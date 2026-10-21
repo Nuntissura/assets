@@ -27,6 +27,129 @@ fn storage(error: impl std::fmt::Display) -> FetchError {
     FetchError::Storage(error.to_string())
 }
 
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{DurableFetchStorage, digest};
+    use crate::ArchiveStore;
+    use fforager_contracts::{
+        ARCHIVE_SCHEMA, ArchiveIdentity, ArchiveKey, ArchiveLimits, ArchiveMembership,
+        ArchiveNamespace, AssetId,
+    };
+    use fforager_core::engine::{
+        FetchControl, FetchEngine, FetchError, FetchRequest, FetchTransport, TransferReceipt,
+    };
+    use std::fs;
+    use std::io::Write;
+    use std::path::Path;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Debug)]
+    struct AbortingTransport(Arc<AtomicUsize>);
+
+    impl FetchTransport for AbortingTransport {
+        fn download(
+            &mut self,
+            _: &FetchRequest,
+            _: &mut dyn Write,
+            _: &FetchControl<'_>,
+        ) -> Result<TransferReceipt, FetchError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Err(FetchError::Transport(
+                "intentional fixture abort; no network".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn hardlinked_stage_is_rejected_before_truncation() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .unwrap();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = repository
+            .join(".fforager-artifacts/test-runs")
+            .join(format!("hardlinked-stage-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let request = FetchRequest {
+            url: "https://example.invalid/hardlink-regression.wav".into(),
+            output: root.join("media.wav"),
+            state_dir: root.join("state"),
+            max_bytes: 4096,
+            timeout_ms: 30_000,
+            cancel_file: None,
+            allowed_loopback: None,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut engine =
+            FetchEngine::new(AbortingTransport(calls.clone()), DurableFetchStorage::new());
+        let cancel = AtomicBool::new(false);
+        assert!(matches!(
+            engine.fetch(&request, &cancel),
+            Err(FetchError::Transport(_))
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let stages = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".fforager-"))
+                    && path.extension() == Some(std::ffi::OsStr::new("part"))
+            })
+            .collect::<Vec<_>>();
+        let [stage] = stages.as_slice() else {
+            panic!("expected one actual aborted stage");
+        };
+        let sentinel = root.join("sentinel.bin");
+        let original = b"Existing hardlinked content must survive rejected preparation.\n";
+        fs::write(&sentinel, original).unwrap();
+        fs::remove_file(stage).unwrap();
+        fs::hard_link(&sentinel, stage).unwrap();
+        let rejected = engine
+            .fetch(&request, &cancel)
+            .expect_err("hardlinked stage rejected");
+        let observed = fs::read(&sentinel).unwrap();
+        assert_eq!(
+            observed, original,
+            "preexisting sentinel was truncated or overwritten"
+        );
+        assert_eq!(digest(&observed), digest(original));
+        assert!(
+            matches!(rejected, FetchError::Storage(ref detail) if detail.contains("FF-STORAGE-E-HANDLE-CONFINEMENT"))
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "rejected stage reached transport"
+        );
+        assert!(!request.output.exists());
+        let key = ArchiveKey {
+            schema: ARCHIVE_SCHEMA,
+            namespace: ArchiveNamespace::SourceAsset,
+            identity: ArchiveIdentity::Asset(
+                AssetId::new(format!("asset_{}", digest(request.url.as_bytes()))).unwrap(),
+            ),
+            identity_rule_version: 1,
+            extractor_id: "generic-http".into(),
+        };
+        let archive = ArchiveStore::open(
+            request.state_dir.join("archive.redb"),
+            ArchiveLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(archive.membership(&key).unwrap(), ArchiveMembership::Absent);
+    }
+}
+
 fn digest(bytes: &[u8]) -> String {
     lower_hex(&Sha256::digest(bytes))
 }
@@ -34,7 +157,7 @@ fn digest(bytes: &[u8]) -> String {
 fn lower_hex(bytes: &sha2::digest::Output<Sha256>) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut result = String::with_capacity(64);
-    for byte in bytes.iter() {
+    for byte in bytes {
         result.push(char::from(HEX[usize::from(byte >> 4)]));
         result.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
@@ -432,24 +555,7 @@ impl Session {
             .as_ref()
             .and_then(|record| record.commit.clone());
         let Some(mut commit) = pending else {
-            if self.output_root.exists(&self.output_name)? {
-                return Err(storage(
-                    "FF-STORAGE-E-UNOWNED-OUTPUT: no validated recovery record",
-                ));
-            }
-            if let ArchiveMembership::Claimed { lease } =
-                self.archive.membership(&self.key).map_err(storage)?
-            {
-                if lease.owner_job_id.as_str() != self.job
-                    || lease.claim_provenance.transaction_id.as_str()
-                        != format!("transaction_{}", self.key_digest)
-                    || lease.claim_provenance.source_locator_digest != self.source_digest
-                {
-                    return Err(storage("FF-STORAGE-E-RECOVERY-LEASE"));
-                }
-                self.archive.release_claim(&lease).map_err(storage)?;
-            }
-            return Ok(None);
+            return self.recover_without_commit();
         };
         if commit.lease.key != self.key
             || commit.output.final_output_identity != self.output.to_string_lossy()
@@ -540,6 +646,27 @@ impl Session {
         }
         self.finish(commit, true).map(Some)
     }
+
+    fn recover_without_commit(&mut self) -> Result<Option<FetchResult>, FetchError> {
+        if self.output_root.exists(&self.output_name)? {
+            return Err(storage(
+                "FF-STORAGE-E-UNOWNED-OUTPUT: no validated recovery record",
+            ));
+        }
+        if let ArchiveMembership::Claimed { lease } =
+            self.archive.membership(&self.key).map_err(storage)?
+        {
+            if lease.owner_job_id.as_str() != self.job
+                || lease.claim_provenance.transaction_id.as_str()
+                    != format!("transaction_{}", self.key_digest)
+                || lease.claim_provenance.source_locator_digest != self.source_digest
+            {
+                return Err(storage("FF-STORAGE-E-RECOVERY-LEASE"));
+            }
+            self.archive.release_claim(&lease).map_err(storage)?;
+        }
+        Ok(None)
+    }
 }
 
 fn hash_file(
@@ -550,7 +677,7 @@ fn hash_file(
     file.seek(SeekFrom::Start(0)).map_err(storage)?;
     let mut bytes = 0_u64;
     let mut hash = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
     loop {
         control.check()?;
         let count = file.read(&mut buffer).map_err(storage)?;
@@ -627,16 +754,15 @@ impl Journal {
         }
         if let Some(commit) = &body.commit {
             commit.validate(ArchiveLimits::default()).map_err(storage)?;
-            if let Some(previous) = self.last.as_ref().and_then(|last| last.commit.as_ref()) {
-                if commit.output != previous.output
+            if let Some(previous) = self.last.as_ref().and_then(|last| last.commit.as_ref())
+                && (commit.output != previous.output
                     || commit.provenance != previous.provenance
                     || commit.success_event != previous.success_event
                     || commit.lease.key != previous.lease.key
                     || commit.lease.owner_job_id != previous.lease.owner_job_id
-                    || commit.lease.claim_provenance != previous.lease.claim_provenance
-                {
-                    return Err(storage("FF-STORAGE-E-JOURNAL-COMMIT"));
-                }
+                    || commit.lease.claim_provenance != previous.lease.claim_provenance)
+            {
+                return Err(storage("FF-STORAGE-E-JOURNAL-COMMIT"));
             }
         }
         Ok(())
@@ -871,8 +997,10 @@ mod platform {
             let mut fs = [0_u16; 64];
             let mut serial = 0;
             let mut flags = 0;
-            let mut version = OSVERSIONINFOW::default();
-            version.dwOSVersionInfoSize = size_of::<OSVERSIONINFOW>() as u32;
+            let mut version = OSVERSIONINFOW {
+                dwOSVersionInfoSize: u32::try_from(size_of::<OSVERSIONINFOW>()).map_err(storage)?,
+                ..OSVERSIONINFOW::default()
+            };
             let mut product = 0;
             // SAFETY: all buffers are live and sized, optional output pointers null.
             let ok = unsafe {
@@ -880,23 +1008,23 @@ mod platform {
                     self.handle().as_raw_handle(),
                     std::ptr::null_mut(),
                     0,
-                    &mut serial,
+                    &raw mut serial,
                     std::ptr::null_mut(),
-                    &mut flags,
+                    &raw mut flags,
                     fs.as_mut_ptr(),
-                    fs.len() as u32,
+                    u32::try_from(fs.len()).map_err(storage)?,
                 )
             };
             // SAFETY: initialized structure with correct size, live product output.
             if ok == 0
-                || unsafe { RtlGetVersion(&mut version) } < 0
+                || unsafe { RtlGetVersion(&raw mut version) } < 0
                 || unsafe {
                     GetProductInfo(
                         version.dwMajorVersion,
                         version.dwMinorVersion,
                         0,
                         0,
-                        &mut product,
+                        &raw mut product,
                     )
                 } == 0
             {
@@ -987,7 +1115,7 @@ mod platform {
             let pointer = allocation.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
             let mut status_block = IO_STATUS_BLOCK::default();
             // SAFETY: usize allocation gives sufficient alignment and byte extent;
-            // fixed header and flexible UTF-16 tail are fully initialized. The
+            // fixed header and aligned FileName field address initialize the UTF-16 tail. The
             // owning stage handle is retained; ReplaceIfExists remains false.
             let status = unsafe {
                 (*pointer).Anonymous.ReplaceIfExists = false;
@@ -995,16 +1123,12 @@ mod platform {
                 (*pointer).FileNameLength = u32::try_from(target.len() * 2).map_err(storage)?;
                 std::ptr::copy_nonoverlapping(
                     target.as_ptr(),
-                    allocation
-                        .as_mut_ptr()
-                        .cast::<u8>()
-                        .add(offset)
-                        .cast::<u16>(),
+                    (&raw mut (*pointer).FileName).cast::<u16>(),
                     target.len(),
                 );
                 NtSetInformationFile(
                     file.as_raw_handle(),
-                    &mut status_block,
+                    &raw mut status_block,
                     pointer.cast(),
                     u32::try_from(bytes).map_err(storage)?,
                     FileRenameInformation,
@@ -1039,9 +1163,9 @@ mod platform {
             Buffer: wide.as_mut_ptr(),
         };
         let attributes = OBJECT_ATTRIBUTES {
-            Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+            Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).map_err(storage)?,
             RootDirectory: parent.as_raw_handle(),
-            ObjectName: &mut unicode,
+            ObjectName: &raw mut unicode,
             Attributes: 0x40 | 0x1000, // OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE
             SecurityDescriptor: std::ptr::null_mut(),
             SecurityQualityOfService: std::ptr::null_mut(),
@@ -1060,10 +1184,10 @@ mod platform {
         // storage lives through this synchronous call, and no handle is inherited.
         let status = unsafe {
             NtCreateFile(
-                &mut handle,
+                &raw mut handle,
                 access,
-                &attributes,
-                &mut status_block,
+                &raw const attributes,
+                &raw mut status_block,
                 std::ptr::null(),
                 0,
                 sharing,
@@ -1085,7 +1209,7 @@ mod platform {
     fn information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION, FetchError> {
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // SAFETY: live file handle and correctly sized initialized output.
-        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) } == 0 {
             return Err(storage(std::io::Error::last_os_error()));
         }
         Ok(info)
@@ -1098,7 +1222,7 @@ mod platform {
             GetFinalPathNameByHandleW(
                 file.as_raw_handle(),
                 buffer.as_mut_ptr(),
-                buffer.len() as u32,
+                u32::try_from(buffer.len()).map_err(storage)?,
                 0,
             )
         };

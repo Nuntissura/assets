@@ -54,6 +54,9 @@ pub struct FetchRequest {
 
 impl FetchRequest {
     /// Reject unusable requests before opening a file or admitting network work.
+    ///
+    /// # Errors
+    /// Returns `InvalidRequest` for invalid path, URL-length, byte, deadline or loopback bounds.
     pub fn validate(&self) -> Result<(), FetchError> {
         if self.url.is_empty() || self.url.len() > 16 * 1024 {
             return Err(FetchError::InvalidRequest(
@@ -131,6 +134,10 @@ impl std::error::Error for FetchError {}
 
 /// Concrete networking stays outside the engine's dependency ring.
 pub trait FetchTransport {
+    /// Stream the admitted response into the owned staging writer.
+    ///
+    /// # Errors
+    /// Returns adapter errors for transport or sink failures, limits, cancellation or deadline.
     fn download(
         &mut self,
         request: &FetchRequest,
@@ -143,6 +150,9 @@ pub trait FetchTransport {
 pub trait FetchStorage {
     type Writer: Write;
     /// Reconcile an already durable prefix before any network acquisition.
+    ///
+    /// # Errors
+    /// Returns cancellation/deadline errors or adapter failures validating and reconciling state.
     fn recover(
         &mut self,
         _request: &FetchRequest,
@@ -151,13 +161,24 @@ pub trait FetchStorage {
         control.check()?;
         Ok(None)
     }
+    /// Open an owned staging writer before acquisition.
+    ///
+    /// # Errors
+    /// Returns adapter errors for confinement, state, resource or control failures.
     fn prepare(
         &mut self,
         request: &FetchRequest,
         control: &FetchControl<'_>,
     ) -> Result<Self::Writer, FetchError>;
     /// Actual SHA-256 locator identity shared by graph and archive ownership.
+    ///
+    /// # Errors
+    /// Returns an adapter error if the writer's source identity cannot be established.
     fn source_identity(&self, writer: &Self::Writer) -> Result<String, FetchError>;
+    /// Acknowledge output publication and durable archive/journal effects.
+    ///
+    /// # Errors
+    /// Returns adapter errors for control, validation or durable-effect failures.
     fn commit(
         &mut self,
         request: &FetchRequest,
@@ -166,6 +187,9 @@ pub trait FetchStorage {
         control: &FetchControl<'_>,
     ) -> Result<FetchResult, FetchError>;
     /// Preserve recoverable state while closing a failed or cancelled writer.
+    ///
+    /// # Errors
+    /// Returns an adapter error if required abort or resource-release effects fail.
     fn abort(&mut self, writer: Self::Writer) -> Result<(), FetchError>;
 }
 
@@ -181,6 +205,10 @@ impl<T: FetchTransport, S: FetchStorage> FetchEngine<T, S> {
         Self { transport, storage }
     }
 
+    /// Execute one validated request through recovery, acquisition and durable commit.
+    ///
+    /// # Errors
+    /// Returns request, resource, control, transport or storage errors from the owned flow.
     pub fn fetch(
         &mut self,
         request: &FetchRequest,

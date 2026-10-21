@@ -14466,6 +14466,22 @@ fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> 
         "WP-FF-020-FINDING-BUILD-EDGE-002" => {
             Some("xtask::tests::build_only_contract_reuse_rejects_dependency_and_product_drift")
         }
+        "WP-FF-021-FINDING-HARDLINK-001" => {
+            Some("storage::fetch::tests::hardlinked_stage_is_rejected_before_truncation")
+        }
+        "WP-FF-021-FINDING-BYTE-CREDIT-002" => Some("FF-GATE-RUNTIME-001::phase1-success"),
+        "WP-FF-021-FINDING-ACTOR-METADATA-003" => Some(
+            "xtask::phase1_runtime::tests::actor_metadata_decodes_utf16_and_rejects_malformed_bytes",
+        ),
+        "WP-FF-021-FINDING-ARCHIVE-SCHEMA-004" => Some(
+            "xtask::phase1_runtime::tests::archive_oracle_uses_metadata_and_rejects_invalid_rows_and_versions",
+        ),
+        "WP-FF-021-FINDING-OUTPUT-IDENTITY-005" => {
+            Some("xtask::phase1_runtime::tests::output_identity_requires_the_same_existing_target")
+        }
+        "WP-FF-021-FINDING-WATCHER-VARIANT-006" => Some(
+            "xtask::phase1_runtime::watcher_mutant::tests::source_variant_uses_approved_lock_and_emits_incompatible_wire",
+        ),
         "WP-FF-017-FINDING-GRAPH-CLOSURE-005" | "WP-FF-017-FINDING-SOURCE-CLOSURE-006" => {
             Some("xtask::tests::ordinary_profile_rejects_resolved_transitive_feature_unification")
         }

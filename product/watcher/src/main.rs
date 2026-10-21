@@ -111,7 +111,7 @@ fn heartbeat(root: &Path, worker_pid: u32, sequence: u64) -> io::Result<()> {
     fs::rename(temporary, root.join("heartbeat.json"))
 }
 
-fn run(options: Options) -> io::Result<()> {
+fn run(options: &Options) -> io::Result<()> {
     let started = Instant::now();
     fs::create_dir_all(&options.state_dir)?;
     let log_path = options.state_dir.join(format!(
@@ -189,7 +189,7 @@ fn run(options: Options) -> io::Result<()> {
 }
 
 fn main() -> ExitCode {
-    match parse().and_then(|options| run(options).map_err(|error| error.to_string())) {
+    match parse().and_then(|options| run(&options).map_err(|error| error.to_string())) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("diagnostics_degraded: {error}");

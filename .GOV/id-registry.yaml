@@ -229,6 +229,8 @@ registered_files:
     path: .GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json
   - id: WP-FF-021-first-runnable-production-slice-v1-REFINEMENT-001
     path: .GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json
+  - id: WP-FF-021-first-runnable-production-slice-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
   - id: FF-NODE-SESSION-BOOTSTRAP-001
     path: .GOV/topology.yaml#/nodes
   - id: FF-EDGE-SESSION-BOOTSTRAP-INJECTS-START-001

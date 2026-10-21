@@ -250,7 +250,7 @@
       {
         "kind": "focused-owning-feedback",
         "source_code": "dd6483ac5cef60793cebda71fe9e7c9e47ad246f",
-        "clippy": "PASS16.21seconds alltargets/allfeatures warningsdenied",
+        "clippy": "PASS16.21seconds fforager-xtask owning-package alltargets/allfeatures warningsdenied; not workspace coverage",
         "test_target": "PASS4minutes27seconds",
         "report_receipt_guards": "PASS2of2 in1.87seconds",
         "authority_parser": "PASS1of1 in0.09seconds after exact YAML scalar quoting",
@@ -729,6 +729,233 @@
         "canonical_acceptance": "PENDING",
         "main_containment": "PENDING"
       }
-    ]
+    ],
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098",
+        "FF-BUILD-099"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-021-first-runnable-production-slice-v1-AC-001",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-002",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-003",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-004",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-005",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-006",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-007",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-008",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-009"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "The exact staged release fforager launcher, worker, and watcher artifacts accept the committed representative direct HTTP/HTTPS fixture through the production entrypoint, launcher-owned sibling topology, worker engine, approved production transport, source graph, selection, storage, diagnostics, and operator-visible result; the launcher exits zero only after producing the expected hash-bound durable output and reconciled archive result within the declared timeout.",
+          "Production-runtime cancellation and transport-failure scenarios exercise the shipped artifact and prove bounded cancellation progress, complete resource release, no corrupt final output, typed nonzero failure, retained diagnostics, and no success or archive insertion before required effects are acknowledged.",
+          "Crash/restart runtime scenarios cover every implemented durable prefix, run reconciliation twice, reject inconsistent resume state, and produce the same correct output/archive verdict without advancing beyond durable bytes or deleting recoverable evidence early.",
+          "The staged launcher starts an independent watcher with bounded readiness and shutdown; missing, corrupt, incompatible, hung, crashed, and storage-failed watcher scenarios expose diagnostics degradation while leaving the same Ferric bytes, archive decision, exit semantics, and bounded launcher completion, and an uncommanded Ferric crash leaves retrievable watcher evidence.",
+          "The product dependency and execution graph contains no Python, yt-dlp, yt-dlp companion asset, wreq product route, testkit normal/build edge, hidden governance/build runtime read, unapproved process, or undeclared native/runtime dependency; an indirect-wrapper negative fixture fails the canonical gate.",
+          "A backwards-compatible FF-GATE-RUNTIME-001 proof-contract extension builds once; hashes and stages every exact release artifact; supervises the deterministic HTTP origin, launcher, product process, and independent watcher; executes ordered success, transport-failure, external-cancellation, crash/restart/reconciliation, and watcher-degraded actions with real production adapters; semantically inspects output, archive, journal, and watcher evidence; and rejects a declaration-preserving mutation of product behavior or durable state. Prior ff.runtime-proof@1 fixtures continue to pass, and an independent validator that did not author the proof producer reruns the gate.",
+          "The no-context model manual names only runtime-proven commands and accurately documents purpose, startup, inputs, outputs, navigation, stable diagnostics, limits, common failures, recovery, watcher degradation, and artifact-proof reproduction; executing its canonical workflow reproduces the accepted result.",
+          "FF-GATE-ARCH-001, FF-GATE-PR-001, FF-GATE-RUNTIME-001, triggered deep/fault/platform gates, FF-GATE-WATCHER-001, secret scan, artifact hygiene, and independent HIGH-risk adversarial review pass for one source, lockfile, fixture, artifact, watcher, and runtime-proof manifest with no unresolved finding.",
+          "An executable packet-promotion check parses exact dependency IDs and independently verifies lifecycle VALIDATED, recorded closure commit, canonical-main ancestry, and non-supersession; negative fixtures for a range, alternative revision, missing packet, STUB status, absent closure, uncontained closure, superseded ID, and forged packet claim all fail. WP-FF-011 activation is rejected until its exact WP-FF-020 and WP-FF-021 bindings and every other named predecessor pass this check."
+        ],
+        "risk_cases": [
+          "Stage confinement must reject a preexisting hardlink before truncation; real sentinel regression and one-predicate counterfact verify this boundary.",
+          "Dependency delivery frames can exceed logical write credit; retain one bounded frame, admit resources before effects, and preserve aggregate limits.",
+          "Process faults require retained owned creation/image identity; watcher debug control cannot be exposed through the readonly worker wrapper.",
+          "Report, archive and path representations can manufacture false results; strict schemas, active metadata and physical target identity must remain fail-closed."
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "Existing data-only prerequisites cannot execute the accepted direct-fetch entrypoint; the bounded product slice is necessary."
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "Reuse SourceGraph, deterministic selection, OwnedResourceBroker, archive contracts, diagnostics and approved dependency boundaries."
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "Use standard owned files, atomic cancellation, bounded process polling and strict argument parsing without another runtime language."
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "Use only FF-DEC-004 confined Windows storage and FF-DEC-005 validation-only owned actor identity/watcher pause scopes."
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "Reuse exact FF-DEC-002 transport, Tokio, redb and existing pinned serialization/hash dependencies; no new dependency campaign."
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "One engine/facade path, launcher-owned worker plus independent watcher, direct HTTP input and exact twelve production scenarios; broader acquisition remains excluded."
+        }
+      ],
+      "artifact_specific_justification": {
+        "product": "Actual CLI/launcher/worker/watcher, core admission/engine, transport and durable storage implement the accepted direct-fetch slice.",
+        "validator": "Versioned runtime evidence and promotion checker independently enforce exact artifacts, physical effects, source history and predecessor containment.",
+        "manual": "The direct-fetch topic documents actual parser limits, startup, typed results, diagnostics and retained-state recovery.",
+        "governance": "Current approval, declaration and finding evidence preserve original acceptance and historical failures without product closure claims."
+      },
+      "pre_simplification_verdict": "FAIL: initial implementation and proof attempts exposed hardlink truncation, frame/credit confusion, actor decoding, archive schema selection, output text identity and ineffective watcher mutation; actual failed evidence is retained.",
+      "simplification_changes": [
+        "Reuse existing public engine/storage and exact twelve-case runner; add one hardlink regression and two bounded single-predicate counterfacts instead of a new proof framework.",
+        "Use actual active archive metadata and canonical physical output identity; preserve strict versioned report consumption and original runtime-proof contract.",
+        "Keep worker native checks readonly and watcher pause type-restricted; document only the proven direct-fetch candidate and retain all final acceptance boundaries."
+      ],
+      "post_simplification_verdict": "PASS: source review and focused public-boundary checks resolve the six observed findings, including actual single-predicate semantic failures and restored success. This verdict covers implementation/remediation review only; final canonical gates, predecessor promotion and main containment are separate requirements.",
+      "complete_post_change_verification": [
+        "Independent r5 readback rehashed all236 staged evidence pins for cleanbe26c70/source fingerprint6da2613fb23489cc0a6b14ca534f716ac41d20da00440f02d3586974d0e80b69; all12 actual case receipts were retained.",
+        "Independent readonly archive reads for positive and watcher cases found canonical active-v1 row/sequence1/524332bytes/expected SHA and zero leases; cancellation and503 had empty tables/sequence0/no final output.",
+        "Implementation independently inspected actual crash/restart retained actor metadata, watcher lifetime, valid journal checksum chain, output and archive, including repeated recovery without duplicate commit.",
+        "Hardlink public Engine regression passed; deleting only link-count rejection compiled and failed because sentinel became empty; exact restored source passed the same unchanged test.",
+        "Fresh64KiB frame counterfact compiled and exited5 on a131072-byte frame after122880bytes; unchanged4MiB fixture probe with golden worker exited0 and independently matched physical output/archive. All243 stable source inputs were restored.",
+        "Owning actor UTF16, archive metadata, physical path and real source-variant guards passed at their recorded candidate boundaries; later mechanical refactoring received independent source review and owning receipt/report checks.",
+        "Manual direct read reconciled actual locked Cargo package/bin names, parser limits, exit mappings, stop newline, cancellation and recovery against current source and actual r5 captures.",
+        "r5 aggregate runtime report1792566456989051700-489988 remains FAIL for oldWP006 closure containment after actual case collection; predecessor repair and final source-bound gate/merge acceptance remain separate.",
+        "The actual controlled testkit handler fault compiled and retained the original two-second assertion/native101 with live parent/marker and bounded captures; independent retained creation identities observed the parent, grandchild and all five monitored actor handles signaled at root exit.",
+        "All243 handler source pins restored exactly; the unchanged ordinary selector succeeded1/1 in1.07s. This proves the added diagnostic/cleanup branch under controlled fault, not the cause of the earlier canonical startup delay.",
+        "Actual full workspace all-target/all-feature warnings-denied Clippy fixed4 completed exit0 in2.71s. Earlier fixed/fixed2/fixed3 compiler failures remain retained in product-batch captures; no failed invocation is relabeled.",
+        "Independent reciprocal source review accepted exact lint corrections: CLI/worker predicate syntax, facade drop scope/error borrows, launcher loop/heartbeat extraction, transport duration/error syntax and storage checked native buffer/pointer conversions with unchanged confinement/no-overwrite/control semantics."
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-021-first-runnable-production-slice-v1-CEILING-001",
+        "current_ceiling": "Bounded direct HTTP candidate on approved Windows/NTFS profile; no general extraction, challenge, streaming protocol, performance, packaging, release or replacement-parity claim.",
+        "replacement_trigger": "All original acceptance rows, current canonical gates, exact predecessor promotion and actual corrective closure containment pass independently.",
+        "likely_upgrade_path": "Complete this exact slice before separately authorized WP011 cross-boundary work.",
+        "trigger_detection_method": "Runtime and promotion consumers reject missing effects, changed proof declarations, invalid predecessor lifecycle or uncontained closure.",
+        "linked_evidence": [
+          ".fforager-artifacts/runtime-proof/phase1-489988-1792566298418301100/runtime-evidence.json",
+          ".fforager-artifacts/product-batch/phase1-regressions/baseline-identity.json",
+          "product/MODEL_MANUAL.md"
+        ]
+      },
+      "adversarial_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "Contract and serialization: runtime-proof candidate references, strict v1/v2 report shapes, status receipts and exact artifact/case sets can otherwise accept declarations as execution.",
+          "State and resource: prepare/truncate/publication, journal replay, archive leases and frame admission can corrupt another file or overstate an acknowledged commit.",
+          "Integration and gate: actual active archive schema, physical output identity and exact predecessor IDs/containment must be independently consumed rather than inferred from stdout.",
+          "Process integration: launcher-owned worker/watchers require creation/image/parent identity, retained exit acknowledgment, bounded cancellation and watcher-only pause control."
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "Actual diff and scope review followed core/storage/net, launcher/facade, strict report consumers, native ownership wrappers and exact promotion boundaries.",
+          "Independent physical readback of236 r5 pins and raw status/capture hashes matched all12 actual case receipts; canonical archive data was reread outside the proof producer.",
+          "Separate implementation reviewer inspected runtime producer changes, owned worker guard and actual crash/restart evidence; manager exclusively ran Cargo and production boundaries.",
+          "Independent manual review compared actual parser defaults/limits, worker/launcher exits, stop bytes and package binaries against documented commands and r5 output.",
+          "The complete actual full-workspace Clippy fixed4 result and source-only lint equivalence were independently read; the prior warning/error captures remain historical failures."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "Hardlink guard removal alone compiled, then unchanged public regression failed on truncated sentinel; exact restored source passed unchanged selector.",
+          "Frame constant1MiB to64KiB alone produced actual limit failure5 on valid524332-byte fixture under4MiB cap; golden worker fresh-state probe succeeded with exact hash and archive.",
+          "Actual durable-prefix checksum-valid invalid phase exited4 JOURNAL-PHASE; physical final-byte mutation exited4 RECOVERY-HASH while canonical committed archive remained unchanged.",
+          "Existing owning strict evidence, candidate-history and promotion negatives reject unknown/missing fields, altered frozen contracts, reused authorization references and forged predecessor claims.",
+          "Controlled ignored-source parent hold5s and descendant lifetime30s force the unchanged two-second assertion into actual diagnostics/owned cleanup, ending native101; exact source restoration then passes the unchanged ordinary selector."
+        ],
+        "BOUNDARY_PROBES": [
+          "Production launcher/worker/watcher executed outside source through actual HTTP origin and approved net/storage adapters; all236 physical evidence pins were independently reconciled.",
+          "Public Engine with DurableFetchStorage rejected real owned NTFS stage hardlink before truncation and retained sentinel bytes; mutation reached the physical failure, not compile failure.",
+          "Actual direct CLI counterfact preserved same fixture/4MiB/30s/explicitloopback policy with distinct owned stages and byte-identical launcher/watcher/origin.",
+          "Actual watcher incompatible source variant emitted ready@9; missing/corrupt/crash/hung/storage failure exposed degradation without changing successful media/archive decisions.",
+          "The owning test uses retained real parent/grandchild processes and fixed SystemRoot cleanup under the existing diagnostic authorization; monitored creation identities independently acknowledge only the five observed actor exits."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "Transport503 exited3 and cancellation exited130/1810ms; both actual databases had zero committed rows/leases and no final output.",
+          "Unsupported archive version and invalid row fixtures fail; metadata-aware positive/negative/rollback readers retain exact key and sequence constraints.",
+          "Physical output identity accepts a distinct valid alias of the same existing target but rejects missing, relative or genuinely different targets, including identical bytes.",
+          "Actor metadata rejects malformed UTF16/UTF8 and oversized input; readonly OwnedWorker exposes no watcher pause/debug method and requires live creation/image/parent checks.",
+          "Cleanup acknowledgment cannot turn the original exceeded two-second bound into success, and taskkill status is explicitly not a substitute for descendant absence; raw controlled marker remained six bytes."
+        ],
+        "INDEPENDENT_FINDINGS": [
+          {
+            "finding_id": "WP-FF-021-FINDING-HARDLINK-001",
+            "finding": "Preexisting stage hardlink could truncate another owned file; retained-handle link-count check now rejects before truncation, independently witnessed by real public regression and semantic single-predicate counterfact.",
+            "status": "REMEDIATED",
+            "proof_id": "storage::fetch::tests::hardlinked_stage_is_rejected_before_truncation"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-BYTE-CREDIT-002",
+            "finding": "A valid dependency delivery frame was confused with64KiB logical credit. Explicit1MiB retained frame guard,16KiB borrowed writes and2MiB admission preserve total bounds; fresh old-limit variant fails and golden CLI succeeds.",
+            "status": "REMEDIATED",
+            "proof_id": "FF-GATE-RUNTIME-001::phase1-success"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-ACTOR-METADATA-003",
+            "finding": "Actual Windows actor metadata was UTF16 rather than UTF8. Bounded BOM-aware strict decoding preserves owned PID/parent/image checks and rejects malformed bytes.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::phase1_runtime::tests::actor_metadata_decodes_utf16_and_rejects_malformed_bytes"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-ARCHIVE-SCHEMA-004",
+            "finding": "The proof reader hardcoded inactive v2 table while actual store metadata selectedv1. Independently observed physical row justified metadata-aware strict positive/negative/rollback consumption.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::phase1_runtime::tests::archive_oracle_uses_metadata_and_rejects_invalid_rows_and_versions"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-OUTPUT-IDENTITY-005",
+            "finding": "Text-only output path equality rejected the same Windows physical target with mixed separators. Existing-target canonical identity now accepts aliases and rejects genuinely different targets.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::phase1_runtime::tests::output_identity_requires_the_same_existing_target"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-WATCHER-VARIANT-006",
+            "finding": "Binary literal mutation did not establish incompatible wire behavior. Exact single-literal source variant uses only approved lock identities, distinct staging, retained hashes and actual ready@9 observation.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::phase1_runtime::watcher_mutant::tests::source_variant_uses_approved_lock_and_emits_incompatible_wire"
+          },
+          {
+            "finding_id": "WP-FF-024-FINDING-TIMEOUT-DIAGNOSTICS-001",
+            "finding": "The actual owning testkit two-second failure dropped child status, captures and cleanup evidence. Existing approved diagnostic remediation preserves that deadline failure, records bounded actual phase/capture facts and cleans only the retained owned parent/tree; a controlled real parent/grandchild fault and exact ordinary restoration demonstrate the branch without claiming the original startup cause.",
+            "status": "REMEDIATED",
+            "proof_id": "testkit::fake_child_process::bounded_descendant_outlives_direct_child_then_self_cleans"
+          }
+        ],
+        "RESIDUAL_UNCERTAINTY": [
+          "Current runtime observations and full workspace Clippy do not override the retained r5 aggregate prerequisite containment failure or final exact-candidate canonical/main acceptance. Earlier startup delay cause remains unverified; the controlled handler proves only bounded diagnostics/owned cleanup. Storage remains approved Windows/NTFS only; frame guard does not bound dependency allocation or OS RSS."
+        ],
+        "MANUAL_REVIEW": {
+          "artifact": "product/MODEL_MANUAL.md",
+          "reviewer": "review_fresh independent adversarial subagent",
+          "method": "Direct manual/source comparison plus independent actual runtime and physical archive readback",
+          "verdict": "PASS",
+          "evidence": [
+            "The locked Cargo release command names actual launcher/worker/watcher packages and sibling binaries; fetch flags, defaults and numeric limits match current parser.",
+            "Documented failure/recovery, typed exits, retained journal/archive handling and exact watcher stop newline match current source and actual success/cancellation/corruption observations.",
+            "FF-GATE-RUNTIME-001 and main containment remain final acceptance requirements; manual text distinguishes actual direct-fetch candidate from historical prerequisites and does not certify current gate closure."
+          ]
+        }
+      }
+    }
   }
 }

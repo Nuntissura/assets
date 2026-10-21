@@ -40,7 +40,7 @@ impl Default for TransportPolicy {
     fn default() -> Self {
         Self {
             max_bytes: 1024 * 1024 * 1024,
-            total_timeout: Duration::from_secs(120),
+            total_timeout: Duration::from_mins(2),
             connect_timeout: Duration::from_secs(15),
             idle_timeout: Duration::from_secs(30),
             allow_loopback: None,
@@ -145,7 +145,7 @@ impl OrdinaryTransport {
     pub fn new(mut policy: TransportPolicy) -> Result<Self, TransportError> {
         if policy.max_bytes == 0
             || policy.total_timeout.is_zero()
-            || policy.total_timeout > Duration::from_secs(24 * 60 * 60)
+            || policy.total_timeout > Duration::from_hours(24)
             || policy.connect_timeout.is_zero()
             || policy.idle_timeout.is_zero()
             || policy
@@ -233,7 +233,7 @@ impl OrdinaryTransport {
             deadline,
         )
         .await?
-        .map_err(network_error)?;
+        .map_err(|error| network_error(&error))?;
         let (status, connected, content_length) = self.validate_response(&response, selected)?;
         let bytes_received = self.copy_response(response, sink, cancel, deadline).await?;
         if content_length.is_some_and(|length| length != bytes_received) {
@@ -296,7 +296,7 @@ impl OrdinaryTransport {
             .http2_max_header_list_size(64 * 1024)
             .resolve_to_addrs(host, &[selected])
             .build()
-            .map_err(network_error)
+            .map_err(|error| network_error(&error))
     }
 
     fn validate_response(
@@ -377,7 +377,7 @@ impl OrdinaryTransport {
         loop {
             let Some(chunk) = controlled(response.chunk(), cancel, deadline)
                 .await?
-                .map_err(network_error)?
+                .map_err(|error| network_error(&error))?
             else {
                 return Ok(received);
             };
@@ -413,7 +413,7 @@ impl OrdinaryTransport {
                             ));
                         }
                         Ok(written) if written <= remaining.len() => {
-                            remaining = &remaining[written..]
+                            remaining = &remaining[written..];
                         }
                         Ok(_) => {
                             return Err(TransportError::new(
@@ -470,7 +470,7 @@ async fn controlled<F: Future>(
     }
 }
 
-fn network_error(error: reqwest::Error) -> TransportError {
+fn network_error(error: &reqwest::Error) -> TransportError {
     let kind = if error.is_timeout() {
         TransportErrorKind::TimedOut
     } else {

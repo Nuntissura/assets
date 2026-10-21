@@ -18,13 +18,56 @@ guards are not limits on dependency preallocation, allocator overhead or OS RSS.
 
 </topic>
 
-<topic id="phase-0-purpose" status="active" version="4" wp="WP-FF-006-rust-youtube-challenge-spike-v1" updated_at="2026-07-26">
+<topic id="phase-1-direct-fetch" status="active" version="1" wp="WP-FF-021-first-runnable-production-slice-v1" updated_at="2026-10-21">
+
+## Build and run the direct-fetch candidate
+
+This implementation accepts one direct HTTP/HTTPS media URL on the approved Windows/NTFS storage profile. Its launcher starts the sibling worker and independent watcher. It does not perform site extraction, challenge solving, browser impersonation or playlist selection. Source availability and the runtime observations below do not replace the final canonical gates and main-containment requirement.
+
+From the repository root, use the locked Cargo build and keep all three executables together:
+
+```powershell
+cargo build --offline --locked --release --manifest-path build/Cargo.toml --target-dir .fforager-artifacts/cargo-target -p fforager-launcher -p fforager-worker -p fforager-watcher
+& ./.fforager-artifacts/cargo-target/release/fforager.exe --help
+```
+
+Supply an actual direct-media URL in place of the placeholder. The output parent must exist; output and state paths must differ. This example gives the invocation its own ignored directory:
+
+```powershell
+$mediaUrl = '<direct-http-or-https-media-url>'
+$runRoot = Join-Path '.fforager-artifacts' ('manual-fetch-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $runRoot -ErrorAction Stop | Out-Null
+$outputPath = Join-Path $runRoot 'media.wav'
+$statePath = Join-Path $runRoot 'state'
+$cancelPath = Join-Path $runRoot 'cancel'
+& ./.fforager-artifacts/cargo-target/release/fforager.exe fetch $mediaUrl --output $outputPath --state-dir $statePath --max-bytes 4194304 --timeout-ms 30000 --cancel-file $cancelPath
+```
+
+The parser requires exactly one URL plus `--output` and `--state-dir`. Defaults are 1 GiB and 120000 ms; explicit limits are 1 byte..1 TiB and 1..3600000 ms. A controlled local origin additionally requires `--allow-loopback IP:PORT` naming that exact loopback endpoint. This permission does not admit other private/special-use destinations. Ordinary redirects, ambient proxy selection, cookie persistence, automatic decompression and dependency retries remain disabled.
+
+Success exits 0 and writes one stdout JSON object with `status`, `job_id`, `output`, `bytes`, `sha256`, `archive_sequence` and `recovered`. It follows output publication, archive commit and journal acknowledgment. The demonstrated 524332-byte WAV has SHA-256 `2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873`; this fixture result is not a general media-compatibility claim.
+
+Errors use stderr JSON and nonzero exits: 2 invalid arguments/request, 3 transport failure, 4 storage failure, 5 byte-limit failure, 124 deadline, 130 cancellation, or 6 launcher failure. An uncommanded worker exit can propagate another nonzero code. Never treat a partial output, staged file or diagnostic message as a successful acquisition. `diagnostics_degraded` concerns the independent watcher and does not itself change the media/archive verdict.
+
+### Cancellation, diagnostics and recovery
+
+Create the invocation's `--cancel-file` to request cancellation. Completion waits for the owned worker result or bounded launcher cleanup. Before retrying, remove only that owned cancellation file. Keep the original URL, output, state directory and byte limit for recovery; do not delete or edit its journal, archive, lock files or `.fforager-*.part` staging files. A pre-commit cancellation/failure must not become final/archive success. After publication has crossed the commit point, a successful result still requires the archive and journal acknowledgments; a failure retains the recognized prefix for recovery.
+
+Repeating the same successful command checks the actual output hash and archive/journal state before network work. The demonstrated offline repeat returns `recovered: true` with the same archive sequence. A worker crash before commit may require reacquisition on the first retry; the next retry must retain the same completed archive decision. Corrupt output or an inconsistent durable prefix is an error, not permission to overwrite a different existing target. Existing outputs are never silently replaced; unsupported filesystems, reparse traversal, hardlinked handles or failed confinement/durability checks fail closed.
+
+Watcher readiness, heartbeat and bounded JSONL lifetime observations live below the selected state directory's `diagnostics/launcher-*` directories. If a worker dies unexpectedly, the watcher can retain crash evidence independently. Its owned `stop` control file accepts exactly `stop` followed by a newline. Use only that invocation's observed diagnostic directory; do not stop unrelated processes or infer product success from watcher liveness. Preserve stderr, stdout, state and the exact command when investigating an error.
+
+`FF-GATE-RUNTIME-001` independently stages the launcher/worker/watcher and checks the frozen twelve direct-fetch/failure/recovery scenarios. Its final verdict and predecessor/main-containment checks remain the acceptance authority; manual commands and partial gate observations do not certify Phase 1 closure or release readiness.
+
+</topic>
+
+<topic id="phase-0-purpose" status="active" version="5" wp="WP-FF-006-rust-youtube-challenge-spike-v1" updated_at="2026-10-21">
 
 # Ferric Forager model manual
 
 Ferric Forager is an independent Rust-native replacement for yt-dlp with additional acquisition, recording, extraction, metadata, archive, protocol, diagnostics, and integration capabilities. Ferric owns every implementation path. Python, yt-dlp, and yt-dlp companion packages or executable assets are not permitted dependencies of product code, builds, tests, canonical verification, packages, releases, or runtime behavior.
 
-The repository currently contains shipped data-only contract crates and pure deterministic core models, but no executable Ferric runtime capability. These Phase 0 prerequisite artifacts and the executable build-and-proof tooling MUST NOT be counted as product capability progress, a completed product phase, packaging, release, or runtime completion.
+The Phase 0 artifacts described in this manual include shipped data-only contracts, pure deterministic core models and executable build-and-proof tooling. Those prerequisite artifacts do not by themselves establish an executable Ferric runtime capability and MUST NOT be counted as product capability progress, a completed product phase, packaging, release, or runtime completion. The separately implemented direct-fetch candidate is documented above and remains subject to its own canonical acceptance and main-containment checks.
 
 Repository ownership is deterministic:
 

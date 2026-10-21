@@ -85,11 +85,11 @@ fn run() -> Result<ExitCode, String> {
         .cancel_file
         .clone()
         .or_else(|| diagnostic_root.as_ref().map(|root| root.join("cancel")));
-    if fetch.cancel_file.is_none() {
-        if let Some(path) = &cancel_path {
-            arguments.push("--cancel-file".into());
-            arguments.push(path.as_os_str().to_owned());
-        }
+    if fetch.cancel_file.is_none()
+        && let Some(path) = &cancel_path
+    {
+        arguments.push("--cancel-file".into());
+        arguments.push(path.as_os_str().to_owned());
     }
     let mut worker_command = Command::new(directory.join(executable("fforager-worker")));
     worker_command
@@ -105,28 +105,44 @@ fn run() -> Result<ExitCode, String> {
     let mut watcher = diagnostic_root
         .as_ref()
         .and_then(|root| start_watcher(&directory, root, worker.id()));
+    let status = monitor_worker(&mut worker, &mut watcher, deadline, cancel_path.as_deref())?;
+    if status
+        .code()
+        .is_some_and(|code| matches!(code, 0 | 2 | 3 | 4 | 5 | 124 | 130))
+    {
+        if let Some((child, stop)) = watcher.take() {
+            stop_watcher(child, &stop);
+        }
+    } else if watcher.is_some() {
+        degraded(
+            "worker_failed_watcher_retained",
+            "watcher keeps bounded crash evidence independently",
+        );
+    }
+    let code = status
+        .code()
+        .and_then(|code| u8::try_from(code).ok())
+        .unwrap_or(1);
+    Ok(ExitCode::from(code))
+}
+
+fn monitor_worker(
+    worker: &mut Child,
+    watcher: &mut Option<(Child, PathBuf)>,
+    deadline: Instant,
+    cancel_path: Option<&Path>,
+) -> Result<std::process::ExitStatus, String> {
     let mut heartbeat_sequence = 0_u64;
     let mut heartbeat_progress = Instant::now();
     let mut heartbeat_degraded = false;
     let status = loop {
         if let Some((child, stop)) = watcher.as_ref() {
             let heartbeat = stop.parent().map(|parent| parent.join("heartbeat.json"));
-            if let Some(path) = heartbeat {
-                if let Ok(file) = fs::File::open(path) {
-                    let mut bytes = Vec::new();
-                    if file.take(4097).read_to_end(&mut bytes).is_ok() && bytes.len() <= 4096 {
-                        if let Ok(message) = serde_json::from_slice::<WatcherHeartbeat>(&bytes) {
-                            if message.schema == "ff.watcher-heartbeat@1"
-                                && message.worker_pid == worker.id()
-                                && message.watcher_pid == child.id()
-                                && message.sequence > heartbeat_sequence
-                            {
-                                heartbeat_sequence = message.sequence;
-                                heartbeat_progress = Instant::now();
-                            }
-                        }
-                    }
-                }
+            if let Some(sequence) = heartbeat.and_then(|path| {
+                advancing_heartbeat(&path, worker.id(), child.id(), heartbeat_sequence)
+            }) {
+                heartbeat_sequence = sequence;
+                heartbeat_progress = Instant::now();
             }
             if !heartbeat_degraded && heartbeat_progress.elapsed() >= Duration::from_millis(500) {
                 degraded(
@@ -154,7 +170,7 @@ fn run() -> Result<ExitCode, String> {
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {
-                terminate_and_reap(&mut worker)?;
+                terminate_and_reap(worker)?;
                 if let Some((child, stop)) = watcher.take() {
                     stop_watcher(child, &stop);
                 }
@@ -162,7 +178,7 @@ fn run() -> Result<ExitCode, String> {
             }
         }
         if Instant::now() >= deadline {
-            if let Some(path) = &cancel_path {
+            if let Some(path) = cancel_path {
                 let _ = fs::write(path, b"cancel\n");
             }
             let grace = Instant::now() + Duration::from_millis(250);
@@ -193,24 +209,29 @@ fn run() -> Result<ExitCode, String> {
         }
         std::thread::sleep(Duration::from_millis(25));
     };
-    if status
-        .code()
-        .is_some_and(|code| matches!(code, 0 | 2 | 3 | 4 | 5 | 124 | 130))
+    Ok(status)
+}
+
+fn advancing_heartbeat(
+    path: &Path,
+    worker_pid: u32,
+    watcher_pid: u32,
+    previous: u64,
+) -> Option<u64> {
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    if file.take(4097).read_to_end(&mut bytes).is_ok()
+        && bytes.len() <= 4096
+        && let Ok(message) = serde_json::from_slice::<WatcherHeartbeat>(&bytes)
+        && message.schema == "ff.watcher-heartbeat@1"
+        && message.worker_pid == worker_pid
+        && message.watcher_pid == watcher_pid
+        && message.sequence > previous
     {
-        if let Some((child, stop)) = watcher.take() {
-            stop_watcher(child, &stop);
-        }
-    } else if watcher.is_some() {
-        degraded(
-            "worker_failed_watcher_retained",
-            "watcher keeps bounded crash evidence independently",
-        );
+        Some(message.sequence)
+    } else {
+        None
     }
-    let code = status
-        .code()
-        .and_then(|code| u8::try_from(code).ok())
-        .unwrap_or(1);
-    Ok(ExitCode::from(code))
 }
 
 fn start_watcher(directory: &Path, control: &Path, worker_pid: u32) -> Option<(Child, PathBuf)> {
@@ -241,17 +262,16 @@ fn start_watcher(directory: &Path, control: &Path, worker_pid: u32) -> Option<(C
     loop {
         if let Ok(file) = fs::File::open(&ready) {
             let mut bytes = Vec::new();
-            if file.take(4097).read_to_end(&mut bytes).is_ok() && bytes.len() <= 4096 {
-                if let Ok(message) = serde_json::from_slice::<WatcherReady>(&bytes) {
-                    if message.schema == "ff.watcher-ready@1"
-                        && message.worker_pid == worker_pid
-                        && message.watcher_pid == child.id()
-                        && message.ready
-                        && matches!(child.try_wait(), Ok(None))
-                    {
-                        return Some((child, stop));
-                    }
-                }
+            if file.take(4097).read_to_end(&mut bytes).is_ok()
+                && bytes.len() <= 4096
+                && let Ok(message) = serde_json::from_slice::<WatcherReady>(&bytes)
+                && message.schema == "ff.watcher-ready@1"
+                && message.worker_pid == worker_pid
+                && message.watcher_pid == child.id()
+                && message.ready
+                && matches!(child.try_wait(), Ok(None))
+            {
+                return Some((child, stop));
             }
             // Publication may be partially visible; acceptance stays strict until the deadline.
         }

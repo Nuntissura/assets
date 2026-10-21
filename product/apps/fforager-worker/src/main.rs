@@ -58,13 +58,13 @@ fn main() -> std::process::ExitCode {
     });
     let result = fetch(&request, &cancelled);
     done.store(true, Ordering::Release);
-    if let Some(monitor) = monitor {
-        if monitor.join().is_err() {
-            eprintln!(
-                "{}",
-                serde_json::json!({"status":"diagnostics_degraded","code":"cancellation_monitor_failed"})
-            );
-        }
+    if let Some(monitor) = monitor
+        && monitor.join().is_err()
+    {
+        eprintln!(
+            "{}",
+            serde_json::json!({"status":"diagnostics_degraded","code":"cancellation_monitor_failed"})
+        );
     }
     match result {
         Ok(result) => {

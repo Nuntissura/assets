@@ -28,22 +28,21 @@ impl FetchTransport for NetPort<'_> {
                     .transport
                     .resolve_addresses(&request.url, control.cancellation_flag())
                     .await
-                    .map_err(map_transport_error)?;
+                    .map_err(|error| map_transport_error(&error))?;
                 let receipt = self
                     .transport
                     .download(&request.url, &addresses, sink, control.cancellation_flag())
                     .await
-                    .map_err(map_transport_error)?;
+                    .map_err(|error| map_transport_error(&error))?;
                 Ok(TransferReceipt {
                     bytes: receipt.bytes_received,
                 })
             };
-            match tokio::time::timeout(control.remaining(), transfer).await {
-                Ok(result) => result,
-                Err(_) => {
-                    control.check()?;
-                    Err(FetchError::TimedOut)
-                }
+            if let Ok(result) = tokio::time::timeout(control.remaining(), transfer).await {
+                result
+            } else {
+                control.check()?;
+                Err(FetchError::TimedOut)
             }
         })
     }
@@ -55,7 +54,7 @@ impl FetchTransport for NetPort<'_> {
 /// Returns the typed request, cancellation, transport, storage, or byte-limit failure.
 pub fn fetch(request: &FetchRequest, cancel: &AtomicBool) -> Result<FetchResult, FetchError> {
     request.validate()?;
-    fforager_net::validate_url(&request.url).map_err(map_transport_error)?;
+    fforager_net::validate_url(&request.url).map_err(|error| map_transport_error(&error))?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -67,20 +66,21 @@ pub fn fetch(request: &FetchRequest, cancel: &AtomicBool) -> Result<FetchResult,
         allow_loopback: request.allowed_loopback,
         ..TransportPolicy::default()
     })
-    .map_err(map_transport_error)?;
-    let mut engine = FetchEngine::new(
-        NetPort {
-            runtime: &runtime,
-            transport,
-        },
-        DurableFetchStorage::new(),
-    );
-    let result = engine.fetch(request, cancel);
-    drop(engine);
+    .map_err(|error| map_transport_error(&error))?;
+    let result = {
+        let mut engine = FetchEngine::new(
+            NetPort {
+                runtime: &runtime,
+                transport,
+            },
+            DurableFetchStorage::new(),
+        );
+        engine.fetch(request, cancel)
+    };
     runtime.shutdown_timeout(Duration::from_millis(250));
     result
 }
-fn map_transport_error(error: TransportError) -> FetchError {
+fn map_transport_error(error: &TransportError) -> FetchError {
     match error.kind {
         TransportErrorKind::Cancelled => FetchError::Cancelled,
         TransportErrorKind::TimedOut => FetchError::TimedOut,

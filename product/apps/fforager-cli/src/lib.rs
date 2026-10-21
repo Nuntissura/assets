@@ -59,7 +59,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
     let mut allowed_loopback = None;
     while let Some(argument) = args.next() {
         match argument.to_str() {
-            Some("--output") | Some("-o") => set_path(&mut output, args.next(), "--output")?,
+            Some("--output" | "-o") => set_path(&mut output, args.next(), "--output")?,
             Some("--state-dir") => set_path(&mut state_dir, args.next(), "--state-dir")?,
             Some("--cancel-file") => set_path(&mut cancel_file, args.next(), "--cancel-file")?,
             Some("--allow-loopback") => {
@@ -77,10 +77,10 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
                 allowed_loopback = Some(address);
             }
             Some("--max-bytes") => {
-                set_bound(&mut max_bytes, args.next(), "--max-bytes", 1, 1 << 40)?
+                set_bound(&mut max_bytes, args.next(), "--max-bytes", 1, 1 << 40)?;
             }
             Some("--timeout-ms") => {
-                set_bound(&mut timeout_ms, args.next(), "--timeout-ms", 1, 3_600_000)?
+                set_bound(&mut timeout_ms, args.next(), "--timeout-ms", 1, 3_600_000)?;
             }
             Some(value) if !value.starts_with('-') => {
                 if url.is_some() {
