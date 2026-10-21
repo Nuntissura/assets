@@ -695,6 +695,7 @@ name = "fforager-xtask"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata",
+ "fforager-contracts",
  "saphyr",
  "serde",
  "serde_json",

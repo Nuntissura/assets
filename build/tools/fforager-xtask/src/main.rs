@@ -1,3 +1,4 @@
+mod benchmark;
 mod compatibility;
 mod ffmpeg_report;
 #[cfg(test)]
@@ -649,6 +650,9 @@ fn run() -> Result<(), String> {
     let root = repo_root()?;
     require_repository_root_cwd(&root)?;
     match args.as_slice() {
+        [command, rest @ ..] if command == "benchmark-validate" => benchmark::run(&root, rest),
+        [command, rest @ ..] if command == "benchmark-calibrate" => benchmark::calibrate(&root, rest),
+        [command, rest @ ..] if command == "benchmark-bundle" => benchmark::materialize(&root, rest),
         [gate] if gate == "architecture-check" => run_architecture_gate(&root, &args),
         [command, rest @ ..] if command == "compatibility-generate" => {
             compatibility::run_generate(&root, rest)
@@ -696,7 +700,7 @@ fn run() -> Result<(), String> {
         [gate] if matches!(gate.as_str(), "verify-release" | "watcher-check") => {
             Err(format!("{gate} is NOT_IMPLEMENTED for Phase 0 and cannot report PASS"))
         }
-        _ => Err("usage: fforager-xtask <architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|secret-scan <--install-hooks|--verify-hooks|--staged|--history|--pre-push REMOTE>|transport-corpus|archive-store-evidence|resource-durability-models|ffmpeg-supervision-produce --platform <windows_x86_64|linux_x86_64> --fixture-root PATH --report PATH --receipt PATH|ffmpeg-supervision-aggregate --windows-report PATH --windows-receipt PATH --linux-report PATH --linux-receipt PATH|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
+        _ => Err("usage: fforager-xtask <benchmark-validate --input BUNDLE --report REPORT|benchmark-calibrate --host-profile TEMPLATE --ffmpeg ABSOLUTE --ffprobe ABSOLUTE --fixture RELATIVE --output NEW_ARTIFACT_DIR|benchmark-bundle --windows-profile PROFILE --unix-profile PROFILE --active-profile ID --controls CALIBRATION --output NEW_ARTIFACT_DIR|architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|secret-scan <--install-hooks|--verify-hooks|--staged|--history|--pre-push REMOTE>|transport-corpus|archive-store-evidence|resource-durability-models|ffmpeg-supervision-produce --platform <windows_x86_64|linux_x86_64> --fixture-root PATH --report PATH --receipt PATH|ffmpeg-supervision-aggregate --windows-report PATH --windows-receipt PATH --linux-report PATH --linux-receipt PATH|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
     }
 }
 

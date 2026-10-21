@@ -36,7 +36,7 @@ rules:
     statement: Superseded packet history is archived and never deleted.
 current_focus:
   statement: Work packet selected.
-  active_wp_id: WP-FF-023-dependency-security-remediation-v1
+  active_wp_id: WP-FF-020-equivalent-work-benchmark-design-v1
 work_packets:
   - wp_id: WP-FF-001-governance-workflow-v1
     packet: .GOV/work_packets/WP-FF-001-governance-workflow-v1/packet.json

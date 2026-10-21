@@ -30,7 +30,7 @@ artifact_role = "non_shipped_gate_runner"
 shipped = false
 test_only = false
 publish_allowed = false
-allowed_internal_dependencies = []
+allowed_internal_dependencies = [{ package = "fforager-contracts", kinds = ["normal"], optional = false }]
 split_trigger = "FF-BUILD-036"
 feature_owner = "WP-FF-003-executable-gate-bootstrap-v1"
 profile = "phase0_bootstrap"

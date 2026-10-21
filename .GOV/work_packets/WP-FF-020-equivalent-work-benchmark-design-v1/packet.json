@@ -8,12 +8,17 @@
     "version": "1",
     "title": "Define the Phase 0D equivalent-work benchmark design",
     "created_at_utc": "2026-08-09T15:39:12Z",
-    "updated_at_utc": "2026-08-09T15:39:12Z"
+    "updated_at_utc": "2026-10-21T02:27:11Z"
   },
   "authorization": {
     "source": "operator_message",
     "reference": "Create a dedicated Phase 0D benchmark-design work packet, ensure it is completed before WP-FF-011, commit and push the packet changes, then start WP-FF-010.",
-    "recorded_at_utc": "2026-08-09T15:39:12Z"
+    "recorded_at_utc": "2026-08-09T15:39:12Z",
+    "current_implementation_direction": {
+      "reference": "The Operator requests Phase1 delivery including necessary predecessor work; preserve all six WP020 criteria and perform the bounded benchmark design implementation with independent review and shared warm Cargo.",
+      "source": "operator_message",
+      "sequence_limit": "Implementation priority changes start sequencing only. Outstanding profiles, variance, acceptance and main containment remain required."
+    }
   },
   "authority": {
     "bootstrap": "START_HERE.yaml",
@@ -35,10 +40,10 @@
   },
   "source_control": {
     "canonical_branch": "main",
-    "base_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
-    "work_branch": "codex/wp-ff-020-benchmark-design",
-    "worktree_policy": "NONE",
-    "worktree_id": null,
+    "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
+    "work_branch": "codex/phase1-prerequisite-closure",
+    "worktree_policy": "LINKED_REPO_LOCAL_HELPER",
+    "worktree_id": "phase1-prerequisites",
     "remote_backup": {
       "required_for_handoff": true,
       "branch": null,
@@ -50,16 +55,14 @@
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "STUB",
+    "status": "IN_PROGRESS",
     "risk": "HIGH",
     "blockers": [
-      "The packet is a STUB and does not authorize implementation.",
-      "Current benchmark-harness, statistics, host-isolation, and measurement-tool research must be refreshed and bound to exact versions before promotion.",
-      "Exact benchmark manifest, raw-sample, normalized-observation, equality-admission, report, and rejection schemas are not yet frozen.",
-      "Pinned Windows and Unix replay host profiles and measured baseline-variance evidence are not yet recorded.",
-      "FF-GATE-RUNTIME-001 currently rejects a design-authorized build-only PREREQUISITE when no shipped product path changes; a separately authorized fail-closed classifier remediation must distinguish declared Phase 0 prerequisite artifacts from NONE governance work before this packet can be promoted."
+      "Measured Windows and Unix control variance and exact replay profiles remain unproven.",
+      "Concrete domain-derived observations, public counterfactual execution and required canonical gates remain pending.",
+      "Predecessor remediations and final closure containment remain unproven."
     ],
-    "next_action": "After WP-FF-010 or in a separately Operator-selected Phase 0D lane, first complete a separately authorized fail-closed PREREQUISITE/NONE classifier remediation, then refresh current source-level benchmark research, pin replay hosts and tool identities, freeze equality before timing, promote this STUB, and implement the Ferric-owned manifest/report validators and negative fixtures.",
+    "next_action": "Implement actual domain decoding and bounded native media control calibration, run focused admission/statistics checks, then obtain independent review and required canonical verdicts before containment.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -95,7 +98,9 @@
       "build/fixtures/benchmarks/",
       "build/tools/fforager-xtask/",
       "build/reports/",
-      ".fforager-artifacts/"
+      ".fforager-artifacts/",
+      "build/architecture-policy.toml",
+      "build/Cargo.lock"
     ],
     "dependencies": [
       "WP-FF-003-executable-gate-bootstrap-v2 VALIDATED closure 27887cea0026a9db218b623ce8e69fc0cf191fb0 contained in main",
@@ -198,7 +203,7 @@
       "required_future_proof": "the backwards-compatible FF-GATE-RUNTIME-001 staged-artifact contract delivered by WP-FF-021 plus the WP-FF-011 equivalent-work runtime benchmark gate"
     },
     "stub_implementation_brief": {
-      "implementation_authorized": false,
+      "implementation_authorized": true,
       "promotion_requirements": [
         "A separately authorized classifier remediation makes FF-GATE-RUNTIME-001 recognize design-authorized build-only Phase 0 prerequisite artifacts while preserving fail-closed rejection of NONE or RUNTIME mismatches.",
         "Current official and source-level benchmark research is recorded with exact versions and rejected alternatives.",
@@ -208,7 +213,14 @@
         "Every acceptance row has an executable command, bounded timeout, concrete input, expected result, and failure oracle.",
         "The exact non-product prerequisite declaration remains unchanged from the first committed non-STUB checkpoint through closure, and no product path changes under this packet."
       ],
-      "detail_location": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json"
+      "detail_location": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json",
+      "historical_blockers": [
+        "The packet is a STUB and does not authorize implementation.",
+        "Current benchmark-harness, statistics, host-isolation, and measurement-tool research must be refreshed and bound to exact versions before promotion.",
+        "Exact benchmark manifest, raw-sample, normalized-observation, equality-admission, report, and rejection schemas are not yet frozen.",
+        "Pinned Windows and Unix replay host profiles and measured baseline-variance evidence are not yet recorded.",
+        "FF-GATE-RUNTIME-001 currently rejects a design-authorized build-only PREREQUISITE when no shipped product path changes; a separately authorized fail-closed classifier remediation must distinguish declared Phase 0 prerequisite artifacts from NONE governance work before this packet can be promoted."
+      ]
     }
   }
 }
