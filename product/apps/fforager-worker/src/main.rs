@@ -81,7 +81,7 @@ fn main() -> std::process::ExitCode {
                 fforager::FetchError::TimedOut => ("timed_out", 124),
                 fforager::FetchError::Transport(_) => ("transport_failed", 3),
                 fforager::FetchError::Storage(_) => ("storage_failed", 4),
-                fforager::FetchError::LimitExceeded => ("limit_exceeded", 5),
+                fforager::FetchError::LimitExceeded(_) => ("limit_exceeded", 5),
             };
             eprintln!(
                 "{}",

@@ -1,8 +1,22 @@
 ---
 file_id: FF-PRODUCT-MODEL-MANUAL-001
 file_kind: model_manual
-updated_at: "2026-10-20"
+updated_at: "2026-10-21"
 ---
+
+<topic id="phase-1-streaming-bounds" status="active" version="1" wp="WP-FF-021-first-runnable-production-slice-v1" updated_at="2026-10-21">
+
+## Direct-fetch streaming bounds
+
+The Phase 1 direct-fetch path reserves 2 MiB of logical payload memory before
+adapter effects. It retains at most one accepted dependency delivery frame
+(1 MiB guard), drains it through borrowed writes of at most 16 KiB, and checks
+the total admitted body bound before writing that frame. Cancellation is checked
+between writes; the next frame is requested only after the current frame drains.
+The frame guard runs after reqwest allocates its frame. These reservations and
+guards are not limits on dependency preallocation, allocator overhead or OS RSS.
+
+</topic>
 
 <topic id="phase-0-purpose" status="active" version="4" wp="WP-FF-006-rust-youtube-challenge-spike-v1" updated_at="2026-07-26">
 

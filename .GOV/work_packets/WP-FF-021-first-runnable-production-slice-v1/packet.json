@@ -543,6 +543,37 @@
         "watcher-storage-failure"
       ],
       "timeout_seconds": 30
+    },
+    "current_runtime_attempt": {
+      "gate_id": "FF-GATE-RUNTIME-001",
+      "verdict": "FAIL",
+      "report": "build/reports/runtime-truth-check-1792548038243491200-424088.json",
+      "source_commit": "dd7d20f7c47a1f374198a6ab6d9111453c20f1be",
+      "source_dirty": false,
+      "implementation_commit": "0dfbd843e50b7134e5600b6f9bff6fe4e54ac708",
+      "release_build": {
+        "exit_code": 0,
+        "elapsed_seconds": 72
+      },
+      "stage": ".fforager-artifacts/runtime-proof/phase1-424088-1792547967253557600",
+      "observations": {
+        "fixture_bytes": 524332,
+        "transport_failure_exit_code": 3,
+        "crash_restart": "BLOCKED_NO_ACTUATOR",
+        "declared_maximum_bytes": 4194304,
+        "external_cancellation_elapsed_ms": 839,
+        "external_cancellation_exit_code": 130,
+        "predecessor_acceptance": "NOT_REACHED",
+        "watcher_storage_fault_exit_code": 3,
+        "watcher_process_probe_error": "WMIC stdout is not UTF-8",
+        "successful_case_exit_code": 5,
+        "successful_case_error": "byte_limit_exceeded",
+        "watcher_storage_fault_error": "transport_failed"
+      },
+      "limitations": [
+        "No Phase1 acceptance or closure is established.",
+        "Historical scenario captures remain bound to this exact candidate; later source revisions require explicit versioned binding."
+      ]
     }
   }
 }

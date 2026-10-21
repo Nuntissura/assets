@@ -559,9 +559,11 @@ fn hash_file(
         }
         bytes = bytes
             .checked_add(u64::try_from(count).map_err(storage)?)
-            .ok_or(FetchError::LimitExceeded)?;
+            .ok_or_else(|| FetchError::LimitExceeded("stored byte count overflow".into()))?;
         if bytes > maximum {
-            return Err(FetchError::LimitExceeded);
+            return Err(FetchError::LimitExceeded(format!(
+                "stored bytes {bytes} exceed admitted bound {maximum}"
+            )));
         }
         hash.update(&buffer[..count]);
     }

@@ -111,7 +111,7 @@ pub enum FetchError {
     TimedOut,
     Transport(String),
     Storage(String),
-    LimitExceeded,
+    LimitExceeded(String),
 }
 
 impl fmt::Display for FetchError {
@@ -122,7 +122,7 @@ impl fmt::Display for FetchError {
             Self::TimedOut => f.write_str("timed_out"),
             Self::Transport(detail) => write!(f, "transport: {detail}"),
             Self::Storage(detail) => write!(f, "storage: {detail}"),
-            Self::LimitExceeded => f.write_str("byte_limit_exceeded"),
+            Self::LimitExceeded(detail) => write!(f, "byte_limit_exceeded: {detail}"),
         }
     }
 }
@@ -239,7 +239,7 @@ impl<T: FetchTransport, S: FetchStorage> FetchEngine<T, S> {
                 } else if receipt.bytes == 0 {
                     FetchError::Transport("empty direct-media response".into())
                 } else {
-                    FetchError::LimitExceeded
+                    FetchError::LimitExceeded("transport receipt exceeds admitted bytes".into())
                 };
                 cleanup_result(primary, self.storage.abort(staged))
             }

@@ -84,7 +84,7 @@ fn map_transport_error(error: TransportError) -> FetchError {
     match error.kind {
         TransportErrorKind::Cancelled => FetchError::Cancelled,
         TransportErrorKind::TimedOut => FetchError::TimedOut,
-        TransportErrorKind::SizeLimit => FetchError::LimitExceeded,
+        TransportErrorKind::SizeLimit => FetchError::LimitExceeded(error.to_string()),
         TransportErrorKind::InvalidInput => FetchError::InvalidRequest(error.to_string()),
         TransportErrorKind::Sink => FetchError::Storage(error.to_string()),
         _ => FetchError::Transport(error.to_string()),

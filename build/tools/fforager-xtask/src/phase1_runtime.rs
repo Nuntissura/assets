@@ -564,7 +564,7 @@ fn validate_contract(
         "git",
         &["log", "--reverse", "--format=%H", "HEAD", "--", &path],
     )?;
-    let mut frozen = None;
+    let mut history = Vec::new();
     for commit in commits.lines() {
         let previous: Value = serde_json::from_str(&command_output(
             root,
@@ -577,13 +577,53 @@ fn validate_contract(
             .and_then(Value::as_str)
             == Some(SCHEMA)
         {
-            frozen = previous.pointer("/extensions/runtime_proof").cloned();
-            break;
+            history.push(
+                previous
+                    .pointer("/extensions/runtime_proof")
+                    .cloned()
+                    .ok_or_else(|| failure("historical v2 declaration missing"))?,
+            );
         }
     }
-    if frozen.as_ref() != Some(value) {
+    validate_candidate_history(proof, value, &history)
+}
+
+fn contract_digest(proof: &Proof) -> Result<String, String> {
+    let mut contract = serde_json::to_value(proof).map_err(failure)?;
+    let object = contract
+        .as_object_mut()
+        .ok_or_else(|| failure("typed proof is not an object"))?;
+    object.remove("source_commit");
+    object.remove("authorization_reference");
+    Ok(sha256_bytes(
+        &serde_json::to_vec(&contract).map_err(failure)?,
+    ))
+}
+
+fn validate_candidate_history(
+    proof: &Proof,
+    value: &Value,
+    history: &[Value],
+) -> Result<(), String> {
+    let first: Proof = serde_json::from_value(
+        history
+            .first()
+            .ok_or_else(|| failure("no committed v2 declaration"))?
+            .clone(),
+    )
+    .map_err(failure)?;
+    if contract_digest(&first)? != contract_digest(proof)? {
         return Err(failure(
-            "v2 proof must equal its first committed current-candidate declaration; historical predeclaration is not claimed",
+            "candidate reference cannot change the immutable fixture/scenario/artifact/bound contract; a separate authorized contract transition is required",
+        ));
+    }
+    let frozen = history.iter().find(|item| {
+        item.get("authorization_reference").and_then(Value::as_str)
+            == Some(proof.authorization_reference.as_str())
+    });
+    if frozen != Some(value) {
+        return Err(failure(
+            "candidate proof differs from the first committed full declaration for its exact reference",
         ));
     }
     Ok(())
@@ -600,7 +640,9 @@ struct Origin {
 }
 
 impl Origin {
-    fn start(fixture: &[u8], negative: bool, slow: bool) -> Result<Self, String> {
+    fn start(stage: &Path, fixture: &[u8], negative: bool, slow: bool) -> Result<Self, String> {
+        let mut diagnostics =
+            File::create(stage.join("origin-diagnostics.jsonl")).map_err(failure)?;
         let listener = TcpListener::bind("127.0.0.1:0").map_err(failure)?;
         listener.set_nonblocking(true).map_err(failure)?;
         let address = listener.local_addr().map_err(failure)?;
@@ -608,15 +650,27 @@ impl Origin {
         let running = Arc::clone(&stop);
         let bytes = fixture.to_vec();
         let thread = thread::spawn(move || {
+            let mut failures = 0_u32;
             while !running.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let _ = serve(&mut stream, &bytes, negative, slow, &running);
+                        if let Err(error) = serve(&mut stream, &bytes, negative, slow, &running) {
+                            if failures < 32 {
+                                failures += 1;
+                                let event = serde_json::json!({"schema":"ff.origin-diagnostic@1", "sequence":failures, "kind":format!("{:?}",error.kind()), "os_error":error.raw_os_error(), "detail":error.to_string().chars().take(1024).collect::<String>()});
+                                if let Err(record_error) = writeln!(diagnostics, "{event}") {
+                                    eprintln!("origin diagnostic write failed: {record_error}");
+                                }
+                            }
+                        }
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(2))
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        eprintln!("owned origin accept failed: {error}");
+                        break;
+                    }
                 }
             }
         });
@@ -644,6 +698,7 @@ fn serve(
     slow: bool,
     stop: &AtomicBool,
 ) -> io::Result<()> {
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_millis(200)))?;
     stream.set_write_timeout(Some(Duration::from_millis(200)))?;
     let mut request = Vec::new();
@@ -919,7 +974,7 @@ fn execute_case(stage: &Path, case: &str, fixture: &[u8], proof: &Proof) -> Resu
         case,
         "external-cancellation" | "crash-restart" | "watcher-crash" | "watcher-hung"
     );
-    let origin = Origin::start(fixture, case == "transport-failure", slow)?;
+    let origin = Origin::start(stage, fixture, case == "transport-failure", slow)?;
     let launched = SystemTime::now();
     let mut invocation = Invocation::start(stage, &origin, proof.timeout_seconds)?;
     match case {
@@ -1202,7 +1257,7 @@ fn verify_actor_parent(
 ) -> Result<(), String> {
     let system = env::var_os("SystemRoot").ok_or_else(|| failure("SystemRoot unavailable"))?;
     let executable = PathBuf::from(system).join("System32/wbem/WMIC.exe");
-    let process = command_output(
+    let bytes = command_output_bytes_with_timeout(
         stage,
         executable
             .to_str()
@@ -1215,7 +1270,10 @@ fn verify_actor_parent(
             "ParentProcessId,ExecutablePath",
             "/value",
         ],
+        TOOL_COMMAND_TIMEOUT,
     )?;
+    fs::write(stage.join(format!("actor-{pid}-metadata.bin")), &bytes).map_err(failure)?;
+    let process = decode_actor_metadata(&bytes)?;
     let mut parent = None;
     let mut image = None;
     for line in process.lines().map(str::trim) {
@@ -1235,6 +1293,30 @@ fn verify_actor_parent(
         ));
     }
     Ok(())
+}
+
+fn decode_actor_metadata(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() > 64 * 1024 {
+        return Err(failure("actor metadata exceeds bound"));
+    }
+    if let Some(payload) = bytes.strip_prefix(&[0xff, 0xfe]) {
+        if payload.len() % 2 != 0 {
+            return Err(failure("truncated UTF-16 actor metadata"));
+        }
+        let words = payload
+            .chunks_exact(2)
+            .map(|word| u16::from_le_bytes([word[0], word[1]]))
+            .collect::<Vec<_>>();
+        String::from_utf16(&words).map_err(failure)
+    } else {
+        String::from_utf8(
+            bytes
+                .strip_prefix(&[0xef, 0xbb, 0xbf])
+                .unwrap_or(bytes)
+                .to_vec(),
+        )
+        .map_err(failure)
+    }
 }
 
 fn executable_name_worker() -> String {
@@ -1709,6 +1791,48 @@ mod tests {
 
     #[test]
     fn version_two_receipt_rereads_actual_bytes_and_declared_proof() {
+        let first = component_evidence().proof;
+        let first_value = serde_json::to_value(&first).expect("first candidate");
+        let mut next_value = first_value.clone();
+        next_value["source_commit"] = "6".repeat(40).into();
+        let reused: Proof =
+            serde_json::from_value(next_value.clone()).expect("reused reference shape");
+        assert!(validate_candidate_history(&reused, &next_value, &[first_value.clone()]).is_err());
+        next_value["authorization_reference"] = "component-source-candidate-2".into();
+        let next: Proof = serde_json::from_value(next_value.clone()).expect("next candidate shape");
+        assert!(validate_candidate_history(&next, &next_value, &[first_value.clone()]).is_err());
+        validate_candidate_history(
+            &next,
+            &next_value,
+            &[first_value.clone(), next_value.clone()],
+        )
+        .expect("explicit source-only successor preserves first contract");
+        for field in ["fixture", "scenarios", "artifacts", "timeout_seconds"] {
+            let mut changed = next_value.clone();
+            match field {
+                "fixture" => changed["fixture"]["sha256"] = "7".repeat(64).into(),
+                "scenarios" => changed["scenarios"]
+                    .as_array_mut()
+                    .expect("cases")
+                    .reverse(),
+                "artifacts" => changed["artifacts"]
+                    .as_array_mut()
+                    .expect("artifacts")
+                    .reverse(),
+                "timeout_seconds" => changed["timeout_seconds"] = 60.into(),
+                _ => unreachable!(),
+            }
+            let proof: Proof =
+                serde_json::from_value(changed.clone()).expect("changed successor shape");
+            assert!(
+                validate_candidate_history(
+                    &proof,
+                    &changed,
+                    &[first_value.clone(), changed.clone()]
+                )
+                .is_err()
+            );
+        }
         let canonical = repo_root().expect("repository root");
         with_isolated_fixture_root(&canonical, "phase1-runtime-receipt", |root| {
             let mut evidence = component_evidence();
@@ -1746,5 +1870,59 @@ mod tests {
             if validate_evidence(&evidence, Some(root)).is_ok() { return Err("changed captured bytes were accepted".into()); }
             Ok(())
         }).expect("actual byte/declaration rejection controls");
+    }
+
+    #[test]
+    fn actor_metadata_decodes_utf16_and_rejects_malformed_bytes() {
+        let expected =
+            "ExecutablePath=C:\\owned\\caf\u{e9}\\fforager-watcher.exe\r\nParentProcessId=42\r\n";
+        let mut utf16 = vec![0xff, 0xfe];
+        for word in expected.encode_utf16() {
+            utf16.extend_from_slice(&word.to_le_bytes());
+        }
+        assert_eq!(decode_actor_metadata(&utf16).expect("BOM UTF16"), expected);
+        assert_eq!(
+            decode_actor_metadata(expected.as_bytes()).expect("UTF8"),
+            expected
+        );
+        for invalid in [
+            vec![0xff],
+            vec![0xff, 0xfe, 0x41],
+            vec![0xff, 0xfe, 0x00, 0xd8],
+            vec![0xff; 65537],
+        ] {
+            assert!(decode_actor_metadata(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn origin_accepts_delayed_request_and_returns_exact_body() {
+        let canonical = repo_root().expect("repository root");
+        with_isolated_fixture_root(&canonical, "phase1-delayed-origin", |stage| {
+            let origin = Origin::start(stage, b"exact controlled media bytes", false, false)?;
+            let mut client = TcpStream::connect(origin.address).map_err(failure)?;
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .map_err(failure)?;
+            thread::sleep(Duration::from_millis(50));
+            client
+                .write_all(
+                    b"GET /media HTTP/1.1\r\nHost: owned-origin\r\nConnection: close\r\n\r\n",
+                )
+                .map_err(failure)?;
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).map_err(failure)?;
+            let split = response
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .ok_or("origin response header missing")?
+                + 4;
+            if &response[split..] != b"exact controlled media bytes" {
+                return Err("origin body differs from real controlled source".into());
+            }
+            drop(origin);
+            Ok(())
+        })
+        .expect("delayed real TCP request");
     }
 }

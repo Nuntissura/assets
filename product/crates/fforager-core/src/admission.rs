@@ -13,12 +13,13 @@ pub(crate) fn with_fetch_resources<R>(
     operation: impl FnOnce() -> Result<R, FetchError>,
 ) -> Result<R, FetchError> {
     // One direct request has one origin and no redirected/concurrent request.
-    // The 64-KiB transport chunk/header and hash/read windows fit this declared
-    // streaming-buffer reservation; adapter/library allocations remain separate.
+    // One retained delivery frame (at most 1 MiB), 16-KiB borrowed sink writes,
+    // headers and hash/read windows fit this logical payload reservation.
+    // Dependency preallocation and other runtime allocations remain separate.
     let resources = ResourceVector {
         metadata_requests: 0,
         media_requests: 1,
-        memory_bytes: 256 * 1024,
+        memory_bytes: 2 * 1024 * 1024,
         disk_read_bytes_in_flight: 64 * 1024,
         disk_write_bytes_in_flight: 64 * 1024,
         open_handles: 128,

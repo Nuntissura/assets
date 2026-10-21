@@ -20,7 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAXIMUM_HEADER_BYTES: usize = 64 * 1024;
-const MAXIMUM_BUFFERED_CHUNK: usize = 64 * 1024;
+// One dependency-owned delivery frame is retained while borrowed slices drain.
+// This post-allocation guard does not bound reqwest/Hyper allocation or RSS.
+const MAXIMUM_DELIVERY_FRAME: usize = 1024 * 1024;
 const WRITE_CHUNK: usize = 16 * 1024;
 const CANCEL_POLL: Duration = Duration::from_millis(25);
 
@@ -379,10 +381,13 @@ impl OrdinaryTransport {
             else {
                 return Ok(received);
             };
-            if chunk.len() > MAXIMUM_BUFFERED_CHUNK {
+            if chunk.len() > MAXIMUM_DELIVERY_FRAME {
                 return Err(TransportError::new(
                     TransportErrorKind::SizeLimit,
-                    "response chunk exceeds the byte-credit window",
+                    format!(
+                        "response frame {} exceeds retained-frame bound {MAXIMUM_DELIVERY_FRAME} after {received} bytes",
+                        chunk.len()
+                    ),
                 ));
             }
             let length = u64::try_from(chunk.len())
