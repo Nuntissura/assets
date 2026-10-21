@@ -275,6 +275,31 @@ impl LevelsRecord {
     /// GIMP `gimp_operation_levels_map`: `v = clamp((x - ib) / (iw - ib))`, `v = gamma curve(v)`
     /// ([`levels_gamma`]: the power `v^(1/gamma)` with Photoshop's toe near black for gamma above
     /// 1), `out = ob + v (ow - ob)`, clamped.
+    /// The record on whole 8-bit levels, Photoshop's 8-bit document (lane SMB-PS-ORACLE-PARITY-2,
+    /// D5 PS-C02 `8bit_comp_in20_230_g1.5_out10_240`, `dom_adjustLevels_*`, `8bit_comp_and_red`:
+    /// every stage rounds to a level, half up): `v8 = round((x8 - ib) 255 / (iw - ib))` clamped to
+    /// `0..=255`, `l8 = round(255 levels_gamma(v8 / 255))`, `out = round(ob + l8 (ow - ob) / 255) /
+    /// 255`, with `x8 = round(255 x)` and the record's levels `ib, iw, ob, ow` rounded to whole
+    /// levels. The float [`LevelsRecord::map_value`] of the same 8-bit ramp differed by up to 3 codes.
+    pub fn map_value_8bit(&self, x: f32) -> f32 {
+        let level = |v: f32| (v + 0.5).floor();
+        let x8 = level(x * 255.0);
+        let ib = level(self.input_black * 255.0);
+        let iw = level(self.input_white * 255.0);
+        let ob = level(self.output_black * 255.0);
+        let ow = level(self.output_white * 255.0);
+        let v8 = if iw > ib {
+            level(((x8 - ib) * 255.0 / (iw - ib)).clamp(0.0, 255.0))
+        } else {
+            0.0
+        };
+        let l8 = if self.gamma != 1.0 && v8 > 0.0 {
+            level(255.0 * levels_gamma(v8 / 255.0, self.gamma))
+        } else {
+            v8
+        };
+        (level(ob + l8 * (ow - ob) / 255.0) / 255.0).clamp(0.0, 1.0)
+    }
     pub fn map_value(&self, x: f32) -> f32 {
         let mut v =
             ((x - self.input_black) / (self.input_white - self.input_black)).clamp(0.0, 1.0);
@@ -481,6 +506,16 @@ pub enum AdjustmentOp {
 pub struct PreparedAdjustment {
     op: AdjustmentOp,
     curves: Option<[Option<PreparedCurve>; 4]>,
+    /// Photoshop's 8-bit document (lane SMB-PS-ORACLE-PARITY-2): Levels on whole levels
+    /// ([`LevelsRecord::map_value_8bit`]); the other kinds are unchanged.
+    eight_bit: bool,
+}
+impl PreparedAdjustment {
+    /// This adjustment evaluated at the 8-bit working depth (`true`) or in binary32.
+    pub fn with_eight_bit(mut self, eight_bit: bool) -> Self {
+        self.eight_bit = eight_bit;
+        self
+    }
 }
 
 impl AdjustmentOp {
@@ -619,6 +654,7 @@ impl AdjustmentOp {
         Ok(PreparedAdjustment {
             op: self.clone(),
             curves,
+            eight_bit: false,
         })
     }
 
@@ -775,7 +811,11 @@ impl PreparedAdjustment {
         let out = match &self.op {
             AdjustmentOp::Levels(l) => {
                 let ch = [&l.red, &l.green, &l.blue];
-                [0, 1, 2].map(|i| l.composite.map_value(ch[i].map_value(rgb[i])))
+                if self.eight_bit {
+                    [0, 1, 2].map(|i| l.composite.map_value_8bit(ch[i].map_value_8bit(rgb[i])))
+                } else {
+                    [0, 1, 2].map(|i| l.composite.map_value(ch[i].map_value(rgb[i])))
+                }
             }
             AdjustmentOp::Curves(_) => {
                 let c = self

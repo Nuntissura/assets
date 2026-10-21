@@ -321,6 +321,10 @@ pub enum ExtOperator {
     /// of the envelope path ([`admit_extended`]); [`PlanExtensions::validate`] does not report it
     /// (it describes the envelope, and the convention is declared by the plan alone).
     AlphaPremultiplied,
+    /// An 8-bit working depth ([`super::WorkingDepth::Eight`], lane SMB-PS-ORACLE-PARITY-2); class
+    /// Approximate (Photoshop's 8-bit storage measured on the D5 oracle), declared by each backend.
+    /// Key [`super::WORKING_DEPTH_EIGHT_OPERATOR`].
+    WorkingDepthEight,
     /// A coverage mask with `density < 1` (the v1 path keeps today's backend refusal).
     MaskDensity,
     MaskFeather,
@@ -388,6 +392,7 @@ impl ExtOperator {
             Self::EffectsWithBlendIf => "effects_with_blend_if",
             Self::EffectsNested => "effects_nested",
             Self::AlphaPremultiplied => "alpha_premultiplied",
+            Self::WorkingDepthEight => super::WORKING_DEPTH_EIGHT_OPERATOR,
             Self::MaskDensity => "mask_density",
             Self::MaskFeather => "mask_feather",
             Self::Knockout(k) => k.key(),
@@ -424,6 +429,7 @@ impl ExtOperator {
             Self::Knockout(Knockout::Deep) => crate::knockout_math::KNOCKOUT_EXACTNESS,
             Self::Effect(_) | Self::EffectsNested => EFFECT_EXACTNESS,
             Self::AlphaPremultiplied => ALPHA_BOUNDARY_EXACTNESS,
+            Self::WorkingDepthEight => Exactness::Approximate,
             Self::Transform(_) => TRANSFORM_EXACTNESS,
             Self::Blur(_) => BLUR_EXACTNESS,
             Self::Filter(_) => FILTER_EXACTNESS,
@@ -965,6 +971,9 @@ impl PlanExtensions {
         }
         if self.output.display == Some(DisplayTransform::Clip) {
             ops.push(ExtOperator::DisplayClip);
+        }
+        if self.output.is_eight_bit() {
+            ops.push(ExtOperator::WorkingDepthEight);
         }
         if self.output.display.and_then(|d| d.view()).is_some() {
             ops.push(ExtOperator::DisplayView);

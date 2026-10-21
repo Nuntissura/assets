@@ -18,7 +18,8 @@ mod output;
 pub use output::{
     DISPLAY_CLIP_OPERATOR, DisplayTransform, EXTENDED_RANGE_CLAUSE,
     EXTENDED_RANGE_COMBINATION_OPERATOR, EXTENDED_RANGE_MODE_OPERATOR, EXTENDED_RANGE_OPERATOR,
-    ExtendedOp, OutputStage, SampleRange,
+    ExtendedOp, OutputStage, SampleRange, WORKING_DEPTH_EIGHT_OPERATOR, WorkingDepth,
+    quantise_8bit,
 };
 pub use extensions::{
     ALPHA_BOUNDARY_EXACTNESS, ContentAwareFillOp, ExtOperator, Knockout, LayerExtension, PlanExtensions,

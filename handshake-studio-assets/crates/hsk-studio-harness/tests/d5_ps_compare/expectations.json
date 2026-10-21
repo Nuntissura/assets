@@ -4,28 +4,7 @@
  "entries": [
   {
    "case": "PS-C02",
-   "variant": "8bit_comp_in20_230_g1.5_out10_240",
-   "verdict": "MISMATCH",
-   "class": "formula",
-   "reason": "Levels gamma 1.5: the slope-limited toe (SMB-PS-ORACLE-PARITY-1, adjust_math::levels_gamma: Hermite from slope 2^g at 0 to the power at 2^g / 32, exact for gamma 2) leaves up to 2 8-bit codes on one ramp step (16-bit: 0.09 code, Photoshop's own LUT quantisation alternates by about 6 steps of the 15-bit scale in the power region); the toe constants for gamma 1.5 are not pinned by the two oracle gammas, follow-up FP-LEVELS-GAMMA-TOE (gamma sweep)"
-  },
-  {
-   "case": "PS-C02",
-   "variant": "8bit_comp_and_red",
-   "verdict": "MISMATCH",
-   "class": "formula",
-   "reason": "Levels gamma 1.5: the slope-limited toe (SMB-PS-ORACLE-PARITY-1, adjust_math::levels_gamma: Hermite from slope 2^g at 0 to the power at 2^g / 32, exact for gamma 2) leaves up to 2 8-bit codes on one ramp step (16-bit: 0.09 code, Photoshop's own LUT quantisation alternates by about 6 steps of the 15-bit scale in the power region); the toe constants for gamma 1.5 are not pinned by the two oracle gammas, follow-up FP-LEVELS-GAMMA-TOE (gamma sweep)"
-  },
-  {
-   "case": "PS-C02",
    "variant": "16bit_comp_and_red",
-   "verdict": "MISMATCH",
-   "class": "formula",
-   "reason": "Levels gamma 1.5: the slope-limited toe (SMB-PS-ORACLE-PARITY-1, adjust_math::levels_gamma: Hermite from slope 2^g at 0 to the power at 2^g / 32, exact for gamma 2) leaves up to 2 8-bit codes on one ramp step (16-bit: 0.09 code, Photoshop's own LUT quantisation alternates by about 6 steps of the 15-bit scale in the power region); the toe constants for gamma 1.5 are not pinned by the two oracle gammas, follow-up FP-LEVELS-GAMMA-TOE (gamma sweep)"
-  },
-  {
-   "case": "PS-C02",
-   "variant": "dom_adjustLevels_20_230_g1.5_10_240",
    "verdict": "MISMATCH",
    "class": "formula",
    "reason": "Levels gamma 1.5: the slope-limited toe (SMB-PS-ORACLE-PARITY-1, adjust_math::levels_gamma: Hermite from slope 2^g at 0 to the power at 2^g / 32, exact for gamma 2) leaves up to 2 8-bit codes on one ramp step (16-bit: 0.09 code, Photoshop's own LUT quantisation alternates by about 6 steps of the 15-bit scale in the power region); the toe constants for gamma 1.5 are not pinned by the two oracle gammas, follow-up FP-LEVELS-GAMMA-TOE (gamma sweep)"
@@ -92,20 +71,6 @@
    "verdict": "MISMATCH",
    "class": "geometry",
    "reason": "the clip base is a 96-gon circle filled through an anti-aliased Photoshop selection; the suite rasterises it with 16x16 supersampling, so 576 samples on the circle rim differ (up to 27 codes); the interior (clip rule, base alpha) matches"
-  },
-  {
-   "case": "PS-C28",
-   "variant": "nomask",
-   "verdict": "MISMATCH",
-   "class": "rounding_8bit",
-   "reason": "pass-through group with a Multiply layer and Levels gamma 1.4: Photoshop stores the multiply result in 8 bits before the Levels (scratch: the 8-bit-quantised input with the gamma toe reproduces within 1 code); Studio's float pipeline differs by up to 3 codes on 1152 samples (5 codes before the toe)"
-  },
-  {
-   "case": "PS-C29",
-   "variant": "fill100",
-   "verdict": "MISMATCH",
-   "class": "rounding_8bit",
-   "reason": "pass-through group with a Multiply layer and Levels gamma 1.4: Photoshop stores the multiply result in 8 bits before the Levels (scratch: the 8-bit-quantised input with the gamma toe reproduces within 1 code); Studio's float pipeline differs by up to 3 codes on 1152 samples (5 codes before the toe)"
   },
   {
    "case": "PS-C05",

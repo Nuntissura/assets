@@ -65,21 +65,66 @@ fn serialize_view<S: serde::Serializer>(
     serializer.serialize_str(view.key())
 }
 
-/// The output stage of a plan: sample range plus optional display transform.
+/// The sample depth the compositor stores between layers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+pub enum WorkingDepth {
+    /// binary32 throughout (the default; unchanged, absent from the digest).
+    #[default]
+    Float,
+    /// Photoshop's 8-bit document (lane SMB-PS-ORACLE-PARITY-2, measured on the Photoshop 27.11 D5
+    /// oracle): the running result of every group is stored in 8-bit levels after each layer (except
+    /// the root's last layer: the delivered result keeps binary32, the sink owns the output depth)
+    /// ([`quantise_8bit`] on each straight channel and on alpha; PS-C28 `nomask` and PS-C29 `fill100`:
+    /// the Multiply result is stored before the Levels layer reads it, within one code where the float
+    /// composite differed by 3), and Levels runs on whole levels
+    /// ([`crate::adjust_math::LevelsRecord::map_value_8bit`]; PS-C02 8-bit gamma 1.5 variants).
+    /// Key [`WORKING_DEPTH_EIGHT_OPERATOR`], class Approximate, declared by each backend
+    /// (`ExtOperator::WorkingDepthEight`).
+    Eight,
+}
+impl WorkingDepth {
+    pub fn is_float(&self) -> bool {
+        *self == Self::Float
+    }
+}
+/// Operator key of an 8-bit working depth (`ExtOperator::WorkingDepthEight`).
+pub const WORKING_DEPTH_EIGHT_OPERATOR: &str = "working_depth_8bit";
+
+/// One sample stored in 8-bit levels: `floor(255 v + 0.5) / 255` (half up, every backend the same
+/// way; [`WorkingDepth::Eight`]).
+pub fn quantise_8bit(v: f32) -> f32 {
+    (v * 255.0 + 0.5).floor() / 255.0
+}
+
+/// The output stage of a plan: sample range plus optional display transform, and the working depth
+/// (lane SMB-PS-ORACLE-PARITY-2; [`WorkingDepth::Float`] is not serialised, so every existing
+/// digest is unchanged).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct OutputStage {
     pub sample_range: SampleRange,
     pub display: Option<DisplayTransform>,
+    #[serde(skip_serializing_if = "WorkingDepth::is_float")]
+    pub working_depth: WorkingDepth,
 }
 impl OutputStage {
     pub const fn new(sample_range: SampleRange, display: Option<DisplayTransform>) -> Self {
         Self {
             sample_range,
             display,
+            working_depth: WorkingDepth::Float,
         }
     }
-    /// Unit range and no display transform (absent from the digest).
+    /// This stage with the working depth `depth`.
+    pub const fn with_working_depth(mut self, depth: WorkingDepth) -> Self {
+        self.working_depth = depth;
+        self
+    }
+    /// The 8-bit working depth ([`WorkingDepth::Eight`]).
+    pub fn is_eight_bit(&self) -> bool {
+        self.working_depth == WorkingDepth::Eight
+    }
+    /// Unit range, no display transform and the float working depth (absent from the digest).
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }

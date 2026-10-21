@@ -980,7 +980,18 @@ fn prepare<'a>(
                             let opcode = opcode_of(kind)
                                 .filter(|_| gpu_adjust_supported(kind))
                                 .ok_or_else(|| unsupported(kind.key()))?;
-                            let compiled = compile_adjustment(op, opcode).map_err(unsupported)?;
+                            let mut compiled =
+                                compile_adjustment(op, opcode).map_err(unsupported)?;
+                            // Levels on whole levels in an 8-bit document (lane
+                            // SMB-PS-ORACLE-PARITY-2, pigment `LevelsRecord::map_value_8bit`): the y
+                            // of each record's second vec4.
+                            if output.is_eight_bit()
+                                && matches!(op, hsk_studio_pigment::adjust_math::AdjustmentOp::Levels(_))
+                            {
+                                for hi in compiled.params.iter_mut().skip(1).step_by(2) {
+                                    hi[1] = 1.0;
+                                }
+                            }
                             lut_floats = lut_floats.max(compiled.lut.as_ref().map_or(0, Vec::len));
                             Some(Box::new(compiled))
                         }
@@ -1881,6 +1892,9 @@ impl RenderBackend<NoVector> for GpuBackend {
             // knockout passes (`knockout` module, tests/gpu_knockout.rs).
             | ExtOperator::Knockout(_) => true,
             ExtOperator::AlphaPremultiplied => false,
+            // 8-bit working depth (lane SMB-PS-ORACLE-PARITY-2): `Exec::store_depth` after every
+            // layer and the 8-bit Levels body of kernel.wgsl.
+            ExtOperator::WorkingDepthEight => true,
             // Key pipelines (lane SMB-AE-KEY-TRACK-3): `key.wgsl` on keyed tile layers
             // (tests/gpu_keying.rs); inner/outer key, key cleaner and wire removal are not run.
             ExtOperator::Key(kind) => key::gpu_key_supported(kind),
@@ -2041,6 +2055,9 @@ struct Exec<'e> {
     stats: &'e mut GpuStats,
     /// Extended-range output stage: every composite dispatch carries `EXTENDED_FLAG`.
     extended: bool,
+    /// 8-bit working depth (lane SMB-PS-ORACLE-PARITY-2): the running result is stored in 8-bit
+    /// levels after every layer (`Exec::store_depth`).
+    eight_bit: bool,
     /// Knockout buffers and contexts (only when the plan has a knockout layer).
     ko: Option<knockout::KoBuffers>,
 }
@@ -2114,6 +2131,7 @@ impl Exec<'_> {
             mix: true,
             density: 1.0,
             extended: self.extended,
+            quantise: false,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2123,6 +2141,45 @@ impl Exec<'_> {
             });
         ctx.kernel
             .dispatch(&mut encoder, &self.binds_chunk[level], region.width, region.height);
+        ctx.queue.submit(Some(encoder.finish()));
+        self.stats.dispatches = self.stats.dispatches.saturating_add(1);
+        Ok(())
+    }
+
+    /// The working depth after a layer (lane SMB-PS-ORACLE-PARITY-2, pigment
+    /// `render_plan::quantise_8bit`): in an 8-bit document every texel of `levels[level]` is stored
+    /// in 8-bit levels (one dispatch over the chunk); float: nothing.
+    fn store_depth(&mut self, chunk: Rect, level: usize) -> Result<(), GpuError> {
+        if !self.eight_bit {
+            return Ok(());
+        }
+        let ctx = self.ctx;
+        let params = LayerParams {
+            chunk_w: chunk.width,
+            chunk_h: chunk.height,
+            region: [0, 0, chunk.width, chunk.height],
+            mode: StudioBlendMode::Normal,
+            source: SourceKind::Solid([0.0; 4]),
+            has_mask: false,
+            opacity: 1.0,
+            unfilled: 1.0,
+            fill: 1.0,
+            replace: false,
+            clip: false,
+            opaque_source: false,
+            mix: false,
+            density: 1.0,
+            extended: self.extended,
+            quantise: true,
+        };
+        ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu working depth"),
+            });
+        ctx.kernel
+            .dispatch(&mut encoder, &self.binds_tile[level], chunk.width, chunk.height);
         ctx.queue.submit(Some(encoder.finish()));
         self.stats.dispatches = self.stats.dispatches.saturating_add(1);
         Ok(())
@@ -2205,6 +2262,7 @@ impl Exec<'_> {
             mix: pass == Pass::Mix,
             density: mask.map_or(1.0, |m| m.density),
             extended: self.extended,
+            quantise: false,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2535,6 +2593,7 @@ impl Exec<'_> {
             density: 1.0,
             // Effect colour over the running frame (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE).
             extended: self.extended,
+            quantise: false,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2597,6 +2656,7 @@ impl Exec<'_> {
             density: mask.map_or(1.0, |m| m.density),
             // Adjustment layer (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE: linear exposure only).
             extended: self.extended,
+            quantise: false,
         };
         let Some(env) = self.ext.as_ref() else {
             return Err(unsupported("plan_shape"));
@@ -2674,6 +2734,10 @@ fn eval_group(
             eval_layer(ex, prep, &layers[i], chunk, level)?;
         } else {
             eval_clip_run(ex, prep, &layers[i..j], chunk, level)?;
+        }
+        // the root's last layer is the delivered result, not a stored intermediate
+        if idx != prep.root || j < layers.len() {
+            ex.store_depth(chunk, level)?;
         }
         i = j;
     }
@@ -3962,6 +4026,7 @@ fn run(
         mask_upload: Vec::new(),
         stats,
         extended: prepared.output.is_extended(),
+        eight_bit: prepared.output.is_eight_bit(),
         ko: ko_buffers,
     };
     // A leaf root is one Normal, opacity-1 layer over transparent black.

@@ -689,7 +689,7 @@ fn evaluate(corpus: &Corpus, entry: &Entry, build: fn(&Corpus, &Entry) -> Result
         }
         Built::Render { scene, store, rows } => {
             out.rows = rows.iter().map(|r| r.to_string()).collect();
-            match render(&scene) {
+            match render(&at_document_depth(scene, entry)) {
                 Err(key) => {
                     out.verdict = "NOT_SUPPORTED";
                     out.detail = format!("studio_refusal {key}");
@@ -703,7 +703,7 @@ fn evaluate(corpus: &Corpus, entry: &Entry, build: fn(&Corpus, &Entry) -> Result
         }
         Built::Dissolve { scene, backdrop, source, rows } => {
             out.rows = rows.iter().map(|r| r.to_string()).collect();
-            match render(&scene) {
+            match render(&at_document_depth(scene, entry)) {
                 Err(key) => {
                     out.verdict = "NOT_SUPPORTED";
                     out.detail = format!("studio_refusal {key}");
@@ -721,6 +721,17 @@ fn evaluate(corpus: &Corpus, entry: &Entry, build: fn(&Corpus, &Entry) -> Result
         .find(|x| x.case == entry.case_id && glob(&x.variant, &entry.variant))
         .cloned();
     out
+}
+
+/// The working depth of the oracle document (lane SMB-PS-ORACLE-PARITY-2): Photoshop's 8-bit
+/// documents store every layer result in 8-bit levels and run Levels on whole levels, so the
+/// variants of an 8-bit document render at pigment's `WorkingDepth::Eight` (16- and 32-bit ones
+/// stay float).
+fn at_document_depth(mut scene: Scene, entry: &Entry) -> Scene {
+    if entry.bits.ends_with("EIGHT") {
+        scene.ext.output = scene.ext.output.with_working_depth(WorkingDepth::Eight);
+    }
+    scene
 }
 
 /// Diagnostics only: with `HSK_D5_DUMP_DIR` set, Studio's straight RGBA grid of every compared

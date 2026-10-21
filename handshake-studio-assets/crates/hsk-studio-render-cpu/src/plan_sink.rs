@@ -58,7 +58,7 @@ use hsk_studio_pigment::render_plan::{
     MaskInput, Operator, PASS_THROUGH_FILL_OPERATOR, PASS_THROUGH_MASK_OPERATOR, PlanError,
     PlanExtensions, PlanLimits, PlanNode, PlanSources, RenderBackend, RenderPlan, RenderReceipt,
     SAMPLE_RANGE_OPERATOR, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
-    TileSink, admit_extended_with_limits, admit_with_limits,
+    TileSink, admit_extended_with_limits, admit_with_limits, quantise_8bit,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -1194,7 +1194,27 @@ impl Eval<'_, '_> {
             } else {
                 self.clip_run(base, run, chunk, dst, spare, fx)?;
             }
+            // the root's last layer is the delivered result, not a stored intermediate
+            if idx != self.prepared.root || !next.is_empty() {
+                self.store_depth(chunk, dst)?;
+            }
             rest = next;
+        }
+        Ok(())
+    }
+
+    /// The working depth after a layer (lane SMB-PS-ORACLE-PARITY-2): in an 8-bit document the
+    /// running result a later layer reads is stored in 8-bit levels, pigment
+    /// `render_plan::quantise_8bit` on every straight channel and on alpha (D5 PS-C28 `nomask`,
+    /// PS-C29 `fill100`); the root's final result is delivered unquantised (the sink owns the output
+    /// depth). Float: nothing.
+    fn store_depth(&self, chunk: Rect, dst: &mut [[f32; 4]]) -> Result<(), RenderError> {
+        if !self.prepared.ext.output.is_eight_bit() {
+            return Ok(());
+        }
+        let count = area(chunk)?;
+        for px in dst.get_mut(..count).ok_or_else(overflow)? {
+            *px = px.map(quantise_8bit);
         }
         Ok(())
     }
@@ -2560,6 +2580,9 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // Stage-6a view transform (lane SMB-PRISM-VIEW-TRANSFORM): Prism's
             // `ViewTransformId::apply` on the delivered chunk (tests/cpu_view_transform.rs).
             ExtOperator::DisplayView => operator.intrinsic(),
+            // 8-bit working depth (lane SMB-PS-ORACLE-PARITY-2): `Eval::store_depth` after every
+            // layer and pigment's 8-bit Levels (`PreparedAdjustment::with_eight_bit`).
+            ExtOperator::WorkingDepthEight => operator.intrinsic(),
             // Envelope operations in an extended-range plan (lane SMB-PIGMENT-EXTENDED-RANGE-2):
             // the defined ones run through pigment's `*_in(SampleRange::Extended, ..)` functions
             // (tests/cpu_extended_envelope.rs); the undefined ones are intrinsically unsupported.

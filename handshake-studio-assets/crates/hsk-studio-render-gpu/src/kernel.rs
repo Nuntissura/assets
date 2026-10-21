@@ -394,6 +394,9 @@ pub(crate) struct LayerParams {
     pub density: f32,
     /// Extended-range output stage: `flags` bit 2, no unit clamp in the kernel.
     pub extended: bool,
+    /// `flags` bit 6 (lane SMB-PS-ORACLE-PARITY-2): no composite, the destination texel is stored
+    /// in 8-bit levels (pigment `render_plan::quantise_8bit`), the 8-bit working depth.
+    pub quantise: bool,
 }
 impl LayerParams {
     pub(crate) fn to_bytes(self) -> [u8; PARAMS_BYTES as usize] {
@@ -406,6 +409,7 @@ impl LayerParams {
             | if self.clip { 2 } else { 0 }
             | if self.opaque_source { 8 } else { 0 }
             | if self.mix { 16 } else { 0 }
+            | if self.quantise { 64 } else { 0 }
             | if self.extended {
                 crate::plan_sink::EXTENDED_FLAG
             } else {

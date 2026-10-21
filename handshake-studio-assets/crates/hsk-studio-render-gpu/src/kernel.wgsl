@@ -259,7 +259,31 @@ fn levels_map(x: f32, ib: f32, iw: f32, g: f32, ob: f32, ow: f32) -> f32 {
     return clamp(ob + v * (ow - ob), 0.0, 1.0);
 }
 
+// adjust_math::LevelsRecord::map_value_8bit (lane SMB-PS-ORACLE-PARITY-2): Levels on whole 8-bit
+// levels, every stage rounded half up; b.y = 1 in an 8-bit document.
+fn levels_level(v: f32) -> f32 {
+    return floor(v + 0.5);
+}
+fn levels_map_8bit(x: f32, a: vec4<f32>, b: vec4<f32>) -> f32 {
+    let x8 = levels_level(x * 255.0);
+    let ib = levels_level(a.x * 255.0);
+    let iw = levels_level(a.y * 255.0);
+    let ob = levels_level(a.w * 255.0);
+    let ow = levels_level(b.x * 255.0);
+    var v8: f32 = 0.0;
+    if (iw > ib) {
+        v8 = levels_level(clamp((x8 - ib) * 255.0 / (iw - ib), 0.0, 255.0));
+    }
+    var l8 = v8;
+    if (a.z != 1.0 && v8 > 0.0) {
+        l8 = levels_level(255.0 * levels_gamma(v8 / 255.0, a.z));
+    }
+    return clamp(levels_level(ob + l8 * (ow - ob) / 255.0) / 255.0, 0.0, 1.0);
+}
 fn levels_rec(x: f32, a: vec4<f32>, b: vec4<f32>) -> f32 {
+    if (b.y > 0.5) {
+        return levels_map_8bit(x, a, b);
+    }
     return levels_map(x, a.x, a.y, a.z, a.w, b.x);
 }
 

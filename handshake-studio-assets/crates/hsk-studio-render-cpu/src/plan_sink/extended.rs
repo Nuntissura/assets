@@ -362,7 +362,11 @@ impl ExtPrep {
             };
             if let Some(op) = &e.adjustment {
                 prep.charge(ADJUSTMENT_STATE_BYTES, limit)?;
-                let prepared = op.prepare().map_err(adjust_error)?;
+                // Levels on whole levels in an 8-bit document (lane SMB-PS-ORACLE-PARITY-2)
+                let prepared = op
+                    .prepare()
+                    .map_err(adjust_error)?
+                    .with_eight_bit(extensions.output.is_eight_bit());
                 fx.adjustment = Some(prep.adjustments.len());
                 prep.adjustments.push(prepared);
             }

@@ -15,6 +15,11 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let di = (p.ry + gid.y) * p.chunk_w + (p.rx + gid.x);
+    if ((p.flags & 64u) != 0u) {
+        // 8-bit working depth (lane SMB-PS-ORACLE-PARITY-2): pigment render_plan::quantise_8bit
+        dst[di] = floor(dst[di] * 255.0 + vec4<f32>(0.5)) / 255.0;
+        return;
+    }
     let extended = (p.flags & 4u) != 0u;
     if (extended && dst[di].a > 1.5) {
         return; // an overflow marker stays
