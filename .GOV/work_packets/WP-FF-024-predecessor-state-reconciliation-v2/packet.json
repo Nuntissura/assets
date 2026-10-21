@@ -8,7 +8,7 @@
     "version": "2",
     "title": "Reconcile contained prerequisite lineage and closure state",
     "created_at_utc": "2026-10-21T06:28:35Z",
-    "updated_at_utc": "2026-10-21T08:42:57Z"
+    "updated_at_utc": "2026-10-21T10:09:41Z"
   },
   "authorization": {
     "source": "operator_message",
@@ -45,9 +45,9 @@
     "status": "IN_PROGRESS",
     "risk": "MEDIUM",
     "blockers": [
-      "Current prerequisite canonical gates and actual common corrective closure containment remain unproven."
+      "Actual common corrective closure main containment remains unproven."
     ],
-    "next_action": "Commit the exact reviewed code/evidence after first v2 activation, run current prerequisite canonical gates, then merge only after required verdicts and prove actual common corrective closure containment.",
+    "next_action": "Commit accepted technical closure, bind its exact commit as MERGE_PENDING, push and merge into canonical main, then independently prove ancestry before VALIDATED.",
     "supersedes": [
       "WP-FF-024-predecessor-state-reconciliation-v1"
     ],
@@ -110,8 +110,10 @@
       "id": "WP-FF-024-predecessor-state-reconciliation-v2-AC-003",
       "requirement": "The original v1 six-governance-path/NONE scope and its failed canonical verdicts remain explicit historical evidence. This successor changes only its declared governance paths and exact necessary owning-test diagnostic/cleanup source, plus a strictly required finding-map arm if needed, under a freshly committed PREREQUISITE declaration; independent review verifies original target/frozen-field/history preservation and current required canonical verdicts without relabeling failures.",
       "proof_class": "governance",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "First v2 activation f2d2b6c precedes exact owning test/map import. Independent preserved-contract/source review, controlled failure/restored success, public prerequisite preflight and actual clean13b51f6 canonical PR70checks/55fixtures passed; all earlier failed verdicts remain recorded."
+      ]
     },
     {
       "id": "WP-FF-024-predecessor-state-reconciliation-v2-AC-004",
@@ -219,11 +221,52 @@
           ".fforager-artifacts/product-batch/wp024-v2-owning.stdout"
         ],
         "observed": "Owning Clippy9.12s, test build3.76s, unchanged selector1/1 in1.07s."
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "FAIL",
+        "source_commit": "13b51f6bcfdaa855e01434e42413af2ec942d801",
+        "artifact": "build/reports/verify-pr-1792574881776173500-478900.json",
+        "diagnostic": "WP008-E-REPORT-COUNT: expected one archive report, observed0",
+        "disposition": "All workspace tests passed. Exact unchanged owning producer raw stdout under RUST_TEST_THREADS=1 placed its WP008 report prefix after the libtest test-name progress text on the same line; no missing historical file was substituted."
+      },
+      {
+        "proof": "Run-local harness compatibility",
+        "result": "PASS",
+        "artifacts": [
+          ".fforager-artifacts/product-batch/wp008-two-threads-probe-identity.json",
+          ".fforager-artifacts/product-batch/wp008-two-threads-probe.stdout",
+          ".fforager-artifacts/product-batch/wp009-two-threads-probe.stdout",
+          ".fforager-artifacts/product-batch/wp024-two-threads-identity.json",
+          ".fforager-artifacts/product-batch/wp024-two-threads-ffmpeg.stdout",
+          ".fforager-artifacts/product-batch/wp024-two-threads-testkit.stdout"
+        ],
+        "observed": "Unchanged binaries/source with RUST_TEST_THREADS=2: strict WP008 count1, WP009 count1, FFmpeg65 accepted/3 ignored, testkit integration9 accepted. WP009 threads1 raw formatting was not separately observed; original Windows timing failure cause remains unverified."
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "PASS",
+        "source_commit": "13b51f6bcfdaa855e01434e42413af2ec942d801",
+        "content_fingerprint": "cea6680bc769e1b12fc057f8aff5424b1f404315129559d1c8745664e0f87867",
+        "dirty": false,
+        "artifact": "build/reports/verify-pr-1792577211387529800-38336.json",
+        "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "environment": {
+          "RUST_TEST_THREADS": "2",
+          "CARGO_TARGET_DIR": "unset; owner .cargo/config.toml resolves shared artifact target",
+          "TEMP": ".fforager-artifacts/tmp",
+          "TMP": ".fforager-artifacts/tmp",
+          "git_config": "Process-only core.longpaths=true appended after existing GIT_CONFIG_COUNT entries",
+          "logs": "Inherited RUST_LOG=warn retained; no compiler/lint override"
+        },
+        "checks": 70,
+        "fixtures": 55,
+        "ceiling": "Prerequisite-only; no product/runtime/performance completion"
       }
     ],
     "not_proven": [
-      "Original cause of the prior two-second failure, current prerequisite canonical gate verdicts and actually merged corrective closure containment.",
-      "Any product, capability, runtime, performance, packaging, release or phase progress."
+      "Actually merged common corrective closure containment.",
+      "Original Windows/startup timing causes remain unverified; no product/runtime/performance completion."
     ]
   },
   "extensions": {

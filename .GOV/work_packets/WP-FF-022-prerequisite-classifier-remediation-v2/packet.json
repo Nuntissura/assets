@@ -54,7 +54,7 @@
     "blockers": [
       "Current technical evidence is accepted; common corrective closure containment remains unproven."
     ],
-    "next_action": "Complete the metadata-only correction through WP-FF-024-predecessor-state-reconciliation-v1, preserving the historical records, then bind the actual merged common corrective closure and verify ancestry before VALIDATED.",
+    "next_action": "Bind the actual WP024-v2 accepted common corrective closure and prove its canonical-main ancestry before VALIDATED; preserve original bases, requirements and all historical failures.",
     "supersedes": [
       "WP-FF-022-prerequisite-classifier-remediation-v1"
     ],
@@ -1000,6 +1000,26 @@
           "testkit_passed": 17,
           "dependency_checks": "advisories, bans, licenses and sources accepted",
           "deep_surface": "Composed deep checks executed within verify-pr; no separate literal deep invocation claimed."
+        },
+        {
+          "gate_id": "FF-GATE-PR-001",
+          "result": "PASS",
+          "source_commit": "13b51f6bcfdaa855e01434e42413af2ec942d801",
+          "content_fingerprint": "cea6680bc769e1b12fc057f8aff5424b1f404315129559d1c8745664e0f87867",
+          "dirty": false,
+          "artifact": "build/reports/verify-pr-1792577211387529800-38336.json",
+          "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+          "environment": {
+            "RUST_TEST_THREADS": "2",
+            "CARGO_TARGET_DIR": "unset; owner .cargo/config.toml resolves shared artifact target",
+            "TEMP": ".fforager-artifacts/tmp",
+            "TMP": ".fforager-artifacts/tmp",
+            "git_config": "Process-only core.longpaths=true appended after existing GIT_CONFIG_COUNT entries",
+            "logs": "Inherited RUST_LOG=warn retained; no compiler/lint override"
+          },
+          "checks": 70,
+          "fixtures": 55,
+          "ceiling": "Prerequisite-only; no product/runtime/performance completion"
         }
       ],
       "corrective_closure": {
@@ -1013,7 +1033,9 @@
         "classifier_source_main_ancestry_exit": 0,
         "wp020_status_at_classifier_source": "STUB",
         "interpretation": "AC005 retains the original classifier non-authorization ceiling at this snapshot. WP020 was later separately authorized and is now VALIDATED through its own contained a88d961 closure; classifier remediation did not authorize that promotion."
-      }
+      },
+      "current_correction_packet": "WP-FF-024-predecessor-state-reconciliation-v2",
+      "current_correction_activation": "f2d2b6cfe87ff6fb4bbeee93ede5fb2e831de7c5"
     }
   }
 }
