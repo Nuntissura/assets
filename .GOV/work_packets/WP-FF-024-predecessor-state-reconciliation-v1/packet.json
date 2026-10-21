@@ -150,7 +150,22 @@
         "new_execution": false,
         "authorization": "Explicit live root authorization for this byte-identical ignored generated alias; no tracked build/report/source path changed."
       },
-      "Independent implementation subagent target/packet review accepted exact frozen-field/history preservation, temporal022STUBceiling and actual006reportalias provenance."
+      "Independent implementation subagent target/packet review accepted exact frozen-field/history preservation, temporal022STUBceiling and actual006reportalias provenance.",
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "source_commit": "ce1be6355cfa3e0e006ad76c379054afc710953a",
+        "artifact": "build/reports/runtime-truth-check-1792566804849471600-499680.json",
+        "proof_ceiling": "Current NONE classification only; no strict PR or containment acceptance."
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "FAIL",
+        "source_commit": "ce1be6355cfa3e0e006ad76c379054afc710953a",
+        "artifact": "build/reports/verify-pr-1792566877321851800-516472.json",
+        "diagnostic": "simplification or complete post-change verification evidence is incomplete",
+        "disposition": "Missing minimum verification evidence and explicit review lenses corrected; retry verdict not yet observed."
+      }
     ],
     "not_proven": [
       "Target state repair, correction-specific public NONE/gate verdicts, independent final metadata review and corrective closure containment.",
@@ -259,7 +274,8 @@
         "Current report alias byte identity and ignored generated-output classification were directly verified.",
         "Original source/main ancestry and accepted-source build/product equality were directly reread before target-state edits.",
         "Independent implementation review accepted exact original three bases/scopes/AC IDs, texts and proof classes/non-product declarations; original006historical30checks and primary09c7WP023stop/recovery/validationprefix are preserved.",
-        "Independent current-source/manifest/Git ancestry and physical byte-identical canonical report alias review accepted; no source, dependency, requirement or finding-map changes."
+        "Independent current-source/manifest/Git ancestry and physical byte-identical canonical report alias review accepted; no source, dependency, requirement or finding-map changes.",
+        "Current correction public NONE classifier accepted cleance1be6355cfa3e0e006ad76c379054afc710953a in report1792566804849471600-499680; strict PR report1792566877321851800-516472 rejected incomplete verification evidence before broad checks, and that failure remains recorded."
       ],
       "ceilings_exceptions_and_evidence": {
         "ceiling_id": "WP-FF-024-predecessor-state-reconciliation-v1-CEILING-001",
@@ -275,10 +291,10 @@
       },
       "adversarial_review": {
         "DIFF_ATTACK_SURFACES": [
-          "Historical ancestry may be relabeled as current closure; retain uncontained99139 and actual contained8dcc source separately.",
-          "Frozen bases, requirements, scope and declarations may drift during state correction; compare exact original canonical JSON fields.",
-          "Older helper WP023 state may overwrite newer primary failures and Operator-stop history; preserve exact primary09c7 checkpoint before current-state updates.",
-          "Copied current reports may be overstated as new runs, product proof or proof for different bytes; bind exact original artifacts, hashes and prerequisite ceilings."
+          "State and integration: historical ancestry may be relabeled as current closure; retain uncontained99139 and actual contained8dcc source separately before predecessor promotion.",
+          "Contract and serialization: frozen bases, acceptance requirements, scope and declarations may drift during JSON state correction; exact original canonical fields were compared.",
+          "State and resource boundaries: older helper WP023 could overwrite newer primary failures or Operator-stop history; preserve exact primary09c7 checkpoint, with no product resource or dependency change.",
+          "Gate integration: copied reports could be overstated as new runs, product proof or evidence for other bytes; bind original artifacts, physical hashes and prerequisite ceilings."
         ],
         "INDEPENDENT_CHECKS_RUN": [
           "Fresh canonical Git ancestry:99139 is not contained in main;8dcc sanitized source and79392 classifier implementation are contained.",
