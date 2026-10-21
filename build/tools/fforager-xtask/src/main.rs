@@ -11250,9 +11250,21 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
         architecture_policy_product_affecting(&base_policy_text, &current_policy_text)?;
     let base_has_shipped_member = base_policy.members.iter().any(|member| member.shipped);
     let has_shipped_member = current_has_shipped_member || base_has_shipped_member;
+    let build_only_contract_reuse = impact == "PREREQUISITE"
+        && changed.contains("build/Cargo.lock")
+        && changed.contains("build/architecture-policy.toml")
+        && exact_build_only_contract_reuse(root, base, &changed)?;
     let product_paths = changed
         .iter()
         .filter(|path| {
+            if build_only_contract_reuse
+                && matches!(
+                    path.as_str(),
+                    "build/Cargo.lock" | "build/architecture-policy.toml"
+                )
+            {
+                return false;
+            }
             if path.replace('\\', "/") == "build/architecture-policy.toml" {
                 has_shipped_member && architecture_policy_affects_product
             } else {
@@ -12041,6 +12053,131 @@ fn product_affecting_path(path: &str, has_shipped_member: bool) -> bool {
                 | "build/architecture-policy.toml"
                 | "rust-toolchain.toml"
         )
+}
+
+fn exact_build_only_contract_reuse(
+    root: &Path,
+    base: &str,
+    changed: &BTreeSet<String>,
+) -> Result<bool, String> {
+    let tool = "build/tools/fforager-xtask/Cargo.toml";
+    if changed.iter().any(|path| {
+        path.starts_with("product/crates/fforager-contracts/")
+            || (path.ends_with("Cargo.toml") && path != tool)
+    }) {
+        return Ok(false);
+    }
+    let read = |path: &str| -> Result<(toml::Value, toml::Value), String> {
+        let old = command_output(root, "git", &["show", &format!("{base}:{path}")])?;
+        let new = fs::read_to_string(root.join(path)).map_err(|error| error.to_string())?;
+        Ok((
+            toml::from_str(&old).map_err(|error| error.to_string())?,
+            toml::from_str(&new).map_err(|error| error.to_string())?,
+        ))
+    };
+    let provider = root.join("product/crates/fforager-contracts");
+    let provider_manifest: toml::Value = read_toml(&provider.join("Cargo.toml"))?;
+    if provider_manifest.get("features").is_some()
+        || provider_manifest
+            .get("package")
+            .and_then(|package| package.get("build"))
+            .is_some()
+        || provider.join("build.rs").exists()
+    {
+        return Ok(false);
+    }
+    let (old_tool, new_tool) = read(tool)?;
+    let (old_lock, new_lock) = read("build/Cargo.lock")?;
+    let (old_policy, new_policy) = read("build/architecture-policy.toml")?;
+    exact_contract_reuse_declarations(
+        &old_tool, new_tool, &old_lock, new_lock, old_policy, new_policy,
+    )
+}
+
+fn exact_contract_reuse_declarations(
+    old_tool: &toml::Value,
+    mut new_tool: toml::Value,
+    old_lock: &toml::Value,
+    mut new_lock: toml::Value,
+    mut old_policy: toml::Value,
+    mut new_policy: toml::Value,
+) -> Result<bool, String> {
+    let expected_dependency: toml::Value =
+        toml::from_str("version = '0.1.0'\npath = '../../../product/crates/fforager-contracts'")
+            .map_err(|error| error.to_string())?;
+    let Some(dependencies) = new_tool
+        .get_mut("dependencies")
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return Ok(false);
+    };
+    if dependencies.remove("fforager-contracts") != Some(expected_dependency)
+        || &new_tool != old_tool
+    {
+        return Ok(false);
+    }
+    let Some(packages) = new_lock
+        .get_mut("package")
+        .and_then(toml::Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let tools = packages
+        .iter()
+        .enumerate()
+        .filter(|(_, package)| {
+            package.get("name").and_then(toml::Value::as_str) == Some("fforager-xtask")
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let [tool] = tools.as_slice() else {
+        return Ok(false);
+    };
+    let Some(dependencies) = packages[*tool]
+        .get_mut("dependencies")
+        .and_then(toml::Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let count = dependencies
+        .iter()
+        .filter(|dependency| dependency.as_str() == Some("fforager-contracts"))
+        .count();
+    if count != 1 {
+        return Ok(false);
+    }
+    dependencies.retain(|dependency| dependency.as_str() != Some("fforager-contracts"));
+    if &new_lock != old_lock {
+        return Ok(false);
+    }
+    let expected_edge: toml::Value = toml::from_str(
+        "edges = [{ package = 'fforager-contracts', kinds = ['normal'], optional = false }]",
+    )
+    .map_err(|error| error.to_string())?;
+    let Some(members) = new_policy
+        .get_mut("members")
+        .and_then(toml::Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let mut matches = 0;
+    for member in members {
+        if member.get("name").and_then(toml::Value::as_str) != Some("fforager-xtask") {
+            continue;
+        }
+        matches += 1;
+        if member.get("shipped").and_then(toml::Value::as_bool) != Some(false)
+            || member.get("artifact_role").and_then(toml::Value::as_str)
+                != Some("non_shipped_gate_runner")
+            || member.get("allowed_internal_dependencies") != expected_edge.get("edges")
+        {
+            return Ok(false);
+        }
+        member["allowed_internal_dependencies"] = toml::Value::Array(Vec::new());
+    }
+    normalize_architecture_policy_hygiene(&mut old_policy)?;
+    normalize_architecture_policy_hygiene(&mut new_policy)?;
+    Ok(matches == 1 && old_policy == new_policy)
 }
 
 fn architecture_policy_product_affecting(
@@ -13856,6 +13993,9 @@ fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> 
         "WP-FF-020-FINDING-DOMAIN-001" => Some(
             "xtask::benchmark::domain::tests::physical_domain_rejects_rehashed_cheaper_work_and_missing_effects",
         ),
+        "WP-FF-020-FINDING-BUILD-EDGE-002" => {
+            Some("xtask::tests::build_only_contract_reuse_rejects_dependency_and_product_drift")
+        }
         "WP-FF-017-FINDING-GRAPH-CLOSURE-005" | "WP-FF-017-FINDING-SOURCE-CLOSURE-006" => {
             Some("xtask::tests::ordinary_profile_rejects_resolved_transitive_feature_unification")
         }
@@ -17538,6 +17678,101 @@ mod tests {
                 .unwrap_err()
                 .contains("FF-RUNTIME-E-OBSERVABLE-MISSING")
         );
+    }
+
+    #[test]
+    fn build_only_contract_reuse_rejects_dependency_and_product_drift() {
+        let old_tool: toml::Value = toml::from_str(
+            "[package]\nname='fforager-xtask'\n[dependencies]\nserde={workspace=true}",
+        )
+        .unwrap();
+        let mut new_tool = old_tool.clone();
+        new_tool["dependencies"].as_table_mut().unwrap().insert(
+            "fforager-contracts".into(),
+            toml::from_str("version='0.1.0'\npath='../../../product/crates/fforager-contracts'")
+                .unwrap(),
+        );
+        let old_lock: toml::Value = toml::from_str("version=4\n[[package]]\nname='fforager-contracts'\nversion='0.1.0'\n[[package]]\nname='fforager-xtask'\nversion='0.1.0'\ndependencies=['serde']\n[[package]]\nname='serde'\nversion='1.0.228'\nsource='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='retained-original-checksum'").unwrap();
+        let mut new_lock = old_lock.clone();
+        new_lock["package"][1]["dependencies"] =
+            toml::Value::Array(vec!["fforager-contracts".into(), "serde".into()]);
+        let old_policy: toml::Value = toml::from_str("forbidden_product_runtime_roots=['.GOV','build']\n[[members]]\nname='fforager-xtask'\nshipped=false\nartifact_role='non_shipped_gate_runner'\nallowed_internal_dependencies=[]\n[[members]]\nname='fforager-contracts'\nshipped=true").unwrap();
+        let mut new_policy = old_policy.clone();
+        let edges: toml::Value = toml::from_str(
+            "edges=[{package='fforager-contracts',kinds=['normal'],optional=false}]",
+        )
+        .unwrap();
+        new_policy["members"][0]["allowed_internal_dependencies"] = edges["edges"].clone();
+        let admitted = |tool, lock, policy| {
+            exact_contract_reuse_declarations(
+                &old_tool,
+                tool,
+                &old_lock,
+                lock,
+                old_policy.clone(),
+                policy,
+            )
+            .unwrap()
+        };
+        assert!(admitted(
+            new_tool.clone(),
+            new_lock.clone(),
+            new_policy.clone()
+        ));
+        for mutation in [
+            "feature",
+            "optional",
+            "path",
+            "version",
+            "registry-version",
+            "checksum",
+            "source",
+            "other-edge",
+            "shipped",
+            "native",
+        ] {
+            let (mut tool, mut lock, mut policy) =
+                (new_tool.clone(), new_lock.clone(), new_policy.clone());
+            match mutation {
+                "feature" => {
+                    tool["dependencies"]["fforager-contracts"]
+                        .as_table_mut()
+                        .unwrap()
+                        .insert("features".into(), toml::Value::Array(vec!["extra".into()]));
+                }
+                "optional" => {
+                    tool["dependencies"]["fforager-contracts"]
+                        .as_table_mut()
+                        .unwrap()
+                        .insert("optional".into(), true.into());
+                }
+                "path" => {
+                    tool["dependencies"]["fforager-contracts"]["path"] = "foreign-contracts".into();
+                }
+                "version" => tool["dependencies"]["fforager-contracts"]["version"] = "0.2.0".into(),
+                "registry-version" => lock["package"][2]["version"] = "1.0.229".into(),
+                "checksum" => lock["package"][2]["checksum"] = "substituted".into(),
+                "source" => {
+                    lock["package"][2]["source"] =
+                        "registry+https://unapproved.invalid/index".into();
+                }
+                "other-edge" => {
+                    lock["package"][0].as_table_mut().unwrap().insert(
+                        "dependencies".into(),
+                        toml::Value::Array(vec!["serde".into()]),
+                    );
+                }
+                "shipped" => policy["members"][1]["shipped"] = false.into(),
+                "native" => {
+                    policy
+                        .as_table_mut()
+                        .unwrap()
+                        .insert("native_decision".into(), "unapproved".into());
+                }
+                _ => unreachable!(),
+            }
+            assert!(!admitted(tool, lock, policy), "{mutation} admitted");
+        }
     }
 
     #[test]

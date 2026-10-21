@@ -158,7 +158,7 @@
   "recovery": {
     "last_checkpoint": {
       "checks_run": [
-        "Historical source-bound proof and exact final route review recorded in change_evidence."
+        "Comparator owning1/1 and FF-GATE-RUNTIME-001 diagnostic iteration PASS; exact reports and prior rejection retained in change_evidence."
       ],
       "blockers": [
         "Final source-bound cohorts, required canonical verdicts and main containment are not established."
@@ -168,10 +168,10 @@
         ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
         "build/tools/fforager-xtask/src/main.rs"
       ],
-      "recorded_at_utc": "2026-10-21T04:38:30Z",
+      "recorded_at_utc": "2026-10-21T04:51:45Z",
       "branch": "codex/phase1-prerequisite-closure",
-      "head_sha": "1e07fa8bc6593899dd08dee8795680afffbc3727",
-      "next_action": "Commit the exact finding route and required evidence metadata, acquire source-bound native cohorts once, then run required canonical gates before closure containment."
+      "head_sha": "c3906c9b8c2350b51703c7d87e83f87fcafce2b4",
+      "next_action": "Commit exact comparator and evidence metadata, refresh optimized collectors, acquire source-bound native cohorts once, then required canonical gates and containment."
     }
   },
   "validation": {
@@ -330,7 +330,10 @@
         "Historical1e07 Linux A/B each106 controls and100 measured observations, native exit0 with independent physical reconciliation.",
         "Historical Windows materializer rejected18percent outliers against unchanged10percent ceiling.",
         "Historical Linux public admission exited0; independent seeded bootstrap exactly matched95percent bounds.",
-        "Historical public negatives rejected elapsed+1, pinned A-cohort substitution and forged measured RSS with exact diagnostics."
+        "Historical public negatives rejected elapsed+1, pinned A-cohort substitution and forged measured RSS with exact diagnostics.",
+        "FF-GATE-RUNTIME-001 c390 clean report1792557670155769100-514432 rejected build/Cargo.lock and architecture-policy.toml; exact non-shipped contracts reuse was the recorded blocker.",
+        "Comparator owning regression passed1/1 after14.70s compile; initial TOML missing-key fixture panic was corrected without changing the comparator.",
+        "FF-GATE-RUNTIME-001 diagnostic iteration PASS report1792558129277152100-309524, c390 dirty only main.rs, fingerprint623f2ba2b48a73108963f3557af6a1f0f13aafed6faea617ac2d1e52d8ba4507; clean final acceptance remains separate."
       ],
       "adversarial_review": {
         "DIFF_ATTACK_SURFACES": [
@@ -343,7 +346,8 @@
           "Opened benchmark, calibration, domain and bundle source plus strict AC001 through AC006; the final finding registration changes only three lines.",
           "Independently reconciled643 physical file pins per cohort across historical1e07 Windows/Linux A/B, all424 output WAVs, probe facts and native argv.",
           "Reconciled distinct A/B identities, invocation statuses and elapsed values, owned parent-child tuples, calibration arrays and committed source/tree/lock bindings.",
-          "Opened historical Linux public admission exit0 and reconciled106 B samples, independent A-only175071ppm threshold,50 ratios and exact2000-resample confidence bounds."
+          "Opened historical Linux public admission exit0 and reconciled106 B samples, independent A-only175071ppm threshold,50 ratios and exact2000-resample confidence bounds.",
+          "Independent reviewer inspected exact comparator and ten mutations, then opened owning1/1 and FF-GATE-RUNTIME-001 diagnostic report1792558129277152100-309524; final clean canonical verdicts remain separate."
         ],
         "COUNTERFACTUAL_CHECKS": [
           "The executed physical-domain owning proof rejects rehashed changed payload; caller-authored facts alone cannot satisfy actual physical decoding.",
@@ -369,6 +373,12 @@
             "finding": "Caller-normalized facts lacked an independent physical-domain oracle. Finite local PCM remux admission now derives work from bounded media, probe, argv, inventory and source-bound controls; executed physical-domain negatives reject coherent cheaper-work substitutions.",
             "status": "REMEDIATED",
             "proof_id": "xtask::benchmark::domain::tests::physical_domain_rejects_rehashed_cheaper_work_and_missing_effects"
+          },
+          {
+            "finding_id": "WP-FF-020-FINDING-BUILD-EDGE-002",
+            "finding": "Canonical prerequisite classification rejected dependency-closed non-shipped xtask reuse of unchanged featureless contracts. The exact PREREQUISITE-only comparator permits only coherent tool-manifest, lock and non-shipped policy edge addition; all other dependency, native, feature, provider-source and product-path rejection remains enforced.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::tests::build_only_contract_reuse_rejects_dependency_and_product_drift"
           }
         ],
         "RESIDUAL_UNCERTAINTY": [
