@@ -71,20 +71,18 @@
     "remote_backup": {
       "required_for_handoff": true,
       "branch": "codex/wp020-prerequisite-classifier",
-      "head_sha": "63a02773e8097b525381536311dfab36c91a9e33",
-      "verified_at_utc": "2026-10-21T23:44:07.6947114Z"
+      "head_sha": "3a4191bdd621c1eefa0bb72ac61fb84450ee71e0",
+      "verified_at_utc": "2026-10-21T23:46:02.9172537Z"
     },
     "closure_commit": "763eed9d60b20ab6802b3a5c60e503f89b32c6cb",
-    "main_containment_status": "PENDING",
-    "merged_main_commit": null
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "5500bbf454a3bb32987b16d600844dbac6f01254"
   },
   "lifecycle": {
-    "status": "MERGE_PENDING",
+    "status": "VALIDATED",
     "risk": "HIGH",
-    "blockers": [
-      "Technical acceptance passed; canonical-main closure containment remains unproven."
-    ],
-    "next_action": "Record this technical closure commit as MERGE_PENDING, merge into canonical main, prove closure ancestry and unchanged accepted product/build inputs, then mark VALIDATED and clear active focus. WP011 remains STUB.",
+    "blockers": [],
+    "next_action": "Phase1 first runnable production slice is independently accepted and its closure is contained in canonical main. WP011 remains STUB; no Phase2 activation is implied.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -252,31 +250,39 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-10-21T23:44:07.6983028Z",
-      "branch": "codex/wp020-prerequisite-classifier",
-      "head_sha": "63a02773e8097b525381536311dfab36c91a9e33",
+      "recorded_at_utc": "2026-10-21T23:46:02.9256320Z",
+      "branch": "main",
+      "head_sha": "5500bbf454a3bb32987b16d600844dbac6f01254",
       "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
-      "merge_base_main": "c0bbd293c473b57de264efc2fcb8345b958e981d",
+      "merge_base_main": "5500bbf454a3bb32987b16d600844dbac6f01254",
       "status_porcelain_v2": [
-        "# branch.oid 63a02773e8097b525381536311dfab36c91a9e33",
-        "# branch.head codex/wp020-prerequisite-classifier",
-        "# branch.upstream origin/codex/wp020-prerequisite-classifier",
-        "# branch.ab +0 -0"
+        "# branch.oid 5500bbf454a3bb32987b16d600844dbac6f01254",
+        "# branch.head main",
+        "# branch.upstream origin/main",
+        "# branch.ab +34 -0"
       ],
       "dirty_paths": [
-        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json"
+        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json",
+        ".GOV/taskboard/taskboard.yaml"
       ],
       "checks_run": [
-        "Independent canonical acceptance and nine-AC HIGH-risk review PASS; technical closure only, main containment pending."
+        "Technical closure ancestry exit0; accepted product/build/config/toolchain diff exit0 empty. Final canonical acceptance and independent nine-AC review PASS."
       ],
-      "blockers": [
-        "Technical acceptance passed; canonical-main closure containment remains unproven."
-      ],
-      "next_action": "Record this technical closure commit as MERGE_PENDING, merge into canonical main, prove closure ancestry and unchanged accepted product/build inputs, then mark VALIDATED and clear active focus. WP011 remains STUB."
+      "blockers": [],
+      "next_action": "Phase1 first runnable production slice is independently accepted and its closure is contained in canonical main. WP011 remains STUB; no Phase2 activation is implied."
     }
   },
   "validation": {
     "checks": [
+      {
+        "kind": "canonical-main-containment",
+        "result": "PASS",
+        "closure_commit": "763eed9d60b20ab6802b3a5c60e503f89b32c6cb",
+        "merged_main_commit": "5500bbf454a3bb32987b16d600844dbac6f01254",
+        "command": "git merge-base --is-ancestor 763eed9d60b20ab6802b3a5c60e503f89b32c6cb main",
+        "exit_code": 0,
+        "source_equivalence": "git diff --exit-code 63a02773e8097b525381536311dfab36c91a9e33 main -- build product .cargo rust-toolchain.toml: exit0, empty."
+      },
       {
         "kind": "final-phase1-independent-acceptance",
         "candidate": "63a02773e8097b525381536311dfab36c91a9e33",
@@ -378,9 +384,7 @@
         "retained_failures": "Initial style diagnostics and subsequent explicit-import compiler failures retained; no limit/schema/guard weakening."
       }
     ],
-    "not_proven": [
-      "Canonical-main containment of the technical closure commit remains unproven."
-    ],
+    "not_proven": [],
     "historical_not_proven": [
       "Any shipped Ferric product artifact or command",
       "Any direct HTTP/HTTPS acquisition",
