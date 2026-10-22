@@ -48,6 +48,7 @@ use hsk_studio_develop::{
     ParametricCurve, PointColour, RadialGradient, Threads,
 };
 use hsk_studio_develop::{ByteOrder, ExportColourSpace, TiffCompression, TiffExportSettings, develop_to_tiff};
+use hsk_studio_develop::{DngCompression, DngExportSettings, DngPreview, UnappliedPolicy, decode_container, develop_to_dng, exif_subset};
 use std::cell::RefCell;
 use hsk_studio_folio::{Payload, TileRef};
 use hsk_studio_interop_raster as raster;
@@ -558,6 +559,10 @@ pub enum DevelopExport {
         big_tiff: bool,
         dpi: Option<u32>,
     },
+    /// DNG 1.4 with the raw CFA frame preserved sample for sample, an sRGB preview, the EXIF subset of the original
+    /// and the XMP packet set by [`Viewer::set_develop_dng_xmp`] (lane SMB-DEVELOP-DNG-WRITER). `allow_dropped`
+    /// writes sources that carry features the DNG cannot (opcode lists, ...) and lists them in the report.
+    Dng { compression: DngCompression, preview: DngPreview, allow_dropped: bool },
 }
 
 impl DevelopExport {
@@ -566,6 +571,7 @@ impl DevelopExport {
             Self::Png { .. } => "png",
             Self::Jpeg { .. } => "jpeg",
             Self::Tiff { .. } => "tiff",
+            Self::Dng { .. } => "dng",
         }
     }
 }
@@ -600,6 +606,10 @@ pub struct DevelopDoc {
     threads: Threads,
     /// Last decoded entry by bytes (the panel reads the entry every frame).
     cache: RefCell<Option<(Vec<u8>, EntryView)>>,
+    /// The original container bytes: the DNG export re-decodes them (lane SMB-DEVELOP-DNG-WRITER).
+    original: Vec<u8>,
+    /// XMP packet embedded by the DNG export (caller supplied; the lrcat codec writes it).
+    dng_xmp: Option<Vec<u8>>,
 }
 
 /// Signature of a raster layer's tile list (placement and content digests, in order).
@@ -749,7 +759,7 @@ impl Viewer {
         let mut base = prepared.recipe.clone();
         base.working_profile.sha256 = digest;
         base.output_profile.sha256 = digest;
-        let mut develop = DevelopDoc { prepared, base, layer_id, import_signature: None, threads: Threads::auto(), cache: RefCell::new(None) };
+        let mut develop = DevelopDoc { prepared, base, layer_id, import_signature: None, threads: Threads::auto(), cache: RefCell::new(None), original: original.to_vec(), dng_xmp: None };
         if just_imported {
             // Right after the import the layer holds the identity develop (same route, same recipe).
             develop.import_signature = develop.layer_tiles(self).map(signature);
@@ -765,6 +775,15 @@ impl Viewer {
     /// Whether the open document is a developed raw (the develop panel and export apply).
     pub fn develop_available(&self) -> bool {
         self.develop.is_some()
+    }
+
+    /// Sets (or clears) the XMP packet the DNG export embeds (tag 700). The packet is validated by develop at export time
+    /// (UTF-8, `<x:xmpmeta`, at most `hsk_studio_develop::dng_write::MAX_XMP_BYTES`); the develop recipe is carried by
+    /// whatever the caller wrote into it (the lrcat XMP codec owns the `crs:` mapping).
+    pub fn set_develop_dng_xmp(&mut self, xmp: Option<Vec<u8>>) -> Result<(), Refusal> {
+        let develop = self.develop.as_mut().ok_or_else(|| Refusal::new("not_a_raw_document", "open a camera raw or DNG first"))?;
+        develop.dng_xmp = xmp;
+        Ok(())
     }
 
     /// Worker threads of every develop run (`1..=hsk_studio_develop::MAX_THREADS`; default auto). The
@@ -951,8 +970,37 @@ impl Viewer {
             DevelopExport::Png { depth } => depth,
             DevelopExport::Jpeg { .. } => OutputDepth::Eight,
             DevelopExport::Tiff { depth, .. } => depth,
+            DevelopExport::Dng { .. } => OutputDepth::Eight,
         };
         let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
+        if let DevelopExport::Dng { compression, preview, allow_dropped } = format {
+            let mut raw = decode_container(&d.original).map_err(|e| Refusal::develop(e, "dng_source"))?;
+            if d.prepared.colour_loss.is_some() {
+                raw.allow_approximate_colour();
+            }
+            let settings = DngExportSettings {
+                compression,
+                preview,
+                unapplied: if allow_dropped { UnappliedPolicy::Record } else { UnappliedPolicy::Refuse },
+                software: Some("Handshake Studio develop".to_owned()),
+                unique_camera_model: None,
+            };
+            let exif = exif_subset(&d.original);
+            let (export, receipt) = develop_to_dng(&raw, &recipe, revision, &settings, d.dng_xmp.as_deref(), Some(&exif), SRGB_V4_ICC, d.threads, self.cancel)
+                .map_err(|e| Refusal::new(e.code(), if e.detail().is_empty() { format!("{e:?}") } else { e.detail().to_owned() }))?;
+            write_atomic(path, &export.bytes).map_err(|code| Refusal::new(code, path.display().to_string()))?;
+            return Ok(json!({
+                "format": "dng", "path": path.to_string_lossy(), "width": export.width, "height": export.height,
+                "bytes": export.bytes.len(), "file_sha256": hex(&export.dng_sha256), "samples_sha256": hex(&export.samples_sha256),
+                "bits_per_sample": export.bits_per_sample, "compression": format!("{:?}", export.compression).to_lowercase(),
+                "raw_payload_bytes": export.raw_payload_bytes, "preview": export.preview.map(|(w, h)| json!({"width": w, "height": h})),
+                "xmp_bytes": export.xmp_bytes, "exif_fields": export.exif_fields, "dropped": export.dropped,
+                "colour_loss": export.colour_loss, "dng_version": "1.4.0.0",
+                "route": receipt.as_ref().map(|r| r.route.clone()), "math_token": receipt.as_ref().map(|r| r.math_token.clone()),
+                "threads": d.threads.get(), "revision": revision, "values_known": known,
+                "values": values_json(&edit),
+            }));
+        }
         if let DevelopExport::Tiff { depth, compression, predictor, colour_space, big_endian, big_tiff, dpi } = format {
             let mut settings = TiffExportSettings::new(depth, colour_space);
             settings.compression = compression;
@@ -1006,7 +1054,9 @@ impl Viewer {
                 };
                 (raster::encode_jpeg(&req).map_err(|e| Refusal::new(e.code(), "jpeg encode"))?, Some(name))
             }
-            DevelopExport::Tiff { .. } => return Err(Refusal::new("export_internal", "tiff export is handled before the raster encoders")),
+            DevelopExport::Tiff { .. } | DevelopExport::Dng { .. } => {
+                return Err(Refusal::new("export_internal", "tiff and dng export are handled before the raster encoders"));
+            }
         };
         let back = raster::decode(&bytes, &raster::Limits::default(), self.cancel).map_err(|e| Refusal::new(e.code(), "decode back"))?;
         if (back.width, back.height) != (output.width, output.height) || back.icc.as_deref() != Some(SRGB_V4_ICC) {
@@ -1018,7 +1068,7 @@ impl Viewer {
             "depth_bits": output.depth_bits, "bytes": bytes.len(), "file_sha256": hsk_studio_package::sha256_hex_of(&bytes),
             "samples_sha256": hsk_studio_package::sha256_hex_of(&output.data), "transfer": output.transfer,
             "icc_sha256": hex(&output.icc_sha256), "clip": {"below_zero": output.clip.below_zero, "above_one": output.clip.above_one},
-            "subsampling": subsampling, "quality": match format { DevelopExport::Jpeg { quality } => Some(quality), DevelopExport::Png { .. } | DevelopExport::Tiff { .. } => None },
+            "subsampling": subsampling, "quality": match format { DevelopExport::Jpeg { quality } => Some(quality), DevelopExport::Png { .. } | DevelopExport::Tiff { .. } | DevelopExport::Dng { .. } => None },
             "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
             "threads": d.threads.get(), "revision": revision, "values_known": known,
             "values": values_json(&edit),

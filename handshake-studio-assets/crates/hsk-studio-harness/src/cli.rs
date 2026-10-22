@@ -48,6 +48,12 @@ struct Parsed {
     bigtiff: bool,
     dpi: Option<u32>,
     colour_space: Option<String>,
+    /// develop: `--dng` and its options (lane SMB-DEVELOP-DNG-WRITER).
+    dng: bool,
+    dng_compression: Option<String>,
+    dng_preview: Option<String>,
+    dng_xmp: Option<PathBuf>,
+    dng_allow_dropped: bool,
     quality: Option<u8>,
     /// develop: `--adjust CONTROL VALUE` (value kept as text; parsed as a number by `develop`).
     adjust: Vec<(String, String)>,
@@ -94,6 +100,11 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--png" => p.png = true,
             "--jpeg" => p.jpeg = true,
             "--tiff" => p.tiff = true,
+            "--dng" => p.dng = true,
+            "--dng-compression" => p.dng_compression = Some(take(&mut i, "dng compression (none|ljpeg)")?),
+            "--dng-preview" => p.dng_preview = Some(take(&mut i, "dng preview (none|medium|full)")?),
+            "--dng-xmp" => p.dng_xmp = Some(PathBuf::from(take(&mut i, "XMP packet path")?)),
+            "--dng-allow-dropped" => p.dng_allow_dropped = true,
             "--compression" => p.compression = Some(take(&mut i, "compression (none|lzw|zip)")?),
             "--predictor" => p.predictor = true,
             "--byte-order" => p.byte_order = Some(take(&mut i, "byte order (le|be)")?),
@@ -241,7 +252,14 @@ pub fn run(args: &[String]) -> CliOutput {
                 || parsed.bigtiff
                 || parsed.dpi.is_some()
                 || parsed.colour_space.is_some();
+            let dng_options = parsed.dng_compression.is_some() || parsed.dng_preview.is_some() || parsed.dng_xmp.is_some() || parsed.dng_allow_dropped;
             let format = match (parsed.png, parsed.jpeg, parsed.quality, parsed.depth) {
+                (false, false, None, None) if parsed.dng && !parsed.tiff && !tiff_options => match dng_choice(&parsed) {
+                    Ok(choice) => choice,
+                    Err(message) => return usage(&message),
+                },
+                _ if parsed.dng => return usage("--dng is exclusive with --png, --jpeg, --tiff, --quality, --depth and the TIFF options"),
+                _ if dng_options => return usage("--dng-compression, --dng-preview, --dng-xmp and --dng-allow-dropped apply to --dng only"),
                 (false, false, q, depth) if parsed.tiff => {
                     if q.is_some() {
                         return usage("--quality applies to --jpeg only");
@@ -251,13 +269,13 @@ pub fn run(args: &[String]) -> CliOutput {
                         Err(message) => return usage(&message),
                     }
                 }
-                _ if parsed.tiff => return usage("develop needs exactly one of --png, --jpeg, --tiff"),
+                _ if parsed.tiff => return usage("develop needs exactly one of --png, --jpeg, --tiff, --dng"),
                 _ if tiff_options => return usage("--compression, --predictor, --byte-order, --bigtiff, --dpi and --colour-space apply to --tiff only"),
                 (true, false, None, depth) => DevelopChoice::Png(depth.unwrap_or(16)),
                 (true, false, Some(_), _) => return usage("--quality applies to --jpeg only"),
                 (false, true, _, Some(_)) => return usage("--depth applies to --png only (JPEG is 8-bit)"),
                 (false, true, q, None) => DevelopChoice::Jpeg(q.unwrap_or(DEFAULT_JPEG_QUALITY)),
-                _ => return usage("develop needs exactly one of --png, --jpeg, --tiff"),
+                _ => return usage("develop needs exactly one of --png, --jpeg, --tiff, --dng"),
             };
             let mut adjust = Vec::with_capacity(parsed.adjust.len());
             for (control, text) in &parsed.adjust {
@@ -284,6 +302,26 @@ enum DevelopChoice {
     /// depth, compression (0 none, 1 lzw, 2 zip), predictor, colour space (0 srgb, 1 display-p3, 2 adobe-rgb, 3 prophoto),
     /// big-endian, BigTIFF, dpi.
     Tiff { depth: u8, compression: u8, predictor: bool, colour_space: u8, big_endian: bool, big_tiff: bool, dpi: Option<u32> },
+    /// compression (0 none, 1 lossless JPEG), preview (0 none, 1 medium, 2 full size), XMP packet path, allow dropped features.
+    Dng { compression: u8, preview: u8, xmp: Option<PathBuf>, allow_dropped: bool },
+}
+
+/// `--dng [--dng-compression none|ljpeg] [--dng-preview none|medium|full] [--dng-xmp FILE] [--dng-allow-dropped]`;
+/// defaults uncompressed, medium preview. The XMP packet (the develop recipe as `crs:` keys, written by the lrcat
+/// XMP codec) is embedded verbatim; develop validates it and every other refusal.
+fn dng_choice(parsed: &Parsed) -> Result<DevelopChoice, String> {
+    let compression = match parsed.dng_compression.as_deref() {
+        None | Some("none") => 0,
+        Some("ljpeg") => 1,
+        Some(other) => return Err(format!("--dng-compression must be none or ljpeg, got `{other}`")),
+    };
+    let preview = match parsed.dng_preview.as_deref() {
+        None | Some("medium") => 1,
+        Some("none") => 0,
+        Some("full") => 2,
+        Some(other) => return Err(format!("--dng-preview must be none, medium or full, got `{other}`")),
+    };
+    Ok(DevelopChoice::Dng { compression, preview, xmp: parsed.dng_xmp.clone(), allow_dropped: parsed.dng_allow_dropped })
 }
 
 /// `--tiff [--depth 8|16] [--compression none|lzw|zip] [--predictor] [--byte-order le|be] [--bigtiff] [--dpi N]
@@ -344,7 +382,33 @@ fn execute_develop(source: &Path, output: &Path, format: DevelopChoice, adjust: 
             Err(r) => return fail(r.code, json!({"stage":"adjust","message":r.detail})),
         }
     }
+    if let DevelopChoice::Dng { xmp: Some(path), .. } = &format {
+        // Read within the DNG XMP budget (checked before reading); develop validates the packet itself.
+        let packet = match std::fs::metadata(path) {
+            Ok(m) if m.len() <= hsk_studio_develop::dng_write::MAX_XMP_BYTES as u64 => std::fs::read(path).ok(),
+            Ok(_) => return fail("limit_xmp_bytes", json!({"stage":"xmp"})),
+            Err(_) => None,
+        };
+        let Some(packet) = packet else {
+            return fail("xmp_unreadable", json!({"stage":"xmp"}));
+        };
+        if let Err(r) = viewer.set_develop_dng_xmp(Some(packet)) {
+            return fail(r.code, json!({"stage":"xmp","message":r.detail}));
+        }
+    }
     let format = match format {
+        DevelopChoice::Dng { compression, preview, allow_dropped, .. } => {
+            use hsk_studio_develop::{DngCompression, DngPreview};
+            DevelopExport::Dng {
+                compression: if compression == 1 { DngCompression::LosslessJpeg } else { DngCompression::None },
+                preview: match preview {
+                    0 => DngPreview::None,
+                    2 => DngPreview::FullSize,
+                    _ => DngPreview::Medium,
+                },
+                allow_dropped,
+            }
+        }
         DevelopChoice::Png(16) => DevelopExport::Png { depth: OutputDepth::Sixteen },
         DevelopChoice::Png(_) => DevelopExport::Png { depth: OutputDepth::Eight },
         DevelopChoice::Jpeg(quality) => DevelopExport::Jpeg { quality },
