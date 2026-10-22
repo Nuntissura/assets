@@ -244,7 +244,7 @@ fn unsupported_render_settings_are_refused_before_rendering() {
         jobs(&r, &root).err().map(|e| e.code)
     };
     assert_eq!(code(&|v| v["render_queue"][0]["settings"]["field_render"] = json!("upper_field_first")), Some("render_fields"));
-    assert_eq!(code(&|v| v["render_queue"][0]["settings"]["time_span"] = json!("work_area_only")), Some("render_work_area_unavailable"));
+    assert_eq!(code(&|v| v["render_queue"][0]["settings"]["time_span"] = json!({"custom":{"start_tick":0,"end_tick":100 * S}})), Some("render_span_range"));
     assert_eq!(code(&|v| v["render_queue"][0]["settings"]["frame_rate"] = json!({"numerator":30,"denominator":1})), Some("render_frame_rate_conversion"));
     assert_eq!(code(&|v| v["render_queue"][0]["output_modules"][0]["channels"] = json!("rgb_alpha")), Some("output_alpha_codec"));
     assert_eq!(code(&|v| v["render_queue"][0]["output_modules"][1]["colour"]["output_color_space"] = json!("rec2020")), Some("output_color_space"));

@@ -46,7 +46,7 @@ impl ScenePixels for NoPixels {
     }
 }
 
-/// One rectangle of a synthetic scene.
+/// One rectangle of a synthetic scene (`position` is the rectangle CENTRE, as in the shape-layer record).
 #[derive(Clone)]
 struct Rect {
     id: &'static str,
@@ -130,7 +130,7 @@ fn depth(depth: RenderDepth) -> RenderOptions {
 
 #[test]
 fn reduced_resolutions_render_the_scene_at_the_reduced_size() {
-    let square = [rect("SLYR-a", [RED[0], RED[1], RED[2], 1.0], [8.0, 8.0], [16.0, 16.0])];
+    let square = [rect("SLYR-a", [RED[0], RED[1], RED[2], 1.0], [16.0, 16.0], [16.0, 16.0])];
     let full = render(&square, RenderOptions::default());
     assert_eq!((full.width, full.height), (64, 32));
     assert!(near(px(&full, 16, 16), RED, 1e-5) && near(px(&full, 60, 28), [0.0; 3], 0.0));
@@ -178,7 +178,7 @@ fn hostile_resolution_divisors_are_refused() {
 #[test]
 fn bit_depths_quantise_to_their_levels_and_32_bit_is_unbounded() {
     let v = [0.123_456_f32, 0.5, 0.9];
-    let cover = [rect("SLYR-a", [v[0], v[1], v[2], 1.0], [0.0, 0.0], [64.0, 32.0])];
+    let cover = [rect("SLYR-a", [v[0], v[1], v[2], 1.0], [32.0, 16.0], [64.0, 32.0])];
     let float = render(&cover, depth(RenderDepth::Float));
     assert!(near(px(&float, 32, 16), v, 1e-5), "{:?}", px(&float, 32, 16));
     let b8 = px(&render(&cover, depth(RenderDepth::Bits8)), 32, 16);
@@ -206,9 +206,9 @@ fn bit_depths_quantise_to_their_levels_and_32_bit_is_unbounded() {
 #[test]
 fn thirty_two_bit_rendering_keeps_values_above_one() {
     // 0.8 + 0.8 with linear dodge (add): the unit-range stages clamp at 1.0, 32 bpc keeps 1.6.
-    let mut add = rect("SLYR-b", [0.8, 0.8, 0.8, 1.0], [0.0, 0.0], [64.0, 32.0]);
+    let mut add = rect("SLYR-b", [0.8, 0.8, 0.8, 1.0], [32.0, 16.0], [64.0, 32.0]);
     add.mode = StudioBlendMode::LinearDodgeAdd;
-    let layers = [rect("SLYR-a", [0.8, 0.1, 0.1, 1.0], [0.0, 0.0], [64.0, 32.0]), add];
+    let layers = [rect("SLYR-a", [0.8, 0.1, 0.1, 1.0], [32.0, 16.0], [64.0, 32.0]), add];
     for d in [RenderDepth::Float, RenderDepth::Bits8, RenderDepth::Bits16] {
         assert!(near(px(&render(&layers, depth(d)), 32, 16), [1.0, 0.9, 0.9], 5e-3), "{d:?}");
     }
@@ -454,13 +454,13 @@ fn the_queue_renders_the_work_area_at_reduced_resolution_and_depth() {
     assert_eq!((job.span.start_ticks, job.span.end_ticks), (2 * F, 5 * F));
     let video = job.video.as_ref().unwrap();
     assert_eq!((video.frame_count(), video.format().width, video.format().height), (3, 32, 16), "3 frames at half size");
-    // The frame at the work area's start: source frame 2 = the square at x = 10 -> reduced x = 5.
+    // The frame at the work area's start: source frame 2 = the square over [2, 18) x [0, 16) -> reduced [1, 9) x [0, 8).
     let cancel = CancellationToken::default();
     let f0 = built.shared.frame(0, &cancel).unwrap();
     assert_eq!((f0.width, f0.height), (32, 16));
-    assert!(near(px(&f0, 10, 8), RED, 2e-3), "interior {:?}", px(&f0, 10, 8));
-    assert!(near(px(&f0, 2, 8), [0.0; 3], 0.0), "left of the square {:?}", px(&f0, 2, 8));
-    let l16 = px(&f0, 10, 8)[0] * 65535.0;
+    assert!(near(px(&f0, 5, 4), RED, 2e-3), "interior {:?}", px(&f0, 5, 4));
+    assert!(near(px(&f0, 14, 4), [0.0; 3], 0.0), "right of the square {:?}", px(&f0, 14, 4));
+    let l16 = px(&f0, 5, 4)[0] * 65535.0;
     assert!((l16 - l16.round()).abs() < 1e-2, "16-bit levels");
     // The file: encode the item and read the receipt.
     let mut queue = ExportQueue::new();
@@ -545,8 +545,8 @@ fn frames_of(outer: Value, switch: &str) -> Vec<std::sync::Arc<Frame>> {
 #[test]
 fn frame_blending_renders_per_layer_and_off_for_all_layers_forces_it_off() {
     let layer = json!({"time_remap": half_speed(), "frame_blending": "frame_mix"});
-    // The square covers [8 + a, 24 + a) at source frame a. Outer frame 3 = source 1.5: floor frame 1
-    // is [9, 25), frame 2 is [10, 26).
+    // The square covers [a, 16 + a) at source frame a. Outer frame 3 = source 1.5: floor frame 1
+    // is [1, 17), frame 2 is [2, 18).
     let on = frames_of(layer.clone(), "current_settings");
     let checked = frames_of(layer.clone(), "on_for_checked_layers");
     let off = frames_of(layer.clone(), "off_for_all_layers");
@@ -556,12 +556,12 @@ fn frame_blending_renders_per_layer_and_off_for_all_layers_forces_it_off() {
     assert_eq!(on[2], unblended[2]);
     // Frame 3: blended = half red where only one of the two source frames covers the column.
     let blended = &on[3];
-    assert!(near(px(blended, 9, 16), [RED[0] * 0.5, RED[1] * 0.5, RED[2] * 0.5], 2e-3), "column only in frame 1 {:?}", px(blended, 9, 16));
-    assert!(near(px(blended, 25, 16), [RED[0] * 0.5, RED[1] * 0.5, RED[2] * 0.5], 2e-3), "column only in frame 2 {:?}", px(blended, 25, 16));
-    assert!(near(px(blended, 17, 16), RED, 2e-3), "column in both {:?}", px(blended, 17, 16));
+    assert!(near(px(blended, 1, 8), [RED[0] * 0.5, RED[1] * 0.5, RED[2] * 0.5], 2e-3), "column only in frame 1 {:?}", px(blended, 1, 8));
+    assert!(near(px(blended, 17, 8), [RED[0] * 0.5, RED[1] * 0.5, RED[2] * 0.5], 2e-3), "column only in frame 2 {:?}", px(blended, 17, 8));
+    assert!(near(px(blended, 9, 8), RED, 2e-3), "column in both {:?}", px(blended, 9, 8));
     // Off for all layers: the floor frame, whatever the layer record says; equal to a layer without blending.
     assert_eq!(off[3], unblended[3]);
-    assert!(near(px(&off[3], 9, 16), RED, 2e-3) && near(px(&off[3], 25, 16), [0.0; 3], 0.0), "floor frame");
+    assert!(near(px(&off[3], 1, 8), RED, 2e-3) && near(px(&off[3], 17, 8), [0.0; 3], 0.0), "floor frame");
     assert_ne!(on[3], off[3], "blending is visible");
     // The refusal that guards a caller who forgot the switch: the unforced composition is refused.
     let comps = compositions(layer);
