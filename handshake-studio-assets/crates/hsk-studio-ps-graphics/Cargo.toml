@@ -1,0 +1,20 @@
+[package]
+name = "hsk-studio-ps-graphics"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = "Apache-2.0 OR MIT"
+# Vendored fork of stet-graphics 0.8.4 (https://github.com/AndyCappDev/stet, Apache-2.0 OR MIT, Scott Bowman),
+# lane SMB-EPS-FREE-FONTS: see NOTICE and SOURCE_PROVENANCE.json. The dependency alias keeps the
+# upstream crate path names (stet_core, ...) so the vendored sources compile unchanged.
+
+[features]
+default = []
+
+[dependencies]
+moxcms = { version = "=0.8.1", default-features = false, features = ["any_to_any"] }
+sha2 = { version = "=0.10.9", default-features = false, features = ["std"] }
+stet-fonts = { path = "../hsk-studio-ps-fonts", package = "hsk-studio-ps-fonts", version = "=0.1.0", default-features = false, features = [] }
+
+[lib]
+path = "src/lib.rs"

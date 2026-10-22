@@ -1,0 +1,2329 @@
+// stet - A PostScript Interpreter
+// Copyright (c) 2026 Scott Bowman
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! PDF output device — accumulates pages and writes a PDF file on finish().
+
+use stet_core::context::Context;
+use stet_core::device::OutputDevice;
+use stet_fonts::geometry::PsPath;
+use stet_graphics::device::{ClipParams, FillParams, ImageParams, StrokeParams};
+use stet_graphics::display_list::DisplayList;
+
+use std::collections::{HashMap, HashSet};
+
+use crate::content_stream::{self, ContentStreamResult, ShadingRef};
+use crate::font_data::FontData;
+use crate::font_embedder;
+use crate::font_tracker::FontTracker;
+use crate::image_ops::ImageXObject;
+use crate::pdf_objects::PdfObj;
+use crate::pdf_writer::PdfWriter;
+use crate::shading_ops;
+
+/// A single page's data. Display list is stored and content stream generated
+/// at finalize time when Context is available for font width extraction.
+struct PageData {
+    display_list: DisplayList,
+    /// The page — the MediaBox — in points.
+    width_pts: f64,
+    height_pts: f64,
+    /// The device space the display list is drawn in, in device units.
+    device_w: f64,
+    device_h: f64,
+    dpi: f64,
+    trim_box: Option<(f64, f64, f64, f64)>,
+}
+
+/// PDF output device. Accumulates display lists per page and generates
+/// a single PDF file containing all pages on `finish()`.
+pub struct PdfDevice {
+    pages: Vec<PageData>,
+    page_w: u32,
+    page_h: u32,
+    /// The device space the next page's display list is drawn in, in device
+    /// units: `page_w` × `page_h` for the interpreter, whose default matrix
+    /// maps the page onto whole pixels; the exact page for a display list
+    /// drawn at the page's own size.
+    device_size: (f64, f64),
+    /// The next page in points, written as its MediaBox. Not derived from
+    /// the pixels: a page that is not a whole number of them at this
+    /// resolution — A4 at 300 dpi — would be rounded.
+    page_size_pts: (f64, f64),
+    dpi: f64,
+    output_path: Option<String>,
+    pending_trim_box: Option<(f64, f64, f64, f64)>,
+    /// ICC output profile bytes, retained for forward compatibility with a
+    /// future PDF/X-4 OutputIntent implementation. Currently unused.
+    #[allow(dead_code)]
+    output_profile: Option<Vec<u8>>,
+    /// `/Catalog /OutputIntents` records to emit. Populated by PDF→PDF
+    /// round-trip from the source PDF's intents; empty by default for the
+    /// PostScript-interpreter path.
+    output_intents: Vec<stet_graphics::document_structure::OutputIntentRecord>,
+    /// Whether to emit an implicit `0 0 W H re W n` clip at the top of each
+    /// content stream. Defaults to `true` for the PostScript-interpreter
+    /// path (where DL content can extend past page bounds and the rasterizer
+    /// clips implicitly). PDF→PDF round-trip sets this to `false` because the
+    /// source content was already authored within the page and the implicit
+    /// clip turns into a spurious top-level `Clip` element on re-read.
+    emit_page_box_clip: bool,
+    /// The document is taken as bytes (`take_pdf_bytes*`), never written to
+    /// a file: see [`Self::in_memory`].
+    in_memory: bool,
+}
+
+impl PdfDevice {
+    /// Create a new PDF device with the given page dimensions and DPI.
+    pub fn new(width: u32, height: u32, dpi: f64) -> Self {
+        Self {
+            pages: Vec::new(),
+            page_w: width,
+            page_h: height,
+            device_size: (width as f64, height as f64),
+            page_size_pts: (width as f64 * 72.0 / dpi, height as f64 * 72.0 / dpi),
+            dpi,
+            output_path: None,
+            pending_trim_box: None,
+            output_profile: None,
+            output_intents: Vec::new(),
+            emit_page_box_clip: true,
+            in_memory: false,
+        }
+    }
+
+    /// Create a PDF device whose document is taken as bytes rather than
+    /// written to a file.
+    ///
+    /// [`new`](Self::new) serves the command line: at the end of the job,
+    /// `finish` writes the document to an output path, derived from the page
+    /// names the interpreter passes when [`set_output_path`] has not pinned
+    /// one, and the `/Title` defaults to that file's name. A device made
+    /// here writes nothing, derives no path and invents no title (a pdfmark
+    /// `/DOCINFO /Title` still sets one); call
+    /// [`take_pdf_bytes_with_context`](Self::take_pdf_bytes_with_context)
+    /// when the job is done.
+    ///
+    /// [`set_output_path`]: Self::set_output_path
+    pub fn in_memory(width: u32, height: u32, dpi: f64) -> Self {
+        Self {
+            in_memory: true,
+            ..Self::new(width, height, dpi)
+        }
+    }
+
+    /// Control whether to emit the implicit `0 0 W H re W n` page-box clip
+    /// at the top of each content stream. Default `true`; PDF→PDF round-trip
+    /// should set this to `false` so the writer faithfully reproduces the
+    /// source content without injecting a top-level clip.
+    pub fn set_emit_page_box_clip(&mut self, on: bool) {
+        self.emit_page_box_clip = on;
+    }
+
+    /// Set the `/Catalog /OutputIntents` chain to emit. Replaces any
+    /// previously installed records. Used by PDF→PDF round-trip to carry
+    /// the source PDF's PDF/X / PDF/A OutputIntent over to the output;
+    /// preserving this lets the renderer route DeviceGray / DeviceCMYK /
+    /// ICCBased fills through the same destination profile the source
+    /// declared, so a re-rendered output PDF colour-matches the input.
+    pub fn set_output_intents(
+        &mut self,
+        intents: Vec<stet_graphics::document_structure::OutputIntentRecord>,
+    ) {
+        self.output_intents = intents;
+    }
+
+    /// Set the trim box for the next page (in PDF points, lower-left origin).
+    pub fn set_trim_box(&mut self, llx: f64, lly: f64, urx: f64, ury: f64) {
+        self.pending_trim_box = Some((llx, lly, urx, ury));
+    }
+
+    /// Set the page dimensions used for the next page, in device pixels.
+    /// The PS interpreter path drives this through `setpagedevice`
+    /// ([`OutputDevice::resize_page`]); direct API users call this, or
+    /// [`set_page_size_in_points`](Self::set_page_size_in_points), before
+    /// each `replay_and_show` so per-page sizes can vary across pages in
+    /// the same output PDF. The page is `width` × `height` × 72 / dpi
+    /// points.
+    pub fn set_page_size(&mut self, width: u32, height: u32) {
+        self.page_w = width;
+        self.page_h = height;
+        self.device_size = (width as f64, height as f64);
+        self.page_size_pts = (
+            width as f64 * 72.0 / self.dpi,
+            height as f64 * 72.0 / self.dpi,
+        );
+    }
+
+    /// Set the next page's size in points, for a display list drawn at
+    /// exactly that size (`width` × `height` × dpi / 72 device units, not
+    /// rounded to pixels) — as `stet_pdf_reader` renders a page. The MediaBox
+    /// is the page itself, rather than the page rounded to whole pixels.
+    pub fn set_page_size_in_points(&mut self, width: f64, height: f64) {
+        let scale = self.dpi / 72.0;
+        self.device_size = (width * scale, height * scale);
+        self.page_w = (width * scale).round().max(1.0) as u32;
+        self.page_h = (height * scale).round().max(1.0) as u32;
+        self.page_size_pts = (width, height);
+    }
+
+    /// Set an ICC output profile.
+    ///
+    /// Previously embedded as a PDF/X-3 OutputIntent, but the emitted output
+    /// contained transparency features (soft masks) that PDF/X-3 prohibits.
+    /// The OutputIntent emission path has been removed pending a correct
+    /// PDF/X-4 implementation; calling this currently has no effect on the
+    /// output. The setter is retained so the API is forward-compatible with
+    /// the eventual X-4 work.
+    #[deprecated(
+        note = "OutputIntent emission is temporarily disabled pending PDF/X-4 support; calling this has no effect"
+    )]
+    pub fn set_output_profile(&mut self, bytes: Vec<u8>) {
+        self.output_profile = Some(bytes);
+    }
+
+    /// Build the PDF document into a byte vector.
+    ///
+    /// Returns the complete PDF file contents, or `None` if the device has
+    /// no pages. Each call builds the document afresh.
+    pub fn take_pdf_bytes(&self) -> Option<Vec<u8>> {
+        if self.pages.is_empty() {
+            return None;
+        }
+        let (writer, catalog_ref, info_ref) = self.build_pdf(None).ok()?;
+        let mut buf = Vec::new();
+        writer
+            .write_pdf(&mut buf, catalog_ref, Some(info_ref))
+            .ok()?;
+        Some(buf)
+    }
+
+    /// Build the PDF document into a byte vector, using Context for font data.
+    pub fn take_pdf_bytes_with_context(&self, ctx: &Context) -> Option<Vec<u8>> {
+        if self.pages.is_empty() {
+            return None;
+        }
+        let (writer, catalog_ref, info_ref) = self.build_pdf(Some(ctx)).ok()?;
+        let mut buf = Vec::new();
+        writer
+            .write_pdf(&mut buf, catalog_ref, Some(info_ref))
+            .ok()?;
+        Some(buf)
+    }
+
+    /// Assemble all accumulated pages into a PDF and write to the output file.
+    fn write_pdf(&self, ctx: Option<&Context>) -> Result<(), String> {
+        let path = self.output_path.as_deref().ok_or("no output path set")?;
+        let (writer, catalog_ref, info_ref) = self.build_pdf(ctx)?;
+
+        let file = std::fs::File::create(path).map_err(|e| format!("create {}: {}", path, e))?;
+        let mut bw = std::io::BufWriter::new(file);
+        writer
+            .write_pdf(&mut bw, catalog_ref, Some(info_ref))
+            .map_err(|e| format!("write {}: {}", path, e))?;
+
+        eprintln!("PDF written: {} ({} pages)", path, self.pages.len());
+        Ok(())
+    }
+
+    /// Pin the file this device writes at end of job.
+    ///
+    /// Set from an explicit `--output` path so the name is used verbatim,
+    /// instead of being derived in [`Self::replay_and_show`] from the
+    /// per-page name the interpreter passes down.
+    pub fn set_output_path(&mut self, path: impl Into<String>) {
+        self.output_path = Some(path.into());
+    }
+
+    /// The `/Producer` written when no `pdfmark` `/DOCINFO` overrides it.
+    ///
+    /// Carries the version, so a file can be traced to the build that wrote
+    /// it — the convention every other producer follows (Ghostscript writes
+    /// "GPL Ghostscript 10.05.1", Distiller "Acrobat Distiller 20.0"). A bare
+    /// "stet" tells a prepress operator chasing a rendering difference
+    /// nothing at all.
+    fn default_producer() -> String {
+        format!("stet {}", env!("CARGO_PKG_VERSION"))
+    }
+
+    /// Build the contents of the /Info dict. Starts with device defaults
+    /// (Producer + auto-derived Title + UTC CreationDate) and lets any
+    /// `/DOCINFO` pdfmark record on `ctx.doc_structure` override or
+    /// extend each key. The pdfmark buffer is *not* drained here; phases
+    /// past Phase 1 may want to consult it for separate concerns.
+    fn build_info_dict(&self, ctx: Option<&Context>) -> Vec<(Vec<u8>, PdfObj)> {
+        let docinfo = ctx.map(collect_docinfo).unwrap_or_default();
+
+        let producer = docinfo
+            .producer
+            .clone()
+            .unwrap_or_else(Self::default_producer);
+        let mut entries: Vec<(Vec<u8>, PdfObj)> = vec![(
+            b"Producer".to_vec(),
+            PdfObj::LitString(producer.into_bytes()),
+        )];
+
+        // Title — pdfmark wins; otherwise derive from filename.
+        let title = docinfo.title.clone().or_else(|| {
+            self.output_path
+                .as_deref()
+                .and_then(|p| std::path::Path::new(p).file_stem())
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        });
+        if let Some(t) = title {
+            entries.push((b"Title".to_vec(), PdfObj::LitString(t.into_bytes())));
+        }
+
+        for (key, value) in [
+            (&b"Author"[..], &docinfo.author),
+            (&b"Subject"[..], &docinfo.subject),
+            (&b"Keywords"[..], &docinfo.keywords),
+            (&b"Creator"[..], &docinfo.creator),
+        ] {
+            if let Some(v) = value {
+                entries.push((key.to_vec(), PdfObj::LitString(v.clone().into_bytes())));
+            }
+        }
+
+        // CreationDate — pdfmark override or default to "now in UTC".
+        let creation_date = docinfo
+            .creation_date_string()
+            .unwrap_or_else(default_now_pdf_date);
+        entries.push((
+            b"CreationDate".to_vec(),
+            PdfObj::LitString(creation_date.into_bytes()),
+        ));
+
+        if let Some(md) = docinfo.mod_date_string() {
+            entries.push((b"ModDate".to_vec(), PdfObj::LitString(md.into_bytes())));
+        }
+
+        if let Some(t) = docinfo.trapped {
+            let name: &[u8] = match t {
+                stet_graphics::document_structure::TrappedState::True => b"True",
+                stet_graphics::document_structure::TrappedState::False => b"False",
+                stet_graphics::document_structure::TrappedState::Unknown => b"Unknown",
+                _ => b"Unknown",
+            };
+            entries.push((b"Trapped".to_vec(), PdfObj::Name(name.to_vec())));
+        }
+
+        entries
+    }
+
+    /// Build the PDF document, returning the writer and object refs.
+    fn build_pdf(&self, ctx: Option<&Context>) -> Result<(PdfWriter, u32, u32), String> {
+        let mut writer = PdfWriter::new();
+
+        // The fonts the text was shown with, as the interpreter copied them:
+        // a `restore` may have reclaimed the fonts themselves by now.
+        let resolved = ctx.map(|c| c.font_snapshots.resolve(c));
+        let font_data = ctx.zip(resolved.as_ref()).map(|(c, fonts)| FontData {
+            names: &c.names,
+            fonts,
+        });
+        let fonts = font_data.as_ref();
+
+        // Pre-allocate catalog and pages objects
+        let catalog_ref = writer.alloc_obj();
+        let pages_ref = writer.alloc_obj();
+
+        // Document-level font tracker — shared across all pages
+        let mut font_tracker = FontTracker::new();
+
+        // Track every page's fonts first — the text in its groups, soft
+        // masks, layers and pattern tiles too — so each resource's widths
+        // cover every code the document uses before any page kerns with
+        // them, and every font a stream names is embedded.
+        for page in &self.pages {
+            content_stream::track_fonts(&page.display_list, &mut font_tracker, fonts);
+        }
+        if let Some(f) = fonts {
+            content_stream::measure_widths(&mut font_tracker, f);
+        }
+
+        // Then build the content streams
+        let mut page_results: Vec<(ContentStreamResult, &PageData)> = Vec::new();
+        for page in &self.pages {
+            let result = content_stream::build_content_stream(
+                &page.display_list,
+                (page.device_w, page.device_h),
+                (page.width_pts, page.height_pts),
+                page.dpi,
+                &mut font_tracker,
+                self.emit_page_box_clip,
+            );
+            page_results.push((result, page));
+        }
+
+        // Embed each unique font once at document level
+        let font_obj_map: HashMap<String, u32> =
+            self.embed_all_fonts(&mut writer, &font_tracker, fonts);
+
+        // Collect document-level Optional-Content state from every
+        // page's OcgMarkerRef list — its pattern tiles' too and allocate one /OCG indirect per
+        // unique ocg_id. The Catalog's /OCProperties references all of
+        // them; per-page /Properties dicts (built in build_page below)
+        // map the page-local resource names (P0, P1, …) to these refs.
+        let mut ocg_id_to_ref: HashMap<u32, u32> = HashMap::new();
+        let mut ocg_default_off: HashSet<u32> = HashSet::new();
+        let mut ocg_order: Vec<u32> = Vec::new();
+        for (result, _) in &page_results {
+            for marker in result.ocg_markers() {
+                let mut visit = |ocg_id: u32, default_visible: bool| {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        ocg_id_to_ref.entry(ocg_id)
+                    {
+                        let r = writer.add_object(&PdfObj::Dict(vec![
+                            (b"Type".to_vec(), PdfObj::name("OCG")),
+                            (
+                                b"Name".to_vec(),
+                                PdfObj::LitString(format!("Layer {}", ocg_id).into_bytes()),
+                            ),
+                        ]));
+                        e.insert(r);
+                        ocg_order.push(ocg_id);
+                        if !default_visible {
+                            ocg_default_off.insert(ocg_id);
+                        }
+                    }
+                };
+                collect_ocg_ids(&marker.visibility, &mut visit);
+            }
+        }
+
+        // Pre-allocate page object numbers so annotations can reference
+        // their target pages by indirect ref before the page dict is
+        // written, and so /Annots arrays can be assembled at build time.
+        let page_refs: Vec<u32> = (0..page_results.len())
+            .map(|_| writer.alloc_obj())
+            .collect();
+
+        // Build per-page annotation objects up front so each page dict
+        // gets its /Annots array. Widget annotations are split off and
+        // emitted by `form_fields::write_form`, which owns the field
+        // tree they sit under; the rest go through the standard
+        // annotation path.
+        let mut per_page_annots: Vec<Vec<u32>> = ctx
+            .map(|c| {
+                let records: Vec<stet_graphics::document_structure::AnnotationRecord> = c
+                    .doc_structure
+                    .records()
+                    .iter()
+                    .filter_map(|r| match r {
+                        stet_graphics::document_structure::StructuralRecord::Annotation(rec) => {
+                            Some(rec.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if records.is_empty() {
+                    return vec![Vec::new(); page_refs.len()];
+                }
+                crate::annotations::collect_per_page(&mut writer, &records, &page_refs)
+            })
+            .unwrap_or_else(|| vec![Vec::new(); page_refs.len()]);
+
+        // Form fields — Widget annotations + /FORM record assembled
+        // into /AcroForm. The output's per-page widget refs merge into
+        // per_page_annots above so each page's /Annots array carries
+        // both standard annotations and widget annotations.
+        let acroform_output = ctx.and_then(|c| {
+            let widgets: Vec<(usize, stet_graphics::document_structure::AnnotationRecord)> = c
+                .doc_structure
+                .records()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| match r {
+                    stet_graphics::document_structure::StructuralRecord::Annotation(rec)
+                        if matches!(
+                            rec.subtype,
+                            stet_graphics::document_structure::AnnotationSubtype::Widget(_)
+                        ) =>
+                    {
+                        Some((i, rec.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let form_record = c
+                .doc_structure
+                .records()
+                .iter()
+                .filter_map(|r| match r {
+                    stet_graphics::document_structure::StructuralRecord::Form(rec) => {
+                        Some(rec.clone())
+                    }
+                    _ => None,
+                })
+                .reduce(|acc, next| next.merge_over(&acc));
+            crate::form_fields::write_form(
+                &mut writer,
+                &widgets,
+                form_record.as_ref(),
+                page_refs.len(),
+            )
+        });
+        if let Some(out) = &acroform_output {
+            for (i, refs) in out.per_page_widget_refs.iter().enumerate() {
+                per_page_annots[i].extend(refs);
+            }
+        }
+
+        // Layer /PAGES (document-wide defaults) under /PAGE (per-page
+        // overrides) into one PageOverride per page. Later /PAGE
+        // records override earlier ones key-by-key, matching the same
+        // "later wins" rule we apply to /DOCINFO.
+        let per_page_overrides = compute_page_overrides(ctx, page_refs.len());
+
+        // Second pass: build page objects referencing shared font objects
+        for (i, (result, page)) in page_results.iter().enumerate() {
+            self.build_page(
+                &mut writer,
+                page,
+                pages_ref,
+                page_refs[i],
+                result,
+                &font_obj_map,
+                &per_page_annots[i],
+                &per_page_overrides[i],
+                &ocg_id_to_ref,
+            )?;
+        }
+
+        // Pages object
+        writer.set_object(
+            pages_ref,
+            &PdfObj::Dict(vec![
+                (b"Type".to_vec(), PdfObj::name("Pages")),
+                (
+                    b"Kids".to_vec(),
+                    PdfObj::Array(page_refs.iter().map(|&r| PdfObj::Ref(r)).collect()),
+                ),
+                (b"Count".to_vec(), PdfObj::Int(page_refs.len() as i64)),
+            ]),
+        );
+
+        // Outlines — emitted from `/OUT pdfmark` records on the
+        // pdfmark buffer. Returns `None` when no /OUT records were
+        // issued, in which case /Catalog stays free of /Outlines.
+        let outlines_ref = ctx.and_then(|c| {
+            let records: Vec<stet_graphics::document_structure::OutlineRecord> = c
+                .doc_structure
+                .records()
+                .iter()
+                .filter_map(|r| match r {
+                    stet_graphics::document_structure::StructuralRecord::Outline(rec) => {
+                        Some(rec.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if records.is_empty() {
+                return None;
+            }
+            let tree = stet_graphics::document_structure::build_outline_tree(&records);
+            crate::outline::write_outline_tree(&mut writer, &tree, &page_refs)
+        });
+
+        // /Names — combined tree of /Dests (from /DEST records) and
+        // /EmbeddedFiles (from /EMBED records). Each leaf is built
+        // separately, then `write_names_root` combines them into one
+        // catalog-level dict.
+        let dests_leaf = ctx.and_then(|c| {
+            let records: Vec<stet_graphics::document_structure::DestRecord> = c
+                .doc_structure
+                .records()
+                .iter()
+                .filter_map(|r| match r {
+                    stet_graphics::document_structure::StructuralRecord::Dest(rec) => {
+                        Some(rec.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            crate::names::build_dests_leaf(&mut writer, &records, &page_refs)
+        });
+        let embedded_files_leaf = ctx.and_then(|c| {
+            let records: Vec<stet_graphics::document_structure::EmbedRecord> = c
+                .doc_structure
+                .records()
+                .iter()
+                .filter_map(|r| match r {
+                    stet_graphics::document_structure::StructuralRecord::Embed(rec) => {
+                        Some(rec.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            crate::attachments::build_embedded_files_leaf(&mut writer, &records)
+        });
+        let names_ref =
+            crate::names::write_names_root(&mut writer, dests_leaf, embedded_files_leaf);
+
+        // /VIEWERPREFERENCES — merge all records into one effective
+        // viewer-prefs bag, then split into the `/ViewerPreferences`
+        // indirect object plus the catalog-level `/PageLayout` and
+        // `/PageMode` entries which sit on `/Catalog` directly.
+        let merged_prefs = ctx.map(collect_viewer_prefs).unwrap_or_default();
+        let viewer_prefs_ref = crate::metadata::write_viewer_prefs(&mut writer, &merged_prefs);
+
+        // /Metadata — last record wins; emit the stream object.
+        let metadata_ref = ctx.and_then(|c| {
+            c.doc_structure
+                .records()
+                .iter()
+                .rev()
+                .find_map(|r| match r {
+                    stet_graphics::document_structure::StructuralRecord::Metadata(rec) => {
+                        Some(rec.clone())
+                    }
+                    _ => None,
+                })
+                .map(|rec| crate::metadata::write_xmp_metadata(&mut writer, &rec))
+        });
+
+        // Catalog
+        let mut catalog_entries = vec![
+            (b"Type".to_vec(), PdfObj::name("Catalog")),
+            (b"Pages".to_vec(), PdfObj::Ref(pages_ref)),
+        ];
+
+        // /OCProperties — Optional-Content document state. /OCGs lists
+        // every layer used anywhere in the document; /D is the default
+        // configuration the viewer applies on open (which layers start
+        // on, the display order, base state). Per-marker visibility
+        // decisions live in the per-page /Properties dicts the build_page
+        // loop above wrote, so /OCProperties only describes layers, not
+        // their per-page bracket semantics.
+        if !ocg_id_to_ref.is_empty() {
+            let make_array = || -> Vec<PdfObj> {
+                ocg_order
+                    .iter()
+                    .filter_map(|id| ocg_id_to_ref.get(id).map(|&r| PdfObj::Ref(r)))
+                    .collect()
+            };
+            let off_array: Vec<PdfObj> = ocg_order
+                .iter()
+                .filter(|id| ocg_default_off.contains(id))
+                .filter_map(|id| ocg_id_to_ref.get(id).map(|&r| PdfObj::Ref(r)))
+                .collect();
+            let mut d_entries: Vec<(Vec<u8>, PdfObj)> = vec![
+                (b"Name".to_vec(), PdfObj::LitString(b"Default".to_vec())),
+                (b"BaseState".to_vec(), PdfObj::name("ON")),
+                (b"Order".to_vec(), PdfObj::Array(make_array())),
+            ];
+            if !off_array.is_empty() {
+                d_entries.push((b"OFF".to_vec(), PdfObj::Array(off_array)));
+            }
+            let ocprops = writer.add_object(&PdfObj::Dict(vec![
+                (b"OCGs".to_vec(), PdfObj::Array(make_array())),
+                (b"D".to_vec(), PdfObj::Dict(d_entries)),
+            ]));
+            catalog_entries.push((b"OCProperties".to_vec(), PdfObj::Ref(ocprops)));
+        }
+        if let Some(outline_ref) = outlines_ref {
+            catalog_entries.push((b"Outlines".to_vec(), PdfObj::Ref(outline_ref)));
+        }
+        if let Some(names_ref) = names_ref {
+            catalog_entries.push((b"Names".to_vec(), PdfObj::Ref(names_ref)));
+        }
+        if let Some(viewer_prefs_ref) = viewer_prefs_ref {
+            catalog_entries.push((b"ViewerPreferences".to_vec(), PdfObj::Ref(viewer_prefs_ref)));
+        }
+        // /PageLayout — only the producer-supplied value, validated.
+        if let Some(layout_bytes) = merged_prefs
+            .page_layout
+            .as_deref()
+            .and_then(crate::metadata::validated_page_layout)
+        {
+            catalog_entries.push((b"PageLayout".to_vec(), PdfObj::Name(layout_bytes.to_vec())));
+        }
+        // /PageMode — producer's /VIEWERPREFERENCES /PageMode wins;
+        // otherwise fall back to /UseOutlines when an outline tree
+        // exists so viewers open the bookmark pane by default.
+        let effective_page_mode: Option<Vec<u8>> = merged_prefs
+            .page_mode
+            .as_deref()
+            .and_then(crate::metadata::validated_page_mode)
+            .map(|v| v.to_vec())
+            .or_else(|| outlines_ref.map(|_| b"UseOutlines".to_vec()));
+        if let Some(mode) = effective_page_mode {
+            catalog_entries.push((b"PageMode".to_vec(), PdfObj::Name(mode)));
+        }
+        if let Some(metadata_ref) = metadata_ref {
+            catalog_entries.push((b"Metadata".to_vec(), PdfObj::Ref(metadata_ref)));
+        }
+        if let Some(out) = &acroform_output {
+            catalog_entries.push((b"AcroForm".to_vec(), PdfObj::Ref(out.acroform_ref)));
+        }
+
+        // /Catalog /OutputIntents — emitted before set_object so the
+        // intent dicts and their ICC profile streams land in the writer
+        // first, then the catalog references them.
+        if !self.output_intents.is_empty() {
+            let intent_refs = emit_output_intents(&mut writer, &self.output_intents);
+            if !intent_refs.is_empty() {
+                catalog_entries.push((
+                    b"OutputIntents".to_vec(),
+                    PdfObj::Array(intent_refs.into_iter().map(PdfObj::Ref).collect()),
+                ));
+            }
+        }
+
+        writer.set_object(catalog_ref, &PdfObj::Dict(catalog_entries));
+
+        // Info dictionary — start with device defaults, then let any
+        // /DOCINFO pdfmark records override or extend.
+        let info_ref = writer.alloc_obj();
+        let info_entries = self.build_info_dict(ctx);
+        writer.set_object(info_ref, &PdfObj::Dict(info_entries));
+
+        Ok((writer, catalog_ref, info_ref))
+    }
+
+    /// Embed all tracked fonts once at document level.
+    /// Returns a map from PDF font name (e.g. "F0") to the PDF object number.
+    fn embed_all_fonts(
+        &self,
+        writer: &mut PdfWriter,
+        font_tracker: &FontTracker,
+        fonts: Option<&FontData>,
+    ) -> HashMap<String, u32> {
+        let mut map = HashMap::new();
+        for usage in font_tracker.fonts() {
+            // A font is embedded from the interpreter's copy of it; text
+            // shown without one gets a reference to the font by name.
+            let font_ref = match fonts.filter(|_| usage.root.is_some()) {
+                Some(f) => {
+                    font_embedder::build_font_resource(writer, usage, f).unwrap_or_else(|| {
+                        let tu = font_embedder::build_tounicode_for_fallback(writer, usage, f);
+                        self.build_font_reference(writer, usage, tu)
+                    })
+                }
+                None => self.build_font_reference(writer, usage, None),
+            };
+            map.insert(usage.pdf_name.clone(), font_ref);
+        }
+        map
+    }
+
+    /// Write the resources of a content stream — a page's or a pattern
+    /// tile's — and return the indirect object of its resource dictionary.
+    ///
+    /// Every kind the stream's content and its forms name is written here,
+    /// for pages and tiles alike; a pattern's tile has its resources written
+    /// the same way, so patterns nest. The dictionary is allocated first so
+    /// the stream's forms can name it as their own `/Resources`.
+    fn write_resources(
+        &self,
+        writer: &mut PdfWriter,
+        result: &ContentStreamResult,
+        font_obj_map: &HashMap<String, u32>,
+        ocg_id_to_ref: &HashMap<u32, u32>,
+    ) -> u32 {
+        let ContentStreamResult {
+            content: _,
+            images,
+            shading_refs,
+            used_font_names,
+            ext_gstate_dicts,
+            color_spaces,
+            icc_color_spaces,
+            pattern_refs,
+            pattern_cs_entries,
+            transfer_refs,
+            halftone_refs,
+            bg_ucr_refs,
+            soft_mask_refs,
+            ocg_marker_refs,
+            form_xobjects,
+        } = result;
+        let resources_ref = writer.alloc_obj();
+
+        // Image XObjects and Form XObjects (groups and soft-mask masks)
+        // share the /XObject dict. Each Form names this same resource dict:
+        // its content was emitted by the Builder that emitted the stream
+        // invoking it. Capture each form's indirect ref so the soft-mask
+        // /SMask patches below can wire them up.
+        let mut xobject_entries: Vec<(Vec<u8>, PdfObj)> = Vec::new();
+        for (i, img) in images.iter().enumerate() {
+            let img_ref = self.build_image_xobject(writer, img);
+            xobject_entries.push((format!("Im{}", i).into_bytes(), PdfObj::Ref(img_ref)));
+        }
+        let mut form_obj_refs: Vec<u32> = Vec::with_capacity(form_xobjects.len());
+        for (i, form) in form_xobjects.iter().enumerate() {
+            let form_ref = build_form_xobject(writer, form, resources_ref);
+            form_obj_refs.push(form_ref);
+            xobject_entries.push((format!("X{}", i).into_bytes(), PdfObj::Ref(form_ref)));
+        }
+
+        // Build shading objects
+        let mut shading_entries: Vec<(Vec<u8>, PdfObj)> = Vec::new();
+        for (i, sh_ref) in shading_refs.iter().enumerate() {
+            let sh_obj = match sh_ref {
+                ShadingRef::Axial(p) => shading_ops::build_axial_shading(writer, p),
+                ShadingRef::Radial(p) => shading_ops::build_radial_shading(writer, p),
+                ShadingRef::Mesh(p) => shading_ops::build_mesh_shading(writer, p),
+                ShadingRef::Patch(p) => shading_ops::build_patch_shading(writer, p),
+            };
+            shading_entries.push((format!("Sh{}", i).into_bytes(), PdfObj::Ref(sh_obj)));
+        }
+
+        // Build per-page font resource references (pointing to shared document-level objects)
+        let mut font_entries: Vec<(Vec<u8>, PdfObj)> = Vec::new();
+        for name in used_font_names {
+            if let Some(&obj_ref) = font_obj_map.get(name) {
+                font_entries.push((name.clone().into_bytes(), PdfObj::Ref(obj_ref)));
+            }
+        }
+
+        // Resources dict
+        let mut resources: Vec<(Vec<u8>, PdfObj)> = Vec::new();
+        if !font_entries.is_empty() {
+            resources.push((b"Font".to_vec(), PdfObj::Dict(font_entries)));
+        }
+        if !xobject_entries.is_empty() {
+            resources.push((b"XObject".to_vec(), PdfObj::Dict(xobject_entries)));
+        }
+        if !shading_entries.is_empty() {
+            resources.push((b"Shading".to_vec(), PdfObj::Dict(shading_entries)));
+        }
+
+        // Build ExtGState resources
+        if !ext_gstate_dicts.is_empty() {
+            let mut gs_entries: Vec<(Vec<u8>, PdfObj)> = Vec::new();
+            for (i, gs_dict) in ext_gstate_dicts.iter().enumerate() {
+                // Rebuild entries (PdfObj doesn't derive Clone)
+                let mut entries: Vec<(Vec<u8>, PdfObj)> = gs_dict
+                    .entries
+                    .iter()
+                    .map(|(k, v)| {
+                        let obj = match v {
+                            PdfObj::Bool(b) => PdfObj::Bool(*b),
+                            PdfObj::Int(n) => PdfObj::Int(*n),
+                            PdfObj::Real(r) => PdfObj::Real(*r),
+                            PdfObj::Name(n) => PdfObj::Name(n.clone()),
+                            PdfObj::Ref(r) => PdfObj::Ref(*r),
+                            _ => PdfObj::Null,
+                        };
+                        (k.clone(), obj)
+                    })
+                    .collect();
+
+                // Check if this ExtGState has a transfer function reference
+                if let Some(tr) = transfer_refs.iter().find(|r| r.ext_gstate_idx == i) {
+                    let tr2_value = build_transfer_tr2(writer, &tr.tables, tr.is_color);
+                    entries.push((b"TR2".to_vec(), tr2_value));
+                }
+
+                // Check if this ExtGState has a halftone reference
+                if let Some(hr) = halftone_refs.iter().find(|r| r.ext_gstate_idx == i) {
+                    let ht_value = build_halftone_ht(writer, &hr.state);
+                    entries.push((b"HT".to_vec(), ht_value));
+                }
+
+                // Check if this ExtGState has BG/UCR references
+                if let Some(br) = bg_ucr_refs.iter().find(|r| r.ext_gstate_idx == i) {
+                    if let Some(ref bg) = br.state.bg {
+                        let func_ref = build_type0_function(writer, bg);
+                        entries.push((b"BG2".to_vec(), PdfObj::Ref(func_ref)));
+                    }
+                    if let Some(ref ucr) = br.state.ucr {
+                        let func_ref = build_type0_function_signed(writer, ucr);
+                        entries.push((b"UCR2".to_vec(), PdfObj::Ref(func_ref)));
+                    }
+                }
+
+                // Check if this ExtGState has a soft-mask reference. The
+                // mask form ref was allocated in form_obj_refs above; here
+                // we assemble the /SMask dict and stitch it in.
+                if let Some(sm) = soft_mask_refs.iter().find(|r| r.ext_gstate_idx == i) {
+                    let mask_ref = form_obj_refs[sm.mask_form_idx];
+                    let subtype_name: &[u8] = match sm.subtype {
+                        stet_graphics::display_list::SoftMaskSubtype::Alpha => b"Alpha",
+                        stet_graphics::display_list::SoftMaskSubtype::Luminosity => b"Luminosity",
+                    };
+                    let mut smask_entries: Vec<(Vec<u8>, PdfObj)> = vec![
+                        (b"Type".to_vec(), PdfObj::name("Mask")),
+                        (b"S".to_vec(), PdfObj::Name(subtype_name.to_vec())),
+                        (b"G".to_vec(), PdfObj::Ref(mask_ref)),
+                    ];
+                    if let Some([r, g, b]) = sm.backdrop_color {
+                        smask_entries.push((
+                            b"BC".to_vec(),
+                            PdfObj::Array(vec![PdfObj::Real(r), PdfObj::Real(g), PdfObj::Real(b)]),
+                        ));
+                    }
+                    if sm.transfer_invert {
+                        // Emit /TR { 1 exch sub } as a Type 4 (PostScript)
+                        // function. Inline via an indirect-stream object.
+                        let tr_ref = build_invert_transfer(writer);
+                        smask_entries.push((b"TR".to_vec(), PdfObj::Ref(tr_ref)));
+                    }
+                    entries.push((b"SMask".to_vec(), PdfObj::Dict(smask_entries)));
+                }
+
+                let gs_ref = writer.add_object(&PdfObj::Dict(entries));
+                gs_entries.push((format!("GS{}", i).into_bytes(), PdfObj::Ref(gs_ref)));
+            }
+            resources.push((b"ExtGState".to_vec(), PdfObj::Dict(gs_entries)));
+        }
+
+        // Build ColorSpace resources (for Separation/DeviceN fill/stroke colors)
+        let mut cs_entries: Vec<(Vec<u8>, PdfObj)> = Vec::new();
+        for (name, spot_cs) in color_spaces {
+            let cs_obj = build_spot_colorspace(spot_cs, writer);
+            cs_entries.push((name.clone().into_bytes(), cs_obj));
+        }
+        // ICCBased fill/stroke color space resources. Each emits one
+        // /ICCBased stream object and a `[/ICCBased <ref>]` array.
+        for (name, icc_cs) in icc_color_spaces {
+            let icc_ref = writer.add_stream(
+                vec![(b"N".to_vec(), PdfObj::Int(icc_cs.n as i64))],
+                &icc_cs.profile_data,
+                true,
+            );
+            cs_entries.push((
+                name.clone().into_bytes(),
+                PdfObj::Array(vec![PdfObj::name("ICCBased"), PdfObj::Ref(icc_ref)]),
+            ));
+        }
+        // Add uncolored pattern color space entries (e.g., [/Pattern /DeviceRGB])
+        for (name, cs_obj) in pattern_cs_entries {
+            // Reconstruct PdfObj since it doesn't derive Clone
+            let obj = match cs_obj {
+                PdfObj::Array(items) => {
+                    let cloned: Vec<PdfObj> = items
+                        .iter()
+                        .map(|item| match item {
+                            PdfObj::Name(n) => PdfObj::Name(n.clone()),
+                            PdfObj::Int(n) => PdfObj::Int(*n),
+                            PdfObj::Real(n) => PdfObj::Real(*n),
+                            PdfObj::Ref(r) => PdfObj::Ref(*r),
+                            _ => PdfObj::Null,
+                        })
+                        .collect();
+                    PdfObj::Array(cloned)
+                }
+                _ => PdfObj::Null,
+            };
+            cs_entries.push((name.clone().into_bytes(), obj));
+        }
+        if !cs_entries.is_empty() {
+            resources.push((b"ColorSpace".to_vec(), PdfObj::Dict(cs_entries)));
+        }
+
+        // Build /Properties dict for Optional-Content markers. Each
+        // BDC marker in the content stream names a resource here, which
+        // resolves to either an /OCG (Single visibility) or an /OCMD
+        // (Membership / Expression).
+        if !ocg_marker_refs.is_empty() {
+            let mut props_entries: Vec<(Vec<u8>, PdfObj)> = Vec::new();
+            for marker in ocg_marker_refs {
+                let prop_ref = build_ocg_property_ref(writer, &marker.visibility, ocg_id_to_ref);
+                props_entries.push((
+                    marker.resource_name.clone().into_bytes(),
+                    PdfObj::Ref(prop_ref),
+                ));
+            }
+            resources.push((b"Properties".to_vec(), PdfObj::Dict(props_entries)));
+        }
+
+        // Pattern resources: each tile's content stream, with its own
+        // resources written by this same function.
+        if !pattern_refs.is_empty() {
+            let mut pattern_entries: Vec<(Vec<u8>, PdfObj)> = Vec::new();
+            for (i, pat_ref) in pattern_refs.iter().enumerate() {
+                let tile_resources =
+                    self.write_resources(writer, &pat_ref.tile, font_obj_map, ocg_id_to_ref);
+                let m = &pat_ref.pattern_matrix;
+                let pat_dict = vec![
+                    (b"Type".to_vec(), PdfObj::name("Pattern")),
+                    (b"PatternType".to_vec(), PdfObj::Int(1)),
+                    (
+                        b"PaintType".to_vec(),
+                        PdfObj::Int(pat_ref.paint_type as i64),
+                    ),
+                    (b"TilingType".to_vec(), PdfObj::Int(1)),
+                    (
+                        b"BBox".to_vec(),
+                        // Expand BBox slightly beyond XStep/YStep so adjacent tiles
+                        // overlap, eliminating hairline seam artifacts in PDF viewers.
+                        PdfObj::Array(vec![
+                            PdfObj::Real(pat_ref.bbox[0] - 0.5),
+                            PdfObj::Real(pat_ref.bbox[1] - 0.5),
+                            PdfObj::Real(pat_ref.bbox[2] + 0.5),
+                            PdfObj::Real(pat_ref.bbox[3] + 0.5),
+                        ]),
+                    ),
+                    (b"XStep".to_vec(), PdfObj::Real(pat_ref.xstep)),
+                    (b"YStep".to_vec(), PdfObj::Real(pat_ref.ystep)),
+                    (
+                        b"Matrix".to_vec(),
+                        PdfObj::Array(vec![
+                            PdfObj::Real(m.a),
+                            PdfObj::Real(m.b),
+                            PdfObj::Real(m.c),
+                            PdfObj::Real(m.d),
+                            PdfObj::Real(m.tx),
+                            PdfObj::Real(m.ty),
+                        ]),
+                    ),
+                    (b"Resources".to_vec(), PdfObj::Ref(tile_resources)),
+                ];
+                let pat_obj = writer.add_stream(pat_dict, &pat_ref.tile.content, true);
+                pattern_entries.push((format!("P{}", i).into_bytes(), PdfObj::Ref(pat_obj)));
+            }
+            resources.push((b"Pattern".to_vec(), PdfObj::Dict(pattern_entries)));
+        }
+
+        writer.set_object(resources_ref, &PdfObj::Dict(resources));
+        resources_ref
+    }
+
+    /// Build PDF objects for a single page. The page's indirect object
+    /// number is pre-allocated by the caller (so annotations can target
+    /// the page before its dict is written), and the per-page
+    /// annotation refs are passed in for inclusion in the page's
+    /// `/Annots` array.
+    #[expect(clippy::too_many_arguments)]
+    fn build_page(
+        &self,
+        writer: &mut PdfWriter,
+        page: &PageData,
+        pages_ref: u32,
+        page_ref: u32,
+        result: &ContentStreamResult,
+        font_obj_map: &HashMap<String, u32>,
+        annot_refs: &[u32],
+        overrides: &EffectivePageOverride,
+        ocg_id_to_ref: &HashMap<u32, u32>,
+    ) -> Result<(), String> {
+        let resources_ref = self.write_resources(writer, result, font_obj_map, ocg_id_to_ref);
+
+        // Content stream
+        let content_ref = writer.add_stream(Vec::new(), &result.content, true);
+
+        // Page object
+        let mut page_entries = vec![
+            (b"Type".to_vec(), PdfObj::name("Page")),
+            (b"Parent".to_vec(), PdfObj::Ref(pages_ref)),
+            (
+                b"MediaBox".to_vec(),
+                PdfObj::Array(vec![
+                    PdfObj::Int(0),
+                    PdfObj::Int(0),
+                    PdfObj::Real(page.width_pts),
+                    PdfObj::Real(page.height_pts),
+                ]),
+            ),
+            (b"Contents".to_vec(), PdfObj::Ref(content_ref)),
+            (b"Resources".to_vec(), PdfObj::Ref(resources_ref)),
+        ];
+        // Page-level transparency group. PDF/X-1a sources set a
+        // /Group << /S /Transparency /CS DeviceCMYK >> on the page so
+        // overprint compositing happens in CMYK; without it, the
+        // renderer falls back to RGB compositing and overprint
+        // semantics break (50% K painted on a green spot/CMYK cell no
+        // longer knocks out the cell — visible as residual green or
+        // green-X-shaped strokes leaking past the K paint).
+        let page_cs: Option<&str> = match page.display_list.page_group_color_space() {
+            stet_graphics::display_list::GroupColorSpace::DeviceGray => Some("DeviceGray"),
+            stet_graphics::display_list::GroupColorSpace::DeviceRGB => Some("DeviceRGB"),
+            stet_graphics::display_list::GroupColorSpace::DeviceCMYK => Some("DeviceCMYK"),
+            stet_graphics::display_list::GroupColorSpace::Inherited => None,
+        };
+        if let Some(cs) = page_cs {
+            page_entries.push((
+                b"Group".to_vec(),
+                PdfObj::Dict(vec![
+                    (b"Type".to_vec(), PdfObj::name("Group")),
+                    (b"S".to_vec(), PdfObj::name("Transparency")),
+                    (b"CS".to_vec(), PdfObj::name(cs)),
+                ]),
+            ));
+        }
+        // /CropBox / /BleedBox / /TrimBox / /ArtBox: pdfmark /PAGE or
+        // /PAGES wins; otherwise fall back to the device's pending
+        // trim_box (set via PdfDevice::set_trim_box).
+        let effective_trim = overrides.boxes.trim_box.or_else(|| {
+            page.trim_box
+                .map(|(llx, lly, urx, ury)| [llx, lly, urx, ury])
+        });
+        for (name, b) in [
+            (b"CropBox".as_slice(), overrides.boxes.crop_box),
+            (b"BleedBox".as_slice(), overrides.boxes.bleed_box),
+            (b"TrimBox".as_slice(), effective_trim),
+            (b"ArtBox".as_slice(), overrides.boxes.art_box),
+        ] {
+            if let Some([llx, lly, urx, ury]) = b {
+                page_entries.push((
+                    name.to_vec(),
+                    PdfObj::Array(vec![
+                        PdfObj::Real(llx),
+                        PdfObj::Real(lly),
+                        PdfObj::Real(urx),
+                        PdfObj::Real(ury),
+                    ]),
+                ));
+            }
+        }
+        if let Some(rotate) = overrides.rotate
+            && matches!(rotate, 0 | 90 | 180 | 270 | -90 | -180 | -270)
+        {
+            page_entries.push((b"Rotate".to_vec(), PdfObj::Int(rotate as i64)));
+        }
+        if !annot_refs.is_empty() {
+            page_entries.push((
+                b"Annots".to_vec(),
+                PdfObj::Array(annot_refs.iter().map(|r| PdfObj::Ref(*r)).collect()),
+            ));
+        }
+        if let Some(aa) = &overrides.additional_actions
+            && !aa.is_empty()
+        {
+            // Page-level /AA — open / close hooks. Page refs aren't
+            // available to action targets here (an /O /GoTo can land
+            // on any page; we use the empty page_refs slice so out-of-
+            // range refs short-circuit to None and the action drops).
+            let mut aa_entries: Vec<(Vec<u8>, PdfObj)> = Vec::new();
+            if let Some(action) = &aa.on_open
+                && let Some(dict) = crate::outline::encode_action(action, &[])
+            {
+                aa_entries.push((b"O".to_vec(), dict));
+            }
+            if let Some(action) = &aa.on_close
+                && let Some(dict) = crate::outline::encode_action(action, &[])
+            {
+                aa_entries.push((b"C".to_vec(), dict));
+            }
+            if !aa_entries.is_empty() {
+                page_entries.push((b"AA".to_vec(), PdfObj::Dict(aa_entries)));
+            }
+        }
+        writer.set_object(page_ref, &PdfObj::Dict(page_entries));
+
+        Ok(())
+    }
+
+    /// Build a PDF font reference for a tracked font.
+    ///
+    /// For Standard 14 fonts, creates a simple Type1 font dict.
+    /// For other fonts, also creates a simple Type1 dict (no embedding yet).
+    /// Both include a ToUnicode CMap for searchability.
+    fn build_font_reference(
+        &self,
+        writer: &mut PdfWriter,
+        usage: &crate::font_tracker::FontUsage,
+        tounicode_override: Option<u32>,
+    ) -> u32 {
+        // Build ToUnicode CMap — use override if provided, otherwise fall back to naive mapping
+        let tounicode_ref = tounicode_override.or_else(|| self.build_tounicode_cmap(writer, usage));
+
+        let mut entries: Vec<(Vec<u8>, PdfObj)> = vec![
+            (b"Type".to_vec(), PdfObj::name("Font")),
+            (b"Subtype".to_vec(), PdfObj::name("Type1")),
+            (b"BaseFont".to_vec(), PdfObj::Name(usage.font_name.clone())),
+        ];
+
+        if !usage.is_standard_14 {
+            // For non-standard fonts, add Encoding
+            entries.push((b"Encoding".to_vec(), PdfObj::name("WinAnsiEncoding")));
+        }
+
+        if let Some(tu_ref) = tounicode_ref {
+            entries.push((b"ToUnicode".to_vec(), PdfObj::Ref(tu_ref)));
+        }
+
+        writer.add_object(&PdfObj::Dict(entries))
+    }
+
+    /// Build a ToUnicode CMap for a font.
+    ///
+    /// Maps character codes to Unicode based on common Adobe glyph naming.
+    /// For printable ASCII codes, maps code→Unicode directly (works for most
+    /// Latin text fonts). The full glyph-name-based mapping requires encoding
+    /// array access (deferred to font embedding phase).
+    fn build_tounicode_cmap(
+        &self,
+        writer: &mut PdfWriter,
+        usage: &crate::font_tracker::FontUsage,
+    ) -> Option<u32> {
+        use std::collections::HashMap;
+
+        let mut map: HashMap<u16, u16> = HashMap::new();
+
+        for &code in &usage.used_codes {
+            if code <= 255 {
+                // For ASCII range, assume code = Unicode (works for standard encodings)
+                if (0x20..=0x7E).contains(&code) {
+                    map.insert(code, code);
+                }
+            }
+        }
+
+        if map.is_empty() {
+            return None;
+        }
+
+        let font_name = String::from_utf8_lossy(&usage.font_name);
+        let cmap_data = generate_tounicode_cmap(&map, &font_name);
+        Some(writer.add_stream(Vec::new(), &cmap_data, true))
+    }
+
+    /// Build a PDF image XObject from prepared image data. Returns the object number.
+    fn build_image_xobject(&self, writer: &mut PdfWriter, img: &ImageXObject) -> u32 {
+        // Build SMask if present
+        let smask_ref = img.smask_data.as_ref().map(|smask_data| {
+            writer.add_stream(
+                vec![
+                    (b"Type".to_vec(), PdfObj::name("XObject")),
+                    (b"Subtype".to_vec(), PdfObj::name("Image")),
+                    (b"Width".to_vec(), PdfObj::Int(img.width as i64)),
+                    (b"Height".to_vec(), PdfObj::Int(img.height as i64)),
+                    (b"ColorSpace".to_vec(), PdfObj::name("DeviceGray")),
+                    (b"BitsPerComponent".to_vec(), PdfObj::Int(8)),
+                    (b"Interpolate".to_vec(), PdfObj::Bool(false)),
+                ],
+                smask_data,
+                true,
+            )
+        });
+
+        // Build ICC profile stream if needed
+        let icc_ref = img.icc_profile.as_ref().map(|icc| {
+            writer.add_stream(
+                vec![(b"N".to_vec(), PdfObj::Int(icc.n as i64))],
+                &icc.data,
+                true,
+            )
+        });
+
+        // Build PDF ColorSpace value
+        let cs_obj = build_pdf_colorspace(&img.pdf_color_space, icc_ref, writer);
+
+        // Main image XObject
+        let mut entries = vec![
+            (b"Type".to_vec(), PdfObj::name("XObject")),
+            (b"Subtype".to_vec(), PdfObj::name("Image")),
+            (b"Width".to_vec(), PdfObj::Int(img.width as i64)),
+            (b"Height".to_vec(), PdfObj::Int(img.height as i64)),
+        ];
+
+        if img.is_imagemask {
+            entries.push((b"ImageMask".to_vec(), PdfObj::Bool(true)));
+            // Imagemasks don't have ColorSpace or BitsPerComponent in the XObject
+            entries.push((
+                b"Decode".to_vec(),
+                PdfObj::Array(vec![PdfObj::Int(1), PdfObj::Int(0)]),
+            ));
+        } else {
+            entries.push((b"ColorSpace".to_vec(), cs_obj));
+            entries.push((
+                b"BitsPerComponent".to_vec(),
+                PdfObj::Int(img.bits_per_component as i64),
+            ));
+        }
+
+        entries.push((b"Interpolate".to_vec(), PdfObj::Bool(false)));
+
+        if let Some(smask) = smask_ref {
+            entries.push((b"SMask".to_vec(), PdfObj::Ref(smask)));
+        }
+
+        // Color key masking (ImageType 4): /Mask array of 2×n integers
+        if let Some(ref ckm) = img.color_key_mask {
+            let ncomp = img.pdf_color_space.num_components();
+            let mask_ints: Vec<PdfObj> = if ckm.len() == ncomp {
+                // Exact match: expand each value v to [v, v] range pair
+                ckm.iter()
+                    .flat_map(|&v| [PdfObj::Int(v as i64), PdfObj::Int(v as i64)])
+                    .collect()
+            } else {
+                // Range match: already in [min0, max0, min1, max1, ...] form
+                ckm.iter().map(|&v| PdfObj::Int(v as i64)).collect()
+            };
+            entries.push((b"Mask".to_vec(), PdfObj::Array(mask_ints)));
+        }
+
+        writer.add_stream(entries, &img.sample_data, true)
+    }
+}
+
+/// Build a PDF color space object from our enum.
+fn build_pdf_colorspace(
+    cs: &crate::image_ops::PdfColorSpace,
+    icc_ref: Option<u32>,
+    writer: &mut PdfWriter,
+) -> PdfObj {
+    use crate::image_ops::PdfColorSpace;
+    match cs {
+        PdfColorSpace::DeviceGray => PdfObj::name("DeviceGray"),
+        PdfColorSpace::DeviceRGB => PdfObj::name("DeviceRGB"),
+        PdfColorSpace::DeviceCMYK => PdfObj::name("DeviceCMYK"),
+        PdfColorSpace::ICCBased { .. } => {
+            if let Some(ref_num) = icc_ref {
+                PdfObj::Array(vec![PdfObj::name("ICCBased"), PdfObj::Ref(ref_num)])
+            } else {
+                PdfObj::name("DeviceRGB") // fallback
+            }
+        }
+        PdfColorSpace::Indexed {
+            base,
+            hival,
+            lookup,
+        } => {
+            // Pass icc_ref into the base recursion — when the Indexed
+            // base is ICCBased, the parent's icc_ref points at the
+            // embedded profile stream and the base needs it to emit
+            // `[/ICCBased <ref>]`. Dropping it demotes the base to
+            // DeviceRGB and loses the source profile (GWG130 b/d).
+            let base_obj = build_pdf_colorspace(base, icc_ref, writer);
+            // Embed lookup table as a hex string stream
+            let lookup_ref = writer.add_stream(Vec::new(), lookup, true);
+            PdfObj::Array(vec![
+                PdfObj::name("Indexed"),
+                base_obj,
+                PdfObj::Int(*hival as i64),
+                PdfObj::Ref(lookup_ref),
+            ])
+        }
+        PdfColorSpace::Separation {
+            name,
+            alt,
+            tint_table,
+        } => {
+            let alt_obj = build_pdf_colorspace(alt, None, writer);
+            let func_ref = build_tint_function(tint_table, writer);
+            PdfObj::Array(vec![
+                PdfObj::name("Separation"),
+                PdfObj::Name(name.clone()),
+                alt_obj,
+                PdfObj::Ref(func_ref),
+            ])
+        }
+        PdfColorSpace::DeviceN {
+            names,
+            alt,
+            tint_table,
+        } => {
+            let alt_obj = build_pdf_colorspace(alt, None, writer);
+            let func_ref = build_tint_function(tint_table, writer);
+            let names_arr = PdfObj::Array(names.iter().map(|n| PdfObj::Name(n.clone())).collect());
+            PdfObj::Array(vec![
+                PdfObj::name("DeviceN"),
+                names_arr,
+                alt_obj,
+                PdfObj::Ref(func_ref),
+            ])
+        }
+    }
+}
+
+/// Emit one PDF `/OutputIntent` dict per record, with the
+/// `/DestOutputProfile` ICC stream embedded as a separate object.
+/// Returns the indirect-object numbers for the intent dicts so the
+/// caller can build the `/Catalog /OutputIntents` array.
+fn emit_output_intents(
+    writer: &mut PdfWriter,
+    intents: &[stet_graphics::document_structure::OutputIntentRecord],
+) -> Vec<u32> {
+    let mut refs = Vec::with_capacity(intents.len());
+    for intent in intents {
+        let profile_ref = intent.dest_output_profile.as_ref().map(|bytes| {
+            writer.add_stream(
+                vec![(b"N".to_vec(), PdfObj::Int(intent.n as i64))],
+                bytes,
+                true,
+            )
+        });
+        let mut entries: Vec<(Vec<u8>, PdfObj)> = vec![
+            (b"Type".to_vec(), PdfObj::name("OutputIntent")),
+            (b"S".to_vec(), PdfObj::Name(intent.subtype.clone())),
+        ];
+        if let Some(s) = &intent.output_condition_identifier {
+            entries.push((
+                b"OutputConditionIdentifier".to_vec(),
+                PdfObj::LitString(s.clone()),
+            ));
+        }
+        if let Some(s) = &intent.output_condition {
+            entries.push((b"OutputCondition".to_vec(), PdfObj::LitString(s.clone())));
+        }
+        if let Some(s) = &intent.registry_name {
+            entries.push((b"RegistryName".to_vec(), PdfObj::LitString(s.clone())));
+        }
+        if let Some(s) = &intent.info {
+            entries.push((b"Info".to_vec(), PdfObj::LitString(s.clone())));
+        }
+        if let Some(p_ref) = profile_ref {
+            entries.push((b"DestOutputProfile".to_vec(), PdfObj::Ref(p_ref)));
+        }
+        let intent_ref = writer.add_object(&PdfObj::Dict(entries));
+        refs.push(intent_ref);
+    }
+    refs
+}
+
+/// Build a PDF Type 0 (sampled) function stream from a TintLookupTable.
+/// Returns the object number of the function stream.
+fn build_tint_function(
+    table: &stet_graphics::device::TintLookupTable,
+    writer: &mut PdfWriter,
+) -> u32 {
+    let ni = table.num_inputs as usize;
+    let no = table.num_outputs as usize;
+
+    // Convert f32 data (0.0–1.0) to u8 samples (0–255).
+    // Our TintLookupTable stores data in row-major order (last dimension varies fastest),
+    // but PDF Type 0 functions require the first dimension to vary fastest.
+    // For 1D, the order is the same. For ND, we must transpose.
+    let spd = table.samples_per_dim as usize;
+    let total_entries = spd.pow(ni as u32);
+    let samples: Vec<u8> = if ni <= 1 {
+        table
+            .data
+            .iter()
+            .map(|&v| (v.clamp(0.0, 1.0) * 255.0) as u8)
+            .collect()
+    } else {
+        // Reorder: iterate in PDF order (dim0 fastest) and look up in our order (dim0 slowest)
+        let mut out = Vec::with_capacity(total_entries * no);
+        for pdf_idx in 0..total_entries {
+            // Decompose pdf_idx with dim0 varying fastest
+            let mut coords = vec![0usize; ni];
+            let mut rem = pdf_idx;
+            for coord in coords.iter_mut() {
+                *coord = rem % spd;
+                rem /= spd;
+            }
+            // Convert to our row-major index (dim0 slowest, last dim fastest)
+            let mut our_idx = 0;
+            for coord in coords.iter() {
+                our_idx = our_idx * spd + coord;
+            }
+            let base = our_idx * no;
+            for c in 0..no {
+                out.push((table.data[base + c].clamp(0.0, 1.0) * 255.0) as u8);
+            }
+        }
+        out
+    };
+
+    // Domain: [0 1] repeated for each input
+    let mut domain = Vec::with_capacity(ni * 2);
+    for _ in 0..ni {
+        domain.push(PdfObj::Int(0));
+        domain.push(PdfObj::Int(1));
+    }
+
+    // Range: [0 1] repeated for each output
+    let mut range = Vec::with_capacity(no * 2);
+    for _ in 0..no {
+        range.push(PdfObj::Int(0));
+        range.push(PdfObj::Int(1));
+    }
+
+    // Size: samples_per_dim repeated for each input dimension
+    let size: Vec<PdfObj> = (0..ni)
+        .map(|_| PdfObj::Int(table.samples_per_dim as i64))
+        .collect();
+
+    let dict_entries = vec![
+        (b"FunctionType".to_vec(), PdfObj::Int(0)),
+        (b"Domain".to_vec(), PdfObj::Array(domain)),
+        (b"Range".to_vec(), PdfObj::Array(range)),
+        (b"Size".to_vec(), PdfObj::Array(size)),
+        (b"BitsPerSample".to_vec(), PdfObj::Int(8)),
+    ];
+
+    writer.add_stream(dict_entries, &samples, true)
+}
+
+/// Build a PDF Separation or DeviceN color space array from a SpotColorSpace.
+/// Returns a PdfObj (array) suitable for inclusion in the Resources/ColorSpace dict.
+fn build_spot_colorspace(
+    spot_cs: &stet_graphics::device::SpotColorSpace,
+    writer: &mut PdfWriter,
+) -> PdfObj {
+    use stet_graphics::device::{SimpleColorSpace, SpotColorSpace};
+    match spot_cs {
+        SpotColorSpace::Separation {
+            name,
+            alt,
+            tint_table,
+        } => {
+            let alt_obj = match alt {
+                SimpleColorSpace::DeviceGray => PdfObj::name("DeviceGray"),
+                SimpleColorSpace::DeviceRGB => PdfObj::name("DeviceRGB"),
+                SimpleColorSpace::DeviceCMYK => PdfObj::name("DeviceCMYK"),
+            };
+            let func_ref = build_tint_function(tint_table, writer);
+            PdfObj::Array(vec![
+                PdfObj::name("Separation"),
+                PdfObj::Name(name.clone()),
+                alt_obj,
+                PdfObj::Ref(func_ref),
+            ])
+        }
+        SpotColorSpace::DeviceN {
+            names,
+            alt,
+            tint_table,
+        } => {
+            let alt_obj = match alt {
+                SimpleColorSpace::DeviceGray => PdfObj::name("DeviceGray"),
+                SimpleColorSpace::DeviceRGB => PdfObj::name("DeviceRGB"),
+                SimpleColorSpace::DeviceCMYK => PdfObj::name("DeviceCMYK"),
+            };
+            let func_ref = build_tint_function(tint_table, writer);
+            let names_arr = PdfObj::Array(names.iter().map(|n| PdfObj::Name(n.clone())).collect());
+            PdfObj::Array(vec![
+                PdfObj::name("DeviceN"),
+                names_arr,
+                alt_obj,
+                PdfObj::Ref(func_ref),
+            ])
+        }
+        _ => PdfObj::name("DeviceRGB"),
+    }
+}
+
+/// Generate a ToUnicode CMap stream.
+fn generate_tounicode_cmap(map: &std::collections::HashMap<u16, u16>, font_name: &str) -> Vec<u8> {
+    use std::io::Write;
+    let mut buf = Vec::new();
+
+    writeln!(buf, "/CIDInit /ProcSet findresource begin").unwrap();
+    writeln!(buf, "12 dict begin").unwrap();
+    writeln!(buf, "begincmap").unwrap();
+    writeln!(buf, "/CIDSystemInfo <<").unwrap();
+    writeln!(buf, "  /Registry (Adobe)").unwrap();
+    writeln!(buf, "  /Ordering (UCS)").unwrap();
+    writeln!(buf, "  /Supplement 0").unwrap();
+    writeln!(buf, ">> def").unwrap();
+    writeln!(buf, "/CMapName /{}-UCS def", font_name).unwrap();
+    writeln!(buf, "/CMapType 2 def").unwrap();
+    writeln!(buf, "1 begincodespacerange").unwrap();
+    writeln!(buf, "<00> <FF>").unwrap();
+    writeln!(buf, "endcodespacerange").unwrap();
+
+    let mut sorted: Vec<_> = map.iter().collect();
+    sorted.sort_by_key(|&(&code, _)| code);
+
+    for chunk in sorted.chunks(100) {
+        writeln!(buf, "{} beginbfchar", chunk.len()).unwrap();
+        for &(&code, &unicode) in chunk {
+            writeln!(buf, "<{:02X}> <{:04X}>", code, unicode).unwrap();
+        }
+        writeln!(buf, "endbfchar").unwrap();
+    }
+
+    writeln!(buf, "endcmap").unwrap();
+    writeln!(buf, "CMapName currentdict /CMap defineresource pop").unwrap();
+    writeln!(buf, "end").unwrap();
+    writeln!(buf, "end").unwrap();
+
+    buf
+}
+
+impl OutputDevice for PdfDevice {
+    fn fill_path(&mut self, _path: &PsPath, _params: &FillParams) {}
+    fn stroke_path(&mut self, _path: &PsPath, _params: &StrokeParams) {}
+    fn clip_path(&mut self, _path: &PsPath, _params: &ClipParams) {}
+    fn init_clip(&mut self) {}
+    fn erase_page(&mut self) {}
+
+    fn set_trim_box(&mut self, llx: f64, lly: f64, urx: f64, ury: f64) {
+        self.pending_trim_box = Some((llx, lly, urx, ury));
+    }
+
+    fn show_page(&mut self, _output_path: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Every page accumulates into one PDF, written at end of job, so a
+    /// single output name serves a multi-page document.
+    fn writes_file_per_page(&self) -> bool {
+        false
+    }
+
+    /// Fonts are embedded at the end of the job, from the copies the
+    /// interpreter keeps of them as text is shown.
+    fn keeps_text_fonts(&self) -> bool {
+        true
+    }
+
+    fn draw_image(&mut self, _sample_data: &[u8], _params: &ImageParams) {}
+
+    fn page_size(&self) -> (u32, u32) {
+        (self.page_w, self.page_h)
+    }
+
+    /// The document holds every page of the job, so a new page size resizes
+    /// this device rather than replacing it. The interpreter draws on the
+    /// `media` pixels; the MediaBox is `page_size`, unrounded.
+    fn resize_page(&mut self, media: (u32, u32), page_size: (f64, f64)) -> bool {
+        (self.page_w, self.page_h) = media;
+        self.device_size = (media.0 as f64, media.1 as f64);
+        self.page_size_pts = page_size;
+        true
+    }
+
+    fn replay_and_show(&mut self, list: DisplayList, output_path: &str) -> Result<(), String> {
+        // Capture output path from first page
+        if self.output_path.is_none() && !self.in_memory {
+            // Strip extension (.png or .pdf)
+            let base = if let Some(pos) = output_path.rfind('.') {
+                &output_path[..pos]
+            } else {
+                output_path
+            };
+            // Remove -NNNN page number suffix (e.g., "arc-0001" → "arc")
+            let base = if base.len() >= 5 && base.as_bytes()[base.len() - 5] == b'-' {
+                let suffix = &base[base.len() - 4..];
+                if suffix.bytes().all(|b| b.is_ascii_digit()) {
+                    &base[..base.len() - 5]
+                } else {
+                    base
+                }
+            } else {
+                base
+            };
+            self.output_path = Some(format!("{}.pdf", base));
+        }
+
+        self.pages.push(PageData {
+            display_list: list,
+            width_pts: self.page_size_pts.0,
+            height_pts: self.page_size_pts.1,
+            device_w: self.device_size.0,
+            device_h: self.device_size.1,
+            dpi: self.dpi,
+            trim_box: self.pending_trim_box.take(),
+        });
+
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        if self.pages.is_empty() || self.in_memory {
+            return Ok(());
+        }
+        self.write_pdf(None)
+    }
+
+    fn finish_with_context(&mut self, ctx: &Context) -> Result<(), String> {
+        if self.pages.is_empty() || self.in_memory {
+            return Ok(());
+        }
+        self.write_pdf(Some(ctx))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Parse an ICC profile header to extract the number of components and description.
+///
+/// Returns (N, description) where N is derived from the color space signature
+/// at bytes 16–19 and description is extracted from the `desc` or `mluc` tag.
+///
+/// Currently unused — kept for forward compatibility with the planned
+/// PDF/X-4 OutputIntent implementation.
+#[allow(dead_code)]
+fn parse_icc_header(data: &[u8]) -> (u32, String) {
+    let n = if data.len() >= 20 {
+        match &data[16..20] {
+            b"CMYK" => 4,
+            b"RGB " => 3,
+            b"GRAY" => 1,
+            b"Lab " => 3,
+            _ => 4, // assume CMYK for unknown
+        }
+    } else {
+        4
+    };
+    let desc = extract_icc_description(data).unwrap_or_else(|| "Custom".to_string());
+    (n, desc)
+}
+
+/// Extract the profile description from an ICC profile's tag table.
+///
+/// Looks for the `desc` tag (v2, type 'desc') or `mluc` tag (v4, type 'mluc').
+#[allow(dead_code)]
+fn extract_icc_description(data: &[u8]) -> Option<String> {
+    if data.len() < 132 {
+        return None;
+    }
+    let tag_count = u32::from_be_bytes(data[128..132].try_into().ok()?) as usize;
+    let tag_table_start = 132;
+
+    for i in 0..tag_count {
+        let offset = tag_table_start + i * 12;
+        if offset + 12 > data.len() {
+            break;
+        }
+        let tag_sig = &data[offset..offset + 4];
+        let tag_offset = u32::from_be_bytes(data[offset + 4..offset + 8].try_into().ok()?) as usize;
+        let tag_size = u32::from_be_bytes(data[offset + 8..offset + 12].try_into().ok()?) as usize;
+
+        if tag_sig != b"desc" {
+            continue;
+        }
+        if tag_offset + tag_size > data.len() || tag_size < 12 {
+            return None;
+        }
+
+        let type_sig = &data[tag_offset..tag_offset + 4];
+        if type_sig == b"desc" {
+            // ICC v2 'desc' type: u32 count at offset+8, ASCII string at offset+12
+            let count =
+                u32::from_be_bytes(data[tag_offset + 8..tag_offset + 12].try_into().ok()?) as usize;
+            if count == 0 {
+                return None;
+            }
+            let str_end = (tag_offset + 12 + count).min(tag_offset + tag_size);
+            let s = &data[tag_offset + 12..str_end];
+            // Trim trailing null bytes
+            let s = s.split(|&b| b == 0).next().unwrap_or(s);
+            return Some(String::from_utf8_lossy(s).to_string());
+        } else if type_sig == b"mluc" {
+            // ICC v4 'mluc' type: multi-localized Unicode
+            if tag_size < 20 {
+                return None;
+            }
+            let record_count =
+                u32::from_be_bytes(data[tag_offset + 8..tag_offset + 12].try_into().ok()?) as usize;
+            if record_count == 0 {
+                return None;
+            }
+            // First record: language(2) + country(2) + length(4) + offset(4)
+            let rec_base = tag_offset + 16;
+            if rec_base + 12 > data.len() {
+                return None;
+            }
+            let str_len =
+                u32::from_be_bytes(data[rec_base + 4..rec_base + 8].try_into().ok()?) as usize;
+            let str_off =
+                u32::from_be_bytes(data[rec_base + 8..rec_base + 12].try_into().ok()?) as usize;
+            let abs_off = tag_offset + str_off;
+            if abs_off + str_len > data.len() || str_len < 2 {
+                return None;
+            }
+            // UTF-16BE → String
+            let utf16: Vec<u16> = data[abs_off..abs_off + str_len]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            return Some(
+                String::from_utf16_lossy(&utf16)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            );
+        }
+
+        break;
+    }
+    None
+}
+
+/// Build a PDF Type 4 (PostScript calculator) function that inverts its
+/// input: `{ 1 exch sub }`. Used as the `/TR` entry on a SoftMask /SMask
+/// dict when the source transfer was `{ 1 exch sub }` on the PS side.
+/// Returns the indirect object number.
+fn build_invert_transfer(writer: &mut PdfWriter) -> u32 {
+    let dict_entries = vec![
+        (b"FunctionType".to_vec(), PdfObj::Int(4)),
+        (
+            b"Domain".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(0), PdfObj::Int(1)]),
+        ),
+        (
+            b"Range".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(0), PdfObj::Int(1)]),
+        ),
+    ];
+    writer.add_stream(dict_entries, b"{ 1 exch sub }", false)
+}
+
+/// Build a PDF Type 0 (sampled) function stream from a 256-entry transfer table.
+/// Returns the object number of the function stream.
+fn build_type0_function(writer: &mut PdfWriter, table: &[f64]) -> u32 {
+    let dict_entries = vec![
+        (b"FunctionType".to_vec(), PdfObj::Int(0)),
+        (
+            b"Domain".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(0), PdfObj::Int(1)]),
+        ),
+        (
+            b"Range".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(0), PdfObj::Int(1)]),
+        ),
+        (
+            b"Size".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(table.len() as i64)]),
+        ),
+        (b"BitsPerSample".to_vec(), PdfObj::Int(8)),
+    ];
+    let data: Vec<u8> = table
+        .iter()
+        .map(|&v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+        .collect();
+    writer.add_stream(dict_entries, &data, false)
+}
+
+/// Build the /TR2 value for an ExtGState dict from transfer function tables.
+/// Returns a PdfObj (Ref for single function, Array for 4-component, or Name for identity).
+fn build_transfer_tr2(
+    writer: &mut PdfWriter,
+    tables: &[Option<std::sync::Arc<Vec<f64>>>],
+    is_color: bool,
+) -> PdfObj {
+    if is_color && tables.len() == 4 {
+        // 4-component: [R, G, B, Gray], use /Identity for None entries
+        let refs: Vec<PdfObj> = tables
+            .iter()
+            .map(|t| {
+                if let Some(table) = t {
+                    let func_ref = build_type0_function(writer, table);
+                    PdfObj::Ref(func_ref)
+                } else {
+                    PdfObj::name("Identity")
+                }
+            })
+            .collect();
+        PdfObj::Array(refs)
+    } else if !is_color && tables.len() == 1 {
+        if let Some(ref table) = tables[0] {
+            let func_ref = build_type0_function(writer, table);
+            PdfObj::Ref(func_ref)
+        } else {
+            PdfObj::name("Identity")
+        }
+    } else {
+        PdfObj::name("Identity")
+    }
+}
+
+/// Build a PDF Type 0 (sampled) function stream from a 256-entry table with signed range [-1,1].
+/// Used for undercolor removal (UCR) functions.
+fn build_type0_function_signed(writer: &mut PdfWriter, table: &[f64]) -> u32 {
+    let dict_entries = vec![
+        (b"FunctionType".to_vec(), PdfObj::Int(0)),
+        (
+            b"Domain".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(0), PdfObj::Int(1)]),
+        ),
+        (
+            b"Range".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(-1), PdfObj::Int(1)]),
+        ),
+        (
+            b"Size".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(table.len() as i64)]),
+        ),
+        (b"BitsPerSample".to_vec(), PdfObj::Int(8)),
+    ];
+    // Encode [-1,1] → [0,255]: byte = (v + 1) / 2 * 255
+    let data: Vec<u8> = table
+        .iter()
+        .map(|&v| ((v.clamp(-1.0, 1.0) + 1.0) / 2.0 * 255.0).round() as u8)
+        .collect();
+    writer.add_stream(dict_entries, &data, false)
+}
+
+/// Build a PDF Type 4 (PostScript calculator) function from token bytes.
+/// Domain is 2D [-1,1]×[-1,1], Range [0,1].
+fn build_type4_function(writer: &mut PdfWriter, tokens: &[u8]) -> u32 {
+    let dict_entries = vec![
+        (b"FunctionType".to_vec(), PdfObj::Int(4)),
+        (
+            b"Domain".to_vec(),
+            PdfObj::Array(vec![
+                PdfObj::Int(-1),
+                PdfObj::Int(1),
+                PdfObj::Int(-1),
+                PdfObj::Int(1),
+            ]),
+        ),
+        (
+            b"Range".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(0), PdfObj::Int(1)]),
+        ),
+    ];
+    writer.add_stream(dict_entries, tokens, false)
+}
+
+/// Build a PDF Type 0 (sampled) 2D function from a 64×64 sample table.
+/// Domain is [-1,1]×[-1,1], Range [0,1].
+fn build_type0_function_2d(writer: &mut PdfWriter, table: &[f64]) -> u32 {
+    let dict_entries = vec![
+        (b"FunctionType".to_vec(), PdfObj::Int(0)),
+        (
+            b"Domain".to_vec(),
+            PdfObj::Array(vec![
+                PdfObj::Int(-1),
+                PdfObj::Int(1),
+                PdfObj::Int(-1),
+                PdfObj::Int(1),
+            ]),
+        ),
+        (
+            b"Range".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(0), PdfObj::Int(1)]),
+        ),
+        (
+            b"Size".to_vec(),
+            PdfObj::Array(vec![PdfObj::Int(64), PdfObj::Int(64)]),
+        ),
+        (b"BitsPerSample".to_vec(), PdfObj::Int(8)),
+    ];
+    let data: Vec<u8> = table
+        .iter()
+        .map(|&v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+        .collect();
+    writer.add_stream(dict_entries, &data, false)
+}
+
+/// Build a PDF halftone screen object (Type 1 halftone dict) from a HalftoneScreen.
+/// Returns a PdfObj (either inline Dict or Ref to indirect object).
+fn build_halftone_screen(
+    writer: &mut PdfWriter,
+    screen: &stet_graphics::device::HalftoneScreen,
+) -> PdfObj {
+    let spot_func = if let Some(ref tokens) = screen.type4_tokens {
+        let func_ref = build_type4_function(writer, tokens);
+        PdfObj::Ref(func_ref)
+    } else if let Some(ref table) = screen.sampled_2d {
+        let func_ref = build_type0_function_2d(writer, table);
+        PdfObj::Ref(func_ref)
+    } else {
+        PdfObj::name("Default")
+    };
+
+    let entries = vec![
+        (b"Type".to_vec(), PdfObj::name("Halftone")),
+        (b"HalftoneType".to_vec(), PdfObj::Int(1)),
+        (b"Frequency".to_vec(), PdfObj::Real(screen.frequency)),
+        (b"Angle".to_vec(), PdfObj::Real(screen.angle)),
+        (b"SpotFunction".to_vec(), spot_func),
+    ];
+    let obj_ref = writer.add_object(&PdfObj::Dict(entries));
+    PdfObj::Ref(obj_ref)
+}
+
+/// Build the /HT value for an ExtGState dict from a HalftoneState.
+fn build_halftone_ht(
+    writer: &mut PdfWriter,
+    state: &stet_graphics::device::HalftoneState,
+) -> PdfObj {
+    if let Some(ref color) = state.color {
+        // Type 5 composite halftone
+        let mut entries = vec![
+            (b"Type".to_vec(), PdfObj::name("Halftone")),
+            (b"HalftoneType".to_vec(), PdfObj::Int(5)),
+        ];
+        let component_names: [&[u8]; 4] = [b"Red", b"Green", b"Blue", b"Default"];
+        for (i, screen_opt) in color.iter().enumerate() {
+            if let Some(screen) = screen_opt {
+                let ht_obj = build_halftone_screen(writer, screen);
+                entries.push((component_names[i].to_vec(), ht_obj));
+            }
+        }
+        let obj_ref = writer.add_object(&PdfObj::Dict(entries));
+        PdfObj::Ref(obj_ref)
+    } else if let Some(ref gray) = state.gray {
+        build_halftone_screen(writer, gray)
+    } else {
+        PdfObj::name("Default")
+    }
+}
+
+/// Effective per-page override after layering /PAGES under /PAGE.
+#[derive(Default, Clone)]
+struct EffectivePageOverride {
+    boxes: stet_graphics::document_structure::PageBoxes,
+    rotate: Option<i32>,
+    additional_actions: Option<stet_graphics::document_structure::PageAdditionalActions>,
+}
+
+/// Walk the pdfmark buffer and compute one [`EffectivePageOverride`]
+/// per page in `0..page_count`. Order of precedence per key:
+/// 1. Last `/PAGE` for that specific page (later record wins).
+/// 2. Last `/PAGES` (later document-wide record wins).
+fn compute_page_overrides(ctx: Option<&Context>, page_count: usize) -> Vec<EffectivePageOverride> {
+    use stet_graphics::document_structure::{PageOverrideScope, StructuralRecord};
+    let mut out = vec![EffectivePageOverride::default(); page_count];
+    let Some(c) = ctx else {
+        return out;
+    };
+    let mut all_boxes = stet_graphics::document_structure::PageBoxes::default();
+    let mut all_rotate: Option<i32> = None;
+    let mut all_aa: Option<stet_graphics::document_structure::PageAdditionalActions> = None;
+    let mut per_page_boxes: Vec<stet_graphics::document_structure::PageBoxes> =
+        vec![stet_graphics::document_structure::PageBoxes::default(); page_count];
+    let mut per_page_rotate: Vec<Option<i32>> = vec![None; page_count];
+    let mut per_page_aa: Vec<Option<stet_graphics::document_structure::PageAdditionalActions>> =
+        vec![None; page_count];
+
+    for record in c.doc_structure.records() {
+        let StructuralRecord::PageOverride(rec) = record else {
+            continue;
+        };
+        match rec.scope {
+            PageOverrideScope::All => {
+                all_boxes = rec.boxes.merge_over(&all_boxes);
+                if rec.rotate.is_some() {
+                    all_rotate = rec.rotate;
+                }
+                if let Some(new_aa) = &rec.additional_actions {
+                    all_aa = Some(match all_aa {
+                        Some(prev) => new_aa.merge_over(&prev),
+                        None => new_aa.clone(),
+                    });
+                }
+            }
+            PageOverrideScope::Single(page) => {
+                let idx = page as usize;
+                if idx == 0 || idx > page_count {
+                    continue;
+                }
+                let i = idx - 1;
+                per_page_boxes[i] = rec.boxes.merge_over(&per_page_boxes[i]);
+                if rec.rotate.is_some() {
+                    per_page_rotate[i] = rec.rotate;
+                }
+                if let Some(new_aa) = &rec.additional_actions {
+                    per_page_aa[i] = Some(match per_page_aa[i].clone() {
+                        Some(prev) => new_aa.merge_over(&prev),
+                        None => new_aa.clone(),
+                    });
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    for i in 0..page_count {
+        out[i].boxes = per_page_boxes[i].merge_over(&all_boxes);
+        out[i].rotate = per_page_rotate[i].or(all_rotate);
+        out[i].additional_actions = match (&per_page_aa[i], &all_aa) {
+            (Some(p), Some(a)) => Some(p.merge_over(a)),
+            (Some(p), None) => Some(p.clone()),
+            (None, Some(a)) => Some(a.clone()),
+            (None, None) => None,
+        };
+    }
+    out
+}
+
+/// Convert days since 1970-01-01 to (year, month, day).
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+    // Civil calendar algorithm from Howard Hinnant
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// Format the current wall-clock time as a PDF date string in UTC.
+fn default_now_pdf_date() -> String {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let secs_per_day = 86400u64;
+    let days = now / secs_per_day;
+    let time_of_day = now % secs_per_day;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+    let (year, month, day) = days_to_ymd(days);
+    format!(
+        "D:{:04}{:02}{:02}{:02}{:02}{:02}Z",
+        year, month, day, hours, minutes, seconds
+    )
+}
+
+/// Merge every `/DOCINFO` pdfmark record on the buffer into a single
+/// effective record. Later records override earlier ones key-by-key,
+/// matching GhostScript pdfwrite's behaviour where multiple
+/// `[ /DOCINFO pdfmark` blocks accumulate.
+/// Merge every `/VIEWERPREFERENCES pdfmark` record into one effective
+/// record. Later records override earlier ones key-by-key, matching
+/// the same "later wins" rule we apply to `/DOCINFO`.
+fn collect_viewer_prefs(ctx: &Context) -> stet_graphics::document_structure::ViewerPrefsRecord {
+    use stet_graphics::document_structure::{StructuralRecord, ViewerPrefsRecord};
+    let mut acc = ViewerPrefsRecord::default();
+    for record in ctx.doc_structure.records() {
+        if let StructuralRecord::ViewerPrefs(rec) = record {
+            acc = rec.merge_over(&acc);
+        }
+    }
+    acc
+}
+
+fn collect_docinfo(ctx: &Context) -> stet_graphics::document_structure::DocInfoRecord {
+    let mut acc = stet_graphics::document_structure::DocInfoRecord::default();
+    for record in ctx.doc_structure.records() {
+        let stet_graphics::document_structure::StructuralRecord::DocInfo(rec) = record else {
+            continue;
+        };
+        if let Some(v) = &rec.title {
+            acc.title = Some(v.clone());
+        }
+        if let Some(v) = &rec.author {
+            acc.author = Some(v.clone());
+        }
+        if let Some(v) = &rec.subject {
+            acc.subject = Some(v.clone());
+        }
+        if let Some(v) = &rec.keywords {
+            acc.keywords = Some(v.clone());
+        }
+        if let Some(v) = &rec.creator {
+            acc.creator = Some(v.clone());
+        }
+        if let Some(v) = &rec.producer {
+            acc.producer = Some(v.clone());
+        }
+        if let Some(v) = &rec.creation_date {
+            acc.creation_date = Some(v.clone());
+        }
+        if let Some(v) = &rec.mod_date {
+            acc.mod_date = Some(v.clone());
+        }
+        if let Some(v) = rec.trapped {
+            acc.trapped = Some(v);
+        }
+    }
+    acc
+}
+
+/// Build a PDF Form XObject indirect from a captured Form content stream.
+/// Its `/Resources` is `resources`, the dictionary of the stream invoking
+/// it: one Builder emits both, so they share one resource namespace. It is
+/// named rather than left to the PDF 1.1 rule that a Form without
+/// `/Resources` takes the page's (ISO 32000-1 § 7.8.3; deprecated in
+/// 32000-2), which inside a pattern tile is not where they are.
+fn build_form_xobject(
+    writer: &mut PdfWriter,
+    form: &crate::content_stream::FormXObject,
+    resources: u32,
+) -> u32 {
+    let mut entries: Vec<(Vec<u8>, PdfObj)> = vec![
+        (b"Type".to_vec(), PdfObj::name("XObject")),
+        (b"Subtype".to_vec(), PdfObj::name("Form")),
+        (b"FormType".to_vec(), PdfObj::Int(1)),
+        (
+            b"BBox".to_vec(),
+            PdfObj::Array(vec![
+                PdfObj::Real(form.bbox[0]),
+                PdfObj::Real(form.bbox[1]),
+                PdfObj::Real(form.bbox[2]),
+                PdfObj::Real(form.bbox[3]),
+            ]),
+        ),
+    ];
+    if let Some(group_entries) = &form.group_dict_entries {
+        let entries_clone: Vec<(Vec<u8>, PdfObj)> = group_entries
+            .iter()
+            .map(|(k, v)| (k.clone(), clone_pdfobj_shallow(v)))
+            .collect();
+        entries.push((b"Group".to_vec(), PdfObj::Dict(entries_clone)));
+    }
+    entries.push((b"Resources".to_vec(), PdfObj::Ref(resources)));
+    writer.add_stream(entries, &form.content, true)
+}
+
+/// Shallow clone of a PdfObj used for the static keys we emit in /Group
+/// dicts (Bool / Name / Real). Panics on shapes we don't expect to
+/// appear there, so a future change that adds an indirect ref or array
+/// into a group dict gets caught loudly instead of silently dropping
+/// data.
+fn clone_pdfobj_shallow(v: &PdfObj) -> PdfObj {
+    match v {
+        PdfObj::Bool(b) => PdfObj::Bool(*b),
+        PdfObj::Int(n) => PdfObj::Int(*n),
+        PdfObj::Real(r) => PdfObj::Real(*r),
+        PdfObj::Name(n) => PdfObj::Name(n.clone()),
+        PdfObj::Ref(r) => PdfObj::Ref(*r),
+        PdfObj::Null => PdfObj::Null,
+        _ => panic!("clone_pdfobj_shallow: unsupported PdfObj variant in /Group dict"),
+    }
+}
+
+/// Walk an `OcgVisibility` predicate and call `visit(ocg_id,
+/// default_visible)` for each OCG it references. The `default_visible`
+/// flag is the one attached to the variant; it controls whether the
+/// document-default config lists this OCG under `/OFF`.
+fn collect_ocg_ids<F>(visibility: &stet_graphics::display_list::OcgVisibility, mut visit: F)
+where
+    F: FnMut(u32, bool),
+{
+    use stet_graphics::display_list::OcgVisibility;
+    fn walk_expr(
+        e: &stet_graphics::display_list::VisibilityExpr,
+        v: &mut impl FnMut(u32, bool),
+        default_visible: bool,
+    ) {
+        use stet_graphics::display_list::VisibilityExpr;
+        match e {
+            VisibilityExpr::And(xs) | VisibilityExpr::Or(xs) => {
+                for x in xs {
+                    walk_expr(x, v, default_visible);
+                }
+            }
+            VisibilityExpr::Not(x) => walk_expr(x, v, default_visible),
+            VisibilityExpr::Layer(id) => v(*id, default_visible),
+        }
+    }
+    match visibility {
+        OcgVisibility::Single {
+            ocg_id,
+            default_visible,
+        } => visit(*ocg_id, *default_visible),
+        OcgVisibility::Membership {
+            ocg_ids,
+            default_visible,
+            ..
+        } => {
+            for &id in ocg_ids {
+                visit(id, *default_visible);
+            }
+        }
+        OcgVisibility::Expression {
+            expr,
+            default_visible,
+        } => walk_expr(expr, &mut visit, *default_visible),
+    }
+}
+
+/// Resolve a single `OcgVisibility` predicate into the indirect ref
+/// that goes into a page's `/Properties` entry. The `Single` case
+/// reuses the existing `/OCG` indirect object. `Membership` and
+/// `Expression` allocate fresh `/OCMD` indirect objects (one per
+/// content-stream marker), referencing the underlying `/OCG`s through
+/// `ocg_id_to_ref`.
+fn build_ocg_property_ref(
+    writer: &mut PdfWriter,
+    visibility: &stet_graphics::display_list::OcgVisibility,
+    ocg_id_to_ref: &HashMap<u32, u32>,
+) -> u32 {
+    use stet_graphics::display_list::OcgVisibility;
+    match visibility {
+        OcgVisibility::Single { ocg_id, .. } => *ocg_id_to_ref.get(ocg_id).unwrap_or(&0),
+        OcgVisibility::Membership {
+            ocg_ids, policy, ..
+        } => {
+            use stet_graphics::display_list::MembershipPolicy;
+            let policy_name: &[u8] = match policy {
+                MembershipPolicy::AllOn => b"AllOn",
+                MembershipPolicy::AnyOn => b"AnyOn",
+                MembershipPolicy::AllOff => b"AllOff",
+                MembershipPolicy::AnyOff => b"AnyOff",
+            };
+            let ocgs: Vec<PdfObj> = ocg_ids
+                .iter()
+                .filter_map(|id| ocg_id_to_ref.get(id).map(|&r| PdfObj::Ref(r)))
+                .collect();
+            writer.add_object(&PdfObj::Dict(vec![
+                (b"Type".to_vec(), PdfObj::name("OCMD")),
+                (b"OCGs".to_vec(), PdfObj::Array(ocgs)),
+                (b"P".to_vec(), PdfObj::Name(policy_name.to_vec())),
+            ]))
+        }
+        OcgVisibility::Expression { expr, .. } => {
+            let ve = build_ve_array(expr, ocg_id_to_ref);
+            writer.add_object(&PdfObj::Dict(vec![
+                (b"Type".to_vec(), PdfObj::name("OCMD")),
+                (b"VE".to_vec(), ve),
+            ]))
+        }
+    }
+}
+
+/// Recursively convert a `VisibilityExpr` into the PDF `/VE` array
+/// shape: `[/And expr1 expr2 …]`, `[/Or expr1 expr2 …]`, `[/Not expr]`,
+/// or a bare indirect ref for a leaf `Layer`.
+fn build_ve_array(
+    expr: &stet_graphics::display_list::VisibilityExpr,
+    ocg_id_to_ref: &HashMap<u32, u32>,
+) -> PdfObj {
+    use stet_graphics::display_list::VisibilityExpr;
+    match expr {
+        VisibilityExpr::And(xs) => {
+            let mut arr = vec![PdfObj::name("And")];
+            for x in xs {
+                arr.push(build_ve_array(x, ocg_id_to_ref));
+            }
+            PdfObj::Array(arr)
+        }
+        VisibilityExpr::Or(xs) => {
+            let mut arr = vec![PdfObj::name("Or")];
+            for x in xs {
+                arr.push(build_ve_array(x, ocg_id_to_ref));
+            }
+            PdfObj::Array(arr)
+        }
+        VisibilityExpr::Not(x) => {
+            PdfObj::Array(vec![PdfObj::name("Not"), build_ve_array(x, ocg_id_to_ref)])
+        }
+        VisibilityExpr::Layer(id) => match ocg_id_to_ref.get(id) {
+            Some(&r) => PdfObj::Ref(r),
+            None => PdfObj::Null,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-page display list.
+    fn page() -> DisplayList {
+        let mut list = DisplayList::new();
+        list.push(stet_graphics::display_list::DisplayElement::ErasePage);
+        list
+    }
+
+    /// The device for the command line writes the document at the end of
+    /// the job, to a name derived from the page names it is given; the
+    /// in-memory one writes nothing and its document is taken as bytes.
+    #[test]
+    fn only_the_file_device_writes_a_file() {
+        let dir = std::env::temp_dir().join(format!("stet-pdf-device-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let page_name = dir.join("job-0001.png");
+        let page_name = page_name.to_str().unwrap();
+
+        let mut memory = PdfDevice::in_memory(100, 100, 72.0);
+        memory.replay_and_show(page(), page_name).unwrap();
+        memory.finish().unwrap();
+        memory.finish_with_context(&Context::new()).unwrap();
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
+        assert!(memory.take_pdf_bytes().is_some());
+
+        let mut file = PdfDevice::new(100, 100, 72.0);
+        file.replay_and_show(page(), page_name).unwrap();
+        file.finish().unwrap();
+        assert!(dir.join("job.pdf").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

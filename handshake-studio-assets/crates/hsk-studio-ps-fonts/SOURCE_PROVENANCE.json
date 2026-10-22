@@ -1,0 +1,181 @@
+{
+ "upstream_package": "stet-fonts",
+ "version": "0.8.4",
+ "repository": "https://github.com/AndyCappDev/stet",
+ "license": "Apache-2.0 OR MIT",
+ "copyright": "Copyright (c) 2026 Scott Bowman",
+ "crate_checksum": "a1c9c92149e0a521b816c4856fbdb1fa03900c15c10637331f21c849f0a18721",
+ "read_from": "local cargo registry src/index.crates.io-*/stet-fonts-0.8.4 (crates.io release 2026-10-04)",
+ "lane": "SMB-EPS-FREE-FONTS",
+ "vendored_at": "2026-10-22",
+ "changes": [
+  "src/lib.rs: FONT_SUBSTITUTIONS map to the free fonts; module symbolic; test_support::font_dir prints NOT_PROVEN",
+  "src/symbolic.rs added: Symbol / ZapfDingbats encodings resolved through a TrueType cmap",
+  "src/encoding.rs: ZAPFDINGBATS_ENCODING comment cites the PLRM (data unchanged)",
+  "src/system_fonts.rs: no host font directory is scanned and no cache file is read or written (host fonts are machine-dependent and may not be free)",
+  "tests/malformed_font_guards.rs: extern crate alias line"
+ ],
+ "files": [
+  {
+   "upstream": "src/agl.rs",
+   "upstream_sha256": "750ad8d5b5d1f93953ea82dd996c1bdd412c7b6e4222c63900106efaf9dda329",
+   "owned_sha256": "750ad8d5b5d1f93953ea82dd996c1bdd412c7b6e4222c63900106efaf9dda329",
+   "modified": false
+  },
+  {
+   "upstream": "src/cff_parser.rs",
+   "upstream_sha256": "0c19fa214a5d3dd21f7f12e4155bcd881e1ef8ddd7d581ea9db18cf5e0ce9121",
+   "owned_sha256": "0c19fa214a5d3dd21f7f12e4155bcd881e1ef8ddd7d581ea9db18cf5e0ce9121",
+   "modified": false
+  },
+  {
+   "upstream": "src/cff_writer.rs",
+   "upstream_sha256": "f114125a3af4eef2c3bbb072c1e7fc17502441013ea35737e081362ac9c58ffd",
+   "owned_sha256": "f114125a3af4eef2c3bbb072c1e7fc17502441013ea35737e081362ac9c58ffd",
+   "modified": false
+  },
+  {
+   "upstream": "src/charstring.rs",
+   "upstream_sha256": "83641164582e27e76e4587d5c1b54b03a825c88776379cf39713024329e4de41",
+   "owned_sha256": "83641164582e27e76e4587d5c1b54b03a825c88776379cf39713024329e4de41",
+   "modified": false
+  },
+  {
+   "upstream": "src/cid_cns1.bin",
+   "upstream_sha256": "d92cc9f3aa9ad981db684dc2d722cb12037ffe1c9e243433fd253f2698f8e392",
+   "owned_sha256": "d92cc9f3aa9ad981db684dc2d722cb12037ffe1c9e243433fd253f2698f8e392",
+   "modified": false
+  },
+  {
+   "upstream": "src/cid_gb1.bin",
+   "upstream_sha256": "6d322d158b2eddebc1ab87b771ac9ef9ae8e9bae2a313c2524cf2b68568fe23e",
+   "owned_sha256": "6d322d158b2eddebc1ab87b771ac9ef9ae8e9bae2a313c2524cf2b68568fe23e",
+   "modified": false
+  },
+  {
+   "upstream": "src/cid_japan1.bin",
+   "upstream_sha256": "7ebe74d9133ce659f71ce35f5af749b68b3b725240bc95892d7e817ea086b43e",
+   "owned_sha256": "7ebe74d9133ce659f71ce35f5af749b68b3b725240bc95892d7e817ea086b43e",
+   "modified": false
+  },
+  {
+   "upstream": "src/cid_korea1.bin",
+   "upstream_sha256": "d945af65f9801e05774a604b977191067cdb6691dd2d45091d6c81a979960795",
+   "owned_sha256": "d945af65f9801e05774a604b977191067cdb6691dd2d45091d6c81a979960795",
+   "modified": false
+  },
+  {
+   "upstream": "src/cid_type0.rs",
+   "upstream_sha256": "50e03720ce519d43c4aba6ceb10d108134da4bf2fc7c0afe68d1b6dcaaada6af",
+   "owned_sha256": "50e03720ce519d43c4aba6ceb10d108134da4bf2fc7c0afe68d1b6dcaaada6af",
+   "modified": false
+  },
+  {
+   "upstream": "src/cid_unicode.rs",
+   "upstream_sha256": "b63b75ca3acc74151b8c2b95acb8ffae6f10f21a33c6a1c0b496760e7cecb35b",
+   "owned_sha256": "b63b75ca3acc74151b8c2b95acb8ffae6f10f21a33c6a1c0b496760e7cecb35b",
+   "modified": false
+  },
+  {
+   "upstream": "src/encoding.rs",
+   "upstream_sha256": "c3703b7b908697c25c41951840908d73211200b791dafe27de4c2882d4b07746",
+   "owned_sha256": "e35e4d894562d1ad4754b0a6d5598e7034342f66e7e13a0ef9306a566abf1a74",
+   "modified": true
+  },
+  {
+   "upstream": "src/geometry.rs",
+   "upstream_sha256": "a664a4122cf7cc3411d2ed8efe4b47c74b8292b0944e03092020bd2de821ee90",
+   "owned_sha256": "a664a4122cf7cc3411d2ed8efe4b47c74b8292b0944e03092020bd2de821ee90",
+   "modified": false
+  },
+  {
+   "upstream": "src/glyphlist.txt",
+   "upstream_sha256": "a3b2f61ced9f3644cc0d4ecde5c59df34ca286c689d9484a43a710a81c466789",
+   "owned_sha256": "a3b2f61ced9f3644cc0d4ecde5c59df34ca286c689d9484a43a710a81c466789",
+   "modified": false
+  },
+  {
+   "upstream": "src/lib.rs",
+   "upstream_sha256": "cee5fdd1297b66e90b54df6b42c7ff50249b06d069db5fa7fdd37a69f0670271",
+   "owned_sha256": "ec38b09f7fa918bd5e7157b090ebb59c5d46d1f4bdca79d02ddcf475c0bc63f1",
+   "modified": true
+  },
+  {
+   "upstream": "src/system_fonts.rs",
+   "upstream_sha256": "6e8b8ef88ae20fe745d9cc56fb43c134cac782e020f0a3aff93e23dc9290700c",
+   "owned_sha256": "98ee507773be33ce77a135b6ae83979053396147473075d3bebd52555b844da1",
+   "modified": true
+  },
+  {
+   "upstream": "src/to_unicode.rs",
+   "upstream_sha256": "1a5ab558b9c925b45e9e2e4d3307514403b95da1bcea7fd3ad12f8384610de73",
+   "owned_sha256": "1a5ab558b9c925b45e9e2e4d3307514403b95da1bcea7fd3ad12f8384610de73",
+   "modified": false
+  },
+  {
+   "upstream": "src/truetype.rs",
+   "upstream_sha256": "3b9bc6530ff65fcfa7e48298f825de9d926da9fc7bdf33e5b79aab19a719fcef",
+   "owned_sha256": "3b9bc6530ff65fcfa7e48298f825de9d926da9fc7bdf33e5b79aab19a719fcef",
+   "modified": false
+  },
+  {
+   "upstream": "src/type1_parser.rs",
+   "upstream_sha256": "3e5a2268ff5acafcba53e49b5d93583dafa5c7a46d5c191add67537dcdc955aa",
+   "owned_sha256": "3e5a2268ff5acafcba53e49b5d93583dafa5c7a46d5c191add67537dcdc955aa",
+   "modified": false
+  },
+  {
+   "upstream": "src/type1_to_type2.rs",
+   "upstream_sha256": "56b99fdfbb2af9c4f561b53d3144907093e331243cb11474f32efcfc2a28bb6d",
+   "owned_sha256": "56b99fdfbb2af9c4f561b53d3144907093e331243cb11474f32efcfc2a28bb6d",
+   "modified": false
+  },
+  {
+   "upstream": "src/type2_charstring.rs",
+   "upstream_sha256": "9345480281858310d6b6176567cb03f1bac8d68c24d23a0f9e19a6e28eb07769",
+   "owned_sha256": "9345480281858310d6b6176567cb03f1bac8d68c24d23a0f9e19a6e28eb07769",
+   "modified": false
+  },
+  {
+   "upstream": "src/zapfdingbats.txt",
+   "upstream_sha256": "f6394e3cb8a447e84a1dad75d4baaf2aa7f45dc104faf369f4720e1a774ef2dc",
+   "owned_sha256": "f6394e3cb8a447e84a1dad75d4baaf2aa7f45dc104faf369f4720e1a774ef2dc",
+   "modified": false
+  },
+  {
+   "upstream": "tests/malformed_font_guards.rs",
+   "upstream_sha256": "54f83c8871e247fbf06b3fe4cb3d02e311a25e876e344a1e134e4c984db989e1",
+   "owned_sha256": "68f5565449dc80574a32fab1d1bda17467b34d606bfff65b17f3257004e8d2ee",
+   "modified": true
+  },
+  {
+   "upstream": "LICENSE-APACHE",
+   "upstream_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "owned_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-MIT",
+   "upstream_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "owned_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-ADOBE-AGL",
+   "upstream_sha256": "929cb85d1d7e9fae59b50ef5226dfad7ae901f651bfe43727ff0962dbeb1141c",
+   "owned_sha256": "929cb85d1d7e9fae59b50ef5226dfad7ae901f651bfe43727ff0962dbeb1141c",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-ADOBE-CMAP",
+   "upstream_sha256": "3596d9da6f5cb933206b9142e8a9e06faa9a7de5817ba98333e8d20ad0e4ba7b",
+   "owned_sha256": "3596d9da6f5cb933206b9142e8a9e06faa9a7de5817ba98333e8d20ad0e4ba7b",
+   "modified": false
+  },
+  {
+   "upstream": "Cargo.toml.orig",
+   "upstream_sha256": "a85c68a22576bf32f6b5f8835561af50cf777a880c0000008beaaae7d6845df9",
+   "note": "manifest rewritten, not copied"
+  }
+ ]
+}

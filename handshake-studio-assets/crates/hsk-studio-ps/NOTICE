@@ -1,0 +1,22 @@
+hsk-studio-ps third-party notices
+
+This crate is a vendored fork of stet 0.8.4, part of the stet PostScript interpreter
+(https://github.com/AndyCappDev/stet), Copyright (c) 2026 Scott Bowman, licensed under the Apache License,
+Version 2.0 (LICENSE-APACHE) or the MIT license (LICENSE-MIT), at your option. Studio lane SMB-EPS-FREE-FONTS
+(2026-10-22) changed it as listed in SOURCE_PROVENANCE.json ("changes", and per file "modified"); the changes
+are offered under the same terms.
+
+The fork ships no URW++ font program. Its fonts, each byte-identical to its distribution and under its
+own licence (texts beside the fonts):
+
+- resources/Font/tex-gyre: 33 TeX Gyre Type 1 fonts, Copyright 2006-2009 for TeX Gyre extensions by
+  B. Jackowski and J. M. Nowacki (on behalf of TeX Users Groups), GUST Font License (an instance of the
+  LaTeX Project Public License 1.3c). Only the Type 1 files with the licence, README and MANIFEST files
+  are included, unmodified; the complete TeX Gyre collection is at https://ctan.org/pkg/tex-gyre .
+- resources/Font/stix-two/STIXTwoMath-Regular.ttf: Copyright 2001-2021 The STIX Fonts Project Authors,
+  SIL Open Font License 1.1 (OFL.txt), Reserved Font Name "TM Math".
+- resources/Font/dejavu/DejaVuSans.ttf: DejaVu Sans 2.37, Bitstream Vera Fonts Copyright (c) 2003
+  Bitstream, Inc., Arev Fonts Copyright (c) 2006 Tavmjong Bah, DejaVu changes in the public domain (LICENSE).
+
+Other embedded resources kept from stet: the CMYK ICC profile resources/default_cmyk.icc (stated CC0 by
+stet), the Identity-H/V CMaps and the PostScript init, encoding, ProcSet, ColorSpace and OutputDevice files.

@@ -1,0 +1,68 @@
+%!PS-Adobe-3.0
+%%Title: Adobe Standard Font Substitution Mappings
+%%Creator: stet Font System (hsk-studio-ps fork, lane SMB-EPS-FREE-FONTS)
+%%EndComments
+
+currentglobal true setglobal
+
+% Adobe Standard Font -> free font substitution mappings. The fork ships no URW++
+% fonts: the Latin families map to TeX Gyre (GUST Font License), Symbol and
+% ZapfDingbats to the internal symbolic substitutes (STIX Two Math, DejaVu Sans)
+% loaded with the Symbol / ZapfDingbats built-in encodings.
+/FontSubstitutions <<
+    % Times family (Serif) -> TeX Gyre Termes
+    /Times-Roman /TeXGyreTermes-Regular
+    /Times-Bold /TeXGyreTermes-Bold
+    /Times-Italic /TeXGyreTermes-Italic
+    /Times-BoldItalic /TeXGyreTermes-BoldItalic
+
+    % Helvetica family (Sans-serif) -> TeX Gyre Heros
+    /Helvetica /TeXGyreHeros-Regular
+    /Helvetica-Bold /TeXGyreHeros-Bold
+    /Helvetica-Oblique /TeXGyreHeros-Italic
+    /Helvetica-BoldOblique /TeXGyreHeros-BoldItalic
+
+    % Helvetica Narrow -> TeX Gyre Heros Condensed
+    /Helvetica-Narrow /TeXGyreHerosCondensed-Regular
+    /Helvetica-Narrow-Bold /TeXGyreHerosCondensed-Bold
+    /Helvetica-Narrow-Oblique /TeXGyreHerosCondensed-Italic
+    /Helvetica-Narrow-BoldOblique /TeXGyreHerosCondensed-BoldItalic
+
+    % Courier family (Monospace) -> TeX Gyre Cursor
+    /Courier /TeXGyreCursor-Regular
+    /Courier-Bold /TeXGyreCursor-Bold
+    /Courier-Oblique /TeXGyreCursor-Italic
+    /Courier-BoldOblique /TeXGyreCursor-BoldItalic
+
+    % Palatino -> TeX Gyre Pagella
+    /Palatino-Roman /TeXGyrePagella-Regular
+    /Palatino-Bold /TeXGyrePagella-Bold
+    /Palatino-Italic /TeXGyrePagella-Italic
+    /Palatino-BoldItalic /TeXGyrePagella-BoldItalic
+
+    % New Century Schoolbook -> TeX Gyre Schola
+    /NewCenturySchlbk-Roman /TeXGyreSchola-Regular
+    /NewCenturySchlbk-Bold /TeXGyreSchola-Bold
+    /NewCenturySchlbk-Italic /TeXGyreSchola-Italic
+    /NewCenturySchlbk-BoldItalic /TeXGyreSchola-BoldItalic
+
+    % Bookman -> TeX Gyre Bonum
+    /Bookman-Light /TeXGyreBonum-Regular
+    /Bookman-LightItalic /TeXGyreBonum-Italic
+    /Bookman-Demi /TeXGyreBonum-Bold
+    /Bookman-DemiItalic /TeXGyreBonum-BoldItalic
+
+    % AvantGarde -> TeX Gyre Adventor
+    /AvantGarde-Book /TeXGyreAdventor-Regular
+    /AvantGarde-BookOblique /TeXGyreAdventor-Italic
+    /AvantGarde-Demi /TeXGyreAdventor-Bold
+    /AvantGarde-DemiOblique /TeXGyreAdventor-BoldItalic
+
+    % Symbol fonts
+    /Symbol /HskStudioPs-Symbol
+    /ZapfDingbats /HskStudioPs-ZapfDingbats
+
+    /ZapfChancery-MediumItalic /TeXGyreChorus-MediumItalic
+>> def
+
+setglobal

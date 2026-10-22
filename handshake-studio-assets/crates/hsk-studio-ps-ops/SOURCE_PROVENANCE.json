@@ -1,0 +1,255 @@
+{
+ "upstream_package": "stet-ops",
+ "version": "0.8.4",
+ "repository": "https://github.com/AndyCappDev/stet",
+ "license": "Apache-2.0 OR MIT",
+ "copyright": "Copyright (c) 2026 Scott Bowman",
+ "crate_checksum": "09c66d75f8a868f169413ff2d411d06060f92d9d66b877aff58ecec458fa59bc",
+ "read_from": "local cargo registry src/index.crates.io-*/stet-ops-0.8.4 (crates.io release 2026-10-04)",
+ "lane": "SMB-EPS-FREE-FONTS",
+ "vendored_at": "2026-10-22",
+ "changes": [
+  "Cargo.toml: glob removed; src/file_ops.rs: filenameforall enumerates nothing; src/lib.rs: test_support::font_dir prints NOT_PROVEN"
+ ],
+ "files": [
+  {
+   "upstream": "src/array_ops.rs",
+   "upstream_sha256": "70ea881d8252ccfc21b479c65f23dcd92bc573ee66917335e9a2c37ec0732a26",
+   "owned_sha256": "70ea881d8252ccfc21b479c65f23dcd92bc573ee66917335e9a2c37ec0732a26",
+   "modified": false
+  },
+  {
+   "upstream": "src/cff_ops.rs",
+   "upstream_sha256": "e4522e6cb72568b020f3ffc244621735ea68f2a774471a85d1638236ab69b44c",
+   "owned_sha256": "e4522e6cb72568b020f3ffc244621735ea68f2a774471a85d1638236ab69b44c",
+   "modified": false
+  },
+  {
+   "upstream": "src/cid_ops.rs",
+   "upstream_sha256": "c83de1b95dce987d4704e428b4b46cead386e21ae4c164ffb21e7401afae2bd2",
+   "owned_sha256": "c83de1b95dce987d4704e428b4b46cead386e21ae4c164ffb21e7401afae2bd2",
+   "modified": false
+  },
+  {
+   "upstream": "src/clip_ops.rs",
+   "upstream_sha256": "2e04a5bca6aaedb9facbc07ee4b0f219ead2395ec2a5ac9ffc4151bd8dab686e",
+   "owned_sha256": "2e04a5bca6aaedb9facbc07ee4b0f219ead2395ec2a5ac9ffc4151bd8dab686e",
+   "modified": false
+  },
+  {
+   "upstream": "src/color_ops.rs",
+   "upstream_sha256": "e1f9ff731ddc898535de08af38417cd9a125e2a99255fbf2e045f430021b760c",
+   "owned_sha256": "e1f9ff731ddc898535de08af38417cd9a125e2a99255fbf2e045f430021b760c",
+   "modified": false
+  },
+  {
+   "upstream": "src/composite_ops.rs",
+   "upstream_sha256": "20ff0196ddfb1d43a7de05126c4a760e6bf52b93a99b4f00b0a4145b4379ed67",
+   "owned_sha256": "20ff0196ddfb1d43a7de05126c4a760e6bf52b93a99b4f00b0a4145b4379ed67",
+   "modified": false
+  },
+  {
+   "upstream": "src/control_ops.rs",
+   "upstream_sha256": "2c1a791fbc2bc53a5f55096fbad5662e5ad0d13b23bc3a747d05cce9e4895ecb",
+   "owned_sha256": "2c1a791fbc2bc53a5f55096fbad5662e5ad0d13b23bc3a747d05cce9e4895ecb",
+   "modified": false
+  },
+  {
+   "upstream": "src/device_ops.rs",
+   "upstream_sha256": "869551448832794843cc98c5ae20e619d76e06140786216923c73e16bc63f174",
+   "owned_sha256": "869551448832794843cc98c5ae20e619d76e06140786216923c73e16bc63f174",
+   "modified": false
+  },
+  {
+   "upstream": "src/dict_ops.rs",
+   "upstream_sha256": "4615a7e2663ab7ee910c54961922a6497b2cdee01c455003a95a9e9037da1353",
+   "owned_sha256": "4615a7e2663ab7ee910c54961922a6497b2cdee01c455003a95a9e9037da1353",
+   "modified": false
+  },
+  {
+   "upstream": "src/file_ops.rs",
+   "upstream_sha256": "0a3871c95dbff4f9ce73d5c4f4b8be0dc2815eae0a146a7c752fb39b8aa936d1",
+   "owned_sha256": "ca044e6e6c2f63ec5a3c656e9b143478c5b0c0a12b9e829389cc2cd81e9b9b1a",
+   "modified": true
+  },
+  {
+   "upstream": "src/filter_ops.rs",
+   "upstream_sha256": "60b8a946fbfffd45c96a2b259e1d10fb6475db80e9707ae32ff76779bdae15f6",
+   "owned_sha256": "60b8a946fbfffd45c96a2b259e1d10fb6475db80e9707ae32ff76779bdae15f6",
+   "modified": false
+  },
+  {
+   "upstream": "src/font_ops.rs",
+   "upstream_sha256": "2c6e1ef6d4a5afb6f306a781741d764168732765fc2d31dc0a4ac18ba9851e5a",
+   "owned_sha256": "2c6e1ef6d4a5afb6f306a781741d764168732765fc2d31dc0a4ac18ba9851e5a",
+   "modified": false
+  },
+  {
+   "upstream": "src/graphics_state_ops.rs",
+   "upstream_sha256": "7780241a0817652f8c741f48d71020a46c2c9cd9324394580e3e31ce24087d56",
+   "owned_sha256": "7780241a0817652f8c741f48d71020a46c2c9cd9324394580e3e31ce24087d56",
+   "modified": false
+  },
+  {
+   "upstream": "src/halftone_ops.rs",
+   "upstream_sha256": "236a9da356f95958db4b7b3a69f0ca4d1269aa42dc66ea64f25c276ce321a36b",
+   "owned_sha256": "236a9da356f95958db4b7b3a69f0ca4d1269aa42dc66ea64f25c276ce321a36b",
+   "modified": false
+  },
+  {
+   "upstream": "src/image_ops.rs",
+   "upstream_sha256": "a69634e96f09553e9e01cb20acfe095d9ea398941e947cc5463faaeebdf94bc0",
+   "owned_sha256": "a69634e96f09553e9e01cb20acfe095d9ea398941e947cc5463faaeebdf94bc0",
+   "modified": false
+  },
+  {
+   "upstream": "src/insideness_ops.rs",
+   "upstream_sha256": "134a236a45056dd1f9ef9f2bd2000226c822beb5a413b256c9c2069fcc5e3128",
+   "owned_sha256": "134a236a45056dd1f9ef9f2bd2000226c822beb5a413b256c9c2069fcc5e3128",
+   "modified": false
+  },
+  {
+   "upstream": "src/lib.rs",
+   "upstream_sha256": "782564e82d5ceab831bb261151e426ae6341ae185b29a6570994f5562ad6d17f",
+   "owned_sha256": "a2d6765e39192b4c39f93722f1a32744779b5149621515f19d48d5f2032fc762",
+   "modified": true
+  },
+  {
+   "upstream": "src/math_ops.rs",
+   "upstream_sha256": "34e430bb26a38f12f5609d8e8ba675dadcb0a48d44554fd18fb59dbe57c28132",
+   "owned_sha256": "34e430bb26a38f12f5609d8e8ba675dadcb0a48d44554fd18fb59dbe57c28132",
+   "modified": false
+  },
+  {
+   "upstream": "src/matrix_ops.rs",
+   "upstream_sha256": "9570ed001d470b63e295d3ceb2a8b91405d5cd7b567f7b76aa6f008e4c7ea8b6",
+   "owned_sha256": "9570ed001d470b63e295d3ceb2a8b91405d5cd7b567f7b76aa6f008e4c7ea8b6",
+   "modified": false
+  },
+  {
+   "upstream": "src/misc_ops.rs",
+   "upstream_sha256": "c824a1469870a0deee9297381b9efcb5a64ee0bec45016c59e8af312a275d491",
+   "owned_sha256": "c824a1469870a0deee9297381b9efcb5a64ee0bec45016c59e8af312a275d491",
+   "modified": false
+  },
+  {
+   "upstream": "src/paint_ops.rs",
+   "upstream_sha256": "21ce087c34eb7784034bdb89cdec753d55538ae5067b07f95d9e38a670e6e332",
+   "owned_sha256": "21ce087c34eb7784034bdb89cdec753d55538ae5067b07f95d9e38a670e6e332",
+   "modified": false
+  },
+  {
+   "upstream": "src/param_ops.rs",
+   "upstream_sha256": "a3b9e8cc570918a7f3192eeb32b34302d27834656c02aff63c033134afceb71d",
+   "owned_sha256": "a3b9e8cc570918a7f3192eeb32b34302d27834656c02aff63c033134afceb71d",
+   "modified": false
+  },
+  {
+   "upstream": "src/path_ops.rs",
+   "upstream_sha256": "469851131edf9fed7be22d23bdce3168d646b5540ae17c2d64597322f71659a5",
+   "owned_sha256": "469851131edf9fed7be22d23bdce3168d646b5540ae17c2d64597322f71659a5",
+   "modified": false
+  },
+  {
+   "upstream": "src/path_query_ops.rs",
+   "upstream_sha256": "66db7bb8e42593af0b377c38477ac2d0628cc210e0d50386b11fd00fed3b6073",
+   "owned_sha256": "66db7bb8e42593af0b377c38477ac2d0628cc210e0d50386b11fd00fed3b6073",
+   "modified": false
+  },
+  {
+   "upstream": "src/pdfmark_ops.rs",
+   "upstream_sha256": "17e80bf4bb0d0c031208c86604fe8292834f2fcbb5e95b6a5838aed7a730b819",
+   "owned_sha256": "17e80bf4bb0d0c031208c86604fe8292834f2fcbb5e95b6a5838aed7a730b819",
+   "modified": false
+  },
+  {
+   "upstream": "src/relational_ops.rs",
+   "upstream_sha256": "f4bf25a35af5b7656ffd435faab1baf64dfe6c9db3f33a0ea738aa032a92b3ae",
+   "owned_sha256": "f4bf25a35af5b7656ffd435faab1baf64dfe6c9db3f33a0ea738aa032a92b3ae",
+   "modified": false
+  },
+  {
+   "upstream": "src/resource_ops.rs",
+   "upstream_sha256": "a3ce2089390ee12c55e8223711fd72956bdb68ea5af519887cee3bee181703a8",
+   "owned_sha256": "a3ce2089390ee12c55e8223711fd72956bdb68ea5af519887cee3bee181703a8",
+   "modified": false
+  },
+  {
+   "upstream": "src/shading_ops.rs",
+   "upstream_sha256": "4e8c1af0dbad2029f4d9c3fe2fbe8aabd2d1dc7c77bfb0cb727512253542cbb6",
+   "owned_sha256": "4e8c1af0dbad2029f4d9c3fe2fbe8aabd2d1dc7c77bfb0cb727512253542cbb6",
+   "modified": false
+  },
+  {
+   "upstream": "src/show_ops.rs",
+   "upstream_sha256": "60c183bdb47c10a2adcb0ccbcb71b700476f52a89f2f2709fb2381ee439f2263",
+   "owned_sha256": "60c183bdb47c10a2adcb0ccbcb71b700476f52a89f2f2709fb2381ee439f2263",
+   "modified": false
+  },
+  {
+   "upstream": "src/stack_ops.rs",
+   "upstream_sha256": "ad0f8d46730e1e37bb91168f05bf5a0df5501daae35e93427c6631213a81a559",
+   "owned_sha256": "ad0f8d46730e1e37bb91168f05bf5a0df5501daae35e93427c6631213a81a559",
+   "modified": false
+  },
+  {
+   "upstream": "src/string_ops.rs",
+   "upstream_sha256": "cc0785e28be6e4e95be1b47285d8b510c4a408ed02d26e18b130d76766ba5d45",
+   "owned_sha256": "cc0785e28be6e4e95be1b47285d8b510c4a408ed02d26e18b130d76766ba5d45",
+   "modified": false
+  },
+  {
+   "upstream": "src/strokepath_algorithm.rs",
+   "upstream_sha256": "249e35479555d8278b0459ca456e49387a8c4110a81751cd9848b6b0eab43c95",
+   "owned_sha256": "249e35479555d8278b0459ca456e49387a8c4110a81751cd9848b6b0eab43c95",
+   "modified": false
+  },
+  {
+   "upstream": "src/text_record.rs",
+   "upstream_sha256": "384a37d86ea879998b53ad2950d29d82cebc3033a85bd38cc68d768de12acf4e",
+   "owned_sha256": "384a37d86ea879998b53ad2950d29d82cebc3033a85bd38cc68d768de12acf4e",
+   "modified": false
+  },
+  {
+   "upstream": "src/transparency_ops.rs",
+   "upstream_sha256": "15ba0c498a8c45c99092455f62919ef3dde61412ba1abd91645530bf4b85d0eb",
+   "owned_sha256": "15ba0c498a8c45c99092455f62919ef3dde61412ba1abd91645530bf4b85d0eb",
+   "modified": false
+  },
+  {
+   "upstream": "src/type_ops.rs",
+   "upstream_sha256": "ee1a4cc78ce6e13da47da994b48cf05f3db2dda811db2e90db7b4e95e3ab4fcf",
+   "owned_sha256": "ee1a4cc78ce6e13da47da994b48cf05f3db2dda811db2e90db7b4e95e3ab4fcf",
+   "modified": false
+  },
+  {
+   "upstream": "src/userpath_ops.rs",
+   "upstream_sha256": "52a8eeb8c4d2f0d87ed45deb3f0422ff66b3227884f205e0c254ed4f7351b1ad",
+   "owned_sha256": "52a8eeb8c4d2f0d87ed45deb3f0422ff66b3227884f205e0c254ed4f7351b1ad",
+   "modified": false
+  },
+  {
+   "upstream": "src/vm_ops.rs",
+   "upstream_sha256": "d5ec40a91bcf856da50c56e0b8a2e945e9137b599e1713cb11f942434bfb7dba",
+   "owned_sha256": "d5ec40a91bcf856da50c56e0b8a2e945e9137b599e1713cb11f942434bfb7dba",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-APACHE",
+   "upstream_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "owned_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-MIT",
+   "upstream_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "owned_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "modified": false
+  },
+  {
+   "upstream": "Cargo.toml.orig",
+   "upstream_sha256": "5c0712980e01540fa039afa5c63a33cda4fd19ab062bf00429f5494acc2ab4a2",
+   "note": "manifest rewritten, not copied"
+  }
+ ]
+}

@@ -1,0 +1,425 @@
+{
+ "upstream_package": "stet",
+ "version": "0.8.4",
+ "repository": "https://github.com/AndyCappDev/stet",
+ "license": "Apache-2.0 OR MIT",
+ "copyright": "Copyright (c) 2026 Scott Bowman",
+ "crate_checksum": "66254a6591719e621b791ddddf93e86a5a85724d38035496d76dd544156f77c5",
+ "read_from": "local cargo registry src/index.crates.io-*/stet-0.8.4 (crates.io release 2026-10-04)",
+ "lane": "SMB-EPS-FREE-FONTS",
+ "vendored_at": "2026-10-22",
+ "changes": [
+  "resources/Font/*.t1 (the 35 URW++ base 35 Type 1 programs), resources/FontSet/NimbusRoman-Regular-CFF.ps (URW-derived CFF) and LICENSE-URW-FONTS not vendored",
+  "src/embedded_resources.rs: URW font and FontSet entries removed; FREE_TYPE1_FONTS (33 TeX Gyre .pfb, registered as Font/<FontName>.t1 after unwrap_pfb), FREE_SYMBOLIC_FONTS (STIX Two Math, DejaVu Sans as Font/HskStudioPs-Symbol.ttf / Font/HskStudioPs-ZapfDingbats.ttf), FONT_LICENCES, unwrap_pfb added",
+  "resources/Init/fontmapping.ps: FontSubstitutions map the 35 standard names to the free fonts",
+  "resources/Font/{tex-gyre,stix-two,dejavu}: the free fonts with their licence texts (byte-identical to their distributions; see fonts below)",
+  "Cargo.toml: package renamed, render feature and stet-render dependency removed (render-gated code is compiled out; unexpected_cfgs allowed in lib.rs), pdf-output kept as a plain feature",
+  "tests/free_fonts.rs added (fork tests); upstream tests/ and examples/ not vendored (they read the URW fonts or use dev-dependencies outside the workspace)"
+ ],
+ "files": [
+  {
+   "upstream": "src/diagnostics.rs",
+   "upstream_sha256": "5fd7d512c06e6c7c9878491fd8ce1aeb6cbabbe801820a9a5336766f3de22d25",
+   "owned_sha256": "5fd7d512c06e6c7c9878491fd8ce1aeb6cbabbe801820a9a5336766f3de22d25",
+   "modified": false
+  },
+  {
+   "upstream": "src/embedded_resources.rs",
+   "upstream_sha256": "95e0f314ce0c13a3f9f5272afed459cc0864abda34ce17319f6f958abbd63c66",
+   "owned_sha256": "03f55d032d33e0db4af106080f9b4b2566ed57c0b331500c990c01b17c0f0593",
+   "modified": true
+  },
+  {
+   "upstream": "src/init.rs",
+   "upstream_sha256": "7752d24a8a51b520239284dadce935d78dfaebfe25da6e6f8816abd4e69e8846",
+   "owned_sha256": "7752d24a8a51b520239284dadce935d78dfaebfe25da6e6f8816abd4e69e8846",
+   "modified": false
+  },
+  {
+   "upstream": "src/lib.rs",
+   "upstream_sha256": "682fa6adf44494841abb2ef3c4e394155044b20cfcb073522d76540a688c9e01",
+   "owned_sha256": "5a8955a2119aa33505dd6ff307ff6ef65718818a751f80e31fc0a75faf1a8456",
+   "modified": true
+  },
+  {
+   "upstream": "resources/default_cmyk.icc",
+   "upstream_sha256": "73e1ba37d2bad5bab2a964f40a9eed96209666efc067c3322626214bbef234a0",
+   "owned_sha256": "73e1ba37d2bad5bab2a964f40a9eed96209666efc067c3322626214bbef234a0",
+   "modified": false
+  },
+  {
+   "upstream": "resources/CMap/Identity-H.ps",
+   "upstream_sha256": "fc274e49ffd53025ecff7fd4383ac52cfe95ed8288502d62eea00dd4b89ce758",
+   "owned_sha256": "fc274e49ffd53025ecff7fd4383ac52cfe95ed8288502d62eea00dd4b89ce758",
+   "modified": false
+  },
+  {
+   "upstream": "resources/CMap/Identity-V.ps",
+   "upstream_sha256": "42b991bc1c150611879984211758edb3c6bfe69f3412a80156ebb257c61a1b11",
+   "owned_sha256": "42b991bc1c150611879984211758edb3c6bfe69f3412a80156ebb257c61a1b11",
+   "modified": false
+  },
+  {
+   "upstream": "resources/ColorSpace/DefaultCMYK.ps",
+   "upstream_sha256": "4c0c07aa52c76ec8237d2822cbf10fb86dda3979d0a61ed822f4981c590756dc",
+   "owned_sha256": "4c0c07aa52c76ec8237d2822cbf10fb86dda3979d0a61ed822f4981c590756dc",
+   "modified": false
+  },
+  {
+   "upstream": "resources/ColorSpace/DefaultGray.ps",
+   "upstream_sha256": "9352f035a7d0e291afa830779758a20e4f4d393edff8b5bcec6de3e5908d473a",
+   "owned_sha256": "9352f035a7d0e291afa830779758a20e4f4d393edff8b5bcec6de3e5908d473a",
+   "modified": false
+  },
+  {
+   "upstream": "resources/ColorSpace/DefaultRGB.ps",
+   "upstream_sha256": "a6478c8d71f8ceea0b3d8fd25fa5f65612ae1c3606ebced24e6928de05fdcad6",
+   "owned_sha256": "a6478c8d71f8ceea0b3d8fd25fa5f65612ae1c3606ebced24e6928de05fdcad6",
+   "modified": false
+  },
+  {
+   "upstream": "resources/Encoding/ISOLatin1Encoding.ps",
+   "upstream_sha256": "60e7507d11834b858ea11d85bf5979dcff01bdc7556c6d516552160d8d091b57",
+   "owned_sha256": "60e7507d11834b858ea11d85bf5979dcff01bdc7556c6d516552160d8d091b57",
+   "modified": false
+  },
+  {
+   "upstream": "resources/Encoding/StandardEncoding.ps",
+   "upstream_sha256": "7e06da6f32c535bea4340283868ec3577cacb6d42e26739cd2c3bd5c24be1a8f",
+   "owned_sha256": "7e06da6f32c535bea4340283868ec3577cacb6d42e26739cd2c3bd5c24be1a8f",
+   "modified": false
+  },
+  {
+   "upstream": "resources/Encoding/SymbolEncoding.ps",
+   "upstream_sha256": "3dba265142424a550350691dc4a8de924b4e779b6064846dd76799e789b784ba",
+   "owned_sha256": "3dba265142424a550350691dc4a8de924b4e779b6064846dd76799e789b784ba",
+   "modified": false
+  },
+  {
+   "upstream": "resources/Init/fontcategory.ps",
+   "upstream_sha256": "4e83282869e8bff5584bd519f152ff9f363c4cbdb0f3252dcbe7d3945d1c4039",
+   "owned_sha256": "4e83282869e8bff5584bd519f152ff9f363c4cbdb0f3252dcbe7d3945d1c4039",
+   "modified": false
+  },
+  {
+   "upstream": "resources/Init/fontmapping.ps",
+   "upstream_sha256": "2cbc32d48d053fadbf24f27187186cfc13b127dc6bcf44a0849a36ce827b55c2",
+   "owned_sha256": "749e4689f682718409052df735706032a392f421fa657aafcc92766b5998321f",
+   "modified": true
+  },
+  {
+   "upstream": "resources/Init/pdfextensions.ps",
+   "upstream_sha256": "693ec9735c5fa9781fa11d92903435eaa685499c5355bb07288dfb32d88c0588",
+   "owned_sha256": "693ec9735c5fa9781fa11d92903435eaa685499c5355bb07288dfb32d88c0588",
+   "modified": false
+  },
+  {
+   "upstream": "resources/Init/resourcecategories.ps",
+   "upstream_sha256": "f970cf137d13a70d8712eaa1cf02f46dda5ac1680a4d89bfa94357f17be5e19f",
+   "owned_sha256": "f970cf137d13a70d8712eaa1cf02f46dda5ac1680a4d89bfa94357f17be5e19f",
+   "modified": false
+  },
+  {
+   "upstream": "resources/Init/sysdict.ps",
+   "upstream_sha256": "3f24a61a5c69b05232107a18717051c2a1735d4372cd6cdc34818bdf59ee5908",
+   "owned_sha256": "3f24a61a5c69b05232107a18717051c2a1735d4372cd6cdc34818bdf59ee5908",
+   "modified": false
+  },
+  {
+   "upstream": "resources/OutputDevice/null.ps",
+   "upstream_sha256": "2f4f9401a520530fb0223404a32a27116c3dda50a514f282c2b037833f9de597",
+   "owned_sha256": "2f4f9401a520530fb0223404a32a27116c3dda50a514f282c2b037833f9de597",
+   "modified": false
+  },
+  {
+   "upstream": "resources/OutputDevice/pdf.ps",
+   "upstream_sha256": "42912ed74b6abc3240ddeffbee9aaf3f52691276fbff2bff988c6447340ae38e",
+   "owned_sha256": "42912ed74b6abc3240ddeffbee9aaf3f52691276fbff2bff988c6447340ae38e",
+   "modified": false
+  },
+  {
+   "upstream": "resources/OutputDevice/png.ps",
+   "upstream_sha256": "c348e86574624fb42afcf9f32b8e90a525b43e16fbbbac61c20aeb9e86ae60ec",
+   "owned_sha256": "c348e86574624fb42afcf9f32b8e90a525b43e16fbbbac61c20aeb9e86ae60ec",
+   "modified": false
+  },
+  {
+   "upstream": "resources/OutputDevice/viewer.ps",
+   "upstream_sha256": "baa1bb2d6f603bd1b9236941fd5396a184938150ae088b1568a87100b47d9e80",
+   "owned_sha256": "baa1bb2d6f603bd1b9236941fd5396a184938150ae088b1568a87100b47d9e80",
+   "modified": false
+  },
+  {
+   "upstream": "resources/ProcSet/CIDInit.ps",
+   "upstream_sha256": "062cce0115bcd2bd8e95ed874f4f269119adea02cdf072499ceb8bf4d4c7b583",
+   "owned_sha256": "062cce0115bcd2bd8e95ed874f4f269119adea02cdf072499ceb8bf4d4c7b583",
+   "modified": false
+  },
+  {
+   "upstream": "resources/ProcSet/FontSetInit.ps",
+   "upstream_sha256": "21384bf5a231ea67a1a5a5a8da19f5fa2da4b1e831d7d95bd4738841568bd72a",
+   "owned_sha256": "21384bf5a231ea67a1a5a5a8da19f5fa2da4b1e831d7d95bd4738841568bd72a",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-APACHE",
+   "upstream_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "owned_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-MIT",
+   "upstream_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "owned_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "modified": false
+  },
+  {
+   "upstream": "Cargo.toml.orig",
+   "upstream_sha256": "36eccb4f64b0a6038a2d390fbd03fde0c6363022e909075037df51b9a38a647d",
+   "note": "manifest rewritten, not copied"
+  }
+ ],
+ "fonts": {
+  "sets": {
+   "tex-gyre": {
+    "name": "TeX Gyre (Adventor 2.501, Bonum 2.004, Chorus 2.003, Cursor 2.004, Heros 2.004, Pagella 2.501, Schola 2.005, Termes 2.004)",
+    "source": "https://mirrors.ctan.org/fonts/tex-gyre.zip (CTAN package tex-gyre 2.501; served by ftp.tu-chemnitz.de), downloaded 2026-10-22",
+    "archive_sha256": "1773c470f9e388e087b68e3426e115af2cd236845a7e05ceb25b2a503409a7a3",
+    "licence": "GUST Font License (an instance of the LaTeX Project Public License 1.3c; GUST-FONT-LICENSE.txt); built from URW fonts that URW++ released to GUST under the GFL independently of the GPL release (README-TeX-Gyre-*.txt)",
+    "licence_url": "http://www.gust.org.pl/fonts/licenses/GUST-FONT-LICENSE.txt",
+    "lppl_6": "only type1/*.pfb plus the licence, README and MANIFEST files are distributed (a partial distribution, a Derived Work under LPPL clause 2): the files themselves are unchanged (6a/6b: this record and NOTICE state the change, a subset of files, nothing modified), no support is implied (6c), and the complete Work is available from CTAN at the source URL (6d)"
+   },
+   "stix-two": {
+    "name": "STIX Two Math 2.13 (static TTF)",
+    "source": "https://raw.githubusercontent.com/google/fonts/823468bd7825152bce2b8fd2cf740432ad2fce8d/ofl/stixtwomath/ (upstream https://github.com/stipub/stixfonts commit c4afdf3fa5390159ef24aca1db5e957487c23897)",
+    "licence": "SIL Open Font License 1.1 (Reserved Font Name 'TM Math'); file used unmodified",
+    "licence_url": "https://openfontlicense.org (OFL.txt beside the font)"
+   },
+   "dejavu": {
+    "name": "DejaVu Sans 2.37",
+    "source": "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-sans-ttf-2.37.zip",
+    "archive_sha256": "5c6e497a2f36552cb5ffb112c413a6af39c0f3c47653662b90b4fa6499822fd7",
+    "licence": "Bitstream Vera Fonts licence and Arev Fonts licence (permissive; DejaVu changes public domain); file used unmodified",
+    "licence_url": "https://dejavu-fonts.github.io/License.html (LICENSE beside the font)"
+   }
+  },
+  "files": [
+   {
+    "path": "resources/Font/tex-gyre/GUST-FONT-LICENSE.txt",
+    "sha256": "2bd69affc3da00715116f713f57eab9707e96daf3562ad0215987b15b9c16f73"
+   },
+   {
+    "path": "resources/Font/tex-gyre/MANIFEST-TeX-Gyre-Adventor.txt",
+    "sha256": "22ed76ceb3942e4e19b7c4ef30673d0fc17d44f9e3174347f4951cd52a4b30ce"
+   },
+   {
+    "path": "resources/Font/tex-gyre/MANIFEST-TeX-Gyre-Bonum.txt",
+    "sha256": "a3f8dc563dddc96267c39e58b35492a2321de179144c36d954b0e5bde8f84365"
+   },
+   {
+    "path": "resources/Font/tex-gyre/MANIFEST-TeX-Gyre-Chorus.txt",
+    "sha256": "f605b07ca7d34a5beff322c4177db1dbad02163b77b24d99c0d33124f102f633"
+   },
+   {
+    "path": "resources/Font/tex-gyre/MANIFEST-TeX-Gyre-Cursor.txt",
+    "sha256": "414182f0c4691ef76abd7e78962beb29c34cf777b240ca87263ee6d6d98df5dc"
+   },
+   {
+    "path": "resources/Font/tex-gyre/MANIFEST-TeX-Gyre-Heros.txt",
+    "sha256": "3263a067e409258be34027de883e618cc2c76c70135897835f65f3c569dec5d1"
+   },
+   {
+    "path": "resources/Font/tex-gyre/MANIFEST-TeX-Gyre-Pagella.txt",
+    "sha256": "6ac4bc1448a1d71a3a7ad5fd13566f00855b37ca4db5b20451c88806ac3f5242"
+   },
+   {
+    "path": "resources/Font/tex-gyre/MANIFEST-TeX-Gyre-Schola.txt",
+    "sha256": "db7d5f23bc3e684e81ed3f95e65b888b9e184f7002cdf6eb772ad8d7879ad5f6"
+   },
+   {
+    "path": "resources/Font/tex-gyre/MANIFEST-TeX-Gyre-Termes.txt",
+    "sha256": "f68e1704d13ab91fb1ef3c9f14e1db94c066c53aa2ac686879213e3619214bc7"
+   },
+   {
+    "path": "resources/Font/tex-gyre/README-TeX-Gyre-Adventor.txt",
+    "sha256": "6282254204678377471c1ff8cb56784a433c00fbe172f86f5379c7c08a1dc211"
+   },
+   {
+    "path": "resources/Font/tex-gyre/README-TeX-Gyre-Bonum.txt",
+    "sha256": "f52b76aff8bdedae3d3685a45b92e4cfbbf7a18e9bc3d8e9d7fea3140112a3d1"
+   },
+   {
+    "path": "resources/Font/tex-gyre/README-TeX-Gyre-Chorus.txt",
+    "sha256": "e36730e8a5ddee2e176ddc5b0d788fc3c1c3017df47c00c87fc50ccd1087b0b6"
+   },
+   {
+    "path": "resources/Font/tex-gyre/README-TeX-Gyre-Cursor.txt",
+    "sha256": "abadfc569c46b6eeec05183cc1965e7d687810bffb14d3d2e5daa58eb8f1f497"
+   },
+   {
+    "path": "resources/Font/tex-gyre/README-TeX-Gyre-Heros.txt",
+    "sha256": "cb41cbe4091a67a7a7b39df62553a7fc05f03e9014d7d1e148687967f3250188"
+   },
+   {
+    "path": "resources/Font/tex-gyre/README-TeX-Gyre-Pagella.txt",
+    "sha256": "6fc4c72a8754f7e04ffbbec99167a568c0a3d21e231318ed624b58ddfeb1f896"
+   },
+   {
+    "path": "resources/Font/tex-gyre/README-TeX-Gyre-Schola.txt",
+    "sha256": "aee4625282bd47b4851f7f2447824e6ee7ea0bced35feb7de2c4bfb6bcf98f9e"
+   },
+   {
+    "path": "resources/Font/tex-gyre/README-TeX-Gyre-Termes.txt",
+    "sha256": "2ca38f2af08da678b2cdb4ac99f8b3ff72fb7bdcc785ace290cd8ef1b2b947ab"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qagb.pfb",
+    "sha256": "39c2d6300620d8189915351d0e07276f3bbf95f9f346d1dbf46b8d2045aaec69"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qagbi.pfb",
+    "sha256": "c79838ffb851220844f4ddbed0d80a4c370f1a32643ba0479c7e6b89a40cde0a"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qagr.pfb",
+    "sha256": "3ec36824b2b8d1e97657318b6b335e9189286d0995b1278d369dc088545fdd4d"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qagri.pfb",
+    "sha256": "5b5d46d12373ab0da8121efd4e476a25178eb645b8d8e35988e3637e06888aa2"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qbkb.pfb",
+    "sha256": "53b5cf1527e3578cb04a6fb5a6ef2aa53fe8bb4fc16f6348303118144f3df29f"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qbkbi.pfb",
+    "sha256": "cae45a6941167a9179b6036e01befaf9270ce8cee525f4cef2dc99e4a0498dde"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qbkr.pfb",
+    "sha256": "ba3698cd56b3434239d415d2a4f4aa0fbafc83738d6887736cfc992f592fe326"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qbkri.pfb",
+    "sha256": "610db05006d413f0b321114d781594f6f952b4d505d9f2988ef6b536d4a728c6"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qcrb.pfb",
+    "sha256": "fbf67da3a707b9e1581c638d723a0703ccbc8e4dc6e8d18773582c16a0de0179"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qcrbi.pfb",
+    "sha256": "294ee49abe46d90def4bfc01850be6959b117c868354798866d5d27c50ba7c0d"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qcrr.pfb",
+    "sha256": "ce1a0610a066ed148b175709cda501eca01968f8a2a7cccd2136372b6df65df8"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qcrri.pfb",
+    "sha256": "6760c890aa5f6f9b18b0044854bbd2eb3c96058dcd33f439b7cc85e5c5150601"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qcsb.pfb",
+    "sha256": "b7c14c4c57aba88e4a3f25fe29aa65c8fb7b6ec68550043b5fd12e47974dcf9b"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qcsbi.pfb",
+    "sha256": "f769e241ec293960caf05b2507887c32ca3674c0196949d0c032d3e833b629e0"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qcsr.pfb",
+    "sha256": "c246b0bb606a1a5bb72df1967c550c107ffb4fbfecb005c855773880f7af7d74"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qcsri.pfb",
+    "sha256": "4014a5b92b6004bdd4d8dc677031c763f1410bca07601e7aa0d7cc305e85056a"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qhvb.pfb",
+    "sha256": "e8d7275b00201004f15a5e8303ea755504cad55a7d12cfe23dc9f3753c6c2ced"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qhvbi.pfb",
+    "sha256": "70b8979840ef8af37c8c20cc9ed4982239907be9df268ea1cd66f5a7648d5349"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qhvcb.pfb",
+    "sha256": "757a354a8fbfaeae65bfa14f6dc46e23e0462fa986ed7307bc7f1394ac972a8d"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qhvcbi.pfb",
+    "sha256": "a4599bb73b1100184169adf12c729563d78883d12f7629b530542e26c0d58553"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qhvcr.pfb",
+    "sha256": "3733c6ce08b3278df4ea179d40faa7802eefe6b70ceb40fcb345b4e50f1613ae"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qhvcri.pfb",
+    "sha256": "1814794ac4c10e3d2128fb9aa3e560ca7568bf273bd87b6f3002b0d80c76d3e9"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qhvr.pfb",
+    "sha256": "df26dfd6987c9b6a1df471179bc8db08c90acf7d515045c8bd23e0980d2ab9a3"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qhvri.pfb",
+    "sha256": "9f1f03e46ca8b1d2cd8b0b5c3ccb2122edd8d9b4b3cced0f45d14d919aad3894"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qplb.pfb",
+    "sha256": "0d8fafc4afb8ae7118cec522cd7c0d3016051feeb246c20b3a52d8b39a297aa1"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qplbi.pfb",
+    "sha256": "78d47ab576f36bce872987fac87aa34a3db32fbbc111e3a553937ae3a323635e"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qplr.pfb",
+    "sha256": "8d422717983976fc42ddaf796ab001d0ac611dd5f161df5ffd32a1a30288e9d8"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qplri.pfb",
+    "sha256": "3d815ef31b565c14fc620886f033fdb900e7b026afba64fd3dc91b543f0aa622"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qtmb.pfb",
+    "sha256": "b138931e97810011eab262a551a46d001439628a571d0f3698e16cc9d897e913"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qtmbi.pfb",
+    "sha256": "3d392976f955af339a63e49301d95a7729711a68be961ba56df76fe7ff165cb8"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qtmr.pfb",
+    "sha256": "4b8bce94bf51f6ae44bed92bb220c6efaf247c9090765e7f6c6396683110dd36"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qtmri.pfb",
+    "sha256": "45b401e4dcdbe0a77313217e0d1f617a36326149a6c7c296e9a308d0d402d260"
+   },
+   {
+    "path": "resources/Font/tex-gyre/qzcmi.pfb",
+    "sha256": "c0dd65cb3380efc9b5b0ae8db9b17280bcfcb20f3582994f49eb6e68e4d20327"
+   },
+   {
+    "path": "resources/Font/stix-two/OFL.txt",
+    "sha256": "0c8825913b60d858aacdb33c4ca6660a7d64b0d6464702efbb19313f5765861a"
+   },
+   {
+    "path": "resources/Font/stix-two/STIXTwoMath-Regular.ttf",
+    "sha256": "562551b15b836e6e01d1b7350909baf3c8c8d83260c1190fbf4544333e6936de"
+   },
+   {
+    "path": "resources/Font/dejavu/DejaVuSans.ttf",
+    "sha256": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+   },
+   {
+    "path": "resources/Font/dejavu/LICENSE",
+    "sha256": "7a083b136e64d064794c3419751e5c7dd10d2f64c108fe5ba161eae5e5958a93"
+   }
+  ]
+ }
+}

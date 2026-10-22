@@ -1,0 +1,11 @@
+hsk-studio-ps-fonts third-party notices
+
+This crate is a vendored fork of stet-fonts 0.8.4, part of the stet PostScript interpreter
+(https://github.com/AndyCappDev/stet), Copyright (c) 2026 Scott Bowman, licensed under the Apache License,
+Version 2.0 (LICENSE-APACHE) or the MIT license (LICENSE-MIT), at your option. Studio lane SMB-EPS-FREE-FONTS
+(2026-10-22) changed it as listed in SOURCE_PROVENANCE.json ("changes", and per file "modified"); the changes
+are offered under the same terms.
+
+Embedded data kept from stet-fonts: the Adobe Glyph List and ITC Zapf Dingbats Glyph List
+(src/glyphlist.txt, src/zapfdingbats.txt; LICENSE-ADOBE-AGL) and the Adobe CJK CID/Unicode tables
+(src/cid_*.bin; LICENSE-ADOBE-CMAP, BSD-3-Clause-style terms, Copyright 1990-2023 Adobe).

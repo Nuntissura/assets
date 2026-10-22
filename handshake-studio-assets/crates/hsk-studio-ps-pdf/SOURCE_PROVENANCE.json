@@ -1,0 +1,147 @@
+{
+ "upstream_package": "stet-pdf",
+ "version": "0.8.4",
+ "repository": "https://github.com/AndyCappDev/stet",
+ "license": "Apache-2.0 OR MIT",
+ "copyright": "Copyright (c) 2026 Scott Bowman",
+ "crate_checksum": "e72c0ed123030338a15dd16bfbede79187b20a5ac261c7db1226dfc5e463692a",
+ "read_from": "local cargo registry src/index.crates.io-*/stet-pdf-0.8.4 (crates.io release 2026-10-04)",
+ "lane": "SMB-EPS-FREE-FONTS",
+ "vendored_at": "2026-10-22",
+ "changes": [
+  "src/font_tracker.rs: the standard 14 fonts are embedded like every other font (is_standard_14 false), so the PDF carries the free substitutes"
+ ],
+ "files": [
+  {
+   "upstream": "src/annotations.rs",
+   "upstream_sha256": "1da499ae17ed2196c0eebeab2ab92d90b05efc0d052b7d2ca7151504477373d3",
+   "owned_sha256": "1da499ae17ed2196c0eebeab2ab92d90b05efc0d052b7d2ca7151504477373d3",
+   "modified": false
+  },
+  {
+   "upstream": "src/attachments.rs",
+   "upstream_sha256": "332f43de31040b0abd85494fefa76d630583d6d99c30efd18ac0281765290fce",
+   "owned_sha256": "332f43de31040b0abd85494fefa76d630583d6d99c30efd18ac0281765290fce",
+   "modified": false
+  },
+  {
+   "upstream": "src/cid_type0.rs",
+   "upstream_sha256": "942bbce5e30cf053ea19648e41d4d62a7e2871bab8d8fab30f671ab18ac0f198",
+   "owned_sha256": "942bbce5e30cf053ea19648e41d4d62a7e2871bab8d8fab30f671ab18ac0f198",
+   "modified": false
+  },
+  {
+   "upstream": "src/content_stream.rs",
+   "upstream_sha256": "e2f2f3c1b71b16e35d2bfd0ed9f71a4c3d2d5e1a2d4c35bf09b8f2a7aff6f565",
+   "owned_sha256": "e2f2f3c1b71b16e35d2bfd0ed9f71a4c3d2d5e1a2d4c35bf09b8f2a7aff6f565",
+   "modified": false
+  },
+  {
+   "upstream": "src/font_data.rs",
+   "upstream_sha256": "82a02bdf5280892ec34eda2f39135c99a83f4b46e9ee8148f1caf7d8e631d957",
+   "owned_sha256": "82a02bdf5280892ec34eda2f39135c99a83f4b46e9ee8148f1caf7d8e631d957",
+   "modified": false
+  },
+  {
+   "upstream": "src/font_embedder.rs",
+   "upstream_sha256": "497e41110d25f982365239151b8b9c6bb8b72e4d92d10342c5c486bc809cb6af",
+   "owned_sha256": "497e41110d25f982365239151b8b9c6bb8b72e4d92d10342c5c486bc809cb6af",
+   "modified": false
+  },
+  {
+   "upstream": "src/font_tracker.rs",
+   "upstream_sha256": "2d007fee9cc1b0f8ce31c3c352f080a47832eaa5a71c5fdaed68230c7000b03c",
+   "owned_sha256": "070e1d9f7af00f08e6bd805b19e155184a3d68a314ca36039fd451260b3c997c",
+   "modified": true
+  },
+  {
+   "upstream": "src/form_fields.rs",
+   "upstream_sha256": "2fb555d743bdca0283d2d47f8ecc4be8439dc1006f2a379d6e92e4f36ba5f5c7",
+   "owned_sha256": "2fb555d743bdca0283d2d47f8ecc4be8439dc1006f2a379d6e92e4f36ba5f5c7",
+   "modified": false
+  },
+  {
+   "upstream": "src/image_ops.rs",
+   "upstream_sha256": "e79e82d54ea6107873336ca924798e3ec493971cb15cc7f234fa1505a32e87dc",
+   "owned_sha256": "e79e82d54ea6107873336ca924798e3ec493971cb15cc7f234fa1505a32e87dc",
+   "modified": false
+  },
+  {
+   "upstream": "src/lib.rs",
+   "upstream_sha256": "bd16263470411f877a6ec98346e1ac746fca9ceb059befb496c1e26121cbd2b8",
+   "owned_sha256": "bd16263470411f877a6ec98346e1ac746fca9ceb059befb496c1e26121cbd2b8",
+   "modified": false
+  },
+  {
+   "upstream": "src/metadata.rs",
+   "upstream_sha256": "00dabd2f77b53e257bdea4571473ff7c145580bb23c6a1c966c2c5a442bfc6bf",
+   "owned_sha256": "00dabd2f77b53e257bdea4571473ff7c145580bb23c6a1c966c2c5a442bfc6bf",
+   "modified": false
+  },
+  {
+   "upstream": "src/names.rs",
+   "upstream_sha256": "4049c89fd8a7bafb08c92945ad9ec4893a834ff49ba304f81be57302f960e30c",
+   "owned_sha256": "4049c89fd8a7bafb08c92945ad9ec4893a834ff49ba304f81be57302f960e30c",
+   "modified": false
+  },
+  {
+   "upstream": "src/outline.rs",
+   "upstream_sha256": "5dc251477335954baa711b08e27dce5c811612d27106d04d6a7d8e4901140840",
+   "owned_sha256": "5dc251477335954baa711b08e27dce5c811612d27106d04d6a7d8e4901140840",
+   "modified": false
+  },
+  {
+   "upstream": "src/pdf_device.rs",
+   "upstream_sha256": "261451176cf7165c14d34482ad31791307fe3c989c91fd0a67cb9ea97b43add1",
+   "owned_sha256": "261451176cf7165c14d34482ad31791307fe3c989c91fd0a67cb9ea97b43add1",
+   "modified": false
+  },
+  {
+   "upstream": "src/pdf_objects.rs",
+   "upstream_sha256": "fec3b359e648f1948bdb71a02811a3de7184051c421d8287b760ab0ba4d8761b",
+   "owned_sha256": "fec3b359e648f1948bdb71a02811a3de7184051c421d8287b760ab0ba4d8761b",
+   "modified": false
+  },
+  {
+   "upstream": "src/pdf_writer.rs",
+   "upstream_sha256": "db1dba25e9cadfd0b47db4c1f8178d9babd3088bd53833f494021fa0af0577b0",
+   "owned_sha256": "db1dba25e9cadfd0b47db4c1f8178d9babd3088bd53833f494021fa0af0577b0",
+   "modified": false
+  },
+  {
+   "upstream": "src/shading_ops.rs",
+   "upstream_sha256": "6d8cde93a979790efabd60cf0b4caaa5fb61673ef993411bafd909694103c668",
+   "owned_sha256": "6d8cde93a979790efabd60cf0b4caaa5fb61673ef993411bafd909694103c668",
+   "modified": false
+  },
+  {
+   "upstream": "src/text_ops.rs",
+   "upstream_sha256": "1290ec630723e1c6f2f1b3911df25cd4619abf4b0cdc10c3d02d3525cd146657",
+   "owned_sha256": "1290ec630723e1c6f2f1b3911df25cd4619abf4b0cdc10c3d02d3525cd146657",
+   "modified": false
+  },
+  {
+   "upstream": "src/unicode_mapping.rs",
+   "upstream_sha256": "22c3b8e0070bb69adb43c4cbcf7fc2c00f9942c5d50a6df4579aaf8da653c391",
+   "owned_sha256": "22c3b8e0070bb69adb43c4cbcf7fc2c00f9942c5d50a6df4579aaf8da653c391",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-APACHE",
+   "upstream_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "owned_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-MIT",
+   "upstream_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "owned_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "modified": false
+  },
+  {
+   "upstream": "Cargo.toml.orig",
+   "upstream_sha256": "4c34e899df17a36e378a28999306860572dc563ae716b9139664589deef4ae8d",
+   "note": "manifest rewritten, not copied"
+  }
+ ]
+}

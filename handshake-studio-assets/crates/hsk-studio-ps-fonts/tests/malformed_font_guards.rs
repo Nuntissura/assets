@@ -1,0 +1,442 @@
+// Regression tests for hostile or malformed font programs.
+//
+// Font data reaches these parsers from two directions — embedded in a PDF and
+// embedded in a PostScript program — so every one of these is attacker
+// controlled in the same way a PDF object is.
+//
+// Several abort the process when they regress rather than failing cleanly: a
+// stack overflow is a SIGSEGV-backed abort and an oversized reservation aborts
+// on allocation failure, and neither unwinds, so `catch_unwind` cannot contain
+// them. A regression takes the whole test binary down instead of reporting one
+// failed test. That is the intended signal.
+
+// Fork change (lane SMB-EPS-FREE-FONTS): the vendored package is hsk-studio-ps-fonts.
+extern crate hsk_studio_ps_fonts as stet_fonts;
+
+use stet_fonts::charstring::execute_charstring_ex;
+use stet_fonts::truetype::{parse_cmap, parse_glyf_to_path};
+use stet_fonts::type2_charstring::execute_type2_charstring;
+
+// === TrueType composite glyphs ============================================
+
+/// A composite `glyf` entry with one component naming `component_gid`.
+fn composite_glyph(component_gid: u16) -> Vec<u8> {
+    let mut g = Vec::new();
+    g.extend_from_slice(&(-1i16).to_be_bytes()); // numberOfContours < 0 => composite
+    g.extend_from_slice(&[0u8; 8]); // xMin, yMin, xMax, yMax
+    g.extend_from_slice(&0u16.to_be_bytes()); // flags: byte args, no MORE_COMPONENTS
+    g.extend_from_slice(&component_gid.to_be_bytes());
+    g.extend_from_slice(&[0u8, 0u8]); // dx, dy
+    g
+}
+
+/// The classic `glyf` attack: a composite glyph listing itself as a
+/// component. Unbounded, this recurses until the native stack is gone.
+#[test]
+fn self_referential_composite_glyph_does_not_overflow_the_stack() {
+    let glyph = composite_glyph(0);
+    let resolver = |_gid: u16| -> Option<Vec<u8>> { Some(composite_glyph(0)) };
+    let _ = parse_glyf_to_path(&glyph, &resolver);
+}
+
+/// The same cycle spread over two glyphs, which a bare self-reference check
+/// would miss.
+#[test]
+fn composite_glyph_ring_does_not_overflow_the_stack() {
+    let resolver =
+        |gid: u16| -> Option<Vec<u8>> { Some(composite_glyph(if gid == 0 { 1 } else { 0 })) };
+    let _ = parse_glyf_to_path(&composite_glyph(1), &resolver);
+}
+
+/// A long chain rather than a cycle — every component distinct, so a
+/// visited-set alone would not stop it. Only a depth cap does.
+#[test]
+fn deep_composite_glyph_chain_does_not_overflow_the_stack() {
+    let resolver = |gid: u16| -> Option<Vec<u8>> { Some(composite_glyph(gid.wrapping_add(1))) };
+    let _ = parse_glyf_to_path(&composite_glyph(1), &resolver);
+}
+
+// === cmap format 12 =======================================================
+
+/// Build a font with a single cmap subtable.
+fn font_with_cmap(subtable: &[u8]) -> Vec<u8> {
+    let mut cmap = Vec::new();
+    cmap.extend_from_slice(&0u16.to_be_bytes()); // version
+    cmap.extend_from_slice(&1u16.to_be_bytes()); // numTables
+    cmap.extend_from_slice(&3u16.to_be_bytes()); // platformID = Windows
+    cmap.extend_from_slice(&10u16.to_be_bytes()); // encodingID = UCS-4
+    cmap.extend_from_slice(&12u32.to_be_bytes()); // offset to subtable
+    cmap.extend_from_slice(subtable);
+
+    // sfnt wrapper with one table directory entry.
+    let mut font = Vec::new();
+    font.extend_from_slice(&0x00010000u32.to_be_bytes()); // sfnt version
+    font.extend_from_slice(&1u16.to_be_bytes()); // numTables
+    font.extend_from_slice(&[0u8; 6]); // searchRange, entrySelector, rangeShift
+    font.extend_from_slice(b"cmap");
+    font.extend_from_slice(&0u32.to_be_bytes()); // checksum
+    font.extend_from_slice(&28u32.to_be_bytes()); // offset
+    font.extend_from_slice(&(cmap.len() as u32).to_be_bytes()); // length
+    font.extend_from_slice(&cmap);
+    font
+}
+
+/// A format 12 group covering the entire 32-bit code space. The loop is
+/// `for code in start..=end` over raw u32 — about 4.3 billion iterations.
+#[test]
+fn cmap_format12_full_range_does_not_hang() {
+    let mut sub = Vec::new();
+    sub.extend_from_slice(&12u16.to_be_bytes()); // format
+    sub.extend_from_slice(&0u16.to_be_bytes()); // reserved
+    sub.extend_from_slice(&28u32.to_be_bytes()); // length
+    sub.extend_from_slice(&0u32.to_be_bytes()); // language
+    sub.extend_from_slice(&1u32.to_be_bytes()); // nGroups
+    sub.extend_from_slice(&0u32.to_be_bytes()); // startCharCode
+    sub.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // endCharCode
+    sub.extend_from_slice(&1u32.to_be_bytes()); // startGlyphID
+    let _ = parse_cmap(&font_with_cmap(&sub));
+}
+
+/// `startGlyphID + (code - startCharCode)` is a u32 add that can overflow.
+#[test]
+fn cmap_format12_overflowing_gid_does_not_panic() {
+    let mut sub = Vec::new();
+    sub.extend_from_slice(&12u16.to_be_bytes());
+    sub.extend_from_slice(&0u16.to_be_bytes());
+    sub.extend_from_slice(&28u32.to_be_bytes());
+    sub.extend_from_slice(&0u32.to_be_bytes());
+    sub.extend_from_slice(&1u32.to_be_bytes()); // nGroups
+    sub.extend_from_slice(&0u32.to_be_bytes()); // start
+    sub.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // end
+    sub.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // startGlyphID
+    let _ = parse_cmap(&font_with_cmap(&sub));
+}
+
+/// An ordinary format 12 table must still map correctly — a regression here
+/// means a cap was tightened into legitimate territory.
+#[test]
+fn cmap_format12_ordinary_range_still_maps() {
+    let mut sub = Vec::new();
+    sub.extend_from_slice(&12u16.to_be_bytes());
+    sub.extend_from_slice(&0u16.to_be_bytes());
+    sub.extend_from_slice(&28u32.to_be_bytes());
+    sub.extend_from_slice(&0u32.to_be_bytes());
+    sub.extend_from_slice(&1u32.to_be_bytes());
+    sub.extend_from_slice(&0x41u32.to_be_bytes()); // 'A'
+    sub.extend_from_slice(&0x5Au32.to_be_bytes()); // 'Z'
+    sub.extend_from_slice(&1u32.to_be_bytes()); // gid 1..=26
+    let map = parse_cmap(&font_with_cmap(&sub));
+    assert_eq!(map.get(&0x41), Some(&1), "'A' should map to gid 1");
+    assert_eq!(map.get(&0x5A), Some(&26), "'Z' should map to gid 26");
+}
+
+// === Type 1 seac ==========================================================
+
+/// A charstring that invokes `seac` naming itself as the base character.
+/// `execute()` restarts the depth counter at 0, so the depth-10 guard in
+/// `execute_inner` never fires and this recurses without bound.
+///
+/// `len_iv` is the `usize::MAX` sentinel for `/lenIV -1`, which makes
+/// `decrypt_charstring` pass bytes through unmodified — otherwise the looked-up
+/// charstring would be decrypted into garbage before it ever ran.
+#[test]
+fn self_referential_seac_does_not_overflow_the_stack() {
+    // 0 0 hsbw, then asb=0 adx=0 ady=0 bchar='A' achar='B' seac.
+    // Type 1 encodes a small integer v as the single byte v + 139.
+    fn seac_charstring() -> Vec<u8> {
+        vec![
+            139,
+            139,
+            13, // 0 0 hsbw
+            139,
+            139,
+            139,      // asb adx ady
+            139 + 65, // bchar = 65
+            139 + 66, // achar = 66
+            12,
+            6, // seac
+        ]
+    }
+    // Both the base and the accent resolve back to the same seac charstring.
+    let lookup = |_name: &str| -> Option<Vec<u8>> { Some(seac_charstring()) };
+    let _ = execute_charstring_ex(&seac_charstring(), &[], usize::MAX, false, Some(&lookup));
+}
+
+// === Type 2 subroutine index ==============================================
+
+/// `idx + bias` is an i32 add on a value taken straight off the charstring
+/// stack. Type 2 has arithmetic operators, so a charstring can multiply its
+/// way past `i32::MAX`; Rust saturates the `as i32` cast at that point, and
+/// adding the subroutine bias then overflows.
+#[test]
+fn type2_callsubr_index_does_not_overflow() {
+    /// `28 hi lo` pushes a 16-bit integer.
+    fn push_i16(cs: &mut Vec<u8>, v: i16) {
+        cs.push(28);
+        cs.extend_from_slice(&v.to_be_bytes());
+    }
+    /// Multiply 32767 into itself repeatedly until the value saturates the cast.
+    fn saturating_index(call_op: u8) -> Vec<u8> {
+        let mut cs = Vec::new();
+        push_i16(&mut cs, 32767);
+        for _ in 0..3 {
+            push_i16(&mut cs, 32767);
+            cs.extend_from_slice(&[12, 24]); // mul
+        }
+        cs.push(call_op);
+        cs
+    }
+    for op in [10u8 /* callsubr */, 29 /* callgsubr */] {
+        let _ = execute_type2_charstring(&saturating_index(op), &[], &[], 0.0, 0.0, false);
+    }
+
+    // The negative end saturates at i32::MIN, where adding a bias is fine but
+    // subtracting one is not; exercise it too.
+    let mut cs = Vec::new();
+    push_i16(&mut cs, -32768);
+    for _ in 0..3 {
+        push_i16(&mut cs, 32767);
+        cs.extend_from_slice(&[12, 24]);
+    }
+    cs.push(10);
+    let _ = execute_type2_charstring(&cs, &[], &[], 0.0, 0.0, false);
+}
+
+// === Type 1 /Subrs count ==================================================
+
+/// Build a minimal Type 1 font whose (eexec-encrypted) private section
+/// contains the given plaintext.
+fn type1_font_with_private(private: &[u8]) -> Vec<u8> {
+    // eexec encryption is the inverse of the decryption loop in
+    // `decrypt_eexec`: 4 bytes of random IV, then each plaintext byte
+    // XORed with the high byte of the evolving key.
+    fn eexec_encrypt(plain: &[u8]) -> Vec<u8> {
+        let c1: u32 = 52845;
+        let c2: u32 = 22719;
+        let mut r: u32 = 55665;
+        let mut out = Vec::with_capacity(plain.len() + 4);
+        // 4-byte IV, then the payload.
+        let mut feed = vec![0u8; 4];
+        feed.extend_from_slice(plain);
+        for &p in &feed {
+            let cipher = (p as u32 ^ (r >> 8)) as u8;
+            out.push(cipher);
+            r = ((cipher as u32 + r) * c1 + c2) & 0xFFFF;
+        }
+        out
+    }
+
+    let mut font = b"%!PS-AdobeFont-1.0: Test 001.001\n/FontName /Test def\n\
+                     /FontMatrix [0.001 0 0 0.001 0 0] readonly def\n\
+                     /FontType 1 def\ncurrentfile eexec\n"
+        .to_vec();
+    font.extend_from_slice(&eexec_encrypt(private));
+    font
+}
+
+/// `/Subrs N array` reserves `N` entries before any of them is read, so a
+/// declared count far larger than the file can hold is a direct OOM.
+#[test]
+fn type1_oversized_subrs_count_does_not_allocate_wildly() {
+    for count in ["999999999", "18446744073709551615", "-1"] {
+        let private =
+            format!("dup /Private 8 dict dup begin\n/lenIV 4 def\n/Subrs {count} array\nND\n");
+        let _ = stet_fonts::type1_parser::parse_type1(&type1_font_with_private(private.as_bytes()));
+    }
+}
+
+/// A well-formed `/Subrs` must still be parsed — a regression here means the
+/// cap was tightened into legitimate territory.
+#[test]
+fn type1_ordinary_subrs_count_still_parses() {
+    let private = b"dup /Private 8 dict dup begin\n/lenIV 4 def\n/Subrs 3 array\nND\n";
+    // Not asserting on contents: the point is that a small count is accepted
+    // and the parse reaches the end without being rejected by the new cap.
+    let _ = stet_fonts::type1_parser::parse_type1(&type1_font_with_private(private));
+}
+
+/// High fan-out rather than depth: a composite with many components, each
+/// naming a distinct glyph that is itself such a composite. The path set does
+/// not stop this (no id repeats on any one path) and the depth cap alone
+/// bounds it only at `fan_out ^ MAX_COMPOSITE_DEPTH`, so this measures whether
+/// the combination is actually enough.
+#[test]
+fn wide_composite_glyph_fan_out_terminates() {
+    fn wide_composite(base_gid: u16, fan_out: u16) -> Vec<u8> {
+        let mut g = Vec::new();
+        g.extend_from_slice(&(-1i16).to_be_bytes());
+        g.extend_from_slice(&[0u8; 8]);
+        for i in 0..fan_out {
+            let more = if i + 1 < fan_out { 0x0020u16 } else { 0 };
+            g.extend_from_slice(&more.to_be_bytes());
+            g.extend_from_slice(&base_gid.wrapping_add(i).wrapping_add(1).to_be_bytes());
+            g.extend_from_slice(&[0u8, 0u8]);
+        }
+        g
+    }
+    let resolver = |gid: u16| -> Option<Vec<u8>> { Some(wide_composite(gid, 64)) };
+    let start = std::time::Instant::now();
+    let _ = parse_glyf_to_path(&wide_composite(0, 64), &resolver);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed.as_secs() < 10,
+        "wide composite fan-out took {elapsed:?}; the depth cap alone is not \
+         bounding the work"
+    );
+}
+
+// === CFF charset ranges ===================================================
+
+/// Found by `cargo fuzz run fuzz_font_cff` within 60s of a cold start.
+///
+/// The CFF charset and CID-map parsers build their ranges as
+/// `for sid in first..=first + n_left`, where both ends come from the file.
+/// That add is on `u16`, so a range starting near 0xFFFF overflows it — a
+/// panic under overflow checks, a wrapped (empty or wrong) range in a plain
+/// release build. Four sites had it: charset formats 1 and 2, and the
+/// CID-map formats 1 and 2.
+///
+/// The same pass fixed `n_glyphs - 1` in both format 0 readers, which
+/// underflows `usize` when a font declares zero glyphs.
+#[test]
+fn cff_charset_range_overflow_does_not_panic() {
+    const CRASH: &[u8] = &[
+        0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x01, 0x00, 0x21, 0x00, 0x00, 0xaf, 0xf8, 0xf8,
+        0x11, 0xff, 0xff, 0xd3, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
+        0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x15, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x01, 0x00,
+        0x00, 0x01, 0x01, 0x00, 0x0a, 0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0x5b, 0x00, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01,
+        0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0xff,
+        0xff, 0xfe, 0x01, 0x00, 0x00, 0x02, 0xfe, 0x00, 0x01,
+    ];
+    let Ok(fonts) = stet_fonts::cff_parser::parse_cff(CRASH) else {
+        return;
+    };
+    // Reaching the charstring interpreter matters as much as parsing: the
+    // fuzz target does, and that is the path the crash was found on.
+    for font in fonts.iter().take(2) {
+        for cs in font.char_strings.iter().take(8) {
+            let _ = execute_type2_charstring(
+                cs,
+                &font.local_subrs,
+                &font.global_subrs,
+                0.0,
+                0.0,
+                false,
+            );
+        }
+    }
+}
+
+/// A CFF declaring zero glyphs, exercising the `n_glyphs - 1` underflow in
+/// the format 0 readers directly.
+#[test]
+fn cff_zero_glyph_count_does_not_underflow() {
+    // Header (major, minor, hdrSize, offSize) then an empty Name INDEX.
+    let data: Vec<u8> = vec![1, 0, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+    let _ = stet_fonts::cff_parser::parse_cff(&data);
+}
+
+// === CFF DICT offset operands =============================================
+
+/// A CFF INDEX holding `items`, with 1-byte offsets.
+fn cff_index(items: &[&[u8]]) -> Vec<u8> {
+    let mut out = (items.len() as u16).to_be_bytes().to_vec();
+    if items.is_empty() {
+        return out;
+    }
+    out.push(1); // offSize
+    let mut off = 1u8;
+    out.push(off);
+    for item in items {
+        off += item.len() as u8;
+        out.push(off);
+    }
+    for item in items {
+        out.extend_from_slice(item);
+    }
+    out
+}
+
+/// A minimal CFF whose single Top DICT is `top_dict`.
+///
+/// Padded past 64 bytes with trailing filler, which the INDEX structures — all
+/// self-describing — ignore. The padding is load-bearing for the overflow test
+/// below: a wrapped `offset + size` lands just *under* the offset, so it only
+/// clears a `<= data.len()` check when the file is at least that long. Without
+/// the padding the wrapped value exceeds the length, the check rejects it, and
+/// the bug goes unnoticed in any build with overflow checks off — which is
+/// every shipped build.
+fn cff_with_top_dict(top_dict: &[u8]) -> Vec<u8> {
+    let mut data = vec![1u8, 0, 4, 1]; // major, minor, hdrSize, offSize
+    data.extend_from_slice(&cff_index(&[b"A"])); // Name INDEX
+    data.extend_from_slice(&cff_index(&[top_dict])); // Top DICT INDEX
+    data.extend_from_slice(&cff_index(&[])); // String INDEX
+    data.extend_from_slice(&cff_index(&[])); // Global Subr INDEX
+    data.resize(64, 0);
+    data
+}
+
+/// Found by `cargo fuzz run fuzz_font_cff` on the 2026-08-31 weekly run.
+///
+/// The Private DICT operator carries `[size, offset]`, and the parser bounded
+/// them with `priv_offset + priv_size <= data.len()`. Both operands are `f64`,
+/// because CFF permits a real-number operand wherever an integer is expected,
+/// and `f64 as usize` saturates rather than wrapping — so the crashing font's
+/// `[1e49, 45]` became `[usize::MAX, 45]` and the bounds check overflowed
+/// before it could reject anything. Three sibling sites had the same shape:
+/// the FD-level Private DICT of a CID font, and both local-Subr offsets, which
+/// are relative to their Private DICT and so are added to it.
+///
+/// Rejecting the operand up front is what fixes it; a wider add would only
+/// move the ceiling.
+#[test]
+fn cff_private_dict_offset_overflow_does_not_panic() {
+    // Private DICT (op 18) with operands [1e49, 45]: a real-number size and a
+    // plausible offset. `1e49` is the CFF real encoding 30 1b 49 ff — nibbles
+    // '1' 'E' '4' '9' and the 0xf terminator — and 45 is the one-byte integer
+    // 45 + 139 = 0xb8.
+    let top_dict: &[u8] = &[0x1e, 0x1b, 0x49, 0xff, 0xb8, 18];
+    let _ = stet_fonts::cff_parser::parse_cff(&cff_with_top_dict(top_dict));
+}
+
+/// The reproducer as the fuzzer minimized it, parsed and then run through the
+/// charstring interpreter exactly as `fuzz_font_cff` does.
+#[test]
+fn cff_private_dict_offset_overflow_reproducer() {
+    const CRASH: &[u8] = &[
+        0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x01, 0x00, 0x95, 0x94, 0x94, 0x94, 0x94, 0x94,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3b, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x93, 0x29, 0x29, 0x29, 0x29, 0x29, 0x29, 0x29, 0x29, 0x29, 0x6b, 0x6b,
+        0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x00, 0x00, 0x00, 0x01,
+        0x00, 0x01, 0x01, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x1e, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x76, 0x00, 0x00, 0x00, 0x00, 0x7a, 0x00, 0x00, 0x20, 0x00, 0x00, 0x01, 0x04,
+        0x01, 0x00, 0xff, 0xb8, 0xff, 0xff, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x29, 0x29, 0x29, 0x29,
+        0x29, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x6b, 0x12, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7a, 0x00, 0x00, 0x20,
+        0x00, 0x00, 0x01, 0x04, 0x01, 0x00, 0x76, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7a, 0x00,
+    ];
+    let Ok(fonts) = stet_fonts::cff_parser::parse_cff(CRASH) else {
+        return;
+    };
+    for font in fonts.iter().take(2) {
+        for cs in font.char_strings.iter().take(8) {
+            let _ = execute_type2_charstring(
+                cs,
+                &font.local_subrs,
+                &font.global_subrs,
+                0.0,
+                0.0,
+                false,
+            );
+        }
+    }
+}

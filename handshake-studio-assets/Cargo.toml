@@ -50,6 +50,13 @@ members = [
   "crates/hsk-studio-interop-tiff",
   "crates/hsk-studio-interop-raster",
   "crates/hsk-studio-interop-affinity",
+  "crates/hsk-studio-ps-fonts",
+  "crates/hsk-studio-ps-graphics",
+  "crates/hsk-studio-ps-core",
+  "crates/hsk-studio-ps-ops",
+  "crates/hsk-studio-ps-pdf",
+  "crates/hsk-studio-ps-engine",
+  "crates/hsk-studio-ps",
 ]
 
 [workspace.package]
@@ -112,6 +119,13 @@ declared-members = [
   "crates/hsk-studio-interop-tiff",
   "crates/hsk-studio-interop-raster",
   "crates/hsk-studio-interop-affinity",
+  "crates/hsk-studio-ps-fonts",
+  "crates/hsk-studio-ps-graphics",
+  "crates/hsk-studio-ps-core",
+  "crates/hsk-studio-ps-ops",
+  "crates/hsk-studio-ps-pdf",
+  "crates/hsk-studio-ps-engine",
+  "crates/hsk-studio-ps",
 ]
 
 [workspace.metadata.studio.dependencies.hsk-studio-accord]
@@ -178,7 +192,8 @@ allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-pigment", "hsk-studio-prism", "hsk-studio-type", "hsk-studio-observe"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-vector-core]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-observe"]
+# Lane SMB-EPS-FREE-FONTS (Operator 2026-10-22): optional edges for the EPS worker host (worker) and the worker binary (ps, ps-core).
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-observe", "hsk-studio-ps", "hsk-studio-ps-core", "hsk-studio-worker"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-vector-svg]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-package", "hsk-studio-interop-vector-core"]
@@ -265,6 +280,29 @@ allowed = ["hsk-studio-accord", "hsk-studio-observe"]
 # Lane SMB-AFFINITY-INTEROP-1 (lead approval 2026-10-16): read-only KA container reader; only accord.
 [workspace.metadata.studio.dependencies.hsk-studio-interop-affinity]
 allowed = ["hsk-studio-accord"]
+
+# Lane SMB-EPS-FREE-FONTS (Operator 2026-10-22): vendored fork of the stet 0.8.4 PostScript interpreter (Apache-2.0 OR MIT)
+# with free fonts instead of the URW base35 set; no Studio edges (leaf engine used only by the interop-vector-core EPS worker).
+[workspace.metadata.studio.dependencies.hsk-studio-ps-fonts]
+allowed = []
+
+[workspace.metadata.studio.dependencies.hsk-studio-ps-graphics]
+allowed = ["hsk-studio-ps-fonts"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-ps-core]
+allowed = ["hsk-studio-ps-fonts", "hsk-studio-ps-graphics"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-ps-ops]
+allowed = ["hsk-studio-ps-core", "hsk-studio-ps-fonts", "hsk-studio-ps-graphics"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-ps-pdf]
+allowed = ["hsk-studio-ps-core", "hsk-studio-ps-fonts", "hsk-studio-ps-graphics"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-ps-engine]
+allowed = ["hsk-studio-ps-core", "hsk-studio-ps-ops"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-ps]
+allowed = ["hsk-studio-ps-core", "hsk-studio-ps-engine", "hsk-studio-ps-fonts", "hsk-studio-ps-graphics", "hsk-studio-ps-ops", "hsk-studio-ps-pdf"]
 
 # Corpus-scale imports (SMB-HARNESS-SWEEP-PERF, diagnostics/smb-harness-sweep-perf-1.md): SHA-256, Prism's
 # per-pixel ICC evaluation and interop-psd's tile loop run 18x faster optimized; results are byte-identical

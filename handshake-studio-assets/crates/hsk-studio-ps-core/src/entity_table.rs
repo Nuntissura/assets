@@ -1,0 +1,242 @@
+// stet - A PostScript Interpreter
+// Copyright (c) 2026 Scott Bowman
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Entity table: indirection layer for arena stores.
+//!
+//! Each composite object (string, array, dict) is identified by an `EntityId`.
+//! The entity table maps `EntityId → EntityMeta`, which records the offset
+//! into the backing store's data vec, the allocated length, the save level
+//! at creation/last COW copy, and flags (global, gc_mark).
+
+use crate::object::EntityId;
+
+/// Metadata for one entity in an arena store.
+#[derive(Clone, Debug)]
+pub struct EntityMeta {
+    /// Offset into the backing store's data vec.
+    pub offset: u32,
+    /// Allocated capacity (number of elements/bytes).
+    pub len: u32,
+    /// Save level when created or last COW-copied.
+    pub save_level: u16,
+    /// Bit 0: is_global, Bit 1: gc_mark (reserved for future use),
+    /// Bit 2: cow_backup.
+    pub flags: u8,
+    /// Save ID that was active when this entity was created (0 = before any save).
+    /// Used for invalidrestore: entities with created_after_save >= target_save_id
+    /// are "newer than the snapshot being restored."
+    pub created_after_save: u32,
+}
+
+impl EntityMeta {
+    const FLAG_GLOBAL: u8 = 1;
+    const FLAG_COW_BACKUP: u8 = 1 << 2;
+
+    /// Check if this entity is in global VM.
+    pub fn is_global(&self) -> bool {
+        self.flags & Self::FLAG_GLOBAL != 0
+    }
+
+    /// Set the global flag.
+    pub fn set_global(&mut self, global: bool) {
+        if global {
+            self.flags |= Self::FLAG_GLOBAL;
+        } else {
+            self.flags &= !Self::FLAG_GLOBAL;
+        }
+    }
+
+    /// Whether this entity is a copy-on-write backup rather than live data.
+    ///
+    /// `cow_copy` allocates one of these to hold a composite's pre-mutation
+    /// contents so `restore` can swap them back. It is never reachable from
+    /// PostScript in either state: before the restore it holds the snapshot,
+    /// after it holds the discarded post-save data. Whole-arena sweeps that
+    /// reason about reachability — see [`crate::vm_audit`] — must skip it.
+    pub fn is_cow_backup(&self) -> bool {
+        self.flags & Self::FLAG_COW_BACKUP != 0
+    }
+
+    /// Mark this entity as a copy-on-write backup.
+    pub fn set_cow_backup(&mut self) {
+        self.flags |= Self::FLAG_COW_BACKUP;
+    }
+}
+
+/// Indirection table mapping `EntityId` to metadata about stored data.
+pub struct EntityTable {
+    entries: Vec<EntityMeta>,
+}
+
+impl EntityTable {
+    /// Create an empty entity table.
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Allocate a new entity, returning its `EntityId`.
+    /// The returned EntityId is tagged with the global bit based on the `global` param.
+    pub fn allocate(
+        &mut self,
+        offset: u32,
+        len: u32,
+        save_level: u16,
+        global: bool,
+        created_after_save: u32,
+    ) -> EntityId {
+        let index = self.entries.len() as u32;
+        let id = if global {
+            EntityId::global(index)
+        } else {
+            EntityId::local(index)
+        };
+        let mut flags = 0u8;
+        if global {
+            flags |= EntityMeta::FLAG_GLOBAL;
+        }
+        self.entries.push(EntityMeta {
+            offset,
+            len,
+            save_level,
+            flags,
+            created_after_save,
+        });
+        id
+    }
+
+    /// Get metadata for an entity (read-only).
+    #[inline]
+    pub fn get(&self, id: EntityId) -> &EntityMeta {
+        &self.entries[id.raw_index()]
+    }
+
+    /// Get mutable metadata for an entity.
+    pub fn get_mut(&mut self, id: EntityId) -> &mut EntityMeta {
+        &mut self.entries[id.raw_index()]
+    }
+
+    /// Get metadata by raw table index, without needing a tagged `EntityId`.
+    ///
+    /// Callers that sweep the whole table (the VM audit) do not have an
+    /// `EntityId` in hand — they need the metadata in order to build one with
+    /// the correct global tag.
+    #[inline]
+    pub fn get_by_index(&self, index: usize) -> &EntityMeta {
+        &self.entries[index]
+    }
+
+    /// Number of entities allocated.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Drop every entity from index `n` onward, so their ids become available
+    /// for reuse.
+    ///
+    /// Only sound when no reachable object still refers to those ids. `restore`
+    /// establishes that: PLRM 3.7.3.2 forbids a surviving reference to a
+    /// composite created after the save (enforced by `check_invalidrestore`),
+    /// and COW reverts any pre-save composite that was mutated to point at one.
+    ///
+    /// Note that this makes `EntityId`s **reusable**. Anything keyed by
+    /// `EntityId` that outlives a restore must be purged in the same step, or a
+    /// later entity reusing the index will collide with the stale entry.
+    pub fn truncate(&mut self, n: usize) {
+        self.entries.truncate(n);
+    }
+
+    /// Whether the table is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl Default for EntityTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_allocate_and_get() {
+        let mut table = EntityTable::new();
+        let id = table.allocate(0, 10, 0, false, 0);
+        assert_eq!(id, EntityId::local(0));
+        assert!(!id.is_global());
+        let meta = table.get(id);
+        assert_eq!(meta.offset, 0);
+        assert_eq!(meta.len, 10);
+        assert_eq!(meta.save_level, 0);
+        assert!(!meta.is_global());
+    }
+
+    #[test]
+    fn test_multiple_allocations() {
+        let mut table = EntityTable::new();
+        let id0 = table.allocate(0, 5, 0, false, 0);
+        let id1 = table.allocate(5, 10, 0, true, 0);
+        assert_eq!(id0, EntityId::local(0));
+        assert_eq!(id1, EntityId::global(1));
+        assert_eq!(table.len(), 2);
+        assert!(!id0.is_global());
+        assert!(id1.is_global());
+    }
+
+    #[test]
+    fn test_get_mut() {
+        let mut table = EntityTable::new();
+        let id = table.allocate(0, 5, 0, false, 0);
+        table.get_mut(id).offset = 100;
+        assert_eq!(table.get(id).offset, 100);
+    }
+
+    #[test]
+    fn test_global_flag() {
+        let mut table = EntityTable::new();
+        let id = table.allocate(0, 5, 0, false, 0);
+        assert!(!table.get(id).is_global());
+        table.get_mut(id).set_global(true);
+        assert!(table.get(id).is_global());
+        table.get_mut(id).set_global(false);
+        assert!(!table.get(id).is_global());
+    }
+
+    #[test]
+    fn test_save_level_tracking() {
+        let mut table = EntityTable::new();
+        let id = table.allocate(0, 5, 1, false, 0);
+        assert_eq!(table.get(id).save_level, 1);
+        table.get_mut(id).save_level = 2;
+        assert_eq!(table.get(id).save_level, 2);
+    }
+
+    #[test]
+    fn test_empty_table() {
+        let table = EntityTable::new();
+        assert_eq!(table.len(), 0);
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn test_default() {
+        let table = EntityTable::default();
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn test_len_after_allocations() {
+        let mut table = EntityTable::new();
+        table.allocate(0, 1, 0, false, 0);
+        table.allocate(1, 2, 0, false, 0);
+        table.allocate(3, 3, 0, false, 0);
+        assert_eq!(table.len(), 3);
+        assert!(!table.is_empty());
+    }
+}

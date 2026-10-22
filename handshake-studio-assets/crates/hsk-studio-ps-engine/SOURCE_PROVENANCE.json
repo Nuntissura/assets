@@ -1,0 +1,45 @@
+{
+ "upstream_package": "stet-engine",
+ "version": "0.8.4",
+ "repository": "https://github.com/AndyCappDev/stet",
+ "license": "Apache-2.0 OR MIT",
+ "copyright": "Copyright (c) 2026 Scott Bowman",
+ "crate_checksum": "7016593aa5540df9105f61d90eacba673f796e8891d8e34b46638ef01fcdf480",
+ "read_from": "local cargo registry src/index.crates.io-*/stet-engine-0.8.4 (crates.io release 2026-10-04)",
+ "lane": "SMB-EPS-FREE-FONTS",
+ "vendored_at": "2026-10-22",
+ "changes": [
+  "Cargo.toml only; upstream tests/ not vendored (dev-dependency stet-render)"
+ ],
+ "files": [
+  {
+   "upstream": "src/eval.rs",
+   "upstream_sha256": "8f3fd53c11a2eb0a838c447a5c5d7271715a629290aa74e803a8b43ac07f882d",
+   "owned_sha256": "8f3fd53c11a2eb0a838c447a5c5d7271715a629290aa74e803a8b43ac07f882d",
+   "modified": false
+  },
+  {
+   "upstream": "src/lib.rs",
+   "upstream_sha256": "81a679237cf181f14f98d967e121a98fb84ff72bc5d896250ad2ae5391829de1",
+   "owned_sha256": "81a679237cf181f14f98d967e121a98fb84ff72bc5d896250ad2ae5391829de1",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-APACHE",
+   "upstream_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "owned_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-MIT",
+   "upstream_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "owned_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "modified": false
+  },
+  {
+   "upstream": "Cargo.toml.orig",
+   "upstream_sha256": "786cc8de43bd312de94dde2402e527702aed7f43ebae4d9c91ca523004be1295",
+   "note": "manifest rewritten, not copied"
+  }
+ ]
+}

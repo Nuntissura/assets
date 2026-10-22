@@ -1,0 +1,21 @@
+[package]
+name = "hsk-studio-ps-pdf"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = "Apache-2.0 OR MIT"
+# Vendored fork of stet-pdf 0.8.4 (https://github.com/AndyCappDev/stet, Apache-2.0 OR MIT, Scott Bowman),
+# lane SMB-EPS-FREE-FONTS: see NOTICE and SOURCE_PROVENANCE.json. The dependency alias keeps the
+# upstream crate path names (stet_core, ...) so the vendored sources compile unchanged.
+
+[features]
+default = []
+
+[dependencies]
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+stet-core = { path = "../hsk-studio-ps-core", package = "hsk-studio-ps-core", version = "=0.1.0", default-features = false, features = [] }
+stet-fonts = { path = "../hsk-studio-ps-fonts", package = "hsk-studio-ps-fonts", version = "=0.1.0", default-features = false, features = [] }
+stet-graphics = { path = "../hsk-studio-ps-graphics", package = "hsk-studio-ps-graphics", version = "=0.1.0", default-features = false, features = [] }
+
+[lib]
+path = "src/lib.rs"

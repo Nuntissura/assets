@@ -1,0 +1,193 @@
+{
+ "upstream_package": "stet-core",
+ "version": "0.8.4",
+ "repository": "https://github.com/AndyCappDev/stet",
+ "license": "Apache-2.0 OR MIT",
+ "copyright": "Copyright (c) 2026 Scott Bowman",
+ "crate_checksum": "219ee1caa526df248c301f415522b382c1dd93051bfa5b2d3a02adfd1bf492f8",
+ "read_from": "local cargo registry src/index.crates.io-*/stet-core-0.8.4 (crates.io release 2026-10-04)",
+ "lane": "SMB-EPS-FREE-FONTS",
+ "vendored_at": "2026-10-22",
+ "changes": [
+  "Cargo.toml: glob and jpeg-encoder removed; hayro-jpeg2000 without default features (no image/moxcms image path); exact pins",
+  "src/file_store.rs: DCTEncode output refused with an ioerror (jpeg-encoder not vendored); test_dct_decode_without_eoi_marker reads tests/data/dct16.jpg (fork fixture) instead of encoding",
+  "src/system_font_loader.rs: load_binary_font reads an embedded resource first; symbolic substitutes load through load_ttf_symbolic; load_otf_cff_data added",
+  "src/font_loader.rs: variable names and the substitution test follow the free table",
+  "src/lib.rs: test_support::font_dir prints NOT_PROVEN and returns None (no URW fixture)"
+ ],
+ "files": [
+  {
+   "upstream": "src/array_store.rs",
+   "upstream_sha256": "99899716380778fb4ab9204ad9173b28ebaf511560a10e70ded27ed4552e3e5c",
+   "owned_sha256": "99899716380778fb4ab9204ad9173b28ebaf511560a10e70ded27ed4552e3e5c",
+   "modified": false
+  },
+  {
+   "upstream": "src/binary_token.rs",
+   "upstream_sha256": "0e39f2cfa696f3c0dd4df38ba302d0e022407789b3b6745572e111f08781a6a1",
+   "owned_sha256": "0e39f2cfa696f3c0dd4df38ba302d0e022407789b3b6745572e111f08781a6a1",
+   "modified": false
+  },
+  {
+   "upstream": "src/context.rs",
+   "upstream_sha256": "7f7fc17732f13a7fa0c170e414dda2de8b67f40f32893b5e835ea80d15803461",
+   "owned_sha256": "7f7fc17732f13a7fa0c170e414dda2de8b67f40f32893b5e835ea80d15803461",
+   "modified": false
+  },
+  {
+   "upstream": "src/device.rs",
+   "upstream_sha256": "6632a9be0fead652018fac2f9e5318a5716321b95d546dc695cc7c07228d07ba",
+   "owned_sha256": "6632a9be0fead652018fac2f9e5318a5716321b95d546dc695cc7c07228d07ba",
+   "modified": false
+  },
+  {
+   "upstream": "src/dict.rs",
+   "upstream_sha256": "660928b374ec851201d93c093302a550a2f2e36cec0891ec4e85b294bb63f757",
+   "owned_sha256": "660928b374ec851201d93c093302a550a2f2e36cec0891ec4e85b294bb63f757",
+   "modified": false
+  },
+  {
+   "upstream": "src/dual_array_store.rs",
+   "upstream_sha256": "c9f8df89c05311f45864819370745e9b753c51dc949a05eed2ad44a3b8cfa073",
+   "owned_sha256": "c9f8df89c05311f45864819370745e9b753c51dc949a05eed2ad44a3b8cfa073",
+   "modified": false
+  },
+  {
+   "upstream": "src/dual_dict_store.rs",
+   "upstream_sha256": "7d5b30783d9123c6c1dbe600f88c2471a2c69a9d9a47f8cba9de6d14ad15b15e",
+   "owned_sha256": "7d5b30783d9123c6c1dbe600f88c2471a2c69a9d9a47f8cba9de6d14ad15b15e",
+   "modified": false
+  },
+  {
+   "upstream": "src/dual_string_store.rs",
+   "upstream_sha256": "99c19e1fe366d3c745052596b450dee6265a8d01537c068876ac08382e8764a0",
+   "owned_sha256": "99c19e1fe366d3c745052596b450dee6265a8d01537c068876ac08382e8764a0",
+   "modified": false
+  },
+  {
+   "upstream": "src/entity_table.rs",
+   "upstream_sha256": "416e9a6dc79a34a0b6599dabca9a9cd3d545ee12310af74c4fe02dd13b89c416",
+   "owned_sha256": "416e9a6dc79a34a0b6599dabca9a9cd3d545ee12310af74c4fe02dd13b89c416",
+   "modified": false
+  },
+  {
+   "upstream": "src/eps.rs",
+   "upstream_sha256": "a734ff12f93d8897c281e500017509a3d1de044ca4fae391d991509862c4a320",
+   "owned_sha256": "a734ff12f93d8897c281e500017509a3d1de044ca4fae391d991509862c4a320",
+   "modified": false
+  },
+  {
+   "upstream": "src/error.rs",
+   "upstream_sha256": "9a8782231df2b9105049c56a830c56514a1ffdddf2710ccc6502515a1900ccd2",
+   "owned_sha256": "9a8782231df2b9105049c56a830c56514a1ffdddf2710ccc6502515a1900ccd2",
+   "modified": false
+  },
+  {
+   "upstream": "src/file_store.rs",
+   "upstream_sha256": "34c1fe76b0295df48b320837232d1c63782318d9891f6f09da341ee80da15a28",
+   "owned_sha256": "a4228cfdc8f16fe16f150b1cd9c9f7b0686726f04e48591064f07e61e658297f",
+   "modified": true
+  },
+  {
+   "upstream": "src/font_loader.rs",
+   "upstream_sha256": "aefe21a09568cc109d4a220d389805c38d1644259a094e5acec3d86baddd8591",
+   "owned_sha256": "adaf2d27769f986ac27449073981876b638a672c819a8f6727167a24b1ebe6f4",
+   "modified": true
+  },
+  {
+   "upstream": "src/font_snapshot.rs",
+   "upstream_sha256": "c5526cc157038672aa2499393dac0c1f5d302829c3ab82976b9947c2f3f3fbd5",
+   "owned_sha256": "c5526cc157038672aa2499393dac0c1f5d302829c3ab82976b9947c2f3f3fbd5",
+   "modified": false
+  },
+  {
+   "upstream": "src/glyph_cache.rs",
+   "upstream_sha256": "d9f4a93a953d2a2db79a36cb60bce2fc88f170376a4a72b3dc354ba342499782",
+   "owned_sha256": "d9f4a93a953d2a2db79a36cb60bce2fc88f170376a4a72b3dc354ba342499782",
+   "modified": false
+  },
+  {
+   "upstream": "src/graphics_state.rs",
+   "upstream_sha256": "c538c526cd2ebb4dceea50b3516762a8c8d7d806be8de2049d3112135c7e6651",
+   "owned_sha256": "c538c526cd2ebb4dceea50b3516762a8c8d7d806be8de2049d3112135c7e6651",
+   "modified": false
+  },
+  {
+   "upstream": "src/lib.rs",
+   "upstream_sha256": "81f5005a55aeb9c1e75e5dfd8c92f8be35d6c0c759e10556ae2abd24ee2bb6cb",
+   "owned_sha256": "93a448f13a0482b121c311161f2ecc2e79adfecc394217d709fe2628cfa27e12",
+   "modified": true
+  },
+  {
+   "upstream": "src/name.rs",
+   "upstream_sha256": "d869e5f9ce9425501a1a35a56b725fdc32de5ff969a66255b320eb8bb08edcad",
+   "owned_sha256": "d869e5f9ce9425501a1a35a56b725fdc32de5ff969a66255b320eb8bb08edcad",
+   "modified": false
+  },
+  {
+   "upstream": "src/object.rs",
+   "upstream_sha256": "5ac153f67364c46f9a9c31095d091b127b37443ab481ed73ad56b224a5a1991b",
+   "owned_sha256": "5ac153f67364c46f9a9c31095d091b127b37443ab481ed73ad56b224a5a1991b",
+   "modified": false
+  },
+  {
+   "upstream": "src/output_template.rs",
+   "upstream_sha256": "e2aff461e7764511dfdf94af16bab8299d0edc575405037d19beac50f8feecc8",
+   "owned_sha256": "e2aff461e7764511dfdf94af16bab8299d0edc575405037d19beac50f8feecc8",
+   "modified": false
+  },
+  {
+   "upstream": "src/save_stack.rs",
+   "upstream_sha256": "d8b0d8f79b5a99dd7b1f8776e69c7959a524c716fc9a8a8854b53539db3d7d9d",
+   "owned_sha256": "d8b0d8f79b5a99dd7b1f8776e69c7959a524c716fc9a8a8854b53539db3d7d9d",
+   "modified": false
+  },
+  {
+   "upstream": "src/stack.rs",
+   "upstream_sha256": "d1ad8e522c409a4bd7b323158d8ee0ec90625ce16195f18a9ff1c920fbcfd1e5",
+   "owned_sha256": "d1ad8e522c409a4bd7b323158d8ee0ec90625ce16195f18a9ff1c920fbcfd1e5",
+   "modified": false
+  },
+  {
+   "upstream": "src/string_store.rs",
+   "upstream_sha256": "241c507f33e9a4816a1c7fea5c756d0f0900fe62f15d4c302e4ef6412b4705b3",
+   "owned_sha256": "241c507f33e9a4816a1c7fea5c756d0f0900fe62f15d4c302e4ef6412b4705b3",
+   "modified": false
+  },
+  {
+   "upstream": "src/system_font_loader.rs",
+   "upstream_sha256": "904c692b920069fcb38fb03a8a6888b0b84716197356aa2eaa59690147d0efe6",
+   "owned_sha256": "38b41b8d03f36323ec08303368b37832c62b17005cab54f9a85544f080c2cd03",
+   "modified": true
+  },
+  {
+   "upstream": "src/tokenizer.rs",
+   "upstream_sha256": "9a10b73f53a8297c079485b1e0b8f3692a79cb31fc9171a5bd5eb53abc146ded",
+   "owned_sha256": "9a10b73f53a8297c079485b1e0b8f3692a79cb31fc9171a5bd5eb53abc146ded",
+   "modified": false
+  },
+  {
+   "upstream": "src/vm_audit.rs",
+   "upstream_sha256": "798db0747652945fe5f90aaa203b7c046880fddd41121d154e13150b1383fcff",
+   "owned_sha256": "798db0747652945fe5f90aaa203b7c046880fddd41121d154e13150b1383fcff",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-APACHE",
+   "upstream_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "owned_sha256": "281755c6f4d045a464a29eb720c3e7586175c621352675dce144ca74bd1228cb",
+   "modified": false
+  },
+  {
+   "upstream": "LICENSE-MIT",
+   "upstream_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "owned_sha256": "4e27c8bbd00f817fb6fb96e8ca8eada8f0983a50a38fe3114ba8f977d31f654b",
+   "modified": false
+  },
+  {
+   "upstream": "Cargo.toml.orig",
+   "upstream_sha256": "94a8db8985979ada49560735199c9c4581ac969dcf53e9ad08dc74b731e5a215",
+   "note": "manifest rewritten, not copied"
+  }
+ ]
+}
