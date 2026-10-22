@@ -1989,6 +1989,8 @@ dependencies = [
  "hsk-studio-components",
  "hsk-studio-composite",
  "hsk-studio-folio",
+ "hsk-studio-interop-fig-base",
+ "hsk-studio-interop-fig-native",
  "hsk-studio-interop-raster",
  "hsk-studio-nib",
  "hsk-studio-observe",
@@ -2002,6 +2004,35 @@ dependencies = [
  "ruzstd",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "hsk-studio-interop-fig-base"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-folio",
+ "hsk-studio-observe",
+ "hsk-studio-package",
+ "ruzstd",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "hsk-studio-interop-fig-native"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-components",
+ "hsk-studio-folio",
+ "hsk-studio-interop-fig-base",
+ "hsk-studio-interop-raster",
+ "hsk-studio-nib",
+ "hsk-studio-package",
+ "hsk-studio-press",
+ "hsk-studio-type",
+ "serde_json",
 ]
 
 [[package]]
@@ -2383,7 +2414,26 @@ version = "0.1.0"
 dependencies = [
  "hsk-studio-accord",
  "hsk-studio-observe",
+ "hsk-studio-web-assets",
+ "hsk-studio-web-core",
  "html5ever",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "hsk-studio-web-assets"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-web-core",
+]
+
+[[package]]
+name = "hsk-studio-web-core"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-observe",
  "sha2 0.10.9",
 ]
 

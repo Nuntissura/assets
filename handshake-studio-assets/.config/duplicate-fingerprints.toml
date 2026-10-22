@@ -16,12 +16,13 @@ patterns = [
   'PK\\x0[1-8]',
   '\[\s*0x50\s*,\s*0x4[bB]\s*,\s*0x0[1-8]',
 ]
-# interop-fig container.rs: ZIP magic sniff for format detection only, no reader (reads via package read_zip).
+# interop-fig-base container.rs: ZIP magic sniff for format detection only, no reader (reads via package read_zip);
+#   moved from interop-fig/src/container.rs by SMB-CRATE-SEAM-SPLITS-2 (077fe0c), same site.
 # interop-layout container.rs: IDML writer; CRC via package; ZIP-writer consolidation is a separate candidate, not D16
 #   reader scope (reads via package ZipDirectory).
 allowed = [
   "crates/hsk-studio-package/src/",
-  "crates/hsk-studio-interop-fig/src/container.rs",
+  "crates/hsk-studio-interop-fig-base/src/container.rs",
   "crates/hsk-studio-interop-layout/src/container.rs",
 ]
 
