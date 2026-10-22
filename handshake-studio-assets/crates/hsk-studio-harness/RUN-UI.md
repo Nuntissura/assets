@@ -3,29 +3,77 @@
 The window is never opened by tests or agents (CX-SAFE-002). Tests drive the same state
 headlessly: `tests/viewer_headless.rs`, `tests/viewer_edit.rs`, `tests/viewer_shared_display.rs`,
 `tests/viewer_layers.rs`, `tests/viewer_brush_parity.rs`, `tests/viewer_selection.rs`, `tests/viewer_text.rs`,
-`tests/viewer_develop.rs`, `tests/viewer_develop_2.rs`, `tests/viewer_develop_3.rs`.
+`tests/viewer_develop.rs`, `tests/viewer_develop_2.rs`, `tests/viewer_develop_3.rs`, and the shell
+(menus, shortcuts, file dialog, recent files, hosted panels): `tests/viewer_shell.rs`.
 
 ## Build and launch
 
-From the product workspace root, in Git Bash:
+From the product workspace root, in Git Bash. The build the Operator should use (every hosted
+surface available: documents, audio files, source monitor, mixer, waveform and spectral editors):
 
 ```bash
 cd "<wt-studio-assets>/handshake-studio-assets"
 source "<wt-gov-kernel>/.GOV/docs_repo/wp-studio-module-work/builders/studio-env.sh"
-cargo run -p hsk-studio-harness --features desktop --bin studio-harness -- "<path to file>"
+cargo run -p hsk-studio-harness --features desktop,audio-batch --bin studio-harness -- --recent "<recent-files list>" "<path to file>"
 ```
 
-- `<path to file>`: a PSD/PSB, TIFF, camera raw (DNG, CR2, NEF, ARW, ...), PNG, JPEG, PDF or a
-  native `.handshake` package. It is optional; the path field at the top of the window opens files.
-- `--cpu` before the file renders with render-cpu only. By default render-gpu renders on the
+- `audio-batch` implies `media` (audio files; the source monitor's ProRes / DNxHR / VC-3 / Y4M
+  decoders) and `viewer`. The minimal build `--features desktop` still opens every document and
+  image; the Source Monitor, Mixer, Waveform Editor and Spectral Display then stay in the
+  Workspace menu greyed, their label naming the missing feature.
+- Optional extra features: `media-native` (Windows OS decoders for AAC and H.264 through the
+  `reel-native-mf-worker` beside the executable), `import-affinity` (library preview route only; the
+  window's Open keeps refusing Affinity files with `affinity_native_use_export`). `audio-device` builds,
+  but the window opens no audio output (no device grant is wired in the binary).
+- `<path to file>`: a PSD/PSB, TIFF, camera raw (DNG, CR2, NEF, ARW, ...), PNG, JPEG, PDF, a native
+  `.handshake` package or (with `media`) an audio file. It is optional: File > Open... (Ctrl+O),
+  File > Open Recent and the path field at the top of the window open files.
+- `--recent LIST`: keeps the recent-files list in the file LIST (read at start when it exists,
+  rewritten atomically whenever the list changes; JSON `hsk.studio.harness.recent@1`, at most 10
+  paths). Without it the list lives for the session only (the harness has no settings path).
+- `--cpu` renders with render-cpu only. By default render-gpu renders on the
   window's own wgpu device straight into the displayed texture (status line "render-gpu shares
   the window's device"); the read-back path (render-gpu own device, then render-cpu) is the
   fallback and the status panel says which one rendered and why.
 
+## Menus and shortcuts (lane SMB-HARNESS-SHELL-1)
+
+Menu titles follow the Studio menu law (spec 14.30: FILE, EDIT, VIEW, WORKSPACE > Panels).
+
+| Menu | Entry | Shortcut | Does |
+| --- | --- | --- | --- |
+| File | Open... | Ctrl+O | file dialog (folders, then files of the filter: documents and images; audio with `media`; All files) |
+| File | Open Recent > (files), Clear Recent | | reopens a recent file (most recent first, 10 kept) |
+| File | Save | Ctrl+S | saves the native package at the save path (Save As when there is none) |
+| File | Save As... | Ctrl+Shift+S | dialog; a bare name gets `.handshake`; an existing file needs "replace an existing file" |
+| File | Export PNG... / Export JPEG... | | dialog; the composite as PNG / JPEG (quality 90) at the chosen path |
+| File | Close | Ctrl+W | closes the document and its surfaces (the recent list stays) |
+| Edit | Undo / Redo | Ctrl+Z / Ctrl+Y (also Ctrl+Shift+Z) | chronicle undo / redo |
+| View | Fit in Window, Actual Size, Zoom In, Zoom Out, Render on GPU, Status Log | | view toggles |
+| Workspace | Layers | F2 | shows / hides the layer panel |
+| Workspace | Properties | F3 | shows / hides properties and the import receipt |
+| Workspace | Develop | F4 | shows / hides the develop panel (open a camera raw / DNG first) |
+| Workspace | Layout Editor | F5 | hosts the layout editor on the open document's pages, or on a new blank one-page document when it has none |
+| Workspace | Program Monitor | F6 | the program monitor on the document's first sequence (an audio file opens its own) |
+| Workspace | Source Monitor | F7 | feature `media`: dialog for a media file, then the source monitor (marks, insert / overwrite) |
+| Workspace | Mixer | F8 | feature `audio-batch`: the mixer of the document's first sequence (sources: the open audio file) |
+| Workspace | Waveform Editor | F9 | feature `audio-batch`: the open audio file's waveform editor (a document must be open: it holds the edit list) |
+| Workspace | Spectral Display | F11 | feature `audio-batch`: the spectral display of the open waveform editor |
+| Workspace | Prototype Player | F12 | dialog for a Figma `.fig`, then the play window |
+
+A Workspace entry of an open surface shows or hides it. A greyed entry names its missing feature
+("Mixer (needs feature audio-batch)") or shows the unmet precondition as hover text; a refused
+command writes its reason to the status log. Function keys and Ctrl+O / S / Shift+S / W work while a
+text field has focus; Ctrl+Z / Ctrl+Y then belong to the text field. File dialog: click a folder to
+enter it, Up for the parent, click a file to put its name in the path field, double-click or the
+Open / Save button to accept, Enter in the path field accepts (a typed folder is listed, a typed
+full path is used as given), Escape or Cancel closes it.
+
 ## What the window does
 
+- Menu bar: File, Edit, View, Workspace (table above).
 - Top bar: path field + Open; Save-as path + Save (refuses the opened source unless
-  "overwrite source" is ticked); Export PNG / JPEG; GPU toggle.
+  "overwrite source" is ticked); Export PNG / JPEG (next to the save path); GPU toggle.
 - Tool row: Hand (drag pans), Rect / Ellipse / Lasso (drag a selection; the combine box chooses
   replace, extend, diminish or intersect; Deselect clears; the selection shows marching ants),
   Brush (select a raster layer in the layer panel, then drag; size, hardness, opacity and colour
@@ -88,6 +136,15 @@ cargo run -p hsk-studio-harness --features desktop --bin studio-harness -- "<pat
 
 ## For models (no window)
 
+Shell (lane SMB-HARNESS-SHELL-1): `shell_command(ShellCommand::...)` runs any menu entry
+(`view::shell::menu_entries()` lists them with their shortcuts), `toggle_panel(Panel)`,
+`panel_open` / `panel_visible` / `panel_availability`, `file_dialog()` (set `typed`, `replace`;
+`set_filter`, `choose`, `up`), `dialog_accept`, `dialog_cancel`, `recent_files`, `recent_bytes`,
+`load_recent`, `layout_editor()`, `close`. `state_json()["shell"]` projects every panel (open,
+visible, availability, feature, reason, label, shortcut, command id), the recent list and the open
+dialog. Menu entries have the widget names `menu.<command id>` (`menu.studio.document.open`,
+`menu.studio.workspace.panel.mixer`, ...), the dialog `dialog.*`.
+
 Every window action is a `hsk_studio_harness::view::Viewer` method: `open`, `set_visible`,
 `set_opacity`, `set_blend_mode`, `select_rect`, `select_ellipse`, `select_lasso`,
 `set_combine`, `clear_selection`, `set_brush`, `paint(layer_id, samples)`, `undo`, `redo`,
@@ -121,8 +178,17 @@ layer buttons `layers.<action>`). The active selection is saved with the documen
   Clip (the status line says so; no tone-map mode yet); the develop export clamps and counts them
   (`clip` in the export report).
 
-- Layer masks: masked layers make the render fail with a typed composite `Unavailable` message.
-- Effects and adjustment layers (raster records) are not applied by the viewer.
+- Layer masks render (tests/viewer_mask_package.rs
+  a_session_saved_masked_document_renders_like_a_direct_composite_render) and imported raster
+  records (adjustments, effects, smart filters) render through composite's adapter
+  (tests/viewer_render_records.rs viewer_frame_renders_the_raster_records_like_a_direct_composite_render);
+  there is still no UI to create or edit adjustment layers, layer styles or masks.
+- Shell: the layout editor's edits stay in the editor (saving them with the package is a declared
+  gap of the layout editor); the program monitor opened on a document sequence has no frame
+  decoder bound (transport and scrub run, media clip frames are not resolved); the mixer opened
+  without an audio file mixes silence; the waveform editor needs a document open besides the audio
+  file; the file dialog filters by extension only (what a file is stays decided by its bytes); no
+  drag-and-drop, no multi-document, no docking, no timeline panel.
 - Packages converted before the blending-space binding keep an unassigned blending profile; the
   viewer binds it to the RGB working profile for display only and says so (nothing is written).
 - Tiles are created only on the 256-pixel grid (an empty layer or one on that grid); a layer on
