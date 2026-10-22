@@ -15,6 +15,12 @@
 //!   layer ids) come from the scene at the sample tick and every other layer from the scene at `T`
 //!   (in the sample scene's layer order); the `n` renders are averaged premultiplied
 //!   (accumulation-buffer model; After Effects' adaptive sampling is not reproduced, UNVERIFIED D5);
+//! * render options ([`RenderOptions`], lane SMB-AE-RENDER-QUEUE-2; STU-MOT-121 `resolution` and
+//!   `color_depth`): a divisor pair renders the scene at `ceil(size / divisor)` per side (composite's
+//!   `scale_scene` follows every layer matrix by the scale, so the layers resample with the scene's
+//!   declared filter; no resampler is added); a [`RenderDepth`] picks the output stage of the plan
+//!   (8: 8-bit working levels, 16: the unit-range binary32 pipeline, 32: the unbounded range) and
+//!   quantises the delivered samples to that depth (8: 255 levels, 16: 65535 levels, 32: none);
 //! * render once, encode many ([`SharedFrames`]): the frames of a span are rendered once into a
 //!   bounded shared cache that every output module of an item reads (each frame is dropped after
 //!   the last module took it); the cache budget is checked before anything renders;
@@ -35,9 +41,9 @@
 use super::rgb_to_planes;
 use crate::view::monitor::MonitorFail;
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
-use hsk_studio_composite::{SceneComposition, SceneContext, SceneLimits, ScenePixels, render_scene};
+use hsk_studio_composite::{SceneComposition, SceneContext, SceneLimits, ScenePixels, render_scene, render_scene_with_output, scale_scene};
 use hsk_studio_pigment::blend_math::Exactness;
-use hsk_studio_pigment::render_plan::{ColourTag, ExecuteRequest};
+use hsk_studio_pigment::render_plan::{ColourTag, ExecuteRequest, OutputStage, SampleRange, WorkingDepth, quantise_8bit};
 use hsk_studio_reel::{
     ChromaFormat, ColorInfo, ColorOrigin, ExportAudioSource, ExportJob, ExportLimits, ExportRecipe,
     ExportVideoSource, ReelError, SourceSpan, VideoFormat,
@@ -121,13 +127,82 @@ fn decode_f32(bytes: &[u8]) -> Vec<f32> {
     bytes.chunks_exact(4).map(|b| b.try_into().map_or(0.0, f32::from_le_bytes)).collect()
 }
 
+/// Colour depth of a render (STU-MOT-121 `color_depth`, STU-COL-120; module docs). `Float` is the
+/// engine default (binary32, unit range, nothing quantised).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RenderDepth {
+    #[default]
+    Float,
+    Bits8,
+    Bits16,
+    Bits32,
+}
+
+impl RenderDepth {
+    /// The plan output stage of this depth (`None` = the plan's default stage).
+    pub fn output_stage(self) -> Option<OutputStage> {
+        match self {
+            Self::Float | Self::Bits16 => None,
+            Self::Bits8 => Some(OutputStage::new(SampleRange::Unit, None).with_working_depth(WorkingDepth::Eight)),
+            Self::Bits32 => Some(OutputStage::new(SampleRange::Extended, None)),
+        }
+    }
+
+    /// One sample on this depth's levels (`Float` and `Bits32` keep it; NaN becomes 0).
+    pub fn quantise(self, v: f32) -> f32 {
+        match self {
+            Self::Float | Self::Bits32 => v,
+            Self::Bits8 => quantise_8bit(v.max(0.0).min(1.0)),
+            Self::Bits16 => (v.max(0.0).min(1.0) * 65535.0 + 0.5).floor() / 65535.0,
+        }
+    }
+
+    fn quantise_frame(self, mut f: Frame) -> Frame {
+        if matches!(self, Self::Bits8 | Self::Bits16) {
+            for v in f.rgb.iter_mut().chain(f.alpha.iter_mut()) {
+                *v = self.quantise(*v);
+            }
+        }
+        f
+    }
+}
+
+/// Render options of a [`FrameRenderer`] (module docs): resolution divisors and colour depth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderOptions {
+    /// Horizontal and vertical divisors, each `1..=99` (Folio's `StudioRenderResolution::Custom`
+    /// bound); `(1, 1)` = full resolution.
+    pub divisor: (u32, u32),
+    pub depth: RenderDepth,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self { divisor: (1, 1), depth: RenderDepth::Float }
+    }
+}
+
+impl RenderOptions {
+    /// Rendered size of a `width x height` composition: `ceil(side / divisor)`, at least 1.
+    pub fn size(&self, width: u32, height: u32) -> Result<(u32, u32), MonitorFail> {
+        let (x, y) = self.divisor;
+        if !(1..=99).contains(&x) || !(1..=99).contains(&y) {
+            return Err(fail("render_resolution", "resolution divisors are 1..=99"));
+        }
+        Ok((width.div_ceil(x).max(1), height.div_ceil(y).max(1)))
+    }
+}
+
 /// Renders frames of one composition (with optional motion blur).
 pub struct FrameRenderer<S> {
     scenes: S,
     renderer: Renderer,
     space: ColourTag,
+    /// Rendered (output) size; the composition's own size is `source`.
     width: u32,
     height: u32,
+    source: (u32, u32),
+    options: RenderOptions,
     ticks_per_frame: u64,
     blur: Option<MotionBlur>,
     renders: u64,
@@ -139,7 +214,21 @@ impl<S: CompositionScenes> FrameRenderer<S> {
             b.check()?;
         }
         let renderer = Renderer::new(64).map_err(|e| fail("renderer", format!("{e:?}")))?;
-        Ok(Self { scenes, renderer, space, width, height, ticks_per_frame, blur, renders: 0 })
+        Ok(Self { scenes, renderer, space, width, height, source: (width, height), options: RenderOptions::default(), ticks_per_frame, blur, renders: 0 })
+    }
+
+    /// This renderer with `options` (module docs); the rendered size becomes the reduced size.
+    pub fn with_options(mut self, options: RenderOptions) -> Result<Self, MonitorFail> {
+        let (w, h) = options.size(self.source.0, self.source.1)?;
+        self.width = w;
+        self.height = h;
+        self.options = options;
+        Ok(self)
+    }
+
+    /// The rendered frame size.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
     /// Frame renders so far (motion-blur samples count once per frame).
@@ -148,9 +237,16 @@ impl<S: CompositionScenes> FrameRenderer<S> {
     }
 
     fn render_scene(&mut self, scene: &SceneComposition, cancel: &CancellationToken) -> Result<Frame, ReelError> {
-        if scene.width != self.width || scene.height != self.height {
+        if (scene.width, scene.height) != self.source {
             return Err(ReelError::Unsupported { what: "export-composition-size" });
         }
+        let scaled;
+        let scene = if (self.width, self.height) == self.source {
+            scene
+        } else {
+            scaled = scale_scene(scene, self.width, self.height).map_err(|_| ReelError::Unsupported { what: "export-resolution-scale" })?;
+            &scaled
+        };
         let ctx = SceneContext {
             backend: &self.renderer,
             pixels: self.scenes.pixels(),
@@ -158,7 +254,11 @@ impl<S: CompositionScenes> FrameRenderer<S> {
             space: self.space,
             limits: SceneLimits::default(),
         };
-        let r = render_scene(scene, &ctx, cancel).map_err(|_| {
+        let rendered = match self.options.depth.output_stage() {
+            Some(output) => render_scene_with_output(scene, &ctx, output, cancel),
+            None => render_scene(scene, &ctx, cancel),
+        };
+        let r = rendered.map_err(|_| {
             if cancel.check().is_err() { ReelError::Canceled } else { ReelError::Unsupported { what: "export-render-failed" } }
         })?;
         Ok(Frame { width: r.width, height: r.height, rgb: decode_f32(&r.colour), alpha: decode_f32(&r.alpha) })
@@ -170,8 +270,13 @@ impl<S: CompositionScenes> FrameRenderer<S> {
         })
     }
 
-    /// The frame at composition tick `tick`.
+    /// The frame at composition tick `tick`, on the depth's levels (module docs).
     pub fn frame_at(&mut self, tick: u64, cancel: &CancellationToken) -> Result<Frame, ReelError> {
+        let depth = self.options.depth;
+        self.frame_unquantised(tick, cancel).map(|f| depth.quantise_frame(f))
+    }
+
+    fn frame_unquantised(&mut self, tick: u64, cancel: &CancellationToken) -> Result<Frame, ReelError> {
         let t = i64::try_from(tick).map_err(|_| ReelError::LimitExceeded { what: "tick-range" })?;
         let base = self.scene(t, cancel)?;
         let Some(blur) = self.blur.clone() else {
@@ -354,8 +459,8 @@ impl OutputPost {
         (u32::try_from(w).unwrap_or(1), u32::try_from(h).unwrap_or(1), out)
     }
 
-    /// The module's `rgb_f32le` frame (module docs).
-    pub fn apply(&self, f: &Frame) -> Vec<u8> {
+    /// Premultiplied RGBA of the cropped and resized frame, `out_width * out_height` pixels.
+    fn resolved(&self, f: &Frame) -> (u32, u32, Vec<[f32; 4]>) {
         let (w, h, src) = self.crop_premul(f);
         let (ow, oh) = self.resize.unwrap_or((w, h));
         let at = |x: i64, y: i64| -> [f32; 4] {
@@ -363,7 +468,7 @@ impl OutputPost {
             let y = y.clamp(0, i64::from(h).saturating_sub(1));
             src.get(usize::try_from(y.saturating_mul(i64::from(w)).saturating_add(x)).unwrap_or(0)).copied().unwrap_or([0.0; 4])
         };
-        let mut out = Vec::with_capacity(usize::try_from(u64::from(ow).saturating_mul(u64::from(oh)).saturating_mul(12)).unwrap_or(0));
+        let mut out = Vec::with_capacity(usize::try_from(u64::from(ow).saturating_mul(u64::from(oh))).unwrap_or(0));
         for y in 0..oh {
             for x in 0..ow {
                 let p = if (ow, oh) == (w, h) {
@@ -384,19 +489,49 @@ impl OutputPost {
                     }
                     q
                 };
-                let rgb = match self.channels {
-                    OutputChannels::Alpha => [p[3]; 3],
-                    OutputChannels::Rgb if self.premultiplied => [p[0], p[1], p[2]],
-                    OutputChannels::Rgb => {
-                        if p[3] > 0.0 { [p[0] / p[3], p[1] / p[3], p[2] / p[3]] } else { [0.0; 3] }
-                    }
-                };
-                for c in rgb {
-                    out.extend_from_slice(&c.to_le_bytes());
-                }
+                out.push(p);
+            }
+        }
+        (ow, oh, out)
+    }
+
+    /// The module's `rgb_f32le` frame (module docs).
+    pub fn apply(&self, f: &Frame) -> Vec<u8> {
+        let (ow, oh, pixels) = self.resolved(f);
+        let mut out = Vec::with_capacity(usize::try_from(u64::from(ow).saturating_mul(u64::from(oh)).saturating_mul(12)).unwrap_or(0));
+        for p in pixels {
+            let rgb = match self.channels {
+                OutputChannels::Alpha => [p[3]; 3],
+                OutputChannels::Rgb if self.premultiplied => [p[0], p[1], p[2]],
+                OutputChannels::Rgb => Self::straight(p),
+            };
+            for c in rgb {
+                out.extend_from_slice(&c.to_le_bytes());
             }
         }
         out
+    }
+
+    /// The module's `rgba_f32le` frame (lane SMB-AE-RENDER-QUEUE-2; STU-MOT-122 `channels`
+    /// RGB+alpha with `color`): colour as `premultiplied` selects (premultiplied colour is the
+    /// straight colour times alpha, straight colour is zero where alpha is zero), then the straight
+    /// alpha; `channels` is not consulted. No reel encoder carries alpha yet, so the render queue
+    /// still refuses `rgb_alpha` modules (`output_alpha_codec`); this is the frame such an encoder
+    /// or a still writer would take.
+    pub fn apply_rgba(&self, f: &Frame) -> Vec<u8> {
+        let (ow, oh, pixels) = self.resolved(f);
+        let mut out = Vec::with_capacity(usize::try_from(u64::from(ow).saturating_mul(u64::from(oh)).saturating_mul(16)).unwrap_or(0));
+        for p in pixels {
+            let rgb = if self.premultiplied { [p[0], p[1], p[2]] } else { Self::straight(p) };
+            for c in rgb.into_iter().chain([p[3]]) {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    fn straight(p: [f32; 4]) -> [f32; 3] {
+        if p[3] > 0.0 { [p[0] / p[3], p[1] / p[3], p[2] / p[3]] } else { [0.0; 3] }
     }
 }
 

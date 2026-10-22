@@ -9,22 +9,31 @@
 //! composition and motion records from a `Session` (document entries `studio/composition` and
 //! `studio/motion`, validated on read) and builds the item's jobs.
 //!
-//! Honoured: `time_span` (length of comp, custom; whole frames), `frame_rate` (the comp's own),
-//! `quality` best / current, `resolution` full / current, colour depth 8 / current, `motion_blur`
-//! (current settings = the composition's master switch and checked layers, on = the checked layers,
-//! off = none; shutter angle, phase and samples from the composition settings, STU-MOT-004
-//! defaults 180 / 0 / 16), output format MOV VC-3 (`codec_option` = DNxHR profile) or MOV / MP4
-//! AV1 (`codec_option` = quantizer), crop, resize, channels `rgb` (straight or premultiplied colour)
-//! and `alpha` (grey matte), depth 8 / 10, the audio group (auto = on when the composition has
-//! audio layers, on, off), Rec.709 / unset output colour space, `post_render_action` none,
-//! relative output paths under the caller's root. Refused with a stable code before rendering:
-//! work area (Folio stores none), a frame rate other than the comp's, draft / wireframe, reduced
-//! resolutions, effects all off, colour depth 16 / 32, field rendering, 3:2 pulldown, frame
-//! blending on, `rgb_alpha` (no reel encoder carries alpha: `output_alpha_codec`), mono audio, any
-//! other output colour space (STU-MOT-122a before the render), project links, post-render actions.
+//! Honoured: `time_span` (length of comp, the composition's work area [Folio `composition_work_areas`;
+//! none stored = the whole composition], custom; whole frames), `frame_rate` (the comp's own),
+//! `quality` best / current and `draft` (rendered as best, noted `render_quality_draft_is_best`:
+//! composite has no draft switch), `resolution` full / current / half / third / quarter / custom
+//! divisors (lane SMB-AE-RENDER-QUEUE-2: the scene renders at `ceil(size / divisor)`, see
+//! `composition::RenderOptions`), colour depth 8 / 16 / 32 bits per channel (`composition::RenderDepth`;
+//! `current_settings` = the document's `bits_per_channel` 8 / 16 / 32, else the engine's binary32
+//! default, noted), `frame_blending` (`current_settings` and `on_for_checked_layers` = each composition
+//! layer's own Folio `frame_blending`, which composite renders; `off_for_all_layers` forces every layer
+//! off through [`apply_frame_blending_switch`] on the records the evaluator is built from),
+//! `motion_blur` (current settings = the composition's master switch and checked layers, on = the
+//! checked layers, off = none; shutter angle, phase and samples from the composition settings,
+//! STU-MOT-004 defaults 180 / 0 / 16), output format MOV VC-3 (`codec_option` = DNxHR profile) or
+//! MOV / MP4 AV1 (`codec_option` = quantizer), crop, resize, channels `rgb` (straight or
+//! premultiplied colour) and `alpha` (grey matte), depth 8 / 10, the audio group (auto = on when the
+//! composition has audio layers, on, off), Rec.709 / unset output colour space, `post_render_action`
+//! none, relative output paths under the caller's root. Refused with a stable code before rendering:
+//! a frame rate other than the comp's, wireframe, effects all off, field rendering and 3:2 pulldown
+//! (no reel encoder writes field flags, so the output could not say which field is first),
+//! `rgb_alpha` (no reel encoder carries alpha: `output_alpha_codec`; `OutputPost::apply_rgba` is the
+//! frame such an encoder would take), mono audio, any other output colour space (STU-MOT-122a before
+//! the render), project links, post-render actions.
 use super::composition::{
     CompositionAudioLayer, CompositionScenes, CompositionSpan, DEFAULT_SHARED_CACHE_BYTES, FrameRenderer, ModuleOutput,
-    MotionBlur, OutputChannels, OutputPost, SharedFrames, shared_module_jobs,
+    MotionBlur, OutputChannels, OutputPost, RenderDepth, RenderOptions, SharedFrames, shared_module_jobs,
 };
 use crate::view::monitor::MonitorFail;
 use hsk_studio_accord::CancellationToken;
@@ -32,7 +41,8 @@ use hsk_studio_composite::temporal::composition::{CompositionInput, CompositionT
 use hsk_studio_composite::text::animate::AnimatedGlyph;
 use hsk_studio_composite::{RenderInputs, SceneComposition, ScenePixels, TileInfoSource};
 use hsk_studio_folio::{
-    Budget, Resolver, StudioAudioOutput, StudioColorDepth, StudioComposition, StudioEffectsSwitch, StudioFieldRender,
+    Budget, Resolver, StudioAudioOutput, StudioColorDepth, StudioComposition, StudioCompositionRecords, StudioEffectsSwitch,
+    StudioFieldRender, StudioFrameBlending,
     StudioLayerSwitch, StudioMotionRecords, StudioOutputChannels, StudioOutputColor, StudioOutputFormat, StudioOutputModule,
     StudioPostRenderAction, StudioPulldown, StudioRenderQueueItem, StudioRenderQuality, StudioRenderResolution, StudioTimeSpan,
 };
@@ -69,8 +79,9 @@ pub type AudioResolver<'a> = &'a dyn Fn(&str, u32) -> Option<Arc<Vec<f32>>>;
 /// Module id and its reel job.
 pub type ModuleJobs = Vec<(String, ExportJob)>;
 
-/// The span `[in, out)` and frame duration of an item (module docs).
-pub fn item_span(item: &StudioRenderQueueItem, comp: &StudioComposition) -> Result<(u64, u64, u64), MonitorFail> {
+/// The span `[in, out)` and frame duration of an item (module docs); `work_area` is the
+/// composition's stored work area `(start, end)` in ticks, `None` = the whole composition.
+pub fn item_span(item: &StudioRenderQueueItem, comp: &StudioComposition, work_area: Option<(u64, u64)>) -> Result<(u64, u64, u64), MonitorFail> {
     let tpf = comp.frame_rate.ticks_per_frame().ok_or_else(|| refuse("render_frame_rate", "composition rate has no whole tick count"))?;
     if let Some(r) = item.settings.frame_rate
         && i128::from(r.numerator).saturating_mul(i128::from(comp.frame_rate.denominator))
@@ -80,36 +91,85 @@ pub fn item_span(item: &StudioRenderQueueItem, comp: &StudioComposition) -> Resu
     }
     let (start, end) = match item.settings.time_span {
         StudioTimeSpan::LengthOfComp => (0, comp.duration),
-        StudioTimeSpan::WorkAreaOnly => return Err(refuse("render_work_area_unavailable", "Folio stores no work area")),
+        StudioTimeSpan::WorkAreaOnly => work_area.unwrap_or((0, comp.duration)),
         StudioTimeSpan::Custom { start_tick, end_tick } => (start_tick, end_tick),
     };
+    if start >= end || end > comp.duration {
+        return Err(refuse("render_span_range", "the span must satisfy 0 <= start < end <= the composition length"));
+    }
     // Whole frames: the start rounds down, the end up (a partial last frame renders whole).
     let first = start.checked_div(tpf).unwrap_or(0).saturating_mul(tpf);
     let last = end.div_ceil(tpf).saturating_mul(tpf);
     Ok((first, last, tpf))
 }
 
-fn check_settings(item: &StudioRenderQueueItem) -> Result<(), MonitorFail> {
+/// A setting that rendered differently from its name (never silent; lane SMB-AE-RENDER-QUEUE-2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenderNote {
+    pub code: &'static str,
+    pub detail: String,
+}
+
+fn note(code: &'static str, detail: impl Into<String>) -> RenderNote {
+    RenderNote { code, detail: detail.into() }
+}
+
+/// Forces the Folio `frame_blending` of every layer of every composition off when the item's
+/// `frame_blending` setting is `off_for_all_layers` (the other members keep each layer's own value,
+/// module docs). Build the evaluator from the changed records and pass the matching composition.
+pub fn apply_frame_blending_switch(records: &mut StudioCompositionRecords, switch: StudioLayerSwitch) {
+    if switch == StudioLayerSwitch::OffForAllLayers {
+        for c in &mut records.compositions {
+            for l in &mut c.layers {
+                l.frame_blending = StudioFrameBlending::Off;
+            }
+        }
+    }
+}
+
+/// The render options and notes of an item's settings (module docs); refuses what is not built.
+/// `document_bits` is the document's `bits_per_channel` (what `color_depth: current_settings` takes).
+pub fn render_settings(item: &StudioRenderQueueItem, comp: &StudioComposition, document_bits: Option<u8>) -> Result<(RenderOptions, Vec<RenderNote>), MonitorFail> {
     let s = &item.settings;
-    if !matches!(s.quality, StudioRenderQuality::Best | StudioRenderQuality::CurrentSettings) {
-        return Err(refuse("render_quality", "draft and wireframe are not built"));
+    let mut notes = Vec::new();
+    match s.quality {
+        StudioRenderQuality::Best | StudioRenderQuality::CurrentSettings => {}
+        StudioRenderQuality::Draft => notes.push(note("render_quality_draft_is_best", "composite has no draft quality switch; the item renders at best quality")),
+        StudioRenderQuality::Wireframe => return Err(refuse("render_quality", "wireframe is not built")),
     }
-    if !matches!(s.resolution, StudioRenderResolution::Full | StudioRenderResolution::CurrentSettings) {
-        return Err(refuse("render_resolution", "reduced resolutions are not built"));
-    }
+    let divisor = match s.resolution {
+        StudioRenderResolution::Full | StudioRenderResolution::CurrentSettings => (1, 1),
+        StudioRenderResolution::Half => (2, 2),
+        StudioRenderResolution::Third => (3, 3),
+        StudioRenderResolution::Quarter => (4, 4),
+        StudioRenderResolution::Custom { x, y } => (x, y),
+    };
     if s.effects == StudioEffectsSwitch::AllOff {
         return Err(refuse("render_effects_switch", "effects all off is not built"));
     }
-    if !matches!(s.color_depth, StudioColorDepth::Bits8 | StudioColorDepth::CurrentSettings) {
-        return Err(refuse("render_color_depth", "16 / 32 bpc composition rendering is not built"));
-    }
+    let depth = match s.color_depth {
+        StudioColorDepth::Bits8 => RenderDepth::Bits8,
+        StudioColorDepth::Bits16 => RenderDepth::Bits16,
+        StudioColorDepth::Bits32 => RenderDepth::Bits32,
+        StudioColorDepth::CurrentSettings => match document_bits {
+            Some(8) => RenderDepth::Bits8,
+            Some(16) => RenderDepth::Bits16,
+            Some(32) => RenderDepth::Bits32,
+            other => {
+                notes.push(note("render_color_depth_current_unset", format!("no 8 / 16 / 32 document depth ({other:?}); the engine's binary32 default renders")));
+                RenderDepth::Float
+            }
+        },
+    };
     if s.field_render != StudioFieldRender::Off || s.pulldown_3_2 != StudioPulldown::Off {
-        return Err(refuse("render_fields", "field rendering and 3:2 pulldown are not built"));
+        return Err(refuse("render_fields", "field rendering and 3:2 pulldown are not built: no reel encoder writes field flags"));
     }
-    if s.frame_blending == StudioLayerSwitch::OnForCheckedLayers {
-        return Err(refuse("render_frame_blending", "frame blending is not built"));
+    if s.frame_blending == StudioLayerSwitch::OffForAllLayers && comp.layers.iter().any(|l| !l.frame_blending.is_off()) {
+        return Err(refuse("render_frame_blending_off_unapplied", "build the evaluator from apply_frame_blending_switch records and pass that composition"));
     }
-    Ok(())
+    let options = RenderOptions { divisor, depth };
+    options.size(comp.width, comp.height)?;
+    Ok((options, notes))
 }
 
 /// The motion blur of an item (module docs; `None` = no layer blurs).
@@ -221,11 +281,40 @@ pub fn render_queue_jobs_shared<S: CompositionScenes + 'static>(
     output_root: &Path,
     overwrite: bool,
 ) -> Result<(ModuleJobs, Arc<SharedFrames<S>>), MonitorFail> {
+    render_queue_build(item, comp, motion, None, scenes, audio, space, output_root, overwrite).map(|b| (b.jobs, b.shared))
+}
+
+/// The jobs of a queue item, the shared frames handle and the [`RenderNote`]s of settings that
+/// rendered differently from their name.
+pub struct RenderQueueBuild<S> {
+    pub jobs: ModuleJobs,
+    pub shared: Arc<SharedFrames<S>>,
+    pub notes: Vec<RenderNote>,
+}
+
+/// [`render_queue_jobs_shared`] with the notes; `document_bits` is the document's
+/// `bits_per_channel` (what `color_depth: current_settings` takes, [`render_settings`]).
+#[allow(clippy::too_many_arguments)]
+pub fn render_queue_build<S: CompositionScenes + 'static>(
+    item: &StudioRenderQueueItem,
+    comp: &StudioComposition,
+    motion: Option<&StudioMotionRecords>,
+    document_bits: Option<u8>,
+    scenes: ScenesFactory<'_, S>,
+    audio: AudioResolver<'_>,
+    space: ColourTag,
+    output_root: &Path,
+    overwrite: bool,
+) -> Result<RenderQueueBuild<S>, MonitorFail> {
     if item.composition_id != comp.composition_id {
         return Err(refuse("render_queue_composition", "item names another composition"));
     }
-    check_settings(item)?;
-    let (in_tick, out_tick, tpf) = item_span(item, comp)?;
+    let (options, mut notes) = render_settings(item, comp, document_bits)?;
+    let work_area = motion.and_then(|m| m.work_area(&comp.composition_id));
+    if item.settings.time_span == StudioTimeSpan::WorkAreaOnly && work_area.is_none() {
+        notes.push(note("render_work_area_whole_comp", "no work area is stored for the composition; the whole composition renders"));
+    }
+    let (in_tick, out_tick, tpf) = item_span(item, comp, work_area)?;
     let span = CompositionSpan { ticks_per_frame: tpf, in_tick, out_tick };
     let frames = span.frames()?;
     let layers = motion.and_then(|m| m.composition_audio(&comp.composition_id)).map_or(&[][..], |a| a.layers.as_slice());
@@ -256,11 +345,12 @@ pub fn render_queue_jobs_shared<S: CompositionScenes + 'static>(
             artifact: format!("{} {}", item.item_id, m.module_id),
         });
     }
-    let renderer = FrameRenderer::new(scenes()?, space, comp.width, comp.height, tpf, item_motion_blur(item, motion))?;
+    let renderer = FrameRenderer::new(scenes()?, space, comp.width, comp.height, tpf, item_motion_blur(item, motion))?.with_options(options)?;
+    let (width, height) = renderer.size();
     let consumers = u32::try_from(modules.len()).map_err(|_| refuse("output_modules", "too many output modules"))?;
     let shared = SharedFrames::new(renderer, in_tick, frames, consumers, DEFAULT_SHARED_CACHE_BYTES)?;
-    let jobs = shared_module_jobs(&shared, comp.width, comp.height, span, modules)?;
-    Ok((ids.into_iter().zip(jobs).collect(), shared))
+    let jobs = shared_module_jobs(&shared, width, height, span, modules)?;
+    Ok(RenderQueueBuild { jobs: ids.into_iter().zip(jobs).collect(), shared, notes })
 }
 
 /// [`render_queue_jobs_shared`] for the queue item `item_id` stored in a session's document
@@ -281,10 +371,31 @@ pub fn session_render_queue_jobs<P: ScenePixels + Send + 'static>(
     overwrite: bool,
     cancel: &CancellationToken,
 ) -> Result<(ModuleJobs, Arc<SharedFrames<TemporalScenes<P>>>), MonitorFail> {
+    session_render_queue_build(session, item_id, resolver, info, pixels, glyphs, audio, space, output_root, overwrite, cancel).map(|b| (b.jobs, b.shared))
+}
+
+/// [`session_render_queue_jobs`] with the notes: the item's frame-blending switch is applied to the
+/// records the evaluator is built from ([`apply_frame_blending_switch`]) and `color_depth:
+/// current_settings` takes the document's `bits_per_channel`.
+#[allow(clippy::too_many_arguments)]
+pub fn session_render_queue_build<P: ScenePixels + Send + 'static>(
+    session: &Session,
+    item_id: &str,
+    resolver: &dyn Resolver,
+    info: &dyn TileInfoSource,
+    pixels: &dyn Fn() -> P,
+    glyphs: &BTreeMap<String, (Vec<AnimatedGlyph>, [f32; 4])>,
+    audio: AudioResolver<'_>,
+    space: ColourTag,
+    output_root: &Path,
+    overwrite: bool,
+    cancel: &CancellationToken,
+) -> Result<RenderQueueBuild<TemporalScenes<P>>, MonitorFail> {
     let session_fail = |e: hsk_studio_session::SessionError| refuse("session_records", e.code());
-    let compositions = session.composition_records(resolver, cancel).map_err(session_fail)?.ok_or_else(|| refuse("session_records", "no composition records"))?;
+    let mut compositions = session.composition_records(resolver, cancel).map_err(session_fail)?.ok_or_else(|| refuse("session_records", "no composition records"))?;
     let motion = session.motion_records(resolver, cancel).map_err(session_fail)?.ok_or_else(|| refuse("session_records", "no motion records"))?;
     let item = motion.render_queue.iter().find(|q| q.item_id == item_id).ok_or_else(|| refuse("render_queue_item", item_id.to_owned()))?;
+    apply_frame_blending_switch(&mut compositions, item.settings.frame_blending);
     let comp = compositions.composition(&item.composition_id).ok_or_else(|| refuse("render_queue_composition", item.composition_id.clone()))?;
     let snapshot = session.snapshot();
     let mut scenes = || {
@@ -307,5 +418,5 @@ pub fn session_render_queue_jobs<P: ScenePixels + Send + 'static>(
         .map_err(|e| refuse("session_composition", format!("{e:?}")))?;
         Ok(TemporalScenes { source, pixels: pixels() })
     };
-    render_queue_jobs_shared(item, comp, Some(&motion), &mut scenes, audio, space, output_root, overwrite)
+    render_queue_build(item, comp, Some(&motion), Some(snapshot.document().bits_per_channel), &mut scenes, audio, space, output_root, overwrite)
 }
