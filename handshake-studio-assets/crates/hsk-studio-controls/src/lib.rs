@@ -6,10 +6,13 @@
 //! driven only by descriptors ([`egui_adapter`], headless-testable), and agent JSON / UserManual
 //! projections of the same descriptors ([`projection`]), spec-aligned scrub gestures with one undo
 //! step per gesture, an integer domain, collapsible sections, and Observe reports ([`report`]).
+//! Menu and window descriptors ([`menu`], lane SMB-HARNESS-SHELL-2): one availability evaluation
+//! feeding the egui menu bar, the agent JSON and the manual, with the menu-law audit.
 #![forbid(unsafe_code)]
 
 pub mod descriptor;
 pub mod egui_adapter;
+pub mod menu;
 pub mod projection;
 pub mod registry;
 pub mod report;
@@ -20,6 +23,7 @@ pub use descriptor::{
     ChoiceOption, ControlKind, ControlSpec, GestureRoles, IntegerSpec, NumberSpec, NumberWidget, ScrubGesture,
     SoftState,
 };
+pub use menu::{Availability, AvailabilityState, DescriptorIssue, MenuBar, MenuNode, MenuNodeKind, ReasonCode, WindowRole, WindowSpec};
 pub use registry::{AuditReport, Registry, SectionSpec};
 pub use store::{ChangeEvent, ChangeSource, EventPhase, GesturePhase, Interaction, ValueStore};
 pub use value::{ControlError, Value};
