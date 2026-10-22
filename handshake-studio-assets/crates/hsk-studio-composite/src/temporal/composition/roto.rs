@@ -376,6 +376,13 @@ impl CompositionTemporalSource {
         if let Some(r) = live.search_radius {
             opts.band_px = r;
         }
+        // STU-CMP-034 v02.218: both chatter controls are percent with hard bounds 0..=100; a value
+        // outside refuses (typed), never clamps, whichever stage would consume it.
+        for c in [params.matte_reduce_chatter, params.refine_reduce_chatter].into_iter().flatten() {
+            if !(0.0..=100.0).contains(&c) {
+                return Err(tool(id, ToolError::OutOfRange));
+            }
+        }
         let refine_active = !roto.edge_strokes.is_empty() || params.refine_edge_base_radius.is_some();
         let matte_chatter = if params.fine_tune_matte { params.matte_reduce_chatter.unwrap_or(0.0) } else { 0.0 };
         let refine_chatter = if params.fine_tune_refine_edge_matte { params.refine_reduce_chatter.unwrap_or(0.0) } else { 0.0 };
