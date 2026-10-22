@@ -55,8 +55,8 @@ fn digest(grid: &Grid) -> String {
     }
     hsk_studio_prism::hash_hex(&hsk_studio_prism::profile_hash(&bytes))
 }
-fn render_all(p: &RenderPlan, ext: &PlanExtensions, sources: &Sources<'_>) -> Vec<(Grid, usize, usize)> {
-    [(13usize, 1usize), (4, 1), (3, 2)]
+fn render_all(p: &RenderPlan, ext: &PlanExtensions, sources: &Sources<'_>) -> Vec<(Grid, u32, usize)> {
+    [(13u32, 1usize), (4, 1), (3, 2)]
         .into_iter()
         .map(|(chunk, threads)| {
             let (result, grid) = run_ext(&Renderer::with_threads(chunk, threads).unwrap(), p, ext, Exactness::Approximate, 1 << 24, sources);
@@ -65,7 +65,7 @@ fn render_all(p: &RenderPlan, ext: &PlanExtensions, sources: &Sources<'_>) -> Ve
         })
         .collect()
 }
-fn assert_reference(grids: &[(Grid, usize, usize)], want: &EffectPlane) {
+fn assert_reference(grids: &[(Grid, u32, usize)], want: &EffectPlane) {
     for (grid, chunk, _) in grids {
         for y in 0..H {
             for x in 0..W {
