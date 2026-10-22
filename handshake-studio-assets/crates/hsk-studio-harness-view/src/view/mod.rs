@@ -70,6 +70,9 @@ pub mod monitor;
 pub mod prototype;
 /// Source monitor, marks and insert / overwrite into the program sequence (lane SMB-PR-SOURCE-MONITOR).
 pub mod source_monitor;
+/// Timeline panel: tracks, clips, markers and the playhead, edits through pulse (lane SMB-TIMELINE-UI-1).
+pub mod timeline;
+mod timeline_ui;
 /// Magic wand, quick selection and liquify brush (lane SMB-PS-SELECT-LIQUIFY).
 pub mod select_liquify;
 pub mod selection_store;
@@ -215,6 +218,8 @@ pub struct Viewer {
     monitor: Option<MonitorState>,
     /// Source monitor (module [`source_monitor`]).
     source_monitor: Option<source_monitor::SourceState>,
+    /// Timeline panel (module [`timeline`]).
+    timeline: Option<timeline::TimelineState>,
     /// Prototype play mode (module [`prototype`]) and the clock of its last frame.
     prototype: Option<(prototype::PrototypePlay, std::time::Instant)>,
     /// Selections before each wand / quick-select step (module [`select_liquify`]).
@@ -296,6 +301,7 @@ impl Viewer {
             cancel,
             monitor: None,
             source_monitor: None,
+            timeline: None,
             prototype: None,
             selection_history: Vec::new(),
             records: None,
@@ -777,6 +783,7 @@ impl Viewer {
             "ops": self.run.ops(),
             "status": self.status,
             "shell": self.shell_json(),
+            "timeline": self.timeline_json(),
         });
         #[cfg(feature = "media")]
         {
@@ -965,6 +972,9 @@ impl Viewer {
         self.render_if_dirty();
 
         // Hosted surfaces; WORKSPACE > Panels shows and hides them (module shell).
+        if self.shell.visible(shell::Panel::Timeline) {
+            self.timeline_ui(ctx);
+        }
         if self.shell.visible(shell::Panel::ProgramMonitor) {
             self.monitor_ui(ctx);
         }

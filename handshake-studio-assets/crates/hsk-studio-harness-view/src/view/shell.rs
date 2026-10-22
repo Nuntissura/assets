@@ -1,8 +1,8 @@
 //! Desktop shell of the viewer (lane SMB-HARNESS-SHELL-1): a menu bar (FILE, EDIT, VIEW, WORKSPACE),
 //! keyboard shortcuts, the in-crate file dialog ([`super::file_dialog`]) for open / save / export,
 //! a recent-files list, and the WORKSPACE panel toggles that host every coded surface in the one
-//! window: layers, properties, develop, the layout editor, program monitor, source monitor, mixer,
-//! waveform editor, spectral display and prototype player.
+//! window: layers, properties, develop, the layout editor, program monitor, source monitor, timeline
+//! (lane SMB-TIMELINE-UI-1), mixer, waveform editor, spectral display and prototype player.
 //!
 //! Names follow the Studio menu law (spec 14.30, [STU-SHL-008] / [STU-SHL-010] / [STU-SHL-023] /
 //! [STU-SHL-024] / [STU-SHL-036]): menu titles FILE, EDIT, VIEW, WORKSPACE (panel show/hide toggles
@@ -64,6 +64,7 @@ pub enum Panel {
     LayoutEditor,
     ProgramMonitor,
     SourceMonitor,
+    Timeline,
     Mixer,
     WaveformEditor,
     SpectralDisplay,
@@ -71,13 +72,14 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 10] = [
+    pub const ALL: [Panel; 11] = [
         Panel::Layers,
         Panel::Properties,
         Panel::Develop,
         Panel::LayoutEditor,
         Panel::ProgramMonitor,
         Panel::SourceMonitor,
+        Panel::Timeline,
         Panel::Mixer,
         Panel::WaveformEditor,
         Panel::SpectralDisplay,
@@ -91,6 +93,7 @@ impl Panel {
             Self::LayoutEditor => "layout_editor",
             Self::ProgramMonitor => "program_monitor",
             Self::SourceMonitor => "source_monitor",
+            Self::Timeline => "timeline",
             Self::Mixer => "mixer",
             Self::WaveformEditor => "waveform_editor",
             Self::SpectralDisplay => "spectral_display",
@@ -105,6 +108,7 @@ impl Panel {
             Self::LayoutEditor => "Layout Editor",
             Self::ProgramMonitor => "Program Monitor",
             Self::SourceMonitor => "Source Monitor",
+            Self::Timeline => "Timeline",
             Self::Mixer => "Mixer",
             Self::WaveformEditor => "Waveform Editor",
             Self::SpectralDisplay => "Spectral Display",
@@ -128,6 +132,7 @@ impl Panel {
             Self::LayoutEditor => egui::Key::F5,
             Self::ProgramMonitor => egui::Key::F6,
             Self::SourceMonitor => egui::Key::F7,
+            Self::Timeline => egui::Key::F10,
             Self::Mixer => egui::Key::F8,
             Self::WaveformEditor => egui::Key::F9,
             Self::SpectralDisplay => egui::Key::F11,
@@ -142,6 +147,7 @@ impl Panel {
             Self::LayoutEditor => "F5",
             Self::ProgramMonitor => "F6",
             Self::SourceMonitor => "F7",
+            Self::Timeline => "F10",
             Self::Mixer => "F8",
             Self::WaveformEditor => "F9",
             Self::SpectralDisplay => "F11",
@@ -412,6 +418,7 @@ impl Viewer {
             Panel::LayoutEditor => self.shell.layout.is_some(),
             Panel::ProgramMonitor => self.monitor.is_some(),
             Panel::SourceMonitor => self.source_monitor.is_some(),
+            Panel::Timeline => self.timeline.is_some(),
             #[cfg(feature = "audio-batch")]
             Panel::Mixer => self.mixer.is_some(),
             #[cfg(feature = "audio-batch")]
@@ -443,6 +450,7 @@ impl Viewer {
         match panel {
             Panel::Develop => unavailable("open a camera raw or DNG first"),
             Panel::ProgramMonitor if self.first_sequence().is_none() => unavailable("the open document has no sequence"),
+            Panel::Timeline if self.first_sequence().is_none() => unavailable("the open document has no sequence"),
             Panel::Mixer if self.first_sequence().is_none() => unavailable("the open document has no sequence"),
             #[cfg(feature = "media")]
             Panel::WaveformEditor if self.audio.is_none() => unavailable("open an audio file first"),
@@ -679,6 +687,7 @@ impl Viewer {
                 self.open_dialog(Purpose::OpenSourceMedia, None);
                 Ok(())
             }
+            Panel::Timeline => self.open_timeline(),
             Panel::PrototypePlayer => {
                 self.open_dialog(Purpose::OpenPrototype, None);
                 Ok(())
@@ -738,6 +747,7 @@ impl Viewer {
         self.develop = None;
         self.monitor = None;
         self.source_monitor = None;
+        self.timeline = None;
         self.prototype = None;
         self.selection_history.clear();
         self.records = None;
