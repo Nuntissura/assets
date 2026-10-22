@@ -20,8 +20,8 @@ use hsk_studio_pigment::coverage_math::{
     BlendChannel, BlendRangeEntry, IDENTITY_RANGE, blend_if_weight_over, feather_kernel, mask_coverage,
 };
 use hsk_studio_pigment::effect_math::{
-    ColourOverlayOp, DropShadowOp, EffectKind, EffectOp, EffectPlane, GlowFill, GlowSource,
-    InnerGlowOp, InnerShadowOp, LayerParams as RefLayerParams, OuterGlowOp, StrokeOp,
+    ColourOverlayOp, DropShadowOp, EffectBlurKernel, EffectKind, EffectOp, EffectPlane, GlowFill,
+    GlowSource, InnerGlowOp, InnerShadowOp, LayerParams as RefLayerParams, OuterGlowOp, StrokeOp,
     StrokePosition, render_layer_reference,
 };
 use hsk_studio_pigment::render_plan::{
@@ -4174,6 +4174,26 @@ fn fx_wave1_parity_vs_pigment_render_layer_reference() {
             vec![EffectOp::DropShadow(
                 DropShadowOp::new([0.3, 0.1, 0.0], StudioBlendMode::Multiply, 0.8).with_size(10.0),
             )],
+            (normal, 1.0, 1.0),
+        ),
+        // Lane SMB-PS-ORACLE-PARITY-1 (STUDIO-R36 remediation): a shadow selecting the Gaussian
+        // kernel (Figma-sourced) runs the feather taps on the GPU like pigment's reference.
+        (
+            "gaussian drop shadow size 6 distance 3 and gaussian inner shadow size 4",
+            vec![
+                EffectOp::DropShadow(
+                    DropShadowOp::new(black(), normal, 0.6)
+                        .with_offset(180.0, 3.0)
+                        .with_size(6.0)
+                        .with_blur_kernel(EffectBlurKernel::Gaussian),
+                ),
+                EffectOp::InnerShadow(
+                    InnerShadowOp::new([0.2, 0.0, 0.4], normal, 0.7)
+                        .with_offset(90.0, 2.0)
+                        .with_size(4.0)
+                        .with_blur_kernel(EffectBlurKernel::Gaussian),
+                ),
+            ],
             (normal, 1.0, 1.0),
         ),
         (

@@ -311,9 +311,13 @@ pub struct DropShadowOp {
     pub spread: f32,
     pub size_px: f32,
     pub layer_knocks_out: bool,
+    /// The blur kernel of the matte chain ([`EffectBlurKernel`]; default the Photoshop tent). Not
+    /// serialised when it is the tent, so plans without a Gaussian shadow keep their encoding.
+    #[serde(skip_serializing_if = "EffectBlurKernel::is_tent")]
+    pub blur_kernel: EffectBlurKernel,
 }
 impl DropShadowOp {
-    /// A shadow with zero offset, spread and size that does not knock out.
+    /// A shadow with zero offset, spread and size that does not knock out (tent kernel).
     pub const fn new(colour: [f32; 3], mode: StudioBlendMode, opacity: f32) -> Self {
         Self {
             colour,
@@ -324,7 +328,12 @@ impl DropShadowOp {
             spread: 0.0,
             size_px: 0.0,
             layer_knocks_out: false,
+            blur_kernel: EffectBlurKernel::Tent,
         }
+    }
+    pub const fn with_blur_kernel(mut self, kernel: EffectBlurKernel) -> Self {
+        self.blur_kernel = kernel;
+        self
     }
     pub const fn with_offset(mut self, angle_deg: f32, distance_px: f32) -> Self {
         self.angle_deg = angle_deg;
@@ -404,9 +413,12 @@ pub struct InnerShadowOp {
     pub distance_px: f32,
     pub choke: f32,
     pub size_px: f32,
+    /// The blur kernel of the matte chain (as [`DropShadowOp::blur_kernel`]).
+    #[serde(skip_serializing_if = "EffectBlurKernel::is_tent")]
+    pub blur_kernel: EffectBlurKernel,
 }
 impl InnerShadowOp {
-    /// A shadow with zero offset, choke and size.
+    /// A shadow with zero offset, choke and size (tent kernel).
     pub const fn new(colour: [f32; 3], mode: StudioBlendMode, opacity: f32) -> Self {
         Self {
             colour,
@@ -416,7 +428,12 @@ impl InnerShadowOp {
             distance_px: 0.0,
             choke: 0.0,
             size_px: 0.0,
+            blur_kernel: EffectBlurKernel::Tent,
         }
+    }
+    pub const fn with_blur_kernel(mut self, kernel: EffectBlurKernel) -> Self {
+        self.blur_kernel = kernel;
+        self
     }
     pub const fn with_offset(mut self, angle_deg: f32, distance_px: f32) -> Self {
         self.angle_deg = angle_deg;
@@ -692,6 +709,15 @@ impl EffectOp {
             Self::PatternOverlay(o) => o.opacity,
         }
     }
+    /// The blur kernel of the effect's matte chain: the op's own choice for the drop and inner
+    /// shadow ([`EffectBlurKernel`]), the Photoshop tent for every other kind.
+    pub const fn blur_kernel(&self) -> EffectBlurKernel {
+        match self {
+            Self::DropShadow(o) => o.blur_kernel,
+            Self::InnerShadow(o) => o.blur_kernel,
+            _ => EffectBlurKernel::Tent,
+        }
+    }
     /// The uniform colour of the effect. A gradient overlay has a colour per pixel
     /// (`style::gradient_at`); this returns its first stop's colour, which only parameter
     /// validation reads.
@@ -796,6 +822,62 @@ fn glow_ok(
         return Err(EffectError::Unsupported(EffectFeature::GlowJitter));
     }
     Ok(())
+}
+
+/// The blur kernel of a drop or inner shadow's matte chain (lane SMB-PS-ORACLE-PARITY-1,
+/// remediation of STUDIO-R36 FAIL_V1 `figma_parity_bound_regressed_by_effect_blur_change`): the
+/// kernel belongs to the effect's source application, so a Figma shadow does not inherit
+/// Photoshop's.
+///
+/// - `Tent` (default): Photoshop's layer-effect blur, [`effect_blur_kernel`] (D5 oracle PS-C12,
+///   PS-C15, PS-C16; harness `tests/d5_ps_compare.rs`).
+/// - `Gaussian`: a Gaussian of standard deviation `size / 2`, the taps of
+///   [`crate::coverage_math::feather_kernel`] (support `ceil(3 sigma)`). Figma documents that its
+///   shadow effects translate to CSS `box-shadow` (help.figma.com "Apply effects to layers"), and
+///   CSS Backgrounds 3 section 6.1.2 defines the box-shadow blur as a Gaussian with a standard
+///   deviation of half the blur radius; that Figma's own rasteriser equals that Gaussian is
+///   UNVERIFIED (D5). Selected by interop-fig through the Folio effect record
+///   (`tests/effects.rs` `gaussian_kernel_is_selected_per_shadow`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+pub enum EffectBlurKernel {
+    #[default]
+    Tent,
+    Gaussian,
+}
+impl EffectBlurKernel {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Tent => "tent",
+            Self::Gaussian => "gaussian",
+        }
+    }
+    /// `true` for the default tent (serde skip predicate).
+    pub const fn is_tent(&self) -> bool {
+        matches!(self, Self::Tent)
+    }
+    /// The normalised separable taps of a blur of `size_px` (identity `[1.0]` for 0). Non-finite or
+    /// negative is `OutOfDomain`, above [`MAX_EFFECT_SIZE_PX`] `SizeOutOfRange`, for both kernels.
+    pub fn taps(self, size_px: f32) -> Result<Vec<f32>, EffectError> {
+        match self {
+            Self::Tent => effect_blur_kernel(size_px),
+            Self::Gaussian => {
+                bounded(size_px, MAX_EFFECT_SIZE_PX, EffectError::SizeOutOfRange)?;
+                crate::coverage_math::feather_kernel(size_px)
+                    .map_err(|_| EffectError::SizeOutOfRange)
+            }
+        }
+    }
+    /// Half-width in pixels of [`Self::taps`].
+    pub fn support(self, size_px: f32) -> Result<u32, EffectError> {
+        match self {
+            Self::Tent => effect_blur_support(size_px),
+            Self::Gaussian => {
+                bounded(size_px, MAX_EFFECT_SIZE_PX, EffectError::SizeOutOfRange)?;
+                crate::coverage_math::feather_support(size_px)
+                    .map_err(|_| EffectError::SizeOutOfRange)
+            }
+        }
+    }
 }
 
 /// The blur radius [`effect_blur_kernel`] uses for `size_px`: 0 for 0, otherwise `max(size, 2)`.
@@ -946,15 +1028,17 @@ pub fn effect_support_px(op: &EffectOp) -> Result<u32, EffectError> {
     match op {
         EffectOp::DropShadow(o) => {
             let (spread_px, blur_px) = shadow_split(o.size_px, o.spread);
-            let blur = effect_blur_support(blur_px)?;
+            let blur = o.blur_kernel.support(blur_px)?;
             ceil(o.distance_px)
                 .checked_add(grow_reach_px(spread_px))
                 .and_then(|v| v.checked_add(blur))
                 .ok_or(EffectError::Overflow)
         }
-        EffectOp::InnerShadow(o) => grown_support(o.size_px, o.choke, ceil(o.distance_px)),
-        EffectOp::OuterGlow(o) => grown_support(o.size_px, o.spread, 0),
-        EffectOp::InnerGlow(o) => grown_support(o.size_px, o.choke, 0),
+        EffectOp::InnerShadow(o) => {
+            grown_support(o.blur_kernel, o.size_px, o.choke, ceil(o.distance_px))
+        }
+        EffectOp::OuterGlow(o) => grown_support(EffectBlurKernel::Tent, o.size_px, o.spread, 0),
+        EffectOp::InnerGlow(o) => grown_support(EffectBlurKernel::Tent, o.size_px, o.choke, 0),
         EffectOp::ColourOverlay(_) | EffectOp::GradientOverlay(_) | EffectOp::PatternOverlay(_) => Ok(0),
         EffectOp::Satin(o) => style::satin_support(o),
         EffectOp::BevelEmboss(o) => style::bevel_support(o),
@@ -966,9 +1050,14 @@ pub fn effect_support_px(op: &EffectOp) -> Result<u32, EffectError> {
 }
 
 /// `offset + grow reach + blur half-width` of a grown-then-blurred matte.
-fn grown_support(size_px: f32, grow: f32, offset: u32) -> Result<u32, EffectError> {
+fn grown_support(
+    kernel: EffectBlurKernel,
+    size_px: f32,
+    grow: f32,
+    offset: u32,
+) -> Result<u32, EffectError> {
     let (grown_px, blur_px) = shadow_split(size_px, grow);
-    let blur = effect_blur_support(blur_px)?;
+    let blur = kernel.support(blur_px)?;
     offset
         .checked_add(grow_reach_px(grown_px))
         .and_then(|v| v.checked_add(blur))
@@ -1221,6 +1310,18 @@ fn shift_ext(
 fn matte_chain(
     matte: &[f32],
     g: Grid,
+    split: (f32, f32),
+    offset: (i32, i32),
+    outside: f32,
+) -> Result<Vec<f32>, EffectError> {
+    matte_chain_with(EffectBlurKernel::Tent, matte, g, split, offset, outside)
+}
+
+/// [`matte_chain`] with the blur kernel of a drop or inner shadow ([`EffectBlurKernel`]).
+fn matte_chain_with(
+    kernel: EffectBlurKernel,
+    matte: &[f32],
+    g: Grid,
     (grown_px, blur_px): (f32, f32),
     (dx, dy): (i32, i32),
     outside: f32,
@@ -1230,7 +1331,7 @@ fn matte_chain(
     } else {
         matte.to_vec()
     };
-    let kernel = effect_blur_kernel(blur_px)?;
+    let kernel = kernel.taps(blur_px)?;
     let blurred = blur_ext(&grown, g, &kernel, outside)?;
     shift_ext(&blurred, g, dx, dy, outside)
 }
@@ -1344,7 +1445,7 @@ pub fn reference_matte_with(
         EffectOp::DropShadow(o) => {
             let split = shadow_split(o.size_px, o.spread);
             let offset = shadow_offset(o.angle_deg, o.distance_px)?;
-            let mut matte = matte_chain(alpha, g, split, offset, 0.0)?;
+            let mut matte = matte_chain_with(o.blur_kernel, alpha, g, split, offset, 0.0)?;
             if o.layer_knocks_out {
                 for (m, a) in matte.iter_mut().zip(alpha) {
                     *m *= 1.0 - a;
@@ -1360,7 +1461,14 @@ pub fn reference_matte_with(
         EffectOp::InnerShadow(o) => {
             let offset = shadow_offset(o.angle_deg, o.distance_px)?;
             let inverted: Vec<f32> = alpha.iter().map(|a| 1.0 - a).collect();
-            let matte = matte_chain(&inverted, g, shadow_split(o.size_px, o.choke), offset, 1.0)?;
+            let matte = matte_chain_with(
+                o.blur_kernel,
+                &inverted,
+                g,
+                shadow_split(o.size_px, o.choke),
+                offset,
+                1.0,
+            )?;
             Ok(matte.iter().zip(alpha).map(|(m, a)| m * a).collect())
         }
         EffectOp::InnerGlow(o) => {
@@ -1465,7 +1573,14 @@ pub fn reference_interior_matte(
         EffectOp::InnerShadow(o) => {
             let offset = shadow_offset(o.angle_deg, o.distance_px)?;
             let inverted: Vec<f32> = alpha.iter().map(|a| 1.0 - a).collect();
-            matte_chain(&inverted, g, shadow_split(o.size_px, o.choke), offset, 1.0)
+            matte_chain_with(
+                o.blur_kernel,
+                &inverted,
+                g,
+                shadow_split(o.size_px, o.choke),
+                offset,
+                1.0,
+            )
         }
         EffectOp::InnerGlow(o) => {
             let inverted: Vec<f32> = alpha.iter().map(|a| 1.0 - a).collect();

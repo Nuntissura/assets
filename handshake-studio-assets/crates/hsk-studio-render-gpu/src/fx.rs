@@ -15,7 +15,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_pigment::coverage_math::feather_kernel;
 use hsk_studio_pigment::effect_math::{
-    BevelEmbossOp, BevelPart, BevelStyle, BevelTechnique, EffectError, EffectOp, EffectOrder,
+    BevelEmbossOp, BevelPart, BevelStyle, BevelTechnique, EffectBlurKernel, EffectError, EffectOp,
+    EffectOrder,
     GROW_WEIGHTS, GlowSource, GradientOverlayOp, PatternOverlayOp, SatinOp, StrokePosition,
     effect_blur_kernel, effect_support_px, grow_reach_px, shadow_offset, shadow_split,
 };
@@ -148,8 +149,19 @@ fn from_effect(e: EffectError) -> FxError {
 pub(crate) enum BlurKind {
     /// `effect_math::effect_blur_kernel` (drop and inner shadow, glows, satin, bevel soften).
     Tent,
-    /// `coverage_math::feather_kernel` (bevel height field, chisel soft).
+    /// `coverage_math::feather_kernel` (bevel height field, chisel soft, and a drop or inner shadow
+    /// whose op selects [`EffectBlurKernel::Gaussian`]: pigment's Gaussian effect kernel is the
+    /// feather kernel of the same radius).
     Gauss,
+}
+
+/// The pass kernel of a drop or inner shadow's [`EffectBlurKernel`] (lane SMB-PS-ORACLE-PARITY-1,
+/// STUDIO-R36 remediation): the taps stay pigment's, so the GPU matte equals the CPU reference.
+fn blur_kind(kernel: EffectBlurKernel) -> BlurKind {
+    match kernel {
+        EffectBlurKernel::Gaussian => BlurKind::Gauss,
+        _ => BlurKind::Tent,
+    }
 }
 
 /// The taps of a blur of `blur_px` of `kind` (pigment's kernels).
@@ -283,6 +295,21 @@ fn matte_chain(
     limit: u64,
     init_mode: u32,
     outside: f32,
+    split: (f32, f32),
+    offset: (i32, i32),
+    finish: Option<u32>,
+) -> Result<(Vec<FxStep>, u64), FxError> {
+    matte_chain_with(BlurKind::Tent, kernels, limit, init_mode, outside, split, offset, finish)
+}
+
+/// [`matte_chain`] with the blur kernel kind of a drop or inner shadow ([`blur_kind`]).
+#[allow(clippy::too_many_arguments)]
+fn matte_chain_with(
+    kind: BlurKind,
+    kernels: &mut FxKernels,
+    limit: u64,
+    init_mode: u32,
+    outside: f32,
     (grown_px, blur_px): (f32, f32),
     (dx, dy): (i32, i32),
     finish: Option<u32>,
@@ -295,9 +322,9 @@ fn matte_chain(
         steps.push(s);
     }
     // The identity kernel [1.0] leaves every sample unchanged (1.0 * v), so no pass is spent on it.
-    let taps_len = kernel_taps(BlurKind::Tent, blur_px)?.len();
+    let taps_len = kernel_taps(kind, blur_px)?.len();
     if taps_len > 1 {
-        let index = kernels.intern(BlurKind::Tent, blur_px, limit)?;
+        let index = kernels.intern(kind, blur_px, limit)?;
         let half = u32::try_from(taps_len.saturating_sub(1) / 2).map_err(|_| FxError::Overflow)?;
         for op in [OP_BLUR_H, OP_BLUR_V] {
             let mut s = FxStep::new(op, 0);
@@ -339,7 +366,8 @@ pub(crate) fn compile_effect(
         }
         EffectOp::DropShadow(o) => {
             let offset = shadow_offset(o.angle_deg, o.distance_px).map_err(from_effect)?;
-            let (mut steps, ops) = matte_chain(
+            let (mut steps, ops) = matte_chain_with(
+                blur_kind(o.blur_kernel),
                 kernels,
                 limit,
                 0,
@@ -372,7 +400,8 @@ pub(crate) fn compile_effect(
         EffectOp::InnerShadow(o) => {
             let offset = shadow_offset(o.angle_deg, o.distance_px).map_err(from_effect)?;
             // the interior coverage: the chain without the multiply by the alpha
-            matte_chain(
+            matte_chain_with(
+                blur_kind(o.blur_kernel),
                 kernels,
                 limit,
                 1,

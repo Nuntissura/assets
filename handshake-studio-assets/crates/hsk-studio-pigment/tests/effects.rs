@@ -3,8 +3,9 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::adjust_math::AdjustmentOp;
 use hsk_studio_pigment::effect_math::{
-    ColourOverlayOp, DropShadowOp, EffectError, EffectKind, EffectOp, EffectPlane, LayerParams,
-    StrokeOp, StrokePosition, effect_support_px, reference_matte, render_layer_reference,
+    ColourOverlayOp, DropShadowOp, EffectBlurKernel, EffectError, EffectKind, EffectOp,
+    EffectPlane, InnerShadowOp, LayerParams, StrokeOp, StrokePosition, effect_blur_kernel,
+    effect_blur_support, effect_support_px, reference_matte, render_layer_reference,
     render_reference, shadow_offset,
 };
 use hsk_studio_pigment::render_plan::*;
@@ -654,4 +655,79 @@ fn effect_limits_validation_and_budget() {
         ))),
         Ok(0)
     );
+}
+
+/// Lane SMB-PS-ORACLE-PARITY-1, STUDIO-R36 remediation (`figma_parity_bound_regressed_by_effect_blur_change`):
+/// the blur kernel is chosen per shadow. The default stays Photoshop's tent (the D5 oracle suite
+/// depends on it); `Gaussian` (Figma-sourced shadows) is the Gaussian of sigma size / 2. Every
+/// expected value is derived here by hand.
+#[test]
+fn gaussian_kernel_is_selected_per_shadow() {
+    // Defaults: both shadow ops and every other kind use the tent.
+    assert_eq!(EffectBlurKernel::default(), EffectBlurKernel::Tent);
+    assert_eq!(shadow(1.0).blur_kernel, EffectBlurKernel::Tent);
+    assert_eq!(InnerShadowOp::new(BLACK, NORMAL, 1.0).blur_kernel, EffectBlurKernel::Tent);
+    let overlay = EffectOp::ColourOverlay(ColourOverlayOp::new(RED, NORMAL, 1.0));
+    assert_eq!(overlay.blur_kernel(), EffectBlurKernel::Tent);
+    assert_eq!(EffectBlurKernel::Tent.taps(10.0).unwrap(), effect_blur_kernel(10.0).unwrap());
+    assert_eq!(EffectBlurKernel::Tent.support(10.0).unwrap(), effect_blur_support(10.0).unwrap());
+
+    // Gaussian of size 2: sigma 1, support ceil(3 sigma) = 3, taps exp(-i^2 / 2) normalised.
+    let g = EffectBlurKernel::Gaussian.taps(2.0).unwrap();
+    assert_eq!(g.len(), 7);
+    assert_eq!(EffectBlurKernel::Gaussian.support(2.0).unwrap(), 3);
+    let raw: Vec<f64> = (-3i32..=3).map(|i| (-f64::from(i * i) / 2.0).exp()).collect();
+    let sum: f64 = raw.iter().sum();
+    for (t, r) in g.iter().zip(&raw) {
+        assert!(close(*t, (r / sum) as f32), "{t} vs {}", r / sum);
+    }
+    // Size 0 is the identity for both kernels; size 10: sigma 5, support 15 (tent: 9).
+    assert_eq!(EffectBlurKernel::Gaussian.taps(0.0).unwrap(), vec![1.0]);
+    assert_eq!(EffectBlurKernel::Gaussian.support(10.0).unwrap(), 15);
+    // Hostile sizes are the tent's typed refusals.
+    for k in [EffectBlurKernel::Tent, EffectBlurKernel::Gaussian] {
+        assert_eq!(k.taps(f32::NAN).unwrap_err(), EffectError::OutOfDomain);
+        assert_eq!(k.taps(-1.0).unwrap_err(), EffectError::OutOfDomain);
+        assert_eq!(k.taps(1_000.5).unwrap_err(), EffectError::SizeOutOfRange);
+        assert_eq!(k.support(f32::INFINITY).unwrap_err(), EffectError::OutOfDomain);
+    }
+
+    // The support of a Gaussian drop shadow: distance 3 + blur half-width 15.
+    let gauss = shadow(1.0)
+        .with_offset(180.0, 3.0)
+        .with_size(10.0)
+        .with_blur_kernel(EffectBlurKernel::Gaussian);
+    assert_eq!(effect_support_px(&EffectOp::DropShadow(gauss)).unwrap(), 18);
+    let tent = shadow(1.0).with_offset(180.0, 3.0).with_size(10.0);
+    assert_eq!(effect_support_px(&EffectOp::DropShadow(tent)).unwrap(), 12);
+    let inner = InnerShadowOp::new(BLACK, NORMAL, 1.0)
+        .with_size(4.0)
+        .with_blur_kernel(EffectBlurKernel::Gaussian);
+    assert_eq!(effect_support_px(&EffectOp::InnerShadow(inner)).unwrap(), 6);
+
+    // Matte of one opaque pixel in a 9 x 1 plane, Gaussian size 2, no offset: the separable blur
+    // of a delta is the 2-D kernel, so along the row the matte is tap(i) * tap(0).
+    let dot = plane(9, 1, |x, _| (RED, if x == 4 { 1.0 } else { 0.0 }));
+    let op = EffectOp::DropShadow(shadow(1.0).with_size(2.0).with_blur_kernel(EffectBlurKernel::Gaussian));
+    let m = reference_matte(&dot, &op).unwrap();
+    for x in 0..9u32 {
+        let i = x as i32 - 4;
+        let want = if i.abs() <= 3 { g[(i + 3) as usize] * g[3] } else { 0.0 };
+        assert!(close(at(&m, 9, x, 0), want), "x {x}: {} vs {want}", at(&m, 9, x, 0));
+    }
+    // The tent of the same size gives a different matte ([1, 2, 1] / 4 at size 2): centre 1/4.
+    let t = reference_matte(&dot, &EffectOp::DropShadow(shadow(1.0).with_size(2.0))).unwrap();
+    assert!(close(at(&t, 9, 4, 0), 0.25));
+    assert!(!close(at(&m, 9, 4, 0), at(&t, 9, 4, 0)));
+
+    // Serialisation: the tent is not encoded (existing plans keep their bytes), the Gaussian is.
+    let tent_json = serde_json_like(&EffectOp::DropShadow(shadow(1.0)));
+    assert!(!tent_json.contains("blur_kernel"), "{tent_json}");
+    let gauss_json = serde_json_like(&EffectOp::DropShadow(gauss));
+    assert!(gauss_json.contains("blur_kernel") && gauss_json.contains("Gaussian"), "{gauss_json}");
+}
+
+/// The op's serde encoding as text (pigment serialises plans; no JSON crate needed here).
+fn serde_json_like(op: &EffectOp) -> String {
+    serde_json::to_string(op).unwrap()
 }

@@ -29,7 +29,7 @@
 //! The receipt reports the measured peak, which equals the prediction in the tests.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
-    EffectError, EffectOp, EffectOrder, GlowSource, LayerParams, MAX_EFFECTS_PER_LAYER,
+    EffectBlurKernel, EffectError, EffectOp, EffectOrder, GlowSource, LayerParams, MAX_EFFECTS_PER_LAYER,
     StrokePosition, effect_blur_kernel, effect_support_px, grow_coverage, grow_distance,
     grow_reach_px, knockout_coverage, shadow_offset, shadow_split, unit,
 };
@@ -424,11 +424,21 @@ struct ChainPlan {
 impl ChainPlan {
     fn new(
         inverted: bool,
+        split: (f32, f32),
+        offset: (i32, i32),
+        post: Post,
+    ) -> WResult<Self> {
+        Self::with_kernel(EffectBlurKernel::Tent, inverted, split, offset, post)
+    }
+    /// [`Self::new`] with the blur kernel of a drop or inner shadow.
+    fn with_kernel(
+        blur: EffectBlurKernel,
+        inverted: bool,
         (grown_px, blur_px): (f32, f32),
         offset: (i32, i32),
         post: Post,
     ) -> WResult<Self> {
-        let kernel = effect_blur_kernel(blur_px)?;
+        let kernel = blur.taps(blur_px)?;
         let kb = u32::try_from(kernel.len() / 2).map_err(|_| WindowError::Overflow)?;
         let kd = grow_reach_px(grown_px);
         Ok(Self {
@@ -541,7 +551,8 @@ fn prepare(op: &EffectOp) -> WResult<Plan> {
                 interior: false,
             }
         }
-        EffectOp::DropShadow(o) => Plan::Chain(ChainPlan::new(
+        EffectOp::DropShadow(o) => Plan::Chain(ChainPlan::with_kernel(
+            o.blur_kernel,
             false,
             shadow_split(o.size_px, o.spread),
             shadow_offset(o.angle_deg, o.distance_px)?,
@@ -557,7 +568,8 @@ fn prepare(op: &EffectOp) -> WResult<Plan> {
             (0, 0),
             Post::Knockout,
         )?),
-        EffectOp::InnerShadow(o) => Plan::Chain(ChainPlan::new(
+        EffectOp::InnerShadow(o) => Plan::Chain(ChainPlan::with_kernel(
+            o.blur_kernel,
             true,
             shadow_split(o.size_px, o.choke),
             shadow_offset(o.angle_deg, o.distance_px)?,

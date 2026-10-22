@@ -9,7 +9,7 @@ use hsk_studio_pigment::effect_math::window::{
     window_matte,
 };
 use hsk_studio_pigment::effect_math::{
-    DropShadowOp, EffectError, EffectOp, EffectPlane, GlowFill, GlowSource, InnerGlowOp,
+    DropShadowOp, EffectBlurKernel, EffectError, EffectOp, EffectPlane, GlowFill, GlowSource, InnerGlowOp,
     InnerShadowOp, LayerParams, OuterGlowOp, StrokeOp, StrokePosition, effect_support_px,
     reference_matte, render_layer_reference,
 };
@@ -111,6 +111,27 @@ fn all_ops() -> Vec<(&'static str, EffectOp)> {
         (
             "drop_shadow plain fractional offset",
             EffectOp::DropShadow(DropShadowOp::new(BLACK, NORMAL, 1.0).with_offset(180.0, 2.5)),
+        ),
+        // Lane SMB-PS-ORACLE-PARITY-1 (STUDIO-R36 remediation): Figma-sourced Gaussian shadows.
+        (
+            "drop_shadow gaussian kernel knockout",
+            EffectOp::DropShadow(
+                DropShadowOp::new(BLACK, NORMAL, 0.75)
+                    .with_size(6.0)
+                    .with_offset(30.0, 4.0)
+                    .with_layer_knocks_out(true)
+                    .with_blur_kernel(EffectBlurKernel::Gaussian),
+            ),
+        ),
+        (
+            "inner_shadow gaussian kernel choke",
+            EffectOp::InnerShadow(
+                InnerShadowOp::new(BLACK, NORMAL, 0.8)
+                    .with_size(4.0)
+                    .with_choke(0.25)
+                    .with_offset(60.0, 3.0)
+                    .with_blur_kernel(EffectBlurKernel::Gaussian),
+            ),
         ),
         (
             "colour_overlay",
