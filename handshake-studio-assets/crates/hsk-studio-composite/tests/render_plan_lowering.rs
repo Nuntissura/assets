@@ -1414,15 +1414,21 @@ fn effect_stack_lowers_to_pigment_ops_that_render_as_derived() {
         let out = render_layer_reference(&none, &one, LayerParams::plain(), &low.extensions.layers[1].effects[..1]).unwrap();
         assert_pixel(&out, 0, 0, Some([0.5, 0.0, 0.5]), 1.0);
 
-        // The stroke (1 px outside, white) around a 3 x 3 square at 2..4 of a 7 x 7 plane: the
-        // pixel next to an edge is fully white, two pixels away nothing, the square stays blue.
+        // The stroke (1 px outside, white) around a 3 x 3 square at 2..4 of a 7 x 7 plane, grown by
+        // pigment's Photoshop grow (lane SMB-PS-ORACLE-PARITY-2, D5 PS-C13; pigment
+        // effect_math::grow_coverage clamp(r + src - d) with the chamfer d of GROW_WEIGHTS,
+        // w1 = 0.9996205): the pixel next to an edge (d = w1) is fully white; two pixels away along
+        // an axis (d = 2 w1) keeps the fringe 2 - 2 w1 = 0.000759 (pinned the same in pigment
+        // tests/effects.rs and render-cpu tests/cpu_effects.rs); a knight step away (d = w5) nothing;
+        // the square stays blue.
         let covered: Vec<(u32, u32)> = (2..5).flat_map(|y| (2..5).map(move |x| (x, y))).collect();
         let square = plane_with(7, 7, &covered, blue);
         let none = EffectPlane::transparent(7, 7).unwrap();
         let out = render_layer_reference(&none, &square, LayerParams::plain(), &low.extensions.layers[1].effects[1..]).unwrap();
         assert_pixel(&out, 1, 3, Some([1.0; 3]), 1.0);
         assert_pixel(&out, 5, 3, Some([1.0; 3]), 1.0);
-        assert_pixel(&out, 0, 3, None, 0.0);
+        assert_pixel(&out, 0, 3, Some([1.0; 3]), 0.000_759);
+        assert_pixel(&out, 0, 1, None, 0.0);
         assert_pixel(&out, 3, 3, Some(blue), 1.0);
     });
 }
@@ -1653,8 +1659,12 @@ fn inner_shadow_and_glows_lower_to_pigment_ops_that_render_as_derived() {
         }
 
         // Inner glow from the edge, 5 x 5 plane, blue 3 x 3 square at 1..3: choke 100 percent of
-        // size 1 grows the inverted matte by one pixel, so the 8 square pixels next to the outline
-        // are white (opacity 1), the centre stays blue, and nothing is drawn outside the square.
+        // size 1 grows the inverted matte by one pixel with pigment's Photoshop grow (lane
+        // SMB-PS-ORACLE-PARITY-2: clamp(r + src - d), chamfer d, w1 = 0.9996205), so the 8 square
+        // pixels next to the outline (d = w1) are white (opacity 1); the centre, two axis steps from
+        // the outside (d = 2 w1), keeps the fringe c = 2 - 2 w1 = 0.000759 (pigment
+        // tests/effects.rs and render-cpu tests/cpu_effects.rs pin the same fringe), so it is
+        // blue + c (white - blue) = (c, c, 1); nothing is drawn outside the square.
         let covered: Vec<(u32, u32)> = (1..4).flat_map(|y| (1..4).map(move |x| (x, y))).collect();
         let square = plane_with(5, 5, &covered, blue);
         let none5 = EffectPlane::transparent(5, 5).unwrap();
@@ -1662,17 +1672,18 @@ fn inner_shadow_and_glows_lower_to_pigment_ops_that_render_as_derived() {
         for (x, y) in covered.iter().filter(|p| **p != (2, 2)) {
             assert_pixel(&out, *x, *y, Some([1.0; 3]), 1.0);
         }
-        assert_pixel(&out, 2, 2, Some(blue), 1.0);
+        assert_pixel(&out, 2, 2, Some([0.000_759, 0.000_759, 1.0]), 1.0);
         assert_pixel(&out, 0, 0, None, 0.0);
         assert_pixel(&out, 4, 2, None, 0.0);
 
-        // Source centre inverts it: the centre is white, the ring stays blue.
+        // Source centre inverts it (matte 1 - grow): the centre is white but for the fringe,
+        // 1 - c = 0.999241 in red and green; the ring stays blue.
         let centre = fx_records(None, json!([{"layer_id":identity("SLYR",3),"effects":fx_stack(vec![
             fx_effect("ig_2", 100.0, fx_colour(1.0,1.0,1.0), false,
                 fx_glow("inner_glow", json!({"source":"centre","choke":100.0,"size":1.0})))])}]));
         let low_c = flow_space(&tiled(), &centre, BlendSpace::Encoded).1.unwrap();
         let out = render_layer_reference(&none5, &square, LayerParams::plain(), &low_c.extensions.layers[0].effects).unwrap();
-        assert_pixel(&out, 2, 2, Some([1.0; 3]), 1.0);
+        assert_pixel(&out, 2, 2, Some([0.999_241, 0.999_241, 1.0]), 1.0);
         assert_pixel(&out, 1, 1, Some(blue), 1.0);
         assert_pixel(&out, 3, 2, Some(blue), 1.0);
 
