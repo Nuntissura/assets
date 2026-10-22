@@ -17,8 +17,18 @@
 //! that the set does not hold; [`check_story_style_scopes`] refuses a story that binds a paragraph
 //! to a character style or a range to a paragraph style.
 //!
+//! Composition (lane SMB-LAYOUT-COMPOSER-WIRING): [`StudioCompositionSettings`] carries the
+//! composer axes, hyphenation, H&J spacing, single-word justification and auto-leading amount
+//! (STU-TYP-135, 146-148, 150-151) per paragraph style (`style_composition`) and as local paragraph
+//! overrides (`paragraph_composition`, STU-TYP-201 step 4), beside the styles so the style record
+//! and its wire form are unchanged; empty lists are not encoded, so existing documents keep their
+//! bytes. Not stored: `composer_name` and the composer registry (STU-TYP-136), kinsoku/mojikumi
+//! tables and the leading model (137-139), `balance_ragged_lines` (141), the nine-value
+//! justification mode (145), `allow_arbitrary_hyphenation`, `hyphenation_preference`, provider
+//! style and exceptions (151-154), `use_auto_leading` as a flag separate from `line_height`.
+//!
 //! Declared gaps, not invented here: the full character/paragraph attribute groups of 14.7 (OpenType
-//! features, decoration, baseline shift, indents, spacing, hyphenation, composer, nested styles;
+//! features, decoration, baseline shift, indents, spacing, nested styles;
 //! GREP styles are carried since SMB-LAYOUT-UI as `grep_styles`), override reporting (STU-TYP-202) and variable-bound fields (STU-TYP-204) are not stored;
 //! the `StudioStyleRegistry` storage and publishing fields (14.6/14.10) stay with the design records
 //! (`PAINT` entries only). Bounds the spec does not state are checked for finiteness and their
@@ -136,6 +146,186 @@ pub const MAX_GREP_PATTERN_BYTES: usize = 1024;
 /// GREP rules per paragraph style (a Folio hard ceiling).
 pub const MAX_GREP_STYLES: usize = 64;
 
+/// STU-TYP-135 `composition_scope`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioCompositionScope {
+    /// Each line composed in isolation (Adobe Single-line Composer).
+    SingleLine,
+    /// All lines of the paragraph weighed together (Adobe Paragraph Composer).
+    EveryLine,
+}
+
+/// STU-TYP-135 `composition_engine`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioCompositionEngine {
+    LatinCjk,
+    WorldReady,
+    Adornment,
+}
+
+/// STU-TYP-146 `single_word_justification`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioSingleWordJustification {
+    LeftAlign,
+    CenterAlign,
+    RightAlign,
+    FullyJustified,
+}
+
+/// STU-TYP-147 word-spacing hard bounds (percent).
+pub const WORD_SPACING_PERCENT: (f64, f64) = (0.0, 1000.0);
+/// STU-TYP-147 letter-spacing hard bounds (percent).
+pub const LETTER_SPACING_PERCENT: (f64, f64) = (-100.0, 500.0);
+/// STU-TYP-147 glyph-scaling hard bounds (percent).
+pub const GLYPH_SCALING_PERCENT: (f64, f64) = (50.0, 200.0);
+/// STU-TYP-148 `auto_leading_amount` hard bounds (percent).
+pub const AUTO_LEADING_PERCENT: (f64, f64) = (0.0, 500.0);
+/// STU-TYP-150 `hyphen_weight` hard maximum.
+pub const MAX_HYPHEN_WEIGHT: u32 = 100;
+/// Paragraph composition overrides per record set (a Folio hard ceiling; the spec declares none).
+pub const MAX_PARAGRAPH_COMPOSITION: usize = 65_536;
+
+/// Paragraph composition settings (lane SMB-LAYOUT-COMPOSER-WIRING): the composer axes of
+/// STU-TYP-135, the hyphenation record of STU-TYP-150/151, the H&J spacing block of STU-TYP-147,
+/// single-word justification (STU-TYP-146) and the auto-leading amount (STU-TYP-148), under the spec
+/// field names. Every field is optional: absent means "not set here" and falls through the
+/// STU-TYP-201 order (paragraph style `based_on` chain root first, then the local paragraph
+/// override); a paragraph with nothing set anywhere composes as before these fields existed.
+/// Spacing fields are percent (word and letter spacing of the font's word space, glyph scaling of
+/// the glyph width); counts are letters / lines. `hyphenate_ladder_limit` = 0 is the UNLIMITED
+/// sentinel, not a prohibition (STU-TYP-150). `hyphenation_zone` is consumed only with
+/// `composition_scope = single_line` (STU-TYP-150). Bounds: the STU-TYP-147/148/150 hard bounds
+/// (constants above); where the spec states UNKNOWN only finiteness and the physical domain are
+/// checked. Within one settings record a stated minimum / desired / maximum triple must be
+/// ordered; ordering across inheritance is checked by the consumer after resolution.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioCompositionSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_scope: Option<StudioCompositionScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_engine: Option<StudioCompositionEngine>,
+    /// STU-TYP-150 master switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenation: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenate_words_longer_than: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenate_after_first: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenate_before_last: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenate_ladder_limit: Option<u32>,
+    /// 0..=100; LOWER = more hyphens (STU-TYP-150 direction).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphen_weight: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenation_zone: Option<Length>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenate_capitalized_words: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenate_last_word: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenate_across_columns: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_spacing_minimum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_spacing_desired: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_spacing_maximum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub letter_spacing_minimum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub letter_spacing_desired: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub letter_spacing_maximum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph_scaling_minimum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph_scaling_desired: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph_scaling_maximum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_word_justification: Option<StudioSingleWordJustification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_leading_amount: Option<f64>,
+}
+impl StudioCompositionSettings {
+    /// True when no field is set.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+    /// `self` with every field `top` sets replaced by `top`'s value (STU-TYP-201: later wins).
+    pub fn overlaid(&self, top: &Self) -> Self {
+        macro_rules! pick {
+            ($($f:ident),*) => { Self { $($f: top.$f.clone().or_else(|| self.$f.clone())),* } };
+        }
+        pick!(
+            composition_scope, composition_engine, hyphenation, hyphenate_words_longer_than, hyphenate_after_first,
+            hyphenate_before_last, hyphenate_ladder_limit, hyphen_weight, hyphenation_zone, hyphenate_capitalized_words,
+            hyphenate_last_word, hyphenate_across_columns, word_spacing_minimum, word_spacing_desired, word_spacing_maximum,
+            letter_spacing_minimum, letter_spacing_desired, letter_spacing_maximum, glyph_scaling_minimum, glyph_scaling_desired,
+            glyph_scaling_maximum, single_word_justification, auto_leading_amount
+        )
+    }
+    /// The single settings validator: STU-TYP-147 / 148 / 150 hard bounds, finiteness, a
+    /// non-negative finite hyphenation zone and ordered triples within this record.
+    /// `Code::InvalidField`, target `{target}/{field}`.
+    pub fn validate(&self, target: &str) -> Result<()> {
+        let in_range = |v: Option<f64>, (lo, hi): (f64, f64)| v.is_none_or(|v| v.is_finite() && (lo..=hi).contains(&v));
+        let pair = |x: Option<f64>, y: Option<f64>| match (x, y) {
+            (Some(x), Some(y)) => x <= y,
+            _ => true,
+        };
+        let triples = [
+            ("word_spacing", WORD_SPACING_PERCENT, [self.word_spacing_minimum, self.word_spacing_desired, self.word_spacing_maximum]),
+            ("letter_spacing", LETTER_SPACING_PERCENT, [self.letter_spacing_minimum, self.letter_spacing_desired, self.letter_spacing_maximum]),
+            ("glyph_scaling", GLYPH_SCALING_PERCENT, [self.glyph_scaling_minimum, self.glyph_scaling_desired, self.glyph_scaling_maximum]),
+        ];
+        for (field, bounds, [min, desired, max]) in triples {
+            for (suffix, v) in [("minimum", min), ("desired", desired), ("maximum", max)] {
+                check(in_range(v, bounds), target, &format!("{field}_{suffix}"))?;
+            }
+            check(pair(min, desired) && pair(desired, max) && pair(min, max), target, field)?;
+        }
+        check(in_range(self.auto_leading_amount, AUTO_LEADING_PERCENT), target, "auto_leading_amount")?;
+        check(self.hyphen_weight.is_none_or(|w| w <= MAX_HYPHEN_WEIGHT), target, "hyphen_weight")?;
+        check(
+            self.hyphenation_zone.as_ref().is_none_or(|z| z.value.is_finite() && z.value >= 0.0),
+            target,
+            "hyphenation_zone",
+        )?;
+        Ok(())
+    }
+}
+
+/// The composition settings a paragraph style states (paragraph scope only; one entry per style).
+/// Kept beside the styles rather than on `StudioTypeStyle` so existing style records, their wire
+/// form and every struct literal that builds one stay unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioStyleComposition {
+    /// `STYS` id of a paragraph style of the same set.
+    pub style_id: String,
+    pub settings: StudioCompositionSettings,
+}
+
+/// STU-TYP-201 step 4 local paragraph override of the composition settings, keyed like the
+/// layout-flow paragraph records: the text story and the paragraph's start byte.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioParagraphComposition {
+    /// `STXT` id of the text story holding the paragraph (a document-local reference).
+    pub text_id: String,
+    /// Start byte of the paragraph (`StoryParagraph::start`); checked against the story by the
+    /// composer, which refuses an override naming no paragraph.
+    pub paragraph_start: u64,
+    pub settings: StudioCompositionSettings,
+}
+
 /// The type styles of one document. An empty set is not encoded beyond its header.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -146,6 +336,12 @@ pub struct StudioTypeStyleRecords {
     pub document_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub styles: Vec<StudioTypeStyle>,
+    /// Paragraph-style composition settings (absent = none stated; lane SMB-LAYOUT-COMPOSER-WIRING).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style_composition: Vec<StudioStyleComposition>,
+    /// Local paragraph overrides of the composition settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paragraph_composition: Vec<StudioParagraphComposition>,
 }
 impl StudioTypeStyleRecords {
     /// An empty set for `document_id`.
@@ -154,11 +350,24 @@ impl StudioTypeStyleRecords {
             schema_id: TypeStyleRecordsSchema::V1,
             document_id: document_id.into(),
             styles: Vec::new(),
+            style_composition: Vec::new(),
+            paragraph_composition: Vec::new(),
         }
     }
     /// The style with this id.
     pub fn style(&self, style_id: &str) -> Option<&StudioTypeStyle> {
         self.styles.iter().find(|s| s.style_id == style_id)
+    }
+    /// The composition settings the paragraph style `style_id` itself states.
+    pub fn style_composition(&self, style_id: &str) -> Option<&StudioCompositionSettings> {
+        self.style_composition.iter().find(|c| c.style_id == style_id).map(|c| &c.settings)
+    }
+    /// The local composition override of the paragraph starting at `paragraph_start` in `text_id`.
+    pub fn paragraph_composition(&self, text_id: &str, paragraph_start: u64) -> Option<&StudioCompositionSettings> {
+        self.paragraph_composition
+            .iter()
+            .find(|c| c.text_id == text_id && c.paragraph_start == paragraph_start)
+            .map(|c| &c.settings)
     }
 }
 
@@ -337,6 +546,41 @@ pub fn validate_type_style_records(
                 Some(_) => {}
             }
         }
+    }
+    // Composition settings: per paragraph style (one entry each) and per paragraph override (one
+    // per text story and start byte); every settings record within its bounds.
+    if r.style_composition.len() > MAX_TYPE_STYLES {
+        return Err(err(Code::BudgetExceeded, "style_composition"));
+    }
+    if r.paragraph_composition.len() > MAX_PARAGRAPH_COMPOSITION {
+        return Err(err(Code::BudgetExceeded, "paragraph_composition"));
+    }
+    cx.nodes(r.style_composition.len(), "style_composition")?;
+    cx.nodes(r.paragraph_composition.len(), "paragraph_composition")?;
+    let mut composed = BTreeSet::new();
+    for c in &r.style_composition {
+        cx.tick()?;
+        let target = format!("style_composition/{}", c.style_id);
+        id(&c.style_id, "STYS", &target)?;
+        match scopes.get(c.style_id.as_str()) {
+            None => return Err(err(Code::DanglingReference, target)),
+            Some(TypeStyleScope::Character) => return Err(err(Code::PayloadMismatch, target)),
+            Some(TypeStyleScope::Paragraph) => {}
+        }
+        if !composed.insert(c.style_id.as_str()) {
+            return Err(err(Code::DuplicateIdentity, target));
+        }
+        c.settings.validate(&target)?;
+    }
+    let mut overridden = BTreeSet::new();
+    for c in &r.paragraph_composition {
+        cx.tick()?;
+        let target = format!("paragraph_composition/{}/{}", c.text_id, c.paragraph_start);
+        id(&c.text_id, "STXT", &target)?;
+        if !overridden.insert((c.text_id.as_str(), c.paragraph_start)) {
+            return Err(err(Code::DuplicateIdentity, target));
+        }
+        c.settings.validate(&target)?;
     }
     // `based_on` is a forest: follow each chain, bounded by the set size.
     let parent: BTreeMap<&str, &str> = r
