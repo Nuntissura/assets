@@ -62,6 +62,7 @@ pub struct StudioFillBounds {
 /// The content of a fill layer (tag `fill_kind`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "fill_kind", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(clippy::large_enum_variant)]
 pub enum StudioFill {
     /// A flat colour.
     Solid { colour: StudioColor },
