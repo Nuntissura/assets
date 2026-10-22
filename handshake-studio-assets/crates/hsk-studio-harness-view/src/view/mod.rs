@@ -27,6 +27,8 @@ pub mod export;
 pub mod file_dialog;
 /// Menu bar, shortcuts, recent files and WORKSPACE panel hosting (lane SMB-HARNESS-SHELL-1).
 pub mod shell;
+/// Panels hosted behind WORKSPACE > Panels for the Viewer-API-only surfaces (lane SMB-HARNESS-PANELS-1).
+pub mod hosted;
 pub mod brush_mix;
 pub mod layers;
 /// Decode hook of the program monitor: reel decoders behind pulse's frame cache (lane

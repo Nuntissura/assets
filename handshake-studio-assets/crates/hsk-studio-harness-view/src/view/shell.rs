@@ -23,6 +23,7 @@ use super::file_dialog::{FileDialog, Outcome, Purpose};
 use super::widget as vw;
 use super::{Viewer, export::ExportFormat, render::Prefer};
 use crate::layout_ui::{LayoutDoc, LayoutEditor};
+use super::hosted::HostedPanel;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -69,10 +70,12 @@ pub enum Panel {
     WaveformEditor,
     SpectralDisplay,
     PrototypePlayer,
+    /// A panel hosted by module [`super::hosted`] (lane SMB-HARNESS-PANELS-1).
+    Hosted(HostedPanel),
 }
 
 impl Panel {
-    pub const ALL: [Panel; 11] = [
+    pub const ALL: [Panel; 24] = [
         Panel::Layers,
         Panel::Properties,
         Panel::Develop,
@@ -84,6 +87,19 @@ impl Panel {
         Panel::WaveformEditor,
         Panel::SpectralDisplay,
         Panel::PrototypePlayer,
+        Panel::Hosted(HostedPanel::Appearance),
+        Panel::Hosted(HostedPanel::Stroke),
+        Panel::Hosted(HostedPanel::Swatches),
+        Panel::Hosted(HostedPanel::GraphicStyles),
+        Panel::Hosted(HostedPanel::AlignDistribute),
+        Panel::Hosted(HostedPanel::Transform),
+        Panel::Hosted(HostedPanel::PathOperations),
+        Panel::Hosted(HostedPanel::Masks),
+        Panel::Hosted(HostedPanel::EnvelopeDistort),
+        Panel::Hosted(HostedPanel::Brushes),
+        Panel::Hosted(HostedPanel::VectorExport),
+        Panel::Hosted(HostedPanel::VectorImport),
+        Panel::Hosted(HostedPanel::AudioBatch),
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -98,6 +114,7 @@ impl Panel {
             Self::WaveformEditor => "waveform_editor",
             Self::SpectralDisplay => "spectral_display",
             Self::PrototypePlayer => "prototype_player",
+            Self::Hosted(h) => h.key(),
         }
     }
     pub fn label(self) -> &'static str {
@@ -113,6 +130,7 @@ impl Panel {
             Self::WaveformEditor => "Waveform Editor",
             Self::SpectralDisplay => "Spectral Display",
             Self::PrototypePlayer => "Prototype Player",
+            Self::Hosted(h) => h.label(),
         }
     }
     /// The cargo feature the surface needs (beyond `viewer`), if any.
@@ -120,6 +138,7 @@ impl Panel {
         match self {
             Self::SourceMonitor => Some("media"),
             Self::Mixer | Self::WaveformEditor | Self::SpectralDisplay => Some("audio-batch"),
+            Self::Hosted(h) => h.feature(),
             _ => None,
         }
     }
@@ -137,6 +156,7 @@ impl Panel {
             Self::WaveformEditor => egui::Key::F9,
             Self::SpectralDisplay => egui::Key::F11,
             Self::PrototypePlayer => egui::Key::F12,
+            Self::Hosted(h) => h.key_code(),
         }
     }
     pub fn shortcut_text(self) -> &'static str {
@@ -152,6 +172,14 @@ impl Panel {
             Self::WaveformEditor => "F9",
             Self::SpectralDisplay => "F11",
             Self::PrototypePlayer => "F12",
+            Self::Hosted(h) => h.shortcut_text(),
+        }
+    }
+    /// Modifiers of the toggle key (none for the shell's own panels).
+    pub fn modifiers(self) -> egui::Modifiers {
+        match self {
+            Self::Hosted(h) => h.modifiers(),
+            _ => egui::Modifiers::NONE,
         }
     }
 }
@@ -337,11 +365,13 @@ pub struct ShellState {
     dialog: Option<FileDialog>,
     recent: Vec<PathBuf>,
     recent_generation: u64,
+    /// Form state of the hosted panels (module [`super::hosted`]).
+    pub(super) hosted: super::hosted::HostedState,
 }
 
 impl Default for ShellState {
     fn default() -> Self {
-        Self { hidden: Vec::new(), show_status: true, layout: None, dialog: None, recent: Vec::new(), recent_generation: 0 }
+        Self { hidden: Vec::new(), show_status: true, layout: None, dialog: None, recent: Vec::new(), recent_generation: 0, hosted: Default::default() }
     }
 }
 
@@ -364,6 +394,11 @@ impl ShellState {
     pub(super) fn close_document(&mut self) {
         self.layout = None;
         self.dialog = None;
+        self.hosted.close_document();
+    }
+    /// Key state of the hosted layout editor.
+    pub(super) fn layout_state(&self) -> Option<Value> {
+        self.layout.as_ref().map(LayoutEditor::state_json)
     }
 }
 
@@ -428,6 +463,7 @@ impl Viewer {
             #[cfg(not(feature = "audio-batch"))]
             Panel::Mixer | Panel::WaveformEditor | Panel::SpectralDisplay => false,
             Panel::PrototypePlayer => self.prototype.is_some(),
+            Panel::Hosted(h) => self.shell.hosted.is_open(h),
         }
     }
 
@@ -456,6 +492,7 @@ impl Viewer {
             Panel::WaveformEditor if self.audio.is_none() => unavailable("open an audio file first"),
             Panel::WaveformEditor if self.run.snapshot().is_none() => unavailable("a document must be open to hold the edit list"),
             Panel::SpectralDisplay if !self.panel_open(Panel::WaveformEditor) => unavailable("open the waveform editor first"),
+            Panel::Hosted(h) => self.hosted_availability(h),
             _ => Availability::Available,
         }
     }
@@ -692,6 +729,10 @@ impl Viewer {
                 self.open_dialog(Purpose::OpenPrototype, None);
                 Ok(())
             }
+            Panel::Hosted(h) => {
+                self.shell.hosted.open(h);
+                Ok(())
+            }
             #[cfg(feature = "audio-batch")]
             Panel::Mixer => {
                 let sequence = self.first_sequence().ok_or("the open document has no sequence")?;
@@ -790,6 +831,8 @@ impl Viewer {
             "status_log": self.shell.show_status,
             "recent": self.shell.recent.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
             "dialog": self.shell.dialog.as_ref().map(FileDialog::state_json),
+            "hosted": self.hosted_json(),
+            "surfaces": self.surfaces_json(),
         })
     }
 
@@ -903,8 +946,11 @@ impl Viewer {
             if i.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
                 commands.push(ShellCommand::Close);
             }
-            for p in Panel::ALL {
-                if i.consume_key(egui::Modifiers::NONE, p.key_code()) {
+            // Modified keys first: consume_key ignores an extra Shift, so a plain F-key pattern would
+            // also take Shift+F-key (hosted panels, module hosted).
+            let (modified, plain): (Vec<Panel>, Vec<Panel>) = Panel::ALL.into_iter().partition(|p| p.modifiers() != egui::Modifiers::NONE);
+            for p in modified.into_iter().chain(plain) {
+                if i.consume_key(p.modifiers(), p.key_code()) {
                     commands.push(ShellCommand::Panel(p));
                 }
             }
@@ -916,6 +962,7 @@ impl Viewer {
 
     /// The open dialog and the hosted layout editor (drawn as floating windows).
     pub(super) fn shell_windows_ui(&mut self, ctx: &egui::Context) {
+        self.hosted_ui(ctx);
         let show_layout = self.shell.visible(Panel::LayoutEditor);
         if let Some(ed) = self.shell.layout.as_mut()
             && show_layout
