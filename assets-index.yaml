@@ -234,7 +234,8 @@ assets:
   path: assets/handpick
   kind: asset
   status: source-present
-  purpose: Portable search interaction, query grammar, grouped results, completion replacements, and parked drafts.
+  purpose: Portable search interaction, query grammar, grouped results, completion replacements, parked drafts,
+    and native Quicknote bookmarks.
   capabilities:
   - search
   - suggestions
@@ -244,6 +245,9 @@ assets:
   - pins
   - grouped results
   - native writing
+  - write-first Quicknote admission
+  - persistent native editor bookmarks
+  - explicit Save-or-Pin close admission
   manual: assets/handpick/README.md
   packages:
   - name: handpick

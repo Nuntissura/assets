@@ -1,11 +1,52 @@
 schema_version: handpick.product-spec.v1
 file_id: handpick-product-spec-v1
 file_kind: product-specification
-version: 1
-updated_at: '2026-10-09'
+version: 2
+updated_at: '2026-10-22'
 title: Handpick shared search and Notes input surface
 purpose: Give a fresh agent the fixed product intent, reusable asset boundaries, complete requirements and honest
   implementation/proof state before extending Handpick.
+write_first_quicknote_extension:
+  recorded_at: '2026-10-22'
+  status: source-authored-validation-unrun-unpublished
+  basis: Operator's Tanuki write-first Quicknote clarification and explicit instruction to update Handpick.
+  precedence: These lifecycle clarifications supersede earlier park-as-bookmark presentation wording for the new bookmark API. Existing park/restore remains supported for legacy consumers.
+  requirements:
+  - id: HP-QUICKNOTE-001
+    statement: Fresh completed-empty original search/write lookup or explicit Shift+Enter admits transfer into the existing Notes-native editor; clear the literal query only after successful owner transfer. Errors, pending/partial/offline/stale results, command/settings/navigation filters, and contextual queries do not automatically transfer.
+  - id: HP-QUICKNOTE-002
+    statement: Pin retains the active native editor and its bookmark; Close hides the Quicknote drawer and result tray, clears the independent top query, and keeps bookmark icons above the normal searchbar. Selecting a bookmark reopens that same native editor without consuming the bookmark.
+  - id: HP-QUICKNOTE-003
+    statement: Close requires a current exact matching canonical Save acknowledgement or a bookmark whose native revision is durably recovered by the host. Otherwise prompt Save or Pin with cancellation preserving content; IME and unknown pending Save retain the active editor.
+  - id: HP-QUICKNOTE-004
+    statement: Optional title and body remain owner-native metadata. Bookmark tooltip uses title or first body line; empty body restores normal search presentation without destroying title/recovery. Quicknote drawer has no minimap; its full Notes editor may have one.
+  - id: HP-QUICKNOTE-005
+    statement: Independent top query and categorized context results remain usable below the open native writing surface. No copying rich content or separate canonical Quicknote store.
+  - id: HP-QUICKNOTE-006
+    statement: Owners expose unassigned captures under Quicknotes in Notes navigation and allow project/folder assignment at capture or later; these are ordinary Notes placement metadata, not asset-owned storage or another note type.
+  - id: HP-QUICKNOTE-007
+    statement: Bookmark icons are visually integral to the searchbar upper rim, without a separate row, layer or increased top-bar height. Hosts own rendering and hitboxes.
+  public_api:
+    original_query: Session::can_start_quicknote(fence, channel, QuicknoteTrigger, composing) performs admission only; QuicknoteTrigger is NewLine or CompleteEmpty.
+    bookmarks: WritingSession::bookmark(fence, id), bookmarks(), open_bookmark(id), remove_bookmark(id); capacity is shared with parked pins; edits advance active bookmark revision.
+    close: WritingSession::close_quicknote(fence) returns QuicknoteClose::Closed or NeedsSaveOrPin; rejected transitions preserve state.
+    body_empty: WritingSession::present_quicknote(fence, body_is_empty) changes presentation only; existing present_draft title semantics remain compatible.
+    recovery: WritingSession::bind_committed(editor, native_revision, note, note_revision) admits an unchanged canonical owner readback, then committed_note() reports that exact current mapping. Never use recovered dirty writing as canonical evidence. Exact already-active editor/revision or inactive exact bookmark identity/revision is admitted without clearing, remounting, consuming the bookmark or changing presentation. Advance generation to reject earlier lookup fences. Different occupied editor, native revision mismatch, legacy parked pin, revoked lifecycle, active IME or pending Save rejects without mutation.
+    existing_note_save: SaveDestination::Edit requests a complete Notes-native edit under owner revision conflict checks without invented prior capture operations. Update retains fragment-lineage semantics.
+  compatibility:
+    package_version: 0.1.0
+    wire_version: handpick.v1
+    note: Local source only, no released version claim. Edit adds a wire variant and changes exhaustive Rust matching; older strict consumers must reject it. Hosts must implement owner semantics before adoption. Legacy park/restore remains available.
+  validation:
+    native: cargo test --offline --locked --manifest-path assets/handpick/Cargo.toml --jobs 1
+    bridge: Build with wasm feature for wasm32-unknown-unknown, generate matching wasm-bindgen web glue, then run tests/wasm_bridge.mjs against that actual module.
+    status: UNRUN; Cargo needs a fresh coordinated resource grant. Source formatting and catalog structure are not behavioral proof.
+    host: Prove owner readback/conflict/recovery and actual drawer close, bookmark reopen, retained undo, categorized search and Quicknotes placement separately.
+  research:
+  - https://code.visualstudio.com/docs/editing/getting-started/userinterface
+  - https://obsidian.md/help/plugins/quick-switcher
+  - Portal product/handpick/web/Handpick.tsx inspected read-only for independent query and native park/restore lifecycle.
+  rejected: Duplicate editors, a second Quicknote store, overwriting occupied drafts, visible rows as complete coverage, and consuming persistent bookmarks on restore.
 reading_contract:
   machine_readable_baseline: This YAML carries the preserved product requirements; README.md explains them. Runtime
     source is evidence for mechanisms, not permission to redefine intent.

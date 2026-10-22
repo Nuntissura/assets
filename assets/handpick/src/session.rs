@@ -1,5 +1,11 @@
 use crate::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuicknoteTrigger {
+    NewLine,
+    CompleteEmpty,
+}
+
 /// Host-selected resource ceilings, measured in UTF-8 bytes and item counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
@@ -293,6 +299,31 @@ impl Session {
         } else {
             Err(Error::Stale)
         }
+    }
+    /// Admission for the original top query only; contextual lookup must not call this.
+    /// Transfer into an owner-native editor first, then clear the literal query explicitly.
+    pub fn can_start_quicknote(
+        &self,
+        fence: &Fence,
+        channel: Channel,
+        trigger: QuicknoteTrigger,
+        composing: bool,
+    ) -> Result<bool, Error> {
+        self.check_fence(fence)?;
+        if composing {
+            return Ok(false);
+        }
+        if trigger == QuicknoteTrigger::NewLine {
+            return Ok(true);
+        }
+        let query = parse_query(&self.draft).map_err(|_| Error::PayloadLimit)?;
+        let delivery = self.delivery(channel);
+        Ok(!self.draft.trim().is_empty()
+            && query.purpose == QueryPurpose::SearchWrite
+            && !query.incomplete
+            && query.unsupported.is_empty()
+            && delivery.status() == DeliveryStatus::Complete
+            && delivery.items().is_empty())
     }
     /// Admit a delivery only for the current context/round/draft; reject oversize or duplicate rows.
     /// Hosts must authorize the entire payload before calling this method.

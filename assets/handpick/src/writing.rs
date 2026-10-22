@@ -1,6 +1,8 @@
 //! Native editor orchestration. No content, native coordinates, undo or persistence is copied here.
 use crate::*;
 use serde::{Deserialize, Serialize};
+mod quicknote;
+pub use quicknote::*;
 
 /// Explicit owner-held titles take precedence; derived labels never mutate draft metadata.
 pub fn resolve_draft_title<'a>(title: &'a str, fallback: &'a str) -> &'a str {
@@ -63,6 +65,11 @@ pub enum NoteAddress {
 pub enum SaveDestination {
     Create {
         folder: Option<FolderId>,
+    },
+    /// Edit the complete canonical Note at its owner revision, without capture lineage.
+    Edit {
+        note: NoteId,
+        expected_revision: RevisionId,
     },
     Append {
         note: NoteId,
@@ -431,6 +438,8 @@ pub struct WritingSession {
     generation: u64,
     editor: Option<(EditorId, u64)>,
     pins: Vec<WritingPin>,
+    bookmarks: Vec<WritingPin>,
+    committed_editor: Option<(EditorId, u64, NoteId, RevisionId)>,
     max_pins: usize,
     pending_save: Option<SaveIntent>,
     query_purpose: QueryPurpose,
@@ -463,6 +472,8 @@ impl WritingSession {
             generation: 0,
             editor: None,
             pins: vec![],
+            bookmarks: vec![],
+            committed_editor: None,
             max_pins: limits.max_pins,
             pending_save: None,
             query_purpose: QueryPurpose::SearchWrite,
@@ -519,11 +530,12 @@ impl WritingSession {
         if self.editor.is_some() {
             return Err(Error::OccupiedDraft);
         }
-        if self.pins.iter().any(|pin| pin.editor == editor) {
+        if self.pins.iter().chain(&self.bookmarks).any(|pin| pin.editor == editor) {
             return Err(Error::DuplicatePin);
         }
         let next = self.next()?;
         self.editor = Some((editor, revision));
+        self.committed_editor = None;
         self.generation = next;
         self.results.invalidate();
         self.composition = None;
@@ -554,6 +566,11 @@ impl WritingSession {
         }
         let next = self.next()?;
         self.editor = Some((fence.editor.clone(), revision));
+        for bookmark in &mut self.bookmarks {
+            if bookmark.editor == fence.editor {
+                bookmark.revision = revision;
+            }
+        }
         self.generation = next;
         self.results.invalidate();
         Ok(())
@@ -712,13 +729,13 @@ impl WritingSession {
     }
     pub fn park(&mut self, id: PinId) -> Result<(), Error> {
         let fence = self.fence()?;
-        if self.composition.is_some() {
+        if self.composition.is_some() || self.pending_save.is_some() {
             return Err(Error::Stale);
         }
-        if self.pins.iter().any(|pin| pin.id == id) {
+        if self.pins.iter().chain(&self.bookmarks).any(|pin| pin.id == id || pin.editor == fence.editor) {
             return Err(Error::DuplicatePin);
         }
-        if self.pins.len() >= self.max_pins {
+        if self.pins.len() + self.bookmarks.len() >= self.max_pins {
             return Err(Error::PinLimit);
         }
         let next = self.next()?;
@@ -735,7 +752,7 @@ impl WritingSession {
     /// Occupied restore exchanges handles atomically; native content/selection/undo stay untouched.
     pub fn restore(&mut self, id: &PinId, replacement_pin: Option<PinId>) -> Result<(), Error> {
         self.active()?;
-        if self.composition.is_some() {
+        if self.composition.is_some() || self.pending_save.is_some() {
             return Err(Error::Stale);
         }
         let index = self
@@ -747,7 +764,8 @@ impl WritingSession {
             return Err(Error::OccupiedDraft);
         }
         if let Some(replacement) = &replacement_pin {
-            if self.pins.iter().any(|pin| &pin.id == replacement) {
+            if self.pins.iter().chain(&self.bookmarks).any(|pin| &pin.id == replacement)
+                || self.editor.as_ref().is_some_and(|(editor, _)| self.bookmarks.iter().any(|pin| &pin.editor == editor)) {
                 return Err(Error::DuplicatePin);
             }
         }
@@ -800,10 +818,10 @@ impl WritingSession {
                 self.pending_save = None;
                 Ok(SaveDisposition::RetainForRetry)
             }
-            ContentOutcome::Committed { note, .. } => {
+            ContentOutcome::Committed { note, revision, .. } => {
                 let existing = match &outcome.submitted.destination {
                     SaveDestination::Create { .. } => None,
-                    SaveDestination::Append { note, .. } | SaveDestination::Update { note, .. } => Some(note),
+                    SaveDestination::Append { note, .. } | SaveDestination::Update { note, .. } | SaveDestination::Edit { note, .. } => Some(note),
                     SaveDestination::Insert { target, .. } => Some(match target {
                         NoteAddress::Note { note }
                         | NoteAddress::Heading { note, .. }
@@ -818,6 +836,7 @@ impl WritingSession {
                         && revision == &outcome.submitted.fence.revision
                 });
                 self.pending_save = None;
+                self.committed_editor = Some((outcome.submitted.fence.editor.clone(), outcome.submitted.fence.revision, note.clone(), revision.clone()));
                 Ok(if current && self.composition.is_some() {
                     SaveDisposition::RetainActiveComposition
                 } else if current {
@@ -833,6 +852,8 @@ impl WritingSession {
         self.active = false;
         self.editor = None;
         self.pins.clear();
+        self.bookmarks.clear();
+        self.committed_editor = None;
         self.pending_save = None;
         self.composition = None;
         self.expanded = false;

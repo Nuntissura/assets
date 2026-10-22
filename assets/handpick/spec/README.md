@@ -1,12 +1,14 @@
 ---
 file_id: handpick-spec-entry-v1
 file_kind: product-specification-guide
-updated_at: '2026-10-09'
+updated_at: '2026-10-22'
 ---
 
 <topic id="purpose" version="1" status="baseline">
 
 # What Handpick is
+
+The newer `write_first_quicknote_extension` in the YAML supersedes park-as-bookmark presentation wording for the additive persistent-bookmark API: Pin keeps the editor open, Close hides its drawer/results, and selecting its icon reopens the same editor without consuming the bookmark. The older park/restore API remains available. See the README's write-first section for exact API and proof boundaries; these additions are source-authored, untested and unpublished.
 
 Handpick is the shared search and text-input surface for Handshake Desktop and Portal. It lets someone search content, metadata, settings and actions, and keep writing an idea in the same surface. It connects that writing to the existing Notes and Loom owners.
 

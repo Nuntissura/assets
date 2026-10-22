@@ -252,4 +252,55 @@ try{
   overflow.edited(fence,'2');overflowReject(()=>overflow.expandForOverflow(fence,true,true),'Stale');
   fence=overflow.fence();overflow.revoke();overflowReject(()=>overflow.expandForOverflow(fence,true,true),'Revoked');
 }finally{overflow.free();}
-console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks,picker_checks:pickerChecks,recovery_checks:recoveryChecks,overflow_checks:overflowChecks}));
+let quicknoteChecks=0;
+const quicknoteCheck=(actual,expected)=>{assert.deepEqual(actual,expected);quicknoteChecks++;};
+const quicknoteReject=(fn,code)=>{assert.throws(fn,error=>String(error)===code);quicknoteChecks++;};
+const bookmarkSession=new glue.WritingSession('private','bookmark',2);
+try {
+  bookmarkSession.bind('editor-a','1');bookmarkSession.expand();
+  quicknoteCheck(bookmarkSession.closeQuicknote(bookmarkSession.fence()),'needs_save_or_pin');
+  bookmarkSession.bookmark(bookmarkSession.fence(),'bookmark-a');
+  quicknoteCheck(bookmarkSession.expanded(),true);
+  bookmarkSession.edited(bookmarkSession.fence(),'2');
+  quicknoteCheck(decode(bookmarkSession.bookmarks()),[{id:'bookmark-a',editor:'editor-a',revision:'2'}]);
+  quicknoteCheck(bookmarkSession.closeQuicknote(bookmarkSession.fence()),'closed');
+  quicknoteCheck(bookmarkSession.expanded(),false);
+  bookmarkSession.openBookmark('bookmark-a');
+  quicknoteCheck(decode(bookmarkSession.fence()).editor,'editor-a');
+  quicknoteCheck(decode(bookmarkSession.fence()).revision,'2');
+  quicknoteCheck(decode(bookmarkSession.bookmarks()).length,1);
+  bookmarkSession.bindCommitted('editor-a','2','note-a','stored-a');
+  quicknoteCheck(decode(bookmarkSession.committedNote()),{note:'note-a',revision:'stored-a'});
+  quicknoteCheck(decode(bookmarkSession.bookmarks()).length,1);
+  quicknoteReject(()=>bookmarkSession.bindCommitted('editor-a','3','note-a','stored-a'),'Stale');
+  quicknoteReject(()=>bookmarkSession.presentQuicknote(bookmarkSession.fence(),'true'),'InvalidWire');
+  quicknoteCheck(bookmarkSession.presentQuicknote(bookmarkSession.fence(),true),false);
+  quicknoteCheck(bookmarkSession.closeQuicknote(bookmarkSession.fence()),'closed');
+  bookmarkSession.bindCommitted('editor-a','2','note-a','stored-a');
+  quicknoteCheck(bookmarkSession.expanded(),false);
+  quicknoteCheck(decode(bookmarkSession.bookmarks()).length,1);
+  quicknoteCheck(bookmarkSession.closeQuicknote(bookmarkSession.fence()),'closed');
+  bookmarkSession.bindCommitted('editor-b','7','note-b','owner-revision');
+  quicknoteCheck(decode(bookmarkSession.committedNote()),{note:'note-b',revision:'owner-revision'});
+  quicknoteReject(()=>bookmarkSession.openBookmark('bookmark-a'),'OccupiedDraft');
+  const submitted={operation:'edit-existing',fence:decode(bookmarkSession.fence()),destination:{kind:'edit',note:'note-b',expected_revision:'owner-revision'}};
+  bookmarkSession.submit(encode(submitted));
+  quicknoteReject(()=>bookmarkSession.closeQuicknote(bookmarkSession.fence()),'Stale');
+  bookmarkSession.acknowledge(encode({submitted,content:{state:'committed',note:'note-b',revision:'owner-next',relationships:'pending',search:'pending'}}));
+  quicknoteCheck(bookmarkSession.closeQuicknote(bookmarkSession.fence()),'closed');
+  bookmarkSession.removeBookmark('bookmark-a');
+  quicknoteCheck(decode(bookmarkSession.bookmarks()),[]);
+} finally {bookmarkSession.free();}
+const quicknoteQuery=new glue.Session('private',encode({max_text_bytes:4096,max_pins:1,max_items:8,max_item_bytes:4096,max_actions_per_item:8}));
+try {
+  quicknoteQuery.setDraft('a thought');let fence=quicknoteQuery.begin();
+  quicknoteCheck(quicknoteQuery.canStartQuicknote(fence,'search','complete_empty',false),false);
+  quicknoteQuery.deliver(fence,'search','complete','[]');
+  quicknoteCheck(quicknoteQuery.canStartQuicknote(fence,'search','complete_empty',false),true);
+  quicknoteCheck(quicknoteQuery.draft(),'a thought');
+  quicknoteCheck(quicknoteQuery.canStartQuicknote(fence,'search','new_line',true),false);
+  quicknoteReject(()=>quicknoteQuery.canStartQuicknote(fence,'search','new_line',0),'InvalidWire');
+  quicknoteQuery.setDraft('newer');
+  quicknoteReject(()=>quicknoteQuery.canStartQuicknote(fence,'search','complete_empty',false),'Stale');
+} finally {quicknoteQuery.free();}
+console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks,picker_checks:pickerChecks,recovery_checks:recoveryChecks,overflow_checks:overflowChecks,quicknote_checks:quicknoteChecks}));

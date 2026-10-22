@@ -242,6 +242,17 @@ impl WasmSession {
             self.inner.begin().map_err(core_error)?,
         ))
     }
+    #[wasm_bindgen(js_name = canStartQuicknote)]
+    pub fn can_start_quicknote(&self, fence_json: &str, channel_name: &str, trigger: &str, composing: JsValue) -> Result<bool, JsValue> {
+        let fence: FoundationFence = read(fence_json)?;
+        let trigger = match trigger {
+            "new_line" => QuicknoteTrigger::NewLine,
+            "complete_empty" => QuicknoteTrigger::CompleteEmpty,
+            _ => return Err(reject("InvalidWire")),
+        };
+        let composing = composing.as_bool().ok_or_else(|| reject("InvalidWire"))?;
+        self.inner.can_start_quicknote(&fence.decode()?, channel(channel_name)?, trigger, composing).map_err(core_error)
+    }
     pub fn deliver(
         &mut self,
         fence_json: &str,
@@ -348,6 +359,18 @@ impl WasmWritingSession {
         self.inner
             .bind(editor, revision(editor_revision)?)
             .map_err(core_error)
+    }
+    #[wasm_bindgen(js_name = bindCommitted)]
+    pub fn bind_committed(&mut self, editor: &str, editor_revision: &str, note: &str, note_revision: &str) -> Result<(), JsValue> {
+        self.inner.bind_committed(
+            EditorId::new(editor).map_err(|_| reject("InvalidIdentity"))?, revision(editor_revision)?,
+            NoteId::new(note).map_err(|_| reject("InvalidIdentity"))?,
+            RevisionId::new(note_revision).map_err(|_| reject("InvalidIdentity"))?,
+        ).map_err(core_error)
+    }
+    #[wasm_bindgen(js_name = committedNote)]
+    pub fn committed_note(&self) -> Result<String, JsValue> {
+        write(&self.inner.committed_note().map(|(note, revision)| serde_json::json!({"note": note.as_str(), "revision": revision.as_str()})))
     }
     pub fn fence(&self) -> Result<String, JsValue> {
         write(&self.inner.fence().map_err(core_error)?)
@@ -466,6 +489,33 @@ impl WasmWritingSession {
         self.inner
             .park(PinId::new(pin).map_err(|_| reject("InvalidIdentity"))?)
             .map_err(core_error)
+    }
+    pub fn bookmark(&mut self, fence_json: &str, pin: &str) -> Result<(), JsValue> {
+        self.inner.bookmark(&read(fence_json)?, PinId::new(pin).map_err(|_| reject("InvalidIdentity"))?).map_err(core_error)
+    }
+    pub fn bookmarks(&self) -> Result<String, JsValue> {
+        let pins: Vec<_> = self.inner.bookmarks().iter().map(|pin| serde_json::json!({"id":pin.id.as_str(),"editor":pin.editor.as_str(),"revision":pin.revision.to_string()})).collect();
+        write(&pins)
+    }
+    #[wasm_bindgen(js_name = openBookmark)]
+    pub fn open_bookmark(&mut self, pin: &str) -> Result<(), JsValue> {
+        self.inner.open_bookmark(&PinId::new(pin).map_err(|_| reject("InvalidIdentity"))?).map_err(core_error)
+    }
+    #[wasm_bindgen(js_name = removeBookmark)]
+    pub fn remove_bookmark(&mut self, pin: &str) -> Result<(), JsValue> {
+        self.inner.remove_bookmark(&PinId::new(pin).map_err(|_| reject("InvalidIdentity"))?).map_err(core_error)
+    }
+    #[wasm_bindgen(js_name = closeQuicknote)]
+    pub fn close_quicknote(&mut self, fence_json: &str) -> Result<String, JsValue> {
+        Ok(match self.inner.close_quicknote(&read(fence_json)?).map_err(core_error)? {
+            QuicknoteClose::Closed => "closed",
+            QuicknoteClose::NeedsSaveOrPin => "needs_save_or_pin",
+        }.into())
+    }
+    #[wasm_bindgen(js_name = presentQuicknote)]
+    pub fn present_quicknote(&mut self, fence_json: &str, body_is_empty: JsValue) -> Result<bool, JsValue> {
+        let body_is_empty = body_is_empty.as_bool().ok_or_else(|| reject("InvalidWire"))?;
+        self.inner.present_quicknote(&read(fence_json)?, body_is_empty).map_err(core_error)
     }
     pub fn restore(&mut self, pin: &str, replacement_pin: Option<String>) -> Result<(), JsValue> {
         let pin = PinId::new(pin).map_err(|_| reject("InvalidIdentity"))?;
