@@ -9,7 +9,6 @@
 #![cfg(feature = "viewer")]
 
 mod common;
-#[allow(dead_code)]
 mod support_audio;
 
 use common::{Scratch, synthetic_dng, two_layer_psd};
