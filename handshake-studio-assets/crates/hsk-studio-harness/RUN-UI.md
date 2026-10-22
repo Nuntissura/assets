@@ -69,6 +69,37 @@ enter it, Up for the parent, click a file to put its name in the path field, dou
 Open / Save button to accept, Enter in the path field accepts (a typed folder is listed, a typed
 full path is used as given), Escape or Cancel closes it.
 
+## Hosted panels (lane SMB-HARNESS-PANELS-1)
+
+Workspace > Panels also hosts, as floating panels, every surface that had only a Viewer API. Each
+acts on the layer selected in Layers (single-layer actions) or on its Targets checklist (align,
+distribute, transform, brush art); each control calls one existing Viewer method and is one undo
+step where that method is. The first line of each panel is its key state (also
+`state_json()["shell"]["hosted"][key]["summary"]`), the last line the last result (also said in the
+status log).
+
+| Menu | Entry | Shortcut | What it does |
+|---|---|---|---|
+| Workspace | Appearance | Shift+F2 | fill of the selected layer: Set Fill (colour), No Fill, Clear Appearance, Reduce to Basic |
+| Workspace | Stroke | Shift+F3 | stroke panel: colour, weight, cap, join, miter limit, dash, dash offset, align; Apply Stroke / No Stroke |
+| Workspace | Swatches | Shift+F4 | New Swatch (name, colour); per swatch To Fill / To Stroke (optional tint %); Detach Fill / Stroke |
+| Workspace | Graphic Styles | Shift+F5 | New from Selection, Break Link; per style Apply, Merge, Redefine |
+| Workspace | Align & Distribute | Shift+F6 | Targets; align to selection / key object (the selected layer) / artboard; align, distribute edges, spacing (gap or equal) |
+| Workspace | Transform | Shift+F7 | Targets; reference point; Move, Rotate, Scale, Reflect, Shear; Transform Each |
+| Workspace | Path Operations | Shift+F8 | Offset Path, Outline Stroke, Expand Shape, Reverse Path Direction, Promote to Network; anchor (contour, index): Split at Anchor, Remove Anchor, Convert Anchor, Live Corner; Join |
+| Workspace | Masks | Shift+F9 | source layer; Make Clipping Mask (even-odd), Make Mask (alpha / luminance / vector, invert), Release |
+| Workspace | Envelope Distort | Shift+F10 | warp (15 styles, bend, distortions), mesh (rows, columns) or top object; fidelity; Make, Release, Expand |
+| Workspace | Brushes | Shift+F11 | New Brush from Targets (art, scatter, pattern side tiles; colorization); per brush Apply (scale %); Remove Brush |
+| Workspace | Vector Export | Shift+F12 | path; Export SVG / Export PDF (never over an existing file without overwrite) |
+| Workspace | Vector Import | Ctrl+Shift+F2 | artwork path (`.ai`) and package path: Import as Editable Vectors (writes the package and opens it) |
+| Workspace | Audio Batch | Ctrl+Shift+F3 | feature `audio-batch`: input, output, gain dB, FLAC or AIFF; Add to Queue, Run Queue (runs on the UI thread), receipts |
+
+Models: `Viewer::hosted_action(PanelAction::...)` runs any panel control headlessly (the exact call
+the control makes); `hosted_summary(HostedPanel)`; widget names `panel.<key>` (window) and
+`panel.<key>.<control>`; `state_json()["shell"]["hosted"]` per panel (open, visible, summary, last,
+swatches / styles / brushes / targets / queue) and `state_json()["shell"]["surfaces"]` (layout
+editor, program monitor, source monitor, prototype player state).
+
 ## What the window does
 
 - Menu bar: File, Edit, View, Workspace (table above).
