@@ -534,35 +534,39 @@ fn half_speed() -> Value {
         {"time":10 * F,"value":[5.0 / 25.0],"in_interp":"linear","out_interp":"linear"}]})
 }
 
-fn frames_of(outer: Value, switch: &str) -> Vec<std::sync::Arc<Frame>> {
-    let root = std::env::temp_dir();
+/// The content kind of outer layer 1 at outer frame 3 (source frame 1.5) for a frame-blending switch.
+fn layer_content_at_frame_3(outer: Value, switch: &str) -> &'static str {
     let m = motion(settings(json!({"frame_blending":switch})), json!({}));
-    let b = build(&compositions(outer), &m, &root).unwrap_or_else(|e| panic!("{switch}: {e:?}"));
-    let cancel = CancellationToken::default();
-    (0..10).map(|k| b.shared.frame(k, &cancel).unwrap()).collect()
+    let mut records = compositions(outer);
+    apply_frame_blending_switch(&mut records, m.render_queue[0].settings.frame_blending);
+    let snap = snapshot();
+    let id = identity("SCOM", 1);
+    let source = CompositionTemporalSource::new(
+        &CompositionInput {
+            snapshot: &snap, expected_revision: 7, records: &records, composition_id: &id, budget: Budget::default(),
+            resolver: &Available, blend_space: BlendSpace::Encoded, info: &info, space: SPACE, inputs: RenderInputs::default(),
+        },
+        &CancellationToken::default(),
+    )
+    .and_then(|s| s.with_motion_records(&m, &BTreeMap::new(), SPACE, 7, None))
+    .unwrap();
+    let scene = source.scene_at(3 * F as i64, &CancellationToken::default()).unwrap();
+    match &scene.layers[0].content {
+        SceneContent::FrameBlended(_) => "frame_blended",
+        SceneContent::Precomp(_) => "precomp",
+        _ => "other",
+    }
 }
 
 #[test]
-fn frame_blending_renders_per_layer_and_off_for_all_layers_forces_it_off() {
+fn frame_blending_switch_reaches_the_composition_layers() {
     let layer = json!({"time_remap": half_speed(), "frame_blending": "frame_mix"});
-    // The square covers [a, 16 + a) at source frame a. Outer frame 3 = source 1.5: floor frame 1
-    // is [1, 17), frame 2 is [2, 18).
-    let on = frames_of(layer.clone(), "current_settings");
-    let checked = frames_of(layer.clone(), "on_for_checked_layers");
-    let off = frames_of(layer.clone(), "off_for_all_layers");
-    let unblended = frames_of(json!({"time_remap": half_speed()}), "current_settings");
-    assert_eq!(on[3], checked[3], "current_settings and on_for_checked_layers use each layer's own switch");
-    // Whole-frame outer frames (even k) show an integral source frame: blending changes nothing.
-    assert_eq!(on[2], unblended[2]);
-    // Frame 3: blended = half red where only one of the two source frames covers the column.
-    let blended = &on[3];
-    assert!(near(px(blended, 1, 8), [RED[0] * 0.5, RED[1] * 0.5, RED[2] * 0.5], 2e-3), "column only in frame 1 {:?}", px(blended, 1, 8));
-    assert!(near(px(blended, 17, 8), [RED[0] * 0.5, RED[1] * 0.5, RED[2] * 0.5], 2e-3), "column only in frame 2 {:?}", px(blended, 17, 8));
-    assert!(near(px(blended, 9, 8), RED, 2e-3), "column in both {:?}", px(blended, 9, 8));
-    // Off for all layers: the floor frame, whatever the layer record says; equal to a layer without blending.
-    assert_eq!(off[3], unblended[3]);
-    assert!(near(px(&off[3], 1, 8), RED, 2e-3) && near(px(&off[3], 17, 8), [0.0; 3], 0.0), "floor frame");
-    assert_ne!(on[3], off[3], "blending is visible");
+    // Each layer's own switch is what composite renders: current_settings and on_for_checked_layers keep it.
+    assert_eq!(layer_content_at_frame_3(layer.clone(), "current_settings"), "frame_blended");
+    assert_eq!(layer_content_at_frame_3(layer.clone(), "on_for_checked_layers"), "frame_blended");
+    // Off for all layers forces the layer off whatever its record says.
+    assert_eq!(layer_content_at_frame_3(layer.clone(), "off_for_all_layers"), "precomp");
+    assert_eq!(layer_content_at_frame_3(json!({"time_remap": half_speed()}), "current_settings"), "precomp", "no blending recorded");
     // The refusal that guards a caller who forgot the switch: the unforced composition is refused.
     let comps = compositions(layer);
     let item = motion(settings(json!({"frame_blending":"off_for_all_layers"})), json!({})).render_queue[0].clone();
@@ -572,8 +576,42 @@ fn frame_blending_renders_per_layer_and_off_for_all_layers_forces_it_off() {
     apply_frame_blending_switch(&mut forced, StudioLayerSwitch::OffForAllLayers);
     assert!(forced.compositions.iter().flat_map(|c| &c.layers).all(|l| l.frame_blending.is_off()));
     assert!(render_settings(&item, &forced.compositions[0], Some(8)).is_ok());
-    // Other switches leave the layers alone.
     let mut kept = comps.clone();
     apply_frame_blending_switch(&mut kept, StudioLayerSwitch::OnForCheckedLayers);
-    assert_eq!(kept, comps);
+    assert_eq!(kept, comps, "other switches leave the layers alone");
+}
+
+/// A frame-blended layer (two source frames, weight 0.5) in a synthetic scene.
+struct Blended(NoPixels);
+impl CompositionScenes for Blended {
+    fn scene_at(&mut self, _: i64, cancel: &CancellationToken) -> Result<SceneComposition, String> {
+        use hsk_studio_composite::composition::{FrameBlendMethod, FrameBlendedContent};
+        let frame = |x: f64| {
+            let mut s = scene(&[rect("SLYR-a", [RED[0], RED[1], RED[2], 1.0], [x, 16.0], [16.0, 16.0])], cancel);
+            s.background = None;
+            s
+        };
+        let outer = scene(&[], cancel);
+        let mut layer = scene(&[rect("SLYR-a", [0.0; 4], [0.0, 0.0], [1.0, 1.0])], cancel).layers.remove(0);
+        layer.layer_id = "SLYR-blend".into();
+        layer.content = SceneContent::FrameBlended(Box::new(FrameBlendedContent {
+            a: frame(16.0), b: frame(18.0), weight_b: 0.5, method: FrameBlendMethod::FrameMix, flow: hsk_studio_pigment::frame_blend::FlowParams::DEFAULT,
+        }));
+        Ok(SceneComposition { layers: vec![layer], ..outer })
+    }
+    fn pixels(&self) -> &dyn ScenePixels {
+        &self.0
+    }
+}
+
+#[test]
+fn a_frame_blended_layer_renders_through_the_queue_renderer() {
+    let mut r = FrameRenderer::new(Blended(NoPixels), SPACE, 64, 32, F, None).unwrap();
+    let f = r.frame_at(0, &CancellationToken::default()).unwrap();
+    // Frame A covers [8, 24), frame B [10, 26): columns 8..10 and 24..26 are half covered, 10..24 full.
+    assert!(near(px(&f, 16, 16), RED, 2e-3), "both frames {:?}", px(&f, 16, 16));
+    let half = [RED[0] * 0.5, RED[1] * 0.5, RED[2] * 0.5];
+    assert!(near(px(&f, 8, 16), half, 2e-3), "only A {:?}", px(&f, 8, 16));
+    assert!(near(px(&f, 25, 16), half, 2e-3), "only B {:?}", px(&f, 25, 16));
+    assert!(near(px(&f, 4, 16), [0.0; 3], 0.0) && near(px(&f, 40, 16), [0.0; 3], 0.0));
 }
