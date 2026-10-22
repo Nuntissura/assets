@@ -557,6 +557,8 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioReaction.media_hit_time", "internal: value"),
     ("StudioRenderSettings.resolution", "internal: value"),
     ("StudioRgba.colour_profile_id", "external:colour_profile"),
+    ("StudioRotoEdgeStroke.path", "internal: value (stroke geometry points, not a file reference)"),
+    ("StudioRotoStroke.path", "internal: value (stroke geometry points, not a file reference)"),
     ("StudioShapeParameters.create_compound_path_from_ellipses", "internal: flag"),
     ("StudioShapeStream.path", "internal: shape path index"),
     ("StudioSwatch.profile_ref", "external:colour_profile"),
