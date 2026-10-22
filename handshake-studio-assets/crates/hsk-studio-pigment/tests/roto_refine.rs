@@ -122,3 +122,27 @@ fn reduce_chatter_damps_a_flickering_matte_and_refuses_hostile_options() {
     stop.cancel();
     assert_eq!(refine_roto_sequence(&frames, &mattes, &base, &limits, &stop).unwrap_err().code(), "canceled");
 }
+
+#[test]
+fn refine_roto_stage_bounds_chatter_to_zero_through_one_hundred() {
+    let (w, h) = (40u32, 20u32);
+    let frames = vec![ramp_frame(w, h); 3];
+    let mattes: Vec<CoveragePlane> = (0..3).map(|k| plane(w, h, |x, _| x >= if k % 2 == 0 { 18 } else { 22 })).collect();
+    let bands: Vec<Option<RotoBand<'_>>> = frames.iter().map(|_| Some(RotoBand::Radius(0.0))).collect();
+    let (limits, cancel) = (RotoLimits::default(), CancellationToken::default());
+    let run = |c: f64| {
+        refine_roto_stage(&frames, &mattes, &bands, &RefineOptions::default(), c, &hsk_studio_pigment::frame_blend::FlowParams::DEFAULT, &limits, &cancel)
+    };
+    for bad in [100.5, -1.0] {
+        assert_eq!(run(bad).unwrap_err().code(), "tool_out_of_range", "{bad}");
+    }
+    assert_eq!(run(f64::NAN).unwrap_err().code(), "nonfinite");
+    for ok in [0.0, 100.0] {
+        assert_eq!(run(ok).unwrap().len(), 3);
+    }
+    // The matte-path entry keeps the same bound.
+    let o = |c: f64| RotoRefineOptions { reduce_chatter: c, band_px: 0.0, ..RotoRefineOptions::default() };
+    assert_eq!(refine_roto_sequence(&frames, &mattes, &o(100.5), &limits, &cancel).unwrap_err().code(), "tool_out_of_range");
+    assert_eq!(refine_roto_sequence(&frames, &mattes, &o(-1.0), &limits, &cancel).unwrap_err().code(), "tool_out_of_range");
+    assert!(refine_roto_sequence(&frames, &mattes, &o(100.0), &limits, &cancel).is_ok());
+}

@@ -8,8 +8,10 @@
 //! undeclared") -- applied per frame through the one Pigment refine engine
 //! ([`super::refine::refine_with_marks`]: guided filter of He, Sun and Tang 2010 or the closed-form
 //! matting of Levin, Lischinski and Weiss 2008), not a copy; STU-CMP-033 (a key / matte is a
-//! pipeline with a visible refine stage); STU-CMP-034 / STU-CMP-100 (assisted rotoscoping gap,
-//! see [`super::roto`] for the conflict record).
+//! pipeline with a visible refine stage); STU-CMP-034 v02.218 (assisted rotoscoping; STU-CMP-100 is
+//! RESOLVED by it, see [`super::roto`]). `matte_reduce_chatter` / `refine_reduce_chatter` are percent
+//! with hard and soft bounds 0..100: outside it a typed refusal, never a clamp; every other numeric
+//! control is `unknown`-bounded (STU-RAS-106) and used as given.
 //!
 //! Studio readings (After Effects Refine Edge / Reduce Chatter behaviour UNVERIFIED, D5; class
 //! Approximate):
@@ -126,9 +128,8 @@ pub fn refine_roto_frame(
 }
 
 /// Refine every frame of a roto sequence, then reduce chatter (module docs). `mattes[i]` belongs
-/// to `frames[i]`. `reduce_chatter` is range-checked `0..=100` here (the predecessor contract,
-/// pinned by `tests/roto_refine.rs`); [`refine_roto_stage`] is the STU-CMP-034 v02.217 entry whose
-/// chatter bounds are `unknown` and therefore not checked.
+/// to `frames[i]`. `reduce_chatter` is range-checked `0..=100` here (STU-CMP-034 v02.218, pinned
+/// by `tests/roto_refine.rs`); [`refine_roto_stage`] is the stage entry with the same bound.
 pub fn refine_roto_sequence(
     frames: &[RgbaPlane],
     mattes: &[CoveragePlane],
@@ -149,10 +150,9 @@ pub fn refine_roto_sequence(
 /// The refine stage of assisted rotoscoping (lane SMB-AE-ROTO-WIRING; STU-CMP-034 item 5): per
 /// frame the one STU-RAS-121 engine inside `bands[i]` (`None` = the frame is passed through
 /// unrefined: its coverage is the input matte, no colours), then chatter reduction at
-/// `reduce_chatter` percent (`k = 2/3 * percent / 100`, module docs). The v02.217 table declares
-/// the chatter bounds `unknown` ([STU-RAS-106]): any finite value is used as given, never clamped
-/// or range-checked (a value outside `0..=100` extrapolates the blend; the result alpha is
-/// limited to `[0, 1]` when written as coverage). Bytes and flow work are admitted before work.
+/// `reduce_chatter` percent (`k = 2/3 * percent / 100`, module docs). The STU-CMP-034 v02.218
+/// table bounds both chatter controls to `0..=100` percent: outside it (or non-finite) the call
+/// refuses with a typed error and never clamps. Bytes and flow work are admitted before work.
 #[allow(clippy::too_many_arguments)]
 pub fn refine_roto_stage(
     frames: &[RgbaPlane],
@@ -166,6 +166,9 @@ pub fn refine_roto_stage(
 ) -> Result<Vec<RotoRefined>, ToolError> {
     if !reduce_chatter.is_finite() {
         return Err(Error::Nonfinite.into());
+    }
+    if !(0.0..=100.0).contains(&reduce_chatter) {
+        return Err(ToolError::OutOfRange);
     }
     refine_frames(frames, mattes, bands, refine, reduce_chatter, flow, limits, cancel)
 }

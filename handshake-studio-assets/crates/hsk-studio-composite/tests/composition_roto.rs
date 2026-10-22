@@ -451,9 +451,10 @@ fn freeze_locks_segmentation_and_matte_controls_stay_live() {
         let t_run = run(&thawed, &pixels, None).unwrap();
         assert_ne!(t_run.receipt.inputs_digest, base.receipt.inputs_digest);
         assert_ne!(t_run.mattes, base.mattes);
-        // Matte controls stay live while frozen; the cache is reused. An unknown-bounded value
-        // (chatter 150, STU-RAS-106) is used as given, never refused or clamped.
-        frozen["parameters"] = json!({"fine_tune_matte":true,"matte_feather":1.0,"matte_reduce_chatter":150.0,"quality":"best"});
+        // Matte controls stay live while frozen; the cache is reused. An unknown-bounded
+        // control (matte_feather) is used as given; chatter is bounded 0..=100 (STU-CMP-034 v02.218),
+        // 100 is accepted.
+        frozen["parameters"] = json!({"fine_tune_matte":true,"matte_feather":1.0,"matte_reduce_chatter":100.0,"quality":"best"});
         let tuned = source(&document(), &records(json!({"roto":frozen}), FRAMES), &pixels).unwrap();
         let tuned_run = run(&tuned, &pixels, Some(&f_run.segmentation)).unwrap();
         assert!(tuned_run.receipt.reused_cache);
@@ -480,6 +481,29 @@ fn refine_stage_consumes_the_edge_refinement_engine() {
         assert_eq!(out.receipt.not_modelled, vec!["quality", "motion_damping"]);
         for k in 0..FRAMES {
             assert!(iou(&out, k) >= 0.8, "refined frame {k}: {}", iou(&out, k));
+        }
+    });
+}
+
+#[test]
+fn chatter_controls_refuse_outside_zero_to_one_hundred_on_both_stages() {
+    bounded_case("chatter_controls_refuse_outside_zero_to_one_hundred_on_both_stages", || {
+        let pixels = Pixels::fixture();
+        let attempt = |params: Value| {
+            let mut r = roto(3, vec![]);
+            r["parameters"] = params;
+            let src = source(&document(), &records(json!({"roto":r}), FRAMES), &pixels).unwrap();
+            run(&src, &pixels, None)
+        };
+        for bad in [100.5, -1.0] {
+            let m = attempt(json!({"fine_tune_matte":true,"matte_reduce_chatter":bad})).unwrap_err();
+            assert!(format!("{m:?}").contains("tool_out_of_range"), "matte {bad}: {m:?}");
+            let r = attempt(json!({"fine_tune_refine_edge_matte":true,"refine_reduce_chatter":bad})).unwrap_err();
+            assert!(format!("{r:?}").contains("tool_out_of_range"), "refine {bad}: {r:?}");
+        }
+        for ok in [0.0, 100.0] {
+            attempt(json!({"fine_tune_matte":true,"matte_reduce_chatter":ok})).unwrap();
+            attempt(json!({"fine_tune_refine_edge_matte":true,"refine_reduce_chatter":ok})).unwrap();
         }
     });
 }

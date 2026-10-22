@@ -1,7 +1,7 @@
 //! Time remap, frame blending and assisted-rotoscoping records of a composition layer (lane
 //! SMB-AE-ROTO-WIRING slice 1; parity AE-10, AE-18). Data only; composite evaluates them.
 //!
-//! Spec basis (module 14, v02.217):
+//! Spec basis (module 14, v02.218):
 //! - [STU-MOT-045] "Enabling it on a footage or composition layer creates a `time_remap` property
 //!   whose value AT a composition time is the SOURCE time to sample", "The property is an ordinary
 //!   `StudioProperty` and every keyframe operation, interpolation type and expression applies to
@@ -35,9 +35,11 @@
 //!
 //! Units and bounds: frames are SOURCE frame indices of the layer (for a precomposition layer the
 //! nested composition's frames); paths are source-frame pixels. Every numeric row of the
-//! STU-CMP-034 table carries `unknown` bounds and default ([STU-RAS-106]: "MUST NOT invent a value
+//! STU-CMP-034 v02.218 table carries `unknown` bounds and default, except the two chatter controls
+//! (percent, hard and soft bounds 0..100, default 0) ([STU-RAS-106]: "MUST NOT invent a value
 //! ... MUST NOT clamp"): each is `Option<f64>`, absent = not set, any finite value is stored as
-//! given (never clamped, never range-checked here); enums are closed sets; booleans default
+//! given (never clamped, never range-checked here: the record is document state, and the evaluator
+//! REFUSES a chatter outside 0..100 with a typed error, never clamps); enums are closed sets; booleans default
 //! `false`. The refine controls are the STU-RAS-121 control set ([`StudioEdgeRefinementControls`],
 //! the one edge-refinement record; item 5 "MUST NOT define a second edge-refinement record").
 //! Folio hard ceilings (not spec bounds): counts below, coordinates and diameters within
@@ -281,7 +283,7 @@ pub struct StudioRotoParameters {
     /// Percent, signed; bounds and default `unknown`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte_shift_edge: Option<f64>,
-    /// Unit, bounds and default `unknown`.
+    /// Percent, hard and soft bounds 0..100 (STU-CMP-034 v02.218); outside it the evaluator refuses, never clamps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte_reduce_chatter: Option<f64>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -295,7 +297,7 @@ pub struct StudioRotoParameters {
     /// The STU-RAS-121 controls (item 5).
     #[serde(default, skip_serializing_if = "StudioEdgeRefinementControls::is_default")]
     pub refine: StudioEdgeRefinementControls,
-    /// Unit, bounds and default `unknown`; 0 uses the current frame only.
+    /// Percent, hard and soft bounds 0..100 (STU-CMP-034 v02.218); 0 uses the current frame only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refine_reduce_chatter: Option<f64>,
     #[serde(default, skip_serializing_if = "is_false")]

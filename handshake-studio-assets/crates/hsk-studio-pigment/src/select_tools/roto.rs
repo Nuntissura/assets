@@ -2,16 +2,11 @@
 //! base-frame stroke mask becomes a segmented matte, which is propagated frame by frame forward
 //! and backward through a footage sequence.
 //!
-//! Spec basis (module 14): [STU-CMP-034] "DECLARED GAP -- rotoscoping. Mask-path animation
-//! ([STU-CMP-025]) is the manual rotoscoping mechanism ... An ASSISTED rotoscoping capability --
-//! propagating a hand-drawn boundary across frames by tracking edges -- is NOT specified here ...
-//! until it is specified an implementer builds the manual path and does not improvise a propagation
-//! algorithm"; [STU-CMP-100] "GAP -- assisted rotoscoping ... boundary propagation is not
-//! specified". This module was dispatched by the lead with Operator-approved scope expansion
-//! (lane SMB-AE-ROTO-TIMEREMAP, 2026-10-20) and fills the gap with a published, cited method
-//! rather than an improvised one; the spec conflict is recorded in the lane notes for a spec
-//! enrichment of STU-CMP-100. Everything here is class Approximate; After Effects Roto Brush
-//! behaviour is UNVERIFIED (D5).
+//! Spec basis (module 14, v02.218): [STU-CMP-034] assisted rotoscoping (strokes, spans, base
+//! frames, propagation forward / backward, the `classic` | `learned` engine closed set, the
+//! parameter table; [STU-CMP-100] is RESOLVED by it). The `classic` engine is a published, cited
+//! method rather than an improvised one. Everything here is class Approximate; After Effects Roto
+//! Brush behaviour is UNVERIFIED (D5).
 //!
 //! Method (clean-room from the papers, no code read):
 //! - Base frame: interactive graph cut, Boykov and Jolly, ICCV 2001 (hard seeds from the strokes,
@@ -51,10 +46,10 @@ use hsk_studio_accord::CancellationToken;
 /// Propagation engine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RotoEngine {
-    /// Flow-warped shape prior plus graph cut (module docs).
+    /// Spec `classic` (STU-CMP-034): flow-warped shape prior plus graph cut (module docs).
     #[default]
-    GraphCut,
-    /// A learned segmentation / propagation model: not installed, refuses `model_unavailable`.
+    Classic,
+    /// Spec `learned`: a learned segmentation / propagation model: not installed, refuses `model_unavailable`.
     Learned,
 }
 
@@ -72,7 +67,7 @@ pub struct RotoOptions {
 impl Default for RotoOptions {
     fn default() -> Self {
         Self {
-            engine: RotoEngine::GraphCut,
+            engine: RotoEngine::Classic,
             graph: GraphCutOptions::default(),
             base_margin_px: 16.0,
             band_px: 3.0,

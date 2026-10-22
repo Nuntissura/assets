@@ -1,5 +1,5 @@
 //! Assisted rotoscoping in the composition pipeline (lane SMB-AE-ROTO-WIRING; parity AE-18;
-//! STU-CMP-034 v02.217). A layer's Folio roto record (strokes, spans, engine, parameter table,
+//! STU-CMP-034 v02.218). A layer's Folio roto record (strokes, spans, engine, parameter table,
 //! freeze) drives Pigment's roto engine and the shared STU-RAS-121 refine engine to a per-frame
 //! matte that the scene path applies as [`crate::composition::SceneContent::Rotoscoped`].
 //!
@@ -40,7 +40,9 @@
 //!    record's STU-RAS-121 controls and `refine_reduce_chatter` apply; without it the engine runs
 //!    at identity controls.
 //!
-//! Unknown-bounded numerics (STU-RAS-106) are used as given, never clamped; a value the engine's
+//! `matte_reduce_chatter` / `refine_reduce_chatter` are percent with hard and soft bounds 0..100
+//! (STU-CMP-034 v02.218): outside it the run refuses `tool_out_of_range`, never clamps.
+//! Every other numeric is unknown-bounded (STU-RAS-106) and used as given, never clamped; a value the engine's
 //! formula is undefined for (a negative radius or feather) is the engine's typed refusal
 //! `tool_out_of_range`. Absent numerics are not applied (identity), except where the engine needs
 //! a working value: `search_radius` (Pigment's 3 px band) and `decontamination_amount` (the shared
