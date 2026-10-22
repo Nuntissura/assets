@@ -960,7 +960,7 @@ impl Viewer {
             }
             TimelineCommand::AddMarker => {
                 let here = playhead.ok_or("no_program_monitor")?;
-                let frame_start = Ticks::new((here.value() / tpf).saturating_mul(tpf));
+                let frame_start = Ticks::new(here.value().checked_div(tpf).unwrap_or(0).saturating_mul(tpf));
                 self.timeline_commit("timeline_marker_add", |snap, seq_id, ctx| {
                     let doc = snap.document();
                     let taken = all_marker_ids(doc);
@@ -1058,7 +1058,7 @@ impl Viewer {
             "markers": t.cache.as_ref().map_or(0, |c| c.markers.len()),
             "work_area": seq.and_then(|s| s.work_area.as_ref()).map(|a| json!([a.start.value(), a.end.value()])),
             "playhead_ticks": playhead.map(Ticks::value),
-            "playhead_frame": playhead.map(|p| p.value() / tpf),
+            "playhead_frame": playhead.map(|p| p.value().checked_div(tpf).unwrap_or(0)),
             "playhead_timecode": timecode,
             "snapping": t.snapping,
             "selected": t.selected,

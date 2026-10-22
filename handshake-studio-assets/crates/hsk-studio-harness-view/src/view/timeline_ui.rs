@@ -191,7 +191,7 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
         if r.changed() {
             t.view.scroll_frames = scroll.max(0.0);
         }
-        let here = playhead.and_then(|p| seq.frame_rate.accord().map(|r| (p, r))).and_then(|(p, r)| hsk_studio_pulse::format_ticks(p, r, hsk_studio_pulse::TimeDisplay::matching(r), None).ok());
+        let here = playhead.zip(seq.frame_rate.accord()).and_then(|(p, r)| hsk_studio_pulse::format_ticks(p, r, hsk_studio_pulse::TimeDisplay::matching(r), None).ok());
         ui.label(format!("Playhead {}", here.as_deref().unwrap_or("-")));
         out.drawn.push(widget::PLAYHEAD.into());
     });
@@ -242,7 +242,7 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
     let dragged = t.drag().map(|d| d.clip_id.clone());
     for b in &l.clips {
         let name = widget::clip(&b.clip_id);
-        let label = format!("{} [{}..{})", b.label, b.start.value() / tpf, b.end.value() / tpf);
+        let label = format!("{} [{}..{})", b.label, b.start.value().checked_div(tpf).unwrap_or(0), b.end.value().checked_div(tpf).unwrap_or(0));
         let body = ui.interact(b.rect, vw::id(&name), egui::Sense::click_and_drag());
         body.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
         out.drawn.push(name);
@@ -312,7 +312,7 @@ fn paint(ui: &egui::Ui, l: &TimelineLayout, t: &TimelineState, playhead: Option<
         let header = egui::Rect::from_min_max(row.rect.min, egui::pos2(l.lanes_left, row.rect.max.y));
         painter.rect_filled(header, 0.0, visuals.faint_bg_color);
         let name = if row.locked { format!("{} (locked)", row.name) } else { row.name.clone() };
-        painter.text(header.left_center() + egui::vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, name, font.clone(), text);
+        painter.text(egui::pos2(header.min.x + 4.0, header.center().y), egui::Align2::LEFT_CENTER, name, font.clone(), text);
     }
     let selected = t.selected();
     let drag = t.drag();
@@ -323,7 +323,7 @@ fn paint(ui: &egui::Ui, l: &TimelineLayout, t: &TimelineState, playhead: Option<
         let stroke = if selected == Some(b.clip_id.as_str()) { egui::Stroke::new(2.0_f32, egui::Color32::WHITE) } else { egui::Stroke::new(1.0_f32, egui::Color32::BLACK) };
         lanes.rect_stroke(b.rect, 3.0, stroke, egui::StrokeKind::Inside);
         if b.rect.width() > 24.0 {
-            lanes.with_clip_rect(b.rect.shrink(2.0)).text(b.rect.left_center() + egui::vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, &b.label, font.clone(), egui::Color32::WHITE);
+            lanes.with_clip_rect(b.rect.shrink(2.0)).text(egui::pos2(b.rect.min.x + 4.0, b.rect.center().y), egui::Align2::LEFT_CENTER, &b.label, font.clone(), egui::Color32::WHITE);
         }
     }
     if let Some(p) = drag.and_then(|d| d.preview.as_ref()) {
@@ -357,6 +357,6 @@ fn paint(ui: &egui::Ui, l: &TimelineLayout, t: &TimelineState, playhead: Option<
             if l.clips_truncated { "more clips than drawn  " } else { "" },
             if l.unplaceable > 0 { format!("{} clips out of range", l.unplaceable) } else { String::new() }
         );
-        painter.text(l.area.right_bottom() - egui::vec2(4.0, 2.0), egui::Align2::RIGHT_BOTTOM, note, font, text);
+        painter.text(egui::pos2(l.area.max.x - 4.0, l.area.max.y - 2.0), egui::Align2::RIGHT_BOTTOM, note, font, text);
     }
 }
