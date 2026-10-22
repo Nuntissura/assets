@@ -2,10 +2,16 @@
 name: create-assets
 description: Discover, reuse, extend, bundle, and synchronize reusable software assets in Nuntissura/assets. Use before hosts implement reusable functionality, when updating assets, or checking cross-device catalog and skill parity. Excludes image and media generation.
 metadata:
-  version: "2.0.0"
+  version: "2.1.0"
 ---
 
 # Create assets
+
+## Mandatory before-use update
+
+- [ASSET-SYNC-008] On every invocation, before relying on this skill or its inventory, run `python scripts/asset_sync.py before-use --repo PATH` from this installed skill directory. Discover PATH from the verified checkout, `ASSETS_REPO`, or machine-local Git setting `assets.repo`; never guess a drive. The bootstrap needs Python 3.11+ and Git, not PyYAML.
+- [ASSET-SYNC-009] After the bootstrap succeeds, reread the installed `SKILL.md` and generated inventory at the reported origin revision, then follow the updated instructions. Stop on local skill edits, catalog conflicts, unresolved Git operations, divergent commits, network failures, or rejected fast-forwards; preserve all local files and do not substitute a cached inventory.
+- [ASSET-SYNC-010] The before-use command fetches GitHub, advances only by fast-forward, and updates managed installed skill files. It never stashes, resets, force-pushes, or resolves conflicts. Device bootstrap is required once; subsequent skill invocations perform this update automatically.
 
 ## Instruction index
 
@@ -22,9 +28,9 @@ metadata:
 
 - [ASSET-SCOPE-001] Use https://github.com/Nuntissura/assets as the asset repository identity; discover its local checkout from the current environment and verify its Git remote rather than hardcoding a disk path.
 - [ASSET-SCOPE-002] Inspect the repository index, applicable authority, target asset manifests, public API, and relevant host integration before choosing files or architecture.
-- [ASSET-SCOPE-003] Keep each asset in a contained subfolder of the single assets Git repository, with its own ownership boundary and independently applicable governance when present; do not create per-asset Git repositories or permanent identity branches.
+- [ASSET-SCOPE-003] Keep every asset beneath the visible `assets/` parent on the canonical branch of the single GitHub repository. Treat each asset subfolder as its own repository-like work scope with independent ownership, proof, and existing governance. Do not use permanent branches as asset locations or create nested Git repositories.
 - [ASSET-SCOPE-004] Verify actual Git boundaries before staging, committing, or changing dependencies; do not assume a folder is an independent Git repository.
-- [ASSET-SCOPE-005] Do not convert existing folders into nested repositories, submodules, or workspaces solely to match the containment concept; propose any required topology change separately.
+- [ASSET-SCOPE-005] Use an isolated Git worktree of the shared repository when an asset task needs independent Git state; work inside that worktree's `assets/NAME` scope. A Git worktree is a repository checkout, not a nested repository inside an asset. Do not add governance to an asset that has none.
 - [ASSET-SCOPE-006] Preserve unrelated working-tree edits and existing asset names.
 - [ASSET-SCOPE-007] Research current relevant implementations before a new feature or substantial design, following applicable operator and project research requirements; record sources, reuse, rejected approaches, risks, mitigations, and proof before implementation. Recorded-failure remediation follows its narrower applicable rules.
 
@@ -85,14 +91,14 @@ metadata:
 - [ASSET-SCOPE-009] Reuse an adequate asset, extend and validate its missing reusable capability first, or create a new asset only after inspected candidates cannot appropriately own the capability; record the new asset's rationale in its index entry.
 - [ASSET-INDEX-005] `assets-index.yaml` is the sole authored inventory. `references/assets-index.yaml` beside this skill is a generated discovery copy, never a second source of truth; verify it against the repository before relying on it.
 - [ASSET-INDEX-006] Read `repo-governance/asset-catalog-policy.yaml` in the verified repository for schema, discovery, fork, versioning, and publication requirements. Follow its commands from the repository root or pass `--repo` to its checker.
-- [ASSET-INDEX-007] Index every reusable package and composition, including remote-branch-only assets with explicit source branches. Classify exclusions explicitly and keep source-only drafts separate from installable assets. Preserve existing names, IDs, paths, and the assets.index.v1 schema.
+- [ASSET-INDEX-007] Index every reusable package and composition beneath `assets/` on the canonical branch. New assets must be integrated there; historical branch aliases are discovery evidence, never the published asset location. Classify exclusions explicitly and keep source-only drafts separate from installable assets. Preserve existing names, IDs, paths, and the assets.index.v1 schema.
 
 ## Cross-device publication and parity
 
 - [ASSET-SYNC-001] Use GitHub origin as the cross-device publication target. Run `python repo-governance/scripts/asset_catalog.py parity --skill-dir PATH` against every installed and mirrored copy of this skill before dependent work and after publication; supply each directory with another `--skill-dir`.
 - [ASSET-SYNC-002] A parity failure requires reading its findings: reconcile relevant remote updates, refresh stale catalog metadata or generated copies, and preserve unrelated unfinished work. Never overwrite conflicting work or treat offline or partial checks as synchronized.
 - [ASSET-SYNC-003] After approved changes, run the checker with `refresh`, then `check`, and use `install --skill-dir PATH` for selected local copies. Refresh derives package versions from manifests; it does not invent version bumps or independently author skill entries.
-- [ASSET-SYNC-004] Publish only validated task-owned files through a normal fast-forward push under the applicable authority; never force-push, reset, or sweep unrelated edits into publication. A review branch remains pending until canonical integration.
+- [ASSET-SYNC-004] After an asset change passes its owning authority's proof, automatically publish it with `python scripts/asset_sync.py publish --repo PATH --plan PLAN.json --message TEXT`. Derive the plan from inspected asset contracts; include every selected asset ID and its meaningful proof commands. The helper uses a private index and an isolated candidate checkout, then a normal push and fresh origin reread. Preserve unrelated staged and unstaged work; stop on failed proof, remote advancement, or conflicts. Review-required work follows its owning review gate before canonical publication.
 - [ASSET-SYNC-005] Freshly fetch and reread the published commit and catalog before claiming publication. Report exact source revisions and remaining drift; equal package versions alone do not prove source equality. Host adoption additionally requires its actual resolved revision and feature proof.
 - [ASSET-SYNC-006] Maintain the repository-owned skill at `repo-governance/skills/create-assets`; install or mirror that skill and its generated inventory on each device. Global configuration mirrors distribute copies and do not become asset authority.
 - [ASSET-SYNC-007] Preserve independent package versions; review semantic compatibility on public contract changes. Catalog-contract and skill releases have their own versions, and incompatible catalog data formats require a schema change. Do not embed the catalog's own containing commit hash in it.
@@ -107,8 +113,14 @@ metadata:
 
 ## Model use and recovery
 
-Python 3.11+ and PyYAML are required by the checker. Discover the local assets checkout and verify its remote. From its root, use `search --query "intended behavior"` to find entries; open each entry's source folder, public API and manual at its recorded source branch. A branch-only entry is discoverable without being present in the current checkout. Source presence and catalog status do not establish product readiness.
+Python 3.11+ and PyYAML are required by the checker. Discover the local assets checkout and verify its remote. From its root, use `search --query "intended behavior"` to find entries; open each entry's source folder, public API and manual at its recorded source branch. Every current entry resolves to a visible canonical folder. Read its `governance` entrypoint when present; `mode: none` adds no governance ceremony. Source presence and catalog status do not establish product readiness.
 
-Use `check` for offline structural validation. Use `parity --skill-dir PATH` for fresh origin, source-content, package-version, catalog, and installed-copy checks. Exit 0 means the requested check passed, 1 means drift, and 2 means an environment/input error. Read the JSON findings and repair only the relevant constraint. These commands never merge, stage, commit, push, or stop processes. `refresh` writes the catalog and its generated skill copy; `install` explicitly updates selected skill files.
+Use `check` for offline structural validation. Use `parity --skill-dir PATH` for fresh origin, source-content, package-version, catalog, and installed-copy checks. Exit 0 means the requested check passed, 1 means drift, and 2 means an environment/input error. Read the JSON findings and repair only the relevant constraint. Catalog checks do not merge, stage, commit, push, or stop processes. The separate sync helper performs the explicitly authorized update and publication steps. `refresh` writes the catalog and its generated skill copy; `install` explicitly updates selected skill files.
 
 Research and implementation decisions are recorded in the repository's `repo-governance/asset-catalog-policy.yaml`. Repository manifests and all fetched origin branches were inspected on 2026-10-22. Old checkout observations are not permanent product facts.
+
+## Publication plan
+
+The plan is an ignored, task-specific JSON file. `assets` contains entries with `id`, an explicit `paths` list of task-owned files inside that asset, and nonempty `checks`; each check has an argument-array `argv`, repository-relative `authority` pointing to the inspected asset rules or manual, and optional repository-relative `cwd` within that asset folder. Do not list whole directories or sweep other local edits within the same asset into publication. No shell command strings are accepted. Run required gameplan preparation before costly proof commands. Publication reruns proof against the exact isolated candidate, so unrelated local dependency edits cannot certify an unpublished combination. It preserves the caller's real Git index and files and reports the published revision; reconcile that revision before the next task.
+
+For a small asset without governance, derive focused public-API proof from the operator request and existing manual. For a governed asset, retain every applicable owner gate, including independent review where required. A successful helper exit establishes only the declared proof and remote tree equality, not an invented compatibility verdict.

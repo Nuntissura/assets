@@ -1,0 +1,264 @@
+//! Typed, content-free errors: stable snake_case codes only, carrying no paths, layer names or
+//! document text. `SessionError::outcome` maps every failure onto the closed Observe outcome vocabulary.
+use hsk_studio_observe::{Error as ObserveError, FailureCode, Outcome, Receipt};
+use hsk_studio_package::PackageError;
+use std::fmt;
+
+/// What a registered provider reports; the code is provider-owned, stable and content-free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderError {
+    Canceled,
+    Rejected(&'static str),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegistryError {
+    /// Id is empty, longer than 64 bytes, or outside `[a-z0-9._-]`.
+    InvalidId,
+    DuplicateId,
+    /// The registry already holds `MAX_PROVIDERS` entries.
+    Full,
+}
+
+impl RegistryError {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::InvalidId => "invalid_provider_id",
+            Self::DuplicateId => "duplicate_provider",
+            Self::Full => "registry_full",
+        }
+    }
+}
+
+impl fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+impl std::error::Error for RegistryError {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionError {
+    Canceled,
+    InvalidBudget,
+    Io(std::io::ErrorKind),
+    Package(PackageError),
+    /// Folio accepted the document only as a read-only inspection (unknown schema): it can be
+    /// inspected but not edited or re-written by this session.
+    ReadOnlyDocument,
+    /// The caller's expected document revision (or the revision a proposal was computed on) is
+    /// not the session's current revision. Nothing was changed.
+    StaleRevision {
+        expected: u64,
+        current: u64,
+    },
+    ProviderUnavailable,
+    /// Provider-owned stable rejection code (for example `revision_conflict`).
+    Provider(&'static str),
+    /// A provider returned a transaction the session refuses to commit (wrong document, not
+    /// exactly one revision ahead, or property revisions that do not follow the session vector).
+    ProposalInconsistent,
+    /// A provider's successor document is not the live document plus the property writes the
+    /// proposal declares (it was prepared from another base, or carries unrevisioned edits).
+    /// Nothing was published or sent to the commit authority.
+    ProposalNotDerived,
+    /// The saved file did not read back as the revision the session wrote.
+    VerifyMismatch,
+    /// `save` was called on a session with no origin path.
+    NoDestination,
+    /// Idempotency key is empty, longer than 128 bytes or contains control characters.
+    InvalidKey,
+    /// A commit authority is injected, so every submit must carry a caller-supplied key (this
+    /// crate takes keys from the caller and mints none).
+    KeyRequired,
+    /// The grant port reports the grant revoked (checked afresh on every submit and retry).
+    GrantRevoked,
+    /// The grant port reports no grant.
+    GrantMissing,
+    /// Same key, different principal/resource/action/payload/expected revision.
+    IdempotencyConflict,
+    /// Bounded admission is full; retry after the hint. Nothing was started.
+    Overloaded {
+        retry_after_ms: u64,
+    },
+    /// The operation alone is larger than the whole admission budget; retrying cannot help.
+    CostExceedsBudget,
+    /// Admission was closed by `close_admission` / `drain`.
+    Closed,
+    /// The commit authority did not say whether the transaction was committed. The transaction
+    /// is pending under its key: `reconcile` (or a retry with the same key) looks it up and
+    /// adopts it exactly once or clears it, and does not blindly re-apply it (test
+    /// `lost_acknowledgement_is_reconciled_and_applied_exactly_once`).
+    OutcomeUnknown,
+    /// An unresolved pending outcome exists; resolve it before submitting anything else.
+    ReconciliationRequired,
+    /// The commit authority fenced this session's epoch (a newer lease holder exists).
+    StaleEpoch,
+    /// Stable authority-owned rejection code.
+    CommitRejected(&'static str),
+    /// The authority's receipt does not match the revision or binding the session sent.
+    ReceiptMismatch,
+    /// The idempotency table is full (`Budgets::max_receipts`) and no receipt may be evicted:
+    /// under `ReceiptPolicy::RefuseWhenFull`, or under `EvictAcknowledged` when every held
+    /// receipt is pending or not yet acknowledged. Nothing was started.
+    ReceiptsFull,
+    /// The operator command named a key whose pending outcome is not diverged (it is committed,
+    /// or the authority has no receipt for it, or the receipt agrees: `reconcile` handles those).
+    NotDiverged,
+    /// No receipt is held under that key: it was never submitted, or it was evicted after the
+    /// caller acknowledged it (`ReceiptPolicy::EvictAcknowledged`).
+    ReceiptNotHeld,
+    /// The authority document supplied to `resync_diverged` was refused; nothing changed.
+    AuthorityDocument(AuthorityFault),
+}
+
+/// Why `resync_diverged` refused the authority document it was given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthorityFault {
+    /// Larger than the session's folio input budget (or over another folio budget).
+    TooLarge,
+    /// Not a valid document under folio.
+    Invalid,
+    /// Folio accepts it only as a read-only inspection (unknown schema): it cannot be edited.
+    ReadOnly,
+    /// Names another document than the one this session owns.
+    WrongDocument,
+    /// Its revision is not the revision the authority's receipt names.
+    WrongRevision,
+    /// A raster tile names an asset the session's source package does not hold.
+    MissingAsset,
+}
+
+impl AuthorityFault {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::TooLarge => "authority_document_too_large",
+            Self::Invalid => "authority_document_invalid",
+            Self::ReadOnly => "authority_document_read_only",
+            Self::WrongDocument => "authority_document_wrong_document",
+            Self::WrongRevision => "authority_document_wrong_revision",
+            Self::MissingAsset => "authority_document_missing_asset",
+        }
+    }
+}
+
+impl SessionError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Canceled => "canceled",
+            Self::InvalidBudget => "invalid_budget",
+            Self::Io(_) => "io",
+            Self::Package(e) => e.code(),
+            Self::ReadOnlyDocument => "read_only_document",
+            Self::StaleRevision { .. } => "stale_revision",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::Provider(code) => code,
+            Self::ProposalInconsistent => "proposal_inconsistent",
+            Self::ProposalNotDerived => "proposal_not_derived",
+            Self::VerifyMismatch => "verify_mismatch",
+            Self::NoDestination => "no_destination",
+            Self::InvalidKey => "invalid_idempotency_key",
+            Self::KeyRequired => "key_required",
+            Self::GrantRevoked => "grant_revoked",
+            Self::GrantMissing => "grant_missing",
+            Self::IdempotencyConflict => "idempotency_conflict",
+            Self::Overloaded { .. } => "overloaded",
+            Self::CostExceedsBudget => "cost_exceeds_budget",
+            Self::Closed => "closed",
+            Self::OutcomeUnknown => "outcome_unknown",
+            Self::ReconciliationRequired => "reconciliation_required",
+            Self::StaleEpoch => "stale_epoch",
+            Self::CommitRejected(code) => code,
+            Self::ReceiptMismatch => "receipt_mismatch",
+            Self::ReceiptsFull => "receipts_full",
+            Self::NotDiverged => "not_diverged",
+            Self::ReceiptNotHeld => "receipt_not_held",
+            Self::AuthorityDocument(fault) => fault.code(),
+        }
+    }
+
+    /// Terminal Observe outcome for this failure.
+    pub fn outcome(&self) -> Outcome {
+        match self {
+            Self::Canceled => Outcome::Canceled,
+            Self::Package(PackageError::Canceled) => Outcome::Canceled,
+            Self::Io(_)
+            | Self::ProviderUnavailable
+            | Self::Overloaded { .. }
+            | Self::Closed
+            | Self::OutcomeUnknown
+            | Self::ReconciliationRequired => Outcome::Failure(FailureCode::Unavailable),
+            Self::Package(e) => hsk_studio_package::outcome_for::<()>(&Err(e.clone())),
+            Self::ReadOnlyDocument => Outcome::Failure(FailureCode::Unsupported),
+            Self::InvalidBudget
+            | Self::StaleRevision { .. }
+            | Self::Provider(_)
+            | Self::ProposalInconsistent
+            | Self::ProposalNotDerived
+            | Self::VerifyMismatch
+            | Self::NoDestination
+            | Self::InvalidKey
+            | Self::KeyRequired
+            | Self::GrantRevoked
+            | Self::GrantMissing
+            | Self::IdempotencyConflict
+            | Self::CostExceedsBudget
+            | Self::StaleEpoch
+            | Self::CommitRejected(_)
+            | Self::ReceiptMismatch
+            | Self::ReceiptsFull
+            | Self::NotDiverged
+            | Self::ReceiptNotHeld
+            | Self::AuthorityDocument(_) => Outcome::Failure(FailureCode::Validation),
+        }
+    }
+
+    pub(crate) fn from_package(error: PackageError) -> Self {
+        match error {
+            PackageError::Canceled => Self::Canceled,
+            other => Self::Package(other),
+        }
+    }
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+impl std::error::Error for SessionError {}
+
+/// What happened to the one Observe report of an operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportStatus {
+    /// The terminal frame was accepted by the sink.
+    Delivered(Receipt),
+    /// Observe or the sink refused it; the operation result is unaffected.
+    Undelivered(ObserveError),
+    /// No report was possible because the operation failed before the container identified its
+    /// document (observe frames are addressed by document id).
+    Unaddressed,
+}
+
+/// A failed operation together with the fate of its report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failed {
+    pub error: SessionError,
+    pub report: ReportStatus,
+}
+
+impl Failed {
+    pub fn code(&self) -> &'static str {
+        self.error.code()
+    }
+}
+
+impl fmt::Display for Failed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.error.code())
+    }
+}
+
+impl std::error::Error for Failed {}

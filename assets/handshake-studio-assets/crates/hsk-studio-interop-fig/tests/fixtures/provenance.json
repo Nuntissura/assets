@@ -1,0 +1,87 @@
+{
+  "author": "Operator",
+  "tool": "Figma desktop 126.10.7",
+  "export": "Save local copy (.fig); PNG 1x references exported from the same documents",
+  "date": "2026-10-14",
+  "licence": "Operator-owned test data",
+  "notes": "Variables have one mode only (Figma plan limit); light/dark modes are not representable in these fixtures.",
+  "files": [
+    {
+      "name": "fig-basic-shapes.fig",
+      "size": 101769,
+      "sha256": "1bd093838dc823daac8aef2c912b9cc332db988a0af264176a0fdde07574b1c3"
+    },
+    {
+      "name": "fig-basic-shapes.png",
+      "size": 87114,
+      "sha256": "9b0e6f7128de518c482a8aadf7c4dcdf014f7284ed605c826b2d214734b9789a"
+    },
+    {
+      "name": "fig-components-autolayout-variants.png",
+      "size": 5053,
+      "sha256": "4d047fca36cbc7c9262734adccf6cabccc998a89c284627eff221c808ac37096"
+    },
+    {
+      "name": "fig-components-autolayout.fig",
+      "size": 45805,
+      "sha256": "d4815ef3dd9fe12978421832458461d55d909ee5177a2c359b44db62714c4be9"
+    },
+    {
+      "name": "fig-components-autolayout.png",
+      "size": 7671,
+      "sha256": "d63a84ad51e6bc5d697f7bafcfbfe2e1d4094086855075a658e496dd035ebca9"
+    },
+    {
+      "name": "fig-prototype-pages-animated.png",
+      "size": 7129,
+      "sha256": "ec498956e0e07d9ab00b88401f47043b10d7e743a238494522071c0ef5e21017"
+    },
+    {
+      "name": "fig-prototype-pages-detail.png",
+      "size": 6524,
+      "sha256": "1d3c8abb1590dbfb318450ac954c9a229866ca8db8126fef5fee974d436005c0"
+    },
+    {
+      "name": "fig-prototype-pages-scroll.png",
+      "size": 13824,
+      "sha256": "3238d1c648a9bdc8fbcf2af05e0d0db64782d0d5c8bec46361ba12cc0268bae2"
+    },
+    {
+      "name": "fig-prototype-pages-start.png",
+      "size": 6797,
+      "sha256": "b373873e365a2b66756db27b9cea6afcbfda4bda116426e050724361426092a4"
+    },
+    {
+      "name": "fig-prototype-pages.fig",
+      "size": 43400,
+      "sha256": "8c86ec5d622ddf4a82d42c4a138f9f39a0f22d2e40d40a6268e68d2b020daf0b"
+    },
+    {
+      "name": "Inter-Bold.ttf",
+      "size": 420428,
+      "sha256": "288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f",
+      "role": "test font, unmodified (static Inter Bold, family 'Inter', style 'Bold')",
+      "source": "rsms/inter release v4.1: https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip (zip sha256 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e), member extras/ttf/Inter-Bold.ttf, byte-identical to the zip member",
+      "licence": "OFL-1.1 (Inter-4.1-OFL.txt, the release's LICENSE.txt; Reserved Font Name rules apply to modified versions only, this file is unmodified)",
+      "added": "2026-10-15, lane SMB-INTEROP-FIG-PAINTS-2; downloaded by the lead under the Operator grant, added under the Operator answer 'Yes, add it' (START_LOG 2026-10-15)"
+    },
+    {
+      "name": "Inter-4.1-OFL.txt",
+      "size": 4380,
+      "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
+      "role": "licence of Inter-Bold.ttf, unmodified",
+      "source": "LICENSE.txt of the same Inter-4.1.zip, byte-identical to the zip member",
+      "licence": "OFL-1.1 text",
+      "added": "2026-10-15, lane SMB-INTEROP-FIG-PAINTS-2"
+    },
+    {
+      "name": "Inter-Regular-4.1.ttf",
+      "size": 411640,
+      "sha256": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
+      "role": "test font, unmodified (static Inter Regular 4.1, family 'Inter', style 'Regular'); the type crate's Inter-Regular.ttf 3.019 fixture is kept",
+      "source": "member extras/ttf/Inter-Regular.ttf of rsms/inter release v4.1 Inter-4.1.zip (zip sha256 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e, https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip), extracted byte-identical",
+      "licence": "OFL-1.1 (Inter-4.1-OFL.txt)",
+      "added": "2026-10-15, lane SMB-INTEROP-FIG-EXPORT (lead decision START_LOG 2026-10-15: new fixture file, 3.019 kept)"
+    }
+  ]
+}

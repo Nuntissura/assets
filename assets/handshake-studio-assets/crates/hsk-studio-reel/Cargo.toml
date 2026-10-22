@@ -1,0 +1,33 @@
+[package]
+name = "hsk-studio-reel"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+av1 = ["dep:rav1d", "dep:libc"]
+prores = []
+# AV1 encode through rav1e (lane SMB-REEL-ENCODE; lead-approved 2026-10-15, default off).
+av1-encode = ["dep:rav1e"]
+# Studio's own AAC-LC decoder (lane SMB-AUDIO-CODECS), opt-in since Operator decision D24-A (2026-10-15):
+# by default AAC decodes through the OS decoder (Media Foundation, reel-native worker) via ExternalAudioDecoder.
+studio-aac = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
+lewton = { version = "=0.10.2", default-features = false, features = [] }
+opus-pure = { version = "=0.2.2", default-features = false, features = [] }
+rav1d = { version = "=1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"], optional = true }
+libc = { version = "=0.2.190", default-features = false, features = [], optional = true }
+rav1e = { version = "=0.8.1", default-features = false, features = [], optional = true }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "reel-consumer"
+path = "examples/reel-consumer.rs"

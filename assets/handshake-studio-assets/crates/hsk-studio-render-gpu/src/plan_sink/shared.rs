@@ -1,0 +1,489 @@
+//! Shared-device execution (feature `shared-device`, lane SMB-RENDER-GPU-SHARED-DEVICE): render a
+//! pigment plan on a CALLER-OWNED wgpu device and queue (for example egui-wgpu's, wgpu 27.0.1 is
+//! the one wgpu in the workspace) straight into a caller-owned texture, with no read-back to the
+//! host and no upload from it.
+//!
+//! Same admission, preparation, budgets, chunking and compute passes as [`GpuBackend`] (the
+//! backend inside is an ordinary `GpuBackend` over the caller's device): only the chunk output
+//! differs. Instead of the staging copy + map + `TileSink`, one compute pass per chunk converts
+//! the finished straight-alpha linear `RGBA f32` chunk into display bytes and stores them into the
+//! target texture at the chunk's position relative to the plan extent origin.
+//!
+//! Display encoding (the egui convention: textures hold gamma-space, premultiplied 8-bit values):
+//! `a8 = round(a * 255)`, `c8 = round(srgb_encode(c) * 255)` (IEC 61966-2-1, clamped to `0..=1`,
+//! NaN as 0), stored `round(c8 * a8 / 255) / 255` and `a8 / 255` into an [`TARGET_FORMAT`]
+//! (`Rgba8Unorm`) storage texture. Rounding is `floor(x + 0.5)`, Rust `f32::round` for the
+//! non-negative values here; `pow` may differ from the CPU in the last ulp, so parity with the
+//! CPU encoding is +-1 per channel (test tests/shared_device.rs
+//! shared_device_renders_into_the_callers_texture_without_readback).
+//!
+//! Extended-range plans (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE): the pass checks every texel for
+//! the kernel's overflow marker (alpha above 1.5) or a non-finite value; such a texel is NOT
+//! written and sets a 4-byte device flag, which the host reads once after the last chunk (the only
+//! read-back of this path, extended plans only) and turns into the typed refusal render-cpu
+//! returns, `Unsupported { sample_range_outside_unit }`. The texture then holds an unfinished
+//! frame the caller must not present (as with any `Err`). A unit-range plan never reads the flag
+//! and writes every texel exactly as before.
+//!
+//! Contract: the texture must be created on the same device, `Rgba8Unorm`, 2D, one sample,
+//! usage `STORAGE_BINDING`, and at least the plan extent in both dimensions; anything else is
+//! refused as `Backend(Sink(Rejected))` before any device work. The commands are submitted on the
+//! caller's queue, so a later submission on that queue (egui's frame) sees the finished texture.
+//! Device loss is the host's to detect: no device-lost or uncaptured-error callback is installed
+//! on a shared device (see `GpuContext::from_external`).
+#![deny(clippy::arithmetic_side_effects)]
+use super::{GpuBackend, GpuStats, State, overflow, unsupported};
+use crate::device::{DeviceOptions, GpuContext};
+use crate::error::GpuError;
+use crate::pipeline::PipelineFault;
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_pigment::Rect;
+use hsk_studio_pigment::render_plan::{
+    BackendError, ExecuteRequest, NoVector, PlanExtensions, PlanSources, RenderPlan,
+    RenderReceipt, SAMPLE_RANGE_OPERATOR, SinkError, TileSink,
+};
+
+/// The only texture format the shared output writes (storage-writable in core WebGPU).
+pub const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Machine-readable facts of this module (the crate DESCRIPTOR is unchanged).
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-RENDER_GPU.shared","lane":"SMB-RENDER-GPU-SHARED-DEVICE","feature":"shared-device (default off: the default build keeps no wgpu type in a public signature, STU-ARC-002)","api":"SharedDevice::new(&wgpu::Device, &wgpu::Queue, wgpu::AdapterInfo, DeviceOptions) -> Result<SharedDevice, GpuError>; render_to_texture(plan, Option<&PlanExtensions>, request, sources, cancel, &wgpu::Texture) -> Result<(RenderReceipt, GpuStats), GpuError>; backend() -> &GpuBackend (the same device through the TileSink path)","output":"Rgba8Unorm storage texture, gamma-space premultiplied 8-bit (egui texture convention), written at the chunk position relative to the plan extent origin; no read-back of the frame (GpuStats.bytes_read_back stays 0 for unit-range plans; an extended-range plan reads one 4-byte overflow flag: the pass skips a texel holding the overflow marker or a non-finite value and sets the flag, and render_to_texture returns Unsupported{sample_range_outside_unit}, test gpu_extended_envelope gpu_overflow_in_envelope_operations_and_on_the_shared_texture_is_typed)","refused":"texture not Rgba8Unorm, not 2D, multisampled, without STORAGE_BINDING or smaller than the plan extent: Backend(Sink(Rejected)) before any device work","loss":"no callbacks installed on the caller's device; the host detects loss","proven_by":"tests/shared_device.rs shared_device_renders_into_the_callers_texture_without_readback (live adapter, tests/gpu-proof.toml policy), shared_target_refusals_happen_before_device_work"}"#;
+
+const PARAMS_BYTES: u64 = 32;
+const WORKGROUP: u32 = 8;
+
+const SHADER: &str = r"
+struct Params {
+    dst: vec2<u32>,
+    size: vec2<u32>,
+    frame_width: u32,
+    margin: u32,
+    extended: u32,
+    view: u32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> level: array<vec4<f32>>;
+@group(0) @binding(2) var target_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var<storage, read_write> overflow_flag: array<atomic<u32>, 1>;
+// Stage-6a view transform parameters (hsk_studio_prism::view_gpu_params; lane
+// SMB-PRISM-VIEW-TRANSFORM-2), read by Prism's VIEW_WGSL through vp().
+@group(0) @binding(4) var<storage, read> view_params: array<f32>;
+fn vp(i: u32) -> f32 {
+    return view_params[i];
+}
+
+fn unit(v: f32) -> f32 {
+    // NaN compares unequal to itself: map it to 0 like the CPU encoder.
+    return select(0.0, clamp(v, 0.0, 1.0), v == v);
+}
+fn byte(v: f32) -> f32 {
+    return floor(unit(v) * 255.0 + 0.5);
+}
+fn encode(v: f32) -> f32 {
+    let c = unit(v);
+    if c <= 0.0031308 {
+        return c * 12.92;
+    }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= params.size.x || id.y >= params.size.y {
+        return;
+    }
+    let p = level[(id.y + params.margin) * params.frame_width + id.x + params.margin];
+    if params.extended != 0u {
+        // Overflow marker (alpha 2) or a non-finite texel: never displayed, flagged for the host.
+        let e = bitcast<vec4<u32>>(p) & vec4<u32>(0x7f800000u);
+        if p.a > 1.5 || any(e == vec4<u32>(0x7f800000u)) {
+            atomicStore(&overflow_flag[0], 1u);
+            return;
+        }
+    }
+    var rgb = p.rgb;
+    if params.view != 0u {
+        // Stage 6a: Prism's SDR view (display-referred linear [0, 1]) before the display encoding.
+        rgb = vt_view(rgb);
+    }
+    let a8 = byte(p.a);
+    let c8 = vec3<f32>(byte(encode(rgb.r)), byte(encode(rgb.g)), byte(encode(rgb.b)));
+    let pre = floor(c8 * a8 / 255.0 + vec3<f32>(0.5));
+    textureStore(target_tex, vec2<u32>(params.dst.x + id.x, params.dst.y + id.y), vec4<f32>(pre / 255.0, a8 / 255.0));
+}
+";
+
+/// The display-encoding pass, built once per shared device.
+struct OutputPipeline {
+    pipeline: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+    params: wgpu::Buffer,
+    /// Set by the pass when an extended-range texel overflowed (lane
+    /// SMB-RENDER-GPU-EXTENDED-ENVELOPE); cleared before every execution.
+    flag: wgpu::Buffer,
+    flag_readback: wgpu::Buffer,
+    /// Stage-6a view parameters (`hsk_studio_prism::view_gpu_params`), written per chunk when the
+    /// plan declares an SDR view (lane SMB-PRISM-VIEW-TRANSFORM-2).
+    view_params: wgpu::Buffer,
+}
+
+impl OutputPipeline {
+    /// Built under `pipeline::guarded` (out-of-memory, internal and validation scopes plus a panic
+    /// guard): the host's device has no handler of ours, so an unscoped backend compiler error
+    /// would reach wgpu's default handler, which panics (lane SMB-RENDER-GPU-PIPELINE-FAULT).
+    fn new(device: &wgpu::Device) -> Result<Self, PipelineFault> {
+        const LABEL: &str = "hsk-studio-render-gpu shared output";
+        crate::pipeline::guarded(device, LABEL, crate::pipeline::Stage::Pipeline, || {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+                // The output pass plus Prism's WGSL view transform (colour maths stay Prism's).
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(format!(
+                    "{SHADER}{}",
+                    hsk_studio_prism::VIEW_WGSL
+                ))),
+            });
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: TARGET_FORMAT,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+                bind_group_layouts: &[&layout],
+                push_constant_ranges: &[],
+            });
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+            let params = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hsk-studio-render-gpu shared output params"),
+                size: PARAMS_BYTES,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let flag = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hsk-studio-render-gpu shared overflow flag"),
+                size: FLAG_BYTES,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let view_params = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hsk-studio-render-gpu shared output view params"),
+                size: VIEW_PARAMS_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let flag_readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hsk-studio-render-gpu shared overflow flag readback"),
+                size: FLAG_BYTES,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            Self {
+                pipeline,
+                layout,
+                params,
+                flag,
+                flag_readback,
+                view_params,
+            }
+        })
+    }
+}
+
+/// Bytes of the view-transform parameter block (`hsk_studio_prism::VIEW_GPU_PARAMS` binary32).
+const VIEW_PARAMS_BYTES: u64 = (hsk_studio_prism::VIEW_GPU_PARAMS as u64) * 4;
+/// Bytes of the overflow flag (one `atomic<u32>`).
+const FLAG_BYTES: u64 = 4;
+/// Longest wait for the overflow-flag read-back.
+const FLAG_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One execution's texture output (built by [`SharedDevice::render_to_texture`], used by `run`).
+pub(in crate::plan_sink) struct TextureOut<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    pipeline: &'a OutputPipeline,
+    view: wgpu::TextureView,
+    origin_x: i64,
+    origin_y: i64,
+    /// Stage-6a SDR view parameters (`None`: no view in the plan's output stage).
+    view_params: Option<[f32; hsk_studio_prism::VIEW_GPU_PARAMS]>,
+}
+
+impl TextureOut<'_> {
+    /// Encode the central `rect` of the finished frame in `level` (frame width `frame_width`,
+    /// effect margin `margin`) into the target texture and submit on the caller's queue.
+    pub(in crate::plan_sink) fn write_chunk_in(
+        &self,
+        level: &wgpu::Buffer,
+        rect: Rect,
+        frame_width: u32,
+        margin: u32,
+        extended: bool,
+    ) -> Result<(), GpuError> {
+        let dst_x = u32::try_from(rect.x.checked_sub(self.origin_x).ok_or_else(overflow)?)
+            .map_err(|_| overflow())?;
+        let dst_y = u32::try_from(rect.y.checked_sub(self.origin_y).ok_or_else(overflow)?)
+            .map_err(|_| overflow())?;
+        let mut params = Vec::with_capacity(32);
+        let ext = u32::from(extended);
+        let view = u32::from(self.view_params.is_some());
+        for word in [dst_x, dst_y, rect.width, rect.height, frame_width, margin, ext, view] {
+            params.extend_from_slice(&word.to_le_bytes());
+        }
+        self.queue.write_buffer(&self.pipeline.params, 0, &params);
+        if let Some(values) = &self.view_params {
+            let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+            self.queue.write_buffer(&self.pipeline.view_params, 0, &bytes);
+        }
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hsk-studio-render-gpu shared output"),
+            layout: &self.pipeline.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.pipeline.params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: level.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.pipeline.flag.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.pipeline.view_params.as_entire_binding(),
+                },
+            ],
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline.pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(
+                rect.width.div_ceil(WORKGROUP),
+                rect.height.div_ceil(WORKGROUP),
+                1,
+            );
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// After the last chunk of an extended-range plan: read the overflow flag (4 bytes) and return
+    /// the typed refusal render-cpu returns when a texel overflowed. A unit-range plan reads
+    /// nothing. Returns the bytes read back.
+    pub(in crate::plan_sink) fn finish(&self, extended: bool) -> Result<u64, GpuError> {
+        if !extended {
+            return Ok(0);
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu shared overflow flag"),
+            });
+        encoder.copy_buffer_to_buffer(&self.pipeline.flag, 0, &self.pipeline.flag_readback, 0, FLAG_BYTES);
+        self.queue.submit(Some(encoder.finish()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pipeline
+            .flag_readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |outcome| {
+                let _ = tx.send(outcome);
+            });
+        let polled = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(FLAG_WAIT),
+        });
+        if polled.is_err() || !matches!(rx.try_recv(), Ok(Ok(()))) {
+            return Err(GpuError::Gpu("readback_map_failed"));
+        }
+        let flagged = {
+            let view = self.pipeline.flag_readback.slice(..).get_mapped_range();
+            view.iter().any(|b| *b != 0)
+        };
+        self.pipeline.flag_readback.unmap();
+        if flagged {
+            return Err(unsupported(SAMPLE_RANGE_OPERATOR));
+        }
+        Ok(FLAG_BYTES)
+    }
+}
+
+/// The sink of a texture execution: never called (chunks go to the texture).
+struct NoSink;
+impl TileSink for NoSink {
+    fn accept(&mut self, _: Rect, _: &[u8], _: &[u8]) -> Result<(), SinkError> {
+        Err(SinkError::Unavailable)
+    }
+}
+
+/// A render-gpu backend on a caller-owned device, with the texture output pass.
+pub struct SharedDevice {
+    backend: GpuBackend,
+    output: OutputPipeline,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+impl SharedDevice {
+    /// Wrap the caller's device and queue (clones of wgpu's reference-counted handles). Builds the
+    /// render-gpu compute pipelines and the output pass on that device; a failure is the
+    /// [`PipelineFault`] detail (code as `GpuError::Pipeline`, failing object label, wgpu class,
+    /// redacted backend message; lane SMB-RENDER-GPU-SUBMIT-FAULT, test
+    /// shared_device_new_returns_the_fault_detail). Execution faults on the shared device are
+    /// read from [`GpuBackend::submit_fault`] of [`SharedDevice::backend`].
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        adapter: wgpu::AdapterInfo,
+        options: DeviceOptions,
+    ) -> Result<Self, PipelineFault> {
+        let ctx = GpuContext::from_external(device.clone(), queue.clone(), adapter, &options)?;
+        let generation = ctx.generation();
+        let output = OutputPipeline::new(device)?;
+        Ok(Self {
+            backend: GpuBackend::with_state(options, State::Ready(Box::new(ctx)), generation),
+            output,
+            device: device.clone(),
+            queue: queue.clone(),
+        })
+    }
+
+    /// Deprecated alias of the backend over the shared device (see
+    /// [`GpuBackend::with_display_transform`]); declare the output stage in the plan instead.
+    #[deprecated(note = "declare the output stage in the plan: PlanExtensions::with_output")]
+    pub fn with_display_transform(mut self, transform: super::DisplayTransform) -> Self {
+        #[allow(deprecated)]
+        let backend = self.backend.with_display_transform(transform);
+        self.backend = backend;
+        self
+    }
+
+    /// The backend over the shared device (read-back path through a `TileSink`, state queries).
+    pub fn backend(&self) -> &GpuBackend {
+        &self.backend
+    }
+
+    /// Render `plan` (with its envelope when `extensions` is `Some`) into `target`. Same order and
+    /// typed failures as [`GpuBackend::execute_detailed`]; the target is checked first.
+    pub fn render_to_texture(
+        &self,
+        plan: &RenderPlan<NoVector>,
+        extensions: Option<&PlanExtensions>,
+        request: &ExecuteRequest,
+        sources: &dyn PlanSources,
+        cancel: &CancellationToken,
+        target: &wgpu::Texture,
+    ) -> Result<(RenderReceipt, GpuStats), GpuError> {
+        let extent = plan.target.extent;
+        let rejected = GpuError::Backend(BackendError::Sink(SinkError::Rejected));
+        if target.format() != TARGET_FORMAT
+            || target.dimension() != wgpu::TextureDimension::D2
+            || target.sample_count() != 1
+            || !target.usage().contains(wgpu::TextureUsages::STORAGE_BINDING)
+            || target.width() < extent.width
+            || target.height() < extent.height
+        {
+            return Err(rejected);
+        }
+        let out = TextureOut {
+            device: &self.device,
+            queue: &self.queue,
+            pipeline: &self.output,
+            view: target.create_view(&wgpu::TextureViewDescriptor::default()),
+            origin_x: extent.x,
+            origin_y: extent.y,
+            // The executed envelope's view (deprecated backend alias included); an HDR view has no
+            // GPU form and is refused by execute_inner before any device work.
+            view_params: super::display::aliased(extensions, self.backend.display)
+                .as_ref()
+                .or(extensions)
+                .and_then(|e| e.output.display)
+                .and_then(|d| d.view())
+                .and_then(hsk_studio_prism::view_gpu_params),
+        };
+        // A fresh overflow flag for this execution (ordered before every pass on the queue).
+        self.queue.write_buffer(&self.output.flag, 0, &[0u8; FLAG_BYTES as usize]);
+        self.backend.execute_inner(
+            plan,
+            extensions,
+            request,
+            sources,
+            cancel,
+            &mut NoSink,
+            Some(&out),
+        )
+    }
+}

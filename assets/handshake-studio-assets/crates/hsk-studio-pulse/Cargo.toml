@@ -1,0 +1,31 @@
+[package]
+name = "hsk-studio-pulse"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false }
+
+[dev-dependencies]
+hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false }
+hsk-studio-render-cpu = { path = "../hsk-studio-render-cpu", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "pulse-consumer"
+path = "examples/pulse-consumer.rs"
+
+[[example]]
+name = "pulse-timeline-consumer"
+path = "examples/pulse-timeline-consumer.rs"

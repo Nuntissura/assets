@@ -1,0 +1,39 @@
+[package]
+name = "hsk-studio-motion-js"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+quickjs = ["dep:rquickjs", "dep:hsk-studio-worker", "hsk-studio-worker/job-caps"]
+test-faults = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-motion = { path = "../hsk-studio-motion", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-worker = { path = "../hsk-studio-worker", version = "=0.1.0", default-features = false, optional = true }
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"], optional = true }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "motion-js-consumer"
+path = "examples/motion-js-consumer.rs"
+
+[[bin]]
+name = "motion-js-worker"
+path = "src/bin/motion-js-worker.rs"
+required-features = ["quickjs"]
+
+[[test]]
+name = "quickjs_worker"
+path = "tests/quickjs_worker.rs"
+required-features = ["quickjs", "test-faults"]
+
+[[test]]
+name = "worker_fault_env"
+path = "tests/worker_fault_env.rs"
+required-features = ["quickjs"]

@@ -1,0 +1,164 @@
+{
+  "schema": "hsk.studio.reel.mov-fixture-provenance@1",
+  "purpose": "independent-writer oracle for the ISOBMFF/MOV index reader: edit list, version 1 ctts with negative offsets, sync samples, drop-frame tmcd start (tests/engine_video.rs ffmpeg_made_mov_matches_independent_oracle)",
+  "generated_by": "tests/fixtures/mov/generate-mov.sh (run once, offline, under the artifact root on D:; never by tests)",
+  "generated_on": "2026-10-11",
+  "generator_tool": "ffmpeg 8.1.1-full_build-www.gyan.dev, encoder libx264; ffmpeg and ffprobe are fixture generator and oracle only, never a product or test-time dependency",
+  "reproducibility": "regenerating with the same ffmpeg build gave the identical sha256 (checked 2026-10-11)",
+  "source_content": "synthetic ffmpeg lavfi testsrc2, 64x36 yuv420p, 24 frames at 30000/1001, H.264 High, -bf 2 -g 12, open-gop=0, no third-party media, no personal data",
+  "files": {
+    "mov-h264-bf2-negcts-tc-df-64x36.mov": {
+      "bytes": 4197,
+      "sha256": "4480db23d496dedb5dc7608ab6b9b21627dd94900221f018e03d7e6bf1bce418",
+      "container": "QuickTime MOV: track 1 avc1 (media timescale 30000, tref/tmcd -> track 2), track 2 tmcd (one 4-byte sample, 24024 units), movie timescale 1000"
+    }
+  },
+  "boxes_seen_with_an_independent_python_parser": {
+    "stts": "one run, 24 samples of 1001",
+    "ctts": "version 1, 18 runs, offsets 0, 2002, -1001, 1001 ...",
+    "stss": [
+      1,
+      13
+    ],
+    "elst": "one entry: segment_duration 801 (movie timescale 1000), media_time 0, rate 1.0 (both tracks)",
+    "mvhd": "timescale 1000, duration 801",
+    "mdhd": "timescale 30000, duration 24024"
+  },
+  "oracle": {
+    "ffprobe_video_packets": {
+      "command": "ffprobe -v error -select_streams v:0 -show_entries packet=pts,dts,flags -of csv=p=0 FILE",
+      "output_order": "decode order",
+      "packets": [
+        {
+          "pts": 0,
+          "ffprobe_dts": -1001,
+          "flags": "K__"
+        },
+        {
+          "pts": 3003,
+          "ffprobe_dts": 0,
+          "flags": "___"
+        },
+        {
+          "pts": 1001,
+          "ffprobe_dts": 1001,
+          "flags": "___"
+        },
+        {
+          "pts": 2002,
+          "ffprobe_dts": 2002,
+          "flags": "___"
+        },
+        {
+          "pts": 6006,
+          "ffprobe_dts": 3003,
+          "flags": "___"
+        },
+        {
+          "pts": 4004,
+          "ffprobe_dts": 4004,
+          "flags": "___"
+        },
+        {
+          "pts": 5005,
+          "ffprobe_dts": 5005,
+          "flags": "___"
+        },
+        {
+          "pts": 9009,
+          "ffprobe_dts": 6006,
+          "flags": "___"
+        },
+        {
+          "pts": 7007,
+          "ffprobe_dts": 7007,
+          "flags": "___"
+        },
+        {
+          "pts": 8008,
+          "ffprobe_dts": 8008,
+          "flags": "___"
+        },
+        {
+          "pts": 11011,
+          "ffprobe_dts": 9009,
+          "flags": "___"
+        },
+        {
+          "pts": 10010,
+          "ffprobe_dts": 10010,
+          "flags": "___"
+        },
+        {
+          "pts": 12012,
+          "ffprobe_dts": 11011,
+          "flags": "K__"
+        },
+        {
+          "pts": 15015,
+          "ffprobe_dts": 12012,
+          "flags": "___"
+        },
+        {
+          "pts": 13013,
+          "ffprobe_dts": 13013,
+          "flags": "___"
+        },
+        {
+          "pts": 14014,
+          "ffprobe_dts": 14014,
+          "flags": "___"
+        },
+        {
+          "pts": 18018,
+          "ffprobe_dts": 15015,
+          "flags": "___"
+        },
+        {
+          "pts": 16016,
+          "ffprobe_dts": 16016,
+          "flags": "___"
+        },
+        {
+          "pts": 17017,
+          "ffprobe_dts": 17017,
+          "flags": "___"
+        },
+        {
+          "pts": 21021,
+          "ffprobe_dts": 18018,
+          "flags": "___"
+        },
+        {
+          "pts": 19019,
+          "ffprobe_dts": 19019,
+          "flags": "___"
+        },
+        {
+          "pts": 20020,
+          "ffprobe_dts": 20020,
+          "flags": "___"
+        },
+        {
+          "pts": 23023,
+          "ffprobe_dts": 21021,
+          "flags": "___"
+        },
+        {
+          "pts": 22022,
+          "ffprobe_dts": 22022,
+          "flags": "___"
+        }
+      ],
+      "note": "pts equals the composition time dts + ctts in media units (1/30000 s); ffprobe's dts column is shifted by -1001 and is not used by the test; K flags at packets 0 and 12 = sync samples [0, 12]"
+    },
+    "ffprobe_timecode_packet": {
+      "command": "ffprobe -v error -select_streams 1 -show_packets -show_data FILE",
+      "size": 4,
+      "pos": 36,
+      "data_hex": "0001a573",
+      "derivation": "00:59:59;29 at 29.97 drop frame = 1800*59 + 30*59 + 29 - 2*(59 - 59/10) = 107891 = 0x0001a573"
+    },
+    "ffprobe_streams": "stream 0 h264 (avc1), stream 1 tmcd; both tag timecode=00:59:59;29, time_base 1/30000"
+  }
+}

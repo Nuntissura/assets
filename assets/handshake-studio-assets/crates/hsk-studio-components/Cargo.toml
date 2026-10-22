@@ -1,0 +1,20 @@
+[package]
+name = "hsk-studio-components"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "components-consumer"
+path = "examples/components-consumer.rs"

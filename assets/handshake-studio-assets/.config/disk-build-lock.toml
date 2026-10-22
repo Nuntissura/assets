@@ -1,0 +1,12 @@
+# Disk-wide build lock (CX-984-002: at most one build per physical disk at a time). tools/run-round.sh holds it for
+# its whole run; the team's cargo wrapper (studio-env.sh) holds it per build command. Protocol, stale-lock rule and
+# waits: tools/disk-build-lock.sh. Lock root: start at the workspace root, walk up at most `max-ancestors` parents,
+# first ancestor A where A/<search> is a directory; the lock lives at A/<search>/<lock-dir>. From the edit tree and
+# from every export under Handshake_Artifacts/WP-KERNEL-STUDIO this is the same directory, so every tree on the disk
+# shares one lock. STUDIO_DISK_BUILD_LOCK_DIR (set by studio-env.sh) must name the same directory when set.
+# Format: plain `key = value` lines, no tables.
+# Owner: workspace steward (root .config).
+schema = "hsk.studio.disk-build-lock@1"
+search = "Handshake_Artifacts/WP-KERNEL-STUDIO"
+lock-dir = ".disk-build-lock"
+max-ancestors = 8

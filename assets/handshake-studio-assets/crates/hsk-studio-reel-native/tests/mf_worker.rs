@@ -1,0 +1,553 @@
+#![cfg(all(feature = "mf-worker", feature = "test-faults", windows))]
+//! H.264 through the OS-provided Windows Media Foundation decoder in the isolated `reel-native-mf-worker`
+//! (run with `--features mf-worker,test-faults` on Windows; cargo builds the worker binary for this test).
+//!
+//! Fixtures (`tests/fixtures/h264/provenance.json`): ffmpeg 8.1.1 / libx264 encodes of `testsrc2` 128x72,
+//! oracle = ffmpeg's per-frame SHA-256 of the decoded yuv420p frame (`*.framehash`). H.264 decoding is
+//! normative, so the comparison is exact (no tolerance). A host without Media Foundation or without a
+//! synchronous software H.264 decoder MFT cannot prove the decode: those tests print `NOT_PROVEN:` and
+//! assert the typed `MEDIA_CODEC_UNAVAILABLE` instead (V4-03).
+use hsk_studio_accord::{CancellationToken, Ticks};
+use hsk_studio_reel::*;
+use hsk_studio_reel_native::*;
+use std::{io::Cursor, sync::Arc, thread, time::Duration};
+
+const WORKER: &str = env!("CARGO_BIN_EXE_reel-native-mf-worker");
+const BASELINE: &[u8] = include_bytes!("fixtures/h264/h264-baseline-128x72-24f.mp4");
+const BASELINE_HASH: &str = include_str!("fixtures/h264/h264-baseline-128x72-24f.framehash");
+const HIGH_BF2: &[u8] = include_bytes!("fixtures/h264/h264-high-bf2-128x72-24f.mp4");
+const HIGH_BF2_HASH: &str = include_str!("fixtures/h264/h264-high-bf2-128x72-24f.framehash");
+const MAIN_BF3: &[u8] = include_bytes!("fixtures/h264/h264-main-bf3-128x72-24f.mp4");
+const MAIN_BF3_HASH: &str = include_str!("fixtures/h264/h264-main-bf3-128x72-24f.framehash");
+const HIGH_BF3_PYRAMID: &[u8] = include_bytes!("fixtures/h264/h264-high-bf3-pyramid-128x72-24f.mp4");
+const HIGH_BF3_PYRAMID_HASH: &str =
+    include_str!("fixtures/h264/h264-high-bf3-pyramid-128x72-24f.framehash");
+const HIGH422: &[u8] = include_bytes!("fixtures/h264/h264-high422-10bit-128x72-12f.mp4");
+const MAIN_NOB: &[u8] = include_bytes!("fixtures/h264/h264-main-nob-128x72-24f.mp4");
+const MAIN_NOB_HASH: &str = include_str!("fixtures/h264/h264-main-nob-128x72-24f.framehash");
+const HIGH_NOB: &[u8] = include_bytes!("fixtures/h264/h264-high-nob-128x72-24f.mp4");
+const HIGH_NOB_HASH: &str = include_str!("fixtures/h264/h264-high-nob-128x72-24f.framehash");
+
+/// Main and High profile (CABAC; High adds 8x8 transforms), no B-frames: every frame exact.
+fn assert_profiles_exact(worker: &WorkerMfProvider, limits: &Limits, label: &str) {
+    for (name, bytes, hash) in [("main", MAIN_NOB, MAIN_NOB_HASH), ("high", HIGH_NOB, HIGH_NOB_HASH)] {
+        let (receipt, sink) = decode(worker, bytes, 0, 24, limits).unwrap();
+        assert!(receipt.complete, "{label} {name}");
+        let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+        assert_eq!(got, oracle(hash), "{label} {name} differs from the ffmpeg oracle");
+    }
+}
+/// One frame at 30000/1001 fps in Pulse ticks (254,016,000 per millisecond).
+const FRAME_TICKS: u64 = 8_475_667_200;
+/// 128 x 72 4:2:0 8-bit, tight planes.
+const FRAME_BYTES: usize = 128 * 72 + 2 * 64 * 36;
+
+fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+        sync::mpsc,
+    };
+    let (tx, rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = tx.send(catch_unwind(AssertUnwindSafe(body)));
+    });
+    match rx.recv_timeout(Duration::from_secs(120)) {
+        Ok(Ok(())) => {}
+        Ok(Err(p)) => resume_unwind(p),
+        Err(e) => panic!("case {name} exceeded/lost declared 120s deadline: {e}"),
+    }
+}
+
+#[derive(Debug, Default)]
+struct Collect {
+    chunks: Vec<(i64, u64, Vec<u8>)>,
+}
+
+impl ChunkSink for Collect {
+    fn accept(&mut self, c: Chunk<'_>) -> Result<(), ReelError> {
+        self.chunks.push((c.pts, c.index, c.bytes.to_vec()));
+        Ok(())
+    }
+}
+
+fn request(bytes: &[u8], start: u64, count: u64) -> SegmentRequest {
+    SegmentRequest {
+        codec: ISOBMFF_PROVIDER_ID.to_owned(),
+        start_pts: Ticks::new(start),
+        count,
+        track: None,
+        output: OutputMode::Decoded,
+        prefer: SourcePreference::Original,
+        purpose: Purpose::Preview,
+        grant: Grant {
+            content_id: ContentId::parse("h264-fixture").unwrap(),
+            revision: 1,
+            expected_len: bytes.len() as u64,
+        },
+        expected_revision: 1,
+    }
+}
+
+fn provider(options: MfWorkerOptions) -> WorkerMfProvider {
+    WorkerMfProvider::new(options.with_worker_program(WORKER)).unwrap()
+}
+
+fn decode(
+    worker: &WorkerMfProvider,
+    bytes: &[u8],
+    start: u64,
+    count: u64,
+    limits: &Limits,
+) -> Result<(SegmentReceipt, Collect), ReelError> {
+    let registry = Registry::standard().with_video_decoder(Arc::new(worker.clone()));
+    let mut sink = Collect::default();
+    let receipt = registry.decode_segment(
+        &mut Cursor::new(bytes.to_vec()),
+        None,
+        &request(bytes, start, count),
+        limits,
+        &CancellationToken::default(),
+        &mut sink,
+    )?;
+    Ok((receipt, sink))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&full_digest(&mut Cursor::new(bytes), 4096, &CancellationToken::default()).unwrap())
+}
+
+/// The SHA-256 column of an ffmpeg `framehash` file, in presentation order.
+fn oracle(framehash: &str) -> Vec<String> {
+    framehash
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .map(|line| line.rsplit(',').next().unwrap().trim().to_owned())
+        .collect()
+}
+
+fn unavailable(error: &ReelError) -> bool {
+    matches!(error, ReelError::CodecUnavailable { .. })
+}
+
+/// The HELLO identity names the MFT, its CLSID, `dxva=0` and `os-licensed` (printed so the lead can record
+/// the host's real decoder); every frame equals ffmpeg's decode byte for byte; PTS, receipt and decoder id
+/// are exact; random access with pre-roll from the previous sync sample gives the same frames.
+#[test]
+fn h264_baseline_software_decode_exact_vs_oracle() {
+    bounded_case("h264_baseline", || {
+        let worker = provider(MfWorkerOptions::default());
+        let limits = Limits::default();
+        let expected = oracle(BASELINE_HASH);
+        assert_eq!(expected.len(), 24);
+        assert!(expected[0].starts_with("38510c300e4699f7"));
+        let (receipt, sink) = match decode(&worker, BASELINE, 0, 24, &limits) {
+            Err(error) if unavailable(&error) => {
+                println!(
+                    "NOT_PROVEN: no Media Foundation H.264 software decoder on this host ({error:?}); identity {:?}",
+                    worker.descriptor().decoder_version
+                );
+                return;
+            }
+            other => other.unwrap(),
+        };
+        let identity = worker.descriptor();
+        println!(
+            "mf-h264 identity: id {} version {} licence {}",
+            identity.decoder_id, identity.decoder_version, identity.licence
+        );
+        assert_eq!(receipt.decoder_id, "mf-h264");
+        assert!(receipt.decoder_version.ends_with("|dxva=0|os-licensed"));
+        assert_eq!(identity.licence, H264_LICENCE);
+        assert!(receipt.complete, "{receipt:?}");
+        let video = receipt.video.unwrap();
+        assert_eq!(
+            (video.width, video.height, video.bit_depth, video.chroma),
+            (128, 72, 8, ChromaFormat::Yuv420)
+        );
+        assert_eq!(sink.chunks.len(), 24);
+        let digests: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+        for (n, ((pts, _, bytes), digest)) in sink.chunks.iter().zip(&digests).enumerate() {
+            assert_eq!(bytes.len(), FRAME_BYTES, "frame {n}");
+            assert_eq!(*pts, (n as u64 * FRAME_TICKS) as i64, "frame {n} pts");
+            assert_eq!(digest, &expected[n], "frame {n} differs from the ffmpeg oracle");
+        }
+        assert_profiles_exact(&worker, &limits, "software");
+        // Random access: frame 5 (pre-roll from the sync sample at 0) and frames 12..15 (sync at 12).
+        for (start, count) in [(5, 1), (12, 4), (20, 4)] {
+            let (receipt, sink) = decode(&worker, BASELINE, start * FRAME_TICKS, count, &limits).unwrap();
+            assert!(receipt.complete);
+            let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+            let want = &expected[start as usize..(start + count) as usize];
+            assert_eq!(got, want, "span {start}+{count}");
+        }
+        let stats = worker.stats();
+        assert_eq!((stats.crashed, stats.protocol_faults), (0, 0), "{stats:?}");
+        assert!(stats.spawned >= 1 && stats.alive <= 2, "{stats:?}");
+    });
+}
+
+/// B-frame streams (SMB-REEL-BFRAME-ORDER): the decoder releases pictures in presentation order with the
+/// input sample time (= packet tag) of their own packet, the session declares reel's `reorders_output`, and
+/// reel matches each picture to its packet. High with 2 B-frames (negative composition offsets, no edit
+/// shift), Main with 3 B-frames (edit list) and High with 3 B-frames and b-pyramid (B used as reference):
+/// every frame equals ffmpeg's decode byte for byte, in presentation order, PTS exactly `n * frame`, each
+/// picture once; random access that starts on or inside a B run (pre-roll from the previous IDR, pictures
+/// decoded before the range but presented after it) gives the same frames; a crash mid-GOP replays from the
+/// IDR and still delivers every picture exactly once; DXVA gives the same bytes where a Direct3D 11 video
+/// device exists (else `NOT_PROVEN:`).
+#[test]
+fn h264_bframe_streams_decode_exact_in_presentation_order() {
+    bounded_case("h264_bframes", || {
+        let limits = Limits::default();
+        let software = provider(MfWorkerOptions::default());
+        let streams = [
+            ("high-bf2", HIGH_BF2, HIGH_BF2_HASH),
+            ("main-bf3", MAIN_BF3, MAIN_BF3_HASH),
+            ("high-bf3-pyramid", HIGH_BF3_PYRAMID, HIGH_BF3_PYRAMID_HASH),
+        ];
+        assert!(oracle(HIGH_BF2_HASH)[0].starts_with("79c95135ab274e5c"));
+        let exact = |worker: &WorkerMfProvider, label: &str| {
+            for (name, bytes, hash) in streams {
+                let expected = oracle(hash);
+                assert_eq!(expected.len(), 24, "{name}");
+                let (receipt, sink) = decode(worker, bytes, 0, 24, &limits).unwrap();
+                assert!(receipt.complete, "{label} {name}: {receipt:?}");
+                assert_eq!(receipt.actual.units, 24, "{label} {name}");
+                let pts: Vec<i64> = sink.chunks.iter().map(|c| c.0).collect();
+                let want: Vec<i64> = (0..24).map(|n| (n * FRAME_TICKS) as i64).collect();
+                assert_eq!(pts, want, "{label} {name}: presentation order and PTS");
+                let mut indices: Vec<u64> = sink.chunks.iter().map(|c| c.1).collect();
+                assert_ne!(indices, (0..24).collect::<Vec<_>>(), "{name}: decode order differs");
+                indices.sort_unstable();
+                assert_eq!(indices, (0..24).collect::<Vec<_>>(), "{label} {name}: each packet once");
+                let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+                assert_eq!(got, expected, "{label} {name} differs from the ffmpeg oracle");
+            }
+        };
+        match decode(&software, HIGH_BF2, 0, 1, &limits) {
+            Err(error) if unavailable(&error) => {
+                println!("NOT_PROVEN: no Media Foundation H.264 software decoder on this host ({error:?})");
+                return;
+            }
+            other => {
+                other.unwrap();
+            }
+        }
+        exact(&software, "software");
+        // Random access, every stream: starts on a B picture, inside a B run, at the second IDR, at the end.
+        for (name, bytes, hash) in streams {
+            let expected = oracle(hash);
+            for (start, count) in [(1, 1), (2, 3), (5, 4), (10, 5), (12, 4), (21, 3), (23, 1)] {
+                let (receipt, sink) =
+                    decode(&software, bytes, start * FRAME_TICKS, count, &limits).unwrap();
+                assert!(receipt.complete, "{name} {start}+{count}: {receipt:?}");
+                assert_eq!(
+                    (receipt.actual.start_pts.value(), receipt.actual.end_pts.value()),
+                    (start * FRAME_TICKS, (start + count) * FRAME_TICKS),
+                    "{name} {start}+{count}"
+                );
+                let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+                let want = &expected[start as usize..(start + count) as usize];
+                assert_eq!(got, want, "{name} span {start}+{count}");
+            }
+        }
+        let stats = software.stats();
+        assert_eq!((stats.crashed, stats.protocol_faults), (0, 0), "{stats:?}");
+        // Replay mid-GOP: the first worker exits at packet 9 (pictures of earlier packets partly released,
+        // B pictures held by the decoder); the fresh worker resumes from the IDR at 0.
+        let once = provider(MfWorkerOptions {
+            first_worker_exit_at_tag: Some(9),
+            ..MfWorkerOptions::default()
+        });
+        let (receipt, sink) = decode(&once, HIGH_BF3_PYRAMID, 0, 24, &limits).unwrap();
+        assert!(receipt.complete, "{receipt:?}");
+        let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+        assert_eq!(got, oracle(HIGH_BF3_PYRAMID_HASH), "replayed B-frame segment");
+        let stats = once.stats();
+        assert_eq!((stats.crashed, stats.replays, stats.replay_failed), (1, 1, 0), "{stats:?}");
+        // DXVA.
+        let hardware = provider(MfWorkerOptions {
+            path: MfPath::Hardware,
+            ..MfWorkerOptions::default()
+        });
+        match decode(&hardware, HIGH_BF2, 0, 1, &limits) {
+            Ok(_) => exact(&hardware, "dxva"),
+            Err(error) => {
+                println!("NOT_PROVEN: DXVA B-frame parity, path unavailable on this host ({error:?})");
+                assert_eq!(error, ReelError::Unsupported { what: MF_DXVA_UNAVAILABLE });
+            }
+        }
+    });
+}
+
+fn baseline_config() -> Vec<u8> {
+    let index = build_index(
+        &mut Cursor::new(BASELINE.to_vec()),
+        BASELINE.len() as u64,
+        &Limits::default(),
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    let config = index.tracks[0].codec_config.clone();
+    assert_eq!(config.first(), Some(&1), "avcC version");
+    config
+}
+
+/// Pre-spawn refusals (hostile declared sizes, decoder limits, unsupported profile/chroma) and the
+/// aggregate frame budget: typed, and no worker process is ever started.
+#[test]
+fn mf_declared_limits_and_unsupported_streams() {
+    bounded_case("mf_declared_limits", || {
+        let worker = provider(MfWorkerOptions::default());
+        let config = baseline_config();
+        let cancel = CancellationToken::default();
+        let spec = |width: u32, height: u32, limits: Limits| VideoStreamSpec {
+            codec: VideoCodec::H264,
+            container: "isobmff",
+            config: &config,
+            color: ColorTag::Untagged,
+            width,
+            height,
+            limits,
+        };
+        let open = |s: VideoStreamSpec<'_>| match worker.open(&s, &cancel) {
+            Ok(_) => panic!("{}x{} must be refused before a worker starts", s.width, s.height),
+            Err(error) => error.into_reel(),
+        };
+        let limits = Limits::default();
+        // dims_u32_max: the 4:2:0 byte size overflows.
+        assert_eq!(
+            open(spec(u32::MAX, u32::MAX, limits)),
+            ReelError::LimitExceeded {
+                what: "h264-declared-dimensions"
+            }
+        );
+        for (width, height) in [(47, 47), (47, 72), (128, 47), (4097, 72), (128, 2305)] {
+            assert_eq!(
+                open(spec(width, height, limits)),
+                ReelError::Unsupported {
+                    what: "mf-picture-size"
+                },
+                "{width}x{height}"
+            );
+        }
+        // aggregate_over_budget: the declared picture above the caller's chunk budget.
+        let tight = Limits {
+            max_chunk_bytes: FRAME_BYTES - 1,
+            ..Limits::default()
+        };
+        assert_eq!(
+            open(spec(128, 72, tight)),
+            ReelError::LimitExceeded {
+                what: "h264-frame-bytes"
+            }
+        );
+        // Wrong codec on an H.264 provider.
+        let mut other = spec(128, 72, limits);
+        other.codec = VideoCodec::Av1;
+        assert!(matches!(open(other), ReelError::CodecUnavailable { .. }));
+        // High 4:2:2 10-bit (profile_idc 122) through the full route: typed before any spawn.
+        let error = decode(&worker, HIGH422, 0, 12, &limits).unwrap_err();
+        assert_eq!(
+            error,
+            ReelError::Unsupported {
+                what: "h264-profile"
+            }
+        );
+        assert_eq!(worker.stats().spawned, 0, "{:?}", worker.stats());
+    });
+}
+
+/// Supervision through the shared core: crash on OPEN and on a packet, a hung decode, a garbage reply
+/// end as typed decoder faults with the worker reaped; the provider stays usable afterwards; and a mutation
+/// sweep over the fixture's sample bytes ends as `Ok` or a typed error within the deadline, host alive.
+#[test]
+fn mf_worker_fault_matrix() {
+    bounded_case("mf_worker_fault_matrix", || {
+        let limits = Limits::default();
+        let clean = provider(MfWorkerOptions::default());
+        if let Err(error) = decode(&clean, BASELINE, 0, 2, &limits)
+            && unavailable(&error)
+        {
+            println!("NOT_PROVEN: no Media Foundation H.264 software decoder on this host ({error:?})");
+            return;
+        }
+        for (fault, expected) in [
+            (WorkerTestFault::ExitOnOpen, DecoderFault::Crashed),
+            (WorkerTestFault::ExitOnPacket, DecoderFault::Crashed),
+            (WorkerTestFault::HangOnPacket, DecoderFault::Deadline),
+            (WorkerTestFault::GarbageReply, DecoderFault::Protocol),
+        ] {
+            let faulty = provider(MfWorkerOptions {
+                test_fault: fault,
+                batch_deadline: Duration::from_secs(2),
+                ..MfWorkerOptions::default()
+            });
+            let error = decode(&faulty, BASELINE, 0, 2, &limits).unwrap_err();
+            assert_eq!(error, ReelError::DecoderFault { fault: expected }, "{fault:?}");
+            let stats = faulty.stats();
+            assert_eq!(stats.alive, 0, "{fault:?}: worker reaped {stats:?}");
+        }
+        // Mutation sweep: single-byte replacements across the mdat payload.
+        let mdat = BASELINE
+            .windows(4)
+            .position(|w| w == b"mdat")
+            .expect("mdat box")
+            + 4;
+        let mut outcomes = (0_u32, 0_u32);
+        for (step, offset) in (mdat..BASELINE.len()).step_by(331).enumerate() {
+            let mut mutated = BASELINE.to_vec();
+            mutated[offset] ^= 0x5A_u8.rotate_left(step as u32 % 8);
+            match decode(&clean, &mutated, 0, 24, &limits) {
+                Ok(_) => outcomes.0 += 1,
+                Err(error) => {
+                    assert!(
+                        matches!(
+                            error,
+                            ReelError::Corrupt { .. }
+                                | ReelError::Unsupported { .. }
+                                | ReelError::DecoderFault { .. }
+                                | ReelError::LimitExceeded { .. }
+                        ),
+                        "offset {offset}: {error:?}"
+                    );
+                    outcomes.1 += 1;
+                }
+            }
+        }
+        println!("mutation sweep: {} ok, {} typed errors", outcomes.0, outcomes.1);
+        assert!(outcomes.0 + outcomes.1 >= 40);
+        // Still usable after the sweep, and exact.
+        let (receipt, sink) = decode(&clean, BASELINE, 0, 24, &limits).unwrap();
+        assert!(receipt.complete);
+        assert_eq!(sha256_hex(&sink.chunks[23].2), oracle(BASELINE_HASH)[23]);
+    });
+}
+
+/// DXVA parity gate (slice 2): the hardware path decodes both fixtures to exactly the ffmpeg oracle (which
+/// the software path equals, test `h264_baseline_software_decode_exact_vs_oracle`), its receipt says
+/// `dxva=1`; `Auto` decodes exactly whichever path it takes. A host without a Direct3D 11 video device (or
+/// whose decoder refuses the manager) prints `NOT_PROVEN:` and asserts the typed `mf-dxva-unavailable`.
+#[test]
+fn mf_dxva_parity_with_software() {
+    bounded_case("mf_dxva_parity", || {
+        let limits = Limits::default();
+        let expected = oracle(BASELINE_HASH);
+        let hardware = provider(MfWorkerOptions {
+            path: MfPath::Hardware,
+            ..MfWorkerOptions::default()
+        });
+        match decode(&hardware, BASELINE, 0, 24, &limits) {
+            Ok((receipt, sink)) => {
+                println!("dxva identity: {}", receipt.decoder_version);
+                assert!(receipt.decoder_version.contains("|dxva=1|"), "{}", receipt.decoder_version);
+                assert!(receipt.complete);
+                let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+                assert_eq!(got, expected, "DXVA output differs from software/ffmpeg");
+                assert_profiles_exact(&hardware, &limits, "dxva");
+                let stats = hardware.hardware_stats().unwrap();
+                assert_eq!((stats.crashed, stats.protocol_faults), (0, 0), "{stats:?}");
+            }
+            Err(error) if unavailable(&error) => {
+                println!("NOT_PROVEN: no Media Foundation H.264 decoder on this host ({error:?})");
+                return;
+            }
+            Err(error) => {
+                println!(
+                    "NOT_PROVEN: DXVA path unavailable on this host ({error:?}); hardware worker HELLO {}",
+                    hardware.descriptor().decoder_version
+                );
+                assert_eq!(
+                    error,
+                    ReelError::Unsupported {
+                        what: MF_DXVA_UNAVAILABLE
+                    }
+                );
+            }
+        }
+        // Auto: exact on either path, and the receipt names the one taken.
+        let auto = provider(MfWorkerOptions {
+            path: MfPath::Auto,
+            ..MfWorkerOptions::default()
+        });
+        let (receipt, sink) = decode(&auto, BASELINE, 0, 24, &limits).unwrap();
+        println!("auto identity: {}", receipt.decoder_version);
+        assert!(
+            receipt.decoder_version.contains("|dxva=1|") || receipt.decoder_version.contains("|dxva=0|"),
+            "{}",
+            receipt.decoder_version
+        );
+        let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+        assert_eq!(got, expected);
+    });
+}
+
+/// Slice 3: bounded replay and the heartbeat watch. (1) The first worker of the pool dies at packet 9; the
+/// segment resumes on a fresh worker from the last IDR (packet 0), pictures already delivered are dropped,
+/// and the output is still exactly the oracle. (2) Every worker dies on its first packet: one replay, it
+/// fails, the typed crash stands. (3) A worker that hangs sends no HEARTBEAT and is killed after the 1 s
+/// heartbeat timeout although the batch deadline is 30 s. (4) A HEARTBEAT counter that does not advance is a
+/// protocol fault.
+#[test]
+fn mf_heartbeat_and_replay() {
+    bounded_case("mf_heartbeat_and_replay", || {
+        let limits = Limits::default();
+        let clean = provider(MfWorkerOptions::default());
+        if let Err(error) = decode(&clean, BASELINE, 0, 2, &limits)
+            && unavailable(&error)
+        {
+            println!("NOT_PROVEN: no Media Foundation H.264 software decoder on this host ({error:?})");
+            return;
+        }
+        let expected = oracle(BASELINE_HASH);
+        // (1) replay cures a one-off crash.
+        let once = provider(MfWorkerOptions {
+            first_worker_exit_at_tag: Some(9),
+            ..MfWorkerOptions::default()
+        });
+        let (receipt, sink) = decode(&once, BASELINE, 0, 24, &limits).unwrap();
+        assert!(receipt.complete);
+        let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+        assert_eq!(got, expected, "replayed segment differs from the oracle");
+        let indices: Vec<u64> = sink.chunks.iter().map(|c| c.1).collect();
+        assert_eq!(indices, (0..24).collect::<Vec<_>>(), "no picture lost or repeated");
+        let stats = once.stats();
+        assert_eq!(
+            (stats.spawned, stats.crashed, stats.replays, stats.replay_failed),
+            (2, 1, 1, 0),
+            "{stats:?}"
+        );
+        // (2) replay that fails again.
+        let always = provider(MfWorkerOptions {
+            test_fault: WorkerTestFault::ExitOnPacket,
+            ..MfWorkerOptions::default()
+        });
+        let error = decode(&always, BASELINE, 0, 24, &limits).unwrap_err();
+        assert_eq!(error, ReelError::DecoderFault { fault: DecoderFault::Crashed });
+        let stats = always.stats();
+        assert_eq!((stats.replays, stats.replay_failed, stats.alive), (1, 1, 0), "{stats:?}");
+        // (3) heartbeat watch kills a hung decode long before the batch deadline.
+        let hung = provider(MfWorkerOptions {
+            test_fault: WorkerTestFault::HangOnPacket,
+            batch_deadline: Duration::from_secs(30),
+            heartbeat_timeout: Duration::from_secs(1),
+            replay_bytes: 0,
+            ..MfWorkerOptions::default()
+        });
+        let started = std::time::Instant::now();
+        let error = decode(&hung, BASELINE, 0, 24, &limits).unwrap_err();
+        let elapsed = started.elapsed();
+        assert_eq!(error, ReelError::DecoderFault { fault: DecoderFault::Deadline });
+        assert!(elapsed < Duration::from_secs(10), "killed after {elapsed:?}");
+        let stats = hung.stats();
+        assert_eq!((stats.killed_heartbeat, stats.replays, stats.alive), (1, 0, 0), "{stats:?}");
+        // (4) a counter that does not advance.
+        let stuck = provider(MfWorkerOptions {
+            test_fault: WorkerTestFault::RepeatHeartbeat,
+            ..MfWorkerOptions::default()
+        });
+        let error = decode(&stuck, BASELINE, 0, 24, &limits).unwrap_err();
+        assert_eq!(error, ReelError::DecoderFault { fault: DecoderFault::Protocol });
+        assert_eq!(stuck.stats().protocol_faults, 1, "{:?}", stuck.stats());
+    });
+}

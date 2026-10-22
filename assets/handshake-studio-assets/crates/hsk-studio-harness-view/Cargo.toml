@@ -1,0 +1,64 @@
+[package]
+name = "hsk-studio-harness-view"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+import = ["dep:hsk-studio-package", "hsk-studio-harness-core/import"]
+import-psd = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "hsk-studio-harness-core/import-psd"]
+import-raw = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-develop", "hsk-studio-harness-core/import-raw"]
+import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-tiff", "hsk-studio-harness-core/import-tiff"]
+import-pdf = ["import", "dep:hsk-studio-press", "hsk-studio-harness-core/import-pdf"]
+import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster", "hsk-studio-harness-core/import-raster"]
+import-affinity = ["import-raster", "dep:hsk-studio-interop-affinity", "hsk-studio-harness-core/import-affinity"]
+viewer = ["layout-ui", "import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig", "vector-interop"]
+vector-interop = ["import-pdf", "dep:hsk-studio-interop-vector"]
+layout-ui = ["dep:egui", "dep:hsk-studio-layout"]
+desktop = ["viewer", "dep:eframe", "hsk-studio-render-gpu/shared-device"]
+media = ["viewer", "dep:hsk-studio-reel", "hsk-studio-reel/prores", "hsk-studio-composite/motion"]
+media-native = ["media", "dep:hsk-studio-reel-native", "hsk-studio-reel-native/mf", "hsk-studio-reel-native/av1"]
+os-encode = ["media-native", "hsk-studio-reel-native/os-encode"]
+audio-device = ["viewer", "dep:hsk-studio-score-device"]
+audio-batch = ["media", "dep:hsk-studio-score"]
+audio-plugin = ["audio-batch", "dep:hsk-studio-score-plugin"]
+studio-aac = ["media", "hsk-studio-reel/studio-aac"]
+
+[dependencies]
+hsk-studio-harness-core = { path = "../hsk-studio-harness-core", version = "=0.1.0", default-features = false }
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-session = { path = "../hsk-studio-session", version = "=0.1.0", default-features = false }
+hsk-studio-controls = { path = "../hsk-studio-controls", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-psd = { path = "../hsk-studio-interop-psd", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-develop = { path = "../hsk-studio-develop", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-tiff = { path = "../hsk-studio-interop-tiff", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-press = { path = "../hsk-studio-press", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-raster = { path = "../hsk-studio-interop-raster", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-affinity = { path = "../hsk-studio-interop-affinity", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-render-cpu = { path = "../hsk-studio-render-cpu", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-render-gpu = { path = "../hsk-studio-render-gpu", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-pulse = { path = "../hsk-studio-pulse", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-components = { path = "../hsk-studio-components", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-fig = { path = "../hsk-studio-interop-fig", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-vector = { path = "../hsk-studio-interop-vector", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-reel-native = { path = "../hsk-studio-reel-native", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-score-device = { path = "../hsk-studio-score-device", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-score-plugin = { path = "../hsk-studio-score-plugin", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-layout = { path = "../hsk-studio-layout", version = "=0.1.0", default-features = false, optional = true }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+egui = { version = "=0.33.3", default-features = false, features = ["default_fonts"], optional = true }
+eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "accesskit"], optional = true }
+
+[lib]
+path = "src/lib.rs"

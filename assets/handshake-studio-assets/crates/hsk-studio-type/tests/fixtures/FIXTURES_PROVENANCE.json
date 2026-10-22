@@ -1,0 +1,176 @@
+{
+  "schema": "hsk.studio.type_test_fixture_provenance@1",
+  "purpose": "All Type test evidence checked into the crate so tests run from the Studio repo alone (standalone module asset). Every file is byte-identical to its MT-35536 hash pin; recipe sha256 4b5e892e and reference sha256 6579f9a9 unchanged.",
+  "resolution": "tests/support/mod.rs: fixtures() = CARGO_MANIFEST_DIR/tests/fixtures; research() = fixtures/evidence; font_root() = fixtures/fonts (file name from recipe/preparation paths); reference_file() = fixtures/evidence/type-reference-corrected-with-dlig.json. HSK_TYPE_RESEARCH_ROOT, HSK_TYPE_FONT_ROOT, HSK_TYPE_REFERENCE_FILE are optional overrides only.",
+  "line_endings": "tests/fixtures/.gitattributes '* -text' keeps exact bytes (fonts/OFL.txt is CRLF; root '* text=auto eol=lf' would rewrite)",
+  "embedded_absolute_paths": "recipe and preparation JSON contain the original machine paths as recorded evidence; tests use only their file names",
+  "vendored_at": "2026-10-11",
+  "files": [
+    {
+      "file": "fonts/Inter-Regular.ttf",
+      "recipe_font_index": 0,
+      "bytes": 680240,
+      "sha256": "529be850e06f62f8904f22bda77e45bde4834498fdbec4ff4201fa3177447a3a",
+      "family": "Inter",
+      "version": "Version 3.019;git-0a5106e0b",
+      "copyright": "Copyright © 2020 The Inter Project Authors",
+      "license": "OFL-1.1",
+      "license_evidence": "name ID 13/14 SIL Open Font License 1.1, http://scripts.sil.org/OFL; OS/2 fsType 0",
+      "license_file": "fonts/OFL.txt",
+      "reserved_font_name": "Inter (applies to modified versions only; file is unmodified)",
+      "upstream": "https://github.com/rsms/inter",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/Inter-Regular.ttf"
+    },
+    {
+      "file": "fonts/NotoSansArabic-Regular.ttf",
+      "recipe_font_index": 1,
+      "bytes": 234892,
+      "sha256": "bdff3e5659d67e67def05b33f749683b9376ae819d65d3dd62ac4640b3aaef48",
+      "family": "Noto Sans Arabic",
+      "version": "Version 2.013; ttfautohint (v1.8.4.16-eb64)",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/arabic)",
+      "license": "OFL-1.1",
+      "license_evidence": "name ID 13/14 SIL Open Font License 1.1, https://openfontlicense.org; OS/2 fsType 0",
+      "license_file": "fonts/NotoSans-OFL.txt",
+      "upstream": "https://github.com/notofonts/arabic",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/NotoSansArabic-Regular.ttf"
+    },
+    {
+      "file": "fonts/NotoSansSC-Regular.otf",
+      "recipe_font_index": 2,
+      "bytes": 8331336,
+      "sha256": "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9",
+      "family": "Noto Sans SC",
+      "version": "Version 2.004;hotconv 1.0.118;makeotfexe 2.5.65603",
+      "copyright": "© 2014-2021 Adobe (http://www.adobe.com/).",
+      "license": "OFL-1.1",
+      "license_evidence": "name ID 13/14 SIL Open Font License 1.1, http://scripts.sil.org/OFL; OS/2 fsType 0",
+      "license_file": "fonts/NotoSans-OFL.txt",
+      "upstream": "https://github.com/googlefonts/noto-cjk (Sans/LICENSE: SIL OFL 1.1)",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/NotoSansSC-Regular.otf"
+    },
+    {
+      "file": "fonts/OFL.txt",
+      "bytes": 4520,
+      "sha256": "156202d7470eec0af1427ea332098720cb88212bacf669791d7575db2ba8a7aa",
+      "covers": [
+        "fonts/Inter-Regular.ttf"
+      ],
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/OFL.txt"
+    },
+    {
+      "file": "fonts/NotoSans-OFL.txt",
+      "bytes": 4301,
+      "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+      "covers": [
+        "fonts/NotoSansArabic-Regular.ttf",
+        "fonts/NotoSansDevanagari-Regular.ttf",
+        "fonts/NotoSansHebrew-Regular.ttf",
+        "fonts/NotoSansSC-Regular.otf"
+      ],
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/NotoSans-OFL.txt"
+    },
+    {
+      "file": "evidence/type-exact-oracle-recipe.json",
+      "bytes": 10472,
+      "sha256": "4b5e892e1618ac4395e78060b4529629399cd1b797a7e9edd99019c36292503c",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research/type-exact-oracle-recipe.json",
+      "role": "oracle recipe: 7 cases, 4 fonts (paths used only as file-name keys)",
+      "pin": "MT-35536 research_basis sha256"
+    },
+    {
+      "file": "evidence/type-foundation-preparation.json",
+      "bytes": 7775,
+      "sha256": "b6e733fd25540a757bac073e0d9527e58d9b7edd39982b88fb3d5e4bc608fbdf",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research/type-foundation-preparation.json",
+      "role": "preparation record; source_identities OFL.txt hashes checked against fonts/ by file name"
+    },
+    {
+      "file": "evidence/type-variable-fixture-and-oracle.json",
+      "bytes": 1573,
+      "sha256": "34f5c533029c6541f405c3d77a53b5002930768ef653c0a9ec928d8f8facab8b",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research/type-variable-fixture-and-oracle.json",
+      "role": "variable font fixture record (font/license sha256, release archive)",
+      "pin": "MT-35536 research_basis sha256"
+    },
+    {
+      "file": "evidence/Inter-variable-opsz-wght.ttf",
+      "bytes": 876576,
+      "sha256": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research/Inter-variable-opsz-wght.ttf",
+      "recipe_font_index": 3,
+      "family": "Inter (variable opsz,wght)",
+      "version": "Version 4.001;git-66647c0bb",
+      "copyright": "Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)",
+      "license": "OFL-1.1",
+      "license_evidence": "name ID 13/14 SIL Open Font License 1.1, https://openfontlicense.org; OS/2 fsType 0; upstream rsms/inter OFL-1.1; Google Fonts METADATA.pb license dir ofl",
+      "license_file": "evidence/Inter-variable-OFL.txt",
+      "reserved_font_name": "Inter (modified versions only; file unmodified)",
+      "upstream": "https://github.com/rsms/inter (Inter-4.1-GoogleFonts.zip, archive sha256 925d1022e7dad4eae6dc3fe92aaad9f8750db2786f2012e2a3f2a533de0ef4e1)"
+    },
+    {
+      "file": "evidence/Inter-variable-OFL.txt",
+      "bytes": 4377,
+      "sha256": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research/Inter-variable-OFL.txt",
+      "covers": [
+        "evidence/Inter-variable-opsz-wght.ttf"
+      ]
+    },
+    {
+      "file": "evidence/unicode16-selected-bidi-goldens.json",
+      "bytes": 2562,
+      "sha256": "90a42d9eeeffe4ab7bbebe0e5edb0a46661d335ade88e33498527509d0916847",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research/unicode16-selected-bidi-goldens.json",
+      "role": "selected Unicode 16 BidiCharacterTest goldens (official bidi line 61)",
+      "license": "Unicode-3.0",
+      "license_file": "evidence/Unicode-data-license.txt"
+    },
+    {
+      "file": "evidence/type-reference-corrected-with-dlig.json",
+      "bytes": 214995,
+      "sha256": "6579f9a90162edaf6dc1bcb91b964d8014eaeaf8d7fef7536243e55bd52c2bbe",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-validator/type-reference-producer/type-reference-corrected-with-dlig.json",
+      "role": "independent reference oracle (harfrust 0.14.0 producer)",
+      "pin": "tests/support/mod.rs reference_file EXPECTED sha256"
+    },
+    {
+      "file": "evidence/Unicode-data-license.txt",
+      "bytes": 1995,
+      "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research/Unicode-data-license.txt",
+      "covers": [
+        "evidence/unicode16-selected-bidi-goldens.json"
+      ],
+      "license": "Unicode-3.0 (notice accompanies the copied BidiCharacterTest data line)"
+    },
+    {
+      "file": "fonts/NotoSansDevanagari-Regular.ttf",
+      "role": "SMB-TYPE-ENG-1 coverage-gain font (harfrust spike test only)",
+      "bytes": 244284,
+      "sha256": "306b53ecfb182a504dd8a7446093c316387d2fd8dc350d0792ed1753fe0996cd",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/NotoSansDevanagari-Regular.ttf",
+      "family": "Noto Sans Devanagari",
+      "version": "Version 2.006; ttfautohint (v1.8.4.7-5d5b)",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/devanagari)",
+      "license": "OFL-1.1",
+      "license_evidence": "name ID 13/14 SIL Open Font License 1.1, https://scripts.sil.org/OFL; OS/2 fsType 0",
+      "license_file": "fonts/NotoSans-OFL.txt",
+      "upstream": "https://github.com/notofonts/devanagari"
+    },
+    {
+      "file": "fonts/NotoSansHebrew-Regular.ttf",
+      "role": "SMB-TYPE-ENG-1 coverage-gain font (harfrust spike test only)",
+      "bytes": 26860,
+      "sha256": "cdefaf8efd47045f6820928eba84db5bed7557539328952b5f828315485e02ee",
+      "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/NotoSansHebrew-Regular.ttf",
+      "family": "Noto Sans Hebrew",
+      "version": "Version 3.001; ttfautohint (v1.8.4.7-5d5b)",
+      "copyright": "Copyright 2024 The Noto Project Authors (https://github.com/notofonts/hebrew)",
+      "license": "OFL-1.1",
+      "license_evidence": "name ID 13/14 SIL Open Font License 1.1, http://scripts.sil.org/OFL; OS/2 fsType 0",
+      "license_file": "fonts/NotoSans-OFL.txt",
+      "upstream": "https://github.com/notofonts/hebrew"
+    }
+  ]
+}

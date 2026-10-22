@@ -1,0 +1,30 @@
+[package]
+name = "hsk-studio-composite"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+motion = ["dep:hsk-studio-motion"]
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false }
+hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false }
+kurbo = { version = "=0.13.1", default-features = false, features = ["std"] }
+hsk-studio-motion = { path = "../hsk-studio-motion", version = "=0.1.0", default-features = false, optional = true }
+
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "composite-consumer"
+path = "examples/composite-consumer.rs"

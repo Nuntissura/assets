@@ -1,0 +1,19 @@
+# Oracle fixtures that tools/run-round.sh builds before any unit and places in the oracle corpus root
+# (.config/oracle-corpus.toml), so tests find them through the same corpus convention, without env vars.
+# Build: `cargo build --offline --locked --manifest-path <manifest> --target-dir <round target>/fixtures/<id>` (the
+# fixture is a standalone package with its own committed Cargo.lock, outside the Studio workspace). Placement:
+# content-addressed <corpus root>/<dest>/sha256/<library sha256>/<library file> (written only when absent or
+# different) plus <dest>/MANIFEST.json {schema hsk.studio.oracle-fixture@1, id, library (that path relative to
+# <dest>), sha256, source_sha256, round_sha, built_at}, replaced atomically; tests read MANIFEST.json, check the
+# library sha256 and print `NOT_PROVEN:` when either is absent. round.json "fixtures" binds both and re-checks them
+# after the units. Built only when a crate in `needed_by` is selected. A build failure fails the
+# round like a unit build failure; an absent corpus root is recorded (corpus_absent) and the tests stay NOT_PROVEN.
+# Owner: workspace steward (root .config); fixture sources belong to the crate lanes.
+schema = "hsk.studio.oracle-fixtures@1"
+
+[[fixture]]
+id = "score-plugin/clap-gain"
+manifest = "crates/hsk-studio-score-plugin/tests/fixtures/clap-gain/Cargo.toml"
+lib = "hsk_score_plugin_clap_gain_fixture"
+dest = "score-plugin/clap-gain"
+needed_by = ["hsk-studio-score-plugin"]

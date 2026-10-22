@@ -1,0 +1,92 @@
+{
+  "package": "unicode-bidi",
+  "version": "0.3.18",
+  "unicode_version": "16.0.0",
+  "selected_features": [
+    "std",
+    "hardcoded-data"
+  ],
+  "private_changes": [
+    "explicit style X6 override",
+    "typed bounded execution",
+    "exact-layout admitted containers",
+    "no public string reorder/UTF16 API"
+  ],
+  "upstream_inputs": [
+    {
+      "path": "level.rs",
+      "upstream_sha256": "ce1eaa9940f1b90bc59aba296488b8cd128aefeb4b6b2e3ecc34da26c569150b"
+    },
+    {
+      "path": "data_source.rs",
+      "upstream_sha256": "36fa0785e51c549c1f72f09040cfe515b848d1b23fb30d469770a6b4b17b49df"
+    },
+    {
+      "path": "format_chars.rs",
+      "upstream_sha256": "678399fec3f4bfaf4093f38cfdb8956288313386dc3511dab9fb58164e8dc01b"
+    },
+    {
+      "path": "char_data/mod.rs",
+      "upstream_sha256": "8cbdcaacddb3dd9b70d615693fa73d0e7dca6332102a95f0d3ce447df7645284"
+    },
+    {
+      "path": "char_data/tables.rs",
+      "upstream_sha256": "8cbe4b6a4fc690e76107d4654047d3f0d8988b870fc3234f76dc265ad2e2a9ca"
+    },
+    {
+      "path": "explicit.rs",
+      "upstream_sha256": "86c3c55bf2cc90aab1411aac6cf05de505ca74e44a76fe829572dd7dc4dd2aa3"
+    },
+    {
+      "path": "implicit.rs",
+      "upstream_sha256": "8d5b003464aee3f333785c6170a884945251f39601e4ea658e669a2ad575d588"
+    }
+  ],
+  "derivative_files": [
+    {
+      "path": "src/provider/bidi/char_data/mod.rs",
+      "sha256": "8a42f68d78e7c6fc8f98aa15865becc1986ab08427d3b5fb7315bd995f174bee"
+    },
+    {
+      "path": "src/provider/bidi/char_data/tables.rs",
+      "sha256": "77dbfb7fedd50085dd1c1343461320050056294307d7ea33dadd70e80460abb4"
+    },
+    {
+      "path": "src/provider/bidi/data_source.rs",
+      "sha256": "02f7705cf8cfa4238545e3e5975f43bd6b1f92a0cc88f33a1f309b568c502dc3"
+    },
+    {
+      "path": "src/provider/bidi/explicit.rs",
+      "sha256": "c90ee1a1d8ed175a5fc4b65d1c217a2a8d6e30e5b67eca25aaa7a53e8a9fffc8"
+    },
+    {
+      "path": "src/provider/bidi/format_chars.rs",
+      "sha256": "678399fec3f4bfaf4093f38cfdb8956288313386dc3511dab9fb58164e8dc01b"
+    },
+    {
+      "path": "src/provider/bidi/implicit.rs",
+      "sha256": "0989ae6d26fa4c785dda1cb29b30f66706ed39466f5b9ece05429ae4ba176f1d"
+    },
+    {
+      "path": "src/provider/bidi/level.rs",
+      "sha256": "2a4f5729e35efd9c8c83fd712d45bfe67d7bfda70ed226d0d4e4419ed290d902"
+    },
+    {
+      "path": "src/provider/bidi/mod.rs",
+      "sha256": "ab9d017207092e02ddb0c9f96e485d0c3c2ec53072962c2cd3e51fa9950d1d21"
+    },
+    {
+      "path": "src/provider/bidi/prepare.rs",
+      "sha256": "053b91a0a8d33053cce1cbaefeb513e761f4612aa583fd342e70770f529d4dbe"
+    }
+  ],
+  "status": "ACTUAL_SOURCE_ADAPTATION_COMPILE_CHECK_PASSED_RUNTIME_PENDING",
+  "semantics": "Frozen UTF8 Unicode16; no owned clones/string reorder; admitted nested storage; explicit metered bounded loops; structured ordinary X6 override priority; original controls; L1/L2 unchanged coordinate bytes; independent official bidi proof pending",
+  "hash_basis": "sha256 of committed git blob bytes (LF; root .gitattributes text=auto eol=lf), recomputed from HEAD 1d886fcdb938 on 2026-10-11; enforced by tests/provenance.rs (CRLF checkouts normalized to LF before hashing)",
+  "eol_hash_correction": {
+    "date": "2026-10-11",
+    "finding": "validation/R2-review-b.json (commit 87c1cd9)",
+    "note": "9/9 derivative hashes had been computed over Windows CRLF working-tree bytes, not committed LF blobs; recomputed from committed blobs (R2-review-b finding)",
+    "check": "tests/provenance.rs vendored_derivative_hashes_match_committed_bytes"
+  }
+}

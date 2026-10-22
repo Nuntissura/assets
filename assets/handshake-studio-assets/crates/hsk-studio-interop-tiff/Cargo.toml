@@ -1,0 +1,19 @@
+[package]
+name = "hsk-studio-interop-tiff"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+tiff = { version = "=0.11.3", default-features = false, features = ["deflate", "lzw", "jpeg"] }
+
+[dev-dependencies]
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
+
+[lib]
+path = "src/lib.rs"

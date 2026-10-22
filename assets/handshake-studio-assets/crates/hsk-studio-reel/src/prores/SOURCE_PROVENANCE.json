@@ -1,0 +1,30 @@
+{
+  "module": "hsk-studio-reel src/prores (cargo feature prores, default off)",
+  "display_name": "ProRes (RDD 36 decoder, not Apple-certified)",
+  "decoder_id": "prores-rdd36",
+  "implementation_sources": [
+    {
+      "document": "SMPTE RDD 36:2022, Apple ProRes Bitstream Syntax and Decoding Process",
+      "url": "https://pub.smpte.org/pub/rdd36/rdd36-2022.pdf",
+      "sha256": "7bcef3a4981c3db6f44614f9db460b2344a7051c817202fa495167b17c87cf8a",
+      "local_copy": "Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus/smpte-rdd36/rdd36-2022.pdf (Operator-approved download)",
+      "sections_used": ["5.1-5.3 syntax", "6.1-6.4 semantics", "7.1.1 entropy decoding (Tables 8-11)", "7.2 inverse scanning (Figures 4, 5)", "7.3 inverse quantization (Table 15)", "7.4 inverse transform", "7.5 sample generation and pixel arrangement (Figures 6-8)"]
+    },
+    {
+      "document": "WP-KERNEL-STUDIO lane brief builders/briefs/lane-reel-eng-2.md (governance kernel)",
+      "use": "verified reading notes of RDD 36 (header byte offsets, clamp, alpha quirks), written by a researcher from RDD 36 only"
+    }
+  ],
+  "third_party_codec_source_consulted": "none: no ffmpeg (proresdec, prores_ks, proresenc), Craft prores crate, oxideav-prores or any other ProRes implementation was read",
+  "external_tools": "ffmpeg 8.1.1 (gyan.dev build) used only as a black-box fixture generator and reference decoder; its output is test data",
+  "apple_statements_read": [
+    "https://support.apple.com/en-us/118584 (Apple ProRes and ProRes RAW Authorized Products)",
+    "https://www.apple.com/final-cut-pro/docs/Apple_ProRes.pdf (white paper, April 2022, p.4)"
+  ],
+  "licence_status": "not Apple-certified; shipping decision D24 (opt-in feature); Operator item D22 (licensing enquiry to Apple) open",
+  "studio_assumptions": [
+    "output bit depth 10 for 4:2:2 frames and 12 for 4:4:4 frames (RDD 36 has no bit-depth field)",
+    "sample clamp [0, 2^b - 1] (7.5.1 default) and rounding ties up",
+    "encoded alpha refused (prores-alpha) until the decoded-frame model has an alpha plane"
+  ]
+}

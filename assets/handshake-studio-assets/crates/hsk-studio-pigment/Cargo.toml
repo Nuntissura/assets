@@ -1,0 +1,20 @@
+[package]
+name = "hsk-studio-pigment"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+
+[[example]]
+name = "pigment-consumer"
+path = "examples/pigment-consumer.rs"

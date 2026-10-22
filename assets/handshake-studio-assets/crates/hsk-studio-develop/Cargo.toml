@@ -1,0 +1,32 @@
+[package]
+name = "hsk-studio-develop"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-interop-tiff = { path = "../hsk-studio-interop-tiff", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+sha2 = { version = "=0.11.0", default-features = false, features = [] }
+
+[dev-dependencies]
+# Corpus tests only: decodes the camera-embedded JPEG preview as an independent oracle for the
+# vendor raw decoders (tests/real_raw_compressed.rs). Already pinned in the workspace lock.
+zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "develop-consumer"
+path = "examples/develop-consumer.rs"
+
+[[example]]
+name = "develop-bench"
+path = "examples/develop-bench.rs"

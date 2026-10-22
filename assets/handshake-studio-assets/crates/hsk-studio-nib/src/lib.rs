@@ -1,0 +1,30 @@
+//! Nib: fallible, source-only geometry proposals; no document mutation or host authority.
+mod encoded;
+mod owned_path;
+mod path_contract;
+mod provider;
+pub use owned_path::*;
+pub use path_contract::*;
+pub use provider::{Network, Region, Segment};
+mod proposal;
+pub use proposal::*;
+
+mod descriptor;
+pub mod anchor_path;
+pub mod arrange;
+pub mod boolean;
+pub mod brush;
+pub mod edit;
+pub mod flatten;
+pub mod freeform;
+pub mod intersect;
+pub mod mesh;
+pub mod network;
+pub mod pathfinder;
+pub mod raster;
+pub mod shape;
+pub mod shape_ops;
+pub mod stroke;
+pub mod warp;
+pub mod width;
+pub use descriptor::descriptor;

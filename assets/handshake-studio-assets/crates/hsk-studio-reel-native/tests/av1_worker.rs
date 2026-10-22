@@ -1,0 +1,1211 @@
+#![cfg(all(feature = "av1-worker", feature = "test-faults"))]
+//! AV1 worker-process isolation contract (run with `--features av1-worker,test-faults`; cargo builds the
+//! `reel-native-av1-worker` binary for this test).
+//!
+//! Fixture: reel's `av1-16x16-3f.{mp4,mkv}` (16x16 4:2:0 8-bit, 3 frames). The oracle is libdav1d's
+//! per-frame SHA-256 recorded in reel's `provenance.json` (the same strings reel's own AV1 test uses), plus
+//! equality with reel's in-process decode of the same segment. The hostile mutations are single-byte
+//! replacements of the mp4 `mdat` payload (file offsets 817..1073) that reel's lane measured as process
+//! ABORTS of the in-process decoder (rav1d 1.1.0 `decode.rs:4997`, raw rows in
+//! `Handshake_Artifacts/WP-KERNEL-STUDIO/reel-av1/mut-results.txt`); here they must end as typed errors
+//! with the test process alive.
+use hsk_studio_accord::{CancellationToken, Ticks};
+use hsk_studio_reel::*;
+use hsk_studio_reel_native::*;
+use std::{
+    io::Cursor,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
+
+const WORKER: &str = env!("CARGO_BIN_EXE_reel-native-av1-worker");
+const MP4: &[u8] = include_bytes!("../../hsk-studio-reel/tests/fixtures/av1/av1-16x16-3f.mp4");
+const MKV: &[u8] = include_bytes!("../../hsk-studio-reel/tests/fixtures/av1/av1-16x16-3f.mkv");
+/// Raw yuv420p frame SHA-256 from `ffmpeg -c:v libdav1d ... -f framehash -hash sha256`.
+const ORACLE: [&str; 3] = [
+    "124247cf2dfe43d502cbcd58d1247c61b495507271ccdc9442b39b5dd8f82423",
+    "c7d6df9a67f2b718788ff80c36a4692f2916a0ccff393bf5bef02a92d872b099",
+    "8059c70336722e95b8b1514f79fa12772669a2c932f80b16afea4900d79ecf32",
+];
+const MS: u64 = 254_016_000; // Pulse ticks per millisecond
+const PTS_MP4: [u64; 3] = [0, 10_584_000_000, 21_168_000_000];
+const PTS_MKV: [u64; 3] = [0, 42 * MS, 83 * MS];
+
+fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+        sync::mpsc,
+    };
+    let (tx, rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = tx.send(catch_unwind(AssertUnwindSafe(body)));
+    });
+    match rx.recv_timeout(Duration::from_secs(120)) {
+        Ok(Ok(())) => {}
+        Ok(Err(p)) => resume_unwind(p),
+        Err(e) => panic!("case {name} exceeded/lost declared 120s deadline: {e}"),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Owned {
+    kind: ChunkKind,
+    pts: i64,
+    duration: Ticks,
+    index: u64,
+    units: u64,
+    sync: bool,
+    preroll: bool,
+    trim_start: u64,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Collect {
+    chunks: Vec<Owned>,
+}
+
+impl ChunkSink for Collect {
+    fn accept(&mut self, c: Chunk<'_>) -> Result<(), ReelError> {
+        self.chunks.push(Owned {
+            kind: c.kind,
+            pts: c.pts,
+            duration: c.duration,
+            index: c.index,
+            units: c.units,
+            sync: c.sync,
+            preroll: c.preroll,
+            trim_start: c.trim_start,
+            bytes: c.bytes.to_vec(),
+        });
+        Ok(())
+    }
+}
+
+fn request(codec: &str, bytes: &[u8], start: u64, count: u64) -> SegmentRequest {
+    SegmentRequest {
+        codec: codec.to_owned(),
+        start_pts: Ticks::new(start),
+        count,
+        track: None,
+        output: OutputMode::Decoded,
+        prefer: SourcePreference::Original,
+        purpose: Purpose::Preview,
+        grant: Grant {
+            content_id: ContentId::parse("av1-fixture").unwrap(),
+            revision: 1,
+            expected_len: bytes.len() as u64,
+        },
+        expected_revision: 1,
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = full_digest(&mut Cursor::new(bytes), 4096, &CancellationToken::default()).unwrap();
+    hex(&digest)
+}
+
+fn provider(options: Av1WorkerOptions) -> WorkerAv1Provider {
+    WorkerAv1Provider::new(options.with_worker_program(WORKER)).unwrap()
+}
+
+/// reel's in-process decode (container provider id, `OutputMode::Decoded`) for a TRUSTED stream only: the
+/// route runs rav1d in this process only when the caller says so (these are reel's own fixtures).
+fn in_process(
+    registry: &Registry,
+    bytes: &[u8],
+    start: u64,
+    count: u64,
+) -> (SegmentReceipt, Collect) {
+    let mut src = Cursor::new(bytes.to_vec());
+    let id = registry.detect(&mut src).unwrap().descriptor().id;
+    let mut sink = Collect::default();
+    let receipt = registry
+        .decode_segment_routed(
+            &mut src,
+            None,
+            &request(id, bytes, start, count),
+            &Limits::default(),
+            &CancellationToken::default(),
+            &mut sink,
+            SourceTrust::Trusted,
+        )
+        .unwrap();
+    (receipt, sink)
+}
+
+fn via_worker(
+    provider: &WorkerAv1Provider,
+    bytes: &[u8],
+    start: u64,
+    count: u64,
+    limits: &Limits,
+) -> Result<(SegmentReceipt, Collect), Av1Error> {
+    let mut sink = Collect::default();
+    let receipt = provider.decode_av1(
+        &mut Cursor::new(bytes.to_vec()),
+        &request(AV1_PROVIDER_ID, bytes, start, count),
+        limits,
+        &CancellationToken::default(),
+        &mut sink,
+    )?;
+    Ok((receipt, sink))
+}
+
+fn digests(sink: &Collect) -> Vec<String> {
+    sink.chunks.iter().map(|c| sha256_hex(&c.bytes)).collect()
+}
+
+#[test]
+fn worker_decode_is_bit_exact_with_in_process_and_the_dav1d_oracle() {
+    bounded_case("worker_decode_is_bit_exact", || {
+        let worker = provider(Av1WorkerOptions::default());
+        let mut registry = Registry::standard();
+        registry.register(Box::new(worker.clone())).unwrap();
+        let listed = registry.descriptors();
+        assert!(
+            listed
+                .iter()
+                .any(|d| d.id == "av1" && d.can_decode && d.bit_depths == [8, 10, 12])
+        );
+        let limits = Limits::default();
+
+        for (name, bytes, pts) in [("mp4", MP4, PTS_MP4), ("mkv", MKV, PTS_MKV)] {
+            // Whole clip, random access with pre-roll (last frame only), and a two-frame middle span:
+            // chunks (pts, index, flags, bytes) and the whole receipt equal reel's in-process decode.
+            for (start, count) in [(0, 3), (pts[2], 1), (pts[1], 2)] {
+                let (expected_receipt, expected) = in_process(&registry, bytes, start, count);
+                let mut sink = Collect::default();
+                let mut src = Cursor::new(bytes.to_vec());
+                let receipt = registry
+                    .decode_segment(
+                        &mut src,
+                        None,
+                        &request(AV1_PROVIDER_ID, bytes, start, count),
+                        &limits,
+                        &CancellationToken::default(),
+                        &mut sink,
+                    )
+                    .unwrap();
+                assert_eq!(receipt, expected_receipt, "{name} {start}+{count} receipt");
+                assert_eq!(sink, expected, "{name} {start}+{count} chunks");
+                assert_eq!(receipt.decoder_id, "rav1d");
+                assert!(receipt.complete && receipt.video.is_some());
+            }
+            // Hash test: every frame equals libdav1d's output bit for bit; a repeat is identical.
+            let (_, all) = via_worker(&worker, bytes, 0, 3, &limits).unwrap();
+            assert_eq!(digests(&all), ORACLE, "{name}");
+            let (_, again) = via_worker(&worker, bytes, 0, 3, &limits).unwrap();
+            assert_eq!(all, again, "{name} second decode");
+            let (receipt, last) = via_worker(&worker, bytes, pts[2], 1, &limits).unwrap();
+            assert_eq!(digests(&last), [ORACLE[2]], "{name} random access");
+            assert_eq!(receipt.actual.start_pts, Ticks::new(pts[2]));
+        }
+
+        // One worker served every segment above (no respawn, nothing crashed, nothing left running).
+        let stats = worker.stats();
+        assert_eq!(
+            (stats.spawned, stats.crashed, stats.alive),
+            (1, 0, 1),
+            "{stats:?}"
+        );
+
+        // Typed refusals match the in-process ones and never cost a process: a reserved profile in the
+        // av1C record is refused before any spawn; frames above the chunk limit are refused as a limit.
+        let mut patched = MP4.to_vec();
+        let at = patched.windows(4).position(|w| w == b"av1C").unwrap() + 4;
+        patched[at + 1] = (patched[at + 1] & 0x1F) | (3 << 5);
+        let before = worker.stats().spawned;
+        let error = via_worker(&worker, &patched, 0, 1, &limits).unwrap_err();
+        assert_eq!(
+            error,
+            Av1Error::Reel(ReelError::Unsupported {
+                what: "av1-profile"
+            })
+        );
+        assert_eq!(worker.stats().spawned, before);
+        let tiny = Limits {
+            max_chunk_bytes: 256,
+            ..Limits::default()
+        };
+        assert_eq!(
+            via_worker(&worker, MP4, 0, 1, &tiny).unwrap_err().code(),
+            "MEDIA_LIMIT_EXCEEDED"
+        );
+        // A request for another id, or a packets request, is not this provider's job.
+        let mut wrong = request("isobmff", MP4, 0, 1);
+        let mut sink = Collect::default();
+        let refused = worker.decode_av1(
+            &mut Cursor::new(MP4.to_vec()),
+            &wrong,
+            &limits,
+            &CancellationToken::default(),
+            &mut sink,
+        );
+        assert_eq!(refused.unwrap_err().code(), "MEDIA_CODEC_UNAVAILABLE");
+        wrong.codec = AV1_PROVIDER_ID.to_owned();
+        wrong.output = OutputMode::Packets;
+        let refused = worker.decode_av1(
+            &mut Cursor::new(MP4.to_vec()),
+            &wrong,
+            &limits,
+            &CancellationToken::default(),
+            &mut sink,
+        );
+        assert_eq!(refused.unwrap_err().code(), "MEDIA_UNSUPPORTED");
+        assert!(sink.chunks.is_empty());
+    });
+}
+
+#[test]
+fn hostile_aborting_mutations_end_as_typed_errors_and_the_host_survives() {
+    bounded_case("hostile_aborting_mutations", || {
+        // The bound is exercised in the supervision case; here every crash may respawn.
+        let worker = provider(Av1WorkerOptions {
+            max_spawns: 64,
+            spawn_window: Duration::from_secs(600),
+            ..Av1WorkerOptions::default()
+        });
+        let limits = Limits::default();
+        let mutate = |offset: usize, value: u8| {
+            let mut bytes = MP4.to_vec();
+            assert!(bytes[offset] != value, "mutation must change the byte");
+            bytes[offset] = value;
+            bytes
+        };
+
+        // Clean decode first: the worker is warm and correct.
+        let (_, clean) = via_worker(&worker, MP4, 0, 3, &limits).unwrap();
+        assert_eq!(digests(&clean), ORACLE);
+
+        // Recorded as MEDIA_CORRUPT in the in-process probe: a typed decoder error that does NOT cost the
+        // worker (the same process answers the next request).
+        let corrupt = via_worker(&worker, &mutate(817, 0), 0, 3, &limits).unwrap_err();
+        assert_eq!(corrupt.code(), "MEDIA_CORRUPT", "{corrupt:?}");
+        assert!(matches!(corrupt, Av1Error::Reel(_)));
+        // Recorded as decoding fine with changed content: same worker, complete, three frames.
+        let (receipt, changed) = via_worker(&worker, &mutate(824, 0), 0, 3, &limits).unwrap();
+        assert!(receipt.complete && changed.chunks.len() == 3);
+        assert_ne!(
+            digests(&changed),
+            ORACLE,
+            "the mutation must change the picture"
+        );
+        assert_eq!(worker.stats().spawned, 1, "typed errors must not respawn");
+
+        // Recorded as PROCESS ABORTS in-process (rav1d decode.rs:4997 unwrap on None, inside an
+        // extern "C" fn). Each one kills a worker; the call returns the contained fault.
+        let aborting: [(usize, u8); 6] = [
+            (826, 0),
+            (949, 128),
+            (966, 255),
+            (994, 0),
+            (1004, 128),
+            (1009, 255),
+        ];
+        let started = Instant::now();
+        for (offset, value) in aborting {
+            let error = via_worker(&worker, &mutate(offset, value), 0, 3, &limits).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Av1Error::Worker(Av1WorkerFault::DecoderCrashed { .. })
+                ),
+                "mutation {offset}={value}: {error:?}"
+            );
+            assert_eq!(error.code(), "decoder_crashed");
+        }
+        // Through the reel port the same fault is reel's distinct ReelError::DecoderFault (not Corrupt).
+        let mut sink = Collect::default();
+        let ported = worker
+            .decode_segment(
+                &mut Cursor::new(mutate(826, 0)),
+                &request(AV1_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(
+            ported,
+            ReelError::DecoderFault {
+                fault: DecoderFault::Crashed
+            }
+        );
+        assert_eq!(ported.code(), "MEDIA_DECODER_FAULT");
+        let crashes = aborting.len() as u64 + 1;
+        let elapsed = started.elapsed();
+
+        // The provider is still usable: a fresh worker decodes the clean clip bit-exactly again, and
+        // every crashed process was reaped (only the one healthy idle worker is alive).
+        let (_, after) = via_worker(&worker, MP4, 0, 3, &limits).unwrap();
+        assert_eq!(digests(&after), ORACLE);
+        let stats = worker.stats();
+        assert_eq!(stats.crashed, crashes, "{stats:?}");
+        assert_eq!(stats.spawned, 1 + crashes, "{stats:?}");
+        assert_eq!(stats.alive, 1, "{stats:?}");
+        assert!(stats.last_crash_exit_code.is_some());
+        println!(
+            "hostile: {crashes} crashes contained in {elapsed:?}; exit code {:?}",
+            stats.last_crash_exit_code
+        );
+    });
+}
+
+#[test]
+fn supervision_kills_on_deadline_cancel_oversize_garbage_and_bounds_respawn() {
+    bounded_case("supervision", || {
+        let limits = Limits::default();
+        let faulty = |fault: WorkerTestFault, tweak: &dyn Fn(&mut Av1WorkerOptions)| {
+            let mut options = Av1WorkerOptions {
+                test_fault: fault,
+                ..Av1WorkerOptions::default()
+            };
+            tweak(&mut options);
+            provider(options)
+        };
+
+        // Wall-clock deadline: a worker that never answers is killed at the batch deadline.
+        let hung = faulty(WorkerTestFault::HangOnPacket, &|o| {
+            o.batch_deadline = Duration::from_millis(400);
+        });
+        let started = Instant::now();
+        let error = via_worker(&hung, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::DecoderDeadline));
+        assert!(started.elapsed() < Duration::from_secs(20));
+        let stats = hung.stats();
+        assert_eq!((stats.killed_deadline, stats.alive), (1, 0), "{stats:?}");
+
+        // Output cap: a reply far above the declared 16x16 frame kills the worker.
+        let big = faulty(WorkerTestFault::OversizeFrame, &|_| {});
+        let error = via_worker(&big, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::OutputTooLarge));
+        let stats = big.stats();
+        assert_eq!((stats.killed_oversize, stats.alive), (1, 0), "{stats:?}");
+
+        // Protocol violation: a frame of unknown kind kills the worker.
+        let junk = faulty(WorkerTestFault::GarbageReply, &|_| {});
+        let error = via_worker(&junk, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::Protocol));
+        let stats = junk.stats();
+        assert_eq!((stats.protocol_faults, stats.alive), (1, 0), "{stats:?}");
+
+        // Bounded respawn: a worker that dies on every request (exit code 86) is replaced at most twice
+        // per window, then the provider refuses to spawn instead of looping.
+        let dying = faulty(WorkerTestFault::ExitOnPacket, &|o| {
+            o.max_spawns = 2;
+            o.spawn_window = Duration::from_secs(600);
+        });
+        for _ in 0..2 {
+            let error = via_worker(&dying, MP4, 0, 3, &limits).unwrap_err();
+            assert_eq!(
+                error,
+                Av1Error::Worker(Av1WorkerFault::DecoderCrashed {
+                    exit_code: Some(86)
+                })
+            );
+        }
+        let error = via_worker(&dying, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::RespawnLimited));
+        let stats = dying.stats();
+        assert_eq!(
+            (
+                stats.spawned,
+                stats.crashed,
+                stats.spawn_denied,
+                stats.alive
+            ),
+            (2, 2, 1, 0),
+            "{stats:?}"
+        );
+
+        // Cancel and pool bound: with one worker allowed, a second call while the first is stuck is
+        // refused at once (pool busy); cancelling the first kills its worker and returns Canceled.
+        let stuck = faulty(WorkerTestFault::HangOnPacket, &|o| {
+            o.max_workers = 1;
+        });
+        let cancel = CancellationToken::default();
+        let first = {
+            let (stuck, cancel) = (stuck.clone(), cancel.clone());
+            thread::spawn(move || {
+                let mut sink = Collect::default();
+                stuck.decode_av1(
+                    &mut Cursor::new(MP4.to_vec()),
+                    &request(AV1_PROVIDER_ID, MP4, 0, 3),
+                    &Limits::default(),
+                    &cancel,
+                    &mut sink,
+                )
+            })
+        };
+        // Wait until OPEN and the first PACKET are on the wire: the worker is hung inside a request.
+        let waiting = Instant::now();
+        while stuck.stats().requests < 2 {
+            assert!(
+                waiting.elapsed() < Duration::from_secs(20),
+                "request never sent"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let error = via_worker(&stuck, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::PoolBusy));
+        cancel.cancel();
+        let outcome = first.join().unwrap();
+        assert_eq!(outcome.unwrap_err(), Av1Error::Reel(ReelError::Canceled));
+        let stats = stuck.stats();
+        assert_eq!((stats.killed_canceled, stats.alive), (1, 0), "{stats:?}");
+        // A token cancelled before the call never reaches the pool.
+        let done = CancellationToken::default();
+        done.cancel();
+        let mut sink = Collect::default();
+        let error = stuck
+            .decode_av1(
+                &mut Cursor::new(MP4.to_vec()),
+                &request(AV1_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &done,
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(error, Av1Error::Reel(ReelError::Canceled));
+        assert_eq!(stuck.stats().spawned, 1);
+    });
+}
+
+/// R8 review B (PLR-055): a worker picture larger than the container-declared size (here 18x16 against the
+/// 16x16 the fixtures declare) but far under the reply cap (the cap is the declared 384 bytes plus 512 of
+/// slack; the picture is 483 bytes on the wire) is a lying worker. The host classifies it as a worker
+/// protocol fault BEFORE reel's route sees it: counted in `protocol_faults`, the worker is killed, no
+/// picture reaches the sink, and it is not the output-cap kill (`killed_oversize` stays 0).
+#[test]
+fn oversize_picture_under_the_reply_cap_is_a_protocol_fault() {
+    bounded_case("oversize_picture_under_the_reply_cap", || {
+        let limits = Limits::default();
+        let liar = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::OversizePicture,
+            ..Av1WorkerOptions::default()
+        });
+        for (round, (name, bytes)) in [("mp4", MP4), ("mkv", MKV)].into_iter().enumerate() {
+            let mut sink = Collect::default();
+            let error = liar
+                .decode_av1(
+                    &mut Cursor::new(bytes.to_vec()),
+                    &request(AV1_PROVIDER_ID, bytes, 0, 3),
+                    &limits,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap_err();
+            assert_eq!(error, Av1Error::Worker(Av1WorkerFault::Protocol), "{name}");
+            assert_eq!(error.code(), "worker_protocol", "{name}");
+            assert!(sink.chunks.is_empty(), "{name}: a picture reached the sink");
+            let stats = liar.stats();
+            assert_eq!(
+                (
+                    stats.protocol_faults,
+                    stats.killed_oversize,
+                    stats.crashed,
+                    stats.alive
+                ),
+                (round as u64 + 1, 0, 0, 0),
+                "{name}: {stats:?}"
+            );
+        }
+
+        // The same worker behind reel's registry route (an ordinary untrusted decode): reel's vocabulary
+        // is the distinct decoder fault, and the fault is counted just the same.
+        let registry = Registry::standard().with_video_decoder(Arc::new(liar.clone()));
+        let mut sink = Collect::default();
+        let error = registry
+            .decode_segment(
+                &mut Cursor::new(MP4.to_vec()),
+                None,
+                &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ReelError::DecoderFault {
+                fault: DecoderFault::Protocol
+            }
+        );
+        assert!(sink.chunks.is_empty());
+        let stats = liar.stats();
+        assert_eq!(
+            (stats.protocol_faults, stats.killed_oversize, stats.alive),
+            (3, 0, 0),
+            "{stats:?}"
+        );
+    });
+}
+
+/// R8 review B (PLR-055): the declared size is the sequence maximum (AV1-ISOBMFF 2.2.4), so a picture of
+/// exactly that size and a smaller one (14x14 against 16x16) are legal: both decode, nothing is counted
+/// as a fault, and the worker stays alive for the next call.
+#[test]
+fn exact_and_smaller_pictures_than_declared_are_accepted() {
+    bounded_case("exact_and_smaller_pictures_than_declared", || {
+        let limits = Limits::default();
+        let exact = provider(Av1WorkerOptions::default());
+        let smaller = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::UndersizePicture,
+            ..Av1WorkerOptions::default()
+        });
+        for (name, bytes) in [("mp4", MP4), ("mkv", MKV)] {
+            let (receipt, sink) = via_worker(&exact, bytes, 0, 3, &limits).unwrap();
+            assert!(receipt.complete, "{name} exact");
+            assert_eq!(sink.chunks.len(), 3, "{name} exact");
+            for chunk in &sink.chunks {
+                assert_eq!(chunk.bytes.len(), 16 * 16 + 2 * 8 * 8, "{name} exact");
+            }
+
+            let (receipt, sink) = via_worker(&smaller, bytes, 0, 3, &limits).unwrap();
+            assert!(receipt.complete, "{name} smaller");
+            assert_eq!(sink.chunks.len(), 3, "{name} smaller");
+            for chunk in &sink.chunks {
+                assert_eq!(chunk.bytes.len(), 14 * 14 + 2 * 7 * 7, "{name} smaller");
+            }
+        }
+        for (name, provider) in [("exact", &exact), ("smaller", &smaller)] {
+            let stats = provider.stats();
+            assert_eq!(
+                (
+                    stats.spawned,
+                    stats.protocol_faults,
+                    stats.killed_oversize,
+                    stats.crashed,
+                    stats.alive
+                ),
+                (1, 0, 0, 0, 1),
+                "{name}: {stats:?}"
+            );
+        }
+    });
+}
+
+/// Lead decision after R8 review B (PLR-055, same class): OPEN is answered by OPENED alone, so a FRAME (here a
+/// well-formed 2x2 picture, inside any declared size) answering OPEN is the worker breaking the protocol. The
+/// host classifies it as a worker protocol fault like every other lying reply: counted in `protocol_faults`,
+/// the worker is killed, typed `worker_protocol`, and no picture reaches the sink.
+#[test]
+fn frame_reply_to_open_is_a_protocol_fault() {
+    bounded_case("frame_reply_to_open_is_a_protocol_fault", || {
+        let limits = Limits::default();
+        let liar = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::FrameOnOpen,
+            ..Av1WorkerOptions::default()
+        });
+        for (round, (name, bytes)) in [("mp4", MP4), ("mkv", MKV)].into_iter().enumerate() {
+            let mut sink = Collect::default();
+            let error = liar
+                .decode_av1(
+                    &mut Cursor::new(bytes.to_vec()),
+                    &request(AV1_PROVIDER_ID, bytes, 0, 3),
+                    &limits,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap_err();
+            assert_eq!(error, Av1Error::Worker(Av1WorkerFault::Protocol), "{name}");
+            assert_eq!(error.code(), "worker_protocol", "{name}");
+            assert!(sink.chunks.is_empty(), "{name}: a picture reached the sink");
+            let stats = liar.stats();
+            assert_eq!(
+                (
+                    stats.protocol_faults,
+                    stats.killed_oversize,
+                    stats.crashed,
+                    stats.alive
+                ),
+                (round as u64 + 1, 0, 0, 0),
+                "{name}: {stats:?}"
+            );
+        }
+
+        // Behind reel's registry route (an ordinary untrusted decode): reel's distinct decoder fault, and the
+        // fault is counted just the same.
+        let registry = Registry::standard().with_video_decoder(Arc::new(liar.clone()));
+        let mut sink = Collect::default();
+        let error = registry
+            .decode_segment(
+                &mut Cursor::new(MP4.to_vec()),
+                None,
+                &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ReelError::DecoderFault {
+                fault: DecoderFault::Protocol
+            }
+        );
+        assert!(sink.chunks.is_empty());
+        let stats = liar.stats();
+        assert_eq!(
+            (stats.protocol_faults, stats.killed_oversize, stats.alive),
+            (3, 0, 0),
+            "{stats:?}"
+        );
+    });
+}
+
+/// The two legs every counted worker protocol fault test shares. `liar` is a provider whose worker breaks the
+/// protocol on every call (a fresh worker per call, because a faulty one is killed): `decode_av1` on mp4 then
+/// mkv gives the typed `Av1Error::Worker(Protocol)` (code `worker_protocol`), nothing reaches the sink and the
+/// violation is counted exactly once per call (`protocol_faults` is 1, then 2); then the same provider behind
+/// reel's registry route gives reel's distinct `DecoderFault::Protocol`, counted once more (3). Nothing is
+/// counted as a spawn failure, an output-cap kill or a crash, and no worker stays alive or is pooled.
+fn assert_protocol_fault_counted_once_per_call(liar: &WorkerAv1Provider, case: &str) {
+    assert_protocol_fault_counted_once_per_call_after(liar, case, 0);
+}
+
+/// [`assert_protocol_fault_counted_once_per_call`] for a fault the host can only see after earlier replies of the
+/// same request or session were delivered: at most `pictures` pictures reached the sink before the violation (the
+/// one FRAME that precedes the batch cap; the pictures of the PACKETs before a FINISH).
+fn assert_protocol_fault_counted_once_per_call_after(
+    liar: &WorkerAv1Provider,
+    case: &str,
+    pictures: usize,
+) {
+    let limits = Limits::default();
+    for (round, (name, bytes)) in [("mp4", MP4), ("mkv", MKV)].into_iter().enumerate() {
+        let mut sink = Collect::default();
+        let error = liar
+            .decode_av1(
+                &mut Cursor::new(bytes.to_vec()),
+                &request(AV1_PROVIDER_ID, bytes, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            Av1Error::Worker(Av1WorkerFault::Protocol),
+            "{case} {name}"
+        );
+        assert_eq!(error.code(), "worker_protocol", "{case} {name}");
+        assert!(
+            sink.chunks.len() <= pictures,
+            "{case} {name}: {} pictures reached the sink, at most {pictures} may",
+            sink.chunks.len()
+        );
+        let stats = liar.stats();
+        assert_eq!(
+            (
+                stats.protocol_faults,
+                stats.spawn_failed,
+                stats.killed_oversize,
+                stats.crashed,
+                stats.alive
+            ),
+            (round as u64 + 1, 0, 0, 0, 0),
+            "{case} {name}: {stats:?}"
+        );
+    }
+    let registry = Registry::standard().with_video_decoder(Arc::new(liar.clone()));
+    let mut sink = Collect::default();
+    let error = registry
+        .decode_segment(
+            &mut Cursor::new(MP4.to_vec()),
+            None,
+            &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+            &limits,
+            &CancellationToken::default(),
+            &mut sink,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ReelError::DecoderFault {
+            fault: DecoderFault::Protocol
+        },
+        "{case} registry route"
+    );
+    assert!(
+        sink.chunks.len() <= pictures,
+        "{case} registry route: {} pictures reached the sink, at most {pictures} may",
+        sink.chunks.len()
+    );
+    let stats = liar.stats();
+    assert_eq!(
+        (
+            stats.spawned,
+            stats.protocol_faults,
+            stats.spawn_failed,
+            stats.killed_oversize,
+            stats.crashed,
+            stats.alive
+        ),
+        (3, 3, 0, 0, 0, 0),
+        "{case} registry route: {stats:?}"
+    );
+}
+
+/// R9 pre-review (PLR-059): a FRAME whose tag no PACKET of the session carried is a lying worker. Reel's route
+/// drops such a picture without a word (the result is a shortfall, Partial or Incomplete, and nothing is
+/// counted), so the host classifies it before reel sees it: a worker protocol fault, counted once per call,
+/// the worker is killed. The pictures here are the decoded ones, the size is legal and the framing is
+/// well-formed: only the tag is wrong. The legal side (every tag sent, including the pre-roll pictures of a
+/// random-access start) is `worker_decode_is_bit_exact_with_in_process_and_the_dav1d_oracle`.
+#[test]
+fn frame_with_an_unsent_tag_is_a_protocol_fault() {
+    bounded_case("frame_with_an_unsent_tag_is_a_protocol_fault", || {
+        let liar = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::WrongTag,
+            ..Av1WorkerOptions::default()
+        });
+        assert_protocol_fault_counted_once_per_call(&liar, "wrong tag");
+    });
+}
+
+/// PLR-078 (R15 pre-review): a worker that breaks one reply-grammar rule of `wire.rs` (on its first PACKET, or on
+/// FINISH), counted once per call as a worker protocol fault: typed `worker_protocol`, the worker killed and not
+/// pooled, nothing counted as a spawn failure, an output-cap kill or a crash. `pictures` is how many pictures may
+/// have reached the sink before the host saw the violation.
+fn reply_grammar_case(case: &'static str, fault: WorkerTestFault, pictures: usize) {
+    bounded_case(case, move || {
+        let liar = provider(Av1WorkerOptions {
+            test_fault: fault,
+            ..Av1WorkerOptions::default()
+        });
+        assert_protocol_fault_counted_once_per_call_after(&liar, case, pictures);
+    });
+}
+
+/// PLR-078: a BATCH_END that announces a different number of FRAMEs than the host received (here one announced, none
+/// sent) ends the batch as a protocol fault, not as a complete batch.
+#[test]
+fn batch_end_count_differing_from_the_frames_received_is_a_protocol_fault() {
+    reply_grammar_case("batch end count", WorkerTestFault::BatchEndCount, 0);
+}
+
+/// PLR-078: OPENED is the answer to OPEN only; answering a PACKET with it is a protocol fault.
+#[test]
+fn opened_reply_to_a_packet_is_a_protocol_fault() {
+    reply_grammar_case("opened on packet", WorkerTestFault::OpenedOnPacket, 0);
+}
+
+/// PLR-078: the same for FINISH. The PACKETs before it are served normally, so up to the three pictures of the
+/// fixture reach the sink before the violation.
+#[test]
+fn opened_reply_to_finish_is_a_protocol_fault() {
+    reply_grammar_case("opened on finish", WorkerTestFault::OpenedOnFinish, 3);
+}
+
+/// PLR-078: one FRAME more than `MAX_FRAMES_PER_BATCH` (64) in a batch is a protocol fault. All 65 FRAMEs are legal on
+/// their own (2x2 mono inside the declared size, the tag of the PACKET just sent) and the BATCH_END counts them, so only
+/// the cap can refuse the batch; the first FRAME is delivered (it matches the pending packet), the rest are dropped by
+/// reel's route as repeats, so at most one picture reaches the sink.
+#[test]
+fn more_frames_than_a_batch_may_hold_is_a_protocol_fault() {
+    reply_grammar_case("65 frames in a batch", WorkerTestFault::ManyFrames, 1);
+}
+
+/// A worker that greets with `fault` (a bad HELLO), counted once per call as a worker protocol fault.
+fn bad_hello_case(case: &'static str, fault: WorkerTestFault) {
+    bounded_case(case, move || {
+        let liar = provider(Av1WorkerOptions {
+            test_fault: fault,
+            ..Av1WorkerOptions::default()
+        });
+        assert_protocol_fault_counted_once_per_call(&liar, case);
+    });
+}
+
+/// R9 pre-review (PLR-060): the worker greets first and the host bounds the greeting (`HELLO_CAP`, 1024
+/// bytes). A greeting above the cap is the worker breaking the protocol: counted in `protocol_faults`, not in
+/// `spawn_failed`, typed `worker_protocol` (reel `DecoderFault::Protocol`), and the worker is killed, not
+/// pooled. The next two tests do the same for greeting bytes whose first four bytes read as a length above the
+/// cap (bytes that are no frame) and for a well-framed greeting the decoder rejects.
+#[test]
+fn oversize_hello_is_a_protocol_fault_not_a_spawn_failure() {
+    bad_hello_case("oversize hello", WorkerTestFault::OversizeHello);
+}
+
+/// R9 pre-review (PLR-060): greeting bytes that are no frame at all (text whose first four bytes read as a
+/// length far above the cap) are a counted worker protocol fault, not a spawn failure.
+#[test]
+fn garbage_hello_is_a_protocol_fault_not_a_spawn_failure() {
+    bad_hello_case("garbage hello", WorkerTestFault::GarbageHello);
+}
+
+/// R9 pre-review (PLR-060): a well-framed greeting of the right kind that the decoder rejects was already a
+/// counted protocol fault before this fix; the test keeps the two arms (cap and decoder) in agreement.
+#[test]
+fn malformed_hello_is_a_protocol_fault_not_a_spawn_failure() {
+    bad_hello_case("malformed hello", WorkerTestFault::MalformedHello);
+}
+
+/// R9 pre-review (PLR-060), the other side of the boundary: a worker that never greets (it exits and closes
+/// its output before HELLO), and a program the system cannot start at all, are real spawn failures and stay
+/// `worker_spawn_failed` (reel `CodecUnavailable`), counted in `spawn_failed` and not in `protocol_faults`.
+/// A worker that stays silent past `spawn_timeout` is pinned by `canceled_call_does_not_wait_for_a_stalled_hello`.
+#[test]
+fn a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault() {
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    bounded_case("a_worker_that_never_greets", || {
+        let limits = Limits::default();
+        let silent = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::ExitBeforeHello,
+            ..Av1WorkerOptions::default()
+        });
+        let error = via_worker(&silent, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::SpawnFailed));
+        assert_eq!(error.code(), "worker_spawn_failed");
+        let stats = silent.stats();
+        assert_eq!(
+            (
+                stats.spawned,
+                stats.spawn_failed,
+                stats.protocol_faults,
+                stats.crashed,
+                stats.alive
+            ),
+            (1, 1, 0, 0, 0),
+            "{stats:?}"
+        );
+        let registry = Registry::standard().with_video_decoder(Arc::new(silent.clone()));
+        let mut sink = Collect::default();
+        let error = registry
+            .decode_segment(
+                &mut Cursor::new(MP4.to_vec()),
+                None,
+                &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "MEDIA_CODEC_UNAVAILABLE", "{error:?}");
+        assert!(sink.chunks.is_empty());
+        let stats = silent.stats();
+        assert_eq!(
+            (stats.spawned, stats.spawn_failed, stats.protocol_faults),
+            (2, 2, 0),
+            "{stats:?}"
+        );
+
+        // A file that is no executable: process creation fails, nothing was spawned or counted as a fault.
+        let fake = Scratch(std::env::temp_dir().join(format!(
+            "hsk-reel-native-not-a-worker-{}",
+            std::process::id()
+        )));
+        std::fs::write(&fake.0, b"this file is not an executable").unwrap();
+        let broken =
+            WorkerAv1Provider::new(Av1WorkerOptions::default().with_worker_program(fake.0.clone()))
+                .unwrap();
+        let error = via_worker(&broken, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::SpawnFailed));
+        let stats = broken.stats();
+        assert_eq!(
+            (
+                stats.spawned,
+                stats.spawn_failed,
+                stats.protocol_faults,
+                stats.alive
+            ),
+            (0, 1, 0, 0),
+            "{stats:?}"
+        );
+    });
+}
+
+/// PLR-078 (R15 pre-review), the exact boundary of the greeting rule: the first four bytes are read as a length, so a
+/// worker that closes its output after fewer than four bytes (`ShortHello`, three bytes), or after the start of a frame
+/// whose announced length is within the cap (`CutHello`, ten of 64 bytes), never completed a greeting. That is a spawn
+/// failure (`worker_spawn_failed`, reel `CodecUnavailable` behind the route), not a protocol fault. Four or more bytes
+/// of text read as a length above the cap and are the protocol fault of `garbage_hello_is_a_protocol_fault_not_a_spawn_failure`.
+#[test]
+fn a_greeting_cut_short_is_a_spawn_failure_not_a_protocol_fault() {
+    bounded_case("a_greeting_cut_short", || {
+        let limits = Limits::default();
+        for (what, fault) in [
+            ("three bytes", WorkerTestFault::ShortHello),
+            ("ten bytes of a 64-byte frame", WorkerTestFault::CutHello),
+        ] {
+            let cut = provider(Av1WorkerOptions {
+                test_fault: fault,
+                ..Av1WorkerOptions::default()
+            });
+            let error = via_worker(&cut, MP4, 0, 3, &limits).unwrap_err();
+            assert_eq!(
+                error,
+                Av1Error::Worker(Av1WorkerFault::SpawnFailed),
+                "{what}"
+            );
+            assert_eq!(error.code(), "worker_spawn_failed", "{what}");
+            let stats = cut.stats();
+            assert_eq!(
+                (
+                    stats.spawned,
+                    stats.spawn_failed,
+                    stats.protocol_faults,
+                    stats.crashed,
+                    stats.alive
+                ),
+                (1, 1, 0, 0, 0),
+                "{what}: {stats:?}"
+            );
+            let registry = Registry::standard().with_video_decoder(Arc::new(cut.clone()));
+            let mut sink = Collect::default();
+            let error = registry
+                .decode_segment(
+                    &mut Cursor::new(MP4.to_vec()),
+                    None,
+                    &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+                    &limits,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap_err();
+            assert_eq!(error.code(), "MEDIA_CODEC_UNAVAILABLE", "{what}: {error:?}");
+            assert!(sink.chunks.is_empty(), "{what}");
+            let stats = cut.stats();
+            assert_eq!(
+                (stats.spawned, stats.spawn_failed, stats.protocol_faults),
+                (2, 2, 0),
+                "{what}: {stats:?}"
+            );
+        }
+    });
+}
+
+/// R7 review B (PLR-035, uncancellable HELLO wait): a worker that stalls before its HELLO (here 30 s, with a
+/// 30 s spawn timeout) must not hold a canceled call. The wait is polled, the starting worker is killed and
+/// reaped, and the call answers Canceled within a few hundred ms; without a cancel `spawn_timeout` still
+/// bounds the wait with a typed spawn fault.
+#[test]
+fn canceled_call_does_not_wait_for_a_stalled_hello() {
+    bounded_case("canceled_call_does_not_wait_for_a_stalled_hello", || {
+        let limits = Limits::default();
+        let stalled = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::StallHello,
+            spawn_timeout: Duration::from_secs(30),
+            ..Av1WorkerOptions::default()
+        });
+        let cancel = CancellationToken::default();
+        let canceller = {
+            let cancel = cancel.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(300));
+                cancel.cancel();
+            })
+        };
+        let mut sink = Collect::default();
+        let started = Instant::now();
+        let error = stalled
+            .decode_av1(
+                &mut Cursor::new(MP4.to_vec()),
+                &request(AV1_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &cancel,
+                &mut sink,
+            )
+            .unwrap_err();
+        let waited = started.elapsed();
+        canceller.join().unwrap();
+        assert_eq!(error, Av1Error::Reel(ReelError::Canceled));
+        assert!(
+            waited < Duration::from_secs(5),
+            "the HELLO wait ignored the cancel: {waited:?}"
+        );
+        assert!(sink.chunks.is_empty());
+        let stats = stalled.stats();
+        assert_eq!(
+            (
+                stats.spawned,
+                stats.killed_canceled,
+                stats.spawn_failed,
+                stats.crashed,
+                stats.alive
+            ),
+            (1, 1, 0, 0, 0),
+            "{stats:?}"
+        );
+
+        // Without a cancel the spawn timeout still bounds the wait: a typed spawn fault, not a hang.
+        let timed_out = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::StallHello,
+            spawn_timeout: Duration::from_millis(400),
+            ..Av1WorkerOptions::default()
+        });
+        let started = Instant::now();
+        let error = via_worker(&timed_out, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::SpawnFailed));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let stats = timed_out.stats();
+        assert_eq!(
+            (
+                stats.spawned,
+                stats.spawn_failed,
+                stats.killed_canceled,
+                stats.alive
+            ),
+            (1, 1, 0, 0),
+            "{stats:?}"
+        );
+    });
+}
+
+/// R7 review B (PLR-034, parent-directory worker lookup): cargo puts the worker binary one directory ABOVE
+/// this test executable (`target/<profile>/` against `target/<profile>/deps/`), which is exactly the
+/// location the old lookup accepted. Default discovery must not find it; an explicit path still works.
+#[test]
+fn default_discovery_does_not_look_in_the_parent_of_the_executable_directory() {
+    let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let worker = std::fs::canonicalize(WORKER).unwrap();
+    let exe_dir = exe.parent().unwrap();
+    let layout_holds =
+        worker.parent() == exe_dir.parent() && !exe_dir.join(worker.file_name().unwrap()).exists();
+    if !layout_holds {
+        println!(
+            "NOT_PROVEN: the worker binary is not in the parent of this test executable's directory; \
+             unit test worker_is_found_only_beside_the_running_executable proves the lookup rule alone"
+        );
+        return;
+    }
+    assert_eq!(
+        WorkerAv1Provider::new(Av1WorkerOptions::default()).err(),
+        Some(Av1ConfigError::WorkerProgramMissing)
+    );
+    assert!(
+        WorkerAv1Provider::new(Av1WorkerOptions::default().with_worker_program(WORKER)).is_ok()
+    );
+}
+
+/// R5 (SMB-REEL-NATIVE-AV1-WORKER overflow): a container may declare PixelWidth = PixelHeight =
+/// 0xFFFFFFFF. The declared-size caps must refuse it as a typed limit before any worker starts, never
+/// overflow (a panic in this host process would defeat the isolation).
+#[test]
+fn hostile_declared_dims_u32_max_are_refused_before_any_spawn() {
+    bounded_case("hostile_declared_dims_u32_max", || {
+        let worker = provider(Av1WorkerOptions::default());
+        // av1C records: 4:2:0 8-bit (profile 0, subsampling x+y), 4:4:4 10-bit (profile 1, high
+        // bit depth) and no record at all (worst case 4:4:4 16-bit).
+        let yuv420: &[u8] = &[0x81, 0x00, 0x0C, 0x00];
+        let yuv444_10: &[u8] = &[0x81, 0x20, 0x40, 0x00];
+        for (config, width, height) in [
+            (yuv420, u32::MAX, u32::MAX),
+            (yuv444_10, u32::MAX, u32::MAX),
+            (&[][..], u32::MAX, u32::MAX),
+        ] {
+            let spec = VideoStreamSpec {
+                codec: VideoCodec::Av1,
+                container: MATROSKA_PROVIDER_ID,
+                config,
+                color: ColorTag::Untagged,
+                width,
+                height,
+                limits: Limits::default(),
+            };
+            let opened = ExternalVideoDecoder::open(&worker, &spec, &CancellationToken::default());
+            let error = match opened {
+                Ok(_) => panic!("{width}x{height} {config:?}: opened"),
+                Err(error) => error.into_reel(),
+            };
+            assert_eq!(
+                error.code(),
+                "MEDIA_LIMIT_EXCEEDED",
+                "{width}x{height} {config:?}: {error:?}"
+            );
+        }
+        let stats = worker.stats();
+        assert_eq!((stats.spawned, stats.alive), (0, 0), "{stats:?}");
+    });
+}
+
+#[test]
+fn untrusted_decode_through_a_registry_is_routed_to_the_worker_and_survives_aborting_input() {
+    bounded_case("untrusted_registry_routing", || {
+        let worker = provider(Av1WorkerOptions {
+            max_spawns: 64,
+            spawn_window: Duration::from_secs(600),
+            ..Av1WorkerOptions::default()
+        });
+        // The worker is registered as the registry's VIDEO DECODER (not as a provider): ordinary
+        // isobmff/matroska calls, untrusted by default, reach it.
+        let registry = Registry::standard().with_video_decoder(Arc::new(worker.clone()));
+        assert_eq!(
+            registry
+                .video_decoder_identity()
+                .map(|identity| identity.id),
+            Some("rav1d")
+        );
+        let limits = Limits::default();
+        let decode = |registry: &Registry, bytes: &[u8], container: &str| {
+            let mut sink = Collect::default();
+            let result = registry.decode_segment(
+                &mut Cursor::new(bytes.to_vec()),
+                None,
+                &request(container, bytes, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            );
+            (result, sink)
+        };
+
+        for (bytes, container) in [(MP4, ISOBMFF_PROVIDER_ID), (MKV, MATROSKA_PROVIDER_ID)] {
+            let before = worker.stats().requests;
+            let (receipt, sink) = decode(&registry, bytes, container);
+            let receipt = receipt.unwrap();
+            // OPEN + three PACKETs + FINISH went to the worker process, and the output is bit-exact
+            // with the dav1d oracle and equal (chunks and whole receipt) to the trusted in-process decode.
+            assert!(worker.stats().requests >= before + 5, "{container}");
+            assert_eq!(digests(&sink), ORACLE, "{container}");
+            let (expected_receipt, expected) = in_process(&registry, bytes, 0, 3);
+            assert_eq!(receipt, expected_receipt, "{container}");
+            assert_eq!(sink, expected, "{container}");
+            assert_eq!(receipt.decoder_id, "rav1d");
+        }
+        assert_eq!(
+            worker.stats().spawned,
+            1,
+            "one worker served both containers"
+        );
+
+        // A byte replacement that ABORTS the in-process decoder, through the same plain registry call:
+        // this test process is still alive to assert, and the answer is reel's distinct decoder fault.
+        let mut hostile = MP4.to_vec();
+        hostile[826] = 0;
+        let (result, _) = decode(&registry, &hostile, ISOBMFF_PROVIDER_ID);
+        let error = result.unwrap_err();
+        assert_eq!(
+            error,
+            ReelError::DecoderFault {
+                fault: DecoderFault::Crashed
+            }
+        );
+        assert_eq!(error.code(), "MEDIA_DECODER_FAULT");
+        assert_eq!(worker.stats().crashed, 1);
+        // The pool recovered: the next untrusted call starts a fresh worker and decodes correctly.
+        let (receipt, sink) = decode(&registry, MP4, ISOBMFF_PROVIDER_ID);
+        assert!(receipt.unwrap().complete);
+        assert_eq!(digests(&sink), ORACLE);
+        assert_eq!(worker.stats().spawned, 2);
+
+        // Without a registered worker the same untrusted call is CodecUnavailable: never in-process.
+        let (result, sink) = decode(&Registry::standard(), MP4, ISOBMFF_PROVIDER_ID);
+        assert_eq!(
+            result.unwrap_err(),
+            ReelError::CodecUnavailable {
+                codec: "av01".to_owned()
+            }
+        );
+        assert!(sink.chunks.is_empty());
+    });
+}

@@ -1,0 +1,512 @@
+//! Signed tick offsets, half-open tick ranges and checked trim/ripple over an ordered lane of
+//! ranges (STU-VID-026 time arithmetic). Pure time algebra: no ids, clips, tracks or documents.
+//! All arithmetic is checked; inputs are never modified (callers get a new `Vec`).
+use crate::error::{PulseError, Result};
+use hsk_studio_accord::{CancellationToken, FrameRate, Ticks};
+
+pub const MAX_RANGES: usize = 262_144;
+const CANCEL_STRIDE: usize = 256;
+
+/// Signed tick offset; magnitude never exceeds `u64::MAX`, so `Ticks + delta` is decidable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TickDelta(i128);
+
+impl TickDelta {
+    pub const ZERO: TickDelta = TickDelta(0);
+
+    pub fn new(value: i128) -> Result<Self> {
+        if value.unsigned_abs() > u128::from(u64::MAX) {
+            return Err(PulseError::Overflow);
+        }
+        Ok(Self(value))
+    }
+    /// Offset that moves `from` to `to`.
+    pub fn between(from: Ticks, to: Ticks) -> Self {
+        Self(i128::from(to.value()) - i128::from(from.value()))
+    }
+    pub fn frames(frames: i64, rate: FrameRate) -> Result<Self> {
+        Self::new(i128::from(frames) * i128::from(rate.ticks_per_frame()))
+    }
+    pub fn value(self) -> i128 {
+        self.0
+    }
+    pub fn negated(self) -> Self {
+        Self(-self.0)
+    }
+    pub fn is_whole_frames(self, rate: FrameRate) -> bool {
+        self.0 % i128::from(rate.ticks_per_frame()) == 0
+    }
+}
+
+/// `ticks + delta`; below zero is `Underflow`, above `u64::MAX` is `Overflow`.
+pub fn offset(ticks: Ticks, delta: TickDelta) -> Result<Ticks> {
+    let value = i128::from(ticks.value()) + delta.0;
+    if value < 0 {
+        return Err(PulseError::Underflow);
+    }
+    u64::try_from(value)
+        .map(Ticks::new)
+        .map_err(|_| PulseError::Overflow)
+}
+
+/// Where edit points may land: anywhere (audio, captions) or on whole frames (video).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grid {
+    Free,
+    Frames(FrameRate),
+}
+
+impl Grid {
+    /// Refuses an edge move that is not a whole number of frames on a frame grid.
+    pub fn check_delta(self, delta: TickDelta) -> Result<()> {
+        match self {
+            Self::Frames(rate) if !delta.is_whole_frames(rate) => Err(PulseError::NotFrameAligned),
+            _ => Ok(()),
+        }
+    }
+    /// Refuses a position that is not on a frame boundary on a frame grid.
+    pub fn check_position(self, at: Ticks) -> Result<()> {
+        match self {
+            Self::Frames(rate) if !at.value().is_multiple_of(rate.ticks_per_frame()) => {
+                Err(PulseError::NotFrameAligned)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Half-open `[start, end)` in ticks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TickRange {
+    start: Ticks,
+    end: Ticks,
+}
+
+impl TickRange {
+    pub fn new(start: Ticks, end: Ticks) -> Result<Self> {
+        if start > end {
+            return Err(PulseError::InvalidRange);
+        }
+        Ok(Self { start, end })
+    }
+    pub fn from_start_duration(start: Ticks, duration: Ticks) -> Result<Self> {
+        Self::new(start, start.checked_add(duration)?)
+    }
+    pub fn start(self) -> Ticks {
+        self.start
+    }
+    pub fn end(self) -> Ticks {
+        self.end
+    }
+    pub fn duration(self) -> Ticks {
+        Ticks::new(self.end.value() - self.start.value())
+    }
+    pub fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+    pub fn contains(self, t: Ticks) -> bool {
+        self.start <= t && t < self.end
+    }
+    pub fn overlaps(self, other: TickRange) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+    /// `self` ends exactly where `other` starts.
+    pub fn abuts(self, other: TickRange) -> bool {
+        self.end == other.start
+    }
+    pub fn intersect(self, other: TickRange) -> Option<TickRange> {
+        let start = self.start.value().max(other.start.value());
+        let end = self.end.value().min(other.end.value());
+        (start < end).then(|| Self {
+            start: Ticks::new(start),
+            end: Ticks::new(end),
+        })
+    }
+    pub fn shifted(self, delta: TickDelta) -> Result<TickRange> {
+        Ok(Self {
+            start: offset(self.start, delta)?,
+            end: offset(self.end, delta)?,
+        })
+    }
+    /// Splits at an interior point; both halves are non-empty.
+    pub fn split_at(self, at: Ticks) -> Result<(TickRange, TickRange)> {
+        if at <= self.start || at >= self.end {
+            return Err(PulseError::OutsideRange);
+        }
+        Ok((
+            Self {
+                start: self.start,
+                end: at,
+            },
+            Self {
+                start: at,
+                end: self.end,
+            },
+        ))
+    }
+    /// Keeps the start, moves the end so the range lasts `new_duration` (> 0).
+    pub fn trim_end_to(self, new_duration: Ticks, grid: Grid) -> Result<TickRange> {
+        if new_duration.value() == 0 {
+            return Err(PulseError::ZeroDuration);
+        }
+        let end = self.start.checked_add(new_duration)?;
+        grid.check_delta(TickDelta::between(self.end, end))?;
+        Ok(Self {
+            start: self.start,
+            end,
+        })
+    }
+    /// Keeps the end, moves the start to `new_start` (< end).
+    pub fn trim_start_to(self, new_start: Ticks, grid: Grid) -> Result<TickRange> {
+        match new_start.value().cmp(&self.end.value()) {
+            std::cmp::Ordering::Equal => return Err(PulseError::ZeroDuration),
+            std::cmp::Ordering::Greater => return Err(PulseError::OutsideRange),
+            std::cmp::Ordering::Less => {}
+        }
+        grid.check_delta(TickDelta::between(self.start, new_start))?;
+        Ok(Self {
+            start: new_start,
+            end: self.end,
+        })
+    }
+}
+
+/// A lane is ordered by start and non-overlapping (adjacent ranges may abut).
+pub fn validate_lane(ranges: &[TickRange], cancel: &CancellationToken) -> Result<()> {
+    cancel.check()?;
+    if ranges.len() > MAX_RANGES {
+        return Err(PulseError::LimitExceeded);
+    }
+    for (i, pair) in ranges.windows(2).enumerate() {
+        if i % CANCEL_STRIDE == 0 {
+            cancel.check()?;
+        }
+        if pair[1].start < pair[0].start {
+            return Err(PulseError::UnorderedRanges);
+        }
+        if pair[1].start < pair[0].end {
+            return Err(PulseError::Overlap);
+        }
+    }
+    Ok(())
+}
+
+fn index_of(ranges: &[TickRange], index: usize) -> Result<TickRange> {
+    ranges.get(index).copied().ok_or(PulseError::OutsideRange)
+}
+
+fn shift_tail(out: &mut [TickRange], delta: TickDelta, cancel: &CancellationToken) -> Result<()> {
+    for (i, range) in out.iter_mut().enumerate() {
+        if i % CANCEL_STRIDE == 0 {
+            cancel.check()?;
+        }
+        *range = range.shifted(delta)?;
+    }
+    Ok(())
+}
+
+/// Shifts every range starting at or after `from` by `delta`. A range straddling `from` stays,
+/// so a negative shift that would collide with it is refused (`overlap`).
+pub fn ripple_shift(
+    ranges: &[TickRange],
+    from: Ticks,
+    delta: TickDelta,
+    cancel: &CancellationToken,
+) -> Result<Vec<TickRange>> {
+    validate_lane(ranges, cancel)?;
+    let first = ranges.partition_point(|r| r.start < from);
+    let mut out = ranges.to_vec();
+    shift_tail(&mut out[first..], delta, cancel)?;
+    if first > 0 && first < out.len() && out[first].start.value() < out[first - 1].end.value() {
+        return Err(PulseError::Overlap);
+    }
+    Ok(out)
+}
+
+/// Moves the tail of `ranges[index]` so it lasts `new_duration`; nothing else moves, a gap opens
+/// or the range extends into free space (`overlap` if it would run into the next range).
+pub fn trim_end(
+    ranges: &[TickRange],
+    index: usize,
+    new_duration: Ticks,
+    grid: Grid,
+    cancel: &CancellationToken,
+) -> Result<Vec<TickRange>> {
+    validate_lane(ranges, cancel)?;
+    let trimmed = index_of(ranges, index)?.trim_end_to(new_duration, grid)?;
+    if ranges
+        .get(index + 1)
+        .is_some_and(|next| trimmed.end > next.start)
+    {
+        return Err(PulseError::Overlap);
+    }
+    let mut out = ranges.to_vec();
+    out[index] = trimmed;
+    Ok(out)
+}
+
+/// Moves the head of `ranges[index]` to `new_start`; the end stays.
+pub fn trim_start(
+    ranges: &[TickRange],
+    index: usize,
+    new_start: Ticks,
+    grid: Grid,
+    cancel: &CancellationToken,
+) -> Result<Vec<TickRange>> {
+    validate_lane(ranges, cancel)?;
+    let trimmed = index_of(ranges, index)?.trim_start_to(new_start, grid)?;
+    if index > 0 && trimmed.start.value() < ranges[index - 1].end.value() {
+        return Err(PulseError::Overlap);
+    }
+    let mut out = ranges.to_vec();
+    out[index] = trimmed;
+    Ok(out)
+}
+
+/// Ripple trim of the tail: `ranges[index]` lasts `new_duration` and every later range shifts by
+/// the duration change, so no gap opens and nothing collides.
+pub fn ripple_trim_end(
+    ranges: &[TickRange],
+    index: usize,
+    new_duration: Ticks,
+    grid: Grid,
+    cancel: &CancellationToken,
+) -> Result<Vec<TickRange>> {
+    validate_lane(ranges, cancel)?;
+    let original = index_of(ranges, index)?;
+    let trimmed = original.trim_end_to(new_duration, grid)?;
+    let delta = TickDelta::between(original.end, trimmed.end);
+    let mut out = ranges.to_vec();
+    out[index] = trimmed;
+    shift_tail(&mut out[index + 1..], delta, cancel)?;
+    Ok(out)
+}
+
+/// Ripple trim of the head: `new_start` is the equivalent plain-trim head position. The range
+/// keeps its start, lasts `duration - (new_start - start)`, and later ranges shift by the
+/// duration change (a head extension, `new_start < start`, pushes them later).
+pub fn ripple_trim_start(
+    ranges: &[TickRange],
+    index: usize,
+    new_start: Ticks,
+    grid: Grid,
+    cancel: &CancellationToken,
+) -> Result<Vec<TickRange>> {
+    validate_lane(ranges, cancel)?;
+    let original = index_of(ranges, index)?;
+    match new_start.value().cmp(&original.end.value()) {
+        std::cmp::Ordering::Equal => return Err(PulseError::ZeroDuration),
+        std::cmp::Ordering::Greater => return Err(PulseError::OutsideRange),
+        std::cmp::Ordering::Less => {}
+    }
+    let moved = TickDelta::between(original.start, new_start);
+    grid.check_delta(moved)?;
+    let change = moved.negated();
+    let trimmed = TickRange {
+        start: original.start,
+        end: offset(original.end, change)?,
+    };
+    let mut out = ranges.to_vec();
+    out[index] = trimmed;
+    shift_tail(&mut out[index + 1..], change, cancel)?;
+    Ok(out)
+}
+
+fn make_range(start: Ticks, end: Ticks) -> Result<TickRange> {
+    match start.value().cmp(&end.value()) {
+        std::cmp::Ordering::Equal => Err(PulseError::ZeroDuration),
+        std::cmp::Ordering::Greater => Err(PulseError::OutsideRange),
+        std::cmp::Ordering::Less => Ok(TickRange { start, end }),
+    }
+}
+
+/// Index of the range containing `t` in an ordered lane (scheduling: what is active at `t`).
+pub fn range_at(ranges: &[TickRange], t: Ticks) -> Option<usize> {
+    let i = ranges.partition_point(|r| r.end <= t);
+    ranges.get(i).filter(|r| r.contains(t)).map(|_| i)
+}
+
+/// Smallest range boundary strictly after `after` in an ordered lane.
+pub fn next_edit_point(ranges: &[TickRange], after: Ticks) -> Option<Ticks> {
+    let i = ranges.partition_point(|r| r.end <= after);
+    let r = ranges.get(i)?;
+    Some(if r.start > after { r.start } else { r.end })
+}
+
+/// Largest range boundary strictly before `before` in an ordered lane.
+pub fn prev_edit_point(ranges: &[TickRange], before: Ticks) -> Option<Ticks> {
+    let j = ranges.partition_point(|r| r.start < before);
+    let r = ranges.get(j.checked_sub(1)?)?;
+    Some(if r.end < before { r.end } else { r.start })
+}
+
+/// Empty spans between consecutive ranges (leading space before the first range is not a gap).
+pub fn gaps(ranges: &[TickRange], cancel: &CancellationToken) -> Result<Vec<TickRange>> {
+    validate_lane(ranges, cancel)?;
+    Ok(ranges
+        .windows(2)
+        .filter(|pair| pair[0].end < pair[1].start)
+        .map(|pair| TickRange {
+            start: pair[0].end,
+            end: pair[1].start,
+        })
+        .collect())
+}
+
+/// Closes gap `gap_index` (as listed by [`gaps`]) by shifting all later ranges earlier.
+pub fn close_gap(
+    ranges: &[TickRange],
+    gap_index: usize,
+    cancel: &CancellationToken,
+) -> Result<Vec<TickRange>> {
+    let gap = *gaps(ranges, cancel)?
+        .get(gap_index)
+        .ok_or(PulseError::OutsideRange)?;
+    ripple_shift(
+        ranges,
+        gap.end,
+        TickDelta::between(gap.end, gap.start),
+        cancel,
+    )
+}
+
+/// One output range derived from lane entry `origin`; the cuts say how much of the original
+/// head/tail was removed so a consumer can move its source window by the same amount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LanePiece {
+    pub origin: usize,
+    pub range: TickRange,
+    pub head_cut: Ticks,
+    pub tail_cut: Ticks,
+}
+
+fn cut_span(
+    ranges: &[TickRange],
+    span: TickRange,
+    grid: Grid,
+    close: bool,
+    cancel: &CancellationToken,
+) -> Result<Vec<LanePiece>> {
+    validate_lane(ranges, cancel)?;
+    if span.is_empty() {
+        return Err(PulseError::ZeroDuration);
+    }
+    grid.check_position(span.start)?;
+    grid.check_position(span.end)?;
+    let closing = if close {
+        TickDelta::between(span.end, span.start)
+    } else {
+        TickDelta::ZERO
+    };
+    let mut out = Vec::with_capacity(ranges.len() + 1);
+    for (origin, r) in ranges.iter().enumerate() {
+        if origin % CANCEL_STRIDE == 0 {
+            cancel.check()?;
+        }
+        let keep = |range: TickRange, head: u64, tail: u64| LanePiece {
+            origin,
+            range,
+            head_cut: Ticks::new(head),
+            tail_cut: Ticks::new(tail),
+        };
+        if r.end <= span.start {
+            out.push(keep(*r, 0, 0));
+        } else if r.start >= span.end {
+            out.push(keep(r.shifted(closing)?, 0, 0));
+        } else {
+            if r.start < span.start {
+                let tail = r.end.value() - span.start.value();
+                out.push(keep(
+                    TickRange {
+                        start: r.start,
+                        end: span.start,
+                    },
+                    0,
+                    tail,
+                ));
+            }
+            if r.end > span.end {
+                let head = span.end.value() - r.start.value();
+                let right = TickRange {
+                    start: span.end,
+                    end: r.end,
+                };
+                out.push(keep(right.shifted(closing)?, head, 0));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Removes `span` from every range and leaves a gap (STU-VID-028 lift); partly covered ranges
+/// are trimmed and a range straddling the span becomes two pieces.
+pub fn lift_span(
+    ranges: &[TickRange],
+    span: TickRange,
+    grid: Grid,
+    cancel: &CancellationToken,
+) -> Result<Vec<LanePiece>> {
+    cut_span(ranges, span, grid, false, cancel)
+}
+
+/// Removes `span` and closes it: everything after shifts earlier by the span (STU-VID-028 extract).
+pub fn extract_span(
+    ranges: &[TickRange],
+    span: TickRange,
+    grid: Grid,
+    cancel: &CancellationToken,
+) -> Result<Vec<LanePiece>> {
+    cut_span(ranges, span, grid, true, cancel)
+}
+
+/// Rolls the edit point between abutting `ranges[left_index]` and the next range by `delta`:
+/// one lengthens by exactly what the other shortens; the lane's extent is unchanged.
+pub fn roll_edit(
+    ranges: &[TickRange],
+    left_index: usize,
+    delta: TickDelta,
+    grid: Grid,
+    cancel: &CancellationToken,
+) -> Result<Vec<TickRange>> {
+    validate_lane(ranges, cancel)?;
+    let left = index_of(ranges, left_index)?;
+    let right = index_of(ranges, left_index + 1)?;
+    if !left.abuts(right) {
+        return Err(PulseError::NotAdjacent);
+    }
+    grid.check_delta(delta)?;
+    let edit = offset(left.end, delta)?;
+    let mut out = ranges.to_vec();
+    out[left_index] = make_range(left.start, edit)?;
+    out[left_index + 1] = make_range(edit, right.end)?;
+    Ok(out)
+}
+
+/// Slides `ranges[index]` by `delta` between two abutting neighbours: the previous range
+/// lengthens and the next shortens by the same amount (or vice versa); the slid range keeps its length.
+pub fn slide(
+    ranges: &[TickRange],
+    index: usize,
+    delta: TickDelta,
+    grid: Grid,
+    cancel: &CancellationToken,
+) -> Result<Vec<TickRange>> {
+    validate_lane(ranges, cancel)?;
+    let current = index_of(ranges, index)?;
+    let previous = index
+        .checked_sub(1)
+        .map(|i| index_of(ranges, i))
+        .transpose()?
+        .ok_or(PulseError::NotAdjacent)?;
+    let next = index_of(ranges, index + 1)?;
+    if !previous.abuts(current) || !current.abuts(next) {
+        return Err(PulseError::NotAdjacent);
+    }
+    grid.check_delta(delta)?;
+    let moved = current.shifted(delta)?;
+    let mut out = ranges.to_vec();
+    out[index - 1] = make_range(previous.start, moved.start)?;
+    out[index] = moved;
+    out[index + 1] = make_range(moved.end, next.end)?;
+    Ok(out)
+}

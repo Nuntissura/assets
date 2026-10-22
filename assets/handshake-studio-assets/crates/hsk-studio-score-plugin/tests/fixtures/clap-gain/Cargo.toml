@@ -1,0 +1,16 @@
+[package]
+name = "hsk-score-plugin-clap-gain-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+# Standalone: not a member of the Studio workspace. Built only by hand/validator into its own target dir.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+clack-plugin = "=0.2.0"

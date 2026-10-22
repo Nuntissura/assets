@@ -155,6 +155,12 @@ class CatalogBehavior(unittest.TestCase):
                        check=True, capture_output=True)
         self.assertIn("ORIGIN_DEFAULT_BRANCH_DRIFT", self.codes())
 
+    def test_historical_vendor_paths_keep_their_classification_after_relocation(self):
+        index = {"legacy_root_paths": {"old": "assets/old"},
+                 "exclusions": [{"path": "assets/old/vendor", "reason": "third party"}]}
+        self.assertTrue(catalog.excluded("old/vendor/dependency/Cargo.toml", index))
+        self.assertFalse(catalog.excluded("old/first-party/Cargo.toml", index))
+
 
 if __name__ == "__main__":
     unittest.main()

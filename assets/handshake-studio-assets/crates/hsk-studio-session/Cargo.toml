@@ -1,0 +1,26 @@
+[package]
+name = "hsk-studio-session"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-chronicle = { path = "../hsk-studio-chronicle", version = "=0.1.0", default-features = false }
+hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "session-consumer"
+path = "examples/session-consumer.rs"

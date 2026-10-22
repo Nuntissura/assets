@@ -1,0 +1,24 @@
+[package]
+name = "hsk-studio-interop-psd"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
+
+[[example]]
+name = "interop-psd-consumer"
+path = "examples/interop-psd-consumer.rs"

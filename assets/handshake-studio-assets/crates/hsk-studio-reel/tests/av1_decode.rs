@@ -1,0 +1,490 @@
+//! AV1 decode (feature `av1`): the in-process rav1d decoder behind the ISOBMFF and Matroska providers,
+//! reached through the explicit trusted route (`VideoRoute::trusted()`).
+//!
+//! Fixture: `tests/fixtures/av1/av1-16x16-3f.{mp4,mkv}` (16x16 4:2:0 8-bit, 3 frames @24 fps, one GOP),
+//! authored once offline by `generate.sh` (ffmpeg is a generator only). The expected per-frame SHA-256 are
+//! the oracle: libdav1d's raw planar output recorded in `provenance.json`; the test cannot edit them.
+#![cfg(feature = "av1")]
+use hsk_studio_accord::{CancellationToken, Ticks};
+use hsk_studio_reel::av1::{decoder_version, parse_av1c};
+use hsk_studio_reel::*;
+use sha2::{Digest, Sha256};
+use std::io::Cursor;
+
+const MP4: &[u8] = include_bytes!("fixtures/av1/av1-16x16-3f.mp4");
+const MKV: &[u8] = include_bytes!("fixtures/av1/av1-16x16-3f.mkv");
+/// Raw yuv420p frame SHA-256 from `ffmpeg -c:v libdav1d ... -f framehash -hash sha256`.
+const ORACLE: [&str; 3] = [
+    "124247cf2dfe43d502cbcd58d1247c61b495507271ccdc9442b39b5dd8f82423",
+    "c7d6df9a67f2b718788ff80c36a4692f2916a0ccff393bf5bef02a92d872b099",
+    "8059c70336722e95b8b1514f79fa12772669a2c932f80b16afea4900d79ecf32",
+];
+const MS: u64 = 254_016_000; // Pulse ticks per millisecond
+/// Presentation times in ticks. MP4 keeps the exact 1/24 s grid; ffmpeg's Matroska muxer rounds frame
+/// times to whole milliseconds (0, 42, 83 ms), which the Matroska index reports exactly as stored.
+const PTS_MP4: [u64; 3] = [0, 10_584_000_000, 21_168_000_000];
+const PTS_MKV: [u64; 3] = [0, 42 * MS, 83 * MS];
+
+#[derive(Debug, Default)]
+struct Collect {
+    frames: Vec<(i64, bool, Vec<u8>)>,
+}
+
+impl ChunkSink for Collect {
+    fn accept(&mut self, c: Chunk<'_>) -> Result<(), ReelError> {
+        assert_eq!(c.kind, ChunkKind::VideoFrame);
+        assert!(!c.preroll);
+        self.frames.push((c.pts, c.sync, c.bytes.to_vec()));
+        Ok(())
+    }
+}
+
+fn request(provider_id: &str, bytes: &[u8], start: u64, count: u64) -> SegmentRequest {
+    SegmentRequest {
+        codec: provider_id.to_owned(),
+        start_pts: Ticks::new(start),
+        count,
+        track: None,
+        output: OutputMode::Decoded,
+        prefer: SourcePreference::Original,
+        purpose: Purpose::Preview,
+        grant: Grant {
+            content_id: ContentId::parse("av1-fixture").unwrap(),
+            revision: 1,
+            expected_len: bytes.len() as u64,
+        },
+        expected_revision: 1,
+    }
+}
+
+fn decode(
+    bytes: &[u8],
+    start: u64,
+    count: u64,
+    limits: &Limits,
+) -> Result<(SegmentReceipt, Collect), ReelError> {
+    let registry = Registry::standard();
+    let mut src = Cursor::new(bytes.to_vec());
+    let provider = registry.detect(&mut src)?;
+    let id = provider.descriptor().id;
+    let mut sink = Collect::default();
+    // The in-process decoder runs only for sources the caller explicitly marks trusted (these are the
+    // repository's own generated fixtures); the default route is covered by tests/video_route.rs.
+    let receipt = provider.decode_segment_routed(
+        &mut src,
+        &request(id, bytes, start, count),
+        limits,
+        &CancellationToken::default(),
+        &mut sink,
+        &VideoRoute::trusted(),
+    )?;
+    Ok((receipt, sink))
+}
+
+fn hash(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[test]
+fn av1_decodes_frames_with_layout_color_and_decoder_receipt_from_both_containers() {
+    for (name, bytes, pts) in [("mp4", MP4, PTS_MP4), ("mkv", MKV, PTS_MKV)] {
+        let (receipt, sink) = decode(bytes, 0, 3, &Limits::default()).unwrap();
+        assert_eq!(sink.frames.len(), 3, "{name}");
+        assert_eq!(receipt.actual.units, 3, "{name}");
+        assert!(receipt.complete, "{name}");
+        assert_eq!(receipt.disposition, Disposition::Exact, "{name}");
+        // Decoder id + version are on the receipt (STU deterministic-decode contract).
+        assert_eq!(receipt.decoder_id, "rav1d");
+        assert_eq!(receipt.decoder_version, decoder_version());
+        assert!(!decoder_version().is_empty());
+        let video = receipt.video.expect("video format on the receipt");
+        assert_eq!((video.width, video.height, video.bit_depth), (16, 16, 8));
+        assert_eq!(video.chroma, ChromaFormat::Yuv420);
+        assert_eq!(video.frame_bytes(), Some(384));
+        // Colour comes from the AV1 sequence header (BT.709 matrix, limited range), not guessed.
+        assert_eq!(video.color.origin, ColorOrigin::SequenceHeader, "{name}");
+        assert_eq!(video.color.matrix, 1, "{name}");
+        assert!(!video.color.full_range, "{name}");
+        for (k, (got, sync, planes)) in sink.frames.iter().enumerate() {
+            assert_eq!(*got as u64, pts[k], "{name} frame {k}");
+            assert_eq!(*sync, k == 0, "{name} frame {k}");
+            assert_eq!(planes.len(), 384, "{name} frame {k}");
+        }
+    }
+    // The capability is enumerable.
+    let d = hsk_studio_reel::av1::descriptor();
+    assert!(d.can_decode && d.bit_depths == [8, 10, 12]);
+}
+
+#[test]
+fn av1_output_is_bit_exact_against_dav1d_oracle_deterministic_and_seekable() {
+    let digests = |bytes: &[u8], start: u64, count: u64| -> Vec<String> {
+        decode(bytes, start, count, &Limits::default())
+            .unwrap()
+            .1
+            .frames
+            .iter()
+            .map(|(_, _, b)| hash(b))
+            .collect()
+    };
+    for (name, bytes, pts) in [("mp4", MP4, PTS_MP4), ("mkv", MKV, PTS_MKV)] {
+        // Every frame equals libdav1d's output, bit for bit, and a second decode is identical.
+        let first = digests(bytes, 0, 3);
+        assert_eq!(first, ORACLE, "{name}");
+        assert_eq!(digests(bytes, 0, 3), first, "{name} second decode");
+        // Random access: start on the last frame; the two earlier frames are decoded as pre-roll only.
+        let (receipt, sink) = decode(bytes, pts[2], 1, &Limits::default()).unwrap();
+        assert_eq!(sink.frames.len(), 1, "{name}");
+        assert_eq!(hash(&sink.frames[0].2), ORACLE[2], "{name}");
+        assert_eq!(receipt.actual.start_pts, Ticks::new(pts[2]), "{name}");
+        assert_eq!(receipt.actual.units, 1);
+    }
+}
+
+#[test]
+fn av1_refuses_unsupported_or_hostile_streams_with_typed_errors() {
+    // av1C record: unknown record version and a reserved profile are `Unsupported`, a missing marker
+    // bit is `Corrupt`; the same patched record is refused through the provider before any decode.
+    assert_eq!(
+        parse_av1c(&[0x82, 0x00, 0x00, 0x00]).unwrap_err(),
+        ReelError::Unsupported {
+            what: "av1c-version"
+        }
+    );
+    assert_eq!(
+        parse_av1c(&[0x01, 0x00, 0x00, 0x00]).unwrap_err(),
+        ReelError::Corrupt {
+            what: "av1c-marker"
+        }
+    );
+    let mut patched = MP4.to_vec();
+    let at = patched
+        .windows(4)
+        .position(|w| w == b"av1C")
+        .expect("fixture has an av1C box")
+        + 4;
+    assert_eq!(patched[at], 0x81, "marker + version 1");
+    patched[at + 1] = (patched[at + 1] & 0x1F) | (3 << 5);
+    let err = decode(&patched, 0, 1, &Limits::default()).unwrap_err();
+    assert_eq!(
+        err,
+        ReelError::Unsupported {
+            what: "av1-profile"
+        }
+    );
+    assert_eq!(err.code(), "MEDIA_UNSUPPORTED");
+    // A frame larger than the chunk limit is refused as a limit, never truncated.
+    let tiny = Limits {
+        max_chunk_bytes: 256,
+        ..Limits::default()
+    };
+    assert_eq!(
+        decode(MP4, 0, 1, &tiny).unwrap_err().code(),
+        "MEDIA_LIMIT_EXCEEDED"
+    );
+}
+
+const MP4_1080P: &[u8] = include_bytes!("fixtures/av1/av1-1920x1080-2f.mp4");
+/// Raw yuv420p frame SHA-256 of `av1-1920x1080-2f.mp4` from libdav1d (see `provenance.json`).
+const ORACLE_1080P: [&str; 2] = [
+    "deb0b61137e5d33deeffe5eda5125bfb860c9d86a1c7523e1b21b991b91cbd80",
+    "ff3ac0c64bc2772c846a2a7083b25fa57161a66cc25b4128ad2dc7c8459acf34",
+];
+
+/// R5 SMB-REEL-ENG-3 (av1/mod.rs:148-151): the pixel limit was `max_chunk_bytes / 6` (the 4:4:4 16-bit
+/// worst case), 1,398,101 px at default limits, so an ordinary 1920x1080 8-bit 4:2:0 stream (3,110,400
+/// bytes packed, well inside the 8 MiB chunk limit) was refused as `av1-frame-resources`. The limit now
+/// follows the stream's own `av1C` layout and bit depth; a limit that really cannot hold the frame still
+/// refuses it with the typed error.
+#[test]
+fn av1_1080p_decodes_at_default_limits_and_a_smaller_limit_still_refuses_it() {
+    let (receipt, sink) = decode(MP4_1080P, 0, 2, &Limits::default()).unwrap();
+    let video = receipt.video.expect("video format on the receipt");
+    assert_eq!(
+        (video.width, video.height, video.bit_depth),
+        (1920, 1080, 8)
+    );
+    assert_eq!(video.chroma, ChromaFormat::Yuv420);
+    assert_eq!(video.frame_bytes(), Some(3_110_400));
+    assert!(receipt.complete && receipt.actual.units == 2);
+    let digests: Vec<String> = sink.frames.iter().map(|(_, _, b)| hash(b)).collect();
+    assert_eq!(digests, ORACLE_1080P);
+
+    // 2 MiB holds 1,398,101 px of 4:2:0 8-bit: smaller than 1080p, so the decoder refuses it up front.
+    let small = Limits {
+        max_chunk_bytes: 2 * 1024 * 1024,
+        ..Limits::default()
+    };
+    assert_eq!(
+        decode(MP4_1080P, 0, 1, &small).unwrap_err(),
+        ReelError::LimitExceeded {
+            what: "av1-frame-resources"
+        }
+    );
+}
+
+/// `bytes` with the one occurrence of `pattern` replaced (same length); the pattern must be unique, so a
+/// fixture that changes cannot make the patch silently miss.
+fn patched(bytes: &[u8], pattern: &[u8], replacement: &[u8]) -> Vec<u8> {
+    assert_eq!(pattern.len(), replacement.len());
+    let hits: Vec<usize> = bytes
+        .windows(pattern.len())
+        .enumerate()
+        .filter(|(_, w)| *w == pattern)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(hits.len(), 1, "pattern {pattern:02x?} must occur once");
+    let mut out = bytes.to_vec();
+    out[hits[0]..hits[0] + pattern.len()].copy_from_slice(replacement);
+    out
+}
+
+/// The 16x16 fixtures with the size the CONTAINER declares changed (the bitstream still holds 16x16):
+/// the `av01` sample entry width/height, or the Matroska PixelWidth/PixelHeight elements.
+fn declared(container: &str, width: u8, height: u8) -> Vec<u8> {
+    if container == ISOBMFF_PROVIDER_ID {
+        let entry = |w: u8, h: u8| {
+            [
+                b"av01".as_slice(),
+                &[0; 6],
+                &[0, 1],
+                &[0; 16],
+                &[0, w, 0, h],
+            ]
+            .concat()
+        };
+        patched(MP4, &entry(16, 16), &entry(width, height))
+    } else {
+        patched(
+            MKV,
+            &[0xB0, 0x81, 16, 0xBA, 0x81, 16],
+            &[0xB0, 0x81, width, 0xBA, 0x81, height],
+        )
+    }
+}
+
+/// PLR-056: the oversize-picture refusal (`within_declared_size`, PLR-032) on the TRUSTED in-process
+/// rav1d path, with the container declaring less than the bitstream holds. The route's other test of this
+/// rule drives a fake external decoder (`tests/video_route.rs`); here the picture comes from the real
+/// decoder. A picture above the declared size on either side is `DecoderFault::Protocol` and nothing
+/// reaches the sink; the declared size is the sequence maximum, so a larger declared size (or an
+/// undeclared side, 0) decodes bit-exactly as before.
+#[test]
+fn oversize_picture_on_the_trusted_rav1d_path_is_refused() {
+    let trusted = |bytes: &[u8]| {
+        let registry = Registry::standard();
+        let mut src = Cursor::new(bytes.to_vec());
+        let id = registry.detect(&mut src).unwrap().descriptor().id;
+        let mut sink = Collect::default();
+        let result = registry.resolve_id(id).unwrap().decode_segment_routed(
+            &mut src,
+            &request(id, bytes, 0, 3),
+            &Limits::default(),
+            &CancellationToken::default(),
+            &mut sink,
+            &VideoRoute::trusted(),
+        );
+        (result, sink)
+    };
+    let protocol = ReelError::DecoderFault {
+        fault: DecoderFault::Protocol,
+    };
+    for (name, container) in [("mp4", ISOBMFF_PROVIDER_ID), ("mkv", MATROSKA_PROVIDER_ID)] {
+        // Control: the fixture as written (16x16 declared, 16x16 decoded) decodes through rav1d.
+        let (result, sink) = trusted(&declared(container, 16, 16));
+        let receipt = result.unwrap_or_else(|e| panic!("{name} control: {e}"));
+        assert_eq!(receipt.decoder_id, "rav1d", "{name}");
+        assert_eq!(sink.frames.len(), 3, "{name}");
+
+        // Declared smaller than the 16x16 the stream holds, on either side or both: refused.
+        for (w, h) in [(15, 16), (16, 15), (8, 8), (1, 1)] {
+            let (result, sink) = trusted(&declared(container, w, h));
+            assert_eq!(result.unwrap_err(), protocol, "{name} declared {w}x{h}");
+            assert!(
+                sink.frames.is_empty(),
+                "{name} declared {w}x{h}: nothing is delivered"
+            );
+        }
+
+        // Declared larger (the sequence maximum): legal, and the pictures are the oracle's.
+        for (w, h) in [(17, 16), (32, 32), (255, 255)] {
+            let (result, sink) = trusted(&declared(container, w, h));
+            let receipt = result.unwrap_or_else(|e| panic!("{name} declared {w}x{h}: {e}"));
+            assert_eq!(receipt.video.map(|v| (v.width, v.height)), Some((16, 16)));
+            let digests: Vec<String> = sink.frames.iter().map(|(_, _, b)| hash(b)).collect();
+            assert_eq!(digests, ORACLE, "{name} declared {w}x{h}");
+        }
+    }
+    // An undeclared side (0) is not checked; the declared side still is. (MP4 only: Matroska has no
+    // zero-size video track.)
+    let (result, sink) = trusted(&declared(ISOBMFF_PROVIDER_ID, 0, 16));
+    result.unwrap();
+    assert_eq!(sink.frames.len(), 3);
+    let (result, sink) = trusted(&declared(ISOBMFF_PROVIDER_ID, 0, 15));
+    assert_eq!(result.unwrap_err(), protocol);
+    assert!(sink.frames.is_empty());
+}
+
+// ---- R10 (PLR-062): Export through the in-process rav1d arm ---------------------------------------------
+
+fn export_request(provider_id: &str, bytes: &[u8], start: u64, count: u64) -> SegmentRequest {
+    SegmentRequest {
+        purpose: Purpose::Export,
+        ..request(provider_id, bytes, start, count)
+    }
+}
+
+/// Export through the TRUSTED in-process rav1d arm, which no test drove before (PLR-062): an export at a
+/// whole-frame start decodes bit-exactly, complete and `Exact`, from the first frame and from a later one
+/// (pre-roll decoded from the sync sample); a start inside a frame is `NotExact` with the frame start as
+/// `nearest`; a range that runs past the end is `OutOfRange`; and a shortfall can not reach the sink.
+#[test]
+fn export_through_the_trusted_rav1d_arm_is_exact_or_it_fails() {
+    let export = |bytes: &[u8], start: u64, count: u64| {
+        let registry = Registry::standard();
+        let mut src = Cursor::new(bytes.to_vec());
+        let id = registry.detect(&mut src).unwrap().descriptor().id;
+        let mut sink = Collect::default();
+        let result = registry.resolve_id(id).unwrap().decode_segment_routed(
+            &mut src,
+            &export_request(id, bytes, start, count),
+            &Limits::default(),
+            &CancellationToken::default(),
+            &mut sink,
+            &VideoRoute::trusted(),
+        );
+        (result, sink)
+    };
+    for (name, bytes, pts) in [("mp4", MP4, PTS_MP4), ("mkv", MKV, PTS_MKV)] {
+        // The whole clip, and the last two frames (frame 0 is decoded as pre-roll only).
+        for (first, count) in [(0usize, 3u64), (1, 2)] {
+            let (result, sink) = export(bytes, pts[first], count);
+            let receipt = result.unwrap_or_else(|e| panic!("{name} export from {first}: {e}"));
+            assert_eq!(receipt.decoder_id, "rav1d", "{name}");
+            assert_eq!(receipt.disposition, Disposition::Exact, "{name} {first}");
+            assert!(receipt.complete, "{name} {first}");
+            assert_eq!(receipt.actual.units, count, "{name} {first}");
+            let digests: Vec<String> = sink.frames.iter().map(|(_, _, b)| hash(b)).collect();
+            assert_eq!(
+                digests,
+                ORACLE[first..].to_vec(),
+                "{name} export from {first}"
+            );
+        }
+
+        // A start inside frame 1: refused with the frame start as `nearest`; nothing reaches the sink.
+        let inside = pts[1] + 1;
+        let (result, sink) = export(bytes, inside, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            ReelError::NotExact {
+                requested: Ticks::new(inside),
+                nearest: Ticks::new(pts[1]),
+            },
+            "{name}"
+        );
+        assert!(sink.frames.is_empty(), "{name}");
+
+        // A count that runs past the end, from the first and from the last frame.
+        for (start, count) in [(pts[0], 4), (pts[2], 2)] {
+            let (result, sink) = export(bytes, start, count);
+            assert!(
+                matches!(result, Err(ReelError::OutOfRange { .. })),
+                "{name} {start}+{count}: {result:?}"
+            );
+            assert!(sink.frames.is_empty(), "{name} {start}+{count}");
+        }
+    }
+}
+
+/// PLR-062 on the in-process arm: the range refusals come BEFORE the session is opened. Opening the
+/// in-process session feeds the `av1C` configuration OBUs to rav1d, so a record whose sequence-header OBU
+/// claims more payload than it holds (size 127, 13 bytes present; `parse_av1c` only splits the record and
+/// accepts it) makes the open fail. An export that reports its own range error from such a file never
+/// reached the open; a valid export of the same file does, and fails with the open error.
+#[test]
+fn export_range_is_refused_before_the_in_process_session_opens() {
+    let unopenable = |container: &str| {
+        // `av1C` record `81 00 0c 00` then OBU header 0x0a and size 0x0d: the size becomes 0x7f.
+        let record = [0x81, 0x00, 0x0c, 0x00, 0x0a];
+        let source = if container == ISOBMFF_PROVIDER_ID {
+            MP4
+        } else {
+            MKV
+        };
+        patched(
+            source,
+            &[record.as_slice(), &[0x0d]].concat(),
+            &[record.as_slice(), &[0x7f]].concat(),
+        )
+    };
+    for (name, container, pts) in [
+        ("mp4", ISOBMFF_PROVIDER_ID, PTS_MP4),
+        ("mkv", MATROSKA_PROVIDER_ID, PTS_MKV),
+    ] {
+        let bytes = unopenable(container);
+        let export = |start: u64, count: u64| {
+            decode_with_purpose(&bytes, start, count, &Limits::default(), Purpose::Export)
+                .map(|_| ())
+        };
+        // Control: a valid export reaches the open, and the open is what fails.
+        let opened = export(pts[0], 3).unwrap_err();
+        assert!(
+            !matches!(
+                opened,
+                ReelError::NotExact { .. }
+                    | ReelError::OutOfRange { .. }
+                    | ReelError::Incomplete { .. }
+            ),
+            "{name}: the control must fail at the session open, got {opened:?}"
+        );
+        // A start inside frame 1, and counts that run past the end from the first and the last frame:
+        // each reports its own refusal, not the open error.
+        assert_eq!(
+            export(pts[1] + 1, 1).unwrap_err(),
+            ReelError::NotExact {
+                requested: Ticks::new(pts[1] + 1),
+                nearest: Ticks::new(pts[1]),
+            },
+            "{name}"
+        );
+        for (start, count) in [(pts[0], 4), (pts[2], 2)] {
+            assert!(
+                matches!(export(start, count), Err(ReelError::OutOfRange { .. })),
+                "{name} {start}+{count}: {:?}",
+                export(start, count)
+            );
+        }
+        // A preview keeps its order: the session opens first, so the open error comes first.
+        let preview = decode_with_purpose(&bytes, pts[0], 4, &Limits::default(), Purpose::Preview);
+        assert_eq!(
+            preview.unwrap_err(),
+            opened,
+            "{name}: preview order unchanged"
+        );
+    }
+}
+
+fn decode_with_purpose(
+    bytes: &[u8],
+    start: u64,
+    count: u64,
+    limits: &Limits,
+    purpose: Purpose,
+) -> Result<(SegmentReceipt, Collect), ReelError> {
+    let registry = Registry::standard();
+    let mut src = Cursor::new(bytes.to_vec());
+    let id = registry.detect(&mut src)?.descriptor().id;
+    let mut sink = Collect::default();
+    let mut req = request(id, bytes, start, count);
+    req.purpose = purpose;
+    let receipt = registry.resolve_id(id).unwrap().decode_segment_routed(
+        &mut src,
+        &req,
+        limits,
+        &CancellationToken::default(),
+        &mut sink,
+        &VideoRoute::trusted(),
+    )?;
+    Ok((receipt, sink))
+}

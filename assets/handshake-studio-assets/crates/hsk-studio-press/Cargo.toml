@@ -1,0 +1,25 @@
+[package]
+name = "hsk-studio-press"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-press-read = { path = "../hsk-studio-press-read", version = "=0.1.0", default-features = false }
+hsk-studio-press-write = { path = "../hsk-studio-press-write", version = "=0.1.0", default-features = false }
+
+[dev-dependencies]
+hayro-interpret = { version = "=0.7.0", default-features = false, features = ["embed-fonts"] }
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "press-consumer"
+path = "examples/press-consumer.rs"

@@ -1,0 +1,2 @@
+# veraPDF reports are kept byte-identical to the artifact copies (their sha256 is cited).
+*.xml -text

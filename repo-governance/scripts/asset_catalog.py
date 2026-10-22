@@ -17,6 +17,7 @@ INDEX = "assets-index.yaml"
 SKILL = "repo-governance/skills/create-assets"
 MANIFESTS = {"Cargo.toml", "package.json", "pyproject.toml"}
 SKIP = {".git", ".local", "target", "node_modules", "__pycache__"}
+INSTALL_STATE = ".asset-installation.json"
 
 
 def git(root, *args):
@@ -118,6 +119,10 @@ class Tree:
 
 
 def excluded(path, index):
+    for previous, current in index.get("legacy_root_paths", {}).items():
+        if path == previous or path.startswith(previous + "/"):
+            path = current + path[len(previous):]
+            break
     return any(part in SKIP for part in PurePosixPath(path).parts) or any(
         path == item["path"] or path.startswith(item["path"].rstrip("/") + "/")
         for item in index.get("exclusions", []))
@@ -185,6 +190,9 @@ def check(root, index=None, tree=None):
                 if not entry.get(key):
                     errors.append(f"{entry.get('id')}: missing {key}")
             relative(entry["path"])
+            asset_root = index.get("repository", {}).get("asset_root")
+            if asset_root and not entry["path"].startswith(asset_root + "/"):
+                errors.append(f"{entry['id']}: asset is outside the assets parent folder")
             if entry["id"] in seen_ids:
                 errors.append(f"duplicate ID {entry['id']}")
             if entry["path"] in seen_paths:
@@ -241,7 +249,7 @@ def check(root, index=None, tree=None):
 def skill_files(root):
     folder = root / SKILL
     return {p.relative_to(folder).as_posix(): p.read_bytes() for p in folder.rglob("*")
-            if p.is_file() and "__pycache__" not in p.parts}
+            if p.is_file() and "__pycache__" not in p.parts and p.name != INSTALL_STATE}
 
 
 def install(root, destination):
@@ -303,7 +311,8 @@ def parity(root, skill_dirs):
             continue
         candidate_tree = Tree(root, candidate)
         for path in packages(candidate_tree, index):
-            if path not in known:
+            relocated = index.get("legacy_source_paths", {}).get(path, path)
+            if relocated not in known:
                 finding("UNINDEXED_ORIGIN_PACKAGE", candidate, path)
     for entry in index["assets"]:
         entry_branch = entry.get("source_branch", branch)
@@ -323,7 +332,7 @@ def parity(root, skill_dirs):
                 finding("SKILL_DRIFT", path, "installed or mirrored copy differs from repository skill")
         if directory.is_dir():
             for path in directory.rglob("*"):
-                if path.is_file() and "__pycache__" not in path.parts:
+                if path.is_file() and "__pycache__" not in path.parts and path.name != INSTALL_STATE:
                     name = path.relative_to(directory).as_posix()
                     if name not in expected_files:
                         finding("SKILL_EXTRA_FILE", path, "not present in the repository-owned skill")

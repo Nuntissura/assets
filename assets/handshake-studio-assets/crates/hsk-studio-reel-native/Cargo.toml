@@ -1,0 +1,64 @@
+[package]
+name = "hsk-studio-reel-native"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+av1 = ["dep:hsk-studio-accord", "dep:hsk-studio-reel", "dep:hsk-studio-worker"]
+av1-worker = ["av1", "hsk-studio-reel/av1"]
+mf = ["dep:hsk-studio-accord", "dep:hsk-studio-reel", "dep:hsk-studio-worker"]
+mf-worker = ["mf", "dep:windows"]
+# H.264 / HEVC ENCODE only through the OS encoder MFT in the isolated worker (Operator decision D24-A, lane
+# SMB-D24A-CODEC-DEFAULTS); default off. Host: WorkerMfEncoder; worker: --encode=h264|hevc modes.
+os-encode = ["mf"]
+test-faults = []
+# Studio's own AAC-LC decoder in reel, as this crate's own feature so a validator round can run the
+# tests/mf_aac.rs cross-check (rounds take a crate's own feature names; lead request, lane
+# SMB-PR-SOURCE-MONITOR). Default off.
+studio-aac = ["hsk-studio-reel/studio-aac"]
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-worker = { path = "../hsk-studio-worker", version = "=0.1.0", default-features = false, optional = true }
+windows = { version = "=0.62.2", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_System_Com"], optional = true }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "reel-native-av1-worker"
+path = "src/bin/reel-native-av1-worker.rs"
+required-features = ["av1-worker"]
+
+[[bin]]
+name = "reel-native-mf-worker"
+path = "src/bin/reel-native-mf-worker.rs"
+required-features = ["mf-worker"]
+
+[[test]]
+name = "mf_worker"
+path = "tests/mf_worker.rs"
+required-features = ["mf-worker", "test-faults"]
+
+[[test]]
+name = "av1_worker"
+path = "tests/av1_worker.rs"
+required-features = ["av1-worker", "test-faults"]
+
+[[test]]
+name = "worker_fault_env"
+path = "tests/worker_fault_env.rs"
+required-features = ["av1-worker"]
+
+[[test]]
+name = "mf_aac"
+path = "tests/mf_aac.rs"
+required-features = ["mf-worker", "test-faults"]
+
+[[test]]
+name = "mf_encode"
+path = "tests/mf_encode.rs"
+required-features = ["mf-worker", "test-faults", "os-encode"]

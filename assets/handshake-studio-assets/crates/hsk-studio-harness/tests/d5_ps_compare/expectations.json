@@ -1,0 +1,202 @@
+{
+ "schema": "hsk.studio.d5-ps-expectations@1",
+ "note": "Every MISMATCH / NOT_SUPPORTED outcome of tests/d5_ps_compare.rs must match an entry (case + variant glob, first match wins) with the same verdict, or the test fails. Classes: studio_bug, formula, formula_edge, formula_fill, rounding_8bit, geometry, unsupported_feature, spec_refusal. Evidence: research/d5-photoshop-compare-20261016.json (governance kernel). Since SMB-PS-ORACLE-PARITY-1 every MISMATCH is listed by its exact variant name: a variant without an entry must MATCH (or be NOT_SUPPORTED by an entry), so a regression of a fixed variant fails the suite. SMB-PS-ORACLE-PARITY-2 removed the 149 entries its rules fixed (grow for spread/choke/stroke, stroke placement, outer-glow knockout, unit fade, Blend-If gray weights, pass-through opacity, 8-bit working depth, 8-bit linear-light fill source): 340 -> 489 MATCH.",
+ "entries": [
+  {
+   "case": "PS-C02",
+   "variant": "16bit_comp_and_red",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "Levels gamma 1.5: the slope-limited toe (SMB-PS-ORACLE-PARITY-1, adjust_math::levels_gamma: Hermite from slope 2^g at 0 to the power at 2^g / 32, exact for gamma 2) leaves up to 2 8-bit codes on one ramp step (16-bit: 0.09 code, Photoshop's own LUT quantisation alternates by about 6 steps of the 15-bit scale in the power region); the toe constants for gamma 1.5 are not pinned by the two oracle gammas, follow-up FP-LEVELS-GAMMA-TOE (gamma sweep)"
+  },
+  {
+   "case": "PS-C04",
+   "variant": "sat+50",
+   "verdict": "MISMATCH",
+   "class": "rounding_8bit",
+   "reason": "hue/saturation +50: up to 2 codes on 444 of 14739 samples (saturation stretch near full saturation); the psd-tools master formula matches every other variant within 1 code"
+  },
+  {
+   "case": "PS-C06",
+   "variant": "8bit_ev+1_only",
+   "verdict": "MISMATCH",
+   "class": "rounding_8bit",
+   "reason": "8-bit exposure +1 EV: up to 2 codes on the darkest inputs (192 samples); the x^2.2 linearisation stand-in matches the other 8-bit variants exactly and the 32-bit variants match within 1.2e-7"
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_o100_f100_VIVIDLIGHT",
+   "verdict": "MISMATCH",
+   "class": "rounding_8bit",
+   "reason": "8-bit vivid light: up to 2 codes on the burn half (source < 0.5) from Photoshop's 8-bit integer arithmetic; the 16-bit grid matches (after FIX-VIVID-ENDPOINTS, which removed the 255-code end-point errors at source 0 and 1)"
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_o50_f100_VIVIDLIGHT",
+   "verdict": "MISMATCH",
+   "class": "rounding_8bit",
+   "reason": "8-bit vivid light: up to 2 codes on the burn half (source < 0.5) from Photoshop's 8-bit integer arithmetic; the 16-bit grid matches (after FIX-VIVID-ENDPOINTS, which removed the 255-code end-point errors at source 0 and 1)"
+  },
+  {
+   "case": "PS-L01",
+   "variant": "lab16_to_swop_relcol",
+   "verdict": "MISMATCH",
+   "class": "colour_engine",
+   "reason": "Lab -> U.S. Web Coated (SWOP) v2 with BPC through Prism (moxcms) vs Photoshop ACE, using the profile Photoshop embedded in its output: ink differs by up to 6.5 (relative colorimetric) / 4.8 (perceptual) 8-bit codes, mean 0.5, on 1110/1147 of 2048 samples; the CLUT interpolation and the BPC implementation differ from ACE. Follow-up FP-CMS-ACE-PARITY"
+  },
+  {
+   "case": "PS-L01",
+   "variant": "lab16_to_swop_perceptual",
+   "verdict": "MISMATCH",
+   "class": "colour_engine",
+   "reason": "Lab -> U.S. Web Coated (SWOP) v2 with BPC through Prism (moxcms) vs Photoshop ACE, using the profile Photoshop embedded in its output: ink differs by up to 6.5 (relative colorimetric) / 4.8 (perceptual) 8-bit codes, mean 0.5, on 1110/1147 of 2048 samples; the CLUT interpolation and the BPC implementation differ from ACE. Follow-up FP-CMS-ACE-PARITY"
+  },
+  {
+   "case": "PS-C13",
+   "variant": "circle_outside_s50",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "outside stroke 50 px on the 96-gon circle: up to 3 codes on 144 rim samples near the canvas top (distance about 50 px). SMB-PS-ORACLE-PARITY-2 identified Photoshop's grow as a 5 x 5 chamfer distance with the anti-aliased alpha as a sub-pixel edge (effect_math::grow_distance / grow_coverage; every other PS-C12/C13/C15/C16 spread, choke and stroke variant matches); the fitted weights GROW_WEIGHTS are pinned by the 40 px spread corners, and at 50 px Photoshop's grown edge lies about 0.01 px closer than the fit (the exact sqrt 2 / sqrt 5 weights miss the other way, 2 codes): the weight rule beyond 40 px is UNVERIFIED (needs a spread/stroke sweep at sizes 20/50/100)"
+  },
+  {
+   "case": "PS-C20",
+   "variant": "clipped_no_blendif",
+   "verdict": "MISMATCH",
+   "class": "geometry",
+   "reason": "the clip base is a 96-gon circle filled through an anti-aliased Photoshop selection; the suite rasterises it with 16x16 supersampling, so 576 samples on the circle rim differ (up to 27 codes); the interior (clip rule, base alpha) matches"
+  },
+  {
+   "case": "PS-C05",
+   "variant": "modern_*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "modern (non-legacy) brightness/contrast is refused by pigment adjust_math (no published transfer); the oracle now has 4 ramp outputs for it, follow-up FP-BC-MODERN"
+  },
+  {
+   "case": "PS-C18",
+   "variant": "blendif_*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Blend-If on a clip base is refused by pigment admission (blend_if_clip_base, no public definition); the oracle now defines it: with Blend Clipped Layers as Group off the result equals the run without Blend-If (byte-identical outputs), follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C19",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Underlying Blend-If on a clip base: refused (blend_if_clip_base); oracle outputs for Blend Clipped Layers as Group on and off are identical, follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C20",
+   "variant": "clipped_this_gray",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Blend-If on a clipped layer: refused (blend_if_clipped_layer); oracle output available, follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C21",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Underlying Blend-If on a clipped layer: refused (blend_if_clipped_layer); oracle outputs with and without a bright layer below the base are identical, follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C22",
+   "variant": "clipped_invert_this_gray",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Blend-If on a clipped adjustment layer: refused (blend_if_clipped_layer), follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C28",
+   "variant": "mask*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "a mask on a pass-through group is refused for every backend (mask_on_pass_through); oracle outputs for mask / density 50 / opacity 50 exist, follow-up FP-PASS-THROUGH-MASK-OPACITY"
+  },
+  {
+   "case": "PS-C29",
+   "variant": "fill50",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "pass-through group fill below 1 is refused (group_pass_through_fill_opacity); oracle output exists, follow-up FP-PASS-THROUGH-MASK-OPACITY"
+  },
+  {
+   "case": "PS-C14",
+   "variant": "blendInterior_on",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "Blend Interior Effects as Group: no envelope field, follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C14",
+   "variant": "mask_hides_effects_on",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "Layer Mask Hides Effects: no envelope field, follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C16",
+   "variant": "*_precise",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "Precise glow technique is refused (glow_technique_precise); Photoshop's precise output equals softer at spread 100, follow-up FP-GLOW-PRECISE-RANGE"
+  },
+  {
+   "case": "PS-C16",
+   "variant": "*_range50",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "glow range below 100 % is refused (glow_range), follow-up FP-GLOW-PRECISE-RANGE"
+  },
+  {
+   "case": "PS-C16",
+   "variant": "*_range25",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "glow range below 100 % is refused (glow_range), follow-up FP-GLOW-PRECISE-RANGE"
+  },
+  {
+   "case": "PS-C16",
+   "variant": "*_jitter50",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "glow jitter is refused (glow_jitter); Photoshop's output with jitter 50 on a solid-colour glow is byte-identical to jitter 0, so Studio could admit jitter for a colour fill (follow-up FP-GLOW-PRECISE-RANGE)"
+  },
+  {
+   "case": "PS-C17",
+   "variant": "*_precise",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "Precise inner glow is refused (glow_technique_precise); the oracle cannot judge it (see below)"
+  },
+  {
+   "case": "PS-C24",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "effects together with Blend-If are refused (effects_with_blend_if) or need Transparency Shapes Layer off (no field); oracle outputs exist (the this-gray, fill-0 and transparency-shapes-off variants are byte-identical), follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C25",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "effects together with Underlying Blend-If are refused (effects_with_blend_if); follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C26",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Blend-If with effects (effects_with_blend_if) or Blend Interior Effects as Group (no field); follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C27",
+   "variant": "both",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "a group with a drop shadow holding a layer with a drop shadow is refused by render-cpu (effects_nested declared Unsupported); follow-up FP-STYLE-SWITCHES"
+  }
+ ]
+}

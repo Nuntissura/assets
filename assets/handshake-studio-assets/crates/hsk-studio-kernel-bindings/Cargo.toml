@@ -1,0 +1,29 @@
+[package]
+name = "hsk-studio-kernel-bindings"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+# V4-04: fault-injection hooks (Fault, TransientHost::plan_fault); not part of a default build.
+test-faults = []
+# SMB-CKC-PORTS: in-memory CKC port double for tests of import mappings; never in a default build.
+ckc-test-double = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-session = { path = "../hsk-studio-session", version = "=0.1.0", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "kernel-bindings-consumer"
+path = "examples/kernel-bindings-consumer.rs"

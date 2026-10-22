@@ -1,0 +1,29 @@
+[package]
+name = "hsk-studio-score-plugin"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+clap = ["dep:clack-host"]
+test-faults = []
+
+[dependencies]
+clack-host = { version = "=0.2.0", default-features = false, features = ["libloading"], optional = true }
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false }
+hsk-studio-worker = { path = "../hsk-studio-worker", version = "=0.1.0", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "score-plugin-worker"
+path = "src/bin/score-plugin-worker.rs"
+
+[[example]]
+name = "score-plugin-consumer"
+path = "examples/score-plugin-consumer.rs"

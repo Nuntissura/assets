@@ -1,0 +1,51 @@
+# Frozen duplicate capabilities (workflow V4-05, CX-CAP-001): tools/run-round.sh step 0 scans crates/*/src/** (product
+# code; tests and examples are not scanned) with every pattern below (Python regex, matched per line) and fails the round
+# fast (exit 71) when a file outside `allowed` matches: a new copy of a frozen capability. `allowed` entries are path
+# prefixes relative to the workspace root (here exact files: the known sites as of 2026-10-11; D18 sites set by the lead).
+# Changing `allowed` is a lead decision (owner moves, consolidation, D16/D18 rulings); workspace steward edits this file.
+schema = "hsk.studio.duplicate-fingerprints@1"
+
+[[fingerprint]]
+id = "D16"
+title = "bounded ZIP container parsing (local/central/EOCD/ZIP64 signatures) and CRC-32 table generation"
+owner = "hsk-studio-package (D16 option (a), 2026-10-14: bounded non-canonical ZIP reader bounded_zip.rs, canonical zip.rs, the single CRC-32)"
+patterns = [
+  '(?i)0xedb8_?8320',
+  '(?i)\b0x0?(?:4034b50|2014b50|6054b50|6064b50|7064b50|8074b50)\b',
+  '(?i)\b0x0(?:403|201|605|606|706|807)_4b50\b',
+  'PK\\x0[1-8]',
+  '\[\s*0x50\s*,\s*0x4[bB]\s*,\s*0x0[1-8]',
+]
+# interop-fig container.rs: ZIP magic sniff for format detection only, no reader (reads via package read_zip).
+# interop-layout container.rs: IDML writer; CRC via package; ZIP-writer consolidation is a separate candidate, not D16
+#   reader scope (reads via package ZipDirectory).
+allowed = [
+  "crates/hsk-studio-package/src/",
+  "crates/hsk-studio-interop-fig/src/container.rs",
+  "crates/hsk-studio-interop-layout/src/container.rs",
+]
+
+[[fingerprint]]
+id = "D18"
+title = "worker process supervision (spawn, creation flags, kill/respawn)"
+owner = "hsk-studio-worker (D18 option (a), 2026-10-14); consumer copies removed by SMB-WORKER-CRATE"
+patterns = [
+  '\bCommand::new\s*\(',
+  '\.creation_flags\s*\(',
+]
+allowed = [
+  "crates/hsk-studio-worker/src/",
+]
+
+[[fingerprint]]
+id = "TIMECODE"
+title = "timecode label arithmetic (frames/ticks <-> timecode, drop-frame), owned by hsk-studio-pulse"
+owner = "hsk-studio-pulse; interop-media copy frozen pending Operator decision D9"
+patterns = [
+  '\bfn\s+(?:frames_to_timecode|timecode_to_frames|ticks_to_timecode|timecode_to_ticks|parse_timecode|format_timecode)\b',
+  '(?i)\bfn\s+\w*drop_?frame\w*\s*[<(]',
+]
+allowed = [
+  "crates/hsk-studio-pulse/src/time.rs",
+  "crates/hsk-studio-interop-media/src/time.rs",
+]

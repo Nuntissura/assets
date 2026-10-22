@@ -1,0 +1,26 @@
+{
+  "fixture_set": "prores",
+  "purpose": "ProRes decode oracle for tests/prores_decode.rs (feature prores)",
+  "generator_tool": "ffmpeg 8.1.1-full_build-www.gyan.dev (ffmpeg.exe sha256 09948d4cdd0650da6ff5a87577469f2a218dc2615ae379f8f734d24c49de0f73), encoder prores_ks with -fflags +bitexact -flags:v +bitexact -vendor apl0; external decoder used as black-box oracle only",
+  "source_content": "synthetic ffmpeg lavfi color+geq pattern, 40x24, 25 fps, 4 frames; no third-party media, no personal data",
+  "commands": {
+    "422 fixtures": "authored by the lane researcher, exact command lines in builders/briefs/lane-reel-eng-2.md topic tests (G422 expression; -profile:v 3 / 0 -mbs_per_slice 1 / 1 setfield tff +ildct / 2 setfield bff +ildct)",
+    "4444 fixture and sources": "generate-prores.sh (this directory)",
+    "references": "ffmpeg -i FILE.mov -f rawvideo FILE.ref.yuv (native output: yuv422p10le for 4:2:2, yuv444p12le for 4444)"
+  },
+  "observed": "sample entries apch, apco, apcs, apcn, ap4h; HQ frame sizes 986 994 987 998; frame_header_size 148; 4444 written as bitstream version 1",
+  "files_sha256": {
+    "prores-422hq-40x24-p.mov": "f2404325141539ae35bac5795a07275dbf355a7f17953e205ce3cf7108793e75",
+    "prores-422hq-40x24-p.ref.yuv": "33e15d07ce877f21f4b99c86d9dda72ac34acf732b10090f8ae4e5addfeb8fe7",
+    "prores-422lt-40x24-tff.mov": "657be21dbc17633c4c8ff30bf0f2ff60525934f5e8f69eaa755c18ea8bf480ac",
+    "prores-422lt-40x24-tff.ref.yuv": "2536b00212472679aaf96ed32e8568d2683d27046a65132d4b94147d85788718",
+    "prores-422proxy-40x24-mbs1.mov": "26ce094602ee7dade16a49ce7fa8ddeb4438be8ddbddd4a1a56f806a40594df1",
+    "prores-422proxy-40x24-mbs1.ref.yuv": "2d27f0db675b6c49b5dba61ebd36f1614816ef7f1d180be7b1e3d176e18819ac",
+    "prores-422std-40x24-bff.mov": "08577df402babe2902a714d83658f93e996ddfde4a71ea5b1ac5a13a7e920382",
+    "prores-422std-40x24-bff.ref.yuv": "4810bac28bccda46170e2deb5e08b3181d52740682e8f48605c1f8920d1ee6c6",
+    "prores-4444-40x24.mov": "f93cc7d1ab8b8d0b60a816d8d7c4db35605dff04cdce9be5ee3e5fa9ef92f342",
+    "prores-4444-40x24.ref.yuv": "7c5124c5a6a648d698c1476830b876c1658332eed4e3ff0c36d0a11bb0ddddac",
+    "source-422-10bit-40x24.yuv": "ab87b3d19c30ceed1258b12d1cba47b80f74085e4ddb76890e3241f8f2ce64ac",
+    "source-444-10bit-40x24.yuv": "da6322d579252747542668521c6ab98e2e12f071b81293beea6c2d4812553963"
+  }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "hsk-studio-accord"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+
+[features]
+default = []
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "accord-consumer"
+path = "examples/accord-consumer.rs"

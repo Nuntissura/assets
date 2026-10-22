@@ -1,0 +1,36 @@
+[package]
+name = "hsk-studio-interop-fig"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-components = { path = "../hsk-studio-components", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false }
+hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-press = { path = "../hsk-studio-press", version = "=0.1.0", default-features = false }
+hsk-studio-interop-raster = { path = "../hsk-studio-interop-raster", version = "=0.1.0", default-features = false }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false }
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
+ruzstd = { version = "=0.9.0", default-features = false, features = ["std"] }
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "interop-fig-consumer"
+path = "examples/interop-fig-consumer.rs"
+
+[dev-dependencies]
+hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false }
+hsk-studio-render-cpu = { path = "../hsk-studio-render-cpu", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }

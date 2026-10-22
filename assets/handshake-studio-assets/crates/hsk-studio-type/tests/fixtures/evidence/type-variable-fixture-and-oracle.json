@@ -1,0 +1,33 @@
+{
+  "google_fonts_commit": "0b58fb370093f9a9f4ff785d94405710b79de67c",
+  "upstream_commit": "66647c0bbbe41a850d79d9c76fb13add3378940f",
+  "release_archive": "https://github.com/rsms/inter/files/15438431/Inter-4.1-GoogleFonts.zip",
+  "version": "Inter4.1 archive, font4.001 per pinned upstream_info",
+  "archive_sha256": "925d1022e7dad4eae6dc3fe92aaad9f8750db2786f2012e2a3f2a533de0ef4e1",
+  "font_sha256": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031",
+  "length": 876576,
+  "license": "SIL OFL1.1",
+  "license_sha256": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57",
+  "archive_and_google_bytes_identical": true,
+  "actual_fvar_axes": [
+    {
+      "tag": "opsz",
+      "min": 14.0,
+      "default": 14.0,
+      "max": 32.0
+    },
+    {
+      "tag": "wght",
+      "min": 100.0,
+      "default": 400.0,
+      "max": 900.0
+    }
+  ],
+  "oracle": {
+    "pure_rust_runtime": "tests/shaping/main.rs103–170 shape helper Face/UnicodeBuffer/rustybuzz::shape, no C orplatformcall in this function",
+    "source_commit": "9faca967408677f17bc15366dbdc3d2b683d1489",
+    "limits": "Storedcases use differentfonts; no storedgoldensforchosenhost3fonts/newInterfixturefound, nooracleexecuted, noPASS. Archivedproductionproviderrejected; potentialboundedindependentreferenceonly, owningbindingrequired.",
+    "candidate": "rustybuzz0.20.1 independent olderRustimplementation/ttf-parser",
+    "stored_reference": "tests/shaping/in_house.rs andcustom.rs exactfixedglyph/cluster/position assertions inspected"
+  }
+}

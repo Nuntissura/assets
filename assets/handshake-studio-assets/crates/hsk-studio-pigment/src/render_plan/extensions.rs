@@ -1,0 +1,1123 @@
+//! Additive extension envelope of the render-plan IR (decision: work-folder
+//! `diagnostics/adjustments-advanced-blending.md`, topic additivity). The v1 types (`RenderPlan`,
+//! `Layer`, `MaskInput`, `Operator`, `PlanNode`, `BackendError`) are built by struct literals or
+//! matched exhaustively in composite, render-cpu and render-gpu, so features added after v1 travel
+//! here, addressed by `(group node, layer index)`, next to an unchanged plan:
+//! adjustment layers, Blend-If, mask feather, the mask-density capability query and knockout
+//! (refused until implemented). [`admit_extended`] is the one shared admission for a plan with
+//! its envelope; a backend opts in per operator through
+//! [`RenderBackend::extension_exactness`] (default: nothing supported).
+use super::{
+    Applicability, BackendError, ClipRole, ExactnessLedger, ExecuteRequest, MaskFormat, MaskInput, Operator,
+    PlanError, PlanLimits, PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core,
+    admit_plan_rules,
+};
+use super::output::{
+    DISPLAY_CLIP_OPERATOR, DisplayTransform, EXTENDED_RANGE_COMBINATION_OPERATOR,
+    EXTENDED_RANGE_OPERATOR, ExtendedOp, OutputStage,
+};
+use crate::adjust_math::{ADJUSTMENT_LAYER_EXACTNESS, AdjustError, AdjustmentKind, AdjustmentOp};
+use crate::blend_math::{Exactness, StudioBlendMode, extended_defined, extended_mode_key};
+use crate::blur_math::{BLUR_EXACTNESS, BlurScope, LayerBlur};
+use crate::coverage_math::{
+    BlendRangeEntry, COVERAGE_EXACTNESS, CoverageError, IDENTITY_RANGE, MAX_FEATHER_PX, check_range,
+};
+use crate::Rect;
+use crate::content_aware::{CONTENT_AWARE_EXACTNESS, ContentAwareOptions};
+use crate::filter_math::{FILTER_EXACTNESS, FilterKind, LayerFilter, MAX_FILTERS_PER_LAYER};
+use crate::keying::{KEY_EXACTNESS, KeyKind, KeyStage, MAX_KEY_STAGES};
+use crate::effect_math::{
+    EFFECT_EXACTNESS, EffectError, EffectKind, EffectOp, MAX_EFFECTS_PER_LAYER,
+    MAX_EFFECTS_PER_PLAN,
+};
+use crate::transform_math::{
+    LayerTransform, MAX_TRANSFORM_AREA_PER_PLAN, MAX_TRANSFORMS_PER_PLAN, PreparedTransform,
+    ResampleFilter, TRANSFORM_EXACTNESS,
+};
+use hsk_studio_accord::CancellationToken;
+use serde::Serialize;
+use std::collections::BTreeSet;
+
+/// Knockout depth of a layer (Photoshop advanced blending: none, shallow, deep), rule
+/// [`crate::knockout_math`]. Admitted by [`PlanExtensions::validate`] on an unclipped,
+/// non-pass-through layer without an adjustment, effects, blur, filters, content-aware fill, keys,
+/// smart filters or Blend-If: `Shallow` in an isolated group (lane SMB-PS-ADJUST-STYLES), at the
+/// plan root and in a pass-through group (its backdrop is the running result before the group), and
+/// `Deep` (lane SMB-PS-ADJUST-STYLES-2). The two placements that read a backdrop outside the layer's
+/// own group buffer (shallow in a pass-through group, deep) also need a plain ancestry: every group
+/// layer from the layer's group up to the root is the only use of its group, unclipped, not a clip
+/// base and without an envelope operator. Everything else is refused with
+/// [`PlanError::KnockoutUnsupported`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum Knockout {
+    None,
+    Shallow,
+    Deep,
+}
+impl Knockout {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::None => "knockout_none",
+            Self::Shallow => "knockout_shallow",
+            Self::Deep => "knockout_deep",
+        }
+    }
+}
+
+/// Extension of one `Layer` of one `Group` node.
+///
+/// - `adjustment`: `Some` makes the layer an adjustment layer. Its `Layer.input` must be the
+///   canonical placeholder `PlanNode::Solid { rect, rgba: [0.0; 4] }` (the rect bounds where the
+///   adjustment applies). Content = `f(backdrop)`, where the backdrop is the group's running result
+///   below this layer (transparent start in an isolated group, the parent backdrop in a
+///   pass-through group, the run unit inside a clip-to-base run). Per pixel
+///   `k = opacity * fill_opacity * mask * blend_if`, colour `lerp(Cb, B_mode(Cb, f(Cb)), k)`, alpha
+///   unchanged ([`crate::adjust_math::composite_adjustment`]). It may not be a clip base.
+/// - `blend_if`: Blend-If entries ([`crate::coverage_math::blend_if_weight`] multiplies the
+///   source alpha). Empty or all-identity = no Blend-If. Refused on a pass-through layer. A
+///   non-identity Blend-If on the base of a clipping run or on a clipped layer is not defined by any
+///   public source and is refused by [`admit_extended`] for every backend
+///   ([`ExtOperator::BlendIfClipBase`], [`ExtOperator::BlendIfClippedLayer`]; the clip role is
+///   [`super::Group::clip_role`]). A non-identity Blend-If on a layer that also carries effects has
+///   no public definition either and is refused the same way ([`ExtOperator::EffectsWithBlendIf`]).
+/// - `mask_feather_px`: Gaussian feather radius of the layer's coverage mask
+///   ([`crate::coverage_math::feather_kernel`], applied before density); `0` = none.
+/// - `knockout`: see [`Knockout`] for the admitted placements.
+/// - `effects`: layer effects of waves 1 and 2 ([`crate::effect_math`]: drop shadow, colour
+///   overlay, solid stroke, inner shadow, outer glow, inner glow), rendered in list order within
+///   each placement (behind the content, over the content). Not allowed on an adjustment layer, a pass-through layer, a clipped layer or the
+///   base of a clipping run. A layer whose content holds another layer with effects is reported as
+///   [`ExtOperator::EffectsNested`], which a backend must declare through
+///   [`RenderBackend::extension_exactness`]. Empty = no effects (and absent from the digest).
+///
+/// - `transform`: an affine layer transform with a resampling filter ([`crate::transform_math`],
+///   lane SMB-PIGMENT-TRANSFORM). The layer's input must be a `Tile` node; its content is the tile
+///   resampled through the transform (destination bounds `PreparedTransform::bounds`), and with
+///   `transform_mask` its coverage mask is resampled the same way (zero coverage outside the
+///   transformed plane, before invert and density). Refused with layer effects on the same layer
+///   and, for a transformed mask, with a mask feather or without a coverage mask
+///   ([`PlanError::TransformCombination`]); reported as [`ExtOperator::Transform`] (Approximate).
+///   `None` = no transform (and absent from the digest).
+///
+/// - `blur`: a Gaussian layer blur or backdrop blur ([`crate::blur_math`], lane
+///   SMB-COMPOSITE-NEW-KINDS): radius `0..=MAX_BLUR_RADIUS_PX`, the shared Gaussian (`sigma =
+///   radius / 2`). Refused ([`PlanError::BlurCombination`]) on an adjustment layer, a pass-through
+///   layer, a clipped layer or a clip base, together with effects or a non-identity Blend-If on the
+///   same layer, and (backdrop scope) in a non-isolated group, whose backdrop is not the group's
+///   own result. Reported as [`ExtOperator::Blur`] (Approximate). `None` = no blur (and absent
+///   from the digest).
+///
+/// - `filters`: core pixel filters ([`crate::filter_math`], lane SMB-PIGMENT-RETOUCH: Gaussian
+///   blur, unsharp mask, high pass, median, seeded add noise) applied to the layer's content in
+///   list order before the layer composites (at most [`MAX_FILTERS_PER_LAYER`]). Refused
+///   ([`PlanError::FilterCombination`]) on an adjustment layer, a pass-through layer, a clipped
+///   layer or a clip base, and together with effects, a transform or a blur on the same layer; a
+///   parameter outside its range or too many filters is [`PlanError::FilterParameter`]. Reported
+///   as [`ExtOperator::Filter`] (Approximate). Empty = no filters (and absent from the digest).
+///
+/// - `content_aware_fill`: a native content-aware fill of the layer's content before it
+///   composites ([`ContentAwareFillOp`], [`crate::content_aware::fill`], STU-RAS-143; lane
+///   SMB-PIGMENT-FILTER-DESCRIPTOR). Options out of range, a hole mask that is not a coverage
+///   plane (clip-to-base) or whose density is not 1, or a non-finite / overflowing hole or
+///   sampling rectangle is [`PlanError::ContentAwareParameter`]; together with an adjustment layer,
+///   effects, a transform, a blur or filters on the same layer, a pass-through layer, a clipped
+///   layer or a clip base it is [`PlanError::ContentAwareCombination`]. Reported as
+///   [`ExtOperator::ContentAwareFill`] (Approximate); no backend declares it yet, so shared
+///   admission refuses it under the key `content_aware_fill` before any sink call. `None` = no
+///   fill (and absent from the digest).
+///
+/// - `keys`: a key pipeline ([`crate::keying`], lane SMB-AE-KEY-TRACK-2, STU-CMP-032/033): the
+///   stages run in list order over the layer's content (WITHOUT the layer mask, over the content
+///   bounds inside the plan extent) as one [`crate::keying::run_key_pipeline`] call, and the
+///   result (colour despilled, alpha multiplied by the matte) is what the layer composites, so
+///   the layer mask, Blend-If, mode and opacity apply after the key. A stage out of range, more
+///   than [`MAX_KEY_STAGES`] stages or a difference matte (its clean plate is not an envelope
+///   input) is [`PlanError::KeyParameter`]; keys together with an adjustment layer, effects, a
+///   transform, a blur, filters or a content-aware fill on the same layer, a pass-through layer,
+///   a clipped layer, a clip base or an extended-range output stage are
+///   [`PlanError::KeyCombination`]. Reported per stage as [`ExtOperator::Key`] (Approximate).
+///   Empty = no key (and absent from the digest).
+///
+/// - `smart_filters`: a smart (live) filter stack ([`crate::smart_filter::SmartFilterOp`], lane
+///   SMB-PS-SELECT-LIQUIFY-2, STU-RAS-037 / STU-FX-011a / STU-FX-024): filter_math filters and
+///   liquify meshes with per-entry enable, opacity and coverage mask plus a stack mask, evaluated
+///   once over the layer content inside the plan extent by
+///   [`crate::smart_filter::SmartFilterStack::render`]; the layer mask, Blend-If, mode and opacity
+///   apply after it. Parameters are [`PlanError::SmartFilterParameter`], combinations
+///   [`PlanError::SmartFilterCombination`]. Reported as [`ExtOperator::SmartFilter`]
+///   (Approximate). `None` = no stack (and absent from the digest).
+///
+/// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
+/// [`LayerExtension::new`] and the `with_*` methods or field assignment.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct LayerExtension {
+    pub group: PlanNodeId,
+    pub layer: u32,
+    pub adjustment: Option<AdjustmentOp>,
+    pub blend_if: Vec<BlendRangeEntry>,
+    pub mask_feather_px: f32,
+    pub knockout: Knockout,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<EffectOp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transform: Option<LayerTransform>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blur: Option<LayerBlur>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<LayerFilter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_aware_fill: Option<ContentAwareFillOp>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<KeyStage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smart_filters: Option<crate::smart_filter::SmartFilterOp>,
+}
+
+/// A content-aware fill on a layer's content ([`LayerExtension::content_aware_fill`]): the pixels
+/// where `hole` (a plan coverage mask source; coverage > 0, inverted honoured, density 1) is set
+/// are synthesized by [`crate::content_aware::fill`] from the rest of the content (`sampling`
+/// `None` = auto, `Some(rect)` = rectangular, plan coordinates) with `options` (its `threads` is
+/// not part of the digest).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct ContentAwareFillOp {
+    pub hole: MaskInput,
+    pub sampling: Option<Rect>,
+    pub options: ContentAwareOptions,
+}
+impl ContentAwareFillOp {
+    /// A fill of `hole` with auto sampling and the default options.
+    pub fn new(hole: MaskInput) -> Self {
+        Self { hole, sampling: None, options: ContentAwareOptions::default() }
+    }
+    /// Parameter check of [`PlanExtensions::validate`] (never clamped).
+    fn check(&self) -> bool {
+        self.options.validate().is_ok()
+            && self.hole.format != MaskFormat::BaseAlpha
+            && self.hole.density == 1.0
+            && self.hole.placement.end().is_ok()
+            && self.sampling.is_none_or(|r| r.end().is_ok() && r.width > 0 && r.height > 0)
+    }
+}
+impl LayerExtension {
+    /// An extension that changes nothing (fill in the fields you need).
+    pub const fn new(group: PlanNodeId, layer: u32) -> Self {
+        Self {
+            group,
+            layer,
+            adjustment: None,
+            blend_if: Vec::new(),
+            mask_feather_px: 0.0,
+            knockout: Knockout::None,
+            effects: Vec::new(),
+            transform: None,
+            blur: None,
+            filters: Vec::new(),
+            content_aware_fill: None,
+            keys: Vec::new(),
+            smart_filters: None,
+        }
+    }
+    pub fn with_smart_filters(mut self, op: crate::smart_filter::SmartFilterOp) -> Self {
+        self.smart_filters = Some(op);
+        self
+    }
+    pub fn with_keys(mut self, keys: Vec<KeyStage>) -> Self {
+        self.keys = keys;
+        self
+    }
+    pub fn with_adjustment(mut self, op: AdjustmentOp) -> Self {
+        self.adjustment = Some(op);
+        self
+    }
+    pub fn with_blend_if(mut self, entries: Vec<BlendRangeEntry>) -> Self {
+        self.blend_if = entries;
+        self
+    }
+    pub fn with_mask_feather(mut self, px: f32) -> Self {
+        self.mask_feather_px = px;
+        self
+    }
+    pub fn with_knockout(mut self, knockout: Knockout) -> Self {
+        self.knockout = knockout;
+        self
+    }
+    pub fn with_effects(mut self, effects: Vec<EffectOp>) -> Self {
+        self.effects = effects;
+        self
+    }
+    pub fn with_transform(mut self, transform: LayerTransform) -> Self {
+        self.transform = Some(transform);
+        self
+    }
+    pub fn with_blur(mut self, blur: LayerBlur) -> Self {
+        self.blur = Some(blur);
+        self
+    }
+    pub fn with_filters(mut self, filters: Vec<LayerFilter>) -> Self {
+        self.filters = filters;
+        self
+    }
+    pub fn with_content_aware_fill(mut self, op: ContentAwareFillOp) -> Self {
+        self.content_aware_fill = Some(op);
+        self
+    }
+}
+
+/// The envelope: at most one entry per `(group, layer)`. Empty = the plain v1 plan. An entry
+/// addressed to a group no layer reaches from the root is validated but asks nothing of a backend
+/// ([`PlanExtensions::validate`]).
+#[non_exhaustive]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct PlanExtensions {
+    pub layers: Vec<LayerExtension>,
+    /// The plan's output stage (sample range, stage-6a display transform; lane
+    /// SMB-PIGMENT-EXTENDED-RANGE). The default (unit range, no display transform) is not
+    /// serialised, so it leaves every digest unchanged.
+    #[serde(skip_serializing_if = "OutputStage::is_default")]
+    pub output: OutputStage,
+}
+
+/// One envelope feature a plan uses; the unit of capability and exactness accounting next to the
+/// v1 [`super::Operator`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExtOperator {
+    /// The adjustment-layer compositing rule (alpha preserved).
+    AdjustmentLayer,
+    /// The per-pixel maths of one adjustment kind.
+    Adjustment(AdjustmentKind),
+    BlendIf,
+    /// Non-identity Blend-If on the BASE of a clipping run ([`super::ClipRole::Base`]). Reported
+    /// instead of [`ExtOperator::BlendIf`]; intrinsically `Unsupported` because no public source
+    /// defines it (work-folder `diagnostics/adjustments-advanced-blending.md` topic
+    /// `blend-if-clip-roles`), so [`admit_extended`] refuses it for every backend whatever the
+    /// backend claims (`tests/blend_if_clip.rs`).
+    BlendIfClipBase,
+    /// Non-identity Blend-If on a CLIPPED layer or clipped adjustment layer
+    /// ([`super::ClipRole::Clipped`]); same status as [`ExtOperator::BlendIfClipBase`].
+    BlendIfClippedLayer,
+    /// Layer effects together with a non-identity Blend-If on ONE (unclipped) layer. Reported
+    /// instead of [`ExtOperator::BlendIf`] (effects on a clip role are refused earlier, as
+    /// [`PlanError::EffectClipRun`]); intrinsically `Unsupported` because no public source defines
+    /// how the Blend-If weight composes with the effect mattes (work-folder
+    /// `diagnostics/adjustments-advanced-blending.md` topic `effects-ops`), so [`admit_extended`]
+    /// refuses it for every backend whatever the backend claims (`tests/effects_ops.rs`).
+    EffectsWithBlendIf,
+    /// A layer with effects whose content contains, directly or through nested group layers,
+    /// another layer with effects. Classed like the effects themselves
+    /// ([`EFFECT_EXACTNESS`], Approximate): a backend declares whether it evaluates the nesting
+    /// through [`RenderBackend::extension_exactness`], and [`admit_extended`] refuses a backend
+    /// that reports it `Unsupported` before any sink call (`tests/effects_ops.rs`).
+    EffectsNested,
+    /// A premultiplied alpha convention at the target or on a tile input
+    /// ([`super::RenderPlan::uses_premultiplied_alpha`]). STU-CMP-022 defines internal compositing
+    /// on one declared convention (pigment's maths is straight) with a conversion at the boundary,
+    /// so the semantics exist and each backend declares whether it converts through
+    /// [`RenderBackend::extension_exactness`]; undeclared is `Unsupported` (what render-cpu and
+    /// render-gpu do today). Intrinsic `Approximate` ([`ALPHA_BOUNDARY_EXACTNESS`]): the
+    /// unpremultiply discards the colour of a zero-alpha pixel, which is a Studio rule rather than
+    /// a published formula. It is checked by shared admission of the v1 plan ([`super::admit`]) and
+    /// of the envelope path ([`admit_extended`]); [`PlanExtensions::validate`] does not report it
+    /// (it describes the envelope, and the convention is declared by the plan alone).
+    AlphaPremultiplied,
+    /// An 8-bit working depth ([`super::WorkingDepth::Eight`], lane SMB-PS-ORACLE-PARITY-2); class
+    /// Approximate (Photoshop's 8-bit storage measured on the D5 oracle), declared by each backend.
+    /// Key [`super::WORKING_DEPTH_EIGHT_OPERATOR`].
+    WorkingDepthEight,
+    /// A coverage mask with `density < 1` (the v1 path keeps today's backend refusal).
+    MaskDensity,
+    MaskFeather,
+    /// Reported by `validate` for an admitted shallow or deep knockout (see [`Knockout`]).
+    Knockout(Knockout),
+    /// One layer-effect kind (drop shadow, colour overlay, stroke, inner shadow, outer glow, inner
+    /// glow; keys are `EffectKind::key`). The blend modes the
+    /// effects use are admitted separately by [`admit_extended`] through the backend's v1
+    /// [`Operator::Blend`] classes.
+    Effect(EffectKind),
+    /// A transformed layer resampled with this filter ([`LayerExtension::transform`],
+    /// [`crate::transform_math`]); class [`TRANSFORM_EXACTNESS`] (Approximate). A transformed mask
+    /// uses the same operator.
+    Transform(ResampleFilter),
+    /// A layer blur or backdrop blur ([`LayerExtension::blur`], [`crate::blur_math`]); class
+    /// [`BLUR_EXACTNESS`] (Approximate). Keys `blur_layer`, `blur_backdrop`.
+    Blur(BlurScope),
+    /// A core pixel filter on the layer content ([`LayerExtension::filters`],
+    /// [`crate::filter_math`]); class [`FILTER_EXACTNESS`] (Approximate). Keys `filter_*`.
+    Filter(FilterKind),
+    /// A content-aware fill of the layer content ([`LayerExtension::content_aware_fill`],
+    /// [`crate::content_aware`]); class [`CONTENT_AWARE_EXACTNESS`] (Approximate). Key
+    /// `content_aware_fill`. Declared by no backend yet (render-cpu and render-gpu answer
+    /// `Unsupported` for operators they do not list), so admission refuses it typed.
+    ContentAwareFill,
+    /// An extended-range output stage ([`OutputStage::sample_range`] `Extended`): blend modes run
+    /// unclamped (`blend_math::composite_over_extended`). Class Approximate: the extension of the
+    /// unit-range formulas past 1 is pigment's reading (Photoshop 32-bit parity UNVERIFIED, D5).
+    /// Key `sample_range_extended`; each backend declares it.
+    ExtendedRange,
+    /// A reachable layer (or a layer effect) whose mode is not `blend_math::extended_defined` in
+    /// an extended-range plan; intrinsically Unsupported (STU-COL-120, STU-RAS-155 (b)). Key
+    /// `sample_range_extended_mode_<mode key>` (`blend_math::extended_mode_key`), naming the mode.
+    ExtendedRangeMode(StudioBlendMode),
+    /// RETIRED by lane SMB-PIGMENT-EXTENDED-RANGE-2 (envelope entries are now reported per
+    /// operation as [`ExtOperator::ExtendedEnvelope`]); never reported by `validate`, kept for
+    /// capability queries. Intrinsically Unsupported. Key `sample_range_extended_combination`.
+    ExtendedRangeCombination,
+    /// One envelope operation in an extended-range plan ([`ExtendedOp`]): class Approximate when
+    /// [`ExtendedOp::defined`] (each backend declares it), else intrinsically Unsupported for every
+    /// backend; key [`ExtendedOp::key`], clause [`ExtendedOp::clause`].
+    ExtendedEnvelope(ExtendedOp),
+    /// The stage-6a clip ([`DisplayTransform::Clip`]); class Exact. Key `display_clip`.
+    DisplayClip,
+    /// One key-pipeline stage kind ([`LayerExtension::keys`], [`crate::keying`]); class
+    /// [`KEY_EXACTNESS`] (Approximate). Keys [`KeyKind::key`] (`key_*`, `matte_*`).
+    Key(KeyKind),
+    /// A smart-filter stack ([`LayerExtension::smart_filters`]); class Approximate (the
+    /// filter_math and liquify classes). Key `smart_filter_stack`.
+    SmartFilter,
+    /// A stage-6a view transform ([`DisplayTransform::View`] or [`DisplayTransform::ViewFrom`],
+    /// Prism's ACES 1.x RRT + ODT / RRTODT from the
+    /// published CTL, evaluated per pixel by `hsk_studio_prism::ViewTransformId::apply`); class
+    /// Exact. Key `display_view_transform`.
+    DisplayView,
+}
+impl ExtOperator {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::AdjustmentLayer => "adjustment_layer",
+            Self::Adjustment(k) => k.key(),
+            Self::BlendIf => "blend_if",
+            Self::BlendIfClipBase => "blend_if_clip_base",
+            Self::BlendIfClippedLayer => "blend_if_clipped_layer",
+            Self::EffectsWithBlendIf => "effects_with_blend_if",
+            Self::EffectsNested => "effects_nested",
+            Self::AlphaPremultiplied => "alpha_premultiplied",
+            Self::WorkingDepthEight => super::WORKING_DEPTH_EIGHT_OPERATOR,
+            Self::MaskDensity => "mask_density",
+            Self::MaskFeather => "mask_feather",
+            Self::Knockout(k) => k.key(),
+            Self::Effect(k) => k.key(),
+            Self::Transform(f) => match f {
+                ResampleFilter::NearestNeighbour => "transform_nearest_neighbour",
+                ResampleFilter::Bilinear => "transform_bilinear",
+                ResampleFilter::Bicubic => "transform_bicubic",
+            },
+            Self::Blur(scope) => scope.key(),
+            Self::Filter(kind) => kind.key(),
+            Self::ContentAwareFill => "content_aware_fill",
+            Self::ExtendedRange => EXTENDED_RANGE_OPERATOR,
+            Self::ExtendedRangeMode(mode) => extended_mode_key(mode),
+            Self::ExtendedRangeCombination => EXTENDED_RANGE_COMBINATION_OPERATOR,
+            Self::ExtendedEnvelope(op) => op.key(),
+            Self::DisplayClip => DISPLAY_CLIP_OPERATOR,
+            Self::Key(kind) => kind.key(),
+            Self::SmartFilter => crate::smart_filter::SMART_FILTER_OPERATOR,
+            Self::DisplayView => super::output::DISPLAY_VIEW_OPERATOR,
+        }
+    }
+    /// Class independent of any backend (formula provenance).
+    pub const fn intrinsic(self) -> Exactness {
+        match self {
+            Self::AdjustmentLayer => ADJUSTMENT_LAYER_EXACTNESS,
+            Self::Adjustment(k) => k.facts().exactness,
+            Self::BlendIf | Self::MaskDensity | Self::MaskFeather => COVERAGE_EXACTNESS,
+            Self::BlendIfClipBase | Self::BlendIfClippedLayer | Self::EffectsWithBlendIf => {
+                Exactness::Unsupported
+            }
+            Self::Knockout(Knockout::None) => Exactness::Exact,
+            Self::Knockout(Knockout::Shallow) => crate::knockout_math::KNOCKOUT_EXACTNESS,
+            Self::Knockout(Knockout::Deep) => crate::knockout_math::KNOCKOUT_EXACTNESS,
+            Self::Effect(_) | Self::EffectsNested => EFFECT_EXACTNESS,
+            Self::AlphaPremultiplied => ALPHA_BOUNDARY_EXACTNESS,
+            Self::WorkingDepthEight => Exactness::Approximate,
+            Self::Transform(_) => TRANSFORM_EXACTNESS,
+            Self::Blur(_) => BLUR_EXACTNESS,
+            Self::Filter(_) => FILTER_EXACTNESS,
+            Self::ContentAwareFill => CONTENT_AWARE_EXACTNESS,
+            Self::ExtendedRange => Exactness::Approximate,
+            Self::ExtendedRangeMode(_) | Self::ExtendedRangeCombination => Exactness::Unsupported,
+            Self::ExtendedEnvelope(op) => {
+                if op.defined() {
+                    Exactness::Approximate
+                } else {
+                    Exactness::Unsupported
+                }
+            }
+            Self::DisplayClip | Self::DisplayView => Exactness::Exact,
+            Self::Key(_) => KEY_EXACTNESS,
+            Self::SmartFilter => FILTER_EXACTNESS,
+        }
+    }
+}
+/// Class of the premultiplied-alpha boundary conversion ([`ExtOperator::AlphaPremultiplied`]).
+pub const ALPHA_BOUNDARY_EXACTNESS: Exactness = Exactness::Approximate;
+
+fn is_clip(l: &super::Layer) -> bool {
+    l.mask
+        .as_ref()
+        .is_some_and(super::MaskInput::is_clip_to_base)
+}
+
+impl PlanExtensions {
+    /// An envelope holding `layers` (validated by [`PlanExtensions::validate`]).
+    pub fn from_layers(layers: Vec<LayerExtension>) -> Self {
+        Self {
+            layers,
+            output: OutputStage::default(),
+        }
+    }
+    /// This envelope with output stage `output` (sample range, display transform).
+    pub fn with_output(mut self, output: OutputStage) -> Self {
+        self.output = output;
+        self
+    }
+    /// No layer entry and the default output stage: the plain v1 plan.
+    pub fn is_empty(&self) -> bool {
+        self.layers.is_empty() && self.output.is_default()
+    }
+    /// The extension of `(group, layer)`, if any.
+    pub fn extension(&self, group: PlanNodeId, layer: u32) -> Option<&LayerExtension> {
+        self.layers
+            .iter()
+            .find(|e| e.group == group && e.layer == layer)
+    }
+
+    /// `flags[n]`: node `n` is a group holding, directly or through the inputs of its layers, a
+    /// layer that carries effects in this envelope. Nodes are index-ordered (an input is an
+    /// earlier node), so one forward pass suffices; empty when no layer has effects. Only entries
+    /// addressed to a group in `reachable` count (the set of
+    /// [`RenderPlan::reachable_nodes`]): an entry on an unreachable group is not executed, and
+    /// every input of a reachable group is reachable too, so the flags a reachable entry reads do
+    /// not depend on the entries that are skipped.
+    /// Every group layer from `node` (a group) up to the plan root is the only layer anywhere in
+    /// the plan that uses its group, unclipped, not a clip base, and carries no envelope entry with
+    /// an operator (a knockout reading a backdrop outside its own buffer passes through plain group
+    /// composites only; lane SMB-PS-ADJUST-STYLES-2). The walk is bounded by the node count.
+    fn plain_ancestry<V>(&self, plan: &RenderPlan<V>, mut node: u32) -> bool {
+        for _ in 0..=plan.nodes.len() {
+            if node == plan.root.0 {
+                return true;
+            }
+            let target = node;
+            let users: Vec<(usize, usize, &super::Group)> = plan
+                .nodes
+                .iter()
+                .enumerate()
+                .flat_map(|(gi, n)| match n {
+                    PlanNode::Group(g) => g
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, l)| l.input.0 == target)
+                        .map(|(li, _)| (gi, li, g))
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            let [(gi, li, g)] = users.as_slice() else {
+                return false;
+            };
+            let (gi, li, g) = (*gi, *li, *g);
+            let (Ok(gi), Ok(li32)) = (u32::try_from(gi), u32::try_from(li)) else {
+                return false;
+            };
+            if g.clip_role(li) != Some(ClipRole::Unclipped) {
+                return false;
+            }
+            let operator = self.layers.iter().any(|x| {
+                x.group.0 == gi
+                    && x.layer == li32
+                    && (x.knockout != Knockout::None
+                        || x.adjustment.is_some()
+                        || !x.effects.is_empty()
+                        || x.transform.is_some()
+                        || x.blur.is_some()
+                        || !x.filters.is_empty()
+                        || x.content_aware_fill.is_some()
+                        || !x.keys.is_empty()
+                        || x.smart_filters.is_some()
+                        || x.blend_if.iter().any(|b| {
+                            b.source != crate::coverage_math::IDENTITY_RANGE
+                                || b.destination != crate::coverage_math::IDENTITY_RANGE
+                        }))
+            });
+            if operator {
+                return false;
+            }
+            node = gi;
+        }
+        false
+    }
+
+    fn nodes_holding_effects<V>(&self, plan: &RenderPlan<V>, reachable: &[bool]) -> Vec<bool> {
+        let with_effects: BTreeSet<(u32, u32)> = self
+            .layers
+            .iter()
+            .filter(|e| {
+                !e.effects.is_empty() && reachable.get(e.group.0 as usize).copied().unwrap_or(false)
+            })
+            .map(|e| (e.group.0, e.layer))
+            .collect();
+        if with_effects.is_empty() {
+            return Vec::new();
+        }
+        let mut flags: Vec<bool> = Vec::with_capacity(plan.nodes.len());
+        for (n, node) in plan.nodes.iter().enumerate() {
+            let holds = match (node, u32::try_from(n)) {
+                (PlanNode::Group(g), Ok(n32)) => g.layers.iter().enumerate().any(|(li, l)| {
+                    u32::try_from(li).is_ok_and(|li32| with_effects.contains(&(n32, li32)))
+                        || flags.get(l.input.0 as usize).copied().unwrap_or(false)
+                }),
+                _ => false,
+            };
+            flags.push(holds);
+        }
+        flags
+    }
+
+    /// Validation of the envelope against its plan (run after `plan.validate`), in the two parts of
+    /// [`RenderPlan::validate`]. STRUCTURE is checked on EVERY entry, reachable or not: the target
+    /// group and layer, duplicates, the adjustment input and parameters, mode applicability,
+    /// clipping-run and pass-through rules, effect parameters and budgets, Blend-If ranges, feather
+    /// range. A knockout, an adjustment kind or an effect feature that pigment itself refuses
+    /// (`PlanError::KnockoutUnsupported`, `AdjustmentUnsupported`, `EffectUnsupported`) is a typed
+    /// error on every entry too: no backend could run it, so it is not a capability a backend
+    /// declares (test `tests/plan_followups.rs` `intrinsic_envelope_refusals_stay_on_every_entry`).
+    ///
+    /// CAPABILITY is collected over the entries addressed to a group REACHABLE from the root only,
+    /// like the operators of [`RenderPlan::validate`] and like the backends. render-cpu does not
+    /// prepare an entry of a group no layer reaches and charges nothing for it (test
+    /// `hsk-studio-render-cpu` `tests/cpu_envelope_reach.rs`
+    /// `unreachable_envelope_entries_are_neither_admitted_nor_prepared`); render-gpu looks an entry
+    /// up per executed layer of a reachable group (by reading `plan_sink.rs` `prepare`: no GPU test
+    /// puts an entry on an unreachable group yet). Returns the distinct envelope operators of
+    /// those entries in first-use order; an operator used only by an entry on an unreachable group
+    /// is not reported, so a backend that refuses it still admits the plan, and the same entry on
+    /// a reachable group is refused with the same key (test `tests/plan_followups.rs`
+    /// `unreachable_envelope_entry_asks_for_nothing_reachable_one_is_refused`).
+    pub fn validate<V>(&self, plan: &RenderPlan<V>) -> Result<Vec<ExtOperator>, PlanError> {
+        let mut ops: Vec<ExtOperator> = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut total_effects = 0usize;
+        let mut total_transforms = 0usize;
+        let mut transform_area = 0u64;
+        let reachable = plan.reachable_nodes();
+        let holding_effects = self.nodes_holding_effects(plan, &reachable);
+        for e in &self.layers {
+            let node = e.group.0;
+            // Whether the operators of this entry count (the group is reachable); the structure
+            // below is checked either way.
+            let counts = reachable.get(node as usize).copied().unwrap_or(false);
+            let mut add = |op: ExtOperator| {
+                if counts && !ops.contains(&op) {
+                    ops.push(op);
+                }
+            };
+            let Some(PlanNode::Group(g)) = plan.nodes.get(node as usize) else {
+                return Err(PlanError::ExtensionTarget { node });
+            };
+            let Some(layer) = g.layers.get(e.layer as usize) else {
+                return Err(PlanError::ExtensionTarget { node });
+            };
+            if !seen.insert((node, e.layer)) {
+                return Err(PlanError::ExtensionDuplicate { node });
+            }
+            if e.knockout != Knockout::None {
+                let refused = Err(PlanError::KnockoutUnsupported {
+                    node,
+                    depth: e.knockout,
+                });
+                if layer.mode == StudioBlendMode::PassThrough
+                    || g.clip_role(e.layer as usize) != Some(ClipRole::Unclipped)
+                    || e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.blur.is_some()
+                    || !e.filters.is_empty()
+                    || e.content_aware_fill.is_some()
+                    || !e.keys.is_empty()
+                    || e.smart_filters.is_some()
+                    || e.blend_if.iter().any(|b| {
+                        b.source != crate::coverage_math::IDENTITY_RANGE
+                            || b.destination != crate::coverage_math::IDENTITY_RANGE
+                    })
+                {
+                    return refused;
+                }
+                // Shallow in a pass-through group and deep read a backdrop outside the layer's own
+                // group buffer: the backend carries it through the plain group path only.
+                let outside_own_group = e.knockout == Knockout::Deep || !g.isolated;
+                if outside_own_group && !self.plain_ancestry(plan, node) {
+                    return refused;
+                }
+                add(ExtOperator::Knockout(e.knockout));
+            }
+            if let Some(op) = &e.adjustment {
+                match plan.nodes.get(layer.input.0 as usize) {
+                    Some(PlanNode::Solid { rgba, .. }) if *rgba == [0.0; 4] => {}
+                    _ => return Err(PlanError::AdjustmentInput { node }),
+                }
+                if layer.mode.facts().applicability != Applicability::Layer {
+                    return Err(PlanError::ModeNotApplicable {
+                        node,
+                        mode: layer.mode,
+                    });
+                }
+                match op.prepare() {
+                    Ok(_) => {}
+                    Err(AdjustError::Unsupported(_)) => {
+                        return Err(PlanError::AdjustmentUnsupported {
+                            node,
+                            kind: op.kind(),
+                        });
+                    }
+                    Err(_) => return Err(PlanError::AdjustmentParameter { node }),
+                }
+                // A clipped layer's base is the nearest earlier unclipped layer: the next layer
+                // being clipped makes this (unclipped) adjustment layer its base.
+                let next_clipped = g.layers.get(e.layer as usize + 1).is_some_and(is_clip);
+                if !is_clip(layer) && next_clipped {
+                    return Err(PlanError::AdjustmentClipBase { node });
+                }
+                add(ExtOperator::AdjustmentLayer);
+                add(ExtOperator::Adjustment(op.kind()));
+            }
+            if !e.effects.is_empty() {
+                if e.adjustment.is_some() {
+                    return Err(PlanError::EffectOnAdjustment { node });
+                }
+                if layer.mode == StudioBlendMode::PassThrough {
+                    return Err(PlanError::EffectPassThrough { node });
+                }
+                if is_clip(layer) || g.layers.get(e.layer as usize + 1).is_some_and(is_clip) {
+                    return Err(PlanError::EffectClipRun { node });
+                }
+                total_effects = total_effects.saturating_add(e.effects.len());
+                if e.effects.len() > MAX_EFFECTS_PER_LAYER || total_effects > MAX_EFFECTS_PER_PLAN {
+                    return Err(PlanError::EffectLimit { node });
+                }
+                for effect in &e.effects {
+                    effect.validate().map_err(|err| match err {
+                        EffectError::SizeOutOfRange | EffectError::DistanceOutOfRange => {
+                            PlanError::EffectLimit { node }
+                        }
+                        EffectError::ModeNotApplicable(mode) => {
+                            PlanError::ModeNotApplicable { node, mode }
+                        }
+                        EffectError::Unsupported(feature) => {
+                            PlanError::EffectUnsupported { node, feature }
+                        }
+                        _ => PlanError::EffectParameter { node },
+                    })?;
+                    add(ExtOperator::Effect(effect.kind()));
+                }
+                // Effects inside the content of a layer with effects: the content node must be an
+                // EARLIER node (the plan is index-ordered), whose group subtree holds a layer with
+                // effects. Backends declare whether they evaluate it.
+                if layer.input.0 < node
+                    && holding_effects
+                        .get(layer.input.0 as usize)
+                        .copied()
+                        .unwrap_or(false)
+                {
+                    add(ExtOperator::EffectsNested);
+                }
+            }
+            if let Some(t) = &e.transform {
+                let Some(PlanNode::Tile(tile)) = plan.nodes.get(layer.input.0 as usize) else {
+                    return Err(PlanError::TransformTarget { node });
+                };
+                if !e.effects.is_empty() {
+                    return Err(PlanError::TransformCombination { node });
+                }
+                if t.transform_mask
+                    && (e.mask_feather_px != 0.0
+                        || !layer.mask.as_ref().is_some_and(|m| m.format != MaskFormat::BaseAlpha))
+                {
+                    return Err(PlanError::TransformCombination { node });
+                }
+                let prepared = PreparedTransform::new(t, tile.placement)
+                    .map_err(|error| PlanError::TransformMatrix { node, error })?;
+                let bounds = prepared.bounds();
+                total_transforms = total_transforms.saturating_add(1);
+                transform_area = transform_area.saturating_add(
+                    u64::from(bounds.width).saturating_mul(u64::from(bounds.height)),
+                );
+                if total_transforms > MAX_TRANSFORMS_PER_PLAN
+                    || transform_area > MAX_TRANSFORM_AREA_PER_PLAN
+                {
+                    return Err(PlanError::TransformLimit { node });
+                }
+                add(ExtOperator::Transform(t.filter));
+            }
+            if let Some(b) = &e.blur {
+                if !b.radius_px.is_finite() {
+                    return Err(PlanError::NonFinite { node });
+                }
+                b.validate().map_err(|_| PlanError::OutOfRange { node })?;
+                let blend_if = e
+                    .blend_if
+                    .iter()
+                    .any(|x| x.source != IDENTITY_RANGE || x.destination != IDENTITY_RANGE);
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || blend_if
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                    || (b.scope == BlurScope::Backdrop && !g.isolated)
+                {
+                    return Err(PlanError::BlurCombination { node });
+                }
+                add(ExtOperator::Blur(b.scope));
+            }
+            if !e.filters.is_empty() {
+                if e.filters.len() > MAX_FILTERS_PER_LAYER {
+                    return Err(PlanError::FilterParameter { node });
+                }
+                for f in &e.filters {
+                    f.validate().map_err(|_| PlanError::FilterParameter { node })?;
+                }
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.transform.is_some()
+                    || e.blur.is_some()
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                {
+                    return Err(PlanError::FilterCombination { node });
+                }
+                for f in &e.filters {
+                    add(ExtOperator::Filter(f.kind()));
+                }
+            }
+            if let Some(ca) = &e.content_aware_fill {
+                if !ca.check() {
+                    return Err(PlanError::ContentAwareParameter { node });
+                }
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.transform.is_some()
+                    || e.blur.is_some()
+                    || !e.filters.is_empty()
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                {
+                    return Err(PlanError::ContentAwareCombination { node });
+                }
+                add(ExtOperator::ContentAwareFill);
+            }
+            if !e.keys.is_empty() {
+                if e.keys.len() > MAX_KEY_STAGES
+                    || e.keys.iter().any(|k| k.validate().is_err() || k.kind() == KeyKind::Difference)
+                {
+                    return Err(PlanError::KeyParameter { node });
+                }
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.transform.is_some()
+                    || e.blur.is_some()
+                    || !e.filters.is_empty()
+                    || e.content_aware_fill.is_some()
+                    || self.output.is_extended()
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                {
+                    return Err(PlanError::KeyCombination { node });
+                }
+                for k in &e.keys {
+                    add(ExtOperator::Key(k.kind()));
+                }
+            }
+            if let Some(sf) = &e.smart_filters {
+                if !sf.check() {
+                    return Err(PlanError::SmartFilterParameter { node });
+                }
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.transform.is_some()
+                    || e.blur.is_some()
+                    || !e.filters.is_empty()
+                    || e.content_aware_fill.is_some()
+                    || !e.keys.is_empty()
+                    || self.output.is_extended()
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                {
+                    return Err(PlanError::SmartFilterCombination { node });
+                }
+                add(ExtOperator::SmartFilter);
+            }
+            if !e.blend_if.is_empty() {
+                if layer.mode == StudioBlendMode::PassThrough {
+                    return Err(PlanError::BlendIfPassThrough { node });
+                }
+                let mut channels = BTreeSet::new();
+                for entry in &e.blend_if {
+                    if !channels.insert(entry.channel.key()) {
+                        return Err(PlanError::BlendIfRange { node });
+                    }
+                    for r in [entry.source, entry.destination] {
+                        check_range(r).map_err(|e| match e {
+                            CoverageError::OutOfDomain => PlanError::OutOfRange { node },
+                            _ => PlanError::BlendIfRange { node },
+                        })?;
+                    }
+                }
+                if e.blend_if
+                    .iter()
+                    .any(|x| x.source != IDENTITY_RANGE || x.destination != IDENTITY_RANGE)
+                {
+                    // Blend-If inside a clipping run has no defined semantics (no public source):
+                    // the clip roles get their own intrinsically unsupported operators, so the
+                    // shared admission refuses them identically for every backend. Effects on
+                    // the same layer have no defined composition with the Blend-If weight either
+                    // (a layer with effects is never a clip role: `EffectClipRun` above).
+                    add(match g.clip_role(e.layer as usize) {
+                        Some(ClipRole::Base) => ExtOperator::BlendIfClipBase,
+                        Some(ClipRole::Clipped) => ExtOperator::BlendIfClippedLayer,
+                        _ if !e.effects.is_empty() => ExtOperator::EffectsWithBlendIf,
+                        _ => ExtOperator::BlendIf,
+                    });
+                }
+            }
+            if !e.mask_feather_px.is_finite() {
+                return Err(PlanError::NonFinite { node });
+            }
+            if !(0.0..=MAX_FEATHER_PX).contains(&e.mask_feather_px) {
+                return Err(PlanError::OutOfRange { node });
+            }
+            if e.mask_feather_px > 0.0 {
+                if !layer
+                    .mask
+                    .as_ref()
+                    .is_some_and(|m| m.format != MaskFormat::BaseAlpha)
+                {
+                    return Err(PlanError::FeatherWithoutMask { node });
+                }
+                add(ExtOperator::MaskFeather);
+            }
+        }
+        // Reachable groups only, like every other predicate (`RenderPlan::has_mask_density`).
+        if plan.has_mask_density() && !ops.contains(&ExtOperator::MaskDensity) {
+            ops.push(ExtOperator::MaskDensity);
+        }
+        // Output stage, over the nodes reachable from the root (like the layers a backend runs).
+        if self.output.is_extended() {
+            let mut push = |op: ExtOperator| {
+                if !ops.contains(&op) {
+                    ops.push(op);
+                }
+            };
+            push(ExtOperator::ExtendedRange);
+            for (i, n) in plan.nodes.iter().enumerate() {
+                let PlanNode::Group(g) = n else { continue };
+                if !reachable.get(i).copied().unwrap_or(false) {
+                    continue;
+                }
+                for l in &g.layers {
+                    if l.mode != StudioBlendMode::PassThrough && !extended_defined(l.mode) {
+                        push(ExtOperator::ExtendedRangeMode(l.mode));
+                    }
+                }
+            }
+            for e in &self.layers {
+                if !reachable.get(e.group.0 as usize).copied().unwrap_or(false) {
+                    continue;
+                }
+                let env = ExtOperator::ExtendedEnvelope;
+                if let Some(op) = &e.adjustment {
+                    push(env(match op {
+                        AdjustmentOp::Exposure(x) if x.linearize_gamma != 1.0 => {
+                            ExtendedOp::ExposureEncoded
+                        }
+                        _ => ExtendedOp::Adjustment(op.kind()),
+                    }));
+                }
+                if e.blend_if
+                    .iter()
+                    .any(|x| x.source != IDENTITY_RANGE || x.destination != IDENTITY_RANGE)
+                {
+                    push(env(ExtendedOp::BlendIf));
+                }
+                if !e.effects.is_empty() {
+                    push(env(ExtendedOp::Effects));
+                    for effect in &e.effects {
+                        if !extended_defined(effect.mode()) {
+                            push(ExtOperator::ExtendedRangeMode(effect.mode()));
+                        }
+                    }
+                }
+                for f in &e.filters {
+                    push(env(ExtendedOp::Filter(f.kind())));
+                }
+                if let Some(ca) = &e.content_aware_fill {
+                    push(env(if crate::content_aware::fill_extended_defined(&ca.options) {
+                        ExtendedOp::ContentAwareFill
+                    } else {
+                        ExtendedOp::ContentAwareColourAdaptation
+                    }));
+                }
+                if e.blur.is_some() {
+                    push(env(ExtendedOp::Blur));
+                }
+                if e.transform.is_some() {
+                    push(env(ExtendedOp::Transform));
+                }
+            }
+        }
+        if self.output.display == Some(DisplayTransform::Clip) {
+            ops.push(ExtOperator::DisplayClip);
+        }
+        if self.output.is_eight_bit() {
+            ops.push(ExtOperator::WorkingDepthEight);
+        }
+        if self.output.display.and_then(|d| d.view()).is_some() {
+            ops.push(ExtOperator::DisplayView);
+        }
+        Ok(ops)
+    }
+
+    /// The distinct blend modes the effects of EVERY entry composite with, in first-use order.
+    /// [`admit_extended`] asks the backend for the modes of the entries a backend executes only
+    /// ([`PlanExtensions::effect_modes_in`]).
+    pub fn effect_modes(&self) -> Vec<StudioBlendMode> {
+        Self::modes_of(self.layers.iter())
+    }
+
+    /// [`PlanExtensions::effect_modes`] over the entries addressed to a group of `plan` reachable
+    /// from the root: the modes [`admit_extended`] asks the backend for (its v1
+    /// [`Operator::Blend`] class), so an effect on a group no layer reaches asks for nothing (test
+    /// `tests/plan_followups.rs` `unreachable_envelope_entry_asks_for_nothing_reachable_one_is_refused`,
+    /// case "effect blend mode").
+    pub fn effect_modes_in<V>(&self, plan: &RenderPlan<V>) -> Vec<StudioBlendMode> {
+        let reachable = plan.reachable_nodes();
+        Self::modes_of(
+            self.layers
+                .iter()
+                .filter(|e| reachable.get(e.group.0 as usize).copied().unwrap_or(false)),
+        )
+    }
+
+    fn modes_of<'a>(entries: impl Iterator<Item = &'a LayerExtension>) -> Vec<StudioBlendMode> {
+        let mut modes: Vec<StudioBlendMode> = Vec::new();
+        for effect in entries.flat_map(|e| e.effects.iter()) {
+            if !modes.contains(&effect.mode()) {
+                modes.push(effect.mode());
+            }
+        }
+        modes
+    }
+
+    /// SHA-256 binding a receipt to the plan and its envelope. An empty envelope digests exactly
+    /// like the plain plan ([`RenderPlan::digest`]).
+    pub fn digest_with<V: Serialize>(
+        &self,
+        plan: &RenderPlan<V>,
+    ) -> Result<[u8; 32], crate::Error> {
+        if self.is_empty() {
+            return plan.digest();
+        }
+        let bytes = serde_json::to_vec(&(plan, self)).map_err(|_| crate::Error::InvalidInput)?;
+        Ok(hsk_studio_prism::profile_hash(&bytes))
+    }
+}
+
+/// Shared admission for a plan with its envelope: [`admit`](super::admit) for the v1 plan (except its v1-only
+/// mask-density refusal: density is the envelope operator `MaskDensity` here), then envelope
+/// validation, then per envelope operator class = intrinsic lowered by
+/// [`RenderBackend::extension_exactness`]; refuses Unsupported or below `min_exactness` before any
+/// sink call. Knockout and refused adjustment features map to `BackendError::Unsupported` naming
+/// the feature; other envelope defects map to `BackendError::InvalidPlan`. The plan-level parity
+/// rules of [`super::admit`] (mask on a pass-through layer, premultiplied alpha, leaf-root Normal
+/// class) run last here too.
+///
+/// Validates the plan with the default (maximum) [`PlanLimits`]; [`admit_extended_with_limits`] is
+/// this function with the caller's (tighter) limits.
+pub fn admit_extended<V, B: RenderBackend<V> + ?Sized>(
+    plan: &RenderPlan<V>,
+    extensions: &PlanExtensions,
+    backend: &B,
+    request: &ExecuteRequest,
+    cancel: &CancellationToken,
+) -> Result<ExactnessLedger, BackendError> {
+    admit_extended_with_limits(
+        plan,
+        extensions,
+        &PlanLimits::default(),
+        backend,
+        request,
+        cancel,
+    )
+}
+
+/// [`admit_extended`] with caller-supplied [`PlanLimits`], on the same terms as
+/// [`admit_with_limits`](super::admit_with_limits): the plan is validated with `limits` (tighter
+/// budgets refuse a plan the defaults admit, a field above [`PlanLimits::MAXIMUM`] is refused as
+/// `BackendError::InvalidPlan(PlanError::LimitAboveMaximum)` before the plan or the envelope is
+/// read; tests `tests/plan_limits.rs` `tightened_limits_refuse_what_the_defaults_admit`,
+/// `loosening_past_the_maxima_is_a_typed_error_everywhere`), every later step and refusal key is
+/// unchanged. The envelope's own budgets (`MAX_EFFECTS_PER_LAYER`, `MAX_EFFECTS_PER_PLAN`, effect
+/// sizes) are fixed constants outside `PlanLimits`.
+pub fn admit_extended_with_limits<V, B: RenderBackend<V> + ?Sized>(
+    plan: &RenderPlan<V>,
+    extensions: &PlanExtensions,
+    limits: &PlanLimits,
+    backend: &B,
+    request: &ExecuteRequest,
+    cancel: &CancellationToken,
+) -> Result<ExactnessLedger, BackendError> {
+    let mut ledger = admit_core(
+        plan,
+        limits,
+        backend,
+        request,
+        cancel,
+        extensions.output.sample_range,
+    )?;
+    let operators = extensions.validate(plan).map_err(|e| match e {
+        PlanError::KnockoutUnsupported { depth, .. } => BackendError::Unsupported {
+            operator: depth.key(),
+            exactness: Exactness::Unsupported,
+        },
+        PlanError::AdjustmentUnsupported { kind, .. } => BackendError::Unsupported {
+            operator: kind.key(),
+            exactness: Exactness::Unsupported,
+        },
+        PlanError::EffectUnsupported { feature, .. } => BackendError::Unsupported {
+            operator: feature.key(),
+            exactness: Exactness::Unsupported,
+        },
+        other => BackendError::InvalidPlan(other),
+    })?;
+    for op in operators {
+        let class = op.intrinsic().lowest_of(backend.extension_exactness(op));
+        if class == Exactness::Unsupported || class.rank() > request.min_exactness.rank() {
+            return Err(BackendError::Unsupported {
+                operator: op.key(),
+                exactness: class,
+            });
+        }
+        ledger.record(op.key(), class);
+    }
+    // An effect composites with its own blend mode: the backend's v1 class for that mode applies
+    // (an effect is refused when its mode is: `tests/effects.rs`
+    // `effect_without_backend_support_is_refused_before_the_sink`).
+    for mode in extensions.effect_modes_in(plan) {
+        let op = Operator::Blend(mode);
+        let class = op.intrinsic().lowest_of(backend.exactness(op));
+        if class == Exactness::Unsupported || class.rank() > request.min_exactness.rank() {
+            return Err(BackendError::Unsupported {
+                operator: op.key(),
+                exactness: class,
+            });
+        }
+        ledger.record(op.key(), class);
+    }
+    // Plan-level parity rules, last so every earlier refusal keeps its key (see `admit_plan_rules`).
+    admit_plan_rules(plan, backend, request, &mut ledger)?;
+    Ok(ledger)
+}

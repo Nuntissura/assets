@@ -1,0 +1,669 @@
+//! Provider port, request/receipt vocabulary, limits. Instance-owned: there is no global registry.
+#![deny(clippy::arithmetic_side_effects)]
+use crate::error::ReelError;
+use crate::video::VideoRoute;
+use hsk_studio_accord::{CancellationToken, Ticks};
+use std::io::{Read, Seek, SeekFrom, Write};
+
+pub trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek + ?Sized> ReadSeek for T {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Video,
+    Audio,
+    Container,
+}
+
+impl MediaKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Video => "video",
+            Self::Audio => "audio",
+            Self::Container => "container",
+        }
+    }
+}
+
+/// Certification status of a decoder by the owner of the format (STU-VID-051 item 1 as enriched by D23:
+/// every adapter descriptor carries it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Certification {
+    /// The format has no owner certification programme that applies (open containers, PCM, raw video).
+    NotApplicable,
+    /// The format owner has NOT certified this decoder (e.g. a ProRes decoder written from SMPTE RDD 36,
+    /// which is not Apple-certified).
+    NotCertified,
+    /// Certified by the format owner.
+    Certified,
+}
+
+impl Certification {
+    /// Stable wire string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not_applicable",
+            Self::NotCertified => "not_certified",
+            Self::Certified => "certified",
+        }
+    }
+}
+
+/// Licence string of code written in this workspace (Studio-owned adapters): the workspace declares no
+/// SPDX licence yet, so the descriptor says whose code it is instead of inventing one.
+pub const STUDIO_OWNED_LICENCE: &str = "studio-owned";
+
+/// Enumerable capability descriptor (STU-VID-051; D23: decoder id, licence and certification status).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodecDescriptor {
+    pub id: &'static str,
+    /// User-facing name of the adapter (D24: the ProRes adapter is exactly
+    /// "ProRes (RDD 36 decoder, not Apple-certified)").
+    pub name: &'static str,
+    pub kind: MediaKind,
+    pub container: &'static str,
+    pub bit_depths: &'static [u8],
+    pub chroma: Option<&'static str>,
+    pub transfer: Option<&'static str>,
+    /// Id of the decoder implementation; the same string a receipt of that decoder carries.
+    pub decoder_id: &'static str,
+    pub decoder_version: &'static str,
+    /// Licence of the decoder implementation (SPDX expression, or `STUDIO_OWNED_LICENCE`).
+    pub licence: &'static str,
+    pub certification: Certification,
+    pub can_decode: bool,
+    pub can_encode: bool,
+}
+
+impl CodecDescriptor {
+    pub fn to_json(&self) -> String {
+        let depths = self
+            .bit_depths
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let opt = |v: Option<&str>| v.map_or_else(|| "null".to_string(), |s| format!("\"{s}\""));
+        format!(
+            "{{\"id\":\"{}\",\"name\":\"{}\",\"kind\":\"{}\",\"container\":\"{}\",\"bit_depths\":[{}],\"chroma\":{},\"transfer\":{},\"decoder_id\":\"{}\",\"decoder_version\":\"{}\",\"licence\":\"{}\",\"certification\":\"{}\",\"can_decode\":{},\"can_encode\":{}}}",
+            self.id,
+            self.name,
+            self.kind.as_str(),
+            self.container,
+            depths,
+            opt(self.chroma),
+            opt(self.transfer),
+            self.decoder_id,
+            self.decoder_version,
+            self.licence,
+            self.certification.as_str(),
+            self.can_decode,
+            self.can_encode
+        )
+    }
+}
+
+/// Opaque identity of a source (for example a content hash). Printable ASCII, 1..=128 bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentId(String);
+
+impl ContentId {
+    pub fn parse(value: &str) -> Result<Self, ReelError> {
+        if value.is_empty() || value.len() > 128 || !value.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(ReelError::Corrupt { what: "content-id" });
+        }
+        Ok(Self(value.to_owned()))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Explicit resource bounds. Every provider checks them before allocating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Container structure bytes a probe may read (ISOBMFF `moov`, headers).
+    pub max_probe_bytes: u64,
+    /// Largest single chunk (frame / packet / audio slice) buffer.
+    pub max_chunk_bytes: usize,
+    /// Largest sample table a container index may expand.
+    pub max_samples: usize,
+    pub max_tracks: usize,
+    pub max_edit_entries: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_probe_bytes: 64 * 1024 * 1024,
+            max_chunk_bytes: 8 * 1024 * 1024,
+            max_samples: 4_000_000,
+            max_tracks: 64,
+            max_edit_entries: 4096,
+        }
+    }
+}
+
+/// Caller-issued read grant for one source revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grant {
+    pub content_id: ContentId,
+    pub revision: u64,
+    pub expected_len: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    /// Decoded frames / PCM samples.
+    Decoded,
+    /// Encoded packets in decode order (demux only).
+    Packets,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourcePreference {
+    Original,
+    Proxy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    Preview,
+    /// Full-resolution export: proxy preference is refused (`StrictOriginalRequired`).
+    Export,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentRequest {
+    /// Provider id (see `Registry::descriptors`).
+    pub codec: String,
+    pub start_pts: Ticks,
+    /// Frames, audio samples or presentation samples (packets), depending on the provider.
+    pub count: u64,
+    /// Container track id; `None` selects the first video track, else the first audio track.
+    pub track: Option<u32>,
+    pub output: OutputMode,
+    pub prefer: SourcePreference,
+    pub purpose: Purpose,
+    pub grant: Grant,
+    /// The caller's current revision of the source; must equal `grant.revision`.
+    pub expected_revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkKind {
+    VideoFrame,
+    AudioSamples,
+    Packet,
+}
+
+/// One bounded delivery unit. `bytes` borrows a reused buffer: valid only during `accept`.
+#[derive(Debug)]
+pub struct Chunk<'a> {
+    pub kind: ChunkKind,
+    /// Presentation time in ticks; negative only for pre-roll packets that precede presentation zero.
+    pub pts: i64,
+    pub duration: Ticks,
+    /// Zero-based index of the first unit in the source stream (frame, sample, or decode index).
+    pub index: u64,
+    pub units: u64,
+    pub sync: bool,
+    /// Decode-only packet needed to reach the requested frames; not part of the requested span.
+    pub preroll: bool,
+    /// Ticks at the start of this chunk that lie before the presented start (an edit list that begins
+    /// inside a sample): the consumer discards that much decoded output. `0` when nothing is trimmed.
+    pub trim_start: u64,
+    pub bytes: &'a [u8],
+}
+
+impl Chunk<'_> {
+    pub fn pts_ticks(&self) -> Option<Ticks> {
+        u64::try_from(self.pts).ok().map(Ticks::new)
+    }
+}
+
+pub trait ChunkSink {
+    fn accept(&mut self, chunk: Chunk<'_>) -> Result<(), ReelError>;
+}
+
+/// Pull side of an encode: fill `buf` with the next contiguous chunk, return its unit count.
+pub trait ChunkSource {
+    fn next_chunk(&mut self, buf: &mut Vec<u8>) -> Result<Option<u64>, ReelError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncodeParams {
+    Audio {
+        rate: u32,
+        channels: u16,
+        bits: u16,
+        float: bool,
+    },
+    Video {
+        width: u32,
+        height: u32,
+        ticks_per_frame: u64,
+        chroma: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodeSpec {
+    pub codec: String,
+    pub params: EncodeParams,
+    /// Declared total frames/samples: the segment is `complete` only when exactly this many were written.
+    pub total_units: u64,
+}
+
+/// Stream shape used to decide whether a proxy may stand in for the original.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamLayout {
+    pub kind: MediaKind,
+    pub codec: String,
+    pub width: u32,
+    pub height: u32,
+    /// Ticks per frame or per audio sample.
+    pub ticks_per_unit: u64,
+    pub units: u64,
+    pub channels: u16,
+    pub tracks: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disposition {
+    /// Requested time was unit-aligned and the exact requested units were delivered.
+    Exact,
+    /// Requested start fell inside a unit; the containing unit was delivered (actual differs from requested).
+    Approximate,
+    /// Fewer units than requested were produced; the receipt says how many.
+    Partial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Original,
+    Proxy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyNote {
+    NotRequested,
+    ProxyUsed,
+    NoProxyAvailable,
+    LayoutMismatchUsedOriginal,
+    /// Proxy failed grant verification or probing; the original was read instead.
+    ProxyUnusableUsedOriginal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start_pts: Ticks,
+    pub end_pts: Ticks,
+    pub units: u64,
+}
+
+/// Exact requested vs actual accounting (STU-ARC-015/021). Never a silent clamp or truncation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentReceipt {
+    pub requested: Span,
+    pub actual: Span,
+    pub disposition: Disposition,
+    pub source: SourceKind,
+    pub proxy_note: ProxyNote,
+    pub original_id: ContentId,
+    pub proxy_id: Option<ContentId>,
+    pub codec: String,
+    pub decoder_id: &'static str,
+    pub decoder_version: &'static str,
+    pub chunks: u32,
+    pub bytes_read: u64,
+    pub complete: bool,
+    /// False when any media-time to tick conversion in this segment needed rounding.
+    pub ticks_exact: bool,
+    /// Pixel layout of the `ChunkKind::VideoFrame` chunks of a compressed-video decode (`None` for every
+    /// other segment).
+    pub video: Option<VideoFormat>,
+}
+
+/// Chroma layout of a decoded video frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChromaFormat {
+    Mono,
+    Yuv420,
+    Yuv422,
+    Yuv444,
+}
+
+impl ChromaFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mono => "mono",
+            Self::Yuv420 => "420",
+            Self::Yuv422 => "422",
+            Self::Yuv444 => "444",
+        }
+    }
+}
+
+/// Where a decoded frame's colour code points came from. Never guessed: `Untagged` carries the ITU-T
+/// H.273 "unspecified" value (2) and leaves the assumption to the consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorOrigin {
+    /// The codec's own sequence header (authoritative).
+    SequenceHeader,
+    /// The container (`colr` nclx) because the bitstream carried no colour description.
+    Container,
+    Untagged,
+}
+
+/// ITU-T H.273 code points plus range. `full_range` always comes from the bitstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColorInfo {
+    pub primaries: u16,
+    pub transfer: u16,
+    pub matrix: u16,
+    pub full_range: bool,
+    pub origin: ColorOrigin,
+}
+
+/// Layout of one decoded frame as delivered in `Chunk::bytes`: planes Y, U, V in that order (Y only for
+/// `Mono`), each plane tightly packed row-major, one byte per sample at 8 bits and two bytes per sample
+/// (little-endian) above 8 bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoFormat {
+    pub width: u32,
+    pub height: u32,
+    pub bit_depth: u8,
+    pub chroma: ChromaFormat,
+    pub color: ColorInfo,
+}
+
+impl VideoFormat {
+    pub const fn bytes_per_sample(&self) -> usize {
+        if self.bit_depth > 8 { 2 } else { 1 }
+    }
+
+    /// `(width, height)` of each plane in delivery order.
+    pub fn plane_dims(&self) -> Vec<(u32, u32)> {
+        let (w, h) = (self.width, self.height);
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        match self.chroma {
+            ChromaFormat::Mono => vec![(w, h)],
+            ChromaFormat::Yuv420 => vec![(w, h), (cw, ch), (cw, ch)],
+            ChromaFormat::Yuv422 => vec![(w, h), (cw, h), (cw, h)],
+            ChromaFormat::Yuv444 => vec![(w, h), (w, h), (w, h)],
+        }
+    }
+
+    /// Total bytes of one packed frame; `None` when it does not fit `usize`.
+    pub fn frame_bytes(&self) -> Option<usize> {
+        let bps = self.bytes_per_sample() as u64;
+        let samples = self.plane_dims().iter().try_fold(0u64, |acc, (w, h)| {
+            acc.checked_add(u64::from(*w).checked_mul(u64::from(*h))?)
+        })?;
+        usize::try_from(samples.checked_mul(bps)?).ok()
+    }
+}
+
+pub trait MediaProvider: Send + Sync {
+    fn descriptor(&self) -> CodecDescriptor;
+    /// Cheap magic-number check on the first bytes of a source.
+    fn sniff(&self, _head: &[u8]) -> bool {
+        false
+    }
+    fn probe(
+        &self,
+        src: &mut dyn ReadSeek,
+        limits: &Limits,
+        cancel: &CancellationToken,
+    ) -> Result<StreamLayout, ReelError>;
+    #[allow(clippy::too_many_arguments)]
+    fn decode_segment(
+        &self,
+        src: &mut dyn ReadSeek,
+        req: &SegmentRequest,
+        limits: &Limits,
+        cancel: &CancellationToken,
+        sink: &mut dyn ChunkSink,
+    ) -> Result<SegmentReceipt, ReelError>;
+    /// `decode_segment` with explicit compressed-video routing (source trust and the external decoder).
+    /// Providers that never decode compressed video ignore the route; the container providers apply it
+    /// (see `crate::video`). `decode_segment` itself is the untrusted route with no external decoder.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_segment_routed(
+        &self,
+        src: &mut dyn ReadSeek,
+        req: &SegmentRequest,
+        limits: &Limits,
+        cancel: &CancellationToken,
+        sink: &mut dyn ChunkSink,
+        _route: &VideoRoute<'_>,
+    ) -> Result<SegmentReceipt, ReelError> {
+        self.decode_segment(src, req, limits, cancel, sink)
+    }
+    fn encode_segment(
+        &self,
+        _spec: &EncodeSpec,
+        _source: &mut dyn ChunkSource,
+        _out: &mut dyn Write,
+        _limits: &Limits,
+        _cancel: &CancellationToken,
+    ) -> Result<EncodeReceipt, ReelError> {
+        Err(ReelError::Unsupported {
+            what: "encode-not-implemented",
+        })
+    }
+}
+
+/// Result of staging an encode: not published unless `complete`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodeReceipt {
+    pub codec: String,
+    pub complete: bool,
+    pub units_written: u64,
+    pub units_declared: u64,
+    pub bytes_written: u64,
+    pub canceled: bool,
+}
+
+/// Verify the grant against the live source length and the caller's revision before any payload read.
+/// Returns the verified length.
+pub(crate) fn verify_grant(
+    src: &mut dyn ReadSeek,
+    grant: &Grant,
+    expected_revision: u64,
+) -> Result<u64, ReelError> {
+    if grant.revision != expected_revision {
+        return Err(ReelError::StaleGrant);
+    }
+    let len = src.seek(SeekFrom::End(0))?;
+    if len != grant.expected_len {
+        return Err(ReelError::StaleGrant);
+    }
+    src.seek(SeekFrom::Start(0))?;
+    Ok(len)
+}
+
+/// Export is exact or it fails (STU-ARC-021): a `Purpose::Export` request whose start is not a whole unit
+/// of the source is `NotExact { requested, nearest }`, where `nearest` is a start the export can be
+/// retried at (the start of the unit a preview would have delivered; for an edit-trimmed first sample,
+/// the next whole presented sample, see `isobmff::require_exact_track_start`). `nearest` is only
+/// evaluated for a refusal, so `Purpose::Preview` and an exact
+/// export do no extra work and see no new error. A `Purpose::Preview` request is not refused here. Every
+/// provider calls this BEFORE its first payload read and before the first `sink.accept`, so a refused
+/// export leaves the sink untouched (test `export_is_exact_or_error_for_every_provider`). Rounding of a
+/// media time to ticks (`ticks_exact == false`) is a receipt flag, not an export refusal.
+pub(crate) fn require_exact_start(
+    req: &SegmentRequest,
+    exact: bool,
+    nearest: impl FnOnce() -> Result<Ticks, ReelError>,
+) -> Result<(), ReelError> {
+    if req.purpose == Purpose::Export && !exact {
+        return Err(ReelError::NotExact {
+            requested: req.start_pts,
+            nearest: nearest()?,
+        });
+    }
+    Ok(())
+}
+
+/// Whether a delivery is complete, computed from the units it delivered against the units requested
+/// (SMB-REEL-ENG-1 R10: a constant `complete: true` reported Ok, Exact and complete for a packet
+/// delivery that handed over 2 of 4 requested units, test
+/// `repeated_media_sample_is_a_shortfall_not_a_silent_success`). A shortfall is `false` for a
+/// `Purpose::Preview` receipt (paired with `delivery_disposition`, which reports `Partial`) and the typed
+/// `Incomplete { requested, delivered }` for `Purpose::Export`, which is exact or fails.
+///
+/// `delivered` is the count of the provider's OWN delivery loop (its cursor or counter), never a number
+/// computed from the request (SMB-REEL-RECEIPTS, PLR-066): the wav, y4m, PCM, packet and mxf receipts take
+/// `complete`, `actual.units` and the end of `actual` from what their loop handed to the sink. The helper
+/// is unit-tested (`delivery_complete_is_computed_from_delivered_units`); each provider's call site is
+/// pinned by `delivery_tests` (`wav_receipt_states_what_the_loop_delivered`,
+/// `y4m_receipt_states_what_the_loop_delivered`, `pcm_receipt_states_what_the_loop_delivered`,
+/// `mxf_receipt_states_what_the_loop_delivered`), which shorten the loop with `short_loop` and fail when
+/// a receipt still states the requested count; the packet site by
+/// `repeated_media_sample_is_a_shortfall_not_a_silent_success`.
+pub(crate) fn delivery_complete(req: &SegmentRequest, delivered: u64) -> Result<bool, ReelError> {
+    if delivered == req.count {
+        return Ok(true);
+    }
+    if req.purpose == Purpose::Export {
+        return Err(ReelError::Incomplete {
+            requested: req.count,
+            delivered,
+        });
+    }
+    Ok(false)
+}
+
+/// The receipt disposition of a delivery: a shortfall is `Partial` whatever the start was; a complete
+/// delivery is `Exact` when the start was a whole unit and `Approximate` otherwise.
+pub(crate) fn delivery_disposition(exact_start: bool, complete: bool) -> Disposition {
+    match (complete, exact_start) {
+        (false, _) => Disposition::Partial,
+        (true, true) => Disposition::Exact,
+        (true, false) => Disposition::Approximate,
+    }
+}
+
+/// Test seam (V4-04: `cfg(test)` only, compiled into no product build). It makes a provider's delivery loop
+/// stop `units` short of the bound the request and the source give it, the way a defective loop would,
+/// without any error on the way: a receipt that states the requested count (or the requested end) then
+/// disagrees with what reached the sink, and the tests in `delivery_tests` fail on it. On every reachable
+/// input the loop delivers exactly the requested units (that is the loop invariant the receipts rely on),
+/// so without this seam a receipt computed from the request and one computed from the loop cannot be told
+/// apart. The seam is thread-local and reset when its guard drops.
+#[cfg(test)]
+pub(crate) mod short_loop {
+    use std::cell::Cell;
+
+    thread_local! {
+        static UNITS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Resets the seam when dropped.
+    pub(crate) struct Guard(());
+
+    /// The delivery loops of this thread stop `units` short of their bound until the guard drops.
+    pub(crate) fn engage(units: u64) -> Guard {
+        UNITS.with(|c| c.set(units));
+        Guard(())
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            UNITS.with(|c| c.set(0));
+        }
+    }
+
+    /// `bound` less the engaged shortfall (the bound itself while the seam is off).
+    pub(crate) fn bound(bound: u64) -> u64 {
+        bound.saturating_sub(UNITS.with(Cell::get))
+    }
+}
+
+/// `read_exact` that maps a short read to `Truncated { delivered }`.
+pub(crate) fn read_exact_or_truncated(
+    src: &mut dyn ReadSeek,
+    buf: &mut [u8],
+    delivered: u64,
+) -> Result<(), ReelError> {
+    src.read_exact(buf).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+            ReelError::Truncated { delivered }
+        } else {
+            ReelError::Io(e.kind())
+        }
+    })
+}
+
+/// `read_exact` for structural parsing: a short read is corruption of the structure.
+pub(crate) fn read_exact_structural(
+    src: &mut dyn ReadSeek,
+    buf: &mut [u8],
+    what: &'static str,
+) -> Result<(), ReelError> {
+    src.read_exact(buf).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+            ReelError::Corrupt { what }
+        } else {
+            ReelError::Io(e.kind())
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(purpose: Purpose, count: u64) -> SegmentRequest {
+        SegmentRequest {
+            codec: "test".into(),
+            start_pts: Ticks::new(0),
+            count,
+            track: None,
+            output: OutputMode::Packets,
+            prefer: SourcePreference::Original,
+            purpose,
+            grant: Grant {
+                content_id: ContentId::parse("model-unit").unwrap(),
+                revision: 1,
+                expected_len: 0,
+            },
+            expected_revision: 1,
+        }
+    }
+
+    /// Completeness follows the delivered count: equal is complete; any other count is a shortfall that a
+    /// preview reports (`Partial`) and an export refuses with the units it did deliver.
+    #[test]
+    fn delivery_complete_is_computed_from_delivered_units() {
+        for purpose in [Purpose::Preview, Purpose::Export] {
+            assert_eq!(delivery_complete(&request(purpose, 4), 4), Ok(true));
+        }
+        assert_eq!(
+            delivery_complete(&request(Purpose::Preview, 4), 2),
+            Ok(false)
+        );
+        assert_eq!(
+            delivery_complete(&request(Purpose::Export, 4), 2),
+            Err(ReelError::Incomplete {
+                requested: 4,
+                delivered: 2
+            })
+        );
+        // More units than requested is no more complete than fewer.
+        assert_eq!(
+            delivery_complete(&request(Purpose::Preview, 4), 5),
+            Ok(false)
+        );
+        assert_eq!(
+            delivery_disposition(true, true),
+            Disposition::Exact,
+            "whole start, all units"
+        );
+        assert_eq!(delivery_disposition(false, true), Disposition::Approximate);
+        assert_eq!(delivery_disposition(true, false), Disposition::Partial);
+        assert_eq!(delivery_disposition(false, false), Disposition::Partial);
+    }
+}

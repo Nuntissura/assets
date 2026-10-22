@@ -1,0 +1,48 @@
+# Machine-local path gate (workflow V4-03): tools/run-round.sh step 0 scans every text file under crates/*/src/** and
+# crates/*/tests/** line by line for a drive-letter path ((?<![A-Za-z0-9])[A-Za-z]:[/\\]) or a user-profile segment
+# (Users/ or Users\) and fails the round fast (exit 72) with file:line for any hit that is not pinned below.
+# Tests reach host data only through the documented corpus-root config (.config/oracle-corpus.toml, not scanned).
+# [pinned]: files whose CURRENT hits are test data, never opened as host paths (hostile-input vectors that the code
+# must refuse, synthetic catalog values, provenance records, populate-tool sources); value = exact hit count. A new
+# file with a hit, or more hits than pinned in a pinned file, fails step 0. Entries are lead-reviewable: removing one makes
+# that file strict. Baseline 2026-10-11 (steward survey at origin c2bbb9b; reasons below). A pinned count that
+# drops is reported (round.json step0_policy.machine_path_pins_dropped) and tightened at the next steward sync.
+schema = "hsk.studio.machine-paths@1"
+corpus_config = ".config/oracle-corpus.toml"
+
+[pinned]
+# hostile absolute-path vectors that Folio refuses as clip media paths
+"crates/hsk-studio-folio/tests/timeline_contract.rs" = 1
+# hostile absolute ZIP entry name that package refuses (absolute_name)
+"crates/hsk-studio-package/tests/foundation_contract.rs" = 1
+# hostile file:///c:/x link the web source patcher denies (FileScheme)
+"crates/hsk-studio-web/tests/source_dom_patch.rs" = 2
+# CSS escape test input (property name + colon + escaped 'i'), not a host path; lead decision 2026-10-11T16:59Z
+# (c:\\69mage-set, web ca91987)
+"crates/hsk-studio-web/src/cssurl/tests.rs" = 1
+# CSS escape test input (property name + colon + escaped 'i'), not a host path; lead decision 2026-10-11T16:59Z
+# (b:\\69mage-set, web 5e0598b)
+"crates/hsk-studio-web/tests/html5ever_differential/corpus.rs" = 1
+# hostile PDF /Launch action filespec (C:\\Budget Plan\\run.exe) press redacts, and its expected redacted string
+# (steward sync for R7, press 5a91fd7; lead-reviewable)
+"crates/hsk-studio-press/tests/pdf_delivery.rs" = 2
+# synthetic Lightroom catalog: root-folder values (absolute by Lightroom's format)
+"crates/hsk-studio-interop-lrcat/tests/fixtures/synthetic-main.expected.tsv" = 300
+"crates/hsk-studio-interop-lrcat/tests/fixtures/synthetic-wal.expected.tsv" = 301
+# Type evidence/provenance records (where reference files were taken from; tests read the vendored copies only)
+"crates/hsk-studio-type/tests/fixtures/FIXTURES_PROVENANCE.json" = 15
+"crates/hsk-studio-type/tests/fixtures/evidence/type-exact-oracle-recipe.json" = 4
+"crates/hsk-studio-type/tests/fixtures/evidence/type-foundation-preparation.json" = 13
+"crates/hsk-studio-type/tests/fixtures/evidence/type-reference-corrected-with-dlig.json" = 73
+# Prism oracle fixture: default_locations = source dirs of populate_corpus.py (copy tool); tests read the corpus root
+"crates/hsk-studio-prism/tests/oracle/t1_lcms2.json" = 1
+# render-gpu path redaction (SMB-RENDER-GPU-SUBMIT-FAULT 2e52586): doc examples of the drive-letter/UNC shapes the
+# redactor strips (pipeline.rs:104, :135, :137); lead decision 2026-10-15 (C41), C16 precedent
+"crates/hsk-studio-render-gpu/src/pipeline.rs" = 3
+# redact_paths test inputs (gpu_submit_fault.rs:262, :267, :283): example machine paths the redactor must reduce to
+# file names; never opened as host paths; lead decision 2026-10-15 (C41), C16 precedent
+"crates/hsk-studio-render-gpu/tests/gpu_submit_fault.rs" = 3
+# hostile linked-file path vectors (SMB-PACKAGE-COMPLETENESS-2 608dbce, linked_files.rs:56: "../outside.psd",
+# "/etc/passwd", "C:/x.psd" ...): inputs the package must refuse, never opened as host paths; steward C50, C16/C41
+# precedent, lead-reviewable
+"crates/hsk-studio-package/tests/linked_files.rs" = 1

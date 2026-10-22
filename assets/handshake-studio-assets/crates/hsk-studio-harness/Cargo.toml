@@ -1,0 +1,82 @@
+[package]
+name = "hsk-studio-harness"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+import = ["dep:hsk-studio-package", "hsk-studio-harness-core/import", "hsk-studio-harness-view/import"]
+import-psd = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "hsk-studio-harness-core/import-psd", "hsk-studio-harness-view/import-psd"]
+import-raw = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-develop", "hsk-studio-harness-core/import-raw", "hsk-studio-harness-view/import-raw"]
+import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-tiff", "hsk-studio-harness-core/import-tiff", "hsk-studio-harness-view/import-tiff"]
+import-pdf = ["import", "dep:hsk-studio-press", "hsk-studio-harness-core/import-pdf", "hsk-studio-harness-view/import-pdf"]
+import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster", "hsk-studio-harness-core/import-raster", "hsk-studio-harness-view/import-raster"]
+import-affinity = ["import-raster", "dep:hsk-studio-interop-affinity", "hsk-studio-harness-core/import-affinity", "hsk-studio-harness-view/import-affinity"]
+viewer = ["layout-ui", "import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig", "vector-interop", "hsk-studio-harness-view/viewer"]
+vector-interop = ["import-pdf", "dep:hsk-studio-interop-vector", "hsk-studio-harness-view/vector-interop"]
+layout-ui = ["dep:egui", "dep:hsk-studio-layout", "hsk-studio-harness-view/layout-ui"]
+desktop = ["viewer", "dep:eframe", "hsk-studio-render-gpu/shared-device", "hsk-studio-harness-view/desktop"]
+media = ["viewer", "dep:hsk-studio-reel", "hsk-studio-reel/prores", "hsk-studio-composite/motion", "hsk-studio-harness-view/media"]
+media-native = ["media", "dep:hsk-studio-reel-native", "hsk-studio-reel-native/mf", "hsk-studio-reel-native/av1", "hsk-studio-harness-view/media-native"]
+os-encode = ["media-native", "hsk-studio-reel-native/os-encode", "hsk-studio-harness-view/os-encode"]
+audio-device = ["viewer", "dep:hsk-studio-score-device", "hsk-studio-harness-view/audio-device"]
+audio-batch = ["media", "dep:hsk-studio-score", "hsk-studio-harness-view/audio-batch"]
+audio-plugin = ["audio-batch", "dep:hsk-studio-score-plugin", "hsk-studio-harness-view/audio-plugin"]
+studio-aac = ["media", "hsk-studio-reel/studio-aac", "hsk-studio-harness-view/studio-aac"]
+
+[dependencies]
+hsk-studio-harness-core = { path = "../hsk-studio-harness-core", version = "=0.1.0", default-features = false }
+hsk-studio-harness-view = { path = "../hsk-studio-harness-view", version = "=0.1.0", default-features = false }
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-session = { path = "../hsk-studio-session", version = "=0.1.0", default-features = false }
+hsk-studio-controls = { path = "../hsk-studio-controls", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-psd = { path = "../hsk-studio-interop-psd", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-develop = { path = "../hsk-studio-develop", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-tiff = { path = "../hsk-studio-interop-tiff", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-press = { path = "../hsk-studio-press", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-raster = { path = "../hsk-studio-interop-raster", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-affinity = { path = "../hsk-studio-interop-affinity", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-render-cpu = { path = "../hsk-studio-render-cpu", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-render-gpu = { path = "../hsk-studio-render-gpu", version = "=0.1.0", default-features = false, optional = true }
+# Text tool shaping (lane SMB-HARNESS-UI-3; edge harness -> type approved by the coordinator 2026-10-14).
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false, optional = true }
+# Vector tools: anchor path model, shapes, pathfinder (lane SMB-ILLUSTRATOR-PEN; NEW edge harness -> nib, dep-requests 2026-10-15T04:20:17Z, lead report).
+hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false, optional = true }
+# Program monitor (lane SMB-PULSE-PLAYBACK; edge harness -> pulse lead-approved 2026-10-15).
+hsk-studio-pulse = { path = "../hsk-studio-pulse", version = "=0.1.0", default-features = false, optional = true }
+# Prototype play mode (lane SMB-HARNESS-PROTOTYPE-PLAY; edges harness -> components and harness -> interop-fig lead-approved 2026-10-15, optional under viewer).
+hsk-studio-components = { path = "../hsk-studio-components", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-fig = { path = "../hsk-studio-interop-fig", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-vector = { path = "../hsk-studio-interop-vector", version = "=0.1.0", default-features = false, optional = true }
+# Monitor decode hook and audio out (lane SMB-PULSE-PLAYBACK-2; edges harness -> reel, reel-native, score-device lead-approved 2026-10-15, steward 2390395).
+hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-reel-native = { path = "../hsk-studio-reel-native", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-score-device = { path = "../hsk-studio-score-device", version = "=0.1.0", default-features = false, optional = true }
+# Batch effect chain (lane SMB-AUDIO-IMPORT-2; NEW EDGE harness -> score, lead brief 2026-10-15, steward to add).
+hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false, optional = true }
+# Plugin on a waveform selection (lane SMB-AU-WAVEFORM-EDITOR slice 4b; NEW EDGE harness -> score-plugin, lead-approved 2026-10-16, dep-requests 2026-10-16T08:06:21Z).
+hsk-studio-score-plugin = { path = "../hsk-studio-score-plugin", version = "=0.1.0", default-features = false, optional = true }
+# Layout editing surface (lane SMB-LAYOUT-UI; NEW EDGE harness -> layout, dep-requests 2026-10-15, lead report).
+hsk-studio-layout = { path = "../hsk-studio-layout", version = "=0.1.0", default-features = false, optional = true }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+egui = { version = "=0.33.3", default-features = false, features = ["default_fonts"], optional = true }
+eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "accesskit"], optional = true }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "studio-harness"
+path = "examples/studio-harness.rs"
+
+[[bin]]
+name = "studio-harness"
+path = "src/bin/studio-harness.rs"
+required-features = ["desktop"]

@@ -1,0 +1,292 @@
+//! Lane SMB-LR-LIBRARY-WRITE slice 2: XMP sidecar read/write for develop settings (crs:) and
+//! library fields, byte-wise preservation of unknown content, hostile packets, and the write path
+//! through the CKC port (test-only double). The packet below is hand-written in the shape of a
+//! Lightroom Classic sidecar; Camera Raw names and formats are UNVERIFIED (D5).
+use hsk_studio_accord::DomainId;
+use hsk_studio_develop::{DevelopRecipe, ProfileBinding, VignetteStyle};
+use hsk_studio_interop_lrcat::{
+    LibrarySidecar, SidecarUpdate, WhiteBalanceSource, XmpLimits, XmpRating, read_sidecar, read_sidecar_via_port, write_sidecar,
+    write_sidecar_via_port,
+};
+use hsk_studio_kernel_bindings::{ActorKind, AssetFacts, AssetId, CkcActor, CkcError, CkcLimits, CkcTestDouble, SidecarPlacement};
+
+fn recipe() -> DevelopRecipe {
+    let profile = ProfileBinding { profile_id: DomainId::parse("SCPF-019abcde-0000-7000-8000-000000000001").unwrap(), sha256: [7; 32] };
+    DevelopRecipe::native([1.0; 3], [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], profile)
+}
+
+fn text_has_crs_decl(b: &[u8]) -> bool {
+    String::from_utf8_lossy(b).contains("xmlns:crs=\"http://ns.adobe.com/camera-raw-settings/1.0/\"")
+}
+
+fn lim() -> XmpLimits {
+    XmpLimits::default()
+}
+
+/// Lightroom-shaped sidecar: attribute and element forms, unknown namespaces, a tone-curve
+/// sequence and a nested mask structure (crs: but unmanaged), comments, CDATA, single quotes.
+const SIDECAR: &str = r#"<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 7.0-c000 1.000000, 0000/00/00-00:00:00        ">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:aux="http://ns.adobe.com/exif/1.0/aux/"
+    xmlns:camera="http://ns.adobe.com/camera-raw-settings/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:vendor="urn:example:vendor"
+   xmp:Rating="3"
+   xmp:Label='Red'
+   aux:Lens="24-70mm F2.8 &amp; more"
+   camera:Version="15.0"
+   camera:ProcessVersion="11.0"
+   camera:WhiteBalance="As Shot"
+   camera:Temperature="5200"
+   camera:Exposure2012="+0.50"
+   camera:Contrast2012="+12"
+   camera:Sharpness="40"
+   camera:LensProfileEnable="1"
+   camera:HasCrop="False"
+   vendor:Opaque="keep &lt;me&gt; exactly">
+   <!-- vendor comment: must survive -->
+   <camera:Clarity2012>+8</camera:Clarity2012>
+   <camera:ToneCurvePV2012>
+    <rdf:Seq>
+     <rdf:li>0, 0</rdf:li>
+     <rdf:li>255, 255</rdf:li>
+    </rdf:Seq>
+   </camera:ToneCurvePV2012>
+   <camera:MaskGroupBasedCorrections>
+    <rdf:Seq>
+     <rdf:li rdf:parseType="Resource">
+      <camera:What>Correction</camera:What>
+      <camera:CorrectionMasks><rdf:Seq><rdf:li camera:What="Mask/Gradient" camera:ZeroX="0.5"/></rdf:Seq></camera:CorrectionMasks>
+     </rdf:li>
+    </rdf:Seq>
+   </camera:MaskGroupBasedCorrections>
+   <vendor:Note><![CDATA[raw <cdata> & text]]></vendor:Note>
+   <dc:subject>
+    <rdf:Bag>
+     <rdf:li>Rome</rdf:li>
+     <rdf:li>Trip</rdf:li>
+    </rdf:Bag>
+   </dc:subject>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#;
+
+const UNKNOWN_BLOCKS: [&str; 6] = [
+    "aux:Lens=\"24-70mm F2.8 &amp; more\"",
+    "vendor:Opaque=\"keep &lt;me&gt; exactly\"",
+    "<!-- vendor comment: must survive -->",
+    "<camera:ToneCurvePV2012>\n    <rdf:Seq>\n     <rdf:li>0, 0</rdf:li>\n     <rdf:li>255, 255</rdf:li>\n    </rdf:Seq>\n   </camera:ToneCurvePV2012>",
+    "<camera:CorrectionMasks><rdf:Seq><rdf:li camera:What=\"Mask/Gradient\" camera:ZeroX=\"0.5\"/></rdf:Seq></camera:CorrectionMasks>",
+    "<vendor:Note><![CDATA[raw <cdata> & text]]></vendor:Note>",
+];
+
+#[test]
+fn sidecar_roundtrip_of_crs_and_library_fields() {
+    // A recipe with values in many managed groups, written to a fresh packet and read back.
+    let mut r = recipe();
+    r.exposure_stops = -1.25;
+    r.adjust.tone.contrast = 20.0;
+    r.adjust.tone.blacks = -15.0;
+    r.adjust.presence.vibrance = 30.0;
+    r.adjust.detail.texture = 10.0;
+    r.adjust.detail.sharpen.radius = 1.5;
+    r.adjust.mixer.bands[5].saturation = -40.0;
+    r.adjust.grayscale.bands[0] = 25.0;
+    r.adjust.grading.midtones.hue = 210.0;
+    r.adjust.grading.balance = -20.0;
+    r.adjust.parametric.darks = -10.0;
+    r.adjust.effects.grain.amount = 35.0;
+    r.adjust.effects.grain.seed = 4_000_000_000;
+    r.adjust.effects.vignette.style = VignetteStyle::ColourPriority;
+    r.adjust.calibration.red_hue = 12.0;
+    r.adjust.geometry.perspective_rotate = -2.5;
+    r.crop.left = 0.125;
+    r.crop.right = 0.875;
+    r.crop.angle = 3.25;
+    r.enables.enable_detail = true;
+    r.enables.enable_colour_adjustments = true;
+    r.enables.enable_grayscale_mix = true;
+    r.enables.enable_tone_curve = true;
+    r.enables.enable_effects = true;
+    r.enables.enable_calibration = true;
+    r.enables.enable_transform = true;
+    let lib = LibrarySidecar {
+        rating: Some(XmpRating::Rejected),
+        label: Some("Purple & <friends>".into()),
+        keywords: vec!["Rome".into(), "Trip".into()],
+        hierarchical_keywords: vec![vec!["Places".into(), "Italy".into(), "Rome".into()]],
+    };
+    let bytes = write_sidecar(None, &SidecarUpdate { recipe: Some(&r), library: Some(&lib) }, &lim()).unwrap();
+    let back = read_sidecar(&bytes, &recipe(), &lim()).unwrap();
+    assert_eq!(back.recipe, r, "every managed value survives write + read");
+    assert_eq!(back.library, lib);
+    assert_eq!((back.white_balance, back.losses.len(), back.preserved_properties), (WhiteBalanceSource::AsShot, 0, 0));
+    // Writing the read result again changes nothing (byte-identical), and so does writing to it.
+    let again = write_sidecar(Some(&bytes), &SidecarUpdate { recipe: Some(&back.recipe), library: Some(&back.library) }, &lim()).unwrap();
+    assert_eq!(again, bytes);
+    // Defaults are not written into a fresh packet: an identity, as-shot recipe yields no crs:
+    // property at all (a reader infers the same values).
+    let plain = String::from_utf8(write_sidecar(None, &SidecarUpdate { recipe: Some(&recipe()), library: None }, &lim()).unwrap()).unwrap();
+    assert!(!plain.contains("crs:") && plain.contains("<rdf:Description rdf:about=\"\">"), "{plain}");
+    assert!(text_has_crs_decl(&bytes));
+    // Absolute white balance is written as Custom and reported (not applied) on read.
+    let mut wb = r.clone();
+    wb.adjust.absolute_white_balance = Some(hsk_studio_develop::AbsoluteWhiteBalance { kelvin: 4800.0, tint: 7.0 });
+    wb.white_balance_mode = hsk_studio_develop::WbMode::Temperature;
+    let text = String::from_utf8(write_sidecar(None, &SidecarUpdate { recipe: Some(&wb), library: None }, &lim()).unwrap()).unwrap();
+    assert!(text.contains("crs:WhiteBalance=\"Custom\"") && text.contains("crs:Temperature=\"4800\"") && text.contains("crs:Tint=\"+7\""));
+    let read = read_sidecar(text.as_bytes(), &recipe(), &lim()).unwrap();
+    assert!(matches!(read.white_balance, WhiteBalanceSource::Absolute(a) if a.kelvin == 4800.0 && a.tint == 7.0));
+    assert_eq!(read.recipe.adjust.absolute_white_balance, None, "needs the raw to apply");
+}
+
+#[test]
+fn edits_touch_only_managed_spans_and_keep_unknown_bytes() {
+    let read = read_sidecar(SIDECAR.as_bytes(), &recipe(), &lim()).unwrap();
+    // Element and attribute forms read; the gated groups with authored values are enabled.
+    assert_eq!((read.recipe.exposure_stops, read.recipe.adjust.tone.contrast, read.recipe.adjust.presence.clarity), (0.5, 12.0, 8.0));
+    assert_eq!(read.recipe.adjust.detail.sharpen.amount, 40.0);
+    assert!(read.recipe.enables.enable_detail && read.recipe.adjust.optics.lens_profile_enable);
+    assert_eq!(read.library.rating, Some(XmpRating::Stars(3)));
+    assert_eq!((read.library.label.as_deref(), read.library.keywords.len()), (Some("Red"), 2));
+    // Unknown: aux:Lens, vendor:Opaque, crs Version/ProcessVersion, ToneCurvePV2012, mask groups, vendor:Note.
+    assert_eq!(read.preserved_properties, 7);
+    // No-op write: identical bytes.
+    let same = write_sidecar(Some(SIDECAR.as_bytes()), &SidecarUpdate { recipe: Some(&read.recipe), library: Some(&read.library) }, &lim()).unwrap();
+    assert_eq!(same, SIDECAR.as_bytes());
+    // Edit: exposure (attribute), clarity (element form), a key absent before (Vibrance), rating,
+    // label removed, keyword added, a hierarchical keyword in a namespace not declared yet (lr:).
+    let mut r = read.recipe.clone();
+    r.exposure_stops = 1.0;
+    r.adjust.presence.clarity = -5.0;
+    r.adjust.presence.vibrance = 15.0;
+    let lib = LibrarySidecar {
+        rating: Some(XmpRating::Stars(5)),
+        label: None,
+        keywords: vec!["Rome".into(), "Trip".into(), "Night".into()],
+        hierarchical_keywords: vec![vec!["Places".into(), "Rome".into()]],
+    };
+    let out = String::from_utf8(write_sidecar(Some(SIDECAR.as_bytes()), &SidecarUpdate { recipe: Some(&r), library: Some(&lib) }, &lim()).unwrap()).unwrap();
+    for block in UNKNOWN_BLOCKS {
+        assert_eq!(out.matches(block).count(), 1, "unknown content kept verbatim: {block}");
+    }
+    assert!(out.contains("camera:Exposure2012=\"+1.00\"") && out.contains("<camera:Clarity2012>-5</camera:Clarity2012>"));
+    assert!(out.contains("camera:Vibrance=\"+15\""), "existing prefix reused for the crs namespace");
+    assert!(out.contains("xmp:Rating=\"5\"") && !out.contains("xmp:Label"));
+    assert!(out.contains("xmlns:lr=\"http://ns.adobe.com/lightroom/1.0/\"") && out.contains("<rdf:li>Places|Rome</rdf:li>"));
+    // Bytes before the first edited span and after the last one are untouched.
+    let first = SIDECAR.find("xmp:Rating=").unwrap();
+    assert_eq!(&out[..first], &SIDECAR[..first]);
+    let tail = SIDECAR.find("  </rdf:Description>").unwrap();
+    assert!(out.ends_with(&SIDECAR[tail..]));
+    let back = read_sidecar(out.as_bytes(), &recipe(), &lim()).unwrap();
+    assert_eq!((back.recipe.exposure_stops, back.recipe.adjust.presence.clarity, back.recipe.adjust.presence.vibrance), (1.0, -5.0, 15.0));
+    assert_eq!(back.library, lib);
+    assert_eq!(back.preserved_properties, 7);
+    // Self-closing description: children force an open/close pair.
+    let tiny = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:q="urn:q" q:k="v"/></rdf:RDF></x:xmpmeta>"#;
+    let lib2 = LibrarySidecar { keywords: vec!["A".into()], ..LibrarySidecar::default() };
+    let t = String::from_utf8(write_sidecar(Some(tiny.as_bytes()), &SidecarUpdate { recipe: None, library: Some(&lib2) }, &lim()).unwrap()).unwrap();
+    assert!(t.contains("q:k=\"v\"") && t.contains("</rdf:Description>"));
+    assert_eq!(read_sidecar(t.as_bytes(), &recipe(), &lim()).unwrap().library.keywords, ["A"]);
+}
+
+#[test]
+fn hostile_sidecars_are_refused_typed() {
+    let l = lim();
+    let wrap = |inner: &str| {
+        format!(r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/"{inner}</rdf:Description></rdf:RDF></x:xmpmeta>"#)
+    };
+    let deep = format!("<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">{}{}</rdf:RDF>", "<a>".repeat(100), "</a>".repeat(100));
+    let many_keywords = wrap(&format!("><dc:subject><rdf:Bag>{}</rdf:Bag></dc:subject>", "<rdf:li>k</rdf:li>".repeat(5000)));
+    let cases: Vec<(Vec<u8>, &str)> = vec![
+        (b"<!DOCTYPE x [<!ENTITY a \"b\">]><x/>".to_vec(), "xmp_doctype_refused"),
+        (wrap(">").replace("</x:xmpmeta>", "").into_bytes(), "xmp_unclosed_element"),
+        (wrap("></crs:Oops>").into_bytes(), "xmp_tag_mismatch"),
+        (deep.into_bytes(), "xmp_depth_exceeded"),
+        (many_keywords.into_bytes(), "xmp_keywords_exceeded"),
+        (wrap(" crs:Exposure2012=\"1\"><crs:Exposure2012>2</crs:Exposure2012>").into_bytes(), "xmp_property_repeated"),
+        (wrap(" crs:A=\"1\" crs:A=\"2\">").into_bytes(), "xmp_attribute_repeated"),
+        (wrap(" zz:Exposure2012=\"1\">").into_bytes(), "xmp_unbound_prefix"),
+        (wrap(" crs:Exposure2012=\"<1\">").into_bytes(), "xmp_attribute_value"),
+        (wrap(" crs:Unmanaged=\"&bogus;\">").into_bytes(), "xmp_bad_reference"),
+        (vec![0x3c, 0xff, 0xfe], "xmp_not_utf8"),
+        (vec![b' '; 5 * 1024 * 1024], "xmp_input_too_large"),
+        ([b"<r>".to_vec(), b"<a/>".repeat(70_000), b"</r>".to_vec()].concat(), "xmp_nodes_exceeded"),
+    ];
+    for (bytes, code) in &cases {
+        let got = read_sidecar(bytes, &recipe(), &l).unwrap_err().code();
+        assert_eq!(got, *code, "{}", String::from_utf8_lossy(&bytes[..bytes.len().min(80)]));
+    }
+    // Hostile VALUES are typed losses on read, never clamped or applied.
+    let bad = wrap(" crs:Exposure2012=\"+9.0\" crs:Contrast2012=\"NaN\" crs:Sharpness=\"lots\" crs:PostCropVignetteStyle=\"3\" crs:EnableDetail=\"maybe\" crs:WhiteBalance=\"Daylight\">");
+    let read = read_sidecar(bad.as_bytes(), &recipe(), &l).unwrap();
+    let codes: Vec<&str> = read.losses.iter().map(|(_, c)| *c).collect();
+    assert_eq!(codes, ["crs_value_out_of_range", "crs_value_out_of_range", "crs_value_not_number", "crs_vignette_style_unsupported", "crs_value_not_boolean", "crs_white_balance_preset_unmapped"]);
+    assert_eq!(read.recipe, recipe(), "nothing applied");
+    // Writes refuse what cannot be represented, before producing bytes.
+    let w = |lib: LibrarySidecar| write_sidecar(None, &SidecarUpdate { recipe: None, library: Some(&lib) }, &l).unwrap_err().code();
+    assert_eq!(w(LibrarySidecar { hierarchical_keywords: vec![vec!["a|b".into()]], ..Default::default() }), "xmp_keyword_separator");
+    assert_eq!(w(LibrarySidecar { keywords: vec!["k".into(); 5000], ..Default::default() }), "xmp_keywords_exceeded");
+    assert_eq!(w(LibrarySidecar { label: Some("a\u{0}b".into()), ..Default::default() }), "xmp_control_character");
+    let mut nan = recipe();
+    nan.adjust.tone.contrast = f64::NAN;
+    assert_eq!(write_sidecar(None, &SidecarUpdate { recipe: Some(&nan), library: None }, &l).unwrap_err().code(), "crs_recipe_invalid");
+    // A managed key in an unexpected shape is not overwritten blindly.
+    let shaped = wrap("><crs:Exposure2012><rdf:Seq><rdf:li>1</rdf:li></rdf:Seq></crs:Exposure2012>");
+    let mut r = recipe();
+    r.exposure_stops = 2.0;
+    assert_eq!(write_sidecar(Some(shaped.as_bytes()), &SidecarUpdate { recipe: Some(&r), library: None }, &l).unwrap_err().code(), "xmp_property_shape");
+}
+
+#[test]
+fn sidecar_writes_go_through_the_ckc_port_with_revision_cas() {
+    let d = CkcTestDouble::new(CkcLimits::default());
+    let actor = CkcActor { kind: ActorKind::Operator, principal_id: "op-1".into() };
+    let asset = AssetId::from_bytes([3; 16]);
+    d.seed_asset(asset.clone(), AssetFacts::default()).unwrap();
+    // No sidecar yet: a write creates one (expected revision None).
+    assert_eq!(read_sidecar_via_port(&d, &actor, &asset, &recipe(), &lim()).unwrap(), None);
+    let mut r = recipe();
+    r.adjust.tone.shadows = 25.0;
+    let up = SidecarUpdate { recipe: Some(&r), library: None };
+    let rc = write_sidecar_via_port(&d, &actor, &asset, &up, SidecarPlacement::BesideOriginal, "x1", &lim()).unwrap().unwrap();
+    assert_eq!((rc.command_id, rc.revision), ("asset.write_xmp_sidecar_bytes", 1));
+    let (read, rev) = read_sidecar_via_port(&d, &actor, &asset, &recipe(), &lim()).unwrap().unwrap();
+    assert_eq!((read.recipe.adjust.tone.shadows, rev), (25.0, 1));
+    // Unchanged bytes: no command, no event.
+    let events = d.events();
+    assert_eq!(write_sidecar_via_port(&d, &actor, &asset, &up, SidecarPlacement::BesideOriginal, "x2", &lim()).unwrap(), None);
+    assert_eq!(d.events(), events);
+    // Seeded Lightroom-shaped sidecar: an edit keeps its unknown bytes in what CKC stores.
+    let other = AssetId::from_bytes([4; 16]);
+    d.seed_asset(other.clone(), AssetFacts::default()).unwrap();
+    d.seed_sidecar(other.clone(), SIDECAR.as_bytes().to_vec()).unwrap();
+    let (base, rev) = read_sidecar_via_port(&d, &actor, &other, &recipe(), &lim()).unwrap().unwrap();
+    let mut edited = base.recipe.clone();
+    edited.adjust.tone.contrast = -30.0;
+    let rc = write_sidecar_via_port(&d, &actor, &other, &SidecarUpdate { recipe: Some(&edited), library: None }, SidecarPlacement::BesideOriginal, "x3", &lim()).unwrap().unwrap();
+    assert_eq!((rev, rc.revision), (1, 2));
+    // A stale precondition (someone rewrote the sidecar between read and write) is refused by the
+    // port contract: replaying the request with the old revision fails.
+    let stale = hsk_studio_kernel_bindings::XmpSidecarBytesWrite {
+        idempotency_key: "x4".into(),
+        asset_id: other.clone(),
+        expected_sidecar_revision: Some(1),
+        bytes: SIDECAR.as_bytes().to_vec(),
+        placement: SidecarPlacement::BesideOriginal,
+    };
+    use hsk_studio_kernel_bindings::CkcCatalogPort;
+    assert_eq!(d.write_xmp_sidecar_bytes(&actor, &stale).unwrap_err(), CkcError::StaleRevision { current: 2 });
+    let creating = hsk_studio_kernel_bindings::XmpSidecarBytesWrite { idempotency_key: "x5".into(), expected_sidecar_revision: None, ..stale.clone() };
+    assert_eq!(d.write_xmp_sidecar_bytes(&actor, &creating).unwrap_err(), CkcError::StaleRevision { current: 2 });
+    let huge = hsk_studio_kernel_bindings::XmpSidecarBytesWrite { idempotency_key: "x6".into(), bytes: vec![b' '; 5 << 20], expected_sidecar_revision: Some(2), ..stale };
+    assert_eq!(d.write_xmp_sidecar_bytes(&actor, &huge).unwrap_err().code(), "ckc_sidecar_bytes");
+    // Denied actor: the read itself is unauthorized (no existence leak).
+    d.deny("op-1").unwrap();
+    assert_eq!(read_sidecar_via_port(&d, &actor, &other, &recipe(), &lim()).unwrap_err().code(), "ckc_unauthorized");
+}

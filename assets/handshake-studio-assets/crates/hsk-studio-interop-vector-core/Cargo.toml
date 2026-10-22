@@ -1,0 +1,25 @@
+[package]
+name = "hsk-studio-interop-vector-core"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "dxf_import"
+path = "tests/dxf_import.rs"
+
+[[test]]
+name = "eps_import"
+path = "tests/eps_import.rs"

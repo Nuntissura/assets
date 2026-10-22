@@ -1,0 +1,14 @@
+# GPU proof policy of tests/gpu_plan.rs (workflow V4-03). Plain `key = value` lines (no tables), read at
+# compile time by the test binary (include_str!), so no test touches a machine path and the round
+# entrypoint, which unsets every HSK_* variable, sees the same value as an editor run.
+#
+# require_gpu = true   a GPU-execution proof that finds no adapter FAILS with a message starting
+#                      `NOT_PROVEN: no adapter` (brief test 1: never skipped-as-pass). This is the
+#                      committed default: the validator host has a supported backend.
+# require_gpu = false  a machine without a GPU may print `NOT_PROVEN: no adapter; <proof> not run` and
+#                      pass; tools/run-round.sh counts every such line and exits 73 (never 0), so the
+#                      claim stays NOT_PROVEN. Opting out is a reviewed change to THIS file.
+#
+# HSK_STUDIO_TEST_REQUIRE_GPU=1 still forces strict mode; it can never relax the file.
+schema = "hsk.studio.render-gpu-proof@1"
+require_gpu = true

@@ -1,0 +1,609 @@
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_pigment::Rect;
+use hsk_studio_pigment::render_plan::*;
+
+fn bounded_case(body: impl FnOnce() + Send + 'static) {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+        sync::mpsc,
+        time::Duration,
+    };
+    let (tx, rx) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(catch_unwind(AssertUnwindSafe(body)));
+    });
+    match rx.recv_timeout(Duration::from_secs(20)) {
+        Ok(Ok(())) => {}
+        Ok(Err(p)) => resume_unwind(p),
+        Err(_) => panic!("bounded_case exceeded 20 s"),
+    }
+}
+
+const R: Rect = Rect {
+    x: 0,
+    y: 0,
+    width: 2,
+    height: 1,
+};
+
+fn target() -> OutputTarget {
+    OutputTarget {
+        extent: R,
+        format: SampleFormat::RgbF32Le,
+        alpha: AlphaConvention::Straight,
+        space: ColourTag {
+            profile_sha256: [7; 32],
+            blend_space: BlendSpace::LinearLight,
+        },
+    }
+}
+
+fn layer(input: u32, mode: StudioBlendMode) -> Layer {
+    Layer {
+        input: PlanNodeId(input),
+        mode,
+        opacity: 1.0,
+        fill_opacity: 1.0,
+        mask: None,
+    }
+}
+
+/// tile(0) + solid(1) in an isolated group(2) with `mode` on the solid; pass-through group(3)
+/// holding group(2); root group(4) referencing (3) as pass-through.
+fn plan(mode: StudioBlendMode) -> RenderPlan {
+    RenderPlan {
+        revision: 9,
+        target: target(),
+        nodes: vec![
+            PlanNode::Tile(TileInput {
+                key: SourceKey(0),
+                placement: R,
+                format: SampleFormat::RgbF32Le,
+                alpha: AlphaConvention::Straight,
+                colour_sha256: [1; 32],
+                alpha_sha256: [2; 32],
+            }),
+            PlanNode::Solid {
+                rect: R,
+                rgba: [1.0, 0.0, 0.0, 1.0],
+            },
+            PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![
+                    layer(0, StudioBlendMode::Normal),
+                    Layer {
+                        opacity: 0.5,
+                        ..layer(1, mode)
+                    },
+                ],
+            }),
+            PlanNode::Group(Group {
+                isolated: false,
+                layers: vec![layer(2, StudioBlendMode::Normal)],
+            }),
+            PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![layer(3, StudioBlendMode::PassThrough)],
+            }),
+        ],
+        root: PlanNodeId(4),
+    }
+}
+
+#[test]
+fn plan_validation_refuses_malformed_plans() {
+    bounded_case(|| {
+        let limits = PlanLimits::default();
+        let ok = plan(StudioBlendMode::Multiply);
+        let ops = ok.validate(&limits).expect("valid plan");
+        for op in [
+            Operator::Tile,
+            Operator::Solid,
+            Operator::Blend(StudioBlendMode::Multiply),
+            Operator::IsolatedGroup,
+            Operator::PassThroughGroup,
+        ] {
+            assert!(ops.contains(&op), "missing {op:?}");
+        }
+        // Group(3) is non-isolated and only referenced by the root's PassThrough layer.
+        assert!(!ops.contains(&Operator::NonIsolatedBlendedGroup));
+        let digest = ok.digest().unwrap();
+        assert_eq!(digest, ok.digest().unwrap());
+        assert_ne!(digest, plan(StudioBlendMode::Screen).digest().unwrap());
+
+        let mut p = plan(StudioBlendMode::Normal);
+        let PlanNode::Group(g) = &mut p.nodes[2] else {
+            unreachable!()
+        };
+        g.layers[0].input = PlanNodeId(3);
+        assert_eq!(
+            p.validate(&limits),
+            Err(PlanError::ForwardReference { node: 2, input: 3 })
+        );
+        for (mode, err) in [
+            (
+                StudioBlendMode::PassThrough,
+                PlanError::ModeNotApplicable {
+                    node: 2,
+                    mode: StudioBlendMode::PassThrough,
+                },
+            ),
+            (
+                StudioBlendMode::Behind,
+                PlanError::ModeNotApplicable {
+                    node: 2,
+                    mode: StudioBlendMode::Behind,
+                },
+            ),
+        ] {
+            assert_eq!(plan(mode).validate(&limits), Err(err));
+        }
+        let mut p = plan(StudioBlendMode::Normal);
+        let PlanNode::Group(g) = &mut p.nodes[3] else {
+            unreachable!()
+        };
+        g.isolated = true;
+        assert_eq!(
+            p.validate(&limits),
+            Err(PlanError::PassThroughOnIsolated { node: 4 })
+        );
+        let mut p = plan(StudioBlendMode::Normal);
+        let PlanNode::Group(g) = &mut p.nodes[2] else {
+            unreachable!()
+        };
+        g.layers[1].opacity = f32::NAN;
+        assert_eq!(p.validate(&limits), Err(PlanError::NonFinite { node: 2 }));
+        g_set_fill(&mut p);
+        assert_eq!(p.validate(&limits), Err(PlanError::OutOfRange { node: 2 }));
+        let mut p = plan(StudioBlendMode::Normal);
+        p.root = PlanNodeId(5);
+        assert_eq!(p.validate(&limits), Err(PlanError::RootOutOfRange));
+        let tight = PlanLimits {
+            max_depth: 2,
+            ..limits
+        };
+        assert_eq!(
+            plan(StudioBlendMode::Normal).validate(&tight),
+            Err(PlanError::TooDeep)
+        );
+    });
+}
+
+fn g_set_fill(p: &mut RenderPlan) {
+    let PlanNode::Group(g) = &mut p.nodes[2] else {
+        unreachable!()
+    };
+    g.layers[1].opacity = 1.0;
+    g.layers[1].fill_opacity = 1.5;
+}
+
+/// Minimal CPU-like backend: Normal/Multiply exact, everything else unsupported. Emits one
+/// transparent chunk; proves the port is implementable, object safe and admission-first.
+struct Probe;
+impl RenderBackend for Probe {
+    fn identity(&self) -> BackendIdentity {
+        BackendIdentity {
+            name: "probe",
+            version: "0",
+            device: DeviceClass::Cpu,
+            adapter: String::new(),
+            generation: 0,
+        }
+    }
+    fn exactness(&self, operator: Operator) -> Exactness {
+        match operator {
+            Operator::Blend(StudioBlendMode::Normal | StudioBlendMode::Multiply)
+            | Operator::Blend(StudioBlendMode::LinearBurn)
+            | Operator::Tile
+            | Operator::Solid
+            | Operator::IsolatedGroup
+            | Operator::PassThroughGroup => Exactness::Exact,
+            _ => Exactness::Unsupported,
+        }
+    }
+    fn execute(
+        &self,
+        plan: &RenderPlan,
+        request: &ExecuteRequest,
+        sources: &dyn PlanSources,
+        cancel: &CancellationToken,
+        sink: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, BackendError> {
+        let exactness = admit(plan, self, request, cancel)?;
+        for node in &plan.nodes {
+            if let PlanNode::Tile(t) = node {
+                let planes = sources
+                    .tile(t.key)
+                    .ok_or(BackendError::UnresolvedSource(t.key))?;
+                if !planes.matches(t, plan.target.space) {
+                    return Err(BackendError::SourceMismatch(t.key));
+                }
+            }
+        }
+        let px = plan.target.extent.area() as usize;
+        sink.accept(plan.target.extent, &vec![0; px * 12], &vec![0; px * 4])
+            .map_err(BackendError::Sink)?;
+        Ok(RenderReceipt {
+            plan_revision: plan.revision,
+            plan_digest: plan.digest().map_err(|_| BackendError::Overflow)?,
+            backend: self.identity(),
+            region: plan.target.extent,
+            target: plan.target,
+            exactness,
+            chunks: 1,
+            nodes_executed: plan.nodes.len() as u64,
+            peak_working_bytes: 0,
+        })
+    }
+}
+
+struct Sources {
+    colour: Vec<u8>,
+    alpha: Vec<u8>,
+    colour_sha256: [u8; 32],
+}
+impl PlanSources for Sources {
+    fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
+        (key == SourceKey(0)).then_some(TilePlanes {
+            width: 2,
+            height: 1,
+            colour: &self.colour,
+            colour_stride_bytes: 24,
+            alpha: &self.alpha,
+            alpha_stride_bytes: 8,
+            colour_sha256: self.colour_sha256,
+            alpha_sha256: [2; 32],
+            format: SampleFormat::RgbF32Le,
+            alpha_convention: AlphaConvention::Straight,
+            space: target().space,
+        })
+    }
+    fn mask(&self, _key: SourceKey) -> Option<hsk_studio_pigment::Mask<'_>> {
+        None
+    }
+}
+
+#[derive(Default)]
+struct Chunks(u32);
+impl TileSink for Chunks {
+    fn accept(&mut self, _rect: Rect, _colour: &[u8], _alpha: &[u8]) -> Result<(), SinkError> {
+        self.0 += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn admission_floors_exactness_through_object_safe_port() {
+    bounded_case(|| {
+        let backend: &dyn RenderBackend = &Probe;
+        let cancel = CancellationToken::default();
+        let sources = Sources {
+            colour: vec![0; 24],
+            alpha: vec![0; 8],
+            colour_sha256: [1; 32],
+        };
+        let request = |floor| ExecuteRequest {
+            expected_revision: 9,
+            min_exactness: floor,
+            deadline: None,
+            max_working_bytes: 1 << 20,
+        };
+        let mut sink = Chunks::default();
+        let receipt = backend
+            .execute(
+                &plan(StudioBlendMode::Multiply),
+                &request(Exactness::Exact),
+                &sources,
+                &cancel,
+                &mut sink,
+            )
+            .expect("exact plan renders");
+        assert_eq!(sink.0, 1);
+        assert_eq!(receipt.plan_revision, 9);
+        assert_eq!(receipt.exactness.lowest, Exactness::Exact);
+        assert_eq!(receipt.target.space.blend_space.key(), "linear_light");
+        assert!(
+            receipt
+                .exactness
+                .operators
+                .iter()
+                .any(|o| o.key == "multiply")
+        );
+
+        // Approximate intrinsic mode: refused under an Exact floor, admitted under Approximate.
+        let refused = backend.execute(
+            &plan(StudioBlendMode::LinearBurn),
+            &request(Exactness::Exact),
+            &sources,
+            &cancel,
+            &mut sink,
+        );
+        assert_eq!(
+            refused,
+            Err(BackendError::Unsupported {
+                operator: "linear_burn",
+                exactness: Exactness::Approximate
+            })
+        );
+        let r = backend
+            .execute(
+                &plan(StudioBlendMode::LinearBurn),
+                &request(Exactness::Approximate),
+                &sources,
+                &cancel,
+                &mut sink,
+            )
+            .unwrap();
+        assert_eq!(r.exactness.lowest, Exactness::Approximate);
+        // Backend-unsupported and unrecovered modes refuse under any floor, never Normal.
+        for mode in [StudioBlendMode::Screen, StudioBlendMode::Average] {
+            let e = backend
+                .execute(
+                    &plan(mode),
+                    &request(Exactness::Approximate),
+                    &sources,
+                    &cancel,
+                    &mut sink,
+                )
+                .unwrap_err();
+            assert_eq!(e.code(), "unsupported_operator");
+        }
+        let before = sink.0;
+        let stale = backend.execute(
+            &plan(StudioBlendMode::Normal),
+            &ExecuteRequest {
+                expected_revision: 8,
+                ..request(Exactness::Exact)
+            },
+            &sources,
+            &cancel,
+            &mut sink,
+        );
+        assert_eq!(
+            stale,
+            Err(BackendError::StaleRevision {
+                expected: 8,
+                found: 9
+            })
+        );
+        let wrong = Sources {
+            colour_sha256: [3; 32],
+            ..sources
+        };
+        assert_eq!(
+            backend.execute(
+                &plan(StudioBlendMode::Normal),
+                &request(Exactness::Exact),
+                &wrong,
+                &cancel,
+                &mut sink
+            ),
+            Err(BackendError::SourceMismatch(SourceKey(0)))
+        );
+        cancel.cancel();
+        assert_eq!(
+            backend.execute(
+                &plan(StudioBlendMode::Normal),
+                &request(Exactness::Exact),
+                &wrong,
+                &cancel,
+                &mut sink
+            ),
+            Err(BackendError::Canceled)
+        );
+        assert_eq!(sink.0, before, "refusals never reach the sink");
+    });
+}
+
+/// Backend that implements every operator exactly and opts in to the clip-to-base route.
+struct ClipProbe;
+impl RenderBackend for ClipProbe {
+    fn identity(&self) -> BackendIdentity {
+        BackendIdentity {
+            name: "clip-probe",
+            version: "0",
+            device: DeviceClass::Cpu,
+            adapter: String::new(),
+            generation: 0,
+        }
+    }
+    fn exactness(&self, _operator: Operator) -> Exactness {
+        Exactness::Exact
+    }
+    fn supports_clip_to_base(&self) -> bool {
+        true
+    }
+    fn execute(
+        &self,
+        _plan: &RenderPlan,
+        _request: &ExecuteRequest,
+        _sources: &dyn PlanSources,
+        _cancel: &CancellationToken,
+        _sink: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, BackendError> {
+        Err(BackendError::Unavailable("probe"))
+    }
+}
+
+fn solid() -> PlanNode {
+    PlanNode::Solid {
+        rect: R,
+        rgba: [1.0, 0.0, 0.0, 1.0],
+    }
+}
+fn clipped_layer(input: u32, mode: StudioBlendMode) -> Layer {
+    Layer {
+        mask: Some(MaskInput::clip_to_base()),
+        ..layer(input, mode)
+    }
+}
+fn group_plan(layers: Vec<Layer>) -> RenderPlan {
+    RenderPlan {
+        revision: 9,
+        target: target(),
+        nodes: vec![
+            solid(),
+            solid(),
+            PlanNode::Group(Group {
+                isolated: true,
+                layers,
+            }),
+        ],
+        root: PlanNodeId(2),
+    }
+}
+
+#[test]
+fn clip_to_base_is_validated_refused_without_opt_in_and_approximate() {
+    bounded_case(|| {
+        let limits = PlanLimits::default();
+        let base = layer(0, StudioBlendMode::Normal);
+        let ok = group_plan(vec![base, clipped_layer(1, StudioBlendMode::Multiply)]);
+        let ops = ok.validate(&limits).expect("base plus clipped layer");
+        assert!(ops.contains(&Operator::Mask(MaskFormat::BaseAlpha)));
+        assert_eq!(Operator::Mask(MaskFormat::BaseAlpha).key(), "clip_to_base");
+        assert_eq!(
+            Operator::Mask(MaskFormat::BaseAlpha).intrinsic(),
+            Exactness::Approximate
+        );
+        // Several clipped layers share one base, and a later unclipped layer starts a new run.
+        for layers in [
+            vec![base, clipped_layer(1, StudioBlendMode::Screen), clipped_layer(1, StudioBlendMode::Multiply)],
+            vec![base, clipped_layer(1, StudioBlendMode::Normal), base, clipped_layer(1, StudioBlendMode::Normal)],
+        ] {
+            assert!(group_plan(layers).validate(&limits).is_ok());
+        }
+        // No unclipped layer below: refused, with the layer's group as the node.
+        assert_eq!(
+            group_plan(vec![clipped_layer(0, StudioBlendMode::Normal), base]).validate(&limits),
+            Err(PlanError::ClipWithoutBase { node: 2 })
+        );
+        // Only the canonical encoding is a clip route.
+        for broken in [
+            MaskInput { density: 0.5, ..MaskInput::clip_to_base() },
+            MaskInput { inverted: true, ..MaskInput::clip_to_base() },
+            MaskInput { key: SourceKey(3), ..MaskInput::clip_to_base() },
+            MaskInput { sha256: [1; 32], ..MaskInput::clip_to_base() },
+        ] {
+            let layer = Layer { mask: Some(broken), ..layer(1, StudioBlendMode::Normal) };
+            assert_eq!(
+                group_plan(vec![base, layer]).validate(&limits),
+                Err(PlanError::ClipFields { node: 2 })
+            );
+        }
+        // A clipped layer cannot reference a pass-through group.
+        let mut pass = group_plan(vec![base]);
+        pass.nodes.push(PlanNode::Group(Group {
+            isolated: false,
+            layers: vec![layer(1, StudioBlendMode::Normal)],
+        }));
+        pass.nodes.push(PlanNode::Group(Group {
+            isolated: true,
+            layers: vec![
+                layer(0, StudioBlendMode::Normal),
+                Layer { mask: Some(MaskInput::clip_to_base()), ..layer(3, StudioBlendMode::PassThrough) },
+            ],
+        }));
+        pass.root = PlanNodeId(4);
+        assert_eq!(pass.validate(&limits), Err(PlanError::ClipPassThrough { node: 4 }));
+
+        // Admission: a backend that does not opt in refuses (typed), however it answers
+        // `exactness`; an opted-in backend is held to the route's Approximate class.
+        let cancel = CancellationToken::default();
+        let request = |floor| ExecuteRequest {
+            expected_revision: 9,
+            min_exactness: floor,
+            deadline: None,
+            max_working_bytes: 1 << 20,
+        };
+        assert_eq!(
+            admit(&ok, &Probe, &request(Exactness::Approximate), &cancel),
+            Err(BackendError::Unsupported {
+                operator: "clip_to_base",
+                exactness: Exactness::Unsupported
+            })
+        );
+        assert_eq!(
+            admit(&ok, &ClipProbe, &request(Exactness::Exact), &cancel),
+            Err(BackendError::Unsupported {
+                operator: "clip_to_base",
+                exactness: Exactness::Approximate
+            })
+        );
+        let ledger = admit(&ok, &ClipProbe, &request(Exactness::Approximate), &cancel).unwrap();
+        assert_eq!(ledger.lowest, Exactness::Approximate);
+        assert!(ledger.operators.iter().any(|o| o.key == "clip_to_base"));
+        // Plans without the route are unaffected by the capability flag.
+        assert!(admit(&plan(StudioBlendMode::Multiply), &Probe, &request(Exactness::Exact), &cancel).is_ok());
+    });
+}
+
+/// R3 finding: a pass-through group serving as the clip base was admitted (only the backends
+/// refused it, at execute). `validate` and therefore `admit` now refuse it, uniformly.
+#[test]
+fn clip_base_pass_through_is_refused_by_validate_and_admit() {
+    bounded_case(|| {
+        let limits = PlanLimits::default();
+        // Nodes: 0, 1 solids; 2 isolated group; 3 NON-isolated group (the PassThrough target);
+        // 4 isolated group whose first layer is the pass-through base.
+        let with_group_4 = |layers: Vec<Layer>| {
+            let mut p = group_plan(vec![layer(0, StudioBlendMode::Normal)]);
+            p.nodes.push(PlanNode::Group(Group {
+                isolated: false,
+                layers: vec![layer(1, StudioBlendMode::Normal)],
+            }));
+            p.nodes.push(PlanNode::Group(Group { isolated: true, layers }));
+            p.root = PlanNodeId(4);
+            p
+        };
+        let pass_base = layer(3, StudioBlendMode::PassThrough);
+        // [pass-through base, clipped Normal] -> refused, node = the group holding the run (4).
+        let bad = with_group_4(vec![pass_base, clipped_layer(0, StudioBlendMode::Normal)]);
+        assert_eq!(
+            bad.validate(&limits),
+            Err(PlanError::ClipBasePassThrough { node: 4 })
+        );
+        assert_eq!(
+            PlanError::ClipBasePassThrough { node: 4 }.code(),
+            "plan_clip_base_pass_through"
+        );
+        // Every clipped layer of the run shares that base, so a longer run is refused too.
+        let long = with_group_4(vec![
+            pass_base,
+            clipped_layer(0, StudioBlendMode::Multiply),
+            clipped_layer(0, StudioBlendMode::Screen),
+        ]);
+        assert_eq!(
+            long.validate(&limits),
+            Err(PlanError::ClipBasePassThrough { node: 4 })
+        );
+        // Admission carries the same typed refusal, even for a backend that opted in and is Exact.
+        let cancel = CancellationToken::default();
+        let request = ExecuteRequest {
+            expected_revision: 9,
+            min_exactness: Exactness::Approximate,
+            deadline: None,
+            max_working_bytes: 1 << 20,
+        };
+        assert_eq!(
+            admit(&bad, &ClipProbe, &request, &cancel),
+            Err(BackendError::InvalidPlan(PlanError::ClipBasePassThrough { node: 4 }))
+        );
+        // Controls: a pass-through layer that is NOT the base of a run stays valid -- unclipped
+        // (no run at all), or followed by a Normal unclipped layer that starts the clipped run.
+        let lone = with_group_4(vec![pass_base, layer(0, StudioBlendMode::Normal)]);
+        assert!(lone.validate(&limits).is_ok());
+        let before_base = with_group_4(vec![
+            pass_base,
+            layer(0, StudioBlendMode::Normal),
+            clipped_layer(0, StudioBlendMode::Normal),
+        ]);
+        assert!(before_base.validate(&limits).is_ok());
+        // And the same run over a Normal base is valid.
+        let normal_base = with_group_4(vec![
+            layer(0, StudioBlendMode::Normal),
+            clipped_layer(0, StudioBlendMode::Normal),
+        ]);
+        assert!(normal_base.validate(&limits).is_ok());
+    });
+}
