@@ -47,6 +47,7 @@ use hsk_studio_develop::{
     DevelopError, DevelopRecipe, GrayscaleMix, LinearGradient, LocalStack, LuminanceRange, Mask, MaskBlend, MaskSource, OutputDepth,
     ParametricCurve, PointColour, RadialGradient, Threads,
 };
+use hsk_studio_develop::{ByteOrder, ExportColourSpace, TiffCompression, TiffExportSettings, develop_to_tiff};
 use std::cell::RefCell;
 use hsk_studio_folio::{Payload, TileRef};
 use hsk_studio_interop_raster as raster;
@@ -546,6 +547,17 @@ pub enum DevelopExport {
     Png { depth: OutputDepth },
     /// Baseline JPEG, quality 1..=100 (8-bit; develop renders 8-bit samples for it).
     Jpeg { quality: u8 },
+    /// TIFF RGB 8/16-bit with the sRGB profile embedded (lane SMB-DEVELOP-EXPORT-TIFF): develop's export module
+    /// checks the colour space against the profile and refuses Adobe RGB / ProPhoto (no profile) typed.
+    Tiff {
+        depth: OutputDepth,
+        compression: TiffCompression,
+        predictor: bool,
+        colour_space: ExportColourSpace,
+        big_endian: bool,
+        big_tiff: bool,
+        dpi: Option<u32>,
+    },
 }
 
 impl DevelopExport {
@@ -553,6 +565,7 @@ impl DevelopExport {
         match self {
             Self::Png { .. } => "png",
             Self::Jpeg { .. } => "jpeg",
+            Self::Tiff { .. } => "tiff",
         }
     }
 }
@@ -937,8 +950,31 @@ impl Viewer {
         let depth = match format {
             DevelopExport::Png { depth } => depth,
             DevelopExport::Jpeg { .. } => OutputDepth::Eight,
+            DevelopExport::Tiff { depth, .. } => depth,
         };
         let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
+        if let DevelopExport::Tiff { depth, compression, predictor, colour_space, big_endian, big_tiff, dpi } = format {
+            let mut settings = TiffExportSettings::new(depth, colour_space);
+            settings.compression = compression;
+            settings.predictor = predictor;
+            settings.byte_order = if big_endian { ByteOrder::Big } else { ByteOrder::Little };
+            settings.big_tiff = big_tiff;
+            settings.dpi = dpi;
+            settings.metadata.software = Some("Handshake Studio develop".to_owned());
+            let (export, receipt) = develop_to_tiff(&d.prepared.plane, &recipe, revision, &settings, SRGB_V4_ICC, d.threads, self.cancel)
+                .map_err(|e| Refusal::new(e.code(), if e.detail().is_empty() { format!("{e:?}") } else { e.detail().to_owned() }))?;
+            write_atomic(path, &export.bytes).map_err(|code| Refusal::new(code, path.display().to_string()))?;
+            return Ok(json!({
+                "format": "tiff", "path": path.to_string_lossy(), "width": export.width, "height": export.height,
+                "depth_bits": export.depth_bits, "bytes": export.bytes.len(), "file_sha256": hex(&export.tiff_sha256),
+                "icc_sha256": hex(&export.icc_sha256), "clip": {"below_zero": export.clip.below_zero, "above_one": export.clip.above_one},
+                "compression": format!("{compression:?}").to_lowercase(), "predictor": predictor, "colour_space": colour_space.name(),
+                "byte_order": if big_endian { "big" } else { "little" }, "big_tiff": big_tiff, "dpi": dpi,
+                "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
+                "threads": d.threads.get(), "revision": revision, "values_known": known,
+                "values": values_json(&edit),
+            }));
+        }
         let (output, receipt) = hsk_studio_develop::develop_to_output(&d.prepared.plane, &recipe, revision, depth, SRGB_V4_ICC, d.threads, self.cancel)
             .map_err(|e| Refusal::develop(e, "develop_to_output"))?;
         let samples = match output.depth_bits {
@@ -970,6 +1006,7 @@ impl Viewer {
                 };
                 (raster::encode_jpeg(&req).map_err(|e| Refusal::new(e.code(), "jpeg encode"))?, Some(name))
             }
+            DevelopExport::Tiff { .. } => return Err(Refusal::new("export_internal", "tiff export is handled before the raster encoders")),
         };
         let back = raster::decode(&bytes, &raster::Limits::default(), self.cancel).map_err(|e| Refusal::new(e.code(), "decode back"))?;
         if (back.width, back.height) != (output.width, output.height) || back.icc.as_deref() != Some(SRGB_V4_ICC) {
@@ -981,7 +1018,7 @@ impl Viewer {
             "depth_bits": output.depth_bits, "bytes": bytes.len(), "file_sha256": hsk_studio_package::sha256_hex_of(&bytes),
             "samples_sha256": hsk_studio_package::sha256_hex_of(&output.data), "transfer": output.transfer,
             "icc_sha256": hex(&output.icc_sha256), "clip": {"below_zero": output.clip.below_zero, "above_one": output.clip.above_one},
-            "subsampling": subsampling, "quality": match format { DevelopExport::Jpeg { quality } => Some(quality), DevelopExport::Png { .. } => None },
+            "subsampling": subsampling, "quality": match format { DevelopExport::Jpeg { quality } => Some(quality), DevelopExport::Png { .. } | DevelopExport::Tiff { .. } => None },
             "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
             "threads": d.threads.get(), "revision": revision, "values_known": known,
             "values": values_json(&edit),

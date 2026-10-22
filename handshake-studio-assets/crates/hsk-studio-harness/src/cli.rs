@@ -40,6 +40,14 @@ struct Parsed {
     expect_visible: Vec<(String, bool)>,
     png: bool,
     jpeg: bool,
+    /// develop: `--tiff` and its options (lane SMB-DEVELOP-EXPORT-TIFF).
+    tiff: bool,
+    compression: Option<String>,
+    predictor: bool,
+    byte_order: Option<String>,
+    bigtiff: bool,
+    dpi: Option<u32>,
+    colour_space: Option<String>,
     quality: Option<u8>,
     /// develop: `--adjust CONTROL VALUE` (value kept as text; parsed as a number by `develop`).
     adjust: Vec<(String, String)>,
@@ -85,6 +93,13 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--json" => p.json = true,
             "--png" => p.png = true,
             "--jpeg" => p.jpeg = true,
+            "--tiff" => p.tiff = true,
+            "--compression" => p.compression = Some(take(&mut i, "compression (none|lzw|zip)")?),
+            "--predictor" => p.predictor = true,
+            "--byte-order" => p.byte_order = Some(take(&mut i, "byte order (le|be)")?),
+            "--bigtiff" => p.bigtiff = true,
+            "--dpi" => p.dpi = Some(take(&mut i, "dpi")?.parse::<u32>().map_err(|_| "dpi must be an unsigned integer".to_string())?),
+            "--colour-space" => p.colour_space = Some(take(&mut i, "colour space (srgb|display-p3|adobe-rgb|prophoto)")?),
             "--quality" => {
                 p.quality = Some(
                     take(&mut i, "quality")?
@@ -220,12 +235,29 @@ pub fn run(args: &[String]) -> CliOutput {
             let [source, output] = parsed.positional.as_slice() else {
                 return usage("develop needs SOURCE and OUT paths");
             };
+            let tiff_options = parsed.compression.is_some()
+                || parsed.predictor
+                || parsed.byte_order.is_some()
+                || parsed.bigtiff
+                || parsed.dpi.is_some()
+                || parsed.colour_space.is_some();
             let format = match (parsed.png, parsed.jpeg, parsed.quality, parsed.depth) {
+                (false, false, q, depth) if parsed.tiff => {
+                    if q.is_some() {
+                        return usage("--quality applies to --jpeg only");
+                    }
+                    match tiff_choice(&parsed, depth) {
+                        Ok(choice) => choice,
+                        Err(message) => return usage(&message),
+                    }
+                }
+                _ if parsed.tiff => return usage("develop needs exactly one of --png, --jpeg, --tiff"),
+                _ if tiff_options => return usage("--compression, --predictor, --byte-order, --bigtiff, --dpi and --colour-space apply to --tiff only"),
                 (true, false, None, depth) => DevelopChoice::Png(depth.unwrap_or(16)),
                 (true, false, Some(_), _) => return usage("--quality applies to --jpeg only"),
                 (false, true, _, Some(_)) => return usage("--depth applies to --png only (JPEG is 8-bit)"),
                 (false, true, q, None) => DevelopChoice::Jpeg(q.unwrap_or(DEFAULT_JPEG_QUALITY)),
-                _ => return usage("develop needs exactly one of --png, --jpeg"),
+                _ => return usage("develop needs exactly one of --png, --jpeg, --tiff"),
             };
             let mut adjust = Vec::with_capacity(parsed.adjust.len());
             for (control, text) in &parsed.adjust {
@@ -249,6 +281,37 @@ pub fn run(args: &[String]) -> CliOutput {
 enum DevelopChoice {
     Png(u8),
     Jpeg(u8),
+    /// depth, compression (0 none, 1 lzw, 2 zip), predictor, colour space (0 srgb, 1 display-p3, 2 adobe-rgb, 3 prophoto),
+    /// big-endian, BigTIFF, dpi.
+    Tiff { depth: u8, compression: u8, predictor: bool, colour_space: u8, big_endian: bool, big_tiff: bool, dpi: Option<u32> },
+}
+
+/// `--tiff [--depth 8|16] [--compression none|lzw|zip] [--predictor] [--byte-order le|be] [--bigtiff] [--dpi N]
+/// [--colour-space srgb|display-p3|adobe-rgb|prophoto]`; defaults 16-bit, uncompressed, little-endian, sRGB.
+/// The predictor needs a compression; develop decides every other refusal (profile missing for Adobe RGB / ProPhoto).
+fn tiff_choice(parsed: &Parsed, depth: Option<u8>) -> Result<DevelopChoice, String> {
+    let compression = match parsed.compression.as_deref() {
+        None | Some("none") => 0,
+        Some("lzw") => 1,
+        Some("zip") => 2,
+        Some(other) => return Err(format!("--compression must be none, lzw or zip, got `{other}`")),
+    };
+    let colour_space = match parsed.colour_space.as_deref() {
+        None | Some("srgb") => 0,
+        Some("display-p3") => 1,
+        Some("adobe-rgb") => 2,
+        Some("prophoto") => 3,
+        Some(other) => return Err(format!("--colour-space must be srgb, display-p3, adobe-rgb or prophoto, got `{other}`")),
+    };
+    let big_endian = match parsed.byte_order.as_deref() {
+        None | Some("le") => false,
+        Some("be") => true,
+        Some(other) => return Err(format!("--byte-order must be le or be, got `{other}`")),
+    };
+    if parsed.predictor && compression == 0 {
+        return Err("--predictor needs --compression lzw or zip".to_string());
+    }
+    Ok(DevelopChoice::Tiff { depth: depth.unwrap_or(16), compression, predictor: parsed.predictor, colour_space, big_endian, big_tiff: parsed.bigtiff, dpi: parsed.dpi })
 }
 
 /// `develop SOURCE OUT (--png [--depth 8|16] | --jpeg [--quality N]) [--adjust CONTROL VALUE]... [--threads N]`
@@ -285,6 +348,27 @@ fn execute_develop(source: &Path, output: &Path, format: DevelopChoice, adjust: 
         DevelopChoice::Png(16) => DevelopExport::Png { depth: OutputDepth::Sixteen },
         DevelopChoice::Png(_) => DevelopExport::Png { depth: OutputDepth::Eight },
         DevelopChoice::Jpeg(quality) => DevelopExport::Jpeg { quality },
+        DevelopChoice::Tiff { depth, compression, predictor, colour_space, big_endian, big_tiff, dpi } => {
+            use hsk_studio_develop::{ExportColourSpace, TiffCompression};
+            DevelopExport::Tiff {
+                depth: if depth == 8 { OutputDepth::Eight } else { OutputDepth::Sixteen },
+                compression: match compression {
+                    1 => TiffCompression::Lzw,
+                    2 => TiffCompression::Deflate,
+                    _ => TiffCompression::None,
+                },
+                predictor,
+                colour_space: match colour_space {
+                    1 => ExportColourSpace::DisplayP3,
+                    2 => ExportColourSpace::AdobeRgb,
+                    3 => ExportColourSpace::ProPhoto,
+                    _ => ExportColourSpace::Srgb,
+                },
+                big_endian,
+                big_tiff,
+                dpi,
+            }
+        }
     };
     match viewer.export_develop(output, format, overwrite) {
         Ok(report) => out(
