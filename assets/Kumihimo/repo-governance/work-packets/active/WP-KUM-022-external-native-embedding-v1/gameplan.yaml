@@ -11,7 +11,7 @@ precedence: 'on conflict CODEX, role profile, WP contract, WP-STATE, MT win; cor
 scope: wp
 assignment: WP-KUM-022-external-native-embedding-v1
 parent: null
-generation: 20
+generation: 21
 expensive_actions: []
 steps:
 - {id: GP-001, role: any, at: before_round, do: require scoped asset preparation only before compiler grant, check: {type: confirm}, source: 'prep: contract command text matched foreign Handshake gate', state: retired}
@@ -32,3 +32,4 @@ steps:
 - {id: GP-016, role: any, at: before_round, do: verify original PID and birth identity closure; distinguish reused PIDs and their unrelated children, check: {type: confirm}, source: 'prep: phase06 PID19060 and53424 reused by later node processes after true owned closure', state: active}
 - {id: GP-017, role: any, at: before_submit, do: verify JSON birth timestamps preserve ISO strings before canonical process identity comparisons, check: {type: confirm}, source: 'prep: PowerShell JSON auto-date conversion made later PID-reuse gauge locale-date parsing fail', state: active}
 - {id: GP-018, role: any, at: before_submit, do: verify changed source formatting against immutable baseline without broad preexisting formatting cleanup, check: {type: confirm}, source: 'prep: whole demo rustfmt check fails unchanged baseline; admitted marker block already matches formatter', state: active}
+- {id: GP-019, role: any, at: before_round, do: verify final owned snapshot follows latest expanded owned exit and persists exact time basis, check: {type: confirm}, source: 'infra: phase04 Cargo0 outer125; conhost exit followed final snapshot floor; floor was not persisted', state: active}

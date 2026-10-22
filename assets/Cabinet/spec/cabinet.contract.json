@@ -155,6 +155,14 @@
       "requirement": "Independent dependency and code inspection rejects dead scaffolding, redundant constructions and unused public integration paths"
     },
     {
+      "id": "CAB-037",
+      "requirement": "Host-owned Bin entries retain previous parent; pure restore planning selects the existing folder or root fallback."
+    },
+    {
+      "id": "CAB-038",
+      "requirement": "Pure purge planning requires a complete bounded inventory and rejects empty or duplicate IDs; the host owns persistence, authorization, irreversible effects and recovery."
+    },
+    {
       "id": "CAB-039",
       "requirement": "Framework-independent InteractionState owns reusable editing, context reconciliation, move preflight, lazy expansion and preview scheduling for host GUIs"
     },
@@ -526,6 +534,16 @@
       "src/egui_view.rs": "99036dccd43ed076c16790ac72d4c38e9e771379d9c2892bbdb155016360a321",
       "src/lib.rs": "56993d4591bade6529d0220e6132e7e5a3b30255fbcc9b0ef800b1b557c6ef49"
     }
+  },
+  "development_extension": {
+    "status": "VALIDATED_ASSET_EXTENSION",
+    "base_source_commit": "7bfc9457af77d3f6b6a3fcc3a2738707acbba0c9",
+    "requirements": [
+      "CAB-037",
+      "CAB-038"
+    ],
+    "manual_ref": "README.md#recycle-bin",
+    "validation": "cargo test --locked -p cabinet passes 72 core tests, including 3 bin:: tests. Prior full standalone proof applies to its recorded base inputs only. No fresh host WASM, GUI, persistence or integration proof is claimed."
   },
   "gui_split": {
     "updated_at": "2026-10-14",

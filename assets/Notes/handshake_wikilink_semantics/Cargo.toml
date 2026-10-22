@@ -1,0 +1,9 @@
+[package]
+name = "handshake_wikilink_semantics"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+handshake_rich_document_model = { path = "../handshake_rich_document_model" }
+regex = "1"

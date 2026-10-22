@@ -1348,18 +1348,9 @@ pub fn draw(
             if recreate {
                 ui.label("Surface recreation required");
             }
-            if settings.profile == ChromeProfile::Full
-                && ui.available_width() >= chrome_button_width(ctx, source)
-            {
-                ui.label(egui::RichText::new(source).small());
-            }
-            let remaining = (ui.available_width() / 95.0).floor().max(0.0) as usize;
-            if remaining == 0 {
-                return;
-            }
             let query = TabQuery {
                 frame: Some(frame.frame),
-                limit: remaining.min(size),
+                limit: size,
                 ..Default::default()
             };
             if let Ok(tabs) = controller.snapshot().tab_page(&query) {
@@ -1370,7 +1361,22 @@ pub fn draw(
                     {
                         continue;
                     }
+                    if tab_width(ui, &row, settings.group_colors) > ui.available_width() {
+                        break;
+                    }
                     tab_button(ui, &row, controller, host, settings.group_colors, report);
+                }
+            }
+            if settings.profile == ChromeProfile::Full {
+                let text = egui::RichText::new(source).small();
+                let measured = egui::Atom::from(text.clone()).into_sized(
+                    ui,
+                    egui::Vec2::INFINITY,
+                    Some(egui::TextWrapMode::Extend),
+                    egui::TextStyle::Body.into(),
+                );
+                if measured.size.x <= ui.available_width() {
+                    ui.label(text);
                 }
             }
         });
@@ -1539,15 +1545,8 @@ pub fn surface_frames(controller: &Controller, root: WorkspaceId) -> Vec<FrameId
     }
     result
 }
-fn tab_button(
-    ui: &mut egui::Ui,
-    row: &TabRow,
-    controller: &mut Controller,
-    host: &mut impl DesktopHost,
-    colors: bool,
-    report: &mut FrameReport,
-) {
-    let label = format!(
+fn tab_label(row: &TabRow) -> String {
+    format!(
         "{}{}{}{}{}",
         row.group_label
             .as_ref()
@@ -1561,13 +1560,39 @@ fn tab_button(
         } else {
             ""
         }
-    );
-    let mut text = egui::RichText::new(&label);
+    )
+}
+fn tab_text(row: &TabRow, colors: bool) -> egui::RichText {
+    let mut text = egui::RichText::new(tab_label(row));
     if colors {
         if let Some(color) = row.group_color.as_deref().and_then(parse_color) {
             text = text.color(color);
         }
     }
+    text
+}
+fn tab_width(ui: &egui::Ui, row: &TabRow, colors: bool) -> f32 {
+    let text = egui::Atom::from(tab_text(row, colors)).into_sized(
+        ui,
+        egui::Vec2::INFINITY,
+        Some(egui::TextWrapMode::Extend),
+        egui::TextStyle::Button.into(),
+    );
+    let margin = egui::Frame::new()
+        .inner_margin(ui.spacing().button_padding)
+        .total_margin();
+    text.size.x + margin.sum().x
+}
+fn tab_button(
+    ui: &mut egui::Ui,
+    row: &TabRow,
+    controller: &mut Controller,
+    host: &mut impl DesktopHost,
+    colors: bool,
+    report: &mut FrameReport,
+) {
+    let label = tab_label(row);
+    let text = tab_text(row, colors);
     let response = ui
         .push_id(("tab", row.id.raw()), |ui| {
             ui.selectable_label(row.selected, text)

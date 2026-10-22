@@ -33,6 +33,8 @@ assets:
   - navigation
   - recycle bin
   - hover preview
+  - restore-parent planning
+  - bounded complete-inventory purge planning
   manual: assets/Cabinet/README.md
   packages:
   - name: cabinet
@@ -194,6 +196,7 @@ assets:
   - tags
   - price books
   - client pricing tiers
+  - atomic record creation with outgoing relations
   manual: assets/buurtman-balie/README.md
   packages:
   - name: buurtman-balie
@@ -744,6 +747,7 @@ assets:
   - HANDSHAKE-RICH-DOCUMENT-MODEL-ASSET-001
   - HANDSHAKE-SIGNATURE-HELP-ASSET-001
   - HANDSHAKE-RICH-FORMATTING-ASSET-001
+  - HANDSHAKE-WIKILINK-SEMANTICS-DRAFT-001
   source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/Notes
   governance:
     mode: none
@@ -2163,6 +2167,37 @@ assets:
     mode: none
     scope: operator request and public asset contract
   work_scope: assets/shared
+- id: HANDSHAKE-WIKILINK-SEMANTICS-DRAFT-001
+  name: handshake_wikilink_semantics
+  path: assets/Notes/handshake_wikilink_semantics
+  kind: asset
+  status: source-present
+  purpose: Wikilink parsing into the shared HsLinkNode model and deterministic in-memory reference, title, and alias
+    resolution.
+  capabilities:
+  - wikilink parsing
+  - HsLinkNode conversion
+  - reference resolution
+  - title resolution
+  - alias ambiguity
+  - autocomplete query detection
+  manual: assets/Notes/handshake_wikilink_semantics/README.md
+  packages:
+  - name: handshake_wikilink_semantics
+    manifest: assets/Notes/handshake_wikilink_semantics/Cargo.toml
+    role: logic
+    version: 0.1.0
+    api: assets/Notes/handshake_wikilink_semantics/src/lib.rs
+    depends_on:
+    - handshake_rich_document_model
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/Notes/handshake_wikilink_semantics
+  governance:
+    mode: none
+    scope: operator request and public asset contract
+  work_scope: assets/Notes/handshake_wikilink_semantics
+  creation_rationale: Parsing and reference resolution are separate from the existing canonical document model;
+    this component depends on that model instead of copying its node types. Promoted from the existing source-only
+    draft after binding and testing the shared model.
 drafts:
 - id: HANDSHAKE-WIKILINK-SEMANTICS-DRAFT-001
   path: assets/Notes/handshake_wikilink_semantics

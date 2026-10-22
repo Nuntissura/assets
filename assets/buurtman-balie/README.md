@@ -425,3 +425,9 @@ for component-scoped language metadata. The original browser modules were preser
 and in-place bindings avoid adding a framework dependency or remounting active forms.
 
 </topic>
+
+<topic id="atomic-linked-create">
+
+`Command::CreateLinked { record, relations }` creates a record and at most32 outgoing relations in one snapshot CAS and one operation receipt. Every relation source must equal the new record ID. Existing link validation and workspace budgets apply. Invalid links commit neither the record nor its receipt. Retry the identical actor, workspace and request after an uncertain response; changed intent under the same operation ID is rejected. External links remain opaque; hosts independently authorize account and screenshot resolution. Existing API2/schema2 snapshots stay readable; the additive command requires a host source pin containing this variant.
+
+</topic>

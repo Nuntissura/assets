@@ -1,0 +1,26 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-016-linked-create-v1
+kind: active
+title: Atomic record and external-link creation
+version: 1
+spec_revision: 15
+requirement_refs:
+- BB-ATOMIC-LINK-001
+scope:
+- Add CreateLinked to existing core; no GUI or schema change.
+- Update model manual before Portal embedding.
+dependencies: []
+acceptance:
+- Invalid link commits nothing; exact retry returns same outcome; changed intent rejects.
+- Source restriction and32-link bound verified; original contracts still pass.
+research_basis:
+  reuse: Existing Create/Link validation and snapshot CAS/receipt implementation inspected;
+    preserve original authorization before replay.
+  selected: Compose existing deterministic validators against one local snapshot and
+    one final CAS.
+  rejected: Separate Create then Link commits leave partially linked reports.
+  validation: Atomic failure and replay tests plus retained core contracts.
+verification_checks:
+- BB-CHECK-RUST
+- BB-CHECK-FMT
+- BB-CHECK-LINT

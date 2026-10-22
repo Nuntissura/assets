@@ -17,12 +17,18 @@ progress:
 - Independent exact-artifact review recomputed all18 latency/outcome groups and reconciled seed/canonical counters,
   pressure/configuration, zero expired CAS dispatch and exactly-once committed response-loss replay. Bounded P1
   PASS.
+- 'P1 preserved; whole-command CommandWorker P2 independently reconciled on native Windows ARM64 and x64 under ARM64
+  emulation: all2100 attempts successful and all210 distinct creates committed, canonical310records/370receipts/revision370.
+  21 affected worker/boundary tests passed on both targets. Production Portal workload, host response/resource budgets
+  and integration remain outstanding; camera-store/supermarket/photo-service retained.'
+- Fixed localization proof fingerprint to resolve actual BB_DEMO_BINARY; all five affected isolated browser proofs
+  rerun successfully. Original live demo preserved.
 blockers:
 - Production performance acceptance awaits representative Portal workload and host-selected numeric latency/resource
   budgets; camera-store and supermarket remain retained.
-next_action: Select representative production Portal host workload and numeric latency/resource budgets; evaluate
-  measured competing-write conflicts at the host integration boundary. P1 diagnostic complete; retain camera-store,
-  supermarket and photo-service integration work. No production SLA or native x64 hardware verdict.
+next_action: Integrate CommandWorker at actual Portal host command boundary and select representative production
+  workload/numeric budgets. Preserve external CAS Conflict handling; camera-store/supermarket/photo-service remain
+  retained. P2 provisional measurement complete, no production SLA.
 verification:
 - check_id: BB-CHECK-RUST
   result: passed
@@ -49,6 +55,35 @@ verification:
   result: passed
   command: cargo package -p buurtman-balie-host-demo --list --allow-dirty --offline
   observed: Exit0 six manifest/lock/example files only; no governance/private backups or monitor artifacts.
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: python tooling/portal-workload.py --profile P2 --executable target/release/examples/portal_workload.exe
+  observed: '.local/portal-workload/runs/16971303980c49e3b97198d03a501a8a/result.json: native ARM64; exact2100 successful
+    attempts/210creates, canonical/fault/resource/hash/cleanup reconciliation independently passed. No retries;
+    expired request zero CAS; lost response one commit and exact replay.'
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: python tooling/portal-workload.py --profile P2 --executable target/x86_64-pc-windows-msvc/release/examples/portal_workload.exe
+  observed: '.local/portal-workload/runs/a508c78722b44f959d40854243c43911/result.json: x64 under ARM64 emulation;
+    exact2100 successful attempts/210creates, canonical/fault/resource/hash/cleanup reconciliation independently
+    passed. No retries; expired request zero CAS; lost response one commit and exact replay.'
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: cargo test --locked --offline --test command-worker --test command-boundary --test worker (native and
+    --target x86_64-pc-windows-msvc)
+  observed: 9 command-worker +2 independent command-boundary +10 original worker tests passed on each target. Dispatch-time
+    revoked authorization, external CAS/stale revision, capacity/uncertainty, actor/intent replay probes passed.
+- check_id: BB-CHECK-LINT
+  result: passed
+  command: cargo clippy --locked --offline -p buurtman-balie -p buurtman-balie-host-demo --all-targets --all-features
+    -- -D warnings
+  observed: Current source exit0; cargo fmt --check exit0; both release architecture examples built.
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: python tooling/portal-workload.py --profile P1 --executable target/release/examples/portal_workload.exe
+  observed: '.local/portal-workload/runs/3d80f2a142304f9f8ea861dbbd60fdeb/result.json: unchanged P1 mix/current
+    branch passed;88creates122conflicts, canonical188records248receipts/revision248; own-process cleanup0. Historical
+    P1 runs retained.'
 recovery:
   branch: codex/buurtman-balie
   commit: null
@@ -56,4 +91,5 @@ recovery:
 diagnostic_governance_check:
   command: python tooling/check.py
   result: passed
-  observed: After synchronization exit0;15WPs36requirements0MTs, structural consistency only.
+  observed: Final synchronized python tooling/check.py exit0:15WPs36requirements0MTs, structural consistency only;
+    canonical state/taskboard/spec roadmap reread agree, sync_pending false.

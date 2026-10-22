@@ -34,7 +34,7 @@ work_packets:
 - wp_id: WP-BB-006-localization-v1
   title: English French Dutch module localization
   kind: active
-  status: in_progress
+  status: completed
   contract_ref: repo-governance/work-packets/active/WP-BB-006-localization-v1/wp-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-BB-006-localization-v1/state.yaml
 - wp_id: WP-BB-007-postgresql-storage-v1
@@ -52,7 +52,7 @@ work_packets:
 - wp_id: WP-BB-009-internal-manual-v1
   title: Internal CRM user manual
   kind: active
-  status: in_progress
+  status: completed
   contract_ref: repo-governance/work-packets/active/WP-BB-009-internal-manual-v1/wp-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-BB-009-internal-manual-v1/state.yaml
 - wp_id: WP-BB-010-swarm-backpressure-v1
@@ -76,13 +76,13 @@ work_packets:
 - wp_id: WP-BB-013-operator-workflow-validation-v1
   title: Realistic employee and operator workflow validation
   kind: active
-  status: in_progress
+  status: completed
   contract_ref: repo-governance/work-packets/active/WP-BB-013-operator-workflow-validation-v1/wp-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-BB-013-operator-workflow-validation-v1/state.yaml
 - wp_id: WP-BB-014-crate-boundary-v1
   title: Independent core and host presentation crate boundary
   kind: active
-  status: in_progress
+  status: completed
   contract_ref: repo-governance/work-packets/active/WP-BB-014-crate-boundary-v1/wp-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-BB-014-crate-boundary-v1/state.yaml
 - wp_id: WP-BB-015-field-selection-v1
@@ -91,3 +91,9 @@ work_packets:
   status: completed
   contract_ref: repo-governance/work-packets/active/WP-BB-015-field-selection-v1/wp-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-BB-015-field-selection-v1/state.yaml
+- wp_id: WP-BB-016-linked-create-v1
+  title: Atomic record and external-link creation
+  kind: active
+  status: completed
+  contract_ref: repo-governance/work-packets/active/WP-BB-016-linked-create-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-016-linked-create-v1/state.yaml

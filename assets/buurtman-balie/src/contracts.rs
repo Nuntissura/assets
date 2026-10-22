@@ -104,6 +104,11 @@ pub struct Relation {
 pub enum Command {
     /// revision must be zero; service assigns revision one.
     Create(Record),
+    /// Create a record and up to 32 outgoing relations in one CAS and receipt.
+    CreateLinked {
+        record: Record,
+        relations: Vec<Relation>,
+    },
     /// record.revision is the expected current revision.
     Update(Record),
     DefineField(FieldDefinition),

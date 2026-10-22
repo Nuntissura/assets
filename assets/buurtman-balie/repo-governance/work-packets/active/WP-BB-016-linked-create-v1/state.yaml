@@ -1,0 +1,34 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-016-linked-create-v1
+status: completed
+work_location: .
+sync_pending: false
+progress:
+- Atomic CreateLinked and bounded outgoing links implemented; original contracts and new rollback/replay/changed-intent
+  tests passed.
+- cargo test --offline --locked --features surreal --lib --tests passed; clippy all-targets surreal warnings denied
+  passed; rustfmt applied.
+- Internal README documents atomicity,32-link bound, opaque external ownership and retry behavior before Portal
+  embedding.
+blockers: []
+next_action: Portal host integration requires an exact published source revision and separate host-adoption proof.
+verification:
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: cargo test --offline --locked --features surreal --lib --tests
+  observed: Original selected core/worker tests and linked creation rejection/replay passed; optional SQLite unchanged.
+- check_id: BB-CHECK-FMT
+  result: passed
+  command: cargo fmt --check
+  observed: Exit0 after formatting.
+- check_id: BB-CHECK-LINT
+  result: passed
+  command: cargo clippy --offline --locked --all-targets --features surreal -- -D warnings
+  observed: Exit0 no warnings.
+acceptance_proof:
+- Invalid target left no record; identical replay matched, changed intent rejected.
+- Wrong source and33 links rejected; retained selected tests passed.
+recovery:
+  uncommitted_at_prior_validation: true
+  source_pin: Historical validation used Portal product/buurtman-balie/source-pin.json development snapshot; host
+    adoption must resolve and verify the canonical published source revision rather than infer a release pin.

@@ -115,6 +115,16 @@ impl<S: Store, A: Authorization> Crm<S, A> {
     }
     fn apply(&self, state: &mut Snapshot, command: &Command) -> Result<Option<u64>, Error> {
         match command {
+            Command::CreateLinked { record, relations } => {
+                if relations.len() > 32 || relations.iter().any(|r| r.source != record.id) {
+                    return Err(Error::Invalid("create links"));
+                }
+                let revision = self.apply(state, &Command::Create(record.clone()))?;
+                for relation in relations {
+                    self.apply(state, &Command::Link(relation.clone()))?;
+                }
+                Ok(revision)
+            }
             Command::DefinePricingTier(tier) => {
                 identifier(&tier.id)?;
                 text(&tier.name, 128, false)?;

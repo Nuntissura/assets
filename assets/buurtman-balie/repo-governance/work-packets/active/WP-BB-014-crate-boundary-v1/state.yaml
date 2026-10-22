@@ -1,6 +1,6 @@
 schema_version: buurtman.wp-state.v1
 wp_id: WP-BB-014-crate-boundary-v1
-status: in_progress
+status: completed
 work_location: .
 sync_pending: false
 progress:
@@ -16,9 +16,12 @@ progress:
 - Fresh separated composition UI/manual and independent visual/current-source proof passed; seven-file optional
   npm allowlist inspected. Prior core/demo package listings, fmt/lint and separately executed native ARM64/x64-emulated
   core/demo evidence retained; native x64 hardware/macOS/Linux not claimed.
+- Completed core/default-member and separate host-demo/presentation boundaries. Fresh 19/6/7 package lists, five
+  browser proofs, fmt/lint and Windows ARM64 plus x64-emulated runtime evidence; native x64 hardware/macOS/Linux
+  and production hosts remain untested.
 blockers: []
-next_action: Root runs current GOV for closure mapping; synchronize completion only with applicable current proof.
-  WP015 subsequent presentation/manual changes require fresh affected proof before accepting new behavior.
+next_action: Selected contract complete. Continue retained host/release work through its existing WP; production
+  integration and native x64 hardware/macOS/Linux not claimed.
 verification:
 - check_id: BB-CHECK-FMT
   result: passed
@@ -31,27 +34,43 @@ verification:
     superseded.
 - check_id: BB-CHECK-PACKAGE
   result: passed
-  command: cargo package -p buurtman-balie --list --allow-dirty --offline; cargo package -p buurtman-balie-host-demo
-    --list --allow-dirty --offline
-  observed: Read same output; core has Cargo/README/toolchain/src/tests only, demo generated Cargo files plus2 examples;
-    no web/Python/demo/private/governance inputs in core listing. Metadata output separately selects root default
-    member.
+  command: cargo package --list --allow-dirty --offline; cargo package -p buurtman-balie-host-demo --list --allow-dirty
+    --offline
+  observed: Fresh exact .local/crate-boundary-proof/core-package.txt (19 files), demo-package.txt (6 files, three
+    examples), web-package.json (7 files) exclude governance/private backups; unpublished.
 - check_id: BB-CHECK-UI
   result: passed
-  observed: .local/ui-proof/result.json read; current recorded fingerprints and successful cleanup; root command
-    exit0 and final independent evidence review. Temporary MemoryStore scope only.
+  observed: Fresh current-source five browser proofs exit0 using explicit ARM64 bridge; unchanged run fingerprints,
+    owned cleanup verified. Independent .local/independent-review/final-ui-current.md opens exact desktop/mobile
+    artifacts. Temporary MemoryStore scope only.
   command: python tooling/browser-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
 - check_id: BB-CHECK-PACKAGE
   result: passed
-  observed: exec-8b01444e-3570-4d8c-a200-314ad508ee9f exit0 npm seven-file listing read; includes user-manual/manual-content,
-    no private/governance. Prior core/demo separation proof retained.
-  command: npm pack --dry-run --json --ignore-scripts
+  observed: Fresh exact .local/crate-boundary-proof/core-package.txt (19 files), demo-package.txt (6 files, three
+    examples), web-package.json (7 files) exclude governance/private backups; unpublished.
+  command: npm pack --dry-run --json (web directory)
 - check_id: BB-CHECK-RUST
   result: passed
   command: cargo test --locked --offline --all-features --lib --tests; cargo test --locked --offline --all-features
     --lib --tests --target x86_64-pc-windows-msvc
   observed: Previously independently read native13contract5SQLite10worker output and exec-58f2bd66 x64 equivalent
     exit0; runtime scopes explicit in acceptance mapping.
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: cargo test --locked --offline --test command-worker --test command-boundary --test worker (native and
+    --target x86_64-pc-windows-msvc)
+  observed: 21 affected tests passed on each target; prior unchanged contract/SQLite/demo evidence retained. x64
+    executed under ARM64 Windows emulation.
+- check_id: BB-CHECK-LINT
+  result: passed
+  command: cargo clippy --locked --offline -p buurtman-balie -p buurtman-balie-host-demo --all-targets --all-features
+    -- -D warnings
+  observed: Current core/host-demo exit0; cargo fmt --check exit0.
+- check_id: BB-CHECK-GOV
+  result: passed
+  command: python tooling/check.py
+  observed: Final synchronized python tooling/check.py exit0:15WPs36requirements0MTs, structural consistency only;
+    canonical state/taskboard/spec roadmap reread agree, sync_pending false.
 reported_proof:
   source: Devlead chat command outputs independently read through read_thread on 2026-10-11.
   host: rustc -vV output is aarch64-pc-windows-msvc1.98.1; x64 execution runs on this ARM64 Windows host.

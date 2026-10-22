@@ -2,6 +2,87 @@ use buurtman_balie::memory::MemoryStore;
 use buurtman_balie::*;
 use std::collections::BTreeMap;
 
+#[test]
+fn linked_creation_is_atomic_and_replayed_as_one_intent() {
+    let mut crm = Crm::new(MemoryStore::new(3), Grants, Limits::default());
+    let context = ctx("portal");
+    let case = record("case", "Report", Kind::SupportCase);
+    let link = Relation {
+        source: "case".into(),
+        label: "reporter".into(),
+        target: Target::External(ExternalRef {
+            owner: "identity".into(),
+            resource_type: "account".into(),
+            id: "user".into(),
+        }),
+    };
+    let mut invalid = link.clone();
+    invalid.target = Target::Record("missing".into());
+    assert!(crm
+        .execute(
+            &context,
+            req(
+                "invalid",
+                Command::CreateLinked {
+                    record: case.clone(),
+                    relations: vec![link.clone(), invalid]
+                }
+            )
+        )
+        .is_err());
+    assert_eq!(crm.get(&context, "case"), Err(Error::NotFound));
+    let request = req(
+        "create",
+        Command::CreateLinked {
+            record: case,
+            relations: vec![link.clone()],
+        },
+    );
+    let first = crm.execute(&context, request.clone()).unwrap();
+    assert_eq!(crm.execute(&context, request.clone()).unwrap(), first);
+    assert_eq!(crm.relations(&context, "case").unwrap(), vec![link]);
+    let mut changed = request;
+    if let Command::CreateLinked { relations, .. } = &mut changed.command {
+        relations.clear();
+    }
+    assert_eq!(crm.execute(&context, changed), Err(Error::OperationReused));
+    let mut wrong = Relation {
+        source: "other".into(),
+        label: "x".into(),
+        target: Target::External(ExternalRef {
+            owner: "identity".into(),
+            resource_type: "account".into(),
+            id: "user".into(),
+        }),
+    };
+    assert!(crm
+        .execute(
+            &context,
+            req(
+                "wrong",
+                Command::CreateLinked {
+                    record: record("second", "Second", Kind::SupportCase),
+                    relations: vec![wrong.clone()]
+                }
+            )
+        )
+        .is_err());
+    wrong.source = "second".into();
+    assert!(crm
+        .execute(
+            &context,
+            req(
+                "oversized",
+                Command::CreateLinked {
+                    record: record("second", "Second", Kind::SupportCase),
+                    relations: vec![wrong; 33]
+                }
+            )
+        )
+        .is_err());
+    assert_eq!(crm.get(&context, "second"), Err(Error::NotFound));
+}
+
 struct Grants;
 impl Authorization for Grants {
     fn allows(&self, ctx: &Context, access: Access) -> bool {

@@ -1,6 +1,6 @@
 schema_version: buurtman.wp-state.v1
 wp_id: WP-BB-009-internal-manual-v1
-status: in_progress
+status: completed
 work_location: .
 sync_pending: false
 progress:
@@ -14,24 +14,35 @@ progress:
 - Fresh manual command exec-b0df88c9-8adf-4c7d-b0af-2b27a079bb12 exit0 and final-ui-current bounded visual/source
   review inspected. Npm exec-8b01444e-3570-4d8c-a200-314ad508ee9f exit0 includes manual modules among seven public
   files; private/governance excluded.
+- Completed reusable nine-topic offline EN/FR/NL manual; fresh keyboard/draft/disposal/provisioning proof and exact
+  seven-file npm package output independently reviewed.
 blockers: []
-next_action: Root runs current GOV for closure mapping; synchronize completion only with applicable current proof.
-  WP015 subsequent presentation/manual changes require fresh affected proof before accepting new behavior.
+next_action: Selected contract complete. Continue retained host/release work through its existing WP; production
+  integration and native x64 hardware/macOS/Linux not claimed.
 verification:
 - check_id: BB-CHECK-UI
   result: passed
-  observed: .local/manual-proof/result.json read; current recorded fingerprints and successful cleanup; root command
-    exit0 and final independent evidence review. Temporary MemoryStore scope only.
+  observed: Fresh current-source five browser proofs exit0 using explicit ARM64 bridge; unchanged run fingerprints,
+    owned cleanup verified. Independent .local/independent-review/final-ui-current.md opens exact desktop/mobile
+    artifacts. Temporary MemoryStore scope only.
   command: python tooling/manual-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
 - check_id: BB-CHECK-PACKAGE
   result: passed
-  observed: exec-8b01444e-3570-4d8c-a200-314ad508ee9f exit0 npm seven-file listing read; includes user-manual/manual-content,
-    no private/governance. Prior core/demo separation proof retained.
-  command: npm pack --dry-run --json --ignore-scripts
+  observed: Fresh exact .local/crate-boundary-proof/core-package.txt (19 files), demo-package.txt (6 files, three
+    examples), web-package.json (7 files) exclude governance/private backups; unpublished.
+  command: npm pack --dry-run --json (web directory)
+- check_id: BB-CHECK-GOV
+  result: passed
+  command: python tooling/check.py
+  observed: Final synchronized python tooling/check.py exit0:15WPs36requirements0MTs, structural consistency only;
+    canonical state/taskboard/spec roadmap reread agree, sync_pending false.
 proof_context:
   prior_result_ref: .local/manual-proof/result.json
-  current_input_validity: Fresh replacement proof has identical before/after fingerprints and completed cleanup;
-    independent current-source/package acceptance remains pending.
+  current_input_validity: Fresh current-source five browser proofs exit0 using explicit ARM64 bridge; unchanged
+    run fingerprints, owned cleanup verified. Independent .local/independent-review/final-ui-current.md opens exact
+    desktop/mobile artifacts. Temporary MemoryStore scope only. Fresh exact .local/crate-boundary-proof/core-package.txt
+    (19 files), demo-package.txt (6 files, three examples), web-package.json (7 files) exclude governance/private
+    backups; unpublished.
   handoff_ref: tooling/manual-proof.py
 recovery:
   branch: codex/buurtman-balie

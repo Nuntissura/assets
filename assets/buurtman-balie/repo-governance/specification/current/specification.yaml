@@ -1,6 +1,6 @@
 schema_version: buurtman.spec.v1
 specification_id: SPEC-buurtman-balie-v1
-revision: 14
+revision: 15
 product_name: Buurtman Balie
 owner: model_operated
 purpose: Build an independently reusable CRM product for multiple operator projects; Portal admin is its first embedding,
@@ -211,6 +211,10 @@ requirements:
     generates a valid ASCII canonical key with explicit Unicode/collision handling; optional advanced key override
     preserves host API. Preserve field catalogue types/scopes and canonical ownership; English/French/Dutch localization,
     disposal, in-flight drafts and actual desktop/mobile browser proof required.'
+  status: accepted
+- requirement_id: BB-ATOMIC-LINK-001
+  statement: Create a record with up to32 outgoing relations under one CAS and replay receipt. Reject any invalid
+    relation without committing the record, relations or receipt. Host identity and image ownership remain external.
   status: accepted
 constraints:
 - Independently reusable Rust core; injected authorization and storage; business workspace isolation.
@@ -883,30 +887,38 @@ workflow_findings:
   remediation:
   - finding_id: WF-001
     scenario_id: dirty-switch
-    current_behavior: Selecting Milk replaces unsaved Camera description silently.
+    current_behavior: Dirty record drafts are retained and guarded before selection/New product; cancel/continue/save
+      and failure paths passed fresh workflow proof.
     source_refs:
     - web/app.js
     required_remediation: Protect dirty drafts before record selection/New product; validate cancel/continue/save
       and failure paths.
-    status: recorded_existing_behavior_remediation
+    status: remediated_verified_temporary_composition
+    historical_behavior: Selecting Milk replaces unsaved Camera description silently.
+    proof_ref: .local/workflow-proof/result.json
   - finding_id: WF-002
     scenario_id: stale-quote
-    current_behavior: Employee EUR72 preview remains after Camera B2B base changes to100; refreshed price would
-      be EUR90.
+    current_behavior: Quote invalidates visibly when relevant client/product/tier revisions change; delayed stale
+      responses cannot restore freshness. EUR72/90/99 canonical quote regression passed.
     source_refs:
     - web/app.js
     - web/client-pricing.js
     required_remediation: Invalidate or visibly mark quote freshness against client/product/tier revisions; test
       relevant and unrelated updates.
-    status: recorded_existing_behavior_remediation
+    status: remediated_verified_temporary_composition
+    historical_behavior: Employee EUR72 preview remains after Camera B2B base changes to100; refreshed price would
+      be EUR90.
+    proof_ref: .local/workflow-proof/result.json
   - finding_id: WF-003
     scenario_id: invalid-price
-    current_behavior: Locally rejected negative price is presented as unconfirmed save with retry-to-reconcile instruction.
+    current_behavior: Local negative-price validation dispatches nothing and asks for correction; post-dispatch
+      uncertainty retains exact-intent replay. Client Conflict reread/failed-reread/r1-r2-r3 retained-draft regression
+      passed.
     source_refs:
     - web/app.js
     required_remediation: Separate local pre-dispatch correction from post-dispatch uncertain recovery; retain conflict/response-loss
       handling.
-    status: recorded_existing_behavior_remediation
+    status: remediated_verified_temporary_composition
     conflict_recovery_finding:
       review_ref: .local/independent-review/gui-current.md
       observed_failure: Client Conflict marks cached revision stale but reselection reused the unchanged client
@@ -917,8 +929,13 @@ workflow_findings:
       remediation_observed: Current source rereads Customer list after confirmed Conflict, retains form controls,
         replaces selected revision only after successful fresh read and requests review before another save. Failed
         reread preserves needsReload; next save retries read without dispatching a stale write.
-      proof_required: Actual competing client writer r1/cache versus r2/backend then retained-draft save at r3;
-        failed reread must not claim reload or dispatch stale mutation. Fresh runtime proof pending.
+      proof_required: Exact r1/cache versus r2/backend retained-draft r3 save and failed-reread/no stale dispatch
+        passed; production host behavior remains untested.
+      proof_observed: Fresh current workflow proof passed exact competing writer and failed reread cases; independent
+        final-ui-current review accepts bounded temporary composition.
+    historical_behavior: Locally rejected negative price is presented as unconfirmed save with retry-to-reconcile
+      instruction.
+    proof_ref: .local/workflow-proof/result.json
   scope_boundary: Existing behavior fixes only; no authorization for host inventory/checkout implementation. Root
     assigns product writers/proof.
 roadmap:
@@ -967,11 +984,11 @@ roadmap:
   - BB-GROWTH-003
   verification_summary: Unimplemented discovery/proposed scope.
 - wp_id: WP-BB-006-localization-v1
-  status: in_progress
+  status: completed
   requirement_refs:
   - BB-LOCALE-001
-  verification_summary: Existing localization result and independent review inspected; unknown-error and exact discount/final
-    assertions plus current-input provenance require devlead review. Status retained.
+  verification_summary: Completed scoped EN/FR/NL localization with 147 formatter oracle cases, immutable in-flight
+    requests, lifecycle/unsupported-language proof and independent current-source visual review.
 - wp_id: WP-BB-007-postgresql-storage-v1
   status: planned
   requirement_refs:
@@ -984,23 +1001,21 @@ roadmap:
   verification_summary: Official-source research and host applicability gaps recorded; current research review and
     BB-CHECK-GOV acceptance recording remain with devlead. No implemented compliance verdict.
 - wp_id: WP-BB-009-internal-manual-v1
-  status: in_progress
+  status: completed
   requirement_refs:
   - BB-MANUAL-001
-  verification_summary: Shipped manual source updated after saved proof; fresh visual/API/package proof and independent
-    review remain required. Status retained.
+  verification_summary: Completed reusable nine-topic offline EN/FR/NL manual; fresh keyboard/draft/disposal/provisioning
+    proof and exact seven-file npm package output independently reviewed.
 - wp_id: WP-BB-010-swarm-backpressure-v1
   status: in_progress
   requirement_refs:
   - BB-CONCURRENCY-001
   - BB-BACKPRESSURE-001
   - BB-PERFORMANCE-001
-  verification_summary: 'Selected spec13 P1 provisional diagnostic complete: exact2100 mixed operations each on
-    native Windows ARM64 and Windows x64 under ARM64 emulation, temporary MemoryStore only. Functional shared worker
-    evidence recorded; independent review reconciled all18 raw latency/outcome groups, canonical/configuration/pressure/fault
-    expiry/exact-intent replay and owned-resource/cleanup/hash evidence. Production representative Portal workload,
-    host numeric latency/resource budgets and actual host integration remain outstanding; camera-store/supermarket/photo-service
-    retained. No production SLA or native x64 hardware claim.'
+  verification_summary: 'P1 preserved; whole-command CommandWorker P2 independently reconciled on native Windows
+    ARM64 and x64 under ARM64 emulation: all2100 attempts successful and all210 distinct creates committed, canonical310records/370receipts/revision370.
+    21 affected worker/boundary tests passed on both targets. Production Portal workload, host response/resource
+    budgets and integration remain outstanding; camera-store/supermarket/photo-service retained.'
 - wp_id: WP-BB-011-crm-usecase-research-v1
   status: in_progress
   requirement_refs:
@@ -1017,19 +1032,19 @@ roadmap:
     CRDT convergence/races and raw durable ingress/rehydration/real-host/retention/publish/interoperability remain
     required/outstanding.
 - wp_id: WP-BB-013-operator-workflow-validation-v1
-  status: in_progress
+  status: completed
   requirement_refs:
   - BB-WORKFLOW-001
-  verification_summary: Accepted dedicated-subagent workflow validation; scenario matrix, actual UI/backend observations,
-    screenshots and remediation/spec/stub capture pending. No implicit feature implementation or host compatibility.
+  verification_summary: Completed dedicated operator workflow validation and retained three-context matrix. WF001-003/client
+    Conflict regressions passed; connected host navigation/inventory/checkout gaps remain in existing stubs.
 - wp_id: WP-BB-014-crate-boundary-v1
-  status: in_progress
+  status: completed
   requirement_refs:
   - BB-BOUNDARY-001
   - BB-PLATFORM-001
-  verification_summary: Core/default-member and separate host-demo boundary observed; package/fmt/lint outputs reviewed.
-    Native ARM64 and x64-emulated all-feature tests/demo outputs inspected; ignored Surreal tests not live proof.
-    UI/independent source acceptance pending, native x64 hardware evidence absent; macOS/Linux later.
+  verification_summary: Completed core/default-member and separate host-demo/presentation boundaries. Fresh 19/6/7
+    package lists, five browser proofs, fmt/lint and Windows ARM64 plus x64-emulated runtime evidence; native x64
+    hardware/macOS/Linux and production hosts remain untested.
 - wp_id: WP-BB-015-field-selection-v1
   status: completed
   requirement_refs:
@@ -1038,6 +1053,10 @@ roadmap:
   verification_summary: Selected field presentation completed with six-criterion independent bounded PASS; five
     fresh temporary backend browser proofs and current seven-file package proof. Prior cleanup failures historical;
     no production host/universal ancestry/full CRM claim.
+- wp_id: WP-BB-016-linked-create-v1
+  status: completed
+  requirement_refs:
+  - BB-ATOMIC-LINK-001
 host_intent:
 - host: Handshake Portal
   requested_use: Operator business customer/user management, per-user usage and bug/feedback handling.

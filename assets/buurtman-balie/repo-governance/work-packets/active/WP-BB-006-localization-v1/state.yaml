@@ -1,6 +1,6 @@
 schema_version: buurtman.wp-state.v1
 wp_id: WP-BB-006-localization-v1
-status: in_progress
+status: completed
 work_location: .
 sync_pending: false
 progress:
@@ -12,15 +12,23 @@ progress:
 - Fresh en/fr/nl artifact and command exec-840c30a0-8629-48a5-a876-68b5d1a46215 exit0 inspected; unknown errors,
   unsupported language, preserved drafts/requests, disposal and independent exact-money oracle cover earlier gaps.
   147 cases are formatter cases, not persisted quotes.
+- Completed scoped EN/FR/NL localization with 147 formatter oracle cases, immutable in-flight requests, lifecycle/unsupported-language
+  proof and independent current-source visual review.
 blockers: []
-next_action: Root runs current GOV for closure mapping; synchronize completion only with applicable current proof.
-  WP015 subsequent presentation/manual changes require fresh affected proof before accepting new behavior.
+next_action: Selected contract complete. Continue retained host/release work through its existing WP; production
+  integration and native x64 hardware/macOS/Linux not claimed.
 verification:
 - check_id: BB-CHECK-UI
   result: passed
-  observed: .local/localization-proof/result.json read; current recorded fingerprints and successful cleanup; root
-    command exit0 and final independent evidence review. Temporary MemoryStore scope only.
+  observed: Fresh current-source five browser proofs exit0 using explicit ARM64 bridge; unchanged run fingerprints,
+    owned cleanup verified. Independent .local/independent-review/final-ui-current.md opens exact desktop/mobile
+    artifacts. Temporary MemoryStore scope only.
   command: python tooling/localization-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
+- check_id: BB-CHECK-GOV
+  result: passed
+  command: python tooling/check.py
+  observed: Final synchronized python tooling/check.py exit0:15WPs36requirements0MTs, structural consistency only;
+    canonical state/taskboard/spec roadmap reread agree, sync_pending false.
 recovery:
   branch: codex/buurtman-balie
   commit: null

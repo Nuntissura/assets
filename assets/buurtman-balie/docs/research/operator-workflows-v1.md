@@ -18,7 +18,7 @@ The run recorded all scenario results and screenshots, then ended with exit 1 du
 
 <topic id="scenario-matrix" wp="WP-BB-013-operator-workflow-validation-v1" status="observed">
 
-All executed scenarios start in the isolated demo business workspace and use the demo operator grant. New product/client records are temporary canonical records for that process only. `EXECUTED` describes observed steps, not production compatibility. SaaS linked references are opaque demo identifiers; they prove command acceptance, not the referenced owner's facts.
+This matrix preserves the original observations; current remediation proof follows in `current-remediation`. All executed scenarios start in the isolated demo business workspace and use the demo operator grant. New product/client records are temporary canonical records for that process only. `EXECUTED` describes observed steps, not production compatibility. SaaS linked references are opaque demo identifiers; they prove command acceptance, not the referenced owner's facts.
 
 | Scenario / employee task | Exact entity / canonical owner | Expected steps and result | Actual result / evidence |
 |---|---|---|---|
@@ -45,6 +45,18 @@ All executed scenarios start in the isolated demo business workspace and use the
 | Company staff/manager day-to-day | Shifts, HR, payroll, staff grants / HR/identity hosts | Role-specific access, schedule/attendance, approvals, audit | NOT_IMPLEMENTED/unproven; employee pricing is not HR; `company-employee` |
 | SaaS operations/analytics | Subscription/usage/billing/RSS/tag telemetry / Portal and provider owners | Account linkage, measure resources/module usage, freshness/window, entitlement changes | NOT_IMPLEMENTED/unproven; a CRM external pointer does not supply or authorize metrics |
 | Cross-company operations | Imports, exports, communications, reminders, reporting, restore / selected owners unresolved | Day-to-day company discovery surface | NOT_IMPLEMENTED/unproven; preserve growth and analytics stubs; not an exhaustive business requirements claim |
+
+</topic>
+
+<topic id="current-remediation" wp="WP-BB-013-operator-workflow-validation-v1" status="verified" updated_at="2026-10-11">
+
+## Current temporary-backend remediation
+
+Fresh `tooling/workflow-proof.py` completed with exit0 against the newly built ARM64 bridge configured through `BB_DEMO_BINARY`. `.local/workflow-proof/result.json` records unchanged pre/post input hashes, no page errors and completed owned cleanup. Root opened current desktop and localized mobile screenshots; readable stacked controls, retained drafts and stale-preview indication are visible.
+
+WF-001: `record_and_new_drafts_retained` and conflict-draft recovery pass. WF-002: unrelated updates preserve quotes, relevant product/client changes invalidate them, late/changed-selection replies are discarded, and exact employee previews reconcile EUR72/90/99. WF-003: negative price input dispatches nothing and confirmed rejection remains distinct from uncertain exact-request replay. The client Conflict recovery probe rereads canonical revision while preserving the newer draft instead of repeating a stale save.
+
+These replace the initial defect observations only for the supported temporary CRM/UI paths. WF-004 connected real-host navigation and WF-005 inventory/label/checkout integration remain unimplemented under their Portal/retail/growth stubs. SaaS usage, HR, real sales and stock retain their canonical host owners; successful demo commands or pointers do not prove those workflows. The original failed driver-cleanup run is historical, not current acceptance.
 
 </topic>
 

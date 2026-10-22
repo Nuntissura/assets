@@ -27,9 +27,13 @@ def fingerprints(args):
     paths = [ROOT / name for name in ('Cargo.toml', 'Cargo.lock', 'crates/buurtman-balie-host-demo/Cargo.toml')]
     for folder, pattern in [('web', '*'), ('src', '*.rs'), ('crates/buurtman-balie-host-demo/examples', '*.rs'), ('tooling', '*.py')]:
         paths.extend(path for path in (ROOT / folder).rglob(pattern) if path.is_file())
-    binary = ROOT / ('target/debug/examples/json_bridge.exe' if os.name == 'nt' else 'target/debug/examples/json_bridge')
+    binary = Path(os.environ.get('BB_DEMO_BINARY', ROOT / 'target/debug/examples/json_bridge'))
+    if os.name == 'nt' and not binary.suffix:
+        binary = binary.with_suffix('.exe')
+    binary = binary.resolve(strict=True)
     paths.append(binary)
-    result = {path.relative_to(ROOT).as_posix(): sha256_file(path) for path in sorted(set(paths))}
+    result = {path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else str(path):
+              sha256_file(path) for path in sorted(set(paths))}
     result['runtime/python'] = sha256_file(Path(sys.executable))
     result['runtime/browser'] = sha256_file(Path(args.browser).resolve(strict=True))
     spec = importlib.util.find_spec('playwright')

@@ -14,6 +14,23 @@ The default crate and its Peak subcrate have no external runtime dependencies. H
 
 </topic>
 
+<topic id="recycle-bin">
+
+## Recycle bin host contract
+
+`bin::BinItem` records a stable occurrence ID and its previous parent. Persist it in the owning
+host transaction when moving an item to Bin. `restore_parent` chooses its last live folder or
+Root if that folder is absent; the host rechecks permissions, conflicts and revisions before
+committing. Bin remains scoped to the authenticated workspace.
+
+`purge_inventory` rejects incomplete, oversized or duplicate inventories. Empty Bin must read
+the whole canonical inventory, including unloaded/filtered entries and descendants. Individual
+Delete forever and Empty Bin require an explicit user action and host-owned durable recovery
+when storage effects cannot share a transaction. A plan is not deletion proof. Cabinet stores
+no bytes, performs no I/O and cannot certify that a host permanently removed them.
+
+</topic>
+
 <topic id="operate">
 
 ## Use
