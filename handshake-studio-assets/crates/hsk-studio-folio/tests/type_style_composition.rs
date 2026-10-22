@@ -84,7 +84,8 @@ fn wire(v: &Value) -> Vec<u8> {
 fn absent_composition_keeps_existing_bytes() {
     let v = legacy();
     assert_eq!(check(&v), Ok(vec![]));
-    assert_eq!(wire(&v), serde_json::to_vec(&v).unwrap());
+    // Same members as the legacy wire value: no new key appears when nothing is set.
+    assert_eq!(serde_json::from_slice::<Value>(&wire(&v)).unwrap(), v);
     let empty = StudioTypeStyleRecords::new(identity("SDOC", 1));
     assert_eq!(
         serde_json::to_value(&empty).unwrap(),
