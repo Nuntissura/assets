@@ -1,8 +1,9 @@
 //! Core half of STUDIO-MODULE-INTEROP_VECTOR (SMB-CRATE-SEAM-SPLITS slice 3a): the vector model,
 //! ids, errors, the .ai import through the PDF drawing port and the Press provider port, and the
 //! other vector interchange formats (lane SMB-DXF-EPS-IMPORT): DXF (own reader, default build), the DWG refusal,
-//! EPS (DSC comments, DOS header and preview in process; no PostScript interpreter: vector
-//! conversion is a typed refusal, see `eps`) and EPSF export.
+//! EPS (DSC and preview in process, vector content through the isolated worker of features
+//! `eps` / `eps-worker`, which runs the vendored `hsk-studio-ps` interpreter with free fonts; a
+//! typed refusal without them, see `eps`) and EPSF export.
 //! `hsk-studio-interop-vector` is the public face; the `#[doc(hidden)]` modules are the seam
 //! `hsk-studio-interop-vector-svg` builds on, not a public contract.
 #![forbid(unsafe_code)]
@@ -15,6 +16,7 @@ mod dxf_import;
 mod dxf_reader;
 mod eps;
 mod eps_export;
+mod eps_worker;
 #[doc(hidden)]
 pub mod error;
 #[doc(hidden)]
@@ -35,6 +37,11 @@ pub use eps::{
     import_eps_with, read_eps,
 };
 pub use eps_export::{EpsExport, export_eps, export_eps_proposal};
+pub use eps_worker::{EPS_WORKER_PANIC_EXIT, EPS_WORKER_PROGRAM, EPS_WORKER_PROTOCOL};
+#[cfg(feature = "eps")]
+pub use eps_worker::{EpsWorkerOptions, WorkerEpsConverter};
+#[cfg(feature = "eps-worker")]
+pub use eps_worker::eps_worker_main;
 pub use error::{PreservedBlob, Result, VectorError};
 pub use ids::{IdMint, SequentialIdMint};
 pub use model::*;

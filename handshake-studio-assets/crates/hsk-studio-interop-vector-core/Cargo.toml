@@ -6,15 +6,30 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+# Host side of the isolated EPS-to-PDF worker (hsk-studio-worker supervision; Job Object caps on
+# Windows). Default off. Lane SMB-EPS-FREE-FONTS restores the SMB-DXF-EPS-IMPORT worker.
+eps = ["dep:hsk-studio-worker", "hsk-studio-worker/job-caps"]
+# The worker binary itself: links the vendored PostScript interpreter hsk-studio-ps (fork of stet
+# 0.8.4, Apache-2.0 OR MIT, with free fonts instead of the URW++ base 35). Only the worker process
+# runs PostScript. Default off.
+eps-worker = ["eps", "dep:stet", "dep:stet-core"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
 hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-worker = { path = "../hsk-studio-worker", version = "=0.1.0", default-features = false, features = [], optional = true }
+stet = { path = "../hsk-studio-ps", package = "hsk-studio-ps", version = "=0.1.0", default-features = false, features = ["pdf-output"], optional = true }
+stet-core = { path = "../hsk-studio-ps-core", package = "hsk-studio-ps-core", version = "=0.1.0", default-features = false, features = [], optional = true }
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "interop-vector-eps-worker"
+path = "src/bin/interop-vector-eps-worker.rs"
+required-features = ["eps-worker"]
 
 [[test]]
 name = "dxf_import"
@@ -23,3 +38,8 @@ path = "tests/dxf_import.rs"
 [[test]]
 name = "eps_import"
 path = "tests/eps_import.rs"
+
+[[test]]
+name = "eps_worker"
+path = "tests/eps_worker.rs"
+required-features = ["eps-worker"]

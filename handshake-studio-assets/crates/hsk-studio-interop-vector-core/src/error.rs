@@ -56,19 +56,17 @@ pub enum VectorError {
     MalformedDxf(&'static str),
     /// The EPS file is damaged: DOS binary header, DSC comments or preview (`what` names the check).
     MalformedEps(&'static str),
-    /// EPS vector content (EPS to PDF or raster) is not converted: Studio has no PostScript
-    /// interpreter (the interpreter route was removed for licensing, START_LOG lead decision
-    /// 2026-10-21). `route` (`EPS_ROUTE`) says so and names what is available: the DSC and
-    /// DOS-header data from `read_eps` and the preview from `import_eps_preview`. The original
-    /// bytes are preserved.
+    /// EPS vector content needs the isolated PostScript worker, which this call did not use or
+    /// this build does not have; `route` names how to obtain the vector content. The original bytes
+    /// are preserved. A raster preview, when the file has one, is available from `import_eps_preview`.
     EpsVectorNotDecoded {
         route: &'static str,
         preserved: PreservedBlob,
     },
-    /// No EPS-to-PDF converter is available (reported by a host-supplied `EpsPdfConverter`).
+    /// No EPS-to-PDF converter is available (the worker program is missing or could not start).
     EpsConverterUnavailable,
-    /// The EPS-to-PDF conversion of a host-supplied `EpsPdfConverter` failed (`what` names the
-    /// failure; `no_pages` when its PDF has no page).
+    /// The isolated EPS-to-PDF conversion failed (`what`: deadline, memory_cap, crashed,
+    /// postscript_error, no_pages, output_over_cap, protocol, canceled_by_worker).
     EpsConversionFailed(&'static str),
 }
 

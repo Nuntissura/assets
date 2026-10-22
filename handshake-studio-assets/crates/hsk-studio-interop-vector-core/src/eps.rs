@@ -8,19 +8,20 @@
 //! trailer, `%%LanguageLevel`, `%%DocumentFonts`, `%%DocumentNeededResources`) plus the EPSI
 //! interchange preview (`%%BeginPreview: w h depth lines` hex lines). [`import_eps_preview`]
 //! returns the preview (TIFF or WMF bytes for the host's decoders, an EPSI bitmap decoded to
-//! 8-bit gray) with the typed loss `eps_vector_not_decoded`.
+//! 8-bit gray) with the typed loss `eps_vector_not_decoded`; [`import_eps`] refuses with
+//! [`VectorError::EpsVectorNotDecoded`] naming the routes.
 //!
-//! Vector content (EPS to PDF or raster): Studio has no PostScript interpreter. The isolated
-//! `stet` worker of slice 3 was removed for licensing (START_LOG lead decision 2026-10-21: stet
-//! always embeds the URW++ base 35 fonts, which their publisher offers under the AGPL only), so
-//! [`import_eps`] refuses with [`VectorError::EpsVectorNotDecoded`] whose route [`EPS_ROUTE`] names
-//! that removal and the data that stays available (DSC/DOS header from [`read_eps`], the preview
-//! from [`import_eps_preview`]); proof: `tests/eps_import.rs`
-//! `eps_conversion_refusal_names_the_removed_interpreter_route`. [`import_eps_with`] remains the
-//! port for a host-supplied [`EpsPdfConverter`] (none ships with Studio; it must never run
-//! PostScript in the caller's process): it reads the converter's PDF through the same
-//! [`PdfDrawingProvider`] port and Folio builder as the `.ai` import, with the loss
-//! `eps_via_pdf_conversion` plus the builder's own.
+//! Stage 2, vector content: [`import_eps_with`] hands the PostScript section to an
+//! [`EpsPdfConverter`] (the isolated, capped worker of features `eps` / `eps-worker`, see
+//! `eps_worker`; never an interpreter in this process) and reads the resulting PDF through the
+//! same [`PdfDrawingProvider`] port and Folio builder as the `.ai` import. Losses:
+//! `eps_via_pdf_conversion` (the drawing is the interpreter's rendering of the program, not the
+//! program), plus the builder's own (text as outlines where the host cannot lay it out). The
+//! worker runs `hsk-studio-ps`, the vendored fork of `stet` 0.8.4 (lane SMB-EPS-FREE-FONTS,
+//! Operator 2026-10-22) that ships free fonts only: the 35 standard PostScript font names resolve
+//! to TeX Gyre (GUST Font License), STIX Two Math (OFL) for Symbol and DejaVu Sans for
+//! ZapfDingbats, never to the URW++ base 35 fonts the upstream crate embeds. A build without
+//! feature `eps` has no converter: [`import_eps`] names the features in [`EPS_ROUTE`].
 //!
 //! DSC comments are read line by line at the start of a line only, after the DOS header is
 //! removed; nothing inside PostScript strings or procedures is interpreted (proof:
@@ -36,10 +37,14 @@ use hsk_studio_accord::CancellationToken;
 pub const DOS_EPS_MAGIC: [u8; 4] = [0xC5, 0xD0, 0xD3, 0xC6];
 /// Length of the DOS binary EPS header.
 pub const DOS_EPS_HEADER_LEN: usize = 30;
-/// Carried by [`VectorError::EpsVectorNotDecoded`]: the PostScript interpreter route was removed for
-/// licensing; the DSC/DOS-header data ([`read_eps`]) and the preview ([`import_eps_preview`]) are
-/// available.
-pub const EPS_ROUTE: &str = "postscript_interpreter_route_removed_for_licensing_dsc_data_from_read_eps_and_preview_from_import_eps_preview_are_available";
+/// The routes to EPS vector content, carried by [`VectorError::EpsVectorNotDecoded`] (this build
+/// has the isolated worker host, feature `eps`).
+#[cfg(feature = "eps")]
+pub const EPS_ROUTE: &str = "import_eps_with_the_isolated_eps_worker_or_import_eps_preview_for_the_raster_preview";
+/// The routes to EPS vector content, carried by [`VectorError::EpsVectorNotDecoded`] (this build has
+/// no worker host: features `eps` / `eps-worker` are off).
+#[cfg(not(feature = "eps"))]
+pub const EPS_ROUTE: &str = "eps_worker_not_in_this_build_enable_features_eps_and_eps_worker_or_import_eps_preview_for_the_raster_preview";
 /// Largest EPSI preview side (pixels).
 pub const MAX_PREVIEW_SIDE: u32 = 16_384;
 /// Largest EPSI preview area (pixels).
@@ -378,9 +383,8 @@ pub fn import_eps_preview(bytes: &[u8], policy: &ImportPolicy, cancel: &Cancella
     Ok(EpsPreviewImport { info, preview, loss, preserved: PreservedBlob { kind: "eps", bytes: bytes.to_vec() } })
 }
 
-/// EPS content conversion: always refuses with [`VectorError::EpsVectorNotDecoded`] (route
-/// [`EPS_ROUTE`]: the interpreter route was removed for licensing; DSC data and preview are
-/// available; bytes preserved) once the file reads as EPS. A damaged file is `MalformedEps`.
+/// Always refuses with [`VectorError::EpsVectorNotDecoded`] (route [`EPS_ROUTE`], bytes preserved)
+/// once the file reads as EPS: vector content needs [`import_eps_with`].
 pub fn import_eps(bytes: &[u8], policy: &ImportPolicy, cancel: &CancellationToken) -> Result<VectorProposal> {
     cancel.check().map_err(|_| VectorError::Canceled)?;
     read_eps(bytes, policy)?;
@@ -388,8 +392,8 @@ pub fn import_eps(bytes: &[u8], policy: &ImportPolicy, cancel: &CancellationToke
 }
 
 /// Turns the PostScript section of an EPS into PDF bytes (one page, the bounding box at the
-/// origin). Studio ships no implementation (the interpreter route was removed for licensing); a
-/// host may supply an isolated converter. It must never run PostScript in the caller's process.
+/// origin). Implemented by the isolated worker host (`eps_worker::WorkerEpsConverter`); a host
+/// may supply its own isolated converter. It must never run PostScript in the caller's process.
 pub trait EpsPdfConverter {
     fn eps_to_pdf(&self, postscript: &[u8], cancel: &CancellationToken) -> Result<Vec<u8>>;
 }

@@ -63,15 +63,15 @@ fn dos_header_and_dsc_comments_are_read() {
     assert_eq!(import.preview, Some(EpsPreview::Wmf(wmf)));
 }
 
-/// EPS content conversion is a typed refusal (remediation 2026-10-21): the route names that the
-/// PostScript interpreter route was removed for licensing and that DSC data and the preview stay
-/// available; the error is `eps_vector_not_decoded` (Unavailable) with the bytes preserved, a plain
-/// PostScript file is refused the same way, and the DSC data and the EPSI preview of the same file
-/// are still read.
+/// EPS content conversion without a converter is a typed refusal (lane SMB-EPS-FREE-FONTS, which
+/// restores the worker): the route names the worker (features `eps` / `eps-worker`; in a build
+/// without them, that they are off) and the preview route; the error is `eps_vector_not_decoded`
+/// (Unavailable) with the bytes preserved, a plain PostScript file is refused the same way, and the
+/// DSC data and the EPSI preview of the same file are still read.
 #[test]
-fn eps_conversion_refusal_names_the_removed_interpreter_route() {
-    assert!(EPS_ROUTE.contains("postscript_interpreter_route_removed_for_licensing"), "{EPS_ROUTE}");
-    assert!(EPS_ROUTE.contains("read_eps") && EPS_ROUTE.contains("import_eps_preview"), "{EPS_ROUTE}");
+fn eps_conversion_refusal_names_the_worker_route() {
+    assert!(EPS_ROUTE.contains("eps_worker") && EPS_ROUTE.contains("import_eps_preview"), "{EPS_ROUTE}");
+    assert_eq!(EPS_ROUTE.contains("not_in_this_build"), cfg!(not(feature = "eps")), "{EPS_ROUTE}");
     let epsi = "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 2 1\n%%EndComments\n%%BeginPreview: 2 1 8 1\n% 00 ff\n%%EndPreview\nnewpath 0 0 moveto 2 1 lineto stroke\nshowpage\n%%EOF\n";
     for bytes in [epsi.as_bytes(), b"%!PS-Adobe-3.0\n%%BoundingBox: 0 0 10 10\nshowpage\n".as_slice()] {
         match import_eps(bytes, &policy(), &CancellationToken::default()) {

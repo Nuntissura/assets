@@ -6,6 +6,11 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+# Host side of the isolated EPS-to-PDF worker (core feature `eps`). Default off.
+eps = ["hsk-studio-interop-vector-core/eps"]
+# Also builds the worker binary into this build (core feature `eps-worker`: the vendored hsk-studio-ps
+# interpreter with free fonts). Default off.
+eps-worker = ["hsk-studio-interop-vector-core/eps-worker"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
