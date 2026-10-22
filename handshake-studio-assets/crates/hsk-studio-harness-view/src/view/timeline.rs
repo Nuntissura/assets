@@ -909,6 +909,8 @@ impl Viewer {
     }
 
     fn timeline_command_inner(&mut self, command: &TimelineCommand) -> Result<(), String> {
+        // An undo or redo since the last frame changed the sequence: the clock follows it first.
+        self.timeline_sync_monitor();
         let t = self.timeline.as_mut().ok_or("no_timeline")?;
         match command {
             TimelineCommand::Select(id) => {

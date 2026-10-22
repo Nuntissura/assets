@@ -166,7 +166,9 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
     };
     let tpf = ticks_per_frame(seq);
     let selected = t.selected().map(str::to_owned);
-    ui.horizontal_wrapped(|ui| {
+    // One toolbar row (scrolls sideways when narrow): a wrapping row lets nested widget scopes
+    // grow the row and push the lanes out of the panel.
+    egui::ScrollArea::horizontal().id_salt(vw::id("timeline.toolbar")).show(ui, |ui| ui.horizontal(|ui| {
         ui.strong(format!("Timeline: {}", seq.name.chars().take(48).collect::<String>()));
         let snap = ui.push_id(vw::id(widget::SNAP), |ui| ui.selectable_label(t.snapping, "Snap")).inner.on_hover_text("Snapping to edit points, markers, work area and playhead (S)");
         out.drawn.push(widget::SNAP.into());
@@ -194,7 +196,7 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
         let here = playhead.zip(seq.frame_rate.accord()).and_then(|(p, r)| hsk_studio_pulse::format_ticks(p, r, hsk_studio_pulse::TimeDisplay::matching(r), None).ok());
         ui.label(format!("Playhead {}", here.as_deref().unwrap_or("-")));
         out.drawn.push(widget::PLAYHEAD.into());
-    });
+    }));
     let size = egui::vec2(ui.available_width().max(HEADER_PX + 40.0), ui.available_height().max(RULER_PX + WORK_AREA_PX + 30.0));
     let (area, bg) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let markers: &[(String, TickRange)] = t.cache.as_ref().map_or(&[], |c| &c.markers);

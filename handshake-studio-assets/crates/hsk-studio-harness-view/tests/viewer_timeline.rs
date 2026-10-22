@@ -163,8 +163,10 @@ fn sequence_package(dir: &Path) -> PathBuf {
 
 // ---- egui driving ----------------------------------------------------------------------------------
 
+/// A 1400 x 1200 screen: at 900 px the viewer's top bars leave the bottom panels (status, timeline,
+/// program monitor) less than the timeline's minimum height (measured: the panel reached y 965).
 fn input(events: Vec<egui::Event>) -> egui::RawInput {
-    egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), events, ..Default::default() }
+    egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1200.0))), events, ..Default::default() }
 }
 
 fn frame(v: &mut Viewer, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
