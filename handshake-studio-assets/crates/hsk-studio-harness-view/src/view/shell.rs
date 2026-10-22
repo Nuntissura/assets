@@ -17,6 +17,18 @@
 //! Model navigation: [`Viewer::shell_command`] runs any entry headlessly, every entry has the
 //! stable widget name `menu.<command id>` ([`widget::entry`]), and `Viewer::state_json()["shell"]`
 //! projects the panels (open, visible, availability), the recent list and the open dialog.
+//!
+//! Lane SMB-HARNESS-SHELL-2: the menu tree is ONE set of controls descriptors
+//! ([`Viewer::menu_bar`], `hsk_studio_controls::menu`, [STU-ARC-014]) and that one availability
+//! evaluation feeds the egui menu (greyed with the reason line, never hidden, the remedy of an
+//! `INAPPLICABLE_HERE` leaf drawn as an enabled sibling leaf: [STU-SHL-018] / [STU-SHL-020]), the
+//! AccessKit description of every node (feature `desktop`), the command API ([`Viewer::shell_command`]
+//! refuses with the same reason line, [STU-SHL-019] / MENU-INV-4), `state_json()["shell"]["menu"]` and
+//! the manual. HELP carries the leaves of [STU-SHL-037]; the ones the viewer can serve (Open Studio
+//! Manual, Search Manual, Full Command Index, Keyboard Shortcut Reference, System Report, About
+//! Studio) open the in-window help view ([`HelpPage`]), the others stay in the menu greyed
+//! `NOT_IMPLEMENTED_YET` ([STU-SHL-018]: never hidden). No vendor product name in any label or id
+//! ([STU-SHL-008], audited by `MenuBar::audit`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::file_dialog::{FileDialog, Outcome, Purpose};
@@ -24,6 +36,7 @@ use super::widget as vw;
 use super::{Viewer, export::ExportFormat, render::Prefer};
 use crate::layout_ui::{LayoutDoc, LayoutEditor};
 use super::hosted::HostedPanel;
+use hsk_studio_controls::menu::{self as cm, MenuBar, MenuNode, ReasonCode, WindowRole, WindowSpec};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -49,7 +62,18 @@ pub mod widget {
     pub const EDIT: &str = "menu.edit";
     pub const VIEW: &str = "menu.view";
     pub const WORKSPACE: &str = "menu.workspace";
+    pub const HELP: &str = "menu.help";
     pub const OPEN_RECENT: &str = "menu.studio.document.open_recent";
+    /// WORKSPACE > Panels ([STU-SHL-036] expansion node `studio.workspace.panel`).
+    pub const PANELS: &str = "menu.studio.workspace.panel";
+    /// HELP > Studio Manual and HELP > Diagnostics submenus ([STU-SHL-037]).
+    pub const HELP_MANUAL: &str = "menu.studio.help.manual";
+    pub const HELP_DIAGNOSTICS: &str = "menu.studio.help.diagnostics";
+    /// The help view window and its items.
+    pub const HELP_WINDOW: &str = "help";
+    pub const HELP_SEARCH: &str = "help.search";
+    pub const HELP_ROWS: &str = "help.rows";
+    pub const HELP_CLOSE: &str = "help.close";
     /// One menu entry: `menu.<command id>`.
     pub fn entry(command_id: &str) -> String {
         format!("menu.{command_id}")
@@ -240,6 +264,248 @@ pub fn entry_label(panel: Panel, availability: &Availability) -> String {
     }
 }
 
+/// HELP leaves ([STU-SHL-037]: Studio Manual submenu, Full Command Index, Keyboard Shortcut
+/// Reference, Diagnostics submenu, About Studio). The spec gives labels but no command ids for
+/// HELP; the `studio.help.*` ids are harness ids (no canonical id verified).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelpCommand {
+    OpenManual,
+    SearchManual,
+    ForCommand,
+    ForPanel,
+    ForTool,
+    DomainGuides,
+    CommandIndex,
+    ShortcutReference,
+    RenderHarness,
+    VisualDebugger,
+    FlightRecorder,
+    ValidationReport,
+    SystemReport,
+    GpuReport,
+    AccessibilitySnapshot,
+    About,
+}
+
+/// Node id of HELP > Studio Manual.
+pub const HELP_MANUAL_ID: &str = "studio.help.manual";
+/// Node id of HELP > Diagnostics.
+pub const HELP_DIAGNOSTICS_ID: &str = "studio.help.diagnostics";
+
+impl HelpCommand {
+    /// Menu order ([STU-SHL-037]).
+    pub const ALL: [HelpCommand; 16] = [
+        Self::OpenManual,
+        Self::SearchManual,
+        Self::ForCommand,
+        Self::ForPanel,
+        Self::ForTool,
+        Self::DomainGuides,
+        Self::CommandIndex,
+        Self::ShortcutReference,
+        Self::RenderHarness,
+        Self::VisualDebugger,
+        Self::FlightRecorder,
+        Self::ValidationReport,
+        Self::SystemReport,
+        Self::GpuReport,
+        Self::AccessibilitySnapshot,
+        Self::About,
+    ];
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::OpenManual => "studio.help.manual.open",
+            Self::SearchManual => "studio.help.manual.search",
+            Self::ForCommand => "studio.help.manual.this_command",
+            Self::ForPanel => "studio.help.manual.this_panel",
+            Self::ForTool => "studio.help.manual.this_tool",
+            Self::DomainGuides => "studio.help.manual.domain_guides",
+            Self::CommandIndex => "studio.help.command_index",
+            Self::ShortcutReference => "studio.help.shortcut_reference",
+            Self::RenderHarness => "studio.help.diagnostics.render_harness",
+            Self::VisualDebugger => "studio.help.diagnostics.visual_debugger",
+            Self::FlightRecorder => "studio.help.diagnostics.flight_recorder",
+            Self::ValidationReport => "studio.help.diagnostics.validation_report",
+            Self::SystemReport => "studio.help.diagnostics.system_report",
+            Self::GpuReport => "studio.help.diagnostics.gpu_report",
+            Self::AccessibilitySnapshot => "studio.help.diagnostics.accessibility_snapshot",
+            Self::About => "studio.help.about",
+        }
+    }
+    /// The spec label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OpenManual => "Open Studio Manual",
+            Self::SearchManual => "Search Manual…",
+            Self::ForCommand => "Help for This Command",
+            Self::ForPanel => "Help for This Panel",
+            Self::ForTool => "Help for This Tool",
+            Self::DomainGuides => "Domain Guides…",
+            Self::CommandIndex => "Full Command Index…",
+            Self::ShortcutReference => "Keyboard Shortcut Reference…",
+            Self::RenderHarness => "Render Harness…",
+            Self::VisualDebugger => "Visual Debugger",
+            Self::FlightRecorder => "Flight Recorder",
+            Self::ValidationReport => "Validation Report…",
+            Self::SystemReport => "System Report…",
+            Self::GpuReport => "GPU Report…",
+            Self::AccessibilitySnapshot => "Accessibility Tree Snapshot…",
+            Self::About => "About Studio",
+        }
+    }
+    /// The submenu holding the leaf (`None`: directly under HELP).
+    pub fn group(self) -> Option<&'static str> {
+        match self {
+            Self::OpenManual | Self::SearchManual | Self::ForCommand | Self::ForPanel | Self::ForTool | Self::DomainGuides => Some(HELP_MANUAL_ID),
+            Self::RenderHarness
+            | Self::VisualDebugger
+            | Self::FlightRecorder
+            | Self::ValidationReport
+            | Self::SystemReport
+            | Self::GpuReport
+            | Self::AccessibilitySnapshot => Some(HELP_DIAGNOSTICS_ID),
+            Self::CommandIndex | Self::ShortcutReference | Self::About => None,
+        }
+    }
+    /// The help view the leaf opens; `None`: not implemented in the viewer (greyed
+    /// `NOT_IMPLEMENTED_YET`, never hidden).
+    pub fn page(self) -> Option<HelpPage> {
+        match self {
+            Self::OpenManual | Self::SearchManual => Some(HelpPage::Manual),
+            Self::CommandIndex => Some(HelpPage::CommandIndex),
+            Self::ShortcutReference => Some(HelpPage::Shortcuts),
+            Self::SystemReport => Some(HelpPage::SystemReport),
+            Self::About => Some(HelpPage::About),
+            _ => None,
+        }
+    }
+    /// Menu-only per [STU-SHL-037] (Full Command Index and the Diagnostics leaves).
+    pub fn menu_only(self) -> bool {
+        self == Self::CommandIndex || self.group() == Some(HELP_DIAGNOSTICS_ID)
+    }
+    /// Why an unimplemented leaf is greyed (reason text of `NOT_IMPLEMENTED_YET`).
+    pub fn missing(self) -> &'static str {
+        match self {
+            Self::ForCommand | Self::ForPanel | Self::ForTool => "context help needs a focused element and per-element manual anchors; the viewer has neither yet",
+            Self::DomainGuides => "no domain guides are written for the viewer yet",
+            Self::RenderHarness => "the render harness report is not wired into the viewer yet",
+            Self::VisualDebugger => "the viewer has no visual debugger surface yet",
+            Self::FlightRecorder => "the viewer has no flight recorder binding yet",
+            Self::ValidationReport => "the viewer has no validation report surface yet",
+            Self::GpuReport => "the viewer does not expose the GPU adapter report yet",
+            Self::AccessibilitySnapshot => "the AccessKit tree is emitted to the host with each frame; the viewer does not snapshot it yet (its widget names: Viewer::drawn)",
+            _ => "",
+        }
+    }
+}
+
+/// The page the in-window help view shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelpPage {
+    /// The manual: menu, window, panel-control and command-line topics, filtered by the query.
+    Manual,
+    /// Every menu node with its path, command id, shortcut and availability.
+    CommandIndex,
+    /// Every menu shortcut.
+    Shortcuts,
+    /// Build: package version, compiled features, render preference, crate descriptors.
+    SystemReport,
+    /// Name, version and build features.
+    About,
+}
+
+impl HelpPage {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::CommandIndex => "command_index",
+            Self::Shortcuts => "shortcuts",
+            Self::SystemReport => "system_report",
+            Self::About => "about",
+        }
+    }
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Manual => "Studio Manual",
+            Self::CommandIndex => "Full Command Index",
+            Self::Shortcuts => "Keyboard Shortcut Reference",
+            Self::SystemReport => "System Report",
+            Self::About => "About Studio",
+        }
+    }
+}
+
+/// Most rows one help page holds (the rest are reported as truncated).
+pub const MAX_HELP_ROWS: usize = 4096;
+/// Longest manual search query, in bytes.
+pub const MAX_HELP_QUERY_BYTES: usize = 256;
+
+/// One help row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HelpRow {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// The open help view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HelpState {
+    pub page: HelpPage,
+    /// Manual search text (empty: every topic).
+    pub query: String,
+}
+
+/// Validates a manual search query: refused `help_query_too_long` (over
+/// [`MAX_HELP_QUERY_BYTES`]) or `help_query_control_character`. Kept as typed (blanks are
+/// ignored when matching).
+pub fn parse_help_query(text: &str) -> Result<String, &'static str> {
+    if text.len() > MAX_HELP_QUERY_BYTES {
+        return Err("help_query_too_long");
+    }
+    if text.chars().any(char::is_control) {
+        return Err("help_query_control_character");
+    }
+    Ok(text.to_owned())
+}
+
+/// Cargo features of this crate compiled into the build (system report, about).
+pub fn compiled_feature_names() -> Vec<&'static str> {
+    let all = [
+        ("viewer", cfg!(feature = "viewer")),
+        ("desktop", cfg!(feature = "desktop")),
+        ("layout-ui", cfg!(feature = "layout-ui")),
+        ("vector-interop", cfg!(feature = "vector-interop")),
+        ("import-psd", cfg!(feature = "import-psd")),
+        ("import-raw", cfg!(feature = "import-raw")),
+        ("import-tiff", cfg!(feature = "import-tiff")),
+        ("import-pdf", cfg!(feature = "import-pdf")),
+        ("import-raster", cfg!(feature = "import-raster")),
+        ("import-affinity", cfg!(feature = "import-affinity")),
+        ("media", cfg!(feature = "media")),
+        ("media-native", cfg!(feature = "media-native")),
+        ("os-encode", cfg!(feature = "os-encode")),
+        ("audio-device", cfg!(feature = "audio-device")),
+        ("audio-batch", cfg!(feature = "audio-batch")),
+        ("audio-plugin", cfg!(feature = "audio-plugin")),
+        ("studio-aac", cfg!(feature = "studio-aac")),
+    ];
+    all.iter().filter(|(_, on)| *on).map(|(n, _)| *n).collect()
+}
+
+/// The descriptor of the help view window.
+pub fn help_window_spec(page: HelpPage) -> WindowSpec {
+    let mut w = WindowSpec::new(
+        widget::HELP_WINDOW,
+        page.title(),
+        "In-window help view opened from the HELP menu: manual topics, command index, shortcut reference, system report or about.",
+    );
+    if page == HelpPage::Manual {
+        w = w.with(widget::HELP_SEARCH, "search the manual", WindowRole::Field, "Filters the topics: case-insensitive text match in title and body.");
+    }
+    w.with(widget::HELP_ROWS, "topics", WindowRole::List, "The rows of the page.").with(widget::HELP_CLOSE, "Close", WindowRole::Action, "Closes the help view.")
+}
+
 /// A shell command (one menu entry or shortcut).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellCommand {
@@ -260,6 +526,7 @@ pub enum ShellCommand {
     ToggleGpu,
     ToggleStatus,
     Panel(Panel),
+    Help(HelpCommand),
 }
 
 impl ShellCommand {
@@ -283,7 +550,16 @@ impl ShellCommand {
             Self::ToggleGpu => "studio.view.render_gpu".into(),
             Self::ToggleStatus => "studio.view.status_log".into(),
             Self::Panel(p) => format!("studio.workspace.panel.{}", p.key()),
+            Self::Help(h) => h.id().into(),
         }
+    }
+
+    /// The command of a menu leaf id (`None`: not a leaf of the shell).
+    pub fn from_id(id: &str) -> Option<ShellCommand> {
+        if let Some(i) = id.strip_prefix("studio.document.open_recent.").and_then(|i| i.parse::<usize>().ok()) {
+            return Some(Self::OpenRecent(i));
+        }
+        menu_entries().into_iter().map(|e| e.command).find(|c| c.id() == id)
     }
 }
 
@@ -317,6 +593,7 @@ pub fn menu_entries() -> Vec<MenuEntry> {
         e("View", ShellCommand::ToggleStatus, "Status Log", None),
     ];
     out.extend(Panel::ALL.map(|p| e("Workspace", ShellCommand::Panel(p), p.label(), Some(p.shortcut_text()))));
+    out.extend(HelpCommand::ALL.map(|h| e("Help", ShellCommand::Help(h), h.label(), None)));
     out
 }
 
@@ -367,11 +644,12 @@ pub struct ShellState {
     recent_generation: u64,
     /// Form state of the hosted panels (module [`super::hosted`]).
     pub(super) hosted: super::hosted::HostedState,
+    help: Option<HelpState>,
 }
 
 impl Default for ShellState {
     fn default() -> Self {
-        Self { hidden: Vec::new(), show_status: true, layout: None, dialog: None, recent: Vec::new(), recent_generation: 0, hosted: Default::default() }
+        Self { hidden: Vec::new(), show_status: true, layout: None, dialog: None, recent: Vec::new(), recent_generation: 0, hosted: Default::default(), help: None }
     }
 }
 
@@ -497,13 +775,273 @@ impl Viewer {
         }
     }
 
-    /// Runs one shell command (a menu entry or shortcut). Refusals are also said in the status log.
+    /// The availability of a panel entry as a controls descriptor record ([STU-SHL-050] states,
+    /// [STU-SHL-051] codes). A missing cargo feature: `NOT_IN_THIS_DOCUMENT CAPABILITY_NOT_GRANTED`
+    /// (no in-app action builds it in); no sequence: `NOT_IN_THIS_DOCUMENT NO_SUCH_CONTAINER`
+    /// (`container:timeline`; the harness has no New Timeline command); otherwise
+    /// `INAPPLICABLE_HERE` with the remedy that makes it true (Open..., or the waveform editor for
+    /// the spectral display).
+    fn panel_descriptor_availability(panel: Panel, a: &Availability) -> cm::Availability {
+        match a {
+            Availability::Available => cm::Availability::available(),
+            Availability::NeedsFeature(f) => cm::Availability::not_in_document(
+                ReasonCode::CapabilityNotGranted,
+                &format!("needs feature {f} (build with --features {f})"),
+                Some(&format!("capability:{f}")),
+            ),
+            Availability::Unavailable(why) => match panel {
+                Panel::ProgramMonitor | Panel::Mixer => cm::Availability::not_in_document(ReasonCode::NoSuchContainer, why, Some("container:timeline")),
+                Panel::SpectralDisplay => cm::Availability::inapplicable(ReasonCode::DocFeatureAbsent, why, &ShellCommand::Panel(Panel::WaveformEditor).id()),
+                _ => cm::Availability::inapplicable(ReasonCode::DocFeatureAbsent, why, &ShellCommand::Open.id()),
+            },
+        }
+    }
+
+    /// The menu tree as controls descriptors, ONE availability evaluation per node ([STU-SHL-046]):
+    /// the egui menu, the AccessKit descriptions, [`Viewer::shell_command`],
+    /// `state_json()["shell"]["menu"]` and the manual all read it. Titles FILE, EDIT, VIEW,
+    /// WORKSPACE, HELP in the order of [STU-SHL-011]; WORKSPACE > Panels ([STU-SHL-036]); HELP per
+    /// [STU-SHL-037].
+    pub fn menu_bar(&self) -> MenuBar {
+        use cm::Availability as A;
+        let entries = menu_entries();
+        let leaf = |c: ShellCommand| {
+            let e = entries.iter().find(|e| e.command == c);
+            let mut n = MenuNode::item(&c.id(), e.map_or("", |e| e.label));
+            if let Some(s) = e.and_then(|e| e.shortcut) {
+                n = n.with_shortcut(s);
+            }
+            n
+        };
+        let open = self.run.snapshot().is_some();
+        let history = self.run.history();
+        let can = |k: &str| history[k].as_array().is_some_and(|a| !a.is_empty());
+        let (can_undo, can_redo) = (can("undo"), can("redo"));
+        let open_id = ShellCommand::Open.id();
+        let needs_doc = |what: &str| if open { A::available() } else { A::inapplicable(ReasonCode::NoSuchContainer, &format!("nothing open to {what}"), &open_id) };
+
+        let mut recent: Vec<MenuNode> = self
+            .shell
+            .recent
+            .iter()
+            .enumerate()
+            .map(|(i, p)| MenuNode::item(&ShellCommand::OpenRecent(i).id(), &p.to_string_lossy()).data_label().with_help("Reopens this file."))
+            .collect();
+        recent.push(leaf(ShellCommand::ClearRecent).with_help("Empties the recent list.").with_availability(if self.shell.recent.is_empty() {
+            A::not_in_document(ReasonCode::DocFeatureAbsent, "no recent files", None)
+        } else {
+            A::available()
+        }));
+        let file = MenuNode::title(
+            "file",
+            "File",
+            vec![
+                leaf(ShellCommand::Open).with_help("Opens a document, image, camera raw, PDF or (feature media) audio file through the file dialog."),
+                MenuNode::submenu("studio.document.open_recent", "Open Recent", recent).with_help("The ten most recent opens (generated leaves)."),
+                leaf(ShellCommand::Save).with_availability(needs_doc("save")).with_help("Saves the native package to the save path (Save As when there is none)."),
+                leaf(ShellCommand::SaveAs).with_availability(needs_doc("save")).with_help("Saves the native package under a chosen name."),
+                leaf(ShellCommand::ExportPng).with_availability(needs_doc("export")).with_help("Exports the rendered composite as PNG."),
+                leaf(ShellCommand::ExportJpeg).with_availability(needs_doc("export")).with_help("Exports the rendered composite as JPEG."),
+                leaf(ShellCommand::Close).with_help("Closes the document and every document-bound surface; the recent list stays."),
+            ],
+        );
+        let undo = if can_undo { A::available() } else { A::not_in_document(ReasonCode::DocFeatureAbsent, "nothing to undo", None) };
+        let redo = match (can_redo, can_undo) {
+            (true, _) => A::available(),
+            (false, true) => A::inapplicable(ReasonCode::DocFeatureAbsent, "nothing to redo", &ShellCommand::Undo.id()),
+            (false, false) => A::not_in_document(ReasonCode::DocFeatureAbsent, "nothing to redo", None),
+        };
+        let edit = MenuNode::title(
+            "edit",
+            "Edit",
+            vec![
+                leaf(ShellCommand::Undo).with_availability(undo).with_help("Undoes the last committed step."),
+                leaf(ShellCommand::Redo).with_availability(redo).with_help("Redoes the last undone step."),
+            ],
+        );
+        let view = MenuNode::title(
+            "view",
+            "View",
+            vec![
+                leaf(ShellCommand::Fit).selected(self.fit).with_help("Fits the canvas into the window."),
+                leaf(ShellCommand::ActualSize).with_help("Shows the canvas at 100 %."),
+                leaf(ShellCommand::ZoomIn).with_help("Zooms in by 2x."),
+                leaf(ShellCommand::ZoomOut).with_help("Zooms out by 2x."),
+                leaf(ShellCommand::ToggleGpu).selected(self.prefer == Prefer::Gpu).with_help("Renders on the GPU when on, on the CPU when off."),
+                leaf(ShellCommand::ToggleStatus).selected(self.shell.show_status).with_help("Shows or hides the status log."),
+            ],
+        );
+        let panels: Vec<MenuNode> = Panel::ALL
+            .iter()
+            .map(|p| {
+                let a = self.panel_availability(*p);
+                MenuNode::item(&ShellCommand::Panel(*p).id(), &entry_label(*p, &a))
+                    .with_shortcut(p.shortcut_text())
+                    .selected(self.panel_visible(*p))
+                    .with_help(&format!("Shows or hides the {} panel (opens it when closed).", p.label()))
+                    .with_availability(Self::panel_descriptor_availability(*p, &a))
+            })
+            .collect();
+        let workspace = MenuNode::title(
+            "workspace",
+            "Workspace",
+            vec![MenuNode::submenu("studio.workspace.panel", "Panels", panels).with_help("One show/hide toggle per panel (STU-SHL-036).")],
+        );
+        let help_leaf = |h: HelpCommand| {
+            let mut n = MenuNode::item(h.id(), h.label()).with_help(match h.page() {
+                Some(p) => p.title(),
+                None => h.missing(),
+            });
+            if h.menu_only() {
+                n = n.menu_only();
+            }
+            match h.page() {
+                Some(_) => n,
+                None => n.with_availability(A::not_in_document(ReasonCode::NotImplementedYet, h.missing(), None)),
+            }
+        };
+        let group = |g: &str| HelpCommand::ALL.iter().filter(|h| h.group() == Some(g)).map(|h| help_leaf(*h)).collect::<Vec<_>>();
+        let help = MenuNode::title(
+            "help",
+            "Help",
+            vec![
+                MenuNode::submenu(HELP_MANUAL_ID, "Studio Manual", group(HELP_MANUAL_ID)).with_help("The manual generated from the same descriptors."),
+                help_leaf(HelpCommand::CommandIndex),
+                help_leaf(HelpCommand::ShortcutReference),
+                MenuNode::submenu(HELP_DIAGNOSTICS_ID, "Diagnostics", group(HELP_DIAGNOSTICS_ID)).menu_only().with_help("Reports about this build and its surfaces."),
+                help_leaf(HelpCommand::About),
+            ],
+        );
+        let mut bar = MenuBar::new(vec![file, edit, view, workspace, help]);
+        bar.resolve_remedies();
+        bar
+    }
+
+    /// Runs one shell command (a menu entry or shortcut). The menu's availability record gates it
+    /// (the same evaluation the menu renders, MENU-INV-4): a node that is not available is refused
+    /// with its reason line. Refusals are also said in the status log.
     pub fn shell_command(&mut self, command: ShellCommand) -> Result<(), String> {
-        let result = self.shell_command_inner(command);
+        let id = command.id();
+        let gate = self.menu_bar().find(&id).map(|n| n.availability.clone());
+        let result = match gate {
+            None => Err(format!("no menu leaf {id}")),
+            Some(a) if !a.is_available() => Err(a.reason_line()),
+            Some(_) => self.shell_command_inner(command),
+        };
         if let Err(e) = &result {
-            self.say(format!("{}: {e}", command.id()));
+            self.say(format!("{id}: {e}"));
         }
         result
+    }
+
+    /// The open help view.
+    pub fn help_state(&self) -> Option<&HelpState> {
+        self.shell.help.as_ref()
+    }
+
+    /// Closes the help view.
+    pub fn help_close(&mut self) {
+        self.shell.help = None;
+    }
+
+    /// Sets the manual search text (showing the manual page); returns the number of matching rows.
+    /// Refused: [`parse_help_query`] codes (nothing changes).
+    pub fn help_search(&mut self, text: &str) -> Result<usize, &'static str> {
+        let query = parse_help_query(text)?;
+        let n = self.help_rows(HelpPage::Manual, &query).0.len();
+        self.shell.help = Some(HelpState { page: HelpPage::Manual, query });
+        Ok(n)
+    }
+
+    /// The rows of help page `page` (the query filters the manual only: case-insensitive match in
+    /// title and body, blanks around it ignored) and whether they were truncated at
+    /// [`MAX_HELP_ROWS`].
+    pub fn help_rows(&self, page: HelpPage, query: &str) -> (Vec<HelpRow>, bool) {
+        let row = |id: String, title: String, body: String| HelpRow { id, title, body };
+        let bar = self.menu_bar();
+        let features = compiled_feature_names().join(", ");
+        let version = env!("CARGO_PKG_VERSION");
+        let mut rows: Vec<HelpRow> = match page {
+            HelpPage::Manual => {
+                let mut v: Vec<HelpRow> = bar.manual_topics().into_iter().map(|t| row(t.id, t.title, t.body)).collect();
+                for w in [Purpose::Open.window_spec(), help_window_spec(HelpPage::Manual)] {
+                    let t = w.manual_topic();
+                    v.push(row(t.id, t.title, t.body));
+                }
+                let m = hsk_studio_harness_core::manual::manual_json(self.harness);
+                for t in m["panel_controls"].as_array().into_iter().flatten() {
+                    let s = |k: &str| t[k].as_str().unwrap_or_default().to_owned();
+                    v.push(row(format!("panel.{}", s("id")), s("title"), s("body")));
+                }
+                for c in m["commands"].as_array().into_iter().flatten() {
+                    let s = |k: &str| c[k].as_str().unwrap_or_default().to_owned();
+                    v.push(row(format!("cli.{}", s("name")), format!("studio-harness {}", s("name")), format!("{}\n{}", s("usage"), s("summary"))));
+                }
+                v
+            }
+            HelpPage::CommandIndex => bar
+                .walk()
+                .iter()
+                .map(|w| {
+                    let n = w.node;
+                    let mut body = format!("command id `{}`", n.id);
+                    if let Some(s) = &n.shortcut {
+                        body.push_str(&format!("; shortcut {s}"));
+                    }
+                    if n.menu_only {
+                        body.push_str("; menu-only");
+                    }
+                    let state = if n.availability.is_available() { "AVAILABLE".to_owned() } else { n.availability.reason_line() };
+                    body.push_str(&format!("; {state}"));
+                    row(n.author_id(), w.path.join(" > "), body)
+                })
+                .collect(),
+            HelpPage::Shortcuts => bar
+                .walk()
+                .iter()
+                .filter_map(|w| w.node.shortcut.as_ref().map(|s| row(w.node.author_id(), s.clone(), format!("{} (`{}`)", w.path.join(" > "), w.node.id))))
+                .collect(),
+            HelpPage::SystemReport => {
+                let descriptors = self.harness.collect_descriptors().unwrap_or_default();
+                let names: Vec<String> = descriptors.iter().map(|d| d["crate"].as_str().or_else(|| d["owner"].as_str()).unwrap_or("?").to_owned()).collect();
+                vec![
+                    row("system.package".into(), "Package".into(), format!("hsk-studio-harness-view {version}")),
+                    row("system.features".into(), "Compiled features".into(), features.clone()),
+                    row("system.render".into(), "Render preference".into(), format!("{:?}", self.prefer)),
+                    row("system.descriptors".into(), "Crate descriptors".into(), format!("{} descriptors: {}", descriptors.len(), names.join(", "))),
+                ]
+            }
+            HelpPage::About => vec![
+                row(
+                    "about.name".into(),
+                    "Studio".into(),
+                    "Handshake Studio development viewer: the desktop harness over the Studio crates (window-free, headless-testable).".into(),
+                ),
+                row("about.version".into(), "Version".into(), version.into()),
+                row("about.features".into(), "Build features".into(), features.clone()),
+                row("about.manual".into(), "Manual".into(), "HELP > Studio Manual; on the command line: studio-harness help".into()),
+            ],
+        };
+        let q = query.trim().to_lowercase();
+        if page == HelpPage::Manual && !q.is_empty() {
+            rows.retain(|r| r.title.to_lowercase().contains(&q) || r.body.to_lowercase().contains(&q));
+        }
+        let truncated = rows.len() > MAX_HELP_ROWS;
+        rows.truncate(MAX_HELP_ROWS);
+        (rows, truncated)
+    }
+
+    fn help_json(&self) -> Value {
+        let Some(h) = self.shell.help.as_ref() else { return Value::Null };
+        let (rows, truncated) = self.help_rows(h.page, &h.query);
+        json!({
+            "page": h.page.key(),
+            "title": h.page.title(),
+            "query": h.query,
+            "rows": rows.iter().map(|r| json!({"id": r.id, "title": r.title, "body": r.body})).collect::<Vec<_>>(),
+            "truncated": truncated,
+            "window": help_window_spec(h.page).agent_json(),
+        })
     }
 
     fn shell_command_inner(&mut self, command: ShellCommand) -> Result<(), String> {
@@ -583,6 +1121,14 @@ impl Viewer {
                 Ok(())
             }
             ShellCommand::Panel(p) => self.toggle_panel(p),
+            ShellCommand::Help(h) => match h.page() {
+                Some(page) => {
+                    let query = self.shell.help.as_ref().filter(|s| s.page == page).map(|s| s.query.clone()).unwrap_or_default();
+                    self.shell.help = Some(HelpState { page, query });
+                    Ok(())
+                }
+                None => Err(h.missing().into()),
+            },
         }
     }
 
@@ -833,98 +1379,29 @@ impl Viewer {
             "dialog": self.shell.dialog.as_ref().map(FileDialog::state_json),
             "hosted": self.hosted_json(),
             "surfaces": self.surfaces_json(),
+            "menu": self.menu_bar().agent_json(),
+            "help": self.help_json(),
         })
     }
 
-    /// The menu bar (top-most panel). Menu clicks run after the bar is drawn.
+    /// The menu bar (top-most panel), drawn from [`Viewer::menu_bar`] by the controls renderer.
+    /// With feature `desktop` every node's AccessKit description carries its availability
+    /// (`AVAILABLE`, or the reason line: state, reason code, reason text, remedy; [STU-SHL-019] /
+    /// [STU-MDL-107]). Menu clicks run after the bar is drawn.
     pub(super) fn shell_menu_ui(&mut self, ctx: &egui::Context) {
-        let mut chosen: Option<ShellCommand> = None;
-        let mut drawn: Vec<String> = Vec::new();
-        let open = self.run.snapshot().is_some();
-        let history = self.run.history();
-        let can = |k: &str| history[k].as_array().is_some_and(|a| !a.is_empty());
-        let (can_undo, can_redo) = (can("undo"), can("redo"));
-        let recent: Vec<String> = self.shell.recent.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        let panels: Vec<(Panel, Availability, bool)> = Panel::ALL.iter().map(|p| (*p, self.panel_availability(*p), self.panel_visible(*p))).collect();
-        let (gpu, status, fit) = (self.prefer == Prefer::Gpu, self.shell.show_status, self.fit);
+        let bar = self.menu_bar();
+        let mut rendered = cm::MenuUi::default();
         egui::TopBottomPanel::top(vw::id(widget::MENU_BAR)).show(ctx, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                let mut item = |ui: &mut egui::Ui, command: ShellCommand, label: &str, shortcut: Option<&str>, enabled: bool, hover: Option<&str>, selected: bool| {
-                    let name = widget::entry(&command.id());
-                    let mut button = egui::Button::new(label).selected(selected);
-                    if let Some(s) = shortcut {
-                        button = button.shortcut_text(s);
-                    }
-                    let mut r = ui.push_id(vw::id(&name), |ui| ui.add_enabled(enabled, button)).inner;
-                    if let Some(h) = hover {
-                        r = r.on_disabled_hover_text(h);
-                    }
-                    drawn.push(name);
-                    if r.clicked() {
-                        chosen = Some(command);
-                        ui.close();
-                    }
-                };
-                ui.push_id(vw::id(widget::FILE), |ui| {
-                    ui.menu_button("File", |ui| {
-                        item(ui, ShellCommand::Open, "Open…", Some("Ctrl+O"), true, None, false);
-                        ui.push_id(vw::id(widget::OPEN_RECENT), |ui| {
-                            ui.menu_button("Open Recent", |ui| {
-                                if recent.is_empty() {
-                                    ui.label("No recent files");
-                                }
-                                for (i, path) in recent.iter().enumerate() {
-                                    item(ui, ShellCommand::OpenRecent(i), path, None, true, None, false);
-                                }
-                                ui.separator();
-                                item(ui, ShellCommand::ClearRecent, "Clear Recent", None, !recent.is_empty(), None, false);
-                            });
-                        });
-                        ui.separator();
-                        item(ui, ShellCommand::Save, "Save", Some("Ctrl+S"), open, Some("nothing open"), false);
-                        item(ui, ShellCommand::SaveAs, "Save As…", Some("Ctrl+Shift+S"), open, Some("nothing open"), false);
-                        ui.separator();
-                        item(ui, ShellCommand::ExportPng, "Export PNG…", None, open, Some("nothing open"), false);
-                        item(ui, ShellCommand::ExportJpeg, "Export JPEG…", None, open, Some("nothing open"), false);
-                        ui.separator();
-                        item(ui, ShellCommand::Close, "Close", Some("Ctrl+W"), true, None, false);
-                    });
-                });
-                ui.push_id(vw::id(widget::EDIT), |ui| {
-                    ui.menu_button("Edit", |ui| {
-                        item(ui, ShellCommand::Undo, "Undo", Some("Ctrl+Z"), can_undo, Some("nothing to undo"), false);
-                        item(ui, ShellCommand::Redo, "Redo", Some("Ctrl+Y"), can_redo, Some("nothing to redo"), false);
-                    });
-                });
-                ui.push_id(vw::id(widget::VIEW), |ui| {
-                    ui.menu_button("View", |ui| {
-                        item(ui, ShellCommand::Fit, "Fit in Window", None, true, None, fit);
-                        item(ui, ShellCommand::ActualSize, "Actual Size", None, true, None, false);
-                        item(ui, ShellCommand::ZoomIn, "Zoom In", None, true, None, false);
-                        item(ui, ShellCommand::ZoomOut, "Zoom Out", None, true, None, false);
-                        ui.separator();
-                        item(ui, ShellCommand::ToggleGpu, "Render on GPU", None, true, None, gpu);
-                        item(ui, ShellCommand::ToggleStatus, "Status Log", None, true, None, status);
-                    });
-                });
-                ui.push_id(vw::id(widget::WORKSPACE), |ui| {
-                    ui.menu_button("Workspace", |ui| {
-                        ui.label("Panels");
-                        for (p, availability, visible) in &panels {
-                            let hover = match availability {
-                                Availability::NeedsFeature(f) => Some(format!("build with --features {f}")),
-                                Availability::Unavailable(why) => Some(why.clone()),
-                                Availability::Available => None,
-                            };
-                            item(ui, ShellCommand::Panel(*p), &entry_label(*p, availability), Some(p.shortcut_text()), *availability == Availability::Available, hover.as_deref(), *visible);
-                        }
-                    });
-                });
-            });
+            rendered = cm::menu_bar_ui(ui, &bar, &vw::id);
         });
-        self.drawn.extend([widget::MENU_BAR, widget::FILE, widget::EDIT, widget::VIEW, widget::WORKSPACE].map(String::from));
-        self.drawn.extend(drawn);
-        if let Some(command) = chosen {
+        #[cfg(feature = "desktop")]
+        for n in &rendered.nodes {
+            let line = if n.enabled { "AVAILABLE".to_owned() } else { n.reason.clone() };
+            let _ = ctx.accesskit_node_builder(n.id, |b| b.set_description(line));
+        }
+        self.drawn.push(widget::MENU_BAR.into());
+        self.drawn.extend(rendered.drawn());
+        if let Some(command) = rendered.clicked.as_deref().and_then(ShellCommand::from_id) {
             let _ = self.shell_command(command);
         }
     }
@@ -960,7 +1437,50 @@ impl Viewer {
         }
     }
 
-    /// The open dialog and the hosted layout editor (drawn as floating windows).
+    /// The help view (an in-window egui window, never an OS window), from its descriptor
+    /// ([`help_window_spec`]).
+    fn help_ui(&mut self, ctx: &egui::Context) {
+        let Some(h) = self.shell.help.clone() else { return };
+        let spec = help_window_spec(h.page);
+        let (rows, truncated) = self.help_rows(h.page, &h.query);
+        let (mut open, mut close, mut query) = (true, false, h.query.clone());
+        egui::Window::new(spec.title.as_str())
+            .id(vw::id(widget::HELP_WINDOW))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([520.0, 480.0])
+            .show(ctx, |ui| {
+                if spec.item(widget::HELP_SEARCH).is_some() {
+                    ui.add(egui::TextEdit::singleline(&mut query).id(vw::id(widget::HELP_SEARCH)).hint_text(spec.label(widget::HELP_SEARCH)).desired_width(f32::INFINITY));
+                }
+                egui::ScrollArea::vertical().id_salt(vw::id(widget::HELP_ROWS)).max_height(380.0).show(ui, |ui| {
+                    for r in &rows {
+                        ui.strong(r.title.as_str());
+                        ui.label(r.body.as_str());
+                        ui.separator();
+                    }
+                    if truncated {
+                        ui.label(format!("only the first {MAX_HELP_ROWS} rows are shown"));
+                    }
+                });
+                if ui.push_id(vw::id(widget::HELP_CLOSE), |ui| ui.button(spec.label(widget::HELP_CLOSE))).inner.clicked() {
+                    close = true;
+                }
+            });
+        self.drawn.push(widget::HELP_WINDOW.into());
+        self.drawn.extend(spec.items.iter().map(|i| i.id.clone()));
+        if !open || close {
+            self.shell.help = None;
+        } else if query != h.query {
+            match parse_help_query(&query) {
+                Ok(q) => self.shell.help = Some(HelpState { page: h.page, query: q }),
+                Err(code) => self.say(format!("help search: {code}")),
+            }
+        }
+    }
+
+    /// The open dialog, the help view and the hosted layout editor (drawn as floating windows).
     pub(super) fn shell_windows_ui(&mut self, ctx: &egui::Context) {
         self.hosted_ui(ctx);
         let show_layout = self.shell.visible(Panel::LayoutEditor);
@@ -970,6 +1490,7 @@ impl Viewer {
             let drawn = ed.ui(ctx);
             self.drawn.extend(drawn.into_iter().map(String::from));
         }
+        self.help_ui(ctx);
         let Some(d) = self.shell.dialog.as_mut() else { return };
         let (outcome, drawn) = d.ui(ctx);
         self.drawn.extend(drawn);

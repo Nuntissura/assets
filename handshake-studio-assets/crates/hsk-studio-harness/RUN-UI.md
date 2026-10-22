@@ -38,7 +38,11 @@ cargo run -p hsk-studio-harness --features desktop,audio-batch --bin studio-harn
 
 ## Menus and shortcuts (lane SMB-HARNESS-SHELL-1)
 
-Menu titles follow the Studio menu law (spec 14.30: FILE, EDIT, VIEW, WORKSPACE > Panels).
+Menu titles follow the Studio menu law (spec 14.30: FILE, EDIT, VIEW, WORKSPACE > Panels, HELP).
+Lane SMB-HARNESS-SHELL-2: the menu is built from controls menu descriptors (`Viewer::menu_bar()`);
+a greyed entry shows its reason line (`INAPPLICABLE_HERE` / `NOT_IN_THIS_DOCUMENT`, reason code,
+reason text, remedy) as hover text, and an `INAPPLICABLE_HERE` entry has an enabled `-> <remedy>`
+entry right below it that runs the remedy (e.g. `-> Open…` under a greyed Save).
 
 | Menu | Entry | Shortcut | Does |
 | --- | --- | --- | --- |
@@ -50,16 +54,21 @@ Menu titles follow the Studio menu law (spec 14.30: FILE, EDIT, VIEW, WORKSPACE 
 | File | Close | Ctrl+W | closes the document and its surfaces (the recent list stays) |
 | Edit | Undo / Redo | Ctrl+Z / Ctrl+Y (also Ctrl+Shift+Z) | chronicle undo / redo |
 | View | Fit in Window, Actual Size, Zoom In, Zoom Out, Render on GPU, Status Log | | view toggles |
-| Workspace | Layers | F2 | shows / hides the layer panel |
-| Workspace | Properties | F3 | shows / hides properties and the import receipt |
-| Workspace | Develop | F4 | shows / hides the develop panel (open a camera raw / DNG first) |
-| Workspace | Layout Editor | F5 | hosts the layout editor on the open document's pages, or on a new blank one-page document when it has none |
-| Workspace | Program Monitor | F6 | the program monitor on the document's first sequence (an audio file opens its own) |
-| Workspace | Source Monitor | F7 | feature `media`: dialog for a media file, then the source monitor (marks, insert / overwrite) |
-| Workspace | Mixer | F8 | feature `audio-batch`: the mixer of the document's first sequence (sources: the open audio file) |
-| Workspace | Waveform Editor | F9 | feature `audio-batch`: the open audio file's waveform editor (a document must be open: it holds the edit list) |
-| Workspace | Spectral Display | F11 | feature `audio-batch`: the spectral display of the open waveform editor |
-| Workspace | Prototype Player | F12 | dialog for a Figma `.fig`, then the play window |
+| Workspace > Panels | Layers | F2 | shows / hides the layer panel |
+| Workspace > Panels | Properties | F3 | shows / hides properties and the import receipt |
+| Workspace > Panels | Develop | F4 | shows / hides the develop panel (open a camera raw / DNG first) |
+| Workspace > Panels | Layout Editor | F5 | hosts the layout editor on the open document's pages, or on a new blank one-page document when it has none |
+| Workspace > Panels | Program Monitor | F6 | the program monitor on the document's first sequence (an audio file opens its own) |
+| Workspace > Panels | Source Monitor | F7 | feature `media`: dialog for a media file, then the source monitor (marks, insert / overwrite) |
+| Workspace > Panels | Mixer | F8 | feature `audio-batch`: the mixer of the document's first sequence (sources: the open audio file) |
+| Workspace > Panels | Waveform Editor | F9 | feature `audio-batch`: the open audio file's waveform editor (a document must be open: it holds the edit list) |
+| Workspace > Panels | Spectral Display | F11 | feature `audio-batch`: the spectral display of the open waveform editor |
+| Workspace > Panels | Prototype Player | F12 | dialog for a design file (`.fig`, filter "Design file (.fig)"), then the play window |
+| Help > Studio Manual | Open Studio Manual, Search Manual... | | in-window help view: menu, dialog, panel-control and command-line topics; a search field filters them |
+| Help | Full Command Index..., Keyboard Shortcut Reference... | | every menu entry with its command id and availability; every shortcut |
+| Help > Diagnostics | System Report... | | package version, compiled features, render preference, crate descriptors |
+| Help | About Studio | | name, version, build features |
+| Help | Help for This Command / Panel / Tool, Domain Guides..., Render Harness..., Visual Debugger, Flight Recorder, Validation Report..., GPU Report..., Accessibility Tree Snapshot... | | shown greyed `NOT_IMPLEMENTED_YET` (the menu never hides an entry) |
 
 A Workspace entry of an open surface shows or hides it. A greyed entry names its missing feature
 ("Mixer (needs feature audio-batch)") or shows the unmet precondition as hover text; a refused
@@ -102,7 +111,7 @@ editor, program monitor, source monitor, prototype player state).
 
 ## What the window does
 
-- Menu bar: File, Edit, View, Workspace (table above).
+- Menu bar: File, Edit, View, Workspace, Help (table above).
 - Top bar: path field + Open; Save-as path + Save (refuses the opened source unless
   "overwrite source" is ticked); Export PNG / JPEG (next to the save path); GPU toggle.
 - Tool row: Hand (drag pans), Rect / Ellipse / Lasso (drag a selection; the combine box chooses
@@ -175,6 +184,14 @@ Shell (lane SMB-HARNESS-SHELL-1): `shell_command(ShellCommand::...)` runs any me
 visible, availability, feature, reason, label, shortcut, command id), the recent list and the open
 dialog. Menu entries have the widget names `menu.<command id>` (`menu.studio.document.open`,
 `menu.studio.workspace.panel.mixer`, ...), the dialog `dialog.*`.
+Lane SMB-HARNESS-SHELL-2: `menu_bar()` is the menu as controls descriptors (`audit()` = the menu
+law checks: unique ids, depth, reasons, remedies, no vendor product name); `shell_command` refuses
+an entry that is not available with that entry's reason line; `state_json()["shell"]["menu"]`
+lists every node (id, author id `menu.<id>`, label, menu path, shortcut, availability record) and
+`["help"]` the open help view (page, query, rows); `help_search(text)`, `help_rows(page, query)`,
+`help_close()`; `ShellCommand::Help(HelpCommand::...)` opens a help page. With feature `desktop`
+every menu node's AccessKit description is `AVAILABLE` or its reason line. The dialog and the help
+view carry their window descriptor in `state_json` (`window`).
 
 Every window action is a `hsk_studio_harness::view::Viewer` method: `open`, `set_visible`,
 `set_opacity`, `set_blend_mode`, `select_rect`, `select_ellipse`, `select_lasso`,

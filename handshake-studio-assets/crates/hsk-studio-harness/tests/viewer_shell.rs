@@ -18,7 +18,10 @@ use hsk_studio_harness::layout_ui::LayoutEdit;
 use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::file_dialog::{self, FileDialog, Purpose, list_dir, parse_typed};
 use hsk_studio_harness::view::render::Prefer;
-use hsk_studio_harness::view::shell::{self, Availability, CompiledFeatures, Panel, ShellCommand, decode_recent, encode_recent, entry_label, feature_gate, menu_entries};
+use hsk_studio_controls::menu::{AvailabilityState, ReasonCode, vendor_product_names};
+use hsk_studio_harness::view::shell::{
+    self, Availability, CompiledFeatures, HelpCommand, HelpPage, Panel, ShellCommand, decode_recent, encode_recent, entry_label, feature_gate, menu_entries,
+};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -187,7 +190,7 @@ fn menu_bar_draws_its_titles_and_every_entry_has_a_unique_command_id() {
     let mut v = Viewer::new(Prefer::Cpu);
     let ctx = egui::Context::default();
     let _ = frame(&mut v, &ctx, vec![]);
-    for name in [shell::widget::MENU_BAR, shell::widget::FILE, shell::widget::EDIT, shell::widget::VIEW, shell::widget::WORKSPACE] {
+    for name in [shell::widget::MENU_BAR, shell::widget::FILE, shell::widget::EDIT, shell::widget::VIEW, shell::widget::WORKSPACE, shell::widget::HELP] {
         assert!(drew(&v, name), "{name} not drawn: {:?}", v.drawn());
     }
     // Drawing committed nothing.
@@ -222,6 +225,12 @@ fn accesskit_clicks_reach_the_open_dialog_and_a_workspace_panel() {
     let (workspace, _) = ak_find(&out, |l| l == "Workspace").expect("Workspace menu node");
     let _ = frame(&mut v, &ctx, vec![ak_click(workspace)]);
     let out = frame(&mut v, &ctx, vec![]);
+    // WORKSPACE > Panels ([STU-SHL-036] expansion node).
+    let (panels, disabled) = ak_find(&out, |l| l == "Panels").expect("Panels submenu node");
+    assert!(!disabled);
+    let _ = frame(&mut v, &ctx, vec![ak_click(panels)]);
+    let out = frame(&mut v, &ctx, vec![]);
+    assert!(drew(&v, shell::widget::PANELS), "{:?}", v.drawn());
     // Greyed entries are disabled nodes whose label names the feature.
     for p in Panel::ALL {
         if let Availability::NeedsFeature(f) = feature_gate(p, &CompiledFeatures::current()) {
@@ -291,7 +300,7 @@ fn function_keys_and_workspace_entries_open_every_surface() {
     press(&mut v, &ctx, egui::Key::F12, none);
     let s = v.state_json();
     assert_eq!(s["shell"]["dialog"]["purpose"], "open_prototype");
-    assert_eq!(s["shell"]["dialog"]["filter"], "Figma (.fig)");
+    assert_eq!(s["shell"]["dialog"]["filter"], "Design file (.fig)");
     assert!(s["shell"]["dialog"]["entries"].as_array().unwrap().iter().any(|e| e["name"] == "proto.fig"), "{}", s["shell"]["dialog"]);
     assert!(!s["shell"]["dialog"]["entries"].as_array().unwrap().iter().any(|e| e["name"] == "sequence.handshake"));
     v.file_dialog().unwrap().typed = "proto.fig".into();
@@ -564,4 +573,204 @@ fn save_as_export_and_close_run_through_the_dialog_and_shortcuts() {
     // Reopen after close works on the fresh run.
     v.open(&source).unwrap();
     assert_eq!(v.layers().len(), 2);
+}
+
+// ---- lane SMB-HARNESS-SHELL-2: naming law, HELP, one availability record -------------------------
+
+fn menu_node(v: &Viewer, id: &str) -> Value {
+    v.state_json()["shell"]["menu"]["nodes"].as_array().unwrap().iter().find(|n| n["id"] == id).cloned().unwrap_or_else(|| panic!("no menu node {id}"))
+}
+
+/// F-R37-3 / [STU-SHL-008] / [STU-SHL-251]: no vendor product name in any dialog filter label, dialog
+/// item, help window item, menu title, submenu, leaf, panel label or command id, in every state the
+/// tree changes with (nothing open, a document and a recent list open, a sequence document with
+/// panels open). Operator file paths in Open Recent are data, not Studio names.
+#[test]
+fn no_vendor_product_name_in_dialog_filters_or_the_menu_tree() {
+    let mut scanned = 0usize;
+    for purpose in file_dialog::Purpose::ALL {
+        for f in purpose.filters() {
+            assert!(vendor_product_names(f.name).is_empty(), "{purpose:?} filter {:?} names {:?}", f.name, vendor_product_names(f.name));
+            scanned += 1;
+        }
+        let w = purpose.window_spec();
+        assert_eq!(w.audit(), vec![], "{purpose:?} window");
+        scanned += w.items.len();
+    }
+    assert_eq!(file_dialog::Purpose::OpenPrototype.filters()[0].name, "Design file (.fig)");
+    for page in [HelpPage::Manual, HelpPage::CommandIndex, HelpPage::Shortcuts, HelpPage::SystemReport, HelpPage::About] {
+        assert_eq!(shell::help_window_spec(page).audit(), vec![], "{page:?}");
+    }
+    let scratch = Scratch::new("shell-naming");
+    let mut v = Viewer::new(Prefer::Cpu);
+    let mut check = |v: &Viewer, state: &str| {
+        let bar = v.menu_bar();
+        assert_eq!(bar.audit(), vec![], "{state}");
+        for w in bar.walk() {
+            let n = w.node;
+            assert!(vendor_product_names(&n.id).is_empty(), "{state}: id {}", n.id);
+            if !n.data_label {
+                assert!(vendor_product_names(&n.label).is_empty(), "{state}: label {}", n.label);
+            }
+            scanned += 1;
+        }
+        // The projection agents read is the same tree.
+        let nodes = v.state_json()["shell"]["menu"]["nodes"].as_array().unwrap().len();
+        assert_eq!(nodes, bar.walk().len(), "{state}");
+    };
+    check(&v, "nothing open");
+    let named = psd_at(&scratch.0, "figma-export.psd");
+    v.open(&named).unwrap();
+    check(&v, "document open, recent path holding a vendor word");
+    v.open(&sequence_package(&scratch.0)).unwrap();
+    v.shell_command(ShellCommand::Panel(Panel::LayoutEditor)).unwrap();
+    v.shell_command(ShellCommand::Panel(Panel::ProgramMonitor)).unwrap();
+    check(&v, "sequence document, panels open");
+    assert!(scanned > 100, "scanned {scanned}");
+}
+
+/// [STU-SHL-037] HELP leaves in spec order, never hidden ([STU-SHL-018]); the implemented ones
+/// open the in-window help view headlessly, the others refuse with NOT_IMPLEMENTED_YET.
+#[test]
+fn help_menu_carries_the_spec_leaves_and_opens_the_help_views() {
+    let mut v = Viewer::new(Prefer::Cpu);
+    let bar = v.menu_bar();
+    let labels = |id: &str| bar.find(id).unwrap().children.iter().map(|c| c.label.clone()).collect::<Vec<_>>();
+    let titles: Vec<&str> = bar.titles.iter().map(|t| t.label.as_str()).collect();
+    assert_eq!(titles, ["File", "Edit", "View", "Workspace", "Help"], "HELP last ([STU-SHL-011] order)");
+    assert_eq!(labels("help"), ["Studio Manual", "Full Command Index…", "Keyboard Shortcut Reference…", "Diagnostics", "About Studio"]);
+    assert_eq!(labels(shell::HELP_MANUAL_ID), ["Open Studio Manual", "Search Manual…", "Help for This Command", "Help for This Panel", "Help for This Tool", "Domain Guides…"]);
+    assert_eq!(
+        labels(shell::HELP_DIAGNOSTICS_ID),
+        ["Render Harness…", "Visual Debugger", "Flight Recorder", "Validation Report…", "System Report…", "GPU Report…", "Accessibility Tree Snapshot…"]
+    );
+    assert!(bar.find(HelpCommand::CommandIndex.id()).unwrap().menu_only && bar.find(shell::HELP_DIAGNOSTICS_ID).unwrap().menu_only);
+    for h in HelpCommand::ALL {
+        let node = bar.find(h.id()).unwrap();
+        match h.page() {
+            Some(_) => assert!(node.availability.is_available(), "{h:?}"),
+            None => {
+                assert_eq!((node.availability.state, node.availability.reason_code), (AvailabilityState::NotInThisDocument, Some(ReasonCode::NotImplementedYet)), "{h:?}");
+                let e = v.shell_command(ShellCommand::Help(h)).unwrap_err();
+                assert_eq!(e, node.availability.reason_line());
+                assert!(v.help_state().is_none());
+            }
+        }
+    }
+    // Full Command Index: every node, with its id and availability.
+    v.shell_command(ShellCommand::Help(HelpCommand::CommandIndex)).unwrap();
+    let h = v.state_json()["shell"]["help"].clone();
+    assert_eq!(h["page"], "command_index");
+    let rows = h["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), bar.walk().len());
+    let save = rows.iter().find(|r| r["id"] == "menu.studio.document.save").unwrap();
+    assert!(save["title"] == "File > Save" && save["body"].as_str().unwrap().contains("INAPPLICABLE_HERE NO_SUCH_CONTAINER"), "{save}");
+    // Keyboard Shortcut Reference: every shortcut of the tree.
+    v.shell_command(ShellCommand::Help(HelpCommand::ShortcutReference)).unwrap();
+    let rows = v.state_json()["shell"]["help"]["rows"].as_array().unwrap().clone();
+    for (key, id) in [("Ctrl+O", "studio.document.open"), ("Ctrl+Shift+S", "studio.document.save_as"), ("F5", "studio.workspace.panel.layout_editor")] {
+        assert!(rows.iter().any(|r| r["title"] == key && r["body"].as_str().unwrap().contains(id)), "{key}: {rows:?}");
+    }
+    // System report and about: the build's features and version.
+    v.shell_command(ShellCommand::Help(HelpCommand::SystemReport)).unwrap();
+    let rows = v.state_json()["shell"]["help"]["rows"].clone();
+    assert!(rows.as_array().unwrap().iter().any(|r| r["id"] == "system.features" && r["body"].as_str().unwrap().contains("viewer")), "{rows}");
+    v.shell_command(ShellCommand::Help(HelpCommand::About)).unwrap();
+    assert!(v.state_json()["shell"]["help"]["rows"].as_array().unwrap().iter().any(|r| r["id"] == "about.version"));
+    // The manual and its search: menu, window, panel-control and command-line topics.
+    v.shell_command(ShellCommand::Help(HelpCommand::OpenManual)).unwrap();
+    let all = v.state_json()["shell"]["help"]["rows"].as_array().unwrap().len();
+    let ids: Vec<String> = v.state_json()["shell"]["help"]["rows"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_owned()).collect();
+    for want in ["menu.studio.document.open", "dialog", "help", "cli.open"] {
+        assert!(ids.iter().any(|i| i == want), "{want} missing from the manual");
+    }
+    let hits = v.help_search("  RECENT ").unwrap();
+    assert!(hits > 0 && hits < all, "{hits} of {all}");
+    for r in v.state_json()["shell"]["help"]["rows"].as_array().unwrap() {
+        let text = format!("{} {}", r["title"], r["body"]).to_lowercase();
+        assert!(text.contains("recent"), "{r}");
+    }
+    // Hostile queries are refused and change nothing.
+    assert_eq!(v.help_search(&"x".repeat(shell::MAX_HELP_QUERY_BYTES + 1)), Err("help_query_too_long"));
+    assert_eq!(v.help_search("a\u{0}b"), Err("help_query_control_character"));
+    assert_eq!(v.help_search("a\nb"), Err("help_query_control_character"));
+    assert_eq!(v.help_state().unwrap().query, "  RECENT ");
+    assert_eq!(v.help_search("zzzz-no-such-topic"), Ok(0));
+    // Drawn headlessly as an in-window egui window (no OS window, no focus request).
+    let ctx = egui::Context::default();
+    let _ = frame(&mut v, &ctx, vec![]);
+    for name in [shell::widget::HELP_WINDOW, shell::widget::HELP_SEARCH, shell::widget::HELP_ROWS, shell::widget::HELP_CLOSE] {
+        assert!(drew(&v, name), "{name} not drawn: {:?}", v.drawn());
+    }
+    v.help_close();
+    let _ = frame(&mut v, &ctx, vec![]);
+    assert!(!drew(&v, shell::widget::HELP_WINDOW) && v.state_json()["shell"]["help"].is_null());
+}
+
+/// [STU-SHL-019] / [STU-SHL-020] / MENU-INV-4: one availability record per node, the same in the
+/// command API refusal, the agent JSON and (feature `desktop`) the AccessKit node description; an
+/// INAPPLICABLE_HERE node names ONE enabled remedy, drawn as an enabled sibling leaf that runs it.
+#[test]
+fn availability_reaches_the_command_api_the_projection_and_accesskit_alike() {
+    let mut v = Viewer::new(Prefer::Cpu);
+    let save = menu_node(&v, "studio.document.save");
+    assert_eq!(save["availability"]["availability_state"], "INAPPLICABLE_HERE");
+    assert_eq!(save["availability"]["reason_code"], "NO_SUCH_CONTAINER");
+    assert_eq!(save["availability"]["remedy_command_id"], "studio.document.open");
+    let line = v.menu_bar().find("studio.document.save").unwrap().availability.reason_line();
+    assert_eq!(v.shell_command(ShellCommand::Save), Err(line.clone()));
+    assert!(last_status(&v).ends_with(&line), "{}", last_status(&v));
+    // Develop: INAPPLICABLE_HERE with Open as remedy; program monitor without a sequence: NOT_IN_THIS_DOCUMENT.
+    let dev = menu_node(&v, "studio.workspace.panel.develop");
+    assert_eq!((dev["availability"]["availability_state"].as_str(), dev["availability"]["remedy_command_id"].as_str()), (Some("INAPPLICABLE_HERE"), Some("studio.document.open")));
+    let scratch = Scratch::new("shell-availability");
+    v.open(&psd_at(&scratch.0, "a.psd")).unwrap();
+    let pm = menu_node(&v, "studio.workspace.panel.program_monitor");
+    assert_eq!((pm["availability"]["availability_state"].as_str(), pm["availability"]["profile_clause"].as_str()), (Some("NOT_IN_THIS_DOCUMENT"), Some("container:timeline")));
+    // Spectral display: its remedy resolves to an enabled leaf in every build.
+    let sp = menu_node(&v, "studio.workspace.panel.spectral_display");
+    match sp["availability"]["availability_state"].as_str() {
+        Some("INAPPLICABLE_HERE") => {
+            let remedy = sp["availability"]["remedy_command_id"].as_str().unwrap().to_owned();
+            assert_eq!(menu_node(&v, &remedy)["availability"]["availability_state"], "AVAILABLE", "{remedy}");
+        }
+        Some("NOT_IN_THIS_DOCUMENT") => assert_eq!(sp["availability"]["reason_code"], "CAPABILITY_NOT_GRANTED"),
+        other => panic!("spectral display {other:?}"),
+    }
+    assert_eq!(v.menu_bar().audit(), vec![]);
+    // Redo after an undo-able step: INAPPLICABLE_HERE with Undo as remedy.
+    let first = v.layers()[0].layer_id.clone();
+    v.set_visible(&first, false).unwrap();
+    let redo = menu_node(&v, "studio.history.redo");
+    assert_eq!((redo["availability"]["availability_state"].as_str(), redo["availability"]["remedy_command_id"].as_str()), (Some("INAPPLICABLE_HERE"), Some("studio.history.undo")));
+    accesskit_reasons();
+}
+
+#[cfg(not(feature = "desktop"))]
+fn accesskit_reasons() {
+    println!("NOT_PROVEN: AccessKit node descriptions need feature desktop (egui accesskit); proven in the desktop unit");
+}
+
+/// Feature `desktop`: File opened through AccessKit; the greyed Save node is disabled and its
+/// description is the reason line; the remedy sibling node runs Open.
+#[cfg(feature = "desktop")]
+fn accesskit_reasons() {
+    let mut v = Viewer::new(Prefer::Cpu);
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let out = frame(&mut v, &ctx, vec![]);
+    let (file, _) = ak_find(&out, |l| l == "File").expect("File menu node");
+    let _ = frame(&mut v, &ctx, vec![ak_click(file)]);
+    let out = frame(&mut v, &ctx, vec![]);
+    let tree = out.platform_output.accesskit_update.as_ref().expect("accesskit update");
+    let line = v.menu_bar().find("studio.document.save").unwrap().availability.reason_line();
+    let save = tree.nodes.iter().find(|(_, n)| n.label().is_some_and(|l| l.starts_with("Save") && !l.starts_with("Save As"))).map(|(_, n)| n.clone()).expect("Save node");
+    assert!(save.is_disabled());
+    assert_eq!(save.description(), Some(line.as_str()));
+    let open = tree.nodes.iter().find(|(_, n)| n.label().is_some_and(|l| l.starts_with("Open…"))).map(|(_, n)| n.clone()).expect("Open node");
+    assert_eq!(open.description(), Some("AVAILABLE"));
+    let (remedy, disabled) = ak_find(&out, |l| l.starts_with("-> Open")).expect("remedy sibling node");
+    assert!(!disabled);
+    let _ = frame(&mut v, &ctx, vec![ak_click(remedy)]);
+    assert_eq!(v.state_json()["shell"]["dialog"]["purpose"], "open", "{}", v.state_json()["status"]);
 }

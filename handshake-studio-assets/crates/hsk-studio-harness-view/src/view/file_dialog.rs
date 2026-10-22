@@ -8,8 +8,14 @@
 //! refused when empty, longer than [`MAX_PATH_BYTES`] or holding a control character (NUL
 //! included); a listing stops at [`MAX_DIALOG_ENTRIES`] entries and says so; unreadable entries
 //! are counted, never fatal. Saving never replaces an existing file unless "replace" is ticked.
+//!
+//! Lane SMB-HARNESS-SHELL-2: the window is described by a controls window descriptor
+//! ([`Purpose::window_spec`], [STU-ARC-014]) whose labels the egui window draws and whose agent
+//! JSON is in [`FileDialog::state_json`]; no filter label or item names a vendor product
+//! ([STU-SHL-008]; finding F-R37-3 renamed the `.fig` filter to "Design file (.fig)").
 #![deny(clippy::arithmetic_side_effects)]
 
+use hsk_studio_controls::menu::{WindowRole, WindowSpec};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -41,7 +47,7 @@ pub const DOCUMENT_EXTENSIONS: &[&str] = &[
 ];
 /// Audio files the viewer opens with feature `media` (reel's audio import).
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "wave", "mp3", "flac", "ogg", "oga", "aac", "m4a", "aif", "aiff"];
-/// Figma files of the prototype player.
+/// Design files (`.fig`) of the prototype player.
 pub const FIG_EXTENSIONS: &[&str] = &["fig"];
 /// Media files of the source monitor (feature `media`: reel's in-process decoders; others refuse typed).
 pub const VIDEO_EXTENSIONS: &[&str] = &["mov", "mxf", "mkv", "y4m", "mp4", "m4v"];
@@ -78,13 +84,14 @@ pub enum Purpose {
     /// FILE > Export PNG / Export JPEG: the rendered composite.
     ExportPng,
     ExportJpeg,
-    /// WORKSPACE > Prototype Player: a Figma `.fig`.
+    /// WORKSPACE > Prototype Player: a design file (`.fig`).
     OpenPrototype,
     /// WORKSPACE > Source Monitor: a media file (feature `media`).
     OpenSourceMedia,
 }
 
 impl Purpose {
+    pub const ALL: [Purpose; 6] = [Self::Open, Self::SaveAs, Self::ExportPng, Self::ExportJpeg, Self::OpenPrototype, Self::OpenSourceMedia];
     pub fn key(self) -> &'static str {
         match self {
             Self::Open => "open",
@@ -131,11 +138,27 @@ impl Purpose {
             Self::SaveAs => vec![Filter { name: "Native package (.handshake)", extensions: &["handshake"] }],
             Self::ExportPng => vec![Filter { name: "PNG", extensions: &["png"] }],
             Self::ExportJpeg => vec![Filter { name: "JPEG", extensions: &["jpg", "jpeg"] }],
-            Self::OpenPrototype => vec![Filter { name: "Figma (.fig)", extensions: FIG_EXTENSIONS }],
+            Self::OpenPrototype => vec![Filter { name: "Design file (.fig)", extensions: FIG_EXTENSIONS }],
             Self::OpenSourceMedia => vec![Filter { name: "Media", extensions: VIDEO_EXTENSIONS }],
         };
         out.push(Filter::ALL_FILES);
         out
+    }
+
+    /// The window descriptor of the dialog for this purpose: its title and items (the egui window
+    /// draws these labels; the same descriptor feeds the agent JSON and the manual).
+    pub fn window_spec(self) -> WindowSpec {
+        let saves = self.saves();
+        let mut w = WindowSpec::new(widget::WINDOW, self.title(), "File dialog: lists a folder (folders first, then the files the filter admits); type a file name or a full path.")
+            .with(widget::UP, "Up", WindowRole::Action, "Parent folder.")
+            .with(widget::DIR, "folder", WindowRole::Text, "The listed folder.")
+            .with(widget::FILTER, "filter", WindowRole::Choice, "Which files are listed (by extension).")
+            .with(widget::LIST, "files", WindowRole::List, "Folders open on click; a file's name goes into the path field; double click accepts.")
+            .with(widget::PATH, "file name or full path", WindowRole::Field, "Enter accepts; a folder is listed.");
+        if saves {
+            w = w.with(widget::REPLACE, "replace an existing file", WindowRole::Toggle, "Without it an existing file is refused (file_exists).");
+        }
+        w.with(widget::ACCEPT, if saves { "Save" } else { "Open" }, WindowRole::Action, "Accepts the path field.").with(widget::CANCEL, "Cancel", WindowRole::Action, "Closes the dialog (also Escape).")
     }
 }
 
@@ -353,6 +376,7 @@ impl FileDialog {
             "typed": self.typed,
             "replace": self.replace,
             "error": self.error,
+            "window": self.purpose.window_spec().agent_json(),
         })
     }
 
@@ -366,7 +390,8 @@ impl FileDialog {
         let filters = self.filters();
         let active = self.filter;
         let saves = self.purpose.saves();
-        egui::Window::new(self.purpose.title())
+        let spec = self.purpose.window_spec();
+        egui::Window::new(spec.title.as_str())
             .id(id(widget::WINDOW))
             .open(&mut open)
             .collapsible(false)
@@ -374,14 +399,14 @@ impl FileDialog {
             .default_size([560.0, 420.0])
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.push_id(id(widget::UP), |ui| ui.add_enabled(self.dir.parent().is_some(), egui::Button::new("Up"))).inner.on_hover_text("Parent folder").clicked() {
+                    if ui.push_id(id(widget::UP), |ui| ui.add_enabled(self.dir.parent().is_some(), egui::Button::new(spec.label(widget::UP)))).inner.on_hover_text("Parent folder").clicked() {
                         go_up = true;
                     }
                     ui.push_id(id(widget::DIR), |ui| ui.label(self.dir.to_string_lossy()));
                 });
                 drawn.extend([widget::UP, widget::DIR].map(String::from));
                 ui.push_id(id(widget::FILTER), |ui| {
-                    egui::ComboBox::from_label("filter").selected_text(filters.get(active).map_or("All files", |f| f.name)).show_ui(ui, |ui| {
+                    egui::ComboBox::from_label(spec.label(widget::FILTER)).selected_text(filters.get(active).map_or("All files", |f| f.name)).show_ui(ui, |ui| {
                         for (i, f) in filters.iter().enumerate() {
                             if ui.selectable_label(i == active, f.name).clicked() {
                                 filter_pick = Some(i);
@@ -411,24 +436,23 @@ impl FileDialog {
                     }
                 });
                 drawn.push(widget::LIST.into());
-                let r = ui.add(egui::TextEdit::singleline(&mut self.typed).id(id(widget::PATH)).hint_text("file name or full path").desired_width(f32::INFINITY));
+                let r = ui.add(egui::TextEdit::singleline(&mut self.typed).id(id(widget::PATH)).hint_text(spec.label(widget::PATH)).desired_width(f32::INFINITY));
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
                 }
                 drawn.push(widget::PATH.into());
                 if saves {
-                    ui.push_id(id(widget::REPLACE), |ui| ui.checkbox(&mut self.replace, "replace an existing file"));
+                    ui.push_id(id(widget::REPLACE), |ui| ui.checkbox(&mut self.replace, spec.label(widget::REPLACE)));
                     drawn.push(widget::REPLACE.into());
                 }
                 if let Some(e) = &self.error {
                     ui.colored_label(egui::Color32::RED, e);
                 }
                 ui.horizontal(|ui| {
-                    let verb = if saves { "Save" } else { "Open" };
-                    if ui.push_id(id(widget::ACCEPT), |ui| ui.button(verb)).inner.clicked() {
+                    if ui.push_id(id(widget::ACCEPT), |ui| ui.button(spec.label(widget::ACCEPT))).inner.clicked() {
                         submit = true;
                     }
-                    if ui.push_id(id(widget::CANCEL), |ui| ui.button("Cancel")).inner.clicked() {
+                    if ui.push_id(id(widget::CANCEL), |ui| ui.button(spec.label(widget::CANCEL))).inner.clicked() {
                         cancel = true;
                     }
                 });
