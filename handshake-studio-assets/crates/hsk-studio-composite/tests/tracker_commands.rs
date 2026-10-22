@@ -80,6 +80,9 @@ fn a_shot_is_tracked_corrected_and_stabilised_by_typed_commands() {
         three_d: None,
         camera: None,
         light: None,
+        time_remap: None,
+        frame_blending: hsk_studio_folio::StudioFrameBlending::Off,
+        roto: None,
     };
     let timing = TrackTiming { first_tick: 0, ticks_per_frame: 100 };
     let out = stabilize(&layer, &track, timing, TrackAxes { position: true, ..TrackAxes::default() }, 2, 0).unwrap();

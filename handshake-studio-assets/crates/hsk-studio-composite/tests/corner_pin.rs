@@ -26,6 +26,9 @@ fn layer() -> StudioCompositionLayer {
         three_d: None,
         camera: None,
         light: None,
+        time_remap: None,
+        frame_blending: hsk_studio_folio::StudioFrameBlending::Off,
+        roto: None,
     }
 }
 

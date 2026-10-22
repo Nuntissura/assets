@@ -28,6 +28,10 @@
 //! source mapping uses floor division (`source_tick`); Adobe's rounding is UNVERIFIED (D5 oracle).
 //! Quantising keyframe times to frame boundaries (STU-MOT-020) is not enforced.
 //!
+//! Lane SMB-AE-ROTO-WIRING adds per layer `time_remap` (STU-MOT-045), `frame_blending`
+//! (STU-MOT-007a) and the assisted-rotoscoping state `roto` (STU-CMP-034), all serde default and
+//! skipped when absent (submodule `roto`).
+//!
 //! Refusals: out-of-range values `InvalidField`; a tick or stretch product beyond `i64` is
 //! `InvalidField` with a `tick_overflow` target segment (no new `Code`: the enum is matched
 //! exhaustively by dependents); an unknown layer/composition/parent/matte target `DanglingReference`;
@@ -44,6 +48,9 @@ use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+mod roto;
+pub use roto::*;
 
 schema_token!(CompositionSchema, "hsk.studio.composition@1");
 schema_token!(CompositionRecordsSchema, "hsk.studio.composition_records@1");
@@ -294,6 +301,17 @@ pub struct StudioCompositionLayer {
     /// Light (STU-CMP-045): this layer is a light; it requires `three_d` and has no content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub light: Option<StudioLightOptions>,
+    /// Time remap (lane SMB-AE-ROTO-WIRING; STU-MOT-045): the source time in seconds at each
+    /// composition tick (module `roto` docs). Absent = the `start_time` / `stretch` mapping;
+    /// records without it are byte-identical to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_remap: Option<StudioKeyedValue>,
+    /// Frame blending (STU-MOT-007a); absent = `off`.
+    #[serde(default, skip_serializing_if = "StudioFrameBlending::is_off")]
+    pub frame_blending: StudioFrameBlending,
+    /// Assisted rotoscoping state (STU-CMP-034 item 1); absent = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roto: Option<Box<StudioAssistedRoto>>,
 }
 
 /// A keyframable value of a fixed component count (static value plus keys; the keyframe rules of a
@@ -1014,6 +1032,12 @@ fn validate_layer(
         if !ids.insert(m.mask_id.as_str()) {
             return Err(err(Code::DuplicateIdentity, format!("{t}/masks/{}", m.mask_id)));
         }
+    }
+    if let Some(r) = &l.time_remap {
+        roto::validate_time_remap(r, t, cx)?;
+    }
+    if let Some(r) = &l.roto {
+        roto::validate_roto(r, t, cx)?;
     }
     Ok(())
 }

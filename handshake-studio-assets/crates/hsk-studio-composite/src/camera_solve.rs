@@ -624,6 +624,9 @@ pub fn camera_layer(solve: &CameraSolve, layer_id: &str, timing: StudioLayerTimi
             values: BTreeMap::new(),
         }),
         light: None,
+        time_remap: None,
+        frame_blending: hsk_studio_folio::StudioFrameBlending::Off,
+        roto: None,
     })
 }
 
@@ -642,5 +645,8 @@ pub fn target_layer(solve: &CameraSolve, point: usize, layer_id: &str, timing: S
         three_d: Some(StudioLayer3d { position_z: Some(StudioKeyedValue::constant(vec![p[2]])), ..StudioLayer3d::default() }),
         camera: None,
         light: None,
+        time_remap: None,
+        frame_blending: hsk_studio_folio::StudioFrameBlending::Off,
+        roto: None,
     })
 }
