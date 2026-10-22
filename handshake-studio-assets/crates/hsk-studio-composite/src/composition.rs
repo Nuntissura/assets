@@ -56,6 +56,11 @@ use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, ResampleFilter
 use hsk_studio_pigment::{Mask, Rect};
 use std::collections::BTreeMap;
 
+pub(crate) mod frame_content;
+pub use frame_content::{
+    FRAME_BLEND_OPERATOR, FrameBlendMethod, FrameBlendedContent, ROTO_MATTE_OPERATOR, RotoMatte, RotoscopedContent,
+};
+
 /// Default bound on the layers of one scene (Folio's `MAX_COMPOSITION_LAYERS`).
 pub const DEFAULT_MAX_SCENE_LAYERS: usize = 4096;
 /// Default bound on the bytes of every surface one render allocates (output frame included).
@@ -136,6 +141,15 @@ pub enum SceneContent {
     /// [`crate::clip_finishing`]): the inner content is rendered over its rect, graded per texel by
     /// [`crate::clip_finishing::ClipGrade::apply`] (Prism and Pigment maths), then placed like a tile.
     Graded(Box<crate::clip_finishing::GradedContent>),
+    /// Two source frames blended (lane SMB-AE-ROTO-WIRING; STU-MOT-007a `frame_mix` /
+    /// `pixel_motion`, STU-MOT-045 item 6, [`FrameBlendedContent`]): both frames are rendered by
+    /// the same backend, blended by Pigment's frame-blend maths, then placed like a tile.
+    FrameBlended(Box<FrameBlendedContent>),
+    /// Content under an assisted-roto matte (lane SMB-AE-ROTO-WIRING; STU-CMP-034,
+    /// [`RotoscopedContent`]): the inner content is rendered over its rect, its alpha multiplied
+    /// by the frame's roto coverage (and its colours replaced by decontaminated colours where the
+    /// refine stage produced them), then placed like a tile.
+    Rotoscoped(Box<RotoscopedContent>),
 }
 
 /// The sample scenes of [`SceneContent::Accumulated`]: one size, at least one, at most
@@ -858,7 +872,7 @@ fn lower_inner(
             SceneContent::Pinned(p) => (&p.content, Some(p.pin)),
             other => (other, None),
         };
-        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_) | SceneContent::Filtered(_) | SceneContent::Accumulated(_) | SceneContent::Graded(_)) {
+        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_) | SceneContent::Filtered(_) | SceneContent::Accumulated(_) | SceneContent::Graded(_) | SceneContent::FrameBlended(_) | SceneContent::Rotoscoped(_)) {
             return Err(TemporalError::Unsupported {
                 layer_id: id.to_owned(),
                 feature: crate::track_apply::COMPOSITION_CORNER_PIN_CONTENT,
@@ -903,7 +917,9 @@ fn lower_inner(
             | SceneContent::Lit(_)
             | SceneContent::Filtered(_)
             | SceneContent::Accumulated(_)
-            | SceneContent::Graded(_) => true,
+            | SceneContent::Graded(_)
+            | SceneContent::FrameBlended(_)
+            | SceneContent::Rotoscoped(_) => true,
             SceneContent::None | SceneContent::Pinned(_) => false,
         };
         let matte_empty = layer
@@ -1066,6 +1082,35 @@ fn lower_inner(
                 };
                 out.sources.surfaces.insert(key, surface);
                 inputs.push((key, g.rect, tile));
+            }
+            SceneContent::FrameBlended(fb) => {
+                let surface = frame_content::frame_blended_surface(id, fb, ctx, cancel, depth, charges, &mut exactness)?;
+                let rect = Rect { x: 0, y: 0, width: surface.width, height: surface.height };
+                let key = out.key()?;
+                let tile = SceneTile {
+                    tile_id: format!("{id}/frame_blended"),
+                    placement: rect,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: surface.colour_sha256,
+                    alpha_sha256: surface.alpha_sha256,
+                };
+                out.sources.surfaces.insert(key, surface);
+                inputs.push((key, rect, tile));
+            }
+            SceneContent::Rotoscoped(r) => {
+                let surface = frame_content::rotoscoped_surface(id, r, scene.filter, ctx, cancel, depth, charges, &mut exactness)?;
+                let key = out.key()?;
+                let tile = SceneTile {
+                    tile_id: format!("{id}/rotoscoped"),
+                    placement: r.rect,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: surface.colour_sha256,
+                    alpha_sha256: surface.alpha_sha256,
+                };
+                out.sources.surfaces.insert(key, surface);
+                inputs.push((key, r.rect, tile));
             }
             SceneContent::None | SceneContent::Adjustment(_) | SceneContent::Pinned(_) => {}
         }

@@ -50,10 +50,24 @@
 //! the document-graph path (`composition_precomp_on_document_graph`,
 //! `composition_track_matte_on_document_graph`). Not modelled (Folio stores none of them, so
 //! nothing is dropped): 3D layers and cameras/lights, motion blur, expressions, frame blending,
-//! `preserve_source_visibility` of a matte (the spec default, not rendered, is applied). Time
-//! remapping (STU-MOT-045) is not stored by Folio either; a caller attaches a motion `TimeRemap` per
-//! layer with [`CompositionTemporalSource::with_time_remap`] (lane SMB-AE-ROTO-TIMEREMAP), which
-//! then replaces `start_time` / `stretch` for that layer's source time.
+//! `preserve_source_visibility` of a matte (the spec default, not rendered, is applied).
+//!
+//! Time remap, frame blending and assisted roto (lane SMB-AE-ROTO-WIRING; STU-MOT-045,
+//! STU-MOT-007a, STU-CMP-034): a layer's Folio `time_remap` record is lowered to a motion
+//! `TimeRemap` over the source timing of its nested composition (duration, frame duration) when
+//! the source is read; a remap attached by a caller with
+//! [`CompositionTemporalSource::with_time_remap`] (lane SMB-AE-ROTO-TIMEREMAP) overrides it. Either
+//! replaces `start_time` / `stretch` for that layer's source time. A precomposition layer with a
+//! remap, a frame-blending method other than `off` or a roto record is FRAME SAMPLED: motion's
+//! `frame_sample` over the nested composition's frames picks the frame pair (`off` = the frame
+//! containing the source tick, held at the last frame); a non-zero weight under `frame_mix` /
+//! `pixel_motion` yields [`crate::composition::SceneContent::FrameBlended`] of the two nested frames,
+//! otherwise the nested composition plays at the frame's start tick. A precomposition without any
+//! of the three keeps the exact-tick sampling of the stretch rule (unchanged). Refused typed: any
+//! of the three on a layer that is not a precomposition, frame blending or roto on a collapsed
+//! precomposition ([`COMPOSITION_TIME_SOURCE`]), roto together with frame blending
+//! ([`COMPOSITION_ROTO_FRAME_BLENDING`]). Roto: module `roto`
+//! ([`CompositionTemporalSource::propagate_roto`], [`CompositionTemporalSource::with_roto`]).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::motion::sample;
@@ -90,6 +104,20 @@ use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendSpace, StudioBlendMode};
 use hsk_studio_pigment::transform_math::{Affine2, ResampleFilter};
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+mod roto;
+pub use roto::{
+    COMPOSITION_ROTO_NOT_PROPAGATED, ROTO_FRAME_LOST, ROTO_LEARNED_MODEL_LANE, ROTO_MODEL_UNAVAILABLE,
+    RotoFrameReceipt, RotoFrameState, RotoLimits, RotoMatteFrame, RotoMattes, RotoReceipt, RotoRun, RotoSegmentation,
+    RotoSegmentedFrame,
+};
+
+/// A time remap, frame blending or roto record on a layer whose source has no frames (not a
+/// precomposition), or frame blending / roto on a collapsed precomposition (module docs).
+pub const COMPOSITION_TIME_SOURCE: &str = "composition_time_source";
+/// Roto and frame blending on one layer (the matte belongs to one source frame).
+pub const COMPOSITION_ROTO_FRAME_BLENDING: &str = "composition_roto_frame_blending";
 
 /// The resampling filter a composition declares unless the caller picks another (module docs).
 pub const DEFAULT_COMPOSITION_FILTER: ResampleFilter = ResampleFilter::Bilinear;
@@ -196,6 +224,12 @@ struct CompLayer {
     masks: Option<LayerMasks>,
     /// 3D members (lane SMB-AE-3D; `crate::three_d`).
     three_d: Option<Box<Layer3d>>,
+    /// Lane SMB-AE-ROTO-WIRING: frame blending, the nested source timing of a precomposition, the
+    /// lowered Folio time remap and the roto record.
+    blending: hsk_studio_folio::StudioFrameBlending,
+    source: Option<hsk_studio_motion::SourceTiming>,
+    remap: Option<hsk_studio_motion::TimeRemap>,
+    roto: Option<Box<hsk_studio_folio::StudioAssistedRoto>>,
 }
 
 /// A layer's own 3D transform: anchor, position, X/Y scale, rotation (lane SMB-AE-3D-2).
@@ -352,6 +386,8 @@ pub struct CompositionTemporalSource {
     /// Time remap per layer id (lane SMB-AE-ROTO-TIMEREMAP,
     /// [`CompositionTemporalSource::with_time_remap`]).
     remaps: BTreeMap<String, hsk_studio_motion::TimeRemap>,
+    /// Roto mattes per layer id (lane SMB-AE-ROTO-WIRING, [`CompositionTemporalSource::with_roto`]).
+    roto: BTreeMap<String, Arc<RotoMattes>>,
 }
 
 /// The shutter of one composition and its blurred layers (Folio
@@ -738,6 +774,7 @@ impl CompositionTemporalSource {
             tiles,
             blur: BTreeMap::new(),
             remaps: BTreeMap::new(),
+            roto: BTreeMap::new(),
         })
     }
 
@@ -911,6 +948,7 @@ impl CompositionTemporalSource {
             let stream = |p: StudioLayerProperty| -> Result<Option<Property>, TemporalError> {
                 l.stream(p).map(|s| property(id, s)).transpose()
             };
+            let (source, remap) = Self::read_time(l, &content, input)?;
             layers.push(CompLayer {
                 layer_id: l.layer_id.clone(),
                 timing: l.timing,
@@ -1000,6 +1038,10 @@ impl CompositionTemporalSource {
                     }
                 },
                 content,
+                blending: l.frame_blending,
+                source,
+                remap,
+                roto: l.roto.clone(),
             });
         }
         // Lane SMB-AE-3D-2: 2D and 3D layers parent each other (`crate::three_d` module docs); a
@@ -1022,6 +1064,45 @@ impl CompositionTemporalSource {
             immersive: comp.immersive.clone(),
             layers,
         })
+    }
+
+    /// The nested source timing and the lowered Folio time remap of layer `l` (module docs).
+    #[allow(clippy::type_complexity)]
+    fn read_time(
+        l: &hsk_studio_folio::StudioCompositionLayer,
+        content: &Content,
+        input: &CompositionInput<'_>,
+    ) -> Result<(Option<hsk_studio_motion::SourceTiming>, Option<hsk_studio_motion::TimeRemap>), TemporalError> {
+        let id = l.layer_id.as_str();
+        let timed = l.time_remap.is_some() || !l.frame_blending.is_off() || l.roto.is_some();
+        let Content::Precomp { composition_id, collapse, .. } = content else {
+            return if timed { Err(unsupported(id, COMPOSITION_TIME_SOURCE)) } else { Ok((None, None)) };
+        };
+        if *collapse && (!l.frame_blending.is_off() || l.roto.is_some()) {
+            return Err(unsupported(id, COMPOSITION_TIME_SOURCE));
+        }
+        if l.roto.is_some() && !l.frame_blending.is_off() {
+            return Err(unsupported(id, COMPOSITION_ROTO_FRAME_BLENDING));
+        }
+        let nested = input
+            .records
+            .composition(composition_id)
+            .ok_or_else(|| CompositeError::DanglingInput(composition_id.clone()))?;
+        let source_err = |e: MotionError| TemporalError::Source { layer_id: id.to_owned(), code: e.code().to_owned() };
+        let tpf = nested
+            .frame_rate
+            .ticks_per_frame()
+            .ok_or_else(|| TemporalError::Document(format!("InvalidField:{}/frame_rate", nested.composition_id)))?;
+        let source = hsk_studio_motion::SourceTiming::new(nested.duration, tpf).map_err(source_err)?;
+        let remap = match &l.time_remap {
+            None => None,
+            Some(v) => {
+                let p = keyed_property(id, v)?;
+                let p = Property::new(hsk_studio_motion::TIME_REMAP_KEY, v.static_value.clone(), p.keyframes().to_vec()).map_err(source_err)?;
+                Some(hsk_studio_motion::TimeRemap::from_property(p, source).map_err(source_err)?)
+            }
+        };
+        Ok((Some(source), remap))
     }
 
     fn root(&self) -> Result<&Comp, TemporalError> {
@@ -1235,7 +1316,7 @@ impl CompositionTemporalSource {
 
     /// Source tick of `l` at `tick`: the remap when one is attached, else `start_time` / `stretch`.
     fn layer_source(&self, l: &CompLayer, tick: i64, cancel: &CancellationToken) -> Result<i64, TemporalError> {
-        if let Some(r) = self.remaps.get(&l.layer_id) {
+        if let Some(r) = self.remaps.get(&l.layer_id).or(l.remap.as_ref()) {
             let s = r.sample(hsk_studio_motion::EvalTick::new(tick), cancel).map_err(|e| TemporalError::Source {
                 layer_id: l.layer_id.clone(),
                 code: e.code().to_owned(),
@@ -1243,6 +1324,36 @@ impl CompositionTemporalSource {
             return i64::try_from(s.source_tick).map_err(|_| CompositeError::Overflow.into());
         }
         map_source(&l.timing, tick).ok_or_else(|| CompositeError::Overflow.into())
+    }
+
+    /// The frame pair of a frame-sampled precomposition layer at source tick `source` (module
+    /// docs): `None` = exact-tick sampling; `Some((sample, Some(method)))` = blend two frames;
+    /// `Some((sample, None))` = show `sample.frame_a` (a remapped tick is already clamped to the
+    /// source range; the caller shows nothing for a stretch-rule tick outside it).
+    #[allow(clippy::type_complexity)]
+    fn frame_pick(
+        &self,
+        l: &CompLayer,
+        source: i64,
+    ) -> Result<Option<(hsk_studio_motion::FrameSample, Option<crate::composition::FrameBlendMethod>)>, TemporalError> {
+        let timed = l.remap.is_some() || self.remaps.contains_key(&l.layer_id);
+        if !timed && l.blending.is_off() && l.roto.is_none() {
+            return Ok(None);
+        }
+        let st = l.source.ok_or_else(|| unsupported(&l.layer_id, COMPOSITION_TIME_SOURCE))?;
+        let blending = match l.blending {
+            hsk_studio_folio::StudioFrameBlending::Off => hsk_studio_motion::FrameBlending::Off,
+            hsk_studio_folio::StudioFrameBlending::FrameMix => hsk_studio_motion::FrameBlending::FrameMix,
+            hsk_studio_folio::StudioFrameBlending::PixelMotion => hsk_studio_motion::FrameBlending::PixelMotion,
+        };
+        let fs = hsk_studio_motion::frame_sample(u64::try_from(source).unwrap_or(0), st, blending);
+        let method = match blending {
+            _ if fs.weight_b == 0.0 => None,
+            hsk_studio_motion::FrameBlending::Off => None,
+            hsk_studio_motion::FrameBlending::FrameMix => Some(crate::composition::FrameBlendMethod::FrameMix),
+            hsk_studio_motion::FrameBlending::PixelMotion => Some(crate::composition::FrameBlendMethod::PixelMotion),
+        };
+        Ok(Some((fs, method)))
     }
 
     /// The composition evaluated at composition tick `tick` (module docs).
@@ -2079,21 +2190,49 @@ impl CompositionTemporalSource {
                 }
                 let source = self.layer_source(l, tick, cancel)?;
                 let inside = u64::try_from(source).is_ok_and(|t| t < nested.duration);
-                let mut scene = if inside {
-                    let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
-                    self.scene_of(nested, source, depth, cancel)?
-                } else {
-                    SceneComposition {
-                        composition_id: nested.composition_id.clone(),
-                        width: nested.width,
-                        height: nested.height,
-                        background: None,
-                        filter: self.filter,
-                        layers: Vec::new(),
-                    }
+                let empty = || SceneComposition {
+                    composition_id: nested.composition_id.clone(),
+                    width: nested.width,
+                    height: nested.height,
+                    background: None,
+                    filter: self.filter,
+                    layers: Vec::new(),
                 };
-                scene.background = None;
-                SceneContent::Precomp(Box::new(scene))
+                let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
+                let remapped = l.remap.is_some() || self.remaps.contains_key(&l.layer_id);
+                match self.frame_pick(l, source)? {
+                    // Exact-tick sampling (no remap, no blending, no roto): unchanged.
+                    None => {
+                        let mut scene = if inside { self.scene_of(nested, source, depth, cancel)? } else { empty() };
+                        scene.background = None;
+                        SceneContent::Precomp(Box::new(scene))
+                    }
+                    // The stretch rule outside the nested duration shows nothing (as exact-tick
+                    // sampling); a remap is clamped instead (STU-MOT-045 contract 5).
+                    Some(_) if !inside && !remapped => SceneContent::Precomp(Box::new(empty())),
+                    Some((fs, method)) => {
+                        let frame_tick = |f: u64| -> Result<i64, TemporalError> {
+                            let t = f.checked_mul(nested.ticks_per_frame).ok_or(CompositeError::Overflow)?;
+                            i64::try_from(t).map_err(|_| CompositeError::Overflow.into())
+                        };
+                        let mut a = self.scene_of(nested, frame_tick(fs.frame_a)?, depth, cancel)?;
+                        a.background = None;
+                        match method {
+                            Some(method) => {
+                                let mut b = self.scene_of(nested, frame_tick(fs.frame_b)?, depth, cancel)?;
+                                b.background = None;
+                                SceneContent::FrameBlended(Box::new(crate::composition::FrameBlendedContent {
+                                    a,
+                                    b,
+                                    weight_b: fs.weight_b,
+                                    method,
+                                    flow: hsk_studio_pigment::frame_blend::FlowParams::DEFAULT,
+                                }))
+                            }
+                            None => self.rotoscope(l, fs.frame_a, SceneContent::Precomp(Box::new(a)))?,
+                        }
+                    }
+                }
             }
         };
         let content = match self.motion.as_deref() {
