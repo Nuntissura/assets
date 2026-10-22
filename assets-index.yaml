@@ -623,6 +623,31 @@ assets:
     mode: none
     scope: operator request and public asset contract
   work_scope: assets/hskernel/handshake_context_bundle
+- id: HANDSHAKE-DEXTERITY-ASSET-001
+  name: handshake_dexterity
+  path: assets/hskernel/handshake_dexterity
+  kind: asset
+  status: source-present
+  purpose: Pure Dexterity engine-profile validation, immutable resolved identity and explicit GenieX launch planning.
+  capabilities:
+  - Bundled model, engine, preset and explicit CPU/NPU device profiles with canonical fingerprints.
+  - Registered-model argument plans without implicit device fallback, process execution or host authorization.
+  manual: assets/hskernel/handshake_dexterity/README.md
+  creation_rationale: Existing ModelLane navigation owns projections, while Studio worker owns framed process supervision.
+    This component owns pure engine-profile resolution and planning, reuses canonical JSON, and adds no second supervisor.
+  packages:
+  - name: handshake_dexterity
+    manifest: assets/hskernel/handshake_dexterity/Cargo.toml
+    version: 0.1.0
+    api: assets/hskernel/handshake_dexterity/src/lib.rs
+    role: logic
+    depends_on:
+    - handshake_canonical_json
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/hskernel/handshake_dexterity
+  governance:
+    mode: none
+    scope: operator request and public asset contract
+  work_scope: assets/hskernel/handshake_dexterity
 - id: HANDSHAKE-MODEL-LANE-NAVIGATION-ASSET-001
   name: handshake_model_lane_navigation
   path: assets/hskernel/handshake_model_lane_navigation
@@ -2137,6 +2162,7 @@ assets:
   purpose: Package grouping in hskernel; inspect each component contract before independent reuse.
   capabilities:
   - Context bundles and canonical JSON hashing.
+  - Pure Dexterity engine-profile validation and explicit launch planning.
   - ModelLane navigation lookup and validated scalar projections.
   - Watcher lifecycle, bounded parent-exit finalization, and Windows parent-process watch.
   - Recovery claims, identities, cloud-assistance receipts, and dashboard protocol.
@@ -2144,6 +2170,7 @@ assets:
   manual: assets/hskernel/handshake_context_bundle/src/lib.rs
   components:
   - HANDSHAKE-CONTEXT-BUNDLE-ASSET-001
+  - HANDSHAKE-DEXTERITY-ASSET-001
   - HANDSHAKE-MODEL-LANE-NAVIGATION-ASSET-001
   - HANDSHAKE-PALMISTRY-LIFECYCLE-ASSET-001
   - HANDSHAKE-RECOVERY-PROTOCOL-ASSET-001

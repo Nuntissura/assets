@@ -1,0 +1,13 @@
+[package]
+name = "handshake_dexterity"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pure Dexterity engine profile validation and explicit GenieX launch planning"
+
+[workspace]
+
+[dependencies]
+handshake_canonical_json = { path = "../../shared/handshake_canonical_json" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
