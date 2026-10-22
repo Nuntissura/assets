@@ -2199,14 +2199,11 @@ assets:
     this component depends on that model instead of copying its node types. Promoted from the existing source-only
     draft after binding and testing the shared model.
 drafts:
-- id: HANDSHAKE-WIKILINK-SEMANTICS-DRAFT-001
-  path: assets/Notes/handshake_wikilink_semantics
-  status: local-source-only
-  reason: Untracked source and README exist without a package manifest; not installable or published.
 - id: HANDSHAKE-SWARM-STATE-DRAFT-001
   path: assets/hskernel/crates/handshake_swarm_state
-  status: local-source-only
-  reason: Untracked test fragment exists without a package manifest or production source.
+  status: published-source-only-draft
+  reason: Preserved test-only fragment; no package manifest or production ModelSessionState implementation. Syntax
+    and formatting checked; runtime tests remain unrun and the folder is not installable.
 legacy_source_paths:
   Cabinet/Cargo.toml: assets/Cabinet/Cargo.toml
   Cabinet/cabinet-egui/Cargo.toml: assets/Cabinet/cabinet-egui/Cargo.toml
