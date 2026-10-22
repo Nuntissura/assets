@@ -260,16 +260,31 @@ impl StudioCompositionSettings {
     }
     /// `self` with every field `top` sets replaced by `top`'s value (STU-TYP-201: later wins).
     pub fn overlaid(&self, top: &Self) -> Self {
-        macro_rules! pick {
-            ($($f:ident),*) => { Self { $($f: top.$f.clone().or_else(|| self.$f.clone())),* } };
+        Self {
+            composition_scope: top.composition_scope.or(self.composition_scope),
+            composition_engine: top.composition_engine.or(self.composition_engine),
+            hyphenation: top.hyphenation.or(self.hyphenation),
+            hyphenate_words_longer_than: top.hyphenate_words_longer_than.or(self.hyphenate_words_longer_than),
+            hyphenate_after_first: top.hyphenate_after_first.or(self.hyphenate_after_first),
+            hyphenate_before_last: top.hyphenate_before_last.or(self.hyphenate_before_last),
+            hyphenate_ladder_limit: top.hyphenate_ladder_limit.or(self.hyphenate_ladder_limit),
+            hyphen_weight: top.hyphen_weight.or(self.hyphen_weight),
+            hyphenation_zone: top.hyphenation_zone.clone().or_else(|| self.hyphenation_zone.clone()),
+            hyphenate_capitalized_words: top.hyphenate_capitalized_words.or(self.hyphenate_capitalized_words),
+            hyphenate_last_word: top.hyphenate_last_word.or(self.hyphenate_last_word),
+            hyphenate_across_columns: top.hyphenate_across_columns.or(self.hyphenate_across_columns),
+            word_spacing_minimum: top.word_spacing_minimum.or(self.word_spacing_minimum),
+            word_spacing_desired: top.word_spacing_desired.or(self.word_spacing_desired),
+            word_spacing_maximum: top.word_spacing_maximum.or(self.word_spacing_maximum),
+            letter_spacing_minimum: top.letter_spacing_minimum.or(self.letter_spacing_minimum),
+            letter_spacing_desired: top.letter_spacing_desired.or(self.letter_spacing_desired),
+            letter_spacing_maximum: top.letter_spacing_maximum.or(self.letter_spacing_maximum),
+            glyph_scaling_minimum: top.glyph_scaling_minimum.or(self.glyph_scaling_minimum),
+            glyph_scaling_desired: top.glyph_scaling_desired.or(self.glyph_scaling_desired),
+            glyph_scaling_maximum: top.glyph_scaling_maximum.or(self.glyph_scaling_maximum),
+            single_word_justification: top.single_word_justification.or(self.single_word_justification),
+            auto_leading_amount: top.auto_leading_amount.or(self.auto_leading_amount),
         }
-        pick!(
-            composition_scope, composition_engine, hyphenation, hyphenate_words_longer_than, hyphenate_after_first,
-            hyphenate_before_last, hyphenate_ladder_limit, hyphen_weight, hyphenation_zone, hyphenate_capitalized_words,
-            hyphenate_last_word, hyphenate_across_columns, word_spacing_minimum, word_spacing_desired, word_spacing_maximum,
-            letter_spacing_minimum, letter_spacing_desired, letter_spacing_maximum, glyph_scaling_minimum, glyph_scaling_desired,
-            glyph_scaling_maximum, single_word_justification, auto_leading_amount
-        )
     }
     /// The single settings validator: STU-TYP-147 / 148 / 150 hard bounds, finiteness, a
     /// non-negative finite hyphenation zone and ordered triples within this record.
