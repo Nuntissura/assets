@@ -6,12 +6,19 @@
 //! `offset = (-distance cos a, distance sin a)` (Photoshop light-angle reading, y down), so
 //! `a = atan2(dy, -dx)`; the colour alpha becomes the effect opacity percent; a Figma inner-shadow
 //! spread becomes a choke percent of the radius (approximation, reported as a loss note).
+//! Shadow blur: a Figma DROP_SHADOW / INNER_SHADOW is written with
+//! `blur_kernel: gaussian` (standard deviation radius / 2) so it does not inherit Photoshop's tent
+//! kernel (lane SMB-PS-ORACLE-PARITY-1, STUDIO-R36 remediation). Basis: Figma help "Apply effects
+//! to layers" (shadow effects translate to CSS `box-shadow`) and CSS Backgrounds 3 section 6.1.2
+//! (box-shadow blur = Gaussian of standard deviation half the blur radius); Figma's own rasteriser
+//! is UNVERIFIED (D5). Tested by `tests/fig_paints_2.rs` `bold_text_renders_with_the_inter_bold_fixture`
+//! and `tests/fig_paints.rs`.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::native::{blend, tidy, wide};
 use crate::nodes::Effect;
 use hsk_studio_folio::{
     BLEND_PASS_THROUGH, BlurScope, MAX_BLUR_RADIUS, ProfileBinding, StudioColor, StudioEffect,
-    StudioEffectKind,
+    StudioEffectBlurKernel, StudioEffectKind,
 };
 
 /// A mapped effect plus the loss codes of the parts that did not survive (approximations).
@@ -88,6 +95,7 @@ pub(crate) fn effect(e: &Effect, ordinal: usize) -> Result<Mapped, &'static str>
             size,
             // Figma draws the shadow behind a transparent node only with showShadowBehindNode.
             layer_knocks_out: e.show_shadow_behind_node != Some(true),
+            blur_kernel: Some(StudioEffectBlurKernel::Gaussian),
         }
     } else {
         let choke = if spread > 0.0 && size > 0.0 {
@@ -103,6 +111,7 @@ pub(crate) fn effect(e: &Effect, ordinal: usize) -> Result<Mapped, &'static str>
             distance,
             choke,
             size,
+            blur_kernel: Some(StudioEffectBlurKernel::Gaussian),
         }
     };
     Ok((

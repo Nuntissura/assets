@@ -496,11 +496,14 @@ fn map_effect(
             spread: percent(o, "Ckmt", 0.0)?,
             size: pixels(o, "blur", 0.0)?,
             layer_knocks_out: flag(o, "layerConceals", true)?,
+            // absent = Photoshop's tent kernel
+            blur_kernel: None,
         },
         Slot::InnerShadow => StudioEffectKind::InnerShadow {
             distance: pixels(o, "Dstn", 0.0)?,
             choke: percent(o, "Ckmt", 0.0)?,
             size: pixels(o, "blur", 0.0)?,
+            blur_kernel: None,
         },
         Slot::OuterGlow => StudioEffectKind::OuterGlow {
             technique: pick(o, "GlwT", &GLOW_TECHNIQUE)?,

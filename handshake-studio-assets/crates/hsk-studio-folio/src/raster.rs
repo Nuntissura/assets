@@ -532,6 +532,18 @@ pub enum GlowTechnique {
     Softer,
     Precise,
 }
+/// The blur kernel of a drop or inner shadow's matte (lane SMB-PS-ORACLE-PARITY-1, STUDIO-R36
+/// remediation): `tent` is Photoshop's layer-effect blur, `gaussian` a Gaussian of standard
+/// deviation `size / 2` (CSS `box-shadow`, which Figma documents its shadows translate to). The
+/// record field is optional: absent means `tent` (every Photoshop-sourced or hand-made shadow), and
+/// the Figma importer writes `gaussian`. Rendered by pigment `effect_math::EffectBlurKernel`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioEffectBlurKernel {
+    Tent,
+    Gaussian,
+}
+
 /// What a blur effect reads (STU-FX-002 `render_scope`, members `layer` and `below`; `group` is not
 /// a blur scope here). `layer` is the uniform Gaussian layer blur (STU-FX-013 "Gaussian Blur",
 /// Figma `FOREGROUND_BLUR`); `below` blurs the backdrop under the layer (STU-FX-013 "Background
@@ -602,6 +614,9 @@ pub enum StudioEffectKind {
         distance: f64,
         choke: f64,
         size: f64,
+        /// Blur kernel of the shadow matte; absent = `tent` (not encoded when absent).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blur_kernel: Option<StudioEffectBlurKernel>,
     },
     InnerGlow {
         technique: GlowTechnique,
@@ -662,6 +677,9 @@ pub enum StudioEffectKind {
         spread: f64,
         size: f64,
         layer_knocks_out: bool,
+        /// Blur kernel of the shadow matte; absent = `tent` (not encoded when absent).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blur_kernel: Option<StudioEffectBlurKernel>,
     },
     /// Gaussian blur of the layer or of its backdrop (added by SMB-FOLIO-PAINT-BLUR-STYLE; not a
     /// STU-RAS-157 Photoshop layer-style kind: the blur family is STU-FX-013, and STU-FX-031 dedups
@@ -1477,6 +1495,7 @@ fn validate_effects(s: &StudioEffectStack, target: &str, cx: &mut Ctx) -> Result
                 distance,
                 choke,
                 size,
+                ..
             } => check(
                 nonneg(*distance) && nonneg(*choke) && nonneg(*size),
                 &t,

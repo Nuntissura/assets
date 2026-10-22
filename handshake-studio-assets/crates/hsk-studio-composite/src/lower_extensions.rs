@@ -19,7 +19,8 @@ use hsk_studio_folio::{
     Parent, Payload, ProfileBinding, StrokeFillType, StrokePosition as FolioStrokePosition,
     StudioAdjustment,
     StudioAdjustmentChannel, StudioAdvancedBlending, StudioBlendChannel, StudioColor,
-    StudioContour, StudioCurve, StudioEffect, StudioEffectKind, StudioEffectStack,
+    StudioContour, StudioCurve, StudioEffect, StudioEffectBlurKernel, StudioEffectKind,
+    StudioEffectStack,
     StudioGlobalLight, StudioKnockout, StudioLayer, StudioLevelsRecord, StudioLutKind,
     StudioRasterRecords, StudioSelectiveColourMethod, StudioToneMethod,
     BevelDirection as FolioBevelDirection, BevelStyle as FolioBevelStyle,
@@ -32,7 +33,7 @@ use hsk_studio_pigment::blend_math::{BlendSpace, Exactness, StudioBlendMode};
 use hsk_studio_pigment::blur_math::{BlurScope as PigmentBlurScope, LayerBlur};
 use hsk_studio_pigment::coverage_math::{BlendChannel, BlendRangeEntry};
 use hsk_studio_pigment::effect_math::{
-    ColourOverlayOp, DropShadowOp, EffectError, EffectFeature, EffectOp, GlowSource,
+    ColourOverlayOp, DropShadowOp, EffectBlurKernel, EffectError, EffectFeature, EffectOp, GlowSource,
     GlowTechnique, InnerGlowOp, InnerShadowOp, MAX_EFFECTS_PER_LAYER, OuterGlowOp, StrokeOp,
     StrokePosition as PigmentStrokePosition,
     BevelEmbossOp, BevelPart, BevelShape, BevelStroke, BevelStyle, BevelTechnique, GradientOverlayOp,
@@ -694,6 +695,16 @@ fn grown(notes: &mut Notes, e: &StudioEffect, field: &str, percent: f64) -> f32 
     (percent / 100.0) as f32
 }
 
+/// The pigment blur kernel of a shadow record (lane SMB-PS-ORACLE-PARITY-1, STUDIO-R36
+/// remediation): absent or `tent` is Photoshop's tent, `gaussian` the Gaussian of sigma size / 2
+/// (Figma-sourced shadows).
+fn shadow_blur_kernel(k: Option<StudioEffectBlurKernel>) -> EffectBlurKernel {
+    match k {
+        Some(StudioEffectBlurKernel::Gaussian) => EffectBlurKernel::Gaussian,
+        None | Some(StudioEffectBlurKernel::Tent) => EffectBlurKernel::Tent,
+    }
+}
+
 fn glow_technique(t: FolioGlowTechnique) -> GlowTechnique {
     match t {
         FolioGlowTechnique::Softer => GlowTechnique::Softer,
@@ -732,6 +743,7 @@ fn convert_effect(
             spread,
             size,
             layer_knocks_out,
+            blur_kernel,
         } => {
             let angle = shadow_angle(e, cx)?;
             EffectOp::DropShadow(
@@ -739,20 +751,23 @@ fn convert_effect(
                     .with_offset(angle, *distance as f32)
                     .with_spread(grown(notes, e, "spread", *spread))
                     .with_size(*size as f32)
-                    .with_layer_knocks_out(*layer_knocks_out),
+                    .with_layer_knocks_out(*layer_knocks_out)
+                    .with_blur_kernel(shadow_blur_kernel(*blur_kernel)),
             )
         }
         StudioEffectKind::InnerShadow {
             distance,
             choke,
             size,
+            blur_kernel,
         } => {
             let angle = shadow_angle(e, cx)?;
             EffectOp::InnerShadow(
                 InnerShadowOp::new(effect_colour(e, cx)?, mode, opacity)
                     .with_offset(angle, *distance as f32)
                     .with_choke(grown(notes, e, "choke", *choke))
-                    .with_size(*size as f32),
+                    .with_size(*size as f32)
+                    .with_blur_kernel(shadow_blur_kernel(*blur_kernel)),
             )
         }
         StudioEffectKind::OuterGlow {

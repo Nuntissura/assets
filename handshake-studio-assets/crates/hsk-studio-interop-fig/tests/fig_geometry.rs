@@ -443,11 +443,15 @@ fn real_effects_masks_image_paints_pinned() {
         distance,
         spread,
         size,
+        blur_kernel,
         ..
     } = &fx.params
     else {
         panic!("drop shadow")
     };
+    // Figma shadows render with the Gaussian kernel, not Photoshop's tent (lane
+    // SMB-PS-ORACLE-PARITY-1, STUDIO-R36 remediation).
+    assert_eq!(*blur_kernel, Some(hsk_studio_folio::StudioEffectBlurKernel::Gaussian));
     assert!((distance - 52f64.sqrt()).abs() < 1e-9 && *spread == 0.0 && *size == 10.0);
     // The render agrees: the shadow falls below the rectangle (darker under the bottom edge than
     // above the top edge, both 3 px away; artboard-local rectangle x 40..210, y 90..200).
