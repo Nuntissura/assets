@@ -638,6 +638,18 @@ pub struct StudioCompositionMotionSettings {
     pub motion_blur_layers: Vec<String>,
 }
 
+/// The work area of a composition (lane SMB-AE-RENDER-QUEUE-2; STU-MOT-020 lists "the work area"
+/// among the composition's time-base members, STU-MOT-121 `time_span` `work_area_only` renders it):
+/// the span `[start_tick, end_tick)` in composition ticks, `0 <= start < end <= duration`. Absent =
+/// the whole composition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioCompositionWorkArea {
+    pub composition_id: String,
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
 /// The motion records of one document (module docs).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -655,6 +667,10 @@ pub struct StudioMotionRecords {
     /// Shutter and motion-blur switches per composition (absent = STU-MOT-004 defaults, blur off).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composition_settings: Vec<StudioCompositionMotionSettings>,
+    /// Work areas per composition (absent = the whole composition; omitted from the wire when
+    /// empty, so earlier record sets stay byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composition_work_areas: Vec<StudioCompositionWorkArea>,
 }
 
 impl StudioMotionRecords {
@@ -668,7 +684,12 @@ impl StudioMotionRecords {
             composition_audio: Vec::new(),
             render_queue: Vec::new(),
             composition_settings: Vec::new(),
+            composition_work_areas: Vec::new(),
         }
+    }
+    /// The work area of a composition as `(start_tick, end_tick)`.
+    pub fn work_area(&self, composition_id: &str) -> Option<(u64, u64)> {
+        self.composition_work_areas.iter().find(|w| w.composition_id == composition_id).map(|w| (w.start_tick, w.end_tick))
     }
     pub fn composition_settings(&self, composition_id: &str) -> Option<&StudioCompositionMotionSettings> {
         self.composition_settings.iter().find(|s| s.composition_id == composition_id)
@@ -987,6 +1008,18 @@ pub fn validate_motion_records(
                 return Err(err(Code::DanglingReference, format!("{t}/motion_blur_layers")));
             }
         }
+    }
+    let mut areas_seen = BTreeSet::new();
+    cx.nodes(r.composition_work_areas.len(), "composition_work_areas")?;
+    for w in &r.composition_work_areas {
+        let t = w.composition_id.as_str();
+        let Some(comp) = compositions.composition(t) else {
+            return Err(err(Code::DanglingReference, format!("{t}/work_area")));
+        };
+        if !areas_seen.insert(t) {
+            return Err(err(Code::DuplicateIdentity, format!("{t}/work_area")));
+        }
+        check(w.start_tick < w.end_tick && w.end_tick <= comp.duration, t, "work_area")?;
     }
     if r.render_queue.len() > MAX_QUEUE_ITEMS {
         return Err(err(Code::BudgetExceeded, "render_queue"));

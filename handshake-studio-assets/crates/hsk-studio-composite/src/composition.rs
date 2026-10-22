@@ -48,7 +48,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::blend_math::{Exactness, ExactnessLedger, StudioBlendMode};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, ColourTag, ExecuteRequest, Group, Layer, LayerExtension, MaskFormat,
-    MaskInput, OutputTarget, PlanExtensions, PlanLimits, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
+    MaskInput, OutputStage, OutputTarget, PlanExtensions, PlanLimits, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
     RenderReceipt, SampleFormat, SinkError, SourceKey, TileInput, TilePlanes, TileSink,
 };
 use hsk_studio_pigment::adjust_math::AdjustmentOp;
@@ -630,6 +630,9 @@ fn surface_bytes(width: u32, height: u32) -> Result<u64, TemporalError> {
 struct Charges {
     bytes: u64,
     surfaces: usize,
+    /// The output stage every frame and precomposition execution carries
+    /// ([`render_scene_with_output`]); `None` = the plan's own (default) stage.
+    output: Option<OutputStage>,
 }
 
 impl Charges {
@@ -1556,6 +1559,48 @@ pub fn render_scene(
     render_inner(scene, ctx, cancel, 0, &mut Charges::default())
 }
 
+/// [`render_scene`] with a caller output stage (lane SMB-AE-RENDER-QUEUE-2; STU-COL-120 bit depth,
+/// STU-MOT-121 `color_depth`): the stage (sample range, display transform, working depth) is set on
+/// the envelope of the frame's plan and of every rendered precomposition, so a 32-bit render runs
+/// in the unbounded range and an 8-bit render stores 8-bit levels between layers. Static subtrees
+/// keep their own plans (unit range). The default stage gives [`render_scene`]'s bytes.
+pub fn render_scene_with_output(
+    scene: &SceneComposition,
+    ctx: &SceneContext<'_>,
+    output: OutputStage,
+    cancel: &CancellationToken,
+) -> Result<RenderedScene, TemporalError> {
+    let mut charges = Charges { output: Some(output), ..Charges::default() };
+    render_inner(scene, ctx, cancel, 0, &mut charges)
+}
+
+/// `scene` rendered at `width x height` instead of its own size (lane SMB-AE-RENDER-QUEUE-2;
+/// STU-MOT-121 `resolution`): every layer matrix (and matte layer matrix) is followed by the scale
+/// `width / scene.width, height / scene.height`, so the layers resample into the smaller frame with
+/// the scene's declared filter; nested precompositions keep their own raster and are transformed
+/// like any layer. Sizes outside `1..=scene size` per side are refused.
+pub fn scale_scene(scene: &SceneComposition, width: u32, height: u32) -> Result<SceneComposition, CompositeError> {
+    if width == 0 || height == 0 || width > scene.width || height > scene.height || scene.width == 0 || scene.height == 0 {
+        return Err(CompositeError::Unavailable("scale_scene_size".to_owned()));
+    }
+    let scale = Affine2 { m: [f64::from(width) / f64::from(scene.width), 0.0, 0.0, 0.0, f64::from(height) / f64::from(scene.height), 0.0] };
+    fn layer(l: &SceneLayer, scale: Affine2) -> SceneLayer {
+        let mut out = l.clone();
+        out.matrix = l.matrix.then(scale);
+        if let Some(m) = &mut out.matte
+            && let Some(inner) = m.layer.as_mut()
+        {
+            **inner = layer(inner, scale);
+        }
+        out
+    }
+    let mut out = scene.clone();
+    out.width = width;
+    out.height = height;
+    out.layers = scene.layers.iter().map(|l| layer(l, scale)).collect();
+    Ok(out)
+}
+
 /// [`SceneContent::Filtered`]: the inner content rendered over `f.rect` (every surface charged),
 /// then the one-tile static plan `[surface]` with the stack as the layer's envelope entry rendered
 /// by the same backend over the same rect (pigment's smart-filter evaluation owns the maths).
@@ -2239,7 +2284,10 @@ fn render_inner(
     charges: &mut Charges,
 ) -> Result<RenderedScene, TemporalError> {
     charges.surface(ctx, scene.width, scene.height)?;
-    let lowering = lower_inner(scene, ctx, cancel, depth, charges)?;
+    let mut lowering = lower_inner(scene, ctx, cancel, depth, charges)?;
+    if let Some(output) = charges.output {
+        lowering.extensions.output = output;
+    }
     let mut sink = FrameSink::new(scene.width, scene.height)?;
     let sources = lowering.sources.bind(ctx.pixels);
     let receipt = ctx
