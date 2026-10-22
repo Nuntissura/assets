@@ -13,9 +13,16 @@
 //! SMB-TYPE-FF-LIGATURE); what remains after the limits is `residual_pt` (the line is left loose or
 //! tight, never scaled past the limits). The Knuth-Plass stretch/shrink ratios use `space_params()`
 //! (stretch = max - 1, shrink = 1 - min of word spacing); letter spacing is not part of the breaking.
-use crate::hyphenate::{HyphenationParams, Hyphenator};
-use crate::styles::{Alignment, StyleSource};
+//!
+//! Per-paragraph composition (lane SMB-LAYOUT-COMPOSER-WIRING): a paragraph whose Folio style chain
+//! or local override states composition settings is composed with [`paragraph_params`] (composer,
+//! H&J limits, hyphenation, single-word justification); every other paragraph keeps the request's
+//! composer and these options unchanged.
+use crate::breaker::{AdobeParams, Composer};
+use crate::hyphenate::{HyphenationParams, Hyphenator, MAX_WORD_BYTES};
+use crate::styles::{Alignment, ParagraphComposition, StyleSource, length_pt};
 use crate::{LayoutError, SpaceParams};
+use hsk_studio_folio::{StudioCompositionEngine, StudioCompositionScope, StudioSingleWordJustification};
 
 /// Minimum / desired / maximum of one spacing quantity.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -196,6 +203,9 @@ pub struct TypesetOptions<'a> {
     pub alignment: Alignment,
     /// Folio type styles; `None` = unstyled.
     pub styles: Option<StyleSource<'a>>,
+    /// Hyphen advance (points, shaped by the caller) for paragraphs whose style composition turns
+    /// hyphenation on while `hyphenation` is `None` (see [`paragraph_params`]).
+    pub hyphen_advance_pt: Option<f64>,
 }
 impl Default for TypesetOptions<'_> {
     fn default() -> Self {
@@ -205,6 +215,7 @@ impl Default for TypesetOptions<'_> {
             hyphenator: None,
             alignment: Alignment::Left,
             styles: None,
+            hyphen_advance_pt: None,
         }
     }
 }
@@ -218,6 +229,149 @@ impl TypesetOptions<'_> {
         if let Some(h) = &self.hyphenation {
             h.validate().map_err(|_| LayoutError::InvalidInput)?;
         }
+        if self.hyphen_advance_pt.is_some_and(|a| !(a.is_finite() && a >= 0.0)) {
+            return Err(LayoutError::InvalidInput);
+        }
         Ok(())
     }
+}
+
+/// What one paragraph is composed with (see [`paragraph_params`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParagraphParams {
+    pub composer: Composer,
+    pub justify: JustifyParams,
+    pub space: SpaceParams,
+    /// `None` = not hyphenated.
+    pub hyphenation: Option<HyphenationParams>,
+    /// STU-TYP-151 `hyphenate_last_word`: false keeps the paragraph's last word whole.
+    pub hyphenate_last_word: bool,
+    /// STU-TYP-146 setting of a justified line holding one word (`None` = fully justified, the
+    /// behaviour before the setting existed).
+    pub single_word: Option<StudioSingleWordJustification>,
+}
+
+/// Composition parameters of one paragraph (lane SMB-LAYOUT-COMPOSER-WIRING). Without composition
+/// settings (`composition = None`) this is exactly the request: `composer`, `opts.justify` (or its
+/// default), the space stretch/shrink of `opts.justify` (else `req_space`) and `opts.hyphenation`.
+/// With settings, every field the settings state replaces the request's value:
+/// - `composition_scope` selects the Adobe-parity composers (`single_line` -> `AdobeSingleLine`,
+///   `every_line` -> `AdobeParagraph`); unset keeps the request's composer.
+///   `hyphenation_zone` sets `AdobeParams::hyphenation_zone_pt` of an Adobe composer (36 pt when
+///   the request's composer is not one). `composition_engine` `world_ready` / `adornment` is
+///   `UnsupportedComposition` (layout composes Latin only); `latin_cjk` composes.
+/// - word / letter / glyph spacing percentages are divided by 100 (`JustifyParams` units); letter
+///   spacing is relative to the paragraph's shaped word space (`space_advance_pt`, else the
+///   request's `reference_space_pt`); the resolved triples must be ordered (`InvalidInput`). A word
+///   spacing setting or a `composition_scope` also sets the breakers' space stretch/shrink from the
+///   H&J limits (as a request with `justify` does).
+/// - `hyphenation` false turns hyphenation off; true (or any request hyphenation) turns it on with
+///   `hyphenate_words_longer_than` as the minimum word length (InDesign's "Words with at least N
+///   letters" reading, the mapping the D5 ID oracle matches), `hyphenate_after_first` /
+///   `hyphenate_before_last` as the letters before / after a break, `hyphenate_ladder_limit` as the
+///   consecutive limit (0 = unlimited; values above 255 saturate) and
+///   `hyphenate_capitalized_words`. A minimum no hyphenable word can meet (above `MAX_WORD_BYTES`)
+///   leaves the paragraph unhyphenated, the outcome the setting describes. Hyphen advance: the
+///   request's `hyphenation` value, else `opts.hyphen_advance_pt`, else the paragraph's own U+002D
+///   glyph, else one third of the font size (an ESTIMATE, UNVERIFIED: Arial's hyphen is 0.333 em).
+/// - Inert here (stored, round-tripped, not composed): `hyphen_weight`, `hyphenate_across_columns`.
+pub fn paragraph_params(
+    composition: Option<&ParagraphComposition>,
+    font_size_pt: f64,
+    composer: Composer,
+    req_space: SpaceParams,
+    opts: &TypesetOptions<'_>,
+) -> Result<ParagraphParams, LayoutError> {
+    let base_justify = opts.justify.unwrap_or_default();
+    let mut out = ParagraphParams {
+        composer,
+        justify: base_justify,
+        space: if opts.justify.is_some() { base_justify.space_params() } else { req_space },
+        hyphenation: opts.hyphenation,
+        hyphenate_last_word: true,
+        single_word: None,
+    };
+    let Some(c) = composition else {
+        return Ok(out);
+    };
+    let s = &c.settings;
+    match s.composition_engine {
+        Some(StudioCompositionEngine::WorldReady | StudioCompositionEngine::Adornment) => {
+            return Err(LayoutError::UnsupportedComposition);
+        }
+        Some(StudioCompositionEngine::LatinCjk) | None => {}
+    }
+    let mut adobe = match composer {
+        Composer::AdobeSingleLine(p) | Composer::AdobeParagraph(p) => p,
+        _ => AdobeParams::default(),
+    };
+    if let Some(zone) = &s.hyphenation_zone {
+        let pt = length_pt(zone)?;
+        if pt < 0.0 {
+            return Err(LayoutError::InvalidInput);
+        }
+        adobe.hyphenation_zone_pt = pt;
+    }
+    out.composer = match (s.composition_scope, composer) {
+        (Some(StudioCompositionScope::SingleLine), _) | (None, Composer::AdobeSingleLine(_)) => Composer::AdobeSingleLine(adobe),
+        (Some(StudioCompositionScope::EveryLine), _) | (None, Composer::AdobeParagraph(_)) => Composer::AdobeParagraph(adobe),
+        (None, other) => other,
+    };
+    let pct = |v: Option<f64>, base: f64| v.map_or(base, |v| v / 100.0);
+    let jp = &mut out.justify;
+    jp.word_spacing = Spacing {
+        min: pct(s.word_spacing_minimum, jp.word_spacing.min),
+        desired: pct(s.word_spacing_desired, jp.word_spacing.desired),
+        max: pct(s.word_spacing_maximum, jp.word_spacing.max),
+    };
+    let letter_set = s.letter_spacing_minimum.is_some() || s.letter_spacing_desired.is_some() || s.letter_spacing_maximum.is_some();
+    jp.letter_spacing = Spacing {
+        min: pct(s.letter_spacing_minimum, jp.letter_spacing.min),
+        desired: pct(s.letter_spacing_desired, jp.letter_spacing.desired),
+        max: pct(s.letter_spacing_maximum, jp.letter_spacing.max),
+    };
+    if letter_set && let Some(space) = c.space_advance_pt {
+        jp.reference_space_pt = space;
+    }
+    jp.glyph_scaling = Spacing {
+        min: pct(s.glyph_scaling_minimum, jp.glyph_scaling.min),
+        desired: pct(s.glyph_scaling_desired, jp.glyph_scaling.desired),
+        max: pct(s.glyph_scaling_maximum, jp.glyph_scaling.max),
+    };
+    jp.validate()?;
+    if s.composition_scope.is_some() || s.word_spacing_minimum.is_some() || s.word_spacing_desired.is_some() || s.word_spacing_maximum.is_some() {
+        out.space = out.justify.space_params();
+    }
+    if s.hyphenation.unwrap_or(opts.hyphenation.is_some()) {
+        let advance = opts
+            .hyphenation
+            .map(|h| h.hyphen_advance_pt)
+            .or(opts.hyphen_advance_pt)
+            .or(c.hyphen_advance_pt)
+            .unwrap_or(font_size_pt / 3.0);
+        let mut h = opts.hyphenation.unwrap_or(HyphenationParams { hyphen_advance_pt: advance, ..HyphenationParams::default() });
+        let count = |v: Option<u32>, base: usize| v.map_or(base, |v| usize::try_from(v).unwrap_or(usize::MAX));
+        h.min_word_len = count(s.hyphenate_words_longer_than, h.min_word_len);
+        h.min_before = count(s.hyphenate_after_first, h.min_before);
+        h.min_after = count(s.hyphenate_before_last, h.min_after);
+        if let Some(limit) = s.hyphenate_ladder_limit {
+            h.consecutive_limit = u8::try_from(limit).unwrap_or(u8::MAX);
+        }
+        if let Some(caps) = s.hyphenate_capitalized_words {
+            h.hyphenate_capitalized = caps;
+        }
+        let reachable = h.min_word_len <= MAX_WORD_BYTES
+            && h.min_before.checked_add(h.min_after).is_some_and(|n| n <= MAX_WORD_BYTES);
+        out.hyphenation = if reachable {
+            h.validate().map_err(|_| LayoutError::InvalidInput)?;
+            Some(h)
+        } else {
+            None
+        };
+    } else {
+        out.hyphenation = None;
+    }
+    out.hyphenate_last_word = s.hyphenate_last_word.unwrap_or(true);
+    out.single_word = s.single_word_justification;
+    Ok(out)
 }

@@ -49,9 +49,9 @@ use crate::adobe_composer::{AdobeContext, compress_line, justify_line, paragraph
 use crate::breaker::{Composer, HyphenRules, LineBreak, Sums, first_fit, knuth_plass, line_start};
 use crate::hyphenate::Hyphenator;
 use crate::styles::{Alignment, ParagraphStyling};
-use crate::typeset::{Justification, TypesetOptions, justify_metrics};
+use crate::typeset::{Justification, TypesetOptions, justify_metrics, paragraph_params};
 use crate::folio_input::{Frame, FrameObstacles, FrameVertical, pt, resolve_flow};
-use hsk_studio_folio::{StudioAlignToGrid, StudioLayoutGrids};
+use hsk_studio_folio::{StudioAlignToGrid, StudioLayoutGrids, StudioSingleWordJustification};
 use crate::paragraph::{ShapedParagraph, SpaceParams, build_items};
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
@@ -469,7 +469,7 @@ fn reflow_inner(
     let styled;
     let (paragraphs, stylings): (&[ShapedParagraph], Vec<Option<ParagraphStyling>>) =
         if let Some(src) = opts.styles {
-            let (a, b) = crate::styles::apply(src, req.story, req.paragraphs, opts.alignment)?;
+            let (a, b) = crate::styles::apply(src, req.story, text, req.paragraphs, opts.alignment)?;
             styled = a;
             (&styled, b.into_iter().map(Some).collect())
         } else {
@@ -725,14 +725,7 @@ fn compose_flow(
     {
         return Err(LayoutError::BudgetExceeded);
     }
-    let jp = opts.justify.unwrap_or_default();
-    let space = if opts.justify.is_some() { jp.space_params() } else { req_space };
     let hyphenator = opts.hyphenator.unwrap_or_else(|| Hyphenator::en_us());
-    let hyph = opts.hyphenation.as_ref().map(|h| (hyphenator, h));
-    let rules = opts.hyphenation.as_ref().map_or(HyphenRules::NONE, |h| HyphenRules {
-        limit: h.consecutive_limit,
-        double_demerits: h.double_hyphen_demerits,
-    });
     if paragraphs.iter().any(|p| p.font_missing) {
         return Err(LayoutError::MissingFont);
     }
@@ -757,7 +750,23 @@ fn compose_flow(
     let scan_cap_base = limits.max_lines.saturating_add(1);
     for (pi, p) in paragraphs.iter().enumerate() {
         canceled(cancel)?;
-        let items = build_items(p, text, space, hyph)?;
+        // Composer, H&J limits and hyphenation of this paragraph: the request's unless its Folio style
+        // chain or local override states composition settings (`typeset::paragraph_params`).
+        let styling = stylings.get(pi).and_then(Option::as_ref);
+        let pp = paragraph_params(
+            styling.and_then(|s| s.composition.as_ref()),
+            styling.map_or(0.0, |s| s.font_size_pt),
+            composer,
+            req_space,
+            opts,
+        )?;
+        let (composer, jp) = (pp.composer, pp.justify);
+        let hyph = pp.hyphenation.as_ref().map(|h| (hyphenator, h));
+        let rules = pp.hyphenation.as_ref().map_or(HyphenRules::NONE, |h| HyphenRules {
+            limit: h.consecutive_limit,
+            double_demerits: h.double_hyphen_demerits,
+        });
+        let items = build_items(p, text, pp.space, hyph, pp.hyphenate_last_word)?;
         let sums = Sums::new(&items);
         let para_alignment = stylings.get(pi).and_then(Option::as_ref).map_or(opts.alignment, |s| s.alignment);
         let justified = matches!(para_alignment, Alignment::Justified | Alignment::JustifiedAll);
@@ -1017,6 +1026,23 @@ fn compose_flow(
                     Alignment::Left => {}
                     Alignment::Center => x_start_pt += (slot.width_pt - width_pt).max(0.0) / 2.0,
                     Alignment::Right => x_start_pt += (slot.width_pt - width_pt).max(0.0),
+                    // STU-TYP-146: a justified line holding one word (no inner word space) set as
+                    // the paragraph's single-word justification says; fully justified when unset.
+                    Alignment::Justified | Alignment::JustifiedAll
+                        if (!is_last || alignment == Alignment::JustifiedAll)
+                            && spaces == 0.0
+                            && matches!(
+                                pp.single_word,
+                                Some(StudioSingleWordJustification::LeftAlign | StudioSingleWordJustification::CenterAlign | StudioSingleWordJustification::RightAlign)
+                            ) =>
+                    {
+                        let room = (slot.width_pt - width_pt).max(0.0);
+                        match pp.single_word {
+                            Some(StudioSingleWordJustification::CenterAlign) => x_start_pt += room / 2.0,
+                            Some(StudioSingleWordJustification::RightAlign) => x_start_pt += room,
+                            _ => {}
+                        }
+                    }
                     Alignment::Justified | Alignment::JustifiedAll if !is_last || alignment == Alignment::JustifiedAll => {
                         // Adobe composers: a hyphen is one more glyph gap of the line (oracle ID-02
                         // letter spacing: the hyphen takes its letter gap like the letters).

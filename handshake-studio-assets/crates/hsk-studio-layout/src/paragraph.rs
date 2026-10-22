@@ -288,12 +288,14 @@ fn ligature_split(p: &ShapedParagraph, k: usize, at: u64) -> Option<(f64, f64)> 
 
 /// Builds the item list: boxes (unbreakable glyph runs), glue (whitespace runs), zero-width
 /// penalties at in-word opportunities (after a hyphen), and finishing glue plus a forced penalty at
-/// every mandatory break and at the paragraph end.
+/// every mandatory break and at the paragraph end. `hyphenate_last_word` false (STU-TYP-151) adds no
+/// hyphenation point to the paragraph's last word (the glyph run holding its last non-space glyph).
 pub(crate) fn build_items(
     p: &ShapedParagraph,
     text: &str,
     space: SpaceParams,
     hyph: Option<(&Hyphenator, &HyphenationParams)>,
+    hyphenate_last_word: bool,
 ) -> Result<Vec<Item>, LayoutError> {
     let (s, e) = (
         usize::try_from(p.source.start).map_err(|_| LayoutError::InvalidInput)?,
@@ -353,6 +355,8 @@ pub(crate) fn build_items(
         items.push(Item::penalty(FORCED, at));
     };
     let n = g.len();
+    // End (exclusive) of the paragraph's last non-space glyph: the run ending there is its last word.
+    let last_word_end = (0..n).rev().find(|k| !space_at(*k)).map_or(0, |k| k + 1);
     let mut i = 0;
     while i < n {
         let sp = space_at(i);
@@ -385,6 +389,7 @@ pub(crate) fn build_items(
             let mut cuts: Vec<(usize, Option<u64>)> = Vec::new();
             if let Some((h, hp)) = hyph
                 && j - i >= 2
+                && (hyphenate_last_word || j != last_word_end)
             {
                 let (a, b) = (g[i].cluster.start as usize, g[j - 1].cluster.end as usize);
                 if let Some(word) = text.get(a..b) {

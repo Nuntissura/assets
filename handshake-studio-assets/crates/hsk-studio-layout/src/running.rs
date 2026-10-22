@@ -248,7 +248,7 @@ pub fn compose_overlay(
     let styled;
     let (paragraphs, stylings): (&[ShapedParagraph], Vec<Option<ParagraphStyling>>) = match opts.styles {
         Some(src) => {
-            let (a, b) = crate::styles::apply(src, story, paragraphs, opts.alignment)?;
+            let (a, b) = crate::styles::apply(src, story, text, paragraphs, opts.alignment)?;
             styled = a;
             (&styled, b.into_iter().map(Some).collect())
         }

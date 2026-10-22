@@ -527,7 +527,7 @@ pub fn layout_table(
         match (opts.styles, req.cell_story) {
             (Some(src), Some(story)) => {
                 let (a, b) =
-                    crate::styles::apply(src, story, req.cell_paragraphs, opts.alignment)?;
+                    crate::styles::apply(src, story, cell_text, req.cell_paragraphs, opts.alignment)?;
                 styled = a;
                 (&styled, b.into_iter().map(Some).collect())
             }

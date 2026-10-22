@@ -165,7 +165,7 @@ fn compose_note(
     let styled;
     let (paragraphs, stylings): (&[ShapedParagraph], Vec<Option<ParagraphStyling>>) = match opts.styles {
         Some(src) => {
-            let (a, b) = crate::styles::apply(src, n.story, n.paragraphs, opts.alignment)?;
+            let (a, b) = crate::styles::apply(src, n.story, text, n.paragraphs, opts.alignment)?;
             styled = a;
             (&styled, b.into_iter().map(Some).collect())
         }

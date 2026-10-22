@@ -101,7 +101,7 @@ pub fn reflow_with_tables(
     let styled;
     let (paragraphs, stylings): (&[ShapedParagraph], Vec<Option<ParagraphStyling>>) = match opts.styles {
         Some(src) => {
-            let (a, b) = crate::styles::apply(src, req.story, req.paragraphs, opts.alignment)?;
+            let (a, b) = crate::styles::apply(src, req.story, text, req.paragraphs, opts.alignment)?;
             styled = a;
             (&styled, b.into_iter().map(Some).collect())
         }
