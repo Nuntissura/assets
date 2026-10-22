@@ -3,7 +3,8 @@
 //! codec's own RGBA/Gray types would break that stride once ExtraSamples is declared through it.
 use crate::error::{cmul, Result, TiffError};
 use crate::limits::MAX_ENCODE_BYTES;
-use crate::model::{Alpha, Resolution, Samples};
+use crate::endian::to_big_endian;
+use crate::model::{Alpha, ByteOrder, Resolution, Samples};
 use std::io::Cursor;
 use tiff::encoder::colortype::ColorType;
 use tiff::encoder::{DeflateLevel, TiffEncoder, TiffKind, TiffKindBig, TiffKindStandard, TiffValue};
@@ -125,15 +126,120 @@ color_type!(Rgb32F, f32, Pi::RGB, &[32, 32, 32], &[Sf::IEEEFP; 3], float);
 color_type!(Rgba32F, f32, Pi::RGB, &[32, 32, 32, 32], &[Sf::IEEEFP; 4], float);
 color_type!(Cmyk32F, f32, Pi::CMYK, &[32, 32, 32, 32], &[Sf::IEEEFP; 4], float);
 
+/// ASCII metadata tags written when set: Software (305), ImageDescription (270), Artist (315), Copyright (33432).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Metadata {
+    pub software: Option<String>,
+    pub description: Option<String>,
+    pub artist: Option<String>,
+    pub copyright: Option<String>,
+}
+
+/// Largest total metadata text accepted (bytes).
+pub const MAX_METADATA_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodeOptions {
+    pub byte_order: ByteOrder,
+    pub metadata: Metadata,
+}
+
+impl Default for EncodeOptions {
+    fn default() -> Self {
+        Self { byte_order: ByteOrder::Little, metadata: Metadata::default() }
+    }
+}
+
 /// Encodes one page. The output is little-endian.
 pub fn encode(req: &EncodeRequest<'_>) -> Result<Vec<u8>> {
+    encode_with(req, &EncodeOptions::default())
+}
+
+/// Encodes one page in the requested byte order with optional ASCII metadata. Output is a pure function of
+/// the inputs (no timestamps, no host data). Big-endian output stores the samples big-endian before
+/// compression and swaps the container fields (`endian.rs`); the horizontal predictor is applied to the logical
+/// sample values first, as a native big-endian writer would.
+pub fn encode_with(req: &EncodeRequest<'_>, opts: &EncodeOptions) -> Result<Vec<u8>> {
     check(req)?;
+    check_metadata(&opts.metadata)?;
     let out = Vec::new();
-    if req.big_tiff {
-        encode_kind::<TiffKindBig>(req, out)
-    } else {
-        encode_kind::<TiffKindStandard>(req, out)
+    if opts.byte_order == ByteOrder::Little {
+        return if req.big_tiff {
+            encode_kind::<TiffKindBig>(req, opts, false, out)
+        } else {
+            encode_kind::<TiffKindStandard>(req, opts, false, out)
+        };
     }
+    let prepared = prepare_big_endian(req)?;
+    let be_req = EncodeRequest {
+        width: req.width,
+        height: req.height,
+        color: req.color,
+        alpha: req.alpha,
+        bit_depth: req.bit_depth,
+        samples: &prepared,
+        icc: req.icc,
+        compression: req.compression,
+        predictor: Predictor::None,
+        big_tiff: req.big_tiff,
+        resolution: req.resolution,
+        orientation: req.orientation,
+    };
+    let predictor_tag = req.predictor == Predictor::Horizontal;
+    let le = if req.big_tiff {
+        encode_kind::<TiffKindBig>(&be_req, opts, predictor_tag, out)?
+    } else {
+        encode_kind::<TiffKindStandard>(&be_req, opts, predictor_tag, out)?
+    };
+    to_big_endian(&le, req.big_tiff)
+}
+
+fn check_metadata(m: &Metadata) -> Result<()> {
+    let mut total = 0_usize;
+    for text in [&m.software, &m.description, &m.artist, &m.copyright].into_iter().flatten() {
+        if !text.is_ascii() || text.contains('\0') {
+            return Err(TiffError::Usage("metadata_not_ascii"));
+        }
+        total = total.checked_add(text.len()).ok_or(TiffError::DimsOverflow)?;
+        if total > MAX_METADATA_BYTES {
+            return Err(TiffError::Limit("limit_metadata_bytes"));
+        }
+    }
+    Ok(())
+}
+
+/// Row-wise horizontal differencing on the logical values (when requested), then each sample's bytes reversed,
+/// so the little-endian `tiff` writer emits big-endian sample bytes.
+fn prepare_big_endian(req: &EncodeRequest<'_>) -> Result<Samples> {
+    let spp = usize::from(req.color.samples_per_pixel());
+    let row = usize::try_from(req.width)
+        .map_err(|_| TiffError::DimsOverflow)?
+        .checked_mul(spp)
+        .ok_or(TiffError::DimsOverflow)?;
+    let diff = req.predictor == Predictor::Horizontal;
+    macro_rules! conv {
+        ($v:expr, $variant:ident, $swap:expr) => {{
+            let mut out: Vec<_> = $v.to_vec();
+            if diff {
+                for (src, dst) in $v.chunks(row).zip(out.chunks_mut(row)) {
+                    for i in spp..src.len() {
+                        dst[i] = src[i].wrapping_sub(src[i.wrapping_sub(spp)]);
+                    }
+                }
+            }
+            for x in &mut out {
+                *x = $swap(*x);
+            }
+            Samples::$variant(out)
+        }};
+    }
+    Ok(match req.samples {
+        Samples::U8(v) => conv!(v, U8, |x: u8| x),
+        Samples::U16(v) => conv!(v, U16, u16::swap_bytes),
+        Samples::U32(v) => conv!(v, U32, u32::swap_bytes),
+        Samples::F32(v) => Samples::F32(v.iter().map(|x| f32::from_bits(x.to_bits().swap_bytes())).collect()),
+        Samples::F64(_) => return Err(TiffError::unsupported("sample_type_unsupported")),
+    })
 }
 
 fn check(req: &EncodeRequest<'_>) -> Result<()> {
@@ -186,7 +292,7 @@ fn map_enc(e: tiff::TiffError) -> TiffError {
     }
 }
 
-fn encode_kind<K: TiffKind>(req: &EncodeRequest<'_>, out: Vec<u8>) -> Result<Vec<u8>> {
+fn encode_kind<K: TiffKind>(req: &EncodeRequest<'_>, opts: &EncodeOptions, predictor_tag: bool, out: Vec<u8>) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(out);
     let mut enc = TiffEncoder::<_, K>::new_generic(&mut cursor).map_err(map_enc)?;
     enc = match req.compression {
@@ -202,26 +308,26 @@ fn encode_kind<K: TiffKind>(req: &EncodeRequest<'_>, out: Vec<u8>) -> Result<Vec
     }
     use ColorModel::{Cmyk, Gray, GrayA, Rgb, Rgba};
     match (req.samples, req.color) {
-        (Samples::U8(s), Gray) => write::<K, Gray8>(&mut enc, req, s)?,
-        (Samples::U8(s), GrayA) => write::<K, GrayA8>(&mut enc, req, s)?,
-        (Samples::U8(s), Rgb) => write::<K, Rgb8>(&mut enc, req, s)?,
-        (Samples::U8(s), Rgba) => write::<K, Rgba8>(&mut enc, req, s)?,
-        (Samples::U8(s), Cmyk) => write::<K, Cmyk8>(&mut enc, req, s)?,
-        (Samples::U16(s), Gray) => write::<K, Gray16>(&mut enc, req, s)?,
-        (Samples::U16(s), GrayA) => write::<K, GrayA16>(&mut enc, req, s)?,
-        (Samples::U16(s), Rgb) => write::<K, Rgb16>(&mut enc, req, s)?,
-        (Samples::U16(s), Rgba) => write::<K, Rgba16>(&mut enc, req, s)?,
-        (Samples::U16(s), Cmyk) => write::<K, Cmyk16>(&mut enc, req, s)?,
-        (Samples::U32(s), Gray) => write::<K, Gray32>(&mut enc, req, s)?,
-        (Samples::U32(s), GrayA) => write::<K, GrayA32>(&mut enc, req, s)?,
-        (Samples::U32(s), Rgb) => write::<K, Rgb32>(&mut enc, req, s)?,
-        (Samples::U32(s), Rgba) => write::<K, Rgba32>(&mut enc, req, s)?,
-        (Samples::U32(s), Cmyk) => write::<K, Cmyk32>(&mut enc, req, s)?,
-        (Samples::F32(s), Gray) => write::<K, Gray32F>(&mut enc, req, s)?,
-        (Samples::F32(s), GrayA) => write::<K, GrayA32F>(&mut enc, req, s)?,
-        (Samples::F32(s), Rgb) => write::<K, Rgb32F>(&mut enc, req, s)?,
-        (Samples::F32(s), Rgba) => write::<K, Rgba32F>(&mut enc, req, s)?,
-        (Samples::F32(s), Cmyk) => write::<K, Cmyk32F>(&mut enc, req, s)?,
+        (Samples::U8(s), Gray) => write::<K, Gray8>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U8(s), GrayA) => write::<K, GrayA8>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U8(s), Rgb) => write::<K, Rgb8>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U8(s), Rgba) => write::<K, Rgba8>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U8(s), Cmyk) => write::<K, Cmyk8>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U16(s), Gray) => write::<K, Gray16>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U16(s), GrayA) => write::<K, GrayA16>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U16(s), Rgb) => write::<K, Rgb16>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U16(s), Rgba) => write::<K, Rgba16>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U16(s), Cmyk) => write::<K, Cmyk16>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U32(s), Gray) => write::<K, Gray32>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U32(s), GrayA) => write::<K, GrayA32>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U32(s), Rgb) => write::<K, Rgb32>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U32(s), Rgba) => write::<K, Rgba32>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U32(s), Cmyk) => write::<K, Cmyk32>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::F32(s), Gray) => write::<K, Gray32F>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::F32(s), GrayA) => write::<K, GrayA32F>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::F32(s), Rgb) => write::<K, Rgb32F>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::F32(s), Rgba) => write::<K, Rgba32F>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::F32(s), Cmyk) => write::<K, Cmyk32F>(&mut enc, req, opts, predictor_tag, s)?,
         (Samples::F64(_), _) => return Err(TiffError::unsupported("sample_type_unsupported")),
     }
     Ok(cursor.into_inner())
@@ -230,6 +336,8 @@ fn encode_kind<K: TiffKind>(req: &EncodeRequest<'_>, out: Vec<u8>) -> Result<Vec
 fn write<K: TiffKind, C: ColorType>(
     enc: &mut TiffEncoder<&mut Cursor<Vec<u8>>, K>,
     req: &EncodeRequest<'_>,
+    opts: &EncodeOptions,
+    predictor_tag: bool,
     samples: &[C::Inner],
 ) -> Result<()>
 where
@@ -248,6 +356,20 @@ where
     }
     if let Some(o) = req.orientation {
         img.encoder().write_tag(Tag::Orientation, o).map_err(map_enc)?;
+    }
+    if predictor_tag {
+        img.encoder().write_tag(Tag::Predictor, 2_u16).map_err(map_enc)?;
+    }
+    let m = &opts.metadata;
+    for (tag, text) in [
+        (Tag::ImageDescription, &m.description),
+        (Tag::Software, &m.software),
+        (Tag::Artist, &m.artist),
+        (Tag::Copyright, &m.copyright),
+    ] {
+        if let Some(text) = text {
+            img.encoder().write_tag(tag, text.as_str()).map_err(map_enc)?;
+        }
     }
     if let Some(icc) = req.icc {
         let dir = img.encoder();
