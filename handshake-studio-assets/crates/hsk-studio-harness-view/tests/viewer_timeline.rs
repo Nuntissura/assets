@@ -190,6 +190,23 @@ fn drag(v: &mut Viewer, ctx: &egui::Context, from: egui::Pos2, to: egui::Pos2) {
     let _ = frame(v, ctx, vec![]);
 }
 
+/// Runs frames until the timeline layout is the same in two frames in a row (at most 6). The first
+/// frame of a fresh context sizes the side, status and timeline panels differently from the
+/// following frames (measured: the panel moved from y 850 to 885 and clip 1 from y 903 to 938), so
+/// a pointer aimed at the first frame's block misses it; a real user never drags in frame one.
+fn settle(v: &mut Viewer, ctx: &egui::Context) {
+    let mut last = None;
+    for _ in 0..6 {
+        let _ = frame(v, ctx, vec![]);
+        let now = v.timeline().and_then(|t| t.layout()).cloned();
+        if now.is_some() && now == last {
+            return;
+        }
+        last = now;
+    }
+    panic!("timeline layout did not settle in 6 frames");
+}
+
 fn drew(v: &Viewer, name: &str) -> bool {
     v.drawn().iter().any(|d| d == name)
 }
@@ -348,7 +365,7 @@ fn clip_blocks_sit_at_the_pixels_of_their_in_and_out() {
 fn dragging_a_clip_edge_trims_it_through_pulse_and_undo_restores_it() {
     let (_s, mut v, ctx) = opened("trim");
     v.shell_command(ShellCommand::Panel(Panel::Timeline)).unwrap();
-    let _ = frame(&mut v, &ctx, vec![]);
+    settle(&mut v, &ctx);
     // Clip 1 plays source [0, 20); its source is known to be at least that long, so a longer tail
     // needs the source length: give the monitor extents of 1000 frames for every source.
     struct Long;
@@ -375,7 +392,7 @@ fn dragging_a_clip_edge_trims_it_through_pulse_and_undo_restores_it() {
     assert!(h["undo"].as_array().unwrap().last().unwrap().as_str().unwrap().starts_with("timeline_trim_out"));
     assert_eq!(v.monitor().unwrap().sequence(), &seq(&v), "the monitor plays the edited sequence");
     v.shell_command(ShellCommand::Undo).unwrap();
-    let _ = frame(&mut v, &ctx, vec![]);
+    settle(&mut v, &ctx);
     assert_eq!(window(&v, 1), (10, 30, 0, 20));
     assert_eq!(v.monitor().unwrap().sequence(), &seq(&v), "undo reaches the monitor too");
     // Head: +12 px = +3 frames (10 -> 13, source in 0 -> 3).
@@ -412,7 +429,7 @@ fn dragged_edges_snap_to_edit_points_within_the_snap_distance() {
     // Drawn: the same drag with snapping on, then off.
     let (_s, mut v, ctx) = opened("snap");
     v.shell_command(ShellCommand::Panel(Panel::Timeline)).unwrap();
-    let _ = frame(&mut v, &ctx, vec![]);
+    settle(&mut v, &ctx);
     assert_eq!(v.state_json()["timeline"]["snapping"], true);
     let b = block(&v, 1);
     let y = b.rect.center().y;
