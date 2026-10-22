@@ -765,6 +765,10 @@ pub struct StudioRasterLayerRecord {
     /// is not encoded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed_asset: Option<StudioPlacedAsset>,
+    /// Fill content of a `fill` layer (lane SMB-PS-FILL-LAYERS, module `fill_layer`); absent is not
+    /// encoded, so earlier record sets stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_layer: Option<super::StudioFillLayer>,
 }
 impl StudioRasterLayerRecord {
     /// An empty entry for `layer_id`.
@@ -777,6 +781,7 @@ impl StudioRasterLayerRecord {
             effects: None,
             smart_filters: None,
             placed_asset: None,
+            fill_layer: None,
         }
     }
 }
@@ -1694,6 +1699,14 @@ pub(crate) fn validate_adjustment_clip_bases(
     Ok(())
 }
 
+/// Is `layer` a `fill` layer that names its own fill record (kind `fill`, payload a primitive
+/// reference to one of the three fill schemas with the layer's own id)?
+pub(crate) fn hosts_fill_layer(layer: &StudioLayer) -> bool {
+    layer.kind == "fill"
+        && matches!(&layer.payload, Payload::PrimitiveReference { schema_id, object_id }
+            if object_id == &layer.layer_id && super::FILL_PAYLOAD_SCHEMAS.contains(&schema_id.as_str()))
+}
+
 /// The single raster-record validator: ids, document binding, spec ranges, the adjustment-layer
 /// linkage in both directions and the mask-parameter precondition. Unresolved colour profiles are
 /// reported as [`ResolutionIssue`]s; everything else is a typed refusal. Effect instances count
@@ -1772,9 +1785,27 @@ pub fn validate_raster_records(
         if let Some(a) = &e.placed_asset {
             placed_asset(a, layer, &placed_ids, t)?;
         }
+        let hosts_fill = hosts_fill_layer(layer);
+        match &e.fill_layer {
+            Some(f) => {
+                let names = matches!(&layer.payload, Payload::PrimitiveReference { schema_id, .. }
+                    if schema_id == f.fill.schema_id());
+                if !hosts_fill || !names {
+                    return Err(err(Code::PayloadMismatch, t));
+                }
+                super::fill_layer::validate_fill_layer(f, t, &mut cx)?;
+            }
+            None if hosts_fill => return Err(err(Code::DanglingReference, t)),
+            None => {}
+        }
     }
     // Every adjustment layer must have its adjustment record.
     for l in &d.layers {
+        if hosts_fill_layer(l)
+            && r.layer(&l.layer_id).and_then(|e| e.fill_layer.as_ref()).is_none()
+        {
+            return Err(err(Code::DanglingReference, &l.layer_id));
+        }
         let hosts = l.kind == "adjustment"
             && matches!(&l.payload, Payload::PrimitiveReference { schema_id, .. } if schema_id == ADJUSTMENT_SCHEMA);
         if hosts

@@ -59,6 +59,8 @@ mod identity;
 pub use identity::{check_identity_uniqueness, check_variable_identity_uniqueness};
 mod raster;
 pub use raster::*;
+mod fill_layer;
+pub use fill_layer::*;
 mod smart_filter;
 pub use smart_filter::*;
 mod audio_preset;
@@ -909,6 +911,9 @@ fn validate(
                         }
                         _ => return Err(err(Code::UnsupportedDescriptor, &op.layer_id)),
                     },
+                    // Lane SMB-PS-FILL-LAYERS (STU-RAS-007 `fill`): an image source whose payload
+                    // names its own fill record under one of the three fill schemas.
+                    "fill" if raster::hosts_fill_layer(l) => ValueType::Image,
                     _ => return Err(err(Code::UnsupportedDescriptor, &op.layer_id)),
                 };
                 (

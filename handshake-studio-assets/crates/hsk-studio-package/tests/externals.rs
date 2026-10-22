@@ -509,6 +509,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioEndnote.note_story_id", "internal: text story records"),
     ("StudioEndnote.story_id", "internal: text story records"),
     ("StudioEnvelopeShape.source_layer_id", "internal: document layer"),
+    ("StudioFill.link_with_layer", "internal: flag"),
     ("StudioFootnote.note_story_id", "internal: text story records"),
     ("StudioFootnote.story_id", "internal: text story records"),
     ("StudioFrameShape.path_id", "internal: vector path records"),
