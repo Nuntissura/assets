@@ -233,9 +233,12 @@ struct Brush<'a> {
     path: &'a [[f64; 2]],
 }
 
+/// One capsule: segment ends, radius and the clipped pixel box `[x0, y0, x1, y1)`.
+type Capsule = ([f64; 2], [f64; 2], f64, [i64; 4]);
+
 /// The clipped pixel boxes of every capsule of `b` widened by `grow` (segments, or the single
 /// point of a one-point path).
-fn capsules(b: &Brush<'_>, grow: f64, rect: Rect) -> Vec<([f64; 2], [f64; 2], f64, [i64; 4])> {
+fn capsules(b: &Brush<'_>, grow: f64, rect: Rect) -> Vec<Capsule> {
     let r = b.diameter / 2.0 + grow.max(0.0);
     let (w, h) = (f64::from(rect.width), f64::from(rect.height));
     let segs: Vec<([f64; 2], [f64; 2])> = if b.path.len() == 1 {
