@@ -47,6 +47,7 @@ use serde_json::{Value, json};
 use crate::adjust;
 use crate::blend::StudioBlendMode;
 use crate::effects;
+use crate::fill;
 use crate::convert::{
     AbsoluteSummary, BpcSummary, ClipSummary, EngineSummary, IccConverter, IccRefusal, ProfileDevice, ProfileFacts,
     RenderingIntent, WIDE_UNAVAILABLE, WideConvertRequest, WideConvertSource, refusal_code,
@@ -81,6 +82,8 @@ pub(crate) const ADJUSTMENT_KEYS: [&[u8; 4]; 17] = [
     b"thrs", b"nvrt", b"post", b"vibA", b"clrL",
 ];
 pub(crate) const FILL_KEYS: [&[u8; 4]; 3] = [b"SoCo", b"GdFl", b"PtFl"];
+/// Vector mask keys: a fill that carries one is a shape layer (bounded by its path).
+const VECTOR_MASK_KEYS: [&[u8; 4]; 2] = [b"vmsk", b"vsms"];
 pub(crate) const CACHED_PIXEL_KEYS: [&[u8; 4]; 8] = [b"TySh", b"tySh", b"SoLd", b"SoLE", b"PlLd", b"plLd", b"lfx2", b"lrFX"];
 
 /// Host-owned identity and handle minting. Every identity in a proposal comes from this trait.
@@ -602,10 +605,12 @@ impl Builder<'_, '_, '_> {
         layer_id: &str,
         has_appearance_mask: bool,
         adjustment: Option<StudioAdjustment>,
+        fill_layer: Option<hsk_studio_folio::StudioFillLayer>,
         allow_effects: bool,
     ) -> Result<()> {
         let mut record = StudioRasterLayerRecord::new(layer_id);
         record.adjustment = adjustment;
+        record.fill_layer = fill_layer;
         if let Some(mask) = layer.mask() {
             let path = format!("layer[{index}]/mask");
             let params_present = mask.flags & 0x10 != 0;
@@ -683,6 +688,7 @@ impl Builder<'_, '_, '_> {
             || record.advanced_blending.is_some()
             || record.effects.is_some()
             || record.placed_asset.is_some()
+            || record.fill_layer.is_some()
         {
             self.records.push(record);
         }
@@ -901,7 +907,7 @@ impl Builder<'_, '_, '_> {
         self.loss.entries.retain(|e| !(e.path == path && e.code == "adjustment_layer_not_applied"));
         self.note(path.clone(), LossKind::Preserved, "adjustment_mapped_to_record");
         self.notes(&path, mapped.notes);
-        self.collect_records(index, layer, id, has_mask, Some(mapped.value), false)?;
+        self.collect_records(index, layer, id, has_mask, Some(mapped.value), None, false)?;
         Ok(Some(StackEntry {
             out: address(id, "source", "out"),
             layer_id: id.to_owned(),
@@ -909,6 +915,74 @@ impl Builder<'_, '_, '_> {
             slot,
             clipped: imported_look(layer, false).clipped,
             adjustment: true,
+        }))
+    }
+
+    /// A `SoCo` / `GdFl` / `PtFl` fill layer as a Folio `fill` layer with its record (lane
+    /// SMB-PS-FILL-LAYERS). A shape layer (a fill with a vector mask) stays the typed unsupported
+    /// layer: its fill is bounded by the path, which is not applied (`vector_data_not_applied`), so a
+    /// canvas-sized fill would paint where the shape does not. A fill the record cannot hold, or a
+    /// host that binds no `fill` primitive, keeps the layer unsupported with the reason as a loss.
+    fn mapped_fill_layer(
+        &mut self,
+        index: usize,
+        layer: &PsdLayer,
+        block: &crate::layers::TaggedBlock,
+        id: &str,
+        parent: &Value,
+    ) -> Result<Option<StackEntry>> {
+        if !self.pixels_mapped || matches!(layer.blend_mode(), None | Some(StudioBlendMode::PassThrough)) {
+            return Ok(None);
+        }
+        let path = format!("layer[{index}]/tagged/{}", key_text(block.key));
+        if layer.blocks.iter().any(|b| VECTOR_MASK_KEYS.contains(&&b.key)) {
+            self.note(path, LossKind::Unsupported, "fill_layer_vector_mask_not_applied");
+            return Ok(None);
+        }
+        let Some(result) = fill::fill_layer(layer, block, &self.doc.header, self.cfg.limits, &self.patterns) else {
+            return Ok(None);
+        };
+        let mapped = match result {
+            Ok(mapped) => mapped,
+            Err(reason) => {
+                self.note(path, LossKind::Unsupported, reason);
+                return Ok(None);
+            }
+        };
+        let schema = mapped.value.fill.schema_id();
+        let resolver = self.cfg.resolver;
+        if !(resolver.primitive_layer_binding("fill", schema) && resolver.primitive(schema, id) == Resolution::Available) {
+            self.note(path, LossKind::Unsupported, "fill_primitive_unresolved");
+            return Ok(None);
+        }
+        let mask = self.mask_for(index, layer, id)?;
+        let has_mask = mask.is_some();
+        let mask_default = layer.mask().map(|m| m.default_color);
+        let appearance = Self::appearance_json(layer, false, mask);
+        let slot = self.layers.len();
+        self.layers.push(json!({
+            "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
+            "kind": "fill",
+            "payload": {"payload_kind": "primitive_reference", "schema_id": schema, "object_id": id},
+            "visible": layer.visible(), "appearance": appearance,
+        }));
+        self.operations.push(json!({
+            "layer_id": id, "operation_key": "source", "operation_kind": "source",
+            "inputs": [], "outputs": [port("out", "one", "source")],
+        }));
+        self.record(id, index, layer, mask_default);
+        // The record holds the mapped values; the block stays byte-exact in the document.
+        self.loss.entries.retain(|e| !(e.path == path && e.code == "fill_layer_not_applied"));
+        self.note(path.clone(), LossKind::Preserved, "fill_mapped_to_record");
+        self.notes(&path, mapped.notes);
+        self.collect_records(index, layer, id, has_mask, None, Some(mapped.value), false)?;
+        Ok(Some(StackEntry {
+            out: address(id, "source", "out"),
+            layer_id: id.to_owned(),
+            psd_index: index,
+            slot,
+            clipped: imported_look(layer, false).clipped,
+            adjustment: false,
         }))
     }
 
@@ -1130,7 +1204,7 @@ impl Builder<'_, '_, '_> {
             "appearance": appearance,
         }));
         self.record(&id, folder, layer, mask_default);
-        self.collect_records(folder, layer, &id, has_mask, None, true)?;
+        self.collect_records(folder, layer, &id, has_mask, None, None, true)?;
         let inner_parent = json!({"node_kind": "layer", "node_id": id});
         // The children of a hidden group are in no render plan (`effects.rs`: what a plan counts). An error ends the
         // whole import, so the count needs no restoring on the `?` path.
@@ -1177,6 +1251,12 @@ impl Builder<'_, '_, '_> {
         let fill = layer.blocks.iter().find(|b| FILL_KEYS.contains(&&b.key));
         if let Some(block) = adjustment
             && let Some(entry) = self.mapped_adjustment_layer(index, layer, block, &id, parent)?
+        {
+            return Ok(Some(entry));
+        }
+        if adjustment.is_none()
+            && let Some(block) = fill
+            && let Some(entry) = self.mapped_fill_layer(index, layer, block, &id, parent)?
         {
             return Ok(Some(entry));
         }
@@ -1241,7 +1321,7 @@ impl Builder<'_, '_, '_> {
             "inputs": [], "outputs": [port("out", "one", "source")],
         }));
         self.record(&id, index, layer, mask_default);
-        self.collect_records(index, layer, &id, has_mask, None, true)?;
+        self.collect_records(index, layer, &id, has_mask, None, None, true)?;
         Ok(Some(StackEntry {
             out: address(&id, "source", "out"),
             layer_id: id,

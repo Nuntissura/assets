@@ -15,6 +15,7 @@ mod document;
 mod effects;
 mod error;
 mod export;
+mod fill;
 mod header;
 mod image_source;
 mod layers;
