@@ -477,8 +477,11 @@ fn razor_lift_and_ripple_delete_are_single_undo_steps() {
     assert_eq!(e, "track_kind_mismatch");
     v.timeline_command(TimelineCommand::Select(None)).unwrap();
     assert_eq!(v.timeline_command(TimelineCommand::Lift).unwrap_err(), "no_selection");
+    // A scrub past the end clamps to the last frame (89, inside clip 2); at frame 0 nothing is cut.
     v.timeline_command(TimelineCommand::Scrub(Ticks::new(95 * F))).unwrap();
-    assert!(v.timeline_command(TimelineCommand::RazorAtPlayhead).unwrap_err().contains("nothing_under_playhead"));
+    assert_eq!(v.monitor().unwrap().scheduler().playhead(), Ticks::new(89 * F));
+    v.timeline_command(TimelineCommand::Scrub(Ticks::new(0))).unwrap();
+    assert_eq!(v.timeline_command(TimelineCommand::RazorAtPlayhead).unwrap_err(), "nothing_under_playhead");
 }
 
 /// Markers: the sequence marker is drawn on the ruler, M adds one at the playhead frame (one
@@ -561,3 +564,4 @@ fn hostile_sequences_lay_out_bounded() {
     let l = layout(&broken, &TimelineView { px_per_frame: 1e-9, scroll_frames: 1e300 }, area, &[]);
     assert!(l.ruler_labels.len() <= hsk_studio_harness_view::view::timeline::MAX_RULER_LABELS);
 }
+

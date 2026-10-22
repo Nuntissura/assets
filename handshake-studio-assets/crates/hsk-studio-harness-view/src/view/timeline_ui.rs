@@ -62,7 +62,7 @@ impl Viewer {
             let id = self.timeline.as_ref().map(|t| t.sequence_id().to_owned()).unwrap_or_default();
             let sequence = self.run.snapshot().and_then(|s| s.document().sequences.iter().find(|q| q.sequence_id == id));
             let Some(t) = self.timeline.as_mut() else { return };
-            let response = egui::TopBottomPanel::bottom(vw::id(widget::PANEL)).resizable(true).default_height(230.0).min_height(120.0).show(ctx, |ui| panel(ui, sequence, t, playhead, &mut out));
+            let response = egui::TopBottomPanel::bottom(vw::id(widget::PANEL)).resizable(true).default_height(260.0).min_height(140.0).show(ctx, |ui| panel(ui, sequence, t, playhead, &mut out));
             out.panel = Some(response.response.rect);
         }
         self.drawn.push(widget::PANEL.into());
@@ -176,11 +176,11 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
         button(ui, out, widget::RAZOR, "Add Edit", "Split at the playhead: the selected clip, else the targeted tracks (Ctrl+K)", playhead.is_some(), TimelineCommand::RazorAtPlayhead);
         button(ui, out, widget::LIFT, "Lift", "Remove the selected clip and leave a gap (Delete)", selected.is_some(), TimelineCommand::Lift);
         button(ui, out, widget::RIPPLE_DELETE, "Ripple Delete", "Remove the selected clip and close the gap (Alt+Backspace)", selected.is_some(), TimelineCommand::RippleDelete);
-        ui.separator();
+        ui.add_space(12.0);
         button(ui, out, widget::ADD_MARKER, "Add Marker", "Sequence marker at the playhead (M)", playhead.is_some(), TimelineCommand::AddMarker);
         button(ui, out, widget::PREVIOUS_MARKER, "Previous Marker", "Ctrl+Shift+M", playhead.is_some(), TimelineCommand::PreviousMarker);
         button(ui, out, widget::NEXT_MARKER, "Next Marker", "Shift+M", playhead.is_some(), TimelineCommand::NextMarker);
-        ui.separator();
+        ui.add_space(12.0);
         button(ui, out, widget::ZOOM_OUT, "Zoom Out", "-", t.view.px_per_frame > MIN_PX_PER_FRAME, TimelineCommand::ZoomOut);
         button(ui, out, widget::ZOOM_IN, "Zoom In", "=", t.view.px_per_frame < MAX_PX_PER_FRAME, TimelineCommand::ZoomIn);
         button(ui, out, widget::ZOOM_FIT, "Zoom to Fit", "\\", true, TimelineCommand::ZoomToFit);

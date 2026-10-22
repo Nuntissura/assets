@@ -232,18 +232,22 @@ impl TimelineLayout {
     }
 }
 
-/// Ruler label step in frames: the smallest of 1, 2, 5, 10, 25, 50, ... (x 10) at least
+/// Ruler label step in frames: the smallest of 1, 2, 5, 10, 25, 50, 100, 250, 500, ... at least
 /// [`RULER_LABEL_PX`] apart at `px_per_frame`.
 fn ruler_step(px_per_frame: f64) -> u64 {
-    let mut step: u64 = 1;
-    for _ in 0..24 {
-        for m in [1u64, 2, 5] {
-            let s = step.saturating_mul(m);
-            if s as f64 * px_per_frame >= RULER_LABEL_PX {
+    let fits = |s: u64| s as f64 * px_per_frame >= RULER_LABEL_PX;
+    if let Some(s) = [1u64, 2, 5].into_iter().find(|s| fits(*s)) {
+        return s;
+    }
+    let mut decade: u64 = 10;
+    for _ in 0..20 {
+        // decade, 2.5 x decade, 5 x decade (decade is a multiple of 10, so 2.5 x is whole).
+        for s in [decade, (decade / 2).saturating_mul(5), decade.saturating_mul(5)] {
+            if fits(s) {
                 return s;
             }
         }
-        step = step.saturating_mul(10);
+        decade = decade.saturating_mul(10);
     }
     u64::MAX
 }
