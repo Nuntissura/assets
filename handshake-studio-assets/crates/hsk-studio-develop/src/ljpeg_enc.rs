@@ -237,7 +237,8 @@ pub(crate) fn encode(samples: &[u16], width: u32, rows: u32, precision: u8) -> R
             return Err(DevelopError::Overflow);
         }
         writer.put(code, len);
-        writer.put(u32::from(extra), u32::from(category.min(15)));
+        // Category 16 (difference 32768) carries no extra bits (T.81 H.1.2.2).
+        writer.put(u32::from(extra), if category == 16 { 0 } else { u32::from(category) });
     }
     out.extend_from_slice(&writer.finish());
     out.extend_from_slice(&[0xFF, 0xD9]);
