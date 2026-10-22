@@ -126,7 +126,9 @@ pub fn refine_roto_frame(
 }
 
 /// Refine every frame of a roto sequence, then reduce chatter (module docs). `mattes[i]` belongs
-/// to `frames[i]`.
+/// to `frames[i]`. `reduce_chatter` is range-checked `0..=100` here (the predecessor contract,
+/// pinned by `tests/roto_refine.rs`); [`refine_roto_stage`] is the STU-CMP-034 v02.217 entry whose
+/// chatter bounds are `unknown` and therefore not checked.
 pub fn refine_roto_sequence(
     frames: &[RgbaPlane],
     mattes: &[CoveragePlane],
@@ -134,18 +136,57 @@ pub fn refine_roto_sequence(
     limits: &RotoLimits,
     cancel: &CancellationToken,
 ) -> Result<Vec<RotoRefined>, ToolError> {
-    let first = frames.first().ok_or(Error::InvalidInput)?;
-    if mattes.len() != frames.len() {
-        return Err(Error::InvalidInput.into());
-    }
-    if frames.len() > limits.max_frames {
-        return Err(Error::BudgetExceeded.into());
-    }
     if !opts.reduce_chatter.is_finite() || !opts.band_px.is_finite() {
         return Err(Error::Nonfinite.into());
     }
     if !(0.0..=100.0).contains(&opts.reduce_chatter) || opts.band_px < 0.0 {
         return Err(ToolError::OutOfRange);
+    }
+    let bands: Vec<Option<RotoBand<'_>>> = frames.iter().map(|_| Some(RotoBand::Radius(opts.band_px))).collect();
+    refine_frames(frames, mattes, &bands, &opts.refine, opts.reduce_chatter, &opts.flow, limits, cancel)
+}
+
+/// The refine stage of assisted rotoscoping (lane SMB-AE-ROTO-WIRING; STU-CMP-034 item 5): per
+/// frame the one STU-RAS-121 engine inside `bands[i]` (`None` = the frame is passed through
+/// unrefined: its coverage is the input matte, no colours), then chatter reduction at
+/// `reduce_chatter` percent (`k = 2/3 * percent / 100`, module docs). The v02.217 table declares
+/// the chatter bounds `unknown` ([STU-RAS-106]): any finite value is used as given, never clamped
+/// or range-checked (a value outside `0..=100` extrapolates the blend; the result alpha is
+/// limited to `[0, 1]` when written as coverage). Bytes and flow work are admitted before work.
+#[allow(clippy::too_many_arguments)]
+pub fn refine_roto_stage(
+    frames: &[RgbaPlane],
+    mattes: &[CoveragePlane],
+    bands: &[Option<RotoBand<'_>>],
+    refine: &RefineOptions,
+    reduce_chatter: f64,
+    flow: &FlowParams,
+    limits: &RotoLimits,
+    cancel: &CancellationToken,
+) -> Result<Vec<RotoRefined>, ToolError> {
+    if !reduce_chatter.is_finite() {
+        return Err(Error::Nonfinite.into());
+    }
+    refine_frames(frames, mattes, bands, refine, reduce_chatter, flow, limits, cancel)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn refine_frames(
+    frames: &[RgbaPlane],
+    mattes: &[CoveragePlane],
+    bands: &[Option<RotoBand<'_>>],
+    refine: &RefineOptions,
+    reduce_chatter: f64,
+    flow: &FlowParams,
+    limits: &RotoLimits,
+    cancel: &CancellationToken,
+) -> Result<Vec<RotoRefined>, ToolError> {
+    let first = frames.first().ok_or(Error::InvalidInput)?;
+    if mattes.len() != frames.len() || bands.len() != frames.len() {
+        return Err(Error::InvalidInput.into());
+    }
+    if frames.len() > limits.max_frames {
+        return Err(Error::BudgetExceeded.into());
     }
     let fb = first.bounds;
     let count = u64::try_from(frames.len()).map_err(|_| Error::Overflow)?;
@@ -154,10 +195,10 @@ pub fn refine_roto_sequence(
     if out > limits.max_output_bytes {
         return Err(Error::BudgetExceeded.into());
     }
-    let chatter = opts.reduce_chatter > 0.0 && frames.len() > 1;
+    let chatter = reduce_chatter != 0.0 && frames.len() > 1;
     if chatter {
         // Two flow estimates per frame.
-        flow_admit(fb.area(), &opts.flow, count.saturating_mul(2), &limits.blend).map_err(blend_err)?;
+        flow_admit(fb.area(), flow, count.saturating_mul(2), &limits.blend).map_err(blend_err)?;
     }
     for f in frames {
         if f.bounds != fb {
@@ -169,17 +210,26 @@ pub fn refine_roto_sequence(
     let n = w.checked_mul(h).ok_or(Error::Overflow)?;
     let mut alphas: Vec<Vec<f64>> = Vec::with_capacity(frames.len());
     let mut colours: Vec<Option<Vec<[f32; 3]>>> = Vec::with_capacity(frames.len());
-    let mut bands = Vec::with_capacity(frames.len());
-    for (frame, matte) in frames.iter().zip(mattes) {
+    let mut bands_px = Vec::with_capacity(frames.len());
+    for ((frame, matte), band) in frames.iter().zip(mattes).zip(bands) {
         cancel.check().map_err(|_| Error::Canceled)?;
-        let r = refine_roto_frame(frame, matte, &RotoBand::Radius(opts.band_px), &opts.refine, &limits.tool)?;
+        let pixel = |i: usize| {
+            (
+                fb.x.saturating_add(i.checked_rem(w).unwrap_or(0) as i64),
+                fb.y.saturating_add(i.checked_div(w).unwrap_or(0) as i64),
+            )
+        };
+        let Some(band) = band else {
+            alphas.push((0..n).map(|i| { let (x, y) = pixel(i); f64::from(matte.at(x, y)) / 65535.0 }).collect());
+            colours.push(None);
+            bands_px.push(0);
+            continue;
+        };
+        let r = refine_roto_frame(frame, matte, band, refine, &limits.tool)?;
         let mut a = Vec::with_capacity(n);
         let mut c = r.colours.as_ref().map(|_| Vec::with_capacity(n));
         for i in 0..n {
-            let (x, y) = (
-                fb.x.saturating_add(i.checked_rem(w).unwrap_or(0) as i64),
-                fb.y.saturating_add(i.checked_div(w).unwrap_or(0) as i64),
-            );
+            let (x, y) = pixel(i);
             a.push(f64::from(r.coverage.at(x, y)) / 65535.0);
             if let (Some(out), Some(src)) = (c.as_mut(), r.colours.as_ref()) {
                 let own = frame.data.get(i).copied().unwrap_or([0.0; 4]);
@@ -191,10 +241,10 @@ pub fn refine_roto_sequence(
         }
         alphas.push(a);
         colours.push(c);
-        bands.push(r.band_pixels);
+        bands_px.push(r.band_pixels);
     }
     let finals: Vec<Vec<f64>> = if chatter {
-        let k = 2.0 / 3.0 * opts.reduce_chatter / 100.0;
+        let k = 2.0 / 3.0 * reduce_chatter / 100.0;
         let lumas: Vec<_> = frames.iter().map(|f| luma(f, w, h)).collect();
         let mut out = Vec::with_capacity(frames.len());
         for t in 0..frames.len() {
@@ -205,10 +255,10 @@ pub fn refine_roto_sequence(
                 let (Some(lt), Some(ln), Some(an)) = (lumas.get(t), lumas.get(nb), alphas.get(nb)) else {
                     continue;
                 };
-                let flow = flow_gray(lt, ln, &opts.flow, cancel).map_err(blend_err)?;
+                let fl = flow_gray(lt, ln, flow, cancel).map_err(blend_err)?;
                 for (i, s) in sum.iter_mut().enumerate() {
                     let (x, y) = (i.checked_rem(w).unwrap_or(0), i.checked_div(w).unwrap_or(0));
-                    let [u, v] = flow.at(x, y);
+                    let [u, v] = fl.at(x, y);
                     *s += bilinear(w, h, x as f64 + u, y as f64 + v, |j| an.get(j).copied().unwrap_or(0.0));
                 }
                 used = used.saturating_add(1);
@@ -228,7 +278,7 @@ pub fn refine_roto_sequence(
     Ok(finals
         .into_iter()
         .zip(colours)
-        .zip(bands)
+        .zip(bands_px)
         .enumerate()
         .map(|(index, ((a, colours), band_pixels))| RotoRefined {
             index,

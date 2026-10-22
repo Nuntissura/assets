@@ -455,3 +455,39 @@ pub fn roto_propagate(
         })
         .collect()
 }
+
+/// Admission of a whole assisted-roto run before any allocation (lane SMB-AE-ROTO-WIRING;
+/// STU-CMP-034 item 8: "Frame count, per-frame working set, aggregate output bytes and aggregate
+/// motion-estimation work are admitted against declared limits BEFORE any allocation"). `frames`
+/// = every frame of every span, `propagation_steps` = the flow steps of propagation, `refine_passes`
+/// = refine-stage passes over all frames (each: 22 bytes per pixel per frame, see
+/// [`super::roto_refine`]), `chatter_steps` = chatter flow estimates. Refusals are typed
+/// (`BudgetExceeded`, `Overflow`, `tool_out_of_range` for the options).
+pub fn roto_sequence_admission(
+    frame: Rect,
+    frames: u64,
+    propagation_steps: u64,
+    refine_passes: u64,
+    chatter_steps: u64,
+    opts: &RotoOptions,
+    limits: &RotoLimits,
+) -> Result<(), ToolError> {
+    check(opts)?;
+    if usize::try_from(frames).map_err(|_| Error::Overflow)? > limits.max_frames {
+        return Err(Error::BudgetExceeded.into());
+    }
+    let area = frame.area();
+    let mattes = area.checked_mul(2).and_then(|b| b.checked_mul(frames)).ok_or(Error::Overflow)?;
+    let refine = area
+        .checked_mul(22)
+        .and_then(|b| b.checked_mul(frames))
+        .and_then(|b| b.checked_mul(refine_passes))
+        .ok_or(Error::Overflow)?;
+    if mattes.checked_add(refine).ok_or(Error::Overflow)? > limits.max_output_bytes {
+        return Err(Error::BudgetExceeded.into());
+    }
+    limits.tool.admit(area, WORK_BYTES_PER_PIXEL)?;
+    let steps = propagation_steps.checked_add(chatter_steps).ok_or(Error::Overflow)?;
+    flow_admit(area, &opts.flow, steps, &limits.blend).map_err(blend_err)?;
+    Ok(())
+}
