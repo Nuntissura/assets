@@ -23,6 +23,10 @@ pub mod develop_entry;
 pub mod develop_more;
 pub mod edit;
 pub mod export;
+/// In-crate file dialog of the desktop shell (lane SMB-HARNESS-SHELL-1).
+pub mod file_dialog;
+/// Menu bar, shortcuts, recent files and WORKSPACE panel hosting (lane SMB-HARNESS-SHELL-1).
+pub mod shell;
 pub mod brush_mix;
 pub mod layers;
 /// Decode hook of the program monitor: reel decoders behind pulse's frame cache (lane
@@ -170,7 +174,11 @@ pub struct LayerRow {
 
 /// The application state of the desktop viewer.
 pub struct Viewer {
+    /// The application's harness (FILE > Close starts a fresh run on it).
+    harness: &'static Harness,
     run: Run<'static>,
+    /// Menu bar, dialogs, recent files, panel visibility, hosted layout editor (module [`shell`]).
+    shell: shell::ShellState,
     pub path_input: String,
     pub save_input: String,
     pub overwrite: bool,
@@ -258,7 +266,9 @@ impl Viewer {
         let cancel: &'static CancellationToken = Box::leak(Box::new(CancellationToken::default()));
         #[allow(unused_mut)]
         let mut viewer = Self {
+            harness,
             run: harness.run(crate::harness::default_actor(), cancel),
+            shell: shell::ShellState::default(),
             path_input: String::new(),
             save_input: String::new(),
             overwrite: false,
@@ -443,8 +453,9 @@ impl Viewer {
     /// is opened as a native package. Bounded by `import::MAX_SOURCE_BYTES`.
     pub fn open(&mut self, path: &Path) -> Result<(), String> {
         let result = self.open_inner(path);
-        if let Err(e) = &result {
-            self.say(e.clone());
+        match &result {
+            Ok(()) => self.shell.remember(path),
+            Err(e) => self.say(e.clone()),
         }
         result
     }
@@ -765,6 +776,7 @@ impl Viewer {
             "develop": self.develop_json(),
             "ops": self.run.ops(),
             "status": self.status,
+            "shell": self.shell_json(),
         });
         #[cfg(feature = "media")]
         {
@@ -785,6 +797,8 @@ impl Viewer {
     /// `egui::Context` in tests) owns the context.
     pub fn ui(&mut self, ctx: &egui::Context) {
         self.drawn.clear();
+        // Menu bar first: the top-most panel (module shell).
+        self.shell_menu_ui(ctx);
         let mut open_request = None;
         let mut save_request = None;
         let mut export_request = None;
@@ -829,6 +843,7 @@ impl Viewer {
             });
             ui.horizontal_wrapped(|ui| self.tools_ui(ui));
         });
+        self.shell_shortcuts(ctx);
         self.shortcuts(ctx);
         if let Some(path) = open_request {
             let _ = self.open(&path);
@@ -844,60 +859,64 @@ impl Viewer {
         }
         self.render_if_dirty();
 
-        egui::TopBottomPanel::bottom(widget::id(widget::STATUS_PANEL)).resizable(true).default_height(90.0).show(ctx, |ui| {
-            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                for line in &self.status {
-                    ui.label(line);
-                }
+        if self.shell.show_status() {
+            egui::TopBottomPanel::bottom(widget::id(widget::STATUS_PANEL)).resizable(true).default_height(90.0).show(ctx, |ui| {
+                egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                    for line in &self.status {
+                        ui.label(line);
+                    }
+                });
             });
-        });
-        self.drawn.push(widget::STATUS_PANEL.into());
+            self.drawn.push(widget::STATUS_PANEL.into());
+        }
 
         let mut toggles = Vec::new();
         let mut layer_action: Option<&'static str> = None;
-        egui::SidePanel::left(widget::id(widget::LAYER_PANEL)).resizable(true).default_width(240.0).show(ctx, |ui| {
-            ui.heading("Layers");
-            let open = self.run.snapshot().is_some();
-            let has_selection = self.selected.is_some();
-            ui.horizontal_wrapped(|ui| {
-                for (name, label, hover, needs_selection) in [
-                    (widget::LAYER_NEW, "New", "New empty raster layer above the selected layer", false),
-                    (widget::LAYER_DUPLICATE, "Dup", "Duplicate the selected layer (a group with its contents)", true),
-                    (widget::LAYER_DELETE, "Del", "Delete the selected layer (a group with its contents)", true),
-                    (widget::LAYER_UP, "Up", "Move the selected layer one step up", true),
-                    (widget::LAYER_DOWN, "Down", "Move the selected layer one step down", true),
-                    (widget::LAYER_GROUP, "Group", "Put the selected layer into a new group", true),
-                    (widget::LAYER_UNGROUP, "Ungroup", "Move the selected group's layers out and delete the group", true),
-                ] {
-                    let enabled = open && (has_selection || !needs_selection);
-                    if ui.push_id(widget::id(name), |ui| ui.add_enabled(enabled, egui::Button::new(label))).inner.on_hover_text(hover).clicked() {
-                        layer_action = Some(name);
+        if self.shell.visible(shell::Panel::Layers) {
+            egui::SidePanel::left(widget::id(widget::LAYER_PANEL)).resizable(true).default_width(240.0).show(ctx, |ui| {
+                ui.heading("Layers");
+                let open = self.run.snapshot().is_some();
+                let has_selection = self.selected.is_some();
+                ui.horizontal_wrapped(|ui| {
+                    for (name, label, hover, needs_selection) in [
+                        (widget::LAYER_NEW, "New", "New empty raster layer above the selected layer", false),
+                        (widget::LAYER_DUPLICATE, "Dup", "Duplicate the selected layer (a group with its contents)", true),
+                        (widget::LAYER_DELETE, "Del", "Delete the selected layer (a group with its contents)", true),
+                        (widget::LAYER_UP, "Up", "Move the selected layer one step up", true),
+                        (widget::LAYER_DOWN, "Down", "Move the selected layer one step down", true),
+                        (widget::LAYER_GROUP, "Group", "Put the selected layer into a new group", true),
+                        (widget::LAYER_UNGROUP, "Ungroup", "Move the selected group's layers out and delete the group", true),
+                    ] {
+                        let enabled = open && (has_selection || !needs_selection);
+                        if ui.push_id(widget::id(name), |ui| ui.add_enabled(enabled, egui::Button::new(label))).inner.on_hover_text(hover).clicked() {
+                            layer_action = Some(name);
+                        }
+                        self.drawn.push(name.into());
                     }
-                    self.drawn.push(name.into());
-                }
+                });
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for row in self.layers() {
+                        ui.horizontal(|ui| {
+                            ui.add_space(12.0 * row.depth as f32);
+                            let mut visible = row.visible;
+                            let vis_id = widget::layer(&row.layer_id, "visible");
+                            if ui.push_id(widget::id(&vis_id), |ui| ui.checkbox(&mut visible, "")).inner.on_hover_text("Visible").changed() {
+                                toggles.push((row.layer_id.clone(), visible));
+                            }
+                            self.drawn.push(vis_id);
+                            let sel_id = widget::layer(&row.layer_id, "select");
+                            let selected = self.selected.as_deref() == Some(row.layer_id.as_str());
+                            let label = format!("{}  {:.0}%{}", row.name, row.opacity, if row.kind == "group" { "  (group)" } else { "" });
+                            if ui.push_id(widget::id(&sel_id), |ui| ui.selectable_label(selected, label)).inner.clicked() {
+                                self.selected = Some(row.layer_id.clone());
+                            }
+                            self.drawn.push(sel_id);
+                        });
+                    }
+                });
             });
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for row in self.layers() {
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0 * row.depth as f32);
-                        let mut visible = row.visible;
-                        let vis_id = widget::layer(&row.layer_id, "visible");
-                        if ui.push_id(widget::id(&vis_id), |ui| ui.checkbox(&mut visible, "")).inner.on_hover_text("Visible").changed() {
-                            toggles.push((row.layer_id.clone(), visible));
-                        }
-                        self.drawn.push(vis_id);
-                        let sel_id = widget::layer(&row.layer_id, "select");
-                        let selected = self.selected.as_deref() == Some(row.layer_id.as_str());
-                        let label = format!("{}  {:.0}%{}", row.name, row.opacity, if row.kind == "group" { "  (group)" } else { "" });
-                        if ui.push_id(widget::id(&sel_id), |ui| ui.selectable_label(selected, label)).inner.clicked() {
-                            self.selected = Some(row.layer_id.clone());
-                        }
-                        self.drawn.push(sel_id);
-                    });
-                }
-            });
-        });
-        self.drawn.push(widget::LAYER_PANEL.into());
+            self.drawn.push(widget::LAYER_PANEL.into());
+        }
         for (layer, visible) in toggles {
             let _ = self.set_visible(&layer, visible);
         }
@@ -907,23 +926,31 @@ impl Viewer {
 
         let mut commits = Vec::new();
         let (mut develop_changes, mut develop_ops) = (Vec::new(), Vec::new());
-        egui::SidePanel::right(widget::id(widget::PROPERTIES_PANEL)).resizable(true).default_width(300.0).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if self.develop.is_some() {
-                    ui.heading("Develop");
-                    (develop_changes, develop_ops) = self.develop_ui(ui);
-                    self.drawn.push(widget::DEVELOP_PANEL.into());
-                    ui.separator();
-                }
-                ui.heading("Properties");
-                commits = self.properties_ui(ui);
-                ui.separator();
-                ui.heading("Import receipt");
-                self.receipt_ui(ui);
+        let show_develop = self.develop.is_some() && self.shell.visible(shell::Panel::Develop);
+        let show_properties = self.shell.visible(shell::Panel::Properties);
+        if show_develop || show_properties {
+            egui::SidePanel::right(widget::id(widget::PROPERTIES_PANEL)).resizable(true).default_width(300.0).show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if show_develop {
+                        ui.heading("Develop");
+                        (develop_changes, develop_ops) = self.develop_ui(ui);
+                        self.drawn.push(widget::DEVELOP_PANEL.into());
+                        ui.separator();
+                    }
+                    if show_properties {
+                        ui.heading("Properties");
+                        commits = self.properties_ui(ui);
+                        ui.separator();
+                        ui.heading("Import receipt");
+                        self.receipt_ui(ui);
+                    }
+                });
             });
-        });
-        self.drawn.push(widget::PROPERTIES_PANEL.into());
-        self.drawn.push(widget::RECEIPT_PANEL.into());
+        }
+        if show_properties {
+            self.drawn.push(widget::PROPERTIES_PANEL.into());
+            self.drawn.push(widget::RECEIPT_PANEL.into());
+        }
         for (layer, control, text) in commits {
             let _ = self.commit(&layer, &control, &text);
         }
@@ -937,17 +964,31 @@ impl Viewer {
         ctx.request_repaint_after(std::time::Duration::from_millis(if self.edit.selection.is_some() { 120 } else { 1000 }));
         self.render_if_dirty();
 
-        self.monitor_ui(ctx);
-        self.source_monitor_ui(ctx);
+        // Hosted surfaces; WORKSPACE > Panels shows and hides them (module shell).
+        if self.shell.visible(shell::Panel::ProgramMonitor) {
+            self.monitor_ui(ctx);
+        }
+        if self.shell.visible(shell::Panel::SourceMonitor) {
+            self.source_monitor_ui(ctx);
+        }
         #[cfg(feature = "media")]
         self.audio_ui(ctx);
         #[cfg(feature = "audio-batch")]
-        self.mixer_ui(ctx);
+        if self.shell.visible(shell::Panel::Mixer) {
+            self.mixer_ui(ctx);
+        }
         #[cfg(feature = "audio-batch")]
-        self.waveform_ui(ctx);
+        if self.shell.visible(shell::Panel::WaveformEditor) {
+            self.waveform_ui(ctx);
+        }
         #[cfg(feature = "audio-batch")]
-        self.spectral_ui(ctx);
-        if let Some((play, last)) = &mut self.prototype {
+        if self.shell.visible(shell::Panel::SpectralDisplay) {
+            self.spectral_ui(ctx);
+        }
+        self.shell_windows_ui(ctx);
+        if let Some((play, last)) = &mut self.prototype
+            && self.shell.visible(shell::Panel::PrototypePlayer)
+        {
             let now = std::time::Instant::now();
             let ms = u64::try_from(now.duration_since(*last).as_millis()).unwrap_or(u64::MAX);
             *last = now;
@@ -1054,7 +1095,7 @@ impl Viewer {
         }
         let Some(frame) = &self.frame else {
             if self.run.snapshot().is_none() {
-                ui.label("Open a file: type its path above and press Open (or pass it as the first argument).");
+                ui.label("Open a file: File > Open… (Ctrl+O), File > Open Recent, or type its path above and press Open (or pass it as the first argument).");
             }
             return;
         };
