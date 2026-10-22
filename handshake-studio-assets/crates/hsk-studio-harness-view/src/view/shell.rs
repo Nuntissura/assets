@@ -906,8 +906,9 @@ impl Viewer {
 
     /// The open dialog and the hosted layout editor (drawn as floating windows).
     pub(super) fn shell_windows_ui(&mut self, ctx: &egui::Context) {
+        let show_layout = self.shell.visible(Panel::LayoutEditor);
         if let Some(ed) = self.shell.layout.as_mut()
-            && self.shell.visible(Panel::LayoutEditor)
+            && show_layout
         {
             let drawn = ed.ui(ctx);
             self.drawn.extend(drawn.into_iter().map(String::from));
