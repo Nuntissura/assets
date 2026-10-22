@@ -810,7 +810,12 @@ impl Viewer {
         let mut save_request = None;
         let mut export_request = None;
         egui::TopBottomPanel::top(widget::id("toolbar")).show(ctx, |ui| {
+            // A vertical separator in a wrapping row takes all the height below it; bounding each
+            // row keeps the toolbar one line per row instead of the whole window (lane
+            // SMB-TIMELINE-UI-1: the bottom panels were pushed off-screen).
+            let row = ui.spacing().interact_size.y;
             ui.horizontal_wrapped(|ui| {
+                ui.set_max_height(row);
                 ui.label("File");
                 ui.add(egui::TextEdit::singleline(&mut self.path_input).id(widget::id(widget::PATH_FIELD)).hint_text("path to .psd .psb .tif .dng .cr2 .png .jpg .pdf .handshake").desired_width(360.0));
                 self.drawn.push(widget::PATH_FIELD.into());
@@ -848,7 +853,10 @@ impl Viewer {
                     ui.label(format!("render-{} r{}", f.backend, f.revision));
                 }
             });
-            ui.horizontal_wrapped(|ui| self.tools_ui(ui));
+            ui.horizontal_wrapped(|ui| {
+                ui.set_max_height(row);
+                self.tools_ui(ui)
+            });
         });
         self.shell_shortcuts(ctx);
         self.shortcuts(ctx);
