@@ -142,6 +142,9 @@ pub struct DngRaw {
     /// at decode.
     pub approximate_colour: bool,
     pub unique_camera_model: Option<String>,
+    /// TIFF Orientation (1..=8) of the source; 1 when absent or when a vendor decoder does not read it.
+    /// Recorded, never applied by develop (see `unapplied`).
+    pub orientation: u16,
     /// SHA-256 of the complete container bytes.
     pub container_sha256: [u8; 32],
     /// Features present in the file that this reader does not apply (never silently dropped):
@@ -717,10 +720,18 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     {
         unapplied.push("default_scale");
     }
-    if let Some(e) = l.get(tag::ORIENTATION)
-        && first_u32(&tiff, e)? != 1
-    {
-        unapplied.push("orientation");
+    let mut orientation = 1u16;
+    if let Some(e) = l.get(tag::ORIENTATION) {
+        let value = first_u32(&tiff, e)?;
+        if value != 1 {
+            unapplied.push("orientation");
+        }
+        // Only the defined values 1..=8 are kept; anything else stays unapplied and reads as 1.
+        if let Ok(v) = u16::try_from(value)
+            && (1..=8).contains(&v)
+        {
+            orientation = v;
+        }
     }
     Ok(DngRaw {
         width,
@@ -739,6 +750,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         color,
         approximate_colour: false,
         unique_camera_model,
+        orientation,
         unapplied,
         container_sha256: Sha256::digest(bytes).into(),
         samples,
@@ -832,10 +844,17 @@ impl DngRaw {
             colour_route,
             approximate_colour: false,
             unique_camera_model: frame.unique_camera_model,
+            orientation: 1,
             container_sha256: Sha256::digest(container).into(),
             unapplied: frame.unapplied,
             samples: frame.samples,
         })
+    }
+
+    /// The whole stored frame, row-major (`width * height` samples after the optional linearization
+    /// table, before black subtraction).
+    pub fn samples(&self) -> &[u16] {
+        &self.samples
     }
 
     /// Raw sample after the optional linearization table (before black subtraction).
