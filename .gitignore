@@ -1,3 +1,4 @@
 .local/
 .gameplan-active
 **/target/
+**/__pycache__/

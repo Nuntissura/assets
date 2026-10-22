@@ -1,0 +1,81 @@
+schema: assets.catalog-policy.v1
+version: 1.0.0
+repository: https://github.com/Nuntissura/assets
+catalog: assets-index.yaml
+skill: repo-governance/skills/create-assets/SKILL.md
+checker: repo-governance/scripts/asset_catalog.py
+rules:
+  - id: ASSETS-CATALOG-001
+    requirement: Maintain one GitHub assets repository with contained asset subfolders; do not create per-asset repositories, nested Git repositories, or permanent per-asset branches as the standard topology.
+  - id: ASSETS-CATALOG-002
+    requirement: Before implementing reusable functionality in any host, search the current catalog by behavior and inspect plausible matches, their public contracts, dependencies, and manuals.
+  - id: ASSETS-CATALOG-003
+    requirement: Reuse an adequate asset; implement and validate missing reusable capability in its owning asset before integrating the updated asset into a host. Keep responsibilities assigned to the host in the host.
+  - id: ASSETS-CATALOG-004
+    requirement: Create a new asset only after inspected existing candidates cannot appropriately own the capability; record the reason in the new catalog entry.
+  - id: ASSETS-CATALOG-005
+    requirement: Treat assets-index.yaml as the sole authored inventory. Generate the skill inventory copy with refresh; never maintain an independent skill list.
+  - id: ASSETS-CATALOG-006
+    requirement: Catalog every first-party reusable package and composition, preserve existing names and IDs, and give every excluded manifest an explicit classification reason. Record unfinished source without a manifest as a draft, not as an installable package.
+  - id: ASSETS-CATALOG-007
+    requirement: Record source branch, repository-relative folder, package versions, dependencies, API paths, and available manuals. Existing assets on noncanonical branches remain discoverable with explicit source locations until deliberately integrated.
+  - id: ASSETS-CATALOG-008
+    requirement: Run check after catalog, manifest, capability, bundle, source-location, retirement, or skill changes. Validate the affected asset's public behavior separately before host adoption; catalog checks do not establish product quality or compatibility.
+  - id: ASSETS-SYNC-001
+    requirement: Treat origin at the verified GitHub repository identity as the cross-device publication target; inspect and freshly fetch every origin branch before discovery and before publication. Never use cached tracking refs alone as fresh parity proof.
+  - id: ASSETS-SYNC-002
+    requirement: Run parity against each installed or mirrored create-assets directory at task start and after publication; preserve its exact origin revision, checked directories, and drift findings in the command output.
+  - id: ASSETS-SYNC-003
+    requirement: Distinguish local-only files, unpublished changes, remote-only files, revision divergence, missing catalog entries, package-version drift, and skill-copy drift. Never label a partial or offline comparison IN_SYNC.
+  - id: ASSETS-SYNC-004
+    requirement: Reconcile relevant remote changes before dependent implementation. Never force-push, reset, overwrite another device's work, or silently choose one divergent revision. Escalate an unresolved conflict with the exact paths and revisions.
+  - id: ASSETS-SYNC-005
+    requirement: Publish only the current task's validated asset and catalog changes through a normal fast-forward push to the canonical branch, or a review branch when its authority requires review. Preserve unrelated unfinished work. A review-branch push is not canonical integration.
+  - id: ASSETS-SYNC-006
+    requirement: Independently fetch and reread the published revision and catalog before claiming publication; verify that hosts resolve their intended exact asset revision and features before claiming adoption.
+  - id: ASSETS-SYNC-007
+    requirement: Install the repository-owned skill and its generated inventory into explicitly selected model skill directories on each device. Global configuration mirrors carry copies only; they do not become another asset authority.
+  - id: ASSETS-VERSION-001
+    requirement: Preserve the assets.index.v1 schema and existing fields; additive catalog metadata uses catalog_version. Bump schema for incompatible data-format changes and catalog_version for intentional catalog-contract releases.
+  - id: ASSETS-VERSION-002
+    requirement: Derive package versions from actual manifests, including workspace inheritance. Review semantic compatibility when changing public contracts; never invent a version bump merely to claim synchronization.
+  - id: ASSETS-VERSION-003
+    requirement: Use Git commit identity and content comparison for cross-device equality; package versions alone never prove equal source. Report source revision at check time instead of embedding a self-referential catalog commit hash.
+  - id: ASSETS-VERSION-004
+    requirement: Record source_tree fingerprints for assets available only on another origin branch; compare these with the freshly fetched source tree and inspect changes before refreshing them, even when package versions are unchanged.
+  - id: ASSETS-FORK-001
+    requirement: Do not fork an existing asset or maintain divergent host copies by default; try configuration, an adapter, composition, or a compatible extension first.
+  - id: ASSETS-FORK-002
+    requirement: Permit a fork only when its core purpose requires a demonstrated conflict in domain rules, invariants, or lifecycle behavior and the original asset must retain its promised contract.
+  - id: ASSETS-FORK-003
+    requirement: Before a fork, document both purposes and conflicting acceptance cases, explain why each nonfork alternative fails, define ownership and maintenance, and obtain explicit operator approval of that concrete decision.
+  - id: ASSETS-FORK-004
+    requirement: Host differences, GUI frameworks, branding, storage integrations, deadlines, missing features, or implementation convenience alone never justify a fork. Prefer dependencies on shared components over copied implementations.
+  - id: ASSETS-FORK-005
+    requirement: Keep an approved fork in its own subfolder of this repository; record fork_of and the approved fork_decision path in its catalog entry, preserving independent IDs and compatibility obligations.
+commands:
+  check: python repo-governance/scripts/asset_catalog.py check
+  refresh: python repo-governance/scripts/asset_catalog.py refresh
+  search: python repo-governance/scripts/asset_catalog.py search --query "intended behavior"
+  parity: python repo-governance/scripts/asset_catalog.py parity --skill-dir PATH
+  install: python repo-governance/scripts/asset_catalog.py install --skill-dir PATH
+  tests: python -m unittest discover -s repo-governance/tests -p "test_*.py"
+research:
+  checked_at: '2026-10-22'
+  sources:
+    - https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html
+    - https://git-scm.com/docs/git-ls-tree
+    - https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
+    - https://backstage.io/docs/features/software-catalog/descriptor-format/
+  inspected: [local manifests and manuals, all freshly fetched origin branch trees, installed create-assets skill, global authority twins]
+  selected: Repository-owned YAML catalog with generated skill copy; manifest-derived versions; Git object reads for remote proof; read-only parity; scoped publication
+  reused: [existing assets.index.v1 identities and package fields, Git object database, existing asset folders, shared authority twins]
+  rejected: [independently authored skill inventory, per-asset repositories, permanent asset branches, version-only equality, automatic conflict overwrites]
+  risks_and_controls:
+    - risk: Remote-only branch assets disappear from local discovery
+      control: Scan all fetched branch manifests and record explicit source branches
+    - risk: Unfinished concurrent work is accidentally published
+      control: Explicit task-owned staging paths and normal fast-forward pushes
+    - risk: Catalog or installed skill becomes stale
+      control: Deterministic projection, manifest checks, installed-copy comparison, and GitHub workflow
+  validation: Temporary-repository behavioral tests; real local catalog check; installed-copy comparison; fresh origin reread after publication

@@ -1,70 +1,1961 @@
 schema: assets.index.v1
-updated_at: '2026-10-20'
-coverage: partial
-coverage_note: Cabinet, Peak, the listed Notes packages and standalone Handshake modules are indexed. Other asset folders are not yet catalogued.
+catalog_version: 1.0.0
+updated_at: '2026-10-22'
+coverage: complete
+coverage_note: All first-party package manifests in this checkout and all fetched origin branches are classified.
+  Source-only unfinished folders are listed separately; presence does not establish product readiness.
+repository:
+  url: https://github.com/Nuntissura/assets
+  branch: codex/handpick
+  topology: single-repository-with-subfolders
+exclusions:
+- path: source-downloads
+  reason: Downloaded external source material, not first-party reusable assets.
+- path: Kumihimo/product/third-party
+  reason: Vendored dependencies maintained within Kumihimo, not first-party catalog assets.
+- path: handshake-studio-assets/crates/hsk-studio-score-plugin/tests/fixtures
+  reason: Plugin test fixture packages, not reusable production assets.
 assets:
-  - id: CABINET-ASSET-001
-    name: Cabinet
-    path: Cabinet
-    manual: Cabinet/README.md
-    contract: Cabinet/spec/cabinet.contract.json
-    components:
-      - CABINET-PEAK-ASSET-001
-    packages:
-      - name: cabinet
-        manifest: Cabinet/Cargo.toml
-        role: logic
-        api: Cabinet/src/lib.rs
-        interaction: Cabinet/src/interaction.rs
-        depends_on:
-          - cabinet-peak
-      - name: cabinet-egui
-        manifest: Cabinet/cabinet-egui/Cargo.toml
-        role: host-gui-adapter
-        api: Cabinet/cabinet-egui/src/lib.rs
-        depends_on:
-          - cabinet
-          - cabinet-peak-egui
-  - id: CABINET-PEAK-ASSET-001
-    name: Peak
-    path: Cabinet/Peak
-    manual: Cabinet/Peak/README.md
-    packages:
-      - name: cabinet-peak
-        manifest: Cabinet/Peak/Cargo.toml
-        role: logic
-        api: Cabinet/Peak/src/lib.rs
-        depends_on: []
-      - name: cabinet-peak-egui
-        manifest: Cabinet/Peak/cabinet-peak-egui/Cargo.toml
-        role: host-gui-adapter
-        api: Cabinet/Peak/cabinet-peak-egui/src/lib.rs
-        depends_on:
-          - cabinet-peak
-  - id: HANDSHAKE-TEXT-MECHANICS-ASSET-001
-    name: handshake_text_mechanics
-    path: handshake_text_mechanics
-    manual: handshake_text_mechanics/README.md
-    packages:
-      - name: handshake_text_mechanics
-        manifest: handshake_text_mechanics/Cargo.toml
-        role: logic
-        api: handshake_text_mechanics/src/lib.rs
-        depends_on: []
-
-  - id: NOTES-ASSET-001
-    name: Notes
-    path: Notes
-    manual: Notes/handshake_rich_document_model/README.md
-    packages:
-      - name: handshake_rich_document_model
-        manifest: Notes/handshake_rich_document_model/Cargo.toml
-        role: logic
-        api: Notes/handshake_rich_document_model/src/lib.rs
-        depends_on: []
-      - name: handshake_rich_formatting
-        manifest: handshake_rich_formatting/Cargo.toml
-        role: logic
-        api: handshake_rich_formatting/src/lib.rs
-        depends_on:
-          - handshake_rich_document_model
+- id: CABINET-ASSET-001
+  name: Cabinet
+  path: Cabinet
+  kind: asset
+  status: source-present
+  purpose: Portable hierarchy navigation and host-owned tree operations.
+  capabilities:
+  - tree
+  - hierarchy
+  - folders
+  - files
+  - documents
+  - bookmarks
+  - navigation
+  - recycle bin
+  - hover preview
+  manual: Cabinet/README.md
+  packages:
+  - name: cabinet
+    manifest: Cabinet/Cargo.toml
+    version: 0.1.0
+    api: Cabinet/src/lib.rs
+    role: logic
+    depends_on:
+    - cabinet-peak
+    interaction: Cabinet/src/interaction.rs
+  - name: cabinet-egui
+    manifest: Cabinet/cabinet-egui/Cargo.toml
+    version: 0.1.0
+    api: Cabinet/cabinet-egui/src/lib.rs
+    role: host-gui-adapter
+    depends_on:
+    - cabinet
+    - cabinet-peak-egui
+  components:
+  - CABINET-PEAK-ASSET-001
+  contract: Cabinet/spec/cabinet.contract.json
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Cabinet
+- id: CABINET-PEAK-ASSET-001
+  name: Peak
+  path: Cabinet/Peak
+  kind: asset
+  status: source-present
+  purpose: Bounded fenced hover previews, independent of Cabinet and storage.
+  capabilities:
+  - hover preview
+  - text preview
+  - image preview
+  - RAW preview
+  - decode scheduling
+  - egui
+  manual: Cabinet/Peak/README.md
+  packages:
+  - name: cabinet-peak
+    manifest: Cabinet/Peak/Cargo.toml
+    version: 0.1.0
+    api: Cabinet/Peak/src/lib.rs
+    role: logic
+    depends_on: []
+  - name: cabinet-peak-egui
+    manifest: Cabinet/Peak/cabinet-peak-egui/Cargo.toml
+    version: 0.1.0
+    api: Cabinet/Peak/cabinet-peak-egui/src/lib.rs
+    role: host-gui-adapter
+    depends_on:
+    - cabinet-peak
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Cabinet/Peak
+- id: KUMIHIMO-ASSET-001
+  name: Kumihimo
+  path: Kumihimo
+  kind: module
+  status: source-present
+  purpose: Reusable workspace window and frame mechanics with grids, tabs, docking, popouts, and desktop/browser
+    adapters.
+  capabilities:
+  - workspace
+  - window
+  - frame
+  - grid
+  - tabs
+  - grouped tabs
+  - docking
+  - popouts
+  - layout
+  - browser
+  - egui
+  - render bridge
+  - external apps
+  manual: Kumihimo/README.md
+  packages:
+  - name: kumihimo-content
+    manifest: Kumihimo/product/kumihimo-content/Cargo.toml
+    version: 0.2.0
+    api: Kumihimo/product/kumihimo-content/src/lib.rs
+    role: package
+    depends_on:
+    - kumihimo-core
+  - name: kumihimo-core
+    manifest: Kumihimo/product/kumihimo-core/Cargo.toml
+    version: 0.3.0
+    api: Kumihimo/product/kumihimo-core/src/lib.rs
+    role: package
+    depends_on: []
+  - name: kumihimo-egui
+    manifest: Kumihimo/product/kumihimo-egui/Cargo.toml
+    version: 0.2.0
+    api: Kumihimo/product/kumihimo-egui/src/lib.rs
+    role: host-gui-adapter
+    depends_on:
+    - kumihimo-content
+    - kumihimo-core
+    - kumihimo-external-apps
+    - kumihimo-layout-json
+  - name: kumihimo-external-apps
+    manifest: Kumihimo/product/kumihimo-external-apps/Cargo.toml
+    version: 0.1.0
+    api: Kumihimo/product/kumihimo-external-apps/src/lib.rs
+    role: package
+    depends_on:
+    - kumihimo-core
+  - name: kumihimo-layout-json
+    manifest: Kumihimo/product/kumihimo-layout-json/Cargo.toml
+    version: 0.1.0
+    api: Kumihimo/product/kumihimo-layout-json/src/lib.rs
+    role: package
+    depends_on:
+    - kumihimo-core
+  - name: kumihimo-render-bridge
+    manifest: Kumihimo/product/kumihimo-render-bridge/Cargo.toml
+    version: 0.1.0
+    api: Kumihimo/product/kumihimo-render-bridge/src/lib.rs
+    role: package
+    depends_on:
+    - kumihimo-content
+    - kumihimo-core
+    - kumihimo-egui
+  - name: kumihimo-web
+    manifest: Kumihimo/product/kumihimo-web/Cargo.toml
+    version: 0.1.0
+    api: Kumihimo/product/kumihimo-web/src/lib.rs
+    role: package
+    depends_on:
+    - kumihimo-content
+    - kumihimo-core
+    - kumihimo-layout-json
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Kumihimo
+- id: BUURTMAN-BALIE-ASSET-001
+  name: buurtman-balie
+  path: buurtman-balie
+  kind: module
+  status: source-present
+  purpose: Host-independent CRM records, relationships, transactional service contracts, and reusable browser field
+    editor.
+  capabilities:
+  - CRM
+  - customers
+  - organizations
+  - support cases
+  - interactions
+  - products
+  - distributors
+  - custom fields
+  - tags
+  - price books
+  - client pricing tiers
+  manual: buurtman-balie/README.md
+  packages:
+  - name: buurtman-balie
+    manifest: buurtman-balie/Cargo.toml
+    version: 0.2.0
+    api: buurtman-balie/src/lib.rs
+    role: package
+    depends_on: []
+  - name: buurtman-balie-collaboration
+    manifest: buurtman-balie/crates/buurtman-balie-collaboration/Cargo.toml
+    version: 0.2.0
+    api: buurtman-balie/crates/buurtman-balie-collaboration/src/lib.rs
+    role: package
+    depends_on: []
+  - name: buurtman-balie-host-demo
+    manifest: buurtman-balie/crates/buurtman-balie-host-demo/Cargo.toml
+    version: 0.2.0
+    api: buurtman-balie/crates/buurtman-balie-host-demo/Cargo.toml
+    role: package
+    depends_on:
+    - buurtman-balie
+  - name: buurtman-balie-web
+    manifest: buurtman-balie/web/package.json
+    version: 0.2.0
+    api: buurtman-balie/web/package.json
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/buurtman-balie
+- id: HANDPICK-ASSET-001
+  name: handpick
+  path: handpick
+  kind: asset
+  status: source-present
+  purpose: Portable search interaction, query grammar, grouped results, completion replacements, and parked drafts.
+  capabilities:
+  - search
+  - suggestions
+  - completion
+  - query grammar
+  - drafts
+  - pins
+  - grouped results
+  - native writing
+  manual: handpick/README.md
+  packages:
+  - name: handpick
+    manifest: handpick/Cargo.toml
+    version: 0.1.0
+    api: handpick/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/handpick
+- id: HANDSHAKE-CONTEXT-MENU-ASSET-001
+  name: handshake_context_menu
+  path: handshake_context_menu
+  kind: asset
+  status: source-present
+  purpose: Context-menu model and keyboard navigation, with a separate egui adapter.
+  capabilities:
+  - Context-menu model and keyboard navigation, with a separate egui adapter.
+  manual: handshake_context_menu/src/lib.rs
+  packages:
+  - name: handshake_context_menu
+    manifest: handshake_context_menu/Cargo.toml
+    version: 0.1.0
+    api: handshake_context_menu/src/lib.rs
+    role: package
+    depends_on: []
+  - name: handshake_context_menu_egui
+    manifest: handshake_context_menu/egui/Cargo.toml
+    version: 0.1.0
+    api: handshake_context_menu/egui/src/lib.rs
+    role: host-gui-adapter
+    depends_on:
+    - handshake_context_menu
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/handshake_context_menu
+- id: HANDSHAKE-RICH-FORMATTING-ASSET-001
+  name: handshake_rich_formatting
+  path: handshake_rich_formatting
+  kind: asset
+  status: source-present
+  purpose: Framework-independent rich-document formatting commands and input actions.
+  capabilities:
+  - Framework-independent rich-document formatting commands and input actions.
+  manual: handshake_rich_formatting/README.md
+  packages:
+  - name: handshake_rich_formatting
+    manifest: handshake_rich_formatting/Cargo.toml
+    version: 0.1.0
+    api: handshake_rich_formatting/src/lib.rs
+    role: logic
+    depends_on:
+    - handshake_rich_document_model
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/handshake_rich_formatting
+- id: HANDSHAKE-TEXT-MECHANICS-ASSET-001
+  name: handshake_text_mechanics
+  path: handshake_text_mechanics
+  kind: asset
+  status: source-present
+  purpose: Text buffer, cursor, Unicode layout, formatting edits, and navigation history.
+  capabilities:
+  - Text buffer, cursor, Unicode layout, formatting edits, and navigation history.
+  manual: handshake_text_mechanics/README.md
+  packages:
+  - name: handshake_text_mechanics
+    manifest: handshake_text_mechanics/Cargo.toml
+    version: 0.1.0
+    api: handshake_text_mechanics/src/lib.rs
+    role: logic
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/handshake_text_mechanics
+- id: TASKBOARD-ASSET-001
+  name: taskboard
+  path: taskboard
+  kind: module
+  status: source-present
+  purpose: Portable taskboard domain contracts and mutation validation with a reusable browser board editor.
+  capabilities:
+  - taskboard
+  - board
+  - task status
+  - revision fencing
+  - browser editor
+  - React
+  manual: taskboard/README.md
+  packages:
+  - name: taskboard
+    manifest: taskboard/Cargo.toml
+    version: 0.1.0
+    api: taskboard/src/lib.rs
+    role: package
+    depends_on: []
+  - name: taskboard-web
+    manifest: taskboard/package.json
+    version: 0.1.0
+    api: taskboard/package.json
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/taskboard
+- id: HANDSHAKE-CKC-PROVENANCE-ASSET-001
+  name: handshake_ckc_provenance
+  path: CKC/handshake_ckc_provenance
+  kind: asset
+  status: source-present
+  purpose: Provenance reference and identity types.
+  capabilities:
+  - Provenance reference and identity types.
+  manual: CKC/handshake_ckc_provenance/src/lib.rs
+  packages:
+  - name: handshake_ckc_provenance
+    manifest: CKC/handshake_ckc_provenance/Cargo.toml
+    version: 0.1.0
+    api: CKC/handshake_ckc_provenance/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/CKC/handshake_ckc_provenance
+- id: HANDSHAKE-ASSET-RESOLVER-ASSET-001
+  name: handshake_asset_resolver
+  path: Notes/handshake_asset_resolver
+  kind: asset
+  status: source-present
+  purpose: Media reference validation, resolution, errors, and per-editor resolution cache.
+  capabilities:
+  - Media reference validation, resolution, errors, and per-editor resolution cache.
+  manual: Notes/handshake_asset_resolver/README.md
+  packages:
+  - name: handshake_asset_resolver
+    manifest: Notes/handshake_asset_resolver/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_asset_resolver/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_asset_resolver
+- id: HANDSHAKE-CODE-STRUCTURE-ASSET-001
+  name: handshake_code_structure
+  path: Notes/handshake_code_structure
+  kind: asset
+  status: source-present
+  purpose: Code folding, outline, sticky-scroll, and file-symbol mechanics.
+  capabilities:
+  - Code folding, outline, sticky-scroll, and file-symbol mechanics.
+  manual: Notes/handshake_code_structure/README.md
+  packages:
+  - name: handshake_code_structure
+    manifest: Notes/handshake_code_structure/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_code_structure/src/lib.rs
+    role: package
+    depends_on:
+    - handshake_text_mechanics
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_code_structure
+- id: HANDSHAKE-DIFF-MERGE-ASSET-001
+  name: handshake_diff_merge
+  path: Notes/handshake_diff_merge
+  kind: asset
+  status: source-present
+  purpose: Line diff and base-aligned three-way text merge.
+  capabilities:
+  - Line diff and base-aligned three-way text merge.
+  manual: Notes/handshake_diff_merge/README.md
+  packages:
+  - name: handshake_diff_merge
+    manifest: Notes/handshake_diff_merge/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_diff_merge/src/lib.rs
+    role: package
+    depends_on:
+    - handshake_text_mechanics
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_diff_merge
+- id: HANDSHAKE-EMBED-VIEWS-ASSET-001
+  name: handshake_embed_views
+  path: Notes/handshake_embed_views
+  kind: asset
+  status: source-present
+  purpose: egui embed views, image decoding, and texture-cache adapters.
+  capabilities:
+  - egui embed views, image decoding, and texture-cache adapters.
+  manual: Notes/handshake_embed_views/README.md
+  packages:
+  - name: handshake_embed_views
+    manifest: Notes/handshake_embed_views/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_embed_views/src/lib.rs
+    role: host-gui-adapter
+    depends_on:
+    - handshake_asset_resolver
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_embed_views
+- id: HANDSHAKE-FIND-REPLACE-ASSET-001
+  name: handshake_find_replace
+  path: Notes/handshake_find_replace
+  kind: asset
+  status: source-present
+  purpose: In-file literal and regular-expression search and replacement.
+  capabilities:
+  - In-file literal and regular-expression search and replacement.
+  manual: Notes/handshake_find_replace/README.md
+  packages:
+  - name: handshake_find_replace
+    manifest: Notes/handshake_find_replace/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_find_replace/src/lib.rs
+    role: package
+    depends_on:
+    - handshake_text_mechanics
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_find_replace
+- id: HANDSHAKE-GUTTER-ASSET-001
+  name: handshake_gutter
+  path: Notes/handshake_gutter
+  kind: asset
+  status: source-present
+  purpose: egui editor gutter and breakpoint model.
+  capabilities:
+  - egui editor gutter and breakpoint model.
+  manual: Notes/handshake_gutter/README.md
+  packages:
+  - name: handshake_gutter
+    manifest: Notes/handshake_gutter/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_gutter/src/lib.rs
+    role: host-gui-adapter
+    depends_on:
+    - handshake_text_mechanics
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_gutter
+- id: HANDSHAKE-LSP-WIRE-ASSET-001
+  name: handshake_lsp_wire
+  path: Notes/handshake_lsp_wire
+  kind: asset
+  status: source-present
+  purpose: LSP wire types and request/response mechanics.
+  capabilities:
+  - LSP wire types and request/response mechanics.
+  manual: Notes/handshake_lsp_wire/README.md
+  packages:
+  - name: handshake_lsp_wire
+    manifest: Notes/handshake_lsp_wire/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_lsp_wire/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_lsp_wire
+- id: HANDSHAKE-RENAME-ASSET-001
+  name: handshake_rename
+  path: Notes/handshake_rename
+  kind: asset
+  status: source-present
+  purpose: Text rename edit mechanics using canonical text buffers.
+  capabilities:
+  - Text rename edit mechanics using canonical text buffers.
+  manual: Notes/handshake_rename/README.md
+  packages:
+  - name: handshake_rename
+    manifest: Notes/handshake_rename/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_rename/src/lib.rs
+    role: package
+    depends_on:
+    - handshake_text_mechanics
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_rename
+- id: HANDSHAKE-RICH-DOCUMENT-MODEL-ASSET-001
+  name: handshake_rich_document_model
+  path: Notes/handshake_rich_document_model
+  kind: asset
+  status: source-present
+  purpose: Rich-document blocks, selections, undo history, and serialization.
+  capabilities:
+  - Rich-document blocks, selections, undo history, and serialization.
+  manual: Notes/handshake_rich_document_model/README.md
+  packages:
+  - name: handshake_rich_document_model
+    manifest: Notes/handshake_rich_document_model/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_rich_document_model/src/lib.rs
+    role: logic
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_rich_document_model
+- id: HANDSHAKE-SIGNATURE-HELP-ASSET-001
+  name: handshake_signature_help
+  path: Notes/handshake_signature_help
+  kind: asset
+  status: source-present
+  purpose: Signature-help interaction model.
+  capabilities:
+  - Signature-help interaction model.
+  manual: Notes/handshake_signature_help/README.md
+  packages:
+  - name: handshake_signature_help
+    manifest: Notes/handshake_signature_help/Cargo.toml
+    version: 0.1.0
+    api: Notes/handshake_signature_help/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes/handshake_signature_help
+- id: HANDSHAKE-CONTEXT-BUNDLE-ASSET-001
+  name: handshake_context_bundle
+  path: hskernel/handshake_context_bundle
+  kind: asset
+  status: source-present
+  purpose: Context bundles and canonical JSON hashing.
+  capabilities:
+  - Context bundles and canonical JSON hashing.
+  manual: hskernel/handshake_context_bundle/src/lib.rs
+  packages:
+  - name: handshake_context_bundle
+    manifest: hskernel/handshake_context_bundle/Cargo.toml
+    version: 0.1.0
+    api: hskernel/handshake_context_bundle/src/lib.rs
+    role: package
+    depends_on:
+    - handshake_canonical_json
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/hskernel/handshake_context_bundle
+- id: HANDSHAKE-MODEL-LANE-NAVIGATION-ASSET-001
+  name: handshake_model_lane_navigation
+  path: hskernel/handshake_model_lane_navigation
+  kind: asset
+  status: source-present
+  purpose: ModelLane navigation lookup and validated scalar projections.
+  capabilities:
+  - ModelLane navigation lookup and validated scalar projections.
+  manual: hskernel/handshake_model_lane_navigation/src/lib.rs
+  packages:
+  - name: handshake_model_lane_navigation
+    manifest: hskernel/handshake_model_lane_navigation/Cargo.toml
+    version: 0.1.0
+    api: hskernel/handshake_model_lane_navigation/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/hskernel/handshake_model_lane_navigation
+- id: HANDSHAKE-PALMISTRY-LIFECYCLE-ASSET-001
+  name: handshake-palmistry-lifecycle
+  path: hskernel/handshake_palmistry_lifecycle
+  kind: asset
+  status: source-present
+  purpose: Watcher lifecycle, bounded parent-exit finalization, and Windows parent-process watch.
+  capabilities:
+  - Watcher lifecycle, bounded parent-exit finalization, and Windows parent-process watch.
+  manual: hskernel/handshake_palmistry_lifecycle/README.md
+  packages:
+  - name: handshake-palmistry-lifecycle
+    manifest: hskernel/handshake_palmistry_lifecycle/Cargo.toml
+    version: 0.1.0
+    api: hskernel/handshake_palmistry_lifecycle/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/hskernel/handshake_palmistry_lifecycle
+- id: HANDSHAKE-RECOVERY-PROTOCOL-ASSET-001
+  name: handshake_recovery_protocol
+  path: hskernel/handshake_recovery_protocol
+  kind: asset
+  status: source-present
+  purpose: Recovery claims, identities, cloud-assistance receipts, and dashboard protocol.
+  capabilities:
+  - Recovery claims, identities, cloud-assistance receipts, and dashboard protocol.
+  manual: hskernel/handshake_recovery_protocol/src/lib.rs
+  packages:
+  - name: handshake_recovery_protocol
+    manifest: hskernel/handshake_recovery_protocol/Cargo.toml
+    version: 0.1.0
+    api: hskernel/handshake_recovery_protocol/src/lib.rs
+    role: package
+    depends_on:
+    - handshake_canonical_json
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/hskernel/handshake_recovery_protocol
+- id: HANDSHAKE-SWARM-LANE-DIAGNOSTICS-ASSET-001
+  name: handshake_swarm_lane_diagnostics
+  path: hskernel/handshake_swarm_lane_diagnostics
+  kind: asset
+  status: source-present
+  purpose: Swarm diagnostic projection models, decoding, and validation.
+  capabilities:
+  - Swarm diagnostic projection models, decoding, and validation.
+  manual: hskernel/handshake_swarm_lane_diagnostics/README.md
+  packages:
+  - name: handshake_swarm_lane_diagnostics
+    manifest: hskernel/handshake_swarm_lane_diagnostics/Cargo.toml
+    version: 0.1.0
+    api: hskernel/handshake_swarm_lane_diagnostics/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/hskernel/handshake_swarm_lane_diagnostics
+- id: HANDSHAKE-CANONICAL-JSON-ASSET-001
+  name: handshake_canonical_json
+  path: shared/handshake_canonical_json
+  kind: asset
+  status: source-present
+  purpose: Canonical JSON byte encoding and SHA-256 helpers.
+  capabilities:
+  - Canonical JSON byte encoding and SHA-256 helpers.
+  manual: shared/handshake_canonical_json/src/lib.rs
+  packages:
+  - name: handshake_canonical_json
+    manifest: shared/handshake_canonical_json/Cargo.toml
+    version: 0.1.0
+    api: shared/handshake_canonical_json/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/shared/handshake_canonical_json
+- id: NOTES-ASSET-001
+  name: Notes
+  path: Notes
+  kind: kit
+  status: source-present
+  purpose: Reusable document and editor packages grouped under Notes; each component retains its own public contract.
+  capabilities:
+  - Reusable document and editor packages grouped under Notes; each component retains its own public contract.
+  manual: Notes/handshake_rich_document_model/README.md
+  packages: []
+  components:
+  - HANDSHAKE-ASSET-RESOLVER-ASSET-001
+  - HANDSHAKE-CODE-STRUCTURE-ASSET-001
+  - HANDSHAKE-DIFF-MERGE-ASSET-001
+  - HANDSHAKE-EMBED-VIEWS-ASSET-001
+  - HANDSHAKE-FIND-REPLACE-ASSET-001
+  - HANDSHAKE-GUTTER-ASSET-001
+  - HANDSHAKE-LSP-WIRE-ASSET-001
+  - HANDSHAKE-RENAME-ASSET-001
+  - HANDSHAKE-RICH-DOCUMENT-MODEL-ASSET-001
+  - HANDSHAKE-SIGNATURE-HELP-ASSET-001
+  - HANDSHAKE-RICH-FORMATTING-ASSET-001
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/Notes
+- id: HANDSHAKE-STUDIO-ASSETS-ASSET-001
+  name: handshake-studio-assets
+  path: handshake-studio-assets
+  kind: kit
+  status: source-present
+  purpose: Studio package composition with document, graphics, layout, media, interchange, providers, and development
+    consumers.
+  capabilities:
+  - Studio package composition with document, graphics, layout, media, interchange, providers, and development consumers.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/Cargo.toml
+  packages: []
+  components:
+  - HSK-STUDIO-ACCORD-ASSET-001
+  - HSK-STUDIO-CHRONICLE-ASSET-001
+  - HSK-STUDIO-COMPONENTS-ASSET-001
+  - HSK-STUDIO-COMPOSITE-ASSET-001
+  - HSK-STUDIO-CONTROLS-ASSET-001
+  - HSK-STUDIO-DEVELOP-ASSET-001
+  - HSK-STUDIO-FOLIO-ASSET-001
+  - HSK-STUDIO-HARNESS-CORE-ASSET-001
+  - HSK-STUDIO-HARNESS-VIEW-ASSET-001
+  - HSK-STUDIO-HARNESS-ASSET-001
+  - HSK-STUDIO-INTEROP-AFFINITY-ASSET-001
+  - HSK-STUDIO-INTEROP-FIG-ASSET-001
+  - HSK-STUDIO-INTEROP-LAYOUT-ASSET-001
+  - HSK-STUDIO-INTEROP-LRCAT-ASSET-001
+  - HSK-STUDIO-INTEROP-MEDIA-ASSET-001
+  - HSK-STUDIO-INTEROP-PSD-ASSET-001
+  - HSK-STUDIO-INTEROP-RASTER-ASSET-001
+  - HSK-STUDIO-INTEROP-TIFF-ASSET-001
+  - HSK-STUDIO-INTEROP-VECTOR-CORE-ASSET-001
+  - HSK-STUDIO-INTEROP-VECTOR-SVG-ASSET-001
+  - HSK-STUDIO-INTEROP-VECTOR-ASSET-001
+  - HSK-STUDIO-KERNEL-BINDINGS-ASSET-001
+  - HSK-STUDIO-LAYOUT-ASSET-001
+  - HSK-STUDIO-MOTION-JS-ASSET-001
+  - HSK-STUDIO-MOTION-ASSET-001
+  - HSK-STUDIO-NIB-ASSET-001
+  - HSK-STUDIO-OBSERVE-ASSET-001
+  - HSK-STUDIO-PACKAGE-ASSET-001
+  - HSK-STUDIO-PIGMENT-ASSET-001
+  - HSK-STUDIO-PRESS-READ-ASSET-001
+  - HSK-STUDIO-PRESS-WRITE-ASSET-001
+  - HSK-STUDIO-PRESS-ASSET-001
+  - HSK-STUDIO-PRISM-ASSET-001
+  - HSK-STUDIO-PULSE-ASSET-001
+  - HSK-STUDIO-REEL-NATIVE-ASSET-001
+  - HSK-STUDIO-REEL-ASSET-001
+  - HSK-STUDIO-RENDER-CPU-ASSET-001
+  - HSK-STUDIO-RENDER-GPU-ASSET-001
+  - HSK-STUDIO-SCORE-DEVICE-ASSET-001
+  - HSK-STUDIO-SCORE-PLUGIN-ASSET-001
+  - HSK-STUDIO-SCORE-ASSET-001
+  - HSK-STUDIO-SESSION-ASSET-001
+  - HSK-STUDIO-TYPE-ASSET-001
+  - HSK-STUDIO-WEB-ASSET-001
+  - HSK-STUDIO-WORKER-ASSET-001
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets
+  source_tree: 8b977d152768b872275fb02e1c45ee026bc34032
+- id: HSK-STUDIO-ACCORD-ASSET-001
+  name: hsk-studio-accord
+  path: handshake-studio-assets/crates/hsk-studio-accord
+  kind: asset
+  status: source-present
+  purpose: Accord host-neutral schema, identity, units and validation transport. This transport is caller-owned
+    and is NOT a full StudioDocument or database schema.
+  capabilities:
+  - Accord host-neutral schema, identity, units and validation transport. This transport is caller-owned and is
+    NOT a full StudioDocument or database schema.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-accord/src/lib.rs
+  packages:
+  - name: hsk-studio-accord
+    manifest: handshake-studio-assets/crates/hsk-studio-accord/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-accord/src/lib.rs
+    role: package
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-accord
+  source_tree: b1ad1bec65e6fef5062695d9e751ea2e80543c30
+- id: HSK-STUDIO-CHRONICLE-ASSET-001
+  name: hsk-studio-chronicle
+  path: handshake-studio-assets/crates/hsk-studio-chronicle
+  kind: asset
+  status: source-present
+  purpose: Pure source-local property patch preparation; no history stack or authority database.
+  capabilities:
+  - Pure source-local property patch preparation; no history stack or authority database.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-chronicle/src/lib.rs
+  packages:
+  - name: hsk-studio-chronicle
+    manifest: handshake-studio-assets/crates/hsk-studio-chronicle/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-chronicle/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-chronicle
+  source_tree: 4fa4dff67500ed4ae09ede7b00a9f2a53f563073
+- id: HSK-STUDIO-COMPONENTS-ASSET-001
+  name: hsk-studio-components
+  path: handshake-studio-assets/crates/hsk-studio-components
+  kind: asset
+  status: source-present
+  purpose: Components, variables, responsive constraints, prototype actions within same document; no separate Figma-like
+    app.
+  capabilities:
+  - Components, variables, responsive constraints, prototype actions within same document; no separate Figma-like
+    app.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-components/src/lib.rs
+  packages:
+  - name: hsk-studio-components
+    manifest: handshake-studio-assets/crates/hsk-studio-components/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-components/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-components
+  source_tree: 6a34609af75a0878007130c80276c4602dfa3a88
+- id: HSK-STUDIO-COMPOSITE-ASSET-001
+  name: hsk-studio-composite
+  path: handshake-studio-assets/crates/hsk-studio-composite
+  kind: asset
+  status: source-present
+  purpose: Static render-plan evaluator consumes immutable snapshot; same semantics for previews/export. Temporal/effect
+    providers attach through typed ports; no unconditional motion/pulse engine dependency in the static render closure.
+  capabilities:
+  - Static render-plan evaluator consumes immutable snapshot; same semantics for previews/export. Temporal/effect
+    providers attach through typed ports; no unconditional motion/pulse engine dependency in the static render closure.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-composite/src/lib.rs
+  packages:
+  - name: hsk-studio-composite
+    manifest: handshake-studio-assets/crates/hsk-studio-composite/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-composite/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-motion
+    - hsk-studio-nib
+    - hsk-studio-observe
+    - hsk-studio-pigment
+    - hsk-studio-prism
+    - hsk-studio-type
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-composite
+  source_tree: 7904f32423ded807c8ecccb8795533d7a70e186a
+- id: HSK-STUDIO-CONTROLS-ASSET-001
+  name: hsk-studio-controls
+  path: handshake-studio-assets/crates/hsk-studio-controls
+  kind: asset
+  status: source-present
+  purpose: One shared egui control/panel mechanic configured by capability registry; agent projections/manual use
+    same semantics; never imports full native app.
+  capabilities:
+  - One shared egui control/panel mechanic configured by capability registry; agent projections/manual use same
+    semantics; never imports full native app.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-controls/src/lib.rs
+  packages:
+  - name: hsk-studio-controls
+    manifest: handshake-studio-assets/crates/hsk-studio-controls/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-controls/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-controls
+  source_tree: 8e2cc0cc7c5250a228dcd260d71943485fd1ccfd
+- id: HSK-STUDIO-DEVELOP-ASSET-001
+  name: hsk-studio-develop
+  path: handshake-studio-assets/crates/hsk-studio-develop
+  kind: asset
+  status: source-present
+  purpose: RAW decode/develop recipes; originals immutable through CKC/ArtifactService provider identity, target-independent
+    scalar oracle and SIMD dispatch. Imported catalog semantics adapt into existing CKC owner, not a private Studio
+    catalog.
+  capabilities:
+  - RAW decode/develop recipes; originals immutable through CKC/ArtifactService provider identity, target-independent
+    scalar oracle and SIMD dispatch. Imported catalog semantics adapt into existing CKC owner, not a private Studio
+    catalog.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-develop/src/lib.rs
+  packages:
+  - name: hsk-studio-develop
+    manifest: handshake-studio-assets/crates/hsk-studio-develop/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-develop/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-interop-tiff
+    - hsk-studio-observe
+    - hsk-studio-pigment
+    - hsk-studio-prism
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-develop
+  source_tree: 588352fa9688f04a185853584993494126035426
+- id: HSK-STUDIO-FOLIO-ASSET-001
+  name: hsk-studio-folio
+  path: handshake-studio-assets/crates/hsk-studio-folio
+  kind: asset
+  status: source-present
+  purpose: Pure Studio document wire contracts and immutable, caller-revision-checked snapshots. Catalog, grants,
+    byte resolution, rendering and host promotion remain caller-owned.
+  capabilities:
+  - Pure Studio document wire contracts and immutable, caller-revision-checked snapshots. Catalog, grants, byte
+    resolution, rendering and host promotion remain caller-owned.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-folio/src/lib.rs
+  packages:
+  - name: hsk-studio-folio
+    manifest: handshake-studio-assets/crates/hsk-studio-folio/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-folio/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-folio
+  source_tree: 8f2f7f3aa5cadad4135780652b0ae8769e42a4d4
+- id: HSK-STUDIO-HARNESS-CORE-ASSET-001
+  name: hsk-studio-harness-core
+  path: handshake-studio-assets/crates/hsk-studio-harness-core
+  kind: asset
+  status: source-present
+  purpose: 'Core half of STUDIO-MODULE-HARNESS (SMB-CRATE-SEAM-SPLITS slice 3b): the headless run over the real
+    session (open, revision-checked provider submit, atomic save, reopen), the import routes (features import, import-psd,
+    import-raw, import-tiff, import-pdf, import-raster), the controls-descriptor panel and the manual. `hsk-studio-harness`
+    is the public face; the `#[doc(hidden)]` module is the seam `hsk-studio-harness-view` and the CLI build on.'
+  capabilities:
+  - 'Core half of STUDIO-MODULE-HARNESS (SMB-CRATE-SEAM-SPLITS slice 3b): the headless run over the real session
+    (open, revision-checked provider submit, atomic save, reopen), the import routes (features import, import-psd,
+    import-raw, import-tiff, import-pdf, import-raster), the controls-descriptor panel and the manual. `hsk-studio-harness`
+    is the public face; the `#[doc(hidden)]` module is the seam `hsk-studio-harness-view` and the CLI build on.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-harness-core/src/lib.rs
+  packages:
+  - name: hsk-studio-harness-core
+    manifest: handshake-studio-assets/crates/hsk-studio-harness-core/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-harness-core/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-controls
+    - hsk-studio-develop
+    - hsk-studio-folio
+    - hsk-studio-interop-affinity
+    - hsk-studio-interop-psd
+    - hsk-studio-interop-raster
+    - hsk-studio-interop-tiff
+    - hsk-studio-observe
+    - hsk-studio-package
+    - hsk-studio-press
+    - hsk-studio-prism
+    - hsk-studio-session
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-harness-core
+  source_tree: 9714516f5591673e3183d121c481f2e513bf38a3
+- id: HSK-STUDIO-HARNESS-VIEW-ASSET-001
+  name: hsk-studio-harness-view
+  path: handshake-studio-assets/crates/hsk-studio-harness-view
+  kind: asset
+  status: source-present
+  purpose: 'View half of STUDIO-MODULE-HARNESS (SMB-CRATE-SEAM-SPLITS slice 3b): the desktop viewer state and egui
+    UI (feature viewer, window-free and headless-testable) and the layout editing surface (feature layout-ui), on
+    the core half''s run, import routes and panel. `hsk-studio-harness` is the public face.'
+  capabilities:
+  - 'View half of STUDIO-MODULE-HARNESS (SMB-CRATE-SEAM-SPLITS slice 3b): the desktop viewer state and egui UI (feature
+    viewer, window-free and headless-testable) and the layout editing surface (feature layout-ui), on the core half''s
+    run, import routes and panel. `hsk-studio-harness` is the public face.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-harness-view/src/lib.rs
+  packages:
+  - name: hsk-studio-harness-view
+    manifest: handshake-studio-assets/crates/hsk-studio-harness-view/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-harness-view/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-components
+    - hsk-studio-composite
+    - hsk-studio-controls
+    - hsk-studio-develop
+    - hsk-studio-folio
+    - hsk-studio-harness-core
+    - hsk-studio-interop-affinity
+    - hsk-studio-interop-fig
+    - hsk-studio-interop-psd
+    - hsk-studio-interop-raster
+    - hsk-studio-interop-tiff
+    - hsk-studio-interop-vector
+    - hsk-studio-layout
+    - hsk-studio-nib
+    - hsk-studio-observe
+    - hsk-studio-package
+    - hsk-studio-pigment
+    - hsk-studio-press
+    - hsk-studio-prism
+    - hsk-studio-pulse
+    - hsk-studio-reel
+    - hsk-studio-reel-native
+    - hsk-studio-render-cpu
+    - hsk-studio-render-gpu
+    - hsk-studio-score
+    - hsk-studio-score-device
+    - hsk-studio-score-plugin
+    - hsk-studio-session
+    - hsk-studio-type
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-harness-view
+  source_tree: a721e55c1ebba209052f32c8e5abe8de60a44528
+- id: HSK-STUDIO-HARNESS-ASSET-001
+  name: hsk-studio-harness
+  path: handshake-studio-assets/crates/hsk-studio-harness
+  kind: asset
+  status: source-present
+  purpose: Standalone asset desktop/headless development consumers with explicit selected providers; no unconditional
+    all-domain facade, no separately shipped suite app.
+  capabilities:
+  - Standalone asset desktop/headless development consumers with explicit selected providers; no unconditional all-domain
+    facade, no separately shipped suite app.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-harness/src/lib.rs
+  packages:
+  - name: hsk-studio-harness
+    manifest: handshake-studio-assets/crates/hsk-studio-harness/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-harness/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-components
+    - hsk-studio-composite
+    - hsk-studio-controls
+    - hsk-studio-develop
+    - hsk-studio-folio
+    - hsk-studio-harness-core
+    - hsk-studio-harness-view
+    - hsk-studio-interop-affinity
+    - hsk-studio-interop-fig
+    - hsk-studio-interop-psd
+    - hsk-studio-interop-raster
+    - hsk-studio-interop-tiff
+    - hsk-studio-interop-vector
+    - hsk-studio-layout
+    - hsk-studio-nib
+    - hsk-studio-observe
+    - hsk-studio-package
+    - hsk-studio-pigment
+    - hsk-studio-press
+    - hsk-studio-prism
+    - hsk-studio-pulse
+    - hsk-studio-reel
+    - hsk-studio-reel-native
+    - hsk-studio-render-cpu
+    - hsk-studio-render-gpu
+    - hsk-studio-score
+    - hsk-studio-score-device
+    - hsk-studio-score-plugin
+    - hsk-studio-session
+    - hsk-studio-type
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-harness
+  source_tree: b51f9f9c3d2b3525a07d848f8b3ac88ba3453e1a
+- id: HSK-STUDIO-INTEROP-AFFINITY-ASSET-001
+  name: hsk-studio-interop-affinity
+  path: handshake-studio-assets/crates/hsk-studio-interop-affinity
+  kind: asset
+  status: source-present
+  purpose: 'Studio Affinity interop (lane SMB-AFFINITY-INTEROP-1, parity row AF-02; lead decision 2026-10-16): a
+    clean-room, read-only reader of the KA container that every Affinity document (`.af`, `.afphoto`, `.afdesign`,
+    `.afpub`, V1-V3) and resource file uses.'
+  capabilities:
+  - 'Studio Affinity interop (lane SMB-AFFINITY-INTEROP-1, parity row AF-02; lead decision 2026-10-16): a clean-room,
+    read-only reader of the KA container that every Affinity document (`.af`, `.afphoto`, `.afdesign`, `.afpub`,
+    V1-V3) and resource file uses.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-affinity/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-affinity
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-affinity/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-affinity/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-affinity
+  source_tree: e2c6082d25ae3c006b7216fc1a15cdd5c54a8153
+- id: HSK-STUDIO-INTEROP-FIG-ASSET-001
+  name: hsk-studio-interop-fig
+  path: handshake-studio-assets/crates/hsk-studio-interop-fig
+  kind: asset
+  status: source-present
+  purpose: Offline .fig proprietary-version decoder and conversion adapter owner; decoder availability NOT_PROVEN.
+    Preserve original/source-qualified IDs and map components/variants/variables/modes/auto-layout/prototypes with
+    loss receipts. SVG/PNG/token/API interchange does not replace required editable .fig import.
+  capabilities:
+  - Offline .fig proprietary-version decoder and conversion adapter owner; decoder availability NOT_PROVEN. Preserve
+    original/source-qualified IDs and map components/variants/variables/modes/auto-layout/prototypes with loss receipts.
+    SVG/PNG/token/API interchange does not replace required editable .fig import.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-fig/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-fig
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-fig/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-fig/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-components
+    - hsk-studio-composite
+    - hsk-studio-folio
+    - hsk-studio-interop-raster
+    - hsk-studio-nib
+    - hsk-studio-observe
+    - hsk-studio-package
+    - hsk-studio-pigment
+    - hsk-studio-press
+    - hsk-studio-prism
+    - hsk-studio-render-cpu
+    - hsk-studio-type
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-fig
+  source_tree: 295d4f8230f943929e69a277a8d52a99455c938e
+- id: HSK-STUDIO-INTEROP-LAYOUT-ASSET-001
+  name: hsk-studio-interop-layout
+  path: handshake-studio-assets/crates/hsk-studio-interop-layout
+  kind: asset
+  status: source-present
+  purpose: IDML/INDD/print interchange conversion; no claim INDD readable without actual decoder proof.
+  capabilities:
+  - IDML/INDD/print interchange conversion; no claim INDD readable without actual decoder proof.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-layout/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-layout
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-layout/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-layout/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-layout
+    - hsk-studio-nib
+    - hsk-studio-observe
+    - hsk-studio-package
+    - hsk-studio-pigment
+    - hsk-studio-press
+    - hsk-studio-prism
+    - hsk-studio-type
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-layout
+  source_tree: 813133186f90610e907d207ce23f3c3fb3ec3f76
+- id: HSK-STUDIO-INTEROP-LRCAT-ASSET-001
+  name: hsk-studio-interop-lrcat
+  path: handshake-studio-assets/crates/hsk-studio-interop-lrcat
+  kind: asset
+  status: source-present
+  purpose: Internal bounded read-only Lightroom .lrcat file-byte decoder, fixed Lightroom semantic extraction only;
+    explicitly granted stable main/WAL handles. No engine, query API, writable catalog or DB. Outputs CKC/Studio
+    proposals through shared ports.
+  capabilities:
+  - Internal bounded read-only Lightroom .lrcat file-byte decoder, fixed Lightroom semantic extraction only; explicitly
+    granted stable main/WAL handles. No engine, query API, writable catalog or DB. Outputs CKC/Studio proposals
+    through shared ports.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-lrcat/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-lrcat
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-lrcat/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-lrcat/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-develop
+    - hsk-studio-kernel-bindings
+    - hsk-studio-observe
+    - hsk-studio-package
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-lrcat
+  source_tree: a68e59a4d9ff721357e5092239f7adb63243d041
+- id: HSK-STUDIO-INTEROP-MEDIA-ASSET-001
+  name: hsk-studio-interop-media
+  path: handshake-studio-assets/crates/hsk-studio-interop-media
+  kind: asset
+  status: source-present
+  purpose: Typed timeline/motion/audio interchange (PRPROJ/AEP/SESX included explicit missing-decoder scope), loss-aware
+    proposals through neutral Folio contracts. No Lightroom parser or private catalog; lrcat has its own adapter.
+  capabilities:
+  - Typed timeline/motion/audio interchange (PRPROJ/AEP/SESX included explicit missing-decoder scope), loss-aware
+    proposals through neutral Folio contracts. No Lightroom parser or private catalog; lrcat has its own adapter.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-media/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-media
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-media/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-media/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-observe
+    - hsk-studio-pulse
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-media
+  source_tree: 0866a25d9acdff96311f7a6075f848bdfa096914
+- id: HSK-STUDIO-INTEROP-PSD-ASSET-001
+  name: hsk-studio-interop-psd
+  path: handshake-studio-assets/crates/hsk-studio-interop-psd
+  kind: asset
+  status: source-present
+  purpose: PSD/PSB conversion with provenance and structured unsupported/loss report; preserve originals/unknown
+    bytes.
+  capabilities:
+  - PSD/PSB conversion with provenance and structured unsupported/loss report; preserve originals/unknown bytes.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-psd/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-psd
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-psd/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-psd/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-observe
+    - hsk-studio-pigment
+    - hsk-studio-prism
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-psd
+  source_tree: 95fab41b62b1b219cd40cf666f583dbc8b14beaf
+- id: HSK-STUDIO-INTEROP-RASTER-ASSET-001
+  name: hsk-studio-interop-raster
+  path: handshake-studio-assets/crates/hsk-studio-interop-raster
+  kind: asset
+  status: source-present
+  purpose: 'Studio raster interop: the single owner (lead decision R-OWN, 2026-10-14; CX-CAP-001) of PNG / JPEG
+    (later WebP, GIF, BMP) container decode and encode over `&[u8]`.'
+  capabilities:
+  - 'Studio raster interop: the single owner (lead decision R-OWN, 2026-10-14; CX-CAP-001) of PNG / JPEG (later
+    WebP, GIF, BMP) container decode and encode over `&[u8]`.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-raster/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-raster
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-raster/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-raster/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-raster
+  source_tree: c915b4200fa0fdd357f8a5c1cc22faf26963d1cb
+- id: HSK-STUDIO-INTEROP-TIFF-ASSET-001
+  name: hsk-studio-interop-tiff
+  path: handshake-studio-assets/crates/hsk-studio-interop-tiff
+  kind: asset
+  status: source-present
+  purpose: 'Studio TIFF interop: the single TIFF container owner (lead decision F1, 2026-10-14; CX-CAP-001).'
+  capabilities:
+  - 'Studio TIFF interop: the single TIFF container owner (lead decision F1, 2026-10-14; CX-CAP-001).'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-tiff/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-tiff
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-tiff/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-tiff/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-tiff
+  source_tree: 86cc84c06538e7b252565e7a0e820df24920bcda
+- id: HSK-STUDIO-INTEROP-VECTOR-CORE-ASSET-001
+  name: hsk-studio-interop-vector-core
+  path: handshake-studio-assets/crates/hsk-studio-interop-vector-core
+  kind: asset
+  status: source-present
+  purpose: 'Core half of STUDIO-MODULE-INTEROP_VECTOR (SMB-CRATE-SEAM-SPLITS slice 3a): the vector model, ids, errors,
+    the .ai import through the PDF drawing port and the Press provider port, and the other vector interchange formats
+    (lane SMB-DXF-EPS-IMPORT): DXF (own reader, default build), the DWG refusal, EPS (DSC comments, DOS header and
+    preview in process; no PostScript interpreter: vector conversion is a typed refusal, see `eps`) and EPSF export.
+    `hsk-studio-interop-vector` is the public face; the `#[doc(hidden)]` modules are the seam `hsk-studio-interop-vector-svg`
+    builds on, not a public contract.'
+  capabilities:
+  - 'Core half of STUDIO-MODULE-INTEROP_VECTOR (SMB-CRATE-SEAM-SPLITS slice 3a): the vector model, ids, errors,
+    the .ai import through the PDF drawing port and the Press provider port, and the other vector interchange formats
+    (lane SMB-DXF-EPS-IMPORT): DXF (own reader, default build), the DWG refusal, EPS (DSC comments, DOS header and
+    preview in process; no PostScript interpreter: vector conversion is a typed refusal, see `eps`) and EPSF export.
+    `hsk-studio-interop-vector` is the public face; the `#[doc(hidden)]` modules are the seam `hsk-studio-interop-vector-svg`
+    builds on, not a public contract.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-vector-core/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-vector-core
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-vector-core/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-vector-core/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-nib
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-vector-core
+  source_tree: 9112c5d433aaccc74efc259965040d53adc6d51c
+- id: HSK-STUDIO-INTEROP-VECTOR-SVG-ASSET-001
+  name: hsk-studio-interop-vector-svg
+  path: handshake-studio-assets/crates/hsk-studio-interop-vector-svg
+  kind: asset
+  status: source-present
+  purpose: 'SVG half of STUDIO-MODULE-INTEROP_VECTOR (SMB-CRATE-SEAM-SPLITS slice 3a): SVG/SVGZ import (`import_svg`),
+    SVG export and gzip, on the core half''s model, ids and errors. `hsk-studio-interop-vector` is the public face.'
+  capabilities:
+  - 'SVG half of STUDIO-MODULE-INTEROP_VECTOR (SMB-CRATE-SEAM-SPLITS slice 3a): SVG/SVGZ import (`import_svg`),
+    SVG export and gzip, on the core half''s model, ids and errors. `hsk-studio-interop-vector` is the public face.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-vector-svg/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-vector-svg
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-vector-svg/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-vector-svg/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-interop-vector-core
+    - hsk-studio-nib
+    - hsk-studio-package
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-vector-svg
+  source_tree: 1a77ab5bf71e9075fac6d276dbdae382311abf55
+- id: HSK-STUDIO-INTEROP-VECTOR-ASSET-001
+  name: hsk-studio-interop-vector
+  path: handshake-studio-assets/crates/hsk-studio-interop-vector
+  kind: asset
+  status: source-present
+  purpose: SVG/AI vector import/export with fallible loss-aware proposals; PDF decoding/editing exposed through
+    Press provider ports, not unconditional all-PDF engine.
+  capabilities:
+  - SVG/AI vector import/export with fallible loss-aware proposals; PDF decoding/editing exposed through Press provider
+    ports, not unconditional all-PDF engine.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-interop-vector/src/lib.rs
+  packages:
+  - name: hsk-studio-interop-vector
+    manifest: handshake-studio-assets/crates/hsk-studio-interop-vector/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-interop-vector/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-interop-vector-core
+    - hsk-studio-interop-vector-svg
+    - hsk-studio-nib
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-interop-vector
+  source_tree: b418ca6eb92aa614720c4dd48de39b9967e49d40
+- id: HSK-STUDIO-KERNEL-BINDINGS-ASSET-001
+  name: hsk-studio-kernel-bindings
+  path: handshake-studio-assets/crates/hsk-studio-kernel-bindings
+  kind: asset
+  status: source-present
+  purpose: Host-neutral integration bridge port schemas and executable in-memory adapter consumer. Concrete AppState/SurrealDB/Argus/native
+    adapters live later in Handshake product integration target and are excluded from this assets workspace.
+  capabilities:
+  - Host-neutral integration bridge port schemas and executable in-memory adapter consumer. Concrete AppState/SurrealDB/Argus/native
+    adapters live later in Handshake product integration target and are excluded from this assets workspace.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-kernel-bindings/src/lib.rs
+  packages:
+  - name: hsk-studio-kernel-bindings
+    manifest: handshake-studio-assets/crates/hsk-studio-kernel-bindings/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-kernel-bindings/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-observe
+    - hsk-studio-session
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-kernel-bindings
+  source_tree: 2b1d1a14cc1637e22d82403dbd2f6725b42b2663
+- id: HSK-STUDIO-LAYOUT-ASSET-001
+  name: hsk-studio-layout
+  path: handshake-studio-assets/crates/hsk-studio-layout
+  kind: asset
+  status: source-present
+  purpose: 'Publication/page/threaded-frame composition, overset/preflight, tables and multilingual paragraph algorithms.
+    Slice 1: threaded-frame reflow with overset detection, and a first-fit plus a Knuth-Plass line breaker over
+    Type-shaped Latin left-to-right paragraphs. Pages, text frames, thread links and the story are Folio''s (`StudioPageSpread::pages`,
+    `StudioLayer::text_frame`, `StudioTextStory`); layout reads them and keeps no model of its own. Anything else
+    is refused, never mis-laid.'
+  capabilities:
+  - 'Publication/page/threaded-frame composition, overset/preflight, tables and multilingual paragraph algorithms.
+    Slice 1: threaded-frame reflow with overset detection, and a first-fit plus a Knuth-Plass line breaker over
+    Type-shaped Latin left-to-right paragraphs. Pages, text frames, thread links and the story are Folio''s (`StudioPageSpread::pages`,
+    `StudioLayer::text_frame`, `StudioTextStory`); layout reads them and keeps no model of its own. Anything else
+    is refused, never mis-laid.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-layout/src/lib.rs
+  packages:
+  - name: hsk-studio-layout
+    manifest: handshake-studio-assets/crates/hsk-studio-layout/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-layout/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-observe
+    - hsk-studio-type
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-layout
+  source_tree: f1c4919de807ba4c5fe2b7d291e2996b07ed6446
+- id: HSK-STUDIO-MOTION-JS-ASSET-001
+  name: hsk-studio-motion-js
+  path: handshake-studio-assets/crates/hsk-studio-motion-js
+  kind: asset
+  status: source-present
+  purpose: Optional JavaScript expression provider; isolate C/FFI/toolchain/runtime quotas from pure Motion semantics.
+    Shared host sandbox lifecycle; no private script/plugin authority.
+  capabilities:
+  - Optional JavaScript expression provider; isolate C/FFI/toolchain/runtime quotas from pure Motion semantics.
+    Shared host sandbox lifecycle; no private script/plugin authority.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-motion-js/src/lib.rs
+  packages:
+  - name: hsk-studio-motion-js
+    manifest: handshake-studio-assets/crates/hsk-studio-motion-js/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-motion-js/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-motion
+    - hsk-studio-observe
+    - hsk-studio-worker
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-motion-js
+  source_tree: 40e02b9335f4350b3617f55254bea7bfd0d49f1e
+- id: HSK-STUDIO-MOTION-ASSET-001
+  name: hsk-studio-motion
+  path: handshake-studio-assets/crates/hsk-studio-motion
+  kind: asset
+  status: source-present
+  purpose: Keyframes/easing and temporal/property-expression/time/seed/dependency policy; typed provider ports preserve
+    pure Rust domain closure. Static composition plan belongs to Composite; optional JS engine belongs to MotionJS.
+    No vendor runtime or unconditional NLE/audio/native provider dependency.
+  capabilities:
+  - Keyframes/easing and temporal/property-expression/time/seed/dependency policy; typed provider ports preserve
+    pure Rust domain closure. Static composition plan belongs to Composite; optional JS engine belongs to MotionJS.
+    No vendor runtime or unconditional NLE/audio/native provider dependency.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-motion/src/lib.rs
+  packages:
+  - name: hsk-studio-motion
+    manifest: handshake-studio-assets/crates/hsk-studio-motion/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-motion/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-motion
+  source_tree: 3fbc55e604f49619d56a7f3080e18a7c2b15040b
+- id: HSK-STUDIO-NIB-ASSET-001
+  name: hsk-studio-nib
+  path: handshake-studio-assets/crates/hsk-studio-nib
+  kind: asset
+  status: source-present
+  purpose: 'Nib: fallible, source-only geometry proposals; no document mutation or host authority.'
+  capabilities:
+  - 'Nib: fallible, source-only geometry proposals; no document mutation or host authority.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-nib/src/lib.rs
+  packages:
+  - name: hsk-studio-nib
+    manifest: handshake-studio-assets/crates/hsk-studio-nib/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-nib/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-nib
+  source_tree: 069cc61a7ec9ee994058fb3f4b7d62a78d0c81b3
+- id: HSK-STUDIO-OBSERVE-ASSET-001
+  name: hsk-studio-observe
+  path: handshake-studio-assets/crates/hsk-studio-observe
+  kind: asset
+  status: source-present
+  purpose: 'Observe: bounded correlation/progress/outcome adapter, not a recorder or authority. Caller-owned ports
+    deliver allowlisted bytes to the existing diagnostic owners.'
+  capabilities:
+  - 'Observe: bounded correlation/progress/outcome adapter, not a recorder or authority. Caller-owned ports deliver
+    allowlisted bytes to the existing diagnostic owners.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-observe/src/lib.rs
+  packages:
+  - name: hsk-studio-observe
+    manifest: handshake-studio-assets/crates/hsk-studio-observe/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-observe/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-observe
+  source_tree: 1328bc4315133d1bb240cd85d4733371632cc55c
+- id: HSK-STUDIO-PACKAGE-ASSET-001
+  name: hsk-studio-package
+  path: handshake-studio-assets/crates/hsk-studio-package
+  kind: asset
+  status: source-present
+  purpose: Native document container serialization, manifest/hash references, atomic recovery and bounded loading.
+    Stream asset bytes through CKC/PRIM-ArtifactService provider ports; no private catalog, preview cache, metadata
+    store, watcher or second CAS under STU-ASSET-004/009/010. Standalone fixtures supply scoped in-memory resolver
+    inputs rather than kernel imports.
+  capabilities:
+  - Native document container serialization, manifest/hash references, atomic recovery and bounded loading. Stream
+    asset bytes through CKC/PRIM-ArtifactService provider ports; no private catalog, preview cache, metadata store,
+    watcher or second CAS under STU-ASSET-004/009/010. Standalone fixtures supply scoped in-memory resolver inputs
+    rather than kernel imports.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-package/src/lib.rs
+  packages:
+  - name: hsk-studio-package
+    manifest: handshake-studio-assets/crates/hsk-studio-package/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-package/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-package
+  source_tree: 05f4ac2a9acca2813543306ade00cc1a75634ac4
+- id: HSK-STUDIO-PIGMENT-ASSET-001
+  name: hsk-studio-pigment
+  path: handshake-studio-assets/crates/hsk-studio-pigment
+  kind: asset
+  status: source-present
+  purpose: Pigment source-local CPU masked replacement. Host acceptance and richer raster work remain pending.
+  capabilities:
+  - Pigment source-local CPU masked replacement. Host acceptance and richer raster work remain pending.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-pigment/src/lib.rs
+  packages:
+  - name: hsk-studio-pigment
+    manifest: handshake-studio-assets/crates/hsk-studio-pigment/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-pigment/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-folio
+    - hsk-studio-observe
+    - hsk-studio-prism
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-pigment
+  source_tree: a610b3c32524a3416d0ca3972a8b1f51d80ab372
+- id: HSK-STUDIO-PRESS-READ-ASSET-001
+  name: hsk-studio-press-read
+  path: handshake-studio-assets/crates/hsk-studio-press-read
+  kind: asset
+  status: source-present
+  purpose: Bounded PDF object editing, projection proposals, forms/annotations/signature states, prepress/accessibility/redaction/full-save.
+    PDF bytes are provider transport, never separate live document authority.
+  capabilities:
+  - Bounded PDF object editing, projection proposals, forms/annotations/signature states, prepress/accessibility/redaction/full-save.
+    PDF bytes are provider transport, never separate live document authority.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-press-read/src/lib.rs
+  packages:
+  - name: hsk-studio-press-read
+    manifest: handshake-studio-assets/crates/hsk-studio-press-read/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-press-read/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-press-read
+  source_tree: fc0a4b84ac383baa6ba6c1803973a677c429d7b7
+- id: HSK-STUDIO-PRESS-WRITE-ASSET-001
+  name: hsk-studio-press-write
+  path: handshake-studio-assets/crates/hsk-studio-press-write
+  kind: asset
+  status: source-present
+  purpose: 'The write half of STUDIO-MODULE-PRESS (SMB-CRATE-SEAM-SPLITS, slice 1): Folio/vector -> PDF export,
+    the PDF/X-4 check, font subsetting (CFF, sfnt), export verdicts, the ink manager and the separations preview,
+    built on the read half''s PDF syntax, object writer, painter and vector reading. `hsk-studio-press` is the public
+    face.'
+  capabilities:
+  - 'The write half of STUDIO-MODULE-PRESS (SMB-CRATE-SEAM-SPLITS, slice 1): Folio/vector -> PDF export, the PDF/X-4
+    check, font subsetting (CFF, sfnt), export verdicts, the ink manager and the separations preview, built on the
+    read half''s PDF syntax, object writer, painter and vector reading. `hsk-studio-press` is the public face.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-press-write/src/lib.rs
+  packages:
+  - name: hsk-studio-press-write
+    manifest: handshake-studio-assets/crates/hsk-studio-press-write/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-press-write/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-press-read
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-press-write
+  source_tree: 846d5d4cb44984eb8c80d2799b09038e5ebd6c8a
+- id: HSK-STUDIO-PRESS-ASSET-001
+  name: hsk-studio-press
+  path: handshake-studio-assets/crates/hsk-studio-press
+  kind: asset
+  status: source-present
+  purpose: Bounded PDF object editing, projection proposals, forms/annotations/signature states, prepress/accessibility/redaction/full-save.
+    PDF bytes are provider transport, never separate live document authority.
+  capabilities:
+  - Bounded PDF object editing, projection proposals, forms/annotations/signature states, prepress/accessibility/redaction/full-save.
+    PDF bytes are provider transport, never separate live document authority.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-press/src/lib.rs
+  packages:
+  - name: hsk-studio-press
+    manifest: handshake-studio-assets/crates/hsk-studio-press/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-press/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+    - hsk-studio-press-read
+    - hsk-studio-press-write
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-press
+  source_tree: efd2526ca6b007188c7961e79b1b7e5056464d34
+- id: HSK-STUDIO-PRISM-ASSET-001
+  name: hsk-studio-prism
+  path: handshake-studio-assets/crates/hsk-studio-prism
+  kind: asset
+  status: source-present
+  purpose: Bounded caller-scoped RGB ICCv4 analytical transform; not persisted profile decoding.
+  capabilities:
+  - Bounded caller-scoped RGB ICCv4 analytical transform; not persisted profile decoding.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-prism/src/lib.rs
+  packages:
+  - name: hsk-studio-prism
+    manifest: handshake-studio-assets/crates/hsk-studio-prism/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-prism/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-prism
+  source_tree: e6c2e9f75573dd8c75985f21f7707b8963c42d2f
+- id: HSK-STUDIO-PULSE-ASSET-001
+  name: hsk-studio-pulse
+  path: handshake-studio-assets/crates/hsk-studio-pulse
+  kind: asset
+  status: source-present
+  purpose: Canonical integer-tick sequence time at 254016000000 ticks/second per STU-VID-012 and normalized broadcast
+    ticks/frame per STU-VID-013. Preserve declared field types with checked arithmetic/range; rational time is for
+    interchange adapters, never a competing stored authority. Own edit/trim/ripple/multicam references and scheduling;
+    media decoder behind typed port.
+  capabilities:
+  - Canonical integer-tick sequence time at 254016000000 ticks/second per STU-VID-012 and normalized broadcast ticks/frame
+    per STU-VID-013. Preserve declared field types with checked arithmetic/range; rational time is for interchange
+    adapters, never a competing stored authority. Own edit/trim/ripple/multicam references and scheduling; media
+    decoder behind typed port.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-pulse/src/lib.rs
+  packages:
+  - name: hsk-studio-pulse
+    manifest: handshake-studio-assets/crates/hsk-studio-pulse/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-pulse/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-composite
+    - hsk-studio-folio
+    - hsk-studio-observe
+    - hsk-studio-pigment
+    - hsk-studio-prism
+    - hsk-studio-render-cpu
+    - hsk-studio-score
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-pulse
+  source_tree: 3015f4c2155533a1c457cf5a276baa1c630eb883
+- id: HSK-STUDIO-REEL-NATIVE-ASSET-001
+  name: hsk-studio-reel-native
+  path: handshake-studio-assets/crates/hsk-studio-reel-native
+  kind: asset
+  status: source-present
+  purpose: Optional native media codec provider; isolate FFI/toolchain/codec license/version/process boundaries
+    from pure media contracts.
+  capabilities:
+  - Optional native media codec provider; isolate FFI/toolchain/codec license/version/process boundaries from pure
+    media contracts.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-reel-native/src/lib.rs
+  packages:
+  - name: hsk-studio-reel-native
+    manifest: handshake-studio-assets/crates/hsk-studio-reel-native/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-reel-native/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-reel
+    - hsk-studio-worker
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-reel-native
+  source_tree: 75a4a03df709334b67c104b8bbbd07556dbb94ed
+- id: HSK-STUDIO-REEL-ASSET-001
+  name: hsk-studio-reel
+  path: handshake-studio-assets/crates/hsk-studio-reel
+  kind: asset
+  status: source-present
+  purpose: Decode/encode media/proxy-provider adapters; native codec bindings opt-in, never reachable from raster/type
+    default closure.
+  capabilities:
+  - Decode/encode media/proxy-provider adapters; native codec bindings opt-in, never reachable from raster/type
+    default closure.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-reel/src/lib.rs
+  packages:
+  - name: hsk-studio-reel
+    manifest: handshake-studio-assets/crates/hsk-studio-reel/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-reel/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-reel
+  source_tree: 587e4cecc57eb0af6eeb36fbb48a8505f91b3a54
+- id: HSK-STUDIO-RENDER-CPU-ASSET-001
+  name: hsk-studio-render-cpu
+  path: handshake-studio-assets/crates/hsk-studio-render-cpu
+  kind: asset
+  status: source-present
+  purpose: CPU render backend/reference; opt-in professional reference cases require external independent oracles.
+  capabilities:
+  - CPU render backend/reference; opt-in professional reference cases require external independent oracles.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-render-cpu/src/lib.rs
+  packages:
+  - name: hsk-studio-render-cpu
+    manifest: handshake-studio-assets/crates/hsk-studio-render-cpu/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-render-cpu/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-composite
+    - hsk-studio-nib
+    - hsk-studio-observe
+    - hsk-studio-pigment
+    - hsk-studio-prism
+    - hsk-studio-type
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-render-cpu
+  source_tree: 10e906ca983c73702ebb2ca9d037b19acc306039
+- id: HSK-STUDIO-RENDER-GPU-ASSET-001
+  name: hsk-studio-render-gpu
+  path: handshake-studio-assets/crates/hsk-studio-render-gpu
+  kind: asset
+  status: source-present
+  purpose: wgpu backend/device lifecycle, residency and budgets; GPU API types hidden from document/contracts.
+  capabilities:
+  - wgpu backend/device lifecycle, residency and budgets; GPU API types hidden from document/contracts.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-render-gpu/src/lib.rs
+  packages:
+  - name: hsk-studio-render-gpu
+    manifest: handshake-studio-assets/crates/hsk-studio-render-gpu/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-render-gpu/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-composite
+    - hsk-studio-observe
+    - hsk-studio-pigment
+    - hsk-studio-prism
+    - hsk-studio-type
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-render-gpu
+  source_tree: 9c8551d06e8e08736309e88624fac4d5dfa752d9
+- id: HSK-STUDIO-SCORE-DEVICE-ASSET-001
+  name: hsk-studio-score-device
+  path: handshake-studio-assets/crates/hsk-studio-score-device
+  kind: asset
+  status: source-present
+  purpose: Optional native device I/O provider; all configuration and allocation off realtime callback; preallocated
+    fixed-capacity handoff.
+  capabilities:
+  - Optional native device I/O provider; all configuration and allocation off realtime callback; preallocated fixed-capacity
+    handoff.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-score-device/src/lib.rs
+  packages:
+  - name: hsk-studio-score-device
+    manifest: handshake-studio-assets/crates/hsk-studio-score-device/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-score-device/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+    - hsk-studio-score
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-score-device
+  source_tree: b46f1d2b954e72c36e2baf5074ad6ee197dd1a36
+- id: HSK-STUDIO-SCORE-PLUGIN-ASSET-001
+  name: hsk-studio-score-plugin
+  path: handshake-studio-assets/crates/hsk-studio-score-plugin
+  kind: asset
+  status: source-present
+  purpose: Optional native plugin hosting provider; scoped process/lifetime/timeout and foreign resource budgets
+    separate from pure DSP.
+  capabilities:
+  - Optional native plugin hosting provider; scoped process/lifetime/timeout and foreign resource budgets separate
+    from pure DSP.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-score-plugin/src/lib.rs
+  packages:
+  - name: hsk-studio-score-plugin
+    manifest: handshake-studio-assets/crates/hsk-studio-score-plugin/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-score-plugin/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+    - hsk-studio-score
+    - hsk-studio-worker
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-score-plugin
+  source_tree: cc3da9a03420cf990909505c89fddc3a00c48567
+- id: HSK-STUDIO-SCORE-ASSET-001
+  name: hsk-studio-score
+  path: handshake-studio-assets/crates/hsk-studio-score
+  kind: asset
+  status: source-present
+  purpose: Pure audio sample/channel/timing, DSP/spectral/mix/routing/latency semantics and bounded offline block
+    processing. Device I/O and plugin hosting are optional separate providers.
+  capabilities:
+  - Pure audio sample/channel/timing, DSP/spectral/mix/routing/latency semantics and bounded offline block processing.
+    Device I/O and plugin hosting are optional separate providers.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-score/src/lib.rs
+  packages:
+  - name: hsk-studio-score
+    manifest: handshake-studio-assets/crates/hsk-studio-score/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-score/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-score
+  source_tree: d534894804fc528e73ce5b7a23c17bcd7c8d68b8
+- id: HSK-STUDIO-SESSION-ASSET-001
+  name: hsk-studio-session
+  path: handshake-studio-assets/crates/hsk-studio-session
+  kind: asset
+  status: source-present
+  purpose: Headless single-document operation orchestration, provider registration and test ports. Multi- output
+    delivery captures immutable revision/presets/output verification and uses existing Job Runtime via a port for
+    queue/watchfolder/cancel/retry, without a second job database or queue authority. No built-in all-engine mega
+    dependency.
+  capabilities:
+  - Headless single-document operation orchestration, provider registration and test ports. Multi- output delivery
+    captures immutable revision/presets/output verification and uses existing Job Runtime via a port for queue/watchfolder/cancel/retry,
+    without a second job database or queue authority. No built-in all-engine mega dependency.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-session/src/lib.rs
+  packages:
+  - name: hsk-studio-session
+    manifest: handshake-studio-assets/crates/hsk-studio-session/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-session/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-chronicle
+    - hsk-studio-folio
+    - hsk-studio-observe
+    - hsk-studio-package
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-session
+  source_tree: 3f69396011a5aa6458d401994e1c2b819e10ee1c
+- id: HSK-STUDIO-TYPE-ASSET-001
+  name: hsk-studio-type
+  path: handshake-studio-assets/crates/hsk-studio-type
+  kind: asset
+  status: source-present
+  purpose: Source-only, caller-granted text shaping. No host font discovery or document mutation.
+  capabilities:
+  - Source-only, caller-granted text shaping. No host font discovery or document mutation.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-type/src/lib.rs
+  packages:
+  - name: hsk-studio-type
+    manifest: handshake-studio-assets/crates/hsk-studio-type/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-type/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-type
+  source_tree: 7dcd27cdc152f9ef77f72f9b509a20644f733acf
+- id: HSK-STUDIO-WEB-ASSET-001
+  name: hsk-studio-web
+  path: handshake-studio-assets/crates/hsk-studio-web
+  kind: asset
+  status: source-present
+  purpose: Visual/code/DOM/template/responsive workflow over one source revision and shared editor/preview mechanics.
+    No separate app/server/job or persistence authority.
+  capabilities:
+  - Visual/code/DOM/template/responsive workflow over one source revision and shared editor/preview mechanics. No
+    separate app/server/job or persistence authority.
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-web/src/lib.rs
+  packages:
+  - name: hsk-studio-web
+    manifest: handshake-studio-assets/crates/hsk-studio-web/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-web/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+    - hsk-studio-observe
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-web
+  source_tree: 6ed2bbf43edc9a84e76873a54bf489fc374787b0
+- id: HSK-STUDIO-WORKER-ASSET-001
+  name: hsk-studio-worker
+  path: handshake-studio-assets/crates/hsk-studio-worker
+  kind: asset
+  status: source-present
+  purpose: 'Studio worker-process supervision: the single owner (Operator decision D18 option (a), 2026-10-14) of
+    starting, watching and reclaiming the isolated worker processes used by `hsk-studio-motion-js`, `hsk-studio-reel-native`
+    and `hsk-studio-score-plugin`.'
+  capabilities:
+  - 'Studio worker-process supervision: the single owner (Operator decision D18 option (a), 2026-10-14) of starting,
+    watching and reclaiming the isolated worker processes used by `hsk-studio-motion-js`, `hsk-studio-reel-native`
+    and `hsk-studio-score-plugin`.'
+  source_branch: codex/handshake-studio-assets
+  manual: handshake-studio-assets/crates/hsk-studio-worker/src/lib.rs
+  packages:
+  - name: hsk-studio-worker
+    manifest: handshake-studio-assets/crates/hsk-studio-worker/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-worker/src/lib.rs
+    role: package
+    depends_on:
+    - hsk-studio-accord
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handshake-studio-assets/handshake-studio-assets/crates/hsk-studio-worker
+  source_tree: 28c3e899cf2487b3fa99afd01ac547387ee65a8a
+- id: CKC-KIT-001
+  name: CKC
+  path: CKC
+  kind: kit
+  status: source-present
+  purpose: Package grouping in CKC; inspect each component contract before independent reuse.
+  capabilities:
+  - Provenance reference and identity types.
+  manual: CKC/handshake_ckc_provenance/src/lib.rs
+  components:
+  - HANDSHAKE-CKC-PROVENANCE-ASSET-001
+  packages: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/CKC
+- id: HSKERNEL-KIT-001
+  name: hskernel
+  path: hskernel
+  kind: kit
+  status: source-present
+  purpose: Package grouping in hskernel; inspect each component contract before independent reuse.
+  capabilities:
+  - Context bundles and canonical JSON hashing.
+  - ModelLane navigation lookup and validated scalar projections.
+  - Watcher lifecycle, bounded parent-exit finalization, and Windows parent-process watch.
+  - Recovery claims, identities, cloud-assistance receipts, and dashboard protocol.
+  - Swarm diagnostic projection models, decoding, and validation.
+  manual: hskernel/handshake_context_bundle/src/lib.rs
+  components:
+  - HANDSHAKE-CONTEXT-BUNDLE-ASSET-001
+  - HANDSHAKE-MODEL-LANE-NAVIGATION-ASSET-001
+  - HANDSHAKE-PALMISTRY-LIFECYCLE-ASSET-001
+  - HANDSHAKE-RECOVERY-PROTOCOL-ASSET-001
+  - HANDSHAKE-SWARM-LANE-DIAGNOSTICS-ASSET-001
+  packages: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/hskernel
+- id: SHARED-KIT-001
+  name: shared
+  path: shared
+  kind: kit
+  status: source-present
+  purpose: Package grouping in shared; inspect each component contract before independent reuse.
+  capabilities:
+  - Canonical JSON byte encoding and SHA-256 helpers.
+  manual: shared/handshake_canonical_json/src/lib.rs
+  components:
+  - HANDSHAKE-CANONICAL-JSON-ASSET-001
+  packages: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/shared
+drafts:
+- id: HANDSHAKE-WIKILINK-SEMANTICS-DRAFT-001
+  path: Notes/handshake_wikilink_semantics
+  status: local-source-only
+  reason: Untracked source and README exist without a package manifest; not installable or published.
+- id: HANDSHAKE-SWARM-STATE-DRAFT-001
+  path: hskernel/crates/handshake_swarm_state
+  status: local-source-only
+  reason: Untracked test fragment exists without a package manifest or production source.

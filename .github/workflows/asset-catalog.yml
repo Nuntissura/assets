@@ -1,0 +1,23 @@
+name: Asset catalog parity
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyYAML==6.0.3
+      - run: python -m unittest discover -s repo-governance/tests -p 'test_*.py'
+      - run: python repo-governance/scripts/asset_catalog.py check
+      - name: Compare canonical GitHub source and generated skill inventory
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/codex/handpick'
+        run: python repo-governance/scripts/asset_catalog.py parity --skill-dir repo-governance/skills/create-assets
