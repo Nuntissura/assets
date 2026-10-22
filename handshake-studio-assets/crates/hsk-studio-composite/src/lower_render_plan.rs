@@ -48,8 +48,8 @@ use crate::{
     CompositeError,
     evaluate_static::{EvalReport, StepStatus, tile_rects, union},
     lower_extensions::{
-        AdjustmentOp, EffectContext, LayerFeatures, LoweringNote, adjustment_for,
-        is_adjustment_layer,
+        AdjustmentOp, EffectContext, LayerFeatures, LoweringNote, REFUSE_FILL_ROOT, adjustment_for,
+        fill_record, fill_rect, fill_solid_rgba, is_adjustment_layer, is_fill_layer,
     },
     lower_plan::{LoweredPlan, NodeAddr, SourceValue, Step, StepAppearance},
 };
@@ -1196,6 +1196,30 @@ pub(crate) fn lower_inner(
                     }
                     continue;
                 }
+                // A fill layer (lane SMB-PS-FILL-LAYERS): a solid fill is a `Solid` node over its
+                // rectangle; a gradient or pattern fill is an opaque white `Solid` shape whose
+                // content the plan layer hides and whose fill the layer's effect draws
+                // (`LayerFeatures::fill_overlay`).
+                if let (SourceValue::Image, Some(l), Some(recs), Some(cx)) = (
+                    value,
+                    layers.get(addr.layer_id.as_str()).copied().filter(|l| is_fill_layer(l)),
+                    records,
+                    effect_cx.as_ref(),
+                ) {
+                    let unavailable =
+                        |code: &str| CompositeError::Unavailable(format!("{}:{code}", addr.text()));
+                    let f = fill_record(recs, &l.layer_id).map_err(unavailable)?;
+                    let solid = fill_solid_rgba(f, cx).map_err(unavailable)?;
+                    if i == root_index && solid.is_none() {
+                        return Err(unavailable(REFUSE_FILL_ROOT));
+                    }
+                    let id = out.push(PlanNode::Solid {
+                        rect: fill_rect(f),
+                        rgba: solid.unwrap_or([1.0; 4]),
+                    })?;
+                    node_of.insert(i, id);
+                    continue;
+                }
                 let (SourceValue::Image, Some(Payload::Raster { tiles: tile_records })) = (
                     value,
                     layers.get(addr.layer_id.as_str()).map(|l| &l.payload),
@@ -1433,13 +1457,19 @@ pub(crate) fn lower_inner(
                         _ => None,
                     };
                     let clip = out.clip_mask(&layer.layer_id, report.steps[child].extent)?;
-                    let emitted_layer = out.layer(
+                    let mut emitted_layer = out.layer(
                         input_id,
                         child_appearance,
                         layer,
                         features.as_ref().and_then(|f| f.mask),
                         clip,
                     )?;
+                    if features.as_ref().is_some_and(|f| f.fill_overlay) {
+                        // The fill is the layer's effect (blend mode and fill opacity on the
+                        // effect); the content plane under it stays invisible.
+                        emitted_layer.mode = StudioBlendMode::Normal;
+                        emitted_layer.fill_opacity = 0.0;
+                    }
                     if let Some(f) = &features {
                         let coverage_mask = child_appearance.mask && !child_appearance.clipped;
                         let mut p =

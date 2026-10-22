@@ -9,7 +9,7 @@ use crate::{
         ConvertedAdjustment, EffectContext, LayerFeatures, REFUSE_BLUR_COMBINATION,
         REFUSE_CLIP_BASE_PASS_THROUGH,
         REFUSE_CLIP_GROUP_BLEND_OFF, REFUSE_EFFECT_ON_CLIP_BASE, adjustment_for,
-        blend_if_operator, is_adjustment_layer,
+        blend_if_operator, fill_record, fill_rect, is_adjustment_layer, is_fill_layer,
     },
     lower_plan::{LoweredPlan, NodeAddr, SourceValue, Step},
 };
@@ -522,6 +522,13 @@ pub(crate) fn evaluate_with(
             }
             _ => None,
         };
+        // A fill layer (lane SMB-PS-FILL-LAYERS) is an image source with the extent of its record.
+        let fill: Option<Result<hsk_studio_pigment::Rect, &'static str>> = match (records, layer, step) {
+            (Some(recs), Some(l), Step::Source { value: SourceValue::Image, .. }) if is_fill_layer(l) => {
+                Some(fill_record(recs, &l.layer_id).map(fill_rect))
+            }
+            _ => None,
+        };
         record_appearance(&mut ledger, step, converted.is_some());
         let mut ext_block: Option<&'static str> = None;
         let mut step_effects = false;
@@ -577,6 +584,18 @@ pub(crate) fn evaluate_with(
                 let (extent, status) = match (&converted, value, payload) {
                     (Some(Ok(_)), _, _) => (None, StepStatus::Ready),
                     (Some(Err(code)), _, _) => (None, StepStatus::Unavailable((*code).into())),
+                    (None, SourceValue::Image, Some(Payload::PrimitiveReference { .. })) if fill.is_some() => {
+                        match fill {
+                            Some(Ok(rect)) => {
+                                if *visible {
+                                    record_operator(&mut ledger, Operator::Solid);
+                                }
+                                (Some(rect), StepStatus::Ready)
+                            }
+                            Some(Err(code)) => (None, StepStatus::Unavailable(code.into())),
+                            None => (None, StepStatus::Unavailable("unsupported_payload".into())),
+                        }
+                    }
                     (None, SourceValue::Image, Some(Payload::Raster { tiles })) => {
                         (raster_extent(tiles)?, StepStatus::Ready)
                     }

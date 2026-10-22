@@ -21,7 +21,8 @@ use hsk_studio_folio::{
     StudioAdjustmentChannel, StudioAdvancedBlending, StudioBlendChannel, StudioColor,
     StudioContour, StudioCurve, StudioEffect, StudioEffectBlurKernel, StudioEffectKind,
     StudioEffectStack,
-    StudioGlobalLight, StudioKnockout, StudioLayer, StudioLevelsRecord, StudioLutKind,
+    StudioFill, StudioFillGradientStyle, StudioFillLayer, StudioGlobalLight, StudioKnockout,
+    StudioLayer, StudioLevelsRecord, StudioLutKind,
     StudioRasterRecords, StudioSelectiveColourMethod, StudioToneMethod,
     BevelDirection as FolioBevelDirection, BevelStyle as FolioBevelStyle,
     BevelTechnique as FolioBevelTechnique,
@@ -146,6 +147,137 @@ pub(crate) fn is_adjustment_layer(l: &StudioLayer) -> bool {
     l.kind == "adjustment"
         && matches!(&l.payload, Payload::PrimitiveReference { schema_id, object_id }
             if schema_id == ADJUSTMENT_SCHEMA && *object_id == l.layer_id)
+}
+
+/// Refusal code: a fill layer whose record is absent.
+pub const REFUSE_FILL_RECORD: &str = "fill_record_missing";
+/// Refusal code: a gradient or pattern fill layer is the render root (its fill is an effect of the
+/// layer over a hidden content plane, which a root cannot wrap; a solid fill root renders).
+pub const REFUSE_FILL_ROOT: &str = "fill_layer_as_root";
+
+/// Is this layer a fill layer (STU-RAS-007: kind `fill`, payload a primitive reference to one of
+/// the three fill schemas naming its own layer id; lane SMB-PS-FILL-LAYERS)?
+pub(crate) fn is_fill_layer(l: &StudioLayer) -> bool {
+    l.kind == "fill"
+        && matches!(&l.payload, Payload::PrimitiveReference { schema_id, object_id }
+            if *object_id == l.layer_id
+                && hsk_studio_folio::FILL_PAYLOAD_SCHEMAS.contains(&schema_id.as_str()))
+}
+
+/// The fill record of `layer_id` (the one function evaluation and lowering share).
+pub(crate) fn fill_record<'r>(
+    records: &'r StudioRasterRecords,
+    layer_id: &str,
+) -> Result<&'r StudioFillLayer, &'static str> {
+    records
+        .layer(layer_id)
+        .and_then(|r| r.fill_layer.as_ref())
+        .ok_or(REFUSE_FILL_RECORD)
+}
+
+/// The plan rectangle a fill covers.
+pub(crate) fn fill_rect(f: &StudioFillLayer) -> hsk_studio_pigment::Rect {
+    hsk_studio_pigment::Rect {
+        x: f.bounds.x,
+        y: f.bounds.y,
+        width: f.bounds.width,
+        height: f.bounds.height,
+    }
+}
+
+/// The straight RGBA of a solid fill in plan units (the colour rule of the effects); `None` for a
+/// gradient or pattern fill.
+pub(crate) fn fill_solid_rgba(
+    f: &StudioFillLayer,
+    cx: &EffectContext<'_>,
+) -> Result<Option<[f32; 4]>, &'static str> {
+    match &f.fill {
+        StudioFill::Solid { colour } => {
+            let rgb = profile_colour(colour, cx)?;
+            Ok(Some([rgb[0], rgb[1], rgb[2], 1.0]))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The effect instance a gradient or pattern fill renders as: the layer's own content is hidden
+/// (fill opacity 0 on the plan layer, normal mode) and this overlay carries the fill with the
+/// layer's blend mode and fill opacity, composited against the running backdrop. The plan layer's
+/// opacity fades the effect, the mask shapes it (the effect matte is the content shape after the
+/// layer mask) and the stop opacities multiply the matte, so the result equals the fill composited
+/// like a pixel layer of the same appearance (proof: `tests/fill_layer_render.rs`). `None` for a
+/// solid fill.
+fn fill_effect(f: &StudioFillLayer, layer: &StudioLayer) -> Option<StudioEffect> {
+    let look = layer.effective_appearance();
+    let (params, angle) = match &f.fill {
+        StudioFill::Solid { .. } => return None,
+        StudioFill::Gradient {
+            style,
+            stops,
+            angle,
+            scale,
+            reverse,
+            dither,
+            align_with_layer,
+            offset_x,
+            offset_y,
+        } => (
+            StudioEffectKind::GradientOverlay {
+                gradient: hsk_studio_folio::StudioEffectFill {
+                    schema_id: hsk_studio_folio::GRADIENT_SCHEMA.to_owned(),
+                    object_id: layer.layer_id.clone(),
+                },
+                gradient_type: match style {
+                    StudioFillGradientStyle::Linear => "linear",
+                    StudioFillGradientStyle::Radial => "radial",
+                    StudioFillGradientStyle::Angle => "angle",
+                    StudioFillGradientStyle::Reflected => "reflected",
+                    StudioFillGradientStyle::Diamond => "diamond",
+                }
+                .to_owned(),
+                reverse: *reverse,
+                dither: *dither,
+                align_with_layer: *align_with_layer,
+                scale: *scale,
+                offset_x: *offset_x,
+                offset_y: *offset_y,
+                stops: Some(stops.clone()),
+            },
+            *angle,
+        ),
+        StudioFill::Pattern {
+            pattern,
+            pattern_tile,
+            scale,
+            phase_x,
+            phase_y,
+            link_with_layer,
+        } => (
+            StudioEffectKind::PatternOverlay {
+                pattern: pattern.clone(),
+                scale: *scale,
+                phase_x: *phase_x,
+                phase_y: *phase_y,
+                link_with_layer: *link_with_layer,
+                pattern_tile: pattern_tile.clone(),
+            },
+            0.0,
+        ),
+    };
+    Some(StudioEffect {
+        instance_id: "fill".to_owned(),
+        enabled: true,
+        visible_in_editor: true,
+        blend_mode: look.blend_mode,
+        opacity: look.fill_opacity,
+        colour: None,
+        contour: None,
+        anti_alias: false,
+        noise: 0.0,
+        angle,
+        use_global_light: false,
+        params,
+    })
 }
 
 pub(crate) struct ConvertedAdjustment {
@@ -1230,6 +1362,9 @@ pub(crate) struct LayerFeatures {
     pub pattern_tiles: Vec<hsk_studio_folio::TileRef>,
     /// Approximations made while converting (effects); adjustments carry their own.
     pub notes: Notes,
+    /// The layer is a gradient or pattern fill layer: its first effect is the fill itself and the
+    /// plan layer's own content is hidden (normal mode, fill opacity 0; see [`fill_effect`]).
+    pub fill_overlay: bool,
     /// Blend Clipped Layers as Group is switched off on this layer (`clbl = 0`). It only matters
     /// when the layer is the base of a clipping run that renders a clipped layer: the callers that
     /// know the run refuse it there (`REFUSE_CLIP_GROUP_BLEND_OFF`).
@@ -1246,7 +1381,29 @@ impl LayerFeatures {
     ) -> Self {
         let rec = records.layer(layer_id);
         let blending = rec.and_then(|r| r.advanced_blending.as_ref());
-        let (effects, blur, notes, pattern_tiles) = match rec.and_then(|r| r.effects.as_ref()) {
+        // A gradient or pattern fill layer renders as an effect (lane SMB-PS-FILL-LAYERS): the stack
+        // converted is the fill's own instance followed by the layer's styles.
+        let fill_fx = layers
+            .get(layer_id)
+            .filter(|l| is_fill_layer(l))
+            .and_then(|l| rec.and_then(|r| r.fill_layer.as_ref()).and_then(|f| fill_effect(f, l)));
+        let fill_overlay = fill_fx.is_some();
+        let combined: Option<StudioEffectStack> = match (fill_fx, rec.and_then(|r| r.effects.as_ref())) {
+            (None, stack) => stack.cloned(),
+            (Some(fx), stack) => {
+                let mut effects = vec![fx];
+                if let Some(s) = stack.filter(|s| s.enabled) {
+                    effects.extend(s.effects.iter().cloned());
+                }
+                Some(StudioEffectStack {
+                    effect_stack_id: stack.map_or_else(|| "fill".to_owned(), |s| s.effect_stack_id.clone()),
+                    enabled: true,
+                    scale: stack.map_or(100.0, |s| s.scale),
+                    effects,
+                })
+            }
+        };
+        let (effects, blur, notes, pattern_tiles) = match combined.as_ref() {
             Some(stack) => match convert_effects(stack, cx) {
                 Ok(c) => (Ok(c.ops), c.blur, c.notes, c.patterns),
                 Err(code) => (Err(code), None, Vec::new(), Vec::new()),
@@ -1265,6 +1422,7 @@ impl LayerFeatures {
             blur,
             pattern_tiles,
             notes,
+            fill_overlay,
             clipped_group_blend_off: blending.is_some_and(|b| !b.blend_clipped_effects),
             channel_blend_default: blending
                 .is_none_or(|b| b.channel_blend.red && b.channel_blend.green && b.channel_blend.blue),
