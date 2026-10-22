@@ -13,10 +13,14 @@ fn bad() -> TiffError {
     TiffError::Corrupt("encoder_failed")
 }
 
+fn bad_at(code: &'static str) -> TiffError {
+    TiffError::Corrupt(code)
+}
+
 fn span(len: usize, off: u64, n: u64) -> Result<Range<usize>> {
     let end = cadd(off, n)?;
     if end > u64::try_from(len).map_err(|_| bad())? {
-        return Err(bad());
+        return Err(bad_at("encoder_endian_bounds"));
     }
     Ok(usize::try_from(off).map_err(|_| bad())?..usize::try_from(end).map_err(|_| bad())?)
 }
@@ -46,7 +50,7 @@ fn field(ty: u64) -> Result<(u64, usize)> {
         4 | 9 | 11 | 13 => (4, 4),
         5 | 10 => (8, 4),
         12 | 16 | 17 | 18 => (8, 8),
-        _ => return Err(bad()),
+        _ => return Err(bad_at("encoder_endian_field_type")),
     })
 }
 
@@ -86,12 +90,12 @@ pub(crate) fn to_big_endian(le: &[u8], big: bool) -> Result<Vec<u8>> {
             let e = cadd(first, cmul(i, entry_w)?)?;
             let tag_ty = cadd(e, 2)?;
             let n_at = cadd(e, 4)?;
-            let v_at = cadd(n_at, count_w)?;
+            let v_at = cadd(n_at, ptr_w)?;
             let ty = read_le(&b, tag_ty, 2)?;
-            let n = read_le(&b, n_at, count_w)?;
+            let n = read_le(&b, n_at, ptr_w)?;
             swap(&mut b, e, 2, 2)?;
             swap(&mut b, tag_ty, 2, 2)?;
-            swap(&mut b, n_at, count_w, usize::try_from(count_w).map_err(|_| bad())?)?;
+            swap(&mut b, n_at, ptr_w, usize::try_from(ptr_w).map_err(|_| bad())?)?;
             let (size, unit) = field(ty)?;
             let total = cmul(size, n)?;
             if total <= ptr_w {
