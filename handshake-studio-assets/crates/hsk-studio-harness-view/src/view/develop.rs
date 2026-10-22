@@ -996,7 +996,7 @@ impl Viewer {
                 "raw_payload_bytes": export.raw_payload_bytes, "preview": export.preview.map(|(w, h)| json!({"width": w, "height": h})),
                 "xmp_bytes": export.xmp_bytes, "exif_fields": export.exif_fields, "dropped": export.dropped,
                 "colour_loss": export.colour_loss, "dng_version": "1.4.0.0",
-                "route": receipt.as_ref().map(|r| r.route.clone()), "math_token": receipt.as_ref().map(|r| r.math_token.clone()),
+                "route": receipt.as_ref().map(|r| r.route), "math_token": receipt.as_ref().map(|r| r.math_token),
                 "threads": d.threads.get(), "revision": revision, "values_known": known,
                 "values": values_json(&edit),
             }));
