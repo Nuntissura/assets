@@ -7,6 +7,7 @@ mod descriptor;
 mod epub;
 mod error;
 mod folio_export;
+mod idml_composition;
 mod idml_decode;
 mod idml_encode;
 mod idml_longdoc;
@@ -32,6 +33,7 @@ pub use epub::{
 };
 pub use error::{IdmlError, PreservedBlob, Result};
 pub use folio_export::{ExportNames, FolioExport, FolioExportInput, StoryInput, export_folio};
+pub use idml_composition::{COMPOSITION_ATTRIBUTES, TypeStyleImport, import_type_styles};
 pub use idml_decode::{decode_idml, import_idml, open_idml};
 pub use idml_encode::{ContentEdit, export_idml, export_model, replace_content, write_idml};
 pub use idml_longdoc::{LongDocExportInput, LongDocImport, export_folio_longdoc, import_longdoc};
@@ -43,7 +45,7 @@ pub use pdf_export::{
     PlacedMask, PlacedRaster, export_pdf, export_pdf_with, outline_from_toc, page_labels_from_sections, pdf_glyphs_from_type,
 };
 pub use reflow::{
-    FixedAdvanceShaper, ParagraphShaper, ReflowOptions, ShapeContext, ThreadReflow, reflow_import,
+    FixedAdvanceShaper, ParagraphShaper, ReflowOptions, ShapeContext, ThreadReflow, reflow_import, reflow_import_typeset,
 };
 
 /// The layout crate whose `Composer`, `LayoutError`, `LayoutProposal` and `SourceSpan` appear in the

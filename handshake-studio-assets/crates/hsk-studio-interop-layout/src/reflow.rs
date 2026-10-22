@@ -27,7 +27,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{FirstBaseline, GeometryUnit, Length, Payload, StudioTextStory};
 use hsk_studio_layout::{
     Composer, LayoutError, LayoutProposal as Placement, Limits as ReflowLimits, ReflowRequest,
-    ShapedParagraph, SourceSpan, SpaceParams, reflow,
+    ShapedParagraph, SourceSpan, SpaceParams, TypesetOptions, reflow_typeset,
 };
 use std::collections::BTreeMap;
 
@@ -111,11 +111,27 @@ impl ThreadReflow {
 }
 
 /// Reflows every story of the import that has a frame chain, in story order. Stories without a
-/// frame are not threads and are omitted. Only cancellation aborts the call.
+/// frame are not threads and are omitted. Only cancellation aborts the call. Composes with
+/// `options.composer` and no type styles (`reflow_import_typeset` with default options).
 pub fn reflow_import(
     import: &IdmlImport,
     shaper: &dyn ParagraphShaper,
     options: &ReflowOptions,
+    cancel: &CancellationToken,
+) -> Result<Vec<ThreadReflow>> {
+    reflow_import_typeset(import, shaper, options, &TypesetOptions::default(), cancel)
+}
+
+/// `reflow_import` composed with `typeset` (lane SMB-LAYOUT-COMPOSER-WIRING): with
+/// `typeset.styles` holding the records of [`crate::import_type_styles`] for this import, each
+/// paragraph is composed with the composer, H&J limits and hyphenation its IDML paragraph style
+/// and local attributes state (hsk-studio-layout `paragraph_params`); paragraphs without settings
+/// keep `options.composer`.
+pub fn reflow_import_typeset(
+    import: &IdmlImport,
+    shaper: &dyn ParagraphShaper,
+    options: &ReflowOptions,
+    typeset: &TypesetOptions<'_>,
     cancel: &CancellationToken,
 ) -> Result<Vec<ThreadReflow>> {
     canceled(cancel)?;
@@ -184,7 +200,7 @@ pub fn reflow_import(
                     }
                 }
             }
-            reflow(
+            reflow_typeset(
                 &ReflowRequest {
                     document: &derived,
                     story: &ps.story,
@@ -196,6 +212,7 @@ pub fn reflow_import(
                     expected_revision: derived.revision,
                     limits: options.limits,
                 },
+                typeset,
                 cancel,
             )
         })();

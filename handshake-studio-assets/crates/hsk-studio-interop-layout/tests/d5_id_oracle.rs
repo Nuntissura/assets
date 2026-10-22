@@ -34,9 +34,9 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{FirstBaseline, GeometryUnit, Length, StoryContent, StudioDocument, StudioTextStory};
 use hsk_studio_interop_layout::layout::{
     AdobeParams, Alignment, Composer, HyphenationParams, Hyphenator, JustifyParams, LayoutProposal, Limits as ReflowLimits,
-    ReflowRequest, ShapedParagraph, SpaceParams, Spacing, TypesetOptions, reflow_typeset,
+    ReflowRequest, ShapedParagraph, SpaceParams, Spacing, StyleSource, TypesetOptions, reflow_typeset,
 };
-use hsk_studio_interop_layout::{Limits, SequentialIdMint, import_idml};
+use hsk_studio_interop_layout::{Limits, SequentialIdMint, import_idml, import_type_styles};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -677,5 +677,69 @@ fn arial_ff_is_the_presentation_form_ligature() {
     // No other glyph of the paragraph covers more than one character.
     assert!(glyphs.iter().enumerate().all(|(i, g)| i == k || g.cluster.end - g.cluster.start == 1));
     ledger.record("ID", "arial_ff_ligature", Verdict::Match, format!("uniFB00 {} pt, components 2 x {} pt", glyphs[k].advance_pt, 569.0 * unit));
+    ledger.finish();
+}
+
+/// ID-03 through the document model (lane SMB-LAYOUT-COMPOSER-WIRING): each InDesign-written IDML's
+/// paragraph composition (`[No paragraph style]` attributes inherited through
+/// `NormalParagraphStyle`, local `Composer="HL Single"` / `Hyphenation="false"`) is imported into
+/// Folio type-style records with `import_type_styles` and composed from those records alone: the
+/// request composer is FirstFit and the options carry no justification limits, no hyphenation and
+/// no composer, only the styles, the hyphenator, the paragraph alignment (`Justification` is not
+/// mapped yet) and the shaped hyphen advance. The lines must equal the explicit-setup composition
+/// that `id03_idml_configurations` compares with InDesign, so the oracle verdicts pinned there
+/// carry over to the wired path. NOT_PROVEN without the corpus font.
+#[test]
+fn id03_imported_styles_compose_as_the_explicit_setup() {
+    const T: &str = "d5_id_oracle::id03_imported_styles_compose_as_the_explicit_setup";
+    let mut ledger = Ledger::new(T);
+    let Some((root, p)) = setup_or_not_proven(T, &mut ledger) else { return ledger.finish() };
+    let cancel = CancellationToken::default();
+    for (variant, para, hyph) in [("para_hyph_w240", true, true), ("single_hyph_w240", false, true), ("para_nohyph_w240", true, false)] {
+        let bytes = match oracle(&root, &format!("ID-03__{variant}.idml")) {
+            Ok(b) => b,
+            Err(e) => {
+                ledger.record("ID-03", &format!("{variant}.styles"), Verdict::NotProven, e);
+                continue;
+            }
+        };
+        let mut mint = SequentialIdMint::new(1);
+        let import = import_idml(&bytes, &Limits::default(), &mut mint, &cancel).expect("import");
+        let styles = import_type_styles(&import, &Limits::default(), &mut mint, &cancel).expect("type styles");
+        assert!(!styles.records.style_composition.is_empty(), "{variant}: the root style's composition is mapped");
+        let story = import.proposal.stories.first().expect("story").story.clone();
+        assert_eq!(story.inline_text(), Some(TEXT), "{variant}");
+        let mut doc = import.proposal.snapshot.document().clone();
+        for f in doc.layers.iter_mut().filter_map(|l| l.text_frame.as_mut()) {
+            f.bounds.width = Length { value: 240.0, unit: GeometryUnit::Pt };
+            f.first_baseline_offset = FirstBaseline::Fixed;
+            f.minimum_first_baseline_offset = Length { value: p.ascent_pt, unit: GeometryUnit::Pt };
+        }
+        let opts = TypesetOptions {
+            hyphenator: Some(Hyphenator::en_us_indesign()),
+            alignment: Alignment::JustifiedAll,
+            styles: Some(StyleSource { records: &styles.records, default_font_size_pt: SIZE }),
+            hyphen_advance_pt: Some(p.hyphen_pt),
+            ..TypesetOptions::default()
+        };
+        let paragraphs = [p.paragraph.clone()];
+        let req = ReflowRequest {
+            document: &doc,
+            story: &story,
+            resolved_text: None,
+            paragraphs: &paragraphs,
+            obstacles: &[],
+            composer: Composer::FirstFit,
+            space: SpaceParams::default(),
+            expected_revision: doc.revision,
+            limits: ReflowLimits::default(),
+        };
+        let wired = reflow_typeset(&req, &opts, &cancel).expect("wired composition");
+        let s = Setup { paragraph_composer: para, hyphenate: hyph, justify: true, full: true, width: 240.0, ws: [80.0, 100.0, 133.0], ls: [0.0; 3], gs: [100.0; 3] };
+        let explicit = compose(&p, &s).expect("explicit composition");
+        let lines = |pl: &LayoutProposal| pl.frames.iter().map(|f| f.lines.clone()).collect::<Vec<_>>();
+        assert_eq!(lines(&wired), lines(&explicit), "{variant}: records-driven composition differs from the explicit setup");
+        println!("D5_WIRING: ID-03 {variant} records-driven lines == explicit setup ({} lines)", wired.frames.iter().map(|f| f.lines.len()).sum::<usize>());
+    }
     ledger.finish();
 }
