@@ -82,6 +82,7 @@
 #   "complete": false, the exit code and the reason (raw files kept).
 # Env: sets CARGO_TARGET_DIR, TMP/TEMP/TMPDIR (<target-dir>/../tmp), CARGO_PROFILE_{DEV,TEST}_DEBUG,
 #   CARGO_TERM_COLOR; unsets every HSK_* variable. Nothing else is required from the caller (python 3.11+).
+#   CARGO_INCREMENTAL=0 (lead decision 2026-10-22, proposal P1): rounds never keep incremental state; the union rebuilds every workspace crate anyway, so incremental dirs are pure disk waste (268 GiB purged 2026-10-21).
 # Exit: 2 refused, 75 step 0 drift or disk build lock wait gave up (infrastructure), 72 step 0 machine-local path
 #   (V4-03), 71 step 0 new frozen-duplicate site (V4-05), 70 results aggregation failed, else the first failing unit
 #   build's exit code (default unit first), else the first failing test run's exit code (124 = doctest per-test
@@ -227,6 +228,7 @@ unset_vars=$(compgen -e | grep '^HSK_' || true)
 for v in $unset_vars; do unset "$v"; done
 export CARGO_TARGET_DIR="$target" TMP="$target/../tmp" CARGO_TERM_COLOR=never
 export TEMP="$TMP" TMPDIR="$TMP" CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_PROFILE_TEST_DEBUG=line-tables-only
+export CARGO_INCREMENTAL=0
 mkdir -p "$TMP"
 # nextest resolves its store (junit, run data) against the workspace root; pin it under the target dir.
 toolcfg="$results/nextest-store.toml"
@@ -892,7 +894,7 @@ round_json = {
     "tests_file": "tests.json", "tests_reported": len(tests),
     "tools": {"rustc": E["RR_RUSTC"], "cargo": E["RR_CARGO"], "nextest": E["RR_NEXTEST"]},
     "rustc_wrapper": E["RR_WRAPPER"],
-    "env_set": ["CARGO_TARGET_DIR", "TMP", "TEMP", "TMPDIR", "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG", "CARGO_TERM_COLOR"],
+    "env_set": ["CARGO_TARGET_DIR", "TMP", "TEMP", "TMPDIR", "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG", "CARGO_TERM_COLOR", "CARGO_INCREMENTAL"],
     "env_unset": E["RR_UNSET"], "target_dir": E["RR_TARGET"],
 }
 (res / "tests.json").write_text(json.dumps({"schema": "hsk.studio.round-tests@1", "sha": E["RR_SHA"], "tests": tests},
