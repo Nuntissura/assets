@@ -2241,6 +2241,8 @@ assets:
   - metadata observations
   - host owner ports
   - bounded model validation
+  - versioned capture URL normalization
+  - access-scoped immutable metadata transitions
   - origin-preserving tag assignment plans
   - project membership and folder placement plans
   manual: assets/hsscrap/README.md
@@ -2270,6 +2272,8 @@ assets:
   - distinct connected stream modes
   - source appearances and read bookmark state
   - bounded acquisition and checkpoint owner ports
+  - account source library and group membership reducers
+  - per-group keyword and priority rules
   manual: assets/rss/README.md
   packages:
   - name: rss-contracts
@@ -2279,6 +2283,13 @@ assets:
     role: logic
     depends_on:
     - hsscrap
+  - name: rss-core
+    manifest: assets/rss/crates/rss-core/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-core/src/lib.rs
+    role: logic
+    depends_on:
+    - rss-contracts
   components:
   - HSSCRAP-ASSET-001
   source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/rss

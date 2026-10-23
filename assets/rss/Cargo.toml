@@ -1,8 +1,9 @@
 [workspace]
-members = ["crates/rss-contracts"]
+members = ["crates/rss-contracts", "crates/rss-core"]
 resolver = "2"
 
 [workspace.dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 hsscrap = { path = "../hsscrap/crates/hsscrap", version = "=0.1.0" }
+rss-contracts = { path = "crates/rss-contracts", version = "=0.1.0" }

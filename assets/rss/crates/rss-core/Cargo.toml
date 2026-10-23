@@ -1,0 +1,9 @@
+[package]
+name = "rss-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+include = ["src/**", "tests/**", "Cargo.toml"]
+
+[dependencies]
+rss-contracts.workspace = true

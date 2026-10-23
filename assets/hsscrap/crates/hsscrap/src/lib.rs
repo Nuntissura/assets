@@ -9,3 +9,5 @@ pub use validation::{decode, Validate};
 mod record_validation;
 pub mod tags;
 pub mod organization;
+pub mod identity;
+pub mod metadata;

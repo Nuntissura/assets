@@ -18,6 +18,18 @@ Continuation binds subscription, source, access partition, executor and generati
 
 </topic>
 
+<topic id="source-library">
+
+`rss-core` provides pure reducers for account-owned sources, many-to-many groups, source display-name editing, pause/resume, group-specific keyword and priority rules, profile selection and independent appearance state. Run its focused cases with `cargo test --manifest-path assets/rss/Cargo.toml -p rss-core --test catalogue` after the coordinated preparation gate.
+
+Pass an authorized owner scope and expected library revision to each mutation. The returned snapshot is a proposed next state. A host must persist it with an atomic compare-and-swap, reject stale commits and authorize the selected profile. Pure reducer tests do not prove that persistence boundary. Display-name editing preserves provider/source URL identity; changing the followed target uses a new follow intent.
+
+One source selected through several groups schedules once. Removing a group or membership preserves the source and all separately owned captures, item tags and project placements. Per-member rules keep each group's keywords and priority separate; the host supplies finite rule limits and account keyword budget. Existing Portal collection rules supplied the trim, printable-text and case-insensitive uniqueness behavior. Detach removes only that membership's rule. Source and group removal clean their own rules.
+
+Profile selection intersects host-authorized sources before counts or acquisition. Item grouping preserves each appearance-state ID and its exact read/bookmark booleans, including contradictory historical rows. It never aggregates them with OR/AND. Host authorization must also filter access partitions; matching IDs carry no grants.
+
+</topic>
+
 <topic id="research">
 
 Source inspected 2026-10-23 before implementation: [RSSHub Instagram adapter](https://github.com/DIYgod/RSSHub/blob/master/lib/routes/instagram/web-api/utils.ts), [gallery-dl Instagram](https://github.com/mikf/gallery-dl/blob/master/gallery_dl/extractor/instagram.py), [gallery-dl Pinterest](https://github.com/mikf/gallery-dl/blob/master/gallery_dl/extractor/pinterest.py), [yt-dlp TikTok](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/tiktok.py), [feed-rs parser](https://github.com/feed-rs/feed-rs/blob/master/feed-rs/src/parser/mod.rs), and [Karakeep feed worker](https://github.com/karakeep-app/karakeep/blob/main/apps/workers/workers/feedWorker.ts).
