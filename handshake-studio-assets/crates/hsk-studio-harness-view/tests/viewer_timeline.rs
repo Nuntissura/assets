@@ -305,6 +305,10 @@ fn accesskit_click_opens_the_timeline_and_clips_are_nodes() {
     let workspace = ak_find(&out, |l| l == "Workspace").expect("Workspace menu node");
     let _ = frame(&mut v, &ctx, vec![ak_click(workspace)]);
     let out = frame(&mut v, &ctx, vec![]);
+    // WORKSPACE > Panels submenu (SMB-HARNESS-SHELL-2 descriptor menu, [STU-SHL-036]).
+    let panels = ak_find(&out, |l| l == "Panels").expect("Panels submenu node");
+    let _ = frame(&mut v, &ctx, vec![ak_click(panels)]);
+    let out = frame(&mut v, &ctx, vec![]);
     let entry = ak_find(&out, |l| l.starts_with("Timeline")).expect("Timeline entry node");
     let _ = frame(&mut v, &ctx, vec![ak_click(entry)]);
     let out = frame(&mut v, &ctx, vec![]);

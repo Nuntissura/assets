@@ -790,7 +790,7 @@ impl Viewer {
                 Some(&format!("capability:{f}")),
             ),
             Availability::Unavailable(why) => match panel {
-                Panel::ProgramMonitor | Panel::Mixer => cm::Availability::not_in_document(ReasonCode::NoSuchContainer, why, Some("container:timeline")),
+                Panel::ProgramMonitor | Panel::Timeline | Panel::Mixer => cm::Availability::not_in_document(ReasonCode::NoSuchContainer, why, Some("container:timeline")),
                 Panel::SpectralDisplay => cm::Availability::inapplicable(ReasonCode::DocFeatureAbsent, why, &ShellCommand::Panel(Panel::WaveformEditor).id()),
                 _ => cm::Availability::inapplicable(ReasonCode::DocFeatureAbsent, why, &ShellCommand::Open.id()),
             },
