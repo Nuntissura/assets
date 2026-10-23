@@ -2320,6 +2320,8 @@ assets:
   - bounded public Instagram profile and Reels request, media evidence and resume contracts
   - bounded public YouTube uploads traversal and explicitly partial no-login Atom evidence
   - bounded public TikTok creator-window and item media evidence with sparse-window traversal
+  - bounded versioned Rust WASM bridge composing native wall query and hsscrap interaction
+  - bounded public Pinterest board discovery, pin media and opaque-bookmark traversal
   manual: assets/rss/README.md
   packages:
   - name: rss-contracts
@@ -2386,6 +2388,26 @@ assets:
     manifest: assets/rss/crates/rss-provider-tiktok/Cargo.toml
     version: 0.1.0
     api: assets/rss/crates/rss-provider-tiktok/src/lib.rs
+    role: logic
+    depends_on:
+    - handshake_canonical_json
+    - hsscrap
+    - rss-contracts
+  - name: rss-wasm
+    manifest: assets/rss/crates/rss-wasm/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-wasm/src/lib.rs
+    role: bridge
+    depends_on:
+    - handshake_canonical_json
+    - hsscrap
+    - hsscrap-wasm
+    - rss-contracts
+    - rss-core
+  - name: rss-provider-pinterest
+    manifest: assets/rss/crates/rss-provider-pinterest/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-provider-pinterest/src/lib.rs
     role: logic
     depends_on:
     - handshake_canonical_json

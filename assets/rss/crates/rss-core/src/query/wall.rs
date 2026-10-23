@@ -457,7 +457,11 @@ impl WallState {
                 .insert((item, reference.member_id), MediaState::Unavailable);
             return Ok(None);
         }
-        if self.media_state(&reference) != MediaState::NotRequested {
+        if self
+            .media_pending
+            .contains_key(&(item, reference.member_id))
+            || self.media_state(&reference) != MediaState::NotRequested
+        {
             return Ok(None);
         }
         let ticket = MediaTicket {
@@ -498,6 +502,10 @@ impl WallState {
         };
         self.media_pending
             .insert((item, reference.member_id), ticket.clone());
+        if self.media_state(&reference) != MediaState::Ready {
+            self.media
+                .insert((item, reference.member_id), MediaState::Loading);
+        }
         self.player = Some(reference);
         intents.push(WallIntent::ResolveMedia(ticket));
         Ok(intents)
@@ -517,6 +525,29 @@ impl WallState {
         }
         Some(WallIntent::StopPlayback(member))
     }
+    /// Invalidates one exact pending resolver. The host aborts its work separately.
+    /// A cancelled unresolved preview can be requested again; ready media is retained.
+    pub fn cancel_media(&mut self, ticket: &MediaTicket) -> Result<Vec<WallIntent>> {
+        let key = (ticket.member.item_id, ticket.member.member_id);
+        if ticket.generation != self.generation
+            || self.media_pending.get(&key) != Some(ticket)
+            || !self.cards.contains_key(&ticket.member.item_id)
+        {
+            return Err(Error::StaleResult);
+        }
+        self.media_pending.remove(&key);
+        if self.media_state(&ticket.member) == MediaState::Loading {
+            self.media.remove(&key);
+        }
+        if ticket.purpose == MediaPurpose::Playback && self.player.as_ref() == Some(&ticket.member)
+        {
+            self.player = None;
+            Ok(vec![WallIntent::StopPlayback(ticket.member.clone())])
+        } else {
+            Ok(vec![])
+        }
+    }
+
     pub fn complete_media(&mut self, ticket: &MediaTicket, state: MediaState) -> Result<()> {
         let key = (ticket.member.item_id, ticket.member.member_id);
         if ticket.generation != self.generation

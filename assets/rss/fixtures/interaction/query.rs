@@ -435,6 +435,55 @@ fn stop_during_pending_playback_allows_a_new_preview_and_rejects_late_decode() {
 }
 
 #[test]
+fn play_before_preview_preserves_the_pending_playback_ticket() {
+    let (session, mut wall, _) = loaded(1);
+    install(&session, &mut wall, vec![card(1, MediaKind::Video, 1)]);
+    let effects = wall.play(id(1)).unwrap();
+    let WallIntent::ResolveMedia(play) = &effects[0] else {
+        panic!("playback intent")
+    };
+    assert_eq!(wall.media_state(&play.member), MediaState::Loading);
+    assert!(wall.request_preview(id(1)).unwrap().is_none());
+    wall.complete_media(play, MediaState::Ready).unwrap();
+    assert_eq!(wall.player(), Some(&play.member));
+}
+
+#[test]
+fn cancelled_media_retries_without_caching_failure_and_late_tickets_stay_stale() {
+    let (session, mut wall, _) = loaded(1);
+    install(&session, &mut wall, vec![card(1, MediaKind::Video, 1)]);
+    let WallIntent::ResolveMedia(preview) = wall.request_preview(id(1)).unwrap().unwrap() else {
+        panic!("preview intent")
+    };
+    assert!(wall.cancel_media(&preview).unwrap().is_empty());
+    assert_eq!(wall.media_state(&preview.member), MediaState::NotRequested);
+    let WallIntent::ResolveMedia(retry) = wall.request_preview(id(1)).unwrap().unwrap() else {
+        panic!("retry intent")
+    };
+    assert_ne!(preview, retry);
+    assert_eq!(wall.cancel_media(&preview), Err(Error::StaleResult));
+    assert_eq!(
+        wall.complete_media(&preview, MediaState::Ready),
+        Err(Error::StaleResult)
+    );
+    wall.complete_media(&retry, MediaState::Ready).unwrap();
+    let effects = wall.play(id(1)).unwrap();
+    let WallIntent::ResolveMedia(play) = &effects[0] else {
+        panic!("playback intent")
+    };
+    assert!(matches!(
+        wall.cancel_media(play).unwrap().as_slice(),
+        [WallIntent::StopPlayback(_)]
+    ));
+    assert!(wall.player().is_none());
+    assert_eq!(wall.media_state(&play.member), MediaState::Ready);
+    assert_eq!(
+        wall.complete_media(play, MediaState::Ready),
+        Err(Error::StaleResult)
+    );
+}
+
+#[test]
 fn matching_selected_observation_from_foreign_partition_never_enters_card_cache() {
     let (session, mut wall, _) = loaded(2);
     let safe = card(1, MediaKind::Link, 0);

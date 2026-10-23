@@ -1168,6 +1168,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hsscrap-wasm"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "handshake_canonical_json",
+ "hsscrap",
+ "hsscrap-gui",
+ "serde",
+ "serde_json",
+ "uuid",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "html5ever"
 version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2474,6 +2488,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-provider-pinterest"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "handshake_canonical_json",
+ "hsscrap",
+ "rss-contracts",
+ "serde",
+ "serde_json",
+ "sha2",
+ "url",
+]
+
+[[package]]
 name = "rss-provider-syndication"
 version = "0.1.0"
 dependencies = [
@@ -2519,6 +2547,21 @@ dependencies = [
  "serde_json",
  "sha2",
  "url",
+]
+
+[[package]]
+name = "rss-wasm"
+version = "0.1.0"
+dependencies = [
+ "handshake_canonical_json",
+ "hsscrap",
+ "hsscrap-wasm",
+ "rss-contracts",
+ "rss-core",
+ "serde",
+ "serde_json",
+ "uuid",
+ "wasm-bindgen",
 ]
 
 [[package]]
