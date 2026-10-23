@@ -32,18 +32,18 @@ use scenes::{H, Pixels, W, digest, effected_scene, entry, golden_cases, identity
 /// Digests of [`golden_cases`] on [`premultiplied_source`] (pinned on the build platform; module
 /// docs of `composition::effect_stack` on `libm`).
 const GOLDEN: &[(&str, &str)] = &[
-    ("twirl", "PIN"),
-    ("spherize", "PIN"),
-    ("offset", "PIN"),
-    ("polar_rect_to_polar", "PIN"),
-    ("polar_polar_to_rect", "PIN"),
-    ("ramp_linear", "PIN"),
-    ("ramp_radial", "PIN"),
-    ("circle_over_feathered", "PIN"),
-    ("circle_replace", "PIN"),
-    ("checkerboard_over", "PIN"),
-    ("twirl_then_offset", "PIN"),
-    ("offset_then_twirl_mixed", "PIN"),
+    ("twirl", "79cf47053c3a9bac9a0e434ac673b600a8e9a86de3d6c6c5feecc64c33ac17cd"),
+    ("spherize", "3bf16349eef8c084184da3a265bbb748c593cb5c8b0b10245e3d8937f4b86223"),
+    ("offset", "18a083e1ebf31bc6082f4a04fb620137e162e721b3d6f48c83353fbc83f448b1"),
+    ("polar_rect_to_polar", "db1c80b56bae75231c3aa852e8df1502070f7f42f58ebf6d40c4fc17402b5131"),
+    ("polar_polar_to_rect", "b765a00a6c181ad11df1eea7eeede9ba860831a2f11a92cca53216da757590db"),
+    ("ramp_linear", "8ca5abffd5e913632b4e86687a50e1be88dde055647f8d30d378926af10db41c"),
+    ("ramp_radial", "76664551869b4df458f984e96dd7f7b755087bd6edc9a63b25c8865cd0d5440f"),
+    ("circle_over_feathered", "e8b3add85836214d517a442c921f047590d74d5e2582b6b7ca60972f3cd2f087"),
+    ("circle_replace", "bd73ba7c6dcb7308f4b1725e1270ad31eb02f9075b83593ceffdc82464b8f32f"),
+    ("checkerboard_over", "b0323010cc84cf42622a05d9771ec931f3d5bcc0618437fac288c0d544fa3db4"),
+    ("twirl_then_offset", "e92afdfb7c4c85dff6fbc8f2e93216cbc14243ef72b8134d789b16b2847c9073"),
+    ("offset_then_twirl_mixed", "34b85d17575232c71c02470c1a86a2662b02217d786572fd252047b430bad0a6"),
 ];
 
 fn run(effects: &[SceneEffectEntry]) -> Vec<[f32; 4]> {
