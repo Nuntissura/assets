@@ -1,0 +1,18 @@
+[package]
+name = "rss-provider-syndication"
+version = "0.1.0"
+edition = "2021"
+publish = false
+include = ["src/**", "tests/**", "README.md", "Cargo.toml"]
+
+[dependencies]
+rss-contracts.workspace = true
+rss-acquisition = { path = "../rss-acquisition", version = "=0.1.0" }
+hsscrap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+feed-rs = "=3.0.0"
+scraper = { version = "=0.29.0", default-features = false }
+url = "=2.5.8"
+chrono = "=0.4.45"
+sha2 = "=0.10.9"

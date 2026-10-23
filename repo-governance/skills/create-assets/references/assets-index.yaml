@@ -2302,6 +2302,8 @@ assets:
   - URL capture receipt validation and owner recovery
   - identity-first ingestion and canonical owner outcome references
   - immutable batch checkpoint retry and acknowledged queue continuation
+  - bounded RSS/Atom discovery, parsing and media evidence
+  - digest-bound source document pagination and partial terminal checkpoints
   manual: assets/rss/README.md
   packages:
   - name: rss-contracts
@@ -2325,6 +2327,15 @@ assets:
     role: logic
     depends_on:
     - hsscrap
+    - rss-contracts
+  - name: rss-provider-syndication
+    manifest: assets/rss/crates/rss-provider-syndication/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-provider-syndication/src/lib.rs
+    role: logic
+    depends_on:
+    - hsscrap
+    - rss-acquisition
     - rss-contracts
   components:
   - HSSCRAP-ASSET-001

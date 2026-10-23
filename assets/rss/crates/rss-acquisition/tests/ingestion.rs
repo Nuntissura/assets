@@ -355,3 +355,36 @@ fn authority_changes_during_provider_fetch_reject_the_returned_page() {
         assert_eq!(result, Err(expected));
     }
 }
+
+
+#[test]
+fn terminal_empty_document_settles_partial_after_prior_items_without_clearing_them() {
+    let first_request = request(1); let admission = Admission::new(&first_request); let mut owner = Owner::default();
+    let checkpoints = Checkpoints::new(owner.clone()); let allocator = Allocator(owner.clone());
+    let mut queue = JobQueue::new(JobLimits { max_jobs: 1, max_running: 1, max_attempts: 3, timeout_ticks: 10, initial_backoff_ticks: 1, max_backoff_ticks: 4 }).unwrap();
+    queue.enqueue(first_request.clone(), 0).unwrap(); queue.start(first_request.operation_id, &reference("executor"), 0).unwrap();
+    queue.begin_commit(first_request.operation_id, &reference("executor"), 1).unwrap();
+    let first = prepared(&mut owner, &admission, &first_request, None); let first_page = page(&first_request, &first, true);
+    let first_ack = run(commit_page(&owner, &admission, &admission, &allocator, &checkpoints, &reference("attempt"), &first_request, &first_page, &[first], &BTreeSet::new())).unwrap();
+    let second_request = queue.advance(&first_ack, id(2), 2).unwrap(); *admission.operation.lock().unwrap() = second_request.operation_id;
+    queue.start(second_request.operation_id, &reference("executor"), 3).unwrap(); queue.begin_commit(second_request.operation_id, &reference("executor"), 4).unwrap();
+    let preserved = { let store = owner.0.lock().unwrap(); (store.captures.clone(), store.observations.clone(), store.appearances.clone(), store.mutations) };
+    let mut terminal = first_page; terminal.operation_id = second_request.operation_id; terminal.entries.clear(); terminal.continuation = None;
+    terminal.state = AcquisitionState::Partial { observed_at: at(), reason_code: rss_contracts::TERMINAL_SOURCE_DOCUMENT.into() };
+    terminal.coverage = Coverage::Partial;
+    let mut fresh = second_request.clone(); fresh.continuation = None;
+    assert!(run(commit_page(&owner, &admission, &admission, &allocator, &checkpoints, &reference("attempt"), &fresh, &terminal, &[], &BTreeSet::new())).is_err());
+    let mut wrong = terminal.clone(); wrong.coverage = Coverage::Complete;
+    assert!(run(commit_page(&owner, &admission, &admission, &allocator, &checkpoints, &reference("attempt"), &second_request, &wrong, &[], &BTreeSet::new())).is_err());
+    let mut wrong = terminal.clone(); wrong.continuation = second_request.continuation.clone();
+    assert!(run(commit_page(&owner, &admission, &admission, &allocator, &checkpoints, &reference("attempt"), &second_request, &wrong, &[], &BTreeSet::new())).is_err());
+    let mut wrong = terminal.clone(); wrong.state = AcquisitionState::Partial { observed_at: at(), reason_code: "challenge".into() };
+    assert!(run(commit_page(&owner, &admission, &admission, &allocator, &checkpoints, &reference("attempt"), &second_request, &wrong, &[], &BTreeSet::new())).is_err());
+    assert_eq!(checkpoints.state.lock().unwrap().calls, 1);
+    let acknowledgement = run(commit_page(&owner, &admission, &admission, &allocator, &checkpoints, &reference("attempt"), &second_request, &terminal, &[], &BTreeSet::new())).unwrap();
+    queue.acknowledge(&acknowledgement).unwrap(); assert_eq!(queue.jobs()[0].state, JobState::Completed);
+    let store = owner.0.lock().unwrap(); assert_eq!((store.captures.clone(), store.observations.clone(), store.appearances.clone(), store.mutations), preserved);
+    let state = checkpoints.state.lock().unwrap(); let (_, batch, _) = state.batches.get(&second_request.operation_id).unwrap();
+    assert!(batch.appearances.is_empty()); assert!(batch.item_owner_outcome_refs.is_empty()); assert!(batch.continuation.is_none());
+    assert!(matches!(&batch.state, AcquisitionState::Partial { reason_code, .. } if reason_code == rss_contracts::TERMINAL_SOURCE_DOCUMENT));
+}

@@ -60,3 +60,21 @@ fn failed_or_expired_pages_do_not_become_verified_empty() {
     page.executor_ref=reference("stale-executor");
     assert_eq!(page.validate(&subscription,&bounds(),&Default::default()),Err(Error::StaleResult));
 }
+
+
+#[test]
+fn terminal_document_marker_requires_empty_partial_without_an_outgoing_cursor() {
+    let subscription = subscription();
+    let mut page = AcquisitionPage { subscription_ref: subscription.subscription_ref.clone(), source_ref: subscription.source_ref.clone(),
+        partition: subscription.partition.clone(), executor_ref: subscription.executor_ref.clone(), generation: subscription.generation,
+        operation_id: "00000000-0000-0000-0000-000000000010".parse().unwrap(), entries: vec![],
+        state: AcquisitionState::Partial { observed_at: Instant::parse("2026-10-23T00:00:00Z").unwrap(), reason_code: TERMINAL_SOURCE_DOCUMENT.into() },
+        coverage: hsscrap::Coverage::Partial, continuation: None };
+    page.validate(&subscription, &bounds(), &Default::default()).unwrap(); assert!(page.is_terminal_partial_document());
+    page.coverage = hsscrap::Coverage::Complete;
+    assert!(page.validate(&subscription, &bounds(), &Default::default()).is_err());
+    page.coverage = hsscrap::Coverage::Partial;
+    page.continuation = Some(Continuation { source_ref: subscription.source_ref.clone(), subscription_ref: subscription.subscription_ref.clone(),
+        partition: subscription.partition.clone(), executor_ref: subscription.executor_ref.clone(), generation: subscription.generation, token: "next".into() });
+    assert!(page.validate(&subscription, &bounds(), &Default::default()).is_err());
+}

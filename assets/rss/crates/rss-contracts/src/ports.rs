@@ -48,5 +48,8 @@ pub trait CheckpointOwner: Send + Sync {
     /// Atomically bind operation_id to the entire immutable batch and current authorized job/executor/generation.
     /// Every call, including replay after a lost reply, compares that full intent and rejects changed reuse.
     /// Verify referenced canonical owner outcomes before committing. Lookup alone does not prove batch intent.
+    /// A TERMINAL_SOURCE_DOCUMENT Partial batch may have no appearances or owner outcomes.
+    /// Validate its current continuation job and document result; settle only that checkpoint.
+    /// Preserve every earlier appearance and user state; this never asserts a complete or empty source.
     fn commit<'a>(&'a self, scope: &'a ScopeRef, batch: BatchCommit) -> Pending<'a, CommitOutcome>;
 }

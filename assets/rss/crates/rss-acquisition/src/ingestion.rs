@@ -217,8 +217,11 @@ pub async fn commit_page(owner: &impl ItemOwner, authority: &impl AuthorityPort,
     authorize_current(authority, execution, request, execution_ref).await?;
     page.validate(&request.subscription, &request.bounds, supported)?;
     if page.operation_id != request.operation_id || prepared.len() != page.entries.len() { return Err(Error::StaleResult); }
+    let terminal_document = page.is_terminal_partial_document() && request.continuation.is_some();
     if !matches!(page.state, AcquisitionState::Ready { .. } | AcquisitionState::Partial { .. } | AcquisitionState::VerifiedEmpty { .. })
-        || page.entries.is_empty() && !matches!(page.state, AcquisitionState::VerifiedEmpty { .. }) { return Err(invalid("page.unverified_progress")); }
+        || page.entries.is_empty() && !matches!(page.state, AcquisitionState::VerifiedEmpty { .. }) && !terminal_document {
+        return Err(invalid("page.unverified_progress"));
+    }
     let entries: BTreeMap<_, _> = prepared.iter().map(|prepared| (&prepared.entry.provider_entry_key, prepared)).collect();
     if entries.len() != prepared.len() { return Err(invalid("prepared.duplicate_key")); }
     let mut outcome_refs = BTreeSet::new();

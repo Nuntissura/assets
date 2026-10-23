@@ -2,6 +2,9 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// A verified terminal source document with no entries; does not assert an empty or complete source.
+pub const TERMINAL_SOURCE_DOCUMENT: &str = "terminal_source_document";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Continuation {
     pub source_ref: HostRef,
@@ -86,6 +89,10 @@ pub struct AcquisitionPage {
     pub continuation: Option<Continuation>,
 }
 impl AcquisitionPage {
+    pub fn is_terminal_partial_document(&self) -> bool {
+        self.entries.is_empty() && self.continuation.is_none() && self.coverage == hsscrap::Coverage::Partial
+            && matches!(&self.state, AcquisitionState::Partial { reason_code, .. } if reason_code == TERMINAL_SOURCE_DOCUMENT)
+    }
     pub fn validate(&self, subscription: &Subscription, bounds: &Bounds, supported: &BTreeSet<String>) -> Result<()> {
         bounds.validate()?;
         self.partition.validate(bounds)?;
@@ -113,6 +120,9 @@ impl AcquisitionPage {
             AcquisitionState::Ready { .. } if self.entries.is_empty() => return Err(invalid("state.empty_requires_verified_source")),
             AcquisitionState::Partial { reason_code, .. } => {
                 if self.coverage != hsscrap::Coverage::Partial { return Err(invalid("state.partial_coverage")); }
+                if reason_code == TERMINAL_SOURCE_DOCUMENT && !self.is_terminal_partial_document() {
+                    return Err(invalid("state.terminal_source_document"));
+                }
                 bounded(reason_code, "reason_code", bounds.max_text_bytes)?;
             }
             AcquisitionState::NeverStarted | AcquisitionState::Running | AcquisitionState::Reconnect
