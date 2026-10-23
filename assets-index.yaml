@@ -2254,6 +2254,8 @@ assets:
   - bounded operation intents and revision-fenced replay decisions
   - durable reference-host recovery and owner receipt reconciliation proof
   - authorized URL identity candidate lookup and immutable source identity assertions
+  - authorized transfer projections with strict JCS hashes and durable export cursor plans
+  - typed import mapping, replay conflicts and destination media quarantine plans
   manual: assets/hsscrap/README.md
   packages:
   - name: hsscrap
