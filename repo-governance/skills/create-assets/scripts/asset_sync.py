@@ -208,13 +208,14 @@ def publish(root, plan, message, expected=REPOSITORY):
     spec.loader.exec_module(catalog)
     index = catalog.yaml.safe_load((root / "assets-index.yaml").read_text(encoding="utf-8"))
     assets = {a["id"]: a for a in index["assets"]}
-    scopes, selected_paths, checks = [], [], []
+    scopes, selected_paths, executable_paths, checks = [], [], [], []
     for item in plan["assets"]:
         asset = assets[item["id"]]
         scope = str(safe_path(asset["path"]))
         if not scope.startswith("assets/") or not item.get("checks") or not item.get("paths"):
             raise ValueError(f"asset scope or required proof missing: {item['id']}")
         scopes.append(scope)
+        item_paths = []
         for value in item["paths"]:
             path = str(safe_path(value))
             if not path.startswith(scope + "/") or (root / path).is_dir():
@@ -224,6 +225,12 @@ def publish(root, plan, message, expected=REPOSITORY):
                 if not existing or existing.split(b"\t", 1)[0].split()[1] != b"blob":
                     raise ValueError(f"publication requires an exact existing or tracked deleted file: {path}")
             selected_paths.append(path)
+            item_paths.append(path)
+        for value in item.get("executable_paths", []):
+            path = str(safe_path(value))
+            if path not in item_paths or not (root / path).is_file():
+                raise ValueError("executable paths must name selected files inside their asset scope")
+            executable_paths.append(path)
         for check in item["checks"]:
             cwd = str(safe_path(check.get("cwd", scope)))
             if cwd != scope and not cwd.startswith(scope + "/"):
@@ -251,6 +258,8 @@ def publish(root, plan, message, expected=REPOSITORY):
     run(root, "read-tree", "HEAD", env=env)
     allowed = selected_paths + ["assets-index.yaml", SKILL + "/references/assets-index.yaml"]
     run(root, "add", "-A", "--", *allowed, env=env)
+    if executable_paths:
+        run(root, "update-index", "--chmod=+x", "--", *executable_paths, env=env)
     paths = run(root, "diff", "--cached", "--name-only", "-z", env=env).decode().split("\0")
     if not any(paths):
         raise ValueError("no scoped changes to publish")
@@ -259,6 +268,7 @@ def publish(root, plan, message, expected=REPOSITORY):
     checkout = session / "proof"
     subprocess.run(["git", "clone", "--shared", "--no-checkout", str(root), str(checkout)],
                    check=True, capture_output=True)
+    run(checkout, "config", "core.longpaths", "true")
     run(checkout, "checkout", "--detach", candidate)
     run(checkout, "remote", "set-url", "origin", run(root, "remote", "get-url", "origin").decode().strip())
     result = subprocess.run([sys.executable, str(checkout / "repo-governance/scripts/asset_catalog.py"),

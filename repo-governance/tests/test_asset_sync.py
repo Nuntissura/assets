@@ -132,6 +132,18 @@ class DeviceSynchronization(unittest.TestCase):
         self.assertEqual(self.git("show", result["revision"] + ":unrelated.txt"), b"original\n")
         self.assertIn(b"43", self.git("show", result["revision"] + ":assets/example/src/lib.rs"))
 
+    def test_publishes_explicit_executable_paths_without_mutating_real_index(self):
+        self.write("assets/example/src/lib.rs", "pub fn answer() -> u8 { 43 }\n")
+        self.write("assets/example/bin/run.sh", "#!/bin/sh\nexit 0\n")
+        plan = self.plan()
+        plan["assets"][0]["paths"].append("assets/example/bin/run.sh")
+        plan["assets"][0]["executable_paths"] = ["assets/example/bin/run.sh"]
+        before = self.git("ls-files", "-s")
+        result = sync.publish(self.root, plan, "validated executable asset", str(self.remote))
+        self.assertEqual(before, self.git("ls-files", "-s"))
+        row = self.git("ls-tree", result["revision"], "assets/example/bin/run.sh").decode()
+        self.assertTrue(row.startswith("100755 blob "))
+
     def test_failed_proof_does_not_push(self):
         before = sync.origin(self.root, str(self.remote))[2]
         self.write("assets/example/src/lib.rs", "pub fn answer() -> u8 { 43 }\n")

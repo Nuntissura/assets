@@ -110,6 +110,12 @@ rules:
   requirement: Preserve the caller working tree and real index during scoped publication. Independently reread the
     pushed commit and tree from freshly fetched origin; retain a failed candidate for diagnosis and require reconciliation
     before further work.
+- id: ASSETS-SYNC-011
+  requirement: When selected asset files require executable Git modes, list each exact task-owned path in
+    executable_paths as well as paths; apply those modes only to the private candidate index and preserve the real index.
+- id: ASSETS-SYNC-012
+  requirement: Enable Git long-path checkout in the isolated publication candidate before checkout so Windows retains
+    every tracked path in repositories containing deep paths.
 commands:
   check: python repo-governance/scripts/asset_catalog.py check
   refresh: python repo-governance/scripts/asset_catalog.py refresh
