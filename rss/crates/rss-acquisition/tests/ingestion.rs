@@ -28,6 +28,8 @@ fn query() -> IdentityQuery { IdentityQuery { provider: "syndication".into(), na
 #[derive(Default)]
 struct Store {
     invalid_item_owner: bool,
+    identity_read_override: Option<SourceIdentity>, missing_identity_read: bool,
+    denied_identity_read: bool, missing_identity_lookup: bool, identity_reservations: usize,
     captures: Vec<URLCapture>, observations: Vec<MetadataObservation>, streams: Vec<ObservationStream>, identities: Vec<SourceIdentity>,
     outcomes: BTreeMap<OperationId, OperationOutcome>, appearances: BTreeMap<String, SourceAppearance>, mutations: usize,
     outcome_refs: BTreeMap<HostRef, OperationId>,
@@ -59,7 +61,9 @@ impl ItemOwner for Owner {
     }
     fn lookup_identity(&self, context: &CommandContext, query: IdentityQuery) -> Result<Option<ItemId>> {
         if query.access_partition != context.scope { return Err(Error::Denied); }
-        Ok(self.0.lock().unwrap().identities.iter().find(|value| value.provider == query.provider && value.namespace == query.namespace
+        let store = self.0.lock().unwrap();
+        if store.missing_identity_lookup { return Ok(None); }
+        Ok(store.identities.iter().find(|value| value.provider == query.provider && value.namespace == query.namespace
             && value.provider_item_id == query.provider_item_id && value.access_partition == context.scope && value.retired_at.is_none()).map(|value| value.item_id))
     }
     fn lookup_url(&self, context: &CommandContext, query: UrlIdentityQuery) -> Result<Vec<ItemId>> {
@@ -73,10 +77,23 @@ impl ItemOwner for Owner {
         store.observations.push(observation); Ok(Self::record(&mut store, context))
     }
     fn assert_source_identity(&mut self, context: CommandContext, identity: SourceIdentity) -> Result<OperationOutcome> {
-        let mut store = self.0.lock().unwrap(); store.identities.push(identity); Ok(Self::record(&mut store, context))
+        let mut store = self.0.lock().unwrap();
+        if identity.access_partition != context.scope || identity.retired_at.is_some()
+            || store.identities.iter().any(|value| value.identity_id == identity.identity_id
+                || value.retired_at.is_none() && value.provider == identity.provider && value.namespace == identity.namespace
+                    && value.provider_item_id == identity.provider_item_id && value.access_partition == identity.access_partition)
+            || !store.observations.iter().any(|observation| observation.observation_id == identity.verified_by_observation_id
+                && observation.item_id == identity.item_id && observation.access_partition == identity.access_partition
+                && observation.provider.as_ref() == Some(&identity.provider) && observation.status.state == AvailabilityState::Available
+                && store.streams.iter().any(|stream| stream.stream_id == observation.stream_id && stream.provider_namespace == identity.namespace)) {
+            return Err(Error::Conflict { field: "source_identity".into() });
+        }
+        store.identities.push(identity); Ok(Self::record(&mut store, context))
     }
     fn inspect_source_identity(&self, context: &CommandContext, identity: IdentityId) -> Result<SourceIdentity> {
-        self.0.lock().unwrap().identities.iter().find(|value| value.identity_id == identity && value.access_partition == context.scope).cloned().ok_or(Error::NotFound)
+        let store = self.0.lock().unwrap();
+        if store.denied_identity_read { return Err(Error::Denied); }
+        store.identities.iter().find(|value| value.identity_id == identity && value.access_partition == context.scope).cloned().ok_or(Error::NotFound)
     }
     fn operation_outcome(&self, context: &CommandContext, operation: OperationId) -> Result<OperationOutcome> {
         let store = self.0.lock().unwrap(); let outcome = store.outcomes.get(&operation).ok_or(Error::NotFound)?;
@@ -137,9 +154,24 @@ impl EntryAllocator for Allocator {
         current: ItemSnapshot, observation: &'a MetadataObservation, query: IdentityQuery) -> Pending<'a, IdentityAllocation> {
         Box::pin(async move {
             assert!(current.observations.iter().any(|stored| stored == observation), "identity guard must follow observation commit/readback");
+            self.0.0.lock().unwrap().identity_reservations += 1;
             Ok(IdentityAllocation { context: context(request, 3), identity: SourceIdentity { identity_id: id(400 + number(request)),
                 item_id: current.item.item_id, provider: query.provider, namespace: query.namespace, provider_item_id: query.provider_item_id,
                 access_partition: query.access_partition, verified_by_observation_id: observation.observation_id, retired_at: None, common: Extensions::default() } })
+        })
+    }
+    fn inspect_identity<'a>(&'a self, request: &'a SourceRequest, execution: &'a HostRef, query: &'a IdentityQuery) -> Pending<'a, Option<SourceIdentity>> {
+        Box::pin(async move {
+            if query.access_partition != request.subscription.partition.scope || execution != &reference("attempt") { return Err(rss_contracts::Error::Denied); }
+            let store = self.0.0.lock().unwrap();
+            if store.denied_identity_read { return Err(rss_contracts::Error::Denied); }
+            if store.missing_identity_read { return Ok(None); }
+            if let Some(value) = &store.identity_read_override { return Ok(Some(value.clone())); }
+            let mut matching = store.identities.iter().filter(|value| value.provider == query.provider && value.namespace == query.namespace
+                && value.provider_item_id == query.provider_item_id && value.access_partition == query.access_partition && value.retired_at.is_none());
+            let result = matching.next().cloned();
+            if matching.next().is_some() { return Err(rss_contracts::Error::Conflict); }
+            Ok(result)
         })
     }
     fn inspect_appearance<'a>(&'a self, _: &'a SourceRequest, key: &'a str) -> Pending<'a, Option<SourceAppearance>> {
@@ -239,6 +271,7 @@ fn two_source_pages_keep_the_same_subscription_fence_and_reuse_canonical_item() 
     queue.start(first_request.operation_id, &reference("executor"), 0).unwrap();
     queue.begin_commit(first_request.operation_id, &reference("executor"), 1).unwrap();
     let first = prepared(&mut owner, &admission, &first_request, Some(query())); let first_page = page(&first_request, &first, true);
+    let immutable_identity = owner.0.lock().unwrap().identities[0].clone();
     let first_ack = run(commit_page(&owner, &admission, &admission, &Allocator(owner.clone()), &checkpoints, &reference("attempt"), &first_request, &first_page, &[first], &BTreeSet::new())).unwrap();
     let before_advance = serde_json::to_vec(&queue).unwrap(); let mut queue: JobQueue = serde_json::from_slice(&before_advance).unwrap();
     assert_eq!(queue.advance(&first_ack, first_request.operation_id, 4), Err(rss_contracts::Error::Conflict));
@@ -256,8 +289,112 @@ fn two_source_pages_keep_the_same_subscription_fence_and_reuse_canonical_item() 
     let second_ack = run(commit_page(&owner, &admission, &admission, &Allocator(owner.clone()), &checkpoints, &reference("attempt"), &second_request, &second_page, &[second], &BTreeSet::new())).unwrap();
     queue.acknowledge(&second_ack).unwrap(); assert_eq!(queue.jobs()[0].state, JobState::Completed); assert!(second_ack.continuation().is_none());
     assert_eq!(owner.0.lock().unwrap().captures.iter().map(|capture| capture.item_id).collect::<BTreeSet<_>>().len(), 1);
+    { let store = owner.0.lock().unwrap();
+        assert_eq!(store.identities, vec![immutable_identity.clone()]);
+        assert_eq!(store.observations.len(), 2);
+        assert_eq!(store.identity_reservations, 1, "refresh must not allocate or reassert an immutable identity");
+    }
     assert_eq!(checkpoints.state.lock().unwrap().batches.len(), 2);
     assert!(checkpoints.state.lock().unwrap().batches.values().all(|(_, batch, _)| batch.expected_generation == Revision(1)));
+    { let state = checkpoints.state.lock().unwrap();
+        assert_eq!(state.batches[&first_request.operation_id].1.item_owner_outcome_refs.len(), 3);
+        assert_eq!(state.batches[&second_request.operation_id].1.item_owner_outcome_refs.len(), 2);
+    }
+    let mutations = owner.0.lock().unwrap().mutations;
+    for changed_verification in [false, true] {
+        let mut duplicate = immutable_identity.clone();
+        if changed_verification { duplicate.verified_by_observation_id = id(202); }
+        assert!(owner.assert_source_identity(context(&second_request, 9), duplicate).is_err());
+    }
+    let mut duplicate = immutable_identity; duplicate.identity_id = id(999);
+    assert!(owner.assert_source_identity(context(&second_request, 9), duplicate).is_err());
+    assert_eq!(owner.0.lock().unwrap().mutations, mutations);
+}
+
+#[test]
+fn same_page_identity_retry_preserves_exact_lost_checkpoint_batch() {
+    let request = request(1); let admission = Admission::new(&request); let mut owner = Owner::default();
+    let checkpoints = Checkpoints::new(owner.clone()); let allocator = Allocator(owner.clone());
+    let first = prepared(&mut owner, &admission, &request, Some(query())); let source_page = page(&request, &first, false);
+    checkpoints.state.lock().unwrap().lose_next = true;
+    assert!(matches!(run(commit_page(&owner, &admission, &admission, &allocator, &checkpoints, &reference("attempt"), &request,
+        &source_page, &[first], &BTreeSet::new())), Err(rss_contracts::Error::UnknownOutcome { .. })));
+    let batch_before = serde_json::to_vec(&checkpoints.state.lock().unwrap().batches[&request.operation_id].1).unwrap();
+    let identity_before = owner.0.lock().unwrap().identities.clone();
+    let replay = prepared(&mut owner, &admission, &request, Some(query()));
+    let replay_page = page(&request, &replay, false);
+    assert_eq!(source_page, replay_page);
+    run(commit_page(&owner, &admission, &admission, &allocator, &checkpoints, &reference("attempt"), &request,
+        &replay_page, &[replay], &BTreeSet::new())).unwrap();
+    let state = checkpoints.state.lock().unwrap();
+    assert_eq!(serde_json::to_vec(&state.batches[&request.operation_id].1).unwrap(), batch_before);
+    assert_eq!(state.batches[&request.operation_id].1.item_owner_outcome_refs.len(), 3);
+    let store = owner.0.lock().unwrap();
+    assert_eq!(store.identities, identity_before); assert_eq!(store.observations.len(), 1); assert_eq!(store.mutations, 3);
+}
+
+#[test]
+fn existing_identity_requires_exact_canonical_tuple_and_original_verification() {
+    for scenario in 0..9 {
+        let first_request = request(1); let admission = Admission::new(&first_request); let mut owner = Owner::default();
+        let first = prepared(&mut owner, &admission, &first_request, Some(query()));
+        let original = owner.0.lock().unwrap().identities[0].clone();
+        { let mut store = owner.0.lock().unwrap(); let mut changed = original.clone();
+            match scenario {
+                0 => changed.retired_at = Some(at()),
+                1 => changed.verified_by_observation_id = id(999),
+                2 => changed.item_id = id(999),
+                3 => store.missing_identity_read = true,
+                4 => store.missing_identity_lookup = true,
+                5 => store.denied_identity_read = true,
+                6 => changed.access_partition = ScopeRef("foreign".into()),
+                7 => changed.namespace = "different-namespace".into(),
+                _ => store.observations[0].status.state = AvailabilityState::Unavailable,
+            }
+            if matches!(scenario, 0 | 1 | 2 | 6 | 7) { store.identity_read_override = Some(changed); }
+        }
+        let second_request = request(2); *admission.operation.lock().unwrap() = second_request.operation_id;
+        let allocator = Allocator(owner.clone());
+        assert!(run(prepare_entry(&mut owner, &admission, &admission, &allocator, &reference("attempt"),
+            &second_request, &context(&second_request, 0), "opaque-post", "https://example.org/post", Some(query()), |_| {}, &BTreeSet::new())).is_err(), "scenario {scenario}");
+        let store = owner.0.lock().unwrap();
+        assert_eq!(store.identities, vec![original]); assert_eq!(store.identity_reservations, 1);
+        assert_eq!(first.entry().capture.item_id, store.captures[0].item_id);
+    }
+}
+
+#[test]
+fn checkpoint_rechecks_reused_identity_without_an_old_operation_receipt() {
+    for scenario in 0..8 {
+        let first_request = request(1); let admission = Admission::new(&first_request); let mut owner = Owner::default();
+        let _first = prepared(&mut owner, &admission, &first_request, Some(query()));
+        let second_request = request(2); *admission.operation.lock().unwrap() = second_request.operation_id;
+        let second = prepared(&mut owner, &admission, &second_request, Some(query())); let source_page = page(&second_request, &second, false);
+        { let mut store = owner.0.lock().unwrap();
+            // An old identity journal is unnecessary for a new page's read-only identity proof.
+            store.outcomes.remove(&context(&first_request, 3).operation_id);
+            match scenario {
+                0 => store.identities[0].retired_at = Some(at()),
+                1 => store.identities[0].verified_by_observation_id = second.entry().observation.observation_id,
+                2 => store.identities[0].item_id = id(999),
+                3 => store.denied_identity_read = true,
+                4 => store.missing_identity_lookup = true,
+                5 => { store.observations.remove(0); },
+                6 => store.observations[0].status.state = AvailabilityState::Unavailable,
+                _ => {},
+            }
+        }
+        let checkpoints = Checkpoints::new(owner.clone());
+        let result = run(commit_page(&owner, &admission, &admission, &Allocator(owner.clone()), &checkpoints, &reference("attempt"),
+            &second_request, &source_page, &[second], &BTreeSet::new()));
+        if scenario == 7 {
+            assert!(result.is_ok());
+            assert_eq!(checkpoints.state.lock().unwrap().batches[&second_request.operation_id].1.item_owner_outcome_refs.len(), 2);
+        } else {
+            assert!(result.is_err(), "scenario {scenario}");
+            assert_eq!(checkpoints.state.lock().unwrap().calls, 0);
+        }
+    }
 }
 
 #[test]

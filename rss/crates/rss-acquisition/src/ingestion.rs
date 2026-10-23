@@ -25,6 +25,9 @@ pub trait EntryAllocator: Send + Sync {
         entry_key: &'a str, resolved_item: Option<ItemId>, url: NormalizedCaptureUrl) -> Pending<'a, CaptureAllocation>;
     fn reserve_observation<'a>(&'a self, request: &'a SourceRequest, execution_ref: &'a HostRef,
         entry_key: &'a str, capture: ItemSnapshot, identity: Option<IdentityQuery>) -> Pending<'a, ObservationAllocation>;
+    /// Read the exact currently authorized immutable assertion from its canonical owner, not an allocation cache.
+    fn inspect_identity<'a>(&'a self, request: &'a SourceRequest, execution_ref: &'a HostRef,
+        identity: &'a IdentityQuery) -> Pending<'a, Option<SourceIdentity>>;
     /// Resolve the identity assertion's revision guard from the snapshot after observation commitment.
     fn reserve_identity<'a>(&'a self, request: &'a SourceRequest, execution_ref: &'a HostRef, entry_key: &'a str,
         current: ItemSnapshot, observation: &'a MetadataObservation, identity: IdentityQuery) -> Pending<'a, IdentityAllocation>;
@@ -41,9 +44,15 @@ pub struct PreparedEntry {
     appearance: SourceAppearance,
     capture_context: CommandContext,
     observation_context: CommandContext,
-    identity: Option<IdentityAllocation>,
+    identity: Option<IdentityProof>,
     receipts: Vec<HostRef>,
     outcome_refs: Vec<HostRef>,
+}
+enum IdentityProof { New(IdentityAllocation), Existing(SourceIdentity) }
+impl IdentityProof {
+    fn identity(&self) -> &SourceIdentity {
+        match self { Self::New(allocation) => &allocation.identity, Self::Existing(identity) => identity }
+    }
 }
 impl PreparedEntry {
     pub fn entry(&self) -> &ObservedEntry { &self.entry }
@@ -86,16 +95,37 @@ fn read_observation(owner: &impl ItemOwner, context: &CommandContext, request: &
     Ok(())
 }
 
-fn read_identity(owner: &impl ItemOwner, allocation: &IdentityAllocation, supported: &BTreeSet<String>) -> Result<()> {
-    committed(owner, &allocation.context)?;
-    let stored = owner.inspect_source_identity(&allocation.context, allocation.identity.identity_id)?;
-    stored.validate(&allocation.context.bounds, supported)?;
+fn read_identity(owner: &impl ItemOwner, context: &CommandContext, identity: &SourceIdentity, supported: &BTreeSet<String>) -> Result<()> {
+    identity.validate(&context.bounds, supported)?;
+    let stored = owner.inspect_source_identity(context, identity.identity_id)?;
+    stored.validate(&context.bounds, supported)?;
     let query = IdentityQuery { provider: stored.provider.clone(), namespace: stored.namespace.clone(),
         provider_item_id: stored.provider_item_id.clone(), access_partition: stored.access_partition.clone() };
-    if stored != allocation.identity || owner.lookup_identity(&allocation.context, query)? != Some(stored.item_id) {
-        return Err(Error::UnknownOutcome { operation_id: allocation.context.operation_id });
+    if stored != *identity || stored.access_partition != context.scope || stored.retired_at.is_some()
+        || owner.lookup_identity(context, query)? != Some(stored.item_id) {
+        return Err(Error::UnknownOutcome { operation_id: context.operation_id });
     }
+    let snapshot = owner.inspect(context, stored.item_id)?;
+    snapshot.item.validate(&context.bounds, supported)?;
+    if snapshot.item.item_id != stored.item_id || snapshot.item.owner_scope.0.is_empty()
+        || snapshot.item.lifecycle != hsscrap::Lifecycle::Active { return Err(Error::StaleResult); }
+    let observation = snapshot.observations.iter().find(|value| value.observation_id == stored.verified_by_observation_id)
+        .ok_or(Error::StaleResult)?;
+    observation.validate(&context.bounds, supported)?;
+    if observation.item_id != stored.item_id || observation.access_partition != stored.access_partition
+        || observation.provider.as_deref() != Some(stored.provider.as_str())
+        || observation.status.state != hsscrap::AvailabilityState::Available { return Err(Error::StaleResult); }
+    let stream = snapshot.streams.iter().find(|value| value.stream_id == observation.stream_id).ok_or(Error::StaleResult)?;
+    stream.validate(&context.bounds, supported)?;
+    if stream.item_id != stored.item_id || stream.access_partition != stored.access_partition
+        || stream.provider_namespace != stored.namespace || stream.producer != observation.producer { return Err(Error::StaleResult); }
     Ok(())
+}
+
+fn matches_identity(identity: &SourceIdentity, query: &IdentityQuery, item: ItemId) -> bool {
+    identity.item_id == item && identity.provider == query.provider && identity.namespace == query.namespace
+        && identity.provider_item_id == query.provider_item_id && identity.access_partition == query.access_partition
+        && identity.retired_at.is_none()
 }
 
 fn outcome_receipts(outcomes: &[OperationOutcome], bounds: &Bounds) -> Result<Vec<HostRef>> {
@@ -161,21 +191,37 @@ pub async fn prepare_entry<O: ItemOwner + MutationCoordinator>(owner: &mut O, au
     let mut outcomes = vec![capture_outcome, observation_outcome];
     let identity = if let Some(query) = provider_identity {
         authorize_current(authority, execution, request, execution_ref).await?;
-        let current = owner.inspect(&reserved.context, entry.capture.item_id)?;
-        let identity = allocator.reserve_identity(request, execution_ref, entry_key, current, &entry.observation, query.clone()).await?;
-        context_for(&identity.context, request, &lookup_context.actor)?;
-        identity.identity.validate(&request.bounds, supported)?;
-        if identity.context.operation_id == reserved.context.operation_id || identity.context.operation_id == allocation.context.operation_id
-            || identity.identity.item_id != entry.capture.item_id || identity.identity.access_partition != request.subscription.partition.scope
-            || identity.identity.verified_by_observation_id != entry.observation.observation_id || identity.identity.retired_at.is_some()
-            || identity.identity.provider != query.provider || identity.identity.namespace != query.namespace
-            || identity.identity.provider_item_id != query.provider_item_id {
-            return Err(invalid("identity.reservation"));
-        }
+        let existing = allocator.inspect_identity(request, execution_ref, &query).await?;
         authorize_current(authority, execution, request, execution_ref).await?;
-        outcomes.push(reconcile(owner, &identity.context, |owner| owner.assert_source_identity(identity.context.clone(), identity.identity.clone()))?);
-        read_identity(owner, &identity, supported)?;
-        Some(identity)
+        if existing.as_ref().is_some_and(|identity| !matches_identity(identity, &query, entry.capture.item_id)) {
+            return Err(invalid("identity.existing"));
+        }
+        if let Some(identity) = existing.as_ref().filter(|identity| identity.verified_by_observation_id != entry.observation.observation_id) {
+            read_identity(owner, &reserved.context, identity, supported)?;
+            Some(IdentityProof::Existing(identity.clone()))
+        } else {
+            if existing.is_none() && owner.lookup_identity(&reserved.context, query.clone())?.is_some() { return Err(Error::Conflict); }
+            let current = owner.inspect(&reserved.context, entry.capture.item_id)?;
+            let identity = allocator.reserve_identity(request, execution_ref, entry_key, current, &entry.observation, query.clone()).await?;
+            context_for(&identity.context, request, &lookup_context.actor)?;
+            identity.identity.validate(&request.bounds, supported)?;
+            if identity.context.operation_id == reserved.context.operation_id || identity.context.operation_id == allocation.context.operation_id
+                || !matches_identity(&identity.identity, &query, entry.capture.item_id)
+                || identity.identity.verified_by_observation_id != entry.observation.observation_id {
+                return Err(invalid("identity.reservation"));
+            }
+            if existing.as_ref().is_some_and(|stored| stored != &identity.identity) { return Err(Error::Conflict); }
+            authorize_current(authority, execution, request, execution_ref).await?;
+            let outcome = if existing.is_some() {
+                // Same-page retry must resolve its original journal, never assert the immutable identity again.
+                reconcile(owner, &identity.context, |_| Err(hsscrap::Error::NotFound))?
+            } else {
+                reconcile(owner, &identity.context, |owner| owner.assert_source_identity(identity.context.clone(), identity.identity.clone()))?
+            };
+            outcomes.push(outcome);
+            read_identity(owner, &identity.context, &identity.identity, supported)?;
+            Some(IdentityProof::New(identity))
+        }
     } else { None };
     let previous = allocator.inspect_appearance(request, entry_key).await?;
     let appearance = if let Some(mut previous) = previous {
@@ -197,7 +243,7 @@ pub async fn prepare_entry<O: ItemOwner + MutationCoordinator>(owner: &mut O, au
     appearance.validate(&request.bounds, supported)?;
     let mut outcome_refs = vec![canonical_outcome_ref(allocator, &allocation.context, &outcomes[0]).await?,
         canonical_outcome_ref(allocator, &reserved.context, &outcomes[1]).await?];
-    if let Some(identity) = &identity { outcome_refs.push(canonical_outcome_ref(allocator, &identity.context, &outcomes[2]).await?); }
+    if let Some(IdentityProof::New(identity)) = &identity { outcome_refs.push(canonical_outcome_ref(allocator, &identity.context, &outcomes[2]).await?); }
     Ok(PreparedEntry { entry, appearance, capture_context: allocation.context, observation_context: reserved.context,
         identity, receipts: outcome_receipts(&outcomes, &request.bounds)?, outcome_refs })
 }
@@ -230,10 +276,10 @@ pub async fn commit_page(owner: &impl ItemOwner, authority: &impl AuthorityPort,
         let prepared = entries.get(&entry.provider_entry_key).ok_or_else(|| invalid("prepared.missing"))?;
         if &prepared.entry != entry { return Err(Error::Conflict); }
         let mut outcomes = vec![committed(owner, &prepared.capture_context)?, committed(owner, &prepared.observation_context)?];
-        read_observation(owner, &prepared.observation_context, request, entry, prepared.identity.as_ref().map(|identity| identity.identity.namespace.as_str()), supported)?;
+        read_observation(owner, &prepared.observation_context, request, entry, prepared.identity.as_ref().map(|identity| identity.identity().namespace.as_str()), supported)?;
         if let Some(identity) = &prepared.identity {
-            read_identity(owner, identity, supported)?;
-            outcomes.push(committed(owner, &identity.context)?);
+            read_identity(owner, &prepared.observation_context, identity.identity(), supported)?;
+            if let IdentityProof::New(allocation) = identity { outcomes.push(committed(owner, &allocation.context)?); }
         }
         if outcome_receipts(&outcomes, &request.bounds)? != prepared.receipts { return Err(Error::Conflict); }
         if outcomes.len() != prepared.outcome_refs.len() { return Err(Error::Conflict); }

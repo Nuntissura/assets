@@ -2316,6 +2316,7 @@ assets:
   - explicit cancelled-attempt settlement after host termination and canonical child reconciliation
   - URL capture receipt validation and owner recovery
   - identity-first ingestion and canonical owner outcome references
+  - immutable provider identity reuse with exact same-page assertion and checkpoint replay
   - immutable batch checkpoint retry and acknowledged queue continuation
   - bounded RSS/Atom discovery, parsing and media evidence
   - digest-bound source document pagination and partial terminal checkpoints
