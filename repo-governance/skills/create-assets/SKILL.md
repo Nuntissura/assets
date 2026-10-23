@@ -28,9 +28,9 @@ metadata:
 
 - [ASSET-SCOPE-001] Use https://github.com/Nuntissura/assets as the asset repository identity; discover its local checkout from the current environment and verify its Git remote rather than hardcoding a disk path.
 - [ASSET-SCOPE-002] Inspect the repository index, applicable authority, target asset manifests, public API, and relevant host integration before choosing files or architecture.
-- [ASSET-SCOPE-003] Keep every asset beneath the visible `assets/` parent on the canonical branch of the single GitHub repository. Treat each asset subfolder as its own repository-like work scope with independent ownership, proof, and existing governance. Do not use permanent branches as asset locations or create nested Git repositories.
+- [ASSET-SCOPE-003] Keep each asset project directly under the repository root on the shared canonical branch of the single GitHub repository. Treat each asset subfolder as its own repository-like work scope with independent ownership, proof, and existing governance. Do not use permanent branches as asset locations or create nested Git repositories.
 - [ASSET-SCOPE-004] Verify actual Git boundaries before staging, committing, or changing dependencies; do not assume a folder is an independent Git repository.
-- [ASSET-SCOPE-005] Use an isolated Git worktree of the shared repository when an asset task needs independent Git state; work inside that worktree's `assets/NAME` scope. A Git worktree is a repository checkout, not a nested repository inside an asset. Do not add governance to an asset that has none.
+- [ASSET-SCOPE-005] When authorized, use an isolated Git worktree of the shared repository when an asset task needs independent Git state; work inside that worktree's `NAME` scope. A Git worktree is a repository checkout, not a nested repository inside an asset. Do not add governance to an asset that has none.
 - [ASSET-SCOPE-006] Preserve unrelated working-tree edits and existing asset names.
 - [ASSET-SCOPE-007] Research current relevant implementations before a new feature or substantial design, following applicable operator and project research requirements; record sources, reuse, rejected approaches, risks, mitigations, and proof before implementation. Recorded-failure remediation follows its narrower applicable rules.
 
@@ -91,7 +91,7 @@ metadata:
 - [ASSET-SCOPE-009] Reuse an adequate asset, extend and validate its missing reusable capability first, or create a new asset only after inspected candidates cannot appropriately own the capability; record the new asset's rationale in its index entry.
 - [ASSET-INDEX-005] `assets-index.yaml` is the sole authored inventory. `references/assets-index.yaml` beside this skill is a generated discovery copy, never a second source of truth; verify it against the repository before relying on it.
 - [ASSET-INDEX-006] Read `repo-governance/asset-catalog-policy.yaml` in the verified repository for schema, discovery, fork, versioning, and publication requirements. Follow its commands from the repository root or pass `--repo` to its checker.
-- [ASSET-INDEX-007] Index every reusable package and composition beneath `assets/` on the canonical branch. New assets must be integrated there; historical branch aliases are discovery evidence, never the published asset location. Classify exclusions explicitly and keep source-only drafts separate from installable assets. Preserve existing names, IDs, paths, and the assets.index.v1 schema.
+- [ASSET-INDEX-007] Index every reusable package and composition within its project folder directly under the repository root on the shared canonical branch. New asset projects must be integrated there; historical branch aliases are discovery evidence, never the published asset location. Classify exclusions explicitly and keep source-only drafts separate from installable assets. Preserve existing names, IDs, paths, and the assets.index.v1 schema.
 
 ## Cross-device publication and parity
 

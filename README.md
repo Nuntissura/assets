@@ -8,13 +8,13 @@ updated_at: '2026-10-22'
 
 # Assets
 
-All published assets are visible in the [assets folder](assets/) on this repository's default branch.
+All published asset projects have their own folder directly under this repository's root on its default branch.
 The [catalog](assets-index.yaml) lists packages, versions, source links, APIs, manuals, work scopes,
 and existing governance. A catalog entry establishes discoverability, not product readiness.
 
 Each asset folder is maintained as an independent work scope. Some have strict governance; others
 use their public contract and the operator request. Git history belongs to this shared repository.
-For isolated work, use a separate Git worktree and work inside its selected `assets/NAME` folder.
+For authorized isolated work, use a separate Git worktree and work inside its selected `NAME` folder.
 
 </topic>
 

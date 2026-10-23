@@ -212,7 +212,10 @@ def publish(root, plan, message, expected=REPOSITORY):
     for item in plan["assets"]:
         asset = assets[item["id"]]
         scope = str(safe_path(asset["path"]))
-        if not scope.startswith("assets/") or not item.get("checks") or not item.get("paths"):
+        scope_parts = PurePosixPath(scope).parts
+        if (not scope_parts or scope_parts[0].startswith(".")
+                or scope_parts[0] in {"repo-governance", "source-downloads", "node_modules", "target"}
+                or not item.get("checks") or not item.get("paths")):
             raise ValueError(f"asset scope or required proof missing: {item['id']}")
         scopes.append(scope)
         item_paths = []

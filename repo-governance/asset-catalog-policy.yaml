@@ -6,7 +6,7 @@ skill: repo-governance/skills/create-assets/SKILL.md
 checker: repo-governance/scripts/asset_catalog.py
 rules:
 - id: ASSETS-CATALOG-001
-  requirement: Maintain one GitHub assets repository with every asset beneath the visible assets/ parent on its
+  requirement: Maintain one GitHub assets repository with each asset project directly under its root on the shared
     canonical branch; do not create nested Git repositories or use permanent asset branches as the published asset
     location.
 - id: ASSETS-CATALOG-002
@@ -26,7 +26,7 @@ rules:
     give every excluded manifest an explicit classification reason. Record unfinished source without a manifest
     as a draft, not as an installable package.
 - id: ASSETS-CATALOG-007
-  requirement: Record repository-relative canonical assets/ folders, package versions, dependencies, API paths,
+  requirement: Record canonical project folders directly under the repository root, package versions, dependencies, API paths,
     available manuals, and each asset work scope and existing governance entrypoint. Historical branch paths are
     aliases only; new assets must become visible canonical folders.
 - id: ASSETS-CATALOG-008
@@ -72,7 +72,7 @@ rules:
     commit hash.
 - id: ASSETS-VERSION-004
   requirement: Use source_tree fingerprints only for historical source reconciliation; every current asset must
-    resolve to its canonical assets/ folder. Never require switching branches to discover or consume a current asset.
+    resolve within its canonical project folder directly under the repository root. Never require switching branches to discover or consume a current asset.
 - id: ASSETS-FORK-001
   requirement: Do not fork an existing asset or maintain divergent host copies by default; try configuration, an
     adapter, composition, or a compatible extension first.
@@ -95,8 +95,8 @@ rules:
     rules, ownership, and proof requirements. Preserve existing strict governance and do not impose governance on
     assets that have none.
 - id: ASSETS-SCOPE-002
-  requirement: When isolation is needed, use a separate Git worktree of the shared repository and work within its
-    selected assets/ scope; do not initialize nested repositories or make an asset-specific branch its permanent
+  requirement: When authorized isolation is needed, use a separate Git worktree of the shared repository and work within its
+    selected project folder directly under that worktree root; do not initialize nested repositories or make an asset-specific branch its permanent
     source location.
 - id: ASSETS-SYNC-008
   requirement: The before-use helper must verify origin, freshly fetch GitHub, permit only fast-forward checkout
@@ -141,7 +141,7 @@ research:
   - all freshly fetched origin branch trees
   - installed create-assets skill
   - global authority twins
-  selected: Visible canonical assets/ parent; byte-preserving relocation and Studio import; independent asset work
+  selected: Canonical project folders directly under the shared repository root; byte-preserving relocation and Studio import; independent asset work
     scopes; before-use fast-forward and managed skill update; private-index candidate publication with isolated
     owner proof and normal conflict-rejecting push
   reused:
@@ -170,5 +170,5 @@ research:
     control: Deterministic projection, manifest checks, installed-copy comparison, and GitHub workflow
   validation: Temporary-repository behavioral tests; real local catalog check; installed-copy comparison; fresh
     origin reread after publication
-asset_root: assets
+asset_root: null
 sync_helper: repo-governance/skills/create-assets/scripts/asset_sync.py
