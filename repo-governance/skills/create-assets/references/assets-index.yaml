@@ -2241,6 +2241,8 @@ assets:
   - metadata observations
   - host owner ports
   - bounded model validation
+  - origin-preserving tag assignment plans
+  - project membership and folder placement plans
   manual: assets/hsscrap/README.md
   packages:
   - name: hsscrap
@@ -2257,6 +2259,36 @@ assets:
   discovery_rationale: Existing handshake_asset_resolver owns retained-media resolution/cache and handshake_embed_views
     owns media rendering. Neither owns capture provenance, item metadata/overrides or scoped resource identity;
     adding that purpose there would conflate media-byte resolution with the independent hsscrap item owner.
+- id: RSS-ASSET-001
+  name: rss
+  path: assets/rss
+  kind: asset
+  status: source-present
+  purpose: Portable source subscriptions, scoped acquisition, appearance state and checkpoint contracts.
+  capabilities:
+  - public source identity
+  - distinct connected stream modes
+  - source appearances and read bookmark state
+  - bounded acquisition and checkpoint owner ports
+  manual: assets/rss/README.md
+  packages:
+  - name: rss-contracts
+    manifest: assets/rss/crates/rss-contracts/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-contracts/src/lib.rs
+    role: logic
+    depends_on:
+    - hsscrap
+  components:
+  - HSSCRAP-ASSET-001
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/rss
+  governance:
+    mode: none
+    scope: operator request and source acquisition contracts
+  work_scope: assets/rss
+  discovery_rationale: hsscrap owns reusable item metadata and provenance but intentionally excludes subscriptions,
+    source appearances and acquisition state. Existing resolver/rendering assets do not own source scheduling; RSS
+    composes hsscrap instead of adding a divergent item schema or host-specific acquisition logic.
 drafts:
 - id: HANDSHAKE-SWARM-STATE-DRAFT-001
   path: assets/hskernel/crates/handshake_swarm_state

@@ -18,6 +18,8 @@ Build from repository root: `cargo build --manifest-path assets/hsscrap/Cargo.to
 
 This package currently implements the model foundation. URL identity migration/normalization, observation/gallery transitions, transfer/JCS proof and host/GUI adoption remain separate incomplete microtasks. A serialized media reference does not prove retained bytes.
 
+`tags` groups only freshly authorized assignments by canonical tag ID, preserves each origin and routes removal to writable targets. `organization` plans project membership saves, stable folder/root placement moves and explicit cross-project moves. Hosts supply authorized destinations and complete canonical membership/placement sets, then atomically commit plans with revision checks. Removing a placement does not remove the item; RemoveIfEmpty counts the full supplied canonical set. These pure plans do not establish a host persistence or authorization implementation.
+
 </topic>
 
 <topic id="research-basis">
