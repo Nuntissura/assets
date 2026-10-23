@@ -14,6 +14,8 @@ The current foundation is `rss-contracts`. From repository root, build with `car
 
 AccessPartition validates public versus connected mode. Public profile, Reels, board and channel modes remain distinct. Connected Following, actual Home/For You, private sources, own uploads and subscription import cannot substitute for one another. Capability availability is an adapter declaration, not proof of source access. VerifiedEmpty requires explicit selected-source evidence; failures, expiry and partial acquisition retain separate states.
 
+An account-owned source may feed a distinct authorized profile partition. Providers validate a nonempty bounded source owner and exact selected source reference; they do not equate catalogue ownership with capture access. Construct each provider from the canonical selected source record. The host AuthorityPort, AcquisitionOwner and transport/canonical-preparation ports must freshly verify account ownership, profile selection, source configuration, executor and generation before network or owner effects, including redirects and replay. Source and partition IDs are never grants.
+
 Continuation binds subscription, source, access partition, executor and generation. It cannot be used as a WallCursor. CheckpointOwner records accepted item-owner outcomes and source appearances before acknowledging the continuation. A lost response requires scoped operation lookup; pending or unknown outcomes do not authorize advancing a checkpoint. No credential bytes or database/HTTP-framework types appear in these contracts. Optional hsscrap extensions and nullable legacy history remain intact.
 
 </topic>

@@ -2310,6 +2310,7 @@ assets:
   - source appearances and read bookmark state
   - bounded acquisition and checkpoint owner ports
   - account source library and group membership reducers
+  - account-owned sources with authorized distinct profile acquisition partitions
   - per-group keyword and priority rules
   - bounded resumable acquisition job transitions
   - URL capture receipt validation and owner recovery

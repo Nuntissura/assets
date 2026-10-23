@@ -179,7 +179,8 @@ impl<F: FetchPort, N: CanonicalEntryPort> SyndicationProvider<F, N> {
         rss_acquisition::validate_request(&request)?;
         self.source.revision.validate()?;
         self.source.common.validate_bounded(&request.bounds, &self.supported_extensions)?;
-        if self.source.source_ref != request.subscription.source_ref || self.source.owner_scope != request.subscription.partition.scope {
+        request.bounds.text("source.owner_scope", &self.source.owner_scope.0, request.bounds.max_text_bytes)?;
+        if self.source.source_ref != request.subscription.source_ref || self.source.owner_scope.0.is_empty() {
             return Err(Error::Denied);
         }
         if self.source.provider != Provider::Syndication || request.subscription.partition.mode != AccessMode::PublicFeed {

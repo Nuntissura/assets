@@ -93,11 +93,12 @@ struct Fetch {
 impl FetchPort for Fetch {
     fn fetch<'a>(
         &'a self,
-        _: &'a SourceRequest,
+        source: &'a SourceRequest,
         _: &'a HostRef,
         request: FetchRequest,
     ) -> Pending<'a, FetchResponse> {
         Box::pin(async move {
+            if source.subscription.partition.scope.0 != "scope" { return Err(rss_contracts::Error::Denied); }
             let reply = self
                 .replies
                 .lock()
@@ -195,7 +196,7 @@ impl CanonicalScientificEntryPort for Canonical {
     }
 }
 fn provider(replies: Vec<Reply>) -> ScientificProvider<Fetch, Canonical> {
-    ScientificProvider {source:Source {source_ref:reference("source"),owner_scope:ScopeRef("scope".into()),provider:Provider::Syndication,
+    ScientificProvider {source:Source {source_ref:reference("source"),owner_scope:ScopeRef("account".into()),provider:Provider::Syndication,
     original_url:"https://export.arxiv.org/api/query?search_query=cat:cs.AI&max_results=3&sortBy=submittedDate&sortOrder=descending".into(),display_name:"Papers".into(),revision:Revision(1),paused:false,common:Extensions::default()},execution_ref:reference("attempt"),
     limits:ProviderLimits {max_body_bytes:100000,max_document_entries:100,max_documents:20,max_fetches_per_operation:2,timeout_millis:10000,max_redirects:0},supported_extensions:BTreeSet::new(),fetch:Fetch {replies:Mutex::new(replies.into()),requests:Mutex::new(vec![])},canonical:Canonical::default()}
 }
@@ -466,4 +467,30 @@ fn approved_queries_namespaces_bounds_and_malformed_later_paper_are_checked_befo
     );
     let adapter = provider(vec![raw(wrong_namespace.into_bytes())]);
     assert!(run(adapter.acquire(request(2))).is_err());
+}
+
+#[test]
+fn account_owned_source_uses_authorized_profile_partition() {
+    let adapter = provider(vec![raw(api(0, 1, &["2408.12345v1"]))]);
+    let authorized = request(90);
+    assert_ne!(adapter.source.owner_scope, authorized.subscription.partition.scope);
+    let page = run(adapter.acquire(authorized.clone())).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(adapter.source.owner_scope, ScopeRef("account".into()));
+    assert_eq!(page.partition, authorized.subscription.partition);
+    assert_eq!(page.entries[0].capture.access_partition, authorized.subscription.partition.scope);
+    assert_eq!(page.entries[0].observation.access_partition, authorized.subscription.partition.scope);
+    for invalid in 0..4 {
+        let mut adapter = provider(vec![]);
+        let mut request = request(90);
+        match invalid {
+            0 => request.subscription.source_ref = reference("unselected-source"),
+            1 => request.subscription.partition.scope = ScopeRef("foreign".into()),
+            2 => adapter.source.owner_scope = ScopeRef(String::new()),
+            _ => adapter.source.owner_scope = ScopeRef("x".repeat(request.bounds.max_text_bytes + 1)),
+        }
+        assert!(matches!(run(adapter.acquire(request)), Err(rss_contracts::Error::Denied | rss_contracts::Error::LimitExceeded { .. } | rss_contracts::Error::ItemOwner { error: hsscrap::Error::LimitExceeded { .. } })));
+        assert!(adapter.fetch.requests.lock().unwrap().is_empty());
+        assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
+    }
 }

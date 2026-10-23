@@ -25,8 +25,8 @@ fn raw(body:Vec<u8>)->Reply {Reply {body,status:200,cached:None}}
 fn ok(value:Value)->Reply {raw(serde_json::to_vec(&value).unwrap())}
 #[derive(Default)]
 struct Fetch {replies:Mutex<VecDeque<Reply>>,requests:Mutex<Vec<FetchRequest>>}
-impl PublicFetchPort for Fetch {fn fetch<'a>(&'a self,_:&'a SourceRequest,_:&'a HostRef,request:FetchRequest)->Pending<'a,FetchResponse> {
-    Box::pin(async move {let reply=self.replies.lock().unwrap().pop_front().ok_or(rss_contracts::Error::Network)?;
+impl PublicFetchPort for Fetch {fn fetch<'a>(&'a self,source:&'a SourceRequest,_:&'a HostRef,request:FetchRequest)->Pending<'a,FetchResponse> {
+    Box::pin(async move {if source.subscription.partition.scope.0 != "scope" {return Err(rss_contracts::Error::Denied);} let reply=self.replies.lock().unwrap().pop_front().ok_or(rss_contracts::Error::Network)?;
         let response=FetchResponse {final_url:request.url.clone(),status:reply.status,body:reply.body,cached_body:reply.cached,observed_at:at()};self.requests.lock().unwrap().push(request);Ok(response)})}}
 #[derive(Default)]
 struct Canonical {identities:Mutex<BTreeMap<String,ItemId>>,calls:AtomicU64}
@@ -39,7 +39,7 @@ impl CanonicalEntryPort for Canonical {fn prepare<'a>(&'a self,request:&'a Sourc
             producer:"fixture".into(),access_partition:request.subscription.partition.scope.clone(),observed_at:at(),source_revision:None,canonical_url_assertion:None,provider:None,host_site:"www.tiktok.com".into(),
             title:None,description:None,author:None,published_at:None,provider_labels:vec![],gallery_snapshot:None,source_payload_digest:None,status:Availability {state:AvailabilityState::Available,checked_at:Some(at()),reason_code:None,retry_after:None},common:Extensions::default()};
         evidence.populate(&mut observation);Ok(ObservedEntry {provider_entry_key:evidence.id,capture,observation})})}}
-fn provider(replies:Vec<Reply>)->TikTokProvider<Fetch,Canonical> {TikTokProvider {source:Source {source_ref:reference("source"),owner_scope:ScopeRef("scope".into()),provider:Provider::Tiktok,
+fn provider(replies:Vec<Reply>)->TikTokProvider<Fetch,Canonical> {TikTokProvider {source:Source {source_ref:reference("source"),owner_scope:ScopeRef("account".into()),provider:Provider::Tiktok,
     original_url:"https://www.tiktok.com/@creator".into(),display_name:"Creator".into(),revision:Revision(1),paused:false,common:Extensions::default()},execution_ref:reference("attempt"),initial_cursor_millis:START,
     limits:ProviderLimits {max_body_bytes:100000,max_document_entries:100,max_documents:20,max_fetches_per_operation:4,timeout_millis:10000},supported_extensions:BTreeSet::new(),fetch:Fetch {replies:Mutex::new(replies.into()),requests:Mutex::new(vec![])},canonical:Canonical::default()}}
 
@@ -113,4 +113,30 @@ fn explicit_zero_profile_and_terminal_empty_window_are_separate() {
     let adapter=provider(vec![raw(empty_profile),ok(window(vec![],false))]);assert!(matches!(run(adapter.acquire(request(1))).unwrap().state,rss_contracts::AcquisitionState::VerifiedEmpty {..}));
     let adapter=provider(vec![raw(profile()),ok(window(vec![item(1)],true)),raw(profile()),ok(window(vec![],false))]);let first=run(adapter.acquire(request(1))).unwrap();let mut next=request(2);next.continuation=first.continuation;assert!(run(adapter.acquire(next)).unwrap().is_terminal_partial_document());
     let adapter=provider(vec![raw(profile()),ok(window(vec![],false))]);assert!(run(adapter.acquire(request(1))).is_err());
+}
+
+#[test]
+fn account_owned_source_uses_authorized_profile_partition() {
+    let adapter = provider(vec![raw(profile()), ok(window(vec![item(1)], false))]);
+    let authorized = request(90);
+    assert_ne!(adapter.source.owner_scope, authorized.subscription.partition.scope);
+    let page = run(adapter.acquire(authorized.clone())).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(adapter.source.owner_scope, ScopeRef("account".into()));
+    assert_eq!(page.partition, authorized.subscription.partition);
+    assert_eq!(page.entries[0].capture.access_partition, authorized.subscription.partition.scope);
+    assert_eq!(page.entries[0].observation.access_partition, authorized.subscription.partition.scope);
+    for invalid in 0..4 {
+        let mut adapter = provider(vec![]);
+        let mut request = request(90);
+        match invalid {
+            0 => request.subscription.source_ref = reference("unselected-source"),
+            1 => request.subscription.partition.scope = ScopeRef("foreign".into()),
+            2 => adapter.source.owner_scope = ScopeRef(String::new()),
+            _ => adapter.source.owner_scope = ScopeRef("x".repeat(request.bounds.max_text_bytes + 1)),
+        }
+        assert!(matches!(run(adapter.acquire(request)), Err(rss_contracts::Error::Denied | rss_contracts::Error::LimitExceeded { .. } | rss_contracts::Error::ItemOwner { error: hsscrap::Error::LimitExceeded { .. } })));
+        assert!(adapter.fetch.requests.lock().unwrap().is_empty());
+        assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
+    }
 }

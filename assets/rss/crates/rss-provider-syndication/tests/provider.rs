@@ -13,7 +13,7 @@ fn reference(value: &str) -> HostRef { HostRef { host_instance_id: "fixture".int
 fn at() -> Instant { Instant::parse("2026-10-23T00:00:00Z").unwrap() }
 fn bounds() -> Bounds { Bounds { max_url_bytes: 4096, max_text_bytes: 4096, max_collection_items: 100, max_page_items: 2, max_operation_bytes: 100_000 } }
 fn request(operation: u64) -> SourceRequest { SourceRequest { subscription: Subscription { subscription_ref: reference("subscription"), source_ref: reference("source"),
-    partition: AccessPartition { scope: ScopeRef("account".into()), mode: AccessMode::PublicFeed, connection_ref: None },
+    partition: AccessPartition { scope: ScopeRef("profile".into()), mode: AccessMode::PublicFeed, connection_ref: None },
     executor_ref: reference("executor"), generation: Revision(1), paused: false, common: Extensions::default() }, operation_id: id(operation), continuation: None, bounds: bounds() } }
 fn feed(count: usize) -> Vec<u8> {
     format!("<rss version=\"2.0\"><channel><title>Blog</title><link>https://example.org/</link><description>Blog</description>{}</channel></rss>",
@@ -24,8 +24,8 @@ fn response(body: Vec<u8>) -> FetchResponse { FetchResponse { final_url: "https:
 #[derive(Default)]
 struct Fetch { responses: Mutex<VecDeque<FetchResponse>>, requests: Mutex<Vec<FetchRequest>> }
 impl FetchPort for Fetch {
-    fn fetch<'a>(&'a self, _: &'a SourceRequest, _: &'a HostRef, request: FetchRequest) -> Pending<'a, FetchResponse> {
-        Box::pin(async move { self.requests.lock().unwrap().push(request); self.responses.lock().unwrap().pop_front().ok_or(rss_contracts::Error::Network) })
+    fn fetch<'a>(&'a self, source: &'a SourceRequest, _: &'a HostRef, request: FetchRequest) -> Pending<'a, FetchResponse> {
+        Box::pin(async move { if source.subscription.partition.scope.0 != "profile" { return Err(rss_contracts::Error::Denied); } self.requests.lock().unwrap().push(request); self.responses.lock().unwrap().pop_front().ok_or(rss_contracts::Error::Network) })
     }
 }
 /// A disposable typed callback fixture, not an implementation of a durable host owner.
@@ -177,4 +177,30 @@ fn unknown_required_source_feature_fails_before_fetch_or_owner_preparation() {
     }) if feature == "syndication.future_projection.v9"));
     assert!(adapter.fetch.requests.lock().unwrap().is_empty());
     assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn account_owned_source_uses_authorized_profile_partition() {
+    let adapter = provider(vec![response(feed(1))]);
+    let authorized = request(90);
+    assert_ne!(adapter.source.owner_scope, authorized.subscription.partition.scope);
+    let page = run(adapter.acquire(authorized.clone())).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(adapter.source.owner_scope, ScopeRef("account".into()));
+    assert_eq!(page.partition, authorized.subscription.partition);
+    assert_eq!(page.entries[0].capture.access_partition, authorized.subscription.partition.scope);
+    assert_eq!(page.entries[0].observation.access_partition, authorized.subscription.partition.scope);
+    for invalid in 0..4 {
+        let mut adapter = provider(vec![]);
+        let mut request = request(90);
+        match invalid {
+            0 => request.subscription.source_ref = reference("unselected-source"),
+            1 => request.subscription.partition.scope = ScopeRef("foreign".into()),
+            2 => adapter.source.owner_scope = ScopeRef(String::new()),
+            _ => adapter.source.owner_scope = ScopeRef("x".repeat(request.bounds.max_text_bytes + 1)),
+        }
+        assert!(matches!(run(adapter.acquire(request)), Err(rss_contracts::Error::Denied | rss_contracts::Error::LimitExceeded { .. } | rss_contracts::Error::ItemOwner { error: hsscrap::Error::LimitExceeded { .. } })));
+        assert!(adapter.fetch.requests.lock().unwrap().is_empty());
+        assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
+    }
 }

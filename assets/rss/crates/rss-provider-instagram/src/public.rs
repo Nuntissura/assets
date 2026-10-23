@@ -89,7 +89,8 @@ impl<F: PublicFetchPort, C: CanonicalEntryPort> InstagramProvider<F,C> {
         bounded_request(&request,&self.execution_ref,&self.supported_extensions)?;
         self.source.revision.validate()?;
         self.source.common.validate_bounded(&request.bounds,&self.supported_extensions)?;
-        if self.source.source_ref != request.subscription.source_ref || self.source.owner_scope != request.subscription.partition.scope { return Err(Error::Denied); }
+        request.bounds.text("source.owner_scope", &self.source.owner_scope.0, request.bounds.max_text_bytes)?;
+        if self.source.source_ref != request.subscription.source_ref || self.source.owner_scope.0.is_empty() { return Err(Error::Denied); }
         let mode = request.subscription.partition.mode;
         if self.source.provider != rss_contracts::Provider::Instagram || !matches!(mode,AccessMode::PublicProfile | AccessMode::PublicReels) {
             return Err(Error::Unsupported { provider:rss_contracts::Provider::Instagram, mode });

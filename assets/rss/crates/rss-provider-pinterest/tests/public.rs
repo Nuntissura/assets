@@ -96,11 +96,12 @@ struct Fetch {
 impl PublicFetchPort for Fetch {
     fn fetch<'a>(
         &'a self,
-        _: &'a SourceRequest,
+        source: &'a SourceRequest,
         _: &'a HostRef,
         request: FetchRequest,
     ) -> Pending<'a, FetchResponse> {
         Box::pin(async move {
+            if source.subscription.partition.scope.0 != "scope" { return Err(rss_contracts::Error::Denied); }
             let reply = self
                 .replies
                 .lock()
@@ -198,7 +199,7 @@ fn provider(replies: Vec<Reply>) -> PinterestProvider<Fetch, Canonical> {
     PinterestProvider {
         source: Source {
             source_ref: reference("source"),
-            owner_scope: ScopeRef("scope".into()),
+            owner_scope: ScopeRef("account".into()),
             provider: Provider::Pinterest,
             original_url: "https://www.pinterest.com/owner/board/".into(),
             display_name: "Board".into(),
@@ -643,4 +644,30 @@ fn explicit_zero_board_and_terminal_continuation_are_not_false_full_history() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn account_owned_source_uses_authorized_profile_partition() {
+    let adapter = provider(vec![board(), ok(page(vec![item(1)], "-end-"))]);
+    let authorized = request(90);
+    assert_ne!(adapter.source.owner_scope, authorized.subscription.partition.scope);
+    let page = run(adapter.acquire(authorized.clone())).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(adapter.source.owner_scope, ScopeRef("account".into()));
+    assert_eq!(page.partition, authorized.subscription.partition);
+    assert_eq!(page.entries[0].capture.access_partition, authorized.subscription.partition.scope);
+    assert_eq!(page.entries[0].observation.access_partition, authorized.subscription.partition.scope);
+    for invalid in 0..4 {
+        let mut adapter = provider(vec![]);
+        let mut request = request(90);
+        match invalid {
+            0 => request.subscription.source_ref = reference("unselected-source"),
+            1 => request.subscription.partition.scope = ScopeRef("foreign".into()),
+            2 => adapter.source.owner_scope = ScopeRef(String::new()),
+            _ => adapter.source.owner_scope = ScopeRef("x".repeat(request.bounds.max_text_bytes + 1)),
+        }
+        assert!(matches!(run(adapter.acquire(request)), Err(rss_contracts::Error::Denied | rss_contracts::Error::LimitExceeded { .. } | rss_contracts::Error::ItemOwner { error: hsscrap::Error::LimitExceeded { .. } })));
+        assert!(adapter.fetch.requests.lock().unwrap().is_empty());
+        assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
+    }
 }

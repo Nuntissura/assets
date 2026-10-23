@@ -65,7 +65,8 @@ impl<F:PublicFetchPort,C:CanonicalEntryPort> TikTokProvider<F,C> {
     pub(crate) async fn acquire_page(&self,request:SourceRequest)->Result<AcquisitionPage> {
         self.limits.validate()?;validate_request(&request,&self.execution_ref,&self.supported_extensions)?;
         self.source.revision.validate()?;self.source.common.validate_bounded(&request.bounds,&self.supported_extensions)?;
-        if self.source.source_ref!=request.subscription.source_ref||self.source.owner_scope!=request.subscription.partition.scope {return Err(Error::Denied);}
+        request.bounds.text("source.owner_scope", &self.source.owner_scope.0, request.bounds.max_text_bytes)?;
+        if self.source.source_ref!=request.subscription.source_ref||self.source.owner_scope.0.is_empty() {return Err(Error::Denied);}
         if self.source.provider!=rss_contracts::Provider::Tiktok||request.subscription.partition.mode!=rss_contracts::AccessMode::PublicProfile {return Err(Error::Unsupported {provider:rss_contracts::Provider::Tiktok,mode:request.subscription.partition.mode});}
         if self.source.paused||request.subscription.paused {return Err(Error::Cancelled);}
         let target=resolve_url(&self.source.original_url,&request.bounds)?;

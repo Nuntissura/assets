@@ -35,8 +35,8 @@ fn raw(body:Vec<u8>)->Reply {Reply {body,status:200,cached:None}}
 #[derive(Default)]
 struct Fetch {replies:Mutex<VecDeque<Reply>>,requests:Mutex<Vec<FetchRequest>>}
 impl FetchPort for Fetch {
-    fn fetch<'a>(&'a self,_:&'a SourceRequest,_:&'a HostRef,request:FetchRequest)->Pending<'a,FetchResponse> {
-        Box::pin(async move {let reply=self.replies.lock().unwrap().pop_front().ok_or(rss_contracts::Error::Network)?;
+    fn fetch<'a>(&'a self,source:&'a SourceRequest,_:&'a HostRef,request:FetchRequest)->Pending<'a,FetchResponse> {
+        Box::pin(async move {if source.subscription.partition.scope.0 != "scope" {return Err(rss_contracts::Error::Denied);} let reply=self.replies.lock().unwrap().pop_front().ok_or(rss_contracts::Error::Network)?;
             let result=FetchResponse {final_url:request.url.clone(),status:reply.status,body:reply.body,cached_body:reply.cached,observed_at:at()};self.requests.lock().unwrap().push(request);Ok(result)})
     }
 }
@@ -58,7 +58,7 @@ impl CanonicalEntryPort for Canonical {
         })
     }
 }
-fn provider(strategy:Strategy,replies:Vec<Reply>)->YouTubeProvider<Fetch,Canonical> {YouTubeProvider {source:Source {source_ref:reference("source"),owner_scope:ScopeRef("scope".into()),
+fn provider(strategy:Strategy,replies:Vec<Reply>)->YouTubeProvider<Fetch,Canonical> {YouTubeProvider {source:Source {source_ref:reference("source"),owner_scope:ScopeRef("account".into()),
     provider:Provider::Youtube,original_url:format!("https://www.youtube.com/channel/{CHANNEL}"),display_name:"Creator".into(),revision:Revision(1),paused:false,common:Extensions::default()},
     execution_ref:reference("attempt"),strategy,limits:ProviderLimits {max_body_bytes:100000,max_document_entries:100,max_documents:20,max_fetches_per_operation:4,timeout_millis:10000},
     supported_extensions:BTreeSet::new(),fetch:Fetch {replies:Mutex::new(replies.into()),requests:Mutex::new(vec![])},canonical:Canonical::default()}}
@@ -132,4 +132,30 @@ fn verified_empty_public_uploads_and_terminal_empty_page_are_distinct() {
     let empty=provider(Strategy::PublicApi,vec![ok(channel()),ok(page(vec![],None))]);assert!(matches!(run(empty.acquire(request(1))).unwrap().state,rss_contracts::AcquisitionState::VerifiedEmpty {..}));
     let adapter=provider(Strategy::PublicApi,vec![ok(channel()),ok(page(vec![item(1)],Some("next"))),ok(channel()),ok(page(vec![],None))]);
     let first=run(adapter.acquire(request(1))).unwrap();let mut next=request(2);next.continuation=first.continuation;assert!(run(adapter.acquire(next)).unwrap().is_terminal_partial_document());
+}
+
+#[test]
+fn account_owned_source_uses_authorized_profile_partition() {
+    let adapter = provider(Strategy::PublicApi, vec![ok(channel()), ok(page(vec![item(1)], None))]);
+    let authorized = request(90);
+    assert_ne!(adapter.source.owner_scope, authorized.subscription.partition.scope);
+    let page = run(adapter.acquire(authorized.clone())).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(adapter.source.owner_scope, ScopeRef("account".into()));
+    assert_eq!(page.partition, authorized.subscription.partition);
+    assert_eq!(page.entries[0].capture.access_partition, authorized.subscription.partition.scope);
+    assert_eq!(page.entries[0].observation.access_partition, authorized.subscription.partition.scope);
+    for invalid in 0..4 {
+        let mut adapter = provider(Strategy::PublicApi, vec![]);
+        let mut request = request(90);
+        match invalid {
+            0 => request.subscription.source_ref = reference("unselected-source"),
+            1 => request.subscription.partition.scope = ScopeRef("foreign".into()),
+            2 => adapter.source.owner_scope = ScopeRef(String::new()),
+            _ => adapter.source.owner_scope = ScopeRef("x".repeat(request.bounds.max_text_bytes + 1)),
+        }
+        assert!(matches!(run(adapter.acquire(request)), Err(rss_contracts::Error::Denied | rss_contracts::Error::LimitExceeded { .. } | rss_contracts::Error::ItemOwner { error: hsscrap::Error::LimitExceeded { .. } })));
+        assert!(adapter.fetch.requests.lock().unwrap().is_empty());
+        assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
+    }
 }

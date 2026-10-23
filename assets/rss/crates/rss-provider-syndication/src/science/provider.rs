@@ -39,8 +39,9 @@ impl<F: FetchPort, N: CanonicalScientificEntryPort> ScientificProvider<F, N> {
             .subscription
             .common
             .validate_bounded(&request.bounds, &self.supported_extensions)?;
+        request.bounds.text("source.owner_scope", &self.source.owner_scope.0, request.bounds.max_text_bytes)?;
         if self.source.source_ref != request.subscription.source_ref
-            || self.source.owner_scope != request.subscription.partition.scope
+            || self.source.owner_scope.0.is_empty()
         {
             return Err(Error::Denied);
         }
