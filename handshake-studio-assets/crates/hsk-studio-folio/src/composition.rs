@@ -32,6 +32,9 @@
 //! (STU-MOT-007a) and the assisted-rotoscoping state `roto` (STU-CMP-034), all serde default and
 //! skipped when absent (submodule `roto`).
 //!
+//! Lane SMB-AE-EFFECT-STACK-1 adds per layer the ordered effect stack `effects` (STU-FX-002,
+//! STU-CMP-010 step 3; submodule `effects`), serde default and skipped when empty.
+//!
 //! Refusals: out-of-range values `InvalidField`; a tick or stretch product beyond `i64` is
 //! `InvalidField` with a `tick_overflow` target segment (no new `Code`: the enum is matched
 //! exhaustively by dependents); an unknown layer/composition/parent/matte target `DanglingReference`;
@@ -49,7 +52,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod effects;
 mod roto;
+pub use effects::*;
 pub use roto::*;
 
 schema_token!(CompositionSchema, "hsk.studio.composition@1");
@@ -312,6 +317,11 @@ pub struct StudioCompositionLayer {
     /// Assisted rotoscoping state (STU-CMP-034 item 1); absent = none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roto: Option<Box<StudioAssistedRoto>>,
+    /// Effect stack (lane SMB-AE-EFFECT-STACK-1; STU-FX-002, module `effects` docs): ordered
+    /// entries, render order = list order. Empty = none; records without it are byte-identical to
+    /// before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<StudioCompositionEffect>,
 }
 
 /// A keyframable value of a fixed component count (static value plus keys; the keyframe rules of a
@@ -1039,6 +1049,7 @@ fn validate_layer(
     if let Some(r) = &l.roto {
         roto::validate_roto(r, t, cx)?;
     }
+    effects::validate_effects(&l.effects, t, cx)?;
     Ok(())
 }
 

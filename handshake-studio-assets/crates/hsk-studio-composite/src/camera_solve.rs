@@ -627,6 +627,7 @@ pub fn camera_layer(solve: &CameraSolve, layer_id: &str, timing: StudioLayerTimi
         time_remap: None,
         frame_blending: hsk_studio_folio::StudioFrameBlending::Off,
         roto: None,
+        effects: Vec::new(),
     })
 }
 
@@ -648,5 +649,6 @@ pub fn target_layer(solve: &CameraSolve, point: usize, layer_id: &str, timing: S
         time_remap: None,
         frame_blending: hsk_studio_folio::StudioFrameBlending::Off,
         roto: None,
+        effects: Vec::new(),
     })
 }

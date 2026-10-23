@@ -35,6 +35,7 @@ fn layer(streams: Vec<StudioPropertyStream>) -> StudioCompositionLayer {
         time_remap: None,
         frame_blending: hsk_studio_folio::StudioFrameBlending::Off,
         roto: None,
+        effects: Vec::new(),
     }
 }
 
