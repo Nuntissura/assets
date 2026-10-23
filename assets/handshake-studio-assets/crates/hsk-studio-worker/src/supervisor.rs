@@ -15,8 +15,8 @@
 //!   token, the wall-clock deadline and (with a Job Object) the kernel CPU accounting;
 //! * classification and reclaim: cancel and deadline kill the child at once; end of stream is a crash
 //!   (after [`EXIT_PATIENCE`] so the true exit code can be read); a framing failure supplied by the
-//!   caller's reader is a protocol fault and kills the child; every path ends with the child killed or
-//!   exited AND reaped; dropping a [`Session`] reaps it;
+//!   caller's reader is a protocol fault and kills the child; failed bounded reaps retain the child,
+//!   keepalive and admission under [`Supervisor::retry_cleanup`]; dropping a [`Session`] reclaims it;
 //! * liveness: [`Session::heartbeat`] probes the process without blocking.
 //!
 //! What it does not own: the wire format (the caller supplies a [`ReadFn`] that reads one reply frame and
@@ -54,13 +54,13 @@ pub const EXIT_PATIENCE: Duration = Duration::from_millis(500);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(windows)]
-fn quiet(command: &mut Command) {
+pub(crate) fn quiet(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
 #[cfg(not(windows))]
-fn quiet(_command: &mut Command) {}
+pub(crate) fn quiet(_command: &mut Command) {}
 
 /// One spawned process in the host-owned ledger (STU-PAR-005 shape; the real ledger is host-side).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,13 +169,14 @@ struct Shared {
     bytes: AtomicU64,
     ledger: Mutex<Vec<ProcessLedgerEntry>>,
     counters: Counters,
+    pending_cleanup: Mutex<Vec<OwnedProcess>>,
 }
 
 /// The worker or byte budget has no room; nothing was acquired.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refused;
 
-/// A held share of the worker and byte budget; released on drop, which for a session is after the reap.
+/// A held share of the worker and byte budget; retained with the child until its confirmed reap.
 pub struct Permit {
     shared: Arc<Shared>,
     bytes: u64,
@@ -259,8 +260,8 @@ pub enum SpawnError<E> {
 pub enum StartError {
     /// The program could not be started: no process exists.
     NotStarted,
-    /// A process was started but its caps, pipes or I/O thread could not be set up: it is already
-    /// killed and reaped and counts as spawned.
+    /// A process was started but setup failed. Reclamation was attempted; any unreaped child
+    /// remains owned by the supervisor until `retry_cleanup` succeeds.
     Setup,
 }
 
@@ -296,22 +297,26 @@ impl<T> Out<T> {
 
 /// One live worker process plus the I/O thread that owns its pipes.
 pub struct Session<F, E> {
-    child: Child,
+    process: ProcessOwner,
     jobs: mpsc::Sender<Job>,
     replies: mpsc::Receiver<Result<F, ReadFailure<E>>>,
     /// False once the process was terminated or its stream is out of sync: never reused.
     usable: bool,
+}
+
+struct OwnedProcess {
+    child: Child,
     ledger_index: usize,
-    pid: u32,
+    job: Option<WorkerJob>,
+    _keepalive: Option<Box<dyn Send>>,
+    _permit: Permit,
+}
+
+pub(crate) struct ProcessOwner {
+    owned: Option<OwnedProcess>,
     shared: Arc<Shared>,
     finished: Option<Terminated>,
-    /// Operating-system caps of this worker (`None` where none were requested).
-    job: Option<WorkerJob>,
-    /// Caller state that must outlive the child (for example a private directory the child uses);
-    /// dropped after `Drop::drop` has killed and reaped it, before the permit is released.
-    _keepalive: Option<Box<dyn Send>>,
-    /// Last field: released only after `Drop::drop` has killed and reaped the child.
-    _permit: Permit,
+    pid: u32,
 }
 
 /// Owns the worker's pipes: the first frame, then per job one write and the reply frames up to the
@@ -375,6 +380,58 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
+    pub(crate) fn owns_permit(&self, permit: &Permit) -> bool {
+        Arc::ptr_eq(&self.shared, &permit.shared)
+    }
+
+    pub(crate) fn requests_os_caps(&self) -> bool {
+        self.shared.config.os_limits.is_some()
+    }
+
+    pub(crate) fn adopt(
+        &self,
+        child: Child,
+        permit: Permit,
+        owner_session: &str,
+        keepalive: Option<Box<dyn Send>>,
+    ) -> ProcessOwner {
+        bump(&self.shared.counters.spawned);
+        let pid = child.id();
+        let ledger_index = {
+            let mut ledger = lock(&self.shared.ledger);
+            ledger.push(ProcessLedgerEntry {
+                owner_session: owner_session.to_owned(),
+                started_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+                pid,
+                killed: false,
+                reaped: false,
+                exit_code: None,
+            });
+            ledger.len().saturating_sub(1)
+        };
+        ProcessOwner {
+            owned: Some(OwnedProcess { child, ledger_index, job: None, _keepalive: keepalive, _permit: permit }),
+            shared: Arc::clone(&self.shared),
+            finished: None,
+            pid,
+        }
+    }
+
+    /// Retries retained failed reaps. A nonzero result means resources remain owned here.
+    pub fn retry_cleanup(&self) -> usize {
+        let pending = std::mem::take(&mut *lock(&self.shared.pending_cleanup));
+        for owned in pending {
+            let pid = owned.child.id();
+            let mut owner = ProcessOwner {
+                owned: Some(owned), shared: Arc::clone(&self.shared), finished: None, pid,
+            };
+            let _ = owner.terminate(Duration::ZERO);
+            // Drop requeues a failed reap outside the collection's lock.
+        }
+        lock(&self.shared.pending_cleanup).len()
+    }
+
     pub fn new(config: SupervisorConfig) -> Self {
         Self {
             shared: Arc::new(Shared {
@@ -383,6 +440,7 @@ impl Supervisor {
                 bytes: AtomicU64::new(0),
                 ledger: Mutex::new(Vec::new()),
                 counters: Counters::default(),
+                pending_cleanup: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -436,7 +494,7 @@ impl Supervisor {
 
     /// Starts a worker and registers it in the ledger; the caller waits for the first frame
     /// ([`Session::wait`]) and classifies a failed handshake itself. From the moment the child exists,
-    /// every error path drops the session, which kills and reaps it.
+    /// every error path drops the session, which attempts bounded reclamation and retains failed reaps.
     pub fn start<F, E>(
         &self,
         permit: Permit,
@@ -468,22 +526,6 @@ impl Supervisor {
         }
         quiet(&mut command);
         let mut child = command.spawn().map_err(|_| StartError::NotStarted)?;
-        bump(&shared.counters.spawned);
-        let pid = child.id();
-        let ledger_index = {
-            let mut ledger = lock(&shared.ledger);
-            ledger.push(ProcessLedgerEntry {
-                owner_session: owner_session.to_owned(),
-                started_unix_ms: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
-                pid,
-                killed: false,
-                reaped: false,
-                exit_code: None,
-            });
-            ledger.len().saturating_sub(1)
-        };
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
         let (out, replies_rx) = match shared.config.reply_buffer {
             Some(bound) => {
@@ -496,26 +538,21 @@ impl Supervisor {
             }
         };
         let (stdin, stdout) = (child.stdin.take(), child.stdout.take());
-        // From here the session owns the child: dropping it on any error path kills and reaps it.
+        // The process owner retains the child and admission even if bounded reclamation fails.
         let mut session = Session {
-            child,
+            process: self.adopt(child, permit, owner_session, keepalive),
             jobs: jobs_tx,
             replies: replies_rx,
             usable: true,
-            ledger_index,
-            pid,
-            shared: Arc::clone(shared),
-            finished: None,
-            job: None,
-            _keepalive: keepalive,
-            _permit: permit,
         };
         // The worker is idle until its first request, so the short window before it joins the job is
         // unobservable; a failure to apply the caps fails the start (fail closed).
         if let Some(limits) = shared.config.os_limits {
-            session.job = Some(
-                WorkerJob::attach(&session.child, limits).map_err(|_| StartError::Setup)?,
-            );
+            if let Some(owned) = session.process.owned.as_mut() {
+                owned.job = Some(
+                    WorkerJob::attach(&owned.child, limits).map_err(|_| StartError::Setup)?,
+                );
+            }
         }
         let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
             return Err(StartError::Setup);
@@ -573,7 +610,7 @@ impl<F, E> Session<F, E> {
                     if cancel.check().is_err() {
                         return Waited::Canceled;
                     }
-                    if self.job.as_ref().is_some_and(WorkerJob::cpu_exceeded) {
+                    if self.process.owned.as_ref().and_then(|p| p.job.as_ref()).is_some_and(WorkerJob::cpu_exceeded) {
                         return Waited::CpuCap;
                     }
                     if Instant::now() >= wall {
@@ -586,7 +623,7 @@ impl<F, E> Session<F, E> {
 
     /// Operating-system id of the worker process (also in the ledger).
     pub fn pid(&self) -> u32 {
-        self.pid
+        self.process.pid
     }
 
     /// False once the process was terminated or its stream is out of sync.
@@ -602,13 +639,7 @@ impl<F, E> Session<F, E> {
 
     /// Non-blocking liveness probe of the worker process.
     pub fn heartbeat(&mut self) -> Liveness {
-        match self.child.try_wait() {
-            Ok(None) => Liveness::Running,
-            Ok(Some(status)) => Liveness::Exited {
-                exit_code: status.code(),
-            },
-            Err(_) => Liveness::Unknown,
-        }
+        self.process.heartbeat()
     }
 
     /// Usable and still running.
@@ -624,7 +655,7 @@ impl<F, E> Session<F, E> {
 
     /// Re-arms the CPU cap for the next request (no-op without a Job Object).
     pub fn arm_cpu(&mut self, budget: Duration) -> std::io::Result<()> {
-        match self.job.as_mut() {
+        match self.process.owned.as_mut().and_then(|p| p.job.as_mut()) {
             Some(job) => job.arm_cpu(budget),
             None => Ok(()),
         }
@@ -632,12 +663,12 @@ impl<F, E> Session<F, E> {
 
     /// Whether this worker runs under a Job Object.
     pub fn has_os_caps(&self) -> bool {
-        self.job.is_some()
+        self.process.owned.as_ref().is_some_and(|p| p.job.is_some())
     }
 
     /// Caps the kernel reported since the last call.
     pub fn drain_os_events(&self) -> OsEvents {
-        self.job.as_ref().map(WorkerJob::drain).unwrap_or_default()
+        self.process.owned.as_ref().and_then(|p| p.job.as_ref()).map(WorkerJob::drain).unwrap_or_default()
     }
 
     /// Writes one request frame and waits for its reply frame (cancel and the deadline are polled).
@@ -663,52 +694,15 @@ impl<F, E> Session<F, E> {
         }
     }
 
-    /// Reaps the child, killing it if it is still running after `patience`. Idempotent.
+    /// Attempts bounded reclamation after `patience`. A failed reap retains ownership and is retryable.
     pub fn terminate(&mut self, patience: Duration) -> Terminated {
         self.usable = false;
-        if let Some(done) = self.finished {
-            return done;
-        }
-        let until = after(patience);
-        let mut done = Terminated {
-            killed: false,
-            reaped: false,
-            exit_code: None,
-        };
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(status)) => {
-                    done.reaped = true;
-                    done.exit_code = status.code();
-                    break;
-                }
-                Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(5)),
-                _ => {
-                    done.killed = self.child.kill().is_ok();
-                    done.reaped = self.child.wait().is_ok();
-                    break;
-                }
-            }
-        }
-        if done.killed {
-            bump(&self.shared.counters.killed);
-        }
-        if done.reaped {
-            bump(&self.shared.counters.reaped);
-        }
-        if let Some(entry) = lock(&self.shared.ledger).get_mut(self.ledger_index) {
-            entry.killed = done.killed;
-            entry.reaped = done.reaped;
-            entry.exit_code = done.exit_code;
-        }
-        self.finished = Some(done);
-        done
+        self.process.terminate(patience)
     }
 
-    /// Reclaims the worker for `failure` (kill and reap; a closed stream gets [`EXIT_PATIENCE`] to
-    /// report its own exit code) and says how it ended.
+    /// Reclaims the worker for a failed exchange and classifies the result.
     pub fn fail(&mut self, failure: Failure<E>) -> (Classified<E>, Terminated) {
-        let counters = &self.shared.counters;
+        let counters = &self.process.shared.counters;
         match failure {
             Failure::Canceled => {
                 bump(&counters.canceled);
@@ -721,12 +715,7 @@ impl<F, E> Session<F, E> {
             Failure::Read(ReadFailure::Closed) => {
                 bump(&counters.crashed);
                 let done = self.terminate(EXIT_PATIENCE);
-                (
-                    Classified::Crashed {
-                        exit_code: done.exit_code,
-                    },
-                    done,
-                )
+                (Classified::Crashed { exit_code: done.exit_code }, done)
             }
             Failure::Read(ReadFailure::Failed(error)) => {
                 bump(&counters.protocol_faults);
@@ -736,9 +725,94 @@ impl<F, E> Session<F, E> {
     }
 }
 
-impl<F, E> Drop for Session<F, E> {
+impl ProcessOwner {
+    pub(crate) fn pid(&self) -> u32 { self.pid }
+
+    pub(crate) fn child_mut(&mut self) -> Option<&mut Child> {
+        self.owned.as_mut().map(|p| &mut p.child)
+    }
+
+    pub(crate) fn heartbeat(&mut self) -> Liveness {
+        if let Some(done) = self.finished {
+            return Liveness::Exited { exit_code: done.exit_code };
+        }
+        match self.child_mut().map(Child::try_wait) {
+            Some(Ok(None)) => Liveness::Running,
+            Some(Ok(Some(status))) => Liveness::Exited { exit_code: status.code() },
+            _ => Liveness::Unknown,
+        }
+    }
+
+    pub(crate) fn canceled(&self) { bump(&self.shared.counters.canceled); }
+    pub(crate) fn timed_out(&self) { bump(&self.shared.counters.timed_out); }
+    pub(crate) fn crashed(&self) { bump(&self.shared.counters.crashed); }
+
+    pub(crate) fn terminate(&mut self, patience: Duration) -> Terminated {
+        if let Some(done) = self.finished {
+            return done;
+        }
+        let Some(owned) = self.owned.as_mut() else {
+            return Terminated { killed: false, reaped: false, exit_code: None };
+        };
+        let until = after(patience);
+        let prior_killed = lock(&self.shared.ledger).get(owned.ledger_index)
+            .is_some_and(|entry| entry.killed);
+        let mut done = Terminated {
+            killed: prior_killed,
+            reaped: false,
+            exit_code: None,
+        };
+        loop {
+            match owned.child.try_wait() {
+                Ok(Some(status)) => {
+                    done.reaped = true;
+                    done.exit_code = status.code();
+                    break;
+                }
+                Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(5)),
+                _ => {
+                    let killed_now = owned.child.kill().is_ok();
+                    done.killed |= killed_now;
+                    let reap_until = if killed_now { after(EXIT_PATIENCE) } else { Instant::now() };
+                    loop {
+                        match owned.child.try_wait() {
+                            Ok(Some(status)) => {
+                                done.reaped = true;
+                                done.exit_code = status.code();
+                                break;
+                            }
+                            Ok(None) if Instant::now() < reap_until => thread::sleep(WAIT_SLICE),
+                            _ => break,
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        if done.killed && !prior_killed {
+            bump(&self.shared.counters.killed);
+        }
+        if done.reaped {
+            bump(&self.shared.counters.reaped);
+        }
+        if let Some(entry) = lock(&self.shared.ledger).get_mut(owned.ledger_index) {
+            entry.killed |= done.killed;
+            entry.reaped = done.reaped;
+            entry.exit_code = done.exit_code;
+        }
+        if done.reaped {
+            self.finished = Some(done);
+        }
+        done
+    }
+}
+
+impl Drop for ProcessOwner {
     fn drop(&mut self) {
-        // Reached on every error path after the child exists: kill if still running, then reap.
-        let _ = self.terminate(Duration::ZERO);
+        if !self.terminate(Duration::ZERO).reaped {
+            if let Some(owned) = self.owned.take() {
+                lock(&self.shared.pending_cleanup).push(owned);
+            }
+        }
     }
 }

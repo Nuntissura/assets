@@ -24,6 +24,26 @@ fn main() {
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     match mode.as_str() {
+        "raw" => {
+            let _ = output.write_all(b"stdout-only");
+            let _ = std::io::stderr().write_all(b"stderr-only");
+        }
+        "raw-native" => {
+            let args: Vec<_> = std::env::args_os().skip(2).collect();
+            let valid = args.len() == 2
+                && args[0] == std::ffi::OsStr::new("argument with spaces")
+                && std::env::var_os(&args[1]).is_none()
+                && std::env::var_os("HSK_ONESHOT_VALUE").as_deref()
+                    == Some(std::ffi::OsStr::new("exact-value"))
+                && std::env::var_os("HSK_ONESHOT_EXPECT_CWD")
+                    .map(std::path::PathBuf::from) == std::env::current_dir().ok();
+            if !valid { std::process::exit(12); }
+            let _ = output.write_all(b"native-ok");
+        }
+        "raw-flood" => {
+            let bytes = [b'x'; 1024];
+            while output.write_all(&bytes).and_then(|()| output.flush()).is_ok() {}
+        }
         "exit9" => std::process::exit(9),
         "silent" => std::thread::sleep(std::time::Duration::from_secs(60)),
         _ => {

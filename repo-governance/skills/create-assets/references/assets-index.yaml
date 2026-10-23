@@ -2123,6 +2123,8 @@ assets:
   - 'Studio worker-process supervision: the single owner (Operator decision D18 option (a), 2026-10-14) of starting,
     watching and reclaiming the isolated worker processes used by `hsk-studio-motion-js`, `hsk-studio-reel-native`
     and `hsk-studio-score-plugin`.'
+  - Exact native one-shot launch inputs, bounded separate output streams, cancellation and deadlines, confirmed-reap
+    accounting, retained cleanup, and pre-spawn refusal of unsupported caps.
   manual: assets/handshake-studio-assets/crates/hsk-studio-worker/src/lib.rs
   packages:
   - name: hsk-studio-worker
