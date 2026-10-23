@@ -11,3 +11,5 @@ pub mod tags;
 pub mod organization;
 pub mod identity;
 pub mod metadata;
+pub mod gallery;
+pub mod media_refs;

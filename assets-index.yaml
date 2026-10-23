@@ -2243,6 +2243,8 @@ assets:
   - bounded model validation
   - versioned capture URL normalization
   - access-scoped immutable metadata transitions
+  - complete selected gallery reconciliation and stable members
+  - retained association and occurrence reference validation
   - origin-preserving tag assignment plans
   - project membership and folder placement plans
   manual: assets/hsscrap/README.md
@@ -2252,7 +2254,8 @@ assets:
     version: 0.1.0
     api: assets/hsscrap/crates/hsscrap/src/lib.rs
     role: logic
-    depends_on: []
+    depends_on:
+    - handshake_canonical_json
   source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/hsscrap
   governance:
     mode: none
