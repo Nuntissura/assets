@@ -60,14 +60,17 @@ fn distort_and_generate_kernels_match_pinned_digests_and_hand_values() {
     bounded_case("distort_and_generate_kernels_match_pinned_digests_and_hand_values", || {
         let cases = golden_cases();
         assert_eq!(cases.len(), GOLDEN.len());
+        // Every digest is computed and printed before any comparison, so one run reports all of them.
         let mut seen = Vec::new();
-        for ((name, effects), (pinned_name, pinned)) in cases.iter().zip(GOLDEN) {
+        for ((name, effects), (pinned_name, _)) in cases.iter().zip(GOLDEN) {
             assert_eq!(name, pinned_name);
             let got = digest(&run(effects));
             println!("GOLDEN {name} {got}");
-            assert_eq!(&got, pinned, "{name}");
-            assert!(!seen.contains(&got), "{name} equals an earlier case");
             seen.push(got);
+        }
+        for (i, ((name, pinned), got)) in GOLDEN.iter().zip(&seen).enumerate() {
+            assert_eq!(got, pinned, "{name}");
+            assert!(!seen[..i].contains(got), "{name} equals an earlier case");
         }
         let src = premultiplied_source();
         // Identities: a zero twirl angle, a zero sphere radius, zero interpolation, zero shift and a
@@ -276,7 +279,7 @@ fn context(pixels: &Pixels) -> SceneContext<'_> {
 struct Info<'a>(&'a Pixels);
 impl TileInfoSource for Info<'_> {
     fn tile_info(&self, t: &TileRef) -> Option<TileInfo> {
-        (format!("{}/{}", t.layer_id, t.object_key) == scenes::tile_id()).then(|| TileInfo {
+        (format!("{}/{}", t.layer_id, t.object_key) == scenes::tile_id()).then_some(TileInfo {
             format: SampleFormat::RgbF32Le,
             alpha: AlphaConvention::Straight,
             colour_sha256: self.0.colour_sha256,
@@ -418,7 +421,11 @@ fn folio_effect_stacks_render_through_render_scene_in_stack_order() {
         let (scene, first) = render(json!({"effects":[twirl]}), 0);
         let SceneContent::Effected(e) = &scene.layers[0].content else { panic!() };
         assert_eq!(e.effects[0].effect, SceneEffect::Twirl { angle_deg: 0.0, radius_px: 0.3 * 16.0, centre: [8.0, 6.0] });
-        let identity_frame = (0..W * H).map(|i| source_texel(i % W, i / W)).collect::<Vec<_>>();
+        // The straight planes carry zero colour where the source is fully transparent.
+        let identity_frame = (0..W * H)
+            .map(|i| source_texel(i % W, i / W))
+            .map(|p| if p[3] > 0.0 { p } else { [0.0; 4] })
+            .collect::<Vec<_>>();
         assert!(max_delta(&pixels_of(&first), &straight(&premultiplied_source())) <= 1e-6);
         assert!(max_delta(&straight(&premultiplied_source()), &identity_frame) <= 1e-6);
         let (scene, _) = render(json!({"effects":[twirl]}), 1);
