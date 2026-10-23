@@ -11,7 +11,7 @@ fn command() -> (CommandContext, URLCapture) {
     let item_id = "00000000-0000-0000-0000-000000000002".parse().unwrap();
     let url = "https://example.org/article";
     let normalized = hsscrap::identity::normalize_url(url, &bounds()).unwrap();
-    let context = CommandContext { actor: reference("actor"), scope: ScopeRef("account".into()), operation_id,
+    let context = CommandContext { actor: reference("actor"), scope: ScopeRef("profile-view".into()), operation_id,
         intent_digest: "capture-intent-v1".into(), expected_revisions: vec![], bounds: bounds() };
     let capture = URLCapture { capture_id: "00000000-0000-0000-0000-000000000003".parse().unwrap(), item_id,
         capture_kind: CaptureKind::UserInput, access_partition: context.scope.clone(), captured_url: url.into(), original_url: Some(url.into()),
@@ -20,7 +20,7 @@ fn command() -> (CommandContext, URLCapture) {
     (context, capture)
 }
 #[derive(Default)]
-struct Owner { calls: usize, recovery_calls: usize, outcomes: BTreeMap<OperationId, OperationOutcome>, captures: Vec<URLCapture>, lose_response: bool, pending: bool, recoverable: bool, hide_capture: bool, canonicalize_guards: bool }
+struct Owner { calls: usize, recovery_calls: usize, outcomes: BTreeMap<OperationId, OperationOutcome>, captures: Vec<URLCapture>, lose_response: bool, pending: bool, recoverable: bool, hide_capture: bool, canonicalize_guards: bool, invalid_item_owner: bool, deny_inspection: bool }
 impl MutationCoordinator for Owner {
     fn commit(&mut self, _: CommandContext, _: Vec<OwnerCommand>) -> Result<OperationOutcome> { panic!("capture uses its owner") }
     fn lookup(&self, context: &CommandContext, operation: OperationId) -> Result<OperationOutcome> { self.operation_outcome(context, operation) }
@@ -44,9 +44,10 @@ impl ItemOwner for Owner {
         if self.lose_response { Err(Error::UnknownOutcome { operation_id: outcome.operation_id }) } else { Ok(outcome) }
     }
     fn inspect(&self, context: &CommandContext, item: ItemId) -> Result<ItemSnapshot> {
+        if self.deny_inspection {return Err(Error::Denied);}
         let capture = self.captures.iter().find(|capture| capture.item_id == item).ok_or(Error::NotFound)?;
         if capture.access_partition != context.scope { return Err(Error::Denied); }
-        Ok(ItemSnapshot { item: Item { item_id: item, owner_scope: context.scope.clone(), revision: Revision(1), first_capture_id: capture.capture_id,
+        Ok(ItemSnapshot { item: Item { item_id: item, owner_scope: ScopeRef((if self.invalid_item_owner {""} else {"account"}).into()), revision: Revision(1), first_capture_id: capture.capture_id,
             selected_observation_id: None, gallery_observation_id: None, member_order: vec![], title_override: Override::Inherit,
             description_override: Override::Inherit, cover_override: Override::Inherit, created_at: instant(), updated_at: instant(), lifecycle: Lifecycle::Active,
             deleted_at: None, common: Extensions::default() }, captures: if self.hide_capture { vec![] } else { self.captures.clone() }, observations: vec![], members: vec![], streams: vec![] })
@@ -78,6 +79,12 @@ fn saved_url_is_durable_before_enrichment_and_lost_response_replays_without_seco
     save_url(&mut owner, &intent(&capture), context.clone(), capture.clone(), &BTreeSet::new()).unwrap();
     assert_eq!(owner.calls, 1);
     assert_eq!(owner.captures, vec![capture.clone()]);
+    let snapshot=owner.inspect(&context,capture.item_id).unwrap();
+    assert_eq!(snapshot.item.owner_scope,ScopeRef("account".into()));
+    assert_eq!(capture.access_partition,ScopeRef("profile-view".into()));
+    owner.deny_inspection=true;
+    assert_eq!(save_url(&mut owner,&intent(&capture),context.clone(),capture.clone(),&BTreeSet::new()),Err(rss_contracts::Error::ItemOwner {error:Error::Denied}));
+    owner.deny_inspection=false;
     let mut changed = context; changed.intent_digest = "different-intent".into();
     assert_eq!(save_url(&mut owner, &intent(&capture), changed, capture, &BTreeSet::new()), Err(rss_contracts::Error::Conflict));
     assert_eq!(owner.calls, 1);
@@ -85,8 +92,8 @@ fn saved_url_is_durable_before_enrichment_and_lost_response_replays_without_seco
 
 #[test]
 fn pending_or_missing_canonical_capture_never_acknowledges_success() {
-    for (pending, hide_capture) in [(true, false), (false, true)] {
-        let (context, capture) = command(); let mut owner = Owner { pending, hide_capture, ..Default::default() };
+    for (pending, hide_capture, invalid_item_owner) in [(true, false, false), (false, true, false), (false, false, true)] {
+        let (context, capture) = command(); let mut owner = Owner { pending, hide_capture, invalid_item_owner, ..Default::default() };
         let result = save_url(&mut owner, &intent(&capture), context.clone(), capture.clone(), &BTreeSet::new());
         assert_eq!(result, Err(rss_contracts::Error::UnknownOutcome { operation_id: context.operation_id }));
         if pending {

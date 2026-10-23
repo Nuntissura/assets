@@ -96,6 +96,10 @@ pub trait MutationCoordinator {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag="kind",content="value",rename_all="snake_case")]
 pub enum OwnerCommand {
+    Capture { item:ItemId, capture:URLCapture },
+    AcceptObservation { observation:MetadataObservation },
+    ApplyGallerySnapshot { item:ItemId, observation:ObservationId },
+    Tombstone { item:ItemId },
     ItemPatch { item:ItemId, patch:ItemPatch }, AddTag(TagAssignment), RemoveTag(AssignmentId),
     AssertSourceIdentity(SourceIdentity),
     SaveMembership(ProjectMembership), RemoveMembership(MembershipId),

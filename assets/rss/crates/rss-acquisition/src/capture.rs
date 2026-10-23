@@ -110,7 +110,8 @@ pub(crate) fn persist_capture(owner: &mut (impl ItemOwner + MutationCoordinator)
     }
     let outcome = reconcile(owner, &context, |owner| owner.capture(command))?;
     let snapshot = owner.inspect(&context, capture.item_id)?;
-    if snapshot.item.item_id != capture.item_id || snapshot.item.owner_scope != context.scope
+    snapshot.item.validate(&context.bounds, supported).map_err(|_|Error::UnknownOutcome {operation_id:context.operation_id})?;
+    if snapshot.item.item_id != capture.item_id || snapshot.item.owner_scope.0.is_empty()
         || snapshot.item.lifecycle != hsscrap::Lifecycle::Active
         || !snapshot.captures.iter().any(|stored| stored == &capture) { return Err(Error::UnknownOutcome { operation_id: context.operation_id }); }
     Ok(outcome)

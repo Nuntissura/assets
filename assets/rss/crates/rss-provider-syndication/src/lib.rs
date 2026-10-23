@@ -1,6 +1,7 @@
 //! RSS/Atom evidence parsing and bounded host ports. Hosts retain canonical ownership and transport policy.
 pub mod blogs;
 pub mod rss;
+pub mod science;
 
 use hsscrap::{MediaKind, MetadataObservation, PublicationTime};
 use rss_contracts::{Bounds, HostRef, Instant, ObservedEntry, Pending, SourceRequest};

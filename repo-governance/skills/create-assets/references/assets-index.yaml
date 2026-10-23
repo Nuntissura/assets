@@ -2262,6 +2262,7 @@ assets:
   - bounded metadata and tag interaction drafts with explicit owner save and recovery plans
   - separate egui metadata and tag inspector with accessible controls
   - bounded versioned Rust WASM bridge with native outcome comparison
+  - typed capture observation gallery and tombstone operation intents with native replay decisions
   manual: assets/hsscrap/README.md
   packages:
   - name: hsscrap
@@ -2322,6 +2323,7 @@ assets:
   - bounded public TikTok creator-window and item media evidence with sparse-window traversal
   - bounded versioned Rust WASM bridge composing native wall query and hsscrap interaction
   - bounded public Pinterest board discovery, pin media and opaque-bookmark traversal
+  - bounded arXiv API and scientific RSS Atom acquisition with explicit coverage and source metadata
   manual: assets/rss/README.md
   packages:
   - name: rss-contracts

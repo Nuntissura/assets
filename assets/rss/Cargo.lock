@@ -2508,6 +2508,7 @@ dependencies = [
  "chrono",
  "feed-rs",
  "hsscrap",
+ "quick-xml 0.42.0",
  "rss-acquisition",
  "rss-contracts",
  "scraper",

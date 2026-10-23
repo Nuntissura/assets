@@ -70,7 +70,7 @@ fn read_observation(owner: &impl ItemOwner, context: &CommandContext, request: &
     entry: &ObservedEntry, namespace: Option<&str>, supported: &BTreeSet<String>) -> Result<()> {
     let snapshot = owner.inspect(context, entry.capture.item_id)?;
     snapshot.item.validate(&request.bounds, supported)?;
-    if snapshot.item.item_id != entry.capture.item_id || snapshot.item.owner_scope != request.subscription.partition.scope
+    if snapshot.item.item_id != entry.capture.item_id || snapshot.item.owner_scope.0.is_empty()
         || snapshot.item.lifecycle != hsscrap::Lifecycle::Active
         || !snapshot.captures.iter().any(|value| value == &entry.capture)
         || !snapshot.observations.iter().any(|value| value == &entry.observation) {

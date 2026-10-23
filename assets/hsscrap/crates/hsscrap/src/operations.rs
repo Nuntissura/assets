@@ -30,7 +30,28 @@ pub fn plan_operation(mut context:CommandContext,commands:Vec<OwnerCommand>,supp
     }
     for command in &commands {
         match command {
+            OwnerCommand::Capture{item,capture}=>{
+                capture.validate(&context.bounds,supported)?;
+                if capture.item_id!=*item || capture.access_partition!=context.scope
+                    || capture.operation_id!=context.operation_id
+                    || capture.actor_ref.as_ref().is_some_and(|actor|actor!=&context.actor) {
+                    return Err(invalid("capture_context","capture must agree with its operation context"));
+                }
+                let normalized=crate::identity::normalize_url(&capture.captured_url,&context.bounds)?;
+                if capture.normalization_version!=normalized.normalization_version {
+                    return Err(Error::UnsupportedRequiredFeature{feature:"hsscrap.url_normalization_version".into()});
+                }
+                if capture.identity_url!=normalized.identity_url {
+                    return Err(invalid("identity_url","capture URL normalization mismatch"));
+                }
+            },
             OwnerCommand::ItemPatch{patch,..}=>patch.validate(&context.bounds,supported)?,
+            OwnerCommand::AcceptObservation{observation}=>{
+                observation.validate(&context.bounds,supported)?;
+                if observation.access_partition!=context.scope {
+                    return Err(invalid("observation_scope","observation must agree with its operation scope"));
+                }
+            },
             OwnerCommand::AssertSourceIdentity(v)=>{
                 v.validate(&context.bounds,supported)?;
                 if [&v.provider,&v.namespace,&v.provider_item_id,&v.access_partition.0].iter().any(|value|value.is_empty()) {

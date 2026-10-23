@@ -33,6 +33,146 @@ fn plan(id:u128,title:&str,revision:u64,with_tag:bool)->OperationPlan {
 }
 fn read_canonical(path:&std::path::Path)->State {serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()}
 
+fn capture_request()->(CommandContext,OwnerCommand) {
+    let context=CommandContext{actor:actor(),scope:scope(),operation_id:OperationId(uuid::Uuid::from_u128(60)),intent_digest:String::new(),expected_revisions:vec![],bounds:bounds()};
+    let url="HTTPS://EXAMPLE.ORG:443/Case/%2f?q=1&q=2#Part";
+    let normalized=hsscrap::identity::normalize_url(url,&context.bounds).unwrap();
+    let capture=URLCapture{capture_id:CaptureId(uuid::Uuid::from_u128(61)),item_id:item_id(),capture_kind:CaptureKind::UserInput,access_partition:context.scope.clone(),captured_url:url.into(),original_url:Some(url.into()),identity_url:normalized.identity_url,normalization_version:normalized.normalization_version,captured_at:Some(at()),created_here_at:at(),actor_ref:Some(context.actor.clone()),operation_id:context.operation_id,common:Extensions::default()};
+    (context,OwnerCommand::Capture{item:item_id(),capture})
+}
+
+#[test]
+fn capture_command_admits_only_matching_context_and_normalized_identity() {
+    let (context,command)=capture_request();
+    let plan=plan_operation(context.clone(),vec![command.clone()],&BTreeSet::new()).unwrap();
+    let wire=serde_json::to_value(&plan.commands[0]).unwrap();
+    assert_eq!(wire["kind"],"capture");
+    assert!(wire["value"].get("context").is_none());
+    assert_eq!(serde_json::from_value::<OwnerCommand>(wire).unwrap(),command);
+    for field in ["item","scope","operation","actor","identity","version","history","limit"] {
+        let mut command=command.clone();
+        let OwnerCommand::Capture{capture,..}=&mut command else {unreachable!()};
+        match field {
+            "item"=>capture.item_id=ItemId(uuid::Uuid::from_u128(99)),
+            "scope"=>capture.access_partition=ScopeRef("foreign".into()),
+            "operation"=>capture.operation_id=OperationId(uuid::Uuid::from_u128(99)),
+            "actor"=>capture.actor_ref=Some(HostRef{native_id:"other".into(),..actor()}),
+            "identity"=>capture.identity_url="https://example.org/different".into(),
+            "version"=>capture.normalization_version="future".into(),
+            "history"=>capture.actor_ref=None,
+            "limit"=>capture.captured_url="x".repeat(context.bounds.max_url_bytes+1),
+            _=>unreachable!(),
+        }
+        assert!(plan_operation(context.clone(),vec![command],&BTreeSet::new()).is_err(),"{field}");
+    }
+    let mut legacy=command;
+    let OwnerCommand::Capture{capture,..}=&mut legacy else {unreachable!()};
+    capture.capture_kind=CaptureKind::LegacyMigration;capture.actor_ref=None;capture.original_url=None;capture.captured_at=None;
+    assert!(plan_operation(context,vec![legacy],&BTreeSet::new()).is_ok());
+}
+
+#[test]
+fn capture_intent_rejects_changed_url_id_scope_and_actor_on_replay() {
+    let (context,command)=capture_request();
+    let original=plan_operation(context.clone(),vec![command.clone()],&BTreeSet::new()).unwrap();
+    let existing=pending_outcome(&original);
+    assert!(matches!(decide_operation(&original,Some(&existing),true).unwrap(),OperationDecision::Recover(_)));
+    for field in ["url","capture_id","item_id","scope","actor"] {
+        let mut context=context.clone();let mut command=command.clone();
+        let OwnerCommand::Capture{item,capture}=&mut command else {unreachable!()};
+        match field {
+            "url"=>{
+                capture.captured_url="https://example.org/changed".into();capture.original_url=Some(capture.captured_url.clone());
+                capture.identity_url=hsscrap::identity::normalize_url(&capture.captured_url,&context.bounds).unwrap().identity_url;
+            },
+            "capture_id"=>capture.capture_id=CaptureId(uuid::Uuid::from_u128(99)),
+            "item_id"=>{*item=ItemId(uuid::Uuid::from_u128(99));capture.item_id=*item;},
+            "scope"=>{context.scope=ScopeRef("other".into());capture.access_partition=context.scope.clone();},
+            "actor"=>{context.actor.native_id="other".into();capture.actor_ref=Some(context.actor.clone());},
+            _=>unreachable!(),
+        }
+        context.intent_digest=original.context.intent_digest.clone();
+        assert!(matches!(plan_operation(context.clone(),vec![command.clone()],&BTreeSet::new()),Err(Error::Conflict{field}) if field=="intent_digest"));
+        context.intent_digest.clear();
+        let changed=plan_operation(context,vec![command],&BTreeSet::new()).unwrap();
+        assert_ne!(changed.context.intent_digest,original.context.intent_digest);
+        assert!(matches!(decide_operation(&changed,Some(&existing),true),Err(Error::Conflict{..})),"{field}");
+    }
+    assert_eq!(decide_operation(&original,Some(&existing),false),Err(Error::Denied));
+}
+
+#[test]
+fn staged_capture_remains_pending_until_complete_owner_receipts() {
+    let (context,command)=capture_request();
+    let plan=plan_operation(context,vec![command],&BTreeSet::new()).unwrap();
+    let staged=pending_outcome(&plan);
+    assert_eq!(staged.outcome,OutcomeState::Pending);
+    assert!(staged.committed_at.is_none());assert!(staged.owner_receipt_refs.is_empty());assert!(staged.result_refs.is_empty());
+    assert!(matches!(finish_operation(&plan,&[],&[],vec![],at()),Err(Error::Conflict{field}) if field=="incomplete_owner_commit"));
+    let owner=item_ref(item_id());
+    let receipt=OwnerStepReceipt{operation_id:plan.context.operation_id,intent_digest:plan.context.intent_digest.clone(),command_index:0,owner:owner.clone(),receipt:HostRef{host_instance_id:"reference-host".into(),owner_kind:"receipt".into(),native_id:"capture".into()}};
+    let committed=finish_operation(&plan,&[receipt],&[owner.clone()],vec![owner],at()).unwrap();
+    assert_eq!(committed.outcome,OutcomeState::Committed);assert_eq!(committed.committed_at,Some(at()));
+    assert!(matches!(decide_operation(&plan,Some(&committed),true).unwrap(),OperationDecision::Replay(value) if value==committed));
+    assert_eq!(staged.outcome,OutcomeState::Pending);
+}
+
+fn observation_request()->MetadataObservation {
+    MetadataObservation{observation_id:ObservationId(uuid::Uuid::from_u128(70)),item_id:item_id(),stream_id:StreamId(uuid::Uuid::from_u128(71)),sequence:Revision(1),
+        baseline_observation_id:None,capture_id:Some(CaptureId(uuid::Uuid::from_u128(61))),appearance_ref:None,producer:"reference-provider".into(),access_partition:scope(),
+        observed_at:at(),source_revision:None,canonical_url_assertion:None,provider:Some("test-provider".into()),host_site:"example.org".into(),
+        title:Some("Observed title".into()),description:None,author:None,published_at:None,provider_labels:vec![],gallery_snapshot:None,source_payload_digest:None,
+        status:Availability{state:AvailabilityState::Available,checked_at:Some(at()),reason_code:None,retry_after:None},common:Extensions::default()}
+}
+
+#[test]
+fn observation_gallery_and_tombstone_intents_bind_payload_and_ids() {
+    let (context,_)=capture_request();
+    let observation=observation_request();
+    let accepted=OwnerCommand::AcceptObservation{observation:observation.clone()};
+    let mut changed_title=observation.clone();changed_title.title=Some("Different title".into());
+    let mut changed_id=observation.clone();changed_id.observation_id=ObservationId(uuid::Uuid::from_u128(99));
+    let mut changed_stream=observation.clone();changed_stream.stream_id=StreamId(uuid::Uuid::from_u128(99));
+    let gallery=OwnerCommand::ApplyGallerySnapshot{item:item_id(),observation:observation.observation_id};
+    for (original,changed) in [
+        (accepted.clone(),OwnerCommand::AcceptObservation{observation:changed_title}),
+        (accepted.clone(),OwnerCommand::AcceptObservation{observation:changed_id}),
+        (accepted,OwnerCommand::AcceptObservation{observation:changed_stream}),
+        (gallery.clone(),OwnerCommand::ApplyGallerySnapshot{item:item_id(),observation:ObservationId(uuid::Uuid::from_u128(99))}),
+        (gallery,OwnerCommand::ApplyGallerySnapshot{item:ItemId(uuid::Uuid::from_u128(99)),observation:observation.observation_id}),
+        (OwnerCommand::Tombstone{item:item_id()},OwnerCommand::Tombstone{item:ItemId(uuid::Uuid::from_u128(99))}),
+    ] {
+        let plan=plan_operation(context.clone(),vec![original.clone()],&BTreeSet::new()).unwrap();
+        let wire=serde_json::to_value(&original).unwrap();
+        assert!(wire["value"].get("context").is_none());
+        assert_eq!(serde_json::from_value::<OwnerCommand>(wire).unwrap(),original);
+        let mut stale=plan.context.clone();
+        assert!(matches!(plan_operation(stale.clone(),vec![changed.clone()],&BTreeSet::new()),Err(Error::Conflict{field}) if field=="intent_digest"));
+        stale.intent_digest.clear();
+        let changed=plan_operation(stale,vec![changed],&BTreeSet::new()).unwrap();
+        assert_ne!(changed.context.intent_digest,plan.context.intent_digest);
+        assert!(matches!(decide_operation(&changed,Some(&pending_outcome(&plan)),true),Err(Error::Conflict{field}) if field=="operation_intent_reuse"));
+    }
+}
+
+#[test]
+fn observation_command_rejects_invalid_payload_and_foreign_scope_before_planning() {
+    let (context,_)=capture_request();
+    let observation=observation_request();
+    for field in ["scope","provenance","sequence","title","feature"] {
+        let mut observation=observation.clone();
+        match field {
+            "scope"=>observation.access_partition=ScopeRef("foreign".into()),
+            "provenance"=>observation.capture_id=None,
+            "sequence"=>observation.sequence=Revision(0),
+            "title"=>observation.title=Some("x".repeat(context.bounds.max_text_bytes+1)),
+            "feature"=>{observation.common.required_features.insert("vendor.required".into());},
+            _=>unreachable!(),
+        }
+        assert!(plan_operation(context.clone(),vec![OwnerCommand::AcceptObservation{observation}],&BTreeSet::new()).is_err(),"{field}");
+    }
+}
+
 #[test]
 fn lost_response_restart_replay_after_deletion_and_revocation() {
     let (_dir,host)=initialize(limits());let request=plan(10,"edited",1,true);

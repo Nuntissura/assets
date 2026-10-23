@@ -15,7 +15,7 @@ fn at() -> Instant { Instant::parse("2026-10-23T00:00:00Z").unwrap() }
 fn bounds() -> Bounds { Bounds { max_url_bytes: 4096, max_text_bytes: 4096, max_collection_items: 100, max_page_items: 25, max_operation_bytes: 100000 } }
 fn request(page: u64) -> SourceRequest { SourceRequest {
     subscription: Subscription { subscription_ref: reference("subscription"), source_ref: reference("source"),
-        partition: AccessPartition { scope: ScopeRef("account".into()), mode: AccessMode::PublicFeed, connection_ref: None },
+        partition: AccessPartition { scope: ScopeRef("profile-view".into()), mode: AccessMode::PublicFeed, connection_ref: None },
         executor_ref: reference("executor"), generation: Revision(1), paused: false, common: Extensions::default() },
     operation_id: id(page), continuation: None, bounds: bounds(),
 } }
@@ -23,10 +23,11 @@ fn number(request: &SourceRequest) -> u64 { request.operation_id.to_string()[24.
 fn context(request: &SourceRequest, step: u64) -> CommandContext { CommandContext { actor: reference("actor"),
     scope: request.subscription.partition.scope.clone(), operation_id: id(1000 + number(request) * 10 + step),
     intent_digest: format!("page-{}-step-{step}", number(request)), expected_revisions: vec![], bounds: request.bounds.clone() } }
-fn query() -> IdentityQuery { IdentityQuery { provider: "syndication".into(), namespace: "posts".into(), provider_item_id: "opaque-post".into(), access_partition: ScopeRef("account".into()) } }
+fn query() -> IdentityQuery { IdentityQuery { provider: "syndication".into(), namespace: "posts".into(), provider_item_id: "opaque-post".into(), access_partition: ScopeRef("profile-view".into()) } }
 
 #[derive(Default)]
 struct Store {
+    invalid_item_owner: bool,
     captures: Vec<URLCapture>, observations: Vec<MetadataObservation>, streams: Vec<ObservationStream>, identities: Vec<SourceIdentity>,
     outcomes: BTreeMap<OperationId, OperationOutcome>, appearances: BTreeMap<String, SourceAppearance>, mutations: usize,
     outcome_refs: BTreeMap<HostRef, OperationId>,
@@ -49,7 +50,7 @@ impl ItemOwner for Owner {
     fn inspect(&self, context: &CommandContext, item: ItemId) -> Result<ItemSnapshot> {
         let store = self.0.lock().unwrap(); let first = store.captures.iter().find(|capture| capture.item_id == item).ok_or(Error::NotFound)?;
         if first.access_partition != context.scope { return Err(Error::Denied); }
-        Ok(ItemSnapshot { item: Item { item_id: item, owner_scope: context.scope.clone(), revision: Revision(1), first_capture_id: first.capture_id,
+        Ok(ItemSnapshot { item: Item { item_id: item, owner_scope: ScopeRef((if store.invalid_item_owner {""} else {"account"}).into()), revision: Revision(1), first_capture_id: first.capture_id,
             selected_observation_id: None, gallery_observation_id: None, member_order: vec![], title_override: Override::Inherit,
             description_override: Override::Inherit, cover_override: Override::Inherit, created_at: at(), updated_at: at(), lifecycle: Lifecycle::Active,
             deleted_at: None, common: Extensions::default() }, captures: store.captures.iter().filter(|value| value.item_id == item).cloned().collect(),
@@ -197,6 +198,9 @@ fn page(request: &SourceRequest, prepared: &PreparedEntry, more: bool) -> Acquis
 fn identity_resolution_reuses_saved_url_and_rejects_conflicting_provider_identity() {
     let request = request(1); let admission = Admission::new(&request); let mut owner = Owner::default();
     let first = prepared(&mut owner, &admission, &request, None);
+    let snapshot=owner.inspect(&context(&request,0),first.entry().capture.item_id).unwrap();
+    assert_eq!(snapshot.item.owner_scope,ScopeRef("account".into()));
+    assert_eq!(first.entry().capture.access_partition,ScopeRef("profile-view".into()));
     let current = owner.0.lock().unwrap().mutations;
     assert_eq!(rss_acquisition::identity::resolve_capture_identity(&owner, &context(&request, 0), "https://example.org/post", Some(&query())).unwrap(), Some(first.entry().capture.item_id));
     assert_eq!(owner.0.lock().unwrap().mutations, current);
@@ -285,6 +289,10 @@ fn normalizer_cannot_retarget_reserved_ids_and_checkpoint_rereads_canonical_reco
         |observation| observation.item_id = id(999), &BTreeSet::new())).is_err());
     assert_eq!(owner.0.lock().unwrap().captures.len(), 1); assert!(owner.0.lock().unwrap().observations.is_empty());
     let prepared = prepared(&mut owner, &admission, &request, None); let page = page(&request, &prepared, false); let checkpoints = Checkpoints::new(owner.clone());
+    owner.0.lock().unwrap().invalid_item_owner=true;
+    assert!(matches!(run(commit_page(&owner,&admission,&admission,&Allocator(owner.clone()),&checkpoints,&reference("attempt"),&request,&page,std::slice::from_ref(&prepared),&BTreeSet::new())),Err(rss_contracts::Error::UnknownOutcome {..})));
+    assert_eq!(checkpoints.state.lock().unwrap().calls,0);
+    owner.0.lock().unwrap().invalid_item_owner=false;
     owner.0.lock().unwrap().observations.clear();
     assert!(run(commit_page(&owner, &admission, &admission, &Allocator(owner.clone()), &checkpoints, &reference("attempt"), &request, &page, &[prepared], &BTreeSet::new())).is_err());
     assert_eq!(checkpoints.state.lock().unwrap().calls, 0);
