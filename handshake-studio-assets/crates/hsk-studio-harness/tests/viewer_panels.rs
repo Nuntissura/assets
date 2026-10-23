@@ -91,7 +91,8 @@ fn quiet(ctx: &egui::Context, out: &egui::FullOutput, before: Option<egui::Id>) 
 #[cfg(feature = "desktop")]
 fn ak_node(out: &egui::FullOutput, label: &str) -> Option<(egui::accesskit::NodeId, bool)> {
     let tree = out.platform_output.accesskit_update.as_ref()?;
-    tree.nodes.iter().find(|(_, n)| n.label().is_some_and(|l| l == label)).map(|(id, n)| (*id, n.is_disabled()))
+    // egui puts a button's text in the node label and a plain label's text in the node value.
+    tree.nodes.iter().find(|(_, n)| n.label().is_some_and(|l| l == label) || n.value().is_some_and(|l| l == label)).map(|(id, n)| (*id, n.is_disabled()))
 }
 
 /// Clicks the enabled control labelled `label` through an AccessKit action request (egui's own
