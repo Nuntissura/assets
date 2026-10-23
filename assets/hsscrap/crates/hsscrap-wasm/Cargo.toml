@@ -1,0 +1,30 @@
+[package]
+name = "hsscrap-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hsscrap = { path = "../hsscrap", version = "=0.1.0" }
+hsscrap-gui = { path = "../hsscrap-gui", version = "=0.1.0" }
+egui = { version = "=0.33.3", features = ["accesskit"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+handshake_canonical_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.129"
+
+[[test]]
+name = "wire_contract"
+path = "../../tests/wasm/native.rs"
+
+[[bin]]
+name = "hsscrap-wasm-reference"
+path = "../../tests/wasm/reference.rs"
+test = false

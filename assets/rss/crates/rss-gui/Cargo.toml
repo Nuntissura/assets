@@ -1,0 +1,19 @@
+[package]
+name = "rss-gui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rss-contracts.workspace = true
+rss-core = { path = "../rss-core", version = "=0.1.0" }
+hsscrap.workspace = true
+hsscrap-gui = { path = "../../../hsscrap/crates/hsscrap-gui", version = "=0.1.0" }
+egui = { version = "=0.33.3", features = ["accesskit"] }
+
+[dev-dependencies]
+egui_kittest = { version = "=0.33.3", features = ["wgpu", "snapshot"] }
+
+[[test]]
+name = "wall"
+path = "../../fixtures/interaction/gui.rs"

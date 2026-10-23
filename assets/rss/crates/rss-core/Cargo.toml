@@ -7,3 +7,10 @@ include = ["src/**", "tests/**", "Cargo.toml"]
 
 [dependencies]
 rss-contracts.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hsscrap.workspace = true
+
+[[test]]
+name = "wall_query"
+path = "../../fixtures/interaction/query.rs"

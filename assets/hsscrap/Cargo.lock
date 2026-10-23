@@ -1057,6 +1057,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hsscrap-wasm"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "handshake_canonical_json",
+ "hsscrap",
+ "hsscrap-gui",
+ "serde",
+ "serde_json",
+ "uuid",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

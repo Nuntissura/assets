@@ -2261,6 +2261,7 @@ assets:
   - typed import mapping, replay conflicts and destination media quarantine plans
   - bounded metadata and tag interaction drafts with explicit owner save and recovery plans
   - separate egui metadata and tag inspector with accessible controls
+  - bounded versioned Rust WASM bridge with native outcome comparison
   manual: assets/hsscrap/README.md
   packages:
   - name: hsscrap
@@ -2277,6 +2278,15 @@ assets:
     role: gui
     depends_on:
     - hsscrap
+  - name: hsscrap-wasm
+    manifest: assets/hsscrap/crates/hsscrap-wasm/Cargo.toml
+    version: 0.1.0
+    api: assets/hsscrap/crates/hsscrap-wasm/src/lib.rs
+    role: bridge
+    depends_on:
+    - handshake_canonical_json
+    - hsscrap
+    - hsscrap-gui
   source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/hsscrap
   governance:
     mode: none
@@ -2304,6 +2314,9 @@ assets:
   - immutable batch checkpoint retry and acknowledged queue continuation
   - bounded RSS/Atom discovery, parsing and media evidence
   - digest-bound source document pagination and partial terminal checkpoints
+  - snapshot-bound wall query and 25/50/100 paging transitions
+  - anchored refresh, authority-scoped card admission and single-player effects
+  - separate egui feed wall, manager and composed metadata inspector
   manual: assets/rss/README.md
   packages:
   - name: rss-contracts
@@ -2319,6 +2332,7 @@ assets:
     api: assets/rss/crates/rss-core/src/lib.rs
     role: logic
     depends_on:
+    - hsscrap
     - rss-contracts
   - name: rss-acquisition
     manifest: assets/rss/crates/rss-acquisition/Cargo.toml
@@ -2337,6 +2351,16 @@ assets:
     - hsscrap
     - rss-acquisition
     - rss-contracts
+  - name: rss-gui
+    manifest: assets/rss/crates/rss-gui/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-gui/src/lib.rs
+    role: gui
+    depends_on:
+    - hsscrap
+    - hsscrap-gui
+    - rss-contracts
+    - rss-core
   components:
   - HSSCRAP-ASSET-001
   source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/rss

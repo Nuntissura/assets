@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/hsscrap", "crates/hsscrap-gui"]
+members = ["crates/hsscrap", "crates/hsscrap-gui", "crates/hsscrap-wasm"]
 resolver = "2"
 
 [workspace.dependencies]

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/rss-contracts", "crates/rss-core", "crates/rss-acquisition", "crates/rss-provider-syndication"]
+members = ["crates/rss-contracts", "crates/rss-core", "crates/rss-acquisition", "crates/rss-provider-syndication", "crates/rss-gui"]
 resolver = "2"
 
 [workspace.dependencies]

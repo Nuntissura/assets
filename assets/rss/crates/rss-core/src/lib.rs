@@ -9,3 +9,4 @@ pub use sources::{SourceGroup, SourceLibrary};
 pub use rules::{MemberRule, RuleLimits};
 pub use visibility::ProfileSelection;
 pub use appearance_state::{group_items, update_state, ItemAppearances};
+pub mod query;
