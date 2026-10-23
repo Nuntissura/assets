@@ -1,0 +1,13 @@
+[package]
+name = "hsscrap"
+version = "0.1.0"
+edition = "2021"
+publish = false
+include = ["src/**", "tests/**", "Cargo.toml"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+url.workspace = true

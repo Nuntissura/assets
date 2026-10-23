@@ -2229,6 +2229,34 @@ assets:
   creation_rationale: Parsing and reference resolution are separate from the existing canonical document model;
     this component depends on that model instead of copying its node types. Promoted from the existing source-only
     draft after binding and testing the shared model.
+- id: HSSCRAP-ASSET-001
+  name: hsscrap
+  path: assets/hsscrap
+  kind: asset
+  status: source-present
+  purpose: Portable capture metadata, ordered media-item identity, and explicit host owner contracts.
+  capabilities:
+  - typed media-item records
+  - capture provenance
+  - metadata observations
+  - host owner ports
+  - bounded model validation
+  manual: assets/hsscrap/README.md
+  packages:
+  - name: hsscrap
+    manifest: assets/hsscrap/crates/hsscrap/Cargo.toml
+    version: 0.1.0
+    api: assets/hsscrap/crates/hsscrap/src/lib.rs
+    role: logic
+    depends_on: []
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/hsscrap
+  governance:
+    mode: none
+    scope: operator request and portable model contract
+  work_scope: assets/hsscrap
+  discovery_rationale: Existing handshake_asset_resolver owns retained-media resolution/cache and handshake_embed_views
+    owns media rendering. Neither owns capture provenance, item metadata/overrides or scoped resource identity;
+    adding that purpose there would conflate media-byte resolution with the independent hsscrap item owner.
 drafts:
 - id: HANDSHAKE-SWARM-STATE-DRAFT-001
   path: assets/hskernel/crates/handshake_swarm_state
