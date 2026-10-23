@@ -12,7 +12,7 @@
   "src/lib.rs: FONT_SUBSTITUTIONS map to the free fonts; module symbolic; test_support::font_dir prints NOT_PROVEN",
   "src/symbolic.rs added: Symbol / ZapfDingbats encodings resolved through a TrueType cmap",
   "src/encoding.rs: ZAPFDINGBATS_ENCODING comment cites the PLRM (data unchanged)",
-  "src/system_fonts.rs: no host font directory is scanned and no cache file is read or written (host fonts are machine-dependent and may not be free)",
+  "src/system_fonts.rs: no host font directory is scanned and no cache file is read or written (host fonts are machine-dependent and may not be free); test_system_font_cache_builds asserts the cache is empty (upstream asserted host fonts were found)",
   "src/type2_charstring.rs: #[expect(clippy::drain_collect)] -> #[allow] (unfulfilled on toolchain 1.97.1)",
   "tests/malformed_font_guards.rs: extern crate alias line"
  ],
@@ -104,7 +104,7 @@
   {
    "upstream": "src/system_fonts.rs",
    "upstream_sha256": "6e8b8ef88ae20fe745d9cc56fb43c134cac782e020f0a3aff93e23dc9290700c",
-   "owned_sha256": "98ee507773be33ce77a135b6ae83979053396147473075d3bebd52555b844da1",
+   "owned_sha256": "4ff52d5b32241fbf1b816c7a0a62a5b80da291d287a3ee3215ae139961763c68",
    "modified": true
   },
   {

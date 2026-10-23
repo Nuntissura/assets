@@ -1351,10 +1351,11 @@ mod tests {
     #[test]
     fn test_system_font_cache_builds() {
         let cache = SystemFontCache::build();
-        // On a typical Linux system, should find some fonts
+        // Fork change: host font discovery is off, so the cache is always empty.
         assert!(
-            !cache.fonts.is_empty(),
-            "Expected to find system fonts, found none"
+            cache.fonts.is_empty(),
+            "host font discovery is off in the fork, found {} fonts",
+            cache.fonts.len()
         );
     }
 

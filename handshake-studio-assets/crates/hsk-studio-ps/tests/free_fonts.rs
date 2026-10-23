@@ -89,7 +89,7 @@ fn truetype_width(font: &[u8], cp: u32) -> i64 {
 /// Slice 1: no AGPL or GPL file anywhere in the vendored crates, no URW++ font program among the
 /// embedded resources, and every embedded font is one of the free sets with its licence text: the
 /// 33 TeX Gyre Type 1 programs (GUST Font License, an LPPL 1.3c instance; their notices name TeX
-/// Gyre and GUST), STIX Two Math (SIL OFL 1.1) and DejaVu Sans (Bitstream Vera / Arev licences).
+/// Gyre and the TeX Users Groups), STIX Two Math (SIL OFL 1.1) and DejaVu Sans (Bitstream Vera / Arev licences).
 #[test]
 fn embedded_fonts_are_free_and_their_licences_ship() {
     // Licence texts.
@@ -103,7 +103,9 @@ fn embedded_fonts_are_free_and_their_licences_ship() {
         let program = unwrap_pfb(pfb).unwrap_or_else(|| panic!("{name}: PFB segments"));
         let text = String::from_utf8_lossy(&program[..program.len().min(4096)]).into_owned();
         assert!(text.contains(&format!("/FontName /{name} def")), "{name}: FontName");
-        assert!(text.contains("TeX Gyre") && text.contains("GUST"), "{name}: TeX Gyre / GUST notice");
+        // Every TeX Gyre notice names TeX Gyre and the TeX USERS GROUPS; 25 of 33 also name GUST
+        // (Adventor and Pagella do not), so GUST is not asserted per font.
+        assert!(text.contains("TeX Gyre") && text.contains("TeX USERS GROUPS"), "{name}: TeX Gyre notice");
         let font = parse_type1(&program).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(font.font_name, name);
         assert!(font.charstrings.len() > 300, "{name}: {} glyphs", font.charstrings.len());
