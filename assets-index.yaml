@@ -2324,6 +2324,7 @@ assets:
   - bounded versioned Rust WASM bridge composing native wall query and hsscrap interaction
   - bounded public Pinterest board discovery, pin media and opaque-bookmark traversal
   - bounded arXiv API and scientific RSS Atom acquisition with explicit coverage and source metadata
+  - independent exact-Git native and WASM consumers with artifact and source archive provenance
   manual: assets/rss/README.md
   packages:
   - name: rss-contracts
