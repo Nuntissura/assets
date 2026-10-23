@@ -173,3 +173,81 @@ fn registry_lists_validated_full_snapshots_in_stable_id_order() {
     assert!(matches!(reverse.resolve("missing"), Err(Error::MissingProfile)));
     assert!(matches!(Registry::new(vec![first.clone(), first]), Err(Error::DuplicateProfile)));
 }
+
+#[test]
+fn output_contract_preserves_legacy_arguments_and_adds_one_global_flag() {
+    for profile in [qairt(), cpu()] {
+        let resolved = Registry::new(vec![profile.clone()]).unwrap().resolve(&profile.id).unwrap();
+        let host = binding(&profile);
+        let legacy = resolved.plan(host.clone(), "hello").unwrap();
+        let console = resolved.plan_with_output_contract(host.clone(), "hello", OutputContract::ConsoleV1).unwrap();
+        let structured = resolved.plan_with_output_contract(host.clone(), "hello", OutputContract::TestModeJsonV1).unwrap();
+        let mut expected: Vec<OsString> = vec!["--skip-update".into(), "--data-dir".into(), host.data.as_os_str().to_owned()];
+        match profile.engine {
+            Engine::GenieXQairt => expected.extend([
+                "--log", "info", "infer", "local/Qwen3-0.6B", "--compute", "npu", "--power-mode", "balanced",
+                "--max-tokens", "64", "--think=false", "--temperature", "0", "--seed", "42", "--prompt", "hello",
+            ].map(OsString::from)),
+            Engine::GenieXLlamaCpp => expected.extend([
+                "infer", "local/Qwen3-4B-abliterated:Q4_0", "--compute", "cpu", "--power-mode", "balanced",
+                "--nctx", "2048", "--max-tokens", "256", "--think=false", "--temperature", "0.6",
+                "--top-k", "20", "--top-p", "0.95", "--min-p", "0", "--prompt", "hello",
+            ].map(OsString::from)),
+        }
+        assert_eq!(legacy.arguments(), expected.as_slice());
+        assert_eq!(console.arguments(), expected.as_slice());
+        assert_eq!(legacy.output_contract(), OutputContract::ConsoleV1);
+        assert_eq!(console.output_contract(), OutputContract::ConsoleV1);
+        assert_eq!(structured.output_contract(), OutputContract::TestModeJsonV1);
+        let infer = expected.iter().position(|arg| arg == "infer").unwrap();
+        expected.insert(infer, "--test-mode".into());
+        assert_eq!(structured.arguments(), expected.as_slice());
+        assert_eq!(structured.arguments().iter().filter(|arg| *arg == "--test-mode").count(), 1);
+        for plan in [&legacy, &console, &structured] {
+            assert_eq!(plan.resolved().profile(), &profile);
+            assert_eq!(plan.resolved().fingerprint(), resolved.fingerprint());
+            assert_eq!(plan.binding().executable, host.executable);
+            assert_eq!(plan.binding().cwd, host.cwd);
+            assert_eq!(plan.binding().data, host.data);
+            assert_eq!(plan.binding().model_selector, host.model_selector);
+            assert_eq!(plan.binding().content_sha256, host.content_sha256);
+            assert_eq!(plan.binding().capabilities, host.capabilities);
+            assert_eq!(plan.binding().environment, host.environment);
+        }
+    }
+}
+
+#[test]
+fn output_contract_fingerprint_binds_profile_and_mode_and_keeps_prompt_private() {
+    for profile in [qairt(), cpu()] {
+        let resolved = Registry::new(vec![profile.clone()]).unwrap().resolve(&profile.id).unwrap();
+        let prompt = "private-output-prompt; $(not-a-shell)\nnext line";
+        let console = resolved.plan(binding(&profile), prompt).unwrap();
+        let structured = resolved.plan_with_output_contract(binding(&profile), prompt, OutputContract::TestModeJsonV1).unwrap();
+        assert_ne!(console.output_contract_fingerprint(), structured.output_contract_fingerprint());
+        for (plan, identity) in [(&console, "console-v1"), (&structured, "test-mode-json-v1")] {
+            let expected = handshake_canonical_json::sha256_hex(&handshake_canonical_json::canonical_json_bytes(&serde_json::json!({
+                "schema": "handshake.dexterity.output_contract@1",
+                "profile_fingerprint": resolved.fingerprint(),
+                "output_contract": identity,
+            })));
+            assert_eq!(plan.output_contract_fingerprint(), expected);
+            assert_eq!(plan.arguments().last().unwrap(), &OsString::from(prompt));
+            assert_eq!(plan.arguments()[plan.arguments().len() - 2], OsString::from("--prompt"));
+            let debug = format!("{plan:?} {:?}", plan.binding());
+            for secret in ["private-output-prompt", "not-for-debug", "PRIVATE_VALUE"] {
+                assert!(!debug.contains(secret));
+            }
+            let mut alternate = binding(&profile);
+            alternate.environment.insert("OTHER_PRIVATE_VALUE".into(), "another-secret".into());
+            alternate.cwd = alternate.cwd.join("other");
+            let repeated = resolved.plan_with_output_contract(alternate, "different prompt", plan.output_contract()).unwrap();
+            assert_eq!(plan.output_contract_fingerprint(), repeated.output_contract_fingerprint());
+            let mut changed_profile = profile.clone();
+            changed_profile.revision += 1;
+            let changed = Registry::new(vec![changed_profile.clone()]).unwrap().resolve(&changed_profile.id).unwrap()
+                .plan_with_output_contract(binding(&changed_profile), prompt, plan.output_contract()).unwrap();
+            assert_ne!(plan.output_contract_fingerprint(), changed.output_contract_fingerprint());
+        }
+    }
+}

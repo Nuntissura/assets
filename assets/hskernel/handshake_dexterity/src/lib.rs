@@ -4,7 +4,7 @@
 mod plan;
 mod profile;
 
-pub use plan::{HostBinding, LaunchPlan, RuntimeCapability};
+pub use plan::{HostBinding, LaunchPlan, OutputContract, RuntimeCapability};
 pub use profile::{Device, Engine, EngineProfile, Model, ModelFormat, Preset, Registry, ResolvedProfile, Sampling};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
