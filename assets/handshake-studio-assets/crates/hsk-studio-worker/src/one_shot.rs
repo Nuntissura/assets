@@ -1,6 +1,6 @@
 use crate::{
     one_shot_api::{ExactLaunch, OneShotEvent, OneShotReason, OneShotRequest, OneShotStartError,
-        OneShotTerminal, OutputBounds, OutputStream},
+        OneShotTerminal, OutputBounds, OutputStream, OneShotObservedFailure, OneShotObservedStartError},
     raw_pipe::{Pipes, Reader},
     supervisor::{ProcessOwner, quiet},
     Permit, Supervisor, WAIT_SLICE,
@@ -73,38 +73,92 @@ impl Supervisor {
         cancel: CancellationToken,
         deadline: Instant,
     ) -> Result<OneShotSession, OneShotStartError> {
-        if cancel.check().is_err() { return Err(OneShotStartError::Canceled); }
-        if Instant::now() >= deadline { return Err(OneShotStartError::Deadline); }
-        if !cfg!(any(unix, windows)) { return Err(OneShotStartError::UnsupportedPlatform); }
-        if self.requests_os_caps() { return Err(OneShotStartError::UnsupportedCaps); }
+        self.start_one_shot_observed(permit, request, cancel, deadline, |_| Ok(()))
+            .map_err(|error| match error {
+                OneShotObservedStartError::BeforeSpawn(error) => error,
+                OneShotObservedStartError::AfterSpawn { cleanup, .. } => OneShotStartError::Setup(cleanup),
+            })
+    }
+
+    /// Observes the real PID once, immediately after child adoption and before output setup.
+    /// The synchronous observer must not block. Rejection attempts reclamation. An unwind panic
+    /// resumes with its original payload after cleanup or supervisor retention of the child.
+    /// Normal Rust panic hooks may run; aborts are not caught.
+    pub fn start_one_shot_observed<F>(
+        &self,
+        permit: Permit,
+        request: OneShotRequest<'_>,
+        cancel: CancellationToken,
+        deadline: Instant,
+        observer: F,
+    ) -> Result<OneShotSession, OneShotObservedStartError>
+    where F: FnOnce(u32) -> Result<(), ()> {
+        self.start_one_shot_with_setup(permit, request, cancel, deadline, observer,
+            |pipes, process| match process.child_mut() {
+                Some(child) => pipes.readers(child),
+                None => Err(io::ErrorKind::BrokenPipe.into()),
+            })
+    }
+
+    fn start_one_shot_with_setup<F, S>(
+        &self, permit: Permit, request: OneShotRequest<'_>, cancel: CancellationToken,
+        deadline: Instant, observer: F, setup: S,
+    ) -> Result<OneShotSession, OneShotObservedStartError>
+    where
+        F: FnOnce(u32) -> Result<(), ()>,
+        S: FnOnce(Pipes, &mut ProcessOwner) -> io::Result<(Reader, Reader)>,
+    {
+        use OneShotObservedStartError::BeforeSpawn;
+        if cancel.check().is_err() { return Err(BeforeSpawn(OneShotStartError::Canceled)); }
+        if Instant::now() >= deadline { return Err(BeforeSpawn(OneShotStartError::Deadline)); }
+        if !cfg!(any(unix, windows)) { return Err(BeforeSpawn(OneShotStartError::UnsupportedPlatform)); }
+        if self.requests_os_caps() { return Err(BeforeSpawn(OneShotStartError::UnsupportedCaps)); }
         if !self.owns_permit(&permit) || request.bounds.chunk_bytes.get() > 65_536
             || !valid_launch(&request.launch) {
-            return Err(OneShotStartError::InvalidLaunch);
+            return Err(BeforeSpawn(OneShotStartError::InvalidLaunch));
         }
         let mut command = Command::new(request.launch.executable);
         command.args(request.launch.args).current_dir(request.launch.cwd)
             .env_clear().envs(request.launch.env).stdin(Stdio::null());
         quiet(&mut command);
-        let pipes = Pipes::prepare(&mut command).map_err(|_| OneShotStartError::NotStarted)?;
+        let pipes = Pipes::prepare(&mut command).map_err(|_| BeforeSpawn(OneShotStartError::NotStarted))?;
         // Recheck after command/pipe setup, immediately before the only spawn boundary.
-        if cancel.check().is_err() { return Err(OneShotStartError::Canceled); }
-        if Instant::now() >= deadline { return Err(OneShotStartError::Deadline); }
-        let child = command.spawn().map_err(|_| OneShotStartError::NotStarted)?;
+        if cancel.check().is_err() { return Err(BeforeSpawn(OneShotStartError::Canceled)); }
+        if Instant::now() >= deadline { return Err(BeforeSpawn(OneShotStartError::Deadline)); }
+        let child = command.spawn().map_err(|_| BeforeSpawn(OneShotStartError::NotStarted))?;
         let mut process = self.adopt(child, permit, request.owner_session, request.keepalive);
-        let readers = match process.child_mut() {
-            Some(child) => pipes.readers(child),
-            None => Err(io::ErrorKind::BrokenPipe.into()),
-        };
-        let (stdout, stderr) = match readers {
-            Ok(readers) => readers,
-            Err(_) => return Err(OneShotStartError::Setup(process.terminate(Duration::ZERO))),
-        };
         let pid = process.pid();
+        let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(pid)));
+        let failure = match observation {
+            Ok(Ok(())) => None,
+            Ok(Err(())) => Some(OneShotObservedFailure::ObserverRejected),
+            Err(payload) => {
+                // Establish child custody before propagating the opaque payload without dropping it.
+                let _ = process.terminate(Duration::ZERO);
+                drop(process);
+                std::panic::resume_unwind(payload)
+            }
+        };
+        if let Some(cause) = failure {
+            return Err(observed_failure(process, cause));
+        }
+        let (stdout, stderr) = match setup(pipes, &mut process) {
+            Ok(readers) => readers,
+            Err(_) => return Err(observed_failure(process, OneShotObservedFailure::Setup)),
+        };
         Ok(OneShotSession {
             stdout: Some(stdout), stderr: Some(stderr), process: Some(process), cancel, deadline,
             bounds: request.bounds, stdout_bytes: 0, stderr_bytes: 0, stderr_first: false, pid,
         })
     }
+}
+
+fn observed_failure(mut process: ProcessOwner, cause: OneShotObservedFailure) -> OneShotObservedStartError {
+    let pid = process.pid();
+    let cleanup = process.terminate(Duration::ZERO);
+    // Requeue failed reaps before exposing the error. Keepalive and admission remain owned there.
+    drop(process);
+    OneShotObservedStartError::AfterSpawn { pid, cause, cleanup }
 }
 
 impl OneShotSession {
@@ -199,3 +253,64 @@ impl Iterator for OneShotSession {
 }
 
 impl std::iter::FusedIterator for OneShotSession {}
+
+#[cfg(all(test, any(unix, windows)))]
+mod tests {
+    use super::*;
+    use std::{cell::Cell, collections::BTreeMap, num::NonZeroUsize, sync::{Arc, atomic::{AtomicBool, Ordering}}};
+
+    struct KeepaliveProbe(Arc<AtomicBool>);
+    impl Drop for KeepaliveProbe {
+        fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); }
+    }
+
+    #[test]
+    fn observed_setup_failure_keeps_identity_and_owns_resources_through_cleanup() {
+        // Spawn this test harness only to list tests. The injected setup failure is private and
+        // cannot be selected through the product API or environment.
+        let program = std::env::current_exe().expect("test executable");
+        let sup = Supervisor::new(crate::SupervisorConfig {
+            program: program.clone(), args: vec![], env: vec![], max_workers: 1,
+            max_in_flight_bytes: 4096, spawn_timeout: Duration::from_secs(10),
+            os_limits: None, reply_buffer: None, io_thread_name: "unused".into(),
+        });
+        let args = [std::ffi::OsString::from("--list")];
+        let env = BTreeMap::new();
+        let released = Arc::new(AtomicBool::new(false));
+        let observed = Cell::new(0);
+        let setups = Cell::new(0);
+        let error = sup.start_one_shot_with_setup(sup.admit(32).unwrap(), OneShotRequest {
+            owner_session: "setup-failure-test",
+            launch: ExactLaunch { executable: &program, cwd: program.parent().unwrap(), args: &args, env: &env },
+            bounds: OutputBounds { chunk_bytes: NonZeroUsize::new(128).unwrap(), stdout_bytes: 4096, stderr_bytes: 4096 },
+            keepalive: Some(Box::new(KeepaliveProbe(released.clone()))),
+        }, CancellationToken::default(), Instant::now() + Duration::from_secs(10), |pid| {
+            observed.set(pid);
+            assert!(!released.load(Ordering::SeqCst));
+            Ok(())
+        }, |_, _| {
+            setups.set(setups.get() + 1);
+            assert_ne!(observed.get(), 0, "observer precedes setup");
+            assert!(!released.load(Ordering::SeqCst));
+            assert!(sup.admit(0).is_err());
+            Err(io::ErrorKind::BrokenPipe.into())
+        }).err().expect("setup failure");
+        let OneShotObservedStartError::AfterSpawn { pid, cause, cleanup } = error else { panic!("no spawned identity"); };
+        assert_eq!(pid, observed.get());
+        assert_eq!(cause, OneShotObservedFailure::Setup);
+        assert_eq!(setups.get(), 1);
+        assert_eq!(sup.ledger()[0].pid, pid);
+        if cleanup.reaped || sup.ledger()[0].reaped {
+            assert!(released.load(Ordering::SeqCst));
+            assert_eq!(sup.stats().workers_live, 0);
+        } else {
+            // No false cleanup success: the owning supervisor must retain admission and keepalive.
+            assert!(!released.load(Ordering::SeqCst));
+            assert!(sup.admit(0).is_err());
+        }
+        assert_eq!(sup.retry_cleanup(), 0);
+        assert!(sup.ledger()[0].reaped);
+        assert!(released.load(Ordering::SeqCst));
+        assert!(sup.admit(0).is_ok());
+    }
+}

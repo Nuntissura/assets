@@ -25,6 +25,12 @@
 //! [`Supervisor::retry_cleanup`]; it is not proof of completed reclamation. Retain an accessible
 //! [`Supervisor`] and retry cleanup until its pending count is zero. Pending children keep their
 //! permits and keepalive resources; dropping all supervisor handles does not establish cleanup.
+//! [`Supervisor::start_one_shot_observed`] calls a synchronous, nonblocking observer with the real PID
+//! after adoption and before output setup. Its structured error distinguishes no spawn from a real
+//! child and reports PID, cause and cleanup for rejection or setup failure. Observer panics resume
+//! their original unwind after child cleanup or supervisor retention. This module never drops,
+//! retains, formats or logs the captured panic payload.
+//! Normal Rust panic hooks may still run, and an abort panic cannot be caught.
 //!
 //! Implementation basis: Rust [`std::process::Child`] requires explicit wait/reap, Windows
 //! [PeekNamedPipe](https://learn.microsoft.com/windows/win32/api/namedpipeapi/nf-namedpipeapi-peeknamedpipe)
@@ -48,7 +54,7 @@ pub use caps::{JOB_CAPS_AVAILABLE, OsEvents, OsLimits, WorkerJob, harden_worker_
 pub use program::{discover_program, find_beside, resolve_program};
 pub use one_shot::OneShotSession;
 pub use one_shot_api::{ExactLaunch, OneShotEvent, OneShotReason, OneShotRequest, OneShotStartError,
-    OneShotTerminal, OutputBounds, OutputStream};
+    OneShotTerminal, OutputBounds, OutputStream, OneShotObservedFailure, OneShotObservedStartError};
 pub use supervisor::{
     Classified, EXIT_PATIENCE, Failure, Liveness, Permit, ProcessLedgerEntry, ReadFailure, ReadFn,
     Refused, RespawnGate, Session, SpawnError, StartError, StartRequest, Supervisor,

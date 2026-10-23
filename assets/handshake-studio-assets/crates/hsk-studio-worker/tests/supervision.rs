@@ -6,7 +6,8 @@ use hsk_studio_worker::{
 };
 use std::{io::Read, path::PathBuf, process::ChildStdout, time::{Duration, Instant}};
 use hsk_studio_worker::{ExactLaunch, OneShotEvent, OneShotReason, OneShotRequest,
-    OneShotStartError, OneShotTerminal, OutputBounds, OutputStream};
+    OneShotStartError, OneShotTerminal, OutputBounds, OutputStream,
+    OneShotObservedStartError, OneShotObservedFailure};
 use std::{collections::BTreeMap, ffi::OsString, num::NonZeroUsize};
 
 fn read_reply(stdout: &mut ChildStdout, cap: u32) -> Result<Vec<u8>, ReadFailure<()>> {
@@ -359,4 +360,147 @@ fn one_shot_refuses_windows_case_equivalent_environment_names() {
         assert_eq!(sup.stats().workers_live, 0);
         assert!(sup.ledger().is_empty());
     }
+}
+
+fn observed_start<F>(sup: &Supervisor, cancel: CancellationToken, deadline: Instant, observer: F)
+    -> Result<hsk_studio_worker::OneShotSession, OneShotObservedStartError>
+where F: FnOnce(u32) -> Result<(), ()> {
+    let program = PathBuf::from(env!("CARGO_BIN_EXE_hsk-worker-testbin"));
+    let args = [OsString::from("raw")];
+    let env = BTreeMap::new();
+    sup.start_one_shot_observed(sup.admit(0).unwrap(), OneShotRequest {
+        owner_session: "observed-test",
+        launch: ExactLaunch { executable: &program, cwd: program.parent().unwrap(), args: &args, env: &env },
+        bounds: OutputBounds { chunk_bytes: NonZeroUsize::new(128).unwrap(), stdout_bytes: 4096, stderr_bytes: 4096 },
+        keepalive: None,
+    }, cancel, deadline, observer)
+}
+
+#[test]
+fn observed_start_calls_once_with_actual_adopted_identity() {
+    let sup = supervisor("ignored", 1);
+    let calls = std::cell::Cell::new(0);
+    let seen = std::cell::Cell::new(0);
+    let mut session = observed_start(&sup, CancellationToken::default(),
+        Instant::now() + Duration::from_secs(10), |pid| {
+            calls.set(calls.get() + 1);
+            seen.set(pid);
+            assert_eq!(sup.ledger()[0].pid, pid);
+            assert_eq!(sup.stats().workers_live, 1);
+            Ok(())
+        }).expect("observed start");
+    assert_eq!(calls.get(), 1);
+    assert_eq!(seen.get(), session.pid());
+    let (stdout, stderr, terminal) = collect_raw(&mut session);
+    assert_eq!(stdout, b"stdout-only");
+    assert_eq!(stderr, b"stderr-only");
+    assert!(terminal.cleanup.reaped);
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn observed_start_does_not_call_observer_before_spawn() {
+    let sup = supervisor("ignored", 1);
+    let calls = std::cell::Cell::new(0);
+    let cancel = CancellationToken::default();
+    cancel.cancel();
+    let error = observed_start(&sup, cancel, Instant::now() + Duration::from_secs(10), |_| {
+        calls.set(calls.get() + 1); Ok(())
+    }).err().expect("canceled");
+    assert_eq!(error, OneShotObservedStartError::BeforeSpawn(OneShotStartError::Canceled));
+    let error = observed_start(&sup, CancellationToken::default(), Instant::now(), |_| {
+        calls.set(calls.get() + 1); Ok(())
+    }).err().expect("deadline");
+    assert_eq!(error, OneShotObservedStartError::BeforeSpawn(OneShotStartError::Deadline));
+    assert_eq!(calls.get(), 0);
+    assert_eq!(sup.stats().spawned, 0);
+    assert_eq!(sup.stats().workers_live, 0);
+    assert!(sup.ledger().is_empty());
+}
+
+#[test]
+fn observed_start_rejection_reports_identity_and_cleanup() {
+    let sup = supervisor("ignored", 1);
+    let seen = std::cell::Cell::new(0);
+    let error = observed_start(&sup, CancellationToken::default(),
+        Instant::now() + Duration::from_secs(10), |pid| { seen.set(pid); Err(()) })
+        .err().expect("observer rejected");
+    let OneShotObservedStartError::AfterSpawn { pid, cause, cleanup } = error else { panic!("no identity"); };
+    assert_eq!(pid, seen.get());
+    assert_eq!(cause, OneShotObservedFailure::ObserverRejected);
+    assert!(cleanup.reaped);
+    assert_eq!(sup.ledger()[0].pid, pid);
+    assert!(sup.ledger()[0].reaped);
+    assert_eq!(sup.stats().workers_live, 0);
+}
+
+#[cfg(panic = "unwind")]
+#[test]
+fn observed_start_resumes_unwind_after_reclaiming_the_adopted_child() {
+    let sup = supervisor("ignored", 1);
+    let seen = std::cell::Cell::new(0);
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observed_start(&sup, CancellationToken::default(),
+        Instant::now() + Duration::from_secs(10), |pid| {
+            seen.set(pid);
+            panic!("test observer panic");
+        }))).err().expect("observer panic propagated");
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"test observer panic"));
+    assert_ne!(seen.get(), 0);
+    assert_eq!(sup.ledger()[0].pid, seen.get());
+    assert!(sup.ledger()[0].reaped);
+    assert_eq!(sup.stats().workers_live, 0);
+}
+
+#[test]
+fn observed_start_caps_refusal_never_calls_the_observer() {
+    let program = PathBuf::from(env!("CARGO_BIN_EXE_hsk-worker-testbin"));
+    let sup = Supervisor::new(SupervisorConfig {
+        program, args: vec![], env: vec![], max_workers: 1,
+        max_in_flight_bytes: 4096, spawn_timeout: Duration::from_secs(10),
+        os_limits: Some(hsk_studio_worker::OsLimits {
+            process_memory_bytes: 1 << 20, cpu_time: Duration::from_secs(1),
+        }),
+        reply_buffer: None, io_thread_name: "unused".into(),
+    });
+    let calls = std::cell::Cell::new(0);
+    let error = observed_start(&sup, CancellationToken::default(),
+        Instant::now() + Duration::from_secs(10), |_| { calls.set(calls.get() + 1); Ok(()) })
+        .err().expect("caps refused");
+    assert_eq!(error, OneShotObservedStartError::BeforeSpawn(OneShotStartError::UnsupportedCaps));
+    assert_eq!(calls.get(), 0);
+    assert!(sup.ledger().is_empty());
+    assert_eq!(sup.stats().workers_live, 0);
+}
+
+#[cfg(panic = "unwind")]
+#[test]
+fn observed_start_resumes_opaque_payload_after_child_cleanup_without_dropping_it() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    struct PanickingDrop { dropped: Arc<AtomicBool>, panic_on_drop: bool }
+    impl Drop for PanickingDrop {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+            if self.panic_on_drop { panic!("test payload destructor must not run in worker"); }
+        }
+    }
+    let sup = supervisor("ignored", 1);
+    let dropped = Arc::new(AtomicBool::new(false));
+    let payload = PanickingDrop { dropped: dropped.clone(), panic_on_drop: true };
+    let seen = std::cell::Cell::new(0);
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observed_start(&sup, CancellationToken::default(),
+        Instant::now() + Duration::from_secs(10), |pid| {
+            seen.set(pid);
+            std::panic::panic_any(payload);
+        }))).err().expect("original payload propagated");
+    assert!(!dropped.load(Ordering::SeqCst));
+    assert_ne!(seen.get(), 0);
+    assert_eq!(sup.ledger()[0].pid, seen.get());
+    assert!(sup.ledger()[0].reaped);
+    assert_eq!(sup.stats().workers_live, 0);
+    assert!(sup.admit(0).is_ok());
+    // The outer caller owns the payload again and can release it without leaking the test resource.
+    let mut payload = payload.downcast::<PanickingDrop>().unwrap_or_else(|_| panic!("wrong payload"));
+    payload.panic_on_drop = false;
+    drop(payload);
+    assert!(dropped.load(Ordering::SeqCst));
 }

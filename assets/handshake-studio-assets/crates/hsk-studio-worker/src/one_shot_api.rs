@@ -85,3 +85,18 @@ pub enum OneShotStartError {
     NotStarted,
     Setup(Terminated),
 }
+
+/// A returned failure after a real child was adopted. Observer panics resume after owned cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OneShotObservedFailure {
+    ObserverRejected,
+    Setup,
+}
+
+/// Distinguishes refusal before spawn from a real child whose cleanup was attempted.
+/// If cleanup is pending, retain the supervisor and use its cleanup retry API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OneShotObservedStartError {
+    BeforeSpawn(OneShotStartError),
+    AfterSpawn { pid: u32, cause: OneShotObservedFailure, cleanup: Terminated },
+}

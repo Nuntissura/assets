@@ -2128,6 +2128,8 @@ assets:
     and `hsk-studio-score-plugin`.'
   - Exact native one-shot launch inputs, bounded separate output streams, cancellation and deadlines, confirmed-reap
     accounting, retained cleanup, and pre-spawn refusal of unsupported caps.
+  - Observed one-shot child identity before output setup, with owned cleanup on rejection, setup failure and propagated
+    observer panic.
   manual: assets/handshake-studio-assets/crates/hsk-studio-worker/src/lib.rs
   packages:
   - name: hsk-studio-worker
