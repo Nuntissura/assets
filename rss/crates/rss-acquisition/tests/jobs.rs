@@ -98,3 +98,59 @@ fn cancellation_deadline_and_owner_reservations_fence_new_effects() {
     queue.start(first.operation_id, &reference("executor"), 0).unwrap(); queue.cancel(first.operation_id).unwrap();
     assert_eq!(queue.begin_commit(first.operation_id, &reference("executor"), 1), Err(Error::Cancelled));
 }
+
+#[test]
+fn explicit_cancel_settlement_requires_exact_identity_and_releases_only_its_slot() {
+    for began_commit in [false, true] {
+        let first = request(1);
+        let mut second = request(2); second.subscription.subscription_ref = reference("second");
+        let mut queue = JobQueue::new(limits()).unwrap();
+        queue.enqueue(first.clone(), 0).unwrap(); queue.enqueue(second.clone(), 0).unwrap();
+        queue.start(first.operation_id, &reference("executor"), 0).unwrap();
+        if began_commit { queue.begin_commit(first.operation_id, &reference("executor"), 1).unwrap(); }
+        let before = queue.clone();
+        assert_eq!(queue.settle_cancelled(&first, &reference("executor")), Err(Error::Conflict));
+        assert_eq!(queue, before);
+        queue.cancel(first.operation_id).unwrap();
+        let unresolved = queue.clone();
+        assert!(matches!(queue.start(second.operation_id, &reference("executor"), 1), Err(Error::LimitExceeded { .. })));
+        assert_eq!(queue, unresolved);
+        assert_eq!(queue.settle_cancelled(&first, &reference("wrong-executor")), Err(Error::Denied));
+        assert_eq!(queue, unresolved);
+        let mut changed = Vec::new();
+        let mut value = first.clone(); value.subscription.source_ref = reference("different-source"); changed.push(value);
+        let mut value = first.clone(); value.subscription.subscription_ref = reference("different-subscription"); changed.push(value);
+        let mut value = first.clone(); value.subscription.partition.scope = ScopeRef("different-profile".into()); changed.push(value);
+        let mut value = first.clone(); value.subscription.generation = Revision(2); changed.push(value);
+        let mut value = first.clone(); value.subscription.executor_ref = reference("other"); changed.push(value);
+        let mut value = first.clone(); value.bounds.max_page_items += 1; changed.push(value);
+        let mut value = first.clone(); value.operation_id = request(3).operation_id; changed.push(value);
+        for value in changed {
+            assert!(queue.settle_cancelled(&value, &reference("executor")).is_err());
+            assert_eq!(queue, unresolved);
+        }
+        // The trusted host's termination and canonical reconciliation occur outside this pure reducer.
+        queue.settle_cancelled(&first, &reference("executor")).unwrap();
+        assert_eq!(queue.jobs()[0].state, JobState::Cancelled);
+        assert!(queue.jobs()[0].cancel_requested);
+        assert_eq!(queue.jobs()[0].request, first);
+        assert_eq!(queue.jobs()[1], unresolved.jobs()[1]);
+        let bytes = serde_json::to_vec(&queue).unwrap();
+        let mut recovered: JobQueue = serde_json::from_slice(&bytes).unwrap();
+        recovered.settle_cancelled(&first, &reference("executor")).unwrap();
+        assert_eq!(recovered, queue);
+        recovered.start(second.operation_id, &reference("executor"), 1).unwrap();
+        recovered.remove_terminal(first.operation_id).unwrap();
+        assert_eq!(recovered.jobs().len(), 1);
+        assert_eq!(recovered.jobs()[0].request, second);
+        assert!(matches!(recovered.jobs()[0].state, JobState::Running { .. }));
+    }
+    for error in [Error::Expired, Error::Invalid { field: "source".into() }] {
+        let first = request(1); let mut queue = JobQueue::new(limits()).unwrap();
+        queue.enqueue(first.clone(), 0).unwrap(); queue.start(first.operation_id, &reference("executor"), 0).unwrap();
+        queue.cancel(first.operation_id).unwrap(); queue.fail(first.operation_id, &error, 1, None).unwrap();
+        let before = queue.clone();
+        assert_eq!(queue.settle_cancelled(&first, &reference("executor")), Err(Error::Conflict));
+        assert_eq!(queue, before);
+    }
+}

@@ -121,6 +121,20 @@ impl JobQueue {
         if matches!(job.state, JobState::Queued { .. } | JobState::Backoff { .. } | JobState::Reconnect) { job.state = JobState::Cancelled; }
         Ok(())
     }
+    /// Call only after the host proves the worker has terminated and every persisted child intent
+    /// is canonically committed, rejected or never started. Atomically persist this transition with
+    /// attempt retirement. This releases queue capacity without acknowledging or advancing a checkpoint.
+    pub fn settle_cancelled(&mut self, request: &SourceRequest, executor: &HostRef) -> Result<()> {
+        self.validate()?;
+        let job = self.job_mut(request.operation_id)?;
+        if &job.request.subscription.executor_ref != executor { return Err(Error::Denied); }
+        if &job.request != request || !job.cancel_requested { return Err(Error::Conflict); }
+        if !matches!(job.state, JobState::Running { .. } | JobState::AwaitingRecovery | JobState::Cancelled) {
+            return Err(Error::Conflict);
+        }
+        job.state = JobState::Cancelled;
+        Ok(())
+    }
     /// A restart or elapsed running deadline does not establish that an external effect stopped.
     pub fn recover_interrupted(&mut self, now: u64, restarted: bool) -> Result<()> {
         self.validate()?;

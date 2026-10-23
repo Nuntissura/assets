@@ -2313,6 +2313,7 @@ assets:
   - account-owned sources with authorized distinct profile acquisition partitions
   - per-group keyword and priority rules
   - bounded resumable acquisition job transitions
+  - explicit cancelled-attempt settlement after host termination and canonical child reconciliation
   - URL capture receipt validation and owner recovery
   - identity-first ingestion and canonical owner outcome references
   - immutable batch checkpoint retry and acknowledged queue continuation
