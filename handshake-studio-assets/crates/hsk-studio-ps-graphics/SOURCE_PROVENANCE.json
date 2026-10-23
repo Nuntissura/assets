@@ -9,7 +9,7 @@
  "lane": "SMB-EPS-FREE-FONTS",
  "vendored_at": "2026-10-22",
  "changes": [
-  "Cargo.toml: glob removed; src/icc.rs: the SWOP*.icc glob dropped"
+  "Cargo.toml: glob removed; src/icc.rs: the SWOP*.icc glob dropped; one collapsible_if collapsed (clippy, toolchain 1.97.1)"
  ],
  "files": [
   {
@@ -39,7 +39,7 @@
   {
    "upstream": "src/icc.rs",
    "upstream_sha256": "f28ffaab26e49874e5c8bcb80ca57fb42043b1a598e19105fffad1669266c04b",
-   "owned_sha256": "2a7c99344dcf7e8807d64cda64f56f3569863d29caa2b34c9c7f13562d58310a",
+   "owned_sha256": "7bf84123c950fef5e6762ff3ea35f53a9f619badee0a0ac3802ccf0adafed6fa",
    "modified": true
   },
   {

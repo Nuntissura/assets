@@ -388,7 +388,9 @@ fn op_vmoveto(state: &mut T2State) {
 /// caller and leave `state.stack` at capacity zero, so the next operand push
 /// reallocates -- on every operator, for every glyph. `T2State` reserves 48
 /// slots up front precisely to avoid that, and draining keeps the reservation.
-#[expect(clippy::drain_collect)]
+// Fork change (lane SMB-EPS-FREE-FONTS): `allow`, the lint does not fire on toolchain 1.97.1
+// (an unfulfilled `expect` warns).
+#[allow(clippy::drain_collect)]
 fn take_args(state: &mut T2State) -> Vec<f64> {
     state.stack.drain(..).collect()
 }

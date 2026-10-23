@@ -13,6 +13,7 @@
   "src/symbolic.rs added: Symbol / ZapfDingbats encodings resolved through a TrueType cmap",
   "src/encoding.rs: ZAPFDINGBATS_ENCODING comment cites the PLRM (data unchanged)",
   "src/system_fonts.rs: no host font directory is scanned and no cache file is read or written (host fonts are machine-dependent and may not be free)",
+  "src/type2_charstring.rs: #[expect(clippy::drain_collect)] -> #[allow] (unfulfilled on toolchain 1.97.1)",
   "tests/malformed_font_guards.rs: extern crate alias line"
  ],
  "files": [
@@ -133,8 +134,8 @@
   {
    "upstream": "src/type2_charstring.rs",
    "upstream_sha256": "9345480281858310d6b6176567cb03f1bac8d68c24d23a0f9e19a6e28eb07769",
-   "owned_sha256": "9345480281858310d6b6176567cb03f1bac8d68c24d23a0f9e19a6e28eb07769",
-   "modified": false
+   "owned_sha256": "ae76103c2f2f876651c5641e6a5f70f35a6c896e5cc2740d4f2a64edc202127e",
+   "modified": true
   },
   {
    "upstream": "src/zapfdingbats.txt",

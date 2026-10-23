@@ -180,7 +180,7 @@ showpage\n%%EOF\n";
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let ttf = dir.join("disk.ttf");
     std::fs::write(&ttf, stet::embedded_resources::FREE_SYMBOLIC_FONTS[1].1).expect("disk font");
-    let probe = format!("%!PS-Adobe-3.0\n/DiskFont ({}) .loadbinaryfontfile {{ nosuchop }} if\n0 0 10 10 rectfill showpage\n", ttf.to_string_lossy().replace('\', "/"));
+    let probe = format!("%!PS-Adobe-3.0\n/DiskFont ({}) .loadbinaryfontfile {{ nosuchop }} if\n0 0 10 10 rectfill showpage\n", ttf.to_string_lossy().replace('\\', "/"));
     assert!(convert(&c, &probe).expect("disk font refused, page kept").starts_with(b"%PDF-"));
     let _ = std::fs::remove_dir_all(&dir);
     assert_reaped(&c);
