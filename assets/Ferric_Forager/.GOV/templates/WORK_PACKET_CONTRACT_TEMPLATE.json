@@ -1,0 +1,84 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "{{PROFILE}}",
+  "identity": {
+    "wp_id": "{{WP_ID}}",
+    "base_wp_id": "{{BASE_WP_ID}}",
+    "version": "{{WP_VERSION}}",
+    "title": "{{TITLE}}",
+    "created_at_utc": "{{CREATED_AT_UTC}}",
+    "updated_at_utc": "{{CREATED_AT_UTC}}"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "{{AUTHORIZATION_REFERENCE}}",
+    "recorded_at_utc": "{{CREATED_AT_UTC}}"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "{{BASE_SHA}}",
+    "work_branch": "{{WORK_BRANCH}}",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "IN_PROGRESS",
+    "risk": "{{RISK}}",
+    "blockers": [],
+    "next_action": "{{NEXT_ACTION}}",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "{{SCOPE_SUMMARY}}",
+    "product_impact": "{{PRODUCT_IMPACT_NONE_PREREQUISITE_OR_RUNTIME}}",
+    "in_scope": [],
+    "non_goals": [],
+    "allowed_paths": [],
+    "dependencies": []
+  },
+  "acceptance_matrix": [
+    {
+      "id": "{{ACCEPTANCE_ID}}",
+      "requirement": "{{REQUIREMENT}}",
+      "proof_class": "{{PROOF_CLASS}}",
+      "status": "PENDING",
+      "evidence": []
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "{{CREATED_AT_UTC}}",
+      "branch": "{{WORK_BRANCH}}",
+      "base_sha": "{{BASE_SHA}}",
+      "head_sha": "{{BASE_SHA}}",
+      "dirty_paths": [],
+      "checks_run": [],
+      "blockers": [],
+      "next_action": "{{NEXT_ACTION}}"
+    }
+  },
+  "validation": {
+    "checks": [],
+    "not_proven": []
+  },
+  "extensions": {}
+}

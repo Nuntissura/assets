@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "runtime-test-only-substitute"
+mutation = "runtime_test_only_substitute"
+expected_diagnostic = "FF-RUNTIME-E-TEST-SUBSTITUTE"

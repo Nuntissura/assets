@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "proof-class-promotion"
+mutation = "proof_class_promotion"
+expected_diagnostic = "FF-ARCH-E-PROOF-CLASS-PROMOTION"

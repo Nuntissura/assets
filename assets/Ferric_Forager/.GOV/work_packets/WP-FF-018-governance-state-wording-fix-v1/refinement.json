@@ -1,0 +1,96 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-018-governance-state-wording-fix-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-018-governance-state-wording-fix-v1",
+  "updated_at_utc": "2026-07-31T05:30:32Z",
+  "operator_request": "Fix the misleading unresolved-Operator-decision wording and commit the correction.",
+  "spec_anchors": [
+    {
+      "path": ".GOV/work_packets/WP-FF-007-transport-fingerprint-spike-v2/packet.json#/lifecycle/next_action",
+      "scope": "The stale lifecycle wording to correct without changing WP-007's historical verdict."
+    },
+    {
+      "path": ".GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/packet.json",
+      "scope": "Validated FF-DEC-001 non-shipped wreq adjudication."
+    },
+    {
+      "path": ".GOV/work_packets/WP-FF-017-ordinary-transport-decision-v1/packet.json",
+      "scope": "Validated FF-DEC-002 ordinary transport dependency decision."
+    },
+    {
+      "path": ".GOV/codex.yaml#rules",
+      "scope": "The taskboard must not copy packet lifecycle, verdict, blocker, or next-action details."
+    }
+  ],
+  "scope_edges": {
+    "in_scope": [
+      "Correct WP-007's next_action to distinguish its historical failed-spike verdict from the dependency decisions later resolved by WP-015 and WP-017.",
+      "Reduce inactive taskboard focus text to the fact that no packet is active.",
+      "Preserve FF-DEC-001, FF-DEC-002, and every product/dependency authorization unchanged."
+    ],
+    "non_goals": [
+      "Change transport behavior, dependencies, product scope, or the WP-007 aggregate verdict.",
+      "Authorize a new product consumer or browser-fingerprint transport.",
+      "Revalidate the WP-007 transport corpus."
+    ]
+  },
+  "research_basis": {
+    "checked_at_utc": "2026-07-31T05:30:32Z",
+    "sources": [
+      ".GOV/work_packets/WP-FF-007-transport-fingerprint-spike-v2/packet.json",
+      ".GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/packet.json",
+      ".GOV/work_packets/WP-FF-017-ordinary-transport-decision-v1/packet.json",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/codex.yaml"
+    ],
+    "patterns_found": [
+      "WP-007 retained FAILED_SPIKE_REQUIRES_OPERATOR_DECISION as its historical aggregate verdict.",
+      "WP-015 subsequently established FF-DEC-001 for non-shipped wreq/BoringSSL adjudication only.",
+      "WP-017 subsequently established FF-DEC-002 for a narrow future fforager-net ordinary transport consumer.",
+      "The taskboard is an index and active-focus surface, not a projection of packet lifecycle details."
+    ],
+    "reuse_opportunities": [
+      "Cite the existing validated WP-015/WP-017 decisions instead of creating a new dependency decision.",
+      "Reuse the existing current_focus schema while removing copied packet-state prose."
+    ],
+    "rejected_options": [
+      {
+        "option": "Remove FAILED_SPIKE_REQUIRES_OPERATOR_DECISION from WP-007.",
+        "reason": "That would rewrite the validated spike result rather than correct its stale next action."
+      },
+      {
+        "option": "Treat WP-007 as still awaiting a dependency decision.",
+        "reason": "That conflicts with validated WP-015, validated WP-017, FF-DEC-001, and FF-DEC-002."
+      }
+    ],
+    "selected_approach": "Preserve WP-007's historical verdict, state that its dependency escalation was resolved by WP-015/WP-017, and remove copied lifecycle detail from inactive taskboard focus.",
+    "risks_and_mitigations": [
+      {
+        "risk": "Wording could imply browser-fingerprint product transport is authorized.",
+        "mitigation": "State only that the dependency escalation was resolved and retain the separate-Operator-work boundary for later implementation."
+      },
+      {
+        "risk": "Removing the historical verdict could falsify WP-007 evidence.",
+        "mitigation": "Keep FAILED_SPIKE_REQUIRES_OPERATOR_DECISION and its zero-product-progress ceiling explicit in WP-007."
+      }
+    ],
+    "validation_plan": [
+      "Parse the modified packet and refinement JSON.",
+      "Run git diff --check.",
+      "Run FF-GATE-DEEP-001 from the active taskboard packet.",
+      "Commit the correction, prove closure containment in main, and mark WP-018 VALIDATED."
+    ]
+  },
+  "red_team": {
+    "attack_surfaces": [
+      "Historical verdict accidentally rewritten as a successful pure-Rust transport result.",
+      "Resolved dependency authorization overstated as shipped browser-transport capability.",
+      "Taskboard resumes mirroring detailed packet lifecycle state."
+    ],
+    "minimum_controls": [
+      "Preserve the exact historical verdict and zero-progress ceiling.",
+      "Name FF-DEC-001 and FF-DEC-002 as dependency decisions only.",
+      "Keep inactive taskboard focus limited to no-active-packet state."
+    ]
+  }
+}

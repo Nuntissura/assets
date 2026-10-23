@@ -1,0 +1,315 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-008-archive-store-evidence-v1",
+    "base_wp_id": "WP-FF-008-archive-store-evidence",
+    "version": "1",
+    "title": "Produce archive-store selection and failure evidence",
+    "created_at_utc": "2026-07-18T21:13:04Z",
+    "updated_at_utc": "2026-08-02T13:27:34Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator authorized Phase 0 planning, requested WP-FF-008 through WP-FF-011 as detailed no-context STUB packets linked to the canonical design and readiness topics, and required the stubs to be committed and pushed before WP-FF-003 implementation begins.",
+    "recorded_at_utc": "2026-07-18T21:13:04Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#76-ffmpeg",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#9-workspace-and-module-layout",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#174-archive-backed-duplicate-prevention",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#23-persistence-resume-and-crash-recovery",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0c--dependency-and-risk-spikes",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#3012-archive-identity-errors",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#appendix-c--benchmark-matrix",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/consensus_blockers/0",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/consensus_blockers/5",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/adjudicated_disagreements/1",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/peer_question_resolutions/22",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/implementation_readiness_gates/4",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/recommended_next_closure_unit/outputs/3"
+    ],
+    "decision_ids": [
+      "D-021",
+      "D-022"
+    ]
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "447b4dbb0d64df56b3c956d8f311ff24f5b51c50",
+    "work_branch": "codex/archive-store-evidence",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "SUPERSEDED",
+    "risk": "HIGH",
+    "blockers": [
+      "WP-FF-003 executable gate bootstrap must be VALIDATED before this compiled spike starts.",
+      "The exact pure-Rust candidate set and current source-level research are not yet recorded.",
+      "Archive identity and commit/archive contracts from WP-FF-005 and WP-FF-009 must be stable enough to define equal workloads and failure oracles."
+    ],
+    "next_action": "Superseded by WP-FF-008-archive-store-evidence-v2, which preserves this scope and corrects the accepted WP-009 dependency lineage before implementation.",
+    "supersedes": [],
+    "superseded_by": "WP-FF-008-archive-store-evidence-v2"
+  },
+  "scope": {
+    "summary": "Resolve the archive-backend readiness gate with a bounded Rust-first spike that measures a maintained pure-Rust store against the complete archive contract and records an evidence matrix; SQLite remains unapproved unless the Operator later accepts a narrow dependency exception based on the same evidence.",
+    "in_scope": [
+      "Define separate item, representation, track, asset, and derived-output identities and the uniqueness/provenance keys the archive must persist.",
+      "Implement or adapt the smallest prototype archive adapter needed to test transactional uniqueness, concurrent claims, leases, successful-output insertion, and idempotent reconciliation.",
+      "Exercise crash recovery at every archive-relevant durable prefix, including output-without-row, row-without-output, stale lease, torn record, duplicate claim, and interrupted migration.",
+      "Measure membership lookup, insertion, write amplification, memory, storage size, and recovery behavior at representative and 1,000,000-identity scales.",
+      "Test schema creation, forward migration, interrupted migration, rollback or last-known-good recovery, import of mapped yt-dlp text archives, and explicit rejection of unknown identity mappings.",
+      "Produce a machine-readable candidate evidence matrix and decision-ready result that distinguishes PASS, FAIL, unsupported capability, and residual uncertainty.",
+      "Return failed-candidate evidence to the Operator without silently adding SQLite, a remote database, native bindings, or another runtime dependency."
+    ],
+    "non_goals": [
+      "Authorizing SQLite, PostgreSQL, a remote database, native bindings, or another runtime dependency.",
+      "Implementing the complete production storage subsystem, all output sinks, or all archive migration formats.",
+      "Claiming complete replacement readiness, parity, or production durability from a prototype-only result.",
+      "Changing extractor, protocol, collection, or final product scope to make a candidate pass.",
+      "Treating benchmark speed as acceptance when crash, identity, lease, migration, or reconciliation correctness fails."
+    ],
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-008-archive-store-evidence-v1/packet.json",
+      "build/Cargo.toml",
+      "build/Cargo.lock",
+      "build/architecture-policy.toml",
+      "build/tooling-policy.toml",
+      "build/rule-to-proof.toml",
+      "product/crates/fforager-contracts/",
+      "product/crates/fforager-core/",
+      "product/crates/fforager-storage/",
+      "build/crates/fforager-testkit/",
+      "build/tools/fforager-xtask/",
+      "build/fixtures/",
+      "build/integration-tests/",
+      "build/benches/",
+      "build/reports/",
+      "build/target/",
+      "product/MODEL_MANUAL.md"
+    ],
+    "dependencies": [
+      "WP-FF-003-executable-gate-bootstrap-v1 VALIDATED",
+      "WP-FF-005-versioned-core-contracts-v1 accepted archive identity and state-machine inputs",
+      "WP-FF-009-resource-durability-models-v1 accepted durable-prefix, filesystem-capability, and reconciliation models",
+      "Pinned yt-dlp 2026.07.04 archive oracle cases from WP-FF-004",
+      "Canonical architecture, PR, and triggered deep gates implemented by fforager-xtask"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-008-archive-store-evidence-v1-AC-001",
+      "requirement": "A versioned machine-readable archive contract defines identity levels, uniqueness keys, provenance, success-event insertion, leases, reconciliation, migrations, import mapping, supported filesystem guarantees, limits, and error outcomes without assuming a storage engine.",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v1-AC-002",
+      "requirement": "At least one maintained pure-Rust candidate is inspected at source/configuration/test level and exercised through the same declared archive workload; every rejected candidate has a concrete capability, maintenance, dependency, or proof failure.",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v1-AC-003",
+      "requirement": "Deterministic fault tests cover concurrent duplicate claims, stale leases, crashes at every archive/commit prefix, torn or invalid records, output-row mismatch, restart reconciliation, and interrupted migration, and produce no false success or silently accepted inconsistency.",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v1-AC-004",
+      "requirement": "The candidate evidence report includes crash, concurrency, migration, lease, reconciliation, filesystem, latency, RSS, storage-size, and write-amplification results for declared corpus sizes, including benchmark-matrix row B-021, with exact command, timeout, fixture hash, environment, and failure oracle.",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v1-AC-005",
+      "requirement": "The result selects a pure-Rust backend only if every mandatory correctness gate passes; otherwise it produces Operator-ready exception evidence and leaves SQLite and other native/runtime dependencies unauthorized.",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v1-AC-006",
+      "requirement": "FF-GATE-ARCH-001, FF-GATE-PR-001, the triggered archive deep tests, and an independent adversarial review pass on the same source and evidence manifest.",
+      "status": "PENDING",
+      "evidence": []
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-18T21:13:04Z",
+      "branch": "main",
+      "base_sha": "447b4dbb0d64df56b3c956d8f311ff24f5b51c50",
+      "head_sha": "447b4dbb0d64df56b3c956d8f311ff24f5b51c50",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-008-archive-store-evidence-v1/packet.json"
+      ],
+      "checks_run": [
+        "git branch --show-current: main",
+        "git rev-parse HEAD: 447b4dbb0d64df56b3c956d8f311ff24f5b51c50",
+        "git status --porcelain=v2 --branch: main at 447b4dbb0d64df56b3c956d8f311ff24f5b51c50 before packet creation",
+        "git worktree list --porcelain: one main worktree; no packet worktree created"
+      ],
+      "blockers": [
+        "Packet is a STUB and does not authorize implementation."
+      ],
+      "next_action": "Wait for prerequisites, then refresh research and promote the packet before creating prototype code."
+    }
+  },
+  "validation": {
+    "checks": [
+      "packet_json_parse: PASS",
+      "template_required_sections: PASS",
+      "authority_and_readiness_anchor_review: PASS",
+      "allowed_path_review: PASS"
+    ],
+    "not_proven": [
+      "Any archive backend selection",
+      "Archive crash safety or production durability",
+      "Archive performance at scale",
+      "SQLite or other dependency authorization",
+      "Broad implementation or replacement readiness"
+    ]
+  },
+  "extensions": {
+    "repository_layout": {
+      "governance_root": ".GOV/",
+      "product_root": "product/",
+      "product_owns": ["shipped runtime code", "product apps", "product assets", "independent watcher", "product-package-local tests", "MODEL_MANUAL.md"],
+      "build_root": "build/",
+      "build_owns": ["Cargo workspace and lockfile", "architecture/tooling/rule-to-proof policies", "non-shipped xtask and testkit", "shared fixtures", "cross-package integration tests", "fuzz targets", "benchmarks", "generated reports", "Cargo target output"],
+      "toolchain_selector": "rust-toolchain.toml",
+      "canonical_manifest": "build/Cargo.toml",
+      "canonical_command_prefix": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask --",
+      "runtime_boundary": "Shipped product execution must require neither .GOV/ nor build/."
+    },
+    "stub_contract": {
+      "implementation_authorized": false,
+      "promotion_requirements": [
+        "Prerequisite packet evidence is available and source-compatible.",
+        "Current broad research is recorded with source dates, inspected implementation evidence, candidate maintenance status, rejected options, and validation plan.",
+        "The exact candidate dependency graph and licenses pass policy preflight.",
+        "Acceptance commands, fixture versions, report schema, timeouts, and failure oracles are frozen.",
+        "The Operator is asked only if evidence supports a specific dependency-boundary exception."
+      ]
+    },
+    "documentation_topics": [
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "7.10", "heading": "Fixed dependency and readiness boundary", "lines": "479-491", "use": "Rust/FFmpeg boundary; archive backend undecided pending pure-Rust spike"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "9.1", "heading": "Crate-boundary rules", "lines": "713-730", "use": "fforager-storage ownership and runtime/governance boundary"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "17.4", "heading": "Archive-backed duplicate prevention", "lines": "1576-1589", "use": "archive behavior, bounded actor, lease/reconciliation, and evidence requirements"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "23.2-23.6", "heading": "Journal, checkpoints, commit, reconciliation, and filesystem capability", "lines": "2063-2127", "use": "durable prefix and failure oracle"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "Phase 0C", "heading": "Dependency and risk spikes", "lines": "2580-2586", "use": "authorized prototype scope"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "30.12", "heading": "Archive identity errors", "lines": "2835-2839", "use": "identity failure and mitigation"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "31.7", "heading": "Broad-feature implementation readiness gates", "lines": "2914-2929", "use": "gates 5 and 8"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "Appendix C", "heading": "Benchmark Matrix", "lines": "3237-3269", "use": "B-021 archive-scale workload"}
+    ],
+    "readiness_matrix_items": [
+      {"json_pointer": "/consensus_blockers/0", "id": "SYN-001", "required_resolution": "Run a Rust-only storage spike; request a specific exception only if measured evidence proves it necessary."},
+      {"json_pointer": "/consensus_blockers/5", "id": "SYN-006", "required_resolution": "Crash-safe staged commit, path, filesystem capability, and startup reconciliation."},
+      {"json_pointer": "/adjudicated_disagreements/1", "topic": "archive_storage", "status": "blocked_pending_spike", "required_resolution": "Benchmark and fault-test a maintained pure-Rust candidate first."},
+      {"json_pointer": "/peer_question_resolutions/22", "question": 23, "required_resolution": "SQLite unapproved; separate identity levels and archive only reconcilable committed outputs."},
+      {"json_pointer": "/implementation_readiness_gates/4", "gate": "Archive store crash, concurrency, migration, lease, and reconciliation result"},
+      {"json_pointer": "/implementation_readiness_gates/7", "gate": "Commit/archive/resume fault injection across every durable state prefix"},
+      {"json_pointer": "/recommended_next_closure_unit/outputs/3", "output": "Pure-Rust archive-store versus SQLite evidence matrix without pre-approving SQLite"}
+    ],
+    "base_scope": [
+      "Pure-Rust-first archive candidate prototype",
+      "Complete mandatory correctness and fault matrix",
+      "Scale/performance evidence",
+      "Decision-ready backend result"
+    ],
+    "high_roi_additions": [
+      {"addition": "Use one reusable deterministic fault-schedule and report schema for archive, journal, and later update-activation tests.", "why_high_roi": "The durable-prefix harness is already required and avoids rebuilding fault orchestration for later packets.", "gap_closed": "Crash claims otherwise depend on ad hoc tests.", "reuses": ["fforager-testkit", "fforager-xtask report conventions", "WP-FF-009 state models"], "validation": "Mutation fixture must remove a crash prefix and make the deep gate fail."},
+      {"addition": "Emit explain-identity and explain-reconciliation records with stable IDs in every test case.", "why_high_roi": "Identity diagnostics are cheap while the schema is being defined and make operator/model debugging deterministic.", "gap_closed": "Archive skips or duplicates can otherwise be opaque.", "reuses": ["versioned contracts", "structured diagnostics conventions"], "validation": "Golden reports cover distinct, duplicate, migrated, and inconsistent identities."},
+      {"addition": "Retain candidate-neutral workload and result adapters so a future Operator-approved backend can run the exact same matrix.", "why_high_roi": "It prevents evidence drift and makes later dependency adjudication cheaper.", "gap_closed": "Different backends could otherwise be judged on unequal tests.", "reuses": ["archive contract", "benchmark manifest", "fault corpus"], "validation": "A fake failing backend proves the harness detects contract violations without backend-specific assertions."}
+    ],
+    "reused_systems": [
+      "WP-FF-003 locked workspace and executable gates",
+      "fforager-contracts versioning and identity types",
+      "fforager-storage ownership boundary",
+      "fforager-testkit deterministic clocks/faults when available",
+      "fforager-xtask machine-readable report aggregation",
+      "WP-FF-004 pinned archive oracle",
+      "WP-FF-009 durable-prefix and filesystem models"
+    ],
+    "gaps_closed": [
+      "Unselected archive backend",
+      "Unproven identity separation and uniqueness semantics",
+      "Unproven concurrent claims and leases",
+      "Unproven crash/migration/reconciliation behavior",
+      "No comparable scale evidence",
+      "SQLite dependency temptation without measured need"
+    ],
+    "red_team": [
+      {"risk": "A candidate appears fast but loses or duplicates claims after a crash.", "failure_scenarios": ["power loss after output rename before archive row", "duplicate workers claim one asset", "torn migration marker"], "mitigations": ["fault every durable prefix", "transactional uniqueness", "idempotent startup reconciliation", "never admit speed samples from failed correctness runs"], "verification": "Seeded crash matrix plus restart oracle; mutated missing-prefix fixture must fail."},
+      {"risk": "Archive identity is too broad or unstable.", "failure_scenarios": ["distinct representations collapse", "same asset redownloads after schema upgrade", "derived output masks source identity"], "mitigations": ["separate identity layers", "version canonicalization", "golden migration corpus", "explain-identity output"], "verification": "Collision/alias corpus and backwards/forwards migration checks."},
+      {"risk": "Row and filesystem state diverge.", "failure_scenarios": ["row exists but output is missing", "output exists without row", "cross-volume copy interrupted"], "mitigations": ["reconciled output provenance", "filesystem capability profiles", "fail-closed or explicit degraded mode", "preserve diagnostics"], "verification": "Every mismatch is injected and produces the declared recovery or inconsistency result."},
+      {"risk": "A native dependency is introduced implicitly through a transitive Cargo link.", "failure_scenarios": ["candidate enables default native feature", "build script downloads a binary"], "mitigations": ["Cargo metadata/lockfile/tooling-policy inspection", "links/source/build-script gate", "explicit Operator decision only after evidence"], "verification": "Negative dependency fixtures fail architecture and dependency policy gates."},
+      {"risk": "Large-corpus tests pass by loading all identities into memory.", "failure_scenarios": ["million-row run causes unbounded RSS", "cache makes reported lookup unrealistically cheap"], "mitigations": ["bounded cache contract", "cold/warm profiles", "RSS and I/O reporting", "controlled corpus generation"], "verification": "B-021 profiles enforce declared memory ceiling and cache state."}
+    ],
+    "verification_needs": {
+      "required_commands_at_execution": [
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-deep --evidence-from-taskboard"
+      ],
+      "required_proof_classes": [
+        "JSON schema and golden contract fixtures",
+        "deterministic model/property tests",
+        "fault injection across every durable prefix",
+        "concurrency/lease/reconciliation negative cases",
+        "migration and import corpora",
+        "controlled scale benchmark distributions",
+        "dependency/native-link inspection",
+        "independent adversarial review"
+      ],
+      "closure_rule": "No PASS if any mandatory correctness row fails, evidence comes from a different source/fixture manifest, or the selected backend requires an unapproved runtime/native dependency."
+    },
+    "applicable_rule_ids": [
+      "FF-BUILD-011",
+      "FF-BUILD-012",
+      "FF-BUILD-013",
+      "FF-BUILD-014",
+      "FF-BUILD-015",
+      "FF-BUILD-017",
+      "FF-BUILD-018",
+      "FF-BUILD-019",
+      "FF-BUILD-021",
+      "FF-BUILD-023",
+      "FF-BUILD-026",
+      "FF-BUILD-027",
+      "FF-BUILD-030",
+      "FF-BUILD-033",
+      "FF-BUILD-034",
+      "FF-BUILD-035",
+      "FF-BUILD-047",
+      "FF-BUILD-048",
+      "FF-BUILD-054",
+      "FF-BUILD-055",
+      "FF-BUILD-057",
+      "FF-BUILD-058",
+      "FF-BUILD-059",
+      "FF-BUILD-060",
+      "FF-BUILD-064",
+      "FF-BUILD-066",
+      "FF-BUILD-067"
+    ]
+  }
+}

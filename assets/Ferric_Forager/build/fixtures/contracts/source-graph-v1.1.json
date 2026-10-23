@@ -1,0 +1,15 @@
+{
+  "schema":{"major":1,"minor":1},
+  "roots":["node_root"],
+  "nodes":[{
+    "id":"node_root",
+    "kind":"media",
+    "identities":{"item":"item_1","representations":["repr_1"],"tracks":["track_1"],"assets":["asset_1"],"derived_outputs":["output_1"]},
+    "provenance":{"extractor_key":"direct","source_identity":"source-1","canonical_url":"https://example.invalid/video","parent_node":null},
+    "title":{"state":"present","value":"Example"},
+    "description":{"state":"unknown"},
+    "extensions":{"core.note":"fixture"}
+  }],
+  "edges":[],
+  "continuations":[]
+}

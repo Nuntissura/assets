@@ -1,0 +1,1135 @@
+schema_id = "ff.architecture_policy@2"
+file_id = "FF-GOV-BUILD-ARCH-POLICY-001"
+schema_version = "2.0.0"
+accepted_design_decision_ids = ["FF-BUILD-036", "FF-BUILD-077"]
+workspace_manifest = "build/Cargo.toml"
+workspace_root = "build"
+target_directory = ".fforager-artifacts/cargo-target"
+root_toolchain_selector = "rust-toolchain.toml"
+governance_root = ".GOV"
+product_root = "product"
+build_root = "build"
+exception_authority = ".GOV/rules/build-rules.yaml"
+exception_decision_ids = ["FF-DEC-001", "FF-DEC-002", "FF-DEC-003", "FF-DEC-004", "FF-DEC-005"]
+unsafe_policy = "forbid_except_scoped_policy_listed_boundary"
+unsafe_exception_authority = ".GOV/rules/build-rules.yaml#exception_authority"
+unsafe_decision_ids = ["FF-DEC-003", "FF-DEC-004", "FF-DEC-005"]
+internal_edge_default = "deny"
+forbidden_layer_edges = ["engine->frontend", "engine->adapter", "engine->watcher", "adapter->adapter", "product->watcher", "watcher->engine", "normal_or_build:product->testkit"]
+forbidden_product_runtime_roots = [".GOV", "build", ".fforager-artifacts"]
+allowed_runtime_or_native_dependencies = ["FFmpeg", "ffprobe", "FF-DEC-001", "FF-DEC-002", "FF-DEC-003", "FF-DEC-004", "FF-DEC-005"]
+approved_transitive_build_packages = ["bindgen@0.72.1", "btls-sys@0.5.6", "camino@1.2.4", "clang-sys@1.8.1", "crc32fast@1.5.0", "crossbeam-utils@0.8.22", "getrandom@0.3.4", "getrandom@0.4.3", "httparse@1.10.1", "icu_normalizer_data@2.0.0", "icu_properties_data@2.0.1", "libc@0.2.189", "memoffset@0.9.1", "ntapi@0.4.3", "num-traits@0.2.19", "parking_lot_core@0.9.12", "paste@1.0.15", "portable-atomic@1.14.0", "proc-macro2@1.0.107", "quote@1.0.47", "redb@4.1.0", "ring@0.17.14", "rustls@0.23.46", "rustversion@1.0.23", "serde@1.0.228", "serde_core@1.0.228", "serde_json@1.0.150", "thiserror@2.0.19", "winapi@0.3.9", "zerocopy@0.8.55", "zmij@1.0.23", "zstd-safe@7.2.4", "zstd-sys@2.0.16+zstd.1.5.7"]
+approved_transitive_proc_macros = ["boa_macros@0.21.1", "bytemuck_derive@1.11.0", "derive_arbitrary@1.4.2", "displaydoc@0.2.6", "dynify-macros@0.1.2", "equator-macro@0.4.2", "foreign-types-macros@0.2.4", "futures-macro@0.3.33", "num_enum_derive@0.7.6", "openssl-macros@0.1.1", "paste@1.0.15", "phf_macros@0.13.1", "pin-project-internal@1.1.13", "rustversion@1.0.23", "serde_derive@1.0.228", "thiserror-impl@2.0.19", "time-macros@0.2.32", "typed-builder-macro@0.23.2", "windows-implement@0.60.2", "windows-interface@0.59.3", "yoke-derive@0.8.2", "zerofrom-derive@0.1.7", "zerovec-derive@0.11.3"]
+
+[[members]]
+name = "fforager-xtask"
+manifest = "build/tools/fforager-xtask/Cargo.toml"
+source_root = "build/tools/fforager-xtask/src"
+layer = "build_tooling"
+artifact_role = "non_shipped_gate_runner"
+shipped = false
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-contracts", kinds = ["normal"], optional = false }]
+split_trigger = "FF-BUILD-036"
+feature_owner = "WP-FF-003-executable-gate-bootstrap-v1"
+profile = "phase0_bootstrap"
+removal_condition = "Replace only through a versioned gate-runner migration that preserves all report and proof contracts."
+runtime_native_constraint_ref = "FF-DEC-005"
+unsafe_policy_ref = "FF-BUILD-050;FF-DEC-005"
+exception_policy_ref = "FF-DEC-005"
+
+[[members]]
+name = "fforager-javascript"
+manifest = "build/crates/fforager-javascript/Cargo.toml"
+source_root = "build/crates/fforager-javascript/src"
+layer = "build_tooling"
+artifact_role = "non_shipped_isolated_javascript_worker_spike"
+shipped = false
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-contracts", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-001"
+feature_owner = "WP-FF-006-rust-youtube-challenge-spike-v1"
+profile = "phase0_prerequisite_spike"
+removal_condition = "Remove or replace only after the Rust JavaScript approach receives an explicit Phase-0 viability verdict and any successor preserves the bounded worker proof contract."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-transport"
+manifest = "build/crates/fforager-transport/Cargo.toml"
+source_root = "build/crates/fforager-transport/src"
+layer = "build_tooling"
+artifact_role = "non_shipped_transport_capability_spike"
+shipped = false
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-contracts", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-007-transport-fingerprint-spike-v1-AC-002"
+feature_owner = "WP-FF-007-transport-fingerprint-spike-v1"
+profile = "phase0_prerequisite_spike"
+removal_condition = "Remove or replace only after WP-007 records a bounded transport verdict and any successor preserves the mandatory corpus and fail-closed capability contract."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-contracts"
+manifest = "product/crates/fforager-contracts/Cargo.toml"
+source_root = "product/crates/fforager-contracts/src"
+layer = "contracts"
+artifact_role = "shipped_versioned_wire_contracts"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = []
+split_trigger = "WP-FF-005-versioned-core-contracts-v1-AC-001"
+feature_owner = "WP-FF-005-versioned-core-contracts-v1"
+profile = "phase0_prerequisite_contracts"
+removal_condition = "Replace only through a versioned contract migration with retained prior-version fixtures and conformance proof."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-diagnostics-contract"
+manifest = "product/crates/fforager-diagnostics-contract/Cargo.toml"
+source_root = "product/crates/fforager-diagnostics-contract/src"
+layer = "contracts"
+artifact_role = "shipped_bounded_diagnostic_contracts"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = []
+split_trigger = "WP-FF-005-versioned-core-contracts-v1-AC-001"
+feature_owner = "WP-FF-005-versioned-core-contracts-v1"
+profile = "phase0_prerequisite_contracts"
+removal_condition = "Replace only through a versioned diagnostic migration preserving bounded payload and prior-version conformance proof."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-core"
+manifest = "product/crates/fforager-core/Cargo.toml"
+source_root = "product/crates/fforager-core/src"
+layer = "engine"
+artifact_role = "shipped_deterministic_core_models"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-contracts", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-005-versioned-core-contracts-v1-AC-003"
+feature_owner = "WP-FF-005-versioned-core-contracts-v1"
+profile = "phase0_prerequisite_contracts"
+removal_condition = "Replace only through a versioned deterministic-model migration with state, resource, durability, and replay proof."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-storage"
+manifest = "product/crates/fforager-storage/Cargo.toml"
+source_root = "product/crates/fforager-storage/src"
+layer = "adapter"
+artifact_role = "shipped_archive_store_prerequisite"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-contracts", kinds = ["normal"], optional = false }, { package = "fforager-core", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-008-archive-store-evidence-v2-AC-001"
+feature_owner = "WP-FF-008-archive-store-evidence-v2"
+profile = "phase0_prerequisite_archive_store"
+removal_condition = "Replace only through a versioned archive-store migration that reruns the complete candidate-neutral crash, concurrency, migration, reconciliation, and scale corpus."
+runtime_native_constraint_ref = "FF-DEC-004"
+unsafe_policy_ref = "FF-BUILD-050;FF-DEC-004"
+exception_policy_ref = "FF-DEC-004"
+
+[[members]]
+name = "fforager-ffmpeg"
+manifest = "product/crates/fforager-ffmpeg/Cargo.toml"
+source_root = "product/crates/fforager-ffmpeg/src"
+layer = "adapter"
+artifact_role = "non_shipped_ffmpeg_supervision_prerequisite"
+shipped = false
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [
+  { package = "fforager-contracts", kinds = ["normal"], optional = false },
+  { package = "fforager-core", kinds = ["normal"], optional = false },
+]
+split_trigger = "WP-FF-010-ffmpeg-supervision-spike-v1-AC-002"
+feature_owner = "WP-FF-010-ffmpeg-supervision-spike-v1"
+profile = "phase0_prerequisite_spike"
+removal_condition = "Remove or replace only after the first shipped consumer re-proves the exact platform boundary through FF-GATE-RUNTIME-001 or the prerequisite is retired."
+runtime_native_constraint_ref = "FF-DEC-003"
+unsafe_policy_ref = "FF-BUILD-050;FF-DEC-003"
+exception_policy_ref = "FF-DEC-003"
+
+[[members]]
+name = "fforager-testkit"
+manifest = "build/crates/fforager-testkit/Cargo.toml"
+source_root = "build/crates/fforager-testkit/src"
+layer = "testkit"
+artifact_role = "non_shipped_contract_conformance_harness"
+shipped = false
+test_only = true
+publish_allowed = false
+allowed_internal_dependencies = [
+  { package = "fforager-contracts", kinds = ["normal"], optional = false },
+  { package = "fforager-diagnostics-contract", kinds = ["normal"], optional = false },
+  { package = "fforager-core", kinds = ["normal"], optional = false },
+  { package = "fforager-storage", kinds = ["normal"], optional = false },
+]
+split_trigger = "WP-FF-005-versioned-core-contracts-v1-AC-005"
+feature_owner = "WP-FF-005-versioned-core-contracts-v1"
+profile = "phase0_prerequisite_contracts"
+removal_condition = "Remove only after every framed protocol consumer has equivalent shared prior/current and negative-path conformance proof."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[dependency_decisions]]
+name = "redb"
+version = "4.1.0"
+consumer = "fforager-storage"
+runtime_class = "shipped_rust_product"
+purpose = "Execute the bounded Phase 0 archive-store candidate behind Ferric-owned identity, claim, lease, migration, and reconciliation contracts."
+native = false
+owner = "WP-FF-008-archive-store-evidence"
+allowed_consumers = ["fforager-storage"]
+reason = "Current source-level comparison selected exact-pinned redb 4.1.0 as the smallest maintained pure-Rust ACID candidate with stable format, MVCC, crash repair, and no mandatory default dependency; Ferric still requires two-phase durability and independent fault evidence."
+removal_trigger = "Remove or replace if the candidate fails any mandatory archive correctness row or a maintained pure-Rust alternative passes the same candidate-neutral corpus with materially lower risk."
+approval_id = "WP-FF-008-archive-store-evidence-v2-AC-002"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "redb"
+version = "4.1.0"
+consumer = "fforager-testkit"
+runtime_class = "non_shipped_test_tooling"
+purpose = "Create candidate-specific malformed and unknown-version database fixtures while keeping corruption hooks out of the shipped candidate-neutral archive API."
+native = false
+owner = "WP-FF-008-archive-store-evidence"
+allowed_consumers = ["fforager-testkit"]
+reason = "The independent proof harness must mutate redb metadata below the public Ferric boundary to prove typed refusal of valid-looking but unsupported on-disk states."
+removal_trigger = "Remove with the redb candidate or when an equally strict candidate-neutral fault-injection fixture format replaces direct test-only mutation."
+approval_id = "WP-FF-008-archive-store-evidence-v2-AC-003"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "sha2"
+version = "0.11.0"
+consumer = "fforager-testkit"
+runtime_class = "non_shipped_test_tooling"
+purpose = "Bind persisted archive evidence inputs, executed action receipts, counterfactual receipts, and producer source files to cryptographic identities."
+native = false
+owner = "WP-FF-008-archive-store-evidence"
+allowed_consumers = ["fforager-testkit"]
+reason = "Independent persisted evidence needs the workspace's existing exact-pinned SHA-256 implementation instead of non-cryptographic FNV attribution or a new local digest implementation."
+removal_trigger = "Rust supplies a standard SHA-256 implementation or the archive evidence contract migrates through an accepted digest transition."
+approval_id = "WP-FF-008-archive-store-evidence-v2-AC-004"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "cargo_metadata"
+version = "0.23.1"
+consumer = "fforager-xtask"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Consume Cargo metadata format 1 without a brittle hand-written JSON parser."
+native = false
+owner = "WP-FF-003-executable-gate-bootstrap"
+allowed_consumers = ["fforager-xtask"]
+reason = "The official structured Cargo graph surface avoids lossy cargo-tree text parsing."
+removal_trigger = "Cargo exposes an equally stable std-only metadata interface or the gate runner is replaced through a validated migration."
+approval_id = "WP-FF-003-executable-gate-bootstrap-v1-AC-002"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-testkit"
+runtime_class = "non_shipped_test_tooling"
+purpose = "Load and validate canonical contract inventory and cross-version JSON fixtures."
+native = false
+owner = "WP-FF-005-versioned-core-contracts"
+allowed_consumers = ["fforager-testkit"]
+reason = "The conformance harness must replay the same JSON artifacts used by shipped contract readers."
+removal_trigger = "All registered wire contracts migrate away from JSON through accepted compatibility fixtures."
+approval_id = "WP-FF-005-versioned-core-contracts-v1-AC-005"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-contracts"
+runtime_class = "shipped_rust_product"
+purpose = "Serialize and deserialize explicit versioned wire DTOs."
+native = false
+owner = "WP-FF-005-versioned-core-contracts"
+allowed_consumers = ["fforager-contracts"]
+reason = "The contract boundary requires a mature typed serializer with deny-unknown-fields and exact pinned behavior."
+removal_trigger = "All versioned wire contracts migrate through accepted fixtures to an equally strict serializer."
+approval_id = "WP-FF-005-versioned-core-contracts-v1-AC-001"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-contracts"
+runtime_class = "shipped_rust_product"
+purpose = "Encode and decode bounded JSON wire envelopes and fixture payloads."
+native = false
+owner = "WP-FF-005-versioned-core-contracts"
+allowed_consumers = ["fforager-contracts"]
+reason = "The accepted WP-005 wire fixtures and framing contract use JSON payloads."
+removal_trigger = "The wire format migrates through a versioned compatibility plan and retained prior-version fixtures."
+approval_id = "WP-FF-005-versioned-core-contracts-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "sha2"
+version = "0.11.0"
+consumer = "fforager-contracts"
+runtime_class = "shipped_rust_product"
+purpose = "Compute the versioned canonical SHA-256 projections that bind validated FFmpeg requests and typed operation plans before an executable argument vector is exposed."
+native = false
+owner = "WP-FF-010-ffmpeg-supervision-spike"
+allowed_consumers = ["fforager-contracts"]
+reason = "The supervision contract must reject stale or caller-forged operation identities before spawn; reusing the workspace's exact-pinned pure-Rust SHA-256 implementation avoids an arbitrary verifier boundary or a local digest implementation."
+removal_trigger = "Rust supplies an approved standard SHA-256 implementation or the FFmpeg contract migrates through an accepted versioned digest transition."
+approval_id = "WP-FF-010-ffmpeg-supervision-spike-v1-AC-001"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "sha2"
+version = "0.11.0"
+consumer = "fforager-ffmpeg"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Independently bind executable bytes, packet payload projections, output files, wait receipts, and platform proof facts to SHA-256 identities."
+native = false
+owner = "WP-FF-010-ffmpeg-supervision-spike"
+allowed_consumers = ["fforager-ffmpeg"]
+reason = "The supervision adapter must reconstruct contract and runtime identities without trusting producer labels; this reuses the workspace exact-pinned pure-Rust digest implementation."
+removal_trigger = "Rust supplies an approved standard SHA-256 implementation or the FFmpeg evidence contract migrates through a reviewed digest transition."
+approval_id = "WP-FF-010-ffmpeg-supervision-spike-v1-AC-007"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-ffmpeg"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Serialize strict platform proof reports and deserialize bounded ffprobe JSON into closed local structures."
+native = false
+owner = "WP-FF-010-ffmpeg-supervision-spike"
+allowed_consumers = ["fforager-ffmpeg"]
+reason = "The existing workspace serializer provides deny-unknown-fields report boundaries and typed untrusted-input decoding without a new parser dependency."
+removal_trigger = "The proof/report and ffprobe-normalization boundaries migrate through retained compatibility fixtures to an equally strict parser."
+approval_id = "WP-FF-010-ffmpeg-supervision-spike-v1-AC-007"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-ffmpeg"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Consume bounded ffprobe JSON and emit the strict FFmpeg platform proof schema."
+native = false
+owner = "WP-FF-010-ffmpeg-supervision-spike"
+allowed_consumers = ["fforager-ffmpeg"]
+reason = "FFprobe JSON and the packet-authorized report path already use the workspace exact-pinned JSON representation; a second parser would add risk without narrowing the boundary."
+removal_trigger = "FFprobe and the proof schema migrate through retained fixtures to another bounded representation."
+approval_id = "WP-FF-010-ffmpeg-supervision-spike-v1-AC-007"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "windows-sys"
+version = "0.61.2"
+consumer = "fforager-ffmpeg"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Expose exact Windows Job, process-creation attribute, wait, pipe, and handle APIs for the scoped Ferric-owned FFmpeg supervision boundary."
+native = false
+owner = "WP-FF-010-ffmpeg-supervision-spike"
+allowed_consumers = ["fforager-ffmpeg"]
+reason = "Stable Rust does not expose atomic pre-execution Job-list attachment or independent Job accounting; the Operator explicitly selected the narrow Ferric-owned binding path."
+removal_trigger = "Stable Rust exposes the complete proven boundary or a smaller maintained safe binding passes the same behavior-sensitive corpus."
+approval_id = "WP-FF-010-ffmpeg-supervision-spike-v1-AC-002"
+features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_Threading"]
+default_features = false
+exception_id = "FF-DEC-003"
+
+[[dependency_decisions]]
+name = "libc"
+version = "0.2.189"
+consumer = "fforager-ffmpeg"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Expose exact Unix process-group signaling and wait-status primitives for bounded FFmpeg supervision evidence."
+native = false
+owner = "WP-FF-010-ffmpeg-supervision-spike"
+allowed_consumers = ["fforager-ffmpeg"]
+reason = "Stable Rust creates a process group but does not expose the complete TERM/KILL group signaling and typed wait-status surface required by WP-010."
+removal_trigger = "Stable Rust exposes the complete proven Unix boundary or the prerequisite is retired."
+approval_id = "WP-FF-010-ffmpeg-supervision-spike-v1-AC-002"
+features = []
+default_features = false
+exception_id = "FF-DEC-003"
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-diagnostics-contract"
+runtime_class = "shipped_rust_product"
+purpose = "Serialize and deserialize bounded versioned diagnostic DTOs."
+native = false
+owner = "WP-FF-005-versioned-core-contracts"
+allowed_consumers = ["fforager-diagnostics-contract"]
+reason = "Diagnostic producers and consumers require a shared strict typed contract."
+removal_trigger = "All diagnostic contracts migrate through accepted fixtures to an equally strict serializer."
+approval_id = "WP-FF-005-versioned-core-contracts-v1-AC-001"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-diagnostics-contract"
+runtime_class = "shipped_rust_product"
+purpose = "Encode and decode bounded diagnostic payloads and fixtures."
+native = false
+owner = "WP-FF-005-versioned-core-contracts"
+allowed_consumers = ["fforager-diagnostics-contract"]
+reason = "The accepted diagnostic wire representation and conformance fixtures use JSON."
+removal_trigger = "The diagnostic wire format migrates through a versioned compatibility plan and retained prior-version fixtures."
+approval_id = "WP-FF-005-versioned-core-contracts-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-xtask"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Strict typed policy and report serialization."
+native = false
+owner = "WP-FF-003-executable-gate-bootstrap"
+allowed_consumers = ["fforager-xtask"]
+reason = "Typed deny-unknown-fields schemas are required for fail-closed project policy parsing."
+removal_trigger = "All governed policy and report surfaces are removed or migrate to an equally strict approved serializer."
+approval_id = "WP-FF-003-executable-gate-bootstrap-v1-AC-002"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-xtask"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Parse Cargo, packet, and report JSON."
+native = false
+owner = "WP-FF-003-executable-gate-bootstrap"
+allowed_consumers = ["fforager-xtask"]
+reason = "Cargo metadata, packet contracts, and gate reports use JSON as their accepted machine-readable format."
+removal_trigger = "Every governed JSON producer and consumer migrates through a versioned accepted contract."
+approval_id = "WP-FF-003-executable-gate-bootstrap-v1-AC-002"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "saphyr"
+version = "0.0.11"
+consumer = "fforager-xtask"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Parse governance YAML fail-closed before consuming build rules or active task state."
+native = false
+owner = "WP-FF-003-executable-gate-bootstrap"
+allowed_consumers = ["fforager-xtask"]
+reason = "A maintained YAML 1.2 parser is safer and smaller than inventing a project-local parser for authoritative governance files."
+removal_trigger = "Governance authority migrates away from YAML or Rust gains an approved equivalent parser already present in the workspace."
+approval_id = "WP-FF-003-executable-gate-bootstrap-v2-AC-003"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "sha2"
+version = "0.11.0"
+consumer = "fforager-xtask"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Verify SHA-256 identities for host-installed validation executables."
+native = false
+owner = "WP-FF-003-executable-gate-bootstrap"
+allowed_consumers = ["fforager-xtask"]
+reason = "FF-BUILD-047 requires exact checksum evidence for tools not owned by the pinned Rust toolchain or workspace lockfile."
+removal_trigger = "All validation executables are supplied through an independently verified toolchain or a standard-library SHA-256 implementation becomes available."
+approval_id = "WP-FF-003-executable-gate-bootstrap-v2-AC-003"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "futures-util"
+version = "0.3.33"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Pull wreq response chunks incrementally so the adjudication boundary checks each chunk against Ferric's response-body limit before extending its buffer."
+native = false
+owner = "WP-FF-015-wreq-transport-adjudication"
+allowed_consumers = ["fforager-transport"]
+reason = "Wreq 6 exposes its bounded response stream through the futures Stream interface; the direct trait dependency keeps body-bound enforcement explicit and warnings-denied."
+removal_trigger = "Wreq exposes an equivalent inherent incremental-response API or the non-shipped adjudication is removed."
+approval_id = "WP-FF-015-wreq-transport-adjudication-v1-AC-003"
+features = ["async-await", "std"]
+default_features = false
+
+[[dependency_decisions]]
+name = "tokio"
+version = "1.53.1"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Drive the bounded asynchronous wreq control and candidate executions without adding an external runtime process."
+native = false
+owner = "WP-FF-015-wreq-transport-adjudication"
+allowed_consumers = ["fforager-transport"]
+reason = "Wreq exposes an asynchronous transport and the retained adjudication adapter must execute timeout and cancellation behavior through a deterministic owned runtime."
+removal_trigger = "The non-shipped adjudication is removed or its future shipped consumer supplies the accepted application runtime through a separately proven composition root."
+approval_id = "WP-FF-015-wreq-transport-adjudication-v1-AC-002"
+features = ["rt-multi-thread", "time"]
+default_features = false
+
+[[dependency_decisions]]
+name = "webpki-roots"
+version = "1.0.10"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Bind the ordinary candidate to an exact Ferric-selected Mozilla trust-root snapshot instead of machine-dependent platform trust."
+native = false
+owner = "WP-FF-023-dependency-security-remediation"
+allowed_consumers = ["fforager-transport"]
+reason = "A provider-bound rustls ClientConfig requires an explicit root store so ordinary HTTPS trust does not vary with host-injected platform roots."
+removal_trigger = "Replace through a versioned Ferric trust-store policy that preserves explicit root provenance and staged trust-decision tests."
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "wreq"
+version = "6.0.0-rc.29"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Compile and execute the exact-pinned v6 browser-profile candidate through the same Ferric-owned transport adjudication boundary."
+native = true
+owner = "WP-FF-015-wreq-transport-adjudication"
+allowed_consumers = ["fforager-transport"]
+reason = "The stable control is checkpointed at reachable sanitized commit 7dae6b6; the recommended dependency path selects this release candidate for browser-profile behavior and bounded fail-closed adjudication."
+removal_trigger = "Remove if the candidate fails mandatory behavior, wire, supply-chain, or adversarial review gates."
+approval_id = "WP-FF-015-wreq-transport-adjudication-v1-AC-001"
+features = ["stream", "tokio-rt", "webpki-roots"]
+default_features = false
+exception_id = "FF-DEC-001"
+
+[[dependency_decisions]]
+name = "wreq-util"
+version = "3.0.0-rc.14"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Supply the exact predefined browser profile selected by the non-shipped v6 candidate adapter."
+native = true
+owner = "WP-FF-015-wreq-transport-adjudication"
+allowed_consumers = ["fforager-transport"]
+reason = "The candidate must configure a fixed vendor profile through a maintained profile bundle while Ferric retains proxy, redirect, cookie, decompression, pooling, and body-bound policy."
+removal_trigger = "Remove with the wreq candidate or replace after a separately authorized dependency/profile decision."
+approval_id = "WP-FF-015-wreq-transport-adjudication-v1-AC-001"
+features = ["emulation"]
+default_features = false
+exception_id = "FF-DEC-001"
+
+[[dependency_decisions]]
+name = "reqwest"
+version = "0.13.4"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Resolve and exercise the exact ordinary HTTPS engine selected for future fforager-net product use while retaining zero product progress."
+native = true
+owner = "WP-FF-023-dependency-security-remediation"
+allowed_consumers = ["fforager-transport"]
+reason = "The Operator approved reqwest only with default features disabled, rustls-no-provider, and Ferric-owned transport policy controls."
+removal_trigger = "Remove if the exact dependency, provider, policy-control, or typed browser-required boundary fails validation."
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
+features = ["http2", "rustls-no-provider", "stream"]
+default_features = false
+exception_id = "FF-DEC-002"
+
+[[dependency_decisions]]
+name = "rustls"
+version = "0.23.46"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Construct reqwest with the exact explicit ring crypto provider without enabling reqwest's AWS-LC-selecting rustls feature."
+native = true
+owner = "WP-FF-023-dependency-security-remediation"
+allowed_consumers = ["fforager-transport"]
+reason = "An explicit rustls dependency is required to build the provider-bound ClientConfig supplied through reqwest's preconfigured TLS boundary."
+removal_trigger = "Remove if reqwest gains an equally narrow provider-specific stable surface or the Operator selects a replacement ordinary transport."
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
+features = ["ring", "std", "tls12"]
+default_features = false
+exception_id = "FF-DEC-002"
+
+[[dependency_decisions]]
+name = "toml"
+version = "1.1.3"
+consumer = "fforager-xtask"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Strict parsing of project-owned TOML policy."
+native = false
+owner = "WP-FF-003-executable-gate-bootstrap"
+allowed_consumers = ["fforager-xtask"]
+reason = "Cargo and project build policies use TOML and must be parsed semantically rather than through lexical matching."
+removal_trigger = "All governed TOML policy migrates through a versioned accepted contract."
+approval_id = "WP-FF-003-executable-gate-bootstrap-v1-AC-002"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "boa_ast"
+version = "0.21.1"
+consumer = "fforager-javascript"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Inspect parsed player syntax structurally and retain only Ferric-selected challenge definitions."
+native = false
+owner = "WP-FF-006-rust-youtube-challenge-spike"
+allowed_consumers = ["fforager-javascript"]
+reason = "The spike requires AST-level discovery rather than executing a whole site-supplied player or importing external solver code."
+removal_trigger = "The spike is removed or a validated Ferric-owned parser provides equivalent bounded structural discovery."
+approval_id = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-003"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "boa_engine"
+version = "0.21.1"
+consumer = "fforager-javascript"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Execute reduced site-supplied challenge behavior in a fresh pure-Rust context with explicit runtime limits."
+native = false
+owner = "WP-FF-006-rust-youtube-challenge-spike"
+allowed_consumers = ["fforager-javascript"]
+reason = "Boa is a current pure-Rust ECMAScript engine with instruction, loop, recursion, and stack limit controls suitable for the isolated spike."
+removal_trigger = "The spike is removed or an independently validated pure-Rust engine provides stronger equivalent bounded execution."
+approval_id = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-003"
+features = ["fuzz"]
+default_features = false
+
+[[dependency_decisions]]
+name = "boa_gc"
+version = "0.21.1"
+consumer = "fforager-javascript"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Force collection after each discarded per-job context so same-worker RSS remains inside the protocol ceiling."
+native = false
+owner = "WP-FF-006-rust-youtube-challenge-spike"
+allowed_consumers = ["fforager-javascript"]
+reason = "The engine context is fresh per job, but deterministic collection is required to bound retained process memory between jobs."
+removal_trigger = "Boa exposes equivalent deterministic context teardown or the isolated engine is replaced through a validated migration."
+approval_id = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-003"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "boa_interner"
+version = "0.21.1"
+consumer = "fforager-javascript"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Resolve interned AST identifiers during Ferric-owned player challenge discovery."
+native = false
+owner = "WP-FF-006-rust-youtube-challenge-spike"
+allowed_consumers = ["fforager-javascript"]
+reason = "Boa AST nodes store identifiers through the matching interner and discovery must compare their exact source identities."
+removal_trigger = "The selected parser exposes stable owned identifiers without this direct dependency or the spike is removed."
+approval_id = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-003"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "boa_parser"
+version = "0.21.1"
+consumer = "fforager-javascript"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Parse committed raw player JavaScript into the structural discovery input."
+native = false
+owner = "WP-FF-006-rust-youtube-challenge-spike"
+allowed_consumers = ["fforager-javascript"]
+reason = "Using the engine-aligned parser avoids brittle regular-expression extraction and preserves a single pinned syntax model."
+removal_trigger = "The spike is removed or a validated Ferric-owned parser supplies equivalent current-player coverage."
+approval_id = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-003"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-javascript"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Strictly serialize the worker request, response, corpus manifest, and proof report DTOs."
+native = false
+owner = "WP-FF-006-rust-youtube-challenge-spike"
+allowed_consumers = ["fforager-javascript"]
+reason = "The spike reuses the WP-005 JSON envelope and requires deny-unknown-fields DTO validation."
+removal_trigger = "The worker boundary migrates through accepted compatibility fixtures away from Serde."
+approval_id = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-003"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-javascript"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Encode and decode bounded WP-005 worker envelopes, manifests, and machine proof reports."
+native = false
+owner = "WP-FF-006-rust-youtube-challenge-spike"
+allowed_consumers = ["fforager-javascript"]
+reason = "The accepted versioned JavaScript worker contract and committed corpus use strict JSON representations."
+removal_trigger = "The worker protocol and retained corpus migrate through an accepted non-JSON compatibility plan."
+approval_id = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-003"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "sha2"
+version = "0.11.0"
+consumer = "fforager-javascript"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Verify raw-player identity and bind cache/report evidence to exact source bytes."
+native = false
+owner = "WP-FF-006-rust-youtube-challenge-spike"
+allowed_consumers = ["fforager-javascript"]
+reason = "The corpus contract requires exact SHA-256 provenance before any site-supplied player code is parsed or evaluated."
+removal_trigger = "Rust supplies a standard SHA-256 implementation or the corpus identity contract migrates through an accepted decision."
+approval_id = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-002"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "sysinfo"
+version = "0.39.6"
+consumer = "fforager-javascript"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Measure worker RSS and prove termination, reaping, and process absence from the supervising Rust process."
+native = false
+owner = "WP-FF-006-rust-youtube-challenge-spike"
+allowed_consumers = ["fforager-javascript"]
+reason = "Boa has no exact heap quota, so the WP-005 process memory ceiling requires an independent parent-side RSS supervisor."
+removal_trigger = "The selected engine exposes a validated exact memory cap or the operating-system supervisor migrates to an approved equivalent."
+approval_id = "WP-FF-006-rust-youtube-challenge-spike-v1-AC-004"
+features = ["system"]
+default_features = false
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Strictly serialize the WP-007 corpus manifest, case evidence, and aggregate verdict."
+native = false
+owner = "WP-FF-007-transport-fingerprint-spike"
+allowed_consumers = ["fforager-transport"]
+reason = "The mandatory corpus requires deny-unknown-fields DTOs and deterministic machine-readable reports."
+removal_trigger = "The non-shipped spike is removed or its retained corpus migrates through an accepted non-Serde format transition."
+approval_id = "WP-FF-007-transport-fingerprint-spike-v1-AC-002"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Decode the strict transport corpus and encode deterministic behavioral evidence."
+native = false
+owner = "WP-FF-007-transport-fingerprint-spike"
+allowed_consumers = ["fforager-transport"]
+reason = "WP-004 normalization conventions and existing Ferric proof surfaces use bounded JSON."
+removal_trigger = "The retained corpus and report migrate through an accepted non-JSON compatibility transition."
+approval_id = "WP-FF-007-transport-fingerprint-spike-v1-AC-002"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "sha2"
+version = "0.11.0"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Bind manifest, transcript, and candidate evidence to deterministic SHA-256 identities."
+native = false
+owner = "WP-FF-007-transport-fingerprint-spike"
+allowed_consumers = ["fforager-transport"]
+reason = "The spike must prove exact corpus and wire-evidence identities using the already-approved repository digest implementation."
+removal_trigger = "Rust supplies a standard SHA-256 implementation or the retained evidence contract migrates through an accepted digest change."
+approval_id = "WP-FF-007-transport-fingerprint-spike-v1-AC-002"
+features = []
+default_features = false
+
+[[members]]
+name = "fforager-net"
+manifest = "product/crates/fforager-net/Cargo.toml"
+source_root = "product/crates/fforager-net/src"
+layer = "adapter"
+artifact_role = "shipped_ordinary_http_transport"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = []
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager"
+manifest = "product/crates/fforager/Cargo.toml"
+source_root = "product/crates/fforager/src"
+layer = "composition"
+artifact_role = "shipped_library_composition"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-core", kinds = ["normal"], optional = false }, { package = "fforager-net", kinds = ["normal"], optional = false }, { package = "fforager-storage", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-cli"
+manifest = "product/apps/fforager-cli/Cargo.toml"
+source_root = "product/apps/fforager-cli/src"
+layer = "frontend"
+artifact_role = "shipped_command_parser"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = []
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-launcher"
+manifest = "product/apps/fforager-launcher/Cargo.toml"
+source_root = "product/apps/fforager-launcher/src"
+layer = "frontend"
+artifact_role = "shipped_worker_watcher_launcher"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-cli", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-004"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-worker"
+manifest = "product/apps/fforager-worker/Cargo.toml"
+source_root = "product/apps/fforager-worker/src"
+layer = "frontend"
+artifact_role = "shipped_acquisition_worker"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager", kinds = ["normal"], optional = false }, { package = "fforager-cli", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-watcher"
+manifest = "product/watcher/Cargo.toml"
+source_root = "product/watcher/src"
+layer = "watcher"
+artifact_role = "shipped_independent_diagnostic_watcher"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-diagnostics-contract", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-004"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[dependency_decisions]]
+name = "reqwest"
+version = "0.13.4"
+consumer = "fforager-net"
+runtime_class = "shipped_rust_product"
+purpose = "Execute provider-bound ordinary HTTP requests with Ferric-owned admission and bounded transfers."
+native = true
+owner = "WP-FF-023-dependency-security-remediation"
+allowed_consumers = ["fforager-net"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
+features = ["http2", "rustls-no-provider", "stream"]
+default_features = false
+exception_id = "FF-DEC-002"
+
+[[dependency_decisions]]
+name = "rustls"
+version = "0.23.46"
+consumer = "fforager-net"
+runtime_class = "shipped_rust_product"
+purpose = "Bind the ordinary client explicitly to the approved ring provider."
+native = true
+owner = "WP-FF-023-dependency-security-remediation"
+allowed_consumers = ["fforager-net"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
+features = ["ring", "std", "tls12"]
+default_features = false
+exception_id = "FF-DEC-002"
+
+[[dependency_decisions]]
+name = "webpki-roots"
+version = "1.0.10"
+consumer = "fforager-net"
+runtime_class = "shipped_rust_product"
+purpose = "Construct an explicit pinned Mozilla trust-root store for the ordinary client."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-net"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "tokio"
+version = "1.53.1"
+consumer = "fforager-net"
+runtime_class = "shipped_rust_product"
+purpose = "Drive bounded asynchronous networking through the production composition runtime."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-net"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["rt-multi-thread", "time"]
+default_features = false
+
+[[dependency_decisions]]
+name = "tokio"
+version = "1.53.1"
+consumer = "fforager"
+runtime_class = "shipped_rust_product"
+purpose = "Drive bounded asynchronous networking through the production composition runtime."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["rt-multi-thread", "time"]
+default_features = false
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-launcher"
+runtime_class = "shipped_rust_product"
+purpose = "Deserialize strict deny-unknown-fields readiness or durable journal records."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-launcher"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-storage"
+runtime_class = "shipped_rust_product"
+purpose = "Deserialize strict deny-unknown-fields readiness or durable journal records."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-storage"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-launcher"
+runtime_class = "shipped_rust_product"
+purpose = "Read and emit bounded structured production results, diagnostics or durable state."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-launcher"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-worker"
+runtime_class = "shipped_rust_product"
+purpose = "Read and emit bounded structured production results, diagnostics or durable state."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-worker"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-watcher"
+runtime_class = "shipped_rust_product"
+purpose = "Read and emit bounded structured production results, diagnostics or durable state."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-watcher"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-storage"
+runtime_class = "shipped_rust_product"
+purpose = "Read and emit bounded structured production results, diagnostics or durable state."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-storage"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "sysinfo"
+version = "0.39.6"
+consumer = "fforager-watcher"
+runtime_class = "shipped_rust_product"
+purpose = "Observe worker identity and lifetime without controlling worker correctness."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-watcher"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["system"]
+default_features = false
+
+[[dependency_decisions]]
+name = "sha2"
+version = "0.11.0"
+consumer = "fforager-storage"
+runtime_class = "shipped_rust_product"
+purpose = "Bind durable byte content, archive identity and recovery journals to SHA-256."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-storage"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "windows-sys"
+version = "0.61.2"
+consumer = "fforager-storage"
+runtime_class = "shipped_rust_product"
+purpose = "Open confined Windows directory handles, validate filesystem identity and acknowledge durable flushes."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-storage"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-003"
+features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_Threading", "Wdk_System_SystemServices", "Win32_System_SystemInformation", "Wdk_Storage_FileSystem", "Wdk_Foundation", "Win32_System_IO"]
+default_features = false
+exception_id = "FF-DEC-004"
+
+[[dependency_decisions]]
+name = "redb"
+version = "4.1.0"
+consumer = "fforager-xtask"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Independently inspect real archive records produced by staged Phase 1 artifacts."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-xtask"]
+reason = "Reuse the approved archive dependency to verify persisted records without trusting worker stdout or adding a reader package."
+removal_trigger = "The archive representation changes through a reviewed migration or an equally independent bounded reader replaces direct redb access."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-006"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "windows-sys"
+version = "0.61.2"
+consumer = "fforager-xtask"
+runtime_class = "non_shipped_build_tooling"
+purpose = "Boundedly pause/resume only the owned watcher; read-only retained identity and exit acknowledgment for the launcher-owned worker, with no worker pause/control API."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-xtask"]
+reason = "The Operator approved the narrow existing-binding validation boundary; it adds no product process-control API."
+removal_trigger = "Replace with an equally direct bounded owned-watcher fault mechanism or retire the watcher hang scenario."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-004"
+features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_Diagnostics_Debug"]
+default_features = false
+exception_id = "FF-DEC-005"

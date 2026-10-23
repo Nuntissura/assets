@@ -1,0 +1,170 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-002-architecture-review-merge-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-002-architecture-review-merge-v1",
+  "updated_at_utc": "2026-07-18T00:30:03Z",
+  "operator_request": "Create a new starting design that merges all peer reviews into the original documentation, improves the yt-dlp-derived architecture, enforces the architecture and good coding habits through build rules, keeps the independent diagnostic watcher current, and distills Ponytail critiques and YAGNI research into useful project heuristics.",
+  "spec_anchors": [
+    {"path": ".GOV/spec/ferric_forager_technical_design_v0.2.0.md", "scope": "complete source design"},
+    {"path": ".GOV/reviews/peer-review-v0.2.0/primary-synthesis.md", "scope": "complete synthesis and adjudications"},
+    {"path": ".GOV/reviews/peer-review-v0.2.0/architecture-performance-review.md", "scope": "complete lens report"},
+    {"path": ".GOV/reviews/peer-review-v0.2.0/compatibility-product-review.md", "scope": "complete lens report"},
+    {"path": ".GOV/reviews/peer-review-v0.2.0/security-reliability-review.md", "scope": "complete lens report"},
+    {"path": ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json", "scope": "all blockers, decisions, and gates"}
+  ],
+  "scope_edges": {
+    "preserve": [
+      "Complete expanded Ferric Forager feature scope",
+      "Rust-only production implementation",
+      "FFmpeg and ffprobe as supervised external processes",
+      "yt-dlp as pinned oracle and source research rather than production dependency",
+      "Independent diagnostic watcher failure domain"
+    ],
+    "change": [
+      "Resolve review findings into explicit contracts and phase gates",
+      "Replace premature fine-grained crate topology with coarse enforceable architecture",
+      "Add executable architecture and coding-quality enforcement requirements",
+      "Add watcher anti-staleness contract",
+      "Add evidence-based YAGNI/Ponytail heuristics"
+    ],
+    "non_goals": [
+      "Product implementation",
+      "Dependency-boundary exceptions",
+      "Silent narrowing for an easier parity claim"
+    ]
+  },
+  "assumptions": [
+    "The intended Ponytail project is verified as DietrichGebert/ponytail and research is pinned to commit 16f29800fd2681bdf24f3eb4ccffe38be3baec6b.",
+    "The new v0.3.0 file becomes the design source only after authority paths and validators are updated together.",
+    "YAGNI limits speculative mechanisms, not known compatibility scope or mandatory correctness controls."
+  ],
+  "research": {
+    "status": "COMPLETE",
+    "sources": [
+      {
+        "source": ".GOV/reviews/peer-review-v0.2.0/",
+        "checked_at": "2026-07-18",
+        "evidence": "Complete architecture/performance, compatibility/product, security/reliability, synthesis, and readiness artifacts, including pinned yt-dlp, FFmpeg, Tokio, transport, JavaScript, storage, concurrency, fuzzing, and field-implementation research."
+      },
+      {
+        "source": "https://github.com/DietrichGebert/ponytail at commit 16f29800fd2681bdf24f3eb4ccffe38be3baec6b and its pinned skills/benchmarks",
+        "checked_at": "2026-07-18",
+        "evidence": "Current reuse/simplification ladder, overengineering-review limits, corrected agentic benchmark, and disclosed limitations."
+      },
+      {
+        "source": "https://github.com/DietrichGebert/ponytail/issues/126, /issues/236, and /pull/608",
+        "checked_at": "2026-07-18",
+        "evidence": "Inflated-baseline correction, independent benchmark with robustness losses on unstated edge cases, and open scope-before-simplicity hardening proposal."
+      },
+      {
+        "source": "https://wuwei.page/en/blog/ponytail-less-code-measured/ and https://github.com/DietrichGebert/ponytail/pull/592",
+        "checked_at": "2026-07-18",
+        "evidence": "Independent non-peer-reviewed reproduction found occasional missing persistence, types, tests, and guards; unmerged draft proposes invariant-owner root-cause fixes while preserving verification, recovery, cleanup, and affected callers. Both are critique evidence, not authority."
+      },
+      {
+        "source": "https://martinfowler.com/bliki/Yagni.html",
+        "checked_at": "2026-07-18",
+        "evidence": "YAGNI applies to presumptive capability complexity; refactoring, self-testing code, and continuous delivery are enabling practices."
+      },
+      {
+        "source": "Rust and Cargo official documentation plus cargo-deny, RustSec, Loom, Miri, cargo-hack, cargo-udeps, and cargo-mutants primary repositories",
+        "checked_at": "2026-07-18",
+        "evidence": "Workspace metadata, lint inheritance, Clippy limitations, deterministic locked builds, dependency policy, model/unsafe/feature/mutation check scopes and limitations."
+      },
+      {
+        "source": "systemd watchdog, Kubernetes probe, Prometheus absent-signal, and gRPC health primary documentation",
+        "checked_at": "2026-07-18",
+        "evidence": "Progress-sensitive liveness, startup/readiness separation, absent-data detection, and serving-state patterns without adopting their runtimes."
+      },
+      {
+        "source": "Hugging Face search, Civitai search, Reddit discussions, and X/Twitter search",
+        "checked_at": "2026-07-18",
+        "evidence": "Hugging Face returned adjacent agent-architecture material but no Ferric-specific or Ponytail-authoritative implementation; Civitai and X produced no relevant technical evidence; Reddit supplied lower-grade qualitative concerns about code golf, readability, and missed edge handling and was used only as critique corroboration."
+      }
+    ],
+    "patterns_found": [
+      "Coarse inward dependency rings plus machine-checkable Cargo metadata edges prevent premature crate topology and architecture drift.",
+      "YAGNI is safe only after scope proof and with refactoring, tests, CI, and explicit carve-outs for correctness and risk controls.",
+      "LOC reduction is not quality evidence and can reward omitted persistence, types, guards, or tests.",
+      "Watcher freshness has distinct runtime-progress, wire/schema, independent capability inventory, synthetic corpus, current-binary replay, cross-version, privacy, and paired-artifact contracts.",
+      "Current-binary replay is necessary but insufficient by itself; independent inventory and canonical/synthetic corpora prevent producer/watcher self-agreement from hiding omissions.",
+      "Established tools should provide narrow evidence while one governed wrapper preserves reproducible commands and reports."
+    ],
+    "reuse_opportunities": [
+      "Reuse the existing typed event, invariance, backpressure, termination, process-independence, task-packet, and review-gate authority rather than create a parallel quality system.",
+      "Reuse Cargo metadata and workspace lint inheritance for architecture and coding enforcement.",
+      "Reuse the v0.2.0 design verbatim as the preservation base and integrate review resolutions in place.",
+      "Reuse the diagnostic contract for both producer/watcher compile-time coverage and independent golden replay fixtures."
+    ],
+    "rejected_options": [
+      "Install or copy Ponytail wholesale as always-on project authority.",
+      "Use one-line, LOC, diff-size, file-count, or abstraction-count reduction as an acceptance target.",
+      "Ban every single-implementation trait, including current process/security/network/storage/test boundaries.",
+      "Freeze the v0.2.0 approximately thirty-crate workspace before contract and ownership evidence.",
+      "Treat cargo-deny, Clippy, audit, Miri, Loom, fuzzing, or tests as proof of absence of arbitrary defects.",
+      "Prove watcher freshness through timestamps, touch requirements, or process existence.",
+      "Make watcher acknowledgements part of Ferric correctness or success."
+    ],
+    "selected_approach": "Preservation-first v0.3.0 design with a Phase 0 bootstrap closure, coarse contracts/engine/adapters/composition rings, reusable facade and Handshake adapter, machine-readable Cargo architecture policy constrained by a separate exception allowlist, built-in repository-root Cargo verification commands, three-gate scope-before-simplicity YAGNI evidence, and a process-independent watcher proven through bounded degraded lifecycle, typed loop state, independent inventory, canonical/synthetic corpora, current-binary replay, paired artifacts, privacy checks, and fault tests.",
+    "risks": [
+      "The new design can look enforceable before the Cargo workspace, architecture checker, and watcher suite exist.",
+      "Strict linting can cause meaningless blanket exceptions or toolchain-update churn.",
+      "Shared producer/watcher protocol code can reproduce the same serialization bug on both sides.",
+      "YAGNI can be misused to narrow mandatory compatibility or reliability work.",
+      "The expanded v0.3.0 design may preserve prose while still missing one review finding."
+      ,"A bounded independent watcher cannot guarantee absolute crash evidence when every persistence path is unavailable."
+      ,"A product-owned architecture policy could self-authorize exceptions unless governance supplies a separate allowlist."
+    ],
+    "mitigations": [
+      "Mark every build gate REQUIRED_NOT_YET_IMPLEMENTED, authorize only the minimal Phase 0 bootstrap and bounded spikes needed to make them executable, and retain broad feature implementation as blocked.",
+      "Pin the toolchain, select restriction lints individually, require stable-ID exception reasons, and validate exception scope.",
+      "Keep independent golden bytes/schema validation and cross-version replay in addition to shared types.",
+      "Put scope/correctness/risk review before simplification and make non-negotiable carve-outs normative.",
+      "Validate all 47 SYN/AP/FCP/SR finding IDs against an explicit disposition table."
+      ,"Scope critical-event guarantees to post-admission healthy-storage writes, reserve critical capacity, expose residual gaps, and never block Ferric correctness."
+      ,"Require every architecture exception to cite the separate canonical build-rule allowlist and split graph, source, runtime, packaging, and artifact proof classes."
+    ],
+    "validation_plan": [
+      "Parse every changed YAML/JSON authority and state file.",
+      "Validate contiguous FF-BUILD IDs and registered FF-GATE IDs.",
+      "Validate frontmatter/topic structure, original top-level section preservation, core scope markers, and all 47 finding rows.",
+      "Validate authority routing, registry, topology, active packet, allowed paths, and AGENTS/CLAUDE identity.",
+      "Run independent design, watcher/enforcement, and Ponytail/YAGNI adversarial audits.",
+      "Run negative probes for false readiness, forbidden old authority paths, unimplemented gates, absolute paths, and watcher correctness coupling."
+    ]
+  },
+  "red_team": {
+    "attack_surfaces": [
+      "A review finding is summarized away instead of integrated or explicitly rejected",
+      "YAGNI is misused to delete required parity or reliability scope",
+      "Architecture rules exist only as prose and drift from code",
+      "The watcher still builds while no longer understanding current product events or failure modes",
+      "Coarse initial crates become an accidental monolith or premature fine-grained crates recreate the original topology risk",
+      "New design authority paths drift across bootstrap, Codex, topology, registry, and task state"
+    ],
+    "minimum_controls": [
+      "Machine-checkable review-finding traceability",
+      "Explicit scope-preservation and YAGNI applicability boundaries",
+      "Named executable conformance gates and exception policy",
+      "Watcher protocol handshake, coverage manifest, freshness tests, and release gate",
+      "Mechanically checked dependency directions plus evidence-based split criteria",
+      "Cross-file authority and ID invariant validation"
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-002-architecture-review-merge-v1-AC-001",
+    "WP-FF-002-architecture-review-merge-v1-AC-002",
+    "WP-FF-002-architecture-review-merge-v1-AC-003",
+    "WP-FF-002-architecture-review-merge-v1-AC-004",
+    "WP-FF-002-architecture-review-merge-v1-AC-005",
+    "WP-FF-002-architecture-review-merge-v1-AC-006",
+    "WP-FF-002-architecture-review-merge-v1-AC-007"
+  ],
+  "execution_decomposition": [
+    "Inspect and trace the complete v0.2.0 design and all peer reviews",
+    "Research Ponytail/YAGNI and current Rust architecture/watcher enforcement practices",
+    "Author v0.3.0 by preservation-first integration",
+    "Update canonical build rules and authority routing",
+    "Run structural, traceability, parse, invariant, and adversarial checks"
+  ]
+}

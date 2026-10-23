@@ -1,0 +1,46 @@
+{
+  "schema_id": "ff.compatibility-report@1",
+  "schema_version": "1.0.0",
+  "command": "compatibility-replay",
+  "status": "PASS",
+  "source": {
+    "git_commit": "ca6f41f28870a9a3ec355840487f1bf3e3fc8928",
+    "dirty": false,
+    "dirty_paths": []
+  },
+  "inputs": {
+    "build/fixtures/compatibility/corpus-v1/manifest.json": "1016c7836f3b0d6660105abf13a639376f457f51121f709c98a27b0b161f6c78",
+    "build/fixtures/compatibility/live-canaries-v1/manifest.json": "3808834a75c3d6f368618e740e2dbcac6fdab610b42396a39c7a8863b4522321",
+    "build/fixtures/compatibility/yt-dlp-2026.07.04/oracle-manifest.json": "b0f8a5ee045c7645966a37df60c133caeb3b863bfb068495431a0f9fbedd78ef",
+    "build/fixtures/compatibility/yt-dlp-2026.07.04/profile.json": "f64d65c1c24bece65a641d4e305710a9760de3367f7f7f83bbac5f67fb79f55c"
+  },
+  "checks": [
+    {
+      "id": "corpus-coverage",
+      "status": "PASS",
+      "detail": "7 deterministic cases cover all 7 mandatory planes with stable IDs and verified digests"
+    },
+    {
+      "id": "corpus-network-isolation",
+      "status": "PASS",
+      "detail": "every mandatory case declares deterministic=true and network_allowed=false"
+    },
+    {
+      "id": "offline-replay",
+      "status": "PASS",
+      "detail": "selected 7 sanitized deterministic cases; shard=None; network_access=false"
+    }
+  ],
+  "negative_fixtures": [],
+  "differential_rows": [],
+  "artifacts": [
+    "build/fixtures/compatibility/yt-dlp-2026.07.04/profile.json",
+    "build/fixtures/compatibility/corpus-v1/manifest.json",
+    "build/reports"
+  ],
+  "proof_limitations": [
+    "Corpus validation and report completeness do not prove Ferric feature parity.",
+    "Live canaries are opt-in nondeterministic observations and never satisfy offline deterministic acceptance.",
+    "The generated profile inventories pinned oracle surfaces; later compatibility rows remain missing features until implemented and compared."
+  ]
+}

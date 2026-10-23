@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "counterexample-not-public-boundary"
+mutation = "counterexample_not_public_boundary"
+expected_diagnostic = "FF-ARCH-E-DECLARATION-ONLY-PROOF"

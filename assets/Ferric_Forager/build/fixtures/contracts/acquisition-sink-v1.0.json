@@ -1,0 +1,1 @@
+{"source":{"kind":"direct_url","url":"https://example.invalid/video"},"sink":{"kind":"atomic_file","rooted_path":"outputs/video.bin"},"semantics":{"backpressure":"block_producer","seekable":true,"atomic":true,"postprocessing_requires_seekable_temporary":false,"expected_lifetime_seconds":3600}}

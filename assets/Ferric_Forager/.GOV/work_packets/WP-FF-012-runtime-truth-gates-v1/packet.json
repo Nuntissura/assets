@@ -1,0 +1,314 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-012-runtime-truth-gates-v1",
+    "base_wp_id": "WP-FF-012-runtime-truth-gates",
+    "version": "1",
+    "title": "Require production-runtime truth for product and phase completion",
+    "created_at_utc": "2026-07-19T15:00:31Z",
+    "updated_at_utc": "2026-07-19T16:02:42Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator requested rule changes preventing mockups, vibe coding, scaffolding, and test-satisfying substitutes from shipping or advancing phases without working runtime behavior, then explicitly authorized implementation.",
+    "recorded_at_utc": "2026-07-19T15:00:31Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#28-implementation-sequence",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#31-acceptance-criteria",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#f1-executable-enforcement"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "a5a6a3a78e3aefcbd463294bbbab5e4ec2f58728",
+    "work_branch": "codex/wp-ff-012-runtime-truth",
+    "worktree_policy": "ISOLATED_PARALLEL_DIRTY_WORK",
+    "worktree_id": "WP-FF-012-runtime-truth",
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": "75dbeb495694955f6a0ff786f7bcb47b73d5bbeb",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "142d0aad625713231f91381deb709e174b2865f7"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "Await Operator selection before activating any later work-packet stub.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Make operator-usable production runtime behavior the mandatory product-progress and phase-closure unit, and mechanically prevent mocks, scaffolds, prototypes, tests, or self-authored reports from substituting for the shipped artifact.",
+    "product_impact": "NONE",
+    "in_scope": [
+      "Revise and extend Codex authority with enforceable runtime-truth rules",
+      "Add matching build rules and work-packet requirements",
+      "Replace skeleton-only product phases with runtime vertical slices without narrowing final product scope",
+      "Implement a fail-closed runtime-truth gate and integrate it into canonical verification",
+      "Add negative fixtures and unit tests for test-only, mock, scaffold, no-op, missing-artifact, and missing-counterfactual bypasses",
+      "Update the rule-to-proof map, ID registry, taskboard, and no-context model manual",
+      "Run governance, architecture, Rust, negative-fixture, and canonical PR validation"
+    ],
+    "non_goals": [
+      "Implementing Ferric extraction, download, archive, watcher, or FFmpeg product behavior",
+      "Claiming any Ferric runtime capability is currently implemented",
+      "Forbidding mocks or deterministic fixtures as supporting unit-test tools",
+      "Deleting final product scope or the operator-facing plugin starter-generation capability",
+      "Changing the authorized Rust plus FFmpeg and ffprobe dependency boundary",
+      "Modifying WP-FF-004 remediation source or its uncommitted work"
+    ],
+    "allowed_paths": [
+      ".GOV/codex.yaml",
+      ".GOV/id-registry.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/topology.yaml",
+      ".GOV/work_packets/WP-FF-012-runtime-truth-gates-v1/packet.json",
+      ".GOV/work_packets/WP-FF-012-runtime-truth-gates-v1/refinement.json",
+      "build/rule-to-proof.toml",
+      "build/fixtures/architecture/",
+      "build/tools/fforager-xtask/src/main.rs",
+      "product/MODEL_MANUAL.md"
+    ],
+    "dependencies": [
+      "Existing Rust xtask and locked dependency set",
+      "Current three-root repository boundary and canonical verification gates",
+      "Cargo production profiles and process execution",
+      "No new runtime, native, test, or validator dependency"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-012-runtime-truth-gates-v1-AC-001",
+      "requirement": "Codex, build, and work-packet authority make operator-usable behavior from the shipped production entrypoint the only legal product-progress and phase-completion proof; tests, mocks, fixtures, reports, prototypes, and scaffolding are supporting evidence only.",
+      "proof_class": "authority_and_negative_fixture",
+      "status": "PASS",
+      "evidence": ["FF-CODEX-049 through FF-CODEX-059", "FF-BUILD-078 through FF-BUILD-088", "FF-WPR-041 through FF-WPR-049", "FF-GATE-RUNTIME-001 negative fixtures"]
+    },
+    {
+      "id": "WP-FF-012-runtime-truth-gates-v1-AC-002",
+      "requirement": "The implementation sequence no longer contains a completed skeleton-only product phase: build bootstrap is a non-product prerequisite, the first product phase is a complete direct-HTTP/HLS cross-boundary runtime slice, and later phase wording requires runnable vertical outcomes without dropping final scope.",
+      "proof_class": "design_anchor_review",
+      "status": "PASS",
+      "evidence": ["Technical design Section 28 now distinguishes non-product Prerequisite 0 from runtime product phases", "Phase 1 is the first complete shipped-entrypoint runtime slice", "Phase 9 requires generated plugin build, install, and production-host execution"]
+    },
+    {
+      "id": "WP-FF-012-runtime-truth-gates-v1-AC-003",
+      "requirement": "FF-GATE-RUNTIME-001 validates a strict versioned runtime-proof manifest, production artifact identity, clean staged execution contract, production boundary use, observables, negative paths, and counterfactual detection; product-affecting changes cannot convert absent runtime proof into PASS or NOT_APPLICABLE.",
+      "proof_class": "executable_gate",
+      "status": "PASS",
+      "evidence": ["build/tools/fforager-xtask/src/main.rs runtime_truth_check", "Exact activation-checkpoint proof binding", "Locked release build and artifact digest", "Repository-external clean stage and external-process execution", "Success, negative, and same-oracle counterfactual validation"]
+    },
+    {
+      "id": "WP-FF-012-runtime-truth-gates-v1-AC-004",
+      "requirement": "Executable negative fixtures prove rejection of mock/test-only proof, scaffold or prototype completion, no-op success, missing artifact identity, missing clean-package execution, and absent counterfactual evidence.",
+      "proof_class": "negative_fixture",
+      "status": "PASS",
+      "evidence": ["Eight runtime-* architecture fixtures execute the production contract validator", "34 Rust tests include proof predeclaration, stage aliases, unsafe paths, base rewrite, mock/test-only, no-op, and counterfactual probes"]
+    },
+    {
+      "id": "WP-FF-012-runtime-truth-gates-v1-AC-005",
+      "requirement": "Formatting, warnings-denied Clippy, full Rust tests, architecture-check, verify-pr, governance parsing, ID registry, authority mirror, allowed-path diff, and adversarial post-change review pass without claiming current Ferric runtime behavior.",
+      "proof_class": "aggregate_validation",
+      "status": "PASS",
+      "evidence": ["cargo fmt --check PASS", "warnings-denied cargo clippy PASS", "34 Rust tests PASS", "FF-GATE-ARCH-001 PASS", "FF-GATE-RUNTIME-001 governance-only PASS with explicit no-product ceiling", "Canonical verify-pr, governance, mirror, registry, and containment evidence is recorded before VALIDATED closure"]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-19T16:02:42Z",
+      "branch": "codex/wp-ff-012-runtime-truth",
+      "base_sha": "a5a6a3a78e3aefcbd463294bbbab5e4ec2f58728",
+      "head_sha": "142d0aad625713231f91381deb709e174b2865f7",
+      "dirty_paths": [],
+      "checks_run": [
+        "Read START_HERE.yaml, AGENTS.md, .GOV/codex.yaml, taskboard, active WP-FF-004 packet, topology, build rules, work-packet requirements/template, design phase anchors, readiness matrix, verifier implementation, and ID registry",
+        "Verified AGENTS.md and CLAUDE.md are byte-identical",
+        "Inspected current branch, HEAD, merge-base, dirty paths, and worktrees",
+        "Created isolated locked worktree from committed WP-FF-004 activation without copying its dirty remediation work",
+        "Checked current Rust, Cargo, Google engineering, GitHub artifact provenance, SLSA, and field Rust CLI sources",
+        "Implemented runtime-truth authority and phase rewrite",
+        "Implemented strict packet applicability, activation proof binding, artifact identity, repository-external staging, external execution, observables, negative scenarios, and counterfactual validation",
+        "Ran warnings-denied Clippy and 32-test suites before the final two boundary tests were added",
+        "Ran FF-GATE-ARCH-001 with eight runtime negative fixtures",
+        "Ran FF-GATE-RUNTIME-001 and inspected policy-only proof classes and explicit no-product limitation",
+        "Performed independent adversarial review and closed base rewrite, shipping-policy downgrade, stage collision, symlink, path alias, in-repository staging, and output-containment bypasses",
+        "Ran final warnings-denied Clippy and 34 Rust tests",
+        "Ran canonical FF-GATE-PR-001 and inspected its generated report",
+        "Parsed changed JSON, checked allowed paths, registry ranges, authority mirror, and git diff whitespace"
+      ],
+      "blockers": [],
+      "next_action": "Commit the validated containment record and clear canonical active focus."
+    }
+  },
+  "validation": {
+    "checks": [
+      "PASS: cargo fmt --manifest-path build/Cargo.toml --all -- --check",
+      "PASS: cargo clippy --manifest-path build/Cargo.toml --locked --workspace --all-targets -- -D warnings",
+      "PASS: cargo test --manifest-path build/Cargo.toml --locked --workspace with 34 tests",
+      "PASS: FF-GATE-ARCH-001 with eight runtime negative fixtures",
+      "PASS: FF-GATE-RUNTIME-001 governance-only path with policy and negative-fixture proof classes",
+      "PASS: FF-GATE-PR-001 canonical aggregate validation; clean report build/reports/verify-pr-1784476660642163000-656176.json is bound to commit 75dbeb495694955f6a0ff786f7bcb47b73d5bbeb with dirty=false and 29 checks",
+      "PASS: changed JSON parse, allowed-path diff, ID registry, AGENTS/CLAUDE mirror, and git diff --check",
+      "PASS: closure commit 75dbeb495694955f6a0ff786f7bcb47b73d5bbeb and MERGE_PENDING evidence commit 4b7fec613a2d5de0d1136ed847cc0021a90a8b52 are ancestors of main merge 142d0aad625713231f91381deb709e174b2865f7",
+      "PASS: post-merge formatting, warnings-denied Clippy, all 49 integrated tests, FF-GATE-ARCH-001, and FF-GATE-RUNTIME-001"
+    ],
+    "not_proven": [
+      "Any Ferric product runtime capability",
+      "A packaged Ferric binary, because no shipped product member exists yet",
+      "Cross-platform runtime behavior",
+      "Release readiness or yt-dlp replacement parity"
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-012-runtime-truth-gates-v1/refinement.json",
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-036", "FF-BUILD-037", "FF-BUILD-038", "FF-BUILD-039", "FF-BUILD-040", "FF-BUILD-041", "FF-BUILD-042", "FF-BUILD-043", "FF-BUILD-044", "FF-BUILD-045", "FF-BUILD-046", "FF-BUILD-077",
+        "FF-BUILD-078", "FF-BUILD-079", "FF-BUILD-080", "FF-BUILD-081", "FF-BUILD-082", "FF-BUILD-083", "FF-BUILD-084", "FF-BUILD-085", "FF-BUILD-086", "FF-BUILD-087", "FF-BUILD-088"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-012-runtime-truth-gates-v1-AC-001",
+        "WP-FF-012-runtime-truth-gates-v1-AC-002",
+        "WP-FF-012-runtime-truth-gates-v1-AC-003",
+        "WP-FF-012-runtime-truth-gates-v1-AC-004",
+        "WP-FF-012-runtime-truth-gates-v1-AC-005"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Product progress and phase closure require operator-usable behavior from the exact shipped artifact",
+          "Tests, mocks, reports, prototypes, and scaffolding remain supporting evidence only",
+          "Every product packet predeclares success, negative, and counterfactual runtime proof",
+          "Missing runtime proof fails closed instead of becoming PASS or NOT_APPLICABLE"
+        ],
+        "risk_cases": [
+          "A packet rewrites its base SHA or adds runtime proof after implementation to hide unproven product work",
+          "A shipping-policy change reclassifies a product member and escapes product-impact detection",
+          "A staged input overwrites the binary or an expected output aliases an input or gate receipt",
+          "A mock, test-only adapter, no-op exit zero, or fabricated observable is offered as product completion",
+          "A symlink or unsafe path escapes the clean stage or fixture ownership boundary"
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {"candidate": "no mechanism beyond the accepted outcome", "result": "Rejected because current authority and verifier explicitly permit skeleton-only PASS."},
+        {"candidate": "reuse current Ferric code", "result": "Selected for the existing xtask process runner, reports, active-packet resolver, policy parser, and negative-fixture framework."},
+        {"candidate": "Rust core/std", "result": "Selected for strict Serde validation already present, hashing, filesystem staging, process execution, and bounded checks."},
+        {"candidate": "approved platform capability", "result": "Selected for Cargo production builds, Git source identity, filesystem isolation, and required FFmpeg/ffprobe preflight when scenarios activate them."},
+        {"candidate": "already-approved dependency", "result": "Existing serde, serde_json, sha2, and toml dependencies cover the gate; no addition is justified."},
+        {"candidate": "smallest complete clear implementation", "result": "Selected as strict manifest validation plus canonical gate integration and mutation fixtures, without a new product crate."}
+      ],
+      "artifact_specific_justification": {
+        "codex_rules": "Define the canonical prohibition and completion truth.",
+        "build_rules": "Translate the authority into executable proof obligations.",
+        "packet_contract": "Require runtime scenarios before product implementation and closure.",
+        "technical_design": "Remove skeleton-only phase completion from the product sequence.",
+        "xtask": "Fail closed when product changes omit or fake production runtime evidence.",
+        "negative_fixtures": "Prove the validator rejects the named regression paths.",
+        "model_manual": "Tell no-context models how runtime truth is established and recovered."
+      },
+      "pre_simplification_verdict": "PASS: the original authority and verifier were proven insufficient because skeleton phases and governance-only PASS could coexist with no shipped Ferric runtime artifact.",
+      "simplification_changes": [
+        "Replaced subjective anti-vibe language with exact shipped-entrypoint, artifact-identity, observable, negative-path, and counterfactual invariants.",
+        "Kept one runtime-proof schema and one canonical runtime gate instead of adding parallel completion systems.",
+        "Generalized artifact justification validation instead of preserving a WP-FF-003-specific key list.",
+        "Merged skeleton product stages into non-product prerequisites and the first complete runtime slice without deleting final scope."
+      ],
+      "post_simplification_verdict": "PASS: the resulting contract has one fail-closed applicability path, one strict runtime manifest, and direct negative probes for every operator-named substitute class.",
+      "complete_post_change_verification": [
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check",
+        "cargo clippy --manifest-path build/Cargo.toml --locked --workspace --all-targets -- -D warnings",
+        "cargo test --manifest-path build/Cargo.toml --locked --workspace",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "Parse every changed JSON and canonical YAML authority surface",
+        "Verify AGENTS.md and CLAUDE.md remain byte-identical",
+        "Verify ID registry ranges and the allowed-path diff",
+        "Inspect the generated runtime report for policy-only proof classes and explicit no-product limitations",
+        "Run git diff --check and prove closure commit containment in main"
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-012-runtime-truth-gates-v1-CEILING-001",
+        "current_ceiling": "The gate can enforce proof structure and reject bypasses now, but no Ferric production artifact exists to execute.",
+        "replacement_trigger": "The first shipped product member or product-affecting packet activates mandatory packaged-artifact execution.",
+        "likely_upgrade_path": "Add versioned runtime scenarios per capability and execute the exact staged release artifact through the same manifest contract.",
+        "trigger_detection_method": "Architecture member inventory, packet product-impact declaration, changed-path classification, and runtime-proof manifest presence fail closed.",
+        "linked_evidence": [
+          ".GOV/rules/build-rules.yaml",
+          "build/tools/fforager-xtask/src/main.rs",
+          "build/rule-to-proof.toml",
+          ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml"
+        ]
+      },
+      "independent_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "Product-impact classification and packet-controlled base SHA",
+          "Activation-time runtime-proof declaration",
+          "Cargo package, binary, profile, features, and shipped-member identity",
+          "Artifact copy, digest binding, repository-external stage, and input/output paths",
+          "Process environment, timeout, exit status, stdout, stderr, files, and counterfactual oracle",
+          "Phase and completion wording across Codex, build, packet, design, and model-manual surfaces"
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "Read the implementation diff independently after the first green test run",
+          "Compared changed-path classification against both current and base shipping policy",
+          "Inspected stage construction, artifact rehash, fixture canonicalization, symlink handling, output containment, and receipt collisions",
+          "Inspected the emitted runtime report rather than relying on the command PASS line",
+          "Searched authority and design text for surviving skeleton, scaffold, mock, and NOT_APPLICABLE completion paths"
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "The same observable validator rejects a success observation after the required stdout token is removed",
+          "The contract rejects a success scenario with no non-exit observable",
+          "The contract rejects a success scenario with no counterfactual"
+        ],
+        "BOUNDARY_PROBES": [
+          "Activation base rewrite is rejected against committed packet history",
+          "Runtime proof rewritten after activation is rejected by exact structural comparison",
+          "Shipping policy, lockfile, manifest, and toolchain changes become product-affecting once either base or current policy has a shipped member",
+          "Case-insensitive binary aliases, duplicate paths, unsafe segments, symlink inputs, and repository-contained stages are rejected"
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "cfg(test) or test-only compilation",
+          "mock production boundary",
+          "scaffold completion claim",
+          "no-op exit-zero success",
+          "missing artifact identity",
+          "workspace rather than clean-stage execution",
+          "missing counterfactual",
+          "input collision with the staged binary"
+        ],
+        "INDEPENDENT_FINDINGS": [
+          "Closed: packet base SHA could be rewritten to hide product changes.",
+          "Closed: removing the last shipped-member declaration could disable packaging-impact classification.",
+          "Closed: staged inputs could overwrite the verified artifact or gate receipts.",
+          "Closed: the clean stage originally lived under build/target and therefore remained inside the repository.",
+          "Closed: symlink and path aliases could weaken fixture ownership or output containment.",
+          "Closed: governance-only reports originally overstated artifact and external-process proof classes."
+        ],
+        "RESIDUAL_UNCERTAINTY": [
+          "No shipped Ferric member exists, so the production build-and-execute branch is compiled and structurally tested but cannot yet receive end-to-end runtime proof.",
+          "The gate executes outside the repository with stripped build variables but is not an operating-system security sandbox; code review and architecture checks still guard deliberate absolute filesystem or undeclared network access.",
+          "Declared production-boundary IDs cannot alone prove internal adapter selection; capability-specific observables, diagnostics, and protocol receipts must bind that claim in each future runtime scenario.",
+          "Timeout handling kills and reaps the direct child; descendant-process cleanup remains a required product-specific process-lifecycle proof when Ferric begins spawning external tools."
+        ]
+      }
+    }
+  }
+}

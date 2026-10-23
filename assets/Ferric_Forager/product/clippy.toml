@@ -1,0 +1,10 @@
+disallowed-types = [
+  { path = "std::process::Command", reason = "Phase 0 product code has no reviewed process supervisor." },
+]
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "Process construction requires a future typed FFmpeg/ffprobe boundary." },
+]
+disallowed-macros = [
+  { path = "core::include_bytes", reason = "Product code must not embed documentation or research assets." },
+  { path = "core::include_str", reason = "Product code must not embed documentation or research assets." },
+]

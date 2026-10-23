@@ -1,0 +1,110 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-014-durable-wire-proof-remediation-v3-REFINEMENT-001",
+  "wp_id": "WP-FF-014-durable-wire-proof-remediation-v3",
+  "updated_at_utc": "2026-07-26T15:50:10Z",
+  "operator_request": "Remediate every reported spot-check finding, then commit, push, and provide an overview of remaining work.",
+  "basis": {
+    "research_status": "REUSED_COMPLETED_PROJECT_RESEARCH_AND_PRIOR_WP014_PROOF",
+    "research_reopen_triggers": [
+      "The Operator explicitly requests new research.",
+      "The locked Serde behavior, Rust toolchain, dependency set, or architecture harness assumption is proven stale.",
+      "A decision lacks evidence in the design, WP-005, WP-013, archived WP-014 revisions, current source, or reproduced behavior."
+    ],
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#232-journal-model",
+      ".GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json",
+      ".GOV/work_packets/WP-FF-013-proof-integrity-remediation-v2/packet.json",
+      ".GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/"
+    ],
+    "existing_research_sources": [
+      "WP-013 current Rust and Serde implementation research",
+      "WP-005 versioned durable-contract basis",
+      "Current storage, testkit, architecture mapping, and gate implementation",
+      "Direct public deserialization reproductions and prior WP-014 test and gate reports"
+    ],
+    "selected_approach": [
+      "Preserve the implemented Serde and validation remediation.",
+      "Preserve three distinct public-boundary mutation fixtures.",
+      "Archive invalid packet revisions with their diagnostics.",
+      "Start v3 with a safe immutable prerequisite object and rerun canonical checks."
+    ],
+    "rejected_options": [
+      "Rewriting activation history.",
+      "Backfilling or mutating the prerequisite object after activation.",
+      "Discarding verified contract work.",
+      "Adding dependencies or changing valid wire shape."
+    ],
+    "reuse_opportunities": [
+      "Reuse every prior WP-014 code change, test, fixture, and report.",
+      "Reuse the WP-013 supersession and prerequisite wording patterns.",
+      "Reuse the truth gate's activation comparison as the independent packet check."
+    ],
+    "validation_plan": "Commit v3 with its prerequisite object present and unchanged, run prerequisite and PR checks, inspect the full base-to-head diff and exact boundary reports independently, record findings and residual uncertainty, then execute closure and main-containment proof."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "The locked dependency and toolchain basis remains current.",
+      "The established journal JSON shape is authoritative.",
+      "No Ferric archive/journal entrypoint exists.",
+      "Prior WP-014 implementation commits remain within v3 base-to-head scope."
+    ],
+    "non_goals": [
+      "Changing valid durable-wire tags or fields.",
+      "Broad schema redesign.",
+      "Creating an entrypoint or advancing product state.",
+      "Erasing prior packet diagnostics."
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-014-durable-wire-proof-remediation-v3-AC-001",
+    "WP-FF-014-durable-wire-proof-remediation-v3-AC-002",
+    "WP-FF-014-durable-wire-proof-remediation-v3-AC-003",
+    "WP-FF-014-durable-wire-proof-remediation-v3-AC-004",
+    "WP-FF-014-durable-wire-proof-remediation-v3-AC-005"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "nested_tagged_enum_unknown_field",
+      "reconcile_variant_unknown_field",
+      "full_record_sequence_zero",
+      "constructed_record_bypass",
+      "valid_wire_shape_regression",
+      "non_behavioral_fixture",
+      "masked_guard_failure",
+      "late_or_mutated_prerequisite_declaration"
+    ],
+    "minimum_controls": [
+      "Invalid cases cross public serde_json boundaries.",
+      "Canonical records round-trip to equal JSON.",
+      "Constructed records expose validation.",
+      "Each guard has a distinct isolated mutation.",
+      "The architecture gate executes all mapped fixtures.",
+      "The prerequisite object is verified against the first v3 commit."
+    ],
+    "plausible_failures": [
+      "Undeclared variant data is ignored.",
+      "Sequence zero breaks ordering.",
+      "A guard disappears without a gate failure.",
+      "A mutation runs zero tests or fails elsewhere.",
+      "Strictness breaks valid records.",
+      "Packet prose or object drift creates a false prerequisite claim."
+    ]
+  },
+  "execution_decomposition": [
+    "Commit the v3 checkpoint.",
+    "Run prerequisite and PR checks.",
+    "Perform independent adversarial review and record evidence.",
+    "Commit closure, merge, prove containment, push, and report remaining work."
+  ]
+}

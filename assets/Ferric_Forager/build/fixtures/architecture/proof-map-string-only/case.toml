@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "proof-map-string-only"
+mutation = "proof_map_string_only"
+expected_diagnostic = "FF-ARCH-E-INVENTORY-PROOF-UNRESOLVED"

@@ -1,0 +1,108 @@
+schema_id: ff.taskboard@2
+file_id: FF-GOV-TASKBOARD-001
+updated_at: "2026-10-21"
+authority: canonical_index
+project_id: FF-PROJ-001
+packet_root: .GOV/work_packets/
+archive_root: .GOV/archive/work_packets/
+status_model:
+  - STUB
+  - READY_FOR_DEV
+  - IN_PROGRESS
+  - BLOCKED
+  - MERGE_PENDING
+  - VALIDATED
+  - FAIL
+  - OUTDATED_ONLY
+  - ABANDONED
+  - SUPERSEDED
+profile_model: [TRACKED, EXPANDED]
+rules:
+  - id: FF-TASKBOARD-RULE-001
+    statement: Every indexed work packet has one stable wp_id and one packet path.
+  - id: FF-TASKBOARD-RULE-002
+    statement: At most one non-superseded packet revision may be active for a base_wp_id.
+  - id: FF-TASKBOARD-RULE-003
+    statement: STUB is planning state and does not authorize product implementation.
+  - id: FF-TASKBOARD-RULE-004
+    statement: The taskboard stores only the packet index and active focus; packet.json is authoritative for lifecycle, branch, scope, acceptance, blockers, proof, and next action.
+  - id: FF-TASKBOARD-RULE-005
+    statement: MERGE_PENDING means acceptance passed but the approved closure is not yet proven contained in main.
+  - id: FF-TASKBOARD-RULE-006
+    statement: VALIDATED requires the approved closure commit to be mechanically verified as contained in main.
+  - id: FF-TASKBOARD-RULE-007
+    statement: Do not maintain derived counts, copied packet fields, or Markdown task-state projections.
+  - id: FF-TASKBOARD-RULE-008
+    statement: Superseded packet history is archived and never deleted.
+current_focus:
+  statement: No work packet selected.
+  active_wp_id: null
+work_packets:
+  - wp_id: WP-FF-001-governance-workflow-v1
+    packet: .GOV/work_packets/WP-FF-001-governance-workflow-v1/packet.json
+  - wp_id: WP-FF-002-architecture-review-merge-v1
+    packet: .GOV/work_packets/WP-FF-002-architecture-review-merge-v1/packet.json
+  - wp_id: WP-FF-003-executable-gate-bootstrap-v1
+    packet: .GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/packet.json
+  - wp_id: WP-FF-003-executable-gate-bootstrap-v2
+    packet: .GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json
+  - wp_id: WP-FF-004-compatibility-inventory-corpus-v1
+    packet: .GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/packet.json
+  - wp_id: WP-FF-004-compatibility-inventory-corpus-v2
+    packet: .GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json
+  - wp_id: WP-FF-005-versioned-core-contracts-v1
+    packet: .GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json
+  - wp_id: WP-FF-006-rust-youtube-challenge-spike-v1
+    packet: .GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/packet.json
+  - wp_id: WP-FF-007-transport-fingerprint-spike-v1
+    packet: .GOV/archive/work_packets/WP-FF-007-transport-fingerprint-spike/WP-FF-007-transport-fingerprint-spike-v1/packet.json
+  - wp_id: WP-FF-007-transport-fingerprint-spike-v2
+    packet: .GOV/work_packets/WP-FF-007-transport-fingerprint-spike-v2/packet.json
+  - wp_id: WP-FF-008-archive-store-evidence-v1
+    packet: .GOV/archive/work_packets/WP-FF-008-archive-store-evidence/WP-FF-008-archive-store-evidence-v1/packet.json
+  - wp_id: WP-FF-008-archive-store-evidence-v2
+    packet: .GOV/work_packets/WP-FF-008-archive-store-evidence-v2/packet.json
+  - wp_id: WP-FF-009-resource-durability-models-v1
+    packet: .GOV/archive/work_packets/WP-FF-009-resource-durability-models/WP-FF-009-resource-durability-models-v1/packet.json
+  - wp_id: WP-FF-009-resource-durability-models-v2
+    packet: .GOV/work_packets/WP-FF-009-resource-durability-models-v2/packet.json
+  - wp_id: WP-FF-010-ffmpeg-supervision-spike-v1
+    packet: .GOV/work_packets/WP-FF-010-ffmpeg-supervision-spike-v1/packet.json
+  - wp_id: WP-FF-011-equivalent-work-vertical-slice-v1
+    packet: .GOV/work_packets/WP-FF-011-equivalent-work-vertical-slice-v1/packet.json
+  - wp_id: WP-FF-012-runtime-truth-gates-v1
+    packet: .GOV/work_packets/WP-FF-012-runtime-truth-gates-v1/packet.json
+  - wp_id: WP-FF-013-proof-integrity-remediation-v1
+    packet: .GOV/archive/work_packets/WP-FF-013-proof-integrity-remediation/WP-FF-013-proof-integrity-remediation-v1/packet.json
+  - wp_id: WP-FF-013-proof-integrity-remediation-v2
+    packet: .GOV/work_packets/WP-FF-013-proof-integrity-remediation-v2/packet.json
+  - wp_id: WP-FF-014-durable-wire-proof-remediation-v1
+    packet: .GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/WP-FF-014-durable-wire-proof-remediation-v1/packet.json
+  - wp_id: WP-FF-014-durable-wire-proof-remediation-v2
+    packet: .GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/WP-FF-014-durable-wire-proof-remediation-v2/packet.json
+  - wp_id: WP-FF-014-durable-wire-proof-remediation-v3
+    packet: .GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/packet.json
+  - wp_id: WP-FF-015-wreq-transport-adjudication-v1
+    packet: .GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/packet.json
+  - wp_id: WP-FF-016-no-api-key-guard-v1
+    packet: .GOV/work_packets/WP-FF-016-no-api-key-guard-v1/packet.json
+  - wp_id: WP-FF-017-ordinary-transport-decision-v1
+    packet: .GOV/work_packets/WP-FF-017-ordinary-transport-decision-v1/packet.json
+  - wp_id: WP-FF-018-governance-state-wording-fix-v1
+    packet: .GOV/work_packets/WP-FF-018-governance-state-wording-fix-v1/packet.json
+  - wp_id: WP-FF-019-ferforstart-session-bootstrap-v1
+    packet: .GOV/work_packets/WP-FF-019-ferforstart-session-bootstrap-v1/packet.json
+  - wp_id: WP-FF-020-equivalent-work-benchmark-design-v1
+    packet: .GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json
+  - wp_id: WP-FF-021-first-runnable-production-slice-v1
+    packet: .GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json
+  - wp_id: WP-FF-022-prerequisite-classifier-remediation-v1
+    packet: .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json
+  - wp_id: WP-FF-022-prerequisite-classifier-remediation-v2
+    packet: .GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json
+  - wp_id: WP-FF-023-dependency-security-remediation-v1
+    packet: .GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json
+  - wp_id: WP-FF-024-predecessor-state-reconciliation-v1
+    packet: .GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json
+  - wp_id: WP-FF-024-predecessor-state-reconciliation-v2
+    packet: .GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v2/packet.json

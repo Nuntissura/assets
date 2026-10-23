@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "nondeterministic-offline-classification",
+  "mutation": "nondeterministic_classification_for_offline_case",
+  "expected_diagnostic": "FF-COMP-E-CLASSIFICATION: deterministic case cannot be nondeterministic_response"
+}

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "unstable-id",
+  "mutation": "unstable_option_id",
+  "expected_diagnostic": "FF-COMP-E-UNSTABLE-ID: Option Has Spaces"
+}

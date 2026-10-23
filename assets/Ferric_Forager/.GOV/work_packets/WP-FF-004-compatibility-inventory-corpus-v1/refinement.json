@@ -1,0 +1,207 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-004-compatibility-inventory-corpus-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-004-compatibility-inventory-corpus-v1",
+  "updated_at_utc": "2026-07-19T12:49:08Z",
+  "operator_request": "Proceed and activate WP-FF-004 after WP-FF-003 v2 was implemented, validated, and hardened.",
+  "basis": {
+    "research_status": "CURRENT_PRIMARY_AND_FIELD_SOURCES_CHECKED",
+    "activation_basis": "The project design and readiness matrix require a generated pinned yt-dlp compatibility profile and executable mandatory oracle corpus. Validated WP-FF-003 v2 supplies the fail-closed xtask, report, policy, negative-fixture, and bounded-process foundation that WP-FF-004 must reuse.",
+    "authority_checked": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#71-baseline-release",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#202-compatibility-objective",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#204-compatibility-report",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#262-differential-test-harness",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#263-recorded-network-fixtures",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0a--compatibility-inventory-and-executable-oracle",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#296-reference-project-comparison-policy",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#316-compatibility",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#SYN-002",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#SYN-009",
+      ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json"
+    ],
+    "sources_checked": [
+      {
+        "source": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.07.04",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Official immutable release published 2026-07-04T22:41:44Z; release tag commit fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9."
+      },
+      {
+        "source": "https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/2026.07.04",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Official asset metadata records yt-dlp.exe size 18226085 and SHA-256 52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8; SHA2-256SUMS SHA-256 eca42575010efc77b8dc1e263c57e19c4bddc42d3e08ba789ccde72c97d48c64."
+      },
+      {
+        "source": "https://github.com/yt-dlp/yt-dlp/tree/2026.07.04",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Cloned the exact tag and inspected yt_dlp/version.py, options.py, __init__.py, extractor/_extractors.py, extractor/__init__.py, devscripts/make_lazy_extractors.py, and tests; version.py records release source head 997fa140840a08df3938b40da470c78049fef1f6."
+      },
+      {
+        "source": "https://github.com/yt-dlp/yt-dlp/issues",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Current issue and release history confirms mutable site behavior, extractor breakage, sanitization defects, and security-sensitive output behavior; live results cannot be deterministic acceptance proof."
+      },
+      {
+        "source": "https://wiremock.org/docs/record-playback/",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Record/replay systems select explicit request match fields, treat repeated responses as ordered scenarios when needed, and transform captures before persistence."
+      },
+      {
+        "source": "https://vcrpy.readthedocs.io/en/latest/advanced.html",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Committed cassettes require pre-persistence filtering of headers, query parameters, post data, requests, and responses."
+      },
+      {
+        "source": "https://docs.mitmproxy.org/stable/concepts/options/",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Saved-flow and replay matching are explicit policy surfaces; capture filters and replay match headers must be declared rather than inferred."
+      },
+      {
+        "source": "https://github.com/web-platform-tests/wpt",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Large compatibility suites use generated manifests plus linting and stable cross-implementation tests rather than a prose-only compatibility claim."
+      },
+      {
+        "source": "https://playwright.dev/docs/test-sharding",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Parallel shards emit distinct reports that are merged only after every shard completes; shard identity prevents report collisions."
+      },
+      {
+        "source": "https://reproducible-builds.org/specs/source-date-epoch/",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Clock input must be explicit or normalized to a fixed source epoch for reproducible generation."
+      },
+      {
+        "source": "https://slsa.dev/spec/v1.0/provenance",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Artifact provenance should bind external parameters and cryptographic digests to reproducible generation instructions."
+      },
+      {
+        "source": "https://www.cs.tufts.edu/comp/150FP/archive/bill-mckeeman/DifferentailTesting.pdf",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Differential testing compares independent implementations and treats mismatches as test candidates requiring classification; agreement is not a proof of total correctness."
+      },
+      {
+        "source": "https://www.usenix.org/conference/nsdi19/presentation/li-yuliang",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Deterministic replay requires capturing each interaction that can produce divergent behavior instead of assuming network timing is reproducible."
+      },
+      {
+        "source": "https://www.reddit.com/r/youtubedl/comments/1unmgsk/ytdlp_release_20260704/",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "Community release discussion reinforces that stable releases remain exposed to later site changes; no community claim was adopted as oracle authority."
+      },
+      {
+        "source": "Hugging Face, Civitai, and X/Twitter searches for yt-dlp deterministic compatibility corpora",
+        "checked_at_utc": "2026-07-19T12:49:08Z",
+        "evidence": "No relevant source-level compatibility-oracle implementation was found on Civitai or X; Hugging Face results were downstream media/data pipelines and were rejected as compatibility proof."
+      }
+    ],
+    "inspected_implementation_evidence": [
+      "The official executable emitted 895 help lines containing 277 unique long-option spellings.",
+      "The official executable emitted 1752 extractor rows, 1751 unique strings, and a duplicated generic row at positions 479 and 1752; normalization must collapse identical raw duplicates while recording their occurrence count.",
+      "The official executable emitted 1595 extractor-description rows.",
+      "yt_dlp/options.py defines five pinned preset aliases and uses callback-driven aliases, configuration parsing, defaults, and compatibility interactions that are not fully represented by a flat help-option count.",
+      "devscripts/make_lazy_extractors.py records static URL-matching and description properties, confirming extractor URL classes are generated runtime metadata rather than a filename inventory.",
+      "A live official YouTube test URL produced mutable anti-bot failure on 2026-07-19, proving live canaries must remain mechanically distinct from deterministic corpus proof."
+    ],
+    "field_patterns": [
+      "Pin source, executable, checksum-manifest, release metadata, and generator-input digests together.",
+      "Generate a canonical manifest from independent oracle surfaces and cross-check counts rather than trusting one surface.",
+      "Normalize clock, randomness, paths, host identity, headers, query values, and secrets before persistence.",
+      "Keep offline deterministic replay and opt-in live canaries as different suites, commands, and report classifications.",
+      "Use stable case IDs for deterministic sharding and reject overlap, gaps, and mixed corpus versions during merge.",
+      "Classify every differential row explicitly; missing candidate output is a missing feature, never an omitted PASS."
+    ],
+    "reuse_opportunities": [
+      "Reuse WP-FF-003 v2 bounded process capture, SHA-256 implementation, atomic JSON report writer, stable diagnostics, source-state evidence, and negative-fixture execution path.",
+      "Reuse the existing serde/serde_json stack and avoid new dependencies or a Python helper.",
+      "Reuse the taskboard-selected active packet and report input collection for attribution and recovery."
+    ],
+    "selected_approach": [
+      "Generate a versioned compatibility profile from the exact pinned yt-dlp 2026.07.04 source and executable oracle.",
+      "Keep native Ferric semantics separate from yt-dlp compatibility-profile semantics.",
+      "Build deterministic offline oracle planes and mechanically separate opt-in live canaries.",
+      "Implement generation, validation, and reporting through the validated WP-FF-003 v2 fforager-xtask and report protocol."
+    ],
+    "rejected_options": [
+      "A moving yt-dlp baseline, because regeneration would silently redefine expected behavior.",
+      "Live network responses as deterministic proof, because mutable external state cannot provide reproducible acceptance evidence.",
+      "Production Python or yt-dlp execution, because the authorized runtime is native Rust with supervised FFmpeg and ffprobe only.",
+      "A hand-curated inventory without completeness checks, because omissions would make compatibility claims non-enumerable and capable of false PASS."
+    ],
+    "research_completed_before_product_implementation": [
+      "Verified the immutable official release, exact tag and source identities, checksum manifest, Windows executable digest, and source input hashes.",
+      "Inspected pinned option, preset, compatibility, extractor-registration, URL-matching, help, description, and test surfaces.",
+      "Compared field-tested inventory, cassette sanitization, deterministic replay, reproducible generation, provenance, differential testing, and report-sharding patterns.",
+      "Selected a Rust-only non-shipped generator/validator that consumes separately obtained pinned oracle inputs and commits only normalized derived manifests and sanitized deterministic fixtures."
+    ],
+    "validation_plan": "Require deterministic regeneration, schema and stable-ID checks, independent completeness counts, missing/duplicate/change mutation probes, secret/path/clock/random/network negative probes, offline differential replay, distinct live-canary reporting, FF-GATE-ARCH-001, FF-GATE-PR-001, and independent adversarial closure review."
+  },
+  "scope_edges": {
+    "preserve": [
+      "The complete compatibility, extractor, protocol, metadata, archive, collection, sink, and diagnostic scope in the current technical design.",
+      "The Rust-only production boundary and supervised FFmpeg/ffprobe exception.",
+      "WP-FF-003 v2 fail-closed architecture, tooling, reporting, negative-fixture, and recovery conventions."
+    ],
+    "change": [
+      "Add the Phase 0A generated yt-dlp 2026.07.04 compatibility profile.",
+      "Add versioned deterministic oracle manifests, fixtures, validation, and differential reports.",
+      "Add no-context generation, offline replay, opt-in live-canary, sanitization, and recovery instructions."
+    ],
+    "assumptions_to_verify": [
+      "The exact pinned yt-dlp 2026.07.04 source and executable artifacts remain obtainable and independently identifiable.",
+      "WP-FF-003 v2 paths and report schemas can be extended without introducing a parallel validation framework.",
+      "Mandatory deterministic fixtures can be sanitized and redistributed without retaining credentials or machine-local state."
+    ],
+    "non_goals": [
+      "Ferric extractor, transport fingerprint, JavaScript execution, archive-store, or broad CLI implementation.",
+      "Production invocation of Python or yt-dlp.",
+      "A full replacement-parity claim from corpus construction alone.",
+      "Treating opt-in live canaries as deterministic closure evidence."
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-004-compatibility-inventory-corpus-v1-AC-001",
+    "WP-FF-004-compatibility-inventory-corpus-v1-AC-002",
+    "WP-FF-004-compatibility-inventory-corpus-v1-AC-003",
+    "WP-FF-004-compatibility-inventory-corpus-v1-AC-004",
+    "WP-FF-004-compatibility-inventory-corpus-v1-AC-005",
+    "WP-FF-004-compatibility-inventory-corpus-v1-AC-006"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "Pinned-oracle provenance, version drift, and untrusted upstream input handling.",
+      "Inventory completeness, dynamic registration, alias collisions, interaction coverage, and false-PASS omissions.",
+      "Fixture secrecy, portability, nondeterminism, normalization drift, and unexpected network access.",
+      "Differential classification integrity, accepted-divergence authorization, report attribution, and shard merging."
+    ],
+    "minimum_controls": [
+      "Fail closed on oracle identity mismatch, missing inventory rows, duplicate or unstable IDs, unknown normalization versions, and undeclared differences.",
+      "Cross-check inventory against at least two independent pinned upstream surfaces and prove omission detection with mutation fixtures.",
+      "Scan and normalize secrets, absolute paths, clocks, randomness, host identity, and mutable network inputs before fixture acceptance.",
+      "Mechanically separate default offline suites from explicit live canaries and emit distinct report classifications.",
+      "Require stable case IDs, deterministic shard merge receipts, and rejection of overlap, gaps, or corpus-version mismatch."
+    ],
+    "plausible_failures": [
+      "A generator reports completeness while dynamically registered options, extractors, aliases, or interactions are absent.",
+      "A corpus passes a narrow happy path while errors, artifacts, archive behavior, redirects, or configuration interactions remain uncovered.",
+      "Cookies, tokens, absolute paths, timestamps, host identifiers, or other machine-local values enter committed fixtures.",
+      "A newer yt-dlp binary or a mutable live response silently replaces the pinned oracle.",
+      "A differential row disappears or is mislabeled so an unsupported Ferric behavior counts as PASS.",
+      "Parallel shards overlap, omit cases, or merge results from different corpus versions."
+    ]
+  },
+  "execution_decomposition": [
+    "Verify current Git, packet, taskboard, validated WP-FF-003 v2, and pinned-oracle state.",
+    "Complete and record current broad source-level research before product implementation.",
+    "Freeze versioned schemas, stable IDs, normalization, sanitization, coverage dimensions, oracle identity, and deterministic/live partition rules.",
+    "Implement profile and corpus generators through fforager-xtask using the accepted WP-FF-003 v2 report and policy surfaces.",
+    "Create deterministic corpus partitions and explicit live-canary manifests.",
+    "Implement fail-closed inventory, corpus, sanitizer, coverage, shard, and differential validators.",
+    "Run mutation, negative, deterministic-regeneration, offline-replay, canonical-gate, and independent adversarial checks.",
+    "Update the model manual and close only through committed acceptance evidence and verified main containment."
+  ]
+}

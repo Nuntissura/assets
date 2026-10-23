@@ -1,0 +1,19 @@
+{
+  "schema_id": "ff.oracle-migration-observation@1",
+  "case_id": "case-migration-config-v1",
+  "source": {
+    "schema_version": "0",
+    "configuration": {
+      "format": "bestvideo+bestaudio/best",
+      "output": "%(title)s [%(id)s].%(ext)s"
+    }
+  },
+  "expected": {
+    "schema_version": "1",
+    "configuration": {
+      "format_selector": "bestvideo+bestaudio/best",
+      "output_template": "%(title)s [%(id)s].%(ext)s"
+    },
+    "warnings": []
+  }
+}

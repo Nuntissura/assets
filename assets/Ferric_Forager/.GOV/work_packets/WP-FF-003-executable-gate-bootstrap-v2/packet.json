@@ -1,0 +1,371 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-003-executable-gate-bootstrap-v2",
+    "base_wp_id": "WP-FF-003-executable-gate-bootstrap",
+    "version": "2",
+    "title": "Adversarially re-evaluate and remediate the Phase 0 executable-gate bootstrap",
+    "created_at_utc": "2026-07-19T10:27:04Z",
+    "updated_at_utc": "2026-07-19T11:28:41Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator requested evaluation tests on WP-FF-003 through different adversarial lenses, remediation of findings, gaps, concerns, and risks, code cleanup where needed, and explicitly authorized sub-agent assistance.",
+    "recorded_at_utc": "2026-07-19T10:27:04Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#9-workspace-and-module-layout",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#268-mandatory-build-and-architecture-gates",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#269-rust-coding-discipline",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0-bootstrap--executable-gate-skeleton",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#appendix-f--architecture-and-build-enforcement-contract"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "f44e5747c59e2b42783a5ea323ac8368ad2b420c",
+    "work_branch": "codex/wp-ff-003-adversarial-remediation",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/wp-ff-003-adversarial-remediation",
+      "head_sha": "ccccf23f26de6c8e96a405ae7cda24e8597d7bcf",
+      "verified_at_utc": "2026-07-19T11:28:41Z"
+    },
+    "closure_commit": "27887cea0026a9db218b623ce8e69fc0cf191fb0",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "fb588bfae7ff23a8e76dc48a146c0775e171d05e"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "Await Operator activation of a later work packet; WP-FF-004 through WP-FF-011 remain non-authorizing stubs.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Re-evaluate the validated WP-FF-003 implementation through independent contract, hostile-state, and Rust-quality lenses; remediate confirmed defects and regression-proof them without widening Phase 0 scope.",
+    "in_scope": [
+      "Re-prove every WP-FF-003 v1 acceptance requirement against current main",
+      "Attack false-PASS routes, policy/schema boundaries, failure propagation, hostile repository/environment states, and Rust implementation quality",
+      "Add focused regression tests or fixtures for confirmed gaps",
+      "Remove or simplify brittle, duplicated, misleading, or unnecessary code only when full scope remains proven",
+      "Run final architecture-check and verify-pr gates plus independent counterfactual, boundary, and negative-path probes"
+    ],
+    "non_goals": [
+      "Shipped Ferric Forager product features or crates",
+      "Phase 0A through Phase 0D implementation",
+      "Broad implementation-readiness, parity, performance, durability, or cross-platform claims",
+      "New runtime or native dependencies",
+      "Changing the accepted three-root architecture or authority precedence"
+    ],
+    "allowed_paths": [
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/id-registry.yaml",
+      ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json",
+      ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/refinement.json",
+      ".gitignore",
+      "rust-toolchain.toml",
+      "build/Cargo.toml",
+      "build/Cargo.lock",
+      "build/architecture-policy.toml",
+      "build/tooling-policy.toml",
+      "build/rule-to-proof.toml",
+      "build/deny.toml",
+      "build/tools/fforager-xtask/",
+      "build/fixtures/architecture/",
+      "build/integration-tests/",
+      "build/reports/",
+      "product/MODEL_MANUAL.md"
+    ],
+    "dependencies": [
+      "WP-FF-003 v1 validated implementation and acceptance contract",
+      "Pinned Rust toolchain, Cargo, rustfmt, Clippy, cargo-deny, and Git",
+      "No new product runtime or native dependency"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v2-AC-001",
+      "requirement": "All eight WP-FF-003 v1 acceptance requirements remain preserved and are freshly re-proven against current source, policy, reports, fixtures, manual, and canonical commands.",
+      "status": "PASS",
+      "evidence": [
+        "build/reports/architecture-check-1784460384946397900-638472.json",
+        "build/reports/verify-pr-1784460426565043200-644864.json",
+        "All preserved v1 source, policy, fixture, report, manual, and canonical command surfaces passed from clean commit 27887cea0026a9db218b623ce8e69fc0cf191fb0."
+      ]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v2-AC-002",
+      "requirement": "Independent contract/policy, hostile-state, and Rust-quality audits each derive concrete attack surfaces and run checks beyond the v1 evidence list, including at least two counterfactuals, one producer-consumer boundary probe, and one negative-path probe overall; every material result is reproduced by the primary agent.",
+      "status": "PASS",
+      "evidence": [
+        "Independent contract/policy, hostile-state, and Rust-quality audits recorded nine confirmed findings.",
+        "Primary reproduction covered CRLF manifests, malformed YAML, noncanonical split triggers, nested selectors, feature drift, unsupported hosts, timeouts, dynamic packet inputs, and production-fixture reachability.",
+        "Counterfactuals, producer-consumer input binding, and degraded negative paths are executable in the 19-test suite."
+      ]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v2-AC-003",
+      "requirement": "Every confirmed finding, gap, concern, and risk is either remediated with executable regression proof or retained as explicit residual uncertainty that does not contradict Phase 0 PASS; no false-PASS route remains known.",
+      "status": "PASS",
+      "evidence": [
+        "Every confirmed finding is listed under extensions.change_evidence.independent_findings with a remediation.",
+        "All retained uncertainty is bounded under extensions.change_evidence.residual_uncertainty and does not contradict the stated Phase 0 proof ceiling.",
+        "The clean-source verify-pr report contains zero failed checks and 16 production-validator fixture results."
+      ]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v2-AC-004",
+      "requirement": "A reuse, deletion, dependency, and simplification review removes or improves brittle or unnecessary implementation where safe, and the full accepted scope/risk matrix passes again after cleanup.",
+      "status": "PASS",
+      "evidence": [
+        "SyntheticScenario and SyntheticEdge were deleted in favor of production validator reuse.",
+        "Process orchestration, dependency checks, TOML/YAML parsing, and repository mutation helpers were centralized and warnings-denied Clippy passed.",
+        "Exact non-shipped saphyr and sha2 decisions, transitive build inventory, and Zlib license policy passed cargo-deny."
+      ]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v2-AC-005",
+      "requirement": "The pinned architecture-check and verify-pr commands, formatting, warnings-denied Clippy, tests, docs, dependency policy, governance parsing, authority mirror, allowlist, registry-target, and git diff checks pass on the final branch with truthful proof limitations.",
+      "status": "PASS",
+      "evidence": [
+        "FF-GATE-ARCH-001 PASS: build/reports/architecture-check-1784460384946397900-638472.json",
+        "FF-GATE-PR-001 PASS: build/reports/verify-pr-1784460426565043200-644864.json",
+        "Final aggregate source was clean at 27887cea0026a9db218b623ce8e69fc0cf191fb0; 28 checks, 19 tests, 16 fixtures, cargo-deny, advisory freshness, docs, governance parsing, authority mirror, and git diff checks passed."
+      ]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-19T11:28:02Z",
+      "branch": "codex/wp-ff-003-adversarial-remediation",
+      "base_sha": "f44e5747c59e2b42783a5ea323ac8368ad2b420c",
+      "head_sha": "27887cea0026a9db218b623ce8e69fc0cf191fb0",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json",
+        ".GOV/id-registry.yaml",
+        "build/reports/architecture-check-1784460384946397900-638472.json",
+        "build/reports/verify-pr-1784460426565043200-644864.json"
+      ],
+      "checks_run": [
+        "FF-GATE-ARCH-001 PASS with clean source at 27887cea0026a9db218b623ce8e69fc0cf191fb0",
+        "FF-GATE-PR-001 PASS with clean source at 27887cea0026a9db218b623ce8e69fc0cf191fb0",
+        "19 focused tests PASS; 13 composed repository mutation cases and 16 production-validator fixture rows PASS",
+        "Governance JSON/YAML parse, authority mirror, and git diff --check PASS"
+      ],
+      "blockers": [],
+      "next_action": "Commit merge-pending evidence and durable reports, push remote backup, merge to main, and verify closure containment."
+    }
+  },
+  "validation": {
+    "checks": [
+      "FF-GATE-ARCH-001 PASS: build/reports/architecture-check-1784460384946397900-638472.json",
+      "FF-GATE-PR-001 PASS: build/reports/verify-pr-1784460426565043200-644864.json",
+      "Clean-source report proof: git commit 27887cea0026a9db218b623ce8e69fc0cf191fb0, dirty=false, 28 checks, zero failures, 16 production-validator fixtures",
+      "cargo fmt, three locked check profiles, warnings-denied Clippy, 19 tests, rustdoc warnings denied, cargo-deny advisories/bans/licenses/sources: PASS",
+      "Governance JSON/YAML parsing, authority mirror equality, active v2 packet/refinement report inputs, allowlisted changed paths, registry targets, and git diff --check: PASS",
+      "Main containment PASS: closure 27887cea0026a9db218b623ce8e69fc0cf191fb0 and evidence ccccf23f26de6c8e96a405ae7cda24e8597d7bcf are ancestors of merge fb588bfae7ff23a8e76dc48a146c0775e171d05e",
+      "Post-closure state PASS: formatting, warnings-denied Clippy, all 19 tests, and architecture-check pass with active_wp_id null; verify-pr rejects the closed state with expected one active work-packet ID instead of emitting PASS"
+    ],
+    "not_proven": [
+      "Broad Phase 1 implementation readiness",
+      "yt-dlp replacement parity",
+      "Shipped clean-artifact behavior before a shipped member exists",
+      "Cross-platform behavior not exercised on this Windows host",
+      "Descendant process-tree cancellation beyond the directly spawned child",
+      "Dynamic runtime path construction beyond conservative lexical scanning"
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/refinement.json",
+    "revision": {
+      "revises": "WP-FF-003-executable-gate-bootstrap-v1",
+      "preserved_acceptance_ids": [
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-001",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-002",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-003",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-004",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-005",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-006",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-007",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-008"
+      ],
+      "changed_requirements": [
+        "Fresh multi-lens independent adversarial evaluation",
+        "Primary-agent reproduction and remediation of confirmed findings",
+        "Post-remediation cleanup and full proof rerun"
+      ],
+      "supersession_effective_when": "WP-FF-003-executable-gate-bootstrap-v2 reaches VALIDATED"
+    },
+    "delegation": {
+      "authorized_by_operator": true,
+      "primary_agent_proof_review_required": true,
+      "lenses": [
+        "contract_policy_audit",
+        "hostile_state_audit",
+        "rust_quality_audit"
+      ]
+    },
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-031",
+        "FF-BUILD-034",
+        "FF-BUILD-035",
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-047",
+        "FF-BUILD-048",
+        "FF-BUILD-049",
+        "FF-BUILD-050",
+        "FF-BUILD-051",
+        "FF-BUILD-052",
+        "FF-BUILD-054",
+        "FF-BUILD-055",
+        "FF-BUILD-056",
+        "FF-BUILD-057",
+        "FF-BUILD-058",
+        "FF-BUILD-059",
+        "FF-BUILD-060",
+        "FF-BUILD-064",
+        "FF-BUILD-066",
+        "FF-BUILD-067",
+        "FF-BUILD-077"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-003-executable-gate-bootstrap-v2-AC-001",
+        "WP-FF-003-executable-gate-bootstrap-v2-AC-002",
+        "WP-FF-003-executable-gate-bootstrap-v2-AC-003",
+        "WP-FF-003-executable-gate-bootstrap-v2-AC-004",
+        "WP-FF-003-executable-gate-bootstrap-v2-AC-005"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Preserve every v1 acceptance requirement",
+          "Make every aggregate PASS fail closed",
+          "Keep product runtime independent from .GOV and build",
+          "Keep reports collision-safe, atomic, attributable, and truthful",
+          "Keep command failures and unavailable gates from becoming PASS"
+        ],
+        "risk_cases": [
+          "Validator trusts self-declared policy instead of independent inputs",
+          "Malformed, unknown, missing, or mismatched data is ignored",
+          "Fixture fails for the wrong reason",
+          "Hostile repository, path, Git, or tool state produces a false PASS",
+          "Report creation or command error is swallowed",
+          "Brittle parsing or duplicated logic diverges across gates"
+        ]
+      },
+      "review_gates": {
+        "scope_and_risk_coverage": "PASS: three independent lenses and primary-agent reproductions covered contracts, hostile state, process failure, parser failure, dependency drift, portability, and code quality.",
+        "reuse_deletion_dependency_simplification": "PASS: removed the duplicated SyntheticScenario validator, reused production primitives, centralized bounded process execution, and selected only two exact non-shipped pure-Rust dependencies for missing capabilities.",
+        "post_simplification_complete_rerun": "PASS: formatting, warnings-denied Clippy, 19 focused tests, and architecture-check were green after the production-validator and checksum cleanup; verify-pr is the final aggregate proof."
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "rejected because confirmed false-PASS routes required executable remediation and regression proof"
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "selected for production validator primitives, report protocol, Cargo metadata graph, policy schemas, fixture inventory, and canonical gate orchestration"
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "selected for bounded child supervision, atomic capture cleanup, recursive selector inventory, path containment, deterministic collections, and file streaming"
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "selected direct Cargo, rustup component, Git, where.exe, filesystem, and process APIs without shell composition or foreground windows"
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "existing serde, serde_json, toml, and cargo_metadata were retained; current research selected exact saphyr and sha2 versions for missing YAML and checksum capabilities"
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "selected one private xtask with strict policy schemas, production-linked fixtures, representative repository sandboxes, and one bounded process layer; no shipped crate or public API was introduced"
+        }
+      ],
+      "artifact_specific_justification": {
+        "cargo_workspace": "Exact non-shipped parser and checksum dependencies must be reproducibly locked and linted.",
+        "xtask": "Confirmed false-PASS and hang routes were in the executable validator and required direct remediation.",
+        "architecture_policy": "Dependency ownership, features, consumers, reasons, removal triggers, approval IDs, and member safety references must fail closed.",
+        "tooling_policy": "Exact commands, sources, hosts, versions, provenance kinds, and host executable checksums require canonical declarations.",
+        "rule_to_proof": "The preserved rule map remains the canonical rule, validator, and fixture inventory contract.",
+        "negative_fixtures": "All assigned negative rows now invoke production validator primitives and representative mutations exercise the composed gate.",
+        "model_manual": "No-context operators need the new timeout, YAML, checksum, and recovery behavior documented."
+      },
+      "pre_simplification_verdict": "PASS: every confirmed audit finding had a reproducible failure path; the remediation scope was necessary, but duplicated synthetic validation and repeated unbounded process handling were not acceptable maintenance surfaces.",
+      "simplification_changes": [
+        "Removed SyntheticScenario, SyntheticEdge, and their parallel validator implementation; fixture rows now call production validator primitives.",
+        "Centralized every child invocation through bounded status or output helpers with quiet Windows execution, capture cleanup, kill, and reap behavior.",
+        "Replaced exact-text CRLF-sensitive manifest checks and YAML line scans with semantic TOML and maintained YAML parsing.",
+        "Split dependency validation into decision, direct, and transitive helpers to keep warnings-denied Clippy green and make policy boundaries auditable.",
+        "Added only the OSI-approved Zlib license used by Saphyr's locked foldhash transitive dependency after cargo-deny rejected the first aggregate run."
+      ],
+      "post_simplification_verdict": "PASS: the smaller validation model preserves all 16 assigned diagnostics, 13 composed repository mutations, exact policy checks, and truthful timeout behavior; 19 focused tests and architecture-check pass after cleanup.",
+      "complete_post_change_verification": [
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check: PASS",
+        "cargo clippy --manifest-path build/Cargo.toml --workspace --all-targets --all-features --locked --target-dir build/target -- -D warnings: PASS",
+        "cargo test --manifest-path build/Cargo.toml --workspace --all-targets --all-features --locked --no-fail-fast --target-dir build/target -- --test-threads=1: PASS, 19 tests",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check: PASS, 12 canonical architecture rules and 16 production-validator fixture rows",
+        "Representative repository mutation matrix: PASS, 13 baseline-positive then exact-negative composed gate probes",
+        "Bounded process timeout negative path: PASS with explicit incomplete-evidence result after child kill and reap",
+        "Malformed governance YAML and noncanonical task state: PASS by rejection before value consumption",
+        "Nested toolchain selector, dependency feature drift, unsupported host, and invalid split trigger: PASS by exact diagnostic rejection"
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-003-executable-gate-bootstrap-v2-CEILING-001",
+        "current_ceiling": "Phase 0 has one non-shipped xtask on the supported x86_64 Windows MSVC host; no shipped member, watcher, deep gate, release gate, or cross-platform process proof exists.",
+        "replacement_trigger": "A shipped member, watcher package, supported-host expansion, deep-risk claim, or release claim activates the owning future gate and proof corpus.",
+        "likely_upgrade_path": "Extend the same strict policy and versioned report protocol with platform-specific descendant process supervision and runtime or packaging fixtures owned by the activating packet.",
+        "trigger_detection_method": "Workspace member policy, product watcher manifest, supported_hosts, active packet risks, and gate inventory are inspected fail closed.",
+        "linked_evidence": [
+          "build/tools/fforager-xtask/src/main.rs",
+          "build/architecture-policy.toml",
+          "build/tooling-policy.toml",
+          "build/rule-to-proof.toml",
+          "build/Cargo.lock",
+          "product/MODEL_MANUAL.md"
+        ]
+      },
+      "independent_findings": [
+        "REMEDIATED HIGH: CRLF member manifests bypassed exact-text lint inheritance checks; semantic TOML parsing now covers LF, CRLF, spacing, ordering, false, and malformed inputs.",
+        "REMEDIATED HIGH: arbitrary split-trigger text passed; only FF-BUILD-036 is accepted.",
+        "REMEDIATED HIGH: fixed selector paths missed nested selectors; recursive governed-root inventory now detects them while excluding generated build/target.",
+        "REMEDIATED HIGH: fixture validation duplicated production logic; the duplicate engine was removed and composed repository mutations regression-proof production reachability.",
+        "REMEDIATED HIGH: architecture and dependency policy omitted ownership, consumer, feature, default-feature, safety, exception, and removal metadata; strict schema v2 now enforces each field.",
+        "REMEDIATED HIGH: external commands were unbounded; all command paths now use explicit deadlines and incomplete-evidence timeout errors.",
+        "REMEDIATED MEDIUM: report inputs hardcoded the v1 packet; active packet and refinement inputs are now resolved and contained dynamically.",
+        "REMEDIATED MEDIUM: tool policy trusted loose declarations; schema v3 enforces exact identity, command, source, supported host, provenance, and Git/cargo-deny executable SHA-256.",
+        "REMEDIATED HIGH: line-scanned YAML could fail open on malformed authority; saphyr parses one YAML document structurally before governed values are read.",
+        "REMEDIATED DEPENDENCY GATE: the first aggregate run rejected foldhash's Zlib license; the exact OSI-approved license is now explicitly inventoried in cargo-deny policy."
+      ],
+      "residual_uncertainty": [
+        "Windows child timeout proof kills and reaps the directly spawned process; a future gate that spawns descendant process trees must add Job Object supervision before claiming tree-wide cancellation.",
+        "Product runtime path protection includes conservative lexical source scanning; dynamically constructed paths remain outside Phase 0 proof and are stated in the architecture report limitations.",
+        "Graph edge fixture rows execute production classifiers and cycle detection, but Cargo rejects some cyclic manifests before metadata exists; composed repository mutations cover all policy, source, host, path, and dependency surfaces that can reach the gate through valid Cargo metadata."
+      ]
+    }
+  }
+}

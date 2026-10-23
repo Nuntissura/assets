@@ -1,0 +1,26 @@
+{
+  "schema_id": "ff.compatibility-live-canaries@1",
+  "schema_version": "1.0.0",
+  "suite_id": "ff-ytdlp-2026.07.04-live-canaries-v1",
+  "profile_id": "yt-dlp-2026.07.04-profile-v1",
+  "default_enabled": false,
+  "deterministic_proof": false,
+  "canaries": [
+    {
+      "id": "live-canary-youtube-test-video-v1",
+      "url_class": "url-class-youtube",
+      "url": "https://www.youtube.com/watch?v=BaW_jenozKc",
+      "timeout_seconds": 30,
+      "credential_policy": "operator-supplied-outside-repository-or-none",
+      "expected_classification": "nondeterministic_observation"
+    },
+    {
+      "id": "live-canary-vimeo-public-v1",
+      "url_class": "url-class-vimeo",
+      "url": "https://vimeo.com/56015672",
+      "timeout_seconds": 30,
+      "credential_policy": "operator-supplied-outside-repository-or-none",
+      "expected_classification": "nondeterministic_observation"
+    }
+  ]
+}

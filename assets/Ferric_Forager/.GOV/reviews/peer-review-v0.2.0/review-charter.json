@@ -1,0 +1,49 @@
+{
+  "file_id": "FERRIC-FORAGER-PEER-REVIEW-CHARTER-0.2.0",
+  "file_kind": "peer-review-charter",
+  "updated_at": "2026-07-18T00:17:00+02:00",
+  "source_design": "../../spec/ferric_forager_technical_design_v0.2.0.md",
+  "review_risk_tier": "HIGH",
+  "operator_authority": {
+    "implementation_language": "Rust",
+    "python_runtime_allowed_in_production": false,
+    "ffmpeg_role": "required external media-processing dependency supervised by Rust",
+    "operator_wording": "built fully in Rust with FFmpeg as dependency",
+    "external_runtime_boundary": "Do not silently authorize additional production runtimes or native transport libraries; identify and prove any claimed necessity, especially JavaScript execution and browser impersonation, for explicit operator resolution.",
+    "primary_optimization_priority": "speed",
+    "behavioral_foundation": "yt-dlp",
+    "required_direction": "improve efficiency over yt-dlp while preserving and expanding the functionality stated in the design",
+    "scope_preservation": "Do not narrow or discard the documented functionality expansion without an explicit operator decision."
+  },
+  "review_rules": {
+    "research_before_conclusions": true,
+    "primary_sources_required_for_technical_claims": true,
+    "independent_lenses_required": true,
+    "adversarial_review_required": true,
+    "findings_first": true,
+    "required_sections": [
+      "DIFF_ATTACK_SURFACES",
+      "INDEPENDENT_CHECKS_RUN",
+      "COUNTERFACTUAL_CHECKS",
+      "BOUNDARY_PROBES",
+      "NEGATIVE_PATH_CHECKS",
+      "INDEPENDENT_FINDINGS",
+      "RESIDUAL_UNCERTAINTY"
+    ],
+    "forbidden_shortcuts": [
+      "Treating the design's references as proof without opening current sources",
+      "Treating aspirational wording as a resolved contract",
+      "Recommending Python fallback in the production implementation",
+      "Recommending removal of FFmpeg from the architecture",
+      "Narrowing the documented functionality expansion merely to make implementation easier",
+      "Claiming implementation readiness while acceptance surfaces remain undefined"
+    ]
+  },
+  "deliverables": [
+    "architecture-performance-review.md",
+    "compatibility-product-review.md",
+    "security-reliability-review.md",
+    "primary-synthesis.md",
+    "implementation-readiness-matrix.json"
+  ]
+}

@@ -1,0 +1,239 @@
+schema_id: ff.repository_topology@1
+file_id: FF-GOV-TOPOLOGY-001
+updated_at: "2026-07-31"
+project:
+  id: FF-PROJ-001
+  name: Ferric Forager
+  repository_url: https://github.com/Nuntissura/ferric_forager
+  repository_remote_status: CONFIGURED_AS_ORIGIN
+  local_root: .
+authority_precedence:
+  - AGENTS.md
+  - .GOV/codex.yaml
+  - .GOV/rules/build-rules.yaml
+  - .GOV/taskboard/taskboard.yaml
+  - .GOV/work_packets/<WP_ID>/packet.json
+  - .GOV/work_packets/<WP_ID>/refinement.json
+  - .GOV/spec/ferric_forager_technical_design_v0.3.0.md
+  - .GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json
+context_entrypoint: START_HERE.yaml
+nodes:
+  - id: FF-NODE-ROOT-001
+    kind: repository_root
+    path: .
+    owner: project
+  - id: FF-NODE-SESSION-BOOTSTRAP-001
+    kind: model_authority_injector
+    path: ferforstart.cmd
+    owner: governance
+    responsibility: emit_canonical_session_authority_and_require_post_read_acknowledgment
+  - id: FF-NODE-CODEX-001
+    kind: bootstrap_router
+    path: AGENTS.md
+    owner: governance
+  - id: FF-NODE-CLAUDE-001
+    kind: bootstrap_router_mirror
+    path: CLAUDE.md
+    owner: governance
+  - id: FF-NODE-CODEX-RULES-001
+    kind: canonical_project_codex
+    path: .GOV/codex.yaml
+    owner: governance
+  - id: FF-NODE-START-001
+    kind: model_entrypoint
+    path: START_HERE.yaml
+    owner: governance
+  - id: FF-NODE-TOPOLOGY-001
+    kind: canonical_topology
+    path: .GOV/topology.yaml
+    owner: governance
+  - id: FF-NODE-PRODUCT-001
+    kind: product_root
+    path: product/
+    owner: product
+    contains: [shipped_code, product_package_local_tests, product_assets, watcher]
+  - id: FF-NODE-BUILD-001
+    kind: build_root
+    path: build/
+    owner: build_tooling
+    contains: [cargo_workspace, lockfile, policies, non_shipped_tools, shared_test_harnesses, fixtures, fuzzing, benchmarks, reports, git_hooks]
+  - id: FF-NODE-ARTIFACT-ROOT-001
+    kind: ignored_disposable_artifact_root
+    path: .fforager-artifacts/
+    owner: build_tooling
+    contains: [cargo_target, test_runs, runtime_proof, command_capture, temporary_repositories, validation_scratch]
+    cleanup_gate: FF-GATE-ARTIFACT-HYGIENE-001
+  - id: FF-NODE-WORKTREE-ROOT-001
+    kind: ignored_linked_worktree_root
+    path: .worktrees/
+    owner: repository_workflow
+    create_command: powershell -NoProfile -File build/scripts/new-worktree.ps1
+    artifact_link: Each worktree-local .fforager-artifacts path links to FF-NODE-ARTIFACT-ROOT-001.
+  - id: FF-NODE-TOOLCHAIN-SELECTOR-001
+    kind: rustup_selector
+    path: rust-toolchain.toml
+    owner: build_tooling
+    responsibility: sole_repository_toolchain_selector
+  - id: FF-NODE-WATCHER-001
+    kind: product_component
+    path: product/watcher/
+    owner: product
+    responsibility: independent_diagnostics
+    lifecycle: starts_with_ferric_closes_on_governed_shutdown_survives_ferric_crash
+  - id: FF-NODE-GOV-001
+    kind: governance_root
+    path: .GOV/
+    owner: governance
+  - id: FF-NODE-RULES-001
+    kind: authority
+    path: .GOV/rules/build-rules.yaml
+    owner: governance
+  - id: FF-NODE-SPEC-001
+    kind: design_source
+    path: .GOV/spec/ferric_forager_technical_design_v0.3.0.md
+    owner: governance
+  - id: FF-NODE-REVIEWS-001
+    kind: review_collection
+    path: .GOV/reviews/
+    owner: governance
+  - id: FF-NODE-TEMPLATES-001
+    kind: governance_templates
+    path: .GOV/templates/
+    owner: governance
+  - id: FF-NODE-WP-REQUIREMENTS-001
+    kind: work_packet_requirements
+    path: .GOV/templates/WORK_PACKET_REQUIREMENTS.yaml
+    owner: governance
+  - id: FF-NODE-TASKBOARD-001
+    kind: canonical_taskboard
+    path: .GOV/taskboard/taskboard.yaml
+    owner: governance
+  - id: FF-NODE-WORK-PACKETS-001
+    kind: work_packet_collection
+    path: .GOV/work_packets/
+    owner: governance
+  - id: FF-NODE-ARCHIVE-001
+    kind: governance_archive
+    path: .GOV/archive/
+    owner: governance
+  - id: FF-NODE-ID-REGISTRY-001
+    kind: id_registry
+    path: .GOV/id-registry.yaml
+    owner: governance
+edges:
+  - id: FF-EDGE-CODEX-READS-TOPOLOGY-001
+    from: FF-NODE-CODEX-RULES-001
+    to: FF-NODE-TOPOLOGY-001
+    relation: requires_read
+  - id: FF-EDGE-CODEX-READS-RULES-001
+    from: FF-NODE-CODEX-RULES-001
+    to: FF-NODE-RULES-001
+    relation: requires_read
+  - id: FF-EDGE-CLAUDE-MIRRORS-CODEX-001
+    from: FF-NODE-CLAUDE-001
+    to: FF-NODE-CODEX-001
+    relation: mirrors_rule_for_rule
+  - id: FF-EDGE-START-ROUTES-TOPOLOGY-001
+    from: FF-NODE-START-001
+    to: FF-NODE-TOPOLOGY-001
+    relation: routes_new_models
+  - id: FF-EDGE-BOOT-ROUTES-CODEX-001
+    from: FF-NODE-CODEX-001
+    to: FF-NODE-CODEX-RULES-001
+    relation: requires_read
+  - id: FF-EDGE-BOOT-ROUTES-START-001
+    from: FF-NODE-CODEX-001
+    to: FF-NODE-START-001
+    relation: requires_read
+  - id: FF-EDGE-SESSION-BOOTSTRAP-INJECTS-START-001
+    from: FF-NODE-SESSION-BOOTSTRAP-001
+    to: FF-NODE-START-001
+    relation: injects_complete_authority
+  - id: FF-EDGE-SESSION-BOOTSTRAP-INJECTS-CODEX-001
+    from: FF-NODE-SESSION-BOOTSTRAP-001
+    to: FF-NODE-CODEX-RULES-001
+    relation: injects_complete_authority
+  - id: FF-EDGE-SESSION-BOOTSTRAP-INJECTS-TOPOLOGY-001
+    from: FF-NODE-SESSION-BOOTSTRAP-001
+    to: FF-NODE-TOPOLOGY-001
+    relation: injects_complete_authority
+  - id: FF-EDGE-TASKBOARD-INDEXES-PACKETS-001
+    from: FF-NODE-TASKBOARD-001
+    to: FF-NODE-WORK-PACKETS-001
+    relation: indexes_canonical_state
+  - id: FF-EDGE-REQUIREMENTS-GOVERN-PACKETS-001
+    from: FF-NODE-WP-REQUIREMENTS-001
+    to: FF-NODE-WORK-PACKETS-001
+    relation: constrains_contracts
+  - id: FF-EDGE-PACKETS-GOVERN-PRODUCT-001
+    from: FF-NODE-WORK-PACKETS-001
+    to: FF-NODE-PRODUCT-001
+    relation: scopes_and_validates
+  - id: FF-EDGE-PACKETS-GOVERN-BUILD-001
+    from: FF-NODE-WORK-PACKETS-001
+    to: FF-NODE-BUILD-001
+    relation: scopes_and_validates
+  - id: FF-EDGE-BUILD-BUILDS-PRODUCT-001
+    from: FF-NODE-BUILD-001
+    to: FF-NODE-PRODUCT-001
+    relation: builds_and_tests
+  - id: FF-EDGE-BUILD-WRITES-ARTIFACTS-001
+    from: FF-NODE-BUILD-001
+    to: FF-NODE-ARTIFACT-ROOT-001
+    relation: writes_disposable_outputs
+  - id: FF-EDGE-WORKTREES-MERGE-PRODUCT-001
+    from: FF-NODE-WORKTREE-ROOT-001
+    to: FF-NODE-PRODUCT-001
+    relation: merges_completed_implementation_to_main
+  - id: FF-EDGE-WORKTREES-SHARE-ARTIFACTS-001
+    from: FF-NODE-WORKTREE-ROOT-001
+    to: FF-NODE-ARTIFACT-ROOT-001
+    relation: links_each_worktree_to_single_disposable_root
+  - id: FF-EDGE-TOOLCHAIN-SELECTS-BUILD-001
+    from: FF-NODE-TOOLCHAIN-SELECTOR-001
+    to: FF-NODE-BUILD-001
+    relation: selects_toolchain
+  - id: FF-EDGE-WATCHER-OBSERVES-PRODUCT-001
+    from: FF-NODE-WATCHER-001
+    to: FF-NODE-PRODUCT-001
+    relation: observes_diagnostically
+  - id: FF-EDGE-SPEC-INFORMS-PACKETS-001
+    from: FF-NODE-SPEC-001
+    to: FF-NODE-WORK-PACKETS-001
+    relation: provides_spec_anchors
+  - id: FF-EDGE-REVIEWS-GATE-PACKETS-001
+    from: FF-NODE-REVIEWS-001
+    to: FF-NODE-WORK-PACKETS-001
+    relation: supplies_readiness_gates
+boundaries:
+  - id: FF-BOUNDARY-PRODUCT-GOV-001
+    statement: Product runtime code under product/ MUST NOT depend on .GOV/ or build/ at runtime.
+  - id: FF-BOUNDARY-PRODUCT-BUILD-001
+    statement: Product-local tests remain with their product package; shared and cross-package build or test infrastructure belongs under build/, all disposable output belongs under `.fforager-artifacts/`, and neither is shipped.
+  - id: FF-BOUNDARY-RUNTIME-DEPENDENCY-001
+    statement: Production implementation is Rust with supervised FFmpeg and ffprobe; any other runtime or native dependency requires explicit Operator approval.
+  - id: FF-BOUNDARY-WATCHER-001
+    statement: The watcher is diagnostic-only and process-independent from Ferric Forager.
+  - id: FF-BOUNDARY-PYTHON-001
+    statement: Ferric Forager is an independent Rust-native yt-dlp replacement; Python, yt-dlp, and yt-dlp companion packages or executable assets are forbidden product, build, test, canonical-verification, package, release, and runtime dependencies, while explicitly invoked non-canonical tooling may only observe an Operator-supplied external reference.
+entrypoints:
+  session_bootstrap: ferforstart.cmd
+  no_context_model: START_HERE.yaml
+  codex_bootstrap: AGENTS.md
+  claude_bootstrap: CLAUDE.md
+  project_codex: .GOV/codex.yaml
+  build_rules: .GOV/rules/build-rules.yaml
+  build_verification_contracts: .GOV/rules/build-rules.yaml#verification_gates
+  secret_scan: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- secret-scan --history
+  git_hooks: build/git-hooks/
+  runtime_truth_gate: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard
+  task_state: .GOV/taskboard/taskboard.yaml
+  work_packet_template: .GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json
+  work_packet_requirements: .GOV/templates/WORK_PACKET_REQUIREMENTS.yaml
+  product_root: product/
+  build_root: build/
+  artifact_root: .fforager-artifacts/
+  worktree_root: .worktrees/
+  cargo_workspace: build/Cargo.toml
+  rust_toolchain_selector: rust-toolchain.toml
+  watcher_root: product/watcher/

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "invalid-candidate-digest",
+  "mutation": "invalid_candidate_digest",
+  "expected_diagnostic": "FF-COMP-E-CANDIDATE-DIGEST: candidate digest is not SHA-256"
+}

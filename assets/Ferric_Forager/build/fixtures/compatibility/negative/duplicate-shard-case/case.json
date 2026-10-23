@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "duplicate-shard-case",
+  "mutation": "duplicate_shard_case",
+  "expected_diagnostic": "FF-COMP-E-DUPLICATE-ID: case-archive-duplicate-v1"
+}

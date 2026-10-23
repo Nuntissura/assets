@@ -1,0 +1,117 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-019-ferforstart-session-bootstrap-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-019-ferforstart-session-bootstrap-v1",
+  "updated_at_utc": "2026-07-31T06:25:49Z",
+  "operator_request": "Create ferforstart.cmd at the repository root to inject the three named authority files, require models to read and acknowledge them as repository rules and instructions, and make both AGENTS.md and CLAUDE.md require it at session start.",
+  "spec_anchors": [
+    {
+      "path": "START_HERE.yaml#deterministic_navigation",
+      "scope": "Canonical model startup reading order and required authority surfaces."
+    },
+    {
+      "path": ".GOV/codex.yaml#rules",
+      "scope": "Authority-first execution, disk-agnostic paths, mirrored bootstrap routers, and topology registration."
+    },
+    {
+      "path": ".GOV/topology.yaml",
+      "scope": "Canonical entrypoints, authority nodes, and requires-read edges."
+    },
+    {
+      "path": "AGENTS.md",
+      "scope": "Codex bootstrap router mirrored rule-for-rule by CLAUDE.md."
+    }
+  ],
+  "scope_edges": {
+    "in_scope": [
+      "A generic cmd.exe authority emitter that works from any current directory.",
+      "Exact file boundaries and a post-read acknowledgment contract.",
+      "Mirrored startup rules and topology/registry synchronization."
+    ],
+    "non_goals": [
+      "Launching Codex, Claude, or another vendor-specific model CLI.",
+      "Changing authority semantics or precedence.",
+      "Claiming that terminal output can technically force a noncompliant model to obey."
+    ]
+  },
+  "research_basis": {
+    "checked_at_utc": "2026-07-31T06:25:49Z",
+    "sources": [
+      "START_HERE.yaml",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml"
+    ],
+    "patterns_found": [
+      "START_HERE.yaml already defines the canonical reading order and no-context entrypoint.",
+      "AGENTS.md and CLAUDE.md are byte-identical bootstrap mirrors and use stable FF-BOOT IDs.",
+      "Committed paths must be disk-agnostic; cmd.exe %~dp0 resolves the launcher directory without a drive-letter dependency.",
+      "A generic launcher can inject authority into any model-visible terminal by emitting exact file contents, while model compliance still depends on the host exposing that output."
+    ],
+    "reuse_opportunities": [
+      "Reuse the existing three canonical authority files rather than generating a duplicate combined authority document.",
+      "Reuse the topology node/edge and ID-registry conventions.",
+      "Reuse cmd.exe built-ins only, adding no runtime dependency."
+    ],
+    "rejected_options": [
+      {
+        "option": "Hardcode D:\\Projects\\LLM projects\\Ferric_Forager.",
+        "reason": "It violates project portability and breaks when the repository moves."
+      },
+      {
+        "option": "Generate and commit a combined authority copy.",
+        "reason": "It creates a fourth drifting authority projection instead of injecting canonical files at runtime."
+      },
+      {
+        "option": "Launch a specific model CLI from the script.",
+        "reason": "The operator requested model-agnostic authority injection, and vendor-specific commands would narrow reuse and require unverified CLI assumptions."
+      }
+    ],
+    "selected_approach": "Use ferforstart.cmd with %~dp0-relative paths, fail-closed existence checks, exact type-based file emission, stable begin/end markers, and an acknowledgment line that may be stated only after all injected files are read.",
+    "risks_and_mitigations": [
+      {
+        "risk": "A model may acknowledge without actually reading the output.",
+        "mitigation": "Place the complete files directly in the session-visible output, explicitly prohibit premature acknowledgment, and require the startup action in both model bootstrap files."
+      },
+      {
+        "risk": "A moved repository breaks absolute paths.",
+        "mitigation": "Resolve every file from %~dp0 and commit no drive letter or user-profile path."
+      },
+      {
+        "risk": "AGENTS.md and CLAUDE.md drift.",
+        "mitigation": "Apply one byte-identical FF-BOOT-007 line and validate exact file hashes/content equality."
+      },
+      {
+        "risk": "A missing file yields partial authority and a false success.",
+        "mitigation": "Validate all three paths before emitting any authority and exit nonzero with the missing path."
+      }
+    ],
+    "validation_plan": [
+      "Execute ferforstart.cmd from the repository root and a different current directory.",
+      "Compare each injected bounded section byte-for-byte with its canonical source after normalizing only the command-output line ending boundary.",
+      "Execute a copied launcher beside an intentionally incomplete temporary authority tree and require a nonzero missing-file error.",
+      "Verify AGENTS.md and CLAUDE.md byte identity and FF-BOOT-007 presence.",
+      "Parse YAML/JSON governance surfaces, run git diff --check, and run the canonical deep gate."
+    ]
+  },
+  "red_team": {
+    "attack_surfaces": [
+      "Current-directory path substitution",
+      "partial output presented as complete authority",
+      "missing-file false success",
+      "premature acknowledgment",
+      "AGENTS/CLAUDE mirror drift",
+      "unregistered startup entrypoint"
+    ],
+    "minimum_controls": [
+      "%~dp0 repository-root resolution",
+      "preflight all required files before any injection",
+      "stable begin/end markers for each canonical file",
+      "exact post-read acknowledgment contract",
+      "byte-identical mirrored bootstrap rule",
+      "topology and ID-registry synchronization"
+    ]
+  }
+}

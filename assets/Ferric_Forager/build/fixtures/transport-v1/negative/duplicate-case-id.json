@@ -1,0 +1,25 @@
+{
+  "schema_id": "fforager.transport-corpus-manifest.v1",
+  "corpus_id": "WP-FF-007-transport-corpus-v1",
+  "normalization_version": "WP-FF-004-sanitized-transcript-v1",
+  "candidate_identity": "ferric-std-first-transport-spike-v1",
+  "max_cases": 2,
+  "cases": [
+    {
+      "id": "duplicate-id",
+      "kind": "standard_capability",
+      "mandatory": true,
+      "proof_class": "structural",
+      "requested_capabilities": ["http11", "range", "streaming", "replay", "cancellation", "metadata_bounds", "body_bounds"],
+      "expected_outcome": "standard-capabilities-supported"
+    },
+    {
+      "id": "duplicate-id",
+      "kind": "standard_capability",
+      "mandatory": true,
+      "proof_class": "structural",
+      "requested_capabilities": ["http11", "range", "streaming", "replay", "cancellation", "metadata_bounds", "body_bounds"],
+      "expected_outcome": "standard-capabilities-supported"
+    }
+  ]
+}

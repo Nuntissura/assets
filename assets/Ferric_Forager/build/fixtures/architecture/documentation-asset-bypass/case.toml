@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "documentation-asset-bypass"
+mutation = "documentation_asset_bypass"
+expected_diagnostic = "FF-ARCH-E-PRODUCT-ORACLE-RUNTIME"

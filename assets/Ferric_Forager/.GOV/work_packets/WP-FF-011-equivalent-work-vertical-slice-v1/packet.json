@@ -1,0 +1,260 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-011-equivalent-work-vertical-slice-v1",
+    "base_wp_id": "WP-FF-011-equivalent-work-vertical-slice",
+    "version": "1",
+    "title": "Prove the equivalent-work cross-boundary vertical slice",
+    "created_at_utc": "2026-07-18T21:13:04Z",
+    "updated_at_utc": "2026-08-09T15:39:12Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator authorized Phase 0 planning, requested WP-FF-008 through WP-FF-011 as detailed no-context STUB packets linked to the canonical design and readiness topics, and required the stubs to be committed and pushed before WP-FF-003 implementation begins.",
+    "recorded_at_utc": "2026-07-18T21:13:04Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#61-behavioral-parity-over-structural-parity",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#10-core-domain-model",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#15-manifest-and-fragment-pipeline",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#16-scheduler-and-resource-governance",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#19-ffmpeg-and-post-processing-integration",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#23-persistence-resume-and-crash-recovery",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#256-independent-ferric-forager-watcher",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#27-benchmark-plan-and-performance-gates",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-2--cross-boundary-proof-slice",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#appendix-c--benchmark-matrix",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/consensus_blockers/2",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/phase_readiness/1",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/implementation_readiness_gates/9",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/recommended_next_closure_unit/outputs/4"
+    ],
+    "decision_ids": [
+      "D-011",
+      "D-012"
+    ]
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "447b4dbb0d64df56b3c956d8f311ff24f5b51c50",
+    "work_branch": "codex/equivalent-work-vertical-slice",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {"required_for_handoff": true, "branch": null, "head_sha": null, "verified_at_utc": null},
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "STUB",
+    "risk": "HIGH",
+    "blockers": [
+      "This is the design Section 28 Phase 2 proof slice; it cannot start merely because the STUB is indexed.",
+      "The exact consumed Phase 0 revisions WP-FF-003-executable-gate-bootstrap-v2, WP-FF-004-compatibility-inventory-corpus-v2, WP-FF-005-versioned-core-contracts-v1, WP-FF-006-rust-youtube-challenge-spike-v1, WP-FF-007-transport-fingerprint-spike-v2, WP-FF-008-archive-store-evidence-v2, WP-FF-009-resource-durability-models-v2, and WP-FF-010-ffmpeg-supervision-spike-v1 must each be VALIDATED with closure-commit containment in main.",
+      "WP-FF-006-rust-youtube-challenge-spike-v1 records closure 99139e04d12ec9f099f2092c624336702143e9fd as contained, but that commit is not an ancestor of main; its governance must be repaired and independently revalidated before this packet may consume WP-FF-006 evidence.",
+      "WP-FF-020-equivalent-work-benchmark-design-v1 must be VALIDATED with closure-commit containment in main before this slice starts.",
+      "WP-FF-021-first-runnable-production-slice-v1 must be VALIDATED with production-runtime closure-commit containment in main before this slice starts.",
+      "If any named predecessor is superseded before activation, this packet itself must be revised to name the exact replacement; ranges, alternatives, and implied current revisions are forbidden.",
+      "The executable exact-dependency and canonical-main-containment check required by WP-FF-021-first-runnable-production-slice-v1-AC-009 must pass before activation; the present repository does not yet mechanically enforce scope.dependencies.",
+      "Broad feature implementation remains blocked until all Section 31.7 readiness gates that this slice consumes are proven."
+    ],
+    "next_action": "After WP-FF-010, WP-FF-020, WP-FF-021, and every other consumed readiness gate are VALIDATED and mechanically contained in main, bind this packet to their exact closure SHAs and corpus/tool manifests, refresh integration research, add the strict production runtime-proof contract, promote it, and implement the complete Section 28 Phase 2 slice without dropping any boundary or comparing unequal work.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Integrate one representative end-to-end path across direct HTTP and HLS acquisition, serializable selection, atomic resources/byte credits, FFmpeg stream copy, durable staged commit/archive, independent watcher diagnostics, and canonical equivalent-work proof, with an optional Operator-supplied pinned yt-dlp comparison that is never a Ferric verification dependency.",
+    "product_impact": "RUNTIME",
+    "in_scope": [
+      "Acquire a pinned direct-HTTP fixture and representative HLS fixture through the accepted transport and protocol contracts.",
+      "Carry a serializable source graph, stable identities, format selection, logical ordering, and typed errors/events through the same engine path.",
+      "Use atomic resource-vector admission and end-to-end byte credits with observable bounds, cancellation, and no hidden unbounded stage.",
+      "Run FFmpeg stream-copy discovery, explicit stream maps, progress, cancellation, descendant containment, reaping, and ffprobe-normalized validation.",
+      "Perform same-filesystem staged commit, resume, injected-crash reconciliation, archive insertion, and cleanup without reporting success before output/archive reconciliation.",
+      "Emit independent watcher crash evidence and alive-but-stalled detection while proving watcher absence/failure cannot change product correctness or result.",
+      "When the Operator supplies pinned yt-dlp 2026.07.04 comparison evidence, compare it only after normalized source, requests, selected streams, output/ffprobe, metadata/sidecar/archive work, failure class, cache state, and process topology are equal; canonical Ferric correctness and benchmark admission must execute and pass with yt-dlp absent.",
+      "Use randomized paired order, warmup, repetitions, outlier/noise policy, distributions, and 95-percent confidence bounds; report total-system and separated Ferric/FFmpeg costs.",
+      "Run cancellation, retry, slow-disk, crash-prefix, watcher-failure, and output-mismatch negative cases with machine-readable reports.",
+      "Add the thin YouTube/challenge canary only if Phase 0C selected an authorized passing challenge and transport path; otherwise record it as blocked without substituting a runtime."
+    ],
+    "non_goals": [
+      "Full extractor, protocol, collection, live, sink, post-processing, or yt-dlp replacement parity.",
+      "A speed claim based on different work, output, metadata, archive action, validation, cache, network state, or process topology.",
+      "Using live internet measurements as the primary gate.",
+      "Adding Python, yt-dlp, an external JavaScript runtime, SQLite native bindings, or another unapproved product, build, test, or canonical-verification dependency; optional Operator-supplied yt-dlp comparison evidence remains external and non-canonical.",
+      "Making the watcher a controller, acknowledgement dependency, or product success dependency.",
+      "Treating one mean, one machine, or one successful happy-path run as proof."
+    ],
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-011-equivalent-work-vertical-slice-v1/packet.json",
+      "build/Cargo.toml",
+      "build/Cargo.lock",
+      "build/architecture-policy.toml",
+      "build/tooling-policy.toml",
+      "build/rule-to-proof.toml",
+      "product/crates/fforager/",
+      "product/crates/fforager-contracts/",
+      "product/crates/fforager-diagnostics-contract/",
+      "product/crates/fforager-core/",
+      "product/crates/fforager-net/",
+      "product/crates/fforager-protocol/",
+      "product/crates/fforager-storage/",
+      "product/crates/fforager-ffmpeg/",
+      "product/crates/fforager-javascript/",
+      "build/crates/fforager-testkit/",
+      "product/apps/fforager-cli/",
+      "product/apps/fforager-launcher/",
+      "product/apps/fforager-worker/",
+      "product/watcher/",
+      "build/tools/fforager-xtask/",
+      "build/fixtures/",
+      "build/integration-tests/",
+      "build/benches/",
+      "build/reports/",
+      ".fforager-artifacts/",
+      "product/MODEL_MANUAL.md"
+    ],
+    "dependencies": [
+      "WP-FF-003-executable-gate-bootstrap-v2 VALIDATED closure 27887cea0026a9db218b623ce8e69fc0cf191fb0 contained in main",
+      "WP-FF-004-compatibility-inventory-corpus-v2 VALIDATED closure 9a39cc597da1fc646c628e64910dbfcf2a0f947e contained in main",
+      "WP-FF-005-versioned-core-contracts-v1 VALIDATED closure acf5465518e94984848e7d1f725575a99daebd55 contained in main",
+      "WP-FF-006-rust-youtube-challenge-spike-v1 requires governance repair and independent revalidation because its recorded closure 99139e04d12ec9f099f2092c624336702143e9fd is not contained in main; after repair it is consumed only as non-product evidence",
+      "WP-FF-007-transport-fingerprint-spike-v2 VALIDATED closure ec14fbd1fb732ef99dc14a4779b8bec6baf60ebe contained in main",
+      "WP-FF-008-archive-store-evidence-v2 VALIDATED closure 92505bd29112c989bb4fbecf5eb58af96ec458e3 contained in main",
+      "WP-FF-009-resource-durability-models-v2 VALIDATED closure 605667f6562c7ae1d51af66bf13bec5f49c24338 contained in main",
+      "WP-FF-010-ffmpeg-supervision-spike-v1 must be VALIDATED with its exact closure commit contained in main",
+      "WP-FF-012-runtime-truth-gates-v1 VALIDATED closure 75dbeb495694955f6a0ff786f7bcb47b73d5bbeb contained in main",
+      "WP-FF-013-proof-integrity-remediation-v2 VALIDATED closure f229ed5147c13cb7cf027867f1b11fe37a9160b4 contained in main",
+      "WP-FF-014-durable-wire-proof-remediation-v3 VALIDATED closure f63cbae2f69b4c1d25e3295cf52ffdb22dc903f5 contained in main",
+      "WP-FF-017-ordinary-transport-decision-v1 and FF-DEC-002 VALIDATED closure 94482379e224482ab3f0f1f7f48f1864ea0105e9 contained in main",
+      "WP-FF-020-equivalent-work-benchmark-design-v1 must be VALIDATED with its exact closure commit contained in main",
+      "WP-FF-021-first-runnable-production-slice-v1 must be production-runtime VALIDATED with its exact closure commit contained in main",
+      "The backwards-compatible multi-artifact and multi-step runtime-proof contract plus executable exact-dependency/main-containment check delivered and validated by WP-FF-021",
+      "Mandatory committed fixture/corpus/equality hashes; optional Operator-supplied pinned yt-dlp 2026.07.04 comparison evidence is non-canonical and may be absent",
+      "Approved transport, archive, challenge-if-used, resource/durability, and FFmpeg implementations",
+      "Versioned benchmark manifest/report schema and reproducible Windows/Unix test profiles",
+      "FF-GATE-ARCH-001, FF-GATE-PR-001, FF-GATE-DEEP-001, and applicable watcher gate operational"
+    ]
+  },
+  "acceptance_matrix": [
+    {"id": "WP-FF-011-equivalent-work-vertical-slice-v1-AC-001", "requirement": "Pinned direct-HTTP and HLS fixtures complete through one engine path with serializable source/selection identities, typed events/errors, and normalized output facts matching the accepted oracle predicates.", "proof_class": "production_runtime", "status": "PENDING", "evidence": []},
+    {"id": "WP-FF-011-equivalent-work-vertical-slice-v1-AC-002", "requirement": "Resource and byte-credit reports prove atomic admission, declared item/byte bounds, cancellation progress, no permit/credit leaks, and no hidden unbounded buffering under normal, slow-consumer, retry, and cancellation cases.", "proof_class": "production_runtime", "status": "PENDING", "evidence": []},
+    {"id": "WP-FF-011-equivalent-work-vertical-slice-v1-AC-003", "requirement": "FFmpeg stream-copy uses a trusted pinned identity, explicit maps and -c copy, bounded progress/pipes, platform-specific graceful/forced cancellation, direct-child reap, declared containment-empty proof, explicit Unix escape/residual-uncertainty reporting, and ffprobe validation before commit eligibility.", "proof_class": "production_runtime", "status": "PENDING", "evidence": []},
+    {"id": "WP-FF-011-equivalent-work-vertical-slice-v1-AC-004", "requirement": "Resume and fault tests cover every durable commit/archive prefix and prove idempotent reconciliation, no resume beyond durable_contiguous, no corrupt final output, and no success before output/archive agreement.", "proof_class": "production_runtime", "status": "PENDING", "evidence": []},
+    {"id": "WP-FF-011-equivalent-work-vertical-slice-v1-AC-005", "requirement": "Watcher tests record Ferric crash evidence and alive-but-stalled state while missing, crashed, incompatible, hung, or storage-failed watcher cases leave identical product behavior and decided result within bounded startup/shutdown.", "proof_class": "production_runtime", "status": "PENDING", "evidence": []},
+    {"id": "WP-FF-011-equivalent-work-vertical-slice-v1-AC-006", "requirement": "Every admitted benchmark sample passes equality for source graph, request sequence, bytes, selected streams, ffprobe output, metadata/sidecar/archive action, validation, failure class, cache/network state, and declared process topology; deliberately cheaper work is rejected. Canonical admission and Ferric correctness pass with optional yt-dlp comparison evidence absent.", "proof_class": "integration", "status": "PENDING", "evidence": []},
+    {"id": "WP-FF-011-equivalent-work-vertical-slice-v1-AC-007", "requirement": "The versioned benchmark report records randomized paired order, warmup, repetitions, outlier/noise policy, distributions, 95-percent confidence bounds, total-system CPU/wall/RSS/I-O, and separated Ferric/FFmpeg costs; one mean cannot pass.", "proof_class": "integration", "status": "PENDING", "evidence": []},
+    {"id": "WP-FF-011-equivalent-work-vertical-slice-v1-AC-008", "requirement": "The backwards-compatible extended runtime-proof gate delivered by WP-FF-021, executable exact-dependency/main-containment check, FF-GATE-ARCH-001, FF-GATE-PR-001, triggered deep/model/fault/benchmark gates, FF-GATE-WATCHER-001, and independent adversarial review pass against one source/tool/corpus/benchmark manifest.", "proof_class": "integration", "status": "PENDING", "evidence": []}
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-08-09T15:39:12Z",
+      "branch": "codex/wp-ff-020-021-planning",
+      "base_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
+      "head_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
+      "dirty_paths": [".GOV/work_packets/WP-FF-011-equivalent-work-vertical-slice-v1/packet.json", ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json", ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json", ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json", ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json", ".GOV/taskboard/taskboard.yaml", ".GOV/id-registry.yaml"],
+      "checks_run": [
+        "Current branch, HEAD, and dirty-path state inspected before dependency-ordering edits.",
+        "Existing runtime-proof executor and counterfactual implementation inspected; current ff.runtime-proof@1 is insufficient for WP-FF-021 and WP-FF-011.",
+        "Existing packet validator searched; scope.dependencies are not currently parsed or mechanically enforced."
+      ],
+      "blockers": ["Packet is a STUB; WP-FF-010, WP-FF-020, and WP-FF-021 are not yet VALIDATED, and WP-FF-021 has not yet delivered the executable dependency-containment or extended runtime-proof gate."],
+      "next_action": "Keep indexed as STUB until WP-FF-010, WP-FF-020, WP-FF-021, and every other consumed readiness gate are VALIDATED and contained in main."
+    }
+  },
+  "validation": {
+    "checks": ["packet_json_parse: PASS", "template_required_sections: PASS", "authority_and_readiness_anchor_review: PASS", "allowed_path_review: PASS"],
+    "not_proven": ["Any end-to-end product behavior", "Direct HTTP or HLS equivalence", "Crash-safe commit/archive", "Watcher integration", "Equivalent-work performance", "Broad or release readiness"]
+  },
+  "extensions": {
+    "repository_layout": {
+      "governance_root": ".GOV/",
+      "product_root": "product/",
+      "product_owns": ["shipped runtime code", "product apps", "product assets", "independent watcher", "product-package-local tests", "MODEL_MANUAL.md"],
+      "build_root": "build/",
+      "build_owns": ["Cargo workspace and lockfile", "architecture/tooling/rule-to-proof policies", "non-shipped xtask and testkit", "shared fixtures", "cross-package integration tests", "fuzz targets", "benchmarks", "generated reports", "Cargo target output"],
+      "toolchain_selector": "rust-toolchain.toml",
+      "canonical_manifest": "build/Cargo.toml",
+      "canonical_command_prefix": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask --",
+      "runtime_boundary": "Shipped product execution must require neither .GOV/ nor build/."
+    },
+    "stub_contract": {
+      "implementation_authorized": false,
+      "promotion_requirements": [
+        "Bind every exact prerequisite packet ID listed in scope.dependencies to a VALIDATED closure commit contained in canonical main; if any ID is superseded, revise this packet before activation rather than accepting an alternative or range.",
+        "Bind exact WP-FF-020-equivalent-work-benchmark-design-v1 to a VALIDATED closure commit contained in main.",
+        "Bind exact WP-FF-021-first-runnable-production-slice-v1 to a production-runtime VALIDATED closure commit contained in main.",
+        "Run the executable exact-dependency/lifecycle/closure/main-containment/non-supersession check delivered by WP-FF-021-first-runnable-production-slice-v1-AC-009; until that check exists and passes, dependency ordering is authoritative but not mechanically proven and this packet remains STUB.",
+        "Confirm all Section 31.7 gates consumed by the slice are executable and passing.",
+        "Validate the Phase 1 production slice and independent watcher before Phase 2 work.",
+        "Freeze exact fixture, oracle, toolchain, FFmpeg, archive, transport, host, filesystem, process-topology, cache, and benchmark manifests.",
+        "Record current source-level benchmark and cross-boundary integration research plus rejected alternatives.",
+        "Freeze equality predicates before performance thresholds.",
+        "Commit one strict no-placeholder runtime-proof object using the backwards-compatible multi-artifact and multi-step schema delivered by WP-FF-021 before changing lifecycle.status from STUB."
+      ]
+    },
+    "documentation_topics": [
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "6.1-6.3", "heading": "Behavioral parity, measurement, and bounded concurrency", "lines": "316-327", "use": "correctness and boundedness precedence"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "15.10 and 16", "heading": "Byte credits and resource governance", "lines": "1381-1487", "use": "end-to-end bounded-resource proof"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "19.7", "heading": "Supervised-process contract", "lines": "1785-1798", "use": "first-slice FFmpeg proof"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "23", "heading": "Persistence, Resume, and Crash Recovery", "lines": "2046-2127", "use": "staged commit and reconciliation"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "25.6-25.8", "heading": "Independent watcher", "lines": "2280-2309", "use": "diagnostic independence/freshness"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "27.1-27.4", "heading": "Benchmark Plan and Performance Gates", "lines": "2481-2552", "use": "equivalent-work manifest and statistics"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "Phase 2", "heading": "Cross-boundary proof slice", "lines": "2605-2614", "use": "complete base scope"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "31.7", "heading": "Broad-feature implementation readiness gates", "lines": "2914-2929", "use": "promotion prerequisites"},
+      {"source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md", "section": "Appendix C", "heading": "Benchmark Matrix", "lines": "3237-3269", "use": "B-005 through B-010, B-016, B-018 through B-021"}
+    ],
+    "readiness_matrix_items": [
+      {"json_pointer": "/consensus_blockers/2", "id": "SYN-003", "required_resolution": "Equivalent work first; versioned workloads, distributions, and confidence bounds second."},
+      {"json_pointer": "/phase_readiness/1", "phase": "Phase 1 and broad parallel implementation", "status": "BLOCKED", "use": "prevents premature activation"},
+      {"json_pointer": "/implementation_readiness_gates/9", "gate": "Equivalent-work benchmark manifests with correctness gates and confidence intervals"},
+      {"json_pointer": "/recommended_next_closure_unit/outputs/4", "output": "Direct-HTTP plus HLS plus FFmpeg-stream-copy vertical slice with cancel, resume, crash reconciliation, and equivalent-work benchmark", "note": "v0.3.0 places the integrated slice in Phase 2 after Phase 0 proof gates and the Phase 1 skeleton; the later canonical design sequencing controls activation."}
+    ],
+    "base_scope": ["Direct HTTP and HLS", "Serializable selection", "Atomic resources/credits", "FFmpeg stream-copy", "Durable commit/archive", "Independent watcher diagnostics", "Equivalent-work benchmark"],
+    "high_roi_additions": [
+      {"addition": "Use one provenance-bound run manifest as the join key for oracle equality, product diagnostics, fault traces, watcher evidence, and benchmark samples.", "why_high_roi": "Every surface already needs provenance, and one key prevents mismatched evidence and parallel-agent confusion.", "gap_closed": "Reports from different source/tool/corpus states could otherwise be combined falsely.", "reuses": ["stable IDs", "xtask reports", "benchmark manifest", "watcher artifact pairing"], "validation": "Aggregator rejects any report with a different manifest hash."},
+      {"addition": "Retain deterministic replay bundles for every failed cross-boundary run.", "why_high_roi": "The fixtures and traces already exist, so packaging them makes future regression and parallel model work much cheaper.", "gap_closed": "Network/process/crash failures are otherwise difficult to reproduce.", "reuses": ["sanitized transcripts", "fault seeds", "structured events", "artifact hashes"], "validation": "A fresh no-context run reproduces the normalized verdict offline."},
+      {"addition": "Add equality-rejection fixtures that intentionally omit archive work, choose a lower-quality stream, warm only one cache, or shift topology.", "why_high_roi": "The benchmark gate is already being built and these cheap negatives prevent the most likely false speed claims.", "gap_closed": "A polished benchmark could reward cheaper work.", "reuses": ["oracle normalization", "benchmark admission", "negative-fixture convention"], "validation": "Each unequal fixture is rejected before timing statistics are evaluated."}
+    ],
+    "reused_systems": ["WP-FF-003 gates and report schema", "WP-FF-004 pinned corpus/oracle", "WP-FF-005 contracts", "WP-FF-006/007 approved challenge/transport evidence", "WP-FF-008 archive backend evidence", "WP-FF-009 resource/durability models", "WP-FF-010 FFmpeg supervisor", "WP-FF-020 equivalent-work benchmark design", "WP-FF-021 Phase 1 engine/launcher/watcher production slice", "fforager-testkit fixtures/faults", "fforager-xtask aggregation"],
+    "gaps_closed": ["No cross-boundary integration proof", "No equal-work performance admission", "No representative crash/cancel/resume path", "No FFmpeg-to-commit validation chain", "No watcher proof on real slice", "No provenance-safe parallel-agent evidence join"],
+    "red_team": [
+      {"risk": "Ferric appears faster by doing less work.", "failure_scenarios": ["lower-quality stream", "omitted sidecar/archive", "less validation", "warm cache only for Ferric", "yt-dlp process topology changed"], "mitigations": ["freeze equality predicates", "reject samples before timing", "negative unequal-work fixtures", "provenance-bound manifest"], "verification": "Every deliberate shortcut is rejected before statistics."},
+      {"risk": "Happy path hides boundedness or cancellation failure.", "failure_scenarios": ["slow disk grows queue", "HLS retry storm leaks tasks", "FFmpeg ignores stop", "watcher sink stalls"], "mitigations": ["resource/queue occupancy", "controlled faults", "bounded cancellation", "watcher correctness independence"], "verification": "Saturation and cancellation cases meet declared bounds and leave no corrupt output/orphan."},
+      {"risk": "Crash reconciliation produces false success or inconsistent archive.", "failure_scenarios": ["crash after rename", "archive row without output", "cleanup before durable archive"], "mitigations": ["shared durable-prefix model", "idempotent startup reconciliation", "success only after agreement"], "verification": "Fault every prefix and rerun recovery twice with identical final verdict."},
+      {"risk": "Benchmark result is statistically or environmentally invalid.", "failure_scenarios": ["one mean", "order bias", "antivirus/storage variance", "different FFmpeg identity"], "mitigations": ["paired randomized order", "variance/noise policy", "95-percent bounds", "pinned environment and tool identities"], "verification": "Report validator rejects missing/mismatched fields and unstable noise above threshold."},
+      {"risk": "The STUB is activated before Phase 2 prerequisites.", "failure_scenarios": ["Phase 0 gate merely planned", "WP-FF-020 benchmark design absent", "WP-FF-021 runtime slice or watcher absent", "blocked backend substituted", "scope.dependencies prose is ignored"], "mitigations": ["exact predecessor IDs", "packet revision on supersession", "executable lifecycle/closure-SHA/main-containment/non-supersession check delivered by WP-FF-021", "fail-closed negative fixtures"], "verification": "After WP-FF-021 delivers the check, it rejects activation unless every exact named prerequisite, including WP-FF-020 and WP-FF-021, is VALIDATED with its closure contained in main; until then this is a recorded residual and the packet remains STUB."}
+    ],
+    "performance_contract": {
+      "correctness_precedes_timing": true,
+      "equivalence_dimensions": ["source graph", "request sequence", "bytes/fragments", "selected streams", "ffprobe output", "metadata/sidecars", "archive action", "validation", "failure class", "cache/network state", "process topology"],
+      "statistics": ["randomized paired order", "warmup", "repetitions", "outlier/noise policy", "distributions", "95-percent confidence bounds"],
+      "cost_reporting": ["total-system wall/CPU/RSS/I-O", "Ferric process", "FFmpeg process", "other authorized worker if used"],
+      "claim_rule": "Upper confidence bound must satisfy no-regression; lower bound must satisfy any claimed improvement; a single mean never passes."
+    },
+    "verification_needs": {
+      "required_commands_at_execution": [
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-deep --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- watcher-check"
+      ],
+      "required_proof_classes": ["oracle equality", "local/replayed network integration", "resource saturation/cancellation", "FFmpeg process fault/validation", "durable-prefix crash recovery", "watcher failure/stall independence", "equivalent-work statistics", "unequal-work negative fixtures", "independent adversarial review"],
+      "closure_rule": "No performance or slice PASS unless all correctness/resource/recovery/watcher/equality gates pass on the exact same provenance manifest and every prerequisite closure is contained in main."
+    },
+    "applicable_rule_ids": ["FF-BUILD-001", "FF-BUILD-003", "FF-BUILD-004", "FF-BUILD-005", "FF-BUILD-006", "FF-BUILD-011", "FF-BUILD-013", "FF-BUILD-014", "FF-BUILD-015", "FF-BUILD-017", "FF-BUILD-018", "FF-BUILD-019", "FF-BUILD-021", "FF-BUILD-022", "FF-BUILD-023", "FF-BUILD-024", "FF-BUILD-025", "FF-BUILD-026", "FF-BUILD-027", "FF-BUILD-030", "FF-BUILD-031", "FF-BUILD-033", "FF-BUILD-034", "FF-BUILD-035", "FF-BUILD-039", "FF-BUILD-042", "FF-BUILD-043", "FF-BUILD-048", "FF-BUILD-057", "FF-BUILD-058", "FF-BUILD-059", "FF-BUILD-060", "FF-BUILD-064", "FF-BUILD-066", "FF-BUILD-067", "FF-BUILD-068", "FF-BUILD-069", "FF-BUILD-070", "FF-BUILD-071", "FF-BUILD-072", "FF-BUILD-073", "FF-BUILD-074", "FF-BUILD-075", "FF-BUILD-076"],
+    "dependency_ordering_authorization": {
+      "source": "operator_message",
+      "recorded_at_utc": "2026-08-09T15:39:12Z",
+      "requirement": "WP-FF-020 and WP-FF-021 must be completed before WP-FF-011."
+    }
+  }
+}

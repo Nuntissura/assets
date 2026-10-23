@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "duplicate-stable-id",
+  "mutation": "duplicate_option_id",
+  "expected_diagnostic": "FF-COMP-E-DUPLICATE-ID: option-abort-on-error"
+}

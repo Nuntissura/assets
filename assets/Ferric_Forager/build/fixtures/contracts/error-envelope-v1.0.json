@@ -1,0 +1,1 @@
+{"header":{"schema_id":"ff.error@1","version":{"major":1,"minor":0},"request_id":"request_error_1","producer_id":"producer_1","job_id":"job_1","sequence":1},"code":"invalid_input","message":"invalid fixture input","retryable":false,"details":{"core.field":"input"}}

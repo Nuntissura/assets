@@ -1,0 +1,162 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-004-compatibility-inventory-corpus-v2-REFINEMENT-001",
+  "wp_id": "WP-FF-004-compatibility-inventory-corpus-v2",
+  "updated_at_utc": "2026-07-19T14:34:48Z",
+  "operator_request": "Run evaluation tests on the just-implemented WP-FF-004 through different adversarial lenses, remediate findings, gaps, concerns, and risks, and clean up code where needed.",
+  "basis": {
+    "research_status": "CURRENT_PRIMARY_AND_FIELD_SOURCES_CHECKED",
+    "activation_basis": "WP-FF-004 v1 is validated high-risk compatibility and serialized-report code. Fresh review must derive attacks from the integrated diff and independently test false-PASS, boundary, negative, and counterfactual cases rather than treating its recorded green tests as proof.",
+    "authority_checked": [
+      "START_HERE.yaml",
+      ".GOV/codex.yaml",
+      ".GOV/rules/build-rules.yaml#FF-BUILD-035",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml#FF-WPR-035",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/packet.json",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/refinement.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#202-compatibility-objective",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#262-differential-test-harness",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#263-recorded-network-fixtures"
+    ],
+    "sources_checked": [
+      {
+        "source": "https://rust-fuzz.github.io/book/cargo-fuzz/structure-aware-fuzzing.html",
+        "checked_at_utc": "2026-07-19T14:31:00Z",
+        "evidence": "The Rust Fuzz Book recommends structure-aware mutation/generation so tests reach semantic validator paths rather than stopping at shallow parse rejection."
+      },
+      {
+        "source": "https://github.com/sourcefrog/cargo-mutants",
+        "checked_at_utc": "2026-07-19T14:31:00Z",
+        "evidence": "Current cargo-mutants guidance distinguishes executed coverage from assertions that actually detect changed behavior; focused manual mutations can expose surviving false-PASS paths without adding an unpinned tool."
+      },
+      {
+        "source": "https://github.com/taiki-e/cargo-hack",
+        "checked_at_utc": "2026-07-19T14:31:00Z",
+        "evidence": "Current cargo-hack supports deterministic feature and partition matrices; WP-004 has one non-shipped package and no feature surface, so the existing all-target/all-feature canonical gate remains the relevant reuse path."
+      },
+      {
+        "source": "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html",
+        "checked_at_utc": "2026-07-19T14:31:00Z",
+        "evidence": "OWASP recommends strict allowlisting for outbound targets and warns that complete URL validation is parser-sensitive; live canary destinations therefore require stronger proof than an https prefix."
+      },
+      {
+        "source": "https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html",
+        "checked_at_utc": "2026-07-19T14:31:00Z",
+        "evidence": "OWASP recommends canonicalization plus allowlist validation and avoiding caller-selected filesystem paths; repository path checks must prove canonical containment rather than lexical prefixes alone."
+      }
+    ],
+    "inspected_implementation_evidence": [
+      "The integrated WP-004 diff adds one 2,129-line Rust compatibility module, command routing, seven cases, twelve negative fixtures, reports, and manual instructions.",
+      "validate_profile checks schema, identity, count self-consistency, stable IDs, and digest shape but does not bind the complete generated row content to an immutable expected digest.",
+      "run_diff consumes candidate, profile, and corpus data but directly calls differential_rows without first validating the canonical profile/corpus and its base report does not attribute the candidate input hash.",
+      "base_report unconditionally emits status PASS, including the live-canary command whose individual checks and console verdict are OBSERVED.",
+      "validate_sanitized_value uses a narrow exact-key and substring set while the manual claims allowlisted placeholders and broad machine-local/secret normalization.",
+      "require_safe_input/output use lexical relative-prefix checks and have not yet proven canonical containment across links or reparse points."
+    ],
+    "field_patterns": [
+      "Mutate semantically valid structured inputs so the probe reaches deep validator logic.",
+      "Bind generated and consumed artifacts to immutable versioned identities or cryptographic digests, not only self-consistent counts.",
+      "Attribute every report-producing input and keep PASS, OBSERVED, DIFFERENT, and missing-feature states mechanically distinct.",
+      "Use strict outbound destination allowlists and canonical filesystem containment at trust boundaries.",
+      "Run simplification only after scope/risk proof, then rerun the complete matrix."
+    ],
+    "reuse_opportunities": [
+      "Reuse existing strict Serde structs, SHA-256 helpers, stable IDs, atomic report writer, source-state attribution, and mutation fixture runner.",
+      "Add structure-aware unit mutations directly beside private validators instead of adding a new testing dependency.",
+      "Reuse canonical compatibility commands and FF-GATE-PR-001 for final aggregate proof."
+    ],
+    "selected_approach": [
+      "Execute four serial independent lenses over the actual integrated code and serialized artifacts.",
+      "First add or run probes that demonstrate a false-PASS or policy bypass, then remediate the narrow production boundary and retain a focused regression test.",
+      "Keep all changes inside the existing non-shipped Rust compatibility surface and existing fixtures unless a confirmed finding requires manual text or governance state."
+    ],
+    "rejected_options": [
+      "Rerunning only the v1 tests, because that would violate the independent-check requirement.",
+      "Adding cargo-fuzz, cargo-mutants, or another dependency/tool immediately, because focused structured mutations can test the current small private surface with existing Rust and locked dependencies.",
+      "Changing the yt-dlp baseline or expanding into Ferric feature implementation, because neither is needed to close this adversarial remediation unit.",
+      "Treating report completeness as parity or live observations as deterministic proof."
+    ],
+    "risks_and_mitigations": [
+      {
+        "risk": "A self-consistent mutation survives validation.",
+        "mitigation": "Bind immutable versioned content and add simultaneous row/count/digest mutation probes."
+      },
+      {
+        "risk": "A command emits PASS while inputs are unvalidated, unattributed, or only observed.",
+        "mitigation": "Validate every consumed canonical artifact, hash every external input, and parameterize report verdicts."
+      },
+      {
+        "risk": "Secret, path, or outbound URL checks are bypassed by alternate spelling or filesystem indirection.",
+        "mitigation": "Use explicit allowlists, canonical containment, and table-driven boundary probes."
+      },
+      {
+        "risk": "Cleanup removes compatibility scope.",
+        "mitigation": "Preserve v1 acceptance IDs and rerun the full canonical matrix after simplification."
+      }
+    ],
+    "validation_plan": "Capture baseline, run structured manual mutations and command-level producer-consumer probes, require RED before remediation where practical, add focused regressions, run formatting/Clippy/tests, compatibility validate/replay/diff/inventory-diff, architecture-check, verify-pr, governance parse/mirror/registry/allowlist checks, and record counterfactuals plus residual uncertainty."
+  },
+  "scope_edges": {
+    "preserve": [
+      "All six WP-FF-004 v1 acceptance requirements and the Phase 0 proof ceiling",
+      "Rust-only production boundary with yt-dlp as research/oracle input only",
+      "Seven mandatory offline planes and mechanically separate opt-in live canaries"
+    ],
+    "change": [
+      "Add independent adversarial regression coverage and narrow remediations for reproduced defects",
+      "Correct misleading report, integrity, sanitizer, path, or live-policy behavior if probes confirm it",
+      "Update no-context instructions only when observable command or recovery behavior changes"
+    ],
+    "assumptions_to_verify": [
+      "The current committed profile, corpus, and live manifests can be immutably bound without preventing deliberate versioned regeneration.",
+      "Canonical path containment can be enforced using existing std filesystem capabilities on the supported host.",
+      "No new dependency is required for complete remediation."
+    ],
+    "non_goals": [
+      "Ferric implementation or parity claims",
+      "New baseline generation or live-network acceptance",
+      "Cross-platform behavior not executable on this Windows host"
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-004-compatibility-inventory-corpus-v2-AC-001",
+    "WP-FF-004-compatibility-inventory-corpus-v2-AC-002",
+    "WP-FF-004-compatibility-inventory-corpus-v2-AC-003",
+    "WP-FF-004-compatibility-inventory-corpus-v2-AC-004",
+    "WP-FF-004-compatibility-inventory-corpus-v2-AC-005"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "pinned_content_integrity_and_false_completeness",
+      "replay_differential_and_report_truthfulness",
+      "sanitization_path_and_live_network_security",
+      "rust_failure_paths_counterfactuals_and_cleanup"
+    ],
+    "minimum_controls": [
+      "At least two independent checks not present in v1 evidence",
+      "At least two concrete code-path counterfactuals",
+      "At least one producer-consumer boundary probe and one negative-path probe",
+      "No PASS from self-consistency, omitted inputs, swallowed errors, or OBSERVED-only results",
+      "Full accepted matrix rerun after simplification"
+    ],
+    "plausible_failures": [
+      "Remove or replace an inventory row while updating its count and retain PASS.",
+      "Rewrite a fixture plus manifest digest or alter expected_outcome and retain PASS.",
+      "Feed a malformed canonical profile/corpus into diff and receive a completeness PASS.",
+      "Alter a candidate without leaving a report input hash.",
+      "Run live canaries whose report status is PASS despite nondeterministic OBSERVED rows.",
+      "Leak a secret or machine-local path through an unrecognized key, spelling, or path form.",
+      "Escape the declared input/output root through canonicalization differences or a filesystem link."
+    ]
+  },
+  "execution_decomposition": [
+    "Run and record clean baseline tests and gates.",
+    "Execute pinned-content structured mutations and preserve every reproducing RED case.",
+    "Execute report/candidate/replay boundary probes and truth-state counterfactuals.",
+    "Execute sanitizer, path containment, live URL, malformed-input, and failure-path probes.",
+    "Remediate confirmed findings with the smallest existing-surface implementation.",
+    "Review deletion/reuse/dependency simplification and rerun the complete matrix.",
+    "Record findings, counterfactuals, residual uncertainty, closure commit, and main containment."
+  ]
+}

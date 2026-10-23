@@ -1,0 +1,1 @@
+{"header":{"schema_id":"ff.event@1","version":{"major":1,"minor":0},"request_id":"request_event_1","producer_id":"producer_1","job_id":"job_1","sequence":1},"kind":"job_progress","criticality":"operational","sensitivity":"operational","payload":{"completed":1}}

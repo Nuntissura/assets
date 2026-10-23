@@ -1,0 +1,127 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-021-first-runnable-production-slice-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-021-first-runnable-production-slice-v1",
+  "updated_at_utc": "2026-08-09T15:39:12Z",
+  "operator_request": "Create a Phase 1 runnable-production-slice work packet, ensure it is completed before WP-FF-011, commit and push the packet changes, then start WP-FF-010.",
+  "basis": {
+    "research_status": "PROJECT_AUTHORITY_AND_REUSE_BASIS_RECORDED_CURRENT_IMPLEMENTATION_RESEARCH_REQUIRED_BEFORE_PROMOTION",
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#9-workspace-and-module-layout",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#23-persistence-resume-and-crash-recovery",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#25-observability-and-diagnostics",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-1--first-runnable-production-slice",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/phase_readiness/1",
+      "product/MODEL_MANUAL.md#runtime-proof-contract",
+      "build/tools/fforager-xtask/src/main.rs runtime-proof schema and executor"
+    ],
+    "research_reopen_triggers": [
+      "WP-FF-010 or WP-FF-020 changes a consumed process, host, or proof contract.",
+      "An implementation mechanism needs a new runtime, native dependency, crate, feature, or public contract.",
+      "The required backwards-compatible runtime-proof schema or deterministic local HTTP proof boundary changes during implementation.",
+      "A locked dependency, toolchain, transport, archive, durability, watcher, or runtime-proof assumption is stale."
+    ],
+    "selected_approach": [
+      "Keep the packet STUB until every exact Phase 0 dependency and the strict backwards-compatible multi-artifact and multi-step runtime-proof contract are committed and mechanically promotable.",
+      "Implement one complete direct-HTTP operator workflow through the shipped entrypoint rather than a broad skeleton.",
+      "Reuse accepted contracts, ordinary transport, archive evidence, durability models, proof gates, and diagnostic schemas before adding mechanisms.",
+      "Use a deterministic local HTTP boundary for canonical runtime proof and keep live internet supplementary.",
+      "Treat the watcher as an independent diagnostic sibling whose failure cannot change product correctness."
+    ],
+    "rejected_options": [
+      "Starting Phase 1 while WP-FF-010 or WP-FF-020 is unvalidated.",
+      "Closing on compilation, unit tests, mocks, fixtures, scaffolding, or internal calls.",
+      "Adding every planned crate before one runtime slice needs it.",
+      "Using yt-dlp, Python, wreq product routing, an external JavaScript runtime, or another unapproved process/dependency.",
+      "Using live internet as the canonical success scenario.",
+      "Making watcher acknowledgement or storage a product success dependency."
+    ],
+    "reuse_opportunities": [
+      "Reuse the WP-005 public and process contracts.",
+      "Reuse FF-DEC-002 ordinary transport with Ferric-owned policy controls.",
+      "Reuse WP-008 archive evidence and WP-009 durability/resource models.",
+      "Extend WP-012 staged runtime proof with backwards fixtures and independent validation because ff.runtime-proof@1 cannot express this slice's multiple artifacts, actors, ordered actions, or semantic state inspection.",
+      "Reuse the protocol package ownership boundary for direct acquisition, byte credits, and sinks.",
+      "Reuse committed compatibility and negative fixtures where they match the direct-HTTP slice.",
+      "Reuse stable diagnostic IDs across product and watcher without adding a control dependency."
+    ],
+    "validation_plan": "After prerequisites close, refresh source-level implementation research; implement and freeze a backwards-compatible multi-artifact and multi-step runtime-proof schema plus deterministic HTTP fixture/server boundary; preserve ff.runtime-proof@1 fixtures; implement only the complete direct-HTTP slice; execute exact staged release success, failure, external cancellation, crash/restart reconciliation, watcher-degraded, semantic-observable, and declaration-preserving behavior/state-counterfactual scenarios; independently rerun the proof producer; prove exact dependency/closure/main-containment validation; run all canonical gates and independent HIGH-risk adversarial review; merge and prove main containment before Phase 1 is VALIDATED."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "The design's Phase 1 sequencing remains canonical.",
+      "FF-DEC-002 remains the only approved ordinary product transport dependency decision.",
+      "No shipped runnable fforager entrypoint currently exists, so all runnable behavior claimed here must be created and proven in this packet.",
+      "The current ff.runtime-proof@1 executor is insufficient; this packet definitely requires a backwards-compatible proof-contract and gate extension for multiple artifacts and actors, deterministic origin supervision, ordered cancellation/restart actions, semantic durable-state inspection, and a real behavior/state counterfactual."
+    ],
+    "non_goals": [
+      "Phase 2 HLS/FFmpeg/equivalent-work runtime expansion.",
+      "Complete compatibility or replacement scope.",
+      "Broad crate scaffolding or planned-command documentation.",
+      "Performance claims."
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-021-first-runnable-production-slice-v1-AC-001",
+    "WP-FF-021-first-runnable-production-slice-v1-AC-002",
+    "WP-FF-021-first-runnable-production-slice-v1-AC-003",
+    "WP-FF-021-first-runnable-production-slice-v1-AC-004",
+    "WP-FF-021-first-runnable-production-slice-v1-AC-005",
+    "WP-FF-021-first-runnable-production-slice-v1-AC-006",
+    "WP-FF-021-first-runnable-production-slice-v1-AC-007",
+    "WP-FF-021-first-runnable-production-slice-v1-AC-008",
+    "WP-FF-021-first-runnable-production-slice-v1-AC-009"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "scaffold_false_completion",
+      "runtime_substitute",
+      "unreachable_product_code",
+      "transport_policy_bypass",
+      "unbounded_bytes_or_tasks",
+      "cancellation_race",
+      "durable_prefix_false_success",
+      "archive_output_disagreement",
+      "watcher_control_dependency",
+      "clean_stage_leak",
+      "counterfactual_self_validation",
+      "dependency_activation_bypass"
+    ],
+    "minimum_controls": [
+      "Strict runtime proof is immutable from activation.",
+      "The exact release artifact executes outside source/build/governance roots.",
+      "At least one success and one nonzero negative scenario cross real production boundaries.",
+      "Every required effect remains pending until acknowledged.",
+      "Watcher failure preserves identical product semantics.",
+      "A declaration-preserving behavior mutation is rejected.",
+      "An independent validator reruns the proof producer, and exact dependency/closure/main-containment negative fixtures fail closed.",
+      "No Phase 2 or broad-readiness claim is emitted."
+    ],
+    "plausible_failures": [
+      "The binary starts but does not acquire media.",
+      "The happy path bypasses production transport or storage.",
+      "Cancellation leaves a task, handle, partial final output, or archive row.",
+      "Recovery advances beyond durable bytes or reports success early.",
+      "Watcher absence changes output or exit behavior.",
+      "The runtime gate observes a fixture helper instead of the product boundary.",
+      "WP-FF-011 activates from ranged, alternative, superseded, unvalidated, or uncontained dependency prose because no executable dependency check ran."
+    ]
+  },
+  "execution_decomposition": [
+    "Wait for WP-FF-010 and WP-FF-020 plus every consumed Phase 0 closure.",
+    "Refresh implementation research; implement the backwards-compatible multi-artifact and multi-step runtime-proof extension, deterministic local HTTP proof boundary, behavior/state counterfactual, independent validator path, and exact dependency-containment check; then freeze strict runtime proof at activation.",
+    "Implement the smallest complete product topology and direct-HTTP runtime path.",
+    "Implement durable output/archive/recovery and independent watcher behavior consumed by that path.",
+    "Run staged production runtime, counterfactual, platform/fault, watcher, and no-context manual proof.",
+    "Perform independent adversarial review, close, merge to main, and prove containment before WP-FF-011 can activate."
+  ]
+}

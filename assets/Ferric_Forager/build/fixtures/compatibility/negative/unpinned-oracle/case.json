@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "unpinned-oracle",
+  "mutation": "unpin_oracle_version",
+  "expected_diagnostic": "FF-COMP-E-UNPINNED-ORACLE: oracle manifest identity or policy mismatch"
+}

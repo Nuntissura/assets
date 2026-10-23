@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "unsanitized-secret",
+  "mutation": "inject_unsanitized_secret",
+  "expected_diagnostic": "FF-COMP-E-UNSANITIZED-SECRET: key=Authorization"
+}

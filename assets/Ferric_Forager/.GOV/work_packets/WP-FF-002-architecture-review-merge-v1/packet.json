@@ -1,0 +1,317 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-002-architecture-review-merge-v1",
+    "base_wp_id": "WP-FF-002-architecture-review-merge",
+    "version": "1",
+    "title": "Merge peer reviews into the executable architecture design",
+    "created_at_utc": "2026-07-18T00:30:03Z",
+    "updated_at_utc": "2026-07-18T01:28:31Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator requested a new project-start design file that merges all peer reviews into the original design, improves the yt-dlp-derived Rust architecture, enforces architecture and coding habits through build rules, prevents the independent diagnostic watcher from going stale, and incorporates research-backed Ponytail critiques and YAGNI principles.",
+    "recorded_at_utc": "2026-07-18T00:30:03Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.2.0.md",
+      ".GOV/reviews/peer-review-v0.2.0/primary-synthesis.md",
+      ".GOV/reviews/peer-review-v0.2.0/architecture-performance-review.md",
+      ".GOV/reviews/peer-review-v0.2.0/compatibility-product-review.md",
+      ".GOV/reviews/peer-review-v0.2.0/security-reliability-review.md",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "0b2fd8a4d8a01eff4c96dc820219647f6b1d72b9",
+    "work_branch": "codex/architecture-review-merge",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/architecture-review-merge",
+      "head_sha": "4bcfcff0b7bb1acfd82d718a955af8bf02e745cd",
+      "verified_at_utc": "2026-07-18T01:28:31Z"
+    },
+    "closure_commit": "1144bb93ba7469f844bf8a950e8e102455f3373d",
+    "main_containment_status": "VALIDATED",
+    "merged_main_commit": "442409455004e57c75c7126938585ca54c55fbf0"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "Closed. A new work packet may implement the Phase 0 executable-gate bootstrap defined by v0.3.0.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Create the next canonical Ferric Forager design by preservation-first integration of the v0.2.0 design, all peer reviews, current architecture research, Ponytail/YAGNI heuristics, executable architecture rules, and watcher anti-staleness requirements.",
+    "in_scope": [
+      "Preservation-first v0.2.0 to v0.3.0 design revision with review traceability",
+      "Coarse Rust workspace architecture and dependency-direction contracts",
+      "Executable architecture and coding-quality enforcement requirements",
+      "Independent watcher lifecycle, freshness, compatibility, and regression contracts",
+      "Current Ponytail critique and YAGNI research distilled into project heuristics",
+      "Authority routing, topology, registry, and build-rule synchronization required by the new design"
+    ],
+    "non_goals": [
+      "Production implementation",
+      "Reducing the final extractor, protocol, metadata, archive, diagnostics, or expanded-product scope",
+      "Authorizing new production runtimes or native dependencies",
+      "Claiming full implementation readiness or yt-dlp replacement parity"
+    ],
+    "allowed_paths": [
+      "START_HERE.yaml",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/id-registry.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/work_packets/WP-FF-002-architecture-review-merge-v1/packet.json",
+      ".GOV/work_packets/WP-FF-002-architecture-review-merge-v1/refinement.json"
+    ],
+    "dependencies": [
+      "Pinned yt-dlp 2026.07.04 review evidence",
+      "Current primary-source software architecture and Rust tooling research",
+      "Git"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-002-architecture-review-merge-v1-AC-001",
+      "requirement": "The v0.3.0 design preserves the complete v0.2.0 product scope and explicitly traces every primary-synthesis and lens-review finding to an accepted change, retained decision, deferred proof gate, or documented rejection.",
+      "status": "PASS",
+      "evidence": ["All 39 original H1 sections and core scope markers are retained; Appendix E contains the exact 47 SYN/AP/FCP/SR rows; independent design re-audit resolved 14/15 substantive findings with only Git tracking pending closure."]
+    },
+    {
+      "id": "WP-FF-002-architecture-review-merge-v1-AC-002",
+      "requirement": "The architecture defines coarse Rust components, allowed dependency directions, public boundary contracts, state-machine ownership, and split criteria that can be checked mechanically without freezing premature crate granularity.",
+      "status": "PASS",
+      "evidence": ["Sections 8.5, 8.6, and 9 define contracts/engine/adapters/composition rings, facade, launcher, Handshake adapter, state ownership, split triggers, separate exception authority, and graph/source/runtime/artifact proof classes."]
+    },
+    {
+      "id": "WP-FF-002-architecture-review-merge-v1-AC-003",
+      "requirement": "Canonical build rules require executable architecture conformance, disciplined Rust coding defaults, exception handling, and CI evidence rather than prose-only compliance.",
+      "status": "PASS",
+      "evidence": ["build-rules.yaml contains contiguous FF-BUILD-001..076, five exact repository-root Cargo gates, change-evidence schema, fail-closed exception allowlist, tooling-policy preflight, and truthful REQUIRED_NOT_YET_IMPLEMENTED status."]
+    },
+    {
+      "id": "WP-FF-002-architecture-review-merge-v1-AC-004",
+      "requirement": "Watcher requirements prevent diagnostic staleness through versioned protocol compatibility, feature/incident coverage, freshness signals, end-to-end fixtures, lifecycle tests, and release gates while preserving process and correctness independence.",
+      "status": "PASS",
+      "evidence": ["Sections 25.6-25.8 and 26.10 plus FF-BUILD-068..076 define degraded lifecycle independence, typed loop progress, privacy, reserved critical storage and residual gaps, independent inventory/corpora/replay, N/N-1 platform coverage, and adversarial tests; final watcher audit PASS."]
+    },
+    {
+      "id": "WP-FF-002-architecture-review-merge-v1-AC-005",
+      "requirement": "The design records current primary-source Ponytail/YAGNI research, critiques, selected heuristics, rejected interpretations, risks, mitigations, and validation implications.",
+      "status": "PASS",
+      "evidence": ["Sections 6.13-6.16 and references R18-R23/R28-R29 pin Ponytail commit 16f2980, separate source claims from Ferric adaptations, include corrected and independent critiques, and enforce scope-before-simplicity with three-stage rerun evidence; final YAGNI audit PASS."]
+    },
+    {
+      "id": "WP-FF-002-architecture-review-merge-v1-AC-006",
+      "requirement": "START_HERE.yaml, project Codex authority, topology, ID registry, taskboard, build rules, and the new design agree on authority paths, stable IDs, and active work state.",
+      "status": "PASS",
+      "evidence": ["START_HERE.yaml, .GOV/codex.yaml, .GOV/topology.yaml, .GOV/id-registry.yaml, taskboard, packet, build rules, and v0.3.0 resolve the same design and active packet IDs; AGENTS.md and CLAUDE.md remain byte-identical."]
+    },
+    {
+      "id": "WP-FF-002-architecture-review-merge-v1-AC-007",
+      "requirement": "All changed YAML and JSON parse, Markdown topic structure and review traceability validate, rule and registry IDs remain consistent, and adversarial negative-path checks expose unresolved uncertainty without false readiness claims.",
+      "status": "PASS",
+      "evidence": ["Six YAML and three JSON files parsed; 76 build rules and five gate IDs aligned; prose topic/frontmatter passed; 39 H1 sections and 47 findings passed; authority/state, portability, allowed-path, adversarial wording, and git diff checks passed. Canonical Cargo gate correctly reports product/Cargo.toml absent and remains unimplemented."]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-18T01:28:31Z",
+      "branch": "main",
+      "base_sha": "0b2fd8a4d8a01eff4c96dc820219647f6b1d72b9",
+      "head_sha": "442409455004e57c75c7126938585ca54c55fbf0",
+      "dirty_paths": [
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/work_packets/WP-FF-002-architecture-review-merge-v1/packet.json"
+      ],
+      "checks_run": [
+        "git branch --show-current: codex/architecture-review-merge",
+        "git rev-parse HEAD: 5bf08d33e9a22d226c8a41b45c4709fc8626c686",
+        "git merge-base main HEAD: 0b2fd8a4d8a01eff4c96dc820219647f6b1d72b9",
+        "six YAML and three JSON files parse",
+        "FF-BUILD-001..076 and five registered gate IDs align",
+        "39 original H1 sections and all 47 review rows retained",
+        "authority, active-state, topic, portability, allowed-path, and adversarial contract probes pass",
+        "independent final Ponytail/YAGNI audit: PASS",
+        "independent final watcher/build-rule audit: PASS",
+        "independent design audit: all 15 findings resolved after closure commit 1144bb93ba7469f844bf8a950e8e102455f3373d tracked v0.3.0 atomically",
+        "git diff --check: PASS",
+        "canonical architecture command: expected failure because product/Cargo.toml does not yet exist",
+        "git merge-base --is-ancestor 1144bb93ba7469f844bf8a950e8e102455f3373d main: exit 0",
+        "remote work branch 4bcfcff0b7bb1acfd82d718a955af8bf02e745cd verified"
+      ],
+      "blockers": [],
+      "next_action": "Closed. A new work packet may implement the Phase 0 executable-gate bootstrap defined by v0.3.0."
+    }
+  },
+  "validation": {
+    "checks": [
+      "yaml_json_parse: PASS",
+      "rule_gate_registry_alignment: PASS",
+      "prose_frontmatter_topic_structure: PASS",
+      "original_scope_and_39_h1_preservation: PASS",
+      "all_47_peer_review_dispositions: PASS",
+      "authority_and_active_state_alignment: PASS",
+      "change_evidence_contract: PASS",
+      "adversarial_wording_and_portability_probes: PASS",
+      "dirty_paths_within_allowed_paths: PASS",
+      "AGENTS_CLAUDE_byte_identity: PASS",
+      "git_diff_check: PASS",
+      "final_design_audit: PASS",
+      "final_watcher_build_audit: PASS",
+      "final_ponytail_yagni_audit: PASS"
+    ],
+    "not_proven": [
+      "Full implementation readiness",
+      "yt-dlp replacement parity",
+      "Execution of FF-GATE-ARCH-001, FF-GATE-PR-001, FF-GATE-DEEP-001, FF-GATE-RELEASE-001, or FF-GATE-WATCHER-001 before the Phase 0 product bootstrap exists"
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-002-architecture-review-merge-v1/refinement.json",
+    "delegated_research": {
+      "authorized_by_operator": true,
+      "primary_agent_proof_review_required": true
+    },
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-047",
+        "FF-BUILD-048",
+        "FF-BUILD-049",
+        "FF-BUILD-050",
+        "FF-BUILD-051",
+        "FF-BUILD-052",
+        "FF-BUILD-053",
+        "FF-BUILD-054",
+        "FF-BUILD-055",
+        "FF-BUILD-056",
+        "FF-BUILD-057",
+        "FF-BUILD-058",
+        "FF-BUILD-059",
+        "FF-BUILD-060",
+        "FF-BUILD-061",
+        "FF-BUILD-062",
+        "FF-BUILD-063",
+        "FF-BUILD-064",
+        "FF-BUILD-065",
+        "FF-BUILD-066",
+        "FF-BUILD-067",
+        "FF-BUILD-068",
+        "FF-BUILD-069",
+        "FF-BUILD-070",
+        "FF-BUILD-071",
+        "FF-BUILD-072",
+        "FF-BUILD-073",
+        "FF-BUILD-074",
+        "FF-BUILD-075",
+        "FF-BUILD-076"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-002-architecture-review-merge-v1-AC-001",
+        "WP-FF-002-architecture-review-merge-v1-AC-002",
+        "WP-FF-002-architecture-review-merge-v1-AC-003",
+        "WP-FF-002-architecture-review-merge-v1-AC-004",
+        "WP-FF-002-architecture-review-merge-v1-AC-005",
+        "WP-FF-002-architecture-review-merge-v1-AC-006",
+        "WP-FF-002-architecture-review-merge-v1-AC-007"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "preserve the complete v0.2.0 product scope",
+          "integrate every peer-review finding with explicit disposition",
+          "define coarse mechanically enforceable architecture",
+          "enforce coding discipline and change evidence through build rules",
+          "keep the independent watcher current without making it a correctness dependency",
+          "distill current Ponytail critiques and YAGNI into guarded heuristics"
+        ],
+        "risk_cases": [
+          "false implementation readiness",
+          "scope loss disguised as simplification",
+          "self-authorized architecture exceptions",
+          "watcher protocol and feature drift",
+          "watcher availability becoming product availability",
+          "bounded diagnostic storage making absolute losslessness impossible",
+          "single-tool proof overclaims",
+          "review dispositions exceeding their normative controls"
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {"candidate": "no new canonical design", "result": "rejected because the accepted request requires one merged starting surface"},
+        {"candidate": "reuse v0.2.0 in place", "result": "reused byte-for-byte as the preservation base before in-place v0.3.0 integration"},
+        {"candidate": "reuse existing project authority and review corpus", "result": "selected for routing, IDs, state, and all 47 finding anchors"},
+        {"candidate": "reuse standard Cargo metadata and Rust workspace lint surfaces", "result": "selected for graph and lint evidence within their documented limits"},
+        {"candidate": "reuse approved dependencies or install Ponytail", "result": "rejected; no product dependency is needed and Ponytail is research input, not authority"},
+        {"candidate": "one-line representation", "result": "rejected because the complete traceable design and atomic rules cannot remain clear or complete in that form"},
+        {"candidate": "smallest complete clear implementation", "result": "selected as one v0.3.0 design plus synchronized canonical build rules and authority routing"}
+      ],
+      "artifact_specific_justification": {
+        "technical_design": "A new versioned source is required to preserve v0.2.0 while making review integration and supersession explicit.",
+        "build_rules": "Canonical atomic rules are required because prose architecture and watcher promises alone cannot enforce later product changes.",
+        "authority_routing": "START_HERE, Codex authority, topology, and registry must resolve the same canonical design atomically.",
+        "work_packet_evidence": "The active packet is the existing canonical per-change machine-readable surface; a second evidence file would create drift."
+      },
+      "pre_simplification_verdict": "FAIL_THEN_CORRECTED: independent audits found bootstrap circularity, scope/identity/security/sink gaps, YAGNI escape hatches, unbootstrappable commands, watcher independence contradictions, and proof overclaims.",
+      "simplification_changes": [
+        "replaced premature fine-grained architecture with coarse rings and evidence-triggered splits",
+        "made one active packet the canonical change-evidence record",
+        "derived machine facts from Cargo and retained only human decisions in architecture policy",
+        "replaced timestamps and self-agreement with independent watcher inventory, canonical corpus, and current-binary replay",
+        "replaced absolute losslessness with scoped durable admission guarantees and explicit residual gaps"
+      ],
+      "post_simplification_verdict": "PASS: the complete accepted scope, risk, review-traceability, authority, architecture, coding, YAGNI, and watcher matrix was rerun after all simplification and adversarial corrections.",
+      "complete_post_change_verification": [
+        "YAML/JSON parse",
+        "rule/gate/registry alignment",
+        "frontmatter/topic structure",
+        "39 original top-level sections and core scope markers",
+        "47 exact review disposition rows",
+        "authority/active-state routing",
+        "change-evidence schema",
+        "portability and stale-wording negative probes",
+        "allowed dirty paths",
+        "AGENTS/CLAUDE byte identity",
+        "git diff check",
+        "independent design, watcher/build, and Ponytail/YAGNI re-audits"
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "classification": "STATUS_LIMITATION_NOT_DELIBERATE_IMPLEMENTATION_CEILING",
+        "current_status_limit": "Design and build-rule contracts are authored; product workspace, xtask, architecture policy, tooling policy, watcher, and all executable product gates do not yet exist.",
+        "next_required_closure": "The first product implementation work packet must create the Phase 0 bootstrap closure before any shipped crate.",
+        "exceptions": [],
+        "linked_evidence": [
+          ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+          ".GOV/rules/build-rules.yaml",
+          ".GOV/reviews/peer-review-v0.2.0/"
+        ]
+      }
+    }
+  }
+}

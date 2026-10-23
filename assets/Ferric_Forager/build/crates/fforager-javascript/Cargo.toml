@@ -1,0 +1,31 @@
+[package]
+name = "fforager-javascript"
+version = "0.1.0"
+workspace = "../.."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+boa_ast.workspace = true
+boa_engine.workspace = true
+boa_gc.workspace = true
+boa_interner.workspace = true
+boa_parser.workspace = true
+fforager-contracts = { version = "0.1.0", path = "../../../product/crates/fforager-contracts" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sysinfo.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "fforager-js-worker"
+path = "src/bin/fforager-js-worker.rs"
+
+[[bin]]
+name = "fforager-js-corpus"
+path = "src/bin/fforager-js-corpus.rs"

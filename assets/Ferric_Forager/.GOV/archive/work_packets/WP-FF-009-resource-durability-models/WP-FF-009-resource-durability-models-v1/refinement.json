@@ -1,0 +1,362 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-009-resource-durability-models-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-009-resource-durability-models-v1",
+  "updated_at_utc": "2026-08-01T22:35:45Z",
+  "operator_request": "Start implementing WP-009; use no more than three subagents in parallel for implementation help and independent adversarial review through different lenses; harden concerns, risks, and gaps; clean Cargo/test artifacts when finished; close finished subagents; tolerate long waits on the loaded host; do not stop processes the assistant did not start; and preserve Ferric as a Rust-native yt-dlp replacement with no yt-dlp dependency.",
+  "basis": {
+    "research_status": "CURRENT_SOURCE_LEVEL_RESEARCH_COMPLETED_2026-08-01",
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md and byte-identical CLAUDE.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md sections 15.3, 15.10, 16, 23, Prerequisite 0B, and 31.7",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json",
+      ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json",
+      ".GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json",
+      "current fforager-contracts, fforager-core, fforager-testkit, fforager-xtask, fixtures, and MODEL_MANUAL.md"
+    ],
+    "sources_checked": [
+      {
+        "id": "WP009-RSCH-DRF-001",
+        "kind": "university_usenix_paper",
+        "url": "https://www.usenix.org/conference/nsdi11/dominant-resource-fairness-fair-allocation-multiple-resource-types",
+        "checked_at": "2026-08-01",
+        "evidence": "Multi-resource fairness must reason about a user's dominant share rather than independent scalar permits; adaptive DRF remains later work because WP-009 freezes a simpler deterministic first policy."
+      },
+      {
+        "id": "WP009-RSCH-TOKIO-SEMAPHORE-001",
+        "kind": "official_versioned_api_and_source",
+        "url": "https://docs.rs/tokio/1.53.1/tokio/sync/struct.Semaphore.html",
+        "checked_at": "2026-08-01",
+        "evidence": "Owned RAII permits release on Drop; FIFO acquire-many fairness can intentionally reserve a large queue head; cancelled acquisition loses its place. Ferric reuses these semantics without adding Tokio to fforager-core."
+      },
+      {
+        "id": "WP009-RSCH-TOKIO-MPSC-001",
+        "kind": "official_versioned_api_and_source",
+        "url": "https://docs.rs/tokio/1.53.1/tokio/sync/mpsc/index.html",
+        "checked_at": "2026-08-01",
+        "evidence": "A bounded queue propagates consumer capacity upstream, while an unbounded queue admits indefinitely; Ferric additionally requires byte bounds because item bounds alone are insufficient."
+      },
+      {
+        "id": "WP009-RSCH-LOOM-001",
+        "kind": "github_source_and_limitations",
+        "url": "https://github.com/tokio-rs/loom",
+        "checked_at": "2026-08-01",
+        "evidence": "Permutation testing is valuable but bounded and explicitly incomplete for parts of the C11 memory model; WP-009 must report model bounds and residual uncertainty rather than claim universal concurrency proof."
+      },
+      {
+        "id": "WP009-RSCH-CRASHMONKEY-001",
+        "kind": "github_source_and_usenix_implementation",
+        "url": "https://github.com/utsaslab/crashmonkey",
+        "checked_at": "2026-08-01",
+        "evidence": "Bounded black-box crash testing enumerates finite operation/persistence prefixes and compares recovered state against an oracle; WP-009 adopts bounded prefix enumeration and explicit fault receipts."
+      },
+      {
+        "id": "WP009-RSCH-SQUIRRELFS-001",
+        "kind": "university_usenix_paper",
+        "url": "https://www.usenix.org/conference/osdi24/presentation/leblanc",
+        "checked_at": "2026-08-01",
+        "evidence": "Typestate can enforce persistence ordering, but WP-009 retains the already-versioned Ferric state-machine boundary and uses executable transition guards instead of introducing a parallel type system."
+      },
+      {
+        "id": "WP009-RSCH-LINUX-OPENAT2-001",
+        "kind": "official_linux_man_pages",
+        "url": "https://man7.org/linux/man-pages/man2/openat2.2.html",
+        "checked_at": "2026-08-01",
+        "evidence": "RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS, and RESOLVE_NO_MAGICLINKS provide an explicit rooted resolution contract; O_NOFOLLOW alone protects only the final component."
+      },
+      {
+        "id": "WP009-RSCH-LINUX-FSYNC-001",
+        "kind": "official_linux_man_pages",
+        "url": "https://man7.org/linux/man-pages/man2/fsync.2.html",
+        "checked_at": "2026-08-01",
+        "evidence": "File fsync does not necessarily persist the containing directory entry, so rename durability requires separately acknowledged directory synchronization."
+      },
+      {
+        "id": "WP009-RSCH-LINUX-RENAME-001",
+        "kind": "official_linux_man_pages",
+        "url": "https://man7.org/linux/man-pages/man2/renameat.2.html",
+        "checked_at": "2026-08-01",
+        "evidence": "Same-filesystem replacement visibility and cross-filesystem EXDEV are distinct from durable persistence; the model keeps rename and sync acknowledgements separate."
+      },
+      {
+        "id": "WP009-RSCH-RUST-FS-001",
+        "kind": "official_rust_1_97_documentation",
+        "url": "https://doc.rust-lang.org/1.97.1/std/fs/struct.File.html",
+        "checked_at": "2026-08-01",
+        "evidence": "File::sync_all reports close-time errors that Drop cannot; explicit acknowledgement is required before durable state advances."
+      },
+      {
+        "id": "WP009-RSCH-RUST-RENAME-001",
+        "kind": "official_rust_1_97_documentation",
+        "url": "https://doc.rust-lang.org/1.97.1/std/fs/fn.rename.html",
+        "checked_at": "2026-08-01",
+        "evidence": "std::fs::rename rejects separate filesystems and maps to different OS primitives; cross-volume copy/sync/rename must remain a separately modeled non-atomic boundary."
+      },
+      {
+        "id": "WP009-RSCH-WINDOWS-REPARSE-001",
+        "kind": "official_microsoft_documentation",
+        "url": "https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-points-and-file-operations",
+        "checked_at": "2026-08-01",
+        "evidence": "Security-sensitive path handling must inspect reparse points using handles and FILE_FLAG_OPEN_REPARSE_POINT rather than trusting normalized names."
+      },
+      {
+        "id": "WP009-RSCH-WINDOWS-FLUSH-001",
+        "kind": "official_microsoft_documentation",
+        "url": "https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers",
+        "checked_at": "2026-08-01",
+        "evidence": "Buffered file data requires explicit FlushFileBuffers acknowledgement; platform and filesystem support remain capability facts, not universal assumptions."
+      },
+      {
+        "id": "WP009-RSCH-WINDOWS-RENAME-001",
+        "kind": "official_microsoft_documentation",
+        "url": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info",
+        "checked_at": "2026-08-01",
+        "evidence": "Handle-relative rename supports an explicit root directory; Ferric must separately verify final handle identity and volume before acknowledging confinement or replacement."
+      },
+      {
+        "id": "WP009-RSCH-HF-JOBS-001",
+        "kind": "adjacent_official_hyperscaler_workflow",
+        "url": "https://huggingface.co/docs/hub/en/jobs-configuration",
+        "checked_at": "2026-08-01",
+        "evidence": "Operational job systems expose explicit bounded timeouts and observable job identity; this supports Ferric's timeout and trace requirements but does not define Ferric's scheduler."
+      },
+      {
+        "id": "WP009-RSCH-COMMUNITY-SCAN-001",
+        "kind": "non_authoritative_failure_report_scan",
+        "url": "https://www.reddit.com/r/rust/comments/1894efi/async_is_hard_but_what_if_we_avoid_shared_state/",
+        "checked_at": "2026-08-01",
+        "evidence": "Community reports reinforce that bounded-channel cycles can deadlock and cancellation/lifecycle ownership is easy to omit; used only to seed negative tests, never as contract authority."
+      },
+      {
+        "id": "WP009-RSCH-ADJACENT-SCAN-001",
+        "kind": "hugging_face_civitai_x_adjacent_scan",
+        "url": "https://github.com/civitai/civitai/wiki/REST-API-Reference",
+        "checked_at": "2026-08-01",
+        "evidence": "Hugging Face supplied relevant timeout/resource examples; Civitai supplied download identity/size metadata but no durable-prefix implementation; X searches returned no inspectable primary implementation evidence. No mechanism was selected from these scans."
+      }
+    ],
+    "patterns_found": [
+      "Atomic multi-resource admission must be one transaction; independent semaphores cannot prove no hold-and-wait.",
+      "Owned permits need Drop-based release plus explicit release receipts when outcome attribution matters.",
+      "Item-bounded queues still need byte bounds and simultaneous input/output reservation for transforming stages.",
+      "Fairness claims are conditional on explicit release/cancellation assumptions and need a deterministic queue/tie-break policy.",
+      "Crash proof is a bounded prefix exploration problem with independent recovery oracles and mutation-sensitive failures.",
+      "Rename visibility, data synchronization, directory synchronization, archive insertion, cleanup, and final reconciliation are separate acknowledgements.",
+      "Path confinement is handle-relative and capability-specific; normalization is not a security boundary.",
+      "Cross-volume and network filesystems require explicit degraded or rejected profiles rather than inherited local-filesystem claims."
+    ],
+    "reuse_opportunities": [
+      "Extend the existing 13-dimensional ResourceVector, ResourceLedger, ByteCreditLedger, DurabilityPosition, StateMachine, JournalRecord, CommitState, ReconcileState, and FilesystemCapability types.",
+      "Reuse fforager-testkit fixture loading, deterministic lifecycle replay, public-boundary counterexamples, and stable invariant IDs.",
+      "Reuse fforager-xtask's proof-class reporting, change-evidence checks, architecture fixtures, and active-packet aggregation.",
+      "Reuse the existing MODEL_MANUAL resource/durability section and update only actually implemented commands and proof ceilings."
+    ],
+    "selected_approach": [
+      "Keep fforager-core dependency-free beyond fforager-contracts; do not add Tokio, Loom, proptest, a database, Python, yt-dlp, or another runtime.",
+      "Promote existing pure models into versioned strict contracts plus deterministic bounded schedule/fault exploration.",
+      "Freeze strict FIFO head reservation with a deterministic per-owner active ceiling as the v1 fairness policy; adaptive DRF or weighted policies remain later evidence-driven work.",
+      "Add owned RAII resource/credit leases at the Ferric boundary so success, error, panic unwind, and cancellation drop paths release exactly once.",
+      "Generate machine-readable traces and reports that name concrete inputs, executed boundaries, expected and observed outcomes, proof class, and residual uncertainty.",
+      "Treat Windows NTFS as the supported local positive profile and Ubuntu WSL2 over v9fs as an explicit Unix rejected/degraded profile; do not claim native Linux filesystem durability from WSL interop."
+    ],
+    "rejected_options": [
+      "Independent per-resource semaphores: rejected because they permit hold-and-wait and cannot atomically admit composite vectors.",
+      "Adding Tokio/Loom/proptest now: rejected because existing Ferric pure models and deterministic explorer can close the bounded prerequisite without another dependency; Loom's own documented incompleteness would not provide universal proof.",
+      "Replacing existing contracts with a new typestate hierarchy: rejected because it would duplicate accepted WP-005/WP-014 public boundaries and increase migration risk.",
+      "Treating std::fs::rename as durable commit: rejected because visibility, file sync, directory sync, archive, and reconciliation acknowledgements are distinct.",
+      "Claiming native Linux support from the WSL2 v9fs mount: rejected because the observed filesystem and host boundary differ from native ext4/xfs semantics.",
+      "Any yt-dlp/Python runtime, test, fixture generator, fallback, sidecar, or delegated path: rejected by project authority and the Operator's explicit constraint."
+    ],
+    "validation_plan": "Run focused contract/core/testkit tests, deterministic schedule/fault/saturation gates, Windows NTFS positive filesystem probes, Ubuntu 24.04 WSL2 v9fs fail-closed probes, isolated counterfactual mutations for each large block, warnings-denied Clippy, full locked workspace tests, architecture-check, verify-deep, runtime-truth prerequisite classification, verify-pr, secret scan, independent adversarial reviews, closure commit, main containment, and final artifact cleanup."
+  },
+  "frozen_profiles": {
+    "resource_vector_contract": {
+      "schema_id": "ff.resource-vector@1",
+      "dimensions": [
+        "metadata_requests",
+        "media_requests",
+        "memory_bytes",
+        "disk_read_bytes_in_flight",
+        "disk_write_bytes_in_flight",
+        "open_handles",
+        "cpu_light_slots",
+        "cpu_heavy_slots",
+        "javascript_workers",
+        "ffmpeg_processes",
+        "ffmpeg_cpu_threads",
+        "archive_writer_slots",
+        "sink_bytes"
+      ],
+      "grant_rule": "complete checked vector or nothing",
+      "ownership_rule": "one non-cloneable owned lease releases exactly once on Drop or explicit finish",
+      "queue_bounds": [
+        "max_waiter_items",
+        "max_waiter_declared_variable_bytes"
+      ],
+      "fairness_policy": "strict_fifo_head_reservation_v1_with_deterministic_per_owner_active_ceiling",
+      "fairness_assumptions": [
+        "Every active grant eventually releases, explicitly cancels, or unwinds.",
+        "Requests do not exceed configured capacity.",
+        "The queue head is never bypassed; once it fits, it is the next issued request."
+      ],
+      "starvation_bound": "Conditional on the assumptions, a queued request advances after at most the finite set of active grants ahead of it release and every earlier waiter is issued and released; no later waiter adds delay."
+    },
+    "byte_credit_contract": {
+      "schema_id": "ff.byte-credit@1",
+      "stages": [
+        "http_receive",
+        "decompression",
+        "decrypt_or_pack_input",
+        "decrypt_or_pack_output",
+        "reorder",
+        "writer",
+        "journal",
+        "ffmpeg_pipe",
+        "spill_and_sink"
+      ],
+      "reservation_rule": "reserve every simultaneously live input and output byte before allocation",
+      "ownership_rule": "an unconsumed claim may transfer exactly once at a time; consumed attribution cannot be rewritten",
+      "loss_policy": "required bytes are lossless; lossy diagnostics require a separate declared budget and cannot consume recorder credit",
+      "durability_positions": [
+        "received",
+        "validated_written_contiguous",
+        "durable_contiguous"
+      ]
+    },
+    "model_inventory": [
+      "resource_admission",
+      "byte_credit_and_fragment_durability",
+      "job_and_cancellation",
+      "sink_backpressure",
+      "ffmpeg_resource_effects",
+      "commit_archive_reconciliation",
+      "filesystem_capability"
+    ],
+    "exploration_profile": {
+      "schema_id": "ff.model-exploration@1",
+      "determinism": "stable case IDs plus explicit seeds and lexicographic transition order",
+      "bounds": [
+        "maximum transition depth per model",
+        "maximum active grants and queued requests",
+        "maximum byte claims and queue bytes",
+        "finite fault inventory across every durable prefix",
+        "bounded trace length with fail-closed overflow"
+      ],
+      "required_failure_oracles": [
+        "no partial resource grant",
+        "no grant or credit leak",
+        "no later waiter bypass",
+        "no queue item or byte bound violation",
+        "no durability position ahead of its prerequisite",
+        "no durable or terminal state before the full acknowledgement set",
+        "no success before output/archive reconciliation",
+        "unsupported confinement fails closed"
+      ]
+    },
+    "platform_profiles": [
+      {
+        "profile_id": "ff-fs-windows-11-26200-ntfs-v1",
+        "environment": "Microsoft Windows 11 Home 10.0.26200 build 26200; repository-root NTFS volume; rustc/cargo 1.97.1",
+        "mode": "SUPPORTED_LOCAL_POSITIVE_PROOF",
+        "required_positive_capabilities": [
+          "same-volume replacement identity",
+          "explicit file flush acknowledgement",
+          "reparse-aware handle-relative confinement",
+          "final handle path, file identity, and volume verification",
+          "cross-volume rejection or explicit copy-sync-rename classification"
+        ],
+        "not_assumed": [
+          "universal directory flush",
+          "network filesystem durability",
+          "normalization as confinement"
+        ]
+      },
+      {
+        "profile_id": "ff-fs-ubuntu-24.04-wsl2-v9fs-v1",
+        "environment": "Ubuntu 24.04 on WSL2 kernel 6.6.87.2; repository mount reports v9fs; matching Rust 1.97.1 toolchain required before execution",
+        "mode": "UNIX_INTEROP_REJECTED_OR_EXPLICITLY_DEGRADED_PROOF",
+        "required_observations": [
+          "rooted path confinement support is probed and failure is closed",
+          "same-filesystem rename and file/directory synchronization are not promoted beyond observed v9fs behavior",
+          "cross-volume and native ext4/xfs durability remain unclaimed",
+          "reports identify WSL2 and v9fs so they cannot satisfy a native Linux profile"
+        ],
+        "replacement_trigger": "Run the same manifest under a repository-compliant native Linux ext4 or xfs host with Rust 1.97.1 and record exact kernel/filesystem identity."
+      }
+    ]
+  },
+  "scope_edges": {
+    "assumptions": [
+      "WP-003 v2 and WP-005 closure commits remain contained in main.",
+      "The current WP-005/WP-014 public contracts and proof infrastructure remain the canonical reuse surface.",
+      "This packet is Phase 0B prerequisite work and cannot claim shipped runtime behavior or product progress.",
+      "No native Linux filesystem proof is available from the current repository mount."
+    ],
+    "non_goals": [
+      "Building the full scheduler, downloader, storage backend, FFmpeg adapter, or Phase 1 entrypoint.",
+      "Adding adaptive scheduling, a database, Python, yt-dlp, or any yt-dlp companion/runtime path.",
+      "Claiming universal filesystem guarantees, universal liveness, native Linux durability, or product completion."
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-009-resource-durability-models-v1-AC-001",
+    "WP-FF-009-resource-durability-models-v1-AC-002",
+    "WP-FF-009-resource-durability-models-v1-AC-003",
+    "WP-FF-009-resource-durability-models-v1-AC-004",
+    "WP-FF-009-resource-durability-models-v1-AC-005",
+    "WP-FF-009-resource-durability-models-v1-AC-006",
+    "WP-FF-009-resource-durability-models-v1-AC-007"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "atomic_vector_overflow_underflow_and_partial_grant",
+      "permit_drop_panic_cancel_and_double_release",
+      "fifo_head_starvation_and_owner_monopoly",
+      "simultaneous_transform_input_output_credit",
+      "dishonest_length_and_unbounded_queue",
+      "durable_prefix_ahead_of_acknowledged_bytes",
+      "partial_effect_acknowledgement_false_terminal_state",
+      "torn_duplicate_reordered_checksum_invalid_journal",
+      "prepared_renamed_archived_cleaned_crash_prefixes",
+      "cross_volume_and_network_filesystem_overclaim",
+      "symlink_junction_reparse_and_toc_tou_confinement",
+      "model_to_implementation_mapping_bypass",
+      "yt_dlp_or_python_indirect_dependency_bypass"
+    ],
+    "minimum_controls": [
+      "Every mutation is transactional or leaves state byte-for-byte unchanged.",
+      "Owned leases are non-cloneable and release through one identity-checked path.",
+      "Every variable-size queue exposes item and byte occupancy.",
+      "Every durable/terminal transition requires the complete effect acknowledgement set.",
+      "Fault cases retain concrete input, prefix, expected and observed recovery, and proof class.",
+      "Platform reports fail closed on unrecognized or mismatched profile identity.",
+      "Independent reviewers attack separate resource, durability/filesystem, and proof-integrity lenses."
+    ],
+    "plausible_failures": [
+      "An integer boundary corrupts accounting after a failed release or queued dispatch.",
+      "A panic drops user work but leaves a ledger grant live.",
+      "Small jobs bypass a large head request indefinitely.",
+      "A transform owns input plus output while only one side is credited.",
+      "A checkpoint record becomes durable before the referenced bytes or directory entry.",
+      "A recovery model accepts archive-without-output or output-without-archive as success.",
+      "A WSL/v9fs result is mislabeled as native Linux filesystem proof.",
+      "A declaration-only fixture passes without changing executable behavior."
+    ]
+  },
+  "execution_decomposition": [
+    "Activate the packet with the immutable non-product prerequisite declaration and research profiles.",
+    "Implement versioned resource/credit contracts, owned leases, deterministic saturation/model tests, and traces.",
+    "Implement durability-prefix, recovery, filesystem-profile, and fault-corpus models plus platform probes.",
+    "Integrate model/fault/saturation proof into fforager-testkit and fforager-xtask reports.",
+    "Run independent adversarial reviews through resource/concurrency, durability/filesystem, and proof-integrity lenses; remediate every confirmed finding at the public boundary.",
+    "Run closure gates, commit, merge to main, prove containment, push durable recovery state, and clean .fforager-artifacts."
+  ]
+}

@@ -1,0 +1,344 @@
+schema_id: ff.id_registry@1
+file_id: FF-GOV-ID-REGISTRY-001
+updated_at: "2026-10-21"
+namespaces:
+  FF-PROJ:
+    entity_kind: project
+    next_numeric_id: 2
+  FF-CODEX:
+    entity_kind: project_rule
+    next_numeric_id: 77
+  FF-BOOT:
+    entity_kind: bootstrap_rule
+    next_numeric_id: 7
+  FF-BUILD:
+    entity_kind: build_rule
+    next_numeric_id: 100
+  FF-GATE:
+    entity_kind: validation_gate
+    next_numeric_id: 2
+    note: Compound stable suffixes are registered below.
+  FF-DOC-DESIGN:
+    entity_kind: technical_design
+    next_numeric_id: 2
+  FF-NODE:
+    entity_kind: topology_node
+    next_numeric_id: 2
+    note: Compound stable suffixes are registered below.
+  FF-EDGE:
+    entity_kind: topology_edge
+    next_numeric_id: 2
+    note: Compound stable suffixes are registered below.
+  FF-BOUNDARY:
+    entity_kind: topology_boundary
+    next_numeric_id: 2
+    note: Compound stable suffixes are registered below.
+  FF-TASKBOARD-RULE:
+    entity_kind: taskboard_rule
+    next_numeric_id: 9
+  FF-WPR:
+    entity_kind: work_packet_requirement
+    next_numeric_id: 59
+  FF-START-BOUNDARY:
+    entity_kind: model_entrypoint_boundary
+    next_numeric_id: 10
+  WP-FF:
+    entity_kind: work_packet
+    next_numeric_id: 25
+  FF-AC:
+    entity_kind: work_packet_acceptance_row
+    next_numeric_id: 1
+  FF-INV:
+    entity_kind: invariant
+    next_numeric_id: 1
+  FF-DEC:
+    entity_kind: decision
+    next_numeric_id: 6
+registered_files:
+  - id: FF-DOC-START-001
+    path: START_HERE.yaml
+  - id: FF-GOV-RULES-001
+    path: .GOV/rules/build-rules.yaml
+  - id: FF-GOV-CODEX-001
+    path: .GOV/codex.yaml
+  - id: FF-GOV-TOPOLOGY-001
+    path: .GOV/topology.yaml
+  - id: FF-GOV-ID-REGISTRY-001
+    path: .GOV/id-registry.yaml
+  - id: FF-GOV-TASKBOARD-001
+    path: .GOV/taskboard/taskboard.yaml
+  - id: FF-GOV-WP-CONTRACT-TEMPLATE-001
+    path: .GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json
+  - id: FF-GOV-WP-REQUIREMENTS-001
+    path: .GOV/templates/WORK_PACKET_REQUIREMENTS.yaml
+  - id: FF-DOC-DESIGN-001
+    path: .GOV/spec/ferric_forager_technical_design_v0.3.0.md
+  - id: FF-GOV-BUILD-ARCH-POLICY-001
+    path: build/architecture-policy.toml
+  - id: FF-GOV-BUILD-TOOLING-POLICY-001
+    path: build/tooling-policy.toml
+  - id: FF-GOV-BUILD-RULE-PROOF-001
+    path: build/rule-to-proof.toml
+  - id: FF-BUILD-CONTRACT-INVENTORY-001
+    path: build/fixtures/contracts/inventory.json
+  - id: FF-PRODUCT-MODEL-MANUAL-001
+    path: product/MODEL_MANUAL.md
+  - id: WP-FF-001-governance-workflow-v1
+    path: .GOV/work_packets/WP-FF-001-governance-workflow-v1/packet.json
+  - id: WP-FF-002-architecture-review-merge-v1
+    path: .GOV/work_packets/WP-FF-002-architecture-review-merge-v1/packet.json
+  - id: WP-FF-002-architecture-review-merge-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-002-architecture-review-merge-v1/refinement.json
+  - id: WP-FF-003-executable-gate-bootstrap-v1
+    path: .GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/packet.json
+  - id: WP-FF-003-executable-gate-bootstrap-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/refinement.json
+  - id: WP-FF-003-executable-gate-bootstrap-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-003-executable-gate-bootstrap-v2
+    path: .GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json
+  - id: WP-FF-003-executable-gate-bootstrap-v2-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/refinement.json
+  - id: WP-FF-003-executable-gate-bootstrap-v2-CEILING-001
+    path: .GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-004-compatibility-inventory-corpus-v1
+    path: .GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/packet.json
+  - id: WP-FF-004-compatibility-inventory-corpus-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/refinement.json
+  - id: WP-FF-004-compatibility-inventory-corpus-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-004-compatibility-inventory-corpus-v2
+    path: .GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json
+  - id: WP-FF-004-compatibility-inventory-corpus-v2-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/refinement.json
+  - id: WP-FF-004-compatibility-inventory-corpus-v2-CEILING-001
+    path: .GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-005-versioned-core-contracts-v1
+    path: .GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json
+  - id: WP-FF-005-versioned-core-contracts-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/refinement.json
+  - id: WP-FF-005-versioned-core-contracts-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-006-rust-youtube-challenge-spike-v1
+    path: .GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/packet.json
+  - id: WP-FF-006-rust-youtube-challenge-spike-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/refinement.json
+  - id: WP-FF-006-rust-youtube-challenge-spike-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-007-transport-fingerprint-spike-v1
+    path: .GOV/archive/work_packets/WP-FF-007-transport-fingerprint-spike/WP-FF-007-transport-fingerprint-spike-v1/packet.json
+  - id: WP-FF-007-transport-fingerprint-spike-v1-REFINEMENT-001
+    path: .GOV/archive/work_packets/WP-FF-007-transport-fingerprint-spike/WP-FF-007-transport-fingerprint-spike-v1/refinement.json
+  - id: WP-FF-007-transport-fingerprint-spike-v1-CEILING-001
+    path: .GOV/archive/work_packets/WP-FF-007-transport-fingerprint-spike/WP-FF-007-transport-fingerprint-spike-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-007-transport-fingerprint-spike-v2
+    path: .GOV/work_packets/WP-FF-007-transport-fingerprint-spike-v2/packet.json
+  - id: WP-FF-007-transport-fingerprint-spike-v2-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-007-transport-fingerprint-spike-v2/refinement.json
+  - id: WP-FF-007-transport-fingerprint-spike-v2-CEILING-001
+    path: .GOV/work_packets/WP-FF-007-transport-fingerprint-spike-v2/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-008-archive-store-evidence-v1
+    path: .GOV/work_packets/WP-FF-008-archive-store-evidence-v1/packet.json
+  - id: WP-FF-009-resource-durability-models-v1
+    path: .GOV/work_packets/WP-FF-009-resource-durability-models-v1/packet.json
+  - id: WP-FF-010-ffmpeg-supervision-spike-v1
+    path: .GOV/work_packets/WP-FF-010-ffmpeg-supervision-spike-v1/packet.json
+  - id: WP-FF-010-ffmpeg-supervision-spike-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-010-ffmpeg-supervision-spike-v1/refinement.json
+  - id: WP-FF-010-ffmpeg-supervision-spike-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-010-ffmpeg-supervision-spike-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-011-equivalent-work-vertical-slice-v1
+    path: .GOV/work_packets/WP-FF-011-equivalent-work-vertical-slice-v1/packet.json
+  - id: WP-FF-012-runtime-truth-gates-v1
+    path: .GOV/work_packets/WP-FF-012-runtime-truth-gates-v1/packet.json
+  - id: WP-FF-012-runtime-truth-gates-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-012-runtime-truth-gates-v1/refinement.json
+  - id: WP-FF-012-runtime-truth-gates-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-012-runtime-truth-gates-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-013-proof-integrity-remediation-v1
+    path: .GOV/archive/work_packets/WP-FF-013-proof-integrity-remediation/WP-FF-013-proof-integrity-remediation-v1/packet.json
+  - id: WP-FF-013-proof-integrity-remediation-v1-REFINEMENT-001
+    path: .GOV/archive/work_packets/WP-FF-013-proof-integrity-remediation/WP-FF-013-proof-integrity-remediation-v1/refinement.json
+  - id: WP-FF-013-proof-integrity-remediation-v1-CEILING-001
+    path: .GOV/archive/work_packets/WP-FF-013-proof-integrity-remediation/WP-FF-013-proof-integrity-remediation-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-013-proof-integrity-remediation-v2
+    path: .GOV/work_packets/WP-FF-013-proof-integrity-remediation-v2/packet.json
+  - id: WP-FF-013-proof-integrity-remediation-v2-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-013-proof-integrity-remediation-v2/refinement.json
+  - id: WP-FF-013-proof-integrity-remediation-v2-CEILING-001
+    path: .GOV/work_packets/WP-FF-013-proof-integrity-remediation-v2/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-014-durable-wire-proof-remediation-v1
+    path: .GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/WP-FF-014-durable-wire-proof-remediation-v1/packet.json
+  - id: WP-FF-014-durable-wire-proof-remediation-v1-REFINEMENT-001
+    path: .GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/WP-FF-014-durable-wire-proof-remediation-v1/refinement.json
+  - id: WP-FF-014-durable-wire-proof-remediation-v1-CEILING-001
+    path: .GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/WP-FF-014-durable-wire-proof-remediation-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-014-durable-wire-proof-remediation-v2
+    path: .GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/WP-FF-014-durable-wire-proof-remediation-v2/packet.json
+  - id: WP-FF-014-durable-wire-proof-remediation-v2-REFINEMENT-001
+    path: .GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/WP-FF-014-durable-wire-proof-remediation-v2/refinement.json
+  - id: WP-FF-014-durable-wire-proof-remediation-v2-CEILING-001
+    path: .GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/WP-FF-014-durable-wire-proof-remediation-v2/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-014-durable-wire-proof-remediation-v3
+    path: .GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/packet.json
+  - id: WP-FF-014-durable-wire-proof-remediation-v3-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/refinement.json
+  - id: WP-FF-014-durable-wire-proof-remediation-v3-CEILING-001
+    path: .GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-015-wreq-transport-adjudication-v1
+    path: .GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/packet.json
+  - id: WP-FF-015-wreq-transport-adjudication-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/refinement.json
+  - id: WP-FF-015-wreq-transport-adjudication-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: FF-DEC-001
+    path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/0
+  - id: WP-FF-016-no-api-key-guard-v1
+    path: .GOV/work_packets/WP-FF-016-no-api-key-guard-v1/packet.json
+  - id: WP-FF-016-no-api-key-guard-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-016-no-api-key-guard-v1/refinement.json
+  - id: WP-FF-016-no-api-key-guard-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-016-no-api-key-guard-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-017-ordinary-transport-decision-v1
+    path: .GOV/work_packets/WP-FF-017-ordinary-transport-decision-v1/packet.json
+  - id: WP-FF-017-ordinary-transport-decision-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-017-ordinary-transport-decision-v1/refinement.json
+  - id: WP-FF-017-ordinary-transport-decision-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-017-ordinary-transport-decision-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: FF-DEC-002
+    path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/1
+  - id: FF-DEC-003
+    path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/2
+  - id: FF-DEC-004
+    path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/3
+  - id: FF-DEC-005
+    path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/4
+  - id: WP-FF-018-governance-state-wording-fix-v1
+    path: .GOV/work_packets/WP-FF-018-governance-state-wording-fix-v1/packet.json
+  - id: WP-FF-018-governance-state-wording-fix-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-018-governance-state-wording-fix-v1/refinement.json
+  - id: WP-FF-019-ferforstart-session-bootstrap-v1
+    path: .GOV/work_packets/WP-FF-019-ferforstart-session-bootstrap-v1/packet.json
+  - id: WP-FF-019-ferforstart-session-bootstrap-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-019-ferforstart-session-bootstrap-v1/refinement.json
+  - id: WP-FF-020-equivalent-work-benchmark-design-v1
+    path: .GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json
+  - id: WP-FF-020-equivalent-work-benchmark-design-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json
+  - id: WP-FF-021-first-runnable-production-slice-v1
+    path: .GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json
+  - id: WP-FF-021-first-runnable-production-slice-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json
+  - id: WP-FF-021-first-runnable-production-slice-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: FF-NODE-SESSION-BOOTSTRAP-001
+    path: .GOV/topology.yaml#/nodes
+  - id: FF-EDGE-SESSION-BOOTSTRAP-INJECTS-START-001
+    path: .GOV/topology.yaml#/edges
+  - id: FF-EDGE-SESSION-BOOTSTRAP-INJECTS-CODEX-001
+    path: .GOV/topology.yaml#/edges
+  - id: FF-EDGE-SESSION-BOOTSTRAP-INJECTS-TOPOLOGY-001
+    path: .GOV/topology.yaml#/edges
+  - id: WP-FF-022-prerequisite-classifier-remediation-v1
+    path: .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json
+  - id: WP-FF-022-prerequisite-classifier-remediation-v2
+    path: .GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json
+  - id: WP-FF-023-dependency-security-remediation-v1
+    path: .GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json
+  - id: WP-FF-023-dependency-security-remediation-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-024-predecessor-state-reconciliation-v1
+    path: .GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json
+  - id: WP-FF-024-predecessor-state-reconciliation-v2
+    path: .GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v2/packet.json
+  - id: WP-FF-024-predecessor-state-reconciliation-v2-CEILING-001
+    path: .GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v2/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-024-predecessor-state-reconciliation-v1-CEILING-001
+    path: .GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+registered_rule_ranges:
+  - namespace: FF-BOOT
+    first: FF-BOOT-001
+    last: FF-BOOT-007
+    count: 7
+    path: AGENTS.md
+    mirror_path: CLAUDE.md
+  - namespace: FF-CODEX
+    first: FF-CODEX-001
+    last: FF-CODEX-076
+    count: 76
+    path: .GOV/codex.yaml
+  - namespace: FF-BUILD
+    first: FF-BUILD-001
+    last: FF-BUILD-099
+    count: 99
+    path: .GOV/rules/build-rules.yaml
+  - namespace: FF-TASKBOARD-RULE
+    first: FF-TASKBOARD-RULE-001
+    last: FF-TASKBOARD-RULE-008
+    count: 8
+    path: .GOV/taskboard/taskboard.yaml
+  - namespace: FF-WPR
+    first: FF-WPR-001
+    last: FF-WPR-058
+    count: 58
+    path: .GOV/templates/WORK_PACKET_REQUIREMENTS.yaml
+  - namespace: FF-START-BOUNDARY
+    first: FF-START-BOUNDARY-001
+    last: FF-START-BOUNDARY-009
+    count: 9
+    path: START_HERE.yaml
+registered_topology_ids:
+  - FF-NODE-ROOT-001
+  - FF-NODE-CODEX-001
+  - FF-NODE-CLAUDE-001
+  - FF-NODE-CODEX-RULES-001
+  - FF-NODE-START-001
+  - FF-NODE-TOPOLOGY-001
+  - FF-NODE-PRODUCT-001
+  - FF-NODE-BUILD-001
+  - FF-NODE-ARTIFACT-ROOT-001
+  - FF-NODE-WORKTREE-ROOT-001
+  - FF-NODE-TOOLCHAIN-SELECTOR-001
+  - FF-NODE-WATCHER-001
+  - FF-NODE-GOV-001
+  - FF-NODE-RULES-001
+  - FF-NODE-SPEC-001
+  - FF-NODE-REVIEWS-001
+  - FF-NODE-TEMPLATES-001
+  - FF-NODE-WP-REQUIREMENTS-001
+  - FF-NODE-TASKBOARD-001
+  - FF-NODE-WORK-PACKETS-001
+  - FF-NODE-ARCHIVE-001
+  - FF-NODE-ID-REGISTRY-001
+  - FF-EDGE-CODEX-READS-TOPOLOGY-001
+  - FF-EDGE-CODEX-READS-RULES-001
+  - FF-EDGE-CLAUDE-MIRRORS-CODEX-001
+  - FF-EDGE-START-ROUTES-TOPOLOGY-001
+  - FF-EDGE-BOOT-ROUTES-CODEX-001
+  - FF-EDGE-BOOT-ROUTES-START-001
+  - FF-EDGE-TASKBOARD-INDEXES-PACKETS-001
+  - FF-EDGE-REQUIREMENTS-GOVERN-PACKETS-001
+  - FF-EDGE-PACKETS-GOVERN-PRODUCT-001
+  - FF-EDGE-PACKETS-GOVERN-BUILD-001
+  - FF-EDGE-BUILD-BUILDS-PRODUCT-001
+  - FF-EDGE-BUILD-WRITES-ARTIFACTS-001
+  - FF-EDGE-WORKTREES-MERGE-PRODUCT-001
+  - FF-EDGE-WORKTREES-SHARE-ARTIFACTS-001
+  - FF-EDGE-TOOLCHAIN-SELECTS-BUILD-001
+  - FF-EDGE-WATCHER-OBSERVES-PRODUCT-001
+  - FF-EDGE-SPEC-INFORMS-PACKETS-001
+  - FF-EDGE-REVIEWS-GATE-PACKETS-001
+  - FF-BOUNDARY-PRODUCT-GOV-001
+  - FF-BOUNDARY-PRODUCT-BUILD-001
+  - FF-BOUNDARY-RUNTIME-DEPENDENCY-001
+  - FF-BOUNDARY-WATCHER-001
+  - FF-BOUNDARY-PYTHON-001
+registered_validation_gate_ids:
+  - FF-GATE-SECRET-001
+  - FF-GATE-ARCH-001
+  - FF-GATE-PR-001
+  - FF-GATE-DEEP-001
+  - FF-GATE-RELEASE-001
+  - FF-GATE-WATCHER-001
+  - FF-GATE-RUNTIME-001
+  - FF-GATE-ARTIFACT-HYGIENE-001

@@ -1,0 +1,399 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-004-compatibility-inventory-corpus-v2",
+    "base_wp_id": "WP-FF-004-compatibility-inventory-corpus",
+    "version": "2",
+    "title": "Adversarially re-evaluate and remediate the compatibility inventory and corpus",
+    "created_at_utc": "2026-07-19T14:34:48Z",
+    "updated_at_utc": "2026-07-19T15:22:02Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator requested evaluation tests on WP-FF-004 through different adversarial lenses, remediation of findings, gaps, concerns, and risks, and code cleanup where needed.",
+    "recorded_at_utc": "2026-07-19T14:34:48Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#71-baseline-release",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#202-compatibility-objective",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#204-compatibility-report",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#262-differential-test-harness",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#263-recorded-network-fixtures",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0a--compatibility-inventory-and-executable-oracle",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#316-compatibility"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "f94c17854213fff4dbd82e754314f37a011db3a3",
+    "work_branch": "codex/wp-ff-004-adversarial-remediation",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/wp-ff-004-adversarial-remediation",
+      "head_sha": "5804802cabb98e380addfc7ae13a975af88557bc",
+      "verified_at_utc": "2026-07-19T15:20:14Z"
+    },
+    "closure_commit": "9a39cc597da1fc646c628e64910dbfcf2a0f947e",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "2e985c883b45e9a6f12b721e3749722748657f91"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "Await Operator selection before activating any later work-packet stub.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Re-prove the validated WP-FF-004 v1 contract through fresh independent attack lenses, remediate every reproduced false-PASS, security, attribution, and robustness defect, simplify brittle code, and rerun the complete compatibility and canonical gate matrix.",
+    "in_scope": [
+      "Preserve and freshly re-prove every WP-FF-004 v1 acceptance requirement",
+      "Attack pinned profile/corpus/live-manifest integrity and completeness rather than trusting self-consistent counts",
+      "Attack replay and differential producer-consumer boundaries, candidate attribution, classification integrity, and report truthfulness",
+      "Attack sanitizer, path containment, live URL policy, malformed input, duplicate argument, and failure-report behavior",
+      "Add focused regression tests and negative fixtures for confirmed findings",
+      "Remove or simplify brittle, duplicated, misleading, or unnecessary code only while full scope remains proven",
+      "Run canonical compatibility commands, FF-GATE-ARCH-001, FF-GATE-PR-001, counterfactuals, boundary probes, and negative paths"
+    ],
+    "non_goals": [
+      "Ferric extractor, transport, archive, JavaScript, FFmpeg, or shipped runtime implementation",
+      "A replacement-parity, performance, release, or broad Phase 1 readiness claim",
+      "Changing the pinned yt-dlp 2026.07.04 baseline or adding a production Python/yt-dlp dependency",
+      "Adding a new runtime, native dependency, worktree, or delegated agent"
+    ],
+    "allowed_paths": [
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/id-registry.yaml",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/refinement.json",
+      "build/tools/fforager-xtask/",
+      "build/fixtures/compatibility/",
+      "build/reports/",
+      "product/MODEL_MANUAL.md"
+    ],
+    "dependencies": [
+      "WP-FF-004 v1 validated implementation and six acceptance requirements",
+      "Pinned Rust toolchain, Cargo, Git, and existing locked dependencies",
+      "Pinned yt-dlp 2026.07.04 profile, corpus, oracle manifest, and separately acquired oracle inputs when regeneration is exercised",
+      "No new product runtime or native dependency"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v2-AC-001",
+      "requirement": "All six WP-FF-004 v1 acceptance requirements remain preserved and are freshly re-proven against current source, manifests, fixtures, reports, manual, and canonical commands.",
+      "status": "PASS",
+      "evidence": [
+        "All six v1 acceptance requirements were re-read and preserved.",
+        "Clean compatibility validation, full replay, 2/4/0/1 deterministic shards, empty-candidate diff, identity inventory diff, 43 Rust tests, warnings-denied Clippy, and architecture-check pass at 9a39cc597da1fc646c628e64910dbfcf2a0f947e."
+      ]
+    },
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v2-AC-002",
+      "requirement": "Pinned-content integrity, replay/differential truthfulness, sanitization/path/live-network security, and Rust failure-path/cleanup lenses each derive concrete attack surfaces and execute checks beyond v1 evidence, including at least two counterfactuals, one producer-consumer boundary probe, and one negative-path probe.",
+      "status": "PASS",
+      "evidence": [
+        "Eleven structure-aware tests were first observed RED and then GREEN across all four declared lenses.",
+        "Independent command probes proved Windows CRLF digest failure, differential bypass of failing canonical validation, missing candidate attribution, canonical corpus rejection, and junction containment.",
+        "Four concrete counterfactuals, two producer-consumer boundary probes, and malformed/oversized/omission/classification/security negative paths are recorded under extensions.change_evidence.adversarial_review."
+      ]
+    },
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v2-AC-003",
+      "requirement": "Every reproduced finding, gap, concern, and risk is remediated with executable regression proof or retained as explicit bounded residual uncertainty that does not contradict the Phase 0 proof ceiling; no known false-PASS route remains.",
+      "status": "PASS",
+      "evidence": [
+        "Every confirmed finding is recorded under extensions.change_evidence.independent_findings with executable remediation.",
+        "The exact 16-mutation compatibility validator and 24 compatibility-focused tests pass.",
+        "Residual uncertainty is bounded under extensions.change_evidence.residual_uncertainty and does not contradict the Phase 0 proof ceiling."
+      ]
+    },
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v2-AC-004",
+      "requirement": "A reuse, deletion, dependency, and simplification review removes or improves brittle or misleading implementation where safe, and the complete accepted scope/risk matrix passes again after cleanup.",
+      "status": "PASS",
+      "evidence": [
+        "Mutation handling was split into profile, oracle, corpus, and candidate helpers; candidate validation/classification and generic inventory deltas removed duplicated long paths.",
+        "No dependency, runtime, crate, feature, or parallel framework was added.",
+        "Formatting, warnings-denied Clippy, 43 tests, compatibility commands, and architecture-check passed after simplification."
+      ]
+    },
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v2-AC-005",
+      "requirement": "Formatting, warnings-denied Clippy, the full Rust test suite, deterministic compatibility validation/replay/diff/inventory-diff probes, FF-GATE-ARCH-001, FF-GATE-PR-001, governance parsing, authority mirror, allowlist, registry-target, and git diff checks pass on the final clean branch with truthful proof limitations.",
+      "status": "PASS",
+      "evidence": [
+        "PASS before final aggregate rerun: build/reports/compatibility-validate-1784473586662161900-662216.json",
+        "PASS full replay: build/reports/compatibility-replay-1784473587540703300-659432.json",
+        "PASS shard replays: build/reports/compatibility-replay-1784473588301239300-653996.json, build/reports/compatibility-replay-1784473589581095200-653496.json, build/reports/compatibility-replay-1784473590584427500-620384.json, build/reports/compatibility-replay-1784473591719560600-652064.json",
+        "PASS candidate-attributed diff: build/reports/compatibility-diff-1784473593374506600-649852.json",
+        "PASS inventory diff v2: build/reports/compatibility-inventory-diff-1784473595216892900-652248.json",
+        "PASS architecture gate: build/reports/architecture-check-1784473609459449000-615092.json",
+        "PASS clean aggregate gate: build/reports/verify-pr-1784474179254131400-638204.json"
+      ]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-19T15:20:14Z",
+      "branch": "main",
+      "base_sha": "f94c17854213fff4dbd82e754314f37a011db3a3",
+      "head_sha": "2e985c883b45e9a6f12b721e3749722748657f91",
+      "dirty_paths": [
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json"
+      ],
+      "checks_run": [
+        "Authority, topology, build rules, packet template, v1 packet/refinement, cited design anchors, and readiness gates read",
+        "git branch --show-current: codex/wp-ff-004-adversarial-remediation",
+        "git rev-parse HEAD and git merge-base main HEAD: f94c17854213fff4dbd82e754314f37a011db3a3",
+        "Integrated WP-FF-004 diff and complete compatibility.rs implementation inspected",
+        "Baseline 28 tests PASS but compatibility-validate FAIL on all seven CRLF-converted case digests",
+        "Eleven independent structured mutations reproduced false-PASS or policy-bypass behavior before remediation",
+        "After remediation: formatting PASS; warnings-denied Clippy PASS; 43 tests PASS",
+        "Clean compatibility validate/replay/shards/diff/inventory-diff and FF-GATE-ARCH-001 PASS at 9a39cc597da1fc646c628e64910dbfcf2a0f947e",
+        "Canonical containment junction probe and corrupted-corpus differential probe rejected for the exact intended diagnostics",
+        "Initial FF-GATE-PR-001 correctly rejected pending packet evidence; failure report build/reports/verify-pr-1784473626788804400-630820.json",
+        "Final clean FF-GATE-PR-001 PASS at cd07c4c9cc31dc990c50abf3ba30d7ce628ae4ae; report build/reports/verify-pr-1784474179254131400-638204.json",
+        "git merge-base mechanically verified closure commit 9a39cc597da1fc646c628e64910dbfcf2a0f947e and branch head 5804802cabb98e380addfc7ae13a975af88557bc are ancestors of main merge 2e985c883b45e9a6f12b721e3749722748657f91",
+        "Post-merge focused compatibility regression: 24 PASS",
+        "Post-merge FF-GATE-ARCH-001 PASS at build/reports/architecture-check-1784474490074057900-655980.json"
+      ],
+      "blockers": [],
+      "next_action": "Await Operator selection before activating any later work-packet stub."
+    }
+  },
+  "validation": {
+    "checks": [
+      "24 compatibility-focused tests and 43 full Rust tests PASS",
+      "Warnings-denied Clippy and formatting PASS",
+      "Compatibility validation PASS with seven planes and exact 16 required negative mutations",
+      "Full and 2/4/0/1 sharded replay PASS with explicit per-case receipts",
+      "Candidate-attributed differential report PASS for completeness with seven explicit missing_feature rows",
+      "Inventory-diff v2 PASS across options, presets, interactions, extractors, and extractor descriptions",
+      "FF-GATE-ARCH-001 PASS at build/reports/architecture-check-1784473609459449000-615092.json",
+      "Canonical containment and corrupted-corpus command probes PASS by exact rejection",
+      "FF-GATE-PR-001 PASS: build/reports/verify-pr-1784474179254131400-638204.json",
+      "Main containment VERIFIED at merge 2e985c883b45e9a6f12b721e3749722748657f91",
+      "Post-merge 24-test compatibility regression PASS and FF-GATE-ARCH-001 PASS: build/reports/architecture-check-1784474490074057900-655980.json"
+    ],
+    "not_proven": [
+      "Any Ferric feature behavior or replacement parity",
+      "Exhaustive behavioral coverage for every inventory row or extractor",
+      "Cross-host oracle generation or live-site stability",
+      "DNS resolution or redirect-target safety inside the external live-probe backend",
+      "Protection against a hostile local actor changing a canonicalized path after containment validation"
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/refinement.json",
+    "revision": {
+      "revises": "WP-FF-004-compatibility-inventory-corpus-v1",
+      "preserved_acceptance_ids": [
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-001",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-002",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-003",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-004",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-005",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-006"
+      ],
+      "changed_requirements": [
+        "Fresh multi-lens independent adversarial evaluation",
+        "Executable reproduction and remediation of confirmed findings",
+        "Post-remediation cleanup and complete proof rerun"
+      ],
+      "supersession_effective_when": "WP-FF-004-compatibility-inventory-corpus-v2 reaches VALIDATED"
+    },
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-017",
+        "FF-BUILD-018",
+        "FF-BUILD-031",
+        "FF-BUILD-034",
+        "FF-BUILD-035",
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-047",
+        "FF-BUILD-048",
+        "FF-BUILD-049",
+        "FF-BUILD-050",
+        "FF-BUILD-052",
+        "FF-BUILD-057",
+        "FF-BUILD-058",
+        "FF-BUILD-059",
+        "FF-BUILD-060",
+        "FF-BUILD-064",
+        "FF-BUILD-066",
+        "FF-BUILD-067",
+        "FF-BUILD-077"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-004-compatibility-inventory-corpus-v2-AC-001",
+        "WP-FF-004-compatibility-inventory-corpus-v2-AC-002",
+        "WP-FF-004-compatibility-inventory-corpus-v2-AC-003",
+        "WP-FF-004-compatibility-inventory-corpus-v2-AC-004",
+        "WP-FF-004-compatibility-inventory-corpus-v2-AC-005"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Preserve all v1 acceptance requirements",
+          "Make pinned inventory and corpus omissions or rewrites fail closed",
+          "Keep replay and differential reports complete, attributable, and truthful",
+          "Keep offline validation network-free and live canaries strictly bounded and non-proof",
+          "Reject secrets, machine-local paths, malformed identities, duplicates, and mismatched inputs"
+        ],
+        "risk_cases": [
+          "Self-consistent profile or corpus mutation bypasses validation",
+          "Diff or replay reports PASS without validating or attributing consumed inputs",
+          "Live report or URL policy overstates proof or permits unintended destinations",
+          "Secret or machine-local value bypasses a narrow scanner",
+          "Malformed, duplicate, unknown, or partial input is ignored",
+          "Cleanup removes a required compatibility or proof surface"
+        ]
+      },
+      "review_gates": {
+        "scope_and_risk_coverage": "PASS: four attack lenses, eleven structure-aware RED-to-GREEN tests, two command boundary probes, four counterfactuals, canonical report inspection, and exact negative paths cover the declared WP-004 v2 risk matrix.",
+        "reuse_deletion_dependency_simplification": "PASS: remediation reuses strict Serde, SHA-256, atomic reports, source attribution, deterministic collections, std filesystem canonicalization, and the existing mutation runner; no dependency or parallel framework was added.",
+        "post_simplification_complete_rerun": "PASS: formatting, warnings-denied Clippy, 43 tests, compatibility validation/replay/shards/diff/inventory-diff, and architecture-check are green after refactoring long mutation, classification, and inventory-delta paths."
+      },
+      "reuse_candidates_in_order_with_result": [
+        {"candidate": "no mechanism beyond the accepted outcome", "result": "rejected for reproduced false-PASS and security paths that require executable remediation; retained for speculative cases that did not reproduce"},
+        {"candidate": "reuse current Ferric code", "result": "selected for strict Serde schemas, SHA-256 helpers, atomic reports, source attribution, and existing mutation fixtures"},
+        {"candidate": "Rust core/std", "result": "selected for deterministic collections, path canonicalization, bounded parsing, and focused unit tests"},
+        {"candidate": "approved platform capability", "result": "selected for Git, filesystem, and separately acquired pinned oracle execution where required"},
+        {"candidate": "already-approved dependency", "result": "existing serde, serde_json, and sha2 are sufficient; no addition is currently justified"},
+        {"candidate": "smallest complete clear implementation", "result": "selected private integrity, containment, classification, sanitization, and inventory-delta helpers plus four new production-linked negative fixtures and focused tests"}
+      ],
+      "artifact_specific_justification": {
+        "cargo_workspace": "The existing locked non-shipped workspace builds and tests the hardened compatibility command without any new member, feature, or dependency.",
+        "xtask": "The reviewed generator, validator, replay, diff, sanitization, path, bounded-input, and report code lives in the existing non-shipped compatibility module and required direct remediation.",
+        "architecture_policy": "The accepted three-root and non-shipped boundaries remain unchanged and are rerun to prove the remediation did not widen runtime or dependency scope.",
+        "tooling_policy": "The pinned Rust, Cargo, Git, and validation tool identities remain unchanged and govern every recorded command.",
+        "rule_to_proof": "The inherited architecture proof map remains unchanged and is rerun because the compatibility tooling still depends on every canonical architecture rule.",
+        "negative_fixtures": "The exact compatibility mutation inventory expands from 12 to 16 to regression-proof self-consistent integrity and classification/decision false-PASS paths.",
+        "model_manual": "A no-context model needs the new canonical-integrity, LF-normalization, bounded-input, inventory-diff v2, live OBSERVED, path-containment, diagnostic, and recovery behavior."
+      },
+      "pre_simplification_verdict": "PASS: baseline unit tests were green while canonical validation failed on Windows, and eleven structured mutations plus command probes proved the remediation scope necessary for integrity, attribution, truth-state, classification, sanitizer, path, negative-inventory, resource-bound, and inventory-coverage correctness.",
+      "simplification_changes": [
+        "Split mutation execution into profile, oracle, corpus, and candidate helpers instead of extending one long match body.",
+        "Separated candidate input validation from per-row classification and decision authorization.",
+        "Replaced five repeated inventory map/diff blocks with one generic typed inventory_delta helper.",
+        "Centralized canonical JSON content digests, LF-normalized fixture hashing, bounded JSON reads, and canonical path containment.",
+        "Kept all remediation inside the existing non-shipped compatibility module and existing serde/serde_json/sha2/std surface."
+      ],
+      "post_simplification_verdict": "PASS: the refactored module preserves the complete v1 contract, closes every reproduced path, adds no dependency or runtime surface, and passes warnings-denied Clippy plus the complete accepted scope/risk matrix.",
+      "complete_post_change_verification": [
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check: PASS",
+        "cargo clippy --manifest-path build/Cargo.toml --workspace --all-targets --all-features --locked --target-dir build/target -- -D warnings: PASS",
+        "cargo test --manifest-path build/Cargo.toml --workspace --all-targets --all-features --locked --no-fail-fast --target-dir build/target -- --test-threads=1: PASS, 43 tests",
+        "compatibility-validate: PASS, seven planes and exact 16 negative mutations",
+        "compatibility-replay full and shards 0/4 through 3/4: PASS, exact 2/4/0/1 distribution with explicit per-case checks",
+        "compatibility-diff empty candidate: PASS for completeness, seven missing_feature rows and candidate SHA-256 attribution",
+        "compatibility-inventory-diff identity comparison: PASS with ff.compatibility-inventory-diff@2 and all five row families",
+        "canonical junction containment probe: PASS by exact rejection before parse",
+        "mutated canonical corpus through compatibility-diff: PASS by FF-COMP-E-CORPUS-INTEGRITY rejection",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check: PASS"
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-004-compatibility-inventory-corpus-v2-CEILING-001",
+        "current_ceiling": "The pinned inventory and representative seven-plane corpus are Phase 0 oracle infrastructure; they do not prove Ferric feature parity, exhaustive extractor behavior, cross-host generation, or live-site stability.",
+        "replacement_trigger": "Ferric candidate producers, a new pinned baseline, supported-host expansion, or broader corpus coverage activates additional versioned cases and differential proof.",
+        "likely_upgrade_path": "Extend the same stable IDs, strict schemas, pinned integrity, classified differences, deterministic fixtures, and explicit live-observation separation.",
+        "trigger_detection_method": "Profile/corpus IDs, pinned hashes, active packet acceptance, supported-host policy, candidate manifests, and inventory-diff reports fail closed.",
+        "linked_evidence": [
+          "build/tools/fforager-xtask/src/compatibility.rs",
+          "build/fixtures/compatibility/yt-dlp-2026.07.04/profile.json",
+          "build/fixtures/compatibility/corpus-v1/manifest.json",
+          "build/fixtures/compatibility/negative/",
+          "product/MODEL_MANUAL.md"
+        ]
+      },
+      "adversarial_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "Generated profile and corpus validators versus self-consistent row/count/digest mutations",
+          "Canonical profile/corpus producers versus replay, differential, and inventory-diff consumers",
+          "Candidate classification and decision authorization versus truthful report output",
+          "Committed fixture sanitization, machine-local path detection, and placeholder allowlisting",
+          "Lexical repository paths versus canonical filesystem containment and reparse points",
+          "Live-canary initial destinations and OBSERVED-only truth state",
+          "Negative-fixture inventory completeness, malformed/oversized JSON, and bounded resource behavior",
+          "Inventory-diff coverage across every versioned row family"
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "Ran compatibility-validate on a clean Windows checkout after all 28 inherited tests passed; it failed all case digests because core.autocrlf converted LF to CRLF.",
+          "Ran compatibility-diff while canonical compatibility-validate was failing; it emitted PASS and omitted the candidate input hash before remediation.",
+          "Executed eleven semantically valid in-memory mutations that reached deep validators rather than shallow parse failures; all were RED before remediation and GREEN after.",
+          "Inspected final validate/replay/diff/inventory reports directly for exact negative IDs, per-case replay checks, candidate attribution, missing rows, and schema version."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "If validate_current_profile_content in build/tools/fforager-xtask/src/compatibility.rs were removed, a pinned option row and its count could be removed together without failing validate_profile.",
+          "If validate_corpus_without_files were removed from differential_rows, compatibility-diff could again emit PASS for a self-consistently corrupted canonical corpus.",
+          "If require_safe_input used only safe_relative and prefix checks, a build/target junction could route candidate reads into .GOV.",
+          "If base_report hardcoded status PASS, compatibility-live-canaries would again overstate nondeterministic OBSERVED rows as deterministic gate success."
+        ],
+        "BOUNDARY_PROBES": [
+          "Producer-consumer probe: temporarily changed a canonical corpus expected_outcome and proved compatibility-diff rejects it with FF-COMP-E-CORPUS-INTEGRITY before report emission; mutation was reverted.",
+          "Filesystem probe: created a verified temporary build/target junction to .GOV and proved candidate resolution rejects canonical containment before parsing; the junction was removed.",
+          "Report probe: final compatibility-diff input map contains candidate:build/fixtures/compatibility/candidate-empty-v1.json with its SHA-256 and seven explicit missing_feature rows."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "Self-consistent profile row/count removal",
+          "Self-consistent corpus expected-outcome change",
+          "Invalid canonical profile passed to differential and inventory diff",
+          "Invented stable divergence decision and nondeterministic classification on a deterministic case",
+          "Missing one of the exact required negative fixtures",
+          "Private live destination and live OBSERVED report status",
+          "X-Api-Key, access_token, unknown placeholder, Windows forward-slash, macOS, and UNC path bypasses",
+          "Oversized JSON input bounded at 16 MiB",
+          "CRLF fixture digest equivalence and canonical junction escape"
+        ],
+        "INDEPENDENT_FINDINGS": "See extensions.change_evidence.independent_findings; every confirmed finding is remediated and regression-tested.",
+        "RESIDUAL_UNCERTAINTY": "See extensions.change_evidence.residual_uncertainty; remaining risks are bounded and do not raise the Phase 0 proof ceiling."
+      },
+      "independent_findings": [
+        "REMEDIATED HIGH: all inherited unit tests passed while Windows core.autocrlf made every canonical case digest fail; fixture integrity now hashes UTF-8 after CRLF/CR to LF normalization and has a portability regression test.",
+        "REMEDIATED HIGH: profile validation trusted self-consistent counts and digest shapes; canonical serialized content digests now bind the oracle manifest, profile, corpus, and live manifest to their versioned IDs.",
+        "REMEDIATED HIGH: corpus expected outcomes and fixture schema/case identity were not enforced; canonical corpus integrity plus per-plane schema and case-ID checks now fail closed.",
+        "REMEDIATED HIGH: compatibility-diff bypassed canonical profile/corpus validation and could emit PASS while compatibility-validate failed; diff now validates every canonical input and fixture first.",
+        "REMEDIATED MEDIUM: differential reports omitted the candidate path/hash; the candidate is now canonically contained, bounded, parsed, and attributed by SHA-256.",
+        "REMEDIATED HIGH: arbitrary syntactically stable IDs authorized accepted divergences and deterministic offline cases could be labeled nondeterministic; decision allowlisting and deterministic classification constraints now reject both paths.",
+        "REMEDIATED HIGH: live-canary reports hardcoded PASS and accepted any HTTPS destination; reports now emit OBSERVED and manifest rows must match exact public destination allowlists and pinned content.",
+        "REMEDIATED HIGH: sanitizer checks missed common sensitive-key aliases, unknown placeholders, forward-slash Windows paths, macOS paths, UNC paths, URL userinfo, and additional assignment forms; explicit key/placeholder/path/assignment allowlists and regression tables now cover them.",
+        "REMEDIATED HIGH: compatibility input/output checks were lexical and vulnerable to link/reparse escape; canonical containment under build/fixtures/compatibility or build/target is now required and a real junction probe proves rejection.",
+        "REMEDIATED MEDIUM: JSON reads were unbounded; the shared reader now caps every compatibility JSON input at 16 MiB and a sparse oversized probe proves bounded rejection.",
+        "REMEDIATED HIGH: deleting up to five negative fixtures retained PASS because only a minimum of seven was required; validation now requires the exact 16-ID mutation inventory.",
+        "REMEDIATED MEDIUM: replay receipts exposed only a count and shard; each selected case now emits its stable ID, plane, expected outcome, and fixture digest.",
+        "REMEDIATED MEDIUM: inventory diff accepted changed content under one profile ID and ignored presets, interactions, and descriptions; schema v2 rejects same-ID drift and reports all five versioned row families.",
+        "REMEDIATED QUALITY: extended long functions triggered warnings-denied Clippy; mutation domains, candidate classification, and inventory deltas were separated into reusable private helpers with no lint allowance or new dependency.",
+        "REMEDIATED GOVERNANCE: WP-004 v1 refinement/ceiling and v2 packet/refinement/ceiling durable IDs were missing from the registry; all six targets are now registered."
+      ],
+      "residual_uncertainty": [
+        "Pinned canonical digests intentionally make any legitimate profile, corpus, or live-manifest content change require a new version/ID and reviewed digest update; this is a fail-closed maintenance cost, not automatic baseline migration.",
+        "Exact initial live URL allowlists do not prove safety of DNS changes or redirects performed inside the external yt-dlp oracle; live execution remains explicit opt-in, nondeterministic, credential-free, and excluded from acceptance proof.",
+        "Canonical path checks occur before later file operations and do not provide handle-based protection against a hostile local actor racing filesystem links after validation; the current Phase 0 threat model records but does not claim elimination of that local TOCTOU class.",
+        "The sanitizer is a finite allowlist backed by pinned current fixtures and regression cases; it cannot prove detection of every future secret format, so new fixture schemas or credential forms must extend the allowlist and negative corpus.",
+        "Cross-host oracle regeneration, live-site stability, exhaustive extractor behavior, and any Ferric feature parity remain unproven."
+      ]
+    }
+  }
+}

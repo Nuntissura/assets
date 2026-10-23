@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "structural-replay-behavioral-pass"
+mutation = "structural_replay_behavioral_pass"
+expected_diagnostic = "FF-COMP-E-SEMANTIC-EMPTY"

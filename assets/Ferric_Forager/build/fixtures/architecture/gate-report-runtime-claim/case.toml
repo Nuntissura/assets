@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "gate-report-runtime-claim"
+mutation = "gate_report_runtime_claim"
+expected_diagnostic = "FF-ARCH-E-GATE-REPORT-RUNTIME"

@@ -1,0 +1,620 @@
+schema_id: ff.build_rules@2
+file_id: FF-GOV-RULES-001
+updated_at: "2026-07-27"
+authority: canonical
+verification_gates:
+  - id: FF-GATE-SECRET-001
+    command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- secret-scan --history
+    working_directory: repository_root
+    purpose: Reject provider-pattern API keys in reachable history without emitting matched values; repository hooks apply the same scanner to exact staged blobs before commit and all outgoing commits before push.
+    required_when: before every commit, push, pull-request verification, and release
+    current_status: IMPLEMENTED
+  - id: FF-GATE-ARCH-001
+    command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check
+    working_directory: repository_root
+    purpose: Validate declared graph policy, source/build-script policy, and the rule-to-proof map using their assigned negative fixtures without treating Cargo metadata as runtime or artifact proof.
+    required_when: build/Cargo.toml exists
+    current_status: IMPLEMENTED_PHASE_0
+  - id: FF-GATE-PR-001
+    command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard
+    working_directory: repository_root
+    purpose: Validate active change evidence and run formatting, compile, declared feature profiles, Clippy, tests, doctests, docs, architecture, dependency policy, clean-artifact smoke, and every watcher gate applicable to the current phase.
+    required_when: build/Cargo.toml exists
+    current_status: IMPLEMENTED_PHASE_0
+  - id: FF-GATE-DEEP-001
+    command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-deep --evidence-from-taskboard
+    working_directory: repository_root
+    purpose: Run triggered model, fuzz, mutation, unsafe, feature-combination, fault, replay, benchmark, watcher cross-version, and packaging gates.
+    required_when: the active work packet explicitly activates a deep_gate trigger after Phase 0 bootstrap
+    current_status: NOT_IMPLEMENTED_TRIGGER_GATED
+  - id: FF-GATE-RELEASE-001
+    command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-release
+    working_directory: repository_root
+    purpose: Aggregate mandatory hashed per-target CI reports for the same source, lockfile, toolchain, and artifact manifest into the compatibility, update, provenance, platform, watcher, security, and equivalent-work release verdict.
+    required_when: a release or replacement claim is proposed
+    current_status: REQUIRED_NOT_YET_IMPLEMENTED
+  - id: FF-GATE-WATCHER-001
+    command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- watcher-check
+    working_directory: repository_root
+    purpose: Validate diagnostic schema coverage, current-build replay, artifact pairing, lifecycle, crash survival, staleness, saturation, storage failure, and supported cross-version behavior.
+    required_when: product/watcher/Cargo.toml exists or a Phase 1 watcher or release claim is proposed
+    current_status: REQUIRED_NOT_YET_IMPLEMENTED
+  - id: FF-GATE-RUNTIME-001
+    command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard
+    working_directory: repository_root
+    purpose: Classify product impact, reject test-only or substitute proof, and for product-affecting work build, stage, execute, identify, and counterfactually validate the exact production artifact through its shipped entrypoint.
+    required_when: every TRACKED or EXPANDED product-affecting change and every product capability, product phase, packaging, release, or replacement claim
+    current_status: IMPLEMENTED_RUNTIME_PATH_UNEXERCISED_NO_SHIPPED_MEMBER
+  - id: FF-GATE-ARTIFACT-HYGIENE-001
+    command: powershell -NoProfile -File build/scripts/clean-artifacts.ps1 -VerifyOnly
+    working_directory: repository_root
+    purpose: Prove the single ignored repository-root artifact directory is empty before another task begins.
+    required_when: before selecting, starting, or moving to the next task
+    current_status: IMPLEMENTED
+change_evidence_contract:
+  canonical_location: active_work_packet.extensions.change_evidence
+  resolved_by: START_HERE.yaml -> .GOV/taskboard/taskboard.yaml -> active work packet
+  required_fields:
+    - applicable_rule_ids
+    - acceptance_or_authority_ids
+    - scope_and_risk_matrix
+    - reuse_candidates_in_order_with_result
+    - artifact_specific_justification
+    - pre_simplification_verdict
+    - simplification_changes
+    - post_simplification_verdict
+    - complete_post_change_verification
+    - ceilings_exceptions_and_evidence
+  validation: FF-GATE-PR-001 MUST reject a missing field, an uninspected reuse rung, a narrowed accepted outcome, or absent post-simplification rerun evidence.
+  conditional_nested_fields:
+    ceilings_exceptions_and_evidence.when_deliberate_ceiling: [ceiling_id, current_ceiling, replacement_trigger, likely_upgrade_path, trigger_detection_method, linked_evidence]
+  runtime_boundary: Build tooling may read the explicitly resolved active packet; shipped Ferric and watcher binaries MUST NOT read .GOV or build/ files at runtime.
+exception_authority:
+  canonical_allowlist:
+    - id: FF-DEC-001
+      kind: native_dependency
+      status: ACTIVE_NON_SHIPPED_ADJUDICATION_ONLY
+      owner: WP-FF-015-wreq-transport-adjudication
+      approval_id: WP-FF-015-wreq-transport-adjudication-v1-AC-001
+      allowed_prerequisite_consumers: [fforager-transport]
+      allowed_product_consumers: []
+      allowed_direct_dependencies: [wreq, wreq-util]
+      allowed_versions: ["wreq@5.3.0", "wreq@6.0.0-rc.29", "wreq-util@3.0.0-rc.14"]
+      allowed_native_link_packages: ["btls-sys@0.5.6", "clang-sys@1.8.1", "zstd-sys@2.0.16+zstd.1.5.7"]
+      allowed_native_runtime_packages: []
+      allowed_package_archive_sha256: []
+      allowed_package_source_inventory_sha256: []
+      ordinary_transport_resolved_closure_sha256: ""
+      ordinary_transport_registry_source_closure_sha256: ""
+      allowed_runtime_classes: [non_shipped_phase0_prerequisite]
+      allow_build_scripts: true
+      allow_build_time_downloads: false
+      allow_prebuilt_binaries: false
+      allow_packaged_pregenerated_assembly_objects: false
+      packaged_object_inventory_sha256: ""
+      allow_product_use: false
+      allow_packaging_or_release: false
+      promotion_requires_new_operator_decision: true
+      reason: The validated WP-007 corpus produced 31 mandatory typed blockers and proved that the approved std-first stack cannot execute browser TLS or HTTP2 fingerprint semantics; the Operator explicitly selected the recommended bounded wreq adjudication path.
+      removal_trigger: Remove the exception if wreq fails adjudication, a maintained non-native implementation passes the same corpus, or the non-shipped transport prerequisite is retired; production promotion requires a separate explicit Operator decision.
+    - id: FF-DEC-002
+      kind: native_dependency
+      status: ACTIVE_SHIPPED_PRODUCT_NARROW_ONLY
+      owner: WP-FF-023-dependency-security-remediation
+      approval_id: WP-FF-023-dependency-security-remediation-v1-AC-001
+      allowed_prerequisite_consumers: [fforager-transport]
+      allowed_product_consumers: [fforager-net, fforager, fforager-worker]
+      allowed_direct_dependencies: [reqwest, rustls]
+      allowed_versions: ["reqwest@0.13.4", "ring@0.17.14", "rustls@0.23.46"]
+      allowed_native_link_packages: ["ring@0.17.14"]
+      allowed_native_runtime_packages: ["rustls-platform-verifier@0.7.0"]
+      allowed_package_archive_sha256: ["ring@0.17.14=a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7", "rustls-platform-verifier@0.7.0=26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"]
+      allowed_package_source_inventory_sha256: ["ring@0.17.14=60be074c360264320b3fa0a46515ca828e44954988d8843ad3766bf84fc452d3", "rustls-platform-verifier@0.7.0=8d7a222bf3a643ce4c2003c1ede94bbd0d4e10443271602ab445c9d940ac40b0"]
+      ordinary_transport_resolved_closure_sha256: "6b94d937622dc36f58d37908ee686791f9ff741bb6ec2cf817b01b6949243388"
+      ordinary_transport_registry_source_closure_sha256: "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
+      allowed_runtime_classes: [non_shipped_phase0_prerequisite, shipped_rust_product]
+      allow_build_scripts: true
+      allow_build_time_downloads: false
+      allow_prebuilt_binaries: false
+      allow_packaged_pregenerated_assembly_objects: true
+      packaged_object_inventory_sha256: "be06dab876434410926fdf8d9ab7c37b18054f87adaf761dc6c8fcf167a56fb3"
+      allow_product_use: true
+      allow_packaging_or_release: true
+      promotion_requires_new_operator_decision: false
+      reason: The Operator originally approved shipped reqwest 0.13.4 with rustls 0.23.42, rustls-no-provider, and native ring 0.17.14 for Ferric's ordinary transport under narrow Ferric-owned policy controls; WP-FF-023-dependency-security-remediation-v1-AC-001 reauthorizes the five exact security patch versions with the same provider, feature and native boundaries; the separately approved narrow WP021 composition decision permits only fforager -> fforager-net and fforager-worker -> fforager -> fforager-net as normal first-party callers, while fforager-net remains the only direct product reqwest/rustls consumer; the exact locked ring crate includes a digest-pinned packaged Windows assembly-object inventory, and rustls-no-provider selects rustls-platform-verifier 0.7.0 whose Windows FFI remains supply-chain governed even though Ferric's provider-bound ClientConfig bypasses it at runtime.
+      removal_trigger: Replace only through a new explicit Operator decision that re-proves the exact provider, native-link, feature, consumer, runtime-class, policy-control, and staged-runtime boundaries.
+    - id: FF-DEC-003
+      kind: native_ffi_and_unsafe_boundary
+      status: ACTIVE_NON_SHIPPED_FFMPEG_PREREQUISITE_ONLY
+      owner: WP-FF-010-ffmpeg-supervision-spike
+      approval_id: WP-FF-010-ffmpeg-supervision-spike-v1-AC-002
+      operator_decision: The Operator explicitly approved the recommended narrow Ferric-owned windows-sys/libc process boundary on 2026-08-09.
+      allowed_prerequisite_consumers: [fforager-ffmpeg]
+      allowed_product_consumers: []
+      allowed_direct_dependencies: [windows-sys, libc]
+      allowed_versions: ["windows-sys@0.61.2", "libc@0.2.189"]
+      allowed_native_link_packages: []
+      allowed_native_runtime_packages: []
+      allowed_runtime_classes: [non_shipped_phase0_prerequisite]
+      allow_build_scripts: false
+      allow_build_time_downloads: false
+      allow_prebuilt_binaries: false
+      allow_packaged_pregenerated_assembly_objects: false
+      allow_ffi: true
+      allow_unsafe: scoped_platform_modules_only
+      safety_invariants: [validated_direct_arguments_only, no_shell, pre_execution_windows_job_assignment, non_inheritable_handles, direct_child_wait, independent_windows_active_zero, unix_process_group_signal_scope, bounded_termination, exact_handle_ownership]
+      allow_product_use: false
+      allow_packaging_or_release: false
+      promotion_requires_new_operator_decision: true
+      reason: WP-010 requires exact Windows pre-execution Job assignment and Unix process-group supervision that stable Rust std does not expose completely; the Operator selected the smallest Ferric-owned boundary instead of the larger processkit dependency and its additional supply-chain surface.
+      residual_uncertainty: Windows parent death during suspended pre-execution setup can leave a suspended orphan unless a separately approved broker removes the interval; Unix process groups are signal scopes and do not contain hostile setsid or setpgid escape.
+      removal_trigger: Remove if stable Rust exposes the complete proven boundary, a smaller maintained safe binding passes the same behavior-sensitive corpus, or the prerequisite is retired; shipped promotion requires a new explicit Operator decision and FF-GATE-RUNTIME-001 proof.
+    - id: FF-DEC-004
+      kind: native_ffi_and_unsafe_boundary
+      status: ACTIVE_SHIPPED_STORAGE_NARROW_ONLY
+      owner: WP-FF-021-first-runnable-production-slice
+      approval_id: WP-FF-021-first-runnable-production-slice-v1-AC-003
+      operator_decision: The Operator explicitly approved the narrow production storage boundary using the already-pinned windows-sys for directory handles, filesystem identity, and flush operations on 2026-10-21.
+      allowed_prerequisite_consumers: []
+      allowed_product_consumers: [fforager-storage]
+      allowed_direct_dependencies: [windows-sys]
+      allowed_versions: ["windows-sys@0.61.2"]
+      allowed_native_link_packages: []
+      allowed_native_runtime_packages: []
+      allowed_runtime_classes: [shipped_rust_product]
+      allow_build_scripts: false
+      allow_build_time_downloads: false
+      allow_prebuilt_binaries: false
+      allow_packaged_pregenerated_assembly_objects: false
+      allow_ffi: true
+      allow_unsafe: scoped_storage_platform_module_only
+      safety_invariants: [retained_root_handles, no_reparse_traversal, verified_volume_identity, live_host_profile, acknowledged_file_and_directory_flush, exact_handle_ownership]
+      allow_product_use: true
+      allow_packaging_or_release: false
+      promotion_requires_new_operator_decision: false
+      reason: Stable Rust does not expose the Windows directory-handle, live filesystem identity, and directory-flush operations required for confined durable output and truthful archive commitments.
+      residual_uncertainty: Runtime acceptance and independent review remain unproven; unsupported filesystems or failed flush operations must fail closed.
+      removal_trigger: Replace only with an equally confined and durable platform boundary; any broader native API purpose or consumer requires a new Operator decision.
+    - id: FF-DEC-005
+      kind: native_ffi_and_unsafe_boundary
+      status: ACTIVE_NON_SHIPPED_VALIDATION_ONLY
+      owner: WP-FF-021-first-runnable-production-slice
+      approval_id: WP-FF-021-first-runnable-production-slice-v1-AC-004
+      operator_decision: The Operator explicitly approved validation-only watcher pause/resume and, in the subsequent 2026-10-21 live approval, read-only identity and exit acknowledgment for the launcher-owned worker, using already-pinned windows-sys. Worker pause or process-control authority is not extended.
+      allowed_prerequisite_consumers: [fforager-xtask]
+      allowed_product_consumers: []
+      allowed_direct_dependencies: [windows-sys]
+      allowed_versions: ["windows-sys@0.61.2"]
+      allowed_native_link_packages: []
+      allowed_native_runtime_packages: []
+      allowed_runtime_classes: [non_shipped_build_tooling]
+      allow_build_scripts: false
+      allow_build_time_downloads: false
+      allow_prebuilt_binaries: false
+      allow_packaged_pregenerated_assembly_objects: false
+      allow_ffi: true
+      allow_unsafe: scoped_owned_watcher_pause_module_only
+      safety_invariants: [validator_owned_watcher_pause_only, validator_owned_worker_read_only_identity, retained_process_handle, pid_and_creation_time_identity, verified_staged_image_identity, launcher_parent_identity, worker_identity_has_no_pause_or_process_control, pause_at_most_two_seconds, unconditional_detach_guard, no_shell, no_unowned_process_control]
+      allow_product_use: false
+      allow_packaging_or_release: false
+      promotion_requires_new_operator_decision: true
+      reason: Actual watcher-hang validation requires bounded watcher pause; crash/restart validation additionally retains a read-only handle for the independently identified launcher-owned worker through the existing owned actuator and exit acknowledgment. No new native API or dependency is authorized.
+      residual_uncertainty: "Native calls remain confined to phase1_runtime/windows_pause.rs: only owned watchers can pause/resume; owned workers expose read-only identity and exit acknowledgment. Failed identity, parent, liveness or detach checks are explicit proof failures."
+      removal_trigger: Remove when an equally direct bounded owned-process fault mechanism replaces it or watcher hang validation is retired; broader APIs, consumers or product use require a new Operator decision.
+  rule: build/architecture-policy.toml MUST reference a stable decision ID in this separate allowlist and MUST NOT authorize native runtimes, unsafe crates, forbidden edges, build-time downloads, prebuilt binaries, FFI, or other architecture exceptions by editing build policy alone.
+rules:
+  - id: FF-BUILD-001
+    category: independent_watcher
+    statement: An independent watcher for Ferric Forager MUST be created and maintained for the entire duration of the project.
+    enforcement: REQUIRED
+  - id: FF-BUILD-002
+    category: independent_watcher
+    statement: The watcher MUST live under product/watcher/ on the product-code side of the repository.
+    enforcement: REQUIRED
+  - id: FF-BUILD-003
+    category: independent_watcher
+    statement: The watcher MUST remain diagnostic-only and MUST NOT become a hidden controller, data-path dependency, or correctness dependency for Ferric Forager.
+    enforcement: REQUIRED
+  - id: FF-BUILD-004
+    category: independent_watcher
+    statement: Ferric Forager's governed startup MUST start the watcher with a bounded Ready timeout, record the diagnostic result separately, and continue with identical product behavior when the watcher is missing, corrupt, incompatible, hung, or storage-failed.
+    enforcement: REQUIRED
+  - id: FF-BUILD-005
+    category: independent_watcher
+    statement: Governed shutdown MUST request a bounded watcher flush-and-exit, but watcher death, storage failure, or timeout MUST NOT change an already decided Ferric job result or hold launcher exit past the bound.
+    enforcement: REQUIRED
+  - id: FF-BUILD-006
+    category: independent_watcher
+    statement: The watcher MUST run in an independent process and failure domain so it survives an uncommanded Ferric Forager crash.
+    enforcement: REQUIRED
+  - id: FF-BUILD-007
+    category: independent_watcher
+    statement: Crash diagnostics MUST survive watcher restart and ordinary shutdown and may be deleted only after explicit collection acknowledgement or governed retention expiry.
+    enforcement: REQUIRED
+  - id: FF-BUILD-008
+    category: independent_watcher
+    statement: The watcher MUST use bounded storage, bounded queues, explicit retention, stable event IDs, monotonic timestamps, and crash-safe writes.
+    enforcement: REQUIRED
+  - id: FF-BUILD-009
+    category: independent_watcher
+    statement: Watcher tests MUST cover the complete current design Section 26.10 core matrix, including degraded startup/shutdown, launcher ownership, crash isolation, every loop/handoff stall plus long idle, reserved critical storage, residual gaps, protocol/sequence/privacy faults, cross-version/platform pairing, and inability to control Ferric.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-010
+    category: invariance
+    statement: An invariant is a condition that MUST remain true at its declared program point regardless of the execution path used to reach that point.
+    enforcement: DEFINITION
+  - id: FF-BUILD-011
+    category: invariance
+    statement: Every state transition, persistence boundary, queue boundary, process boundary, and unsafe or externally observable operation MUST declare its relevant preconditions, invariants, and postconditions.
+    enforcement: REQUIRED
+  - id: FF-BUILD-012
+    category: invariance
+    statement: Preconditions MUST be checked or made true before the operation that relies on them.
+    enforcement: REQUIRED
+  - id: FF-BUILD-013
+    category: invariance
+    statement: Postconditions MUST be tested at the smallest practical boundary and MUST include failure and cancellation outcomes.
+    enforcement: REQUIRED
+  - id: FF-BUILD-014
+    category: invariance
+    statement: An invariant that cannot be mechanically proved MUST have executable assertions, model tests, property tests, fault injection, or an explicitly recorded proof limitation.
+    enforcement: REQUIRED
+  - id: FF-BUILD-015
+    category: invariance
+    statement: No resume checkpoint may exceed the durable contiguous byte prefix, and no job may report success before output validation and archive reconciliation complete.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-016
+    category: referential_transparency
+    statement: A referentially transparent function can be replaced by its return value without changing overall program behavior.
+    enforcement: DEFINITION
+  - id: FF-BUILD-017
+    category: referential_transparency
+    statement: Prefer pure deterministic functions for parsing, selection, planning, naming, normalization, identity derivation, state transition calculation, and compatibility comparison.
+    enforcement: REQUIRED
+  - id: FF-BUILD-018
+    category: referential_transparency
+    statement: Isolate time, randomness, network, filesystem, process, environment, and mutable-state effects behind explicit inputs and narrow boundary interfaces.
+    enforcement: REQUIRED
+  - id: FF-BUILD-019
+    category: referential_transparency
+    statement: Hidden global dependencies, ambient mutable state, and action-at-a-distance coupling are forbidden in product logic.
+    enforcement: REQUIRED
+  - id: FF-BUILD-020
+    category: referential_transparency
+    statement: If code is difficult to test without broad mocks, redesign the effect boundary or data flow before adding a mocking framework.
+    enforcement: REQUIRED
+  - id: FF-BUILD-021
+    category: referential_transparency
+    statement: Caching and parallel execution are legal only when keys include every behavior-affecting input and tests prove deterministic equivalence.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-022
+    category: backpressure
+    statement: Backpressure MUST propagate consumer capacity upstream so a faster producer slows to the sustainable rate of the bounded downstream system.
+    enforcement: REQUIRED
+  - id: FF-BUILD-023
+    category: backpressure
+    statement: Every queue, channel, buffer, retry set, fragment window, event sink, subprocess pipe, and pending-work collection MUST have explicit item and byte bounds where size varies.
+    enforcement: REQUIRED
+  - id: FF-BUILD-024
+    category: backpressure
+    statement: Unbounded buffering is forbidden in production paths.
+    enforcement: REQUIRED
+  - id: FF-BUILD-025
+    category: backpressure
+    statement: Silent dropping is forbidden for required data; lossy diagnostic data requires an explicit priority, drop policy, counter, and operator-visible signal.
+    enforcement: REQUIRED
+  - id: FF-BUILD-026
+    category: backpressure
+    statement: Admission MUST account atomically for coupled CPU, memory, network, disk, subprocess, and per-host resources rather than relying on unrelated semaphores.
+    enforcement: REQUIRED
+  - id: FF-BUILD-027
+    category: backpressure
+    statement: Saturation tests MUST prove bounded memory, bounded queues, cancellation progress, fairness policy, and graceful throughput degradation.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-028
+    category: halting_problem
+    statement: The Halting Problem proves that no general algorithm can decide whether every arbitrary program eventually terminates or runs forever.
+    enforcement: DEFINITION
+  - id: FF-BUILD-029
+    category: halting_problem
+    statement: No design, AI tool, validator, static analysis, sandbox, or test suite may be described as guaranteeing detection of all infinite loops, all bugs, or perfectly correct arbitrary code.
+    enforcement: REQUIRED
+  - id: FF-BUILD-030
+    category: halting_problem
+    statement: Treat termination as a bounded operational contract using deadlines, budgets, cancellation, leases, heartbeats, progress detection, process supervision, and operator-visible uncertainty.
+    enforcement: REQUIRED
+  - id: FF-BUILD-031
+    category: halting_problem
+    statement: Every external process, script engine, plugin, parser, network operation, retry loop, live stream, and background task MUST define a timeout or an explicitly governed indefinite-mode policy.
+    enforcement: REQUIRED
+  - id: FF-BUILD-032
+    category: halting_problem
+    statement: Timeouts MUST be classified as policy decisions or incomplete evidence, not proof that the underlying computation could never finish.
+    enforcement: REQUIRED
+  - id: FF-BUILD-033
+    category: halting_problem
+    statement: Liveness claims MUST identify their finite state model, assumptions, fairness conditions, and residual uncertainty.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-034
+    category: integration
+    statement: Work-packet acceptance criteria MUST identify which invariants, pure-core boundaries, backpressure paths, and termination controls are added, changed, or proven.
+    enforcement: REQUIRED
+  - id: FF-BUILD-035
+    category: integration
+    statement: Medium- and high-risk validation MUST attack invariant violations, hidden effects, consumer stalls, cancellation races, hung work, and false completion claims.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-036
+    category: architecture
+    statement: The first product change MUST atomically create the minimal locked Cargo workspace under build/, the sole root rust-toolchain.toml selector, fforager-xtask, architecture policy, rule-to-proof map, negative fixtures, and CI command and pass the bootstrap architecture gate before adding any shipped crate; later workspace growth MUST use the accepted coarse topology and inward dependency rings.
+    enforcement: REQUIRED
+  - id: FF-BUILD-037
+    category: architecture
+    statement: build/architecture-policy.toml MUST declare every workspace member, layer, shipped or test-only status, allowed and forbidden direct edge, split trigger, runtime/native constraint reference, unsafe decision reference, feature owner, and exception reference and MUST NOT self-authorize an exception absent the separate canonical allowlist.
+    enforcement: REQUIRED
+  - id: FF-BUILD-038
+    category: architecture
+    statement: FF-GATE-ARCH-001 MUST derive normal, build, dev, target, and optional dependency edges from cargo metadata --manifest-path build/Cargo.toml --format-version=1 --locked and MUST fail on undeclared members, cycles, forbidden graph edges, and unapproved split triggers.
+    enforcement: REQUIRED
+  - id: FF-BUILD-039
+    category: architecture
+    statement: Frontends MUST depend inward on the engine and adapters; the engine MUST NOT depend on frontends, concrete adapters, watcher code, .GOV/ files, or build/ files at runtime.
+    enforcement: REQUIRED
+  - id: FF-BUILD-040
+    category: architecture
+    statement: Concrete product adapters MUST NOT depend directly on one another unless architecture-policy.toml records a current contract need, stable decision ID, scope, and negative validation fixture.
+    enforcement: REQUIRED
+  - id: FF-BUILD-041
+    category: architecture
+    statement: fforager-testkit MAY be a dev-dependency of shipped packages but MUST NOT appear in their normal or build dependency graph or shipped artifacts.
+    enforcement: REQUIRED
+  - id: FF-BUILD-042
+    category: architecture
+    statement: Among Ferric workspace packages, the watcher MUST depend only on the versioned diagnostic contract and watcher-local bounded persistence or OS-observation adapters; third-party crates remain governed by normal dependency policy, and the watcher MUST NOT depend on the engine, scheduler, downloader, storage implementation, or product adapters.
+    enforcement: REQUIRED
+  - id: FF-BUILD-043
+    category: architecture
+    statement: Ferric Forager product code MUST NOT depend on watcher code, watcher acknowledgements, or watcher availability for correctness, progress, commit, archive, or success.
+    enforcement: REQUIRED
+  - id: FF-BUILD-044
+    category: architecture
+    statement: A new physical crate requires a recorded current trigger from security or process isolation, public/versioned contract, independent lifecycle, ownership isolation, feature/dependency isolation, measured build improvement, or demonstrated cycle pressure.
+    enforcement: REQUIRED
+  - id: FF-BUILD-045
+    category: architecture
+    statement: Private modules and pub(crate) visibility MUST be preferred when they enforce the current boundary without a justified physical crate.
+    enforcement: REQUIRED
+  - id: FF-BUILD-046
+    category: architecture
+    statement: Every REQUIRED architecture rule MUST map its stable rule ID to the applicable graph, source, build-script, runtime-fault, packaging, or artifact-inspection validator and to a negative fixture where the proof class supports fixtures; architecture-check MUST fail when that map is incomplete.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-047
+    category: coding_discipline
+    statement: The Rust toolchain MUST be pinned by the sole repository-root rust-toolchain.toml selector, every workspace member MUST inherit the build/ workspace lint policy, build/tooling-policy.toml MUST pin every external validation tool by exact version/source/checksum or toolchain/Cargo.lock identity and supported host/invocation, and tool updates MUST occur through a dedicated validated change.
+    enforcement: REQUIRED
+  - id: FF-BUILD-048
+    category: coding_discipline
+    statement: FF-GATE-PR-001 MUST validate tool preflight and active change evidence and run format checking, workspace compilation, declared feature profiles, Clippy with warnings denied, tests and doctests, rustdoc warnings, architecture validation, dependency policy, clean-artifact smoke, and phase-applicable watcher validation; risk-trigger IDs select the deterministic union of additional deep gates.
+    enforcement: REQUIRED
+  - id: FF-BUILD-049
+    category: coding_discipline
+    statement: Clippy restriction lints MUST be selected individually; enabling the complete restriction group is forbidden because its lints may conflict or reject idiomatic Rust.
+    enforcement: REQUIRED
+  - id: FF-BUILD-050
+    category: coding_discipline
+    statement: Every non-approved crate root MUST contain #![forbid(unsafe_code)]; a policy-listed boundary crate retains deny(unsafe_code), permits only scoped reasoned unsafe uses, and requires a stable decision ID, documented safety invariants, dedicated tests and review, and Miri where applicable.
+    enforcement: REQUIRED
+  - id: FF-BUILD-051
+    category: coding_discipline
+    statement: Shipped library paths MUST NOT use unwrap, expect, panic, todo, unimplemented, dbg, leaked must-use results, process exit, or blocking while holding an async lock except through a scoped reasoned exception tied to a stable ID.
+    enforcement: REQUIRED
+  - id: FF-BUILD-052
+    category: coding_discipline
+    statement: Every lint or architecture allowance MUST include a stable rule or decision ID and a concrete reason; crate-wide blanket allowances require an explicit architecture-policy entry.
+    enforcement: REQUIRED
+  - id: FF-BUILD-053
+    category: coding_discipline
+    statement: Incomplete compatibility paths MUST return typed unsupported or not-implemented errors and MUST appear in machine-readable compatibility reports.
+    enforcement: REQUIRED
+  - id: FF-BUILD-054
+    category: coding_discipline
+    statement: Direct dependencies MUST centralize version and feature constraints; architecture policy records purpose, owner, allowed consumers, reason, removal trigger, and approval ID while validation derives selected features, source, license, consumers, versions, and Cargo links from Cargo metadata, the lockfile, and dependency-policy tooling.
+    enforcement: REQUIRED
+  - id: FF-BUILD-055
+    category: coding_discipline
+    statement: Dependency validation MUST check advisories, banned crates, licenses, sources, unreviewed duplicates, default features, and Cargo links/native-library changes without claiming absence of all vulnerabilities.
+    enforcement: REQUIRED
+  - id: FF-BUILD-056
+    category: coding_discipline
+    statement: Public contract crates MUST document versioning, compatibility, limits, errors, and examples, and rustdoc warnings MUST fail the governed build.
+    enforcement: REQUIRED
+  - id: FF-BUILD-057
+    category: coding_discipline
+    statement: Every accepted behavior, bug fix, state transition, and failure path MUST have a runnable test or named proof method tied to its current acceptance requirement, or an explicit validated not-applicable result.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-058
+    category: yagni
+    statement: Accepted authority settles the required outcome; before questioning its mechanism, scope completeness and the full correctness, compatibility, security, recovery, resource-bound, diagnostic, integration, migration, documentation, error-path, and verification matrix MUST be proven.
+    enforcement: REQUIRED
+  - id: FF-BUILD-059
+    category: yagni
+    statement: Every behavior, configuration key, public API, feature, and dependency MUST map to a current accepted requirement, invariant, or compatibility row; a named boundary may justify implementation structure but MUST NOT create, remove, or narrow accepted behavior.
+    enforcement: REQUIRED
+  - id: FF-BUILD-060
+    category: yagni
+    statement: "Before creating code or a dependency, change evidence MUST identify each candidate inspected and why earlier rungs fail in this order: no mechanism beyond the accepted outcome, reuse of current Ferric code, Rust core or std, approved platform capability, already-approved dependency, then the smallest complete clear implementation."
+    enforcement: REQUIRED
+  - id: FF-BUILD-061
+    category: yagni
+    statement: A trait or dynamic-dispatch seam requires two current production implementations or one necessary named current invariant, contract, isolation boundary, or deterministic test that concrete static private code cannot satisfy; candidate categories alone are insufficient.
+    enforcement: REQUIRED
+  - id: FF-BUILD-062
+    category: yagni
+    statement: A one-to-one delegation layer requires review evidence for the current invariant, translation, ownership boundary, failure boundary, compatibility contract, or observability requirement it alone enforces; this is not claimed as an AST-enforced fact unless a checker exists.
+    enforcement: REQUIRED
+  - id: FF-BUILD-063
+    category: yagni
+    statement: A configuration key, generic extension, or optional feature requires a current acceptance scenario, owner, bounds, lifecycle, at least one governed test profile, and either a removal condition or an explicit stable-contract designation with owner and retention test.
+    enforcement: REQUIRED
+  - id: FF-BUILD-064
+    category: yagni
+    statement: YAGNI applies only to capability or implementation complexity unnecessary to completely satisfy current accepted requirements and MUST NOT remove or weaken accepted behavior, requested coverage/risk cases, integrations, migrations, documentation, correctness, trust-boundary validation, data integrity, cancellation, timeouts, bounded resources, security, compatibility, diagnostics, observability, accessibility, recovery, or verification.
+    enforcement: REQUIRED
+  - id: FF-BUILD-065
+    category: yagni
+    statement: A deliberate simple implementation with a known ceiling MUST record the ceiling, a current observable replacement trigger, the likely upgrade path, and the test, metric, benchmark, compatibility probe, or operator threshold that detects the trigger.
+    enforcement: REQUIRED
+  - id: FF-BUILD-066
+    category: yagni
+    statement: "Review MUST run as three recorded gates: prove accepted scope and risk coverage; perform reuse, deletion, dependency, and simplification review; then rerun the complete acceptance, risk, and scope matrix after simplification."
+    enforcement: REQUIRED
+  - id: FF-BUILD-067
+    category: yagni
+    statement: Line count, one-liner count, file count, abstraction count, and diff size MUST NOT be acceptance criteria or substitutes for complete behavior and quality evidence; the active work packet is the canonical change-evidence record and code or policy diffs are linked evidence only.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-068
+    category: watcher_freshness
+    statement: Ferric and the watcher MUST share one bounded versioned diagnostic contract with major/minor negotiation, a canonical schema-hash algorithm, stable event IDs, required/optional and sensitivity metadata, producer-side redaction, bounded safe handling of unknown optional fields, and sequence semantics keyed by producer instance, boot/session, and channel.
+    enforcement: REQUIRED
+  - id: FF-BUILD-069
+    category: watcher_freshness
+    statement: Governed startup and release packaging MUST pair exact artifact IDs, producer schema hash, and watcher accepted protocol/schema set; missing, corrupt, incompatible, hung, or failed watcher startup yields bounded diagnostics_degraded or diagnostics_incompatible without changing Ferric startup, correctness, or success semantics.
+    enforcement: REQUIRED
+  - id: FF-BUILD-070
+    category: watcher_freshness
+    statement: Watcher loop health MUST expose Idle, Working, Blocked, or Failed with work identity and expected deadline; admitted-work completion generations plus independent responsiveness canaries MUST distinguish legitimate idle time from stalls in ingest, persistence, health-serving, retention, and their handoffs.
+    enforcement: REQUIRED
+  - id: FF-BUILD-071
+    category: watcher_freshness
+    statement: Every event kind MUST declare criticality and an exhaustive legal policy; mandatory terminal, crash, and invariant-breach events use durable critical handling or an explicit scoped loss marker, reject is limited to invalid or unsupported-major input, and drop_with_counter is limited to declared lossy telemetry.
+    enforcement: REQUIRED
+  - id: FF-BUILD-072
+    category: watcher_freshness
+    statement: Governed queue, process, durable-transition, state-machine, and subsystem constructors MUST require a diagnostic capability ID from an architecture-policy inventory; raw constructors are confined to audited adapter modules so an omitted self-registration cannot satisfy coverage.
+    enforcement: REQUIRED
+  - id: FF-BUILD-073
+    category: watcher_freshness
+    statement: A diagnostic producer or schema change MUST update the independent capability inventory, watcher policy, checked-in previous/canonical wire fixtures, registry-generated one-event-per-kind and all-transition corpus, current-binary replay, privacy cases, and illegal-policy negative fixtures in the same change.
+    enforcement: REQUIRED
+  - id: FF-BUILD-074
+    category: watcher_freshness
+    statement: FF-GATE-WATCHER-001 MUST test producer N with watcher N and N-1 on every supported OS/architecture using retained immutable wire corpora or provenance-bound artifacts; terminal/crash evidence is never intentionally dropped after watcher admission and before acknowledged durable write while the watcher and its reserved critical sink are healthy, and every residual gap is explicit.
+    enforcement: REQUIRED
+  - id: FF-BUILD-075
+    category: watcher_freshness
+    statement: Watcher validation MUST cover missing/corrupt/incompatible/hung startup, bounded degraded startup, Ferric and launcher crash ownership, watcher crash isolation, all loop and handoff stalls plus long idle, bounded shutdown/flush that cannot change the decided Ferric result, reserved critical storage and residual gaps, malformed/torn/duplicate/reordered/replayed/overflow/restart sequences, PID reuse, clock jumps, privacy, paired packaging, and inability to control Ferric.
+    enforcement: REQUIRED
+  - id: FF-BUILD-076
+    category: watcher_freshness
+    statement: Watcher freshness requires independent inventory coverage, canonical synthetic corpora, current-binary replay, and the required cross-version/platform rows; file timestamps, self-declared registry agreement, one natural trace, touch requirements, and process existence are forbidden as sufficient evidence.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-077
+    category: architecture
+    statement: "The repository MUST maintain three non-overlapping tracked roots: .GOV/ owns governance; product/ owns shipped runtime code, assets, the watcher, and package-local product tests; build/ owns the Cargo workspace, lockfile, build policies, non-shipped tooling, shared test infrastructure, and governance reports. The ignored `.fforager-artifacts/` root owns all disposable build and test output. rust-toolchain.toml at repository root is the sole rustup selector, and shipped product runtime MUST NOT require .GOV/, build/, or `.fforager-artifacts/` at runtime."
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-078
+    category: runtime_truth
+    statement: Product progress, capability completion, product-runtime work-packet closure, and product-phase completion require operator-usable behavior executed through a shipped production entrypoint; compilation, tests, mocks, fixtures, reports, documentation, contracts, prototypes, scaffolding, governance, and explicitly classified Phase 0 prerequisite packets are supporting evidence only.
+    revision: 2
+    enforcement: REQUIRED
+  - id: FF-BUILD-079
+    category: runtime_truth
+    statement: Before product runtime implementation begins, an active packet with scope.product_impact RUNTIME MUST define at least one strict black-box runtime scenario with production build identity, shipped entrypoint, representative input, actual production boundaries, expected outputs and side effects, failure oracle, timeout, and operator-visible result; a design-authorized PREREQUISITE packet instead carries an exact committed zero-progress prerequisite declaration.
+    revision: 2
+    enforcement: REQUIRED
+  - id: FF-BUILD-080
+    category: runtime_truth
+    statement: FF-GATE-RUNTIME-001 MUST build the locked shipping profile once, record the artifact digest, stage that exact artifact into an isolated `.fforager-artifacts/runtime-proof/` package directory, and execute it without governance, build-tool, product-source, dev-dependency, testkit, test-only feature, or cfg(test) assistance.
+    enforcement: REQUIRED
+  - id: FF-BUILD-081
+    category: runtime_truth
+    statement: Runtime acceptance MUST reject mock, fake, stub, fixture-only implementation, in-memory substitute, hardcoded-success path, test-only adapter, and direct internal-function execution as product proof while retaining them as supporting test mechanisms where justified.
+    enforcement: REQUIRED
+  - id: FF-BUILD-082
+    category: runtime_truth
+    statement: Shipped paths MUST NOT contain placeholder behavior, no-op success, dummy output, inert commands, fabricated state, or deferred implementation hidden behind success; typed unsupported outcomes MUST remain explicit capability gaps and MUST NOT advance implemented status.
+    enforcement: REQUIRED
+  - id: FF-BUILD-083
+    category: runtime_truth
+    statement: Product infrastructure, contracts, scaffolding, and test machinery MUST normally be delivered in the same closure unit as the first production runtime behavior that consumes them; a design-authorized Phase 0 packet with scope.product_impact PREREQUISITE may close only bounded prerequisite acceptance, MUST report zero product/capability/runtime/packaging/release/phase progress, and MUST be consumed and re-proven by the first production runtime slice.
+    revision: 2
+    enforcement: REQUIRED
+  - id: FF-BUILD-084
+    category: runtime_truth
+    statement: Every product phase MUST close on at least one complete runtime vertical slice through the shipped entrypoint, engine, production adapters, required external processes, persistence or output boundary, diagnostics, and operator-visible result; skeleton-only and layer-only phase completion is forbidden.
+    enforcement: REQUIRED
+  - id: FF-BUILD-085
+    category: runtime_truth
+    statement: Unit, property, mutation, fixture, replay, integration, fuzz, and mock-based tests are supporting layers and MUST NOT replace execution of the corresponding production artifact for product closure.
+    enforcement: REQUIRED
+  - id: FF-BUILD-086
+    category: runtime_truth
+    statement: Verification of a packet with scope.product_impact RUNTIME MUST return BLOCKED or FAIL, never PASS or NOT_APPLICABLE, when the production artifact, required dependency, representative input, production boundary, observable, negative path, or runtime receipt is absent or mismatched; PREREQUISITE verification may PASS only its bounded prerequisite evidence and explicit zero-progress ceiling.
+    revision: 2
+    enforcement: REQUIRED
+  - id: FF-BUILD-087
+    category: runtime_truth
+    statement: FF-GATE-RUNTIME-001 MUST execute a counterfactual that removes, corrupts, skips, or falsely reports a required observable and MUST prove that the same acceptance oracle rejects the mutation.
+    enforcement: REQUIRED
+  - id: FF-BUILD-088
+    category: runtime_truth
+    statement: Code unreachable from a current accepted production entrypoint is not implemented product behavior; it MUST be removed or classified as non-product experimental or design-authorized Phase 0 prerequisite work, and prerequisite code may advance only its named prerequisite packet while remaining unable to advance product, capability, runtime, packaging, release, or phase status until consumed and re-proven.
+    revision: 2
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-089
+    category: product_dependency_boundary
+    statement: Architecture, dependency, packaging, source-policy, and canonical verification gates MUST reject yt-dlp, Python, or any yt-dlp companion package or executable asset as an import, dependency, bundled artifact, executed solver/library asset, installer, downloader, subprocess plan, fallback, sidecar, plugin, service, required fixture, or delegated work path anywhere Ferric build, test, verification, package, release, or runtime behavior depends on it. Only explicitly invoked non-canonical research tooling may observe an Operator-supplied version-pinned external executable; canonical commands MUST succeed with it absent. Negative fixtures MUST prove rejection of both an indirect runtime wrapper and a bundled companion solver asset.
+    revision: 2
+    enforcement: REQUIRED
+  - id: FF-BUILD-090
+    category: proof_integrity
+    statement: Validators and reports MUST classify evidence as structural, semantic, integration, or production-runtime and MUST reject behavioral PASS labels when only schema, existence, digest, inventory, fixture-load, or expected-label checks executed.
+    enforcement: REQUIRED
+  - id: FF-BUILD-091
+    category: proof_integrity
+    statement: A behavioral proof MUST observe a public producer-consumer or state-effect boundary and include a counterfactual that alters behavior without altering its declaration; equality of constants, proof IDs, inventory rows, fixture expectations, permissive flags, or generated claims is declaration-only evidence and MUST fail behavioral acceptance.
+    enforcement: REQUIRED
+  - id: FF-BUILD-092
+    category: effect_integrity
+    statement: State-machine tests and model gates MUST prove that every emitted required external effect is pending until acknowledged and that durable, terminal, release, success, cancellation, confinement, commit, and recovery states are unreachable after any strict subset of required acknowledgements; FFmpeg termination and reap and filesystem confinement establishment require explicit separate proof.
+    enforcement: REQUIRED
+  - id: FF-BUILD-093
+    category: compatibility_integrity
+    statement: Schema negotiation MUST accept drift only through a versioned exact source-to-target compatibility transition validated by both wire semantics and negative unrelated-hash cases; boolean opt-in, wildcard, or mutual permissiveness is forbidden.
+    enforcement: REQUIRED
+  - id: FF-BUILD-094
+    category: wire_integrity
+    statement: Diagnostic and other durable wire gates MUST reject sequence zero unless an exact contract registers a different origin, reject undeclared top-level and nested fields unless registered as bounded optional extensions, and retain malformed, unknown-field, prior/current, and sequence-boundary fixtures.
+    enforcement: REQUIRED
+  - id: FF-BUILD-095
+    category: graph_integrity
+    statement: SourceGraph validation and model tests MUST cover each traversable relationship kind with acyclic, self-cycle, multi-node cycle, and limit-boundary cases and MUST reject prohibited cycles before any consumer traversal.
+    enforcement: REQUIRED
+  - id: FF-BUILD-096
+    category: finding_remediation
+    statement: Every confirmed counterexample MUST become a public-boundary regression that preserves the original failing input and expected correction, and validation MUST demonstrate a counterfactual or mutation that reintroduces the defect and is rejected.
+    enforcement: REQUIRED
+  - id: FF-BUILD-097
+    category: proof_integrity
+    statement: Proof inventories and rule-to-proof maps MUST resolve each behavioral rule to an executable behavior-sensitive check; gates MUST reject missing, unknown, duplicate, skipped, declaration-only, or proof-ID-string-only mappings and MUST not treat map consistency as the mapped proof result.
+    enforcement: REQUIRED
+  - id: FF-BUILD-098
+    category: validation_reporting
+    statement: Every gate result MUST record proof class, concrete input, executed boundary, expected result, observed result, and skipped semantic dependencies; aggregation MUST preserve the weakest proof class and MUST NOT promote structural-only evidence to semantic, integration, or runtime PASS.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-099
+    category: credential_protection
+    statement: "No commit or push may contain an API key or credential. Pre-commit MUST scan exact stage-zero index blobs; pre-push MUST scan every complete outgoing commit snapshot including new-branch ancestry; canonical verification MUST scan reachable history, the exact index, and tracked or non-ignored worktree files; binary blobs are scanned, oversized or unreadable blobs fail closed, matched values are never emitted, explicit redacted placeholders remain legal, and GitHub secret-scanning push protection MUST remain enabled as an independent remote pre-receive control."
+    enforcement: REQUIRED

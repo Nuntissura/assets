@@ -1,0 +1,72 @@
+{
+  "schema_id": "ff.archive-store-evidence-corpus@2",
+  "corpus_id": "WP-FF-008-archive-store-evidence-v2",
+  "fixture_identity": {
+    "owner": "Ferric Forager",
+    "origin": "committed deterministic synthetic corpus",
+    "network_required": false,
+    "external_executable_required": false
+  },
+  "candidate": {
+    "name": "redb",
+    "version": "4.1.0",
+    "default_features": false,
+    "features": [],
+    "write_strategy": "two_phase",
+    "durability": "immediate"
+  },
+  "candidate_matrix": [
+    {"name":"redb","version":"4.1.0","disposition":"EXECUTED","reason":"selected exact-pinned pure-Rust transactional candidate"},
+    {"name":"fjall","version":"3.1.8","disposition":"DEFERRED_COMPARISON","reason":"broader dependency and background-maintenance proof surface"},
+    {"name":"sled","version":"0.34.7","disposition":"REJECTED","reason":"stale release line and broader legacy correctness surface"},
+    {"name":"sqlite","version":"unapproved","disposition":"UNAUTHORIZED","reason":"native dependency boundary is not approved"}
+  ],
+  "source_paths": [
+    "product/crates/fforager-contracts/src/archive.rs",
+    "product/crates/fforager-storage/src/lib.rs",
+    "build/crates/fforager-testkit/src/archive_evidence.rs",
+    "build/crates/fforager-testkit/src/lib.rs",
+    "build/tools/fforager-xtask/src/main.rs"
+  ],
+  "limits": {
+    "maximum_fixture_bytes": 1048576,
+    "maximum_cases": 24,
+    "maximum_case_runtime_ms": 120000,
+    "representative_identities": 4096,
+    "b021_identities": 1000000,
+    "latency_sample_limit": 1024,
+    "maximum_report_bytes": 8388608
+  },
+  "cases": [
+    {"case_id":"wp008-identity-item","category":"identity","scenario":"item_identity_is_distinct","injected_fault":"representation_alias","expected":"distinct","actions":["build_five_keys","wire_roundtrip_selected"],"negative_action":"alias_level_rejected"},
+    {"case_id":"wp008-identity-representation","category":"identity","scenario":"representation_identity_is_distinct","injected_fault":"track_alias","expected":"distinct","actions":["build_five_keys","wire_roundtrip_selected"],"negative_action":"alias_level_rejected"},
+    {"case_id":"wp008-identity-track","category":"identity","scenario":"track_identity_is_distinct","injected_fault":"asset_alias","expected":"distinct","actions":["build_five_keys","wire_roundtrip_selected"],"negative_action":"alias_level_rejected"},
+    {"case_id":"wp008-identity-asset","category":"identity","scenario":"asset_identity_is_distinct","injected_fault":"derived_alias","expected":"distinct","actions":["build_five_keys","wire_roundtrip_selected"],"negative_action":"alias_level_rejected"},
+    {"case_id":"wp008-identity-derived","category":"identity","scenario":"derived_output_identity_preserves_provenance","injected_fault":"source_alias","expected":"distinct","actions":["build_five_keys","wire_roundtrip_selected"],"negative_action":"alias_level_rejected"},
+    {"case_id":"wp008-duplicate-suppression","category":"claim","scenario":"committed_identity_is_not_reclaimed","injected_fault":"duplicate_request","expected":"already_committed","actions":["claim","commit","duplicate_claim"],"negative_action":"distinct_identity_claimable"},
+    {"case_id":"wp008-concurrent-claim","category":"claim","scenario":"two_workers_claim_one_identity","injected_fault":"simultaneous_request","expected":"one_winner","actions":["separated_check_insert_model","independent_handle_stress","barrier_thread_race"],"negative_action":"two_winner_model_rejected"},
+    {"case_id":"wp008-lease-renewal","category":"lease","scenario":"owner_renews_exact_token","injected_fault":"foreign_token","expected":"foreign_rejected","actions":["claim","renew_exact_lease"],"negative_action":"superseded_lease_replay_rejected"},
+    {"case_id":"wp008-lease-takeover","category":"lease","scenario":"expired_lease_is_taken_over","injected_fault":"old_owner_commit","expected":"stale_token_rejected","actions":["claim_initial","claim_stale_takeover"],"negative_action":"old_token_commit_rejected"},
+    {"case_id":"wp008-crash-before-archive","category":"crash","scenario":"output_exists_without_archive_row","injected_fault":"restart_after_output_commit","expected":"reconcile_insert","actions":["persist_final_output","claim","drop_store","reopen_store","reconstruct_observation","reconcile_insert","reopen_verify"],"negative_action":"missing_recovery_record_rejected"},
+    {"case_id":"wp008-crash-after-archive","category":"crash","scenario":"archive_row_exists_without_output","injected_fault":"restart_after_archive_commit","expected":"fail_closed_inconsistent","actions":["persist_final_output","claim_commit","drop_store","remove_final_output","reopen_reconstruct"],"negative_action":"row_without_output_failed_closed"},
+    {"case_id":"wp008-reconciliation-idempotent","category":"reconciliation","scenario":"repeat_same_recovery_observation","injected_fault":"duplicate_reconcile","expected":"converged_twice","actions":["persist_final_output","claim_commit","drop_reopen_first","reconstruct_first","reconcile_first","drop_reopen_second","reconstruct_second","reconcile_second"],"negative_action":"output_identity_mismatch_rejected"},
+    {"case_id":"wp008-corrupt-store","category":"corruption","scenario":"invalid_database_bytes","injected_fault":"replace_database_header","expected":"typed_fail_closed","actions":["create_clean_store","drop_store","replace_database_header"],"negative_action":"corrupt_reopen_rejected"},
+    {"case_id":"wp008-torn-store","category":"corruption","scenario":"truncated_database_bytes","injected_fault":"truncate_database","expected":"typed_fail_closed","actions":["create_clean_store","drop_store","truncate_database"],"negative_action":"torn_reopen_rejected"},
+    {"case_id":"wp008-schema-create","category":"migration","scenario":"create_current_schema","injected_fault":"none","expected":"current_schema","actions":["open_initialize","drop_reopen","inspect_empty_state"],"negative_action":"unsupported_transition_rejected"},
+    {"case_id":"wp008-schema-forward","category":"migration","scenario":"authorized_forward_transition","injected_fault":"old_schema","expected":"migrated","actions":["seed_source_records","begin_migration","copy_batch_1","copy_batch_2","copy_batch_3","verify_migration","activate_migration","verify_all_active","drop_reopen","verify_all_reopened"],"negative_action":"skip_copy_verify_rejected"},
+    {"case_id":"wp008-schema-interrupted","category":"migration","scenario":"migration_marker_survives_restart","injected_fault":"interrupt_after_marker","expected":"last_known_good_or_resume","actions":["seed_source_records","begin_migration","copy_first_batch","drop_store","reopen_store","load_durable_cursor","resume_remaining_batches","verify_migration","activate_migration","verify_all_active","drop_reopen","verify_all_reopened"],"negative_action":"wrong_migration_id_rejected"},
+    {"case_id":"wp008-schema-unknown","category":"migration","scenario":"newer_unknown_schema","injected_fault":"unknown_major","expected":"typed_rejection","actions":["create_current_store","drop_store","write_unknown_store_version"],"negative_action":"unknown_store_version_reopen_rejected"},
+    {"case_id":"wp008-import-mapped","category":"import","scenario":"ferric_text_rows_have_explicit_mapping","injected_fault":"duplicate_line","expected":"idempotent_import","actions":["import_mapped_batch","repeat_import","read_imported_membership"],"negative_action":"mismatched_level_mapping_rejected"},
+    {"case_id":"wp008-import-unknown","category":"import","scenario":"text_row_has_no_identity_mapping","injected_fault":"unknown_identity_kind","expected":"typed_rejection","actions":["encode_known_mapping","decode_known_mapping"],"negative_action":"unknown_mapping_decode_rejected"},
+    {"case_id":"wp008-retry-idempotent","category":"retry","scenario":"repeat_claim_commit_and_import","injected_fault":"retry_after_observed_success","expected":"same_terminal_state","actions":["claim","retry_claim","commit","retry_commit","import","retry_import"],"negative_action":"changed_output_retry_rejected"},
+    {"case_id":"wp008-rollback-last-known-good","category":"migration","scenario":"failed_transition_preserves_source","injected_fault":"invalid_target_version","expected":"source_reopens","actions":["clean_seed_source","clean_migrate_pre_activation","clean_rollback","clean_reopen_verify","dirty_seed_source","dirty_migrate_activate","dirty_write_v2","dirty_reopen_verify_v2"],"negative_action":"dirty_rollback_rejected"},
+    {"case_id":"wp008-scale-representative","category":"scale","scenario":"streamed_representative_archive","injected_fault":"cold_and_warm_lookup","expected":"measured","actions":["stream_insert","drop_store","reopen_cold_lookup","warm_lookup","resource_observe"],"negative_action":"absent_identity_not_present"},
+    {"case_id":"wp008-scale-b021","category":"scale","scenario":"one_million_archive_identities","injected_fault":"host_budget_guard","expected":"measured_or_explicit_blocked","actions":["evaluate_stress_guard"],"negative_action":null}
+  ],
+  "residual_uncertainty": [
+    "redb 4.1.0 invokes the panic hook before Ferric catches the reproduced same-thread torn-file page-manager assertion; ArchiveStore::open returns typed OpenFailed and no unwind escapes, but the candidate diagnostic cannot be suppressed safely through its public API.",
+    "Process-kill and power-loss durability remain bounded by the declared filesystem capability profile; clean restart and candidate repair are not physical power-loss proof.",
+    "The one-million-identity B-021 row may be explicitly BLOCKED when the opt-in stress budget is not enabled; a blocked row is not performance evidence.",
+    "This Phase 0 prerequisite corpus executes no shipped Ferric entrypoint and provides zero product, capability, runtime, packaging, release, or phase progress."
+  ]
+}

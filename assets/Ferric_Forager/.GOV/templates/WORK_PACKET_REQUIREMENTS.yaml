@@ -1,0 +1,200 @@
+schema_id: ff.work_packet_requirements@2
+file_id: FF-GOV-WP-REQUIREMENTS-001
+updated_at: "2026-07-22"
+authority: canonical_profile_requirements
+purpose: Preserve reliable state, recovery, scope, and proof while minimizing paperwork that does not advance product delivery.
+profile_selection:
+  precedence: EXPANDED > TRACKED > DIRECT
+  DIRECT:
+    packet_required: false
+    allowed: Read-only work and trivial non-authority documentation corrections.
+  TRACKED:
+    packet_required: true
+    triggers: [product_change, authority_change, task_state_change, governance_workflow_change, multi_session, worktree, recoverable_handoff]
+    required_sections: [identity, authorization, source_control, lifecycle, scope, acceptance_matrix, recovery, validation]
+  EXPANDED:
+    packet_required: true
+    extends: TRACKED
+    triggers: [architecture, dependency, security_boundary, public_contract, compatibility, durability, performance_claim, broad_spec_change, medium_or_high_risk]
+    conditional_sections: [refinement, research, red_team, contracts, performance, microtasks]
+anti_ceremony:
+  - Do not create a packet for DIRECT work.
+  - Do not create empty conditional sections or repeated not-applicable prose.
+  - Do not split work into microtasks unless independent sequencing or parallel ownership needs them.
+  - Do not create separate evidence, receipt, handoff, or status files when packet state plus Git proof is sufficient.
+  - Prefer exact Git command output over manually reconstructed state prose.
+requirements:
+  - id: FF-WPR-001
+    applies_to: [TRACKED, EXPANDED]
+    statement: packet.json is the sole detailed work-packet authority; no Markdown packet or status projection is created.
+  - id: FF-WPR-002
+    applies_to: [TRACKED, EXPANDED]
+    statement: wp_id uses WP-FF-<number>-<name>-v<number>, contains no timestamp, and preserves base_wp_id across revisions.
+  - id: FF-WPR-003
+    applies_to: [TRACKED, EXPANDED]
+    statement: Only one non-superseded revision may be active for a base_wp_id.
+  - id: FF-WPR-004
+    applies_when: packet_revision
+    statement: A revision preserves prior requirements and records changed requirements and supersession relationships.
+  - id: FF-WPR-005
+    applies_to: [TRACKED, EXPANDED]
+    statement: The taskboard stores only the packet index and active ID; packet.json is the sole detailed lifecycle source and taskboard changes occur only when index or focus changes.
+  - id: FF-WPR-006
+    applies_to: [TRACKED, EXPANDED]
+    statement: Product implementation requires recorded Operator authorization; EXPANDED work also satisfies its triggered refinement requirements.
+  - id: FF-WPR-007
+    applies_to: [TRACKED, EXPANDED]
+    statement: Validator acceptance sets MERGE_PENDING; VALIDATED requires closure-commit containment in main.
+  - id: FF-WPR-008
+    applies_to: [TRACKED, EXPANDED]
+    statement: Main containment is checked mechanically before VALIDATED.
+  - id: FF-WPR-009
+    applies_to: [TRACKED, EXPANDED]
+    statement: Record base SHA, canonical branch, work branch, remote-backup state, and worktree policy; physical worktree paths remain machine-local and uncommitted.
+  - id: FF-WPR-010
+    applies_to: [TRACKED, EXPANDED]
+    statement: Scope records purpose, in-scope behavior, non-goals, allowed paths, and dependencies only to the detail needed to prevent accidental widening.
+  - id: FF-WPR-011
+    applies_when: shared_or_authority_surface_change
+    statement: Root authority, governance, CI, build, and shared files require explicit scope.
+  - id: FF-WPR-012
+    applies_to: [EXPANDED]
+    statement: Refinement records the Operator request, relevant spec anchors, assumptions, non-goals, acceptance, and execution decomposition when needed.
+  - id: FF-WPR-013
+    applies_when: current_research_required
+    statement: Record sources, dates, inspected implementation evidence, selected/rejected approaches, risks, mitigations, and validation plan.
+  - id: FF-WPR-014
+    applies_when: yt_dlp_compatibility_claim
+    statement: Record pinned version, inventory IDs, corpus version, oracle cases, divergences, and equivalence rules.
+  - id: FF-WPR-015
+    applies_when: expanded_risk_review
+    statement: Record concrete attack surfaces, plausible failures, and enforceable controls.
+  - id: FF-WPR-016
+    applies_when: cross_boundary_change
+    statement: Record only the data, process, filesystem, network, compatibility, and observability boundaries actually touched.
+  - id: FF-WPR-017
+    applies_when: state_transition_or_external_boundary_change
+    statement: Record affected invariants, preconditions, postconditions, cancellation outcomes, and proof methods.
+  - id: FF-WPR-018
+    applies_when: hidden_state_or_effect_boundary_change
+    statement: Identify pure-core and effect boundaries and eliminate hidden state that prevents narrow testing.
+  - id: FF-WPR-019
+    applies_when: producer_consumer_change
+    statement: Record item/byte bounds, admission, loss policy, cancellation, and saturation proof.
+  - id: FF-WPR-020
+    applies_when: potentially_unbounded_operation
+    statement: Record deadline, budget, cancellation, indefinite-mode policy, assumptions, and residual uncertainty.
+  - id: FF-WPR-021
+    applies_when: product_runtime_or_diagnostics_change
+    statement: Record watcher lifecycle, diagnostics, retention, crash-survival, and test impact.
+  - id: FF-WPR-022
+    applies_when: performance_claim
+    statement: Record equivalent work, process topologies, correctness preconditions, metrics, samples, confidence method, and thresholds.
+  - id: FF-WPR-023
+    applies_to: [TRACKED, EXPANDED]
+    statement: Acceptance rows have stable IDs, measurable requirements, statuses, and concrete proof.
+  - id: FF-WPR-024
+    applies_to: [TRACKED, EXPANDED]
+    statement: Required acceptance closes only with proof; missing proof remains BLOCKED.
+  - id: FF-WPR-025
+    applies_when: design_or_spec_clause_change
+    statement: Map each affected clause to code/tests and closure proof without mapping untouched clauses.
+  - id: FF-WPR-026
+    applies_when: shared_surface_change
+    statement: Identify affected producers/consumers and add tripwire validation.
+  - id: FF-WPR-027
+    applies_when: persisted_or_emitted_data_change
+    statement: Record stable IDs, relationships, provenance, serializers/readers, migrations, and retrieval fields.
+  - id: FF-WPR-028
+    applies_when: microtasks_are_necessary
+    statement: Each microtask records only scope, files, dependencies, expected behavior, acceptance, verification, and next-state update.
+  - id: FF-WPR-029
+    applies_when: multi_session_or_parallel_work
+    statement: Use packet recovery checkpoints plus Git commits as the canonical assignment, status, steering, validation, and handoff surface.
+  - id: FF-WPR-030
+    applies_when: delegated_agents
+    statement: Delegation requires Operator authorization and primary-agent proof review.
+  - id: FF-WPR-031
+    applies_when: operator_or_model_surface_change
+    statement: Record the affected command, API, diagnostic, or GUI entrypoint and its required proof.
+  - id: FF-WPR-032
+    applies_when: product_operating_behavior_change
+    statement: Update the no-context model operating instructions in the same work packet.
+  - id: FF-WPR-033
+    applies_when: trust_boundary_change
+    statement: Record source of truth, provenance, verification, errors, guardrails, and validator assertions.
+  - id: FF-WPR-034
+    applies_to: [TRACKED, EXPANDED]
+    statement: Record commands actually run, exit result, and the artifact or behavior proved; hashes and full environment dumps are conditional on risk or reproducibility need.
+  - id: FF-WPR-035
+    applies_when: medium_or_high_risk_validation
+    statement: Include independent checks, counterfactuals, boundary and negative probes, findings, and residual uncertainty.
+  - id: FF-WPR-036
+    applies_when: pause_block_or_handoff
+    statement: One recovery checkpoint records what changed, checks run, gaps, branch/base/head, dirty paths, and exact next action.
+  - id: FF-WPR-037
+    applies_to: [TRACKED, EXPANDED]
+    statement: No PASS is legal while required acceptance is unproven or validation context is mismatched.
+  - id: FF-WPR-038
+    applies_when: supersession
+    statement: Retain superseded packet history under the base work-packet archive directory.
+  - id: FF-WPR-039
+    applies_to: [TRACKED, EXPANDED]
+    statement: Committed paths are repository-relative; machine-local worktree paths and credentials remain uncommitted.
+  - id: FF-WPR-040
+    applies_when: new_runtime_or_native_dependency
+    statement: Obtain explicit Operator approval backed by current research and measured need.
+  - id: FF-WPR-041
+    applies_when: product_change
+    statement: Set scope.product_impact to RUNTIME for product behavior or packaging changes, PREREQUISITE only for a design-authorized bounded Phase 0 prerequisite with an exact zero-progress declaration, and NONE only when changed paths and declared outcomes contain neither product behavior nor prerequisite artifacts.
+  - id: FF-WPR-042
+    applies_when: product_impact_runtime
+    statement: At least one acceptance row uses proof_class production_runtime and identifies the shipped entrypoint, production build identity, representative input, actual production boundaries, expected observables, negative path, timeout, and operator-visible result.
+  - id: FF-WPR-043
+    applies_when: product_impact_runtime
+    statement: extensions.runtime_proof uses the strict current schema consumed by FF-GATE-RUNTIME-001 and records no manually asserted PASS in place of gate-generated runtime evidence.
+  - id: FF-WPR-044
+    applies_when: product_impact_runtime
+    statement: Runtime proof builds the locked shipping profile once, hashes and stages that exact artifact, and executes it without source-tree, .GOV, build tooling, dev-dependencies, testkit, test-only features, or cfg(test) behavior.
+  - id: FF-WPR-045
+    applies_when: product_impact_runtime
+    statement: Mock, fake, stub, fixture-only implementation, in-memory substitute, hardcoded-success path, test-only adapter, and direct internal-function execution may support tests but cannot satisfy runtime acceptance or closure.
+  - id: FF-WPR-046
+    applies_when: product_impact_runtime
+    statement: Missing or mismatched production artifacts, dependencies, inputs, boundaries, observables, negative paths, or runtime receipts remain BLOCKED and cannot be marked PASS or NOT_APPLICABLE.
+  - id: FF-WPR-047
+    applies_when: product_phase_closure
+    statement: The packet closes at least one operator-usable vertical runtime slice through the shipped entrypoint, engine, production adapters, required external processes, output or persistence, diagnostics, and visible result; skeleton-only closure is forbidden.
+  - id: FF-WPR-048
+    applies_when: product_impact_runtime
+    statement: Runtime acceptance includes a gate-executed counterfactual proving the oracle rejects a removed, corrupted, skipped, or falsely successful required observable.
+  - id: FF-WPR-049
+    applies_when: non_product_experiment_or_research_spike
+    statement: The packet labels prototypes, scaffolding, risk spikes, and unreachable experimental code as non-product evidence; they cannot advance implemented capability, product progress, or phase status.
+  - id: FF-WPR-050
+    applies_when: completed_research_basis_exists
+    statement: Reuse a still-current completed packet research basis and proceed to the requested deliverable; reopen research only for an explicit Operator research request or a named stale or missing dependency, source, version, assumption, or evidence trigger.
+  - id: FF-WPR-051
+    applies_when: delegated_agents
+    statement: Delegated lanes match the Operator request exactly; implementation and implementation-review delegation does not authorize research or research-review delegation.
+  - id: FF-WPR-052
+    applies_when: product_impact_prerequisite
+    statement: A PREREQUISITE packet is design-authorized Phase 0 work, commits an exact non-product prerequisite declaration at activation, contains no production-runtime proof or acceptance, claims zero product/capability/runtime/packaging/release/phase progress, and names the future shipped consumer and runtime gate that must re-prove it.
+  - id: FF-WPR-053
+    applies_when: yt_dlp_compatibility_or_media_behavior
+    statement: Scope and acceptance explicitly prohibit yt-dlp and Python from product dependencies, packaging, installation, subprocess, fallback, sidecar, plugin, service, and delegated runtime paths; any pinned yt-dlp oracle use is non-shipped build or research tooling with provenance and Ferric-independent execution, and validation includes an indirect-wrapper negative case.
+  - id: FF-WPR-054
+    applies_when: replay_or_behavioral_proof
+    statement: Each acceptance row names the semantics executed, concrete input, observed boundary, expected and observed results, proof class, and skipped dependencies; structural fixture checks cannot close a replay, oracle, parity, compatibility, durability, integration, or behavioral PASS row.
+  - id: FF-WPR-055
+    applies_when: external_effect_state_transition
+    statement: Record the complete required acknowledgement set for every emitted effect and prove each partial-acknowledgement prefix cannot reach durable, terminal, release, success, cancellation, confinement, commit, or recovery completion.
+  - id: FF-WPR-056
+    applies_when: schema_graph_or_durable_wire_change
+    statement: Acceptance includes exact schema-transition authority with unrelated-hash negatives, declared sequence origin and unknown-field policy at every wire level, and relationship-kind cycle policy with self-cycle and multi-node-cycle negatives.
+  - id: FF-WPR-057
+    applies_when: behavioral_acceptance_or_proof_map
+    statement: Map metadata routes to an executable public-boundary proof that is independent of implementation declarations; include a behavior-changing declaration-preserving counterfactual, and reject proof-ID strings, constants, inventory equality, or expected-label agreement as behavioral proof.
+  - id: FF-WPR-058
+    applies_when: confirmed_inspection_finding
+    statement: Preserve the original failing input in an executable public-boundary regression, record the corrected observable, and prove the regression fails when the correction is removed or bypassed before marking the finding closed.

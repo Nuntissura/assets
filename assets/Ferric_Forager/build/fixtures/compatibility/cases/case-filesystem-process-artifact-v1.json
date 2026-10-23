@@ -1,0 +1,26 @@
+{
+  "schema_id": "ff.oracle-artifact-observation@1",
+  "case_id": "case-filesystem-process-artifact-v1",
+  "process_plan": [
+    {
+      "program": "ffmpeg",
+      "argument_classes": ["input", "stream-copy", "output"],
+      "timeout_policy": "bounded"
+    },
+    {
+      "program": "ffprobe",
+      "argument_classes": ["validate-output"],
+      "timeout_policy": "bounded"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "output/Fixture_Alpha_[alpha].mkv",
+      "state": "durable-final"
+    },
+    {
+      "path": "output/Fixture_Alpha_[alpha].info.json",
+      "state": "durable-sidecar"
+    }
+  ]
+}

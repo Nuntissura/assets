@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "proof-map-behavior-stub"
+mutation = "proof_map_behavior_stub"
+expected_diagnostic = "FF-ARCH-E-INVENTORY-PROOF-BEHAVIOR"

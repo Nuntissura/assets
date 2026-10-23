@@ -1,0 +1,1 @@
+{"schema_id":"ff.state-scenario@1","machine_kind":"JobCancellation","initial_state":"JobQueued","events":["Start","Cancel","Acknowledge"],"expected_state":"JobCancelled"}

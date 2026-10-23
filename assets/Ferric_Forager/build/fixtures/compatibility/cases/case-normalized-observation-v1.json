@@ -1,0 +1,13 @@
+{
+  "schema_id": "ff.oracle-observation@1",
+  "case_id": "case-normalized-observation-v1",
+  "observation": {
+    "extractor_key": "Generic",
+    "media_id": "alpha",
+    "title": "Fixture Alpha",
+    "timestamp": "{{TIMESTAMP}}",
+    "formats": ["audio-128", "video-720"],
+    "selected_format": "video-720+audio-128",
+    "output_filename": "Fixture_Alpha_[alpha].mkv"
+  }
+}

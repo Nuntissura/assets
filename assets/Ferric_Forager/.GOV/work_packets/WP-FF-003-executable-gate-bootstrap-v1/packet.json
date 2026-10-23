@@ -1,0 +1,381 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-003-executable-gate-bootstrap-v1",
+    "base_wp_id": "WP-FF-003-executable-gate-bootstrap",
+    "version": "1",
+    "title": "Implement the Phase 0 executable-gate bootstrap",
+    "created_at_utc": "2026-07-18T21:12:33Z",
+    "updated_at_utc": "2026-07-18T23:42:00Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator authorized activation of WP-FF-003 and Phase 0, required WP-FF-004 through WP-FF-011 to be created as detailed no-context stubs and remotely checkpointed before implementation, authorized sub-agent assistance subject to primary-agent proof review, then explicitly required a third sibling folder for Cargo builds and tests and authorized the cleanest deterministic option plus immediate implementation.",
+    "recorded_at_utc": "2026-07-18T21:12:33Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#9-workspace-and-module-layout",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#268-mandatory-build-and-architecture-gates",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#269-rust-coding-discipline",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0-bootstrap--executable-gate-skeleton",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#appendix-f--architecture-and-build-enforcement-contract",
+      ".GOV/rules/build-rules.yaml#verification_gates",
+      ".GOV/rules/build-rules.yaml#FF-BUILD-036",
+      ".GOV/rules/build-rules.yaml#FF-BUILD-046",
+      ".GOV/rules/build-rules.yaml#FF-BUILD-047",
+      ".GOV/rules/build-rules.yaml#FF-BUILD-048"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "447b4dbb0d64df56b3c956d8f311ff24f5b51c50",
+    "work_branch": "codex/executable-gate-bootstrap",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/executable-gate-bootstrap",
+      "head_sha": "ce0f439bef00e7b38e76e4fea2173f76e1f1fafa",
+      "verified_at_utc": "2026-07-18T23:42:00Z"
+    },
+    "closure_commit": "d71d9230fa338f60e00bf9eac4679a9b60469efb",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "d37eaa26bb329c26e4ad84cfe6741a77e2acda78"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "Await Operator activation of a later stub; WP-FF-004 through WP-FF-011 remain non-authorizing STUB packets.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Create the first executable build-and-proof skeleton using three explicit roots: .GOV/ governance, product/ shipped runtime code/assets plus product-local tests, and build/ Cargo workspace/shared test infrastructure, with one root rust-toolchain selector, a non-shipped xtask, machine-readable policies and proof map, negative fixtures, canonical gates, versioned reports, and a Phase 0 no-context model manual stub.",
+    "in_scope": [
+      "Minimal build/Cargo.toml and build/Cargo.lock with a non-shipped fforager-xtask workspace member",
+      "Sole repository-root rust-toolchain.toml selector plus inherited workspace lint/profile policy",
+      "Machine-readable build/architecture-policy.toml and build/tooling-policy.toml",
+      "Explicit three-root ownership and runtime-independence validation",
+      "Rule-to-proof mapping for every REQUIRED architecture rule and explicit proof-class limitations",
+      "Graph, source, build-script, runtime-boundary, and policy negative fixtures required by the bootstrap architecture gate",
+      "Repository-root architecture-check and bootstrap-applicable verify-pr commands with versioned machine-readable reports",
+      "Clean-artifact smoke verification with .GOV and build/ absent from shipped runtime ancestry",
+      "Phase 0 no-context model manual stub covering commands, inputs, outputs, safety, unimplemented gates, failures, and recovery",
+      "Governance activation and detailed stub queue required before implementation"
+    ],
+    "non_goals": [
+      "Any shipped Ferric Forager crate or watcher binary",
+      "Feature implementation, compatibility corpus generation, YouTube execution, transport selection, archive selection, FFmpeg integration, or performance claims",
+      "Implementing deep, release, or watcher gates whose product surfaces do not yet exist",
+      "Adding Python, yt-dlp execution, another JavaScript runtime, Wasmtime, SQLite native bindings, or another runtime/native dependency",
+      "Claiming broad implementation readiness or replacement parity"
+    ],
+    "allowed_paths": [
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/id-registry.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/codex.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+      ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/packet.json",
+      ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/refinement.json",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/packet.json",
+      ".GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json",
+      ".GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/packet.json",
+      ".GOV/work_packets/WP-FF-007-transport-fingerprint-spike-v1/packet.json",
+      ".GOV/work_packets/WP-FF-008-archive-store-evidence-v1/packet.json",
+      ".GOV/work_packets/WP-FF-009-resource-durability-models-v1/packet.json",
+      ".GOV/work_packets/WP-FF-010-ffmpeg-supervision-spike-v1/packet.json",
+      ".GOV/work_packets/WP-FF-011-equivalent-work-vertical-slice-v1/packet.json",
+      ".gitignore",
+      "rust-toolchain.toml",
+      "build/Cargo.toml",
+      "build/Cargo.lock",
+      "build/architecture-policy.toml",
+      "build/tooling-policy.toml",
+      "build/rule-to-proof.toml",
+      "build/deny.toml",
+      "build/tools/fforager-xtask/",
+      "build/fixtures/architecture/",
+      "build/integration-tests/",
+      "build/reports/",
+      "product/MODEL_MANUAL.md",
+      "product/watcher/.gitkeep"
+    ],
+    "dependencies": [
+      "Pinned Rust toolchain installed on the validation host",
+      "Cargo and rustc from the pinned toolchain",
+      "Git for clean-artifact and source-state verification",
+      "No new product runtime or native dependency"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v1-AC-001",
+      "requirement": "Root rust-toolchain.toml plus build/Cargo.toml and build/Cargo.lock define a locked resolver-3 virtual workspace whose only compiled member is policy-marked non-shipped fforager-xtask; locked Cargo metadata reports workspace_root build/, target_directory build/target, exact declared membership, inherited lints, and no shipped product crate.",
+      "status": "PASS",
+      "evidence": ["Locked cargo metadata plus build/reports/architecture-check-1784417543476059400-590864.json prove resolver 3, build/ workspace and target roots, one default non-shipped member, inherited lints, Rust 1.97.1, and no shipped crate."]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v1-AC-002",
+      "requirement": "build/architecture-policy.toml and build/tooling-policy.toml are machine-readable, fail closed, and declare three-root ownership, workspace membership, layers, shipped status, direct-edge policy, split triggers, runtime/native constraints, unsafe and exception references, feature ownership, dependency decisions, exact tool identity, supported hosts, invocation, and owning gates without self-authorizing exceptions.",
+      "status": "PASS",
+      "evidence": ["build/architecture-policy.toml and build/tooling-policy.toml parse through strict deny-unknown-fields schemas and declare exact roots, members, default-deny edges, forbidden layers, unsafe/exception authorities, dependency/build surfaces, tool identities, hosts, and advisory freshness."]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v1-AC-003",
+      "requirement": "build/rule-to-proof.toml maps every REQUIRED architecture rule FF-BUILD-036 through FF-BUILD-046 plus FF-BUILD-077 to its applicable graph, source, build-script, runtime-fault, packaging, or artifact proof and to a negative fixture where that proof class supports fixtures; architecture-check rejects missing or unknown mappings.",
+      "status": "PASS",
+      "evidence": ["The architecture report maps exactly 12 canonical REQUIRED architecture rules to fixed proof, validator, and fixture sets; a swapped FF-BUILD-036 fixture binding was rejected with a structured FAIL report."]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v1-AC-004",
+      "requirement": "The architecture checker derives locked Cargo graph facts, validates declared members, three-root placement, and allowed edges, scans governed source/build-script policy, rejects shipped runtime reads of .GOV or build/, rejects wrong-root build/test infrastructure and unapproved runtime/native/build behavior, and proves each assigned negative fixture fails for its intended stable rule without claiming runtime or artifact proof it did not execute.",
+      "status": "PASS",
+      "evidence": ["The real checker derives locked member and dependency-kind/target graphs, checks cycles and declared edges, conservatively scans product Rust paths, inventories transitive build/proc-macro/native-links surfaces, and runs 16 exact negative scenarios through shared production validation helpers.", "Independent real-path counterfactuals rejected root Cargo.toml, resolver 2, a watcher trigger with no watcher gate, and a swapped rule fixture binding; every failure emitted a FAIL report."]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v1-AC-005",
+      "requirement": "The canonical repository-root architecture-check command using build/Cargo.toml exits 0 on the real workspace, runs all assigned negative fixtures, and atomically emits a versioned report under build/reports containing exact command, source revision, normalized inputs, rule and fixture results, proof limitations, artifacts, and exit state.",
+      "status": "PASS",
+      "evidence": ["cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check exited 0; build/reports/architecture-check-1784417543476059400-590864.json records hashed normalized inputs, source state, checks, rules, fixtures, proof classes, limitations, and exit state."]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v1-AC-006",
+      "requirement": "The bootstrap-applicable verify-pr command using build/Cargo.toml validates the active packet change-evidence contract and runs pinned-tool preflight, formatting, locked compile/check, selected feature profiles, Clippy with warnings denied, tests, doctests, docs, architecture, dependency policy, and explicit zero-shipped-member clean-artifact NOT_APPLICABLE handling, emitting a versioned aggregate report under build/reports; unavailable future-phase gates remain explicit NOT_APPLICABLE or NOT_IMPLEMENTED and cannot be reported PASS.",
+      "status": "PASS",
+      "evidence": ["cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard exited 0; build/reports/verify-pr-1784417561401536900-570216.json records exact tool identities, advisory DB head b5fc89b8be99e96f79194d8a6f11e9b4143b99f0 at age 31h plus dirty input hashes, all applicable child gates, and truthful future-gate states."]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v1-AC-007",
+      "requirement": "MODEL_MANUAL.md enables a no-context model to run every implemented command from the repository root and explains purpose, navigation, inputs, outputs, safety boundaries, current unimplemented gates, common failures, recovery, structured report locations, and the prohibition on using chat history as state.",
+      "status": "PASS",
+      "evidence": ["product/MODEL_MANUAL.md uses machine-parseable frontmatter/topics and documents purpose, three-root navigation, canonical commands, inputs, outputs, safety, failure modes, recovery, report paths, proof limitations, and chat-history prohibition."]
+    },
+    {
+      "id": "WP-FF-003-executable-gate-bootstrap-v1-AC-008",
+      "requirement": "All changed governance, build, and product policy files parse; the three-root topology, taskboard, registry, design, packet, commands, and runtime-independence rules agree; AGENTS.md and CLAUDE.md remain byte-identical; git diff --check passes; and independent adversarial probes find no route that converts a wrong-root file, unknown rule, missing fixture, undeclared member, forbidden edge, self-authorized exception, skipped required gate, or absent evidence into PASS.",
+      "status": "PASS",
+      "evidence": ["All .GOV YAML/JSON parsed; 45 changed files were within the packet allowlist; all 27 registered file targets exist; AGENTS.md and CLAUDE.md hashes match; locked metadata, report shape, topology, registry, fmt, Clippy, tests, and git diff --check pass.", "Independent adversarial review findings were remediated and re-reviewed before closure; residual Phase 0 limits remain explicit rather than converted to PASS."]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-18T23:42:00Z",
+      "branch": "main",
+      "base_sha": "447b4dbb0d64df56b3c956d8f311ff24f5b51c50",
+      "head_sha": "d37eaa26bb329c26e4ad84cfe6741a77e2acda78",
+      "dirty_paths": [
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/packet.json"
+      ],
+      "checks_run": [
+        "git branch --show-current: main",
+        "git rev-parse HEAD: d37eaa26bb329c26e4ad84cfe6741a77e2acda78",
+        "git merge-base --is-ancestor d71d9230fa338f60e00bf9eac4679a9b60469efb main: exit 0",
+        "FF-GATE-ARCH-001 and FF-GATE-PR-001 final pre-closure runs: PASS",
+        "Rust 1.97.1, Cargo 1.97.1, rustfmt 1.9.0, Clippy 0.1.97, cargo-deny 0.20.2: PASS",
+        "warnings-denied Clippy and 10 unit tests: PASS",
+        "cargo-deny advisories, bans, licenses, and sources: PASS with advisory HEAD/freshness and dirty input blob bound in report",
+        "16 exact negative scenarios plus four real repository counterfactuals: PASS",
+        "independent adversarial review final verdict: PASS_PHASE_0 with no blocking defects",
+        "all governance YAML/JSON parse, 45 changed files allowlisted, registered targets exist, AGENTS/CLAUDE match, and git diff --check passes"
+      ],
+      "blockers": [],
+      "next_action": "Commit and push the validated containment record on main; leave all later work packets as non-authorizing stubs until the Operator activates one."
+    }
+  },
+  "validation": {
+    "checks": [
+      "FF-GATE-ARCH-001 PASS: build/reports/architecture-check-1784417543476059400-590864.json",
+      "FF-GATE-PR-001 PASS: build/reports/verify-pr-1784418000985428700-600256.json",
+      "Main containment PASS: git merge-base --is-ancestor d71d9230fa338f60e00bf9eac4679a9b60469efb main returned exit 0 at merge commit d37eaa26bb329c26e4ad84cfe6741a77e2acda78",
+      "cargo fmt --check, locked check profiles, warnings-denied Clippy, 10 unit tests, rustdoc warnings denied, and cargo-deny: PASS",
+      "Advisory database identity/freshness: head b5fc89b8be99e96f79194d8a6f11e9b4143b99f0, 31 hours old, untracked advisory content bound by Git blob 577f4c5ad123a0cf4921c112efa11d54e2085ba0",
+      "Real counterfactuals: root Cargo.toml, resolver 2, watcher trigger, and swapped rule binding all FAIL with structured reports",
+      "All governance YAML/JSON parse, changed paths are allowlisted, registry targets exist, authority mirrors match, and git diff --check passes"
+    ],
+    "not_proven": [
+      "Broad Phase 1 implementation readiness",
+      "yt-dlp replacement parity",
+      "Shipped clean-artifact behavior before a shipped member exists",
+      "Runtime watcher independence before the watcher package and gate exist",
+      "Deep, release, compatibility, performance, durability, cross-platform, FFI, build-script behavior, downloaded/prebuilt binary, or packaging claims"
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/refinement.json",
+    "delegation": {
+      "authorized_by_operator": true,
+      "primary_agent_proof_review_required": true
+    },
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-077",
+        "FF-BUILD-047",
+        "FF-BUILD-048",
+        "FF-BUILD-049",
+        "FF-BUILD-050",
+        "FF-BUILD-051",
+        "FF-BUILD-052",
+        "FF-BUILD-054",
+        "FF-BUILD-055",
+        "FF-BUILD-056",
+        "FF-BUILD-057",
+        "FF-BUILD-058",
+        "FF-BUILD-059",
+        "FF-BUILD-060",
+        "FF-BUILD-064",
+        "FF-BUILD-066",
+        "FF-BUILD-067"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-001",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-002",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-003",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-004",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-005",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-006",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-007",
+        "WP-FF-003-executable-gate-bootstrap-v1-AC-008"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "bootstrap all architecture proof surfaces before a shipped crate",
+          "make PASS fail-closed and machine-readable",
+          "keep product runtime independent from .GOV and build",
+          "pin tool and dependency resolution",
+          "give no-context models runnable commands and recovery"
+        ],
+        "risk_cases": [
+          "validator validates its own assumptions instead of independent inputs",
+          "negative fixtures accidentally pass or fail for the wrong reason",
+          "unknown rules or policy keys are ignored",
+          "Cargo metadata omits target, optional, build, or dev edges",
+          "clean build secretly requires repository governance files",
+          "verify-pr reports skipped or unimplemented gates as PASS",
+          "toolchain drift changes lint or report behavior",
+          "a product/native dependency is introduced through xtask convenience"
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {"candidate": "no mechanism beyond the accepted outcome", "result": "rejected because FF-BUILD-036 requires an executable bootstrap gate before shipped code"},
+        {"candidate": "reuse current Ferric code", "result": "no product implementation exists; reuse the accepted v0.3.0 contracts, build rules, packet evidence, and directory topology"},
+        {"candidate": "Rust core/std", "result": "selected for path containment, direct process execution, bounded filesystem traversal, source scanning, atomic report writes, and deterministic collections"},
+        {"candidate": "approved platform capability", "result": "use Git, Cargo, rustc, rustfmt, Clippy, rustdoc, filesystem isolation, and process exit status through direct argument vectors"},
+        {"candidate": "already-approved dependency", "result": "no pre-existing dependency was available; current primary-source research selected exact tooling-only serde, serde_json, toml, and cargo_metadata versions to avoid hand-written Cargo JSON and project TOML parsers; none is shipped or native"},
+        {"candidate": "smallest complete clear implementation", "result": "selected one non-shipped xtask binary with private typed validators, one virtual workspace, strict TOML policies, synthetic negative scenarios, and versioned JSON reports; no shipped crate, public library API, plugin seam, or second toolchain selector"}
+      ],
+      "artifact_specific_justification": {
+        "cargo_workspace": "Required executable substrate for every named project gate.",
+        "xtask": "Required stable repository-root orchestration surface and report owner.",
+        "architecture_policy": "Required independent declaration of allowed workspace shape and dependency decisions.",
+        "tooling_policy": "Required reproducible external-tool preflight without auto-installation.",
+        "rule_to_proof": "Required fail-closed link between normative rules, proof classes, validators, and fixtures.",
+        "negative_fixtures": "Required evidence that each supported prohibition can detect a counterexample.",
+        "model_manual": "Required no-context operating and recovery surface."
+      },
+      "pre_simplification_verdict": "PASS: the implemented Phase 0 surface matches the accepted zero-shipped-member outcome; review found that robust typed policy/Cargo parsing is required, while a public xtask library, speculative product crates, and duplicated test roots are not.",
+      "simplification_changes": [
+        "Kept one non-shipped fforager-xtask binary and private implementation instead of introducing a public gate library or product crate.",
+        "Centralized Cargo output, shared fixtures, reports, and target artifacts under build/ with one root rust-toolchain selector.",
+        "Replaced declaration-only fixture lookup with mutated synthetic policy/graph scenarios that must produce exactly one assigned stable diagnostic.",
+        "Used Cargo metadata format 1 and strict typed TOML/JSON parsing instead of handwritten generic parsers."
+      ],
+      "post_simplification_verdict": "PASS: formatting, warnings-denied Clippy, unit tests, locked metadata, the canonical architecture gate, dependency policy, governance parsing, and three-root drift scans were rerun after simplification; no accepted Phase 0 behavior was removed.",
+      "complete_post_change_verification": [
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check: PASS",
+        "cargo check --manifest-path build/Cargo.toml --workspace --all-targets --locked --target-dir build/target: PASS",
+        "cargo clippy --manifest-path build/Cargo.toml --workspace --all-targets --all-features --locked --target-dir build/target -- -D warnings: PASS",
+        "cargo test --manifest-path build/Cargo.toml --workspace --all-targets --all-features --locked --no-fail-fast --target-dir build/target: PASS, 10 tests",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check: PASS with 12 required architecture rules and 16 exact negative scenarios",
+        "cargo deny --manifest-path build/Cargo.toml --config build/deny.toml check: PASS for advisories, bans, licenses, and sources; duplicate syn versions are an allowed warning",
+        "advisory database identity/freshness: PASS at head b5fc89b8be99e96f79194d8a6f11e9b4143b99f0, age 31 hours under the 168-hour maximum, with untracked advisory input bound by blob hash",
+        "WP-004 through WP-011 packet JSON parses and contains explicit .GOV/product/build ownership guidance: PASS",
+        "technical design has no live product/Cargo.toml or product-owned shared build/test infrastructure path: PASS",
+        "real counterfactual repository mutations for root Cargo.toml, resolver 2, watcher trigger, and swapped fixture binding: all rejected with structured FAIL reports",
+        "independent adversarial review findings remediated and focused re-review requested before closure"
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-003-executable-gate-bootstrap-v1-CEILING-001",
+        "current_ceiling": "Phase 0 bootstrap validates architecture and applicable PR surfaces only; deep, release, watcher, compatibility, durability, and performance gates remain explicit unimplemented future work.",
+        "replacement_trigger": "The owning Phase 0 or Phase 1 packet introduces the governed risk surface and acceptance corpus.",
+        "likely_upgrade_path": "Extend the same versioned xtask report protocol and deterministic trigger map without changing PASS semantics.",
+        "trigger_detection_method": "Active packet risk IDs, workspace member policy, and implemented gate inventory select the required union; unknown triggers fail.",
+        "linked_evidence": [
+          "build/reports/architecture-check-1784415722594185400-599928.json",
+          "build/reports/architecture-check-1784417543476059400-590864.json",
+          "build/reports/verify-pr-1784417561401536900-570216.json",
+          "build/Cargo.lock",
+          "build/architecture-policy.toml",
+          "build/rule-to-proof.toml"
+        ]
+      }
+    },
+    "adversarial_review": {
+      "risk_tier": "HIGH",
+      "verdict": "PASS_PHASE_0",
+      "DIFF_ATTACK_SURFACES": [
+        "three-root path and toolchain-selector enforcement",
+        "workspace member, dependency-kind, target, optional-edge, layer, and cycle validation",
+        "runtime/native/build/proc-macro/unsafe policy",
+        "exact governance rule-to-proof-to-fixture bindings",
+        "gate trigger semantics and aggregate PASS truthfulness",
+        "report provenance, failure reporting, advisory identity, and Cargo target isolation"
+      ],
+      "INDEPENDENT_CHECKS_RUN": [
+        "fmt, locked check, warnings-denied Clippy, 10 unit tests, cargo-deny, architecture-check, and verify-pr: PASS",
+        "packet/refinement/stub JSON parsing, governance YAML parsing, diff-check, authority mirror equality, registry/topology alignment, and report inspection: PASS",
+        "verify-deep, verify-release, and watcher-check: explicit nonzero NOT_IMPLEMENTED and no PASS"
+      ],
+      "COUNTERFACTUAL_CHECKS": [
+        "root Cargo.toml rejected as FF-ARCH-E-WRONG-ROOT",
+        "resolver 2 rejected before PASS",
+        "watcher Cargo manifest activates a required unimplemented gate and rejects verify-pr",
+        "swapped FF-BUILD-036 fixture binding rejected by exact rule contract"
+      ],
+      "BOUNDARY_PROBES": [
+        "governance trigger definitions agree with Phase 0 command dispatch",
+        "architecture policy represents unsafe, exception, allowed/default-deny, and forbidden-edge authority",
+        "negative scenarios reuse the same pure validators used for real repository inputs",
+        "product, governance, and build roots remain distinct and reports/build artifacts remain under build"
+      ],
+      "NEGATIVE_PATH_CHECKS": [
+        "implemented gate failures emit structured FAIL reports",
+        "unknown fixture mutations, missing/unknown rule inventory, missing proof bindings, wrong roots, duplicate selectors, runtime literals, forbidden edges, and cycles fail closed",
+        "future gates cannot report PASS while unimplemented"
+      ],
+      "INDEPENDENT_FINDINGS": [
+        "No blocking WP-FF-003 contract defects remain after remediation.",
+        "Specification compliance, executable gates, implementation quality, and evidence attribution PASS for the Phase 0 ceiling."
+      ],
+      "RESIDUAL_UNCERTAINTY": [
+        "Linux and other non-Windows behavior is untested and unclaimed.",
+        "No shipped crate exists, so clean-artifact, native/FFI/build-script behavior, runtime-fault, watcher, release, deep, compatibility, durability, performance, and packaging proof remain trigger-gated and unclaimed.",
+        "Runtime path inspection is intentionally conservative and lexical until shipped members exist.",
+        "The external RustSec cache contains one pre-existing untracked advisory; the report binds its blob hash and fresh tracked HEAD, and independent review found no evidence that it suppresses an advisory."
+      ]
+    }
+  }
+}

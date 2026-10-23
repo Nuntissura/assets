@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "product-watcher-edge"
+mutation = "add_product_watcher_edge"
+expected_diagnostic = "FF-ARCH-E-PRODUCT-WATCHER-EDGE"

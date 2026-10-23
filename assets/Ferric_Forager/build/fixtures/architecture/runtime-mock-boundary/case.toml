@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "runtime-mock-boundary"
+mutation = "runtime_mock_boundary"
+expected_diagnostic = "FF-RUNTIME-E-MOCK-SUBSTITUTE"

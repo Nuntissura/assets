@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "unpinned-oracle-artifact",
+  "mutation": "unpin_oracle_artifact",
+  "expected_diagnostic": "FF-COMP-E-UNPINNED-ORACLE: artifact identity mismatch"
+}

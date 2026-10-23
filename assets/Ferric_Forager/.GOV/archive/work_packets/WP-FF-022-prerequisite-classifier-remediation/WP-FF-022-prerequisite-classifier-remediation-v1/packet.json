@@ -1,0 +1,644 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "created_at_utc": "2026-10-20T12:13:51Z",
+    "title": "Repair build-only Phase 0 prerequisite classification",
+    "base_wp_id": "WP-FF-022-prerequisite-classifier-remediation",
+    "wp_id": "WP-FF-022-prerequisite-classifier-remediation-v1",
+    "version": "1",
+    "updated_at_utc": "2026-10-20T15:16:03Z"
+  },
+  "authorization": {
+    "reference": "Yes, approve Python solely for the gameplan controller. Keep Ferric implementation and canonical verification Python-free, and proceed with the WP-020 classifier fix using subagents for paperwork and implementation.",
+    "source": "operator_message",
+    "recorded_at_utc": "2026-10-20T12:13:51Z",
+    "resume_authorizations": [
+      {
+        "reference": "Restore the host prerequisites and diagnose the Windows job-empty assertion using subagents. Keep Python limited to gameplan, rerun the canonical gates, and merge only after they pass.",
+        "recorded_at_utc": "2026-10-20T14:52:32Z",
+        "source": "operator_message"
+      }
+    ]
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+    "work_branch": "codex/wp020-prerequisite-classifier",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "verified_at_utc": "2026-10-20T14:28:21Z",
+      "head_sha": "fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
+      "branch": "codex/wp020-prerequisite-classifier"
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "SUPERSEDED",
+    "risk": "MEDIUM",
+    "blockers": [
+      "Whole unchanged FFmpeg default-parallel package still fails windows.rs1747 after verified host repair:63passed,1failed,3ignored; the immediate job-empty failure remains reproducible at the required scheduling surface.",
+      "Cause of the immediate job-empty assertion remains UNVERIFIED; isolated first-query instrumented full-parallel diagnosis is pending. No tracked correction or product-path authorization is justified yet.",
+      "Fresh committed-candidate canonical architecture/verify-pr acceptance and main closure containment remain unproven."
+    ],
+    "next_action": "Historical v1 retained without erasing requirements or failures; continue the same authorized closure through WP-FF-022-prerequisite-classifier-remediation-v2.",
+    "supersedes": [],
+    "superseded_by": "WP-FF-022-prerequisite-classifier-remediation-v2"
+  },
+  "scope": {
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/id-registry.yaml",
+      "build/tools/fforager-xtask/",
+      "build/fixtures/architecture/",
+      "build/reports/",
+      ".fforager-artifacts/",
+      "product/MODEL_MANUAL.md",
+      ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json"
+    ],
+    "in_scope": [
+      "Recognize explicitly declared, design-authorized build-only Phase 0 prerequisite artifacts separately from NONE governance/build-tool work, applying all existing declaration, activation, zero-progress, future-consumer and runtime-claim checks.",
+      "Preserve fail-closed NONE/RUNTIME classification, shipped-product path protections and declaration integrity.",
+      "Add executable public-command regression and behavior-changing counterfactual proof for the recorded failure.",
+      "Record canonical validation, independent review, closure commit and main containment.",
+      "Correct only the runtime-truth-check operating paragraph in product/MODEL_MANUAL.md to document NONE versus activation-frozen design-authorized build-only PREREQUISITE; this documentation is excluded from runtime product-path classification.",
+      "After independently proven WP-022 closure containment only, synchronize the named classifier blocker in WP-020 packet lifecycle: remove only that resolved blocker, advance only classifier-first next_action to remaining promotion preparation, and append exact WP-022 closure/proof evidence; preserve STUB, all other blockers, acceptance, declaration, promotion requirements and scope.",
+      "Restore only the verified Windows host prerequisites blocking this same canonical PR closure: existing symlink capability and the documented WMIC executable requirement, with host agent work/scripts confined to ignored artifact output and no machine-local paths committed.",
+      "Diagnose and reproduce only the recorded Windows job-empty assertion at product/crates/fforager-ffmpeg/src/platform/windows.rs::spawn_proves_preexecution_job_and_caches_nonzero_direct_wait; product-source edits require a classifier-compatible authorized scope before implementation.",
+      "Independently re-prove restored host prerequisites and any justified narrow assertion correction, rerun required canonical gates, and merge only after every required gate passes."
+    ],
+    "product_impact": "NONE",
+    "summary": "Remediate the recorded WP-020 FF-GATE-RUNTIME-001 classification failure in non-shipped Rust gate tooling only.",
+    "dependencies": [
+      ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json#/lifecycle/blockers records the failing classifier and requires separately authorized fail-closed remediation.",
+      "Existing FF-GATE-RUNTIME-001 prerequisite declarations and runtime proof contract remain authoritative."
+    ],
+    "non_goals": [
+      "Activate, implement or rewrite benchmark requirements or planned scope of WP-020 or any other packet; the sole WP-020 exception is status-only synchronization of the named classifier blocker after WP-022 closure containment is proven.",
+      "Change product code, product capability, dependency authorization, design scope, runtime-proof schemas or authority precedence; the sole product-tree exception is the affected runtime-truth-check operating paragraph in product/MODEL_MANUAL.md.",
+      "Claim any product, capability, runtime, packaging, release or phase progress.",
+      "Use Python in Ferric implementation or canonical verification; the sole approved use is the separate global gameplan controller.",
+      "Change unrelated host settings, add Ferric runtime/native/Python dependencies or weaken existing canonical gates to work around prerequisites.",
+      "Classify a product-tree test-only source edit as NONE without satisfying existing product_affecting_path; current classifier has no package-local test exemption."
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-001",
+      "requirement": "The public runtime-truth-check command reproduces the original design-authorized build-only PREREQUISITE rejection before the correction and accepts that same input after correction, with no shipped product changes and only policy/contract proof plus explicit zero-progress limitations.",
+      "status": "PASS",
+      "evidence": [
+        "Primary reported original_wp020 focused 3/3 GREEN, including unchanged public handler policy/scenario_contract report with zero progress.",
+        "Primary directly inspected identical-input literal baseline exit1 and candidate exit0 FF-GATE-RUNTIME-001 report at activation0013ea7aaa8cd70a9fba9a141fd6baa39b90a295; policy/scenario_contract classes and zero-progress limitations observed. Reports are recorded in validation.checks.",
+        "Independent literal original and restored input accepted on exact baseline activation; report references recorded in reviewer results artifact. No product runtime claim."
+      ],
+      "proof_class": "integration"
+    },
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-002",
+      "requirement": "The public command rejects undeclared or altered prerequisite declarations, governance-only prerequisite relabeling, RUNTIME without shipped changes, forbidden product-path changes, missing design authority/future consumer/proof and positive product-progress claims; valid NONE governance work retains its existing result.",
+      "status": "PASS",
+      "evidence": [
+        "Independent reviewer completed14/14 literal expected oracles and no unresolved blocking implementation finding; paperwork agent opened exact emitted review JSON."
+      ],
+      "proof_class": "integration"
+    },
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-003",
+      "requirement": "A declaration-preserving counterfactual removes or bypasses the correction and demonstrably makes the public-boundary regression fail; declaration equality or expected-label agreement alone does not satisfy this row.",
+      "status": "PASS",
+      "evidence": [
+        "After the candidate and independent14-probe run, primary replayed original baseline behavior on exact activation0013ea7aaa8cd70a9fba9a141fd6baa39b90a295 and identical content_fingerprint590c3510cc0d8919c5547a0b61b1505357e760ba22368f4f23a518ec08de3ed9 with unchanged declaration/input: exit1 original FF-RUNTIME-E-IMPACT-MISMATCH.",
+        "Restoring the candidate executable on the same input produced FF-GATE-RUNTIME-001 PASS exit0 with only policy/scenario_contract classes and zero-progress limitations; primary opened both source identities directly.",
+        "Original baseline SHA2561bd2321cfa6543ce1cfaf7a862f5e93a0001eb97576927c4dc68a83524ada1a5 report runtime-truth-check-1792501199753942500-324540.json; candidate SHA2566696a44f6e59715399e715cc45ada7d7523d686fe23dd3c14ed26172cc369d2c report runtime-truth-check-1792501269813080200-516856.json."
+      ],
+      "proof_class": "integration"
+    },
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-004",
+      "requirement": "Canonical architecture-check and verify-pr plus every activated deep trigger pass for the final code; independent adversarial implementation review verifies the changed public classification boundary and records findings and residual uncertainty.",
+      "status": "BLOCKED",
+      "evidence": [
+        "Independent scoped implementation review PASS and canonical architecture-check PASS at clean dd00e4a731accfc886d516286a28ee27a726cef2; report build/reports/architecture-check-1792503465087351800-504232.json.",
+        "Canonical verify-pr failed formatting only at the same clean source identity: build/reports/verify-pr-1792504072319859900-524376.json. Mechanical rustfmt wrap and a fresh committed-candidate PR retry are required; AC004 remains pending.",
+        "Canonical FF-GATE-PR-001 final FAIL exit1 at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b, fingerprint1d160562b412bc954599e540cd0fec7a44d4eab1b35799571a35c13dae3d42f9; report build/reports/verify-pr-1792506415445954900-428344.json opened directly.",
+        "Compile default/no-default/all-features and Clippy completed before test failures. Original public-input and NONE classifier tests passed before primary stopped its own failing wrapper; remaining canonical module/workspace tests and later dependencies are NOT_RUN/incomplete, not passing evidence.",
+        "Verified host blockers: symlink OS1314 and missing wmic.exe; separate Windows immediate active-zero assertion cause remains UNVERIFIED. Focused earlier7/7 classifier result remains supporting evidence only.",
+        "Authorized host prerequisites independently restored and verified by real normal-token/root queries plus exact existing symlink and WP009 public-corpus tests. Canonical final acceptance remains unproven.",
+        "Unchanged Windows job-empty exact serial test passes post-restoration; historical cause remains UNVERIFIED and no race-fix/product correction is claimed. Whole default-parallel FFmpeg package result and committed-candidate canonical reruns remain pending.",
+        "Whole unchanged FFmpeg default-parallel rerun FAIL63passed1failed3ignored at windows.rs1747 after host prerequisites repaired; serial1/1 PASS cannot replace this required scheduling-surface failure. Canonical acceptance remains blocked."
+      ],
+      "proof_class": "integration"
+    },
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-005",
+      "requirement": "The accepted closure commit is merged into canonical main and git merge-base --is-ancestor proves containment; WP-020 remains a non-authorizing STUB and zero product/capability/runtime/packaging/release/phase progress is preserved.",
+      "status": "PENDING",
+      "evidence": [],
+      "proof_class": "governance"
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "blockers": [
+        "Whole unchanged FFmpeg default-parallel package still fails windows.rs1747 after verified host repair:63passed,1failed,3ignored; the immediate job-empty failure remains reproducible at the required scheduling surface.",
+        "Cause of the immediate job-empty assertion remains UNVERIFIED; isolated first-query instrumented full-parallel diagnosis is pending. No tracked correction or product-path authorization is justified yet.",
+        "Fresh committed-candidate canonical architecture/verify-pr acceptance and main closure containment remain unproven."
+      ],
+      "branch": "codex/wp020-prerequisite-classifier",
+      "head_sha": "6575128f3b69623c94f549af38e63fbea6440161",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json"
+      ],
+      "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+      "checks_run": [
+        "git branch --show-current: codex/wp020-prerequisite-classifier",
+        "git rev-parse HEAD: 6575128f3b69623c94f549af38e63fbea6440161",
+        "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+        "git status --porcelain=v2 --branch: clean before resume amendment; upstream ahead0/behind0",
+        "git config --get core.hooksPath: build/git-hooks",
+        "Inspected active packet/template and actual product_runtime_path: no product-test path exemption.",
+        "Opened actual independent normal/root host proof JSON and focused symlink/WP009 result files.",
+        "No tracked product test edit was justified; original file retained, NONE classification preserved."
+      ],
+      "next_action": "Continue isolated first-query instrumented full-parallel diagnosis for the exact reproduced job-empty failure. Preserve v1 NONE and no tracked product edit; use the verified successor prerequisite route only if actual trace proves a bounded test correction necessary. Do not commit/archive/activate a revision or merge while diagnosis is pending.",
+      "recorded_at_utc": "2026-10-20T15:07:10Z"
+    }
+  },
+  "validation": {
+    "checks": [
+      {
+        "boundary": "build/tools/fforager-xtask/src/main.rs::active_evidence_inputs",
+        "result": "FAILED_INPUT_COLLECTION",
+        "observed": "active packet has no refinement input path",
+        "meaning": "Historical input-collection failure before the reused context reference; at that point the classifier RED regression had not run. Subsequent RED/GREEN is recorded separately.",
+        "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard",
+        "reported_by": "primary agent"
+      },
+      {
+        "input": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
+        "boundary": "runtime-truth-check original WP-020 build-only declaration",
+        "proof_class": "integration",
+        "result": "RED",
+        "command": "Original WP-020 public runtime-truth-check handler and independently built literal baseline",
+        "reported_by": "primary agent",
+        "meaning": "Original classification failure reproduced before correction. Subsequent focused/literal GREEN and behavior-reversion proof are recorded separately.",
+        "observed": "exit 1: FF-RUNTIME-E-IMPACT-MISMATCH: packet declares PREREQUISITE but no shipped product path changed"
+      },
+      {
+        "command": "cargo test --manifest-path build/Cargo.toml --locked -p fforager-xtask original_wp020",
+        "observed": "3 passed, 0 failed; unchanged original WP-020 handler emitted policy/scenario_contract proof and explicit zero claims",
+        "result": "GREEN",
+        "reported_by": "primary agent",
+        "proof_class": "integration"
+      },
+      {
+        "command": "Focused original_wp020_context_corrections_keep_current_claims_closed regression",
+        "observed": "Current-claim completion context reproduced as RED exit 1 before narrowed first-plus-article/no-prior-copula handling; subsequent focused GREEN reported by primary",
+        "result": "RED_THEN_GREEN",
+        "reported_by": "primary agent",
+        "proof_class": "semantic"
+      },
+      {
+        "proof_class": "integration",
+        "command": "Full runtime_classifier_tests module",
+        "observed": "7 passed, 0 failed, 138 filtered; 180.74 seconds; parent session 8348",
+        "result": "GREEN",
+        "limitation": "Later test-table-only alias/constant/semicolon cleanup remains subject to canonical final rerun.",
+        "reported_by": "primary agent"
+      },
+      {
+        "input": "Activation 0013ea7aaa8cd70a9fba9a141fd6baa39b90a295; only declared build/benches/classifier-proof.json artifact change",
+        "result": "RED_THEN_GREEN",
+        "command": "Literal baseline and candidate runtime-truth-check --evidence-from-taskboard against identical activated original WP020 declaration",
+        "observed": "Baseline exit1; candidate FF-GATE-RUNTIME-001 PASS exit0, executed classes policy and scenario_contract, all zero-progress limitations",
+        "expected": "Original baseline rejects; candidate emits policy/scenario_contract only and explicit zero-progress limitations",
+        "reported_by": "primary agent direct report inspection",
+        "proof_class": "integration",
+        "artifacts": [
+          ".fforager-artifacts/runtime-classifier-source/build/reports/runtime-truth-check-1792500333358389000-520984.json",
+          ".fforager-artifacts/runtime-classifier-source/build/reports/runtime-truth-check-1792500536905069600-494316.json"
+        ],
+        "identity": "Original declaration unchanged from canonical WP020, candidate source frozen before fresh first activation; baseline executable SHA256 1bd2321cfa6543ce1cfaf7a862f5e93a0001eb97576927c4dc68a83524ada1a5"
+      },
+      {
+        "proof_class": "structural",
+        "result": "PASS",
+        "reported_by": "primary agent",
+        "command": "Focused xtask Clippy with warnings denied after test-table mechanical cleanup",
+        "observed": "Final focused Clippy PASS in 8.67 seconds"
+      },
+      {
+        "proof_class": "integration",
+        "artifact": ".fforager-artifacts/runtime-classifier-proof/review-probe-results.json",
+        "observed": "14/14 expected oracles; original/restored PASS policy+scenario_contract; 12 mutated cases reject",
+        "primary_paperwork_inspection": "Opened exact emitted JSON and verified each row exit/status/expected diagnostic.",
+        "reviewer": "independent implementation review subagent",
+        "result": "PASS",
+        "command": "Independent literal classifier review script"
+      },
+      {
+        "result": "COUNTERFACTUAL_PASS",
+        "expected": "Original behavior rejects while restored correction accepts; declaration/input remain unchanged",
+        "artifacts": [
+          ".fforager-artifacts/runtime-classifier-source/build/reports/runtime-truth-check-1792501199753942500-324540.json",
+          ".fforager-artifacts/runtime-classifier-source/build/reports/runtime-truth-check-1792501269813080200-516856.json"
+        ],
+        "input": "Same activation0013ea7aaa8cd70a9fba9a141fd6baa39b90a295, content_fingerprint590c3510cc0d8919c5547a0b61b1505357e760ba22368f4f23a518ec08de3ed9 and unchanged declaration",
+        "reported_by": "primary agent direct inspection of both reports",
+        "proof_class": "integration",
+        "observed": "Baseline exit1 original IMPACT-MISMATCH, restored candidate exit0 PASS policy/scenario_contract",
+        "command": "Postcandidate baseline behavior reversion and candidate restoration, literal runtime-truth-check CLI"
+      },
+      {
+        "command": "Canonical architecture-check first attempt",
+        "artifact": "build/reports/architecture-check-1792501759970294000-474356.json",
+        "content_fingerprint": "6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff",
+        "source_commit": "dd00e4a731accfc886d516286a28ee27a726cef2",
+        "result": "FAIL_INFRASTRUCTURE",
+        "observed": "Inner cargo metadata exceeded its existing120-second child deadline; subsequent exact direct metadata diagnostic exited0 in27seconds without source change.",
+        "source_dirty": false
+      },
+      {
+        "command": "Canonical architecture-check with inherited verbose CARGO_LOG/RUST_LOG",
+        "result": "FAIL_DIAGNOSTIC_TRUNCATION",
+        "observed": "Canonical compiler guard could not find expected disallowed Command text in bounded captured prefix because inherited verbose Cargo logging filled the diagnostic capture. No source change; focused normal-log guard exited101 and included both disallowed Command and method diagnostics.",
+        "reported_by": "primary agent",
+        "artifact": "build/reports/architecture-check-1792502818099229900-330608.json",
+        "source_commit": "dd00e4a731accfc886d516286a28ee27a726cef2",
+        "source_dirty": false
+      },
+      {
+        "source_dirty": false,
+        "observed": "Canonical architecture gate PASS exit0 at clean candidate source; exact report opened.",
+        "executed_proof_classes": [
+          "counterfactual",
+          "graph",
+          "negative_fixture",
+          "semantic",
+          "structural",
+          "wire_boundary"
+        ],
+        "artifact": "build/reports/architecture-check-1792503465087351800-504232.json",
+        "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+        "source_commit": "dd00e4a731accfc886d516286a28ee27a726cef2",
+        "content_fingerprint": "6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff",
+        "result": "PASS"
+      },
+      {
+        "command": "verify-pr invocation missing --evidence-from-taskboard",
+        "result": "USAGE_REJECTED",
+        "observed": "Rejected before canonical gate execution; corrected to exact authority command.",
+        "reported_by": "primary agent"
+      },
+      {
+        "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "artifact": "build/reports/verify-pr-1792504072319859900-524376.json",
+        "content_fingerprint": "6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff",
+        "observed": "Canonical PR gate FAIL exit1 at formatting: ORIGINAL_WP020_PACKET include_bytes constant requires rustfmt two-line wrap in runtime_classifier_tests.rs; no final PR acceptance.",
+        "result": "FAIL",
+        "source_commit": "dd00e4a731accfc886d516286a28ee27a726cef2",
+        "source_dirty": false
+      },
+      {
+        "reported_by": "primary agent",
+        "command": "Focused compiler guard with normal Cargo logging",
+        "observed": "Exit101 with expected disallowed Command and method compiler diagnostics; distinguishes prior bounded-prefix truncation from guard failure.",
+        "source_change": false,
+        "result": "EXPECTED_REJECTION"
+      },
+      {
+        "reported_by": "primary agent",
+        "command": "Focused rustfmt verification after include_bytes constant wrap",
+        "observed": "PASS in2.65seconds; whitespace-only constant wrap, main.rs SHA256 prefix472675 unchanged and frozen original packet Git blob prefix82c8 unchanged.",
+        "proof_class": "structural",
+        "result": "PASS"
+      },
+      {
+        "content_fingerprint": "1d160562b412bc954599e540cd0fec7a44d4eab1b35799571a35c13dae3d42f9",
+        "observed": "Test check failed exit1; later dependencies NOT_RUN. Host symlink1314/missingWMIC and unresolved immediate jobempty assertion observed. Primary stopped only owned wrapper478852 tree after failures; remaining nofailfast test execution incomplete.",
+        "artifact": "build/reports/verify-pr-1792506415445954900-428344.json",
+        "not_proven": "All remaining canonical tests, later dependencies, final PR acceptance and closure.",
+        "source_commit": "fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
+        "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "source_dirty": false,
+        "completed_before_failure": [
+          "default compile",
+          "no-default-features compile",
+          "all-features compile",
+          "Clippy",
+          "original WP020 public classifier test",
+          "NONE classifier test"
+        ],
+        "result": "FAIL"
+      },
+      {
+        "observed": "Official Microsoft signed temporaryWMIC package restored18newfiles and aliases, overwrote0existingpayloadfiles; Developer Mode DWORD1. No Ferric dependency or tracked product change.",
+        "command": "Authorized host prerequisite restoration by host subagent",
+        "artifacts": [
+          ".fforager-artifacts/host-prerequisites/host-change-summary.json",
+          ".fforager-artifacts/host-prerequisites/independent-normal-token-proof.json",
+          ".fforager-artifacts/host-prerequisites/independent-root-host-proof.json"
+        ],
+        "result": "RESTORED_WITH_INDEPENDENT_PROOF",
+        "proof_class": "integration"
+      },
+      {
+        "observed": "Both actual WMIC FileSystem queries exited0 with NTFS; actual unelevated SymbolicLink had reparse-point state and target bytes matched. Exact emitted proof JSON opened by paperwork agent.",
+        "command": "Independent normal-token and root host capability probes",
+        "result": "PASS",
+        "proof_class": "integration"
+      },
+      {
+        "observed": "1 passed,0failed; existing binary, source6575128 unchanged",
+        "command": "Exact existing FFmpeg governed-input symlink test",
+        "proof_class": "integration",
+        "result": "PASS",
+        "artifact": ".fforager-artifacts/host-prerequisites/focused-symlink-result.json"
+      },
+      {
+        "observed": "1 test passed,48cases0fail; Windows11Home26200NTFS and WSLUbuntu24.04.4kernel6.6.87.2v9fs match frozen platform expectations",
+        "command": "Exact existing WP009 public resource/durability corpus",
+        "proof_class": "integration",
+        "result": "PASS",
+        "artifact": ".fforager-artifacts/host-prerequisites/focused-wp009-result.json"
+      },
+      {
+        "observed": "Exact original serial prehost FAIL; scratch diagnostic1 activecount0; scratch diagnostic2 first original querytrue/count0; unchanged original serial posthost PASS1/1. No observed nonzero-to-zero transition and no proven causal host link; no tracked source correction justified.",
+        "command": "Recorded Windows job-empty assertion diagnosis",
+        "reported_by": "primary agent",
+        "result": "CAUSE_UNVERIFIED_UNCHANGED_TEST_GREEN",
+        "proof_class": "integration"
+      },
+      {
+        "limitation": "Exact serial PASS does not prove default-parallel scheduling acceptance; no causal fix is established.",
+        "reported_by": "primary agent",
+        "proof_class": "integration",
+        "command": "Whole unchanged existing FFmpeg test binary at default parallelism after host repair",
+        "result": "FAIL",
+        "observed": "63passed,1failed,3ignored; same immediate job-empty assertion at windows.rs1747 failed. Binary SHA2563303108E627217AE27C99DF609E30A2D9F1420D72BD07310B2F594117CC1142F unchanged; primary opened raw stdout/stderr."
+      }
+    ],
+    "not_proven": [
+      "Default-parallel FFmpeg scheduling acceptance remains false at the exact job-empty assertion; causal trace and any justified bounded correction remain unproven.",
+      "Fresh canonical architecture-check/verify-pr acceptance and main containment remain unproven.",
+      "Any product, capability, runtime, packaging, release or phase progress."
+    ]
+  },
+  "extensions": {
+    "delegation": {
+      "proof_review": "primary agent and independent implementation reviewer",
+      "implementation": "implementation subagent",
+      "paperwork": "paperwork subagent",
+      "operator_authorized": true
+    },
+    "canonical_proof_commands": [
+      "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard",
+      "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+      "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard"
+    ],
+    "remediation_basis": {
+      "diagnosis": "The no-shipped-product-path branch rejects every non-NONE impact before the existing PREREQUISITE declaration validation can execute.",
+      "profile_rationale": "EXPANDED/MEDIUM follows the highest applicable START_HERE profile: runtime-truth gate logic and lexical completion-claim classification affect false-PASS safety, demonstrated by the independently reproduced CLAIM-CONTEXT-003 regression. This remains bounded recorded remediation with unchanged scope, authority, dependencies, schema and acceptance.",
+      "inspected_boundary": "build/tools/fforager-xtask/src/main.rs::runtime_truth_check",
+      "recorded_failure": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json#/lifecycle/blockers",
+      "research_policy": "Recorded remediation under GLOBAL-REMEDIATE-001 through GLOBAL-REMEDIATE-004: reuse the existing linked WP-020 recorded blocker context; no new-feature research or new refinement ceremony. Actual changed gate/claim trust boundaries, failure scenarios and controls are recorded in existing change_evidence.",
+      "refinement_reuse": "Reuses the existing WP-020 refinement solely as the recorded classifier-blocker context: scope_edges.assumptions and planning_contract.verification_needs preserve the Phase 0 prerequisite/NONE distinction and zero-progress ceiling. This reference satisfies the existing active_evidence_inputs collector requirement without creating a new refinement or activating or authorizing WP-020.",
+      "resume_context": "Continuing the same blocked WP022 closure under explicit Operator authorization; no new task selection/artifact cleanup or new-feature research/refinement ceremony. Existing blockers remain recorded until independently re-proven.",
+      "test_path_classification": "Actual product_runtime_path has no product-test exemption. No tracked product test correction was justified by the observed diagnosis, so product_impact remains NONE; no v2, product path authorization, schema change or gate weakening was performed."
+    },
+    "proof_requirements": {
+      "negative_matrix": "Observe nonzero rejection for undeclared/altered declaration, governance-only relabeling, RUNTIME/no shipped changes, forbidden shipped paths and positive progress claims.",
+      "public_regression": "Use the original WP-020-style build-only prerequisite at the public command boundary in an isolated repository; preserve exact committed activation declaration and base identity.",
+      "scratch_root": ".fforager-artifacts/",
+      "counterfactual": "Restore the original classifier behavior while preserving declaration/input and prove the regression rejects it.",
+      "gate_evidence": "Before verify-pr, populate extensions.change_evidence from actual implementation, verification and independent review; pending metadata cannot satisfy a gate.",
+      "timeout": "All public-command probes and gate children use the existing bounded command runner and record actual input, boundary, expected/observed exit and result.",
+      "deep_trigger_applicability": "No standalone deep_gate trigger is activated by this bounded remediation. FF-GATE-DEEP-001 standalone command is conditional under build-rules.yaml; required verify-pr already executes its applicable run_verify_deep_checks. AC-004 still requires every actually activated deep trigger.",
+      "wp020_status_sync": "Do not edit WP020 until primary supplies the exact independently contained WP022 closure SHA; implementation freezes original-input regression separately first. Then remove only the exact classifier blocker, update classifier-first lifecycle.next_action, append exact closure/proof link, and preserve every other field."
+    },
+    "refinement": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json",
+    "change_evidence": {
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Accept only design-authorized, activated and exactly declared build-only Phase 0 prerequisite artifacts with zero product progress.",
+          "Preserve NONE governance and shipped-path RUNTIME fail-closed boundaries.",
+          "Treat an exact bounded canonical gate identifier as a reference while preserving surrounding completion-claim scanning.",
+          "Observe original-input RED/GREEN and declaration-preserving counterfactual rejection through the public handler and generated report."
+        ],
+        "risk_cases": [
+          "A governance-only edit is relabeled PREREQUISITE; reject without a real allowed build artifact change.",
+          "A declaration or scope changes after activation; compare against committed activation and reject.",
+          "A new product path or runtime proof is hidden in a build-only packet; reject.",
+          "Removing lexical completion checks conceals a real positive claim; retain adjacent-prose and identifier-extension negative probes.",
+          "Medium-risk gate/lexical regression can falsely accept a current completion claim; independent context RED and narrowed GREEN, exact gate-ID boundaries, adjacent prose and public-command negatives must all remain evidence-bound.",
+          "A product-tree test-only correction is misclassified as NONE; preserve actual classifier rules and resolve its authorized route before editing.",
+          "Host setup changes more than the verified prerequisite; host lane is bounded to symlink capability/WMIC and must independently verify resulting capability without weakening gates."
+        ]
+      },
+      "complete_post_change_verification": [
+        "Full classifier module: primary observed 7 passed, 0 failed, 138 filtered in 180.74 seconds, covering original WP020 handler and negative matrix.",
+        "Original WP020-focused filter: primary observed 3 passed, 0 failed with policy/scenario_contract classes and explicit zero-progress report limitations.",
+        "Identical activation0013ea7aaa8cd70a9fba9a141fd6baa39b90a295 original input: literal baseline exit1 IMPACT-MISMATCH versus candidate FF-GATE-RUNTIME-001 PASS exit0.",
+        "Independent literal controls reported by reviewer reject artifact removal, activated scope rewrite, shipped manifest change and prerequisite declaration mutation with expected diagnostics.",
+        "Independent literal claim/path negatives reject adjacent current claims and canonical references, not-only positive assertion, both punctuation variants, root slash alias and nested non_goals~1 key.",
+        "Primary reproduced claim-context false acceptance as focused RED then narrowed GREEN, preserving current-claim rejection instead of editing original WP020 prose.",
+        "Final focused warnings-denied Clippy passed in 8.67 seconds after test-table-only mechanical cleanup.",
+        "Frozen original WP020 testdata independently matches baseline10d1688 blob82c8a8e; pure fixture test passes after include_bytes integration.",
+        "Independent limited manual review directly inspected locked Cargo commands, corrected NONE/PREREQUISITE operating paragraph, recovery and FF-GATE-RUNTIME-001 guidance as PASS.",
+        "Postcandidate behavior counterfactual: primary observed original baseline exit1 IMPACT-MISMATCH then restored candidate exit0 PASS policy/scenario_contract on identical activation0013ea7a and content fingerprint590c3510; both reports independently opened.",
+        "Canonical architecture-check PASS at clean dd00e4a731accfc886d516286a28ee27a726cef2 fingerprint6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff; report architecture-check-1792503465087351800-504232.json.",
+        "Canonical verify-pr FAIL at that same source: sole emitted rustfmt include_bytes constant wrapping diff; report verify-pr-1792504072319859900-524376.json. Final corrected-candidate PR remains required.",
+        "Canonical PR at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b FAIL; report verify-pr-1792506415445954900-428344.json. Compile profiles/Clippy completed; tests encountered symlink1314, missingWMIC and unresolved Windows assertion; later dependencies NOT_RUN. Primary stopped only owned wrapper after failures; no full test PASS claimed.",
+        "Authorized host restoration independently verified WMIC queryNTFS exit0 and unelevated symlink reparse/targetbytes;18newpayloadfiles,0overwritten, DeveloperMode1.",
+        "Existing exact symlink test1/1 and WP009 public corpus1/1 with48cases0fail passed using unchanged binaries; original exact Windows jobempty serial test passes but cause remainsUNVERIFIED."
+      ],
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098",
+        "FF-BUILD-099"
+      ],
+      "adversarial_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "Contract and gate classification: runtime_truth_check previously rejected every non-NONE build-only packet before strict PREREQUISITE validation; reviewed activation/base binding before corrected branch.",
+          "Serialization and state: exact activation declaration equality, explicit false progress booleans, allowed_paths immutability and strict unknown-field policy prevent self-authorized prerequisite evidence.",
+          "Resource and integration boundary: changed Git paths must map to declared actual build artifacts, exclude reports/governance-only work and retain product-affecting Cargo manifest classification under build/.",
+          "Claim-context gate integration: registered gate/WP identifiers, adjacent negation and original imperative/non-goals remain bounded references or exclusions; genuine current claims and escaped JSON-key aliases reject."
+        ],
+        "MANUAL_REVIEW": {
+          "reviewer": "independent implementation review subagent",
+          "artifact": "product/MODEL_MANUAL.md",
+          "method": "Direct changed operating paragraph inspection against runtime_truth_check, startup and build authority; reviewed unchanged surrounding command and recovery guidance.",
+          "evidence": [
+            "Lines 268-274 retain repository-root locked Cargo commands, including the runtime-truth-check command for FF-GATE-RUNTIME-001.",
+            "Line 279 distinguishes ordinary NONE and activation-frozen design-authorized build-only PREREQUISITE with actual declared build artifacts, future runtime re-proof and zero progress.",
+            "Lines 638-670 retain bounded-child input/output, stable diagnostics, lockfile/cleanup/re-run recovery guidance; this is limited changed-command review, not full manual revalidation."
+          ],
+          "verdict": "PASS"
+        },
+        "INDEPENDENT_FINDINGS": [
+          {
+            "status": "REMEDIATED",
+            "proof_id": "xtask::runtime_classifier_tests::build_only_prerequisite_public_handler_accepts_original_wp020_input",
+            "finding_id": "WP-FF-022-FINDING-CLASSIFIER-001",
+            "finding": "Original WP-020 build-only PREREQUISITE input is rejected before prerequisite validation with FF-RUNTIME-E-IMPACT-MISMATCH and exit 1."
+          },
+          {
+            "status": "REMEDIATED",
+            "proof_id": "xtask::runtime_classifier_tests::gate_identifier_is_not_a_current_runtime_claim",
+            "finding_id": "WP-FF-022-FINDING-GATE-REFERENCE-002",
+            "finding": "The exact immutable future proof reference FF-GATE-RUNTIME-001 is lexically misread as a current runtime-completion claim because its identifier contributes a runtime token."
+          },
+          {
+            "status": "REMEDIATED",
+            "finding": "An intermediate article-only imperative exception accepted current assertions Runtime complete — a milestone and Product capability is complete, a milestone; primary independently reproduced context RED before narrowing first-plus-article handling and requiring no preceding copula.",
+            "finding_id": "WP-FF-022-FINDING-CLAIM-CONTEXT-003",
+            "proof_id": "xtask::runtime_classifier_tests::original_wp020_context_corrections_keep_current_claims_closed"
+          }
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "Independent reviewer authored/executed literal CLI script with 120-second child bounds, own-PID fresh report identity and source/argv verification; original and restored inputs exited0 with policy/scenario_contract proof only.",
+          "Removing only the untracked benchmark artifact under frozen activation exited1 BUILD-PREREQUISITE-ARTIFACT; reviewer restored bytes before next probe.",
+          "Postactivation allowed_paths expansion and shipped-workspace build/Cargo.toml mutation exited1 BUILD-PREREQUISITE-SCOPE and BUILD-PREREQUISITE-PATH respectively.",
+          "Six current completion claims plus root slash-key and noncanonical-neighbor aliases all rejected with PROGRESS-CLAIM; both punctuation counterexamples were included.",
+          "Frozen test fixture Git blob82c8a8e9a46b7ce7e78414115741192306aa5845 equals original10d1688 WP020 packet; original-input tests use include_bytes rather than mutable governance."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "Forged postactivation design_authority rejected PREREQUISITE-NOT-PREDECLARED; this proves declaration freezing, not newly activated anchor admission.",
+          "FF-GATE-RUNTIME-001: runtime completed and WP-FF-012-runtime-truth-gates-v1: runtime completed both rejected; canonical references cannot hide adjacent current claims.",
+          "No shipped product but release ready and product not only ready but validated both rejected; negation does not spill into positive clauses.",
+          "Runtime complete - a milestone and Product capability is complete, a milestone both rejected; punctuation assertions are not the original first-complete-a imperative."
+        ],
+        "BOUNDARY_PROBES": [
+          "First-activation Git packet versus current scope: postactivation allowed_paths addition rejected with immutable-scope diagnostic.",
+          "Changed Git set versus actual filesystem artifact: removing only the benchmark artifact rejected despite unchanged prerequisite declaration.",
+          "Physical build/Cargo.toml versus shipped product classification: comment-only manifest mutation rejected and exact path appeared in report.",
+          "Arbitrary serialized JSON keys versus contextual scanner: root scope/non_goals and nested non_goals~1 aliases reject current runtime-completion text."
+        ],
+        "RESIDUAL_UNCERTAINTY": [
+          "Claim scanning is a bounded lexical policy heuristic rather than proof for every English paraphrase. Review covers unchanged original input and concrete bypasses, proves no product behavior/performance/runtime/release readiness, and does not replace canonical gates or main containment.",
+          "Historical Windows immediate job-empty assertion failure remains causally unexplained despite unchanged exact serial rerun passing. Scratch probes did not observe nonzero-to-zero transition; default parallel package and canonical gates are required before closure."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "Primary replayed original baseline AFTER independent candidate probes on identical activation0013ea7aaa8cd70a9fba9a141fd6baa39b90a295 and content fingerprint590c3510cc0d8919c5547a0b61b1505357e760ba22368f4f23a518ec08de3ed9: exit1 IMPACT-MISMATCH; candidate restoration then exited0 PASS policy/scenario_contract, declaration/input unchanged.",
+          "Removing the changed-build-artifact requirement could accept governance alone; independent sole-artifact removal instead returned BUILD-PREREQUISITE-ARTIFACT with unchanged declaration.",
+          "Removing activation scope equality could allow self-authorization; independent postactivation scope expansion instead returned BUILD-PREREQUISITE-SCOPE.",
+          "Restoring article-only imperative exemption would conceal both punctuation assertions; literal candidate rejects Runtime complete - a milestone and Product capability is complete, a milestone after recorded focused RED/GREEN."
+        ]
+      },
+      "acceptance_or_authority_ids": [
+        "WP-FF-022-prerequisite-classifier-remediation-v1-AC-001",
+        "WP-FF-022-prerequisite-classifier-remediation-v1-AC-002",
+        "WP-FF-022-prerequisite-classifier-remediation-v1-AC-003",
+        "WP-FF-022-prerequisite-classifier-remediation-v1-AC-004",
+        "WP-FF-022-prerequisite-classifier-remediation-v1-AC-005"
+      ],
+      "pre_simplification_verdict": "FAIL: the original WP-020 build-only PREREQUISITE public handler rejects the unchanged declaration with exit 1 and FF-RUNTIME-E-IMPACT-MISMATCH; the independently built literal baseline reproduces this failure.",
+      "artifact_specific_justification": {
+        "wp022-packet": "The sole active packet records authorized scope, executed proof, findings and closure; no WP-020 contract edit is required.",
+        "xtask-main": "The existing runtime classifier and claim tokenization own both observed failures and their canonical finding-to-proof routes.",
+        "xtask-runtime-classifier-tests": "Isolated artifact-root Git repositories execute actual public handler/report behavior against the original WP-020 declaration and deliberate negative mutations.",
+        "model-manual": "The runtime-truth-check paragraph incorrectly mandates NONE for every build-only packet; correcting only that operating guidance is required to document the changed public command accurately.",
+        "wp020-status": "Only after WP022 closure containment, synchronize the resolved classifier blocker and its immediate next action/evidence while preserving benchmark STUB authorization and all substantive requirements."
+      },
+      "simplification_changes": [
+        "Reuse existing strict prerequisite schema, activation and zero-progress validators instead of creating a second declaration format.",
+        "Reuse the unchanged WP-020 refinement as recorded blocker context rather than authoring a new refinement or altering benchmark scope.",
+        "Generate isolated regression repositories under the shared artifact root rather than introducing tracked synthetic fixtures or external scratch.",
+        "Tokenize only the exact bounded canonical FF-GATE-RUNTIME-001 reference, retaining surrounding prose and all future-consumer fields."
+      ],
+      "post_simplification_verdict": "PASS: focused public-handler tests, independent14-probe literal review and the same-input baseline reversion/candidate restoration prove the bounded classifier correction with unchanged prerequisite declaration; negative controls retain fail-closed classification and focused Clippy passes. This is policy/contract proof only; canonical architecture/PR gates and main containment remain separate unproven closure obligations.",
+      "ceilings_exceptions_and_evidence": {
+        "replacement_trigger": "The first separately authorized shipped consumer executes and re-proves prerequisite behavior through FF-GATE-RUNTIME-001.",
+        "likely_upgrade_path": "Keep WP-020 benchmark research/promotion and WP-021/WP-011 shipped runtime proof in their existing sequence and contracts.",
+        "current_ceiling": "This remediation proves only governance classifier behavior; no product capability, runtime, packaging, release or phase progress is claimed.",
+        "trigger_detection_method": "Inspect separately authorized packet activation and canonical shipped-artifact gate evidence.",
+        "ceiling_id": "WP-FF-022-prerequisite-classifier-remediation-v1-CEILING-001",
+        "linked_evidence": [
+          ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
+          "build/tools/fforager-xtask/src/main.rs",
+          "build/tools/fforager-xtask/src/runtime_classifier_tests.rs"
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "Inspected the recorded original classifier rejection; leaving the mechanism unchanged prevents WP-020 promotion and cannot close the named blocker."
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "Reuse runtime_truth_check, declaration deserialization, activation-base checks, zero-progress scanner and existing public command/report infrastructure."
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "Use existing Rust string/path/set operations for path admission and bounded canonical gate identifier tokenization; no new dependency."
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "Reuse existing Git committed-baseline and activation queries; no new platform capability or process management."
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "Existing serde_json and policy parser cover the unchanged contract; no dependency selection or upgrade is required."
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "Route declared build-only prerequisites to existing declaration controls, add only fail-closed build-only admission and exact token handling, and prove both findings publicly."
+        }
+      ]
+    },
+    "independent_review": {
+      "risk": "MEDIUM",
+      "verdict": "PASS",
+      "scope": "Inspected classifier implementation boundary; no unresolved blocking finding. Canonical gates and containment remain separate.",
+      "reviewer": "independent implementation review subagent",
+      "artifact": ".fforager-artifacts/runtime-classifier-proof/review-probe-results.json",
+      "observed": "14/14 literal expected oracles, script exit0; original and restored input PASS, all intermediate negatives rejected with expected diagnostics."
+    }
+  }
+}

@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "runtime-missing-artifact-identity"
+mutation = "runtime_missing_artifact_identity"
+expected_diagnostic = "FF-RUNTIME-E-ARTIFACT-IDENTITY"

@@ -1,0 +1,36 @@
+[package]
+name = "fforager-ffmpeg"
+version = "0.1.0"
+workspace = "../../../build"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+fforager-contracts = { version = "0.1.0", path = "../fforager-contracts" }
+fforager-core = { version = "0.1.0", path = "../fforager-core" }
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+disallowed_types = "forbid"
+disallowed_methods = "forbid"
+disallowed_macros = "forbid"
+

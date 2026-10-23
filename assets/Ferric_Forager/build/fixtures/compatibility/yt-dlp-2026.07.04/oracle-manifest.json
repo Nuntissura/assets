@@ -1,0 +1,80 @@
+{
+  "schema_id": "ff.compatibility-oracle@1",
+  "schema_version": "1.0.0",
+  "oracle_id": "yt-dlp-2026.07.04-oracle-v1",
+  "release": {
+    "project": "yt-dlp/yt-dlp",
+    "version": "2026.07.04",
+    "channel": "stable",
+    "immutable": true,
+    "published_at_utc": "2026-07-04T22:41:44Z",
+    "release_url": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.07.04",
+    "tag_commit": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+    "release_git_head": "997fa140840a08df3938b40da470c78049fef1f6"
+  },
+  "artifacts": [
+    {
+      "artifact_id": "sha2-256sums",
+      "filename": "SHA2-256SUMS",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/SHA2-256SUMS",
+      "sha256": "eca42575010efc77b8dc1e263c57e19c4bddc42d3e08ba789ccde72c97d48c64",
+      "size_bytes": 1595,
+      "role": "official-checksum-manifest"
+    },
+    {
+      "artifact_id": "source-tarball",
+      "filename": "yt-dlp.tar.gz",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.tar.gz",
+      "sha256": "31c32457d1a573a341bb0929386c624fe47339a5338829e6e9c9454bdfa7397a",
+      "size_bytes": 6015962,
+      "role": "official-release-source"
+    },
+    {
+      "artifact_id": "yt-dlp-windows-x64",
+      "filename": "yt-dlp.exe",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.exe",
+      "sha256": "52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8",
+      "size_bytes": 18226085,
+      "role": "executable-behavioral-oracle-x86_64-windows"
+    }
+  ],
+  "source_inputs": [
+    {
+      "path": "yt_dlp/version.py",
+      "sha256": "8485c16520f205dbb8babb162c48fa30f65413230f9f8ac0317dbd2725fdecfd",
+      "role": "release-identity"
+    },
+    {
+      "path": "yt_dlp/options.py",
+      "sha256": "b527798ae3e43213e689e6f9f6b670a3678e9998753a07d47a84ee23846d1b3a",
+      "role": "option-config-default-preset-source"
+    },
+    {
+      "path": "yt_dlp/__init__.py",
+      "sha256": "f3ddb4b5759d6646aa25ff9de7026c78b14543bb1180a3f2ff5acb0757082256",
+      "role": "compatibility-interaction-source"
+    },
+    {
+      "path": "yt_dlp/extractor/_extractors.py",
+      "sha256": "91c7e51ed6d369dbea1d5862afbd61adf1b53860206aedaa29b4196800acdce0",
+      "role": "extractor-registration-source"
+    },
+    {
+      "path": "yt_dlp/extractor/__init__.py",
+      "sha256": "96b18d67eac15b220f4a557522af5d28fea7f696b3f77d44712807822eb5f5f6",
+      "role": "extractor-order-and-url-class-source"
+    }
+  ],
+  "generator": {
+    "normalization_version": "ff-normalization-v1",
+    "network_allowed": false,
+    "plugins_allowed": false,
+    "config_allowed": false,
+    "timeout_seconds": 60,
+    "commands": [
+      ["--ignore-config", "--no-plugin-dirs", "--encoding", "utf-8", "--no-color", "--help"],
+      ["--ignore-config", "--no-plugin-dirs", "--encoding", "utf-8", "--no-color", "--list-extractors"],
+      ["--ignore-config", "--no-plugin-dirs", "--encoding", "utf-8", "--no-color", "--extractor-descriptions"]
+    ]
+  }
+}

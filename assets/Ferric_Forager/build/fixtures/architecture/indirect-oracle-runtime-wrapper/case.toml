@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "indirect-oracle-runtime-wrapper"
+mutation = "add_indirect_oracle_runtime_wrapper"
+expected_diagnostic = "FF-ARCH-E-PRODUCT-ORACLE-RUNTIME"

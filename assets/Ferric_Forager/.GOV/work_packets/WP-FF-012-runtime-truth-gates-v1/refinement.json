@@ -1,0 +1,182 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-012-runtime-truth-gates-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-012-runtime-truth-gates-v1",
+  "updated_at_utc": "2026-07-19T15:00:31Z",
+  "operator_request": "Prevent mockups, vibe coding, scaffolding, and test-satisfying substitutes from shipping or advancing phases without working runtime behavior, then implement the required Codex-rule changes.",
+  "basis": {
+    "research_status": "CURRENT_PRIMARY_AND_FIELD_SOURCES_CHECKED",
+    "activation_basis": "Current authority calls the first two implementation stages skeletons, the repository has no shipped product crate, and verify-pr can PASS while clean shipped-artifact proof is NOT_APPLICABLE. Runtime truth must therefore become an executable closure invariant rather than an advisory preference.",
+    "authority_checked": [
+      "START_HERE.yaml",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#28-implementation-sequence",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#31-acceptance-criteria",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json",
+      "build/tools/fforager-xtask/src/main.rs",
+      "build/rule-to-proof.toml",
+      "product/MODEL_MANUAL.md"
+    ],
+    "sources_checked": [
+      {
+        "source": "https://doc.rust-lang.org/reference/conditional-compilation.html#test",
+        "checked_at_utc": "2026-07-19T14:55:00Z",
+        "evidence": "Rust enables cfg(test) only for test-harness compilation, so test-only code can differ from the shipped artifact."
+      },
+      {
+        "source": "https://doc.rust-lang.org/cargo/commands/cargo-test.html",
+        "checked_at_utc": "2026-07-19T14:55:00Z",
+        "evidence": "cargo test builds special test executables linked with libtest; a green test harness is not identity proof for the production release binary."
+      },
+      {
+        "source": "https://doc.rust-lang.org/cargo/commands/cargo-build.html",
+        "checked_at_utc": "2026-07-19T14:57:00Z",
+        "evidence": "Cargo provides an explicit release profile and locked dependency resolution suitable for producing the artifact that runtime acceptance must execute."
+      },
+      {
+        "source": "https://doc.rust-lang.org/cargo/reference/cargo-targets.html#integration-tests",
+        "checked_at_utc": "2026-07-19T14:57:00Z",
+        "evidence": "Cargo supports black-box binary execution from integration tests, while those test crates may still use dev-dependencies; final proof therefore executes the separately staged release artifact."
+      },
+      {
+        "source": "https://google.github.io/eng-practices/review/reviewer/looking-for.html#tests",
+        "checked_at_utc": "2026-07-19T14:58:00Z",
+        "evidence": "Google review guidance requires appropriate unit, integration, or end-to-end tests and explicitly asks whether tests fail when product behavior is broken, supporting counterfactual gate validation."
+      },
+      {
+        "source": "https://docs.github.com/en/actions/concepts/security/artifact-attestations",
+        "checked_at_utc": "2026-07-19T14:58:00Z",
+        "evidence": "GitHub artifact attestations bind build provenance to binaries and source identity, but documentation warns provenance alone does not prove artifact behavior."
+      },
+      {
+        "source": "https://slsa.dev/spec/v1.2/verifying-artifacts",
+        "checked_at_utc": "2026-07-19T14:59:00Z",
+        "evidence": "SLSA verification binds an artifact digest to provenance and declared expectations, reinforcing tested-artifact identity without treating identity as functional proof."
+      },
+      {
+        "source": "https://github.com/BurntSushi/ripgrep",
+        "checked_at_utc": "2026-07-19T14:59:00Z",
+        "evidence": "A mature Rust CLI uses unit and integration testing and distributes platform binaries; the applicable pattern is layered proof, not tests as a substitute for shipped execution."
+      }
+    ],
+    "field_patterns": [
+      "Build the production profile with locked inputs and bind proof to the exact artifact digest.",
+      "Execute the artifact as an external process from a clean staged package rather than through internal functions or a test harness.",
+      "Treat unit, fixture, replay, and mock-based tests as supporting layers, never final operator-visible behavior proof.",
+      "Make the validator demonstrate sensitivity by failing when a required output or side effect is removed.",
+      "Keep live-site observations separate from deterministic runtime proof while requiring both when a live URL class is claimed."
+    ],
+    "reuse_opportunities": [
+      "Reuse xtask command timeouts, child-process supervision, SHA-256 helper, strict Serde parsing, report writer, active-packet resolution, and negative-fixture runner.",
+      "Reuse Cargo --release --locked and existing source identity collection.",
+      "Reuse the three-root boundary to execute staged product artifacts without .GOV or build runtime access."
+    ],
+    "selected_approach": [
+      "Add atomic normative runtime-truth rules to Codex, build, and work-packet authority.",
+      "Make build bootstrap a non-product prerequisite and merge the first product skeleton into the existing cross-boundary proof slice.",
+      "Implement FF-GATE-RUNTIME-001 as a strict manifest-driven fail-closed verifier integrated with verify-pr and architecture negative fixtures.",
+      "Require exact artifact identity, clean-stage external execution, production boundaries, expected observables, negative outcomes, and a counterfactual detection result."
+    ],
+    "rejected_options": [
+      "Adding only the phrase no vibe coding, because it is subjective and cannot be mechanically enforced.",
+      "Banning all mocks and fixtures, because they remain useful for deterministic unit and fault testing but cannot establish runtime completion.",
+      "Treating cargo test, compile success, report presence, provenance, or artifact hashes as functional runtime proof.",
+      "Creating another scaffold-only product phase to build the runtime gate.",
+      "Requiring nondeterministic live-network success as the sole acceptance oracle."
+    ],
+    "risks_and_mitigations": [
+      {
+        "risk": "A self-authored manifest asserts success without running the product.",
+        "mitigation": "Require bounded external-process receipts, artifact digest matching, observed outputs, and a counterfactual that the validator detects."
+      },
+      {
+        "risk": "Test-only code or a mock adapter satisfies the scenario.",
+        "mitigation": "Reject cfg(test), dev/test-only features and dependencies, mock/fake/stub boundary modes, and internal-function-only execution as closure proof."
+      },
+      {
+        "risk": "Clean-package execution becomes flaky because a live site changes.",
+        "mitigation": "Use deterministic production-adapter protocol scenarios for closure and separately require bounded live canaries for claimed URL classes."
+      },
+      {
+        "risk": "The rule rewrite narrows final product scope by deleting future plugin starter generation or risk prototypes.",
+        "mitigation": "Retain capabilities but require each to terminate in a running production-path outcome; label research spikes as evidence, never product phases."
+      },
+      {
+        "risk": "Governance-only changes become impossible before a product binary exists.",
+        "mitigation": "The runtime gate is fail-closed only for product-affecting work; governance changes may prove the gate itself without claiming product progress."
+      }
+    ],
+    "validation_plan": "Run RED negative fixtures for each bypass, implement strict manifest and applicability validation, run Rust unit tests and canonical gates, inspect generated reports, verify allowed paths and registry ranges, run an independent adversarial review, then record the exact remaining ceiling that no Ferric binary exists yet."
+  },
+  "scope_edges": {
+    "preserve": [
+      "Complete Rust-native product scope and yt-dlp compatibility target",
+      "Required FFmpeg and ffprobe external-process boundary",
+      "Supporting unit, property, replay, fixture, fuzz, and mock-based tests",
+      "Research spikes as non-product evidence",
+      "Plugin SDK and starter-generation capability when it produces a runnable installed reference plugin"
+    ],
+    "change": [
+      "Redefine product progress and phase completion around operator-usable runtime behavior",
+      "Remove skeleton-only product phase closure",
+      "Require exact shipped-artifact execution and counterfactual gate sensitivity",
+      "Make absent runtime proof BLOCKED for product-affecting work"
+    ],
+    "assumptions_to_verify": [
+      "Changed paths and architecture member metadata can classify product-affecting work without relying on packet prose alone.",
+      "The existing xtask process and report helpers can implement the gate without new dependencies.",
+      "The design sequence can merge Phase 1 and Phase 2 without losing any accepted capability."
+    ],
+    "non_goals": [
+      "Producing or claiming the first Ferric runtime binary",
+      "Removing deterministic test seams",
+      "Expanding the runtime/native dependency boundary"
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-012-runtime-truth-gates-v1-AC-001",
+    "WP-FF-012-runtime-truth-gates-v1-AC-002",
+    "WP-FF-012-runtime-truth-gates-v1-AC-003",
+    "WP-FF-012-runtime-truth-gates-v1-AC-004",
+    "WP-FF-012-runtime-truth-gates-v1-AC-005"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "test_harness_and_cfg_test_substitution",
+      "mock_stub_scaffold_and_noop_success",
+      "artifact_identity_and_clean_package_bypass",
+      "self_authored_report_and_counterfactual_sensitivity",
+      "phase_label_and_acceptance_contract_regression"
+    ],
+    "minimum_controls": [
+      "Every product capability maps to at least one black-box shipped-entrypoint scenario",
+      "No product-affecting PASS or NOT_APPLICABLE without the exact staged artifact run",
+      "Mock, fake, stub, prototype, scaffold, and test-only modes cannot satisfy closure",
+      "At least one counterfactual proves the runtime verifier fails on missing required behavior",
+      "No accepted final product scope is deleted during phase restructuring"
+    ],
+    "plausible_failures": [
+      "cargo test passes through cfg(test) while the release binary omits the behavior.",
+      "A mock adapter produces expected output while the production adapter is absent.",
+      "A CLI command exits zero but writes dummy output or skips persistence.",
+      "A report asserts PASS without executing the recorded artifact digest.",
+      "A phase closes on contracts, crate structure, documentation, or scaffolding alone.",
+      "The gate reports NOT_APPLICABLE because the product artifact or required dependency is missing.",
+      "A test runs a different build than the artifact later packaged or released."
+    ]
+  },
+  "execution_decomposition": [
+    "Commit the isolated activation checkpoint.",
+    "Patch Codex, build, and work-packet authority with runtime-truth invariants.",
+    "Rewrite the implementation sequence into prerequisite plus runtime vertical slices.",
+    "Implement runtime-proof schema/applicability validation and canonical gate integration.",
+    "Add and execute negative fixtures and counterfactuals.",
+    "Update manual, rule map, registry, and packet evidence.",
+    "Run complete canonical and adversarial verification, checkpoint, merge, and prove main containment."
+  ]
+}

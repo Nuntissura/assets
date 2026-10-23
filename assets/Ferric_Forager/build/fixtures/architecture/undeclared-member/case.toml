@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "undeclared-member"
+mutation = "add_undeclared_member"
+expected_diagnostic = "FF-ARCH-E-UNDECLARED-MEMBER"

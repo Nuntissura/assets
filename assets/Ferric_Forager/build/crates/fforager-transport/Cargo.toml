@@ -1,0 +1,48 @@
+[package]
+name = "fforager-transport"
+version = "0.1.0"
+workspace = "../.."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["ordinary-transport"]
+ordinary-transport = ["dep:reqwest", "dep:rustls", "dep:tokio", "dep:webpki-roots"]
+wreq-adjudication = ["dep:futures-util", "dep:tokio", "dep:wreq", "dep:wreq-util"]
+
+[dependencies]
+fforager-contracts = { version = "0.1.0", path = "../../../product/crates/fforager-contracts" }
+futures-util = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, optional = true }
+wreq = { workspace = true, optional = true }
+wreq-util = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "fforager-transport-corpus"
+path = "src/bin/fforager-transport-corpus.rs"
+
+[[bin]]
+name = "fforager-ordinary-transport-decision"
+path = "src/bin/fforager-ordinary-transport-decision.rs"
+required-features = ["ordinary-transport"]
+
+[[bin]]
+name = "fforager-wreq-adjudication"
+path = "src/bin/fforager-wreq-adjudication.rs"
+required-features = ["wreq-adjudication"]
+
+[[bin]]
+name = "fforager-wreq-live-probe"
+path = "src/bin/fforager-wreq-live-probe.rs"
+required-features = ["wreq-adjudication"]

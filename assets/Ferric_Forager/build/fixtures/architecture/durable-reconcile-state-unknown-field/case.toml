@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "durable-reconcile-state-unknown-field"
+mutation = "durable_reconcile_state_unknown_field"
+expected_diagnostic = "FF-ARCH-E-WIRE-BOUNDARY"

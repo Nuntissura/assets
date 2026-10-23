@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "runtime-missing-clean-stage"
+mutation = "runtime_missing_clean_stage"
+expected_diagnostic = "FF-RUNTIME-E-CLEAN-STAGE"

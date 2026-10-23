@@ -1,0 +1,89 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-003-executable-gate-bootstrap-v2-REFINEMENT-001",
+  "wp_id": "WP-FF-003-executable-gate-bootstrap-v2",
+  "updated_at_utc": "2026-07-19T10:27:04Z",
+  "operator_request": "Run evaluation tests on the just-implemented WP-FF-003 through different adversarial lenses, remediate findings, gaps, concerns, and risks, clean up code where needed, and use sub-agents to help.",
+  "basis": {
+    "preserved_refinement": ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/refinement.json",
+    "research_status": "CURRENT_PRIMARY_SOURCES_CHECKED",
+    "reason": "The accepted architecture was retained. Current primary-source review selected saphyr 0.0.11 for fail-closed YAML 1.2 parsing and RustCrypto sha2 0.11.0 for executable SHA-256 proof; both are exact, pure-Rust, non-shipped build dependencies bound by Cargo.lock.",
+    "sources_checked": [
+      "https://docs.rs/saphyr/0.0.11/saphyr/",
+      "https://github.com/saphyr-rs/saphyr",
+      "https://docs.rs/sha2/0.11.0/sha2/",
+      "https://github.com/RustCrypto/hashes/tree/master/sha2"
+    ],
+    "selected_patterns": [
+      "Parse authoritative YAML structurally before reading governed values.",
+      "Bind host-installed executable identity to exact version, resolved invocation, supported host, and SHA-256.",
+      "Bind Rust components to the sole root toolchain selector and Cargo.lock input identity."
+    ],
+    "rejected_options": [
+      "Continue line scanning YAML, because malformed documents can retain matching text and fail open.",
+      "Write a project-local YAML parser or SHA-256 implementation, because mature pure-Rust libraries are smaller-risk and independently maintained.",
+      "Trust version output alone for host-installed executables, because FF-BUILD-047 requires a source/checksum or toolchain/lock identity."
+    ],
+    "risks_and_mitigations": [
+      "Dependency expansion is confined to the non-shipped xtask, exact-pinned, lockfile-bound, cargo-deny checked, and declared in architecture policy.",
+      "Executable checksums are intentionally host-specific; any tool update requires a dedicated validated policy change."
+    ],
+    "validation_plan": "Warnings-denied Clippy, focused unit and repository-mutation tests, cargo-deny, architecture-check, verify-pr, checksum mismatch counterfactual, malformed YAML counterfactual, and final Git/governance containment checks."
+  },
+  "scope_edges": {
+    "preserve": [
+      "All WP-FF-003 v1 acceptance requirements and proof limitations",
+      "Three-root ownership and Rust-only dependency boundary",
+      "Phase 0 bootstrap scope and later-phase blocks"
+    ],
+    "change": [
+      "Add independent adversarial proof beyond the original evidence",
+      "Remediate confirmed false-PASS, failure-path, robustness, and maintainability defects",
+      "Add focused regression tests and simplify safely"
+    ],
+    "non_goals": [
+      "New product features, shipped crates, runtime/native dependencies, or broad readiness claims",
+      "Spec or architecture redesign"
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-003-executable-gate-bootstrap-v2-AC-001",
+    "WP-FF-003-executable-gate-bootstrap-v2-AC-002",
+    "WP-FF-003-executable-gate-bootstrap-v2-AC-003",
+    "WP-FF-003-executable-gate-bootstrap-v2-AC-004",
+    "WP-FF-003-executable-gate-bootstrap-v2-AC-005"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "Contract, acceptance, policy-schema, rule-to-proof, and false-PASS alignment",
+      "Hostile repository, filesystem, path, Git, toolchain, process, and report states",
+      "Rust parsing, error propagation, determinism, filesystem traversal, process handling, test isolation, and code quality"
+    ],
+    "minimum_controls": [
+      "At least two independent checks not cited by v1 evidence",
+      "Concrete symbol-level counterfactuals",
+      "Producer-consumer boundary probes",
+      "Invalid and degraded-state negative-path probes",
+      "Primary-agent reproduction before remediation",
+      "Focused regression tests followed by full post-cleanup gates"
+    ],
+    "plausible_failures": [
+      "An aggregate report says PASS after a required child never ran",
+      "A fixture fails before exercising its intended diagnostic",
+      "Unknown or malformed policy fields are accepted",
+      "A path escape or missing repository/tool state bypasses validation",
+      "Parallel or interrupted report writers lose or corrupt evidence",
+      "Duplicated gate logic drifts and one route becomes weaker"
+    ]
+  },
+  "execution_decomposition": [
+    "Activate the v2 revision and capture exact Git state",
+    "Run three independent read-only adversarial audits",
+    "Reproduce and classify every material finding",
+    "Remediate confirmed defects with focused regression proof",
+    "Perform reuse, deletion, dependency, and simplification review",
+    "Run the full acceptance/risk/scope matrix and canonical gates",
+    "Record residual uncertainty and close only through main-containment proof"
+  ]
+}

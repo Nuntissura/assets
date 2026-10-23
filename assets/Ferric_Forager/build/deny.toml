@@ -1,0 +1,32 @@
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is an unmaintained transitive Boa 0.21.1 proc-macro with no safe upgrade; WP-FF-006 is non-shipped prerequisite evidence, unsafe Rust is forbidden, and the exception must be removed or re-authorized before any later product consumer" },
+]
+
+[licenses]
+version = 2
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib"]
+exceptions = [
+  { crate = "alloc-no-stdlib@2.0.4", allow = ["BSD-3-Clause"] },
+  { crate = "alloc-stdlib@0.2.4", allow = ["BSD-3-Clause"] },
+  { crate = "bindgen@0.72.1", allow = ["BSD-3-Clause"] },
+  { crate = "brotli@8.0.4", allow = ["BSD-3-Clause"] },
+  { crate = "libloading@0.8.9", allow = ["ISC"] },
+  { crate = "ring@0.17.14", allow = ["Apache-2.0", "ISC"] },
+  { crate = "rustls-webpki@0.103.16", allow = ["ISC"] },
+  { crate = "subtle@2.6.1", allow = ["BSD-3-Clause"] },
+  { crate = "untrusted@0.9.0", allow = ["ISC"] },
+  { crate = "webpki-root-certs@1.0.10", allow = ["CDLA-Permissive-2.0"] },
+  { crate = "webpki-roots@1.0.10", allow = ["CDLA-Permissive-2.0"] },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,16 @@
+[package]
+name = "fforager-worker"
+version = "0.1.0"
+workspace = "../../../build"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+fforager = { version = "0.1.0", path = "../../crates/fforager" }
+fforager-cli = { version = "0.1.0", path = "../fforager-cli" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

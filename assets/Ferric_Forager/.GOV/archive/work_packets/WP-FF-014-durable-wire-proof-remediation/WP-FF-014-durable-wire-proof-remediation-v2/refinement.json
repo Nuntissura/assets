@@ -1,0 +1,111 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-014-durable-wire-proof-remediation-v2-REFINEMENT-001",
+  "wp_id": "WP-FF-014-durable-wire-proof-remediation-v2",
+  "updated_at_utc": "2026-07-26T15:50:10Z",
+  "operator_request": "Remediate every finding from the completed product-code versus completed-work-packet spot check, then commit, push, and provide an overview of remaining work.",
+  "basis": {
+    "research_status": "REUSED_COMPLETED_PROJECT_RESEARCH_AND_V1_REPRODUCTION",
+    "research_reopen_triggers": [
+      "The Operator explicitly requests new research.",
+      "The pinned Serde behavior, Rust toolchain, dependency set, or architecture harness assumption is proven stale.",
+      "A remediation decision lacks evidence in the technical design, WP-005, WP-013, archived WP-014 v1, current source, or reproduced public-boundary behavior."
+    ],
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#232-journal-model",
+      ".GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json",
+      ".GOV/work_packets/WP-FF-013-proof-integrity-remediation-v2/packet.json",
+      ".GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/WP-FF-014-durable-wire-proof-remediation-v1/packet.json"
+    ],
+    "existing_research_sources": [
+      "WP-013 official Rust and Serde implementation research",
+      "WP-013 strict Serde DTO, public-boundary counterexample, and isolated-mutation patterns",
+      "WP-005 versioned durable-contract implementation basis",
+      "Current storage contract, testkit, architecture fixtures, rule mapping, and gate implementation",
+      "Direct public deserialization reproductions and v1 focused, workspace, architecture, and deep proof"
+    ],
+    "selected_approach": [
+      "Preserve the complete v1 technical remediation and proof.",
+      "Archive v1 with its two truthful runtime failures instead of backfilling its activation.",
+      "Activate v2 with the exact machine-readable non-product prerequisite declaration present from the first committed checkpoint.",
+      "Rerun runtime-truth and PR validation against v2, then complete adversarial closure."
+    ],
+    "rejected_options": [
+      "Rewriting or amending v1 activation history.",
+      "Treating a late v1 declaration as equivalent to predeclaration.",
+      "Discarding the already verified contract and mutation work.",
+      "Adding dependencies, changing valid wire shape, or creating a parallel proof framework."
+    ],
+    "reuse_opportunities": [
+      "Reuse every v1 contract change, test, fixture, report, and failure record.",
+      "Reuse the validated WP-013 supersession pattern.",
+      "Reuse runtime-truth's activation checkpoint proof to validate v2 independently."
+    ],
+    "validation_plan": "Commit v2 with the prerequisite object already present, rerun runtime-truth and PR gates from the v2 taskboard focus, independently inspect the full base-to-head diff and boundary behavior, record all findings and residual uncertainty, then execute closure and main-containment proof."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "The existing locked Serde dependency and Rust toolchain remain current.",
+      "The current journal JSON shape is authoritative for compatibility.",
+      "No shipped Ferric archive/journal runtime consumer exists.",
+      "The v1 product and proof commits remain within the preserved v2 base-to-head scope."
+    ],
+    "non_goals": [
+      "Changing valid durable-wire tags or field names.",
+      "Broad schema-version redesign.",
+      "Creating a shipped runtime or advancing product phase state.",
+      "Erasing v1 activation defects or failure reports."
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-014-durable-wire-proof-remediation-v2-AC-001",
+    "WP-FF-014-durable-wire-proof-remediation-v2-AC-002",
+    "WP-FF-014-durable-wire-proof-remediation-v2-AC-003",
+    "WP-FF-014-durable-wire-proof-remediation-v2-AC-004",
+    "WP-FF-014-durable-wire-proof-remediation-v2-AC-005"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "unknown_field_at_nested_tagged_enum_body",
+      "unknown_field_at_reconcile_variant",
+      "zero_sequence_through_full_record_deserialization",
+      "invalid_in_memory_record_bypasses_wire_validation",
+      "valid_wire_shape_regression",
+      "architecture_fixture_declared_but_not_behavior_changing",
+      "first_failure_masks_unexercised_later_guard",
+      "late_prerequisite_declaration_mislabeled_as_predeclared"
+    ],
+    "minimum_controls": [
+      "Each invalid case is tested through public serde_json deserialization.",
+      "Canonical valid records decode and serialize to the same JSON value.",
+      "Constructed records have an explicit invariant-validation method.",
+      "Each corrected guard has a distinct isolated mutation fixture and marker.",
+      "The canonical architecture gate executes all mapped fixtures.",
+      "Runtime-truth proves the v2 prerequisite declaration existed at first commit."
+    ],
+    "plausible_failures": [
+      "Undeclared variant data is silently ignored.",
+      "A zero sequence breaks durable ordering or replay.",
+      "A future refactor removes one guard while the architecture gate remains green.",
+      "A mutation runs zero tests or fails for an unrelated reason.",
+      "Strictness changes valid historical records.",
+      "A late packet edit is presented as an activation-time declaration."
+    ]
+  },
+  "execution_decomposition": [
+    "Commit this v2 activation checkpoint with the structured prerequisite declaration.",
+    "Rerun runtime-truth and PR validation from the active v2 packet.",
+    "Complete the independent adversarial diff review and packet evidence.",
+    "Commit closure, merge to main, verify containment, push, and report remaining authoritative work."
+  ]
+}

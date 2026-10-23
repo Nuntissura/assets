@@ -1,0 +1,89 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "wp_id": "WP-FF-008-archive-store-evidence-v2",
+  "status": "FROZEN_FOR_IMPLEMENTATION",
+  "updated_at_utc": "2026-08-02T13:27:34Z",
+  "operator_request": "Implement WP-FF-008 with no more than three parallel subagents, independent multi-lens adversarial review of every large block, long-wait tolerance, no interference with unrelated processes, final artifact cleanup, and no yt-dlp dependency anywhere in Ferric.",
+  "spec_anchors": [
+    "Section 17.4 archive-backed duplicate prevention",
+    "Section 23 persistence, resume, staged commit, and crash reconciliation",
+    "Prerequisite 0C pure-Rust archive-store crash/concurrency/migration/performance corpus",
+    "Section 31.7 readiness gates 5 and 8",
+    "Appendix C benchmark B-021"
+  ],
+  "assumptions": [
+    "A single Ferric process owns one archive database; concurrent claims are concurrent tasks/threads, not multi-process writers.",
+    "Only reconciled committed outputs become archive successes.",
+    "The adapter may serialize writes while permitting concurrent reads if the candidate contract requires it.",
+    "Filesystem crash/power-loss proof remains bounded by WP-009 capability profiles and must not be overclaimed."
+  ],
+  "non_goals": [
+    "No SQLite or other native dependency approval.",
+    "No production feature, runtime, package, release, or phase completion claim.",
+    "No Python, yt-dlp, yt-dlp companion asset, executable, subprocess, fallback, sidecar, plugin, service, or delegated dependency.",
+    "No backend-specific identity semantics in public contracts."
+  ],
+  "research_basis": {
+    "completed_at_utc": "2026-08-02T13:27:34Z",
+    "method": "Current official repository, release, manifest, design, changelog, test, issue-surface, benchmark, and RustSec source inspection; exact release tags were shallow-cloned under ignored .fforager-artifacts/research for source-level review.",
+    "sources": [
+      {"id": "REDB-REPO", "url": "https://github.com/cberner/redb/tree/v4.1.0", "version_or_commit": "v4.1.0 / 6ed1f981ba4deab0b2adbdd7bccb46ec409b2191", "checked": ["README", "Cargo.toml", "Cargo.lock", "docs/design.md", "CHANGELOG.md", "tests", "fuzz"]},
+      {"id": "REDB-RELEASE", "url": "https://github.com/cberner/redb/releases/tag/v4.1.0", "version_or_commit": "2026-04-19", "checked": ["release fixes", "migration warning", "correctness fixes"]},
+      {"id": "FJALL-REPO", "url": "https://github.com/fjall-rs/fjall/tree/3.1.8", "version_or_commit": "3.1.8 / 6debe706dbc53d6d0eb666aae5057671d5c1370f", "checked": ["README", "Cargo.toml", "transaction modes", "journal/recovery tests", "memory guidance"]},
+      {"id": "SLED-REPO", "url": "https://github.com/spacejam/sled/tree/v0.34.7", "version_or_commit": "v0.34.7 / d81865d07f07910133877915b57abf0c52d5756b", "checked": ["release age", "Cargo.toml", "unsafe surface", "crash recovery tests"]},
+      {"id": "RUSTSEC", "url": "https://github.com/RustSec/advisory-db", "version_or_commit": "308808d74a1462ec8b09c1e76938471c53b55dcc at 2026-08-02T15:17:32+02:00", "checked": ["no package advisory entry found for redb, fjall, or sled"]},
+      {"id": "FERRIC-WP009", "url": ".GOV/work_packets/WP-FF-009-resource-durability-models-v2/packet.json", "version_or_commit": "closure 605667f6562c7ae1d51af66bf13bec5f49c24338", "checked": ["durable positions", "recovery action lineage", "filesystem evidence ceilings", "resource bounds"]}
+    ],
+    "patterns_found": [
+      "redb 4.1.0 is maintained, pure Rust, ACID, MVCC, stable-format, crash-repairing, and has no mandatory normal dependency with default features disabled.",
+      "redb's default one-fsync checksum commit has a documented hostile-input theoretical ceiling; Ferric must select two-phase durability for archive commits and test that setting.",
+      "redb 4.0/4.1 fixed data-loss, corruption, savepoint, and transaction defects, so exact pinning plus Ferric boundary fault tests are mandatory.",
+      "fjall 3.1.8 is maintained and pure Rust but default writes reach OS buffers until explicit PersistMode::SyncAll; it carries a broader normal dependency surface and background maintenance.",
+      "sled 0.34.7 has an old release line, extensive unsafe code, and a broader legacy dependency surface; it is unsuitable as the first candidate.",
+      "Candidate semantics must remain behind Ferric-owned identities and archive state transitions so a later candidate reruns the same workload."
+    ],
+    "selected_approach": {
+      "candidate": "redb",
+      "exact_version": "4.1.0",
+      "features": [],
+      "default_features": false,
+      "durability_profile": "two-phase immediate durability for archive commits",
+      "reason": "Smallest maintained pure-Rust transactional candidate matching single-process archive ownership, crash recovery, stable format, range lookup, and concurrent-reader needs with the narrowest dependency graph inspected."
+    },
+    "rejected_or_deferred": [
+      {"candidate": "std-only bespoke store", "result": "REJECTED", "reason": "Would reinvent transactions, indexing, repair, and migrations without field hardening."},
+      {"candidate": "fjall 3.1.8", "result": "DEFERRED_COMPARISON", "reason": "Viable maintained pure-Rust LSM candidate, but explicit persistence, background maintenance, and broader dependencies add proof surface for Ferric's archive workload."},
+      {"candidate": "sled 0.34.7", "result": "REJECTED", "reason": "Stale release line, extensive unsafe implementation surface, and legacy dependencies increase maintenance and correctness risk."},
+      {"candidate": "SQLite", "result": "UNAUTHORIZED", "reason": "Native binding/runtime dependency remains outside the Operator-approved boundary and cannot be pre-approved by this spike."}
+    ],
+    "risks_and_mitigations": [
+      {"risk": "A database commit and output filesystem state diverge.", "mitigation": "Keep staged-output reconciliation authoritative, archive only reconciled output identities, and inject both row-without-output and output-without-row."},
+      {"risk": "Concurrent claim or lease takeover creates duplicates.", "mitigation": "Use one atomic write transaction with versioned lease tokens and deterministic stale/fresh clocks; test races and stale-token rejection."},
+      {"risk": "Candidate corruption or migration interruption is misreported as success.", "mitigation": "Fail closed with typed errors, keep migration state/version records, preserve last-known-good source, and execute interrupted/corrupt cases."},
+      {"risk": "Million-identity scale loads all keys into memory.", "mitigation": "Stream deterministic generation/insertion, bound batches/cache, record RSS and database size, and reject evidence missing resource observations."},
+      {"risk": "The candidate's self-claims replace Ferric proof.", "mitigation": "Run behavior-sensitive public-boundary counterfactuals and validate observed state independently from expected labels."},
+      {"risk": "yt-dlp enters through fixtures or delegated tooling.", "mitigation": "Use only committed Ferric-owned corpus data and enforce dependency/source/asset negative fixtures; canonical verification succeeds with yt-dlp absent."}
+    ],
+    "validation_plan": [
+      "Contract schema strictness and identity collision/alias fixtures.",
+      "Public candidate-neutral claim, lease, success insertion, membership, and reconciliation tests.",
+      "Concurrent duplicate claims and deterministic stale lease takeover.",
+      "Corrupt/torn store, row/output mismatch, interrupted migration, and unknown import mapping refusal.",
+      "Representative and one-million-identity controlled runs with timeout, latency distributions, RSS, file size, and write amplification proxy.",
+      "Dependency graph, features, sources, licenses, build scripts, native links, unsafe source, and yt-dlp/Python prohibition checks.",
+      "Independent multi-lens adversarial reviews followed by remediation regressions and full rerun."
+    ]
+  },
+  "execution_decomposition": [
+    {"block": "archive-contracts", "scope": "identity, provenance, claim/lease, insertion, reconciliation, migration/import DTOs, bounds, typed errors"},
+    {"block": "storage-adapter", "scope": "candidate-neutral boundary and exact-pinned redb adapter with two-phase immediate durability"},
+    {"block": "proof-system", "scope": "fixtures, deterministic faults/concurrency/scale workloads, xtask report and gate integration, model manual"}
+  ],
+  "red_team": [
+    {"attack": "race two workers for one asset then expire and reuse a lease", "minimum_control": "one winner, exact token ownership, stale/fresh clock boundary, old-token commit rejection"},
+    {"attack": "crash or corrupt every archive/migration/reconciliation prefix", "minimum_control": "idempotent declared recovery or typed fail-closed result with no false success"},
+    {"attack": "substitute expected labels, reports, or fixture inventories for behavior", "minimum_control": "public producer-consumer observations and declaration-preserving behavior mutations"},
+    {"attack": "make the scale run pass by loading everything into memory or skipping B-021", "minimum_control": "streaming workload, explicit resource observations, timeout, and blocked-not-pass handling"},
+    {"attack": "introduce yt-dlp or Python indirectly", "minimum_control": "negative fixtures for wrappers/assets plus canonical dependency/source scan"}
+  ]
+}

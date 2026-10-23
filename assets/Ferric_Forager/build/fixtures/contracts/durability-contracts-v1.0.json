@@ -1,0 +1,46 @@
+{
+  "schema_id": "ff.durability-contracts@1",
+  "position": {"received_bytes": 1024, "validated_bytes": 768, "durable_bytes": 512},
+  "commit_prepared": {
+    "final_rooted_path": "outputs/final.bin",
+    "working_path_identity": "working_1",
+    "artifacts": [{"identity":"artifact_1","size_bytes":1024,"checksum":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}],
+    "required_sidecars": ["outputs/final.json"],
+    "filesystem_profile_id": "fs_profile_1",
+    "data_synchronized": true,
+    "parent_directory_synchronized": true
+  },
+  "commit_renamed": {
+    "final_identity": "final_1",
+    "collision_decision": "created_new",
+    "directory_synchronized": true
+  },
+  "archive_committed": {
+    "transaction_id": "transaction_1",
+    "archive_row_id": "archive_row_1",
+    "asset_ids": ["asset_1"],
+    "derived_output_ids": ["output_1"],
+    "output_provenance_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "commit_sequence": 1,
+    "uniqueness": {
+      "claim_key": "canonical-output-key",
+      "constraint_receipt": "unique-index-receipt"
+    }
+  },
+  "journal_record": {
+    "schema": {"major":1,"minor":0},
+    "job_id": "job_1",
+    "producer_instance": "producer_1",
+    "sequence": 1,
+    "prior_record_hash": null,
+    "payload_checksum": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "durability": "durable",
+    "payload": {"kind":"output_checkpoint","body":{"position":{"received_bytes":1024,"validated_bytes":768,"durable_bytes":512}}}
+  },
+  "archive_candidate": {
+    "artifact": {"identity":"artifact_1","size_bytes":1024,"checksum":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+    "completeness": "complete",
+    "final_validation_passed": true,
+    "committed_output_identity": "final_1"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "self-consistent-inventory-removal",
+  "mutation": "remove_option_row_and_count",
+  "expected_diagnostic": "FF-COMP-E-PROFILE-INTEGRITY: pinned profile content mismatch"
+}

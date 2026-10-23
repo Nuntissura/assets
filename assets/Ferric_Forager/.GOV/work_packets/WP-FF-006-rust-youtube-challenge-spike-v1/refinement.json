@@ -1,0 +1,198 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-006-rust-youtube-challenge-spike-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-006-rust-youtube-challenge-spike-v1",
+  "updated_at_utc": "2026-07-27T00:36:00Z",
+  "operator_request": "Ensure Ferric Forager is understood and enforced as an independent Rust replacement for yt-dlp with added features and never depends on yt-dlp; invalidate and remove any WP-006 implementation path that executes or requires yt-dlp-family code.",
+  "basis": {
+    "research_status": "COMPLETE_SELECTED_FERRIC_OWNED_RUST_PATH",
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md and byte-identical CLAUDE.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#74-javascript-challenges",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#18-javascript-challenge-execution",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#246-javascript-safety",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#265-fuzzing-targets",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#prerequisite-0c--dependency-and-risk-spikes",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates",
+      ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json",
+      ".GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json",
+      "product/crates/fforager-contracts/src/protocol.rs",
+      "product/crates/fforager-contracts/src/framing.rs"
+    ],
+    "current_primary_sources": [
+      {
+        "source": "https://github.com/yt-dlp/yt-dlp/tree/2026.07.04",
+        "identity": "tag 2026.07.04, commit fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+        "evidence": "pyproject.toml pins yt-dlp-ejs==0.8.0 for the default and curl-cffi dependency groups."
+      },
+      {
+        "source": "https://github.com/yt-dlp/ejs/tree/0.8.0",
+        "identity": "tag 0.8.0, commit 4fb477f4af56880cfd324c48bd4294a2d2294e50",
+        "evidence": "Source-level solver, seven upstream player families, nine player variants, n/sig test vectors, and generated release assets were inspected."
+      },
+      {
+        "source": "https://github.com/yt-dlp/ejs/releases/tag/0.8.0",
+        "identity": "immutable release assets",
+        "evidence": "yt.solver.core.js SHA-256 ca259e4e3cdd37d92fc266d9af08d4fd66da8479e240f4d984f29da402c22ead; yt.solver.lib.js SHA-256 770831df5c46474fbff06732315b28f4fb090e427ca669a51da61e2457d41c82."
+      },
+      {
+        "source": "https://github.com/boa-dev/boa/tree/v0.21",
+        "identity": "v0.21 branch commit ad8739f5e0b51d20faf7a2cce98afa5c40121438; crates.io boa_engine 0.21.1",
+        "evidence": "Pure-Rust engine source, context isolation, instruction budget, loop/recursion/stack limits, feature surface, tests, and maintenance activity were inspected."
+      },
+      {
+        "source": "https://docs.rs/boa_engine/0.21.1/boa_engine/vm/struct.RuntimeLimits.html",
+        "identity": "boa_engine 0.21.1 documentation",
+        "evidence": "RuntimeLimits exposes loop-iteration, recursion, stack, and backtrace bounds; context construction also exposes an instruction budget."
+      },
+      {
+        "source": "https://github.com/trynova/nova",
+        "identity": "current source and nova_vm 1.0.0 publication inspected",
+        "evidence": "Nova remains a less mature engine with broader unsafe/GC surface and no demonstrated yt-dlp EJS corpus compatibility; it is not selected for this bounded spike."
+      },
+      {
+        "source": "https://github.com/boa-dev/boa/tree/v0.21.1",
+        "identity": "tag v0.21.1, commit bc36c3fac0969ea21ea0570b62e7846f97389b73; crates.io boa_engine 0.21.1 remains current on 2026-07-26",
+        "evidence": "Source inspection reconfirmed pure-Rust parsing/evaluation, fresh Context construction, instruction budgeting, and loop, recursion, stack, and backtrace RuntimeLimits. Boa exposes no exact heap cap, so the selected design treats parent RSS sampling and process termination/reap as the memory boundary and records sampling overshoot as residual uncertainty."
+      },
+      {
+        "source": "https://github.com/TeamNewPipe/NewPipeExtractor",
+        "identity": "commit 4b70576661aadf663a935df5b904a43147d9fc50 inspected on 2026-07-26",
+        "evidence": "Current source uses player-call patterns plus balanced-brace extraction for signature code and pattern/lexer extraction for throttling code. This is retained only as independent field evidence that regex-only discovery needs lexer fallback and continuous maintenance."
+      },
+      {
+        "source": "https://github.com/LuanRT/YouTube.js",
+        "identity": "commit 14825d7712e32b208830895701973a5a934a3522 inspected on 2026-07-26",
+        "evidence": "Current source parses the player to an AST, structurally identifies the combined n/signature URL-transform wrapper, collects declarations and dependencies, suppresses side-effectful initializers, and evaluates only the extracted program. This supports AST-structural discovery over regex-only or full-player evaluation."
+      },
+      {
+        "source": "https://github.com/yt-dlp/ejs/tree/0.8.0",
+        "identity": "tag 0.8.0, commit 4fb477f4af56880cfd324c48bd4294a2d2294e50; source and inert test observations only",
+        "evidence": "The seven pinned player IDs, nine variants, n/signature inputs, and expected observations were inspected as external comparison provenance. No solver source, generated solver asset, package, executable, or runtime is imported, executed, bundled, or required by Ferric."
+      },
+      {
+        "source": "https://crates.io/crates/sysinfo/0.39.6",
+        "identity": "sysinfo 0.39.6, Rust 1.95 minimum, MIT, inspected with cargo info on 2026-07-26",
+        "evidence": "The system-only feature provides cross-platform child RSS observation without an external runtime, build-time download, Cargo links entry, or native library. It is selected only for parent process supervision and peak-memory evidence."
+      },
+      {
+        "source": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html",
+        "identity": "RUSTSEC-2024-0436 from the current locally provisioned RustSec database inspected by cargo-deny 0.20.2 on 2026-07-27",
+        "evidence": "paste 1.0.15 is archived and unmaintained, with no safe upgrade listed. Cargo tree proves it is a transitive Boa 0.21.1 proc-macro dependency. The bounded deny exception names the exact advisory and reason, applies only to this non-shipped prerequisite, and requires removal or new authorization before a later product consumer."
+      }
+    ],
+    "selected_approach": [
+      "Select Boa 0.21.1 with default features disabled inside a policy-marked non-shipped Rust executable worker. Each request creates a fresh capability-free Boa Context and crosses the WP-005 bounded JavaScriptWorkerEnvelope and four-byte length-prefixed JSON frame boundary.",
+      "Implement Ferric-owned discovery by parsing each raw player with Boa's parser, locating the combined n/signature URL-transform wrapper through structural markers, and emitting a side-effect-reduced program containing only declarations and assignment/literal expression statements from the player IIFE. Do not use regex-only discovery and do not evaluate the original full player initialization path.",
+      "Use checked-in raw site-supplied player programs plus inert provenance-bound expected observations for multiple pinned player generations. No external solver source, generated solver asset, package, executable, or runtime is imported, executed, bundled, or required.",
+      "Enforce input, output, frame, instruction, loop, recursion, stack, wall-time, job-count, age, and RSS/recycle bounds; use parent process supervision for non-cooperative timeout and cancellation.",
+      "Pin the local fforager-contracts dependency to version 0.1.0 and record one reasoned cargo-deny exception for RUSTSEC-2024-0436 because Boa 0.21.1 has no safe paste upgrade; do not carry that exception into a later product consumer without explicit re-authorization.",
+      "Emit deterministic per-case reports and an aggregate PASS_RUST_ONLY_PATH or FAILED_SPIKE_REQUIRES_OPERATOR_DECISION verdict only after dependency-independence proof passes."
+    ],
+    "rejected_options": [
+      "Deno, Node.js, Bun, QuickJS, QuickJS-NG, Wasmtime, rusty_v8, Hermes, or another external/native runtime because the Operator and packet forbid them.",
+      "Nova for this spike because current maturity and corpus evidence are weaker and its unsafe GC surface adds risk without a demonstrated compatibility advantage.",
+      "Executing yt-dlp-ejs or any other yt-dlp-family solver/library asset because Ferric is an independent replacement and must own its implementation path.",
+      "Regex-only player discovery because current NewPipe source retains multiple patterns plus lexer fallback and recent releases document recurring n-function breakage.",
+      "Full raw-player evaluation because browser initialization code introduces irrelevant effects, ambient host assumptions, avoidable compatibility surface, and a larger attack/resource boundary.",
+      "Adding a second JavaScript parser such as SWC because Boa already supplies the parser required by the selected engine and a second parser would enlarge dependency and maintenance cost without closing a current acceptance gap.",
+      "Patching Boa to substitute pastey during this spike because the upstream dependency is transitive, no reviewed drop-in patch is part of Boa 0.21.1, and carrying a local engine fork would enlarge the attack and maintenance surface beyond the bounded non-shipped evidence need.",
+      "A handwritten case-specific transform table because it would echo fixture expectations rather than discover and solve real player behavior.",
+      "Network-downloading EJS/player assets during build or test because it violates deterministic offline proof and the no-build-download boundary.",
+      "Treating generic Test262 or simple eval success as YouTube challenge compatibility proof."
+    ],
+    "reuse_opportunities": [
+      "Reuse the existing locked Cargo workspace, architecture policy, report envelope, scanner, negative-fixture harness, and canonical gates.",
+      "Reuse WP-005 JavaScriptWorkerEnvelope, FrameDecoder, ProtocolLimits, typed failure codes, cancellation generations, and state-machine identities.",
+      "Reuse WP-004 stable corpus identities, deterministic normalization, and optional external-comparison provenance without reusing external implementation code.",
+      "Reuse Rust std process, pipe, timing, hashing, and filesystem APIs plus already-approved serde/serde_json/sha2 before adding any new mechanism."
+    ],
+    "validation_plan": "Run the committed raw-player corpus through the spawned Rust worker; inspect reports; run malformed/partial/oversized/protocol/cancel/timeout/crash/memory/capability/cache/context/recycle/quarantine probes; mutate an expected output and prove the same aggregate oracle rejects it; scan dependency, source, executable assets, build scripts, artifacts, process plans, FFI, links, and downloads; prove canonical build/test/verification succeeds with yt-dlp absent; run format/check/test/doc/Clippy/architecture/deep/PR gates; then perform two independent adversarial reviews through engine-security/resource-isolation and corpus-proof/contract-integrity lenses."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "Pinned external observations may remain comparison provenance, but Ferric-owned specifications and committed corpora are canonical and no external implementation code is an executable packet input.",
+      "A passing spike selects a prerequisite mechanism only and is not a video downloader or product capability.",
+      "The logged-in Firefox session is optional live-canary context and is never a source of committed cookies, tokens, secrets, or deterministic corpus truth."
+    ],
+    "non_goals": [
+      "Downloading the requested Short, implementing the YouTube extractor, or claiming full YouTube support.",
+      "Shipping the worker or granting it network/filesystem/process capabilities.",
+      "Adding an external runtime, Python, yt-dlp or companion implementation dependency, executable solver asset, Wasm, or a new native dependency."
+    ]
+  },
+  "corpus_contract": {
+    "oracle_identity": "Ferric-owned YouTube challenge corpus; optional external comparison observations carry separate pinned provenance",
+    "mandatory_cases": "Every pinned case in the checked-in WP-006 manifest binds raw site-player bytes, variant, challenge type, input, inert expected observation, and provenance without bundling or executing external solver code.",
+    "pass_threshold": "100 percent exact output agreement for mandatory deterministic cases, with no skipped or structurally-only cases.",
+    "live_canary_policy": "Optional, non-blocking, separately labeled, sanitized, and never allowed to replace deterministic corpus proof.",
+    "failure_bundle": "Case ID, upstream identities, script/player hashes, engine identity, bounded non-secret input, expected and observed result, typed error, limits, duration, process/RSS observation, and replay command."
+  },
+  "resource_and_security_contract": {
+    "defaults": {
+      "maximum_frame_bytes": 1048576,
+      "maximum_input_bytes": 524288,
+      "maximum_output_bytes": 1048576,
+      "maximum_wall_millis": 10000,
+      "maximum_cancel_grace_millis": 500,
+      "maximum_memory_bytes": 536870912,
+      "maximum_loop_iterations": 5000000,
+      "maximum_recursion_depth": 512,
+      "maximum_stack_size": 10240,
+      "maximum_instructions": 50000000,
+      "maximum_jobs_per_worker": 64,
+      "maximum_worker_age_millis": 300000
+    },
+    "capabilities": "No registered network, filesystem, environment, process, dynamic import, module loader, console, timer, or secret-bearing host functions.",
+    "isolation": "The selected Rust engine creates a fresh capability-free execution context per job; host-owned content-addressed prepared-program artifacts do not retain JavaScript heap or global state across jobs.",
+    "termination": "Engine budgets are cooperative first-line controls; parent wall deadline/cancellation may terminate and reap the separate worker. Timeout is a bounded policy outcome, not proof that arbitrary code could never finish.",
+    "memory": "Input/output and engine structural limits are exact; parent RSS supervision provides bounded detection and forced worker termination. The report must state OS hard-containment coverage and residual race/overshoot rather than claim a perfect in-engine heap cap."
+  },
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "actual_ejs_and_player_semantics_vs_fixture_echo",
+      "fresh_context_capability_and_secret_isolation",
+      "framing_protocol_version_and_recursive_bounds",
+      "timeout_cancel_crash_reap_recycle_and_quarantine",
+      "memory_rss_instruction_loop_recursion_stack_and_output_bombs",
+      "cache_key_poisoning_and_cross_job_state",
+      "dependency_build_script_ffi_native_link_and_external_runtime_escape",
+      "report_truthfulness_counterfactual_and_zero-progress ceiling",
+      "reuse_deletion_simplification_and_bad_code_hygiene"
+    ],
+    "minimum_controls": [
+      "Ferric-owned discovery and solving execute against raw pinned player bytes through the Rust worker, an output mutation fails the same acceptance path, and a bundled yt-dlp-family solver asset is rejected.",
+      "Every worker request crosses the bounded public frame/envelope boundary and receives a correlated typed terminal outcome.",
+      "Parent supervision proves termination and reap for infinite loop, cancellation, crash, malformed stream, timeout, and memory pressure.",
+      "Dependency and source scans reject all forbidden runtimes, downloads, FFI, native links, and indirect wrappers.",
+      "No PASS is possible with skipped mandatory cases, missing process proof, structural-only behavioral evidence, or a positive product-progress claim."
+    ]
+  },
+  "execution_decomposition": [
+    "Commit activation, refinement, zero-progress ceiling, and exact checkpoint.",
+    "Complete current research and select a Ferric-owned Rust player-function discovery and challenge-solving approach.",
+    "Add the pinned offline raw-player/Ferric-observation corpus and a behavior-sensitive manifest validator.",
+    "Implement the non-shipped pure-Rust worker, Ferric-owned challenge path, bounded envelope/frame protocol, fresh-context execution, and parent supervisor.",
+    "Implement typed report/verdict generation and capability, bounds, lifecycle, cache, churn, dependency, and counterfactual probes.",
+    "Update the no-context manual.",
+    "Run multi-lens independent adversarial reviews, remediate every confirmed finding, simplify, and rerun all acceptance and canonical gates."
+  ],
+  "acceptance_ids": [
+    "WP-FF-006-rust-youtube-challenge-spike-v1-AC-001",
+    "WP-FF-006-rust-youtube-challenge-spike-v1-AC-002",
+    "WP-FF-006-rust-youtube-challenge-spike-v1-AC-003",
+    "WP-FF-006-rust-youtube-challenge-spike-v1-AC-004",
+    "WP-FF-006-rust-youtube-challenge-spike-v1-AC-005",
+    "WP-FF-006-rust-youtube-challenge-spike-v1-AC-006",
+    "WP-FF-006-rust-youtube-challenge-spike-v1-AC-007"
+  ]
+}

@@ -1,0 +1,165 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-019-ferforstart-session-bootstrap-v1",
+    "base_wp_id": "WP-FF-019-ferforstart-session-bootstrap",
+    "version": "1",
+    "title": "Add the ferforstart authority-injection session bootstrap",
+    "created_at_utc": "2026-07-31T06:25:49Z",
+    "updated_at_utc": "2026-07-31T08:08:00Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Create a root CMD that injects .GOV/codex.yaml, .GOV/topology.yaml, and START_HERE.yaml as authority files; make AGENTS.md and CLAUDE.md require it at session start; slug ferforstart.",
+    "recorded_at_utc": "2026-07-31T06:25:49Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "e3dfc1247d4b0a8f64f8ed27596cbdb2153a79b4",
+    "work_branch": "codex/wp-ff-019-ferforstart",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": "b13ca70025fe25009f6bafed98e818102eaca0b1",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "b9dac4eeb1666e71a881627fdf5fe01c6538fa55"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "MEDIUM",
+    "blockers": [],
+    "next_action": "No WP-019 action remains. Await separate Operator direction before activating another work packet.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Create a disk-agnostic Windows CMD session bootstrap that injects the three named canonical authority files into model-visible output and requires complete reading and acknowledgment before repository work.",
+    "product_impact": "NONE",
+    "in_scope": [
+      "Create root ferforstart.cmd using repository-root discovery from the script path.",
+      "Fail closed when any required authority file is missing or unreadable.",
+      "Emit START_HERE.yaml, .GOV/codex.yaml, and .GOV/topology.yaml completely with stable boundaries and an exact acknowledgment instruction.",
+      "Add byte-identical FF-BOOT-007 startup rules to AGENTS.md and CLAUDE.md.",
+      "Register the launcher in repository topology and stable-ID governance."
+    ],
+    "non_goals": [
+      "Change the substance or precedence of the injected authority files.",
+      "Add a model-vendor-specific CLI dependency or launch a model process.",
+      "Modify product code, runtime behavior, dependencies, packaging, or release state."
+    ],
+    "allowed_paths": [
+      "ferforstart.cmd",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".GOV/topology.yaml",
+      ".GOV/id-registry.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/work_packets/WP-FF-019-ferforstart-session-bootstrap-v1/packet.json",
+      ".GOV/work_packets/WP-FF-019-ferforstart-session-bootstrap-v1/refinement.json"
+    ],
+    "dependencies": [
+      "START_HERE.yaml remains the model entrypoint authority.",
+      ".GOV/codex.yaml remains the canonical project rules authority.",
+      ".GOV/topology.yaml remains the canonical repository topology.",
+      "Windows cmd.exe and repository-relative %~dp0 resolution."
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-019-ferforstart-session-bootstrap-v1-AC-001",
+      "requirement": "Running ferforstart.cmd from the repository root and from another working directory exits 0, injects the complete contents of START_HERE.yaml, .GOV/codex.yaml, and .GOV/topology.yaml with unambiguous boundaries, and emits the required read-before-action acknowledgment contract.",
+      "proof_class": "integration",
+      "status": "PASS",
+      "evidence": [
+        "Root and C:\\Windows invocations both exited 0 and produced byte-identical output.",
+        "Bounded START_HERE.yaml, .GOV/codex.yaml, and .GOV/topology.yaml sections matched their canonical sources line-for-line; exact acknowledgment count was 1."
+      ]
+    },
+    {
+      "id": "WP-FF-019-ferforstart-session-bootstrap-v1-AC-002",
+      "requirement": "ferforstart.cmd fails nonzero with a named error when any required authority file is unavailable and never emits a false completion acknowledgment.",
+      "proof_class": "integration",
+      "status": "PASS",
+      "evidence": [
+        "Missing START_HERE.yaml, .GOV/codex.yaml, and .GOV/topology.yaml fixtures each exited 1, emitted zero stdout bytes, and named the unavailable file in a FERFORSTART-ERROR."
+      ]
+    },
+    {
+      "id": "WP-FF-019-ferforstart-session-bootstrap-v1-AC-003",
+      "requirement": "AGENTS.md and CLAUDE.md remain byte-identical and contain FF-BOOT-007 requiring ferforstart.cmd at every session start, complete reading, acknowledgment, and compliance with all injected repository rules and instructions before acting.",
+      "proof_class": "structural",
+      "status": "PASS",
+      "evidence": [
+        "AGENTS.md and CLAUDE.md SHA-256 hashes were identical.",
+        "FF-BOOT-007 occurred exactly once in each mirrored bootstrap router."
+      ]
+    },
+    {
+      "id": "WP-FF-019-ferforstart-session-bootstrap-v1-AC-004",
+      "requirement": "Repository topology and stable-ID registration identify ferforstart.cmd as the session authority injector and link it to all three injected authority surfaces.",
+      "proof_class": "structural",
+      "status": "PASS",
+      "evidence": [
+        "FF-NODE-SESSION-BOOTSTRAP-001 and all three FF-EDGE-SESSION-BOOTSTRAP-INJECTS-* IDs are registered in .GOV/id-registry.yaml and represented in .GOV/topology.yaml.",
+        "FF-GATE-DEEP-001 PASS: build/reports/verify-deep-1785485054666582600-223976.json."
+      ]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-31T08:08:00Z",
+      "branch": "main",
+      "base_sha": "e3dfc1247d4b0a8f64f8ed27596cbdb2153a79b4",
+      "head_sha": "b9dac4eeb1666e71a881627fdf5fe01c6538fa55",
+      "dirty_paths": [
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/work_packets/WP-FF-019-ferforstart-session-bootstrap-v1/packet.json"
+      ],
+      "checks_run": [
+        "powershell -NoProfile -File build/scripts/clean-artifacts.ps1",
+        "powershell -NoProfile -File build/scripts/clean-artifacts.ps1 -VerifyOnly",
+        "ferforstart.cmd root and non-root exact-section integration checks",
+        "ferforstart.cmd three-file missing-authority negative matrix",
+        "AGENTS.md and CLAUDE.md byte-identity and FF-BOOT-007 occurrence checks",
+        "git diff --check",
+        "FF-GATE-DEEP-001: build/reports/verify-deep-1785485054666582600-223976.json PASS",
+        "git merge-base --is-ancestor b13ca70025fe25009f6bafed98e818102eaca0b1 main: exit 0"
+      ],
+      "blockers": [],
+      "next_action": "Commit the validated containment state and clear active taskboard focus."
+    }
+  },
+  "validation": {
+    "checks": [
+      "ferforstart.cmd root and C:\\Windows invocations: PASS",
+      "Exact canonical authority section comparison and one required acknowledgment: PASS",
+      "Missing-authority negative matrix for all three required files: PASS",
+      "AGENTS.md and CLAUDE.md byte identity with FF-BOOT-007 exactly once: PASS",
+      "JSON governance parse and git diff --check: PASS",
+      "FF-GATE-DEEP-001: build/reports/verify-deep-1785485054666582600-223976.json PASS",
+      "Main containment: git merge-base --is-ancestor b13ca70025fe25009f6bafed98e818102eaca0b1 main exited 0"
+    ],
+    "not_proven": [
+      "Automatic compliance by a model that ignores repository authority or does not expose command output in its session.",
+      "Any product, capability, runtime, packaging, release, or phase progress."
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-019-ferforstart-session-bootstrap-v1/refinement.json"
+  }
+}

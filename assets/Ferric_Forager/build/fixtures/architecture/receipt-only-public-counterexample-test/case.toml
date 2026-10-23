@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "receipt-only-public-counterexample-test"
+mutation = "receipt_only_public_counterexample_test"
+expected_diagnostic = "FF-ARCH-E-PUBLIC-COUNTEREXAMPLE-RECEIPT-ONLY"

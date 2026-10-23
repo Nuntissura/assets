@@ -1,0 +1,225 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-007-transport-fingerprint-spike-v2-REFINEMENT-001",
+  "wp_id": "WP-FF-007-transport-fingerprint-spike-v2",
+  "updated_at_utc": "2026-07-29T17:23:01Z",
+  "operator_request": "Revalidate WP-007 only if current proof is needed, merge it only if it is not already contained in main, and merge any other work packet only when canonical lifecycle and Git containment prove a merge remains pending. V2 preserves v1's complete technical scope and reuses its still-current research after sanitized history made v1's activation and closure lineage non-ancestral.",
+  "basis": {
+    "research_status": "COMPLETE_SELECTED_FAIL_CLOSED_STD_FIRST_EVIDENCE_PATH",
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md and byte-identical CLAUDE.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#75-browser-impersonation",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#131-transport-capability-contract",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#132-transport-selection",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#133-connection-pools",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#134-request-model",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#135-redirect-policy",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#137-streaming-identity-and-replay-requirements",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#141-session-partitions",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#264-local-protocol-test-server",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#303-browser-impersonation-is-difficult-in-a-pure-rust-stack",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates",
+      ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v1/packet.json",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json",
+      ".GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json",
+      "build/fixtures/compatibility/cases/case-sanitized-transcript-v1.json",
+      "build/tools/fforager-xtask/src/compatibility.rs#replay_sanitized_transcript_case",
+      "product/crates/fforager-contracts/src/protocol.rs",
+      "product/crates/fforager-contracts/src/framing.rs"
+    ],
+    "current_primary_sources": [
+      {
+        "source": "https://github.com/rustls/rustls",
+        "identity": "main commit bd9f7f59aa790da07010961188209e68384febe5 inspected 2026-07-27; crates.io latest 0.24.0-dev.1",
+        "evidence": "Rustls remains the mature Rust TLS baseline, but official issue 2498 states the project does not support the ClientHello fingerprinting use case and does not intend to expose it in the near future. Current first-party crypto providers include aws-lc-rs and ring, which require native/build scrutiny outside this packet's authorization."
+      },
+      {
+        "source": "https://github.com/rustls/rustls/issues/2498",
+        "identity": "official issue closed not planned; inspected 2026-07-27",
+        "evidence": "Maintainers explicitly state rustls does not support JA3/JA4 fingerprinting and will not expose enough ClientHello data for that use case."
+      },
+      {
+        "source": "https://github.com/hyperium/hyper",
+        "identity": "master commit 67ace6484db5d4a15367013847768f5f94f4b97d; crates.io hyper 1.11.0",
+        "evidence": "Hyper is a mature low-level HTTP/1.1 and HTTP/2 building block, not a browser fingerprint implementation."
+      },
+      {
+        "source": "https://github.com/hyperium/h2",
+        "identity": "master commit 9416dc875da6d6b900eedc22636413c62dae912b; crates.io h2 0.4.15",
+        "evidence": "Current source exposes selected HTTP/2 settings values but serializes a library-defined settings sequence; exact browser HTTP/2 wire parity is not a declared compatibility contract."
+      },
+      {
+        "source": "https://github.com/seanmonstar/reqwest",
+        "identity": "master commit 221abe9ec921e22fe1bafaed47b51b03bed4b7c3; crates.io reqwest 0.13.4",
+        "evidence": "Reqwest supplies redirects, proxies, cookies, streaming, HTTP/2, and rustls integration. It does not claim browser TLS/HTTP2 fingerprint parity, and its current default rustls feature selects aws-lc-rs."
+      },
+      {
+        "source": "https://github.com/0x676e67/wreq",
+        "identity": "main commit 8b1b773ed20545f68ccb0c6369165cf080348e5f; crates.io wreq 6.0.0-rc.29",
+        "evidence": "Wreq provides fine-grained TLS and HTTP/2 browser emulation, but its official README states HTTPS uses BoringSSL and documents BoringSSL build dependencies. It is rejected by the explicit dependency boundary."
+      },
+      {
+        "source": "https://github.com/3andne/craftls",
+        "identity": "craft-0.22.0 commit 4d1da98768af023411063a14db63a5cd10f595d7; crates.io craftls 0.0.2+rustls.0.22.0 last updated 2024-01-16",
+        "evidence": "Craftls adds configurable ClientHello and old browser profiles, but has no GitHub releases, has not moved since January 2024, forks Rustls 0.22, and defaults to ring. It lacks the current maintenance, complete HTTP/2 parity, security, and dependency-boundary evidence required for selection."
+      },
+      {
+        "source": "https://github.com/lwthiker/curl-impersonate",
+        "identity": "main commit 822dbefe42e077fb9f3f16eaf0eca24944e5aadc; comparison only",
+        "evidence": "Its source documents why browser parity requires coordinated TLS extensions, cipher/curve configuration, HTTP/2 settings, and header behavior, and uses BoringSSL for Chrome. It is forbidden and was not executed or adopted."
+      },
+      {
+        "source": "https://www.rfc-editor.org/rfc/rfc6265.html",
+        "identity": "RFC 6265",
+        "evidence": "Defines host-only/domain/path/secure cookie matching and public-suffix rejection guidance used by the mandatory cookie cases."
+      },
+      {
+        "source": "https://www.rfc-editor.org/rfc/rfc9110.html",
+        "identity": "RFC 9110",
+        "evidence": "Defines HTTP origin, redirect, authentication, and message semantics used by redirect and credential-scope cases."
+      },
+      {
+        "source": "https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml and https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml",
+        "identity": "current IANA IPv4 and IPv6 special-purpose registries inspected 2026-07-27",
+        "evidence": "Supply the authoritative special-use address classes for SSRF positive, boundary, mixed-answer, and rebinding cases."
+      }
+    ],
+    "selected_approach": [
+      "Own the mandatory corpus in WP-007 and reuse only WP-004 stable-ID and secret-normalization conventions.",
+      "Create a policy-marked non-shipped Rust crate under build/ that uses Rust std plus already-approved serde, serde_json, and sha2.",
+      "Execute security/resource/cancellation semantics through a public candidate-adapter API and real local TCP protocol server where a socket boundary is required.",
+      "Represent every requested capability as satisfied or as a typed blocked capability before execution; never substitute ordinary HTTP success for fingerprint parity.",
+      "Emit an aggregate PASS_PURE_RUST_PATH only if every mandatory case is behaviorally proven; otherwise emit FAILED_SPIKE_REQUIRES_OPERATOR_DECISION with exact blockers and no dependency exception."
+    ],
+    "rejected_options": [
+      "Wreq, curl-impersonate, curl_cffi, libcurl, BoringSSL, OpenSSL, native-tls, or another external/native implementation because no exception is authorized.",
+      "Craftls because its old unreleased Rustls fork, default ring dependency, stale browser profiles, and incomplete HTTP/2/maintenance evidence do not satisfy the high-risk selection gate.",
+      "Reqwest/hyper/rustls as proof of browser compatibility because none declares or exposes complete browser TLS and HTTP/2 fingerprint parity.",
+      "Hand-authoring a PASS report or comparing fixture labels because behavioral proof must execute the same public acceptance oracle and a behavior-changing counterfactual.",
+      "Creating shipped product transport code because this packet is a non-product Phase 0 prerequisite."
+    ],
+    "reuse_opportunities": [
+      "WP-003 architecture/dependency policy, machine reports, negative fixtures, and canonical gates.",
+      "WP-004 stable case identities and bounded sanitized transcript normalization conventions.",
+      "WP-005 RequestId, protocol limits, cancellation generation/correlation, and typed failure conventions.",
+      "Rust std TCP, IP address, timing, synchronization, and bounded collection APIs.",
+      "Already-approved serde, serde_json, and sha2 dependencies."
+    ],
+    "validation_plan": "Run strict manifest validation, the real local protocol server cases, deterministic security/resource/cancellation cases, exact capability negotiation, sanitized replay, and a declaration-preserving behavior mutation through the same aggregate oracle; inspect the dependency graph/source/build scripts/artifacts for forbidden mechanisms; run format/check/test/doc/Clippy plus architecture/runtime-ceiling/deep/PR gates; dispatch distinct-lens adversarial implementation reviews and convert every confirmed finding into a public-boundary regression before final rerun."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "Loopback is allowed only behind a test-harness capability internal to the non-shipped corpus runner; ordinary SSRF policy must reject it.",
+      "A typed blocked capability is a valid failed-spike observation but never an implemented capability.",
+      "A future dependency exception is an Operator decision outside this packet."
+    ],
+    "non_goals": [
+      "Shipping a downloader or extractor.",
+      "Full HTTP stack parity.",
+      "Selecting a native-backed compatibility transport.",
+      "Claiming browser parity from JA3 strings, generic HTTP success, or structural fixtures."
+    ]
+  },
+  "corpus_contract": {
+    "owner": "WP-FF-007-transport-fingerprint-spike-v2",
+    "normalization_reuse": "WP-004 ff-normalization-v1 stable-ID and sanitized-placeholder conventions only",
+    "mandatory_case_families": [
+      "capability negotiation and no silent downgrade",
+      "HTTP/1.1 wire and range behavior through the local server",
+      "HTTP/2 and browser TLS/wire fingerprint requirements",
+      "proxy destination-evidence policy",
+      "redirect origin, credential stripping, downgrade, and hop limits",
+      "cookie host-only/domain/path/secure/public-suffix and control-character policy",
+      "DNS provenance, all-address SSRF validation, selected-address binding, rebinding, IPv4, and IPv6",
+      "pool-key credential/proxy/TLS/fingerprint/session partitioning",
+      "metadata/body/decompression/retry/redirect and streaming byte-credit bounds",
+      "cancellation acknowledgement and pool reuse/discard outcome",
+      "sanitized deterministic replay and secret canaries"
+    ],
+    "pass_threshold": "Every mandatory case executes its named semantics and passes the same aggregate oracle; any required blocked capability forces FAILED_SPIKE_REQUIRES_OPERATOR_DECISION.",
+    "counterfactual": "Mutate one observed required outcome while leaving the case declaration intact and prove the same aggregate oracle rejects the evidence.",
+    "report_fields": [
+      "stable case ID",
+      "proof class",
+      "concrete input and executed boundary",
+      "requested/satisfied/blocked capabilities",
+      "selected address/proxy/ALPN/protocol/wire identity",
+      "pool identity",
+      "normalized transcript",
+      "expected and observed result",
+      "typed error and exact mismatch",
+      "timing and limits",
+      "skipped semantic dependencies"
+    ]
+  },
+  "resource_and_security_contract": {
+    "bounds": [
+      "manifest bytes and case count",
+      "request/response metadata bytes",
+      "body and decompressed bytes",
+      "redirect and retry counts",
+      "stream chunk bytes and outstanding byte credits",
+      "deadline and cancellation acknowledgement generation",
+      "pool entries and every behavior-affecting pool-key field",
+      "transcript exchanges, headers, URL length, and sanitized value length"
+    ],
+    "fail_closed_rules": [
+      "Reject every disallowed address when any DNS answer is disallowed.",
+      "Bind execution to one address from the validated answer set and reject substitution.",
+      "Reject proxy requests requiring address-level SSRF proof when trusted destination evidence is unavailable.",
+      "Strip origin-bound credentials and recompute cookies on cross-origin redirect.",
+      "Reject HTTPS-to-HTTP downgrade by default.",
+      "Accept body bytes only after byte-credit admission.",
+      "Do not reuse a connection after unacknowledged or unsafe cancellation.",
+      "Block unsupported fingerprint/wire requirements before network execution."
+    ]
+  },
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "corpus ownership and fixture-echo proof fraud",
+      "TLS/HTTP2 fingerprint downgrade and false parity",
+      "IPv4/IPv6 SSRF, mixed DNS answers, rebinding, redirect, nested URL, and proxy evidence",
+      "cookie/credential origin, path, secure, public-suffix, and control-character scope",
+      "pool-key cross-session, proxy, credential, client-certificate, and fingerprint leakage",
+      "metadata/body/decompression/retry/redirect/stream byte-credit exhaustion",
+      "cancellation acknowledgement races and poisoned connection reuse",
+      "transcript secret leakage and nondeterministic replay",
+      "dependency/build-script/FFI/native/prebuilt/download escape",
+      "report aggregation, proof-class promotion, and false completion"
+    ],
+    "minimum_controls": [
+      "Every mandatory family has positive, boundary, and negative executable cases or a typed blocked capability that forces the failed-spike verdict.",
+      "The local server is a real socket boundary and loopback authority cannot appear in ordinary request policy.",
+      "The aggregate oracle consumes observed behavior, not case labels, and rejects a declaration-preserving behavior mutation.",
+      "Distinct-lens subagent reviews inspect the implementation after it exists; the primary verifies and remediates confirmed findings.",
+      "No final PASS or closure occurs without complete canonical reruns and the exact zero-progress ceiling."
+    ]
+  },
+  "execution_decomposition": [
+    "Activation and corpus-ownership remediation.",
+    "Strict corpus manifest, public candidate-adapter model, local protocol server, and report schema.",
+    "Capability, redirect, cookie, DNS/SSRF/rebinding, pool, bounds, replay, and cancellation implementations.",
+    "Behavior-sensitive corpus runner, counterfactual, architecture policy, and model manual.",
+    "Targeted and canonical verification.",
+    "Distinct-lens adversarial implementation reviews, regression fixes, and final rerun.",
+    "MERGE_PENDING checkpoint, merge to main, and mechanical containment proof."
+  ],
+  "acceptance_ids": [
+    "WP-FF-007-transport-fingerprint-spike-v2-AC-001",
+    "WP-FF-007-transport-fingerprint-spike-v2-AC-002",
+    "WP-FF-007-transport-fingerprint-spike-v2-AC-003",
+    "WP-FF-007-transport-fingerprint-spike-v2-AC-004",
+    "WP-FF-007-transport-fingerprint-spike-v2-AC-005",
+    "WP-FF-007-transport-fingerprint-spike-v2-AC-006",
+    "WP-FF-007-transport-fingerprint-spike-v2-AC-007",
+    "WP-FF-007-transport-fingerprint-spike-v2-AC-008"
+  ]
+}

@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "sequence-zero-replay"
+mutation = "sequence_zero_replay"
+expected_diagnostic = "FF-ARCH-E-SEQUENCE-ZERO"

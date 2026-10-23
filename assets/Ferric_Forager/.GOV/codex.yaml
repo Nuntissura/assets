@@ -1,0 +1,268 @@
+schema_id: ff.project_codex@2
+file_id: FF-GOV-CODEX-001
+updated_at: "2026-07-27"
+authority: canonical_project_codex
+always_reads:
+  - START_HERE.yaml
+  - .GOV/taskboard/taskboard.yaml
+conditional_reads:
+  topology: .GOV/topology.yaml
+  product_behavior: .GOV/rules/build-rules.yaml
+  active_packet: .GOV/work_packets/<ACTIVE_WP_ID>/packet.json
+  design_anchors: .GOV/spec/ferric_forager_technical_design_v0.3.0.md
+  readiness_gates: .GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json
+rules:
+  - id: FF-CODEX-001
+    category: authority
+    statement: Read START_HERE.yaml before selecting or changing project work.
+  - id: FF-CODEX-002
+    category: authority
+    statement: Read .GOV/topology.yaml before making path, ownership, dependency, workflow, or architecture claims.
+  - id: FF-CODEX-003
+    category: authority
+    statement: Read .GOV/rules/build-rules.yaml before designing, implementing, reviewing, or validating product behavior.
+  - id: FF-CODEX-004
+    category: authority
+    statement: Treat .GOV/spec/ferric_forager_technical_design_v0.3.0.md as the current product-design source and use .GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json for unresolved readiness gates that v0.3.0 leaves as Phase 0 proof gates.
+  - id: FF-CODEX-005
+    category: authority
+    statement: Treat .GOV/taskboard/taskboard.yaml as the sole canonical project-level work-packet index and active-focus surface; detailed lifecycle state lives only in each packet.json.
+  - id: FF-CODEX-006
+    category: authority
+    statement: Treat each .GOV/work_packets/<WP_ID>/packet.json as authoritative for that work packet's scope, lifecycle, acceptance, and evidence.
+  - id: FF-CODEX-007
+    category: product_direction
+    statement: Build Ferric Forager as an independent Rust-native replacement for yt-dlp with the added capabilities in the current technical design; Ferric owns every shipped implementation path.
+    revision: 2
+  - id: FF-CODEX-008
+    category: product_direction
+    statement: Do not add Python, yt-dlp, or a yt-dlp companion package, executable, library, solver asset, fallback, sidecar, plugin, service, or delegated-work path to Ferric product, build, test, canonical verification, package, release, or runtime requirements.
+    revision: 2
+  - id: FF-CODEX-009
+    category: product_direction
+    statement: Use FFmpeg and ffprobe as required supervised external-process dependencies.
+  - id: FF-CODEX-010
+    category: product_direction
+    statement: Do not add another production runtime or native dependency outside Rust and FFmpeg without explicit Operator approval supported by current research and measured evidence.
+  - id: FF-CODEX-011
+    category: product_direction
+    statement: Use Ferric-owned specifications and committed corpora as the implementation and proof foundation; a pinned yt-dlp release may be observed only by explicitly invoked, non-canonical, non-shipped comparison tooling and Ferric MUST remain fully buildable, testable, verifiable, runnable, packageable, and releasable when yt-dlp is absent.
+    revision: 2
+  - id: FF-CODEX-012
+    category: product_direction
+    statement: Optimize for speed only among designs that first prove equivalent work, correctness, compatibility, bounded resources, recoverability, and security.
+  - id: FF-CODEX-013
+    category: product_direction
+    statement: Preserve the expanded functionality in the current technical design and do not narrow scope silently to obtain an easier replacement claim.
+  - id: FF-CODEX-014
+    category: repository_boundary
+    statement: Keep shipped product code, product assets, the independent watcher, and product-package-local unit, integration, documentation, and compile-time tests under product/.
+    revision: 2
+  - id: FF-CODEX-015
+    category: repository_boundary
+    statement: Keep governance contracts, rules, topology, task state, work packets, templates, reviews, and specifications under .GOV/.
+  - id: FF-CODEX-016
+    category: repository_boundary
+    statement: Do not introduce product runtime dependencies on .GOV/ or build/; governance and build/test tooling may inspect product artifacts, but shipped product execution must require neither non-runtime root.
+    revision: 2
+  - id: FF-CODEX-017
+    category: repository_boundary
+    statement: Use repository-relative paths in committed artifacts and isolate unavoidable machine-local paths in ignored local configuration.
+  - id: FF-CODEX-018
+    category: repository_boundary
+    statement: Do not create new file or directory names containing spaces.
+  - id: FF-CODEX-019
+    category: work_packet
+    statement: Do not begin product implementation without an active TRACKED or EXPANDED work packet indexed in .GOV/taskboard/taskboard.yaml and backed by .GOV/work_packets/<WP_ID>/packet.json.
+    revision: 2
+  - id: FF-CODEX-020
+    category: work_packet
+    statement: Create one minimal packet.json from the canonical template for TRACKED or EXPANDED work, use the smallest applicable profile, and do not create Markdown packet, task-state, receipt, or handoff projections.
+    revision: 2
+  - id: FF-CODEX-021
+    category: work_packet
+    statement: Use stable WP-FF-<number>-<name>-v<number> identifiers, keep base_wp_id stable across revisions, and never encode dates in work-packet IDs.
+  - id: FF-CODEX-022
+    category: work_packet
+    statement: Require a research-backed refinement only for EXPANDED work or when a specific risk trigger requires it; TRACKED work must not carry empty refinement paperwork.
+    revision: 2
+  - id: FF-CODEX-023
+    category: work_packet
+    statement: Make every acceptance criterion executable or tie non-runtime evidence to a named artifact and review method; every product capability and product-phase closure MUST additionally have black-box proof through the shipped production entrypoint, and qualitative prose, tests, or reviewed artifacts alone are not closure proof.
+    revision: 2
+  - id: FF-CODEX-024
+    category: work_packet
+    statement: Preserve the two-step closure distinction in which validator acceptance is MERGE_PENDING and only a verified commit contained in main is VALIDATED.
+  - id: FF-CODEX-025
+    category: work_packet
+    statement: Archive superseded work packets under .GOV/archive/work_packets/<BASE_WP_ID>/ and do not delete lifecycle history.
+  - id: FF-CODEX-026
+    category: research_and_validation
+    statement: Perform current broad research before substantial product implementation and record it in the EXPANDED packet refinement; do not require research ceremony for DIRECT or ordinary TRACKED work.
+    revision: 2
+  - id: FF-CODEX-027
+    category: research_and_validation
+    statement: For yt-dlp compatibility claims, use a pinned external comparison version plus a Ferric-owned generated inventory and representative committed corpus; external comparison execution is optional evidence and MUST NOT be a prerequisite of canonical proof.
+    revision: 2
+  - id: FF-CODEX-028
+    category: research_and_validation
+    statement: For performance claims, compare equivalent work and process topology using a versioned benchmark manifest, distributions, and confidence bounds.
+  - id: FF-CODEX-029
+    category: research_and_validation
+    statement: Validate medium- and high-risk work adversarially with independent checks, counterfactuals, boundary probes, negative paths, findings, and residual uncertainty.
+  - id: FF-CODEX-030
+    category: research_and_validation
+    statement: Do not claim implementation readiness, parity, safety, speed, durability, product progress, phase completion, or capability completion without the proof surface named by the active contract; for product behavior that proof MUST execute the exact staged production artifact through its shipped entrypoint and verify operator-visible results.
+    revision: 2
+  - id: FF-CODEX-031
+    category: research_and_validation
+    statement: Keep unresolved uncertainty explicit and do not replace missing evidence with model memory or confidence.
+  - id: FF-CODEX-032
+    category: watcher_and_diagnostics
+    statement: Maintain the independent diagnostic watcher under product/watcher/ for the entire project lifecycle.
+  - id: FF-CODEX-033
+    category: watcher_and_diagnostics
+    statement: Keep the watcher process-independent from Ferric Forager so it survives Ferric crashes, starts with Ferric, and closes only during a correct commanded shutdown.
+  - id: FF-CODEX-034
+    category: watcher_and_diagnostics
+    statement: Keep watcher responsibilities diagnostic-only; it may observe, record, health-check, and package evidence but must not become a hidden product controller or correctness dependency.
+  - id: FF-CODEX-035
+    category: watcher_and_diagnostics
+    statement: Give no-context models structured logs, state, health checks, traces, crash evidence, reproduction data, and stable identifiers through product diagnostics.
+  - id: FF-CODEX-036
+    category: authority_maintenance
+    statement: Keep AGENTS.md and CLAUDE.md as byte-identical bootstrap routers to START_HERE.yaml and .GOV/codex.yaml.
+  - id: FF-CODEX-037
+    category: authority_maintenance
+    statement: Update .GOV/topology.yaml and .GOV/id-registry.yaml in the same change whenever durable nodes, edges, authority surfaces, or governance entity classes change.
+  - id: FF-CODEX-038
+    category: authority_maintenance
+    statement: When a rule changes, preserve its ID and supersede or retire it explicitly instead of renumbering later rules.
+  - id: FF-CODEX-039
+    category: authority_maintenance
+    statement: Ask the Operator before changing the authorized dependency boundary, final product scope, or canonical authority precedence.
+
+  - id: FF-CODEX-040
+    category: product_first_governance
+    statement: Product delivery is the goal and is measured only by operator-usable behavior executed through a shipped production entrypoint; governance, build infrastructure, contracts, tests, reports, prototypes, and scaffolding are supporting infrastructure and MUST be limited to the minimum required to deliver and prove the current runtime closure unit safely.
+    revision: 2
+  - id: FF-CODEX-041
+    category: product_first_governance
+    statement: Use DIRECT, TRACKED, or EXPANDED exactly as classified by START_HERE.yaml; never require empty sections, repeated not-applicable prose, refinements, microtasks, research, red-team material, performance evidence, or handoff paperwork outside their declared triggers.
+  - id: FF-CODEX-042
+    category: state_tracking
+    statement: For TRACKED and EXPANDED work, keep stable identity, authorization, scope, lifecycle, acceptance, blockers, branch, base/head commits, and exact next action in packet.json; keep only the packet index and active ID in the taskboard.
+  - id: FF-CODEX-043
+    category: recovery
+    statement: Create a recovery checkpoint at activation, material verification, blocking, handoff, and closure; a recoverable checkpoint includes Git identity and dirty paths, but only a commit plus appropriate remote backup is durable across filesystem or machine loss.
+  - id: FF-CODEX-044
+    category: worktrees
+    statement: Worktrees are optional and default to NONE; use native Git worktree commands only for parallel work, long-running dirty work, isolated validation, or high-risk experiments, keep physical paths out of committed state, and never treat a worktree as a backup.
+  - id: FF-CODEX-045
+    category: model_navigation
+    statement: A no-context model MUST follow START_HERE.yaml deterministic_navigation, read the small always-read set, resolve the active packet, and load only condition-triggered authority or cited spec anchors before acting.
+  - id: FF-CODEX-046
+    category: state_tracking
+    statement: Do not maintain derived taskboard counts or mirror packet lifecycle, branch, risk, acceptance, blocker, or next-action fields into the taskboard; update its index only when packets are added, archived, or selected as active.
+  - id: FF-CODEX-047
+    category: recovery
+    statement: Do not use uncommitted changes, stashes, linked worktrees, local reflogs, generated evidence, or chat history as the sole recovery source; checkpoint commits and remote-backed branches are the canonical durable recovery path for paused or handed-off work.
+
+  - id: FF-CODEX-048
+    category: repository_boundary
+    statement: Keep the Cargo workspace manifest and lockfile, architecture/tooling/proof policies, non-shipped xtask and testkit packages, shared fixtures, cross-package test harnesses, fuzzing, benchmarks, and governance reports under build/; keep all disposable build and test output under `.fforager-artifacts/`; keep rust-toolchain.toml at repository root as the sole rustup selector for canonical repository-root commands.
+
+  - id: FF-CODEX-049
+    category: runtime_truth
+    statement: Product progress, capability completion, product-runtime work-packet closure, and product-phase completion MUST be measured by operator-usable behavior executed through a shipped production entrypoint; compilation, tests, mocks, fixtures, reports, documentation, contracts, prototypes, scaffolding, governance, and explicitly classified Phase 0 prerequisite packets are supporting evidence only and MUST NOT independently constitute product progress or completion.
+    revision: 2
+  - id: FF-CODEX-050
+    category: runtime_truth
+    statement: Before product runtime implementation begins, every work packet with scope.product_impact RUNTIME MUST define at least one black-box runtime scenario containing the production build identity, shipped entrypoint, representative input, actual production boundaries, expected outputs and side effects, failure oracle, timeout, and operator-visible result; design-authorized PREREQUISITE packets instead carry the exact zero-progress prerequisite declaration required by FF-CODEX-054.
+    revision: 2
+  - id: FF-CODEX-051
+    category: runtime_truth
+    statement: Product closure proof MUST build the shipping profile once, record the artifact digest, stage that exact artifact into an isolated `.fforager-artifacts/runtime-proof/` package directory, and execute it without .GOV/, build/, product source, dev-dependency, testkit, test-only feature, or cfg(test) assistance.
+  - id: FF-CODEX-052
+    category: runtime_truth
+    statement: A mock, fake, stub, fixture-only implementation, in-memory substitute, hardcoded-success path, test-only adapter, or direct internal-function invocation MUST NOT satisfy runtime acceptance, product progress, phase completion, compatibility, durability, integration, or release proof; such mechanisms remain allowed only as supporting tests.
+  - id: FF-CODEX-053
+    category: runtime_truth
+    statement: Shipped paths MUST NOT contain placeholder behavior, no-op success, dummy output, inert commands, fabricated state, or deferred implementation hidden behind a successful result; a typed unsupported result is legal only for an explicitly unsupported capability row and MUST NOT count as implemented behavior.
+  - id: FF-CODEX-054
+    category: runtime_truth
+    statement: Infrastructure, contracts, scaffolding, and test machinery required by product work MUST normally be created in the same closure unit as the first production runtime behavior that consumes them; a design-authorized Phase 0 prerequisite packet may instead close only its bounded prerequisite contract when scope.product_impact is PREREQUISITE, it makes zero product, capability, runtime, packaging, release, or phase-progress claim, and its artifacts are required to be consumed and re-proven by the first production runtime slice.
+    revision: 2
+  - id: FF-CODEX-055
+    category: runtime_truth
+    statement: Every product phase MUST finish with at least one complete vertical runtime slice through the real shipped entrypoint, engine, production adapters, required external processes, persistence or output boundary, diagnostics, and operator-visible result; skeleton-only and layer-only completed product phases are forbidden.
+  - id: FF-CODEX-056
+    category: runtime_truth
+    statement: Unit, property, mutation, fixture, replay, integration, fuzz, and mock-based tests remain required where applicable but are insufficient for product closure unless the corresponding production artifact also passes its black-box runtime scenario.
+  - id: FF-CODEX-057
+    category: runtime_truth
+    statement: Verification of a work packet with scope.product_impact RUNTIME MUST fail BLOCKED rather than report PASS or NOT_APPLICABLE when production-artifact execution, a required production dependency, representative input, expected observable, negative path, or runtime evidence is absent; PREREQUISITE verification may PASS only its bounded non-product prerequisite contract and explicit zero-progress ceiling.
+    revision: 2
+  - id: FF-CODEX-058
+    category: runtime_truth
+    statement: Runtime acceptance MUST include an executable counterfactual proving the gate fails when a required operator-visible output or side effect is removed, corrupted, skipped, or falsely reported successful.
+  - id: FF-CODEX-059
+    category: runtime_truth
+    statement: Code unreachable from a current accepted production entrypoint is not implemented product behavior and MUST be removed or retained only as explicitly non-product experimental work or design-authorized Phase 0 prerequisite work; prerequisite code may advance only its named prerequisite packet and MUST NOT advance product, capability, runtime, packaging, release, or phase status until consumed and re-proven through a shipped entrypoint.
+    revision: 2
+
+  - id: FF-CODEX-060
+    category: research_reuse
+    statement: When an active packet already has a completed research basis that remains current for its selected approach, reuse it and proceed to the requested deliverable; do not repeat, broaden, or adversarially review research unless the Operator explicitly requests research work or a named dependency, source, version, assumption, or evidence gap is proven stale or missing.
+  - id: FF-CODEX-061
+    category: delegated_execution
+    statement: Assign delegated agents only to the lanes the Operator requested; an instruction to use subagents for implementation and adversarial review of the implementation does not authorize research, research review, planning review, or replacement of direct implementation work.
+
+  - id: FF-CODEX-062
+    category: product_direction
+    statement: "Ferric Forager MUST implement media discovery, extraction, selection, download, post-processing orchestration, challenge solving, and compatibility behavior through Ferric-owned Rust implementation paths; no product crate, shipped binary, build, test, canonical gate, package, installer, runtime subprocess plan, fallback, sidecar, plugin, service, required fixture, or delegated-work path may import, invoke, bundle, install, download, execute, or require yt-dlp, Python, or any yt-dlp companion package or executable asset. Explicitly invoked non-canonical research tooling may observe an Operator-supplied version-pinned external executable, but its output becomes inert provenance-bound comparison data and Ferric MUST remain fully independent of that executable and its code."
+    revision: 2
+  - id: FF-CODEX-063
+    category: proof_integrity
+    statement: "A command, report, acceptance row, or review may use behavioral terms such as replay, oracle comparison, parity, equivalence, compatible, durable, integrated, or PASS only when it executes and observes the named semantics; schema validation, file existence, digest matching, inventory agreement, fixture loading, or expected-label echoing MUST be reported as structural evidence only and MUST NOT satisfy behavioral proof."
+  - id: FF-CODEX-064
+    category: proof_integrity
+    statement: "Required proof MUST be independent of the implementation declaration it judges: comparing two copies of the same constant, proof ID, inventory row, fixture expectation, permissive flag, or generated claim is self-validation and cannot close acceptance. The validator MUST observe a public producer-consumer or state-effect boundary and execute a counterfactual that changes or removes the behavior while leaving the declaration intact and proves rejection."
+  - id: FF-CODEX-065
+    category: effect_integrity
+    statement: "A lifecycle transition that emits external effects MUST remain non-durable and non-terminal until every effect required for that transition is explicitly acknowledged; resource release, success, cancellation completion, confinement, commit, or recovery completion before the complete acknowledgement set is forbidden. Process cancellation and failure proof MUST include termination and reap outcomes, and filesystem confinement proof MUST distinguish requested establishment from acknowledged confinement."
+  - id: FF-CODEX-066
+    category: compatibility_integrity
+    statement: "Protocol or schema drift MUST be authorized by an explicit, versioned, reviewed compatibility transition identifying the exact source and target schema identities and validated semantics; peer-supplied booleans, wildcard ranges, matching permissive preferences, or unrelated hashes MUST NOT self-authorize compatibility."
+  - id: FF-CODEX-067
+    category: wire_integrity
+    statement: "Every wire boundary MUST define sequence origin and unknown-field policy explicitly: durable sequences begin at one unless a named contract says otherwise, and undeclared fields are rejected unless the exact schema boundary registers them as bounded optional forward-compatible extensions. Top-level and nested deserializers MUST apply the same declared policy and have negative fixtures."
+  - id: FF-CODEX-068
+    category: graph_integrity
+    statement: "Every traversable SourceGraph relationship kind MUST declare whether cycles are forbidden or bounded, and validation MUST reject every prohibited self-cycle and multi-node cycle before traversal; node and edge count limits do not substitute for cycle or recursion policy proof."
+  - id: FF-CODEX-069
+    category: finding_remediation
+    statement: "A confirmed inspection or validator counterexample is not remediated by prose, renamed labels, or an implementation-local test alone; closure requires an executable regression at the public boundary that reproduces the original failing input, observes the corrected result, and fails when the correction is reverted or bypassed."
+  - id: FF-CODEX-070
+    category: proof_integrity
+    statement: "Proof inventories and rule-to-proof maps are routing metadata, not proof. Each mapped proof ID MUST resolve to and execute a behavior-sensitive check, and canonical gates MUST reject unknown, duplicate, declaration-only, skipped, or structurally successful mappings when the governing requirement is behavioral."
+  - id: FF-CODEX-071
+    category: validation_reporting
+    statement: "Every generated validation result MUST record the proof class actually executed, the concrete input and boundary observed, the expected and observed outcomes, and any skipped semantic dependency; a structural-only result MUST never be promoted to behavioral PASS by aggregation, naming, or packet prose."
+  - id: FF-CODEX-072
+    category: artifact_hygiene
+    statement: "Every disposable Cargo build, test run, benchmark output, runtime-proof stage, command capture, temporary repository, and generated validation scratch artifact MUST live under the ignored repository-root `.fforager-artifacts/` directory; external temp roots, root `target/`, and `build/target/` are forbidden."
+  - id: FF-CODEX-073
+    category: artifact_hygiene
+    statement: "Before selecting, starting, or moving to the next task, run `powershell -NoProfile -File build/scripts/clean-artifacts.ps1` and its `-VerifyOnly` mode; the next task MUST NOT begin until `.fforager-artifacts/` is verified empty."
+  - id: FF-CODEX-074
+    category: worktrees
+    statement: "Every linked worktree MUST live under the ignored repository-root `.worktrees/` directory and MUST be created through `build/scripts/new-worktree.ps1`; the helper MUST link the worktree-local `.fforager-artifacts` path to the primary repository's single artifact root, and external ad hoc worktree paths are forbidden."
+  - id: FF-CODEX-075
+    category: implementation_closure
+    statement: "Implementation performed on a work branch or linked worktree is not complete until its closure commit is merged into canonical `main` and main-containment is proven; shipped implementation MUST reside under `product/`, while prerequisite-only code that lacks product-promotion approval remains decision-required and MUST NOT be called complete product implementation."
+
+  - id: FF-CODEX-076
+    category: credential_protection
+    statement: "No commit or push may contain an API key or credential. Every clone MUST install and retain build/git-hooks through core.hooksPath, pre-commit MUST scan exact staged blobs, pre-push MUST scan every outgoing commit, canonical verification MUST scan reachable history plus index and non-ignored worktree files, diagnostics MUST suppress matched values, and GitHub secret-scanning push protection MUST remain enabled as the independent remote pre-receive control."
+

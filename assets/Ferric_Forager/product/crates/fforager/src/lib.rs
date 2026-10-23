@@ -1,0 +1,92 @@
+//! Production composition of the single fetch engine and its adapters.
+#![forbid(unsafe_code)]
+
+use fforager_core::engine::{FetchControl, FetchEngine, FetchTransport, TransferReceipt};
+pub use fforager_core::engine::{FetchError, FetchRequest, FetchResult};
+use fforager_net::{OrdinaryTransport, TransportError, TransportErrorKind, TransportPolicy};
+use fforager_storage::DurableFetchStorage;
+use std::io::Write;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
+
+struct NetPort<'a> {
+    runtime: &'a tokio::runtime::Runtime,
+    transport: OrdinaryTransport,
+}
+
+impl FetchTransport for NetPort<'_> {
+    fn download(
+        &mut self,
+        request: &FetchRequest,
+        sink: &mut dyn Write,
+        control: &FetchControl<'_>,
+    ) -> Result<TransferReceipt, FetchError> {
+        self.runtime.block_on(async {
+            control.check()?;
+            let transfer = async {
+                let addresses = self
+                    .transport
+                    .resolve_addresses(&request.url, control.cancellation_flag())
+                    .await
+                    .map_err(|error| map_transport_error(&error))?;
+                let receipt = self
+                    .transport
+                    .download(&request.url, &addresses, sink, control.cancellation_flag())
+                    .await
+                    .map_err(|error| map_transport_error(&error))?;
+                Ok(TransferReceipt {
+                    bytes: receipt.bytes_received,
+                })
+            };
+            if let Ok(result) = tokio::time::timeout(control.remaining(), transfer).await {
+                result
+            } else {
+                control.check()?;
+                Err(FetchError::TimedOut)
+            }
+        })
+    }
+}
+
+/// Runs one acquisition through the shared engine and concrete production adapters.
+///
+/// # Errors
+/// Returns the typed request, cancellation, transport, storage, or byte-limit failure.
+pub fn fetch(request: &FetchRequest, cancel: &AtomicBool) -> Result<FetchResult, FetchError> {
+    request.validate()?;
+    fforager_net::validate_url(&request.url).map_err(|error| map_transport_error(&error))?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(|error| FetchError::Transport(format!("runtime initialization: {error}")))?;
+    let transport = OrdinaryTransport::new(TransportPolicy {
+        max_bytes: request.max_bytes,
+        total_timeout: Duration::from_millis(request.timeout_ms),
+        allow_loopback: request.allowed_loopback,
+        ..TransportPolicy::default()
+    })
+    .map_err(|error| map_transport_error(&error))?;
+    let result = {
+        let mut engine = FetchEngine::new(
+            NetPort {
+                runtime: &runtime,
+                transport,
+            },
+            DurableFetchStorage::new(),
+        );
+        engine.fetch(request, cancel)
+    };
+    runtime.shutdown_timeout(Duration::from_millis(250));
+    result
+}
+fn map_transport_error(error: &TransportError) -> FetchError {
+    match error.kind {
+        TransportErrorKind::Cancelled => FetchError::Cancelled,
+        TransportErrorKind::TimedOut => FetchError::TimedOut,
+        TransportErrorKind::SizeLimit => FetchError::LimitExceeded(error.to_string()),
+        TransportErrorKind::InvalidInput => FetchError::InvalidRequest(error.to_string()),
+        TransportErrorKind::Sink => FetchError::Storage(error.to_string()),
+        _ => FetchError::Transport(error.to_string()),
+    }
+}

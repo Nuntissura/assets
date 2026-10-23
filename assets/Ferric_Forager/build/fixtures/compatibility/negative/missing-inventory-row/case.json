@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "missing-inventory-row",
+  "mutation": "remove_option_row",
+  "expected_diagnostic": "FF-COMP-E-INVENTORY-COUNT: profile counts do not match rows"
+}

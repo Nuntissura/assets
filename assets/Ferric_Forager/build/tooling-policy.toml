@@ -1,0 +1,63 @@
+schema_id = "ff.tooling_policy@3"
+file_id = "FF-GOV-BUILD-TOOLING-POLICY-001"
+schema_version = "3.0.0"
+rust_toolchain = "1.97.1"
+supported_hosts = ["x86_64-pc-windows-msvc"]
+auto_install = false
+advisory_database_max_age_hours = 168
+
+[[tools]]
+name = "rustc"
+identity_line = "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+command = ["rustc", "--version", "--verbose"]
+source = "root rust-toolchain.toml"
+provenance_kind = "root-toolchain-and-cargo-lock"
+owning_gate = "FF-GATE-PR-001"
+required_now = true
+
+[[tools]]
+name = "cargo"
+identity_line = "cargo 1.97.1 (c980f4866 2026-06-30)"
+command = ["cargo", "--version", "--verbose"]
+source = "root rust-toolchain.toml"
+provenance_kind = "root-toolchain-and-cargo-lock"
+owning_gate = "FF-GATE-PR-001"
+required_now = true
+
+[[tools]]
+name = "rustfmt"
+identity_line = "rustfmt 1.9.0-stable (8bab26f4f6 2026-07-14)"
+command = ["rustfmt", "--version"]
+source = "pinned rustup component"
+provenance_kind = "root-toolchain-and-cargo-lock"
+owning_gate = "FF-GATE-PR-001"
+required_now = true
+
+[[tools]]
+name = "clippy"
+identity_line = "clippy 0.1.97 (8bab26f4f6 2026-07-14)"
+command = ["cargo", "clippy", "--version"]
+source = "pinned rustup component"
+provenance_kind = "root-toolchain-and-cargo-lock"
+owning_gate = "FF-GATE-PR-001"
+required_now = true
+
+[[tools]]
+name = "git"
+identity_line = "git version 2.53.0.windows.3"
+command = ["git", "--version"]
+source = "supported host installation"
+provenance_kind = "executable-sha256"
+executable_sha256 = "c53279919fdea03474bb23b465b3a82287157491f1bd69a5eb82dd9831582333"
+owning_gate = "FF-GATE-PR-001"
+required_now = true
+
+[[tools]]
+name = "cargo-deny"
+identity_line = "cargo-deny 0.20.2"
+command = ["cargo", "deny", "--version"]
+source = "cargo install cargo-deny --version 0.20.2 --locked"
+provenance_kind = "executable-sha256"
+executable_sha256 = "6e67806f5cf7d4da170d226a8f12cbd16aba236f51af1d75bc9fc56129d998ae"
+owning_gate = "FF-GATE-PR-001"
+required_now = true

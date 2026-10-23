@@ -1,0 +1,25 @@
+[package]
+name = "fforager-core"
+version = "0.1.0"
+workspace = "../../../build"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+fforager-contracts = { version = "0.1.0", path = "../fforager-contracts" }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+disallowed_types = "forbid"
+disallowed_methods = "forbid"
+disallowed_macros = "forbid"

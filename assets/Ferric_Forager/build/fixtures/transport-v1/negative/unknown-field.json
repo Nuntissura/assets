@@ -1,0 +1,9 @@
+{
+  "schema_id": "fforager.transport-corpus-manifest.v1",
+  "corpus_id": "WP-FF-007-transport-corpus-v1",
+  "normalization_version": "WP-FF-004-sanitized-transcript-v1",
+  "candidate_identity": "ferric-std-first-transport-spike-v1",
+  "max_cases": 1,
+  "cases": [],
+  "undeclared_field": true
+}

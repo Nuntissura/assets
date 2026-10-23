@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "unknown-normalization",
+  "mutation": "unknown_normalization",
+  "expected_diagnostic": "FF-COMP-E-NORMALIZATION: unknown normalization version"
+}

@@ -1,0 +1,25 @@
+{
+  "schema_id": "ff.compatibility-inventory-diff@1",
+  "schema_version": "1.0.0",
+  "status": "PASS",
+  "source": {
+    "git_commit": "ca6f41f28870a9a3ec355840487f1bf3e3fc8928",
+    "dirty": false,
+    "dirty_paths": []
+  },
+  "inputs": {
+    "after:build/fixtures/compatibility/yt-dlp-2026.07.04/profile.json": "f64d65c1c24bece65a641d4e305710a9760de3367f7f7f83bbac5f67fb79f55c",
+    "before:build/fixtures/compatibility/yt-dlp-2026.07.04/profile.json": "f64d65c1c24bece65a641d4e305710a9760de3367f7f7f83bbac5f67fb79f55c"
+  },
+  "before_profile_id": "yt-dlp-2026.07.04-profile-v1",
+  "after_profile_id": "yt-dlp-2026.07.04-profile-v1",
+  "added_options": [],
+  "removed_options": [],
+  "changed_options": [],
+  "added_extractors": [],
+  "removed_extractors": [],
+  "changed_extractors": [],
+  "proof_limitations": [
+    "Inventory diffing reports stable-row additions, removals, and changes; it does not prove behavioral parity or explain the cause of upstream drift."
+  ]
+}

@@ -1,0 +1,294 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-014-durable-wire-proof-remediation-v1",
+    "base_wp_id": "WP-FF-014-durable-wire-proof-remediation",
+    "version": "1",
+    "title": "Close durable-wire strictness and architecture-proof gaps",
+    "created_at_utc": "2026-07-26T15:12:54Z",
+    "updated_at_utc": "2026-07-26T15:43:24Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator requested remediation of every finding from the completed product-code versus work-packet spot check, followed by commit, push, and an overview of remaining work.",
+    "recorded_at_utc": "2026-07-26T15:12:54Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#232-journal-model",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#versioned-contracts",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#f1-executable-enforcement"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "405c054005102417a6ce992795a2752bc26c40dc",
+    "work_branch": "codex/durable-wire-proof-remediation",
+    "worktree_policy": "ISOLATED_PARALLEL_DIRTY_WORK",
+    "worktree_id": "WP-FF-014-durable-wire-proof-remediation",
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/durable-wire-proof-remediation",
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "SUPERSEDED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "Continue under WP-FF-014-durable-wire-proof-remediation-v2, whose first committed activation checkpoint contains the required machine-readable prerequisite declaration.",
+    "supersedes": [],
+    "superseded_by": "WP-FF-014-durable-wire-proof-remediation-v2"
+  },
+  "scope": {
+    "summary": "Reject unrecognized nested durable-wire fields and journal sequence zero at public deserialization boundaries, then make architecture proof fail when each guard is independently removed.",
+    "product_impact": "PREREQUISITE",
+    "zero_progress_declaration": "This packet remediates design-authorized Phase 0 prerequisite contracts and proof tooling only; it claims zero product, capability, runtime, packaging, release, replacement-parity, or phase progress. A future shipped archive/journal runtime consumer must consume and re-prove these invariants through FF-GATE-RUNTIME-001.",
+    "in_scope": [
+      "Reject unknown JournalPayload variant-body fields at the Serde public boundary",
+      "Reject unknown ReconcileState variant fields at the Serde public boundary",
+      "Reject JournalRecord sequence zero during public deserialization while preserving the valid wire shape",
+      "Expose an explicit JournalRecord validation path for constructed values",
+      "Add valid and invalid public-boundary regression tests",
+      "Extend FF-BUILD-094 with independent compiled mutations for every corrected storage guard",
+      "Run focused, workspace, architecture, deep, runtime-truth, PR, and adversarial verification"
+    ],
+    "non_goals": [
+      "Changing the journal JSON shape for valid records",
+      "Adding a shipped Ferric entrypoint or claiming runtime behavior",
+      "Broad contract redesign, unrelated cleanup, or new dependencies",
+      "Repeating completed research without a named stale-source trigger"
+    ],
+    "allowed_paths": [
+      ".GOV/id-registry.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v1/packet.json",
+      ".GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v1/refinement.json",
+      "build/rule-to-proof.toml",
+      "build/fixtures/architecture/durable-journal-payload-unknown-field/",
+      "build/fixtures/architecture/durable-journal-sequence-zero/",
+      "build/fixtures/architecture/durable-reconcile-state-unknown-field/",
+      "build/crates/fforager-testkit/src/lib.rs",
+      "build/tools/fforager-xtask/src/main.rs",
+      "build/reports/",
+      "product/crates/fforager-contracts/src/storage.rs",
+      "product/crates/fforager-contracts/tests/durable_wire.rs"
+    ],
+    "dependencies": [
+      "Existing locked Rust workspaces and approved dependencies only",
+      "Validated WP-005 versioned contracts, WP-012 runtime-truth gate, and WP-013 proof-integrity remediation",
+      "Existing FF-BUILD-094 wire-boundary rule and architecture mutation harness"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v1-AC-001",
+      "requirement": "Public Serde decoding rejects an unknown JournalPayload body field, an unknown ReconcileState variant field, and JournalRecord sequence zero.",
+      "proof_class": "public_wire_boundary_negative_tests",
+      "status": "PASS",
+      "evidence": [
+        "product/crates/fforager-contracts/tests/durable_wire.rs::durable_wire_rejects_unknown_variant_fields_and_sequence_zero",
+        "build/crates/fforager-testkit/src/lib.rs::public_boundary_counterexamples_reject_audit_failures"
+      ]
+    },
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v1-AC-002",
+      "requirement": "Canonical valid durable-wire examples still decode and round-trip without changing their JSON field or tag shape, and constructed sequence-zero records fail explicit validation.",
+      "proof_class": "wire_compatibility_and_invariant_tests",
+      "status": "PASS",
+      "evidence": [
+        "product/crates/fforager-contracts/tests/durable_wire.rs::valid_journal_wire_round_trips_without_shape_change",
+        "product/crates/fforager-contracts/tests/durable_wire.rs::constructed_sequence_zero_record_fails_explicit_validation"
+      ]
+    },
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v1-AC-003",
+      "requirement": "FF-BUILD-094 independently removes each corrected guard in an isolated copy, invokes the compiled public boundary, and fails for the expected behavior rather than a declaration-only check.",
+      "proof_class": "independent_compiled_mutation",
+      "status": "PASS",
+      "evidence": [
+        "FF-GATE-ARCH-001 report build/reports/architecture-check-1785079376553345300-95588.json",
+        "durable-journal-payload-unknown-field, durable-reconcile-state-unknown-field, and durable-journal-sequence-zero each PASS through isolated-compiled-public-boundary"
+      ]
+    },
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v1-AC-004",
+      "requirement": "Focused tests, locked workspace tests, warnings-denied Clippy, architecture, deep, runtime-truth, and PR gates pass while preserving the prerequisite zero-progress ceiling.",
+      "proof_class": "aggregate_validation",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v1-AC-005",
+      "requirement": "Independent adversarial review covers public-boundary bypasses, valid-wire compatibility, counterfactual guard removal, failure paths, and residual uncertainty.",
+      "proof_class": "independent_adversarial_review",
+      "status": "PENDING",
+      "evidence": []
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-26T15:23:30Z",
+      "branch": "codex/durable-wire-proof-remediation",
+      "base_sha": "405c054005102417a6ce992795a2752bc26c40dc",
+      "head_sha": "ac6ba3bb5692c4b10b1f00b09602b871818259b3",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v1/packet.json",
+        "build/crates/fforager-testkit/src/lib.rs",
+        "build/fixtures/architecture/durable-journal-payload-unknown-field/case.toml",
+        "build/fixtures/architecture/durable-journal-sequence-zero/case.toml",
+        "build/fixtures/architecture/durable-reconcile-state-unknown-field/case.toml",
+        "build/rule-to-proof.toml",
+        "build/tools/fforager-xtask/src/main.rs",
+        "product/crates/fforager-contracts/src/storage.rs",
+        "product/crates/fforager-contracts/tests/durable_wire.rs"
+      ],
+      "checks_run": [
+        "Read all applicable authority, task, topology, build-rule, packet-requirement, template, and WP-013 research/proof sources.",
+        "Reproduced all three wire-boundary failures through the public Serde boundary in an isolated export.",
+        "Verified the current architecture gate passes while FF-BUILD-094 lacks storage mutation coverage.",
+        "PASS: fforager-contracts 35 unit tests, 3 durable-wire integration tests, and doctests.",
+        "PASS: exact fforager-testkit public counterexample with the v4 durable-wire receipt.",
+        "PASS: FF-GATE-ARCH-001 with 52 fixtures, including three independent storage mutations; report build/reports/architecture-check-1785079376553345300-95588.json."
+      ],
+      "blockers": [],
+      "next_action": "Commit the implementation checkpoint, then run full canonical and independent validation."
+    }
+  },
+  "validation": {
+    "checks": [
+      "PASS: cargo fmt --manifest-path build/Cargo.toml --all -- --check",
+      "PASS: cargo test --manifest-path build/Cargo.toml --locked -p fforager-contracts; 35 unit, 3 integration, and 0 doctest failures",
+      "PASS: exact fforager-testkit public boundary counterexample with durable-wire receipt v4",
+      "PASS: FF-GATE-ARCH-001 report build/reports/architecture-check-1785079376553345300-95588.json with all three storage counterfactuals",
+      "PASS: warnings-denied Clippy for the locked workspace, all targets, and all features",
+      "PASS: locked full workspace tests, all features, with no failures",
+      "PASS: post-refactor FF-GATE-ARCH-001 report build/reports/architecture-check-1785080043944725200-81096.json",
+      "PASS: FF-GATE-DEEP-001 report build/reports/verify-deep-1785080474396690800-94140.json",
+      "EXPECTED PRE-CORRECTION FAIL: FF-GATE-RUNTIME-001 report build/reports/runtime-truth-check-1785080489617903500-99164.json rejected the missing extensions.non_product_prerequisite object; the structured declaration is now added for rerun"
+    ],
+    "not_proven": [
+      "Any shipped Ferric product runtime capability",
+      "Archive persistence against a real product entrypoint",
+      "Packaging, release readiness, cross-platform runtime behavior, or replacement parity"
+    ]
+  },
+  "extensions": {
+    "non_product_prerequisite": {
+      "schema_id": "ff.non-product-prerequisite@1",
+      "classification": "phase0_supporting_evidence",
+      "design_authority": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#232-journal-model",
+      "product_progress": false,
+      "capability_progress": false,
+      "runtime_completion": false,
+      "packaging_or_release_progress": false,
+      "phase_progress": false,
+      "required_future_consumer": "the first shipped archive and journal runtime consumer",
+      "required_future_proof": "FF-GATE-RUNTIME-001 through the exact staged production artifact"
+    },
+    "refinement": ".GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v1/refinement.json",
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-091",
+        "FF-BUILD-094"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-014-durable-wire-proof-remediation-v1-AC-001",
+        "WP-FF-014-durable-wire-proof-remediation-v1-AC-002",
+        "WP-FF-014-durable-wire-proof-remediation-v1-AC-003",
+        "WP-FF-014-durable-wire-proof-remediation-v1-AC-004",
+        "WP-FF-014-durable-wire-proof-remediation-v1-AC-005"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Invalid durable wire fails at the same public boundary consumers use",
+          "Valid durable wire retains its existing shape",
+          "Every correction has a behavior-changing compiled counterfactual"
+        ],
+        "risk_cases": [
+          "Serde accepts an undeclared nested field because only an outer container is strict",
+          "Sequence zero enters durable state because validation exists only after construction",
+          "The architecture gate tests diagnostics but silently omits storage DTOs",
+          "A mutation edits a declaration without executing the public boundary"
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "Existing strict Serde DTO pattern",
+          "result": "Selected for unknown-field rejection without changing valid JSON."
+        },
+        {
+          "candidate": "Existing testkit public-boundary counterexample",
+          "result": "Selected as the independent compiled consumer boundary."
+        },
+        {
+          "candidate": "Existing architecture isolated-mutation harness",
+          "result": "Selected and extended with three storage-specific fixtures."
+        },
+        {
+          "candidate": "New dependency or parallel validation framework",
+          "result": "Rejected because current Serde and xtask infrastructure are sufficient."
+        }
+      ],
+      "artifact_specific_justification": {
+        "storage_contract": "Owns the public durable-wire types and sequence invariant.",
+        "contract_tests": "Prove invalid and canonical valid payloads at the public API.",
+        "testkit_counterexample": "Provides a consumer outside the implementation crate for compiled boundary proof.",
+        "architecture_fixtures": "Prove the gate fails independently when each guard is removed.",
+        "packet_and_taskboard": "Authorize and track this high-risk public-contract remediation."
+      },
+      "pre_simplification_verdict": "FAIL: three invalid durable-wire inputs deserialize successfully and FF-BUILD-094 passes without storage counterfactual coverage.",
+      "simplification_changes": [
+        "Use existing Serde conversion and deny-unknown-field mechanisms.",
+        "Reuse one public counterexample test and the existing mutation runner.",
+        "Add only the three missing storage-specific negative fixtures."
+      ],
+      "post_simplification_verdict": "PASS: existing Serde, public testkit, and isolated mutation mechanisms close the reproduced gaps without a new dependency or framework.",
+      "complete_post_change_verification": [
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check",
+        "cargo test --manifest-path build/Cargo.toml --locked -p fforager-testkit",
+        "cargo test --manifest-path build/Cargo.toml --locked -p fforager-contracts",
+        "cargo clippy --manifest-path build/Cargo.toml --locked --workspace --all-targets -- -D warnings",
+        "cargo test --manifest-path build/Cargo.toml --locked --workspace --all-features --no-fail-fast",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-deep --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "Parse changed JSON and YAML, verify allowed paths, run git diff --check, and prove closure containment in main"
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-014-durable-wire-proof-remediation-v1-CEILING-001",
+        "current_ceiling": "This packet repairs Phase 0 durable contracts and proof prerequisites; no shipped archive/journal entrypoint exists.",
+        "replacement_trigger": "A shipped Ferric archive/journal runtime consumer persists or reconciles these contracts.",
+        "likely_upgrade_path": "Execute representative valid and invalid durable records through the exact staged Ferric artifact under FF-GATE-RUNTIME-001.",
+        "trigger_detection_method": "Runtime-truth changed-path classification and staged-artifact scenarios fail closed when a shipped consumer appears.",
+        "linked_evidence": [
+          "product/crates/fforager-contracts/src/storage.rs",
+          "build/crates/fforager-testkit/src/lib.rs",
+          "build/tools/fforager-xtask/src/main.rs",
+          ".GOV/rules/build-rules.yaml"
+        ]
+      },
+      "independent_review": {
+        "DIFF_ATTACK_SURFACES": [],
+        "INDEPENDENT_CHECKS_RUN": [],
+        "COUNTERFACTUAL_CHECKS": [],
+        "BOUNDARY_PROBES": [],
+        "NEGATIVE_PATH_CHECKS": [],
+        "INDEPENDENT_FINDINGS": [],
+        "RESIDUAL_UNCERTAINTY": []
+      }
+    }
+  }
+}

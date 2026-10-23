@@ -1,0 +1,174 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-003-executable-gate-bootstrap-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-003-executable-gate-bootstrap-v1",
+  "updated_at_utc": "2026-07-18T21:12:33Z",
+  "operator_request": "Activate WP-FF-003 and Phase 0, create and remotely checkpoint all later Phase 0 packets as detailed documentation-linked stubs first, then create a clean deterministic third sibling folder for Cargo builds and tests and begin implementing; sub-agent assistance is authorized with primary-agent proof review.",
+  "spec_anchors": [
+    {"path": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#9-workspace-and-module-layout", "scope": "accepted physical topology, xtask location, dependency direction, policy ownership, and architecture-check proof classes"},
+    {"path": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#268-mandatory-build-and-architecture-gates", "scope": "canonical commands, applicable PR gate, reports, and tool limitations"},
+    {"path": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#269-rust-coding-discipline", "scope": "toolchain, lint, unsafe, dependency, review, and change-evidence requirements"},
+    {"path": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0-bootstrap--executable-gate-skeleton", "scope": "first product closure and no-context manual stub"},
+    {"path": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates", "scope": "bootstrap authorization and claims that remain blocked"},
+    {"path": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#appendix-f--architecture-and-build-enforcement-contract", "scope": "machine-readable policies, canonical reports, change evidence, and exception separation"},
+    {"path": ".GOV/rules/build-rules.yaml", "scope": "FF-BUILD-036 through FF-BUILD-067 and named verification gates"}
+  ],
+  "scope_edges": {
+    "preserve": [
+      "Rust-only product direction and FFmpeg/ffprobe supervised external-process boundary",
+      "product runtime independence from .GOV",
+      "accepted coarse topology without adding shipped crates",
+      "fail-closed rule and exception authority",
+      "Phase 1 and broad implementation block"
+    ],
+    "change": [
+      "Turn the currently unimplemented architecture and applicable PR gates into executable commands",
+      "Create the minimal locked build/ Cargo and xtask substrate plus the sole root rust-toolchain selector",
+      "Create machine-readable policy, proof mapping, reports, and negative fixtures",
+      "Create a no-context Phase 0 operating manual"
+    ],
+    "non_goals": [
+      "Product features or shipped binaries",
+      "Deep/release/watcher gate implementation",
+      "Compatibility, dependency-selection, durability, or performance conclusions",
+      "New runtime or native dependency approval"
+    ]
+  },
+  "assumptions": [
+    "The first compiled workspace member is non-shipped fforager-xtask under build/tools/fforager-xtask.",
+    "The repository has three owned roots: .GOV/ governance, product/ shipped runtime code/assets and product-local tests, and build/ Cargo workspace/shared test infrastructure.",
+    "The sole root rust-toolchain.toml is a repository bootstrap selector rather than a fourth code/config root.",
+    "The bootstrap can use Rust std plus pinned built-in Cargo toolchain components unless research proves a small non-runtime development dependency is necessary and policy-compliant.",
+    "Future gates extend a stable report envelope but cannot reinterpret a failed or unimplemented check as PASS.",
+    "The governance checkpoint containing packet activation and detailed stubs must be remotely verified before product files are created."
+  ],
+  "research": {
+    "status": "COMPLETE_WITH_AUTHORITY_DECISION_REQUIRED",
+    "checked_at": "2026-07-18",
+    "sources": [
+      {"source": "https://doc.rust-lang.org/cargo/reference/workspaces.html", "evidence": "Virtual workspaces share one root lockfile, require an explicit resolver, and support inherited package and lint policy."},
+      {"source": "https://blog.rust-lang.org/2026/07/16/Rust-1.97.1/", "evidence": "Rust 1.97.1 is the current patch release and fixes an LLVM miscompilation in 1.97.0."},
+      {"source": "https://rust-lang.github.io/rustup/overrides.html and https://rust-lang.github.io/rustup/concepts/profiles.html", "evidence": "rustup selects a toolchain override by current-directory ancestry, not Cargo --manifest-path; minimal profiles can add rustfmt and Clippy components."},
+      {"source": "https://doc.rust-lang.org/cargo/commands/cargo-metadata.html and https://doc.rust-lang.org/cargo/reference/external-tools.html", "evidence": "Cargo metadata format-version 1 and Cargo JSON messages are the stable external-tool surfaces for declared/resolved graph, target, build-script, artifact, and native-link evidence."},
+      {"source": "https://github.com/matklad/cargo-xtask and https://rust-lang.github.io/rust-analyzer/xtask/index.html", "evidence": "A repository-local Rust xtask binary is a field-used cross-platform orchestration pattern; child tools should use direct process argument vectors."},
+      {"source": "https://doc.rust-lang.org/rustc/json.html and https://www.oasis-open.org/standard/sarif-v2-1-0/", "evidence": "Cargo/rustc provide typed JSON/JSONL tool evidence; SARIF is useful for static-analysis findings but is not a complete orchestration receipt envelope."},
+      {"source": "https://github.com/EmbarkStudios/cargo-deny/releases/tag/0.20.2 and https://embarkstudios.github.io/cargo-deny/checks/", "evidence": "cargo-deny 0.20.2 is the current pinned candidate for advisory, ban/duplicate, license, source, and build-script policy evidence, with documented proof limitations."},
+      {"source": "https://github.com/EmbarkStudios/cargo-deny/tree/main/tests/test_data", "evidence": "Mature negative-fixture precedent uses checked-in minimal fixture workspaces and exact expected diagnostics."},
+      {"source": "https://doc.rust-lang.org/cargo/commands/cargo-package.html", "evidence": "cargo package --locked provides a pristine package listing and verification build useful for later shipped-artifact smoke tests."},
+      {"source": "https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/using-pre-written-building-blocks-in-your-workflow", "evidence": "GitHub documents full commit SHAs as immutable third-party Action references for CI supply-chain pinning."}
+    ],
+    "patterns_found": [
+      "Use one virtual workspace with explicit members, resolver 3, inherited lint/package policy, and a tracked root Cargo.lock.",
+      "Use Cargo CLI JSON rather than unstable Cargo internals or human cargo-tree text; inspect both declared dependency rows and the resolved graph so optional, target, build, dev, and renamed edges are not omitted.",
+      "Keep proof classes separate: metadata for graph facts, conservative source/build-script checks for declared source boundaries, Cargo build JSON for artifacts/native links, and runtime/package tests for behavioral claims.",
+      "Use a versioned custom JSON gate envelope with exact commands, exit states, trigger/rule IDs, findings, fixture expectations, skips with authority, proof limitations, artifacts, and hashes.",
+      "Each negative fixture must contain one intended violation and must fail with the exact stable diagnostic code; wrong-reason failure is a validator failure.",
+      "A zero-shipped-member clean-artifact check is explicit NOT_APPLICABLE in WP-003, not a vacuous PASS; later shipped members use a fresh directory with .GOV absent.",
+      "Aggregate PASS is legal only when every required applicable child check passes; NOT_RUN, NOT_IMPLEMENTED, unknown triggers, and unauthorized skips cannot become PASS."
+    ],
+    "reuse_opportunities": [
+      "Reuse Cargo metadata and compiler JSON instead of building a custom dependency resolver.",
+      "Reuse the active packet change-evidence surface instead of a second editable receipt.",
+      "Reuse Rust std and direct std::process::Command calls for the initial xtask rather than adding a runtime dependency.",
+      "Reuse cargo-deny as the later exact-version dependency-policy implementation instead of duplicating cargo-audit at bootstrap.",
+      "Reuse one report envelope and stable diagnostic vocabulary for every later Phase 0 and release gate."
+    ],
+    "rejected_options": [
+      "A product-local rust-toolchain.toml alone, because rustup will not select it for the canonical repository-root Cargo invocation.",
+      "Changing the canonical command to cargo +<version> or changing its working directory without an authority decision.",
+      "Using Cargo as a library or parsing cargo tree text, because those are unstable or lossy compared with official JSON surfaces.",
+      "Treating Cargo metadata, Cargo links, lexical grep, cargo-deny, Clippy, or any single tool as complete runtime/native/security proof.",
+      "Using SARIF as the sole wrapper report format.",
+      "Running cargo-audit and cargo-deny as duplicate bootstrap advisory gates.",
+      "Running clean-artifact smoke inside the repository where ambient governance files could mask a runtime dependency."
+    ],
+    "selected_approach": "Create a resolver-3 virtual workspace at build/Cargo.toml with only non-shipped build/tools/fforager-xtask; keep shipped code and product-local tests under product/; keep shared fixtures, cross-package test harnesses, fuzzing, benchmarks, reports, and target output under build/; pin Rust 1.97.1 minimal plus rustfmt and Clippy through the sole root rust-toolchain.toml; use Cargo metadata and compiler JSON through direct argument vectors; default-deny undeclared members, wrong-root files, edges, rules, fixtures, tools, exceptions, and report triggers; use exact diagnostic-coded fixtures; emit collision-safe atomic versioned JSON reports; make zero shipped artifacts explicit NOT_APPLICABLE; and pin dependency-policy tooling without auto-installing it.",
+    "risks": [
+      "Wrong-root build/test files or duplicate toolchain selectors can recreate ownership drift and make models run inconsistent gates.",
+      "Optional, target, build, dev, or renamed edges can be omitted by a resolved-graph-only checker.",
+      "Machine-local absolute paths can make reports non-portable or nondeterministic.",
+      "Build scripts, proc macros, downloaded/prebuilt artifacts, and native links can evade metadata-only validation.",
+      "Mutable advisory data can make two nominally identical dependency reports incomparable.",
+      "Fixtures can drift or fail before reaching the intended validator.",
+      "Parallel report writers can overwrite evidence.",
+      "A clean-artifact check can falsely pass if the test retains repository ancestry or silently treats zero shipped artifacts as success."
+    ],
+    "mitigations": [
+      "Apply the Operator-selected three-root split, keep one root rust-toolchain.toml selector, validate exact path ownership, and reject duplicate selectors.",
+      "Inspect declared and resolved Cargo dependency facts and add exact fixtures for every dependency kind and target condition.",
+      "Normalize all reported paths repository-relative and test Windows and Linux path behavior.",
+      "Default-deny build/proc-macro/native behavior, combine policy/source/build-JSON/artifact checks, and report residual proof limits.",
+      "Record advisory database identity and freshness and fail stale/offline evidence rather than silently reuse it.",
+      "Require one intended mutation, an exact diagnostic code, a positive control, and completeness checks across every REQUIRED architecture rule.",
+      "Use unique report IDs, create-new temporary files, atomic rename, and content hashes.",
+      "Enumerate shipped=true members from policy; emit NOT_APPLICABLE for the WP-003 zero-member case and later stage outside the repository with .GOV absent."
+    ],
+    "validation_plan": [
+      "Run every negative fixture RED and require its exact stable diagnostic code.",
+      "Run the real bootstrap architecture-check GREEN with a versioned report.",
+      "Run locked format, check, Clippy, tests, doctests, and docs on the pinned toolchain.",
+      "Run dependency-policy evidence with exact tool and advisory database identity when the external tool is provisioned.",
+      "Require explicit clean-artifact NOT_APPLICABLE while no shipped member exists.",
+      "Run verify-pr and prove aggregate status rules through negative mutations.",
+      "Repeat architecture and PR gates on Windows and Linux before treating cross-platform path/process behavior as proven.",
+      "Independently mutate members, every edge class, build scripts, proc macros, unsafe policy, .GOV runtime reads, exception references, and report triggers and confirm fail-closed behavior."
+    ],
+    "authority_decision": {
+      "status": "RESOLVED_BY_OPERATOR",
+      "decision": "Use .GOV/ for governance, product/ for shipped runtime code/assets and product-local tests, build/ for Cargo workspace/shared build-test infrastructure, and one root rust-toolchain.toml selector.",
+      "basis": "Cargo supports explicitly listed sibling workspace members through package.workspace, shares the workspace lockfile and target directory under build/, and rustup requires the selector in repository-root ancestry for canonical root commands.",
+      "rejected_fallbacks": [
+        "Product-only Cargo workspace with build/ used merely as target output",
+        "Separate product and build workspaces with two lockfiles and policy graphs",
+        "Root Cargo.toml",
+        "Duplicate toolchain files",
+        "cargo +version duplicated across every command",
+        "Symlink or junction based ownership"
+      ]
+    }
+  },
+  "red_team": {
+    "attack_surfaces": [
+      "Self-validating policy and report inputs",
+      "Unknown rules, fields, fixtures, members, or dependencies silently ignored",
+      "A fixture failing before it reaches the intended validator",
+      "A validator checking Cargo metadata but overclaiming runtime, package, or artifact behavior",
+      "verify-pr converting NOT_IMPLEMENTED, NOT_RUN, or skipped checks into PASS",
+      "Product or clean-artifact execution reading .GOV or build/",
+      "Cargo/test infrastructure placed under product/ or governance placed under build/",
+      "Toolchain and external-tool drift",
+      "Architecture policy self-authorizing exceptions"
+    ],
+    "minimum_controls": [
+      "Fail-closed schema/version and unknown-value handling",
+      "Stable rule-to-proof and fixture-to-expected-finding maps",
+      "Mutation fixtures with exact failure identifiers",
+      "Explicit proof-class and residual-limitation reporting",
+      "Aggregate PASS only when every required applicable child check passes",
+      "Three-root placement checks and duplicate-selector rejection",
+      "Clean copy verification with .GOV and build/ absent from shipped runtime ancestry",
+      "Pinned toolchain and exact tool preflight without auto-install",
+      "Separate canonical exception allowlist references"
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-003-executable-gate-bootstrap-v1-AC-001",
+    "WP-FF-003-executable-gate-bootstrap-v1-AC-002",
+    "WP-FF-003-executable-gate-bootstrap-v1-AC-003",
+    "WP-FF-003-executable-gate-bootstrap-v1-AC-004",
+    "WP-FF-003-executable-gate-bootstrap-v1-AC-005",
+    "WP-FF-003-executable-gate-bootstrap-v1-AC-006",
+    "WP-FF-003-executable-gate-bootstrap-v1-AC-007",
+    "WP-FF-003-executable-gate-bootstrap-v1-AC-008"
+  ],
+  "execution_decomposition": [
+    "Use the verified remote packet/stub checkpoint",
+    "Complete current research and select the smallest field-aligned bootstrap design",
+    "Update authority, topology, design, registry, and stubs for the Operator-selected three-root layout",
+    "Create the root toolchain selector and locked non-shipped build/ Cargo/xtask substrate and policies",
+    "Implement architecture-check, exact negative fixtures, and versioned reports",
+    "Implement bootstrap-applicable verify-pr and clean-artifact smoke",
+    "Write the no-context model manual stub",
+    "Run complete positive, negative, adversarial, and simplification verification"
+  ]
+}

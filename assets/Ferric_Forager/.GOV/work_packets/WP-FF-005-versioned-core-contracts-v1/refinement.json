@@ -1,0 +1,148 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-005-versioned-core-contracts-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-005-versioned-core-contracts-v1",
+  "updated_at_utc": "2026-07-19T18:22:59Z",
+  "operator_request": "Activate and implement WP-FF-005 using subagents for implementation assistance and independent multi-lens adversarial review of the implementation, then remediate and harden; reuse the research already completed for this work.",
+  "basis": {
+    "research_status": "REUSED_COMPLETED_PROJECT_RESEARCH",
+    "research_reopen_triggers": [
+      "A selected dependency or source version has changed since the recorded basis.",
+      "A concrete implementation decision lacks evidence in the existing design, peer-review, WP-003, or WP-004 sources.",
+      "The Operator explicitly requests additional research."
+    ],
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#85-dependency-rings-and-composition-roots",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#86-owned-state-machines",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#101-canonical-serializable-source-graph",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#161-atomic-resource-vectors",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#232-journal-model",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#prerequisite-0b--contracts-and-state-machines",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json",
+      ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json",
+      "build/architecture-policy.toml",
+      "build/rule-to-proof.toml",
+      "build/fixtures/compatibility/corpus-v1/manifest.json",
+      "product/MODEL_MANUAL.md"
+    ],
+    "existing_research_sources": [
+      "The current technical design reference set and peer-review corpus",
+      "The validated WP-003 build, architecture, failure-boundary, and proof implementation",
+      "The validated WP-004 pinned compatibility inventory, seven-plane corpus, and adversarial remediation evidence",
+      "The WP-005 stub implementation brief, reuse ladder, risk scenarios, and verification matrix"
+    ],
+    "selected_approach": [
+      "Keep versioned wire DTOs data-only and separate from validated pure domain/state types.",
+      "Use explicit schema identity and major/minor compatibility ranges with bounded JSON inputs, stable tagged variants, typed errors, and checked conversions.",
+      "Use one bounded framing/conformance model for process, plugin, JavaScript-worker, and diagnostic envelopes without runtime handles in contract crates.",
+      "Implement state transitions as pure state-plus-event calculations returning new state and explicit effect intents.",
+      "Implement atomic resource vectors and byte credits with checked arithmetic, exact grant identity, all-or-nothing admission, bounded queues, cancellation, and deterministic replay traces.",
+      "Classify this packet as Phase 0 prerequisite evidence with zero product/runtime/phase progress until a shipped consumer re-proves it through FF-GATE-RUNTIME-001."
+    ],
+    "rejected_options": [
+      "Repeating or adversarially reviewing the completed research basis without a named stale or missing-evidence trigger.",
+      "Using untagged public protocol enums, unbounded extension maps, round-trip-only compatibility proof, wrapping or saturating resource arithmetic, independent resource semaphores, runtime handles in contract crates, or tests as product-runtime proof.",
+      "Adding a new serialization format, runtime, native dependency, or concrete adapter under this prerequisite packet.",
+      "Expanding WP-005 into the blocked Phase 1 production slice merely to satisfy a runtime-progress claim."
+    ],
+    "reuse_opportunities": [
+      "Reuse the locked Cargo workspace, strict Serde parsing, report writer, bounded process runner, policy parser, negative-fixture harness, and canonical gates from WP-003.",
+      "Reuse WP-004 stable IDs, bounded JSON, deterministic fixtures, content digests, seven compatibility planes, and source-graph/migration/failure/archive observations as oracle evidence rather than normative product types.",
+      "Reuse standard checked arithmetic and deterministic collections before adding any dependency."
+    ],
+    "validation_plan": "Run format, warnings-denied Clippy, all workspace tests, doctests/docs, architecture and dependency gates, the implemented deep contract/model gate, compatibility fixture checks, direct boundary and malformed-input probes, deterministic replay, counterfactual mutations, then independent implementation reviews through contract, serialization/security, state/resource/durability, and integration/gate lenses; remediate every confirmed finding and rerun the complete matrix."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "WP-003 and WP-004 validated outputs remain the current reusable prerequisite foundations.",
+      "Phase 0B contracts may close only as explicitly classified prerequisite evidence and do not constitute product progress.",
+      "Compatibility-facing semantics not proven by WP-004 remain typed provisional or unsupported rather than guessed."
+    ],
+    "non_goals": [
+      "Concrete networking, extraction, storage, FFmpeg, JavaScript, plugin, scheduler, watcher, packaging, or release behavior.",
+      "A product capability, runtime-completion, replacement, parity, performance, or product-phase claim.",
+      "Additional research without a recorded reopen trigger."
+    ]
+  },
+  "contract_and_model_map": [
+    {
+      "design_area": "Sections 8.5, 10.1, and 10.5",
+      "artifacts": ["SourceGraph", "Identity", "TriState", "ExtensionMap"],
+      "invariants": ["bounded serializable data only", "unique stable identities", "resolvable roots and relationships", "separate item/representation/track/asset/derived identities", "namespaced bounded extensions"],
+      "proof": ["architecture scans", "prior/current fixtures", "duplicate/dangling/cycle/oversize/collision negatives"]
+    },
+    {
+      "design_area": "Sections 8.6 and Prerequisite 0B",
+      "artifacts": ["job/cancel", "source/redirect", "admission", "fragment/durability", "live", "sink", "FFmpeg", "JavaScript", "plugin", "commit/archive", "filesystem-capability", "watcher transition models"],
+      "invariants": ["one named owner", "declared preconditions and postconditions", "typed invalid transitions", "explicit cancellation outcomes", "finite assumptions", "durable-prefix recovery"],
+      "proof": ["success/failure/cancel/restart traces", "invalid-transition counterfactuals", "deterministic replay"]
+    },
+    {
+      "design_area": "Sections 16.1 and 16.7",
+      "artifacts": ["ResourceVector", "GrantLedger", "ByteCreditLedger", "DurabilityPosition"],
+      "invariants": ["checked arithmetic", "all-or-nothing grant", "capacity never exceeded", "release exactly once", "bounded waiter state", "durable <= validated <= received", "credits conserved"],
+      "proof": ["zero/exact/one-over/MAX boundaries", "cancel queued/granted", "double/unknown release", "stalled consumer", "starvation and saturation traces"]
+    },
+    {
+      "design_area": "Sections 23.2 through 23.6",
+      "artifacts": ["JournalRecord", "CommitState", "ArchiveState", "ReconcileState", "FilesystemCapability"],
+      "invariants": ["monotonic sequence and valid prior hash", "transition only after named durability prerequisites", "no success before archive/output reconciliation", "idempotent recovery for every prefix", "explicit degraded filesystem guarantees"],
+      "proof": ["every durable crash prefix", "torn/duplicate/reordered records", "restart idempotence", "unsupported/degraded filesystem cases"]
+    }
+  ],
+  "acceptance_ids": [
+    "WP-FF-005-versioned-core-contracts-v1-AC-001",
+    "WP-FF-005-versioned-core-contracts-v1-AC-002",
+    "WP-FF-005-versioned-core-contracts-v1-AC-003",
+    "WP-FF-005-versioned-core-contracts-v1-AC-004",
+    "WP-FF-005-versioned-core-contracts-v1-AC-005",
+    "WP-FF-005-versioned-core-contracts-v1-AC-006",
+    "WP-FF-005-versioned-core-contracts-v1-AC-007"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "wire_schema_and_cross_version_drift",
+      "identity_relationship_and_extension_collision",
+      "framing_allocation_and_malformed_input",
+      "state_transition_cancellation_and_false_completion",
+      "resource_overflow_leak_starvation_and_backpressure",
+      "durable_prefix_recovery_and_archive_reconciliation",
+      "architecture_dependency_and_runtime_claim_boundary"
+    ],
+    "minimum_controls": [
+      "Every public contract has a stable identity, version policy, bounds, typed errors, fixtures, and inventory row.",
+      "Every state transition and durable prefix has executable success, failure, cancellation, restart, and counterfactual proof.",
+      "Every resource dimension uses checked arithmetic and all-or-nothing admission with exact release identity.",
+      "No contract crate contains runtime handles or depends outward on adapters, watcher, governance, or build tooling.",
+      "No prerequisite PASS is reported as product, capability, runtime, packaging, release, or phase progress."
+    ],
+    "plausible_failures": [
+      "A current/current round trip passes while prior readers reject or reinterpret a field.",
+      "An unknown mandatory message kind or incompatible major version is silently accepted.",
+      "A declared frame length causes allocation before the configured maximum is checked.",
+      "Cancellation or an invalid transition leaks a grant or advances a durable prefix.",
+      "Independent resource checks partially acquire capacity and deadlock or exceed a coupled bound.",
+      "A renamed output is reported successful before archive reconciliation.",
+      "Green tests or a generated report are misrepresented as shipped runtime behavior."
+    ]
+  },
+  "execution_decomposition": [
+    "Commit activation, prerequisite classification, completed-research reuse guard, and exact recovery checkpoint.",
+    "Generalize architecture and runtime gates for declared prerequisite product packages without weakening runtime truth.",
+    "Implement versioned contracts and diagnostic envelopes with canonical fixtures and inventory.",
+    "Implement pure transition, resource, byte-credit, durability, and recovery models with deterministic proofs.",
+    "Implement the triggered deep gate and negative/counterfactual fixtures.",
+    "Update the model manual and complete packet evidence.",
+    "Run independent multi-lens adversarial implementation reviews, remediate findings, and rerun all proof."
+  ]
+}

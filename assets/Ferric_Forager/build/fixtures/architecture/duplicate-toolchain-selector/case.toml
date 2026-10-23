@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "duplicate-toolchain-selector"
+mutation = "add_duplicate_toolchain_selector"
+expected_diagnostic = "FF-ARCH-E-DUPLICATE-TOOLCHAIN"

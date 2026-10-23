@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "source-content-fingerprint"
+mutation = "source_content_fingerprint"
+expected_diagnostic = "FF-COMP-E-REPLAY-REPORT-SOURCE-STALE"

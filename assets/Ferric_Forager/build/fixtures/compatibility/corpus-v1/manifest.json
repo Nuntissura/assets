@@ -1,0 +1,99 @@
+{
+  "schema_id": "ff.compatibility-corpus@1",
+  "schema_version": "1.0.0",
+  "corpus_id": "ff-ytdlp-2026.07.04-corpus-v1",
+  "profile_id": "yt-dlp-2026.07.04-profile-v1",
+  "normalization_versions": [
+    "ff-normalization-v1"
+  ],
+  "shard_algorithm": "sha256-stable-id-mod-v1",
+  "shard_count": 4,
+  "planes": [
+    "archive",
+    "failure",
+    "filesystem_process_artifact",
+    "migration",
+    "normalized_observation",
+    "sanitized_network_transcript",
+    "source_graph"
+  ],
+  "cases": [
+    {
+      "id": "case-archive-duplicate-v1",
+      "plane": "archive",
+      "deterministic": true,
+      "network_allowed": false,
+      "normalization_version": "ff-normalization-v1",
+      "fixture": "build/fixtures/compatibility/cases/case-archive-duplicate-v1.json",
+      "fixture_sha256": "fd06d465d44022830778b95e27ee47a46d7ce66f92c1c3c445bf1231a9606ed3",
+      "expected_outcome": "duplicate-history-classification",
+      "shard": 3
+    },
+    {
+      "id": "case-failure-timeout-v1",
+      "plane": "failure",
+      "deterministic": true,
+      "network_allowed": false,
+      "normalization_version": "ff-normalization-v1",
+      "fixture": "build/fixtures/compatibility/cases/case-failure-timeout-v1.json",
+      "fixture_sha256": "29c9686a18a6643c85627e6a992c8703c1906a08725ffb3c932a4f55530786b0",
+      "expected_outcome": "timeout-failure-envelope",
+      "shard": 0
+    },
+    {
+      "id": "case-filesystem-process-artifact-v1",
+      "plane": "filesystem_process_artifact",
+      "deterministic": true,
+      "network_allowed": false,
+      "normalization_version": "ff-normalization-v1",
+      "fixture": "build/fixtures/compatibility/cases/case-filesystem-process-artifact-v1.json",
+      "fixture_sha256": "1e0026228569425f243016f30b6bf913812380b79d23632e9a3c05dc0a838458",
+      "expected_outcome": "normalized-process-artifact",
+      "shard": 1
+    },
+    {
+      "id": "case-migration-config-v1",
+      "plane": "migration",
+      "deterministic": true,
+      "network_allowed": false,
+      "normalization_version": "ff-normalization-v1",
+      "fixture": "build/fixtures/compatibility/cases/case-migration-config-v1.json",
+      "fixture_sha256": "ea6db0260a439feeb2079fbcf9ec505cae898d423ad1c998cc152cb59ca7ec8c",
+      "expected_outcome": "explicit-migration-mapping",
+      "shard": 1
+    },
+    {
+      "id": "case-normalized-observation-v1",
+      "plane": "normalized_observation",
+      "deterministic": true,
+      "network_allowed": false,
+      "normalization_version": "ff-normalization-v1",
+      "fixture": "build/fixtures/compatibility/cases/case-normalized-observation-v1.json",
+      "fixture_sha256": "400997d9f76a1a2ad6c1cc4a7aa06d867a23d63bb17263f954d4d3e1aa0d25b1",
+      "expected_outcome": "stable-normalized-observation",
+      "shard": 1
+    },
+    {
+      "id": "case-sanitized-transcript-v1",
+      "plane": "sanitized_network_transcript",
+      "deterministic": true,
+      "network_allowed": false,
+      "normalization_version": "ff-normalization-v1",
+      "fixture": "build/fixtures/compatibility/cases/case-sanitized-transcript-v1.json",
+      "fixture_sha256": "1283da6c2f3e22e71b18dd5d80b4fcc519d916962dd8e3c1113d4d824790b7bf",
+      "expected_outcome": "sanitized-offline-replay",
+      "shard": 0
+    },
+    {
+      "id": "case-source-graph-direct-v1",
+      "plane": "source_graph",
+      "deterministic": true,
+      "network_allowed": false,
+      "normalization_version": "ff-normalization-v1",
+      "fixture": "build/fixtures/compatibility/cases/case-source-graph-direct-v1.json",
+      "fixture_sha256": "8a2cda5b90f14ca95c93e09f51c510c8f1c8cb4badcd9ff1c690d83e1c9cd254",
+      "expected_outcome": "direct-source-graph-expansion",
+      "shard": 1
+    }
+  ]
+}

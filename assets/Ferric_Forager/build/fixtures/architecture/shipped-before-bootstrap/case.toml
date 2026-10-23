@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "shipped-before-bootstrap"
+mutation = "mark_bootstrap_member_shipped"
+expected_diagnostic = "FF-ARCH-E-SHIPPED-BUILD-TOOLING"

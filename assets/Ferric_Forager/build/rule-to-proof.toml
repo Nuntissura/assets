@@ -1,0 +1,241 @@
+schema_id = "ff.rule_to_proof@1"
+file_id = "FF-GOV-BUILD-RULE-PROOF-001"
+schema_version = "1.0.0"
+
+[[rules]]
+rule_id = "FF-BUILD-036"
+proof_classes = ["graph", "policy"]
+validators = ["workspace-shape"]
+fixture_ids = ["shipped-before-bootstrap"]
+limitations = ["Phase 0 contains no shipped member."]
+
+[[rules]]
+rule_id = "FF-BUILD-037"
+proof_classes = ["policy"]
+validators = ["strict-policy"]
+fixture_ids = ["self-authorized-exception"]
+limitations = []
+
+[[rules]]
+rule_id = "FF-BUILD-038"
+proof_classes = ["graph"]
+validators = ["cargo-metadata"]
+fixture_ids = ["undeclared-member", "forbidden-edge", "cycle"]
+limitations = ["Cargo metadata is graph proof, not runtime proof."]
+
+[[rules]]
+rule_id = "FF-BUILD-039"
+proof_classes = ["graph", "source"]
+validators = ["runtime-boundary"]
+fixture_ids = ["shipped-governance-read"]
+limitations = ["Lexical scanning cannot prove absence of dynamically constructed paths."]
+
+[[rules]]
+rule_id = "FF-BUILD-040"
+proof_classes = ["graph", "policy"]
+validators = ["layer-edges"]
+fixture_ids = ["adapter-edge-without-decision"]
+limitations = []
+
+[[rules]]
+rule_id = "FF-BUILD-041"
+proof_classes = ["graph"]
+validators = ["testkit-boundary"]
+fixture_ids = ["testkit-production-edge"]
+limitations = []
+
+[[rules]]
+rule_id = "FF-BUILD-042"
+proof_classes = ["graph"]
+validators = ["watcher-boundary"]
+fixture_ids = ["watcher-product-edge"]
+limitations = ["Watcher package is absent in Phase 0."]
+
+[[rules]]
+rule_id = "FF-BUILD-043"
+proof_classes = ["runtime_fault", "graph"]
+validators = ["watcher-independence"]
+fixture_ids = ["product-watcher-edge"]
+limitations = ["Runtime-fault proof is NOT_APPLICABLE until the watcher exists."]
+
+[[rules]]
+rule_id = "FF-BUILD-044"
+proof_classes = ["policy"]
+validators = ["split-trigger"]
+fixture_ids = ["missing-split-trigger"]
+limitations = []
+
+[[rules]]
+rule_id = "FF-BUILD-045"
+proof_classes = ["policy"]
+validators = ["split-trigger"]
+fixture_ids = ["missing-split-trigger"]
+limitations = []
+
+[[rules]]
+rule_id = "FF-BUILD-046"
+proof_classes = ["policy", "negative_fixture"]
+validators = ["rule-map-completeness"]
+fixture_ids = ["missing-rule-map", "unknown-rule-map", "missing-fixture-binding"]
+limitations = []
+
+[[rules]]
+rule_id = "FF-BUILD-077"
+proof_classes = ["graph", "source", "artifact"]
+validators = ["three-root-boundary"]
+fixture_ids = ["wrong-root-build-file", "duplicate-toolchain-selector"]
+limitations = ["With zero shipped members this proves repository ownership only; FF-GATE-RUNTIME-001 separately forbids any product-runtime claim."]
+
+[[rules]]
+rule_id = "FF-BUILD-078"
+proof_classes = ["policy", "runtime_observable", "negative_fixture"]
+validators = ["runtime-proof-contract"]
+fixture_ids = ["runtime-scaffold-completion", "runtime-noop-success"]
+limitations = ["No shipped member exists yet; current proof attacks the completion contract without claiming Ferric runtime behavior."]
+
+[[rules]]
+rule_id = "FF-BUILD-079"
+proof_classes = ["policy", "scenario_contract", "negative_fixture"]
+validators = ["runtime-proof-contract"]
+fixture_ids = ["runtime-missing-artifact-identity", "runtime-noop-success"]
+limitations = ["Scenario execution activates with the first shipped product member."]
+
+[[rules]]
+rule_id = "FF-BUILD-080"
+proof_classes = ["artifact", "external_process", "negative_fixture"]
+validators = ["runtime-proof-contract", "runtime-truth-check"]
+fixture_ids = ["runtime-missing-artifact-identity", "runtime-missing-clean-stage", "runtime-stage-collision"]
+limitations = ["Exact staged-artifact execution activates with a product-affecting packet."]
+
+[[rules]]
+rule_id = "FF-BUILD-081"
+proof_classes = ["policy", "external_process", "negative_fixture"]
+validators = ["runtime-proof-contract"]
+fixture_ids = ["runtime-test-only-substitute", "runtime-mock-boundary"]
+limitations = ["Supporting tests remain legal but cannot populate production runtime proof."]
+
+[[rules]]
+rule_id = "FF-BUILD-082"
+proof_classes = ["policy", "runtime_observable", "negative_fixture"]
+validators = ["runtime-proof-contract"]
+fixture_ids = ["runtime-noop-success"]
+limitations = ["Semantic placeholder detection also requires review until shipped paths exist."]
+
+[[rules]]
+rule_id = "FF-BUILD-083"
+proof_classes = ["policy", "runtime_observable", "negative_fixture"]
+validators = ["runtime-proof-contract"]
+fixture_ids = ["runtime-scaffold-completion"]
+limitations = ["Packet scope and runtime scenarios jointly enforce co-delivery."]
+
+[[rules]]
+rule_id = "FF-BUILD-084"
+proof_classes = ["policy", "runtime_observable", "negative_fixture"]
+validators = ["runtime-proof-contract", "runtime-truth-check"]
+fixture_ids = ["runtime-scaffold-completion", "runtime-noop-success"]
+limitations = ["The current repository has no product phase eligible for runtime closure."]
+
+[[rules]]
+rule_id = "FF-BUILD-085"
+proof_classes = ["policy", "external_process", "negative_fixture"]
+validators = ["runtime-proof-contract"]
+fixture_ids = ["runtime-test-only-substitute"]
+limitations = ["Test quality remains separately reviewed; this row prevents tests from replacing artifact execution."]
+
+[[rules]]
+rule_id = "FF-BUILD-086"
+proof_classes = ["artifact", "runtime_observable", "negative_fixture"]
+validators = ["runtime-proof-contract", "runtime-truth-check"]
+fixture_ids = ["runtime-missing-artifact-identity", "runtime-missing-clean-stage", "runtime-stage-collision"]
+limitations = ["Governance-only changes may PASS only with an explicit no-product-change ceiling."]
+
+[[rules]]
+rule_id = "FF-BUILD-087"
+proof_classes = ["counterfactual", "negative_fixture"]
+validators = ["runtime-proof-contract", "runtime-truth-check"]
+fixture_ids = ["runtime-missing-counterfactual"]
+limitations = ["Counterfactual execution mutates observed evidence through the same acceptance oracle."]
+
+[[rules]]
+rule_id = "FF-BUILD-088"
+proof_classes = ["policy", "runtime_observable", "negative_fixture"]
+validators = ["runtime-proof-contract"]
+fixture_ids = ["runtime-scaffold-completion"]
+limitations = ["Reachability review remains necessary for dynamic dispatch paths not observable from source structure."]
+
+[[rules]]
+rule_id = "FF-BUILD-089"
+proof_classes = ["source", "dependency", "process_plan", "negative_fixture"]
+validators = ["product-native-boundary"]
+fixture_ids = ["indirect-oracle-runtime-wrapper", "bundled-companion-solver-asset", "documentation-asset-bypass", "readme-include-bypass", "dynamic-product-process", "include-doc-macro-bypass", "clippy-allow-escape", "product-clippy-guard-missing", "clippy-conf-dir-poison", "cargo-home-poison"]
+limitations = ["Product source rejects yt-dlp-family/Python references, include!/include_bytes!/include_str!, aliases or direct use of std::process::Command, and local disallowed-lint escape text; build implementation, integration-test, fuzz, and benchmark roots additionally reject yt-dlp-family code and executable assets. Compiler-resolved Clippy guards forbid Command aliases, Command::new, include_bytes!, and include_str! while the scanner retains include! and escape coverage. Verification rejects and strips compiler, toolchain, wrapper, lint-flag, and CLIPPY_CONF_DIR overrides. Explicitly invoked compatibility capture remains isolated non-canonical research tooling; canonical gates use committed Ferric-owned data. The future typed FFmpeg/ffprobe process boundary must be explicitly introduced and then re-proven through a shipped entrypoint."]
+
+[[rules]]
+rule_id = "FF-BUILD-090"
+proof_classes = ["structural", "semantic", "integration", "negative_fixture"]
+validators = ["compatibility-semantic-replay", "ffmpeg-supervision-report-consumer"]
+fixture_ids = ["structural-replay-behavioral-pass", "source-content-fingerprint"]
+limitations = ["Compatibility replay executes native Rust fixture semantics but does not prove a future shipped Ferric entrypoint or yt-dlp replacement parity. Freshness binds HEAD, dirty paths, and a deterministic fingerprint of tracked and untracked source contents. The FFmpeg consumer classifies accepted Windows/Linux-native platform reports as integration evidence only and never as ff.runtime-proof@1 or production-runtime proof."]
+
+[[rules]]
+rule_id = "FF-BUILD-091"
+proof_classes = ["semantic", "counterfactual", "integration", "negative_fixture"]
+validators = ["public-boundary-counterexample", "ffmpeg-supervision-report-consumer"]
+fixture_ids = ["declaration-only-proof"]
+limitations = ["Public-boundary counterexamples currently prove prerequisite contracts, not production runtime behavior. The FFmpeg report consumer rejects declaration-preserving behavior mutations, but trusts no producer digest as the canonical fixture oracle."]
+
+[[rules]]
+rule_id = "FF-BUILD-092"
+proof_classes = ["state_effect", "counterfactual", "negative_fixture"]
+validators = ["effect-acknowledgement-boundary"]
+fixture_ids = ["effect-acknowledgement-subset"]
+limitations = ["The state machine is a prerequisite model; future process and filesystem adapters must re-prove acknowledgement delivery through a shipped entrypoint."]
+
+[[rules]]
+rule_id = "FF-BUILD-093"
+proof_classes = ["wire_boundary", "counterfactual", "negative_fixture"]
+validators = ["schema-transition-authority"]
+fixture_ids = ["unrelated-schema-transition"]
+limitations = ["No non-exact schema transition is authorized in the shipped registry; a future exact reviewed transition must be added and behavior-tested before any drift can be accepted."]
+
+[[rules]]
+rule_id = "FF-BUILD-094"
+proof_classes = ["wire_boundary", "counterfactual", "negative_fixture"]
+validators = ["wire-boundary"]
+fixture_ids = ["wire-zero-or-unknown-field", "sequence-zero-replay", "durable-journal-payload-unknown-field", "durable-journal-record-unknown-field", "durable-reconcile-state-unknown-field", "durable-journal-sequence-zero"]
+limitations = ["Current fixtures cover registered diagnostic and durable storage contract boundaries; future durable DTOs must add their own public-boundary counterfactual."]
+
+[[rules]]
+rule_id = "FF-BUILD-095"
+proof_classes = ["graph", "counterfactual", "negative_fixture"]
+validators = ["source-graph-cycle-boundary"]
+fixture_ids = ["source-graph-cycle"]
+limitations = ["Cycle rejection proves bounded graph validation; adapter traversal remains future runtime proof."]
+
+[[rules]]
+rule_id = "FF-BUILD-096"
+proof_classes = ["public_boundary", "counterfactual", "negative_fixture"]
+validators = ["finding-regression-boundary"]
+fixture_ids = ["counterexample-not-public-boundary", "remove-public-boundary-counterexample-test", "receipt-only-public-counterexample-test"]
+limitations = ["Regression fixtures prove the corrected public prerequisite boundary, not shipped product completion."]
+
+[[rules]]
+rule_id = "FF-BUILD-097"
+proof_classes = ["semantic", "integration", "negative_fixture"]
+validators = ["behavior-sensitive-proof-map", "ffmpeg-supervision-report-consumer"]
+fixture_ids = ["proof-map-string-only", "proof-map-behavior-stub", "proof-map-constant-tautology"]
+limitations = ["Proof routing metadata is non-proof; each inventory proof ID must resolve through cargo test --list and execute as an exact non-ignored test in verify-deep. The gate rejects obvious neutralized bodies and literal-only assertion tautologies before execution; the isolated ItemId counterfactual proves that a mapped stub cannot replace independent public behavior evidence, but it does not claim one mutation probe covers every mapped contract invariant or that arbitrary semantic relevance can be decided statically. WP-FF-010 closure must separately execute ffmpeg-supervision-aggregate against same-source Windows and Linux-native reports."]
+
+[[rules]]
+rule_id = "FF-BUILD-098"
+proof_classes = ["structural", "semantic", "integration", "production_runtime", "negative_fixture"]
+validators = ["proof-class-aggregation", "ffmpeg-supervision-report-consumer"]
+fixture_ids = ["proof-class-promotion", "gate-report-runtime-claim"]
+limitations = ["Aggregation reports the weakest executed class and cannot upgrade prerequisite evidence into runtime proof. The FFmpeg consumer emits only integration evidence and explicitly excludes product, capability, packaging, release, phase, and production-runtime completion."]
+
+[[rules]]
+rule_id = "FF-BUILD-099"
+proof_classes = ["counterfactual", "integration", "negative_fixture"]
+validators = ["credential-snapshot-boundary"]
+fixture_ids = ["secret-scan-provider-key"]
+limitations = ["Provider-prefix matching cannot prove absence of every unknown or unstructured secret; GitHub push protection remains an independent remote control."]

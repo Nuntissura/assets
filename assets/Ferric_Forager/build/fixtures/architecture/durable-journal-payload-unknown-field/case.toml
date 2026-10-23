@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "durable-journal-payload-unknown-field"
+mutation = "durable_journal_payload_unknown_field"
+expected_diagnostic = "FF-ARCH-E-WIRE-BOUNDARY"

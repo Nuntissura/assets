@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "bundled-companion-solver-asset"
+mutation = "bundle_companion_solver_asset"
+expected_diagnostic = "FF-ARCH-E-FERRIC-YTDLP-DEPENDENCY"

@@ -1,0 +1,505 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-004-compatibility-inventory-corpus-v1",
+    "base_wp_id": "WP-FF-004-compatibility-inventory-corpus",
+    "version": "1",
+    "title": "Generate the pinned compatibility inventory and executable oracle corpus",
+    "created_at_utc": "2026-07-18T21:12:21Z",
+    "updated_at_utc": "2026-07-19T13:46:47Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator explicitly instructed Codex to proceed and activate WP-FF-004 after WP-FF-003 v2 was implemented, validated, and hardened.",
+    "recorded_at_utc": "2026-07-19T12:31:56Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#71-baseline-release",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#202-compatibility-objective",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#204-compatibility-report",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#262-differential-test-harness",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#263-recorded-network-fixtures",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0a--compatibility-inventory-and-executable-oracle",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#296-reference-project-comparison-policy",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#316-compatibility",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "91404decb77599c0491084627b7ef97c96bfb9b5",
+    "work_branch": "codex/compatibility-inventory-corpus",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/compatibility-inventory-corpus",
+      "head_sha": "74c246544cdb5d41b070d51bb8cdc84af20ec736",
+      "verified_at_utc": "2026-07-19T13:46:47Z"
+    },
+    "closure_commit": "ca6f41f28870a9a3ec355840487f1bf3e3fc8928",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "44741f452801a72b769f816aed6703866e91f815"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "Await Operator activation of a later work packet; WP-FF-005 and later packets remain non-authorizing stubs.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Create a generated, versioned yt-dlp 2026.07.04 compatibility profile and executable oracle corpus that enumerates behavior and provides deterministic comparison planes without making yt-dlp or Python a production dependency.",
+    "in_scope": [
+      "Generate option, alias, configuration, default, preset, interaction, extractor, and URL-class inventories from the pinned yt-dlp 2026.07.04 oracle.",
+      "Define separate Ferric-native semantics and yt-dlp compatibility-profile semantics so neither silently redefines the other.",
+      "Version source-graph, normalized result, sanitized network-transcript, filesystem/process artifact, error, archive, and migration oracle planes.",
+      "Create representative mandatory deterministic corpus partitions plus an explicitly opt-in live-canary policy.",
+      "Record normalization versions, provenance, artifact hashes, expected outcomes, intentional divergences, nondeterminism controls, and secret sanitization.",
+      "Implement machine-readable inventory/corpus validation and differential reporting through the accepted WP-003 tooling surface.",
+      "Update the Phase 0 no-context model manual with the implemented generation, replay, comparison, and recovery commands."
+    ],
+    "non_goals": [
+      "Production Python or yt-dlp execution.",
+      "Claiming full replacement parity before every mandatory row passes or has an explicit accepted divergence.",
+      "Implementing Ferric extractors, transport fingerprints, JavaScript execution, archive storage, or broad CLI compatibility.",
+      "Treating live network results as deterministic corpus proof.",
+      "Silently narrowing the final extractor, protocol, collection, archive, metadata, sink, or compatibility scope."
+    ],
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/packet.json",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/refinement.json",
+      "build/Cargo.toml",
+      "build/Cargo.lock",
+      "build/architecture-policy.toml",
+      "build/tooling-policy.toml",
+      "build/rule-to-proof.toml",
+      "build/tools/fforager-xtask/",
+      "product/crates/fforager-contracts/",
+      "build/crates/fforager-testkit/",
+      "build/fixtures/",
+      "build/integration-tests/",
+      "build/reports/",
+      "build/target/",
+      "product/MODEL_MANUAL.md"
+    ],
+    "dependencies": [
+      "WP-FF-003-executable-gate-bootstrap-v2 VALIDATED with verified main containment",
+      "Pinned yt-dlp 2026.07.04 source and executable oracle",
+      "Accepted WP-003 architecture, tooling, report, and negative-fixture conventions",
+      "FF-GATE-ARCH-001 and FF-GATE-PR-001"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v1-AC-001",
+      "requirement": "A generator produces a versioned machine-readable profile for yt-dlp 2026.07.04 covering options, aliases, config/default/preset interactions, extractor descriptors, and URL classes, with pinned provenance and deterministic regeneration proof.",
+      "status": "PASS",
+      "evidence": [
+        "build/fixtures/compatibility/yt-dlp-2026.07.04/oracle-manifest.json",
+        "build/fixtures/compatibility/yt-dlp-2026.07.04/profile.json",
+        "Two independent pinned-oracle generations produced byte-identical profile SHA-256 f64d65c1c24bece65a641d4e305710a9760de3367f7f7f83bbac5f67fb79f55c with 250 option rows, five presets, six source-grounded interactions, 1751 extractor/URL-class rows, and 1594 unique descriptions."
+      ]
+    },
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v1-AC-002",
+      "requirement": "A versioned mandatory corpus manifest covers source graph, normalized observation, sanitized transcript, artifact, failure, archive, and migration planes; each case has a stable ID, oracle identity, normalization version, expected result, and deterministic/live classification.",
+      "status": "PASS",
+      "evidence": [
+        "build/fixtures/compatibility/corpus-v1/manifest.json",
+        "build/reports/compatibility-replay-1784468577013338100-661108.json",
+        "The clean-source offline replay selected all seven required deterministic planes with network_access=false; stable zero-based shard assignments were separately replayed as 2/4/0/1 cases."
+      ]
+    },
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v1-AC-003",
+      "requirement": "Executable validation rejects missing inventory rows, duplicate or unstable IDs, unsanitized secret fixtures, unpinned oracle inputs, unknown normalization versions, and deterministic cases that depend on live network state.",
+      "status": "PASS",
+      "evidence": [
+        "build/fixtures/compatibility/negative/",
+        "build/reports/compatibility-validate-1784468576165129500-653984.json",
+        "The clean-source validator passed 12 exact production-linked mutations, including unpinned artifact/command, missing/duplicate/unstable inventory, sanitizer, normalization, deterministic-network, shard, candidate-digest, and accepted-divergence decision failures."
+      ]
+    },
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v1-AC-004",
+      "requirement": "Differential reporting classifies each observed difference as Ferric defect, accepted baseline correction, nondeterministic response, accepted divergence with stable decision ID, or missing feature; no silent omission counts as pass.",
+      "status": "PASS",
+      "evidence": [
+        "build/reports/compatibility-diff-1784468577852020900-661548.json",
+        "build/reports/compatibility-inventory-diff-1784468579152468100-647020.json",
+        "The empty candidate produced exactly seven explicit missing_feature rows; accepted divergence without a stable decision ID and invalid observation digests fail closed; report output states that completeness is not Ferric parity."
+      ]
+    },
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v1-AC-005",
+      "requirement": "The canonical architecture and PR gates pass on the pinned toolchain, and packet-specific corpus checks emit a machine-readable report linked to these acceptance IDs.",
+      "status": "PASS",
+      "evidence": [
+        "build/reports/architecture-check-1784468643263715300-637432.json",
+        "build/reports/verify-pr-1784468566986366700-641512.json",
+        "build/reports/compatibility-validate-1784468576165129500-653984.json",
+        "Both canonical gates and packet-specific validation passed from clean closure commit ca6f41f28870a9a3ec355840487f1bf3e3fc8928."
+      ]
+    },
+    {
+      "id": "WP-FF-004-compatibility-inventory-corpus-v1-AC-006",
+      "requirement": "The Phase 0 model manual explains generation, offline replay, opt-in live canaries, inputs, outputs, sanitization, failure recovery, and the rule that corpus evidence is not a parity claim by itself.",
+      "status": "PASS",
+      "evidence": [
+        "product/MODEL_MANUAL.md#phase-0-compatibility-oracle",
+        "product/MODEL_MANUAL.md#phase-0-compatibility-comparison",
+        "The manual gives repository-relative commands, inputs, outputs, deterministic normalization, sanitization, shard behavior, classifications, explicit live opt-in, proof ceilings, and diagnostic recovery."
+      ]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-19T13:46:47Z",
+      "branch": "main",
+      "base_sha": "91404decb77599c0491084627b7ef97c96bfb9b5",
+      "head_sha": "44741f452801a72b769f816aed6703866e91f815",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/packet.json"
+      ],
+      "checks_run": [
+        "git branch --show-current: codex/compatibility-inventory-corpus",
+        "git rev-parse HEAD: 91404decb77599c0491084627b7ef97c96bfb9b5",
+        "git merge-base main HEAD: 91404decb77599c0491084627b7ef97c96bfb9b5",
+        "git status --porcelain=v2 --branch: clean main at activation baseline before state edits",
+        "WP-FF-003-executable-gate-bootstrap-v2 lifecycle.status: VALIDATED; main_containment_status: VERIFIED",
+        "FF-GATE-ARCH-001 initial activation probe: expected FAIL because the active EXPANDED packet did not yet declare its required refinement input; report build/reports/architecture-check-1784464413976488500-655308.json",
+        "FF-GATE-ARCH-001 after linking substantive refinement: PASS; report build/reports/architecture-check-1784464607934492900-651580.json",
+        "Final activation FF-GATE-ARCH-001 after checkpoint-state update: PASS; report build/reports/architecture-check-1784464663149698900-651004.json",
+        "Activation checkpoint commit: e62e60240f5fd09783f81df015775ac07d1c3096",
+        "Remote backup verified: origin/codex/compatibility-inventory-corpus contains e62e60240f5fd09783f81df015775ac07d1c3096",
+        "Pinned oracle verification: immutable release 2026.07.04, tag fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9, release source head 997fa140840a08df3938b40da470c78049fef1f6, yt-dlp.exe SHA-256 52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8",
+        "Official oracle surfaces captured successfully: 895 help lines, 277 unique long-option spellings, 1752 extractor rows with 1751 unique strings and one exact generic duplicate, 1595 description rows",
+        "Implementation checkpoint commit: 30f33287e75167203609acaef812f85815697756",
+        "Deterministic profile regeneration: PASS with identical SHA-256 f64d65c1c24bece65a641d4e305710a9760de3367f7f7f83bbac5f67fb79f55c",
+        "Compatibility validation: PASS with 250 options, 1751 extractors, seven planes, and 12 exact negative mutations",
+        "Independent HIGH-risk audit: one sanitizer suffix bypass found, remediated, and regression-tested; exact raw alias/extractor sets and pinned source/artifact boundary independently matched",
+        "Full Rust test suite: PASS, 28 tests; warnings-denied Clippy: PASS; FF-GATE-ARCH-001: PASS",
+        "Inventory-diff provenance hardening commit: ca6f41f28870a9a3ec355840487f1bf3e3fc8928",
+        "Final clean-source FF-GATE-PR-001 PASS: build/reports/verify-pr-1784468566986366700-641512.json",
+        "Final clean-source FF-GATE-ARCH-001 PASS: build/reports/architecture-check-1784468643263715300-637432.json",
+        "Final clean-source compatibility validation/replay/diff reports all bind to closure commit ca6f41f28870a9a3ec355840487f1bf3e3fc8928",
+        "Merge commit: 44741f452801a72b769f816aed6703866e91f815 with parents 91404decb77599c0491084627b7ef97c96bfb9b5 and 74c246544cdb5d41b070d51bb8cdc84af20ec736",
+        "git merge-base --is-ancestor ca6f41f28870a9a3ec355840487f1bf3e3fc8928 main: exit 0",
+        "git merge-base --is-ancestor 74c246544cdb5d41b070d51bb8cdc84af20ec736 main: exit 0"
+      ],
+      "blockers": [],
+      "next_action": "Commit the VALIDATED containment record on main, rerun the architecture gate, and push main."
+    }
+  },
+  "validation": {
+    "checks": [
+      "Activation FF-GATE-ARCH-001 PASS: build/reports/architecture-check-1784464663149698900-651004.json",
+      "Current research and pinned yt-dlp 2026.07.04 source/executable identity verification recorded in refinement.json",
+      "Implementation checkpoint 30f33287e75167203609acaef812f85815697756 contains the generator, profile, corpus, negative fixtures, replay/diff/live commands, and model manual",
+      "Deterministic regeneration, compatibility validation, full and sharded replay, differential completeness, independent oracle-set comparison, warnings-denied Clippy, and 28 tests: PASS",
+      "Final clean-source FF-GATE-ARCH-001: PASS at build/reports/architecture-check-1784468643263715300-637432.json",
+      "Final clean-source FF-GATE-PR-001: PASS at build/reports/verify-pr-1784468566986366700-641512.json",
+      "All six acceptance rows are PASS.",
+      "Closure commit ca6f41f28870a9a3ec355840487f1bf3e3fc8928 and MERGE_PENDING evidence commit 74c246544cdb5d41b070d51bb8cdc84af20ec736 are mechanically contained in main merge commit 44741f452801a72b769f816aed6703866e91f815."
+    ],
+    "not_proven": [
+      "Any Ferric feature behavior or parity",
+      "Exhaustive behavioral coverage for every inventory row and interaction combination",
+      "Cross-host oracle regeneration equivalence",
+      "Live-site stability or deterministic live-network behavior"
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v1/refinement.json",
+    "repository_layout": {
+      "governance_root": ".GOV/",
+      "product_root": "product/",
+      "product_owns": ["shipped runtime code", "product apps", "product assets", "independent watcher", "product-package-local tests", "MODEL_MANUAL.md"],
+      "build_root": "build/",
+      "build_owns": ["Cargo workspace and lockfile", "architecture/tooling/rule-to-proof policies", "non-shipped xtask and testkit", "shared fixtures", "cross-package integration tests", "fuzz targets", "benchmarks", "generated reports", "Cargo target output"],
+      "toolchain_selector": "rust-toolchain.toml",
+      "canonical_manifest": "build/Cargo.toml",
+      "canonical_command_prefix": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask --",
+      "runtime_boundary": "Shipped product execution must require neither .GOV/ nor build/."
+    },
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-031",
+        "FF-BUILD-034",
+        "FF-BUILD-035",
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-047",
+        "FF-BUILD-048",
+        "FF-BUILD-049",
+        "FF-BUILD-050",
+        "FF-BUILD-051",
+        "FF-BUILD-052",
+        "FF-BUILD-054",
+        "FF-BUILD-055",
+        "FF-BUILD-056",
+        "FF-BUILD-057",
+        "FF-BUILD-058",
+        "FF-BUILD-059",
+        "FF-BUILD-060",
+        "FF-BUILD-064",
+        "FF-BUILD-066",
+        "FF-BUILD-067",
+        "FF-BUILD-077"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-001",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-002",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-003",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-004",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-005",
+        "WP-FF-004-compatibility-inventory-corpus-v1-AC-006"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Generate a deterministic pinned yt-dlp 2026.07.04 compatibility profile with stable option, preset, interaction, extractor, description, and URL-class inventories.",
+          "Provide a versioned seven-plane offline corpus with stable IDs, hashes, normalization, expected outcomes, and deterministic shard assignments.",
+          "Fail closed on unpinned inputs, inventory omissions, duplicate or unstable IDs, unsafe normalization, network-coupled deterministic cases, secrets, and invalid differential rows.",
+          "Keep Python and yt-dlp outside shipped product execution while providing explicit no-context generation, replay, diff, recovery, and opt-in live observation workflows.",
+          "Emit truthful machine-readable reports that distinguish report completeness from Ferric parity."
+        ],
+        "risk_cases": [
+          "A mutable or locally modified executable/source tree is accepted as the pinned oracle.",
+          "Help parsing mistakes an option reference in wrapped description text for a new option or silently omits an alias.",
+          "Locale bytes, randomized descriptions, line endings, current time, paths, or live responses make regeneration nondeterministic.",
+          "A credential placeholder accepts a secret suffix or a committed fixture leaks authorization, cookies, query tokens, or machine-local paths.",
+          "Shard selection silently reassigns cases under a caller-supplied total or rejects a legitimate empty deterministic shard.",
+          "A differential report omits missing cases or reports command success as feature parity."
+        ]
+      },
+      "review_gates": {
+        "scope_and_risk_coverage": "PASS: the authority matrix, direct diff review, exact oracle-set comparison, 12 production-linked negative mutations, shard boundaries, sanitizer attack strings, live opt-in guard, and report-shape inspection cover the declared WP-FF-004 risk surface.",
+        "reuse_deletion_dependency_simplification": "PASS: the implementation reuses the accepted WP-003 xtask, bounded process capture, atomic report, source-state, SHA-256, strict Serde, Cargo, and manual surfaces; it adds no dependency, shipped crate, Python runtime, or parallel validation framework.",
+        "post_simplification_complete_rerun": "PASS: formatting, warnings-denied Clippy, 28 tests, compatibility validation, deterministic regeneration, replay and diff boundaries, and architecture-check are green after the sanitizer hardening; verify-pr remains the final aggregate command."
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "rejected because a prose inventory cannot prove pinned regeneration, fail-closed coverage, sanitizer behavior, or executable differential completeness"
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "selected the WP-003 xtask command router, bounded child capture, atomic JSON reports, source attribution, SHA-256 helper, strict schema conventions, and canonical gates"
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "selected deterministic BTree collections, strict path containment, stable SHA-based sharding, Windows-1252 decoding, atomic files, and bounded durations"
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "selected the pinned official Windows oracle executable, immutable Git tag checkout, Git identity checks, and repository-local Cargo execution without foreground windows"
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "selected existing serde, serde_json, and sha2 only; no new dependency or production runtime dependency was necessary"
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "selected one non-shipped compatibility module plus versioned JSON manifests, fixtures, reports, and two model-manual topics; no product crate or external service was added"
+        }
+      ],
+      "artifact_specific_justification": {
+        "cargo_workspace": "The existing locked non-shipped workspace hosts the compatibility command without adding a product or dependency surface.",
+        "xtask": "Generation, provenance checks, replay, sanitization, differential classification, live opt-in, and atomic reporting require one executable fail-closed implementation.",
+        "architecture_policy": "The accepted WP-003 architecture policy remains unchanged and proves the new module stays in non-shipped build tooling.",
+        "tooling_policy": "The accepted pinned host/tool policy remains unchanged and governs all canonical validation commands.",
+        "rule_to_proof": "The accepted architecture proof map remains unchanged and is rerun to guard runtime boundaries and repository topology.",
+        "negative_fixtures": "Twelve production-linked mutations prove exact rejection of inventory, identity, sanitizer, normalization, network, shard, candidate, and divergence failures.",
+        "model_manual": "A no-context model needs exact generation, validation, replay, diff, live opt-in, limitations, inputs, outputs, and recovery commands."
+      },
+      "pre_simplification_verdict": "PASS: the required implementation belongs in existing non-shipped WP-003 tooling and versioned fixtures; introducing a service, database, product crate, Python dependency, or separate schema framework would add unjustified complexity.",
+      "simplification_changes": [
+        "Reused WP-003 command capture by exposing its byte layer while preserving UTF-8 behavior for every existing caller.",
+        "Collapsed the pinned extractor duplicate deterministically while retaining source_occurrences instead of inventing duplicate identities.",
+        "Separated mandatory offline proof from live canaries, requiring --enable-live and labeling every live result OBSERVED with deterministic_proof=false.",
+        "Normalized only the upstream source-confirmed randomized search examples and kept all other oracle text intact.",
+        "Kept compatibility reporting and inventory diffing in one non-shipped Rust module with no new Cargo dependency."
+      ],
+      "post_simplification_verdict": "PASS: the resulting implementation has one generator/validator/replay/diff surface, strict versioned JSON inputs, deterministic normalization, explicit limitations, and no shipped runtime expansion while preserving every WP-FF-004 acceptance requirement.",
+      "complete_post_change_verification": [
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check: PASS",
+        "cargo clippy --manifest-path build/Cargo.toml --locked -p fforager-xtask --all-targets -- -D warnings: PASS",
+        "cargo test --manifest-path build/Cargo.toml --locked -p fforager-xtask: PASS, 28 tests",
+        "compatibility-generate canonical and build/target regeneration: PASS, byte-identical SHA-256 f64d65c1c24bece65a641d4e305710a9760de3367f7f7f83bbac5f67fb79f55c",
+        "compatibility-validate: PASS, 250 option rows, 1751 unique extractor rows, seven cases, and 12 exact negative mutations",
+        "compatibility-replay full plus shards 0/4 through 3/4: PASS, exact 2/4/0/1 case partition and no network access",
+        "compatibility-diff with empty candidate: PASS for completeness, seven explicit missing_feature rows and no parity claim",
+        "Independent oracle comparison: PASS, all 280 option aliases and all 1751 extractor keys plus source occurrences match the raw pinned executable captures",
+        "Pinned boundary comparison: PASS, clean source tag fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9 and executable SHA-256 52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8",
+        "Wrong shard total, absolute candidate path, missing live opt-in, invalid digest, and placeholder-secret suffix probes: PASS by precise rejection",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check: PASS"
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-004-compatibility-inventory-corpus-v1-CEILING-001",
+        "current_ceiling": "The generated inventory and seven representative offline planes establish an executable oracle foundation; they do not prove Ferric feature parity, exhaustive extractor behavior, cross-host oracle generation, or live-site stability.",
+        "replacement_trigger": "Ferric implementation of a compatibility row, a new pinned yt-dlp baseline, supported-host expansion, or a corpus coverage expansion activates candidate observations, versioned inventory diffing, and additional oracle fixtures.",
+        "likely_upgrade_path": "Add Ferric candidate result producers and more deterministic cases under the same stable IDs, normalization versioning, differential classifications, and strict report protocol; version the profile when the oracle changes.",
+        "trigger_detection_method": "Candidate manifests, profile IDs, corpus coverage planes, supported host policy, active work-packet acceptance, and inventory diff reports are checked fail closed.",
+        "linked_evidence": [
+          "build/tools/fforager-xtask/src/compatibility.rs",
+          "build/fixtures/compatibility/yt-dlp-2026.07.04/oracle-manifest.json",
+          "build/fixtures/compatibility/yt-dlp-2026.07.04/profile.json",
+          "build/fixtures/compatibility/corpus-v1/manifest.json",
+          "build/fixtures/compatibility/negative/",
+          "product/MODEL_MANUAL.md"
+        ]
+      },
+      "independent_findings": [
+        "REMEDIATED HIGH: redirected official Windows oracle output used CP-1252 despite UTF-8 controls; strict oracle-only Windows-1252 decoding now preserves non-ASCII extractor identities while all existing command consumers remain UTF-8-only.",
+        "REMEDIATED HIGH: wrapped help descriptions beginning with an option reference were misparsed as duplicate option rows; only exact option-column indentation now begins a row and a focused regression test covers the boundary.",
+        "REMEDIATED HIGH: upstream extractor descriptions randomize search examples; the pinned source-confirmed random fragment is normalized before hashing and two independent generations are byte-identical.",
+        "REMEDIATED HIGH: sanitizer assignment matching accepted a secret suffix after an allowlisted placeholder; placeholder grammar and post-placeholder boundaries are now strict and regression-tested.",
+        "REMEDIATED MEDIUM: caller-selected shard totals could reassign cases and a legitimate empty shard failed; replay now requires the manifest shard_count, selects stored assignments, and accepts the valid empty partition.",
+        "REMEDIATED MEDIUM: the first inventory-diff report omitted source state, input hashes, status, and proof limitations; the report now carries the same attributable fail-closed envelope data required of other WP-004 outputs.",
+        "PASS INDEPENDENT: raw oracle capture comparison found exact parity for 280 option aliases, 1751 unique extractor keys, and duplicate occurrence counts.",
+        "PASS INDEPENDENT: direct Git and artifact inspection found the source checkout clean at the pinned tag commit and the executable hash exact."
+      ],
+      "residual_uncertainty": [
+        "The representative seven-case corpus proves each required plane is executable, not that every yt-dlp option, extractor, interaction, protocol, or failure branch has a case.",
+        "Oracle generation is proven on the pinned x86_64 Windows executable; another supported oracle artifact would need its own encoding and artifact proof before claiming equivalent regeneration.",
+        "Live canaries remain subject to anti-bot controls, rate limits, site drift, and network failure; their OBSERVED reports are intentionally excluded from deterministic acceptance.",
+        "The generated interaction rows are pinned source-grounded contract summaries rather than an exhaustive dynamic enumeration of every cross-option state combination."
+      ]
+    },
+    "stub_implementation_brief": {
+      "base_scope": "Produce the Phase 0A compatibility inventory and executable oracle foundation required to measure native Ferric behavior against the pinned yt-dlp baseline.",
+      "readiness_matrix_links": {
+        "path": ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json",
+        "phase": "Phase 0",
+        "consensus_blocker_ids": ["SYN-002", "SYN-009"],
+        "implementation_readiness_gate_items": [
+          "Generated versioned yt-dlp compatibility profile and mandatory corpus",
+          "Executable phase gates with machine-readable reports",
+          "No-context model manual, structured diagnostics, stable identifiers, and parallel-agent-safe receipts"
+        ],
+        "peer_question_numbers": [1, 13, 14]
+      },
+      "promotion_requirements": [
+        "Verify the exact yt-dlp 2026.07.04 source/artifact identity and generator inputs against current primary sources and pinned repository evidence.",
+        "Inspect WP-003 outputs and use its accepted report schemas, fixture layout, validator command conventions, and architecture policy instead of creating parallel infrastructure.",
+        "Record current research sources, inspected upstream implementation paths, selected and rejected generation approaches, sanitization threats, corpus sampling rationale, and validation plan.",
+        "Replace proposed output paths or command names only where the validated WP-003 topology requires it; update allowed_paths before implementation."
+      ],
+      "planned_outputs": [
+        "Versioned compatibility-profile manifest and schemas",
+        "Generated option/config/default/interaction inventory",
+        "Generated extractor and URL-class inventory",
+        "Versioned mandatory corpus manifest with stable case IDs",
+        "Sanitized deterministic fixtures and opt-in live-canary manifest",
+        "Machine-readable corpus validation and differential reports",
+        "No-context operating instructions"
+      ],
+      "high_roi_additions": [
+        {
+          "addition": "Generate inventory-diff reports between pinned profile versions.",
+          "why_high_roi": "The same parser and stable IDs already required for generation can expose added, removed, and changed behavior cheaply.",
+          "gap_or_risk_closed": "Prevents silent compatibility drift and makes future yt-dlp baseline updates reviewable.",
+          "reuse": "WP-003 report envelope, profile generator, stable IDs, and corpus manifest.",
+          "verification": "Mutation fixture adds/removes/changes one upstream row and the diff report must identify it exactly."
+        },
+        {
+          "addition": "Add a sanitizer validator with secret canaries and allowlisted normalized tokens.",
+          "why_high_roi": "Sanitized transcripts are already required; testing the sanitizer while fixtures are built avoids later corpus rewrites and leakage.",
+          "gap_or_risk_closed": "Prevents credentials, cookies, tokens, and machine-local data from entering committed fixtures or reports.",
+          "reuse": "Transcript normalization pipeline and negative-fixture convention from WP-003.",
+          "verification": "Seed representative secret forms and prove validation fails before any fixture is accepted."
+        },
+        {
+          "addition": "Shard corpus manifests by stable case ID with deterministic merge receipts.",
+          "why_high_roi": "Partition metadata is cheap when stable IDs are first defined and enables parallel models to generate or replay disjoint cases safely.",
+          "gap_or_risk_closed": "Reduces merge conflicts, duplicate work, and untraceable partial corpus results.",
+          "reuse": "Stable case IDs, machine-readable reports, and packet/Git recovery conventions.",
+          "verification": "Two disjoint shard reports merge deterministically; overlap, missing shards, and mismatched corpus versions fail."
+        },
+        {
+          "addition": "Keep deterministic offline corpus and opt-in live canaries as mechanically separate suites.",
+          "why_high_roi": "The classification is already required in every case and makes CI reliable without losing current-site signal.",
+          "gap_or_risk_closed": "Prevents network nondeterminism from masquerading as regression proof or blocking ordinary development.",
+          "reuse": "Corpus manifest classification and WP-003 gate selection.",
+          "verification": "Default checks prove no live network access; an explicit live command emits a distinct non-deterministic report."
+        }
+      ],
+      "existing_systems_to_reuse": [
+        "WP-003 fforager-xtask command/report framework",
+        "WP-003 architecture policy, rule-to-proof map, and negative fixtures",
+        "yt-dlp 2026.07.04 pinned behavioral oracle",
+        "Technical design Sections 20, 26, 29, and 31 compatibility classifications",
+        "Cargo-locked Rust workspace and testkit"
+      ],
+      "gaps_closed": [
+        "Compatibility target becomes enumerable rather than aspirational.",
+        "Oracle comparison becomes executable and versioned.",
+        "Nondeterminism, accepted divergence, and missing behavior become explicit machine states.",
+        "Future extractors and spikes receive reusable cases instead of inventing ad hoc fixtures."
+      ],
+      "risk_scenarios": [
+        {
+          "risk": "Inventory generator silently misses dynamically registered or interaction-dependent behavior.",
+          "failure_scenario": "The profile reports complete coverage while a pinned option, extractor, default interaction, or URL class is absent.",
+          "mitigation_and_hardening": "Combine source-level enumeration, runtime help/config inspection, independent counts, collision reports, and mutation fixtures; missing rows fail closed.",
+          "verification_needed": "Cross-check generated counts and stable IDs against at least two independent pinned upstream surfaces and remove one known row to prove failure."
+        },
+        {
+          "risk": "Corpus overfits a narrow happy path.",
+          "failure_scenario": "Mandatory cases pass while redirects, failure semantics, artifacts, archive behavior, or config interactions remain untested.",
+          "mitigation_and_hardening": "Use explicit plane and behavior-dimension coverage matrices; require each mandatory row to map to cases or a recorded gap.",
+          "verification_needed": "Coverage validator rejects an intentionally uncovered mandatory dimension and reports the exact missing mappings."
+        },
+        {
+          "risk": "Fixtures contain secrets or machine-specific state.",
+          "failure_scenario": "Cookies, tokens, absolute paths, timestamps, or host identifiers are committed and replay becomes unsafe or non-portable.",
+          "mitigation_and_hardening": "Normalize secrets and environmental values to deterministic tokens, scan before write and before commit, and keep credentials/live inputs outside committed artifacts.",
+          "verification_needed": "Secret/path/time canary fixtures must be rejected or normalized identically across supported hosts."
+        },
+        {
+          "risk": "A newer yt-dlp or live response silently replaces the pinned oracle.",
+          "failure_scenario": "Regeneration changes expected behavior without an explicit profile version or review.",
+          "mitigation_and_hardening": "Pin artifact/source identity and hashes in manifests, make network use explicit, and require versioned inventory diffs for baseline changes.",
+          "verification_needed": "Mismatched oracle version/hash and unexpected network access fail before generation or comparison."
+        }
+      ],
+      "verification_needs": [
+        "JSON/schema validation and deterministic regeneration comparison",
+        "Stable-ID uniqueness and coverage mapping",
+        "Secret, absolute-path, clock, randomness, and network negative probes",
+        "Mutation tests for omitted/duplicated/changed inventory rows",
+        "Offline differential replay with classified outcomes",
+        "FF-GATE-ARCH-001 and FF-GATE-PR-001",
+        "Independent adversarial review before closure"
+      ],
+      "no_context_execution_order": [
+        "Read START_HERE.yaml, AGENTS.md, .GOV/codex.yaml, taskboard, this packet, topology, build rules, and only the cited design anchors/readiness items.",
+        "Confirm this packet is active and no longer STUB; confirm WP-003 is VALIDATED and refresh Git checkpoint fields.",
+        "Complete the research-backed refinement and validate the pinned oracle identity.",
+        "Define versioned schemas, stable IDs, coverage dimensions, normalization, sanitization, and deterministic/live partitions before collecting fixtures.",
+        "Implement generators and validators through fforager-xtask, then create corpus cases.",
+        "Run negative probes, deterministic regeneration, differential replay, canonical gates, and independent adversarial validation.",
+        "Update manual and packet proof, commit closure, set MERGE_PENDING only after acceptance, then prove main containment before VALIDATED."
+      ]
+    }
+  }
+}

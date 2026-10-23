@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "cycle"
+mutation = "add_cycle"
+expected_diagnostic = "FF-ARCH-E-CYCLE"

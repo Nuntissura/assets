@@ -1,0 +1,57 @@
+{
+  "schema_id": "ff.resource-scenario@1",
+  "capacity": {
+    "metadata_requests": 2,
+    "media_requests": 3,
+    "memory_bytes": 4096,
+    "disk_read_bytes_in_flight": 2048,
+    "disk_write_bytes_in_flight": 1024,
+    "open_handles": 8,
+    "cpu_light_slots": 4,
+    "cpu_heavy_slots": 2,
+    "javascript_workers": 2,
+    "ffmpeg_processes": 1,
+    "ffmpeg_cpu_threads": 6,
+    "archive_writer_slots": 1,
+    "sink_bytes": 512
+  },
+  "requests": [
+    {
+      "metadata_requests": 2,
+      "media_requests": 3,
+      "memory_bytes": 4096,
+      "disk_read_bytes_in_flight": 2048,
+      "disk_write_bytes_in_flight": 1024,
+      "open_handles": 8,
+      "cpu_light_slots": 4,
+      "cpu_heavy_slots": 2,
+      "javascript_workers": 2,
+      "ffmpeg_processes": 1,
+      "ffmpeg_cpu_threads": 6,
+      "archive_writer_slots": 1,
+      "sink_bytes": 512
+    },
+    {
+      "metadata_requests": 1,
+      "media_requests": 1,
+      "memory_bytes": 1,
+      "disk_read_bytes_in_flight": 1,
+      "disk_write_bytes_in_flight": 1,
+      "open_handles": 1,
+      "cpu_light_slots": 1,
+      "cpu_heavy_slots": 1,
+      "javascript_workers": 1,
+      "ffmpeg_processes": 1,
+      "ffmpeg_cpu_threads": 1,
+      "archive_writer_slots": 1,
+      "sink_bytes": 1
+    }
+  ],
+  "expected": ["admitted", "queued"],
+  "byte_credit": {
+    "capacity": 10,
+    "claim_bytes": 10,
+    "received_before_release": 4,
+    "credited_after_release": 4
+  }
+}

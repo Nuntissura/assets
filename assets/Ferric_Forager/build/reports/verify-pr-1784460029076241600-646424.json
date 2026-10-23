@@ -1,0 +1,492 @@
+{
+  "schema_id": "ff.gate-report@1",
+  "schema_version": "1.0.0",
+  "gate_id": "FF-GATE-PR-001",
+  "gate_version": 1,
+  "status": "PASS",
+  "exit_code": 0,
+  "source": {
+    "git_commit": "16dafd1ae76fcecb8a3f3309dd7d28f7b0d5be01",
+    "dirty": false,
+    "dirty_paths": []
+  },
+  "invocation": {
+    "repository_root": ".",
+    "gate_args": [
+      "verify-pr",
+      "--evidence-from-taskboard"
+    ],
+    "canonical_command": [
+      "cargo",
+      "run",
+      "--manifest-path",
+      "build/Cargo.toml",
+      "--locked",
+      "-p",
+      "fforager-xtask",
+      "--",
+      "verify-pr",
+      "--evidence-from-taskboard"
+    ]
+  },
+  "inputs": [
+    {
+      "path": ".GOV/codex.yaml",
+      "git_blob": "886f0f2b00ebb862ccde88d5d1470a06a4bfdb70"
+    },
+    {
+      "path": ".GOV/id-registry.yaml",
+      "git_blob": "31f5b1bfbfb68a34a2f4f5ffbe4ab4edd147bf63"
+    },
+    {
+      "path": ".GOV/rules/build-rules.yaml",
+      "git_blob": "0bfd1eff9dfe3b9c2c96a8afca4c79104b031ad2"
+    },
+    {
+      "path": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+      "git_blob": "b6efd94a5e96677e1675ae9844bd6ca5ae135896"
+    },
+    {
+      "path": ".GOV/taskboard/taskboard.yaml",
+      "git_blob": "139f92b675748c9ddc6e60c27fafc27fb84eb224"
+    },
+    {
+      "path": ".GOV/topology.yaml",
+      "git_blob": "bf8c731983b62968a765c536946ca1650d3bb9d2"
+    },
+    {
+      "path": ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/packet.json",
+      "git_blob": "53d6e6d9ac9a2113031da151fa5a30d91af27b88"
+    },
+    {
+      "path": ".GOV/work_packets/WP-FF-003-executable-gate-bootstrap-v2/refinement.json",
+      "git_blob": "82c0b6d34fe8cd7319662ff53c8b183ffeb03d52"
+    },
+    {
+      "path": "build/Cargo.lock",
+      "git_blob": "2897cf2ae0fca179c0f3f97d92fca4cb290a149f"
+    },
+    {
+      "path": "build/Cargo.toml",
+      "git_blob": "6518b8e82440bbea2027662258607db6424c3de7"
+    },
+    {
+      "path": "build/architecture-policy.toml",
+      "git_blob": "a7830b0053b00021c674adc0ea5ebe07dec0e090"
+    },
+    {
+      "path": "build/deny.toml",
+      "git_blob": "46cd06086df428153140caba1f6d9ce114c1db30"
+    },
+    {
+      "path": "build/fixtures/architecture/adapter-edge-without-decision/case.toml",
+      "git_blob": "ac5b4e4a06ec2be1be09d378986ef14cb39997cf"
+    },
+    {
+      "path": "build/fixtures/architecture/cycle/case.toml",
+      "git_blob": "0ebfa02001614207b7f214d426fdf3189ad67938"
+    },
+    {
+      "path": "build/fixtures/architecture/duplicate-toolchain-selector/case.toml",
+      "git_blob": "a76a6bed5299f09bde346d7e82f6fcd3fa0c22d4"
+    },
+    {
+      "path": "build/fixtures/architecture/forbidden-edge/case.toml",
+      "git_blob": "3b9eb003cc37b2ab8bb02c90f955a271f94f1498"
+    },
+    {
+      "path": "build/fixtures/architecture/missing-fixture-binding/case.toml",
+      "git_blob": "ac99eecb8b0c452b08486a0c5294f7d82f045afe"
+    },
+    {
+      "path": "build/fixtures/architecture/missing-rule-map/case.toml",
+      "git_blob": "0b767a75350862fa0821672338de3e88807d7974"
+    },
+    {
+      "path": "build/fixtures/architecture/missing-split-trigger/case.toml",
+      "git_blob": "32b1b5d3054d75bd8442a4d0b1677cac362162b8"
+    },
+    {
+      "path": "build/fixtures/architecture/product-watcher-edge/case.toml",
+      "git_blob": "f3da55c80bf498fc82d27019d2ccfbe569a9d86f"
+    },
+    {
+      "path": "build/fixtures/architecture/self-authorized-exception/case.toml",
+      "git_blob": "196fb7e19751a8c48185345a61b4a3ffdfe30f5e"
+    },
+    {
+      "path": "build/fixtures/architecture/shipped-before-bootstrap/case.toml",
+      "git_blob": "f469f573d0e3217501a931bb6c83280f5dab2af2"
+    },
+    {
+      "path": "build/fixtures/architecture/shipped-governance-read/case.toml",
+      "git_blob": "b1e2141dcf7192e7c8b70ba7b0c15093eef7b0e0"
+    },
+    {
+      "path": "build/fixtures/architecture/testkit-production-edge/case.toml",
+      "git_blob": "2c47264de1e90b44ddcdb3b3afa63814bd4553c2"
+    },
+    {
+      "path": "build/fixtures/architecture/undeclared-member/case.toml",
+      "git_blob": "8eae8c83e1272d232a097f3b71a8487c625548ad"
+    },
+    {
+      "path": "build/fixtures/architecture/unknown-rule-map/case.toml",
+      "git_blob": "76ad3cc6c3f4ba61e4feadc6f8ffcded312e44ac"
+    },
+    {
+      "path": "build/fixtures/architecture/watcher-product-edge/case.toml",
+      "git_blob": "80eb64cceec3da02bb786942d49d7343d89be53e"
+    },
+    {
+      "path": "build/fixtures/architecture/wrong-root-build-file/case.toml",
+      "git_blob": "e0823c8b0482fbf8072bf458fb1cd2a2304d27f4"
+    },
+    {
+      "path": "build/rule-to-proof.toml",
+      "git_blob": "a22abd7bb70f5e3fd4d228be7ac3b5d37384c1be"
+    },
+    {
+      "path": "build/tooling-policy.toml",
+      "git_blob": "9558b1dcc16620be3492cf618fd66d47641e04fd"
+    },
+    {
+      "path": "build/tools/fforager-xtask/Cargo.toml",
+      "git_blob": "4c154ebc77c4416c48273528be6a89d8ff7bfee8"
+    },
+    {
+      "path": "build/tools/fforager-xtask/src/main.rs",
+      "git_blob": "5f5ff2934eff09122cef488ef7ff4ba92acb0934"
+    },
+    {
+      "path": "product/MODEL_MANUAL.md",
+      "git_blob": "16c6670130179ffc9fa1898b0c55111abf45acce"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "git_blob": "010f002cf56497ce0a1b4ac124a2e2d86a97bc3d"
+    }
+  ],
+  "checks": [
+    {
+      "id": "supported-host",
+      "status": "PASS",
+      "detail": "rustc host=x86_64-pc-windows-msvc"
+    },
+    {
+      "id": "tool-rustc",
+      "status": "PASS",
+      "detail": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-pc-windows-msvc\nrelease: 1.97.1\nLLVM version: 22.1.6; provenance=root-toolchain-and-cargo-lock; inputs=rust-toolchain.toml,build/Cargo.lock"
+    },
+    {
+      "id": "tool-cargo",
+      "status": "PASS",
+      "detail": "cargo 1.97.1 (c980f4866 2026-06-30)\nrelease: 1.97.1\ncommit-hash: c980f4866141969fab6254a680546a277789d6f0\ncommit-date: 2026-06-30\nhost: x86_64-pc-windows-msvc\nlibgit2: 1.9.2 (sys:0.20.4 vendored)\nlibcurl: 8.20.0-DEV (sys:0.4.88+curl-8.20.0 vendored ssl:Schannel)\nos: Windows 10.0.26200 (Windows 11 Core) [64-bit]; provenance=root-toolchain-and-cargo-lock; inputs=rust-toolchain.toml,build/Cargo.lock"
+    },
+    {
+      "id": "tool-rustfmt",
+      "status": "PASS",
+      "detail": "rustfmt 1.9.0-stable (8bab26f4f6 2026-07-14); provenance=root-toolchain-and-cargo-lock; inputs=rust-toolchain.toml,build/Cargo.lock"
+    },
+    {
+      "id": "tool-clippy",
+      "status": "PASS",
+      "detail": "clippy 0.1.97 (8bab26f4f6 2026-07-14); provenance=root-toolchain-and-cargo-lock; inputs=rust-toolchain.toml,build/Cargo.lock"
+    },
+    {
+      "id": "tool-git",
+      "status": "PASS",
+      "detail": "git version 2.53.0.windows.3; executable=\\\\?\\C:\\Program Files\\Git\\cmd\\git.exe; sha256=c53279919fdea03474bb23b465b3a82287157491f1bd69a5eb82dd9831582333"
+    },
+    {
+      "id": "tool-cargo-deny",
+      "status": "PASS",
+      "detail": "cargo-deny 0.20.2; executable=\\\\?\\C:\\Users\\Ilja Smets\\.cargo\\bin\\cargo-deny.exe; sha256=6e67806f5cf7d4da170d226a8f12cbd16aba236f51af1d75bc9fc56129d998ae"
+    },
+    {
+      "id": "active-packet-evidence",
+      "status": "PASS",
+      "detail": "active packet WP-FF-003-executable-gate-bootstrap-v2 has complete non-placeholder change evidence"
+    },
+    {
+      "id": "format",
+      "status": "PASS",
+      "detail": "cargo fmt --manifest-path build/Cargo.toml --all -- --check exited 0"
+    },
+    {
+      "id": "check",
+      "status": "PASS",
+      "detail": "cargo check --manifest-path build/Cargo.toml --workspace --all-targets --locked --target-dir build/target exited 0"
+    },
+    {
+      "id": "check-no-default-features",
+      "status": "PASS",
+      "detail": "cargo check --manifest-path build/Cargo.toml --workspace --all-targets --locked --no-default-features --target-dir build/target exited 0"
+    },
+    {
+      "id": "check-all-features",
+      "status": "PASS",
+      "detail": "cargo check --manifest-path build/Cargo.toml --workspace --all-targets --locked --all-features --target-dir build/target exited 0"
+    },
+    {
+      "id": "clippy",
+      "status": "PASS",
+      "detail": "cargo clippy --manifest-path build/Cargo.toml --workspace --all-targets --all-features --locked --target-dir build/target -- -D warnings exited 0"
+    },
+    {
+      "id": "test",
+      "status": "PASS",
+      "detail": "cargo test --manifest-path build/Cargo.toml --workspace --all-targets --all-features --locked --no-fail-fast --target-dir build/target exited 0"
+    },
+    {
+      "id": "doctests",
+      "status": "NOT_APPLICABLE",
+      "detail": "WP-003 has no doctest-capable library target; activation trigger is the first library target."
+    },
+    {
+      "id": "docs",
+      "status": "PASS",
+      "detail": "RUSTDOCFLAGS=-Dwarnings cargo doc --manifest-path build/Cargo.toml --workspace --all-features --locked --no-deps --target-dir build/target exited 0"
+    },
+    {
+      "id": "dependency-policy",
+      "status": "PASS",
+      "detail": "cargo deny --manifest-path build/Cargo.toml --config build/deny.toml check exited 0"
+    },
+    {
+      "id": "advisory-database",
+      "status": "PASS",
+      "detail": "id=advisory-db-3157b0e258782691; head=b5fc89b8be99e96f79194d8a6f11e9b4143b99f0; commit_epoch=1784303558; age_hours=43; dirty_inputs=[\"build/@NON_FILE_OR_DELETED\", \"crates/deno/RUSTSEC-0000-0000.md@577f4c5ad123a0cf4921c112efa11d54e2085ba0\"]"
+    },
+    {
+      "id": "workspace-shape",
+      "status": "PASS",
+      "detail": "locked resolver-3 workspace has one declared non-shipped member and build/target output"
+    },
+    {
+      "id": "internal-graph",
+      "status": "PASS",
+      "detail": "normal, dev, build, optional, and target-conditioned internal edges match policy and are acyclic"
+    },
+    {
+      "id": "three-root-boundary",
+      "status": "PASS",
+      "detail": ".GOV, product, and build ownership is exclusive; root selector is unique"
+    },
+    {
+      "id": "dependency-policy",
+      "status": "PASS",
+      "detail": "all direct dependencies are exact non-shipped tooling decisions; transitive build/proc-macro packages match policy and no package declares native links"
+    },
+    {
+      "id": "rule-map-completeness",
+      "status": "PASS",
+      "detail": "every canonical REQUIRED architecture rule has validators, proof classes, and negative fixtures"
+    },
+    {
+      "id": "negative-fixtures",
+      "status": "PASS",
+      "detail": "16 fixtures produced exactly their assigned stable diagnostic"
+    },
+    {
+      "id": "clean-shipped-artifact",
+      "status": "NOT_APPLICABLE",
+      "detail": "Authority WP-FF-003 has zero shipped=true members; activation trigger is the first shipped member."
+    },
+    {
+      "id": "watcher-check",
+      "status": "NOT_APPLICABLE",
+      "detail": "product/watcher/Cargo.toml is absent; activation trigger is the watcher package or a watcher/release claim."
+    },
+    {
+      "id": "verify-deep",
+      "status": "NOT_IMPLEMENTED",
+      "detail": "Future gate outside the Phase 0 verify-pr applicable child set."
+    },
+    {
+      "id": "verify-release",
+      "status": "NOT_IMPLEMENTED",
+      "detail": "Future gate outside the Phase 0 verify-pr applicable child set."
+    }
+  ],
+  "rules": [
+    "FF-BUILD-036",
+    "FF-BUILD-037",
+    "FF-BUILD-038",
+    "FF-BUILD-039",
+    "FF-BUILD-040",
+    "FF-BUILD-041",
+    "FF-BUILD-042",
+    "FF-BUILD-043",
+    "FF-BUILD-044",
+    "FF-BUILD-045",
+    "FF-BUILD-046",
+    "FF-BUILD-077"
+  ],
+  "fixtures": [
+    {
+      "fixture_id": "adapter-edge-without-decision",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-ADAPTER-EDGE",
+      "observed_diagnostics": [
+        "FF-ARCH-E-ADAPTER-EDGE"
+      ]
+    },
+    {
+      "fixture_id": "cycle",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-CYCLE",
+      "observed_diagnostics": [
+        "FF-ARCH-E-CYCLE"
+      ]
+    },
+    {
+      "fixture_id": "duplicate-toolchain-selector",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-DUPLICATE-TOOLCHAIN",
+      "observed_diagnostics": [
+        "FF-ARCH-E-DUPLICATE-TOOLCHAIN"
+      ]
+    },
+    {
+      "fixture_id": "forbidden-edge",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-FORBIDDEN-EDGE",
+      "observed_diagnostics": [
+        "FF-ARCH-E-FORBIDDEN-EDGE"
+      ]
+    },
+    {
+      "fixture_id": "missing-fixture-binding",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-MISSING-FIXTURE-BINDING",
+      "observed_diagnostics": [
+        "FF-ARCH-E-MISSING-FIXTURE-BINDING"
+      ]
+    },
+    {
+      "fixture_id": "missing-rule-map",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-MISSING-RULE",
+      "observed_diagnostics": [
+        "FF-ARCH-E-MISSING-RULE"
+      ]
+    },
+    {
+      "fixture_id": "missing-split-trigger",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-MISSING-SPLIT-TRIGGER",
+      "observed_diagnostics": [
+        "FF-ARCH-E-MISSING-SPLIT-TRIGGER"
+      ]
+    },
+    {
+      "fixture_id": "product-watcher-edge",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-PRODUCT-WATCHER-EDGE",
+      "observed_diagnostics": [
+        "FF-ARCH-E-PRODUCT-WATCHER-EDGE"
+      ]
+    },
+    {
+      "fixture_id": "self-authorized-exception",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-UNAPPROVED-EXCEPTION",
+      "observed_diagnostics": [
+        "FF-ARCH-E-UNAPPROVED-EXCEPTION"
+      ]
+    },
+    {
+      "fixture_id": "shipped-before-bootstrap",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-SHIPPED-BEFORE-BOOTSTRAP",
+      "observed_diagnostics": [
+        "FF-ARCH-E-SHIPPED-BEFORE-BOOTSTRAP"
+      ]
+    },
+    {
+      "fixture_id": "shipped-governance-read",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-RUNTIME-BOUNDARY",
+      "observed_diagnostics": [
+        "FF-ARCH-E-RUNTIME-BOUNDARY"
+      ]
+    },
+    {
+      "fixture_id": "testkit-production-edge",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-TESTKIT-EDGE",
+      "observed_diagnostics": [
+        "FF-ARCH-E-TESTKIT-EDGE"
+      ]
+    },
+    {
+      "fixture_id": "undeclared-member",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-UNDECLARED-MEMBER",
+      "observed_diagnostics": [
+        "FF-ARCH-E-UNDECLARED-MEMBER"
+      ]
+    },
+    {
+      "fixture_id": "unknown-rule-map",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-UNKNOWN-RULE",
+      "observed_diagnostics": [
+        "FF-ARCH-E-UNKNOWN-RULE"
+      ]
+    },
+    {
+      "fixture_id": "watcher-product-edge",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-WATCHER-EDGE",
+      "observed_diagnostics": [
+        "FF-ARCH-E-WATCHER-EDGE"
+      ]
+    },
+    {
+      "fixture_id": "wrong-root-build-file",
+      "status": "PASS",
+      "execution_path": "production-validator",
+      "expected_diagnostic": "FF-ARCH-E-WRONG-ROOT",
+      "observed_diagnostics": [
+        "FF-ARCH-E-WRONG-ROOT"
+      ]
+    }
+  ],
+  "proof_classes": [
+    "artifact",
+    "graph",
+    "negative_fixture",
+    "policy",
+    "runtime_fault",
+    "source"
+  ],
+  "proof_limitations": [
+    "Cargo metadata is graph proof, not runtime proof.",
+    "Lexical scanning cannot prove absence of dynamically constructed paths.",
+    "Phase 0 contains no shipped member.",
+    "Runtime-fault proof is NOT_APPLICABLE until the watcher exists.",
+    "Watcher package is absent in Phase 0.",
+    "Zero shipped members makes clean shipped-artifact proof NOT_APPLICABLE."
+  ],
+  "artifacts": [
+    "build/target",
+    "build/reports"
+  ]
+}

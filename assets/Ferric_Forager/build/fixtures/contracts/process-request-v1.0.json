@@ -1,0 +1,1 @@
+{"kind":"request","body":{"header":{"schema_id":"ff.process@1","version":{"major":1,"minor":0},"request_id":"request_1","producer_id":"producer_1","job_id":"job_1","sequence":1},"operation":"inspect","payload":{"source":"fixture"}}}

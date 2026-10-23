@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "adapter-edge-without-decision"
+mutation = "add_adapter_edge"
+expected_diagnostic = "FF-ARCH-E-ADAPTER-EDGE"

@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "proof-map-constant-tautology"
+mutation = "proof_map_constant_tautology"
+expected_diagnostic = "FF-ARCH-E-INVENTORY-PROOF-STUB"

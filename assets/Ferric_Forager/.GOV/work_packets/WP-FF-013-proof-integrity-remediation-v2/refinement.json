@@ -1,0 +1,121 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-013-proof-integrity-remediation-v2-REFINEMENT-001",
+  "wp_id": "WP-FF-013-proof-integrity-remediation-v2",
+  "updated_at_utc": "2026-07-22T16:17:57Z",
+  "operator_request": "Keep Ferric Forager a native Rust rewrite/reimagination that cannot use yt-dlp as product behavior; first harden project Codex prevention rules, then address every finding with no more than six terra xhigh subagents in parallel.",
+  "basis": {
+    "research_status": "REUSED_COMPLETED_PROJECT_RESEARCH_PLUS_TARGETED_REOPEN",
+    "research_reopen_triggers": [
+      "The Operator explicitly requests research.",
+      "A selected dependency, upstream oracle version, or source assumption is proven stale.",
+      "A remediation decision lacks evidence in current design, review, WP-003, WP-004, WP-005, or WP-012 sources."
+    ],
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json",
+      ".GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json",
+      ".GOV/work_packets/WP-FF-012-runtime-truth-gates-v1/packet.json",
+      ".GOV/archive/work_packets/WP-FF-013-proof-integrity-remediation/WP-FF-013-proof-integrity-remediation-v1/packet.json"
+    ],
+    "existing_research_sources": [
+      "The current technical design reference set and peer-review corpus",
+      "Validated WP-003 build and proof infrastructure",
+      "Validated WP-004 compatibility inventory and pinned-oracle corpus",
+      "Validated WP-005 contract implementation basis",
+      "Validated WP-012 runtime-truth enforcement",
+      "Official Rust Clippy lint-configuration documentation for fully-qualified disallowed methods, types, and macros: https://doc.rust-lang.org/clippy/lint_configuration.html"
+    ],
+    "selected_approach": [
+      "Supersede the deficient v1 activation instead of backfilling its history.",
+      "Keep yt-dlp outside product crates, packaging, runtime, fallback, wrapper, and sidecar paths; allow only pinned non-shipped oracle generation and comparison.",
+      "Make proof reports distinguish static support declarations from evidence actually executed.",
+      "Combine product-local compiler-resolved Clippy forbids for raw process construction and byte/text embedding with the independent source gate required for include!, which the pinned Clippy release does not observe reliably.",
+      "Replace helper-predicate fixtures with isolated mutations and composed/public boundary execution.",
+      "Complete lifecycle effect outcome and recovery semantics, explicit schema-transition authority, and exact counterexample tests.",
+      "Retain the prerequisite zero-progress ceiling until a shipped Rust Ferric entrypoint consumes and re-proves the work."
+    ],
+    "rejected_options": [
+      "Backfilling the v1 prerequisite declaration after activation.",
+      "Adding yt-dlp or Python as a product dependency, subprocess, fallback, wrapper, sidecar, installer payload, or runtime service.",
+      "Treating fixture hashes, declaration equality, toy predicates, empty shard selection, or test-name presence as behavioral proof.",
+      "Allowing peers to opt into arbitrary schema drift with booleans or an empty authority token.",
+      "Treating effect emission as effect completion or leaving failed/cancelled effects unrecoverable.",
+      "Repeating completed research without a named reopen trigger."
+    ],
+    "reuse_opportunities": [
+      "Reuse pure Rust contract types, lifecycle transition engine, bounded graph model, strict Serde DTOs, and existing test crates.",
+      "Reuse the WP-004 corpus as provenance-bound inputs while upgrading replay selection and reporting.",
+      "Reuse xtask reporting, rule-to-proof mapping, temp-copy helpers, runtime truth, and adversarial review structure."
+    ],
+    "validation_plan": "Implement three non-overlapping remediation lanes, run focused and workspace tests, compile alias and embedded-asset bypass probes through product-local Clippy forbids plus the independent source gate, execute compatibility and canonical gates, execute isolated mutations against actual governed boundaries, inspect result-level proof metadata, rerun the exact public counterexamples with execution receipts, and fail closure if any evidence still depends only on declarations or local helper literals."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "Existing research and approved dependencies remain current.",
+      "yt-dlp is permitted only as a non-shipped compatibility oracle and is never Ferric product behavior.",
+      "No shipped Ferric entrypoint exists, so all closure remains prerequisite-only."
+    ],
+    "non_goals": [
+      "Creating or claiming a Ferric downloader entrypoint.",
+      "Broad architecture redesign unrelated to reproduced failures.",
+      "New dependencies or broad external research beyond the targeted official Clippy verification triggered by a reproduced alias/include bypass."
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-013-proof-integrity-remediation-v2-AC-001",
+    "WP-FF-013-proof-integrity-remediation-v2-AC-002",
+    "WP-FF-013-proof-integrity-remediation-v2-AC-003",
+    "WP-FF-013-proof-integrity-remediation-v2-AC-004",
+    "WP-FF-013-proof-integrity-remediation-v2-AC-005",
+    "WP-FF-013-proof-integrity-remediation-v2-AC-006",
+    "WP-FF-013-proof-integrity-remediation-v2-AC-007",
+    "WP-FF-013-proof-integrity-remediation-v2-AC-008"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "forbidden_runtime_or_packaged_oracle_coupling",
+      "empty_or_structural_check_mislabeled_as_semantic_replay",
+      "static_proof_class_promoted_to_executed_evidence",
+      "implementation_and_validator_share_helper_predicate",
+      "partial_or_failed_effect_outcome_and_false_terminal_state",
+      "schema_drift_self_authorization_or_legacy_flag",
+      "graph_cycle_and_recursion_exhaustion",
+      "wire_unknown_field_and_sequence_boundary_bypass",
+      "declared_but_empty_public_counterexample"
+    ],
+    "minimum_controls": [
+      "Product scans reject direct and indirect yt-dlp or Python coupling in manifests, code, assets, package inputs, process plans, and non-text documentation paths.",
+      "Every selected replay case executes; empty selection fails; every PASS identifies only the proof class actually executed.",
+      "Counterexamples mutate isolated governed inputs and invoke the composed/public boundary.",
+      "Every external effect has correlated acknowledgement, failure, cancellation, and recovery paths before durable or terminal state.",
+      "Schema compatibility names reviewed source-to-target pairs; legacy peer booleans grant no authority.",
+      "A required public test emits a validated execution receipt so a named empty body cannot pass."
+    ],
+    "plausible_failures": [
+      "A future neutral wrapper embeds or invokes yt-dlp from a documentation exception path.",
+      "An empty shard or static proof map is reported as semantic or production-runtime evidence.",
+      "A mutation fixture validates only a local literal predicate.",
+      "A process cleanup or resource release fails and the machine has no legal recovery transition.",
+      "A V1 permissive flag appears to authorize unrelated schemas after migration.",
+      "A test remains listed and named while its body is empty."
+    ]
+  },
+  "execution_decomposition": [
+    "Commit this correctly predeclared v2 activation checkpoint.",
+    "Delegate lifecycle, diagnostic, and compatibility/proof/reporting remediation to three non-overlapping terra xhigh lanes.",
+    "Integrate inventories, fixtures, rule mappings, and manual centrally.",
+    "Run canonical gates and fresh independent high-risk adversarial validation.",
+    "Commit, merge, verify main containment, and remote-back only after all acceptance surfaces pass."
+  ]
+}

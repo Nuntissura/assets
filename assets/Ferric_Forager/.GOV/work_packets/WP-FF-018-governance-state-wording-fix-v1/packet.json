@@ -1,0 +1,139 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "TRACKED",
+  "identity": {
+    "wp_id": "WP-FF-018-governance-state-wording-fix-v1",
+    "base_wp_id": "WP-FF-018-governance-state-wording-fix",
+    "version": "1",
+    "title": "Correct resolved WP-007 decision wording",
+    "created_at_utc": "2026-07-30T17:34:42Z",
+    "updated_at_utc": "2026-07-31T06:13:56Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "fix it. and commit",
+    "recorded_at_utc": "2026-07-30T17:34:42Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [],
+    "decision_ids": [
+      "FF-DEC-001",
+      "FF-DEC-002"
+    ]
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "65f24bddf6e496c6bf41e126fb70c5677e1d5c76",
+    "work_branch": "main",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": "e24b5c7cd628979a543785b54a7b128e0b3b1735",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "e24b5c7cd628979a543785b54a7b128e0b3b1735"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "LOW",
+    "blockers": [],
+    "next_action": "No WP-018 action remains. Await separate Operator direction before activating another work packet; no WP-007 dependency decision remains open.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Correct governance wording that incorrectly presents WP-007's dependency escalation as an unresolved Operator decision after WP-015 and WP-017 resolved it.",
+    "product_impact": "NONE",
+    "in_scope": [
+      "State that WP-007's dependency escalation was resolved by FF-DEC-001 and FF-DEC-002 through WP-015 and WP-017.",
+      "Keep the inactive taskboard focus free of copied packet verdict or lifecycle text.",
+      "Register and close this narrow correction packet."
+    ],
+    "non_goals": [
+      "Change any dependency authorization, product behavior, product scope, or prior spike verdict.",
+      "Activate a product implementation packet.",
+      "Authorize browser-fingerprint transport for shipped product use."
+    ],
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-018-governance-state-wording-fix-v1/packet.json",
+      ".GOV/work_packets/WP-FF-018-governance-state-wording-fix-v1/refinement.json",
+      ".GOV/work_packets/WP-FF-007-transport-fingerprint-spike-v2/packet.json",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/id-registry.yaml"
+    ],
+    "dependencies": [
+      "WP-FF-015-wreq-transport-adjudication-v1 VALIDATED.",
+      "WP-FF-017-ordinary-transport-decision-v1 VALIDATED.",
+      "FF-DEC-001 and FF-DEC-002 remain unchanged."
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-018-governance-state-wording-fix-v1-AC-001",
+      "requirement": "WP-007's lifecycle text accurately states that its dependency escalation was resolved by WP-015 and WP-017 while preserving the historical FAILED_SPIKE_REQUIRES_OPERATOR_DECISION verdict and zero-product-progress ceiling.",
+      "proof_class": "governance",
+      "status": "PASS",
+      "evidence": [
+        "WP-007 next_action now states that WP-015 and WP-017 resolved the dependency escalation through FF-DEC-001 and FF-DEC-002 while preserving FAILED_SPIKE_REQUIRES_OPERATOR_DECISION and the zero-product-progress ceiling.",
+        "FF-GATE-DEEP-001 PASS: build/reports/verify-deep-1785478192018816200-212460.json."
+      ]
+    },
+    {
+      "id": "WP-FF-018-governance-state-wording-fix-v1-AC-002",
+      "requirement": "When no packet is active, taskboard current_focus states only that no work packet is active and does not copy packet verdict, lifecycle, blocker, or next-action details.",
+      "proof_class": "governance",
+      "status": "PASS",
+      "evidence": [
+        "The taskboard current_focus now states only 'No work packet is active.' with active_wp_id null.",
+        "The stale copied WP-007 verdict and next-action projection was removed from current_focus."
+      ]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-31T06:13:56Z",
+      "branch": "main",
+      "base_sha": "65f24bddf6e496c6bf41e126fb70c5677e1d5c76",
+      "head_sha": "e24b5c7cd628979a543785b54a7b128e0b3b1735",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-018-governance-state-wording-fix-v1/packet.json",
+        ".GOV/taskboard/taskboard.yaml"
+      ],
+      "checks_run": [
+        "powershell -NoProfile -File build/scripts/clean-artifacts.ps1",
+        "powershell -NoProfile -File build/scripts/clean-artifacts.ps1 -VerifyOnly",
+        "JSON parse: WP-018 packet and refinement PASS",
+        "git diff --check PASS",
+        "cargo test --manifest-path build/Cargo.toml --workspace --all-targets --all-features --locked --no-fail-fast --target-dir .fforager-artifacts/cargo-target: 113 passed, 0 failed",
+        "FF-GATE-DEEP-001 PASS: build/reports/verify-deep-1785478192018816200-212460.json",
+        "git merge-base --is-ancestor e24b5c7cd628979a543785b54a7b128e0b3b1735 main: exit 0"
+      ],
+      "blockers": [],
+      "next_action": "Commit the validated containment state and clear active taskboard focus."
+    }
+  },
+  "validation": {
+    "checks": [
+      "JSON parse: WP-007 packet, WP-018 packet, and WP-018 refinement PASS",
+      "git diff --check PASS",
+      "Workspace suite: 113 passed, 0 failed",
+      "FF-GATE-DEEP-001: build/reports/verify-deep-1785478192018816200-212460.json PASS",
+      "Main containment: git merge-base --is-ancestor e24b5c7cd628979a543785b54a7b128e0b3b1735 main exited 0"
+    ],
+    "not_proven": [
+      "Any product, transport capability, runtime, packaging, release, or phase progress."
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-018-governance-state-wording-fix-v1/refinement.json"
+  }
+}

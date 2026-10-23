@@ -1,0 +1,798 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-009-resource-durability-models-v1",
+    "base_wp_id": "WP-FF-009-resource-durability-models",
+    "version": "1",
+    "title": "Define and prove resource and durability models",
+    "created_at_utc": "2026-07-18T21:13:04Z",
+    "updated_at_utc": "2026-08-02T04:45:17Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator authorized Phase 0 planning and creation of WP-FF-009, then on 2026-08-01 explicitly instructed Codex to start implementing WP-009 with no more than three parallel subagents, independent adversarial review of each large implementation block, artifact cleanup, long-wait tolerance, no interference with unrelated processes, and no dependency on yt-dlp.",
+    "recorded_at_utc": "2026-08-01T22:41:17Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#153-bounded-reorder-buffer",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#1510-end-to-end-byte-credits-and-durability-positions",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#16-scheduler-and-resource-governance",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#23-persistence-resume-and-crash-recovery",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0b--contracts-and-state-machines",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#307-resume-corruption",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#3013-live-sink-backpressure",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/consensus_blockers/4",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/consensus_blockers/5",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/peer_question_resolutions/7",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/peer_question_resolutions/8",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/peer_question_resolutions/9",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/peer_question_resolutions/16",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/implementation_readiness_gates/6",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/implementation_readiness_gates/7"
+    ],
+    "decision_ids": [
+      "D-007",
+      "D-008",
+      "D-022"
+    ]
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "05eb057d075ed9629743942e53fdece9ace011ee",
+    "work_branch": "codex/resource-durability-models",
+    "worktree_policy": "LINKED_REPO_LOCAL_HELPER",
+    "worktree_id": ".worktrees/WP-FF-009-resource-durability-models-v1",
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/resource-durability-models",
+      "head_sha": "7aa8a5b6794ea5d5c7c1cb130838595817633099",
+      "verified_at_utc": "2026-08-01T23:03:16Z"
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "SUPERSEDED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "Retain as immutable activation history; continue only under WP-FF-009-resource-durability-models-v2 because v1 committed a non-resolvable one-character base-SHA transcription and FF-GATE-RUNTIME-001 forbids rewriting an activated base.",
+    "supersedes": [],
+    "superseded_by": "WP-FF-009-resource-durability-models-v2"
+  },
+  "scope": {
+    "summary": "Turn the design's atomic resource-vector, byte-credit, cancellation, durability-position, staged-commit, and filesystem-capability rules into versioned contracts and executable models that broad feature work must consume.",
+    "product_impact": "PREREQUISITE",
+    "in_scope": [
+      "Define the immutable ResourceVector dimensions, per-job/global limits, all-or-nothing central grant, deterministic fairness/tie-break policy, RAII ownership, cancellation, and release semantics.",
+      "Define byte-credit acquisition, ownership transfer, simultaneous input/output reservation, spill behavior, item/byte queue occupancy, loss policy, and upstream backpressure for every variable-size stage.",
+      "Define separate received, validated-written-contiguous, and durable-contiguous positions and prohibit resume state beyond the durable prefix.",
+      "Define finite state models for job/cancel, admission, fragment/durability, sink, FFmpeg resource use, commit/archive, filesystem capability, and recovery transitions touched by the Phase 2 proof slice.",
+      "Define same-filesystem staged commit and startup reconciliation for every PREPARED, RENAMED, ARCHIVED, and CLEANED crash prefix, including torn/duplicate/reordered journal records.",
+      "Define supported filesystem capability profiles for atomic replace, synchronization, leases/locking, path confinement, cross-volume behavior, and explicit degraded or rejected modes.",
+      "Implement deterministic model, property, saturation, cancellation, and fault tests that falsify leaks, over-admission, starvation, hidden unbounded queues, false durability, corrupt resume, and false success.",
+      "Expose stable structured model traces, invariant IDs, occupancy, grants, transition reasons, and residual uncertainty for no-context diagnosis."
+    ],
+    "non_goals": [
+      "Implementing the full scheduler, downloader, archive backend, FFmpeg adapter, or every product state machine.",
+      "Introducing adaptive concurrency before fixed deterministic policy passes correctness, saturation, cancellation, and equivalent-work gates.",
+      "Claiming universal filesystem atomicity, universal termination, zero data loss, or correctness beyond declared assumptions and capability profiles.",
+      "Allowing independent semaphores, optimistic checkpoints, unbounded queues, or watcher acknowledgement to become the product contract.",
+      "Reducing protocol, live, sink, collection, archive, or recovery scope to simplify the model."
+    ],
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-009-resource-durability-models-v1/packet.json",
+      ".GOV/work_packets/WP-FF-009-resource-durability-models-v1/refinement.json",
+      ".GOV/taskboard/taskboard.yaml",
+      "build/Cargo.toml",
+      "build/Cargo.lock",
+      "build/architecture-policy.toml",
+      "build/tooling-policy.toml",
+      "build/rule-to-proof.toml",
+      "product/crates/fforager-contracts/",
+      "product/crates/fforager-core/",
+      "product/crates/fforager-protocol/",
+      "product/crates/fforager-storage/",
+      "product/crates/fforager-ffmpeg/",
+      "build/crates/fforager-testkit/",
+      "build/tools/fforager-xtask/",
+      "build/fixtures/",
+      "build/integration-tests/",
+      "build/reports/",
+      "build/target/",
+      "product/MODEL_MANUAL.md"
+    ],
+    "dependencies": [
+      "WP-FF-003-executable-gate-bootstrap-v1 VALIDATED",
+      "WP-FF-005-versioned-core-contracts-v1 accepted base contracts",
+      "Canonical architecture, PR, and triggered deep gates implemented by fforager-xtask",
+      "Controlled clock, deterministic scheduler, model/property-test, and fault-injection support in fforager-testkit",
+      "Current platform documentation for Windows and Unix filesystem/process guarantees"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-009-resource-durability-models-v1-AC-001",
+      "requirement": "Versioned resource and byte-credit contracts define every admitted dimension, item/byte bound, ownership transfer, coupled reservation, fairness rule, cancellation outcome, loss policy, and observable occupancy used by the Phase 2 proof slice.",
+      "proof_class": "contract_boundary_and_invariant_tests",
+      "status": "PASS",
+      "evidence": [
+        "product/crates/fforager-contracts/src/resource.rs freezes the 13-dimension ResourceVector, nine byte-credit stages, owned transfer rules, coupled reservations, queue item/byte bounds, and loss policy.",
+        "product/crates/fforager-core/src/resource.rs tests atomic admission, FIFO head reservation, per-owner/global ceilings, typed cancellation, and RAII release."
+      ]
+    },
+    {
+      "id": "WP-FF-009-resource-durability-models-v1-AC-002",
+      "requirement": "Deterministic model/property tests prove all-or-nothing resource grants, no hold-and-wait across scheduler permits, no permit/credit leak on success/error/panic/cancellation, bounded queues and memory, cancellation progress, and the declared starvation/fairness bound.",
+      "proof_class": "resource_model_saturation_and_counterfactual_tests",
+      "status": "PASS",
+      "evidence": [
+        "build/fixtures/resource-durability-models/manifest.json declares 48 bounded deterministic cases including atomic saturation, FIFO head ordering, queue bounds, success/error/panic/cancel cleanup, and all nine byte-credit stages.",
+        "testkit::tests::resource_durability_report_rejects_missing_queue_bounds_and_durability_outrun and the canonical 48/48 report exercise the public broker boundaries and reject missing bounds or durability outrun."
+      ]
+    },
+    {
+      "id": "WP-FF-009-resource-durability-models-v1-AC-003",
+      "requirement": "The durability model separates received, validated-written-contiguous, and durable-contiguous positions; every generated trace resumes at or before durable_contiguous and no success trace precedes output validation plus archive reconciliation.",
+      "proof_class": "durability_state_model_and_prefix_tests",
+      "status": "PASS",
+      "evidence": [
+        "product/crates/fforager-contracts/src/storage.rs defines received, validated_written_contiguous, and durable_contiguous with exact monotonic and no-outrun validation.",
+        "product/crates/fforager-core/src/lifecycle.rs requires broker-correlated effect acknowledgements before durability and commit prefixes advance; core lifecycle tests passed in the final workspace suite."
+      ]
+    },
+    {
+      "id": "WP-FF-009-resource-durability-models-v1-AC-004",
+      "requirement": "Fault injection covers every PREPARED, RENAMED, ARCHIVED, and CLEANED prefix plus torn, duplicate, reordered, checksum-invalid, cross-volume, stale-lease, collision, partial-cleanup, and interrupted-migration cases with an idempotent declared recovery or fail-closed result.",
+      "proof_class": "fault_injection_and_idempotent_recovery_tests",
+      "status": "PASS",
+      "evidence": [
+        "The canonical 48-case corpus covers PREPARED, RENAMED, ARCHIVED, CLEANED, torn, duplicate, reordered, checksum-invalid, stale-lease, collision, partial-cleanup, interrupted-migration, confinement, and cross-volume outcomes.",
+        "apply_recovery_action returns an opaque RecoveryApplication bound to the exact prior observation and selected action; typed tests reject wrong initial actions and mismatched retries."
+      ]
+    },
+    {
+      "id": "WP-FF-009-resource-durability-models-v1-AC-005",
+      "requirement": "Supported filesystem profiles state exact atomic-replace, file/directory sync, lease/lock, rooted no-follow path, cross-volume, and degraded-mode guarantees for each tested platform; unsupported security-sensitive confinement fails closed.",
+      "proof_class": "platform_capability_boundary_and_negative_tests",
+      "status": "PASS",
+      "evidence": [
+        "FilesystemProfileContract freezes Windows 11/NTFS and Ubuntu 24.04/WSL2-v9fs capability ceilings, exact sync/replace/lease/confinement claims, and explicit degraded or rejected modes.",
+        "The fresh report records live read-only Windows and WSL identity/mount observations while explicitly withholding crash, power-loss, atomic-replace, confinement-race, and native-Linux claims."
+      ]
+    },
+    {
+      "id": "WP-FF-009-resource-durability-models-v1-AC-006",
+      "requirement": "Structured traces and machine-readable reports let a no-context model identify the invariant, state, resource vector, credit owner, queue occupancy, durable prefix, injected fault, recovery action, and residual uncertainty for every failed case.",
+      "proof_class": "diagnostic_report_contract_and_replay_tests",
+      "status": "PASS",
+      "evidence": [
+        "build/reports/wp-ff-009-resource-durability-models-54964-1785645099031696600.json contains 48 unique rows with invariant, state, resource vector, credit owner, queue occupancy, durable prefix, fault, recovery action, and residual uncertainty fields.",
+        "Report SHA-256 58d7133dd83b2521abf7528ade7aa650591b9a7e00edc04b08471d04e4fcfe0d binds schema 1.1.0 to six current source fingerprints; the report declares zero_product_progress=true."
+      ]
+    },
+    {
+      "id": "WP-FF-009-resource-durability-models-v1-AC-007",
+      "requirement": "FF-GATE-ARCH-001, FF-GATE-PR-001, triggered model/fault/saturation deep gates, and an independent adversarial review pass on the same source and fixture manifest.",
+      "proof_class": "aggregate_validation_and_independent_adversarial_review",
+      "status": "PENDING",
+      "evidence": []
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-08-02T03:26:49Z",
+      "branch": "codex/resource-durability-models",
+      "base_sha": "05eb05708e92fb1f3ad35e5f030bd980810a21a9",
+      "head_sha": "7aa8a5b6794ea5d5c7c1cb130838595817633099",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-009-resource-durability-models-v1/packet.json",
+        "build/crates/fforager-testkit/src/lib.rs",
+        "build/fixtures/contracts/durability-contracts-v1.0.json",
+        "build/fixtures/resource-durability-models/manifest.json",
+        "build/tools/fforager-xtask/src/main.rs",
+        "product/MODEL_MANUAL.md",
+        "product/crates/fforager-contracts/src/lib.rs",
+        "product/crates/fforager-contracts/src/resource.rs",
+        "product/crates/fforager-contracts/src/storage.rs",
+        "product/crates/fforager-core/src/lifecycle.rs",
+        "product/crates/fforager-core/src/resource.rs"
+      ],
+      "checks_run": [
+        "powershell -NoProfile -File build/scripts/clean-artifacts.ps1: PASS FF-GATE-ARTIFACT-HYGIENE-001; items=0",
+        "powershell -NoProfile -File build/scripts/clean-artifacts.ps1 -VerifyOnly: PASS FF-GATE-ARTIFACT-HYGIENE-001; items=0",
+        "WP-FF-003-executable-gate-bootstrap-v1, WP-FF-003-executable-gate-bootstrap-v2, and WP-FF-005-versioned-core-contracts-v1: VALIDATED and mechanically contained in main",
+        "Current research basis recorded in refinement.json with field implementation, official platform, source-code, benchmark/postmortem, and negative-path sources",
+        "build/scripts/new-worktree.ps1 created the linked repo-local worktree and shared artifact junction",
+        "git branch --show-current: codex/resource-durability-models",
+        "git show -s --format=%P 7aa8a5b6794ea5d5c7c1cb130838595817633099 and git merge-base main: 05eb05708e92fb1f3ad35e5f030bd980810a21a9",
+        "git config --get core.hooksPath: build/git-hooks",
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check: PASS",
+        "cargo clippy --manifest-path build/Cargo.toml --locked --workspace --all-targets --all-features -- -D warnings: PASS through the repository-local short-path alias",
+        "cargo clippy --manifest-path build/Cargo.toml --locked --jobs 1 -p fforager-testkit -p fforager-xtask --all-targets -- -D warnings: PASS after the final proof-tool changes",
+        "cargo test --manifest-path build/Cargo.toml --locked --workspace --all-features --no-fail-fast: PASS; xtask 115/115 and all workspace/doctest targets passed",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- resource-durability-models: PASS after final target-isolation hardening and stable lifecycle/resource proof-ID restoration; report SHA-256 58d7133dd83b2521abf7528ade7aa650591b9a7e00edc04b08471d04e4fcfe0d; 48/48; 0 failed",
+        "cargo test --manifest-path build/Cargo.toml --locked --jobs 1 -p fforager-xtask --bin fforager-xtask -- --test-threads=1: PASS 115/115 after 128-bit target-key and label-isolation hardening"
+      ],
+      "blockers": [],
+      "next_action": "Run the taskboard-backed aggregate gates, record AC-007 only after they pass, then commit, push, merge into canonical main, prove containment, and clean artifacts."
+    }
+  },
+  "validation": {
+    "checks": [
+      "packet_json_parse: PASS",
+      "template_required_sections: PASS",
+      "authority_and_readiness_anchor_review: PASS",
+      "allowed_path_review: PASS",
+      "prerequisite_containment_review: PASS",
+      "research_basis_and_refinement: PASS",
+      "resource_byte_stage_and_proof_profiles_frozen: PASS"
+    ],
+    "not_proven": [
+      "Real crash or power-loss durability on physical filesystems",
+      "Native-Linux filesystem behavior beyond the declared frozen profile",
+      "Production scheduler or storage integration",
+      "Any product, capability, runtime, packaging, release, phase, or broad implementation progress"
+    ]
+  },
+  "extensions": {
+    "repository_layout": {
+      "governance_root": ".GOV/",
+      "product_root": "product/",
+      "product_owns": [
+        "shipped runtime code",
+        "product apps",
+        "product assets",
+        "independent watcher",
+        "product-package-local tests",
+        "MODEL_MANUAL.md"
+      ],
+      "build_root": "build/",
+      "build_owns": [
+        "Cargo workspace and lockfile",
+        "architecture/tooling/rule-to-proof policies",
+        "non-shipped xtask and testkit",
+        "shared fixtures",
+        "cross-package integration tests",
+        "fuzz targets",
+        "benchmarks",
+        "generated reports",
+        "Cargo target output"
+      ],
+      "toolchain_selector": "rust-toolchain.toml",
+      "canonical_manifest": "build/Cargo.toml",
+      "canonical_command_prefix": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask --",
+      "runtime_boundary": "Shipped product execution must require neither .GOV/ nor build/."
+    },
+    "stub_contract": {
+      "implementation_authorized": true,
+      "promotion_requirements": [
+        "WP-FF-003 and WP-FF-005 prerequisite evidence is accepted.",
+        "Current source-level research is recorded for structured concurrency, coupled-resource admission, byte backpressure, crash-consistent journals, and Windows/Unix filesystem guarantees.",
+        "The initial fixed fairness policy, resource dimensions, byte stages, filesystem profiles, and finite state models are frozen.",
+        "Every model has assumptions, invariant IDs, generated transitions, timeout, failure oracle, and report schema.",
+        "No broad feature implementation depends on an unproven model."
+      ],
+      "promotion_evidence": [
+        "WP-FF-003 executable-gate bootstrap v1/v2 and WP-FF-005 versioned core contracts are VALIDATED and mechanically contained in canonical main.",
+        "Current source-level research and selected/rejected approaches are recorded in refinement.json.",
+        "The 13 resource dimensions, strict FIFO head-reservation profile, byte-credit stages, three durability positions, model inventory, bounded exploration profile, and exact filesystem proof profiles are frozen in refinement.json.",
+        "The operator explicitly authorized implementation on 2026-08-01."
+      ],
+      "promoted_at_utc": "2026-08-01T22:41:17Z"
+    },
+    "refinement": {
+      "schema_id": "ff.work_packet_refinement@1",
+      "path": ".GOV/work_packets/WP-FF-009-resource-durability-models-v1/refinement.json",
+      "status": "FROZEN_FOR_IMPLEMENTATION",
+      "research_basis_status": "CURRENT_SOURCE_LEVEL_RESEARCH_COMPLETED_2026-08-01"
+    },
+    "non_product_prerequisite": {
+      "schema_id": "ff.non-product-prerequisite@1",
+      "classification": "phase0_supporting_evidence",
+      "design_authority": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0b--contracts-and-state-machines",
+      "product_progress": false,
+      "capability_progress": false,
+      "runtime_completion": false,
+      "packaging_or_release_progress": false,
+      "phase_progress": false,
+      "required_future_consumer": "the first shipped Ferric scheduler, durability, and direct-HTTP vertical slice",
+      "required_future_proof": "FF-GATE-RUNTIME-001 through the exact staged Ferric product artifact"
+    },
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-010",
+        "FF-BUILD-011",
+        "FF-BUILD-012",
+        "FF-BUILD-013",
+        "FF-BUILD-014",
+        "FF-BUILD-015",
+        "FF-BUILD-017",
+        "FF-BUILD-018",
+        "FF-BUILD-019",
+        "FF-BUILD-020",
+        "FF-BUILD-021",
+        "FF-BUILD-022",
+        "FF-BUILD-023",
+        "FF-BUILD-024",
+        "FF-BUILD-025",
+        "FF-BUILD-026",
+        "FF-BUILD-027",
+        "FF-BUILD-029",
+        "FF-BUILD-030",
+        "FF-BUILD-031",
+        "FF-BUILD-032",
+        "FF-BUILD-033",
+        "FF-BUILD-034",
+        "FF-BUILD-035",
+        "FF-BUILD-048",
+        "FF-BUILD-057",
+        "FF-BUILD-058",
+        "FF-BUILD-059",
+        "FF-BUILD-060",
+        "FF-BUILD-064",
+        "FF-BUILD-066",
+        "FF-BUILD-067",
+        "FF-BUILD-072",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098",
+        "FF-BUILD-099"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-009-resource-durability-models-v1-AC-001",
+        "WP-FF-009-resource-durability-models-v1-AC-002",
+        "WP-FF-009-resource-durability-models-v1-AC-003",
+        "WP-FF-009-resource-durability-models-v1-AC-004",
+        "WP-FF-009-resource-durability-models-v1-AC-005",
+        "WP-FF-009-resource-durability-models-v1-AC-006",
+        "WP-FF-009-resource-durability-models-v1-AC-007"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Atomic all-or-nothing resource-vector admission with deterministic bounded queue semantics and owned release",
+          "Byte-credit ownership and three monotonic durability positions with no resume beyond durable_contiguous",
+          "Idempotent fail-closed reconciliation for every declared commit prefix and malformed journal class",
+          "Exact platform capability profiles with unsupported confinement and cross-volume behavior rejected or degraded",
+          "Machine-readable deterministic counterexamples and independent review evidence"
+        ],
+        "risk_cases": [
+          "Composite permits are partially held or leaked on cancellation, error, or panic",
+          "Strict queue-head reservation creates an undocumented liveness ceiling",
+          "Simultaneous transform input and output are allocated before coupled byte reservation",
+          "A journal checkpoint outruns data or directory durability",
+          "Torn, duplicate, reordered, or checksum-invalid records are accepted beyond the prior valid prefix",
+          "Windows reparse points, cross-volume paths, or WSL v9fs are treated as stronger filesystems than proven",
+          "A model-only pass is misrepresented as shipped runtime behavior"
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "existing Ferric contracts, pure ledgers, lifecycle models, fixtures, testkit, and xtask reports",
+          "result": "Selected as the primary implementation substrate; it preserves the Rust-native dependency boundary and makes later product consumers share the proven types."
+        },
+        {
+          "candidate": "Rust core and std ownership, Drop, checked arithmetic, filesystem, and synchronization primitives",
+          "result": "Selected for owned leases, deterministic models, and local capability probes without introducing runtime dependencies."
+        },
+        {
+          "candidate": "Tokio semaphore or queue runtime",
+          "result": "Rejected as a new core dependency; its documented FIFO and owned-permit semantics inform Ferric's pure model only."
+        },
+        {
+          "candidate": "loom, proptest, a database, Python, yt-dlp, or yt-dlp companion processes",
+          "result": "Rejected for this packet; deterministic bounded schedule/fault exploration is implementable with existing Rust code and the product must have no yt-dlp dependency."
+        }
+      ],
+      "artifact_specific_justification": {
+        "contracts_and_core": "Own versioned model inputs, invariant-bearing state, owned leases, and recovery outcomes that later shipped code must consume.",
+        "testkit_and_fixtures": "Provide deterministic schedule, saturation, malformed-input, and crash-prefix counterexamples independent of implementation-local tests.",
+        "xtask_and_reports": "Bind triggered deep gates to exact source/fixture manifests and persist no-context diagnostic evidence.",
+        "model_manual": "Explains purpose, operation, evidence ceilings, failure modes, and recovery to a model with no chat context.",
+        "packet_and_refinement": "Freeze authority, assumptions, product-progress ceiling, exact proof profiles, and later runtime consumer obligations."
+      },
+      "pre_simplification_verdict": "FAIL: independent adversarial attacks reproduced resource-proof, recovery-lineage, filesystem-evidence, and report-freshness defects before remediation.",
+      "simplification_changes": [
+        "Replaced separately mutable resource accounting with one atomic ResourceVector broker and owned RAII admission boundary.",
+        "Centralized the nine byte-credit stages behind one coupled input/output reservation contract with exact owner, stage, item, and byte attribution.",
+        "Replaced observational recovery bypasses with an opaque RecoveryApplication that binds the exact prior observation, oracle-selected action, and idempotent same-action retry.",
+        "Removed hardcoded proof claims in favor of executed typed wrong-broker counterexamples, caller-created invocation receipts, and current source-manifest revalidation.",
+        "Cached immutable live platform identity evidence once per test process so concurrent report validations reuse the same bounded observations.",
+        "Shortened isolated proof-integrity target directories while retaining 128 SHA-256 bits over canonical source root plus mutation label, with direct root and label isolation tests and repository artifact containment."
+      ],
+      "post_simplification_verdict": "PASS: independently rerun public-boundary counterexamples, fresh report validation, full workspace tests, formatting, and strict Clippy now pass on the settled implementation.",
+      "complete_post_change_verification": [
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check",
+        "cargo clippy --manifest-path build/Cargo.toml --locked --workspace --all-targets --all-features -- -D warnings",
+        "cargo test --manifest-path build/Cargo.toml --locked --workspace --all-features --no-fail-fast",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-deep --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "Parse changed authority and reports, verify allowed paths, run git diff --check and secret scan, prove closure containment in main, then clean and verify .fforager-artifacts"
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-009-resource-durability-models-v1-CEILING-001",
+        "current_ceiling": "This packet supplies Phase 0 prerequisite contracts, executable models, and proof infrastructure; it provides zero product, capability, runtime, packaging, release, or phase progress.",
+        "replacement_trigger": "The first shipped Ferric scheduler, durability, and direct-HTTP slice consumes the contracts and models.",
+        "likely_upgrade_path": "Execute representative resource saturation, cancellation, byte-flow, crash-prefix, and filesystem scenarios through the exact staged Ferric product artifact.",
+        "trigger_detection_method": "FF-GATE-RUNTIME-001 changed-path classification and staged-artifact scenarios fail closed when a shipped consumer appears.",
+        "linked_evidence": [
+          ".GOV/work_packets/WP-FF-009-resource-durability-models-v1/refinement.json",
+          "product/crates/fforager-contracts/",
+          "product/crates/fforager-core/",
+          "build/crates/fforager-testkit/",
+          "build/tools/fforager-xtask/"
+        ]
+      },
+      "adversarial_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "Contract lens: attacked the 13-dimension resource vector, nine-stage credit schema, strict storage payloads, and exact public ownership boundaries for missing fields or partial grants.",
+          "Serial durability lens: attacked validate, data-sync, directory-sync, journal-append, and journal-sync ordering at every PREPARED, RENAMED, ARCHIVED, and CLEANED prefix.",
+          "State and recovery lens: attacked wrong initial actions, foreign jobs, stale leases, collisions, interrupted migration, false already-applied observations, and mismatched retries.",
+          "Resource and cancellation lens: attacked all-or-nothing saturation, FIFO head reservation, per-owner/global item and byte ceilings, and success/error/panic/cancel cleanup.",
+          "Integration lens: attacked the contract-to-core-to-testkit-to-xtask manifest linkage, filesystem profile evidence ceilings, and the future shipped-consumer boundary.",
+          "Gate and report lens: attacked stale invocation receipts, mutated source fingerprints, missing report fields, semantic overclaims, fabricated typed results, and nested proof-integrity target isolation."
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "Independent resource review ran six external boundary probes, five contract tests, eighteen core resource tests, and strict Clippy before returning PASS.",
+          "Independent durability review ran eleven storage contract tests, forty-five lifecycle tests, three external public probes, three compile-fail doctests, and strict Clippy before returning PASS.",
+          "Independent proof review parsed 48 unique manifest cases and report rows, recomputed all six source fingerprints, and confirmed semantic-only proof classes plus exact mechanisms.",
+          "The final parent verification ran the normal parallel testkit 16/16 and the complete workspace/all-features/no-fail-fast suite, including xtask 115/115 and compile-fail doctests.",
+          "The final authoritative report was regenerated after target-isolation hardening and stable lifecycle/resource proof-ID restoration at SHA-256 58d7133dd83b2521abf7528ade7aa650591b9a7e00edc04b08471d04e4fcfe0d with 48/48 cases and zero failures."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "Mutating foreign-broker durability acknowledgement to return success made the standalone WP-009 command fail with the typed PositionDoesNotMatchEffect diagnostic.",
+          "Fabricating a current-looking invocation receipt for an older persisted report made the standalone command fail with WP009-E-EXECUTION-RECEIPT-STALE.",
+          "Removing queue bounds or permitting durability to outrun validated data is rejected by testkit::tests::resource_durability_report_rejects_missing_queue_bounds_and_durability_outrun.",
+          "Changing recovery output to claim non-idempotent convergence is rejected by testkit::tests::resource_durability_report_rejects_non_idempotent_recovery_claim.",
+          "Removing required report fields or changing semantic proof attribution is rejected by xtask::tests::wp009_report_validator_rejects_missing_fields_and_false_semantics."
+        ],
+        "BOUNDARY_PROBES": [
+          "OwnedResourceBroker public requests prove complete-vector admission or exact FIFO queuing without exposing a mutable raw ledger.",
+          "OwnedByteCreditBroker public success, error, panic, and cancellation paths prove exact component, owner, stage, and zero-retained-credit outcomes.",
+          "StateMachine effect acknowledgement rejects cross-instance routing, foreign durability brokers, replay, and restoration without matching position evidence.",
+          "apply_recovery_action accepts only the oracle-selected action and exposes an opaque application whose retry accepts only the same bound action.",
+          "The xtask consumer re-parses the manifest and report, re-hashes current sources, checks the caller-created receipt, and independently validates every row."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "Oversized, unmapped, duplicate, reordered, checksum-invalid, mixed-job, and incomplete journal inputs fail closed at the prior valid durable prefix.",
+          "Blank renamed identities, incomplete archive uniqueness evidence, unsupported path confinement, WSL-v9fs strengthening, and cross-volume atomicity claims are rejected.",
+          "Wrong-broker acknowledgements produce CreditError::AcknowledgementBrokerMismatch through executed public code rather than a hardcoded evidence label.",
+          "Missing proof fields, absent or stale receipts, source-manifest drift, false semantic labels, and platform overclaims fail the independent report validator.",
+          "StateMachine remains non-Clone at the public boundary, preventing replay through copied lifecycle authority, and compile-fail doctests enforce the boundary."
+        ],
+        "INDEPENDENT_FINDINGS": [
+          {
+            "finding": "Composite resource and byte-credit concurrency needed executable bounds and leak counterexamples at the public owned boundaries; those counterexamples now pass.",
+            "finding_id": "WP-FF-009-FINDING-RESOURCE-CONCURRENCY-001",
+            "proof_id": "testkit::tests::resource_durability_report_rejects_missing_queue_bounds_and_durability_outrun",
+            "status": "REMEDIATED"
+          },
+          {
+            "finding": "Durability recovery and filesystem profiles accepted overbroad or forgeable observations; exact serial prerequisites, action lineage, and evidence ceilings now fail closed.",
+            "finding_id": "WP-FF-009-FINDING-DURABILITY-FILESYSTEM-002",
+            "proof_id": "testkit::tests::resource_durability_model_corpus_executes_public_boundaries",
+            "status": "REMEDIATED"
+          },
+          {
+            "finding": "The proof report originally permitted hardcoded or stale evidence paths; executed typed counterexamples and caller-bound fresh receipts now make those mutations fail.",
+            "finding_id": "WP-FF-009-FINDING-PROOF-REPORT-003",
+            "proof_id": "xtask::tests::wp009_report_validator_rejects_missing_fields_and_false_semantics",
+            "status": "REMEDIATED"
+          }
+        ],
+        "RESIDUAL_UNCERTAINTY": [
+          "The evidence is bounded pure-model prerequisite proof and does not execute a shipped Ferric scheduler, downloader, archive adapter, or storage runtime.",
+          "Live platform probes establish only host and repository-mount identity; they do not execute crash, power-loss, atomic-replace, confinement-race, or durability experiments.",
+          "WSL2 exposes this repository through v9fs, so it cannot substantiate a native Linux filesystem durability profile.",
+          "The caller-created invocation receipt is process-local; persisted proof remains protected by independent report, manifest, freshness, and source-fingerprint revalidation.",
+          "No shipped Ferric runtime consumer exists; model evidence cannot raise the immutable zero-product-progress ceiling."
+        ],
+        "MANUAL_REVIEW": {
+          "artifact": "product/MODEL_MANUAL.md",
+          "reviewer": "Independent adversarial proof-review subagent",
+          "method": "Compared every WP-009 manual workflow and evidence ceiling against the settled contracts, core APIs, testkit producer, xtask consumer, manifest, and fresh report.",
+          "verdict": "PASS",
+          "evidence": [
+            "The manual gives the exact locked Cargo report command, parsed output fields, startup purpose, inputs, outputs, and diagnostic navigation path.",
+            "The recovery section matches exact-action RecoveryApplication retry semantics, typed wrong-action refusal, commit-prefix ordering, and fail-closed journal behavior.",
+            "The manual explicitly reserves shipped-product validation for FF-GATE-RUNTIME-001 and preserves zero product, capability, runtime, packaging, release, and phase progress."
+          ]
+        }
+      }
+    },
+    "documentation_topics": [
+      {
+        "source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+        "section": "15.10",
+        "heading": "End-to-end byte credits and durability positions",
+        "lines": "1381-1391",
+        "use": "credit ownership and three durability positions"
+      },
+      {
+        "source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+        "section": "16.1-16.7",
+        "heading": "Scheduler and Resource Governance",
+        "lines": "1395-1487",
+        "use": "atomic vector, fixed policy, task ownership, fairness, cancellation, backpressure, saturation"
+      },
+      {
+        "source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+        "section": "23.1-23.6",
+        "heading": "Persistence, Resume, and Crash Recovery",
+        "lines": "2046-2127",
+        "use": "journal, durable state, staged commit, reconciliation, filesystem capability"
+      },
+      {
+        "source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+        "section": "Phase 0B",
+        "heading": "Contracts and state machines",
+        "lines": "2573-2578",
+        "use": "authorized contract/model scope"
+      },
+      {
+        "source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+        "section": "31.7",
+        "heading": "Broad-feature implementation readiness gates",
+        "lines": "2914-2929",
+        "use": "gates 7 and 8"
+      }
+    ],
+    "readiness_matrix_items": [
+      {
+        "json_pointer": "/consensus_blockers/4",
+        "id": "SYN-005",
+        "required_resolution": "Atomic resource-vector broker, byte-credit queues, structured ownership, cancellation, and fixed policies before adaptive behavior."
+      },
+      {
+        "json_pointer": "/consensus_blockers/5",
+        "id": "SYN-006",
+        "required_resolution": "Durable staged commit, filesystem capability, and startup reconciliation for every state prefix."
+      },
+      {
+        "json_pointer": "/peer_question_resolutions/7",
+        "question": 8,
+        "required_resolution": "Byte credits plus received, validated/written, and durable-contiguous checkpoints."
+      },
+      {
+        "json_pointer": "/peer_question_resolutions/8",
+        "question": 9,
+        "required_resolution": "Exact local-filesystem guarantees with explicit reject/degrade behavior."
+      },
+      {
+        "json_pointer": "/peer_question_resolutions/9",
+        "question": 10,
+        "required_resolution": "FFmpeg process slots plus coupled CPU, memory, disk, and pipe budgets."
+      },
+      {
+        "json_pointer": "/peer_question_resolutions/16",
+        "question": 17,
+        "required_resolution": "Versioned job/cancel, admission, fragment/durability, sink, FFmpeg, and commit/archive models."
+      },
+      {
+        "json_pointer": "/implementation_readiness_gates/6",
+        "gate": "Atomic resource-vector and byte-credit invariants with executable saturation and cancellation tests"
+      },
+      {
+        "json_pointer": "/implementation_readiness_gates/7",
+        "gate": "Commit/archive/resume fault injection across every durable state prefix"
+      }
+    ],
+    "base_scope": [
+      "Versioned resource/credit contracts",
+      "Versioned durability and recovery state models",
+      "Deterministic model/property/saturation/fault tests",
+      "Machine-readable diagnostic traces"
+    ],
+    "high_roi_additions": [
+      {
+        "addition": "Build one reusable controlled-clock schedule explorer for resource, retry, lease, timeout, and cancellation races.",
+        "why_high_roi": "Those races already share time and interleaving requirements, so one harness reduces later packet cost.",
+        "gap_closed": "Real-time tests would be flaky and miss boundary schedules.",
+        "reuses": [
+          "fforager-testkit",
+          "finite state models",
+          "stable invariant IDs"
+        ],
+        "validation": "Seed replay is deterministic and mutation cases that leak a grant or skip cancellation are detected."
+      },
+      {
+        "addition": "Emit a compact state/credit timeline and counterexample minimization in failed model reports.",
+        "why_high_roi": "It makes failures reproducible by operators and no-context models while the transition system is already instrumented.",
+        "gap_closed": "Large property-test traces are otherwise hard to diagnose.",
+        "reuses": [
+          "structured diagnostics",
+          "model transition IDs",
+          "xtask report schema"
+        ],
+        "validation": "A known failing fixture produces the same minimized trace across reruns."
+      },
+      {
+        "addition": "Use the exact same durable-prefix enum and recovery oracle in WP-FF-008 and WP-FF-011.",
+        "why_high_roi": "It prevents three implementations of crash semantics and makes vertical-slice integration cheaper.",
+        "gap_closed": "Archive, commit, and end-to-end tests could otherwise disagree.",
+        "reuses": [
+          "fforager-contracts",
+          "fforager-storage",
+          "fault corpus"
+        ],
+        "validation": "Cross-package golden fixtures deserialize and return identical next actions."
+      }
+    ],
+    "reused_systems": [
+      "WP-FF-003 executable gate and report infrastructure",
+      "WP-FF-005 versioned identity/error/cancellation/process contracts",
+      "fforager-core state-machine and resource ownership boundary",
+      "fforager-protocol byte-flow ownership boundary",
+      "fforager-storage journal/commit ownership boundary",
+      "fforager-testkit deterministic clocks and fault injection",
+      "fforager-xtask triggered deep-gate aggregation"
+    ],
+    "gaps_closed": [
+      "Independent semaphores do not define coupled admission",
+      "Byte ownership and queue bounds are not executable",
+      "Cancellation/fairness assumptions are unproven",
+      "Resume checkpoints may otherwise outrun durable data",
+      "Commit/archive crash prefixes lack executable recovery oracles",
+      "Filesystem guarantees and degraded modes are not frozen"
+    ],
+    "red_team": [
+      {
+        "risk": "Atomic admission deadlocks or starves large composite requests.",
+        "failure_scenarios": [
+          "task holds memory while waiting for FFmpeg slot",
+          "small jobs indefinitely bypass large vector",
+          "cancelled waiter remains queued"
+        ],
+        "mitigations": [
+          "single all-or-nothing grant",
+          "deterministic fairness/tie-break",
+          "RAII release",
+          "cancel-safe queue removal"
+        ],
+        "verification": "Schedule exploration and saturation tests assert no partial grant, leak, or starvation outside declared bound."
+      },
+      {
+        "risk": "A transform temporarily owns input and output without enough credits.",
+        "failure_scenarios": [
+          "decompression expansion",
+          "decrypt/reorder duplication",
+          "FFmpeg pipe plus output buffer"
+        ],
+        "mitigations": [
+          "reserve simultaneous inputs/outputs first",
+          "bounded chunking or spill",
+          "credit-transfer invariants"
+        ],
+        "verification": "Dishonest lengths and expansion-ratio fixtures remain within declared memory/disk bounds."
+      },
+      {
+        "risk": "Journal state advances beyond durable bytes.",
+        "failure_scenarios": [
+          "flush reordered after checkpoint",
+          "balanced mode loses suffix",
+          "torn record appears newer"
+        ],
+        "mitigations": [
+          "separate positions",
+          "ordered durable prerequisites",
+          "prior-hash/checksum",
+          "resume at prior valid prefix"
+        ],
+        "verification": "Crash injection after every write/sync/record step never resumes beyond durable_contiguous."
+      },
+      {
+        "risk": "Filesystem behavior is assumed portable when it is not.",
+        "failure_scenarios": [
+          "directory sync unsupported",
+          "Windows reparse-point race",
+          "cross-volume rename treated atomic",
+          "network filesystem lies about durability"
+        ],
+        "mitigations": [
+          "capability profiles",
+          "handle-relative no-follow operations",
+          "explicit degraded/rejected modes",
+          "platform-specific tests"
+        ],
+        "verification": "Windows and Unix profiles run exact positive and negative path/durability fixtures."
+      },
+      {
+        "risk": "Model proof overclaims real implementation behavior.",
+        "failure_scenarios": [
+          "code path bypasses model",
+          "hidden queue is unbounded",
+          "implementation transition missing from inventory"
+        ],
+        "mitigations": [
+          "shared contract types",
+          "constructor capability inventory",
+          "runtime fault tests",
+          "negative fixture removes a mapping"
+        ],
+        "verification": "Architecture/deep gate fails on unmapped transition or unregistered queue."
+      }
+    ],
+    "verification_needs": {
+      "required_commands_at_execution": [
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-deep --evidence-from-taskboard"
+      ],
+      "required_proof_classes": [
+        "Versioned schemas and golden transition fixtures",
+        "Deterministic model/property tests",
+        "Controlled-clock fairness and cancellation exploration",
+        "Saturation tests with item/byte/resource occupancy",
+        "Fault injection across durable prefixes",
+        "Windows and Unix filesystem capability probes",
+        "Runtime integration tripwires",
+        "Independent adversarial review"
+      ],
+      "closure_rule": "No PASS while any state transition lacks declared preconditions/invariants/postconditions, any variable-size queue lacks item and byte bounds, any generated trace permits false durability/success, or platform proof is missing for a claimed profile."
+    },
+    "applicable_rule_ids": [
+      "FF-BUILD-010",
+      "FF-BUILD-011",
+      "FF-BUILD-012",
+      "FF-BUILD-013",
+      "FF-BUILD-014",
+      "FF-BUILD-015",
+      "FF-BUILD-017",
+      "FF-BUILD-018",
+      "FF-BUILD-019",
+      "FF-BUILD-020",
+      "FF-BUILD-021",
+      "FF-BUILD-022",
+      "FF-BUILD-023",
+      "FF-BUILD-024",
+      "FF-BUILD-025",
+      "FF-BUILD-026",
+      "FF-BUILD-027",
+      "FF-BUILD-029",
+      "FF-BUILD-030",
+      "FF-BUILD-031",
+      "FF-BUILD-032",
+      "FF-BUILD-033",
+      "FF-BUILD-034",
+      "FF-BUILD-035",
+      "FF-BUILD-048",
+      "FF-BUILD-057",
+      "FF-BUILD-058",
+      "FF-BUILD-059",
+      "FF-BUILD-060",
+      "FF-BUILD-064",
+      "FF-BUILD-066",
+      "FF-BUILD-067",
+      "FF-BUILD-072"
+    ]
+  }
+}

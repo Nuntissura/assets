@@ -1,0 +1,130 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-014-durable-wire-proof-remediation-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-014-durable-wire-proof-remediation-v1",
+  "updated_at_utc": "2026-07-26T15:43:24Z",
+  "operator_request": "Remediate every finding from the completed product-code versus completed-work-packet spot check, then commit, push, and provide an overview of remaining work.",
+  "basis": {
+    "research_status": "REUSED_COMPLETED_PROJECT_RESEARCH",
+    "research_reopen_triggers": [
+      "The Operator explicitly requests new research.",
+      "The pinned Serde behavior, Rust toolchain, dependency set, or architecture harness assumption is proven stale.",
+      "A remediation decision lacks evidence in the technical design, WP-005, WP-013, current source, or reproduced public-boundary behavior."
+    ],
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#232-journal-model",
+      ".GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json",
+      ".GOV/work_packets/WP-FF-013-proof-integrity-remediation-v2/packet.json",
+      ".GOV/work_packets/WP-FF-013-proof-integrity-remediation-v2/refinement.json"
+    ],
+    "existing_research_sources": [
+      "WP-013 current official Rust and Serde implementation research",
+      "WP-013 strict Serde DTO, public-boundary counterexample, and isolated-mutation patterns",
+      "WP-005 versioned durable-contract implementation basis",
+      "Current storage contract, testkit, architecture fixtures, rule mapping, and gate implementation",
+      "Direct public deserialization reproductions for all three findings"
+    ],
+    "patterns_found": [
+      "Strict durable DTOs reject undeclared fields at every tagged-enum variant body, not only at the enclosing record.",
+      "A nonzero durable sequence must be enforced during deserialization, not only by producer convention.",
+      "A proof map is incomplete when its mutation fixtures do not touch every governed durable-wire type.",
+      "The existing isolated mutation harness and public testkit boundary can prove each correction without a new framework."
+    ],
+    "selected_approach": [
+      "Apply Serde deny_unknown_fields to JournalPayload and ReconcileState.",
+      "Deserialize JournalRecord through a private wire DTO and TryFrom validation so sequence zero fails at the public wire boundary while serialization stays stable.",
+      "Add explicit validation for programmatically constructed JournalRecord values.",
+      "Add public integration tests for invalid and canonical valid wire examples.",
+      "Extend the independent testkit boundary and add one isolated architecture mutation fixture per corrected guard.",
+      "Preserve the exact prerequisite zero-progress ceiling until a shipped consumer re-proves behavior."
+    ],
+    "rejected_options": [
+      "Documenting producer expectations without enforcing consumer-side decoding.",
+      "Replacing sequence with a new public newtype because it would widen the API and compatibility change.",
+      "Using only implementation-crate unit tests because they would not independently exercise the public boundary.",
+      "Keeping one diagnostics-only FF-BUILD-094 fixture because it leaves storage coverage unproved.",
+      "Adding dependencies or a separate proof framework."
+    ],
+    "reuse_opportunities": [
+      "Reuse existing Serde derives and serde_json test dependency.",
+      "Reuse JournalRecord construction and storage fixtures.",
+      "Reuse testkit's public_boundary_counterexamples_reject_audit_failures test.",
+      "Reuse xtask's isolated public-invariant mutation runner and FF-ARCH-E-WIRE-BOUNDARY diagnostic."
+    ],
+    "risks": [
+      "Serde tagged-enum restrictions may interact with content representation differently than expected.",
+      "A TryFrom deserialization adapter may accidentally alter serialized JSON.",
+      "One failing assertion may mask whether later mutation fixtures exercise their own guard.",
+      "The gate may accept a fixture declaration that never changes compiled behavior."
+    ],
+    "mitigations": [
+      "Test exact invalid JSON and canonical valid JSON through the public API.",
+      "Assert serialized JSON equality for valid records.",
+      "Give every architecture fixture a separate isolated mutation and expected marker.",
+      "Require the mutation runner to execute exactly one named non-ignored public test and observe its failure."
+    ],
+    "validation_plan": "Run the focused contract and testkit suites, independently remove each guard through three isolated architecture fixtures, run locked warnings-denied workspace tests and canonical gates, inspect persisted reports, verify invalid and valid public wire behavior, then perform a separate adversarial diff review before closure."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "The existing locked Serde dependency and Rust toolchain remain current for this bounded remediation.",
+      "The current journal JSON shape is authoritative for compatibility.",
+      "No shipped Ferric archive/journal runtime consumer exists."
+    ],
+    "non_goals": [
+      "Changing valid durable-wire tags or field names.",
+      "Broad schema-version redesign.",
+      "Creating a shipped runtime or advancing product phase state.",
+      "Unrelated proof, contract, or governance cleanup."
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-014-durable-wire-proof-remediation-v1-AC-001",
+    "WP-FF-014-durable-wire-proof-remediation-v1-AC-002",
+    "WP-FF-014-durable-wire-proof-remediation-v1-AC-003",
+    "WP-FF-014-durable-wire-proof-remediation-v1-AC-004",
+    "WP-FF-014-durable-wire-proof-remediation-v1-AC-005"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "unknown_field_at_nested_tagged_enum_body",
+      "unknown_field_at_reconcile_variant",
+      "zero_sequence_through_full_record_deserialization",
+      "invalid_in_memory_record_bypasses_wire_validation",
+      "valid_wire_shape_regression",
+      "architecture_fixture_declared_but_not_behavior_changing",
+      "first_failure_masks_unexercised_later_guard"
+    ],
+    "minimum_controls": [
+      "Each invalid case is tested through public serde_json deserialization.",
+      "Canonical valid records decode and serialize to the same JSON value.",
+      "Constructed records have an explicit invariant-validation method.",
+      "Each corrected guard has a distinct isolated mutation fixture and marker.",
+      "The canonical architecture gate executes all mapped fixtures."
+    ],
+    "plausible_failures": [
+      "An attacker or future producer smuggles undeclared variant data that an older consumer silently ignores.",
+      "A zero sequence becomes durable and breaks ordering or replay assumptions.",
+      "A refactor removes one Serde guard while the architecture gate continues to pass on diagnostics coverage.",
+      "A mutation changes text but the exact public test runs zero cases or fails for an unrelated compile error.",
+      "Strictness changes valid historical records."
+    ]
+  },
+  "execution_decomposition": [
+    "Commit the predeclared activation checkpoint.",
+    "Implement the smallest strict contract changes and focused public tests.",
+    "Add independent testkit assertions and one isolated mutation fixture per guard.",
+    "Run focused, aggregate, gate, and adversarial validation.",
+    "Commit closure, merge to main, verify containment, push, and report remaining authoritative work."
+  ]
+}

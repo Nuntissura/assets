@@ -1,0 +1,199 @@
+{
+  "file_id": "ferric-forager-implementation-readiness-matrix-v0.2.0",
+  "file_kind": "implementation-readiness-matrix",
+  "updated_at": "2026-07-18",
+  "source": {
+    "path": ".GOV/spec/ferric_forager_technical_design_v0.2.0.md",
+    "sha256": "5E04A35781B6D60DB25B1BEC1B1BC767877D822B85A9AF4410A9A96EE124407C",
+    "size_bytes": 106789,
+    "last_write_time": "2026-07-16T22:03:36.3197485+02:00"
+  },
+  "verdict": {
+    "complete_product_implementation_readiness": "FAIL",
+    "phase_0_charter_readiness": "PASS",
+    "summary": "Phase 0 research, inventory, corpus, contract, and risk-prototype work can start. Phase 1 and broad parallel implementation are blocked by unresolved compatibility, dependency, source-model, resource, durability, FFmpeg, update, and executable-acceptance contracts."
+  },
+  "fixed_operator_intent": {
+    "implementation_language": "Rust",
+    "production_python_allowed": false,
+    "required_external_dependency": "FFmpeg and ffprobe as supervised external processes",
+    "optimization_priority": "Speed first among correctness-, parity-, bounded-resource-, and recoverability-valid designs",
+    "compatibility_foundation": "yt-dlp behavior and source research, without a production yt-dlp runtime dependency",
+    "expanded_design_functionality_preserved": true,
+    "additional_runtime_or_native_dependencies_require_explicit_operator_approval": true
+  },
+  "review_artifacts": [
+    {
+      "lens": "architecture-performance",
+      "path": ".GOV/reviews/peer-review-v0.2.0/architecture-performance-review.md",
+      "sha256": "F9E4D41CF5B771A5CCD90F40C93776586B04DB9F6FCC94E3E0051D49DB83E06E"
+    },
+    {
+      "lens": "compatibility-product",
+      "path": ".GOV/reviews/peer-review-v0.2.0/compatibility-product-review.md",
+      "sha256": "E3905DF198ED49F7E9E0CDBFAFF96FCF373EB8B0FB7379E947F6D0B80855B280"
+    },
+    {
+      "lens": "security-reliability",
+      "path": ".GOV/reviews/peer-review-v0.2.0/security-reliability-review.md",
+      "sha256": "53D459FF8EDAAF3F25267F20739FA0677F039BB1BA835F5BFDA6340CEC673733"
+    },
+    {
+      "lens": "primary-synthesis",
+      "path": ".GOV/reviews/peer-review-v0.2.0/primary-synthesis.md",
+      "sha256": "F5A7508E4F40E60C478D89F0A35642A2F587C564092A9D158804C47995CB889D"
+    }
+  ],
+  "consensus_blockers": [
+    {
+      "id": "SYN-001",
+      "severity": "critical",
+      "title": "Rust-plus-FFmpeg dependency boundary conflicts with unproven JS, transport, plugin, and storage choices",
+      "required_resolution": "Run Rust-only challenge, transport, process-plugin, and storage spikes; request a specific operator exception only if measured evidence proves it necessary."
+    },
+    {
+      "id": "SYN-002",
+      "severity": "critical",
+      "title": "The yt-dlp compatibility target is not enumerable or executable",
+      "required_resolution": "Generate a pinned compatibility profile and mandatory oracle corpus covering invocation, source graph, sanitized network transcript, artifacts, failures, and archive semantics."
+    },
+    {
+      "id": "SYN-003",
+      "severity": "critical",
+      "title": "Current performance gates can reward inequivalent work or process topology",
+      "required_resolution": "Require equivalent work first, then compare versioned workloads using distributions and confidence bounds."
+    },
+    {
+      "id": "SYN-004",
+      "severity": "high",
+      "title": "The source model is not serializable and the main sequence places JS too late",
+      "required_resolution": "Use a canonical serializable source graph with runtime cursors separated from persisted data, and expose JS/transport services during extraction."
+    },
+    {
+      "id": "SYN-005",
+      "severity": "high",
+      "title": "Multi-resource admission and byte backpressure are incomplete",
+      "required_resolution": "Specify an atomic resource-vector broker, byte-credit queues, structured ownership, cancellation, and fixed policies before adaptive behavior."
+    },
+    {
+      "id": "SYN-006",
+      "severity": "critical",
+      "title": "Commit, resume, archive, filesystem, and path operations lack a crash-safe state machine",
+      "required_resolution": "Define durable staged commit records, no-follow root-relative path operations, filesystem capability modes, and startup reconciliation for every state prefix."
+    },
+    {
+      "id": "SYN-007",
+      "severity": "high",
+      "title": "FFmpeg supervision is weaker than the required security and recovery boundary",
+      "required_resolution": "Add trusted executable selection, version/features, environment/protocol restrictions, bounded pipe handling, process containment, cancellation, reaping, and ffprobe validation."
+    },
+    {
+      "id": "SYN-008",
+      "severity": "high",
+      "title": "Extractor and challenge updateability is deferred too late",
+      "required_resolution": "Move signed, independently versioned compatibility/update contracts with rollback and quarantine into Phase 0/1."
+    },
+    {
+      "id": "SYN-009",
+      "severity": "high",
+      "title": "Acceptance gates are qualitative rather than executable",
+      "required_resolution": "Give every gate a command, corpus version, expected artifact, threshold, timeout, failure oracle, and machine-readable report."
+    }
+  ],
+  "adjudicated_disagreements": [
+    {
+      "topic": "plugin_isolation",
+      "reviewer_positions": ["Wasm sandbox", "Rust executable process IPC"],
+      "resolution": "Rust executable process IPC is the authorized v1 direction. Wasm requires a new runtime and therefore explicit operator approval.",
+      "status": "recommended_for_design_acceptance"
+    },
+    {
+      "topic": "archive_storage",
+      "reviewer_positions": ["Hardened SQLite", "Pure-Rust store first"],
+      "resolution": "The current SQLite default is unapproved. Benchmark and fault-test a maintained pure-Rust candidate first; request a narrow SQLite exception only with evidence.",
+      "status": "blocked_pending_spike"
+    },
+    {
+      "topic": "youtube_javascript",
+      "reviewer_positions": ["Pure-Rust engine candidate", "External runtime candidates"],
+      "resolution": "Only a bounded Rust worker with a pure-Rust engine candidate is currently authorized. Corpus failure must be returned to the operator as measured evidence, not bypassed with an external runtime.",
+      "status": "blocked_pending_spike"
+    },
+    {
+      "topic": "realtime_mux",
+      "reviewer_positions": ["Retain as complete-product capability", "Delay until recovery is proven"],
+      "resolution": "Retain in scope; enable as opt-in only after record-then-mux crash and recovery behavior passes.",
+      "status": "recommended_for_design_acceptance"
+    }
+  ],
+  "peer_question_resolutions": [
+    {"question": 1, "resolution": "Native Ferric semantic contracts plus a generated yt-dlp 2026.07.04 profile and oracle corpus."},
+    {"question": 2, "resolution": "Typed core plus bounded namespaced extensions; behavior and identity fields remain typed; persisted data is fully serializable."},
+    {"question": 3, "resolution": "V1 plugins are Rust executables over bounded versioned process IPC; Wasm needs explicit future approval."},
+    {"question": 4, "resolution": "Extend transport with streaming, cancellation, pooling identity, DNS/SSRF, redirects, cookies, fingerprints, replay, and sanitized transcripts."},
+    {"question": 5, "resolution": "Impersonation blocks only claims requiring it, but full replacement cannot pass while a mandatory case needs it."},
+    {"question": 6, "resolution": "Rust worker plus pure-Rust JS engine corpus spike; no external JS runtime is authorized."},
+    {"question": 7, "resolution": "Per-job no-capability contexts, deterministic bounded IPC, resource/recursion/time limits, worker recycling, OS containment, and quarantine."},
+    {"question": 8, "resolution": "Use byte credits and separate received, validated/written, and durable-contiguous checkpoints."},
+    {"question": 9, "resolution": "Specify and test exact local-filesystem guarantees; reject or explicitly degrade unsupported/network modes until proven."},
+    {"question": 10, "resolution": "Budget FFmpeg process slots plus aggregate CPU, memory, disk, and pipe use; transcodes receive stricter admission."},
+    {"question": 11, "resolution": "Logical source order controls identity/naming; completion-order progress must also carry logical sequence and stable identity."},
+    {"question": 12, "resolution": "Equivalent-work correctness first; versioned statistical performance manifest second."},
+    {"question": 13, "resolution": "Generate the full CLI/config inventory; replace unsafe arbitrary command behavior with typed Rust equivalents or approved divergences."},
+    {"question": 14, "resolution": "Pass 100% of the mandatory deterministic corpus and every active pinned extractor URL class, or record an explicitly approved divergence."},
+    {"question": 15, "resolution": "Use trusted absolute FFmpeg/ffprobe paths or an operator-chosen verified bundle; no JS runtime is approved; storage remains undecided."},
+    {"question": 16, "resolution": "Preserve logical boundaries but start with coarse crates; split only on security, lifecycle, public API, or measured ownership/build evidence."},
+    {"question": 17, "resolution": "Define job/cancel, source/redirect, admission, fragment/durability, live, sink, FFmpeg, JS, plugin, and commit/archive state machines."},
+    {"question": 18, "resolution": "Fuzz protocol manifests, templates/selectors/paths, journals, IPC/JS/plugin frames, cookies, and FFmpeg progress with allocation/time bounds."},
+    {"question": 19, "resolution": "No Python production bridge; port in-scope behavior to Rust and the Rust plugin protocol."},
+    {"question": 20, "resolution": "Signed stable/hotfix channels, separately versioned data/protocols, atomic activation, rollback, quarantine, last-known-good, and receipts; Rust logic ships in binaries."},
+    {"question": 21, "resolution": "Internal enums may be views; the canonical persisted and IPC model is a serializable graph."},
+    {"question": 22, "resolution": "Emit only listing-known fields early with explicit tri-state semantics; resolve asset fields later and expose avoided requests."},
+    {"question": 23, "resolution": "SQLite is unapproved; test a pure-Rust store; separate item/representation/track/asset/derived identities and archive only reconcilable committed outputs."},
+    {"question": 24, "resolution": "Use bounded trusted Rust fanout with lossless recording priority; isolate untrusted or blocking sinks."},
+    {"question": 25, "resolution": "All listed HLS/DASH/MSS/live/range/encryption/discontinuity/recording/mux behavior remains mandatory; real-time mux follows recovery proof."}
+  ],
+  "phase_readiness": [
+    {
+      "phase": "Phase 0",
+      "status": "READY",
+      "allowed_scope": ["inventory", "source research", "compatibility corpus", "contracts", "risk spikes", "benchmark design", "dependency adjudication"]
+    },
+    {
+      "phase": "Phase 1 and broad parallel implementation",
+      "status": "BLOCKED",
+      "blocked_by": ["SYN-001", "SYN-002", "SYN-003", "SYN-004", "SYN-005", "SYN-006", "SYN-007", "SYN-008", "SYN-009"]
+    },
+    {
+      "phase": "Complete replacement release",
+      "status": "BLOCKED",
+      "blocked_by": ["missing executable parity corpus", "unproven Rust-only YouTube challenge path", "unproven approved transport fingerprint path", "unproven crash-safe storage and commit contracts"]
+    }
+  ],
+  "implementation_readiness_gates": [
+    "Generated versioned yt-dlp compatibility profile and mandatory corpus",
+    "Accepted public behavior, dependency, security, identity, durability, and performance decisions",
+    "Rust-only YouTube challenge corpus result",
+    "Approved Rust transport fingerprint, redirect, cookie, SSRF, replay, streaming, pooling, and cancellation result",
+    "Archive store crash, concurrency, migration, lease, and reconciliation result",
+    "Versioned serializable source graph, identity, plugin IPC, event, error, cancellation, and process protocols",
+    "Atomic resource-vector and byte-credit invariants with executable saturation and cancellation tests",
+    "Commit/archive/resume fault injection across every durable state prefix",
+    "FFmpeg supervision failure and descendant-process tests on Windows and Unix",
+    "Equivalent-work benchmark manifests with correctness gates and confidence intervals",
+    "Executable phase gates with machine-readable reports",
+    "No-context model manual, structured diagnostics, stable identifiers, and parallel-agent-safe receipts"
+  ],
+  "recommended_next_closure_unit": {
+    "name": "Phase 0 contract and risk package",
+    "outputs": [
+      "Generated yt-dlp 2026.07.04 compatibility profile and representative mandatory corpus",
+      "Bounded Rust-only EJS/YouTube challenge spike",
+      "Pure-Rust transport/fingerprint spike",
+      "Pure-Rust archive-store versus SQLite evidence matrix without pre-approving SQLite",
+      "Direct-HTTP plus HLS plus FFmpeg-stream-copy vertical slice with cancel, resume, crash reconciliation, and equivalent-work benchmark"
+    ],
+    "does_not_change_final_feature_scope": true,
+    "does_not_count_as_complete_implementation": true
+  }
+}

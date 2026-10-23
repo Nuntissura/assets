@@ -1,0 +1,201 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-020-equivalent-work-benchmark-design-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-020-equivalent-work-benchmark-design-v1",
+  "updated_at_utc": "2026-08-09T15:39:12Z",
+  "operator_request": "Create a dedicated Phase 0D benchmark-design work packet, ensure it is completed before WP-FF-011, commit and push the packet changes, then start WP-FF-010.",
+  "implementation_research_refresh": {
+    "checked_at": "2026-10-21",
+    "trigger": "The existing August planning basis leaves the implementation statistics source and environment identities unpinned; this refresh addresses those named gaps only.",
+    "sources": [
+      "https://github.com/criterion-rs/criterion.rs/blob/82b191ebf278cbe47d8da6c1bff76d8a812f61c0/src/stats/bivariate/mod.rs",
+      "https://github.com/criterion-rs/criterion.rs/blob/82b191ebf278cbe47d8da6c1bff76d8a812f61c0/src/stats/mod.rs",
+      "https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h.htm"
+    ],
+    "observed_patterns": "Criterion retains paired observations during resampling and derives percentile confidence intervals from the resulting distribution; NIST distinguishes outlier labeling from silently deleting observations.",
+    "selected_approach": "Reuse existing serde, SHA256, artifact and report primitives. Implement a bounded Ferric-owned paired-cluster percentile bootstrap with retained raw samples, deterministic declared resampling, explicit noise/outlier refusal, and strict concrete-work admission before statistical processing. No statistics dependency is present in the workspace, and Criterion identifies its statistics API as an unstable implementation detail.",
+    "rejected_options": "Adding Criterion, Hyperfine or another runtime; shell-composed measurement; independent resampling that destroys pair/cluster correlation; dropping inconvenient raw samples; treating synthetic fixture timings as measured performance.",
+    "risks_and_controls": "Externally supplied timing records remain untrusted. Bind artifacts and observations, compare all work dimensions before statistics, resample independent paired clusters, reject missing/duplicate/noisy data and crossing confidence bounds, retain unavailable metrics explicitly, and keep every design report below product or performance acceptance.",
+    "verification": "Public input parser and admission boundary; deterministic cheaper-work/provenance/topology/cache/sample/noise/statistical counterexamples; independent algorithm and source review; actual host observations only when collected, with unavailable fields explicit. No live benchmark campaign or performance claim."
+  },
+  "basis": {
+    "research_status": "CURRENT_PLANNING_BASIS_RECORDED_IMPLEMENTATION_RESEARCH_REQUIRED_BEFORE_PROMOTION",
+    "sources_checked": [
+      {
+        "source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#27-benchmark-plan-and-performance-gates",
+        "checked_at": "2026-08-09",
+        "relevant_pattern": "Equivalent work and correctness gate sample admission before timing, with pinned topology, raw metrics, distributions, and confidence bounds."
+      },
+      {
+        "source": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#prerequisite-0d--equivalent-work-benchmark-design",
+        "checked_at": "2026-08-09",
+        "relevant_pattern": "Phase 0D is non-product design evidence and must version manifests and reports."
+      },
+      {
+        "source": "https://criterion-rs.github.io/book/user_guide/command_line_output.html",
+        "checked_at": "2026-08-09",
+        "relevant_pattern": "Warmup, raw sample analysis, bootstrap confidence intervals, noise thresholds, and explicit caution about environment-driven false changes."
+      },
+      {
+        "source": "https://github.com/sharkdp/hyperfine",
+        "checked_at": "2026-08-09",
+        "relevant_pattern": "Cross-platform command benchmarking with warmup, preparation, outlier detection, and machine-readable export; useful as a field pattern, not selected as a Ferric dependency."
+      },
+      {
+        "source": "https://github.com/google/benchmark/blob/main/docs/user_guide.md",
+        "checked_at": "2026-08-09",
+        "relevant_pattern": "Repetitions, warmup, context, raw file output, custom statistics, and performance-counter reporting."
+      },
+      {
+        "source": "https://man7.org/linux/man-pages/man1/perf-stat.1.html",
+        "checked_at": "2026-08-09",
+        "relevant_pattern": "Linux counter collection supports machine-readable JSON but is platform-specific and must remain an optional declared measurement surface."
+      },
+      {
+        "source": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/performance/slow-performance-when-using-power-plan",
+        "checked_at": "2026-08-09",
+        "relevant_pattern": "Windows power-plan state materially affects benchmark behavior and belongs in the host profile."
+      }
+    ],
+    "selected_approach": [
+      "Keep equivalence predicates, sample admission, statistics policy, and report schemas Ferric-owned and strict.",
+      "Retain raw samples and normalized observations; aggregate reports never replace them.",
+      "Use typed platform measurement adapters whose unavailable metrics remain explicit without changing equality semantics.",
+      "Require behavior-changing negative fixtures before accepting timing data.",
+      "Defer any dependency selection until source, license, transitive graph, reproducibility, and need are measured during promotion."
+    ],
+    "rejected_options": [
+      "A single mean or one-machine result as a gate.",
+      "Timing before equality admission.",
+      "Using Criterion.rs alone for cross-process equivalent-work system benchmarks.",
+      "Using Hyperfine shell command composition as canonical proof.",
+      "Making Bencher or another hosted service a canonical dependency.",
+      "Making yt-dlp or an external comparison executable mandatory for canonical build, test, verification, package, or release."
+    ],
+    "reuse_opportunities": [
+      "Reuse the WP-004 compatibility corpus and normalized observation planes.",
+      "Reuse xtask strict-schema, report, fixture, and counterfactual patterns.",
+      "Reuse stable IDs and provenance hashes across diagnostics and benchmark artifacts.",
+      "Reuse `.fforager-artifacts/` for all disposable benchmark output."
+    ],
+    "validation_plan": "At promotion, bind exact source/tool versions and host profiles; implement strict schemas and public equality admission; execute isolated cheaper-work, provenance, topology, cache, raw-sample, single-mean, and noise mutations; run canonical gates and an independent HIGH-risk adversarial review; close only the non-product design contract with no product-path change."
+  },
+  "planning_contract": {
+    "base_scope": [
+      "Ferric-owned versioned benchmark manifests, normalized observations, raw samples, equality admission, rejection diagnostics, and aggregate reports",
+      "Replayable Windows and Unix host profiles with explicit metric availability and noise policy",
+      "Randomized paired sampling, raw-sample retention, distributions, and 95-percent confidence-bound gates",
+      "Deterministic unequal-work, provenance, cache, topology, missing-sample, and single-mean counterexamples",
+      "No-context xtask help and machine-readable failure/recovery output"
+    ],
+    "performance_contract": {
+      "correctness_precedes_timing": true,
+      "equivalence_dimensions": ["source_graph", "request_sequence", "bytes_and_fragments", "selected_streams", "output_and_ffprobe_facts", "metadata_and_sidecars", "archive_action", "validation", "failure_class", "cache_and_network_state", "process_topology"],
+      "statistics": ["randomized_paired_order", "warmup", "minimum_repetitions", "raw_samples", "outlier_and_noise_policy", "distributions", "95_percent_confidence_bounds"],
+      "claim_rule": "Samples enter timing only after equality passes; upper confidence bounds govern no-regression and lower confidence bounds govern any improvement claim; a single mean never passes."
+    },
+    "high_roi_additions": [
+      {
+        "addition": "Use one provenance-bound run-manifest digest as the join key for equality observations, raw samples, diagnostics, faults, and aggregate reports.",
+        "why_high_roi": "All surfaces already need the same identities, so one join key cheaply prevents mixed-run evidence and improves parallel-agent attribution.",
+        "gap_closed": "Plausible reports from different source, tool, corpus, cache, or topology states could otherwise be combined.",
+        "reuses": ["stable IDs", "xtask reports", "compatibility corpus hashes", "diagnostic provenance"],
+        "validation": "Aggregation rejects every artifact whose manifest digest differs."
+      },
+      {
+        "addition": "Retain raw samples and deterministic equality-rejection replay bundles for every failed admission.",
+        "why_high_roi": "The gate already computes these observations, so retention makes later regressions and agent handoffs reproducible without another noisy run.",
+        "gap_closed": "Aggregate-only evidence hides false equivalence, lost samples, and environmental noise.",
+        "reuses": ["fixture convention", "normalized observations", "report schema", ".fforager-artifacts/"],
+        "validation": "A fresh no-context replay reproduces the same normalized rejection offline."
+      },
+      {
+        "addition": "Separate platform measurement adapters from Ferric-owned equality and statistics policy.",
+        "why_high_roi": "Platform counters differ while admission semantics must remain portable, letting later packets add metrics without rewriting correctness policy.",
+        "gap_closed": "One unavailable OS counter could otherwise disable the benchmark or silently change its meaning.",
+        "reuses": ["typed report contracts", "host profiles", "unsupported-result conventions"],
+        "validation": "Windows and Unix fixtures produce the same equality verdict while declaring platform-specific metric availability."
+      }
+    ],
+    "reused_systems": [
+      "WP-FF-003 gate/report infrastructure",
+      "WP-FF-004 pinned compatibility corpus and normalized observations",
+      "WP-FF-005 versioned contracts",
+      "WP-FF-012 runtime-truth and proof-integrity patterns",
+      "fforager-xtask strict-schema/report aggregation",
+      "existing negative-fixture and counterfactual conventions",
+      "Appendix C benchmark IDs"
+    ],
+    "gaps_closed": [
+      "No executable equivalent-work admission before timing",
+      "No provenance-safe raw-sample/report join",
+      "No replayable Windows/Unix benchmark profile contract",
+      "No fail-closed statistical confidence/noise contract",
+      "No deterministic cheaper-work rejection corpus"
+    ],
+    "verification_needs": [
+      "Independent validator reruns strict schemas, equality admission, statistics, and aggregation.",
+      "Behavior-changing declaration-preserving counterexamples reject cheaper work, cache asymmetry, topology shifts, provenance drift, missing samples, one mean, and excessive noise.",
+      "Windows and Unix profiles reproduce the same semantic verdict while recording unsupported measurements explicitly.",
+      "Canonical architecture, PR, deep, artifact-hygiene, secret-scan, and adversarial-review gates pass from the same source and manifest identity.",
+      "Closure records zero product, capability, runtime, packaging, release, and phase progress and names WP-FF-021/WP-FF-011 as future consumers."
+    ]
+  },
+  "scope_edges": {
+    "assumptions": [
+      "The current design and committed compatibility corpus remain canonical.",
+      "Optional comparison execution is observational and non-canonical.",
+      "Windows and Unix measurement capabilities differ and must be declared rather than silently normalized away.",
+      "The live FF-GATE-RUNTIME-001 changed-path classifier cannot currently validate a build-only PREREQUISITE; promotion remains blocked until a separately authorized classifier remediation preserves the Phase 0 prerequisite/NONE distinction without requiring token product code."
+    ],
+    "non_goals": [
+      "Performance claims or release thresholds without measured variance.",
+      "Phase 1 or Phase 2 product implementation.",
+      "A new runtime, native dependency, hosted service, or shell-based canonical path."
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-020-equivalent-work-benchmark-design-v1-AC-001",
+    "WP-FF-020-equivalent-work-benchmark-design-v1-AC-002",
+    "WP-FF-020-equivalent-work-benchmark-design-v1-AC-003",
+    "WP-FF-020-equivalent-work-benchmark-design-v1-AC-004",
+    "WP-FF-020-equivalent-work-benchmark-design-v1-AC-005",
+    "WP-FF-020-equivalent-work-benchmark-design-v1-AC-006"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "unequal_work",
+      "process_topology_shift",
+      "cache_asymmetry",
+      "provenance_mismatch",
+      "raw_sample_loss",
+      "biased_order",
+      "noise_threshold_abuse",
+      "declaration_only_pass",
+      "optional_tool_becomes_required"
+    ],
+    "minimum_controls": [
+      "Equality admission precedes statistics.",
+      "Raw samples and normalized observations remain linked to one manifest digest.",
+      "Deliberately cheaper work fails before timing.",
+      "Confidence bounds and noise policy fail closed.",
+      "Canonical proof succeeds with optional comparison tools absent.",
+      "Independent review runs isolated counterfactuals."
+    ],
+    "plausible_failures": [
+      "A faster sample omitted required work.",
+      "A report mixed different builds or hosts.",
+      "One side received a warm cache or cheaper topology.",
+      "An aggregate hid missing or rejected samples.",
+      "A hosted or external tool became an undeclared prerequisite."
+    ]
+  },
+  "execution_decomposition": [
+    "Refresh and record exact implementation research and dependency candidates.",
+    "Freeze schemas, profiles, thresholds, failure oracles, and commands; promote the STUB.",
+    "Implement Ferric-owned equality, sample, statistics, and report validation with negative fixtures.",
+    "Run Windows/Unix evidence, canonical gates, and independent adversarial review.",
+    "Close as scope.product_impact PREREQUISITE with the frozen non-product declaration, zero product progress, and merge containment proof."
+  ]
+}

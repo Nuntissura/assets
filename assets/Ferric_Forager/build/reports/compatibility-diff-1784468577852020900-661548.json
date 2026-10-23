@@ -1,0 +1,93 @@
+{
+  "schema_id": "ff.compatibility-report@1",
+  "schema_version": "1.0.0",
+  "command": "compatibility-diff",
+  "status": "PASS",
+  "source": {
+    "git_commit": "ca6f41f28870a9a3ec355840487f1bf3e3fc8928",
+    "dirty": false,
+    "dirty_paths": []
+  },
+  "inputs": {
+    "build/fixtures/compatibility/corpus-v1/manifest.json": "1016c7836f3b0d6660105abf13a639376f457f51121f709c98a27b0b161f6c78",
+    "build/fixtures/compatibility/live-canaries-v1/manifest.json": "3808834a75c3d6f368618e740e2dbcac6fdab610b42396a39c7a8863b4522321",
+    "build/fixtures/compatibility/yt-dlp-2026.07.04/oracle-manifest.json": "b0f8a5ee045c7645966a37df60c133caeb3b863bfb068495431a0f9fbedd78ef",
+    "build/fixtures/compatibility/yt-dlp-2026.07.04/profile.json": "f64d65c1c24bece65a641d4e305710a9760de3367f7f7f83bbac5f67fb79f55c"
+  },
+  "checks": [
+    {
+      "id": "differential-completeness",
+      "status": "PASS",
+      "detail": "every one of 7 corpus cases has an explicit row; missing_features=7"
+    }
+  ],
+  "negative_fixtures": [],
+  "differential_rows": [
+    {
+      "case_id": "case-archive-duplicate-v1",
+      "status": "DIFFERENT",
+      "classification": "missing_feature",
+      "decision_id": null,
+      "expected_digest": "fd06d465d44022830778b95e27ee47a46d7ce66f92c1c3c445bf1231a9606ed3",
+      "observed_digest": null
+    },
+    {
+      "case_id": "case-failure-timeout-v1",
+      "status": "DIFFERENT",
+      "classification": "missing_feature",
+      "decision_id": null,
+      "expected_digest": "29c9686a18a6643c85627e6a992c8703c1906a08725ffb3c932a4f55530786b0",
+      "observed_digest": null
+    },
+    {
+      "case_id": "case-filesystem-process-artifact-v1",
+      "status": "DIFFERENT",
+      "classification": "missing_feature",
+      "decision_id": null,
+      "expected_digest": "1e0026228569425f243016f30b6bf913812380b79d23632e9a3c05dc0a838458",
+      "observed_digest": null
+    },
+    {
+      "case_id": "case-migration-config-v1",
+      "status": "DIFFERENT",
+      "classification": "missing_feature",
+      "decision_id": null,
+      "expected_digest": "ea6db0260a439feeb2079fbcf9ec505cae898d423ad1c998cc152cb59ca7ec8c",
+      "observed_digest": null
+    },
+    {
+      "case_id": "case-normalized-observation-v1",
+      "status": "DIFFERENT",
+      "classification": "missing_feature",
+      "decision_id": null,
+      "expected_digest": "400997d9f76a1a2ad6c1cc4a7aa06d867a23d63bb17263f954d4d3e1aa0d25b1",
+      "observed_digest": null
+    },
+    {
+      "case_id": "case-sanitized-transcript-v1",
+      "status": "DIFFERENT",
+      "classification": "missing_feature",
+      "decision_id": null,
+      "expected_digest": "1283da6c2f3e22e71b18dd5d80b4fcc519d916962dd8e3c1113d4d824790b7bf",
+      "observed_digest": null
+    },
+    {
+      "case_id": "case-source-graph-direct-v1",
+      "status": "DIFFERENT",
+      "classification": "missing_feature",
+      "decision_id": null,
+      "expected_digest": "8a2cda5b90f14ca95c93e09f51c510c8f1c8cb4badcd9ff1c690d83e1c9cd254",
+      "observed_digest": null
+    }
+  ],
+  "artifacts": [
+    "build/fixtures/compatibility/yt-dlp-2026.07.04/profile.json",
+    "build/fixtures/compatibility/corpus-v1/manifest.json",
+    "build/reports"
+  ],
+  "proof_limitations": [
+    "Corpus validation and report completeness do not prove Ferric feature parity.",
+    "Live canaries are opt-in nondeterministic observations and never satisfy offline deterministic acceptance.",
+    "The generated profile inventories pinned oracle surfaces; later compatibility rows remain missing features until implemented and compared."
+  ]
+}

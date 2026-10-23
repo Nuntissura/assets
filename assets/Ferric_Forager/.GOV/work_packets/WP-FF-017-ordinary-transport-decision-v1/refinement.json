@@ -1,0 +1,154 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-017-ordinary-transport-decision-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-017-ordinary-transport-decision-v1",
+  "updated_at_utc": "2026-07-28T23:00:15Z",
+  "operator_request": "Resolve WP-FF-015's failed wreq transport-candidate decision with a two-engine direction, explicitly approving shipped reqwest 0.13.4 with rustls 0.23.42 and native ring 0.17.14 under narrow Ferric-owned controls while wreq remains non-shipped and disabled; use distinct-lens subagents to adversarially review and harden the implementation.",
+  "basis": {
+    "research_status": "COMPLETE_SELECTED_NARROW_REQWEST_RING_DECISION",
+    "reused_research": [
+      ".GOV/work_packets/WP-FF-007-transport-fingerprint-spike-v1/refinement.json",
+      ".GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/refinement.json"
+    ],
+    "current_primary_sources": [
+      {
+        "source": "https://github.com/seanmonstar/reqwest/releases/tag/v0.13.4",
+        "inspected_at": "2026-07-28",
+        "evidence": "Official release history identifies reqwest 0.13.4 as the current stable release."
+      },
+      {
+        "source": "https://docs.rs/reqwest/0.13.4/reqwest/struct.ClientBuilder.html",
+        "inspected_at": "2026-07-28",
+        "evidence": "The official builder exposes explicit DNS resolver injection, address overrides, redirect policy, no-proxy mode, timeouts, per-host idle-pool controls, TLS backend selection, and decompression disable controls; defaults include automatic redirects, system proxy discovery through the default feature set, no total timeout, and no bounded global in-flight admission."
+      },
+      {
+        "source": "https://docs.rs/crate/reqwest/0.13.4/features",
+        "inspected_at": "2026-07-28",
+        "evidence": "The rustls feature selects aws-lc-rs, while rustls-no-provider permits an explicit provider and default features also enable system-proxy behavior."
+      },
+      {
+        "source": "https://docs.rs/rustls/0.23.42/rustls/crypto/struct.CryptoProvider.html",
+        "inspected_at": "2026-07-28",
+        "evidence": "Rustls documents maintained aws-lc-rs and ring providers and supports constructing a ClientConfig with an explicitly supplied provider."
+      },
+      {
+        "source": "https://docs.rs/rustls-rustcrypto/0.0.2-alpha/rustls_rustcrypto/",
+        "inspected_at": "2026-07-28",
+        "evidence": "The all-Rust provider is alpha, incomplete, and explicitly warns against production use."
+      },
+      {
+        "source": "https://github.com/0x676e67/wreq/releases/tag/v6.0.0-rc.29",
+        "inspected_at": "2026-07-28",
+        "evidence": "The browser-emulation v6 candidate remains a release candidate and retains the native BoringSSL surface adjudicated by WP-FF-015."
+      }
+    ],
+    "inspected_implementation_evidence": [
+      "A repository-local disposable Cargo metadata resolution proved reqwest 0.13.4 with its rustls feature selects aws-lc-rs 1.17.3, aws-lc-sys 0.43.0, ring 0.17.14, cmake, and native build/link surfaces.",
+      "A second repository-local disposable Cargo metadata resolution proved reqwest 0.13.4 with rustls-no-provider plus rustls 0.23.42 ring selects the narrower ring 0.17.14 native link/build surface without AWS-LC or CMake.",
+      "Direct inspection of the locked ring 0.17.14 crate proved that its packaged Windows build consumes bundled C source plus pregenerated NASM object files from the crate; FF-DEC-002 must expose and govern that exact packaged-object boundary rather than claiming a source-only Windows build.",
+      "Locked Cargo metadata and source inspection proved rustls-no-provider selects rustls-platform-verifier 0.7.0; its Windows verifier uses native FFI, so the package must remain explicitly governed even though Ferric's provider-bound ClientConfig bypasses platform trust selection at runtime.",
+      "The exact graph inspection ran under .fforager-artifacts and the canonical cleanup gate subsequently verified items=0."
+    ],
+    "selected_approach": [
+      "Create FF-DEC-002 as the exact Operator-approved shipped native dependency decision for future fforager-net use of reqwest 0.13.4, rustls 0.23.42, and ring 0.17.14.",
+      "Require reqwest default features off, rustls-no-provider, a provider-bound ring ClientConfig, exact webpki-roots 1.0.9, and only the reviewed HTTP/2 and streaming feature surface.",
+      "Authorize ring's packaged pregenerated Windows assembly objects only for exact locked ring 0.17.14, with Cargo.lock and cached archive checksums, full extracted source-tree digest, exact features, recursive content-inventory digest, reachability, and native-link validation; do not generalize that allowance to other prebuilt artifacts.",
+      "Record rustls-platform-verifier 0.7.0 as an exact selected native-runtime package, validate its Cargo.lock/archive/full-source identity, Windows FFI source and empty feature set, and prove the ordinary runtime path bypasses it through reqwest's preconfigured TLS boundary.",
+      "Pin the complete ordinary root-reachable package identity, selected-feature, and edge closure under separate FF-DEC-002 authority so build policy alone cannot self-authorize an unknown no-links FFI dependency.",
+      "Keep Ferric authoritative for destination admission, DNS/SSRF receipts, redirects, cookies, proxies, pool partitioning, concurrency, byte/decompression bounds, timeouts, retries, cancellation, and diagnostics.",
+      "Retain FF-DEC-001 only for the existing non-shipped WP-FF-015 evidence; wreq remains forbidden from product, packaging, release, and runtime paths.",
+      "Represent fingerprint-required requests as a stable typed browser-transport-required refusal until a separate fingerprint transport closes its blockers and receives a new Operator decision.",
+      "Extend the architecture validator so product-native exceptions are explicit, exact, mechanically distinct from prerequisite-only exceptions, and mutation-tested."
+    ],
+    "rejected_options": [
+      "Reqwest's normal rustls feature because it silently selects the broader aws-lc-rs/aws-lc-sys and CMake surface in addition to ring.",
+      "Rustls RustCrypto because its current provider is alpha, incomplete, and explicitly not production-ready.",
+      "Promoting wreq because WP-FF-015 retained unresolved wire-parity, DNS/SSRF, pool, cancellation, and cross-platform blockers and the Operator explicitly kept it non-shipped.",
+      "Forking wreq or hand-building browser fingerprints because Ferric would inherit a security-critical, continuously changing browser-wire maintenance burden.",
+      "Adding Chromium, curl-impersonate, libcurl, Python, yt-dlp, or another runtime/native path because the Operator did not authorize them and their packaging/lifecycle surface is larger.",
+      "Building the complete Phase 1 downloader in this packet because the request resolves the transport decision and Phase 1 additionally requires storage, archive, watcher, diagnostics, launcher, and staged-runtime closure."
+    ],
+    "risks_and_mitigations": [
+      {
+        "risk": "The rustls label hides native crypto or feature drift.",
+        "mitigation": "Pin all three direct versions, disable defaults, enumerate exact features/native links/build packages, and make architecture mutations for AWS-LC, native-tls, default features, version drift, and extra consumers fail."
+      },
+      {
+        "risk": "Ring's crates.io Windows build silently consumes packaged pregenerated assembly objects while governance claims no prebuilt inputs.",
+        "mitigation": "Expose a ring-specific packaged-object authority bit and canonical object-inventory digest, retain the general prebuilt-binary prohibition, verify exact ring identity/features/source markers/object bytes through the locked package, and mutation-test authority or digest drift."
+      },
+      {
+        "risk": "The rustls-no-provider label hides rustls-platform-verifier's selected Windows FFI dependency.",
+        "mitigation": "Govern exact rustls-platform-verifier 0.7.0 as a native-runtime package, validate its selected feature/source surface, bind reqwest to a Ferric-built rustls ClientConfig and root store, and report the selected-but-bypassed package explicitly."
+      },
+      {
+        "risk": "Reqwest defaults become Ferric policy.",
+        "mitigation": "Require no_proxy, no automatic redirects, no cookie store, no automatic decompression, no dependency retry authority, explicit deadlines, and Ferric-owned admission before any future production I/O."
+      },
+      {
+        "risk": "Ordinary HTTPS success is mislabeled browser compatibility.",
+        "mitigation": "Make TLS and HTTP/2 fingerprint requirements return a typed browser-transport-required result before network execution and retain mandatory corpus blockers."
+      },
+      {
+        "risk": "Client reuse crosses security contexts or bypasses global limits.",
+        "mitigation": "Require immutable Ferric pool keys and separately constructed clients per compatible partition; resource admission remains outside reqwest and must bound global and per-origin in-flight work."
+      },
+      {
+        "risk": "The decision packet is mistaken for shipped capability.",
+        "mitigation": "Keep the exact prerequisite zero-progress ceiling and require the future fforager-net consumer to re-prove the decision through FF-GATE-RUNTIME-001."
+      }
+    ],
+    "validation_plan": "Resolve and lock the exact reqwest/rustls/ring graph in the non-shipped transport proof package; extend canonical native-exception validation to distinguish product-authorized and prerequisite-only decisions; add declaration-preserving mutations for consumer, runtime class, product-use flag, versions, features, AWS-LC/default-feature drift, native links, ring packaged-object authority, wreq product reachability, and browser-required refusal; run transport, xtask, architecture, runtime-ceiling, deep/PR as triggered, and secret gates; dispatch distinct transport-security, resource-lifecycle, and dependency/proof-integrity reviewers; remediate confirmed findings with public-boundary regressions and rerun the complete matrix."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "The Operator's exact approval authorizes the named shipped dependency surface but not the complete Phase 1 runtime slice.",
+      "The future production consumer is the accepted fforager-net package from design Section 9.",
+      "Canonical proof remains offline; current external source checks establish dependency selection context but do not become runtime proof."
+    ],
+    "non_goals": [
+      "Shipped downloader or fforager CLI implementation.",
+      "Wreq product promotion or browser-fingerprint compatibility.",
+      "Global Phase 1 readiness or product-progress claims.",
+      "Delegating Ferric security, resource, retry, cookie, redirect, or diagnostics authority to reqwest."
+    ]
+  },
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "native dependency and additive Cargo feature escape",
+      "product versus prerequisite exception confusion",
+      "reqwest default policy leakage",
+      "DNS/SSRF and redirect pre-connect bypass",
+      "pool partition and admission leakage",
+      "browser-fingerprint downgrade or false capability success",
+      "wreq product reachability",
+      "structural graph checks mislabeled behavioral proof"
+    ],
+    "minimum_controls": [
+      "At least three distinct-lens subagent reviews after implementation.",
+      "At least two implementation-independent checks beyond the implementer's command list.",
+      "Concrete counterfactuals for product-native authorization and browser-required refusal.",
+      "Boundary and negative probes for policy defaults, consumer/runtime drift, native-link drift, wreq reachability, and false PASS.",
+      "Every confirmed finding becomes a public-boundary regression before closure."
+    ]
+  },
+  "execution_decomposition": [
+    "Activate WP-FF-017 and FF-DEC-002 decision work on a dedicated branch.",
+    "Implement exact product-native exception semantics and graph validation without weakening FF-DEC-001.",
+    "Resolve and test the reqwest/rustls/ring candidate under the retained non-shipped transport proof boundary.",
+    "Update design and no-context manual with the decision, controls, typed gap, and future runtime proof requirement.",
+    "Run targeted and canonical gates.",
+    "Dispatch distinct-lens adversarial subagent reviews, remediate findings, and rerun.",
+    "Record MERGE_PENDING, merge to main, prove containment, and clear active focus."
+  ],
+  "acceptance_ids": [
+    "WP-FF-017-ordinary-transport-decision-v1-AC-001",
+    "WP-FF-017-ordinary-transport-decision-v1-AC-002",
+    "WP-FF-017-ordinary-transport-decision-v1-AC-003",
+    "WP-FF-017-ordinary-transport-decision-v1-AC-004",
+    "WP-FF-017-ordinary-transport-decision-v1-AC-005",
+    "WP-FF-017-ordinary-transport-decision-v1-AC-006",
+    "WP-FF-017-ordinary-transport-decision-v1-AC-007"
+  ]
+}

@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "wrong-root-build-file"
+mutation = "add_wrong_root_build_file"
+expected_diagnostic = "FF-ARCH-E-WRONG-ROOT"

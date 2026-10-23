@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "remove-public-boundary-counterexample-test"
+mutation = "remove_public_boundary_counterexample_test"
+expected_diagnostic = "FF-ARCH-E-PUBLIC-COUNTEREXAMPLE-MISSING"

@@ -1,0 +1,172 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "TRACKED",
+  "identity": {
+    "wp_id": "WP-FF-001-governance-workflow-v1",
+    "base_wp_id": "WP-FF-001-governance-workflow",
+    "version": "1",
+    "title": "Low-friction governance workflow",
+    "created_at_utc": "2026-07-17T23:53:21Z",
+    "updated_at_utc": "2026-07-18T00:14:34Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator requested deterministic model navigation, minimal paperwork, reliable state tracking and recovery, and optional worktrees; product delivery remains the goal.",
+    "recorded_at_utc": "2026-07-17T23:53:21Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "40ab5e90c34870d9fa97ddd95770bb1446ead612",
+    "work_branch": "codex/governance-low-friction",
+    "worktree_policy": "REMOVED",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/governance-low-friction",
+      "head_sha": "c201babcd20ec0b9327bdfee19af0ea2657b6d1f",
+      "verified_at_utc": "2026-07-18T00:14:34Z"
+    },
+    "closure_commit": "cf9d47ab8145b0ad182bc696bf81db059defbbff",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "7eda44ec9f0b37e4742e25d44afffa78e4567773"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "LOW",
+    "blockers": [],
+    "next_action": null,
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Make model navigation deterministic and state recovery reliable with minimal YAML/JSON plus native Git, without adding product code or governance executables.",
+    "in_scope": [
+      "Deterministic conditional navigation",
+      "DIRECT, TRACKED, and EXPANDED profiles",
+      "Single-packet detailed state and recovery checkpoints",
+      "Optional native Git worktree lifecycle",
+      "Committed and remote-backed recovery"
+    ],
+    "non_goals": [
+      "Product implementation",
+      "Product scope or readiness changes"
+    ],
+    "allowed_paths": [
+      "START_HERE.yaml",
+      ".GOV/codex.yaml",
+      ".GOV/id-registry.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/work_packets/WP-FF-001-governance-workflow-v1/packet.json"
+    ],
+    "dependencies": ["Git"]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-001-governance-workflow-v1-AC-001",
+      "requirement": "A no-context model can deterministically select authority and resume active work from START_HERE.yaml, the taskboard active ID, and packet.json.",
+      "status": "PROVED",
+      "evidence": [
+        "START_HERE.yaml declares a four-file ordered startup set, conditional reads, task profiles, and packet checkpoint resume fields.",
+        "Invariant check resolved current_focus.active_wp_id to the matching packet identity."
+      ]
+    },
+    {
+      "id": "WP-FF-001-governance-workflow-v1-AC-002",
+      "requirement": "Project rules enforce product-first minimal paperwork through explicit DIRECT, TRACKED, and EXPANDED triggers.",
+      "status": "PROVED",
+      "evidence": [
+        "FF-CODEX-040 through FF-CODEX-047 enforce product-first governance, profile triggers, state, recovery, worktrees, and deterministic navigation.",
+        "WORK_PACKET_REQUIREMENTS.yaml preserves all FF-WPR-001 through FF-WPR-040 IDs while making conditional material trigger-based."
+      ]
+    },
+    {
+      "id": "WP-FF-001-governance-workflow-v1-AC-003",
+      "requirement": "The taskboard contains only the packet index and active focus while packet.json contains detailed lifecycle, proof, and recovery state.",
+      "status": "PROVED",
+      "evidence": [
+        "Invariant check proved taskboard work_packets entries contain only wp_id and packet and that no counts key exists.",
+        "Negative probes rejected derived counts, copied lifecycle status, and a missing active packet."
+      ]
+    },
+    {
+      "id": "WP-FF-001-governance-workflow-v1-AC-004",
+      "requirement": "Optional worktrees use native Git create, inspect, clean-remove, repair, and prune-preview commands without committed physical paths.",
+      "status": "PROVED",
+      "evidence": [
+        "git worktree list --porcelain showed the locked WP-FF-001 worktree on codex/governance-low-friction.",
+        "git worktree repair and git worktree prune --dry-run --verbose exited 0.",
+        "Invariant and negative-path checks rejected committed machine-local worktree paths."
+      ]
+    },
+    {
+      "id": "WP-FF-001-governance-workflow-v1-AC-005",
+      "requirement": "Recovery uses a checkpoint commit on a remote-backed work branch.",
+      "status": "PROVED",
+      "evidence": [
+        "Implementation checkpoint cf9d47ab8145b0ad182bc696bf81db059defbbff was committed on codex/governance-low-friction.",
+        "git push created origin/codex/governance-low-friction and git ls-remote returned the same SHA."
+      ]
+    },
+    {
+      "id": "WP-FF-001-governance-workflow-v1-AC-006",
+      "requirement": "Closure becomes VALIDATED only after git merge-base proves the closure commit is contained in main.",
+      "status": "PROVED",
+      "evidence": [
+        "Negative probe passed: git merge-base --is-ancestor rejected a non-commit closure object with exit 128.",
+        "git merge-base --is-ancestor cf9d47ab8145b0ad182bc696bf81db059defbbff main exited 0 after merge commit 7eda44ec9f0b37e4742e25d44afffa78e4567773."
+      ]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-18T00:14:34Z",
+      "branch": "main",
+      "base_sha": "40ab5e90c34870d9fa97ddd95770bb1446ead612",
+      "head_sha": "7eda44ec9f0b37e4742e25d44afffa78e4567773",
+      "dirty_paths": [
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/work_packets/WP-FF-001-governance-workflow-v1/packet.json"
+      ],
+      "checks_run": [
+        "git branch --show-current: codex/governance-low-friction",
+        "git rev-parse HEAD: 40ab5e90c34870d9fa97ddd95770bb1446ead612",
+        "git merge-base main HEAD: 40ab5e90c34870d9fa97ddd95770bb1446ead612",
+        "YAML and JSON parse: PASS for all changed authority/state files",
+        "Cross-file invariant check: PASS",
+        "Adversarial state-drift and physical-path probes: PASS",
+        "git diff --check: PASS",
+        "git fsck --no-dangling: PASS",
+        "git worktree list/repair/prune-preview: PASS",
+        "git push and git ls-remote: origin/codex/governance-low-friction at c201babcd20ec0b9327bdfee19af0ea2657b6d1f",
+        "git merge-base --is-ancestor closure main: PASS",
+        "git merge-base --is-ancestor branch-state main: PASS",
+        "clean locked worktree unlock/remove: PASS"
+      ],
+      "blockers": [],
+      "next_action": "Commit this validated closure state and push main."
+    }
+  },
+  "validation": {
+    "checks": [
+      {"result": "YAML/JSON parsing passed for all changed authority, template, taskboard, registry, and packet files."},
+      {"result": "Rule-ID, ID-registry, taskboard/packet, topology, bootstrap-mirror, scope, and no-product-edit invariants passed."},
+      {"result": "Negative probes rejected derived taskboard state, copied lifecycle state, a missing active packet, a physical worktree path, and an invalid closure object."},
+      {"result": "Native Git worktree list, repair, and prune preview passed; the packet worktree remains locked."},
+      {"result": "git diff --check and git fsck --no-dangling passed."},
+      {"result": "Branch checkpoint cf9d47ab8145b0ad182bc696bf81db059defbbff was pushed and independently resolved from origin."}
+    ],
+    "not_proven": []
+  },
+  "extensions": {}
+}

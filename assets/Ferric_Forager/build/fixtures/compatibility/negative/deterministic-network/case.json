@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "deterministic-network",
+  "mutation": "enable_network_for_deterministic_case",
+  "expected_diagnostic": "FF-COMP-E-DETERMINISTIC-NETWORK: deterministic case permits network"
+}

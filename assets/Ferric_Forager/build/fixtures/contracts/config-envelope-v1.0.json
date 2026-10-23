@@ -1,0 +1,1 @@
+{"header":{"schema_id":"ff.config@1","version":{"major":1,"minor":0},"request_id":"request_config_1","producer_id":"producer_1","job_id":null,"sequence":1},"compatibility":{"major":1,"minimum_minor":0,"maximum_minor":1},"values":{"core.mode":"archive"}}

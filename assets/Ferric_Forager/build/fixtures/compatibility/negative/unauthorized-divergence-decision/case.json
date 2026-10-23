@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "unauthorized-divergence-decision",
+  "mutation": "accepted_divergence_with_unauthorized_decision",
+  "expected_diagnostic": "FF-COMP-E-DIVERGENCE-DECISION: decision ID is not authorized: invented-decision"
+}

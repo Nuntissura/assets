@@ -1,0 +1,404 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-014-durable-wire-proof-remediation-v3",
+    "base_wp_id": "WP-FF-014-durable-wire-proof-remediation",
+    "version": "3",
+    "title": "Close durable-wire strictness and architecture-proof gaps",
+    "created_at_utc": "2026-07-26T15:50:10Z",
+    "updated_at_utc": "2026-07-26T16:42:02Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator requested remediation of every reported spot-check finding, followed by commit, push, and an overview of remaining work. This v3 preserves the full technical scope and evidence while superseding two invalid prerequisite packet activations.",
+    "recorded_at_utc": "2026-07-26T15:50:10Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#232-journal-model",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#versioned-contracts",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#f1-executable-enforcement"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "405c054005102417a6ce992795a2752bc26c40dc",
+    "work_branch": "codex/durable-wire-proof-remediation",
+    "worktree_policy": "ISOLATED_PARALLEL_DIRTY_WORK",
+    "worktree_id": "WP-FF-014-durable-wire-proof-remediation",
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/durable-wire-proof-remediation",
+      "head_sha": "3fc401920ccad89cf10b631441e211d37a070a6c",
+      "verified_at_utc": "2026-07-26T16:42:02Z"
+    },
+    "closure_commit": "f63cbae2f69b4c1d25e3295cf52ffdb22dc903f5",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "33f0818562cd418567ca4acfa12b9190229252cd"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "Await Operator selection before activating another work packet.",
+    "supersedes": [
+      "WP-FF-014-durable-wire-proof-remediation-v1",
+      "WP-FF-014-durable-wire-proof-remediation-v2"
+    ],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Reject unrecognized nested durable-wire fields and journal sequence zero at public deserialization boundaries, then make architecture proof fail when each guard is independently removed.",
+    "product_impact": "PREREQUISITE",
+    "zero_progress_declaration": "This packet remediates design-authorized Phase 0 prerequisite contracts and proof tooling only; it claims zero product, capability, runtime, packaging, release, replacement-parity, or phase progress. A future Ferric archive/journal slice must consume and re-prove these invariants through FF-GATE-RUNTIME-001.",
+    "in_scope": [
+      "Preserve every technical requirement, acceptance row, proof, limitation, and recorded failure from v1 and v2",
+      "Reject unknown JournalPayload variant-body fields at the public Serde boundary",
+      "Reject unknown ReconcileState variant fields at the public Serde boundary",
+      "Reject JournalRecord sequence zero during public deserialization while preserving valid wire shape",
+      "Expose explicit JournalRecord validation for constructed values",
+      "Maintain valid and invalid public-boundary regression tests",
+      "Maintain independent FF-BUILD-094 compiled mutations for every corrected storage guard",
+      "Run focused, workspace, architecture, deep, prerequisite, PR, and adversarial checks"
+    ],
+    "non_goals": [
+      "Changing valid journal tags, fields, or JSON shape",
+      "Adding a distributed Ferric entrypoint or claiming execution behavior",
+      "Broad contract redesign, unrelated cleanup, or new dependencies",
+      "Repeating current research without a named stale-source trigger",
+      "Erasing or rewriting prior packet failures"
+    ],
+    "allowed_paths": [
+      ".GOV/archive/work_packets/WP-FF-014-durable-wire-proof-remediation/",
+      ".GOV/id-registry.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/packet.json",
+      ".GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/refinement.json",
+      "build/rule-to-proof.toml",
+      "build/fixtures/architecture/durable-journal-payload-unknown-field/",
+      "build/fixtures/architecture/durable-journal-record-unknown-field/",
+      "build/fixtures/architecture/durable-journal-sequence-zero/",
+      "build/fixtures/architecture/durable-reconcile-state-unknown-field/",
+      "build/crates/fforager-testkit/src/lib.rs",
+      "build/tools/fforager-xtask/src/main.rs",
+      "build/reports/",
+      "product/crates/fforager-contracts/src/storage.rs",
+      "product/crates/fforager-contracts/tests/durable_wire.rs"
+    ],
+    "dependencies": [
+      "Existing locked Rust workspace and approved dependencies only",
+      "Validated WP-005 versioned contracts, WP-012 truth gate, and WP-013 proof-integrity remediation",
+      "Existing FF-BUILD-094 wire-boundary rule and architecture mutation harness",
+      "Archived WP-014 v1 and v2 evidence and implementation commits"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v3-AC-001",
+      "requirement": "Public Serde decoding rejects an unknown JournalPayload body field, an unknown JournalRecord top-level field, an unknown ReconcileState variant field, and JournalRecord sequence zero.",
+      "proof_class": "public_wire_boundary_negative_tests",
+      "status": "PASS",
+      "evidence": [
+        "product/crates/fforager-contracts/tests/durable_wire.rs::durable_wire_rejects_unknown_variant_fields_and_sequence_zero",
+        "build/crates/fforager-testkit/src/lib.rs::public_boundary_counterexamples_reject_audit_failures"
+      ]
+    },
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v3-AC-002",
+      "requirement": "Canonical valid durable-wire examples decode and round-trip without changing field or tag shape, and constructed sequence-zero records fail explicit validation.",
+      "proof_class": "wire_compatibility_and_invariant_tests",
+      "status": "PASS",
+      "evidence": [
+        "product/crates/fforager-contracts/tests/durable_wire.rs::valid_journal_wire_round_trips_without_shape_change",
+        "product/crates/fforager-contracts/tests/durable_wire.rs::constructed_sequence_zero_record_fails_explicit_validation"
+      ]
+    },
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v3-AC-003",
+      "requirement": "FF-BUILD-094 independently removes each corrected guard in an isolated copy, invokes the compiled public boundary, and fails for the expected behavior rather than a declaration-only check.",
+      "proof_class": "independent_compiled_mutation",
+      "status": "PASS",
+      "evidence": [
+        "FF-GATE-ARCH-001 report build/reports/architecture-check-1785082207435451000-103884.json",
+        "Four storage fixtures each report counterfactual, isolated-compiled-public-boundary execution, and FF-ARCH-E-WIRE-BOUNDARY"
+      ]
+    },
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v3-AC-004",
+      "requirement": "All listed canonical and independent checks meet their defined expectations while preserving the exact prerequisite zero-progress ceiling.",
+      "proof_class": "aggregate_validation",
+      "status": "PASS",
+      "evidence": [
+        "Focused, workspace, Clippy, architecture, and deep checks meet expectations",
+        "FF-GATE-RUNTIME-001 report build/reports/runtime-truth-check-1785081249644554300-102280.json meets its prerequisite expectation",
+        "FF-GATE-PR-001 clean report build/reports/verify-pr-1785084003719873900-92052.json is bound to closure commit f63cbae2f69b4c1d25e3295cf52ffdb22dc903f5"
+      ]
+    },
+    {
+      "id": "WP-FF-014-durable-wire-proof-remediation-v3-AC-005",
+      "requirement": "Independent adversarial review covers public-boundary bypasses, valid-wire compatibility, counterfactual guard removal, failure paths, and residual uncertainty.",
+      "proof_class": "independent_adversarial_review",
+      "status": "PASS",
+      "evidence": [
+        "Base-to-head adversarial diff inspection across contracts, testkit, fixtures, rule mapping, and xtask",
+        "Structured independent review in extensions.change_evidence.adversarial_review"
+      ]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-26T16:42:02Z",
+      "branch": "codex/durable-wire-proof-remediation",
+      "base_sha": "405c054005102417a6ce992795a2752bc26c40dc",
+      "head_sha": "33f0818562cd418567ca4acfa12b9190229252cd",
+      "dirty_paths": [
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/packet.json"
+      ],
+      "checks_run": [
+        "Focused contract and public-boundary checks met expectations.",
+        "Warnings-denied Clippy and locked full workspace checks met expectations.",
+        "FF-GATE-ARCH-001 report build/reports/architecture-check-1785080043944725200-81096.json met expectations.",
+        "FF-GATE-DEEP-001 report build/reports/verify-deep-1785080474396690800-94140.json met expectations.",
+        "Archived v1 and v2 retain every prerequisite-gate failure and diagnostic.",
+        "PASS: final 53-fixture architecture report build/reports/architecture-check-1785082207435451000-103884.json.",
+        "PASS: clean FF-GATE-PR-001 report build/reports/verify-pr-1785084003719873900-92052.json bound to f63cbae2f69b4c1d25e3295cf52ffdb22dc903f5.",
+        "PASS: closure commit f63cbae2f69b4c1d25e3295cf52ffdb22dc903f5 is contained in main merge 33f0818562cd418567ca4acfa12b9190229252cd.",
+        "PASS: remote backup origin/codex/durable-wire-proof-remediation contains MERGE_PENDING state at 3fc401920ccad89cf10b631441e211d37a070a6c."
+      ],
+      "blockers": [],
+      "next_action": "Commit the validated containment record and clear canonical active focus."
+    }
+  },
+  "validation": {
+    "checks": [
+      "PASS: cargo fmt --manifest-path build/Cargo.toml --all -- --check",
+      "PASS: cargo clippy --manifest-path build/Cargo.toml --locked --workspace --all-targets --all-features -- -D warnings",
+      "PASS: cargo test --manifest-path build/Cargo.toml --locked --workspace --all-features --no-fail-fast",
+      "PASS: FF-GATE-ARCH-001 report build/reports/architecture-check-1785080043944725200-81096.json",
+      "PASS: FF-GATE-DEEP-001 report build/reports/verify-deep-1785080474396690800-94140.json",
+      "Archived prior revisions retain prerequisite declaration diagnostics",
+      "MEETS EXPECTATION: FF-GATE-RUNTIME-001 report build/reports/runtime-truth-check-1785081249644554300-102280.json",
+      "PASS: focused durable-wire checks and exact public counterexample receipt v5",
+      "PASS: post-review warnings-denied workspace Clippy",
+      "PASS: final 53-fixture FF-GATE-ARCH-001 report build/reports/architecture-check-1785082207435451000-103884.json with all four storage rows attributed as counterfactual",
+      "EXPECTED PRE-CORRECTION FAIL: FF-GATE-PR-001 report build/reports/verify-pr-1785082284735890500-96056.json rejected the incomplete applicable-rule inventory; all 33 canonical REQUIRED architecture rules are now cited",
+      "EXPECTED PRE-CORRECTION FAIL: aggregate report build/reports/verify-pr-1785083418494815000-99832.json rejected completion wording attached to the prerequisite gate evidence; the evidence now uses neutral wording",
+      "PASS: clean FF-GATE-PR-001 report build/reports/verify-pr-1785084003719873900-92052.json bound to f63cbae2f69b4c1d25e3295cf52ffdb22dc903f5",
+      "PASS: closure commit f63cbae2f69b4c1d25e3295cf52ffdb22dc903f5 is an ancestor of main merge 33f0818562cd418567ca4acfa12b9190229252cd",
+      "PASS: remote backup origin/codex/durable-wire-proof-remediation contains MERGE_PENDING state at 3fc401920ccad89cf10b631441e211d37a070a6c"
+    ],
+    "not_proven": [
+      "Ferric archive/journal execution through a distributed entrypoint",
+      "Archive persistence against a real entrypoint",
+      "Distribution, cross-platform execution, or replacement parity"
+    ]
+  },
+  "extensions": {
+    "non_product_prerequisite": {
+      "schema_id": "ff.non-product-prerequisite@1",
+      "classification": "phase0_supporting_evidence",
+      "design_authority": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#232-journal-model",
+      "product_progress": false,
+      "capability_progress": false,
+      "runtime_completion": false,
+      "packaging_or_release_progress": false,
+      "phase_progress": false,
+      "required_future_consumer": "the first shipped Ferric archive and journal slice",
+      "required_future_proof": "FF-GATE-RUNTIME-001 through the exact staged production artifact"
+    },
+    "refinement": ".GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/refinement.json",
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-014-durable-wire-proof-remediation-v3-AC-001",
+        "WP-FF-014-durable-wire-proof-remediation-v3-AC-002",
+        "WP-FF-014-durable-wire-proof-remediation-v3-AC-003",
+        "WP-FF-014-durable-wire-proof-remediation-v3-AC-004",
+        "WP-FF-014-durable-wire-proof-remediation-v3-AC-005"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Invalid durable wire fails at the public consumer boundary",
+          "Valid durable wire retains its established shape",
+          "Every correction has a behavior-changing compiled counterfactual",
+          "Prerequisite state is machine-readable at this revision's first checkpoint"
+        ],
+        "risk_cases": [
+          "A nested tagged-enum field is silently accepted",
+          "Sequence zero enters durable state",
+          "Storage DTOs remain absent from architecture mutation coverage",
+          "A fixture edits text without reaching compiled behavior",
+          "Packet history is rewritten instead of superseded"
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "Rejected because producer convention alone allowed the reproduced invalid wire inputs and supplied no counterfactual gate evidence."
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "Selected for existing storage DTOs, public validation patterns, testkit consumer boundary, canonical fixtures, and xtask mutation harness."
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "Selected for TryFrom, Display, Error, and explicit validation without introducing another invariant or error framework."
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "Selected for locked Cargo compilation and isolated filesystem workspaces already governed by the architecture gate."
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "Selected for existing Serde and serde_json derives, strict decoding, public boundary inputs, and shape-preserving round trips."
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "Selected as four strict guards with focused tests and four isolated mutations; no public newtype, dependency, or parallel proof framework is required."
+        }
+      ],
+      "artifact_specific_justification": {
+        "storage_contract": "Owns durable-wire types and sequence invariant.",
+        "contract_tests": "Exercise invalid and canonical valid public inputs.",
+        "testkit_counterexample": "Provides an independent compiled consumer.",
+        "architecture_fixtures": "Remove each guard independently.",
+        "packet_revision": "Preserves failed history and starts with an immutable safe prerequisite declaration."
+      },
+      "pre_simplification_verdict": "FAIL: invalid durable inputs were accepted, storage counterfactuals were absent, and two packet revisions could not satisfy activation-time prerequisite proof.",
+      "simplification_changes": [
+        "Use existing Serde conversion and deny-unknown-field mechanisms.",
+        "Reuse one public counterexample and the existing mutation runner.",
+        "Add only three storage-specific fixtures.",
+        "Supersede invalid activations without rewriting history."
+      ],
+      "post_simplification_verdict": "PASS: strict durable decoding, valid-wire preservation, independent compiled mutations, and exact proof attribution are all evidenced.",
+      "complete_post_change_verification": [
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check",
+        "cargo clippy --manifest-path build/Cargo.toml --locked --workspace --all-targets --all-features -- -D warnings",
+        "cargo test --manifest-path build/Cargo.toml --locked --workspace --all-features --no-fail-fast",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-deep --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "Parse changed authority, verify allowed paths, run git diff --check, and prove closure containment in main"
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-014-durable-wire-proof-remediation-v3-CEILING-001",
+        "current_ceiling": "This packet repairs Phase 0 durable contracts and proof prerequisites; no Ferric archive/journal entrypoint exists.",
+        "replacement_trigger": "The first shipped Ferric archive/journal slice consumes these contracts.",
+        "likely_upgrade_path": "Execute representative valid and invalid durable records through the exact staged Ferric artifact under FF-GATE-RUNTIME-001.",
+        "trigger_detection_method": "Changed-path classification and staged-artifact scenarios fail closed when a distributed consumer appears.",
+        "linked_evidence": [
+          "product/crates/fforager-contracts/src/storage.rs",
+          "build/crates/fforager-testkit/src/lib.rs",
+          "build/tools/fforager-xtask/src/main.rs",
+          ".GOV/rules/build-rules.yaml"
+        ]
+      },
+      "adversarial_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "Contract and serialization boundary: tagged-enum body strictness, record-level strictness, sequence origin, valid JSON shape, and public error behavior.",
+          "State and resource boundary: a public-field JournalRecord can be constructed with sequence zero, so explicit validation remains necessary outside deserialization.",
+          "Integration boundary: implementation-crate tests, the independent testkit consumer, canonical fixtures, and exact receipt selection must agree.",
+          "Gate and mutation boundary: every Serde or validation guard must be removed independently, compile, execute one exact public test, fail at its marker, and report the counterfactual proof class."
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "Inspected the full base-to-head storage, public-test, testkit, fixture, mapping, and xtask diff rather than relying on the implementation summary.",
+          "Executed 35 contract unit tests, 3 durable-wire integration tests, doctests, and the exact testkit public counterexample with receipt v5.",
+          "Executed warnings-denied Clippy across the locked workspace, all targets, all features, and corrected every emitted diagnostic.",
+          "Inspected persisted architecture rows for each durable fixture, its concrete mutation, exact compiled boundary, stable diagnostic, and result-level proof class."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "Removed JournalPayload deny_unknown_fields in an isolated workspace and observed the exact public assertion reject the regression.",
+          "Removed JournalRecordWire deny_unknown_fields in an isolated workspace and observed the exact public assertion reject the top-level regression.",
+          "Removed ReconcileState deny_unknown_fields in an isolated workspace and observed the exact public assertion reject the regression.",
+          "Bypassed JournalRecord sequence validation in an isolated workspace and observed the exact public assertion reject sequence zero."
+        ],
+        "BOUNDARY_PROBES": [
+          "Probed sequence zero through full JournalRecord deserialization and sequence one through canonical decoding.",
+          "Probed an undeclared JournalPayload body field, JournalRecord top-level field, and ReconcileState variant field.",
+          "Probed canonical JournalRecord JSON decode and encode equality so the valid wire field and tag shape is unchanged.",
+          "Probed programmatic mutation to sequence zero and required JournalRecord::validate to return JournalRecordError::SequenceZero."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "Invalid nested payload data returns a Serde error rather than being silently discarded.",
+          "Invalid record-level data and sequence zero return a Serde error before domain use.",
+          "A mutation compile error or unrelated failure cannot satisfy the fixture because the runner requires both error: test failed and the case-specific assertion marker.",
+          "A named but unexecuted public test cannot satisfy proof because the runner uses one exact non-ignored test and validates its receipt."
+        ],
+        "INDEPENDENT_FINDINGS": [
+          {
+            "finding_id": "WP-FF-014-FINDING-DURABLE-WIRE-001",
+            "finding": "Four durable-wire rejection and validation boundaries now fail closed while canonical valid JournalRecord JSON retains its established shape.",
+            "status": "REMEDIATED",
+            "proof_id": "testkit::tests::public_boundary_counterexamples_reject_audit_failures"
+          },
+          {
+            "finding_id": "WP-FF-014-FINDING-PROOF-ATTRIBUTION-001",
+            "finding": "Storage guard-removal fixtures now report counterfactual as the executed result class instead of only declaring that support in the rule map.",
+            "status": "REMEDIATED",
+            "proof_id": "FF-GATE-ARCH-001::durable-storage-counterfactuals"
+          }
+        ],
+        "RESIDUAL_UNCERTAINTY": [
+          "Public JournalRecord fields still permit invalid programmatic construction; callers must use validate until a separately authorized API-breaking invariant type is introduced.",
+          "No Ferric archive/journal entrypoint exists, so actual persistence and reconciliation behavior requires later staged-artifact evidence.",
+          "Source mutation anchors are formatting-sensitive by design; an unmatched refactor fails the architecture gate rather than creating false evidence."
+        ],
+        "MANUAL_REVIEW": {
+          "artifact": "product/MODEL_MANUAL.md",
+          "reviewer": "primary Codex adversarial reviewer after the independent base-to-head diff audit",
+          "method": "Directly inspected the purpose, repository ownership, canonical commands, contract operation, dispatch validation, failure recovery, and future evidence ceiling.",
+          "verdict": "PASS",
+          "evidence": [
+            "The manual identifies journal, commit, archive, durability, canonical fixtures, owners, and focused locked Cargo commands.",
+            "The manual's recovery guidance directs boundary callers to validate typed data, reject unknown mandatory data, preserve typed failures, and rerun exact counterexamples.",
+            "The manual distinguishes prerequisite contract evidence from later staged-artifact behavior and names FF-GATE-RUNTIME-001 for the future consumer."
+          ]
+        }
+      }
+    }
+  }
+}

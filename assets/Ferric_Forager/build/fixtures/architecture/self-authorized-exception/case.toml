@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "self-authorized-exception"
+mutation = "add_unapproved_exception"
+expected_diagnostic = "FF-ARCH-E-UNAPPROVED-EXCEPTION"

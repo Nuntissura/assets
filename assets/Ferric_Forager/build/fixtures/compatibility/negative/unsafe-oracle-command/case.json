@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "unsafe-oracle-command",
+  "mutation": "unsafe_oracle_command",
+  "expected_diagnostic": "FF-COMP-E-UNPINNED-ORACLE: oracle manifest identity or policy mismatch"
+}

@@ -1,0 +1,14 @@
+{
+  "schema_id": "ff.oracle-archive-observation@1",
+  "case_id": "case-archive-duplicate-v1",
+  "archive_before": ["generic alpha"],
+  "request": {
+    "extractor_key": "generic",
+    "media_id": "alpha"
+  },
+  "expected": {
+    "decision": "skip-already-recorded",
+    "archive_after": ["generic alpha"],
+    "output_created": false
+  }
+}

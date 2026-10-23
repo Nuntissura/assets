@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "clippy-conf-dir-poison"
+mutation = "clippy_conf_dir_poison"
+expected_diagnostic = "FF-ARCH-E-RUST-ENV-OVERRIDE"

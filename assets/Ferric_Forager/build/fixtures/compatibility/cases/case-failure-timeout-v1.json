@@ -1,0 +1,14 @@
+{
+  "schema_id": "ff.oracle-failure-observation@1",
+  "case_id": "case-failure-timeout-v1",
+  "input": {
+    "operation": "network-request",
+    "deadline_ms": 1000
+  },
+  "expected_error": {
+    "category": "timeout",
+    "retryable": true,
+    "completion": "incomplete-evidence",
+    "success": false
+  }
+}

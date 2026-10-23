@@ -2428,6 +2428,138 @@ assets:
   discovery_rationale: hsscrap owns reusable item metadata and provenance but intentionally excludes subscriptions,
     source appearances and acquisition state. Existing resolver/rendering assets do not own source scheduling; RSS
     composes hsscrap instead of adding a divergent item schema or host-specific acquisition logic.
+- id: FERRIC-FORAGER-ASSET-001
+  name: Ferric Forager
+  path: assets/Ferric_Forager
+  kind: asset
+  status: source-present
+  purpose: Independent Rust-native media discovery, acquisition, recording, extraction, metadata, archiving, and
+    protocol handling, with a separate diagnostics watcher.
+  capabilities:
+  - media discovery
+  - acquisition
+  - recording
+  - extraction
+  - metadata
+  - archiving
+  - protocols
+  - independent diagnostics watcher
+  manual: assets/Ferric_Forager/START_HERE.yaml
+  packages:
+  - name: fforager-javascript
+    manifest: assets/Ferric_Forager/build/crates/fforager-javascript/Cargo.toml
+    api: assets/Ferric_Forager/build/crates/fforager-javascript/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-contracts
+  - name: fforager-testkit
+    manifest: assets/Ferric_Forager/build/crates/fforager-testkit/Cargo.toml
+    api: assets/Ferric_Forager/build/crates/fforager-testkit/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-contracts
+    - fforager-core
+    - fforager-diagnostics-contract
+    - fforager-storage
+  - name: fforager-transport
+    manifest: assets/Ferric_Forager/build/crates/fforager-transport/Cargo.toml
+    api: assets/Ferric_Forager/build/crates/fforager-transport/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-contracts
+  - name: fforager-xtask
+    manifest: assets/Ferric_Forager/build/tools/fforager-xtask/Cargo.toml
+    api: assets/Ferric_Forager/build/tools/fforager-xtask/Cargo.toml
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-contracts
+  - name: fforager-cli
+    manifest: assets/Ferric_Forager/product/apps/fforager-cli/Cargo.toml
+    api: assets/Ferric_Forager/product/apps/fforager-cli/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on: []
+  - name: fforager-launcher
+    manifest: assets/Ferric_Forager/product/apps/fforager-launcher/Cargo.toml
+    api: assets/Ferric_Forager/product/apps/fforager-launcher/Cargo.toml
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-cli
+  - name: fforager-worker
+    manifest: assets/Ferric_Forager/product/apps/fforager-worker/Cargo.toml
+    api: assets/Ferric_Forager/product/apps/fforager-worker/Cargo.toml
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager
+    - fforager-cli
+  - name: fforager
+    manifest: assets/Ferric_Forager/product/crates/fforager/Cargo.toml
+    api: assets/Ferric_Forager/product/crates/fforager/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-core
+    - fforager-net
+    - fforager-storage
+  - name: fforager-contracts
+    manifest: assets/Ferric_Forager/product/crates/fforager-contracts/Cargo.toml
+    api: assets/Ferric_Forager/product/crates/fforager-contracts/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on: []
+  - name: fforager-core
+    manifest: assets/Ferric_Forager/product/crates/fforager-core/Cargo.toml
+    api: assets/Ferric_Forager/product/crates/fforager-core/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-contracts
+  - name: fforager-diagnostics-contract
+    manifest: assets/Ferric_Forager/product/crates/fforager-diagnostics-contract/Cargo.toml
+    api: assets/Ferric_Forager/product/crates/fforager-diagnostics-contract/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on: []
+  - name: fforager-ffmpeg
+    manifest: assets/Ferric_Forager/product/crates/fforager-ffmpeg/Cargo.toml
+    api: assets/Ferric_Forager/product/crates/fforager-ffmpeg/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-contracts
+    - fforager-core
+  - name: fforager-net
+    manifest: assets/Ferric_Forager/product/crates/fforager-net/Cargo.toml
+    api: assets/Ferric_Forager/product/crates/fforager-net/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on: []
+  - name: fforager-storage
+    manifest: assets/Ferric_Forager/product/crates/fforager-storage/Cargo.toml
+    api: assets/Ferric_Forager/product/crates/fforager-storage/src/lib.rs
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-contracts
+    - fforager-core
+  - name: fforager-watcher
+    manifest: assets/Ferric_Forager/product/watcher/Cargo.toml
+    api: assets/Ferric_Forager/product/watcher/Cargo.toml
+    role: package
+    version: 0.1.0
+    depends_on:
+    - fforager-diagnostics-contract
+  source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/Ferric_Forager
+  governance:
+    mode: existing
+    entrypoint: assets/Ferric_Forager/AGENTS.md
+  work_scope: assets/Ferric_Forager
 drafts:
 - id: HANDSHAKE-SWARM-STATE-DRAFT-001
   path: assets/hskernel/crates/handshake_swarm_state

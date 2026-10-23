@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "wire-zero-or-unknown-field"
+mutation = "wire_zero_or_unknown_field"
+expected_diagnostic = "FF-ARCH-E-WIRE-BOUNDARY"

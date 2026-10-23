@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "runtime-noop-success"
+mutation = "runtime_noop_success"
+expected_diagnostic = "FF-RUNTIME-E-NO-OBSERVABLE"

@@ -1,0 +1,390 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-008-archive-store-evidence-v2",
+    "base_wp_id": "WP-FF-008-archive-store-evidence",
+    "version": "2",
+    "title": "Produce archive-store selection and failure evidence with corrected durability lineage",
+    "created_at_utc": "2026-08-02T13:27:34Z",
+    "updated_at_utc": "2026-08-02T23:13:30Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Operator explicitly instructed Codex on 2026-08-02 to start implementing WP-FF-008, use no more than three parallel subagents, independently adversarially review every large implementation block through different lenses, clean all Cargo/test artifacts at finish, tolerate long waits on a heavily loaded PC, never close processes Codex did not start, and preserve Ferric's complete independence from yt-dlp.",
+    "recorded_at_utc": "2026-08-02T13:27:34Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#174-archive-backed-duplicate-prevention",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#23-persistence-resume-and-crash-recovery",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0c--dependency-and-risk-spikes",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#3012-archive-identity-errors",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#appendix-c--benchmark-matrix",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/consensus_blockers/0",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/consensus_blockers/5",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/adjudicated_disagreements/1",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/implementation_readiness_gates/4"
+    ],
+    "decision_ids": ["D-021", "D-022"]
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "7cb53af59268b7838d2b640f32f10b8168ff2acd",
+    "work_branch": "codex/archive-store-evidence",
+    "worktree_policy": "LINKED_REPO_LOCAL_HELPER",
+    "worktree_id": "WP-FF-008-archive-store-evidence-v2",
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/archive-store-evidence",
+      "head_sha": "92c4d08dd3ea0481a87eb793bc29706838e9e054",
+      "verified_at_utc": "2026-08-02T23:13:30Z"
+    },
+    "closure_commit": "92505bd29112c989bb4fbecf5eb58af96ec458e3",
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "92c4d08dd3ea0481a87eb793bc29706838e9e054"
+  },
+  "lifecycle": {
+    "status": "VALIDATED",
+    "risk": "HIGH",
+    "blockers": [],
+    "next_action": "No WP-008 action remains. Await separate Operator direction before activating another work packet.",
+    "supersedes": ["WP-FF-008-archive-store-evidence-v1"],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Resolve the archive-backend readiness gate with a bounded pure-Rust-first spike that measures maintained candidates against Ferric's complete identity, transactional uniqueness, lease, crash, migration, reconciliation, and scale contract.",
+    "product_impact": "PREREQUISITE",
+    "in_scope": [
+      "Preserve separate item, representation, track, asset, and derived-output identities with versioned uniqueness and provenance keys.",
+      "Implement a candidate-neutral archive boundary and the smallest redb 4.1.0 adapter needed to test transactional claims, leases, successful-output insertion, and idempotent reconciliation.",
+      "Exercise output-without-row, row-without-output, stale lease, torn/corrupt store, duplicate claim, and interrupted migration failure classes with fail-closed typed results.",
+      "Measure membership lookup, insertion, write amplification proxy, memory, storage size, and recovery behavior at representative and one-million-identity scales when host time permits.",
+      "Test schema creation, forward migration, interrupted migration, last-known-good recovery, Ferric-owned mapped text-archive import, and rejection of unknown identity mappings.",
+      "Produce a machine-readable candidate evidence matrix separating semantic PASS, FAIL, unsupported capability, and residual uncertainty.",
+      "Adversarially review contracts/identity, storage/durability, and proof/reporting blocks through independent lenses and turn confirmed findings into public-boundary regressions."
+    ],
+    "non_goals": [
+      "Authorizing SQLite, a remote database, native bindings, Python, yt-dlp, yt-dlp companion assets, or another runtime dependency.",
+      "Non-goal: broad storage-subsystem work and any product, capability, runtime, packaging, release, or phase advancement.",
+      "Using benchmark speed as acceptance when crash, identity, lease, migration, or reconciliation correctness fails.",
+      "Executing or requiring yt-dlp for build, test, verification, runtime, packaging, fallback, or delegated work."
+    ],
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-008-archive-store-evidence-v2/packet.json",
+      ".GOV/work_packets/WP-FF-008-archive-store-evidence-v2/refinement.json",
+      ".GOV/archive/work_packets/WP-FF-008-archive-store-evidence/WP-FF-008-archive-store-evidence-v1/packet.json",
+      ".GOV/taskboard/taskboard.yaml",
+      "build/Cargo.toml",
+      "build/Cargo.lock",
+      "build/architecture-policy.toml",
+      "build/tooling-policy.toml",
+      "build/rule-to-proof.toml",
+      "product/crates/fforager-contracts/",
+      "product/crates/fforager-core/",
+      "product/crates/fforager-storage/",
+      "build/crates/fforager-testkit/",
+      "build/tools/fforager-xtask/",
+      "build/fixtures/archive-store-evidence/",
+      "build/integration-tests/",
+      "build/benches/",
+      "build/reports/",
+      "product/MODEL_MANUAL.md"
+    ],
+    "dependencies": [
+      "WP-FF-003-executable-gate-bootstrap-v2 closure 27887cea0026a9db218b623ce8e69fc0cf191fb0 is VALIDATED and contained in main.",
+      "WP-FF-004-compatibility-inventory-corpus-v2 closure 9a39cc597da1fc646c628e64910dbfcf2a0f947e is VALIDATED; only Ferric-owned committed archive oracle data may be consumed.",
+      "WP-FF-005-versioned-core-contracts-v1 closure acf5465518e94984848e7d1f725575a99daebd55 is VALIDATED.",
+      "WP-FF-009-resource-durability-models-v2 closure 605667f6562c7ae1d51af66bf13bec5f49c24338 is VALIDATED and supersedes the stale v1 dependency recorded by WP-008-v1.",
+      "Canonical architecture, runtime-truth, PR, and triggered deep gates remain authoritative."
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-008-archive-store-evidence-v2-AC-001",
+      "requirement": "A versioned machine-readable archive contract defines identity levels, uniqueness, provenance, success-event insertion, leases, reconciliation, migrations, import mapping, filesystem guarantees, bounds, and typed errors independent of a storage engine.",
+      "proof_class": "semantic_contract_boundary",
+      "status": "PASS",
+      "evidence": [
+        "product/crates/fforager-contracts/src/archive.rs defines strict versioned wire types for five identity levels, immutable claim provenance, leases, key-bound success events, reconciliation, migration/import, filesystem commitments, bounds, and typed errors without importing redb.",
+        "The canonical workspace run passed all 61 fforager-contracts unit tests and 3 durable-wire integration tests, including exact-expiry, provenance, reconciliation, event/key, migration, import, and bound failures."
+      ]
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v2-AC-002",
+      "requirement": "Maintained redb 4.1.0 and fjall 3.1.8 are inspected at source/configuration/test level, sled 0.34.7 and SQLite are explicitly rejected or deferred, and redb executes the same candidate-neutral workload without native/runtime dependencies.",
+      "proof_class": "source_inspection_and_dependency_policy",
+      "status": "PASS",
+      "evidence": [
+        "build/Cargo.toml exact-pins redb =4.1.0 with default features disabled; product/crates/fforager-storage exposes only Ferric-owned candidate-neutral types and no public redb types.",
+        "refinement.json records source/configuration/test inspection of redb 4.1.0, fjall 3.1.8, sled 0.34.7, and RustSec advisory-db commit 308808d74a1462ec8b09c1e76938471c53b55dcc; redb was selected, fjall deferred, and sled plus SQLite rejected."
+      ]
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v2-AC-003",
+      "requirement": "Public-boundary deterministic tests cover concurrent duplicate claims, stale leases, archive/commit mismatches, corrupt/torn input, restart reconciliation, and interrupted migration with no false success.",
+      "proof_class": "behavioral_fault_and_counterfactual",
+      "status": "PASS",
+      "evidence": [
+        "product/crates/fforager-storage/src/lib.rs passed 13 candidate-boundary tests covering independent-handle duplicate claims, exact lease/provenance replay, write-blocked migration activation, restart reconciliation, corrupt input, unknown versions, and phase/table coupling.",
+        "build/crates/fforager-testkit/src/lib.rs::tests::archive_store_evidence_corpus_executes_public_boundary executes 24 manifest cases and behavior-removal mutations; verify-deep reran it against settled source with zero failed checks."
+      ]
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v2-AC-004",
+      "requirement": "A machine-readable evidence report records exact source/candidate/fixture identities, workloads, timeout, environment, correctness oracles, latency distributions, memory and storage bounds, and scale results including B-021 or an explicit blocked row.",
+      "proof_class": "executed_candidate_evidence_report",
+      "status": "PASS",
+      "evidence": [
+        "build/reports/wp-ff-008-archive-store-evidence-70288-1785711038123498700.json has SHA-256 b14efb7927f765d689adebc2c5393f8b14606b036dca8ff93474396404b3727c, manifest fingerprint sha256:a94fae7f90f6575037e073af1bbe327e38f6b9a2f5547172985d4f69e4a97331, five current source fingerprints, and 24 unique rows.",
+        "The report records 23 semantic PASS rows, zero failed rows, and one honest B-021 BLOCKED row because FFORAGER_RUN_B021 was not enabled; it records endpoint RSS rather than peak RSS and labels the generator memory figure as a derived bound."
+      ]
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v2-AC-005",
+      "requirement": "Schema creation, forward migration, interrupted migration recovery, mapped text-archive import, unknown-mapping rejection, and idempotent reconciliation execute through the candidate-neutral public boundary.",
+      "proof_class": "behavioral_migration_and_reconciliation",
+      "status": "PASS",
+      "evidence": [
+        "The archive corpus executes creation, nine-record three-batch forward migration with reopen checkpoints, interrupted migration recovery, mapped import, unknown-mapping refusal, and repeat-safe reconciliation through ArchiveStore.",
+        "storage regressions reject writes before migration activation, atomically reverify activation, reject rollback after activation, preserve v1 on pre-activation rollback, bind decoded values to canonical keys, and persist reconciliation replay receipts."
+      ]
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v2-AC-006",
+      "requirement": "FF-GATE-ARCH-001, FF-GATE-RUNTIME-001 prerequisite ceiling, FF-GATE-DEEP-001, FF-GATE-PR-001, secret scan, and independent adversarial reviews pass on the same committed source and evidence manifest.",
+      "proof_class": "aggregate_validation_and_independent_adversarial_review",
+      "status": "PASS",
+      "evidence": [
+        "Clean commit 92505bd29112c989bb4fbecf5eb58af96ec458e3 produced architecture report build/reports/architecture-check-1785711755989965800-77200.json with 7 checks, prerequisite-ceiling report build/reports/runtime-truth-check-1785711767588503500-62888.json with 3 checks, deep report build/reports/verify-deep-1785710052962996500-47276.json with 58 checks, and PR report build/reports/verify-pr-1785711440271499700-70288.json with 68 checks; all record zero failures and dirty=false.",
+        "Independent contract, durability, and proof/report reviewers attacked different blocks, every confirmed finding is REMEDIATED with canonical executable proof, and commit plus push hooks returned FF-GATE-SECRET-001 findings=0."
+      ]
+    },
+    {
+      "id": "WP-FF-008-archive-store-evidence-v2-AC-007",
+      "requirement": "Build, test, verification, package, runtime, fixtures, subprocess plans, and delegated work contain no Python, yt-dlp, yt-dlp companion package, executable asset, wrapper, fallback, sidecar, plugin, service, or downloaded solver dependency.",
+      "proof_class": "dependency_and_negative_fixture_enforcement",
+      "status": "PASS",
+      "evidence": [
+        "The architecture gate, locked Cargo graph, candidate report, fixture manifest, and delegated implementations use Rust-owned code and redb only; no Python or yt-dlp package, executable, wrapper, fallback, sidecar, plugin, service, solver asset, or subprocess is introduced.",
+        "FF-GATE-ARCH-001 passed after the implementation at build/reports/architecture-check-1785685764467905600-66176.json, including bundled-companion and runtime-dependency policy checks."
+      ]
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-08-02T23:13:30Z",
+      "branch": "main",
+      "base_sha": "7cb53af59268b7838d2b640f32f10b8168ff2acd",
+      "head_sha": "92c4d08dd3ea0481a87eb793bc29706838e9e054",
+      "dirty_paths": [
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/work_packets/WP-FF-008-archive-store-evidence-v2/packet.json"
+      ],
+      "checks_run": [
+        "powershell -NoProfile -File build/scripts/clean-artifacts.ps1: PASS FF-GATE-ARTIFACT-HYGIENE-001; items=0 before task selection",
+        "powershell -NoProfile -File build/scripts/clean-artifacts.ps1 -VerifyOnly: PASS FF-GATE-ARTIFACT-HYGIENE-001; items=0 before task selection",
+        "git branch --show-current: codex/archive-store-evidence",
+        "git rev-parse HEAD: 7cb53af59268b7838d2b640f32f10b8168ff2acd",
+        "git merge-base main HEAD: 7cb53af59268b7838d2b640f32f10b8168ff2acd",
+        "Current source-level research inspected redb v4.1.0, fjall 3.1.8, sled v0.34.7, and RustSec advisory-db commit 308808d74a1462ec8b09c1e76938471c53b55dcc.",
+        "PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785685764467905600-66176.json after the settled implementation.",
+        "cargo fmt --manifest-path build/Cargo.toml --all -- --check: PASS",
+        "cargo clippy --manifest-path build/Cargo.toml --locked --workspace --all-targets --all-features -- -D warnings: PASS with CARGO_TARGET_DIR redirected only to the repository-root short artifact path to avoid Windows path-length failure",
+        "cargo test --manifest-path build/Cargo.toml --workspace --all-features --locked --jobs 1 --no-fail-fast: PASS on the canonical target root; xtask 115/115 and all workspace/doctest targets passed",
+        "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- archive-store-evidence: PASS; report build/reports/wp-ff-008-archive-store-evidence-67912-1785705676955951400.json; SHA-256 2763f661c0d66a3137cb9009f524543fb485d33984f16d8afd0f111bf15f03dc; 23 semantic PASS, 1 B-021 BLOCKED, 0 failed",
+        "Prerequisite-ceiling report: build/reports/runtime-truth-check-1785704804038891900-21400.json; 3 checks, 0 failed",
+        "PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785706094496663900-67912.json; 58 checks, 0 failed; source 37a8b0e0eada8df77687d454b84085ffeb03249c plus packet-only dirty evidence",
+        "Commit b033ac58c620f991beeb032eaa3cb41c667ce815 records the settled adversarial finding mappings and packet evidence; its hook returned PASS FF-GATE-SECRET-001 with findings=0",
+        "The first committed-source FF-GATE-PR-001 attempt rejected a stale applicable_rule_ids inventory before any downstream checks; the packet now includes the exact current REQUIRED architecture-rule set plus directly applicable invariant rules",
+        "Two later committed-source FF-GATE-PR-001 attempts cleared governance and xtask 115/115 but reproduced the same WP009-E-PLATFORM-PROBE-TIMEOUT on wsl.exe --exec cat /etc/os-release after 30 seconds under heavy host load",
+        "After raising only that read-only probe bound to 120 seconds, cargo test --manifest-path build/Cargo.toml --locked --jobs 1 -p fforager-testkit --lib tests::resource_durability_model_corpus_executes_public_boundaries -- --exact --nocapture: PASS 1/1 in 52.55 seconds",
+        "Clean closure commit 92505bd29112c989bb4fbecf5eb58af96ec458e3 generated archive report build/reports/wp-ff-008-archive-store-evidence-70288-1785711038123498700.json; 24 cases, 23 semantic PASS, 1 explicit B-021 BLOCKED, 0 failed",
+        "PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785711755989965800-77200.json; commit 92505bd29112c989bb4fbecf5eb58af96ec458e3, dirty=false, 7 checks, 0 failed",
+        "Prerequisite-ceiling report: build/reports/runtime-truth-check-1785711767588503500-62888.json; commit 92505bd29112c989bb4fbecf5eb58af96ec458e3, dirty=false, 3 checks, 0 failed",
+        "PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785710052962996500-47276.json; commit 92505bd29112c989bb4fbecf5eb58af96ec458e3, dirty=false, 58 checks, 0 failed",
+        "PASS FF-GATE-PR-001: build/reports/verify-pr-1785711440271499700-70288.json; commit 92505bd29112c989bb4fbecf5eb58af96ec458e3, dirty=false, 68 checks, 0 failed",
+        "git push origin codex/archive-store-evidence backed up closure commit 92505bd29112c989bb4fbecf5eb58af96ec458e3 after PASS FF-GATE-SECRET-001; findings=0",
+        "git push origin codex/archive-store-evidence backed up MERGE_PENDING evidence commit 92c4d08dd3ea0481a87eb793bc29706838e9e054 after PASS FF-GATE-SECRET-001; findings=0",
+        "git merge --ff-only codex/archive-store-evidence advanced canonical main to 92c4d08dd3ea0481a87eb793bc29706838e9e054",
+        "git merge-base --is-ancestor verified closure commit 92505bd29112c989bb4fbecf5eb58af96ec458e3 and evidence commit 92c4d08dd3ea0481a87eb793bc29706838e9e054 are contained in canonical main",
+        "PASS post-merge FF-GATE-ARCH-001: build/reports/architecture-check-1785712404324500400-64616.json"
+      ],
+      "blockers": [],
+      "next_action": "No WP-008 action remains. Await separate Operator direction before activating another work packet."
+    }
+  },
+  "validation": {
+    "checks": [
+      "packet_json_parse: PASS",
+      "refinement_json_parse: PASS",
+      "taskboard_index_and_focus: PASS",
+      "prerequisite_containment_review: PASS",
+      "research_basis: RECORDED",
+      "PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785711755989965800-77200.json; commit 92505bd29112c989bb4fbecf5eb58af96ec458e3, dirty=false",
+      "Prerequisite-ceiling report: build/reports/runtime-truth-check-1785711767588503500-62888.json; commit 92505bd29112c989bb4fbecf5eb58af96ec458e3, dirty=false; 3 checks, 0 failed",
+      "PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785710052962996500-47276.json; commit 92505bd29112c989bb4fbecf5eb58af96ec458e3, dirty=false; 58 checks, 0 failed",
+      "PASS FF-GATE-PR-001: build/reports/verify-pr-1785711440271499700-70288.json; commit 92505bd29112c989bb4fbecf5eb58af96ec458e3, dirty=false; 68 checks, 0 failed",
+      "PASS FF-GATE-SECRET-001: findings=0 on closure commit and branch push",
+      "PASS: independent contract, storage durability, and proof/report reviews after remediation",
+      "PASS: closure commit 92505bd29112c989bb4fbecf5eb58af96ec458e3 and MERGE_PENDING evidence commit 92c4d08dd3ea0481a87eb793bc29706838e9e054 are ancestors of canonical main",
+      "PASS post-merge FF-GATE-ARCH-001: build/reports/architecture-check-1785712404324500400-64616.json"
+    ],
+    "not_proven": [
+      "Physical power-loss durability on every supported filesystem",
+      "One-million-identity B-021 behavior without the explicit FFORAGER_RUN_B021=1 stress budget",
+      "Suppression of redb 4.1.0's panic-hook diagnostic before Ferric catches the same-thread torn-file assertion",
+      "Any product, capability, runtime, packaging, release, or phase progress"
+    ]
+  },
+  "extensions": {
+    "refinement": {
+      "schema_id": "ff.work_packet_refinement@1",
+      "path": ".GOV/work_packets/WP-FF-008-archive-store-evidence-v2/refinement.json",
+      "status": "FROZEN_FOR_IMPLEMENTATION",
+      "research_basis_status": "CURRENT_SOURCE_LEVEL_RESEARCH_COMPLETED_2026-08-02"
+    },
+    "non_product_prerequisite": {
+      "schema_id": "ff.non-product-prerequisite@1",
+      "classification": "phase0_supporting_evidence",
+      "design_authority": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#phase-0c--dependency-and-risk-spikes",
+      "product_progress": false,
+      "capability_progress": false,
+      "runtime_completion": false,
+      "packaging_or_release_progress": false,
+      "phase_progress": false,
+      "required_future_consumer": "the first shipped Ferric direct-HTTP archive insertion and startup-reconciliation slice",
+      "required_future_proof": "FF-GATE-RUNTIME-001 through the exact staged Ferric product artifact"
+    },
+    "change_evidence": {
+      "applicable_rule_ids": ["FF-BUILD-011", "FF-BUILD-012", "FF-BUILD-013", "FF-BUILD-014", "FF-BUILD-015", "FF-BUILD-017", "FF-BUILD-018", "FF-BUILD-021", "FF-BUILD-023", "FF-BUILD-026", "FF-BUILD-027", "FF-BUILD-030", "FF-BUILD-034", "FF-BUILD-035", "FF-BUILD-036", "FF-BUILD-037", "FF-BUILD-038", "FF-BUILD-039", "FF-BUILD-040", "FF-BUILD-041", "FF-BUILD-042", "FF-BUILD-043", "FF-BUILD-044", "FF-BUILD-045", "FF-BUILD-046", "FF-BUILD-047", "FF-BUILD-048", "FF-BUILD-050", "FF-BUILD-054", "FF-BUILD-055", "FF-BUILD-057", "FF-BUILD-058", "FF-BUILD-059", "FF-BUILD-060", "FF-BUILD-064", "FF-BUILD-066", "FF-BUILD-067", "FF-BUILD-077", "FF-BUILD-078", "FF-BUILD-079", "FF-BUILD-080", "FF-BUILD-081", "FF-BUILD-082", "FF-BUILD-083", "FF-BUILD-084", "FF-BUILD-085", "FF-BUILD-086", "FF-BUILD-087", "FF-BUILD-088", "FF-BUILD-089", "FF-BUILD-090", "FF-BUILD-091", "FF-BUILD-092", "FF-BUILD-093", "FF-BUILD-094", "FF-BUILD-095", "FF-BUILD-096", "FF-BUILD-097", "FF-BUILD-098", "FF-BUILD-099"],
+      "acceptance_or_authority_ids": ["WP-FF-008-archive-store-evidence-v2-AC-001", "WP-FF-008-archive-store-evidence-v2-AC-002", "WP-FF-008-archive-store-evidence-v2-AC-003", "WP-FF-008-archive-store-evidence-v2-AC-004", "WP-FF-008-archive-store-evidence-v2-AC-005", "WP-FF-008-archive-store-evidence-v2-AC-006", "WP-FF-008-archive-store-evidence-v2-AC-007"],
+      "scope_and_risk_matrix": {
+        "required_outcomes": ["candidate-neutral identity and archive contract", "transactional claim/lease/insertion/reconciliation behavior", "migration/import and corruption refusal", "candidate evidence and scale report", "zero yt-dlp dependency"],
+        "risk_cases": ["duplicate claims race", "row/filesystem divergence", "stale lease takeover", "interrupted migration", "store corruption", "unbounded million-identity memory", "dependency or proof overclaim"]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {"candidate": "no mechanism beyond the accepted outcome", "result": "Rejected because transactional uniqueness, persistence, recovery, and measured candidate behavior require an executable store."},
+        {"candidate": "reuse current Ferric code", "result": "Selected for WP-005 identity contracts, WP-009 durability/recovery models, testkit, xtask, and Ferric-owned oracle corpora."},
+        {"candidate": "Rust core/std", "result": "Selected for candidate-neutral codecs, bounded state models, filesystem observation, clocks, and deterministic tests; rejected as the sole durable indexed store because that would reinvent an unproven database."},
+        {"candidate": "approved platform capability", "result": "Selected only for bounded filesystem/process observations; no platform database is authorized."},
+        {"candidate": "already-approved dependency", "result": "No approved workspace dependency supplies a durable indexed transactional store."},
+        {"candidate": "smallest complete clear implementation", "result": "Select exact-pinned redb 4.1.0 with default features disabled as the first measured pure-Rust candidate; retain fjall 3.1.8 as comparison and reject sled 0.34.7 and SQLite for this packet."
+        }
+      ],
+      "artifact_specific_justification": {
+        "fforager-contracts": "Owns versioned archive identities, requests, outcomes, limits, and errors independent of the candidate.",
+        "fforager-storage": "Owns the candidate-neutral public boundary and bounded redb adapter.",
+        "testkit_and_fixtures": "Own deterministic concurrency, fault, migration, import, and scale workloads.",
+        "xtask_and_reports": "Execute and validate behavior-sensitive evidence with exact source and fixture identities.",
+        "model_manual": "Explains no-context operation, evidence ceiling, diagnostics, and recovery."
+      },
+      "pre_simplification_verdict": "FAIL: independent adversarial attacks reproduced contract-provenance, migration/reconciliation durability, and proof-attribution defects before remediation.",
+      "simplification_changes": [
+        "Made immutable claim provenance explicit in ArchiveLease and ArchiveRecord and required the exact claim tuple at commit instead of reconstructing ownership from mutable request state.",
+        "Kept logical membership identity stable across wire-minor revisions while making every decoded record and success event prove its canonical key, namespace, identity level, and output identifiers.",
+        "Replaced migration check-then-act behavior with write exclusion before activation, atomic revalidation during activation, phase-specific checkpoints, and irreversible post-activation version state.",
+        "Persisted reconciliation application receipts so retries converge idempotently, retain lease generation and token lineage, reject backward clocks, and never steal a fresh lease.",
+        "Replaced self-declared report outcomes with structured SHA-256 action and negative receipts, current source fingerprints, real close/reopen cases, deterministic barrier concurrency, and independently reparsed reports.",
+        "Separated measured endpoint RSS from peak-memory claims and made the one-million B-021 workload an explicit opt-in BLOCKED row when the stress budget is absent.",
+        "Raised the existing read-only WP-009 WSL identity-probe bound from 30 to 120 seconds after two committed-source PR runs reproduced timeouts under heavy host load; the exact proof then succeeded in 52.55 seconds and the probe remains bounded to its own child process."
+      ],
+      "post_simplification_verdict": "PASS: independent public-boundary regressions, the canonical workspace suite, strict Clippy, formatting, runtime truth, and deep verification were independently verified on the settled implementation.",
+      "complete_post_change_verification": ["cargo fmt --manifest-path build/Cargo.toml --all -- --check", "cargo clippy --manifest-path build/Cargo.toml --locked --workspace --all-targets --all-features -- -D warnings", "cargo test --manifest-path build/Cargo.toml --locked --workspace --all-features --no-fail-fast", "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check", "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard", "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-deep --evidence-from-taskboard", "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard", "secret scan, closure commit, merge to main, containment proof, artifact cleanup and empty verification"],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-008-resource-archive-store-evidence-v2-CEILING-001",
+        "current_ceiling": "Phase 0 archive-store prerequisite evidence only; zero product, capability, runtime, packaging, release, or phase progress.",
+        "replacement_trigger": "A shipped Ferric direct-HTTP slice consumes the selected archive boundary.",
+        "likely_upgrade_path": "Re-prove claim, insertion, crash reconciliation, and archive-visible output through the exact staged Ferric artifact.",
+        "trigger_detection_method": "FF-GATE-RUNTIME-001 changed-path classification and staged-artifact counterfactual.",
+        "linked_evidence": [".GOV/work_packets/WP-FF-008-archive-store-evidence-v2/refinement.json", "product/crates/fforager-storage/", "build/fixtures/archive-store-evidence/"]
+      },
+      "delegated_execution": {
+        "maximum_parallel_subagents": 3,
+        "implementation_blocks": ["archive contracts and identity", "storage adapter and durability behavior", "corpus/report/gate integration"],
+        "review_rule": "Each large block receives independent review by a subagent that did not implement it, through contract/identity, durability/concurrency/security, and proof/report/simplification lenses."
+      },
+      "adversarial_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "Contract lens: attacked five-level identity separation, wire strictness, exact-expiry behavior, immutable claim provenance, success-event/key binding, and import membership ambiguity.",
+          "Serial durability lens: attacked immediate durable writes, open-time corruption, candidate panic containment, migration phase ordering, activation atomicity, rollback, and store-version/table coupling.",
+          "State and recovery lens: attacked stale versus fresh leases, backward reconciliation clocks, row/filesystem divergence, repeat application, foreign canonical-key values, and restart convergence.",
+          "Resource and concurrency lens: attacked independent-handle duplicate claims, nondeterministic scheduling, timeout enforcement, bounded generator state, endpoint RSS attribution, and the million-identity opt-in ceiling.",
+          "Integration lens: attacked the contract-to-storage-to-testkit-to-xtask manifest chain, source fingerprint closure, scenario/action alignment, report freshness, and model-manual navigation.",
+          "Gate and report lens: attacked self-declared counterfactuals, fake restart labels, empty migration evidence, FNV attribution, fabricated B-021 metrics, and semantic overclaims."
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "The contract reviewer independently inspected the storage adapter and reproduced exact-expiry mismatch, panic-boundary, migration TOCTOU, foreign-value, replay, and metadata-only-version defects before remediation.",
+          "The storage reviewer independently inspected the proof producer and reproduced fake restart, empty migration, nondeterministic concurrency, incomplete source manifest, weak digest, scenario drift, and measurement-overclaim defects before remediation.",
+          "The proof reviewer independently inspected the contract layer and reproduced provenance discontinuity, fresh-lease takeover, unbound success events, free-form filesystem labels, ambiguous import membership, backward clocks, and wire-minor identity coupling before remediation.",
+          "The parent reran formatting, strict all-target/all-feature Clippy, the canonical full workspace/all-feature/no-fail-fast suite, the standalone archive command, runtime truth, and verify-deep after all reviewer remediations.",
+          "The fresh archive report was independently reparsed against its manifest and current five-file SHA-256 source manifest; 24 unique cases yielded 23 semantic passes, one declared blocked scale row, and zero failed cases."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "If ArchiveCommitRequest::validate stopped requiring the exact immutable claim provenance, archive::tests::commit_requires_exact_immutable_claim_provenance would accept a foreign claim tuple.",
+          "If ArchiveStore migration activation stopped excluding intervening archive writes, storage::tests::migration_blocks_commit_between_verify_and_activate would reproduce the lost-write window.",
+          "If reconciliation stopped persisting its applied receipt, the archive corpus repeat would change state instead of proving the same durable idempotent outcome.",
+          "If a report row retained PASS after an executed action was removed or its observation changed without a new SHA-256 receipt, testkit::tests::archive_store_evidence_corpus_executes_public_boundary would reject it.",
+          "If the B-021 row were promoted from BLOCKED with zero measurements, the independent report validator would reject its summary and measurement contract."
+        ],
+        "BOUNDARY_PROBES": [
+          "ArchiveCommitRequest validation binds the contract writer to the storage consumer using the same key, lease token, generation, claim time, expiry, job, transaction, provenance, and output observation.",
+          "ArchiveStore decodes every persisted value through its requested canonical key and maps redb failures and caught same-thread corruption unwinds into Ferric-owned typed errors without exposing redb types.",
+          "Migration prepare, batch copy, verify, activate, reopen, and rollback cross the public ArchiveStore boundary with exact phase, cursor, counts, digest, version, and table invariants.",
+          "The testkit producer executes real independent store handles and close/reopen transitions; the xtask consumer re-reads the persisted report, manifest, current sources, and invocation receipt before acceptance.",
+          "The model manual was compared against the exact locked command, report fields, typed recovery behavior, evidence ceiling, and future runtime consumer gate."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "Exact lease expiry, rotated or foreign tokens, mismatched generation/provenance, missing filesystem evidence, unknown filesystem profiles, and wrong output IDs fail before archive insertion.",
+          "Half-truncated candidate storage returns ArchiveStoreError::OpenFailed without an escaping unwind; the redb panic-hook diagnostic remains explicitly recorded as a candidate residual.",
+          "Writes during pre-activation migration, activation after source drift, post-activation rollback, unknown store versions, mismatched table state, interrupted cursors, and foreign canonical-key values fail closed.",
+          "Fresh leases, unexpected rows or outputs, backward reconciliation clocks, changed retries, unknown import mappings, and already-imported membership are distinguished with typed outcomes.",
+          "Missing actions, forged receipt observations, stale source fingerprints, fabricated scale metrics, and semantic/action drift fail independent report validation."
+        ],
+        "INDEPENDENT_FINDINGS": [
+          {
+            "finding": "Contract review found commit and success semantics could lose or misbind immutable claim provenance and canonical identity context; exact provenance and key-bound regressions now pass.",
+            "finding_id": "WP-FF-008-FINDING-CONTRACT-PROVENANCE-001",
+            "proof_id": "contracts::archive::tests::commit_requires_exact_immutable_claim_provenance",
+            "status": "REMEDIATED"
+          },
+          {
+            "finding": "Storage review found migration activation and reconciliation could admit lost writes, ambiguous version state, or non-idempotent recovery; atomic phase and durable receipt regressions now pass.",
+            "finding_id": "WP-FF-008-FINDING-STORAGE-DURABILITY-002",
+            "proof_id": "storage::tests::migration_blocks_commit_between_verify_and_activate",
+            "status": "REMEDIATED"
+          },
+          {
+            "finding": "Proof review found declared counterfactuals, synthetic restart labels, weak source attribution, and metric overclaims could make evidence look stronger than execution; the public corpus validator now rejects those mutations.",
+            "finding_id": "WP-FF-008-FINDING-PROOF-REPORT-003",
+            "proof_id": "testkit::tests::archive_store_evidence_corpus_executes_public_boundary",
+            "status": "REMEDIATED"
+          }
+        ],
+        "RESIDUAL_UNCERTAINTY": [
+          "redb 4.1.0 invokes the process panic hook before Ferric catches its reproduced same-thread half-truncated-file assertion; ArchiveStore::open returns typed OpenFailed and no unwind escapes, but redb exposes no safe public API to suppress that diagnostic narrowly.",
+          "Clean close/reopen and candidate repair do not prove physical power-loss durability on every filesystem; later staged Ferric execution must re-prove the selected filesystem profile.",
+          "B-021 remains honestly BLOCKED unless FFORAGER_RUN_B021=1 supplies the explicit one-million-identity stress budget; the representative workload is not substituted for that result.",
+          "This candidate evidence is a prerequisite boundary and does not execute a shipped Ferric download/archive workflow."
+        ],
+        "MANUAL_REVIEW": {
+          "artifact": "product/MODEL_MANUAL.md",
+          "reviewer": "Independent adversarial proof and reporting subagent",
+          "method": "Compared the WP-008 topic against settled archive contracts, storage APIs, corpus producer, xtask consumer, manifest, fresh report, typed failures, and evidence ceilings.",
+          "verdict": "PASS",
+          "evidence": [
+            "The manual provides the exact locked Cargo archive-store-evidence command, purpose, inputs, outputs, report navigation, scale opt-in, and diagnostic fields.",
+            "The recovery guidance matches typed open failure, lease reconciliation, interrupted migration, import refusal, repeat-safe retry, and the redb panic-hook residual.",
+            "The manual identifies FF-GATE-RUNTIME-001 as the mandatory future Ferric-consumer proof and preserves the prerequisite-only evidence ceiling."
+          ]
+        }
+      }
+    }
+  }
+}

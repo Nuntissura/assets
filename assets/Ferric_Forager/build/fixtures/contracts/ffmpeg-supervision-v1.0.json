@@ -1,0 +1,163 @@
+{
+  "request": {
+    "schema_id": "ff.ffmpeg-supervision@1",
+    "version": {"major": 1, "minor": 0},
+    "request_id": "request_ffmpeg_stream_copy_1",
+    "job_id": "job_ffmpeg_stream_copy_1",
+    "operation_plan_sha256": "2a5617b6ec721c3d77e33ed0b2ace9a51245476001e3d29370a2924411be2f8a",
+    "toolchain": {
+      "ffmpeg": {
+        "kind": "ffmpeg",
+        "absolute_path": "C:\\FerricTools\\ffmpeg.exe",
+        "file_identity": "windows-volume-1:file-100:usn-200",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "version_output_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "normalized_version": "ffmpeg 8.1.1",
+        "host": {"operating_system": "windows", "architecture": "x86_64"},
+        "capability_binding": {
+          "executable_content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "normalized_probe_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "capabilities": ["demuxer:aac", "demuxer:h264", "muxer:matroska", "progress", "stream_copy"]
+        }
+      },
+      "ffprobe": {
+        "kind": "ffprobe",
+        "absolute_path": "C:\\FerricTools\\ffprobe.exe",
+        "file_identity": "windows-volume-1:file-101:usn-201",
+        "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "version_output_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "normalized_version": "ffprobe 8.1.1",
+        "host": {"operating_system": "windows", "architecture": "x86_64"},
+        "capability_binding": {
+          "executable_content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "normalized_probe_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "capabilities": ["json_output", "stream_metadata"]
+        }
+      }
+    },
+    "operation": {
+      "kind": "stream_copy",
+      "body": {
+        "inputs": [
+          {"path": "input/audio.aac", "demuxer": "aac_adts"},
+          {"path": "input/video.h264", "demuxer": "h264_annex_b"}
+        ],
+        "stream_maps": [
+          {"input_index": 0, "stream_kind": "audio", "stream_index": 0, "source_payload_sha256": "5555555555555555555555555555555555555555555555555555555555555555"},
+          {"input_index": 1, "stream_kind": "video", "stream_index": 0, "source_payload_sha256": "6666666666666666666666666666666666666666666666666666666666666666"}
+        ],
+        "output_path": "output/merged.mkv",
+        "output_muxer": "matroska"
+      }
+    },
+    "environment": {
+      "inherit_parent": false,
+      "trusted_bindings": ["host_system_root", "job_temporary_directory"]
+    },
+    "working_directory": "C:\\FerricJobs\\job_ffmpeg_stream_copy_1",
+    "allowed_protocols": ["file"],
+    "allowed_input_mechanisms": ["audited_elementary_file"],
+    "io": {
+      "progress_channel": "stdout_pipe_one",
+      "diagnostic_channel": "stderr_tail",
+      "output_is_job_scoped_file": true,
+      "stdin_disabled": true
+    },
+    "limits": {
+      "startup_timeout_millis": 5000,
+      "execution_timeout_millis": 300000,
+      "graceful_stop_timeout_millis": 2000,
+      "forced_kill_timeout_millis": 5000,
+      "reap_timeout_millis": 5000,
+      "ffprobe_timeout_millis": 30000,
+      "progress_max_records": 100000,
+      "progress_max_total_bytes": 8388608,
+      "progress_max_record_bytes": 8192,
+      "progress_max_field_bytes": 1024,
+      "progress_max_parser_steps": 400000,
+      "progress_max_silence_millis": 30000,
+      "consumer_stall_timeout_millis": 5000,
+      "stderr_max_total_bytes": 33554432,
+      "stderr_tail_bytes": 65536,
+      "pipe_allocation_bytes": 262144,
+      "output_max_streams": 16,
+      "output_max_duration_millis": 86400000,
+      "output_max_file_size_bytes": 10737418240,
+      "output_max_width": 8192,
+      "output_max_height": 8192,
+      "output_max_channels": 32
+    },
+    "resources": {
+      "resource_contract_schema_id": "ff.resource-vector@1",
+      "byte_credit_contract_schema_id": "ff.byte-credit@1",
+      "pipe_stage": "ffmpeg_pipe",
+      "claim": {
+        "metadata_requests": 0,
+        "media_requests": 0,
+        "memory_bytes": 4194304,
+        "disk_read_bytes_in_flight": 4194304,
+        "disk_write_bytes_in_flight": 4194304,
+        "open_handles": 8,
+        "cpu_light_slots": 0,
+        "cpu_heavy_slots": 1,
+        "javascript_workers": 0,
+        "ffmpeg_processes": 1,
+        "ffmpeg_cpu_threads": 4,
+        "archive_writer_slots": 0,
+        "sink_bytes": 0
+      },
+      "progress_pipe_bytes": 65536,
+      "stderr_pipe_bytes": 65536
+    }
+  },
+  "report": {
+    "schema_id": "ff.ffmpeg-supervision-report@1",
+    "version": {"major": 1, "minor": 0},
+    "request_id": "request_ffmpeg_stream_copy_1",
+    "job_id": "job_ffmpeg_stream_copy_1",
+    "source_commit": "84462ff2ac9fb3bc5b3ff9e5f554949a95545e3f",
+    "request_contract_sha256": "62be6587659202b69ca2d6a0917924142cb0f5f74106a3167f786c184f0c3067",
+    "operation_plan_sha256": "2a5617b6ec721c3d77e33ed0b2ace9a51245476001e3d29370a2924411be2f8a",
+    "ffmpeg_content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "ffprobe_content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "host": {"operating_system": "windows", "architecture": "x86_64"},
+    "lifecycle": [
+      {"sequence": 1, "state": "spawned", "monotonic_millis": 1},
+      {"sequence": 2, "state": "running", "monotonic_millis": 2},
+      {"sequence": 3, "state": "reaped", "monotonic_millis": 100},
+      {"sequence": 4, "state": "validated", "monotonic_millis": 120}
+    ],
+    "terminal_outcome": {"kind": "validated"},
+    "direct_child": {
+      "kind": "reaped",
+      "exit_code": 0,
+      "terminated_by_signal_or_exception": false,
+      "wait_receipt_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "containment": {
+      "kind": "windows_job",
+      "body": {
+        "attached_before_execution": true,
+        "kill_on_job_close": true,
+        "active_process_query": {"kind": "zero"}
+      }
+    },
+    "output_validation": {
+      "kind": "validated",
+      "body": {
+        "ffprobe_content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "facts": {
+          "output_identity_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "file_size_bytes": 1048576,
+          "duration_millis": 10000,
+          "format_names": ["matroska"],
+          "streams": [
+            {"index": 0, "kind": "audio", "selected_source": {"input_index": 0, "stream_kind": "audio", "stream_index": 0, "source_payload_sha256": "5555555555555555555555555555555555555555555555555555555555555555"}, "output_payload_sha256": "5555555555555555555555555555555555555555555555555555555555555555", "codec_name": "aac", "width": null, "height": null, "channels": 2},
+            {"index": 1, "kind": "video", "selected_source": {"input_index": 1, "stream_kind": "video", "stream_index": 0, "source_payload_sha256": "6666666666666666666666666666666666666666666666666666666666666666"}, "output_payload_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "codec_name": "h264", "width": 1920, "height": 1080, "channels": null}
+          ]
+        }
+      }
+    },
+    "residual_uncertainty": ["Windows Job evidence does not by itself remove the suspended-parent-death residual before brokered creation is proven."]
+  }
+}

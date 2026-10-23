@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "accepted-divergence-without-decision",
+  "mutation": "accepted_divergence_without_decision",
+  "expected_diagnostic": "FF-COMP-E-DIVERGENCE-DECISION: accepted divergence lacks stable decision ID"
+}

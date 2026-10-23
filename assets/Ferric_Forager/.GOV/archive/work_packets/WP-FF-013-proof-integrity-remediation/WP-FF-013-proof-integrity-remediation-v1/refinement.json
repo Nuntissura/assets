@@ -1,0 +1,115 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-013-proof-integrity-remediation-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-013-proof-integrity-remediation-v1",
+  "updated_at_utc": "2026-07-22T12:34:54Z",
+  "operator_request": "Keep Ferric Forager a native Rust rewrite/reimagination that cannot use yt-dlp as product behavior, first change project Codex so the inspected proof and contract failures cannot recur, then address every finding using no more than six terra xhigh subagents in parallel.",
+  "basis": {
+    "research_status": "REUSED_COMPLETED_PROJECT_RESEARCH",
+    "research_reopen_triggers": [
+      "The Operator explicitly requests research.",
+      "A selected dependency, upstream oracle version, or source assumption is proven stale.",
+      "A remediation decision lacks evidence in the current design, peer review, WP-003, WP-004, WP-005, or WP-012 sources."
+    ],
+    "authority_checked": [
+      "START_HERE.yaml",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".GOV/codex.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+      ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+      ".GOV/work_packets/WP-FF-004-compatibility-inventory-corpus-v2/packet.json",
+      ".GOV/work_packets/WP-FF-005-versioned-core-contracts-v1/packet.json",
+      ".GOV/work_packets/WP-FF-012-runtime-truth-gates-v1/packet.json"
+    ],
+    "existing_research_sources": [
+      "The current technical design reference set and peer-review corpus",
+      "Validated WP-003 build and proof infrastructure",
+      "Validated WP-004 compatibility inventory and pinned-oracle corpus",
+      "Validated WP-005 contract implementation basis",
+      "Validated WP-012 runtime-truth enforcement"
+    ],
+    "selected_approach": [
+      "Harden canonical project rules before changing implementation.",
+      "Keep yt-dlp outside product crates, packaging, runtime, fallback, and sidecar paths; allow only pinned non-shipped oracle generation and comparison.",
+      "Require evidence labels to state the proof class actually executed and prohibit structural validation from reporting semantic PASS.",
+      "Require independent boundary observations and counterfactuals instead of declaration-to-declaration agreement.",
+      "Repair lifecycle, graph, diagnostic, and compatibility behavior with typed deterministic Rust code and regression proof.",
+      "Retain prerequisite zero-progress classification until a shipped Rust Ferric entrypoint consumes and re-proves the work."
+    ],
+    "rejected_options": [
+      "Adding yt-dlp or Python as a product dependency, subprocess, fallback, sidecar, installer payload, or runtime service.",
+      "Treating the existing seven synthetic fixture files as yt-dlp behavioral execution.",
+      "Allowing peers to opt into arbitrary schema drift with booleans.",
+      "Treating effect emission as equivalent to effect completion.",
+      "Closing findings by renaming tests or proof IDs without behavior-sensitive counterexamples.",
+      "Repeating completed research without a named reopen trigger."
+    ],
+    "reuse_opportunities": [
+      "Reuse pure Rust contract types, lifecycle transition engine, bounded graph model, strict Serde DTOs, and existing test crates.",
+      "Reuse the WP-004 corpus as provenance-bound inputs while upgrading replay semantics and labels.",
+      "Reuse xtask reporting, rule-to-proof mapping, negative fixtures, runtime truth, and adversarial review structure."
+    ],
+    "validation_plan": "First parse and validate the authority hardening. Then implement three non-overlapping delegated lanes, run focused and full workspace tests, execute compatibility and canonical gates, rerun the exact six compiled counterexamples, inspect reports directly, perform independent diff-derived boundary and negative probes, and fail closure if any proof still depends only on its own declarations."
+  },
+  "scope_edges": {
+    "assumptions": [
+      "Existing research and approved dependencies remain current.",
+      "yt-dlp is permitted only as a non-shipped compatibility oracle and is never Ferric product behavior.",
+      "No shipped Ferric entrypoint exists, so all closure remains prerequisite-only."
+    ],
+    "non_goals": [
+      "Implementing or claiming a shipped downloader runtime.",
+      "Broad architecture redesign unrelated to the reproduced failures.",
+      "New dependencies or additional external research."
+    ]
+  },
+  "acceptance_ids": [
+    "WP-FF-013-proof-integrity-remediation-v1-AC-001",
+    "WP-FF-013-proof-integrity-remediation-v1-AC-002",
+    "WP-FF-013-proof-integrity-remediation-v1-AC-003",
+    "WP-FF-013-proof-integrity-remediation-v1-AC-004",
+    "WP-FF-013-proof-integrity-remediation-v1-AC-005",
+    "WP-FF-013-proof-integrity-remediation-v1-AC-006",
+    "WP-FF-013-proof-integrity-remediation-v1-AC-007"
+  ],
+  "red_team": {
+    "risk_tier": "HIGH",
+    "attack_lenses": [
+      "forbidden_runtime_or_packaged_yt_dlp_coupling",
+      "structural_check_mislabeled_as_semantic_replay",
+      "implementation_and_validator_shared_declaration",
+      "partial_effect_acknowledgement_and_false_terminal_state",
+      "schema_drift_self_authorization",
+      "graph_cycle_and_recursion_exhaustion",
+      "wire_unknown_field_and_sequence_boundary_bypass"
+    ],
+    "minimum_controls": [
+      "Dependency and source scans reject yt-dlp or Python in product manifests, code, package inputs, and runtime process plans.",
+      "Every PASS label identifies whether it is structural, semantic, integration, or runtime proof and is rejected if required behavior was not executed.",
+      "Every external effect has a required acknowledgement set and terminal transitions wait for the complete set.",
+      "Schema compatibility is authorized by explicit reviewed transitions, not peer booleans.",
+      "The six reproduced counterexamples become independent regression tests and gate-negative cases."
+    ],
+    "plausible_failures": [
+      "A future wrapper indirectly invokes yt-dlp while product manifests remain Rust-only.",
+      "A fixture hash and expected label agree while no transformation or behavior executes.",
+      "A process is killed but not reaped and resources are released anyway.",
+      "A confinement intent fails after state was already recorded as confined.",
+      "Unrelated schema hashes negotiate because both peers set permissive flags.",
+      "A relationship cycle passes validation and later loops traversal.",
+      "A zero durable sequence or undeclared top-level field is accepted by one wire boundary."
+    ]
+  },
+  "execution_decomposition": [
+    "Commit Codex, build-rule, and work-packet prevention authority first.",
+    "Delegate lifecycle plus graph remediation, diagnostic protocol remediation, and compatibility plus proof remediation to three non-overlapping terra xhigh lanes.",
+    "Integrate inventory, fixtures, rule-to-proof mappings, and model manual centrally.",
+    "Run canonical gates and an independent high-risk adversarial validation pass.",
+    "Commit, merge, verify main containment, and remote-back the validated closure."
+  ]
+}

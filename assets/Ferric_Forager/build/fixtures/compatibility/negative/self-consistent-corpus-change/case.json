@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "fixture_id": "self-consistent-corpus-change",
+  "mutation": "change_expected_outcome",
+  "expected_diagnostic": "FF-COMP-E-CORPUS-INTEGRITY: pinned corpus content mismatch"
+}

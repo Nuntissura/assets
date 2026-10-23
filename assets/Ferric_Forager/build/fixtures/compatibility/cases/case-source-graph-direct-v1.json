@@ -1,0 +1,28 @@
+{
+  "schema_id": "ff.oracle-observation@1",
+  "case_id": "case-source-graph-direct-v1",
+  "input": {
+    "url": "https://media.invalid/watch/alpha",
+    "url_class": "url-class-generic"
+  },
+  "observation": {
+    "root_id": "media-alpha",
+    "nodes": [
+      {
+        "id": "media-alpha",
+        "kind": "media",
+        "children": ["format-alpha-video", "format-alpha-audio"]
+      },
+      {
+        "id": "format-alpha-audio",
+        "kind": "format",
+        "children": []
+      },
+      {
+        "id": "format-alpha-video",
+        "kind": "format",
+        "children": []
+      }
+    ]
+  }
+}
