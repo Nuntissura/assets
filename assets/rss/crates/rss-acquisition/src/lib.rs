@@ -1,6 +1,9 @@
 //! Bounded acquisition decisions. Hosts persist state, authorize effects and enforce deadlines.
 pub mod capture;
 pub mod jobs;
+pub mod authority;
+pub mod identity;
+pub mod ingestion;
 
 use rss_contracts::{Error, Result, SourceRequest};
 
@@ -23,10 +26,10 @@ pub fn validate_request(request: &SourceRequest) -> Result<()> {
     Ok(())
 }
 
-pub async fn acquire(provider: &impl rss_contracts::ProviderPort, request: SourceRequest,
+pub async fn acquire(provider: &impl rss_contracts::ProviderPort, authority: &impl rss_contracts::AuthorityPort,
+    execution: &impl authority::AcquisitionOwner, execution_ref: &rss_contracts::HostRef, request: SourceRequest,
     supported: &std::collections::BTreeSet<String>) -> Result<rss_contracts::AcquisitionPage> {
-    validate_request(&request)?;
-    if request.subscription.paused { return Err(Error::Cancelled); }
+    authority::authorize_current(authority, execution, &request, execution_ref).await?;
     let page = provider.acquire(request.clone()).await?;
     page.validate(&request.subscription, &request.bounds, supported)?;
     if page.operation_id != request.operation_id { return Err(Error::StaleResult); }

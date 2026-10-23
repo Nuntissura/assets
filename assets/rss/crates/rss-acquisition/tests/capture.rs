@@ -20,7 +20,7 @@ fn command() -> (CommandContext, URLCapture) {
     (context, capture)
 }
 #[derive(Default)]
-struct Owner { calls: usize, recovery_calls: usize, outcomes: BTreeMap<OperationId, OperationOutcome>, captures: Vec<URLCapture>, lose_response: bool, pending: bool, recoverable: bool, hide_capture: bool }
+struct Owner { calls: usize, recovery_calls: usize, outcomes: BTreeMap<OperationId, OperationOutcome>, captures: Vec<URLCapture>, lose_response: bool, pending: bool, recoverable: bool, hide_capture: bool, canonicalize_guards: bool }
 impl MutationCoordinator for Owner {
     fn commit(&mut self, _: CommandContext, _: Vec<OwnerCommand>) -> Result<OperationOutcome> { panic!("capture uses its owner") }
     fn lookup(&self, context: &CommandContext, operation: OperationId) -> Result<OperationOutcome> { self.operation_outcome(context, operation) }
@@ -39,6 +39,7 @@ impl ItemOwner for Owner {
         let outcome = OperationOutcome { operation_id: command.context.operation_id, scope: command.context.scope, intent_digest: command.context.intent_digest,
             expected_revisions: command.context.expected_revisions, outcome: if self.pending { OutcomeState::Pending } else { OutcomeState::Committed },
             result_refs: vec![reference("item")], owner_receipt_refs: vec![reference("receipt")], committed_at: (!self.pending).then(instant), common: Extensions::default() };
+        let outcome = if self.canonicalize_guards { serde_json::from_str(&serde_json::to_string(&outcome).unwrap()).unwrap() } else { outcome };
         self.outcomes.insert(outcome.operation_id, outcome.clone());
         if self.lose_response { Err(Error::UnknownOutcome { operation_id: outcome.operation_id }) } else { Ok(outcome) }
     }
@@ -51,6 +52,12 @@ impl ItemOwner for Owner {
             deleted_at: None, common: Extensions::default() }, captures: if self.hide_capture { vec![] } else { self.captures.clone() }, observations: vec![], members: vec![], streams: vec![] })
     }
     fn lookup_identity(&self, _: &CommandContext, _: IdentityQuery) -> Result<Option<ItemId>> { Ok(None) }
+    fn lookup_url(&self, context: &CommandContext, query: UrlIdentityQuery) -> Result<Vec<ItemId>> {
+        query.validate(&context.bounds)?;
+        if query.access_partition != context.scope { return Err(Error::Denied); }
+        Ok(self.captures.iter().filter(|capture| capture.access_partition == context.scope && capture.identity_url == query.identity_url)
+            .map(|capture| capture.item_id).collect::<BTreeSet<_>>().into_iter().collect())
+    }
     fn operation_outcome(&self, context: &CommandContext, operation: OperationId) -> Result<OperationOutcome> {
         let value = self.outcomes.get(&operation).ok_or(Error::NotFound)?;
         if value.scope != context.scope { return Err(Error::Denied); }
@@ -109,4 +116,26 @@ fn interrupted_pending_capture_uses_same_operation_recovery_then_canonical_readb
     assert_eq!(outcome.outcome, OutcomeState::Committed);
     assert_eq!(owner.calls, 1); assert_eq!(owner.recovery_calls, 1);
     assert_eq!(owner.inspect(&context, capture.item_id).unwrap().captures, vec![capture]);
+}
+
+#[test]
+fn canonical_guard_roundtrip_accepts_reordering_but_rejects_changed_or_duplicate_owners() {
+    let (mut context, capture) = command(); context.expected_revisions = vec![
+        ExpectedRevision { owner: reference("z-owner"), revision: Revision(3) },
+        ExpectedRevision { owner: reference("a-owner"), revision: Revision(1) },
+    ];
+    let mut owner = Owner { canonicalize_guards: true, ..Default::default() };
+    save_url(&mut owner, &intent(&capture), context.clone(), capture.clone(), &BTreeSet::new()).unwrap();
+    let stored = &owner.outcomes[&context.operation_id];
+    assert_ne!(stored.expected_revisions, context.expected_revisions, "actual owning serializer must reorder this guard list");
+    for change_owner in [false, true] {
+        let mut changed = context.clone();
+        if change_owner { changed.expected_revisions[0].owner = reference("different-owner"); } else { changed.expected_revisions[0].revision = Revision(4); }
+        assert_eq!(save_url(&mut owner, &intent(&capture), changed, capture.clone(), &BTreeSet::new()), Err(rss_contracts::Error::Conflict));
+    }
+    let mut duplicate = context.clone(); duplicate.expected_revisions.push(duplicate.expected_revisions[0].clone());
+    assert!(save_url(&mut owner, &intent(&capture), duplicate, capture.clone(), &BTreeSet::new()).is_err());
+    let stored = owner.outcomes.get_mut(&context.operation_id).unwrap(); stored.expected_revisions.push(stored.expected_revisions[0].clone());
+    assert!(save_url(&mut owner, &intent(&capture), context, capture, &BTreeSet::new()).is_err());
+    assert_eq!(owner.calls, 1);
 }

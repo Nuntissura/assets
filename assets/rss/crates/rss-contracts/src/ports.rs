@@ -36,12 +36,17 @@ pub struct BatchCommit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CommitOutcome {
+    /// Accepted subscription/executor fence, equal to this batch's expected_generation.
+    /// Page commits do not advance the subscription epoch; host storage revisions are separate.
     Committed { receipt_ref: HostRef, generation: Revision },
     Pending { operation_id: OperationId },
     Conflict,
 }
 pub trait CheckpointOwner: Send + Sync {
     fn lookup<'a>(&'a self, scope: &'a ScopeRef, operation: OperationId) -> Pending<'a, CommitOutcome>;
-    /// The host commits accepted owner outcomes, appearances and continuation together or returns pending recovery.
+    /// Commit accepted owner outcomes, appearances and continuation together, or retain pending recovery.
+    /// Atomically bind operation_id to the entire immutable batch and current authorized job/executor/generation.
+    /// Every call, including replay after a lost reply, compares that full intent and rejects changed reuse.
+    /// Verify referenced canonical owner outcomes before committing. Lookup alone does not prove batch intent.
     fn commit<'a>(&'a self, scope: &'a ScopeRef, batch: BatchCommit) -> Pending<'a, CommitOutcome>;
 }

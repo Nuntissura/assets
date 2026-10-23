@@ -94,6 +94,7 @@ impl JobQueue {
         if !matches!(job.state, JobState::Running { deadline } if now < deadline) { return Err(Error::Conflict); }
         job.state = JobState::AwaitingRecovery; Ok(())
     }
+    /// The host calls this only after the attempt has actually terminated before owner effects.
     pub fn fail(&mut self, operation: OperationId, error: &Error, now: u64, retry_after: Option<u64>) -> Result<()> {
         self.validate()?;
         let limits = self.limits.clone();
@@ -133,6 +134,31 @@ impl JobQueue {
         let index = self.jobs.iter().position(|job| job.request.operation_id == operation).ok_or(Error::NotFound)?;
         if !matches!(self.jobs[index].state, JobState::Completed | JobState::Cancelled | JobState::Failed | JobState::Reconnect) { return Err(Error::Conflict); }
         self.jobs.remove(index); Ok(())
+    }
+    /// Only commit_page can construct this acknowledgement after the exact canonical checkpoint boundary.
+    pub fn acknowledge(&mut self, page: &crate::ingestion::AcknowledgedPage) -> Result<()> {
+        self.validate()?;
+        if page.continuation().is_some() { return Err(invalid("continuation.requires_advance")); }
+        let job = self.job_mut(page.request().operation_id)?;
+        if &job.request != page.request() || !matches!(job.state, JobState::AwaitingRecovery) { return Err(Error::Conflict); }
+        job.state = JobState::Completed;
+        Ok(())
+    }
+    /// Replace the acknowledged page with its next request in one proposed queue snapshot.
+    /// The host atomically persists old-or-new state and retires the old attempt in that boundary.
+    pub fn advance(&mut self, page: &crate::ingestion::AcknowledgedPage, next_operation: OperationId, now: u64) -> Result<SourceRequest> {
+        self.validate()?;
+        let index = self.jobs.iter().position(|job| job.request.operation_id == page.request().operation_id).ok_or(Error::NotFound)?;
+        let previous = &self.jobs[index];
+        if &previous.request != page.request() || !matches!(previous.state, JobState::AwaitingRecovery | JobState::Completed) { return Err(Error::Conflict); }
+        if previous.cancel_requested { return Err(Error::Cancelled); }
+        if self.jobs.iter().any(|job| job.request.operation_id == next_operation) { return Err(Error::Conflict); }
+        let continuation = page.continuation().ok_or_else(|| invalid("continuation.finished"))?.clone();
+        let mut next = page.request().clone(); next.operation_id = next_operation; next.continuation = Some(continuation);
+        validate_request(&next)?;
+        if next.continuation == previous.request.continuation { return Err(invalid("continuation.no_progress")); }
+        self.jobs[index] = Job { request: next.clone(), attempts: 0, cancel_requested: false, state: JobState::Queued { eligible_at: now } };
+        Ok(next)
     }
     fn job_mut(&mut self, operation: OperationId) -> Result<&mut Job> {
         self.jobs.iter_mut().find(|job| job.request.operation_id == operation).ok_or(Error::NotFound)

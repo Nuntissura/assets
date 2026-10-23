@@ -2286,6 +2286,8 @@ assets:
   - per-group keyword and priority rules
   - bounded resumable acquisition job transitions
   - URL capture receipt validation and owner recovery
+  - identity-first ingestion and canonical owner outcome references
+  - immutable batch checkpoint retry and acknowledged queue continuation
   manual: assets/rss/README.md
   packages:
   - name: rss-contracts

@@ -1,13 +1,30 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use hsscrap::{ports::{CaptureCommand, CommandContext, ItemOwner, MutationCoordinator}, OperationOutcome, OutcomeState, URLCapture, Validate};
 use rss_contracts::{CaptureIntent, Error, Result};
 use crate::invalid;
 
-fn committed(owner: &impl ItemOwner, context: &CommandContext) -> Result<OperationOutcome> {
+fn guard_map(values: &[hsscrap::ExpectedRevision]) -> Result<BTreeMap<&hsscrap::HostRef, hsscrap::Revision>> {
+    let mut guards = BTreeMap::new();
+    for value in values {
+        value.revision.validate()?;
+        if guards.insert(&value.owner, value.revision).is_some() { return Err(invalid("expected_revisions.duplicate_owner")); }
+    }
+    Ok(guards)
+}
+
+pub(crate) fn same_outcome(left: &OperationOutcome, right: &OperationOutcome, bounds: &hsscrap::Bounds) -> Result<bool> {
+    left.validate(bounds, &BTreeSet::new())?;
+    right.validate(bounds, &BTreeSet::new())?;
+    // The owning serializer sorts revision-map entries and rejects duplicate owners.
+    Ok(serde_json::to_value(left).map_err(|_| invalid("operation_outcome"))?
+        == serde_json::to_value(right).map_err(|_| invalid("operation_outcome"))?)
+}
+
+pub(crate) fn committed(owner: &impl ItemOwner, context: &CommandContext) -> Result<OperationOutcome> {
     let outcome = owner.operation_outcome(context, context.operation_id)?;
     outcome.validate(&context.bounds, &BTreeSet::new())?;
     if outcome.operation_id != context.operation_id || outcome.scope != context.scope
-        || outcome.intent_digest != context.intent_digest { return Err(Error::Conflict); }
+        || outcome.intent_digest != context.intent_digest || guard_map(&outcome.expected_revisions)? != guard_map(&context.expected_revisions)? { return Err(Error::Conflict); }
     if outcome.outcome != OutcomeState::Committed || outcome.committed_at.is_none() || outcome.owner_receipt_refs.is_empty() {
         return Err(Error::UnknownOutcome { operation_id: context.operation_id });
     }
@@ -76,6 +93,17 @@ pub fn save_url(owner: &mut (impl ItemOwner + MutationCoordinator), intent: &Cap
         || capture.captured_url != *original_url || capture.identity_url != normalized.identity_url
         || capture.normalization_version != normalized.normalization_version || capture.operation_id != context.operation_id
         || capture.actor_ref.as_ref() != Some(&context.actor) { return Err(invalid("capture.intent")); }
+    if crate::identity::resolve_capture_identity(owner, &context, original_url, None)?.is_some_and(|item| item != capture.item_id) {
+        return Err(Error::Conflict);
+    }
+    persist_capture(owner, context, capture, supported)
+}
+
+pub(crate) fn persist_capture(owner: &mut (impl ItemOwner + MutationCoordinator), context: CommandContext,
+    capture: URLCapture, supported: &BTreeSet<String>) -> Result<OperationOutcome> {
+    validate_context(&context, &capture.access_partition)?;
+    capture.validate(&context.bounds, supported)?;
+    if capture.operation_id != context.operation_id { return Err(invalid("capture.operation_id")); }
     let command = CaptureCommand { context: context.clone(), capture: capture.clone(), item_id: capture.item_id };
     if serde_json::to_vec(&command).map_err(|_| invalid("capture.command"))?.len() > context.bounds.max_operation_bytes {
         return Err(Error::LimitExceeded { field: "capture.command".into() });
