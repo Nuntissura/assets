@@ -2317,6 +2317,9 @@ assets:
   - snapshot-bound wall query and 25/50/100 paging transitions
   - anchored refresh, authority-scoped card admission and single-player effects
   - separate egui feed wall, manager and composed metadata inspector
+  - bounded public Instagram profile and Reels request, media evidence and resume contracts
+  - bounded public YouTube uploads traversal and explicitly partial no-login Atom evidence
+  - bounded public TikTok creator-window and item media evidence with sparse-window traversal
   manual: assets/rss/README.md
   packages:
   - name: rss-contracts
@@ -2361,6 +2364,33 @@ assets:
     - hsscrap-gui
     - rss-contracts
     - rss-core
+  - name: rss-provider-instagram
+    manifest: assets/rss/crates/rss-provider-instagram/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-provider-instagram/src/lib.rs
+    role: logic
+    depends_on:
+    - handshake_canonical_json
+    - hsscrap
+    - rss-contracts
+  - name: rss-provider-youtube
+    manifest: assets/rss/crates/rss-provider-youtube/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-provider-youtube/src/lib.rs
+    role: logic
+    depends_on:
+    - handshake_canonical_json
+    - hsscrap
+    - rss-contracts
+  - name: rss-provider-tiktok
+    manifest: assets/rss/crates/rss-provider-tiktok/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-provider-tiktok/src/lib.rs
+    role: logic
+    depends_on:
+    - handshake_canonical_json
+    - hsscrap
+    - rss-contracts
   components:
   - HSSCRAP-ASSET-001
   source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/rss

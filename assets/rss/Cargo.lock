@@ -2460,6 +2460,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-provider-instagram"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "handshake_canonical_json",
+ "hsscrap",
+ "rss-contracts",
+ "serde",
+ "serde_json",
+ "sha2",
+ "url",
+]
+
+[[package]]
 name = "rss-provider-syndication"
 version = "0.1.0"
 dependencies = [
@@ -2467,6 +2481,38 @@ dependencies = [
  "feed-rs",
  "hsscrap",
  "rss-acquisition",
+ "rss-contracts",
+ "scraper",
+ "serde",
+ "serde_json",
+ "sha2",
+ "url",
+]
+
+[[package]]
+name = "rss-provider-tiktok"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "handshake_canonical_json",
+ "hsscrap",
+ "rss-contracts",
+ "scraper",
+ "serde",
+ "serde_json",
+ "sha2",
+ "url",
+]
+
+[[package]]
+name = "rss-provider-youtube"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "feed-rs",
+ "handshake_canonical_json",
+ "hsscrap",
+ "percent-encoding",
  "rss-contracts",
  "scraper",
  "serde",

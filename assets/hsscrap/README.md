@@ -44,6 +44,26 @@ Focused transfer proof: `cargo test --locked --manifest-path assets/hsscrap/Carg
 
 </topic>
 
+<topic id="standalone-consumer" status="locally-passed">
+
+`examples/standalone.rs` is a portable synthetic consumer of the public core, native inspector and versioned bridge. It normalizes a capture URL, edits and cancels a draft, calls the actual inspector, preserves a large revision through the bridge, lays out its panel and revokes its view. The host remains responsible for authorization and owner effects.
+
+After the coordinated preparation gate, run the independent consumer against the exact published source selection:
+
+```powershell
+python assets/hsscrap/tests/consumer/prove.py --revision dc8e88168e22ef1b669018406e48d36be36bc581
+```
+
+The driver creates a separate temporary workspace beneath the existing absolute `CARGO_TARGET_DIR`, resolves the three hsscrap crates from that immutable Git revision, checks Cargo's resolved source and feature graph, then builds and runs the public calls. Its own example is copied into the consumer; neither product nor the asset's private test modules are imported. `--output` relocates the generated consumer and logs. `HSSCRAP_CARGO`, `HSSCRAP_RUSTC` and `HSSCRAP_GIT` select existing tools while preserving Rustup proxy names. Toolchain selection remains explicit in the coordinated environment.
+
+The JSON result names the exact Git revision, selected crates/features, native target/compiler, dependency closure and actual local artifact digests. It also archives the immutable hsscrap/JCS source selection and records its file list, rejecting generated/cache/key-file paths. Review the actual source contents independently. This is a Git source release; the generated consumer executable, archive and previous WASM/bindings are local build outputs. Browser rendering, host persistence, signing/trust and production provider access retain their independent acceptance.
+
+Failure leaves the generated workspace and full command logs in place. A wrong revision/source, unexpected local dependency, GUI dependency in the core, changed public result or excluded package path rejects the run. Inspect that diagnostic and preserve the exact source pin when retrying. The 2026-10-23 first consumer run passed all six public workflows on Rust 1.97.1 for x86_64-pc-windows-msvc. The core resolved closure contained 57 packages and no GUI/RSS dependency. An independent reread verified all five generated artifact digests and all 53 archived files against the immutable source blobs. Canonical publication of this example/manual/driver remains separate from that source-selection proof.
+
+Research inspected 2026-10-23: [Cargo Git dependencies and exact revisions](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#specifying-dependencies-from-git-repositories), [resolved dependency metadata](https://doc.rust-lang.org/cargo/commands/cargo-metadata.html) and [public examples](https://doc.rust-lang.org/cargo/reference/cargo-targets.html#examples). Reuse Cargo's actual source resolver and compiler artifacts. A host build or workspace path dependency would not prove independent immutable consumption. Existing native/GUI/WASM behavior proofs remain valid and are reused; the new driver proves the separate consumer boundary and source-package selection.
+
+</topic>
+
 <topic id="research-basis">
 
 Sources inspected 2026-10-23 before contract selection: [Serde enum representations](https://serde.rs/enum-representations.html), [Cargo exact revision dependencies](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html), [WHATWG URL standard](https://url.spec.whatwg.org/) updated 2026-10-19, [Miniflux entry source](https://github.com/miniflux/v2/blob/main/internal/model/entry.go). Reuse Serde tagged data and UUID newtypes. The canonical WP requires richer capture/access/provenance semantics than feed entries. Existing handshake_asset_resolver owns retained media resolution/cache; handshake_embed_views owns rendering; neither owns capture metadata. A new independent owner preserves their existing purposes. Core dependencies have no GUI/provider/database code.
