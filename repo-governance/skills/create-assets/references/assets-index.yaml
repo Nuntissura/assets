@@ -741,6 +741,8 @@ assets:
   purpose: Canonical JSON byte encoding and SHA-256 helpers.
   capabilities:
   - Canonical JSON byte encoding and SHA-256 helpers.
+  - RFC8785 JCS serialization with UTF16 key ordering and binary64 numbers
+  - bounded duplicate-aware raw JSON canonicalization
   manual: assets/shared/handshake_canonical_json/src/lib.rs
   packages:
   - name: handshake_canonical_json
