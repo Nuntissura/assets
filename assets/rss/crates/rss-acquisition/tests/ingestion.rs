@@ -324,3 +324,34 @@ fn current_authority_is_checked_before_provider_effects() {
     let request = request(1); let admission = Admission::new(&request); admission.allowed.store(false, Ordering::SeqCst);
     assert!(matches!(run(rss_acquisition::acquire(&Provider, &admission, &admission, &reference("attempt"), request, &BTreeSet::new())), Err(rss_contracts::Error::Denied)));
 }
+
+#[test]
+fn authority_changes_during_provider_fetch_reject_the_returned_page() {
+    struct Provider<'a> { admission: &'a Admission, scenario: u8, called: AtomicBool }
+    impl rss_contracts::ProviderPort for Provider<'_> {
+        fn capabilities(&self) -> Vec<rss_contracts::Capability> { vec![] }
+        fn acquire<'a>(&'a self, request: SourceRequest) -> Pending<'a, AcquisitionPage> {
+            Box::pin(async move {
+                self.called.store(true, Ordering::SeqCst);
+                match self.scenario {
+                    0 => self.admission.allowed.store(false, Ordering::SeqCst),
+                    1 => self.admission.active.store(false, Ordering::SeqCst),
+                    2 => self.admission.current.lock().unwrap().generation = Revision(2),
+                    _ => self.admission.current.lock().unwrap().executor_ref = reference("new-executor"),
+                }
+                Ok(AcquisitionPage { subscription_ref: request.subscription.subscription_ref, source_ref: request.subscription.source_ref,
+                    partition: request.subscription.partition, executor_ref: request.subscription.executor_ref, generation: request.subscription.generation,
+                    operation_id: request.operation_id, entries: vec![], state: AcquisitionState::VerifiedEmpty { observed_at: at(),
+                        selected_source_identity: "https://example.org/feed".into() }, coverage: Coverage::Complete, continuation: None })
+            })
+        }
+    }
+    for scenario in 0..4 {
+        let request = request(1); let admission = Admission::new(&request);
+        let provider = Provider { admission: &admission, scenario, called: AtomicBool::new(false) };
+        let result = run(rss_acquisition::acquire(&provider, &admission, &admission, &reference("attempt"), request, &BTreeSet::new()));
+        assert!(provider.called.load(Ordering::SeqCst));
+        let expected = match scenario { 0 => rss_contracts::Error::Denied, 1 => rss_contracts::Error::Cancelled, _ => rss_contracts::Error::StaleResult };
+        assert_eq!(result, Err(expected));
+    }
+}

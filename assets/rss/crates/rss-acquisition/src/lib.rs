@@ -31,6 +31,7 @@ pub async fn acquire(provider: &impl rss_contracts::ProviderPort, authority: &im
     supported: &std::collections::BTreeSet<String>) -> Result<rss_contracts::AcquisitionPage> {
     authority::authorize_current(authority, execution, &request, execution_ref).await?;
     let page = provider.acquire(request.clone()).await?;
+    authority::authorize_current(authority, execution, &request, execution_ref).await?;
     page.validate(&request.subscription, &request.bounds, supported)?;
     if page.operation_id != request.operation_id { return Err(Error::StaleResult); }
     Ok(page)
