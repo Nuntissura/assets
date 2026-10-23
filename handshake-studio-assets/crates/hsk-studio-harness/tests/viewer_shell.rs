@@ -225,8 +225,9 @@ fn accesskit_clicks_reach_the_open_dialog_and_a_workspace_panel() {
     let (workspace, _) = ak_find(&out, |l| l == "Workspace").expect("Workspace menu node");
     let _ = frame(&mut v, &ctx, vec![ak_click(workspace)]);
     let out = frame(&mut v, &ctx, vec![]);
-    // WORKSPACE > Panels ([STU-SHL-036] expansion node).
-    let (panels, disabled) = ak_find(&out, |l| l == "Panels").expect("Panels submenu node");
+    // WORKSPACE > Panels ([STU-SHL-036] expansion node; egui labels a submenu button with its
+    // right arrow: "Panels ⏵").
+    let (panels, disabled) = ak_find(&out, |l| l.starts_with("Panels")).expect("Panels submenu node");
     assert!(!disabled);
     let _ = frame(&mut v, &ctx, vec![ak_click(panels)]);
     let out = frame(&mut v, &ctx, vec![]);
@@ -764,7 +765,9 @@ fn accesskit_reasons() {
     let out = frame(&mut v, &ctx, vec![]);
     let tree = out.platform_output.accesskit_update.as_ref().expect("accesskit update");
     let line = v.menu_bar().find("studio.document.save").unwrap().availability.reason_line();
-    let save = tree.nodes.iter().find(|(_, n)| n.label().is_some_and(|l| l.starts_with("Save") && !l.starts_with("Save As"))).map(|(_, n)| n.clone()).expect("Save node");
+    // The menu leaf carries its shortcut in the label ("Save Ctrl+S"); the side panel's own
+    // "Save" button is a different node.
+    let save = tree.nodes.iter().find(|(_, n)| n.label().is_some_and(|l| l.starts_with("Save ") && l.ends_with("Ctrl+S") && !l.starts_with("Save As"))).map(|(_, n)| n.clone()).expect("Save menu node");
     assert!(save.is_disabled());
     assert_eq!(save.description(), Some(line.as_str()));
     let open = tree.nodes.iter().find(|(_, n)| n.label().is_some_and(|l| l.starts_with("Open…"))).map(|(_, n)| n.clone()).expect("Open node");
