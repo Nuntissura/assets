@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-018-file-drop-integration-v1
-generation: 6
+generation: 7
 phase: blocked
 owner: dev_lead_resume_2026_10_14
 changed_files:
@@ -80,10 +80,22 @@ proof:
     behavior unchanged
   limits: No successful actual native transfer or installed-app hosting/input/teardown
     claim; operator manual tests still required
+- kind: operator_native_manual_report
+  source_revision: 1e37e0aa49ce960306be0ef0fe2e432b73e85589
+  operator_report: all passed; the UI was horrible but not the goal of the test
+  verdict: PASS_OPERATOR_REPORTED_NATIVE_CHECKLIST
+  artifact_ref: .local/manual-acceptance/native-drop-inspection/native-manifest.json
+  artifact_sha256: 74fa09ccacb591a00eeb82d6ade444716a7552a979cf93ae23ddb81ec17dc0ab
+  independent_observation: Final error=null; unsupported text-format rejection recorded;
+    own PID absent and exact HWND161550614 absent after normal close
+  evidence_limit: Final snapshot has no alpha/beta marker and zero retained file-drop
+    receipts. Positive imports/undo are operator-observed, not independently corroborated
+    by this final snapshot
+  ui_feedback: Operator judged UI horrible; UI redesign excluded from this drop test
+    result
 blockers:
-- Operator manual runtime observations required; agent must not launch GUI or control
-  mouse/keyboard. Prepared commands, fixtures, expected outcomes and evidence locations
-  are in product/INTERNAL-MANUAL.md#manual-extension-acceptance
-next_action: Operator runs exact manual tests; lead reads emitted JSON and operator
-  observations, remedies actual failures, then publishes accepted packet. No desktop
-  automation.
+- Positive native import/state evidence is not retained in the final snapshot; operator
+  reports all manual steps passed. Resolve this evidence discrepancy before claiming
+  independently proven WP018 closure. Browser physical-input limitations remain labelled.
+next_action: Reconcile reported native success with final snapshot evidence; keep
+  operator UI feedback separate. WP020 installed-app acceptance remains pending.

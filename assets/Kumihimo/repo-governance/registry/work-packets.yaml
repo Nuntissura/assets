@@ -134,11 +134,12 @@ work_packets:
   phase: blocked
   contract_ref: repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-state.yaml
-  next_action: Operator runs exact manual tests; lead reads emitted JSON and operator observations, remedies actual
-    failures, then publishes accepted packet. No desktop automation.
+  next_action: Reconcile reported native success with final snapshot evidence; keep operator UI feedback separate.
+    WP020 installed-app acceptance remains pending.
   blockers:
-  - Operator manual runtime observations required; agent must not launch GUI or control mouse/keyboard. Prepared
-    commands, fixtures, expected outcomes and evidence locations are in product/INTERNAL-MANUAL.md#manual-extension-acceptance
+  - Positive native import/state evidence is not retained in the final snapshot; operator reports all manual steps
+    passed. Resolve this evidence discrepancy before claiming independently proven WP018 closure. Browser physical-input
+    limitations remain labelled.
 - wp_id: WP-KUM-019-external-app-tiling-v1
   title: Optional selected external desktop-application tiling
   phase: done
