@@ -1,4 +1,5 @@
 mod adapter;
+mod identity_tests;
 use adapter::*;
 use std::collections::BTreeSet;
 use hsscrap::*;
@@ -14,7 +15,7 @@ fn limits()->Limits {Limits{max_bytes:1024*1024,max_items:100,max_tags:100,max_o
 fn bounds()->Bounds {Bounds{max_url_bytes:4096,max_text_bytes:4096,max_collection_items:100,max_page_items:25,max_operation_bytes:20000}}
 fn initialize(limits:Limits)->(tempfile::TempDir,ReferenceHost) {
     let dir=tempfile::Builder::new().prefix("hsscrap-reference-").tempdir().unwrap();
-    let host=ReferenceHost::new(dir.path().join("state.json"),limits).unwrap();
+    let host=ReferenceHost::new(dir.path().join("state.json"),limits,at()).unwrap();
     let capture_id=CaptureId(uuid::Uuid::from_u128(2));
     let item=Item{item_id:item_id(),owner_scope:scope(),revision:Revision(1),first_capture_id:capture_id,selected_observation_id:None,gallery_observation_id:None,member_order:vec![],title_override:Override::Inherit,description_override:Override::Inherit,cover_override:Override::Inherit,created_at:at(),updated_at:at(),lifecycle:Lifecycle::Active,deleted_at:None,common:Extensions::default()};
     let capture=URLCapture{capture_id,item_id:item_id(),capture_kind:CaptureKind::LegacyMigration,access_partition:scope(),captured_url:"https://example.org/".into(),original_url:None,identity_url:"https://example.org/".into(),normalization_version:"hsscrap.url.v1".into(),captured_at:None,created_here_at:at(),actor_ref:None,operation_id:OperationId(uuid::Uuid::from_u128(3)),common:Extensions::default()};
@@ -39,7 +40,7 @@ fn lost_response_restart_replay_after_deletion_and_revocation() {
     let committed=read_canonical(&host.path);
     assert_eq!(committed.items[&item_id()].revision,Revision(3));assert_eq!(committed.tags.len(),1);
     assert_eq!(committed.journal[&request.context.operation_id].outcome.outcome,OutcomeState::Committed);
-    let path=host.path.clone();drop(host);let restarted=ReferenceHost::new(path,limits()).unwrap();
+    let path=host.path.clone();drop(host);let restarted=ReferenceHost::new(path,limits(),at()).unwrap();
     assert_eq!(restarted.commit(request.clone(),at(),FailurePoint::None).unwrap().outcome,OutcomeState::Committed);
     assert_eq!(read_canonical(&restarted.path).items[&item_id()].revision,Revision(3));
     restarted.tombstone(&actor(),&scope(),item_id(),Revision(3),at()).unwrap();
@@ -64,7 +65,7 @@ fn real_process_loss_preserves_partial_owner_commit_and_recovers_without_reapply
     assert_eq!(partial.journal[&request.context.operation_id].receipts.len(),1);
     let owners=vec![item_ref(item_id()),item_ref(item_id())];
     assert!(matches!(finish_operation(&request,&partial.journal[&request.context.operation_id].receipts,&owners,vec![],at()),Err(Error::Conflict{field}) if field=="incomplete_owner_commit"));
-    let restarted=ReferenceHost::new(host.path.clone(),limits()).unwrap();
+    let restarted=ReferenceHost::new(host.path.clone(),limits(),at()).unwrap();
     assert_eq!(restarted.commit(request,at(),FailurePoint::None).unwrap().outcome,OutcomeState::Committed);
     let final_state=read_canonical(&host.path);assert_eq!(final_state.items[&item_id()].revision,Revision(3));assert_eq!(final_state.tags.len(),1);
     let journal=final_state.journal.values().next().unwrap();let mut wrong_owner=journal.receipts.clone();wrong_owner[1].owner=catalogue_ref(&scope());
@@ -121,6 +122,6 @@ fn unresolved_cover_member_is_rejected_before_any_item_effect() {
 fn reference_worker() {
     let root=std::path::PathBuf::from(std::env::var_os("HSSCRAP_REFERENCE_DIR").expect("isolated reference directory"));
     let request:OperationPlan=serde_json::from_slice(&std::fs::read(root.join("request.json")).unwrap()).unwrap();
-    let host=ReferenceHost::new(root.join("state.json"),limits()).unwrap();
+    let host=ReferenceHost::new(root.join("state.json"),limits(),at()).unwrap();
     let result=host.commit(request,at(),FailurePoint::CrashAfterOwner(1));panic!("expected deliberate process exit, observed {result:?}");
 }

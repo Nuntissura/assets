@@ -31,6 +31,12 @@ pub fn plan_operation(mut context:CommandContext,commands:Vec<OwnerCommand>,supp
     for command in &commands {
         match command {
             OwnerCommand::ItemPatch{patch,..}=>patch.validate(&context.bounds,supported)?,
+            OwnerCommand::AssertSourceIdentity(v)=>{
+                v.validate(&context.bounds,supported)?;
+                if [&v.provider,&v.namespace,&v.provider_item_id,&v.access_partition.0].iter().any(|value|value.is_empty()) {
+                    return Err(invalid("source_identity","nonempty provider identity and scope required"));
+                }
+            },
             OwnerCommand::AddTag(v)=>v.validate(&context.bounds,supported)?,
             OwnerCommand::SaveMembership(v)=>v.validate(&context.bounds,supported)?,
             OwnerCommand::AddPlacement(v)|OwnerCommand::MovePlacement(v)=>v.validate(&context.bounds,supported)?,

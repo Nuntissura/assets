@@ -342,6 +342,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-acquisition"
+version = "0.1.0"
+dependencies = [
+ "hsscrap",
+ "rss-contracts",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rss-contracts"
 version = "0.1.0"
 dependencies = [

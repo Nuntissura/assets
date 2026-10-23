@@ -1,0 +1,12 @@
+[package]
+name = "rss-acquisition"
+version = "0.1.0"
+edition = "2021"
+publish = false
+include = ["src/**", "tests/**", "Cargo.toml"]
+
+[dependencies]
+rss-contracts.workspace = true
+hsscrap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

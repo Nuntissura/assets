@@ -17,6 +17,23 @@ pub struct CaptureCommand { pub context:CommandContext, pub capture:URLCapture, 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IdentityQuery { pub provider:String, pub namespace:String, pub provider_item_id:String, pub access_partition:ScopeRef }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UrlIdentityQuery { pub identity_url:String, pub normalization_version:String, pub access_partition:ScopeRef }
+impl UrlIdentityQuery {
+    pub fn validate(&self,bounds:&Bounds)->Result<()> {
+        bounds.validate()?;
+        if self.access_partition.0.is_empty(){return Err(crate::invalid("access_partition","nonempty scope required"));}
+        bounds.text("access_partition",&self.access_partition.0,bounds.max_text_bytes)?;
+        bounds.text("normalization_version",&self.normalization_version,bounds.max_text_bytes)?;
+        if self.normalization_version!=crate::identity::NORMALIZATION_VERSION {
+            return Err(Error::UnsupportedRequiredFeature{feature:"hsscrap.url_normalization_version".into()});
+        }
+        if crate::identity::normalize_url(&self.identity_url,bounds)?.identity_url!=self.identity_url {
+            return Err(crate::invalid("identity_url","normalized URL required"));
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ItemSnapshot { pub item:Item, pub captures:Vec<URLCapture>, pub observations:Vec<MetadataObservation>, pub members:Vec<GalleryMember>, pub streams:Vec<ObservationStream> }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Page<T> { pub values:Vec<T>, pub next_cursor:Option<String>, pub complete:bool }
@@ -33,6 +50,17 @@ pub trait ItemOwner {
     fn capture(&mut self, command:CaptureCommand)->Result<OperationOutcome>;
     fn inspect(&self, context:&CommandContext, item:ItemId)->Result<ItemSnapshot>;
     fn lookup_identity(&self, context:&CommandContext, query:IdentityQuery)->Result<Option<ItemId>>;
+    /// Return every currently authorized canonical candidate under the stated URL normalization version.
+    fn lookup_url(&self, _context:&CommandContext, _query:UrlIdentityQuery)->Result<Vec<ItemId>> {
+        Err(Error::UnsupportedRequiredFeature{feature:"hsscrap.identity_index.v1".into()})
+    }
+    /// Register a verified immutable source assertion through the item owner's revision and operation boundary.
+    fn assert_source_identity(&mut self, _context:CommandContext, _identity:SourceIdentity)->Result<OperationOutcome> {
+        Err(Error::UnsupportedRequiredFeature{feature:"hsscrap.identity_index.v1".into()})
+    }
+    fn inspect_source_identity(&self, _context:&CommandContext, _id:IdentityId)->Result<SourceIdentity> {
+        Err(Error::UnsupportedRequiredFeature{feature:"hsscrap.identity_index.v1".into()})
+    }
     fn apply_patch(&mut self, context:CommandContext, item:ItemId, patch:ItemPatch)->Result<OperationOutcome>;
     fn accept_observation(&mut self, context:CommandContext, observation:MetadataObservation)->Result<OperationOutcome>;
     fn apply_gallery_snapshot(&mut self, context:CommandContext, item:ItemId, observation:ObservationId)->Result<OperationOutcome>;
@@ -69,6 +97,7 @@ pub trait MutationCoordinator {
 #[serde(tag="kind",content="value",rename_all="snake_case")]
 pub enum OwnerCommand {
     ItemPatch { item:ItemId, patch:ItemPatch }, AddTag(TagAssignment), RemoveTag(AssignmentId),
+    AssertSourceIdentity(SourceIdentity),
     SaveMembership(ProjectMembership), RemoveMembership(MembershipId),
     AddPlacement(FolderPlacement), MovePlacement(FolderPlacement), RemovePlacement(PlacementId),
 }

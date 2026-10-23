@@ -2,7 +2,7 @@
 use std::{collections::{BTreeMap,BTreeSet},fs::{File,OpenOptions},io::{Read,Write},path::PathBuf};
 use serde::{Deserialize,Serialize};
 use hsscrap::*;
-use hsscrap::ports::OwnerCommand;
+use hsscrap::ports::*;
 use hsscrap::operations::*;
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
@@ -11,22 +11,23 @@ pub struct Journal {pub plan:OperationPlan,pub outcome:OperationOutcome,pub rece
 pub struct State {
     pub scope:ScopeRef,pub grants:BTreeSet<HostRef>,pub items:BTreeMap<ItemId,Item>,
     pub captures:BTreeMap<CaptureId,URLCapture>,pub members:BTreeMap<MemberId,GalleryMember>,pub tag_catalogue:BTreeSet<TagRef>,
+    pub observations:BTreeMap<ObservationId,MetadataObservation>,pub identities:BTreeMap<IdentityId,SourceIdentity>,
     pub tags:BTreeMap<AssignmentId,TagAssignment>,pub catalog_revision:Revision,pub journal:BTreeMap<OperationId,Journal>,
 }
 #[derive(Debug,Clone,Copy)]
 pub struct Limits {pub max_bytes:usize,pub max_items:usize,pub max_tags:usize,pub max_operations:usize}
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum FailurePoint {None,AfterPending,AfterOwner(usize),AfterCommit,CrashAfterOwner(usize)}
-pub struct ReferenceHost {pub path:PathBuf,pub limits:Limits}
+pub struct ReferenceHost {pub path:PathBuf,pub limits:Limits,pub commit_time:Instant}
 fn io_error(e:impl std::fmt::Display)->Error {invalid("reference_storage",&e.to_string())}
 
 pub fn item_ref(id:ItemId)->HostRef {HostRef{host_instance_id:"reference-host".into(),owner_kind:"hsscrap.item".into(),native_id:id.to_string()}}
 pub fn catalogue_ref(scope:&ScopeRef)->HostRef {HostRef{host_instance_id:"reference-host".into(),owner_kind:"tags.catalogue".into(),native_id:scope.0.clone()}}
 
 impl ReferenceHost {
-    pub fn new(path:PathBuf,limits:Limits)->Result<Self> {
+    pub fn new(path:PathBuf,limits:Limits,commit_time:Instant)->Result<Self> {
         if [limits.max_bytes,limits.max_items,limits.max_tags,limits.max_operations].contains(&0) || limits.max_bytes.checked_add(1).is_none() {return Err(invalid("reference_limits","positive finite limits required"));}
-        Ok(Self{path,limits})
+        Ok(Self{path,limits,commit_time})
     }
     fn lock(&self)->Result<File> {
         let file=OpenOptions::new().read(true).write(true).create(true).truncate(false).open(self.path.with_extension("lock")).map_err(io_error)?;
@@ -41,7 +42,7 @@ impl ReferenceHost {
         self.check_limits(&state)?;Ok(state)
     }
     fn check_limits(&self,state:&State)->Result<()> {
-        for (field,size,limit) in [("items",state.items.len(),self.limits.max_items),("captures",state.captures.len(),self.limits.max_items),("members",state.members.len(),self.limits.max_items),("tag_catalogue",state.tag_catalogue.len(),self.limits.max_tags),("tags",state.tags.len(),self.limits.max_tags),("operations",state.journal.len(),self.limits.max_operations)] {
+        for (field,size,limit) in [("items",state.items.len(),self.limits.max_items),("captures",state.captures.len(),self.limits.max_items),("members",state.members.len(),self.limits.max_items),("observations",state.observations.len(),self.limits.max_items),("identities",state.identities.len(),self.limits.max_items),("tag_catalogue",state.tag_catalogue.len(),self.limits.max_tags),("tags",state.tags.len(),self.limits.max_tags),("operations",state.journal.len(),self.limits.max_operations)] {
             if size>limit {return Err(Error::LimitExceeded{field:field.into(),limit});}
         } Ok(())
     }
@@ -56,6 +57,9 @@ impl ReferenceHost {
         Ok(())
     }
     pub fn initialize(&self,scope:ScopeRef,actors:BTreeSet<HostRef>,items:Vec<Item>,captures:Vec<URLCapture>,tag_catalogue:BTreeSet<TagRef>)->Result<()> {
+        self.initialize_with_observations(scope,actors,items,captures,vec![],tag_catalogue)
+    }
+    pub fn initialize_with_observations(&self,scope:ScopeRef,actors:BTreeSet<HostRef>,items:Vec<Item>,captures:Vec<URLCapture>,observations:Vec<MetadataObservation>,tag_catalogue:BTreeSet<TagRef>)->Result<()> {
         if let Some(parent)=self.path.parent(){std::fs::create_dir_all(parent).map_err(io_error)?;}
         let _lock=self.lock()?;
         if self.path.exists(){return Err(Error::Conflict{field:"reference_initialized".into()});}
@@ -63,9 +67,17 @@ impl ReferenceHost {
         let mut resources=BTreeMap::new();
         for item in items {if item.owner_scope!=scope || resources.insert(item.item_id,item).is_some(){return Err(Error::Conflict{field:"reference_item".into()});}}
         let mut capture_map=BTreeMap::new();
-        for capture in captures {if !resources.contains_key(&capture.item_id) || capture_map.insert(capture.capture_id,capture).is_some(){return Err(Error::Conflict{field:"reference_capture".into()});}}
+        for capture in captures {if capture.access_partition!=scope || !resources.contains_key(&capture.item_id) || capture_map.insert(capture.capture_id,capture).is_some(){return Err(Error::Conflict{field:"reference_capture".into()});}}
         for item in resources.values() {if capture_map.get(&item.first_capture_id).is_none_or(|capture|capture.item_id!=item.item_id){return Err(Error::Conflict{field:"first_capture".into()});}}
-        self.write(&State{scope,grants:actors,items:resources,captures:capture_map,members:BTreeMap::new(),tag_catalogue,tags:BTreeMap::new(),catalog_revision:Revision(1),journal:BTreeMap::new()})
+        let mut observation_map=BTreeMap::new();
+        for observation in observations {
+            if observation.access_partition!=scope || !resources.contains_key(&observation.item_id)
+                || observation.capture_id.is_some_and(|id|capture_map.get(&id).is_none_or(|capture|capture.item_id!=observation.item_id))
+                || observation_map.insert(observation.observation_id,observation).is_some() {
+                return Err(Error::Conflict{field:"reference_observation".into()});
+            }
+        }
+        self.write(&State{scope,grants:actors,items:resources,captures:capture_map,members:BTreeMap::new(),observations:observation_map,identities:BTreeMap::new(),tag_catalogue,tags:BTreeMap::new(),catalog_revision:Revision(1),journal:BTreeMap::new()})
     }
     fn authorize(state:&State,actor:&HostRef,scope:&ScopeRef)->Result<()> {
         if &state.scope!=scope || !state.grants.contains(actor){return Err(Error::Denied);}Ok(())
@@ -85,6 +97,7 @@ impl ReferenceHost {
     fn command_owners(state:&State,command:&OwnerCommand)->Result<Vec<HostRef>> {
         match command {
             OwnerCommand::ItemPatch{item,..}=>Ok(vec![item_ref(*item)]),
+            OwnerCommand::AssertSourceIdentity(identity)=>Ok(vec![item_ref(identity.item_id)]),
             OwnerCommand::AddTag(tag)=>match tag.target {TagTarget::Item(item)=>Ok(vec![item_ref(item),catalogue_ref(&state.scope)]),_=>Err(invalid("reference_target","reference adapter accepts item tags only"))},
             OwnerCommand::RemoveTag(id)=>{
                 let tag=state.tags.get(id).ok_or(Error::NotFound)?;
@@ -99,6 +112,24 @@ impl ReferenceHost {
     }
     fn execute(state:&mut State,command:&OwnerCommand,at:&Instant)->Result<()> {
         match command {
+            OwnerCommand::AssertSourceIdentity(identity)=>{
+                Self::active_item(state,identity.item_id)?;
+                if identity.access_partition!=state.scope || identity.retired_at.is_some(){return Err(Error::Denied);}
+                let observed=state.observations.get(&identity.verified_by_observation_id).ok_or(Error::NotFound)?;
+                if observed.item_id!=identity.item_id || observed.access_partition!=identity.access_partition
+                    || observed.provider.as_deref()!=Some(identity.provider.as_str()) || observed.status.state!=AvailabilityState::Available {
+                    return Err(Error::Conflict{field:"identity_observation".into()});
+                }
+                if let Some(previous)=state.identities.get(&identity.identity_id) {
+                    return if previous==identity {Ok(())} else {Err(Error::Conflict{field:"identity_id".into()})};
+                }
+                if state.identities.values().any(|previous|previous.retired_at.is_none() && previous.access_partition==identity.access_partition
+                    && previous.provider==identity.provider && previous.namespace==identity.namespace && previous.provider_item_id==identity.provider_item_id) {
+                    return Err(Error::Conflict{field:"source_identity".into()});
+                }
+                let item=Self::active_item(state,identity.item_id)?;item.revision=item.revision.next()?;item.updated_at=at.clone();
+                state.identities.insert(identity.identity_id,identity.clone());Ok(())
+            },
             OwnerCommand::ItemPatch{item,patch}=>{
                 if let Patch::Set(Override::Set(member_id))=&patch.cover {
                     let member=state.members.get(member_id).ok_or(Error::NotFound)?;
@@ -142,6 +173,13 @@ impl ReferenceHost {
         let plan=plan_operation(plan.context,plan.commands,&BTreeSet::new())?;
         let _lock=self.lock()?;let mut state=self.read()?;
         Self::authorize(&state,&plan.context.actor,&plan.context.scope)?;
+        let mut results:Vec<_>=plan.context.expected_revisions.iter().map(|guard|guard.owner.clone()).collect();
+        for command in &plan.commands {if let OwnerCommand::AssertSourceIdentity(identity)=command {
+            results.push(HostRef{host_instance_id:"reference-host".into(),owner_kind:"hsscrap.source_identity".into(),native_id:identity.identity_id.to_string()});
+        }}
+        if results.len()>plan.context.bounds.max_collection_items {
+            return Err(Error::LimitExceeded{field:"result_refs".into(),limit:plan.context.bounds.max_collection_items});
+        }
         let existing=state.journal.get(&plan.context.operation_id);
         match decide_operation(&plan,existing.map(|j|&j.outcome),true)? {
             OperationDecision::Replay(outcome)=>return Ok(outcome),
@@ -177,7 +215,7 @@ impl ReferenceHost {
             if failure==FailurePoint::AfterOwner(index+1){return Err(uncertain_outcome(plan.context.operation_id));}
         }
         let resolved_owners:Vec<_>=plan.commands.iter().map(|command|Self::command_owners(&state,command).and_then(|owners|owners.first().cloned().ok_or_else(||invalid("owner","missing command owner")))).collect::<Result<_>>()?;
-        journal.outcome=finish_operation(&plan,&journal.receipts,&resolved_owners,journal.guards.iter().map(|g|g.owner.clone()).collect(),at)?;
+        journal.outcome=finish_operation(&plan,&journal.receipts,&resolved_owners,results,at)?;
         let outcome=journal.outcome.clone();state.journal.insert(plan.context.operation_id,journal);self.write(&state)?;
         if failure==FailurePoint::AfterCommit{return Err(uncertain_outcome(plan.context.operation_id));}Ok(outcome)
     }
@@ -199,4 +237,66 @@ impl ReferenceHost {
         item.lifecycle=Lifecycle::Tombstoned;item.deleted_at=Some(at.clone());item.updated_at=at;item.revision=item.revision.next()?;self.write(&state)
     }
 }
+
+impl ItemOwner for ReferenceHost {
+    fn lookup_url(&self,context:&CommandContext,query:UrlIdentityQuery)->Result<Vec<ItemId>> {
+        query.validate(&context.bounds)?;
+        let _lock=self.lock()?;let state=self.read()?;Self::authorize(&state,&context.actor,&context.scope)?;
+        if query.access_partition!=context.scope{return Err(Error::Denied);}
+        let mut candidates=BTreeSet::new();
+        for capture in state.captures.values() {
+            if capture.access_partition!=query.access_partition || state.items.get(&capture.item_id).is_none_or(|item|item.lifecycle!=Lifecycle::Active){continue;}
+            if capture.normalization_version!=query.normalization_version {
+                return Err(Error::Conflict{field:"url_normalization_version".into()});
+            }
+            if capture.identity_url==query.identity_url {candidates.insert(capture.item_id);}
+        }
+        if candidates.len()>context.bounds.max_collection_items{return Err(Error::LimitExceeded{field:"identity_candidates".into(),limit:context.bounds.max_collection_items});}
+        Ok(candidates.into_iter().collect())
+    }
+    fn lookup_identity(&self,context:&CommandContext,query:IdentityQuery)->Result<Option<ItemId>> {
+        context.bounds.validate()?;
+        for value in [&query.provider,&query.namespace,&query.provider_item_id] {
+            if value.is_empty(){return Err(invalid("identity_query","nonempty identity required"));}
+            context.bounds.text("identity_query",value,context.bounds.max_text_bytes)?;
+        }
+        let _lock=self.lock()?;let state=self.read()?;Self::authorize(&state,&context.actor,&context.scope)?;
+        if query.access_partition!=context.scope{return Err(Error::Denied);}
+        let matching:Vec<_>=state.identities.values().filter(|identity|identity.retired_at.is_none()
+            && identity.access_partition==query.access_partition && identity.provider==query.provider
+            && identity.namespace==query.namespace && identity.provider_item_id==query.provider_item_id
+            && state.items.get(&identity.item_id).is_some_and(|item|item.lifecycle==Lifecycle::Active)).cloned().collect();
+        if matching.len()>context.bounds.max_collection_items{return Err(Error::LimitExceeded{field:"identity_candidates".into(),limit:context.bounds.max_collection_items});}
+        hsscrap::identity::resolve_identity(&query.access_partition,&query.provider,&query.namespace,&query.provider_item_id,&matching,&[])
+    }
+    fn assert_source_identity(&mut self,context:CommandContext,identity:SourceIdentity)->Result<OperationOutcome> {
+        let plan=plan_operation(context,vec![OwnerCommand::AssertSourceIdentity(identity)],&BTreeSet::new())?;
+        self.commit(plan,self.commit_time.clone(),FailurePoint::None)
+    }
+    fn inspect_source_identity(&self,context:&CommandContext,id:IdentityId)->Result<SourceIdentity> {
+        context.bounds.validate()?;
+        let _lock=self.lock()?;let mut state=self.read()?;Self::authorize(&state,&context.actor,&context.scope)?;
+        let identity=state.identities.get(&id).ok_or(Error::NotFound)?.clone();
+        if identity.access_partition!=context.scope{return Err(Error::Denied);}
+        Self::active_item(&mut state,identity.item_id)?;Ok(identity)
+    }
+    fn inspect(&self,context:&CommandContext,item:ItemId)->Result<ItemSnapshot> {
+        context.bounds.validate()?;
+        let _lock=self.lock()?;let mut state=self.read()?;Self::authorize(&state,&context.actor,&context.scope)?;
+        let item=Self::active_item(&mut state,item)?.clone();
+        Ok(ItemSnapshot{captures:state.captures.values().filter(|value|value.item_id==item.item_id && value.access_partition==context.scope).cloned().collect(),
+            observations:state.observations.values().filter(|value|value.item_id==item.item_id && value.access_partition==context.scope).cloned().collect(),
+            members:state.members.values().filter(|value|value.item_id==item.item_id).cloned().collect(),streams:vec![],item})
+    }
+    fn operation_outcome(&self,context:&CommandContext,operation:OperationId)->Result<OperationOutcome> {self.outcome(&context.actor,&context.scope,operation)}
+    fn capture(&mut self,_command:CaptureCommand)->Result<OperationOutcome> {Err(unsupported())}
+    fn apply_patch(&mut self,context:CommandContext,item:ItemId,patch:ItemPatch)->Result<OperationOutcome> {
+        self.commit(plan_operation(context,vec![OwnerCommand::ItemPatch{item,patch}],&BTreeSet::new())?,self.commit_time.clone(),FailurePoint::None)
+    }
+    fn accept_observation(&mut self,_context:CommandContext,_observation:MetadataObservation)->Result<OperationOutcome> {Err(unsupported())}
+    fn apply_gallery_snapshot(&mut self,_context:CommandContext,_item:ItemId,_observation:ObservationId)->Result<OperationOutcome> {Err(unsupported())}
+    fn tombstone(&mut self,_context:CommandContext,_item:ItemId)->Result<OperationOutcome> {Err(unsupported())}
+}
+
+fn unsupported()->Error {Error::UnsupportedRequiredFeature{feature:"reference_host.unimplemented_owner_action".into()}}
 

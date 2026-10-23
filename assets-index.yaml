@@ -2251,6 +2251,7 @@ assets:
   - project membership and folder placement plans
   - bounded operation intents and revision-fenced replay decisions
   - durable reference-host recovery and owner receipt reconciliation proof
+  - authorized URL identity candidate lookup and immutable source identity assertions
   manual: assets/hsscrap/README.md
   packages:
   - name: hsscrap
@@ -2281,6 +2282,8 @@ assets:
   - bounded acquisition and checkpoint owner ports
   - account source library and group membership reducers
   - per-group keyword and priority rules
+  - bounded resumable acquisition job transitions
+  - URL capture receipt validation and owner recovery
   manual: assets/rss/README.md
   packages:
   - name: rss-contracts
@@ -2296,6 +2299,14 @@ assets:
     api: assets/rss/crates/rss-core/src/lib.rs
     role: logic
     depends_on:
+    - rss-contracts
+  - name: rss-acquisition
+    manifest: assets/rss/crates/rss-acquisition/Cargo.toml
+    version: 0.1.0
+    api: assets/rss/crates/rss-acquisition/src/lib.rs
+    role: logic
+    depends_on:
+    - hsscrap
     - rss-contracts
   components:
   - HSSCRAP-ASSET-001
