@@ -56,7 +56,12 @@ use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, ResampleFilter
 use hsk_studio_pigment::{Mask, Rect};
 use std::collections::BTreeMap;
 
+pub(crate) mod effect_stack;
 pub(crate) mod frame_content;
+pub use effect_stack::{
+    EFFECT_STACK_OPERATOR, EffectError, EffectedContent, GeneratorComposite, MAX_EFFECT_WORK, MAX_SCENE_EFFECTS, SceneEffect,
+    SceneEffectEntry, apply_effects,
+};
 pub use frame_content::{
     FRAME_BLEND_OPERATOR, FrameBlendMethod, FrameBlendedContent, ROTO_MATTE_OPERATOR, RotoMatte, RotoscopedContent,
 };
@@ -150,6 +155,11 @@ pub enum SceneContent {
     /// by the frame's roto coverage (and its colours replaced by decontaminated colours where the
     /// refine stage produced them), then placed like a tile.
     Rotoscoped(Box<RotoscopedContent>),
+    /// Content under a per-layer effect stack (lane SMB-AE-EFFECT-STACK-1; STU-CMP-010 steps 2-3,
+    /// STU-FX-002, [`EffectedContent`]): the inner content is rendered over its rect, the folded
+    /// layer-space masks multiply its alpha, the entries run in stack order on the host (the
+    /// distort and generate CPU kernels of `effect_stack`), then it is placed like a tile.
+    Effected(Box<EffectedContent>),
 }
 
 /// The sample scenes of [`SceneContent::Accumulated`]: one size, at least one, at most
@@ -875,7 +885,7 @@ fn lower_inner(
             SceneContent::Pinned(p) => (&p.content, Some(p.pin)),
             other => (other, None),
         };
-        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_) | SceneContent::Filtered(_) | SceneContent::Accumulated(_) | SceneContent::Graded(_) | SceneContent::FrameBlended(_) | SceneContent::Rotoscoped(_)) {
+        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_) | SceneContent::Filtered(_) | SceneContent::Accumulated(_) | SceneContent::Graded(_) | SceneContent::FrameBlended(_) | SceneContent::Rotoscoped(_) | SceneContent::Effected(_)) {
             return Err(TemporalError::Unsupported {
                 layer_id: id.to_owned(),
                 feature: crate::track_apply::COMPOSITION_CORNER_PIN_CONTENT,
@@ -922,7 +932,8 @@ fn lower_inner(
             | SceneContent::Accumulated(_)
             | SceneContent::Graded(_)
             | SceneContent::FrameBlended(_)
-            | SceneContent::Rotoscoped(_) => true,
+            | SceneContent::Rotoscoped(_)
+            | SceneContent::Effected(_) => true,
             SceneContent::None | SceneContent::Pinned(_) => false,
         };
         let matte_empty = layer
@@ -1114,6 +1125,20 @@ fn lower_inner(
                 };
                 out.sources.surfaces.insert(key, surface);
                 inputs.push((key, r.rect, tile));
+            }
+            SceneContent::Effected(e) => {
+                let surface = effect_stack::effected_surface(id, e, scene.filter, ctx, cancel, depth, charges, &mut exactness)?;
+                let key = out.key()?;
+                let tile = SceneTile {
+                    tile_id: format!("{id}/effected"),
+                    placement: e.rect,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: surface.colour_sha256,
+                    alpha_sha256: surface.alpha_sha256,
+                };
+                out.sources.surfaces.insert(key, surface);
+                inputs.push((key, e.rect, tile));
             }
             SceneContent::None | SceneContent::Adjustment(_) | SceneContent::Pinned(_) => {}
         }

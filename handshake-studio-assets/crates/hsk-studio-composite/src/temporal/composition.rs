@@ -106,7 +106,9 @@ use hsk_studio_pigment::transform_math::{Affine2, ResampleFilter};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod effects;
 mod roto;
+pub use effects::{COMPOSITION_EFFECT_CONTENT, COMPOSITION_EFFECT_OPTION};
 pub use roto::{
     COMPOSITION_ROTO_NOT_PROPAGATED, ROTO_FRAME_LOST, ROTO_LEARNED_MODEL_LANE, ROTO_MODEL_UNAVAILABLE,
     RotoFrameReceipt, RotoFrameState, RotoLimits, RotoMatteFrame, RotoMattes, RotoReceipt, RotoRun, RotoSegmentation,
@@ -230,6 +232,8 @@ struct CompLayer {
     source: Option<hsk_studio_motion::SourceTiming>,
     remap: Option<hsk_studio_motion::TimeRemap>,
     roto: Option<Box<hsk_studio_folio::StudioAssistedRoto>>,
+    /// The running effect-stack entries (lane SMB-AE-EFFECT-STACK-1; module `effects`).
+    effects: Vec<effects::EffectStream>,
 }
 
 /// A layer's own 3D transform: anchor, position, X/Y scale, rotation (lane SMB-AE-3D-2).
@@ -949,6 +953,7 @@ impl CompositionTemporalSource {
                 l.stream(p).map(|s| property(id, s)).transpose()
             };
             let (source, remap) = Self::read_time(l, &content, input)?;
+            let effects = effects::read_effects(id, &l.effects, &content)?;
             layers.push(CompLayer {
                 layer_id: l.layer_id.clone(),
                 timing: l.timing,
@@ -1042,6 +1047,7 @@ impl CompositionTemporalSource {
                 source,
                 remap,
                 roto: l.roto.clone(),
+                effects,
             });
         }
         // Lane SMB-AE-3D-2: 2D and 3D layers parent each other (`crate::three_d` module docs); a
@@ -1172,6 +1178,8 @@ impl CompositionTemporalSource {
             Some(l) if l.masks.is_some() => {
                 Err(unsupported(layer_id, crate::mask_paths::COMPOSITION_MASK_PATH_ON_DOCUMENT_GRAPH))
             }
+            // The document graph has no surface for a layer's effect stack (lane SMB-AE-EFFECT-STACK-1).
+            Some(l) if !l.effects.is_empty() => Err(unsupported(layer_id, COMPOSITION_EFFECT_CONTENT)),
             Some(l)
                 if l.matte.is_some()
                     || self.root().is_ok_and(|c| {
@@ -1559,8 +1567,10 @@ impl CompositionTemporalSource {
             bounds = pinned;
         }
         // Masks in layer space over the content rectangle (lane SMB-AE-3D-2; STU-CMP-010 step 2).
+        // With an effect stack the masks are already folded into the content (`effects` module).
         let layer_mask = match &l.masks {
             None => None,
+            Some(_) if !l.effects.is_empty() => None,
             Some(lm) => {
                 let mut at = Vec::with_capacity(lm.masks.len());
                 for (mode, inverted, closed, p) in &lm.masks {
@@ -2239,6 +2249,9 @@ impl CompositionTemporalSource {
             Some(m) => m.content(&l.layer_id, tick, cancel)?.unwrap_or(content),
             None => content,
         };
+        // Effect stack (lane SMB-AE-EFFECT-STACK-1; STU-CMP-010 steps 2-3): masks then effects in
+        // layer space, before the corner pin and the transform.
+        let (content, masks_folded) = Self::effected(l, content, tick, cancel)?;
         let unlinked = match &l.content {
             Content::Static { unlinked: Some(u), .. } => Some(u),
             _ => None,
@@ -2286,7 +2299,7 @@ impl CompositionTemporalSource {
         // A 3D layer's masks are layer-space coverage of its plane (`Self::plane`), never a
         // composition-space matte.
         let matte = match &l.masks {
-            Some(_) if l.three_d.is_some() => matte,
+            Some(_) if l.three_d.is_some() || masks_folded => matte,
             None => matte,
             Some(lm) => {
                 if matte.is_some() {
