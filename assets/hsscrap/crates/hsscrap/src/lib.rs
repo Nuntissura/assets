@@ -13,3 +13,4 @@ pub mod identity;
 pub mod metadata;
 pub mod gallery;
 pub mod media_refs;
+pub mod operations;

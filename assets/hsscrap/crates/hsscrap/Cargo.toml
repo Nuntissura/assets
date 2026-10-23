@@ -12,3 +12,10 @@ uuid.workspace = true
 chrono.workspace = true
 url.workspace = true
 handshake_canonical_json.workspace = true
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[[test]]
+name = "reference_host"
+path = "../../tests/reference_host/main.rs"

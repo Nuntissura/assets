@@ -2249,6 +2249,8 @@ assets:
   - retained association and occurrence reference validation
   - origin-preserving tag assignment plans
   - project membership and folder placement plans
+  - bounded operation intents and revision-fenced replay decisions
+  - durable reference-host recovery and owner receipt reconciliation proof
   manual: assets/hsscrap/README.md
   packages:
   - name: hsscrap
