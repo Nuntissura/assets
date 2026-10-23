@@ -70,26 +70,30 @@ impl Reader {
         #[cfg(unix)]
         { self.0.read(buffer) }
         #[cfg(windows)]
-        {
-            use std::{os::windows::io::AsRawHandle, ptr};
-            use windows_sys::Win32::{Foundation::{ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED}, System::Pipes::PeekNamedPipe};
-            let mut available = 0;
-            // This owner is the only reader. With bytes available, the following read cannot
-            // wait for another writer; neither this handle nor a clone is read concurrently.
-            let ok = unsafe { PeekNamedPipe(self.0.as_raw_handle(), ptr::null_mut(), 0,
-                ptr::null_mut(), &mut available, ptr::null_mut()) };
-            if ok == 0 {
-                let error = io::Error::last_os_error();
-                if matches!(error.raw_os_error(), Some(code) if code == ERROR_BROKEN_PIPE as i32 || code == ERROR_PIPE_NOT_CONNECTED as i32) {
-                    return Ok(0);
-                }
-                return Err(error);
-            }
-            if available == 0 { return Err(io::ErrorKind::WouldBlock.into()); }
-            let length = buffer.len().min(usize::try_from(available).unwrap_or(usize::MAX));
-            self.0.read(&mut buffer[..length])
-        }
+        { try_read_native_pipe(&mut self.0, buffer) }
         #[cfg(not(any(unix, windows)))]
         { let _ = buffer; Err(io::ErrorKind::Unsupported.into()) }
     }
+}
+
+/// Nonblocking Windows pipe read for a creation-time process adapter. The caller must be the sole
+/// reader of this native pipe, including any duplicated handles. Ordinary files are unsupported.
+#[cfg(windows)]
+pub fn try_read_native_pipe(pipe: &mut std::fs::File, buffer: &mut [u8]) -> io::Result<usize> {
+    use std::{os::windows::io::AsRawHandle, ptr};
+    use windows_sys::Win32::{Foundation::{ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED}, System::Pipes::PeekNamedPipe};
+    let mut available = 0;
+    // With one reader and bytes available, Read cannot wait for a subsequent writer.
+    let ok = unsafe { PeekNamedPipe(pipe.as_raw_handle(), ptr::null_mut(), 0,
+        ptr::null_mut(), &mut available, ptr::null_mut()) };
+    if ok == 0 {
+        let error = io::Error::last_os_error();
+        if matches!(error.raw_os_error(), Some(code) if code == ERROR_BROKEN_PIPE as i32 || code == ERROR_PIPE_NOT_CONNECTED as i32) {
+            return Ok(0);
+        }
+        return Err(error);
+    }
+    if available == 0 { return Err(io::ErrorKind::WouldBlock.into()); }
+    let length = buffer.len().min(usize::try_from(available).unwrap_or(usize::MAX));
+    pipe.read(&mut buffer[..length])
 }

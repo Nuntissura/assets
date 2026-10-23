@@ -2130,6 +2130,8 @@ assets:
     accounting, retained cleanup, and pre-spawn refusal of unsupported caps.
   - Observed one-shot child identity before output setup, with owned cleanup on rejection, setup failure and propagated
     observer panic.
+  - Creation-time adapter-owned one-shot processes with same-supervisor admission and retained cleanup, bounded
+    nonblocking streams, actual identity on failed startup, and original observer-panic propagation.
   manual: assets/handshake-studio-assets/crates/hsk-studio-worker/src/lib.rs
   packages:
   - name: hsk-studio-worker

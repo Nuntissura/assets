@@ -31,6 +31,15 @@
 //! their original unwind after child cleanup or supervisor retention. This module never drops,
 //! retains, formats or logs the captured panic payload.
 //! Normal Rust panic hooks may still run, and an abort panic cannot be caught.
+//! Creation-time isolation adapters use [`Supervisor::start_one_shot_with_spawner`] and transfer a
+//! [`OneShotProcess`] into the same admission, ledger and retained-cleanup owner. Both output streams
+//! must provide nonblocking reads. On Windows, `try_read_native_pipe` reuses the native pipe reader.
+//! The spawner receives exact native inputs, cancellation and the absolute deadline. BeforeSpawn
+//! means no child was created; every later startup failure transfers the owning process through
+//! [`OneShotLaunchError::AfterSpawn`]. A spawner unwind must reclaim its child before propagating.
+//! The worker applies no host policy or post-creation sandbox tagging. Configured supervisor caps
+//! are refused on this path; the creation adapter must enforce its approved pre-creation policy.
+//! A provided process reports `reaped` only after process-tree reap and all required cleanup.
 //!
 //! Implementation basis: Rust [`std::process::Child`] requires explicit wait/reap, Windows
 //! [PeekNamedPipe](https://learn.microsoft.com/windows/win32/api/namedpipeapi/nf-namedpipeapi-peeknamedpipe)
@@ -54,7 +63,10 @@ pub use caps::{JOB_CAPS_AVAILABLE, OsEvents, OsLimits, WorkerJob, harden_worker_
 pub use program::{discover_program, find_beside, resolve_program};
 pub use one_shot::OneShotSession;
 pub use one_shot_api::{ExactLaunch, OneShotEvent, OneShotReason, OneShotRequest, OneShotStartError,
-    OneShotTerminal, OutputBounds, OutputStream, OneShotObservedFailure, OneShotObservedStartError};
+    OneShotTerminal, OutputBounds, OutputStream, OneShotObservedFailure, OneShotObservedStartError,
+    OneShotProcess, OneShotLaunchError};
+#[cfg(windows)]
+pub use raw_pipe::try_read_native_pipe;
 pub use supervisor::{
     Classified, EXIT_PATIENCE, Failure, Liveness, Permit, ProcessLedgerEntry, ReadFailure, ReadFn,
     Refused, RespawnGate, Session, SpawnError, StartError, StartRequest, Supervisor,

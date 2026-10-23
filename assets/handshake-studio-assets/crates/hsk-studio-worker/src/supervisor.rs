@@ -305,11 +305,28 @@ pub struct Session<F, E> {
 }
 
 struct OwnedProcess {
-    child: Child,
+    child: OwnedChild,
     ledger_index: usize,
     job: Option<WorkerJob>,
     _keepalive: Option<Box<dyn Send>>,
     _permit: Permit,
+}
+
+enum OwnedChild {
+    Native(Child),
+    Provided(Box<dyn crate::OneShotProcess>),
+}
+
+impl OwnedChild {
+    fn id(&self) -> u32 {
+        match self { Self::Native(child) => child.id(), Self::Provided(child) => child.pid() }
+    }
+    fn native_mut(&mut self) -> Option<&mut Child> {
+        match self { Self::Native(child) => Some(child), Self::Provided(_) => None }
+    }
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self { Self::Native(child) => child.try_wait(), Self::Provided(child) => child.try_wait() }
+    }
 }
 
 pub(crate) struct ProcessOwner {
@@ -395,6 +412,20 @@ impl Supervisor {
         owner_session: &str,
         keepalive: Option<Box<dyn Send>>,
     ) -> ProcessOwner {
+        self.adopt_owned(OwnedChild::Native(child), permit, owner_session, keepalive)
+    }
+
+    pub(crate) fn adopt_provided(
+        &self, child: Box<dyn crate::OneShotProcess>, permit: Permit,
+        owner_session: &str, keepalive: Option<Box<dyn Send>>,
+    ) -> ProcessOwner {
+        self.adopt_owned(OwnedChild::Provided(child), permit, owner_session, keepalive)
+    }
+
+    fn adopt_owned(
+        &self, child: OwnedChild, permit: Permit, owner_session: &str,
+        keepalive: Option<Box<dyn Send>>,
+    ) -> ProcessOwner {
         bump(&self.shared.counters.spawned);
         let pid = child.id();
         let ledger_index = {
@@ -420,8 +451,15 @@ impl Supervisor {
 
     /// Retries retained failed reaps. A nonzero result means resources remain owned here.
     pub fn retry_cleanup(&self) -> usize {
-        let pending = std::mem::take(&mut *lock(&self.shared.pending_cleanup));
-        for owned in pending {
+        let count = lock(&self.shared.pending_cleanup).len();
+        for _ in 0..count {
+            // Leave untouched owners in managed custody if this attempt unwinds. Requeued failures
+            // go behind the remaining batch, so each original owner is attempted at most once.
+            let owned = {
+                let mut pending = lock(&self.shared.pending_cleanup);
+                if pending.is_empty() { break; }
+                pending.remove(0)
+            };
             let pid = owned.child.id();
             let mut owner = ProcessOwner {
                 owned: Some(owned), shared: Arc::clone(&self.shared), finished: None, pid,
@@ -550,7 +588,8 @@ impl Supervisor {
         if let Some(limits) = shared.config.os_limits {
             if let Some(owned) = session.process.owned.as_mut() {
                 owned.job = Some(
-                    WorkerJob::attach(&owned.child, limits).map_err(|_| StartError::Setup)?,
+                    WorkerJob::attach(owned.child.native_mut().ok_or(StartError::Setup)?, limits)
+                        .map_err(|_| StartError::Setup)?,
                 );
             }
         }
@@ -728,17 +767,39 @@ impl<F, E> Session<F, E> {
 impl ProcessOwner {
     pub(crate) fn pid(&self) -> u32 { self.pid }
 
+    pub(crate) fn defer_provided_cleanup(&mut self) -> bool {
+        if !self.owned.as_ref().is_some_and(|owned| matches!(&owned.child, OwnedChild::Provided(_))) {
+            return false;
+        }
+        if let Some(owned) = self.owned.take() {
+            lock(&self.shared.pending_cleanup).push(owned);
+        }
+        true
+    }
+
     pub(crate) fn child_mut(&mut self) -> Option<&mut Child> {
-        self.owned.as_mut().map(|p| &mut p.child)
+        self.owned.as_mut().and_then(|p| p.child.native_mut())
+    }
+
+    pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.owned.as_mut().ok_or(std::io::ErrorKind::BrokenPipe)?.child.try_wait()
+    }
+
+    pub(crate) fn try_read_provided(&mut self, stream: crate::OutputStream, buffer: &mut [u8])
+        -> std::io::Result<usize> {
+        match self.owned.as_mut().map(|owned| &mut owned.child) {
+            Some(OwnedChild::Provided(child)) => child.try_read(stream, buffer),
+            _ => Err(std::io::ErrorKind::Unsupported.into()),
+        }
     }
 
     pub(crate) fn heartbeat(&mut self) -> Liveness {
         if let Some(done) = self.finished {
             return Liveness::Exited { exit_code: done.exit_code };
         }
-        match self.child_mut().map(Child::try_wait) {
-            Some(Ok(None)) => Liveness::Running,
-            Some(Ok(Some(status))) => Liveness::Exited { exit_code: status.code() },
+        match self.try_wait() {
+            Ok(None) => Liveness::Running,
+            Ok(Some(status)) => Liveness::Exited { exit_code: status.code() },
             _ => Liveness::Unknown,
         }
     }
@@ -762,8 +823,22 @@ impl ProcessOwner {
             reaped: false,
             exit_code: None,
         };
-        loop {
-            match owned.child.try_wait() {
+        if let OwnedChild::Provided(child) = &mut owned.child {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| child.terminate(patience)));
+            done = match result {
+                Ok(done) => done,
+                Err(payload) => {
+                    // Preserve the exact owning object before propagating a provider contract fault.
+                    if let Some(owned) = self.owned.take() {
+                        lock(&self.shared.pending_cleanup).push(owned);
+                    }
+                    std::panic::resume_unwind(payload)
+                }
+            };
+            done.killed |= prior_killed;
+        } else if let Some(child) = owned.child.native_mut() {
+          loop {
+            match child.try_wait() {
                 Ok(Some(status)) => {
                     done.reaped = true;
                     done.exit_code = status.code();
@@ -771,11 +846,11 @@ impl ProcessOwner {
                 }
                 Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(5)),
                 _ => {
-                    let killed_now = owned.child.kill().is_ok();
+                    let killed_now = child.kill().is_ok();
                     done.killed |= killed_now;
                     let reap_until = if killed_now { after(EXIT_PATIENCE) } else { Instant::now() };
                     loop {
-                        match owned.child.try_wait() {
+                        match child.try_wait() {
                             Ok(Some(status)) => {
                                 done.reaped = true;
                                 done.exit_code = status.code();
@@ -788,6 +863,7 @@ impl ProcessOwner {
                     break;
                 }
             }
+          }
         }
         if done.killed && !prior_killed {
             bump(&self.shared.counters.killed);

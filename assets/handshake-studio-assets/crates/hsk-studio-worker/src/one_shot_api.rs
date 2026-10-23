@@ -100,3 +100,34 @@ pub enum OneShotObservedStartError {
     BeforeSpawn(OneShotStartError),
     AfterSpawn { pid: u32, cause: OneShotObservedFailure, cleanup: Terminated },
 }
+
+/// Owning process supplied by a creation-time isolation adapter. Implementations retain all tree,
+/// cleanup and output authority until the supervisor confirms complete reclamation.
+/// Methods must not panic. In particular cleanup must remain usable during another unwind.
+pub trait OneShotProcess: Send {
+    fn pid(&self) -> u32;
+    /// Observe exit without releasing tree or cleanup authority.
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+    /// Bounded and repeatable. `reaped` is true only after OS reap AND required resource cleanup.
+    /// On failure retain all remaining authority in this object for another attempt.
+    fn terminate(&mut self, patience: std::time::Duration) -> Terminated;
+    /// Nonblocking, sole-reader access: 0 is EOF, WouldBlock means no bytes yet. Never return more
+    /// than buffer.len(). Both streams must obey this contract, including after process exit.
+    fn try_read(&mut self, stream: OutputStream, buffer: &mut [u8]) -> std::io::Result<usize>;
+}
+
+/// BeforeSpawn promises no OS child was created. A post-creation failure transfers the genuine
+/// owning process, even when startup failed or it already exited. Never discard its cleanup custody.
+pub enum OneShotLaunchError {
+    BeforeSpawn,
+    AfterSpawn(Box<dyn OneShotProcess>),
+}
+
+impl fmt::Debug for OneShotLaunchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BeforeSpawn => f.write_str("BeforeSpawn"),
+            Self::AfterSpawn(_) => f.write_str("AfterSpawn([owned process])"),
+        }
+    }
+}
