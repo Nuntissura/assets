@@ -2256,6 +2256,8 @@ assets:
   - authorized URL identity candidate lookup and immutable source identity assertions
   - authorized transfer projections with strict JCS hashes and durable export cursor plans
   - typed import mapping, replay conflicts and destination media quarantine plans
+  - bounded metadata and tag interaction drafts with explicit owner save and recovery plans
+  - separate egui metadata and tag inspector with accessible controls
   manual: assets/hsscrap/README.md
   packages:
   - name: hsscrap
@@ -2265,6 +2267,13 @@ assets:
     role: logic
     depends_on:
     - handshake_canonical_json
+  - name: hsscrap-gui
+    manifest: assets/hsscrap/crates/hsscrap-gui/Cargo.toml
+    version: 0.1.0
+    api: assets/hsscrap/crates/hsscrap-gui/src/lib.rs
+    role: gui
+    depends_on:
+    - hsscrap
   source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/assets/hsscrap
   governance:
     mode: none

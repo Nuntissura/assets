@@ -1,0 +1,20 @@
+[package]
+name = "hsscrap-gui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Host-embedded Rust metadata and tag inspector for hsscrap"
+
+[dependencies]
+hsscrap = { version = "0.1.0", path = "../hsscrap" }
+egui = { version = "=0.33.3", features = ["accesskit"] }
+
+[dev-dependencies]
+egui_kittest = { version = "=0.33.3", features = ["wgpu", "snapshot"] }
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[[test]]
+name = "inspector"
+path = "../../tests/gui/inspector.rs"

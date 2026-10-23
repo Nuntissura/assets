@@ -19,3 +19,7 @@ tempfile = "=3.27.0"
 [[test]]
 name = "reference_host"
 path = "../../tests/reference_host/main.rs"
+
+[[test]]
+name = "interaction"
+path = "../../tests/gui/interaction.rs"
