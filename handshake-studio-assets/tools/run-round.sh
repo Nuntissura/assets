@@ -54,12 +54,15 @@
 # Disk-wide build lock (CX-984-002, tools/disk-build-lock.sh protocol @2): the round queues with priority (class
 #   round) and holds the lock for every cargo unit (fixture build included); between units, after holding it for
 #   STUDIO_DISK_BUILD_LOCK_ROUND_SLICE_S (default 300) s, it yields one gap to the first queued builder and re-queues
-#   first. Root from STUDIO_DISK_BUILD_LOCK_DIR or the walk-up of .config/disk-build-lock.toml (they must agree);
+#   first. Root from STUDIO_DISK_BUILD_LOCK_DIR or .config/disk-build-lock.toml (they must agree), resolved from the
+#   TARGET dir: under the sole artifact root -> its lock; under the granted SSD root (ssd-search) -> the SSD lock.
+#   A target dir outside both roots, or results outside the sole artifact root, is refused (exit 2). TMP/TEMP and the
+#   test-runner store stay under the sole artifact root for both (CX-984-014: the grant covers the target only).
 #   waits print to stderr; results/disk-lock.json and round.json "disk_lock" record holds, yields, waits and broken
 #   stale locks; giving up (STUDIO_DISK_BUILD_LOCK_TIMEOUT_S, default 7200) or a protocol mismatch exits 75.
 # GPU test lock (SMB-STEWARD-GPU-CONTENTION 2026-10-20; dbl_gpu_run in tools/disk-build-lock.sh): a unit whose selection
 #   includes hsk-studio-render-gpu (or --workspace) runs its test step holding the machine-wide GPU test lock (class
-#   round = queue priority; root STUDIO_GPU_TEST_LOCK_DIR or <disk lock root>/../.gpu-test-lock), so GPU tests of the
+#   round = queue priority; root STUDIO_GPU_TEST_LOCK_DIR or <sole artifact root>/.gpu-test-lock), so GPU tests of the
 #   other build slot never overlap; the build step stays outside it. Giving up waiting is the unit's run status 75.
 # Tree binding: <target-dir>/.studio-workspace-root binds the target dir to ONE workspace root (`cargo
 #   locate-project --workspace` output; the team's studio-env.sh uses the same marker); another root is refused
@@ -80,7 +83,8 @@
 #   units.tsv, oracle-corpus.json, step0.*.txt, nextest-store.toml. Once the results dir exists, round.json is
 #   always written: on refusal, step 0 drift, interruption or aggregation failure it is a minimal record with
 #   "complete": false, the exit code and the reason (raw files kept).
-# Env: sets CARGO_TARGET_DIR, TMP/TEMP/TMPDIR (<target-dir>/../tmp), CARGO_PROFILE_{DEV,TEST}_DEBUG,
+# Env: sets CARGO_TARGET_DIR, TMP/TEMP/TMPDIR (<target-dir>/../tmp; for an SSD target <sole artifact root>/<owner path>/tmp,
+#   owner path = the target dir's parent below the SSD WP dir), CARGO_PROFILE_{DEV,TEST}_DEBUG,
 #   CARGO_TERM_COLOR; unsets every HSK_* variable. Nothing else is required from the caller (python 3.11+).
 #   CARGO_INCREMENTAL=0 (lead decision 2026-10-22, proposal P1): rounds never keep incremental state; the union rebuilds every workspace crate anyway, so incremental dirs are pure disk waste (268 GiB purged 2026-10-21).
 # Exit: 2 refused, 75 step 0 drift or disk build lock wait gave up (infrastructure), 72 step 0 machine-local path
@@ -127,9 +131,11 @@ results=$(abspath "$results")
 source "$root/tools/disk-build-lock.sh"
 unset -f cargo 2>/dev/null || true
 lock_root="${STUDIO_DISK_BUILD_LOCK_DIR:-}"
-cfg_lock=$("$py" -X utf8 -I - "$root" "$root/.config/disk-build-lock.toml" <<'PY'
+# Prints three lines: the lock root for the TARGET dir's disk, the sole artifact root (`search` from the workspace
+# root) and the owner path below the SSD WP dir (empty for a target under the sole artifact root).
+cfg_out=$("$py" -X utf8 -I - "$root" "$root/.config/disk-build-lock.toml" "$target" <<'PY'
 import pathlib, re, sys
-root, cfg = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+root, cfg, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 if not cfg.exists():
     sys.exit(0)
 kv = {}
@@ -142,26 +148,63 @@ for line in cfg.read_text(encoding="utf-8").splitlines():
 if kv.get("schema") != "hsk.studio.disk-build-lock@1" or not all(isinstance(kv.get(k), str) for k in ("search", "lock-dir")) \
         or not isinstance(kv.get("max-ancestors"), int):
     sys.exit("run-round: disk-build-lock.toml needs schema hsk.studio.disk-build-lock@1, search, lock-dir, max-ancestors")
-for k in ("search", "lock-dir"):
+for k in ("search", "lock-dir", "ssd-search", "ssd-lock-dir"):
+    if k not in kv:
+        continue
+    if not isinstance(kv[k], str):
+        sys.exit(f"run-round: disk-build-lock.toml {k} must be a string")
     p = pathlib.PurePosixPath(kv[k])
     if p.is_absolute() or ".." in p.parts or ":" in kv[k]:
         sys.exit(f"run-round: disk-build-lock.toml {k} must be a relative path without '..'")
-found = next((a / kv["search"] for a in [root, *root.parents][: kv["max-ancestors"] + 1] if (a / kv["search"]).is_dir()), None)
-if found:
-    print((found / kv["lock-dir"]).as_posix())
+n = kv["max-ancestors"] + 1
+def walk(start, rel):
+    return next((a / rel for a in [start, *start.parents][:n] if (a / rel).is_dir()), None)
+art = walk(root, kv["search"])                      # sole artifact root (WP dir), from the workspace root
+if art is None:
+    sys.exit(0)
+def inside(p, top):
+    try:
+        p.resolve().relative_to(top.resolve()); return True
+    except ValueError:
+        return False
+t_art = walk(target, kv["search"])
+t_ssd = walk(target, kv["ssd-search"]) if "ssd-search" in kv else None
+owner_rel = ""
+if t_art is not None and inside(target, t_art) and t_art.resolve() == art.resolve():
+    lock = art / kv["lock-dir"]
+elif t_ssd is not None and inside(target, t_ssd) and "ssd-lock-dir" in kv:
+    lock = t_ssd.parent / kv["ssd-lock-dir"]
+    # the owner path below the SSD WP dir is mirrored on the sole root for TMP/TEMP and the test-runner store
+    rel = target.resolve().parent.relative_to(t_ssd.resolve()).as_posix()
+    if rel in ("", ".") or not all(re.fullmatch(r"[A-Za-z0-9._-]+", s) and s not in (".", "..") for s in rel.split("/")):
+        sys.exit(f"run-round: SSD target dir needs <ssd root>/<owner path>/target with plain segments, got {target.as_posix()}")
+    owner_rel = rel
+else:
+    sys.exit(f"run-round: target dir {target.as_posix()} is neither under {art.as_posix()} nor under the granted SSD root ({kv.get('ssd-search')})")
+print(lock.as_posix()); print(art.as_posix()); print(owner_rel)
 PY
-) || die "invalid .config/disk-build-lock.toml"
+) || die "invalid .config/disk-build-lock.toml or target dir outside the build roots"
+cfg_lock=$(printf '%s\n' "$cfg_out" | sed -n 1p) art_root=$(printf '%s\n' "$cfg_out" | sed -n 2p) owner_rel=$(printf '%s\n' "$cfg_out" | sed -n 3p)
 if [ -n "$lock_root" ] && [ -n "$cfg_lock" ] && [ "$(abspath "$lock_root")" != "$(abspath "$cfg_lock")" ]; then
   die "STUDIO_DISK_BUILD_LOCK_DIR=$lock_root differs from the .config/disk-build-lock.toml root $cfg_lock"
 fi
 lock_root=${lock_root:-$cfg_lock}
 [ -n "$lock_root" ] || die "no disk build lock root (.config/disk-build-lock.toml search not found; or set STUDIO_DISK_BUILD_LOCK_DIR)"
+[ -n "$art_root" ] || die "sole artifact root not found from $root (.config/disk-build-lock.toml search)"
 lock_root=$(abspath "$lock_root")
-gpu_root=$(abspath "${STUDIO_GPU_TEST_LOCK_DIR:-$(dirname "$lock_root")/.gpu-test-lock}")
+art_root=$(abspath "$art_root")
+gpu_root=$(abspath "${STUDIO_GPU_TEST_LOCK_DIR:-$art_root/.gpu-test-lock}")
 for p in "$target" "$results"; do
-  case "$p" in [cC]:*|/c/*) die "refusing C: path $p (build output and temp stay off C:)" ;; esac
   under "$p" "$root" && die "refusing path inside the workspace: $p"
 done
+under "$results" "$art_root" || die "results dir must lie under the sole artifact root $art_root (CX-984-001)"
+if [ -z "$owner_rel" ]; then
+  tmp_dir="$target/../tmp" store_dir="$target/nextest" target_class=artifact-root
+else
+  # e.g. C:/HandshakeBuild/WP-KERNEL-STUDIO/studio-round/target -> <art>/studio-round/{tmp,nextest};
+  #      .../studio-team-dev/steward-export/target -> <art>/studio-team-dev/steward-export/{tmp,nextest}
+  tmp_dir="$art_root/$owner_rel/tmp" store_dir="$art_root/$owner_rel/nextest" target_class=ssd
+fi
 [ -e "$results/round.json" ] && die "results dir already holds a round.json: $results"
 
 # Identity: export (default) or edit tree (--dev).
@@ -203,7 +246,7 @@ finish() {
     printf ' "mode": %s,\n "selection": %s,\n' "$(jstr "$([ $dev -eq 1 ] && echo dev || echo export)")" "$(jstr "$([ $all -eq 1 ] && echo --all || echo "${crates[*]}")")"
     printf ' "sha": %s,\n "tree": %s,\n "identity_file": %s,\n' "$(jstr "$identity_sha")" "$(jstr "$identity_tree")" "$(jstr "$identity")"
     printf ' "started_at": %s,\n "ended_at": %s,\n' "$(jstr "$started")" "$(jstr "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
-    printf ' "units_file": "units.tsv",\n "target_dir": %s\n}\n' "$(jstr "$target")"
+    printf ' "units_file": "units.tsv",\n "target_dir": %s,\n "target_class": %s\n}\n' "$(jstr "$target")" "$(jstr "${target_class:-}")"
   } >"$results/round.json"
   echo "run-round: incomplete (exit $rc: ${reason:-exit $rc}) -> $results/round.json" >&2
 }
@@ -226,13 +269,14 @@ fi
 # Environment: only what this script sets.
 unset_vars=$(compgen -e | grep '^HSK_' || true)
 for v in $unset_vars; do unset "$v"; done
-export CARGO_TARGET_DIR="$target" TMP="$target/../tmp" CARGO_TERM_COLOR=never
+export CARGO_TARGET_DIR="$target" TMP="$tmp_dir" CARGO_TERM_COLOR=never
 export TEMP="$TMP" TMPDIR="$TMP" CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_PROFILE_TEST_DEBUG=line-tables-only
 export CARGO_INCREMENTAL=0
 mkdir -p "$TMP"
-# nextest resolves its store (junit, run data) against the workspace root; pin it under the target dir.
+# nextest resolves its store (junit, run data) against the workspace root; pin it under the target dir (artifact-root
+# target) or under the owner on the sole root (SSD target, CX-984-014).
 toolcfg="$results/nextest-store.toml"
-printf '[store]\ndir = "%s/nextest"\n' "$target" >"$toolcfg"
+printf '[store]\ndir = "%s"\n' "$store_dir" >"$toolcfg"
 nx=(--user-config-file none --tool-config-file "run-round:$toolcfg")
 cd "$root"
 
@@ -401,7 +445,10 @@ for unit, specs in doc.get("prebuild", {}).items():
     if not ok:
         sys.exit(f"run-round: round-features.toml [prebuild] {unit}: expected a list of [package, bin, feature...] lists")
     prebuild[unit] = specs
-declared = {"+".join([c] + f.split(",")) for k, c, f, st in feature_units}
+# Keys are checked against the whole declared [crates] table (a typo is refused for every selection); rows are emitted
+# below only for units of the current plan, so a scoped selection without the unit's crate builds no worker (R39
+# scoped render-gpu re-run was refused here when the check used the selection's units).
+declared = {"+".join([c] + s) for c, sets in matrix.items() for s in sets}
 for unit in prebuild:
     if unit not in declared:
         sys.exit(f"run-round: round-features.toml [prebuild] {unit}: not a declared [crates] features unit")
@@ -492,14 +539,14 @@ nextest_unit() {
   if [ $U_BUILD -eq 0 ]; then
     run=(cargo nextest run "${nx[@]}" --no-fail-fast --no-tests=warn --profile "$profile" ${locked[@]+"${locked[@]}"} "$@" ${fa[@]+"${fa[@]}"})
     [ -n "$U_FILTER" ] && run+=(-E "$U_FILTER")
-    rm -f "$target/nextest/$profile/junit.xml"
+    rm -f "$store_dir/$profile/junit.xml"
     case " $* " in
       *" --workspace "*|*" hsk-studio-render-gpu "*)
         dbl_gpu_run "$gpu_root" round "$lock_owner" "gpu tests: $lock_label" "${run[@]}" >"$d/run.stdout.txt" 2>"$d/run.stderr.txt" ;;
       *) "${run[@]}" >"$d/run.stdout.txt" 2>"$d/run.stderr.txt" ;;
     esac
     U_RUN=$?
-    [ -f "$target/nextest/$profile/junit.xml" ] && cp "$target/nextest/$profile/junit.xml" "$d/junit.xml"
+    [ -f "$store_dir/$profile/junit.xml" ] && cp "$store_dir/$profile/junit.xml" "$d/junit.xml"
   fi
   return 0
 }
@@ -756,7 +803,7 @@ set -e
 export RR_MODE=$([ $dev -eq 1 ] && echo dev || echo export) RR_PROFILE=$profile
 export RR_SELECTION=$([ $all -eq 1 ] && echo --all || echo "${crates[*]}") RR_SHA=$identity_sha RR_TREE=$identity_tree
 export RR_IDENTITY=$identity RR_OWNER_DIR=$owner_dir RR_MANIFEST=$manifest RR_DIRTY=$dirty RR_STARTED=$started RR_ENDED=$ended
-export RR_LOCK_SHA=$(sha256sum Cargo.lock | cut -c1-64) RR_FILTER=$default_filter RR_EXIT=$code RR_TARGET=$target
+export RR_LOCK_SHA=$(sha256sum Cargo.lock | cut -c1-64) RR_FILTER=$default_filter RR_EXIT=$code RR_TARGET=$target RR_TARGET_CLASS=$target_class
 export RR_RUSTC=$(rustc -V 2>/dev/null) RR_CARGO=$(cargo -V 2>/dev/null) RR_NEXTEST=$(cargo nextest --version 2>/dev/null | head -n1)
 export RR_UNSET=$(echo $unset_vars) RR_WRAPPER=${RUSTC_WRAPPER:-} RR_DOCTEST_BUDGET=$doctest_budget
 if ! "$py" -X utf8 -I - "$results" "$root/.config/round-features.toml" <<'PY'; then
@@ -895,7 +942,7 @@ round_json = {
     "tools": {"rustc": E["RR_RUSTC"], "cargo": E["RR_CARGO"], "nextest": E["RR_NEXTEST"]},
     "rustc_wrapper": E["RR_WRAPPER"],
     "env_set": ["CARGO_TARGET_DIR", "TMP", "TEMP", "TMPDIR", "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG", "CARGO_TERM_COLOR", "CARGO_INCREMENTAL"],
-    "env_unset": E["RR_UNSET"], "target_dir": E["RR_TARGET"],
+    "env_unset": E["RR_UNSET"], "target_dir": E["RR_TARGET"], "target_class": E["RR_TARGET_CLASS"],
 }
 (res / "tests.json").write_text(json.dumps({"schema": "hsk.studio.round-tests@1", "sha": E["RR_SHA"], "tests": tests},
                                            indent=1) + "\n", encoding="utf-8", newline="\n")

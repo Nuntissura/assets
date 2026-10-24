@@ -1,0 +1,8 @@
+# Studio workspace cargo policy (steward). Read by every cargo call in this workspace: rounds/canaries via
+# tools/run-round.sh (exports carry this file), the steward and lane builders. CARGO_BUILD_JOBS overrides it.
+# Shared host (Operator 2026-10-24: another agent builds on this machine without Studio's disk locks; Ryzen 9 5950X,
+# 32 logical CPUs, 127.9 GiB RAM, paging file shared): 8 build jobs. 2026-10-24 a C: lane build at the default 32
+# jobs failed with Windows OS error 1455 (paging file too small) while R39 built on D:; lane builds at
+# CARGO_BUILD_JOBS=6 succeeded. No target-dir here: target dirs come from run-round.sh / studio-env.sh only.
+[build]
+jobs = 8

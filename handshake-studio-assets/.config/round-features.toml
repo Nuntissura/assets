@@ -31,7 +31,17 @@ hsk-studio-worker = [["test-faults"]]
 # interop-vector eps-worker only forwards to the core feature.
 hsk-studio-interop-vector-core = [["eps-worker"]]
 hsk-studio-interop-vector = [["eps-worker"]]
-hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"], ["media"], ["media-native"], ["audio-device"], ["audio-batch"], ["layout-ui"], ["studio-aac"], ["os-encode"], ["audio-plugin"]]
+hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"], ["media"], ["media-native"], ["audio-device"], ["audio-batch"], ["layout-ui"], ["studio-aac"], ["os-encode"], ["audio-plugin"], ["audio-batch", "audio-device"], ["import-affinity"]]
+# Steward R40 prep (lead 2026-10-24, R39 validator finding): feature-gated test files no round unit compiled
+# (workspace audit: every test target's required-features and #![cfg(...)] against every unit's cargo-tree features).
+# harness-view: tests/{develop_retouch_entry,viewer_fig_edit,viewer_proof,viewer_timeline,viewer_timeline_rate,
+# viewer_timeline_trim}.rs are #![cfg(feature = "viewer")] (5 #[cfg(feature = "desktop")] tests inside); the lanes ran
+# them via `-p harness-view -p harness --features hsk-studio-harness/desktop,hsk-studio-harness/audio-batch`, which
+# activates harness-view desktop + audio-batch (+ viewer, media). ["viewer"] = smallest set compiling every file;
+# ["desktop", "audio-batch"] = the lane-proven set (desktop-gated tests, audio-batch view paths).
+# harness: tests/audio_session.rs is #![cfg(all(feature = "audio-batch", feature = "audio-device"))];
+# tests/import_affinity.rs has 5 #[cfg(feature = "import-affinity")] items (preview tests).
+hsk-studio-harness-view = [["viewer"], ["desktop", "audio-batch"]]
 hsk-studio-composite = [["motion"]]
 
 [ignored]
@@ -41,7 +51,9 @@ hsk-studio-interop-tiff = [[]]
 hsk-studio-interop-raster = [[]]
 # harness: psd-tools sweep (16 size-balanced shards, 0-15), DNG convert, vendor RAW refusals (tests/import_psd.rs needs import-psd;
 # the DNG/RAW tests need import-raw).
-hsk-studio-harness = [["import-psd", "import-raw"]]
+# harness import-affinity: tests/import_affinity.rs afdesignload_v1_designs_open_as_flattened_previews
+# (oracle-corpus/affinity/afdesignload-mit; steward R40 prep 2026-10-24).
+hsk-studio-harness = [["import-psd", "import-raw"], ["import-affinity"]]
 
 [prebuild]
 # F-R32-2 (R32): viewer_media.rs h264_frames_decode_through_the_media_foundation_worker spawns

@@ -10,3 +10,10 @@ schema = "hsk.studio.disk-build-lock@1"
 search = "Handshake_Artifacts/WP-KERNEL-STUDIO"
 lock-dir = ".disk-build-lock"
 max-ancestors = 8
+# Granted SSD build root (Operator 2026-10-24, CX-984-014: 400 GB, cargo target dirs only). A --target-dir under
+# A/<ssd-search> (A = an ancestor of the target dir) builds under the lock <parent of A/<ssd-search>>/<ssd-lock-dir>
+# (the same lock the team's studio-env.sh uses for SSD lanes). TMP/TEMP, the test-runner store, results and the GPU
+# test lock stay under the sole artifact root (`search`, found from the workspace root). The lock always follows the
+# disk of the target dir.
+ssd-search = "HandshakeBuild/WP-KERNEL-STUDIO"
+ssd-lock-dir = ".disk-build-lock"

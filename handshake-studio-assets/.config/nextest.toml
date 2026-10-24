@@ -4,16 +4,31 @@ nextest-version = "0.9.148"
 [profile.default]
 fail-fast = false
 retries = 0
-# Per-test cap 120 s (CX-EXEC-005): flagged slow at 30 s, terminated after 4 periods.
+# Shared host (Operator 2026-10-24: another agent builds and tests on this machine without Studio's locks; Ryzen 9
+# 5950X, 32 logical CPUs): Studio runs at most 8 tests at once (a quarter of the logical CPUs), so a concurrent
+# foreign build cannot push CPU-bound tests over the cap. render-gpu keeps its own group limit (4) below.
+test-threads = 8
+# Per-test cap 120 s (CX-EXEC-005): flagged slow at 30 s, terminated after 4 periods (render-gpu: override below).
 slow-timeout = { period = "30s", terminate-after = 4 }
 
 # F-R32-3 (lead-approved 2026-10-15): render-gpu's GPU tests slow each other down when many run at once (R32 union
 # 77-91 s per test against the 120 s cap). Measured on the steward export of 673baba (58 render-gpu tests, a round
 # running concurrently): 32 threads = 25 timed out, max 122 s; 8 threads = all pass, max 23.7 s, wall 64 s;
 # 4 threads = all pass, max 22.9 s, wall 86 s. At most 8 render-gpu tests run at once; other crates are unaffected.
+#
+# render-gpu per-test cap 660 s (lead 2026-10-24, CX-EXEC-005 / CX-EXEC-015 (4): failure_class
+# gpu_contention_foreign_clients in R39 at b7ef882e: 22 render-gpu TIMEOUTs; foreign GPU clients held the GPU at
+# P5/P8 idle clocks). Derivation from studio-round/results/R39 vs R37 tests.json (render-gpu nextest rows, same tests):
+# slowest render-gpu test in R37 (uncontended) 28.7 s; largest measured R39/R37 slowdown of a completed test 18.5x
+# (gpu_modes_masks_groups_clip_parity 6.25 s -> 115.8 s; median 2.07x, p90 4.73x over 277 tests); worst case
+# 28.7 s x 18.5 = 531 s; margin 1.24 -> 660 s = period 60 s x terminate-after 11 (flagged slow every 60 s). The 22
+# timed-out tests ran 6.9-26.4 s in R37, so <= 488 s at 18.5x. Applies to every profile (nextest checks the default
+# profile's overrides before a profile's base slow-timeout, so the canary's render-gpu test gets it too). Other
+# packages keep 120 s (default) / 30 s (canary).
 [[profile.default.overrides]]
 filter = 'package(hsk-studio-render-gpu)'
 test-group = 'render-gpu'
+slow-timeout = { period = "60s", terminate-after = 11 }
 
 [test-groups]
 # 4 since 2026-10-20 (lead go, SMB-STEWARD-GPU-CONTENTION): at 8, one slot alone ran several tests at 112-120 s and
@@ -21,7 +36,8 @@ test-group = 'render-gpu'
 render-gpu = { max-threads = 4 }
 
 [profile.default.junit]
-# Written to <target-dir>/nextest/default/junit.xml; run-round.sh copies it into each unit's results dir.
+# Written to <store dir>/default/junit.xml (<target-dir>/nextest, or <sole root>/<owner path>/nextest for an SSD
+# target); run-round.sh copies it into each unit's results dir.
 # Full results: every test is a <testcase> (passing names included), passing tests' stdout/stderr stored
 # (e.g. a NOT_PROVEN branch stays distinguishable from a parity PASS), skipped tests listed (report-skipped: 0.9.143+).
 path = "junit.xml"
@@ -34,6 +50,7 @@ report-skipped = "all"
 [profile.canary]
 fail-fast = false
 retries = 0
+test-threads = 8
 slow-timeout = { period = "10s", terminate-after = 3 }
 
 [profile.canary.junit]
