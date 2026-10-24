@@ -12,15 +12,17 @@
 //! Serialize implementation; it does not cap output allocation. Callers validate aggregate payload
 //! and extension limits before calling it. `jcs_from_slice` bounds raw input, rejects duplicate object
 //! keys, malformed JSON, lone surrogates and trailing data, then uses the same JCS serializer.
-//! Raw admission makes two bounded passes and rejects incompatible serde_json feature behavior
-//! (including arbitrary_precision/raw_value object-key reinterpretation) before processing input.
+//! Raw admission builds a literal Value tree in one duplicate-aware bounded parse, preserving reserved
+//! object keys under serde_json/raw_value. A separate Number-key probe rejects arbitrary_precision,
+//! whose synthetic number maps cannot be distinguished from literal object keys by this visitor.
 //! Typed serialization retains the upstream serializer's behavior under dependency features.
 //! Neither API normalizes Unicode or supplies transferable grants.
 //!
 //! Standalone proof from repository root:
-//! `cargo test --locked --manifest-path assets/shared/handshake_canonical_json/Cargo.toml`.
-//! Feature probes add `--features serde_json/arbitrary_precision` or `--features serde_json/raw_value`
-//! and the filter `jcs_tests::raw_parser_feature_behavior_is_explicit` to that command.
+//! `cargo test --locked --manifest-path shared/handshake_canonical_json/Cargo.toml`.
+//! Run the full suite also with `--features serde_json/raw_value`, then with
+//! `--features serde_json/raw_value,serde_json/float_roundtrip`. Probe the unsupported feature with
+//! `--features serde_json/arbitrary_precision jcs_tests::raw_parser_feature_behavior_is_explicit`.
 //! No services, credentials or GUI are required. Errors identify invalid JSON/serialization or the
 //! configured input-byte limit; callers retain source data and must not accept a failed hash.
 //!

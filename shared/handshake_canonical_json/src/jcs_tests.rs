@@ -77,6 +77,8 @@ fn serde_private_token_object_keys_remain_json_objects() {
     for input in [
         br#"{"$serde_json::private::Number":"1.0"}"#.as_slice(),
         br#"{"$serde_json::private::RawValue":"0"}"#.as_slice(),
+        br#"{"$serde_json::private::RawValue":"not JSON"}"#.as_slice(),
+        br#"[{"$serde_json::private::Number":"0"},{"$serde_json::private::RawValue":{"nested":[true,null,1]}}]"#.as_slice(),
     ] {
         assert_eq!(jcs_from_slice(input, 128).unwrap(), input);
     }
@@ -84,14 +86,10 @@ fn serde_private_token_object_keys_remain_json_objects() {
 
 #[test]
 fn raw_parser_feature_behavior_is_explicit() {
-    let probe = br#"[{"$serde_json::private::Number":"0"},{"$serde_json::private::RawValue":"0"}]"#;
+    let probe = br#"{"$serde_json::private::Number":"0"}"#;
     let preserved = serde_json::from_slice::<serde_json::Value>(probe)
         .ok()
-        .and_then(|value| {
-            value
-                .as_array()
-                .map(|values| values.iter().all(serde_json::Value::is_object))
-        })
+        .map(|value| value.is_object())
         .unwrap_or(false);
     if preserved {
         assert_eq!(jcs_from_slice(b"1.0", 3).unwrap(), b"1");
@@ -149,6 +147,9 @@ fn duplicate_object_keys_reject_before_raw_values_or_typed_maps_can_lose_them() 
         br#"{"a":1,"a":2}"#,
         br#"{"a":1,"\u0061":2}"#,
         br#"{"outer":[{"x":1,"x":2}]}"#,
+        br#"{"$serde_json::private::RawValue":"0","$serde_json::private::RawValue":"1"}"#,
+        br#"{"$serde_json::private::Number":"0","$serde_json::private::Number":"1"}"#,
+        br#"{"$serde_json::private::RawValue":{"x":1,"\u0078":2}}"#,
     ];
     let accepted: Vec<_> = inputs
         .iter()

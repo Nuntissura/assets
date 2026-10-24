@@ -745,6 +745,7 @@ assets:
   - Canonical JSON byte encoding and SHA-256 helpers.
   - RFC8785 JCS serialization with UTF16 key ordering and binary64 numbers
   - bounded duplicate-aware raw JSON canonicalization
+  - Literal raw JSON objects preserved with serde_json raw_value feature unification
   manual: shared/handshake_canonical_json/src/lib.rs
   packages:
   - name: handshake_canonical_json
