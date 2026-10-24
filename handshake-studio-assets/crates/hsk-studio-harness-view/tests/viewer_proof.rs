@@ -75,7 +75,7 @@ fn psd() -> Vec<u8> {
     extra.extend(0u32.to_be_bytes());
     let mut pascal = vec![5u8];
     pascal.extend_from_slice(b"chart");
-    while pascal.len() % 4 != 0 {
+    while !pascal.len().is_multiple_of(4) {
         pascal.push(0);
     }
     extra.extend(pascal);
@@ -85,7 +85,7 @@ fn psd() -> Vec<u8> {
         info.extend(0u16.to_be_bytes());
         info.extend_from_slice(data);
     }
-    if info.len() % 2 == 1 {
+    if !info.len().is_multiple_of(2) {
         info.push(0);
     }
     let mut section = (info.len() as u32).to_be_bytes().to_vec();
