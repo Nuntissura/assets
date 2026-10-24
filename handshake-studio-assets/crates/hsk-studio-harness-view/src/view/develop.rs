@@ -35,7 +35,17 @@
 //! creative looks, develop presets and model-mask buttons ([`super::develop_more`]): sliders in the
 //! sections `lens`, `transform`, `effects`, `calibration`, `look`, structure steps through
 //! [`DevelopOp::Family`], one undo step per change like every other develop change.
+//!
+//! Lane SMB-LR-HEALING-2 adds spot removal (STU-RAW-015 / STU-RAW-124 over develop's `retouch.rs`):
+//! the window sets `enable_retouch` / `enable_distraction_removal` from the edit's lists
+//! (STU-RAW-105; adapter fill records never switch rendering on), typed ops
+//! ([`DevelopOp::AddSpot`], [`DevelopOp::MoveSpotSource`], [`DevelopOp::SetSpot`],
+//! [`DevelopOp::RemoveSpot`], [`DevelopOp::AddDistraction`], [`DevelopOp::RemoveDistraction`]) and
+//! the controls `develop.spot.<i>.<field>` / `develop.distraction.<i>.radius`; the panel section
+//! (module `spot`) places spots on a preview of the rendered frame.
 #![deny(clippy::arithmetic_side_effects)]
+
+mod spot;
 
 use super::Viewer;
 use super::develop_entry;
@@ -47,6 +57,7 @@ use hsk_studio_develop::{
     DevelopError, DevelopRecipe, GrayscaleMix, LinearGradient, LocalStack, LuminanceRange, Mask, MaskBlend, MaskSource, OutputDepth,
     ParametricCurve, PointColour, RadialGradient, Threads,
 };
+use hsk_studio_develop::{DistractionArea, RetouchArea, SourceState, SpotType};
 use hsk_studio_develop::{ByteOrder, ExportColourSpace, TiffCompression, TiffExportSettings, develop_to_tiff};
 use hsk_studio_develop::{DngCompression, DngExportSettings, DngPreview, UnappliedPolicy, decode_container, develop_to_dng, exif_subset};
 use std::cell::RefCell;
@@ -185,9 +196,30 @@ pub fn controls(edit: &DevelopEdit) -> Vec<DevelopControl> {
             }
         }
     }
+    for i in 0..edit.adjust.retouch.areas.len() {
+        for (f, range, p) in SPOT_FIELDS {
+            out.push(c(format!("develop.spot.{i}.{f}"), format!("spot {i} {f}"), "spot", range, p));
+        }
+    }
+    for (i, d) in edit.adjust.retouch.distraction.iter().enumerate() {
+        if !d.masks.is_empty() {
+            out.push(c(format!("develop.distraction.{i}.radius"), format!("distraction {i} radius"), "spot", (0.001, 0.5), 3));
+        }
+    }
     out.extend(super::develop_more::family_controls(&edit.adjust));
     out
 }
+
+/// Numeric fields of a retouch area (`develop.spot.<i>.<field>`; develop validates every value).
+const SPOT_FIELDS: [(&str, (f64, f64), u8); 7] = [
+    ("centre_x", (0.0, 1.0), 3),
+    ("centre_y", (0.0, 1.0), 3),
+    ("radius", (0.001, 0.5), 3),
+    ("feather", (0.0, 1.0), 2),
+    ("opacity", (0.0, 1.0), 2),
+    ("source_x", (0.0, 1.0), 3),
+    ("source_y", (0.0, 1.0), 3),
+];
 
 fn index(s: &str) -> Option<usize> {
     s.parse::<usize>().ok()
@@ -200,6 +232,28 @@ fn slot<'a>(e: &'a mut DevelopEdit, id: &str) -> Option<&'a mut f64> {
         return Some(&mut e.exposure_stops);
     }
     let a = &mut e.adjust;
+    if let Some(r) = rest.strip_prefix("spot.") {
+        let (i, f) = r.split_once('.')?;
+        let s = a.retouch.areas.get_mut(index(i)?)?;
+        return Some(match f {
+            "centre_x" => &mut s.centre_x,
+            "centre_y" => &mut s.centre_y,
+            "radius" => &mut s.radius,
+            "feather" => &mut s.feather,
+            "opacity" => &mut s.opacity,
+            "source_x" => &mut s.source_x,
+            "source_y" => &mut s.source_y,
+            _ => return None,
+        });
+    }
+    if let Some(r) = rest.strip_prefix("distraction.") {
+        let (i, f) = r.split_once('.')?;
+        let d = a.retouch.distraction.get_mut(index(i)?)?;
+        return match f {
+            "radius" => d.masks.first_mut().map(|b| &mut b.radius),
+            _ => None,
+        };
+    }
     if let Some(r) = rest.strip_prefix("point.") {
         let (i, f) = r.split_once('.')?;
         let p = a.point_colours.get_mut(index(i)?)?;
@@ -372,6 +426,18 @@ pub enum DevelopOp {
     /// Lens profile, Upright, grain seed, vignette style, look and preset steps (lane
     /// SMB-DEVELOP-LENS-PRESETS, [`super::develop_more::FamilyOp`]).
     Family(super::develop_more::FamilyOp),
+    /// A heal / clone spot (STU-RAW-124 circle area: no dab mask) at the normalised `centre` with
+    /// `radius` (fraction of the shorter side). `source: Some` = explicit source point
+    /// (`source_set_explicitly`); `None` = engine-chosen source (pigment `spot_heal` search).
+    AddSpot { spot_type: SpotType, centre: (f64, f64), radius: f64, source: Option<(f64, f64)>, feather: f64, opacity: f64 },
+    /// Moves the source point of spot `spot` (the source becomes explicit).
+    MoveSpotSource { spot: usize, source: (f64, f64) },
+    /// Type, feather, opacity and radius of spot `spot`.
+    SetSpot { spot: usize, spot_type: SpotType, feather: f64, opacity: f64, radius: f64 },
+    RemoveSpot(usize),
+    /// A core distraction-removal area (STU-RAS-143 native fill) over a one-dab hole.
+    AddDistraction { centre: (f64, f64), radius: f64 },
+    RemoveDistraction(usize),
 }
 
 impl DevelopOp {
@@ -391,6 +457,12 @@ impl DevelopOp {
             Self::AddBrushDabs { correction, mask, dabs } => format!("{} dabs on {correction}.{mask}", dabs.len()),
             Self::Grayscale(on) => format!("grayscale {on}"),
             Self::Family(op) => op.label(),
+            Self::AddSpot { spot_type, .. } => format!("add {} spot", spot_type.key()),
+            Self::MoveSpotSource { spot, .. } => format!("move source of spot {spot}"),
+            Self::SetSpot { spot, .. } => format!("set spot {spot}"),
+            Self::RemoveSpot(i) => format!("remove spot {i}"),
+            Self::AddDistraction { .. } => "add distraction spot".into(),
+            Self::RemoveDistraction(i) => format!("remove distraction spot {i}"),
         }
     }
 
@@ -484,6 +556,50 @@ impl DevelopOp {
             }
             Self::Grayscale(on) => a.grayscale.convert = *on,
             Self::Family(op) => op.apply(a, &mut e.exposure_stops)?,
+            Self::AddSpot { spot_type, centre, radius, source, feather, opacity } => {
+                if a.retouch.areas.len() >= hsk_studio_develop::retouch::MAX_RETOUCH_AREAS {
+                    return Err(Refusal::new("develop_limit", format!("at most {} spots", hsk_studio_develop::retouch::MAX_RETOUCH_AREAS)));
+                }
+                let mut area = RetouchArea::circle(*spot_type, *centre, *radius, source.unwrap_or(*centre));
+                area.feather = *feather;
+                area.opacity = *opacity;
+                if source.is_none() {
+                    area.source_state = SourceState::EngineChosen;
+                }
+                a.retouch.areas.push(area);
+            }
+            Self::MoveSpotSource { spot, source } => {
+                let len = a.retouch.areas.len();
+                let s = a.retouch.areas.get_mut(*spot).ok_or_else(|| range("spot", *spot, len))?;
+                (s.source_x, s.source_y) = *source;
+                s.source_state = SourceState::SourceSetExplicitly;
+            }
+            Self::SetSpot { spot, spot_type, feather, opacity, radius } => {
+                let len = a.retouch.areas.len();
+                let s = a.retouch.areas.get_mut(*spot).ok_or_else(|| range("spot", *spot, len))?;
+                s.spot_type = *spot_type;
+                s.feather = *feather;
+                s.opacity = *opacity;
+                s.radius = *radius;
+            }
+            Self::RemoveSpot(i) => {
+                if *i >= a.retouch.areas.len() {
+                    return Err(range("spot", *i, a.retouch.areas.len()));
+                }
+                a.retouch.areas.remove(*i);
+            }
+            Self::AddDistraction { centre, radius } => {
+                if a.retouch.distraction.len() >= hsk_studio_develop::retouch::MAX_DISTRACTION_AREAS {
+                    return Err(Refusal::new("develop_limit", format!("at most {} distraction spots", hsk_studio_develop::retouch::MAX_DISTRACTION_AREAS)));
+                }
+                a.retouch.distraction.push(DistractionArea { masks: vec![Brush { dabs: vec![*centre], radius: *radius, flow: 1.0, feather: 0.0 }], seed: 0 });
+            }
+            Self::RemoveDistraction(i) => {
+                if *i >= a.retouch.distraction.len() {
+                    return Err(range("distraction spot", *i, a.retouch.distraction.len()));
+                }
+                a.retouch.distraction.remove(*i);
+            }
         }
         if a.local.len() > hsk_studio_develop::local::MAX_CORRECTIONS {
             return Err(Refusal::new("develop_limit", format!("at most {} corrections", hsk_studio_develop::local::MAX_CORRECTIONS)));
@@ -610,6 +726,8 @@ pub struct DevelopDoc {
     original: Vec<u8>,
     /// XMP packet embedded by the DNG export (caller supplied; the lrcat codec writes it).
     dng_xmp: Option<Vec<u8>>,
+    /// Panel state of the spot-removal section (mode, gesture, preview; module `spot`).
+    spot: spot::SpotPanel,
 }
 
 /// Signature of a raster layer's tile list (placement and content digests, in order).
@@ -663,6 +781,9 @@ impl DevelopDoc {
         e.enable_transform = b.enable_transform || transform;
         e.enable_effects = b.enable_effects || effects;
         e.enable_calibration = b.enable_calibration || calibration;
+        // STU-RAW-105: the spot lists switch their stages on; adapter fill records never do.
+        e.enable_retouch = b.enable_retouch || !a.retouch.areas.is_empty();
+        e.enable_distraction_removal = b.enable_distraction_removal || !a.retouch.distraction.is_empty();
         recipe.validate().map_err(|e| Refusal::develop(e, "recipe"))?;
         Ok(recipe)
     }
@@ -759,7 +880,7 @@ impl Viewer {
         let mut base = prepared.recipe.clone();
         base.working_profile.sha256 = digest;
         base.output_profile.sha256 = digest;
-        let mut develop = DevelopDoc { prepared, base, layer_id, import_signature: None, threads: Threads::auto(), cache: RefCell::new(None), original: original.to_vec(), dng_xmp: None };
+        let mut develop = DevelopDoc { prepared, base, layer_id, import_signature: None, threads: Threads::auto(), cache: RefCell::new(None), original: original.to_vec(), dng_xmp: None, spot: spot::SpotPanel::default() };
         if just_imported {
             // Right after the import the layer holds the identity develop (same route, same recipe).
             develop.import_signature = develop.layer_tiles(self).map(signature);
@@ -827,7 +948,10 @@ impl Viewer {
             "local": a.local.iter().map(|c| json!({"id": c.id, "masks": c.masks.iter().map(|m| source_kind(&m.source)).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "grayscale": a.grayscale.convert,
             "families": super::develop_more::family_json(a),
-            "enables": recipe.as_ref().map(|r| json!({"enable_colour_adjustments": r.enables.enable_colour_adjustments, "enable_detail": r.enables.enable_detail, "enable_mask_group_based_corrections": r.enables.enable_mask_group_based_corrections, "enable_lens_corrections": r.enables.enable_lens_corrections, "enable_transform": r.enables.enable_transform, "enable_effects": r.enables.enable_effects, "enable_calibration": r.enables.enable_calibration})),
+            "enables": recipe.as_ref().map(|r| json!({"enable_colour_adjustments": r.enables.enable_colour_adjustments, "enable_detail": r.enables.enable_detail, "enable_mask_group_based_corrections": r.enables.enable_mask_group_based_corrections, "enable_lens_corrections": r.enables.enable_lens_corrections, "enable_transform": r.enables.enable_transform, "enable_effects": r.enables.enable_effects, "enable_calibration": r.enables.enable_calibration, "enable_retouch": r.enables.enable_retouch, "enable_distraction_removal": r.enables.enable_distraction_removal})),
+            "spots": spot::spots_json(&a.retouch),
+            "distraction": spot::distraction_json(&a.retouch),
+            "spot_preview": d.spot.json(),
             "controls": controls(&edit).iter().map(|c| json!({"id": c.id, "label": c.label, "section": c.section, "panel_range": [c.panel_range.0, c.panel_range.1]})).collect::<Vec<_>>(),
             "threads": d.threads.get(),
             "export": {"profile": "sRGB-v4.icc", "profile_sha256": hex(&sha256(SRGB_V4_ICC)), "formats": ["png8", "png16", "jpeg"]},
@@ -1104,6 +1228,7 @@ impl Viewer {
                 return (changes, ops);
             }
         };
+        self.spot_ui(ui, &edit, &mut ops);
         if !known {
             ui.small("The layer's pixels are not a develop state of this session (painted, or a saved entry for other pixels). A change re-develops from the edit shown.");
         }
@@ -1231,6 +1356,7 @@ pub fn develop_panel(edit: &DevelopEdit) -> Result<(Registry, ValueStore), Contr
         ("point", "Point colour", "Hue, saturation and luminance shifts of sampled colours."),
         ("detail", "Detail", "Texture, dehaze, sharpening and noise reduction."),
         ("local", "Local corrections", "Corrections masked by luminance or colour ranges."),
+        ("spot", "Spot removal", "Heal / clone spots (centre, radius, feather, opacity, source) and distraction spots."),
     ] {
         registry.register_section(SectionSpec::new(id, label, help))?;
     }
