@@ -49,6 +49,7 @@ mod spot;
 
 use super::Viewer;
 use super::develop_entry;
+use super::wrap::wrap_item;
 use super::export::write_atomic;
 use crate::import::{RawPrepared, SourceFormat, raw_prepare, raw_proposal};
 use hsk_studio_controls::{ChangeSource, ControlError, ControlSpec, NumberSpec, Registry, SectionSpec, Value as ControlValue, ValueStore};
@@ -1344,20 +1345,6 @@ impl Viewer {
         });
         (changes, ops)
     }
-}
-
-/// One item of a wrapping row (`ui.horizontal_wrapped`) under the stable id `id`: the row allocates
-/// the item's unwrapped size first, so the row wraps it, then `add` draws it there. A bare
-/// `ui.push_id` opens a child Ui the row never wraps: past the row end the child has zero width, the
-/// button text shrinks to one glyph, the row overflows and the auto-sized develop panel stored that
-/// overflow as its width, widening every frame (diagnosis smb-lr-healing-2-1). `text` / `style`: the
-/// item's label and text style (`Button` for buttons and selectable labels, `Body` for small buttons).
-fn wrap_item<R>(ui: &mut egui::Ui, id: egui::Id, text: &str, style: egui::TextStyle, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let galley = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style);
-    let pad = ui.spacing().button_padding;
-    // One point of slack: a label a hair short of its width would wrap inside the allocated cell.
-    let size = egui::vec2(galley.size().x + 2.0 * pad.x + 1.0, (galley.size().y + 2.0 * pad.y).max(ui.spacing().interact_size.y));
-    ui.allocate_ui(size, |ui| ui.push_id(id, add).inner).inner
 }
 
 /// The controls of `edit` as `hsk-studio-controls` descriptors with the edit's values in the store.

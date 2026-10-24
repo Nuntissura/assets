@@ -412,18 +412,18 @@ impl Viewer {
     pub(super) fn ps_options_ui(&mut self, ui: &mut egui::Ui, drawn: &mut Vec<String>) {
         let mut s = self.edit.ps;
         ui.separator();
-        ui.push_id(widget::id(WAND_TOLERANCE), |ui| ui.add(egui::Slider::new(&mut s.wand.tolerance, 0.0..=255.0).text("tolerance")));
+        super::wrap::wrap_measured(ui, widget::id(WAND_TOLERANCE), |ui| ui.add(egui::Slider::new(&mut s.wand.tolerance, 0.0..=255.0).text("tolerance")));
         drawn.push(WAND_TOLERANCE.into());
-        ui.push_id(widget::id(WAND_CONTIGUOUS), |ui| ui.checkbox(&mut s.wand.contiguous, "contiguous"));
+        super::wrap::wrap_measured(ui, widget::id(WAND_CONTIGUOUS), |ui| ui.checkbox(&mut s.wand.contiguous, "contiguous"));
         drawn.push(WAND_CONTIGUOUS.into());
-        ui.push_id(widget::id(SAMPLE_MERGED), |ui| ui.checkbox(&mut s.sample_merged, "sample merged"));
+        super::wrap::wrap_measured(ui, widget::id(SAMPLE_MERGED), |ui| ui.checkbox(&mut s.sample_merged, "sample merged"));
         drawn.push(SAMPLE_MERGED.into());
-        ui.push_id(widget::id(QUICK_SIZE), |ui| ui.add(egui::Slider::new(&mut s.quick_diameter_px, 1.0..=500.0).logarithmic(true).text("quick size")));
+        super::wrap::wrap_measured(ui, widget::id(QUICK_SIZE), |ui| ui.add(egui::Slider::new(&mut s.quick_diameter_px, 1.0..=500.0).logarithmic(true).text("quick size")));
         drawn.push(QUICK_SIZE.into());
-        ui.push_id(widget::id(MAGNETIC_WIDTH), |ui| ui.add(egui::Slider::new(&mut s.magnetic.width, 0.0..=100.0).text("edge width")));
+        super::wrap::wrap_measured(ui, widget::id(MAGNETIC_WIDTH), |ui| ui.add(egui::Slider::new(&mut s.magnetic.width, 0.0..=100.0).text("edge width")));
         drawn.push(MAGNETIC_WIDTH.into());
         let current = LIQUIFY_TOOLS.iter().find(|(_, t)| *t == s.liquify_tool).map_or("forward warp", |(n, _)| *n);
-        ui.push_id(widget::id(LIQUIFY_TOOL), |ui| {
+        super::wrap::wrap_measured(ui, widget::id(LIQUIFY_TOOL), |ui| {
             egui::ComboBox::from_label("liquify").selected_text(current).show_ui(ui, |ui| {
                 for (name, t) in LIQUIFY_TOOLS {
                     ui.selectable_value(&mut s.liquify_tool, t, name);
@@ -431,12 +431,12 @@ impl Viewer {
             });
         });
         drawn.push(LIQUIFY_TOOL.into());
-        ui.push_id(widget::id(LIQUIFY_SIZE), |ui| ui.add(egui::Slider::new(&mut s.liquify_brush.size, 1.0..=1000.0).logarithmic(true).text("liquify size")));
+        super::wrap::wrap_measured(ui, widget::id(LIQUIFY_SIZE), |ui| ui.add(egui::Slider::new(&mut s.liquify_brush.size, 1.0..=1000.0).logarithmic(true).text("liquify size")));
         drawn.push(LIQUIFY_SIZE.into());
-        ui.push_id(widget::id(LIQUIFY_PRESSURE), |ui| ui.add(egui::Slider::new(&mut s.liquify_brush.pressure, 0.0..=100.0).text("pressure")));
+        super::wrap::wrap_measured(ui, widget::id(LIQUIFY_PRESSURE), |ui| ui.add(egui::Slider::new(&mut s.liquify_brush.pressure, 0.0..=100.0).text("pressure")));
         drawn.push(LIQUIFY_PRESSURE.into());
         let mode = REFINE_MODES.iter().find(|(_, m)| *m == s.refine_mode).map_or("refine edge", |(n, _)| *n);
-        ui.push_id(widget::id(REFINE_MODE), |ui| {
+        super::wrap::wrap_measured(ui, widget::id(REFINE_MODE), |ui| {
             egui::ComboBox::from_label("refine").selected_text(mode).show_ui(ui, |ui| {
                 for (name, m) in REFINE_MODES {
                     ui.selectable_value(&mut s.refine_mode, m, name);
@@ -444,9 +444,9 @@ impl Viewer {
             });
         });
         drawn.push(REFINE_MODE.into());
-        ui.push_id(widget::id(REFINE_SIZE), |ui| ui.add(egui::Slider::new(&mut s.refine_size, 1.0..=500.0).logarithmic(true).text("refine size")));
+        super::wrap::wrap_measured(ui, widget::id(REFINE_SIZE), |ui| ui.add(egui::Slider::new(&mut s.refine_size, 1.0..=500.0).logarithmic(true).text("refine size")));
         drawn.push(REFINE_SIZE.into());
-        ui.push_id(widget::id(REFINE_RADIUS), |ui| ui.add(egui::Slider::new(&mut s.refine_radius, 0.0..=100.0).text("edge radius")));
+        super::wrap::wrap_measured(ui, widget::id(REFINE_RADIUS), |ui| ui.add(egui::Slider::new(&mut s.refine_radius, 0.0..=100.0).text("edge radius")));
         drawn.push(REFINE_RADIUS.into());
         self.edit.ps = s;
     }

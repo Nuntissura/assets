@@ -715,7 +715,7 @@ impl Viewer {
                     ui.label(prop);
                     for v in values {
                         let id = widget::variant(prop, v);
-                        if ui.push_id(super::super::widget::id(&id), |ui| ui.selectable_label(v == cur, v.as_str())).inner.on_hover_text(format!("Switch {prop} to {v}")).clicked() && v != cur {
+                        if super::super::wrap::wrap_item(ui, super::super::widget::id(&id), v.as_str(), egui::TextStyle::Button, |ui| ui.selectable_label(v == cur, v.as_str())).on_hover_text(format!("Switch {prop} to {v}")).clicked() && v != cur {
                             run = Some(DesignCommand::SwitchVariant { property: prop.clone(), value: v.clone() });
                         }
                         self.drawn.push(id);
@@ -767,7 +767,8 @@ impl Viewer {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!("{name} . {field} = {value}"));
                     let id = widget::reset(node, field);
-                    if ui.push_id(super::super::widget::id(&id), |ui| ui.button(format!("Reset {field}"))).inner.on_hover_text("Reset this override to the component's value").clicked() {
+                    let label = format!("Reset {field}");
+                    if super::super::wrap::wrap_item(ui, super::super::widget::id(&id), &label, egui::TextStyle::Button, |ui| ui.button(label.as_str())).on_hover_text("Reset this override to the component's value").clicked() {
                         run = Some(DesignCommand::ResetOverride { node_id: node.clone(), field: field.clone() });
                     }
                     self.drawn.push(id);
@@ -782,7 +783,8 @@ impl Viewer {
                 ui.horizontal_wrapped(|ui| {
                     for (id_k, name) in &view.swaps {
                         let id = widget::swap(id_k);
-                        if ui.push_id(super::super::widget::id(&id), |ui| ui.button(format!("Swap to {name}"))).inner.clicked() {
+                        let label = format!("Swap to {name}");
+                        if super::super::wrap::wrap_item(ui, super::super::widget::id(&id), &label, egui::TextStyle::Button, |ui| ui.button(label.as_str())).clicked() {
                             run = Some(DesignCommand::Swap { component_id: id_k.clone() });
                         }
                         self.drawn.push(id);

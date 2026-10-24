@@ -523,7 +523,7 @@ fn name_of(rows: &[(String, String)], id: &str) -> String {
 
 /// A button with a stable widget name; true when clicked.
 fn button(ui: &mut egui::Ui, drawn: &mut Vec<String>, name: String, label: &str, enabled: bool) -> bool {
-    let clicked = ui.push_id(vw::id(&name), |ui| ui.add_enabled(enabled, egui::Button::new(label))).inner.clicked();
+    let clicked = super::wrap::wrap_item(ui, vw::id(&name), label, egui::TextStyle::Button, |ui| ui.add_enabled(enabled, egui::Button::new(label))).clicked();
     drawn.push(name);
     clicked
 }

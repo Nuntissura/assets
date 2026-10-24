@@ -918,12 +918,12 @@ impl super::Viewer {
                     }
                 });
                 drawn.push(widget::AMPLIFY_DB);
-                ui.push_id(super::widget::id(widget::AMPLIFY_DB), |ui| ui.add(egui::DragValue::new(&mut w.amplify_db).range(score::WAVE_AMPLIFY_DB.0..=score::WAVE_AMPLIFY_DB.1).speed(0.1).suffix(" dB")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::AMPLIFY_DB), |ui| ui.add(egui::DragValue::new(&mut w.amplify_db).range(score::WAVE_AMPLIFY_DB.0..=score::WAVE_AMPLIFY_DB.1).speed(0.1).suffix(" dB")));
                 if button(ui, &mut drawn, widget::AMPLIFY, "Amplify", true) {
                     requests.push(WaveformEdit::Amplify { selection: target, db: w.amplify_db });
                 }
                 drawn.push(widget::NORMALIZE_DBFS);
-                ui.push_id(super::widget::id(widget::NORMALIZE_DBFS), |ui| ui.add(egui::DragValue::new(&mut w.normalize_dbfs).range(score::WAVE_NORMALIZE_DBFS.0..=score::WAVE_NORMALIZE_DBFS.1).speed(0.1).suffix(" dBFS")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::NORMALIZE_DBFS), |ui| ui.add(egui::DragValue::new(&mut w.normalize_dbfs).range(score::WAVE_NORMALIZE_DBFS.0..=score::WAVE_NORMALIZE_DBFS.1).speed(0.1).suffix(" dBFS")));
                 if button(ui, &mut drawn, widget::NORMALIZE, "Normalize", true) {
                     requests.push(WaveformEdit::Normalize { selection: target, target_dbfs: w.normalize_dbfs, linked: true });
                 }
@@ -934,7 +934,7 @@ impl super::Viewer {
                     requests.push(WaveformEdit::Reverse(target));
                 }
                 drawn.push(widget::SNAP);
-                ui.push_id(super::widget::id(widget::SNAP), |ui| ui.checkbox(&mut w.snap, "Snap to zero crossings"));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::SNAP), |ui| ui.checkbox(&mut w.snap, "Snap to zero crossings"));
                 if button(ui, &mut drawn, widget::UNDO, "Undo", true) {
                     history = Some(true);
                 }
@@ -1003,7 +1003,7 @@ impl super::Viewer {
 
 fn button(ui: &mut egui::Ui, drawn: &mut Vec<&'static str>, name: &'static str, text: &str, enabled: bool) -> bool {
     drawn.push(name);
-    ui.push_id(super::widget::id(name), |ui| ui.add_enabled(enabled, egui::Button::new(text))).inner.clicked()
+    super::wrap::wrap_item(ui, super::widget::id(name), text, egui::TextStyle::Button, |ui| ui.add_enabled(enabled, egui::Button::new(text))).clicked()
 }
 
 /// Per channel, `(min, max)` over `columns` equal spans of `start .. end`.

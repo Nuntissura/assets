@@ -2097,78 +2097,78 @@ impl Viewer {
         }
         let mut t = self.edit.vector.clone();
         ui.separator();
-        ui.push_id(super::widget::id(widget::FILL_ON), |ui| ui.checkbox(&mut t.fill_on, "fill"));
+        super::wrap::wrap_measured(ui, super::widget::id(widget::FILL_ON), |ui| ui.checkbox(&mut t.fill_on, "fill"));
         drawn.push(widget::FILL_ON.into());
-        ui.push_id(super::widget::id(widget::FILL), |ui| ui.color_edit_button_srgb(&mut t.fill));
+        super::wrap::wrap_measured(ui, super::widget::id(widget::FILL), |ui| ui.color_edit_button_srgb(&mut t.fill));
         drawn.push(widget::FILL.into());
-        ui.push_id(super::widget::id(widget::STROKE_ON), |ui| ui.checkbox(&mut t.stroke_on, "stroke"));
+        super::wrap::wrap_measured(ui, super::widget::id(widget::STROKE_ON), |ui| ui.checkbox(&mut t.stroke_on, "stroke"));
         drawn.push(widget::STROKE_ON.into());
-        ui.push_id(super::widget::id(widget::STROKE), |ui| ui.color_edit_button_srgb(&mut t.stroke));
+        super::wrap::wrap_measured(ui, super::widget::id(widget::STROKE), |ui| ui.color_edit_button_srgb(&mut t.stroke));
         drawn.push(widget::STROKE.into());
-        ui.push_id(super::widget::id(widget::STROKE_WIDTH), |ui| ui.add(egui::Slider::new(&mut t.stroke_width, 0.0..=100.0).text("width")));
+        super::wrap::wrap_measured(ui, super::widget::id(widget::STROKE_WIDTH), |ui| ui.add(egui::Slider::new(&mut t.stroke_width, 0.0..=100.0).text("width")));
         drawn.push(widget::STROKE_WIDTH.into());
         match self.edit.tool {
             Tool::RoundedRectangle => {
-                ui.push_id(super::widget::id(widget::CORNER_RADIUS), |ui| ui.add(egui::Slider::new(&mut t.corner_radius, 0.0..=500.0).text("radius")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::CORNER_RADIUS), |ui| ui.add(egui::Slider::new(&mut t.corner_radius, 0.0..=500.0).text("radius")));
                 drawn.push(widget::CORNER_RADIUS.into());
             }
             Tool::Polygon => {
-                ui.push_id(super::widget::id(widget::SIDES), |ui| ui.add(egui::Slider::new(&mut t.polygon_sides, 3..=100).text("sides")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::SIDES), |ui| ui.add(egui::Slider::new(&mut t.polygon_sides, 3..=100).text("sides")));
                 drawn.push(widget::SIDES.into());
             }
             Tool::Star => {
-                ui.push_id(super::widget::id(widget::POINTS), |ui| ui.add(egui::Slider::new(&mut t.star_points, 3..=50).text("points")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::POINTS), |ui| ui.add(egui::Slider::new(&mut t.star_points, 3..=50).text("points")));
                 drawn.push(widget::POINTS.into());
-                ui.push_id(super::widget::id(widget::INNER), |ui| ui.add(egui::Slider::new(&mut t.star_inner, 0.05..=1.0).text("inner")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::INNER), |ui| ui.add(egui::Slider::new(&mut t.star_inner, 0.05..=1.0).text("inner")));
                 drawn.push(widget::INNER.into());
             }
             Tool::Pen | Tool::Curvature => {
-                if ui.push_id(super::widget::id(widget::PEN_END), |ui| ui.add_enabled(t.pen_layer.is_some(), egui::Button::new("End path"))).inner.on_hover_text("Enter / Escape").clicked() {
+                if super::wrap::wrap_item(ui, super::widget::id(widget::PEN_END), "End path", egui::TextStyle::Button, |ui| ui.add_enabled(t.pen_layer.is_some(), egui::Button::new("End path"))).on_hover_text("Enter / Escape").clicked() {
                     t.pen_layer = None;
                 }
                 drawn.push(widget::PEN_END.into());
             }
             Tool::Pencil => {
-                ui.push_id(super::widget::id(widget::PENCIL_FIDELITY), |ui| ui.add(egui::Slider::new(&mut t.pencil_fidelity, 0..=4).text("fidelity")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::PENCIL_FIDELITY), |ui| ui.add(egui::Slider::new(&mut t.pencil_fidelity, 0..=4).text("fidelity")));
                 drawn.push(widget::PENCIL_FIDELITY.into());
             }
             Tool::Reshape => {
-                ui.push_id(super::widget::id(widget::RESHAPE_RADIUS), |ui| ui.add(egui::Slider::new(&mut t.reshape_radius, 1.0..=500.0).text("falloff")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::RESHAPE_RADIUS), |ui| ui.add(egui::Slider::new(&mut t.reshape_radius, 1.0..=500.0).text("falloff")));
                 drawn.push(widget::RESHAPE_RADIUS.into());
             }
             Tool::BlobBrush => {
-                ui.push_id(super::widget::id(widget::BLOB_DIAMETER), |ui| ui.add(egui::Slider::new(&mut t.blob_diameter, 1.0..=200.0).text("size")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::BLOB_DIAMETER), |ui| ui.add(egui::Slider::new(&mut t.blob_diameter, 1.0..=200.0).text("size")));
                 drawn.push(widget::BLOB_DIAMETER.into());
             }
             Tool::ArcSegment => {
-                ui.push_id(super::widget::id(widget::ARC_SLOPE), |ui| ui.add(egui::Slider::new(&mut t.arc_slope, -100.0..=100.0).text("slope")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::ARC_SLOPE), |ui| ui.add(egui::Slider::new(&mut t.arc_slope, -100.0..=100.0).text("slope")));
                 drawn.push(widget::ARC_SLOPE.into());
-                ui.push_id(super::widget::id(widget::ARC_CLOSED), |ui| ui.checkbox(&mut t.arc_closed, "closed"));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::ARC_CLOSED), |ui| ui.checkbox(&mut t.arc_closed, "closed"));
                 drawn.push(widget::ARC_CLOSED.into());
             }
             Tool::RectangularGrid => {
-                ui.push_id(super::widget::id(widget::GRID_ROWS), |ui| ui.add(egui::Slider::new(&mut t.grid_rows, 0..=50).text("rows")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::GRID_ROWS), |ui| ui.add(egui::Slider::new(&mut t.grid_rows, 0..=50).text("rows")));
                 drawn.push(widget::GRID_ROWS.into());
-                ui.push_id(super::widget::id(widget::GRID_COLUMNS), |ui| ui.add(egui::Slider::new(&mut t.grid_columns, 0..=50).text("columns")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::GRID_COLUMNS), |ui| ui.add(egui::Slider::new(&mut t.grid_columns, 0..=50).text("columns")));
                 drawn.push(widget::GRID_COLUMNS.into());
             }
             Tool::PolarGrid => {
-                ui.push_id(super::widget::id(widget::POLAR_CONCENTRIC), |ui| ui.add(egui::Slider::new(&mut t.polar_concentric, 0..=50).text("concentric")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::POLAR_CONCENTRIC), |ui| ui.add(egui::Slider::new(&mut t.polar_concentric, 0..=50).text("concentric")));
                 drawn.push(widget::POLAR_CONCENTRIC.into());
-                ui.push_id(super::widget::id(widget::POLAR_RADIAL), |ui| ui.add(egui::Slider::new(&mut t.polar_radial, 0..=50).text("radial")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::POLAR_RADIAL), |ui| ui.add(egui::Slider::new(&mut t.polar_radial, 0..=50).text("radial")));
                 drawn.push(widget::POLAR_RADIAL.into());
             }
             Tool::Spiral => {
-                ui.push_id(super::widget::id(widget::SPIRAL_DECAY), |ui| ui.add(egui::Slider::new(&mut t.spiral_decay, 5.0..=99.0).text("decay %")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::SPIRAL_DECAY), |ui| ui.add(egui::Slider::new(&mut t.spiral_decay, 5.0..=99.0).text("decay %")));
                 drawn.push(widget::SPIRAL_DECAY.into());
-                ui.push_id(super::widget::id(widget::SPIRAL_TURNS), |ui| ui.add(egui::Slider::new(&mut t.spiral_turns, 0.25..=20.0).text("turns")));
+                super::wrap::wrap_measured(ui, super::widget::id(widget::SPIRAL_TURNS), |ui| ui.add(egui::Slider::new(&mut t.spiral_turns, 0.25..=20.0).text("turns")));
                 drawn.push(widget::SPIRAL_TURNS.into());
             }
             _ => {}
         }
         let mut run_op = None;
         if self.edit.tool == Tool::DirectSelect {
-            ui.push_id(super::widget::id(widget::PATHFINDER), |ui| {
+            super::wrap::wrap_measured(ui, super::widget::id(widget::PATHFINDER), |ui| {
                 egui::ComboBox::from_label("pathfinder").selected_text("apply to selected + below").show_ui(ui, |ui| {
                     for op in [PathfinderOp::Union, PathfinderOp::SubtractFront, PathfinderOp::Intersect, PathfinderOp::Exclude, PathfinderOp::Divide, PathfinderOp::Trim, PathfinderOp::Merge, PathfinderOp::Crop] {
                         if ui.selectable_label(false, op.member()).clicked() {

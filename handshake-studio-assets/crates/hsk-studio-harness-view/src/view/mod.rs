@@ -90,6 +90,8 @@ pub mod render;
 pub mod proof;
 /// Pen, direct selection, shape tools and pathfinder on vector layers (lane SMB-ILLUSTRATOR-PEN).
 pub mod vector;
+/// Items of wrapping rows under stable ids (toolbar, Layers panel, develop rows; lane SMB-SHELL-ROW-WRAP-1).
+mod wrap;
 
 use crate::harness::{Harness, References, Run, Selection};
 use crate::panel::{self, PanelValues, Route};
@@ -920,7 +922,7 @@ impl Viewer {
                         (widget::LAYER_UNGROUP, "Ungroup", "Move the selected group's layers out and delete the group", true),
                     ] {
                         let enabled = open && (has_selection || !needs_selection);
-                        if ui.push_id(widget::id(name), |ui| ui.add_enabled(enabled, egui::Button::new(label))).inner.on_hover_text(hover).clicked() {
+                        if wrap::wrap_item(ui, widget::id(name), label, egui::TextStyle::Button, |ui| ui.add_enabled(enabled, egui::Button::new(label))).on_hover_text(hover).clicked() {
                             layer_action = Some(name);
                         }
                         self.drawn.push(name.into());
@@ -1304,7 +1306,7 @@ impl Viewer {
                 Tool::MagicWand | Tool::QuickSelect | Tool::MagneticLasso | Tool::Liquify | Tool::RefineBrush => select_liquify::tool_hover(tool),
                 other => vector::tool_hover(other),
             };
-            if ui.push_id(widget::id(&name), |ui| ui.selectable_label(self.edit.tool == tool, tool.label())).inner.on_hover_text(hover).clicked() {
+            if wrap::wrap_item(ui, widget::id(&name), tool.label(), egui::TextStyle::Button, |ui| ui.selectable_label(self.edit.tool == tool, tool.label())).on_hover_text(hover).clicked() {
                 self.set_tool(tool);
             }
             self.drawn.push(name);
@@ -1317,7 +1319,7 @@ impl Viewer {
         self.drawn.extend(ps_drawn);
         ui.separator();
         let mut combine = self.edit.combine;
-        ui.push_id(widget::id(widget::COMBINE), |ui| {
+        wrap::wrap_measured(ui, widget::id(widget::COMBINE), |ui| {
             egui::ComboBox::from_label("combine").selected_text(edit::combine_key(combine)).show_ui(ui, |ui| {
                 for mode in [CombineMode::Replace, CombineMode::Extend, CombineMode::Diminish, CombineMode::Intersect] {
                     ui.selectable_value(&mut combine, mode, edit::combine_key(mode));
@@ -1328,19 +1330,19 @@ impl Viewer {
         if combine != self.edit.combine {
             self.set_combine(combine);
         }
-        if ui.push_id(widget::id(widget::CLEAR_SELECTION), |ui| ui.add_enabled(self.edit.selection.is_some(), egui::Button::new("Deselect"))).inner.clicked() {
+        if wrap::wrap_item(ui, widget::id(widget::CLEAR_SELECTION), "Deselect", egui::TextStyle::Button, |ui| ui.add_enabled(self.edit.selection.is_some(), egui::Button::new("Deselect"))).clicked() {
             self.clear_selection();
         }
         self.drawn.push(widget::CLEAR_SELECTION.into());
         ui.separator();
         let mut brush = self.edit.brush;
-        ui.push_id(widget::id(widget::BRUSH_SIZE), |ui| ui.add(egui::Slider::new(&mut brush.diameter_px, 1.0..=500.0).logarithmic(true).text("size")));
+        wrap::wrap_measured(ui, widget::id(widget::BRUSH_SIZE), |ui| ui.add(egui::Slider::new(&mut brush.diameter_px, 1.0..=500.0).logarithmic(true).text("size")));
         self.drawn.push(widget::BRUSH_SIZE.into());
-        ui.push_id(widget::id(widget::BRUSH_HARDNESS), |ui| ui.add(egui::Slider::new(&mut brush.hardness_pct, 0.0..=100.0).text("hard")));
+        wrap::wrap_measured(ui, widget::id(widget::BRUSH_HARDNESS), |ui| ui.add(egui::Slider::new(&mut brush.hardness_pct, 0.0..=100.0).text("hard")));
         self.drawn.push(widget::BRUSH_HARDNESS.into());
-        ui.push_id(widget::id(widget::BRUSH_OPACITY), |ui| ui.add(egui::Slider::new(&mut brush.opacity_pct, 0.0..=100.0).text("opacity")));
+        wrap::wrap_measured(ui, widget::id(widget::BRUSH_OPACITY), |ui| ui.add(egui::Slider::new(&mut brush.opacity_pct, 0.0..=100.0).text("opacity")));
         self.drawn.push(widget::BRUSH_OPACITY.into());
-        ui.push_id(widget::id(widget::BRUSH_COLOUR), |ui| ui.color_edit_button_srgb(&mut brush.rgb8));
+        wrap::wrap_measured(ui, widget::id(widget::BRUSH_COLOUR), |ui| ui.color_edit_button_srgb(&mut brush.rgb8));
         self.drawn.push(widget::BRUSH_COLOUR.into());
         if brush != self.edit.brush {
             self.set_brush(brush);
@@ -1348,11 +1350,11 @@ impl Viewer {
         ui.separator();
         let history = self.run.history();
         let can = |k: &str| history[k].as_array().is_some_and(|a| !a.is_empty());
-        if ui.push_id(widget::id(widget::UNDO_BUTTON), |ui| ui.add_enabled(can("undo"), egui::Button::new("Undo"))).inner.on_hover_text("Ctrl+Z").clicked() {
+        if wrap::wrap_item(ui, widget::id(widget::UNDO_BUTTON), "Undo", egui::TextStyle::Button, |ui| ui.add_enabled(can("undo"), egui::Button::new("Undo"))).on_hover_text("Ctrl+Z").clicked() {
             let _ = self.undo();
         }
         self.drawn.push(widget::UNDO_BUTTON.into());
-        if ui.push_id(widget::id(widget::REDO_BUTTON), |ui| ui.add_enabled(can("redo"), egui::Button::new("Redo"))).inner.on_hover_text("Ctrl+Shift+Z / Ctrl+Y").clicked() {
+        if wrap::wrap_item(ui, widget::id(widget::REDO_BUTTON), "Redo", egui::TextStyle::Button, |ui| ui.add_enabled(can("redo"), egui::Button::new("Redo"))).on_hover_text("Ctrl+Shift+Z / Ctrl+Y").clicked() {
             let _ = self.redo();
         }
         self.drawn.push(widget::REDO_BUTTON.into());
