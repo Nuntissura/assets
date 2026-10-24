@@ -8,6 +8,7 @@
 mod admission;
 mod error;
 mod motion;
+mod multicam;
 mod ports;
 mod registry;
 mod session;
@@ -32,6 +33,7 @@ pub use session::{
     ReconcileReport, SaveReceipt, Session, SessionConfig, SessionPorts,
 };
 pub use motion::{COMPOSITION_ENTRY, MOTION_ENTRY};
+pub use multicam::MULTICAM_ENTRY;
 pub use source::{DOCUMENT_ENTRY_PREFIX, DOCUMENT_ENTRY_TOKENS};
 pub use timeline::{MAX_COMMAND_ID_BYTES, TIMELINE_STEP_PROVIDER, TimelineStep};
 

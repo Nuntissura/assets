@@ -405,6 +405,7 @@ fn every_folio_reference_property_is_classified() {
         ("book", serde_json::to_value(folio::book_schema()).unwrap()),
         ("clip_finishing", serde_json::to_value(folio::clip_finishing_schema()).unwrap()),
         ("layout_grids", serde_json::to_value(folio::layout_grids_schema()).unwrap()),
+        ("multicam_records", serde_json::to_value(folio::multicam_records_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -533,6 +534,8 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioMatchStatistics.source_std", "internal: value"),
     ("StudioMotionRecords.composition_audio", "container of StudioAudioLayer"),
     ("StudioMotionTemplate.required_fonts", "external:font"),
+    ("StudioMulticamClip.audio_angle", "internal: angle number of the multicam source sequence"),
+    ("StudioMulticamClip.audio_follows_video", "internal: flag"),
     ("StudioObjectStyle.epub_aria_label_source_type", "internal: value"),
     ("StudioObjectStyleCategories.enable_story_options", "internal: flag"),
     ("StudioOutputModule.audio", "not_a_dependency: output audio settings"),
