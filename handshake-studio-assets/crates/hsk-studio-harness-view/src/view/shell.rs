@@ -61,6 +61,8 @@ pub mod widget {
     pub const FILE: &str = "menu.file";
     pub const EDIT: &str = "menu.edit";
     pub const VIEW: &str = "menu.view";
+    /// COLOR (lane SMB-PS-SOFT-PROOF-2: COLOR > Proof, [STU-SHL-030]).
+    pub const COLOR: &str = "menu.color";
     pub const WORKSPACE: &str = "menu.workspace";
     pub const HELP: &str = "menu.help";
     pub const OPEN_RECENT: &str = "menu.studio.document.open_recent";
@@ -527,6 +529,8 @@ pub enum ShellCommand {
     ToggleStatus,
     Panel(Panel),
     Help(HelpCommand),
+    /// VIEW > Proof and COLOR > Proof leaves (lane SMB-PS-SOFT-PROOF-2, module [`super::proof`]).
+    Proof(super::proof::ProofMenuLeaf),
 }
 
 impl ShellCommand {
@@ -551,6 +555,7 @@ impl ShellCommand {
             Self::ToggleStatus => "studio.view.status_log".into(),
             Self::Panel(p) => format!("studio.workspace.panel.{}", p.key()),
             Self::Help(h) => h.id().into(),
+            Self::Proof(l) => l.id(),
         }
     }
 
@@ -594,6 +599,14 @@ pub fn menu_entries() -> Vec<MenuEntry> {
     ];
     out.extend(Panel::ALL.map(|p| e("Workspace", ShellCommand::Panel(p), p.label(), Some(p.shortcut_text()))));
     out.extend(HelpCommand::ALL.map(|h| e("Help", ShellCommand::Help(h), h.label(), None)));
+    // No key bindings: the spec declares none for the proof leaves.
+    out.extend(super::proof::ProofMenuLeaf::all().into_iter().map(|l| {
+        let menu = match l.menu {
+            super::proof::ProofMenu::View => "View",
+            super::proof::ProofMenu::Color => "Color",
+        };
+        e(menu, ShellCommand::Proof(l), l.leaf.label(), None)
+    }));
     out
 }
 
@@ -799,7 +812,7 @@ impl Viewer {
 
     /// The menu tree as controls descriptors, ONE availability evaluation per node ([STU-SHL-046]):
     /// the egui menu, the AccessKit descriptions, [`Viewer::shell_command`],
-    /// `state_json()["shell"]["menu"]` and the manual all read it. Titles FILE, EDIT, VIEW,
+    /// `state_json()["shell"]["menu"]` and the manual all read it. Titles FILE, EDIT, VIEW, COLOR,
     /// WORKSPACE, HELP in the order of [STU-SHL-011]; WORKSPACE > Panels ([STU-SHL-036]); HELP per
     /// [STU-SHL-037].
     pub fn menu_bar(&self) -> MenuBar {
@@ -869,7 +882,13 @@ impl Viewer {
                 leaf(ShellCommand::ZoomOut).with_help("Zooms out by 2x."),
                 leaf(ShellCommand::ToggleGpu).selected(self.prefer == Prefer::Gpu).with_help("Renders on the GPU when on, on the CPU when off."),
                 leaf(ShellCommand::ToggleStatus).selected(self.shell.show_status).with_help("Shows or hides the status log."),
+                MenuNode::submenu(super::proof::VIEW_MENU_ID, "Proof", self.proof_menu_nodes(super::proof::ProofMenu::View)).with_help("Soft proofing: proof setup, proof colours, gamut warning, colour-vision proof (STU-SHL-025)."),
             ],
+        );
+        let color = MenuNode::title(
+            "color",
+            "Color",
+            vec![MenuNode::submenu(super::proof::COLOR_MENU_ID, "Proof", self.proof_menu_nodes(super::proof::ProofMenu::Color)).with_help("Soft proofing with custom proof conditions and saved proof presets (STU-SHL-030).")],
         );
         let panels: Vec<MenuNode> = Panel::ALL
             .iter()
@@ -912,7 +931,7 @@ impl Viewer {
                 help_leaf(HelpCommand::About),
             ],
         );
-        let mut bar = MenuBar::new(vec![file, edit, view, workspace, help]);
+        let mut bar = MenuBar::new(vec![file, edit, view, color, workspace, help]);
         bar.resolve_remedies();
         bar
     }
@@ -1129,6 +1148,7 @@ impl Viewer {
                 }
                 None => Err(h.missing().into()),
             },
+            ShellCommand::Proof(l) => self.proof_menu_leaf(l),
         }
     }
 
@@ -1338,6 +1358,7 @@ impl Viewer {
         self.prototype = None;
         self.selection_history.clear();
         self.records = None;
+        self.proof_close_document();
         #[cfg(feature = "media")]
         {
             self.audio = None;

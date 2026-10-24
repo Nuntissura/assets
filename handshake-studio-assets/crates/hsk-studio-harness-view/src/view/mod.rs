@@ -83,6 +83,9 @@ pub mod text;
 #[cfg(feature = "media")]
 pub mod timeline_export;
 pub mod render;
+/// Soft proofing in the window: VIEW / COLOR > Proof, proof preview and gamut overlay on the canvas,
+/// `state_json()["proof"]` (lane SMB-PS-SOFT-PROOF-2).
+pub mod proof;
 /// Pen, direct selection, shape tools and pathfinder on vector layers (lane SMB-ILLUSTRATOR-PEN).
 pub mod vector;
 
@@ -229,6 +232,9 @@ pub struct Viewer {
     /// The document's raster records (package records entry), rendered through composite's
     /// adapter (lane SMB-HARNESS-RENDER-RECORDS).
     records: Option<hsk_studio_folio::StudioRasterRecords>,
+    /// Proof window and the canvas proof view (module [`proof`]; the state itself is the document
+    /// entry `proof`).
+    proof: proof::ProofState,
     /// The open audio file (module [`audio_import`]).
     #[cfg(feature = "media")]
     audio: Option<audio_import::ViewerAudio>,
@@ -307,6 +313,7 @@ impl Viewer {
             prototype: None,
             selection_history: Vec::new(),
             records: None,
+            proof: proof::ProofState::default(),
             #[cfg(feature = "media")]
             audio: None,
             #[cfg(feature = "media")]
@@ -722,6 +729,7 @@ impl Viewer {
             (Err(e), _) => Err(RenderFail { code: "text", detail: e }),
             (_, Err(e)) => Err(RenderFail { code: "vector", detail: e }),
         };
+        self.proof.frame_changed();
         match result {
             Ok(frame) => {
                 let line = format!("rendered revision {} with render-{} ({}x{}){}", frame.revision, frame.backend, frame.width, frame.height, if frame.notes.is_empty() { String::new() } else { format!("; {}", frame.notes.join("; ")) });
@@ -786,6 +794,7 @@ impl Viewer {
             "status": self.status,
             "shell": self.shell_json(),
             "timeline": self.timeline_json(),
+            "proof": self.proof_json(),
         });
         #[cfg(feature = "media")]
         {
@@ -1006,6 +1015,7 @@ impl Viewer {
             self.spectral_ui(ctx);
         }
         self.shell_windows_ui(ctx);
+        self.proof_ui(ctx);
         if let Some((play, last)) = &mut self.prototype
             && self.shell.visible(shell::Panel::PrototypePlayer)
         {
@@ -1113,6 +1123,11 @@ impl Viewer {
         if let Some(e) = &self.render_error {
             ui.colored_label(egui::Color32::RED, format!("render failed: {e}"));
         }
+        // Proof view (module proof): the proof texture replaces the frame's on the canvas only.
+        let proof_texture = if self.frame.is_some() { self.proof_canvas_texture(ui.ctx()) } else { None };
+        if proof_texture.is_none() {
+            self.proof_canvas_unproofed();
+        }
         let Some(frame) = &self.frame else {
             if self.run.snapshot().is_none() {
                 ui.label("Open a file: File > Open… (Ctrl+O), File > Open Recent, or type its path above and press Open (or pass it as the first argument).");
@@ -1120,10 +1135,11 @@ impl Viewer {
             return;
         };
         let (w, h) = (frame.width, frame.height);
-        let id = match frame.texture {
+        let id = match (proof_texture, frame.texture) {
+            (Some(id), _) => id,
             // Rendered on the host's device straight into this texture: nothing to upload.
-            Some(id) => id,
-            None => self
+            (None, Some(id)) => id,
+            (None, None) => self
                 .texture
                 .get_or_insert_with(|| {
                     let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &frame.rgba8);

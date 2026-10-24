@@ -109,6 +109,42 @@ the control makes); `hosted_summary(HostedPanel)`; widget names `panel.<key>` (w
 swatches / styles / brushes / targets / queue) and `state_json()["shell"]["surfaces"]` (layout
 editor, program monitor, source monitor, prototype player state).
 
+## Soft proofing (lane SMB-PS-SOFT-PROOF-2)
+
+View > Proof (Proof Setup…, Proof Colours, Gamut Warning, Colour-Vision Proof…) and Color > Proof
+(the same plus Custom Proof Condition… and Save Proof Preset…) run one implementation; both are
+greyed with "no open document to proof" (remedy File > Open) until a document is open. No key
+bindings (the spec declares none).
+
+| Entry | What it does |
+|---|---|
+| Proof Setup… | proof window: choose a shipped preset (working_cmyk, working_rgb, legacy_uncompensated_rgb, protanopia, deuteranopia, tritanopia) or a saved condition (turns Proof Colours on); gamut warning colour and opacity (0..100 %, default 100) |
+| Custom Proof Condition… | name, proof profile (working CMYK / RGB, legacy RGB, a document ICC profile, colour vision, operator matrix), proof intent, display intent, black point compensation, simulate paper colour, simulate black ink; Apply saves it in the document and makes it active |
+| Proof Colours | the canvas shows the document through the active condition (none active: working CMYK when the document has a CMYK profile, else working RGB) |
+| Gamut Warning | marks the pixels the proof device cannot reproduce in the warning colour |
+| Colour-Vision Proof… | protanopia, deuteranopia or tritanopia |
+| Save Proof Preset… | saves the active condition under a new name |
+
+Operator: the proof is a view only. The document values, Save, and Export PNG / JPEG stay unproofed.
+Every change is one Undo step and is saved with the document (session entry `proof`, Folio
+`hsk.studio.proof_records@1`). A frame drawn on the GPU display texture is proofed from the CPU
+read-back (named in the state); frames above 2,097,152 pixels are refused for proof
+(`proof_pixel_limit`) and show unproofed.
+
+Models: `Viewer::proof_command(ProofCommand::{Select, Custom, SetProofColours, SetGamutWarning,
+SetGamutStyle, SelectColourVision, SavePreset})` is the typed surface (each one undo step);
+`shell_command(ShellCommand::Proof(ProofMenuLeaf { menu, leaf }))` is the menu click;
+`proof_records()` (Folio-validated), `proof_frame()` (canvas bytes of the proof view),
+`proof_open_page` / `proof_draft_mut` / `proof_apply_draft` / `proof_set_save_name` drive the window;
+widget names `proof.window`, `proof.preset.<i>`, `proof.gamut.colour`, `proof.gamut.opacity`,
+`proof.custom.*`, `proof.vision.<kind>`, `proof.save.name`, `proof.save.button`, `proof.close`.
+`state_json()["proof"]`: entry, Folio `error` (a hostile entry reads as its diagnostic and changes
+nothing), enabled, active_condition, condition (name + six fields), conditions, presets,
+gamut_warning {enabled, colour, opacity, area_fraction, out_of_gamut_pixels, pixel_count,
+region_count, regions_truncated, regions, bounds, method, gamut_intent, threshold_delta_e76,
+max_delta_e76}, receipt (profile ids and SHA-256, intents, output_sha256), read_back, canvas
+(`proof` or `frame`), preview_error, window.
+
 ## What the window does
 
 - Menu bar: File, Edit, View, Workspace, Help (table above).

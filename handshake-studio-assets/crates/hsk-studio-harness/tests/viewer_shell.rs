@@ -638,7 +638,7 @@ fn help_menu_carries_the_spec_leaves_and_opens_the_help_views() {
     let bar = v.menu_bar();
     let labels = |id: &str| bar.find(id).unwrap().children.iter().map(|c| c.label.clone()).collect::<Vec<_>>();
     let titles: Vec<&str> = bar.titles.iter().map(|t| t.label.as_str()).collect();
-    assert_eq!(titles, ["File", "Edit", "View", "Workspace", "Help"], "HELP last ([STU-SHL-011] order)");
+    assert_eq!(titles, ["File", "Edit", "View", "Color", "Workspace", "Help"], "HELP last ([STU-SHL-011] order)");
     assert_eq!(labels("help"), ["Studio Manual", "Full Command Index…", "Keyboard Shortcut Reference…", "Diagnostics", "About Studio"]);
     assert_eq!(labels(shell::HELP_MANUAL_ID), ["Open Studio Manual", "Search Manual…", "Help for This Command", "Help for This Panel", "Help for This Tool", "Domain Guides…"]);
     assert_eq!(
