@@ -170,10 +170,17 @@ the Properties panel adds a "Component instance" section (no other layer shows i
 
 Every change is one Undo step and redraws the instance from its definition. Limits: a rotated or
 scaled instance is not redrawn (refused, status log); clips, masks and effects inside the definition
-are not copied into the redraw (listed in the command result); the instance record changed by a
-command is kept for the session only (no document entry holds design records yet), so after Save
-and reopen an edited instance (or one whose layers were changed outside the section) shows "its
-record is unknown" and refuses commands until the design file is imported again.
+are not copied into the redraw (listed in the command result).
+
+Persistence (lane SMB-FIG-EDIT-2): every change also saves the instance's state (variant, component
+property values, overrides, swap target) in the document entry `design` (Folio
+`hsk.studio.design_state@1`), so after Save and reopen an edited instance shows its edited variant
+and overrides and takes further changes. Undo and Redo return the instance to the state of the
+restored drawing (the entry keeps one state per drawing, newest 256), also after a reopen. An
+instance whose layers were changed outside the section shows "its record is unknown" and refuses
+changes until the design file is imported again; a saved state the document no longer matches
+(unknown component, variant or override) shows the same with the reason, and a damaged `design`
+entry is reported (state `design.entry.error`) and never overwritten.
 
 Models: `Viewer::import_fig(source, dest, overwrite)` (returns losses and counts),
 `design::is_design_file(path)`; `instance_view(layer_id)`; `design_command(layer_id,
@@ -184,8 +191,10 @@ ResetAll, Swap})`; widget names `design.instance`, `design.instance.variant.<pro
 `design.instance.swap.<component>`. `state_json()["design"]`: `instance` (layer_id, instance_id,
 state import / edited / unknown, main_component_id, component_id, component_name, variants
 {values, current}, properties, overrides {node_id, node_name, field, value}, texts, swap_targets,
-error), `instance_layers`, `last` (the last command result or its error). The receipt's `design`
-member holds the imported design records, instance bindings and origins.
+error: also the reason of an `unknown` state), `instance_layers`, `last` (the last command result or
+its error), `entry` (present, states, error {code, target}, dropped [{layer_id, error}],
+design_records_absent). `design_state_records()` returns the admitted entry or its Folio diagnostic.
+The receipt's `design` member holds the imported design records, instance bindings and origins.
 
 ## What the window does
 

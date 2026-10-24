@@ -9,11 +9,13 @@
 //! sets, instances). An instance's current record is the import record until a design command
 //! changes it; every command redraws the instance and records the new record against the
 //! instance layer's new content (its child layer ids), so undo and redo, which return the layer to
-//! earlier children, return the inspector to the record that drew them. GAP (recorded, lead
-//! decision): no session document entry holds design records (the `vector` entry admits paint
-//! styles only), so a record changed by a command lives for the session; after a save and reopen
-//! such an instance (or one whose layers were changed outside the inspector) reports
-//! `state: "unknown"` and refuses commands until the design file is imported again.
+//! earlier children, return the inspector to the record that drew them. Each command also stores
+//! the new record as the instance's state in the session entry `design` (lane SMB-FIG-EDIT-2,
+//! [`super::persist`]), keyed the same way, so after a save and reopen an edited instance reads
+//! `edited` and takes further commands. An instance whose layers were changed outside the
+//! inspector (no state of this session or of the entry matches its children) reports
+//! `state: "unknown"` and refuses commands until the design file is imported again; an entry state
+//! Folio refuses makes its instance `unknown` with the Folio diagnostic as the reason.
 //!
 //! Commands ([`DesignCommand`], one chronicle transaction = one undo step each): variant switch
 //! (`hsk_studio_components::switch_variant`), component swap (`swap_component`; overrides re-matched
@@ -30,6 +32,7 @@ use super::super::layers::{mint_layer_id, operation_for, stack};
 use super::super::text::{self, TextEntry, TextLayerRecord};
 use super::super::vector::{self, PathRecord};
 use super::super::Viewer;
+use super::persist;
 use crate::{Place, PlacementWrite};
 use hsk_studio_components::{Design, LocalContent, resolve_instance, swap_component, switch_variant};
 use hsk_studio_folio::{
@@ -134,8 +137,8 @@ struct Binding {
 }
 
 /// The receipt's design member, parsed.
-struct Receipt {
-    records: StudioDesignRecords,
+pub(super) struct Receipt {
+    pub(super) records: StudioDesignRecords,
     bindings: Vec<Binding>,
     /// component id -> (origin, translation only).
     origins: BTreeMap<String, ([f64; 2], bool)>,
@@ -275,28 +278,39 @@ fn with_instance(records: &StudioDesignRecords, record: &StudioComponentInstance
 }
 
 impl Viewer {
-    fn design_receipt(&self) -> Option<Receipt> {
+    pub(super) fn design_receipt(&self) -> Option<Receipt> {
         receipt_design(self.receipt.as_ref())
     }
 
-    /// The instance binding of `layer_id` and its current record (`None`: not an instance layer).
-    fn instance_record(&self, receipt: &Receipt, layer_id: &str) -> Option<(Binding, &'static str, StudioComponentInstance)> {
+    /// The instance binding of `layer_id`, its state, its current record and, for an `unknown`
+    /// state the `design` entry explains, the reason (`None`: not an instance layer). Order: a
+    /// record of this session for the layer's content, the entry's state for that content, the
+    /// import record while the content is the imported one.
+    fn instance_record(&self, receipt: &Receipt, entry: &persist::EntryRead, layer_id: &str) -> Option<(Binding, &'static str, StudioComponentInstance, Option<String>)> {
         let doc = self.run.snapshot()?.document();
         let b = receipt.bindings.iter().find(|b| b.layer_id == layer_id)?.clone();
         doc.layers.iter().find(|l| l.layer_id == layer_id)?;
         let sig = signature(doc, layer_id);
         if let Some(r) = self.design.get(&b.instance_id, &sig) {
-            return Some((b, "edited", r.clone()));
+            return Some((b, "edited", r.clone(), None));
         }
         let import = receipt.records.component_instances.iter().find(|i| i.instance_id == b.instance_id)?.clone();
-        let state = if b.signature.as_deref().is_none_or(|s| s == sig) { "import" } else { "unknown" };
-        Some((b, state, import))
+        let content = persist::content(doc, layer_id);
+        if let Some(s) = entry.records.as_ref().and_then(|r| r.state(layer_id, &content)).filter(|s| s.instance_id == b.instance_id) {
+            return Some((b, "edited", persist::record_of(&import, s), None));
+        }
+        if b.signature.as_deref().is_none_or(|s| s == sig) {
+            return Some((b, "import", import, None));
+        }
+        let reason = entry.reason(layer_id, &content);
+        Some((b, "unknown", import, reason))
     }
 
     /// The instance inspector's view of `layer_id` (`None`: the layer draws no instance).
     pub fn instance_view(&self, layer_id: &str) -> Option<InstanceView> {
         let receipt = self.design_receipt()?;
-        let (b, state, record) = self.instance_record(&receipt, layer_id)?;
+        let entry = self.read_design_state(Some(&receipt.records));
+        let (b, state, record, reason) = self.instance_record(&receipt, &entry, layer_id)?;
         let doc = self.run.snapshot()?.document();
         let mut view = InstanceView {
             layer_id: b.layer_id.clone(),
@@ -310,7 +324,7 @@ impl Viewer {
             overrides: Vec::new(),
             texts: Vec::new(),
             swaps: Vec::new(),
-            error: None,
+            error: reason,
         };
         let name = |id: &str| doc.layers.iter().find(|l| l.layer_id == id).map_or_else(|| id.to_owned(), |l| l.name.clone());
         for o in &record.overrides {
@@ -401,10 +415,20 @@ impl Viewer {
     #[allow(clippy::too_many_lines)]
     fn design_command_inner(&mut self, layer_id: &str, command: DesignCommand) -> Result<Value, String> {
         let receipt = self.design_receipt().ok_or("design: the open document has no design records (import a design file)")?;
-        let (binding, state, record) = self.instance_record(&receipt, layer_id).ok_or_else(|| format!("design: {layer_id} draws no component instance"))?;
+        let entry = self.read_design_state(Some(&receipt.records));
+        let (binding, state, record, reason) = self.instance_record(&receipt, &entry, layer_id).ok_or_else(|| format!("design: {layer_id} draws no component instance"))?;
         if state == "unknown" {
-            return Err("design: instance_record_unknown (the instance's layers changed outside the inspector or in an earlier session; instance records are not persisted, import the design file again)".into());
+            return Err(match reason {
+                Some(r) => format!("design: instance_record_unknown ({r})"),
+                None => "design: instance_record_unknown (the instance's layers changed outside the inspector; no saved state matches them, import the design file again)".into(),
+            });
         }
+        // A design entry Folio refuses as a whole is never overwritten: commands wait until it is replaced.
+        if let Some(e) = &entry.error {
+            return Err(format!("design: design_state_entry_invalid ({} {}); the stored entry is kept unchanged", persist::snake(e.code), e.target));
+        }
+        let previous_content = self.run.snapshot().map(|s| persist::content(s.document(), layer_id)).unwrap_or_default();
+        let previous_swap = entry.records.as_ref().and_then(|r| r.state(layer_id, &previous_content)).and_then(|s| s.swap_target.clone());
         let doc = self.run.snapshot().ok_or("nothing open")?.document().clone();
         let base = evaluable(&record);
         let records = with_instance(&receipt.records, &base);
@@ -491,9 +515,32 @@ impl Viewer {
         if base != record {
             notes.push("override_without_value_dropped".into());
         }
-        let doc = self.run.snapshot().ok_or("nothing open")?.document();
-        let sig = signature(doc, &binding.layer_id);
-        let revision = doc.revision;
+        let now = self.run.snapshot().ok_or("nothing open")?.document();
+        let sig = signature(now, &binding.layer_id);
+        let content = persist::content(now, &binding.layer_id);
+        let revision = now.revision;
+        // The instance state rides the session entry `design` (module persist); a refusal undoes the redraw.
+        let swap_target = match &command {
+            DesignCommand::Swap { component_id } => Some(component_id.clone()),
+            _ => previous_swap,
+        };
+        let variant = member.variant_properties.clone().unwrap_or_default();
+        let saved = persist::state_of(&next, &binding.layer_id, content, variant, swap_target).and_then(|(state, complete)| {
+            let mut n = self.write_design_state(entry, &receipt.records, state)?;
+            if !complete {
+                n.push("override_without_value_not_saved".into());
+            }
+            Ok(n)
+        });
+        match saved {
+            Ok(n) => notes.extend(n),
+            Err(e) => {
+                let _ = self.run.undo();
+                return Err(format!("{e} (the redraw was undone)"));
+            }
+        }
+        notes.sort();
+        notes.dedup();
         self.design.put(binding.instance_id.clone(), sig, next.clone());
         Ok(json!({
             "command": key, "layer_id": binding.layer_id, "instance_id": binding.instance_id,
@@ -658,7 +705,7 @@ impl Viewer {
             ui.strong("Component instance");
             ui.label(format!("Component: {}", view.component_name.as_deref().unwrap_or("?")));
             if view.state == "unknown" {
-                ui.colored_label(egui::Color32::from_rgb(200, 120, 0), "The instance's layers changed outside this section or in an earlier session: its record is unknown (import the design file again to edit).");
+                ui.colored_label(egui::Color32::from_rgb(200, 120, 0), "The instance's layers changed outside this section and no saved state matches them: its record is unknown (import the design file again to edit).");
             }
             if let Some(e) = &view.error {
                 ui.colored_label(egui::Color32::RED, e);
@@ -752,7 +799,9 @@ impl Viewer {
     /// `state_json()["design"]`: the selected layer's instance (or null) and the last command.
     pub fn design_json(&self) -> Value {
         let instance = self.selected.as_deref().and_then(|l| self.instance_view(l)).map(|v| v.json());
-        let bound = self.design_receipt().map(|r| r.bindings.len());
-        json!({"instance": instance, "instance_layers": bound, "last": self.design.last})
+        let receipt = self.design_receipt();
+        let bound = receipt.as_ref().map(|r| r.bindings.len());
+        let entry = self.read_design_state(receipt.as_ref().map(|r| &r.records)).json();
+        json!({"instance": instance, "instance_layers": bound, "last": self.design.last, "entry": entry})
     }
 }

@@ -268,7 +268,7 @@ fn fig_layers_and_paths_edit_through_the_vector_surface_and_undo() {
     v.undo().unwrap();
     v.undo().unwrap();
     let l = doc(&v).layers.into_iter().find(|l| l.layer_id == layer).unwrap();
-    assert_eq!(l.visible, true);
+    assert!(l.visible);
     assert_ne!(l.name, "renamed shape");
     v.render_if_dirty();
     assert!(v.render_error().is_none(), "{:?}", v.render_error());
@@ -507,7 +507,7 @@ fn accesskit_drives_the_instance_section() {
     settle(&mut v, &ctx);
     let find = |out: &egui::FullOutput, label: &str| -> egui::accesskit::NodeId {
         let tree = out.platform_output.accesskit_update.as_ref().expect("accesskit tree");
-        tree.nodes.iter().find(|(_, n)| n.label().as_deref() == Some(label)).map(|(id, _)| *id).unwrap_or_else(|| panic!("node {label}"))
+        tree.nodes.iter().find(|(_, n)| n.label() == Some(label)).map(|(id, _)| *id).unwrap_or_else(|| panic!("node {label}"))
     };
     let click = |id| egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest { action: egui::accesskit::Action::Click, target: id, data: None });
     let out = frame(&mut v, &ctx, vec![]);

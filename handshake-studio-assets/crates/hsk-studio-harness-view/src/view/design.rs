@@ -11,11 +11,14 @@
 //! the adapter's own) and carries the design records the entries cannot hold (components, sets,
 //! instances, variables, reactions, auto layout) with the instance bindings.
 //!
-//! Instances ([STU-DS-003/008/009/016/017], bound contextually per [STU-DS-160]): see [`instance`].
+//! Instances ([STU-DS-003/008/009/016/017], bound contextually per [STU-DS-160]): see [`instance`];
+//! their state is saved with the document in the session entry `design` ([`persist`], lane
+//! SMB-FIG-EDIT-2).
 #![deny(clippy::arithmetic_side_effects)]
 
 pub mod fig_import;
 pub mod instance;
+pub mod persist;
 
 pub use fig_import::{FigImportReport, is_design_file};
 pub use instance::{DesignCommand, DesignState};
