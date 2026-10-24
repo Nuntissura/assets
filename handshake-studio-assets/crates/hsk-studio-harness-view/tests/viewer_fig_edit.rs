@@ -346,6 +346,35 @@ fn hostile_fig_bytes_are_refused_bounded() {
     assert!(v.state_json()["shell"]["dialog"]["error"].as_str().is_some_and(|t| t.starts_with("fig_import:")));
 }
 
+/// Design-file detection (the ZIP-or-bare verdict comes from the container owner `open_fig`, D16):
+/// a zipped `.fig` and a bare `fig-kiwi` stream are design files; the same ZIP under another name
+/// is not, a bare stream is one under any name, and a too-short file is not.
+#[test]
+fn design_file_detection_zipped_bare_and_other_zip() {
+    let scratch = Scratch::new("detect");
+    let zipped = std::fs::read(fixture_path("fig-basic-shapes.fig")).unwrap();
+    let container = hsk_studio_interop_fig::open_fig(&zipped, &Limits::default(), &CancellationToken::default()).unwrap();
+    assert_eq!(container.packaging, hsk_studio_interop_fig::Packaging::Zip, "fixture is the zipped packaging");
+    let bare = container.canvas().bytes.clone();
+    assert!(bare.starts_with(b"fig-kiwi"), "canvas part carries the prelude");
+    let cases: [(&str, &[u8], bool); 7] = [
+        ("zipped.fig", &zipped, true),
+        ("ZIPPED.FIG", &zipped, true),
+        ("bare.fig", &bare, true),
+        ("bare.bin", &bare, true),
+        ("other.zip", &zipped, false),
+        ("noext", &zipped, false),
+        ("short.fig", b"PK\x03", false),
+    ];
+    for (name, bytes, want) in cases {
+        let path = scratch.0.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(is_design_file(&path), want, "{name}");
+        std::fs::remove_file(&path).unwrap();
+    }
+    assert!(!is_design_file(&scratch.0.join("absent.fig")));
+}
+
 /// The prototype player keeps its own dialog purpose and filter and still plays a `.fig`.
 #[test]
 fn prototype_player_still_opens_fig_files() {

@@ -25,8 +25,8 @@ use super::super::vector::{self, PathRecord, VectorEntry, VectorStyle};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{self as folio, GeometryUnit, Length, NodeKind, Payload, StudioDesignRecords};
 use hsk_studio_interop_fig::{
-    FigDocument, FigOutcome, IdMint, Limits, NATIVE_NOT_PROVEN, NativeConfig, NativeProposal, NodeLoss, SourceId, VersionPolicy,
-    decode_document, hex, import_fig, to_native,
+    FigDocument, FigError, FigOutcome, IdMint, Limits, NATIVE_NOT_PROVEN, NativeConfig, NativeProposal, NodeLoss, Packaging, SourceId,
+    VersionPolicy, decode_document, hex, import_fig, open_fig, to_native,
 };
 use hsk_studio_nib::anchor_path::AnchorPath;
 use serde_json::{Value, json};
@@ -56,8 +56,18 @@ pub fn is_design_file(path: &Path) -> bool {
     if f.read_exact(&mut head).is_err() {
         return false;
     }
-    let zip_named_fig = head.starts_with(b"PK\x03\x04") && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fig"));
-    &head == b"fig-kiwi" || zip_named_fig
+    let named_fig = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fig"));
+    &head == b"fig-kiwi" || (named_fig && head_is_zip(&head))
+}
+
+/// The container owner's packaging verdict on a file head (`open_fig`, D16: no ZIP magic here): on
+/// the 8-byte head a ZIP local header fails as `FigError::Zip` (no directory fits), a bare head as
+/// `NotFig` (shorter than a prelude and version).
+fn head_is_zip(head: &[u8]) -> bool {
+    match open_fig(head, &Limits::default(), &CancellationToken::default()) {
+        Ok(c) => c.packaging == Packaging::Zip,
+        Err(e) => matches!(e, FigError::Zip(_)),
+    }
 }
 
 /// Binds the instance primitive while `to_native` validates its own document (the binding layers
