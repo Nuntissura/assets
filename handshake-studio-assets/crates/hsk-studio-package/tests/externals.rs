@@ -408,6 +408,7 @@ fn every_folio_reference_property_is_classified() {
         ("multicam_records", serde_json::to_value(folio::multicam_records_schema()).unwrap()),
         ("proof_records", serde_json::to_value(folio::proof_records_schema()).unwrap()),
         ("design_state", serde_json::to_value(folio::design_state_records_schema()).unwrap()),
+        ("layout_rules", serde_json::to_value(folio::layout_rule_records_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -526,7 +527,11 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioImageSource.entry_digest", "external:import_original_part"),
     ("StudioImageSource.source_kind", "discriminator: asset or import_original_part"),
     ("StudioIndexMark.story_id", "internal: text story records"),
+    ("StudioLayoutRuleRecords.linked_page_items", "internal: linked page item records (document layers)"),
+    ("StudioLayoutRuleRecords.linked_stories", "internal: linked story records"),
     ("StudioLightOptions.colour_profile_id", "external:colour_profile"),
+    ("StudioLinkedStory.child_story_id", "internal: text story records"),
+    ("StudioLinkedStory.parent_story_id", "internal: text story records"),
     ("StudioLiveShape.path_id", "internal: vector path records"),
     ("StudioLutRef.artifact_manifest_id", "external:colour_lookup"),
     ("StudioLutRef.content_digest", "external:colour_lookup"),
