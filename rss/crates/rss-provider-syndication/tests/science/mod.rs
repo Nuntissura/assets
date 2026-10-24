@@ -122,6 +122,7 @@ struct Canonical {
     identities: Mutex<BTreeMap<String, ItemId>>,
     calls: AtomicU64,
     evidence: Mutex<Vec<ScientificEvidence>>,
+    legacy_provider: bool,
 }
 impl CanonicalScientificEntryPort for Canonical {
     fn prepare<'a>(
@@ -186,7 +187,10 @@ impl CanonicalScientificEntryPort for Canonical {
                 },
                 common: Extensions::default(),
             };
-            evidence.entry.populate(&mut observation);
+            evidence.populate(&mut observation);
+            if self.legacy_provider {
+                observation.provider = Some("syndication".into());
+            }
             Ok(ObservedEntry {
                 provider_entry_key: evidence.entry.key,
                 capture,
@@ -225,6 +229,8 @@ fn api_offsets_and_within_document_resume_preserve_paper_identity_and_provenance
     ]);
     let a = run(adapter.acquire(request(1))).unwrap();
     assert_eq!(a.entries.len(), 2);
+    assert_eq!(a.entries[0].observation.provider.as_deref(), Some("arxiv"));
+    assert_eq!(a.entries[0].provider_entry_key, "http://arxiv.org/abs/2408.12345v2");
     let mut req = request(2);
     req.continuation = a.continuation;
     let b = run(adapter.acquire(req)).unwrap();
@@ -282,6 +288,16 @@ fn api_offsets_and_within_document_resume_preserve_paper_identity_and_provenance
         PublicationPrecision::Subsecond
     );
 }
+#[test]
+fn scientific_canonical_port_must_populate_the_paper_provider() {
+    let mut adapter = provider(vec![raw(api(0, 1, &["2408.12345v2"]))]);
+    adapter.canonical.legacy_provider = true;
+    assert!(matches!(
+        run(adapter.acquire(request(1))),
+        Err(rss_contracts::Error::Invalid { field }) if field == "science.canonical_preparation"
+    ));
+}
+
 #[test]
 fn daily_and_api_dates_have_different_meaning_and_versions_share_global_paper_identity() {
     let mut adapter = provider(vec![

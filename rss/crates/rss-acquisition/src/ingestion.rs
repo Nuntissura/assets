@@ -149,6 +149,7 @@ async fn canonical_outcome_ref(allocator: &impl EntryAllocator, context: &Comman
 
 /// Provider constructors inject the allocator and normalizer; ProviderPort still returns AcquisitionPage.
 /// Fill only metadata on the reserved observation. Changing canonical identity or sequence is rejected.
+/// Source appearance keys may differ from the canonical provider identity, such as versioned paper IDs.
 pub async fn prepare_entry<O: ItemOwner + MutationCoordinator>(owner: &mut O, authority: &impl AuthorityPort,
     execution: &impl AcquisitionOwner, allocator: &impl EntryAllocator, execution_ref: &HostRef,
     request: &SourceRequest, lookup_context: &CommandContext, entry_key: &str, original_url: &str,
@@ -158,7 +159,6 @@ pub async fn prepare_entry<O: ItemOwner + MutationCoordinator>(owner: &mut O, au
     validate_context(lookup_context, &request.subscription.partition.scope)?;
     if lookup_context.bounds != request.bounds || entry_key.is_empty() { return Err(invalid("entry.allocation")); }
     request.bounds.text("entry_key", entry_key, request.bounds.max_text_bytes)?;
-    if provider_identity.as_ref().is_some_and(|query| query.provider_item_id != entry_key) { return Err(invalid("entry.identity_key")); }
     let resolved = crate::identity::resolve_capture_identity(owner, lookup_context, original_url, provider_identity.as_ref())?;
     let normalized = hsscrap::identity::normalize_url(original_url, &request.bounds)?;
     let allocation = allocator.allocate_capture(request, execution_ref, entry_key, resolved, normalized.clone()).await?;

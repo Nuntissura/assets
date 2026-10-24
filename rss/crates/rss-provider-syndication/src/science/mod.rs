@@ -36,6 +36,10 @@ impl ScientificEvidence {
     pub fn reliable_provider_identity(&self) -> String {
         format!("arxiv/paper/{}", self.paper.paper_id)
     }
+    pub fn populate(&self, observation: &mut hsscrap::MetadataObservation) {
+        self.entry.populate(observation);
+        observation.provider = Some("arxiv".into());
+    }
     pub fn publication(&self) -> Option<&PublicationTime> {
         self.entry.published_at.as_ref()
     }

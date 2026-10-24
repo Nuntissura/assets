@@ -276,7 +276,7 @@ impl<F: FetchPort, N: CanonicalScientificEntryPort> ScientificProvider<F, N> {
                     .await?;
                 prepared.validate(&request.bounds, &self.supported_extensions)?;
                 let mut expected = prepared.observation.clone();
-                evidence.entry.populate(&mut expected);
+                evidence.populate(&mut expected);
                 if prepared.provider_entry_key != evidence.entry.key
                     || prepared.capture.captured_url != evidence.entry.url
                     || prepared.capture.access_partition != request.subscription.partition.scope

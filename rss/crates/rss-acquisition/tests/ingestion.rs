@@ -781,3 +781,54 @@ fn legacy_item_and_reused_other_stream_or_clear_keep_their_selection() {
         }
     }
 }
+
+#[test]
+fn versioned_appearance_keys_share_provider_identity_and_preserve_capture_history() {
+    fn prepare_version(owner: &mut Owner, request: &SourceRequest, entry: &str, url: &str,
+        identity: IdentityQuery) -> rss_contracts::Result<PreparedEntry> {
+        let admission = Admission::new(request);
+        let allocator = Allocator(owner.clone());
+        run(prepare_entry(owner, &admission, &admission, &allocator,
+            &reference("attempt"), request, &context(request, 0), entry, url, Some(identity),
+            |observation| observation.title = Some("Actual parsed title".into()), &BTreeSet::new()))
+    }
+    let mut owner = Owner::default();
+    let identity = IdentityQuery { provider: "arxiv".into(), namespace: "paper".into(),
+        provider_item_id: "2408.12345".into(), access_partition: ScopeRef("profile-view".into()) };
+    let first_request = request(1);
+    let first = prepare_version(&mut owner, &first_request, "http://arxiv.org/abs/2408.12345v1",
+        "https://example.org/paper/v1", identity.clone()).unwrap();
+    let mutations = owner.0.lock().unwrap().mutations;
+    let replay = prepare_version(&mut owner, &first_request, "http://arxiv.org/abs/2408.12345v1",
+        "https://example.org/paper/v1", identity.clone()).unwrap();
+    assert_eq!(replay.entry(), first.entry());
+    assert_eq!(owner.0.lock().unwrap().mutations, mutations);
+    let second = prepare_version(&mut owner, &request(2), "http://arxiv.org/abs/2408.12345v2",
+        "https://example.org/paper/v2", identity.clone()).unwrap();
+    assert_eq!(first.entry().capture.item_id, second.entry().capture.item_id);
+    assert_eq!(first.entry().provider_entry_key, "http://arxiv.org/abs/2408.12345v1");
+    assert_eq!(second.entry().provider_entry_key, "http://arxiv.org/abs/2408.12345v2");
+    assert_ne!(first.entry().observation.observation_id, second.entry().observation.observation_id);
+    {
+        let stored = owner.0.lock().unwrap();
+        assert_eq!(stored.items.len(), 1);
+        assert_eq!(stored.captures.len(), 2);
+        assert_eq!(stored.observations.len(), 2);
+        assert_eq!(stored.identities.len(), 1);
+        assert_eq!(stored.identities[0].provider_item_id, "2408.12345");
+        assert!(stored.captures.contains(&first.entry().capture));
+        assert!(stored.captures.contains(&second.entry().capture));
+        assert!(stored.observations.contains(&first.entry().observation));
+        assert!(stored.observations.contains(&second.entry().observation));
+    }
+    let mutations = owner.0.lock().unwrap().mutations;
+    let mut foreign = identity.clone();
+    foreign.access_partition = ScopeRef("another-profile".into());
+    assert!(matches!(prepare_version(&mut owner, &request(3), "version-three",
+        "https://example.org/paper/v3", foreign), Err(rss_contracts::Error::Denied)));
+    let mut empty = identity;
+    empty.provider_item_id.clear();
+    assert!(prepare_version(&mut owner, &request(3), "version-three",
+        "https://example.org/paper/v3", empty).is_err());
+    assert_eq!(owner.0.lock().unwrap().mutations, mutations);
+}

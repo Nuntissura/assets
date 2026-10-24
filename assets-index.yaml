@@ -2335,6 +2335,7 @@ assets:
   - bounded versioned Rust WASM bridge composing native wall query and hsscrap interaction
   - bounded public Pinterest board discovery, pin media and opaque-bookmark traversal
   - bounded arXiv API and scientific RSS Atom acquisition with explicit coverage and source metadata
+  - global scientific paper identity with distinct versioned source appearances
   - independent exact-Git native and WASM consumers with artifact and source archive provenance
   manual: rss/README.md
   packages:
