@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use hsscrap::{identity::NormalizedCaptureUrl, ports::{CommandContext, IdentityQuery, ItemOwner, ItemSnapshot, MutationCoordinator},
+use hsscrap::{identity::NormalizedCaptureUrl, ports::{CommandContext, IdentityQuery, InitialObservation, ItemOwner, ItemSnapshot, MutationCoordinator},
     CaptureKind, MetadataObservation, OperationOutcome, SourceIdentity, URLCapture, Validate};
 use rss_contracts::*;
 use crate::{authority::{authorize_current, AcquisitionOwner}, capture::{committed, persist_capture, reconcile, same_outcome, validate_context}, invalid};
@@ -13,6 +13,8 @@ pub struct IdentityAllocation { pub context: CommandContext, pub identity: Sourc
 pub struct ObservationAllocation {
     pub context: CommandContext,
     pub observation: MetadataObservation,
+    /// The original durable choice; never recompute it after an uncertain owner result.
+    pub initial: Option<InitialObservation>,
 }
 
 /// The host durably binds child operation/record allocations to (page operation, entry key).
@@ -24,7 +26,7 @@ pub trait EntryAllocator: Send + Sync {
     fn allocate_capture<'a>(&'a self, request: &'a SourceRequest, execution_ref: &'a HostRef,
         entry_key: &'a str, resolved_item: Option<ItemId>, url: NormalizedCaptureUrl) -> Pending<'a, CaptureAllocation>;
     fn reserve_observation<'a>(&'a self, request: &'a SourceRequest, execution_ref: &'a HostRef,
-        entry_key: &'a str, capture: ItemSnapshot, identity: Option<IdentityQuery>) -> Pending<'a, ObservationAllocation>;
+        entry_key: &'a str, capture: ItemSnapshot, identity: Option<IdentityQuery>, initial: Option<InitialObservation>) -> Pending<'a, ObservationAllocation>;
     /// Read the exact currently authorized immutable assertion from its canonical owner, not an allocation cache.
     fn inspect_identity<'a>(&'a self, request: &'a SourceRequest, execution_ref: &'a HostRef,
         identity: &'a IdentityQuery) -> Pending<'a, Option<SourceIdentity>>;
@@ -172,9 +174,19 @@ pub async fn prepare_entry<O: ItemOwner + MutationCoordinator>(owner: &mut O, au
     let capture_outcome = persist_capture(owner, allocation.context.clone(), capture.clone(), supported)?;
     let snapshot = owner.inspect(&allocation.context, capture.item_id)?;
     authorize_current(authority, execution, request, execution_ref).await?;
-    let mut reserved = allocator.reserve_observation(request, execution_ref, entry_key, snapshot, provider_identity.clone()).await?;
+    // A create-only capture and the actual pristine owner snapshot are both required.
+    let initial = if allocation.context.expected_revisions.is_empty() {
+        hsscrap::metadata::initial_observation(&snapshot, &capture, &request.bounds, supported)?
+    } else { None };
+    let mut reserved = allocator.reserve_observation(request, execution_ref, entry_key, snapshot, provider_identity.clone(), initial).await?;
     context_for(&reserved.context, request, &lookup_context.actor)?;
     if reserved.context.operation_id == allocation.context.operation_id { return Err(invalid("entry.operation_reuse")); }
+    if let Some(initial) = &reserved.initial {
+        initial.validate(&request.bounds, supported)?;
+        if !allocation.context.expected_revisions.is_empty() || initial.capture != capture || initial.item.item_id != capture.item_id {
+            return Err(invalid("observation.initial_creation"));
+        }
+    }
     let before = reserved.observation.clone();
     populate(&mut reserved.observation);
     if !same_observation_binding(&before, &reserved.observation) || reserved.observation.item_id != capture.item_id
@@ -186,7 +198,10 @@ pub async fn prepare_entry<O: ItemOwner + MutationCoordinator>(owner: &mut O, au
         return Err(invalid("observation.provider"));
     }
     authorize_current(authority, execution, request, execution_ref).await?;
-    let observation_outcome = reconcile(owner, &reserved.context, |owner| owner.accept_observation(reserved.context.clone(), entry.observation.clone()))?;
+    let observation_outcome = reconcile(owner, &reserved.context, |owner| match &reserved.initial {
+        Some(initial) => owner.accept_initial_observation(reserved.context.clone(), entry.observation.clone(), initial.clone()),
+        None => owner.accept_observation(reserved.context.clone(), entry.observation.clone()),
+    })?;
     read_observation(owner, &reserved.context, request, &entry, provider_identity.as_ref().map(|query| query.namespace.as_str()), supported)?;
     let mut outcomes = vec![capture_outcome, observation_outcome];
     let identity = if let Some(query) = provider_identity {

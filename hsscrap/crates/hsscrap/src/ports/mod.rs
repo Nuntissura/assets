@@ -14,6 +14,9 @@ pub struct ItemPatch {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureCommand { pub context:CommandContext, pub capture:URLCapture, pub item_id:ItemId }
+/// Exact original creation preimage, persisted before stream reservation or observation effects.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InitialObservation { pub item:Item, pub capture:URLCapture }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IdentityQuery { pub provider:String, pub namespace:String, pub provider_item_id:String, pub access_partition:ScopeRef }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,6 +66,10 @@ pub trait ItemOwner {
     }
     fn apply_patch(&mut self, context:CommandContext, item:ItemId, patch:ItemPatch)->Result<OperationOutcome>;
     fn accept_observation(&mut self, context:CommandContext, observation:MetadataObservation)->Result<OperationOutcome>;
+    fn accept_initial_observation(&mut self, _context:CommandContext, _observation:MetadataObservation,
+        _initial:InitialObservation)->Result<OperationOutcome> {
+        Err(Error::UnsupportedRequiredFeature{feature:"hsscrap.initial_observation.v1".into()})
+    }
     fn apply_gallery_snapshot(&mut self, context:CommandContext, item:ItemId, observation:ObservationId)->Result<OperationOutcome>;
     fn tombstone(&mut self, context:CommandContext, item:ItemId)->Result<OperationOutcome>;
     fn operation_outcome(&self, context:&CommandContext, operation:OperationId)->Result<OperationOutcome>;
@@ -98,6 +105,7 @@ pub trait MutationCoordinator {
 pub enum OwnerCommand {
     Capture { item:ItemId, capture:URLCapture },
     AcceptObservation { observation:MetadataObservation },
+    AcceptInitialObservation { observation:MetadataObservation, initial:InitialObservation },
     ApplyGallerySnapshot { item:ItemId, observation:ObservationId },
     Tombstone { item:ItemId },
     ItemPatch { item:ItemId, patch:ItemPatch }, AddTag(TagAssignment), RemoveTag(AssignmentId),

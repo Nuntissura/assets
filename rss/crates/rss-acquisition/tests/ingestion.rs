@@ -33,31 +33,73 @@ struct Store {
     captures: Vec<URLCapture>, observations: Vec<MetadataObservation>, streams: Vec<ObservationStream>, identities: Vec<SourceIdentity>,
     outcomes: BTreeMap<OperationId, OperationOutcome>, appearances: BTreeMap<String, SourceAppearance>, mutations: usize,
     outcome_refs: BTreeMap<HostRef, OperationId>,
+    items: BTreeMap<ItemId, Item>,
+    capture_allocations: BTreeMap<OperationId,(CommandContext,URLCapture)>,
+    observation_allocations: BTreeMap<OperationId,(CommandContext,MetadataObservation,Option<InitialObservation>)>,
+    identity_allocations: BTreeMap<OperationId,(CommandContext,SourceIdentity)>,
+    initial_choices: BTreeMap<OperationId,Option<InitialObservation>>,
+    initial_proposals: Vec<Option<InitialObservation>>,
+    plans: BTreeMap<OperationId,hsscrap::operations::OperationPlan>,
+    receipts: BTreeMap<OperationId,hsscrap::operations::OwnerStepReceipt>,
+    clear_at: Option<u8>, lose_initial_reply: bool,
 }
 #[derive(Clone, Default)]
 struct Owner(Arc<Mutex<Store>>);
 impl Owner {
-    fn record(store: &mut Store, context: CommandContext) -> OperationOutcome {
-        let outcome = OperationOutcome { operation_id: context.operation_id, scope: context.scope, intent_digest: context.intent_digest,
-            expected_revisions: context.expected_revisions, outcome: OutcomeState::Committed, result_refs: vec![],
-            owner_receipt_refs: vec![reference(context.operation_id.to_string())], committed_at: Some(at()), common: Extensions::default() };
+    fn planned(mut context:CommandContext,command:OwnerCommand)->CommandContext {
+        context.intent_digest.clear();
+        hsscrap::operations::plan_operation(context,vec![command],&BTreeSet::new()).unwrap().context
+    }
+    fn expected(context:&CommandContext,owner:HostRef)->Revision {
+        context.expected_revisions.iter().find(|value|value.owner==owner).expect("native owner revision guard").revision
+    }
+    fn record(store: &mut Store, context: CommandContext, command:OwnerCommand) -> Result<OperationOutcome> {
+        use hsscrap::operations::*;
+        let plan=plan_operation(context,vec![command],&BTreeSet::new())?;
+        assert_eq!(decide_operation(&plan,store.outcomes.get(&plan.context.operation_id),true)?,OperationDecision::Begin);
+        let receipt=OwnerStepReceipt {operation_id:plan.context.operation_id,intent_digest:plan.context.intent_digest.clone(),
+            command_index:0,owner:reference("item-owner"),receipt:reference(plan.context.operation_id.to_string())};
+        let outcome=finish_operation(&plan,std::slice::from_ref(&receipt),std::slice::from_ref(&receipt.owner),vec![],at())?;
+        store.plans.insert(outcome.operation_id,plan);store.receipts.insert(outcome.operation_id,receipt);
         store.outcome_refs.insert(reference(format!("canonical-operation-{}", outcome.operation_id)), outcome.operation_id);
-        store.outcomes.insert(outcome.operation_id, outcome.clone()); store.mutations += 1; outcome
+        store.outcomes.insert(outcome.operation_id, outcome.clone()); store.mutations += 1; Ok(outcome)
+    }
+    fn snapshot(store:&Store,item:ItemId)->Result<ItemSnapshot> {
+        let mut value=store.items.get(&item).cloned().ok_or(Error::NotFound)?;
+        if store.invalid_item_owner {value.owner_scope=ScopeRef(String::new());}
+        Ok(ItemSnapshot {item:value,captures:store.captures.iter().filter(|v|v.item_id==item).cloned().collect(),
+            observations:store.observations.iter().filter(|v|v.item_id==item).cloned().collect(),members:vec![],
+            streams:store.streams.iter().filter(|v|v.item_id==item).cloned().collect()})
+    }
+    fn edit_selection(&mut self,item:ItemId,selection:Patch<ObservationId>) {
+        let revision=self.0.lock().unwrap().items[&item].revision;
+        let mut ctx=context(&request(90),revision.0);ctx.expected_revisions=vec![ExpectedRevision{owner:reference(format!("item-{item}")),revision}];
+        let patch=ItemPatch {title:Patch::Keep,description:Patch::Keep,cover:Patch::Keep,selected_observation:selection,gallery_observation:Patch::Keep};
+        let ctx=Self::planned(ctx,OwnerCommand::ItemPatch{item,patch:patch.clone()});
+        self.apply_patch(ctx,item,patch).unwrap();
     }
 }
 impl ItemOwner for Owner {
     fn capture(&mut self, command: CaptureCommand) -> Result<OperationOutcome> {
-        let mut store = self.0.lock().unwrap(); store.captures.push(command.capture); Ok(Self::record(&mut store, command.context))
+        let mut store = self.0.lock().unwrap();
+        let capture=command.capture;let item=capture.item_id;
+        hsscrap::operations::plan_operation(command.context.clone(),vec![OwnerCommand::Capture{item,capture:capture.clone()}],&BTreeSet::new())?;
+        if let Some(old)=store.items.get_mut(&item) {
+            if Self::expected(&command.context,reference(format!("item-{item}")))!=old.revision {return Err(Error::Conflict{field:"revision".into()});}
+            old.revision=old.revision.next()?;old.updated_at=capture.created_here_at.clone();}
+        else {assert!(command.context.expected_revisions.is_empty());store.items.insert(item,Item {item_id:item,owner_scope:ScopeRef("account".into()),revision:Revision(1),first_capture_id:capture.capture_id,
+            selected_observation_id:None,gallery_observation_id:None,member_order:vec![],title_override:Override::Inherit,
+            description_override:Override::Inherit,cover_override:Override::Inherit,created_at:capture.created_here_at.clone(),updated_at:capture.created_here_at.clone(),
+            lifecycle:Lifecycle::Active,deleted_at:None,common:Extensions::default()});}
+        store.captures.push(capture.clone());
+        let result=Self::record(&mut store,command.context,OwnerCommand::Capture{item,capture});
+        let clear=store.clear_at==Some(0);if clear {store.clear_at=None;}drop(store);
+        if clear {self.edit_selection(item,Patch::Clear);}result
     }
     fn inspect(&self, context: &CommandContext, item: ItemId) -> Result<ItemSnapshot> {
         let store = self.0.lock().unwrap(); let first = store.captures.iter().find(|capture| capture.item_id == item).ok_or(Error::NotFound)?;
         if first.access_partition != context.scope { return Err(Error::Denied); }
-        Ok(ItemSnapshot { item: Item { item_id: item, owner_scope: ScopeRef((if store.invalid_item_owner {""} else {"account"}).into()), revision: Revision(1), first_capture_id: first.capture_id,
-            selected_observation_id: None, gallery_observation_id: None, member_order: vec![], title_override: Override::Inherit,
-            description_override: Override::Inherit, cover_override: Override::Inherit, created_at: at(), updated_at: at(), lifecycle: Lifecycle::Active,
-            deleted_at: None, common: Extensions::default() }, captures: store.captures.iter().filter(|value| value.item_id == item).cloned().collect(),
-            observations: store.observations.iter().filter(|value| value.item_id == item).cloned().collect(), members: vec![],
-            streams: store.streams.iter().filter(|value| value.item_id == item).cloned().collect() })
+        Self::snapshot(&store,item)
     }
     fn lookup_identity(&self, context: &CommandContext, query: IdentityQuery) -> Result<Option<ItemId>> {
         if query.access_partition != context.scope { return Err(Error::Denied); }
@@ -72,9 +114,34 @@ impl ItemOwner for Owner {
             .map(|value| value.item_id).collect::<BTreeSet<_>>().into_iter().collect())
     }
     fn accept_observation(&mut self, context: CommandContext, observation: MetadataObservation) -> Result<OperationOutcome> {
-        let mut store = self.0.lock().unwrap(); let stream = store.streams.iter_mut().find(|stream| stream.stream_id == observation.stream_id).unwrap();
-        stream.last_accepted_sequence = Some(observation.sequence); stream.latest_observation_id = Some(observation.observation_id);
-        store.observations.push(observation); Ok(Self::record(&mut store, context))
+        let mut store=self.0.lock().unwrap();
+        hsscrap::operations::plan_operation(context.clone(),vec![OwnerCommand::AcceptObservation{observation:observation.clone()}],&BTreeSet::new())?;
+        let stream=store.streams.iter().find(|v|v.stream_id==observation.stream_id).unwrap();
+        let baseline=observation.baseline_observation_id.and_then(|id|store.observations.iter().find(|v|v.observation_id==id));
+        let accepted=hsscrap::metadata::accept_observation(&store.items[&observation.item_id],stream,observation.clone(),baseline,
+            Self::expected(&context,reference(format!("item-{}",observation.item_id))),
+            Self::expected(&context,reference(format!("stream-{}",stream.stream_id))),&context.bounds,&BTreeSet::new())?;
+        store.items.insert(accepted.item.item_id,accepted.item);
+        let stream_id=accepted.stream.stream_id;
+        *store.streams.iter_mut().find(|v|v.stream_id==stream_id).unwrap()=accepted.stream;
+        store.observations.push(accepted.observation);
+        Self::record(&mut store,context,OwnerCommand::AcceptObservation{observation})
+    }
+    fn accept_initial_observation(&mut self,context:CommandContext,observation:MetadataObservation,initial:InitialObservation)->Result<OperationOutcome> {
+        let mut store=self.0.lock().unwrap();let snapshot=Self::snapshot(&store,observation.item_id)?;
+        hsscrap::operations::plan_operation(context.clone(),vec![OwnerCommand::AcceptInitialObservation{observation:observation.clone(),initial:initial.clone()}],&BTreeSet::new())?;
+        let accepted=hsscrap::metadata::accept_initial_observation(&snapshot,observation.clone(),&initial,
+            Self::expected(&context,reference(format!("item-{}",observation.item_id))),
+            Self::expected(&context,reference(format!("stream-{}",observation.stream_id))),&context.bounds,&BTreeSet::new())?;
+        store.items.insert(accepted.item.item_id,accepted.item);
+        let stream_id=accepted.stream.stream_id;
+        *store.streams.iter_mut().find(|v|v.stream_id==stream_id).unwrap()=accepted.stream;
+        store.observations.push(accepted.observation);
+        let outcome=Self::record(&mut store,context,OwnerCommand::AcceptInitialObservation{observation,initial})?;
+        if store.lose_initial_reply {store.lose_initial_reply=false;
+            let pending=hsscrap::operations::pending_outcome(&store.plans[&outcome.operation_id]);
+            store.outcomes.insert(outcome.operation_id,pending);return Err(Error::UnknownOutcome{operation_id:outcome.operation_id});}
+        Ok(outcome)
     }
     fn assert_source_identity(&mut self, context: CommandContext, identity: SourceIdentity) -> Result<OperationOutcome> {
         let mut store = self.0.lock().unwrap();
@@ -88,7 +155,11 @@ impl ItemOwner for Owner {
                 && store.streams.iter().any(|stream| stream.stream_id == observation.stream_id && stream.provider_namespace == identity.namespace)) {
             return Err(Error::Conflict { field: "source_identity".into() });
         }
-        store.identities.push(identity); Ok(Self::record(&mut store, context))
+        hsscrap::operations::plan_operation(context.clone(),vec![OwnerCommand::AssertSourceIdentity(identity.clone())],&BTreeSet::new())?;
+        if Self::expected(&context,reference(format!("item-{}",identity.item_id)))!=store.items[&identity.item_id].revision {return Err(Error::Conflict{field:"revision".into()});}
+        let revision=store.items[&identity.item_id].revision.next()?;
+        store.items.get_mut(&identity.item_id).unwrap().revision=revision;
+        store.identities.push(identity.clone()); Self::record(&mut store, context,OwnerCommand::AssertSourceIdentity(identity))
     }
     fn inspect_source_identity(&self, context: &CommandContext, identity: IdentityId) -> Result<SourceIdentity> {
         let store = self.0.lock().unwrap();
@@ -99,14 +170,27 @@ impl ItemOwner for Owner {
         let store = self.0.lock().unwrap(); let outcome = store.outcomes.get(&operation).ok_or(Error::NotFound)?;
         if outcome.scope != context.scope { return Err(Error::Denied); } Ok(outcome.clone())
     }
-    fn apply_patch(&mut self, _: CommandContext, _: ItemId, _: ItemPatch) -> Result<OperationOutcome> { panic!("ingestion must preserve overrides") }
+    fn apply_patch(&mut self, context: CommandContext, item: ItemId, patch: ItemPatch) -> Result<OperationOutcome> {
+        let mut store=self.0.lock().unwrap();let old=store.items.get_mut(&item).unwrap();
+        hsscrap::operations::plan_operation(context.clone(),vec![OwnerCommand::ItemPatch{item,patch:patch.clone()}],&BTreeSet::new())?;
+        assert_eq!(context.expected_revisions[0].revision,old.revision);
+        match &patch.selected_observation {Patch::Keep=>{},Patch::Clear=>old.selected_observation_id=None,Patch::Set(id)=>old.selected_observation_id=Some(*id)}
+        old.revision=old.revision.next()?;old.updated_at=at();
+        Self::record(&mut store,context,OwnerCommand::ItemPatch{item,patch})
+    }
     fn apply_gallery_snapshot(&mut self, _: CommandContext, _: ItemId, _: ObservationId) -> Result<OperationOutcome> { panic!("fixture has no gallery") }
     fn tombstone(&mut self, _: CommandContext, _: ItemId) -> Result<OperationOutcome> { panic!("provider failure must preserve items") }
 }
 impl MutationCoordinator for Owner {
     fn commit(&mut self, _: CommandContext, _: Vec<OwnerCommand>) -> Result<OperationOutcome> { panic!("use declared item owner methods") }
     fn lookup(&self, context: &CommandContext, operation: OperationId) -> Result<OperationOutcome> { self.operation_outcome(context, operation) }
-    fn recover(&mut self, context: CommandContext) -> Result<OperationOutcome> { self.operation_outcome(&context, context.operation_id) }
+    fn recover(&mut self, context: CommandContext) -> Result<OperationOutcome> {
+        let mut store=self.0.lock().unwrap();let plan=&store.plans[&context.operation_id];
+        assert!(matches!(hsscrap::operations::decide_operation(plan,store.outcomes.get(&context.operation_id),true)?,hsscrap::operations::OperationDecision::Recover(_)));
+        let receipt=&store.receipts[&context.operation_id];
+        let outcome=hsscrap::operations::finish_operation(plan,std::slice::from_ref(receipt),std::slice::from_ref(&receipt.owner),vec![],at())?;
+        store.outcomes.insert(context.operation_id,outcome.clone());Ok(outcome)
+    }
 }
 struct Admission { current: Mutex<Subscription>, operation: Mutex<OperationId>, active: AtomicBool, allowed: AtomicBool }
 impl Admission { fn new(request: &SourceRequest) -> Self { Self { current: Mutex::new(request.subscription.clone()), operation: Mutex::new(request.operation_id), active: AtomicBool::new(true), allowed: AtomicBool::new(true) } } }
@@ -124,40 +208,73 @@ impl AcquisitionOwner for Admission {
 struct Allocator(Owner);
 impl EntryAllocator for Allocator {
     fn allocate_capture<'a>(&'a self, request: &'a SourceRequest, _: &'a HostRef, _: &'a str, resolved: Option<ItemId>, url: hsscrap::identity::NormalizedCaptureUrl) -> Pending<'a, CaptureAllocation> {
-        Box::pin(async move { let context = context(request, 1); Ok(CaptureAllocation { capture: URLCapture {
+        Box::pin(async move { let mut store=self.0.0.lock().unwrap();let operation=context(request,1).operation_id;
+            if let Some((context,capture))=store.capture_allocations.get(&operation) {return Ok(CaptureAllocation{context:context.clone(),capture:capture.clone(),appearance_ref:reference("appearance")});}
+            let mut context = context(request, 1);let capture=URLCapture {
             capture_id: id(100 + number(request)), item_id: resolved.unwrap_or_else(|| id(500)), capture_kind: CaptureKind::SourceIngest,
             access_partition: context.scope.clone(), captured_url: url.original.clone(), original_url: Some(url.original), identity_url: url.identity_url,
             normalization_version: url.normalization_version, captured_at: Some(at()), created_here_at: at(), actor_ref: Some(context.actor.clone()),
-            operation_id: context.operation_id, common: Extensions::default() }, context, appearance_ref: reference("appearance") }) })
+            operation_id: context.operation_id, common: Extensions::default() };
+            if let Some(item)=store.items.get(&capture.item_id) {context.expected_revisions=vec![ExpectedRevision{owner:reference(format!("item-{}",capture.item_id)),revision:item.revision}];}
+            let context=Owner::planned(context,OwnerCommand::Capture{item:capture.item_id,capture:capture.clone()});
+            store.capture_allocations.insert(operation,(context.clone(),capture.clone()));
+            Ok(CaptureAllocation{capture,context,appearance_ref:reference("appearance")}) })
     }
-    fn reserve_observation<'a>(&'a self, request: &'a SourceRequest, _: &'a HostRef, _: &'a str, snapshot: ItemSnapshot, identity: Option<IdentityQuery>) -> Pending<'a, ObservationAllocation> {
+    fn reserve_observation<'a>(&'a self, request: &'a SourceRequest, _: &'a HostRef, _: &'a str, snapshot: ItemSnapshot, identity: Option<IdentityQuery>, initial:Option<InitialObservation>) -> Pending<'a, ObservationAllocation> {
         Box::pin(async move {
             let capture_id = id(100 + number(request)); let observation_id = id(200 + number(request)); let stream_id = id(300);
             let mut store = self.0.0.lock().unwrap();
+            let operation=context(request,2).operation_id;
+            store.initial_proposals.push(initial.clone());
+            if let Some((context,observation,initial))=store.observation_allocations.get(&operation) {
+                return Ok(ObservationAllocation{context:context.clone(),observation:observation.clone(),initial:initial.clone()});
+            }
+            let initial=store.initial_choices.entry(operation).or_insert(initial).clone();
+            let clear=store.clear_at==Some(1);if clear {store.clear_at=None;}drop(store);
+            if clear {self.0.clone().edit_selection(snapshot.item.item_id,Patch::Clear);}
+            let mut store=self.0.0.lock().unwrap();
             assert!(store.captures.iter().any(|value| value.capture_id == capture_id), "capture must commit before stream reservation/enrichment");
             if !store.streams.iter().any(|stream| stream.stream_id == stream_id) { store.streams.push(ObservationStream { stream_id,
                 item_id: snapshot.item.item_id, producer: "fixture".into(), provider_namespace: identity.as_ref().map(|query| query.namespace.clone()).unwrap_or_else(|| "url-only".into()),
-                source_ref: request.subscription.source_ref.clone(), access_partition: request.subscription.partition.scope.clone(), last_issued_sequence: Revision(number(request)),
+                source_ref: request.subscription.source_ref.clone(), access_partition: request.subscription.partition.scope.clone(), last_issued_sequence: Revision(1),
                 last_accepted_sequence: None, latest_observation_id: None, revision: Revision(1), common: Extensions::default() }); }
+            else {let stream=store.streams.iter_mut().find(|stream|stream.stream_id==stream_id).unwrap();
+                *stream=hsscrap::metadata::reserve_sequence(stream,stream.revision).unwrap();}
             let stream = store.streams.iter_mut().find(|stream| stream.stream_id == stream_id).unwrap();
-            stream.last_issued_sequence = Revision(number(request));
-            let baseline = if number(request) > 1 { Some(id(200 + number(request) - 1)) } else { None };
-            Ok(ObservationAllocation { context: context(request, 2), observation: MetadataObservation { observation_id, item_id: snapshot.item.item_id,
-                stream_id, sequence: Revision(number(request)), baseline_observation_id: baseline, capture_id: Some(capture_id), appearance_ref: Some(reference("appearance")),
+            let sequence=stream.last_issued_sequence;let baseline=stream.latest_observation_id;
+            let mut context=context(request,2);context.expected_revisions=vec![ExpectedRevision{owner:reference(format!("item-{}",snapshot.item.item_id)),revision:snapshot.item.revision},
+                ExpectedRevision{owner:reference(format!("stream-{stream_id}")),revision:stream.revision}];
+            let observation=MetadataObservation { observation_id, item_id: snapshot.item.item_id,
+                stream_id, sequence, baseline_observation_id: baseline, capture_id: Some(capture_id), appearance_ref: Some(reference("appearance")),
                 producer: "fixture".into(), access_partition: request.subscription.partition.scope.clone(), observed_at: at(), source_revision: None,
                 canonical_url_assertion: None, provider: identity.as_ref().map(|query| query.provider.clone()), host_site: "example.org".into(), title: None,
                 description: None, author: None, published_at: None, provider_labels: vec![], gallery_snapshot: None, source_payload_digest: None,
-                status: Availability { state: AvailabilityState::Available, checked_at: Some(at()), reason_code: None, retry_after: None }, common: Extensions::default() } })
+                status: Availability { state: AvailabilityState::Available, checked_at: Some(at()), reason_code: None, retry_after: None }, common: Extensions::default() };
+            // This fixture producer already knows its parsed title before reserving native intent.
+            let mut populated=observation.clone();populated.title=Some("Actual parsed title".into());
+            let command=match &initial {Some(initial)=>OwnerCommand::AcceptInitialObservation{observation:populated,initial:initial.clone()},
+                None=>OwnerCommand::AcceptObservation{observation:populated}};
+            let context=Owner::planned(context,command);
+            store.observation_allocations.insert(operation,(context.clone(),observation.clone(),initial.clone()));
+            let clear=store.clear_at==Some(2);if clear {store.clear_at=None;}drop(store);
+            if clear {self.0.clone().edit_selection(snapshot.item.item_id,Patch::Clear);}
+            Ok(ObservationAllocation{context,observation,initial})
         })
     }
     fn reserve_identity<'a>(&'a self, request: &'a SourceRequest, _: &'a HostRef, _: &'a str,
         current: ItemSnapshot, observation: &'a MetadataObservation, query: IdentityQuery) -> Pending<'a, IdentityAllocation> {
         Box::pin(async move {
             assert!(current.observations.iter().any(|stored| stored == observation), "identity guard must follow observation commit/readback");
-            self.0.0.lock().unwrap().identity_reservations += 1;
-            Ok(IdentityAllocation { context: context(request, 3), identity: SourceIdentity { identity_id: id(400 + number(request)),
+            let mut store=self.0.0.lock().unwrap();let operation=context(request,3).operation_id;
+            if let Some((context,identity))=store.identity_allocations.get(&operation) {return Ok(IdentityAllocation{context:context.clone(),identity:identity.clone()});}
+            store.identity_reservations += 1;
+            let identity=SourceIdentity { identity_id: id(400 + number(request)),
                 item_id: current.item.item_id, provider: query.provider, namespace: query.namespace, provider_item_id: query.provider_item_id,
-                access_partition: query.access_partition, verified_by_observation_id: observation.observation_id, retired_at: None, common: Extensions::default() } })
+                access_partition: query.access_partition, verified_by_observation_id: observation.observation_id, retired_at: None, common: Extensions::default() };
+            let mut context=context(request,3);context.expected_revisions=vec![ExpectedRevision{owner:reference(format!("item-{}",current.item.item_id)),revision:current.item.revision}];
+            let context=Owner::planned(context,OwnerCommand::AssertSourceIdentity(identity.clone()));
+            store.identity_allocations.insert(operation,(context.clone(),identity.clone()));
+            Ok(IdentityAllocation{context,identity})
         })
     }
     fn inspect_identity<'a>(&'a self, request: &'a SourceRequest, execution: &'a HostRef, query: &'a IdentityQuery) -> Pending<'a, Option<SourceIdentity>> {
@@ -356,7 +473,7 @@ fn existing_identity_requires_exact_canonical_tuple_and_original_verification() 
         let second_request = request(2); *admission.operation.lock().unwrap() = second_request.operation_id;
         let allocator = Allocator(owner.clone());
         assert!(run(prepare_entry(&mut owner, &admission, &admission, &allocator, &reference("attempt"),
-            &second_request, &context(&second_request, 0), "opaque-post", "https://example.org/post", Some(query()), |_| {}, &BTreeSet::new())).is_err(), "scenario {scenario}");
+            &second_request, &context(&second_request, 0), "opaque-post", "https://example.org/post", Some(query()), |value|value.title=Some("Actual parsed title".into()), &BTreeSet::new())).is_err(), "scenario {scenario}");
         let store = owner.0.lock().unwrap();
         assert_eq!(store.identities, vec![original]); assert_eq!(store.identity_reservations, 1);
         assert_eq!(first.entry().capture.item_id, store.captures[0].item_id);
@@ -532,4 +649,135 @@ fn terminal_empty_document_settles_partial_after_prior_items_without_clearing_th
     let state = checkpoints.state.lock().unwrap(); let (_, batch, _) = state.batches.get(&second_request.operation_id).unwrap();
     assert!(batch.appearances.is_empty()); assert!(batch.item_owner_outcome_refs.is_empty()); assert!(batch.continuation.is_none());
     assert!(matches!(&batch.state, AcquisitionState::Partial { reason_code, .. } if reason_code == rss_contracts::TERMINAL_SOURCE_DOCUMENT));
+}
+
+#[test]
+fn initial_source_selection_uses_native_receipts_and_page85_replay() {
+    let mut request=request(1);request.bounds.max_page_items=85;
+    let admission=Admission::new(&request);let mut owner=Owner::default();
+    let first=prepared(&mut owner,&admission,&request,Some(query()));
+    let item=first.entry().capture.item_id;let observation=first.entry().observation.observation_id;
+    let before=owner.inspect(&context(&request,0),item).unwrap();
+    assert_eq!(before.item.selected_observation_id,Some(observation));
+    assert_eq!(before.item.revision,Revision(3));
+    {let store=owner.0.lock().unwrap();
+        assert!(store.initial_choices[&context(&request,2).operation_id].is_some());
+        assert!(matches!(store.plans[&context(&request,2).operation_id].commands.as_slice(),[OwnerCommand::AcceptInitialObservation{..}]));
+        assert_eq!(store.outcomes.len(),3);
+        for (operation,plan) in &store.plans {assert_eq!(plan.context.bounds.max_page_items,85);
+            let receipt=&store.receipts[operation];
+            assert_eq!(hsscrap::operations::finish_operation(plan,std::slice::from_ref(receipt),std::slice::from_ref(&receipt.owner),vec![],at()).unwrap(),store.outcomes[operation]);}
+    }
+    let checkpoints=Checkpoints::new(owner.clone());let source_page=page(&request,&first,false);
+    run(commit_page(&owner,&admission,&admission,&Allocator(owner.clone()),&checkpoints,&reference("attempt"),&request,&source_page,&[first],&BTreeSet::new())).unwrap();
+    let replay=prepared(&mut owner,&admission,&request,Some(query()));
+    assert_eq!(page(&request,&replay,false),source_page);
+    assert_eq!(owner.inspect(&context(&request,0),item).unwrap(),before);
+    run(commit_page(&owner,&admission,&admission,&Allocator(owner.clone()),&checkpoints,&reference("attempt"),&request,&source_page,&[replay],&BTreeSet::new())).unwrap();
+    let state=checkpoints.state.lock().unwrap();assert_eq!(state.batches.len(),1);
+    assert_eq!(state.batches[&request.operation_id].1.item_owner_outcome_refs.len(),3);
+    assert_eq!(owner.0.lock().unwrap().mutations,3);
+    drop(state);
+    owner.edit_selection(item,Patch::Clear);
+    let cleared=owner.inspect(&context(&request,0),item).unwrap();let mutations=owner.0.lock().unwrap().mutations;
+    let replay=prepared(&mut owner,&admission,&request,Some(query()));
+    run(commit_page(&owner,&admission,&admission,&Allocator(owner.clone()),&checkpoints,&reference("attempt"),&request,&source_page,&[replay],&BTreeSet::new())).unwrap();
+    assert_eq!(owner.inspect(&context(&request,0),item).unwrap(),cleared);
+    assert_eq!(cleared.item.selected_observation_id,None);
+    assert_eq!(owner.0.lock().unwrap().mutations,mutations);
+    assert_eq!(checkpoints.state.lock().unwrap().batches[&request.operation_id].1.item_owner_outcome_refs.len(),3);
+}
+
+#[test]
+fn explicit_clear_before_guard_stream_and_stage_never_reselects() {
+    for position in 0..3 {
+        let request=request(1);let admission=Admission::new(&request);let mut owner=Owner::default();
+        owner.0.lock().unwrap().clear_at=Some(position);
+        let allocator=Allocator(owner.clone());
+        let result=run(prepare_entry(&mut owner,&admission,&admission,&allocator,&reference("attempt"),&request,&context(&request,0),
+            "opaque-post","https://example.org/post",Some(query()),|value|value.title=Some("Actual parsed title".into()),&BTreeSet::new()));
+        if position==0 {assert!(result.is_ok());} else {assert!(result.is_err());}
+        let snapshot=owner.inspect(&context(&request,0),id(500)).unwrap();
+        assert_eq!(snapshot.item.selected_observation_id,None);
+        let choice=owner.0.lock().unwrap().initial_choices[&context(&request,2).operation_id].clone();
+        assert_eq!(choice.is_some(),position!=0);
+        if position!=0 {
+            assert!(snapshot.observations.is_empty());
+            let mutations=owner.0.lock().unwrap().mutations;
+            assert!(run(prepare_entry(&mut owner,&admission,&admission,&allocator,&reference("attempt"),&request,&context(&request,0),
+                "opaque-post","https://example.org/post",Some(query()),|value|value.title=Some("Actual parsed title".into()),&BTreeSet::new())).is_err());
+            assert_eq!(owner.0.lock().unwrap().mutations,mutations);
+            assert_eq!(owner.inspect(&context(&request,0),id(500)).unwrap().item.selected_observation_id,None);
+            assert_eq!(owner.0.lock().unwrap().initial_choices[&context(&request,2).operation_id],choice);
+        }
+    }
+}
+
+#[test]
+fn pending_initial_receipt_recovery_after_user_clear_keeps_original_guard_and_intent() {
+    let request=request(1);let admission=Admission::new(&request);let mut owner=Owner::default();let allocator=Allocator(owner.clone());
+    owner.0.lock().unwrap().lose_initial_reply=true;
+    assert!(run(prepare_entry(&mut owner,&admission,&admission,&allocator,&reference("attempt"),&request,&context(&request,0),
+        "opaque-post","https://example.org/post",Some(query()),|value|value.title=Some("Actual parsed title".into()),&BTreeSet::new())).is_err());
+    let operation=context(&request,2).operation_id;
+    let initial={let store=owner.0.lock().unwrap();
+        assert_eq!(store.outcomes[&operation].outcome,OutcomeState::Pending);
+        assert_eq!(store.items[&id(500)].selected_observation_id,Some(id(201)));
+        assert_eq!(store.observations.len(),1);assert!(store.receipts.contains_key(&operation));
+        store.observation_allocations[&operation].clone()};
+    owner.edit_selection(id(500),Patch::Clear);
+    let replay=prepared(&mut owner,&admission,&request,Some(query()));
+    let snapshot=owner.inspect(&context(&request,0),id(500)).unwrap();
+    assert_eq!(snapshot.item.selected_observation_id,None);
+    assert_eq!(snapshot.observations.len(),1);
+    {let store=owner.0.lock().unwrap();
+        assert_eq!(store.observation_allocations[&operation],initial);
+        assert!(store.initial_proposals.first().unwrap().is_some());
+        assert!(store.initial_proposals.last().unwrap().is_none());
+        assert_eq!(store.outcomes[&operation].outcome,OutcomeState::Committed);
+    }
+    let checkpoints=Checkpoints::new(owner.clone());let source_page=page(&request,&replay,false);
+    run(commit_page(&owner,&admission,&admission,&allocator,&checkpoints,&reference("attempt"),&request,&source_page,&[replay],&BTreeSet::new())).unwrap();
+    let mutations=owner.0.lock().unwrap().mutations;
+    let replay=prepared(&mut owner,&admission,&request,Some(query()));
+    run(commit_page(&owner,&admission,&admission,&allocator,&checkpoints,&reference("attempt"),&request,&source_page,&[replay],&BTreeSet::new())).unwrap();
+    assert_eq!(owner.0.lock().unwrap().mutations,mutations);
+    assert_eq!(owner.inspect(&context(&request,0),id(500)).unwrap(),snapshot);
+    assert_eq!(checkpoints.state.lock().unwrap().batches[&request.operation_id].1.item_owner_outcome_refs.len(),3);
+}
+
+#[test]
+fn legacy_item_and_reused_other_stream_or_clear_keep_their_selection() {
+    for legacy in [true,false] {
+        for other_stream in [false,true] {
+            let first_request=request(1);let admission=Admission::new(&first_request);let mut owner=Owner::default();
+            let expected=if legacy {
+                let allocation=run(Allocator(owner.clone()).allocate_capture(&request(8),&reference("attempt"),"legacy",None,
+                    hsscrap::identity::normalize_url("https://example.org/post",&bounds()).unwrap())).unwrap();
+                let mut capture=allocation.capture;capture.capture_kind=CaptureKind::LegacyMigration;
+                let context=Owner::planned(allocation.context,OwnerCommand::Capture{item:capture.item_id,capture:capture.clone()});
+                owner.capture(CaptureCommand{context,capture,item_id:id(500)}).unwrap();None
+            } else {
+                let first=prepared(&mut owner,&admission,&first_request,Some(query()));
+                if other_stream {
+                    let mut observation=first.entry().observation.clone();observation.observation_id=id(777);observation.stream_id=id(777);
+                    observation.sequence=Revision(1);observation.baseline_observation_id=None;
+                    let mut stream=owner.0.lock().unwrap().streams[0].clone();stream.stream_id=id(777);stream.last_issued_sequence=Revision(1);
+                    stream.last_accepted_sequence=None;stream.latest_observation_id=None;stream.revision=Revision(1);
+                    owner.0.lock().unwrap().streams.push(stream);
+                    let revision=owner.0.lock().unwrap().items[&id(500)].revision;
+                    let mut context=context(&request(80),0);context.expected_revisions=vec![ExpectedRevision{owner:reference(format!("item-{}",id::<ItemId>(500))),revision},
+                        ExpectedRevision{owner:reference(format!("stream-{}",id::<StreamId>(777))),revision:Revision(1)}];
+                    let context=Owner::planned(context,OwnerCommand::AcceptObservation{observation:observation.clone()});
+                    owner.accept_observation(context,observation).unwrap();
+                    owner.edit_selection(id(500),Patch::Set(id(777)));Some(id(777))
+                } else {owner.edit_selection(id(500),Patch::Clear);None}
+            };
+            let next_request=if legacy {first_request}else{request(2)};
+            *admission.operation.lock().unwrap()=next_request.operation_id;
+            let entry=prepared(&mut owner,&admission,&next_request,Some(query()));
+            assert_eq!(owner.inspect(&context(&next_request,0),entry.entry().capture.item_id).unwrap().item.selected_observation_id,expected);
+            assert!(owner.0.lock().unwrap().initial_choices[&context(&next_request,2).operation_id].is_none());
+        }
+    }
 }

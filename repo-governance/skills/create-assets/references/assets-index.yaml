@@ -2252,6 +2252,7 @@ assets:
   - bounded model validation
   - versioned capture URL normalization
   - access-scoped immutable metadata transitions
+  - explicit creation-preimage guarded initial source observation selection
   - complete selected gallery reconciliation and stable members
   - retained association and occurrence reference validation
   - origin-preserving tag assignment plans
@@ -2317,6 +2318,7 @@ assets:
   - URL capture receipt validation and owner recovery
   - identity-first ingestion and canonical owner outcome references
   - immutable provider identity reuse with exact same-page assertion and checkpoint replay
+  - durable pristine-create initial metadata intent with unchanged selection on replay
   - immutable batch checkpoint retry and acknowledged queue continuation
   - bounded RSS/Atom discovery, parsing and media evidence
   - digest-bound source document pagination and partial terminal checkpoints

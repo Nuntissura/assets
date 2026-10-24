@@ -44,6 +44,67 @@ pub fn materialize_patch(
 #[derive(Debug,Clone,PartialEq)]
 pub struct ObservationAccepted { pub item:Item, pub stream:ObservationStream, pub observation:MetadataObservation }
 
+fn pristine(item:&Item,capture:&URLCapture)->bool {
+    item.revision==Revision(1) && item.lifecycle==Lifecycle::Active && item.deleted_at.is_none()
+        && !item.owner_scope.0.is_empty() && item.item_id==capture.item_id
+        && item.first_capture_id==capture.capture_id && capture.capture_kind==CaptureKind::SourceIngest
+        && item.created_at==capture.created_here_at && item.updated_at==item.created_at
+        && item.selected_observation_id.is_none() && item.gallery_observation_id.is_none()
+        && item.member_order.is_empty() && item.title_override==Override::Inherit
+        && item.description_override==Override::Inherit && item.cover_override==Override::Inherit
+}
+
+fn validate_creation(item:&Item,capture:&URLCapture,bounds:&Bounds,supported:&BTreeSet<String>)->Result<()> {
+    bounds.validate()?;item.validate(bounds,supported)?;capture.validate(bounds,supported)?;
+    let normalized=crate::identity::normalize_url(&capture.captured_url,bounds)?;
+    if capture.identity_url!=normalized.identity_url || capture.normalization_version!=normalized.normalization_version
+        || capture.item_id!=item.item_id {
+        return Err(invalid("initial_observation_capture","exact same-item normalized capture required"));
+    }
+    Ok(())
+}
+
+impl Validate for crate::ports::InitialObservation {
+    fn validate(&self,bounds:&Bounds,supported:&BTreeSet<String>)->Result<()> {
+        validate_creation(&self.item,&self.capture,bounds,supported)?;
+        if !pristine(&self.item,&self.capture) {return Err(invalid("initial_observation","pristine source-created item required"));}
+        Ok(())
+    }
+}
+
+/// Call only after the canonical create-only capture committed. Persist Some before reserving a stream.
+/// None preserves prior edits/selections; a later retry must reuse the original persisted result.
+pub fn initial_observation(snapshot:&crate::ports::ItemSnapshot,capture:&URLCapture,bounds:&Bounds,
+    supported:&BTreeSet<String>)->Result<Option<crate::ports::InitialObservation>> {
+    validate_creation(&snapshot.item,capture,bounds,supported)?;
+    if !pristine(&snapshot.item,capture) || snapshot.captures.as_slice()!=std::slice::from_ref(capture)
+        || !snapshot.observations.is_empty() || !snapshot.members.is_empty() || !snapshot.streams.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(crate::ports::InitialObservation{item:snapshot.item.clone(),capture:capture.clone()}))
+}
+
+/// Atomic first acceptance and selection. Hosts reconcile an existing operation before applying this predicate.
+pub fn accept_initial_observation(snapshot:&crate::ports::ItemSnapshot,observation:MetadataObservation,
+    initial:&crate::ports::InitialObservation,expected_item:Revision,expected_stream:Revision,
+    bounds:&Bounds,supported:&BTreeSet<String>)->Result<ObservationAccepted> {
+    initial.validate(bounds,supported)?;
+    let [stream]=snapshot.streams.as_slice() else {return Err(Error::Conflict{field:"initial_observation_stream".into()});};
+    stream.validate(bounds,supported)?;
+    if snapshot.item!=initial.item || snapshot.captures.as_slice()!=std::slice::from_ref(&initial.capture)
+        || !snapshot.observations.is_empty() || !snapshot.members.is_empty()
+        || stream.revision!=Revision(1) || stream.last_issued_sequence!=Revision(1)
+        || stream.last_accepted_sequence.is_some() || stream.latest_observation_id.is_some()
+        || observation.baseline_observation_id.is_some() || observation.sequence!=Revision(1)
+        || observation.capture_id!=Some(initial.capture.capture_id)
+        || observation.access_partition!=initial.capture.access_partition {
+        return Err(Error::Conflict{field:"initial_observation_preimage".into()});
+    }
+    let mut accepted=accept_observation(&snapshot.item,stream,observation,None,expected_item,expected_stream,bounds,supported)?;
+    accepted.item.selected_observation_id=Some(accepted.observation.observation_id);
+    Ok(accepted)
+}
+
 pub fn reserve_sequence(stream:&ObservationStream,expected:Revision)->Result<ObservationStream> {
     if stream.revision!=expected {return Err(Error::Conflict{field:"stream_revision".into()});}
     let mut next=stream.clone(); next.last_issued_sequence=stream.last_issued_sequence.next()?;
@@ -151,5 +212,99 @@ mod tests {
         let mut inherited=item();inherited.title_override=Override::Inherit;inherited.description_override=Override::Inherit;
         let denied=project_metadata(&inherited,true,None).unwrap();assert_eq!(denied.title,None);assert_eq!(denied.description,None);
         assert_eq!(project_metadata(&inherited,false,Some(&base)),Err(Error::Denied));
+    }
+
+    fn initial_fixture()->(crate::ports::ItemSnapshot,URLCapture,MetadataObservation) {
+        let mut item=item();item.revision=Revision(1);item.selected_observation_id=None;
+        item.title_override=Override::Inherit;item.description_override=Override::Inherit;
+        let capture=URLCapture{capture_id:item.first_capture_id,item_id:item.item_id,capture_kind:CaptureKind::SourceIngest,
+            access_partition:ScopeRef("private".into()),captured_url:"https://example.org/post".into(),original_url:Some("https://example.org/post".into()),
+            identity_url:"https://example.org/post".into(),normalization_version:crate::identity::NORMALIZATION_VERSION.into(),
+            captured_at:Some(instant()),created_here_at:instant(),actor_ref:None,operation_id:OperationId(uuid::Uuid::from_u128(10)),common:Extensions::default()};
+        let snapshot=crate::ports::ItemSnapshot{item,captures:vec![capture.clone()],observations:vec![],members:vec![],streams:vec![]};
+        (snapshot,capture,observation(4,1))
+    }
+    fn first_stream()->ObservationStream {
+        let mut stream=stream();stream.revision=Revision(1);stream.last_issued_sequence=Revision(1);
+        stream.last_accepted_sequence=None;stream.latest_observation_id=None;stream
+    }
+
+    #[test] fn initial_source_observation_selects_atomically_without_changing_legacy_acceptance() {
+        let (mut snapshot,capture,observation)=initial_fixture();
+        let initial=initial_observation(&snapshot,&capture,&bounds(),&BTreeSet::new()).unwrap().unwrap();
+        snapshot.streams.push(first_stream());
+        let legacy=accept_observation(&snapshot.item,&snapshot.streams[0],observation.clone(),None,Revision(1),Revision(1),&bounds(),&BTreeSet::new()).unwrap();
+        assert_eq!(legacy.item.selected_observation_id,None);
+        let before=snapshot.clone();
+        let accepted=accept_initial_observation(&snapshot,observation.clone(),&initial,Revision(1),Revision(1),&bounds(),&BTreeSet::new()).unwrap();
+        assert_eq!(snapshot,before);
+        assert_eq!(accepted.item.selected_observation_id,Some(observation.observation_id));
+        assert_eq!(accepted.item.revision,Revision(2));assert_eq!(accepted.stream.revision,Revision(2));
+        assert_eq!(accepted.item.title_override,Override::Inherit);
+        assert_eq!(accepted.item.gallery_observation_id,None);
+        assert_eq!(project_metadata(&accepted.item,true,Some(&accepted.observation)).unwrap().title,observation.title);
+    }
+
+    #[test] fn initial_guard_preserves_clear_manual_selection_and_complete_preimage() {
+        let (original,capture,observation)=initial_fixture();
+        let initial=initial_observation(&original,&capture,&bounds(),&BTreeSet::new()).unwrap().unwrap();
+        let mut cleared=original.clone();cleared.item.revision=Revision(2);
+        assert_eq!(initial_observation(&cleared,&capture,&bounds(),&BTreeSet::new()).unwrap(),None);
+        let mut manual=original.clone();manual.item.selected_observation_id=Some(ObservationId(uuid::Uuid::from_u128(90)));
+        assert_eq!(initial_observation(&manual,&capture,&bounds(),&BTreeSet::new()).unwrap(),None);
+        let mut changed=original.clone();changed.item.common.extensions.insert("test.changed".into(),serde_json::json!(true));
+        for mut current in [cleared,manual,changed] {
+            current.streams.push(first_stream());
+            assert!(accept_initial_observation(&current,observation.clone(),&initial,current.item.revision,Revision(1),&bounds(),&BTreeSet::new()).is_err());
+        }
+        let mut current=original.clone();current.streams.push(first_stream());
+        let mut foreign=capture.clone();foreign.item_id=ItemId(uuid::Uuid::from_u128(91));
+        assert!(initial_observation(&original,&foreign,&bounds(),&BTreeSet::new()).is_err());
+        current.captures[0].captured_url="https://example.org/changed".into();
+        assert!(accept_initial_observation(&current,observation.clone(),&initial,Revision(1),Revision(1),&bounds(),&BTreeSet::new()).is_err());
+        let mut current=original.clone();current.streams.push(first_stream());current.streams.push(first_stream());
+        assert!(accept_initial_observation(&current,observation.clone(),&initial,Revision(1),Revision(1),&bounds(),&BTreeSet::new()).is_err());
+        let mut current=original;current.streams.push(first_stream());
+        for mutate in [0,1,2,3] {
+            let mut incoming=observation.clone();let mut state=current.clone();
+            match mutate {
+                0=>incoming.baseline_observation_id=Some(ObservationId(uuid::Uuid::from_u128(92))),
+                1=>incoming.stream_id=StreamId(uuid::Uuid::from_u128(93)),
+                2=>state.streams[0].latest_observation_id=Some(ObservationId(uuid::Uuid::from_u128(94))),
+                _=>incoming.access_partition=ScopeRef("foreign".into()),
+            }
+            assert!(accept_initial_observation(&state,incoming,&initial,Revision(1),Revision(1),&bounds(),&BTreeSet::new()).is_err());
+        }
+    }
+
+    #[test] fn initial_committed_replay_does_not_restore_selection_after_later_clear() {
+        use crate::{operations::*,ports::*};
+        let (mut snapshot,capture,observation)=initial_fixture();
+        let initial=initial_observation(&snapshot,&capture,&bounds(),&BTreeSet::new()).unwrap().unwrap();
+        let actor=HostRef{host_instance_id:"host".into(),owner_kind:"principal".into(),native_id:"actor".into()};
+        let owner=HostRef{host_instance_id:"host".into(),owner_kind:"item".into(),native_id:snapshot.item.item_id.to_string()};
+        let context=CommandContext{actor,scope:capture.access_partition.clone(),operation_id:OperationId(uuid::Uuid::from_u128(20)),intent_digest:String::new(),
+            expected_revisions:vec![ExpectedRevision{owner:owner.clone(),revision:Revision(1)}],bounds:bounds()};
+        let command=OwnerCommand::AcceptInitialObservation{observation:observation.clone(),initial:initial.clone()};
+        let plan=plan_operation(context,vec![command],&BTreeSet::new()).unwrap();
+        assert_eq!(serde_json::from_str::<OperationPlan>(&serde_json::to_string(&plan).unwrap()).unwrap(),plan);
+        snapshot.streams.push(first_stream());
+        let accepted=accept_initial_observation(&snapshot,observation,&initial,Revision(1),Revision(1),&bounds(),&BTreeSet::new()).unwrap();
+        let receipt=OwnerStepReceipt{operation_id:plan.context.operation_id,intent_digest:plan.context.intent_digest.clone(),command_index:0,owner:owner.clone(),
+            receipt:HostRef{host_instance_id:"host".into(),owner_kind:"receipt".into(),native_id:"accepted".into()}};
+        let committed=finish_operation(&plan,&[receipt],std::slice::from_ref(&owner),vec![owner.clone()],instant()).unwrap();
+        assert_eq!(committed.owner_receipt_refs.len(),1);
+        snapshot.item=accepted.item;snapshot.item.selected_observation_id=None;snapshot.item.revision=Revision(3);
+        snapshot.observations.push(accepted.observation);snapshot.streams=vec![accepted.stream];
+        let before=snapshot.clone();
+        assert_eq!(decide_operation(&plan,Some(&committed),true).unwrap(),OperationDecision::Replay(committed));
+        assert_eq!(snapshot,before);assert_eq!(snapshot.item.selected_observation_id,None);
+        let OwnerCommand::AcceptInitialObservation{observation,..}=&plan.commands[0] else {unreachable!()};
+        assert!(accept_initial_observation(&snapshot,observation.clone(),&initial,Revision(3),snapshot.streams[0].revision,&bounds(),&BTreeSet::new()).is_err());
+        let mut changed=plan.commands.clone();
+        let OwnerCommand::AcceptInitialObservation{initial,..}=&mut changed[0] else {unreachable!()};
+        initial.item.common.extensions.insert("test.changed".into(),serde_json::json!(true));
+        assert!(plan_operation(plan.context.clone(),changed,&BTreeSet::new()).is_err());
+        assert_eq!(decide_operation(&plan,None,false),Err(Error::Denied));
     }
 }

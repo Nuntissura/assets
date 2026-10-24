@@ -52,6 +52,19 @@ pub fn plan_operation(mut context:CommandContext,commands:Vec<OwnerCommand>,supp
                     return Err(invalid("observation_scope","observation must agree with its operation scope"));
                 }
             },
+            OwnerCommand::AcceptInitialObservation{observation,initial}=>{
+                initial.validate(&context.bounds,supported)?;
+                observation.validate(&context.bounds,supported)?;
+                if observation.access_partition!=context.scope || initial.capture.access_partition!=context.scope
+                    || observation.item_id!=initial.item.item_id
+                    || observation.capture_id!=Some(initial.capture.capture_id)
+                    || observation.baseline_observation_id.is_some() || observation.sequence!=Revision(1)
+                    || observation.status.state!=AvailabilityState::Available
+                    || initial.capture.operation_id==context.operation_id
+                    || initial.capture.actor_ref.as_ref().is_some_and(|actor|actor!=&context.actor) {
+                    return Err(invalid("initial_observation_context","original creation and first observation must agree with their operation context"));
+                }
+            },
             OwnerCommand::AssertSourceIdentity(v)=>{
                 v.validate(&context.bounds,supported)?;
                 if [&v.provider,&v.namespace,&v.provider_item_id,&v.access_partition.0].iter().any(|value|value.is_empty()) {
