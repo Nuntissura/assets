@@ -37,6 +37,9 @@
 //!
 //! Studio readings (Premiere behaviour UNVERIFIED, no oracle): the multi-frame step default 5, the
 //! slip direction (right = later source), roll on a lone edge trims, cursor zones of the tools.
+//! Slip at speed (lane SMB-PR-RATE-STRETCH-1): N timeline frames slip the source window by
+//! N x ticks per frame x |speed| source ticks, exactly; a non-whole result is refused
+//! `slip_inexact_at_speed` (the clip's own speed; linked partners move by the same source delta).
 //! The Rate Stretch tool and Speed/Duration live in module `rate`.
 //!
 //! State: `state_json()["timeline"]` keys `tool`, `multi_frame_step`, `edit_point`, `last_trim`,
@@ -260,8 +263,17 @@ pub(super) fn trim_edit(seq: &StudioSequence, clip_id: &str, kind: TrimKind, del
             }
             TimelineEdit::Slide { clip_id: id, delta: tick_delta()? }
         }
-        // Source ticks = frames x sequence ticks per frame (unit-speed reading; module docs).
-        TrimKind::Slip => TimelineEdit::Slip { clip_id: id, delta: tick_delta()? },
+        // Source ticks = frames x sequence ticks per frame x |speed|, exact (module docs).
+        TrimKind::Slip => {
+            let num = i128::from(clip.speed.numerator.unsigned_abs());
+            let den = i128::from(clip.speed.denominator);
+            let scaled = delta.checked_mul(num).ok_or("overflow")?;
+            if den == 0 || scaled.checked_rem(den) != Some(0) {
+                return Err("slip_inexact_at_speed".into());
+            }
+            let source = scaled.checked_div(den).ok_or("overflow")?;
+            TimelineEdit::Slip { clip_id: id, delta: TickDelta::new(source).map_err(|e| e.code().to_owned())? }
+        }
         TrimKind::RateStretch => return Err("rate_stretch_not_a_timeline_edit".into()),
     })
 }

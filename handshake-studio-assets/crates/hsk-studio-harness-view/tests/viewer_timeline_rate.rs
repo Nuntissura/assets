@@ -386,3 +386,32 @@ fn achieved_delta_stops_at_the_neighbour() {
     assert_eq!(v.timeline_command(TimelineCommand::RateStretch { clip_id: cid(1), edge: RateEdge::Head, delta_frames: -3 }).unwrap_err(), "outside_range");
     assert_eq!(seq(&v), base);
 }
+
+// ---- slice 3: slip at non-unit speed -------------------------------------------------------------------
+
+/// Clip 2 at 200 % (source [100, 160) over 30 frames): slip +3 frames moves its source window by 6
+/// source frames, -2 by -4; a clip at 1/11 speed cannot slip one frame exactly
+/// (`slip_inexact_at_speed`, nothing changes).
+#[test]
+fn slip_at_double_speed_moves_two_source_frames_per_frame() {
+    let (_s, mut v, _ctx) = opened_with("slip-speed", |s| {
+        let c = &mut s.tracks[0].clips[1];
+        c.source_out = Ticks::new(160 * F);
+        c.speed = Speed { numerator: 2, denominator: 1 };
+        let c = &mut s.tracks[0].clips[2];
+        c.source_out = Ticks::new(12 * F);
+        c.duration = Ticks::new(22 * F);
+        c.speed = Speed { numerator: 1, denominator: 11 };
+        s.duration = Ticks::new(92 * F);
+    });
+    v.timeline_command(TimelineCommand::Slip { clip_id: cid(2), delta_frames: 3 }).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(window(&v, 2), (30, 60, 106, 166));
+    assert_eq!(speed(&v, 2), (2, 1));
+    v.shell_command(ShellCommand::Undo).unwrap();
+    v.timeline_command(TimelineCommand::Slip { clip_id: cid(2), delta_frames: -2 }).unwrap();
+    assert_eq!(window(&v, 2), (30, 60, 96, 156));
+    let base = seq(&v);
+    assert_eq!(v.timeline_command(TimelineCommand::Slip { clip_id: cid(3), delta_frames: 1 }).unwrap_err(), "slip_inexact_at_speed");
+    assert_eq!(v.state_json()["timeline"]["last_trim"]["refusal"], "slip_inexact_at_speed");
+    assert_eq!(seq(&v), base);
+}
