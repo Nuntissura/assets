@@ -46,3 +46,6 @@ corpus_config = ".config/oracle-corpus.toml"
 # "/etc/passwd", "C:/x.psd" ...): inputs the package must refuse, never opened as host paths; steward C50, C16/C41
 # precedent, lead-reviewable
 "crates/hsk-studio-package/tests/linked_files.rs" = 1
+# upstream stet comment in the vendored fork (SMB-EPS-FREE-FONTS d195ef7, eval.rs:1298): names the `C:\Users\...` shape
+# that PostScript string syntax would mangle; a comment, never a host path; lead decision 2026-10-24, C16/C41 precedent
+"crates/hsk-studio-ps-engine/src/eval.rs" = 1

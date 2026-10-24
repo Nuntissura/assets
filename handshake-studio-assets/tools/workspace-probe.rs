@@ -523,6 +523,11 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-interop-tiff", &["sha2", "tiff"]),
     ("hsk-studio-interop-raster", &["png", "sha2", "zune-jpeg"]),
     ("hsk-studio-interop-affinity", &["crc32fast", "miniz_oxide", "ruzstd", "sha2"]),
+    ("hsk-studio-ps-fonts", &["flate2", "rustc-hash", "serde", "serde_json"]),
+    ("hsk-studio-ps-graphics", &["moxcms", "sha2"]),
+    ("hsk-studio-ps-core", &["fax", "flate2", "hayro-jbig2", "hayro-jpeg2000", "jpeg-decoder", "moxcms", "rustc-hash", "serde", "serde_json", "sha2", "thiserror", "weezl"]),
+    ("hsk-studio-ps-ops", &["flate2"]),
+    ("hsk-studio-ps-pdf", &["flate2"]),
 ];
 // END GENERATED APPROVED
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.

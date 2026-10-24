@@ -26,6 +26,11 @@ hsk-studio-render-gpu = [["test-faults"], ["shared-device"], ["shared-device", "
 hsk-studio-score-device = [["cpal-backend"]]
 hsk-studio-kernel-bindings = [["test-faults"], ["ckc-test-double"]]
 hsk-studio-worker = [["test-faults"]]
+# SMB-EPS-FREE-FONTS (88edeb0, lead-approved 2026-10-24): interop-vector-core eps-worker builds the EPS worker bin
+# (vendored hsk-studio-ps free-font fork) and runs tests/eps_worker.rs (both required-features eps-worker);
+# interop-vector eps-worker only forwards to the core feature.
+hsk-studio-interop-vector-core = [["eps-worker"]]
+hsk-studio-interop-vector = [["eps-worker"]]
 hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"], ["media"], ["media-native"], ["audio-device"], ["audio-batch"], ["layout-ui"], ["studio-aac"], ["os-encode"], ["audio-plugin"]]
 hsk-studio-composite = [["motion"]]
 
