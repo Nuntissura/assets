@@ -908,6 +908,10 @@ impl Viewer {
         let mut layer_action: Option<&'static str> = None;
         if self.shell.visible(shell::Panel::Layers) {
             egui::SidePanel::left(widget::id(widget::LAYER_PANEL)).resizable(true).default_width(240.0).show(ctx, |ui| {
+                // A SidePanel keeps the width its content used last frame; the wrapped button row
+                // uses less than it is given, so without this the panel narrows every frame to its
+                // widest button (lane SMB-SHELL-ROW-WRAP-1). The panel keeps its default or dragged width.
+                ui.set_min_width(ui.available_width());
                 ui.heading("Layers");
                 let open = self.run.snapshot().is_some();
                 let has_selection = self.selected.is_some();
