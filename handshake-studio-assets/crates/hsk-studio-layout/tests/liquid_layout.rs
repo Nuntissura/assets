@@ -170,7 +170,7 @@ fn guide_crossed_frames_stretch_and_text_reflows() {
         page_id: page.map(Into::into),
         orientation: o,
         location: len(at),
-        guide_colour: StudioRgba { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+        guide_colour: StudioRgba { r: 0.0, g: 0.0, b: 1.0, a: 1.0, colour_profile_id: ProfileBinding::Unassigned(()) },
         guide_type: t,
         guide_view_threshold: 5.0,
         fit_to_page: false,

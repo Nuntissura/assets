@@ -58,7 +58,7 @@ fn guide(gid: &str, at: f64, locked: bool) -> StudioRulerGuide {
         page_id: Some("page-1".into()),
         orientation: StudioGuideOrientation::Vertical,
         location: len(at),
-        guide_colour: StudioRgba { r: 0.0, g: 1.0, b: 1.0, a: 1.0 },
+        guide_colour: StudioRgba { r: 0.0, g: 1.0, b: 1.0, a: 1.0, colour_profile_id: ProfileBinding::Unassigned(()) },
         guide_type: StudioGuideType::Ruler,
         guide_view_threshold: 5.0,
         fit_to_page: false,
