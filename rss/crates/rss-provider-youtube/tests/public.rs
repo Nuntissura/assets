@@ -159,3 +159,49 @@ fn account_owned_source_uses_authorized_profile_partition() {
         assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
     }
 }
+
+
+#[test]
+fn atom_accepts_bound_channel_tail_and_same_video_shorts_without_changing_identity() {
+    let video=video_id(1);
+    for channel_id in [CHANNEL, &CHANNEL[2..]] {
+        let body=format!(r#"<feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/"><id>yt:channel:{channel_id}</id><yt:channelId>{channel_id}</yt:channelId><title>Creator</title><link rel="alternate" href="https://www.youtube.com/channel/{CHANNEL}"/><entry><id>yt:video:{video}</id><yt:channelId>{CHANNEL}</yt:channelId><title>Short video</title><published>2026-10-21T23:00:08+00:00</published><link rel="alternate" href="https://www.youtube.com/shorts/{video}"/><media:group><media:content url="https://www.youtube.com/v/{video}?version=3" type="application/x-shockwave-flash" width="640" height="390"/><media:description>Actual feed shape</media:description><media:thumbnail url="https://i4.ytimg.com/vi/{video}/hqdefault.jpg" width="480" height="360"/></media:group></entry></feed>"#).into_bytes();
+        let adapter=provider(Strategy::NoLoginAtom,vec![raw(body.clone())]);
+        let page=run(adapter.acquire(request(95))).unwrap();
+        assert_eq!(page.entries.len(),1);
+        assert!(page.continuation.is_none());
+        assert!(matches!(page.state,rss_contracts::AcquisitionState::Partial {ref reason_code,..} if reason_code=="youtube_recent_atom_only"));
+        let entry=&page.entries[0];
+        assert_eq!(entry.provider_entry_key,video);
+        assert_eq!(entry.capture.captured_url,format!("https://www.youtube.com/watch?v={video}"));
+        assert_eq!(entry.observation.provider.as_deref(),Some("youtube"));
+        assert_eq!(entry.observation.description.as_deref(),Some("Actual feed shape"));
+        assert_eq!(entry.observation.published_at.as_ref().unwrap().raw_value,"2026-10-21T23:00:08+00:00");
+        let document=normalize::atom(&body,CHANNEL,100000,100,&bounds()).unwrap();
+        assert_eq!(document.entries[0].reliable_provider_identity(),format!("youtube/video/{video}"));
+        assert_eq!(document.entries[0].previews[0].url,format!("https://i4.ytimg.com/vi/{video}/hqdefault.jpg"));
+        assert_eq!(adapter.fetch.requests.lock().unwrap()[0].url,format!("https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL}"));
+    }
+}
+
+#[test]
+fn atom_channel_tail_requires_exact_canonical_binding_and_permalink_video() {
+    let video=video_id(1);
+    let body=|channel_id:&str,alternate:&str,permalink:&str| format!(r#"<feed xmlns="http://www.w3.org/2005/Atom"><id>yt:channel:{channel_id}</id><title>Creator</title>{alternate}<entry><id>yt:video:{video}</id><title>Video</title><link rel="alternate" href="{permalink}"/></entry></feed>"#).into_bytes();
+    let channel_link=format!(r#"<link rel="alternate" href="https://www.youtube.com/channel/{CHANNEL}"/>"#);
+    let shorts=format!("https://www.youtube.com/shorts/{video}");
+    for bytes in [
+        body("2234567890123456789012",&channel_link,&shorts),
+        body(&CHANNEL[2..],"",&shorts),
+        body(&CHANNEL[2..],r#"<link rel="alternate" href="https://www.youtube.com/channel/UC2234567890123456789012"/>"#,&shorts),
+    ] {
+        assert!(matches!(normalize::atom(&bytes,CHANNEL,100000,100,&bounds()),Err(rss_contracts::Error::Invalid {field}) if field=="youtube.atom_channel"));
+    }
+    for permalink in [
+        "https://www.youtube.com/shorts/Video000002",
+        "https://www.youtube.com.evil.example/shorts/Video000001",
+        "https://www.youtube.com/shorts/Video000001?other=1",
+    ] {
+        assert!(matches!(normalize::atom(&body(&CHANNEL[2..],&channel_link,permalink),CHANNEL,100000,100,&bounds()),Err(rss_contracts::Error::Invalid {field}) if field=="youtube.atom_permalink"));
+    }
+}

@@ -16,7 +16,9 @@ pub fn media_url(value: &str, bounds: &Bounds) -> Result<()> {
     }
     Ok(())
 }
-fn source(value: &str, mode: AccessMode, bounds: &Bounds) -> Result<(String,String)> {
+/// Validate the requested public mode and return its normalized URL and lowercase username.
+/// Profile and Reels targets remain distinct; this performs no network or account lookup.
+pub fn resolve_source(value: &str, mode: AccessMode, bounds: &Bounds) -> Result<(String,String)> {
     bounds.text("instagram.source_url",value,bounds.max_url_bytes)?;
     let mut url = Url::parse(value).map_err(|_| invalid("instagram.source_url"))?;
     if url.scheme() != "https" || !matches!(url.host_str(),Some("instagram.com" | "www.instagram.com"))
@@ -96,7 +98,7 @@ impl<F: PublicFetchPort, C: CanonicalEntryPort> InstagramProvider<F,C> {
             return Err(Error::Unsupported { provider:rss_contracts::Provider::Instagram, mode });
         }
         if self.source.paused || request.subscription.paused { return Err(Error::Cancelled); }
-        let (source_url,name) = source(&self.source.original_url,mode,&request.bounds)?;
+        let (source_url,name) = resolve_source(&self.source.original_url,mode,&request.bounds)?;
         let mut cursor: Cursor = if let Some(continuation) = &request.continuation {
             serde_json::from_str(&continuation.token).map_err(|_| invalid("instagram.cursor"))?
         } else { Cursor { version:1,source_url:source_url.clone(),source_revision:self.source.revision,mode,account_id:String::new(),page:None,digest:None,offset:0,

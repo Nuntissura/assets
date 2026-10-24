@@ -94,14 +94,18 @@ pub fn atom(bytes:&[u8],channel:&str,max_bytes:usize,max_entries:usize,bounds:&B
         let mut map=captured.lock().ok()?;let values=map.entry(utc.to_rfc3339()).or_default();if !values.contains(&time) {values.push(time);}Some(utc)
     }).build();
     let feed=parser.parse(bytes).map_err(|_|invalid("youtube.atom_parse"))?;
-    if feed.feed_type!=feed_rs::model::FeedType::Atom||feed.id!=format!("yt:channel:{channel}") {return Err(invalid("youtube.atom_channel"));}
+    if feed.feed_type!=feed_rs::model::FeedType::Atom||!public::channel_id(channel) {return Err(invalid("youtube.atom_channel"));}
+    let full_channel=feed.id==format!("yt:channel:{channel}");
+    let channel_tail=feed.id==format!("yt:channel:{}",&channel[2..])&&feed.links.iter().any(|link|
+        link.rel.as_deref()==Some("alternate")&&matches!(public::resolve_url(&link.href,bounds),Ok(public::SourceTarget::Channel(id)) if id==channel));
+    if !full_channel&&!channel_tail {return Err(invalid("youtube.atom_channel"));}
     if feed.entries.len()>max_entries {return Err(Error::LimitExceeded {field:"youtube.atom_entries".into()});}
     if feed.links.iter().any(|link|link.rel.as_deref()==Some("next")) {return Err(invalid("youtube.atom_unexpected_pagination"));}
     let digest=format!("{:x}",Sha256::digest(bytes));let mut entries:Vec<EntryEvidence>=vec![];
     for entry in feed.entries {
         let id=entry.id.strip_prefix("yt:video:").filter(|id|public::video_id(id)).ok_or_else(||invalid("youtube.atom_video"))?;
-        let url=format!("https://www.youtube.com/watch?v={id}");
-        if !entry.links.iter().any(|link|matches!(link.rel.as_deref(),None|Some("alternate"))&&link.href==url) {return Err(invalid("youtube.atom_permalink"));}
+        if !entry.links.iter().any(|link|matches!(link.rel.as_deref(),None|Some("alternate"))
+            &&matches!(public::resolve_url(&link.href,bounds),Ok(public::SourceTarget::Video(video)) if video==id)) {return Err(invalid("youtube.atom_permalink"));}
         let mut images=vec![];
         for media in &entry.media {for image in &media.thumbnails {
             let preview=Preview {url:image.image.uri.clone(),width:image.image.width,height:image.image.height};

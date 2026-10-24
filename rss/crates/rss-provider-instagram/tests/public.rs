@@ -65,6 +65,47 @@ fn provider(mode:AccessMode,replies:Vec<Reply>) -> InstagramProvider<Fetch,Canon
 }
 
 #[test]
+fn resolve_source_normalizes_profile_and_reels() {
+    for (input, mode, expected) in [
+        ("https://instagram.com/KngEmma", AccessMode::PublicProfile, "https://www.instagram.com/kngemma/"),
+        ("https://www.instagram.com/KngEmma/", AccessMode::PublicProfile, "https://www.instagram.com/kngemma/"),
+        ("https://instagram.com/KngEmma/reels", AccessMode::PublicReels, "https://www.instagram.com/kngemma/reels/"),
+        ("https://www.instagram.com/KngEmma/reels/", AccessMode::PublicReels, "https://www.instagram.com/kngemma/reels/"),
+    ] {
+        assert_eq!(public::resolve_source(input, mode, &bounds()).unwrap(), (expected.into(), "kngemma".into()));
+    }
+}
+
+#[test]
+fn resolve_source_rejects_wrong_mode_and_other_targets() {
+    for (input, mode) in [
+        ("https://www.instagram.com/kngemma/reels/", AccessMode::PublicProfile),
+        ("https://www.instagram.com/kngemma/", AccessMode::PublicReels),
+        ("https://www.instagram.com/kngemma/", AccessMode::PublicFeed),
+        ("https://www.instagram.com/kngemma/posts/", AccessMode::PublicProfile),
+        ("https://www.instagram.com/", AccessMode::PublicProfile),
+    ] {
+        assert!(public::resolve_source(input, mode, &bounds()).is_err(), "{input}: {mode:?}");
+    }
+}
+
+#[test]
+fn resolve_source_rejects_foreign_authority_credentials_and_query() {
+    for input in [
+        "https://example.org/kngemma/",
+        "https://www.instagram.com.example.org/kngemma/",
+        "http://www.instagram.com/kngemma/",
+        "https://user@www.instagram.com/kngemma/",
+        "https://user:password@www.instagram.com/kngemma/",
+        "https://www.instagram.com:8443/kngemma/",
+        "https://www.instagram.com/kngemma/?page=2",
+        "https://www.instagram.com/kngemma/#reels",
+    ] {
+        assert!(public::resolve_source(input, AccessMode::PublicProfile, &bounds()).is_err(), "{input}");
+    }
+}
+
+#[test]
 fn profile_and_reels_preserve_global_media_identity_with_distinct_modes() {
     let post = item(900001);
     let p = normalize::account(&serde_json::to_vec(&identity()).unwrap(),"kngemma",100000,&bounds()).unwrap();

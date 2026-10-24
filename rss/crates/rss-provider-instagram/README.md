@@ -1,7 +1,7 @@
 ---
 file_id: rss-instagram-manual-v1
 file_kind: package-manual
-updated_at: 2026-10-23
+updated_at: 2026-10-24
 ---
 
 <topic id="research">
@@ -16,10 +16,12 @@ Reuse RSS source/continuation contracts and hsscrap observations and identity ow
 
 `InstagramProvider<F, C>` implements `rss_contracts::ProviderPort` for `PublicProfile` and `PublicReels`. Select the exact profile URL or its `/reels/` view. Both resolve one numeric account; their traversal coverage remains distinct. Inject `PublicFetchPort` and `CanonicalEntryPort`. The host must prepare through existing `rss-acquisition::prepare_entry`, resolve reliable provider identity `instagram/media/<numeric-id>` and allocate canonical item, observation and ordered gallery member/reference IDs. Provider IDs and media IDs are evidence only.
 
+`public::resolve_source(url, requested_mode, bounds)` exposes the provider's existing source validation and returns `(normalized_url, lowercase_username)`. The normalized URL uses HTTPS, `www.instagram.com` and a trailing slash; `PublicProfile` accepts only the profile path and `PublicReels` only its `/reels/` path. Other modes, hosts, credentials, queries and fragments reject. This pure lookup performs no network access, resolves no numeric account and grants no source authority; acquisition still verifies the current account and request.
+
 Each transport call carries the complete source request and host execution reference. The host authorizes immediately before network and owner effects and rejects expired attempts. Retain exact request/response bytes before canonical preparation. An expected digest selects that retained document; missing or changed snapshots fail and cannot silently substitute a fresh page. The host may return HTTP 304 only with the exact authorized cached body. Pagination tokens bind numeric account, source URL, mode, source revision, executor and generation through the outer continuation, provider cursor, digest/offset and bounded prior identities. Each new page operation has its own authorized execution attempt. Persist the complete pending page and exact canonical preparation results so retries do not create new operation intents. Canonical stored continuations are opaque host state; the host never accepts an arbitrary caller-edited token as authoritative traversal history.
 
 An exhausted nonempty traversal reports Partial because the public API cannot establish an immutable full-history snapshot. A verified terminal empty page after continuation settles only that traversal. An initially empty profile is VerifiedEmpty only when the verified public account explicitly reports zero media and the profile endpoint explicitly ends. Empty Reels or ambiguous empty pages fail without clearing earlier data. Publication times preserve source Unix seconds and UTC precision; absent dates remain absent. Media URLs are expiring locators. The host must retain expiry/re-fetch behavior and merge Partial media evidence without deleting unmentioned canonical members.
 
-After registration, the coordinated build owner runs `cargo test --locked --manifest-path assets/rss/Cargo.toml -p rss-provider-instagram --tests` from the repository root under the active preparation gate. Tests use disposable callbacks and synthetic provider JSON. They do not establish real source availability, durable writes, browser rendering or host adoption. No live provider call is made by this library's tests.
+After registration, the coordinated build owner runs `cargo test --locked --manifest-path rss/Cargo.toml -p rss-provider-instagram --tests` from the repository root under the active preparation gate. Tests use disposable callbacks and synthetic provider JSON. They do not establish real source availability, durable writes, browser rendering or host adoption. No live provider call is made by this library's tests.
 
 </topic>

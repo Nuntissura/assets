@@ -87,3 +87,21 @@ Source selection discovers the actual Git root and checks all three selected man
 Run only after independent publication/adoption and coordinated preparation/native-slot clearance. Supply an exact immutable revision and configured existing Cargo/Rust/Git/wasm-bindgen/Node tools and shared target. Missing tools, wrong pins, changed archive selection or failed runtime calls stop with retained logs. Keep previous output directories for recovery; never reinterpret an uncertain run as a release. The first actual run at `6311655576f52fd615f5804c55466e7643de000d` passed four headless workflows, seven GUI/public-provider workflows and eight directly instantiated WASM checks. The generated module exports the actual `RssBridge`, including query composition and details-boundary methods. Its details checks cover rejected missing tickets, not successful panel rendering. Metadata selected six, fourteen and seven exact-pin Git packages respectively; all active graphs were acyclic, with the headless/core dependency boundaries preserved. Canonical WP state records artifact identities and independent verification. Generated native binaries, bindings and the 140-file canonical source archive are local outputs, not uploaded prebuilt releases. Full host, live-provider and connected-mode gates remain outstanding.
 
 </topic>
+
+
+<topic id="public-provider-source-boundaries">
+
+The native YouTube Atom normalizer accepts the exact requested full UC channel ID and its observed
+feed-ID tail representation. The latter also requires a feed alternate URL resolving to the full
+requested canonical channel. Permalinks reuse the native URL resolver and must name the exact entry
+video, including Shorts; evidence retains the canonical watch URL and global youtube/video identity.
+Foreign channels, video IDs and authorities remain errors. This addresses an actual retained HTTP200
+public feed rejected during host normalization; fixture tests do not establish live host adoption.
+
+Instagram exposes `public::resolve_source(raw, mode, bounds)` for host composition. It returns the
+canonical public source URL and normalized username through the same validator used by acquisition.
+Profile and Reels modes remain distinct; this resolver neither fetches nor grants source access.
+Provider crate manuals contain their owning public-API proof commands. Network, credentials, retained
+response storage, fresh authority and durable canonical owners remain host responsibilities.
+
+</topic>
