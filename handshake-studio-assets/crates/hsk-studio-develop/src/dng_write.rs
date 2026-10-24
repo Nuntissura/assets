@@ -593,7 +593,9 @@ pub fn dng_from_raw(raw: &DngRaw, settings: &DngExportSettings, parts: &DngParts
         && back.black_level.len() == raw.black_level.len()
         && back.black_level.iter().zip(&raw.black_level).all(|(a, b)| (a - b).abs() <= 1e-6)
         && back.black_delta_h.len() == raw.black_delta_h.len()
-        && back.black_delta_v.len() == raw.black_delta_v.len();
+        && back.black_delta_h.iter().zip(&raw.black_delta_h).all(|(a, b)| (a - b).abs() <= 1e-6)
+        && back.black_delta_v.len() == raw.black_delta_v.len()
+        && back.black_delta_v.iter().zip(&raw.black_delta_v).all(|(a, b)| (a - b).abs() <= 1e-6);
     if (back.width, back.height) != (raw.width, raw.height)
         || back.cfa_pattern != raw.cfa_pattern
         || back.active_area != raw.active_area

@@ -43,6 +43,8 @@ struct Src {
     white: u32,
     black: Vec<f64>,
     black_dim: (u16, u16),
+    delta_h: Vec<f64>,
+    delta_v: Vec<f64>,
     orientation: u16,
     opcode_list: bool,
     colour: bool,
@@ -62,6 +64,8 @@ fn base() -> Src {
         white: 4095,
         black: vec![64.0],
         black_dim: (1, 1),
+        delta_h: Vec::new(),
+        delta_v: Vec::new(),
         orientation: 1,
         opcode_list: false,
         colour: true,
@@ -129,6 +133,11 @@ fn build(s: &Src) -> (Vec<u8>, Vec<u16>) {
         (50717, long(s.white)),
         (274, short(s.orientation)),
     ];
+    for (tag, v) in [(50715u16, &s.delta_h), (50716u16, &s.delta_v)] {
+        if !v.is_empty() {
+            e.push((tag, FieldValue::SRational(v.iter().map(|x| ((x * 4.0).round() as i32, 4)).collect())));
+        }
+    }
     if let Some(m) = s.model {
         e.push((50708, FieldValue::Ascii(m.into())));
     }
@@ -199,8 +208,9 @@ fn assert_same_document(a: &DngRaw, b: &DngRaw) {
     for (x, y) in a.black_level.iter().zip(&b.black_level) {
         assert!((x - y).abs() < 1e-6, "black {x} vs {y}");
     }
-    assert_eq!(a.black_delta_h.len(), b.black_delta_h.len());
-    assert_eq!(a.black_delta_v.len(), b.black_delta_v.len());
+    // Values, not lengths: the arrays are exact quarter steps, so the decoded rationals compare exactly.
+    assert_eq!(a.black_delta_h, b.black_delta_h, "BlackLevelDeltaH values");
+    assert_eq!(a.black_delta_v, b.black_delta_v, "BlackLevelDeltaV values");
     assert_eq!(a.orientation, b.orientation);
     assert_eq!(a.unique_camera_model, b.unique_camera_model);
     assert_eq!(a.samples(), b.samples(), "raw data equals sample for sample");
@@ -237,12 +247,23 @@ fn uncompressed_dng_round_trips_samples_and_tags() {
     s.orientation = 6;
     s.active = Some([0, 0, 48, 64]);
     s.crop = Some(([2, 4], [58, 40]));
+    // Non-trivial, non-symmetric deltas: 64 columns (active width) and 48 rows (active height).
+    let want_h: Vec<f64> = (0..64).map(|i| f64::from((i * 7) % 13 - 6) * 0.25).collect();
+    let want_v: Vec<f64> = (0..48).map(|i| f64::from((i * 5) % 11 - 3) * 0.25 + 0.5).collect();
+    s.delta_h = want_h.clone();
+    s.delta_v = want_v.clone();
     let (raw, _) = raw_of(&s);
+    assert_eq!(raw.black_delta_h, want_h, "source decodes the authored DeltaH");
+    assert_eq!(raw.black_delta_v, want_v, "source decodes the authored DeltaV");
     assert_eq!(raw.unapplied, vec!["orientation"]);
     let out = export(&raw, &no_preview());
     assert_eq!((out.bits_per_sample, out.compression, out.preview), (16, DngCompression::None, None));
     let back = decode_container(&out.bytes).unwrap();
     assert_same_document(&raw, &back);
+    assert_eq!(back.black_delta_h, want_h, "written DeltaH equals the authored values in order");
+    assert_eq!(back.black_delta_v, want_v, "written DeltaV equals the authored values in order");
+    assert!(want_h.iter().any(|v| *v != 0.0) && want_h.windows(2).any(|w| w[0] != w[1]));
+    assert!(want_v.iter().any(|v| *v != 0.0) && want_v.windows(2).any(|w| w[0] != w[1]));
     assert_eq!(back.default_window(), raw.default_window());
     assert_eq!(back.orientation, 6);
     assert_eq!(out.dng_sha256.as_slice(), Sha256::digest(&out.bytes).as_slice());
