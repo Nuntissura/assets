@@ -143,6 +143,9 @@ pub struct Adjustments {
     pub calibration: crate::effects::Calibration,
     /// STU-RAW-126 creative look (a `.cube` table with an amount); per pixel, after calibration.
     pub look: Option<crate::look::CreativeLook>,
+    /// STU-RAW-124 retouch areas, core distraction areas and adapter fill records (gated by
+    /// `enable_retouch` / `enable_distraction_removal`; whole frame, first after the tiles).
+    pub retouch: crate::retouch::RetouchStack,
 }
 
 /// Raw-form white balance (STU-RAW-110): kelvin 2000..25000 (the Kim Planckian approximation ends at
@@ -239,6 +242,7 @@ impl Default for Adjustments {
             effects: crate::effects::Effects::default(),
             calibration: crate::effects::Calibration::default(),
             look: None,
+            retouch: crate::retouch::RetouchStack::default(),
         }
     }
 }

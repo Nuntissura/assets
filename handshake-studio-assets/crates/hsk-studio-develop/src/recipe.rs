@@ -54,15 +54,11 @@ impl Enables {
     }
 
     /// First enabled group that this build cannot execute (spec order), if any. Colour adjustments
-    /// (vibrance, saturation, mixer), detail (clarity) and the tone curve run in `adjust.rs`.
+    /// (vibrance, saturation, mixer), detail (clarity) and the tone curve run in `adjust.rs`;
+    /// retouch and distraction removal in `retouch.rs`. Red-eye stays refused: STU-RAW-124 lists no
+    /// red-eye record fields (spec gap, lane SMB-LR-HEALING-1).
     fn first_unsupported(&self) -> Option<&'static str> {
-        [
-            (self.enable_red_eye, "red_eye"),
-            (self.enable_retouch, "retouch"),
-            (self.enable_distraction_removal, "distraction_removal"),
-        ]
-        .into_iter()
-        .find_map(|(on, name)| on.then_some(name))
+        [(self.enable_red_eye, "red_eye")].into_iter().find_map(|(on, name)| on.then_some(name))
     }
 }
 
@@ -232,6 +228,7 @@ pub(crate) struct PreparedRecipe {
     /// Working and output profiles differ: a converter (Prism admitted route) is required.
     pub profile_transform: bool,
     pub adjust: PreparedAdjust,
+    pub retouch: crate::retouch::PreparedRetouch,
 }
 
 impl DevelopRecipe {
@@ -335,6 +332,11 @@ impl DevelopRecipe {
             curves,
             profile_transform: self.working_profile != self.output_profile,
             adjust: PreparedAdjust::prepare(&self.adjust, Gates::from_enables(&self.enables))?,
+            retouch: crate::retouch::PreparedRetouch::prepare(
+                &self.adjust.retouch,
+                self.enables.enable_retouch,
+                self.enables.enable_distraction_removal,
+            )?,
         })
     }
 }

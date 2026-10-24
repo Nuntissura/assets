@@ -1001,6 +1001,9 @@ fn develop_core(
         if !prepared.adjust.local.is_empty() {
             return Err(DevelopError::UnsupportedContribution("mask_group_whole_frame"));
         }
+        if prepared.retouch.is_active() {
+            return Err(DevelopError::UnsupportedContribution("retouch_whole_frame"));
+        }
     }
     if request.execution_hint == ExecutionHint::Sse2 {
         return Err(DevelopError::UnsupportedExecution);
@@ -1315,8 +1318,9 @@ fn geometry_stage(
     Ok(DevelopedImage { width: x1 - x0, height: y1 - y0, rgb })
 }
 
-/// Whole-frame stages after the tiles: clarity (when `enable_detail` and the slider is nonzero),
-/// then the local corrections (when `enable_mask_group_based_corrections`).
+/// Whole-frame stages after the tiles: retouch and distraction removal (when `enable_retouch` /
+/// `enable_distraction_removal`; `retouch.rs`), clarity (when `enable_detail` and the slider is
+/// nonzero), then the local corrections (when `enable_mask_group_based_corrections`).
 fn postprocess(
     image: &mut DevelopedImage,
     recipe: &DevelopRecipe,
@@ -1325,6 +1329,7 @@ fn postprocess(
 ) -> Result<(), DevelopError> {
     let prepared = recipe.prepare()?;
     cancel.check()?;
+    crate::retouch::apply(&recipe.adjust.retouch, prepared.retouch, &mut image.rgb, image.width, image.height, threads, cancel)?;
     let (width, height) = (image.width, image.height);
     let mut clarity_step = |rgb: &mut [f32]| -> Result<(), DevelopError> {
         if prepared.adjust.clarity == 0.0 {

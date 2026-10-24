@@ -6,6 +6,10 @@
 //! written (lossless round trip; numbers are finite binary64, which JSON round-trips exactly).
 //! Local-correction masks: every develop `MaskSource` (`linear_gradient`, `radial_gradient`,
 //! `brush`, `luminance_range`, `colour_range`; lane SMB-HARNESS-DEVELOP-3 added the first three).
+//! Retouch (lane SMB-LR-HEALING-1): the optional `edit.retouch` object (written only when the
+//! develop `RetouchStack` is not empty, so older entries keep their bytes; absent = empty) carries
+//! every STU-RAW-124 area field, the distraction areas and the adapter fill records (digests as
+//! 64 hex digits), bounded by develop's `retouch::MAX_*` limits.
 //!
 //! The decoder treats the bytes as hostile: size cap before parsing, serde_json's nesting limit,
 //! exact array lengths, finite numbers only, list and string caps (develop's own `MAX_*` limits),
@@ -20,6 +24,9 @@ use hsk_studio_develop::{
     RadialGradient, Sharpen, Wheel,
 };
 use hsk_studio_develop::local::MAX_DABS;
+use hsk_studio_develop::retouch::{
+    self, AdapterFillRecord, AdapterRect, DistractionArea, PatchVariation, RetouchArea, RetouchMethod, RetouchStack, SourceState, SpotType,
+};
 use serde_json::{Map, Value, json};
 
 pub const SCHEMA: &str = "hsk.studio.harness.develop@1";
@@ -61,6 +68,36 @@ fn mask(m: &Mask) -> Result<Value, Refusal> {
         MaskBlend::Subtract => "subtract",
     };
     Ok(json!({"id": m.id, "active": m.active, "inverted": m.inverted, "value": m.value, "blend": blend, "source": source}))
+}
+
+fn brush(b: &Brush) -> Value {
+    json!({"dabs": b.dabs.iter().map(|d| [d.0, d.1]).collect::<Vec<_>>(), "radius": b.radius, "flow": b.flow, "feather": b.feather})
+}
+
+fn hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn adapter_rect(r: &AdapterRect) -> Value {
+    json!([r.x, r.y, r.width, r.height])
+}
+
+fn retouch(s: &RetouchStack) -> Value {
+    let areas = s.areas.iter().map(|a| {
+        json!({"spot_type": a.spot_type.key(), "heal_version": a.heal_version, "feather": a.feather, "opacity": a.opacity, "seed": a.seed,
+            "method": a.method.key(), "source_state": a.source_state.key(), "masks": a.masks.iter().map(brush).collect::<Vec<_>>(),
+            "source_x": a.source_x, "source_y": a.source_y, "offset_y": a.offset_y, "centre_x": a.centre_x, "centre_y": a.centre_y, "radius": a.radius})
+    });
+    let distraction = s.distraction.iter().map(|d| json!({"masks": d.masks.iter().map(brush).collect::<Vec<_>>(), "seed": d.seed}));
+    let fills = s.adapter_fills.iter().map(|f| {
+        json!({"adapter_id": f.adapter_id, "model_id": f.model_id, "model_version": f.model_version, "ran_locally": f.ran_locally,
+            "fill_method": f.fill_method, "image_extent": [f.image_extent.0, f.image_extent.1], "search_rect": adapter_rect(&f.search_rect),
+            "target_rect": adapter_rect(&f.target_rect), "black_level": f.black_level, "gamma_type": f.gamma_type,
+            "input_digest": hex(&f.input_digest), "patch_digest": hex(&f.patch_digest), "remap_info": f.remap_info,
+            "variations": f.variations.iter().map(|v| json!({"id": v.id, "patch_digest": hex(&v.patch_digest)})).collect::<Vec<_>>(),
+            "selected_variation": f.selected_variation})
+    });
+    json!({"areas": areas.collect::<Vec<_>>(), "distraction": distraction.collect::<Vec<_>>(), "adapter_fills": fills.collect::<Vec<_>>()})
 }
 
 /// Encodes an edit (see the module documentation).
@@ -107,6 +144,9 @@ pub fn encode(layer_id: &str, tiles_signature: Option<&str>, edit: &DevelopEdit)
     let mut value = value;
     if let Some(edit_object) = value.get_mut("edit").and_then(Value::as_object_mut) {
         edit_object.extend(super::develop_more::encode_families(a));
+        if !a.retouch.is_empty() {
+            edit_object.insert("retouch".to_string(), retouch(&a.retouch));
+        }
     }
     let bytes = serde_json::to_vec(&value).map_err(|e| Refusal { code: "develop_entry_encode", detail: e.to_string() })?;
     if bytes.len() > MAX_ENTRY_BYTES {
@@ -269,6 +309,138 @@ fn decode_correction(v: &Value, path: &str, dabs_left: &mut usize) -> Result<Cor
     })
 }
 
+fn decode_brush(v: &Value, path: &str, dabs_left: &mut usize) -> Result<Brush, Refusal> {
+    let b = object(v, path, &["dabs", "radius", "flow", "feather"])?;
+    let raw = list(b.get("dabs"), &format!("{path}.dabs"), (*dabs_left).min(MAX_DABS))?;
+    *dabs_left = dabs_left.saturating_sub(raw.len());
+    let dabs = raw.iter().map(|d| numbers::<2>(Some(d), &format!("{path}.dabs")).map(|[x, y]| (x, y))).collect::<Result<Vec<_>, _>>()?;
+    Ok(Brush { dabs, radius: num(b, "radius", path)?, flow: num(b, "flow", path)?, feather: num(b, "feather", path)? })
+}
+
+fn decode_brushes(v: Option<&Value>, path: &str, dabs_left: &mut usize) -> Result<Vec<Brush>, Refusal> {
+    list(v, path, retouch::MAX_AREA_MASKS)?.iter().enumerate().map(|(i, b)| decode_brush(b, &format!("{path}[{i}]"), dabs_left)).collect()
+}
+
+fn unsigned(o: &Map<String, Value>, key: &str, path: &str) -> Result<u64, Refusal> {
+    o.get(key).and_then(Value::as_u64).ok_or_else(|| field(&format!("{path}.{key}")))
+}
+
+fn unsigned32(v: &Value, path: &str) -> Result<u32, Refusal> {
+    v.as_u64().and_then(|x| u32::try_from(x).ok()).ok_or_else(|| field(path))
+}
+
+fn digest(o: &Map<String, Value>, key: &str, path: &str) -> Result<[u8; 32], Refusal> {
+    let bad = || field(&format!("{path}.{key}"));
+    let s = o.get(key).and_then(Value::as_str).filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())).ok_or_else(bad)?;
+    let mut out = [0u8; 32];
+    for (slot, pair) in out.iter_mut().zip(s.as_bytes().chunks_exact(2)) {
+        let text = std::str::from_utf8(pair).map_err(|_| bad())?;
+        *slot = u8::from_str_radix(text, 16).map_err(|_| bad())?;
+    }
+    Ok(out)
+}
+
+fn decode_adapter_rect(v: Option<&Value>, path: &str) -> Result<AdapterRect, Refusal> {
+    let a = v.and_then(Value::as_array).filter(|a| a.len() == 4).ok_or_else(|| field(path))?;
+    let part = |i: usize| a.get(i).ok_or_else(|| field(path)).and_then(|x| unsigned32(x, path));
+    Ok(AdapterRect { x: part(0)?, y: part(1)?, width: part(2)?, height: part(3)? })
+}
+
+const AREA_KEYS: [&str; 14] = [
+    "spot_type", "heal_version", "feather", "opacity", "seed", "method", "source_state", "masks", "source_x", "source_y", "offset_y",
+    "centre_x", "centre_y", "radius",
+];
+const FILL_KEYS: [&str; 15] = [
+    "adapter_id", "model_id", "model_version", "ran_locally", "fill_method", "image_extent", "search_rect", "target_rect", "black_level",
+    "gamma_type", "input_digest", "patch_digest", "remap_info", "variations", "selected_variation",
+];
+
+fn decode_area(v: &Value, path: &str, dabs_left: &mut usize) -> Result<RetouchArea, Refusal> {
+    let a = object(v, path, &AREA_KEYS)?;
+    let key = |k: &str| a.get(k).and_then(Value::as_str).ok_or_else(|| field(&format!("{path}.{k}")));
+    Ok(RetouchArea {
+        spot_type: SpotType::from_key(key("spot_type")?).ok_or_else(|| field(&format!("{path}.spot_type")))?,
+        heal_version: unsigned32(a.get("heal_version").unwrap_or(&Value::Null), &format!("{path}.heal_version"))?,
+        feather: num(a, "feather", path)?,
+        opacity: num(a, "opacity", path)?,
+        seed: unsigned(a, "seed", path)?,
+        method: RetouchMethod::from_key(key("method")?).ok_or_else(|| field(&format!("{path}.method")))?,
+        source_state: SourceState::from_key(key("source_state")?).ok_or_else(|| field(&format!("{path}.source_state")))?,
+        masks: decode_brushes(a.get("masks"), &format!("{path}.masks"), dabs_left)?,
+        source_x: num(a, "source_x", path)?,
+        source_y: num(a, "source_y", path)?,
+        offset_y: num(a, "offset_y", path)?,
+        centre_x: num(a, "centre_x", path)?,
+        centre_y: num(a, "centre_y", path)?,
+        radius: num(a, "radius", path)?,
+    })
+}
+
+fn decode_fill(v: &Value, path: &str) -> Result<AdapterFillRecord, Refusal> {
+    let f = object(v, path, &FILL_KEYS)?;
+    let extent = f.get("image_extent").and_then(Value::as_array).filter(|a| a.len() == 2).ok_or_else(|| field(&format!("{path}.image_extent")))?;
+    let ext = |k: usize| unsigned32(extent.get(k).unwrap_or(&Value::Null), &format!("{path}.image_extent"));
+    let remap_info = list(f.get("remap_info"), &format!("{path}.remap_info"), retouch::MAX_VARIATIONS)?
+        .iter()
+        .map(|s| s.as_str().filter(|s| s.len() <= retouch::MAX_RECORD_TEXT).map(str::to_string).ok_or_else(|| field(&format!("{path}.remap_info"))))
+        .collect::<Result<Vec<_>, _>>()?;
+    let variations = list(f.get("variations"), &format!("{path}.variations"), retouch::MAX_VARIATIONS)?
+        .iter()
+        .map(|v| {
+            let v = object(v, &format!("{path}.variations"), &["id", "patch_digest"])?;
+            Ok(PatchVariation { id: text(v, "id", path)?, patch_digest: digest(v, "patch_digest", path)? })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
+    let selected_variation = match f.get("selected_variation") {
+        Some(Value::Null) => None,
+        Some(x) => Some(unsigned32(x, &format!("{path}.selected_variation"))?),
+        None => return Err(field(&format!("{path}.selected_variation"))),
+    };
+    Ok(AdapterFillRecord {
+        adapter_id: text(f, "adapter_id", path)?,
+        model_id: text(f, "model_id", path)?,
+        model_version: text(f, "model_version", path)?,
+        ran_locally: boolean(f, "ran_locally", path)?,
+        fill_method: text(f, "fill_method", path)?,
+        image_extent: (ext(0)?, ext(1)?),
+        search_rect: decode_adapter_rect(f.get("search_rect"), &format!("{path}.search_rect"))?,
+        target_rect: decode_adapter_rect(f.get("target_rect"), &format!("{path}.target_rect"))?,
+        black_level: num(f, "black_level", path)?,
+        gamma_type: text(f, "gamma_type", path)?,
+        input_digest: digest(f, "input_digest", path)?,
+        patch_digest: digest(f, "patch_digest", path)?,
+        remap_info,
+        variations,
+        selected_variation,
+    })
+}
+
+fn decode_retouch(v: &Value) -> Result<RetouchStack, Refusal> {
+    let o = object(v, "retouch", &["areas", "distraction", "adapter_fills"])?;
+    // Dabs are bounded across the whole retouch object (develop's MAX_STACK_DABS), lists by develop's caps.
+    let mut dabs_left = retouch::MAX_STACK_DABS;
+    let areas = list(o.get("areas"), "retouch.areas", retouch::MAX_RETOUCH_AREAS)?
+        .iter()
+        .enumerate()
+        .map(|(i, a)| decode_area(a, &format!("retouch.areas[{i}]"), &mut dabs_left))
+        .collect::<Result<Vec<_>, _>>()?;
+    let distraction = list(o.get("distraction"), "retouch.distraction", retouch::MAX_DISTRACTION_AREAS)?
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let path = format!("retouch.distraction[{i}]");
+            let d = object(d, &path, &["masks", "seed"])?;
+            Ok(DistractionArea { masks: decode_brushes(d.get("masks"), &format!("{path}.masks"), &mut dabs_left)?, seed: unsigned(d, "seed", &path)? })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
+    let adapter_fills = list(o.get("adapter_fills"), "retouch.adapter_fills", retouch::MAX_ADAPTER_FILLS)?
+        .iter()
+        .enumerate()
+        .map(|(i, f)| decode_fill(f, &format!("retouch.adapter_fills[{i}]")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(RetouchStack { areas, distraction, adapter_fills })
+}
+
 const EDIT_KEYS: [&str; 15] = [
     "exposure_stops", "version", "white_balance", "tone", "presence", "mixer", "parametric", "working_to_xyz_d50", "luma",
     "absolute_white_balance", "point_colours", "grayscale", "grading", "detail", "local",
@@ -277,7 +449,10 @@ const EDIT_KEYS: [&str; 15] = [
 fn decode_edit(v: &Value) -> Result<DevelopEdit, Refusal> {
     // The lane SMB-DEVELOP-LENS-PRESETS family objects are optional (older entries lack them).
     let o = v.as_object().ok_or_else(|| field("edit"))?;
-    if EDIT_KEYS.iter().any(|k| !o.contains_key(*k)) || o.keys().any(|k| !EDIT_KEYS.contains(&k.as_str()) && !super::develop_more::FAMILY_KEYS.contains(&k.as_str())) {
+    // `retouch` is optional too (lane SMB-LR-HEALING-1; absent = no retouch).
+    if EDIT_KEYS.iter().any(|k| !o.contains_key(*k))
+        || o.keys().any(|k| !EDIT_KEYS.contains(&k.as_str()) && !super::develop_more::FAMILY_KEYS.contains(&k.as_str()) && k != "retouch")
+    {
         return Err(field("edit"));
     }
     let sub = |key: &str, keys: &[&str]| -> Result<&Map<String, Value>, Refusal> { object(o.get(key).ok_or_else(|| field(key))?, key, keys) };
@@ -393,6 +568,10 @@ fn decode_edit(v: &Value) -> Result<DevelopEdit, Refusal> {
         effects: hsk_studio_develop::Effects::default(),
         calibration: hsk_studio_develop::Calibration::default(),
         look: None,
+        retouch: match o.get("retouch") {
+            Some(r) => decode_retouch(r)?,
+            None => RetouchStack::default(),
+        },
     };
     super::develop_more::decode_families(o, &mut adjust)?;
     Ok(DevelopEdit { exposure_stops: num(o, "exposure_stops", "edit")?, adjust })

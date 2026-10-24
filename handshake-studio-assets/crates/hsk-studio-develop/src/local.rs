@@ -220,7 +220,7 @@ fn finite(values: &[f64]) -> Result<(), DevelopError> {
 }
 
 impl Mask {
-    fn validate(&self) -> Result<(), DevelopError> {
+    pub(crate) fn validate(&self) -> Result<(), DevelopError> {
         finite(&[self.value])?;
         if !(0.0..=1.0).contains(&self.value) {
             return Err(DevelopError::InvalidMask);
@@ -426,20 +426,33 @@ impl PreparedLocal {
 
 /// Rasterise a brush into a coverage plane (`width * height` f32 in 0..1).
 fn rasterise_brush(brush: &Brush, width: usize, height: usize) -> Result<Vec<f32>, DevelopError> {
+    rasterise_brush_window(brush, width, height, (0, 0, width, height))
+}
+
+/// [`rasterise_brush`] restricted to the window `(x0, y0, w, h)` of a `width * height` frame
+/// (row-major `w * h`); dab positions and the radius stay relative to the whole frame, so every
+/// window pixel equals the whole-frame plane's pixel (the retouch stage rasterises its masks this way).
+pub(crate) fn rasterise_brush_window(
+    brush: &Brush,
+    width: usize,
+    height: usize,
+    window: (usize, usize, usize, usize),
+) -> Result<Vec<f32>, DevelopError> {
+    let (wx, wy, ww, wh) = window;
     let radius = (brush.radius * width.min(height) as f64).max(0.5);
     let side = (2.0 * radius).ceil() + 2.0;
     if (brush.dabs.len() as f64) * side * side > BRUSH_VISIT_BUDGET as f64 {
         return Err(DevelopError::InvalidMask);
     }
-    let mut plane = vec![0.0f32; width * height];
+    let mut plane = vec![0.0f32; ww * wh];
     let inner = 1.0 - brush.feather;
     for (nx, ny) in &brush.dabs {
         let (cx, cy) = (nx * width as f64, ny * height as f64);
-        let x0 = ((cx - radius).floor().max(0.0)) as usize;
-        let x1 = ((cx + radius).ceil().min(width as f64 - 1.0)).max(-1.0);
-        let y0 = ((cy - radius).floor().max(0.0)) as usize;
-        let y1 = ((cy + radius).ceil().min(height as f64 - 1.0)).max(-1.0);
-        if x1 < 0.0 || y1 < 0.0 {
+        let x0 = ((cx - radius).floor().max(wx as f64)) as usize;
+        let x1 = ((cx + radius).ceil().min((wx + ww) as f64 - 1.0)).max(-1.0);
+        let y0 = ((cy - radius).floor().max(wy as f64)) as usize;
+        let y1 = ((cy + radius).ceil().min((wy + wh) as f64 - 1.0)).max(-1.0);
+        if x1 < wx as f64 || y1 < wy as f64 {
             continue;
         }
         for y in y0..=(y1 as usize) {
@@ -450,7 +463,7 @@ fn rasterise_brush(brush: &Brush, width: usize, height: usize) -> Result<Vec<f32
                 }
                 let falloff = if d <= inner { 1.0 } else { 1.0 - smoothstep((d - inner) / brush.feather) };
                 let alpha = brush.flow * falloff;
-                let slot = &mut plane[y * width + x];
+                let slot = &mut plane[(y - wy) * ww + (x - wx)];
                 *slot = (1.0 - (1.0 - f64::from(*slot)) * (1.0 - alpha)) as f32;
             }
         }
