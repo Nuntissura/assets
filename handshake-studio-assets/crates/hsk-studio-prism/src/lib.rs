@@ -30,6 +30,8 @@ mod recolor;
 pub use recolor::*;
 mod lut;
 pub use lut::{CubeLut, LutError, MAX_CUBE_BYTES, MAX_LUT_1D_SIZE, MAX_LUT_3D_SIZE, MAX_LUT_VALUES, parse_cube};
+mod proof;
+pub use proof::*;
 mod working;
 pub use working::{
     WORKING_PROFILE_LINEAR_SRGB, WORKING_PROFILE_LINEAR_SRGB_ADMITTED, WORKING_PROFILE_LINEAR_SRGB_ADMITTED_SHA256_HEX,
