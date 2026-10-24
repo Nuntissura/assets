@@ -22,6 +22,14 @@
 //! target raw and is reported as a loss. Group switches (`enable_*`) follow the source when every
 //! group sharing the switch is copied, otherwise the target keeps its switch on if either was on.
 //! Lightroom Classic behaviour of each group is UNVERIFIED (D5).
+//!
+//! Spot removal (lane SMB-LR-HEALING-2, [`SettingsGroup::SpotRemoval`]): the STU-RAW-124 retouch
+//! areas and distraction areas copy as recorded, i.e. their centres, radii and source points as the
+//! same normalised coordinates on the target frame (declared reading; not re-matched to target
+//! content), and `enable_retouch` / `enable_distraction_removal` follow the source (the group owns
+//! both switches). Generative adapter fill records are pixel records of the source image: they are
+//! not copied, the target keeps its own, and a source holding any reports
+//! `adapter_fill_image_specific`.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::DevelopError;
@@ -105,10 +113,11 @@ pub enum SettingsGroup {
     Masking,
     CreativeLook,
     ProcessVersion,
+    SpotRemoval,
 }
 
 impl SettingsGroup {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::WhiteBalance,
         Self::BasicTone,
         Self::Presence,
@@ -127,6 +136,7 @@ impl SettingsGroup {
         Self::Masking,
         Self::CreativeLook,
         Self::ProcessVersion,
+        Self::SpotRemoval,
     ];
 
     pub const fn key(self) -> &'static str {
@@ -149,6 +159,7 @@ impl SettingsGroup {
             Self::Masking => "masking",
             Self::CreativeLook => "creative_look",
             Self::ProcessVersion => "process_version",
+            Self::SpotRemoval => "spot_removal",
         }
     }
 
@@ -274,6 +285,15 @@ pub fn copy_groups(
             SettingsGroup::ProcessVersion => {
                 out.process_version = source.process_version;
                 out.engine_version = source.engine_version;
+            }
+            SettingsGroup::SpotRemoval => {
+                o.retouch.areas.clone_from(&s.retouch.areas);
+                o.retouch.distraction.clone_from(&s.retouch.distraction);
+                out.enables.enable_retouch = source.enables.enable_retouch;
+                out.enables.enable_distraction_removal = source.enables.enable_distraction_removal;
+                if !s.retouch.adapter_fills.is_empty() {
+                    losses.push(GroupLoss { group: *g, code: "adapter_fill_image_specific" });
+                }
             }
         }
     }

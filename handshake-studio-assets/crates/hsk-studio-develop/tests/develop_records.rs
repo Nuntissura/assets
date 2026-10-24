@@ -88,7 +88,7 @@ fn copy_paste_and_sync_settings_per_group() {
     assert_eq!(losses.iter().map(|l| l.code).collect::<Vec<_>>(), ["white_balance_needs_target_raw"]);
     // Group keys are stable.
     assert_eq!(SettingsGroup::from_key("colour_grading"), Some(SettingsGroup::ColourGrading));
-    assert_eq!(SettingsGroup::ALL.iter().map(|g| g.key()).collect::<BTreeSet<_>>().len(), 18);
+    assert_eq!(SettingsGroup::ALL.iter().map(|g| g.key()).collect::<BTreeSet<_>>().len(), 19);
 }
 
 #[test]
@@ -223,4 +223,78 @@ fn hostile_record_inputs_are_bounded() {
     assert_eq!(batch_apply(&mut recs, &[("zz".to_owned(), 1)], BatchOp::Paste(&clip), "x", &small).unwrap_err(), RecordError::NotFound);
     assert_eq!(recs[0], rec);
     assert_eq!(DevelopRecord::new("r", "a", recipe(), RecordLimits { max_history: 0, ..small }).unwrap_err().code(), "record_history_limit");
+}
+
+/// Lane SMB-LR-HEALING-2: the spot-removal group copies the retouch and distraction areas bit-exact
+/// (normalised coordinates, declared) with their two switches, through copy / paste and through a
+/// batch sync; adapter fill records stay the target's and are named as a loss; other groups never
+/// touch the retouch stack.
+#[test]
+fn spot_removal_group_copies_and_syncs() {
+    let mut src = recipe();
+    src.adjust.retouch.areas = vec![
+        RetouchArea { feather: 0.1 + 0.2, ..RetouchArea::circle(SpotType::Heal, (0.3, 0.4), 0.05, (0.45, 0.4)) },
+        RetouchArea { source_state: SourceState::EngineChosen, ..RetouchArea::circle(SpotType::Clone, (0.7, 0.2), 0.03, (0.7, 0.2)) },
+    ];
+    src.adjust.retouch.distraction = vec![DistractionArea { masks: vec![Brush { dabs: vec![(0.5, 0.5)], radius: 0.04, flow: 1.0, feather: 0.0 }], seed: 9 }];
+    src.enables.enable_retouch = true;
+    src.enables.enable_distraction_removal = true;
+    src.adjust.tone.contrast = 20.0;
+    let mut target = recipe();
+    target.adjust.tone.blacks = -9.0;
+    assert_eq!(SettingsGroup::from_key("spot_removal"), Some(SettingsGroup::SpotRemoval));
+
+    let clip = SettingsClipboard::copy(&src, set(&[SettingsGroup::SpotRemoval])).unwrap();
+    let (pasted, losses) = clip.paste(&target).unwrap();
+    assert!(losses.is_empty());
+    let mut expect = target.clone();
+    expect.adjust.retouch.areas = src.adjust.retouch.areas.clone();
+    expect.adjust.retouch.distraction = src.adjust.retouch.distraction.clone();
+    expect.enables.enable_retouch = true;
+    expect.enables.enable_distraction_removal = true;
+    assert_eq!(pasted, expect, "only the spot-removal group changed");
+    assert_eq!(pasted.adjust.retouch.areas[0].feather.to_bits(), (0.1f64 + 0.2).to_bits());
+
+    // Another group leaves the retouch stack alone; copying spot removal from an empty source clears it.
+    let (other, _) = copy_groups(&src, &pasted, &set(&[SettingsGroup::BasicTone])).unwrap();
+    assert_eq!(other.adjust.retouch, pasted.adjust.retouch);
+    let (cleared, _) = copy_groups(&recipe(), &pasted, &set(&[SettingsGroup::SpotRemoval])).unwrap();
+    assert!(cleared.adjust.retouch.is_empty() && !cleared.enables.enable_retouch && !cleared.enables.enable_distraction_removal);
+
+    // Adapter fill records are image-specific: not copied, the target keeps its own, the loss named.
+    let fill = AdapterFillRecord {
+        adapter_id: "studio.adapter.genfill".into(),
+        model_id: "vendor/remove".into(),
+        model_version: "1".into(),
+        ran_locally: true,
+        fill_method: "generative".into(),
+        image_extent: (100, 100),
+        search_rect: AdapterRect { x: 0, y: 0, width: 50, height: 50 },
+        target_rect: AdapterRect { x: 10, y: 10, width: 5, height: 5 },
+        black_level: 0.0,
+        gamma_type: "linear".into(),
+        input_digest: [1; 32],
+        patch_digest: [2; 32],
+        remap_info: Vec::new(),
+        variations: Vec::new(),
+        selected_variation: None,
+    };
+    let mut with_fill = src.clone();
+    with_fill.enables.enable_distraction_removal = false;
+    with_fill.adjust.retouch.adapter_fills = vec![fill];
+    let (no_fill, losses) = copy_groups(&with_fill, &target, &set(&[SettingsGroup::SpotRemoval])).unwrap();
+    assert!(no_fill.adjust.retouch.adapter_fills.is_empty());
+    assert_eq!(losses, vec![GroupLoss { group: SettingsGroup::SpotRemoval, code: "adapter_fill_image_specific" }]);
+
+    // Sync over a selection: one history step per record, every record gets the spots.
+    let l = RecordLimits::default();
+    let mut recs = vec![DevelopRecord::new("r1", "a1", recipe(), l).unwrap(), DevelopRecord::new("r2", "a2", target.clone(), l).unwrap()];
+    let sel: Vec<(String, u64)> = recs.iter().map(|r| (r.record_id().to_owned(), r.revision())).collect();
+    let out = batch_apply(&mut recs, &sel, BatchOp::Paste(&clip), "Sync spot removal", &l).unwrap();
+    assert_eq!(out.len(), 2);
+    for r in &recs {
+        assert_eq!(r.recipe().adjust.retouch.areas, src.adjust.retouch.areas);
+        assert!(r.recipe().enables.enable_retouch);
+        assert_eq!(r.history().last().unwrap().label, "Sync spot removal");
+    }
 }
