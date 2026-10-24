@@ -266,6 +266,11 @@ member holds the imported design records, instance bindings and origins.
 - A trim past a limit commits the achieved part (`state_json()["timeline"]["last_trim"]`); a
   refusal names its code in the status log and changes nothing. Unknown source lengths refuse
   source extensions (`source_extent_unknown`).
+- Rate stretch:
+  1. Rate stretch (lane SMB-PR-RATE-STRETCH-1): toolbar Rate Stretch (or R with the timeline active) makes clip edge drags change the clip's speed, not its source window; the other edge stays, nothing ripples; one undo step per drag; a drag stops at the neighbour (rate_stretch_overlap) or at one frame (rate_stretch_below_one_frame), see state_json timeline.last_trim.
+  2. Ctrl+R with a clip selected opens the Speed/Duration row: Speed % or Duration (frames) - the field edited last is kept, the other derived - plus Reverse Speed; Apply is one undo step. Maintain Audio Pitch and Interpolation are shown unavailable (no clip field stores them).
+  3. Clips not at 100 % show their speed after the name, e.g. (50.00%) or (-100.00%) for reverse. Slip at speed moves the source by frames x |speed| (200 %: one frame slips two source frames); an inexact slip is refused slip_inexact_at_speed.
+  4. Refusals change nothing and name their code in the status log: rate_stretch_unrepresentable, rate_stretch_multicam_reverse, not_frame_aligned, invalid_speed_percent, invalid_duration.
 
 ## For models (no window)
 
