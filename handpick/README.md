@@ -150,7 +150,7 @@ Research basis: [wasm-bindgen exported names](https://wasm-bindgen.github.io/was
 
 </topic>
 
-<topic id="source-entry" status="source-authored-validation-unrun" updated_at="2026-10-24">
+<topic id="source-entry" status="standalone-tested-host-unproven" updated_at="2026-10-24">
 
 ## URL-only source entry
 
@@ -162,7 +162,7 @@ The existing WASM `Session` adds read-only `fence()`, `inputState(fenceJson, com
 
 Clearing the field restores neutral presentation and a collapsed source dropdown. Prose after a URL immediately selects existing Quicknote presentation; it does not itself create an editor or commit a note. URL-only completed-empty lookup cannot automatically transfer into Quicknote. Existing explicit Shift+Enter/NewLine remains a deliberate writing override. Keep the existing Notes-native editor, literal content, bookmarks, pending Save, IME and context fences. An explicit Add source button focuses the same field; an empty field remains neutral until the user enters a URL shape.
 
-Research: [WHATWG URL parsing](https://url.spec.whatwg.org/#url-parsing) separates complete parsing from this literal draft-intent gate; [WAI editable combobox guidance](https://www.w3.org/WAI/ARIA/apg/patterns/combobox/) supports popup dismissal without replacing input and preserving native editing keys. Reuse the existing Session and WritingSession rather than a host regex or second editor. Native and real-WASM test cases are authored but UNRUN; host rendering, owner completion/save and editor continuity require separate proof.
+Research: [WHATWG URL parsing](https://url.spec.whatwg.org/#url-parsing) separates complete parsing from this literal draft-intent gate; [WAI editable combobox guidance](https://www.w3.org/WAI/ARIA/apg/patterns/combobox/) supports popup dismissal without replacing input and preserving native editing keys. Reuse the existing Session and WritingSession rather than a host regex or second editor. Standalone proof passed all 62 native tests, including the five input cases. The actual generated WASM passed 123 input checks and retained all existing bridge checks. Native code is published at a89a44aa7b431864db5bae740a501a8f36e6efa4; host rendering, owner completion/save and editor continuity remain UNPROVEN.
 
 </topic>
 

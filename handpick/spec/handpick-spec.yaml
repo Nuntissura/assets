@@ -8,7 +8,7 @@ purpose: Give a fresh agent the fixed product intent, reusable asset boundaries,
   implementation/proof state before extending Handpick.
 source_entry_extension:
   recorded_at: '2026-10-24'
-  status: source-authored-validation-unrun-unpublished
+  status: standalone-tested-published-host-unproven
   basis: Operator's shared Handpick URL-only Add source and URL-plus-prose Quicknote instruction.
   requirements:
   - id: HP-INPUT-001
@@ -51,7 +51,8 @@ source_entry_extension:
   validation:
     native: cargo test --locked --manifest-path handpick/Cargo.toml
     bridge: Build the wasm feature for wasm32-unknown-unknown, generate matching wasm-bindgen web glue, then run handpick/tests/wasm_bridge.mjs against the actual module.
-    status: UNRUN. Source/parser checks do not establish behavior, generated bindings or host integration.
+    status: Standalone native62 tests and actual generated-WASM123 input checks passed; host integration remains UNPROVEN.
+    published_native_revision: a89a44aa7b431864db5bae740a501a8f36e6efa4
     host: Prove the same global field from every Add source entrypoint, exact whitespace/prefix/prose/reset behavior, owner form completion, native editor continuity, IME, profile reset and keyboard/dropdown handling separately.
 write_first_quicknote_extension:
   recorded_at: '2026-10-22'
