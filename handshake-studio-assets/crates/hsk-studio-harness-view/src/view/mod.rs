@@ -70,6 +70,8 @@ pub mod waveform_plugin;
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).
 pub mod prototype;
+/// Design files opened as editable native documents and the instance inspector (lane SMB-FIG-EDIT-1).
+pub mod design;
 /// Source monitor, marks and insert / overwrite into the program sequence (lane SMB-PR-SOURCE-MONITOR).
 pub mod source_monitor;
 /// Timeline panel: tracks, clips, markers and the playhead, edits through pulse (lane SMB-TIMELINE-UI-1).
@@ -227,6 +229,8 @@ pub struct Viewer {
     timeline: Option<timeline::TimelineState>,
     /// Prototype play mode (module [`prototype`]) and the clock of its last frame.
     prototype: Option<(prototype::PrototypePlay, std::time::Instant)>,
+    /// Instance records changed in this session and the last design command (module [`design`]).
+    design: design::DesignState,
     /// Selections before each wand / quick-select step (module [`select_liquify`]).
     selection_history: Vec<Option<hsk_studio_pigment::selection::CoveragePlane>>,
     /// The document's raster records (package records entry), rendered through composite's
@@ -311,6 +315,7 @@ impl Viewer {
             source_monitor: None,
             timeline: None,
             prototype: None,
+            design: design::DesignState::default(),
             selection_history: Vec::new(),
             records: None,
             proof: proof::ProofState::default(),
@@ -795,6 +800,7 @@ impl Viewer {
             "shell": self.shell_json(),
             "timeline": self.timeline_json(),
             "proof": self.proof_json(),
+            "design": self.design_json(),
         });
         #[cfg(feature = "media")]
         {
@@ -1062,6 +1068,8 @@ impl Viewer {
                 None => self.say(format!("{} has no commit route", change.control_id)),
             }
         }
+        // The instance inspector, bound contextually to an instance layer (module design, STU-DS-160).
+        self.design_section_ui(ui, &layer_id);
         ui.small("Name, Visible, Opacity and Blend mode commit through the session (chronicle, undoable). Fill opacity, Clipped and Isolation are read-only: chronicle has no property for them.");
         commits
     }

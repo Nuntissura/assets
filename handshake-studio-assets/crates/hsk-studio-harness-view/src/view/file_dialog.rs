@@ -133,6 +133,8 @@ impl Purpose {
                 let mut v = vec![Filter { name: "Documents and images", extensions: DOCUMENT_EXTENSIONS }];
                 #[cfg(feature = "media")]
                 v.push(Filter { name: "Audio", extensions: AUDIO_EXTENSIONS });
+                // Lane SMB-FIG-EDIT-1: a design file opens as an editable native document.
+                v.push(Filter { name: "Design file (.fig)", extensions: FIG_EXTENSIONS });
                 v
             }
             Self::SaveAs => vec![Filter { name: "Native package (.handshake)", extensions: &["handshake"] }],

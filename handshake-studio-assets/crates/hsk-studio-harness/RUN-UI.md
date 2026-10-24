@@ -145,6 +145,48 @@ region_count, regions_truncated, regions, bounds, method, gamut_intent, threshol
 max_delta_e76}, receipt (profile ids and SHA-256, intents, output_sha256), read_back, canvas
 (`proof` or `frame`), preview_error, window.
 
+## Design files and component instances (lane SMB-FIG-EDIT-1)
+
+File > Open (filter "Design file (.fig)") turns a design file into an editable native document: the
+window writes `<stem>.handshake` beside the `.fig` (refused when it exists; tick "overwrite source"
+to replace it) and opens it. Layers, artboards and vector paths edit with the layer panel, the pen /
+direct-selection tools and the Properties panel; text layers draw through the text records (a font
+the window lacks draws with Ubuntu-Light); effects render from the package records. The import
+receipt (right panel) lists every loss: the importer's mapping and decode losses and the window's
+own (`viewer.*`: font substitution, multi-line text drawn on one line, artboards rounded to pixels).
+Workspace > Prototype Player still plays a `.fig` without opening it as a document.
+
+Select a layer that draws a component instance (Layers panel; it carries the instance's name) and
+the Properties panel adds a "Component instance" section (no other layer shows it):
+
+| Control | What it does |
+|---|---|
+| variant values (one button per value of each variant property) | switch the variant in place; compatible overrides are kept |
+| component properties (boolean checkbox, text field) | set the instance's property value |
+| Text <layer> field | override the text of a definition text layer (Enter or leaving the field commits) |
+| Reset <field> | reset that override to the component's value |
+| Reset all overrides | reset every override |
+| Swap to <component> | point the instance at another component; overrides re-matched by layer name and hierarchy |
+
+Every change is one Undo step and redraws the instance from its definition. Limits: a rotated or
+scaled instance is not redrawn (refused, status log); clips, masks and effects inside the definition
+are not copied into the redraw (listed in the command result); the instance record changed by a
+command is kept for the session only (no document entry holds design records yet), so after Save
+and reopen an edited instance (or one whose layers were changed outside the section) shows "its
+record is unknown" and refuses commands until the design file is imported again.
+
+Models: `Viewer::import_fig(source, dest, overwrite)` (returns losses and counts),
+`design::is_design_file(path)`; `instance_view(layer_id)`; `design_command(layer_id,
+DesignCommand::{SwitchVariant, SetProperty, SetOverride (characters | visible | opacity), ResetOverride,
+ResetAll, Swap})`; widget names `design.instance`, `design.instance.variant.<property>.<value>`,
+`design.instance.property.<name>`, `design.instance.text.<node>`,
+`design.instance.override.<node>.<field>.reset`, `design.instance.reset_all`,
+`design.instance.swap.<component>`. `state_json()["design"]`: `instance` (layer_id, instance_id,
+state import / edited / unknown, main_component_id, component_id, component_name, variants
+{values, current}, properties, overrides {node_id, node_name, field, value}, texts, swap_targets,
+error), `instance_layers`, `last` (the last command result or its error). The receipt's `design`
+member holds the imported design records, instance bindings and origins.
+
 ## What the window does
 
 - Menu bar: File, Edit, View, Workspace, Help (table above).

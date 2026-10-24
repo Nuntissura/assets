@@ -1213,6 +1213,10 @@ impl Viewer {
         match purpose {
             Purpose::Open => {
                 self.path_input = path.to_string_lossy().into_owned();
+                // A design file becomes an editable native document beside it (module design).
+                if super::design::is_design_file(path) {
+                    return self.import_fig(path, &path.with_extension("handshake"), overwrite).map(|_| ());
+                }
                 self.open(path)
             }
             Purpose::SaveAs => {
