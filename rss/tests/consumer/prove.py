@@ -91,11 +91,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--revision", required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--source-only", action="store_true", help="Validate/archive the selected source closure without compiling consumers")
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.revision):
         parser.error("revision must be an exact lowercase Git commit")
     asset = Path(__file__).resolve().parents[2]
-    repository = asset.parents[1]
     target_setting = os.environ.get("CARGO_TARGET_DIR")
     if not target_setting or not Path(target_setting).is_absolute():
         raise SystemExit("Set absolute CARGO_TARGET_DIR to the coordinated existing target")
@@ -104,10 +104,8 @@ def main() -> None:
     work = Path(tempfile.mkdtemp(prefix="consumer-", dir=output))
     artifacts = work / "artifacts"
     artifacts.mkdir()
-    cargo, rustc, git = tool("RSS_CARGO", "cargo"), tool("RSS_RUSTC", "rustc"), tool("RSS_GIT", "git")
-    bindgen, node = tool("RSS_WASM_BINDGEN", "wasm-bindgen"), tool("RSS_NODE", "node")
+    git = tool("RSS_GIT", "git")
     environment = dict(os.environ)
-    environment["RUSTC"] = rustc
     environment.setdefault("CARGO_NET_GIT_FETCH_WITH_CLI", "true")
     sequence = 0
 
@@ -125,6 +123,33 @@ def main() -> None:
             raise SystemExit(f"Command failed ({result.returncode}); logs at {prefix}")
         return result.stdout
 
+    repository = Path(run([git, "-C", str(asset), "rev-parse", "--show-toplevel"]).strip()).resolve()
+    roots = set(run([git, "ls-tree", "-d", "--name-only", args.revision, "--", "rss", "hsscrap", "shared", "assets"], repository).splitlines())
+    if {"rss", "hsscrap", "shared"}.issubset(roots):
+        source_paths = ["rss", "hsscrap", "shared/handshake_canonical_json"]
+    elif roots == {"assets"}:
+        source_paths = ["assets/rss", "assets/hsscrap", "assets/shared/handshake_canonical_json"]
+    else:
+        raise SystemExit("Selected revision has no complete RSS/hsscrap/shared source layout")
+    for path in source_paths:
+        run([git, "cat-file", "-e", f"{args.revision}:{path}/Cargo.toml"], repository)
+    files = run([git, "ls-tree", "-r", "--name-only", args.revision, "--", *source_paths], repository).splitlines()
+    excluded = {".local", "target", "node_modules", ".git", ".env"}
+    if not files or any(excluded.intersection(Path(file).parts) or Path(file).suffix.lower() in {".pem", ".key", ".pfx", ".p12"} for file in files):
+        raise SystemExit("Canonical source selection contains a generated/private path")
+    archive = artifacts / "source-package.tar"
+    run([git, "archive", "--format=tar", "--output", str(archive), args.revision, "--", *source_paths], repository)
+    if args.source_only:
+        report = {"status": "source-pass", "source_revision": args.revision, "source_files": files,
+                  "source_archive": {"path": str(archive), "sha256": digest(archive)}, "runtime": "not-run"}
+        result = work / "source-result.json"
+        result.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({"status": "source-pass", "result": str(result)}), flush=True)
+        return
+
+    cargo, rustc = tool("RSS_CARGO", "cargo"), tool("RSS_RUSTC", "rustc")
+    bindgen, node = tool("RSS_WASM_BINDGEN", "wasm-bindgen"), tool("RSS_NODE", "node")
+    environment["RUSTC"] = rustc
     compiler = run([rustc, "-vV"])
     host = next(line.removeprefix("host: ") for line in compiler.splitlines() if line.startswith("host: "))
     if run([bindgen, "--version"]).strip() != "wasm-bindgen 0.2.129":
@@ -188,13 +213,6 @@ def main() -> None:
     outputs.append({"kind": "browser", "target": wasm_target, "features": [], **selected, "runtime": browser_result, "artifact": str(wasm), "sha256": digest(wasm),
                     "inputs": {str(path): digest(path) for path in [browser / "Cargo.toml", browser / "Cargo.lock", browser / "src/lib.rs", browser_metadata_path]},
                     "bindings": {str(path): digest(path) for path in sorted(bindings.iterdir()) if path.is_file()}})
-    source_paths = ["assets/rss", "assets/hsscrap", "assets/shared/handshake_canonical_json"]
-    files = run([git, "ls-tree", "-r", "--name-only", args.revision, "--", *source_paths], repository).splitlines()
-    excluded = {".local", "target", "node_modules", ".git", ".env"}
-    if not files or any(excluded.intersection(Path(file).parts) or Path(file).suffix.lower() in {".pem", ".key", ".pfx", ".p12"} for file in files):
-        raise SystemExit("Canonical source selection contains a generated/private path")
-    archive = artifacts / "source-package.tar"
-    run([git, "archive", "--format=tar", "--output", str(archive), args.revision, "--", *source_paths], repository)
     inputs = [native / "Cargo.toml", native / "Cargo.lock", native / "src/main.rs", native / "src/browser.rs", browser / "Cargo.toml", browser / "Cargo.lock", browser / "src/lib.rs", Path(__file__), Path(__file__).with_name("instantiate.mjs")]
     report = {"status": "pass", "source_revision": args.revision, "source_repository": REPOSITORY, "compiler": compiler.strip(), "outputs": outputs,
         "source_files": files, "source_archive": {"path": str(archive), "sha256": digest(archive)}, "consumer_inputs": {str(path): digest(path) for path in inputs},
