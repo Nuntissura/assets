@@ -290,3 +290,111 @@ fn sidecar_writes_go_through_the_ckc_port_with_revision_cas() {
     d.deny("op-1").unwrap();
     assert_eq!(read_sidecar_via_port(&d, &actor, &other, &recipe(), &lim()).unwrap_err().code(), "ckc_unauthorized");
 }
+
+/// Lane SMB-LR-HEALING-1 (STU-RAW-103 decode of STU-RAW-124): `crs:RetouchAreas` structures (a nested
+/// `rdf:Description`, `rdf:parseType="Resource"` children, `rdf:li` attributes) decode into develop
+/// retouch records; unknown fields are loss notes, unusable areas are dropped with a loss note.
+/// Camera Raw field names UNVERIFIED (D5).
+#[test]
+fn xmp_retouch_areas_decode_into_records() {
+    use hsk_studio_develop::{Brush, RetouchArea, RetouchMethod, SourceState, SpotType};
+    let packet = |areas: &str| {
+        format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:EnableRetouch="True">
+   <crs:RetouchAreas>{areas}</crs:RetouchAreas>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>"#
+        )
+    };
+    let explicit = |extra: &str| {
+        format!(
+            r#"<rdf:li><rdf:Description crs:SpotType="heal" crs:SourceState="sourceSetExplicitly" crs:SourceX="0.5" crs:SourceY="0.5" crs:CenterX="0.25" crs:CenterY="0.25" crs:Radius="0.05" {extra}/></rdf:li>"#
+        )
+    };
+    let areas = format!(
+        r#"<rdf:Seq>
+     <rdf:li>
+      <rdf:Description crs:SpotType="heal" crs:HealVersion="2" crs:Feather="0.4" crs:Opacity="0.9" crs:Seed="17" crs:Method="gaussian"
+        crs:SourceState="sourceSetExplicitly" crs:SourceX="0.6" crs:SourceY="0.7" crs:OffsetY="0.01" crs:CenterX="0.2" crs:CenterY="0.3"
+        crs:Radius="0.05" crs:Vendor="x">
+       <crs:Masks>
+        <rdf:Seq>
+         <rdf:li crs:Radius="0.04" crs:Flow="0.8" crs:Feather="0.5" crs:What="Mask/Paint">
+          <crs:Dabs><rdf:Seq><rdf:li>d 0.2 0.3</rdf:li><rdf:li>d 0.25 0.3</rdf:li></rdf:Seq></crs:Dabs>
+         </rdf:li>
+        </rdf:Seq>
+       </crs:Masks>
+      </rdf:Description>
+     </rdf:li>
+     <rdf:li rdf:parseType="Resource">
+      <crs:SpotType>clone</crs:SpotType>
+      <crs:SourceState>source_set_explicitly</crs:SourceState>
+      <crs:SourceX>0.1</crs:SourceX>
+      <crs:SourceY>0.125</crs:SourceY>
+      <crs:CentreX>0.3</crs:CentreX>
+      <crs:CentreY>0.35</crs:CentreY>
+      <crs:Radius>0.02</crs:Radius>
+     </rdf:li>
+     <rdf:li crs:SpotType="patch" crs:SourceState="sourceSetExplicitly" crs:SourceX="0.5" crs:SourceY="0.5" crs:CenterX="0.2" crs:CenterY="0.2" crs:Radius="0.05"/>
+     <rdf:li crs:SpotType="heal" crs:SourceState="sourceSetExplicitly" crs:SourceY="0.5" crs:CenterX="0.2" crs:CenterY="0.2" crs:Radius="0.05"/>
+     {}
+     {}
+    </rdf:Seq>"#,
+        explicit(r#"crs:Opacity="2""#),
+        explicit(r#"crs:Seed="-3""#)
+    );
+    let read = read_sidecar(packet(&areas).as_bytes(), &recipe(), &lim()).unwrap();
+    assert!(read.applied.contains(&"RetouchAreas"), "{:?}", read.applied);
+    assert!(read.recipe.enables.enable_retouch);
+    let got = &read.recipe.adjust.retouch.areas;
+    assert_eq!(
+        got,
+        &vec![
+            RetouchArea {
+                spot_type: SpotType::Heal,
+                heal_version: 2,
+                feather: 0.4,
+                opacity: 0.9,
+                seed: 17,
+                method: RetouchMethod::Gaussian,
+                source_state: SourceState::SourceSetExplicitly,
+                masks: vec![Brush { dabs: vec![(0.2, 0.3), (0.25, 0.3)], radius: 0.04, flow: 0.8, feather: 0.5 }],
+                source_x: 0.6,
+                source_y: 0.7,
+                offset_y: 0.01,
+                centre_x: 0.2,
+                centre_y: 0.3,
+                radius: 0.05,
+            },
+            RetouchArea::circle(SpotType::Clone, (0.3, 0.35), 0.02, (0.1, 0.125)),
+        ]
+    );
+    for loss in [
+        ("RetouchAreas[0].Vendor", "crs_retouch_field_unknown"),
+        ("RetouchAreas[0].Masks[0].What", "crs_retouch_field_unknown"),
+        ("RetouchAreas[2]", "crs_retouch_value_unmapped"),
+        ("RetouchAreas[3]", "crs_retouch_field_missing"),
+        ("RetouchAreas[4]", "crs_retouch_value_out_of_range"),
+        ("RetouchAreas[5]", "crs_value_not_number"),
+    ] {
+        assert!(read.losses.contains(&(loss.0.to_string(), loss.1)), "{loss:?} in {:?}", read.losses);
+    }
+    // Nested descriptions are structure items, not top-level properties: two of them in one packet
+    // decode (a repeated property refusal before this lane).
+    let two = format!("<rdf:Seq>{}{}</rdf:Seq>", explicit(""), explicit(r#"crs:Seed="4""#));
+    let read = read_sidecar(packet(&two).as_bytes(), &recipe(), &lim()).unwrap();
+    assert_eq!(read.recipe.adjust.retouch.areas.len(), 2);
+    assert_eq!(read.recipe.adjust.retouch.areas[1].seed, 4);
+    // Hostile shapes: not a sequence, too many items; one loss, no areas, the read still succeeds.
+    for (body, code) in [
+        ("plain text".to_string(), "crs_retouch_shape"),
+        (format!("<rdf:Seq>{}</rdf:Seq>", explicit("").repeat(hsk_studio_develop::retouch::MAX_RETOUCH_AREAS + 1)), "crs_retouch_too_many"),
+    ] {
+        let read = read_sidecar(packet(&body).as_bytes(), &recipe(), &lim()).unwrap();
+        assert!(read.recipe.adjust.retouch.areas.is_empty());
+        assert!(read.losses.contains(&("RetouchAreas".to_string(), code)), "{code}: {:?}", read.losses);
+    }
+}

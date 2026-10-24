@@ -21,9 +21,22 @@
 //! reported (`WhiteBalance`/`Temperature`/`Tint`), not applied: develop needs the raw to resolve
 //! it (`recipe_for_white`). Library fields: `xmp:Rating` (-1 rejected), `xmp:Label`, `dc:subject`,
 //! `lr:hierarchicalSubject` (`|` separated).
+//!
+//! Retouch areas (lane SMB-LR-HEALING-1, STU-RAW-103 decode of STU-RAW-124): `crs:RetouchAreas` (an
+//! `rdf:Seq` of structures: `rdf:li` property attributes, `rdf:parseType="Resource"` children or one
+//! `rdf:Description`) decodes into develop `RetouchArea` records. Field names are the CamelCase of
+//! the spec's record fields (`SpotType`, `HealVersion`, `Feather`, `Opacity`, `Seed`, `Method`,
+//! `SourceState`, `SourceX`, `SourceY`, `OffsetY`, `CenterX`/`CentreX`, `CenterY`/`CentreY`, `Radius`,
+//! `Masks` = `rdf:Seq` of `Radius`, `Flow`, `Feather`, `Dabs` = `rdf:Seq` of `"d x y"`), UNVERIFIED
+//! against Lightroom Classic (D5); `SourceState` maps only the observed `sourceSetExplicitly`
+//! (or `source_set_explicitly`) and `engine_chosen`. Unknown fields are loss notes (`<key>.<field>`,
+//! `crs_retouch_field_unknown`) and the area keeps decoding; an area missing a required field, with
+//! an unmapped value or out of develop's ranges is dropped with a loss note. The list is never
+//! written back by this codec (the packet bytes stay verbatim on write).
 use crate::develop_map::WhiteBalanceSource;
 use crate::xmp::{NS_DC, NS_LR, NS_RDF, NS_XMP, XmpError, XmpLimits, XmpRating};
-use hsk_studio_develop::{AbsoluteWhiteBalance, DevelopRecipe, NormalizedCrop, VignetteStyle, white_xy};
+use hsk_studio_develop::retouch::{MAX_AREA_MASKS, MAX_RETOUCH_AREAS, RetouchArea, RetouchMethod, RetouchStack, SourceState, SpotType};
+use hsk_studio_develop::{AbsoluteWhiteBalance, Brush, DevelopRecipe, NormalizedCrop, VignetteStyle, parse_dab, white_xy};
 use hsk_studio_kernel_bindings::{AssetId, CkcActor, CkcCatalogPort, CkcError, CkcReceipt, SidecarPlacement, XmpSidecarBytesWrite};
 use std::collections::BTreeMap;
 
@@ -378,6 +391,21 @@ impl XmpSidecar {
             if !(self.elems[e].ns == NS_RDF && self.elems[e].local == "Description") {
                 continue;
             }
+            // A description inside a structure item (`rdf:li` / another description, e.g. one
+            // `crs:RetouchAreas` entry) holds that item's fields, not top-level properties.
+            let mut up = self.elems[e].parent;
+            let mut nested = false;
+            while let Some(p) = up {
+                let pe = &self.elems[p];
+                if pe.ns == NS_RDF && (pe.local == "li" || pe.local == "Description") {
+                    nested = true;
+                    break;
+                }
+                up = pe.parent;
+            }
+            if nested {
+                continue;
+            }
             self.descs.push(e);
             for (ai, a) in self.elems[e].attrs.clone().iter().enumerate() {
                 if a.qname == NS_XMLNS_PREFIX || a.qname.starts_with("xmlns:") {
@@ -483,6 +511,209 @@ impl XmpSidecar {
         }
         Some(Ok(out))
     }
+
+    /// Decoded text of a simple element (no child elements).
+    fn elem_text(&self, e: usize) -> Result<String, XmpError> {
+        let max = self.limits.max_text_bytes as usize;
+        let mut s = String::new();
+        for (span, cdata) in &self.elems[e].text {
+            if *cdata {
+                s.push_str(self.raw(*span));
+            } else {
+                s.push_str(&decode(self.raw(*span), max)?);
+            }
+            if s.len() > max {
+                return Err(XmpError::TextTooLong);
+            }
+        }
+        Ok(s)
+    }
+
+    /// The `rdf:li` items of the single `rdf:Seq`/`rdf:Bag` child of element `e`.
+    fn seq_items(&self, e: usize) -> Result<&[usize], &'static str> {
+        let [c] = self.elems[e].children.as_slice() else { return Err("crs_retouch_shape") };
+        let c = &self.elems[*c];
+        if c.ns != NS_RDF || !matches!(c.local.as_str(), "Seq" | "Bag") {
+            return Err("crs_retouch_shape");
+        }
+        if c.children.iter().any(|&li| self.elems[li].ns != NS_RDF || self.elems[li].local != "li") {
+            return Err("crs_retouch_shape");
+        }
+        Ok(&c.children)
+    }
+
+    /// Fields of one structure item: `crs:` property attributes and child elements of the `rdf:li`
+    /// and of its single `rdf:Description` child, as (local name, simple text) and (local name,
+    /// complex element); fields of other namespaces are counted in the third value.
+    fn item_fields(&self, li: usize) -> Result<StructFields, &'static str> {
+        let mut holders = vec![li];
+        if let [d] = self.elems[li].children.as_slice()
+            && self.elems[*d].ns == NS_RDF
+            && self.elems[*d].local == "Description"
+        {
+            holders.push(*d);
+        }
+        let max = self.limits.max_text_bytes as usize;
+        let mut fields = StructFields::default();
+        for h in holders {
+            for a in &self.elems[h].attrs {
+                if a.qname == NS_XMLNS_PREFIX || a.qname.starts_with("xmlns:") {
+                    continue;
+                }
+                let (ns, local) = self.resolve_name(h, &a.qname, true).map_err(|_| "crs_retouch_shape")?;
+                if ns == NS_RDF {
+                    continue;
+                }
+                if ns != NS_CRS {
+                    fields.foreign = fields.foreign.saturating_add(1);
+                    continue;
+                }
+                fields.simple.push((local, decode(self.raw(a.value), max).map_err(|_| "crs_retouch_shape")?));
+            }
+            for &c in &self.elems[h].children {
+                let ce = &self.elems[c];
+                if ce.ns == NS_RDF && ce.local == "Description" {
+                    continue;
+                }
+                if ce.ns != NS_CRS {
+                    fields.foreign = fields.foreign.saturating_add(1);
+                } else if ce.children.is_empty() {
+                    fields.simple.push((ce.local.clone(), self.elem_text(c).map_err(|_| "crs_retouch_shape")?));
+                } else {
+                    fields.complex.push((ce.local.clone(), c));
+                }
+            }
+        }
+        Ok(fields)
+    }
+}
+
+/// Fields of one XMP structure item (see `XmpSidecar::item_fields`).
+#[derive(Default)]
+struct StructFields {
+    simple: Vec<(String, String)>,
+    complex: Vec<(String, usize)>,
+    foreign: u32,
+}
+
+fn retouch_number(text: &str) -> Result<f64, &'static str> {
+    text.trim().parse::<f64>().ok().filter(|v| v.is_finite()).ok_or("crs_value_not_number")
+}
+
+/// One `crs:Masks` item: a brush mask in the STU-RAW-121 geometry.
+fn read_retouch_mask(doc: &XmpSidecar, li: usize, key: &str, losses: &mut Vec<(String, &'static str)>) -> Result<Brush, &'static str> {
+    let fields = doc.item_fields(li)?;
+    let mut brush = Brush { dabs: Vec::new(), radius: f64::NAN, flow: 1.0, feather: 0.0 };
+    for (name, value) in &fields.simple {
+        match name.as_str() {
+            "Radius" => brush.radius = retouch_number(value)?,
+            "Flow" => brush.flow = retouch_number(value)?,
+            "Feather" => brush.feather = retouch_number(value)?,
+            _ => losses.push((format!("{key}.{name}"), "crs_retouch_field_unknown")),
+        }
+    }
+    for (name, e) in &fields.complex {
+        if name != "Dabs" {
+            losses.push((format!("{key}.{name}"), "crs_retouch_field_unknown"));
+            continue;
+        }
+        let items = doc.seq_items(*e)?;
+        if items.len() > hsk_studio_develop::local::MAX_DABS {
+            return Err("crs_retouch_too_many");
+        }
+        let mut dabs = Vec::with_capacity(items.len());
+        for &d in items {
+            let text = doc.elem_text(d).map_err(|_| "crs_retouch_shape")?;
+            dabs.push(parse_dab(&text).map_err(|_| "crs_value_not_number")?);
+        }
+        brush.dabs = dabs;
+    }
+    if brush.radius.is_nan() {
+        return Err("crs_retouch_field_missing");
+    }
+    Ok(brush)
+}
+
+/// One `crs:RetouchAreas` item (see the module documentation).
+fn read_retouch_area(doc: &XmpSidecar, li: usize, key: &str, losses: &mut Vec<(String, &'static str)>) -> Result<RetouchArea, &'static str> {
+    let fields = doc.item_fields(li)?;
+    let get = |names: &[&str]| fields.simple.iter().find(|(n, _)| names.contains(&n.as_str())).map(|(_, v)| v.trim());
+    let need = |names: &[&str]| get(names).ok_or("crs_retouch_field_missing");
+    let number = |names: &[&str], default: f64| get(names).map_or(Ok(default), retouch_number);
+    let spot_type = SpotType::from_key(need(&["SpotType"])?).ok_or("crs_retouch_value_unmapped")?;
+    let source_state = match need(&["SourceState"])? {
+        "sourceSetExplicitly" | "source_set_explicitly" => SourceState::SourceSetExplicitly,
+        "engine_chosen" => SourceState::EngineChosen,
+        _ => return Err("crs_retouch_value_unmapped"),
+    };
+    let method = match get(&["Method"]) {
+        None => RetouchMethod::Gaussian,
+        Some(m) => RetouchMethod::from_key(m).ok_or("crs_retouch_value_unmapped")?,
+    };
+    let heal_version = get(&["HealVersion"]).map_or(Ok(0), |v| v.parse::<u32>().map_err(|_| "crs_value_not_number"))?;
+    let seed = get(&["Seed"]).map_or(Ok(0), |v| v.parse::<u64>().map_err(|_| "crs_value_not_number"))?;
+    const KNOWN: [&str; 15] = [
+        "SpotType", "HealVersion", "Feather", "Opacity", "Seed", "Method", "SourceState", "SourceX", "SourceY", "OffsetY", "CenterX",
+        "CentreX", "CenterY", "CentreY", "Radius",
+    ];
+    for (name, _) in &fields.simple {
+        if !KNOWN.contains(&name.as_str()) {
+            losses.push((format!("{key}.{name}"), "crs_retouch_field_unknown"));
+        }
+    }
+    let mut masks = Vec::new();
+    for (name, e) in &fields.complex {
+        if name != "Masks" {
+            losses.push((format!("{key}.{name}"), "crs_retouch_field_unknown"));
+            continue;
+        }
+        let items = doc.seq_items(*e)?;
+        if items.len() > MAX_AREA_MASKS {
+            return Err("crs_retouch_too_many");
+        }
+        for (j, &m) in items.iter().enumerate() {
+            masks.push(read_retouch_mask(doc, m, &format!("{key}.Masks[{j}]"), losses)?);
+        }
+    }
+    let area = RetouchArea {
+        spot_type,
+        heal_version,
+        feather: number(&["Feather"], 0.0)?,
+        opacity: number(&["Opacity"], 1.0)?,
+        seed,
+        method,
+        source_state,
+        masks,
+        source_x: retouch_number(need(&["SourceX"])?)?,
+        source_y: retouch_number(need(&["SourceY"])?)?,
+        offset_y: number(&["OffsetY"], 0.0)?,
+        centre_x: retouch_number(need(&["CenterX", "CentreX"])?)?,
+        centre_y: retouch_number(need(&["CenterY", "CentreY"])?)?,
+        radius: number(&["Radius"], 0.0)?,
+    };
+    let one = RetouchStack { areas: vec![area], ..RetouchStack::default() };
+    one.validate().map_err(|_| "crs_retouch_value_out_of_range")?;
+    one.areas.into_iter().next().ok_or("crs_retouch_shape")
+}
+
+/// `crs:RetouchAreas` -> develop records; per-area failures are loss notes, a list that is not a
+/// sequence, over [`MAX_RETOUCH_AREAS`] or over develop's aggregate dab budget is one loss.
+fn read_retouch_areas(doc: &XmpSidecar, prop: usize, losses: &mut Vec<(String, &'static str)>) -> Result<Vec<RetouchArea>, &'static str> {
+    let items = doc.seq_items(prop)?;
+    if items.len() > MAX_RETOUCH_AREAS {
+        return Err("crs_retouch_too_many");
+    }
+    let mut areas = Vec::with_capacity(items.len());
+    for (i, &li) in items.iter().enumerate() {
+        let key = format!("RetouchAreas[{i}]");
+        match read_retouch_area(doc, li, &key, losses) {
+            Ok(area) => areas.push(area),
+            Err(code) => losses.push((key, code)),
+        }
+    }
+    let stack = RetouchStack { areas, ..RetouchStack::default() };
+    stack.validate().map_err(|_| "crs_retouch_too_many")?;
+    Ok(stack.areas)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -881,6 +1112,16 @@ pub fn read_sidecar(bytes: &[u8], base: &DevelopRecipe, limits: &XmpLimits) -> R
     for k in ["WhiteBalance", "Temperature", "Tint"] {
         if doc.scalar(NS_CRS, k).is_some() {
             managed = managed.saturating_add(1);
+        }
+    }
+    if let Some(Prop::Elem { elem }) = doc.props.get(&(NS_CRS.to_owned(), "RetouchAreas".to_owned())) {
+        managed = managed.saturating_add(1);
+        match read_retouch_areas(&doc, *elem, &mut losses) {
+            Ok(areas) => {
+                r.adjust.retouch.areas = areas;
+                applied.push("RetouchAreas");
+            }
+            Err(code) => losses.push(("RetouchAreas".into(), code)),
         }
     }
     r.validate().map_err(|_| syntax("crs_recipe_invalid"))?;
