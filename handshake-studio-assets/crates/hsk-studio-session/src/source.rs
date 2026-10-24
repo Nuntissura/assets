@@ -150,8 +150,11 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// `multicam` (lane SMB-PR-MULTICAM-1, lead brief 2026-10-24) carries the Folio
 /// `StudioMulticamRecords` of the document (`crate::multicam`). `proof` (lane SMB-PS-SOFT-PROOF-2,
 /// lead brief 2026-10-24) carries the Folio `StudioProofRecords` of the document (STU-COL-240
-/// document-scoped soft-proof state), validated by its producer on every set and read.
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof"];
+/// document-scoped soft-proof state), validated by its producer on every set and read. `design`
+/// (lane SMB-FIG-EDIT-2, lead decision 2026-10-24) carries the Folio `StudioDesignStateRecords` of
+/// the document (component instance state: variant, properties, overrides, swap; STU-IO-006 row 35
+/// edit-preserve), validated by its producer on every set and read.
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {
