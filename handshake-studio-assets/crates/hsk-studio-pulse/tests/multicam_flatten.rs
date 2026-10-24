@@ -165,6 +165,9 @@ fn source_sequence() -> StudioSequence {
     )
 }
 fn records_for(snapshot: &Snapshot, clips: &[(u32, u32)]) -> StudioMulticamRecords {
+    records_with(snapshot, clips, Budget::default())
+}
+fn records_with(snapshot: &Snapshot, clips: &[(u32, u32)], budget: Budget) -> StudioMulticamRecords {
     let source = snapshot.document().sequences.iter().find(|q| q.sequence_id == "seq-mc").unwrap();
     let mut records = StudioMulticamRecords::new(ident("SDOC", 1));
     records.multicam_sequences.push(StudioMulticamSequence {
@@ -182,7 +185,7 @@ fn records_for(snapshot: &Snapshot, clips: &[(u32, u32)]) -> StudioMulticamRecor
             enabled: true,
         });
     }
-    validate_multicam_records(&records, snapshot.document(), Budget::default(), &CancellationToken::default()).unwrap();
+    validate_multicam_records(&records, snapshot.document(), budget, &CancellationToken::default()).unwrap();
     records
 }
 /// `seq-main`: V1 multicam clip 1 (window 4..28 @0, then `shape`) linked with A1 multicam clip 2
@@ -202,9 +205,13 @@ fn fixture_with(shape: impl Fn(&mut StudioClip)) -> (Snapshot, StudioMulticamRec
 /// A two-angle source whose angle 1 clip 110 is `angle_clip`, angle 2 clip 111 media(1) 0..24 @0;
 /// `seq-main` V1 holds multicam clip 1 (`main_clip`) on angle 1.
 fn custom_fixture(angle_clip: StudioClip, main_clip: StudioClip) -> (Snapshot, StudioMulticamRecords) {
+    custom_fixture_clips(vec![angle_clip], main_clip)
+}
+/// As [`custom_fixture`] with several angle-1 clips.
+fn custom_fixture_clips(angle_clips: Vec<StudioClip>, main_clip: StudioClip) -> (Snapshot, StudioMulticamRecords) {
     let source = sequence(
         "seq-mc",
-        vec![track(100, TrackKind::Video, 0, vec![angle_clip]), track(101, TrackKind::Video, 1, vec![clip(111, media(1), 0, 24, 0)])],
+        vec![track(100, TrackKind::Video, 0, angle_clips), track(101, TrackKind::Video, 1, vec![clip(111, media(1), 0, 24, 0)])],
     );
     let main = sequence("seq-main", vec![track(1, TrackKind::Video, 0, vec![main_clip])]);
     let snapshot = document(vec![source, main], Budget::default());
@@ -384,5 +391,169 @@ fn resolve_active_angle_at_non_unit_speed() {
         assert_eq!(half.source_tick, Ticks::new(4 * F + F / 2));
         assert_eq!(half.picture, Some((cid(101), Ticks::new(2 * F + F / 2))));
         assert_eq!(ok(|ctx| resolve_active_angle(&h, &hr, &cid(1), Ticks::new(11 * F), ctx)).source_tick, Ticks::new(4 * F + 11 * F / 2));
+    });
+}
+
+// ----- slice 3: clip markers through flatten ---------------------------------------------------
+
+fn marker(id: &str, start: u64, duration: u64) -> StudioMarker {
+    StudioMarker {
+        marker_id: id.into(),
+        name: format!("name {id}"),
+        comment: format!("comment {id}\nsecond line"),
+        color: LabelColor::Rose,
+        start: Ticks::new(start),
+        duration: Ticks::new(duration),
+        role: Some(MarkerRole::Caption { text: format!("caption {id}") }),
+    }
+}
+/// `s` with clip `n`'s markers replaced by `markers` (validated under `budget`).
+fn with_markers(s: &Snapshot, n: u32, markers: Vec<StudioMarker>, budget: Budget) -> Snapshot {
+    let mut d = s.document().clone();
+    for c in d.sequences.iter_mut().flat_map(|q| q.tracks.iter_mut()).flat_map(|t| t.clips.iter_mut()) {
+        if c.clip_id == cid(n) {
+            c.markers = markers.clone();
+        }
+    }
+    validate_document(d, budget, &CancellationToken::default(), &Media).expect("marker fixture is valid")
+}
+/// Window 4..40 on angle 3 for clip 1: pieces media(2) src 4..20 @0 (16 frames) and media(3) src
+/// 100..110 @26 (10 frames), a gap at source 20..30 (timeline 16..26).
+fn angle3_long() -> (Snapshot, StudioMulticamRecords) {
+    let (s, mut r) = fixture_with(|c| {
+        c.source_out = Ticks::new(40 * F);
+        c.duration = Ticks::new(36 * F);
+    });
+    let m = r.clip_mut(&cid(1)).unwrap();
+    (m.active_angle, m.audio_angle) = (3, 3);
+    (s, r)
+}
+/// Timeline tick of a clip marker: `clip.timeline_start + (start - source_in) / speed`.
+fn marker_time(c: &StudioClip, m: &StudioMarker) -> u64 {
+    let offset = u128::from(m.start.value() - c.source_in.value()) * u128::from(c.speed.denominator) / u128::from(c.speed.numerator.unsigned_abs());
+    c.timeline_start.value() + u64::try_from(offset).unwrap()
+}
+
+#[test]
+fn flatten_carries_clip_markers_to_their_pieces() {
+    bounded_case("flatten_markers", || {
+        let (s0, r) = angle3_long();
+        let original = vec![marker("m-a", 6 * F, 0), marker("m-b", 31 * F, 3 * F), marker("m-c", 16 * F, 4 * F)];
+        let s = with_markers(&s0, 1, original.clone(), Budget::default());
+        let p = ok(|ctx| plan_multicam_flatten(&s, 3, &r, &[cid(1)], &fresh(), ctx));
+        let pieces = &main_seq(p.snapshot()).tracks[0].clips;
+        assert_eq!(pieces.iter().map(shape).collect::<Vec<_>>(), vec![
+            (media(2), 4 * F, 20 * F, 0, 16 * F, Speed::UNIT),
+            (media(3), 100 * F, 110 * F, 26 * F, 10 * F, Speed::UNIT),
+        ]);
+        let moved = |i: usize| pieces[i].markers.iter().map(|m| (m.marker_id.clone(), m.start.value(), m.duration.value())).collect::<Vec<_>>();
+        assert_eq!(moved(0), vec![(String::from("m-a"), 6 * F, 0), (String::from("m-c"), 16 * F, 4 * F)], "a span ending at the piece end stays");
+        assert_eq!(moved(1), vec![(String::from("m-b"), 101 * F, 3 * F)], "converted to media ticks of camera 103");
+        let multicam = &main_seq(&s).tracks[0].clips[0];
+        for m in &original {
+            let (piece, carried) = pieces.iter().find_map(|c| c.markers.iter().find(|x| x.marker_id == m.marker_id).map(|x| (c, x))).unwrap();
+            assert_eq!((&carried.name, &carried.comment, carried.color, &carried.role), (&m.name, &m.comment, m.color, &m.role), "{} keeps its payload", m.marker_id);
+            assert_eq!(marker_time(piece, carried), marker_time(multicam, m), "{} stays at its timeline tick", m.marker_id);
+        }
+        assert_one_step(&p, &s, &r);
+
+        // Through the slice 2 speed mapping: an angle clip at 1/2, the multicam clip at 1x and at 2x.
+        let mut slow = clip(110, media(0), 0, 10, 0);
+        set_speed(&mut slow, 1, 2);
+        for speed in [1i64, 2] {
+            let mut main = clip(1, nest(), 4, 12, 0);
+            set_speed(&mut main, speed, 1);
+            let (c0, cr) = custom_fixture(slow.clone(), main);
+            let c = with_markers(&c0, 1, vec![marker("m-s", 6 * F, 2 * F)], Budget::default());
+            let p = ok(|ctx| plan_multicam_flatten(&c, 3, &cr, &[cid(1)], &fresh(), ctx));
+            let piece = &main_seq(p.snapshot()).tracks[0].clips[0];
+            let carried = &piece.markers[0];
+            assert_eq!((carried.start.value(), carried.duration.value()), (3 * F, F), "media tick 2 + (6 - 4) / 2 at speed {speed}");
+            assert_eq!(marker_time(piece, carried), marker_time(&main_seq(&c).tracks[0].clips[0], &main_seq(&c).tracks[0].clips[0].markers[0]));
+            assert_one_step(&p, &c, &cr);
+        }
+        println!("NOT_PROVEN: Premiere marker placement after a multicam flatten (no Premiere oracle); Studio carries clip markers by declared reading");
+    });
+}
+
+#[test]
+fn marker_in_a_gap_is_refused_named() {
+    bounded_case("marker_in_gap", || {
+        let (s0, r) = angle3_long();
+        let flatten = |markers: Vec<StudioMarker>| {
+            let s = with_markers(&s0, 1, markers, Budget::default());
+            refused(|ctx| plan_multicam_flatten(&s, 3, &r, &[cid(1)], &fresh(), ctx))
+        };
+        assert_eq!(flatten(vec![marker("m-gap", 22 * F, 0)]), "multicam_marker_in_gap", "source 20..30 is a gap of angle 3");
+        assert_eq!(flatten(vec![marker("m-ok", 6 * F, 0), marker("m-gap", 20 * F, 0)]), "multicam_marker_in_gap", "the gap starts where the piece ends");
+        assert_eq!(flatten(vec![marker("m-early", 3 * F, 0)]), "multicam_marker_outside_window");
+        assert_eq!(flatten(vec![marker("m-late", 40 * F, 0)]), "multicam_marker_outside_window", "the window is half-open");
+        // A marker whose media tick would fall between ticks (angle clip at 1/2, odd tick offset).
+        let mut slow = clip(110, media(0), 0, 10, 0);
+        set_speed(&mut slow, 1, 2);
+        let (c0, cr) = custom_fixture(slow, clip(1, nest(), 4, 12, 0));
+        let c = with_markers(&c0, 1, vec![marker("m-odd", 6 * F + 1, 0)], Budget::default());
+        assert_eq!(refused(|ctx| plan_multicam_flatten(&c, 3, &cr, &[cid(1)], &fresh(), ctx)), "multicam_speed_inexact");
+    });
+}
+
+#[test]
+fn span_marker_across_pieces_is_refused_named() {
+    bounded_case("span_marker_across_pieces", || {
+        let (s0, r) = angle3_long();
+        let s = with_markers(&s0, 1, vec![marker("m-span", 18 * F, 4 * F)], Budget::default());
+        assert_eq!(refused(|ctx| plan_multicam_flatten(&s, 3, &r, &[cid(1)], &fresh(), ctx)), "multicam_marker_spans_pieces", "runs from piece 1 into the gap");
+        // Two abutting angle clips: a span over their cut is refused, a point at the cut goes right.
+        let (c0, cr) = custom_fixture_clips(vec![clip(110, media(0), 0, 10, 0), clip(112, media(5), 50, 10, 10)], clip(1, nest(), 4, 12, 0));
+        let across = with_markers(&c0, 1, vec![marker("m-cut", 8 * F, 4 * F)], Budget::default());
+        assert_eq!(refused(|ctx| plan_multicam_flatten(&across, 3, &cr, &[cid(1)], &fresh(), ctx)), "multicam_marker_spans_pieces");
+        let at_cut = with_markers(&c0, 1, vec![marker("m-at", 10 * F, 2 * F)], Budget::default());
+        let p = ok(|ctx| plan_multicam_flatten(&at_cut, 3, &cr, &[cid(1)], &fresh(), ctx));
+        let pieces = &main_seq(p.snapshot()).tracks[0].clips;
+        assert!(pieces[0].markers.is_empty());
+        assert_eq!((pieces[1].markers[0].start.value(), pieces[1].markers[0].duration.value()), (50 * F, 2 * F));
+        assert_one_step(&p, &at_cut, &cr);
+    });
+}
+
+#[test]
+fn hostile_marker_counts_are_bounded() {
+    bounded_case("hostile_markers", || {
+        let big = Budget { nodes: 400_000, payload_bytes: 64 << 20, input_bytes: 256 << 20, ..Budget::default() };
+        // 20 000 markers, half on each piece: each finds its piece by binary search.
+        let (s0, r) = angle3_long();
+        let markers: Vec<StudioMarker> = (0..10_000u64)
+            .map(|i| marker(&format!("a-{i}"), 4 * F + i * (16 * F / 10_000), 0))
+            .chain((0..10_000u64).map(|i| marker(&format!("b-{i}"), 30 * F + i * (10 * F / 10_000), 0)))
+            .collect();
+        let s = with_markers(&s0, 1, markers, big);
+        let cancel = CancellationToken::default();
+        let p = with_ctx(&cancel, big, |ctx| plan_multicam_flatten(&s, 3, &r, &[cid(1)], &fresh(), ctx)).expect("bounded flatten");
+        let pieces = &main_seq(p.snapshot()).tracks[0].clips;
+        assert_eq!((pieces[0].markers.len(), pieces[1].markers.len()), (10_000, 10_000));
+        assert!(pieces[1].markers.iter().all(|m| m.start.value() >= 100 * F && m.start.value() < 110 * F));
+        let canceled = CancellationToken::default();
+        canceled.cancel();
+        assert_eq!(with_ctx(&canceled, big, |ctx| plan_multicam_flatten(&s, 3, &r, &[cid(1)], &fresh(), ctx)).unwrap_err().code(), "canceled");
+
+        // Two sequences whose multicam clips carry 32 769 + 32 768 markers: over MAX_FLATTEN_MARKERS
+        // in total (each sequence is within Folio's per-sequence bound), refused before any work.
+        let mut d = s0.document().clone();
+        let main2 = sequence("seq-main2", vec![track(5, TrackKind::Video, 0, vec![clip(5, nest(), 4, 24, 0)])]);
+        d.sequences.push(main2);
+        for c in d.sequences.iter_mut().flat_map(|q| q.tracks.iter_mut()).flat_map(|t| t.clips.iter_mut()) {
+            let count = match c.clip_id.as_str() {
+                id if id == cid(1) => 32_769u64,
+                id if id == cid(5) => 32_768,
+                _ => 0,
+            };
+            let prefix = if c.clip_id == cid(5) { "y" } else { "x" };
+            c.markers = (0..count).map(|i| marker(&format!("{prefix}-{i}"), 5 * F, 0)).collect();
+        }
+        let two = validate_document(d, big, &CancellationToken::default(), &Media).expect("each sequence holds at most 65 536 markers");
+        let r2 = records_with(&two, &[(1, 2), (2, 2), (5, 2)], big);
+        let total = with_ctx(&cancel, big, |ctx| plan_multicam_flatten(&two, 3, &r2, &[cid(1), cid(5)], &fresh(), ctx));
+        assert_eq!(total.unwrap_err().code(), "limit_exceeded");
+        assert_eq!(MAX_FLATTEN_MARKERS, 65_536);
     });
 }

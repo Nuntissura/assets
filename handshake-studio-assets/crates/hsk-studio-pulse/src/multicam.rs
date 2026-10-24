@@ -21,10 +21,19 @@
 //!   clip's first tick switches without a cut, every later event cuts; the whole pass is one step;
 //! - flatten replaces each multicam clip by the clips of its angle track (video: `active_angle`;
 //!   audio: the paired audio track of `audio_angle`) cut to the clip's source window, mapped onto
-//!   the clip's place in the timeline; gaps in the angle track stay gaps; pieces are unlinked and
-//!   carry no markers; the clip's head transition moves to a first piece that starts with the clip,
+//!   the clip's place in the timeline; gaps in the angle track stay gaps; pieces are unlinked; the
+//!   clip's head transition moves to a first piece that starts with the clip,
 //!   its tail to a last piece that ends with it, anything else that no longer plays is dropped and
 //!   listed (Pulse's transition pruning);
+//! - clip markers through flatten (lane SMB-PR-MULTICAM-2; STU-VID-034 "A CLIP marker travels with
+//!   the clip"; STU-VID-033 states no marker mapping, so this is a declared Studio reading): each
+//!   marker of a flattened multicam clip (SOURCE ticks = source-sequence ticks) moves to the piece
+//!   whose source-sequence span contains its start, converted to that piece's media ticks through the
+//!   angle clip's speed (exact, else `multicam_speed_inexact`); id, name, comment, colour, duration
+//!   (mapped the same way) and role are kept. A marker never becomes a SEQUENCE marker (STU-VID-034
+//!   scopes differ): one in a gap of the angle track is refused `multicam_marker_in_gap`, a span
+//!   marker that runs past its piece's end is refused `multicam_marker_spans_pieces`, and one outside
+//!   the clip's source window is refused `multicam_marker_outside_window`;
 //! - angle sync on creation: caller offsets or in points; timecode and audio-waveform sync are not
 //!   specified by STU-VID-033 and are refused `multicam_sync_unsupported`;
 //! - speed (lane SMB-PR-MULTICAM-2; STU-VID-031 "`speed` is a rational multiplier"; STU-VID-033
@@ -39,7 +48,9 @@
 //!   (a slowed clip holds a source tick for several timeline ticks; declared reading).
 //!
 //! Bounds (V4-01/02): record passes hold at most [`MAX_RECORD_PASS_EVENTS`] events, flatten at most
-//! [`MAX_FLATTEN_PIECES`] pieces, preview pages at most [`MAX_PREVIEW_PAGE_SIZE`] angles; every count
+//! [`MAX_FLATTEN_PIECES`] pieces and [`MAX_FLATTEN_MARKERS`] carried markers (running total checked
+//! before each clip is worked; each marker finds its piece by binary search), preview pages at most
+//! [`MAX_PREVIEW_PAGE_SIZE`] angles; every count
 //! is checked before work, every tick sum is checked, the cancel token is polled per event / clip.
 //! Premiere Pro behaviour (angle numbering default, audio-follows-video default, cut placement,
 //! flatten of speed-changed angles, marker placement after flatten, reverse-speed multicam) is
@@ -63,6 +74,8 @@ use std::collections::BTreeSet;
 pub const MAX_RECORD_PASS_EVENTS: usize = 4096;
 /// Most ordinary clips one flatten produces.
 pub const MAX_FLATTEN_PIECES: usize = 65_536;
+/// Most clip markers one flatten carries to its pieces.
+pub const MAX_FLATTEN_MARKERS: usize = 65_536;
 /// Most angles one preview page shows.
 pub const MAX_PREVIEW_PAGE_SIZE: u32 = 64;
 
@@ -100,7 +113,12 @@ pub enum MulticamError {
     SpeedInexact,
     /// A reverse (negative) speed on a multicam clip or an angle clip it reads.
     ReverseUnsupported,
-    MarkersPresent,
+    /// A clip marker starts in a gap of the angle track (no piece holds it).
+    MarkerInGap,
+    /// A span marker runs past the end of the piece that holds its start.
+    MarkerSpansPieces,
+    /// A clip marker starts outside the clip's source window.
+    MarkerOutsideWindow,
 }
 impl MulticamError {
     pub fn code(&self) -> &'static str {
@@ -115,7 +133,9 @@ impl MulticamError {
             Self::TooManyEvents => "too_many_events",
             Self::SpeedInexact => "multicam_speed_inexact",
             Self::ReverseUnsupported => "multicam_reverse_unsupported",
-            Self::MarkersPresent => "multicam_markers_present",
+            Self::MarkerInGap => "multicam_marker_in_gap",
+            Self::MarkerSpansPieces => "multicam_marker_spans_pieces",
+            Self::MarkerOutsideWindow => "multicam_marker_outside_window",
         }
     }
 }
@@ -934,11 +954,9 @@ fn flatten_clip(
     fresh: &mut dyn Iterator<Item = &String>,
     taken: &mut BTreeSet<String>,
     dropped: &mut Vec<String>,
+    cancel: &CancellationToken,
 ) -> MulticamResult<Vec<StudioClip>> {
     let s = forward(&clip.speed)?;
-    if !clip.markers.is_empty() {
-        return Err(MulticamError::MarkersPresent);
-    }
     let pick = |angle: u32| -> MulticamResult<&str> {
         let i = usize::try_from(angle).ok().and_then(|a| a.checked_sub(1)).ok_or(MulticamError::AngleOutOfRange)?;
         decl.angle_order.get(i).map(String::as_str).ok_or(MulticamError::AngleOutOfRange)
@@ -950,6 +968,8 @@ fn flatten_clip(
     };
     let (w0, w1) = (clip.source_in.value(), clip.source_out.value());
     let mut pieces = Vec::new();
+    // Per piece: its source-sequence span and the angle clip's speed (marker mapping).
+    let mut spans: Vec<(u64, u64, (u128, u128))> = Vec::new();
     if let Some(track) = track_id.and_then(|id| source.tracks.iter().find(|k| k.track_id == id)) {
         for c in &track.clips {
             let start = c.timeline_start.value();
@@ -970,6 +990,7 @@ fn flatten_clip(
             piece.timeline_start = Ticks::new(add(clip.timeline_start.value(), scale_exact(sub(o0, w0)?, inverse_ratio(s))?)?);
             piece.duration = Ticks::new(scale_exact(sub(o1, o0)?, inverse_ratio(s))?);
             piece.speed = speed_product(s, a)?;
+            spans.push((o0, o1, a));
             piece.enabled = clip.enabled && c.enabled;
             piece.link_group = None;
             piece.markers = Vec::new();
@@ -977,6 +998,7 @@ fn flatten_clip(
             pieces.push(piece);
         }
     }
+    carry_markers(clip, &spans, &mut pieces, cancel)?;
     let head = clip.transitions.head.clone();
     let tail = clip.transitions.tail.clone();
     match pieces.first_mut() {
@@ -989,6 +1011,42 @@ fn flatten_clip(
         _ => dropped.extend(tail.map(|t| t.transition_id)),
     }
     Ok(pieces)
+}
+
+/// Moves every marker of multicam clip `clip` onto the piece that holds its start (module docs).
+/// `spans` are the pieces' source-sequence spans in order (disjoint and increasing: they come from
+/// the ordered, non-overlapping clips of one angle track).
+fn carry_markers(
+    clip: &StudioClip,
+    spans: &[(u64, u64, (u128, u128))],
+    pieces: &mut [StudioClip],
+    cancel: &CancellationToken,
+) -> MulticamResult<()> {
+    let (w0, w1) = (clip.source_in.value(), clip.source_out.value());
+    for m in &clip.markers {
+        cancel.check().map_err(PulseError::from)?;
+        let start = m.start.value();
+        if start < w0 || start >= w1 {
+            return Err(MulticamError::MarkerOutsideWindow);
+        }
+        let index = spans.partition_point(|(o0, _, _)| *o0 <= start).checked_sub(1).ok_or(MulticamError::MarkerInGap)?;
+        let (o0, o1, a) = spans[index];
+        if start >= o1 {
+            return Err(MulticamError::MarkerInGap);
+        }
+        if add(start, m.duration.value())? > o1 {
+            return Err(MulticamError::MarkerSpansPieces);
+        }
+        let piece = &mut pieces[index];
+        let mut moved = m.clone();
+        moved.start = Ticks::new(add(piece.source_in.value(), scale_exact(sub(start, o0)?, a)?)?);
+        moved.duration = Ticks::new(scale_exact(m.duration.value(), a)?);
+        piece.markers.push(moved);
+    }
+    for piece in pieces.iter_mut() {
+        piece.markers.sort_by_key(|m| m.start);
+    }
+    Ok(())
 }
 
 /// Plans `flatten` (STU-VID-033, command `cmd.clip.multicam.flatten`): every listed multicam clip
@@ -1024,6 +1082,7 @@ pub fn plan_multicam_flatten(
     let mut seen = BTreeSet::new();
     let mut next = records.clone();
     let mut touched = BTreeSet::new();
+    let mut markers = 0usize;
     for clip_id in clip_ids {
         ctx.cancel.check().map_err(PulseError::from)?;
         if !seen.insert(clip_id.as_str()) {
@@ -1033,13 +1092,17 @@ pub fn plan_multicam_flatten(
         let (s, t, _) = locate(document, clip_id)?;
         let position = sequences[s].tracks[t].clips.iter().position(|c| &c.clip_id == clip_id).ok_or(PulseError::UnknownClip)?;
         let clip = sequences[s].tracks[t].clips[position].clone();
+        markers = markers.checked_add(clip.markers.len()).ok_or(PulseError::LimitExceeded)?;
+        if markers > MAX_FLATTEN_MARKERS {
+            return Err(PulseError::LimitExceeded.into());
+        }
         let ClipSource::Sequence { sequence_id } = &clip.source_ref else {
             return Err(MulticamError::NotMulticam);
         };
         let source = document.sequences.iter().find(|q| &q.sequence_id == sequence_id).ok_or(PulseError::UnknownSequence)?;
         let decl = records.multicam_sequence(sequence_id).ok_or(MulticamError::NotMulticam)?;
         let kind = sequences[s].tracks[t].kind;
-        let pieces = flatten_clip(&clip, kind, mode, source, decl, &mut fresh, &mut taken, &mut dropped)?;
+        let pieces = flatten_clip(&clip, kind, mode, source, decl, &mut fresh, &mut taken, &mut dropped, ctx.cancel)?;
         let track = &mut sequences[s].tracks[t];
         let after = position.checked_add(1).ok_or(PulseError::Overflow)?;
         let rest = track.clips.split_off(after);
