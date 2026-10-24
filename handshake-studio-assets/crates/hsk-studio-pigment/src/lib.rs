@@ -10,6 +10,8 @@ pub mod caller;
 pub mod canvas_ops;
 pub mod content_aware;
 pub mod coverage_math;
+/// Histogram, averaged samples and colour readouts (lane SMB-PS-INFO-HISTOGRAM-1).
+pub mod diagnostics;
 pub mod effect_math;
 pub mod filter_math;
 pub mod frame_blend;
