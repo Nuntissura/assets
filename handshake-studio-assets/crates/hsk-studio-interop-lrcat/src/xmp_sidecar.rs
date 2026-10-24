@@ -31,8 +31,19 @@
 //! against Lightroom Classic (D5); `SourceState` maps only the observed `sourceSetExplicitly`
 //! (or `source_set_explicitly`) and `engine_chosen`. Unknown fields are loss notes (`<key>.<field>`,
 //! `crs_retouch_field_unknown`) and the area keeps decoding; an area missing a required field, with
-//! an unmapped value or out of develop's ranges is dropped with a loss note. The list is never
-//! written back by this codec (the packet bytes stay verbatim on write).
+//! an unmapped value or out of develop's ranges is dropped with a loss note.
+//!
+//! Retouch write-back and circle masks (lane SMB-LR-HEALING-2, STU-RAW-103 encode): with a recipe,
+//! [`write_sidecar`] manages `crs:RetouchAreas` as one structure: when the packet's decoded list
+//! equals the recipe's areas the bytes stay unchanged; otherwise only that property's span is
+//! replaced (or inserted, or removed for an empty list) by an `rdf:Seq` of
+//! `rdf:parseType="Resource"` items with the decoder's field names (numbers in Rust's shortest
+//! round-trip form, `SourceState` `sourceSetExplicitly` / `engine_chosen`, `Masks` items with
+//! `Radius`, `Flow`, `Feather`, `Dabs`). Distraction areas and adapter fill records have no `crs:`
+//! field and are not written. A `Masks` item with `crs:What="Mask/Circle"` decodes as a one-dab
+//! brush at its `CenterX`/`CenterY` (the area centre when absent) with its `Radius`, `Flow`,
+//! `Feather`; a gradient mask (`What` naming a gradient) drops the area with
+//! `crs_retouch_mask_gradient`. Field spelling and the circle encoding are UNVERIFIED (D5).
 use crate::develop_map::WhiteBalanceSource;
 use crate::xmp::{NS_DC, NS_LR, NS_RDF, NS_XMP, XmpError, XmpLimits, XmpRating};
 use hsk_studio_develop::retouch::{MAX_AREA_MASKS, MAX_RETOUCH_AREAS, RetouchArea, RetouchMethod, RetouchStack, SourceState, SpotType};
@@ -601,19 +612,38 @@ fn retouch_number(text: &str) -> Result<f64, &'static str> {
 }
 
 /// One `crs:Masks` item: a brush mask in the STU-RAW-121 geometry.
-fn read_retouch_mask(doc: &XmpSidecar, li: usize, key: &str, losses: &mut Vec<(String, &'static str)>) -> Result<Brush, &'static str> {
+/// A circle mask item (`crs:What="Mask/Circle"`) is one dab at its centre, `centre` when it names none.
+fn read_retouch_mask(
+    doc: &XmpSidecar,
+    li: usize,
+    key: &str,
+    centre: (f64, f64),
+    losses: &mut Vec<(String, &'static str)>,
+) -> Result<Brush, &'static str> {
     let fields = doc.item_fields(li)?;
     let mut brush = Brush { dabs: Vec::new(), radius: f64::NAN, flow: 1.0, feather: 0.0 };
+    let what = fields.simple.iter().find(|(n, _)| n == "What").map(|(_, v)| v.trim());
+    let circle = what == Some("Mask/Circle");
+    if what.is_some_and(|w| w.to_ascii_lowercase().contains("gradient")) {
+        return Err("crs_retouch_mask_gradient");
+    }
+    let (mut cx, mut cy) = (None, None);
     for (name, value) in &fields.simple {
         match name.as_str() {
             "Radius" => brush.radius = retouch_number(value)?,
             "Flow" => brush.flow = retouch_number(value)?,
             "Feather" => brush.feather = retouch_number(value)?,
+            "What" if circle => {}
+            "CenterX" | "CentreX" if circle => cx = Some(retouch_number(value)?),
+            "CenterY" | "CentreY" if circle => cy = Some(retouch_number(value)?),
             _ => losses.push((format!("{key}.{name}"), "crs_retouch_field_unknown")),
         }
     }
+    if circle {
+        brush.dabs = vec![(cx.unwrap_or(centre.0), cy.unwrap_or(centre.1))];
+    }
     for (name, e) in &fields.complex {
-        if name != "Dabs" {
+        if name != "Dabs" || circle {
             losses.push((format!("{key}.{name}"), "crs_retouch_field_unknown"));
             continue;
         }
@@ -661,6 +691,7 @@ fn read_retouch_area(doc: &XmpSidecar, li: usize, key: &str, losses: &mut Vec<(S
             losses.push((format!("{key}.{name}"), "crs_retouch_field_unknown"));
         }
     }
+    let centre = (retouch_number(need(&["CenterX", "CentreX"])?)?, retouch_number(need(&["CenterY", "CentreY"])?)?);
     let mut masks = Vec::new();
     for (name, e) in &fields.complex {
         if name != "Masks" {
@@ -672,7 +703,7 @@ fn read_retouch_area(doc: &XmpSidecar, li: usize, key: &str, losses: &mut Vec<(S
             return Err("crs_retouch_too_many");
         }
         for (j, &m) in items.iter().enumerate() {
-            masks.push(read_retouch_mask(doc, m, &format!("{key}.Masks[{j}]"), losses)?);
+            masks.push(read_retouch_mask(doc, m, &format!("{key}.Masks[{j}]"), centre, losses)?);
         }
     }
     let area = RetouchArea {
@@ -687,8 +718,8 @@ fn read_retouch_area(doc: &XmpSidecar, li: usize, key: &str, losses: &mut Vec<(S
         source_x: retouch_number(need(&["SourceX"])?)?,
         source_y: retouch_number(need(&["SourceY"])?)?,
         offset_y: number(&["OffsetY"], 0.0)?,
-        centre_x: retouch_number(need(&["CenterX", "CentreX"])?)?,
-        centre_y: retouch_number(need(&["CenterY", "CentreY"])?)?,
+        centre_x: centre.0,
+        centre_y: centre.1,
         radius: number(&["Radius"], 0.0)?,
     };
     let one = RetouchStack { areas: vec![area], ..RetouchStack::default() };
@@ -714,6 +745,54 @@ fn read_retouch_areas(doc: &XmpSidecar, prop: usize, losses: &mut Vec<(String, &
     let stack = RetouchStack { areas, ..RetouchStack::default() };
     stack.validate().map_err(|_| "crs_retouch_too_many")?;
     Ok(stack.areas)
+}
+
+/// `crs:RetouchAreas` element `qname` holding `areas` (the shape [`read_retouch_areas`] reads back).
+fn serial_retouch(areas: &[RetouchArea], qname: &str, rdf: &str, crs: &str, indent: &str) -> String {
+    let field = |s: &mut String, depth: &str, name: &str, value: &str| s.push_str(&format!("{indent}{depth}<{crs}{name}>{}</{crs}{name}>\n", escape(value)));
+    let mut s = format!("<{qname}>\n{indent} <{rdf}Seq>\n");
+    for a in areas {
+        s.push_str(&format!("{indent}  <{rdf}li {rdf}parseType=\"Resource\">\n"));
+        let source_state = match a.source_state {
+            SourceState::SourceSetExplicitly => "sourceSetExplicitly",
+            SourceState::EngineChosen => "engine_chosen",
+        };
+        for (name, value) in [
+            ("SpotType", a.spot_type.key().to_owned()),
+            ("HealVersion", a.heal_version.to_string()),
+            ("Feather", a.feather.to_string()),
+            ("Opacity", a.opacity.to_string()),
+            ("Seed", a.seed.to_string()),
+            ("Method", a.method.key().to_owned()),
+            ("SourceState", source_state.to_owned()),
+            ("SourceX", a.source_x.to_string()),
+            ("SourceY", a.source_y.to_string()),
+            ("OffsetY", a.offset_y.to_string()),
+            ("CenterX", a.centre_x.to_string()),
+            ("CenterY", a.centre_y.to_string()),
+            ("Radius", a.radius.to_string()),
+        ] {
+            field(&mut s, "   ", name, &value);
+        }
+        if !a.masks.is_empty() {
+            s.push_str(&format!("{indent}   <{crs}Masks>\n{indent}    <{rdf}Seq>\n"));
+            for b in &a.masks {
+                s.push_str(&format!("{indent}     <{rdf}li {rdf}parseType=\"Resource\">\n"));
+                field(&mut s, "      ", "Radius", &b.radius.to_string());
+                field(&mut s, "      ", "Flow", &b.flow.to_string());
+                field(&mut s, "      ", "Feather", &b.feather.to_string());
+                s.push_str(&format!("{indent}      <{crs}Dabs><{rdf}Seq>"));
+                for (x, y) in &b.dabs {
+                    s.push_str(&format!("<{rdf}li>d {x} {y}</{rdf}li>"));
+                }
+                s.push_str(&format!("</{rdf}Seq></{crs}Dabs>\n{indent}     </{rdf}li>\n"));
+            }
+            s.push_str(&format!("{indent}    </{rdf}Seq>\n{indent}   </{crs}Masks>\n"));
+        }
+        s.push_str(&format!("{indent}  </{rdf}li>\n"));
+    }
+    s.push_str(&format!("{indent} </{rdf}Seq>\n{indent}</{qname}>"));
+    s
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1180,6 +1259,8 @@ pub struct SidecarUpdate<'a> {
 enum Want {
     Scalar(Option<String>),
     List(Vec<String>, &'static str),
+    /// `crs:RetouchAreas` (lane SMB-LR-HEALING-2).
+    Retouch(Vec<RetouchArea>),
 }
 
 const TEMPLATE: &str = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\">\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>\n";
@@ -1215,6 +1296,7 @@ pub fn write_sidecar(original: Option<&[u8]>, update: &SidecarUpdate<'_>, limits
             wants.push((NS_CRS, f.key.to_owned(), Want::Scalar(Some(fmt_bool((f.get)(r)).into()))));
         }
         wants.push((NS_CRS, "HasCrop".into(), Want::Scalar(Some(fmt_bool(!crop_identity(&r.crop)).into()))));
+        wants.push((NS_CRS, "RetouchAreas".into(), Want::Retouch(r.adjust.retouch.areas.clone())));
         match r.adjust.absolute_white_balance {
             Some(wb) => {
                 wants.push((NS_CRS, "WhiteBalance".into(), Want::Scalar(Some("Custom".into()))));
@@ -1388,6 +1470,27 @@ fn apply_wants(
                             edits.push((full.start, full.end, String::new()));
                         }
                     }
+                }
+            },
+            Want::Retouch(areas) => match existing {
+                None if areas.is_empty() => {}
+                None => {
+                    let p = prefix_for(ns, &mut declared, &mut attr_text);
+                    child_text.push_str("\n   ");
+                    child_text.push_str(&serial_retouch(areas, &format!("{p}:{local}"), &rdf, &format!("{p}:"), "   "));
+                }
+                Some(prop) => {
+                    let Prop::Elem { elem } = prop else { return Err(syntax("xmp_property_shape")) };
+                    let mut ignored = Vec::new();
+                    if read_retouch_areas(doc, *elem, &mut ignored).ok().as_ref() == Some(areas) {
+                        continue;
+                    }
+                    let e = &doc.elems[*elem];
+                    // The element's own prefix is bound to the crs namespace where it stands.
+                    let crs = e.qname.split_once(':').map_or(String::new(), |(p, _)| format!("{p}:"));
+                    let full = e.full();
+                    let replacement = if areas.is_empty() { String::new() } else { serial_retouch(areas, &e.qname, &rdf, &crs, "   ") };
+                    edits.push((full.start, full.end, replacement));
                 }
             },
             Want::List(items, kind) => {

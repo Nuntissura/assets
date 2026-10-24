@@ -398,3 +398,135 @@ fn xmp_retouch_areas_decode_into_records() {
         assert!(read.losses.contains(&("RetouchAreas".to_string(), code)), "{code}: {:?}", read.losses);
     }
 }
+
+// ---- lane SMB-LR-HEALING-2: crs:RetouchAreas write-back and circle masks (STU-RAW-103 encode) ----
+
+fn retouch_recipe() -> DevelopRecipe {
+    use hsk_studio_develop::{Brush, RetouchArea, RetouchMethod, SourceState, SpotType};
+    let mut r = recipe();
+    r.enables.enable_retouch = true;
+    r.adjust.retouch.areas = vec![
+        RetouchArea {
+            spot_type: SpotType::Heal,
+            heal_version: 3,
+            feather: 0.35,
+            opacity: 0.9,
+            seed: u64::MAX - 7,
+            method: RetouchMethod::Gaussian,
+            source_state: SourceState::SourceSetExplicitly,
+            masks: vec![Brush { dabs: vec![(0.1, 0.2), (0.125, 0.2)], radius: 0.03, flow: 0.8, feather: 0.5 }],
+            source_x: 0.6,
+            source_y: 0.7,
+            offset_y: -0.015625,
+            centre_x: 0.1,
+            centre_y: 0.2,
+            radius: 0.03,
+        },
+        RetouchArea { source_state: SourceState::EngineChosen, ..RetouchArea::circle(SpotType::Clone, (0.5, 0.5), 0.05, (0.5, 0.5)) },
+        RetouchArea::circle(SpotType::Clone, (1.0 / 3.0, 0.7), 0.0625, (0.2, 0.1)),
+    ];
+    r
+}
+
+/// The recipe's retouch areas are written as a managed `crs:RetouchAreas` structure and read back
+/// equal (every field, including non-dyadic numbers, the engine-chosen source and brush dabs), into
+/// a fresh packet and into one that had a different list.
+#[test]
+fn retouch_areas_round_trip_through_write_and_read() {
+    let r = retouch_recipe();
+    let bytes = write_sidecar(None, &SidecarUpdate { recipe: Some(&r), library: None }, &lim()).unwrap();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(text.contains("<crs:RetouchAreas>") && text.contains("<crs:SourceState>engine_chosen</crs:SourceState>"), "{text}");
+    let back = read_sidecar(&bytes, &recipe(), &lim()).unwrap();
+    assert!(back.applied.contains(&"RetouchAreas"), "{:?}", back.losses);
+    assert!(back.losses.iter().all(|(k, _)| !k.starts_with("RetouchAreas")), "{:?}", back.losses);
+    assert_eq!(back.recipe.adjust.retouch.areas, r.adjust.retouch.areas);
+    // Changing the list replaces only that structure: the bytes before and after it are unchanged.
+    let mut fewer = r.clone();
+    fewer.adjust.retouch.areas.remove(0);
+    fewer.adjust.retouch.areas[1].opacity = 0.5;
+    let changed = write_sidecar(Some(&bytes), &SidecarUpdate { recipe: Some(&fewer), library: None }, &lim()).unwrap();
+    let again = read_sidecar(&changed, &recipe(), &lim()).unwrap();
+    assert_eq!(again.recipe.adjust.retouch.areas, fewer.adjust.retouch.areas);
+    let (start, end) = (text.find("<crs:RetouchAreas>").unwrap(), text.find("</crs:RetouchAreas>").unwrap() + "</crs:RetouchAreas>".len());
+    let changed_text = String::from_utf8(changed.clone()).unwrap();
+    assert!(changed_text.starts_with(&text[..start]) && changed_text.ends_with(&text[end..]), "{changed_text}");
+    // An empty list removes the structure.
+    let mut none = r.clone();
+    none.adjust.retouch.areas.clear();
+    let removed = String::from_utf8(write_sidecar(Some(&bytes), &SidecarUpdate { recipe: Some(&none), library: None }, &lim()).unwrap()).unwrap();
+    assert!(!removed.contains("RetouchAreas"), "{removed}");
+    assert!(read_sidecar(removed.as_bytes(), &recipe(), &lim()).unwrap().recipe.adjust.retouch.areas.is_empty());
+}
+
+/// A write whose retouch list equals the packet's decoded list leaves the packet bytes unchanged,
+/// including another writer's spelling (attribute form, nested description, unknown fields).
+#[test]
+fn unchanged_retouch_list_leaves_the_packet_bytes() {
+    let packet = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
+   <crs:RetouchAreas>
+    <rdf:Seq>
+     <rdf:li><rdf:Description crs:SpotType="heal" crs:SourceState="sourceSetExplicitly" crs:SourceX='0.5' crs:SourceY="0.50" crs:CenterX="0.25" crs:CenterY="0.25" crs:Radius="+0.05" crs:Vendor="kept"/></rdf:li>
+    </rdf:Seq>
+   </crs:RetouchAreas>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>"#;
+    let read = read_sidecar(packet.as_bytes(), &recipe(), &lim()).unwrap();
+    assert_eq!(read.recipe.adjust.retouch.areas.len(), 1);
+    let first = write_sidecar(Some(packet.as_bytes()), &SidecarUpdate { recipe: Some(&read.recipe), library: None }, &lim()).unwrap();
+    let again = read_sidecar(&first, &recipe(), &lim()).unwrap();
+    assert_eq!(again.recipe.adjust.retouch.areas, read.recipe.adjust.retouch.areas);
+    let text = String::from_utf8(first).unwrap();
+    let span = |t: &str| t[t.find("<crs:RetouchAreas>").unwrap()..t.find("</crs:RetouchAreas>").unwrap()].to_string();
+    assert_eq!(span(&text), span(packet), "the retouch structure was rewritten");
+    // A second no-op write is byte-identical to its input.
+    let second = write_sidecar(Some(text.as_bytes()), &SidecarUpdate { recipe: Some(&again.recipe), library: None }, &lim()).unwrap();
+    assert_eq!(second, text.as_bytes());
+}
+
+/// Circle retouch areas decode: an area without masks (centre and radius) and a `Mask/Circle`
+/// mask item (one dab at its centre, or the area centre); a gradient mask is a named loss.
+#[test]
+fn circle_retouch_area_decodes() {
+    use hsk_studio_develop::{Brush, RetouchArea, SpotType};
+    let packet = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
+   <crs:RetouchAreas>
+    <rdf:Seq>
+     <rdf:li crs:SpotType="clone" crs:SourceState="sourceSetExplicitly" crs:SourceX="0.6" crs:SourceY="0.4" crs:CenterX="0.3" crs:CenterY="0.4" crs:Radius="0.04"/>
+     <rdf:li rdf:parseType="Resource">
+      <crs:SpotType>heal</crs:SpotType><crs:SourceState>sourceSetExplicitly</crs:SourceState>
+      <crs:SourceX>0.7</crs:SourceX><crs:SourceY>0.7</crs:SourceY><crs:CenterX>0.2</crs:CenterX><crs:CenterY>0.25</crs:CenterY>
+      <crs:Masks><rdf:Seq>
+       <rdf:li crs:What="Mask/Circle" crs:CenterX="0.21" crs:CenterY="0.26" crs:Radius="0.03" crs:Feather="0.5" crs:Flow="0.75"/>
+       <rdf:li crs:What="Mask/Circle" crs:Radius="0.02"/>
+      </rdf:Seq></crs:Masks>
+     </rdf:li>
+     <rdf:li rdf:parseType="Resource">
+      <crs:SpotType>heal</crs:SpotType><crs:SourceState>sourceSetExplicitly</crs:SourceState>
+      <crs:SourceX>0.7</crs:SourceX><crs:SourceY>0.7</crs:SourceY><crs:CenterX>0.2</crs:CenterX><crs:CenterY>0.25</crs:CenterY>
+      <crs:Masks><rdf:Seq><rdf:li crs:What="Mask/Gradient" crs:Radius="0.02"/></rdf:Seq></crs:Masks>
+     </rdf:li>
+    </rdf:Seq>
+   </crs:RetouchAreas>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>"#;
+    let read = read_sidecar(packet.as_bytes(), &recipe(), &lim()).unwrap();
+    let got = &read.recipe.adjust.retouch.areas;
+    let mut masked = RetouchArea::circle(SpotType::Heal, (0.2, 0.25), 0.0, (0.7, 0.7));
+    masked.masks = vec![
+        Brush { dabs: vec![(0.21, 0.26)], radius: 0.03, flow: 0.75, feather: 0.5 },
+        Brush { dabs: vec![(0.2, 0.25)], radius: 0.02, flow: 1.0, feather: 0.0 },
+    ];
+    assert_eq!(got, &vec![RetouchArea::circle(SpotType::Clone, (0.3, 0.4), 0.04, (0.6, 0.4)), masked], "{:?}", read.losses);
+    assert!(read.losses.contains(&("RetouchAreas[2]".to_string(), "crs_retouch_mask_gradient")), "{:?}", read.losses);
+    assert!(read.losses.iter().all(|(k, _)| !k.starts_with("RetouchAreas[1]") && !k.starts_with("RetouchAreas[0]")), "{:?}", read.losses);
+    // The decoded circles write back and read back equal.
+    let bytes = write_sidecar(None, &SidecarUpdate { recipe: Some(&read.recipe), library: None }, &lim()).unwrap();
+    assert_eq!(&read_sidecar(&bytes, &recipe(), &lim()).unwrap().recipe.adjust.retouch.areas, got);
+}
