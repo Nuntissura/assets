@@ -225,7 +225,34 @@ fn unknown_component_or_variant_is_refused() {
     };
     refuse(&|r| r.instances[0].instance_id = identity("SCIN", 9), Code::DanglingReference, "instances/0/instance_id");
     refuse(&|r| r.instances[0].component_id = identity("SCMP", 9), Code::DanglingReference, "instances/0/component_id");
-    refuse(&|r| r.instances[0].component_id = identity("SCMP", 1), Code::DanglingReference, "instances/0/component_id");
+    // A variant switch keeps the main component and adds a VARIANT property (hsk-studio-components
+    // switch_variant): the drawn member is the large one, its assignment and override nodes apply.
+    let switched = |main: u32| {
+        let mut r = records();
+        let s = &mut r.instances[0];
+        s.component_id = identity("SCMP", main);
+        s.properties = serde_json::from_value(json!({"size": {"type": "VARIANT", "value": "large"}, "showIcon": {"type": "BOOLEAN", "value": true}})).unwrap();
+        s.variant = [("size".to_string(), "large".to_string())].into();
+        for o in &mut s.overrides {
+            o.node_id = identity("SLYR", 14);
+        }
+        r
+    };
+    assert_eq!(check(&switched(2), true), Ok(()), "main = the small member, VARIANT size=large");
+    assert_eq!(check(&switched(1), true), Ok(()), "main = the set itself");
+    let mut r = switched(2);
+    r.instances[0].variant = [("size".to_string(), "small".to_string())].into();
+    assert_eq!(check(&r, true), Err((Code::InvalidField, "instances/0/variant".into())), "the assignment follows the VARIANT property");
+    let mut r = switched(2);
+    r.instances[0].properties.insert("size".into(), serde_json::from_value(json!({"type": "VARIANT", "value": "huge"})).unwrap());
+    assert_eq!(check(&r, true), Err((Code::DanglingReference, "instances/0/properties/size".into())));
+    let mut r = switched(2);
+    r.instances[0].overrides[0].node_id = identity("SLYR", 13);
+    assert_eq!(check(&r, true), Err((Code::DanglingReference, "instances/0/overrides/0/node_id".into())), "overrides name the drawn member's layers");
+    // The label property is the small member's: undefined on the drawn large member.
+    let mut r = switched(2);
+    r.instances[0].properties.insert("label".into(), serde_json::from_value(json!({"type": "TEXT", "value": "Go"})).unwrap());
+    assert_eq!(check(&r, true), Err((Code::DanglingReference, "instances/0/properties/label".into())));
     refuse(&|r| r.instances[0].variant = [("colour".to_string(), "red".to_string())].into(), Code::DanglingReference, "instances/0/variant/colour");
     refuse(&|r| r.instances[0].variant = [("size".to_string(), "huge".to_string())].into(), Code::DanglingReference, "instances/0/variant/size");
     refuse(&|r| r.instances[0].variant = [("size".to_string(), "large".to_string())].into(), Code::InvalidField, "instances/0/variant");

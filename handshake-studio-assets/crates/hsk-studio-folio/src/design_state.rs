@@ -15,8 +15,8 @@
 //! Stored (data only; resolving an instance is the components crate's job): one
 //! [`StudioInstanceState`] per instance layer and content, i.e. the instance record a design command
 //! produced for the instance layer `layer_id` while its children were exactly `content_signature`
-//! (child layer ids in document order). The member component (`component_id`, the record's
-//! `main_component_id`), its variant assignment, the instance's component property values, its
+//! (child layer ids in document order). The main component (`component_id`, the record's
+//! `main_component_id`), the drawn member's variant assignment, the instance's component property values, its
 //! overrides (one row per node and field, always with a value) and the component last swapped to.
 //!
 //! Studio readings, declared (lane notes `declared_readings`):
@@ -31,9 +31,13 @@
 //! - override fields are the STU-DS-115 closed set ([`crate::OVERRIDABLE_FIELDS`]), which stores the
 //!   STU-DS-016 surfaces and adds opacity, corner radii and layout sizing; `characters` takes a
 //!   string, `visible` a boolean and `opacity` a float `0..=1` (or a variable alias);
-//! - `variant` is the member's variant assignment written out (validated against the design
-//!   records, never free); `swap_target` is the component (or set) a component swap chose, and the
-//!   member is it or a member of the same set (a later variant switch moves within that set);
+//! - `component_id` is the record's `main_component_id` as stored (a component or a set); a variant
+//!   switch keeps it and records the chosen value as a `VARIANT` property (hsk-studio-components
+//!   `switch_variant`), so the member the instance draws is the set member whose assignment equals
+//!   the main member's (a set: its default variant's) with every `VARIANT` property applied;
+//!   `variant` is that assignment written out (validated, never free); `swap_target` is the
+//!   component (or set) a component swap chose, and the main component or the drawn member is it
+//!   or shares its set (a later variant switch moves within that set);
 //! - without design records only the document is checked (ids, shapes, the instance layer); the
 //!   producer says so (the window reports `design_records_absent`).
 //!
@@ -90,9 +94,9 @@ pub struct StudioInstanceState {
     pub layer_id: String,
     /// `SCIN` instance record of the design records.
     pub instance_id: String,
-    /// `SCMP` member component the instance resolves to (the record's `main_component_id`).
+    /// `SCMP` main component of the instance record (`main_component_id`; a component or a set).
     pub component_id: String,
-    /// The member's variant assignment, property to value (empty for a component outside a set).
+    /// The drawn member's variant assignment, property to value (empty for a component outside a set).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub variant: BTreeMap<String, String>,
     /// Component property values (STU-DS-009/105), name to typed value.
@@ -324,22 +328,52 @@ pub fn validate_design_state_records(
         if !design.component_instances.iter().any(|k| k.instance_id == s.instance_id) {
             return Err(err(Code::DanglingReference, format!("{t}/instance_id")));
         }
-        let member = design.components.iter().find(|k| k.component_id == s.component_id).ok_or_else(|| err(Code::DanglingReference, format!("{t}/component_id")))?;
-        let set = set_of(d, design, member);
-        if let Some(set) = set {
-            for (prop, value) in &s.variant {
-                let values = set.variant_group_properties.get(prop).ok_or_else(|| err(Code::DanglingReference, format!("{t}/variant/{prop}")))?;
-                if !values.contains(value) {
-                    return Err(err(Code::DanglingReference, format!("{t}/variant/{prop}")));
-                }
+        // The main component (a component or a set) and the set it selects within.
+        let main = design.components.iter().find(|k| k.component_id == s.component_id);
+        let set = match main {
+            Some(k) => set_of(d, design, k),
+            None => Some(
+                design.component_sets.iter().find(|k| k.component_id == s.component_id).ok_or_else(|| err(Code::DanglingReference, format!("{t}/component_id")))?,
+            ),
+        };
+        for (prop, value) in &s.variant {
+            let declared = set.and_then(|k| k.variant_group_properties.get(prop)).is_some_and(|values| values.contains(value));
+            if !declared {
+                return Err(err(Code::DanglingReference, format!("{t}/variant/{prop}")));
             }
-        } else if let Some(prop) = s.variant.keys().next() {
-            return Err(err(Code::DanglingReference, format!("{t}/variant/{prop}")));
         }
-        if s.variant != member.variant_properties.clone().unwrap_or_default() {
+        // Expected assignment: the main member's (a set: its default variant's), with every VARIANT
+        // property of the instance applied (STU-DS-008 variant switch in place).
+        let base = match main {
+            Some(k) => k.variant_properties.clone(),
+            None => set.and_then(|k| design.components.iter().find(|m| m.component_id == k.default_variant_id)).and_then(|m| m.variant_properties.clone()),
+        };
+        let mut expected = base.unwrap_or_default();
+        for (name, p) in s.properties.iter().filter(|(_, p)| p.property_type == ComponentPropertyType::Variant) {
+            let declared = match (set, &p.value) {
+                (Some(k), StudioPropertyValue::Text(v)) => k.variant_group_properties.get(name).is_some_and(|values| values.contains(v)),
+                _ => false,
+            };
+            if !declared {
+                return Err(err(Code::DanglingReference, format!("{t}/properties/{name}")));
+            }
+            if let StudioPropertyValue::Text(v) = &p.value {
+                expected.insert(name.clone(), v.clone());
+            }
+        }
+        if s.variant != expected {
             return Err(err(Code::InvalidField, format!("{t}/variant")));
         }
-        for (name, p) in &s.properties {
+        // The member the assignment selects (a component outside a set is its own member).
+        let member = match set {
+            Some(k) => design
+                .components
+                .iter()
+                .find(|m| set_of(d, design, m).is_some_and(|x| x.component_id == k.component_id) && m.variant_properties.as_ref() == Some(&expected))
+                .ok_or_else(|| err(Code::DanglingReference, format!("{t}/variant")))?,
+            None => main.ok_or_else(|| err(Code::DanglingReference, format!("{t}/component_id")))?,
+        };
+        for (name, p) in s.properties.iter().filter(|(_, p)| p.property_type != ComponentPropertyType::Variant) {
             let def = set
                 .into_iter()
                 .flat_map(|k| k.component_property_definitions.iter())
@@ -357,6 +391,7 @@ pub fn validate_design_state_records(
         }
         if let Some(target) = &s.swap_target {
             let same = target == &s.component_id
+                || target == &member.component_id
                 || set.is_some_and(|k| &k.component_id == target)
                 || design.components.iter().find(|k| &k.component_id == target).is_some_and(|k| {
                     let theirs = set_of(d, design, k).map(|x| x.component_id.as_str());
