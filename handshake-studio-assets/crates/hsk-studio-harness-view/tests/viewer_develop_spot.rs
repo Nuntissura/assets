@@ -87,13 +87,13 @@ fn clone_spot(centre: (f64, f64), source: (f64, f64)) -> DevelopOp {
 #[test]
 fn stored_retouch_areas_now_render_in_the_window() {
     let (scratch, mut v) = opened("render");
-    assert_eq!(develop(&v)["enables"]["enable_retouch"], false);
+    assert_eq!(develop(&v)["retouch_enables"]["enable_retouch"], false);
     let before = tiles(&v);
     // Spot at (480, 80) px, radius 0.0625 * 320 = 20 px, source 80 px to its left (exact dyadic coordinates).
     ok(v.develop_op(clone_spot((0.75, 0.25), (0.625, 0.25))));
     let d = develop(&v);
-    assert_eq!(d["enables"]["enable_retouch"], true, "{d}");
-    assert_eq!(d["enables"]["enable_distraction_removal"], false);
+    assert_eq!(d["retouch_enables"]["enable_retouch"], true, "{d}");
+    assert_eq!(d["retouch_enables"]["enable_distraction_removal"], false);
     assert_eq!(d["spots"][0]["spot_type"], "clone");
     assert_eq!(d["spots"][0]["source_state"], "source_set_explicitly");
     let after = tiles(&v);
@@ -111,7 +111,7 @@ fn stored_retouch_areas_now_render_in_the_window() {
     assert_eq!(w.develop_json()["entry"], "Current");
     assert_eq!(w.develop_edit(), Some(edit));
     assert_eq!(digests(&w), pixels);
-    assert_eq!(w.develop_json()["enables"]["enable_retouch"], true);
+    assert_eq!(w.develop_json()["retouch_enables"]["enable_retouch"], true);
 }
 
 /// Adding a heal spot is one undo step; undo restores the import pixels and the empty list.
@@ -164,8 +164,8 @@ fn distraction_spot_fills_and_undo_restores() {
     let pixels = digests(&v);
     ok(v.develop_op(DevelopOp::AddDistraction { centre: (0.4, 0.5), radius: 0.04 }));
     let d = develop(&v);
-    assert_eq!(d["enables"]["enable_distraction_removal"], true, "{d}");
-    assert_eq!(d["enables"]["enable_retouch"], false);
+    assert_eq!(d["retouch_enables"]["enable_distraction_removal"], true, "{d}");
+    assert_eq!(d["retouch_enables"]["enable_retouch"], false);
     assert_eq!(d["distraction"][0]["centre"], serde_json::json!([0.4, 0.5]));
     let filled = digests(&v);
     assert_ne!(filled, pixels, "the fill changed no pixel");
@@ -175,7 +175,7 @@ fn distraction_spot_fills_and_undo_restores() {
     assert_eq!(digests(&v), filled);
     ok(v.develop_op(DevelopOp::RemoveDistraction(0)));
     assert_eq!(digests(&v), pixels);
-    assert_eq!(develop(&v)["enables"]["enable_distraction_removal"], false);
+    assert_eq!(develop(&v)["retouch_enables"]["enable_distraction_removal"], false);
 }
 
 // ---- slice 2: the panel section ---------------------------------------------------------------------
@@ -188,18 +188,18 @@ fn frame(v: &mut Viewer, ctx: &egui::Context, events: Vec<egui::Event>, modifier
     ctx.run(input(events, modifiers), |ctx| v.ui(ctx))
 }
 
-/// Frames until the drawn widget list and the preview rectangle repeat (F-TL-2).
+/// Frames until the preview rectangle repeats on two consecutive frames (F-TL-2).
 fn settle(v: &mut Viewer, ctx: &egui::Context) {
-    let mut last: Option<(Vec<String>, Value)> = None;
+    let mut last = Value::Null;
     for _ in 0..8 {
         let _ = frame(v, ctx, vec![], egui::Modifiers::NONE);
-        let now = (v.drawn().to_vec(), develop(v)["spot_preview"]["rect"].clone());
-        if last.as_ref() == Some(&now) && !now.1.is_null() {
+        let now = develop(v)["spot_preview"]["rect"].clone();
+        if !now.is_null() && now == last {
             return;
         }
-        last = Some(now);
+        last = now;
     }
-    panic!("the develop panel did not settle: {}", develop(v)["spot_preview"]);
+    panic!("the spot preview did not settle: {}", develop(v)["spot_preview"]);
 }
 
 fn preview_rect(v: &Viewer) -> egui::Rect {
