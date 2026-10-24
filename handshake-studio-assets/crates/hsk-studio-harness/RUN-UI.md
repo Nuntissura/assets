@@ -210,6 +210,21 @@ max_delta_e76}, receipt (profile ids and SHA-256, intents, output_sha256), read_
 - Bottom: status log (every open, commit, render, undo, paint and save, with failures).
 - Screen readers / UI automation: AccessKit is enabled (eframe feature `accesskit`).
 
+## Timeline trims (lane SMB-TIMELINE-TRIM-1)
+
+- Timeline trims: toolbar Selection / Ripple / Roll / Slip / Slide sets what edge and body drags
+  do (ripple: later content on sync-locked tracks shifts; roll: the edit between two abutting
+  clips; slip: source window; slide: between neighbours); one undo step per drag.
+- Click a clip edge to select that edit point; Trim Session opens the outgoing/incoming tiles with
+  -step/-1/+1/+step, In / Out / In+Out focus, ripple/roll toggle, Composite Preview, Apply (one
+  undo step) and Cancel (nothing committed).
+- Keys with the panel active and a clip selected: Ctrl+Alt+Left/Right slip one frame (Shift:
+  multi-frame step), Alt+, / Alt+. slide one frame (Shift: step), Alt+Left/Right nudge the clip;
+  Extend Edit rolls the selected (else nearest) edit to the playhead.
+- A trim past a limit commits the achieved part (`state_json()["timeline"]["last_trim"]`); a
+  refusal names its code in the status log and changes nothing. Unknown source lengths refuse
+  source extensions (`source_extent_unknown`).
+
 ## For models (no window)
 
 Shell (lane SMB-HARNESS-SHELL-1): `shell_command(ShellCommand::...)` runs any menu entry
