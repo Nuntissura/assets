@@ -156,7 +156,7 @@ receipt (right panel) lists every loss: the importer's mapping and decode losses
 own (`viewer.*`: font substitution, multi-line text drawn on one line, artboards rounded to pixels).
 Workspace > Prototype Player still plays a `.fig` without opening it as a document.
 
-Select a layer that draws a component instance (Layers panel; it carries the instance's name) and
+Select a layer that draws a component instance (its row in the Layers panel) and
 the Properties panel adds a "Component instance" section (no other layer shows it):
 
 | Control | What it does |

@@ -272,6 +272,13 @@ fn build_package(
             }
         }
     }
+    // The window composites in the harness's RGB working space (as the `.ai` import does): the
+    // importer leaves it unassigned and the renderer refuses `no_working_profile` without one.
+    let mut wire = serde_json::to_value(&doc).map_err(json_err)?;
+    if wire["working_space_rgb"].is_null() {
+        wire["working_space_rgb"] = json!(format!("SCPF-{}-{}-7f16-8000-000000000001", digest.get(0..8).unwrap_or("00000000"), digest.get(8..12).unwrap_or("0000")));
+    }
+    let doc: folio::StudioDocument = serde_json::from_value(wire).map_err(json_err)?;
     let snapshot = folio::validate_document(doc, folio::Budget::default(), cancel, &crate::harness::TrustAll).map_err(|d| format!("fig_import: folio {:?} {}", d.code, d.target))?;
     let doc = snapshot.document();
     // The import content of each instance layer (its children): the inspector's import record
@@ -282,11 +289,31 @@ fn build_package(
     }
     let vector_layers: BTreeSet<&str> = doc.layers.iter().filter(|l| matches!(l.payload, Payload::Vector { .. })).map(|l| l.layer_id.as_str()).collect();
 
-    // The vector entry: paint styles, one fill node per styled vector layer, vector records.
+    // The vector entry: paint styles, one fill node per styled vector layer, vector records. Image
+    // paints name import-original parts the window's vector assets cannot serve (composite refuses
+    // them `image_paint_unresolved`): their rows leave the styles, each a loss.
+    let mut image_rows: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for p in &proposal.vector_records.image_paints {
+        image_rows.entry(p.style_id.as_str()).or_default().push(usize::try_from(p.row).unwrap_or(usize::MAX));
+        viewer_loss(&mut losses, "viewer.image_paint", "image_paint_not_drawn_in_window");
+    }
     let mut design = StudioDesignRecords::new(doc.document_id.clone());
     for s in &proposal.design.paint_styles {
-        match vector::style::validate_style(s) {
-            Ok(()) => design.paint_styles.push(s.clone()),
+        let mut s = s.clone();
+        if let Some(rows) = image_rows.get_mut(s.style_id.as_str()) {
+            rows.sort_unstable();
+            for r in rows.iter().rev() {
+                if *r < s.rows.len() {
+                    s.rows.remove(*r);
+                }
+            }
+            if s.rows.is_empty() {
+                viewer_loss(&mut losses, format!("viewer.paint_style={}", s.style_id), "paint_style_only_image_rows");
+                continue;
+            }
+        }
+        match vector::style::validate_style(&s) {
+            Ok(()) => design.paint_styles.push(s),
             Err(e) => viewer_loss(&mut losses, format!("viewer.paint_style={}", s.style_id), format!("paint_style_not_drawable:{e}")),
         }
     }
@@ -303,22 +330,20 @@ fn build_package(
     entry.design = Some(design);
     let mut vrec = proposal.vector_records.clone();
     vrec.document_id.clone_from(&doc.document_id);
-    let before = vrec.image_paints.len();
-    vrec.image_paints.retain(|p| kept.contains(&p.style_id));
-    for _ in vrec.image_paints.len()..before {
-        viewer_loss(&mut losses, "viewer.image_paint", "image_paint_style_not_drawable");
-    }
+    vrec.image_paints.clear();
+    // Attachments of a dropped binding layer: its expansion group keeps its own, else takes it.
+    let own: BTreeSet<String> = vrec.attachments.iter().map(|a| a.layer_id.clone()).collect();
+    vrec.attachments.retain_mut(|a| match rekeyed.get(&a.layer_id) {
+        None => true,
+        Some(group) if own.contains(group) => false,
+        Some(group) => {
+            a.layer_id.clone_from(group);
+            true
+        }
+    });
     entry.records = vrec;
     entry.validate(doc, cancel)?;
-    if let Err(e) = entry.validate_records(doc, cancel) {
-        // Image paints name import-original parts the window cannot draw yet: they go, the rest stays.
-        let n = entry.records.image_paints.len();
-        entry.records.image_paints.clear();
-        entry.validate_records(doc, cancel).map_err(|e2| format!("fig_import: {e}; without image paints: {e2}"))?;
-        for _ in 0..n {
-            viewer_loss(&mut losses, "viewer.image_paint", "image_paint_not_carried");
-        }
-    }
+    entry.validate_records(doc, cancel).map_err(|e| format!("fig_import: {e}"))?;
     let entry_bytes = entry.to_bytes(&doc.document_id)?;
 
     // The text entry.
@@ -430,6 +455,16 @@ fn build_package(
     if !proposal.raster_records.layers.is_empty() {
         let mut r = proposal.raster_records.clone();
         r.document_id.clone_from(&doc.document_id);
+        // Effects of a dropped binding layer move to its expansion group unless it has its own.
+        let own: BTreeSet<String> = r.layers.iter().map(|l| l.layer_id.clone()).collect();
+        r.layers.retain_mut(|l| match rekeyed.get(&l.layer_id) {
+            None => true,
+            Some(group) if own.contains(group) => false,
+            Some(group) => {
+                l.layer_id.clone_from(group);
+                true
+            }
+        });
         let body = serde_json::to_vec(&r).map_err(json_err)?;
         held.push(hsk_studio_package::ImportEntry::new(hsk_studio_package::ImportRole::Records, body).to_opaque());
     }

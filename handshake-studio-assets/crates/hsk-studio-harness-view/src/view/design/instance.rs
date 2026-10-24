@@ -430,6 +430,11 @@ impl Viewer {
                 if !DRAWN_OVERRIDES.contains(&field.as_str()) {
                     return Err(format!("design: override field {field} is not drawn here (editable: {})", DRAWN_OVERRIDES.join(", ")));
                 }
+                let current = resolve_instance(&base, &design, &BTreeMap::new(), 0, &hsk_studio_components::Limits::default(), self.cancel).map_err(|e| format!("design: {e:?}"))?;
+                let member = design.component(&current.component_id).ok_or("design: member missing")?;
+                if !definition_layers(&doc, &member.layer_id)?.iter().any(|(l, _)| &l.layer_id == node_id) {
+                    return Err(format!("design: {node_id} is not a layer of the instance's definition"));
+                }
                 let ok = matches!((field.as_str(), value), ("characters", StudioValue::String { .. }) | ("visible", StudioValue::Boolean { .. }) | ("opacity", StudioValue::Float { .. }));
                 if !ok {
                     return Err(format!("design: override {field} has the wrong value type"));
@@ -476,11 +481,6 @@ impl Viewer {
         let records = with_instance(&receipt.records, &next);
         let design = Design::new(&doc, &records, &local).map_err(|e| format!("design: records {e:?}"))?;
         let resolved = resolve_instance(&next, &design, &BTreeMap::new(), 0, &hsk_studio_components::Limits::default(), self.cancel).map_err(|e| format!("design: {e:?}"))?;
-        if let DesignCommand::SetOverride { node_id, .. } = &command
-            && !definition_layers(&doc, &design.component(&resolved.component_id).ok_or("design: member missing")?.layer_id)?.iter().any(|(l, _)| &l.layer_id == node_id)
-        {
-            return Err(format!("design: {node_id} is not a layer of the instance's definition"));
-        }
         let member = design.component(&resolved.component_id).ok_or("design: member missing")?;
         let (corigin, cpure) = *receipt.origins.get(&member.component_id).ok_or("design: the definition has no recorded origin")?;
         if !(binding.pure && cpure) {
@@ -516,7 +516,7 @@ impl Viewer {
         if defs.iter().any(|(l, _)| vrecords.attachments.iter().any(|a| a.layer_id == l.layer_id)) {
             notes.push("definition_clips_and_masks_not_copied".into());
         }
-        if self.records.as_ref().is_some_and(|r| defs.iter().any(|(l, _)| r.layers.iter().any(|x| serde_json::to_value(x).ok().and_then(|v| v.get("layer_id").cloned()) == Some(json!(l.layer_id))))) {
+        if self.records.as_ref().is_some_and(|r| defs.iter().any(|(l, _)| r.layers.iter().any(|x| x.layer_id == l.layer_id))) {
             notes.push("definition_effects_not_copied".into());
         }
         // Deletes: the group's current stacked children, deepest first.

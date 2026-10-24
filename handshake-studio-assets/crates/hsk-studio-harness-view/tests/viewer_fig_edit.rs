@@ -190,21 +190,27 @@ fn opening_a_fig_yields_an_editable_native_document() {
     assert_eq!(got, expected);
     assert_eq!(d.artboards.len(), p.snapshot.document().artboards.len());
     assert_eq!(d.geometry_unit, folio::GeometryUnit::Px);
-    // Paths: one anchor record per importer path, listed by the same vector layers.
+    // Paths: one anchor record per importer path; every vector layer lists as many paths as the
+    // importer's layer at the same position, each carried by the entry (ids are the window's).
     let entry = v.vector_entry().unwrap();
     assert_eq!(entry.paths.len(), p.paths.len());
-    for fp in &p.paths {
-        assert!(entry.path(&fp.path_id).is_some(), "path {} carried", fp.path_id);
+    let theirs: Vec<&folio::StudioLayer> = p.snapshot.document().layers.iter().filter(|l| l.kind != "component_instance").collect();
+    for (mine, oracle_layer) in d.layers.iter().zip(&theirs) {
+        if let (Payload::Vector { path_ids: a }, Payload::Vector { path_ids: b }) = (&mine.payload, &oracle_layer.payload) {
+            assert_eq!(a.len(), b.len(), "paths of {}", mine.name);
+            assert!(a.iter().all(|id| entry.path(id).is_some()), "paths of {} carried", mine.name);
+        }
     }
-    // Text: a record and the importer's story per text layer.
+    // Text: a record per text layer whose story text is the importer's.
     let text = v.text_entry().unwrap();
     let text_layers = d.layers.iter().filter(|l| matches!(l.payload, Payload::Text { .. })).count();
     assert!(text_layers > 0);
     assert_eq!(text.layers.len(), text_layers);
-    for r in &text.layers {
-        let story = text.stories.iter().find(|s| s.story_id == r.story_id).unwrap();
-        assert_eq!(Some(story), p.stories.iter().find(|s| s.story_id == r.story_id));
-    }
+    let mut mine_texts: Vec<String> = text.layers.iter().map(|r| text.stories.iter().find(|s| s.story_id == r.story_id).unwrap().inline_text().unwrap().to_owned()).collect();
+    let mut oracle_texts: Vec<String> = p.stories.iter().map(|s| s.inline_text().unwrap().to_owned()).collect();
+    mine_texts.sort();
+    oracle_texts.sort();
+    assert_eq!(mine_texts, oracle_texts);
     // It renders (CPU) and the layer panel lists it.
     v.render_if_dirty();
     assert!(v.render_error().is_none(), "{:?}", v.render_error());
