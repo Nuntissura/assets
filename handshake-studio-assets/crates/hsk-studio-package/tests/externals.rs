@@ -409,6 +409,7 @@ fn every_folio_reference_property_is_classified() {
         ("proof_records", serde_json::to_value(folio::proof_records_schema()).unwrap()),
         ("design_state", serde_json::to_value(folio::design_state_records_schema()).unwrap()),
         ("layout_rules", serde_json::to_value(folio::layout_rule_records_schema()).unwrap()),
+        ("cjk_composition", serde_json::to_value(folio::cjk_composition_records_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
