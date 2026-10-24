@@ -62,6 +62,11 @@ impl TimelineStep {
     }
 }
 
+/// A non-empty command id of at most [`MAX_COMMAND_ID_BYTES`] without control characters.
+pub(crate) fn valid_command_id(command_id: &str) -> bool {
+    !command_id.is_empty() && command_id.len() <= MAX_COMMAND_ID_BYTES && !command_id.chars().any(char::is_control)
+}
+
 pub(crate) fn actor_of(actor: &ActorContext) -> Actor {
     Actor {
         account_id: actor.account_id().to_owned(),
@@ -82,10 +87,7 @@ pub(crate) fn successor(
     resolver: &dyn Resolver,
     cancel: &CancellationToken,
 ) -> Result<Option<Snapshot>, SessionError> {
-    let id_ok = !step.command_id.is_empty()
-        && step.command_id.len() <= MAX_COMMAND_ID_BYTES
-        && !step.command_id.chars().any(char::is_control);
-    if !id_ok {
+    if !valid_command_id(&step.command_id) {
         return Err(SessionError::Provider("invalid_command"));
     }
     if step.expect.sequence_id != step.sequence_id || step.write.sequence_id != step.sequence_id {

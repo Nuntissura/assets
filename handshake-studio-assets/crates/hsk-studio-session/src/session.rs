@@ -16,6 +16,8 @@ use crate::{
         document_entry, load_parts, require_tile_assets,
     },
     timeline::{self, TIMELINE_STEP_PROVIDER, TimelineStep},
+    multicam::MULTICAM_ENTRY,
+    multicam_step::{self, MULTICAM_STEP_PROVIDER, MulticamStep},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_chronicle::{
@@ -215,6 +217,9 @@ pub struct Applied {
     /// value (undo); the caller sets a fresh `command_id`/`correlation_id` and submits it with
     /// [`Session::submit_timeline`]. `None` for provider submits and no-change steps.
     pub timeline_inverse: Option<TimelineStep>,
+    /// For a [`Session::submit_multicam`] step: the step that restores the previous sequences and
+    /// multicam records (undo; its own inverse is the redo). `None` otherwise and for no-change.
+    pub multicam_inverse: Option<MulticamStep>,
     /// The authority's canonical receipt (`None` for no-change or a standalone session).
     pub commit: Option<CommitReceipt>,
     /// True when this is the stored receipt of an earlier identical request: nothing was
@@ -375,6 +380,19 @@ struct PendingCommit {
     draft: Applied,
     /// Set when the authority's receipt for this key disagreed (only an operator command clears it; same test).
     diverged: Option<(CommitReceipt, Disagreement)>,
+    /// The `multicam` document entry the commit stores with the successor (multicam steps).
+    entry: EntryWrite,
+}
+
+/// A document-entry write that travels with a successor (`None` = no entry change; `Some(None)` =
+/// remove the `multicam` entry): published together with the document, never alone.
+type EntryWrite = Option<Option<Vec<u8>>>;
+
+/// The step a submit carries besides a provider proposal.
+#[derive(Clone, Copy)]
+enum Step<'a> {
+    Timeline(&'a TimelineStep),
+    Multicam(&'a MulticamStep),
 }
 
 enum Resolution {
@@ -403,6 +421,7 @@ struct Proposed {
     applied: Applied,
     successor: Option<Snapshot>,
     slots: Vec<Slot>,
+    entry: EntryWrite,
 }
 
 /// A revision update of a proposal: an existing vector entry advanced, or a new entry (the
@@ -754,7 +773,7 @@ impl Session {
                 &params,
                 expected_revision,
                 cancel,
-                Some(step),
+                Some(Step::Timeline(step)),
             )
         });
         self.settle(result, |applied, report| applied.report = report)
@@ -775,8 +794,42 @@ impl Session {
                 &params,
                 expected_revision,
                 cancel,
-                Some(step),
+                Some(Step::Timeline(step)),
             )
+        });
+        self.settle(result, |applied, report| applied.report = report)
+    }
+
+    /// Submits one multicam step (module `multicam_step`): every sequence edit and the `multicam`
+    /// record entry change together at `expected_revision + 1`, through the same grant, admission,
+    /// commit and publish path as [`Session::submit`]. The returned [`Applied::multicam_inverse`]
+    /// is the undo (and the undo's inverse the redo). Refusals change neither the document nor the
+    /// entry: `value_conflict` (a quoted sequence or the quoted records are not the live ones, or a
+    /// created id exists), `invalid_target`, `invalid_input`, `invalid_command`, `folio_rejected` /
+    /// `budget_exceeded` (the document or the records would not validate), `total_too_large`,
+    /// `stale_revision`. Tests in tests/multicam_commit.rs.
+    pub fn submit_multicam(
+        &mut self,
+        step: &MulticamStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(None, MULTICAM_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::Multicam(step)))
+        });
+        self.settle(result, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_multicam`], idempotent under `key` (see [`Session::submit_keyed`]).
+    pub fn submit_multicam_keyed(
+        &mut self,
+        key: &IdempotencyKey,
+        step: &MulticamStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(Some(key), MULTICAM_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::Multicam(step)))
         });
         self.settle(result, |applied, report| applied.report = report)
     }
@@ -838,7 +891,7 @@ impl Session {
         params: &[u8],
         expected: u64,
         cancel: &CancellationToken,
-        timeline: Option<&TimelineStep>,
+        step: Option<Step<'_>>,
     ) -> Result<Applied, SessionError> {
         cancel.check().map_err(|_| SessionError::Canceled)?;
         if self.closed {
@@ -902,8 +955,10 @@ impl Session {
             applied,
             successor,
             slots,
-        } = match timeline {
-            Some(step) => self.propose_timeline(step, current, cancel)?,
+            entry,
+        } = match step {
+            Some(Step::Timeline(step)) => self.propose_timeline(step, current, cancel)?,
+            Some(Step::Multicam(step)) => self.propose_multicam(step, current, cancel)?,
             None => self.propose_checked(provider_id, params, current, cancel)?,
         };
         let Some(successor) = successor else {
@@ -948,6 +1003,7 @@ impl Session {
                             slots,
                             draft: applied,
                             diverged: Some((receipt, disagreement)),
+                            entry,
                         };
                         self.store_pending(key, binding, pending);
                         return Err(SessionError::ReceiptMismatch);
@@ -971,6 +1027,7 @@ impl Session {
                         slots,
                         draft: applied,
                         diverged: None,
+                        entry,
                     };
                     self.store_pending(key, binding, pending);
                     return Err(SessionError::OutcomeUnknown);
@@ -978,6 +1035,7 @@ impl Session {
             }
         }
         self.publish(successor, &slots);
+        self.publish_entry(entry);
         // A cancel that arrived while the commit was happening does not erase the edit (test
         // `admission_overload_cancel_after_commit_and_shutdown_drain`).
         applied.cancel_too_late = cancel.check().is_err();
@@ -1092,6 +1150,7 @@ impl Session {
                 inverse: None,
                 timeline_inverse: changed
                     .then(|| step.inverse(step.command_id.clone(), step.correlation_id)),
+                multicam_inverse: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1100,6 +1159,72 @@ impl Session {
             },
             successor,
             slots: Vec::new(),
+            entry: None,
+        })
+    }
+
+    /// Checks a multicam step against the live snapshot and the live `multicam` entry without
+    /// publishing anything.
+    fn propose_multicam(
+        &self,
+        step: &MulticamStep,
+        current: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Proposed, SessionError> {
+        let checked = multicam_step::successor(
+            &self.snapshot,
+            self.document_entry(MULTICAM_ENTRY),
+            step,
+            self.config.budgets.folio(),
+            &*self.ports.resolver,
+            cancel,
+        )?;
+        // Last point at which a cancel still prevents publication.
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        if let Some(checked) = &checked {
+            if !self.assets_available(checked.successor.document()) {
+                return Err(SessionError::Package(PackageError::MissingAsset));
+            }
+            if let Some(Some(body)) = &checked.entry
+                && !self.document_entry_fits(MULTICAM_ENTRY, body.len())
+            {
+                return Err(SessionError::Package(PackageError::TotalTooLarge));
+            }
+        }
+        let changed = checked.is_some();
+        let revision = if changed {
+            current
+                .checked_add(1)
+                .ok_or(SessionError::ProposalInconsistent)?
+        } else {
+            current
+        };
+        let (successor, entry, inverse) = match checked {
+            Some(c) => (Some(c.successor), c.entry, Some(c.inverse)),
+            None => (None, None, None),
+        };
+        Ok(Proposed {
+            applied: Applied {
+                provider: MULTICAM_STEP_PROVIDER.to_owned(),
+                command_id: step.command_id.clone(),
+                correlation_id: step.correlation_id,
+                actor: timeline::actor_of(&self.config.actor),
+                previous_revision: current,
+                revision,
+                changed,
+                revision_updates: Vec::new(),
+                inverse: None,
+                timeline_inverse: None,
+                multicam_inverse: inverse,
+                commit: None,
+                replayed: false,
+                cancel_too_late: false,
+                receipts_evicted: 0,
+                report: ReportStatus::Unaddressed,
+            },
+            successor,
+            slots: Vec::new(),
+            entry,
         })
     }
 
@@ -1246,6 +1371,7 @@ impl Session {
                 revision_updates: prepared.revision_updates().to_vec(),
                 inverse: prepared.inverse().cloned(),
                 timeline_inverse: None,
+                multicam_inverse: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1254,6 +1380,7 @@ impl Session {
             },
             successor: successor_snapshot,
             slots,
+            entry: None,
         })
     }
 
@@ -1368,9 +1495,11 @@ impl Session {
                     successor,
                     slots,
                     mut draft,
+                    entry,
                     ..
                 } = *pending;
                 self.publish(successor, &slots);
+                self.publish_entry(entry);
                 draft.commit = Some(receipt);
                 // Adopted here, not handed to the caller: unacknowledged until a replay of the
                 // key or `acknowledge_receipt` returns it, so eviction does not take it (test
@@ -2197,17 +2326,35 @@ impl Session {
             .iter()
             .find(|t| **t == token)
             .ok_or(SessionError::Package(PackageError::UnsafeName))?;
+        if let Some(body) = &bytes
+            && !self.document_entry_fits(token, body.len())
+        {
+            return Err(SessionError::Package(PackageError::TotalTooLarge));
+        }
+        self.put_document_entry(token, bytes);
+        Ok(())
+    }
+
+    /// Whether a `len`-byte body for `token` keeps all opaque entries within `max_entry_bytes`.
+    fn document_entry_fits(&self, token: &str, len: usize) -> bool {
         let others: u64 = self
             .quarantined
             .iter()
             .filter(|q| document_entry(&q.name, &q.sha256_hex) != Some(token))
             .map(|q| q.bytes.len() as u64)
             .fold(0u64, u64::saturating_add);
-        if let Some(body) = &bytes
-            && others.saturating_add(body.len() as u64) > self.config.budgets.limits.max_entry_bytes
-        {
-            return Err(SessionError::Package(PackageError::TotalTooLarge));
+        others.saturating_add(len as u64) <= self.config.budgets.limits.max_entry_bytes
+    }
+
+    /// Publishes a checked entry write that travels with a successor (multicam steps).
+    fn publish_entry(&mut self, entry: EntryWrite) {
+        if let Some(bytes) = entry {
+            self.put_document_entry(MULTICAM_ENTRY, bytes);
         }
+    }
+
+    /// Stores or removes the entry `token` (already a known token, size already checked).
+    fn put_document_entry(&mut self, token: &str, bytes: Option<Vec<u8>>) {
         self.quarantined
             .retain(|q| document_entry(&q.name, &q.sha256_hex) != Some(token));
         if let Some(body) = bytes {
@@ -2220,7 +2367,6 @@ impl Session {
             self.quarantined.sort_by(|a, b| a.name.cmp(&b.name));
         }
         self.entries_changed = true;
-        Ok(())
     }
 
     /// Bytes currently staged by [`Session::stage_tile`].
