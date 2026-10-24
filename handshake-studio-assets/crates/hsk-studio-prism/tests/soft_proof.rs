@@ -8,7 +8,42 @@
 mod wide_support;
 use hsk_studio_accord::{CancellationToken, DomainId};
 use hsk_studio_prism::*;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use wide_support::{Ctx, SRGB};
+
+// ---------------------------------------------------------------- counting allocator (allocations, per thread)
+thread_local! {
+    static ALLOCS: Cell<u64> = const { Cell::new(0) };
+}
+fn allocations() -> u64 {
+    ALLOCS.with(Cell::get)
+}
+fn count_one() {
+    let _ = ALLOCS.try_with(|c| c.set(c.get().saturating_add(1)));
+}
+struct Counting;
+// SAFETY: every method forwards to the System allocator with the arguments it received; the only addition is a
+// thread-local counter update that never allocates (try_with, const-initialised cell).
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        count_one();
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count_one();
+        unsafe { System.alloc_zeroed(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        count_one();
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+#[global_allocator]
+static GLOBAL: Counting = Counting;
 
 const P3: &[u8] = include_bytes!("profiles/DisplayP3-v4.icc");
 const CMYK: &[u8] = include_bytes!("oracle/profiles/hsk-synth-cmyk-v2.icc");
@@ -110,4 +145,225 @@ fn presets_include_the_spec_minimum() {
         ProofProfileKind::ColourVision(ColourVision::Deuteranopia)
     );
     assert!(select_proof_condition(&presets, "no_such_condition").is_none());
+}
+
+// ---------------------------------------------------------------- slice 2: the proof chain
+/// Deterministic document RGB pixels spread over the cube (0..1).
+fn rgb_pixels(n: usize) -> Vec<f32> {
+    (0..n)
+        .flat_map(|i| {
+            let f = |k: usize, m: usize| ((i.wrapping_mul(k) % m) as f32) / ((m - 1) as f32);
+            [f(7, 17), f(11, 13), f(5, 19)]
+        })
+        .collect()
+}
+fn wide(src: &[u8], dst: &[u8], pixels: &[f32], intent: Intent, bpc: bool) -> Vec<f32> {
+    let ctx = Ctx::new();
+    wide_support::run(&mut wide_support::engine(&ctx), &ctx, src, dst, pixels, intent, bpc).unwrap().pixels
+}
+fn cancel() -> CancellationToken {
+    CancellationToken::default()
+}
+
+#[test]
+fn hostile_proof_profiles_are_refused_before_allocation() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let refused = |bytes: &[u8], sha: [u8; 32], profile_id: &DomainId| {
+        let cond = ProofCondition::new("hostile", ProofProfile::Icc(ProfileInput { profile_id, bytes, expected_sha256: sha }));
+        let doc = input(&did, SRGB);
+        let display = input(&sid, SRGB);
+        let token = cancel();
+        let before = allocations();
+        let r = prepare_soft_proof(doc, &cond, display, &token).unwrap_err();
+        (r, allocations() - before)
+    };
+    // Size and hash are checked first, from the borrowed bytes: nothing is allocated before the refusal.
+    let oversize = vec![0u8; MAX_WIDE_PROFILE_BYTES + 1];
+    assert_eq!(refused(&oversize, profile_hash(&oversize), &pid), (ProofError::Wide(WideError::ProfileLimit), 0));
+    assert_eq!(refused(CMYK, [0u8; 32], &pid), (ProofError::Wide(WideError::HashMismatch), 0));
+    let wrong_kind = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000011").unwrap();
+    assert_eq!(refused(CMYK, profile_hash(CMYK), &wrong_kind), (ProofError::Wide(WideError::InvalidProfileId), 0));
+    // Framing refusals (after the size/hash gate).
+    let truncated = &CMYK[..200];
+    assert_eq!(refused(truncated, profile_hash(truncated), &pid).0, ProofError::Wide(WideError::MalformedProfile));
+    let mut huge_count = SRGB.to_vec();
+    huge_count[128..132].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert_eq!(refused(&huge_count, profile_hash(&huge_count), &pid).0, ProofError::Wide(WideError::MalformedProfile));
+    let mut link = SRGB.to_vec();
+    link[12..16].copy_from_slice(b"link");
+    assert_eq!(refused(&link, profile_hash(&link), &pid).0, ProofError::Wide(WideError::UnsupportedClass));
+    // The proof profile is admitted before the document: a hostile proof wins over a hostile document.
+    let cond = ProofCondition::new(
+        "hostile",
+        ProofProfile::Icc(ProfileInput { profile_id: &pid, bytes: &oversize, expected_sha256: profile_hash(&oversize) }),
+    );
+    let bad_doc = ProfileInput { profile_id: &did, bytes: SRGB, expected_sha256: [1u8; 32] };
+    assert_eq!(
+        prepare_soft_proof(bad_doc, &cond, input(&sid, SRGB), &cancel()).unwrap_err(),
+        ProofError::Wide(WideError::ProfileLimit)
+    );
+    // A CMYK display is refused; a CMYK document cannot use legacy uncompensated RGB.
+    let ok = ProofCondition::working_cmyk(input(&pid, CMYK));
+    assert_eq!(prepare_soft_proof(input(&did, SRGB), &ok, input(&sid, CMYK), &cancel()).unwrap_err(), ProofError::DisplayNotRgb);
+    let legacy = ProofCondition::legacy_uncompensated_rgb();
+    assert_eq!(
+        prepare_soft_proof(input(&did, CMYK), &legacy, input(&sid, SRGB), &cancel()).unwrap_err(),
+        ProofError::LegacyNeedsRgbDocument
+    );
+    // Hostile pixel buffers and geometry (V4-02): refused before the output is allocated.
+    let proof = prepare_soft_proof(input(&did, SRGB), &ok, input(&sid, SRGB), &cancel()).unwrap();
+    assert_eq!(proof.run(&[0.5; 4], 1, true, &cancel()).unwrap_err(), ProofError::Wide(WideError::ChannelCount));
+    assert_eq!(proof.run(&[], 1, true, &cancel()).unwrap_err(), ProofError::Wide(WideError::ChannelCount));
+    assert_eq!(proof.run(&[0.5; 6], usize::MAX, true, &cancel()).unwrap_err(), ProofError::Geometry);
+    assert_eq!(proof.run(&[0.5; 6], 0, true, &cancel()).unwrap_err(), ProofError::Geometry);
+    assert_eq!(proof.run(&[0.5, f32::NAN, 0.5], 1, true, &cancel()).unwrap_err(), ProofError::Wide(WideError::NonfiniteChannel));
+    assert_eq!(proof.run(&[0.5, 1.5, 0.5], 1, true, &cancel()).unwrap_err(), ProofError::Wide(WideError::ChannelRange));
+    let over = vec![0.5f32; (MAX_WIDE_PIXELS + 1) * 3];
+    let token = cancel();
+    let before = allocations();
+    let r = proof.run(&over, 1, true, &token);
+    let allocated = allocations() - before;
+    assert_eq!(r.unwrap_err(), ProofError::Wide(WideError::PixelLimit));
+    assert_eq!(allocated, 0, "pixel_limit refused before allocating");
+    let canceled = cancel();
+    canceled.cancel();
+    assert_eq!(proof.run(&[0.5; 3], 1, true, &canceled).unwrap_err(), ProofError::Wide(WideError::Canceled));
+}
+
+#[test]
+fn soft_proof_never_changes_document_values() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let doc = rgb_pixels(300);
+    let copy = doc.clone();
+    for cond in [
+        ProofCondition::working_cmyk(input(&pid, CMYK)),
+        ProofCondition::colour_vision(ColourVision::Deuteranopia),
+        ProofCondition::legacy_uncompensated_rgb(),
+    ] {
+        let proof = prepare_soft_proof(input(&did, P3), &cond, input(&sid, SRGB), &cancel()).unwrap();
+        for enabled in [true, false] {
+            let preview = proof.run(&doc, 20, enabled, &cancel()).unwrap();
+            assert_eq!(preview.receipt.enabled, enabled);
+            assert_eq!((preview.receipt.width, preview.receipt.height, preview.receipt.pixel_count), (20, 15, 300));
+            assert_eq!(preview.pixels.len(), doc.len());
+        }
+        assert!(doc.iter().zip(&copy).all(|(a, b)| a.to_bits() == b.to_bits()), "{}: document values changed", cond.name);
+    }
+    // The proof shows something other than the plain display transform (it simulates; it does not pass through).
+    let cond = ProofCondition::working_cmyk(input(&pid, CMYK));
+    let proof = prepare_soft_proof(input(&did, P3), &cond, input(&sid, SRGB), &cancel()).unwrap();
+    let on = proof.run(&doc, 20, true, &cancel()).unwrap();
+    let off = proof.run(&doc, 20, false, &cancel()).unwrap();
+    assert_ne!(on.receipt.output_sha256, off.receipt.output_sha256);
+    // Legacy uncompensated RGB shows the document values unmanaged.
+    let legacy = ProofCondition::legacy_uncompensated_rgb();
+    let legacy = prepare_soft_proof(input(&did, P3), &legacy, input(&sid, SRGB), &cancel()).unwrap();
+    let shown = legacy.run(&doc, 20, true, &cancel()).unwrap();
+    assert!(shown.receipt.unmanaged && shown.receipt.display_stage.is_none());
+    assert_eq!(shown.pixels, doc);
+}
+
+#[test]
+fn toggle_off_equals_the_plain_display_transform() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let doc = rgb_pixels(500);
+    for display_intent in [Intent::RelativeColorimetric, Intent::Perceptual] {
+        for mut cond in [ProofCondition::working_cmyk(input(&pid, CMYK)), ProofCondition::colour_vision(ColourVision::Protanopia)] {
+            cond.display_intent = display_intent;
+            cond.simulate_paper_color = true;
+            let proof = prepare_soft_proof(input(&did, P3), &cond, input(&sid, SRGB), &cancel()).unwrap();
+            let off = proof.run(&doc, 25, false, &cancel()).unwrap();
+            assert_eq!(off.pixels, wide(P3, SRGB, &doc, display_intent, true), "{}", cond.name);
+            assert!(!off.receipt.enabled && off.receipt.display_stage.is_none());
+        }
+    }
+}
+
+#[test]
+fn two_intents_are_applied_separately() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let doc = rgb_pixels(400);
+    let (p, r) = (Intent::Perceptual, Intent::RelativeColorimetric);
+    let mut digests = Vec::new();
+    for (proof_intent, display_intent) in [(p, r), (r, p), (p, p), (r, r)] {
+        let mut cond = ProofCondition::working_cmyk(input(&pid, CMYK));
+        cond.proof_intent = proof_intent;
+        cond.display_intent = display_intent;
+        let proof = prepare_soft_proof(input(&did, SRGB), &cond, input(&sid, SRGB), &cancel()).unwrap();
+        let preview = proof.run(&doc, 20, true, &cancel()).unwrap();
+        // Document -> proof device under proof_intent (with the condition's BPC), then proof device -> display
+        // under display_intent: the composition of two separate wide-path transforms, bit for bit.
+        let cmyk = wide(SRGB, CMYK, &doc, proof_intent, true);
+        let expected = wide(CMYK, SRGB, &cmyk, display_intent, true);
+        assert_eq!(preview.pixels, expected, "proof {proof_intent:?} display {display_intent:?}");
+        let receipt = &preview.receipt;
+        assert_eq!((receipt.condition.proof_intent, receipt.condition.display_intent), (proof_intent, display_intent));
+        assert_eq!(receipt.display_stage.unwrap().intent, display_intent);
+        assert!(receipt.proof_bpc.requested);
+        digests.push(receipt.output_sha256);
+    }
+    // The synthetic CMYK profile has distinct tables per intent: swapping the two intents changes the proof.
+    assert_ne!(digests[0], digests[1]);
+    assert_ne!(digests[2], digests[3]);
+}
+
+#[test]
+fn paper_and_black_ink_flags_are_independent() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let mut doc = rgb_pixels(198);
+    doc.extend_from_slice(&[1.0, 1.0, 1.0, 0.0, 0.0, 0.0]); // white then black, the last two pixels
+    let n = doc.len();
+    let mut previews = Vec::new();
+    for (paper, ink) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut cond = ProofCondition::working_cmyk(input(&pid, CMYK));
+        cond.simulate_paper_color = paper;
+        cond.simulate_black_ink = ink;
+        let proof = prepare_soft_proof(input(&did, SRGB), &cond, input(&sid, SRGB), &cancel()).unwrap();
+        let preview = proof.run(&doc, 1, true, &cancel()).unwrap();
+        let stage = preview.receipt.display_stage.unwrap();
+        assert_eq!(stage.paper_white_scale.is_some(), paper);
+        assert_eq!(stage.intent == Intent::AbsoluteColorimetric, paper);
+        assert_eq!(stage.bpc.requested, !ink);
+        if ink {
+            assert_eq!(stage.bpc.rule, DISPLAY_BPC_RULE_BLACK_INK_SIMULATED);
+        }
+        previews.push(preview);
+    }
+    for i in 0..4 {
+        for j in i + 1..4 {
+            assert_ne!(previews[i].receipt.output_sha256, previews[j].receipt.output_sha256, "combinations {i} and {j} agree");
+        }
+    }
+    let cmyk = wide(SRGB, CMYK, &doc, Intent::RelativeColorimetric, true);
+    // Neither = relative with black point compensation on the display stage.
+    assert_eq!(previews[0].pixels, wide(CMYK, SRGB, &cmyk, Intent::RelativeColorimetric, true));
+    // Black ink alone = proof device -> display without black point compensation.
+    assert_eq!(previews[2].pixels, wide(CMYK, SRGB, &cmyk, Intent::RelativeColorimetric, false));
+    // Paper and black ink = absolute colorimetric proof device -> display.
+    assert_eq!(previews[3].pixels, wide(CMYK, SRGB, &cmyk, Intent::AbsoluteColorimetric, false));
+    let sum = |p: &ProofPreview, at: usize| p.pixels[at..at + 3].iter().sum::<f32>();
+    let (white, black) = (n - 6, n - 3);
+    // Paper colour darkens the paper white (wtpt 0.87/0.90/0.69 against D50), with or without black ink.
+    assert!(sum(&previews[1], white) + 0.05 < sum(&previews[0], white));
+    assert!(sum(&previews[3], white) + 0.05 < sum(&previews[2], white));
+    // Black ink lifts the black, with or without paper colour.
+    assert!(sum(&previews[2], black) > sum(&previews[0], black) + 0.03);
+    assert!(sum(&previews[3], black) > sum(&previews[1], black) + 0.03);
+}
+
+#[test]
+fn proof_is_deterministic_across_threads() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let doc = rgb_pixels(4096);
+    let cond = ProofCondition::working_cmyk(input(&pid, CMYK));
+    let proof = prepare_soft_proof(input(&did, P3), &cond, input(&sid, SRGB), &cancel()).unwrap();
+    let serial = proof.run(&doc, 64, true, &cancel()).unwrap();
+    let results: Vec<ProofPreview> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..4).map(|_| s.spawn(|| proof.run(&doc, 64, true, &cancel()).unwrap())).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for r in results {
+        assert_eq!(r.receipt.output_sha256, serial.receipt.output_sha256);
+        assert!(r.pixels.iter().zip(&serial.pixels).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
 }

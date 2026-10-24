@@ -11,6 +11,8 @@ use crate::WideError;
 
 mod condition;
 pub use condition::*;
+mod chain;
+pub use chain::{DISPLAY_BPC_RULE_BLACK_INK_SIMULATED, DisplayStageReport, ProofPreview, ProofReceipt, SoftProof, prepare_soft_proof};
 mod cvd;
 pub use cvd::{CVD_PROOF_DEVICE_PROFILE_ID, MACHADO_2009_DEUTERANOPIA, MACHADO_2009_PROTANOPIA, MACHADO_2009_TRITANOPIA};
 
