@@ -14,6 +14,7 @@
 //!   no code copied; Photoshop's threshold UNVERIFIED) (`table_destination_gamut_check_uses_round_trip`);
 //! - perceptual and saturation proof intents map with the profile's own tables and never clip (STU-COL-138),
 //!   so the check runs under relative colorimetric; the colorimetric intents check themselves.
+//!
 //! The default warning colour is mid grey (0.5, 0.5, 0.5) in display RGB (STU-COL-244 declares no default;
 //! Photoshop's default UNVERIFIED).
 //!
