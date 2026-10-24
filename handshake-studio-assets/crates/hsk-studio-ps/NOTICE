@@ -10,7 +10,8 @@ The fork ships no URW++ font program. Its fonts, each byte-identical to its dist
 own licence (texts beside the fonts):
 
 - resources/Font/tex-gyre: 33 TeX Gyre Type 1 fonts, Copyright 2006-2009 for TeX Gyre extensions by
-  B. Jackowski and J. M. Nowacki (on behalf of TeX Users Groups), GUST Font License (an instance of the
+  B. Jackowski and J. M. Nowacki (on behalf of TeX Users Groups), except TeX Gyre Adventor (2007-2018) and
+  TeX Gyre Pagella (2006-2018) as stated in their font programs (et al.), GUST Font License (an instance of the
   LaTeX Project Public License 1.3c). Only the Type 1 files with the licence, README and MANIFEST files
   are included, unmodified; the complete TeX Gyre collection is at https://ctan.org/pkg/tex-gyre .
 - resources/Font/stix-two/STIXTwoMath-Regular.ttf: Copyright 2001-2021 The STIX Fonts Project Authors,

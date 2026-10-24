@@ -42,7 +42,7 @@
 //! Parse a Type 1 font and inspect its glyph dictionary:
 //!
 //! ```no_run
-//! use stet_fonts::type1_parser::parse_type1;
+//! use hsk_studio_ps_fonts::type1_parser::parse_type1;
 //!
 //! let data = std::fs::read("qtmr.pfa")?;
 //! let font = parse_type1(&data)?;

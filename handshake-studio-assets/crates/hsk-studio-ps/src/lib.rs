@@ -11,9 +11,9 @@
 //! # Quick Start
 //!
 //! ```no_run
-//! let mut interp = stet::Interpreter::new();
-//! let pages = interp.render(b"%!PS\n100 100 moveto 200 200 lineto stroke showpage", 300.0).unwrap();
-//! // pages[0].rgba — RGBA pixel data
+//! let mut interp = hsk_studio_ps::Interpreter::new();
+//! let pages = interp.render_to_display_list(b"%!PS\n100 100 moveto 200 200 lineto stroke showpage", 300.0).unwrap();
+//! // pages[0].display_list — the page display list (the pixel `render()` is not vendored in this fork)
 //! // pages[0].width, pages[0].height — dimensions in pixels
 //! ```
 //!
@@ -29,7 +29,7 @@
 //! # Configuration
 //!
 //! ```no_run
-//! let mut interp = stet::Interpreter::builder()
+//! let mut interp = hsk_studio_ps::Interpreter::builder()
 //!     .no_icc()             // disable ICC color management
 //!     .suppress_output()    // silence PS print/==/= operators
 //!     .build();
@@ -40,8 +40,8 @@
 //!
 //! ```no_run
 //! # #[cfg(feature = "render")] {
-//! let mut interp = stet::Interpreter::builder()
-//!     .page_background(stet::PageBackground::Transparent)
+//! let mut interp = hsk_studio_ps::Interpreter::builder()
+//!     .page_background(hsk_studio_ps::PageBackground::Transparent)
 //!     .build();
 //! # }
 //! ```
@@ -55,8 +55,8 @@
 //! [`Interpreter::warnings`] tells the two apart.
 //!
 //! ```no_run
-//! let mut interp = stet::Interpreter::new();
-//! let pages = interp.render(b"%!PS\n0 0 100 100 rectfill", 72.0).unwrap();
+//! let mut interp = hsk_studio_ps::Interpreter::new();
+//! let pages = interp.render_to_display_list(b"%!PS\n0 0 100 100 rectfill", 72.0).unwrap();
 //! if pages.is_empty() {
 //!     for w in interp.warnings() {
 //!         eprintln!("warning: {}\n         {}", w, w.hint());
@@ -384,8 +384,8 @@ impl Interpreter {
     /// a program that legitimately drew nothing.
     ///
     /// ```no_run
-    /// let mut interp = stet::Interpreter::new();
-    /// let pages = interp.render(b"%!PS\n0 0 100 100 rectfill", 72.0).unwrap();
+    /// let mut interp = hsk_studio_ps::Interpreter::new();
+    /// let pages = interp.render_to_display_list(b"%!PS\n0 0 100 100 rectfill", 72.0).unwrap();
     /// if pages.is_empty() {
     ///     for w in interp.warnings() {
     ///         eprintln!("warning: {}\n         {}", w, w.hint());

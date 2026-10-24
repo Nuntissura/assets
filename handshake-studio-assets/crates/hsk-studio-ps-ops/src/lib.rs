@@ -39,7 +39,7 @@
 //!
 //! ```no_run
 //! use stet_core::context::Context;
-//! use stet_ops::build_system_dict;
+//! use hsk_studio_ps_ops::build_system_dict;
 //!
 //! let mut ctx = Context::new();
 //! build_system_dict(&mut ctx);  // register every operator into systemdict
