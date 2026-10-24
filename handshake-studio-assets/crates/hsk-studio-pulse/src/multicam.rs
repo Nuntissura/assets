@@ -27,14 +27,23 @@
 //!   listed (Pulse's transition pruning);
 //! - angle sync on creation: caller offsets or in points; timecode and audio-waveform sync are not
 //!   specified by STU-VID-033 and are refused `multicam_sync_unsupported`;
-//! - speed: multicam clips and angle clips resolve and flatten only at unit forward speed
-//!   (`multicam_speed_unsupported` otherwise; the spec states no speed mapping for angles).
+//! - speed (lane SMB-PR-MULTICAM-2; STU-VID-031 "`speed` is a rational multiplier"; STU-VID-033
+//!   states no speed mapping for angles, so this is a declared Studio reading): a multicam clip at
+//!   forward speed `s` reads its source sequence `s` source ticks per timeline tick, an angle clip at
+//!   forward speed `a` reads its media `a` media ticks per source-sequence tick. Flatten keeps each
+//!   piece's media window (the angle clip's window cut to the overlap, mapped through `a`), maps its
+//!   timeline span through `s`, and gives it the exact reduced product `s * a`; any derived tick that
+//!   is not a whole number is refused `multicam_speed_inexact`. Reverse (negative) speed on the
+//!   multicam clip or an angle clip it reads is refused `multicam_reverse_unsupported` (declared
+//!   reading). [`resolve_active_angle`] uses the same mapping and FLOORS a fractional source position
+//!   (a slowed clip holds a source tick for several timeline ticks; declared reading).
 //!
 //! Bounds (V4-01/02): record passes hold at most [`MAX_RECORD_PASS_EVENTS`] events, flatten at most
 //! [`MAX_FLATTEN_PIECES`] pieces, preview pages at most [`MAX_PREVIEW_PAGE_SIZE`] angles; every count
 //! is checked before work, every tick sum is checked, the cancel token is polled per event / clip.
-//! Premiere Pro behaviour (angle numbering default, audio-follows-video default, cut placement and
-//! flatten of speed-changed angles) is UNVERIFIED (D5).
+//! Premiere Pro behaviour (angle numbering default, audio-follows-video default, cut placement,
+//! flatten of speed-changed angles, marker placement after flatten, reverse-speed multicam) is
+//! UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::PulseError;
@@ -87,7 +96,10 @@ pub enum MulticamError {
     EventOutsideClip,
     EventsUnordered,
     TooManyEvents,
-    SpeedUnsupported,
+    /// A speed mapping derives a tick that is not a whole number.
+    SpeedInexact,
+    /// A reverse (negative) speed on a multicam clip or an angle clip it reads.
+    ReverseUnsupported,
     MarkersPresent,
 }
 impl MulticamError {
@@ -101,7 +113,8 @@ impl MulticamError {
             Self::EventOutsideClip => "event_outside_clip",
             Self::EventsUnordered => "events_unordered",
             Self::TooManyEvents => "too_many_events",
-            Self::SpeedUnsupported => "multicam_speed_unsupported",
+            Self::SpeedInexact => "multicam_speed_inexact",
+            Self::ReverseUnsupported => "multicam_reverse_unsupported",
             Self::MarkersPresent => "multicam_markers_present",
         }
     }
@@ -803,19 +816,64 @@ pub struct ResolvedAngle {
     pub sound: Option<(String, Ticks)>,
 }
 
-fn unit(speed: &Speed) -> MulticamResult<()> {
-    if *speed == Speed::UNIT { Ok(()) } else { Err(MulticamError::SpeedUnsupported) }
+/// A forward speed as `(|numerator|, denominator)`; reverse is `multicam_reverse_unsupported`.
+fn forward(speed: &Speed) -> MulticamResult<(u128, u128)> {
+    if speed.is_reversed() {
+        return Err(MulticamError::ReverseUnsupported);
+    }
+    if speed.numerator == 0 || speed.denominator == 0 {
+        return Err(PulseError::InvalidSpeed.into());
+    }
+    Ok((u128::from(speed.numerator.unsigned_abs()), u128::from(speed.denominator)))
+}
+/// `(denominator, numerator)`: the inverse ratio (source offset -> timeline offset).
+fn inverse_ratio((num, den): (u128, u128)) -> (u128, u128) {
+    (den, num)
+}
+/// `x * num / den` exactly (`multicam_speed_inexact` when not a whole number of ticks).
+fn scale_exact(x: u64, (num, den): (u128, u128)) -> MulticamResult<u64> {
+    let product = u128::from(x).checked_mul(num).ok_or(PulseError::Overflow)?;
+    let q = product.checked_div(den).ok_or(PulseError::InvalidSpeed)?;
+    if product.checked_rem(den) != Some(0) {
+        return Err(MulticamError::SpeedInexact);
+    }
+    u64::try_from(q).map_err(|_| PulseError::Overflow.into())
+}
+/// `floor(x * num / den)`.
+fn scale_floor(x: u64, (num, den): (u128, u128)) -> MulticamResult<u64> {
+    let product = u128::from(x).checked_mul(num).ok_or(PulseError::Overflow)?;
+    let q = product.checked_div(den).ok_or(PulseError::InvalidSpeed)?;
+    u64::try_from(q).map_err(|_| PulseError::Overflow.into())
+}
+fn gcd128(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        (a, b) = (b, a.checked_rem(b).unwrap_or(0));
+    }
+    a
+}
+/// The exact reduced product of two forward speeds (`overflow` when it has no `Speed` spelling).
+fn speed_product(s: (u128, u128), a: (u128, u128)) -> MulticamResult<Speed> {
+    let num = s.0.checked_mul(a.0).ok_or(PulseError::Overflow)?;
+    let den = s.1.checked_mul(a.1).ok_or(PulseError::Overflow)?;
+    let g = gcd128(num, den);
+    let num = num.checked_div(g).ok_or(PulseError::InvalidSpeed)?;
+    let den = den.checked_div(g).ok_or(PulseError::InvalidSpeed)?;
+    Ok(Speed {
+        numerator: i64::try_from(num).map_err(|_| PulseError::Overflow)?,
+        denominator: u64::try_from(den).map_err(|_| PulseError::Overflow)?,
+    })
 }
 
-/// The clip of `track` under source-sequence tick `at` and the tick in its own source.
+/// The clip of `track` under source-sequence tick `at` and the tick in its own source (the angle
+/// clip's speed applied, floored; module docs).
 fn under(track: Option<&StudioTrack>, at: u64) -> MulticamResult<Option<(String, Ticks)>> {
     let Some(track) = track else { return Ok(None) };
     for c in &track.clips {
         let start = c.timeline_start.value();
         let end = add(start, c.duration.value())?;
         if at >= start && at < end {
-            unit(&c.speed)?;
-            return Ok(Some((c.clip_id.clone(), Ticks::new(add(c.source_in.value(), sub(at, start)?)?))));
+            let a = forward(&c.speed)?;
+            return Ok(Some((c.clip_id.clone(), Ticks::new(add(c.source_in.value(), scale_floor(sub(at, start)?, a)?)?))));
         }
     }
     Ok(None)
@@ -836,7 +894,7 @@ pub fn resolve_active_angle(
     let (s, t, c) = locate(document, clip_id)?;
     let clip = &document.sequences[s].tracks[t].clips[c];
     let mode = records.clip(clip_id).filter(|m| m.enabled).ok_or(MulticamError::NotMulticam)?;
-    unit(&clip.speed)?;
+    let s = forward(&clip.speed)?;
     let end = clip.timeline_end().ok_or(PulseError::Overflow)?;
     if tick < clip.timeline_start || tick >= end {
         return Err(PulseError::OutsideRange.into());
@@ -852,7 +910,7 @@ pub fn resolve_active_angle(
     };
     let angle_track_id = pick(mode.active_angle)?.clone();
     let audio_track_id = multicam_paired_audio_track(source, pick(mode.audio_angle)?).map(str::to_owned);
-    let at = add(clip.source_in.value(), sub(tick.value(), clip.timeline_start.value())?)?;
+    let at = add(clip.source_in.value(), scale_floor(sub(tick.value(), clip.timeline_start.value())?, s)?)?;
     let find = |id: Option<&String>| id.and_then(|id| source.tracks.iter().find(|k| &k.track_id == id));
     Ok(ResolvedAngle {
         angle: mode.active_angle,
@@ -877,7 +935,7 @@ fn flatten_clip(
     taken: &mut BTreeSet<String>,
     dropped: &mut Vec<String>,
 ) -> MulticamResult<Vec<StudioClip>> {
-    unit(&clip.speed)?;
+    let s = forward(&clip.speed)?;
     if !clip.markers.is_empty() {
         return Err(MulticamError::MarkersPresent);
     }
@@ -900,17 +958,18 @@ fn flatten_clip(
             if o0 >= o1 {
                 continue;
             }
-            unit(&c.speed)?;
+            let a = forward(&c.speed)?;
             let id = fresh.next().ok_or(PulseError::InsufficientIds)?;
             if !taken.insert(id.clone()) {
                 return Err(PulseError::DuplicateId.into());
             }
             let mut piece = c.clone();
             piece.clip_id = id.clone();
-            piece.source_in = Ticks::new(add(c.source_in.value(), sub(o0, start)?)?);
-            piece.source_out = Ticks::new(add(piece.source_in.value(), sub(o1, o0)?)?);
-            piece.timeline_start = Ticks::new(add(clip.timeline_start.value(), sub(o0, w0)?)?);
-            piece.duration = Ticks::new(sub(o1, o0)?);
+            piece.source_in = Ticks::new(add(c.source_in.value(), scale_exact(sub(o0, start)?, a)?)?);
+            piece.source_out = Ticks::new(add(c.source_in.value(), scale_exact(sub(o1, start)?, a)?)?);
+            piece.timeline_start = Ticks::new(add(clip.timeline_start.value(), scale_exact(sub(o0, w0)?, inverse_ratio(s))?)?);
+            piece.duration = Ticks::new(scale_exact(sub(o1, o0)?, inverse_ratio(s))?);
+            piece.speed = speed_product(s, a)?;
             piece.enabled = clip.enabled && c.enabled;
             piece.link_group = None;
             piece.markers = Vec::new();
