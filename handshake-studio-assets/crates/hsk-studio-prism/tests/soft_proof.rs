@@ -367,3 +367,105 @@ fn proof_is_deterministic_across_threads() {
         assert!(r.pixels.iter().zip(&serial.pixels).all(|(a, b)| a.to_bits() == b.to_bits()));
     }
 }
+
+// ---------------------------------------------------------------- slice 3: colour-vision conditions
+fn mat_mul(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    m.map(|r| r[0] * v[0] + r[1] * v[1] + r[2] * v[2])
+}
+
+#[test]
+fn cvd_conditions_run_through_the_proof_chain() {
+    let (did, sid) = (id(10), id(12));
+    let mut doc = rgb_pixels(240);
+    doc.extend_from_slice(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    let mut digests = Vec::new();
+    for kind in [ColourVision::Protanopia, ColourVision::Deuteranopia, ColourVision::Tritanopia] {
+        let cond = ProofCondition::colour_vision(kind);
+        let proof = prepare_soft_proof(input(&did, SRGB), &cond, input(&sid, SRGB), &cancel()).unwrap();
+        assert_eq!(proof.proof_space(), Some(DeviceSpace::Rgb));
+        let preview = proof.run(&doc, 1, true, &cancel()).unwrap();
+        // Same pipeline, toggle and inspection state as an ICC proof: the receipt names the linear-light sRGB proof
+        // device, the published matrix and the display stage.
+        let receipt = &preview.receipt;
+        assert_eq!(receipt.condition.kind, ProofProfileKind::ColourVision(kind));
+        assert_eq!(receipt.proof_profile_id.as_ref().map(|i| i.as_str()), Some(CVD_PROOF_DEVICE_PROFILE_ID));
+        assert_eq!(receipt.proof_profile_sha256, Some(profile_hash(WORKING_PROFILE_LINEAR_SRGB)));
+        assert_eq!(receipt.simulation_matrix, Some(kind.matrix()));
+        assert!(receipt.display_stage.is_some() && receipt.enabled);
+        // Analytic expectation: sRGB decode, clamp, Machado matrix on linear light, clamp, sRGB encode.
+        for (px, out) in doc.chunks_exact(3).zip(preview.pixels.chunks_exact(3)) {
+            let lin = [0, 1, 2].map(|c| wide_support::srgb_decode(f64::from(px[c])));
+            let sim = mat_mul(&kind.matrix(), lin).map(|v| wide_support::srgb_encode(v.clamp(0.0, 1.0)));
+            for c in 0..3 {
+                assert!((f64::from(out[c]) - sim[c]).abs() < 2e-3, "{kind:?} {px:?}: {out:?} vs {sim:?}");
+            }
+        }
+        digests.push(receipt.output_sha256);
+        // Toggled off it is the ordinary display transform, like every proof condition.
+        let off = proof.run(&doc, 1, false, &cancel()).unwrap();
+        assert_eq!(off.pixels, wide(SRGB, SRGB, &doc, Intent::RelativeColorimetric, true));
+    }
+    assert_ne!(digests[0], digests[1]);
+    assert_ne!(digests[1], digests[2]);
+    // Protanopia folds red and green onto one hue: pure red and pure green land on the same blue-free axis.
+    let cond = ProofCondition::colour_vision(ColourVision::Protanopia);
+    let proof = prepare_soft_proof(input(&did, SRGB), &cond, input(&sid, SRGB), &cancel()).unwrap();
+    let rg = proof.run(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0], 1, true, &cancel()).unwrap().pixels;
+    assert!(rg[2] < 0.05 && rg[5] < 0.05, "{rg:?}");
+}
+
+#[test]
+fn cvd_neutral_axis_is_preserved() {
+    for m in [MACHADO_2009_PROTANOPIA, MACHADO_2009_DEUTERANOPIA, MACHADO_2009_TRITANOPIA] {
+        for row in m {
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 2e-6, "{row:?}");
+        }
+    }
+    let (did, sid) = (id(10), id(12));
+    let grays: Vec<f32> = (0..=20).flat_map(|i| [i as f32 / 20.0; 3]).collect();
+    for kind in [ColourVision::Protanopia, ColourVision::Deuteranopia, ColourVision::Tritanopia] {
+        let cond = ProofCondition::colour_vision(kind);
+        let proof = prepare_soft_proof(input(&did, SRGB), &cond, input(&sid, SRGB), &cancel()).unwrap();
+        let on = proof.run(&grays, 21, true, &cancel()).unwrap().pixels;
+        let off = proof.run(&grays, 21, false, &cancel()).unwrap().pixels;
+        for (a, b) in on.chunks_exact(3).zip(off.chunks_exact(3)) {
+            assert!((a[0] - a[1]).abs() < 1e-4 && (a[1] - a[2]).abs() < 1e-4, "{kind:?} gray not neutral: {a:?}");
+            assert!((a[0] - b[0]).abs() < 1e-3, "{kind:?} gray moved: {a:?} vs {b:?}");
+        }
+    }
+}
+
+#[test]
+fn operator_condition_bounds_are_enforced() {
+    let ok_row = [1.0, 0.0, 0.0];
+    let with = |row: [f64; 3]| OperatorSimulation::new([row, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+    assert_eq!(with([f64::NAN, 0.0, 0.0]), Err(ProofError::OperatorMatrixNonfinite));
+    assert_eq!(with([f64::INFINITY, -1.0, 0.0]), Err(ProofError::OperatorMatrixNonfinite));
+    assert_eq!(with([4.5, -3.0, -0.5]), Err(ProofError::OperatorCoefficientRange));
+    assert_eq!(with([-4.0001, 2.5, 2.5]), Err(ProofError::OperatorCoefficientRange));
+    assert_eq!(with([-1.0, 0.25, 0.25]), Err(ProofError::OperatorRowSumRange));
+    assert_eq!(with([1.0, 1.0, 0.5]), Err(ProofError::OperatorRowSumRange));
+    // The limits themselves are admitted.
+    assert!(with([OPERATOR_COEFFICIENT_LIMIT, -2.0, -1.0]).is_ok());
+    assert!(with([OPERATOR_ROW_SUM_MAX, 0.0, 0.0]).is_ok());
+    assert!(with([OPERATOR_ROW_SUM_MIN, 0.0, 0.0]).is_ok());
+    assert_eq!(with(ok_row).unwrap().matrix()[0], ok_row);
+    // An operator condition runs the same pipeline: the Machado protanopia matrix supplied by the operator gives
+    // the shipped protanopia proof bit for bit, and the identity leaves an in-gamut document as displayed.
+    let (did, sid) = (id(10), id(12));
+    let doc = rgb_pixels(200);
+    let shipped = ProofCondition::colour_vision(ColourVision::Protanopia);
+    let operator = ProofCondition::operator("my protan", OperatorSimulation::new(MACHADO_2009_PROTANOPIA).unwrap());
+    let run = |cond: &ProofCondition, enabled: bool| {
+        prepare_soft_proof(input(&did, SRGB), cond, input(&sid, SRGB), &cancel()).unwrap().run(&doc, 10, enabled, &cancel()).unwrap()
+    };
+    let a = run(&shipped, true);
+    let b = run(&operator, true);
+    assert_eq!(a.pixels, b.pixels);
+    assert_eq!(b.receipt.condition.kind, ProofProfileKind::OperatorSimulation);
+    assert!(b.receipt.condition.to_json().contains("\"operator_matrix\":[[0.152286,"));
+    let identity = ProofCondition::operator("identity", OperatorSimulation::new([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]).unwrap());
+    let on = run(&identity, true);
+    let off = run(&identity, false);
+    assert!(on.pixels.iter().zip(&off.pixels).all(|(x, y)| (x - y).abs() < 1e-4));
+}
