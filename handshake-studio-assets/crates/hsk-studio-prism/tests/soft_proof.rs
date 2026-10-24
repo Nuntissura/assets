@@ -469,3 +469,206 @@ fn operator_condition_bounds_are_enforced() {
     let off = run(&identity, false);
     assert!(on.pixels.iter().zip(&off.pixels).all(|(x, y)| (x - y).abs() < 1e-4));
 }
+
+// ---------------------------------------------------------------- slice 4: gamut warning and in-gamut substitute
+fn wide_receipt(src: &[u8], dst: &[u8], pixels: &[f32], intent: Intent, bpc: bool) -> WideReceipt {
+    let ctx = Ctx::new();
+    wide_support::run(&mut wide_support::engine(&ctx), &ctx, src, dst, pixels, intent, bpc).unwrap().receipt
+}
+
+#[test]
+fn gamut_mask_marks_exactly_the_clipped_pixels() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let mut doc = rgb_pixels(300);
+    doc.extend_from_slice(&[0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.5, 0.5, 0.5]);
+    let count = doc.len() / 3;
+    let style = GamutWarningStyle::default();
+    for proof_intent in [Intent::RelativeColorimetric, Intent::Perceptual, Intent::Saturation] {
+        let mut cond = ProofCondition::working_rgb(input(&pid, SRGB));
+        cond.proof_intent = proof_intent;
+        let proof = prepare_soft_proof(input(&did, P3), &cond, input(&sid, SRGB), &cancel()).unwrap();
+        let warning = proof.gamut_warning(&doc, 1, style, &cancel()).unwrap();
+        assert_eq!(warning.method, GamutMethod::LinearDevice);
+        // STU-COL-138: perceptual and saturation do not clip, so the check runs under relative colorimetric.
+        assert_eq!(warning.gamut_intent, Some(Intent::RelativeColorimetric));
+        assert_eq!(warning.threshold_delta_e76, None);
+        // Pixel for pixel, the mask is the wide path's clipping report (STU-COL-138) of the same conversion.
+        let mut expected = 0u64;
+        for (i, px) in doc.chunks_exact(3).enumerate() {
+            let clip = wide_receipt(P3, SRGB, px, Intent::RelativeColorimetric, true).clip;
+            assert_eq!(clip.method, ClipMethod::LinearDevice);
+            assert_eq!(warning.mask[i], clip.pixels_clipped == 1, "pixel {i} {px:?}");
+            expected += clip.pixels_clipped;
+        }
+        assert_eq!(warning.out_of_gamut_pixels, expected);
+        assert_eq!(wide_receipt(P3, SRGB, &doc, Intent::RelativeColorimetric, true).clip.pixels_clipped, expected);
+        assert!(warning.mask[count - 3] && warning.mask[count - 2] && !warning.mask[count - 1]);
+        // The proof run reports the same clipping for a colorimetric proof intent.
+        if proof_intent == Intent::RelativeColorimetric {
+            assert_eq!(proof.run(&doc, 1, true, &cancel()).unwrap().receipt.proof_clip.pixels_clipped, expected);
+        }
+    }
+    // Legacy uncompensated RGB has no proof device: nothing is marked.
+    let legacy = ProofCondition::legacy_uncompensated_rgb();
+    let legacy = prepare_soft_proof(input(&did, P3), &legacy, input(&sid, SRGB), &cancel()).unwrap();
+    let none = legacy.gamut_warning(&doc, 1, style, &cancel()).unwrap();
+    assert_eq!((none.method, none.out_of_gamut_pixels, none.area_fraction), (GamutMethod::NotApplicable, 0, 0.0));
+}
+
+#[test]
+fn table_destination_gamut_check_uses_round_trip() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    // In-gamut document colours made from CMYK device values of the proof profile itself.
+    let inks: Vec<f32> = vec![
+        0.2, 0.1, 0.1, 0.0, 0.1, 0.3, 0.2, 0.1, 0.3, 0.2, 0.4, 0.0, 0.0, 0.0, 0.0, 0.5, 0.15, 0.15, 0.15, 0.15, 0.05, 0.05,
+        0.05, 0.0,
+    ];
+    let inside: Vec<f32> = wide(CMYK, SRGB, &inks, Intent::RelativeColorimetric, false).iter().map(|v| v.clamp(0.0, 1.0)).collect();
+    let n_in = inside.len() / 3;
+    let mut doc = inside.clone();
+    doc.extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 1.0, 0.0]); // sRGB blue and green: beyond the ink gamut
+    let mut cond = ProofCondition::working_cmyk(input(&pid, CMYK));
+    cond.black_point_compensation = false;
+    let proof = prepare_soft_proof(input(&did, SRGB), &cond, input(&sid, SRGB), &cancel()).unwrap();
+    let warning = proof.gamut_warning(&doc, 1, GamutWarningStyle::default(), &cancel()).unwrap();
+    // A table destination cannot reveal clipping from its clamped output: the wide clip report says so, and the
+    // warning uses the PCS round trip with the declared threshold instead.
+    assert_eq!(wide_receipt(SRGB, CMYK, &doc, Intent::RelativeColorimetric, false).clip.method, ClipMethod::Unavailable);
+    assert_eq!(warning.method, GamutMethod::RoundTrip);
+    assert_eq!(warning.threshold_delta_e76, Some(GAMUT_ROUND_TRIP_DELTA_E76));
+    assert!(warning.mask[..n_in].iter().all(|m| !m), "in-gamut colours marked: {:?}", &warning.mask[..n_in]);
+    assert!(warning.mask[n_in] && warning.mask[n_in + 1], "out-of-gamut colours unmarked: {:?}", warning.mask);
+    assert!(warning.max_delta_e76.unwrap() > 2.0 * GAMUT_ROUND_TRIP_DELTA_E76);
+    // Perceptual proof intent: checked under relative colorimetric, same mask.
+    cond.proof_intent = Intent::Perceptual;
+    let perceptual = prepare_soft_proof(input(&did, SRGB), &cond, input(&sid, SRGB), &cancel()).unwrap();
+    let pw = perceptual.gamut_warning(&doc, 1, GamutWarningStyle::default(), &cancel()).unwrap();
+    assert_eq!(pw.gamut_intent, Some(Intent::RelativeColorimetric));
+    assert_eq!(pw.mask, warning.mask);
+    // Colour-vision conditions use the linear-light sRGB proof device: the linear method.
+    let cvd = ProofCondition::colour_vision(ColourVision::Protanopia);
+    let cvd = prepare_soft_proof(input(&did, P3), &cvd, input(&sid, SRGB), &cancel()).unwrap();
+    assert_eq!(cvd.gamut_warning(&[0.0, 1.0, 0.0], 1, GamutWarningStyle::default(), &cancel()).unwrap().method, GamutMethod::LinearDevice);
+}
+
+#[test]
+fn gamut_opacity_bounds_follow_the_parameter_table() {
+    // Parameter table row: gamut_warning.opacity, 0..100, default 100, integer percent.
+    let default = GamutWarningStyle::default();
+    assert_eq!(default.opacity_percent(), GAMUT_WARNING_OPACITY_DEFAULT);
+    assert_eq!((GAMUT_WARNING_OPACITY_MIN, GAMUT_WARNING_OPACITY_MAX, GAMUT_WARNING_OPACITY_DEFAULT), (0, 100, 100));
+    assert_eq!(default.colour(), DEFAULT_GAMUT_WARNING_COLOUR);
+    let colour = [1.0, 0.0, 1.0];
+    assert!(GamutWarningStyle::new(colour, 0).is_ok());
+    assert!(GamutWarningStyle::new(colour, 100).is_ok());
+    assert_eq!(GamutWarningStyle::new(colour, 101), Err(ProofError::OpacityRange));
+    assert_eq!(GamutWarningStyle::new(colour, u32::MAX), Err(ProofError::OpacityRange));
+    assert_eq!(GamutWarningStyle::new([f32::NAN, 0.0, 0.0], 50), Err(ProofError::WarningColourRange));
+    assert_eq!(GamutWarningStyle::new([1.5, 0.0, 0.0], 50), Err(ProofError::WarningColourRange));
+    assert_eq!(GamutWarningStyle::new([0.0, -0.1, 0.0], 50), Err(ProofError::WarningColourRange));
+    // The overlay blends the warning colour at the configured opacity over marked pixels only.
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let doc = [0.0, 1.0, 0.0, 0.5, 0.5, 0.5];
+    let cond = ProofCondition::working_rgb(input(&pid, SRGB));
+    let proof = prepare_soft_proof(input(&did, P3), &cond, input(&sid, SRGB), &cancel()).unwrap();
+    let preview = proof.run(&doc, 2, true, &cancel()).unwrap().pixels;
+    for opacity in [0u32, 50, 100] {
+        let style = GamutWarningStyle::new(colour, opacity).unwrap();
+        let warning = proof.gamut_warning(&doc, 2, style, &cancel()).unwrap();
+        assert_eq!(warning.mask, vec![true, false]);
+        assert_eq!(warning.style.opacity_percent(), opacity);
+        let shown = warning.apply_overlay(&preview).unwrap();
+        let a = opacity as f32 / 100.0;
+        for c in 0..3 {
+            assert!((shown[c] - ((1.0 - a) * preview[c] + a * colour[c])).abs() < 1e-6);
+        }
+        assert_eq!(&shown[3..], &preview[3..]);
+        assert!(warning.apply_overlay(&preview[..3]).is_err());
+    }
+}
+
+#[test]
+fn area_fraction_and_regions_are_bounded() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let cond = ProofCondition::working_rgb(input(&pid, SRGB));
+    let proof = prepare_soft_proof(input(&did, P3), &cond, input(&sid, SRGB), &cancel()).unwrap();
+    let style = GamutWarningStyle::default();
+    let (w, h) = (64usize, 64usize);
+    let grey = [0.5f32, 0.5, 0.5];
+    let green = [0.0f32, 1.0, 0.0];
+    // All in gamut.
+    let plain: Vec<f32> = (0..w * h).flat_map(|_| grey).collect();
+    let none = proof.gamut_warning(&plain, w, style, &cancel()).unwrap();
+    assert_eq!((none.out_of_gamut_pixels, none.area_fraction, none.region_count, none.bounds), (0, 0.0, 0, None));
+    assert!(none.regions.is_empty() && !none.regions_truncated);
+    // One 4x3 block: one region with its exact box.
+    let mut block = plain.clone();
+    for y in 10..13 {
+        for x in 20..24 {
+            block[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&green);
+        }
+    }
+    let one = proof.gamut_warning(&block, w, style, &cancel()).unwrap();
+    let region = GamutRegion { x0: 20, y0: 10, x1: 23, y1: 12, pixels: 12 };
+    assert_eq!((one.out_of_gamut_pixels, one.region_count, one.regions.clone(), one.bounds), (12, 1, vec![region], Some(region)));
+    assert_eq!(one.area_fraction, 12.0 / 4096.0);
+    assert_eq!((one.width, one.height), (w, h));
+    // 484 isolated pixels (every third column and row): more components than the cap lists.
+    let mut dots = plain.clone();
+    let mut placed = 0u64;
+    for y in (0..h).step_by(3) {
+        for x in (0..w).step_by(3) {
+            dots[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&green);
+            placed += 1;
+        }
+    }
+    let many = proof.gamut_warning(&dots, w, style, &cancel()).unwrap();
+    assert_eq!(placed, 484);
+    assert_eq!(many.out_of_gamut_pixels, placed);
+    assert_eq!(many.region_count, placed);
+    assert_eq!(many.regions.len(), MAX_GAMUT_REGIONS);
+    assert!(many.regions_truncated);
+    assert!(many.regions.iter().all(|r| r.pixels == 1 && r.x0 == r.x1 && r.y0 == r.y1));
+    assert_eq!(many.area_fraction, placed as f64 / 4096.0);
+    assert_eq!(many.bounds, Some(GamutRegion { x0: 0, y0: 0, x1: 63, y1: 63, pixels: placed }));
+    // Geometry is checked before any work: a width that does not divide the pixel count is refused.
+    assert_eq!(proof.gamut_warning(&dots, 63, style, &cancel()).unwrap_err(), ProofError::Geometry);
+}
+
+#[test]
+fn substitute_is_in_gamut_and_reports_delta() {
+    let (did, pid, sid) = (id(10), id(11), id(12));
+    let mut cond = ProofCondition::working_rgb(input(&pid, SRGB));
+    cond.black_point_compensation = false;
+    let proof = prepare_soft_proof(input(&did, P3), &cond, input(&sid, SRGB), &cancel()).unwrap();
+    // In gamut: nothing to substitute.
+    let grey = proof.in_gamut_substitute(&[0.5, 0.4, 0.3], &cancel()).unwrap();
+    assert!(!grey.out_of_gamut && grey.substitute == grey.original && grey.delta_e76 == 0.0);
+    // Out of gamut: P3 green. The substitute is the sRGB-clipped colour expressed in P3, in gamut, with its delta.
+    let green = [0.0f32, 1.0, 0.0];
+    let s = proof.in_gamut_substitute(&green, &cancel()).unwrap();
+    assert!(s.out_of_gamut && s.substitute_in_gamut);
+    assert_eq!(s.intent, Intent::RelativeColorimetric);
+    assert!(s.substitute.iter().all(|v| (0.0..=1.0).contains(v)));
+    assert_ne!(s.substitute, s.original);
+    assert!(s.delta_e76.is_finite() && s.delta_e76 > 1.0, "{}", s.delta_e76);
+    let warning = proof.gamut_warning(&s.substitute, 1, GamutWarningStyle::default(), &cancel()).unwrap();
+    assert_eq!(warning.out_of_gamut_pixels, 0);
+    // Shown on an sRGB display, the substitute is the clipped original.
+    let shown = wide(P3, SRGB, &s.substitute, Intent::RelativeColorimetric, false);
+    let clipped: Vec<f32> = wide(P3, SRGB, &green, Intent::RelativeColorimetric, false).iter().map(|v| v.clamp(0.0, 1.0)).collect();
+    assert!(shown.iter().zip(&clipped).all(|(a, b)| (a - b).abs() < 1e-3), "{shown:?} vs {clipped:?}");
+    // A further out-of-gamut colour moves further.
+    let red = proof.in_gamut_substitute(&[1.0, 0.0, 0.0], &cancel()).unwrap();
+    assert!(red.out_of_gamut && red.substitute_in_gamut && red.delta_e76 > 1.0);
+    // The substitute is explicit: a proof run never changes the document, and a hostile colour is refused.
+    assert_eq!(proof.in_gamut_substitute(&[0.5, 0.5], &cancel()).unwrap_err(), ProofError::Wide(WideError::ChannelCount));
+    assert_eq!(proof.in_gamut_substitute(&[0.5; 6], &cancel()).unwrap_err(), ProofError::Wide(WideError::ChannelCount));
+    assert_eq!(proof.in_gamut_substitute(&[0.5, 2.0, 0.5], &cancel()).unwrap_err(), ProofError::Wide(WideError::ChannelRange));
+    // Table proof device: blue is out of the ink gamut and gets a finite substitute with a large delta.
+    let cmyk = ProofCondition::working_cmyk(input(&pid, CMYK));
+    let cmyk = prepare_soft_proof(input(&did, SRGB), &cmyk, input(&sid, SRGB), &cancel()).unwrap();
+    let blue = cmyk.in_gamut_substitute(&[0.0, 0.0, 1.0], &cancel()).unwrap();
+    assert!(blue.out_of_gamut && blue.delta_e76 > GAMUT_ROUND_TRIP_DELTA_E76, "{blue:?}");
+    assert!(blue.substitute.iter().all(|v| (0.0..=1.0).contains(v)));
+}
