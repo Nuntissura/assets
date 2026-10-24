@@ -329,9 +329,9 @@ fn paper_and_black_ink_flags_are_independent() {
         }
         previews.push(preview);
     }
-    for i in 0..4 {
-        for j in i + 1..4 {
-            assert_ne!(previews[i].receipt.output_sha256, previews[j].receipt.output_sha256, "combinations {i} and {j} agree");
+    for (i, a) in previews.iter().enumerate() {
+        for (j, b) in previews.iter().enumerate().skip(i + 1) {
+            assert_ne!(a.receipt.output_sha256, b.receipt.output_sha256, "combinations {i} and {j} agree");
         }
     }
     let cmyk = wide(SRGB, CMYK, &doc, Intent::RelativeColorimetric, true);

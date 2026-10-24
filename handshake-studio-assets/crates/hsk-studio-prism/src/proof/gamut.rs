@@ -210,8 +210,8 @@ fn regions(mask: &[bool], width: usize, height: usize) -> (Vec<GamutRegion>, u64
     let mut stack: Vec<usize> = Vec::new();
     let mut listed = Vec::new();
     let mut total = 0u64;
-    for start in 0..mask.len() {
-        if !mask[start] || seen[start] {
+    for (start, marked) in mask.iter().enumerate() {
+        if !*marked || seen[start] {
             continue;
         }
         total = total.saturating_add(1);
