@@ -1,7 +1,7 @@
 ---
 file_id: handpick-readme-v1
 file_kind: product-manual
-updated_at: '2026-10-22'
+updated_at: '2026-10-24'
 ---
 
 <topic id="foundation" version="0.1.0" status="implemented">
@@ -30,7 +30,7 @@ Portal and Desktop adapters must authorize suggestions, snippets, counts, pins, 
 
 Export this directory as a standalone Rust library, retaining its manifest, source, tests, README and MIT LICENSE. Its MIT package declaration matches the inspected host workspace manifest. Inspect destination authority/layout before publication. Import with a path dependency during development, then bind consumers to an approved exact asset-library revision. No registry publication is implied. Changes to versioned wire contracts require explicit compatibility review; unknown wire versions reject.
 
-This asset repository owns the reusable `assets/handpick` subfolder. From its root, run `cargo test --locked --manifest-path assets/handpick/Cargo.toml`. Build the optional browser library with `cargo build --locked --manifest-path assets/handpick/Cargo.toml --features wasm --target wasm32-unknown-unknown`, generate web glue using matching `wasm-bindgen` CLI 0.2.129 with `--target web`, then run `node assets/handpick/tests/wasm_bridge.mjs path/to/handpick.js`. Keep compiler output and generated bindings outside tracked source. The Portal consumer additionally provides its canonical `tooling/check.ps1 -Profile handpick` runner. Tests cover preservation, scope changes, stale delivery, stable selection, UTF-8 edits, admission and contract round-trips. Product integrations, authorization, rendered behavior and real persistence need separate owner-boundary proof.
+This asset repository owns the reusable `handpick` subfolder. From its root, run `cargo test --locked --manifest-path handpick/Cargo.toml`. Build the optional browser library with `cargo build --locked --manifest-path handpick/Cargo.toml --features wasm --target wasm32-unknown-unknown`, generate web glue using matching `wasm-bindgen` CLI 0.2.129 with `--target web`, then run `node handpick/tests/wasm_bridge.mjs path/to/handpick.js`. Keep compiler output and generated bindings outside tracked source. The Portal consumer additionally provides its canonical `tooling/check.ps1 -Profile handpick` runner. Tests cover preservation, scope changes, stale delivery, stable selection, UTF-8 edits, admission and contract round-trips. Product integrations, authorization, rendered behavior and real persistence need separate owner-boundary proof.
 
 </topic>
 
@@ -136,7 +136,7 @@ Focused native tests cover lifecycle fencing, atomic occupied restore, IME, quer
 
 The default foundation has no assembly, native database or GUI dependencies. The development tablet's inspected native toolchain is `aarch64-pc-windows-msvc`. Native ARM64 tests do not prove an x64 application build or behavior. Consumer integrations targeting x64 require the appropriate Rust/MSVC components and separate x64 proof. Keep build target and runtime architecture visible in validation results.
 
-The optional `wasm` feature exposes the same Rust `Session` and `WritingSession` through a synchronous JSON bridge; default runtime dependencies remain Serde only. It requires `wasm32-unknown-unknown` and matching `wasm-bindgen` CLI 0.2.129. Generate `--target web` glue and initialize it explicitly: Vite 7 supports explicit WASM initialization but not direct WASM ES-module integration. Native and real WASM fixture proof remain separate from rendered editor and owner-persistence proof.
+The optional `wasm` feature exposes the same Rust `Session` and `WritingSession` through a synchronous JSON bridge; default runtime dependencies are Serde and the pinned URL parser. It requires `wasm32-unknown-unknown` and matching `wasm-bindgen` CLI 0.2.129. Generate `--target web` glue and initialize it explicitly: Vite 7 supports explicit WASM initialization but not direct WASM ES-module integration. Native and real WASM fixture proof remain separate from rendered editor and owner-persistence proof.
 
 The JavaScript `Session(context, limitsJson)` exposes literal search input through `setDraft`, `draft`, `draftRevision`, `begin`, `deliver`, `delivery`, `select`, `selected`, `complete`, `pin`, `restore`, `pins`, `switchContext` and `revoke`. Its strict limits JSON uses `max_text_bytes`, `max_pins`, `max_items`, `max_item_bytes` and `max_actions_per_item`; bridge ceilings are 65536 bytes per text/item, 1024 pins/items and 64 actions per item. Foundation fences in this bridge use decimal-string `generation` and `draft_revision`, preserving the older Rust foundation wire format outside this bridge. `complete` accepts a JSON edit with that bridge fence, UTF-8 byte `span` and literal `replacement`, returning a UTF-8 caret byte offset. Call `free()` after retiring callbacks.
 
@@ -147,6 +147,22 @@ The JavaScript class is `WritingSession(context, session, maxPins)`. Supply auth
 `validateRelationships(pageJson, providerId, maxRows)` invokes shared relationship evidence admission, with at most 1024 rows at the bridge. `park(pinId)` and `restore(pinId, replacementPinId)` exchange native editor handles without copying content; occupied restore requires a fresh replacement pin ID. `validateAction(intentJson)` and `validateQuery(providerJson, queryJson)` perform core admission only. `revoke()` retires the orchestration instance; the host must first recover/release its native editor handles and then call generated `free()` when finished. Bridge errors throw content-free codes; malformed JSON yields `InvalidWire`, JSON above 65536 UTF-8 bytes yields `PayloadLimit`, and noncanonical revision strings yield `InvalidRevision`. The bridge does not authorize, persist, log or transmit composition. Retain native selection/undo/recovery in the Notes owner.
 
 Research basis: [wasm-bindgen exported names](https://wasm-bindgen.github.io/wasm-bindgen/reference/attributes/on-rust-exports/js_name.html), [Result exceptions](https://wasm-bindgen.github.io/wasm-bindgen/reference/types/result.html), [web deployment](https://wasm-bindgen.github.io/wasm-bindgen/reference/deployment.html), and [Vite 7 WASM support](https://v7.vite.dev/guide/features#webassembly). A thin optional binding reuses one interaction implementation; a separate TypeScript state machine would duplicate it. Explicit initialization avoids a new bundler plugin. Shared `tests/fixtures/writing-bridge-v1.json` outcomes run through native Rust and `tests/wasm_bridge.mjs` against generated web glue and actual WASM; those checks establish transport/orchestration behavior, not native rich editing continuity.
+
+</topic>
+
+<topic id="source-entry" status="source-authored-validation-unrun" updated_at="2026-10-24">
+
+## URL-only source entry
+
+`Session::input_state(&fence, composing)` returns `Neutral`, `Source { candidate, form, can_add_source }`, or `Quicknote`. Source intent requires exactly one URL shape with zero or one ASCII space independently before and after it. Multiple spaces, tabs, newlines, internal whitespace/control characters or extra prose reject source intent. Complete absolute URLs with hosts, `www.` domain URLs and bare domains such as `example.com` or `example.org` use the pinned `url` parser. The requested `https://www.` and `www.` draft prefixes are recognized before parsing; their source action opens owner entry/completion without claiming a valid provider.
+
+The literal draft never changes during recognition or activation. The candidate omits only the permitted outer spaces. `source_intent(&fence, composing)` rechecks the current context/generation/revision, returns a normalized owner-entry URL with HTTPS added for scheme-less inputs, and returns `https://www.` for the incomplete `www.` prefix. Active IME disables source entry; stale or revoked fences reject. Provider support, authorization, completed destination validation and persistence remain owner responsibilities.
+
+The existing WASM `Session` adds read-only `fence()`, `inputState(fenceJson, composingBoolean)` and `sourceIntent(fenceJson, composingBoolean)`. `fence()` uses the existing decimal-string counters. `inputState` returns JSON `{ "intent": "neutral" }`, `{ "intent": "quicknote" }`, or `{ "intent": "source", "candidate": "www.", "form": "prefix", "can_add_source": true }`; complete URL shapes use `form: "url"`. `sourceIntent` returns a JavaScript string or `null`, with no owner effect. Boolean arguments are strict.
+
+Clearing the field restores neutral presentation and a collapsed source dropdown. Prose after a URL immediately selects existing Quicknote presentation; it does not itself create an editor or commit a note. URL-only completed-empty lookup cannot automatically transfer into Quicknote. Existing explicit Shift+Enter/NewLine remains a deliberate writing override. Keep the existing Notes-native editor, literal content, bookmarks, pending Save, IME and context fences. An explicit Add source button focuses the same field; an empty field remains neutral until the user enters a URL shape.
+
+Research: [WHATWG URL parsing](https://url.spec.whatwg.org/#url-parsing) separates complete parsing from this literal draft-intent gate; [WAI editable combobox guidance](https://www.w3.org/WAI/ARIA/apg/patterns/combobox/) supports popup dismissal without replacing input and preserving native editing keys. Reuse the existing Session and WritingSession rather than a host regex or second editor. Native and real-WASM test cases are authored but UNRUN; host rendering, owner completion/save and editor continuity require separate proof.
 
 </topic>
 

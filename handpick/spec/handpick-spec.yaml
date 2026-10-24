@@ -1,11 +1,58 @@
 schema_version: handpick.product-spec.v1
 file_id: handpick-product-spec-v1
 file_kind: product-specification
-version: 2
-updated_at: '2026-10-22'
+version: 3
+updated_at: '2026-10-24'
 title: Handpick shared search and Notes input surface
 purpose: Give a fresh agent the fixed product intent, reusable asset boundaries, complete requirements and honest
   implementation/proof state before extending Handpick.
+source_entry_extension:
+  recorded_at: '2026-10-24'
+  status: source-authored-validation-unrun-unpublished
+  basis: Operator's shared Handpick URL-only Add source and URL-plus-prose Quicknote instruction.
+  requirements:
+  - id: HP-INPUT-001
+    statement: Add source intent requires exactly one recognized URL shape and no other prose.
+  - id: HP-INPUT-002
+    statement: Permit zero or one ASCII space independently before and after that shape. Multiple surrounding spaces, tabs, newlines, internal whitespace or control characters and other content never classify as Add source.
+  - id: HP-INPUT-003
+    statement: Recognize https://www. and www. draft prefixes before full URL parsing. Their Add source action opens owner entry/completion, without claiming a valid provider or authorizing persistence.
+  - id: HP-INPUT-004
+    statement: Recognize actual absolute URLs with hosts and scheme-less normal domain URLs, including bare domain.com and other normal top-level domains. Do not restrict all bare domains to .com.
+  - id: HP-INPUT-005
+    statement: Preserve the complete literal draft including permitted outer spaces. Input-state candidate removes only permitted outer ASCII spaces; native source handoff normalizes complete URLs and prepends HTTPS for scheme-less entries, including incomplete www., without a host JavaScript normalizer.
+  - id: HP-INPUT-006
+    statement: Clearing URL-only input returns neutral intent with its dropdown collapsed. No source intent or previous action survives the cleared current draft.
+  - id: HP-INPUT-007
+    statement: Prose after a URL selects existing Quicknote presentation immediately, without waiting for completed-empty lookup. Literal text and the existing Notes-native editor, bookmarks, recovery, Save and IME fences remain intact; no second editor or note entity is introduced.
+  - id: HP-INPUT-008
+    statement: Source-only input never automatically transfers to Quicknote after completed-empty search. Explicit existing Shift+Enter/NewLine remains a deliberate writing override; actual native editor transfer remains fenced.
+  - id: HP-INPUT-009
+    statement: Input classification and source action admission require the current context, generation and draft revision. Active composition disables source action admission; stale or revoked sessions reject without mutation.
+  - id: HP-INPUT-010
+    statement: Shared Rust and WASM own recognition, intent and entry-action availability. Provider details, authority, storage, completion and valid Save targets remain owner responsibilities. Placeholder and header rendering remain host responsibilities.
+  public_api:
+    fence: Session::fence() exposes the current read-only foundation fence without dispatching or clearing delivery state.
+    state: Session::input_state(fence, composing) returns InputState::Neutral, Source { candidate, form, can_add_source }, or Quicknote. SourceForm is Prefix or Url.
+    activation: Session::source_intent(fence, composing) returns the normalized owner-entry URL or incomplete prefix, or None; it neither clears the draft nor executes owner effects.
+    wasm: Session.fence() returns the existing decimal-string fence JSON. inputState(fenceJson, strictBoolean) returns discriminated JSON with intent neutral/source/quicknote. Source adds candidate, form prefix/url and can_add_source. sourceIntent(fenceJson, strictBoolean) returns a JavaScript string or null.
+  compatibility:
+    package_version: 0.1.0
+    wire_version: handpick.v1
+    note: Additive API; all prior Quicknote/bookmark/Edit and legacy park/restore contracts remain. Hosts merge existing asset behavior rather than overwriting it with an older consumer copy. New url dependency is pinned to the existing repository-selected 2.5.8.
+  research:
+    sources:
+    - https://url.spec.whatwg.org/#url-parsing
+    - https://www.w3.org/WAI/ARIA/apg/patterns/combobox/
+    pattern: Mature URL parsing handles complete URLs, while strict literal whitespace and requested draft-prefix recognition precede parser normalization. Editable-combobox popup dismissal preserves input and native editing keys.
+    reuse: Existing Session fences, QueryPurpose and can_start_quicknote; existing WritingSession Notes-native editor, IME, save and bookmark behavior.
+    rejected: Host regex classifiers, copied URL parsers, treating a draft prefix as provider-valid, and a second note editor or canonical source store.
+    risks_and_controls: Parser whitespace tolerance cannot widen intent because literal whitespace is checked first; stale input cannot activate source entry because the exact fence is checked again; URL-only completed-empty cannot silently become a note.
+  validation:
+    native: cargo test --locked --manifest-path handpick/Cargo.toml
+    bridge: Build the wasm feature for wasm32-unknown-unknown, generate matching wasm-bindgen web glue, then run handpick/tests/wasm_bridge.mjs against the actual module.
+    status: UNRUN. Source/parser checks do not establish behavior, generated bindings or host integration.
+    host: Prove the same global field from every Add source entrypoint, exact whitespace/prefix/prose/reset behavior, owner form completion, native editor continuity, IME, profile reset and keyboard/dropdown handling separately.
 write_first_quicknote_extension:
   recorded_at: '2026-10-22'
   status: source-authored-validation-unrun-unpublished

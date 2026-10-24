@@ -285,7 +285,7 @@ impl Session {
         self.invalidate();
         Ok(self.fence())
     }
-    pub(crate) fn fence(&self) -> Fence {
+    pub fn fence(&self) -> Fence {
         Fence {
             context: self.context.clone(),
             generation: self.generation,
@@ -299,6 +299,20 @@ impl Session {
         } else {
             Err(Error::Stale)
         }
+    }
+    /// Classify only the current literal query; this neither transfers nor saves native writing.
+    pub fn input_state(&self, fence: &Fence, composing: bool) -> Result<InputState, Error> {
+        self.check_fence(fence)?;
+        Ok(crate::input::classify(&self.draft, composing))
+    }
+    /// Normalize a source-entry handoff, including an incomplete prefix, without authorizing effects.
+    pub fn source_intent(&self, fence: &Fence, composing: bool) -> Result<Option<String>, Error> {
+        Ok(match self.input_state(fence, composing)? {
+            InputState::Source { candidate, form, can_add_source: true } => {
+                Some(crate::input::owner_entry(&candidate, form).ok_or(Error::Stale)?)
+            },
+            _ => None,
+        })
     }
     /// Admission for the original top query only; contextual lookup must not call this.
     /// Transfer into an owner-native editor first, then clear the literal query explicitly.
@@ -315,6 +329,9 @@ impl Session {
         }
         if trigger == QuicknoteTrigger::NewLine {
             return Ok(true);
+        }
+        if matches!(self.input_state(fence, composing)?, InputState::Source { .. }) {
+            return Ok(false);
         }
         let query = parse_query(&self.draft).map_err(|_| Error::PayloadLimit)?;
         let delivery = self.delivery(channel);

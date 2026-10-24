@@ -1,6 +1,7 @@
 //! Effect-free, bounded search interaction primitives. Hosts own authorization and persistence.
 mod contracts;
 mod session;
+mod input;
 mod writing;
 mod query;
 mod picker;
@@ -10,6 +11,7 @@ mod wasm;
 
 pub use contracts::*;
 pub use session::*;
+pub use input::{InputState, SourceForm};
 pub use writing::*;
 pub use query::*;
 pub use picker::*;

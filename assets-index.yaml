@@ -248,6 +248,7 @@ assets:
   - write-first Quicknote admission
   - persistent native editor bookmarks
   - explicit Save-or-Pin close admission
+  - fenced URL source-entry intent and prose classification
   manual: handpick/README.md
   packages:
   - name: handpick

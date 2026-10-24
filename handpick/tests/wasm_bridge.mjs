@@ -303,4 +303,40 @@ try {
   quicknoteQuery.setDraft('newer');
   quicknoteReject(()=>quicknoteQuery.canStartQuicknote(fence,'search','complete_empty',false),'Stale');
 } finally {quicknoteQuery.free();}
-console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks,picker_checks:pickerChecks,recovery_checks:recoveryChecks,overflow_checks:overflowChecks,quicknote_checks:quicknoteChecks}));
+let inputChecks=0;
+const inputCheck=(actual,expected)=>{assert.deepEqual(actual,expected);inputChecks++;};
+const inputReject=(fn,code)=>{assert.throws(fn,error=>String(error)===code);inputChecks++;};
+const inputSession=new glue.Session('private',encode({max_text_bytes:4096,max_pins:1,max_items:8,max_item_bytes:4096,max_actions_per_item:8}));
+try {
+  for(const [candidate,form,destination] of [['https://www.','prefix','https://www.'],['www.','prefix','https://www.'],['example.com','url','https://example.com/'],['www.Example.org/path','url','https://www.example.org/path'],['https://example.dev/path','url','https://example.dev/path']]){
+    for(const [before,after] of [['',''],[' ',''],['',' '],[' ',' ']]){
+      const literal=before+candidate+after;inputSession.setDraft(literal);const fence=inputSession.fence();
+      inputCheck(decode(inputSession.inputState(fence,false)),{intent:'source',candidate,form,can_add_source:true});
+      inputCheck(inputSession.sourceIntent(fence,false),destination);inputCheck(inputSession.draft(),literal);
+      inputCheck(inputSession.fence(),fence);
+    }
+  }
+  for(const literal of ['  example.com','example.com  ','\texample.com','example.com\t','example.com\n','https://example.com notes','notes example.com','example.com example.org','\u00a0example.com']){
+    inputSession.setDraft(literal);const fence=inputSession.fence();
+    inputCheck(decode(inputSession.inputState(fence,false)),{intent:'quicknote'});
+    inputCheck(inputSession.sourceIntent(fence,false),null);inputCheck(inputSession.draft(),literal);
+  }
+  inputSession.setDraft('www.');let fence=inputSession.fence();
+  inputCheck(decode(inputSession.inputState(fence,true)),{intent:'source',candidate:'www.',form:'prefix',can_add_source:false});
+  inputCheck(inputSession.sourceIntent(fence,true),null);
+  inputReject(()=>inputSession.inputState(fence,0),'InvalidWire');inputReject(()=>inputSession.sourceIntent(fence,'false'),'InvalidWire');
+  fence=inputSession.begin();inputSession.deliver(fence,'search','complete','[]');
+  inputCheck(inputSession.canStartQuicknote(fence,'search','complete_empty',false),false);
+  inputCheck(inputSession.canStartQuicknote(fence,'search','new_line',false),true);
+  inputSession.setDraft('');inputCheck(decode(inputSession.inputState(inputSession.fence(),false)),{intent:'neutral'});
+  inputCheck(inputSession.sourceIntent(inputSession.fence(),false),null);
+  inputSession.setDraft('www. a thought');inputCheck(decode(inputSession.inputState(inputSession.fence(),false)),{intent:'quicknote'});
+  inputReject(()=>inputSession.sourceIntent(fence,false),'Stale');
+  inputSession.setDraft('');inputCheck(decode(inputSession.inputState(inputSession.fence(),false)),{intent:'neutral'});
+  inputCheck(inputSession.sourceIntent(inputSession.fence(),false),null);
+  inputSession.setDraft('example.com');fence=inputSession.fence();inputSession.switchContext('work');
+  inputReject(()=>inputSession.inputState(fence,false),'Stale');inputCheck(decode(inputSession.inputState(inputSession.fence(),false)),{intent:'neutral'});
+  inputSession.switchContext('private');inputReject(()=>inputSession.sourceIntent(fence,false),'Stale');
+  inputSession.revoke();inputReject(()=>inputSession.inputState(inputSession.fence(),false),'Revoked');
+} finally {inputSession.free();}
+console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks,picker_checks:pickerChecks,recovery_checks:recoveryChecks,overflow_checks:overflowChecks,quicknote_checks:quicknoteChecks,input_checks:inputChecks}));

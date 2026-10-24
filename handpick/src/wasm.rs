@@ -242,6 +242,24 @@ impl WasmSession {
             self.inner.begin().map_err(core_error)?,
         ))
     }
+    pub fn fence(&self) -> Result<String, JsValue> {
+        write(&FoundationFence::from(self.inner.fence()))
+    }
+    #[wasm_bindgen(js_name = inputState)]
+    pub fn input_state(&self, fence_json: &str, composing: JsValue) -> Result<String, JsValue> {
+        let fence: FoundationFence = read(fence_json)?;
+        let composing = composing.as_bool().ok_or_else(|| reject("InvalidWire"))?;
+        write(&self.inner.input_state(&fence.decode()?, composing).map_err(core_error)?)
+    }
+    #[wasm_bindgen(js_name = sourceIntent)]
+    pub fn source_intent(&self, fence_json: &str, composing: JsValue) -> Result<JsValue, JsValue> {
+        let fence: FoundationFence = read(fence_json)?;
+        let composing = composing.as_bool().ok_or_else(|| reject("InvalidWire"))?;
+        Ok(match self.inner.source_intent(&fence.decode()?, composing).map_err(core_error)? {
+            Some(candidate) => JsValue::from_str(&candidate),
+            None => JsValue::NULL,
+        })
+    }
     #[wasm_bindgen(js_name = canStartQuicknote)]
     pub fn can_start_quicknote(&self, fence_json: &str, channel_name: &str, trigger: &str, composing: JsValue) -> Result<bool, JsValue> {
         let fence: FoundationFence = read(fence_json)?;
