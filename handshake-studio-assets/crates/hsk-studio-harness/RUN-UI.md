@@ -287,7 +287,9 @@ layer buttons `layers.<action>`). The active selection is saved with the documen
   decoder bound (transport and scrub run, media clip frames are not resolved); the mixer opened
   without an audio file mixes silence; the waveform editor needs a document open besides the audio
   file; the file dialog filters by extension only (what a file is stays decided by its bytes); no
-  drag-and-drop, no multi-document, no docking, no timeline panel.
+  drag-and-drop, no multi-document, no docking. The timeline panel exists (Workspace > Panels >
+  Timeline, F10; lane SMB-TIMELINE-UI-1) with one sequence per panel; its trim modes and trim
+  session are in "Timeline trims (lane SMB-TIMELINE-TRIM-1)" above.
 - Packages converted before the blending-space binding keep an unassigned blending profile; the
   viewer binds it to the RGB working profile for display only and says so (nothing is written).
 - Tiles are created only on the 256-pixel grid (an empty layer or one on that grid); a layer on
