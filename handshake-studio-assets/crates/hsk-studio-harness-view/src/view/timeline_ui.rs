@@ -5,13 +5,14 @@
 //! trim, the ruler clicks and drags to scrub; every finished gesture becomes one
 //! [`TimelineCommand`] run after the frame is drawn (one undoable step per drag, never one per
 //! frame dragged, [STU-VID-040]). Clip blocks and trim handles are AccessKit buttons labelled with
-//! the clip name, so the panel is navigable without pixels.
+//! the clip name, so the panel is navigable without pixels. Lane SMB-PR-RATE-STRETCH-1 adds the
+//! Rate Stretch tool (edge drags) and the Speed/Duration form row (`Ctrl+R`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::Viewer;
 use super::timeline::{
-    Drag, DragKind, EDGE_PX, EditMode, HEADER_PX, MAX_PX_PER_FRAME, MIN_PX_PER_FRAME, RULER_PX, TimelineCommand, TimelineLayout, TimelineState, TrimFocus, TrimTool, WORK_AREA_PX, drag_command,
-    drag_target, frames_of, key_command, layout, tick_at_x, ticks_per_frame, widget, x_of,
+    Drag, DragKind, EDGE_PX, EditMode, HEADER_PX, MAX_PX_PER_FRAME, MIN_PX_PER_FRAME, RULER_PX, SpeedFix, TimelineCommand, TimelineLayout, TimelineState, TrimFocus, TrimTool, WORK_AREA_PX,
+    drag_command, drag_target, frames_of, key_command, layout, tick_at_x, ticks_per_frame, widget, x_of,
 };
 use super::widget as vw;
 use hsk_studio_accord::Ticks;
@@ -213,6 +214,9 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
     if t.session().is_some() {
         session_row(ui, seq, t, tpf, out);
     }
+    if t.speed_form().is_some() {
+        speed_form_row(ui, seq, t, out);
+    }
     let size = egui::vec2(ui.available_width().max(HEADER_PX + 40.0), ui.available_height().max(RULER_PX + WORK_AREA_PX + 30.0));
     let (area, bg) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let markers: &[(String, TickRange)] = t.cache.as_ref().map_or(&[], |c| &c.markers);
@@ -292,6 +296,8 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
             if r.drag_started() || r.dragged() || r.drag_stopped() || r.clicked() {
                 let own = b.clip_id.clone();
                 gesture = Some(match (t.tool, *head, previous.clone()) {
+                    (TrimTool::RateStretch, true, _) => (own, DragKind::RateStretchIn, None, r),
+                    (TrimTool::RateStretch, false, _) => (own, DragKind::RateStretchOut, None, r),
                     (TrimTool::Ripple, true, _) => (own, DragKind::RippleIn, Some(EditMode::RippleIn), r),
                     (TrimTool::Ripple, false, _) => (own, DragKind::RippleOut, Some(EditMode::RippleOut), r),
                     (TrimTool::Roll, true, Some(p)) => (p, DragKind::Roll, Some(EditMode::Roll), r),
@@ -335,6 +341,45 @@ fn previous_abutting(seq: &StudioSequence, clip_id: &str) -> Option<String> {
         let p = t.clips.get(i.checked_sub(1)?)?;
         (p.timeline_end() == Some(t.clips[i].timeline_start)).then(|| p.clip_id.clone())
     })
+}
+
+/// The Speed/Duration form row (`cmd.clip.speed`, module `timeline::rate`): speed percent and
+/// duration in frames (the field edited last is the fixed one), reverse, the two STU-VID-031
+/// settings that have no clip storage shown disabled with the reason, Apply and Cancel.
+fn speed_form_row(ui: &mut egui::Ui, seq: &StudioSequence, t: &mut TimelineState, out: &mut Outcome) {
+    let Some(form) = t.speed_form_mut() else { return };
+    let name = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.clip_id == form.clip_id).map_or_else(|| "(missing clip)".to_owned(), super::timeline::clip_label);
+    out.drawn.push(widget::SPEED_FORM.into());
+    egui::ScrollArea::horizontal().id_salt(vw::id(widget::SPEED_FORM)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong(format!("Speed/Duration: {name}"));
+            ui.label("Speed %");
+            let r = ui.push_id(vw::id(widget::SPEED_PERCENT), |ui| ui.add(egui::TextEdit::singleline(&mut form.percent).desired_width(64.0))).inner;
+            out.drawn.push(widget::SPEED_PERCENT.into());
+            if r.changed() {
+                form.fixed = SpeedFix::Speed;
+            }
+            ui.label("Duration (frames)");
+            let r = ui.push_id(vw::id(widget::SPEED_DURATION), |ui| ui.add(egui::TextEdit::singleline(&mut form.duration_frames).desired_width(72.0))).inner;
+            out.drawn.push(widget::SPEED_DURATION.into());
+            if r.changed() {
+                form.fixed = SpeedFix::Duration;
+            }
+            let _ = ui.push_id(vw::id(widget::SPEED_REVERSE), |ui| ui.checkbox(&mut form.reverse, "Reverse Speed"));
+            out.drawn.push(widget::SPEED_REVERSE.into());
+            let why = "No clip field stores this (STU-VID-031 spec gap)";
+            let mut off = false;
+            let _ = ui.push_id(vw::id(widget::SPEED_PITCH), |ui| ui.add_enabled(false, egui::Checkbox::new(&mut off, "Maintain Audio Pitch")).on_disabled_hover_text(why));
+            let _ = ui.push_id(vw::id(widget::SPEED_INTERPOLATION), |ui| ui.add_enabled(false, egui::Button::new("Interpolation: unavailable")).on_disabled_hover_text(why));
+            out.drawn.extend([widget::SPEED_PITCH, widget::SPEED_INTERPOLATION].map(String::from));
+            ui.label(match form.fixed {
+                SpeedFix::Speed => "(duration follows)",
+                SpeedFix::Duration => "(speed follows)",
+            });
+            button(ui, out, widget::SPEED_APPLY, "Apply", "Set the speed or duration as one undo step (Ctrl+R opens this form)", true, TimelineCommand::SpeedDurationApply);
+            button(ui, out, widget::SPEED_CANCEL, "Cancel", "Close without a change", true, TimelineCommand::SpeedDurationCancel);
+        });
+    });
 }
 
 /// The trim session row ([STU-VID-026a]): outgoing / incoming tiles labelled with their source

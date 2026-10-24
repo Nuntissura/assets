@@ -37,7 +37,7 @@
 //!
 //! Studio readings (Premiere behaviour UNVERIFIED, no oracle): the multi-frame step default 5, the
 //! slip direction (right = later source), roll on a lone edge trims, cursor zones of the tools.
-//! Not here: rate stretch (pulse has no speed planner).
+//! The Rate Stretch tool and Speed/Duration live in module `rate`.
 //!
 //! State: `state_json()["timeline"]` keys `tool`, `multi_frame_step`, `edit_point`, `last_trim`,
 //! `trim_session`, `composite_preview`. Recovery: EDIT > Undo (Ctrl+Z) undoes any trim; a refused
@@ -57,7 +57,19 @@ pub const MAX_MULTI_FRAME_STEP: u32 = 1000;
 /// Upper bound of planner calls for one achieved-delta search (1 + 63 halvings of an i64).
 pub const MAX_PLANNER_CALLS: u32 = 64;
 /// Refusal codes that mean "too far": a smaller delta toward zero may still be admitted.
-pub const LIMIT_CODES: &[&str] = &["outside_range", "past_source_start", "past_source_end", "zero_duration", "invalid_range", "overlap", "sync_lock_blocked", "underflow", "overflow"];
+pub const LIMIT_CODES: &[&str] = &[
+    "outside_range",
+    "past_source_start",
+    "past_source_end",
+    "zero_duration",
+    "invalid_range",
+    "overlap",
+    "sync_lock_blocked",
+    "underflow",
+    "overflow",
+    "rate_stretch_overlap",
+    "rate_stretch_below_one_frame",
+];
 
 /// What an edge or body drag does in the panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,10 +79,12 @@ pub enum TrimTool {
     Roll,
     Slip,
     Slide,
+    /// Edge drags change the clip's speed, never its source window (module `rate`).
+    RateStretch,
 }
 
 impl TrimTool {
-    pub const ALL: [TrimTool; 5] = [Self::Selection, Self::Ripple, Self::Roll, Self::Slip, Self::Slide];
+    pub const ALL: [TrimTool; 6] = [Self::Selection, Self::Ripple, Self::Roll, Self::Slip, Self::Slide, Self::RateStretch];
     pub fn key(self) -> &'static str {
         match self {
             Self::Selection => "selection",
@@ -78,6 +92,7 @@ impl TrimTool {
             Self::Roll => "roll",
             Self::Slip => "slip",
             Self::Slide => "slide",
+            Self::RateStretch => "rate_stretch",
         }
     }
     pub fn label(self) -> &'static str {
@@ -87,6 +102,7 @@ impl TrimTool {
             Self::Roll => "Roll",
             Self::Slip => "Slip",
             Self::Slide => "Slide",
+            Self::RateStretch => "Rate Stretch",
         }
     }
 }
@@ -154,6 +170,8 @@ pub enum TrimKind {
     Roll,
     Slip,
     Slide,
+    /// A rate stretch (module `rate`; planned by pulse `plan_rate_stretch`, not a `TimelineEdit`).
+    RateStretch,
 }
 
 impl TrimKind {
@@ -166,6 +184,7 @@ impl TrimKind {
             Self::Roll => "roll",
             Self::Slip => "slip",
             Self::Slide => "slide",
+            Self::RateStretch => "rate_stretch",
         }
     }
 }
@@ -243,6 +262,7 @@ pub(super) fn trim_edit(seq: &StudioSequence, clip_id: &str, kind: TrimKind, del
         }
         // Source ticks = frames x sequence ticks per frame (unit-speed reading; module docs).
         TrimKind::Slip => TimelineEdit::Slip { clip_id: id, delta: tick_delta()? },
+        TrimKind::RateStretch => return Err("rate_stretch_not_a_timeline_edit".into()),
     })
 }
 

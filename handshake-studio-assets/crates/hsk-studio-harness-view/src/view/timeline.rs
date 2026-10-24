@@ -30,11 +30,16 @@
 //! [`MAX_RULER_LABELS`] ruler labels per frame, whatever the sequence holds; clips whose end
 //! overflows are counted, never drawn; a zero-length clip is drawn one pixel wide. Model
 //! navigation: [`Viewer::timeline_command`] runs every panel action headlessly, every widget has a
-//! stable name ([`widget`]), and `state_json()["timeline"]` projects the panel.
+//! stable name ([`widget`]), and `state_json()["timeline"]` projects the panel. Trims live in
+//! module `trim` / `trim_session`; the Rate Stretch tool, Speed/Duration and slip at speed in
+//! module `rate` (its rustdoc is the manual).
 #![deny(clippy::arithmetic_side_effects)]
 
+mod rate;
 mod trim;
 mod trim_session;
+
+pub use rate::{SpeedFix, SpeedForm};
 
 pub use trim::{DEFAULT_MULTI_FRAME_STEP, EditMode, EditPoint, MAX_MULTI_FRAME_STEP, MAX_PLANNER_CALLS, TrimKind, TrimOutcome, TrimTool};
 pub use trim_session::{TrimFocus, TrimSession};
@@ -43,8 +48,9 @@ use super::Viewer;
 use hsk_studio_accord::Ticks;
 use hsk_studio_folio::{self as folio, ClipSource, LabelColor, StudioClip, StudioMarker, StudioSequence, TrackKind};
 use hsk_studio_pulse::{
-    AssemblyEdit, AssemblyMode, AssemblyPoints, EditContext, LinkedRazor, MarkerScope, RecordEdit, SnapTarget, SourceExtents, SourcePatch, TickRange, TimeDisplay, TimelineEdit,
-    UnknownExtents, adjacent_edit, format_ticks, marker_spans, nearest_snap, next_marker, plan_assembly_edit, plan_record_edit, plan_timeline_edit, prev_marker, snap_targets,
+    AssemblyEdit, AssemblyMode, AssemblyPoints, CMD_CLIP_SPEED, CMD_TOOL_RATE_STRETCH, EditContext, LinkedRazor, MarkerScope, RateEdge, RecordEdit, SnapTarget, SourceExtents, SourcePatch,
+    SpeedDurationTarget, TickRange, TimeDisplay, TimelineEdit, UnknownExtents, adjacent_edit, format_ticks, marker_spans, nearest_snap, next_marker, plan_assembly_edit, plan_record_edit,
+    plan_timeline_edit, prev_marker, snap_targets, speed_percent_label,
 };
 use serde_json::{Value, json};
 
@@ -102,6 +108,15 @@ pub mod widget {
     pub const TRIM_COMPOSITE: &str = "timeline.trim_session.composite_preview";
     pub const TRIM_COMMIT: &str = "timeline.trim_session.commit";
     pub const TRIM_ROLLBACK: &str = "timeline.trim_session.rollback";
+    /// Speed/Duration form (lane SMB-PR-RATE-STRETCH-1; module `rate`).
+    pub const SPEED_FORM: &str = "timeline.speed_form";
+    pub const SPEED_PERCENT: &str = "timeline.speed_form.percent";
+    pub const SPEED_DURATION: &str = "timeline.speed_form.duration";
+    pub const SPEED_REVERSE: &str = "timeline.speed_form.reverse";
+    pub const SPEED_PITCH: &str = "timeline.speed_form.maintain_audio_pitch";
+    pub const SPEED_INTERPOLATION: &str = "timeline.speed_form.interpolation";
+    pub const SPEED_APPLY: &str = "timeline.speed_form.apply";
+    pub const SPEED_CANCEL: &str = "timeline.speed_form.cancel";
 }
 
 /// Track header column width (pixels).
@@ -189,7 +204,9 @@ pub fn clip_label(clip: &StudioClip) -> String {
         ClipSource::Sequence { sequence_id } => format!("sequence {sequence_id}"),
         ClipSource::Primitive { object_id, .. } => object_id.clone(),
     };
-    text.chars().take(MAX_LABEL_CHARS).collect()
+    let name: String = text.chars().take(MAX_LABEL_CHARS).collect();
+    // A clip not at 100 % shows its speed (lane SMB-PR-RATE-STRETCH-1).
+    if clip.speed == folio::Speed::UNIT { name } else { format!("{name} ({}%)", speed_percent_label(clip.speed)) }
 }
 
 /// One drawn track row (header plus lane).
@@ -401,6 +418,9 @@ pub enum DragKind {
     /// Slip / slide tool on the clip body.
     Slip,
     Slide,
+    /// Rate Stretch tool on a clip head / tail (lane SMB-PR-RATE-STRETCH-1).
+    RateStretchIn,
+    RateStretchOut,
 }
 
 impl DragKind {
@@ -414,6 +434,8 @@ impl DragKind {
             Self::Roll => "roll",
             Self::Slip => "slip",
             Self::Slide => "slide",
+            Self::RateStretchIn => "rate_stretch_in",
+            Self::RateStretchOut => "rate_stretch_out",
         }
     }
 }
@@ -477,7 +499,7 @@ pub fn drag_target(drag: &Drag, dx: f32, dest_track: &str, view: &TimelineView, 
                 }
             }
         }
-        DragKind::TrimIn | DragKind::RippleIn => {
+        DragKind::TrimIn | DragKind::RippleIn | DragKind::RateStretchIn => {
             let limit = drag.end.value().saturating_sub(tpf);
             start = Ticks::new(shifted(drag.start, delta).value().min(limit));
             if let Some(t) = snap(start).filter(|t| t.at.value() <= limit) {
@@ -485,7 +507,7 @@ pub fn drag_target(drag: &Drag, dx: f32, dest_track: &str, view: &TimelineView, 
                 snapped = Some(t);
             }
         }
-        DragKind::TrimOut | DragKind::RippleOut | DragKind::Roll => {
+        DragKind::TrimOut | DragKind::RippleOut | DragKind::Roll | DragKind::RateStretchOut => {
             let limit = drag.start.value().saturating_add(tpf);
             end = Ticks::new(shifted(drag.end, delta).value().max(limit));
             if let Some(t) = snap(end).filter(|t| t.at.value() >= limit) {
@@ -500,8 +522,8 @@ pub fn drag_target(drag: &Drag, dx: f32, dest_track: &str, view: &TimelineView, 
     };
     let delta_frames = match drag.kind {
         DragKind::Slip => frames,
-        DragKind::TrimOut | DragKind::RippleOut | DragKind::Roll => moved(end, drag.end),
-        DragKind::Move | DragKind::Slide | DragKind::TrimIn | DragKind::RippleIn => moved(start, drag.start),
+        DragKind::TrimOut | DragKind::RippleOut | DragKind::Roll | DragKind::RateStretchOut => moved(end, drag.end),
+        DragKind::Move | DragKind::Slide | DragKind::TrimIn | DragKind::RippleIn | DragKind::RateStretchIn => moved(start, drag.start),
     };
     DragTarget { start, end, track_id: dest_track.to_owned(), snapped, delta_frames }
 }
@@ -516,6 +538,11 @@ pub fn drag_command(drag: &Drag, target: &DragTarget) -> Option<TimelineCommand>
         }),
         DragKind::TrimIn => (target.start != drag.start).then(|| TimelineCommand::TrimIn { clip_id: drag.clip_id.clone(), head: target.start }),
         DragKind::TrimOut => (target.end != drag.end).then(|| TimelineCommand::TrimOut { clip_id: drag.clip_id.clone(), tail: target.end }),
+        DragKind::RateStretchIn | DragKind::RateStretchOut => (target.delta_frames != 0).then(|| TimelineCommand::RateStretch {
+            clip_id: drag.clip_id.clone(),
+            edge: if drag.kind == DragKind::RateStretchIn { RateEdge::Head } else { RateEdge::Tail },
+            delta_frames: target.delta_frames,
+        }),
         DragKind::RippleIn | DragKind::RippleOut | DragKind::Roll | DragKind::Slip | DragKind::Slide => {
             let (clip_id, delta_frames) = (drag.clip_id.clone(), target.delta_frames);
             (delta_frames != 0).then_some(match drag.kind {
@@ -604,6 +631,18 @@ pub enum TimelineCommand {
     TrimSessionRollback,
     /// Composite preview during trim on / off (a display preference).
     ToggleCompositePreview,
+    // ---- rate stretch and Speed/Duration (lane SMB-PR-RATE-STRETCH-1; module `rate`) ----
+    /// Moves the clip's `edge` by `delta_frames` changing its speed, never its source window
+    /// ([STU-VID-026] "Rate stretch"); commits the achieved delta.
+    RateStretch { clip_id: String, edge: RateEdge, delta_frames: i64 },
+    /// Sets the clip's speed or duration (the other is derived) and direction; the head stays.
+    SpeedDuration { clip_id: String, target: SpeedDurationTarget, reverse: bool },
+    /// Opens the Speed/Duration form on the selected clip (`Ctrl+R`).
+    SpeedDurationOpen,
+    /// Applies the open form ([`SpeedForm::command`]) and closes it.
+    SpeedDurationApply,
+    /// Closes the form without a change.
+    SpeedDurationCancel,
 }
 
 impl TimelineCommand {
@@ -648,6 +687,11 @@ impl TimelineCommand {
             Self::TrimSessionCommit => "trim_session_commit",
             Self::TrimSessionRollback => "trim_session_rollback",
             Self::ToggleCompositePreview => "composite_preview",
+            Self::RateStretch { .. } => "rate_stretch",
+            Self::SpeedDuration { .. } => "speed_duration",
+            Self::SpeedDurationOpen => "speed_duration_open",
+            Self::SpeedDurationApply => "speed_duration_apply",
+            Self::SpeedDurationCancel => "speed_duration_cancel",
         }
     }
     /// The recovered command id of the module 14 command tables ([STU-VID-041]) this action runs,
@@ -682,6 +726,8 @@ impl TimelineCommand {
             },
             Self::TrimSessionFocus(f) => f.spec_command(),
             Self::ToggleCompositePreview => "cmd.timeline.composite.preview.during.trim",
+            Self::SetTool(TrimTool::RateStretch) => CMD_TOOL_RATE_STRETCH,
+            Self::SpeedDurationOpen | Self::SpeedDuration { .. } | Self::SpeedDurationApply => CMD_CLIP_SPEED,
             _ => return None,
         })
     }
@@ -694,7 +740,9 @@ impl TimelineCommand {
 /// Shift+M, Ctrl+Shift+M, Up, Down; the rest are harness bindings. Lane SMB-TIMELINE-TRIM-1 adds
 /// the [STU-VID-041] slip and slide nudges (Ctrl+Alt+Left / Right slip one frame, with Shift the
 /// multi-frame step; Alt+, / Alt+. slide one frame, with Shift the step) and the harness clip nudge
-/// Alt+Left / Right (with Shift the step; Premiere's binding UNVERIFIED).
+/// Alt+Left / Right (with Shift the step; Premiere's binding UNVERIFIED). Lane SMB-PR-RATE-STRETCH-1
+/// adds `R` (Rate Stretch tool, `cmd.tools.05ratestretch`) and `Ctrl+R` (Speed/Duration form,
+/// `cmd.clip.speed`).
 pub fn key_command(key: egui::Key, m: egui::Modifiers) -> Option<TimelineCommand> {
     use egui::Key;
     Some(match key {
@@ -702,6 +750,8 @@ pub fn key_command(key: egui::Key, m: egui::Modifiers) -> Option<TimelineCommand
         Key::Comma | Key::Period if m.alt && !m.command => TimelineCommand::SlideNudge { right: key == Key::Period, many: m.shift },
         Key::ArrowLeft | Key::ArrowRight if m.alt && !m.command => TimelineCommand::ClipNudge { right: key == Key::ArrowRight, many: m.shift },
         Key::K if m.command && !m.shift => TimelineCommand::RazorAtPlayhead,
+        Key::R if m.command && !m.shift && !m.alt => TimelineCommand::SpeedDurationOpen,
+        Key::R if m.is_none() => TimelineCommand::SetTool(TrimTool::RateStretch),
         Key::Backspace if m.alt => TimelineCommand::RippleDelete,
         Key::Delete if m.shift => TimelineCommand::RippleDelete,
         Key::Delete | Key::Backspace if m.is_none() => TimelineCommand::Lift,
@@ -746,6 +796,8 @@ pub struct TimelineState {
     pub(super) last_trim: Option<TrimOutcome>,
     pub(super) session: Option<TrimSession>,
     pub composite_preview: bool,
+    /// The open Speed/Duration form (lane SMB-PR-RATE-STRETCH-1).
+    pub(super) speed_form: Option<SpeedForm>,
 }
 
 impl TimelineState {
@@ -773,6 +825,14 @@ impl TimelineState {
     /// The open trim session.
     pub fn session(&self) -> Option<&TrimSession> {
         self.session.as_ref()
+    }
+    /// The open Speed/Duration form.
+    pub fn speed_form(&self) -> Option<&SpeedForm> {
+        self.speed_form.as_ref()
+    }
+    /// The open Speed/Duration form for editing its fields (what typing in the form does).
+    pub fn speed_form_mut(&mut self) -> Option<&mut SpeedForm> {
+        self.speed_form.as_mut()
     }
 }
 
@@ -990,6 +1050,7 @@ impl Viewer {
             last_trim: None,
             session: None,
             composite_preview: false,
+            speed_form: None,
         });
         self.say(format!("timeline: sequence {sequence_id} (playhead = program monitor)"));
         Ok(())
@@ -1094,6 +1155,9 @@ impl Viewer {
             return Err("no_timeline".into());
         }
         if let Some(result) = self.timeline_trim_command(command) {
+            return result;
+        }
+        if let Some(result) = self.timeline_rate_command(command) {
             return result;
         }
         let t = self.timeline.as_mut().ok_or("no_timeline")?;
@@ -1273,6 +1337,7 @@ impl Viewer {
             "last_trim": t.last_trim.as_ref().map(TrimOutcome::json),
             "trim_session": t.session.as_ref().map(TrimSession::json),
             "composite_preview": t.composite_preview,
+            "speed_form": t.speed_form.as_ref().map(SpeedForm::json),
         })
     }
 }
