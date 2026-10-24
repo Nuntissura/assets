@@ -85,6 +85,8 @@ mod motion_records;
 pub use motion_records::*;
 mod clip_finishing;
 pub use clip_finishing::*;
+mod multicam;
+pub use multicam::*;
 mod parentpages;
 pub use parentpages::*;
 mod longdoc;
