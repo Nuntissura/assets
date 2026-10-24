@@ -2575,6 +2575,11 @@ drafts:
   status: published-source-only-draft
   reason: Preserved test-only fragment; no package manifest or production ModelSessionState implementation. Syntax
     and formatting checked; runtime tests remain unrun and the folder is not installable.
+- id: DROPDOWNMENU-ASSET-DRAFT-001
+  path: dropdownmenu
+  status: published-source-only-draft
+  reason: Rust dropdown-menu asset scaffold for desktop and web hosts; package manifests and implementation are
+    not created yet.
 legacy_source_paths:
   Cabinet/Cargo.toml: Cabinet/Cargo.toml
   Cabinet/cabinet-egui/Cargo.toml: Cabinet/cabinet-egui/Cargo.toml
