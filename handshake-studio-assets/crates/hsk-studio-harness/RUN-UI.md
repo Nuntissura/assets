@@ -56,6 +56,7 @@ entry right below it that runs the remedy (e.g. `-> Open…` under a greyed Save
 | View | Fit in Window, Actual Size, Zoom In, Zoom Out, Render on GPU, Status Log | | view toggles |
 | Workspace > Panels | Layers | F2 | shows / hides the layer panel |
 | Workspace > Panels | Properties | F3 | shows / hides properties and the import receipt |
+| Workspace > Panels | Info | Ctrl+Shift+F1 | opens / shows / hides the Info panel (histogram, pointer readout, colour samplers, eyedropper) |
 | Workspace > Panels | Develop | F4 | shows / hides the develop panel (open a camera raw / DNG first) |
 | Workspace > Panels | Layout Editor | F5 | hosts the layout editor on the open document's pages, or on a new blank one-page document when it has none |
 | Workspace > Panels | Program Monitor | F6 | the program monitor on the document's first sequence (an audio file opens its own) |
@@ -144,6 +145,39 @@ gamut_warning {enabled, colour, opacity, area_fraction, out_of_gamut_pixels, pix
 region_count, regions_truncated, regions, bounds, method, gamut_intent, threshold_delta_e76,
 max_delta_e76}, receipt (profile ids and SHA-256, intents, output_sha256), read_back, canvas
 (`proof` or `frame`), preview_error, window.
+
+## Info panel: histogram, readout, colour samplers (lane SMB-PS-INFO-HISTOGRAM-1)
+
+Workspace > Panels > Info (Ctrl+Shift+F1; the spec declares no binding, Studio choice) opens a
+right side panel next to Properties. It reads the composite the canvas shows:
+
+| Part | What it shows / does |
+|---|---|
+| model / sample / scope | readout colour model (RGB, HSB, Lab, CMYK unmanaged), eyedropper and sampler sample size (point, 3x3, 5x5, 11x11, 31x31, 51x51, 101x101: averaged squares, edges average the in-canvas pixels), eyedropper scope (current layer, current and below, all layers) |
+| Place sampler / Eyedropper | while on, a canvas click adds a colour sampler, or samples into the brush colour (the active swatch); click the button again to stop |
+| Document / Pointer / Selection | document size in pixels; position, pixel, RGBA and the model readout under the pointer; selection bounds and covered pixels |
+| Histogram | 256 bins of the chosen channel (luminosity, red, green, blue, alpha) of the whole frame, or of the selection when there is one; pixel count, mean, std dev, median, clipped shadows (value 0) and highlights (value 255) with percentages; transparent pixels are counted, not binned |
+| Colour samplers | up to 10 persistent points, each with live values in its model; Remove deletes one |
+
+Operator: samplers, model, sample size and scope are document state: each change is one Undo step
+and is saved with the document (session entry `info`). The eyedropper does not change the swatch
+when the sample is transparent. On the GPU display texture the panel reads the CPU read-back frame.
+Photoshop's own Histogram / Info numbers (luminosity weights, CMYK readout profile) are UNVERIFIED.
+
+Models: `Viewer::info_command(InfoCommand::{AddSampler, MoveSampler, RemoveSampler,
+SetSamplerModel, SetSampleSize, SetSampleScope, SetModel})` (each one undo step),
+`info_eyedropper(x, y)` (sample into the brush colour with the entry's size and scope),
+`info_records()` (validated entry), `info_set_pick(Pick::{None, Sampler, Eyedropper})`,
+`info_set_channel`; `shell_command(ShellCommand::Panel(Panel::Info))` is the menu click. Widget
+names `info`, `info.model`, `info.sample_size`, `info.scope`, `info.channel`, `info.histogram`,
+`info.pick.sampler`, `info.pick.eyedropper`, `info.sampler.<i>.remove`. `state_json()["info"]`:
+open, visible, pick, model, sample_size, scope, document {x, y, width, height, unit}, pointer {x, y,
+pixel, in_bounds, rgba8, readout}, selection {bounds, pixels}, region, histogram {bins, pixels,
+transparent, channels.<luminosity|red|green|blue|alpha> {bins[256], count, clip_low, clip_high,
+clip_low_pct, clip_high_pct, mean, std_dev, median}, luminosity_weights_per_mille}, samplers[]
+{index, x, y, pixel, rgba8, readout}, eyedropper, swatch, view {shown_min, zoom, origin} (canvas
+mapping: screen = shown_min + (document - origin) * zoom), read_back, error (a refused entry reads
+as its reason and changes nothing). Engine: `hsk_studio_pigment::diagnostics`.
 
 ## Design files and component instances (lane SMB-FIG-EDIT-1)
 

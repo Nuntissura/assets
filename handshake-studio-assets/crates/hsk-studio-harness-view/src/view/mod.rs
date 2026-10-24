@@ -88,6 +88,9 @@ pub mod render;
 /// Soft proofing in the window: VIEW / COLOR > Proof, proof preview and gamut overlay on the canvas,
 /// `state_json()["proof"]` (lane SMB-PS-SOFT-PROOF-2).
 pub mod proof;
+/// Info panel: histogram, pointer readout, colour samplers and eyedropper, `state_json()["info"]`
+/// (lane SMB-PS-INFO-HISTOGRAM-1).
+pub mod info;
 /// Pen, direct selection, shape tools and pathfinder on vector layers (lane SMB-ILLUSTRATOR-PEN).
 pub mod vector;
 /// Items of wrapping rows under stable ids (toolbar, Layers panel, develop rows; lane SMB-SHELL-ROW-WRAP-1).
@@ -241,6 +244,8 @@ pub struct Viewer {
     /// Proof window and the canvas proof view (module [`proof`]; the state itself is the document
     /// entry `proof`).
     proof: proof::ProofState,
+    /// Info panel state (module [`info`]; the document-scoped part is the entry `info`).
+    info: info::InfoState,
     /// The open audio file (module [`audio_import`]).
     #[cfg(feature = "media")]
     audio: Option<audio_import::ViewerAudio>,
@@ -321,6 +326,7 @@ impl Viewer {
             selection_history: Vec::new(),
             records: None,
             proof: proof::ProofState::default(),
+            info: info::InfoState::default(),
             #[cfg(feature = "media")]
             audio: None,
             #[cfg(feature = "media")]
@@ -737,6 +743,7 @@ impl Viewer {
             (_, Err(e)) => Err(RenderFail { code: "vector", detail: e }),
         };
         self.proof.frame_changed();
+        self.info.frame_changed();
         match result {
             Ok(frame) => {
                 let line = format!("rendered revision {} with render-{} ({}x{}){}", frame.revision, frame.backend, frame.width, frame.height, if frame.notes.is_empty() { String::new() } else { format!("; {}", frame.notes.join("; ")) });
@@ -803,6 +810,7 @@ impl Viewer {
             "timeline": self.timeline_json(),
             "proof": self.proof_json(),
             "design": self.design_json(),
+            "info": self.info_json(),
         });
         #[cfg(feature = "media")]
         {
@@ -999,6 +1007,11 @@ impl Viewer {
         for op in develop_ops {
             let _ = self.develop_op(op);
         }
+        // Info panel (module info): its own right side panel, inside the Properties / Develop panel.
+        if self.panel_visible(shell::Panel::Info) {
+            self.render_if_dirty();
+            self.info_ui(ctx);
+        }
         ctx.request_repaint_after(std::time::Duration::from_millis(if self.edit.selection.is_some() { 120 } else { 1000 }));
         self.render_if_dirty();
 
@@ -1188,8 +1201,19 @@ impl Viewer {
         let to_doc = |p: egui::Pos2| [f64::from(fx + (p.x - shown.min.x) / zoom), f64::from(fy + (p.y - shown.min.y) / zoom)];
         let to_screen = |d: [f32; 2]| egui::pos2(shown.min.x + (d[0] - fx) * zoom, shown.min.y + (d[1] - fy) * zoom);
 
-        // Tool gestures (every action below is a headless Viewer method).
-        if tool.is_vector() {
+        // Info panel (module info): the position under the pointer, the canvas mapping, and a
+        // canvas click while it picks (sampler / eyedropper) instead of the tool.
+        self.info.hover = response.hover_pos().map(to_doc);
+        self.info.view = Some(([shown.min.x, shown.min.y], zoom, [fx, fy]));
+        let info_pick = self.info_pick_active();
+        if info_pick {
+            if response.clicked()
+                && let Some(p) = response.interact_pointer_pos()
+            {
+                let [x, y] = to_doc(p);
+                self.info_canvas_click(x, y);
+            }
+        } else if tool.is_vector() {
             self.vector_gesture(ui, &response, &to_doc, zoom);
         } else if tool != Tool::View {
             if response.drag_started() {

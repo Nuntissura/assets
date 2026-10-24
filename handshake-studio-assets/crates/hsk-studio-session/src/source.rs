@@ -153,8 +153,11 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// document-scoped soft-proof state), validated by its producer on every set and read. `design`
 /// (lane SMB-FIG-EDIT-2, lead decision 2026-10-24) carries the Folio `StudioDesignStateRecords` of
 /// the document (component instance state: variant, properties, overrides, swap; STU-IO-006 row 35
-/// edit-preserve), validated by its producer on every set and read.
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design"];
+/// edit-preserve), validated by its producer on every set and read. `info` (lane
+/// SMB-PS-INFO-HISTOGRAM-1) carries the viewer's Info panel state (colour sampler points, readout
+/// model, eyedropper sample size and scope; STU-RAS-163), JSON validated by its producer on every
+/// set and read.
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {

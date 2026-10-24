@@ -87,6 +87,8 @@ pub mod widget {
 pub enum Panel {
     Layers,
     Properties,
+    /// Info: histogram, readout, colour samplers (module [`super::info`], lane SMB-PS-INFO-HISTOGRAM-1).
+    Info,
     Develop,
     LayoutEditor,
     ProgramMonitor,
@@ -101,9 +103,10 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 24] = [
+    pub const ALL: [Panel; 25] = [
         Panel::Layers,
         Panel::Properties,
+        Panel::Info,
         Panel::Develop,
         Panel::LayoutEditor,
         Panel::ProgramMonitor,
@@ -131,6 +134,7 @@ impl Panel {
         match self {
             Self::Layers => "layers",
             Self::Properties => "properties",
+            Self::Info => "info",
             Self::Develop => "develop",
             Self::LayoutEditor => "layout_editor",
             Self::ProgramMonitor => "program_monitor",
@@ -147,6 +151,7 @@ impl Panel {
         match self {
             Self::Layers => "Layers",
             Self::Properties => "Properties",
+            Self::Info => "Info",
             Self::Develop => "Develop",
             Self::LayoutEditor => "Layout Editor",
             Self::ProgramMonitor => "Program Monitor",
@@ -173,6 +178,8 @@ impl Panel {
         match self {
             Self::Layers => egui::Key::F2,
             Self::Properties => egui::Key::F3,
+            // With Ctrl+Shift ([`Panel::modifiers`]); no spec binding for `info` (Studio choice).
+            Self::Info => egui::Key::F1,
             Self::Develop => egui::Key::F4,
             Self::LayoutEditor => egui::Key::F5,
             Self::ProgramMonitor => egui::Key::F6,
@@ -189,6 +196,7 @@ impl Panel {
         match self {
             Self::Layers => "F2",
             Self::Properties => "F3",
+            Self::Info => "Ctrl+Shift+F1",
             Self::Develop => "F4",
             Self::LayoutEditor => "F5",
             Self::ProgramMonitor => "F6",
@@ -201,10 +209,11 @@ impl Panel {
             Self::Hosted(h) => h.shortcut_text(),
         }
     }
-    /// Modifiers of the toggle key (none for the shell's own panels).
+    /// Modifiers of the toggle key (none for the shell's own panels except Info: Ctrl+Shift).
     pub fn modifiers(self) -> egui::Modifiers {
         match self {
             Self::Hosted(h) => h.modifiers(),
+            Self::Info => egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
             _ => egui::Modifiers::NONE,
         }
     }
@@ -740,6 +749,7 @@ impl Viewer {
     pub fn panel_open(&self, panel: Panel) -> bool {
         match panel {
             Panel::Layers | Panel::Properties => true,
+            Panel::Info => self.info.open,
             Panel::Develop => self.develop.is_some(),
             Panel::LayoutEditor => self.shell.layout.is_some(),
             Panel::ProgramMonitor => self.monitor.is_some(),
@@ -1277,6 +1287,11 @@ impl Viewer {
     fn open_panel(&mut self, panel: Panel) -> Result<(), String> {
         match panel {
             Panel::Layers | Panel::Properties => Ok(()),
+            Panel::Info => {
+                self.info.open = true;
+                self.say("info panel open".into());
+                Ok(())
+            }
             Panel::Develop => Err("open a camera raw or DNG first".into()),
             Panel::LayoutEditor => {
                 let (doc, note) = self.layout_doc();
@@ -1363,6 +1378,7 @@ impl Viewer {
         self.selection_history.clear();
         self.records = None;
         self.proof_close_document();
+        self.info_close_document();
         #[cfg(feature = "media")]
         {
             self.audio = None;
