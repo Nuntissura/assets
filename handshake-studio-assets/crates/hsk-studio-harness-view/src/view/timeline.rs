@@ -33,6 +33,12 @@
 //! stable name ([`widget`]), and `state_json()["timeline"]` projects the panel.
 #![deny(clippy::arithmetic_side_effects)]
 
+mod trim;
+mod trim_session;
+
+pub use trim::{DEFAULT_MULTI_FRAME_STEP, EditMode, EditPoint, MAX_MULTI_FRAME_STEP, MAX_PLANNER_CALLS, TrimKind, TrimOutcome, TrimTool};
+pub use trim_session::{TrimFocus, TrimSession};
+
 use super::Viewer;
 use hsk_studio_accord::Ticks;
 use hsk_studio_folio::{self as folio, ClipSource, LabelColor, StudioClip, StudioMarker, StudioSequence, TrackKind};
@@ -76,6 +82,26 @@ pub mod widget {
     pub fn marker(marker_id: &str) -> String {
         format!("timeline.marker.{marker_id}")
     }
+    /// One trim-mode selector of the toolbar: `timeline.tool.<tool key>` (lane SMB-TIMELINE-TRIM-1).
+    pub fn tool(key: &str) -> String {
+        format!("timeline.tool.{key}")
+    }
+    pub const EXTEND_EDIT: &str = "timeline.extend_edit";
+    pub const TRIM_SESSION_ENTER: &str = "timeline.trim_session.enter";
+    pub const TRIM_SESSION: &str = "timeline.trim_session";
+    pub const TRIM_OUTGOING: &str = "timeline.trim_session.outgoing";
+    pub const TRIM_INCOMING: &str = "timeline.trim_session.incoming";
+    pub const TRIM_MINUS_MAJOR: &str = "timeline.trim_session.minus_major";
+    pub const TRIM_MINUS_MINOR: &str = "timeline.trim_session.minus_minor";
+    pub const TRIM_PLUS_MINOR: &str = "timeline.trim_session.plus_minor";
+    pub const TRIM_PLUS_MAJOR: &str = "timeline.trim_session.plus_major";
+    pub const TRIM_FOCUS_IN: &str = "timeline.trim_session.focus_in";
+    pub const TRIM_FOCUS_OUT: &str = "timeline.trim_session.focus_out";
+    pub const TRIM_FOCUS_BOTH: &str = "timeline.trim_session.focus_both";
+    pub const TRIM_TYPE: &str = "timeline.trim_session.type";
+    pub const TRIM_COMPOSITE: &str = "timeline.trim_session.composite_preview";
+    pub const TRIM_COMMIT: &str = "timeline.trim_session.commit";
+    pub const TRIM_ROLLBACK: &str = "timeline.trim_session.rollback";
 }
 
 /// Track header column width (pixels).
@@ -366,6 +392,15 @@ pub enum DragKind {
     Move,
     TrimIn,
     TrimOut,
+    /// Ripple tool on a clip head / tail (lane SMB-TIMELINE-TRIM-1).
+    RippleIn,
+    RippleOut,
+    /// Roll tool on the edit at the dragged clip's tail (a head edit drags as the previous
+    /// abutting clip's tail).
+    Roll,
+    /// Slip / slide tool on the clip body.
+    Slip,
+    Slide,
 }
 
 impl DragKind {
@@ -374,6 +409,11 @@ impl DragKind {
             Self::Move => "move",
             Self::TrimIn => "trim_in",
             Self::TrimOut => "trim_out",
+            Self::RippleIn => "ripple_in",
+            Self::RippleOut => "ripple_out",
+            Self::Roll => "roll",
+            Self::Slip => "slip",
+            Self::Slide => "slide",
         }
     }
 }
@@ -385,6 +425,8 @@ pub struct DragTarget {
     pub end: Ticks,
     pub track_id: String,
     pub snapped: Option<SnapTarget>,
+    /// Signed whole frames the drag moves its edge, its clip or (slip) its source window.
+    pub delta_frames: i64,
 }
 
 /// A clip drag in progress (pointer x at the press, the clip as it was).
@@ -416,7 +458,8 @@ pub fn drag_target(drag: &Drag, dx: f32, dest_track: &str, view: &TimelineView, 
     let duration = drag.end.value().saturating_sub(drag.start.value());
     let (mut start, mut end, mut snapped) = (drag.start, drag.end, None);
     match drag.kind {
-        DragKind::Move => {
+        DragKind::Slip => {}
+        DragKind::Move | DragKind::Slide => {
             start = shifted(drag.start, delta);
             end = Ticks::new(start.value().saturating_add(duration));
             let head = snap(start).map(|t| (t.at.value().abs_diff(start.value()), true, t));
@@ -434,7 +477,7 @@ pub fn drag_target(drag: &Drag, dx: f32, dest_track: &str, view: &TimelineView, 
                 }
             }
         }
-        DragKind::TrimIn => {
+        DragKind::TrimIn | DragKind::RippleIn => {
             let limit = drag.end.value().saturating_sub(tpf);
             start = Ticks::new(shifted(drag.start, delta).value().min(limit));
             if let Some(t) = snap(start).filter(|t| t.at.value() <= limit) {
@@ -442,7 +485,7 @@ pub fn drag_target(drag: &Drag, dx: f32, dest_track: &str, view: &TimelineView, 
                 snapped = Some(t);
             }
         }
-        DragKind::TrimOut => {
+        DragKind::TrimOut | DragKind::RippleOut | DragKind::Roll => {
             let limit = drag.start.value().saturating_add(tpf);
             end = Ticks::new(shifted(drag.end, delta).value().max(limit));
             if let Some(t) = snap(end).filter(|t| t.at.value() >= limit) {
@@ -451,7 +494,16 @@ pub fn drag_target(drag: &Drag, dx: f32, dest_track: &str, view: &TimelineView, 
             }
         }
     }
-    DragTarget { start, end, track_id: dest_track.to_owned(), snapped }
+    let moved = |now: Ticks, was: Ticks| {
+        let d = i128::from(now.value()).saturating_sub(i128::from(was.value())).checked_div(i128::from(tpf.max(1))).unwrap_or(0);
+        i64::try_from(d).unwrap_or(if d < 0 { i64::MIN } else { i64::MAX })
+    };
+    let delta_frames = match drag.kind {
+        DragKind::Slip => frames,
+        DragKind::TrimOut | DragKind::RippleOut | DragKind::Roll => moved(end, drag.end),
+        DragKind::Move | DragKind::Slide | DragKind::TrimIn | DragKind::RippleIn => moved(start, drag.start),
+    };
+    DragTarget { start, end, track_id: dest_track.to_owned(), snapped, delta_frames }
 }
 
 /// The edit a finished drag commits (`None`: nothing changed).
@@ -464,6 +516,16 @@ pub fn drag_command(drag: &Drag, target: &DragTarget) -> Option<TimelineCommand>
         }),
         DragKind::TrimIn => (target.start != drag.start).then(|| TimelineCommand::TrimIn { clip_id: drag.clip_id.clone(), head: target.start }),
         DragKind::TrimOut => (target.end != drag.end).then(|| TimelineCommand::TrimOut { clip_id: drag.clip_id.clone(), tail: target.end }),
+        DragKind::RippleIn | DragKind::RippleOut | DragKind::Roll | DragKind::Slip | DragKind::Slide => {
+            let (clip_id, delta_frames) = (drag.clip_id.clone(), target.delta_frames);
+            (delta_frames != 0).then_some(match drag.kind {
+                DragKind::RippleIn => TimelineCommand::RippleTrimIn { clip_id, delta_frames },
+                DragKind::RippleOut => TimelineCommand::RippleTrimOut { clip_id, delta_frames },
+                DragKind::Roll => TimelineCommand::Roll { clip_id, delta_frames },
+                DragKind::Slip => TimelineCommand::Slip { clip_id, delta_frames },
+                _ => TimelineCommand::Slide { clip_id, delta_frames },
+            })
+        }
     }
 }
 
@@ -498,6 +560,50 @@ pub enum TimelineCommand {
     ScrollTo(u64),
     /// Moves the playhead (the program monitor's scheduler) to `tick`.
     Scrub(Ticks),
+    // ---- trims, nudges and the trim session (lane SMB-TIMELINE-TRIM-1; module `trim`) ----
+    /// Ripple trim of the clip's head by `delta_frames` (the clip keeps its start; later content on
+    /// its track and on every sync-locked track shifts, [STU-VID-026]). Every trim below commits
+    /// the achieved delta ([`TrimOutcome`], `state_json()["timeline"]["last_trim"]`).
+    RippleTrimIn { clip_id: String, delta_frames: i64 },
+    /// Ripple trim of the clip's tail by `delta_frames`.
+    RippleTrimOut { clip_id: String, delta_frames: i64 },
+    /// Rolls the edit between the clip (outgoing) and the clip abutting its tail by `delta_frames`.
+    Roll { clip_id: String, delta_frames: i64 },
+    /// Moves the clip's source window by `delta_frames` (timeline start and duration fixed).
+    Slip { clip_id: String, delta_frames: i64 },
+    /// Moves the clip by `delta_frames` between its two abutting neighbours.
+    Slide { clip_id: String, delta_frames: i64 },
+    /// Selects the edit nearest `nearest_to` on the targeted tracks in `mode` ([STU-VID-026b]).
+    SelectEdit { mode: EditMode, nearest_to: Ticks },
+    /// Selects the edit point of `clip_id` in `mode` (an edge click in the panel).
+    EditPointAt { clip_id: String, mode: EditMode },
+    /// Trim forward / backward by one frame or by the multi-frame step: the open trim session's
+    /// plus / minus, else the selected edit point trimmed in its mode.
+    TrimNudge { forward: bool, many: bool },
+    /// Slips the selected clip one frame or the multi-frame step ([STU-VID-035a]).
+    SlipNudge { right: bool, many: bool },
+    /// Slides the selected clip one frame or the multi-frame step.
+    SlideNudge { right: bool, many: bool },
+    /// Moves the selected clip one frame or the multi-frame step (overwrite at the destination).
+    ClipNudge { right: bool, many: bool },
+    /// Rolls the selected roll edit, else the nearest roll edit on the targeted tracks, to the
+    /// playhead.
+    ExtendEditToPlayhead,
+    /// The one multi-frame step shared by every "many" variant (1..=[`MAX_MULTI_FRAME_STEP`]).
+    SetMultiFrameStep(u32),
+    /// The trim mode of edge and body drags in the panel.
+    SetTool(TrimTool),
+    /// Enters a trim session on the selected edit point ([STU-VID-026a]).
+    TrimSessionEnter,
+    TrimSessionFocus(TrimFocus),
+    /// Toggles the session's trim type between ripple and roll.
+    TrimSessionToggleType,
+    /// Commits the session's adjustment as ONE history step and closes it.
+    TrimSessionCommit,
+    /// Abandons the session (nothing was committed while it was open).
+    TrimSessionRollback,
+    /// Composite preview during trim on / off (a display preference).
+    ToggleCompositePreview,
 }
 
 impl TimelineCommand {
@@ -522,6 +628,26 @@ impl TimelineCommand {
             Self::ZoomToFit => "zoom_fit",
             Self::ScrollTo(_) => "scroll",
             Self::Scrub(_) => "scrub",
+            Self::RippleTrimIn { .. } => "ripple_trim_in",
+            Self::RippleTrimOut { .. } => "ripple_trim_out",
+            Self::Roll { .. } => "roll",
+            Self::Slip { .. } => "slip",
+            Self::Slide { .. } => "slide",
+            Self::SelectEdit { .. } => "edit_select",
+            Self::EditPointAt { .. } => "edit_point",
+            Self::TrimNudge { .. } => "trim_nudge",
+            Self::SlipNudge { .. } => "slip_nudge",
+            Self::SlideNudge { .. } => "slide_nudge",
+            Self::ClipNudge { .. } => "clip_nudge",
+            Self::ExtendEditToPlayhead => "extend_edit",
+            Self::SetMultiFrameStep(_) => "multi_frame_step",
+            Self::SetTool(_) => "tool",
+            Self::TrimSessionEnter => "trim_session_enter",
+            Self::TrimSessionFocus(_) => "trim_session_focus",
+            Self::TrimSessionToggleType => "trim_session_type",
+            Self::TrimSessionCommit => "trim_session_commit",
+            Self::TrimSessionRollback => "trim_session_rollback",
+            Self::ToggleCompositePreview => "composite_preview",
         }
     }
     /// The recovered command id of the module 14 command tables ([STU-VID-041]) this action runs,
@@ -535,6 +661,27 @@ impl TimelineCommand {
             Self::PreviousMarker => "cmd.marker.gotomarker.previous",
             Self::NextEdit => "cmd.tlnav.next.edit",
             Self::PreviousEdit => "cmd.tlnav.prev.edit",
+            Self::SelectEdit { mode, .. } => mode.spec_command(),
+            Self::TrimNudge { forward, many } => match (forward, many) {
+                (true, false) => "cmd.trim.plus.minor",
+                (true, true) => "cmd.trim.plus.major",
+                (false, false) => "cmd.trim.minus.minor",
+                (false, true) => "cmd.trim.minus.major",
+            },
+            Self::SlipNudge { right, many } => match (right, many) {
+                (false, false) => "cmd.timeline.slip.left.one",
+                (false, true) => "cmd.timeline.slip.left.several",
+                (true, false) => "cmd.timeline.slip.right.one",
+                (true, true) => "cmd.timeline.slip.right.several",
+            },
+            Self::SlideNudge { right, many } => match (right, many) {
+                (false, false) => "cmd.timeline.slide.left.one",
+                (false, true) => "cmd.timeline.slide.left.several",
+                (true, false) => "cmd.timeline.slide.right.one",
+                (true, true) => "cmd.timeline.slide.right.several",
+            },
+            Self::TrimSessionFocus(f) => f.spec_command(),
+            Self::ToggleCompositePreview => "cmd.timeline.composite.preview.during.trim",
             _ => return None,
         })
     }
@@ -544,10 +691,16 @@ impl TimelineCommand {
 /// Ctrl+K razor, Delete / Backspace lift, Alt+Backspace and Shift+Delete ripple delete, S snapping,
 /// M add marker, Shift+M next marker, Ctrl+Shift+M previous marker, Up / Down previous / next edit,
 /// `=` / `-` zoom, `\` zoom to fit. Bindings from the module 14 tables: Ctrl+K, Alt+Backspace, S,
-/// Shift+M, Ctrl+Shift+M, Up, Down; the rest are harness bindings.
+/// Shift+M, Ctrl+Shift+M, Up, Down; the rest are harness bindings. Lane SMB-TIMELINE-TRIM-1 adds
+/// the [STU-VID-041] slip and slide nudges (Ctrl+Alt+Left / Right slip one frame, with Shift the
+/// multi-frame step; Alt+, / Alt+. slide one frame, with Shift the step) and the harness clip nudge
+/// Alt+Left / Right (with Shift the step; Premiere's binding UNVERIFIED).
 pub fn key_command(key: egui::Key, m: egui::Modifiers) -> Option<TimelineCommand> {
     use egui::Key;
     Some(match key {
+        Key::ArrowLeft | Key::ArrowRight if m.command && m.alt => TimelineCommand::SlipNudge { right: key == Key::ArrowRight, many: m.shift },
+        Key::Comma | Key::Period if m.alt && !m.command => TimelineCommand::SlideNudge { right: key == Key::Period, many: m.shift },
+        Key::ArrowLeft | Key::ArrowRight if m.alt && !m.command => TimelineCommand::ClipNudge { right: key == Key::ArrowRight, many: m.shift },
         Key::K if m.command && !m.shift => TimelineCommand::RazorAtPlayhead,
         Key::Backspace if m.alt => TimelineCommand::RippleDelete,
         Key::Delete if m.shift => TimelineCommand::RippleDelete,
@@ -585,6 +738,14 @@ pub struct TimelineState {
     pub(super) layout: Option<TimelineLayout>,
     pub(super) synced_revision: Option<u64>,
     pub(super) cache: Option<TimelineCache>,
+    /// Trim mode of panel drags (lane SMB-TIMELINE-TRIM-1).
+    pub tool: TrimTool,
+    /// The one multi-frame step of every "many" nudge ([STU-VID-035a]).
+    pub multi_frame_step: u32,
+    pub(super) edit_point: Option<EditPoint>,
+    pub(super) last_trim: Option<TrimOutcome>,
+    pub(super) session: Option<TrimSession>,
+    pub composite_preview: bool,
 }
 
 impl TimelineState {
@@ -600,6 +761,18 @@ impl TimelineState {
     /// The geometry of the last drawn frame.
     pub fn layout(&self) -> Option<&TimelineLayout> {
         self.layout.as_ref()
+    }
+    /// The selected edit point ([STU-VID-026b]).
+    pub fn edit_point(&self) -> Option<&EditPoint> {
+        self.edit_point.as_ref()
+    }
+    /// What the last trim requested, achieved or refused.
+    pub fn last_trim(&self) -> Option<&TrimOutcome> {
+        self.last_trim.as_ref()
+    }
+    /// The open trim session.
+    pub fn session(&self) -> Option<&TrimSession> {
+        self.session.as_ref()
     }
 }
 
@@ -811,6 +984,12 @@ impl Viewer {
             layout: None,
             synced_revision: revision,
             cache: None,
+            tool: TrimTool::Selection,
+            multi_frame_step: DEFAULT_MULTI_FRAME_STEP,
+            edit_point: None,
+            last_trim: None,
+            session: None,
+            composite_preview: false,
         });
         self.say(format!("timeline: sequence {sequence_id} (playhead = program monitor)"));
         Ok(())
@@ -911,6 +1090,12 @@ impl Viewer {
     fn timeline_command_inner(&mut self, command: &TimelineCommand) -> Result<(), String> {
         // An undo or redo since the last frame changed the sequence: the clock follows it first.
         self.timeline_sync_monitor();
+        if self.timeline.is_none() {
+            return Err("no_timeline".into());
+        }
+        if let Some(result) = self.timeline_trim_command(command) {
+            return result;
+        }
         let t = self.timeline.as_mut().ok_or("no_timeline")?;
         match command {
             TimelineCommand::Select(id) => {
@@ -1005,7 +1190,8 @@ impl Viewer {
                 self.timeline_commit("timeline_trim_out", |snap, seq_id, ctx| plan_one(snap, seq_id, ctx, &edit))
             }
             TimelineCommand::MoveClip { clip_id, start, track_id } => self.timeline_commit("timeline_move", |snap, seq_id, ctx| plan_move(snap, seq_id, ctx, clip_id, *start, track_id.as_deref())),
-            TimelineCommand::Select(_) | TimelineCommand::ToggleSnap | TimelineCommand::ZoomIn | TimelineCommand::ZoomOut | TimelineCommand::ScrollTo(_) => Ok(()),
+            // Select / snap / zoom / scroll returned above; the trim family runs in module `trim`.
+            _ => Ok(()),
         }
     }
 
@@ -1018,14 +1204,7 @@ impl Viewer {
     /// (`Run::submit_sequence`); the program monitor then plays the edited sequence.
     fn timeline_commit(&mut self, op: &str, plan: impl FnOnce(&folio::Snapshot, &str, &EditContext) -> Result<Planned, String>) -> Result<(), String> {
         let sequence_id = self.timeline.as_ref().map(|t| t.sequence_id.clone()).ok_or("no_timeline")?;
-        let snapshot = self.run.snapshot().ok_or("not_open")?;
-        let unknown = UnknownExtents;
-        let extents: &dyn SourceExtents = match self.monitor.as_ref() {
-            Some(m) => m.extents.as_ref(),
-            None => &unknown,
-        };
-        let ctx = EditContext { budget: folio::Budget::default(), resolver: &crate::harness::TrustAll, extents, cancel: self.cancel };
-        let planned = plan(snapshot, &sequence_id, &ctx)?;
+        let planned = self.timeline_plan(plan)?;
         if !self.run.submit_sequence(op, planned.sequence.clone()) {
             let code = self.run.ops().last().and_then(|o| o.get("error").and_then(Value::as_str)).unwrap_or("submit_failed").to_owned();
             return Err(format!("submit_failed {code}"));
@@ -1043,6 +1222,20 @@ impl Viewer {
         let notes = if planned.notes.is_empty() { String::new() } else { format!("; {}", planned.notes.join("; ")) };
         self.say(format!("timeline: {op} (revision {}){notes}", revision.unwrap_or(0)));
         Ok(())
+    }
+
+    /// Plans on the current snapshot with the program monitor's source extents (unknown without a
+    /// monitor); commits nothing.
+    fn timeline_plan<T>(&self, plan: impl FnOnce(&folio::Snapshot, &str, &EditContext) -> Result<T, String>) -> Result<T, String> {
+        let sequence_id = self.timeline.as_ref().map(|t| t.sequence_id.clone()).ok_or("no_timeline")?;
+        let snapshot = self.run.snapshot().ok_or("not_open")?;
+        let unknown = UnknownExtents;
+        let extents: &dyn SourceExtents = match self.monitor.as_ref() {
+            Some(m) => m.extents.as_ref(),
+            None => &unknown,
+        };
+        let ctx = EditContext { budget: folio::Budget::default(), resolver: &crate::harness::TrustAll, extents, cancel: self.cancel };
+        plan(snapshot, &sequence_id, &ctx)
     }
 
     /// `state_json()["timeline"]`: the panel projection (`null` when closed).
@@ -1074,6 +1267,12 @@ impl Viewer {
             "drag": t.drag.as_ref().map(|d| json!({"clip_id": d.clip_id, "kind": d.kind.key(), "preview": d.preview.as_ref().map(|p| json!({"start": p.start.value(), "end": p.end.value(), "track_id": p.track_id, "snapped": p.snapped.as_ref().map(|s| s.kind.key())}))})),
             "drawn": l.map(|l| json!({"tracks": l.tracks.len(), "tracks_hidden": l.tracks_hidden, "clips": l.clips.len(), "clips_truncated": l.clips_truncated, "unplaceable": l.unplaceable, "markers": l.markers.len()})),
             "cache_error": t.cache.as_ref().and_then(|c| c.error),
+            "tool": t.tool.key(),
+            "multi_frame_step": t.multi_frame_step,
+            "edit_point": t.edit_point.as_ref().map(|e| json!({"clip_id": e.clip_id, "mode": e.mode.key()})),
+            "last_trim": t.last_trim.as_ref().map(TrimOutcome::json),
+            "trim_session": t.session.as_ref().map(TrimSession::json),
+            "composite_preview": t.composite_preview,
         })
     }
 }

@@ -10,8 +10,8 @@
 
 use super::Viewer;
 use super::timeline::{
-    Drag, DragKind, EDGE_PX, HEADER_PX, MAX_PX_PER_FRAME, MIN_PX_PER_FRAME, RULER_PX, TimelineCommand, TimelineLayout, TimelineState, WORK_AREA_PX, drag_command, drag_target, frames_of,
-    key_command, layout, tick_at_x, ticks_per_frame, widget, x_of,
+    Drag, DragKind, EDGE_PX, EditMode, HEADER_PX, MAX_PX_PER_FRAME, MIN_PX_PER_FRAME, RULER_PX, TimelineCommand, TimelineLayout, TimelineState, TrimFocus, TrimTool, WORK_AREA_PX, drag_command,
+    drag_target, frames_of, key_command, layout, tick_at_x, ticks_per_frame, widget, x_of,
 };
 use super::widget as vw;
 use hsk_studio_accord::Ticks;
@@ -186,6 +186,19 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
         button(ui, out, widget::ZOOM_OUT, "Zoom Out", "-", t.view.px_per_frame > MIN_PX_PER_FRAME, TimelineCommand::ZoomOut);
         button(ui, out, widget::ZOOM_IN, "Zoom In", "=", t.view.px_per_frame < MAX_PX_PER_FRAME, TimelineCommand::ZoomIn);
         button(ui, out, widget::ZOOM_FIT, "Zoom to Fit", "\\", true, TimelineCommand::ZoomToFit);
+        ui.add_space(12.0);
+        // Trim mode of edge and body drags (lane SMB-TIMELINE-TRIM-1).
+        for tool in TrimTool::ALL {
+            let name = widget::tool(tool.key());
+            let r = ui.push_id(vw::id(&name), |ui| ui.selectable_label(t.tool == tool, tool.label())).inner.on_hover_text(format!("{} tool: edge and body drags", tool.label()));
+            out.drawn.push(name);
+            if r.clicked() {
+                out.commands.push(TimelineCommand::SetTool(tool));
+            }
+        }
+        button(ui, out, widget::EXTEND_EDIT, "Extend Edit", "Roll the selected (else the nearest) edit to the playhead", playhead.is_some(), TimelineCommand::ExtendEditToPlayhead);
+        let can_enter = t.edit_point().is_some() && t.session().is_none();
+        button(ui, out, widget::TRIM_SESSION_ENTER, "Trim Session", "Trim the selected edit point with plus / minus, focus and ripple / roll", can_enter, TimelineCommand::TrimSessionEnter);
         let max = frames_of(seq.duration, tpf).max(1.0);
         let mut scroll = t.view.scroll_frames.min(max);
         let r = ui.push_id(vw::id(widget::SCROLL), |ui| ui.add(egui::Slider::new(&mut scroll, 0.0..=max).text("Scroll").show_value(false))).inner;
@@ -197,6 +210,9 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
         ui.label(format!("Playhead {}", here.as_deref().unwrap_or("-")));
         out.drawn.push(widget::PLAYHEAD.into());
     }));
+    if t.session().is_some() {
+        session_row(ui, seq, t, tpf, out);
+    }
     let size = egui::vec2(ui.available_width().max(HEADER_PX + 40.0), ui.available_height().max(RULER_PX + WORK_AREA_PX + 30.0));
     let (area, bg) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let markers: &[(String, TickRange)] = t.cache.as_ref().map_or(&[], |c| &c.markers);
@@ -268,28 +284,101 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
             out.drawn.push(ename);
             edges.push((head, r));
         }
-        let mut gesture: Option<(DragKind, &egui::Response)> = None;
+        // The trim tool decides what an edge or body gesture does (lane SMB-TIMELINE-TRIM-1); a
+        // roll on a head is the roll of the previous abutting clip's tail.
+        let previous = previous_abutting(seq, &b.clip_id);
+        let mut gesture: Option<(String, DragKind, Option<EditMode>, &egui::Response)> = None;
         for (head, r) in &edges {
             if r.drag_started() || r.dragged() || r.drag_stopped() || r.clicked() {
-                gesture = Some((if *head { DragKind::TrimIn } else { DragKind::TrimOut }, r));
+                let own = b.clip_id.clone();
+                gesture = Some(match (t.tool, *head, previous.clone()) {
+                    (TrimTool::Ripple, true, _) => (own, DragKind::RippleIn, Some(EditMode::RippleIn), r),
+                    (TrimTool::Ripple, false, _) => (own, DragKind::RippleOut, Some(EditMode::RippleOut), r),
+                    (TrimTool::Roll, true, Some(p)) => (p, DragKind::Roll, Some(EditMode::Roll), r),
+                    (TrimTool::Roll, false, _) => (own, DragKind::Roll, Some(EditMode::Roll), r),
+                    (_, true, _) => (own, DragKind::TrimIn, Some(EditMode::TrimIn), r),
+                    (_, false, _) => (own, DragKind::TrimOut, Some(EditMode::TrimOut), r),
+                });
             }
         }
-        let (kind, r) = gesture.unwrap_or((DragKind::Move, &body));
+        let body_kind = match t.tool {
+            TrimTool::Slip => DragKind::Slip,
+            TrimTool::Slide => DragKind::Slide,
+            _ => DragKind::Move,
+        };
+        let (target_clip, kind, mode, r) = gesture.unwrap_or((b.clip_id.clone(), body_kind, None, &body));
         if r.clicked() || r.drag_started() || r.is_pointer_button_down_on() {
             out.pressed_inside = true;
         }
         if r.clicked() {
             out.commands.push(TimelineCommand::Select(Some(b.clip_id.clone())));
+            if let Some(mode) = mode {
+                out.commands.push(TimelineCommand::EditPointAt { clip_id: target_clip.clone(), mode });
+            }
         }
+        let ours = dragged.as_deref() == Some(target_clip.as_str());
         if r.drag_started() {
             let x = r.ctx.input(|i| i.pointer.press_origin()).map_or(0.0, |p| p.x);
-            out.drag_start = Some((b.clip_id.clone(), kind, x));
+            out.drag_start = Some((target_clip, kind, x));
         }
-        if r.drag_stopped() && dragged.as_deref() == Some(b.clip_id.as_str()) {
+        if r.drag_stopped() && ours {
             out.drag_stopped = true;
         }
     }
     t.layout = Some(l);
+}
+
+/// The clip abutting `clip_id`'s head on its track.
+fn previous_abutting(seq: &StudioSequence, clip_id: &str) -> Option<String> {
+    seq.tracks.iter().find_map(|t| {
+        let i = t.clips.iter().position(|c| c.clip_id == clip_id)?;
+        let p = t.clips.get(i.checked_sub(1)?)?;
+        (p.timeline_end() == Some(t.clips[i].timeline_start)).then(|| p.clip_id.clone())
+    })
+}
+
+/// The trim session row ([STU-VID-026a]): outgoing / incoming tiles labelled with their source
+/// ticks, plus / minus minor and major, focus, ripple / roll, composite preview, apply, cancel.
+fn session_row(ui: &mut egui::Ui, seq: &StudioSequence, t: &TimelineState, tpf: u64, out: &mut Outcome) {
+    let Some(s) = t.session() else { return };
+    let name_of = |id: Option<&str>| {
+        id.and_then(|id| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.clip_id == id)).map_or_else(|| "(none)".to_owned(), super::timeline::clip_label)
+    };
+    let tick = |v: Option<u64>| v.map_or_else(|| "-".to_owned(), |v| format!("source tick {v} (frame {})", v.checked_div(tpf).unwrap_or(0)));
+    let step = t.multi_frame_step;
+    out.drawn.push(widget::TRIM_SESSION.into());
+    egui::ScrollArea::horizontal().id_salt(vw::id(widget::TRIM_SESSION)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong(format!("Trim ({}, {})", s.trim_type(), s.focus.key()));
+            let tile = |ui: &mut egui::Ui, name: &str, text: String| {
+                let _ = ui.push_id(vw::id(name), |ui| ui.group(|ui| ui.label(text)));
+            };
+            tile(ui, widget::TRIM_OUTGOING, format!("Outgoing {} out @ {}", name_of(s.outgoing.as_deref()), tick(s.outgoing_source_out)));
+            tile(ui, widget::TRIM_INCOMING, format!("Incoming {} in @ {}", name_of(s.incoming.as_deref()), tick(s.incoming_source_in)));
+            out.drawn.extend([widget::TRIM_OUTGOING, widget::TRIM_INCOMING].map(String::from));
+            button(ui, out, widget::TRIM_MINUS_MAJOR, &format!("-{step}"), "Trim backward by the multi-frame step", true, TimelineCommand::TrimNudge { forward: false, many: true });
+            button(ui, out, widget::TRIM_MINUS_MINOR, "-1", "Trim backward one frame", true, TimelineCommand::TrimNudge { forward: false, many: false });
+            button(ui, out, widget::TRIM_PLUS_MINOR, "+1", "Trim forward one frame", true, TimelineCommand::TrimNudge { forward: true, many: false });
+            button(ui, out, widget::TRIM_PLUS_MAJOR, &format!("+{step}"), "Trim forward by the multi-frame step", true, TimelineCommand::TrimNudge { forward: true, many: true });
+            ui.label(format!("Pending {} frames{}", s.pending_frames, s.limit.as_deref().map(|l| format!(" ({l})")).unwrap_or_default()));
+            for (name, label, focus) in [(widget::TRIM_FOCUS_IN, "In", TrimFocus::In), (widget::TRIM_FOCUS_OUT, "Out", TrimFocus::Out), (widget::TRIM_FOCUS_BOTH, "In+Out", TrimFocus::Both)] {
+                let r = ui.push_id(vw::id(name), |ui| ui.selectable_label(s.focus == focus, label)).inner;
+                out.drawn.push(name.into());
+                if r.clicked() {
+                    out.commands.push(TimelineCommand::TrimSessionFocus(focus));
+                }
+            }
+            let other = if s.trim_type() == "roll" { "Ripple" } else { "Roll" };
+            button(ui, out, widget::TRIM_TYPE, &format!("Make {other}"), "Toggle the trim type between ripple and roll", true, TimelineCommand::TrimSessionToggleType);
+            let r = ui.push_id(vw::id(widget::TRIM_COMPOSITE), |ui| ui.selectable_label(t.composite_preview, "Composite Preview")).inner;
+            out.drawn.push(widget::TRIM_COMPOSITE.into());
+            if r.clicked() {
+                out.commands.push(TimelineCommand::ToggleCompositePreview);
+            }
+            button(ui, out, widget::TRIM_COMMIT, "Apply", "Commit the adjustment as one undo step", true, TimelineCommand::TrimSessionCommit);
+            button(ui, out, widget::TRIM_ROLLBACK, "Cancel", "Abandon the session (nothing committed)", true, TimelineCommand::TrimSessionRollback);
+        });
+    });
 }
 
 fn paint(ui: &egui::Ui, l: &TimelineLayout, t: &TimelineState, playhead: Option<Ticks>, tpf: u64) {
@@ -327,6 +416,13 @@ fn paint(ui: &egui::Ui, l: &TimelineLayout, t: &TimelineState, playhead: Option<
         if b.rect.width() > 24.0 {
             lanes.with_clip_rect(b.rect.shrink(2.0)).text(egui::pos2(b.rect.min.x + 4.0, b.rect.center().y), egui::Align2::LEFT_CENTER, &b.label, font.clone(), egui::Color32::WHITE);
         }
+    }
+    // The selected edit point: a bright bar on its edge (lane SMB-TIMELINE-TRIM-1).
+    if let Some(e) = t.edit_point()
+        && let Some(b) = l.clip(&e.clip_id)
+    {
+        let x = if e.mode.is_head() { b.x0 } else { b.x1 };
+        lanes.vline(x, b.rect.y_range(), egui::Stroke::new(3.0_f32, SNAP_LINE));
     }
     if let Some(p) = drag.and_then(|d| d.preview.as_ref()) {
         let row = l.tracks.iter().find(|r| r.track_id == p.track_id);
