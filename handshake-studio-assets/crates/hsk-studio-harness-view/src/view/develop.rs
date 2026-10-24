@@ -1246,7 +1246,7 @@ impl Viewer {
         let w = super::widget::id;
         ui.horizontal_wrapped(|ui| {
             let mut button = |name: &'static str, label: &str, hover: &str, op: DevelopOp, ops: &mut Vec<DevelopOp>, drawn: &mut Vec<String>| {
-                if ui.push_id(w(name), |ui| ui.button(label)).inner.on_hover_text(hover).clicked() {
+                if wrap_item(ui, w(name), label, egui::TextStyle::Button, |ui| ui.button(label)).on_hover_text(hover).clicked() {
                     ops.push(op);
                 }
                 drawn.push(name.into());
@@ -1291,7 +1291,7 @@ impl Viewer {
                 family.push((format!("develop.local.add_model.{}", kind.key()), format!("Select {}", kind.key()), "Model-assisted mask: refused model_unavailable (no model provider in this build)", DevelopOp::AddCorrection(MaskSource::Model(ModelMask { kind, subcategory: None, model_version: None }))));
             }
             for (name, label, hover, op) in family {
-                if ui.push_id(w(&name), |ui| ui.button(label)).inner.on_hover_text(hover).clicked() {
+                if wrap_item(ui, w(&name), &label, egui::TextStyle::Button, |ui| ui.button(label.as_str())).on_hover_text(hover).clicked() {
                     ops.push(op);
                 }
                 self.drawn.push(name);
@@ -1331,17 +1331,33 @@ impl Viewer {
         }
         ui.horizontal_wrapped(|ui| {
             let base = std::path::PathBuf::from(self.save_input.trim());
-            if ui.push_id(w(super::widget::DEVELOP_EXPORT_PNG), |ui| ui.button("Export developed PNG 16-bit")).inner.on_hover_text("develop_to_output, sRGB-v4 profile embedded, at the save path with extension .develop.png").clicked() {
+            let png = "Export developed PNG 16-bit";
+            if wrap_item(ui, w(super::widget::DEVELOP_EXPORT_PNG), png, egui::TextStyle::Button, |ui| ui.button(png)).on_hover_text("develop_to_output, sRGB-v4 profile embedded, at the save path with extension .develop.png").clicked() {
                 let _ = self.export_develop(&base.with_extension("develop.png"), DevelopExport::Png { depth: OutputDepth::Sixteen }, self.overwrite);
             }
             self.drawn.push(super::widget::DEVELOP_EXPORT_PNG.into());
-            if ui.push_id(w(super::widget::DEVELOP_EXPORT_JPEG), |ui| ui.button("Export developed JPEG")).inner.on_hover_text("develop_to_output 8-bit, quality 90, sRGB-v4 profile embedded, extension .develop.jpg").clicked() {
+            let jpeg = "Export developed JPEG";
+            if wrap_item(ui, w(super::widget::DEVELOP_EXPORT_JPEG), jpeg, egui::TextStyle::Button, |ui| ui.button(jpeg)).on_hover_text("develop_to_output 8-bit, quality 90, sRGB-v4 profile embedded, extension .develop.jpg").clicked() {
                 let _ = self.export_develop(&base.with_extension("develop.jpg"), DevelopExport::Jpeg { quality: super::export::DEFAULT_JPEG_QUALITY }, self.overwrite);
             }
             self.drawn.push(super::widget::DEVELOP_EXPORT_JPEG.into());
         });
         (changes, ops)
     }
+}
+
+/// One item of a wrapping row (`ui.horizontal_wrapped`) under the stable id `id`: the row allocates
+/// the item's unwrapped size first, so the row wraps it, then `add` draws it there. A bare
+/// `ui.push_id` opens a child Ui the row never wraps: past the row end the child has zero width, the
+/// button text shrinks to one glyph, the row overflows and the auto-sized develop panel stored that
+/// overflow as its width, widening every frame (diagnosis smb-lr-healing-2-1). `text` / `style`: the
+/// item's label and text style (`Button` for buttons and selectable labels, `Body` for small buttons).
+fn wrap_item<R>(ui: &mut egui::Ui, id: egui::Id, text: &str, style: egui::TextStyle, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let galley = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style);
+    let pad = ui.spacing().button_padding;
+    // One point of slack: a label a hair short of its width would wrap inside the allocated cell.
+    let size = egui::vec2(galley.size().x + 2.0 * pad.x + 1.0, (galley.size().y + 2.0 * pad.y).max(ui.spacing().interact_size.y));
+    ui.allocate_ui(size, |ui| ui.push_id(id, add).inner).inner
 }
 
 /// The controls of `edit` as `hsk-studio-controls` descriptors with the edit's values in the store.

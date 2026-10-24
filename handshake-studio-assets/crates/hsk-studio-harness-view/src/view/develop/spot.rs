@@ -185,7 +185,8 @@ impl Viewer {
         ui.horizontal_wrapped(|ui| {
             for mode in SpotMode::ALL {
                 let name = format!("develop.spot.mode.{}", mode.key());
-                if ui.push_id(w(&name), |ui| ui.selectable_label(d.spot.mode == mode, format!("Spot mode {}", mode.key()))).inner.on_hover_text("What a click or drag on the preview places").clicked() {
+                let (text, selected) = (format!("Spot mode {}", mode.key()), d.spot.mode == mode);
+                if super::wrap_item(ui, w(&name), &text, egui::TextStyle::Button, |ui| ui.selectable_label(selected, text.as_str())).on_hover_text("What a click or drag on the preview places").clicked() {
                     d.spot.mode = mode;
                 }
                 self.drawn.push(name);
@@ -295,12 +296,14 @@ impl Viewer {
             ui.horizontal_wrapped(|ui| {
                 let other = if a.spot_type == SpotType::Heal { SpotType::Clone } else { SpotType::Heal };
                 let name = format!("develop.spot.{i}.type");
-                if ui.push_id(w(&name), |ui| ui.small_button(format!("Spot {i} {} to {}", a.spot_type.key(), other.key()))).inner.clicked() {
+                let text = format!("Spot {i} {} to {}", a.spot_type.key(), other.key());
+                if super::wrap_item(ui, w(&name), &text, egui::TextStyle::Body, |ui| ui.small_button(text.as_str())).clicked() {
                     ops.push(DevelopOp::SetSpot { spot: i, spot_type: other, feather: a.feather, opacity: a.opacity, radius: a.radius });
                 }
                 self.drawn.push(name);
                 let name = format!("develop.spot.{i}.remove");
-                if ui.push_id(w(&name), |ui| ui.small_button(format!("Remove spot {i}"))).inner.clicked() {
+                let text = format!("Remove spot {i}");
+                if super::wrap_item(ui, w(&name), &text, egui::TextStyle::Body, |ui| ui.small_button(text.as_str())).clicked() {
                     ops.push(DevelopOp::RemoveSpot(i));
                 }
                 self.drawn.push(name);

@@ -17,6 +17,7 @@ use hsk_studio_folio::{Payload, TileRef};
 use hsk_studio_harness_view::view::Viewer;
 use hsk_studio_harness_view::view::develop::{DevelopOp, Refusal};
 use hsk_studio_harness_view::view::render::Prefer;
+use hsk_studio_harness_view::view::widget;
 use serde_json::Value;
 use std::path::Path;
 
@@ -188,18 +189,23 @@ fn frame(v: &mut Viewer, ctx: &egui::Context, events: Vec<egui::Event>, modifier
     ctx.run(input(events, modifiers), |ctx| v.ui(ctx))
 }
 
-/// Frames until the preview rectangle repeats on two consecutive frames (F-TL-2).
+/// Frames until the preview rectangle repeats on two consecutive frames (F-TL-2). A failure reports
+/// each frame's rectangle and develop-panel width (diagnosis smb-lr-healing-2-1: the panel widened
+/// every frame while its button rows overflowed).
 fn settle(v: &mut Viewer, ctx: &egui::Context) {
     let mut last = Value::Null;
+    let mut trace = Vec::new();
     for _ in 0..8 {
         let _ = frame(v, ctx, vec![], egui::Modifiers::NONE);
         let now = develop(v)["spot_preview"]["rect"].clone();
+        let panel = egui::containers::panel::PanelState::load(ctx, widget::id(widget::PROPERTIES_PANEL)).map(|s| s.rect.width());
+        trace.push(format!("{now} panel {panel:?}"));
         if !now.is_null() && now == last {
             return;
         }
         last = now;
     }
-    panic!("the spot preview did not settle: {}", develop(v)["spot_preview"]);
+    panic!("the spot preview did not settle: {}; per frame: {}", develop(v)["spot_preview"], trace.join(" | "));
 }
 
 fn preview_rect(v: &Viewer) -> egui::Rect {
