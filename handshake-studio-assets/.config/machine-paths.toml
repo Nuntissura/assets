@@ -49,3 +49,5 @@ corpus_config = ".config/oracle-corpus.toml"
 # upstream stet comment in the vendored fork (SMB-EPS-FREE-FONTS d195ef7, eval.rs:1298): names the `C:\Users\...` shape
 # that PostScript string syntax would mangle; a comment, never a host path; lead decision 2026-10-24, C16/C41 precedent
 "crates/hsk-studio-ps-engine/src/eval.rs" = 1
+# SMB-HARNESS-SHELL-2 recent-files menu label literal at line 114 (fdb4f81c), not a host path; step 0 C55-b8daa00, lead decision 2026-10-24
+"crates/hsk-studio-controls/tests/menu_descriptors.rs" = 1
