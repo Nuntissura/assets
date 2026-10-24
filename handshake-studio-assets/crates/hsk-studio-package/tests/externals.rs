@@ -406,6 +406,7 @@ fn every_folio_reference_property_is_classified() {
         ("clip_finishing", serde_json::to_value(folio::clip_finishing_schema()).unwrap()),
         ("layout_grids", serde_json::to_value(folio::layout_grids_schema()).unwrap()),
         ("multicam_records", serde_json::to_value(folio::multicam_records_schema()).unwrap()),
+        ("proof_records", serde_json::to_value(folio::proof_records_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -555,6 +556,9 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioPlacedMode.uri", "external:placed_source"),
     ("StudioPlacedSource.asset_id", "external:placed_source (CKC catalog id)"),
     ("StudioPlacedSource.source_id", "internal: placed source id"),
+    ("StudioProofConditionRecord.proof_profile", "internal: proof device choice (shipped preset, ICC reference, colour vision, operator matrix)"),
+    ("StudioProofProfile.content_digest", "internal: sha256 of the StudioIccProfile the reference names (the package reports its bytes through that record as icc_profile)"),
+    ("StudioProofProfile.profile_id", "internal: SCPF id of a StudioIccProfile in the vector records"),
     ("StudioPublishing.documentation_links", "not_a_dependency: documentation links"),
     ("StudioRasterLayerRecord.placed_asset", "container of StudioPlacedAsset"),
     ("StudioRasterRecords.placed_sources", "container of StudioPlacedSource"),

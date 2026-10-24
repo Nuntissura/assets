@@ -148,8 +148,10 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// (lane SMB-AU-WAVEFORM-EDITOR, Operator-approved Audition parity scope 2026-10-16) carries the
 /// harness waveform editor's edit list over its source audio (no samples).
 /// `multicam` (lane SMB-PR-MULTICAM-1, lead brief 2026-10-24) carries the Folio
-/// `StudioMulticamRecords` of the document (`crate::multicam`).
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam"];
+/// `StudioMulticamRecords` of the document (`crate::multicam`). `proof` (lane SMB-PS-SOFT-PROOF-2,
+/// lead brief 2026-10-24) carries the Folio `StudioProofRecords` of the document (STU-COL-240
+/// document-scoped soft-proof state), validated by its producer on every set and read.
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {
