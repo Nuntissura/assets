@@ -1,6 +1,7 @@
 use super::*;
 use rss_provider_pinterest::connected::*;
 use rss_contracts::{CaptureIntent,Error};
+mod home;
 struct AuthorizedFetch {replies:Mutex<VecDeque<Reply>>,requests:Mutex<Vec<FetchRequest>>,checks:AtomicU64,reject:Mutex<Option<(u64,Error)>>}
 impl AuthorizedFetchPort for AuthorizedFetch {
     fn current<'a>(&'a self,_:&'a SourceRequest,_:&'a HostRef,_:&'a AuthorizedContext)->Pending<'a,()> {Box::pin(async move {let check=self.checks.fetch_add(1,Ordering::SeqCst)+1;if let Some((at,error))=&*self.reject.lock().unwrap(){if *at==check{return Err(error.clone());}}Ok(())})}

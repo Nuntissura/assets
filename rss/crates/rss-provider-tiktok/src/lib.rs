@@ -1,6 +1,7 @@
 //! Public TikTok creator-window and item evidence. Network/browser effects and canonical IDs stay host-owned.
 pub mod normalize;
 pub mod public;
+pub mod connected;
 use std::collections::BTreeSet;
 use rss_contracts::{Bounds,HostRef,Instant,ObservedEntry,Pending,SourceRequest};
 use serde::{Deserialize,Serialize};

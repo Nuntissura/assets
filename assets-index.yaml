@@ -2340,9 +2340,12 @@ assets:
   - authorized Instagram own-upload and selected private-source acquisition with renewal-safe continuation
   - bounded authorized Instagram Home raw-document parsing and renewal-safe partial traversal
   - bounded public TikTok creator-window and item media evidence with sparse-window traversal
+  - explicit browser-session TikTok Following ForYou own-profile and private-source acquisition with retained-batch
+    replay
   - bounded versioned Rust WASM bridge composing native wall query and hsscrap interaction
   - bounded public Pinterest board discovery, pin media and opaque-bookmark traversal
   - explicit OAuth Pinterest selected owned shared and private board acquisition with current scope and lease fences
+  - bounded authorized Pinterest Home raw-response and bookmark traversal separate from OAuth boards
   - bounded arXiv API and scientific RSS Atom acquisition with explicit coverage and source metadata
   - global scientific paper identity with distinct versioned source appearances
   - independent exact-Git native and WASM consumers with artifact and source archive provenance

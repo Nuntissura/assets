@@ -375,7 +375,7 @@ fn video(value: &Value, key: MemberKey, bounds: &Bounds) -> Result<MediaEvidence
     }
     selected.ok_or_else(|| invalid("pinterest.video_list"))
 }
-fn entry(value: &Value, digest: &str, bounds: &Bounds) -> Result<EntryEvidence> {
+pub(crate) fn entry(value: &Value, digest: &str, bounds: &Bounds) -> Result<EntryEvidence> {
     if value
         .get("type")
         .and_then(Value::as_str)

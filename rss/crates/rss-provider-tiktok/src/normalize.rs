@@ -12,7 +12,7 @@ pub fn json(bytes:&[u8],max:usize)->Result<Value> {
     serde_json::from_slice(bytes).map_err(|_|invalid("tiktok.json"))
 }
 fn text<'a>(value:&'a Value,key:&str)->Result<&'a str> {value.get(key).and_then(Value::as_str).ok_or_else(||invalid(key))}
-fn unsigned(value:&Value)->Result<u64> {
+pub(crate) fn unsigned(value:&Value)->Result<u64> {
     if let Some(n)=value.as_u64() {Ok(n)} else {let raw=value.as_str().ok_or_else(||invalid("tiktok.integer"))?;
         if raw.is_empty()||!raw.bytes().all(|v|v.is_ascii_digit())||(raw.len()>1&&raw.starts_with('0')) {return Err(invalid("tiktok.integer"));}
         raw.parse().map_err(|_|invalid("tiktok.integer"))}
@@ -21,7 +21,7 @@ fn numeric(value:&Value)->Result<String> {
     let value=if let Some(value)=value.as_str() {value.to_owned()} else {unsigned(value)?.to_string()};
     if !public::numeric_id(&value) {return Err(invalid("tiktok.numeric_id"));}Ok(value)
 }
-fn status(value:&Value)->Result<()> {
+pub(crate) fn status(value:&Value)->Result<()> {
     match value.get("statusCode").and_then(Value::as_u64) {
         Some(0)=>Ok(()),Some(10216|10222|10204)=>Err(Error::Denied),_=>Err(invalid("tiktok.status")),
     }
@@ -39,6 +39,23 @@ pub fn account(bytes:&[u8],name:&str,max:usize,bounds:&Bounds)->Result<Account> 
     let root=rehydration(bytes,max)?;let detail=&root["webapp.user-detail"];status(detail)?;
     let user=&detail["userInfo"]["user"];
     if user.get("privateAccount").and_then(Value::as_bool)!=Some(false) {return Err(Error::Denied);}
+    account_identity(detail,name,bounds)
+}
+pub(crate) fn connected_account(bytes:&[u8],name:&str,max:usize,bounds:&Bounds,mode:rss_contracts::AccessMode,viewer_id:&str,viewer_sec:&str)->Result<Account> {
+    let root=rehydration(bytes,max)?;let detail=&root["webapp.user-detail"];status(detail)?;
+    let user=&detail["userInfo"]["user"];
+    let private=user.get("privateAccount").and_then(Value::as_bool).ok_or(Error::Denied)?;
+    let account=account_identity(detail,name,bounds)?;
+    let own=account.id==viewer_id&&account.sec_uid==viewer_sec;
+    match mode {
+        rss_contracts::AccessMode::OwnUploads if own=>{},
+        rss_contracts::AccessMode::PrivateSource if private&&(own||user.get("relation").and_then(Value::as_u64).is_some_and(|v|matches!(v,1|3)))=>{},
+        _=>return Err(Error::Denied),
+    }
+    Ok(account)
+}
+fn account_identity(detail:&Value,name:&str,bounds:&Bounds)->Result<Account> {
+    let user=&detail["userInfo"]["user"];
     let actual=text(user,"uniqueId")?;
     if !actual.eq_ignore_ascii_case(name) {return Err(Error::StaleResult);}
     let id=numeric(user.get("id").ok_or_else(||invalid("tiktok.account_id"))?)?;let sec_uid=text(user,"secUid")?.to_owned();
@@ -82,7 +99,7 @@ fn media_url(value:&str,bounds:&Bounds)->Result<(String,Option<u64>)> {
     }
     Ok((value.into(),expiry))
 }
-fn entry(value:&Value,digest:&str,bounds:&Bounds)->Result<EntryEvidence> {
+pub(crate) fn entry(value:&Value,digest:&str,bounds:&Bounds)->Result<EntryEvidence> {
     let id=numeric(value.get("id").ok_or_else(||invalid("tiktok.item_id"))?)?;let author=&value["author"];
     let author_id=numeric(author.get("id").ok_or_else(||invalid("tiktok.author_id"))?)?;
     let author_sec_uid=text(author,"secUid")?.to_owned();let author_name=text(author,"uniqueId")?.to_owned();

@@ -150,3 +150,6 @@ fn account_owned_source_uses_authorized_profile_partition() {
         assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
     }
 }
+
+#[path="connected/mod.rs"]
+mod connected;
