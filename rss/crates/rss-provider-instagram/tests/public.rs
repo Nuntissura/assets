@@ -260,3 +260,40 @@ fn account_owned_source_uses_authorized_profile_partition() {
         assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
     }
 }
+
+#[test]
+fn public_request_metadata_is_fixed_anonymous_and_honest() {
+    let request = FetchRequest {
+        method: Method::Get,
+        url: "https://www.instagram.com/api/v1/users/web_profile_info/?username=fixture".into(),
+        form: vec![],
+        expected_digest: None,
+        max_body_bytes: 100_000,
+        timeout_millis: 10_000,
+    };
+    let metadata = request.public_metadata();
+    metadata.validate().unwrap();
+    let headers = metadata.header_pairs();
+    assert_eq!(headers, [
+        ("User-Agent", concat!("rss-provider-instagram/", env!("CARGO_PKG_VERSION"))),
+        ("Accept", "*/*"),
+        ("X-IG-App-ID", "936619743392459"),
+        ("Referer", "https://www.instagram.com/"),
+        ("X-Requested-With", "XMLHttpRequest"),
+    ]);
+    let value = serde_json::to_value(&metadata).unwrap();
+    let decoded: PublicRequestMetadata = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(decoded, metadata);
+    decoded.validate().unwrap();
+    for field in ["user_agent", "accept", "app_id", "referer", "requested_with"] {
+        let mut changed = value.clone();
+        changed[field] = json!("changed");
+        let changed: PublicRequestMetadata = serde_json::from_value(changed).unwrap();
+        assert!(changed.validate().is_err());
+    }
+    for field in ["cookie", "authorization", "csrf_token", "claim"] {
+        let mut changed = value.clone();
+        changed[field] = json!("forbidden");
+        assert!(serde_json::from_value::<PublicRequestMetadata>(changed).is_err());
+    }
+}

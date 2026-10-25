@@ -86,6 +86,47 @@ pub struct FetchRequest {
     pub max_body_bytes: usize,
     pub timeout_millis: u64,
 }
+/// Fixed anonymous request metadata; contains no account or session values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicRequestMetadata {
+    user_agent: String,
+    accept: String,
+    app_id: String,
+    referer: String,
+    requested_with: String,
+}
+impl PublicRequestMetadata {
+    fn web() -> Self {
+        Self {
+            user_agent: concat!("rss-provider-instagram/", env!("CARGO_PKG_VERSION")).into(),
+            accept: "*/*".into(),
+            app_id: "936619743392459".into(),
+            referer: "https://www.instagram.com/".into(),
+            requested_with: "XMLHttpRequest".into(),
+        }
+    }
+    pub fn validate(&self) -> rss_contracts::Result<()> {
+        if self != &Self::web() {
+            return Err(invalid("instagram.public_request_metadata"));
+        }
+        Ok(())
+    }
+    pub fn header_pairs(&self) -> [(&str, &str); 5] {
+        [
+            ("User-Agent", &self.user_agent),
+            ("Accept", &self.accept),
+            ("X-IG-App-ID", &self.app_id),
+            ("Referer", &self.referer),
+            ("X-Requested-With", &self.requested_with),
+        ]
+    }
+}
+impl FetchRequest {
+    pub fn public_metadata(&self) -> PublicRequestMetadata {
+        PublicRequestMetadata::web()
+    }
+}
 pub struct FetchResponse {
     pub final_url: String,
     pub status: u16,

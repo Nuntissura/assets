@@ -12,6 +12,16 @@ Reuse RSS source/continuation contracts and hsscrap observations and identity ow
 
 </topic>
 
+<topic id="public-request-metadata" status="in_progress">
+
+On2026-10-25, Portal's actual public profile/Reels probe received HTTP400 before retaining any document. This proves access failure, not its cause. The current [gallery-dl REST request implementation](https://github.com/mikf/gallery-dl/blob/master/gallery_dl/extractor/instagram.py#L1018-L1037) supplies public application/AJAX/referer metadata that the original FetchRequest contract omitted. Its session/CSRF/claim/cookie fields and browser impersonation are not adopted.
+
+`FetchRequest::public_metadata()` returns one fixed typed `PublicRequestMetadata`: honest crate/version User-Agent, Accept, public application ID, fixed public root Referer and AJAX marker. `header_pairs()` exposes exactly those five fields; `validate()` rejects changed values, and unknown fields fail deserialization. Hosts retain the complete metadata with method/form in request intent, keys and snapshots, validate it before current fetch and recovery, and send the same values through injected and production transports. No arbitrary headers or connected credentials are accepted. Legacy omitted metadata remains distinct and cannot be silently reused as the new request.
+
+Owning metadata/serialization and host binding tests precede a changed actual public-source probe. These headers are an evidence-backed protocol hypothesis; accessor tests do not prove source access or full traversal.
+
+</topic>
+
 <topic id="use">
 
 `InstagramProvider<F, C>` implements `rss_contracts::ProviderPort` for `PublicProfile` and `PublicReels`. Select the exact profile URL or its `/reels/` view. Both resolve one numeric account; their traversal coverage remains distinct. Inject `PublicFetchPort` and `CanonicalEntryPort`. The host must prepare through existing `rss-acquisition::prepare_entry`, resolve reliable provider identity `instagram/media/<numeric-id>` and allocate canonical item, observation and ordered gallery member/reference IDs. Provider IDs and media IDs are evidence only.
