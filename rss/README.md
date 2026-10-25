@@ -1,7 +1,7 @@
 ---
 file_id: rss-manual-v1
 file_kind: package-manual
-updated_at: 2026-10-24
+updated_at: 2026-10-25
 ---
 
 <topic id="contracts">
@@ -17,6 +17,24 @@ AccessPartition validates public versus connected mode. Public profile, Reels, b
 An account-owned source may feed a distinct authorized profile partition. Providers validate a nonempty bounded source owner and exact selected source reference; they do not equate catalogue ownership with capture access. Construct each provider from the canonical selected source record. The host AuthorityPort, AcquisitionOwner and transport/canonical-preparation ports must freshly verify account ownership, profile selection, source configuration, executor and generation before network or owner effects, including redirects and replay. Source and partition IDs are never grants.
 
 Continuation binds subscription, source, access partition, executor and generation. It cannot be used as a WallCursor. CheckpointOwner records accepted item-owner outcomes and source appearances before acknowledging the continuation. A lost response requires scoped operation lookup; pending or unknown outcomes do not authorize advancing a checkpoint. No credential bytes or database/HTTP-framework types appear in these contracts. Optional hsscrap extensions and nullable legacy history remain intact.
+
+</topic>
+
+<topic id="transfer-extension" version="1">
+
+`rss_contracts::transfer` adds typed RSS provenance to the existing `hsscrap.transfer.v1` projection. `ItemExtension` reuses `SourceAppearance` and `AppearanceState` with origin scope, owner-attested coverage and source references/revisions. It transfers no connection, URL locator, executor or continuation model.
+
+The host supplies `ExtensionContext` from its actual authorized export records, complete origin-reference set and explicit metadata-key allowlist. Origin scope is provenance; it is separate from the receiver's audience and destination authorization. Missing Item, observation or state-tag references, duplicate identities and unapproved metadata reject. Bounds apply before queued traversal and serialization.
+
+Call `attach_item_extension` on unhashed `TransferFields` before the existing HSS export planner computes hashes. It refuses overwrite and requires the `rss.transfer.v1` extension/feature pair. `decode_item_projection` accepts raw bytes and calls the HSS decoder first, retaining its duplicate-key, strict JCS, hash and required-feature checks. An ordinary projection without RSS data remains valid; unsupported required RSS semantics reject.
+
+This reuses the existing HSS transfer model and RFC8785 canonicalization rather than copying records or a parser. The host owns consistent snapshots, current grants, redaction/Partial decisions, signing keys, signature/trust/audience verification and durable export state. A verified payload hash is not a signature or proof of live authorization. This contract does not implement a Portal exporter, receiver, credentials or synchronization.
+
+Owning focused proof from repository root, after coordinated preparation:
+
+```text
+cargo test --locked --offline --manifest-path rss/Cargo.toml -p rss-contracts --lib transfer::tests -- --test-threads=1
+```
 
 </topic>
 

@@ -2,6 +2,7 @@
 pub mod sources;
 pub mod acquisition;
 pub mod ports;
+pub mod transfer;
 pub use sources::*;
 pub use acquisition::*;
 pub use ports::*;

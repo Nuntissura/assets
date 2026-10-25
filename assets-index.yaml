@@ -2311,6 +2311,7 @@ assets:
   - public source identity
   - distinct connected stream modes
   - source appearances and read bookmark state
+  - bounded RSS appearance-state extensions reusing hsscrap transfer projections
   - bounded acquisition and checkpoint owner ports
   - account source library and group membership reducers
   - account-owned sources with authorized distinct profile acquisition partitions
