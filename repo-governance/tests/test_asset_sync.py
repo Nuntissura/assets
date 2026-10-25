@@ -111,6 +111,204 @@ class DeviceSynchronization(unittest.TestCase):
             sync.before_use(self.root, [self.installed], str(self.remote))
         self.assertIn("local customization", (self.installed / "SKILL.md").read_text())
 
+    def edit_local_catalog(self):
+        path = self.root / catalog.INDEX
+        index = yaml.safe_load(path.read_text(encoding="utf-8"))
+        index["assets"][0]["capabilities"].append("unpublished local capability")
+        path.write_text(yaml.safe_dump(index, sort_keys=False), encoding="utf-8")
+        catalog.refresh(self.root)
+        # Exercise the existing normalized hash with different platform line endings.
+        path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        generated = self.root / catalog.SKILL / "references/assets-index.yaml"
+        return {path: path.read_bytes(), generated: generated.read_bytes()}
+
+    def test_matching_local_catalog_projection_is_preserved_without_installing_unpublished_inventory(self):
+        preserved = self.edit_local_catalog()
+        self.git("add", catalog.INDEX)
+        index_before = self.git("ls-files", "-s")
+        official = self.git("show", "HEAD:assets-index.yaml")
+        result = sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+        self.assertEqual(result["status"], "UPDATED")
+        self.assertEqual(result["local_catalog"], "UNPUBLISHED")
+        self.assertEqual(result["source_synchronization"], "NOT_SYNCHRONIZED")
+        for path, content in preserved.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertEqual(self.git("ls-files", "-s"), index_before)
+        self.assertEqual((self.installed / "references/assets-index.yaml").read_bytes(), official)
+
+    def test_fresh_remote_skill_installs_while_matching_local_catalog_projection_remains(self):
+        preserved = self.edit_local_catalog()
+        self.update_other_device(catalog.SKILL + "/SKILL.md", "---\nname: create-assets\ndescription: Test\n---\nfresh official rules\n")
+        result = sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+        self.assertEqual(result["local_catalog"], "UNPUBLISHED")
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.git("rev-parse", "origin/main"))
+        self.assertIn("fresh official rules", (self.installed / "SKILL.md").read_text())
+        for path, content in preserved.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertEqual((self.installed / "references/assets-index.yaml").read_bytes(),
+                         self.git("show", "origin/main:assets-index.yaml"))
+        self.assertNotIn(b"unpublished local capability", (self.installed / "references/assets-index.yaml").read_bytes())
+
+    def test_mismatched_generated_inventory_stops_with_local_catalog_preserved(self):
+        preserved = self.edit_local_catalog()
+        generated = self.root / catalog.SKILL / "references/assets-index.yaml"
+        generated.write_bytes(b"independent generated-copy edit\n")
+        preserved[generated] = generated.read_bytes()
+        installed = (self.installed / "references/assets-index.yaml").read_bytes()
+        head = self.git("rev-parse", "HEAD")
+        with self.assertRaisesRegex(ValueError, "generated inventory mismatch"):
+            sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual((self.installed / "references/assets-index.yaml").read_bytes(), installed)
+        for path, content in preserved.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_remote_catalog_conflict_preserves_local_catalog_head_index_and_installation(self):
+        preserved = self.edit_local_catalog()
+        self.git("add", catalog.INDEX)
+        head, index_before = self.git("rev-parse", "HEAD"), self.git("ls-files", "-s")
+        installed = (self.installed / "references/assets-index.yaml").read_bytes()
+        remote_catalog = self.second / catalog.INDEX
+        index = yaml.safe_load(remote_catalog.read_text(encoding="utf-8"))
+        index["assets"][0]["capabilities"].append("remote capability")
+        remote_catalog.write_text(yaml.safe_dump(index, sort_keys=False), encoding="utf-8")
+        catalog.refresh(self.second)
+        sync.run(self.second, "add", catalog.INDEX, catalog.SKILL + "/references/assets-index.yaml")
+        sync.run(self.second, "commit", "-m", "remote catalog update")
+        sync.run(self.second, "push", "origin", "main")
+        with self.assertRaisesRegex(ValueError, "incoming catalog update conflicts"):
+            sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual(self.git("ls-files", "-s"), index_before)
+        self.assertEqual((self.installed / "references/assets-index.yaml").read_bytes(), installed)
+        for path, content in preserved.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_local_repository_control_edit_still_stops_with_matching_dirty_catalog(self):
+        preserved = self.edit_local_catalog()
+        control = self.root / catalog.SKILL / "SKILL.md"
+        control.write_bytes(b"local authored control edit\n")
+        with self.assertRaisesRegex(ValueError, "local repository skill change preserved: SKILL.md"):
+            sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+        self.assertEqual(control.read_bytes(), b"local authored control edit\n")
+        for path, content in preserved.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_own_catalog_publication_is_adopted_and_preserves_unrelated_staged_work(self):
+        self.edit_local_catalog()
+        self.write("assets/example/src/lib.rs", "pub fn answer() -> u8 { 43 }\n")
+        self.write("unrelated.txt", "private staged work\n")
+        self.git("add", "unrelated.txt")
+        index_before = (self.root / ".git/index").read_bytes()
+        unrelated = self.git("ls-files", "-s", "unrelated.txt")
+        published = sync.publish(self.root, self.plan(), "publish capability and code", str(self.remote))
+        self.assertEqual((self.root / ".git/index").read_bytes(), index_before)
+        result = sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+        self.assertEqual(self.git("rev-parse", "HEAD").decode().strip(), published["revision"])
+        self.assertEqual(result["local_catalog"], "CURRENT")
+        self.assertEqual(self.git("ls-files", "-s", "unrelated.txt"), unrelated)
+        self.assertEqual(self.git("diff", "--cached", "--name-only").decode().strip(), "unrelated.txt")
+        self.assertEqual(self.git("diff", "HEAD", "--", catalog.INDEX,
+                                  catalog.SKILL + "/references/assets-index.yaml", "assets/example/src/lib.rs"), b"")
+        self.assertIn(b"unpublished local capability", (self.installed / "references/assets-index.yaml").read_bytes())
+
+    def test_staged_only_catalog_edit_is_reported_and_preserves_index_and_working_bytes(self):
+        self.edit_local_catalog()
+        self.git("add", catalog.INDEX)
+        paths = [catalog.INDEX, catalog.SKILL + "/references/assets-index.yaml"]
+        for path in paths:
+            (self.root / path).write_bytes(self.git("show", "HEAD:" + path))
+        working = {path: (self.root / path).read_bytes() for path in paths}
+        index_before = (self.root / ".git/index").read_bytes()
+        result = sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+        self.assertEqual(result["local_catalog"], "UNPUBLISHED")
+        self.assertEqual(result["source_synchronization"], "NOT_SYNCHRONIZED")
+        self.assertEqual((self.root / ".git/index").read_bytes(), index_before)
+        for path, content in working.items():
+            self.assertEqual((self.root / path).read_bytes(), content)
+
+    def test_indexed_inventory_matches_indexed_or_working_catalog_matrix(self):
+        self.edit_local_catalog()
+        canonical = catalog.INDEX
+        generated = catalog.SKILL + "/references/assets-index.yaml"
+        working = {path: (self.root / path).read_bytes() for path in (canonical, generated)}
+        head = self.git("rev-parse", "HEAD")
+        staged_source = yaml.safe_load(working[canonical])
+        staged_source["assets"][0]["capabilities"].append("coherent staged catalog snapshot")
+        snapshots = {"A": self.git("show", "HEAD:" + canonical),
+                     "B": working[canonical],
+                     "C": yaml.safe_dump(staged_source, sort_keys=False).encode("utf-8")}
+        installed = (self.installed / "references/assets-index.yaml").read_bytes()
+        for catalog_name in snapshots:
+            for inventory_name in snapshots:
+                with self.subTest(indexed_catalog=catalog_name, indexed_inventory=inventory_name):
+                    # Reset only the synthetic test index; working snapshots stay explicitly controlled.
+                    self.git("read-tree", "HEAD")
+                    (self.root / canonical).write_bytes(snapshots[catalog_name])
+                    (self.root / generated).write_bytes(snapshots[inventory_name])
+                    self.git("add", canonical, generated)
+                    for path, content in working.items():
+                        (self.root / path).write_bytes(content)
+                    self.write("unrelated.txt", "unrelated staged work\n")
+                    self.git("add", "unrelated.txt")
+                    index_before = (self.root / ".git/index").read_bytes()
+                    # Unchanged inventory A needs no new pairing. Changed B/C must match a source.
+                    allowed = inventory_name == "A" or inventory_name in (catalog_name, "B")
+                    if allowed:
+                        result = sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+                        self.assertEqual(result["local_catalog"], "UNPUBLISHED")
+                    else:
+                        with self.assertRaisesRegex(ValueError, "staged generated inventory mismatch"):
+                            sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+                    self.assertEqual((self.root / ".git/index").read_bytes(), index_before)
+                    self.assertEqual(self.git("rev-parse", "HEAD"), head)
+                    self.assertEqual((self.installed / "references/assets-index.yaml").read_bytes(), installed)
+                    for path, content in working.items():
+                        self.assertEqual((self.root / path).read_bytes(), content)
+
+    def test_staged_generated_inventory_deletion_stops_and_preserves_both_states(self):
+        working = self.edit_local_catalog()
+        generated = catalog.SKILL + "/references/assets-index.yaml"
+        self.git("rm", "--cached", generated)
+        index_before = (self.root / ".git/index").read_bytes()
+        installed = (self.installed / "references/assets-index.yaml").read_bytes()
+        head = self.git("rev-parse", "HEAD")
+        with self.assertRaises(ValueError):
+            sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+        self.assertEqual((self.root / ".git/index").read_bytes(), index_before)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual((self.installed / "references/assets-index.yaml").read_bytes(), installed)
+        for path, content in working.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_staged_only_authored_control_edit_stops_without_mutating_index_or_working_file(self):
+        path = catalog.SKILL + "/SKILL.md"
+        original = (self.root / path).read_bytes()
+        self.write(path, "staged authored customization\n")
+        self.git("add", path)
+        (self.root / path).write_bytes(original)
+        index_before = (self.root / ".git/index").read_bytes()
+        installed = (self.installed / "SKILL.md").read_bytes()
+        with self.assertRaisesRegex(ValueError, "staged repository skill change preserved"):
+            sync.before_use(self.root, [self.root / catalog.SKILL, self.installed], str(self.remote))
+        self.assertEqual((self.root / ".git/index").read_bytes(), index_before)
+        self.assertEqual((self.root / path).read_bytes(), original)
+        self.assertEqual((self.installed / "SKILL.md").read_bytes(), installed)
+
+    def test_matching_remote_catalog_without_own_publication_receipt_still_stops(self):
+        preserved = self.edit_local_catalog()
+        for path in (catalog.INDEX, catalog.SKILL + "/references/assets-index.yaml"):
+            (self.second / path).write_bytes((self.root / path).read_bytes())
+        sync.run(self.second, "add", catalog.INDEX, catalog.SKILL + "/references/assets-index.yaml")
+        sync.run(self.second, "commit", "-m", "independent matching catalog update")
+        sync.run(self.second, "push", "origin", "main")
+        head = self.git("rev-parse", "HEAD")
+        with self.assertRaisesRegex(ValueError, "incoming catalog update conflicts"):
+            sync.before_use(self.root, [self.installed], str(self.remote))
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        for path, content in preserved.items():
+            self.assertEqual(path.read_bytes(), content)
+
     def test_divergent_commits_stop_without_automatic_merge(self):
         self.write("local.txt", "local commit")
         self.git("add", "local.txt")

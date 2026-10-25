@@ -172,8 +172,49 @@ def advance_checkout(root, ref, head, revision):
 def before_use(root, destinations, expected=REPOSITORY):
     branch, ref, revision = origin(root, expected)
     incoming = skill_snapshot(root, revision)
-    states = [installed_state(root, destination, incoming) for destination in destinations]
     head = run(root, "rev-parse", "HEAD").decode().strip()
+    repository_skill = (root / SKILL).resolve()
+    catalog_content = (root / "assets-index.yaml").read_bytes()
+    published_catalog = run(root, "show", revision + ":assets-index.yaml")
+    baseline_catalog = run(root, "show", head + ":assets-index.yaml")
+    staged_catalog = bool(run(root, "diff", "--cached", "--name-only", head, "--", "assets-index.yaml").strip())
+    local_catalog = staged_catalog or sha(catalog_content) != sha(baseline_catalog)
+    if local_catalog:
+        generated = repository_skill / "references/assets-index.yaml"
+        if not generated.is_file() or sha(generated.read_bytes()) != sha(catalog_content):
+            raise ValueError("local generated inventory mismatch; canonical catalog and skill copy preserved")
+        if sha(published_catalog) != sha(baseline_catalog):
+            receipt = root / ".local/asset-publication/latest.json"
+            publication = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
+            own_publication = (publication.get("base") == head and publication.get("revision") == revision
+                               and {"assets-index.yaml", SKILL + "/references/assets-index.yaml"}
+                               .issubset(publication.get("paths", []))
+                               and sha(catalog_content) == sha(published_catalog))
+            if not own_publication:
+                raise ValueError("incoming catalog update conflicts with unpublished local catalog; all work preserved")
+            # advance_checkout must still verify every receipt path against the published tree and index.
+    staged_controls = run(root, "diff", "--cached", "--name-only", "-z", head, "--", SKILL).decode().split("\0")
+    for path in filter(None, staged_controls):
+        if local_catalog and path == SKILL + "/references/assets-index.yaml":
+            indexed_inventory = run(root, "show", ":" + path)
+            indexed_catalog = run(root, "show", ":assets-index.yaml")
+            if sha(indexed_inventory) not in {sha(indexed_catalog), sha(catalog_content)}:
+                raise ValueError("staged generated inventory mismatch; index and working catalogs preserved")
+            continue
+        raise ValueError(f"staged repository skill change preserved: {path}")
+    baseline_skill = skill_snapshot(root, head)
+    repository_files = {path.relative_to(repository_skill).as_posix(): path for path in repository_skill.rglob("*")
+                        if path.is_file() and "__pycache__" not in path.parts and path.name != STATE}
+    for name in sorted(set(baseline_skill) | set(repository_files)):
+        if local_catalog and name == "references/assets-index.yaml":
+            continue
+        local = repository_files.get(name)
+        if local is None or name not in baseline_skill or sha(local.read_bytes()) != sha(baseline_skill[name]):
+            raise ValueError(f"local repository skill change preserved: {name}")
+    # The repository inventory is a generated source projection, not an installed skill customization.
+    # Git advances its official controls; only external copies receive the fetched installation.
+    states = [None if destination.resolve() == repository_skill else installed_state(root, destination, incoming)
+              for destination in destinations]
     if head != revision:
         result = subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", head, ref], capture_output=True)
         if result.returncode:
@@ -182,18 +223,24 @@ def before_use(root, destinations, expected=REPOSITORY):
         advance_checkout(root, ref, head, revision)
     if run(root, "rev-parse", "HEAD").decode().strip() != revision:
         raise ValueError("checkout did not reach the fetched revision")
+    local_catalog = (sha((root / "assets-index.yaml").read_bytes()) != sha(published_catalog)
+                     or bool(run(root, "diff", "--cached", "--name-only", revision, "--", "assets-index.yaml").strip()))
     # Control-file edits are conflicts even when no branch advancement was necessary.
     for name, content in incoming.items():
+        if local_catalog and name == "references/assets-index.yaml":
+            continue
         local = root / SKILL / safe_path(name)
         if not local.is_file() or sha(local.read_bytes()) != sha(content):
             raise ValueError(f"local repository skill change preserved: {name}")
-    if sha((root / "assets-index.yaml").read_bytes()) != sha(run(root, "show", revision + ":assets-index.yaml")):
-        raise ValueError("local catalog change preserved; refresh requires task-specific reconciliation")
     for destination, state in zip(destinations, states):
-        install_snapshot(destination, incoming, state, revision)
+        if state is not None:
+            install_snapshot(destination, incoming, state, revision)
     return {"status": "UPDATED", "origin_revision": revision, "branch": branch,
             "reread_skill": [str(p / "SKILL.md") for p in destinations],
-            "local_work": "preserved; only a fast-forward and managed skill installation were allowed"}
+            "local_catalog": "UNPUBLISHED" if local_catalog else "CURRENT",
+            "source_synchronization": "NOT_SYNCHRONIZED" if local_catalog else "NOT_VERIFIED",
+            "local_work": "preserved; repository catalog and generated inventory remain unpublished" if local_catalog
+                          else "preserved; only a fast-forward and managed skill installation were allowed"}
 
 
 def publish(root, plan, message, expected=REPOSITORY):

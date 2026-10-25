@@ -2,7 +2,7 @@
 name: create-assets
 description: Discover, reuse, extend, bundle, and synchronize reusable software assets in Nuntissura/assets. Use before hosts implement reusable functionality, when updating assets, or checking cross-device catalog and skill parity. Excludes image and media generation.
 metadata:
-  version: "2.1.0"
+  version: "2.1.1"
 ---
 
 # Create assets
@@ -12,6 +12,7 @@ metadata:
 - [ASSET-SYNC-008] On every invocation, before relying on this skill or its inventory, run `python scripts/asset_sync.py before-use --repo PATH` from this installed skill directory. Discover PATH from the verified checkout, `ASSETS_REPO`, or machine-local Git setting `assets.repo`; never guess a drive. The bootstrap needs Python 3.11+ and Git, not PyYAML.
 - [ASSET-SYNC-009] After the bootstrap succeeds, reread the installed `SKILL.md` and generated inventory at the reported origin revision, then follow the updated instructions. Stop on local skill edits, catalog conflicts, unresolved Git operations, divergent commits, network failures, or rejected fast-forwards; preserve all local files and do not substitute a cached inventory.
 - [ASSET-SYNC-010] The before-use command fetches GitHub, advances only by fast-forward, and updates managed installed skill files. It never stashes, resets, force-pushes, or resolves conflicts. Device bootstrap is required once; subsequent skill invocations perform this update automatically.
+- [ASSET-SYNC-013] Preserve unpublished local catalog edits and an exact generated copy during before-use; report that local catalog as unpublished, and install only the fetched official skill and inventory. A generated copy matching the local canonical catalog is not an authored skill customization. Stop on a mismatched generated copy, edited skill controls or an incoming conflict; bootstrap success does not establish asset-source parity or authorize publishing local edits.
 
 ## Instruction index
 
