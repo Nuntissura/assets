@@ -36,7 +36,11 @@ pub fn resolve_url(raw:&str,bounds:&Bounds)->Result<SourceTarget> {
     Err(invalid("youtube.source_target"))
 }
 fn source_key(source:&SourceTarget)->String {match source {SourceTarget::Channel(id)=>format!("channel/{id}"),SourceTarget::Handle(handle)=>format!("handle/{handle}"),SourceTarget::Video(id)=>format!("video/{id}")}}
-fn canonical_html(bytes:&[u8],bounds:&Bounds)->Result<String> {
+/// Resolve one canonical channel from retained public handle HTML without fetching.
+/// The caller binds these exact bytes to its authorized source request and response.
+pub fn resolve_channel_html(bytes:&[u8],bounds:&Bounds,max_body_bytes:usize)->Result<String> {
+    if max_body_bytes==0||max_body_bytes>16_000_000 {return Err(invalid("youtube.limits"));}
+    if bytes.len()>max_body_bytes {return Err(Error::LimitExceeded {field:"youtube.body".into()});}
     let html=std::str::from_utf8(bytes).map_err(|_|invalid("youtube.channel_html"))?;
     let document=Html::parse_document(html);let selector=Selector::parse("link[rel=canonical][href]").map_err(|_|invalid("youtube.selector"))?;
     let mut channels=BTreeSet::new();
@@ -115,7 +119,7 @@ impl<F:FetchPort,C:CanonicalEntryPort> YouTubeProvider<F,C> {
             (Strategy::NoLoginAtom,SourceTarget::Handle(handle))=>{
                 let mut url=Url::parse("https://www.youtube.com").map_err(|_|invalid("youtube.endpoint"))?;url.set_path(&format!("/@{handle}"));
                 let (bytes,_)=self.get(&request,url.to_string(),None,&mut fetches).await?;
-                Some(normalize::Channel {id:canonical_html(&bytes,&request.bounds)?,uploads:String::new()})
+                Some(normalize::Channel {id:resolve_channel_html(&bytes,&request.bounds,self.limits.max_body_bytes)?,uploads:String::new()})
             }
             _=>return Err(invalid("youtube.atom_requires_channel")),
         };

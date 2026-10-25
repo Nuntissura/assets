@@ -2330,6 +2330,7 @@ assets:
   - bounded public Instagram profile and Reels request, media evidence and resume contracts
   - bounded public YouTube uploads traversal and explicitly partial no-login Atom evidence
   - exact-bound YouTube Atom channel-tail and video permalink normalization
+  - bounded retained public YouTube handle HTML channel resolution
   - public Instagram source URL resolution with distinct profile and Reels modes
   - bounded public TikTok creator-window and item media evidence with sparse-window traversal
   - bounded versioned Rust WASM bridge composing native wall query and hsscrap interaction

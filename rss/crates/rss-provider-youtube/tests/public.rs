@@ -101,6 +101,30 @@ fn handles_and_video_urls_resolve_without_confusing_playlist_item_ids() {
     let mut adapter=provider(Strategy::PublicApi,vec![ok(response)]);adapter.source.original_url="https://youtu.be/Video000001".into();let page=run(adapter.acquire(request(1))).unwrap();
     assert_eq!(page.entries[0].provider_entry_key,"Video000001");assert_eq!(adapter.canonical.identities.lock().unwrap().keys().next().unwrap(),"youtube/video/Video000001");
 }
+
+#[test]
+fn retained_handle_html_resolves_one_bounded_canonical_channel() {
+    let html=format!("<link href='https://www.youtube.com/channel/{CHANNEL}' rel='canonical'>");
+    assert_eq!(public::resolve_channel_html(html.as_bytes(),&bounds(),html.len()).unwrap(),CHANNEL);
+    let duplicated=format!("{html}{html}");
+    assert_eq!(public::resolve_channel_html(duplicated.as_bytes(),&bounds(),duplicated.len()).unwrap(),CHANNEL);
+    let other="UCzyxwvutsrqponmlkjihgfe";
+    let ambiguous=format!("{html}<link rel='canonical' href='https://www.youtube.com/channel/{other}'>");
+    for bytes in [
+        ambiguous.as_bytes(),
+        b"<html><title>Channel</title></html>".as_slice(),
+        b"<link rel='canonical' href='https://example.org/channel/UC1234567890123456789012'>".as_slice(),
+        b"<link rel='canonical' href='https://www.youtube.com/@Creator'>".as_slice(),
+        b"<script>var channel='https://www.youtube.com/channel/UC1234567890123456789012'</script>".as_slice(),
+        &[0xff],
+    ] {
+        assert!(public::resolve_channel_html(bytes,&bounds(),100_000).is_err());
+    }
+    assert!(matches!(public::resolve_channel_html(html.as_bytes(),&bounds(),html.len()-1),Err(rss_contracts::Error::LimitExceeded {field}) if field=="youtube.body"));
+    for limit in [0,16_000_001] {
+        assert!(matches!(public::resolve_channel_html(html.as_bytes(),&bounds(),limit),Err(rss_contracts::Error::Invalid {field}) if field=="youtube.limits"));
+    }
+}
 #[test]
 fn malformed_later_entries_and_foreign_uploads_reject_before_effects() {
     let mut malformed=item(3);malformed["snippet"]["resourceId"]["videoId"]=json!(video_id(4));
