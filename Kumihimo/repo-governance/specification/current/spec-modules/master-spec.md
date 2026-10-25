@@ -2,9 +2,9 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 27
+revision: 28
 title: Kumihimo master specification
-updated_at: '2026-10-14'
+updated_at: '2026-10-25'
 ---
 
 ```yaml
@@ -4485,5 +4485,27 @@ decisions:
   - https://github.com/emilk/egui/tree/44cdd653e2317d300fb8a6c9c36b03f23991e803
   - https://crates.io/crates/eframe/0.33.3
   - https://crates.io/crates/egui-wgpu/0.33.3
+  supersedes: []
+- decision_id: DEC-KUM-STRICT-VULKAN-SELECTION-v1
+  anchor_refs:
+  - TOPIC-KUM-POPOUTS
+  - TOPIC-KUM-RENDER
+  - TOPIC-KUM-BOUNDARIES
+  decision: Add a compatible explicit native-renderer configuration or entrypoint that selects Vulkan exclusively
+    when requested. Preserve the legacy DX12 default and existing NativeOptions exhaustive-literal compatibility.
+    A strict Vulkan request uses only Backends::VULKAN, records the actual adapter backend and reports a typed unavailable
+    failure rather than silently selecting DX12 or OpenGL. Preserve the existing renderer/device, viewport/window
+    identity, capture/readback receipts, source ownership, docking, semantic return, lifecycle and bounded budgets.
+    Enable Vulkan through the existing pinned optional wgpu dependency and controlled dependency resolution; do
+    not invent dependency versions. The existing native and eframe probe modes must report the actual selected backend;
+    eframe Vulkan is a distinct production-boundary proof. Offscreen DX12 captures do not prove Vulkan. Host policy,
+    centralized GPU accounting and later exact-revision adoption remain host responsibilities. No SDK producer,
+    bridge, offscreen-capture or framework upgrade is included.
+  rationale: The original asset supplies reusable backend selection while existing users retain their default. Standalone
+    proof and publication precede separate pinned host adoption.
+  research_source_refs:
+  - https://docs.rs/crate/wgpu/27.0.1/features
+  - https://docs.rs/crate/wgpu-hal/27.0.4/features
+  - https://doc.rust-lang.org/cargo/reference/features.html
   supersedes: []
 ```

@@ -21,6 +21,37 @@ use winit::{
     window::{Window, WindowId},
 };
 
+/// Selects one native graphics backend without fallback to another API.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NativeBackend {
+    #[default]
+    Dx12,
+    Vulkan,
+}
+impl NativeBackend {
+    pub fn backends(self) -> wgpu::Backends {
+        match self {
+            Self::Dx12 => wgpu::Backends::DX12,
+            Self::Vulkan => wgpu::Backends::VULKAN,
+        }
+    }
+    pub fn configuration(self) -> egui_wgpu::WgpuConfiguration {
+        let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
+        setup.instance_descriptor.backends = self.backends();
+        egui_wgpu::WgpuConfiguration {
+            wgpu_setup: setup.into(),
+            ..Default::default()
+        }
+    }
+    pub fn validate_actual(self, actual: wgpu::Backend) -> Result<()> {
+        match (self, actual) {
+            (Self::Dx12, wgpu::Backend::Dx12) | (Self::Vulkan, wgpu::Backend::Vulkan) => Ok(()),
+            (Self::Dx12, _) => Err(AdapterError::Unsupported("requested DX12 backend does not match actual adapter")),
+            (Self::Vulkan, _) => Err(AdapterError::Unsupported("requested Vulkan backend does not match actual adapter")),
+        }
+    }
+}
+
 /// This value cannot be constructed by hosts, tests, callbacks or window-slot callers.
 /// It is minted only after successful set_window and an owned matched Screenshot event.
 pub(crate) struct Ready {
@@ -70,6 +101,7 @@ struct CaptureTag {
 /// Existing raw Painters cannot be adopted because their surface ownership is opaque.
 pub struct NativeRenderer {
     painter: egui_wgpu::winit::Painter,
+    requested_backend: Option<NativeBackend>,
     windows: HashMap<egui::ViewportId, Arc<Window>>,
     max_windows: usize,
 }
@@ -82,7 +114,7 @@ impl NativeRenderer {
             return Err(AdapterError::Budget("native renderer windows"));
         }
         let painter = egui_wgpu::winit::Painter::new(context, configuration, false, Default::default()).await;
-        Ok(Self { painter, windows: HashMap::new(), max_windows })
+        Ok(Self { painter, requested_backend: None, windows: HashMap::new(), max_windows })
     }
     async fn bind_window(&mut self, viewport: egui::ViewportId, window: Arc<Window>) -> Result<()> {
         if !owned_window(&window) { return Err(AdapterError::Invalid("native renderer window owner")); }
@@ -94,8 +126,29 @@ impl NativeRenderer {
         }
         if self.windows.len() >= self.max_windows { return Err(AdapterError::Budget("native renderer windows")); }
         // Only this method creates surfaces, so absence in the map means SDK absence too.
-        self.painter.set_window(viewport, Some(window.clone())).await
-            .map_err(|error| AdapterError::Host(format!("Painter.set_window: {error}")))?;
+        if let Err(error) = self.painter.set_window(viewport, Some(window.clone())).await {
+            let unsupported = match (self.requested_backend, &error) {
+                (Some(NativeBackend::Vulkan), egui_wgpu::WgpuError::RequestAdapterError(_)) => Some("Vulkan adapter unavailable"),
+                (Some(NativeBackend::Vulkan), egui_wgpu::WgpuError::RequestDeviceError(_)) => Some("Vulkan device unavailable"),
+                _ => None,
+            };
+            if let Some(reason) = unsupported {
+                let detail: String = format!("{error:?}").chars().take(4096).collect();
+                eprintln!("Kumihimo Painter.set_window: {reason}: {detail}");
+                return Err(AdapterError::Unsupported(reason));
+            }
+            return Err(AdapterError::Host(format!("Painter.set_window: {error}")));
+        }
+        if let Some(backend) = self.requested_backend {
+            let validation = self.painter.render_state()
+                .ok_or(AdapterError::Invalid("native renderer missing render state"))
+                .and_then(|render| backend.validate_actual(render.adapter.get_info().backend));
+            if let Err(error) = validation {
+                let keep = self.windows.keys().copied().collect();
+                self.painter.gc_viewports(&keep);
+                return Err(error);
+            }
+        }
         self.windows.insert(viewport, window);
         Ok(())
     }
@@ -801,9 +854,20 @@ pub fn run<H: NativeHost + 'static>(
     root: WorkspaceId,
     options: NativeOptions,
 ) -> Result<NativeOutcome> {
+    run_with_backend(controller, host, root, options, NativeBackend::Dx12)
+}
+
+/// Runs the native host with one required graphics backend.
+pub fn run_with_backend<H: NativeHost + 'static>(
+    controller: Controller,
+    host: H,
+    root: WorkspaceId,
+    options: NativeOptions,
+    backend: NativeBackend,
+) -> Result<NativeOutcome> {
     #[cfg(all(feature = "native-apps", windows))]
     if host.native_apps_enabled() { return Err(AdapterError::Unsupported("native-app hosts require run_with_recovery before HWND effects")); }
-    run_impl(controller,host,root,options,false)?.outcome.ok_or(AdapterError::Invalid("legacy runner cannot retain native-app ownership"))
+    run_impl(controller,host,root,options,backend,false)?.outcome.ok_or(AdapterError::Invalid("legacy runner cannot retain native-app ownership"))
 }
 
 struct RunResult<H:NativeHost+'static> {
@@ -864,14 +928,18 @@ impl<H:NativeHost+'static> Drop for RetainedNativeOwner<H> {
 }
 #[cfg(all(feature = "native-apps", windows))]
 pub fn run_with_recovery<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,options:NativeOptions)->Result<NativeRunResult<H>> {
-    let result=run_impl(controller,host,root,options,true)?;
+    run_with_recovery_and_backend(controller,host,root,options,NativeBackend::Dx12)
+}
+#[cfg(all(feature = "native-apps", windows))]
+pub fn run_with_recovery_and_backend<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,options:NativeOptions,backend:NativeBackend)->Result<NativeRunResult<H>> {
+    let result=run_impl(controller,host,root,options,backend,true)?;
     if let Some(retained)=result.retained { Ok(NativeRunResult::Retained(retained)) } else { Ok(NativeRunResult::Completed(result.outcome.ok_or(AdapterError::Invalid("retained native result"))?)) }
 }
 
-fn run_impl<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,options:NativeOptions,retained_mode:bool)->Result<RunResult<H>> {
+fn run_impl<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,options:NativeOptions,backend:NativeBackend,retained_mode:bool)->Result<RunResult<H>> {
     #[cfg(not(windows))]
     {
-        let _ = (controller, host, root, options);
+        let _ = (controller, host, root, options, backend, retained_mode);
         return Err(AdapterError::Unsupported(
             "native observations currently require Windows",
         ));
@@ -914,16 +982,11 @@ fn run_impl<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,
                 pass: request.current_cumulative_pass_nr,
             });
         });
-        let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
-        setup.instance_descriptor.backends = wgpu::Backends::DX12;
-        let configuration = egui_wgpu::WgpuConfiguration {
-            wgpu_setup: setup.into(),
-            ..Default::default()
-        };
-        let renderer = pollster::block_on(NativeRenderer::new(
-            ctx.clone(), configuration, host.policy().max_native_slots.checked_add(1)
+        let mut renderer = pollster::block_on(NativeRenderer::new(
+            ctx.clone(), backend.configuration(), host.policy().max_native_slots.checked_add(1)
                 .ok_or(AdapterError::Budget("native renderer window capacity"))?,
         ))?;
+        renderer.requested_backend = Some(backend);
         let mut plan = Vec::new();
         if let Some(f) = options.probe_frame {
             plan.push(NativeContent::Frame(f));
@@ -1024,6 +1087,7 @@ fn finish_native_app<H:NativeHost>(mut app:App<H>)->Result<NativeOutcome> {
         let value = serde_json::json!({ "schema":"kumihimo.native-observation.v1", "pid":std::process::id(),
             "interactive_opt_in":app.options.interactive, "host_snapshot":app.host.native_host_snapshot(&app.controller), "before":app.before, "during":app.observations, "after":after, "cleanup":cleanup,
             "backend":app.renderer.painter.render_state().map(|r|format!("{:?}",r.adapter.get_info().backend)),
+            "requested_backend":app.renderer.requested_backend.map(|backend|format!("{backend:?}")),
             "captures":app.captures, "canonical_generation":app.controller.snapshot().generation,
             "prepared_slots":app.slots.prepared().len(), "returned":app.returned,
             "remaining_native_bindings":app.slots.bindings().len(), "uia":app.observer_result,

@@ -1,8 +1,15 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-022-external-native-embedding-v1
-generation: 19
+generation: 23
 phase: active
-owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
+owner: 01a17374-1d96-7e02-9aea-77b0f62f20dc
+execution_authorization:
+  decision_id: KUM-WP022-DEPENDENCY-EXECUTION-20261025
+  status: AUTHORIZED
+  scope: Scoped Vulkan dependency resolution and focused compile/test verification
+  custody_transfer_ref: KUM-WP022-CUSTODY-TRANSFER-20261025
+  previous_owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
+  product_and_runtime_proof_status: Unchanged by this authorization record
 changed_files:
 - README.md
 - product/Cargo.lock
@@ -460,11 +467,187 @@ proof:
     execution: Exact Primary phase/slot still required; no Cargo or rerender run
   formatting: Pinned rustfmt chrome whole-file check0; demo changed marker matches formatter; unrelated immutable
     demo baseline formatting retained
+- kind: vulkan_dependency_compile_and_focused_tests
+  observed_at: '2026-10-25T13:04:15.801488+00:00'
+  status: SCOPED_COMPILE_AND_TESTS_PASSED_RUNTIME_NOT_RUN
+  target: x86_64-pc-windows-msvc
+  toolchain: 1.97.1-x86_64-pc-windows-msvc
+  compile:
+    exit_code: 0
+    scope: kumihimo-egui --all-targets --all-features
+  tests:
+    exit_code: 0
+    target: native_app_contracts
+    passed: 10
+    failed: 0
+    ignored: 0
+  dependency_delta:
+    existing_versions_preserved: true
+    added_packages:
+    - name: android_system_properties
+      version: 0.1.6
+    - name: ash
+      version: 0.38.0+1.3.281
+    - name: gpu-alloc
+      version: 0.6.2
+    - name: gpu-alloc-types
+      version: 0.3.1
+    - name: gpu-descriptor
+      version: 0.3.2
+    - name: gpu-descriptor-types
+      version: 0.2.0
+    - name: spirv
+      version: 0.3.0+sdk-1.3.268.0
+    all_additions_reachable_from_pinned_wgpu: true
+  source_inputs_unchanged_during_verification: true
+  artifacts:
+    check.stderr.txt: d221a1c19de6509eb0006517b72d7dd67f24270cc1a0f4204af666f94e4a567f
+    check.stdout.txt: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    resolve.stderr.txt: 2b27e3ab533d84ac710a0bf95c28ac185b96905ea632a4907ab581959c98e281
+    test.stderr.txt: 3f080b047edd3032b7952c98b13e1420e2d1a0e032922c49757ba1f5bfa24c2f
+    test.stdout.txt: fc78edb7136c412eee6bc507ec33e457df1c6b1970d09be2705439c30805e533
+  runtime: NOT_RUN
+  publication: NOT_PERFORMED
+  previous_next_action: Publish scoped source checkpoint and70-file candidate binding, hand exact affected proof
+    map to Primary; execute only separately granted phase
+- kind: vulkan_runtime_and_cleanup_correction
+  observed_at: '2026-10-25T18:10:55.382206+00:00'
+  status: CORRECTED_SOURCE_REVIEWED_REBUILD_PENDING_COMPILER_ALLOCATION
+  native:
+    exit_code: 0
+    actual_backend: Vulkan
+    captures: 16
+    semantic_returns: 3
+    remaining_bindings: 0
+    manifest_sha256: 72d4462ebeffbe11287816416f5c6813602a50d1e39951524e511d90c7bf41b3
+    scope: Historical source; hidden no-UIA proof; owned HWND absent after process exit
+  eframe_attempts:
+  - attempt: 1
+    exit_code: -1
+    result: Hung before retained progress; exact session-owned process stopped
+  - attempt: 2
+    exit_code: 2
+    result: Intrinsic deadline; hidden repaint pending
+  - attempt: 3
+    exit_code: 1
+    result: AlreadyConsumed masked earlier readback failure
+  - attempt: 4
+    exit_code: 1
+    result: First StaleTarget retained
+  - attempt: 5
+    exit_code: 1
+    result: Root readback passed; deferred handoff startup target stale
+  - attempt: 6
+    exit_code: 1
+    result: All phases reached13,9captures,actualVulkan,zero bindings; final queued HWND destruction assertion failed
+    manifest_sha256: 2e2d97d5a2947c60a59cdb7cbfda0574f22e3506c8687b13d15a1db095152985
+    process_result:
+      pid: 27380
+      birth_utc: '2026-10-25T17:06:28.9235147Z'
+      exit_code: 1
+      ended_utc: '2026-10-25T17:06:44.7138548Z'
+      handle_disposed: true
+      pid_present: false
+  build_attempt7:
+    exit_code: 101
+    diagnostic: E0616 private CreationContext raw_window_handle
+    tests: NOT_STARTED
+    stderr_sha256: ce342d53eae8450d2c0b8ca4648fca828e0f452222fae61daf4219c8d04b1bbe
+  correction:
+    probe_sha256: 2402aa362d53f9e3d59dde1cb34c180f2104f5cd24c438a3d8005ac5384a83f9
+    native_sha256: ec2f7f31a0a345c301c3d4a2790eba440606bb5ca6721b07c7282cc4a8191c2a
+    source_review: No new correctness findings; public HasWindowHandle, bounded owned-window drain, first-error
+      preservation, legacy DX12 classification
+    source_manifest: .local/wp022-vulkan-proof/source-attempt8.json
+    verified_product_files: 197
+    build: NOT_RUN
+    tests: NOT_RUN
+    runtime: NOT_RUN
+  publication: NOT_PERFORMED
+  remaining_acceptance: Existing original WP acceptance and host adoption holds retained; component and hidden probe
+    results do not close them
+- kind: vulkan_cleanup_final_scoped_verification
+  observed_at: '2026-10-25T18:59:28.965411+00:00'
+  status: PASS_SCOPED_VULKAN_RENDERING_AND_OWNED_WINDOW_CLEANUP
+  build:
+    attempt: 10
+    exit_code: 0
+    preparation: PASS25/25 before process launch; fail-closed exits
+    source_manifest: source-attempt9.json
+    product_files: 197
+    post_source_drift: []
+    exe_sha256: f975a88122fb94d1d3b507e9d2120adf5c4881d66c9e253d9f18cca2d9132fb5
+  tests:
+    reused_valid_attempt: 8
+    target: native_app_contracts
+    passed: 10
+    failed: 0
+    ignored: 0
+    reuse_basis: Only native_probe example changed after these tests; tested production native.rs and test/dependency
+      inputs unchanged
+  runtime:
+    attempt: 8
+    exit_code: 0
+    backend: Vulkan
+    phases_completed: 13
+    captures: 9
+    remaining_native_bindings: 0
+    binding_metric: WindowSlots native bindings; not SDK internal surface registry
+    owned_windows_destroyed_before_exit: true
+    foreground_unchanged: true
+    actual_queued_destruction_messages_dispatched: 2
+    pid: 39532
+    native_birth_utc: '2026-10-25T18:56:48.3111873Z'
+    cim_path_matches: true
+    native_birth_matches: true
+    handle_disposed: true
+    post_pid_present: false
+    post_hwnd_owner_pid:
+      '14683570': 0
+      '3937006': 0
+      '3478258': 0
+  preserved_failures:
+    runtime7: Exit1; generic cleanup exhausted256 messages; all phase13 captures preserved
+    build9: 'INVALID preparation: overlength confirmation failed and shell continued; numeric compiler0 is not accepted
+      gate-passed proof'
+    earlier: All original failures and runtime1-6 retained in prior records and local raw artifacts
+  independent_evaluation:
+    verdict: PASS_SCOPED_VULKAN_RENDERING_AND_OWNED_WINDOW_CLEANUP
+    reviewer: redraw_review
+    artifacts_opened: Actual manifest/logs/native+CIM process identity/postguard, nine-image contact sheet and populated
+      PNG; source/exe hashes reconciled
+  artifact_sha256:
+    batch-attempt8.json: 0f0cde7d2a8cc254f31149cd2647c2cf0fce544f43906869f940411aba82d020
+    test-attempt8.stdout.txt: 1e2c1639c97478eb2f269086fbefbdb089eaa87721409d3f224aede1bc8c9e91
+    build-attempt9-result.json: 288eb2b3a1397d5953ae329d924977a80409c3a823f76a382601f1d7e25f803a
+    build-attempt10-result.json: ce8cf320f1ed31e41d5fc64339d4b180a1c8a293945f45d3804a3efcb1848269
+    eframe-attempt7-result.json: 3cad9037751a8a4a6253e83c550050c8d34d9e2c7a70c6412a3b8ac4f29e7bcb
+    eframe-attempt7-postguard.json: 0f58208e700b89c84073d5a78566468aae00126d5afa69957599676b6803de44
+    eframe-vulkan-attempt7/eframe-native-manifest.json: fb92fea380bccd48d967278eecf73adb4a75818df9a7493a9bc6f06a5455c867
+    eframe-attempt8-process.json: 4c5727b473ff6e796ef8cc3572189f51f359a3c7bba8faf33d21c11907faf9e7
+    eframe-attempt8-result.json: 53a003d1fb9e38ff87ff33d173a4077ab499fb911e4e05e2c4fbb0d2556d6615
+    eframe-attempt8-postguard.json: 2d29e6babde99889b68ed6a305c1b0da27c6237ffc3550d2b8fc452b30b101a9
+    eframe-attempt8.stderr.txt: 3e0c6edc95187d4bd39604699c10ab238d542052f52a6f7d4449e614a4b98320
+    eframe-vulkan-attempt8/eframe-native-manifest.json: 58be15461a083b8f722c20ae5f1742424c02d203398d7b09eb1e2b90315a9d87
+    publication-source-binding.json: da4fca9fd7397048e9351b78c6406a9eac4e308f58e11d17be2398b1a951a0d8
+  residual_build_auxiliary:
+    pid: 8340
+    birth_utc: '2026-10-25T18:39:30.947935Z'
+    status: LIVE_LAST_OBSERVED_UNTOUCHED
+    full_build_family_settlement: NOT_PROVEN
+    scope: Excluded from runtime-owned PID/HWND closure
+  not_proven:
+  - Physical display/input or assistive hardware
+  - Other platforms
+  - Host adoption
+  - All original WP022 acceptance criteria
+  publication_method: Existing scoped asset_sync helper with isolated exact197-file membership/content reconciliation
+    and owning sync/catalog checks; independent origin reread required
 blockers:
 - Bounded chrome/demo source implemented and source-reviewed; fresh compile, interaction and pixels OPEN; exact
   Primary phase/slot required; host adoption held
-next_action: Publish scoped source checkpoint and70-file candidate binding, hand exact affected proof map to Primary;
-  execute only separately granted phase
+next_action: Publish verified scoped Vulkan candidate through existing asset_sync helper and independently reread
+  immutable origin; GUI adoption remains separate and original WP022 acceptance holds remain open
 source_freeze:
   native_worker: frozen_after_phase04_u8_phase_snapshot_remediation
   theme_worker: frozen
@@ -503,3 +686,17 @@ source_freeze:
     demo: SOURCE_ACCEPTED_FROZEN
     checker: sdk_producer independent
     all_other_sources: FROZEN_READ_ONLY
+vulkan_selection:
+  status: SOURCE_AND_SCOPED_RUNTIME_VERIFIED
+  package: kumihimo-egui
+  package_version: 0.2.0
+  canonical_product_content_sha256: 067b70afde8af4712318bc64905ba1f6c6940c0a21ac8cf35b1da8068b65de67
+  source_inputs:
+    product/Cargo.lock: a21b8612c6efc5b0c71693c211a9d40454ad030fc774501ce1613819f3a2ec7b
+    product/kumihimo-egui/Cargo.toml: 403b8d0f132e53375b2acb39acc32e1ecf71f97fbab9b96bbd240ec78c9adc66
+    product/kumihimo-egui/src/native.rs: ec2f7f31a0a345c301c3d4a2790eba440606bb5ca6721b07c7282cc4a8191c2a
+    product/kumihimo-egui/examples/native_probe.rs: 65a0913c8f2f88151896b3103b87b3a04dc2b09914d96e852c64e4681140815c
+    product/kumihimo-egui/tests/native_app_contracts.rs: b017e16f5c88247200e2dedcfc90d120c6aad94739e6f8c187ee5303f640d6f9
+  historical_source_freeze: Existing source_freeze below retains the pre-Vulkan WP history; this scoped binding
+    is current for Vulkan only
+  host_adoption: HELD_SEPARATE_EXACT_REVISION_ADOPTION

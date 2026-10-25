@@ -1,13 +1,13 @@
 {
   "kind": "derived_spec_index",
   "specification_id": "SPEC-KUMIHIMO-v1",
-  "revision": 27,
+  "revision": 28,
   "documents": [
     {
       "document_id": "DOC-KUM-MASTER-v1",
       "path": "spec-modules/master-spec.md",
-      "revision": 27,
-      "digest": "sha256:3b79b8e6367ef0b8924591addfd1a2bdf9f41a22d948d450a3aaf498e4b24090",
+      "revision": 28,
+      "digest": "sha256:bf6f09589d93ab535563fb8e82fb157c60e958f85f660f8bdc70b75236a6929f",
       "semantic_entity_refs": [
         "TOPIC-KUM-WORKSPACE",
         "REQ-KUM-WORKSPACE-001",
@@ -336,7 +336,8 @@
         "REQ-KUM-POPOUTS-009",
         "ACC-KUM-POPOUTS-009",
         "DEC-KUM-EXTERNAL-NATIVE-EMBEDDING-v1",
-        "DEC-KUM-NATIVE-PRODUCER-v1"
+        "DEC-KUM-NATIVE-PRODUCER-v1",
+        "DEC-KUM-STRICT-VULKAN-SELECTION-v1"
       ]
     },
     {

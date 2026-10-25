@@ -45,10 +45,56 @@ impl DesktopHost for OptIn {
 }
 impl native::NativeHost for OptIn {fn native_apps_enabled(&self)->bool{true}}
 #[test]
+fn native_backend_configuration_is_strict_and_defaults_to_legacy_dx12() {
+    use native::NativeBackend;
+    assert_eq!(NativeBackend::default(), NativeBackend::Dx12);
+    for (backend, expected) in [
+        (NativeBackend::default(), wgpu::Backends::DX12),
+        (NativeBackend::Vulkan, wgpu::Backends::VULKAN),
+    ] {
+        assert_eq!(backend.backends(), expected);
+        let egui_wgpu::WgpuSetup::CreateNew(setup) = backend.configuration().wgpu_setup else {
+            panic!("native backend must create its own strictly configured renderer");
+        };
+        assert_eq!(setup.instance_descriptor.backends, expected);
+    }
+}
+#[test]
+fn native_backend_validates_actual_adapter_without_fallback() {
+    use native::NativeBackend;
+    for (requested, actual) in [
+        (NativeBackend::Dx12, wgpu::Backend::Dx12),
+        (NativeBackend::Vulkan, wgpu::Backend::Vulkan),
+    ] {
+        assert_eq!(requested.validate_actual(actual), Ok(()));
+        for other in wgpu::Backend::ALL {
+            if other != actual {
+                assert!(matches!(requested.validate_actual(other), Err(AdapterError::Unsupported(_))),
+                    "{requested:?} accepted {other:?}");
+            }
+        }
+    }
+}
+#[test]
 fn legacy_run_rejects_opt_in_before_any_native_initialization() {
     let core=Core::new(Identity::new("native-app-test","fixture").unwrap(),Limits::default(),8).unwrap();
     let controller=Controller::new(core,"fixture",ContentLimits::default()).unwrap();
-    let result=native::run(controller,OptIn,WorkspaceId::from_raw(1),native::NativeOptions::default());
+    // Existing exhaustive struct literals remain valid when selecting the renderer separately.
+    let options=native::NativeOptions {
+        interactive:false,probe:true,external_native_probe:false,output:".local/desktop-proof".into(),
+        timeout:std::time::Duration::from_secs(45),observer_timeout:std::time::Duration::from_secs(10),
+        observer_script:None,observer_target:None,probe_view:None,probe_frame:None,probe_group:None,
+        probe_partial_close:false,max_retries:3,max_captures:24,
+    };
+    let result=native::run(controller,OptIn,WorkspaceId::from_raw(1),options);
+    assert!(matches!(result,Err(AdapterError::Unsupported("native-app hosts require run_with_recovery before HWND effects"))));
+}
+#[test]
+fn explicit_vulkan_preserves_legacy_opt_in_rejection_before_native_initialization() {
+    let core=Core::new(Identity::new("native-app-test","fixture").unwrap(),Limits::default(),8).unwrap();
+    let controller=Controller::new(core,"fixture",ContentLimits::default()).unwrap();
+    let result=native::run_with_backend(controller,OptIn,WorkspaceId::from_raw(1),
+        native::NativeOptions::default(),native::NativeBackend::Vulkan);
     assert!(matches!(result,Err(AdapterError::Unsupported("native-app hosts require run_with_recovery before HWND effects"))));
 }
 

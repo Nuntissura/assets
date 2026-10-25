@@ -173,8 +173,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-state.yaml
-  next_action: Publish scoped source checkpoint and70-file candidate binding, hand exact affected proof map to Primary;
-    execute only separately granted phase
+  next_action: Publish verified scoped Vulkan candidate through existing asset_sync helper and independently reread
+    immutable origin; GUI adoption remains separate and original WP022 acceptance holds remain open
   blockers:
   - Bounded chrome/demo source implemented and source-reviewed; fresh compile, interaction and pixels OPEN; exact
     Primary phase/slot required; host adoption held

@@ -1,7 +1,7 @@
 ---
 file_id: KUM-PRODUCT-MANUAL-v1
 file_kind: product-and-model-manual
-updated_at: '2026-10-14'
+updated_at: '2026-10-25'
 ---
 
 <topic id="purpose-and-boundaries">
@@ -423,5 +423,17 @@ Feed `navigation_press`, captured `navigation_move` and `navigation_settle` with
 Pull `MediaBudget` through the same bounded queue and return exact typed `MediaObservation` for its aggregate revision. `media_satisfaction` distinguishes requested/current policy from confirmed or Unknown actual work. Generic reconciliation cannot synthesize an applied budget. A newer consumer policy invalidates old satisfaction; dispatched ambiguity retains recovery obligations. Shared cache/mount/started-instance leases remain reserved until their exact cleanup confirmation. Metadata Drop, hidden controls and declared reservations never prove physical memory/GPU release.
 
 The quiet `controls_host` example supplies a navigation observation and a frame-background media observation through a recording provider. It opens no window and runs no engine. The four feature compile combinations and focused content tests are the WP011 proof surface; actual GUI readability/capture, assistive technology, host engines, performance and unobserved platforms require later integration proof.
+
+</topic>
+
+<topic id="native-backend-selection">
+
+## Native graphics backend
+
+With the `native` feature on Windows, `native::run_with_backend(controller, host, root, options, NativeBackend::Vulkan)` selects Vulkan exclusively. Existing `run` and `run_with_recovery` calls retain DX12, and `NativeOptions` keeps its existing fields. Native-app hosts use `run_with_recovery_and_backend` and retain any returned recovery owner through the existing recovery workflow.
+
+`NativeBackend::configuration()` supplies the corresponding WGPU configuration; `validate_actual()` checks an observed adapter backend. The backend-selecting runners verify the actual adapter before accepting its window binding. For a strict Vulkan request, adapter or device unavailability returns `AdapterError::Unsupported` with a bounded diagnostic on stderr. A Vulkan request never silently falls back to another graphics API. Existing DX12 error classification is preserved. Host GPU accounting, providers, resource policy and persistence remain host responsibilities.
+
+From the Kumihimo root, the existing probe accepts `--backend vulkan` or `--backend dx12`. Add `--eframe` for the separate framework integration. Both modes record the actual backend. The eframe probe stays hidden, drives repaint only for its own current window handles, and bounds startup and capture work with its internal deadline. Its startup readbacks remain separate from the receipts that authorize content handoff. Packet state records which runtime cases have actually passed.
 
 </topic>

@@ -33,6 +33,7 @@ spec_refs:
 - TOPIC-KUM-CHROME
 - TOPIC-KUM-BOUNDARIES
 - DEC-KUM-NATIVE-PRODUCER-v1
+- DEC-KUM-STRICT-VULKAN-SELECTION-v1
 requirements:
 - Provide a reusable public optional native embedding coordinator in the ORIGINAL Assets/Kumihimo component. The
   coordinator owns actual renderer binding, private tagged GPU capture/readback and sealed readiness mint. No public
@@ -95,11 +96,29 @@ execution:
   compiler: Explicit primary integrator shared physical-disk slot required; no worker Cargo
 authorization:
   decision_id: WP012-KUMIHIMO-STANDALONE-SOURCE-20261014-10
-  owning_chat: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
+  owning_chat: 01a17374-1d96-7e02-9aea-77b0f62f20dc
   lease_resolution: Root explicitly resolves narrow leases under Operator source assignment despite unavailable
     previous owner; preserve original session and other WP states
   failed_coordination: Previous owner01a13753 unavailable durable host; no handoff claimed
   producer_decision_id: WP012-KUMIHIMO-NATIVE-PRODUCER-20261014-11
+  current_execution:
+    decision_id: KUM-WP022-DEPENDENCY-EXECUTION-20261025
+    authorized_by: operator
+    authorized_at: '2026-10-25'
+    requirement_id: KUM-WP022-DEPENDENCY-EXECUTION-20261025-001
+    requirement: The WP022 owner shall proceed with the scoped Vulkan dependency resolution and focused compile/test
+      verification under the current operator instruction without seeking another approval for these steps.
+    preserves:
+    - Existing compiler serialization and assigned execution ownership
+    - Genuine proof, original product acceptance and historical failure records
+    - Existing runtime, host-adoption and publication boundaries
+  custody_transfer:
+    decision_id: KUM-WP022-CUSTODY-TRANSFER-20261025
+    previous_owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
+    current_owner: 01a17374-1d96-7e02-9aea-77b0f62f20dc
+    operator_authorization_message: 01a17378-69ec-75d1-a061-44b8f98a6b43
+    predecessor_release: Explicit release received from the previous owner; no retained active operation reported.
+    scope: WP022 only; unrelated session and work-packet ownership unchanged.
 source_leases:
   lead:
   - src/lib.rs
@@ -195,3 +214,64 @@ bounded_original_wp012_remediation:
     Primary phase/slot required
   expansion: If one admitted source file is insufficient, report exact evidenced additional path before writing
     it
+bounded_vulkan_selection:
+  decision_id: WP022-STRICT-VULKAN-SELECTION-20261025
+  spec_ref: DEC-KUM-STRICT-VULKAN-SELECTION-v1
+  status: SOURCE_AND_SCOPED_RUNTIME_VERIFIED
+  files:
+  - product/kumihimo-egui/src/native.rs
+  - product/kumihimo-egui/Cargo.toml
+  - product/Cargo.lock
+  - product/kumihimo-egui/tests/native_app_contracts.rs
+  - product/kumihimo-egui/examples/native_probe.rs
+  requirements:
+  - Add a compatible explicit native-renderer configuration or entrypoint that selects Vulkan exclusively when requested.
+    Preserve the legacy DX12 default and existing NativeOptions exhaustive-literal compatibility. A strict Vulkan
+    request uses only Backends::VULKAN, records the actual adapter backend and reports a typed unavailable failure
+    rather than silently selecting DX12 or OpenGL. Preserve the existing renderer/device, viewport/window identity,
+    capture/readback receipts, source ownership, docking, semantic return, lifecycle and bounded budgets. Enable
+    Vulkan through the existing pinned optional wgpu dependency and controlled dependency resolution; do not invent
+    dependency versions. The existing native and eframe probe modes must report the actual selected backend; eframe
+    Vulkan is a distinct production-boundary proof. Offscreen DX12 captures do not prove Vulkan. Host policy, centralized
+    GPU accounting and later exact-revision adoption remain host responsibilities. No SDK producer, bridge, offscreen-capture
+    or framework upgrade is included.
+  acceptance:
+  - Legacy DX12 entrypoints and exhaustive NativeOptions construction remain compatible
+  - Explicit Vulkan requests are exclusive, observe the actual adapter and expose typed unavailability
+  - Native and eframe root/deferred/immediate genuine readback, stale rejection, return and owned cleanup retain
+    their original obligations
+  - Pinned dependency resolution preserves unrelated records; isolated candidate proof and canonical publication
+    precede separate host adoption
+  execution_authority_ref: KUM-WP022-DEPENDENCY-EXECUTION-20261025
+  historical_execution_predecessors:
+    status: SUPERSEDED_FOR_SOURCE_SEQUENCING_ONLY_BY_DIRECT_OPERATOR_PRODUCT_AUTHORIZATION
+    previous:
+    - Matching saved kernel MT175/MT198 exact five-path admission
+    - Published accepted asset spec and WP predecessor before source start
+    operator_direction: paperwork and repo ceremony can never block work
+    preserved: Actual resource ownership, technical proof, safety, historical failures, product acceptance and distinct
+      exact-revision host adoption remain required
+  host_adoption: HELD_SEPARATE_EXACT_REVISION_ADOPTION
+  research_basis:
+    sources:
+    - https://docs.rs/crate/wgpu/27.0.1/features
+    - https://docs.rs/crate/wgpu-hal/27.0.4/features
+    - https://doc.rust-lang.org/cargo/reference/features.html
+    reuse: Existing NativeRenderer configuration and runner; pinned optional wgpu27.0.1; additive Cargo feature
+      unification
+    selected: Additive backend-selecting entrypoints preserve exhaustive NativeOptions construction and existing
+      adapters
+    rejected:
+    - Host-local renderer copy or lifecycle bypass
+    - Unnecessary render-bridge dependency change
+    - Adding a public NativeOptions field
+    - Fallback to another graphics API reported as Vulkan
+    - Manually invented dependency versions
+    risks_controls:
+    - 'Native and eframe use separate initialization paths: observe and validate each actual backend'
+    - 'New native targets can change before initialization settles: real warmup receipts precede arming; armed stale
+      receipts still reject'
+    - 'Winit Windows destruction is queued: drain only verified own-window messages before cleanup assertions'
+    - Default users retain DX12 behavior and original error classification
+    validation: Affected production configuration tests, exact dependency-graph delta, changed examples and genuine
+      native/eframe presentation/readback/return/cleanup with independent source and artifact review

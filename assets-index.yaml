@@ -115,6 +115,7 @@ assets:
   - egui
   - render bridge
   - external apps
+  - Vulkan backend selection
   manual: Kumihimo/README.md
   packages:
   - name: kumihimo-content
