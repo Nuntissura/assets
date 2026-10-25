@@ -12,6 +12,11 @@ pub fn parse_json(bytes: &[u8], max_bytes: usize) -> Result<Value> {
     if bytes.len() > max_bytes { return Err(Error::LimitExceeded { field: "instagram.body".into() }); }
     handshake_canonical_json::jcs_from_slice(bytes, max_bytes).map_err(|_| invalid("instagram.json"))?;
     let value: Value = serde_json::from_slice(bytes).map_err(|_| invalid("instagram.json"))?;
+    response_errors(&value)?;
+    if value.get("status").and_then(Value::as_str) != Some("ok") { return Err(invalid("instagram.status")); }
+    Ok(value)
+}
+pub(crate) fn response_errors(value: &Value) -> Result<()> {
     if value.get("challenge").is_some() || value.get("checkpoint_url").is_some() { return Err(Error::Challenged); }
     if let Some(message) = value.get("message").and_then(Value::as_str) {
         match message {
@@ -22,8 +27,7 @@ pub fn parse_json(bytes: &[u8], max_bytes: usize) -> Result<Value> {
             _ => {}
         }
     }
-    if value.get("status").and_then(Value::as_str) != Some("ok") { return Err(invalid("instagram.status")); }
-    Ok(value)
+    Ok(())
 }
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str> { value.get(key).and_then(Value::as_str).ok_or_else(|| invalid(key)) }
 fn id(value: &Value) -> Result<String> {
@@ -89,6 +93,10 @@ pub fn document(bytes: &[u8], mode: AccessMode, account: &Account, max_bytes: us
         } else { entries.push(entry); }
     }
     Ok(Document { entries, next, digest })
+}
+pub(crate) fn timeline_entry(item: &Value, digest: &str, bounds: &Bounds) -> Result<EntryEvidence> {
+    let account = Account { id: user_id(&item["user"])?, username: text(&item["user"], "username")?.to_owned(), media_count: None };
+    entry(item, &account, digest, bounds)
 }
 fn entry(item: &Value, account: &Account, digest: &str, bounds: &Bounds) -> Result<EntryEvidence> {
     let key = id(item.get("pk").ok_or_else(|| invalid("instagram.media_id"))?)?;

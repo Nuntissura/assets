@@ -30,7 +30,7 @@ impl AccessPartition {
         bounds.validate()?;
         if self.scope.0.is_empty() || (self.mode.requires_connection() && self.connection_ref.is_none())
             || (self.connection_ref.is_some() && !self.mode.requires_connection()
-                && !matches!(self.mode, AccessMode::PublicProfile | AccessMode::PublicReels)) {
+                && !matches!(self.mode, AccessMode::PublicProfile | AccessMode::PublicReels | AccessMode::PublicBoard)) {
             return Err(invalid("access_partition"));
         }
         bounded(&self.scope.0, "access_partition.scope", bounds.max_text_bytes)?;

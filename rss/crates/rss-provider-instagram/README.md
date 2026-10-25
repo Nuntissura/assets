@@ -48,6 +48,18 @@ The selected extension reuses the existing authorized port, strict media parser 
 
 </topic>
 
+<topic id="connected-home" status="in_progress">
+
+Research checked 2026-10-25: [Gram timeline at 318336a](https://github.com/LuisUrrutia/gram/blob/318336a44dc2f3adc14186dd1392b8875317fd6f/src/lib/timeline.ts#L219-L282) reads the initial homepage HTML and subsequent GraphQL responses. Its [operation builder](https://github.com/LuisUrrutia/gram/blob/318336a44dc2f3adc14186dd1392b8875317fd6f/src/lib/graphql/operations.ts#L208-L236) binds Home separately from other streams. Runtime pagination variables include device information; cookies, query seeds and those variables remain host-owned. The source's missing-connection/page-info empty defaults and fixed query IDs are rejected.
+
+`connected::HomeInstagramProvider` consumes `HomeFetchPort`, which extends the existing authorized transport with one bounded raw Home operation. The host obtains a current Home query seed, performs initial homepage or subsequent timeline requests, and retains exact original request/response provenance. It must not return normalized media or substitute another feed. The asset parses raw HTML application/json scripts and the selected GraphQL connection, reusing existing media normalization. The locked HTML parser is reused instead of adding a custom HTML scanner. Missing or conflicting selected connections, malformed edges, absent pagination and GraphQL failures reject before preparation. The complete raw-body digest binds retained offsets and media evidence.
+
+Construct a canonical root-URL source and a current numeric login context. Requested Home mode, connection, selected profile, source revision and login identity remain bound through the cursor and every callback. Hosts keep runtime device/query/session state outside durable asset cursors and repeat current authorization around transport and canonical preparation. Missing original bytes or changed document kind/digest rejects; renewal cannot relabel old provenance. Native media identities and actual authors remain independent of the logged-in account.
+
+Home returns Partial even when its nonempty current traversal ends. An initially empty connection has no inspected zero-source guarantee and returns an explicit `instagram.home_empty_unverified` error. A terminal empty document after an existing continuation may settle only that traversal. Following remains unsupported and unfinished; no other content is substituted. Fixture proof covers parsing, raw-byte continuation, bounds and lease loss, while actual Home access and host persistence remain separate proof obligations.
+
+</topic>
+
 <topic id="use">
 
 `InstagramProvider<F, C>` implements `rss_contracts::ProviderPort` for `PublicProfile` and `PublicReels`. Select the exact profile URL or its `/reels/` view. Both resolve one numeric account; their traversal coverage remains distinct. Inject `PublicFetchPort` and `CanonicalEntryPort`. The host must prepare through existing `rss-acquisition::prepare_entry`, resolve reliable provider identity `instagram/media/<numeric-id>` and allocate canonical item, observation and ordered gallery member/reference IDs. Provider IDs and media IDs are evidence only.

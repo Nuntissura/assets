@@ -50,7 +50,7 @@ struct Cursor {
     visited: Vec<Option<String>>,
     seen: BTreeMap<String,String>,
 }
-fn bounded_request(request: &SourceRequest, execution: &hsscrap::HostRef, supported: &std::collections::BTreeSet<String>) -> Result<()> {
+pub(crate) fn bounded_request(request: &SourceRequest, execution: &hsscrap::HostRef, supported: &std::collections::BTreeSet<String>) -> Result<()> {
     request.bounds.validate()?;
     request.subscription.partition.validate(&request.bounds)?;
     request.subscription.generation.validate()?;
@@ -67,7 +67,7 @@ fn bounded_request(request: &SourceRequest, execution: &hsscrap::HostRef, suppor
     }
     Ok(())
 }
-fn body(response: FetchResponse, expected: &FetchRequest) -> Result<(Vec<u8>, hsscrap::Instant)> {
+pub(crate) fn body(response: FetchResponse, expected: &FetchRequest) -> Result<(Vec<u8>, hsscrap::Instant)> {
     if response.final_url.contains("/accounts/login") { return Err(Error::ReconnectRequired); }
     if response.final_url.contains("/challenge/") || response.final_url.contains("/checkpoint/") { return Err(Error::Challenged); }
     if response.final_url != expected.url { return Err(Error::StaleResult); }

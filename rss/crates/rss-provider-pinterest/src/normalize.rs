@@ -250,7 +250,7 @@ pub fn pin(bytes: &[u8], expected: &str, max: usize, bounds: &Bounds) -> Result<
         digest,
     })
 }
-fn publication(raw: &str) -> Result<hsscrap::PublicationTime> {
+pub(crate) fn publication(raw: &str) -> Result<hsscrap::PublicationTime> {
     let rfc3339 = chrono::DateTime::parse_from_rfc3339(raw).ok();
     let is_rfc3339 = rfc3339.is_some();
     let date = rfc3339

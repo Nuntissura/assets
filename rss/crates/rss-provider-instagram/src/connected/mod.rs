@@ -1,4 +1,7 @@
 //! Selected own/private profile content through host-authorized transport.
+mod home;
+mod home_normalize;
+pub use home::{HomeDocumentKind, HomeFetchPort, HomeFetchRequest, HomeFetchResponse, HomeInstagramProvider};
 use crate::{authorized::Authorized, public::Traversal, AuthorizedContext, AuthorizedFetchPort,
     CanonicalEntryPort, ProviderLimits};
 use rss_contracts::{AccessMode, AcquisitionPage, Capability, CapabilityStatus, Error, HostRef,

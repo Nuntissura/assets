@@ -2481,6 +2481,7 @@ dependencies = [
  "handshake_canonical_json",
  "hsscrap",
  "rss-contracts",
+ "scraper",
  "serde",
  "serde_json",
  "sha2",

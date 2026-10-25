@@ -1,6 +1,7 @@
 //! Public Pinterest source discovery and pin evidence. Hosts own transport, authority and canonical IDs.
 pub mod normalize;
 pub mod public;
+pub mod connected;
 use rss_contracts::{Bounds, HostRef, Instant, ObservedEntry, Pending, SourceRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
