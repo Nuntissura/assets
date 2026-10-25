@@ -36,6 +36,8 @@ pub fn resolve_source(value: &str, mode: AccessMode, bounds: &Bounds) -> Result<
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authorization: Option<crate::authorized::AuthorizedSelection>,
     version: u8,
     source_url: String,
     source_revision: hsscrap::Revision,
@@ -82,7 +84,36 @@ fn body(response: FetchResponse, expected: &FetchRequest) -> Result<(Vec<u8>, hs
     if bytes.len() > expected.max_body_bytes { return Err(Error::LimitExceeded { field: "instagram.body".into() }); }
     Ok((bytes,response.observed_at))
 }
-impl<F: PublicFetchPort, C: CanonicalEntryPort> InstagramProvider<F,C> {
+pub(crate) trait PageFetch: Send + Sync {
+    fn authorization(&self) -> Option<crate::authorized::AuthorizedSelection> { None }
+    fn current<'a>(&'a self, source: &'a SourceRequest, execution: &'a rss_contracts::HostRef) -> rss_contracts::Pending<'a, ()>;
+    fn fetch<'a>(&'a self, source: &'a SourceRequest, execution: &'a rss_contracts::HostRef, request: FetchRequest) -> rss_contracts::Pending<'a, FetchResponse>;
+}
+struct Anonymous<'a, F>(&'a F);
+impl<F: PublicFetchPort> PageFetch for Anonymous<'_, F> {
+    fn current<'a>(&'a self, _: &'a SourceRequest, _: &'a rss_contracts::HostRef) -> rss_contracts::Pending<'a, ()> { Box::pin(async { Ok(()) }) }
+    fn fetch<'a>(&'a self, source: &'a SourceRequest, execution: &'a rss_contracts::HostRef, request: FetchRequest) -> rss_contracts::Pending<'a, FetchResponse> { self.0.fetch(source, execution, request) }
+}
+pub(crate) struct Traversal<'a, F, C> {
+    pub source: &'a rss_contracts::Source,
+    pub execution_ref: &'a rss_contracts::HostRef,
+    pub limits: &'a crate::ProviderLimits,
+    pub supported_extensions: &'a std::collections::BTreeSet<String>,
+    pub fetch: F,
+    pub canonical: &'a C,
+}
+pub(crate) async fn acquire_public<F: PublicFetchPort, C: CanonicalEntryPort>(provider: &InstagramProvider<F, C>, request: SourceRequest) -> Result<AcquisitionPage> {
+    if request.subscription.partition.connection_ref.is_some() { return Err(Error::Denied); }
+    Traversal { source: &provider.source, execution_ref: &provider.execution_ref, limits: &provider.limits,
+        supported_extensions: &provider.supported_extensions, fetch: Anonymous(&provider.fetch), canonical: &provider.canonical }.acquire_page(request).await
+}
+impl<F: PageFetch, C: CanonicalEntryPort> Traversal<'_, F, C> {
+    async fn fetch_document(&self, source: &SourceRequest, request: FetchRequest) -> Result<FetchResponse> {
+        self.fetch.current(source, self.execution_ref).await?;
+        let result = self.fetch.fetch(source, self.execution_ref, request).await;
+        self.fetch.current(source, self.execution_ref).await?;
+        result
+    }
     fn fetch_request(&self, method: Method, url: String, form: Vec<(String,String)>, digest: Option<String>) -> FetchRequest {
         FetchRequest { method,url,form,expected_digest:digest,max_body_bytes:self.limits.max_body_bytes,timeout_millis:self.limits.timeout_millis }
     }
@@ -101,8 +132,9 @@ impl<F: PublicFetchPort, C: CanonicalEntryPort> InstagramProvider<F,C> {
         let (source_url,name) = resolve_source(&self.source.original_url,mode,&request.bounds)?;
         let mut cursor: Cursor = if let Some(continuation) = &request.continuation {
             serde_json::from_str(&continuation.token).map_err(|_| invalid("instagram.cursor"))?
-        } else { Cursor { version:1,source_url:source_url.clone(),source_revision:self.source.revision,mode,account_id:String::new(),page:None,digest:None,offset:0,
+        } else { Cursor { authorization:self.fetch.authorization(),version:1,source_url:source_url.clone(),source_revision:self.source.revision,mode,account_id:String::new(),page:None,digest:None,offset:0,
             completed_documents:0,visited:vec![],seen:BTreeMap::new() } };
+        if cursor.authorization != self.fetch.authorization() { return Err(Error::StaleResult); }
         if cursor.version != 1 || cursor.source_url != source_url || cursor.source_revision != self.source.revision || cursor.mode != mode
             || cursor.completed_documents >= self.limits.max_documents || cursor.visited.len() != cursor.completed_documents
             || cursor.offset > self.limits.max_document_entries || (cursor.offset > 0) != cursor.digest.is_some()
@@ -114,7 +146,7 @@ impl<F: PublicFetchPort, C: CanonicalEntryPort> InstagramProvider<F,C> {
         let mut identity_url = Url::parse("https://www.instagram.com/api/v1/users/web_profile_info/").map_err(|_| invalid("instagram.endpoint"))?;
         identity_url.query_pairs_mut().append_pair("username",&name);
         let identity_request = self.fetch_request(Method::Get,identity_url.to_string(),vec![],None);
-        let identity_response = self.fetch.fetch(&request,&self.execution_ref,identity_request.clone()).await?;
+        let identity_response = self.fetch_document(&request,identity_request.clone()).await?;
         let (identity_bytes,_) = body(identity_response,&identity_request)?;
         let account = normalize::account(&identity_bytes,&name,self.limits.max_body_bytes,&request.bounds)?;
         if !cursor.account_id.is_empty() && cursor.account_id != account.id { return Err(Error::StaleResult); }
@@ -133,7 +165,7 @@ impl<F: PublicFetchPort, C: CanonicalEntryPort> InstagramProvider<F,C> {
                 if let Some(page) = &cursor.page { form.push(("max_id".into(),page.clone())); }
                 self.fetch_request(Method::Post,"https://www.instagram.com/api/v1/clips/user/".into(),form,cursor.digest.clone())
             };
-            let response = self.fetch.fetch(&request,&self.execution_ref,page_request.clone()).await?;
+            let response = self.fetch_document(&request,page_request.clone()).await?;
             let (bytes,observed_at) = body(response,&page_request)?;
             let document = normalize::document(&bytes,mode,&account,self.limits.max_body_bytes,self.limits.max_document_entries,&request.bounds)?;
             let observed_seconds = chrono::DateTime::parse_from_rfc3339(observed_at.as_str()).map_err(|_| invalid("instagram.observed_at"))?.timestamp();
@@ -179,7 +211,10 @@ impl<F: PublicFetchPort, C: CanonicalEntryPort> InstagramProvider<F,C> {
             let mut entries = vec![];
             let mut entry_bytes = 0usize;
             for evidence in selected {
-                let prepared = self.canonical.prepare(&request,&self.execution_ref,evidence.clone()).await?;
+                self.fetch.current(&request, self.execution_ref).await?;
+                let prepared = self.canonical.prepare(&request,self.execution_ref,evidence.clone()).await;
+                self.fetch.current(&request, self.execution_ref).await?;
+                let prepared = prepared?;
                 prepared.validate(&request.bounds,&self.supported_extensions)?;
                 let mut expected = prepared.observation.clone(); evidence.populate(&mut expected);
                 if prepared.provider_entry_key != evidence.key || prepared.capture.captured_url != evidence.url

@@ -44,6 +44,16 @@ fn provider(replies:Vec<Reply>)->TikTokProvider<Fetch,Canonical> {TikTokProvider
     limits:ProviderLimits {max_body_bytes:100000,max_document_entries:100,max_documents:20,max_fetches_per_operation:4,timeout_millis:10000},supported_extensions:BTreeSet::new(),fetch:Fetch {replies:Mutex::new(replies.into()),requests:Mutex::new(vec![])},canonical:Canonical::default()}}
 
 #[test]
+fn anonymous_profile_rejects_bound_connection_before_callbacks() {
+    let adapter = provider(vec![]);
+    let mut request = request(1);
+    request.subscription.partition.connection_ref = Some(reference("connection"));
+    assert!(matches!(run(adapter.acquire(request)), Err(rss_contracts::Error::Denied)));
+    assert!(adapter.fetch.requests.lock().unwrap().is_empty());
+    assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn creator_windows_paginate_deduplicate_and_refresh_global_identity() {
     let adapter=provider(vec![raw(profile()),ok(window(vec![item(1),item(2)],true)),raw(profile()),ok(window(vec![item(2),item(3)],false)),raw(profile()),ok(window(vec![item(1)],false))]);
     let first=run(adapter.acquire(request(1))).unwrap();let mut next=request(2);next.continuation=first.continuation;let last=run(adapter.acquire(next)).unwrap();

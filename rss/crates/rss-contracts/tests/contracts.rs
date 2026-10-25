@@ -17,7 +17,10 @@ fn access_modes_roundtrip_without_conflating_public_and_connected() {
         let encoded=serde_json::to_string(&partition).unwrap();
         assert_eq!(serde_json::from_str::<AccessPartition>(&encoded).unwrap(),partition);
         partition.connection_ref = if partition.connection_ref.is_some() { None } else { Some(reference("connection")) };
-        assert!(partition.validate(&bounds()).is_err());
+        if matches!(mode, AccessMode::PublicProfile | AccessMode::PublicReels) {
+            partition.validate(&bounds()).unwrap();
+            assert_eq!(serde_json::from_str::<AccessPartition>(&serde_json::to_string(&partition).unwrap()).unwrap(),partition);
+        } else { assert!(partition.validate(&bounds()).is_err()); }
     }
 }
 #[test]

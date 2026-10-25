@@ -1,4 +1,6 @@
-//! Public Instagram profile/Reels evidence. Hosts authorize transport and own canonical records.
+//! Instagram profile/Reels evidence. Hosts authorize transport and own canonical records.
+pub mod authorized;
+pub use authorized::{AuthorizedContext, AuthorizedFetchPort, AuthorizedInstagramProvider};
 pub mod normalize;
 pub mod public;
 
@@ -177,6 +179,6 @@ impl<F: PublicFetchPort, C: CanonicalEntryPort> rss_contracts::ProviderPort for 
             paginated: true, media_metadata: true, adapter_version: "instagram.public.v1".into(),
         }).collect()
     }
-    fn acquire<'a>(&'a self, request: SourceRequest) -> Pending<'a, rss_contracts::AcquisitionPage> { Box::pin(self.acquire_page(request)) }
+    fn acquire<'a>(&'a self, request: SourceRequest) -> Pending<'a, rss_contracts::AcquisitionPage> { Box::pin(public::acquire_public(self, request)) }
 }
 pub(crate) fn invalid(field: &str) -> rss_contracts::Error { rss_contracts::Error::Invalid { field: field.into() } }

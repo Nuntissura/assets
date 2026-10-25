@@ -2333,6 +2333,7 @@ assets:
   - bounded retained public YouTube handle HTML channel resolution
   - public Instagram source URL resolution with distinct profile and Reels modes
   - fixed anonymous Instagram request metadata with exact retained protocol validation
+  - explicit authorized Instagram public-source transport with stable login selection and attempt-local lease checks
   - bounded public TikTok creator-window and item media evidence with sparse-window traversal
   - bounded versioned Rust WASM bridge composing native wall query and hsscrap interaction
   - bounded public Pinterest board discovery, pin media and opaque-bookmark traversal

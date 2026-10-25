@@ -3,6 +3,7 @@ use hsscrap::*;
 use rss_contracts::{AccessMode,AccessPartition,ObservedEntry,Pending,Provider,ProviderPort,Source,SourceRequest,Subscription};
 use rss_provider_instagram::*;
 use serde_json::{Value,json};
+mod connected;
 
 fn run<T>(future: impl Future<Output=T>) -> T {
     struct Noop; impl Wake for Noop { fn wake(self:Arc<Self>) {} }

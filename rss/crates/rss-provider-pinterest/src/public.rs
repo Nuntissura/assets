@@ -143,6 +143,9 @@ impl<F: PublicFetchPort, C: CanonicalEntryPort> PinterestProvider<F, C> {
         self.limits.validate()?;
         request.bounds.validate()?;
         request.subscription.partition.validate(&request.bounds)?;
+        if request.subscription.partition.connection_ref.is_some() {
+            return Err(Error::Denied);
+        }
         request.subscription.generation.validate()?;
         self.source.revision.validate()?;
         self.source

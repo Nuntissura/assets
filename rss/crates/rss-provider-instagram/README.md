@@ -1,7 +1,7 @@
 ---
 file_id: rss-instagram-manual-v1
 file_kind: package-manual
-updated_at: 2026-10-24
+updated_at: 2026-10-25
 ---
 
 <topic id="research">
@@ -19,6 +19,22 @@ On2026-10-25, Portal's actual public profile/Reels probe received HTTP400 before
 `FetchRequest::public_metadata()` returns one fixed typed `PublicRequestMetadata`: honest crate/version User-Agent, Accept, public application ID, fixed public root Referer and AJAX marker. `header_pairs()` exposes exactly those five fields; `validate()` rejects changed values, and unknown fields fail deserialization. Hosts retain the complete metadata with method/form in request intent, keys and snapshots, validate it before current fetch and recovery, and send the same values through injected and production transports. No arbitrary headers or connected credentials are accepted. Legacy omitted metadata remains distinct and cannot be silently reused as the new request.
 
 Owning metadata/serialization and host binding tests precede a changed actual public-source probe. These headers are an evidence-backed protocol hypothesis; accessor tests do not prove source access or full traversal.
+
+</topic>
+
+<topic id="authorized-public-sources" status="in_progress">
+
+Research checked on 2026-10-25: [gallery-dl's session and redirect handling](https://github.com/mikf/gallery-dl/blob/882c8d0bb5c5a3ed4e88726d2f42a1cb7db59bf2/gallery_dl/extractor/instagram.py#L139-L179) keeps authentication in its transport and distinguishes login/challenge redirects. [Instaloader's request context](https://github.com/instaloader/instaloader/blob/master/instaloader/instaloadercontext.py#L579-L625) likewise owns session state outside media traversal. [Meta's official API collection](https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api) describes professional-account API limitations; replacing ordinary-customer source access with professional-account conversion is unsuitable. Direct Meta documentation retrieval returned HTTP429, so that unavailable page supplies no additional evidence.
+
+Portal's exact anonymous profile/Reels requests now receive HTTP401 at identity lookup. The selected extension is an explicit authorized transport for those same public content modes. Hosts retain secrets and the opaque credential lease, validate account/profile/provider/login identity, expiry and revocation, and hold their lease guard through canonical settlement. The asset carries only a bounded nonsecret authorization context and rechecks it around fetch and canonical preparation. The existing normalizer, traversal, media identity and pagination are shared with the anonymous adapter. Silent cookie fallback, credential ownership in this crate, copied parsers and a new authentication framework are rejected.
+
+The stable connection reference belongs to the subscription partition. Lease generation belongs to one attempt and may change on ordinary renewal. An authorized continuation can therefore use a fresh lease generation while retaining its original exact body digest and request provenance; it must not relabel old response metadata or fetch replacement bytes for a missing retained body. Public adapters continue denying any connection-bound request. Other public modes retain their existing partition rules.
+
+`AuthorizedInstagramProvider<F, C>` consumes `AuthorizedFetchPort::{current, fetch}` and the existing `CanonicalEntryPort`. `AuthorizedContext` contains only `connection_ref`, `owner_scope`, the logged-in account's numeric `external_identity`, and `lease_generation`. The logged-in identity is distinct from the selected target profile. `current` surrounds each fetch and each canonical preparation. A constructed authorized provider advertises the two implemented public content modes; the host selects it only for an explicitly bound connection and still proves actual lease validity on every callback.
+
+Owning proof covers mode/connection admission, distinct login and selected target identities, public-only transport rejection, stale/revoked context before canonical effects, and a continuation across lease renewal. Host proof must independently establish real login, exact retained request recovery and canonical acquisition. Personal Following/Home, private sources and own uploads remain required later work under MT011; this selected-source extension does not complete them.
+
+The coordinated build owner runs `cargo test --locked --manifest-path rss/Cargo.toml -p rss-contracts -p rss-provider-instagram -p rss-provider-tiktok -p rss-provider-pinterest --tests` for this boundary extension. The TikTok and Pinterest guards preserve their anonymous-only admission when the shared public-profile partition domain gains an optional explicit connection; Pinterest discovery and all-pins remain separate tested paths.
 
 </topic>
 

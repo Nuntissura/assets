@@ -40,7 +40,8 @@ fn same_target(actual:&str,expected:&str)->bool {
 struct Cursor {version:u8,source_url:String,source_revision:hsscrap::Revision,account_id:String,sec_uid:String,window:u64,digest:Option<String>,offset:usize,
     documents:usize,visited:Vec<u64>,seen:BTreeMap<String,String>}
 fn validate_request(request:&SourceRequest,execution:&hsscrap::HostRef,supported:&BTreeSet<String>)->Result<()> {
-    request.bounds.validate()?;request.subscription.partition.validate(&request.bounds)?;request.subscription.generation.validate()?;request.subscription.common.validate_bounded(&request.bounds,supported)?;
+    request.bounds.validate()?;request.subscription.partition.validate(&request.bounds)?;
+    if request.subscription.partition.connection_ref.is_some() { return Err(Error::Denied); }request.subscription.generation.validate()?;request.subscription.common.validate_bounded(&request.bounds,supported)?;
     for reference in [&request.subscription.subscription_ref,&request.subscription.source_ref,&request.subscription.executor_ref,execution] {for value in [&reference.host_instance_id,&reference.owner_kind,&reference.native_id] {
         if value.is_empty() {return Err(invalid("tiktok.request_reference"));}request.bounds.text("tiktok.request_reference",value,request.bounds.max_text_bytes)?;
     }}

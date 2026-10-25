@@ -322,6 +322,31 @@ fn retained_document_offsets_require_exact_snapshot_and_resume_with_304() {
     assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 2);
 }
 #[test]
+fn anonymous_discovery_and_allpins_reject_bound_connection_before_callbacks() {
+    for discovery in [true, false] {
+        let value = if discovery { board_value() } else { item(1) };
+        let mut adapter = provider(vec![ok(page(vec![value], "-end-"))]);
+        adapter.source.original_url = if discovery {
+            "https://www.pinterest.com/owner/"
+        } else {
+            "https://www.pinterest.com/owner/pins/"
+        }.into();
+        let mut req = request(1);
+        req.subscription.partition.mode = AccessMode::PublicProfile;
+        req.subscription.partition.connection_ref = Some(reference("connection"));
+        req.subscription.partition.validate(&req.bounds).unwrap();
+        if discovery {
+            assert!(matches!(run(adapter.discover_boards(req)), Err(rss_contracts::Error::Denied)));
+        } else {
+            assert!(matches!(run(adapter.acquire(req)), Err(rss_contracts::Error::Denied)));
+        }
+        assert!(adapter.fetch.requests.lock().unwrap().is_empty());
+        assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
+        assert!(adapter.canonical.identities.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn discovery_is_separate_and_returns_bounded_public_board_evidence() {
     let mut second = board_value();
     second["id"] = json!("701");
