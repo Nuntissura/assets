@@ -38,6 +38,16 @@ The coordinated build owner runs `cargo test --locked --manifest-path rss/Cargo.
 
 </topic>
 
+<topic id="connected-selected-profiles" status="in_progress">
+
+Research checked 2026-10-25: [gallery-dl at 175d21f](https://github.com/mikf/gallery-dl/blob/175d21fd8f7e52963911c02916d0634461cddb24/gallery_dl/extractor/instagram.py#L967-L998) separates private-profile/following metadata and selected user-feed traversal. Its missing-grant and pagination defaults are not reused. [instagrapi at 8bb957c](https://github.com/subzeroid/instagrapi/blob/8bb957c7fc0ac693beb73ebe90d3c488de2cd432/instagrapi/mixins/private.py#L2680-L2856) distinguishes login, denied/private, challenge and throttling failures. Those failures cannot become empty feeds.
+
+The selected extension reuses the existing authorized port, strict media parser and retained-body traversal for `OwnUploads` and `PrivateSource` profile URLs. Own uploads require the resolved target numeric ID to equal the leased login identity. Private sources require explicit private metadata and positive followed-by-viewer evidence or the same owner identity, followed by a successful content response. Missing evidence denies before canonical preparation. Source identity, capture partition and cursor keep the requested mode; this does not rewrite connected requests into public requests. Existing public and authorized-public adapters continue rejecting private accounts.
+
+`connected::ConnectedInstagramProvider` takes the existing `AuthorizedContext`, `AuthorizedFetchPort` and `CanonicalEntryPort`. Hosts freshly enforce exact account/profile/connection/login/attempt identity and retain credential guards through settlement. The library owns no credentials and cannot grant access. Missing/changed retained bytes, pagination omissions, account retargeting and lease changes fail without advancing a checkpoint. An explicit zero-media target plus a successful terminal empty profile response can establish VerifiedEmpty; ambiguous empty responses cannot. Owning fixtures cover these boundaries and unchanged public behavior. Home/Following remain unfinished MT011 requirements; this unit supplies no live-source or host-persistence proof.
+
+</topic>
+
 <topic id="use">
 
 `InstagramProvider<F, C>` implements `rss_contracts::ProviderPort` for `PublicProfile` and `PublicReels`. Select the exact profile URL or its `/reels/` view. Both resolve one numeric account; their traversal coverage remains distinct. Inject `PublicFetchPort` and `CanonicalEntryPort`. The host must prepare through existing `rss-acquisition::prepare_entry`, resolve reliable provider identity `instagram/media/<numeric-id>` and allocate canonical item, observation and ordered gallery member/reference IDs. Provider IDs and media IDs are evidence only.

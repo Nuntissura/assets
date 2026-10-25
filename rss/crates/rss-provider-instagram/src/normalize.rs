@@ -38,12 +38,26 @@ fn user_id(value: &Value) -> Result<String> {
     Ok(result)
 }
 pub fn account(bytes: &[u8], username: &str, max_bytes: usize, bounds: &Bounds) -> Result<Account> {
+    account_with_access(bytes, username, max_bytes, bounds, None)
+}
+pub(crate) fn connected_account(bytes: &[u8], username: &str, max_bytes: usize, bounds: &Bounds, mode: AccessMode, login: &str) -> Result<Account> {
+    account_with_access(bytes, username, max_bytes, bounds, Some((mode, login)))
+}
+fn account_with_access(bytes: &[u8], username: &str, max_bytes: usize, bounds: &Bounds, access: Option<(AccessMode, &str)>) -> Result<Account> {
     let root = parse_json(bytes, max_bytes)?;
     let user = &root["data"]["user"];
-    if user.get("is_private").and_then(Value::as_bool) != Some(false) { return Err(Error::Denied); }
+    let private = user.get("is_private").and_then(Value::as_bool).ok_or(Error::Denied)?;
+    if access.is_none() && private { return Err(Error::Denied); }
+    let target = user_id(user)?;
+    match access {
+        Some((AccessMode::OwnUploads, login)) if target == login => {},
+        Some((AccessMode::PrivateSource, login)) if private && (target == login || user.get("followed_by_viewer").and_then(Value::as_bool) == Some(true)) => {},
+        Some(_) => return Err(Error::Denied),
+        None => {},
+    }
     let actual = text(user, "username")?;
     if !actual.eq_ignore_ascii_case(username) { return Err(Error::StaleResult); }
-    let account = Account { id: user_id(user)?, username: actual.to_owned(), media_count: user.get("media_count").and_then(Value::as_u64) };
+    let account = Account { id: target, username: actual.to_owned(), media_count: user.get("media_count").and_then(Value::as_u64) };
     bounds.text("instagram.account", &account.id, bounds.max_text_bytes)?;
     Ok(account)
 }

@@ -229,3 +229,4 @@ fn atom_channel_tail_requires_exact_canonical_binding_and_permalink_video() {
         assert!(matches!(normalize::atom(&body(&CHANNEL[2..],&channel_link,permalink),CHANNEL,100000,100,&bounds()),Err(rss_contracts::Error::Invalid {field}) if field=="youtube.atom_permalink"));
     }
 }
+#[path="connected/mod.rs"] mod connected;

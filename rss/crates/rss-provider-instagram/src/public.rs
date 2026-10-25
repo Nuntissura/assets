@@ -86,6 +86,7 @@ fn body(response: FetchResponse, expected: &FetchRequest) -> Result<(Vec<u8>, hs
 }
 pub(crate) trait PageFetch: Send + Sync {
     fn authorization(&self) -> Option<crate::authorized::AuthorizedSelection> { None }
+    fn connected_identity(&self) -> Option<&str> { None }
     fn current<'a>(&'a self, source: &'a SourceRequest, execution: &'a rss_contracts::HostRef) -> rss_contracts::Pending<'a, ()>;
     fn fetch<'a>(&'a self, source: &'a SourceRequest, execution: &'a rss_contracts::HostRef, request: FetchRequest) -> rss_contracts::Pending<'a, FetchResponse>;
 }
@@ -125,11 +126,16 @@ impl<F: PageFetch, C: CanonicalEntryPort> Traversal<'_, F, C> {
         request.bounds.text("source.owner_scope", &self.source.owner_scope.0, request.bounds.max_text_bytes)?;
         if self.source.source_ref != request.subscription.source_ref || self.source.owner_scope.0.is_empty() { return Err(Error::Denied); }
         let mode = request.subscription.partition.mode;
-        if self.source.provider != rss_contracts::Provider::Instagram || !matches!(mode,AccessMode::PublicProfile | AccessMode::PublicReels) {
+        let content_mode = match (mode, self.fetch.connected_identity()) {
+            (AccessMode::OwnUploads | AccessMode::PrivateSource, Some(_)) => AccessMode::PublicProfile,
+            (AccessMode::PublicProfile | AccessMode::PublicReels, None) => mode,
+            _ => return Err(Error::Unsupported { provider:rss_contracts::Provider::Instagram, mode }),
+        };
+        if self.source.provider != rss_contracts::Provider::Instagram {
             return Err(Error::Unsupported { provider:rss_contracts::Provider::Instagram, mode });
         }
         if self.source.paused || request.subscription.paused { return Err(Error::Cancelled); }
-        let (source_url,name) = resolve_source(&self.source.original_url,mode,&request.bounds)?;
+        let (source_url,name) = resolve_source(&self.source.original_url,content_mode,&request.bounds)?;
         let mut cursor: Cursor = if let Some(continuation) = &request.continuation {
             serde_json::from_str(&continuation.token).map_err(|_| invalid("instagram.cursor"))?
         } else { Cursor { authorization:self.fetch.authorization(),version:1,source_url:source_url.clone(),source_revision:self.source.revision,mode,account_id:String::new(),page:None,digest:None,offset:0,
@@ -148,14 +154,16 @@ impl<F: PageFetch, C: CanonicalEntryPort> Traversal<'_, F, C> {
         let identity_request = self.fetch_request(Method::Get,identity_url.to_string(),vec![],None);
         let identity_response = self.fetch_document(&request,identity_request.clone()).await?;
         let (identity_bytes,_) = body(identity_response,&identity_request)?;
-        let account = normalize::account(&identity_bytes,&name,self.limits.max_body_bytes,&request.bounds)?;
+        let account = if let Some(login) = self.fetch.connected_identity() {
+            normalize::connected_account(&identity_bytes,&name,self.limits.max_body_bytes,&request.bounds,mode,login)?
+        } else { normalize::account(&identity_bytes,&name,self.limits.max_body_bytes,&request.bounds)? };
         if !cursor.account_id.is_empty() && cursor.account_id != account.id { return Err(Error::StaleResult); }
         cursor.account_id = account.id.clone();
         let mut fetches = 1;
         loop {
             if fetches == self.limits.max_fetches_per_operation { return Err(Error::LimitExceeded { field: "instagram.fetches".into() }); }
             fetches += 1;
-            let page_request = if mode == AccessMode::PublicProfile {
+            let page_request = if content_mode == AccessMode::PublicProfile {
                 let mut url = Url::parse(&format!("https://www.instagram.com/api/v1/feed/user/{}/",account.id)).map_err(|_| invalid("instagram.endpoint"))?;
                 url.query_pairs_mut().append_pair("count","30");
                 if let Some(page) = &cursor.page { url.query_pairs_mut().append_pair("max_id",page); }
@@ -167,7 +175,7 @@ impl<F: PageFetch, C: CanonicalEntryPort> Traversal<'_, F, C> {
             };
             let response = self.fetch_document(&request,page_request.clone()).await?;
             let (bytes,observed_at) = body(response,&page_request)?;
-            let document = normalize::document(&bytes,mode,&account,self.limits.max_body_bytes,self.limits.max_document_entries,&request.bounds)?;
+            let document = normalize::document(&bytes,content_mode,&account,self.limits.max_body_bytes,self.limits.max_document_entries,&request.bounds)?;
             let observed_seconds = chrono::DateTime::parse_from_rfc3339(observed_at.as_str()).map_err(|_| invalid("instagram.observed_at"))?.timestamp();
             if document.entries.iter().flat_map(|entry| &entry.media).any(|media| media.expires_at_unix.is_some_and(|expiry| expiry <= observed_seconds.max(0) as u64)) {
                 return Err(Error::Expired);
@@ -204,7 +212,7 @@ impl<F: PageFetch, C: CanonicalEntryPort> Traversal<'_, F, C> {
             }).transpose()?;
             if selected.is_empty() {
                 if let Some(next) = next { cursor = next; continue; }
-                if request.continuation.is_none() && !(mode == AccessMode::PublicProfile && account.media_count == Some(0) && document.entries.is_empty()) {
+                if request.continuation.is_none() && !(content_mode == AccessMode::PublicProfile && account.media_count == Some(0) && document.entries.is_empty()) {
                     return Err(invalid("instagram.empty_unverified"));
                 }
             }

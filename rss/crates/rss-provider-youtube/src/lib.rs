@@ -1,6 +1,7 @@
 //! Public YouTube source evidence through injected host transport and canonical owners.
 pub mod normalize;
 pub mod public;
+pub mod connected;
 use std::collections::BTreeSet;
 use rss_contracts::{Bounds,HostRef,Instant,ObservedEntry,Pending,SourceRequest};
 use serde::{Deserialize,Serialize};

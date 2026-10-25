@@ -1,5 +1,6 @@
 //! Instagram profile/Reels evidence. Hosts authorize transport and own canonical records.
 pub mod authorized;
+pub mod connected;
 pub use authorized::{AuthorizedContext, AuthorizedFetchPort, AuthorizedInstagramProvider};
 pub mod normalize;
 pub mod public;

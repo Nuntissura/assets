@@ -103,13 +103,17 @@ pub struct AuthorizedInstagramProvider<F, C> {
     pub fetch: F,
     pub canonical: C,
 }
-struct Authorized<'a, F> {
-    port: &'a F,
-    context: &'a AuthorizedContext,
+pub(crate) struct Authorized<'a, F> {
+    pub port: &'a F,
+    pub context: &'a AuthorizedContext,
+    pub connected_profile: bool,
 }
 impl<F: AuthorizedFetchPort> PageFetch for Authorized<'_, F> {
     fn authorization(&self) -> Option<AuthorizedSelection> {
         Some(self.context.selection())
+    }
+    fn connected_identity(&self) -> Option<&str> {
+        self.connected_profile.then_some(self.context.external_identity.as_str())
     }
     fn current<'a>(&'a self, source: &'a SourceRequest, execution: &'a HostRef) -> Pending<'a, ()> {
         self.port.current(source, execution, self.context)
@@ -150,6 +154,7 @@ impl<F: AuthorizedFetchPort, C: CanonicalEntryPort> ProviderPort
                 fetch: Authorized {
                     port: &self.fetch,
                     context: &self.authorization,
+                    connected_profile: false,
                 },
                 canonical: &self.canonical,
             }
