@@ -2346,6 +2346,7 @@ assets:
   - bounded public Pinterest board discovery, pin media and opaque-bookmark traversal
   - explicit OAuth Pinterest selected owned shared and private board acquisition with current scope and lease fences
   - bounded authorized Pinterest Home raw-response and bookmark traversal separate from OAuth boards
+  - browser Pinterest own-created selection with exact numeric principal and retained-page binding
   - bounded arXiv API and scientific RSS Atom acquisition with explicit coverage and source metadata
   - global scientific paper identity with distinct versioned source appearances
   - independent exact-Git native and WASM consumers with artifact and source archive provenance
