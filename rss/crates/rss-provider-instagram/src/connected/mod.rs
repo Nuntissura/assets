@@ -1,6 +1,9 @@
 //! Selected own/private profile content through host-authorized transport.
 mod home;
 mod home_normalize;
+mod timeline;
+mod following;
+pub use following::{FollowingContext, FollowingDocumentKind, FollowingFetchPort, FollowingFetchRequest, FollowingFetchResponse, FollowingInstagramProvider};
 pub use home::{HomeDocumentKind, HomeFetchPort, HomeFetchRequest, HomeFetchResponse, HomeInstagramProvider};
 use crate::{authorized::Authorized, public::Traversal, AuthorizedContext, AuthorizedFetchPort,
     CanonicalEntryPort, ProviderLimits};

@@ -71,7 +71,7 @@ fn html_connection(bytes: &[u8], max_bytes: usize, max_entries: usize, bounds: &
     found.ok_or_else(|| invalid("instagram.home_connection_missing"))
 }
 
-pub(super) fn document(bytes: &[u8], kind: HomeDocumentKind, max_bytes: usize, max_entries: usize, bounds: &Bounds)
+pub(super) fn document(bytes: &[u8], kind: HomeDocumentKind, following: bool, max_bytes: usize, max_entries: usize, bounds: &Bounds)
     -> Result<normalize::Document> {
     if bytes.len() > max_bytes { return Err(Error::LimitExceeded { field: "instagram.home_body".into() }); }
     let connection = match kind {
@@ -84,6 +84,9 @@ pub(super) fn document(bytes: &[u8], kind: HomeDocumentKind, max_bytes: usize, m
         },
     };
     errors(&connection)?;
+    if following && connection.get("pagination_source").and_then(Value::as_str) != Some("following") {
+        return Err(Error::StaleResult);
+    }
     let edges = connection.get("edges").and_then(Value::as_array).ok_or_else(|| invalid("instagram.home_edges"))?;
     if edges.len() > max_entries { return Err(Error::LimitExceeded { field: "instagram.home_edges".into() }); }
     let info = connection.get("page_info").filter(|value| value.is_object()).ok_or_else(|| invalid("instagram.home_page_info"))?;
@@ -101,6 +104,11 @@ pub(super) fn document(bytes: &[u8], kind: HomeDocumentKind, max_bytes: usize, m
     let mut entries: Vec<EntryEvidence> = vec![];
     for edge in edges {
         let node = edge.get("node").filter(|value| value.is_object()).ok_or_else(|| invalid("instagram.home_node"))?;
+        if following && ["ad", "explore_story", "end_of_feed_demarcator", "stories_netego", "suggested_users",
+            "bloks_netego", "abra_icebreakers_in_feed_unit", "ad4ad_in_webfeed"].iter()
+            .any(|key| node.get(key).is_some_and(|value| !value.is_null())) {
+            continue;
+        }
         let media = node.get("media").filter(|value| !value.is_null());
         let story = node.get("explore_story").filter(|value| !value.is_null());
         let media = match (media, story) {

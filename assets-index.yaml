@@ -2339,6 +2339,8 @@ assets:
   - explicit authorized Instagram public-source transport with stable login selection and attempt-local lease checks
   - authorized Instagram own-upload and selected private-source acquisition with renewal-safe continuation
   - bounded authorized Instagram Home raw-document parsing and renewal-safe partial traversal
+  - explicit authorized Instagram Following raw-document parsing with selected-stream and renewal-safe partial continuation
+    fences
   - bounded public TikTok creator-window and item media evidence with sparse-window traversal
   - explicit browser-session TikTok Following ForYou own-profile and private-source acquisition with retained-batch
     replay

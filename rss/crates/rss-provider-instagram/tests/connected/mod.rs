@@ -1,5 +1,6 @@
 use super::*;
 mod home;
+mod following;
 
 struct AuthorizedFetch {
     inner: Fetch,
