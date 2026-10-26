@@ -170,6 +170,9 @@ impl Host {
                 Action::Wall(WallIntent::InvalidateMedia { item_id }) => {
                     self.media.ready.retain(|(item, _)| item != item_id);
                 }
+                Action::Wall(WallIntent::ReleaseMedia(member)) => {
+                    self.media.ready.remove(&(member.item_id, member.member_id));
+                }
                 Action::Wall(WallIntent::AccessRevoked) => self.query.revoke(),
                 Action::Wall(WallIntent::Inspect(ticket)) => {
                     let mut inspection = inspection(self.wall.card(ticket.item_id).unwrap());
@@ -240,6 +243,23 @@ fn harness(width: f32, height: f32) -> Harness<'static, Host> {
 }
 fn info(item: u64) -> String {
     format!("Inspect item metadata and tags {}", id::<ItemId>(item))
+}
+
+#[test]
+fn visible_gallery_reloads_an_evicted_member_through_the_owner() {
+    let mut harness = self::harness(1100.0,1000.0);
+    harness.run();
+    let member = MemberRef {item_id:id(1),member_id:id(100)};
+    assert!(harness.state().media.ready.contains(&(member.item_id,member.member_id)));
+    let host = harness.state_mut();
+    host.latest.actions = host.wall.release_media(&member).unwrap().into_iter().map(Action::Wall).collect();
+    host.handle();
+    assert!(!host.media.ready.contains(&(member.item_id,member.member_id)));
+    assert_eq!(host.wall.media_state(&member),MediaState::NotRequested);
+    host.actions.clear();
+    harness.run();
+    assert!(harness.state().media.ready.contains(&(member.item_id,member.member_id)));
+    assert!(harness.state().actions.iter().any(|action| matches!(action,Action::Wall(WallIntent::ResolveMedia(ticket)) if ticket.member==member)));
 }
 fn touch(harness: &mut Harness<'_, Host>, position: Pos2) {
     harness.input_mut().events.extend([

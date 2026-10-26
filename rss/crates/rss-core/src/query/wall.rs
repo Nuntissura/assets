@@ -89,6 +89,8 @@ pub struct MediaTicket {
 pub enum WallIntent {
     ResolveMedia(MediaTicket),
     StopPlayback(MemberRef),
+    /// Host must abort resolvers and dispose cached media for this exact member.
+    ReleaseMedia(MemberRef),
     /// Host must release textures/decoded media for every revision of this item.
     InvalidateMedia {
         item_id: ItemId,
@@ -525,6 +527,23 @@ impl WallState {
         }
         Some(WallIntent::StopPlayback(member))
     }
+    /// Release one current member so an evicted or failed preview can be requested
+    /// again. Selection and other members are unchanged; old tickets become stale.
+    pub fn release_media(&mut self, member: &MemberRef) -> Result<Vec<WallIntent>> {
+        self.cards.get(&member.item_id)
+            .and_then(|card| card.member(member.member_id))
+            .ok_or(Error::NotFound)?;
+        let stopped = if self.player.as_ref() == Some(member) {
+            self.stop_player()
+        } else { None };
+        let key = (member.item_id, member.member_id);
+        self.media_pending.remove(&key);
+        self.media.remove(&key);
+        let mut effects = vec![WallIntent::ReleaseMedia(member.clone())];
+        effects.extend(stopped);
+        Ok(effects)
+    }
+
     /// Invalidates one exact pending resolver. The host aborts its work separately.
     /// A cancelled unresolved preview can be requested again; ready media is retained.
     pub fn cancel_media(&mut self, ticket: &MediaTicket) -> Result<Vec<WallIntent>> {

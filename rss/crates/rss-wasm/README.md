@@ -10,6 +10,8 @@ Inspected current primary sources on 2026-10-23: [wasm-bindgen data conversion](
 
 Retain exact native tickets behind fresh-instance tokens. Reconstructing a native ticket from an item or operation ID would weaken its generation fence. Host cancellation must abort its own work and complete or invalidate the bridge request; an AbortSignal alone does not revoke a retained Rust ticket. Restart and profile transitions invalidate every prior result. Duplicate/deep JSON, stale completions, revoked access, malformed owner projections and retained-state growth are the affected failure cases. Validate them through direct native-owner comparisons and actual compiled WebAssembly instantiation. Native fixtures do not establish a live provider, durable commit, host database snapshot, browser layout or Portal adoption.
 
+The additive version-1 `release_media` action takes `member: {item_id, member_id}`. It delegates to the native release transition, emits cancellation for retained resolvers and a `release_media` effect with the exact member, and stops only that member's active player. The host must abort those resolvers and release that member's decoded media/object URLs. Ready/unavailable/failed previews may then be requested again with a fresh token. Old completions and cancellations reject; releasing a missing or revoked member rejects without changing another member. Existing commands retain their behavior.
+
 </topic>
 
 <topic id="verification" status="locally-passed">

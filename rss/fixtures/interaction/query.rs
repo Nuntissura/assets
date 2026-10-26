@@ -484,6 +484,46 @@ fn cancelled_media_retries_without_caching_failure_and_late_tickets_stay_stale()
 }
 
 #[test]
+fn released_member_retries_terminal_and_pending_media_without_changing_its_gallery() {
+    let (session, mut wall, _) = loaded(2);
+    install(&session, &mut wall, vec![card(1, MediaKind::Video, 2), card(2, MediaKind::Video, 1)]);
+    let member = MemberRef {item_id:id(1), member_id:id(100)};
+    let other = MemberRef {item_id:id(2), member_id:id(200)};
+    let gallery = wall.card(id(1)).unwrap().clone();
+    let selected = wall.selected_member(id(1)).unwrap().member_id;
+    let WallIntent::ResolveMedia(other_preview) = wall.request_preview(id(2)).unwrap().unwrap() else {panic!("other preview")};
+    wall.complete_media(&other_preview, MediaState::Ready).unwrap();
+    for terminal in [None, Some(MediaState::Ready), Some(MediaState::Unavailable), Some(MediaState::Failed)] {
+        let WallIntent::ResolveMedia(old) = wall.request_preview(id(1)).unwrap().unwrap() else {panic!("preview")};
+        if let Some(state) = terminal {wall.complete_media(&old,state).unwrap();}
+        assert_eq!(wall.release_media(&member).unwrap(), vec![WallIntent::ReleaseMedia(member.clone())]);
+        assert_eq!(wall.release_media(&member).unwrap(), vec![WallIntent::ReleaseMedia(member.clone())]);
+        assert_eq!(wall.media_state(&member),MediaState::NotRequested);
+        let WallIntent::ResolveMedia(fresh) = wall.request_preview(id(1)).unwrap().unwrap() else {panic!("fresh preview")};
+        assert_ne!(old,fresh);
+        assert_eq!(wall.complete_media(&old,MediaState::Ready),Err(Error::StaleResult));
+        assert_eq!(wall.cancel_media(&old),Err(Error::StaleResult));
+        assert_eq!(wall.media_state(&member),MediaState::Loading);
+        wall.cancel_media(&fresh).unwrap();
+        assert_eq!(wall.media_state(&other),MediaState::Ready);
+        assert_eq!(wall.card(id(1)),Some(&gallery));
+        assert_eq!(wall.selected_member(id(1)).unwrap().member_id,selected);
+    }
+    wall.play(id(2)).unwrap();
+    wall.release_media(&member).unwrap();
+    assert_eq!(wall.player(),Some(&other));
+    let missing = MemberRef {item_id:id(1),member_id:id(200)};
+    assert_eq!(wall.release_media(&missing),Err(Error::NotFound));
+    assert_eq!(wall.player(),Some(&other));
+    let effects=wall.release_media(&other).unwrap();
+    assert_eq!(effects,vec![WallIntent::ReleaseMedia(other.clone()),WallIntent::StopPlayback(other.clone())]);
+    assert!(wall.player().is_none());
+    assert_eq!(wall.media_state(&other),MediaState::NotRequested);
+    wall.revoke();
+    assert_eq!(wall.release_media(&member),Err(Error::NotFound));
+}
+
+#[test]
 fn matching_selected_observation_from_foreign_partition_never_enters_card_cache() {
     let (session, mut wall, _) = loaded(2);
     let safe = card(1, MediaKind::Link, 0);

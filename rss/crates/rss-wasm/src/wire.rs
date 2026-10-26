@@ -49,6 +49,9 @@ pub enum Action {
         item_id: ItemId,
     },
     Stop,
+    ReleaseMedia {
+        member: MemberRef,
+    },
     SelectMember {
         item_id: ItemId,
         member_id: MemberId,

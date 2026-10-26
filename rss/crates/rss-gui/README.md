@@ -26,6 +26,14 @@ Card faces omit routine source, timestamp and tag metadata. The information cont
 
 </topic>
 
+<topic id="media-release">
+
+Before evicting a ready, unavailable or failed member, call `WallState::release_media(&MemberRef)` and execute its `ReleaseMedia` and optional `StopPlayback` effects. Dispose that exact member's cached texture/player and abort its pending resolver. The current card must contain the active member; unrelated members, selection and gallery order are preserved. Releasing the same current member is idempotent. A later visible preview request receives a fresh ticket; completing or cancelling the retired ticket rejects as stale. A release is not an access grant: authorize every new owner media read independently.
+
+Research checked 2026-10-26: [MDN object URL release](https://developer.mozilla.org/en-US/docs/Web/API/URL/revokeObjectURL_static) and [resource cancellation](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Resource_management). Reuse the existing member/ticket lifecycle so host resource disposal and reducer state agree. Reject direct resolver calls outside returned tickets and full-wall resets for one eviction. Native lifecycle cases, actual egui reload and compiled WASM replay cover terminal-state retries, stale replies and exact-member isolation; host authorization and byte budgets remain independent obligations.
+
+</topic>
+
 <topic id="verification">
 
 From `assets/rss`, after the coordinated gameplan and exclusive Cargo handoff:

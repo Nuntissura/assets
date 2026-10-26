@@ -258,6 +258,42 @@ pub fn scenarios() -> Vec<Scenario> {
     run.action(json!({"type":"revoke"}));
     result.push(run.scenario);
 
+    let mut run = Recorder::new("released-member-media-retries-and-stale-tickets", PageSize::Items25);
+    run.load(2);
+    run.cards(vec![card(1,hsscrap::MediaKind::Video,2),card(2,hsscrap::MediaKind::Video,1)]);
+    let member=json!({"item_id":id::<rss_contracts::ItemId>(1),"member_id":id::<hsscrap::MemberId>(100)});
+    let other=json!({"item_id":id::<rss_contracts::ItemId>(2),"member_id":id::<hsscrap::MemberId>(200)});
+    for state in [None,Some("ready"),Some("unavailable"),Some("failed")] {
+        let old=effect(&run.action(json!({"type":"preview","item_id":member["item_id"]})),"media");
+        if let Some(state)=state {run.action(json!({"type":"complete_media","token":old["token"],"state":state}));}
+        let released=run.action(json!({"type":"release_media","member":member}));
+        assert_eq!(effect(&released,"release_media")["member"],member);
+        assert_eq!(released["view"]["media"][0]["state"],"not_requested");
+        if state.is_none(){assert_eq!(effect(&released,"cancel_host_effect")["token"],old["token"]);}
+        run.action(json!({"type":"release_media","member":member}));
+        let fresh=effect(&run.action(json!({"type":"preview","item_id":member["item_id"]})),"media");
+        assert_ne!(old["token"],fresh["token"]);
+        let stale=run.run("apply",command(json!({"type":"complete_media","token":old["token"],"state":"ready"})));
+        assert_eq!(stale["error"],"stale_ticket");
+        let stale=run.run("apply",command(json!({"type":"cancel","token":old["token"]})));
+        assert_eq!(stale["error"],"stale_ticket");
+        run.action(json!({"type":"cancel","token":fresh["token"]}));
+    }
+    let playing=effect(&run.action(json!({"type":"play","item_id":other["item_id"]})),"media");
+    let unrelated=run.action(json!({"type":"release_media","member":member}));
+    assert_eq!(unrelated["view"]["player"],other);
+    let missing=run.action(json!({"type":"release_media","member":{"item_id":member["item_id"],"member_id":other["member_id"]}}));
+    assert!(missing["error"].is_object());
+    assert_eq!(missing["view"]["player"],other);
+    let stopped=run.action(json!({"type":"release_media","member":other}));
+    assert_eq!(effect(&stopped,"stop_playback")["member"],other);
+    assert_eq!(effect(&stopped,"cancel_host_effect")["token"],playing["token"]);
+    assert!(stopped["view"]["player"].is_null());
+    run.action(json!({"type":"revoke"}));
+    let denied=run.action(json!({"type":"release_media","member":member}));
+    assert!(denied["error"].is_object());
+    result.push(run.scenario);
+
     let mut run = Recorder::new("hss-details-context-and-large-revision", PageSize::Items25);
     run.load(1);
     let mut item = card(1, hsscrap::MediaKind::Image, 1);

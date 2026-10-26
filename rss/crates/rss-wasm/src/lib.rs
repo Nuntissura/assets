@@ -212,6 +212,15 @@ impl RssBridge {
                 self.intents(intent.into_iter().collect(), &mut effects);
                 Ok(())
             }
+            Action::ReleaseMedia { member } => {
+                match self.wall.release_media(&member) {
+                    Ok(intents) => {
+                        self.intents(intents, &mut effects);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            }
             Action::SelectMember { item_id, member_id } => {
                 match self.wall.select_member(item_id, member_id) {
                     Ok(intents) => {
@@ -388,6 +397,15 @@ impl RssBridge {
                     effects.push(
                         json!({"type":"media","token":token,"member":member,"purpose":purpose}),
                     );
+                }
+                WallIntent::ReleaseMedia(member) => {
+                    let cancelled: Vec<_> = self.handles.iter().filter(|(_, handle)| matches!(handle, Handle::Media(ticket) if ticket.member == member))
+                        .map(|(token, _)| token.clone()).collect();
+                    for token in cancelled {
+                        self.handles.remove(&token);
+                        effects.push(json!({"type":"cancel_host_effect","token":token}));
+                    }
+                    effects.push(json!({"type":"release_media","member":member}));
                 }
                 WallIntent::StopPlayback(member) => {
                     self.handles.retain(|_, handle| !matches!(handle, Handle::Media(ticket) if ticket.member == member && ticket.purpose == MediaPurpose::Playback));

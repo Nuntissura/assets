@@ -2329,6 +2329,7 @@ assets:
   - digest-bound source document pagination and partial terminal checkpoints
   - snapshot-bound wall query and 25/50/100 paging transitions
   - anchored refresh, authority-scoped card admission and single-player effects
+  - exact-member media release with bounded host eviction, preview retries and retired-ticket rejection
   - separate egui feed wall, manager and composed metadata inspector
   - bounded public Instagram profile and Reels request, media evidence and resume contracts
   - bounded public YouTube uploads traversal and explicitly partial no-login Atom evidence
