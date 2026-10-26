@@ -6,6 +6,8 @@ mod writing;
 mod query;
 mod picker;
 mod recovery;
+#[cfg(feature = "matching")]
+pub mod matching;
 #[cfg(feature = "wasm")]
 mod wasm;
 

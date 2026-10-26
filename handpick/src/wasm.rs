@@ -37,6 +37,33 @@ pub fn parse_query_wire(text: &str) -> Result<String, JsValue> {
     write(&parse_query(text).map_err(|error| reject(&error.to_string()))?)
 }
 
+#[cfg(feature = "matching")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiteralMatchRequest {
+    version: u8,
+    needle: String,
+    candidate: String,
+    max_edits: u8,
+}
+
+#[cfg(feature = "matching")]
+#[wasm_bindgen(js_name = matchLiteral)]
+pub fn match_literal_wire(input: &str) -> Result<String, JsValue> {
+    let request: LiteralMatchRequest = read(input)?;
+    if request.version != 1 {
+        return Err(reject("InvalidWire"));
+    }
+    let result = matching::match_literal(&request.needle, &request.candidate, request.max_edits)
+        .map_err(|error| reject(match error {
+            matching::LiteralMatchError::EmptyNeedle => "EmptyNeedle",
+            matching::LiteralMatchError::NeedleLimit => "NeedleLimit",
+            matching::LiteralMatchError::CandidateLimit => "CandidateLimit",
+            matching::LiteralMatchError::ThresholdLimit => "ThresholdLimit",
+        }))?;
+    write(&serde_json::json!({"version":1,"match":result}))
+}
+
 fn purpose(value: &str) -> Result<QueryPurpose, JsValue> {
     match value {
         "search_write" => Ok(QueryPurpose::SearchWrite),

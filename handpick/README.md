@@ -1,7 +1,7 @@
 ---
 file_id: handpick-readme-v1
 file_kind: product-manual
-updated_at: '2026-10-24'
+updated_at: '2026-10-26'
 ---
 
 <topic id="foundation" version="0.1.0" status="implemented">
@@ -17,6 +17,24 @@ Call `revoke` immediately when access changes. It clears drafts, pins, results a
 Pinning parks text without saving a note. Host-supplied pin IDs must be unique across their lifecycle. Render bookmark identities along the TOP edge and show original excerpts ONLY in hover/focus tooltips, including keyboard focus. An occupied field requires a new pin ID on restore: restoration swaps the parked text atomically rather than overwriting either draft. Overflow rejects the operation with existing state preserved.
 
 Completion edits reference the original draft revision and a half-open UTF-8 byte span. Invalid boundaries and oversize replacements reject without changes. The result is a UTF-8 caret byte offset. Hosts convert React UTF-16 and matcher/grapheme coordinates and own cursor/selection/focus rendering. The core validates Unicode scalar boundaries; grapheme-level editing policy remains undecided.
+
+</topic>
+
+<topic id="literal-matching" status="implemented" version="1">
+
+## Optional literal similarity
+
+Enable the `matching` feature for `matching::match_literal(needle, candidate, max_edits)`. It returns `Some(LiteralMatch { edit_distance })` only when the whole-literal optimal string alignment distance is within the supplied threshold; otherwise it returns `None`. Comparisons are case-sensitive Unicode scalars. Adjacent transpositions count as one edit. This is restricted Damerau-Levenshtein distance, not unrestricted Damerau-Levenshtein: `CA` versus `ABC` has distance three.
+
+The needle must contain 1–64 Unicode scalars, the candidate at most 256, and the threshold at most eight. Empty candidates are allowed. Bounds reject before distance work and oversized length differences return no match without allocating a distance matrix. The optional exact `strsim` 0.11.1 dependency leaves the default dependency closure unchanged.
+
+Hosts authorize candidates before calling, bound candidate batches, and choose normalization, tokenization, thresholds and ranking. This helper does not enumerate records, find arbitrary substrings, interpret structured queries or establish authorization. Preserve quoted exact phrases and structured filters in the existing parser; similarity does not imply semantic/vector retrieval.
+
+With both `wasm,matching`, `matchLiteral` accepts strict JSON `{ "version": 1, "needle": "oribt", "candidate": "orbit", "max_edits": 1 }` and returns `{ "version": 1, "match": { "edit_distance": 1 } }`. A no-match result has `"match": null`. Unsupported versions, unknown fields and malformed wire values reject with `InvalidWire`; domain bounds use `EmptyNeedle`, `NeedleLimit`, `CandidateLimit` or `ThresholdLimit`. The existing 65,536-byte wire limit applies. Errors contain no input text.
+
+Research on 2026-10-26 inspected [strsim's metric documentation](https://docs.rs/strsim/0.11.1/strsim/) and [implementation](https://docs.rs/strsim/0.11.1/src/strsim/lib.rs.html), [nucleo's matcher implementation](https://github.com/helix-editor/nucleo/blob/master/matcher/src/lib.rs), the current query/parser and provider boundaries, and [SurrealDB's owner-side search primitives](https://surrealdb.com/docs/reference/query-language/functions/database-functions/search). Reuse strsim's tested edit metric instead of copying it. Nucleo's fzf-style subsequence matching alone does not supply the selected insertion/substitution/transposition metric. Database indexes, background picker infrastructure and embeddings add no value to this bounded literal operation and remain outside its scope. Fixed scalar/threshold limits bound work; native and actual WASM vectors cover Unicode, case sensitivity, whole-string semantics, transpositions, restricted-distance behavior and rejected boundaries. Host authorization, candidate policy, relevance and rendered integration require separate proof.
+
+Run `cargo test --locked --manifest-path handpick/Cargo.toml --features wasm,matching`, then build `cargo build --locked --manifest-path handpick/Cargo.toml --features wasm,matching --target wasm32-unknown-unknown`. Generate web glue with wasm-bindgen 0.2.129 and run both `node handpick/tests/wasm_bridge.mjs PATH_TO_GLUE` and `node handpick/tests/matching.mjs PATH_TO_GLUE`. Keep build and generated outputs outside tracked source. Existing `wasm` without `matching` retains its old exports.
 
 </topic>
 

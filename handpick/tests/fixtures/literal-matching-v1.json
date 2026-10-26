@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "cases": [
+    {"needle":"orbit","candidate":"orbit","max_edits":0,"match":{"edit_distance":0}},
+    {"needle":"oribt","candidate":"orbit","max_edits":1,"match":{"edit_distance":1}},
+    {"needle":"oribt","candidate":"orbit","max_edits":0,"match":null},
+    {"needle":"orbut","candidate":"orbit","max_edits":1,"match":{"edit_distance":1}},
+    {"needle":"orbt","candidate":"orbit","max_edits":1,"match":{"edit_distance":1}},
+    {"needle":"orbiit","candidate":"orbit","max_edits":1,"match":{"edit_distance":1}},
+    {"needle":"orbit","candidate":"Orbit","max_edits":0,"match":null},
+    {"needle":"é","candidate":"é","max_edits":1,"match":null},
+    {"needle":"😀猫","candidate":"猫😀","max_edits":1,"match":{"edit_distance":1}},
+    {"needle":"猫","candidate":"","max_edits":1,"match":{"edit_distance":1}},
+    {"needle":"orbit","candidate":"an orbit","max_edits":1,"match":null},
+    {"needle":"\"orbit\"","candidate":"orbit","max_edits":1,"match":null},
+    {"needle":"type:feed","candidate":"type:feeds","max_edits":1,"match":{"edit_distance":1}},
+    {"needle":"CA","candidate":"ABC","max_edits":2,"match":null}
+  ]
+}

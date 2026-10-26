@@ -250,6 +250,7 @@ assets:
   - persistent native editor bookmarks
   - explicit Save-or-Pin close admission
   - fenced URL source-entry intent and prose classification
+  - optional bounded whole-literal edit-distance matching
   manual: handpick/README.md
   packages:
   - name: handpick

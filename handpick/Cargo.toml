@@ -11,11 +11,13 @@ crate-type = ["rlib", "cdylib"]
 
 [features]
 default = []
+matching = ["dep:strsim"]
 wasm = ["dep:wasm-bindgen", "dep:serde_json"]
 
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }
 url = "=2.5.8"
+strsim = { version = "=0.11.1", optional = true }
 wasm-bindgen = { version = "=0.2.129", optional = true }
 serde_json = { version = "=1.0.151", optional = true }
 
