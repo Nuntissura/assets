@@ -125,6 +125,7 @@ pub fn compose(input: &str) -> Result<String, String> {
         .validate()
         .map_err(|_| "invalid_revision")?;
     for source in request.sources {
+        source.source_tags(&request.bounds).map_err(|_| "invalid_source_tags")?;
         reference(&source.source_ref, request.bounds.max_text_bytes)?;
         source
             .common

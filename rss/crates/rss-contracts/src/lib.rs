@@ -1,5 +1,7 @@
 //! Portable RSS source, acquisition and owner contracts. Hosts execute and authorize effects.
 pub mod sources;
+pub mod source_tags;
+pub use source_tags::{SourceTags, SOURCE_TAGS_EXTENSION, MAX_SOURCE_TAGS};
 pub mod acquisition;
 pub mod ports;
 pub mod transfer;

@@ -41,6 +41,7 @@ impl SourceLibrary {
     pub fn add_source(&self, scope: &ScopeRef, expected: Revision, source: Source, bounds: &Bounds) -> Result<Self> {
         self.authorize(scope, expected)?;
         bounds.validate()?;
+        source.source_tags(bounds)?;
         if source.owner_scope != self.owner_scope { return Err(Error::Denied); }
         source.revision.validate()?;
         if self.sources.contains_key(&source.source_ref) {

@@ -403,6 +403,13 @@ pub fn scenarios() -> Vec<Scenario> {
 
     let mut run = Recorder::new("canonical-library-and-manager", PageSize::Items25);
     run.run("compose_query", library_request().to_string());
+    let mut tagged = library_request();
+    tagged["sources"][0]["extensions"] = json!({"rss.source_tags":{"version":1,"tag_refs":[host("shared-tag")]},
+        "portal.connection_selection":{"connection_id":"preserved","future":true}});
+    let tagged_output = run.run("compose_query", tagged.to_string());
+    assert_eq!(tagged_output["ok"]["manager"]["sources"][0]["source"]["extensions"], tagged["sources"][0]["extensions"]);
+    tagged["sources"][0]["extensions"]["rss.source_tags"]["unknown"] = json!("reject without dropping");
+    assert_eq!(run.run("compose_query", tagged.to_string())["error"], "invalid_source_tags");
     let mut foreign = library_request();
     foreign["selection"]["owner_scope"] = json!("foreign");
     run.run("compose_query", foreign.to_string());

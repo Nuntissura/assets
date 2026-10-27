@@ -9,6 +9,22 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 #[test]
+fn source_tag_metadata_reaches_manager_and_malformed_known_extensions_are_rejected() {
+    let mut request=library_request();
+    request["sources"][0]["extensions"]=json!({"rss.source_tags":{"version":1,"tag_refs":[host("shared-tag")]},
+        "portal.connection_selection":{"connection_id":"preserved","unknown":[1,2]}});
+    let output:Value=serde_json::from_str(&RssBridge::compose_query(&request.to_string()).unwrap()).unwrap();
+    assert_eq!(output["manager"]["sources"][0]["source"]["extensions"],request["sources"][0]["extensions"]);
+    let reference=json!(host("shared-tag"));
+    let mut extra=reference.clone();extra["unknown"]=json!(1);
+    for bad in [json!(null),json!({"version":2,"tag_refs":[]}),json!({"version":1,"tag_refs":[],"future":true}),
+        json!({"version":1,"tag_refs":[reference.clone(),reference]}),json!({"version":1,"tag_refs":[extra]})] {
+        request["sources"][0]["extensions"]["rss.source_tags"]=bad;
+        assert_eq!(RssBridge::compose_query(&request.to_string()).unwrap_err(),"invalid_source_tags");
+    }
+}
+
+#[test]
 fn query_pages_and_current_denial_match_the_native_owner() {
     for size in [PageSize::Items25, PageSize::Items50, PageSize::Items100] {
         let mut native = QuerySession::new(query(size), bounds(), 500).unwrap();

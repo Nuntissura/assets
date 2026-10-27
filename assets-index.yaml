@@ -2316,6 +2316,7 @@ assets:
   - bounded RSS appearance-state extensions reusing hsscrap transfer projections
   - bounded acquisition and checkpoint owner ports
   - account source library and group membership reducers
+  - typed bounded source tags preserving source struct and unknown extension roundtrip
   - account-owned sources with authorized distinct profile acquisition partitions
   - per-group keyword and priority rules
   - bounded resumable acquisition job transitions

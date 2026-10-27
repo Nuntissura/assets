@@ -85,3 +85,71 @@ fn member_rules_preserve_independent_keywords_priority_and_cleanup() {
     assert_eq!(library.member_rules.len(),1); assert!(library.member_rules.contains_key(&(r("two"),r("source"))));
     assert_eq!(library.sources.len(),1);
 }
+
+#[test]
+fn source_tags_preserve_identity_connections_groups_and_exact_noop_bytes() {
+    let mut library = library(); let scope = library.owner_scope.clone();
+    library = library.attach(&scope, library.revision, &r("one"), &r("source"), &bounds()).unwrap();
+    library.sources.get_mut(&r("source")).unwrap().common.extensions.insert("portal.connection_selection".into(),
+        serde_json::json!({"connection_id":"opaque","external_identity":"account","future":{"preserved":true}}));
+    let before = library.clone();
+    let tags = vec![TagRef(r("tag-one")),TagRef(r("tag-two"))];
+    let changed = library.set_source_tags(&scope, library.revision, &r("source"), Revision(1), tags.clone(), &bounds()).unwrap();
+    let source = &changed.sources[&r("source")];
+    assert_eq!(source.revision, Revision(2));
+    assert_eq!(changed.revision, Revision(library.revision.0+1));
+    assert_eq!(source.source_tags(&bounds()).unwrap().tag_refs, tags);
+    assert_eq!(changed.memberships, before.memberships); assert_eq!(changed.groups, before.groups);
+    assert_eq!(changed.member_rules, before.member_rules);
+    let mut expected = before.sources[&r("source")].clone();
+    expected.revision=source.revision;
+    expected.common.extensions.insert(SOURCE_TAGS_EXTENSION.into(), source.common.extensions[SOURCE_TAGS_EXTENSION].clone());
+    assert_eq!(*source, expected);
+    let bytes = serde_json::to_vec(source).unwrap();
+    let noop = changed.set_source_tags(&scope, changed.revision, &r("source"), source.revision,
+        tags.into_iter().rev().collect(), &bounds()).unwrap();
+    assert_eq!(noop, changed); assert_eq!(serde_json::to_vec(&noop.sources[&r("source")]).unwrap(), bytes);
+    for result in [changed.set_source_tags(&ScopeRef("foreign".into()), changed.revision, &r("source"), source.revision, vec![], &bounds()),
+        changed.set_source_tags(&scope, library.revision, &r("source"), source.revision, vec![], &bounds()),
+        changed.set_source_tags(&scope, changed.revision, &r("source"), Revision(1), vec![], &bounds()),
+        changed.set_source_tags(&scope, changed.revision, &r("missing"), source.revision, vec![], &bounds()),
+        changed.set_source_tags(&scope, changed.revision, &r("source"), source.revision, vec![TagRef(r("same"));2], &bounds())] {
+        assert!(result.is_err());
+    }
+    let cleared = changed.set_source_tags(&scope, changed.revision, &r("source"), source.revision, vec![], &bounds()).unwrap();
+    assert!(cleared.sources[&r("source")].source_tags(&bounds()).unwrap().tag_refs.is_empty());
+    assert_eq!(cleared.sources[&r("source")].revision, Revision(3));
+    assert_eq!(before.sources[&r("source")].source_tags(&bounds()).unwrap().tag_refs.len(), 0);
+    let empty_noop = before.set_source_tags(&scope, before.revision, &r("source"), Revision(1), vec![], &bounds()).unwrap();
+    assert_eq!(empty_noop, before);
+}
+
+#[test]
+fn malformed_existing_source_tag_data_is_never_overwritten_or_admitted() {
+    let mut library = library(); let scope=library.owner_scope.clone();
+    library.sources.get_mut(&r("source")).unwrap().common.extensions.insert(SOURCE_TAGS_EXTENSION.into(),
+        serde_json::json!({"version":1,"tag_refs":[],"unknown":"must survive rejection"}));
+    let before=library.clone();
+    assert!(library.set_source_tags(&scope, library.revision, &r("source"), Revision(1), vec![], &bounds()).is_err());
+    assert_eq!(library,before);
+    let empty=SourceLibrary::empty(scope.clone());
+    assert!(empty.add_source(&scope, empty.revision, library.sources[&r("source")].clone(), &bounds()).is_err());
+}
+
+#[test]
+fn source_tags_reject_extension_map_capacity_without_dropping_opaque_entries() {
+    let mut library=library(); let scope=library.owner_scope.clone(); let mut limits=bounds(); limits.max_collection_items=50;
+    for index in 0..50 {
+        library.sources.get_mut(&r("source")).unwrap().common.extensions.insert(format!("opaque.entry{index}"),serde_json::json!(index));
+    }
+    library.sources[&r("source")].common.validate_bounded(&limits,&BTreeSet::new()).unwrap();
+    let before=library.clone();
+    assert!(library.set_source_tags(&scope,library.revision,&r("source"),Revision(1),vec![TagRef(r("one"))],&limits).is_err());
+    assert_eq!(library,before);
+    library.sources.get_mut(&r("source")).unwrap().common.extensions.remove("opaque.entry49");
+    let changed=library.set_source_tags(&scope,library.revision,&r("source"),Revision(1),vec![TagRef(r("one"))],&limits).unwrap();
+    assert_eq!(changed.sources[&r("source")].common.extensions.len(),50);
+    for (key,value) in &library.sources[&r("source")].common.extensions {
+        assert_eq!(changed.sources[&r("source")].common.extensions.get(key),Some(value));
+    }
+}

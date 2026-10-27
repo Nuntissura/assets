@@ -2,6 +2,7 @@
 pub mod sources;
 mod groups;
 mod editing;
+mod source_tags;
 mod rules;
 pub mod visibility;
 pub mod appearance_state;
