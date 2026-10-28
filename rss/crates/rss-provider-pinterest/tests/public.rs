@@ -698,3 +698,15 @@ fn account_owned_source_uses_authorized_profile_partition() {
 }
 
 #[path="connected/mod.rs"] mod connected;
+
+#[test]
+fn provider_capabilities_public_are_available_without_execution_ports() {
+    let expected = vec![
+        rss_contracts::Capability { provider: rss_contracts::Provider::Pinterest, mode: AccessMode::PublicBoard, status: rss_contracts::CapabilityStatus::Available,
+            paginated: true, media_metadata: true, adapter_version: "pinterest.public.v1".into() },
+        rss_contracts::Capability { provider: rss_contracts::Provider::Pinterest, mode: AccessMode::PublicProfile, status: rss_contracts::CapabilityStatus::Available,
+            paginated: true, media_metadata: true, adapter_version: "pinterest.public.v1".into() }
+    ];
+    assert_eq!(rss_provider_pinterest::capabilities(), expected);
+    assert_eq!(provider(vec![]).capabilities(), expected);
+}

@@ -54,9 +54,10 @@ impl ProviderLimits {fn validate(&self)->rss_contracts::Result<()> {
         ||self.max_fetches_per_operation<2||self.max_fetches_per_operation>1024||self.timeout_millis==0||self.timeout_millis>300_000 {return Err(invalid("tiktok.limits"));}Ok(())}}
 pub struct TikTokProvider<F,C> {pub source:rss_contracts::Source,pub execution_ref:HostRef,pub initial_cursor_millis:u64,pub limits:ProviderLimits,
     pub supported_extensions:BTreeSet<String>,pub fetch:F,pub canonical:C}
+pub fn capabilities()->Vec<rss_contracts::Capability> {vec![rss_contracts::Capability {provider:rss_contracts::Provider::Tiktok,mode:rss_contracts::AccessMode::PublicProfile,
+    status:rss_contracts::CapabilityStatus::Available,paginated:true,media_metadata:true,adapter_version:"tiktok.public.v1".into()}]}
 impl<F:PublicFetchPort,C:CanonicalEntryPort> rss_contracts::ProviderPort for TikTokProvider<F,C> {
-    fn capabilities(&self)->Vec<rss_contracts::Capability> {vec![rss_contracts::Capability {provider:rss_contracts::Provider::Tiktok,mode:rss_contracts::AccessMode::PublicProfile,
-        status:rss_contracts::CapabilityStatus::Available,paginated:true,media_metadata:true,adapter_version:"tiktok.public.v1".into()}]}
+    fn capabilities(&self)->Vec<rss_contracts::Capability> { capabilities() }
     fn acquire<'a>(&'a self,request:SourceRequest)->Pending<'a,rss_contracts::AcquisitionPage> {Box::pin(self.acquire_page(request))}
 }
 pub(crate) fn invalid(field:&str)->rss_contracts::Error {rss_contracts::Error::Invalid {field:field.into()}}

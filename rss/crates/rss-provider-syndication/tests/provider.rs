@@ -204,3 +204,13 @@ fn account_owned_source_uses_authorized_profile_partition() {
         assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
     }
 }
+
+#[test]
+fn provider_capabilities_public_are_available_without_execution_ports() {
+    let expected = vec![
+        rss_contracts::Capability { provider: rss_contracts::Provider::Syndication, mode: AccessMode::PublicFeed, status: rss_contracts::CapabilityStatus::Available,
+            paginated: true, media_metadata: true, adapter_version: "syndication.v1".into() }
+    ];
+    assert_eq!(rss_provider_syndication::capabilities(), expected);
+    assert_eq!(provider(vec![]).capabilities(), expected);
+}

@@ -66,10 +66,11 @@ impl ProviderLimits {
 }
 pub struct YouTubeProvider<F,C> { pub source:rss_contracts::Source,pub execution_ref:HostRef,pub strategy:Strategy,pub limits:ProviderLimits,
     pub supported_extensions:BTreeSet<String>,pub fetch:F,pub canonical:C }
+pub fn capabilities(strategy: Strategy)->Vec<rss_contracts::Capability> { vec![rss_contracts::Capability {provider:rss_contracts::Provider::Youtube,
+    mode:rss_contracts::AccessMode::PublicChannel,status:rss_contracts::CapabilityStatus::Available,paginated:strategy==Strategy::PublicApi,
+    media_metadata:true,adapter_version:"youtube.public.v1".into()}] }
 impl<F:FetchPort,C:CanonicalEntryPort> rss_contracts::ProviderPort for YouTubeProvider<F,C> {
-    fn capabilities(&self)->Vec<rss_contracts::Capability> { vec![rss_contracts::Capability {provider:rss_contracts::Provider::Youtube,
-        mode:rss_contracts::AccessMode::PublicChannel,status:rss_contracts::CapabilityStatus::Available,paginated:self.strategy==Strategy::PublicApi,
-        media_metadata:true,adapter_version:"youtube.public.v1".into()}] }
+    fn capabilities(&self)->Vec<rss_contracts::Capability> { capabilities(self.strategy) }
     fn acquire<'a>(&'a self,request:SourceRequest)->Pending<'a,rss_contracts::AcquisitionPage> { Box::pin(self.acquire_page(request)) }
 }
 pub(crate) fn invalid(field:&str)->rss_contracts::Error { rss_contracts::Error::Invalid {field:field.into()} }

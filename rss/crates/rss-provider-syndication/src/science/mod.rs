@@ -64,19 +64,20 @@ pub struct ScientificProvider<F, N> {
     pub fetch: F,
     pub canonical: N,
 }
+pub fn capabilities() -> Vec<rss_contracts::Capability> {
+    vec![rss_contracts::Capability {
+        provider: rss_contracts::Provider::Syndication,
+        mode: rss_contracts::AccessMode::PublicFeed,
+        status: rss_contracts::CapabilityStatus::Available,
+        paginated: true,
+        media_metadata: true,
+        adapter_version: "science.arxiv.v1".into(),
+    }]
+}
 impl<F: FetchPort, N: CanonicalScientificEntryPort> rss_contracts::ProviderPort
     for ScientificProvider<F, N>
 {
-    fn capabilities(&self) -> Vec<rss_contracts::Capability> {
-        vec![rss_contracts::Capability {
-            provider: rss_contracts::Provider::Syndication,
-            mode: rss_contracts::AccessMode::PublicFeed,
-            status: rss_contracts::CapabilityStatus::Available,
-            paginated: true,
-            media_metadata: true,
-            adapter_version: "science.arxiv.v1".into(),
-        }]
-    }
+    fn capabilities(&self) -> Vec<rss_contracts::Capability> { capabilities() }
     fn acquire<'a>(
         &'a self,
         request: SourceRequest,

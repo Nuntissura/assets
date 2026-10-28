@@ -153,3 +153,13 @@ fn account_owned_source_uses_authorized_profile_partition() {
 
 #[path="connected/mod.rs"]
 mod connected;
+
+#[test]
+fn provider_capabilities_public_are_available_without_execution_ports() {
+    let expected = vec![
+        rss_contracts::Capability { provider: rss_contracts::Provider::Tiktok, mode: AccessMode::PublicProfile, status: rss_contracts::CapabilityStatus::Available,
+            paginated: true, media_metadata: true, adapter_version: "tiktok.public.v1".into() }
+    ];
+    assert_eq!(rss_provider_tiktok::capabilities(), expected);
+    assert_eq!(provider(vec![]).capabilities(), expected);
+}

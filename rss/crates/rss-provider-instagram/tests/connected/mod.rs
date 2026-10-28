@@ -409,3 +409,15 @@ fn connected_profile_repeated_cursor_and_later_malformed_media_preserve_prior_ef
         assert_eq!(adapter.canonical.calls.load(Ordering::SeqCst), 0);
     }
 }
+
+#[test]
+fn provider_capabilities_authorized_are_available_without_execution_ports() {
+    let expected = vec![
+        rss_contracts::Capability { provider: rss_contracts::Provider::Instagram, mode: AccessMode::PublicProfile, status: rss_contracts::CapabilityStatus::Available,
+            paginated: true, media_metadata: true, adapter_version: "instagram.authorized-source.v1".into() },
+        rss_contracts::Capability { provider: rss_contracts::Provider::Instagram, mode: AccessMode::PublicReels, status: rss_contracts::CapabilityStatus::Available,
+            paginated: true, media_metadata: true, adapter_version: "instagram.authorized-source.v1".into() }
+    ];
+    assert_eq!(rss_provider_instagram::authorized::capabilities(), expected);
+    assert_eq!(authorized(AccessMode::PublicProfile, vec![]).capabilities(), expected);
+}

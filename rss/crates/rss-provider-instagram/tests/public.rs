@@ -298,3 +298,15 @@ fn public_request_metadata_is_fixed_anonymous_and_honest() {
         assert!(serde_json::from_value::<PublicRequestMetadata>(changed).is_err());
     }
 }
+
+#[test]
+fn provider_capabilities_public_are_available_without_execution_ports() {
+    let expected = vec![
+        rss_contracts::Capability { provider: rss_contracts::Provider::Instagram, mode: AccessMode::PublicProfile, status: rss_contracts::CapabilityStatus::Available,
+            paginated: true, media_metadata: true, adapter_version: "instagram.public.v1".into() },
+        rss_contracts::Capability { provider: rss_contracts::Provider::Instagram, mode: AccessMode::PublicReels, status: rss_contracts::CapabilityStatus::Available,
+            paginated: true, media_metadata: true, adapter_version: "instagram.public.v1".into() }
+    ];
+    assert_eq!(rss_provider_instagram::capabilities(), expected);
+    assert_eq!(provider(AccessMode::PublicProfile, vec![]).capabilities(), expected);
+}

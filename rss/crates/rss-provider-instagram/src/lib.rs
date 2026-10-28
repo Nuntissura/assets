@@ -173,13 +173,14 @@ pub struct InstagramProvider<F, C> {
     pub fetch: F,
     pub canonical: C,
 }
+pub fn capabilities() -> Vec<rss_contracts::Capability> {
+    [rss_contracts::AccessMode::PublicProfile, rss_contracts::AccessMode::PublicReels].into_iter().map(|mode| rss_contracts::Capability {
+        provider: rss_contracts::Provider::Instagram, mode, status: rss_contracts::CapabilityStatus::Available,
+        paginated: true, media_metadata: true, adapter_version: "instagram.public.v1".into(),
+    }).collect()
+}
 impl<F: PublicFetchPort, C: CanonicalEntryPort> rss_contracts::ProviderPort for InstagramProvider<F, C> {
-    fn capabilities(&self) -> Vec<rss_contracts::Capability> {
-        [rss_contracts::AccessMode::PublicProfile, rss_contracts::AccessMode::PublicReels].into_iter().map(|mode| rss_contracts::Capability {
-            provider: rss_contracts::Provider::Instagram, mode, status: rss_contracts::CapabilityStatus::Available,
-            paginated: true, media_metadata: true, adapter_version: "instagram.public.v1".into(),
-        }).collect()
-    }
+    fn capabilities(&self) -> Vec<rss_contracts::Capability> { capabilities() }
     fn acquire<'a>(&'a self, request: SourceRequest) -> Pending<'a, rss_contracts::AcquisitionPage> { Box::pin(public::acquire_public(self, request)) }
 }
 pub(crate) fn invalid(field: &str) -> rss_contracts::Error { rss_contracts::Error::Invalid { field: field.into() } }

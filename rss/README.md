@@ -1,7 +1,7 @@
 ---
 file_id: rss-manual-v1
 file_kind: package-manual
-updated_at: 2026-10-25
+updated_at: 2026-10-28
 ---
 
 <topic id="contracts">
@@ -17,6 +17,27 @@ AccessPartition validates public versus connected mode. Public profile, Reels, b
 An account-owned source may feed a distinct authorized profile partition. Providers validate a nonempty bounded source owner and exact selected source reference; they do not equate catalogue ownership with capture access. Construct each provider from the canonical selected source record. The host AuthorityPort, AcquisitionOwner and transport/canonical-preparation ports must freshly verify account ownership, profile selection, source configuration, executor and generation before network or owner effects, including redirects and replay. Source and partition IDs are never grants.
 
 Continuation binds subscription, source, access partition, executor and generation. It cannot be used as a WallCursor. CheckpointOwner records accepted item-owner outcomes and source appearances before acknowledging the continuation. A lost response requires scoped operation lookup; pending or unknown outcomes do not authorize advancing a checkpoint. No credential bytes or database/HTTP-framework types appear in these contracts. Optional hsscrap extensions and nullable legacy history remain intact.
+
+</topic>
+
+<topic id="provider-capabilities" version="1">
+
+Hosts can inspect adapter declarations without constructing transport, canonical-record or execution ports. The existing instance `ProviderPort::capabilities()` methods delegate to the same public helpers:
+
+| Adapter | Public helper |
+| --- | --- |
+| Syndication | `rss_provider_syndication::capabilities()` |
+| arXiv science | `rss_provider_syndication::science::capabilities()` |
+| YouTube public | `rss_provider_youtube::capabilities(strategy)` |
+| Instagram public | `rss_provider_instagram::capabilities()` |
+| Instagram authorized public source | `rss_provider_instagram::authorized::capabilities()` |
+| Instagram Following | `rss_provider_instagram::connected::following_capabilities()` |
+| TikTok public | `rss_provider_tiktok::capabilities()` |
+| Pinterest public | `rss_provider_pinterest::capabilities()` |
+
+YouTube requires the actual `Strategy`: `NoLoginAtom` is not paginated; `PublicApi` is paginated. Science retains the `Syndication` provider identity and `science.arxiv.v1` adapter version. Instagram public, authorized-source and Following declarations retain their distinct modes and adapter versions. No helper checks credentials, transport availability, current grants or successful acquisition. Hosts must inspect those owners separately and must not merge declarations from an adapter they are not using. Other connected adapters retain their existing instance APIs.
+
+Run the eight owning public-API contract checks with `cargo test --locked --manifest-path rss/Cargo.toml -p rss-provider-syndication -p rss-provider-youtube -p rss-provider-instagram -p rss-provider-tiktok -p rss-provider-pinterest --tests provider_capabilities` under coordinated build ownership. Their independent expected values cover the declarations and delegation, including both YouTube strategies. These checks do not establish live source access.
 
 </topic>
 

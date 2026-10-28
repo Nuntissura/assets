@@ -230,3 +230,16 @@ fn atom_channel_tail_requires_exact_canonical_binding_and_permalink_video() {
     }
 }
 #[path="connected/mod.rs"] mod connected;
+
+#[test]
+fn provider_capabilities_preserve_public_api_and_atom_strategy() {
+    for (strategy, paginated) in [(Strategy::PublicApi, true), (Strategy::NoLoginAtom, false)] {
+        let expected = vec![rss_contracts::Capability {
+            provider: Provider::Youtube, mode: AccessMode::PublicChannel,
+            status: rss_contracts::CapabilityStatus::Available, paginated,
+            media_metadata: true, adapter_version: "youtube.public.v1".into(),
+        }];
+        assert_eq!(rss_provider_youtube::capabilities(strategy), expected);
+        assert_eq!(provider(strategy, vec![]).capabilities(), expected);
+    }
+}

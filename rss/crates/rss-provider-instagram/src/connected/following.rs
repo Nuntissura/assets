@@ -82,11 +82,12 @@ impl FollowingContext {
         Ok(())
     }
 }
+pub fn capabilities() -> Vec<Capability> {
+    vec![Capability { provider: Provider::Instagram, mode: AccessMode::Following, status: CapabilityStatus::Available,
+        paginated: true, media_metadata: true, adapter_version: "instagram.following.v1".into() }]
+}
 impl<F: FollowingFetchPort, C: CanonicalEntryPort> ProviderPort for FollowingInstagramProvider<F, C> {
-    fn capabilities(&self) -> Vec<Capability> {
-        vec![Capability { provider: Provider::Instagram, mode: AccessMode::Following, status: CapabilityStatus::Available,
-            paginated: true, media_metadata: true, adapter_version: "instagram.following.v1".into() }]
-    }
+    fn capabilities(&self) -> Vec<Capability> { capabilities() }
     fn acquire<'a>(&'a self, request: SourceRequest) -> Pending<'a, AcquisitionPage> {
         Box::pin(async move {
             self.authorization.validate(&self.source, &request, &request.bounds)?;

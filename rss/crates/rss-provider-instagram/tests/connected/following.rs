@@ -205,3 +205,13 @@ fn following_body_document_media_and_cursor_bounds_reject_before_preparation() {
     let mut resume = selected_following(2); resume.continuation = Some(cursor);
     assert!(run(adapter.acquire(resume)).is_err()); assert_eq!(adapter.fetch.requests.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn provider_capabilities_following_are_available_without_execution_ports() {
+    let expected = vec![
+        rss_contracts::Capability { provider: rss_contracts::Provider::Instagram, mode: AccessMode::Following, status: rss_contracts::CapabilityStatus::Available,
+            paginated: true, media_metadata: true, adapter_version: "instagram.following.v1".into() }
+    ];
+    assert_eq!(rss_provider_instagram::connected::following_capabilities(), expected);
+    assert_eq!(following(vec![]).capabilities(), expected);
+}

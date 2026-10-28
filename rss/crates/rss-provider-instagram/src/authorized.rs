@@ -127,22 +127,23 @@ impl<F: AuthorizedFetchPort> PageFetch for Authorized<'_, F> {
         self.port.fetch(source, execution, self.context, request)
     }
 }
+pub fn capabilities() -> Vec<Capability> {
+    [AccessMode::PublicProfile, AccessMode::PublicReels]
+        .into_iter()
+        .map(|mode| Capability {
+            provider: Provider::Instagram,
+            mode,
+            status: CapabilityStatus::Available,
+            paginated: true,
+            media_metadata: true,
+            adapter_version: "instagram.authorized-source.v1".into(),
+        })
+        .collect()
+}
 impl<F: AuthorizedFetchPort, C: CanonicalEntryPort> ProviderPort
     for AuthorizedInstagramProvider<F, C>
 {
-    fn capabilities(&self) -> Vec<Capability> {
-        [AccessMode::PublicProfile, AccessMode::PublicReels]
-            .into_iter()
-            .map(|mode| Capability {
-                provider: Provider::Instagram,
-                mode,
-                status: CapabilityStatus::Available,
-                paginated: true,
-                media_metadata: true,
-                adapter_version: "instagram.authorized-source.v1".into(),
-            })
-            .collect()
-    }
+    fn capabilities(&self) -> Vec<Capability> { capabilities() }
     fn acquire<'a>(&'a self, request: SourceRequest) -> Pending<'a, AcquisitionPage> {
         Box::pin(async move {
             self.authorization.validate(&self.source, &request)?;
