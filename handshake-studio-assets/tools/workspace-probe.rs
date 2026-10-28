@@ -496,6 +496,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-composite", &["kurbo", "serde_json"]),
     ("hsk-studio-render-cpu", &["kurbo", "serde", "serde_json"]),
     ("hsk-studio-render-gpu", &["wgpu"]),
+    ("hsk-studio-render-gpu-native-memory", &["ash", "wgpu"]),
     ("hsk-studio-package", &["crc32fast", "miniz_oxide", "ruzstd", "serde", "serde_json", "sha2"]),
     ("hsk-studio-interop-psd", &["miniz_oxide", "serde_json"]),
     ("hsk-studio-interop-vector-svg", &["miniz_oxide", "roxmltree", "svgtypes"]),
@@ -525,6 +526,7 @@ const APPROVED: &[(&str, &[&str])] = &[
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.
 const NATIVE_OWNERS: &[&str] = &[
     "hsk-studio-render-gpu",
+    "hsk-studio-render-gpu-native-memory",
     "hsk-studio-score-device",
     "hsk-studio-score-plugin",
     "hsk-studio-reel-native",
@@ -544,7 +546,7 @@ const NATIVE_OWNERS: &[&str] = &[
 // D11: eframe and its window/GUI stack (winit, egui-winit, egui-wgpu; `image` is a non-optional eframe dependency on
 // native targets) only in hsk-studio-harness and (since the 3b split) hsk-studio-harness-view; engines stay window-free.
 const DESIGNATED: &[(&str, &[&str])] = &[
-    ("wgpu", &["hsk-studio-render-gpu", "hsk-studio-harness", "hsk-studio-harness-view"]),
+    ("wgpu", &["hsk-studio-render-gpu", "hsk-studio-render-gpu-native-memory", "hsk-studio-harness", "hsk-studio-harness-view"]),
     ("egui", &["hsk-studio-controls", "hsk-studio-harness", "hsk-studio-harness-view"]),
     ("ffmpeg-sys-next", &["hsk-studio-reel-native"]),
     ("eframe", &["hsk-studio-harness", "hsk-studio-harness-view"]),
@@ -680,7 +682,7 @@ fn registry_closure(
     // derived by tools/registry-sync.py from the parent's `[target.'cfg(fuzzing)'.dependencies]`) are not walked;
     // an entry reachable ONLY through such edges is skipped (and reported), one with any other path is gated.
     let fuzz = fuzzing_edges(policy)?;
-    let root = (dep.to_owned(), version.to_owned());
+    let root = direct_lock_identity(lock, dep, version)?;
     let (visited, skipped, graph) =
         registry_walk(&root, &fuzz, &mut |identity| lock_edges(lock, identity))?;
     for identity in &visited {
@@ -725,6 +727,31 @@ fn registry_closure(
 type LockIdentity = (String, String);
 type RegistryGraph = BTreeMap<LockIdentity, BTreeSet<LockIdentity>>;
 type FuzzEdges = BTreeSet<(LockIdentity, LockIdentity)>;
+fn direct_lock_identity(
+    lock: &BTreeMap<LockIdentity, Table>, name: &str, version: &str,
+) -> Result<LockIdentity> {
+    let mut candidates = lock.keys().filter(|(candidate, locked_version)| {
+        candidate == name && (locked_version == version
+            || (!version.contains('+') && locked_version.split_once('+')
+                .is_some_and(|(base, _)| base == version)))
+    });
+    let identity = candidates.next().ok_or("registry_package_not_locked")?;
+    if candidates.next().is_some() {
+        return Err("registry_lock_dependency_ambiguous".into());
+    }
+    Ok(identity.clone())
+}
+
+fn declared_package(path: &str) -> Result<String> {
+    if !path.starts_with("crates/hsk-studio-")
+        || path.contains(['*', '?'])
+        || Path::new(path).components().any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err("invalid_declared_member".into());
+    }
+    Ok(path.strip_prefix("crates/").ok_or("invalid_declared_member")?.replace('/', "-"))
+}
+
 fn lock_key(identity: &str) -> Result<LockIdentity> {
     let (name, version) = identity
         .split_once('@')
@@ -820,7 +847,7 @@ fn registry_walk(
     let skipped = fuzz_targets.difference(&visited).cloned().collect();
     Ok((order, skipped, graph))
 }
-// `--self-test`: the fuzzing-only rule on a synthetic graph (lead decision 2026-10-15, rav1e option b).
+// `--self-test`: bounded graph, exact registry identity and member-identity fixtures.
 fn self_test() -> Result<String> {
     let id = |n: &str| (n.to_owned(), "1.0.0".to_owned());
     let fuzz: FuzzEdges = [(id("rav1e"), id("libfuzzer-sys"))].into_iter().collect();
@@ -850,7 +877,36 @@ fn self_test() -> Result<String> {
     if !names(&visited).contains("libfuzzer-sys") || !skipped.is_empty() {
         return Err("self_test_normal_path_not_gated".into());
     }
-    Ok("{\"schema\":\"hsk.studio.workspace-probe-self-test@1\",\"status\":\"ok\",\"cases\":2}".to_owned())
+    let lock_of = |versions: &[&str]| -> BTreeMap<LockIdentity, Table> {
+        versions.iter().map(|v| (("ash".to_owned(), (*v).to_owned()), Table::new())).collect()
+    };
+    if direct_lock_identity(&lock_of(&["0.38.0"]), "ash", "0.38.0")?
+        != ("ash".to_owned(), "0.38.0".to_owned())
+        || direct_lock_identity(&lock_of(&["0.38.0+1.3.281"]), "ash", "0.38.0")?
+            != ("ash".to_owned(), "0.38.0+1.3.281".to_owned())
+    {
+        return Err("self_test_exact_registry_identity".into());
+    }
+    for versions in [&["0.38.1+1.3.281"][..], &["0.38.0", "0.38.0+1.3.281"][..],
+                     &["0.38.0+1.3.280", "0.38.0+1.3.281"][..]] {
+        if direct_lock_identity(&lock_of(versions), "ash", "0.38.0").is_ok() {
+            return Err("self_test_registry_missing_or_ambiguous_accepted".into());
+        }
+    }
+    let nested = declared_package("crates/hsk-studio-render-gpu/native-memory")?;
+    if nested != "hsk-studio-render-gpu-native-memory"
+        || nested != declared_package("crates/hsk-studio-render-gpu-native-memory")?
+        || declared_package("elsewhere/hsk-studio-render-gpu/native-memory").is_ok()
+        || declared_package("crates/hsk-studio-render-gpu/../native-memory").is_ok()
+    {
+        return Err("self_test_declared_member_identity".into());
+    }
+    let mut identities = BTreeMap::new();
+    identities.insert(nested, "nested");
+    if identities.insert(declared_package("crates/hsk-studio-render-gpu-native-memory")?, "flat").is_none() {
+        return Err("self_test_duplicate_member_identity_accepted".into());
+    }
+    Ok("{\"schema\":\"hsk.studio.workspace-probe-self-test@1\",\"status\":\"ok\",\"cases\":9}".to_owned())
 }
 fn registry_acyclic(
     node: &LockIdentity,
@@ -953,16 +1009,8 @@ fn inspect(args: &[String]) -> Result<String> {
     unique(&members, "duplicate_member")?;
     let mut available = BTreeMap::new();
     for path in &declared {
-        if !path.starts_with("crates/hsk-studio-")
-            || path.contains(['*', '?'])
-            || Path::new(path)
-                .components()
-                .any(|c| !matches!(c, Component::Normal(_)))
-        {
-            return Err("invalid_declared_member".into());
-        }
-        let name = path.rsplit('/').next().ok_or("invalid_member")?;
-        if available.insert(name.to_owned(), path.clone()).is_some() {
+        let name = declared_package(path)?;
+        if available.insert(name, path.clone()).is_some() {
             return Err("duplicate_package_name".into());
         }
     }
@@ -1292,7 +1340,7 @@ fn inspect(args: &[String]) -> Result<String> {
         hashes
     ))
 }
-const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example, bin, test and bench targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","selection":"Explicit registered packages only, no implicit default features. Feature selectors: dep:x activates optional x; x/f (weak x?/f) forwards feature f to path dependency x (Cargo unification: x activated unless weak, f must exist in x, path-dependency features lists forward the same way, a package is inspected again when its feature set grows; closure_features in the result); selectors naming a registry or undeclared dependency reject. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. Only owner/library pairs in the APPROVED table (generated from workspace.metadata.studio.registry.OWNER.direct by the steward registry sync tool) are approved exact inline direct registry pins, with explicit no defaults and exact feature sets. Native policy: -sys/_sys records only in native provider owners render-gpu, score-device, score-plugin, reel-native, motion-js and labelled kind=native-ffi; wgpu only in render-gpu, egui only in controls, ffmpeg-sys-next only in reel-native; handshake_core, handshake_native, surrealdb, rocksdb, eframe, image, libsqlite3-sys always reject. Metadata workspace.metadata.studio.registry.OWNER has direct inline maps by library (version,features,default-features=false), and locked inline maps keyed name@version (source,checksum,kind=pure-rust|native-ffi) covering the actual selected transitive lock closure, maximum256records. Source is exactly registry+https://github.com/rust-lang/crates.io-index; lock checksum must be64hex and match independently pinned policy. Git/alternate registries, implicit defaults, unapproved native/host dependencies, ambiguous identities and missing transitive pins reject; no network. Metadata pure classification is an owner-approved selection policy, not independent crate implementation review or compiler feature proof. Host paths and pure-leaf GPU edges still reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":64,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
+const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example, bin, test and bench targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","selection":"Explicit registered packages only, no implicit default features. Feature selectors: dep:x activates optional x; x/f (weak x?/f) forwards feature f to path dependency x (Cargo unification: x activated unless weak, f must exist in x, path-dependency features lists forward the same way, a package is inspected again when its feature set grows; closure_features in the result); selectors naming a registry or undeclared dependency reject. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. Only owner/library pairs in the APPROVED table (generated from workspace.metadata.studio.registry.OWNER.direct by the steward registry sync tool) are approved exact inline direct registry pins, with explicit no defaults and exact feature sets. Native policy: -sys/_sys records only in native provider owners render-gpu, hsk-studio-render-gpu-native-memory, score-device, score-plugin, reel-native, motion-js and labelled kind=native-ffi; wgpu only in render-gpu and its native-memory helper, egui only in controls, ffmpeg-sys-next only in reel-native; handshake_core, handshake_native, surrealdb, rocksdb, eframe, image, libsqlite3-sys always reject. Metadata workspace.metadata.studio.registry.OWNER has direct inline maps by library (version,features,default-features=false), and locked inline maps keyed name@version (source,checksum,kind=pure-rust|native-ffi) covering the actual selected transitive lock closure, maximum256records. Source is exactly registry+https://github.com/rust-lang/crates.io-index; lock checksum must be64hex and match independently pinned policy. Git/alternate registries, implicit defaults, unapproved native/host dependencies, ambiguous identities and missing transitive pins reject; no network. Metadata pure classification is an owner-approved selection policy, not independent crate implementation review or compiler feature proof. Host paths and pure-leaf GPU edges still reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":64,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = if args == ["--help"] || args == ["--descriptor"] {

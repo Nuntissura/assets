@@ -1,6 +1,6 @@
 schema: assets.index.v1
 catalog_version: 1.1.0
-updated_at: '2026-10-22'
+updated_at: '2026-10-28'
 coverage: complete
 coverage_note: All first-party package manifests in this checkout and all fetched origin branches are classified.
   Source-only unfinished folders are listed separately; presence does not establish product readiness.
@@ -1942,7 +1942,8 @@ assets:
   purpose: wgpu backend/device lifecycle, residency and budgets; GPU API types hidden from document/contracts.
   capabilities:
   - wgpu backend/device lifecycle, residency and budgets; GPU API types hidden from document/contracts.
-  manual: handshake-studio-assets/crates/hsk-studio-render-gpu/src/lib.rs
+  - read-only Vulkan heap budgets, estimated usage and memory types with device-generation provenance
+  manual: handshake-studio-assets/crates/hsk-studio-render-gpu/README.md
   packages:
   - name: hsk-studio-render-gpu
     manifest: handshake-studio-assets/crates/hsk-studio-render-gpu/Cargo.toml
@@ -1955,7 +1956,14 @@ assets:
     - hsk-studio-observe
     - hsk-studio-pigment
     - hsk-studio-prism
+    - hsk-studio-render-gpu-native-memory
     - hsk-studio-type
+  - name: hsk-studio-render-gpu-native-memory
+    manifest: handshake-studio-assets/crates/hsk-studio-render-gpu/native-memory/Cargo.toml
+    version: 0.1.0
+    api: handshake-studio-assets/crates/hsk-studio-render-gpu/native-memory/src/lib.rs
+    role: internal-native-adapter
+    depends_on: []
   source_url: https://github.com/Nuntissura/assets/tree/codex/handpick/handshake-studio-assets/crates/hsk-studio-render-gpu
   governance:
     mode: none

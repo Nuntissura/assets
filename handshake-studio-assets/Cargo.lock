@@ -2313,7 +2313,16 @@ dependencies = [
  "hsk-studio-observe",
  "hsk-studio-pigment",
  "hsk-studio-prism",
+ "hsk-studio-render-gpu-native-memory",
  "hsk-studio-type",
+ "wgpu",
+]
+
+[[package]]
+name = "hsk-studio-render-gpu-native-memory"
+version = "0.1.0"
+dependencies = [
+ "ash",
  "wgpu",
 ]
 

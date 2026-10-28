@@ -1,0 +1,11 @@
+[package]
+name = "hsk-studio-render-gpu-native-memory"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+description = "Internal Vulkan heap observations for hsk-studio-render-gpu"
+
+[dependencies]
+wgpu = { version = "=27.0.1", default-features = false, features = ["std", "vulkan"] }
+ash = { version = "=0.38.0", default-features = false, features = ["std"] }

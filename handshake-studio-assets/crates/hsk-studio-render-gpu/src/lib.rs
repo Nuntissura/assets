@@ -13,6 +13,7 @@ pub mod error;
 mod ext;
 mod fx;
 mod kernel;
+pub mod memory;
 pub mod pipeline;
 pub mod plan_sink;
 pub mod report;
@@ -21,6 +22,10 @@ pub mod residency;
 pub use device::{AdapterKind, BackendChoice, DeviceInfo, DeviceOptions, GpuContext};
 pub use error::{GpuError, Reason};
 pub use kernel::{gpu_adjust_supported, gpu_blend_qualifies, gpu_blend_supported};
+pub use memory::{
+    DeviceMemorySnapshot, MemoryObservationError, MemoryObservationUnsupportedReason,
+    VulkanMemoryHeap, VulkanMemorySnapshot, VulkanMemoryType,
+};
 pub use pipeline::{FAULT_MESSAGE_MAX_BYTES, PipelineFault, redact_paths};
 pub use plan_sink::{
     DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform, GpuBackend, GpuStats,

@@ -15,6 +15,7 @@ hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
 hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-render-gpu-native-memory = { path = "native-memory", version = "=0.1.0", default-features = false }
 wgpu = { version = "=27.0.1", default-features = false, features = ["std", "wgsl", "vulkan", "dx12", "metal"] }
 
 [dev-dependencies]
@@ -27,3 +28,7 @@ path = "src/lib.rs"
 [[example]]
 name = "render-gpu-consumer"
 path = "examples/render-gpu-consumer.rs"
+
+[[example]]
+name = "memory-observation-contract"
+path = "examples/memory-observation-contract.rs"

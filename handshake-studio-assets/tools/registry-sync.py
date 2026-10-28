@@ -32,6 +32,14 @@ def arr(v):
     return "[" + ", ".join(json.dumps(x) for x in v) + "]"
 
 
+def direct_lock_identity(name, version, byname):
+    candidates = [v for v in byname.get(name, [])
+                  if v == version or v.startswith(version + "+")]
+    if len(candidates) != 1:
+        raise ValueError(f"{name}@{version}: missing or ambiguous exact lock identity")
+    return name, candidates[0]
+
+
 # Lead decision 2026-10-15 (rav1e, option b): a lock edge parent -> child whose child the parent declares ONLY under
 # `[target.'cfg(fuzzing)'.*dependencies]` is a fuzzing edge. Fuzzing edges are not walked; an entry reachable ONLY
 # through them is skipped (never pinned, licence-gated or probed) and reported; any other path gates it. Parent
@@ -91,15 +99,25 @@ def self_test():
                       '[target."cfg(fuzzing)".dependencies.libfuzzer-sys]\nversion = "1"\n'
                       '[target."cfg(fuzzing)".dependencies.v_frame]\nversion = "1"\n')
     ok3 = fuzzing_only_deps(m) == {"libfuzzer-sys"}  # v_frame is also declared normally -> not fuzzing-only
-    if not (ok1 and ok2 and ok3):
-        fail(3, f"registry-sync self-test failed (fuzzing-only skipped {ok1}, normal path gated {ok2}, rule {ok3})")
+    ok4 = direct_lock_identity("ash", "0.38.0", {"ash": ["0.38.0"]}) == ("ash", "0.38.0")
+    ok5 = direct_lock_identity("ash", "0.38.0", {"ash": ["0.38.0+1.3.281"]}) == ("ash", "0.38.0+1.3.281")
+    refused = []
+    for versions in [["0.38.1+1.3.281"], ["0.38.0", "0.38.0+1.3.281"],
+                     ["0.38.0+1.3.280", "0.38.0+1.3.281"]]:
+        try:
+            direct_lock_identity("ash", "0.38.0", {"ash": versions})
+            refused.append(False)
+        except ValueError:
+            refused.append(True)
+    if not (ok1 and ok2 and ok3 and ok4 and ok5 and all(refused)):
+        fail(3, f"registry-sync self-test failed (fuzzing {ok1}/{ok2}/{ok3}, exact {ok4}, metadata {ok5}, refusals {refused})")
 
 
 def main():
     args = sys.argv[1:]
     self_test()
     if args == ["--self-test"]:
-        print("REGISTRY_SYNC_SELF_TEST OK (3 checks)")
+        print("REGISTRY_SYNC_SELF_TEST OK (8 checks)")
         return
     root = pathlib.Path(args[0])
     write, allow = "--write" in args, "--allow-unrequested" in args
@@ -107,7 +125,12 @@ def main():
     manifest_text = (root / "Cargo.toml").read_text(encoding="utf-8")
     manifest = tomllib.loads(manifest_text)
     lock = tomllib.loads((root / "Cargo.lock").read_text(encoding="utf-8"))
-    pk = {(p["name"], p["version"]): p for p in lock["package"]}
+    pk = {}
+    for package in lock["package"]:
+        identity = package["name"], package["version"]
+        if identity in pk:
+            fail(2, f"duplicate lock identity {identity}")
+        pk[identity] = package
     byname = {}
     for n, v in pk:
         byname.setdefault(n, []).append(v)
@@ -122,9 +145,13 @@ def main():
 
     registry = {}  # owner -> {lib: (version, features)}
     defects = []  # crate manifest problems the probe will reject (builder-owned files)
+    owners = []
     for member in manifest["workspace"]["members"]:
         crate = tomllib.loads((root / member / "Cargo.toml").read_text(encoding="utf-8"))
         owner = crate["package"]["name"]
+        if owner in owners:
+            fail(2, f"duplicate workspace package name {owner}")
+        owners.append(owner)
         tables = [crate.get(s, {}) for s in DEP_SECTIONS]
         for t in crate.get("target", {}).values():
             tables += [t.get(s, {}) for s in DEP_SECTIONS]
@@ -151,8 +178,10 @@ def main():
                 prev = registry.setdefault(owner, {}).get(lib)
                 if prev and prev != entry:
                     fail(2, f"{where}: conflicting specs {prev} vs {entry}")
-                if (lib, entry[0]) not in pk:
-                    fail(2, f"{where}: {lib}@{entry[0]} not in Cargo.lock (run cargo first)")
+                try:
+                    direct_lock_identity(lib, entry[0], byname)
+                except ValueError as error:
+                    fail(2, f"{where}: {error}")
                 registry[owner][lib] = entry
 
     sections, approved, fuzz_skipped = [], [], []
@@ -162,11 +191,11 @@ def main():
         if i not in fuzz_cache:
             fuzz_cache[i] = fuzzing_only_deps(crate_manifest(*i)) if pk[i].get("source") == CRATES_IO else set()
         return fuzz_cache[i]
-    for owner in [m.rsplit("/", 1)[1] for m in manifest["workspace"]["members"]]:
+    for owner in owners:
         direct = registry.get(owner)
         if not direct:
             continue
-        seen, fuzz_edges, skipped = walk([(lib, v) for lib, (v, _) in direct.items()],
+        seen, fuzz_edges, skipped = walk([direct_lock_identity(lib, v, byname) for lib, (v, _) in direct.items()],
                                          lambda i: [ident(e) for e in pk[i].get("dependencies", [])], fuzz_only_of)
         fuzz_skipped += [[owner, f"{n}@{v}"] for n, v in sorted(skipped)]
         locked = []
