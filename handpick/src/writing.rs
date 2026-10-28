@@ -727,6 +727,13 @@ impl WritingSession {
         }
         Ok(())
     }
+    pub(crate) fn validate_native_completion(&self, fence: &WritingFence) -> Result<(), Error> {
+        self.validate(fence)?;
+        if self.composition.is_some() || self.pending_save.is_some() {
+            return Err(Error::Stale);
+        }
+        Ok(())
+    }
     pub fn park(&mut self, id: PinId) -> Result<(), Error> {
         let fence = self.fence()?;
         if self.composition.is_some() || self.pending_save.is_some() {

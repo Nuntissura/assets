@@ -251,6 +251,7 @@ assets:
   - explicit Save-or-Pin close admission
   - fenced URL source-entry intent and prose classification
   - optional bounded whole-literal edit-distance matching
+  - bounded native-completion snapshots, normalized triggers and typed owner-intent plans (standalone-tested; host adoption unproven)
   manual: handpick/README.md
   packages:
   - name: handpick

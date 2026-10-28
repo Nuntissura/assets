@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 /// Interaction purpose, independent of the host retrieval implementation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,8 +49,11 @@ pub fn parse_query(text: &str) -> Result<ParsedQuery, QueryError> {
     let mut tokens = Vec::new();
     let mut token = String::new();
     let mut quoted = false;
+    let mut escaped = false;
     for ch in input.chars() {
-        if ch == '"' { quoted = !quoted; token.push(ch); }
+        if quoted && escaped { escaped = false; token.push(ch); }
+        else if quoted && ch == '\\' { escaped = true; token.push(ch); }
+        else if ch == '"' { quoted = !quoted; token.push(ch); }
         else if ch.is_whitespace() && !quoted {
             if !token.is_empty() { tokens.push(std::mem::take(&mut token)); }
         } else { token.push(ch); }
@@ -59,9 +63,15 @@ pub fn parse_query(text: &str) -> Result<ParsedQuery, QueryError> {
     if tokens.len() > 1024 { return Err(QueryError::TokenLimit); }
     parsed.incomplete = quoted;
     let mut lookup_syntax = false;
-    for token in tokens {
+    let token_count = tokens.len();
+    for (index, token) in tokens.into_iter().enumerate() {
+        let partial = quoted && index + 1 == token_count;
         if token.starts_with('"') {
-            let word = token.trim_matches('"').to_lowercase();
+            let Some(word) = query_text(&token, partial) else {
+                parsed.incomplete = true; parsed.unsupported.push(token.clone());
+                parsed.words.push(token.to_lowercase()); continue;
+            };
+            let word = word.to_lowercase();
             if !word.is_empty() { parsed.words.push(word); }
             if token.len() == 1 { parsed.incomplete = true; }
             continue;
@@ -71,7 +81,11 @@ pub fn parse_query(text: &str) -> Result<ParsedQuery, QueryError> {
         let Some((field, raw)) = filter else { parsed.words.push(token.to_lowercase()); continue; };
         lookup_syntax = true;
         let field = field.to_ascii_lowercase();
-        let value = raw.trim_matches('"').to_lowercase();
+        let Some(value) = query_text(raw, partial) else {
+            parsed.incomplete = true; parsed.unsupported.push(token.clone());
+            parsed.words.push(token.to_lowercase()); continue;
+        };
+        let value = value.to_lowercase();
         if value.is_empty() { parsed.incomplete = true; continue; }
         let supported = match field.as_str() {
             "type" => ["note", "notes", "heading", "block", "task", "tag", "settings", "manual", "navigation", "command", "feed", "file", "folder"].contains(&value.as_str()),
@@ -85,7 +99,9 @@ pub fn parse_query(text: &str) -> Result<ParsedQuery, QueryError> {
         }
         match field.as_str() {
             "type" => parsed.result_type = Some(value),
-            "tag" => parsed.tag = Some(value.strip_prefix('#').unwrap_or(&value).to_owned()),
+            "tag" => parsed.tag = Some(if raw.trim_matches('"').starts_with('#') {
+                value.strip_prefix('#').unwrap_or(&value).to_owned()
+            } else { value }),
             "in" => parsed.area = Some(value),
             _ => parsed.task = Some(value),
         }
@@ -109,4 +125,37 @@ pub fn parse_query(text: &str) -> Result<ParsedQuery, QueryError> {
     if !parsed.words.is_empty() { explanation.push("all words / exact quoted phrases".into()); }
     parsed.explanation = if explanation.is_empty() { "Browse authorized results".into() } else { explanation.join(" · ") };
     Ok(parsed)
+}
+
+// Decode only complete quoted values. Unquoted backslashes and partial-query text stay literal.
+fn query_text(raw: &str, partial: bool) -> Option<String> {
+    if partial || !raw.starts_with('"') || !raw.contains('\\') {
+        return Some(raw.trim_matches('"').to_owned());
+    }
+    let mut chars = raw.strip_prefix('"')?.strip_suffix('"')?.chars();
+    let mut text = String::new();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' { text.push(ch); continue; }
+        text.push(match chars.next()? {
+            '"' => '"', '\\' => '\\', '/' => '/', 'b' => '\u{0008}', 'f' => '\u{000c}',
+            'n' => '\n', 'r' => '\r', 't' => '\t',
+            'u' => {
+                let first = hex_quad(&mut chars)?;
+                let scalar = if (0xd800..=0xdbff).contains(&first) {
+                    if chars.next()? != '\\' || chars.next()? != 'u' { return None; }
+                    let low = hex_quad(&mut chars)?;
+                    if !(0xdc00..=0xdfff).contains(&low) { return None; }
+                    0x10000 + ((first - 0xd800) << 10) + low - 0xdc00
+                } else { first };
+                char::from_u32(scalar)?
+            }
+            _ => return None,
+        });
+    }
+    Some(text.nfc().collect())
+}
+fn hex_quad(chars: &mut std::str::Chars<'_>) -> Option<u32> {
+    let mut value = 0;
+    for _ in 0..4 { value = value * 16 + chars.next()?.to_digit(16)?; }
+    Some(value)
 }

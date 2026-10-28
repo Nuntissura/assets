@@ -48,6 +48,7 @@ identity!(BlockId, "Permanent Notes-owned nested block identity.");
 identity!(OperationId, "Stable owner-deduplicated canonical operation identity.");
 identity!(FolderId, "Owner-resolved Notes container identity.");
 identity!(RevisionId, "Opaque owner revision or content hash fence.");
+identity!(CompletionSnapshotId, "Host-unique immutable native selection snapshot; never reused after a selection change.");
 identity!(RelationshipId, "Owner-derived committed relationship identity.");
 identity!(
     ResultId,

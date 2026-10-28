@@ -20,6 +20,44 @@ Completion edits reference the original draft revision and a half-open UTF-8 byt
 
 </topic>
 
+<topic id="native-completion" status="standalone-tested-host-unproven" version="1">
+
+## Native completion adapter
+
+The Rust adapter produces effect-free plans for an owner-held rich editor. Independent affected-source review and standalone proof passed: 81 default tests, 83 tests with `wasm,matching`, a real WASM build, fresh web glue and both browser checks. Host adoption remains unproven. Existing literal `Session::complete` retains its original UTF-8 draft-editing behavior.
+
+The owner captures a `NativeCompletionSnapshot` after `WritingSession::begin_lookup`, with the current `WritingFence`, a fresh `CompletionSnapshotId`, a bounded local text prefix ending at the caret, and either a caret or the original selected text. Selection changes need a fresh snapshot ID even if the content revision is unchanged. Supply the complete local prefix needed for token recognition; do not silently truncate an unfinished token. The combined prefix and selection are limited to 65,536 UTF-8 bytes. Notes tree positions, selection direction, marks and undo history remain owner-held.
+
+`WritingSession::native_completion_trigger` distinguishes explicit manual invocation, such as Ctrl+Space, from automatic invocation. It supports manual selected text or the trailing word, `type:`/`tag:`/`in:`/`is:`, `[[note]]` entry, `((block))` entry, `#tag`, `/template`, alias suffixes and reference/embed prefixes. Closed markers are not unfinished triggers. Query text is limited to 4,096 UTF-8 bytes. NFC plus lowercase lookup text is separate from the original text. `NativeCompletionRange::BeforeCaret` names byte offsets only in that original prefix; `Selection` means the original native selection. Neither is a Notes tree/character offset or an offset into normalized text.
+
+`lookup` returns typed note-title, heading/block, tag, template or query-filter requirements. `parsed_query` reuses the shared grammar. `operator_completions` accepts only names from the host's authorized tag set; at most 5,000 names of 100 UTF-8 bytes each are accepted. Filter insertions preserve canonical names, quote syntax characters and append a space. `tag_creation_name` is only a proposal, available with explicit complete authorized coverage and no normalized duplicate. A partial page cannot establish that a tag does not exist.
+
+`composition_query` retains the original fence. `WritingProvider::validate_native_completion_query` checks the exact provider, query, fence, declared Search support and page bounds, permitting an empty prefix for bounded completion enumeration. It does not change `validate_query`'s existing nonempty prose-query rule or establish live authorization, source completeness or permission to enumerate a corpus.
+
+Deliver authorized descriptors and select the exact `ResultKey` through the existing writing session. `plan_native_completion` combines the trigger with an owner-resolved choice and returns a `NativeCompletionPlan`: the original snapshot/range, typed text/reference/tag/template value and existing `WritingActionIntent`. Aliases and embed prefixes survive planning. Wrong result identities, incompatible target kinds, stale snapshots, active IME and pending save reject without changing content. Before applying, supply a fresh current snapshot to `plan.validate`; repeat canonical permission/target resolution and context checks at the Notes owner. The owner maps the original range and applies one native undo transaction, then advances the writing revision. Save, lost-response recovery and persistence remain separate owner operations. A plan is not a grant, an exactly-once transaction receipt or permission to execute commands.
+
+### Research and verification basis
+
+Text/tag plans repeat the exact currently offered `ApplyCompletion` action check during final validation; a same-key row refresh cannot retain an action it withdrew. The shared query lexer recognizes escaped quotes inside quoted values, and complete quoted values decode JSON-style escapes, including Unicode scalar/surrogate-pair escapes. Invalid complete escapes remain explicitly incomplete/unsupported. Unquoted backslashes and ordinary partial-query text keep their literal behavior. The tag formatter escapes a literal leading `#` as `\u0023`, preserving that name while retaining the existing unescaped optional tag sigil. Decoded escaped values are NFC-normalized independently of source replacement coordinates.
+
+Template lookup preserves source-note title and optional heading/block constraints in `NativeTemplateSource`; `/Road#Intro` finds a heading row while its intent remains template insertion from the owning note. The shared `#`/`^` split follows Portal's anchored, non-dotAll JavaScript expression. LF, CR, U+2028 and U+2029 anywhere in a manually selected query prevent that split; tabs, U+0085, nonbreaking spaces and U+FEFF do not. Original selection/ranges remain unchanged. This distinction follows [ECMAScript's wildcard and boundary rules](https://tc39.es/ecma262/multipage/text-processing.html#sec-compileassertion), not a host-side parser workaround.
+
+The source basis is Portal `product/handpick/web/search.ts:50–86` and `Handpick.tsx:336,427–490`, inspected on 2026-10-28. Existing Handpick query, writing/provider fences and action/address/result contracts are reused. [CodeMirror's completion sources](https://codemirror.net/examples/autocompletion/) and [source implementation](https://github.com/codemirror/autocomplete/blob/main/src/completion.ts) separate explicit invocation, source ranges and asynchronous completion validity. [ProseMirror's transaction/selection contract](https://prosemirror.net/docs/ref/) keeps structural selection mapping and edits at the editor owner. [Unicode normalization](https://docs.rs/unicode-normalization/0.1.26/unicode_normalization/) supplies NFC instead of a copied normalization table. Exact registry checksums and dependency manifests were inspected for the two added lock records; Cargo accepted the unchanged candidate lockfile with `--locked`.
+
+A host regex copy was rejected because it would duplicate shared semantics. Feeding rich Notes into literal `Session::complete` was rejected because its coordinate/content model differs. Core-maintained Notes coordinates, implicit provider discovery and stale-range remapping were rejected because they move owner authority into the asset. The chosen adapter retains immutable source evidence and returns a semantic plan. Risks include Unicode offset drift, changed selection with an unchanged content revision, delayed provider resolution, incomplete tag coverage and IME interruption. Separate normalized text, snapshot IDs, repeated fence checks, explicit coverage and owner transactions address those risks; live owner authorization remains required.
+
+Owning proof commands, completed with locked dependencies:
+
+```text
+cargo test --locked --manifest-path handpick/Cargo.toml --test native_completion
+cargo test --locked --manifest-path handpick/Cargo.toml
+cargo test --locked --manifest-path handpick/Cargo.toml --features wasm,matching
+```
+
+Use an explicitly admitted toolchain/home/external target. Run the focused target first; stop on failure. Native completion is Rust-only in this change; the existing WASM exports are unchanged. Existing browser bridge proofs remain required before publication because the default dependency closure changed. No proof here authorizes a compiler slot, host adoption or GPU execution.
+
+</topic>
+
 <topic id="literal-matching" status="implemented" version="1">
 
 ## Optional literal similarity

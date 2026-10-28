@@ -6,6 +6,7 @@ mod writing;
 mod query;
 mod picker;
 mod recovery;
+mod native_completion;
 #[cfg(feature = "matching")]
 pub mod matching;
 #[cfg(feature = "wasm")]
@@ -18,5 +19,6 @@ pub use writing::*;
 pub use query::*;
 pub use picker::*;
 pub use recovery::*;
+pub use native_completion::*;
 #[cfg(feature = "wasm")]
 pub use wasm::{WasmSession, WasmWritingSession};
