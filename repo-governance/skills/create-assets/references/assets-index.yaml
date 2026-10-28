@@ -1891,6 +1891,7 @@ assets:
   capabilities:
   - Decode/encode media/proxy-provider adapters; native codec bindings opt-in, never reachable from raster/type
     default closure.
+  - Public bounded ESDS decoder-configuration extraction and AAC-LC configuration inspection without codec decoding.
   manual: handshake-studio-assets/crates/hsk-studio-reel/src/lib.rs
   packages:
   - name: hsk-studio-reel

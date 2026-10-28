@@ -429,53 +429,58 @@ impl FrameSource for AdtsStream<'_> {
 
 /// AudioSpecificConfig from an MP4 `esds` box payload (ISO/IEC 14496-1 ES_Descriptor ->
 /// DecoderConfigDescriptor (tag 4) -> DecoderSpecificInfo (tag 5)), with the descriptor's
-/// objectTypeIndication.
-pub(crate) fn asc_from_esds(esds: &[u8]) -> Result<(u8, Vec<u8>), ReelError> {
-    let bad = || ReelError::Corrupt { what: "mp4-esds" };
-    // FullBox version/flags.
-    let mut p = 4usize;
-    let read_desc = |p: &mut usize| -> Result<(u8, usize), ReelError> {
-        let tag = *esds.get(*p).ok_or_else(bad)?;
-        *p = p.saturating_add(1);
+/// objectTypeIndication. Input starts with the four FullBox version/flags bytes, excluding
+/// the box size and `esds` type. Descriptors traversed for configuration extraction are bounded
+/// by their declared parents, and their variable-length sizes must terminate within four bytes.
+/// Unrelated trailing siblings are not validated. A missing DecoderSpecificInfo returns an
+/// empty configuration (for example MPEG audio); this is not full-container or decode validation.
+pub fn asc_from_esds(esds: &[u8]) -> Result<(u8, Vec<u8>), ReelError> {
+    fn descriptor(data: &[u8]) -> Result<(u8, &[u8]), ReelError> {
+        let bad = || ReelError::Corrupt { what: "mp4-esds" };
+        let tag = *data.first().ok_or_else(bad)?;
         let mut len = 0usize;
-        for _ in 0..4 {
-            let b = *esds.get(*p).ok_or_else(bad)?;
-            *p = p.saturating_add(1);
+        for at in 1usize..=4 {
+            let b = *data.get(at).ok_or_else(bad)?;
             len = (len << 7) | usize::from(b & 0x7F);
             if b & 0x80 == 0 {
-                break;
+                let start = at.saturating_add(1);
+                let end = start.checked_add(len).ok_or_else(bad)?;
+                return Ok((tag, data.get(start..end).ok_or_else(bad)?));
             }
         }
-        Ok((tag, len))
-    };
-    let (tag, _) = read_desc(&mut p)?;
+        Err(bad())
+    }
+    let bad = || ReelError::Corrupt { what: "mp4-esds" };
+    let (tag, es) = descriptor(esds.get(4..).ok_or_else(bad)?)?;
     if tag != 3 {
         return Err(bad());
     }
-    let flags = *esds.get(p.saturating_add(2)).ok_or_else(bad)?;
-    p = p.saturating_add(3);
+    let flags = *es.get(2).ok_or_else(bad)?;
+    let mut rest = es.get(3..).ok_or_else(bad)?;
     if flags & 0x80 != 0 {
-        p = p.saturating_add(2);
+        rest = rest.get(2..).ok_or_else(bad)?;
     }
     if flags & 0x40 != 0 {
-        let url_len = usize::from(*esds.get(p).ok_or_else(bad)?);
-        p = p.saturating_add(1).saturating_add(url_len);
+        let url_len = usize::from(*rest.first().ok_or_else(bad)?);
+        rest = rest.get(url_len.saturating_add(1)..).ok_or_else(bad)?;
     }
     if flags & 0x20 != 0 {
-        p = p.saturating_add(2);
+        rest = rest.get(2..).ok_or_else(bad)?;
     }
-    let (tag, _) = read_desc(&mut p)?;
+    let (tag, decoder) = descriptor(rest)?;
     if tag != 4 {
         return Err(bad());
     }
-    let oti = *esds.get(p).ok_or_else(bad)?;
-    p = p.saturating_add(13);
-    let (tag, len) = read_desc(&mut p)?;
+    let oti = *decoder.first().ok_or_else(bad)?;
+    let rest = decoder.get(13..).ok_or_else(bad)?;
+    if rest.is_empty() {
+        return Ok((oti, Vec::new()));
+    }
+    let (tag, asc) = descriptor(rest)?;
     if tag != 5 {
         // No DecoderSpecificInfo (MP3 in MP4 carries none).
         return Ok((oti, Vec::new()));
     }
-    let asc = esds.get(p..p.saturating_add(len)).ok_or_else(bad)?;
     Ok((oti, asc.to_vec()))
 }
 

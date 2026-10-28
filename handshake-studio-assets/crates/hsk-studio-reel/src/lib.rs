@@ -13,6 +13,13 @@
 //! `av1`) only for sources the caller marks `SourceTrust::Trusted`. A proxy is its own source: it is
 //! `Untrusted` unless its `ProxySource` is marked otherwise, whatever the original's trust is.
 //!
+//! `audio::aac::asc_from_esds` extracts the object-type indication and optional decoder configuration
+//! from an ESDS FullBox payload, with nested descriptor bounds and four-byte length termination.
+//! Pass its AAC configuration to `parse_audio_specific_config` to inspect AAC-LC without a decoder;
+//! empty configuration remains valid for MPEG audio without DecoderSpecificInfo. Host playback policy
+//! and actual decoding stay separate. Focused proof: `aac_config_contract`, plus the AAC route in
+//! `d24a_defaults` and MP4 audio routing in `audio_containers`, with default features disabled.
+//!
 //! The synthetic container builders the tests use (WAV, Y4M, MP4/MOV, Matroska bytes, including hostile
 //! variants) are test support in `tests/common`; no module of this crate exports them (PLR-029):
 //!
