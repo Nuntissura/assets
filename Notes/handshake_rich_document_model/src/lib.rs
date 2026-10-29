@@ -30,8 +30,10 @@
 pub mod doc_json;
 pub mod edit_state;
 pub mod find_scan;
+pub mod fragment;
 pub mod history;
 pub mod node;
+pub mod path_trace;
 pub mod position;
 pub mod rope_text;
 pub mod schema;
@@ -43,8 +45,19 @@ pub use doc_json::{
     to_rich_document, DocJsonError, JsonMark, JsonNode, RichDocument, RICH_DOCUMENT_SCHEMA_VERSION,
 };
 pub use edit_state::{DocumentEditState, EditCommit, EditError};
+pub use fragment::{
+    replace_selection_with_fragment, replace_selection_with_fragment_with_trace,
+    FragmentReplaceError, FragmentReplaceOptions, FragmentReplacement, RichFragment,
+    TracedFragmentReplacement,
+};
 pub use history::{UndoManager, DEFAULT_HISTORY_CAP};
-pub use node::{BlockNode, Child, HeadingLevel, HsLinkNode, Mark, NodeKind, TextLeaf};
+pub use node::{
+    BlockNode, Child, HeadingLevel, HsLinkNode, Mark, NodeKind, ReferenceTargetKind, TagReference,
+    TagReferenceKind, TextLeaf,
+};
+pub use path_trace::{
+    SplitBlockChild, SplitSide, StepPathTrace, TracedTransactionReceipt, TransactionTrace,
+};
 pub use position::{absolute_offset, resolve, DocPosition};
 pub use rope_text::RopeText;
 pub use schema::{
@@ -53,5 +66,6 @@ pub use schema::{
 };
 pub use selection::Selection;
 pub use transform::{
-    apply_transaction, ActorKind, Step, Transaction, TransactionReceipt, TransformError,
+    apply_transaction, apply_transaction_with_trace, ActorKind, Step, Transaction,
+    TransactionReceipt, TransformError,
 };

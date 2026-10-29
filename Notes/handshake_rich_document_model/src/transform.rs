@@ -21,6 +21,9 @@
 use thiserror::Error;
 
 use super::node::{BlockNode, Child, Mark, NodeKind, TextLeaf};
+use super::path_trace::{
+    SplitBlockChild, SplitSide, StepPathTrace, TracedTransactionReceipt, TransactionTrace,
+};
 use super::schema::{self, SchemaError};
 
 /// Who/what produced a transaction. Threaded onto the [`Transaction`] so the event
@@ -190,17 +193,43 @@ pub fn apply_transaction(
     doc: &mut BlockNode,
     tx: Transaction,
 ) -> Result<TransactionReceipt, TransformError> {
+    apply_transaction_inner(doc, tx, false).map(|(receipt, _)| receipt)
+}
+
+/// Apply exactly the same transaction with opt-in block-path lineage. The trace
+/// is returned only after final validation succeeds. No intermediate prefix is
+/// schema-validated, and failures retain the original document with no trace.
+pub fn apply_transaction_with_trace(
+    doc: &mut BlockNode,
+    tx: Transaction,
+) -> Result<TracedTransactionReceipt, TransformError> {
+    apply_transaction_inner(doc, tx, true).map(|(receipt, trace)| TracedTransactionReceipt {
+        receipt,
+        trace: trace.expect("trace requested"),
+    })
+}
+
+fn apply_transaction_inner(
+    doc: &mut BlockNode,
+    tx: Transaction,
+    record_trace: bool,
+) -> Result<(TransactionReceipt, Option<TransactionTrace>), TransformError> {
     // RISK-2 atomicity: snapshot before touching anything.
     let snapshot = doc.clone();
+    let mut trace = record_trace.then(|| TransactionTrace::new(doc));
 
-    let mut inverse_in_apply_order: Vec<Step> = Vec::with_capacity(tx.steps.len());
+    let mut inverse_batches: Vec<Vec<Step>> = Vec::with_capacity(tx.steps.len());
 
     let result = (|| -> Result<(), TransformError> {
         for step in &tx.steps {
             // Capture the inverse from current (pre-step) state, THEN apply.
             let inverse = compute_inverse(doc, step)?;
-            apply_step(doc, step)?;
-            inverse_in_apply_order.push(inverse);
+            if let Some(trace) = trace.as_mut() {
+                trace.steps.push(apply_step_with_trace(doc, step)?);
+            } else {
+                apply_step(doc, step)?;
+            }
+            inverse_batches.push(inverse);
         }
         // Post-apply structural validation (RISK-2): a step batch that leaves the
         // tree invalid is rejected wholesale.
@@ -210,15 +239,18 @@ pub fn apply_transaction(
 
     match result {
         Ok(()) => {
-            // Undo applies the inverses in reverse of the forward order.
-            let mut inverse = inverse_in_apply_order;
-            inverse.reverse();
-            Ok(TransactionReceipt {
-                forward: tx.steps,
-                inverse,
-                actor_kind: tx.actor_kind,
-                actor_id: tx.actor_id,
-            })
+            // Reverse forward-step groups while retaining each inverse batch's
+            // own application order, including exact two-block merge restoration.
+            let inverse = inverse_batches.into_iter().rev().flatten().collect();
+            Ok((
+                TransactionReceipt {
+                    forward: tx.steps,
+                    inverse,
+                    actor_kind: tx.actor_kind,
+                    actor_id: tx.actor_id,
+                },
+                trace,
+            ))
         }
         Err(e) => {
             // Roll back to the pre-transaction snapshot.
@@ -228,11 +260,66 @@ pub fn apply_transaction(
     }
 }
 
+fn apply_step_with_trace(
+    doc: &mut BlockNode,
+    step: &Step,
+) -> Result<StepPathTrace, TransformError> {
+    let mut trace = match step {
+        Step::SplitNode { path, char_offset } => return apply_split(doc, path, *char_offset),
+        Step::InsertNode {
+            parent_path, index, ..
+        }
+        | Step::InsertInlineChild {
+            parent_path, index, ..
+        } => StepPathTrace::InsertChild {
+            parent_path: parent_path.clone(),
+            index: *index,
+        },
+        Step::DeleteNode { parent_path, index }
+        | Step::DeleteInlineChild { parent_path, index } => StepPathTrace::DeleteChild {
+            parent_path: parent_path.clone(),
+            index: *index,
+        },
+        Step::MergeNodes { parent_path, index } => {
+            // compute_inverse already checked both sibling addresses against this
+            // same pre-step document. Read geometry without validating a prefix.
+            let mut path = parent_path.clone();
+            path.push(index - 1);
+            let left_children_before = block_at(doc, &path)?.children.len();
+            *path.last_mut().expect("sibling path") = *index;
+            let right_children_before = block_at(doc, &path)?.children.len();
+            StepPathTrace::Merge {
+                parent_path: parent_path.clone(),
+                index: *index,
+                left_children_before,
+                right_children_before,
+                coalesced_boundary: false,
+            }
+        }
+        _ => StepPathTrace::Unchanged,
+    };
+    apply_step(doc, step)?;
+    if let StepPathTrace::Merge {
+        parent_path,
+        index,
+        left_children_before,
+        right_children_before,
+        coalesced_boundary,
+    } = &mut trace
+    {
+        let mut path = parent_path.clone();
+        path.push(*index - 1);
+        *coalesced_boundary =
+            block_at(doc, &path)?.children.len() < *left_children_before + *right_children_before;
+    }
+    Ok(trace)
+}
+
 /// Compute the inverse of `step` against the CURRENT (pre-step) `doc`. The caller
 /// guarantees this runs before `apply_step` for the same step, so the old content is
 /// still present.
-fn compute_inverse(doc: &BlockNode, step: &Step) -> Result<Step, TransformError> {
-    match step {
+fn compute_inverse(doc: &BlockNode, step: &Step) -> Result<Vec<Step>, TransformError> {
+    let inverse: Result<Step, TransformError> = match step {
         Step::InsertText {
             path,
             char_offset,
@@ -307,11 +394,8 @@ fn compute_inverse(doc: &BlockNode, step: &Step) -> Result<Step, TransformError>
             })
         }
         Step::MergeNodes { parent_path, index } => {
-            // Merging child[index] into child[index-1] appends ALL of index's inline
-            // content AFTER child[index-1]'s existing content; the inverse splits
-            // child[index-1] at the join point, which is the pre-merge TOTAL flat
-            // char length of child[index-1] (not just its first text leaf — RISK FIX
-            // for multi-run nodes).
+            // Splitting the merged node cannot recover the removed sibling's
+            // kind, attrs, identities, or original text-run boundaries.
             let parent = block_at(doc, parent_path)?;
             if *index == 0 {
                 return Err(TransformError::InvalidStructuralStep {
@@ -324,14 +408,32 @@ fn compute_inverse(doc: &BlockNode, step: &Step) -> Result<Step, TransformError>
                 .and_then(Child::as_block)
                 .ok_or_else(|| TransformError::InvalidStructuralStep {
                     reason: format!("previous sibling of index {index} is not a block"),
-                })?;
-            let join_at = prev.char_len();
-            let mut prev_path = parent_path.clone();
-            prev_path.push(*index - 1);
-            Ok(Step::SplitNode {
-                path: prev_path,
-                char_offset: join_at,
-            })
+                })?
+                .clone();
+            let removed = parent
+                .children
+                .get(*index)
+                .and_then(Child::as_block)
+                .ok_or_else(|| TransformError::InvalidStructuralStep {
+                    reason: format!("child {index} is not a block to merge"),
+                })?
+                .clone();
+            return Ok(vec![
+                Step::DeleteNode {
+                    parent_path: parent_path.clone(),
+                    index: index - 1,
+                },
+                Step::InsertNode {
+                    parent_path: parent_path.clone(),
+                    index: index - 1,
+                    node: prev,
+                },
+                Step::InsertNode {
+                    parent_path: parent_path.clone(),
+                    index: *index,
+                    node: removed,
+                },
+            ]);
         }
         Step::AddMark { path, mark } => {
             // Inverse of adding a mark: if a mark of the same type already existed,
@@ -397,7 +499,8 @@ fn compute_inverse(doc: &BlockNode, step: &Step) -> Result<Step, TransformError>
                 child,
             })
         }
-    }
+    };
+    inverse.map(|step| vec![step])
 }
 
 /// Apply `step` to `doc` in place. Pure mechanics — atomicity/validation are the
@@ -446,7 +549,7 @@ fn apply_step(doc: &mut BlockNode, step: &Step) -> Result<(), TransformError> {
             parent.children.remove(*index);
             Ok(())
         }
-        Step::SplitNode { path, char_offset } => apply_split(doc, path, *char_offset),
+        Step::SplitNode { path, char_offset } => apply_split(doc, path, *char_offset).map(|_| ()),
         Step::MergeNodes { parent_path, index } => apply_merge(doc, parent_path, *index),
         Step::AddMark { path, mark } => {
             let leaf = text_leaf_at_mut(doc, path)?;
@@ -504,11 +607,12 @@ fn apply_split(
     doc: &mut BlockNode,
     path: &[usize],
     char_offset: usize,
-) -> Result<(), TransformError> {
+) -> Result<StepPathTrace, TransformError> {
     let (parent_path, index) = split_path(path)?;
     let target_kind;
     let target_attrs;
-    let (head_children, tail_children) = {
+    let children_before;
+    let (head_children, tail_children, block_children) = {
         let target = block_at(doc, path)?;
         if !target.kind.holds_inline_content() {
             return Err(TransformError::InvalidStructuralStep {
@@ -517,7 +621,15 @@ fn apply_split(
         }
         target_kind = target.kind;
         target_attrs = target.attrs.clone();
+        children_before = target.children.len();
         split_inline_children(&target.children, char_offset)
+    };
+    let trace = StepPathTrace::Split {
+        path: path.to_vec(),
+        children_before,
+        head_children: head_children.len(),
+        tail_children: tail_children.len(),
+        block_children,
     };
     // Replace the target's children with the head, then insert the tail sibling.
     {
@@ -529,7 +641,7 @@ fn apply_split(
     tail.children = tail_children;
     let parent = block_at_mut(doc, &parent_path)?;
     parent.children.insert(index + 1, Child::Block(tail));
-    Ok(())
+    Ok(trace)
 }
 
 /// Split a flat list of inline children (`Text` runs + `HsLink` atoms) at a flat
@@ -538,16 +650,34 @@ fn apply_split(
 /// in the head when the offset is past it, else in the tail. The head always ends
 /// with at least one text leaf so the resulting block has addressable inline content
 /// even when the split lands exactly on a boundary.
-fn split_inline_children(children: &[Child], char_offset: usize) -> (Vec<Child>, Vec<Child>) {
+fn split_inline_children(
+    children: &[Child],
+    char_offset: usize,
+) -> (Vec<Child>, Vec<Child>, Vec<SplitBlockChild>) {
     let mut head: Vec<Child> = Vec::new();
     let mut tail: Vec<Child> = Vec::new();
     let mut consumed = 0usize;
-    for child in children {
+    let mut block_children = Vec::new();
+    for (old_index, child) in children.iter().enumerate() {
         let len = child.char_len();
         if consumed >= char_offset {
+            if matches!(child, Child::Block(_)) {
+                block_children.push(SplitBlockChild {
+                    old_index,
+                    side: SplitSide::Tail,
+                    new_index: tail.len(),
+                });
+            }
             // Entirely after the split point.
             tail.push(child.clone());
         } else if consumed + len <= char_offset {
+            if matches!(child, Child::Block(_)) {
+                block_children.push(SplitBlockChild {
+                    old_index,
+                    side: SplitSide::Head,
+                    new_index: head.len(),
+                });
+            }
             // Entirely before the split point.
             head.push(child.clone());
         } else {
@@ -571,6 +701,13 @@ fn split_inline_children(children: &[Child], char_offset: usize) -> (Vec<Child>,
                 other => {
                     // Defensive: a non-text child cannot straddle (len 1); place it in
                     // the tail so nothing is dropped.
+                    if matches!(other, Child::Block(_)) {
+                        block_children.push(SplitBlockChild {
+                            old_index,
+                            side: SplitSide::Tail,
+                            new_index: tail.len(),
+                        });
+                    }
                     tail.push(other.clone());
                 }
             }
@@ -585,7 +722,7 @@ fn split_inline_children(children: &[Child], char_offset: usize) -> (Vec<Child>,
     if tail.is_empty() {
         tail.push(Child::Text(TextLeaf::new("")));
     }
-    (head, tail)
+    (head, tail, block_children)
 }
 
 /// Merge child `index` of the block at `parent_path` into child `index-1` by
@@ -811,7 +948,7 @@ mod tests {
     #[test]
     fn split_then_merge_inverse() {
         let mut doc = doc_two_paras();
-        // Combine the two paras into "helloworld" via merge, then check inverse split.
+        // Combine the two paras into "helloworld", then restore both originals.
         let before = doc.clone();
         let merge = Transaction::operator(vec![Step::MergeNodes {
             parent_path: vec![],

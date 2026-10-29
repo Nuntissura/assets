@@ -16,12 +16,16 @@
 
 use thiserror::Error;
 
-use super::node::{BlockNode, Child, Mark, NodeKind};
+use super::node::{parse_reference_payload, BlockNode, Child, Mark, NodeKind};
 
 /// Why a node failed schema validation. Returned (never panicked) so a bad
 /// transaction rolls the document back cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SchemaError {
+    #[error("tag_ref_kind may only classify an hsLink tag")]
+    InvalidTagReferenceKind,
+    #[error("invalid hsEmbed reference attribute {attribute}")]
+    InvalidEmbedReference { attribute: &'static str },
     /// A block child appeared under a kind that only holds inline text (e.g. a
     /// paragraph nested directly inside another paragraph's inline content).
     #[error("node {parent:?} may not contain a block child {child:?}")]
@@ -82,7 +86,7 @@ pub fn block_child_allowed(parent: NodeKind, child: NodeKind) -> bool {
         // Inline-content containers hold NO block children.
         NodeKind::Paragraph | NodeKind::Heading(_) | NodeKind::CodeBlock => false,
         // Atoms hold nothing.
-        NodeKind::HardBreak | NodeKind::HorizontalRule => false,
+        NodeKind::HardBreak | NodeKind::HorizontalRule | NodeKind::HsEmbed => false,
     }
 }
 
@@ -112,6 +116,17 @@ pub fn mark_allowed(parent: NodeKind, _mark: &Mark) -> bool {
 /// only allowed marks. Does NOT recurse — [`validate_tree`] walks the whole tree.
 /// This is the per-node check `apply_transaction` runs on the touched node.
 pub fn validate_node(node: &BlockNode) -> Result<(), SchemaError> {
+    if node
+        .attrs
+        .get("tag_ref_kind")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(SchemaError::InvalidTagReferenceKind);
+    }
+    if matches!(node.kind, NodeKind::HsEmbed) {
+        parse_reference_payload(|key| node.attrs.get(key))
+            .map_err(|attribute| SchemaError::InvalidEmbedReference { attribute })?;
+    }
     if node.kind.is_atom() {
         if !node.children.is_empty() {
             return Err(SchemaError::AtomHasChildren { parent: node.kind });
@@ -142,6 +157,11 @@ pub fn validate_node(node: &BlockNode) -> Result<(), SchemaError> {
                 }
             }
             Child::HsLink(_) | Child::Transclusion(_) => {
+                if let Child::HsLink(link) = child {
+                    if link.tag_ref_kind.is_some() && link.ref_kind != "tag" {
+                        return Err(SchemaError::InvalidTagReferenceKind);
+                    }
+                }
                 // Both inline atoms (hsLink wikilink, loomTransclusion reference) live in the same
                 // inline-content slot as text runs (paragraph/heading), enforced identically.
                 if !inline_atom_allowed(node.kind) {

@@ -24,6 +24,7 @@
 //! that lands inside a multi-byte UTF-8 char (CJK, emoji) silently corrupts the
 //! document. The mandatory `emoji_char_index_is_not_byte_index` test proves it.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use serde_json::Value as JsonValue;
@@ -80,6 +81,9 @@ pub enum NodeKind {
     HardBreak,
     /// A horizontal rule (a leaf block atom; carries no children/text).
     HorizontalRule,
+    /// A persisted Notes reference rendered as a block atom. Reference and block
+    /// identities remain in the block's attrs; loading its preview is host-owned.
+    HsEmbed,
 }
 
 /// A heading level, constrained to the 1..=3 the schema allows. Constructed via
@@ -123,6 +127,7 @@ impl NodeKind {
             NodeKind::TaskItem => "taskItem",
             NodeKind::HardBreak => "hardBreak",
             NodeKind::HorizontalRule => "horizontalRule",
+            NodeKind::HsEmbed => "hsEmbed",
         }
     }
 
@@ -147,6 +152,7 @@ impl NodeKind {
             "taskItem" => NodeKind::TaskItem,
             "hardBreak" => NodeKind::HardBreak,
             "horizontalRule" => NodeKind::HorizontalRule,
+            "hsEmbed" => NodeKind::HsEmbed,
             _ => return None,
         })
     }
@@ -155,7 +161,10 @@ impl NodeKind {
     /// nor a text leaf (`hard_break`, `horizontal_rule`). Used by the schema and
     /// the transform layer to reject inserting children under an atom.
     pub fn is_atom(self) -> bool {
-        matches!(self, NodeKind::HardBreak | NodeKind::HorizontalRule)
+        matches!(
+            self,
+            NodeKind::HardBreak | NodeKind::HorizontalRule | NodeKind::HsEmbed
+        )
     }
 
     /// True when this kind's direct children are text leaves rather than block
@@ -316,6 +325,133 @@ pub struct HsLinkNode {
     /// Optional evidence provenance carried by embed-style links. Ordinary wikilinks leave this absent;
     /// Stage capture embeds persist the exact `{source,artifact_id,sha256,manifest_ref}` descriptor here.
     pub provenance: Option<serde_json::Value>,
+    /// The persisted target class, independent of the note's `ref_value`.
+    pub target_kind: Option<ReferenceTargetKind>,
+    /// The persisted heading/block identity. Never derived from a tree path.
+    pub target_block_id: Option<String>,
+    /// Marked tags store an exact raw full label. Unmarked labels remain opaque.
+    pub tag_ref_kind: Option<TagReferenceKind>,
+}
+
+/// Explicit meaning of a tag's `ref_value` and raw-label contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagReferenceKind {
+    HubId,
+    NormalizedName,
+}
+
+impl TagReferenceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HubId => "hub_id",
+            Self::NormalizedName => "normalized_name",
+        }
+    }
+    pub fn from_json_type(value: &str) -> Option<Self> {
+        match value {
+            "hub_id" => Some(Self::HubId),
+            "normalized_name" => Some(Self::NormalizedName),
+            _ => None,
+        }
+    }
+}
+
+/// Host resolution must keep unclassified historical values distinct from IDs
+/// and names. Neither value syntax nor lookup failure determines their meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagReference<'a> {
+    HubId {
+        id: &'a str,
+        raw_label: &'a str,
+    },
+    NormalizedName {
+        canonical_name: &'a str,
+        raw_label: &'a str,
+    },
+    Unclassified {
+        raw_value: &'a str,
+        stored_label: &'a str,
+    },
+}
+
+impl<'a> TagReference<'a> {
+    /// Plain chip text. Marked labels gain one syntax prefix without stripping a
+    /// literal leading '#'. Historical labels remain verbatim. Hosts own escaping,
+    /// icons, navigation and Markdown export separately.
+    pub fn display_label(self) -> Cow<'a, str> {
+        match self {
+            Self::HubId { raw_label, .. } | Self::NormalizedName { raw_label, .. } => {
+                Cow::Owned(format!("#{raw_label}"))
+            }
+            Self::Unclassified {
+                raw_value,
+                stored_label,
+            } => Cow::Borrowed(if stored_label.is_empty() {
+                raw_value
+            } else {
+                stored_label
+            }),
+        }
+    }
+}
+
+/// Notes reference destinations admitted by the canonical rich-document format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceTargetKind {
+    Note,
+    Heading,
+    Block,
+}
+
+impl ReferenceTargetKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Note => "note",
+            Self::Heading => "heading",
+            Self::Block => "block",
+        }
+    }
+
+    pub fn from_json_type(value: &str) -> Option<Self> {
+        match value {
+            "note" => Some(Self::Note),
+            "heading" => Some(Self::Heading),
+            "block" => Some(Self::Block),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) struct ReferencePayload<'a> {
+    pub ref_value: &'a str,
+    pub target_kind: Option<ReferenceTargetKind>,
+    pub target_block_id: Option<&'a str>,
+}
+
+pub(crate) fn parse_reference_payload<'a>(
+    attr: impl Fn(&str) -> Option<&'a JsonValue>,
+) -> Result<ReferencePayload<'a>, &'static str> {
+    let ref_value = attr("refValue")
+        .and_then(JsonValue::as_str)
+        .ok_or("refValue")?;
+    let target_kind = match attr("target_kind") {
+        None | Some(JsonValue::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .and_then(ReferenceTargetKind::from_json_type)
+                .ok_or("target_kind")?,
+        ),
+    };
+    let target_block_id = match attr("target_block_id") {
+        None | Some(JsonValue::Null) => None,
+        Some(value) => Some(value.as_str().ok_or("target_block_id")?),
+    };
+    Ok(ReferencePayload {
+        ref_value,
+        target_kind,
+        target_block_id,
+    })
 }
 
 impl HsLinkNode {
@@ -331,7 +467,44 @@ impl HsLinkNode {
             label: label.into(),
             resolved: true,
             provenance: None,
+            target_kind: None,
+            target_block_id: None,
+            tag_ref_kind: None,
         }
+    }
+
+    pub fn tag_hub_id(id: impl Into<String>, raw_label: impl Into<String>) -> Self {
+        let mut link = Self::new("tag", id, raw_label);
+        link.tag_ref_kind = Some(TagReferenceKind::HubId);
+        link
+    }
+
+    /// The host supplies the canonical identity from its proved legacy grammar.
+    /// This constructor never parses or normalizes the full raw label.
+    pub fn tag_normalized_name(name: impl Into<String>, raw_label: impl Into<String>) -> Self {
+        let mut link = Self::new("tag", name, raw_label);
+        link.tag_ref_kind = Some(TagReferenceKind::NormalizedName);
+        link
+    }
+
+    pub fn tag_reference(&self) -> Option<TagReference<'_>> {
+        if self.ref_kind != "tag" {
+            return None;
+        }
+        Some(match self.tag_ref_kind {
+            Some(TagReferenceKind::HubId) => TagReference::HubId {
+                id: &self.ref_value,
+                raw_label: &self.label,
+            },
+            Some(TagReferenceKind::NormalizedName) => TagReference::NormalizedName {
+                canonical_name: &self.ref_value,
+                raw_label: &self.label,
+            },
+            None => TagReference::Unclassified {
+                raw_value: &self.ref_value,
+                stored_label: &self.label,
+            },
+        })
     }
 }
 

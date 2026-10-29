@@ -50,7 +50,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use thiserror::Error;
 
-use super::node::{BlockNode, Child, HsLinkNode, Mark, NodeKind, TextLeaf, TransclusionNode};
+use super::node::{
+    parse_reference_payload, BlockNode, Child, HsLinkNode, Mark, NodeKind, TagReferenceKind,
+    TextLeaf, TransclusionNode,
+};
 
 /// The single source of the rich-document schema version. A bump is a one-line edit
 /// here (MT impl note). MUST equal the React `WP009_RICH_DOCUMENT_SCHEMA_VERSION`
@@ -75,6 +78,14 @@ pub enum DocJsonError {
     /// An `hsLink` node was missing a required attr (`refValue`).
     #[error("hsLink node missing required attr: {0}")]
     HsLinkMissingAttr(&'static str),
+    #[error("hsEmbed node missing required attr: {0}")]
+    HsEmbedMissingAttr(&'static str),
+    #[error("invalid reference target attr: {0}")]
+    InvalidReferenceTargetAttr(&'static str),
+    #[error("tag_ref_kind must classify an hsLink tag as hub_id or normalized_name")]
+    InvalidTagReferenceKind,
+    #[error("a classified tag requires its raw full label as a string")]
+    InvalidTagLabel,
     /// A `loomTransclusion` node was missing a required attr (`refValue`).
     #[error("loomTransclusion node missing required attr: {0}")]
     TransclusionMissingAttr(&'static str),
@@ -254,6 +265,15 @@ fn hs_link_to_json(link: &HsLinkNode) -> JsonNode {
     if let Some(provenance) = link.provenance.clone() {
         attrs.insert("provenance".to_string(), provenance);
     }
+    if let Some(kind) = link.target_kind {
+        attrs.insert("target_kind".into(), JsonValue::from(kind.as_str()));
+    }
+    if let Some(id) = &link.target_block_id {
+        attrs.insert("target_block_id".into(), JsonValue::from(id.clone()));
+    }
+    if let Some(kind) = link.tag_ref_kind {
+        attrs.insert("tag_ref_kind".into(), JsonValue::from(kind.as_str()));
+    }
     JsonNode {
         ty: "hsLink".to_string(),
         attrs: Some(attrs),
@@ -329,6 +349,22 @@ fn json_to_block(node: &JsonNode) -> Result<BlockNode, DocJsonError> {
         .unwrap_or(1);
     let kind = NodeKind::from_json_type(&node.ty, heading_level)
         .ok_or_else(|| DocJsonError::UnknownNodeType(node.ty.clone()))?;
+    if node
+        .attrs
+        .as_ref()
+        .and_then(|attrs| attrs.get("tag_ref_kind"))
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(DocJsonError::InvalidTagReferenceKind);
+    }
+    if matches!(kind, NodeKind::HsEmbed) {
+        // Validate the shared reference payload while retaining the complete
+        // block attrs map, including block_id, for exact serialization.
+        json_to_hs_link(node).map_err(|error| match error {
+            DocJsonError::HsLinkMissingAttr(attr) => DocJsonError::HsEmbedMissingAttr(attr),
+            other => other,
+        })?;
+    }
 
     // Preserve free-form attrs verbatim (RISK-3) EXCEPT the typed `level`, which the
     // kind already owns (and `to_json` re-stamps), so we don't duplicate it.
@@ -358,6 +394,15 @@ fn json_to_block(node: &JsonNode) -> Result<BlockNode, DocJsonError> {
 /// Deserialize a [`JsonNode`] into a [`Child`]: a `"text"` node becomes a text leaf,
 /// an `"hsLink"` node becomes an inline atom, anything else a nested block.
 fn json_to_child(node: &JsonNode) -> Result<Child, DocJsonError> {
+    if matches!(node.ty.as_str(), "text" | "loomTransclusion")
+        && node
+            .attrs
+            .as_ref()
+            .and_then(|attrs| attrs.get("tag_ref_kind"))
+            .is_some_and(|value| !value.is_null())
+    {
+        return Err(DocJsonError::InvalidTagReferenceKind);
+    }
     match node.ty.as_str() {
         "text" => {
             let text = node.text.clone().unwrap_or_default();
@@ -395,32 +440,58 @@ fn json_to_transclusion(node: &JsonNode) -> Result<TransclusionNode, DocJsonErro
 /// defaults). `refValue` is required (a wikilink with no target is malformed).
 fn json_to_hs_link(node: &JsonNode) -> Result<HsLinkNode, DocJsonError> {
     let attrs = node.attrs.as_ref();
+    let payload =
+        parse_reference_payload(|key| attrs.and_then(|map| map.get(key))).map_err(|attribute| {
+            match attribute {
+                "refValue" => DocJsonError::HsLinkMissingAttr(attribute),
+                _ => DocJsonError::InvalidReferenceTargetAttr(attribute),
+            }
+        })?;
     let ref_kind = attrs
         .and_then(|m| m.get("refKind"))
         .and_then(JsonValue::as_str)
         .unwrap_or("unknown")
         .to_string();
-    let ref_value = attrs
-        .and_then(|m| m.get("refValue"))
-        .and_then(JsonValue::as_str)
-        .ok_or(DocJsonError::HsLinkMissingAttr("refValue"))?
-        .to_string();
+    let ref_value = payload.ref_value.to_string();
+    let tag_ref_kind = match attrs.and_then(|map| map.get("tag_ref_kind")) {
+        None | Some(JsonValue::Null) => None,
+        Some(value) if ref_kind == "tag" => Some(
+            value
+                .as_str()
+                .and_then(TagReferenceKind::from_json_type)
+                .ok_or(DocJsonError::InvalidTagReferenceKind)?,
+        ),
+        Some(_) => return Err(DocJsonError::InvalidTagReferenceKind),
+    };
     let label = attrs
         .and_then(|m| m.get("label"))
         .and_then(JsonValue::as_str)
         .unwrap_or("")
         .to_string();
+    if tag_ref_kind.is_some()
+        && attrs
+            .and_then(|map| map.get("label"))
+            .and_then(JsonValue::as_str)
+            .is_none()
+    {
+        return Err(DocJsonError::InvalidTagLabel);
+    }
     let resolved = attrs
         .and_then(|m| m.get("resolved"))
         .and_then(JsonValue::as_bool)
         .unwrap_or(true);
     let provenance = attrs.and_then(|m| m.get("provenance")).cloned();
+    let target_kind = payload.target_kind;
+    let target_block_id = payload.target_block_id.map(str::to_string);
     Ok(HsLinkNode {
         ref_kind,
         ref_value,
         label,
         resolved,
         provenance,
+        target_kind,
+        target_block_id,
+        tag_ref_kind,
     })
 }
 
