@@ -460,8 +460,9 @@ fn hostile_lane_commands_are_refused_without_a_step() {
         (add(&a1, LaneTarget::ClipVolume, 10, 12.5), "value_out_of_range"),
         (add(&a1, LaneTarget::ClipVolume, 10, -96.5), "value_out_of_range"),
         (add(&a1, LaneTarget::ClipVolume, 55, 0.0), "no_clip_at"),
-        (add(&a1, LaneTarget::TrackVolume, 10, 0.0), "track_automation_not_stored"),
-        (add(&a1, LaneTarget::TrackPan, 10, 0.0), "track_automation_not_stored"),
+        // Lane SMB-AU-MULTITRACK-2: volume / pan lanes are editable; their refusals are typed.
+        (add(&a1, LaneTarget::TrackVolume, 10, 12.5), "value_out_of_range"),
+        (add(&a1, LaneTarget::TrackPan, 55, 0.0), "outside_sequence"),
         (add("STRK-nope", LaneTarget::ClipVolume, 10, 0.0), "unknown_track"),
         (add(&v1, LaneTarget::ClipVolume, 15, 0.0), "lane_unavailable"),
         (

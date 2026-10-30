@@ -3,14 +3,15 @@
 //! removed clip (save, reopen, validate). Oracles: hand-computed envelope points (offsets move by the
 //! source shift; the edge points are linear-in-dB interpolations of the original envelope), the
 //! clips' own fields after the edit, the run's history labels and Folio's validation of the reopened
-//! package.
+//! package. Track volume and pan lanes are edited by typed commands and a real click (one undo step
+//! each) and the mixer's bus stream plays them (ratios 10^(dB/20), pan direction).
 #![cfg(feature = "audio-batch")]
 
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
 use hsk_studio_harness_view::view::render::Prefer;
-use hsk_studio_harness_view::view::timeline::TimelineCommand;
+use hsk_studio_harness_view::view::timeline::{self, AutomationCommand, LaneTarget, PointId, TimelineCommand, lane_y};
 use hsk_studio_pulse::{AudioSources, SourceExtents};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -382,3 +383,161 @@ fn a_moved_clip_keeps_its_envelope_and_plays_it() {
     assert!((at10 / at20 - 10f64.powf(-0.5)).abs() < 1e-5, "{at10} / {at20}");
 }
 
+// ---- track automation lanes (slice 3) ---------------------------------------------------------------
+
+fn track_points(v: &Viewer, track: u32, param: StudioTrackParam) -> Vec<(u64, f64)> {
+    routing(v).track_lane(&tid(track), param).map(|a| a.points.iter().map(|p| (p.offset_ticks, p.value)).collect()).unwrap_or_default()
+}
+
+fn input(events: Vec<egui::Event>) -> egui::RawInput {
+    egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1200.0))), events, ..Default::default() }
+}
+
+fn frame(v: &mut Viewer, ctx: &egui::Context, events: Vec<egui::Event>) {
+    let _ = ctx.run(input(events), |ctx| v.ui(ctx));
+}
+
+/// Runs frames until the timeline layout is the same in two frames in a row.
+fn settle(v: &mut Viewer, ctx: &egui::Context) -> timeline::TimelineLayout {
+    let mut last = None;
+    for _ in 0..8 {
+        frame(v, ctx, vec![]);
+        let now = v.timeline().and_then(|t| t.layout()).cloned();
+        if let Some(l) = &now
+            && now == last
+        {
+            return l.clone();
+        }
+        last = now;
+    }
+    panic!("timeline layout did not settle");
+}
+
+/// The A1 volume lane: points are added, moved and deleted in dB (stored as linear gains), one undo
+/// step each; the mixer's bus stream follows the lane instead of the static fader (0 dB at frame 0
+/// falling to -6.02 dB at frame 20: at frame 10 the gain is -3.01 dB relative to frame 0); undo
+/// removes the lane and the static fader plays again.
+#[test]
+fn track_volume_lane_points_edit_and_play_through_the_mixer() {
+    let (_s, mut v) = opened("track-volume");
+    let a1 = tid(2);
+    let half_db = 20.0 * 0.5f64.log10();
+    v.multitrack_command(AutomationCommand::ShowLane { track_id: a1.clone(), lane: Some(LaneTarget::TrackVolume) }).unwrap();
+    let steps = undo_steps(&v);
+    let add = |at: u64, value: f64| AutomationCommand::AddPoint { track_id: a1.clone(), lane: LaneTarget::TrackVolume, at: Ticks::new(at), value };
+    v.multitrack_command(add(0, 0.0)).unwrap();
+    v.multitrack_command(add(20 * F, half_db)).unwrap();
+    assert_eq!(undo_steps(&v), steps + 2, "{:?}", v.run().history());
+    let pts = track_points(&v, 2, StudioTrackParam::Volume);
+    assert_eq!(pts.len(), 2);
+    assert!(pts[0] == (0, 1.0) && pts[1].0 == 20 * F && (pts[1].1 - 0.5).abs() < 1e-12, "{pts:?}");
+    let view = v.timeline_lane(&a1, &LaneTarget::TrackVolume).unwrap();
+    assert!(view.error.is_none(), "{:?}", view.error);
+    let drawn: Vec<f64> = view.points().map(|p| p.value).collect();
+    assert!(drawn.len() == 2 && drawn[0].abs() < 1e-9 && (drawn[1] - half_db).abs() < 1e-9, "the lane draws dB: {drawn:?}");
+    assert_eq!(v.state_json()["timeline"]["audio"]["lanes"][0]["editable"], true);
+    // The mixer follows the lane (rebinding restarts its stream at sample 0).
+    v.open_multitrack(RATE, 960, sources(), Arc::new(Ext)).unwrap();
+    let [l, _] = v.mixer_render(30 * SPF).unwrap();
+    let (at0, at10, at25) = (f64::from(l[0]), f64::from(l[10 * SPF]), f64::from(l[25 * SPF]));
+    assert!(at0 > 0.1, "{at0}");
+    assert!((at10 / at0 - 10f64.powf(half_db / 2.0 / 20.0)).abs() < 1e-5, "ramp: {at10} / {at0}");
+    assert!((at25 / at0 - 0.5).abs() < 1e-5, "held after the last point: {at25} / {at0}");
+    // Move the second point to frame 10 at -12 dB, then delete both: one step each, the lane goes.
+    v.multitrack_command(AutomationCommand::MovePoint { track_id: a1.clone(), lane: LaneTarget::TrackVolume, point: PointId { clip_id: None, offset_ticks: 20 * F }, at: Ticks::new(10 * F), value: -12.0 }).unwrap();
+    let pts = track_points(&v, 2, StudioTrackParam::Volume);
+    assert!(pts[1].0 == 10 * F && (pts[1].1 - 10f64.powf(-12.0 / 20.0)).abs() < 1e-12, "{pts:?}");
+    for at in [0, 10 * F] {
+        v.multitrack_command(AutomationCommand::DeletePoint { track_id: a1.clone(), lane: LaneTarget::TrackVolume, point: PointId { clip_id: None, offset_ticks: at } }).unwrap();
+    }
+    assert!(routing(&v).track_automation.is_empty(), "the last point takes the lane with it");
+    assert_eq!(undo_steps(&v), steps + 5);
+    // Undo back to the two-point ramp, then to nothing: the static fader plays (flat).
+    for _ in 0..3 {
+        v.undo().unwrap();
+    }
+    assert_eq!(track_points(&v, 2, StudioTrackParam::Volume).len(), 2);
+    v.undo().unwrap();
+    v.undo().unwrap();
+    assert!(routing(&v).track_automation.is_empty());
+    v.open_multitrack(RATE, 960, sources(), Arc::new(Ext)).unwrap();
+    let [l, _] = v.mixer_render(30 * SPF).unwrap();
+    assert!((f64::from(l[25 * SPF]) / f64::from(l[0]) - 1.0).abs() < 1e-6, "static fader after undo");
+}
+
+/// The A1 pan lane: hard left at frame 0 to hard right at frame 20 (equal-power mono pan): the right
+/// side is silent at the start and the left side at the end, equal at frame 10; a real click in the
+/// B1 volume lane adds a point at the clicked frame and dB.
+#[test]
+fn track_pan_lane_pans_the_mix_and_a_click_adds_a_volume_point() {
+    let (_s, mut v) = opened("track-pan");
+    let (a1, b1) = (tid(2), tid(3));
+    let pan = |at: u64, value: f64| AutomationCommand::AddPoint { track_id: a1.clone(), lane: LaneTarget::TrackPan, at: Ticks::new(at), value };
+    v.multitrack_command(pan(0, -1.0)).unwrap();
+    v.multitrack_command(pan(20 * F, 1.0)).unwrap();
+    assert_eq!(track_points(&v, 2, StudioTrackParam::Pan), vec![(0, -1.0), (20 * F, 1.0)]);
+    v.open_multitrack(RATE, 960, sources(), Arc::new(Ext)).unwrap();
+    let [l, r] = v.mixer_render(30 * SPF).unwrap();
+    assert!(f64::from(l[0]) > 0.1 && f64::from(r[0]).abs() < 1e-6, "hard left: {} {}", l[0], r[0]);
+    assert!(f64::from(r[25 * SPF]) > 0.1 && f64::from(l[25 * SPF]).abs() < 1e-6, "hard right: {} {}", l[25 * SPF], r[25 * SPF]);
+    assert!((f64::from(l[10 * SPF]) - f64::from(r[10 * SPF])).abs() < 1e-5, "centre at frame 10");
+    // A real click in the submix volume lane at frame 20, at the height of 0 dB.
+    let ctx = egui::Context::default();
+    v.multitrack_command(AutomationCommand::ShowLane { track_id: b1.clone(), lane: Some(LaneTarget::TrackVolume) }).unwrap();
+    let l = settle(&mut v, &ctx);
+    let lane = l.lane(&b1).expect("B1 lane row drawn").rect;
+    let ppf = v.timeline().unwrap().view.px_per_frame as f32;
+    let at = egui::pos2(l.lanes_left + 20.0 * ppf, lane_y(lane, CLIP_GAIN_DB, 0.0));
+    let steps = undo_steps(&v);
+    let press = |pressed: bool| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    frame(&mut v, &ctx, vec![egui::Event::PointerMoved(at)]);
+    frame(&mut v, &ctx, vec![press(true)]);
+    frame(&mut v, &ctx, vec![press(false)]);
+    frame(&mut v, &ctx, vec![]);
+    assert_eq!(undo_steps(&v), steps + 1, "{}", v.state_json()["status"]);
+    let pts = track_points(&v, 3, StudioTrackParam::Volume);
+    let px_db = (CLIP_GAIN_DB.1 - CLIP_GAIN_DB.0) / f64::from(lane.height() - 2.0 * timeline::LANE_PAD);
+    assert!(pts.len() == 1 && pts[0].0 == 20 * F && (20.0 * pts[0].1.log10()).abs() <= px_db, "{pts:?}");
+    let _ = settle(&mut v, &ctx);
+    assert!(v.drawn().iter().any(|d| *d == timeline::widget::lane_point(&b1, None, 20 * F)), "{:?}", v.drawn());
+}
+
+/// Hostile track lane commands are refused by name and store nothing.
+#[test]
+fn hostile_track_lane_commands_are_refused_without_a_step() {
+    let (_s, mut v) = opened("track-hostile");
+    let (v1, a1) = (tid(1), tid(2));
+    let steps = undo_steps(&v);
+    let add = |track: &str, lane: LaneTarget, at: u64, value: f64| AutomationCommand::AddPoint { track_id: track.into(), lane, at: Ticks::new(at), value };
+    let cases: Vec<(AutomationCommand, &str)> = vec![
+        (add(&a1, LaneTarget::TrackVolume, F, f64::NAN), "value_not_finite"),
+        (add(&a1, LaneTarget::TrackVolume, F, 12.5), "value_out_of_range"),
+        (add(&a1, LaneTarget::TrackVolume, F, -97.0), "value_out_of_range"),
+        (add(&a1, LaneTarget::TrackPan, F, 1.5), "value_out_of_range"),
+        (add(&a1, LaneTarget::TrackPan, F, f64::INFINITY), "value_not_finite"),
+        (add(&a1, LaneTarget::TrackPan, 1, 0.0), "not_sample_aligned"),
+        (add(&a1, LaneTarget::TrackPan, 51 * F, 0.0), "outside_sequence"),
+        (add(&v1, LaneTarget::TrackVolume, F, 0.0), "lane_unavailable"),
+        (add("STRK-nope", LaneTarget::TrackPan, F, 0.0), "unknown_track"),
+        (AutomationCommand::DeletePoint { track_id: a1.clone(), lane: LaneTarget::TrackPan, point: PointId { clip_id: None, offset_ticks: 0 } }, "unknown_point"),
+        (
+            AutomationCommand::MovePoint { track_id: a1.clone(), lane: LaneTarget::TrackVolume, point: PointId { clip_id: Some(cid(3)), offset_ticks: 0 }, at: Ticks::new(F), value: 0.0 },
+            "unknown_point",
+        ),
+    ];
+    for (c, code) in cases {
+        let e = v.multitrack_command(c.clone()).unwrap_err();
+        assert!(e.starts_with(code), "{c:?}: {e} (want {code})");
+    }
+    assert_eq!(undo_steps(&v), steps, "{:?}", v.run().history());
+    assert!(routing(&v).track_automation.is_empty());
+    // +12 dB is the top of the range: stored as the largest linear level, accepted by Folio.
+    v.multitrack_command(add(&a1, LaneTarget::TrackVolume, F, 12.0)).unwrap();
+    assert!(track_points(&v, 2, StudioTrackParam::Volume)[0].1 <= MAX_AUDIO_LEVEL);
+    // A point moved onto another of the same lane is refused.
+    v.multitrack_command(add(&a1, LaneTarget::TrackVolume, 2 * F, 0.0)).unwrap();
+    let e = v
+        .multitrack_command(AutomationCommand::MovePoint { track_id: a1.clone(), lane: LaneTarget::TrackVolume, point: PointId { clip_id: None, offset_ticks: F }, at: Ticks::new(2 * F), value: 0.0 })
+        .unwrap_err();
+    assert_eq!(e, "point_exists");
+}
