@@ -21,7 +21,7 @@ use crate::proposal::{Known, folio_err};
 use crate::{IDML_MIMETYPE, IdmlError, Result};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    PageSide, Payload, StoryDirection, StoryParagraphDirection, StoryRange, StoryTextKind,
+    AutoSizing, PageSide, Payload, StoryDirection, StoryParagraphDirection, StoryRange, StoryTextKind,
     StudioDocument, StudioTextStory, validate_document,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -296,6 +296,19 @@ fn find<T: Copy + PartialEq>(table: &[(&'static str, T)], value: T) -> &'static 
         .map_or("", |(k, _)| k)
 }
 
+/// The STU-LAY-118 auto-size rows that state Studio's readings for an auto-sizing frame (no minimum
+/// height or width; lines unwrapped for width only and height and width), written with the names and
+/// values InDesign used in the oracle corpus ID-03 exports (lane SMB-ID-FRAME-AUTOSIZE-2). `Off`
+/// writes none (unchanged output). The reference point is not written: no value naming Studio's fixed
+/// top/left edge is attested, so the export reports `auto_sizing_reference_point_not_exported`.
+fn auto_size_rows(kind: AutoSizing) -> String {
+    if kind == AutoSizing::Off {
+        return String::new();
+    }
+    let no_breaks = matches!(kind, AutoSizing::WidthOnly | AutoSizing::HeightAndWidth);
+    format!(" UseMinimumHeightForAutoSizing=\"false\" UseMinimumWidthForAutoSizing=\"false\" UseNoLineBreaksForAutoSizing=\"{no_breaks}\"")
+}
+
 fn frame_children(path: &[PathPoint], p: &FramePrefs) -> Vec<Opaque> {
     let points: String = path
         .iter()
@@ -319,13 +332,14 @@ fn frame_children(path: &[PathPoint], p: &FramePrefs) -> Vec<Opaque> {
         opaque(
             "TextFramePreference",
             format!(
-                "<TextFramePreference TextColumnCount=\"{}\" TextColumnGutter=\"{}\" VerticalJustification=\"{}\" FirstBaselineOffset=\"{}\" MinimumFirstBaselineOffset=\"{}\" AutoSizingType=\"{}\"><Properties><InsetSpacing type=\"list\">{inset}</InsetSpacing></Properties></TextFramePreference>",
+                "<TextFramePreference TextColumnCount=\"{}\" TextColumnGutter=\"{}\" VerticalJustification=\"{}\" FirstBaselineOffset=\"{}\" MinimumFirstBaselineOffset=\"{}\" AutoSizingType=\"{}\"{}><Properties><InsetSpacing type=\"list\">{inset}</InsetSpacing></Properties></TextFramePreference>",
                 p.column_count,
                 num(p.column_gutter_pt),
                 find(&VJ, p.vertical_justification),
                 find(&FB, p.first_baseline),
                 num(p.min_first_baseline_pt),
                 find(&AS, p.auto_size),
+                auto_size_rows(p.auto_size),
             ),
         ),
     ]
@@ -569,6 +583,14 @@ pub(crate) fn folio_model(
             min_first_baseline_pt: f.minimum_first_baseline_offset.value,
             auto_size: f.auto_sizing_type,
         };
+        if prefs.auto_size != AutoSizing::Off {
+            loss.note(
+                "document",
+                "TextFramePreference",
+                LossKind::Approximated,
+                "auto_sizing_reference_point_not_exported",
+            );
+        }
         let link = |l: &Option<String>| l.as_deref().and_then(|id| frame_ids.get(id)).cloned();
         let mut attrs = vec![("ContentType".to_owned(), "TextType".to_owned())];
         if !l.name.is_empty() {

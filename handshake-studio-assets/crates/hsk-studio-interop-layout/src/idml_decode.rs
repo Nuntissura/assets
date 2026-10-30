@@ -613,6 +613,55 @@ fn pick<T: Copy>(
     )
 }
 
+/// The STU-LAY-118 auto-size rows Folio does not store (lane SMB-ID-FRAME-AUTOSIZE-2), against the
+/// readings layout's auto-size lays out (layout DESCRIPTOR `frame_autosize.readings`). Attribute
+/// names and the values `CenterPoint`, `true`, `false` are the ones InDesign wrote in the oracle
+/// corpus ID-03 exports. `Off` makes every row moot; absent rows are not reported (an import without
+/// them is unchanged). For an auto-sizing frame: any `AutoSizingReferencePoint` differs from Studio's
+/// fixed top/left edge; a minimum gate `true` differs from "no minimum" on an axis the kind sizes;
+/// `UseNoLineBreaksForAutoSizing` reads `true` for width only and height and width (lines set
+/// unwrapped), `false` for proportional (lines break at the scaled width) and is moot for height
+/// only. A differing row is an `Approximated` loss; a value outside the known set (compared after
+/// XML decoding, without case folding or trimming) is `frame_preference_value_unknown`. The minimum
+/// values are not read (Folio has no field for them). InDesign behaviour UNVERIFIED (D5).
+fn auto_size_rows(el: Node, kind: AutoSizing, part: &str, loss: &mut LossBook) {
+    if kind == AutoSizing::Off {
+        return;
+    }
+    const UNKNOWN: &str = "frame_preference_value_unknown";
+    let mut note = |code: &'static str| loss.note(part, "TextFramePreference", LossKind::Approximated, code);
+    let flag = |key: &str| {
+        attr(el, key).map(|v| match v {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        })
+    };
+    if let Some(v) = attr(el, "AutoSizingReferencePoint") {
+        note(if v == "CenterPoint" { "auto_sizing_reference_point_not_stored" } else { UNKNOWN });
+    }
+    for (key, sized) in [
+        ("UseMinimumHeightForAutoSizing", kind != AutoSizing::WidthOnly),
+        ("UseMinimumWidthForAutoSizing", kind != AutoSizing::HeightOnly),
+    ] {
+        match flag(key) {
+            Some(None) => note(UNKNOWN),
+            Some(Some(true)) if sized => note("auto_sizing_minimum_not_stored"),
+            _ => {}
+        }
+    }
+    let reading = match kind {
+        AutoSizing::WidthOnly | AutoSizing::HeightAndWidth => Some(true),
+        AutoSizing::HeightAndWidthProportionally => Some(false),
+        _ => None,
+    };
+    match (flag("UseNoLineBreaksForAutoSizing"), reading) {
+        (Some(None), _) => note(UNKNOWN),
+        (Some(Some(v)), Some(r)) if v != r => note("auto_sizing_line_breaks_not_stored"),
+        _ => {}
+    }
+}
+
 fn read_prefs(frame: Node, part: &str, loss: &mut LossBook) -> Result<FramePrefs> {
     let mut p = FramePrefs::default();
     let Some(el) = child(frame, "TextFramePreference") else {
@@ -642,6 +691,7 @@ fn read_prefs(frame: Node, part: &str, loss: &mut LossBook) -> Result<FramePrefs
     );
     p.first_baseline = pick(el, "FirstBaselineOffset", &FB, p.first_baseline, part, loss);
     p.auto_size = pick(el, "AutoSizingType", &AS, p.auto_size, part, loss);
+    auto_size_rows(el, p.auto_size, part, loss);
     if let Some(list) = child(el, "Properties").and_then(|c| child(c, "InsetSpacing")) {
         let items: Vec<f64> = elements(list)
             .filter(|c| name(*c) == "ListItem")
