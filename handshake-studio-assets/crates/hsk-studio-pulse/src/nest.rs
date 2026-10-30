@@ -50,7 +50,9 @@
 //! by `frame_layers` itself), recursively; the nested group's weight multiplies every inner layer's
 //! weight (a group-opacity approximation, exact when the group shows one layer). [`NestedAudioSources`]
 //! renders every nested sequence an audible clip uses through the existing `TimelineMixStream` (its
-//! plain timeline mix: track volume, pan, mute and solo, not its bus routing) into stereo buffers of
+//! plain timeline mix: track volume, pan, mute and solo, not its bus routing; with
+//! [`NestedAudioSources::with_routing`] also the clip gain and pan envelopes stored for it, lane
+//! SMB-PR-NEST-2) into stereo buffers of
 //! the nested sequence's length, innermost first, and answers the Sequence source with them. There
 //! is no depth constant (STU-VID-030 "no fixed depth limit"): recursion is bounded by a cycle guard
 //! (a sequence on the current path) and the caller's budget ([`StreamLimits::max_resident_frames`]
@@ -69,8 +71,8 @@ use crate::time::samples_from_ticks_exact;
 use crate::timeline_edit::{EditContext, SourceExtents, split_clip};
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{
-    ClipSource, ClipTransitions, Code, Diagnostic, MAX_CLIPS_PER_SEQUENCE, Snapshot, Speed, StudioClip, StudioSequence, StudioTrack,
-    TrackKind, validate_document,
+    ClipSource, ClipTransitions, Code, Diagnostic, MAX_CLIPS_PER_SEQUENCE, Snapshot, Speed, StudioAudioRoutingSet, StudioClip,
+    StudioClipGainEnvelope, StudioClipPanEnvelope, StudioSequence, StudioTrack, TrackKind, validate_document,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -170,6 +172,7 @@ pub struct NestProposal {
     inverse: Vec<SequenceChange>,
     nested_clip_ids: Vec<String>,
     dropped_transitions: Vec<String>,
+    copied_clips: Vec<(String, String)>,
 }
 impl NestProposal {
     /// STU-VID-041 command id of the step.
@@ -208,6 +211,12 @@ impl NestProposal {
     /// Transitions removed because they no longer play (undo restores them).
     pub fn dropped_transitions(&self) -> &[String] {
         &self.dropped_transitions
+    }
+    /// Make Subsequence (lane SMB-PR-NEST-2): `(parent clip id, copy id)` per copied clip or range
+    /// piece, in copy order, so a host can carry per-clip records (clip gain and pan envelopes) to
+    /// the copies. Empty for Nest (its clips move with their ids).
+    pub fn copied_clips(&self) -> &[(String, String)] {
+        &self.copied_clips
     }
 }
 
@@ -477,7 +486,7 @@ fn finish(
     }
     inverse.push(SequenceChange::Remove { expect: nested });
     let validated = apply_sequence_changes(snapshot, expected_revision, &changes, ctx)?;
-    Ok(NestProposal { command_id, base_revision: expected_revision, snapshot: validated, changes, inverse, nested_clip_ids, dropped_transitions })
+    Ok(NestProposal { command_id, base_revision: expected_revision, snapshot: validated, changes, inverse, nested_clip_ids, dropped_transitions, copied_clips: Vec::new() })
 }
 
 /// Nest (STU-VID-030; module docs): the clips `clip_ids` (with their link groups) of sequence
@@ -612,11 +621,12 @@ pub fn plan_make_subsequence(snapshot: &Snapshot, sequence_id: &str, expected_re
         fresh.push(take(&ids.track_ids, n)?);
     }
     let mut record = 0usize;
+    let mut copied = Vec::with_capacity(pieces.len());
     for (n, (_, clip)) in pieces.iter_mut().enumerate() {
         ctx.cancel.check().map_err(PulseError::from)?;
         let id = take(&ids.clip_ids, n)?;
         fresh.push(id);
-        clip.clip_id = id.to_owned();
+        copied.push((std::mem::replace(&mut clip.clip_id, id.to_owned()), id.to_owned()));
         for m in &mut clip.markers {
             let id = take(&ids.record_ids, record)?;
             fresh.push(id);
@@ -636,7 +646,9 @@ pub fn plan_make_subsequence(snapshot: &Snapshot, sequence_id: &str, expected_re
     prospective.push(nested.clone());
     let dropped = prune(&mut nested, &prospective, ctx)?;
     nested.duration = nested.content_end().ok_or(PulseError::Overflow)?;
-    finish(snapshot, expected_revision, command, nested, None, Vec::new(), dropped, ctx)
+    let mut proposal = finish(snapshot, expected_revision, command, nested, None, Vec::new(), dropped, ctx)?;
+    proposal.copied_clips = copied;
+    Ok(proposal)
 }
 
 // ---- resolution ----
@@ -797,12 +809,37 @@ fn audio_nests(seq: &StudioSequence) -> Vec<(String, String)> {
 impl<S: AudioSources> NestedAudioSources<S> {
     /// Renders every nested sequence the audible clips of `root` use (recursively, innermost
     /// first) at `sample_rate_hz` (module docs). Refusals: `canceled`, `limit_exceeded` when the
-    /// nested buffers together would pass `limits.max_resident_frames` (before allocating).
+    /// nested buffers together would pass `limits.max_resident_frames` (before allocating). The
+    /// nested mixes carry no clip envelopes: [`NestedAudioSources::with_routing`] with an empty set.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sequences: &[StudioSequence],
         root: &StudioSequence,
         inner: S,
+        sample_rate_hz: u32,
+        max_block_frames: usize,
+        extents: &dyn SourceExtents,
+        limits: StreamLimits,
+        cancel: &CancellationToken,
+    ) -> crate::Result<Self> {
+        Self::with_routing(sequences, root, inner, &StudioAudioRoutingSet::default(), sample_rate_hz, max_block_frames, extents, limits, cancel)
+    }
+
+    /// As [`NestedAudioSources::new`], each nested sequence's mix applying the clip gain and pan
+    /// envelopes of its own entry in `routing` (lane SMB-PR-NEST-2, `TimelineMixStream::
+    /// with_clip_envelopes`). Envelope offsets are ticks from the clip's own `timeline_start`, so a
+    /// clip nested with its envelope plays as it did in the parent (test
+    /// `nested_mix_applies_moved_clip_envelopes` in tests/nest.rs). Only the clip envelopes are
+    /// read: a nested sequence's bus routes, sends, effects and track automation do not apply (the
+    /// nested mix stays its timeline mix). An envelope the mix refuses (an offset off the sample
+    /// grid, a gain above +12 dB) makes that nested sequence silent and reported, like any other
+    /// unrenderable nested sequence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_routing(
+        sequences: &[StudioSequence],
+        root: &StudioSequence,
+        inner: S,
+        routing: &StudioAudioRoutingSet,
         sample_rate_hz: u32,
         max_block_frames: usize,
         extents: &dyn SourceExtents,
@@ -835,8 +872,10 @@ impl<S: AudioSources> NestedAudioSources<S> {
                     return Err(PulseError::LimitExceeded);
                 }
                 let len = usize::try_from(frames).map_err(|_| PulseError::Overflow)?;
+                let own = routing.routings.iter().find(|r| r.sequence_id == id);
+                let envelopes = (own.map_or(&[][..], |r| r.clip_gains.as_slice()), own.map_or(&[][..], |r| r.clip_pans.as_slice()));
                 let rendered = {
-                    match render(seq, sample_rate_hz, max_block_frames, &Lookup { inner: &inner, mixes: &mixes }, &nested_extents, limits, len, cancel) {
+                    match render(seq, sample_rate_hz, max_block_frames, &Lookup { inner: &inner, mixes: &mixes }, &nested_extents, limits, envelopes, len, cancel) {
                         Ok(buffers) => Some(buffers),
                         Err(PulseError::Canceled) => return Err(PulseError::Canceled),
                         Err(e) => {
@@ -901,12 +940,13 @@ fn render<S: AudioSources>(
     sources: &Lookup<'_, S>,
     extents: &dyn SourceExtents,
     limits: StreamLimits,
+    (gains, pans): (&[StudioClipGainEnvelope], &[StudioClipPanEnvelope]),
     len: usize,
     cancel: &CancellationToken,
 ) -> crate::Result<Vec<Vec<f32>>> {
     // The window onto the nested sequence must sit on the sample grid (positions inside do too).
     samples_from_ticks_exact(seq.duration, rate)?;
-    let mut stream = TimelineMixStream::new(seq, rate, block, Lookup { inner: sources.inner, mixes: sources.mixes }, extents, limits, cancel)?;
+    let mut stream = TimelineMixStream::with_clip_envelopes(seq, rate, block, Lookup { inner: sources.inner, mixes: sources.mixes }, extents, limits, gains, pans, cancel)?;
     let (mut left, mut right) = (vec![0.0f32; len], vec![0.0f32; len]);
     let mut at = 0usize;
     let block = block.max(1);

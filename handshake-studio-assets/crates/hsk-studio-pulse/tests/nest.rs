@@ -425,3 +425,80 @@ fn nested_audio_equals_the_inner_mix_and_an_unresolvable_inner_source_is_reporte
         assert_eq!(NestedAudioSources::new(sequences, &top, tone(), RATE, 960, &Known, tight, &cancel).err().map(|e| e.code()), Some("limit_exceeded"));
     });
 }
+
+// ---- lane SMB-PR-NEST-2: clip envelopes follow a nest ----
+
+fn gains(clip: &str) -> StudioClipGainEnvelope {
+    StudioClipGainEnvelope { clip_id: clip.into(), points: vec![StudioClipGainPoint { offset_ticks: 0, gain_db: -9.0 }, StudioClipGainPoint { offset_ticks: 6 * F, gain_db: 2.0 }] }
+}
+fn pans(clip: &str) -> StudioClipPanEnvelope {
+    StudioClipPanEnvelope { clip_id: clip.into(), points: vec![StudioClipPanPoint { offset_ticks: F, pan: -0.75 }, StudioClipPanPoint { offset_ticks: 8 * F, pan: 0.6 }] }
+}
+
+/// The parent mix before a nest equals the mix after it, sample for sample within 1e-6, when the
+/// nested clip's gain and pan envelopes move (unchanged, clip-relative offsets) into the routing of
+/// the new sequence and the nested mix applies them (`NestedAudioSources::with_routing`); without
+/// them (`new`) the nested mix differs, so the envelopes are what the equality proves.
+#[test]
+fn nested_mix_applies_moved_clip_envelopes() {
+    bounded_case("envelopes", || {
+        // seq-top: A1 tone src 2..12 @1 with a gain and a pan envelope.
+        let top = sequence("seq-top", vec![track(6, TrackKind::Audio, 0, vec![clip(6, media("tone"), 2, 10, 1)])]);
+        let snap = document(vec![top.clone()]);
+        let cancel = CancellationToken::default();
+        let c = ctx(&Known, &cancel);
+        let limits = StreamLimits::default();
+        let (g, p) = (gains(&cid(6)), pans(&cid(6)));
+        let before = render(TimelineMixStream::with_clip_envelopes(&top, RATE, 960, tone(), &Known, limits, std::slice::from_ref(&g), std::slice::from_ref(&p), &cancel).unwrap(), 14 * 1920);
+        let proposal = plan_nest(&snap, "seq-top", 3, &[cid(6)], &nest_ids("seq-n"), &c).unwrap();
+        let sequences = &proposal.snapshot().document().sequences;
+        let after_top = find(proposal.snapshot(), "seq-top").clone();
+        // The host's move: the parent keeps no envelope of the moved clip, the new sequence's
+        // routing holds them unchanged (offsets are ticks from the clip's own timeline_start).
+        let mut routing = StudioAudioRouting::new("seq-n");
+        routing.clip_gains.push(g.clone());
+        routing.clip_pans.push(p.clone());
+        let set = StudioAudioRoutingSet { routings: vec![StudioAudioRouting::new("seq-top"), routing] };
+        validate_audio_routing(&set, proposal.snapshot().document(), Budget::default(), &cancel).expect("the moved envelopes validate on the nested sequence's audio track");
+        let ext = NestedExtents::new(sequences, &Known);
+        let nested = NestedAudioSources::with_routing(sequences, &after_top, tone(), &set, RATE, 960, &Known, limits, &cancel).unwrap();
+        assert!(nested.reports().is_empty(), "{:?}", nested.reports());
+        let after = render(TimelineMixStream::with_clip_envelopes(&after_top, RATE, 960, nested, &ext, limits, &[], &[], &cancel).unwrap(), 14 * 1920);
+        for ch in 0..2 {
+            for (i, (want, got)) in before[ch].iter().zip(&after[ch]).enumerate() {
+                assert!((got - want).abs() <= 1e-6, "ch {ch} sample {i}: {got} vs {want}");
+            }
+        }
+        assert!(before[0].iter().any(|v| v.abs() > 0.01) && before[1].iter().any(|v| v.abs() > 0.01), "audible on both channels");
+        // `new` (no routing) is the plain nested mix: it differs from the enveloped parent mix.
+        let plain = NestedAudioSources::new(sequences, &after_top, tone(), RATE, 960, &Known, limits, &cancel).unwrap();
+        let unenveloped = render(TimelineMixStream::new(&after_top, RATE, 960, plain, &ext, limits, &cancel).unwrap(), 14 * 1920);
+        let worst = (0..2).flat_map(|ch| before[ch].iter().zip(&unenveloped[ch]).map(|(a, b)| (a - b).abs()).collect::<Vec<_>>()).fold(0f32, f32::max);
+        assert!(worst > 0.05, "the envelopes change the mix (worst difference {worst})");
+        // An envelope the nested mix refuses (an offset off the sample grid) is reported, never
+        // dropped silently.
+        let mut bad = set.clone();
+        bad.routings[1].clip_gains[0].points[1].offset_ticks = 6 * F + 1;
+        let refused = NestedAudioSources::with_routing(sequences, &after_top, tone(), &bad, RATE, 960, &Known, limits, &cancel).unwrap();
+        assert_eq!(refused.reports(), [NestAudioReport { sequence_id: "seq-n".into(), clip_ids: proposal.nested_clip_ids().to_vec(), code: "not_frame_aligned" }]);
+    });
+}
+
+/// Make Subsequence lists `(parent clip id, copy id)` per copy (range pieces included), so the host
+/// can copy per-clip records under the fresh ids; Nest lists none (its clips keep their ids).
+#[test]
+fn make_subsequence_lists_the_copies_of_each_parent_clip() {
+    bounded_case("copies", || {
+        let snap = document(vec![main_sequence()]);
+        let cancel = CancellationToken::default();
+        let c = ctx(&Known, &cancel);
+        let range = TickRange::new(Ticks::new(8 * F), Ticks::new(14 * F)).unwrap();
+        let p = plan_make_subsequence(&snap, "seq-main", 3, &SubsequenceSource::Range(range), &nest_ids("seq-sub"), &c).unwrap();
+        assert_eq!(p.copied_clips(), [(cid(1), cid(50)), (cid(2), cid(51)), (cid(11), cid(52)), (cid(12), cid(53))]);
+        let p = plan_make_subsequence(&snap, "seq-main", 3, &SubsequenceSource::Clips(vec![cid(12)]), &nest_ids("seq-sub"), &c).unwrap();
+        // Clip 12's link group brings clip 2 (track order: V2 before A2).
+        assert_eq!(p.copied_clips(), [(cid(2), cid(50)), (cid(12), cid(51))]);
+        let n = plan_nest(&snap, "seq-main", 3, &[cid(1)], &nest_ids("seq-n"), &c).unwrap();
+        assert!(n.copied_clips().is_empty());
+    });
+}
