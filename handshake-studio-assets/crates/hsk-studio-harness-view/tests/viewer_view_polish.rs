@@ -6,6 +6,7 @@
 //! 3. TYPE > Convert > Create Outlines with Ctrl+Shift+O (consumed before Ctrl+O).
 //! 4. Path edits that change a live text's placed / overset counts are echoed on the status line;
 //!    the Path Operations summary shows the live-text state.
+//!
 //! Oracles: egui's paint list and panel state, the vector entry's bindings, layer kinds,
 //! composite's reports, the status log, undo / redo. Illustrator behaviour UNVERIFIED (D5).
 #![cfg(feature = "viewer")]
@@ -285,6 +286,16 @@ fn path_edits_echo_live_text_counts_and_the_summary_shows_them() {
     let want = if overset1 > 0 { format!("{placed1} glyphs placed, {overset1} overset") } else { format!("{placed1} glyphs placed") };
     assert!(new.iter().any(|l| l.starts_with("live text STXT-") && l.ends_with(&want)), "{want} not echoed: {new:?}");
     assert!(v.hosted_summary(HostedPanel::PathOperations).ends_with(&want), "{}", v.hosted_summary(HostedPanel::PathOperations));
+    // The binding followed the edit in the same undo step: undo restores the small frame's counts
+    // (and echoes them), redo the grown frame's.
+    let before_undo = status(&v).len();
+    v.undo().unwrap();
+    v.render_if_dirty();
+    assert_eq!(counts(&v), (placed0, overset0));
+    assert!(status(&v).split_off(before_undo).iter().any(|l| l.ends_with(&format!("{placed0} glyphs placed, {overset0} overset"))), "{:?}", status(&v));
+    v.redo().unwrap();
+    v.render_if_dirty();
+    assert_eq!(counts(&v), (placed1, overset1));
     // A render without a count change says nothing more.
     let before = status(&v).len();
     v.set_visible(&rect, false).unwrap();

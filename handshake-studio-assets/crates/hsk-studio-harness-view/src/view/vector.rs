@@ -1867,12 +1867,34 @@ impl Viewer {
             return Err(format!("{op}: vector_entry_over_budget"));
         }
         let path_id = mint_path_id(self.vdoc()?, &entry);
+        let segments = path.contours.first().map(|c| c.segment_count() as f64);
         entry.paths.push(PathRecord { width: record.width.clone(), ..PathRecord::plain(path_id.clone(), path, style.unwrap_or(record.style)) });
         if let Some(shape) = live {
             entry.live.push(StudioLiveShape { layer_id: layer.to_string(), path_id: path_id.clone(), shape });
         }
-        self.store_entry(&entry)?;
-        let ok = self.run.set_vector_paths(op, layer, vec![path_id]);
+        // Live text bound to the replaced path follows the edit (lane SMB-VIEW-POLISH-1): its
+        // binding moves to the new path id (path text kept within the new first contour) in the
+        // same undo step as the layer's path list.
+        let mut follows = false;
+        for p in entry.records.path_texts.iter_mut().filter(|p| p.path_layer_id == layer && p.path_id == record.path_id) {
+            p.path_id.clone_from(&path_id);
+            if let Some(n) = segments {
+                p.end_t = p.end_t.min(n);
+                p.start_t = p.start_t.min(p.end_t);
+            }
+            follows = true;
+        }
+        for a in entry.records.area_texts.iter_mut().filter(|a| a.container_layer_id == layer && a.container_id == record.path_id) {
+            a.container_id.clone_from(&path_id);
+            follows = true;
+        }
+        let ok = if follows && entry_persistable() {
+            let bytes = entry.to_bytes(&self.vdoc()?.document_id)?;
+            self.run.set_vector_paths_and_entry(op, &[(layer.to_string(), vec![path_id])], Some((ENTRY, bytes)))
+        } else {
+            self.store_entry(&entry)?;
+            self.run.set_vector_paths(op, layer, vec![path_id])
+        };
         self.after_edit(ok, format!("{op} {layer}"))?;
         self.selected = Some(layer.to_string());
         Ok(layer.to_string())
