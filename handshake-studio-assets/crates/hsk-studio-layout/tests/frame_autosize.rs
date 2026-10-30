@@ -238,6 +238,11 @@ fn height_only_fits_the_last_line_and_grows_and_shrinks() {
     let placed: Vec<(usize, f64)> = p.layout.frames[0].lines.iter().map(|l| (l.column, l.baseline_y_pt)).collect();
     assert_eq!(placed, [(0, 10.0), (0, 22.0), (1, 10.0)]);
     assert!(p.autosized_frames()[0].compositions <= MAX_AUTOSIZE_ITERATIONS);
+    // Vertical justification is moot for an auto height: centred, the shorter column 1 keeps its
+    // line at the top.
+    let mut centred = doc.clone();
+    frame(&mut centred, 0).vertical_justification = VerticalJustification::Center;
+    assert_eq!(autosize(&centred, &st, &paras).expect("centred").layout, p.layout);
 }
 
 /// Width only: lines do not wrap; the width is the widest line plus the insets (left 2, right 3),
@@ -256,6 +261,12 @@ fn width_only_is_the_widest_line_plus_the_insets() {
         let lines: Vec<(f64, f64, f64)> = p.layout.frames[0].lines.iter().map(|l| (l.baseline_y_pt, l.x_start_pt, l.width_pt)).collect();
         assert_eq!(lines, [(10.0, 2.0, 84.0), (22.0, 2.0, 12.0)], "{kind:?}");
         assert_eq!(p.layout.overset, None);
+        if kind == AutoSizing::WidthOnly {
+            // Width only keeps the authored height and its vertical justification: bottom moves the
+            // block (line tops 0 to bottoms 24) onto the bottom inset 98, 74 pt down.
+            frame(&mut doc, 0).vertical_justification = VerticalJustification::Bottom;
+            assert_eq!(baselines(&autosize(&doc, &st, &paras).expect("bottom").layout, 0), [84.0, 96.0]);
+        }
     }
 }
 
