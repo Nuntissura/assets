@@ -79,6 +79,7 @@ pub mod timeline;
 mod timeline_ui;
 /// Magic wand, quick selection and liquify brush (lane SMB-PS-SELECT-LIQUIFY).
 pub mod select_liquify;
+pub mod fill_tools;
 pub mod selection_store;
 pub mod text;
 /// Render-queue export of a timeline range through reel (lane SMB-REEL-ENCODE, feature `media`).
@@ -1260,6 +1261,7 @@ impl Viewer {
                     (Tool::RectSelect, (Some(a), Some(b))) => self.select_rect(a[0].min(b[0]), a[1].min(b[1]), (a[0] - b[0]).abs(), (a[1] - b[1]).abs()),
                     (Tool::EllipseSelect, (Some(a), Some(b))) => self.select_ellipse(a[0].min(b[0]), a[1].min(b[1]), (a[0] - b[0]).abs(), (a[1] - b[1]).abs()),
                     (Tool::Lasso, _) => self.select_lasso(&points),
+                    (Tool::Gradient, (Some(a), Some(b))) => self.fill_drag(a, b).map(|_| ()),
                     (Tool::Brush, _) => match self.selected.clone() {
                         Some(layer) => self.paint(&layer, &samples).map(|_| ()),
                         None => {
@@ -1282,6 +1284,12 @@ impl Viewer {
             {
                 let [x, y] = to_doc(p);
                 let _ = self.ps_click(x, y);
+            }
+            if tool == Tool::FloodFill && response.clicked()
+                && let Some(p) = response.interact_pointer_pos()
+            {
+                let [x, y] = to_doc(p);
+                let _ = self.fill_click(x, y);
             }
         }
 
@@ -1314,6 +1322,9 @@ impl Viewer {
                     line
                 };
                 painter.add(egui::Shape::line(g, stroke));
+            }
+            (Tool::Gradient, Some(a), Some(b)) => {
+                painter.line_segment([*a, *b], line);
             }
             _ => {}
         }
@@ -1349,6 +1360,7 @@ impl Viewer {
                 Tool::Brush => "Paint on the selected raster layer (clipped to the selection)",
                 Tool::Text => "Click an open vector path for text on the path, inside a closed vector path for area text, elsewhere for a point-text layer (size and colour from the text size and brush colour)",
                 Tool::MagicWand | Tool::QuickSelect | Tool::MagneticLasso | Tool::Liquify | Tool::RefineBrush => select_liquify::tool_hover(tool),
+                Tool::Gradient | Tool::FloodFill => fill_tools::tool_hover(tool),
                 other => vector::tool_hover(other),
             };
             if wrap::wrap_item(ui, widget::id(&name), tool.label(), egui::TextStyle::Button, |ui| ui.selectable_label(self.edit.tool == tool, tool.label())).on_hover_text(hover).clicked() {
@@ -1362,6 +1374,9 @@ impl Viewer {
         let mut ps_drawn = Vec::new();
         self.ps_options_ui(ui, &mut ps_drawn);
         self.drawn.extend(ps_drawn);
+        let mut fill_drawn = Vec::new();
+        self.fill_options_ui(ui, &mut fill_drawn);
+        self.drawn.extend(fill_drawn);
         ui.separator();
         let mut combine = self.edit.combine;
         wrap::wrap_measured(ui, widget::id(widget::COMBINE), |ui| {

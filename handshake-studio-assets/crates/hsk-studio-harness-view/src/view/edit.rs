@@ -26,9 +26,9 @@ use serde_json::{Value, json};
 
 
 /// Pixel edge of the importers' tile cells (`hsk_studio_interop_psd::TILE_EDGE`).
-const CELL: usize = 256;
-const COLOUR_CELL: usize = CELL * CELL * 12;
-const ALPHA_CELL: usize = CELL * CELL * 4;
+pub(super) const CELL: usize = 256;
+pub(super) const COLOUR_CELL: usize = CELL * CELL * 12;
+pub(super) const ALPHA_CELL: usize = CELL * CELL * 4;
 /// Marching-ants segments drawn at most (larger outlines are drawn partially and say so).
 pub const MAX_ANT_SEGMENTS: usize = 200_000;
 
@@ -72,10 +72,14 @@ pub enum Tool {
     Liquify,
     /// Lane SMB-PS-SMART-FILTER-WIRING: the STU-RAS-122 refinement brush set.
     RefineBrush,
+    /// Lane SMB-PS-GRADIENT-BUCKET-1 (module [`super::fill_tools`]): the raster gradient and the
+    /// raster paint bucket (STU-SHL-155 `gradient`, `flood_fill`).
+    Gradient,
+    FloodFill,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 31] = [
+    pub const ALL: [Tool; 33] = [
         Tool::View,
         Tool::RectSelect,
         Tool::EllipseSelect,
@@ -107,6 +111,8 @@ impl Tool {
         Tool::MagneticLasso,
         Tool::Liquify,
         Tool::RefineBrush,
+        Tool::Gradient,
+        Tool::FloodFill,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -141,6 +147,8 @@ impl Tool {
             Tool::MagneticLasso => "magnetic_lasso",
             Tool::Liquify => "liquify",
             Tool::RefineBrush => "refine_edge_brush",
+            Tool::Gradient => "gradient",
+            Tool::FloodFill => "flood_fill",
         }
     }
     pub fn label(self) -> &'static str {
@@ -176,6 +184,8 @@ impl Tool {
             Tool::MagneticLasso => "Magnetic lasso",
             Tool::Liquify => "Liquify",
             Tool::RefineBrush => "Refine edge brush",
+            Tool::Gradient => "Gradient",
+            Tool::FloodFill => "Bucket fill",
         }
     }
 }
@@ -228,6 +238,8 @@ pub struct EditState {
     pub ps: super::select_liquify::PsSettings,
     /// The refinement surface state of the refine-edge brush (module [`super::select_liquify`]).
     pub(super) refine: Option<super::select_liquify::RefineSession>,
+    /// Gradient tool, paint bucket and Edit > Fill settings (module [`super::fill_tools`]).
+    pub fill: super::fill_tools::FillSettings,
 }
 
 impl Default for EditState {
@@ -244,6 +256,7 @@ impl Default for EditState {
             vector_local: None,
             ps: super::select_liquify::PsSettings::default(),
             refine: None,
+            fill: super::fill_tools::FillSettings::default(),
         }
     }
 }
@@ -256,7 +269,7 @@ fn linear(v: u8) -> f32 {
 
 /// Placement of a layer's tiles: a tile (column, row) lies on a grid of the layer's largest tile
 /// size and keeps its own size (composite `tile_rects`, the rule every renderer uses).
-fn tile_rects(tiles: &[TileRef]) -> Option<Vec<Rect>> {
+pub(super) fn tile_rects(tiles: &[TileRef]) -> Option<Vec<Rect>> {
     let px = |l: &hsk_studio_folio::Length| (l.value.is_finite() && l.value >= 1.0 && l.value <= CELL as f64 && l.value.fract() == 0.0).then_some(l.value as u32);
     let (mut gw, mut gh) = (0u32, 0u32);
     for t in tiles {
@@ -281,7 +294,7 @@ fn union(a: Rect, b: Rect) -> Rect {
 
 /// The colour profile new tiles are written in: the layer's own tiles', else any raster tile of
 /// the document (the importers write one working profile), else the assigned RGB working space.
-fn new_tile_profile(doc: &hsk_studio_folio::StudioDocument, tiles: &[TileRef]) -> Option<String> {
+pub(super) fn new_tile_profile(doc: &hsk_studio_folio::StudioDocument, tiles: &[TileRef]) -> Option<String> {
     tiles
         .first()
         .or_else(|| doc.layers.iter().find_map(|l| if let Payload::Raster { tiles } = &l.payload { tiles.first() } else { None }))
@@ -294,7 +307,7 @@ fn new_tile_profile(doc: &hsk_studio_folio::StudioDocument, tiles: &[TileRef]) -
 
 /// A tile reference for a new 256-pixel cell of `layer_id` (format `rgb_f32le` + straight alpha,
 /// the importers' layout), with an object key unique in the layer.
-fn new_tile(layer_id: &str, column: i64, row: i64, profile: &str, digest: &hsk_studio_folio::ContentDigest, existing: &[TileRef]) -> Result<TileRef, String> {
+pub(super) fn new_tile(layer_id: &str, column: i64, row: i64, profile: &str, digest: &hsk_studio_folio::ContentDigest, existing: &[TileRef]) -> Result<TileRef, String> {
     let mut key = format!("t_{column}_{row}");
     if existing.iter().any(|t| t.object_key == key) {
         key = format!("p_{column}_{row}");
@@ -400,7 +413,7 @@ impl Viewer {
         self.edit.ants.len()
     }
 
-    fn canvas(&self) -> Result<Rect, String> {
+    pub(super) fn canvas(&self) -> Result<Rect, String> {
         let snap = self.run.snapshot().ok_or("nothing open")?;
         let board = snap.document().artboards.first().ok_or("the document has no artboard")?;
         let b = [board.bounds.x.value, board.bounds.y.value, board.bounds.width.value, board.bounds.height.value];
@@ -622,6 +635,7 @@ impl Viewer {
             "history": self.run.history(),
             "text_tool": {"available": true, "size_pt": self.text_size_pt, "fonts": self.fonts.iter().map(|f| f.family.clone()).collect::<Vec<_>>()},
             "vector": self.vector_json(),
+            "fill": self.fill_tools_json(),
         })
     }
 }
