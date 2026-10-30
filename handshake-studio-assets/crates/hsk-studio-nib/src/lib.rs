@@ -24,6 +24,7 @@ pub mod pathfinder;
 pub mod raster;
 pub mod shape;
 pub mod shape_ops;
+pub mod simplify;
 pub mod stroke;
 pub mod warp;
 pub mod width;
