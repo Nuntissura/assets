@@ -126,7 +126,8 @@ fn long_edge_64_gives_the_hand_computed_size_in_the_header_and_the_report() {
     let file = hsk_studio_interop_tiff::decode(&std::fs::read(&t).unwrap(), &hsk_studio_interop_tiff::Limits::default(), &CancellationToken::default()).unwrap();
     assert_eq!((file.pages[0].width, file.pages[0].height), (64, 55));
     assert_eq!(r["export_stage"]["output_size"], serde_json::json!([64, 55]));
-    assert_eq!(r["dpi"].as_u64(), Some(240), "the staged TIFF writes the stage resolution: {r}");
+    let res = file.pages[0].resolution.expect("the staged TIFF writes the stage resolution");
+    assert_eq!((f64::from(res.x.0) / f64::from(res.x.1), res.unit), (240.0, 2), "{r}");
     assert!(v.state_json()["status"].to_string().contains("long_edge"), "the status log names the stage: {}", v.state_json()["status"]);
 }
 
