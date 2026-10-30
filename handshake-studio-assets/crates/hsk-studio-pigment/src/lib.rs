@@ -15,6 +15,8 @@ pub mod diagnostics;
 pub mod effect_math;
 pub mod filter_math;
 pub mod frame_blend;
+/// Merge bracketed exposures to 32-bit HDR, align, deghost, tone-map (lane SMB-HDR-MERGE-1).
+pub mod hdr_merge;
 pub mod keying;
 pub mod knockout_math;
 pub mod liquify;
