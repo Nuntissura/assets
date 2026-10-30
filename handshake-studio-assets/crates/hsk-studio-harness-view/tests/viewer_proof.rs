@@ -181,7 +181,7 @@ fn proof_menus_list_the_spec_leaves() {
     let bar = v.menu_bar();
     assert_eq!(bar.audit(), vec![]);
     let titles: Vec<&str> = bar.titles.iter().map(|t| t.label.as_str()).collect();
-    assert_eq!(titles, ["File", "Edit", "View", "Color", "Workspace", "Help"], "COLOR between VIEW and WORKSPACE ([STU-SHL-011])");
+    assert_eq!(titles, ["File", "Edit", "View", "Type", "Color", "Workspace", "Help"], "COLOR between VIEW and WORKSPACE ([STU-SHL-011])");
     let labels = |id: &str| bar.find(id).unwrap().children.iter().map(|c| c.label.clone()).collect::<Vec<_>>();
     // STU-SHL-025 VIEW > Proof (submenu id studio.color.proof) and STU-SHL-030 COLOR > Proof.
     assert_eq!(bar.find(proof::VIEW_MENU_ID).unwrap().label, "Proof");

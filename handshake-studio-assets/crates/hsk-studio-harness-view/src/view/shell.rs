@@ -63,6 +63,10 @@ pub mod widget {
     pub const VIEW: &str = "menu.view";
     /// COLOR (lane SMB-PS-SOFT-PROOF-2: COLOR > Proof, [STU-SHL-030]).
     pub const COLOR: &str = "menu.color";
+    /// TYPE (lane SMB-VIEW-POLISH-1: TYPE > Convert > Create Outlines, [STU-SHL-029]).
+    pub const TYPE: &str = "menu.type";
+    /// TYPE > Convert submenu.
+    pub const TYPE_CONVERT: &str = "menu.studio.type.convert";
     pub const WORKSPACE: &str = "menu.workspace";
     pub const HELP: &str = "menu.help";
     pub const OPEN_RECENT: &str = "menu.studio.document.open_recent";
@@ -540,6 +544,9 @@ pub enum ShellCommand {
     Help(HelpCommand),
     /// VIEW > Proof and COLOR > Proof leaves (lane SMB-PS-SOFT-PROOF-2, module [`super::proof`]).
     Proof(super::proof::ProofMenuLeaf),
+    /// TYPE > Convert > Create Outlines (lane SMB-VIEW-POLISH-1): the Path Operations panel's
+    /// [`super::hosted::PanelAction::CreateOutlines`] on the selected layer (one undo step).
+    CreateOutlines,
 }
 
 impl ShellCommand {
@@ -565,6 +572,8 @@ impl ShellCommand {
             Self::Panel(p) => format!("studio.workspace.panel.{}", p.key()),
             Self::Help(h) => h.id().into(),
             Self::Proof(l) => l.id(),
+            // [STU-SHL-029] TYPE > Convert > Create Outlines; the leaf suffix is a harness id.
+            Self::CreateOutlines => "studio.type.convert.create_outlines".into(),
         }
     }
 
@@ -576,6 +585,9 @@ impl ShellCommand {
         menu_entries().into_iter().map(|e| e.command).find(|c| c.id() == id)
     }
 }
+
+/// Key binding of TYPE > Convert > Create Outlines ([`ShellCommand::CreateOutlines`]).
+pub const CREATE_OUTLINES_SHORTCUT: &str = "Ctrl+Shift+O";
 
 /// One fixed menu entry (Open Recent's generated leaves are not listed).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -605,6 +617,9 @@ pub fn menu_entries() -> Vec<MenuEntry> {
         e("View", ShellCommand::ZoomOut, "Zoom Out", None),
         e("View", ShellCommand::ToggleGpu, "Render on GPU", None),
         e("View", ShellCommand::ToggleStatus, "Status Log", None),
+        // Ctrl+Shift+O (Studio choice; Illustrator's binding UNVERIFIED, D5): no other shell,
+        // panel or hosted-panel binding uses O with Ctrl+Shift; consumed before Ctrl+O (Open).
+        e("Type", ShellCommand::CreateOutlines, "Create Outlines", Some(CREATE_OUTLINES_SHORTCUT)),
     ];
     out.extend(Panel::ALL.map(|p| e("Workspace", ShellCommand::Panel(p), p.label(), Some(p.shortcut_text()))));
     out.extend(HelpCommand::ALL.map(|h| e("Help", ShellCommand::Help(h), h.label(), None)));
@@ -895,6 +910,19 @@ impl Viewer {
                 MenuNode::submenu(super::proof::VIEW_MENU_ID, "Proof", self.proof_menu_nodes(super::proof::ProofMenu::View)).with_help("Soft proofing: proof setup, proof colours, gamut warning, colour-vision proof (STU-SHL-025)."),
             ],
         );
+        // TYPE > Convert > Create Outlines (lane SMB-VIEW-POLISH-1): needs a document and a selected
+        // layer; what the layer holds (point text, live text) is checked by the command itself.
+        let outlines = match (open, self.selected.is_some()) {
+            (false, _) => A::inapplicable(ReasonCode::NoSuchContainer, "nothing open to outline", &open_id),
+            (true, false) => A::inapplicable(ReasonCode::NeedsSelection, "select a text layer or a vector layer with live text", &ShellCommand::Panel(Panel::Layers).id()),
+            (true, true) => A::available(),
+        };
+        let type_menu = MenuNode::title(
+            "type",
+            "Type",
+            vec![MenuNode::submenu("studio.type.convert", "Convert", vec![leaf(ShellCommand::CreateOutlines).with_availability(outlines).with_help("Replaces the selected point text, or the live text bound to the selected vector layer, with filled outline paths (one undo step); the same command as Path Operations > Create Outlines.")])
+                .with_help("Text conversions ([STU-SHL-029] TYPE > Convert).")],
+        );
         let color = MenuNode::title(
             "color",
             "Color",
@@ -941,7 +969,7 @@ impl Viewer {
                 help_leaf(HelpCommand::About),
             ],
         );
-        let mut bar = MenuBar::new(vec![file, edit, view, color, workspace, help]);
+        let mut bar = MenuBar::new(vec![file, edit, view, type_menu, color, workspace, help]);
         bar.resolve_remedies();
         bar
     }
@@ -1122,6 +1150,7 @@ impl Viewer {
                 Ok(())
             }
             ShellCommand::Undo => self.undo().map(|_| ()),
+            ShellCommand::CreateOutlines => self.hosted_action(super::hosted::PanelAction::CreateOutlines).map(|_| ()),
             ShellCommand::Redo => self.redo().map(|_| ()),
             ShellCommand::Fit => {
                 self.fit = true;
@@ -1447,7 +1476,7 @@ impl Viewer {
         }
     }
 
-    /// Shell shortcuts: Ctrl+O, Ctrl+S, Ctrl+Shift+S, Ctrl+W and the panel function keys
+    /// Shell shortcuts: Ctrl+O, Ctrl+Shift+O (Create Outlines), Ctrl+S, Ctrl+Shift+S, Ctrl+W and the panel function keys
     /// (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z stay with the editing shortcuts).
     pub(super) fn shell_shortcuts(&mut self, ctx: &egui::Context) {
         let mut commands = Vec::new();
@@ -1458,7 +1487,10 @@ impl Viewer {
             } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
                 commands.push(ShellCommand::Save);
             }
-            if i.consume_key(egui::Modifiers::COMMAND, egui::Key::O) {
+            // Ctrl+Shift+O first: consume_key ignores an extra Shift, so Ctrl+O would take it.
+            if i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::O) {
+                commands.push(ShellCommand::CreateOutlines);
+            } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::O) {
                 commands.push(ShellCommand::Open);
             }
             if i.consume_key(egui::Modifiers::COMMAND, egui::Key::W) {
