@@ -5,12 +5,10 @@
 //! from egui's own panel state (`PanelState`, the rect a panel used last frame), 3 warm-up frames,
 //! then 20 frames must agree, at the desktop default viewport (1400 x 900) and a constrained one
 //! (900 x 700). Each panel also stays at least as wide as its default (it never narrows to its
-//! narrowest row), except Info at 900 x 700 with a document open: there Properties opens at about
-//! 445 px (a row that does not wrap; by reading, the import receipt's loss grid in
-//! `view/mod.rs` `receipt_ui`, egui `Grid` cells do not wrap; not measured, and `view/mod.rs` is
-//! outside lane SMB-R41-FOLLOWUPS-1), so Layers + Properties + Info defaults exceed the window and
-//! egui clamps Info to the width left: asserted as Layers + Properties + Info = the window width in
-//! every frame (a clamp, not a narrowing), not Info's default width.
+//! narrowest row), Info included at 900 x 700 with a document open (F-R41-3, lane
+//! SMB-VIEW-POLISH-1: the import receipt's loss grid, measured by
+//! `viewer_view_polish::properties_rows_measured_at_900x700`, opened Properties at 445 px and left
+//! Info clamped below its default; its entries now wrap and Properties keeps its default width).
 //! NOT_PROVEN: a real desktop window (the same `Viewer::ui` draws there).
 #![cfg(feature = "viewer")]
 
@@ -30,9 +28,6 @@ const FRAMES: usize = 20;
 /// Default widths (view/mod.rs, view/info.rs) less egui's panel frame margins.
 const PROPERTIES_MIN: f32 = 280.0;
 const INFO_MIN: f32 = 240.0;
-/// Info when it is the clamped panel: below its default (not the fixed width it would keep with
-/// room) and at least egui's side-panel minimum width (96 px) less one pixel of rounding.
-const INFO_CLAMPED: std::ops::Range<f32> = 95.0..INFO_MIN;
 
 /// Per frame, the width of each panel in `ids` on a `w` x `h` screen.
 fn widths(v: &mut Viewer, ids: &[&str], w: f32, h: f32) -> Vec<Vec<f32>> {
@@ -124,21 +119,8 @@ fn info_panel_width_is_stable() {
         v.render_if_dirty();
         v.select_rect(2.0, 3.0, 20.0, 10.0).unwrap();
         let _ = v.info_eyedropper(5.0, 5.0).unwrap();
-        if w >= 1400.0 {
-            let all = widths(&mut v, &ids, w, h);
-            check(&format!("info + properties, samplers and selection, {w}x{h}"), &ids, &[PROPERTIES_MIN, INFO_MIN], &all);
-            continue;
-        }
-        // At 900 px the Layers (240) + Properties (about 445 with a document open, module docs) +
-        // Info defaults exceed the window: Info is clamped to exactly the width the other side
-        // panels leave (rects tile: egui allocates each side panel from the space left), stable.
-        let label = format!("info + properties, samplers and selection, {w}x{h}");
-        let all = widths(&mut v, &[widget::PROPERTIES_PANEL, info::widget::PANEL, widget::LAYER_PANEL], w, h);
-        check(&label, &ids, &[PROPERTIES_MIN, 0.0], &all);
-        for (frame, ws) in all[WARMUP..].iter().enumerate() {
-            let (properties, info, layers) = (ws[0], ws[1], ws[2]);
-            assert!((layers + properties + info - w).abs() < 0.5, "{label} frame {frame}: layers {layers:.1} + properties {properties:.1} + info {info:.1} != {w}");
-            assert!(INFO_CLAMPED.contains(&info), "{label} frame {frame}: info {info:.1} is not a clamp below its default");
-        }
+        // At 900 px too: Layers (240) + Properties (300) + Info (260) defaults fit the window.
+        let all = widths(&mut v, &ids, w, h);
+        check(&format!("info + properties, samplers and selection, {w}x{h}"), &ids, &[PROPERTIES_MIN, INFO_MIN], &all);
     }
 }

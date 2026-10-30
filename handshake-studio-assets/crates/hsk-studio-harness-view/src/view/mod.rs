@@ -261,6 +261,9 @@ pub struct Viewer {
     /// The spectral display of the waveform editor (module [`spectral_display`]).
     #[cfg(feature = "audio-batch")]
     spectral: Option<spectral_display::SpectralDisplayState>,
+    /// The live-text status line of each live story at the last render, `(text_id, line)` (lane
+    /// SMB-VIEW-POLISH-1: [`Viewer::render_if_dirty`] says the lines that changed).
+    live_text_seen: Vec<(String, String)>,
 }
 
 struct MonitorState {
@@ -337,6 +340,7 @@ impl Viewer {
             waveform: None,
             #[cfg(feature = "audio-batch")]
             spectral: None,
+            live_text_seen: Vec::new(),
         };
         // D24-A (lane SMB-PR-SOURCE-MONITOR): AAC decodes by default through the OS decoder, reel-native's
         // isolated Media Foundation AAC worker (`reel-native-mf-worker --aac` beside the executable).
@@ -751,6 +755,7 @@ impl Viewer {
                 self.render_error = None;
                 self.texture = None;
                 self.say(line);
+                self.echo_live_text_changes();
             }
             Err(e) => {
                 self.say(format!("render failed: {e}"));
@@ -758,6 +763,18 @@ impl Viewer {
                 self.frame = None;
                 self.texture = None;
             }
+        }
+    }
+
+    /// Says each live text whose placed / overset glyph counts changed since the last render (lane
+    /// SMB-VIEW-POLISH-1: a path edit re-flows the text bound to it); a story seen for the first
+    /// time is recorded without a line (binding and converting say their own).
+    fn echo_live_text_changes(&mut self) {
+        let now: Vec<(String, String)> = self.live_text_lines().into_iter().map(|(_, id, line)| (id, line)).collect();
+        let changed: Vec<String> = now.iter().filter(|(id, line)| self.live_text_seen.iter().any(|(i, l)| i == id && l != line)).map(|(_, l)| l.clone()).collect();
+        self.live_text_seen = now;
+        for line in changed {
+            self.say(line);
         }
     }
 
@@ -1104,17 +1121,16 @@ impl Viewer {
             ui.label(format!("colour: {}", colour["status"].as_str().unwrap_or("?")));
         }
         let loss = r["loss"].as_array().cloned().unwrap_or_default();
+        // One wrapping label per entry (lane SMB-VIEW-POLISH-1, F-R41-3): the former three-column
+        // Grid does not wrap, and its widest row (measured at 900 x 700: `document/layer_extras |
+        // transformed | merged_image_oracle_unknown`, 411 px) opened Properties at 445 px instead
+        // of its default; the panel now keeps its width and the entry wraps inside it.
         egui::CollapsingHeader::new(format!("Loss entries ({})", loss.len())).id_salt(widget::id("receipt.loss")).default_open(true).show(ui, |ui| {
-            egui::Grid::new(widget::id("receipt.loss.grid")).striped(true).show(ui, |ui| {
-                ui.strong("path");
-                ui.strong("kind");
-                ui.strong("code");
-                ui.end_row();
+            ui.push_id(widget::id("receipt.loss.rows"), |ui| {
+                ui.add(egui::Label::new(egui::RichText::new("path / kind / code").strong()).wrap());
                 for e in &loss {
-                    ui.label(e["path"].as_str().unwrap_or(""));
-                    ui.label(e["kind"].as_str().unwrap_or(""));
-                    ui.label(e["code"].as_str().unwrap_or(""));
-                    ui.end_row();
+                    let [path, kind, code] = ["path", "kind", "code"].map(|k| e[k].as_str().unwrap_or(""));
+                    ui.add(egui::Label::new(format!("{path} / {kind} / {code}")).wrap());
                 }
             });
         });
@@ -1254,11 +1270,12 @@ impl Viewer {
                     _ => Ok(()),
                 };
             }
+            // On an open path: path text; inside a closed path: area text; else point text (lane
+            // SMB-VIEW-POLISH-1, module vector `text_click`).
             if tool == Tool::Text && response.clicked()
                 && let Some(p) = response.interact_pointer_pos()
             {
-                let [x, y] = to_doc(p);
-                let _ = self.place_text(x, y, "Text");
+                let _ = self.text_click(to_doc(p), vector::HIT_RADIUS_SCREEN / f64::from(zoom.max(0.01)), "Text");
             }
             if tool == Tool::MagicWand && response.clicked()
                 && let Some(p) = response.interact_pointer_pos()
@@ -1330,7 +1347,7 @@ impl Viewer {
                 Tool::EllipseSelect => "Drag an elliptical selection",
                 Tool::Lasso => "Drag a freehand selection",
                 Tool::Brush => "Paint on the selected raster layer (clipped to the selection)",
-                Tool::Text => "Click the canvas to place a point-text layer (size and colour from the text size and brush colour)",
+                Tool::Text => "Click an open vector path for text on the path, inside a closed vector path for area text, elsewhere for a point-text layer (size and colour from the text size and brush colour)",
                 Tool::MagicWand | Tool::QuickSelect | Tool::MagneticLasso | Tool::Liquify | Tool::RefineBrush => select_liquify::tool_hover(tool),
                 other => vector::tool_hover(other),
             };

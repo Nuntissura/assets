@@ -1427,7 +1427,57 @@ impl Viewer {
             },
             Err(e) => format!("live text {text_id}: {e}"),
         };
+        // Said here: the next frame's echo of count changes records it afresh (lane SMB-VIEW-POLISH-1).
+        self.live_text_seen.retain(|(id, _)| id != text_id);
         self.say(line);
+    }
+
+    /// The status line of every live text with its container layer, `(layer_id, text_id, line)`
+    /// (lane SMB-VIEW-POLISH-1: the render echo and the Path Operations summary); empty without
+    /// live-text bindings or when the reports cannot be built.
+    pub(super) fn live_text_lines(&self) -> Vec<(String, String, String)> {
+        let bound = self.vector_entry().is_ok_and(|e| !(e.records.path_texts.is_empty() && e.records.area_texts.is_empty()));
+        if !bound {
+            return Vec::new();
+        }
+        self.vector_text_reports().map(|rs| rs.iter().map(|s| (s.report.layer_id.clone(), s.report.text_id.clone(), live_text_line(s))).collect()).unwrap_or_default()
+    }
+
+    /// Text tool click at document point `p` (lane SMB-VIEW-POLISH-1; Studio reading, Illustrator
+    /// behaviour UNVERIFIED, D5): the top-most visible vector layer whose first contour is open and
+    /// passes within `radius` of `p` gets live path text on it; else the top-most visible vector
+    /// layer whose closed path contains `p` gets live area text in it (inset 0); both through
+    /// [`Self::bind_live_text`] (one undo step), selecting that layer. Anywhere else point text is
+    /// placed at `p` ([`Viewer::place_text`]). Returns the story id or the new text layer id.
+    pub fn text_click(&mut self, p: [f64; 2], radius: f64, text: &str) -> Result<String, String> {
+        let target = if p.iter().all(|v| v.is_finite()) && radius.is_finite() && radius >= 0.0 { self.text_target(p, radius) } else { None };
+        let Some((layer, kind)) = target else {
+            return self.place_text(p[0], p[1], text);
+        };
+        let r = self.bind_live_text(&layer, text, kind);
+        if r.is_ok() {
+            self.selected = Some(layer);
+        }
+        r
+    }
+
+    /// The vector layer and live-text kind of a Text tool click ([`Self::text_click`]).
+    fn text_target(&self, p: [f64; 2], radius: f64) -> Option<(String, LiveTextKind)> {
+        let q = PathPoint::new(p[0], p[1]);
+        let records: Vec<(String, PathRecord)> = self
+            .layers()
+            .into_iter()
+            .filter(|r| r.kind == "vector" && r.visible)
+            .filter_map(|r| self.vector_path(&r.layer_id).ok().filter(|rec| rec.network.is_none()).map(|rec| (r.layer_id, rec)))
+            .collect();
+        let on_open = records.iter().find(|(_, r)| r.path.contours.first().is_some_and(|c| !c.closed) && ap::hit_segment(&r.path, q, radius).is_some_and(|s| s.contour == 0));
+        if let Some((id, _)) = on_open {
+            return Some((id.clone(), LiveTextKind::Path));
+        }
+        records
+            .iter()
+            .find(|(_, r)| !r.path.contours.is_empty() && r.path.contours.iter().all(|c| c.closed) && region_contains(&r.path, q))
+            .map(|(id, _)| (id.clone(), LiveTextKind::Area { inset_pt: 0.0 }))
     }
 
     /// The live story bound to a path of vector layer `layer_id` (path texts first).

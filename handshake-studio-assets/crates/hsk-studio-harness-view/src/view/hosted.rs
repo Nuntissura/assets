@@ -1196,7 +1196,10 @@ impl Viewer {
                         (_, Ok(_)) => "path",
                         _ => "not a vector path",
                     };
-                    format!("{}: {kind}", layer(&id))
+                    // The live text bound to the layer (lane SMB-VIEW-POLISH-1): the status line's
+                    // placed / overset counts; nothing appended without live text.
+                    let live: Vec<String> = self.live_text_lines().into_iter().filter(|(l, _, _)| *l == id).map(|(_, _, line)| line).collect();
+                    if live.is_empty() { format!("{}: {kind}", layer(&id)) } else { format!("{}: {kind}; {}", layer(&id), live.join("; ")) }
                 }
                 None => "no layer selected".into(),
             },
