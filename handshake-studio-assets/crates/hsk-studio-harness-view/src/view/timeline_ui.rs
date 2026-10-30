@@ -6,13 +6,15 @@
 //! [`TimelineCommand`] run after the frame is drawn (one undoable step per drag, never one per
 //! frame dragged, [STU-VID-040]). Clip blocks and trim handles are AccessKit buttons labelled with
 //! the clip name, so the panel is navigable without pixels. Lane SMB-PR-RATE-STRETCH-1 adds the
-//! Rate Stretch tool (edge drags) and the Speed/Duration form row (`Ctrl+R`).
+//! Rate Stretch tool (edge drags) and the Speed/Duration form row (`Ctrl+R`). Lane
+//! SMB-AU-MULTITRACK-1 (feature `audio-batch`) adds waveforms in audio clips, the automation lane
+//! rows and the clip gain buttons (module `timeline::audio_ui`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::Viewer;
 use super::timeline::{
     Drag, DragKind, EDGE_PX, EditMode, HEADER_PX, MAX_PX_PER_FRAME, MIN_PX_PER_FRAME, RULER_PX, SpeedFix, TimelineCommand, TimelineLayout, TimelineState, TrimFocus, TrimTool, WORK_AREA_PX,
-    drag_command, drag_target, frames_of, key_command, layout, tick_at_x, ticks_per_frame, widget, x_of,
+    drag_command, drag_target, frames_of, key_command, layout_with_lanes, tick_at_x, ticks_per_frame, widget, x_of,
 };
 use super::widget as vw;
 use hsk_studio_accord::Ticks;
@@ -46,6 +48,17 @@ struct Outcome {
     drag_stopped: bool,
     pressed_inside: bool,
     panel: Option<egui::Rect>,
+    /// Multitrack actions (lane SMB-AU-MULTITRACK-1).
+    #[cfg(feature = "audio-batch")]
+    audio: Vec<super::timeline::AutomationCommand>,
+}
+
+/// What the panel draws besides the sequence: automation lanes (lane SMB-AU-MULTITRACK-1).
+#[derive(Default)]
+struct Extra {
+    lane_tracks: Vec<String>,
+    #[cfg(feature = "audio-batch")]
+    views: Vec<super::timeline::LaneView>,
 }
 
 impl Viewer {
@@ -56,6 +69,15 @@ impl Viewer {
         }
         self.timeline_sync_monitor();
         self.timeline_refresh_cache();
+        #[allow(unused_mut)]
+        let mut extra = Extra::default();
+        #[cfg(feature = "audio-batch")]
+        {
+            self.timeline_audio_follow();
+            let lanes: Vec<(String, super::timeline::LaneTarget)> = self.timeline.as_ref().map(|t| t.audio.lanes.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+            extra.views = lanes.iter().filter_map(|(track, target)| self.timeline_lane(track, target)).collect();
+            extra.lane_tracks = lanes.into_iter().map(|(k, _)| k).collect();
+        }
         let playhead = self.timeline_playhead();
         let playing = self.monitor.as_ref().is_some_and(|m| m.monitor.scheduler().transport() == super::monitor::Transport::Playing);
         let mut out = Outcome::default();
@@ -63,7 +85,7 @@ impl Viewer {
             let id = self.timeline.as_ref().map(|t| t.sequence_id().to_owned()).unwrap_or_default();
             let sequence = self.run.snapshot().and_then(|s| s.document().sequences.iter().find(|q| q.sequence_id == id));
             let Some(t) = self.timeline.as_mut() else { return };
-            let response = egui::TopBottomPanel::bottom(vw::id(widget::PANEL)).resizable(true).default_height(260.0).min_height(140.0).show(ctx, |ui| panel(ui, sequence, t, playhead, &mut out));
+            let response = egui::TopBottomPanel::bottom(vw::id(widget::PANEL)).resizable(true).default_height(260.0).min_height(140.0).show(ctx, |ui| panel(ui, sequence, t, playhead, &extra, &mut out));
             out.panel = Some(response.response.rect);
         }
         self.drawn.push(widget::PANEL.into());
@@ -106,6 +128,10 @@ impl Viewer {
         }
         for c in out.commands {
             let _ = self.timeline_command(c);
+        }
+        #[cfg(feature = "audio-batch")]
+        for c in std::mem::take(&mut out.audio) {
+            let _ = self.multitrack_command(c);
         }
         if playing || self.timeline.as_ref().is_some_and(|t| t.drag.is_some()) {
             ctx.request_repaint();
@@ -159,7 +185,7 @@ fn button(ui: &mut egui::Ui, out: &mut Outcome, name: &str, label: &str, hover: 
     }
 }
 
-fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineState, playhead: Option<Ticks>, out: &mut Outcome) {
+fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineState, playhead: Option<Ticks>, extra: &Extra, out: &mut Outcome) {
     let Some(seq) = sequence else {
         ui.label(format!("Timeline: sequence {} is not in the open document", t.sequence_id()));
         t.layout = None;
@@ -200,6 +226,11 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
         button(ui, out, widget::EXTEND_EDIT, "Extend Edit", "Roll the selected (else the nearest) edit to the playhead", playhead.is_some(), TimelineCommand::ExtendEditToPlayhead);
         let can_enter = t.edit_point().is_some() && t.session().is_none();
         button(ui, out, widget::TRIM_SESSION_ENTER, "Trim Session", "Trim the selected edit point with plus / minus, focus and ripple / roll", can_enter, TimelineCommand::TrimSessionEnter);
+        #[cfg(feature = "audio-batch")]
+        {
+            ui.add_space(12.0);
+            super::timeline::audio_ui::toolbar(ui, seq, t, &mut out.drawn, &mut out.audio);
+        }
         let max = frames_of(seq.duration, tpf).max(1.0);
         let mut scroll = t.view.scroll_frames.min(max);
         let r = ui.push_id(vw::id(widget::SCROLL), |ui| ui.add(egui::Slider::new(&mut scroll, 0.0..=max).text("Scroll").show_value(false))).inner;
@@ -220,9 +251,14 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
     let size = egui::vec2(ui.available_width().max(HEADER_PX + 40.0), ui.available_height().max(RULER_PX + WORK_AREA_PX + 30.0));
     let (area, bg) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let markers: &[(String, TickRange)] = t.cache.as_ref().map_or(&[], |c| &c.markers);
-    let l = layout(seq, &t.view, area, markers);
+    let l = layout_with_lanes(seq, &t.view, area, markers, &extra.lane_tracks);
+    #[cfg(feature = "audio-batch")]
+    let waves = super::timeline::audio_ui::clip_waves(&mut t.audio, seq, &l);
+    #[cfg(not(feature = "audio-batch"))]
+    let waves: Vec<(String, Vec<(f32, f32)>)> = Vec::new();
+    out.drawn.extend(waves.iter().map(|(id, _)| widget::clip_waveform(id)));
     let targets: &[SnapTarget] = t.cache.as_ref().map_or(&[], |c| &c.targets);
-    paint(ui, &l, t, playhead, tpf);
+    paint(ui, &l, t, playhead, tpf, &waves);
     out.drawn.extend([widget::RULER, widget::LANES].map(String::from));
     if l.work_area.is_some() {
         out.drawn.push(widget::WORK_AREA.into());
@@ -331,6 +367,10 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
             out.drag_stopped = true;
         }
     }
+    #[cfg(feature = "audio-batch")]
+    super::timeline::audio_ui::lanes_ui(ui, &l, t, &extra.views, tpf, &mut out.drawn, &mut out.audio, &mut out.pressed_inside);
+    #[cfg(not(feature = "audio-batch"))]
+    let _ = extra;
     t.layout = Some(l);
 }
 
@@ -426,7 +466,7 @@ fn session_row(ui: &mut egui::Ui, seq: &StudioSequence, t: &TimelineState, tpf: 
     });
 }
 
-fn paint(ui: &egui::Ui, l: &TimelineLayout, t: &TimelineState, playhead: Option<Ticks>, tpf: u64) {
+fn paint(ui: &egui::Ui, l: &TimelineLayout, t: &TimelineState, playhead: Option<Ticks>, tpf: u64, waves: &[(String, Vec<(f32, f32)>)]) {
     let painter = ui.painter_at(l.area);
     let visuals = ui.visuals();
     let text = visuals.text_color();
@@ -458,6 +498,9 @@ fn paint(ui: &egui::Ui, l: &TimelineLayout, t: &TimelineState, playhead: Option<
         lanes.rect_filled(b.rect, 3.0, fill);
         let stroke = if selected == Some(b.clip_id.as_str()) { egui::Stroke::new(2.0_f32, egui::Color32::WHITE) } else { egui::Stroke::new(1.0_f32, egui::Color32::BLACK) };
         lanes.rect_stroke(b.rect, 3.0, stroke, egui::StrokeKind::Inside);
+        if let Some((_, cols)) = waves.iter().find(|(id, _)| *id == b.clip_id) {
+            paint_wave(&lanes, b.rect.shrink(1.0), cols);
+        }
         if b.rect.width() > 24.0 {
             lanes.with_clip_rect(b.rect.shrink(2.0)).text(egui::pos2(b.rect.min.x + 4.0, b.rect.center().y), egui::Align2::LEFT_CENTER, &b.label, font.clone(), egui::Color32::WHITE);
         }
@@ -502,4 +545,12 @@ fn paint(ui: &egui::Ui, l: &TimelineLayout, t: &TimelineState, playhead: Option<
         );
         painter.text(egui::pos2(l.area.max.x - 4.0, l.area.max.y - 2.0), egui::Align2::RIGHT_BOTTOM, note, font, text);
     }
+}
+
+/// Waveform columns of an audio clip block (lane SMB-AU-MULTITRACK-1; empty without `audio-batch`).
+fn paint_wave(painter: &egui::Painter, rect: egui::Rect, cols: &[(f32, f32)]) {
+    #[cfg(feature = "audio-batch")]
+    super::timeline::audio_ui::paint_wave(painter, rect, cols);
+    #[cfg(not(feature = "audio-batch"))]
+    let _ = (painter, rect, cols);
 }
