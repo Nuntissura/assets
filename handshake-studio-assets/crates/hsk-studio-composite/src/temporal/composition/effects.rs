@@ -26,15 +26,57 @@
 //! Studio readings (UNVERIFIED, D5): Twirl `Twirl Radius` is percent of the larger layer side;
 //! Spherize `Radius` and Circle `Radius` / `Feather Outer Edge` and Checkerboard `Width` / `Height`
 //! are layer pixels; Offset moves the layer centre to `Shift Center To`.
+//!
+//! Lane SMB-AE-EFFECT-FAMILIES-2 (blur, glow and colour families; entry blend mode and mask). The
+//! lowering maps each row onto pigment's kernels (`composition::effect_stack` module docs); a value
+//! whose kernel pigment does not have is refused [`COMPOSITION_EFFECT_KERNEL`], a value outside a
+//! pigment kernel's domain [`COMPOSITION_EFFECT_OPTION`]. Studio readings (UNVERIFIED, D5):
+//! - Gaussian Blur `Blurriness` is pigment's blur radius in layer pixels (`sigma = radius / 2`),
+//!   at most pigment's `MAX_BLUR_RADIUS_PX` (1000; above: kernel refusal). Fast Box Blur `Blur
+//!   Radius` rounds half up to the box half-width and `Iterations` half up to the pass count
+//!   ([`box_taps`], at most `MAX_EFFECT_TAPS` taps). `Blur Dimensions` / `Glow Dimensions` other
+//!   than `Horizontal and Vertical` need a one-axis kernel pigment does not have (kernel refusal).
+//! - Directional Blur with `Blur Length` above 0, Radial Blur with `Amount` above 0 and Find Edges
+//!   with `Blend With Original` below 1 need kernels pigment does not have (kernel refusal); at
+//!   those identity values the entry is the identity.
+//! - Glow: `Glow Threshold` `v` is the fraction `v / 255`; `Glow Radius` is the blur radius;
+//!   `Glow Operation` maps to the pigment blend mode of the same name (`Add` = linear dodge (add));
+//!   `None`, `Dissolve` and the stencil / silhouette / luminescent / alpha-add operations, `Arbitrary
+//!   Map` colours and a `Color Phase` other than its default are refused.
+//! - Colour: Levels rows are the composite (RGB) record (the per-channel records are not
+//!   recovered: identity) and `Channel:` selects the panel view only; the clip options are no-ops
+//!   on the unit-range stack. Hue/Saturation `Channel Control` selects the panel view only; with
+//!   `colorize` the colorize rows replace the master rows; hues wrap into `-180..180`. Exposure
+//!   linearises encoded values by pigment's `x^2.2` stand-in unless the plan is linear light or
+//!   `bypass_linear_light_conversion` is set; `Individual Channels` runs one exposure per channel.
+//!   Tint is pigment's gradient map black -> `Map Black To`, white -> `Map White To` mixed by
+//!   `Amount to Tint`; Tritone the map shadows (0), midtones (0.5), highlights (1) mixed with the
+//!   original by `Blend With Original`; colour parameters are straight RGB in the plan's colour tag
+//!   (no `StudioColorProfile` reference, [STU-FX-118] gap). Invert `RGB`, `Red`, `Green`, `Blue`
+//!   run pigment's invert on those channels; the other channel spaces and `Alpha` are refused.
+//! - Entry semantics: a blend mode other than normal ([STU-FX-008]) and an effect mask
+//!   ([STU-FX-004], the coverage of the named layer mask alone in `add` mode with its own inversion,
+//!   feather, opacity and expansion, whatever its mode on the layer) wrap the entry's effect in
+//!   [`crate::composition::SceneEffect::Composite`]. Dissolve and the modes pigment's `blend_rgb`
+//!   does not define are refused.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{CompLayer, CompositionTemporalSource, Content, keyed_property, unsupported};
 use crate::CompositeError;
-use crate::composition::{EffectedContent, GeneratorComposite, SceneContent, SceneEffect, SceneEffectEntry};
+use crate::composition::{
+    ChannelAdjustment, ColourEffect, EffectedContent, EntryComposite, GeneratorComposite, GlowColours, GlowEffect, GlowLooping,
+    GlowOriginal, SceneContent, SceneEffect, SceneEffectEntry, box_taps,
+};
 use crate::temporal::TemporalError;
 use crate::temporal::motion::sample;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{EFFECT_PARAM_OUT_OF_RANGE, StudioCompositionEffect, StudioCompositionEffectKind};
+use hsk_studio_folio::{EFFECT_PARAM_OUT_OF_RANGE, StudioCompositionEffect, StudioCompositionEffectKind, StudioCompositionMaskMode};
 use hsk_studio_motion::Property;
+use hsk_studio_pigment::Rect;
+use hsk_studio_pigment::adjust_math::{
+    AdjustmentOp, ColourBalance, Exposure, GradientMap, GradientMapStop, HueSaturation, Levels, LevelsRecord,
+};
+use hsk_studio_pigment::blend_math::{BlendSpace, StudioBlendMode, blend_rgb};
+use hsk_studio_pigment::blur_math::{BlurScope, LayerBlur, MAX_BLUR_RADIUS_PX};
 use hsk_studio_pigment::transform_math::Affine2;
 use std::collections::BTreeMap;
 
@@ -42,6 +84,10 @@ use std::collections::BTreeMap;
 pub const COMPOSITION_EFFECT_CONTENT: &str = "composition_effect_content";
 /// An effect option or value whose behaviour is not implemented (module docs).
 pub const COMPOSITION_EFFECT_OPTION: &str = "composition_effect_option";
+/// An effect value whose kernel pigment does not provide (lane SMB-AE-EFFECT-FAMILIES-2).
+pub const COMPOSITION_EFFECT_KERNEL: &str = "composition_effect_kernel";
+/// Glow `Color Phase` default as recorded ([STU-FX-131]); other phases are refused.
+const GLOW_PHASE_DEFAULT: f64 = 0.003906;
 
 /// One running entry's streams.
 #[derive(Clone, Debug)]
@@ -49,11 +95,22 @@ pub(super) struct EffectStream {
     effect_id: String,
     kind: StudioCompositionEffectKind,
     mix: f64,
+    /// [STU-FX-008] entry blend mode.
+    mode: StudioBlendMode,
+    /// [STU-FX-004] the layer mask this entry is masked by.
+    mask_id: Option<String>,
+    /// The plan's blend space (Exposure linearisation).
+    space: BlendSpace,
     values: BTreeMap<String, Property>,
 }
 
 /// The running entries of layer `id` (module docs).
-pub(super) fn read_effects(id: &str, effects: &[StudioCompositionEffect], content: &Content) -> Result<Vec<EffectStream>, TemporalError> {
+pub(super) fn read_effects(
+    id: &str,
+    effects: &[StudioCompositionEffect],
+    content: &Content,
+    space: BlendSpace,
+) -> Result<Vec<EffectStream>, TemporalError> {
     let solo = effects.iter().any(|e| e.enabled && e.solo);
     let running: Vec<&StudioCompositionEffect> = effects.iter().filter(|e| e.enabled && (!solo || e.solo)).collect();
     if running.is_empty() {
@@ -65,8 +122,20 @@ pub(super) fn read_effects(id: &str, effects: &[StudioCompositionEffect], conten
     running
         .into_iter()
         .map(|e| {
+            let mode = StudioBlendMode::try_from(e.blend_mode).map_err(|_| unsupported(id, COMPOSITION_EFFECT_OPTION))?;
+            if mode == StudioBlendMode::Dissolve || blend_rgb(mode, [0.5; 3], [0.5; 3]).is_err() {
+                return Err(unsupported(id, COMPOSITION_EFFECT_OPTION));
+            }
             let values = e.values.iter().map(|(k, v)| Ok((k.clone(), keyed_property(id, v)?))).collect::<Result<_, TemporalError>>()?;
-            Ok(EffectStream { effect_id: e.effect_id.clone(), kind: e.filter_kind, mix: e.opacity / 100.0, values })
+            Ok(EffectStream {
+                effect_id: e.effect_id.clone(),
+                kind: e.filter_kind,
+                mix: e.opacity / 100.0,
+                mode,
+                mask_id: e.mask_id.clone(),
+                space,
+                values,
+            })
         })
         .collect()
 }
@@ -80,6 +149,19 @@ struct At<'a> {
     /// Layer size in pixels and the layer origin in surface pixels.
     size: [f64; 2],
     origin: [f64; 2],
+}
+
+/// Hue in degrees wrapped into `-180..180` (pigment's Hue/Saturation domain).
+fn wrapped_hue(deg: f64) -> f64 {
+    (deg + 180.0).rem_euclid(360.0) - 180.0
+}
+#[allow(clippy::cast_possible_truncation)]
+fn rgb32(c: [f64; 4]) -> [f32; 3] {
+    [c[0] as f32, c[1] as f32, c[2] as f32]
+}
+/// One adjustment over every channel.
+fn all(op: AdjustmentOp) -> ChannelAdjustment {
+    ChannelAdjustment { op, channels: [true; 3] }
 }
 
 impl At<'_> {
@@ -113,6 +195,10 @@ impl At<'_> {
         let i = v as u16;
         Ok(i)
     }
+    /// A boolean row (`0` / `1`, checked by `value`).
+    fn flag(&self, key: &str) -> Result<bool, TemporalError> {
+        Ok(self.one(key)? > 0.5)
+    }
     /// The generators' `Blending Mode` (option 1 `None`, option 2 `Normal`).
     fn composite(&self) -> Result<GeneratorComposite, TemporalError> {
         match self.option("blending_mode")? {
@@ -120,6 +206,35 @@ impl At<'_> {
             2 => Ok(GeneratorComposite::Over),
             _ => Err(unsupported(self.id, COMPOSITION_EFFECT_OPTION)),
         }
+    }
+    fn refused(&self) -> TemporalError {
+        unsupported(self.id, COMPOSITION_EFFECT_OPTION)
+    }
+    fn no_kernel(&self) -> TemporalError {
+        unsupported(self.id, COMPOSITION_EFFECT_KERNEL)
+    }
+    /// `Blur Dimensions` / `Glow Dimensions`: only `Horizontal and Vertical` has a pigment kernel.
+    fn both_axes(&self, key: &str) -> Result<(), TemporalError> {
+        if self.option(key)? == 1 { Ok(()) } else { Err(self.no_kernel()) }
+    }
+    /// pigment's Gaussian taps of `radius` layer pixels (module docs).
+    fn gaussian(&self, radius: f64) -> Result<Vec<f32>, TemporalError> {
+        if !(radius.is_finite() && (0.0..=f64::from(MAX_BLUR_RADIUS_PX)).contains(&radius)) {
+            return Err(self.no_kernel());
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let r = radius as f32;
+        LayerBlur::new(BlurScope::Layer, r).taps().map_err(|_| self.no_kernel())
+    }
+    /// A colour entry whose adjustments pigment accepts (else an option refusal).
+    fn colour_effect(&self, ops: Vec<ChannelAdjustment>, blend: f64) -> Result<SceneEffect, TemporalError> {
+        if ops.iter().any(|o| o.op.prepare().is_err()) || !(0.0..=1.0).contains(&blend) {
+            return Err(self.refused());
+        }
+        Ok(SceneEffect::Colour(Box::new(ColourEffect { ops, blend })))
+    }
+    fn identity() -> SceneEffect {
+        SceneEffect::Blur { taps: vec![1.0], repeat_edges: false }
     }
 
     fn effect(&self) -> Result<SceneEffect, TemporalError> {
@@ -189,8 +304,217 @@ impl At<'_> {
                     composite: self.composite()?,
                 }
             }
+            StudioCompositionEffectKind::GaussianBlur => {
+                self.both_axes("blur_dimensions")?;
+                SceneEffect::Blur { taps: self.gaussian(self.one("blurriness")?)?, repeat_edges: self.flag("repeat_edge_pixels")? }
+            }
+            StudioCompositionEffectKind::FastBoxBlur => {
+                self.both_axes("blur_dimensions")?;
+                // Hard bounds 0..30000 and 1..50 (checked by `value`): finite, non-negative, in u32.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let (half, passes) = ((self.one("blur_radius")? + 0.5).floor() as u32, (self.one("iterations")? + 0.5).floor() as u32);
+                let taps = box_taps(half, passes).ok_or_else(|| self.no_kernel())?;
+                SceneEffect::Blur { taps, repeat_edges: self.flag("repeat_edge_pixels")? }
+            }
+            StudioCompositionEffectKind::DirectionalBlur => {
+                if self.one("blur_length")? > 0.0 {
+                    return Err(self.no_kernel());
+                }
+                Self::identity()
+            }
+            StudioCompositionEffectKind::RadialBlur => {
+                if self.one("amount")? > 0.0 {
+                    return Err(self.no_kernel());
+                }
+                Self::identity()
+            }
+            StudioCompositionEffectKind::FindEdges => {
+                if self.one("blend_with_original")? < 1.0 {
+                    return Err(self.no_kernel());
+                }
+                Self::identity()
+            }
+            StudioCompositionEffectKind::Glow => self.glow()?,
+            StudioCompositionEffectKind::ColorBalance => {
+                let triple = |a: &str, b: &str, c: &str| -> Result<[f32; 3], TemporalError> {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let v = [self.one(a)? as f32, self.one(b)? as f32, self.one(c)? as f32];
+                    Ok(v)
+                };
+                let op = AdjustmentOp::ColourBalance(ColourBalance {
+                    shadows: triple("shadow_red_balance", "shadow_green_balance", "shadow_blue_balance")?,
+                    midtones: triple("midtone_red_balance", "midtone_green_balance", "midtone_blue_balance")?,
+                    highlights: triple("highlight_red_balance", "highlight_green_balance", "highlight_blue_balance")?,
+                    preserve_luminosity: self.flag("preserve_luminosity")?,
+                });
+                self.colour_effect(vec![all(op)], 0.0)?
+            }
+            StudioCompositionEffectKind::Exposure => {
+                let linearize_gamma = if self.flag("bypass_linear_light_conversion")? {
+                    1.0
+                } else {
+                    match self.e.space {
+                        BlendSpace::LinearLight => 1.0,
+                        BlendSpace::Encoded => 2.2,
+                    }
+                };
+                let op = |prefix: &str| -> Result<AdjustmentOp, TemporalError> {
+                    let (e, o, g) = (format!("{prefix}exposure"), format!("{prefix}offset"), format!("{prefix}gamma_correction"));
+                    #[allow(clippy::cast_possible_truncation)]
+                    let exposure = Exposure {
+                        exposure: self.one(&e)? as f32,
+                        offset: self.one(&o)? as f32,
+                        gamma: self.one(&g)? as f32,
+                        linearize_gamma,
+                    };
+                    Ok(AdjustmentOp::Exposure(exposure))
+                };
+                let ops = if self.option("channels")? == 1 {
+                    vec![all(op("")?)]
+                } else {
+                    vec![
+                        ChannelAdjustment { op: op("red_")?, channels: [true, false, false] },
+                        ChannelAdjustment { op: op("green_")?, channels: [false, true, false] },
+                        ChannelAdjustment { op: op("blue_")?, channels: [false, false, true] },
+                    ]
+                };
+                self.colour_effect(ops, 0.0)?
+            }
+            StudioCompositionEffectKind::HueSaturation => {
+                let colorize = self.flag("colorize")?;
+                let prefix = if colorize { "colorize_" } else { "master_" };
+                #[allow(clippy::cast_possible_truncation)]
+                let op = AdjustmentOp::HueSaturation(HueSaturation {
+                    hue: wrapped_hue(self.one(&format!("{prefix}hue"))?) as f32,
+                    saturation: self.one(&format!("{prefix}saturation"))? as f32,
+                    lightness: self.one(&format!("{prefix}lightness"))? as f32,
+                    colorize,
+                });
+                self.colour_effect(vec![all(op)], 0.0)?
+            }
+            StudioCompositionEffectKind::Levels => {
+                // Sampled so a value outside its hard bounds is refused like every row.
+                self.option("channel")?;
+                self.option("clip_to_output_black")?;
+                self.option("clip_to_output_white")?;
+                #[allow(clippy::cast_possible_truncation)]
+                let composite = LevelsRecord {
+                    input_black: self.one("input_black")? as f32,
+                    input_white: self.one("input_white")? as f32,
+                    gamma: self.one("gamma")? as f32,
+                    output_black: self.one("output_black")? as f32,
+                    output_white: self.one("output_white")? as f32,
+                };
+                let id = LevelsRecord::IDENTITY;
+                self.colour_effect(vec![all(AdjustmentOp::Levels(Levels { composite, red: id, green: id, blue: id }))], 0.0)?
+            }
+            StudioCompositionEffectKind::Tint => {
+                let stops = vec![
+                    GradientMapStop { position: 0.0, colour: rgb32(self.colour("map_black_to")?) },
+                    GradientMapStop { position: 1.0, colour: rgb32(self.colour("map_white_to")?) },
+                ];
+                let amount = self.one("amount_to_tint")? / 100.0;
+                self.colour_effect(vec![all(AdjustmentOp::GradientMap(GradientMap { stops, reverse: false }))], 1.0 - amount)?
+            }
+            StudioCompositionEffectKind::Tritone => {
+                let stops = vec![
+                    GradientMapStop { position: 0.0, colour: rgb32(self.colour("shadows")?) },
+                    GradientMapStop { position: 0.5, colour: rgb32(self.colour("midtones")?) },
+                    GradientMapStop { position: 1.0, colour: rgb32(self.colour("highlights")?) },
+                ];
+                let blend = self.one("blend_with_original")? / 100.0;
+                self.colour_effect(vec![all(AdjustmentOp::GradientMap(GradientMap { stops, reverse: false }))], blend)?
+            }
+            StudioCompositionEffectKind::Invert => {
+                let channels = match self.option("channel")? {
+                    1 => [true; 3],
+                    2 => [true, false, false],
+                    3 => [false, true, false],
+                    4 => [false, false, true],
+                    _ => return Err(self.refused()),
+                };
+                let blend = self.one("blend_with_original")? / 100.0;
+                self.colour_effect(vec![ChannelAdjustment { op: AdjustmentOp::Invert, channels }], blend)?
+            }
         })
     }
+
+    /// Glow (module docs).
+    fn glow(&self) -> Result<SceneEffect, TemporalError> {
+        self.both_axes("glow_dimensions")?;
+        let original = match self.option("composite_original")? {
+            1 => GlowOriginal::OnTop,
+            2 => GlowOriginal::Behind,
+            _ => GlowOriginal::None,
+        };
+        let mode = match self.option("glow_operation")? {
+            2 => StudioBlendMode::Normal,
+            3 => StudioBlendMode::LinearDodgeAdd,
+            4 => StudioBlendMode::Multiply,
+            6 => StudioBlendMode::Screen,
+            7 => StudioBlendMode::Overlay,
+            8 => StudioBlendMode::SoftLight,
+            9 => StudioBlendMode::HardLight,
+            10 => StudioBlendMode::Darken,
+            11 => StudioBlendMode::Lighten,
+            12 => StudioBlendMode::Difference,
+            13 => StudioBlendMode::Hue,
+            14 => StudioBlendMode::Saturation,
+            15 => StudioBlendMode::Colour,
+            16 => StudioBlendMode::Luminosity,
+            17 => StudioBlendMode::ColourDodge,
+            18 => StudioBlendMode::ColourBurn,
+            19 => StudioBlendMode::Exclusion,
+            _ => return Err(self.refused()),
+        };
+        let colours = match self.option("glow_colors")? {
+            1 => None,
+            2 => {
+                #[allow(clippy::float_cmp)]
+                let default_phase = self.one("color_phase")? == GLOW_PHASE_DEFAULT;
+                if !default_phase {
+                    return Err(self.refused());
+                }
+                let looping = match self.option("color_looping")? {
+                    1 => GlowLooping::SawtoothAb,
+                    2 => GlowLooping::SawtoothBa,
+                    3 => GlowLooping::TriangleAba,
+                    _ => GlowLooping::TriangleBab,
+                };
+                Some(GlowColours {
+                    a: self.colour("color_a")?,
+                    b: self.colour("color_b")?,
+                    looping,
+                    loops: self.one("color_loops")?,
+                    midpoint: self.one("a_b_midpoint")?,
+                })
+            }
+            _ => return Err(self.refused()),
+        };
+        Ok(SceneEffect::Glow(Box::new(GlowEffect {
+            based_on_alpha: self.option("glow_based_on")? == 1,
+            threshold: self.one("glow_threshold")? / 255.0,
+            taps: self.gaussian(self.one("glow_radius")?)?,
+            intensity: self.one("glow_intensity")?,
+            original,
+            mode,
+            colours,
+        })))
+    }
+}
+
+/// [STU-FX-004] the coverage over `rect` of layer `l`'s mask `mask_id` alone (module docs).
+fn entry_mask(l: &CompLayer, id: &str, mask_id: &str, tick: i64, cancel: &CancellationToken, rect: Rect) -> Result<Vec<f32>, TemporalError> {
+    let lm = l.masks.as_ref().ok_or_else(|| unsupported(id, COMPOSITION_EFFECT_OPTION))?;
+    let index = lm.masks.iter().position(|m| m.mask_id == mask_id).ok_or_else(|| unsupported(id, COMPOSITION_EFFECT_OPTION))?;
+    let (m, shape) = lm.at(id, tick, cancel)?.into_iter().nth(index).ok_or_else(|| unsupported(id, COMPOSITION_EFFECT_OPTION))?;
+    let alone = [(crate::mask_paths::MaskAtTick { mode: StudioCompositionMaskMode::Add, ..m }, shape)];
+    let o = l.content.origin();
+    let coverage = crate::mask_paths::mask_coverage_shaped(&alone, &Affine2::translate(o[0], o[1]), rect, super::mask_plane_bound(rect.area()))
+        .map_err(|r| unsupported(&format!("{id}/masks/{mask_id}"), r.code))?;
+    let n = usize::try_from(rect.area()).map_err(|_| CompositeError::Overflow)?;
+    // An open path covers nothing.
+    Ok(coverage.unwrap_or_else(|| vec![0.0; n]))
 }
 
 impl CompositionTemporalSource {
@@ -220,7 +544,12 @@ impl CompositionTemporalSource {
         for e in &l.effects {
             cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
             let at = At { id, e, tick, cancel, size, origin };
-            effects.push(SceneEffectEntry { effect_id: e.effect_id.clone(), effect: at.effect()?, mix: e.mix });
+            let mut effect = at.effect()?;
+            if e.mode != StudioBlendMode::Normal || e.mask_id.is_some() {
+                let mask = e.mask_id.as_deref().map(|m| entry_mask(l, id, m, tick, cancel, rect)).transpose()?;
+                effect = SceneEffect::Composite(Box::new(EntryComposite { effect, mode: e.mode, mask }));
+            }
+            effects.push(SceneEffectEntry { effect_id: e.effect_id.clone(), effect, mix: e.mix });
         }
         Ok((SceneContent::Effected(Box::new(EffectedContent { content, rect, mask, effects })), l.masks.is_some()))
     }

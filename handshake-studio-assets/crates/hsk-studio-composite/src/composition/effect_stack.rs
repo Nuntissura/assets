@@ -50,6 +50,35 @@
 //! - Generators composite by [`GeneratorComposite`]: `Replace` (option `None`: only the generated
 //!   pixels remain) or `Over` (option `Normal`: generated over the layer, source-over).
 //!
+//! Blur, glow and colour families and entry semantics (lane SMB-AE-EFFECT-FAMILIES-2, parity
+//! AE-17; Studio readings, After Effects' maths UNVERIFIED, D5). These kernels run over the whole
+//! pre-entry buffer and REUSE pigment's single owners (CX-CAP-001), never a copy:
+//! - `Blur`: pigment `blur_math::blur_window` (premultiplied separable convolution, both axes) on
+//!   the straight pre-entry buffer (`blur_math::unpremultiply`) with the entry's taps: Gaussian Blur
+//!   takes pigment's Gaussian (`LayerBlur::taps`, `sigma = radius / 2`); Fast Box Blur the iterated
+//!   box of [`box_taps`] (a uniform tap vector repeated `iterations` times, the only weights authored
+//!   here). `repeat_edges` extends the source by its border texels over the kernel support (Repeat
+//!   Edge Pixels), else the source is transparent beyond the rect. The output is clipped to the
+//!   content rect (the layer does not grow). A single tap `[1.0]` is the identity: the pre-entry
+//!   buffer is kept bit for bit.
+//! - `Glow`: bright pass by pigment's `Threshold` adjustment on the straight colour (or on alpha,
+//!   `based_on_alpha`); threshold `0` (or below one 8-bit level) passes every texel and `1` (100 %)
+//!   none; the passed texels are blurred by `blur_window`, scaled by `intensity` in premultiplied
+//!   form (alpha at most 1), then keep their own colours or take the A & B ramp ([`GlowColours`]);
+//!   [`GlowOriginal::Behind`] composites the glow over the original with `mode` (pigment
+//!   `blend_math::composite_over`), [`GlowOriginal::OnTop`] the original over the glow (normal),
+//!   [`GlowOriginal::None`] keeps the glow alone. A texel without glow keeps the pre-entry value
+//!   bit for bit (`None`: transparent).
+//! - `Colour`: pigment `adjust_math` adjustments on the straight colour (alpha unchanged, transparent
+//!   texels unchanged); every [`ChannelAdjustment`] reads the entry's input colour and writes only
+//!   its channels; `blend` mixes the input back in (`out (1 - blend) + input blend`).
+//! - `Composite` ([STU-FX-004], [STU-FX-008]): the entry's own blend mode and effect mask wrap the
+//!   inner effect. A mode other than normal replaces the result's colour by the W3C blended source
+//!   colour `Cs' = (1 - ab) Cs + ab B(Cb, Cs)` against the pre-entry colour (pigment
+//!   `blend_math::blend_rgb`, the layer blend code; Compositing 1 s5.1), alpha kept; the mask
+//!   coverage multiplies the entry mix per texel. Normal without a mask is never wrapped, so the
+//!   stacks of SMB-AE-EFFECT-STACK-1 keep their bytes.
+//!
 //! Hostile input (V4-01/02): every number is checked finite and in its domain before any buffer is
 //! allocated (`EffectError::Parameter` names the entry), the entry count is at most
 //! [`MAX_SCENE_EFFECTS`], the work `entries x pixels` at most [`MAX_EFFECT_WORK`], every surface is
@@ -60,7 +89,9 @@ use crate::CompositeError;
 use crate::temporal::TemporalError;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
-use hsk_studio_pigment::blend_math::{Exactness, ExactnessLedger};
+use hsk_studio_pigment::adjust_math::{AdjustmentOp, PreparedAdjustment};
+use hsk_studio_pigment::blend_math::{Exactness, ExactnessLedger, PixelSite, Rgba, StudioBlendMode, blend_rgb, composite_over};
+use hsk_studio_pigment::blur_math::{BlurError, BlurLimits, blur_window, unpremultiply};
 use hsk_studio_pigment::transform_math::ResampleFilter;
 use std::f64::consts::{FRAC_2_PI, TAU};
 
@@ -71,6 +102,137 @@ pub const EFFECT_STACK_OPERATOR: &str = "composition_effect_stack";
 pub const MAX_SCENE_EFFECTS: usize = 128;
 /// Most `entries x pixels` one stack evaluates.
 pub const MAX_EFFECT_WORK: u64 = 1 << 34;
+/// Most taps of one blur kernel (pigment's Gaussian at its largest radius has 3001).
+pub const MAX_EFFECT_TAPS: usize = 6001;
+/// Most bytes one blur of the stack holds (the padded source, pigment's window and its output).
+pub const MAX_EFFECT_BLUR_BYTES: u64 = 1 << 30;
+
+/// Where a glow's original goes (Glow `Composite Original`, Studio reading of the option names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlowOriginal {
+    /// Option `On Top`: the original composites (normal) over the glow.
+    OnTop,
+    /// Option `Behind`: the glow composites over the original with the glow operation.
+    Behind,
+    /// Option `None`: the glow alone.
+    None,
+}
+
+/// Glow `Color Looping` options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlowLooping {
+    SawtoothAb,
+    SawtoothBa,
+    TriangleAba,
+    TriangleBab,
+}
+
+/// Glow `A & B Colors` (Studio reading): the glow's alpha `p` (after intensity) is the ramp input;
+/// `x = p loops`, `f = fract(x)` (`1` at a whole positive `x`); sawtooth A>B takes `f`, B>A `1 - f`,
+/// triangle A>B>A `1 - |2f - 1|`, B>A>B `|2f - 1|`; the A & B midpoint `m` maps `t` piecewise
+/// linearly (`t < m`: `t / 2m`, else `1/2 + (t - m) / 2(1 - m)`); the colour is the straight lerp
+/// of `a` to `b`, its alpha multiplies the glow alpha.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlowColours {
+    pub a: [f64; 4],
+    pub b: [f64; 4],
+    pub looping: GlowLooping,
+    pub loops: f64,
+    pub midpoint: f64,
+}
+impl GlowColours {
+    /// Ramp position `0..=1` of glow alpha `p` (type docs).
+    #[allow(clippy::float_cmp)]
+    pub fn position(&self, p: f64) -> f64 {
+        let x = p * self.loops;
+        let mut f = x - x.floor();
+        if f == 0.0 && x > 0.0 {
+            f = 1.0;
+        }
+        let t = match self.looping {
+            GlowLooping::SawtoothAb => f,
+            GlowLooping::SawtoothBa => 1.0 - f,
+            GlowLooping::TriangleAba => 1.0 - (2.0 * f - 1.0).abs(),
+            GlowLooping::TriangleBab => (2.0 * f - 1.0).abs(),
+        };
+        let m = self.midpoint;
+        if t < m { 0.5 * t / m } else { 0.5 + 0.5 * (t - m) / (1.0 - m) }
+    }
+}
+
+/// Glow (module docs). `threshold` is a fraction `0..=1`; `taps` the blur kernel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlowEffect {
+    pub based_on_alpha: bool,
+    pub threshold: f64,
+    pub taps: Vec<f32>,
+    pub intensity: f64,
+    pub original: GlowOriginal,
+    /// The glow operation (used by [`GlowOriginal::Behind`]).
+    pub mode: StudioBlendMode,
+    /// `None` = the glow keeps its own (original) colours.
+    pub colours: Option<GlowColours>,
+}
+
+/// One pigment adjustment and the output channels `[r, g, b]` it writes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelAdjustment {
+    pub op: AdjustmentOp,
+    pub channels: [bool; 3],
+}
+
+/// Colour family entry (module docs): `blend` (`0..=1`) mixes the input colour back in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColourEffect {
+    pub ops: Vec<ChannelAdjustment>,
+    pub blend: f64,
+}
+
+/// An entry's own composite options around its effect (module docs): [STU-FX-008] blend mode and
+/// [STU-FX-004] effect-mask coverage over the rect (row-major, `0..=1`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntryComposite {
+    pub effect: SceneEffect,
+    pub mode: StudioBlendMode,
+    pub mask: Option<Vec<f32>>,
+}
+
+/// The normalised taps of `iterations` passes of a box `2 half_width + 1` wide (Fast Box Blur;
+/// `half_width` or `iterations` 0 is the identity `[1.0]`); `None` when the kernel would have more
+/// than [`MAX_EFFECT_TAPS`] taps.
+pub fn box_taps(half_width: u32, iterations: u32) -> Option<Vec<f32>> {
+    if half_width == 0 || iterations == 0 {
+        return Some(vec![1.0]);
+    }
+    let half = usize::try_from(half_width).ok()?;
+    let width = half.checked_mul(2)?.checked_add(1)?;
+    let len = half.checked_mul(2)?.checked_mul(usize::try_from(iterations).ok()?)?.checked_add(1)?;
+    if len > MAX_EFFECT_TAPS {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let fw = width as f64;
+    let mut cur = vec![1.0_f64];
+    for _ in 0..iterations {
+        let n = cur.len().checked_add(width.checked_sub(1)?)?;
+        let mut next = Vec::with_capacity(n);
+        let mut acc = 0.0_f64;
+        for i in 0..n {
+            if let Some(v) = cur.get(i) {
+                acc += v;
+            }
+            if let Some(v) = i.checked_sub(width).and_then(|j| cur.get(j)) {
+                acc -= v;
+            }
+            next.push((acc / fw).max(0.0));
+        }
+        cur = next;
+    }
+    let sum: f64 = cur.iter().sum();
+    #[allow(clippy::cast_possible_truncation)]
+    let taps: Vec<f32> = cur.iter().map(|v| (v / sum) as f32).collect();
+    Some(taps)
+}
 
 /// How a generator's pixels combine with the layer (the generators' `Blending Mode` options 1 and
 /// 2; every other option is refused by the adapter).
@@ -92,6 +254,12 @@ pub enum SceneEffect {
     GradientRamp { start: [f64; 2], start_colour: [f64; 4], end: [f64; 2], end_colour: [f64; 4], radial: bool, blend: f64 },
     Circle { centre: [f64; 2], radius_px: f64, feather_px: f64, colour: [f64; 4], opacity: f64, composite: GeneratorComposite },
     Checkerboard { anchor: [f64; 2], cell: [f64; 2], colour: [f64; 4], opacity: f64, composite: GeneratorComposite },
+    /// Gaussian Blur / Fast Box Blur (module docs).
+    Blur { taps: Vec<f32>, repeat_edges: bool },
+    Glow(Box<GlowEffect>),
+    Colour(Box<ColourEffect>),
+    /// An entry's blend mode and effect mask around its effect (module docs).
+    Composite(Box<EntryComposite>),
 }
 
 /// One stack entry: the effect and the fraction `0..=1` of its result mixed over the pre-entry
@@ -136,10 +304,34 @@ fn unit(v: f64) -> bool {
     v.is_finite() && (0.0..=1.0).contains(&v)
 }
 
+fn taps_ok(taps: &[f32]) -> bool {
+    !taps.len().is_multiple_of(2)
+        && taps.len() <= MAX_EFFECT_TAPS
+        && taps.iter().all(|t| t.is_finite() && *t >= 0.0)
+        && taps.iter().sum::<f32>() > 0.0
+}
+/// A blend mode an entry or a glow can use: one pigment's `blend_rgb` defines (dissolve acts on
+/// alpha only, so it is not one).
+fn mode_ok(mode: StudioBlendMode) -> bool {
+    mode != StudioBlendMode::Dissolve && blend_rgb(mode, [0.5; 3], [0.5; 3]).is_ok()
+}
+fn identity_taps(taps: &[f32]) -> bool {
+    taps == [1.0]
+}
+
 /// Domain check of one entry (module docs).
 fn entry_ok(e: &SceneEffectEntry) -> bool {
-    unit(e.mix)
-        && match &e.effect {
+    unit(e.mix) && effect_ok(&e.effect)
+}
+/// The entry's effect mask matches the `n` texels of the rect.
+fn mask_ok(e: &SceneEffectEntry, n: usize) -> bool {
+    match &e.effect {
+        SceneEffect::Composite(c) => c.mask.as_ref().is_none_or(|m| m.len() == n),
+        _ => true,
+    }
+}
+fn effect_ok(effect: &SceneEffect) -> bool {
+    match effect {
             SceneEffect::Twirl { angle_deg, radius_px, centre } => angle_deg.is_finite() && radius_px.is_finite() && *radius_px >= 0.0 && finite(centre),
             SceneEffect::Spherize { radius_px, centre } => radius_px.is_finite() && *radius_px >= 0.0 && finite(centre),
             SceneEffect::Offset { shift, blend } => finite(shift) && unit(*blend),
@@ -152,6 +344,24 @@ fn entry_ok(e: &SceneEffectEntry) -> bool {
             }
             SceneEffect::Checkerboard { anchor, cell, colour, opacity, .. } => {
                 finite(anchor) && finite(cell) && cell.iter().all(|c| *c > 0.0) && finite(colour) && unit(*opacity)
+            }
+            SceneEffect::Blur { taps, .. } => taps_ok(taps),
+            SceneEffect::Glow(g) => {
+                taps_ok(&g.taps)
+                    && unit(g.threshold)
+                    && g.intensity.is_finite()
+                    && g.intensity >= 0.0
+                    && mode_ok(g.mode)
+                    && g.colours.as_ref().is_none_or(|c| {
+                        finite(&c.a) && finite(&c.b) && c.loops.is_finite() && c.loops >= 1.0 && c.midpoint > 0.0 && c.midpoint < 1.0
+                    })
+            }
+            SceneEffect::Colour(c) => unit(c.blend) && c.ops.iter().all(|o| o.op.prepare().is_ok()),
+            SceneEffect::Composite(c) => {
+                !matches!(c.effect, SceneEffect::Composite(_))
+                    && effect_ok(&c.effect)
+                    && mode_ok(c.mode)
+                    && c.mask.as_ref().is_none_or(|m| m.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
             }
         }
 }
@@ -282,7 +492,206 @@ fn evaluate(effect: &SceneEffect, src: &[[f32; 4]], w: u32, h: u32, u: f64, v: f
             let g = if coloured { premultiplied(*colour, *opacity) } else { [0.0; 4] };
             generated(g, pre, *composite)
         }
+        // Whole-buffer kernels ([`whole_buffer`]) never reach the per-texel path.
+        SceneEffect::Blur { .. } | SceneEffect::Glow(_) | SceneEffect::Colour(_) | SceneEffect::Composite(_) => pre,
     }
+}
+
+fn widen(p: [f32; 4]) -> [f64; 4] {
+    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2]), f64::from(p[3])]
+}
+/// A pigment refusal inside entry `index` is that entry's parameter refusal.
+fn param<E>(index: usize) -> impl Fn(E) -> EffectError {
+    move |_| EffectError::Parameter(index)
+}
+/// Premultiplied `f64` texel of a straight `f32` texel.
+fn premultiply(s: [f32; 4]) -> [f64; 4] {
+    let a = f64::from(s[3]);
+    [f64::from(s[0]) * a, f64::from(s[1]) * a, f64::from(s[2]) * a, a]
+}
+#[allow(clippy::cast_possible_truncation)]
+fn narrow(p: [f64; 4]) -> [f32; 4] {
+    [p[0] as f32, p[1] as f32, p[2] as f32, p[3] as f32]
+}
+
+/// pigment's `blur_window` over the straight plane `straight` (`w x h`) with `taps`, border texels
+/// repeated over the support when `repeat` (module docs). Every buffer is bounded before allocation.
+fn blur_plane(straight: &[[f32; 4]], w: u32, h: u32, taps: &[f32], repeat: bool, index: usize) -> Result<Vec<[f32; 4]>, EffectError> {
+    let out = Rect { x: 0, y: 0, width: w, height: h };
+    let limits = BlurLimits { max_bytes: MAX_EFFECT_BLUR_BYTES, max_work: MAX_EFFECT_WORK };
+    let mapped = |e: BlurError| match e {
+        BlurError::OverBudget { .. } => EffectError::OverBudget,
+        BlurError::Overflow => EffectError::Overflow,
+        _ => EffectError::Parameter(index),
+    };
+    let pad = u32::try_from(taps.len().checked_div(2).ok_or(EffectError::Overflow)?).map_err(|_| EffectError::Overflow)?;
+    if !repeat || pad == 0 || w == 0 || h == 0 {
+        return blur_window(straight, out, out, taps, limits).map_err(mapped);
+    }
+    let twice = pad.checked_mul(2).ok_or(EffectError::Overflow)?;
+    let pw = w.checked_add(twice).ok_or(EffectError::Overflow)?;
+    let ph = h.checked_add(twice).ok_or(EffectError::Overflow)?;
+    let area = u64::from(pw).checked_mul(u64::from(ph)).ok_or(EffectError::Overflow)?;
+    if area.checked_mul(16).ok_or(EffectError::Overflow)? > MAX_EFFECT_BLUR_BYTES {
+        return Err(EffectError::OverBudget);
+    }
+    let mut plane: Vec<[f32; 4]> = Vec::new();
+    plane.try_reserve_exact(usize::try_from(area).map_err(|_| EffectError::Overflow)?).map_err(|_| EffectError::OverBudget)?;
+    let pad64 = i64::from(pad);
+    let last_x = i64::from(w).checked_sub(1).ok_or(EffectError::Overflow)?;
+    let last_y = i64::from(h).checked_sub(1).ok_or(EffectError::Overflow)?;
+    let wu = usize::try_from(w).map_err(|_| EffectError::Overflow)?;
+    for py in 0..i64::from(ph) {
+        let sy = py.checked_sub(pad64).ok_or(EffectError::Overflow)?.clamp(0, last_y);
+        let row = usize::try_from(sy).ok().and_then(|r| r.checked_mul(wu)).ok_or(EffectError::Overflow)?;
+        for px in 0..i64::from(pw) {
+            let sx = px.checked_sub(pad64).ok_or(EffectError::Overflow)?.clamp(0, last_x);
+            let at = usize::try_from(sx).ok().and_then(|c| row.checked_add(c)).ok_or(EffectError::Overflow)?;
+            plane.push(*straight.get(at).ok_or(EffectError::Shape)?);
+        }
+    }
+    let origin = 0_i64.checked_sub(pad64).ok_or(EffectError::Overflow)?;
+    let rect = Rect { x: origin, y: origin, width: pw, height: ph };
+    blur_window(&plane, rect, out, taps, limits).map_err(mapped)
+}
+
+/// The glow of `src` (premultiplied, `w x h`) as premultiplied texels (module docs).
+fn glow(g: &GlowEffect, index: usize, src: &[[f32; 4]], w: u32, h: u32, cancel: &CancellationToken) -> Result<Vec<[f64; 4]>, EffectError> {
+    let straight: Vec<[f32; 4]> = src.iter().map(|p| unpremultiply(*p)).collect();
+    // Threshold 0 (or below one 8-bit level, pigment's smallest) passes every texel, 1 none.
+    #[allow(clippy::cast_possible_truncation)]
+    let level = g.threshold as f32;
+    let threshold = if g.threshold >= 1.0 / 255.0 && g.threshold < 1.0 {
+        Some(AdjustmentOp::Threshold { level }.prepare().map_err(param(index))?)
+    } else {
+        None
+    };
+    let mut bright = Vec::with_capacity(straight.len());
+    for s in &straight {
+        let pass = if g.threshold >= 1.0 {
+            0.0
+        } else if let Some(t) = &threshold {
+            let probe = if g.based_on_alpha { [s[3]; 3] } else { [s[0], s[1], s[2]] };
+            t.apply(probe).map_err(param(index))?[0]
+        } else {
+            1.0
+        };
+        bright.push([s[0], s[1], s[2], s[3] * pass]);
+    }
+    cancel.check().map_err(|_| EffectError::Canceled)?;
+    let blurred = if identity_taps(&g.taps) { bright } else { blur_plane(&bright, w, h, &g.taps, false, index)? };
+    let wu = usize::try_from(w).map_err(|_| EffectError::Overflow)?.max(1);
+    let mut out = Vec::with_capacity(src.len());
+    for ((pre_row, s_row), b_row) in src.chunks(wu).zip(straight.chunks(wu)).zip(blurred.chunks(wu)) {
+        cancel.check().map_err(|_| EffectError::Canceled)?;
+        for ((pre, s), b) in pre_row.iter().zip(s_row).zip(b_row) {
+            let ga = (g.intensity * f64::from(b[3])).min(1.0);
+            let (rgb, a) = if ga > 0.0 {
+                let own = [0usize, 1, 2].map(|k| (g.intensity * f64::from(b[k]) * f64::from(b[3]) / ga).clamp(0.0, 1.0));
+                match &g.colours {
+                    None => (own, ga),
+                    Some(c) => {
+                        let m = lerp4(c.a, c.b, c.position(ga));
+                        ([m[0], m[1], m[2]].map(|v| v.clamp(0.0, 1.0)), ga * m[3].clamp(0.0, 1.0))
+                    }
+                }
+            } else {
+                ([0.0; 3], 0.0)
+            };
+            if a <= 0.0 {
+                out.push(if g.original == GlowOriginal::None { [0.0; 4] } else { widen(*pre) });
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let light = Rgba::new(rgb.map(|v| v as f32), a as f32);
+            let original = Rgba::new([s[0], s[1], s[2]], s[3]);
+            let site = PixelSite::default();
+            let r = match g.original {
+                GlowOriginal::Behind => composite_over(g.mode, original, light, 1.0, site).map_err(param(index))?,
+                GlowOriginal::OnTop => composite_over(StudioBlendMode::Normal, light, original, 1.0, site).map_err(param(index))?,
+                GlowOriginal::None => light,
+            };
+            out.push(premultiply([r.rgb[0], r.rgb[1], r.rgb[2], r.a]));
+        }
+    }
+    Ok(out)
+}
+
+/// The colour entry over `src` (premultiplied, rows of `w`) as premultiplied texels (module docs).
+fn colour(c: &ColourEffect, index: usize, src: &[[f32; 4]], w: usize, cancel: &CancellationToken) -> Result<Vec<[f64; 4]>, EffectError> {
+    let prepared: Vec<(PreparedAdjustment, [bool; 3])> =
+        c.ops.iter().map(|o| o.op.prepare().map(|p| (p, o.channels)).map_err(param(index))).collect::<Result<_, _>>()?;
+    let mut out = Vec::with_capacity(src.len());
+    for row in src.chunks(w.max(1)) {
+        cancel.check().map_err(|_| EffectError::Canceled)?;
+        for p in row {
+            let s = unpremultiply(*p);
+            if s[3] <= 0.0 {
+                out.push(widen(*p));
+                continue;
+            }
+            let input = [s[0], s[1], s[2]];
+            let mut adjusted = input;
+            for (op, channels) in &prepared {
+                let y = op.apply(input).map_err(param(index))?;
+                for ((slot, value), on) in adjusted.iter_mut().zip(y).zip(channels) {
+                    if *on {
+                        *slot = value;
+                    }
+                }
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let mixed = [0usize, 1, 2].map(|k| (f64::from(adjusted[k]) * (1.0 - c.blend) + f64::from(input[k]) * c.blend) as f32);
+            out.push(premultiply([mixed[0], mixed[1], mixed[2], s[3]]));
+        }
+    }
+    Ok(out)
+}
+
+/// The result of a whole-buffer effect over the pre-entry buffer, `None` for a per-texel effect.
+fn whole_buffer(
+    effect: &SceneEffect,
+    index: usize,
+    src: &[[f32; 4]],
+    w: u32,
+    h: u32,
+    cancel: &CancellationToken,
+) -> Result<Option<Vec<[f64; 4]>>, EffectError> {
+    Ok(Some(match effect {
+        SceneEffect::Blur { taps, .. } if identity_taps(taps) => src.iter().map(|p| widen(*p)).collect(),
+        SceneEffect::Blur { taps, repeat_edges } => {
+            let straight: Vec<[f32; 4]> = src.iter().map(|p| unpremultiply(*p)).collect();
+            cancel.check().map_err(|_| EffectError::Canceled)?;
+            blur_plane(&straight, w, h, taps, *repeat_edges, index)?.into_iter().map(premultiply).collect()
+        }
+        SceneEffect::Glow(g) => glow(g, index, src, w, h, cancel)?,
+        SceneEffect::Colour(c) => colour(c, index, src, usize::try_from(w).map_err(|_| EffectError::Overflow)?, cancel)?,
+        _ => return Ok(None),
+    }))
+}
+
+/// Whether `effect` runs as a whole-buffer kernel (it holds extra working surfaces).
+fn whole_buffer_kind(effect: &SceneEffect) -> bool {
+    match effect {
+        SceneEffect::Blur { .. } | SceneEffect::Glow(_) | SceneEffect::Colour(_) => true,
+        SceneEffect::Composite(c) => whole_buffer_kind(&c.effect),
+        _ => false,
+    }
+}
+
+/// [STU-FX-008] entry blend (module docs): the result's colour replaced by the W3C blended source
+/// colour against the pre-entry colour, its alpha kept.
+fn entry_blend(mode: StudioBlendMode, pre: [f64; 4], result: [f64; 4]) -> [f64; 4] {
+    if result[3] <= 0.0 {
+        return result;
+    }
+    let cs = unpremultiply(narrow(result));
+    let cb = unpremultiply(narrow(pre));
+    let (cs3, cb3) = ([cs[0], cs[1], cs[2]], [cb[0], cb[1], cb[2]]);
+    let b = blend_rgb(mode, cb3, cs3).unwrap_or(cs3);
+    let ab = f64::from(cb[3]);
+    let mixed = [0usize, 1, 2].map(|k| (1.0 - ab) * f64::from(cs3[k]) + ab * f64::from(b[k]));
+    premultiplied([mixed[0], mixed[1], mixed[2], 1.0], result[3])
 }
 
 /// Runs `effects` in order over the premultiplied buffer `pixels` (`width x height`, row-major),
@@ -305,16 +714,21 @@ pub fn apply_effects(
     if work > MAX_EFFECT_WORK {
         return Err(EffectError::OverBudget);
     }
-    if let Some(bad) = effects.iter().position(|e| !entry_ok(e)) {
+    if let Some(bad) = effects.iter().position(|e| !entry_ok(e) || !mask_ok(e, pixels.len())) {
         return Err(EffectError::Parameter(bad));
     }
-    if effects.is_empty() {
+    if effects.is_empty() || pixels.is_empty() {
         return Ok(());
     }
     let w = usize::try_from(width).map_err(|_| EffectError::Overflow)?;
     let mut src: Vec<[f32; 4]> = pixels.to_vec();
-    for e in effects {
+    for (index, e) in effects.iter().enumerate() {
         src.copy_from_slice(pixels);
+        let (inner, comp) = match &e.effect {
+            SceneEffect::Composite(c) => (&c.effect, Some(c.as_ref())),
+            other => (other, None),
+        };
+        let whole = whole_buffer(inner, index, &src, width, height, cancel)?;
         for (row, line) in pixels.chunks_mut(w.max(1)).enumerate() {
             cancel.check().map_err(|_| EffectError::Canceled)?;
             #[allow(clippy::cast_precision_loss)]
@@ -322,12 +736,22 @@ pub fn apply_effects(
             for (col, out) in line.iter_mut().enumerate() {
                 #[allow(clippy::cast_precision_loss)]
                 let u = col as f64 + 0.5;
-                let pre = [f64::from(out[0]), f64::from(out[1]), f64::from(out[2]), f64::from(out[3])];
-                let value = lerp4(pre, evaluate(&e.effect, &src, width, height, u, v, pre), e.mix);
-                #[allow(clippy::cast_possible_truncation)]
-                {
-                    *out = [value[0] as f32, value[1] as f32, value[2] as f32, value[3] as f32];
+                let pre = widen(*out);
+                let at = row.checked_mul(w).and_then(|r| r.checked_add(col)).ok_or(EffectError::Overflow)?;
+                let mut result = match &whole {
+                    Some(b) => *b.get(at).ok_or(EffectError::Shape)?,
+                    None => evaluate(inner, &src, width, height, u, v, pre),
+                };
+                let mut mix = e.mix;
+                if let Some(c) = comp {
+                    if c.mode != StudioBlendMode::Normal {
+                        result = entry_blend(c.mode, pre, result);
+                    }
+                    if let Some(m) = &c.mask {
+                        mix *= m.get(at).map_or(0.0, |x| f64::from(*x));
+                    }
                 }
+                *out = narrow(lerp4(pre, result, mix));
             }
         }
     }
@@ -365,7 +789,7 @@ pub(super) fn effected_surface(
     if e.effects.len() > MAX_SCENE_EFFECTS || work > MAX_EFFECT_WORK {
         return Err(CompositeError::BudgetExceeded.into());
     }
-    if e.effects.iter().any(|x| !entry_ok(x)) {
+    if e.effects.iter().any(|x| !entry_ok(x) || !mask_ok(x, n)) {
         return Err(invalid(id, "effect_parameter"));
     }
     let mut surface = content_surface(id, &e.content, e.rect, filter, ctx, cancel, depth, charges, exactness)?;
@@ -375,6 +799,11 @@ pub(super) fn effected_surface(
     // The working buffer and the pre-entry copy (16 bytes per pixel each).
     charges.surface(ctx, e.rect.width, e.rect.height)?;
     charges.surface(ctx, e.rect.width, e.rect.height)?;
+    // A blur, glow or colour entry holds a straight copy and its result (lane SMB-AE-EFFECT-FAMILIES-2).
+    if e.effects.iter().any(|x| whole_buffer_kind(&x.effect)) {
+        charges.surface(ctx, e.rect.width, e.rect.height)?;
+        charges.surface(ctx, e.rect.width, e.rect.height)?;
+    }
     let mut buf: Vec<[f32; 4]> = Vec::with_capacity(n);
     for i in 0..n {
         let base = i.checked_mul(3).ok_or(CompositeError::Overflow)?;

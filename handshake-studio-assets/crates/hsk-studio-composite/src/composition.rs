@@ -62,6 +62,11 @@ pub use effect_stack::{
     EFFECT_STACK_OPERATOR, EffectError, EffectedContent, GeneratorComposite, MAX_EFFECT_WORK, MAX_SCENE_EFFECTS, SceneEffect,
     SceneEffectEntry, apply_effects,
 };
+// Lane SMB-AE-EFFECT-FAMILIES-2: blur, glow and colour families and entry composite options.
+pub use effect_stack::{
+    ChannelAdjustment, ColourEffect, EntryComposite, GlowColours, GlowEffect, GlowLooping, GlowOriginal, MAX_EFFECT_BLUR_BYTES,
+    MAX_EFFECT_TAPS, box_taps,
+};
 pub use frame_content::{
     FRAME_BLEND_OPERATOR, FrameBlendMethod, FrameBlendedContent, ROTO_MATTE_OPERATOR, RotoMatte, RotoscopedContent,
 };

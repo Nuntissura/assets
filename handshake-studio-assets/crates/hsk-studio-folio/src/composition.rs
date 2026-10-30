@@ -1083,7 +1083,7 @@ fn validate_layer(
     if let Some(r) = &l.roto {
         roto::validate_roto(r, t, cx)?;
     }
-    effects::validate_effects(&l.effects, t, cx)?;
+    effects::validate_effects(&l.effects, &ids, t, cx)?;
     Ok(())
 }
 
