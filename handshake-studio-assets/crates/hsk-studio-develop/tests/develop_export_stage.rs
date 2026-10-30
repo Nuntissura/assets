@@ -463,3 +463,135 @@ fn hostile_watermark_settings_get_typed_refusals() {
     let (out, r) = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap();
     assert_eq!((out, r.watermark), (bg, None));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Slice 4: staged entry points (develop_to_output_staged, tiff_from_staged_output, develop_to_tiff_staged); the
+// unstaged entries keep their signatures and bytes.
+
+fn decode_tiff(bytes: &[u8]) -> hsk_studio_interop_tiff::TiffFile {
+    hsk_studio_interop_tiff::decode(bytes, &hsk_studio_interop_tiff::Limits::default(), &CancellationToken::default()).expect("decode")
+}
+
+fn gradient(w: u32, h: u32) -> DevelopedImage {
+    let rgb = (0..h)
+        .flat_map(|y| (0..w).map(move |x| (x, y)))
+        .flat_map(|(x, y)| [x as f32 / w as f32, y as f32 / h as f32, 0.5])
+        .collect();
+    image(rgb, w, h)
+}
+
+/// The staged TIFF has the stage's output size and its resolution as whole dpi: 96 ppcm = 243.84 ppi, written 244
+/// (rounded half up). A caller dpi that disagrees is refused; a stage refusal keeps its code through the TIFF path.
+#[test]
+fn staged_tiff_carries_output_size_and_dpi() {
+    let mut st = ExportStage::default();
+    (st.sizing.resize_type, st.sizing.max_width, st.sizing.resolution, st.sizing.resolution_unit) =
+        (ResizeType::LongEdge, 30.0, 96.0, ResolutionUnit::PixelsPerCm);
+    let (staged, receipt) = apply_export_stage(&gradient(60, 40), &st, &CancellationToken::default()).unwrap();
+    assert_eq!(receipt.output_size, (30, 20));
+    assert!((receipt.resolution_ppi - 243.84).abs() < 1e-9);
+    let out = render_output(&staged, OutputDepth::Sixteen, SRGB_V4, None).unwrap();
+    let s = TiffExportSettings::new(OutputDepth::Sixteen, ExportColourSpace::Srgb);
+    let export = tiff_from_staged_output(&out, &s, &receipt).unwrap();
+    assert_eq!((export.width, export.height), (30, 20));
+    let file = decode_tiff(&export.bytes);
+    let page = &file.pages[0];
+    assert_eq!((page.width, page.height), (30, 20));
+    let res = page.resolution.expect("resolution tags");
+    assert_eq!((res.x, res.y, res.unit), ((244, 1), (244, 1), 2));
+    let mut conflict = s.clone();
+    conflict.dpi = Some(300);
+    assert_eq!(tiff_from_staged_output(&out, &conflict, &receipt).unwrap_err().code(), "resolution_conflict");
+    conflict.dpi = Some(244);
+    assert_eq!(tiff_from_staged_output(&out, &conflict, &receipt).unwrap().bytes, export.bytes);
+    let mut other = receipt.clone();
+    other.output_size = (31, 20);
+    assert_eq!(tiff_from_staged_output(&out, &s, &other).unwrap_err().code(), "stage_receipt_mismatch");
+    // Identity stage (no resize, no sharpening, no watermark): byte-identical to the unstaged tiff_from_output at
+    // the same dpi.
+    let mut identity = ExportStage::default();
+    identity.sizing.constrain_size = false;
+    let img = gradient(9, 7);
+    let (same, r) = apply_export_stage(&img, &identity, &CancellationToken::default()).unwrap();
+    assert_eq!(same, img);
+    let o = render_output(&same, OutputDepth::Eight, SRGB_V4, None).unwrap();
+    let mut s8 = TiffExportSettings::new(OutputDepth::Eight, ExportColourSpace::Srgb);
+    let staged_bytes = tiff_from_staged_output(&o, &s8, &r).unwrap().bytes;
+    s8.dpi = Some(240);
+    assert_eq!(staged_bytes, tiff_from_output(&o, &s8).unwrap().bytes);
+}
+
+fn plane(width: u32, height: u32) -> CfaPlane {
+    let bytes = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .flat_map(|(x, y)| (((x * 211 + y * 97) % 3000 + 400) as u16).to_le_bytes())
+        .collect();
+    CfaPlane::with_limits(
+        PlaneInit {
+            width,
+            height,
+            stride_bytes: width * 2,
+            sensor_origin: (0, 0),
+            cfa: Cfa { pattern: CfaPattern::Bayer(Bayer::Rggb), phase_x: 0, phase_y: 0 },
+            black: [0; 3],
+            white: [4095; 3],
+            source_revision: 1,
+            bytes,
+        },
+        Limits::LARGE,
+    )
+    .unwrap()
+}
+
+fn recipe() -> DevelopRecipe {
+    use sha2::Digest;
+    let binding = ProfileBinding {
+        profile_id: hsk_studio_accord::DomainId::parse("SCPF-019abcde-0000-7000-8000-000000000001").unwrap(),
+        sha256: sha2::Sha256::digest(SRGB_V4).into(),
+    };
+    DevelopRecipe::native([1.0; 3], [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], binding)
+}
+
+/// develop_to_output_staged is develop, then the stage, then render_output (same bytes as composing them); its
+/// clip report is the receipt's out_of_range; settings are refused before any development. develop_to_tiff_staged
+/// with an identity stage writes exactly the bytes of the unstaged develop_to_tiff at the stage's dpi.
+#[test]
+fn staged_entries_equal_the_composed_stages_and_keep_unstaged_bytes() {
+    let (p, r) = (plane(24, 16), recipe());
+    let cancel = CancellationToken::default();
+    let mut st = ExportStage::default();
+    (st.sizing.resize_type, st.sizing.max_width) = (ResizeType::LongEdge, 13.0);
+    st.sharpening = OutputSharpening { enabled: true, media: SharpenMedia::Glossy, level: 3 };
+    let (out, receipt, dev) = develop_to_output_staged(&p, &r, 1, OutputDepth::Eight, SRGB_V4, &st, Threads::single(), &cancel).unwrap();
+    let (img, dev2) = develop_to_image_threads(&p, &r, 1, Threads::single(), &cancel).unwrap();
+    let (staged, receipt2) = apply_export_stage(&img, &st, &cancel).unwrap();
+    assert_eq!((dev, receipt.clone()), (dev2, receipt2));
+    assert_eq!(out, render_output(&staged, OutputDepth::Eight, SRGB_V4, Some(r.output_profile.sha256)).unwrap());
+    assert_eq!((out.width, out.height), (13, 9));
+    assert_eq!(out.clip, receipt.out_of_range);
+    let mut bad = st.clone();
+    bad.sizing.percentage = 0.0;
+    let e = develop_to_output_staged(&p, &r, 1, OutputDepth::Eight, SRGB_V4, &bad, Threads::single(), &cancel).unwrap_err();
+    assert_eq!((e.code(), e.detail()), ("export_setting_out_of_range", "resize_percentage"));
+    let mut wrong = SRGB_V4.to_vec();
+    let last = wrong.len() - 1;
+    wrong[last] ^= 1;
+    let e = develop_to_output_staged(&p, &r, 1, OutputDepth::Eight, &wrong, &st, Threads::single(), &cancel).unwrap_err();
+    assert_eq!(e.code(), DevelopError::InvalidProfile.code());
+    // TIFF: identity stage == unstaged develop_to_tiff at 240 dpi, byte for byte.
+    let mut identity = ExportStage::default();
+    identity.sizing.constrain_size = false;
+    let s = TiffExportSettings::new(OutputDepth::Sixteen, ExportColourSpace::Srgb);
+    let (staged_tiff, sr, _) = develop_to_tiff_staged(&p, &r, 1, &s, &identity, SRGB_V4, Threads::single(), &cancel).unwrap();
+    assert_eq!((sr.resized, sr.sharpening, sr.watermark), (false, None, None));
+    let mut s240 = s.clone();
+    s240.dpi = Some(240);
+    let (plain, _) = develop_to_tiff(&p, &r, 1, &s240, SRGB_V4, Threads::single(), &cancel).unwrap();
+    assert_eq!(staged_tiff, plain);
+    // A stage refusal through the TIFF entry keeps its code and detail.
+    let mut text = identity.clone();
+    text.watermark.use_watermark = true;
+    text.watermark.source = WatermarkSource::Text("(c)".into());
+    let e = develop_to_tiff_staged(&p, &r, 1, &s, &text, SRGB_V4, Threads::single(), &cancel).unwrap_err();
+    assert_eq!((e.code(), e.detail()), ("text_watermark_unsupported", "hsk-studio-type"));
+}
