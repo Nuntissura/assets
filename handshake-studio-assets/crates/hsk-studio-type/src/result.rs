@@ -61,6 +61,8 @@ pub struct Run<'a> {
     pub(crate) substitution: Option<SubstitutionReason>,
     pub(crate) provider_scale: u32,
     pub(crate) units_per_em: u32,
+    pub(crate) cap_height_pt: Option<f64>,
+    pub(crate) x_height_pt: Option<f64>,
     pub(crate) axes: ChargedVec<'a, AxisReceipt>,
     pub(crate) features: ChargedVec<'a, FeatureReceipt>,
     pub(crate) glyphs: ChargedVec<'a, Glyph>,
@@ -105,14 +107,15 @@ impl<'a> Run<'a> {
         self.units_per_em
     }
     /// The resolved face's OS/2 `sCapHeight` in points: font units x `font_size_pt() /
-    /// units_per_em()`. `None` when the face has no OS/2 table or its version is below 2.
+    /// units_per_em()`, read by the provider's OS/2 parser (variation-adjusted through MVAR `cpht` at
+    /// the run's axes). `None` when the face has no OS/2 table, its version is below 2 or the table is
+    /// shorter than that version needs (tests/run_face_metrics.rs). Not estimated from outlines.
     pub fn cap_height_pt(&self) -> Option<f64> {
-        None
+        self.cap_height_pt
     }
-    /// The resolved face's OS/2 `sxHeight` in points: font units x `font_size_pt() /
-    /// units_per_em()`. `None` when the face has no OS/2 table or its version is below 2.
+    /// The resolved face's OS/2 `sxHeight` in points, as `cap_height_pt` (MVAR `xhgt`).
     pub fn x_height_pt(&self) -> Option<f64> {
-        None
+        self.x_height_pt
     }
     pub fn axes(&self) -> &[AxisReceipt] {
         self.axes.as_slice()

@@ -380,6 +380,8 @@ pub(crate) fn shape_run<'a>(
         },
         provider_scale: scale,
         units_per_em: scale,
+        cap_height_pt: crate::engine::face_metric(font.face.capital_height(), style.font_size_pt, scale),
+        x_height_pt: crate::engine::face_metric(font.face.x_height(), style.font_size_pt, scale),
         axes,
         features: receipts,
         glyphs,

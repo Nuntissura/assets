@@ -608,6 +608,8 @@ fn shape<'a>(
         },
         provider_scale: scale,
         units_per_em: scale,
+        cap_height_pt: face_metric(font.face.capital_height(), style.font_size_pt, scale),
+        x_height_pt: face_metric(font.face.x_height(), style.font_size_pt, scale),
         axes,
         features: receipts,
         glyphs,
@@ -907,6 +909,11 @@ fn resolved_script(declared: [u8; 4], text: &str, ctx: &Context<'_>) -> Provider
         }
     }
     Ok(*b"Zyyy")
+}
+/// An OS/2 vertical metric (`sCapHeight`, `sxHeight`; font units as the provider read them) in
+/// points at `size`; `None` when the face lacks it or the product is not finite.
+pub(crate) fn face_metric(value: Option<i16>, size: f64, scale: u32) -> Option<f64> {
+    value.and_then(|v| points(i32::from(v), size, scale).ok())
 }
 pub(crate) fn points(value: i32, size: f64, scale: u32) -> ProviderResult<f64> {
     let product = f64::from(value) * size;
