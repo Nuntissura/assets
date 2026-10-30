@@ -188,3 +188,175 @@ fn watermark_2x2_lands_at_the_anchor_rect_the_receipt_reports() {
         assert_ne!(at(x, y), vec![0, 255, 0], "pixel ({x}, {y}) outside the mark");
     }
 }
+
+// ---- slice 2: the export dialog ---------------------------------------------------------------
+
+fn frame(v: &mut Viewer, ctx: &egui::Context, events: Vec<egui::Event>) {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 4000.0))),
+        events,
+        ..Default::default()
+    };
+    let _ = ctx.run(input, |ctx| v.ui(ctx));
+}
+
+fn drew(v: &Viewer, name: &str) -> bool {
+    v.drawn().iter().any(|d| d == name)
+}
+
+fn stage_state(v: &Viewer) -> Value {
+    v.develop_json()["export_stage"].clone()
+}
+
+fn field(v: &mut Viewer, key: &str, value: &str) {
+    v.set_develop_export_field(&ew::key(key), value).unwrap_or_else(|e| panic!("{key} = {value}: {e}"));
+}
+
+use hsk_studio_harness::view::develop::export_dialog::widget as ew;
+
+/// The switch shows the three STU-IO-135 groups with every key row (class and default source shown),
+/// the preview follows the fields: develop's default box 1000 x 1000 fits 300 x 260 to 1000 x 867;
+/// LongEdge plus 64 typed into the max_width field through egui gives 64 x 55, the exported size.
+#[test]
+fn dialog_fields_drive_the_size_preview() {
+    let scratch = Scratch::new("export-dialog-preview");
+    let mut v = open_dng(&scratch, 300, 260);
+    let ctx = egui::Context::default();
+    frame(&mut v, &ctx, vec![]);
+    assert!(drew(&v, ew::STAGE) && drew(&v, ew::EXPORT_TIFF) && drew(&v, ew::EXPORT_DNG), "{:?}", v.drawn());
+    assert!(!drew(&v, &ew::key("max_width")), "rows are hidden while the stage is off");
+    field(&mut v, "stage", "true");
+    assert_eq!(v.develop_export_stage(), Some(&ExportStage::default()), "switching on starts from develop's defaults");
+    frame(&mut v, &ctx, vec![]);
+    for k in hsk_studio_develop::EXPORT_STAGE_KEYS {
+        assert!(drew(&v, &ew::key(k.key)), "{} not drawn", k.key);
+    }
+    for g in ["image_sizing", "watermarking", "output_sharpening"] {
+        assert!(drew(&v, &ew::group(g)), "group {g} not drawn");
+    }
+    let s = stage_state(&v);
+    assert_eq!(s["groups"], serde_json::json!(["image_sizing", "watermarking", "output_sharpening"]), "STU-IO-135 order");
+    let row = |key: &str| s["keys"].as_array().unwrap().iter().find(|r| r["key"] == key).unwrap().clone();
+    assert_eq!((row("constrain_size")["storage"].as_str(), row("constrain_size")["default_source"].as_str()), (Some("stored_setting"), Some("studio_declared")));
+    assert_eq!(row("megapixels")["storage"], "unclassified");
+    assert_eq!((s["preview"].as_str(), s["fit_rule"].as_str(), s["export_enabled"].as_bool()), (Some("1000 x 867 px"), Some("width_height"), Some(true)), "{s}");
+    assert!(drew(&v, ew::PREVIEW));
+
+    field(&mut v, "resize_type", "LongEdge");
+    ctx.memory_mut(|m| m.request_focus(hsk_studio_harness::view::widget::id(&ew::key("max_width"))));
+    let select_all = egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+    frame(&mut v, &ctx, vec![select_all, egui::Event::Text("64".into())]);
+    frame(&mut v, &ctx, vec![]);
+    assert_eq!(v.develop_export_stage().map(|s| s.sizing.max_width), Some(64.0), "typed into the field: {}", stage_state(&v));
+    let s = stage_state(&v);
+    assert_eq!((s["preview"].as_str(), s["preview_size"].clone()), (Some("64 x 55 px"), serde_json::json!([64, 55])));
+    let p = scratch.0.join("preview.png");
+    export(&mut v, &p, DevelopExport::Png { depth: OutputDepth::Eight });
+    assert_eq!(png_size(&p), (64, 55), "the preview is the exported size");
+}
+
+/// A percentage of 0 is develop's typed refusal shown inline: no preview, export disabled and refused
+/// with the same code (DNG still exports, unstaged); text that is not a number is refused typed and
+/// kept; 50 % gives 32 x 24. Nothing is clamped in the view.
+#[test]
+fn invalid_percentage_shows_the_typed_error_and_disables_export() {
+    let scratch = Scratch::new("export-dialog-invalid");
+    let mut v = open_dng(&scratch, 64, 48);
+    let ctx = egui::Context::default();
+    field(&mut v, "stage", "true");
+    field(&mut v, "resize_type", "Percentage");
+    field(&mut v, "resize_percentage", "0");
+    assert_eq!(v.develop_export_stage().map(|s| s.sizing.percentage), Some(0.0), "stored unclamped");
+    let s = stage_state(&v);
+    assert_eq!((s["error"]["code"].as_str(), s["error"]["detail"].as_str()), (Some("export_setting_out_of_range"), Some("resize_percentage")), "{s}");
+    assert_eq!((s["export_enabled"].as_bool(), s["preview"].is_null()), (Some(false), true));
+    frame(&mut v, &ctx, vec![]);
+    assert!(drew(&v, ew::ERROR), "the typed error is shown inline");
+    for f in [DevelopExport::Png { depth: OutputDepth::Sixteen }, TIFF_BUTTON] {
+        let r = v.export_develop(&scratch.0.join(format!("refused.{}", f.name())), f, false).unwrap_err();
+        assert_eq!(r.code, "export_setting_out_of_range", "{}", f.name());
+    }
+    let dng = scratch.0.join("still.dng");
+    export(&mut v, &dng, DNG_BUTTON);
+    assert_eq!(sha_of(&dng), PINS[4].1);
+
+    let r = v.set_develop_export_field(&ew::key("resize_percentage"), "fifty").unwrap_err();
+    assert_eq!(r.code, "export_field_not_a_number");
+    let s = stage_state(&v);
+    assert_eq!((s["error"]["code"].as_str(), s["unparsed"]["resize_percentage"].as_str(), s["export_enabled"].as_bool()), (Some("export_field_not_a_number"), Some("fifty"), Some(false)));
+    let key = s["keys"].as_array().unwrap().iter().find(|r| r["key"] == "resize_percentage").unwrap()["value"].clone();
+    assert_eq!(key, "fifty", "the field keeps the typed text");
+    assert_eq!(v.export_develop(&scratch.0.join("nan.png"), DevelopExport::Png { depth: OutputDepth::Eight }, false).unwrap_err().code, "export_field_not_a_number");
+    field(&mut v, "resize_percentage", "50");
+    let s = stage_state(&v);
+    assert_eq!((s["preview"].as_str(), s["export_enabled"].as_bool(), s["error"].is_null()), (Some("32 x 24 px"), Some(true), true), "{s}");
+    assert_eq!(v.set_develop_export_field("develop.export.no_such_key", "1").unwrap_err().code, "unknown_export_field");
+}
+
+/// The window's TIFF and DNG buttons (drawn beside PNG and JPEG) write files whose headers parse: the
+/// TIFF through interop-tiff (16-bit, sRGB profile, staged to long edge 32 = 32 x 24), the DNG through
+/// develop's own container reader (full raw, stage not applied).
+#[test]
+fn export_tiff_and_dng_buttons_write_files_whose_headers_parse() {
+    let scratch = Scratch::new("export-dialog-buttons");
+    let mut v = open_dng(&scratch, 64, 48);
+    let ctx = egui::Context::default();
+    frame(&mut v, &ctx, vec![]);
+    for name in [hsk_studio_harness::view::widget::DEVELOP_EXPORT_PNG, hsk_studio_harness::view::widget::DEVELOP_EXPORT_JPEG, ew::EXPORT_TIFF, ew::EXPORT_DNG] {
+        assert!(drew(&v, name), "{name} not drawn");
+    }
+    field(&mut v, "stage", "true");
+    field(&mut v, "resize_type", "LongEdge");
+    field(&mut v, "max_width", "32");
+    let base = std::path::PathBuf::from(v.save_input.trim());
+    let tif = base.with_extension("develop.tif");
+    let r = export(&mut v, &tif, TIFF_BUTTON);
+    let file = hsk_studio_interop_tiff::decode(&std::fs::read(&tif).unwrap(), &hsk_studio_interop_tiff::Limits::default(), &CancellationToken::default()).unwrap();
+    let page = &file.pages[0];
+    assert_eq!((page.width, page.height, page.bits_per_sample), (32, 24, 16), "{r}");
+    assert_eq!(page.icc.as_deref(), Some(hsk_studio_harness::view::develop::SRGB_V4_ICC));
+    let dng = base.with_extension("develop.dng");
+    let r = export(&mut v, &dng, DNG_BUTTON);
+    assert_eq!(r["export_stage"]["applied"], false);
+    let bytes = std::fs::read(&dng).unwrap();
+    assert!(bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*"), "TIFF/DNG header");
+    hsk_studio_develop::decode_container(&bytes).unwrap_or_else(|e| panic!("DNG does not parse: {e:?}"));
+    assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(64), Some(48)));
+}
+
+/// A text watermark is develop's typed refusal (needs hsk-studio-type), inline and at export; a PNG
+/// graphic loaded through the dialog's path replaces it and exports with its placement.
+#[test]
+fn text_watermark_is_refused_typed_and_a_graphic_file_is_placed() {
+    let scratch = Scratch::new("export-dialog-watermark");
+    let mut v = open_dng(&scratch, 64, 48);
+    let ctx = egui::Context::default();
+    assert_eq!(v.load_develop_watermark(&scratch.0.join("none.png")).unwrap_err().code, "export_stage_off");
+    field(&mut v, "stage", "true");
+    field(&mut v, "constrain_size", "false");
+    field(&mut v, "use_watermark", "true");
+    field(&mut v, "watermark_source", "text");
+    field(&mut v, "watermark_text", "Handshake Studio");
+    let s = stage_state(&v);
+    assert_eq!((s["error"]["code"].as_str(), s["error"]["detail"].as_str(), s["export_enabled"].as_bool()), (Some("text_watermark_unsupported"), Some("hsk-studio-type"), Some(false)), "{s}");
+    frame(&mut v, &ctx, vec![]);
+    assert!(drew(&v, ew::WATERMARK_TEXT) && drew(&v, ew::ERROR));
+    assert_eq!(v.export_develop(&scratch.0.join("text.png"), DevelopExport::Png { depth: OutputDepth::Eight }, false).unwrap_err().code, "text_watermark_unsupported");
+
+    let samples = raster::Samples::U8([255, 0, 0, 255].repeat(4));
+    let req = raster::PngEncodeRequest { width: 2, height: 2, colour: raster::Colour::Rgba, samples: &samples, icc: None, compression: raster::PngCompression::Balanced };
+    let mark = scratch.0.join("mark.png");
+    std::fs::write(&mark, raster::encode_png(&req).unwrap()).unwrap();
+    v.load_develop_watermark(&mark).unwrap();
+    field(&mut v, "watermark_anchor", "top_left");
+    field(&mut v, "watermark_size", "proportional");
+    field(&mut v, "watermark_size_value", "3.125");
+    let s = stage_state(&v);
+    assert!(s["error"].is_null(), "{s}");
+    assert_eq!((s["watermark_graphic"]["width"].as_u64(), s["watermark_graphic"]["height"].as_u64()), (Some(2), Some(2)));
+    frame(&mut v, &ctx, vec![]);
+    assert!(drew(&v, ew::WATERMARK_GRAPHIC));
+    let r = export(&mut v, &scratch.0.join("graphic.png"), DevelopExport::Png { depth: OutputDepth::Eight });
+    let w = &r["export_stage"]["watermark"];
+    assert_eq!((w["x"].as_i64(), w["y"].as_i64(), w["width"].as_u64(), w["height"].as_u64(), w["anchor"].as_str()), (Some(0), Some(0), Some(2), Some(2), Some("top_left")), "{w}");
+}
