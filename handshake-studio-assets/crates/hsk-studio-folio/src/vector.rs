@@ -496,6 +496,10 @@ pub struct StudioVectorRecords {
     /// empty, so record sets written before them are byte-identical).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub path_texts: Vec<StudioPathText>,
+    /// Area-type bindings (lane SMB-AI-AREA-TYPE-1, `vector_path_text.rs`; absent when empty, so
+    /// record sets written before them are byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub area_texts: Vec<StudioAreaText>,
     /// Gradient meshes (lane SMB-AI-TYPE-PATH-RECOLOR, `vector_mesh.rs`; absent when empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gradient_meshes: Vec<StudioGradientMesh>,
@@ -522,6 +526,7 @@ impl StudioVectorRecords {
             envelopes: Vec::new(),
             icc_profiles: Vec::new(),
             path_texts: Vec::new(),
+            area_texts: Vec::new(),
             gradient_meshes: Vec::new(),
         }
     }
@@ -1009,6 +1014,7 @@ pub fn validate_vector_records(
 
     tools::validate_tools(r, &layers, design, &mut cx)?;
     path_text::validate_path_texts(r, &layers, &mut cx)?;
+    path_text::validate_area_texts(r, &layers, &mut cx)?;
     mesh::validate_meshes(r, &layers, &mut cx)?;
 
     cx.nodes(r.pattern_paints.len(), "pattern_paints")?;

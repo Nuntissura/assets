@@ -156,3 +156,95 @@ pub(super) fn validate_path_texts(r: &StudioVectorRecords, layers: &BTreeMap<&st
     }
     Ok(())
 }
+
+// Area type (lane SMB-AI-AREA-TYPE-1; STU-TYP-002, STU-TYP-114, STU-TYP-116, STU-VEC-038). Member
+// `area_texts` of `StudioVectorRecords`, skipped when empty, so record sets written before it are
+// byte-identical. `StudioAreaText` binds a story (`text_id`, `STXT`, `text_kind = area`) to the
+// closed container path `container_id` (`SVPT`) of vector layer `container_layer_id`, with the
+// inset (points), the first-baseline mode and minimum (points) and the STU-TYP-116 auto-size member.
+// Folio stores and validates only: Type composes (`hsk_studio_type::layout_area_text`), Nib owns
+// the geometry. Field names avoid the package reference vocabulary (they are document-local ids).
+// Declared gaps: closure of the container path is checked by Type (Folio holds no geometry); the
+// story's `text_kind` is checked by [`validate_area_text_story`] where the story is resolved
+// (stories are standalone primitives); the STU-TYP-117 reference point and STU-TYP-118 minimums
+// are not stored (the auto-size anchor is the top-left corner, a declared reading).
+
+/// Most area-text bindings of one record set.
+pub const AREA_TEXT_MAX_ENTRIES: usize = 4096;
+
+/// First-baseline mode of an area text (declared subset; Illustrator parity UNVERIFIED, D5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioFirstBaseline {
+    #[default]
+    Ascent,
+    CapHeight,
+    XHeight,
+    Leading,
+    Fixed,
+}
+
+/// STU-TYP-116 `auto_size_type`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioAutoSize {
+    #[default]
+    Off,
+    HeightOnly,
+    WidthOnly,
+    HeightAndWidth,
+    HeightAndWidthProportional,
+}
+
+/// An area-type binding (comment above).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioAreaText {
+    /// `STXT` story composed inside the container.
+    pub text_id: String,
+    /// `SLYR` vector layer holding the container path.
+    pub container_layer_id: String,
+    /// `SVPT` closed path of that layer.
+    pub container_id: String,
+    /// Inset on every side, points.
+    #[serde(default)]
+    pub inset: f64,
+    #[serde(default)]
+    pub first_baseline: StudioFirstBaseline,
+    /// Minimum first-baseline offset (the offset of `fixed`), points.
+    #[serde(default)]
+    pub first_baseline_min: f64,
+    #[serde(default)]
+    pub auto_size: StudioAutoSize,
+}
+
+pub(super) fn validate_area_texts(r: &StudioVectorRecords, layers: &BTreeMap<&str, &StudioLayer>, cx: &mut Ctx) -> Result<()> {
+    check(r.area_texts.len() <= AREA_TEXT_MAX_ENTRIES, Code::BudgetExceeded, "area_texts", "count")?;
+    cx.nodes(r.area_texts.len(), "area_texts")?;
+    let on_path: BTreeSet<&str> = r.path_texts.iter().map(|p| p.story_id.as_str()).collect();
+    let mut stories = BTreeSet::new();
+    for a in &r.area_texts {
+        cx.tick()?;
+        let t = a.text_id.as_str();
+        id(t, "STXT", "area_texts/text_id")?;
+        unique(&mut stories, t, t)?;
+        // One binding per story: a story is area text or path text, not both.
+        check(!on_path.contains(t), Code::DuplicateIdentity, t, "text_id")?;
+        let l = layer(layers, &a.container_layer_id, &format!("{t}/container_layer_id"))?;
+        id(&a.container_id, "SVPT", &format!("{t}/container_id"))?;
+        let holds = matches!(&l.payload, Payload::Vector { path_ids } if path_ids.contains(&a.container_id));
+        check(holds, Code::DanglingReference, t, "container_id")?;
+        let points = |v: f64| v.is_finite() && (0.0..=PATH_TEXT_MAX_PT).contains(&v);
+        check(points(a.inset), Code::InvalidField, t, "inset")?;
+        check(points(a.first_baseline_min), Code::InvalidField, t, "first_baseline_min")?;
+    }
+    Ok(())
+}
+
+/// The story an area-text binding names, checked where stories are resolved: same id and
+/// `text_kind = area` (STU-TYP-114).
+pub fn validate_area_text_story(binding: &StudioAreaText, story: &crate::StudioTextStory) -> Result<()> {
+    let t = binding.text_id.as_str();
+    check(story.story_id == binding.text_id, Code::DanglingReference, t, "text_id")?;
+    check(story.text_kind == crate::StoryTextKind::Area, Code::InvalidField, t, "text_kind")
+}
