@@ -1293,6 +1293,49 @@ impl Run<'_> {
         }
     }
 
+    /// ONE undoable step (lane SMB-AU-MULTITRACK-2): a sequence replacement exactly like
+    /// [`Run::submit_sequence`] and the session document entry `token` set to `bytes` inside the same
+    /// history step, so undo/redo restore the sequence and the entry together (a timeline edit that
+    /// also edits the clip envelopes of the audio routing entry). A refused sequence changes
+    /// nothing; a refused entry write undoes the sequence step (no split step). Records: the
+    /// `submit_sequence` record `op`, plus an `op` refusal record when the entry write is refused.
+    pub fn submit_sequence_and_entry(&mut self, op: &str, write: folio::StudioSequence, token: &str, bytes: Vec<u8>) -> bool {
+        let previous = match self.session.as_ref() {
+            Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
+            None => {
+                let before = self.frames.count();
+                return self.push(op, before, Err("not_open"), None, None);
+            }
+        };
+        let depth = self.undo_stack.len();
+        if !self.submit_sequence(op, write) {
+            return false;
+        }
+        let cancel = self.cancel;
+        let set = match self.session.as_mut() {
+            Some(s) => s.set_document_entry(token, Some(bytes), cancel).map_err(|e| e.code()),
+            None => Err("not_open"),
+        };
+        if let Err(code) = set {
+            if self.undo_stack.len() > depth {
+                let _ = self.undo();
+            }
+            let before = self.frames.count();
+            return self.own_op(op, before, Err(code));
+        }
+        let restore = EntryRestore { token: token.to_string(), bytes: previous };
+        if self.undo_stack.len() > depth {
+            if let Some(step) = self.undo_stack.last_mut() {
+                step.entry = Some(restore);
+            }
+        } else {
+            // The sequence did not change: the step is entry-only.
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None });
+            self.redo_stack.clear();
+        }
+        true
+    }
+
     /// The bytes of a session document entry of the working session.
     pub fn document_entry(&self, token: &str) -> Option<&[u8]> {
         self.session.as_ref()?.document_entry(token)
@@ -1364,8 +1407,18 @@ impl Run<'_> {
             let revision = session.document_revision();
             return match session.submit_timeline(&submit, revision, cancel) {
                 Ok(applied) => {
+                    // The step's entry comes back with the sequence (submit_sequence_and_entry;
+                    // refused: the sequence step stays applied, reported, never silently split).
+                    let previous = match step.entry.as_ref().map(|e| self.swap_entry(e)) {
+                        Some(Ok(p)) => p,
+                        Some(Err(code)) => {
+                            let revision = self.revision();
+                            return self.push(op, before, Err(code), Some(applied.report), revision);
+                        }
+                        None => None,
+                    };
                     let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None };
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: applied.timeline_inverse.clone(), group: None };
                     if undo {
                         self.redo_stack.push(next);
                     } else {

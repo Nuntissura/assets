@@ -35,12 +35,16 @@
 //! module `rate` (its rustdoc is the manual). Lane SMB-AU-MULTITRACK-1 (feature `audio-batch`)
 //! adds waveform overviews in audio clips, automation lane rows under audio and submix tracks
 //! ([`LaneRow`], [`LANE_PX`]) and clip gain, in module `audio` (its rustdoc is the manual).
+//! Lane SMB-AU-MULTITRACK-2: clip volume envelopes of the audio routing entry follow every edit
+//! committed here (trim, slip, razor, lift, ripple delete, move, rate) in the same history step
+//! (`Run::submit_sequence_and_entry`), module `envelopes`.
 #![deny(clippy::arithmetic_side_effects)]
 
 #[cfg(feature = "audio-batch")]
 mod audio;
 #[cfg(feature = "audio-batch")]
 pub(super) mod audio_ui;
+mod envelopes;
 mod rate;
 mod trim;
 mod trim_session;
@@ -1337,8 +1341,14 @@ impl Viewer {
     /// (`Run::submit_sequence`); the program monitor then plays the edited sequence.
     fn timeline_commit(&mut self, op: &str, plan: impl FnOnce(&folio::Snapshot, &str, &EditContext) -> Result<Planned, String>) -> Result<(), String> {
         let sequence_id = self.timeline.as_ref().map(|t| t.sequence_id.clone()).ok_or("no_timeline")?;
-        let planned = self.timeline_plan(plan)?;
-        if !self.run.submit_sequence(op, planned.sequence.clone()) {
+        let mut planned = self.timeline_plan(plan)?;
+        // Clip envelopes follow the edit in the same history step (module `envelopes`).
+        let entry = self.envelopes_for(&planned.sequence, &mut planned.notes)?;
+        let submitted = match entry {
+            Some(bytes) => self.run.submit_sequence_and_entry(op, planned.sequence.clone(), envelopes::ROUTING_ENTRY, bytes),
+            None => self.run.submit_sequence(op, planned.sequence.clone()),
+        };
+        if !submitted {
             let code = self.run.ops().last().and_then(|o| o.get("error").and_then(Value::as_str)).unwrap_or("submit_failed").to_owned();
             return Err(format!("submit_failed {code}"));
         }
