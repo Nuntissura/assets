@@ -71,6 +71,8 @@ mod audio_routing;
 pub use audio_routing::*;
 mod vector;
 pub use vector::*;
+mod vector_markers;
+pub use vector_markers::*;
 mod live_shape;
 pub use live_shape::*;
 mod vector_network;

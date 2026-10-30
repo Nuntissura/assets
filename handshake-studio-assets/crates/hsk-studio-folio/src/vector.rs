@@ -503,6 +503,10 @@ pub struct StudioVectorRecords {
     /// Gradient meshes (lane SMB-AI-TYPE-PATH-RECOLOR, `vector_mesh.rs`; absent when empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gradient_meshes: Vec<StudioGradientMesh>,
+    /// Stroke arrowheads (lane SMB-AI-ARROWHEADS-1, `vector_markers.rs`, STU-VEC-146; absent when
+    /// empty, so record sets written before them are byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stroke_markers: Vec<crate::StudioStrokeMarkers>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -528,7 +532,14 @@ impl StudioVectorRecords {
             path_texts: Vec::new(),
             area_texts: Vec::new(),
             gradient_meshes: Vec::new(),
+            stroke_markers: Vec::new(),
         }
+    }
+    /// The arrowheads of stroke row `row` of style `style_id`.
+    pub fn stroke_marker(&self, style_id: &str, row: u32) -> Option<&crate::StudioStrokeMarkers> {
+        self.stroke_markers
+            .iter()
+            .find(|m| m.style_id == style_id && m.row == row)
     }
     /// The swatch `swatch_id`.
     pub fn swatch(&self, swatch_id: &str) -> Option<&StudioSwatch> {
@@ -1016,6 +1027,7 @@ pub fn validate_vector_records(
     path_text::validate_path_texts(r, &layers, &mut cx)?;
     path_text::validate_area_texts(r, &layers, &mut cx)?;
     mesh::validate_meshes(r, &layers, &mut cx)?;
+    crate::vector_markers::validate_stroke_markers(r, design, &mut cx)?;
 
     cx.nodes(r.pattern_paints.len(), "pattern_paints")?;
     let styles: BTreeMap<&str, &StudioPaintStyle> = design
