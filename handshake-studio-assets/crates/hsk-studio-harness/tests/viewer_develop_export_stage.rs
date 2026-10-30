@@ -102,6 +102,25 @@ fn empty_stage_exports_stay_byte_identical_to_the_pinned_digests() {
     }
 }
 
+/// Switching the stage on through the dialog starts with every group off (constrain_size false,
+/// sharpening off, watermark off; Studio reading, Lightroom UNVERIFIED, D5): every format exports
+/// byte-identically to the empty stage (the pins) and the report says no group is on.
+#[test]
+fn switching_on_with_no_group_enabled_exports_byte_identically_to_the_empty_stage() {
+    let scratch = Scratch::new("export-stage-switch-on");
+    let mut v = open_dng(&scratch, 64, 48);
+    v.set_develop_export_field(&hsk_studio_harness::view::develop::export_dialog::widget::key("stage"), "true").unwrap();
+    let on = v.develop_export_stage().cloned().unwrap();
+    assert_eq!((on.sizing.constrain_size, on.sharpening.enabled, on.watermark.use_watermark), (false, false, false));
+    assert_eq!(on, unconstrained(), "only constrain_size differs from develop's defaults");
+    for (name, pin) in PINS {
+        let p = scratch.0.join(format!("on.{name}"));
+        let report = export(&mut v, &p, format(name));
+        assert_eq!(sha_of(&p), pin, "{name}: switching on with no group changed the bytes");
+        assert_eq!(report["export_stage"]["applied"], false, "{name}: {report}");
+    }
+}
+
 /// Long edge 64 on the 300 x 260 raw: 64 x round_half_up(260 * 64 / 300 = 55.47) = 64 x 55, in the
 /// PNG header, the TIFF page and the report; the receipt carries sizes, rule, filter and resolution.
 #[test]
@@ -226,7 +245,7 @@ fn dialog_fields_drive_the_size_preview() {
     assert!(drew(&v, ew::STAGE) && drew(&v, ew::EXPORT_TIFF) && drew(&v, ew::EXPORT_DNG), "{:?}", v.drawn());
     assert!(!drew(&v, &ew::key("max_width")), "rows are hidden while the stage is off");
     field(&mut v, "stage", "true");
-    assert_eq!(v.develop_export_stage(), Some(&ExportStage::default()), "switching on starts from develop's defaults");
+    assert_eq!(v.develop_export_stage(), Some(&unconstrained()), "switching on starts with every group off");
     frame(&mut v, &ctx, vec![]);
     for k in hsk_studio_develop::EXPORT_STAGE_KEYS {
         assert!(drew(&v, &ew::key(k.key)), "{} not drawn", k.key);
@@ -239,6 +258,9 @@ fn dialog_fields_drive_the_size_preview() {
     let row = |key: &str| s["keys"].as_array().unwrap().iter().find(|r| r["key"] == key).unwrap().clone();
     assert_eq!((row("constrain_size")["storage"].as_str(), row("constrain_size")["default_source"].as_str()), (Some("stored_setting"), Some("studio_declared")));
     assert_eq!(row("megapixels")["storage"], "unclassified");
+    assert_eq!((s["preview"].as_str(), s["fit_rule"].as_str()), (Some("300 x 260 px"), Some("unconstrained")), "{s}");
+    field(&mut v, "constrain_size", "true");
+    let s = stage_state(&v);
     assert_eq!((s["preview"].as_str(), s["fit_rule"].as_str(), s["export_enabled"].as_bool()), (Some("1000 x 867 px"), Some("width_height"), Some(true)), "{s}");
     assert!(drew(&v, ew::PREVIEW));
 
@@ -264,6 +286,7 @@ fn invalid_percentage_shows_the_typed_error_and_disables_export() {
     let mut v = open_dng(&scratch, 64, 48);
     let ctx = egui::Context::default();
     field(&mut v, "stage", "true");
+    field(&mut v, "constrain_size", "true");
     field(&mut v, "resize_type", "Percentage");
     field(&mut v, "resize_percentage", "0");
     assert_eq!(v.develop_export_stage().map(|s| s.sizing.percentage), Some(0.0), "stored unclamped");
@@ -306,6 +329,7 @@ fn export_tiff_and_dng_buttons_write_files_whose_headers_parse() {
         assert!(drew(&v, name), "{name} not drawn");
     }
     field(&mut v, "stage", "true");
+    field(&mut v, "constrain_size", "true");
     field(&mut v, "resize_type", "LongEdge");
     field(&mut v, "max_width", "32");
     let base = std::path::PathBuf::from(v.save_input.trim());
@@ -392,7 +416,7 @@ fn cli_stage_flags_build_the_same_stage_as_the_dialog() {
 
     let mut v = open_dng(&scratch, 300, 260);
     for (k, value) in [
-        ("stage", "true"), ("resize_type", "LongEdge"), ("max_width", "64"), ("output_sharpening_enabled", "true"),
+        ("stage", "true"), ("constrain_size", "true"), ("resize_type", "LongEdge"), ("max_width", "64"), ("output_sharpening_enabled", "true"),
         ("output_sharpening_media", "Glossy"), ("output_sharpening_level", "3"), ("use_watermark", "true"),
     ] {
         field(&mut v, k, value);
