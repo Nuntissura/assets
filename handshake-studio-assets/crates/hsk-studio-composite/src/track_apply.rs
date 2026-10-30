@@ -491,6 +491,9 @@ pub fn apply_planar_mask(
         closed: true,
         static_value,
         keyframes: keys,
+        feather: None,
+        opacity: None,
+        expansion: None,
     };
     let mut out = target.clone();
     match out.masks.iter_mut().find(|m| m.mask_id == mask_id) {

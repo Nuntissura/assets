@@ -638,6 +638,16 @@ pub enum StudioCompositionMaskMode {
 /// The `path` stream's value is the vertex list in layer-space pixels, six numbers per vertex:
 /// `x, y, in_dx, in_dy, out_dx, out_dy` (the incoming and outgoing tangent handles relative to the
 /// vertex; all four zero for a corner), the same vertex count on every keyframe.
+///
+/// Lane SMB-AE-MASK-FEATHER-1 adds the other three keyframable mask properties of STU-CMP-025, each
+/// a [`StudioKeyedValue`] (static value plus keyframes, the keyframe rules of the path stream):
+/// `feather` (2 components, x and y in pixels, each `0..=MAX_STREAM_ABS_VALUE`; a Studio reading of
+/// the uniform "Mask Feather" of the STU-MOT-095 table, the two-axis form is UNVERIFIED against
+/// After Effects, D5), `opacity` (1 component, STORED normalised `0..=1`, displayed as percent,
+/// STU-CMP-026) and `expansion` (1 component, signed pixels, `|x| <= MAX_STREAM_ABS_VALUE`).
+/// Absent = feather 0, opacity 1, expansion 0; absent streams are not encoded, so records written
+/// before them serialise byte for byte as before. The variable-width feather (`ADBE Mask Interp`)
+/// is a declared gap.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StudioCompositionMask {
@@ -651,6 +661,15 @@ pub struct StudioCompositionMask {
     pub static_value: Vec<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keyframes: Vec<StudioCompositionKeyframe>,
+    /// Mask feather, `[x, y]` pixels, each `>= 0`. Absent = no feather.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feather: Option<StudioKeyedValue>,
+    /// Mask opacity, stored `0..=1` (STU-CMP-026; displayed `0..=100` percent). Absent = 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<StudioKeyedValue>,
+    /// Mask expansion, signed pixels (outward positive). Absent = 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expansion: Option<StudioKeyedValue>,
 }
 fn is_false_flag(v: &bool) -> bool {
     !*v
@@ -658,6 +677,8 @@ fn is_false_flag(v: &bool) -> bool {
 impl StudioCompositionMask {
     /// Numbers per vertex of the path value.
     pub const VERTEX_COMPONENTS: usize = 6;
+    /// Components of the `feather` stream (x, y).
+    pub const FEATHER_COMPONENTS: usize = 2;
 }
 
 /// A corner pin of a composition layer: `from` (four layer-space corners, upper left, upper
@@ -878,9 +899,10 @@ fn validate_corner_pin(p: &StudioCornerPin, layer: &str, cx: &mut Ctx) -> Result
     validate_keyed(&t, StudioCornerPin::DIMENSION, &value_ok, &p.static_value, &p.keyframes, cx)
 }
 
-/// A mask: id shape, an open path only as geometry (`none`), and the path stream (a fixed vertex
+/// A mask: id shape, an open path only as geometry (`none`), the path stream (a fixed vertex
 /// count `1..=MAX_MASK_PATH_VERTICES`, six finite bounded numbers per vertex, keyframe rules of a
-/// transform stream).
+/// transform stream), and the optional feather, opacity and expansion streams (component count,
+/// finite, range, the same keyframe rules; target `<layer>/masks/<mask_id>/<name>`).
 fn validate_mask(m: &StudioCompositionMask, layer: &str, cx: &mut Ctx) -> Result<()> {
     cx.tick()?;
     let id_ok = !m.mask_id.is_empty() && m.mask_id.len() <= 64 && !m.mask_id.chars().any(char::is_control);
@@ -893,7 +915,19 @@ fn validate_mask(m: &StudioCompositionMask, layer: &str, cx: &mut Ctx) -> Result
         && (1..=MAX_MASK_PATH_VERTICES).contains(&vertices);
     check(shape_ok, &t, "static_value")?;
     let value_ok = |v: &[f64]| v.len() == len && v.iter().all(|x| x.is_finite() && x.abs() <= MAX_STREAM_ABS_VALUE);
-    validate_keyed(&t, len, &value_ok, &m.static_value, &m.keyframes, cx)
+    validate_keyed(&t, len, &value_ok, &m.static_value, &m.keyframes, cx)?;
+    for (name, stream, dim, lo, hi) in [
+        ("feather", &m.feather, StudioCompositionMask::FEATHER_COMPONENTS, 0.0, MAX_STREAM_ABS_VALUE),
+        ("opacity", &m.opacity, 1, 0.0, 1.0),
+        ("expansion", &m.expansion, 1, -MAX_STREAM_ABS_VALUE, MAX_STREAM_ABS_VALUE),
+    ] {
+        if let Some(s) = stream {
+            let tn = format!("{t}/{name}");
+            let value_ok = |v: &[f64]| v.len() == dim && v.iter().all(|x| x.is_finite() && (lo..=hi).contains(x));
+            validate_keyed(&tn, dim, &value_ok, &s.static_value, &s.keyframes, cx)?;
+        }
+    }
+    Ok(())
 }
 
 /// A keyed value against its authored bound (component count, hard range, keyframe rules).
