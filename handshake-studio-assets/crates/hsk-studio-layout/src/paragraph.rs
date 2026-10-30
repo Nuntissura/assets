@@ -3,6 +3,7 @@
 //! glyph advances and source clusters Type produced.
 use crate::hyphenate::{HyphenationParams, Hyphenator};
 use crate::{LayoutError, SourceSpan};
+use hsk_studio_folio::FirstBaseline;
 use hsk_studio_type as ty;
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
@@ -36,6 +37,11 @@ pub struct LigaturePart {
 /// `line_height_pt` and `ascent_pt` come from the caller's resolved style (descent is the rest).
 /// `line_end_advances` and `ligature_parts` (paragraph-local glyph indices, ascending) carry Type's
 /// composition v2 line-end data; both are empty for other sources.
+/// `cap_height_pt`, `x_height_pt` and `em_box_pt` are the STU-LAY-120 first-baseline metrics of the
+/// paragraph's first run (lane SMB-ID-FRAME-AUTOSIZE-1): the face's OS/2 `sCapHeight` / `sxHeight`
+/// scaled by font size / units per em, and the em box height, which Studio reads as the font size
+/// (UNVERIFIED, D5). `None` = not known: a frame whose first baseline needs it is refused, never
+/// guessed (`first_baseline_metric`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapedParagraph {
     pub source: SourceSpan,
@@ -47,8 +53,70 @@ pub struct ShapedParagraph {
     pub latin_only: bool,
     pub line_end_advances: Vec<LineEndAdvance>,
     pub ligature_parts: Vec<LigaturePart>,
+    pub cap_height_pt: Option<f64>,
+    pub x_height_pt: Option<f64>,
+    pub em_box_pt: Option<f64>,
 }
+
+/// A STU-LAY-120 first-baseline kind whose metric the paragraph does not carry (a face without the
+/// OS/2 value, or a source that states no font size). `code()` is
+/// `first_baseline_metric_unavailable:<kind>`; the threaded reflow refuses such a frame with
+/// `LayoutError::UnsupportedComposition` (the refusal the reflow has always given for these kinds).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstBaselineUnavailable {
+    pub kind: FirstBaseline,
+}
+impl FirstBaselineUnavailable {
+    pub const fn code(self) -> &'static str {
+        match self.kind {
+            FirstBaseline::Ascent => "first_baseline_metric_unavailable:ascent",
+            FirstBaseline::CapHeight => "first_baseline_metric_unavailable:cap_height",
+            FirstBaseline::Leading => "first_baseline_metric_unavailable:leading",
+            FirstBaseline::EmBoxHeight => "first_baseline_metric_unavailable:em_box_height",
+            FirstBaseline::XHeight => "first_baseline_metric_unavailable:x_height",
+            FirstBaseline::Fixed => "first_baseline_metric_unavailable:fixed",
+        }
+    }
+}
+impl std::fmt::Display for FirstBaselineUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+impl std::error::Error for FirstBaselineUnavailable {}
+
 impl ShapedParagraph {
+    /// The STU-LAY-120 metric of `kind` (pt above the baseline): ascent, cap height, leading (the
+    /// line height), em box height or x height; `fixed` has none (0). A metric the paragraph does not
+    /// carry is refused, never replaced by another one.
+    pub fn first_baseline_metric(&self, kind: FirstBaseline) -> Result<f64, FirstBaselineUnavailable> {
+        let v = match kind {
+            FirstBaseline::Ascent => Some(self.ascent_pt),
+            FirstBaseline::Leading => Some(self.line_height_pt),
+            FirstBaseline::CapHeight => self.cap_height_pt,
+            FirstBaseline::XHeight => self.x_height_pt,
+            FirstBaseline::EmBoxHeight => self.em_box_pt,
+            FirstBaseline::Fixed => Some(0.0),
+        };
+        v.ok_or(FirstBaselineUnavailable { kind })
+    }
+    /// Sets the first-baseline metrics from a face's `head.unitsPerEm` and OS/2 `sCapHeight` /
+    /// `sxHeight` (font units; `None` when the face has no OS/2 table of version 2 or later) at
+    /// `font_size_pt`: each is scaled by `font_size_pt / units_per_em`, and the em box height is the
+    /// font size. `units_per_em == 0` leaves cap and x height unknown.
+    pub fn with_face_metrics(
+        mut self,
+        font_size_pt: f64,
+        units_per_em: u16,
+        cap_height: Option<i16>,
+        x_height: Option<i16>,
+    ) -> Self {
+        let scale = (units_per_em > 0).then(|| font_size_pt / f64::from(units_per_em));
+        self.cap_height_pt = scale.zip(cap_height).map(|(s, v)| f64::from(v) * s);
+        self.x_height_pt = scale.zip(x_height).map(|(s, v)| f64::from(v) * s);
+        self.em_box_pt = Some(font_size_pt);
+        self
+    }
     /// Latin left-to-right paragraph with every font present.
     pub fn latin_ltr(
         source: SourceSpan,
@@ -66,11 +134,16 @@ impl ShapedParagraph {
             latin_only: true,
             line_end_advances: Vec::new(),
             ligature_parts: Vec::new(),
+            cap_height_pt: None,
+            x_height_pt: None,
+            em_box_pt: None,
         }
     }
     /// Flattens a Type-shaped paragraph. A `Prepared` result never carries a missing font (Type
     /// refuses instead), so `font_missing` is false; right-to-left, odd bidi levels and scripts other
     /// than Latn/Zyyy mark the paragraph unsupported so `reflow` refuses it instead of mis-laying it.
+    /// The em box height is the first run's font size; Type's public API states no OS/2 cap or x
+    /// height, so those stay unknown until the host supplies them (`with_face_metrics`).
     pub fn from_type(p: &ty::ParagraphResult<'_>, line_height_pt: f64, ascent_pt: f64) -> Self {
         let mut glyphs = Vec::new();
         let (mut line_end_advances, mut ligature_parts) = (Vec::new(), Vec::new());
@@ -112,6 +185,9 @@ impl ShapedParagraph {
             latin_only: latin,
             line_end_advances,
             ligature_parts,
+            cap_height_pt: None,
+            x_height_pt: None,
+            em_box_pt: p.runs().first().map(|r| r.font_size_pt()),
         }
     }
     /// Toy/test fixture, NOT shaping: one glyph per `char` of `text[source]` with a fixed advance.

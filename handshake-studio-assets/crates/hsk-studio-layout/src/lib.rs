@@ -92,7 +92,8 @@ pub use hyphenate::{
     EN_US_LICENCE, HyphenationError, HyphenationParams, Hyphenator, INDESIGN_EN_US_EXCEPTIONS, MAX_WORD_BYTES, hyphenated,
 };
 pub use paragraph::{
-    Break, BreakKind, LayoutGlyph, LigaturePart, LineEndAdvance, ShapedParagraph, SpaceParams, break_opportunities,
+    Break, BreakKind, FirstBaselineUnavailable, LayoutGlyph, LigaturePart, LineEndAdvance, ShapedParagraph, SpaceParams,
+    break_opportunities,
 };
 pub use parent_adapter::{
     LayerAssignment, LayerRects, ParentAdapterError, parent_set_from_records,
