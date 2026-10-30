@@ -804,6 +804,62 @@ impl hsk_studio_composite::VectorAssets for EntryAssets<'_> {
     }
 }
 
+/// [`EntryAssets`] plus live path and area text (lane SMB-AI-AREA-TYPE-2; STU-TYP-002/004,
+/// STU-TYP-120): composite asks for the story of every Folio `StudioPathText` / `StudioAreaText`
+/// binding ([`hsk_studio_composite::VectorAssets::shaped_story`]) and this shapes it from the
+/// document's `text` entry with the viewer's fonts (`text::shaped_story`: the text layers' font
+/// resolution and shaping). A story that cannot be shaped (absent, stored content, unknown font,
+/// mixed faces, a Type refusal) stays `None`: composite draws the layer without it and reports
+/// `vector_text_not_provided`; the reason is kept for [`Viewer::vector_text_reports`].
+struct LiveTextAssets<'a> {
+    entry: EntryAssets<'a>,
+    text: Option<&'a super::text::TextEntry>,
+    fonts: &'a [super::text::FontFile],
+    cancel: &'a hsk_studio_accord::CancellationToken,
+    unshaped: std::cell::RefCell<Vec<(String, String)>>,
+}
+
+impl hsk_studio_composite::VectorAssets for LiveTextAssets<'_> {
+    fn path(&self, path_id: &str) -> Option<OwnedPath> {
+        hsk_studio_composite::VectorAssets::path(&self.entry, path_id)
+    }
+    fn image(&self, source: &folio::StudioImageSource) -> Option<hsk_studio_composite::ImageInfo> {
+        hsk_studio_composite::VectorAssets::image(&self.entry, source)
+    }
+    fn network(&self, path_id: &str) -> Option<folio::StudioVectorNetwork> {
+        hsk_studio_composite::VectorAssets::network(&self.entry, path_id)
+    }
+    fn plan_colour(&self, colour: &folio::StudioColor, space: hsk_studio_composite::BlendSpace) -> Option<[f32; 3]> {
+        hsk_studio_composite::VectorAssets::plan_colour(&self.entry, colour, space)
+    }
+    fn shaped_story(&self, text_id: &str) -> Option<hsk_studio_composite::vector_text::ShapedStory> {
+        let shaped = match self.text {
+            Some(entry) => super::text::shaped_story(entry, self.fonts, text_id, self.cancel),
+            None => Err("text_entry_unavailable".into()),
+        };
+        shaped.map_err(|e| self.unshaped.borrow_mut().push((text_id.to_string(), e))).ok()
+    }
+}
+
+/// The outcome of one live path- or area-text binding in the viewer ([`Viewer::vector_text_reports`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VectorTextStatus {
+    /// Composite's report (placed and overset glyphs, the container, or a typed code such as
+    /// `vector_text_not_provided`).
+    pub report: hsk_studio_composite::vector_text::TextReport,
+    /// Why the viewer could not shape the story (`None` when it was shaped).
+    pub unshaped: Option<String>,
+}
+
+/// Kind of live text [`Viewer::bind_live_text`] binds to a vector layer's first path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LiveTextKind {
+    /// Type on a path (`StudioPathText`, the whole path, default options).
+    Path,
+    /// Area type inside the closed path (`StudioAreaText`), inset in points.
+    Area { inset_pt: f64 },
+}
+
 /// A fresh `SVPT` id (the document id's time fields, never one the entry holds).
 fn mint_path_id(doc: &StudioDocument, entry: &VectorEntry) -> String {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
@@ -1064,7 +1120,8 @@ impl Viewer {
     pub fn render_folio_vectors(&self, design: &folio::StudioDesignRecords, records: &folio::StudioVectorRecords) -> Result<super::render::Frame, String> {
         let snap = self.run.snapshot().ok_or("render_folio_vectors: nothing open")?;
         let entry = self.vector_entry()?;
-        let prepared = hsk_studio_composite::prepare_vectors(snap, design, records, &EntryAssets(&entry), hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)
+        let text = self.text_entry().ok();
+        let prepared = hsk_studio_composite::prepare_vectors(snap, design, records, &self.live_text_assets(&entry, text.as_ref()), hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)
             .map_err(|e| format!("vector_prepare: {e:?}"))?;
         for l in &snap.document().layers {
             if let Some(code) = prepared.refusal(&l.layer_id) {
@@ -1078,6 +1135,11 @@ impl Viewer {
     /// Prepared vector layers of the open document (`None` without vector layers): composite's
     /// Folio adapter over the entry's records (module docs); a refused layer is an error.
     pub(super) fn prepared_vectors(&self) -> Result<Option<PreparedVectors>, String> {
+        self.prepared_vectors_with_text().map(|p| p.map(|(prepared, _)| prepared))
+    }
+
+    /// [`Self::prepared_vectors`] plus why each unshaped live story was not shaped.
+    fn prepared_vectors_with_text(&self) -> Result<Option<(PreparedVectors, Vec<(String, String)>)>, String> {
         let doc = self.vdoc()?;
         if !doc.layers.iter().any(|l| matches!(l.payload, Payload::Vector { .. })) {
             return Ok(None);
@@ -1086,14 +1148,149 @@ impl Viewer {
         let entry = self.vector_entry()?;
         let design = style::effective_design(doc, &entry)?;
         let records = entry.folio_records(&doc.document_id);
-        let prepared = hsk_studio_composite::prepare_vectors(snap, &design, &records, &EntryAssets(&entry), hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)
+        let text = self.text_entry().ok();
+        let assets = self.live_text_assets(&entry, text.as_ref());
+        let prepared = hsk_studio_composite::prepare_vectors(snap, &design, &records, &assets, hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)
             .map_err(|e| format!("vector_prepare: {e:?}"))?;
         for l in &doc.layers {
             if let Some(code) = prepared.refusal(&l.layer_id) {
                 return Err(format!("vector_refused: {} {code}", l.layer_id));
             }
         }
-        Ok(Some(prepared))
+        Ok(Some((prepared, assets.unshaped.into_inner())))
+    }
+
+    fn live_text_assets<'a>(&'a self, entry: &'a VectorEntry, text: Option<&'a super::text::TextEntry>) -> LiveTextAssets<'a> {
+        LiveTextAssets { entry: EntryAssets(entry), text, fonts: &self.fonts, cancel: self.cancel, unshaped: std::cell::RefCell::new(Vec::new()) }
+    }
+
+    /// The live path- and area-text bindings of the open document as the window draws them (lane
+    /// SMB-AI-AREA-TYPE-2): composite's report per binding (placed / overset glyphs, the area
+    /// container, or a typed code; `vector_text_not_provided` when the story could not be shaped)
+    /// and the viewer's reason for an unshaped story. Empty without vector layers.
+    pub fn vector_text_reports(&self) -> Result<Vec<VectorTextStatus>, String> {
+        let Some((prepared, unshaped)) = self.prepared_vectors_with_text()? else {
+            return Ok(Vec::new());
+        };
+        Ok(prepared
+            .texts()
+            .iter()
+            .map(|r| VectorTextStatus { report: r.clone(), unshaped: unshaped.iter().find(|(id, _)| *id == r.text_id).map(|(_, e)| e.clone()) })
+            .collect())
+    }
+
+    /// Binds `text` as live text to the first path of vector layer `layer_id` (lane
+    /// SMB-AI-AREA-TYPE-2): a Folio story (`text_kind` path or area; font `Ubuntu-Light` or the
+    /// first registered font, `text_size_pt`, fill = the brush colour in linear light, as
+    /// [`Viewer::place_text`]) in the `text` entry, then ONE entry-only undo step writing the
+    /// `StudioPathText` (whole path, default options) or `StudioAreaText` (inset, first baseline
+    /// ascent, auto-size off) binding. One live binding per layer: a new one replaces the old.
+    /// Returns the story id. Area text needs a closed path. Undo removes the binding (the story
+    /// stays in the text entry, unbound, as a removed text layer's story does).
+    pub fn bind_live_text(&mut self, layer_id: &str, text: &str, kind: LiveTextKind) -> Result<String, String> {
+        let family = if self.fonts.iter().any(|f| f.family == super::text::DEFAULT_FONT) { Some(super::text::DEFAULT_FONT.to_string()) } else { self.fonts.first().map(|f| f.family.clone()) };
+        match family {
+            Some(family) => self.bind_live_text_with_font(layer_id, text, kind, &family),
+            None => self.report(Err("live_text: no font registered".into())),
+        }
+    }
+
+    /// [`Self::bind_live_text`] with an explicit font family (one of the viewer's fonts).
+    pub fn bind_live_text_with_font(&mut self, layer_id: &str, text: &str, kind: LiveTextKind, family: &str) -> Result<String, String> {
+        let r = (|| {
+            if text.is_empty() || text.len() > super::text::MAX_STORY_BYTES || text.contains(['\n', '\r']) {
+                return Err(format!("live_text: one line of 1..={} bytes", super::text::MAX_STORY_BYTES));
+            }
+            let record = self.vector_path(layer_id)?;
+            let first = record.path.contours.first().ok_or("live_text: empty path")?;
+            if let LiveTextKind::Area { inset_pt } = kind {
+                if !record.path.contours.iter().all(|c| c.closed) {
+                    return Err("live_text: area text needs a closed path".into());
+                }
+                if !(inset_pt.is_finite() && (0.0..=1.0e5).contains(&inset_pt)) {
+                    return Err("live_text: inset".into());
+                }
+            }
+            if !self.fonts.iter().any(|f| f.family == family) {
+                return Err(format!("live_text: font {family} is not registered"));
+            }
+            let doc = self.vdoc()?;
+            let uuid = layer_id.get(5..).filter(|u| u.len() == 36).ok_or("live_text: layer id")?;
+            // Story and paragraph style take the layer's uuid; the character style flips the
+            // RFC variant nibble (a second, distinct id).
+            let flip = if uuid.get(19..20) == Some("b") { "8" } else { "b" };
+            let (story_id, paragraph_style) = (format!("STXT-{uuid}"), format!("STYS-{uuid}"));
+            let character_style = format!("STYS-{}{flip}{}", uuid.get(..19).unwrap_or_default(), uuid.get(20..).unwrap_or_default());
+            let text_kind = match kind {
+                LiveTextKind::Path => "path",
+                LiveTextKind::Area { .. } => "area",
+            };
+            let profile = serde_json::to_value(&doc.working_space_rgb).unwrap_or(Value::Null);
+            let [r, g, b] = self.edit.brush.rgb8.map(|v| {
+                let c = f64::from(v) / 255.0;
+                if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            });
+            let len = text.len();
+            let story: folio::StudioTextStory = serde_json::from_value(json!({
+                "schema_id": "hsk.studio.text_story@1", "story_id": story_id, "text_kind": text_kind, "story_direction": "left_to_right",
+                "content": {"content_kind": "inline", "text_utf8": text},
+                "paragraphs": [{"start": 0, "end": len, "style_ref": paragraph_style, "paragraph_direction": null}],
+                "character_ranges": [{"start": 0, "end": len, "style_ref": character_style, "applied_language": "en"}],
+            }))
+            .map_err(|e| format!("live_text: story {e}"))?;
+            let styles: Vec<folio::StudioTypeStyle> = serde_json::from_value(json!([
+                {"schema_id": "hsk.studio.type_style@1", "style_id": paragraph_style, "scope": "paragraph", "name": "Live text/Paragraph", "align": "left"},
+                {"schema_id": "hsk.studio.type_style@1", "style_id": character_style, "scope": "character", "name": "Live text/Character",
+                 "font_family": family, "font_size": {"value": self.text_size_pt, "unit": "pt"},
+                 "fill": {"r": r, "g": g, "b": b, "a": 1.0, "colour_profile_id": profile}},
+            ]))
+            .map_err(|e| format!("live_text: style {e}"))?;
+            let mut text_entry = self.text_entry()?;
+            text_entry.stories.retain(|s| s.story_id != story_id);
+            text_entry.stories.push(story);
+            text_entry.styles.styles.retain(|s| s.style_id != paragraph_style && s.style_id != character_style);
+            text_entry.styles.styles.extend(styles);
+            text_entry.validate(doc, self.cancel)?;
+            let mut entry = self.vector_entry()?;
+            entry.records.path_texts.retain(|p| p.path_layer_id != layer_id && p.story_id != story_id);
+            entry.records.area_texts.retain(|a| a.container_layer_id != layer_id && a.text_id != story_id);
+            match kind {
+                LiveTextKind::Path => entry.records.path_texts.push(folio::StudioPathText {
+                    story_id: story_id.clone(),
+                    path_layer_id: layer_id.to_string(),
+                    path_id: record.path_id.clone(),
+                    start_t: 0.0,
+                    end_t: first.segment_count() as f64,
+                    spacing: 0.0,
+                    flipped: folio::StudioPathTextFlip::default(),
+                    path_type_alignment: folio::StudioPathTypeAlignment::default(),
+                    text_type_alignment: folio::StudioTextTypeAlignment::default(),
+                    path_effect: folio::StudioPathEffect::default(),
+                    flow_direction: folio::StudioPathFlowDirection::default(),
+                    align: folio::StudioPathTextAlign::default(),
+                    baseline_offsets: Vec::new(),
+                }),
+                LiveTextKind::Area { inset_pt } => entry.records.area_texts.push(folio::StudioAreaText {
+                    text_id: story_id.clone(),
+                    container_layer_id: layer_id.to_string(),
+                    container_id: record.path_id.clone(),
+                    inset: inset_pt,
+                    first_baseline: folio::StudioFirstBaseline::Ascent,
+                    first_baseline_min: 0.0,
+                    auto_size: folio::StudioAutoSize::Off,
+                }),
+            }
+            self.validate_records(&entry)?;
+            // The story first (unbound it draws nothing), then the binding as the undo step.
+            self.run.set_document_entry(super::text::ENTRY, Some(text_entry.to_bytes()?)).map_err(|e| format!("live_text: text entry {e}"))?;
+            let op = match kind {
+                LiveTextKind::Path => "bind_path_text",
+                LiveTextKind::Area { .. } => "bind_area_text",
+            };
+            self.commit_entry(op, layer_id, &entry)?;
+            Ok(story_id)
+        })();
+        self.report(r)
     }
 
     /// The anchor path of a vector layer (its first path) and that path's record.
@@ -2221,7 +2418,29 @@ impl Viewer {
             })),
             "swatches": self.swatches().unwrap_or_default().into_iter().map(|(id, name)| json!({"style_id": id, "name": name})).collect::<Vec<_>>(),
             "pathfinder_ops": PathfinderOp::ALL.iter().map(|o| o.wire()).collect::<Vec<_>>(),
+            "live_texts": self.live_texts_json(),
         })
+    }
+
+    /// [`Self::vector_text_reports`] as JSON (empty, and nothing prepared, without bindings).
+    fn live_texts_json(&self) -> Vec<Value> {
+        let bound = self.vector_entry().is_ok_and(|e| !(e.records.path_texts.is_empty() && e.records.area_texts.is_empty()));
+        if !bound {
+            return Vec::new();
+        }
+        match self.vector_text_reports() {
+            Ok(reports) => reports
+                .iter()
+                .map(|s| {
+                    let r = &s.report;
+                    match &r.outcome {
+                        Ok(d) => json!({"text_id": r.text_id, "layer_id": r.layer_id, "placed": d.placed, "overset_from": d.overset_from, "overset_count": d.overset_count, "container": d.container, "resized": d.resized}),
+                        Err(code) => json!({"text_id": r.text_id, "layer_id": r.layer_id, "code": code, "unshaped": s.unshaped}),
+                    }
+                })
+                .collect(),
+            Err(e) => vec![json!({"error": e})],
+        }
     }
 }
 

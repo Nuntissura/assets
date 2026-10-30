@@ -324,6 +324,117 @@ fn style_of<'a>(styles: &'a StudioTypeStyleRecords, id: &str) -> Result<&'a foli
     styles.style(id).ok_or_else(|| format!("text_style_missing: {id}"))
 }
 
+/// The font, size (pt) and fill (straight RGBA, linear light) of character style `id`: the one
+/// resolution text layers and live vector text ([`shaped_story`]) share.
+fn character<'f>(styles: &StudioTypeStyleRecords, id: &str, fonts: &'f [FontFile]) -> Result<(&'f FontFile, f64, [f32; 4]), String> {
+    let character = style_of(styles, id)?;
+    let family = character.font_family.as_deref().unwrap_or(DEFAULT_FONT);
+    let font = fonts.iter().find(|f| f.family == family).ok_or_else(|| format!("text_font_unavailable: {family}"))?;
+    let size_pt = character.font_size.as_ref().map_or(Ok(12.0), |l| match l.unit {
+        folio::GeometryUnit::Pt | folio::GeometryUnit::Px => Ok(l.value),
+        _ => Err(format!("text_font_size_unit: {id}")),
+    })?;
+    let fill = character.fill.as_ref().map_or([0.0, 0.0, 0.0, 1.0], |c| [c.r as f32, c.g as f32, c.b as f32, c.a as f32]);
+    Ok((font, size_pt, fill))
+}
+
+/// Story `text_id` of the entry shaped for composite's live path and area text (lane
+/// SMB-AI-AREA-TYPE-2; `hsk_studio_composite::VectorAssets::shaped_story`). Every character range
+/// resolves its font, size and fill exactly as a text layer's character style does
+/// ([`character`]); the text is shaped as point text is ([`shaped_glyphs`]: Type's `TextEngine`,
+/// one paragraph, the same limits and errors) and the glyph outlines come from that font.
+///
+/// Declared readings (Illustrator parity UNVERIFIED, D5): one font and size per story (ranges may
+/// differ in fill: one paint row per distinct fill, in first-use order); the run metrics are the
+/// ink extents of the story's glyphs (Type exposes no font vertical metrics to the harness, as in
+/// `vector::path_text`), cap and x height = that ascent; leading from the first character style's
+/// line height (`auto` = 120% of the size); alignment from the first paragraph style (`justified`
+/// sets left); a glyph whose cluster starts with a space or tab is a break opportunity, a line
+/// feed or U+2029 ends its paragraph; glyph x/y offsets are not carried (composite's
+/// `ShapedGlyph` has none). Errors are typed strings; the caller keeps the story unshaped.
+pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str, cancel: &CancellationToken) -> Result<hsk_studio_composite::vector_text::ShapedStory, String> {
+    use hsk_studio_composite::FillPaint;
+    use hsk_studio_composite::vector_text::{ShapedGlyph, ShapedRun, ShapedStory};
+    let story = entry.stories.iter().find(|s| s.story_id == text_id).ok_or_else(|| format!("text_story_missing: {text_id}"))?;
+    let text = story_text(story).ok_or_else(|| format!("text_story_stored_content_unsupported: {text_id}"))?;
+    if text.is_empty() || text.len() > MAX_STORY_BYTES {
+        return Err(format!("text_story_content: {text_id} (inline text of 1..={MAX_STORY_BYTES} bytes)"));
+    }
+    let mut face: Option<(&FontFile, f64)> = None;
+    let mut fills: Vec<[f32; 4]> = Vec::new();
+    let mut ranges: Vec<(u64, u64, usize)> = Vec::new();
+    for r in &story.character_ranges {
+        let id = r.style_ref.as_deref().ok_or_else(|| format!("text_story_unstyled: {text_id}"))?;
+        let (font, size_pt, fill) = character(&entry.styles, id, fonts)?;
+        let current = face;
+        match current {
+            None => face = Some((font, size_pt)),
+            Some((f, s)) if std::ptr::eq(f, font) && s.to_bits() == size_pt.to_bits() => {}
+            Some(_) => return Err(format!("text_story_mixed_faces: {text_id} (one font and size per live story)")),
+        }
+        let paint = match fills.iter().position(|p| *p == fill) {
+            Some(i) => i,
+            None => {
+                fills.push(fill);
+                fills.len().saturating_sub(1)
+            }
+        };
+        ranges.push((r.start, r.end, paint));
+    }
+    let (font, size_pt) = face.ok_or_else(|| format!("text_story_unstyled: {text_id}"))?;
+    let shaped = shaped_glyphs(font, text, size_pt, cancel)?;
+    let ids: Vec<u32> = shaped.iter().map(|g| g.glyph_id).collect();
+    let outlines = ty::glyph_outlines(&ty::FontBytes { bytes: &font.bytes, resource: font.resource() }, &ids, &ty::OutlineLimits::default(), cancel).map_err(|e| format!("text_outlines {text_id}: {}", e.code()))?;
+    if outlines.len() != shaped.len() {
+        return Err(format!("text_outlines {text_id}: count"));
+    }
+    let (mut top, mut bottom) = (0.0_f64, 0.0_f64);
+    for o in &outlines {
+        if let Some([_, y0, _, y1]) = o.bounds() {
+            let k = size_pt / f64::from(o.units_per_em().max(1));
+            top = top.max(f64::from(y1) * k);
+            bottom = bottom.min(f64::from(y0) * k);
+        }
+    }
+    let first_character = story.character_ranges.first().and_then(|r| r.style_ref.as_deref()).and_then(|id| entry.styles.style(id));
+    let leading_pt = match first_character.and_then(|s| s.line_height.as_ref()) {
+        Some(folio::StudioLineHeight::Percent { value }) => size_pt * value / 100.0,
+        Some(folio::StudioLineHeight::Length { length }) if matches!(length.unit, folio::GeometryUnit::Pt | folio::GeometryUnit::Px) => length.value,
+        _ => size_pt * 1.2,
+    };
+    if !(leading_pt.is_finite() && leading_pt > 0.0) {
+        return Err(format!("text_story_leading: {text_id}"));
+    }
+    let align = match story.paragraphs.first().and_then(|p| p.style_ref.as_deref()).and_then(|id| entry.styles.style(id)).and_then(|s| s.align) {
+        Some(folio::StudioTextAlign::Center) => ty::TextAlign::Center,
+        Some(folio::StudioTextAlign::Right) => ty::TextAlign::Right,
+        _ => ty::TextAlign::Left,
+    };
+    let glyphs: Vec<ShapedGlyph> = shaped
+        .iter()
+        .zip(outlines)
+        .map(|(g, outline)| {
+            let start = g.cluster.start;
+            let first = usize::try_from(start).ok().and_then(|i| text.get(i..)).and_then(|t| t.chars().next());
+            let brk = match first {
+                Some(' ' | '\t') => ty::GlyphBreak::Space,
+                Some('\n' | '\u{2029}') => ty::GlyphBreak::Paragraph,
+                _ => ty::GlyphBreak::None,
+            };
+            let paint = ranges.iter().find(|(s, e, _)| *s <= start && start < *e).map_or(0, |r| r.2);
+            ShapedGlyph { advance_pt: g.x_advance_pt, brk, cluster: start, outline, paint }
+        })
+        .collect();
+    let metrics = ty::ComposeRun { glyph_count: glyphs.len(), ascent_pt: top, descent_pt: -bottom, leading_pt, cap_height_pt: top, x_height_pt: top };
+    Ok(ShapedStory {
+        text_kind: story.text_kind,
+        runs: vec![ShapedRun { metrics, font_size_pt: size_pt }],
+        glyphs,
+        paints: fills.into_iter().map(FillPaint::Solid).collect(),
+        align,
+    })
+}
+
 /// Shapes and rasterises every text layer of `doc` that the entry describes (layers without a
 /// record are left to composite, which refuses them `text_layer_not_prepared`).
 pub fn prepare(doc: &StudioDocument, entry: &TextEntry, fonts: &[FontFile], cancel: &CancellationToken) -> Result<PreparedText, String> {
@@ -371,14 +482,7 @@ fn shape_layers<R>(
         };
         let story = entry.stories.iter().find(|s| &s.story_id == story_id).ok_or_else(|| format!("text_story_missing: {story_id}"))?;
         let text = story_text(story).ok_or("text_story_stored_content_unsupported")?;
-        let character = style_of(&entry.styles, &record.character_style)?;
-        let family = character.font_family.as_deref().unwrap_or(DEFAULT_FONT);
-        let font = fonts.iter().find(|f| f.family == family).ok_or_else(|| format!("text_font_unavailable: {family}"))?;
-        let size_pt = character.font_size.as_ref().map_or(Ok(12.0), |l| match l.unit {
-            folio::GeometryUnit::Pt | folio::GeometryUnit::Px => Ok(l.value),
-            _ => Err(format!("text_font_size_unit: {}", record.character_style)),
-        })?;
-        let fill = character.fill.as_ref().map_or([0.0, 0.0, 0.0, 1.0], |c| [c.r as f32, c.g as f32, c.b as f32, c.a as f32]);
+        let (font, size_pt, fill) = character(&entry.styles, &record.character_style, fonts)?;
         draws.push(Draw { layer_id: &layer.layer_id, text, font, size_pt, origin: record.origin_px, fill });
     }
     let resolution = TextResolution::at_ppi(72.0);
