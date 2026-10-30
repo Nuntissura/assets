@@ -266,8 +266,75 @@ fn budgets_are_checked_before_building() {
     assert_eq!(decode_err(&json!({"action_set_id": "d", "name": "d", "actions": [a]})).0, "list_too_deep");
 }
 
+/// The `pub fn`s of `impl Run` in the harness source, with whether each takes `&mut self` (lane
+/// SMB-R42-FOLLOWUPS-1, F-R42-3). The source is rustfmt-formatted: an `impl` block opens at column
+/// 0 and closes with `}` at column 0, and its methods start with four spaces and `pub fn`; a
+/// signature runs to the first `{` (several lines when rustfmt wraps it).
+fn run_pub_fns() -> Vec<(String, bool)> {
+    const SOURCE: &str = include_str!("../src/harness.rs");
+    let mut found = Vec::new();
+    let mut in_run = false;
+    let mut lines = SOURCE.lines();
+    while let Some(line) = lines.next() {
+        if line.starts_with("impl") {
+            let header = line.split('{').next().unwrap_or_default();
+            in_run = header.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == "Run");
+            continue;
+        }
+        if line == "}" {
+            in_run = false;
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("    pub fn ") else { continue };
+        if !in_run {
+            continue;
+        }
+        let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        let mut signature = line.to_string();
+        while !signature.contains('{') {
+            let Some(next) = lines.next() else { break };
+            signature.push_str(next);
+        }
+        let params = signature.split_once('(').map_or("", |(_, p)| p);
+        found.push((name, params.trim_start().starts_with("&mut self")));
+    }
+    found
+}
+
+/// Mutating `Run` methods that are not commands: they start and stop the recording itself.
+const RECORDING_CONTROLS: [&str; 2] = ["start_recording", "stop_recording"];
+
+/// Every mutating `pub fn` of `impl Run` is named by a corpus row (its `run_method`, alternatives
+/// joined by ` / `), and every corpus `run_method` is a `pub fn` of `impl Run`: a new mutating
+/// operation without a row, or a stale row, fails here (F-R42-3: `submit_sequence_and_entry` was
+/// missing and a fixed list could not see it).
+fn assert_corpus_covers_every_mutating_run_method() {
+    let fns = run_pub_fns();
+    let names: Vec<&str> = fns.iter().map(|(n, _)| n.as_str()).collect();
+    // The scan must see the impl: the known operations and the known read-only accessors.
+    for known in ["rename", "restructure_and_entry", "submit_sequence_and_entry", "undo", "play_action", "snapshot", "history", "finish"] {
+        assert!(names.contains(&known), "scan of src/harness.rs missed Run::{known}: {names:?}");
+    }
+    for read_only in ["snapshot", "ops", "placement", "document_entry", "render_assets", "history", "finish"] {
+        assert!(fns.iter().any(|(n, m)| n == read_only && !m), "Run::{read_only} must scan as non-mutating: {fns:?}");
+    }
+    let corpus_methods: Vec<&str> = RUN_COMMANDS.iter().flat_map(|c| c.run_method.split(" / ")).collect();
+    let missing: Vec<&str> = fns
+        .iter()
+        .filter(|(n, mutating)| *mutating && !RECORDING_CONTROLS.contains(&n.as_str()) && !corpus_methods.contains(&n.as_str()))
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert!(missing.is_empty(), "mutating Run methods without a RUN_COMMANDS row: {missing:?}");
+    let stale: Vec<&str> = corpus_methods.iter().copied().filter(|m| !names.contains(m)).collect();
+    assert!(stale.is_empty(), "RUN_COMMANDS run_method names that are not pub fns of impl Run: {stale:?}");
+    let row = action::command("document.submit_sequence_and_entry").expect("submit_sequence_and_entry row");
+    assert_eq!(row.run_method, "submit_sequence_and_entry");
+    assert!(!row.recordable && row.mutates_authority);
+}
+
 #[test]
 fn corpus_lists_every_run_operation_with_recordability() {
+    assert_corpus_covers_every_mutating_run_method();
     let ids: Vec<&str> = RUN_COMMANDS.iter().map(|c| c.command_id).collect();
     let mut unique = ids.clone();
     unique.sort_unstable();
@@ -275,7 +342,7 @@ fn corpus_lists_every_run_operation_with_recordability() {
     assert_eq!(unique.len(), ids.len(), "command ids are unique");
     let recordable: Vec<&str> = RUN_COMMANDS.iter().filter(|c| c.recordable).map(|c| c.command_id).collect();
     assert_eq!(recordable, ["layer.rename", "layer.set_visible", "layer.set_opacity", "layer.set_blend_mode", "layer.panel_set", "layer.restructure"]);
-    for id in ["document.open", "document.import", "document.reopen", "document.save", "document.checkpoint", "document.verify", "document.summary", "layer.panel", "history.undo", "history.redo", "layer.set_tiles", "layer.set_tiles_and_entry", "layer.set_vector_paths", "layer.set_vector_paths_and_entry", "layer.restructure_and_entry", "document.set_document_entry", "document.submit_sequence"] {
+    for id in ["document.open", "document.import", "document.reopen", "document.save", "document.checkpoint", "document.verify", "document.summary", "layer.panel", "history.undo", "history.redo", "layer.set_tiles", "layer.set_tiles_and_entry", "layer.set_vector_paths", "layer.set_vector_paths_and_entry", "layer.restructure_and_entry", "document.set_document_entry", "document.submit_sequence", "document.submit_sequence_and_entry"] {
         let c = action::command(id).unwrap_or_else(|| panic!("{id} missing"));
         assert!(!c.recordable, "{id}");
     }
