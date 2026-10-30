@@ -9,7 +9,8 @@
 //! box average of the 2 (4:2:2) or 2x2 (4:2:0) full-resolution values, nearest-integer rounding; the
 //! stream is tagged BT.709 (primaries 1, transfer 1, matrix 1). The range is exact: `in`/`out` must be
 //! whole frames of the sequence and the audio start a whole sample, else the export is refused before
-//! anything renders.
+//! anything renders. A sequence with an enabled nested sequence clip is refused `nest_unresolved`
+//! naming the clip (lane SMB-PR-NEST-1: the job holds no document to resolve it).
 #![deny(clippy::arithmetic_side_effects)]
 
 /// Render queue from compositions (lane SMB-AE-MOTION-TOOLS slice 4).
@@ -269,6 +270,15 @@ where
         || !t.out_tick.is_multiple_of(tpf)
     {
         return Err(fail("export_range", "in/out must be whole frames, in < out"));
+    }
+    // Lane SMB-PR-NEST-1: the export holds no document to resolve a nested sequence clip, so it is
+    // refused naming the clip instead of rendering it black or silent (V4-03).
+    let nested = t.sequence.tracks.iter().filter(|tr| tr.enabled).flat_map(|tr| tr.clips.iter()).filter(|c| c.enabled).find_map(|c| match &c.source_ref {
+        hsk_studio_folio::ClipSource::Sequence { sequence_id } => Some((c.clip_id.as_str(), sequence_id.as_str())),
+        _ => None,
+    });
+    if let Some((clip, sequence)) = nested {
+        return Err(fail("nest_unresolved", format!("{clip}: nested sequence {sequence} (export does not resolve nested sequences)")));
     }
     let frames = t
         .out_tick
