@@ -36,6 +36,16 @@
 //! refusals). The layer plane covers fills, strokes and
 //! image copies; every plane of a layer shares its placement.
 //!
+//! Stroke arrowheads (lane SMB-AI-ARROWHEADS-1, STU-VEC-146): a stroke row with a Folio
+//! `StudioStrokeMarkers` entry becomes one [`FillPaint::StrokeGeometry`] row: the nib stroke outline
+//! of the row's paths, trimmed by nib's `markers::marker_outlines` under `arrow_align.inside_path`,
+//! united with the marker outlines (so dashes never dash a marker), painted with the row's paint,
+//! blend mode and opacity. `NONE` / `arrow.none` at both ends is the plain stroke; the `ERD_*`
+//! terminators are refused ([`REFUSE_MARKER_SHAPE_UNBUILT`]), as are markers on a brushed row, a
+//! network stroke or a width-profiled path; other nib marker refusals carry nib's code. The
+//! supersampled mode keeps its stroke refusal (no marker is drawn there). Shapes: nib's table,
+//! UNVERIFIED (D5).
+//!
 //! Refusals are typed per layer and never dropped (`PreparedVectors::refusal`): unresolved paths or
 //! images, gradients, strokes, colour profiles composite would have to convert, budgets. Hostile sizes
 //! (V4-01/02): plane pixels and the sample work are checked before allocation.
@@ -1179,6 +1189,11 @@ pub fn image_source_id(source: &hsk_studio_folio::StudioImageSource) -> String {
 type Sweep<'a> = Box<dyn Fn(&OwnedPath) -> Result<OwnedPath, hsk_studio_nib::Error> + 'a>;
 type BrushDraw<'a> = Box<dyn Fn(&OwnedPath) -> Result<Vec<OwnedPath>, hsk_studio_nib::Error> + 'a>;
 
+/// `arrow.none` / `NONE` (STU-VEC-146: no marker).
+fn is_no_marker(token: &str) -> bool {
+    hsk_studio_folio::StudioArrowhead::from_token(token).is_some_and(|a| a.is_none())
+}
+
 struct FolioCx<'a> {
     layers: std::collections::BTreeMap<&'a str, &'a hsk_studio_folio::StudioLayer>,
     /// Folio layer order (bottom first within a parent).
@@ -1387,7 +1402,15 @@ impl FolioCx<'_> {
             self.records.brush_stroke(style_id?, rows_of.get(k).copied()?)
         };
         let any_brush = (0..fills.len()).any(|k| brushed(k).is_some());
-        if networks.iter().all(Option::is_none) && profiles.iter().all(Option::is_none) && envelope.is_none() && !any_brush {
+        // Stroke arrowheads of a row; an entry with no marker at either end is the plain stroke.
+        let marked = |k: usize| -> Option<&hsk_studio_folio::StudioStrokeMarkers> {
+            self.records
+                .stroke_marker(style_id?, rows_of.get(k).copied()?)
+                .filter(|m| !(is_no_marker(&m.start) && is_no_marker(&m.end)))
+        };
+        let any_marker = (0..fills.len()).any(|k| marked(k).is_some());
+        let has_network = networks.iter().any(Option::is_some);
+        if !has_network && profiles.iter().all(Option::is_none) && envelope.is_none() && !any_brush && !any_marker {
             return Ok((geometry, fills));
         }
         let VectorGeometry::Paths(paths) = geometry else {
@@ -1459,9 +1482,23 @@ impl FolioCx<'_> {
             match f.paint {
                 FillPaint::Stroke { style, paint } => {
                     rows.extend(region_rows.take().into_iter().flatten());
-                    match brushed(k) {
-                        Some(b) => rows.extend(self.brush_rows(b, &stroke, &paint, f.mode, f.opacity)?),
-                        None => rows.push(FillSpec {
+                    match (brushed(k), marked(k)) {
+                        (Some(_), Some(_)) => return Err(REFUSE_MARKER_BRUSH),
+                        (Some(b), None) => rows.extend(self.brush_rows(b, &stroke, &paint, f.mode, f.opacity)?),
+                        (None, Some(m)) => {
+                            if has_network {
+                                return Err(REFUSE_MARKER_NETWORK);
+                            }
+                            rows.push(FillSpec {
+                                paint: FillPaint::StrokeGeometry {
+                                    outline: self.marked_outlines(m, &stroke, &style)?,
+                                    paint,
+                                },
+                                mode: f.mode,
+                                opacity: f.opacity,
+                            });
+                        }
+                        (None, None) => rows.push(FillSpec {
                             paint: FillPaint::StrokeGeometry {
                                 outline: self.stroke_outlines(&stroke, &style)?,
                                 paint,
@@ -1720,6 +1757,59 @@ impl FolioCx<'_> {
             rows.push(FillSpec { paint: FillPaint::StrokeGeometry { outline, paint: Box::new(paint) }, mode, opacity });
         }
         Ok(rows)
+    }
+
+    /// The outline of a marked stroke row: nib's stroke outline of every base path trimmed by
+    /// `markers::marker_outlines` (inside-path ends) and the marker outlines of every open subpath.
+    fn marked_outlines(
+        &self,
+        m: &hsk_studio_folio::StudioStrokeMarkers,
+        bases: &[(OwnedPath, Option<&hsk_studio_folio::StudioWidthProfile>)],
+        style: &StrokeStyle,
+    ) -> Result<Vec<OwnedPath>, &'static str> {
+        use hsk_studio_folio::StudioArrowAlignment as FA;
+        use hsk_studio_nib::markers::{MarkerAlign, MarkerEnd, MarkerError, MarkerOptions, MarkerShape, MarkerSpec, marker_outlines};
+        if !self.unit_px {
+            return Err(REFUSE_GEOMETRY_UNIT);
+        }
+        if bases.iter().any(|(_, w)| w.is_some()) {
+            return Err(REFUSE_MARKER_WIDTH_PROFILE);
+        }
+        let code = |e: MarkerError| match e {
+            MarkerError::ShapeUnbuilt => REFUSE_MARKER_SHAPE_UNBUILT,
+            MarkerError::BudgetExceeded => REFUSE_NIB_BUDGET,
+            MarkerError::InvalidGeometry => REFUSE_VECTOR_GEOMETRY,
+            other => other.code(),
+        };
+        let end = |token: &str, scale: f64| -> Result<Option<MarkerEnd>, &'static str> {
+            Ok(MarkerShape::from_token(token).map_err(code)?.map(|shape| MarkerEnd { shape, scale }))
+        };
+        let spec = MarkerSpec {
+            start: end(&m.start, m.start_scale)?,
+            end: end(&m.end, m.end_scale)?,
+            align: match m.alignment {
+                FA::InsidePath => MarkerAlign::InsidePath,
+                FA::OutsidePath => MarkerAlign::OutsidePath,
+            },
+        };
+        let mut trimmed = Vec::with_capacity(bases.len());
+        let mut markers = Vec::new();
+        for (path, _) in bases {
+            if path.elements.is_empty() {
+                continue;
+            }
+            let o = marker_outlines(path, &spec, style.width, &MarkerOptions::default()).map_err(code)?;
+            if !o.trimmed.elements.is_empty() {
+                trimmed.push(o.trimmed);
+            }
+            markers.extend(o.markers.into_iter().map(|p| p.outline));
+        }
+        let mut out: Vec<OwnedPath> =
+            crate::vector_nib::stroke_outline(&VectorGeometry::Paths(trimmed), style)?
+                .into_iter()
+                .collect();
+        out.extend(markers);
+        Ok(out)
     }
 
     /// The stroke outlines of `bases` under `style`: uniform paths united by nib's stroker, each
