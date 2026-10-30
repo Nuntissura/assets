@@ -555,7 +555,7 @@ impl Viewer {
         ui.separator();
         ui.strong("Export settings");
         let mut on = dlg.stage.is_some();
-        if ui.push_id(id(widget::STAGE), |ui| ui.checkbox(&mut on, "Apply export settings (sizing, output sharpening, watermark)")).inner.changed() {
+        if ui.push_id(id(widget::STAGE), |ui| ui.checkbox(&mut on, "Apply export settings")).inner.on_hover_text("Image sizing, watermark and output sharpening on the PNG / JPEG / TIFF export (not DNG)").changed() {
             edits.push(("stage", on.to_string()));
         }
         drawn.push(widget::STAGE.into());
