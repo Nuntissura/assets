@@ -15,26 +15,25 @@ const W: u32 = 40;
 const H: u32 = 32;
 const PLANE: Rect = Rect { x: 0, y: 0, width: W, height: H };
 const PX: u64 = (W * H) as u64;
-/// Quarter-circle handle length of a cubic arc of unit radius.
-const KAPPA: f64 = 0.552_284_749_830_793_4;
 
 fn rect_path(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<f64> {
     vec![x0, y0, 0.0, 0.0, 0.0, 0.0, x1, y0, 0.0, 0.0, 0.0, 0.0, x1, y1, 0.0, 0.0, 0.0, 0.0, x0, y1, 0.0, 0.0, 0.0, 0.0]
 }
-/// The rectangle `(x0, y0)-(x1, y1)` grown by `r` with round corners of radius `r` (cubic arcs).
+/// The rectangle `(x0, y0)-(x1, y1)` grown by `r` with round corners of radius `r`, as a polygon
+/// with 128 chords per quarter circle (vertices on the circle; chord sagitta `r (1 - cos(pi/512))`,
+/// about 6e-5 px at r = 3). A polygon, not cubic arcs: the coverage path flattens curves at nib's
+/// default 0.1 px tolerance, too coarse for a 1/255 corner oracle (first bundled run: 12/255).
 fn rounded_rect(x0: f64, y0: f64, x1: f64, y1: f64, r: f64) -> Vec<f64> {
-    let k = KAPPA * r;
-    let (ox0, oy0, ox1, oy1) = (x0 - r, y0 - r, x1 + r, y1 + r);
-    vec![
-        x0, oy0, -k, 0.0, 0.0, 0.0, //
-        x1, oy0, 0.0, 0.0, k, 0.0, //
-        ox1, y0, 0.0, -k, 0.0, 0.0, //
-        ox1, y1, 0.0, 0.0, 0.0, k, //
-        x1, oy1, k, 0.0, 0.0, 0.0, //
-        x0, oy1, 0.0, 0.0, -k, 0.0, //
-        ox0, y1, 0.0, k, 0.0, 0.0, //
-        ox0, y0, 0.0, 0.0, 0.0, -k, //
-    ]
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let n = 128;
+    let mut v = Vec::new();
+    for (cx, cy, start) in [(x1, y0, -FRAC_PI_2), (x1, y1, 0.0), (x0, y1, FRAC_PI_2), (x0, y0, PI)] {
+        for i in 0..=n {
+            let t = start + FRAC_PI_2 * f64::from(i) / f64::from(n);
+            v.extend_from_slice(&[cx + r * t.cos(), cy + r * t.sin(), 0.0, 0.0, 0.0, 0.0]);
+        }
+    }
+    v
 }
 fn mask(mode: M, inverted: bool, path: Vec<f64>) -> MaskAtTick {
     MaskAtTick { mode, inverted, closed: true, path }
@@ -54,7 +53,7 @@ fn identity_shape_is_bit_identical_to_mask_coverage() {
         24.25, 27.0, 3.0, 0.5, -6.0, 0.0, //
         5.5, 20.0, 0.0, 3.0, 0.0, -2.0,
     ];
-    let sets = vec![
+    let sets = [
         vec![mask(M::Add, false, curve.clone())],
         vec![mask(M::Add, false, curve.clone()), mask(M::Subtract, true, rect_path(10.5, 8.25, 22.0, 19.5))],
         vec![mask(M::Intersect, false, curve.clone()), mask(M::Difference, false, rect_path(3.0, 3.0, 17.0, 29.0))],
@@ -150,7 +149,7 @@ fn collapse_gives_empty_coverage_and_hostile_shapes_are_typed() {
     assert_eq!(refusal(&with(feather([4.0, 4.0])), grown - 1).mask, 1);
     assert!(mask_coverage_shaped(&with(feather([4.0, 4.0])), &Affine2::IDENTITY, PLANE, grown).is_ok());
     // Sampled overshoot: a negative feather is no feather, opacity is clamped into 0..=1.
-    let base = shaped(&[plain.clone()]);
+    let base = shaped(std::slice::from_ref(&plain));
     assert_eq!(shaped(&[(plain.0.clone(), MaskShape { feather_px: [-0.5, -2.0], opacity: 1.7, expansion_px: 0.0 })]), base);
     assert!(shaped(&[(plain.0.clone(), MaskShape { opacity: -0.2, ..MaskShape::default() })]).iter().all(|c| *c == 0.0));
 }
