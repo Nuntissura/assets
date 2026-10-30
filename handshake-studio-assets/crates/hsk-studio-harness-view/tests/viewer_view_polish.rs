@@ -277,24 +277,32 @@ fn path_edits_echo_live_text_counts_and_the_summary_shows_them() {
     let summary = v.hosted_summary(HostedPanel::PathOperations);
     assert!(summary.contains(&format!("{placed0} glyphs placed, {overset0} overset")), "{summary}");
     let before = status(&v).len();
-    // Drag the bottom-right corner out: the frame grows, more glyphs are placed.
-    v.direct_drag([40.0, 30.0], [90.0, 60.0], Constraint::Free, false, 2.0).unwrap();
-    v.render_if_dirty();
+    // Drag three corners out (three path edits, a render after each): the frame grows to the
+    // rectangle 10,10 - 90,60 and more glyphs are placed. (Run 2 at 21d16891 dragged one corner
+    // only: the quadrilateral placed 0 of 32, counts changed and were echoed; see the lane notes.)
+    for (from, to) in [([40.0, 10.0], [90.0, 10.0]), ([40.0, 30.0], [90.0, 60.0]), ([10.0, 30.0], [10.0, 60.0])] {
+        v.direct_drag(from, to, Constraint::Free, false, 2.0).unwrap();
+        v.render_if_dirty();
+    }
     let (placed1, overset1) = counts(&v);
     assert!(placed1 > placed0 && overset1 < overset0, "{placed0}/{overset0} -> {placed1}/{overset1}");
     let new: Vec<String> = status(&v).split_off(before);
     let want = if overset1 > 0 { format!("{placed1} glyphs placed, {overset1} overset") } else { format!("{placed1} glyphs placed") };
     assert!(new.iter().any(|l| l.starts_with("live text STXT-") && l.ends_with(&want)), "{want} not echoed: {new:?}");
     assert!(v.hosted_summary(HostedPanel::PathOperations).ends_with(&want), "{}", v.hosted_summary(HostedPanel::PathOperations));
-    // The binding followed the edit in the same undo step: undo restores the small frame's counts
-    // (and echoes them), redo the grown frame's.
+    // The binding followed each edit in the same undo step: three undos restore the small frame's
+    // counts (echoed), three redos the grown frame's.
     let before_undo = status(&v).len();
-    v.undo().unwrap();
-    v.render_if_dirty();
+    for _ in 0..3 {
+        v.undo().unwrap();
+        v.render_if_dirty();
+    }
     assert_eq!(counts(&v), (placed0, overset0));
     assert!(status(&v).split_off(before_undo).iter().any(|l| l.ends_with(&format!("{placed0} glyphs placed, {overset0} overset"))), "{:?}", status(&v));
-    v.redo().unwrap();
-    v.render_if_dirty();
+    for _ in 0..3 {
+        v.redo().unwrap();
+        v.render_if_dirty();
+    }
     assert_eq!(counts(&v), (placed1, overset1));
     // A render without a count change says nothing more.
     let before = status(&v).len();
