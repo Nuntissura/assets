@@ -535,8 +535,8 @@ impl Viewer {
         match saved {
             Ok(n) => notes.extend(n),
             Err(e) => {
-                let _ = self.run.undo();
-                return Err(format!("{e} (the redraw was undone)"));
+                let undone = if self.run.undo() { Ok(()) } else { Err(self.op_error()) };
+                return Err(rollback_error(&e, undone));
             }
         }
         notes.sort();
@@ -805,5 +805,28 @@ impl Viewer {
         let bound = receipt.as_ref().map(|r| r.bindings.len());
         let entry = self.read_design_state(receipt.as_ref().map(|r| &r.records)).json();
         json!({"instance": instance, "instance_layers": bound, "last": self.design.last, "entry": entry})
+    }
+}
+
+/// The error of a refused design-state save after the redraw rollback: it says the redraw was undone
+/// only when the undo succeeded, and names the undo failure otherwise (the document then still holds
+/// the unsaved redraw; F-R40-5).
+fn rollback_error(save: &str, undone: Result<(), String>) -> String {
+    match undone {
+        Ok(()) => format!("{save} (the redraw was undone)"),
+        Err(undo) => format!("{save} (the redraw could not be undone: undo {undo}; the document keeps the unsaved redraw)"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rollback_error;
+
+    #[test]
+    fn rollback_error_names_a_failed_undo_and_never_claims_the_redraw_was_undone() {
+        assert_eq!(rollback_error("design: design entry x", Ok(())), "design: design entry x (the redraw was undone)");
+        let failed = rollback_error("design: design entry x", Err("nothing_to_undo".into()));
+        assert!(!failed.contains("the redraw was undone"), "{failed}");
+        assert!(failed.contains("could not be undone") && failed.contains("undo nothing_to_undo"), "{failed}");
     }
 }
