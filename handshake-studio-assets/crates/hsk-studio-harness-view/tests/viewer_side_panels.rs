@@ -38,7 +38,9 @@ fn widths(v: &mut Viewer, ids: &[&str], w: f32, h: f32) -> Vec<Vec<f32>> {
         .collect()
 }
 
-/// After the warm-up every panel keeps one width, at least `mins[i]`.
+/// After the warm-up every panel keeps one width, at least `mins[i]` (pass 0 where the window is too
+/// narrow for every panel's default: egui then clamps the inner panel to the space left, a fixed
+/// width, not a creep).
 fn check(label: &str, ids: &[&str], mins: &[f32], all: &[Vec<f32>]) {
     let trace = all.iter().enumerate().map(|(i, ws)| format!("frame {}: {}", i + 1, ids.iter().zip(ws).map(|(id, w)| format!("{id} {w:.1}")).collect::<Vec<_>>().join(" "))).collect::<Vec<_>>().join("\n");
     eprintln!("{label}:\n{trace}");
@@ -115,6 +117,11 @@ fn info_panel_width_is_stable() {
         v.select_rect(2.0, 3.0, 20.0, 10.0).unwrap();
         let _ = v.info_eyedropper(5.0, 5.0).unwrap();
         let all = widths(&mut v, &ids, w, h);
-        check(&format!("info + properties, samplers and selection, {w}x{h}"), &ids, &[PROPERTIES_MIN, INFO_MIN], &all);
+        // At 900 px the Layers (240) + Properties (445 with a document open, see the lane notes) +
+        // Info defaults exceed the window: Info gets the remaining width (about 215 px), stable.
+        let info_min = if w >= 1400.0 { INFO_MIN } else { 0.0 };
+        check(&format!("info + properties, samplers and selection, {w}x{h}"), &ids, &[PROPERTIES_MIN, info_min], &all);
+        let settled = &all[WARMUP];
+        assert!(settled.iter().sum::<f32>() + 240.0 <= w + 1.0, "{w}x{h}: panels {settled:?} overflow the window");
     }
 }
