@@ -106,8 +106,8 @@ pub use export::{
 };
 pub use export_stage::{
     EXPORT_STAGE_KEYS, ExportStage, ExportStageError, ExportStageReceipt, KeyStorage, MAX_OUTPUT_PIXELS, MAX_OUTPUT_SIDE,
-    OutputSizing, RESAMPLE_FILTER, ResizeType, ResolutionUnit, SizeFit, SizeUnit, StageKey, apply_export_stage,
-    fit_output_size,
+    MAX_SHARPEN_SIGMA_PX, OutputSharpening, OutputSizing, RESAMPLE_FILTER, ResizeType, ResolutionUnit, SharpenAmount,
+    SharpenMedia, SharpenRow, SizeFit, SizeUnit, StageKey, apply_export_stage, fit_output_size, sharpen_row,
 };
 pub use par::{DEFAULT_THREAD_CAP, MAX_THREADS, Threads};
 pub use pipeline::{

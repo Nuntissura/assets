@@ -33,6 +33,16 @@
 //!   exactly flat. Values are not clamped here: the cubic's lobes may leave 0..1 and [`crate::render_output`]
 //!   clamps and counts them (receipt `out_of_range`).
 //! * Resolution is recorded in the receipt (`resolution_ppi`); the TIFF path writes it as whole dpi.
+//!
+//! Output sharpening (Studio reading; Lightroom's algorithm is not public, UNVERIFIED, D5): an unsharp mask on the
+//! sized linear-light image, `out = x + strength (x - G(x))`, G a separable normalised discrete Gaussian of sigma
+//! `sigma_px` over taps `-R..=R`, `R = max(1, ceil(3 sigma))`, edges replicated, accumulated as differences (a flat
+//! field is unchanged bit for bit). The kernel scales with media and output resolution ([`sharpen_row`]): Screen
+//! sigma 0.5 px whatever the resolution (screen pixels are viewed 1:1); Glossy 1/240 in and Matte 1/160 in, times
+//! the output ppi (matte paper spreads ink, so wider). Strength per level 1/2/3 (STU-IO-137, Low/Standard/High of
+//! STU-IO-136): Screen 0.4/0.8/1.2, Glossy 0.5/1.0/1.5, Matte 0.6/1.2/1.8. A sigma above [`MAX_SHARPEN_SIGMA_PX`]
+//! is refused, never truncated. Nothing is clamped here: values pushed out of 0..1 are counted in the receipt and
+//! clamped and counted again, identically, in [`crate::render_output`]'s `ClipReport`.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::output::ClipReport;
@@ -46,6 +56,8 @@ pub const MAX_OUTPUT_SIDE: u32 = 65_535;
 pub const MAX_OUTPUT_PIXELS: u64 = 1 << 28;
 /// The reduction / enlargement filter named in receipts.
 pub const RESAMPLE_FILTER: &str = "keys_cubic_a-0.5_stretched_by_reduction_factor";
+/// Largest output-sharpening Gaussian sigma in output pixels (Studio stage limit).
+pub const MAX_SHARPEN_SIGMA_PX: f64 = 64.0;
 
 /// Resize type (STU-IO-136, six members).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,12 +207,115 @@ pub const EXPORT_STAGE_KEYS: &[StageKey] = &[
     key("resolution", "image_sizing", KeyStorage::StoredSetting, "240", "STU-IO-137"),
     key("resolution_unit", "image_sizing", KeyStorage::StoredSetting, "ppinch", "studio_declared"),
     key("do_not_enlarge", "image_sizing", KeyStorage::StoredSetting, "false", "studio_declared"),
+    key("output_sharpening_enabled", "output_sharpening", KeyStorage::Unclassified, "false", "studio_declared"),
+    key("output_sharpening_media", "output_sharpening", KeyStorage::StoredSetting, "Screen", "studio_declared"),
+    key("output_sharpening_level", "output_sharpening", KeyStorage::StoredSetting, "2", "STU-IO-137"),
 ];
+
+/// Output sharpening media (STU-IO-136).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharpenMedia {
+    Screen,
+    Glossy,
+    Matte,
+}
+
+impl SharpenMedia {
+    pub const fn spec_member(self) -> &'static str {
+        match self {
+            Self::Screen => "Screen",
+            Self::Glossy => "Glossy",
+            Self::Matte => "Matte",
+        }
+    }
+}
+
+/// Output sharpening amount (STU-IO-136), the level 1..3 of STU-IO-137.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharpenAmount {
+    Low,
+    Standard,
+    High,
+}
+
+impl SharpenAmount {
+    pub const fn spec_member(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Standard => "Standard",
+            Self::High => "High",
+        }
+    }
+
+    /// Level 1 = Low, 2 = Standard, 3 = High (STU-IO-137 hard bounds 1..3).
+    pub const fn from_level(level: u8) -> Option<Self> {
+        match level {
+            1 => Some(Self::Low),
+            2 => Some(Self::Standard),
+            3 => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
+/// Output sharpening settings (`output_sharpening` group, STU-IO-135).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutputSharpening {
+    /// studio_declared false (Studio reading of the group's on/off key).
+    pub enabled: bool,
+    pub media: SharpenMedia,
+    /// STU-IO-137: 1..3, default 2.
+    pub level: u8,
+}
+
+impl Default for OutputSharpening {
+    fn default() -> Self {
+        Self { enabled: false, media: SharpenMedia::Screen, level: 2 }
+    }
+}
+
+/// The sharpening table row applied (receipt).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SharpenRow {
+    pub media: SharpenMedia,
+    pub level: u8,
+    pub amount: SharpenAmount,
+    /// Gaussian sigma in output pixels.
+    pub sigma_px: f64,
+    /// Taps `-R..=R`.
+    pub kernel_radius: u32,
+    /// Unsharp-mask strength.
+    pub strength: f64,
+}
+
+/// The table row for `media` and `level` at `ppi` output pixels per inch (see the module notes).
+pub fn sharpen_row(media: SharpenMedia, level: u8, ppi: f64) -> Result<SharpenRow, ExportStageError> {
+    let amount = SharpenAmount::from_level(level).ok_or(ExportStageError::OutOfRange("output_sharpening_level"))?;
+    if !ppi.is_finite() {
+        return Err(ExportStageError::NonFinite("resolution"));
+    }
+    let (sigma_px, strengths) = match media {
+        SharpenMedia::Screen => (0.5, [0.4, 0.8, 1.2]),
+        SharpenMedia::Glossy => (ppi / 240.0, [0.5, 1.0, 1.5]),
+        SharpenMedia::Matte => (ppi / 160.0, [0.6, 1.2, 1.8]),
+    };
+    if sigma_px.is_nan() || sigma_px <= 0.0 || sigma_px > MAX_SHARPEN_SIGMA_PX {
+        return Err(ExportStageError::OutOfRange("output_sharpening_radius"));
+    }
+    let strength = match amount {
+        SharpenAmount::Low => strengths[0],
+        SharpenAmount::Standard => strengths[1],
+        SharpenAmount::High => strengths[2],
+    };
+    let kernel_radius = (3.0 * sigma_px).ceil().max(1.0) as u32;
+    Ok(SharpenRow { media, level, amount, sigma_px, kernel_radius, strength })
+}
 
 /// The whole export stage.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExportStage {
     pub sizing: OutputSizing,
+    pub sharpening: OutputSharpening,
 }
 
 /// A typed refusal of the stage; nothing is clamped, defaulted or skipped silently.
@@ -263,6 +378,10 @@ pub struct ExportStageReceipt {
     pub filter: &'static str,
     /// Output resolution in pixels per inch (`ppcm` x 2.54).
     pub resolution_ppi: f64,
+    /// The sharpening row applied, `None` when output sharpening is off.
+    pub sharpening: Option<SharpenRow>,
+    /// Channel values outside 0..1 right after the sharpening step (zero when sharpening is off).
+    pub sharpen_out_of_range: ClipReport,
     /// Channel values of the staged linear image outside 0..1: exactly what the output transfer clamps and counts.
     pub out_of_range: ClipReport,
 }
@@ -460,6 +579,35 @@ pub(crate) fn separable<const C: usize>(
     Ok(out)
 }
 
+fn gaussian_taps(len: u32, sigma: f64, radius: u32) -> Result<Taps, ExportStageError> {
+    let last = i64::from(len.checked_sub(1).ok_or(DevelopError::InvalidDimensions)?);
+    let r = i64::from(radius);
+    let lo = r.checked_neg().ok_or(DevelopError::Overflow)?;
+    let weights: Vec<f64> = (lo..=r).map(|d| (-(d as f64) * (d as f64) / (2.0 * sigma * sigma)).exp()).collect();
+    let sum: f64 = weights.iter().sum();
+    let mut all = Vec::with_capacity(usize::try_from(len).map_err(|_| ExportStageError::OutputTooLarge)?);
+    for i in 0..i64::from(len) {
+        let taps = (lo..=r)
+            .zip(&weights)
+            .map(|(d, w)| (i.saturating_add(d).clamp(0, last) as usize, w / sum))
+            .collect();
+        all.push(taps);
+    }
+    Ok(all)
+}
+
+/// Unsharp mask of `image` with `row` (sharpened in place).
+fn sharpen(image: &mut DevelopedImage, row: &SharpenRow, cancel: &CancellationToken) -> Result<(), ExportStageError> {
+    let xt = gaussian_taps(image.width, row.sigma_px, row.kernel_radius)?;
+    let yt = gaussian_taps(image.height, row.sigma_px, row.kernel_radius)?;
+    let blurred = separable(&to_pixels(&image.rgb), image.width as usize, &xt, &yt, cancel)?;
+    for (v, b) in image.rgb.iter_mut().zip(blurred.into_iter().flatten()) {
+        let x = f64::from(*v);
+        *v = (x + row.strength * (x - f64::from(b))) as f32;
+    }
+    Ok(())
+}
+
 fn to_pixels(rgb: &[f32]) -> Vec<[f32; 3]> {
     rgb.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
 }
@@ -484,6 +632,14 @@ pub fn apply_export_stage(
     cancel: &CancellationToken,
 ) -> Result<(DevelopedImage, ExportStageReceipt), ExportStageError> {
     stage.sizing.validate()?;
+    if SharpenAmount::from_level(stage.sharpening.level).is_none() {
+        return Err(ExportStageError::OutOfRange("output_sharpening_level"));
+    }
+    let sharpening = if stage.sharpening.enabled {
+        Some(sharpen_row(stage.sharpening.media, stage.sharpening.level, stage.sizing.pixels_per_inch())?)
+    } else {
+        None
+    };
     let pixels = usize::try_from(u64::from(image.width).checked_mul(u64::from(image.height)).ok_or(DevelopError::Overflow)?)
         .map_err(|_| DevelopError::Overflow)?;
     if image.width == 0 || image.height == 0 || pixels.checked_mul(3) != Some(image.rgb.len()) {
@@ -495,7 +651,7 @@ pub fn apply_export_stage(
     cancel.check().map_err(DevelopError::from)?;
     let fit = fit_output_size(&stage.sizing, image.width, image.height)?;
     let resized = (fit.width, fit.height) != (image.width, image.height);
-    let out = if resized {
+    let mut out = if resized {
         let xt = resample_taps(image.width, fit.width)?;
         let yt = resample_taps(image.height, fit.height)?;
         let src = to_pixels(&image.rgb);
@@ -504,6 +660,11 @@ pub fn apply_export_stage(
     } else {
         image.clone()
     };
+    let mut sharpen_out_of_range = ClipReport::default();
+    if let Some(row) = &sharpening {
+        sharpen(&mut out, row, cancel)?;
+        sharpen_out_of_range = count_out_of_range(&out.rgb)?;
+    }
     let receipt = ExportStageReceipt {
         source_size: (image.width, image.height),
         output_size: (out.width, out.height),
@@ -512,6 +673,8 @@ pub fn apply_export_stage(
         resized,
         filter: RESAMPLE_FILTER,
         resolution_ppi: stage.sizing.pixels_per_inch(),
+        sharpening,
+        sharpen_out_of_range,
         out_of_range: count_out_of_range(&out.rgb)?,
     };
     Ok((out, receipt))
