@@ -53,7 +53,7 @@ fn spec() -> MarkerSpec {
 }
 
 fn projected(v: &Viewer) -> serde_json::Value {
-    v.state_json()["vector"]["selected_path"]["stroke_markers"].clone()
+    v.state_json()["edit"]["vector"]["selected_path"]["stroke_markers"].clone()
 }
 
 #[test]
@@ -106,12 +106,13 @@ fn the_canvas_draws_the_markers_near_the_ends_only() {
     let id = line(&mut v);
     let plain = frame(&mut v);
     // End arrow.triangle at 100 %, inside the path: marker size 4, tip at (70, 32), base at x 58,
-    // half width 6 (nib table). Pixel (60, 36) spans 10..11 px behind the tip (half width 5..5.5)
-    // and 4..5 px off the line (the stroke's half width is 2): marker only.
+    // half width 6 (nib table; half width = distance behind the tip / 2). Pixel (58, 36) spans
+    // 11..12 px behind the tip (half width 5.5..6) and 4..5 px off the line (the stroke's half
+    // width is 2): marker only.
     v.set_stroke_markers(&id, 0, Some(MarkerSpec::new(A::ArrowNone, A::ArrowTriangle, Align::InsidePath))).unwrap();
     let marked = frame(&mut v);
-    assert_eq!(px(&plain, 60, 36), WHITE);
-    assert_eq!(px(&marked, 60, 36), BLUE);
+    assert_eq!(px(&plain, 58, 36), WHITE);
+    assert_eq!(px(&marked, 58, 36), BLUE);
     // Every pixel that changed lies in the marker's box near the end; the start is untouched.
     let mut changed = 0;
     for y in 0..H {
@@ -183,7 +184,7 @@ fn stroke_panel_marker_controls_drive_the_same_edits() {
     let _ = ctx.run(input, |ctx| v.ui(ctx));
     for control in ["marker.start", "marker.end", "marker.start_scale", "marker.end_scale", "marker.align", "marker.apply", "marker.none", "marker.swap"] {
         let name = hosted::widget::control("stroke", control);
-        assert!(v.drawn().iter().any(|d| *d == name), "{name} not drawn: {:?}", v.drawn());
+        assert!(v.drawn().contains(&name), "{name} not drawn: {:?}", v.drawn());
     }
     // The panel actions are the Viewer calls: the same record as a direct call.
     v.hosted_action(PanelAction::SetStrokeMarkers(Some(spec()))).unwrap();
@@ -212,7 +213,7 @@ fn vector_pdf_export_writes_the_marker_outlines() {
     let cancel = hsk_studio_accord::CancellationToken::default();
     let render = |b: &[u8]| hsk_studio_press::render_page(b, 0, 4.0 / 3.0, &hsk_studio_press::Limits::default(), &cancel).unwrap();
     let (marked, plain) = (render(&bytes), render(&plain));
-    assert_eq!(plain.pixel(60, 36), Some(WHITE));
-    let c = marked.pixel(60, 36).unwrap();
+    assert_eq!(plain.pixel(58, 36), Some(WHITE));
+    let c = marked.pixel(58, 36).unwrap();
     assert!(c[0] < 40 && c[1] < 40 && c[2] > 215, "{c:?}");
 }

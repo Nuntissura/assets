@@ -349,6 +349,10 @@ pub(super) fn rebind(records: &mut folio::StudioVectorRecords, from: &str, befor
     records.stroke_markers.extend(markers);
 }
 
+/// An edit of the entry's vector records made together with a restyle: the records, the layer's
+/// own style id and its final rows ([`Viewer::restyle_with`]).
+pub(super) type RecordsEdit<'e> = &'e mut dyn FnMut(&mut folio::StudioVectorRecords, &str, &[StudioAppearanceRow]) -> Result<(), String>;
+
 /// A binding made together with a restyle: the first row of its kind takes it.
 pub(super) enum Bind {
     Swatch { kind: RowKind, swatch_id: String, tint: Option<f64> },
@@ -553,7 +557,7 @@ impl Viewer {
         layer_id: &str,
         bind: Option<Bind>,
         edit: impl FnOnce(&mut Vec<StudioAppearanceRow>, GeometryUnit) -> Result<Option<RowKind>, String>,
-        records: Option<&mut dyn FnMut(&mut folio::StudioVectorRecords, &str, &[StudioAppearanceRow]) -> Result<(), String>>,
+        records: Option<RecordsEdit<'_>>,
     ) -> Result<String, String> {
         let record = self.vector_path(layer_id)?;
         let doc = self.vdoc()?;

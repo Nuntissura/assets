@@ -165,12 +165,13 @@ fn hostile_marker_references_are_bounded_and_typed() {
     assert_eq!(codes(&p, "unsupported_marker"), 3 + 3, "{:?}", p.loss);
     assert_eq!(codes(&p, "external_marker_denied"), 1, "{:?}", p.loss);
     // CSS values are tokenised, never substring-matched (V4-08): case and whitespace, an escaped
-    // '#', and a url() inside a comment that is a decoy for `none`.
+    // '#', and a url() inside a comment that is a decoy for `none`. (The two marked lines differ in
+    // colour: identical appearance stacks share one style and so one marker entry.)
     let p = import(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
   <marker id="a" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>
   <line x1="10" y1="10" x2="90" y2="10" stroke="#000" style="MARKER-END : URL( '#a' )"/>
-  <line x1="10" y1="20" x2="90" y2="20" stroke="#000" style="marker-end: url(\23 a)"/>
+  <line x1="10" y1="20" x2="90" y2="20" stroke="#111" style="marker-end: url(\23 a)"/>
   <line x1="10" y1="30" x2="90" y2="30" stroke="#000" style="marker-end: /* url(#a) */ none"/>
 </svg>"##,
     );

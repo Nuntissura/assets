@@ -2204,9 +2204,7 @@ impl<'d> Importer<'_, 'd> {
         let stroke_index = rows
             .iter()
             .position(|r| matches!(r, StudioAppearanceRow::Stroke { .. }));
-        let markers = self
-            .marker_ends(el, st, stroke_index.is_some(), loc)
-            .and_then(|m| stroke_index.map(|i| (i, m)));
+        let markers = stroke_index.zip(self.marker_ends(el, st, stroke_index.is_some(), loc));
         let style_id = if rows.is_empty() {
             None
         } else {
