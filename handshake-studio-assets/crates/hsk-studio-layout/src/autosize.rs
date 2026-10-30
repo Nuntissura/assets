@@ -19,8 +19,10 @@
 //! - Folio stores no `auto_sizing_reference_point`, minimum width/height gates or
 //!   `use_no_line_breaks_for_auto_sizing` (STU-LAY-118): readings top edge fixed for height, left
 //!   edge for width, top-left for proportional; no minimum; no added line breaks.
-//! - Sizing composes the frame top-aligned and unbalanced; the final composition uses the frame's
-//!   vertical justification, which a height fitted to the last line leaves without slack (moot).
+//! - Sizing and the final composition set the frame unbalanced. STU-LAY-121 vertical justification
+//!   is moot for the kinds that size the height (`height_only`, `height_and_width`, proportional):
+//!   their lines are set top-aligned (a shorter last column or the slack a scaled frame keeps is not
+//!   redistributed); `width_only` keeps the authored height and its vertical justification.
 //! - Bounds: no width or height beyond `MAX_AUTOSIZE_EXTENT_PT`; a story that does not fit there
 //!   (for example a run wider than the bound) is `autosize_over_bound`; at most
 //!   `MAX_AUTOSIZE_ITERATIONS` compositions; the cancel token is checked before each one.
@@ -102,6 +104,9 @@ impl AutosizeProposal {
     }
 }
 
+/// Composes the given frames with the given frame options (the reflow's composition core).
+pub(crate) type Compose<'a, 'f> = dyn FnMut(&[Frame<'a>], &[FrameVertical]) -> Result<Composition, LayoutError> + 'f;
+
 /// Bottom of the deepest line (baseline + descent of its paragraph).
 fn deepest(lines: &[Line], paragraphs: &[ShapedParagraph]) -> Option<f64> {
     lines
@@ -114,9 +119,9 @@ fn deepest(lines: &[Line], paragraphs: &[ShapedParagraph]) -> Option<f64> {
 /// `None` when no frame auto-sizes. `compose` composes the given frames with the given options.
 pub(crate) fn autosize<'a>(
     thread: &mut [Frame<'a>],
-    verticals: &[FrameVertical],
+    verticals: &mut [FrameVertical],
     paragraphs: &[ShapedParagraph],
-    compose: &mut dyn FnMut(&[Frame<'a>], &[FrameVertical]) -> Result<Composition, LayoutError>,
+    compose: &mut Compose<'a, '_>,
     cancel: &CancellationToken,
 ) -> Result<Option<FrameResize>, LayoutError> {
     let Some(a) = verticals.iter().position(|v| v.auto != AutoSizing::Off) else {
@@ -174,9 +179,15 @@ pub(crate) fn autosize<'a>(
         AutoSizing::WidthOnly | AutoSizing::HeightAndWidth => {
             let both = kind == AutoSizing::HeightAndWidth;
             let c = run(thread, cap, if both { cap } else { h0 }, &mut runs)?;
-            // Lines do not wrap: a paragraph of the frame wider than the bound cannot be set.
+            // Lines do not wrap: the rest of a paragraph from a line of the frame on must fit the
+            // bound on one line, else the paragraph cannot be set.
             let room = cap - left - right + EPS;
-            let natural = |l: &Line| paragraphs.get(l.paragraph).map_or(0.0, |p| p.glyphs.iter().map(|g| g.advance_pt).sum::<f64>());
+            let natural = |l: &Line| {
+                paragraphs
+                    .get(l.paragraph)
+                    .and_then(|p| p.glyphs.get(l.glyph_range.start..))
+                    .map_or(0.0, |g| g.iter().map(|g| g.advance_pt).sum::<f64>())
+            };
             if c.lines[a].iter().any(|l| l.overfull || natural(l) > room) || (both && c.overset.is_some()) {
                 return Err(LayoutError::AutosizeOverBound);
             }
@@ -203,6 +214,9 @@ pub(crate) fn autosize<'a>(
     };
     thread[a].width_pt = w;
     thread[a].height_pt = h;
+    if kind != AutoSizing::WidthOnly {
+        verticals[a].vjust = VerticalJustification::Top;
+    }
     Ok(Some(FrameResize {
         frame_id: thread[a].id.to_owned(),
         frame_index: thread[a].layer_index,

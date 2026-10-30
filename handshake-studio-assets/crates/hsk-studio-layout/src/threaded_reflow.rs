@@ -560,7 +560,7 @@ fn reflow_sized(
     let mut compose = |t: &[Frame<'_>], v: &[FrameVertical]| {
         compose_flow(t, v, &aligns, text, paragraphs, &stylings, &flows, &pre, req.composer, req.space, opts, limits, cjk, cancel)
     };
-    let resize = crate::autosize::autosize(&mut thread, &verticals, paragraphs, &mut compose, cancel)?;
+    let resize = crate::autosize::autosize(&mut thread, &mut verticals, paragraphs, &mut compose, cancel)?;
     let composed = compose(&thread, &verticals)?;
     let spacing = composed
         .cjk
