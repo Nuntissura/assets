@@ -198,10 +198,12 @@ fn non_grid_records_encode_byte_identically() {
         v["nodes"] = json!([
             {"node": node(4), "auto_layout": layout("HORIZONTAL")},
             {"node": node(5), "child_layout": child(None)}]);
-        let bytes = serde_json::to_vec(&v).unwrap();
-        let r: StudioDesignRecords = serde_json::from_slice(&bytes).unwrap();
+        let r = parse(&v);
         assert_eq!(result_of(&r), Ok(vec![]));
-        assert_eq!(serde_json::to_vec(&r).unwrap(), bytes);
+        assert_eq!(serde_json::to_value(&r).unwrap(), v);
+        let bytes = serde_json::to_vec(&r).unwrap();
+        let again: StudioDesignRecords = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&again).unwrap(), bytes);
         assert!(!String::from_utf8(bytes).unwrap().contains("grid"));
         assert_eq!(StudioAutoLayout::none().grid, None);
     });

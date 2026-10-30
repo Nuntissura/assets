@@ -427,19 +427,76 @@ pub fn grid_track_ok(t: &StudioGridTrackSize) -> bool {
 }
 
 /// STU-DS-145/146/147. The counts and the list lengths are compared before any entry is read.
-fn validate_grid(_g: &StudioGridLayout, _target: &str) -> Result<()> {
-    Ok(()) // red: slice 1 stub
+fn validate_grid(g: &StudioGridLayout, target: &str) -> Result<()> {
+    let bad = |what: &str| err(Code::InvalidField, format!("{target}/auto_layout/grid/{what}"));
+    for (name, n) in [
+        ("grid_row_count", g.grid_row_count),
+        ("grid_column_count", g.grid_column_count),
+    ] {
+        if !(1..=GRID_COUNT_MAX).contains(&n) {
+            return Err(bad(name));
+        }
+    }
+    for (name, v) in [
+        ("grid_row_gap", g.grid_row_gap),
+        ("grid_column_gap", g.grid_column_gap),
+    ] {
+        if !within(v, 0.0, GRID_GAP_MAX) {
+            return Err(bad(name));
+        }
+    }
+    for (name, list, n) in [
+        ("grid_row_sizes", &g.grid_row_sizes, g.grid_row_count),
+        ("grid_column_sizes", &g.grid_column_sizes, g.grid_column_count),
+    ] {
+        if usize::try_from(n).ok() != Some(list.len()) {
+            return Err(bad(name));
+        }
+        if let Some(i) = list.iter().position(|t| !grid_track_ok(t)) {
+            return Err(bad(&format!("{name}/{i}")));
+        }
+    }
+    Ok(())
 }
 
 /// STU-DS-150: a `grid_child` needs a `GRID` parent and an `AUTO` child; spans are at least 1 and
 /// anchor + span stays within the parent's declared count (a span past the count is a validation
 /// error). `parent` is the auto layout of the child's document parent.
 pub(crate) fn validate_grid_child(
-    _k: &StudioChildLayout,
-    _parent: Option<&StudioAutoLayout>,
-    _target: &str,
+    k: &StudioChildLayout,
+    parent: Option<&StudioAutoLayout>,
+    target: &str,
 ) -> Result<()> {
-    Ok(()) // red: slice 1 stub
+    let Some(gc) = &k.grid_child else {
+        return Ok(());
+    };
+    let bad = |what: &str| err(Code::InvalidField, format!("{target}/child_layout/grid_child{what}"));
+    let grid = parent
+        .filter(|p| p.layout_mode == LayoutMode::Grid)
+        .and_then(|p| p.grid.as_ref());
+    let Some(g) = grid else {
+        return Err(bad(""));
+    };
+    if k.layout_positioning == ChildPositioning::Absolute {
+        return Err(bad(""));
+    }
+    for (axis, anchor, span, count) in [
+        ("row", gc.grid_row_anchor_index, gc.grid_row_span, g.grid_row_count),
+        (
+            "column",
+            gc.grid_column_anchor_index,
+            gc.grid_column_span,
+            g.grid_column_count,
+        ),
+    ] {
+        if anchor >= count {
+            return Err(bad(&format!("/grid_{axis}_anchor_index")));
+        }
+        if span < 1 || anchor.checked_add(span).is_none_or(|end| end > count) {
+            return Err(bad(&format!("/grid_{axis}_span")));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_clamps(k: &StudioSizeClamps, target: &str) -> Result<()> {
