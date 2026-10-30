@@ -303,3 +303,164 @@ fn sharpening_clip_is_counted_in_the_clip_report() {
     let (o, r) = apply_export_stage(&src, &off, &CancellationToken::default()).unwrap();
     assert_eq!((o, r.sharpening), (src, None));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Slice 3: graphic watermark (composited in linear light after sharpening; every field a Studio reading,
+// UNVERIFIED, D5).
+
+fn mark(width: u32, height: u32, rgba: Vec<f32>, transfer: MarkTransfer) -> WatermarkSource {
+    WatermarkSource::Graphic(WatermarkGraphic { width, height, rgba, transfer })
+}
+
+fn watermark_stage(source: WatermarkSource, size: WatermarkSize, anchor: WatermarkAnchor, inset: (f64, f64)) -> ExportStage {
+    let mut s = ExportStage::default();
+    s.sizing.constrain_size = false;
+    s.watermark = WatermarkSettings {
+        use_watermark: true,
+        source,
+        size,
+        anchor,
+        inset_x_percent: inset.0,
+        inset_y_percent: inset.1,
+        ..WatermarkSettings::default()
+    };
+    s
+}
+
+fn px(img: &DevelopedImage, x: u32, y: u32) -> [f32; 3] {
+    let i = ((y * img.width + x) * 3) as usize;
+    [img.rgb[i], img.rgb[i + 1], img.rgb[i + 2]]
+}
+
+/// A 2x2 opaque mark on a 10x6 output, placed by hand: Proportional 20 % of the width is 2 px (no resample).
+/// BottomRight with inset x 10 % (1 px) and y 0: x = 10 - 2 - 1 = 7, y = 6 - 2 = 4. TopLeft with insets 20 % / 50 %:
+/// (2, 3). Centre ignores insets: ((10 - 2) / 2, (6 - 2) / 2) = (4, 2). Fit scales by min(10/2, 6/2) = 3 (6x6);
+/// Fill by max(10/2, 6/2) = 5 (10x10), centred at (0, -2) and clipped.
+#[test]
+fn watermark_anchor_and_inset_place_a_2x2_mark_on_10x6() {
+    let colours = [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 0.0]];
+    let rgba: Vec<f32> = colours.iter().flat_map(|c| [c[0], c[1], c[2], 1.0]).collect();
+    let bg = flat(10, 6, 0.25);
+    let cases = [
+        (WatermarkAnchor::BottomRight, (10.0, 0.0), (7i64, 4i64)),
+        (WatermarkAnchor::TopLeft, (20.0, 50.0), (2, 3)),
+        (WatermarkAnchor::Centre, (30.0, 30.0), (4, 2)),
+        (WatermarkAnchor::Right, (10.0, 50.0), (7, 2)),
+        (WatermarkAnchor::Bottom, (10.0, 50.0), (4, 1)),
+    ];
+    for (anchor, inset, (x0, y0)) in cases {
+        let st = watermark_stage(mark(2, 2, rgba.clone(), MarkTransfer::Linear), WatermarkSize::Proportional(20.0), anchor, inset);
+        let (out, receipt) = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap();
+        let p = receipt.watermark.expect("placement");
+        assert_eq!((p.x, p.y, p.width, p.height), (x0, y0, 2, 2), "{anchor:?}");
+        for y in 0..6u32 {
+            for x in 0..10u32 {
+                let (dx, dy) = (i64::from(x) - x0, i64::from(y) - y0);
+                let want = if (0..2).contains(&dx) && (0..2).contains(&dy) { colours[(dy * 2 + dx) as usize] } else { [0.25; 3] };
+                assert_eq!(px(&out, x, y), want, "{anchor:?} at ({x}, {y})");
+            }
+        }
+    }
+    let st = watermark_stage(mark(2, 2, rgba.clone(), MarkTransfer::Linear), WatermarkSize::Fit, WatermarkAnchor::BottomRight, (0.0, 0.0));
+    let p = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap().1.watermark.unwrap();
+    assert_eq!((p.x, p.y, p.width, p.height, p.size_rule), (4, 0, 6, 6, "fit"));
+    let st = watermark_stage(mark(2, 2, rgba, MarkTransfer::Linear), WatermarkSize::Fill, WatermarkAnchor::Centre, (0.0, 0.0));
+    let (out, r) = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap();
+    let p = r.watermark.unwrap();
+    assert_eq!((p.x, p.y, p.width, p.height, p.size_rule), (0, -2, 10, 10, "fill"));
+    assert!(out.rgb.iter().all(|v| *v != 0.25), "fill covers the whole output");
+}
+
+/// Opacity 50 % blends in LINEAR light: white over black gives linear 0.5, which the sRGB transfer writes as 188
+/// (an encoded-domain blend would give 128). An sRGB-encoded 0.5 mark is linear 0.21404 (IEC 61966-2-1); a mark
+/// alpha of 0.5 at opacity 100 equals opacity 50; over 0.25 the blend is 0.625.
+#[test]
+fn watermark_opacity_50_blends_in_linear_light() {
+    let run = |bg: f32, rgba: Vec<f32>, transfer: MarkTransfer, opacity: f64| {
+        let mut st = watermark_stage(mark(1, 1, rgba, transfer), WatermarkSize::Proportional(25.0), WatermarkAnchor::TopLeft, (0.0, 0.0));
+        st.watermark.opacity_percent = opacity;
+        let (out, r) = apply_export_stage(&flat(4, 4, bg), &st, &CancellationToken::default()).unwrap();
+        assert_eq!(r.watermark.unwrap().width, 1);
+        assert_eq!(px(&out, 1, 1), [bg; 3], "outside the mark");
+        out
+    };
+    let out = run(0.0, vec![1.0, 1.0, 1.0, 1.0], MarkTransfer::SrgbTrc, 50.0);
+    assert_eq!(px(&out, 0, 0), [0.5; 3]);
+    let rendered = render_output(&out, OutputDepth::Eight, SRGB_V4, None).unwrap();
+    assert_eq!(&rendered.data[..3], &[188, 188, 188]);
+    let out = run(0.0, vec![0.5, 0.5, 0.5, 1.0], MarkTransfer::SrgbTrc, 100.0);
+    assert!((px(&out, 0, 0)[0] - 0.214_041).abs() < 1e-6, "{:?}", px(&out, 0, 0));
+    let out = run(0.0, vec![1.0, 1.0, 1.0, 0.5], MarkTransfer::Linear, 100.0);
+    assert_eq!(px(&out, 0, 0), [0.5; 3]);
+    let out = run(0.25, vec![1.0, 1.0, 1.0, 1.0], MarkTransfer::Linear, 50.0);
+    assert_eq!(px(&out, 0, 0), [0.625; 3]);
+}
+
+/// Rotation turns the mark clockwise before sizing: a 2x1 [red, green] mark at 90 is 1x2 with red on top; at 270
+/// green is on top; at 180 it is [green, red].
+#[test]
+fn watermark_rotation_90_turns_the_mark_clockwise() {
+    let (red, green) = ([1.0f32, 0.0, 0.0], [0.0f32, 1.0, 0.0]);
+    let rgba = vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0];
+    let bg = flat(10, 6, 0.0);
+    for (rotation, pct, size, first, second) in [
+        (WatermarkRotation::R90, 10.0, (1u32, 2u32), red, green),
+        (WatermarkRotation::R270, 10.0, (1, 2), green, red),
+        (WatermarkRotation::R180, 20.0, (2, 1), green, red),
+        (WatermarkRotation::R0, 20.0, (2, 1), red, green),
+    ] {
+        let mut st = watermark_stage(mark(2, 1, rgba.clone(), MarkTransfer::Linear), WatermarkSize::Proportional(pct), WatermarkAnchor::TopLeft, (0.0, 0.0));
+        st.watermark.rotation = rotation;
+        let (out, r) = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap();
+        let p = r.watermark.unwrap();
+        assert_eq!(((p.width, p.height), p.rotation_degrees), (size, rotation.degrees()), "{rotation:?}");
+        let second_at = if size.0 == 1 { (0, 1) } else { (1, 0) };
+        assert_eq!(px(&out, 0, 0), first, "{rotation:?}");
+        assert_eq!(px(&out, second_at.0, second_at.1), second, "{rotation:?}");
+    }
+}
+
+/// Hostile watermark input: every case a typed refusal before any pixel work, never a panic, never a silent skip.
+/// Text watermarks need hsk-studio-type (no module edge): typed refusal while `use_watermark` is on.
+#[test]
+fn hostile_watermark_settings_get_typed_refusals() {
+    let bg = flat(10, 6, 0.5);
+    let ok = || mark(1, 1, vec![1.0, 1.0, 1.0, 1.0], MarkTransfer::Linear);
+    let refuse = |st: ExportStage| {
+        let e = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap_err();
+        (e.code(), e.detail())
+    };
+    let base = |source| watermark_stage(source, WatermarkSize::Proportional(10.0), WatermarkAnchor::TopLeft, (0.0, 0.0));
+    assert_eq!(refuse(base(WatermarkSource::Text("(c) Studio".into()))), ("text_watermark_unsupported", "hsk-studio-type"));
+    assert_eq!(refuse(base(WatermarkSource::None)).0, "watermark_source_missing");
+    assert_eq!(refuse(base(mark(0, 0, vec![], MarkTransfer::Linear))).0, "watermark_graphic_empty");
+    assert_eq!(refuse(base(mark(0, 3, vec![], MarkTransfer::Linear))).0, "watermark_graphic_empty");
+    // Over the cap: refused from the declared size, before the (empty) buffer is read.
+    assert_eq!(refuse(base(mark(MAX_WATERMARK_SIDE + 1, 1, vec![], MarkTransfer::Linear))).0, "watermark_too_large");
+    assert_eq!(refuse(base(mark(u32::MAX, u32::MAX, vec![], MarkTransfer::Linear))).0, "watermark_too_large");
+    assert_eq!(refuse(base(mark(2, 2, vec![1.0; 15], MarkTransfer::Linear))).0, "watermark_length_mismatch");
+    assert_eq!(refuse(base(mark(1, 1, vec![1.0, f32::NAN, 1.0, 1.0], MarkTransfer::Linear))), ("export_setting_not_finite", "watermark_sample"));
+    assert_eq!(refuse(base(mark(1, 1, vec![1.0, 1.5, 1.0, 1.0], MarkTransfer::Linear))), ("export_setting_out_of_range", "watermark_sample"));
+    for (v, code) in [(-1.0, "export_setting_out_of_range"), (100.5, "export_setting_out_of_range"), (f64::NAN, "export_setting_not_finite")] {
+        let mut st = base(ok());
+        st.watermark.opacity_percent = v;
+        assert_eq!(refuse(st), (code, "watermark_opacity"), "opacity {v}");
+        let mut st = base(ok());
+        st.watermark.inset_x_percent = v;
+        assert_eq!(refuse(st), (code, "watermark_inset_x"), "inset {v}");
+    }
+    for v in [0.0, -3.0, 100.5] {
+        let st = watermark_stage(ok(), WatermarkSize::Proportional(v), WatermarkAnchor::TopLeft, (0.0, 0.0));
+        assert_eq!(refuse(st), ("export_setting_out_of_range", "watermark_size"), "size {v}");
+    }
+    // A thin mark filled over the output would be 1000 x 16 384 000 px: refused, never allocated.
+    let thin = mark(1, MAX_WATERMARK_SIDE, vec![1.0; (MAX_WATERMARK_SIDE * 4) as usize], MarkTransfer::Linear);
+    let st = watermark_stage(thin, WatermarkSize::Fill, WatermarkAnchor::Centre, (0.0, 0.0));
+    let e = apply_export_stage(&flat(1000, 1000, 0.5), &st, &CancellationToken::default()).unwrap_err();
+    assert_eq!(e.code(), "watermark_too_large");
+    // Off: an unused text source is inert, nothing is composited and no placement is recorded.
+    let mut st = base(WatermarkSource::Text("x".into()));
+    st.watermark.use_watermark = false;
+    let (out, r) = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap();
+    assert_eq!((out, r.watermark), (bg, None));
+}
