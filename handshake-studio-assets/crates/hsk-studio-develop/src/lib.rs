@@ -37,6 +37,7 @@ pub mod preset;
 mod levels;
 pub mod output;
 pub mod export;
+pub mod export_stage;
 pub mod dng;
 pub mod dng_write;
 mod ljpeg_enc;
@@ -102,6 +103,11 @@ pub use dng_write::{
 pub use export::{
     ByteOrder, ExportColourSpace, ExportError, MAX_DPI, Metadata, TiffCompression, TiffExport, TiffExportSettings, develop_to_tiff,
     tiff_from_output,
+};
+pub use export_stage::{
+    EXPORT_STAGE_KEYS, ExportStage, ExportStageError, ExportStageReceipt, KeyStorage, MAX_OUTPUT_PIXELS, MAX_OUTPUT_SIDE,
+    OutputSizing, RESAMPLE_FILTER, ResizeType, ResolutionUnit, SizeFit, SizeUnit, StageKey, apply_export_stage,
+    fit_output_size,
 };
 pub use par::{DEFAULT_THREAD_CAP, MAX_THREADS, Threads};
 pub use pipeline::{
