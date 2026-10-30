@@ -108,7 +108,7 @@ use std::sync::Arc;
 
 mod effects;
 mod roto;
-pub use effects::{COMPOSITION_EFFECT_CONTENT, COMPOSITION_EFFECT_KERNEL, COMPOSITION_EFFECT_OPTION};
+pub use effects::{COMPOSITION_EFFECT_CONTENT, COMPOSITION_EFFECT_KERNEL, COMPOSITION_EFFECT_OPTION, EffectColourProfiles};
 pub use roto::{
     COMPOSITION_ROTO_NOT_PROPAGATED, ROTO_FRAME_LOST, ROTO_LEARNED_MODEL_LANE, ROTO_MODEL_UNAVAILABLE,
     RotoFrameReceipt, RotoFrameState, RotoLimits, RotoMatteFrame, RotoMattes, RotoReceipt, RotoRun, RotoSegmentation,
@@ -1016,7 +1016,7 @@ impl CompositionTemporalSource {
                 l.stream(p).map(|s| property(id, s)).transpose()
             };
             let (source, remap) = Self::read_time(l, &content, input)?;
-            let effects = effects::read_effects(id, &l.effects, &content, input.blend_space)?;
+            let effects = effects::read_effects(id, &l.effects, &content, input)?;
             layers.push(CompLayer {
                 layer_id: l.layer_id.clone(),
                 timing: l.timing,

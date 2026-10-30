@@ -12,7 +12,7 @@ use hsk_studio_composite::composition::{
     GlowOriginal, SceneEffect, SceneEffectEntry, apply_effects,
 };
 use hsk_studio_composite::temporal::composition::{
-    COMPOSITION_EFFECT_KERNEL, COMPOSITION_EFFECT_OPTION, CompositionInput, CompositionTemporalSource,
+    COMPOSITION_EFFECT_KERNEL, COMPOSITION_EFFECT_OPTION, CompositionInput, CompositionTemporalSource, EffectColourProfiles,
 };
 use hsk_studio_composite::*;
 use hsk_studio_folio::{Budget, StudioCompositionRecords, TileRef};
@@ -24,9 +24,10 @@ use hsk_studio_pigment::blur_math::{
     BlurAxis, BlurLimits, BlurScope, LayerBlur, RadialBlurKind, box_kernel, radial_blur_window, unpremultiply,
 };
 use hsk_studio_pigment::render_plan::SampleRange;
-use hsk_studio_pigment::render_plan::{AlphaConvention, SampleFormat};
+use hsk_studio_pigment::render_plan::{AlphaConvention, ColourTag, SampleFormat};
 use hsk_studio_pigment::Rect;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 mod common;
 use common::{Available, bounded_case, layer, open, tile};
@@ -122,6 +123,10 @@ fn constant(v: Value) -> Value {
 }
 /// The layer's lowered effect stack at `frame` for records `extra`.
 fn lowered(extra: Value, frame: u64) -> Result<EffectedContent, TemporalError> {
+    lowered_in(extra, frame, scenes::space(), None)
+}
+/// As [`lowered`] in plan colour tag `space`, with the caller's effect colour profiles.
+fn lowered_in(extra: Value, frame: u64, space: ColourTag, profiles: Option<Arc<EffectColourProfiles>>) -> Result<EffectedContent, TemporalError> {
     let pixels = Pixels::fixture();
     let snap = open(&document());
     let records: StudioCompositionRecords = serde_json::from_value(records(extra)).expect("records shape");
@@ -132,13 +137,17 @@ fn lowered(extra: Value, frame: u64) -> Result<EffectedContent, TemporalError> {
         composition_id: &identity("SCOM", 1),
         budget: Budget::default(),
         resolver: &Available,
-        blend_space: BlendSpace::Encoded,
+        blend_space: space.blend_space,
         info: &Info(&pixels),
-        space: scenes::space(),
+        space,
         inputs: RenderInputs::default(),
     };
     let cancel = CancellationToken::default();
-    let scene = CompositionTemporalSource::new(&input, &cancel)?.scene_at(f(frame) as i64, &cancel)?;
+    let mut source = CompositionTemporalSource::new(&input, &cancel)?;
+    if let Some(p) = profiles {
+        source = source.with_effect_colour_profiles(p);
+    }
+    let scene = source.scene_at(f(frame) as i64, &cancel)?;
     match &scene.layers[0].content {
         SceneContent::Effected(e) => Ok((**e).clone()),
         other => panic!("not effected: {other:?}"),
@@ -146,6 +155,12 @@ fn lowered(extra: Value, frame: u64) -> Result<EffectedContent, TemporalError> {
 }
 fn one(e: Value) -> Value {
     json!({ "effects": [e] })
+}
+/// Folio `colour_profiles` naming the document's blending space (SCPF 1) for `keys`: the plan's
+/// own profile in these encoded plans, so the values are today's plan units (lane
+/// SMB-R43-FOLLOWUPS-1, STU-FX-118).
+fn plan_refs(keys: &[&str]) -> Value {
+    keys.iter().map(|k| (k.to_string(), json!({"colour_profile_id": identity("SCPF", 1)}))).collect::<serde_json::Map<_, _>>().into()
 }
 fn lowered_one(e: Value) -> SceneEffect {
     lowered(one(e), 0).expect("lowers").effects[0].effect.clone()
@@ -305,7 +320,8 @@ fn animated_effect_parameters_evaluate_per_frame() {
         // A colour parameter animates the same way: Tint amount 0 -> 100.
         let tint = json!({"effect_id":"t","filter_kind":"tint","values":{"amount_to_tint":{"static_value":[0.0],"keyframes":[
             {"time":0,"value":[0.0],"in_interp":"linear","out_interp":"linear"},
-            {"time":f(2),"value":[100.0],"in_interp":"linear","out_interp":"linear"}]}}});
+            {"time":f(2),"value":[100.0],"in_interp":"linear","out_interp":"linear"}]}},
+            "colour_profiles":plan_refs(&["map_black_to", "map_white_to"])});
         let blend_at = |frame: u64| match lowered(one(tint.clone()), frame).unwrap().effects[0].effect.clone() {
             SceneEffect::Colour(c) => c.blend,
             other => panic!("{other:?}"),
@@ -468,9 +484,10 @@ fn colour_family_maps_onto_pigment_adjustments() {
         assert_eq!(hs.ops, vec![all(AdjustmentOp::HueSaturation(HueSaturation { hue: -90.0, saturation: -50.0, lightness: 0.0, colorize: false }))]);
         let hs = c(json!({"effect_id":"h","filter_kind":"hue_saturation","values":{"colorize":constant(json!([1.0]))}}));
         assert_eq!(hs.ops, vec![all(AdjustmentOp::HueSaturation(HueSaturation { hue: 0.0, saturation: 25.0, lightness: 0.0, colorize: true }))]);
-        let tint = c(json!({"effect_id":"t","filter_kind":"tint"}));
+        let tint = c(json!({"effect_id":"t","filter_kind":"tint","colour_profiles":plan_refs(&["map_black_to", "map_white_to"])}));
         assert_eq!((tint.ops, tint.blend), (vec![all(ramp([0.0; 3], [1.0; 3]))], 0.0));
-        let tri = c(json!({"effect_id":"t","filter_kind":"tritone","values":{"blend_with_original":constant(json!([25.0]))}}));
+        let tri = c(json!({"effect_id":"t","filter_kind":"tritone","values":{"blend_with_original":constant(json!([25.0]))},
+            "colour_profiles":plan_refs(&["shadows", "midtones", "highlights"])}));
         assert_eq!(tri.blend, 0.25);
         let AdjustmentOp::GradientMap(map) = &tri.ops[0].op else { panic!() };
         assert_eq!(map.stops.iter().map(|s| s.position).collect::<Vec<_>>(), vec![0.0, 0.5, 1.0]);
@@ -600,5 +617,111 @@ fn colour_parameter_without_a_profile_reference_is_refused() {
         // A kind that reads no colour, and Glow with its original colours, need no reference.
         assert!(matches!(lowered_one(json!({"effect_id":"i","filter_kind":"invert"})), SceneEffect::Colour(_)));
         assert!(matches!(lowered_one(json!({"effect_id":"g","filter_kind":"glow"})), SceneEffect::Glow(_)));
+    });
+}
+
+/// ICC fixtures of Prism (CC0, `crates/hsk-studio-prism/tests/profiles/README.md`).
+const SRGB_ICC: &[u8] = include_bytes!("../../hsk-studio-prism/tests/profiles/sRGB-v4.icc");
+const P3_ICC: &[u8] = include_bytes!("../../hsk-studio-prism/tests/profiles/DisplayP3-v4.icc");
+
+/// Prism's own conversion of one RGB colour from `source` into `destination` (relative
+/// colorimetric, no black-point compensation): the reference the lowering is checked against.
+fn prism_convert(source: &[u8], destination: &[u8], rgb: [f64; 3]) -> [f64; 3] {
+    use hsk_studio_accord::{ActorContext, DomainId};
+    use hsk_studio_prism::{Intent, ProfileInput, WideEngine, WideSource, WideTransformRequest, profile_hash};
+    struct Quiet;
+    impl hsk_studio_observe::SinkPort for Quiet {
+        fn try_send(&mut self, _: hsk_studio_observe::DeliveryClass, _: &[u8]) -> Result<(), hsk_studio_observe::DeliveryError> {
+            Ok(())
+        }
+    }
+    let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "test").unwrap();
+    let (src_id, dst_id) = (DomainId::parse(&identity("SCPF", 3)).unwrap(), DomainId::parse(&identity("SCPF", 1)).unwrap());
+    let pixels = rgb.map(|c| c as f32);
+    let request = WideTransformRequest {
+        source: WideSource::Profile(ProfileInput { profile_id: &src_id, bytes: source, expected_sha256: profile_hash(source) }),
+        destination: ProfileInput { profile_id: &dst_id, bytes: destination, expected_sha256: profile_hash(destination) },
+        pixels: &pixels,
+        intent: Intent::RelativeColorimetric,
+        black_point_compensation: false,
+        revision: 0,
+        expected_revision: 0,
+        correlation_id: 1,
+        resource_id: &src_id,
+        actor: &actor,
+    };
+    let out = WideEngine::new(actor.clone(), 1).unwrap().transform(&request, &CancellationToken::default(), &mut Quiet).unwrap();
+    [f64::from(out.pixels[0]), f64::from(out.pixels[1]), f64::from(out.pixels[2])]
+}
+
+/// The plan colour tag of an encoded sRGB plan and the caller's profiles: the plan (SCPF 1) and
+/// SCPF 2 in sRGB, SCPF 3 in Display P3.
+fn srgb_plan() -> (ColourTag, Arc<EffectColourProfiles>) {
+    let actor = hsk_studio_accord::ActorContext::new("account", "principal", "owner", "owner-principal", "space", "test").unwrap();
+    let profiles = EffectColourProfiles::new(actor, identity("SCPF", 1), SRGB_ICC.to_vec())
+        .with_profile(identity("SCPF", 2), SRGB_ICC.to_vec())
+        .with_profile(identity("SCPF", 3), P3_ICC.to_vec());
+    (ColourTag { profile_sha256: hsk_studio_prism::profile_hash(SRGB_ICC), blend_space: BlendSpace::Encoded }, Arc::new(profiles))
+}
+fn stops(e: &SceneEffect) -> Vec<[f32; 3]> {
+    let SceneEffect::Colour(c) = e else { panic!("{e:?}") };
+    let AdjustmentOp::GradientMap(m) = &c.ops[0].op else { panic!("{c:?}") };
+    m.stops.iter().map(|s| s.colour).collect()
+}
+
+/// Lane SMB-R43-FOLLOWUPS-1 (F-R43-4, STU-FX-118): a colour parameter is taken from its referenced
+/// profile into the plan's colour tag. A reference to the plan's own profile (the document's
+/// blending space in an encoded plan, or bytes hashing to the tag) keeps today's values bit for
+/// bit; a Display P3 reference is converted by Prism exactly as Prism converts it; references the
+/// caller supplied no bytes for, or a plan profile that does not match the tag, are refused typed.
+#[test]
+fn colour_parameters_convert_from_their_profile_into_the_plan() {
+    bounded_case("colour_parameters_convert_from_their_profile_into_the_plan", || {
+        let (tag, profiles) = srgb_plan();
+        let black = [0.3, 0.25, 0.2, 1.0];
+        let white = [0.8, 0.75, 0.7, 1.0];
+        let tint = |profile: Value| {
+            json!({"effect_id":"t","filter_kind":"tint",
+                "values":{"map_black_to":constant(json!(black)),"map_white_to":constant(json!(white))},
+                "colour_profiles":{"map_black_to":{"colour_profile_id":profile.clone()},"map_white_to":{"colour_profile_id":profile}}})
+        };
+        let today = vec![[0.3_f32, 0.25, 0.2], [0.8, 0.75, 0.7]];
+        // The document's blending space (SCPF 1) in an encoded plan: today's values, bit for bit,
+        // with or without the caller's profiles; explicit null = working_space_rgb (also SCPF 1).
+        for p in [json!(identity("SCPF", 1)), Value::Null] {
+            assert_eq!(stops(&lowered_one(tint(p.clone()))), today);
+            assert_eq!(stops(&lowered_in(one(tint(p)), 0, tag, Some(profiles.clone())).unwrap().effects[0].effect), today);
+        }
+        // An sRGB reference whose bytes hash to the plan's tag (SCPF 2): unchanged too.
+        assert_eq!(stops(&lowered_in(one(tint(json!(identity("SCPF", 2)))), 0, tag, Some(profiles.clone())).unwrap().effects[0].effect), today);
+        // Display P3 (SCPF 3): Prism's conversion into the sRGB plan, exactly; alpha kept.
+        let p3 = lowered_in(one(tint(json!(identity("SCPF", 3)))), 0, tag, Some(profiles.clone())).unwrap();
+        let want: Vec<[f32; 3]> = [black, white]
+            .iter()
+            .map(|c| prism_convert(P3_ICC, SRGB_ICC, [c[0], c[1], c[2]]).map(|v| v as f32))
+            .collect();
+        assert_eq!(stops(&p3.effects[0].effect), want);
+        assert_ne!(want, today, "the conversion moves the values");
+        // Glow A & B colours: the same rule (alpha passes through).
+        let glow = json!({"effect_id":"g","filter_kind":"glow","values":{"glow_colors":constant(json!([2.0])),
+            "color_a":constant(json!([0.5,0.4,0.3,0.75])),"color_b":constant(json!([0.1,0.2,0.3,1.0]))},
+            "colour_profiles":{"color_a":{"colour_profile_id":identity("SCPF", 3)},"color_b":{"colour_profile_id":identity("SCPF", 1)}}});
+        let SceneEffect::Glow(g) = &lowered_in(one(glow), 0, tag, Some(profiles.clone())).unwrap().effects[0].effect else { panic!() };
+        let colours = g.colours.as_ref().expect("A & B colours");
+        let a = prism_convert(P3_ICC, SRGB_ICC, [0.5, 0.4, 0.3]);
+        assert_eq!(colours.a, [a[0], a[1], a[2], 0.75]);
+        assert_eq!(colours.b, [0.1, 0.2, 0.3, 1.0]);
+        // Refused typed, naming the parameter: no caller profiles for a profile other than the
+        // plan's; an id the caller supplied no bytes for; plan bytes that do not hash to the tag.
+        let layer = identity("SLYR", 2);
+        let param = (COMPOSITION_EFFECT_OPTION.to_owned(), format!("{layer}/effects/t/map_black_to"));
+        let refused = |r: Result<EffectedContent, TemporalError>| match r {
+            Err(TemporalError::Unsupported { layer_id, feature }) => (feature.to_owned(), layer_id),
+            other => panic!("not refused: {other:?}"),
+        };
+        assert_eq!(refused(lowered_in(one(tint(json!(identity("SCPF", 3)))), 0, tag, None)), param);
+        assert_eq!(refused(lowered_in(one(tint(json!(identity("SCPF", 9)))), 0, tag, Some(profiles.clone()))), param);
+        let other_tag = ColourTag { profile_sha256: [7; 32], ..tag };
+        assert_eq!(refused(lowered_in(one(tint(json!(identity("SCPF", 3)))), 0, other_tag, Some(profiles.clone()))), param);
     });
 }

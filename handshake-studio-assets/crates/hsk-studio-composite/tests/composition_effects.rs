@@ -364,7 +364,9 @@ fn folio_effect_stacks_render_through_render_scene_in_stack_order() {
         let offset = json!({"effect_id":"o","filter_kind":"offset","values":{"shift_center_to":constant(json!([0.6875,0.75]))}});
         let board = json!({"effect_id":"k","filter_kind":"checkerboard","values":{
             "anchor":constant(json!([0.0625,0.25])),"size_from":constant(json!([3.0])),"width":constant(json!([3.0])),
-            "height":constant(json!([2.0])),"color":constant(json!([0.0,0.0,1.0,1.0])),"blending_mode":constant(json!([2.0]))}});
+            "height":constant(json!([2.0])),"color":constant(json!([0.0,0.0,1.0,1.0])),"blending_mode":constant(json!([2.0]))},
+            // STU-FX-118 (lane SMB-R43-FOLLOWUPS-1): the colour is in the document's blending space.
+            "colour_profiles":{"color":{"colour_profile_id":identity("SCPF", 1)}}});
         let k_offset = SceneEffect::Offset { shift: [3.0, 3.0], blend: 0.0 };
         let k_board = SceneEffect::Checkerboard {
             anchor: [1.0, 3.0], cell: [3.0, 2.0], colour: [0.0, 0.0, 1.0, 1.0], opacity: 1.0, composite: GeneratorComposite::Over,

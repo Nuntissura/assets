@@ -54,16 +54,32 @@
 //!   `bypass_linear_light_conversion` is set; `Individual Channels` runs one exposure per channel.
 //!   Tint is pigment's gradient map black -> `Map Black To`, white -> `Map White To` mixed by
 //!   `Amount to Tint`; Tritone the map shadows (0), midtones (0.5), highlights (1) mixed with the
-//!   original by `Blend With Original`; colour parameters are straight RGB in the plan's colour tag
-//!   (no `StudioColorProfile` reference, [STU-FX-118] gap). Invert `RGB`, `Red`, `Green`, `Blue`
-//!   run pigment's invert on those channels; the other channel spaces and `Alpha` are refused.
+//!   original by `Blend With Original`. Invert `RGB`, `Red`, `Green`, `Blue` run pigment's invert
+//!   on those channels; the other channel spaces and `Alpha` are refused.
+//! - Colour parameters (lane SMB-R43-FOLLOWUPS-1, round finding F-R43-4; [STU-FX-118] "Every
+//!   `color` parameter carries a required `StudioColorProfile` reference and is evaluated in the
+//!   layer's declared working space"): every colour a kind reads (Tint, Tritone, Glow `A & B
+//!   Colors`, Gradient Ramp, Circle, Checkerboard) is taken from the profile its Folio
+//!   `colour_profiles` reference names (explicit null = the document's `working_space_rgb`) into
+//!   the plan's colour tag. The values pass unchanged when that profile is the plan's own: the
+//!   document's `blending_space` in an encoded plan, or a profile whose ICC bytes hash to the
+//!   tag's `profile_sha256`. Otherwise Prism's `WideEngine` converts the RGB channels (relative
+//!   colorimetric, no black-point compensation; Studio reading, UNVERIFIED D5) from the
+//!   referenced profile's ICC bytes into the plan profile's, both supplied by the caller through
+//!   [`EffectColourProfiles`] ([`CompositionTemporalSource::with_effect_colour_profiles`]); alpha
+//!   is kept. A parameter without a reference, a reference the caller supplied no bytes for, a
+//!   plan profile whose bytes do not hash to the tag, or a conversion Prism refuses (a profile
+//!   that is not RGB, a channel outside `0..1`) is refused [`COMPOSITION_EFFECT_OPTION`] when the
+//!   effect is applied, with the layer id `{layer}/effects/{effect_id}/{param_key}` naming the
+//!   parameter. Prism's Observe frame of the conversion is not forwarded (the frame lowering
+//!   reports its own outcome).
 //! - Entry semantics: a blend mode other than normal ([STU-FX-008]) and an effect mask
 //!   ([STU-FX-004], the coverage of the named layer mask alone in `add` mode with its own inversion,
 //!   feather, opacity and expansion, whatever its mode on the layer) wrap the entry's effect in
 //!   [`crate::composition::SceneEffect::Composite`]. Dissolve and the modes pigment's `blend_rgb`
 //!   does not define are refused.
 #![deny(clippy::arithmetic_side_effects)]
-use super::{CompLayer, CompositionTemporalSource, Content, keyed_property, unsupported};
+use super::{CompLayer, CompositionInput, CompositionTemporalSource, Content, keyed_property, unsupported};
 use crate::CompositeError;
 use crate::composition::{
     ChannelAdjustment, ColourEffect, EffectedContent, EntryComposite, GeneratorComposite, GlowColours, GlowEffect, GlowLooping,
@@ -71,10 +87,16 @@ use crate::composition::{
 };
 use crate::temporal::TemporalError;
 use crate::temporal::motion::sample;
-use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{EFFECT_PARAM_OUT_OF_RANGE, StudioCompositionEffect, StudioCompositionEffectKind, StudioCompositionMaskMode};
+use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+use hsk_studio_folio::{
+    EFFECT_PARAM_OUT_OF_RANGE, ProfileBinding, StudioCompositionEffect, StudioCompositionEffectKind, StudioCompositionMaskMode,
+};
 use hsk_studio_motion::Property;
 use hsk_studio_pigment::Rect;
+use hsk_studio_pigment::render_plan::ColourTag;
+use hsk_studio_prism::{Intent, ProfileInput, WideEngine, WideSource, WideTransformRequest, profile_hash};
+use std::fmt;
+use std::sync::Arc;
 use hsk_studio_pigment::adjust_math::{
     AdjustmentOp, ColourBalance, Exposure, GradientMap, GradientMapStop, HueSaturation, Levels, LevelsRecord,
 };
@@ -92,6 +114,90 @@ pub const COMPOSITION_EFFECT_KERNEL: &str = "composition_effect_kernel";
 /// Glow `Color Phase` default as recorded ([STU-FX-131]); other phases are refused.
 const GLOW_PHASE_DEFAULT: f64 = 0.003906;
 
+/// The ICC profiles colour parameters are converted with (module docs): the plan profile (its
+/// bytes must hash to the plan colour tag's `profile_sha256`) and the document profiles that
+/// colour parameters reference, by `SCPF` id. The actor attributes Prism's conversions.
+#[derive(Clone)]
+pub struct EffectColourProfiles {
+    actor: ActorContext,
+    plan_profile_id: String,
+    plan_icc: Vec<u8>,
+    profiles: BTreeMap<String, Vec<u8>>,
+}
+impl EffectColourProfiles {
+    /// The plan profile `plan_profile_id` (an `SCPF` id) with its ICC bytes.
+    pub fn new(actor: ActorContext, plan_profile_id: impl Into<String>, plan_icc: Vec<u8>) -> Self {
+        Self { actor, plan_profile_id: plan_profile_id.into(), plan_icc, profiles: BTreeMap::new() }
+    }
+    /// Adds (or replaces) the ICC bytes of document profile `profile_id`.
+    #[must_use]
+    pub fn with_profile(mut self, profile_id: impl Into<String>, icc: Vec<u8>) -> Self {
+        self.profiles.insert(profile_id.into(), icc);
+        self
+    }
+}
+impl fmt::Debug for EffectColourProfiles {
+    /// Ids and byte counts only (profile bytes are not diagnostic text).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let profiles: BTreeMap<&str, usize> = self.profiles.iter().map(|(k, v)| (k.as_str(), v.len())).collect();
+        f.debug_struct("EffectColourProfiles")
+            .field("plan_profile_id", &self.plan_profile_id)
+            .field("plan_icc_bytes", &self.plan_icc.len())
+            .field("profiles", &profiles)
+            .finish_non_exhaustive()
+    }
+}
+
+impl EffectColourProfiles {
+    /// `rgb` in profile `source_id` (ICC `source`) converted by Prism into the plan profile, whose
+    /// bytes must hash to `tag` (module docs). `Err(Some)` = canceled, `Err(None)` = refused.
+    fn to_plan(
+        &self,
+        source_id: &str,
+        source: &[u8],
+        tag: ColourTag,
+        rgb: [f64; 3],
+        cancel: &CancellationToken,
+    ) -> Result<[f64; 3], Option<TemporalError>> {
+        let plan_sha = profile_hash(&self.plan_icc);
+        if plan_sha != tag.profile_sha256 {
+            return Err(None);
+        }
+        let source_id = DomainId::parse(source_id).map_err(|_| None)?;
+        let plan_id = DomainId::parse(&self.plan_profile_id).map_err(|_| None)?;
+        #[allow(clippy::cast_possible_truncation)]
+        let pixels = rgb.map(|c| c as f32);
+        let request = WideTransformRequest {
+            source: WideSource::Profile(ProfileInput { profile_id: &source_id, bytes: source, expected_sha256: profile_hash(source) }),
+            destination: ProfileInput { profile_id: &plan_id, bytes: &self.plan_icc, expected_sha256: plan_sha },
+            pixels: &pixels,
+            intent: Intent::RelativeColorimetric,
+            black_point_compensation: false,
+            revision: 0,
+            expected_revision: 0,
+            correlation_id: 1,
+            resource_id: &source_id,
+            actor: &self.actor,
+        };
+        let mut engine = WideEngine::new(self.actor.clone(), 1).map_err(|_| None)?;
+        let out = engine.transform(&request, cancel, &mut Discard).map_err(|f| {
+            (f.error == hsk_studio_prism::WideError::Canceled).then_some(TemporalError::Composite(CompositeError::Canceled))
+        })?;
+        match out.pixels.as_slice() {
+            [r, g, b] => Ok([f64::from(*r), f64::from(*g), f64::from(*b)]),
+            _ => Err(None),
+        }
+    }
+}
+
+/// Prism's Observe frames of the colour conversions are not forwarded (module docs).
+struct Discard;
+impl hsk_studio_observe::SinkPort for Discard {
+    fn try_send(&mut self, _: hsk_studio_observe::DeliveryClass, _: &[u8]) -> Result<(), hsk_studio_observe::DeliveryError> {
+        Ok(())
+    }
+}
+
 /// One running entry's streams.
 #[derive(Clone, Debug)]
 pub(super) struct EffectStream {
@@ -102,9 +208,16 @@ pub(super) struct EffectStream {
     mode: StudioBlendMode,
     /// [STU-FX-004] the layer mask this entry is masked by.
     mask_id: Option<String>,
-    /// The plan's blend space (Exposure linearisation).
-    space: BlendSpace,
+    /// The plan's colour tag (its blend space drives the Exposure linearisation).
+    tag: ColourTag,
     values: BTreeMap<String, Property>,
+    /// [STU-FX-118] profile reference per colour parameter (Folio `colour_profiles`).
+    colour_refs: BTreeMap<String, ProfileBinding>,
+    /// The document's `blending_space` and `working_space_rgb` bindings.
+    blending: ProfileBinding,
+    working_rgb: ProfileBinding,
+    /// The caller's profile bytes ([`CompositionTemporalSource::with_effect_colour_profiles`]).
+    colour_profiles: Option<Arc<EffectColourProfiles>>,
 }
 
 /// The running entries of layer `id` (module docs).
@@ -112,8 +225,9 @@ pub(super) fn read_effects(
     id: &str,
     effects: &[StudioCompositionEffect],
     content: &Content,
-    space: BlendSpace,
+    input: &CompositionInput<'_>,
 ) -> Result<Vec<EffectStream>, TemporalError> {
+    let doc = input.snapshot.document();
     let solo = effects.iter().any(|e| e.enabled && e.solo);
     let running: Vec<&StudioCompositionEffect> = effects.iter().filter(|e| e.enabled && (!solo || e.solo)).collect();
     if running.is_empty() {
@@ -136,8 +250,12 @@ pub(super) fn read_effects(
                 mix: e.opacity / 100.0,
                 mode,
                 mask_id: e.mask_id.clone(),
-                space,
+                tag: input.space,
                 values,
+                colour_refs: e.colour_profiles.iter().map(|(k, p)| (k.clone(), p.colour_profile_id.clone())).collect(),
+                blending: doc.blending_space.clone(),
+                working_rgb: doc.working_space_rgb.clone(),
+                colour_profiles: None,
             })
         })
         .collect()
@@ -184,9 +302,35 @@ impl At<'_> {
         let v = self.value(key)?;
         Ok([self.origin[0] + v[0] * self.size[0], self.origin[1] + v[1] * self.size[1]])
     }
+    /// A colour parameter in the plan's colour tag, from its [STU-FX-118] profile reference
+    /// (module docs).
     fn colour(&self, key: &str) -> Result<[f64; 4], TemporalError> {
         let v = self.value(key)?;
-        Ok([v[0], v[1], v[2], v[3]])
+        let rgba = [v[0], v[1], v[2], v[3]];
+        let param = format!("{}/effects/{}/{key}", self.id, self.e.effect_id);
+        let refused = || unsupported(&param, COMPOSITION_EFFECT_OPTION);
+        let profile = match self.e.colour_refs.get(key) {
+            Some(ProfileBinding::Assigned(p)) => p,
+            Some(ProfileBinding::Unassigned(())) => match &self.e.working_rgb {
+                ProfileBinding::Assigned(w) => w,
+                ProfileBinding::Unassigned(()) => return Err(refused()),
+            },
+            None => return Err(refused()),
+        };
+        // The document's blending profile is the encoded plan's own: already plan units.
+        if self.e.tag.blend_space == BlendSpace::Encoded && matches!(&self.e.blending, ProfileBinding::Assigned(b) if b == profile) {
+            return Ok(rgba);
+        }
+        let profiles = self.e.colour_profiles.as_deref().ok_or_else(refused)?;
+        let icc = profiles.profiles.get(profile).ok_or_else(refused)?;
+        if profile_hash(icc) == self.e.tag.profile_sha256 {
+            return Ok(rgba);
+        }
+        let rgb = profiles.to_plan(profile, icc, self.e.tag, [rgba[0], rgba[1], rgba[2]], self.cancel).map_err(|e| match e {
+            Some(c) => c,
+            None => refused(),
+        })?;
+        Ok([rgb[0], rgb[1], rgb[2], rgba[3]])
     }
     fn zero(&self, key: &str) -> Result<(), TemporalError> {
         if self.one(key)?.abs() > 0.0 { Err(unsupported(self.id, COMPOSITION_EFFECT_OPTION)) } else { Ok(()) }
@@ -356,7 +500,7 @@ impl At<'_> {
                 let linearize_gamma = if self.flag("bypass_linear_light_conversion")? {
                     1.0
                 } else {
-                    match self.e.space {
+                    match self.e.tag.blend_space {
                         BlendSpace::LinearLight => 1.0,
                         BlendSpace::Encoded => 2.2,
                     }
@@ -521,6 +665,21 @@ fn entry_mask(l: &CompLayer, id: &str, mask_id: &str, tick: i64, cancel: &Cancel
 }
 
 impl CompositionTemporalSource {
+    /// Attaches the caller's ICC profiles that colour parameters are converted with (module docs)
+    /// to every effect entry of every composition this source reads. Without them only colours in
+    /// the plan's own profile (the document's blending space in an encoded plan) are accepted.
+    #[must_use]
+    pub fn with_effect_colour_profiles(mut self, profiles: Arc<EffectColourProfiles>) -> Self {
+        for comp in self.comps.values_mut() {
+            for l in &mut comp.layers {
+                for e in &mut l.effects {
+                    e.colour_profiles = Some(Arc::clone(&profiles));
+                }
+            }
+        }
+        self
+    }
+
     /// `content` under layer `l`'s effect stack at `tick` (module docs); the flag says whether the
     /// layer's masks were folded into it.
     pub(super) fn effected(l: &CompLayer, content: SceneContent, tick: i64, cancel: &CancellationToken) -> Result<(SceneContent, bool), TemporalError> {
