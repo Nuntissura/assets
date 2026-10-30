@@ -27,8 +27,24 @@
 //! exposure supply it (a lower bound of the radiance). Clipped samples therefore never contribute
 //! when an unclipped sample exists. Output alpha is the reference frame's alpha.
 //!
-//! Photoshop's Merge to HDR Pro and Lightroom's HDR merge are UNVERIFIED (D5, no oracle): the
-//! weights, thresholds and defaults here are Studio readings, not parity claims.
+//! Alignment ([`align`], optional): translation-only median threshold bitmaps (Ward 2003) of every
+//! frame against the reference; an aligned frame samples `frame(x - dx, y - dy)` and samples it
+//! does not cover take no part in the pixel (the reference is never shifted, so every pixel keeps
+//! at least one sample).
+//!
+//! Deghost ([`MergeOptions::deghost`], Studio reading, declared): per-pixel consistency against an
+//! anchor sample: the reference sample when it carries weight, else the weighted sample whose
+//! exposure is nearest the reference's. When any other weighted sample's largest-channel radiance
+//! differs from the anchor's by more than the level's threshold (level 1: 1 stop, 2: 1/2 stop,
+//! 3: 1/4 stop; 0 = off), the pixel takes the anchor's radiance alone, so a moving object appears
+//! only where the anchor exposure saw it.
+//!
+//! Tone-mapping ([`tone`]): 32 -> 16 / 8 bit with a declared global operator through Prism's
+//! display encoding. Every command declares its depths ([`HDR_CAPABILITIES`], [STU-RAS-149]).
+//!
+//! Photoshop's Merge to HDR Pro and Lightroom's HDR merge (auto-align, deghost amounts, presets)
+//! are UNVERIFIED (D5, no oracle): the weights, thresholds and defaults here are Studio readings,
+//! not parity claims.
 //!
 //! Determinism: one thread, fixed frame and pixel order, binary64 accumulation and one rounding to
 //! binary32 per channel. EV offsets become scales through `f64::exp2` (exact for whole stops);
@@ -40,6 +56,22 @@ use crate::Rect;
 use crate::retouch::RgbaPlane;
 use hsk_studio_accord::CancellationToken;
 use std::fmt;
+
+pub mod align;
+pub mod tone;
+pub use align::{ALIGN_MAX_SHIFT, ALIGN_MIN_SIZE, AlignOptions, MTB_EXCLUSION_FRACTION};
+pub use tone::{HDR_TONE_MAP_CAPABILITY, ToneMapOptions, TonedPlane, tone_map};
+
+/// Largest deghost level.
+pub const DEGHOST_MAX_LEVEL: u8 = 3;
+/// Deghost thresholds as radiance ratios per level (`2^stops`; index 0 unused = off).
+pub const DEGHOST_RATIOS: [f64; 4] = [f64::INFINITY, 2.0, std::f64::consts::SQRT_2, 1.189_207_115_002_721];
+
+/// Every HDR command and its depths ([STU-RAS-149] inspectable capability metadata).
+pub const HDR_CAPABILITIES: [DepthCapability; 2] = [HDR_MERGE_CAPABILITY, HDR_TONE_MAP_CAPABILITY];
+
+/// Machine-readable description (manual / model surface).
+pub const HDR_MERGE_DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","path":"hdr_merge","lane":"SMB-HDR-MERGE-1","spec":["STU-RAS-033","STU-RAS-149","STU-RAS-044"],"commands":[{"command":"hdr_merge","api":"merge_brackets(&[Bracket{frame,exposure,depth}], &MergeOptions{black,clip,reference,align,deghost}, &HdrLimits, &CancellationToken) -> HdrMerged{frame,depth,reference,relative_exposure,shifts,fallback_pixels,ghost_pixels}","source_depths":[8,16,32],"target_depths":[32]},{"command":"hdr_tone_map","api":"tone_map(&RgbaPlane, source_depth, &ToneMapOptions{exposure_ev,white,encoding,target_depth}, &HdrLimits, &CancellationToken) -> TonedPlane{bounds,depth,data [u16;4]}","source_depths":[32],"target_depths":[8,16]}],"readings":{"merge":"Debevec-Malik 1997 hat on the largest channel over (black 1/512, clip 0.98), linear-light weighted mean of z / relative_exposure; all-zero-weight pixels take the longest unclipped exposure, else the shortest clipped one","align":"Ward 2003 median threshold bitmaps, translation only, each frame to the reference, exclusion band median/16, bounded by max_shift (1..64) and an 8-sample coarsest level","deghost":"levels 0..3 = off, 1, 1/2, 1/4 stop; inconsistent pixels take the anchor (reference) radiance","tone_map":"exposure 2^ev, Reinhard 2002 eq. 4 on Rec.709 luminance, hue-preserving scale, Prism DisplayEncoding srgb/bt1886/gamma22, round(v * (2^depth - 1))"},"errors":["hdr_too_few_frames","hdr_too_many_frames","hdr_missing_exposure","hdr_invalid_exposure","hdr_mixed_exposure_units","hdr_size_mismatch","hdr_shape","hdr_nonfinite","hdr_parameter","unsupported_depth","hdr_over_budget","hdr_overflow","canceled"],"unverified":["Photoshop Merge to HDR Pro and HDR Toning parity (D5)","Lightroom HDR merge auto-align / deghost amounts (D5)"],"pending":["32-bit HDR editing workflow and preview exposure (STU-RAS-033)","local tone-mapping operators","rotation/scale alignment"],"proven_by":["tests/hdr_merge.rs"]}"#;
 
 /// Largest bracket size.
 pub const HDR_MAX_FRAMES: usize = 16;
@@ -134,6 +166,10 @@ pub struct MergeOptions {
     pub clip: f32,
     /// Index of the reference frame; `None` = the median exposure (the darker middle for even N).
     pub reference: Option<usize>,
+    /// Align every frame to the reference first; `None` = the frames are already registered.
+    pub align: Option<AlignOptions>,
+    /// Deghost level `0..=DEGHOST_MAX_LEVEL` (0 = off).
+    pub deghost: u8,
 }
 impl Default for MergeOptions {
     fn default() -> Self {
@@ -141,6 +177,8 @@ impl Default for MergeOptions {
             black: HDR_BLACK_DEFAULT,
             clip: HDR_CLIP_DEFAULT,
             reference: None,
+            align: None,
+            deghost: 0,
         }
     }
 }
@@ -174,8 +212,12 @@ pub struct HdrMerged {
     pub reference: usize,
     /// Light gathered by each frame relative to the reference (`2^(ev - ev_ref)` or `t / t_ref`).
     pub relative_exposure: Vec<f64>,
+    /// Offset applied to each frame (`(0, 0)` without alignment; always `(0, 0)` for the reference).
+    pub shifts: Vec<(i64, i64)>,
     /// Pixels where every sample had zero weight (supplied by the fallback rule).
     pub fallback_pixels: u64,
+    /// Pixels the deghost rule gave to the anchor sample.
+    pub ghost_pixels: u64,
 }
 
 /// Typed failure.
@@ -326,7 +368,7 @@ fn admit_bracket(brackets: &[Bracket<'_>], options: &MergeOptions) -> Result<Adm
     if !(black.is_finite() && clip.is_finite() && black >= 0.0 && black < clip) {
         return Err(HdrError::Parameter);
     }
-    if options.reference.is_some_and(|r| r >= n) {
+    if options.reference.is_some_and(|r| r >= n) || options.deghost > DEGHOST_MAX_LEVEL {
         return Err(HdrError::Parameter);
     }
     let bounds = brackets[0].frame.bounds;
@@ -389,6 +431,27 @@ fn admit_bracket(brackets: &[Bracket<'_>], options: &MergeOptions) -> Result<Adm
     })
 }
 
+/// One frame's contribution to one pixel.
+#[derive(Clone, Copy)]
+enum Kind {
+    /// Positive hat weight.
+    Weighted(f64),
+    /// Unclipped with zero weight (near black).
+    Dark,
+    Clipped,
+    /// Outside the aligned frame.
+    Uncovered,
+}
+
+#[derive(Clone, Copy)]
+struct Sample {
+    kind: Kind,
+    /// `z / relative_exposure` per channel.
+    radiance: [f64; 3],
+    /// Largest-channel radiance.
+    level: f64,
+}
+
 /// Merge a bracket into one 32-bit linear radiance frame (module docs).
 pub fn merge_brackets(
     brackets: &[Bracket<'_>],
@@ -397,54 +460,90 @@ pub fn merge_brackets(
     cancel: &CancellationToken,
 ) -> Result<HdrMerged, HdrError> {
     let a = admit_bracket(brackets, options)?;
+    if let Some(al) = &options.align {
+        align::check_align(al, a.bounds.width, a.bounds.height)?;
+    }
     let area = a.area as u64;
     let n = brackets.len() as u64;
-    let bytes = area.checked_mul(16).ok_or(HdrError::Overflow)?;
-    let work = area.checked_mul(n).ok_or(HdrError::Overflow)?;
+    let mut bytes = area.checked_mul(16).ok_or(HdrError::Overflow)?;
+    let mut work = area.checked_mul(n).ok_or(HdrError::Overflow)?;
+    if options.align.is_some() {
+        let align_bytes = area.checked_mul(align::ALIGN_BYTES_PER_SAMPLE).ok_or(HdrError::Overflow)?;
+        bytes = bytes.checked_add(align_bytes).ok_or(HdrError::Overflow)?;
+        let align_work = area
+            .checked_mul(align::ALIGN_WORK_PER_SAMPLE)
+            .and_then(|v| v.checked_mul(n))
+            .ok_or(HdrError::Overflow)?;
+        work = work.checked_add(align_work).ok_or(HdrError::Overflow)?;
+    }
     admit(bytes, work, limits)?;
     check_cancel(cancel)?;
 
+    let mut shifts = vec![(0i64, 0i64); brackets.len()];
+    if let Some(al) = &options.align {
+        let pyramid = align::reference_pyramid(brackets[a.reference].frame, al);
+        for (i, b) in brackets.iter().enumerate() {
+            if i != a.reference {
+                shifts[i] = align::align_to(&pyramid, b.frame, cancel)?;
+            }
+        }
+    }
+
     let black = f64::from(options.black);
     let clip = f64::from(options.clip);
+    let ratio = DEGHOST_RATIOS[usize::from(options.deghost)];
+    let (w, h) = (i64::from(a.bounds.width), i64::from(a.bounds.height));
     let width = a.bounds.width as usize;
     let mut out = Vec::with_capacity(a.area);
     let mut fallback_pixels = 0u64;
+    let mut ghost_pixels = 0u64;
+    let mut samples = [Sample {
+        kind: Kind::Uncovered,
+        radiance: [0.0; 3],
+        level: 0.0,
+    }; HDR_MAX_FRAMES];
     for (p, reference_sample) in brackets[a.reference].frame.data.iter().enumerate() {
         if p % width == 0 {
             check_cancel(cancel)?;
         }
-        let mut weight_sum = 0.0f64;
-        let mut acc = [0.0f64; 3];
-        // Fallbacks: longest unclipped (near-black) exposure, else shortest clipped exposure.
-        let mut dark: Option<usize> = None;
-        let mut clipped: Option<usize> = None;
+        let (x, y) = ((p % width) as i64, (p / width) as i64);
         for (i, b) in brackets.iter().enumerate() {
-            let z = b.frame.data[p];
-            let m = largest(z);
-            let w = hat(m, black, clip);
-            if w > 0.0 {
+            let (sx, sy) = (x - shifts[i].0, y - shifts[i].1);
+            samples[i] = if (0..w).contains(&sx) && (0..h).contains(&sy) {
+                let z = b.frame.data[(sy * w + sx) as usize];
+                let m = largest(z);
                 let s = a.relative[i];
-                weight_sum += w;
-                for (sum, v) in acc.iter_mut().zip(z) {
-                    *sum += w * (f64::from(v) / s);
+                let wt = hat(m, black, clip);
+                Sample {
+                    kind: if wt > 0.0 {
+                        Kind::Weighted(wt)
+                    } else if m >= clip {
+                        Kind::Clipped
+                    } else {
+                        Kind::Dark
+                    },
+                    radiance: [f64::from(z[0]) / s, f64::from(z[1]) / s, f64::from(z[2]) / s],
+                    level: m / s,
                 }
-            } else if m >= clip {
-                if clipped.is_none_or(|j| a.relative[i] < a.relative[j]) {
-                    clipped = Some(i);
+            } else {
+                Sample {
+                    kind: Kind::Uncovered,
+                    radiance: [0.0; 3],
+                    level: 0.0,
                 }
-            } else if dark.is_none_or(|j| a.relative[i] > a.relative[j]) {
-                dark = Some(i);
-            }
+            };
         }
-        let rgb = if weight_sum > 0.0 {
-            [acc[0] / weight_sum, acc[1] / weight_sum, acc[2] / weight_sum]
-        } else {
-            fallback_pixels += 1;
-            // At least one of the two exists: every sample is either weighted, dark or clipped.
-            let i = dark.or(clipped).ok_or(HdrError::Overflow)?;
-            let z = brackets[i].frame.data[p];
-            let s = a.relative[i];
-            [f64::from(z[0]) / s, f64::from(z[1]) / s, f64::from(z[2]) / s]
+        let samples = &samples[..brackets.len()];
+        let rgb = match merge_pixel(samples, &a.relative, a.reference, ratio) {
+            Merged::Weighted(rgb) => rgb,
+            Merged::Ghost(rgb) => {
+                ghost_pixels += 1;
+                rgb
+            }
+            Merged::Fallback(rgb) => {
+                fallback_pixels += 1;
+                rgb
+            }
         };
         let px = [rgb[0] as f32, rgb[1] as f32, rgb[2] as f32, reference_sample[3]];
         if !px[..3].iter().all(|v| v.is_finite()) {
@@ -460,6 +559,77 @@ pub fn merge_brackets(
         depth: HDR_OUTPUT_DEPTH,
         reference: a.reference,
         relative_exposure: a.relative,
+        shifts,
         fallback_pixels,
+        ghost_pixels,
     })
+}
+
+enum Merged {
+    Weighted([f64; 3]),
+    Ghost([f64; 3]),
+    Fallback([f64; 3]),
+}
+
+/// One pixel from its samples (module docs): deghost anchor test, weighted mean, fallbacks.
+fn merge_pixel(samples: &[Sample], relative: &[f64], reference: usize, ghost_ratio: f64) -> Merged {
+    let weighted = |i: usize| matches!(samples[i].kind, Kind::Weighted(_));
+    if ghost_ratio.is_finite() {
+        // Anchor: the reference when weighted, else the weighted sample nearest its exposure.
+        let distance = |i: usize| relative[i].max(1.0 / relative[i]);
+        let anchor = if weighted(reference) {
+            Some(reference)
+        } else {
+            (0..samples.len())
+                .filter(|&i| weighted(i))
+                .fold(None, |best: Option<usize>, i| match best {
+                    Some(j) if distance(j) <= distance(i) => Some(j),
+                    _ => Some(i),
+                })
+        };
+        if let Some(k) = anchor {
+            let lv = samples[k].level;
+            let ghost = (0..samples.len()).any(|i| {
+                i != k && weighted(i) && {
+                    let r = samples[i].level / lv;
+                    r > ghost_ratio || r < 1.0 / ghost_ratio
+                }
+            });
+            if ghost {
+                return Merged::Ghost(samples[k].radiance);
+            }
+        }
+    }
+    let mut weight_sum = 0.0f64;
+    let mut acc = [0.0f64; 3];
+    // Fallbacks: longest unclipped (near-black) exposure, else shortest clipped exposure.
+    let mut dark: Option<usize> = None;
+    let mut clipped: Option<usize> = None;
+    for (i, s) in samples.iter().enumerate() {
+        match s.kind {
+            Kind::Weighted(wt) => {
+                weight_sum += wt;
+                for (sum, v) in acc.iter_mut().zip(s.radiance) {
+                    *sum += wt * v;
+                }
+            }
+            Kind::Clipped => {
+                if clipped.is_none_or(|j| relative[i] < relative[j]) {
+                    clipped = Some(i);
+                }
+            }
+            Kind::Dark => {
+                if dark.is_none_or(|j| relative[i] > relative[j]) {
+                    dark = Some(i);
+                }
+            }
+            Kind::Uncovered => {}
+        }
+    }
+    if weight_sum > 0.0 {
+        return Merged::Weighted([acc[0] / weight_sum, acc[1] / weight_sum, acc[2] / weight_sum]);
+    }
+    // The reference is never shifted, so at least one sample is covered (dark or clipped here).
+    let i = dark.or(clipped).unwrap_or(reference);
+    Merged::Fallback(samples[i].radiance)
 }
