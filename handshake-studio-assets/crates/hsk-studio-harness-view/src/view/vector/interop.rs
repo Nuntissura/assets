@@ -13,7 +13,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::Viewer;
 use super::style::effective_design;
-use super::{ENTRY, EntryAssets, PathRecord, VectorEntry, VectorStyle};
+use super::{ENTRY, PathRecord, VectorEntry, VectorStyle};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::FillPaint;
 use hsk_studio_composite::vector::{VectorResolution, expand_vectors};
@@ -421,10 +421,15 @@ impl Viewer {
         let entry = self.vector_entry()?;
         let design = effective_design(doc, &entry)?;
         let records = entry.folio_records(&doc.document_id);
-        let (layers, refused) = expand_vectors(snap, &design, &records, &EntryAssets(&entry), hsk_studio_composite::BlendSpace::Encoded, &VectorResolution::default(), self.cancel)
+        // Live path and area text (lane SMB-AI-AREA-TYPE-3): the canvas's shaping, fills encoded
+        // for this plan; a story that cannot be shaped keeps its typed report as a loss.
+        let text = self.text_entry().ok();
+        let assets = self.live_text_assets_in(&entry, text.as_ref(), hsk_studio_composite::BlendSpace::Encoded);
+        let (layers, refused) = expand_vectors(snap, &design, &records, &assets, hsk_studio_composite::BlendSpace::Encoded, &VectorResolution::default(), self.cancel)
             .map_err(|e| format!("svg_export: {e:?}"))?;
         let expanded: BTreeMap<&str, &hsk_studio_composite::vector::ExpandedLayer> = layers.iter().map(|l| (l.layer_id.as_str(), l)).collect();
         let mut losses: Vec<String> = refused.iter().map(|(l, c)| format!("{l}: refused:{c}")).collect();
+        losses.extend(assets.losses());
         // Clips and masks: a VECTOR mask is written as a clip of its source geometry; ALPHA and
         // LUMINANCE masks stay masks. Layers under a clip source are written as geometry.
         let mut out_records = folio::StudioVectorRecords::new(doc.document_id.clone());

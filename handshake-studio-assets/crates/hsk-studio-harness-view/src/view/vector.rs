@@ -49,7 +49,8 @@ use hsk_studio_nib::OwnedPath;
 use hsk_studio_nib::pathfinder::{PathfinderOp, pathfinder};
 use hsk_studio_nib::shape::{self, CornerKind, EllipseSpec, RectSpec};
 use hsk_studio_nib::stroke::{LineJoin, StrokeOptions, StrokeStyle, outline_stroke};
-use hsk_studio_nib::{FillRule, Mirroring, PathPoint};
+use hsk_studio_nib::{FillRule, Mirroring, PathElement, PathPoint};
+use hsk_studio_type as ty;
 use serde_json::{Value, json};
 
 /// Session document entry token of the vector records.
@@ -684,6 +685,9 @@ impl VectorEntry {
         // Lane SMB-AI-TYPE-PATH-RECOLOR: meshes and path texts of layers the document holds.
         r.gradient_meshes.retain(|m| vector(&m.layer_id));
         r.path_texts.retain(|p| doc.layers.iter().any(|l| l.layer_id == p.path_layer_id && matches!(&l.payload, Payload::Vector { path_ids } if path_ids.contains(&p.path_id))));
+        // Lane SMB-AI-AREA-TYPE-3: area texts likewise (a deleted container layer keeps its record
+        // for the revisions the history can return to).
+        r.area_texts.retain(|a| doc.layers.iter().any(|l| l.layer_id == a.container_layer_id && matches!(&l.payload, Payload::Vector { path_ids } if path_ids.contains(&a.container_id))));
         let design = self.design.clone().unwrap_or_else(|| folio::StudioDesignRecords::new(doc.document_id.clone()));
         folio::validate_vector_records(&r, doc, Some(&design), folio::Budget::default(), cancel).map_err(|d| format!("vector_entry_vector_records: {:?} {}", d.code, d.target))
     }
@@ -816,7 +820,31 @@ struct LiveTextAssets<'a> {
     text: Option<&'a super::text::TextEntry>,
     fonts: &'a [super::text::FontFile],
     cancel: &'a hsk_studio_accord::CancellationToken,
+    /// The plan's blend space: story fills are linear light; an `Encoded` plan (the exports) gets
+    /// them sRGB-encoded so exported text keeps the canvas colour.
+    space: hsk_studio_composite::BlendSpace,
     unshaped: std::cell::RefCell<Vec<(String, String)>>,
+}
+
+impl LiveTextAssets<'_> {
+    /// One typed loss line per story that could not be shaped (lane SMB-AI-AREA-TYPE-3: an export
+    /// keeps composite's `vector_text_not_provided` report with the viewer's reason).
+    fn losses(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (id, why) in self.unshaped.borrow().iter() {
+            let line = format!("{id}: {} ({why})", hsk_studio_composite::vector_text::TEXT_NOT_PROVIDED);
+            if !out.contains(&line) {
+                out.push(line);
+            }
+        }
+        out
+    }
+}
+
+/// sRGB transfer of one linear-light channel.
+fn srgb_encode(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
 }
 
 impl hsk_studio_composite::VectorAssets for LiveTextAssets<'_> {
@@ -837,7 +865,17 @@ impl hsk_studio_composite::VectorAssets for LiveTextAssets<'_> {
             Some(entry) => super::text::shaped_story(entry, self.fonts, text_id, self.cancel),
             None => Err("text_entry_unavailable".into()),
         };
-        shaped.map_err(|e| self.unshaped.borrow_mut().push((text_id.to_string(), e))).ok()
+        let mut shaped = shaped.map_err(|e| self.unshaped.borrow_mut().push((text_id.to_string(), e))).ok()?;
+        if self.space == hsk_studio_composite::BlendSpace::Encoded {
+            for p in &mut shaped.paints {
+                if let hsk_studio_composite::FillPaint::Solid(c) = p {
+                    for v in c.iter_mut().take(3) {
+                        *v = srgb_encode(*v);
+                    }
+                }
+            }
+        }
+        Some(shaped)
     }
 }
 
@@ -871,6 +909,74 @@ fn mint_path_id(doc: &StudioDocument, entry: &VectorEntry) -> String {
             return id;
         }
         n = n.wrapping_add(1);
+    }
+}
+
+/// A status line for one live text report (lane SMB-AI-AREA-TYPE-3).
+fn live_text_line(s: &VectorTextStatus) -> String {
+    let id = &s.report.text_id;
+    match &s.report.outcome {
+        Ok(d) if d.overset_count > 0 => format!("live text {id}: {} glyphs placed, {} overset", d.placed, d.overset_count),
+        Ok(d) => format!("live text {id}: {} glyphs placed", d.placed),
+        Err(code) => format!("live text {id}: {code}{}", s.unshaped.as_deref().map(|u| format!(" ({u})")).unwrap_or_default()),
+    }
+}
+
+/// Type's baseline commands as a nib path (non-zero).
+fn owned_of(commands: &[ty::BaselineCommand]) -> OwnedPath {
+    let q = |a: [f64; 2]| PathPoint::new(a[0], a[1]);
+    OwnedPath {
+        elements: commands
+            .iter()
+            .map(|c| match *c {
+                ty::BaselineCommand::MoveTo(a) => PathElement::MoveTo(q(a)),
+                ty::BaselineCommand::LineTo(a) => PathElement::LineTo(q(a)),
+                ty::BaselineCommand::QuadTo(a, b) => PathElement::QuadTo(q(a), q(b)),
+                ty::BaselineCommand::CubicTo(a, b, d) => PathElement::CubicTo(q(a), q(b), q(d)),
+                ty::BaselineCommand::Close => PathElement::Close,
+            })
+            .collect(),
+        fill_rule: FillRule::NonZero,
+    }
+}
+
+/// A nib path as Type's baseline commands.
+fn baseline_of(path: &OwnedPath) -> Vec<ty::BaselineCommand> {
+    let p = |q: PathPoint| [q.x, q.y];
+    path.elements
+        .iter()
+        .map(|e| match *e {
+            PathElement::MoveTo(a) => ty::BaselineCommand::MoveTo(p(a)),
+            PathElement::LineTo(a) => ty::BaselineCommand::LineTo(p(a)),
+            PathElement::QuadTo(a, b) => ty::BaselineCommand::QuadTo(p(a), p(b)),
+            PathElement::CubicTo(a, b, c) => ty::BaselineCommand::CubicTo(p(a), p(b), p(c)),
+            PathElement::Close => ty::BaselineCommand::Close,
+        })
+        .collect()
+}
+
+/// Type's area options of a Folio area-text binding (as composite lays it out).
+fn area_options(a: &folio::StudioAreaText, align: ty::TextAlign) -> ty::AreaTextOptions {
+    use folio::{StudioAutoSize as S, StudioFirstBaseline as B};
+    ty::AreaTextOptions {
+        inset_pt: a.inset,
+        first_baseline: match a.first_baseline {
+            B::Ascent => ty::FirstBaseline::Ascent,
+            B::CapHeight => ty::FirstBaseline::CapHeight,
+            B::XHeight => ty::FirstBaseline::XHeight,
+            B::Leading => ty::FirstBaseline::Leading,
+            B::Fixed => ty::FirstBaseline::Fixed,
+        },
+        first_baseline_min_pt: a.first_baseline_min,
+        auto_size: match a.auto_size {
+            S::Off => ty::AutoSize::Off,
+            S::HeightOnly => ty::AutoSize::HeightOnly,
+            S::WidthOnly => ty::AutoSize::WidthOnly,
+            S::HeightAndWidth => ty::AutoSize::HeightAndWidth,
+            S::HeightAndWidthProportional => ty::AutoSize::HeightAndWidthProportional,
+        },
+        align,
+        ..ty::AreaTextOptions::default()
     }
 }
 
@@ -1161,7 +1267,12 @@ impl Viewer {
     }
 
     fn live_text_assets<'a>(&'a self, entry: &'a VectorEntry, text: Option<&'a super::text::TextEntry>) -> LiveTextAssets<'a> {
-        LiveTextAssets { entry: EntryAssets(entry), text, fonts: &self.fonts, cancel: self.cancel, unshaped: std::cell::RefCell::new(Vec::new()) }
+        self.live_text_assets_in(entry, text, hsk_studio_composite::BlendSpace::LinearLight)
+    }
+
+    /// [`Self::live_text_assets`] for a plan in `space` (the exports use `Encoded`).
+    fn live_text_assets_in<'a>(&'a self, entry: &'a VectorEntry, text: Option<&'a super::text::TextEntry>, space: hsk_studio_composite::BlendSpace) -> LiveTextAssets<'a> {
+        LiveTextAssets { entry: EntryAssets(entry), text, fonts: &self.fonts, cancel: self.cancel, space, unshaped: std::cell::RefCell::new(Vec::new()) }
     }
 
     /// The live path- and area-text bindings of the open document as the window draws them (lane
@@ -1290,7 +1401,299 @@ impl Viewer {
             self.commit_entry(op, layer_id, &entry)?;
             Ok(story_id)
         })();
+        let r = self.report(r);
+        if let Ok(id) = &r {
+            self.echo_live_text(id);
+        }
+        r
+    }
+
+    /// Says composite's report of live story `text_id` on the status line (lane SMB-AI-AREA-TYPE-3):
+    /// placed and overset glyphs, or the typed code with the viewer's reason for an unshaped story.
+    fn echo_live_text(&mut self, text_id: &str) {
+        let line = match self.vector_text_reports() {
+            Ok(reports) => match reports.iter().find(|r| r.report.text_id == text_id) {
+                Some(s) => live_text_line(s),
+                None => return,
+            },
+            Err(e) => format!("live text {text_id}: {e}"),
+        };
+        self.say(line);
+    }
+
+    /// The live story bound to a path of vector layer `layer_id` (path texts first).
+    fn live_binding(entry: &VectorEntry, layer_id: &str) -> Option<String> {
+        let r = &entry.records;
+        r.path_texts.iter().find(|p| p.path_layer_id == layer_id).map(|p| p.story_id.clone()).or_else(|| r.area_texts.iter().find(|a| a.container_layer_id == layer_id).map(|a| a.text_id.clone()))
+    }
+
+    /// Converts point text to area text or area text to point text (lane SMB-AI-AREA-TYPE-3;
+    /// STU-TYP-114 through Type's `point_to_area` / `area_to_point`), as ONE undo step
+    /// ([`hsk_studio_harness_core::Run::restructure_and_entry`]):
+    /// - a point-text layer becomes a vector layer holding the rectangle `point_to_area` derives
+    ///   from the point layout (no fill, no stroke) with a `StudioAreaText` binding (inset 0, first
+    ///   baseline ascent, auto-size off), so the area layout reproduces the point glyph positions;
+    ///   the text layer is removed;
+    /// - a vector layer with an area-text binding becomes a point-text layer at the origin
+    ///   `area_to_point` derives (the first line's baseline; x = the first line's pen start, as
+    ///   text layers draw left from their origin); the container layer and its binding are removed.
+    ///
+    /// The story is copied under the new layer's id with the other `text_kind`; ranges, styles and
+    /// text are kept unchanged (no character added or removed; soft wraps stay soft). The copy is
+    /// written to the `text` entry first (unbound it draws nothing; undo leaves it, as
+    /// [`Self::bind_live_text`] does). Selects and returns the new layer. Illustrator behaviour
+    /// UNVERIFIED (D5).
+    pub fn convert_text_kind(&mut self, layer_id: &str) -> Result<String, String> {
+        let r = (|| {
+            let doc = self.vdoc()?;
+            let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| format!("convert_text: no layer {layer_id}"))?;
+            match layer.payload.clone() {
+                Payload::Text { story_id } => self.point_to_area_inner(layer_id, &story_id),
+                Payload::Vector { .. } => self.area_to_point_inner(layer_id),
+                _ => Err("convert_text: select a point-text layer or a vector layer with area text".into()),
+            }
+        })();
+        match self.report(r) {
+            Ok((id, story)) => {
+                if let Some(story) = story {
+                    self.echo_live_text(&story);
+                }
+                Ok(id)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The new layer that replaces `old` (same parent and name, directly above `old`, which is
+    /// removed in the same transaction): its id and the placement writes. `payload` may name the
+    /// story `STXT-<new layer uuid>` by a `story_id` of `""`.
+    fn replacement(&self, old: &str, kind: &str, payload: Value) -> Result<(String, Vec<PlacementWrite>), String> {
+        let doc = self.vdoc()?;
+        let (parent, _) = self.run.placement(old).ok_or_else(|| format!("{old} is not in a layer stack"))?;
+        let name = doc.layers.iter().find(|l| l.layer_id == old).map(|l| l.name.clone()).unwrap_or_default();
+        let id = super::layers::mint_layer_id(doc, u64::try_from(doc.layers.len()).unwrap_or(0));
+        let mut payload = payload;
+        if let Some(story) = payload.get_mut("story_id")
+            && story.as_str() == Some("")
+        {
+            *story = json!(format!("STXT-{}", id.get(5..).unwrap_or_default()));
+        }
+        let layer = super::layers::new_layer(&id, &name, &parent, kind, payload)?;
+        let operation = super::layers::operation_for(&id, false)?;
+        let writes = vec![
+            PlacementWrite { layer_id: id.clone(), to: Some(Place::Before(old.to_string())), create: Some((layer, operation)) },
+            PlacementWrite { layer_id: old.to_string(), to: None, create: None },
+        ];
+        Ok((id, writes))
+    }
+
+    /// Commits `writes` and the vector entry as ONE undo step; selects `new_id`.
+    fn replace_with_entry(&mut self, op: &str, writes: &[PlacementWrite], entry: &VectorEntry, new_id: &str) -> Result<(), String> {
+        if !entry_persistable() {
+            return Err(format!("{op}: vector_entry_not_persistable"));
+        }
+        let bytes = entry.to_bytes(&self.vdoc()?.document_id)?;
+        let ok = self.run.restructure_and_entry(op, writes, ENTRY, bytes);
+        self.after_edit(ok, format!("{op} {new_id}"))?;
+        self.selected = Some(new_id.to_string());
+        Ok(())
+    }
+
+    /// The shaped story and point layout of a text layer record (left-aligned from its origin, as
+    /// text layers draw).
+    fn point_layout(&self, text_entry: &super::text::TextEntry, record: &super::text::TextLayerRecord) -> Result<(hsk_studio_composite::vector_text::ShapedStory, ty::PointTextLayout), String> {
+        let shaped = super::text::shaped_story(text_entry, &self.fonts, &record.story_id, self.cancel)?;
+        let runs: Vec<ty::ComposeRun> = shaped.runs.iter().map(|r| r.metrics).collect();
+        let glyphs: Vec<ty::ComposeGlyph> = shaped.glyphs.iter().map(|g| ty::ComposeGlyph { advance_pt: g.advance_pt, brk: g.brk }).collect();
+        let layout = ty::layout_point_text(record.origin_px, &runs, &glyphs, ty::TextAlign::Left, &ty::AreaTextLimits::default()).map_err(|e| format!("point_text_layout: {e:?}"))?;
+        Ok((shaped, layout))
+    }
+
+    /// The text layer record of point-text layer `layer_id` (story `story_id`).
+    fn text_record(text_entry: &super::text::TextEntry, layer_id: &str, story_id: &str) -> Result<super::text::TextLayerRecord, String> {
+        text_entry.layers.iter().find(|r| r.layer_id == layer_id && r.story_id == story_id).cloned().ok_or_else(|| format!("text layer {layer_id} has no text record"))
+    }
+
+    /// A copy of story `from` as `to` with `kind` (every range, style and character kept).
+    fn story_copy(text_entry: &super::text::TextEntry, from: &str, to: &str, kind: folio::StoryTextKind) -> Result<folio::StudioTextStory, String> {
+        let mut story = text_entry.stories.iter().find(|s| s.story_id == from).cloned().ok_or_else(|| format!("text_story_missing: {from}"))?;
+        story.story_id = to.to_string();
+        story.text_kind = kind;
+        Ok(story)
+    }
+
+    fn point_to_area_inner(&mut self, layer_id: &str, story_id: &str) -> Result<(String, Option<String>), String> {
+        let op = "convert_point_to_area";
+        let mut text_entry = self.text_entry()?;
+        let record = Self::text_record(&text_entry, layer_id, story_id)?;
+        let (shaped, layout) = self.point_layout(&text_entry, &record)?;
+        let area = ty::point_to_area(ty::PointText { story: (), origin: record.origin_px, align: shaped.align }, &layout).map_err(|e| format!("{op}: {e:?}"))?;
+        let path = AnchorPath::from_owned_path(&owned_of(&area.container)).map_err(|e| format!("{op}: {}", e.code()))?;
+        let mut entry = self.vector_entry()?;
+        if entry.paths.len() >= MAX_PATHS {
+            return Err(format!("{op}: vector_entry_over_budget"));
+        }
+        let path_id = mint_path_id(self.vdoc()?, &entry);
+        let (id, writes) = self.replacement(layer_id, "vector", json!({"payload_kind": "vector", "path_ids": [path_id]}))?;
+        let new_story = format!("STXT-{}", id.get(5..).unwrap_or_default());
+        let story = Self::story_copy(&text_entry, story_id, &new_story, folio::StoryTextKind::Area)?;
+        text_entry.stories.retain(|s| s.story_id != new_story);
+        text_entry.stories.push(story);
+        text_entry.validate(self.vdoc()?, self.cancel)?;
+        entry.paths.push(PathRecord::plain(path_id.clone(), path, VectorStyle { fill: None, stroke: None, stroke_width: 0.0 }));
+        entry.records.area_texts.retain(|a| a.text_id != new_story);
+        entry.records.area_texts.push(folio::StudioAreaText {
+            text_id: new_story.clone(),
+            container_layer_id: id.clone(),
+            container_id: path_id,
+            inset: 0.0,
+            first_baseline: folio::StudioFirstBaseline::Ascent,
+            first_baseline_min: 0.0,
+            auto_size: folio::StudioAutoSize::Off,
+        });
+        self.run.set_document_entry(super::text::ENTRY, Some(text_entry.to_bytes()?)).map_err(|e| format!("{op}: text entry {e}"))?;
+        self.replace_with_entry(op, &writes, &entry, &id)?;
+        Ok((id, Some(new_story)))
+    }
+
+    fn area_to_point_inner(&mut self, layer_id: &str) -> Result<(String, Option<String>), String> {
+        let op = "convert_area_to_point";
+        let mut entry = self.vector_entry()?;
+        let binding = entry.records.area_texts.iter().find(|a| a.container_layer_id == layer_id).cloned().ok_or_else(|| format!("{op}: {layer_id} holds no area text"))?;
+        let mut text_entry = self.text_entry()?;
+        let shaped = super::text::shaped_story(&text_entry, &self.fonts, &binding.text_id, self.cancel)?;
+        let container = entry.path(&binding.container_id).ok_or_else(|| format!("vector_path_unresolved: {}", binding.container_id))?.path.to_owned_path().map_err(|e| format!("{op}: {}", e.code()))?;
+        let commands = baseline_of(&container);
+        let options = area_options(&binding, shaped.align);
+        let runs: Vec<ty::ComposeRun> = shaped.runs.iter().map(|r| r.metrics).collect();
+        let glyphs: Vec<ty::ComposeGlyph> = shaped.glyphs.iter().map(|g| ty::ComposeGlyph { advance_pt: g.advance_pt, brk: g.brk }).collect();
+        let layout = ty::layout_area_text(&commands, &runs, &glyphs, &options, &ty::AreaTextLimits::default()).map_err(|e| format!("{op}: {e:?}"))?;
+        let point = ty::area_to_point(ty::AreaText { story: (), container: commands, options }, &layout);
+        // Text layers draw left from their origin: the first line's pen start.
+        let origin = [layout.lines.first().map_or(point.origin[0], |l| l.x), point.origin[1]];
+        let (id, writes) = self.replacement(layer_id, "text", json!({"payload_kind": "text", "story_id": ""}))?;
+        let new_story = format!("STXT-{}", id.get(5..).unwrap_or_default());
+        let story = Self::story_copy(&text_entry, &binding.text_id, &new_story, folio::StoryTextKind::Point)?;
+        let paragraph_style = story.paragraphs.first().and_then(|p| p.style_ref.clone()).ok_or_else(|| format!("{op}: story without a paragraph style"))?;
+        let character_style = story.character_ranges.first().and_then(|r| r.style_ref.clone()).ok_or_else(|| format!("{op}: story without a character style"))?;
+        text_entry.stories.retain(|s| s.story_id != new_story);
+        text_entry.stories.push(story);
+        text_entry.layers.retain(|l| l.layer_id != id);
+        text_entry.layers.push(super::text::TextLayerRecord { layer_id: id.clone(), story_id: new_story, origin_px: origin, paragraph_style, character_style });
+        text_entry.validate(self.vdoc()?, self.cancel)?;
+        entry.records.area_texts.retain(|a| a.container_layer_id != layer_id);
+        self.run.set_document_entry(super::text::ENTRY, Some(text_entry.to_bytes()?)).map_err(|e| format!("{op}: text entry {e}"))?;
+        self.replace_with_entry(op, &writes, &entry, &id)?;
+        Ok((id, None))
+    }
+
+    /// Create Outlines (lane SMB-AI-AREA-TYPE-3; STU-VEC-038, AI-29) of a text layer or a vector
+    /// layer's live text, as ONE undo step:
+    /// - a vector layer with a live path- or area-text binding: composite's
+    ///   `create_text_outlines` (the geometry the canvas draws; overset glyphs are not outlined)
+    ///   becomes one filled path per paint row (the glyph compound paths of that row, non-zero,
+    ///   fill = the row colour sRGB-encoded) appended to the layer's paths, and the binding is
+    ///   removed: one chronicle `vector_paths` write and the vector entry in the same step
+    ///   ([`hsk_studio_harness_core::Run::set_vector_paths_and_entry`]); the container / baseline
+    ///   path stays as it is (declared reading; Illustrator UNVERIFIED, D5);
+    /// - a point-text layer: Type's `create_outlines` over the point layout becomes a vector layer
+    ///   with one path per paint row that replaces the text layer
+    ///   ([`hsk_studio_harness_core::Run::restructure_and_entry`]).
+    ///
+    /// A story that cannot be shaped is refused with composite's `vector_text_not_provided` and the
+    /// viewer's reason (nothing changes). Selects and returns the outlined layer.
+    pub fn create_outlines(&mut self, layer_id: &str) -> Result<String, String> {
+        let r = (|| {
+            let op = "create_outlines";
+            let doc = self.vdoc()?;
+            let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| format!("{op}: no layer {layer_id}"))?;
+            match layer.payload.clone() {
+                Payload::Text { story_id } => {
+                    let text_entry = self.text_entry()?;
+                    let record = Self::text_record(&text_entry, layer_id, &story_id)?;
+                    let (shaped, layout) = self.point_layout(&text_entry, &record)?;
+                    let size = shaped.runs.first().map_or(0.0, |r| r.font_size_pt);
+                    let sources: Vec<ty::OutlineSource<'_>> = shaped.glyphs.iter().map(|g| ty::OutlineSource { outline: &g.outline, font_size_pt: size, paint: g.paint }).collect();
+                    let outlined = ty::create_outlines(&layout, &sources, &ty::CreateOutlinesLimits::default()).map_err(|e| format!("{op}: {e:?}"))?;
+                    let mut rows: Vec<(usize, Vec<OwnedPath>)> = Vec::new();
+                    for g in outlined {
+                        match rows.iter_mut().find(|(p, _)| *p == g.paint) {
+                            Some((_, paths)) => paths.push(owned_of(&g.commands)),
+                            None => rows.push((g.paint, vec![owned_of(&g.commands)])),
+                        }
+                    }
+                    rows.sort_by_key(|(p, _)| *p);
+                    let rows = rows
+                        .into_iter()
+                        .map(|(p, paths)| Ok((shaped.paints.get(p).cloned().ok_or_else(|| format!("{op}: paint row"))?, paths)))
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let mut entry = self.vector_entry()?;
+                    let ids = self.outline_records(op, &mut entry, rows)?;
+                    let (id, writes) = self.replacement(layer_id, "vector", json!({"payload_kind": "vector", "path_ids": ids}))?;
+                    self.replace_with_entry(op, &writes, &entry, &id)?;
+                    Ok(id)
+                }
+                Payload::Vector { path_ids } => {
+                    let mut entry = self.vector_entry()?;
+                    let text_id = Self::live_binding(&entry, layer_id).ok_or_else(|| format!("{op}: {layer_id} holds no live text"))?;
+                    let text = self.text_entry().ok();
+                    let records = entry.folio_records(&doc.document_id);
+                    let outcome = {
+                        let assets = self.live_text_assets(&entry, text.as_ref());
+                        match hsk_studio_composite::vector_text::create_text_outlines(&records, &text_id, &assets) {
+                            Ok((_, rows, _)) => Ok(rows.into_iter().map(|r| (r.paint, r.paths)).collect::<Vec<_>>()),
+                            Err(code) => {
+                                let why = assets.unshaped.borrow().iter().find(|(id, _)| *id == text_id).map(|(_, e)| format!(" ({e})")).unwrap_or_default();
+                                Err(format!("{op}: {code}{why}"))
+                            }
+                        }
+                    };
+                    let ids = self.outline_records(op, &mut entry, outcome?)?;
+                    entry.records.path_texts.retain(|p| p.story_id != text_id);
+                    entry.records.area_texts.retain(|a| a.text_id != text_id);
+                    if !entry_persistable() {
+                        return Err(format!("{op}: vector_entry_not_persistable"));
+                    }
+                    let bytes = entry.to_bytes(&self.vdoc()?.document_id)?;
+                    let all: Vec<String> = path_ids.into_iter().chain(ids).collect();
+                    let ok = self.run.set_vector_paths_and_entry(op, &[(layer_id.to_string(), all)], Some((ENTRY, bytes)));
+                    self.after_edit(ok, format!("{op} {layer_id}"))?;
+                    self.selected = Some(layer_id.to_string());
+                    Ok(layer_id.to_string())
+                }
+                _ => Err(format!("{op}: select a point-text layer or a vector layer with live text")),
+            }
+        })();
         self.report(r)
+    }
+
+    /// One filled path record per outline row (the row's glyph paths merged, non-zero); returns
+    /// the new path ids in row order.
+    fn outline_records(&self, op: &str, entry: &mut VectorEntry, rows: Vec<(hsk_studio_composite::FillPaint, Vec<OwnedPath>)>) -> Result<Vec<String>, String> {
+        let doc = self.vdoc()?;
+        let mut ids = Vec::new();
+        for (paint, paths) in rows {
+            let hsk_studio_composite::FillPaint::Solid(c) = paint else {
+                return Err(format!("{op}: text_paint_not_solid"));
+            };
+            let merged = OwnedPath { elements: paths.into_iter().flat_map(|p| p.elements).collect(), fill_rule: FillRule::NonZero };
+            if merged.elements.is_empty() {
+                continue;
+            }
+            let path = AnchorPath::from_owned_path(&merged).map_err(|e| format!("{op}: {}", e.code()))?;
+            if entry.paths.len() >= MAX_PATHS {
+                return Err(format!("{op}: vector_entry_over_budget"));
+            }
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let fill = [c[0], c[1], c[2]].map(|v| (srgb_encode(v) * 255.0).round() as u8);
+            let id = mint_path_id(doc, entry);
+            entry.paths.push(PathRecord::plain(id.clone(), path, VectorStyle { fill: Some(fill), stroke: None, stroke_width: 0.0 }));
+            ids.push(id);
+        }
+        if ids.is_empty() {
+            return Err(format!("{op}: nothing to outline"));
+        }
+        Ok(ids)
     }
 
     /// The anchor path of a vector layer (its first path) and that path's record.

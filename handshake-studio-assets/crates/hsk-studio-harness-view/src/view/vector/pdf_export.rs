@@ -18,7 +18,6 @@
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::Viewer;
 use super::style::effective_design;
-use super::EntryAssets;
 use hsk_studio_composite::FillPaint;
 use hsk_studio_composite::vector::{ExpandedLayer, VectorResolution, expand_vectors};
 use super::masking;
@@ -289,9 +288,14 @@ impl Viewer {
         let entry = self.vector_entry()?;
         let design = effective_design(doc, &entry)?;
         let records = entry.folio_records(&doc.document_id);
-        let (layers, refused) = expand_vectors(snap, &design, &records, &EntryAssets(&entry), hsk_studio_composite::BlendSpace::Encoded, &VectorResolution::default(), self.cancel)
+        // Live path and area text (lane SMB-AI-AREA-TYPE-3): the canvas's shaping, fills encoded
+        // for this plan; a story that cannot be shaped keeps its typed report as a loss.
+        let text = self.text_entry().ok();
+        let assets = self.live_text_assets_in(&entry, text.as_ref(), hsk_studio_composite::BlendSpace::Encoded);
+        let (layers, refused) = expand_vectors(snap, &design, &records, &assets, hsk_studio_composite::BlendSpace::Encoded, &VectorResolution::default(), self.cancel)
             .map_err(|e| format!("pdf_export: {e:?}"))?;
         let mut losses: Vec<String> = refused.iter().map(|(l, c)| format!("{l}: refused:{c}")).collect();
+        losses.extend(assets.losses());
         let board = doc.artboards.first().ok_or("pdf_export: the document has no artboard")?;
         let page = Page { o: [board.bounds.x.value, board.bounds.y.value], h: board.bounds.height.value, w: board.bounds.width.value };
         let media = [0.0, 0.0, board.bounds.width.value * PT, board.bounds.height.value * PT];

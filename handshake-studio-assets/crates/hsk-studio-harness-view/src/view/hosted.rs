@@ -32,7 +32,7 @@ use super::Viewer;
 use super::shell::{Availability, Panel};
 use super::vector::arrange::{Align, Distribute, ReferencePoint, TransformEach};
 use super::vector::brushes::PatternTileLayers;
-use super::vector::{AlignTarget, EnvelopeSpec, PaintSpec, PathEdit, RowKind, StrokePanel, TransformOp};
+use super::vector::{AlignTarget, EnvelopeSpec, LiveTextKind, PaintSpec, PathEdit, RowKind, StrokePanel, TransformOp};
 use super::widget as vw;
 use hsk_studio_folio::{
     self as folio, StudioAppearanceRow, StudioArtScale, StudioBrushColorization, StudioBrushKind, StudioBrushParam, StudioEnvelopeShape, StudioMaskMode,
@@ -237,6 +237,13 @@ pub enum PanelAction {
     ExpandShape,
     PromoteNetwork,
     EditPath(PathEdit),
+    /// Type on the selected vector layer's path (lane SMB-AI-AREA-TYPE-3): live path text, or area
+    /// text inside its closed path ([`Viewer::bind_live_text`]).
+    BindLiveText { text: String, kind: LiveTextKind },
+    /// Point text <-> area text of the selected layer ([`Viewer::convert_text_kind`]).
+    ConvertTextKind,
+    /// Create Outlines of the selected text ([`Viewer::create_outlines`]; one undo step).
+    CreateOutlines,
     /// Masks: the selected layer is clipped or masked by `source`.
     MakeClip { source: String, even_odd: bool },
     MakeMask { source: String, mode: StudioMaskMode, invert: bool },
@@ -271,7 +278,7 @@ impl PanelAction {
             Self::AddGraphicStyle { .. } | Self::ApplyGraphicStyle(_) | Self::MergeGraphicStyle(_) | Self::RedefineGraphicStyle(_) | Self::BreakGraphicStyle => H::GraphicStyles,
             Self::Align { .. } | Self::Distribute { .. } => H::AlignDistribute,
             Self::Transform { .. } | Self::TransformEach { .. } => H::Transform,
-            Self::OffsetPath { .. } | Self::OutlineStroke | Self::ExpandShape | Self::PromoteNetwork | Self::EditPath(_) => H::PathOperations,
+            Self::OffsetPath { .. } | Self::OutlineStroke | Self::ExpandShape | Self::PromoteNetwork | Self::EditPath(_) | Self::BindLiveText { .. } | Self::ConvertTextKind | Self::CreateOutlines => H::PathOperations,
             Self::MakeClip { .. } | Self::MakeMask { .. } | Self::ReleaseMasks => H::Masks,
             Self::MakeEnvelope { .. } | Self::ReleaseEnvelope | Self::ExpandEnvelope => H::EnvelopeDistort,
             Self::AddBrush { .. } | Self::ApplyBrush { .. } | Self::RemoveBrush => H::Brushes,
@@ -300,6 +307,9 @@ impl PanelAction {
                 | Self::ExpandShape
                 | Self::PromoteNetwork
                 | Self::EditPath(_)
+                | Self::BindLiveText { .. }
+                | Self::ConvertTextKind
+                | Self::CreateOutlines
                 | Self::MakeClip { .. }
                 | Self::MakeMask { .. }
                 | Self::ReleaseMasks
@@ -380,6 +390,9 @@ pub struct HostedState {
     each: TransformEach,
     offset: f64,
     offset_join: LineJoin,
+    /// Type section of Path Operations (lane SMB-AI-AREA-TYPE-3): the live text and area inset.
+    live_text: String,
+    live_inset: f64,
     anchor: [usize; 2],
     corner: CornerTreatment,
     corner_radius: f64,
@@ -454,6 +467,8 @@ impl Default for HostedState {
             each: TransformEach::default(),
             offset: 2.0,
             offset_join: LineJoin::Miter,
+            live_text: String::new(),
+            live_inset: 0.0,
             anchor: [0, 0],
             corner: CornerTreatment::Round,
             corner_radius: 4.0,
@@ -916,6 +931,25 @@ impl HostedState {
                     }
                 });
                 drawn.extend([c("join.a"), c("join.b")]);
+                ui.separator();
+                ui.label("Type (live text on the selected path; point / area text)");
+                text(ui, drawn, c("type.text"), "Text", &mut self.live_text, "one line of text");
+                number(ui, drawn, c("type.inset"), "Area inset (pt)", &mut self.live_inset, 0.1);
+                let typed = has && !self.live_text.is_empty();
+                ui.horizontal_wrapped(|ui| {
+                    if button(ui, drawn, c("type.on_path"), "Type on Path", typed) {
+                        actions.push(PanelAction::BindLiveText { text: self.live_text.clone(), kind: LiveTextKind::Path });
+                    }
+                    if button(ui, drawn, c("type.area"), "Area Type", typed) {
+                        actions.push(PanelAction::BindLiveText { text: self.live_text.clone(), kind: LiveTextKind::Area { inset_pt: self.live_inset } });
+                    }
+                    if button(ui, drawn, c("type.convert"), "Convert Point / Area Type", has) {
+                        actions.push(PanelAction::ConvertTextKind);
+                    }
+                    if button(ui, drawn, c("type.outlines"), "Create Outlines", has) {
+                        actions.push(PanelAction::CreateOutlines);
+                    }
+                });
             }
             HostedPanel::Masks => {
                 selected_line(ui);
@@ -1259,6 +1293,9 @@ impl Viewer {
             PanelAction::ExpandShape => self.expand_shape(&layer).map(|_| "shape expanded".into()),
             PanelAction::PromoteNetwork => self.promote_network(&layer).map(|_| "promoted to a network".into()),
             PanelAction::EditPath(edit) => self.edit_path(&layer, edit).map(|_| format!("path edit {edit:?}")),
+            PanelAction::BindLiveText { text, kind } => self.bind_live_text(&layer, &text, kind).map(|id| format!("live text {id}")),
+            PanelAction::ConvertTextKind => self.convert_text_kind(&layer).map(|id| format!("converted to {id}")),
+            PanelAction::CreateOutlines => self.create_outlines(&layer).map(|id| format!("outlines in {id}")),
             PanelAction::MakeClip { source, even_odd } => self.make_clip(&layer, &source, even_odd).map(|id| format!("clip {id}")),
             PanelAction::MakeMask { source, mode, invert } => self.make_vector_mask(&layer, &source, mode, invert).map(|id| format!("mask {id}")),
             PanelAction::ReleaseMasks => self.release_masks(&layer).map(|()| "released".into()),

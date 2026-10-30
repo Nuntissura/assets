@@ -27,7 +27,7 @@ use super::super::Viewer;
 use super::masking;
 use super::style::{effective_design, node_style};
 use super::swatch::cmyk_bytes;
-use super::{EntryAssets, VectorEntry};
+use super::VectorEntry;
 use hsk_studio_composite::FillPaint;
 use hsk_studio_composite::vector::{ExpandedLayer, VectorResolution, expand_vectors};
 use hsk_studio_folio::{self as folio, Payload, StudioAppearanceRow, StudioColorModel, StudioMaskMode, StudioPaint, StudioSwatchKind};
@@ -292,9 +292,14 @@ impl Viewer {
         let entry = self.vector_entry()?;
         let design = effective_design(doc, &entry)?;
         let records = entry.folio_records(&doc.document_id);
-        let (layers, refused) = expand_vectors(snap, &design, &records, &EntryAssets(&entry), hsk_studio_composite::BlendSpace::Encoded, &VectorResolution::default(), self.cancel)
+        // Live path and area text (lane SMB-AI-AREA-TYPE-3): the canvas's shaping, fills encoded
+        // for this plan; a story that cannot be shaped keeps its typed report as a loss.
+        let text = self.text_entry().ok();
+        let assets = self.live_text_assets_in(&entry, text.as_ref(), hsk_studio_composite::BlendSpace::Encoded);
+        let (layers, refused) = expand_vectors(snap, &design, &records, &assets, hsk_studio_composite::BlendSpace::Encoded, &VectorResolution::default(), self.cancel)
             .map_err(|e| format!("separations: {e:?}"))?;
         let mut losses: Vec<String> = refused.iter().map(|(l, c)| format!("{l}: refused:{c}")).collect();
+        losses.extend(assets.losses());
         let board = doc.artboards.first().ok_or("separations: the document has no artboard")?;
         let (o, w, h) = ([board.bounds.x.value, board.bounds.y.value], board.bounds.width.value, board.bounds.height.value);
         let inks = match &options.inks {
