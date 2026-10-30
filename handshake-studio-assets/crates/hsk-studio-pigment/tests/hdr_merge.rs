@@ -446,7 +446,7 @@ fn tone_map_keeps_order_and_range() {
         // Hue order kept (r >= g >= b); alpha 0.5 rounds half away from zero.
         for px in row(1) {
             assert!(px[0] >= px[1] && px[1] >= px[2], "{px:?}");
-            assert_eq!(u32::from(px[3]), (u32::from(top) + 1) / 2);
+            assert_eq!(u32::from(px[3]), (u32::from(top)).div_ceil(2));
         }
         if depth == 16 {
             let grey = row(0);

@@ -201,9 +201,8 @@ fn raw_brackets_merge_through_develop_to_linear_hdr() {
             let work = merged.working.data[p];
             if r < 0.9 {
                 // Unclipped in the reference: the develop pipeline's own linear frame.
-                for c in 0..3 {
-                    let want = reference.rgb[p * 3 + c];
-                    assert!((work[c] - want).abs() <= 5e-3 * want.abs().max(1.0), "working ({x},{y}) {c}: {} vs {want}", work[c]);
+                for (c, (got, want)) in work[..3].iter().zip(&reference.rgb[p * 3..p * 3 + 3]).enumerate() {
+                    assert!((got - want).abs() <= 5e-3 * want.abs().max(1.0), "working ({x},{y}) {c}: {got} vs {want}");
                 }
             } else if work[1] > 1.0 {
                 above_one += 1;
@@ -232,9 +231,8 @@ fn identical_brackets_reproduce_the_develop_pipeline() {
     }
     let (image, _) = developed(&again);
     for (p, px) in merged.working.data.iter().enumerate() {
-        for c in 0..3 {
-            let want = image.rgb[p * 3 + c];
-            assert!((px[c] - want).abs() <= 1e-6 * want.abs().max(1.0), "working {p}/{c}: {} vs {want}", px[c]);
+        for (c, (got, want)) in px[..3].iter().zip(&image.rgb[p * 3..p * 3 + 3]).enumerate() {
+            assert!((got - want).abs() <= 1e-6 * want.abs().max(1.0), "working {p}/{c}: {got} vs {want}");
         }
     }
 }
