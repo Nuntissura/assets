@@ -13,7 +13,8 @@
 //! - `height_and_width_proportionally`: the smallest uniform scale of the authored width and height
 //!   (insets and offsets unscaled; the top-left corner stays) at which the story fits with no overset
 //!   and no overfull line, by bisection on the scale until the bracket on the larger side is at most
-//!   `AUTOSIZE_TOLERANCE_PT` (the found scale always fits).
+//!   `AUTOSIZE_TOLERANCE_PT` (the found scale fits: tests/frame_autosize.rs
+//!   proportional_keeps_the_aspect_and_fits).
 //! - Width and proportional kinds with more than one column are `autosize_multi_column`. A frame with
 //!   no line keeps the authored size on the measured axis.
 //! - Folio stores no `auto_sizing_reference_point`, minimum width/height gates or

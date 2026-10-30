@@ -40,8 +40,8 @@ pub struct LigaturePart {
 /// `cap_height_pt`, `x_height_pt` and `em_box_pt` are the STU-LAY-120 first-baseline metrics of the
 /// paragraph's first run (lane SMB-ID-FRAME-AUTOSIZE-1): the face's OS/2 `sCapHeight` / `sxHeight`
 /// scaled by font size / units per em, and the em box height, which Studio reads as the font size
-/// (UNVERIFIED, D5). `None` = not known: a frame whose first baseline needs it is refused, never
-/// guessed (`first_baseline_metric`).
+/// (UNVERIFIED, D5). `None` = not known: a frame whose first baseline needs it is refused, not
+/// guessed (`first_baseline_metric`; tests/frame_autosize.rs missing_face_metric_refuses_typed).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapedParagraph {
     pub source: SourceSpan,
@@ -61,7 +61,7 @@ pub struct ShapedParagraph {
 /// A STU-LAY-120 first-baseline kind whose metric the paragraph does not carry (a face without the
 /// OS/2 value, or a source that states no font size). `code()` is
 /// `first_baseline_metric_unavailable:<kind>`; the threaded reflow refuses such a frame with
-/// `LayoutError::UnsupportedComposition` (the refusal the reflow has always given for these kinds).
+/// `LayoutError::UnsupportedComposition` (the refusal these kinds had before they composed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FirstBaselineUnavailable {
     pub kind: FirstBaseline,
@@ -88,7 +88,8 @@ impl std::error::Error for FirstBaselineUnavailable {}
 impl ShapedParagraph {
     /// The STU-LAY-120 metric of `kind` (pt above the baseline): ascent, cap height, leading (the
     /// line height), em box height or x height; `fixed` has none (0). A metric the paragraph does not
-    /// carry is refused, never replaced by another one.
+    /// carry is refused, not replaced by another one (tests/frame_autosize.rs
+    /// missing_face_metric_refuses_typed).
     pub fn first_baseline_metric(&self, kind: FirstBaseline) -> Result<f64, FirstBaselineUnavailable> {
         let v = match kind {
             FirstBaseline::Ascent => Some(self.ascent_pt),

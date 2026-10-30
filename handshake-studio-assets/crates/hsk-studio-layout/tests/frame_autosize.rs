@@ -145,6 +145,19 @@ fn missing_face_metric_refuses_typed() {
         frame(&mut d, 0).minimum_first_baseline_offset = len(0.0);
         assert!(run(&d, &st, &plain, &records()).is_ok(), "{kind:?}");
     }
+    // A thread frame no line reaches is not refused: frame A (fixed 10, 26 pt high) holds both lines,
+    // frame B (cap height) stays empty although the paragraph has no cap height.
+    let mut d = document(
+        vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 64.0, 26.0), None, Some(2)), frame_layer(2, 1, spec(0, 10.0, 120.0, 64.0, 40.0), Some(1), None)],
+        [PageSide::RightHand, PageSide::LeftHand],
+    );
+    frame(&mut d, 1).first_baseline_offset = FirstBaseline::CapHeight;
+    frame(&mut d, 1).minimum_first_baseline_offset = len(0.0);
+    let p = run(&d, &st, &plain, &records()).expect("frame B unreached");
+    assert_eq!((baselines(&p, 0), p.frames[1].lines.len(), p.overset), (vec![10.0, 22.0], 0, None));
+    // One more line needs frame B: refused.
+    let (st3, plain3) = story(1, "aaaa bbbb cccc dddd eeee", &[(0, 24)]);
+    assert_eq!(run(&d, &st3, &plain3, &records()), Err(LayoutError::UnsupportedComposition));
 }
 
 /// Hostile metrics (V4-01/02): a NaN, infinite or negative first-baseline metric, and a negative

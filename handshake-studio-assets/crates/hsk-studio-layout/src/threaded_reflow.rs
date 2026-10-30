@@ -276,7 +276,8 @@ fn frame_first(f: &Frame<'_>, v: Option<&FrameVertical>, p: &ShapedParagraph) ->
 
 /// The next line slot for paragraph `p` at or after `cur`. A frame whose first baseline needs a metric
 /// `p` does not carry ends the search (`Ok(None)`) and sets `blocked`: the caller refuses the reflow
-/// only when it needs that slot (a frame no line reaches is never refused).
+/// only when it needs that slot (a frame no line reaches is not refused: tests/frame_autosize.rs
+/// missing_face_metric_refuses_typed).
 #[allow(clippy::too_many_arguments)]
 fn next_slot(
     thread: &[Frame<'_>],
