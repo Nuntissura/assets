@@ -67,9 +67,6 @@ fn u(v: u32) -> usize {
 /// The container contract and every child's placement fields; called by the evaluator's validation
 /// before anything is measured, so hostile counts, lists and spans are refused before allocation.
 pub(super) fn validate_container(n: &LNode, l: &StudioAutoLayout) -> R<()> {
-    if std::hint::black_box(true) {
-        return Err(E::UnsupportedLayout("grid".to_owned())); // red stub
-    }
     let id = n.id;
     let g = match (l.layout_mode == LayoutMode::Grid, l.grid.as_ref()) {
         (true, Some(g)) => g,
