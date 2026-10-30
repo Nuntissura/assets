@@ -31,6 +31,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::dng::{self, ActiveArea, DngRaw, MAX_DNG_PIXELS};
 use crate::export::ExportError;
+use crate::hdr_merge::RawHdrMerged;
 use crate::ljpeg_enc;
 use crate::output::{check_icc_header, develop_to_output, OutputDepth, OutputImage};
 use crate::par::Threads;
@@ -793,4 +794,189 @@ pub fn exif_subset(source: &[u8]) -> ExifSubset {
         }
     }
     out
+}
+
+// ------------------------------------------------------------------ floating-point HDR DNG
+
+/// A floating-point LinearRaw DNG written by [`dng_from_hdr`] (lane SMB-HDR-MERGE-2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HdrDngExport {
+    pub bytes: Vec<u8>,
+    pub dng_sha256: [u8; 32],
+    pub width: u32,
+    pub height: u32,
+    /// Stops the merged radiance was scaled down by so its largest sample is at most 1.0 (DNG
+    /// chapter 5 clips rescaled values to 0..1): stored = radiance * 2^-scale_stops, exact for
+    /// every normal result.
+    pub scale_stops: u32,
+    /// BaselineExposure written: the source's plus `scale_stops`, so a reader that applies it
+    /// renders the merge at the reference exposure.
+    pub baseline_exposure: f64,
+    /// SHA-256 of the stored samples as little-endian binary32 (RGB interleaved, row-major).
+    pub samples_sha256: [u8; 32],
+    pub exif_fields: Vec<&'static str>,
+    /// Source features not written ([`UnappliedPolicy::Record`] only; orientation is written).
+    pub dropped: Vec<&'static str>,
+    /// Loss note of an opted-in approximate colour route of the source.
+    pub colour_loss: Option<&'static str>,
+}
+
+/// Write the camera-space radiance of an HDR merge ([`crate::hdr_merge::RawHdrMerged::camera`])
+/// as a DNG 1.4 floating-point LinearRaw file (Adobe DNG Specification 1.4.0.0: SampleFormat 3,
+/// BitsPerSample 32/32/32, PhotometricInterpretation 34892, Compression 1, no WhiteLevel tag so the
+/// floating-point default 1.0 applies, DNGVersion and DNGBackwardVersion 1.4.0.0 per Compatibility
+/// Issue 8). `source` is the reference bracket's raw ([`crate::hdr_merge::RawHdrMerged::camera`]
+/// `.reference`): its colour tags (the merge is in its camera space), model and orientation are
+/// written, its BaselineExposure raised by [`HdrDngExport::scale_stops`]. Only uncompressed output
+/// without a preview is written (`hdr_compression_unsupported`, `hdr_preview_unsupported`); the
+/// written bytes are decoded back by [`dng::decode_linear_float`] and compared bit for bit before
+/// they are returned. Lightroom's HDR DNG layout is UNVERIFIED (D5).
+pub fn dng_from_hdr(merged: &RawHdrMerged, source: &DngRaw, settings: &DngExportSettings, parts: &DngParts<'_>) -> Result<HdrDngExport, ExportError> {
+    // --- admission ---
+    let frame = &merged.camera.frame;
+    let (width, height) = (frame.bounds.width, frame.bounds.height);
+    if (width, height) != (merged.window.width, merged.window.height) || source.default_window() != merged.window {
+        return Err(bad("hdr_source_mismatch"));
+    }
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if width == 0 || height == 0 || width > 65_535 || height > 65_535 || pixels > MAX_DNG_PIXELS {
+        return Err(ExportError::Develop(DevelopError::InvalidDimensions));
+    }
+    if pixels.saturating_mul(12) > MAX_DNG_BYTES {
+        return Err(tiff(TiffError::Limit("limit_container_bytes")));
+    }
+    if u64::try_from(frame.data.len()).ok() != Some(pixels) {
+        return Err(bad("frame_length_mismatch"));
+    }
+    if settings.compression != DngCompression::None {
+        return Err(bad("hdr_compression_unsupported"));
+    }
+    if settings.preview != DngPreview::None {
+        return Err(bad("hdr_preview_unsupported"));
+    }
+    let dropped: Vec<&'static str> = source.unapplied.iter().copied().filter(|n| *n != "orientation").collect();
+    if let (UnappliedPolicy::Refuse, Some(first)) = (settings.unapplied, dropped.first()) {
+        return Err(ExportError::Develop(DevelopError::UnsupportedContribution(first)));
+    }
+    if !(1..=8).contains(&source.orientation) {
+        return Err(bad("invalid_orientation"));
+    }
+    let model = match (&settings.unique_camera_model, &source.unique_camera_model) {
+        (Some(m), _) | (None, Some(m)) => ascii_field(m, "unique_camera_model_invalid")?,
+        (None, None) => return Err(bad("unique_camera_model_missing")),
+    };
+    let software = settings.software.as_deref().map(|s| ascii_field(s, "software_invalid")).transpose()?;
+    if let Some(x) = parts.xmp {
+        validate_xmp(x)?;
+    }
+    let mut colour: Vec<(u16, FieldValue)> = colour_entries(source)?.into_iter().filter(|(t, _)| *t != 50730).collect();
+    let colour_loss = source.colour_loss();
+
+    // --- scale into the clipped 0..1 range by a power of two ---
+    let mut largest = 0.0f32;
+    for px in &frame.data {
+        for v in &px[..3] {
+            if !v.is_finite() {
+                return Err(ExportError::Develop(DevelopError::NonFinite));
+            }
+            largest = largest.max(*v);
+        }
+    }
+    let mut scale_stops = 0u32;
+    let mut scale = 1.0f32;
+    let mut reduced = f64::from(largest);
+    while reduced > 1.0 {
+        reduced *= 0.5;
+        scale *= 0.5;
+        scale_stops = scale_stops.checked_add(1).ok_or(ExportError::Develop(DevelopError::Overflow))?;
+    }
+    let baseline_exposure = source.color.baseline_exposure + f64::from(scale_stops);
+    if baseline_exposure != 0.0 {
+        colour.push((50730, srationals(&[baseline_exposure])?));
+    }
+    let stored: Vec<f32> = frame.data.iter().flat_map(|px| [px[0] * scale, px[1] * scale, px[2] * scale]).collect();
+
+    // --- payload ---
+    let row_bytes = (width as usize).checked_mul(12).ok_or(bad("dims_overflow"))?;
+    let rows = strip_rows(row_bytes, height as usize)?;
+    let strip_samples = rows.checked_mul(width as usize).and_then(|v| v.checked_mul(3)).ok_or(bad("dims_overflow"))?;
+    let strips: Vec<Vec<u8>> = stored.chunks(strip_samples).map(|chunk| chunk.iter().flat_map(|v| v.to_le_bytes()).collect()).collect();
+    let mut samples_hash = Sha256::new();
+    for strip in &strips {
+        samples_hash.update(strip);
+    }
+    let samples_sha256: [u8; 32] = samples_hash.finalize().into();
+
+    // --- IFD0 = the LinearRaw IFD ---
+    let mut entries: Vec<(u16, FieldValue)> = vec![
+        (254, long(0)),
+        (256, long(width)),
+        (257, long(height)),
+        (258, FieldValue::Short(vec![32, 32, 32])),
+        (259, short(1)),
+        (262, short(34892)),
+        (274, short(source.orientation)),
+        (277, short(3)),
+        (278, long(u32::try_from(rows).map_err(|_| bad("dims_overflow"))?)),
+        (284, short(1)),
+        (339, FieldValue::Short(vec![3, 3, 3])),
+        (50706, FieldValue::Byte(DNG_VERSION.to_vec())),
+        (50707, FieldValue::Byte(DNG_VERSION.to_vec())),
+        (50708, FieldValue::Ascii(model.clone())),
+        (50781, FieldValue::Byte(samples_sha256.get(..16).unwrap_or(&[]).to_vec())),
+    ];
+    entries.extend(colour);
+    let mut exif_fields = Vec::new();
+    let mut children = Vec::new();
+    if let Some(x) = parts.exif {
+        if let Some(s) = &x.make {
+            entries.push((271, FieldValue::Ascii(ascii_field(s, "exif_text_invalid")?)));
+            exif_fields.push("make");
+        }
+        if let Some(s) = &x.model {
+            entries.push((272, FieldValue::Ascii(ascii_field(s, "exif_text_invalid")?)));
+            exif_fields.push("model");
+        }
+        if let Some(s) = &x.date_time {
+            entries.push((306, FieldValue::Ascii(ascii_field(s, "exif_text_invalid")?)));
+            exif_fields.push("date_time");
+        }
+        if let Some(e) = exif_ifd(x, &mut exif_fields)? {
+            children.push(ChildIfds { tag: 34665, ifds: vec![e] });
+        }
+    }
+    if let Some(s) = software {
+        entries.push((305, FieldValue::Ascii(s)));
+    }
+    if let Some(x) = parts.xmp {
+        entries.push((700, FieldValue::Byte(x.to_vec())));
+    }
+    let bytes = write_container(&IfdSpec { entries, strips, children }, MAX_DNG_BYTES).map_err(tiff)?;
+
+    // --- read back ---
+    let back = dng::decode_linear_float(&bytes).map_err(ExportError::Develop)?;
+    let same_samples = back.samples.len() == stored.len() && back.samples.iter().zip(&stored).all(|(a, b)| a.to_bits() == b.to_bits());
+    if (back.width, back.height) != (width, height)
+        || !same_samples
+        || back.black_level != [0.0]
+        || back.white_level != [1.0]
+        || back.backward_version != DNG_VERSION
+        || back.orientation != source.orientation
+        || back.unique_camera_model.as_deref() != Some(model.as_str())
+        || (back.color.baseline_exposure - baseline_exposure).abs() > 1e-9
+    {
+        return Err(bad("export_verify_failed"));
+    }
+    Ok(HdrDngExport {
+        dng_sha256: Sha256::digest(&bytes).into(),
+        bytes,
+        width,
+        height,
+        scale_stops,
+        baseline_exposure,
+        samples_sha256,
+        exif_fields,
+        dropped,
+        colour_loss,
+    })
 }

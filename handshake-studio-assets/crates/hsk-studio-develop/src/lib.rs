@@ -90,6 +90,8 @@ pub use retouch::{
 pub use upright::{DetectedLine, UprightAnalysis, analyse as analyse_upright};
 pub use curves::{Curve, PreparedCurve};
 pub use dng::{recipe_for_white_point, ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
+pub use dng::{decode_linear_float, LinearFloatDng};
+pub use dng_write::{dng_from_hdr, HdrDngExport};
 pub use output::{
     ClipReport, MAX_ICC_BYTES, OutputDepth, OutputImage, check_icc_header, develop_to_output, render_output,
 };

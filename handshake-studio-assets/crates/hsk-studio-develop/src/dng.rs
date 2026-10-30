@@ -1112,3 +1112,208 @@ pub fn recipe_for_white_point(
     recipe.adjust.absolute_white_balance = Some(crate::adjust::AbsoluteWhiteBalance { kelvin, tint });
     Ok((recipe, solution))
 }
+
+// ------------------------------------------------------------------ floating-point LinearRaw
+
+/// SampleFormat 3: IEEE floating point (DNG 1.4.0.0 "SampleFormat").
+const SAMPLE_FORMAT_FLOAT: u32 = 3;
+/// TIFF PlanarConfiguration (1 = chunky).
+const PLANAR_CONFIGURATION: u16 = 284;
+/// Bytes of one interleaved RGB binary32 pixel.
+const FLOAT_RGB_BYTES: u64 = 12;
+
+/// A floating-point LinearRaw DNG as stored (lane SMB-HDR-MERGE-2; Adobe DNG Specification
+/// 1.4.0.0: "Floating Point Image Data", SampleFormat 3, PhotometricInterpretation 34892 LinearRaw
+/// for demosaiced data). Read by [`decode_linear_float`]; [`decode`] keeps refusing LinearRaw files
+/// (`unsupported_container`), so every existing caller is unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinearFloatDng {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major interleaved RGB samples exactly as stored: no black subtraction, rescaling or
+    /// clipping (the DNG chapter 5 mapping is the caller's, with `black_level` and `white_level`).
+    pub samples: Vec<f32>,
+    /// BlackLevel (default `[0.0]`).
+    pub black_level: Vec<f64>,
+    /// WhiteLevel (default `[1.0]` for floating point images).
+    pub white_level: Vec<f64>,
+    pub color: DngColor,
+    pub unique_camera_model: Option<String>,
+    /// TIFF Orientation 1..=8 (1 when absent or undefined).
+    pub orientation: u16,
+    /// DNGBackwardVersion as stored.
+    pub backward_version: [u8; 4],
+    pub container_sha256: [u8; 32],
+}
+
+/// Decode a floating-point LinearRaw DNG: the first full-resolution (NewSubFileType 0) IFD with
+/// PhotometricInterpretation 34892, SamplesPerPixel 3, BitsPerSample 32, SampleFormat 3,
+/// Compression 1 and chunky planes, in strips or tiles, either byte order. DNGVersion and
+/// DNGBackwardVersion must be at least 1.4.0.0 (DNG 1.4 Compatibility Issue 8). 16- and 24-bit
+/// floats, other sample counts and layouts are `unsupported_container`; deflate and every other
+/// compression `unsupported_compression`. Hostile sizes are refused before the frame is allocated.
+pub fn decode_linear_float(bytes: &[u8]) -> Result<LinearFloatDng, DevelopError> {
+    let (tiff, first) = Tiff::parse(bytes)?;
+    let ifds = tiff.walk(first)?;
+    let root = ifds.first().ok_or(DevelopError::InvalidContainer)?;
+    let floor = [1u8, 4, 0, 0];
+    let version = tiff.bytes(root.find(tag::DNG_VERSION).ok_or(DevelopError::UnsupportedContainer)?)?;
+    if version.len() != 4 || version[0] != 1 || version < &floor[..] {
+        return Err(DevelopError::UnsupportedContainer);
+    }
+    let backward = tiff.bytes(root.find(tag::DNG_BACKWARD_VERSION).ok_or(DevelopError::UnsupportedContainer)?)?;
+    let backward_version: [u8; 4] = backward.try_into().map_err(|_| DevelopError::UnsupportedContainer)?;
+    if backward_version < floor || backward_version > [1u8, 7, 1, 0] {
+        return Err(DevelopError::UnsupportedContainer);
+    }
+    let mut found = None;
+    for ifd in &ifds {
+        let photometric = match ifd.find(tag::PHOTOMETRIC) {
+            Some(e) => first_u32(&tiff, e)?,
+            None => continue,
+        };
+        let subfile = match ifd.find(tag::NEW_SUBFILE_TYPE) {
+            Some(e) => first_u32(&tiff, e)?,
+            None => 0,
+        };
+        if photometric == PHOTOMETRIC_LINEAR_RAW && subfile == 0 {
+            found = Some(ifd);
+            break;
+        }
+    }
+    let raw_ifd = found.ok_or(DevelopError::UnsupportedContainer)?;
+    let l = Lookup { raw: raw_ifd, root };
+    let req = |t: u16| l.get(t).ok_or(DevelopError::InvalidContainer);
+
+    let width = first_u32(&tiff, req(tag::WIDTH)?)?;
+    let height = first_u32(&tiff, req(tag::HEIGHT)?)?;
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if width == 0 || height == 0 || width > 65_535 || height > 65_535 || pixels > MAX_DNG_PIXELS {
+        return Err(DevelopError::InvalidDimensions);
+    }
+    let per_sample = |t: u16, want: u32| -> Result<bool, DevelopError> {
+        let v = tiff.u32s(req(t)?)?;
+        Ok(matches!(v.len(), 1 | 3) && v.iter().all(|x| *x == want))
+    };
+    if first_u32(&tiff, req(tag::SAMPLES_PER_PIXEL)?)? != 3
+        || !per_sample(tag::BITS_PER_SAMPLE, 32)?
+        || !per_sample(tag::SAMPLE_FORMAT, SAMPLE_FORMAT_FLOAT)?
+    {
+        return Err(DevelopError::UnsupportedContainer);
+    }
+    if let Some(e) = raw_ifd.find(PLANAR_CONFIGURATION)
+        && first_u32(&tiff, e)? != 1
+    {
+        return Err(DevelopError::UnsupportedContainer);
+    }
+    let compression = match l.get(tag::COMPRESSION) {
+        Some(e) => first_u32(&tiff, e)?,
+        None => 1,
+    };
+    if compression != 1 {
+        return Err(DevelopError::UnsupportedCompression);
+    }
+
+    let layout = layout(&tiff, &l, width, height)?;
+    let block_rows = |block_row: u32| {
+        if layout.tiled {
+            layout.block_h
+        } else {
+            layout.block_h.min(height.saturating_sub(block_row.saturating_mul(layout.block_h)))
+        }
+    };
+    let block_len = |block_row: u32| -> Result<u64, DevelopError> {
+        u64::from(layout.block_w)
+            .checked_mul(u64::from(block_rows(block_row)))
+            .and_then(|v| v.checked_mul(FLOAT_RGB_BYTES))
+            .ok_or(DevelopError::InvalidContainer)
+    };
+    // The declared frame must be backed by payload actually present before it is allocated.
+    let payload = layout
+        .counts
+        .iter()
+        .map(|count| u64::from(*count))
+        .fold(0u64, u64::saturating_add)
+        .min(bytes.len() as u64);
+    if pixels.saturating_mul(FLOAT_RGB_BYTES) > payload {
+        return Err(DevelopError::InvalidDimensions);
+    }
+    let len = usize::try_from(pixels.saturating_mul(3)).map_err(|_| DevelopError::InvalidDimensions)?;
+    let mut samples = vec![0.0f32; len];
+    let big_endian = tiff.is_big_endian();
+    let row_samples = (width as usize).checked_mul(3).ok_or(DevelopError::Overflow)?;
+    for block_row in 0..layout.down {
+        for block_col in 0..layout.across {
+            let index = block_row
+                .checked_mul(layout.across)
+                .and_then(|v| v.checked_add(block_col))
+                .map(|v| v as usize)
+                .ok_or(DevelopError::InvalidContainer)?;
+            let expected = block_len(block_row)?;
+            if u64::from(layout.counts[index]) < expected {
+                return Err(DevelopError::InvalidContainer);
+            }
+            let block = tiff.region(u64::from(layout.offsets[index]), expected)?;
+            let x0 = block_col.saturating_mul(layout.block_w);
+            let y0 = block_row.saturating_mul(layout.block_h);
+            let cols = layout.block_w.min(width.saturating_sub(x0)) as usize;
+            let block_row_bytes = (layout.block_w as usize).checked_mul(12).ok_or(DevelopError::Overflow)?;
+            let col_bytes = cols.checked_mul(12).ok_or(DevelopError::Overflow)?;
+            for by in 0..block_rows(block_row) {
+                let y = y0.saturating_add(by);
+                if y >= height {
+                    break;
+                }
+                let start = (by as usize).checked_mul(block_row_bytes).ok_or(DevelopError::Overflow)?;
+                let src = start
+                    .checked_add(col_bytes)
+                    .and_then(|end| block.get(start..end))
+                    .ok_or(DevelopError::InvalidContainer)?;
+                let dst = (y as usize)
+                    .checked_mul(row_samples)
+                    .and_then(|v| (x0 as usize).checked_mul(3).and_then(|x| v.checked_add(x)))
+                    .ok_or(DevelopError::Overflow)?;
+                let out = dst
+                    .checked_add(cols.checked_mul(3).ok_or(DevelopError::Overflow)?)
+                    .and_then(|end| samples.get_mut(dst..end))
+                    .ok_or(DevelopError::InvalidContainer)?;
+                for (slot, word) in out.iter_mut().zip(src.chunks_exact(4)) {
+                    let word: [u8; 4] = word.try_into().map_err(|_| DevelopError::InvalidContainer)?;
+                    *slot = if big_endian { f32::from_be_bytes(word) } else { f32::from_le_bytes(word) };
+                }
+            }
+        }
+    }
+    let black_level = match l.get(tag::BLACK_LEVEL) {
+        Some(e) => tiff.f64s(e)?,
+        None => vec![0.0],
+    };
+    let white_level = match l.get(tag::WHITE_LEVEL) {
+        Some(e) => tiff.f64s(e)?,
+        None => vec![1.0],
+    };
+    let color = parse_color(&tiff, &l)?;
+    let unique_camera_model = match l.get(tag::UNIQUE_CAMERA_MODEL) {
+        Some(e) => Some(tiff.ascii(e)?),
+        None => None,
+    };
+    let mut orientation = 1u16;
+    if let Some(e) = l.get(tag::ORIENTATION)
+        && let Ok(v) = u16::try_from(first_u32(&tiff, e)?)
+        && (1..=8).contains(&v)
+    {
+        orientation = v;
+    }
+    Ok(LinearFloatDng {
+        width,
+        height,
+        samples,
+        black_level,
+        white_level,
+        color,
+        unique_camera_model,
+        orientation,
+        backward_version,
+        container_sha256: Sha256::digest(bytes).into(),
+    })
+}
