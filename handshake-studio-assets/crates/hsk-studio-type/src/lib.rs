@@ -1,6 +1,8 @@
 //! Source-only, caller-granted text shaping. No host font discovery or document mutation.
 mod admission;
+mod area_text;
 mod contract;
+mod create_outlines;
 mod descriptor;
 mod engine;
 mod finalization;
@@ -17,7 +19,9 @@ pub use admission::{
     AdmissionPort, AllocationSnapshot, EpochPort, Generation, GenerationRetirement, Reservation,
     RetirementPort,
 };
+pub use area_text::*;
 pub use contract::*;
+pub use create_outlines::*;
 pub use descriptor::descriptor;
 pub use engine::TextEngine;
 pub use finalization::*;
