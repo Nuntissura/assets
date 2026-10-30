@@ -19,6 +19,7 @@ pub mod tracker;
 pub mod vector;
 pub mod vector_mask;
 pub mod vector_nib;
+pub mod vector_text;
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{

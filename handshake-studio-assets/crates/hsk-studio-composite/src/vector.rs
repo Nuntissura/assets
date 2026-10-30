@@ -351,6 +351,8 @@ pub struct PreparedVectors {
     masks: Vec<(String, Result<std::sync::Arc<crate::vector_mask::VectorMask>, &'static str>)>,
     /// Masks whose source the caller's backend renders (`crate::vector_mask` module docs).
     pending: Vec<crate::vector_mask::PendingMaskSource>,
+    /// Live path and area text bindings and what was drawn of each (`crate::vector_text`).
+    texts: Vec<crate::vector_text::TextReport>,
 }
 impl PreparedVectors {
     /// Masks waiting for their source to be rendered by the caller's backend (raster, text or
@@ -477,6 +479,14 @@ impl PreparedVectors {
     }
     pub fn planes(&self) -> &[VectorPlane] {
         &self.planes
+    }
+    /// The live-text report of story `text_id` (`crate::vector_text`).
+    pub fn text(&self, text_id: &str) -> Option<&crate::vector_text::TextReport> {
+        self.texts.iter().find(|t| t.text_id == text_id)
+    }
+    /// Every live-text report, in layer order.
+    pub fn texts(&self) -> &[crate::vector_text::TextReport] {
+        &self.texts
     }
     pub(crate) fn knows(&self, layer_id: &str) -> bool {
         self.plane(layer_id).is_some() || self.refusal(layer_id).is_some()
@@ -1045,6 +1055,12 @@ pub trait VectorAssets {
         _colour: &hsk_studio_folio::StudioColor,
         _space: hsk_studio_pigment::blend_math::BlendSpace,
     ) -> Option<[f32; 3]> {
+        None
+    }
+    /// The story `text_id` of a Folio path- or area-text binding, shaped by the caller (lane
+    /// SMB-AI-AREA-TYPE-1, `crate::vector_text`). Default `None`: the host draws no live text; the
+    /// layer draws without it and the binding is reported (`vector_text_not_provided`).
+    fn shaped_story(&self, _text_id: &str) -> Option<crate::vector_text::ShapedStory> {
         None
     }
 }
@@ -1891,6 +1907,7 @@ pub fn prepare_vectors(
     };
     let mut specs = Vec::new();
     let mut refused: Vec<(String, &'static str)> = Vec::new();
+    let mut texts = Vec::new();
     for l in &doc.layers {
         cancel.check().map_err(|_| CompositeError::Canceled)?;
         let drawn = matches!(l.payload, hsk_studio_folio::Payload::Vector { .. })
@@ -1910,7 +1927,12 @@ pub fn prepare_vectors(
         let prepared = cx
             .geometry(&l.layer_id, 0)
             .and_then(|geometry| Ok((geometry, cx.fills(&l.layer_id)?)))
-            .and_then(|(geometry, fills)| cx.own_geometry(&l.layer_id, &l.payload, geometry, fills));
+            .and_then(|(geometry, fills)| cx.own_geometry(&l.layer_id, &l.payload, geometry, fills))
+            .and_then(|(geometry, mut fills)| {
+                // Live path and area text bound to this layer's paths (crate::vector_text).
+                fills.extend(crate::vector_text::text_rows(vectors, &l.layer_id, assets, &mut texts)?);
+                Ok((geometry, fills))
+            });
         match prepared {
             Ok((geometry, fills)) => specs.push(VectorLayerSpec {
                 layer_id: l.layer_id.clone(),
@@ -1924,6 +1946,7 @@ pub fn prepare_vectors(
     for (layer, code) in refused {
         out.push_refusal(&layer, code);
     }
+    out.texts = texts;
     // Vector clips (StudioVectorClip, Figma frame clipping): the clipped layer is cut by the
     // nib outline of the source layer's geometry under the clip rule.
     for a in &vectors.attachments {
@@ -2286,6 +2309,12 @@ pub fn expand_vectors(
             .geometry(&l.layer_id, 0)
             .and_then(|geometry| Ok((geometry, cx.fills(&l.layer_id)?)))
             .and_then(|(geometry, fills)| cx.own_geometry(&l.layer_id, &l.payload, geometry, fills))
+            .and_then(|(geometry, mut fills)| {
+                // Live path and area text as outlines (crate::vector_text; a story the caller does
+                // not shape is not exported, as it is not drawn).
+                fills.extend(crate::vector_text::text_rows(vectors, &l.layer_id, assets, &mut Vec::new())?);
+                Ok((geometry, fills))
+            })
             .and_then(|(geometry, fills)| {
                 let base: Vec<OwnedPath> = match &geometry {
                     VectorGeometry::Paths(p) => p.clone(),
