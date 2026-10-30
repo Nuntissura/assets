@@ -108,6 +108,8 @@ pub use export_stage::{
     EXPORT_STAGE_KEYS, ExportStage, ExportStageError, ExportStageReceipt, KeyStorage, MAX_OUTPUT_PIXELS, MAX_OUTPUT_SIDE,
     MAX_SHARPEN_SIGMA_PX, OutputSharpening, OutputSizing, RESAMPLE_FILTER, ResizeType, ResolutionUnit, SharpenAmount,
     SharpenMedia, SharpenRow, SizeFit, SizeUnit, StageKey, apply_export_stage, fit_output_size, sharpen_row,
+    MAX_WATERMARK_PIXELS, MAX_WATERMARK_SIDE, MarkTransfer, WatermarkAnchor, WatermarkGraphic, WatermarkPlacement,
+    WatermarkRotation, WatermarkSettings, WatermarkSize, WatermarkSource,
 };
 pub use par::{DEFAULT_THREAD_CAP, MAX_THREADS, Threads};
 pub use pipeline::{

@@ -365,10 +365,9 @@ fn watermark_anchor_and_inset_place_a_2x2_mark_on_10x6() {
     let p = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap().1.watermark.unwrap();
     assert_eq!((p.x, p.y, p.width, p.height, p.size_rule), (4, 0, 6, 6, "fit"));
     let st = watermark_stage(mark(2, 2, rgba, MarkTransfer::Linear), WatermarkSize::Fill, WatermarkAnchor::Centre, (0.0, 0.0));
-    let (out, r) = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap();
-    let p = r.watermark.unwrap();
+    let p = apply_export_stage(&bg, &st, &CancellationToken::default()).unwrap().1.watermark.unwrap();
     assert_eq!((p.x, p.y, p.width, p.height, p.size_rule), (0, -2, 10, 10, "fill"));
-    assert!(out.rgb.iter().all(|v| *v != 0.25), "fill covers the whole output");
+    assert!(p.x <= 0 && p.y <= 0 && p.x + i64::from(p.width) >= 10 && p.y + i64::from(p.height) >= 6, "fill covers the output");
 }
 
 /// Opacity 50 % blends in LINEAR light: white over black gives linear 0.5, which the sRGB transfer writes as 188

@@ -43,6 +43,19 @@
 //! STU-IO-136): Screen 0.4/0.8/1.2, Glossy 0.5/1.0/1.5, Matte 0.6/1.2/1.8. A sigma above [`MAX_SHARPEN_SIGMA_PX`]
 //! is refused, never truncated. Nothing is clamped here: values pushed out of 0..1 are counted in the receipt and
 //! clamped and counted again, identically, in [`crate::render_output`]'s `ClipReport`.
+//!
+//! Graphic watermark (Studio reading; STU-IO-135 counts 12 `watermarking` keys but does not enumerate them, so
+//! every field below is UNVERIFIED, D5, and classed [`KeyStorage::Unclassified`] except `use_watermark`,
+//! STU-IO-138): a caller-supplied straight-RGBA image ([`WatermarkGraphic`], colour linear or sRGB-encoded, alpha
+//! linear coverage, every sample finite in 0..1), composited in linear light after sharpening:
+//! `out = bg (1 - a) + mark a`, `a = alpha x opacity / 100`. Steps: rotate clockwise by 0/90/180/270 (exact pixel
+//! permutation); size: `Proportional(p)` makes the rotated mark `round(p% x output width)` wide (height by its
+//! aspect, rounded half up, at least 1), `Fit` the largest size inside the output, `Fill` the smallest size
+//! covering it (aspect kept; clipped at the output edges); resampled (premultiplied, same filter as sizing; a mark
+//! already at its size is copied); placed at one of nine anchors with insets `round(inset% x output edge)` from the
+//! anchored edges (a centred axis ignores its inset; centring floors). The placed rectangle is recorded even where
+//! it leaves the output. Text watermarks need `hsk-studio-type`, a module edge develop does not have: they are the
+//! typed refusal [`ExportStageError::TextWatermarkUnsupported`] (declared gap). Not STU-FX-022's retired filter.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::output::ClipReport;
@@ -58,6 +71,10 @@ pub const MAX_OUTPUT_PIXELS: u64 = 1 << 28;
 pub const RESAMPLE_FILTER: &str = "keys_cubic_a-0.5_stretched_by_reduction_factor";
 /// Largest output-sharpening Gaussian sigma in output pixels (Studio stage limit).
 pub const MAX_SHARPEN_SIGMA_PX: f64 = 64.0;
+/// Largest watermark graphic edge accepted.
+pub const MAX_WATERMARK_SIDE: u32 = 16_384;
+/// Largest watermark graphic area accepted (pixels).
+pub const MAX_WATERMARK_PIXELS: u64 = 1 << 24;
 
 /// Resize type (STU-IO-136, six members).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,7 +227,162 @@ pub const EXPORT_STAGE_KEYS: &[StageKey] = &[
     key("output_sharpening_enabled", "output_sharpening", KeyStorage::Unclassified, "false", "studio_declared"),
     key("output_sharpening_media", "output_sharpening", KeyStorage::StoredSetting, "Screen", "studio_declared"),
     key("output_sharpening_level", "output_sharpening", KeyStorage::StoredSetting, "2", "STU-IO-137"),
+    key("use_watermark", "watermarking", KeyStorage::StoredSetting, "false", "STU-IO-138"),
+    key("watermark_source", "watermarking", KeyStorage::Unclassified, "none", "studio_declared"),
+    key("watermark_opacity", "watermarking", KeyStorage::Unclassified, "100", "studio_declared"),
+    key("watermark_size", "watermarking", KeyStorage::Unclassified, "proportional 25", "studio_declared"),
+    key("watermark_anchor", "watermarking", KeyStorage::Unclassified, "bottom_right", "studio_declared"),
+    key("watermark_inset_x", "watermarking", KeyStorage::Unclassified, "0", "studio_declared"),
+    key("watermark_inset_y", "watermarking", KeyStorage::Unclassified, "0", "studio_declared"),
+    key("watermark_rotation", "watermarking", KeyStorage::Unclassified, "0", "studio_declared"),
 ];
+
+/// Colour encoding of a watermark graphic's RGB (alpha is always linear coverage).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkTransfer {
+    /// Linear light in the output profile's primaries.
+    Linear,
+    /// sRGB / Display P3 transfer curve (decoded with the IEC 61966-2-1 EOTF before compositing).
+    SrgbTrc,
+}
+
+/// A caller-supplied straight-RGBA watermark image (row-major, 4 x f32 per pixel, 0..1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WatermarkGraphic {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<f32>,
+    pub transfer: MarkTransfer,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WatermarkSource {
+    None,
+    Graphic(WatermarkGraphic),
+    /// Refused while used: needs hsk-studio-type (declared gap).
+    Text(String),
+}
+
+/// Watermark size (Studio reading, UNVERIFIED).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WatermarkSize {
+    /// Rotated mark width as a percent of the output width, `0 < p <= 100`.
+    Proportional(f64),
+    Fit,
+    Fill,
+}
+
+impl WatermarkSize {
+    pub const fn rule(self) -> &'static str {
+        match self {
+            Self::Proportional(_) => "proportional",
+            Self::Fit => "fit",
+            Self::Fill => "fill",
+        }
+    }
+}
+
+/// Nine anchor positions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WatermarkAnchor {
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    Centre,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Start,
+    Middle,
+    End,
+}
+
+impl WatermarkAnchor {
+    const fn sides(self) -> (Side, Side) {
+        match self {
+            Self::TopLeft => (Side::Start, Side::Start),
+            Self::Top => (Side::Middle, Side::Start),
+            Self::TopRight => (Side::End, Side::Start),
+            Self::Left => (Side::Start, Side::Middle),
+            Self::Centre => (Side::Middle, Side::Middle),
+            Self::Right => (Side::End, Side::Middle),
+            Self::BottomLeft => (Side::Start, Side::End),
+            Self::Bottom => (Side::Middle, Side::End),
+            Self::BottomRight => (Side::End, Side::End),
+        }
+    }
+}
+
+/// Clockwise rotation of the mark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WatermarkRotation {
+    R0,
+    R90,
+    R180,
+    R270,
+}
+
+impl WatermarkRotation {
+    pub const fn degrees(self) -> u16 {
+        match self {
+            Self::R0 => 0,
+            Self::R90 => 90,
+            Self::R180 => 180,
+            Self::R270 => 270,
+        }
+    }
+}
+
+/// Watermark settings (`watermarking` group, STU-IO-135; fields are Studio readings, see the module notes).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WatermarkSettings {
+    /// STU-IO-138: false in all 9 observed presets.
+    pub use_watermark: bool,
+    pub source: WatermarkSource,
+    /// 0..=100, studio_declared 100.
+    pub opacity_percent: f64,
+    pub size: WatermarkSize,
+    pub anchor: WatermarkAnchor,
+    /// 0..=100 percent of the output width.
+    pub inset_x_percent: f64,
+    /// 0..=100 percent of the output height.
+    pub inset_y_percent: f64,
+    pub rotation: WatermarkRotation,
+}
+
+impl Default for WatermarkSettings {
+    fn default() -> Self {
+        Self {
+            use_watermark: false,
+            source: WatermarkSource::None,
+            opacity_percent: 100.0,
+            size: WatermarkSize::Proportional(25.0),
+            anchor: WatermarkAnchor::BottomRight,
+            inset_x_percent: 0.0,
+            inset_y_percent: 0.0,
+            rotation: WatermarkRotation::R0,
+        }
+    }
+}
+
+/// Where the watermark went (receipt); the rectangle may extend past the output, which clips it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WatermarkPlacement {
+    pub x: i64,
+    pub y: i64,
+    pub width: u32,
+    pub height: u32,
+    pub size_rule: &'static str,
+    pub anchor: WatermarkAnchor,
+    pub rotation_degrees: u16,
+    pub opacity_percent: f64,
+}
 
 /// Output sharpening media (STU-IO-136).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,6 +488,7 @@ pub fn sharpen_row(media: SharpenMedia, level: u8, ppi: f64) -> Result<SharpenRo
 pub struct ExportStage {
     pub sizing: OutputSizing,
     pub sharpening: OutputSharpening,
+    pub watermark: WatermarkSettings,
 }
 
 /// A typed refusal of the stage; nothing is clamped, defaulted or skipped silently.
@@ -327,6 +500,17 @@ pub enum ExportStageError {
     OutOfRange(&'static str),
     /// The output (or an intermediate pass) would exceed [`MAX_OUTPUT_SIDE`] / [`MAX_OUTPUT_PIXELS`].
     OutputTooLarge,
+    /// `use_watermark` with a text source: needs hsk-studio-type, a module edge develop does not have.
+    TextWatermarkUnsupported,
+    /// `use_watermark` with no source.
+    WatermarkMissing,
+    /// A watermark graphic with a zero edge.
+    WatermarkEmpty,
+    /// A watermark graphic over [`MAX_WATERMARK_SIDE`] / [`MAX_WATERMARK_PIXELS`], or a sized mark over
+    /// [`MAX_OUTPUT_PIXELS`].
+    WatermarkTooLarge,
+    /// The graphic's buffer is not `width x height x 4` samples.
+    WatermarkLength,
     Develop(DevelopError),
 }
 
@@ -336,14 +520,20 @@ impl ExportStageError {
             Self::NonFinite(_) => "export_setting_not_finite",
             Self::OutOfRange(_) => "export_setting_out_of_range",
             Self::OutputTooLarge => "export_output_too_large",
+            Self::TextWatermarkUnsupported => "text_watermark_unsupported",
+            Self::WatermarkMissing => "watermark_source_missing",
+            Self::WatermarkEmpty => "watermark_graphic_empty",
+            Self::WatermarkTooLarge => "watermark_too_large",
+            Self::WatermarkLength => "watermark_length_mismatch",
             Self::Develop(e) => e.code(),
         }
     }
 
-    /// The key a setting refusal names; empty otherwise.
+    /// The key a setting refusal names, or the missing module of a text watermark; empty otherwise.
     pub fn detail(&self) -> &'static str {
         match self {
             Self::NonFinite(k) | Self::OutOfRange(k) => k,
+            Self::TextWatermarkUnsupported => "hsk-studio-type",
             _ => "",
         }
     }
@@ -382,6 +572,8 @@ pub struct ExportStageReceipt {
     pub sharpening: Option<SharpenRow>,
     /// Channel values outside 0..1 right after the sharpening step (zero when sharpening is off).
     pub sharpen_out_of_range: ClipReport,
+    /// The placed watermark, `None` when `use_watermark` is off.
+    pub watermark: Option<WatermarkPlacement>,
     /// Channel values of the staged linear image outside 0..1: exactly what the output transfer clamps and counts.
     pub out_of_range: ClipReport,
 }
@@ -608,6 +800,190 @@ fn sharpen(image: &mut DevelopedImage, row: &SharpenRow, cancel: &CancellationTo
     Ok(())
 }
 
+fn percent(value: f64, max: f64, key: &'static str) -> Result<(), ExportStageError> {
+    if !value.is_finite() {
+        return Err(ExportStageError::NonFinite(key));
+    }
+    if !(0.0..=max).contains(&value) {
+        return Err(ExportStageError::OutOfRange(key));
+    }
+    Ok(())
+}
+
+impl WatermarkSettings {
+    fn validate_numbers(&self) -> Result<(), ExportStageError> {
+        percent(self.opacity_percent, 100.0, "watermark_opacity")?;
+        percent(self.inset_x_percent, 100.0, "watermark_inset_x")?;
+        percent(self.inset_y_percent, 100.0, "watermark_inset_y")?;
+        if let WatermarkSize::Proportional(p) = self.size {
+            percent(p, 100.0, "watermark_size")?;
+            if p <= 0.0 {
+                return Err(ExportStageError::OutOfRange("watermark_size"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The graphic, checked: size caps before the buffer is read, then length, then every sample.
+    fn graphic(&self) -> Result<&WatermarkGraphic, ExportStageError> {
+        let g = match &self.source {
+            WatermarkSource::None => return Err(ExportStageError::WatermarkMissing),
+            WatermarkSource::Text(_) => return Err(ExportStageError::TextWatermarkUnsupported),
+            WatermarkSource::Graphic(g) => g,
+        };
+        if g.width == 0 || g.height == 0 {
+            return Err(ExportStageError::WatermarkEmpty);
+        }
+        let area = u64::from(g.width).checked_mul(u64::from(g.height));
+        if g.width > MAX_WATERMARK_SIDE || g.height > MAX_WATERMARK_SIDE || area.is_none_or(|a| a > MAX_WATERMARK_PIXELS) {
+            return Err(ExportStageError::WatermarkTooLarge);
+        }
+        if area.and_then(|a| a.checked_mul(4)).and_then(|n| usize::try_from(n).ok()) != Some(g.rgba.len()) {
+            return Err(ExportStageError::WatermarkLength);
+        }
+        if g.rgba.iter().any(|v| !v.is_finite()) {
+            return Err(ExportStageError::NonFinite("watermark_sample"));
+        }
+        if g.rgba.iter().any(|v| !(0.0..=1.0).contains(v)) {
+            return Err(ExportStageError::OutOfRange("watermark_sample"));
+        }
+        Ok(g)
+    }
+}
+
+fn index(x: usize, y: usize, width: usize) -> Result<usize, ExportStageError> {
+    y.checked_mul(width).and_then(|r| r.checked_add(x)).ok_or(ExportStageError::WatermarkTooLarge)
+}
+
+/// Clockwise rotation (exact permutation); returns the pixels and the new size.
+fn rotate(px: &[[f32; 4]], w: usize, h: usize, rotation: WatermarkRotation) -> Result<(Vec<[f32; 4]>, usize, usize), ExportStageError> {
+    let (nw, nh) = match rotation {
+        WatermarkRotation::R0 | WatermarkRotation::R180 => (w, h),
+        WatermarkRotation::R90 | WatermarkRotation::R270 => (h, w),
+    };
+    let (wl, hl) = (w.checked_sub(1).ok_or(ExportStageError::WatermarkEmpty)?, h.checked_sub(1).ok_or(ExportStageError::WatermarkEmpty)?);
+    let mut out = Vec::with_capacity(px.len());
+    for y in 0..nh {
+        for x in 0..nw {
+            // Destination (x, y) reads source (sx, sy).
+            let (sx, sy) = match rotation {
+                WatermarkRotation::R0 => (x, y),
+                WatermarkRotation::R90 => (y, hl.checked_sub(x).ok_or(ExportStageError::WatermarkEmpty)?),
+                WatermarkRotation::R180 => {
+                    (wl.checked_sub(x).ok_or(ExportStageError::WatermarkEmpty)?, hl.checked_sub(y).ok_or(ExportStageError::WatermarkEmpty)?)
+                }
+                WatermarkRotation::R270 => (wl.checked_sub(y).ok_or(ExportStageError::WatermarkEmpty)?, x),
+            };
+            out.push(px[index(sx, sy, w)?]);
+        }
+    }
+    Ok((out, nw, nh))
+}
+
+fn mark_edge(v: f64) -> Result<u32, ExportStageError> {
+    let v = round_half_up(v).max(1.0);
+    if !v.is_finite() || v > f64::from(u32::MAX) {
+        return Err(ExportStageError::WatermarkTooLarge);
+    }
+    Ok(v as u32)
+}
+
+/// Offset of a mark of `len` on an output axis of `out` with inset percent `inset`.
+fn place(side: Side, out: u32, len: u32, inset: f64) -> Result<i64, ExportStageError> {
+    let room = i64::from(out).checked_sub(i64::from(len)).ok_or(DevelopError::Overflow)?;
+    let inset = round_half_up(f64::from(out) * inset / 100.0) as i64;
+    Ok(match side {
+        Side::Start => inset,
+        Side::Middle => room.div_euclid(2),
+        Side::End => room.checked_sub(inset).ok_or(DevelopError::Overflow)?,
+    })
+}
+
+/// Rotate, size, place and composite the watermark into `image` (linear light).
+fn composite_watermark(
+    image: &mut DevelopedImage,
+    settings: &WatermarkSettings,
+    cancel: &CancellationToken,
+) -> Result<WatermarkPlacement, ExportStageError> {
+    let g = settings.graphic()?;
+    let decode = |v: f32| match g.transfer {
+        MarkTransfer::Linear => v,
+        MarkTransfer::SrgbTrc => crate::adjust::dec(f64::from(v)) as f32,
+    };
+    let src: Vec<[f32; 4]> = g.rgba.chunks_exact(4).map(|c| [decode(c[0]), decode(c[1]), decode(c[2]), c[3]]).collect();
+    let (rotated, mw, mh) = rotate(&src, g.width as usize, g.height as usize, settings.rotation)?;
+    let (ow, oh) = (f64::from(image.width), f64::from(image.height));
+    let (fw, fh) = (mw as f64, mh as f64);
+    let (tw, th) = match settings.size {
+        WatermarkSize::Proportional(p) => {
+            let tw = mark_edge(ow * p / 100.0)?;
+            (tw, mark_edge(f64::from(tw) * fh / fw)?)
+        }
+        WatermarkSize::Fit => {
+            let s = (ow / fw).min(oh / fh);
+            (mark_edge(fw * s)?, mark_edge(fh * s)?)
+        }
+        WatermarkSize::Fill => {
+            let s = (ow / fw).max(oh / fh);
+            (mark_edge(fw * s)?, mark_edge(fh * s)?)
+        }
+    };
+    let over = |a: u64, b: u64| a.checked_mul(b).is_none_or(|n| n > MAX_OUTPUT_PIXELS);
+    if over(u64::from(tw), u64::from(th)) || over(u64::from(tw), mh as u64) {
+        return Err(ExportStageError::WatermarkTooLarge);
+    }
+    let (tw_us, th_us) = (tw as usize, th as usize);
+    let sized = if (tw_us, th_us) == (mw, mh) {
+        rotated
+    } else {
+        let pre: Vec<[f32; 4]> = rotated.iter().map(|p| [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]]).collect();
+        let xt = resample_taps(mw as u32, tw)?;
+        let yt = resample_taps(mh as u32, th)?;
+        separable(&pre, mw, &xt, &yt, cancel)?
+            .into_iter()
+            .map(|p| {
+                if p[3] <= 0.0 {
+                    [0.0; 4]
+                } else {
+                    let a = p[3].min(1.0);
+                    [(p[0] / p[3]).clamp(0.0, 1.0), (p[1] / p[3]).clamp(0.0, 1.0), (p[2] / p[3]).clamp(0.0, 1.0), a]
+                }
+            })
+            .collect()
+    };
+    let (hside, vside) = settings.anchor.sides();
+    let x0 = place(hside, image.width, tw, settings.inset_x_percent)?;
+    let y0 = place(vside, image.height, th, settings.inset_y_percent)?;
+    let opacity = settings.opacity_percent / 100.0;
+    let iw = image.width as usize;
+    for (my, row) in sized.chunks_exact(tw_us).enumerate() {
+        cancel.check().map_err(DevelopError::from)?;
+        let Some(y) = i64::try_from(my).ok().and_then(|m| y0.checked_add(m)).filter(|y| (0..i64::from(image.height)).contains(y)) else {
+            continue;
+        };
+        for (mx, p) in row.iter().enumerate() {
+            let Some(x) = i64::try_from(mx).ok().and_then(|m| x0.checked_add(m)).filter(|x| (0..i64::from(image.width)).contains(x)) else {
+                continue;
+            };
+            let at = index(x as usize, y as usize, iw)?.checked_mul(3).ok_or(DevelopError::Overflow)?;
+            let a = f64::from(p[3]) * opacity;
+            for (c, m) in image.rgb.iter_mut().skip(at).take(3).zip(p) {
+                *c = (f64::from(*c) * (1.0 - a) + f64::from(*m) * a) as f32;
+            }
+        }
+    }
+    Ok(WatermarkPlacement {
+        x: x0,
+        y: y0,
+        width: tw,
+        height: th,
+        size_rule: settings.size.rule(),
+        anchor: settings.anchor,
+        rotation_degrees: settings.rotation.degrees(),
+        opacity_percent: settings.opacity_percent,
+    })
+}
+
 fn to_pixels(rgb: &[f32]) -> Vec<[f32; 3]> {
     rgb.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
 }
@@ -634,6 +1010,10 @@ pub fn apply_export_stage(
     stage.sizing.validate()?;
     if SharpenAmount::from_level(stage.sharpening.level).is_none() {
         return Err(ExportStageError::OutOfRange("output_sharpening_level"));
+    }
+    stage.watermark.validate_numbers()?;
+    if stage.watermark.use_watermark {
+        stage.watermark.graphic()?;
     }
     let sharpening = if stage.sharpening.enabled {
         Some(sharpen_row(stage.sharpening.media, stage.sharpening.level, stage.sizing.pixels_per_inch())?)
@@ -665,6 +1045,7 @@ pub fn apply_export_stage(
         sharpen(&mut out, row, cancel)?;
         sharpen_out_of_range = count_out_of_range(&out.rgb)?;
     }
+    let watermark = if stage.watermark.use_watermark { Some(composite_watermark(&mut out, &stage.watermark, cancel)?) } else { None };
     let receipt = ExportStageReceipt {
         source_size: (image.width, image.height),
         output_size: (out.width, out.height),
@@ -675,6 +1056,7 @@ pub fn apply_export_stage(
         resolution_ppi: stage.sizing.pixels_per_inch(),
         sharpening,
         sharpen_out_of_range,
+        watermark,
         out_of_range: count_out_of_range(&out.rgb)?,
     };
     Ok((out, receipt))
