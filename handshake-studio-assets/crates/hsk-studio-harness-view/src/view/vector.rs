@@ -879,6 +879,9 @@ impl hsk_studio_composite::VectorAssets for LiveTextAssets<'_> {
     }
 }
 
+/// Story ids the viewer could not shape, with the reason.
+type Unshaped = Vec<(String, String)>;
+
 /// The outcome of one live path- or area-text binding in the viewer ([`Viewer::vector_text_reports`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct VectorTextStatus {
@@ -1245,7 +1248,7 @@ impl Viewer {
     }
 
     /// [`Self::prepared_vectors`] plus why each unshaped live story was not shaped.
-    fn prepared_vectors_with_text(&self) -> Result<Option<(PreparedVectors, Vec<(String, String)>)>, String> {
+    fn prepared_vectors_with_text(&self) -> Result<Option<(PreparedVectors, Unshaped)>, String> {
         let doc = self.vdoc()?;
         if !doc.layers.iter().any(|l| matches!(l.payload, Payload::Vector { .. })) {
             return Ok(None);
