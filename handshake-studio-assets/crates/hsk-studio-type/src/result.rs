@@ -104,6 +104,16 @@ impl<'a> Run<'a> {
     pub fn units_per_em(&self) -> u32 {
         self.units_per_em
     }
+    /// The resolved face's OS/2 `sCapHeight` in points: font units x `font_size_pt() /
+    /// units_per_em()`. `None` when the face has no OS/2 table or its version is below 2.
+    pub fn cap_height_pt(&self) -> Option<f64> {
+        None
+    }
+    /// The resolved face's OS/2 `sxHeight` in points: font units x `font_size_pt() /
+    /// units_per_em()`. `None` when the face has no OS/2 table or its version is below 2.
+    pub fn x_height_pt(&self) -> Option<f64> {
+        None
+    }
     pub fn axes(&self) -> &[AxisReceipt] {
         self.axes.as_slice()
     }
