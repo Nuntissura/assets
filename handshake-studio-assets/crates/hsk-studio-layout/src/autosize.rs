@@ -29,7 +29,7 @@ use crate::paragraph::ShapedParagraph;
 use crate::threaded_reflow::{Composition, LayoutProposal, Line};
 use crate::LayoutError;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{AutoSizing, VerticalJustification};
+use hsk_studio_folio::{AutoSizing, Budget, Code, Diagnostic, Resolver, Snapshot, StudioDocument, VerticalJustification};
 
 /// Largest width or height an auto-sized frame may take, pt (declared bound, Studio reading).
 pub const MAX_AUTOSIZE_EXTENT_PT: f64 = 15_552.0;
@@ -67,6 +67,17 @@ impl AutosizeProposal {
     /// Every resize: frame id, size before and after.
     pub fn autosized_frames(&self) -> &[FrameResize] {
         &self.resizes
+    }
+    /// The prospective document: `base` with every resized frame's bounds written, validated by Folio.
+    pub fn autosized_document(
+        &self,
+        base: &StudioDocument,
+        budget: Budget,
+        resolver: &dyn Resolver,
+        cancel: &CancellationToken,
+    ) -> Result<Snapshot, Diagnostic> {
+        let _ = (base, budget, resolver, cancel);
+        Err(Diagnostic { code: Code::UnsupportedMutation, target: "autosize".into() })
     }
 }
 

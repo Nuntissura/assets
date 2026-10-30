@@ -337,3 +337,36 @@ fn unfit_story_refuses_by_the_bound_and_sizing_honours_cancel() {
     stop.cancel();
     assert_eq!(autosize_with(&doc, &st, &paras, &stop), Err(LayoutError::Canceled));
 }
+
+// ---- slice 3: output ---------------------------------------------------------------------------------
+
+/// The receipt names every resized frame with its size before and after; the prospective document
+/// is the base with those bounds written (top-left kept), validated by Folio, and a fixed-size reflow
+/// of it lays out the same lines. A stale base is refused; without auto-size there is no resize and
+/// the document is the base.
+#[test]
+fn autosize_receipt_reports_every_resize_and_the_document_takes_the_bounds() {
+    let cancel = hsk_studio_accord::CancellationToken::default();
+    let (doc, st, paras) = sized("aaaa bbbb cccc dddd eeee ffff", spec(0, 10.0, 10.0, 64.0, 100.0), AutoSizing::HeightOnly);
+    let p = autosize(&doc, &st, &paras).expect("auto-sized");
+    let r = &p.autosized_frames()[0];
+    assert_eq!((r.frame_id.as_str(), r.frame_index, r.auto_sizing), (id("SLYR", 1).as_str(), 0, AutoSizing::HeightOnly));
+    assert_eq!(resized(&p), (64.0, 100.0, 64.0, 38.0));
+    let snap = p.autosized_document(&doc, Budget::default(), &Unresolved, &cancel).expect("Folio-valid document");
+    let mut expected = doc.clone();
+    frame(&mut expected, 0).bounds.height = len(38.0);
+    assert_eq!(snap.document(), &expected);
+    let mut fixed = snap.document().clone();
+    frame(&mut fixed, 0).auto_sizing_type = AutoSizing::Off;
+    assert_eq!(run(&fixed, &st, &paras, &records()).expect("reflow"), p.layout);
+    let mut stale = doc.clone();
+    stale.revision += 1;
+    assert_eq!(p.autosized_document(&stale, Budget::default(), &Unresolved, &cancel).unwrap_err().code, Code::StaleRevision);
+    let mut other = doc.clone();
+    other.layers[0].layer_id = id("SLYR", 9);
+    assert_eq!(p.autosized_document(&other, Budget::default(), &Unresolved, &cancel).unwrap_err().code, Code::InvalidField);
+    let (off_doc, st, paras) = sized("aaaa", spec(0, 10.0, 10.0, 64.0, 100.0), AutoSizing::Off);
+    let off = autosize(&off_doc, &st, &paras).expect("off");
+    assert!(off.autosized_frames().is_empty());
+    assert_eq!(off.autosized_document(&off_doc, Budget::default(), &Unresolved, &cancel).expect("valid").document(), &off_doc);
+}
