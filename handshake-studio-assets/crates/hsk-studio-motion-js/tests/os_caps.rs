@@ -198,8 +198,10 @@ fn job_cpu_cap_gives_typed_budget_and_is_rearmed_per_request() {
         // The cap is CPU time, not wall time, and the test process cannot read the worker's CPU time, so the
         // wall clock is no product measure: under host load (R39 saw 4.54 s) the worker is simply descheduled.
         // The product proof is the typed Budget(Cpu) above with zero Deadline and Fuel denials and one
-        // killed_os_cpu below. The wall clock only guards: at least the cap's 300 ms floor (an earlier stop
-        // would not be the 400 ms allowance) and well under the 10 s deadline, so the deadline did not fire.
+        // killed_os_cpu below, split by the stopping path: the host poll of the job's CPU time stopped it,
+        // not the kernel per-process limit backstop (F-R40-2: the wall bound alone cannot tell them apart).
+        // The wall clock only guards: at least the cap's 300 ms floor (an earlier stop would not be the
+        // 400 ms allowance) and well under the 10 s deadline, so the deadline did not fire.
         assert!(elapsed >= Duration::from_millis(300) && elapsed < Duration::from_secs(9), "{elapsed:?}");
         let stats = p.stats();
         assert_eq!(
@@ -208,6 +210,11 @@ fn job_cpu_cap_gives_typed_budget_and_is_rearmed_per_request() {
         );
         let w = workers(&p);
         assert_eq!((w.killed_os_cpu, w.killed_deadline, w.killed_os_memory), (1, 0, 0));
+        assert_eq!(
+            (w.killed_os_cpu_host_poll, w.killed_os_cpu_kernel_limit),
+            (1, 0),
+            "the host CPU poll, not the kernel per-process backstop, must stop the loop"
+        );
         // The over-budget worker was dropped; the provider recovers on a new worker.
         assert_eq!(eval(&p, "1+2"), Ok(vec![3.0]));
         assert_eq!(workers(&p).spawned, 2);

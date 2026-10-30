@@ -133,6 +133,12 @@ pub struct WorkerStats {
     pub killed_os_memory: u64,
     /// Workers killed because the operating system reported the CPU cap was hit.
     pub killed_os_cpu: u64,
+    /// The part of `killed_os_cpu` stopped by the host's own poll of the job's CPU time
+    /// (`Waited::CpuCap`), before the kernel per-process limit acted.
+    pub killed_os_cpu_host_poll: u64,
+    /// The part of `killed_os_cpu` where the worker was already gone and only the kernel per-process
+    /// CPU limit notice (the backstop) classified the stop.
+    pub killed_os_cpu_kernel_limit: u64,
     /// Exit code of the most recent crashed worker (platform value, e.g. an NTSTATUS on Windows).
     pub last_crash_exit_code: Option<i32>,
 }
@@ -149,6 +155,8 @@ struct Counters {
     killed_oversize: AtomicU64,
     killed_os_memory: AtomicU64,
     killed_os_cpu: AtomicU64,
+    killed_os_cpu_host_poll: AtomicU64,
+    killed_os_cpu_kernel_limit: AtomicU64,
     last_crash_exit_code: Mutex<Option<i32>>,
 }
 
@@ -275,6 +283,8 @@ impl WorkerEngine {
             killed_oversize: c.killed_oversize.load(Ordering::Acquire),
             killed_os_memory: c.killed_os_memory.load(Ordering::Acquire),
             killed_os_cpu: c.killed_os_cpu.load(Ordering::Acquire),
+            killed_os_cpu_host_poll: c.killed_os_cpu_host_poll.load(Ordering::Acquire),
+            killed_os_cpu_kernel_limit: c.killed_os_cpu_kernel_limit.load(Ordering::Acquire),
             last_crash_exit_code: *lock(&c.last_crash_exit_code),
         }
     }
@@ -373,6 +383,7 @@ impl WorkerEngine {
             Waited::Failed(ReadFailure::Closed)
         };
         let mut events = session.drain_os_events();
+        let host_poll = matches!(waited, Waited::CpuCap);
         let (mut failure, patience) = match waited {
             Waited::Frame(bytes) if events.is_clear() => return Ok(bytes),
             // A reply arrived but the kernel reports a cap was hit: the cause below replaces it.
@@ -408,7 +419,14 @@ impl WorkerEngine {
             EngineFailure::Canceled => bump(&self.counters.killed_canceled),
             EngineFailure::Budget(BudgetKind::Deadline) => bump(&self.counters.killed_deadline),
             EngineFailure::Budget(BudgetKind::Memory) => bump(&self.counters.killed_os_memory),
-            EngineFailure::Budget(BudgetKind::Cpu) => bump(&self.counters.killed_os_cpu),
+            EngineFailure::Budget(BudgetKind::Cpu) => {
+                bump(&self.counters.killed_os_cpu);
+                bump(if host_poll {
+                    &self.counters.killed_os_cpu_host_poll
+                } else {
+                    &self.counters.killed_os_cpu_kernel_limit
+                });
+            }
             EngineFailure::Output => bump(&self.counters.killed_oversize),
             EngineFailure::Faulted(EngineFault::Protocol) => bump(&self.counters.protocol_faults),
             EngineFailure::Faulted(EngineFault::Crashed) => {
