@@ -360,3 +360,55 @@ fn text_watermark_is_refused_typed_and_a_graphic_file_is_placed() {
     let w = &r["export_stage"]["watermark"];
     assert_eq!((w["x"].as_i64(), w["y"].as_i64(), w["width"].as_u64(), w["height"].as_u64(), w["anchor"].as_str()), (Some(0), Some(0), Some(2), Some(2), Some("top_left")), "{w}");
 }
+
+// ---- slice 3: CLI parity ----------------------------------------------------------------------
+
+fn cli(args: &[&str]) -> (i32, Value) {
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let o = hsk_studio_harness::cli::run(&args);
+    (o.exit, serde_json::from_str(&o.stdout).unwrap_or_else(|e| panic!("stdout not JSON ({e}): {}", o.stdout)))
+}
+
+/// One argv (`--long-edge 64 --sharpen glossy:high --watermark FILE --export-set KEY VALUE`) builds the
+/// same stage as the dialog's fields: equal stage receipts, equal samples, equal field values; a bad
+/// `--sharpen` is a usage error and a bad value is the dialog's typed refusal.
+#[test]
+fn cli_stage_flags_build_the_same_stage_as_the_dialog() {
+    let scratch = Scratch::new("export-stage-cli");
+    let src = scratch.0.join("synthetic-300x260.dng");
+    std::fs::write(&src, synthetic_dng(300, 260)).unwrap();
+    let samples = raster::Samples::U8([0, 0, 255, 128].repeat(4));
+    let req = raster::PngEncodeRequest { width: 2, height: 2, colour: raster::Colour::Rgba, samples: &samples, icc: None, compression: raster::PngCompression::Balanced };
+    let mark = scratch.0.join("mark.png");
+    std::fs::write(&mark, raster::encode_png(&req).unwrap()).unwrap();
+    let (src_s, mark_s) = (src.to_string_lossy().into_owned(), mark.to_string_lossy().into_owned());
+    let out = scratch.0.join("cli.png").to_string_lossy().into_owned();
+    let (exit, report) = cli(&[
+        "develop", &src_s, &out, "--png", "--long-edge", "64", "--sharpen", "glossy:high", "--watermark", &mark_s,
+        "--export-set", "watermark_anchor", "top_left", "--export-set", "watermark_size_value", "10",
+    ]);
+    assert_eq!(exit, 0, "{report}");
+    assert_eq!(png_size(Path::new(&out)), (64, 55));
+
+    let mut v = open_dng(&scratch, 300, 260);
+    for (k, value) in [
+        ("stage", "true"), ("resize_type", "LongEdge"), ("max_width", "64"), ("output_sharpening_enabled", "true"),
+        ("output_sharpening_media", "Glossy"), ("output_sharpening_level", "3"), ("use_watermark", "true"),
+    ] {
+        field(&mut v, k, value);
+    }
+    v.load_develop_watermark(&mark).unwrap();
+    field(&mut v, "watermark_anchor", "top_left");
+    field(&mut v, "watermark_size_value", "10");
+    let window = export(&mut v, &scratch.0.join("window.png"), DevelopExport::Png { depth: OutputDepth::Sixteen });
+    assert_eq!(report["export"]["export_stage"], window["export_stage"], "same receipt");
+    assert_eq!(report["export"]["samples_sha256"], window["samples_sha256"], "same pixels");
+    assert_eq!(report["develop"]["export_stage"]["keys"], v.develop_json()["export_stage"]["keys"], "same field values");
+    let r = &window["export_stage"];
+    assert_eq!((r["sharpening"]["media"].as_str(), r["sharpening"]["amount"].as_str(), r["watermark"]["anchor"].as_str()), (Some("Glossy"), Some("High"), Some("top_left")), "{r}");
+
+    let (exit, report) = cli(&["develop", &src_s, &out, "--png", "--overwrite", "--sharpen", "glossy"]);
+    assert_eq!((exit, report["error"].as_str()), (2, Some("usage")), "{report}");
+    let (exit, report) = cli(&["develop", &src_s, &out, "--png", "--overwrite", "--long-edge", "64", "--export-set", "resize_type", "Huge"]);
+    assert_eq!((exit, report["error"].as_str(), report["detail"]["setting"].as_str()), (1, Some("export_field_value"), Some("resize_type")), "{report}");
+}
