@@ -1576,7 +1576,7 @@ impl Mapper<'_> {
     fn grid_layout(
         &mut self,
         g: Option<&crate::nodes::FigGrid>,
-    ) -> std::result::Result<(StudioGridLayout, Vec<(SourceId, StudioChildLayout)>), &'static str> {
+    ) -> std::result::Result<GridMapping, &'static str> {
         let g = g.ok_or("auto_layout_grid_missing")?;
         let count = |tracks: &[crate::nodes::FigGridTrack]| {
             u32::try_from(tracks.len())
@@ -3407,6 +3407,9 @@ impl Mapper<'_> {
         Ok(Some(node_ref))
     }
 }
+
+/// A GRID frame's container record and its anchored children's layouts (by Figma id).
+type GridMapping = (StudioGridLayout, Vec<(SourceId, StudioChildLayout)>);
 
 fn design(node: NodeRef) -> StudioNodeDesign {
     StudioNodeDesign {

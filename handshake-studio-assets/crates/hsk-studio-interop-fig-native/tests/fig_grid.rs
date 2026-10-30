@@ -237,7 +237,8 @@ fn grid_frame_imports_with_counts_sizes_gaps_and_anchors() {
 
 #[test]
 fn malformed_or_hostile_grid_fields_fall_back_to_none_with_typed_losses() {
-    let cases: Vec<(&str, Box<dyn Fn(&Kiwi, &mut KiwiValue)>)> = vec![
+    type Case = (&'static str, Box<dyn Fn(&Kiwi, &mut KiwiValue)>);
+    let cases: Vec<Case> = vec![
         // FIXED without a value.
         ("auto_layout_grid_track_value", Box::new(|k, t| k.grid(t, "horizontal-stack", &[(ROW_A, "HUG", None)], &[(COL_A, "FIXED", None)], (0.0, 0.0)))),
         // 1001 columns: refused by count before any track list is built (STU-DS-146 max 1000).

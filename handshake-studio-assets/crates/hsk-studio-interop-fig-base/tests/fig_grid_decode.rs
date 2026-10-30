@@ -22,6 +22,9 @@ fn fixture(name: &str) -> FigImport {
     *import
 }
 
+/// One `GridTrackSizingFunction` as (type, value).
+type Sizing<'a> = Option<(&'a str, Option<f32>)>;
+
 /// Builds kiwi values with the names, ids and enum values of the fixture's own schema.
 struct Kiwi<'a>(&'a SchemaSummary);
 
@@ -60,7 +63,7 @@ impl Kiwi<'_> {
         KiwiValue::Message(f)
     }
     /// A `GUIDGridTrackSizeMap` of (track local id, min, max).
-    fn sizes(&self, entries: &[(u32, Option<(&str, Option<f32>)>, Option<(&str, Option<f32>)>)]) -> KiwiValue {
+    fn sizes(&self, entries: &[(u32, Sizing, Sizing)]) -> KiwiValue {
         let list = entries
             .iter()
             .map(|(id, min, max)| {
