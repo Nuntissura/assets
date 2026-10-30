@@ -330,6 +330,10 @@ fn assert_corpus_covers_every_mutating_run_method() {
     let row = action::command("document.submit_sequence_and_entry").expect("submit_sequence_and_entry row");
     assert_eq!(row.run_method, "submit_sequence_and_entry");
     assert!(!row.recordable && row.mutates_authority);
+    // Lane SMB-PR-NEST-1: the multi-sequence step (Nest, Make Subsequence) has its own row.
+    let row = action::command("document.submit_sequence_edits").expect("submit_sequence_edits row");
+    assert_eq!(row.run_method, "submit_sequence_edits");
+    assert!(!row.recordable && row.mutates_authority);
 }
 
 #[test]
@@ -342,7 +346,7 @@ fn corpus_lists_every_run_operation_with_recordability() {
     assert_eq!(unique.len(), ids.len(), "command ids are unique");
     let recordable: Vec<&str> = RUN_COMMANDS.iter().filter(|c| c.recordable).map(|c| c.command_id).collect();
     assert_eq!(recordable, ["layer.rename", "layer.set_visible", "layer.set_opacity", "layer.set_blend_mode", "layer.panel_set", "layer.restructure"]);
-    for id in ["document.open", "document.import", "document.reopen", "document.save", "document.checkpoint", "document.verify", "document.summary", "layer.panel", "history.undo", "history.redo", "layer.set_tiles", "layer.set_tiles_and_entry", "layer.set_vector_paths", "layer.set_vector_paths_and_entry", "layer.restructure_and_entry", "document.set_document_entry", "document.submit_sequence", "document.submit_sequence_and_entry"] {
+    for id in ["document.open", "document.import", "document.reopen", "document.save", "document.checkpoint", "document.verify", "document.summary", "layer.panel", "history.undo", "history.redo", "layer.set_tiles", "layer.set_tiles_and_entry", "layer.set_vector_paths", "layer.set_vector_paths_and_entry", "layer.restructure_and_entry", "document.set_document_entry", "document.submit_sequence", "document.submit_sequence_and_entry", "document.submit_sequence_edits"] {
         let c = action::command(id).unwrap_or_else(|| panic!("{id} missing"));
         assert!(!c.recordable, "{id}");
     }
