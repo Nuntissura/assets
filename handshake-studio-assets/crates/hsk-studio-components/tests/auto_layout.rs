@@ -531,13 +531,17 @@ fn wrap_lines_and_typed_refusals() {
             container(leaf(1, 0.0, 0.0), l, vec![leaf(2, 10.0, 10.0)])
         };
         let unsupported = |what: &str| Err(E::UnsupportedLayout(what.to_owned()));
-        // GRID is storable by no one: Folio refuses the record, and the evaluator refuses it too.
+        // GRID without its grid record (lane SMB-FIG-GRID-1): Folio refuses the missing record, and
+        // the evaluator refuses it too (solved grids: tests/auto_layout_grid.rs).
         let grid = row(&|l| l.layout_mode = LayoutMode::Grid);
         assert_eq!(
             folio_result(&world(&grid)).unwrap_err().code,
-            folio::Code::UnsupportedDescriptor
+            folio::Code::MissingField
         );
-        assert_eq!(solve_raw(&grid, None).map(|_| ()), unsupported("grid"));
+        assert_eq!(
+            solve_raw(&grid, None).map(|_| ()),
+            Err(E::InvalidLayout(format!("grid_fields@{}", id(1))))
+        );
         assert_eq!(
             solve(
                 &row(&|l| l.counter_axis_align_items = CounterAxisAlign::Baseline),

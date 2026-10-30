@@ -1,4 +1,4 @@
-//! Auto layout (STU-DS-036..045, 144..149): a deterministic flexbox-style subset evaluated in f64
+//! Auto layout (STU-DS-036..045, 144..150): a deterministic flexbox-style subset evaluated in f64
 //! on Folio's records. The container fields are `StudioAutoLayout`, the child fields
 //! `StudioChildLayout`, the clamps `StudioSizeClamps` and the constraints of absolutely positioned
 //! children `StudioConstraint`, all read from the per-node design entries of the Folio record set;
@@ -31,9 +31,18 @@
 //!   `AUTO` positioning.
 //! * A hugging leaf (no auto layout) uses its authored width/height as intrinsic content size; text
 //!   measurement belongs to Layout/Type and is not done here.
-//! * Typed refusals (`UnsupportedLayout`): GRID, BASELINE, `strokes_included_in_layout` (stroke
+//! * GRID (lane SMB-FIG-GRID-1) is solved by the `grid` submodule (placement, CSS-Grid-modelled
+//!   track sizing, the STU-DS-146 commands); its readings are in that module's notes.
+//! * Typed refusals (`UnsupportedLayout`): BASELINE, `strokes_included_in_layout` (stroke
 //!   accounting unspecified), SPACE_BETWEEN or WRAP with a hugging primary axis, FILL on the primary
 //!   axis in a wrapping parent, wrapping counter-hug with a FILL primary, HUG on a plain frame.
+mod grid;
+
+pub use grid::{
+    GRID_CELL_BUDGET, GridReorder, GridTrackEntry, GridTrackMove, grid_append_child_at,
+    grid_reorder_columns, grid_reorder_rows,
+};
+
 use super::constraints::{RectPt, SizePt, apply_constraints};
 use super::design::Design;
 use crate::{ComponentsError as E, R};
@@ -41,7 +50,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     AxisSizingMode, ChildAlign, ChildPositioning, ChildSizing, CounterAxisAlign,
     CounterAxisAlignContent, LayoutMode, LayoutWrap, PrimaryAxisAlign, StudioAutoLayout,
-    StudioConstraint, StudioSizeClamps,
+    StudioConstraint, StudioGridChild, StudioSizeClamps,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -113,6 +122,8 @@ struct LNode<'a> {
     grow: u8,
     align: ChildAlign,
     positioning: ChildPositioning,
+    /// STU-DS-150 placement in a GRID parent.
+    grid_child: Option<StudioGridChild>,
     constraint: StudioConstraint,
     /// `None` = `layout_mode NONE` or no entry: children are placed by their constraints.
     layout: Option<&'a StudioAutoLayout>,
@@ -131,7 +142,8 @@ fn implied_sizing(l: &StudioAutoLayout) -> (ChildSizing, ChildSizing) {
         hug(l.primary_axis_sizing_mode),
         hug(l.counter_axis_sizing_mode),
     );
-    if l.layout_mode == LayoutMode::Horizontal {
+    // GRID reads its primary axis horizontally, as HORIZONTAL does.
+    if l.layout_mode != LayoutMode::Vertical {
         (primary, counter)
     } else {
         (counter, primary)
@@ -183,6 +195,7 @@ fn build<'a>(
         grow: child.map_or(0, |c| c.layout_grow),
         align: child.map_or(ChildAlign::Inherit, |c| c.layout_align),
         positioning: child.map_or(ChildPositioning::Auto, |c| c.layout_positioning),
+        grid_child: child.and_then(|c| c.grid_child),
         constraint: nd
             .and_then(|d| d.constraints.clone())
             .unwrap_or_else(StudioConstraint::top_left),
@@ -198,6 +211,7 @@ fn build<'a>(
 enum Slot {
     Root,
     InFlow { wrap: bool, parent_horizontal: bool },
+    InGrid,
     Placed,
 }
 
@@ -240,6 +254,9 @@ fn validate(n: &LNode, slot: Slot) -> R<()> {
         return Err(E::InvalidLayout(format!("layout_grow@{id}")));
     }
     let (sh, sv) = (n.sizing_horizontal, n.sizing_vertical);
+    if n.grid_child.is_some() && slot != Slot::InGrid {
+        return Err(E::InvalidLayout(format!("grid_child_outside_grid@{id}")));
+    }
     match slot {
         Slot::Root if sh == ChildSizing::Fill || sv == ChildSizing::Fill => {
             return Err(E::InvalidLayout(format!("fill_on_root@{id}")));
@@ -270,6 +287,7 @@ fn validate(n: &LNode, slot: Slot) -> R<()> {
                 return Err(E::UnsupportedLayout("fill_in_wrap".to_owned()));
             }
         }
+        Slot::InGrid => grid::validate_child(n)?,
         Slot::Root => {}
     }
     match n.layout {
@@ -282,8 +300,9 @@ fn validate(n: &LNode, slot: Slot) -> R<()> {
             }
         }
         Some(l) => {
-            if l.layout_mode == LayoutMode::Grid {
-                return Err(E::UnsupportedLayout("grid".to_owned()));
+            let is_grid = l.layout_mode == LayoutMode::Grid;
+            if is_grid != l.grid.is_some() {
+                return Err(E::InvalidLayout(format!("grid_fields@{id}")));
             }
             if l.counter_axis_align_items == CounterAxisAlign::Baseline {
                 return Err(E::UnsupportedLayout("baseline".to_owned()));
@@ -305,7 +324,7 @@ fn validate(n: &LNode, slot: Slot) -> R<()> {
             ] {
                 in_range(p, 0.0, 100_000.0, id)?;
             }
-            let horizontal = l.layout_mode == LayoutMode::Horizontal;
+            let horizontal = l.layout_mode != LayoutMode::Vertical;
             let (sp, sc) = if horizontal { (sh, sv) } else { (sv, sh) };
             if !axis_sizing_ok(sp, l.primary_axis_sizing_mode)
                 || !axis_sizing_ok(sc, l.counter_axis_sizing_mode)
@@ -315,6 +334,18 @@ fn validate(n: &LNode, slot: Slot) -> R<()> {
             let wrap = l.layout_wrap == LayoutWrap::Wrap;
             if l.counter_axis_align_content == CounterAxisAlignContent::SpaceBetween && !wrap {
                 return Err(E::InvalidLayout(format!("align_content_without_wrap@{id}")));
+            }
+            if is_grid {
+                grid::validate_container(n, l)?;
+                for c in &n.children {
+                    let child_slot = if c.positioning == ChildPositioning::Absolute {
+                        Slot::Placed
+                    } else {
+                        Slot::InGrid
+                    };
+                    validate(c, child_slot)?;
+                }
+                return Ok(());
             }
             if l.primary_axis_sizing_mode == AxisSizingMode::Auto
                 && (wrap || l.primary_axis_align_items == PrimaryAxisAlign::SpaceBetween)
@@ -466,6 +497,9 @@ fn content_size(n: &LNode, primary_outer: Option<f64>, ctx: &Ctx) -> R<SizePt> {
             h: n.rect.h,
         });
     };
+    if let Some(g) = grid::grid_of(l) {
+        return grid::content_size(n, l, g, ctx);
+    }
     let horizontal = l.layout_mode == LayoutMode::Horizontal;
     let (ms, me, cs, ce) = pads(l);
     let inflow: Vec<&LNode> = n
@@ -538,7 +572,10 @@ fn arrange(
     let count = n.children.len();
     let mut flow_rects: Vec<Option<RectPt>> = vec![None; count];
     let mut reverse_z = true;
-    if let Some(l) = n.layout {
+    if let Some((l, g)) = n.layout.and_then(|l| grid::grid_of(l).map(|g| (l, g))) {
+        reverse_z = l.item_reverse_z_index;
+        flow_rects = grid::arrange(n, l, g, rect, ctx)?;
+    } else if let Some(l) = n.layout {
         reverse_z = l.item_reverse_z_index;
         let horizontal = l.layout_mode == LayoutMode::Horizontal;
         let (ms, me, cs, ce) = pads(l);
