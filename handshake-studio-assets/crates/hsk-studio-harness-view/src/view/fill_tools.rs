@@ -29,12 +29,12 @@
 //! - Gradients on layer masks are not offered: the viewer has no mask edit target.
 #![deny(clippy::arithmetic_side_effects)]
 use super::Viewer;
-use super::brush_mix::{BLOCK, MixTarget};
+use super::brush_mix::{BLOCK, BYTE_LIMIT, MixTarget, Quiet, plane as window, put, tile_view};
 use super::edit::{self, Tool};
 use super::widget;
 use hsk_studio_accord::{CancellationToken, DomainId};
 use hsk_studio_folio::{Payload, StudioEffectKind, StudioFill, StudioRasterRecords, TileRef};
-use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort, TileAddress};
+use hsk_studio_observe::TileAddress;
 use hsk_studio_pigment::blend_math::StudioBlendMode;
 use hsk_studio_pigment::brush::{BrushLimits, crop_to};
 use hsk_studio_pigment::caller::{MemoryAdmission, SerializedOwner};
@@ -45,8 +45,8 @@ use hsk_studio_pigment::fill_tools::{
 use hsk_studio_pigment::render_plan::MaskFormat;
 use hsk_studio_pigment::select_tools::ToolLimits;
 use hsk_studio_pigment::selection::ColourView;
-use hsk_studio_pigment::{Grid, Mask, Outcome, Rect, Request, ResolvedTile, TileItem, masked_replace};
-use hsk_studio_prism::{ProfileInput, WORKING_PROFILE_LINEAR_SRGB_ADMITTED, profile_hash};
+use hsk_studio_pigment::{Grid, Mask, Outcome, Rect, Request, TileItem, masked_replace};
+use hsk_studio_prism::{DisplayEncoding, profile_hash};
 use serde_json::{Value, json};
 
 /// Largest canvas the tools read (16 bytes per pixel).
@@ -157,13 +157,22 @@ pub fn tool_hover(tool: Tool) -> &'static str {
     }
 }
 
-/// IEC 61966-2-1 encode of linear light (clamped to `[0, 1]`).
-fn encode(v: f32) -> f32 {
-    let c = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
-    if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+/// sRGB-encodes linear `rgb_f32le` bytes through Prism's display encoding (IEC 61966-2-1,
+/// clamped to `[0, 1]`); a non-finite sample is refused.
+fn encode_rgb(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for px in bytes.chunks_exact(12) {
+        let c = [0usize, 4, 8].map(|i| px.get(i..i.saturating_add(4)).and_then(|b| b.try_into().ok()).map_or(f32::NAN, f32::from_le_bytes));
+        let e = DisplayEncoding::Srgb.encode(c).map_err(|e| format!("sRGB encode: {}", e.code()))?;
+        for v in e {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    Ok(out)
 }
 
-/// IEC 61966-2-1 decode into linear light.
+/// IEC 61966-2-1 decode into linear light (Prism exposes the encode only; the brush's 8-bit
+/// `edit::linear(u8)` would quantize the replacement).
 fn decode(v: f32) -> f32 {
     let c = v.clamp(0.0, 1.0);
     if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
@@ -219,7 +228,7 @@ fn decode_pattern(id: &str, tile: &TileRef, body: &[u8]) -> Result<ResolvedPatte
         return Err(format!("pattern_unavailable: pattern {id} tile body is {} bytes ({})", body.len(), tile.format));
     }
     let (colour, alpha) = body.split_at(colour_len);
-    let rgb: Vec<f32> = f32s(colour).map(encode).collect();
+    let rgb: Vec<f32> = f32s(&encode_rgb(colour).map_err(|e| format!("pattern_unavailable: {e}"))?).collect();
     let pixels = rgb
         .chunks_exact(3)
         .zip(f32s(alpha))
@@ -241,62 +250,15 @@ struct Target {
     alpha: Vec<u8>,
 }
 
-/// Delivered engine frames are dropped: the harness records its own operation.
-struct Quiet;
-impl SinkPort for Quiet {
-    fn try_send(&mut self, _class: DeliveryClass, _bytes: &[u8]) -> Result<(), DeliveryError> {
-        Ok(())
-    }
-}
-
-/// Copies the `rect` window at `at` out of a tight plane of `px` bytes per pixel.
-fn window(bytes: &[u8], stride: usize, px: usize, rect: Rect, at: (usize, usize)) -> Option<Vec<u8>> {
-    let (w, h) = (usize::try_from(rect.width).ok()?, usize::try_from(rect.height).ok()?);
-    let row_bytes = w.checked_mul(px)?;
-    let mut out = Vec::with_capacity(row_bytes.checked_mul(h)?);
-    for y in 0..h {
-        let start = at.1.checked_add(y)?.checked_mul(stride)?.checked_add(at.0.checked_mul(px)?)?;
-        out.extend_from_slice(bytes.get(start..start.checked_add(row_bytes)?)?);
-    }
-    Some(out)
-}
-
-/// Writes a tight `rect` window back at `at`.
-fn put(bytes: &mut [u8], stride: usize, px: usize, rect: Rect, at: (usize, usize), src: &[u8]) -> Option<()> {
-    let (w, h) = (usize::try_from(rect.width).ok()?, usize::try_from(rect.height).ok()?);
-    let row_bytes = w.checked_mul(px)?;
-    for y in 0..h {
-        let start = at.1.checked_add(y)?.checked_mul(stride)?.checked_add(at.0.checked_mul(px)?)?;
-        let from = y.checked_mul(row_bytes)?;
-        bytes.get_mut(start..start.checked_add(row_bytes)?)?.copy_from_slice(src.get(from..from.checked_add(row_bytes)?)?);
-    }
-    Some(())
-}
-
 /// Offset of `inner`'s top-left inside `outer`.
 fn offset(outer: Rect, inner: Rect) -> Option<(usize, usize)> {
     Some((usize::try_from(inner.x.checked_sub(outer.x)?).ok()?, usize::try_from(inner.y.checked_sub(outer.y)?).ok()?))
 }
 
-fn resolved<'a>(view: &'a TileRef, block: Rect, colour: &'a [u8], alpha: &'a [u8], profile: &'a DomainId) -> Result<ResolvedTile<'a>, String> {
-    Ok(ResolvedTile {
-        tile_ref: view,
-        bounds: block,
-        sample_format: "rgb_f32le",
-        colour_bytes: colour,
-        colour_stride_bytes: u64::from(block.width).checked_mul(12).ok_or("stride")?,
-        colour_sha256: profile_hash(colour),
-        alpha_bytes: alpha,
-        alpha_stride_bytes: u64::from(block.width).checked_mul(4).ok_or("stride")?,
-        alpha_sha256: profile_hash(alpha),
-        transfer: "linear_light",
-        alpha_association: "straight",
-        profile: ProfileInput { profile_id: profile, bytes: WORKING_PROFILE_LINEAR_SRGB_ADMITTED, expected_sha256: profile_hash(WORKING_PROFILE_LINEAR_SRGB_ADMITTED) },
-    })
-}
-
-/// One block through pigment `masked_replace` with per-pixel replacement planes (the brush's
-/// engine route, [`super::brush_mix`], with a replacement that is not one colour).
+/// One block through pigment `masked_replace` with per-pixel replacement planes: the brush's
+/// engine route ([`super::brush_mix::replace_block`], its tile views and sink), kept as its own
+/// request because the brush runner builds its replacement from ONE colour
+/// (`paint_replacement(block, rgb)`) and has no parameter for replacement planes.
 #[allow(clippy::too_many_arguments)]
 fn replace_block(target: &MixTarget<'_>, tile: &TileRef, block: Rect, colour: &[u8], alpha: &[u8], rc: &[u8], ra: &[u8], mask: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     let key = format!("{}-fx{}y{}", tile.object_key, block.x, block.y);
@@ -307,7 +269,9 @@ fn replace_block(target: &MixTarget<'_>, tile: &TileRef, block: Rect, colour: &[
         "content_digest": tile.content_digest, "artifact_manifest_id": tile.artifact_manifest_id,
     }))
     .map_err(|e| format!("block reference: {e}"))?;
-    let items = [TileItem { before: resolved(&view, block, colour, alpha, target.profile)?, replacement: resolved(&view, block, rc, ra, target.profile)?, expected_property_revision: 0 }];
+    let cs = u64::from(block.width).checked_mul(12).ok_or("stride")?;
+    let as_ = u64::from(block.width).checked_mul(4).ok_or("stride")?;
+    let items = [TileItem { before: tile_view(&view, block, colour, alpha, cs, as_, target.profile), replacement: tile_view(&view, block, rc, ra, cs, as_, target.profile), expected_property_revision: 0 }];
     let request = Request {
         transport_version: 1,
         operation: "masked_replace",
@@ -322,10 +286,10 @@ fn replace_block(target: &MixTarget<'_>, tile: &TileRef, block: Rect, colour: &[
         rectangle: block,
         mask: Mask { bounds: block, sample_format: "coverage_u16le", bytes: mask, stride_bytes: u64::from(block.width).checked_mul(2).ok_or("stride")?, sha256: profile_hash(mask) },
         tiles: &items,
-        byte_limit: hsk_studio_pigment::MAX_BYTES,
+        byte_limit: BYTE_LIMIT,
     };
     let address = TileAddress::new(target.layer.clone(), &key, 0, 0).map_err(|_| "block address".to_string())?;
-    let admission = MemoryAdmission::new(hsk_studio_pigment::MAX_BYTES).map_err(|e| format!("admission {e:?}"))?;
+    let admission = MemoryAdmission::new(BYTE_LIMIT).map_err(|e| format!("admission {e:?}"))?;
     let mut owner = SerializedOwner::new(target.document.clone(), target.layer.clone(), target.actor.clone(), 1, vec![(address, 0)], admission, Quiet).map_err(|e| format!("owner {e:?}"))?;
     match masked_replace(&request, &mut owner, &CancellationToken::default()) {
         Outcome::Accepted(patch) => match patch.updates.first() {
@@ -478,7 +442,7 @@ impl Viewer {
             put(&mut colour, cw.saturating_mul(12), 12, hit, dst_at, &c).ok_or_else(|| format!("{label}: tile copy"))?;
             put(&mut alpha, cw.saturating_mul(4), 4, hit, dst_at, &a).ok_or_else(|| format!("{label}: tile copy"))?;
         }
-        let colour: Vec<u8> = f32s(&colour).flat_map(|v| encode(v).to_le_bytes()).collect();
+        let colour = encode_rgb(&colour).map_err(|e| format!("{label}: {e}"))?;
         Ok(Target {
             canvas,
             tiles: tiles.clone(),

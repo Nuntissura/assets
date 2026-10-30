@@ -28,10 +28,10 @@ use serde_json::json;
 /// Edge of one engine request block (64 x 64 = 4096 pixels, `masked_replace`'s rectangle cap).
 pub const BLOCK: u32 = 64;
 /// Bytes one block request may use (engine accounting).
-const BYTE_LIMIT: u64 = hsk_studio_pigment::MAX_BYTES;
+pub(super) const BYTE_LIMIT: u64 = hsk_studio_pigment::MAX_BYTES;
 
 /// Delivered engine frames are dropped: the harness records its own operation (`paint`).
-struct Quiet;
+pub(super) struct Quiet;
 impl SinkPort for Quiet {
     fn try_send(&mut self, _class: DeliveryClass, _bytes: &[u8]) -> Result<(), DeliveryError> {
         Ok(())
@@ -46,7 +46,7 @@ pub struct MixTarget<'a> {
     pub actor: &'a ActorContext,
 }
 
-fn plane(bytes: &[u8], stride: usize, px: usize, rect: Rect, at: (usize, usize)) -> Option<Vec<u8>> {
+pub(super) fn plane(bytes: &[u8], stride: usize, px: usize, rect: Rect, at: (usize, usize)) -> Option<Vec<u8>> {
     let w = usize::try_from(rect.width).ok()?;
     let h = usize::try_from(rect.height).ok()?;
     let mut out = Vec::with_capacity(w.checked_mul(h)?.checked_mul(px)?);
@@ -58,7 +58,7 @@ fn plane(bytes: &[u8], stride: usize, px: usize, rect: Rect, at: (usize, usize))
     Some(out)
 }
 
-fn put(bytes: &mut [u8], stride: usize, px: usize, rect: Rect, at: (usize, usize), src: &[u8]) -> Option<()> {
+pub(super) fn put(bytes: &mut [u8], stride: usize, px: usize, rect: Rect, at: (usize, usize), src: &[u8]) -> Option<()> {
     let w = usize::try_from(rect.width).ok()?;
     let h = usize::try_from(rect.height).ok()?;
     let row_bytes = w.checked_mul(px)?;
@@ -72,7 +72,7 @@ fn put(bytes: &mut [u8], stride: usize, px: usize, rect: Rect, at: (usize, usize
 }
 
 /// A block of tile planes as the engine reads it (linear light, straight alpha, working profile).
-fn tile_view<'a>(view: &'a TileRef, block: Rect, colour: &'a [u8], alpha: &'a [u8], colour_stride: u64, alpha_stride: u64, profile: &'a DomainId) -> ResolvedTile<'a> {
+pub(super) fn tile_view<'a>(view: &'a TileRef, block: Rect, colour: &'a [u8], alpha: &'a [u8], colour_stride: u64, alpha_stride: u64, profile: &'a DomainId) -> ResolvedTile<'a> {
     ResolvedTile {
         tile_ref: view,
         bounds: block,
