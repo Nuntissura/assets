@@ -253,21 +253,66 @@ impl StudioStrokeMarkers {
 
 /// The swap command (STU-VEC-146): start and end tokens and scales exchanged, alignment kept.
 pub fn swap_markers(m: &StudioStrokeMarkers) -> StudioStrokeMarkers {
-    m.clone()
+    StudioStrokeMarkers {
+        style_id: m.style_id.clone(),
+        row: m.row,
+        start: m.end.clone(),
+        end: m.start.clone(),
+        start_scale: m.end_scale,
+        end_scale: m.start_scale,
+        alignment: m.alignment,
+    }
 }
 
-/// Validates `stroke_markers` (called by `validate_vector_records`).
+fn scale_ok(v: f64) -> bool {
+    v.is_finite() && (MARKER_SCALE_MIN..=MARKER_SCALE_MAX).contains(&v)
+}
+
+/// Validates `stroke_markers` (called by `validate_vector_records`): the entry budget first, then
+/// per entry the style id (`InvalidId`), the style and row (`DanglingReference`, also without design
+/// records), a `Stroke` row (`InvalidField`), one entry per row (`DuplicateIdentity`), both tokens in
+/// the catalogue and both scales in `1..=1000` (`InvalidField`).
 pub(crate) fn validate_stroke_markers(
     r: &crate::StudioVectorRecords,
     design: Option<&StudioDesignRecords>,
     cx: &mut Ctx,
 ) -> Result<()> {
-    let _ = (r, design, cx);
+    let entries = &r.stroke_markers;
+    if entries.len() > MAX_STROKE_MARKERS {
+        return Err(err(Code::BudgetExceeded, "stroke_markers"));
+    }
+    cx.nodes(entries.len(), "stroke_markers")?;
+    let styles: BTreeMap<&str, &StudioPaintStyle> = design
+        .map(|x| x.paint_styles.iter().map(|s| (s.style_id.as_str(), s)).collect())
+        .unwrap_or_default();
+    let mut bound: BTreeSet<(&str, u32)> = BTreeSet::new();
+    for m in entries {
+        cx.tick()?;
+        let t = format!("{}/rows/{}", m.style_id, m.row);
+        id(&m.style_id, "SSTY", &t)?;
+        let style = styles
+            .get(m.style_id.as_str())
+            .ok_or_else(|| err(Code::DanglingReference, &t))?;
+        let row = usize::try_from(m.row)
+            .ok()
+            .and_then(|i| style.rows.get(i))
+            .ok_or_else(|| err(Code::DanglingReference, format!("{t}/row")))?;
+        if !matches!(row, StudioAppearanceRow::Stroke { .. }) {
+            return Err(err(Code::InvalidField, format!("{t}/row")));
+        }
+        if !bound.insert((m.style_id.as_str(), m.row)) {
+            return Err(err(Code::DuplicateIdentity, t));
+        }
+        for (token, field) in [(&m.start, "start"), (&m.end, "end")] {
+            if StudioArrowhead::from_token(token).is_none() {
+                return Err(err(Code::InvalidField, format!("{t}/{field}")));
+            }
+        }
+        for (v, field) in [(m.start_scale, "start_scale"), (m.end_scale, "end_scale")] {
+            if !scale_ok(v) {
+                return Err(err(Code::InvalidField, format!("{t}/{field}")));
+            }
+        }
+    }
     Ok(())
-}
-
-#[allow(dead_code)]
-fn unused(_: &BTreeMap<&str, &StudioPaintStyle>, _: &BTreeSet<(&str, u32)>, _: &StudioAppearanceRow) -> Result<()> {
-    id("", "SSTY", "")?;
-    Err(err(Code::InvalidField, ""))
 }
