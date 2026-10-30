@@ -859,6 +859,7 @@ pub const RUN_COMMANDS: &[CommandEntry] = &[
     entry("document.set_document_entry", "set_document_entry", "Set document entry", false, true, &[]),
     entry("document.stage_tile", "stage_tile", "Stage tile body", false, false, &[]),
     entry("document.submit_sequence", "submit_sequence", "Replace sequence", false, true, &[]),
+    entry("document.submit_sequence_and_entry", "submit_sequence_and_entry", "Replace sequence with document entry", false, true, &[]),
     entry("document.open", "open_path / open_bytes", "Open document", false, false, &[]),
     entry("document.import", "open_import / open_import_detailed", "Open and convert to native", false, false, &[]),
     entry("document.reopen", "reopen_bytes / reopen_path", "Reopen saved document", false, false, &[]),

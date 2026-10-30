@@ -984,9 +984,29 @@ impl Run<'_> {
     /// ONE undoable step (lane SMB-ILLUSTRATOR-TOOLS-2): the `vector_paths` of every layer in
     /// `writes` through one chronicle patch, and the session document entry `token` set to `bytes`
     /// (when given) inside the same history step, so undo/redo restore both together. Without
-    /// path writes the step is entry-only. One record `op`.
+    /// path writes the step is entry-only. A refused entry write undoes the path step and leaves
+    /// the redo history as it was. One record `op`.
     pub fn set_vector_paths_and_entry(&mut self, op: &str, writes: &[(String, Vec<String>)], entry: Option<(&str, Vec<u8>)>) -> bool {
         self.note_unrecordable("layer.set_vector_paths_and_entry");
+        self.keeping_redo_without_new_step(|run| run.vector_paths_and_entry_step(op, writes, entry))
+    }
+
+    /// Runs a `*_and_entry` step (finding F-R42-2 of round STUDIO-R42) with the redo history set
+    /// aside: when `step` leaves no new undo step (refused, unchanged, or rolled back after a
+    /// refused entry write) the redo history it found is restored, so the rollback undo's redo
+    /// entry (the edit without its entry) is dropped, as [`Run::play_action`] does; a new step keeps
+    /// the redo history cleared, as any new edit does.
+    fn keeping_redo_without_new_step(&mut self, step: impl FnOnce(&mut Self) -> bool) -> bool {
+        let depth = self.undo_stack.len();
+        let saved_redo = std::mem::take(&mut self.redo_stack);
+        let ok = step(self);
+        if self.undo_stack.len() <= depth {
+            self.redo_stack = saved_redo;
+        }
+        ok
+    }
+
+    fn vector_paths_and_entry_step(&mut self, op: &str, writes: &[(String, Vec<String>)], entry: Option<(&str, Vec<u8>)>) -> bool {
         let before = self.frames.count();
         let Some(session) = self.session.as_ref() else {
             return self.push(op, before, Err("not_open"), None, None);
@@ -1106,10 +1126,15 @@ impl Run<'_> {
     /// [`Run::restructure`] and the session document entry `token` set to `bytes` inside the same
     /// history step, so undo/redo restore the layers and the entry together (a text layer replaced
     /// by a vector layer whose records live in the entry). A refused structure edit changes
-    /// nothing; a refused entry write undoes the structure edit (no split step). Records: the
-    /// `restructure` record `op`, plus an `op` refusal record when the entry write is refused.
+    /// nothing; a refused entry write undoes the structure edit (no split step) and leaves the redo
+    /// history as it was. Records: the `restructure` record `op`, plus an `op` refusal record when
+    /// the entry write is refused.
     pub fn restructure_and_entry(&mut self, op: &str, writes: &[PlacementWrite], token: &str, bytes: Vec<u8>) -> bool {
         self.note_unrecordable("layer.restructure_and_entry");
+        self.keeping_redo_without_new_step(|run| run.restructure_and_entry_step(op, writes, token, bytes))
+    }
+
+    fn restructure_and_entry_step(&mut self, op: &str, writes: &[PlacementWrite], token: &str, bytes: Vec<u8>) -> bool {
         let previous = match self.session.as_ref() {
             Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
             None => {
@@ -1216,9 +1241,14 @@ impl Run<'_> {
     /// the develop panel's edit lives in the entry `develop`): `tiles` (when given and different)
     /// commits through chronicle like [`Run::set_tiles`], the entry is set to `bytes`, and undo/redo
     /// restore both as one step. Without a tile change the step is entry-only (still one history
-    /// step, op `op`). One record `op`.
+    /// step, op `op`). A refused entry write undoes the tile step and leaves the redo history as it
+    /// was. One record `op`.
     pub fn set_tiles_and_entry(&mut self, op: &str, layer_id: &str, tiles: Option<Vec<TileRef>>, token: &str, bytes: Vec<u8>) -> bool {
         self.note_unrecordable("layer.set_tiles_and_entry");
+        self.keeping_redo_without_new_step(|run| run.tiles_and_entry_step(op, layer_id, tiles, token, bytes))
+    }
+
+    fn tiles_and_entry_step(&mut self, op: &str, layer_id: &str, tiles: Option<Vec<TileRef>>, token: &str, bytes: Vec<u8>) -> bool {
         let previous = match self.session.as_ref() {
             Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
             None => {
@@ -1297,9 +1327,16 @@ impl Run<'_> {
     /// [`Run::submit_sequence`] and the session document entry `token` set to `bytes` inside the same
     /// history step, so undo/redo restore the sequence and the entry together (a timeline edit that
     /// also edits the clip envelopes of the audio routing entry). A refused sequence changes
-    /// nothing; a refused entry write undoes the sequence step (no split step). Records: the
-    /// `submit_sequence` record `op`, plus an `op` refusal record when the entry write is refused.
+    /// nothing; a refused entry write undoes the sequence step (no split step) and leaves the redo
+    /// history as it was. Records: the `submit_sequence` record `op`, plus an `op` refusal record
+    /// when the entry write is refused. While recording it is reported once as
+    /// `document.submit_sequence_and_entry` (not recordable).
     pub fn submit_sequence_and_entry(&mut self, op: &str, write: folio::StudioSequence, token: &str, bytes: Vec<u8>) -> bool {
+        self.note_unrecordable("document.submit_sequence_and_entry");
+        self.keeping_redo_without_new_step(|run| run.sequence_and_entry_step(op, write, token, bytes))
+    }
+
+    fn sequence_and_entry_step(&mut self, op: &str, write: folio::StudioSequence, token: &str, bytes: Vec<u8>) -> bool {
         let previous = match self.session.as_ref() {
             Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
             None => {
@@ -1308,7 +1345,7 @@ impl Run<'_> {
             }
         };
         let depth = self.undo_stack.len();
-        if !self.submit_sequence(op, write) {
+        if !self.quietly(|run| run.submit_sequence(op, write)) {
             return false;
         }
         let cancel = self.cancel;
@@ -1317,8 +1354,9 @@ impl Run<'_> {
             None => Err("not_open"),
         };
         if let Err(code) = set {
+            // A committed sequence step without its entry would split the step: undo it.
             if self.undo_stack.len() > depth {
-                let _ = self.undo();
+                let _ = self.quietly(Self::undo);
             }
             let before = self.frames.count();
             return self.own_op(op, before, Err(code));
