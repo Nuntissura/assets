@@ -338,8 +338,25 @@ pub fn flood_fill(
     canvas: Rect,
     limits: &ToolLimits,
 ) -> Result<FillResult, FillError> {
-    let _ = (target, sample, seed, opts, content, paint, selection, canvas, limits);
-    Err(FillError::Pigment(Error::Unsupported))
+    check_paint(paint)?;
+    let source = Content::new(content)?;
+    check_coordinate(seed)?;
+    let (sx, sy) = (seed[0].floor() as i64, seed[1].floor() as i64);
+    let (cx, cy) = canvas.end()?;
+    if sx < canvas.x || sy < canvas.y || sx >= cx || sy >= cy {
+        return Err(FillError::SeedOutsideCanvas);
+    }
+    check_view(target)?;
+    let sample = sample.unwrap_or(target);
+    check_view(sample)?;
+    let wand = WandOptions { tolerance: opts.tolerance, contiguous: opts.contiguous, sample_merged: false, ..WandOptions::default() };
+    let ctx = SelectionContext { anti_alias: opts.anti_alias, ..SelectionContext::new(canvas) };
+    let mut flood = magic_wand(std::slice::from_ref(sample), 0, (sx, sy), &wand, &ctx, limits)?;
+    if let Some(sel) = selection {
+        flood = combine(Some(&flood), sel, CombineMode::Intersect, &ctx.limits)?;
+    }
+    let region = Region::new(target, Some(&flood), canvas, limits)?;
+    region.paint(target, paint, |x, y| source.at(x, y))
 }
 
 /// Edit > Fill: fills the selection (`None` = the whole canvas) of `target` with `content`.
@@ -351,8 +368,11 @@ pub fn fill_selection(
     paint: &FillPaint,
     limits: &ToolLimits,
 ) -> Result<FillResult, FillError> {
-    let _ = (target, selection, canvas, content, paint, limits);
-    Err(FillError::Pigment(Error::Unsupported))
+    check_paint(paint)?;
+    let source = Content::new(content)?;
+    check_view(target)?;
+    let region = Region::new(target, selection, canvas, limits)?;
+    region.paint(target, paint, |x, y| source.at(x, y))
 }
 
 fn unit(v: f32) -> bool {
