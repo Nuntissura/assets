@@ -224,7 +224,7 @@ fn always_show_ask_and_unsupported_configurations_refuse_before_any_file_is_touc
     assert!(e.code == "batch_ask_overwrite_in_headless" && e.detail["job_id"] == "job-1");
     ask.output_targets[0].overwrite_policy = OverwritePolicy::Rename;
 
-    let refusals: Vec<(&str, Box<dyn Fn(&mut BatchJob)>)> = vec![
+    let refusals: Vec<(&str, Mutation)> = vec![
         ("batch_source_kind_unsupported", Box::new(|j| j.source_set = SourceSet::OpenDocuments)),
         ("batch_source_kind_unsupported", Box::new(|j| j.source_set = SourceSet::CatalogQuery { query: "tag:x".into() })),
         ("batch_source_kind_unsupported", Box::new(|j| j.source_set = SourceSet::SelectionWithinDocument { document: "d".into(), scope: "layer".into() })),
@@ -272,6 +272,9 @@ fn cancelling_after_the_first_input_stops_the_job() {
     assert!(r.state.cancelled && r.stopped == Some("cancelled") && r.state.done == 1 && r.state.total == 3, "{}", r.to_json());
     assert!(out.join("a_out.handshake").exists() && !out.join("b_out.handshake").exists());
 }
+
+/// One change applied to a job before it is run.
+type Mutation = Box<dyn Fn(&mut BatchJob)>;
 
 /// A Job Runtime double: refuses the first `refuse` admissions, counts admits and releases.
 struct Jobs {
