@@ -264,6 +264,18 @@ The receipt's `design` member holds the imported design records, instance bindin
   knife also cuts stroke-only paths into open pieces. Every
   vector edit is one Undo step and a path edit keeps the layer (chronicle `vector_paths`). The
   selected vector layer shows its path, anchors and handles.
+- Live text on a path (lanes SMB-AI-AREA-TYPE-2 and -3): select a vector layer, open Path Operations
+  (Shift+F8), type the text in Type > Text, then Type on Path or Area Type (inset from Area inset).
+  The text draws live and follows path edits; Edit > Undo removes the binding. The status log echoes
+  each live text: "live text <id>: N glyphs placed[, M overset]" or `vector_text_not_provided` with
+  the reason; `state_json()["edit"]["vector"]["live_texts"]` lists each binding (placed / overset
+  glyphs and the area container, or code `vector_text_not_provided` with the viewer's unshaped
+  reason).
+- Convert Point / Area Type: select a point-text layer (or a vector layer holding area text) and
+  press Convert Point / Area Type; one Undo restores the original.
+- Create Outlines: select a point-text layer or a vector layer with live text and press Create
+  Outlines; the text becomes filled outline layers (one per colour) above the container in one undo
+  step.
 - Left: layer tree in stack order. Buttons New (empty raster layer above the selection), Dup,
   Del (a group with its contents), Up, Down, Group, Ungroup: each is one undoable chronicle
   transaction (`placement` property). The checkbox shows/hides a layer through the session
@@ -287,6 +299,15 @@ The receipt's `design` member holds the imported design records, instance bindin
   Grayscale / Colour plus band weights), "Add linear gradient", "Add radial gradient", "Add brush"
   corrections with their geometry sliders, per mask Invert and Remove. Every add or remove is its
   own Undo step even before a value moves.
+  Lane SMB-LR-HEALING-2: Develop > Spot removal (top of the Develop panel): pick Spot mode heal /
+  clone / distraction, then click the preview to place a spot (radius 0.05 of the shorter side), or
+  drag from an empty point to set the radius. Drag a spot's yellow source circle, or Alt+drag from
+  inside a spot, to move its source. Each spot row has a type switch (heal <-> clone) and Remove;
+  distraction spots have Remove. Every change is one EDIT > Undo step. Sliders
+  `develop.spot.<i>.centre_x/centre_y/radius/feather/opacity/source_x/source_y` and
+  `develop.distraction.<i>.radius` sit in the Spot removal section; `state_json` `develop.spots`,
+  `develop.distraction`, `develop.retouch_enables` and `develop.spot_preview` (rect, frame, mode)
+  show the state.
 - Right: properties of the selected layer, built from hsk-studio-controls descriptors. Name,
   Visible, Opacity and Blend mode commit (undoable); Fill opacity, Clipped and Isolation are
   read-only (no chronicle property). Below: the import receipt (source format, loss entries,
@@ -314,6 +335,23 @@ The receipt's `design` member holds the imported design records, instance bindin
   2. Ctrl+R with a clip selected opens the Speed/Duration row: Speed % or Duration (frames) - the field edited last is kept, the other derived - plus Reverse Speed; Apply is one undo step. Maintain Audio Pitch and Interpolation are shown unavailable (no clip field stores them).
   3. Clips not at 100 % show their speed after the name, e.g. (50.00%) or (-100.00%) for reverse. Slip at speed moves the source by frames x |speed| (200 %: one frame slips two source frames); an inexact slip is refused slip_inexact_at_speed.
   4. Refusals change nothing and name their code in the status log: rate_stretch_unrepresentable, rate_stretch_multicam_reverse, not_frame_aligned, invalid_speed_percent, invalid_duration.
+
+## Multitrack (lanes SMB-AU-MULTITRACK-1 and -2)
+
+- Multitrack (feature `audio-batch`): `Viewer::open_multitrack` binds an audio source port to the
+  timeline; audio clips then show their waveform (toolbar Waveforms hides it) and the mixer opens on
+  the same sequence: playback and mixdown are the mixer's bus stream, rebuilt after every timeline
+  or lane edit, undo and redo.
+- Click A in an audio or submix track header to open its automation lane; clicking again cycles
+  Clip Volume / Volume / Pan / bus effect parameters / none. In every lane a click adds a point,
+  dragging moves it, right click deletes it; each is one undo step. Volume is drawn in dB. Where a
+  track has a Volume or Pan lane, playback and mixdown follow the lane instead of the mixer fader /
+  pan.
+- Clip Gain -1 dB / +1 dB (toolbar) shifts the selected audio clip's volume envelope by one dB
+  (refused if any point would leave -96..+12 dB).
+- Timeline edits keep clip volume envelopes on their audio: trimming, slipping or rolling shifts or
+  cuts the envelope (an edge point keeps the gain at the new edge), razor gives both parts their
+  part of the envelope, lift and ripple delete remove it; undo restores clip and envelope together.
 
 ## For models (no window)
 
