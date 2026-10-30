@@ -15,6 +15,12 @@
 //! `mask_clip_not_exported`, `mask_parameters_not_exported`, `paint_not_exported` (pattern and
 //! image rows), `blend_not_exported` (modes PDF has no name for), `raster_layer_not_exported`,
 //! `text_layer_not_exported`.
+//!
+//! Stroke arrowheads (lane SMB-AI-ARROWHEADS-2, Folio `stroke_markers`) need no code here: the
+//! expanded stroke row is nib's trimmed stroke outline united with nib's marker outlines (composite
+//! `StrokeGeometry`), written as filled paths like every other row (test
+//! viewer_vector_markers::vector_pdf_export_writes_the_marker_outlines); a marker composite refuses
+//! (`ERD_*` terminators, brushed rows, width profiles, networks) refuses its layer (`refused:<code>`).
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::Viewer;
 use super::style::effective_design;

@@ -159,9 +159,11 @@ fn restyles_keep_the_markers_on_their_stroke_row() {
     v.apply_graphic_style(&other, &style).unwrap();
     v.break_graphic_style(&other).unwrap();
     assert_eq!(v.stroke_markers(&other, 1).unwrap(), Some(spec()));
-    // Merging a style appends its rows: the layer's own stroke row keeps its markers.
+    // Merging a style appends its rows (fills after the fills, strokes after the strokes: fill,
+    // fill, stroke, stroke): the layer's own stroke row, now row 2, keeps its markers.
     v.merge_graphic_style(&id, &style).unwrap();
-    assert_eq!(v.stroke_markers(&id, 1).unwrap(), Some(spec()));
+    assert_eq!(v.stroke_markers(&id, 2).unwrap(), Some(spec()));
+    assert_eq!(v.stroke_markers(&id, 3).unwrap(), None);
     // Removing the stroke (or clearing the appearance) removes them with the row.
     v.clear_appearance(&other).unwrap();
     assert!(v.stroke_markers(&other, 0).is_err(), "no stroke row");

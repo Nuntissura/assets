@@ -13,7 +13,9 @@
 //! Swatches (lane SMB-ILLUSTRATOR-TOOLS-2, [`super::swatch`]) are Folio `StudioSwatch` records
 //! bound to rows by `StudioSwatchPaint`; graphic styles (STU-VEC-024) are published PAINT styles
 //! (`publish_key` `graphic-style-<n>`) a layer node links to directly. Swatch and brush bindings
-//! follow their rows through every restyle by row kind and per-kind ordinal.
+//! follow their rows through every restyle by row kind and per-kind ordinal; so do stroke markers
+//! (lane SMB-AI-ARROWHEADS-2, [`super::markers`]), which a stroke edit keeps (the new stroke row
+//! takes them) and only a removed row drops.
 //!
 //! Each edit is ONE undo step (an entry-only history step of the session document entry).
 //! Hostile input (non-finite numbers, oversize stop or dash lists, out-of-range values) is refused
@@ -327,19 +329,24 @@ fn ordinals(rows: &[StudioAppearanceRow]) -> Vec<(RowKind, usize)> {
 /// `to`'s own earlier bindings are replaced.
 pub(super) fn rebind(records: &mut folio::StudioVectorRecords, from: &str, before: &[StudioAppearanceRow], to: &str, after: &[StudioAppearanceRow], broken: Option<RowKind>) {
     let (old, new) = (ordinals(before), ordinals(after));
-    let map = |row: u32| -> Option<u32> {
+    let follow = |row: u32, broken: Option<RowKind>| -> Option<u32> {
         let k = old.get(usize::try_from(row).ok()?)?;
         if Some(k.0) == broken {
             return None;
         }
         new.iter().position(|x| x == k).and_then(|i| u32::try_from(i).ok())
     };
+    let map = |row: u32| follow(row, broken);
     let swatches: Vec<folio::StudioSwatchPaint> = records.swatch_paints.iter().filter(|p| p.style_id == from).filter_map(|p| Some(folio::StudioSwatchPaint { style_id: to.to_string(), row: map(p.row)?, ..p.clone() })).collect();
     let brushes: Vec<folio::StudioBrushStroke> = records.brush_strokes.iter().filter(|p| p.style_id == from).filter_map(|p| Some(folio::StudioBrushStroke { style_id: to.to_string(), row: map(p.row)?, ..p.clone() })).collect();
+    // Stroke markers ignore `broken`: a stroke edit keeps them on the stroke row.
+    let markers: Vec<folio::StudioStrokeMarkers> = records.stroke_markers.iter().filter(|m| m.style_id == from).filter_map(|m| Some(folio::StudioStrokeMarkers { style_id: to.to_string(), row: follow(m.row, None)?, ..m.clone() })).collect();
     records.swatch_paints.retain(|p| p.style_id != to);
     records.brush_strokes.retain(|p| p.style_id != to);
+    records.stroke_markers.retain(|m| m.style_id != to);
     records.swatch_paints.extend(swatches);
     records.brush_strokes.extend(brushes);
+    records.stroke_markers.extend(markers);
 }
 
 /// A binding made together with a restyle: the first row of its kind takes it.
@@ -534,6 +541,20 @@ impl Viewer {
     /// is broken into the local copy); bindings follow their rows by kind and ordinal, the kind
     /// `edit` returns loses its bindings, then `bind` binds the first row of its kind.
     pub(super) fn restyle(&mut self, op: &str, layer_id: &str, bind: Option<Bind>, edit: impl FnOnce(&mut Vec<StudioAppearanceRow>, GeometryUnit) -> Result<Option<RowKind>, String>) -> Result<String, String> {
+        self.restyle_with(op, layer_id, bind, edit, None)
+    }
+
+    /// [`Self::restyle`], then `records` edits the entry's vector records for the layer's own style
+    /// id and final rows, and Folio `validate_vector_records` checks the entry before the commit
+    /// (lane SMB-AI-ARROWHEADS-2).
+    pub(super) fn restyle_with(
+        &mut self,
+        op: &str,
+        layer_id: &str,
+        bind: Option<Bind>,
+        edit: impl FnOnce(&mut Vec<StudioAppearanceRow>, GeometryUnit) -> Result<Option<RowKind>, String>,
+        records: Option<&mut dyn FnMut(&mut folio::StudioVectorRecords, &str, &[StudioAppearanceRow]) -> Result<(), String>>,
+    ) -> Result<String, String> {
         let record = self.vector_path(layer_id)?;
         let doc = self.vdoc()?;
         let mut entry = self.vector_entry()?;
@@ -567,6 +588,10 @@ impl Viewer {
                     entry.records.brush_strokes.push(folio::StudioBrushStroke { style_id: id.clone(), row, brush_id, scale_override });
                 }
             }
+        }
+        if let Some(f) = records {
+            f(&mut entry.records, &id, &rows)?;
+            self.validate_records(&entry)?;
         }
         self.commit_entry(op, layer_id, &entry)?;
         Ok(layer_id.to_string())

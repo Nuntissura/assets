@@ -2941,6 +2941,7 @@ impl Viewer {
                 "point_types": r.path.contours.iter().map(|c| c.anchors.iter().map(|a| a.point_type() as u8).collect::<Vec<_>>()).collect::<Vec<_>>(),
                 "live_shape": self.live_shape(id).ok().flatten().map(|s| serde_json::to_value(s).unwrap_or(Value::Null)),
                 "paint_style": self.layer_paint_style(id).ok().map(|s| serde_json::to_value(s).unwrap_or(Value::Null)),
+                "stroke_markers": self.stroke_markers_json(id),
             })),
             "swatches": self.swatches().unwrap_or_default().into_iter().map(|(id, name)| json!({"style_id": id, "name": name})).collect::<Vec<_>>(),
             "pathfinder_ops": PathfinderOp::ALL.iter().map(|o| o.wire()).collect::<Vec<_>>(),
