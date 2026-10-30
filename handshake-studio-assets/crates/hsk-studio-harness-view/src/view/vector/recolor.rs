@@ -22,7 +22,7 @@
 //! Illustrator Recolor Artwork parity is UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::Viewer;
-use super::style::{current_rows, layer_style_id, node, paint_style, rebind, MAX_STYLES};
+use super::style::{current_rows, layer_style_id, paint_style, rebind, set_fill_ref, MAX_STYLES};
 use super::swatch::propagate;
 use super::VectorEntry;
 use hsk_studio_folio::{self as folio, Payload, StudioAppearanceRow, StudioColorModel, StudioDesignRecords, StudioPaint, StudioSwatchKind};
@@ -245,8 +245,8 @@ impl Viewer {
                 }
                 design.paint_styles.retain(|s| s.style_id != style_id);
                 design.paint_styles.push(style);
-                design.nodes.retain(|n| n.node.node_id != id);
-                design.nodes.push(node(&id, &style_id)?);
+                // Lane SMB-FIG-GRID-2: the entry keeps its auto/child layout (a grid anchor).
+                set_fill_ref(design, &id, &style_id)?;
                 // Bindings move onto the layer's own style (a shared graphic style keeps its own);
                 // detached process-swatch rows then lose theirs on the layer's style only.
                 let source = from.clone().unwrap_or_else(|| style_id.clone());
