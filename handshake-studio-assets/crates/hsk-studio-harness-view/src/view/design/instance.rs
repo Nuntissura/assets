@@ -804,7 +804,7 @@ impl Viewer {
         let receipt = self.design_receipt();
         let bound = receipt.as_ref().map(|r| r.bindings.len());
         let entry = self.read_design_state(receipt.as_ref().map(|r| &r.records)).json();
-        json!({"instance": instance, "instance_layers": bound, "last": self.design.last, "entry": entry})
+        json!({"instance": instance, "instance_layers": bound, "last": self.design.last, "entry": entry, "auto_layout": self.auto_layout_json()})
     }
 }
 

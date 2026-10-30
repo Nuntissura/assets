@@ -16,6 +16,7 @@
 //! SMB-FIG-EDIT-2).
 #![deny(clippy::arithmetic_side_effects)]
 
+pub mod auto_layout;
 pub mod fig_import;
 pub mod instance;
 pub mod persist;

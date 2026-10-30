@@ -1113,6 +1113,8 @@ impl Viewer {
         }
         // The instance inspector, bound contextually to an instance layer (module design, STU-DS-160).
         self.design_section_ui(ui, &layer_id);
+        // Auto layout of the selected frame or grid child (lane SMB-FIG-GRID-2, STU-DS-160).
+        self.auto_layout_ui(ui);
         ui.small("Name, Visible, Opacity and Blend mode commit through the session (chronicle, undoable). Fill opacity, Clipped and Isolation are read-only: chronicle has no property for them.");
         commits
     }
