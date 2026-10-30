@@ -65,8 +65,10 @@ fn kind(v: &Viewer, id: &str) -> Option<String> {
     v.layers().into_iter().find(|r| r.layer_id == id).map(|r| r.kind)
 }
 
-fn last_status(v: &Viewer) -> String {
-    v.state_json()["status"].as_array().and_then(|a| a.last()).and_then(|l| l.as_str()).unwrap_or_default().to_owned()
+/// The status log (the echo is followed by panel and render lines).
+fn status(v: &Viewer) -> String {
+    v.state_json()["status"].as_array().map(|a| a.iter().filter_map(|l| l.as_str()).collect::<Vec<_>>().join("
+")).unwrap_or_default()
 }
 
 #[test]
@@ -85,7 +87,7 @@ fn point_and_area_text_convert_both_ways_as_one_undo_step() {
     assert_eq!((drawn.placed, drawn.overset_count), (10, 0), "{drawn:?}");
     let area_ink = inked(&mut v);
     assert!(near(bbox(&area_ink), bbox(&point_ink), 2), "{:?} vs {:?}", bbox(&area_ink), bbox(&point_ink));
-    assert!(last_status(&v).contains("10 glyphs placed"), "{}", last_status(&v));
+    assert!(status(&v).contains(&format!("live text STXT-{}: 10 glyphs placed", &area[5..])), "{}", status(&v));
     // One undo step: the text layer and its pixels come back exactly; redo converts again.
     v.undo().unwrap();
     assert_eq!((kind(&v, &text).as_deref(), kind(&v, &area)), (Some("text"), None));
@@ -116,7 +118,7 @@ fn create_outlines_replaces_live_and_point_text_as_one_undo_step() {
     // Through the Path Operations panel: the drawn container is selected.
     let container = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [80.0, 54.0], false).unwrap();
     v.hosted_action(PanelAction::BindLiveText { text: "Outlined area text".into(), kind: LiveTextKind::Area { inset_pt: 2.0 } }).unwrap();
-    assert!(last_status(&v).contains("glyphs placed"), "{}", last_status(&v));
+    assert!(status(&v).contains("glyphs placed"), "{}", status(&v));
     let live = inked(&mut v);
     assert!(live.len() > 40, "too little ink: {}", live.len());
     v.hosted_action(PanelAction::CreateOutlines).unwrap();
@@ -152,7 +154,7 @@ fn create_outlines_replaces_live_and_point_text_as_one_undo_step() {
     w.add_font("Broken", vec![0_u8; 64]);
     let frame = w.draw_shape(ShapeKind::Rectangle, [10.0, 5.0], [90.0, 30.0], false).unwrap();
     w.bind_live_text_with_font(&frame, "No glyphs", LiveTextKind::Area { inset_pt: 0.0 }, "Broken").unwrap();
-    assert!(last_status(&w).contains(TEXT_NOT_PROVIDED), "{}", last_status(&w));
+    assert!(status(&w).contains(TEXT_NOT_PROVIDED), "{}", status(&w));
     let e = w.create_outlines(&frame).unwrap_err();
     assert!(e.contains(TEXT_NOT_PROVIDED) && e.contains("text_"), "{e}");
     assert_eq!(w.vector_text_reports().unwrap().len(), 1);

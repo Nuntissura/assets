@@ -1471,7 +1471,29 @@ impl Viewer {
         let doc = self.vdoc()?;
         let (parent, _) = self.run.placement(old).ok_or_else(|| format!("{old} is not in a layer stack"))?;
         let name = doc.layers.iter().find(|l| l.layer_id == old).map(|l| l.name.clone()).unwrap_or_default();
-        let id = super::layers::mint_layer_id(doc, u64::try_from(doc.layers.len()).unwrap_or(0));
+        // Never an id the text or vector entry still names (a layer an undo can bring back keeps
+        // its record and story there).
+        let text_entry = self.text_entry().unwrap_or_else(|_| super::text::TextEntry::empty(&doc.document_id));
+        let entry = self.vector_entry()?;
+        let taken = |id: &str| {
+            let story = format!("STXT-{}", id.get(5..).unwrap_or_default());
+            text_entry.layers.iter().any(|l| l.layer_id == id)
+                || text_entry.stories.iter().any(|s| s.story_id == story)
+                || entry.records.area_texts.iter().any(|a| a.container_layer_id == id || a.text_id == story)
+                || entry.records.path_texts.iter().any(|p| p.path_layer_id == id || p.story_id == story)
+        };
+        let mut salt = u64::try_from(doc.layers.len()).unwrap_or(0);
+        let mut id = super::layers::mint_layer_id(doc, salt);
+        for _ in 0..4096 {
+            if !taken(&id) {
+                break;
+            }
+            salt = salt.wrapping_add(1);
+            id = super::layers::mint_layer_id(doc, salt);
+        }
+        if taken(&id) {
+            return Err("no free layer id".into());
+        }
         let mut payload = payload;
         if let Some(story) = payload.get_mut("story_id")
             && story.as_str() == Some("")
