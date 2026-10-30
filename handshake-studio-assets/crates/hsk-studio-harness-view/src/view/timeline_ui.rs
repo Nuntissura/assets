@@ -14,7 +14,7 @@
 use super::Viewer;
 use super::timeline::{
     Drag, DragKind, EDGE_PX, EditMode, HEADER_PX, MAX_PX_PER_FRAME, MIN_PX_PER_FRAME, RULER_PX, SpeedFix, TimelineCommand, TimelineLayout, TimelineState, TrimFocus, TrimTool, WORK_AREA_PX,
-    drag_command, drag_target, frames_of, key_command, layout_with_lanes, tick_at_x, ticks_per_frame, widget, x_of,
+    drag_command, drag_target, frames_of, key_command, layout_full, tick_at_x, ticks_per_frame, widget, x_of,
 };
 use super::widget as vw;
 use hsk_studio_accord::Ticks;
@@ -57,6 +57,8 @@ struct Outcome {
 #[derive(Default)]
 struct Extra {
     lane_tracks: Vec<String>,
+    /// The master row's header text (lane SMB-AU-MULTITRACK-3); `None`: no master row.
+    master: Option<String>,
     #[cfg(feature = "audio-batch")]
     views: Vec<super::timeline::LaneView>,
 }
@@ -77,6 +79,10 @@ impl Viewer {
             let lanes: Vec<(String, super::timeline::LaneTarget)> = self.timeline.as_ref().map(|t| t.audio.lanes.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
             extra.views = lanes.iter().filter_map(|(track, target)| self.timeline_lane(track, target)).collect();
             extra.lane_tracks = lanes.into_iter().map(|(k, _)| k).collect();
+            extra.master = self.timeline_master_row().map(|m| {
+                let auto = if m["volume_automated"] == true { " AUTO" } else { "" };
+                format!("{:.1} dB{auto}  fx {}", m["volume_db"].as_f64().unwrap_or(0.0), m["effects"].as_u64().unwrap_or(0))
+            });
         }
         let playhead = self.timeline_playhead();
         let playing = self.monitor.as_ref().is_some_and(|m| m.monitor.scheduler().transport() == super::monitor::Transport::Playing);
@@ -251,7 +257,7 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
     let size = egui::vec2(ui.available_width().max(HEADER_PX + 40.0), ui.available_height().max(RULER_PX + WORK_AREA_PX + 30.0));
     let (area, bg) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let markers: &[(String, TickRange)] = t.cache.as_ref().map_or(&[], |c| &c.markers);
-    let l = layout_with_lanes(seq, &t.view, area, markers, &extra.lane_tracks);
+    let l = layout_full(seq, &t.view, area, markers, &extra.lane_tracks, extra.master.is_some());
     #[cfg(feature = "audio-batch")]
     let waves = super::timeline::audio_ui::clip_waves(&mut t.audio, seq, &l);
     #[cfg(not(feature = "audio-batch"))]
@@ -367,6 +373,8 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
             out.drag_stopped = true;
         }
     }
+    #[cfg(feature = "audio-batch")]
+    super::timeline::audio_ui::master_ui(ui, &l, t, extra.master.as_deref(), &mut out.drawn, &mut out.audio, &mut out.pressed_inside);
     #[cfg(feature = "audio-batch")]
     super::timeline::audio_ui::lanes_ui(ui, &l, t, &extra.views, tpf, &mut out.drawn, &mut out.audio, &mut out.pressed_inside);
     #[cfg(not(feature = "audio-batch"))]

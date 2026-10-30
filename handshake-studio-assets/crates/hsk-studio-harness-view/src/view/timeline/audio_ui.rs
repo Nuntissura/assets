@@ -97,6 +97,37 @@ pub(in crate::view) fn paint_wave(painter: &egui::Painter, rect: egui::Rect, col
     }
 }
 
+/// The master row (lane SMB-AU-MULTITRACK-3): header "Master" with its **A** lane button and the
+/// summary `text` (master volume, AUTO when a volume lane plays, effect count) in the row body.
+pub(in crate::view) fn master_ui(ui: &mut egui::Ui, l: &TimelineLayout, t: &TimelineState, text: Option<&str>, drawn: &mut Vec<String>, cmds: &mut Vec<AutomationCommand>, pressed: &mut bool) {
+    let (Some(row), Some(text)) = (l.master, text) else { return };
+    let font = egui::FontId::proportional(11.0);
+    let colour = ui.visuals().text_color();
+    let header = egui::Rect::from_min_max(row.min, egui::pos2(l.lanes_left, row.max.y));
+    let body = egui::Rect::from_min_max(egui::pos2(l.lanes_left, row.min.y), row.max);
+    let r = ui.interact(body, vw::id(widget::MASTER), egui::Sense::hover());
+    let summary = format!("Master {text}");
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &summary));
+    drawn.push(widget::MASTER.into());
+    let p = ui.painter_at(row);
+    p.rect_filled(row, 0.0, LANE_BG);
+    p.rect_filled(header, 0.0, ui.visuals().faint_bg_color);
+    p.text(egui::pos2(header.min.x + 4.0, header.center().y), egui::Align2::LEFT_CENTER, "Master", font.clone(), colour);
+    p.text(egui::pos2(body.min.x + 6.0, body.center().y), egui::Align2::LEFT_CENTER, text, font, if text.contains("AUTO") { ENVELOPE } else { colour });
+    let name = widget::lane_toggle(super::MASTER_ROW);
+    let rect = egui::Rect::from_min_size(egui::pos2(l.lanes_left - LANE_BUTTON_PX - 2.0, row.min.y + 2.0), egui::vec2(LANE_BUTTON_PX, LANE_BUTTON_PX));
+    let b = ui.interact(rect, vw::id(&name), egui::Sense::click()).on_hover_text("Automation lane: click cycles master volume / master effect parameters / none");
+    b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "automation lane Master"));
+    let shown = t.audio.lane(super::MASTER_ROW).is_some();
+    p.rect_filled(rect, 2.0, if shown { ENVELOPE } else { ui.visuals().widgets.inactive.bg_fill });
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, "A", egui::FontId::proportional(10.0), if shown { egui::Color32::BLACK } else { colour });
+    drawn.push(name);
+    if b.clicked() {
+        *pressed = true;
+        cmds.push(AutomationCommand::CycleLane { track_id: super::MASTER_ROW.to_owned() });
+    }
+}
+
 /// Header lane buttons and the lane rows.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::view) fn lanes_ui(ui: &mut egui::Ui, l: &TimelineLayout, t: &TimelineState, views: &[LaneView], tpf: u64, drawn: &mut Vec<String>, cmds: &mut Vec<AutomationCommand>, pressed: &mut bool) {

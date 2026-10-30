@@ -37,7 +37,9 @@
 //! ([`LaneRow`], [`LANE_PX`]) and clip gain, in module `audio` (its rustdoc is the manual).
 //! Lane SMB-AU-MULTITRACK-2: clip volume envelopes of the audio routing entry follow every edit
 //! committed here (trim, slip, razor, lift, ripple delete, move, rate) in the same history step
-//! (`Run::submit_sequence_and_entry`), module `envelopes`.
+//! (`Run::submit_sequence_and_entry`), module `envelopes`. Lane SMB-AU-MULTITRACK-3: clip pan
+//! envelopes follow the same way, and [`layout_full`] lays out a master row ([`MASTER_ROW`]) under
+//! the tracks with its lane (module `audio`).
 #![deny(clippy::arithmetic_side_effects)]
 
 #[cfg(feature = "audio-batch")]
@@ -53,8 +55,13 @@ pub use rate::{SpeedFix, SpeedForm};
 
 #[cfg(feature = "audio-batch")]
 pub use audio::{
-    AudioLanes, AutomationCommand, CLIP_GAIN_STEP_DB, LanePoint, LaneSpan, LaneTarget, LaneView, MAX_DRAWN_POINTS, MAX_PEAK_COLUMNS_PER_FRAME, PointId, sample_of, value_at,
+    AudioLanes, AutomationCommand, CLIP_GAIN_STEP_DB, LanePoint, LaneSpan, LaneTarget, LaneView, MAX_DRAWN_POINTS, MAX_PEAK_COLUMNS_PER_FRAME, PointId, has_master_row, sample_of, value_at,
 };
+
+/// Lane id of the master row (lane SMB-AU-MULTITRACK-3): used where a track id names a lane
+/// (automation commands, `LaneRow::track_id`, widget names). Folio track ids are `STRK-` domain ids,
+/// so no track id equals it.
+pub const MASTER_ROW: &str = "master";
 #[cfg(feature = "audio-batch")]
 pub use audio_ui::{LANE_BUTTON_PX, LANE_PAD, POINT_PX, lane_value, lane_y, nearest_frame};
 
@@ -138,6 +145,8 @@ pub mod widget {
     pub const WAVEFORMS: &str = "timeline.waveforms";
     pub const CLIP_GAIN_DOWN: &str = "timeline.clip_gain.down";
     pub const CLIP_GAIN_UP: &str = "timeline.clip_gain.up";
+    /// The master row (lane SMB-AU-MULTITRACK-3); its lane button is `lane_toggle("master")`.
+    pub const MASTER: &str = "timeline.master";
     /// The waveform overview drawn in an audio clip block.
     pub fn clip_waveform(clip_id: &str) -> String {
         format!("timeline.clip.{clip_id}.waveform")
@@ -300,6 +309,8 @@ pub struct TimelineLayout {
     pub tracks: Vec<TrackRow>,
     /// Automation lane rows (lane SMB-AU-MULTITRACK-1), in draw order.
     pub lanes: Vec<LaneRow>,
+    /// The master row under the tracks (lane SMB-AU-MULTITRACK-3; [`layout_full`]).
+    pub master: Option<egui::Rect>,
     pub clips: Vec<ClipBlock>,
     pub markers: Vec<MarkerMark>,
     /// `(x, label)` per ruler label.
@@ -356,6 +367,13 @@ pub fn layout(sequence: &StudioSequence, view: &TimelineView, area: egui::Rect, 
 /// [`layout`] with one automation lane row of [`LANE_PX`] under each track named in `lane_tracks`
 /// (when it fits in `area`).
 pub fn layout_with_lanes(sequence: &StudioSequence, view: &TimelineView, area: egui::Rect, markers: &[(String, TickRange)], lane_tracks: &[String]) -> TimelineLayout {
+    layout_full(sequence, view, area, markers, lane_tracks, false)
+}
+
+/// [`layout_with_lanes`] plus, when `master` is set, a master row of [`TRACK_PX`] under the last
+/// track (only when every track row is drawn and it fits), followed by its lane row when
+/// `lane_tracks` names [`MASTER_ROW`] (lane SMB-AU-MULTITRACK-3).
+pub fn layout_full(sequence: &StudioSequence, view: &TimelineView, area: egui::Rect, markers: &[(String, TickRange)], lane_tracks: &[String], master: bool) -> TimelineLayout {
     let tpf = ticks_per_frame(sequence);
     let lanes_left = area.left() + HEADER_PX;
     let lanes_right = area.right().max(lanes_left);
@@ -366,6 +384,7 @@ pub fn layout_with_lanes(sequence: &StudioSequence, view: &TimelineView, area: e
         ruler,
         tracks: Vec::new(),
         lanes: Vec::new(),
+        master: None,
         clips: Vec::new(),
         markers: Vec::new(),
         ruler_labels: Vec::new(),
@@ -461,6 +480,13 @@ pub fn layout_with_lanes(sequence: &StudioSequence, view: &TimelineView, area: e
         if lane_tracks.contains(&track.track_id) && y + LANE_PX <= area.bottom() {
             out.lanes.push(LaneRow { track_id: track.track_id.clone(), rect: egui::Rect::from_min_max(egui::pos2(area.left(), y), egui::pos2(lanes_right, y + LANE_PX)) });
             y += LANE_PX;
+        }
+    }
+    if master && out.tracks_hidden == 0 && y + TRACK_PX <= area.bottom() {
+        out.master = Some(egui::Rect::from_min_max(egui::pos2(area.left(), y), egui::pos2(lanes_right, y + TRACK_PX)));
+        y += TRACK_PX;
+        if lane_tracks.iter().any(|t| t == MASTER_ROW) && y + LANE_PX <= area.bottom() {
+            out.lanes.push(LaneRow { track_id: MASTER_ROW.to_owned(), rect: egui::Rect::from_min_max(egui::pos2(area.left(), y), egui::pos2(lanes_right, y + LANE_PX)) });
         }
     }
     out

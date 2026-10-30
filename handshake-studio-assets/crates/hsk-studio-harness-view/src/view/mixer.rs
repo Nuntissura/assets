@@ -17,13 +17,28 @@
 //! renders the next frames (a host feeds them to `audio_out`, tests compare them) and updates the
 //! meters: per track the post-fader peak over its strips, per bus the post-fader peak, the master
 //! peak and the master loudness (score's BS.1770 meter: momentary, short-term, integrated).
+//!
+//! **Automated faders** (lane SMB-AU-MULTITRACK-3). Where a track has a volume (or pan) automation
+//! lane, or the master has a volume lane, the lane replaces the fader in the mix (pulse `bus_mix`),
+//! so the static fader is not heard. The strip shows that as a visible state: an amber
+//! `AUTO lane <value> at playhead` label under the fader (widget `mixer.<track>.volume.automated`,
+//! `mixer.<track>.pan.automated`, `mixer.master.volume.automated`) and `volume_automated` /
+//! `pan_automated` in [`super::Viewer::mixer_json`]. A fader move on an automated control **writes
+//! the lane at the playhead** (Studio reading; Audition's own automation modes are UNVERIFIED, D5):
+//! the timeline playhead (the program monitor's position), floored to the mixer's sample grid, gets
+//! a point with the fader's value (an existing point at that tick is replaced), as ONE entry-only
+//! undo step (`mixer_volume_lane`, `mixer_pan_lane`, `mixer_master_volume_lane`); the static track
+//! field is left as it is. Typed refusals, nothing stored: `fader_automated_no_playhead` (no
+//! timeline on the mixer's sequence), `outside_sequence` (playhead after the sequence end), the
+//! fader's range checks.
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::audio_batch::EffectSpec;
 use super::audio_session::{AUDIO_ROUTING_ENTRY, build_bus_stream, bus_effect};
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
 use hsk_studio_folio::{
-    self as folio, StudioAudioRouting, StudioAudioRoutingSet, StudioAudioSend, StudioSequence, StudioTrackRoute, TrackKind,
+    self as folio, StudioAudioRouting, StudioAudioRoutingSet, StudioAudioSend, StudioAutomationPoint, StudioSequence, StudioTrackParam, StudioTrackRoute, TrackKind,
 };
 use hsk_studio_pulse::{AudioSources, PulseError, SourceExtents, TimelineBusStream};
 use hsk_studio_score::GraphMeters;
@@ -47,6 +62,34 @@ pub mod widget {
     pub const METER: &str = "meter";
     pub const ADD_EFFECT: &str = "add_effect";
     pub const MASTER_ADD_EFFECT: &str = "mixer.master.add_effect";
+    /// The automated-fader label of the master volume (lane SMB-AU-MULTITRACK-3).
+    pub const MASTER_VOLUME_AUTOMATED: &str = "mixer.master.volume.automated";
+    /// Suffix of a strip's automated-fader label: `mixer.<track>.volume.automated`.
+    pub const AUTOMATED: &str = "automated";
+}
+
+/// Puts `(offset, value)` into the sorted lane `points`, replacing a point at the same offset.
+fn write_point(points: &mut Vec<StudioAutomationPoint>, offset: u64, value: f64) {
+    points.retain(|p| p.offset_ticks != offset);
+    let k = points.partition_point(|p| p.offset_ticks < offset);
+    points.insert(k, StudioAutomationPoint { offset_ticks: offset, value });
+}
+
+/// Value of the lane `points` at tick `t` (linear in `map(value)` between points, held outside).
+fn lane_at(points: &[StudioAutomationPoint], t: u64, map: impl Fn(f64) -> f64) -> Option<f64> {
+    let first = points.first()?;
+    if t <= first.offset_ticks {
+        return Some(map(first.value));
+    }
+    for w in points.windows(2) {
+        if t <= w[1].offset_ticks {
+            let span = w[1].offset_ticks.saturating_sub(w[0].offset_ticks).max(1) as f64;
+            let k = t.saturating_sub(w[0].offset_ticks) as f64 / span;
+            let (a, b) = (map(w[0].value), map(w[1].value));
+            return Some(a + (b - a) * k);
+        }
+    }
+    points.last().map(|p| map(p.value))
 }
 
 /// Effects the panel offers to add, with their starting parameters (score's processor identity
@@ -224,7 +267,77 @@ impl super::Viewer {
         result
     }
 
+    /// The timeline playhead when the timeline shows the mixer's sequence.
+    fn mixer_playhead(&self) -> Option<Ticks> {
+        let id = &self.mixer.as_ref()?.sequence_id;
+        if self.timeline.as_ref()?.sequence_id() != id {
+            return None;
+        }
+        self.timeline_playhead()
+    }
+
+    /// A fader edit on an automated control writes the lane at the playhead (module docs);
+    /// `None`: the control has no lane (the edit sets the static field as before).
+    fn mixer_automated_edit(&mut self, edit: &MixerEdit) -> Option<Result<(), String>> {
+        let routing = self.mixer_routing().ok()?;
+        let (op, target, value) = match edit {
+            MixerEdit::Volume { track_id, linear } => {
+                routing.track_lane(track_id, StudioTrackParam::Volume)?;
+                ("mixer_volume_lane", Some((track_id.clone(), StudioTrackParam::Volume)), *linear)
+            }
+            MixerEdit::Pan { track_id, pan } => {
+                routing.track_lane(track_id, StudioTrackParam::Pan)?;
+                ("mixer_pan_lane", Some((track_id.clone(), StudioTrackParam::Pan)), *pan)
+            }
+            MixerEdit::MasterVolume { linear } if !routing.master.volume_automation.is_empty() => ("mixer_master_volume_lane", None, *linear),
+            _ => return None,
+        };
+        Some(self.mixer_write_lane(op, target, value))
+    }
+
+    /// Writes `value` into the lane of `target` (`None`: the master volume lane) at the playhead
+    /// floored to the mixer's sample grid, as one entry-only undo step.
+    fn mixer_write_lane(&mut self, op: &str, target: Option<(String, StudioTrackParam)>, value: f64) -> Result<(), String> {
+        let (lo, hi) = match &target {
+            Some((_, StudioTrackParam::Pan)) => (-1.0, 1.0),
+            _ => (0.0, folio::MAX_AUDIO_LEVEL),
+        };
+        if !value.is_finite() || value < lo || value > hi {
+            return Err(format!("mixer: {op} value {value} outside {lo}..={hi}"));
+        }
+        let rate = self.mixer.as_ref().ok_or("mixer: not open")?.rate;
+        let playhead = self.mixer_playhead().ok_or_else(|| format!("mixer: fader_automated_no_playhead ({op}: the lane replaces the fader; open the timeline on this sequence to write it)"))?;
+        let rate = u64::from(rate);
+        let per = TICKS_PER_SECOND.checked_div(rate).filter(|p| *p > 0 && TICKS_PER_SECOND.checked_rem(rate) == Some(0)).ok_or("mixer: rate_off_tick_grid")?;
+        let offset = playhead.value().checked_div(per).and_then(|s| s.checked_mul(per)).ok_or("mixer: overflow")?;
+        let sequence = self.mixer_sequence()?;
+        if offset > sequence.duration.value() {
+            return Err(format!("mixer: outside_sequence ({op} at tick {offset})"));
+        }
+        let mut set = self.mixer_routing_set()?;
+        let routing = set.routings.iter_mut().find(|r| r.sequence_id == sequence.sequence_id).ok_or("mixer: no routing")?;
+        match &target {
+            Some((track_id, param)) => {
+                let lane = routing.track_automation.iter_mut().find(|a| a.track_id == *track_id && a.param == *param).ok_or("mixer: no lane")?;
+                write_point(&mut lane.points, offset, value);
+            }
+            None => write_point(&mut routing.master.volume_automation, offset, value),
+        }
+        let snapshot = self.run.snapshot().ok_or("mixer: no document is open")?;
+        folio::validate_audio_routing(&set, snapshot.document(), folio::Budget::default(), &CancellationToken::default()).map_err(|d| format!("mixer: {op} refused: {d:?}"))?;
+        let bytes = serde_json::to_vec(&set).map_err(|e| format!("mixer: {e}"))?;
+        if !self.run.set_tiles_and_entry(op, "", None, AUDIO_ROUTING_ENTRY, bytes) {
+            return Err(format!("mixer: {op} refused: {}", self.op_error()));
+        }
+        self.say(format!("mixer: {op} at tick {offset} (the lane replaces the fader)"));
+        Ok(())
+    }
+
     fn mixer_edit_inner(&mut self, edit: MixerEdit) -> Result<(), String> {
+        if let Some(result) = self.mixer_automated_edit(&edit) {
+            result?;
+            return self.mixer_rebuild();
+        }
         let track_field = |seq: &mut StudioSequence, id: &str| -> Result<usize, String> {
             seq.tracks
                 .iter()
@@ -420,13 +533,20 @@ impl super::Viewer {
             let from_buses = m.bus_tracks.iter().zip(&meters.buses).filter(|(t, _)| *t == id).map(|(_, p)| *p);
             from_strips.chain(from_buses).reduce(|a, b| [a[0].max(b[0]), a[1].max(b[1])])
         };
+        let here = self.mixer_playhead().map(Ticks::value);
+        let lane = |id: &str, param: StudioTrackParam| routing.as_ref().and_then(|r| r.track_lane(id, param));
         let strips: Vec<Value> = sequence
             .iter()
             .flat_map(|s| s.tracks.iter())
             .filter(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Submix))
             .map(|t| {
                 let route = routing.as_ref().and_then(|r| r.routes.iter().find(|x| x.track_id == t.track_id));
+                let (vl, pl) = (lane(&t.track_id, StudioTrackParam::Volume), lane(&t.track_id, StudioTrackParam::Pan));
                 json!({
+                    "volume_automated": vl.is_some(),
+                    "pan_automated": pl.is_some(),
+                    "lane_volume_db": vl.zip(here).and_then(|(a, h)| lane_at(&a.points, h, db)),
+                    "lane_pan": pl.zip(here).and_then(|(a, h)| lane_at(&a.points, h, |v| v)),
                     "track_id": t.track_id,
                     "name": t.name,
                     "kind": if t.kind == TrackKind::Submix { "submix" } else { "audio" },
@@ -479,6 +599,8 @@ impl super::Viewer {
             "strips": strips,
             "master": {
                 "volume": routing.as_ref().map(|r| r.master.volume),
+                "volume_automated": routing.as_ref().is_some_and(|r| !r.master.volume_automation.is_empty()),
+                "lane_volume_db": routing.as_ref().zip(here).and_then(|(r, h)| lane_at(&r.master.volume_automation, h, db)),
                 "effects": routing.as_ref().map(|r| fx_json(&r.master.effects)).unwrap_or_default(),
                 "peak": meters.map(|x| x.master),
                 "momentary_lufs": meters.and_then(|x| x.loudness.momentary_lufs),
@@ -514,9 +636,19 @@ impl super::Viewer {
                         if ui.push_id(super::widget::id(&name(widget::VOLUME)), |ui| ui.add(egui::Slider::new(&mut vol_db, -96.0..=12.0).vertical().suffix(" dB"))).inner.changed() {
                             requests.push(MixerEdit::Volume { track_id: id.clone(), linear: 10f64.powf(vol_db / 20.0) });
                         }
+                        if strip["volume_automated"] == true {
+                            let key = name(&format!("{}.{}", widget::VOLUME, widget::AUTOMATED));
+                            automated_label(ui, &key, strip["lane_volume_db"].as_f64().map(|v| format!("{v:.1} dB")));
+                            drawn.push(key);
+                        }
                         let mut pan = strip["pan"].as_f64().unwrap_or(0.0);
                         if ui.push_id(super::widget::id(&name(widget::PAN)), |ui| ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).text("pan"))).inner.changed() {
                             requests.push(MixerEdit::Pan { track_id: id.clone(), pan });
+                        }
+                        if strip["pan_automated"] == true {
+                            let key = name(&format!("{}.{}", widget::PAN, widget::AUTOMATED));
+                            automated_label(ui, &key, strip["lane_pan"].as_f64().map(|v| format!("{v:.2}")));
+                            drawn.push(key);
                         }
                         let mut muted = strip["muted"].as_bool().unwrap_or(false);
                         if ui.push_id(super::widget::id(&name(widget::MUTE)), |ui| ui.checkbox(&mut muted, "M")).inner.changed() {
@@ -588,6 +720,10 @@ impl super::Viewer {
                     if ui.push_id(super::widget::id(widget::MASTER_VOLUME), |ui| ui.add(egui::Slider::new(&mut vol_db, -96.0..=12.0).vertical().suffix(" dB"))).inner.changed() {
                         requests.push(MixerEdit::MasterVolume { linear: 10f64.powf(vol_db / 20.0) });
                     }
+                    if master["volume_automated"] == true {
+                        automated_label(ui, widget::MASTER_VOLUME_AUTOMATED, master["lane_volume_db"].as_f64().map(|v| format!("{v:.1} dB")));
+                        drawn.push(widget::MASTER_VOLUME_AUTOMATED.into());
+                    }
                     let p = master["peak"].as_array().map_or(0.0, |a| a.iter().filter_map(Value::as_f64).fold(0.0, f64::max));
                     let lufs = |k: &str| master[k].as_f64().map_or_else(|| "--".to_owned(), |v| format!("{v:.1}"));
                     ui.push_id(super::widget::id(widget::MASTER_METER), |ui| {
@@ -605,6 +741,20 @@ impl super::Viewer {
             let _ = self.mixer_edit(edit);
         }
     }
+}
+
+/// The automated-fader state (module docs): an amber label under the control, an AccessKit label
+/// with the same text; `at_playhead` is the lane's value at the playhead when known.
+fn automated_label(ui: &mut egui::Ui, key: &str, at_playhead: Option<String>) {
+    const AUTO: egui::Color32 = egui::Color32::from_rgb(240, 200, 60);
+    let text = match at_playhead {
+        Some(v) => format!("AUTO lane {v} at playhead"),
+        None => "AUTO lane (fader not heard)".to_owned(),
+    };
+    let _ = ui
+        .push_id(super::widget::id(key), |ui| ui.colored_label(AUTO, &text))
+        .inner
+        .on_hover_text("An automation lane replaces this fader in the mix; moving the fader writes the lane at the playhead (one undo step)");
 }
 
 /// The effect stack of bus `bus` (`None` = master) in `routing`, created empty when absent.

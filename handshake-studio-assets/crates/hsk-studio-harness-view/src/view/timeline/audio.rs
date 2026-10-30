@@ -34,6 +34,21 @@
 //!   after every timeline edit, lane edit, undo or redo (document revision or routing entry changed)
 //!   the mixer's pulse bus stream is rebuilt at its play position. `Viewer::mixer_render` renders it.
 //!
+//! - **Clip pan** (lane SMB-AU-MULTITRACK-3). Audio tracks also offer a **Clip Pan** lane: the pan
+//!   envelopes of their clips (Folio `StudioClipPanEnvelope`, -1 ..= 1, offsets from the clip start,
+//!   linear between points and held outside them), edited exactly like Clip Volume (click adds, drag
+//!   moves, right click deletes; one entry-only undo step each). They follow timeline edits with the
+//!   clip volume envelopes (module `envelopes`), and the mixdown pans each clip by score's pan law
+//!   for its channel count before the track's fader and pan (pulse `bus_mix`).
+//! - **Master row** (lane SMB-AU-MULTITRACK-3). Below the tracks, a sequence with an audio or
+//!   submix track shows a **Master** row ([`MASTER_ROW`]; the header **A** button cycles its lanes):
+//!   the master **Volume** lane (Folio `StudioAudioMaster::volume_automation`, offsets from the
+//!   sequence start, drawn in dB, stored linear; where it has points it replaces the static master
+//!   volume in the mix) and one lane per automatable parameter of each master effect (the effect
+//!   instance keyframes, as for bus effects). Point edits are the same typed commands with
+//!   `track_id` [`MASTER_ROW`]. The master has no pan lane (`lane_unavailable`): Folio and score
+//!   store no master pan. Audition's master track layout is UNVERIFIED (D5).
+//!
 //! Hostile input: values must be finite and in range, typed points must name an existing clip /
 //! effect / parameter, bus keyframes must land on whole samples at the bound rate
 //! (`not_sample_aligned`), envelopes and keyframe lists are bounded by Folio's validation (refused
@@ -46,9 +61,10 @@ use super::super::audio_batch::EffectSpec;
 use super::super::audio_session::{AUDIO_ROUTING_ENTRY, bus_effect};
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND, Ticks};
 use hsk_studio_folio::{
-    self as folio, CLIP_GAIN_DB, MAX_AUDIO_LEVEL, StudioAudioPresetKeyframe, StudioAudioRouting, StudioAutomationPoint, StudioClipGainEnvelope, StudioClipGainPoint, StudioSequence,
-    StudioTrackAutomation, StudioTrackParam, TrackKind,
+    self as folio, CLIP_GAIN_DB, MAX_AUDIO_LEVEL, StudioAudioPresetKeyframe, StudioAudioRouting, StudioAutomationPoint, StudioClipGainEnvelope, StudioClipGainPoint, StudioClipPanEnvelope,
+    StudioClipPanPoint, StudioSequence, StudioTrackAutomation, StudioTrackParam, TrackKind,
 };
+use super::MASTER_ROW;
 use hsk_studio_pulse::{AudioSources, SourceExtents, samples_from_ticks_exact};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -80,18 +96,22 @@ pub enum LaneTarget {
     TrackVolume,
     /// The track pan automation (-1 ..= 1; the static value when it has no points).
     TrackPan,
-    /// One automatable parameter of an effect of the submix track's bus.
+    /// One automatable parameter of an effect of the submix track's bus (on the master row: of a
+    /// master effect).
     BusParam { instance_id: String, key: String },
+    /// The clip pan envelopes of the audio track's clips (-1 ..= 1; lane SMB-AU-MULTITRACK-3).
+    ClipPan,
 }
 
 impl LaneTarget {
-    /// Stable key (`clip_volume`, `track_volume`, `track_pan`, `bus.<instance>.<param>`).
+    /// Stable key (`clip_volume`, `track_volume`, `track_pan`, `bus.<instance>.<param>`, `clip_pan`).
     pub fn key(&self) -> String {
         match self {
             Self::ClipVolume => "clip_volume".into(),
             Self::TrackVolume => "track_volume".into(),
             Self::TrackPan => "track_pan".into(),
             Self::BusParam { instance_id, key } => format!("bus.{instance_id}.{key}"),
+            Self::ClipPan => "clip_pan".into(),
         }
     }
     /// Header label.
@@ -101,12 +121,13 @@ impl LaneTarget {
             Self::TrackVolume => "Volume".into(),
             Self::TrackPan => "Pan".into(),
             Self::BusParam { instance_id, key } => format!("{instance_id} {key}"),
+            Self::ClipPan => "Clip Pan".into(),
         }
     }
     /// Points can be edited (the document stores time-varying values for it; every lane since
     /// lane SMB-AU-MULTITRACK-2).
     pub fn editable(&self) -> bool {
-        matches!(self, Self::ClipVolume | Self::TrackVolume | Self::TrackPan | Self::BusParam { .. })
+        matches!(self, Self::ClipVolume | Self::TrackVolume | Self::TrackPan | Self::BusParam { .. } | Self::ClipPan)
     }
 }
 
@@ -339,6 +360,11 @@ pub fn sample_of(t: Ticks, rate: u32) -> u64 {
     u64::try_from(v).unwrap_or(u64::MAX)
 }
 
+/// Whether `seq` shows a master row (it has an audio or submix track).
+pub fn has_master_row(seq: &StudioSequence) -> bool {
+    seq.tracks.iter().any(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Submix))
+}
+
 fn db(linear: f64) -> f64 {
     if linear > 0.0 { (20.0 * linear.log10()).max(CLIP_GAIN_DB.0) } else { CLIP_GAIN_DB.0 }
 }
@@ -401,13 +427,32 @@ impl Viewer {
         result
     }
 
-    /// The lanes a track offers: audio tracks clip volume, volume, pan; submix tracks volume, pan
-    /// and every automatable parameter of its bus effects.
+    /// The lanes a track offers: audio tracks clip volume, volume, pan, clip pan; submix tracks
+    /// volume, pan and every automatable parameter of its bus effects; the master row
+    /// ([`MASTER_ROW`], when the sequence has an audio or submix track) volume and every automatable
+    /// parameter of the master effects.
     pub fn timeline_lane_choices(&self, track_id: &str) -> Vec<LaneTarget> {
         let Some(seq) = self.timeline_sequence() else { return Vec::new() };
+        if track_id == MASTER_ROW {
+            if !has_master_row(seq) {
+                return Vec::new();
+            }
+            let mut out = vec![LaneTarget::TrackVolume];
+            let rate = self.lanes_rate();
+            if let Ok(routing) = self.timeline_routing() {
+                for e in &routing.master.effects {
+                    for p in &e.params {
+                        if bus_param(e, &p.key, rate).is_ok() {
+                            out.push(LaneTarget::BusParam { instance_id: e.instance_id.clone(), key: p.key.clone() });
+                        }
+                    }
+                }
+            }
+            return out;
+        }
         let Some(track) = seq.tracks.iter().find(|t| t.track_id == track_id) else { return Vec::new() };
         match track.kind {
-            TrackKind::Audio => vec![LaneTarget::ClipVolume, LaneTarget::TrackVolume, LaneTarget::TrackPan],
+            TrackKind::Audio => vec![LaneTarget::ClipVolume, LaneTarget::TrackVolume, LaneTarget::TrackPan, LaneTarget::ClipPan],
             TrackKind::Submix => {
                 let mut out = vec![LaneTarget::TrackVolume, LaneTarget::TrackPan];
                 let rate = self.lanes_rate();
@@ -429,7 +474,10 @@ impl Viewer {
     /// The lane `target` of `track_id` as drawn (`None`: no such audio or submix track).
     pub fn timeline_lane(&self, track_id: &str, target: &LaneTarget) -> Option<LaneView> {
         let seq = self.timeline_sequence()?;
-        let track = seq.tracks.iter().find(|t| t.track_id == track_id && matches!(t.kind, TrackKind::Audio | TrackKind::Submix))?;
+        if track_id == MASTER_ROW {
+            return self.master_lane(seq, target);
+        }
+        let track =seq.tracks.iter().find(|t| t.track_id == track_id && matches!(t.kind, TrackKind::Audio | TrackKind::Submix))?;
         let whole = |rest: f64, points: Vec<LanePoint>| vec![LaneSpan { clip_id: None, start: Ticks::new(0), end: seq.duration, rest, points }];
         let mut view = LaneView { track_id: track_id.to_owned(), target: target.clone(), range: CLIP_GAIN_DB, unit: "dB", spans: Vec::new(), error: None };
         match target {
@@ -472,6 +520,29 @@ impl Viewer {
                             g.points
                                 .iter()
                                 .map(|p| LanePoint { id: PointId { clip_id: Some(c.clip_id.clone()), offset_ticks: p.offset_ticks }, at: Ticks::new(c.timeline_start.value().saturating_add(p.offset_ticks)), value: p.gain_db })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    view.spans.push(LaneSpan { clip_id: Some(c.clip_id.clone()), start: c.timeline_start, end, rest: 0.0, points });
+                }
+            }
+            LaneTarget::ClipPan => {
+                view.range = (-1.0, 1.0);
+                view.unit = "pan";
+                let routing = self.timeline_routing();
+                if let Err(e) = &routing {
+                    view.error = Some(e.clone());
+                }
+                let pans = routing.map(|r| r.clip_pans).unwrap_or_default();
+                for c in track.clips.iter().take(super::MAX_SCANNED_CLIPS) {
+                    let Some(end) = c.timeline_end() else { continue };
+                    let points = pans
+                        .iter()
+                        .find(|g| g.clip_id == c.clip_id)
+                        .map(|g| {
+                            g.points
+                                .iter()
+                                .map(|p| LanePoint { id: PointId { clip_id: Some(c.clip_id.clone()), offset_ticks: p.offset_ticks }, at: Ticks::new(c.timeline_start.value().saturating_add(p.offset_ticks)), value: p.pan })
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -556,7 +627,72 @@ impl Viewer {
             "waveforms": t.audio.waveforms,
             "lanes": lanes,
             "mixer_open": self.mixer.is_some(),
+            "master_row": self.timeline_master_row(),
+            "master_row_drawn": t.layout.as_ref().is_some_and(|l| l.master.is_some()),
         })
+    }
+
+    /// A lane of the master row (module docs): `TrackVolume` = the master volume automation,
+    /// `BusParam` = a master effect parameter; anything else `None`.
+    fn master_lane(&self, seq: &StudioSequence, target: &LaneTarget) -> Option<LaneView> {
+        if !has_master_row(seq) {
+            return None;
+        }
+        let whole = |rest: f64, points: Vec<LanePoint>| vec![LaneSpan { clip_id: None, start: Ticks::new(0), end: seq.duration, rest, points }];
+        let mut view = LaneView { track_id: MASTER_ROW.to_owned(), target: target.clone(), range: CLIP_GAIN_DB, unit: "dB", spans: Vec::new(), error: None };
+        let routing = self.timeline_routing();
+        if let Err(e) = &routing {
+            view.error = Some(e.clone());
+        }
+        let routing = routing.unwrap_or_else(|_| StudioAudioRouting::new(seq.sequence_id.clone()));
+        match target {
+            LaneTarget::TrackVolume => {
+                let points = routing
+                    .master
+                    .volume_automation
+                    .iter()
+                    .map(|p| LanePoint { id: PointId { clip_id: None, offset_ticks: p.offset_ticks }, at: Ticks::new(p.offset_ticks), value: db(p.value) })
+                    .collect();
+                view.spans = whole(db(routing.master.volume), points);
+            }
+            LaneTarget::BusParam { instance_id, key } => {
+                view.unit = "";
+                let found = routing.master.effects.iter().find(|e| &e.instance_id == instance_id).cloned().ok_or_else(|| "unknown_effect".to_owned());
+                match found.and_then(|e| bus_param(&e, key, self.lanes_rate()).map(|r| (e, r))) {
+                    Ok((e, (range, value))) => {
+                        view.range = range;
+                        let points = e
+                            .keyframes
+                            .iter()
+                            .filter(|k| &k.key == key)
+                            .map(|k| LanePoint { id: PointId { clip_id: None, offset_ticks: k.offset_ticks }, at: Ticks::new(k.offset_ticks), value: k.value })
+                            .collect();
+                        view.spans = whole(value, points);
+                    }
+                    Err(e) => view.error = Some(e),
+                }
+            }
+            _ => return None,
+        }
+        Some(view)
+    }
+
+    /// The master row's header summary (`None`: the timeline's sequence has no master row): static
+    /// master volume in dB, whether a volume lane replaces it, and the master effect count.
+    pub fn timeline_master_row(&self) -> Option<Value> {
+        let seq = self.timeline_sequence()?;
+        if !has_master_row(seq) {
+            return None;
+        }
+        let routing = self.timeline_routing();
+        let error = routing.as_ref().err().cloned();
+        let r = routing.unwrap_or_else(|_| StudioAudioRouting::new(seq.sequence_id.clone()));
+        Some(json!({
+            "volume_db": db(r.master.volume),
+            "volume_automated": !r.master.volume_automation.is_empty(),
+            "effects": r.master.effects.len(),
+            "error": error,
+        }))
     }
 
     fn lanes_rate(&self) -> u32 {
@@ -646,9 +782,31 @@ impl Viewer {
     fn lane_edit(&mut self, op: &str, track_id: &str, lane: &LaneTarget, f: impl FnOnce(&mut LaneEdit<'_>) -> Result<(), String>) -> Result<(), String> {
         let rate = self.lanes_rate();
         self.routing_commit(op, |routing, seq| {
+            if track_id == MASTER_ROW {
+                if !has_master_row(seq) {
+                    return Err("no_master_row".into());
+                }
+                let mut edit = match lane {
+                    LaneTarget::TrackVolume => LaneEdit::Master { routing, rate, end: seq.duration },
+                    LaneTarget::BusParam { instance_id, key } => {
+                        let instance = routing.master.effects.iter_mut().find(|e| &e.instance_id == instance_id).ok_or("unknown_effect")?;
+                        let (range, _) = bus_param(instance, key, rate)?;
+                        LaneEdit::Bus { instance, key, range, rate }
+                    }
+                    _ => return Err(format!("lane_unavailable {}", lane.key())),
+                };
+                f(&mut edit)?;
+                if let LaneEdit::Bus { instance, rate, .. } = &edit
+                    && instance.enabled
+                {
+                    bus_effect(instance, *rate).map_err(|e| format!("effect_refused {}", e.code()))?;
+                }
+                return Ok(());
+            }
             let track = seq.tracks.iter().find(|t| t.track_id == track_id).ok_or("unknown_track")?;
             let mut edit = match lane {
                 LaneTarget::ClipVolume if track.kind == TrackKind::Audio => LaneEdit::Clip { routing, track },
+                LaneTarget::ClipPan if track.kind == TrackKind::Audio => LaneEdit::ClipPan { routing, track },
                 LaneTarget::TrackVolume | LaneTarget::TrackPan if matches!(track.kind, TrackKind::Audio | TrackKind::Submix) => {
                     let param = if *lane == LaneTarget::TrackVolume { StudioTrackParam::Volume } else { StudioTrackParam::Pan };
                     LaneEdit::Track { routing, track_id, param, rate, end: seq.duration }
@@ -708,6 +866,44 @@ enum LaneEdit<'a> {
     /// A track volume / pan lane; `end` is the sequence duration.
     Track { routing: &'a mut StudioAudioRouting, track_id: &'a str, param: StudioTrackParam, rate: u32, end: Ticks },
     Bus { instance: &'a mut folio::StudioAudioEffectInstance, key: &'a str, range: (f64, f64), rate: u32 },
+    /// The clip pan envelopes of an audio track (lane SMB-AU-MULTITRACK-3).
+    ClipPan { routing: &'a mut StudioAudioRouting, track: &'a folio::StudioTrack },
+    /// The master volume automation; `end` is the sequence duration (lane SMB-AU-MULTITRACK-3).
+    Master { routing: &'a mut StudioAudioRouting, rate: u32, end: Ticks },
+}
+
+/// Puts `(offset, value)` into `points` (sorted, unique offsets), removing the point at `from` first
+/// (a move): a point already at `offset` is replaced by an add and refuses a move (`point_exists`).
+fn put_point(points: &mut Vec<(u64, f64)>, from: Option<u64>, offset: u64, value: f64) -> Result<(), String> {
+    if let Some(f) = from {
+        let j = points.iter().position(|q| q.0 == f).ok_or("unknown_point")?;
+        points.remove(j);
+        if points.iter().any(|q| q.0 == offset) {
+            return Err("point_exists".into());
+        }
+    }
+    points.retain(|q| q.0 != offset);
+    let k = points.partition_point(|q| q.0 < offset);
+    points.insert(k, (offset, value));
+    Ok(())
+}
+
+/// The clip pan points of `clip_id` in `routing` (empty when it has no envelope).
+fn pan_points(routing: &StudioAudioRouting, clip_id: &str) -> Vec<(u64, f64)> {
+    routing.clip_pans.iter().find(|g| g.clip_id == clip_id).map(|g| g.points.iter().map(|p| (p.offset_ticks, p.pan)).collect()).unwrap_or_default()
+}
+
+/// Stores `points` as the pan envelope of `clip_id` (no points: the envelope is removed).
+fn set_pan_points(routing: &mut StudioAudioRouting, clip_id: &str, points: Vec<(u64, f64)>) {
+    let points: Vec<StudioClipPanPoint> = points.into_iter().map(|(offset_ticks, pan)| StudioClipPanPoint { offset_ticks, pan }).collect();
+    match routing.clip_pans.iter().position(|g| g.clip_id == clip_id) {
+        Some(i) if points.is_empty() => {
+            routing.clip_pans.remove(i);
+        }
+        Some(i) => routing.clip_pans[i].points = points,
+        None if points.is_empty() => {}
+        None => routing.clip_pans.push(StudioClipPanEnvelope { clip_id: clip_id.to_owned(), points }),
+    }
 }
 
 impl LaneEdit<'_> {
@@ -798,6 +994,43 @@ impl LaneEdit<'_> {
                 list.sort_by(|a, b| a.key.cmp(&b.key).then(a.offset_ticks.cmp(&b.offset_ticks)));
                 Ok(())
             }
+            Self::ClipPan { routing, track } => {
+                let value = checked_value(value, (-1.0, 1.0))?;
+                let clip = match from {
+                    Some(p) => {
+                        let id = p.clip_id.as_deref().ok_or("unknown_point")?;
+                        track.clips.iter().find(|c| c.clip_id == id).ok_or("unknown_clip")?
+                    }
+                    None => track.clips.iter().find(|c| c.timeline_start <= at && c.timeline_end().is_some_and(|e| at < e)).ok_or("no_clip_at")?,
+                };
+                let end = clip.timeline_end().ok_or("overflow")?;
+                if at < clip.timeline_start || at > end {
+                    return Err("outside_clip".into());
+                }
+                let offset = at.value().saturating_sub(clip.timeline_start.value());
+                let mut points = pan_points(routing, &clip.clip_id);
+                if from.is_some() && points.is_empty() {
+                    return Err("unknown_point".into());
+                }
+                put_point(&mut points, from.map(|p| p.offset_ticks), offset, value)?;
+                set_pan_points(routing, &clip.clip_id, points);
+                Ok(())
+            }
+            Self::Master { routing, rate, end } => {
+                let stored = 10f64.powf(checked_value(value, CLIP_GAIN_DB)? / 20.0).min(MAX_AUDIO_LEVEL);
+                samples_from_ticks_exact(at, *rate).map_err(|_| "not_sample_aligned".to_owned())?;
+                if at > *end {
+                    return Err("outside_sequence".into());
+                }
+                let lane = &mut routing.master.volume_automation;
+                if from.is_some_and(|p| p.clip_id.is_some()) {
+                    return Err("unknown_point".into());
+                }
+                let mut points: Vec<(u64, f64)> = lane.iter().map(|p| (p.offset_ticks, p.value)).collect();
+                put_point(&mut points, from.map(|p| p.offset_ticks), at.value(), stored)?;
+                *lane = points.into_iter().map(|(offset_ticks, value)| StudioAutomationPoint { offset_ticks, value }).collect();
+                Ok(())
+            }
         }
     }
 
@@ -830,6 +1063,23 @@ impl LaneEdit<'_> {
             Self::Bus { instance, key, .. } => {
                 let j = instance.keyframes.iter().position(|k| k.key == *key && k.offset_ticks == point.offset_ticks).ok_or("unknown_point")?;
                 instance.keyframes.remove(j);
+                Ok(())
+            }
+            Self::ClipPan { routing, .. } => {
+                let id = point.clip_id.as_deref().ok_or("unknown_point")?;
+                let mut points = pan_points(routing, id);
+                let j = points.iter().position(|q| q.0 == point.offset_ticks).ok_or("unknown_point")?;
+                points.remove(j);
+                set_pan_points(routing, id, points);
+                Ok(())
+            }
+            Self::Master { routing, .. } => {
+                if point.clip_id.is_some() {
+                    return Err("unknown_point".into());
+                }
+                let lane = &mut routing.master.volume_automation;
+                let j = lane.iter().position(|q| q.offset_ticks == point.offset_ticks).ok_or("unknown_point")?;
+                lane.remove(j);
                 Ok(())
             }
         }
