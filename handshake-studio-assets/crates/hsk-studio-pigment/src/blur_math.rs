@@ -780,15 +780,23 @@ fn radial_half(kind: RadialBlurKind, amount: f32, ox: f64, oy: f64) -> u32 {
 }
 
 /// Predicted peak bytes (the output) and work (bilinear corner reads, the exact per-pixel sample
-/// counts summed over `out`) of [`radial_blur_window`].
+/// counts summed over `out`) of [`radial_blur_window`]. The exact work needs a walk over `out`, so
+/// `out` is first refused against `limits` by its lower bounds (lane SMB-R43-FOLLOWUPS-1, round
+/// finding F-R43-3): `area x BLUR_SAMPLE_BYTES` bytes and `area x 4` work (at least one sample of
+/// four corner reads per pixel), with checked arithmetic, before any pixel is visited; the walk is
+/// then at most `limits.max_work / 4` pixels (test `tests/ae_kernels.rs`
+/// `radial_hostile_rect_is_refused_before_the_walk`).
 pub fn radial_blur_window_cost(
     out: Rect,
     centre: [f32; 2],
     amount: f32,
     kind: RadialBlurKind,
+    limits: BlurLimits,
 ) -> Result<(u64, u64), BlurError> {
     let (cx, cy) = radial_params(centre, amount)?;
     let (ox1, oy1) = out.end().map_err(|_| BlurError::Overflow)?;
+    let (min_bytes, min_work) = path_cost(out, u64::from(out.width).checked_mul(u64::from(out.height)).ok_or(BlurError::Overflow)?)?;
+    check_budget(min_bytes, min_work, limits)?;
     let mut samples = 0u64;
     for y in out.y..oy1 {
         for x in out.x..ox1 {
@@ -821,7 +829,7 @@ pub fn radial_blur_window(
     kind: RadialBlurKind,
     limits: BlurLimits,
 ) -> Result<Vec<[f32; 4]>, BlurError> {
-    let (bytes, work) = radial_blur_window_cost(out, centre, amount, kind)?;
+    let (bytes, work) = radial_blur_window_cost(out, centre, amount, kind, limits)?;
     let (cx, cy) = radial_params(centre, amount)?;
     let mut result = begin(src, src_rect, out, bytes, work, limits)?;
     if amount == 0.0 {

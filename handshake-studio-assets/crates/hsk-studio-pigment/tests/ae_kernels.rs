@@ -425,11 +425,11 @@ mod radial_tests {
         for (centre, amount) in [([f32::NAN, 0.0], 10.0), ([0.0, f32::INFINITY], 10.0), ([0.0, 0.0], -1.0), ([0.0, 0.0], 1000.5), ([0.0, 0.0], f32::NAN)] {
             for kind in [RadialBlurKind::Spin, RadialBlurKind::Zoom] {
                 assert_eq!(radial_blur_window(UNIT, &src, sr, out, centre, amount, kind, WIDE), Err(BlurError::Parameter));
-                assert_eq!(radial_blur_window_cost(out, centre, amount, kind), Err(BlurError::Parameter));
+                assert_eq!(radial_blur_window_cost(out, centre, amount, kind, WIDE), Err(BlurError::Parameter));
             }
         }
         // The predicted work is exact: it admits the call, one less refuses it before allocation.
-        let (bytes, work) = radial_blur_window_cost(out, [0.0, 0.0], 80.0, RadialBlurKind::Zoom).unwrap();
+        let (bytes, work) = radial_blur_window_cost(out, [0.0, 0.0], 80.0, RadialBlurKind::Zoom, WIDE).unwrap();
         assert_eq!(bytes, 72 * 16);
         assert!(work > 72 * 4 && work % 4 == 0);
         let ok = BlurLimits { max_bytes: bytes, max_work: work };
@@ -440,7 +440,7 @@ mod radial_tests {
             Err(BlurError::OverBudget { needed: work, limit: work - 1 })
         );
         // Far from the centre the per-pixel sample count is capped (2 * 256 + 1).
-        let far = radial_blur_window_cost(rect(100_000, 0, 1, 1), [0.0, 0.0], 100.0, RadialBlurKind::Spin).unwrap();
+        let far = radial_blur_window_cost(rect(100_000, 0, 1, 1), [0.0, 0.0], 100.0, RadialBlurKind::Spin, WIDE).unwrap();
         assert_eq!(far, (16, 513 * 4));
         let mut bad = src.clone();
         bad[40] = [0.0, 0.0, 0.0, 1.5];
@@ -476,6 +476,16 @@ mod radial_tests {
                 );
                 // u32::MAX x u32::MAX: the byte product overflows u64 (checked, typed).
                 assert_eq!(radial_blur_window(UNIT, &src, sr, widest, [0.0, 0.0], amount, kind, small), Err(BlurError::Overflow));
+                // The cost itself refuses the same way (it walks only an admitted rectangle).
+                assert_eq!(
+                    radial_blur_window_cost(huge, [0.0, 0.0], amount, kind, small),
+                    Err(BlurError::OverBudget { needed: area * 16, limit: 1 << 20 })
+                );
+                assert_eq!(
+                    radial_blur_window_cost(huge, [0.0, 0.0], amount, kind, bytes_only),
+                    Err(BlurError::OverBudget { needed: area * 4, limit: 1 << 24 })
+                );
+                assert_eq!(radial_blur_window_cost(widest, [0.0, 0.0], amount, kind, small), Err(BlurError::Overflow));
             }
         }
     }
