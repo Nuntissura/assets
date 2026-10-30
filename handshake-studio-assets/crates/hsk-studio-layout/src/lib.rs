@@ -166,6 +166,10 @@ pub enum LayoutError {
     /// The story does not fit the auto-sized frame at the declared extent bound
     /// (`MAX_AUTOSIZE_EXTENT_PT`), for example an unbreakable run wider than the bound.
     AutosizeOverBound,
+    /// STU-LAY-120: a frame a line needs puts its first baseline by a metric the paragraph setting
+    /// that line does not carry (`ShapedParagraph::first_baseline_metric`); the code is
+    /// `first_baseline_metric_unavailable:<kind>` (lane SMB-ID-FRAME-AUTOSIZE-2).
+    FirstBaselineMetricUnavailable(FirstBaselineUnavailable),
 }
 impl LayoutError {
     pub const fn code(self) -> &'static str {
@@ -181,6 +185,7 @@ impl LayoutError {
             Self::AutosizeThreadedFrame => "autosize_threaded_frame",
             Self::AutosizeMultiColumn => "autosize_multi_column",
             Self::AutosizeOverBound => "autosize_over_bound",
+            Self::FirstBaselineMetricUnavailable(e) => e.code(),
         }
     }
     /// `None` for cancellation (reported as the Canceled outcome).
@@ -188,7 +193,10 @@ impl LayoutError {
         match self {
             Self::Canceled => None,
             Self::MissingFont => Some(FailureCode::Unavailable),
-            Self::UnsupportedComposition | Self::AutosizeThreadedFrame | Self::AutosizeMultiColumn => {
+            Self::UnsupportedComposition
+            | Self::AutosizeThreadedFrame
+            | Self::AutosizeMultiColumn
+            | Self::FirstBaselineMetricUnavailable(_) => {
                 Some(FailureCode::Unsupported)
             }
             _ => Some(FailureCode::Validation),

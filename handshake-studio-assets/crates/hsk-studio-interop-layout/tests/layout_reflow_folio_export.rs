@@ -255,8 +255,9 @@ fn reflow_overset_per_thread_and_typed_refusals() {
     let t = flow(&multi, &TOY);
     assert!(t[0].outcome.is_ok());
     assert!(t[1].outcome.is_ok());
-    // Baselines layout cannot map (cap height) are refused by layout, not guessed, and the refusal
-    // passes through per thread (both threads use the fixture baseline here).
+    // A cap-height baseline the shaped paragraphs carry no metric for (the fixture shaper states no
+    // face) is refused by layout, not guessed, and the refusal passes through per thread (both
+    // threads use the fixture baseline here). Typed code since lane SMB-ID-FRAME-AUTOSIZE-2.
     let cap = import(
         &Fixture {
             baseline: "CapHeight",
@@ -265,10 +266,17 @@ fn reflow_overset_per_thread_and_typed_refusals() {
         .bytes(),
     );
     let c = flow(&cap, &TOY);
-    assert_eq!(c[0].outcome, Err(LayoutError::UnsupportedComposition));
-    assert_eq!(c[0].refusal(), Some("unsupported_composition"));
+    assert_eq!(
+        c[0].outcome,
+        Err(LayoutError::FirstBaselineMetricUnavailable(
+            hsk_studio_interop_layout::layout::FirstBaselineUnavailable {
+                kind: hsk_studio_folio::FirstBaseline::CapHeight
+            }
+        ))
+    );
+    assert_eq!(c[0].refusal(), Some("first_baseline_metric_unavailable:cap_height"));
     assert!(c[0].overset().is_none());
-    assert_eq!(c[1].refusal(), Some("unsupported_composition"));
+    assert_eq!(c[1].refusal(), Some("first_baseline_metric_unavailable:cap_height"));
 
     // An RTL story is refused before any shaping; a missing font is a typed layout refusal.
     let rtl = import(

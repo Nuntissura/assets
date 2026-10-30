@@ -119,8 +119,9 @@ fn minimum_offset_wins_when_larger_and_each_thread_frame_takes_its_own_kind() {
 }
 
 /// A face without OS/2 cap/x height (OS/2 version 1) and a paragraph without face metrics (no em box)
-/// are refused for the kinds that need them; the typed reason is `first_baseline_metric_unavailable:
-/// <kind>` and the reflow refusal stays `unsupported_composition`. Ascent and leading need no face.
+/// are refused for the kinds that need them: the reflow refusal is
+/// `LayoutError::FirstBaselineMetricUnavailable`, code `first_baseline_metric_unavailable:<kind>`
+/// (lane SMB-ID-FRAME-AUTOSIZE-2; was `unsupported_composition`). Ascent and leading need no face.
 #[test]
 fn missing_face_metric_refuses_typed() {
     let v1 = inter_os2_v1();
@@ -136,7 +137,10 @@ fn missing_face_metric_refuses_typed() {
         let mut d = doc.clone();
         frame(&mut d, 0).first_baseline_offset = kind;
         frame(&mut d, 0).minimum_first_baseline_offset = len(0.0);
-        assert_eq!(run(&d, &st, paras, &records()), Err(LayoutError::UnsupportedComposition), "{kind:?}");
+        let refused = run(&d, &st, paras, &records()).unwrap_err();
+        assert_eq!(refused, LayoutError::FirstBaselineMetricUnavailable(FirstBaselineUnavailable { kind }), "{kind:?}");
+        assert_eq!(refused.code(), code);
+        assert_eq!(refused.failure_code(), Some(hsk_studio_observe::FailureCode::Unsupported));
     }
     assert_eq!(paras[0].em_box_pt, Some(11.0));
     for kind in [FirstBaseline::Ascent, FirstBaseline::Leading] {
@@ -157,7 +161,9 @@ fn missing_face_metric_refuses_typed() {
     assert_eq!((baselines(&p, 0), p.frames[1].lines.len(), p.overset), (vec![10.0, 22.0], 0, None));
     // One more line needs frame B: refused.
     let (st3, plain3) = story(1, "aaaa bbbb cccc dddd eeee", &[(0, 24)]);
-    assert_eq!(run(&d, &st3, &plain3, &records()), Err(LayoutError::UnsupportedComposition));
+    let refused = run(&d, &st3, &plain3, &records()).unwrap_err();
+    assert_eq!(refused, LayoutError::FirstBaselineMetricUnavailable(FirstBaselineUnavailable { kind: FirstBaseline::CapHeight }));
+    assert_eq!(refused.code(), "first_baseline_metric_unavailable:cap_height");
 }
 
 /// Hostile metrics (V4-01/02): a NaN, infinite or negative first-baseline metric, and a negative
