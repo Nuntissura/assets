@@ -25,6 +25,13 @@
 //! [`MAX_EXPANDED_NODES`]; test fig_instances_frames::hostile_instances_refused_before_allocation);
 //! text layers record their lines and runs from Figma's stored layout ([`FigTextLayout`]).
 //!
+//! GRID auto layout (lane SMB-FIG-GRID-2, STU-DS-146/147/150): a GRID frame's decoded grid fields
+//! become `StudioAutoLayout::grid` and each anchored child's `StudioChildLayout::grid_child` (on the
+//! node standing for the child: an instance's expansion group); the frame's background layer is
+//! absolute and stretched. Missing or out-of-range values are typed `auto_layout_grid_*` losses and
+//! the frame falls back to no auto layout (test
+//! fig_grid::malformed_or_hostile_grid_fields_fall_back_to_none_with_typed_losses).
+//!
 //! Stroke markers (lane SMB-AI-ARROWHEADS-2, STU-VEC-146): a Figma marker stroke cap of the
 //! collaborative suite (`ARROW_LINES`, `ARROW_EQUILATERAL`, `TRIANGLE_FILLED`, `DIAMOND_FILLED`,
 //! `CIRCLE_FILLED`) or a connector terminator (`ERD_*`) becomes a Folio `stroke_markers` entry on
@@ -78,6 +85,11 @@ use hsk_studio_folio::{
     StudioImageSource, StudioLetterSpacing, StudioLineHeight, StudioTextAlign, StudioTypeStyle,
     StudioTypeStyleRecords, TypeStyleResolver, TypeStyleSchema, TypeStyleScope,
     check_story_style_scopes, validate_type_style_records,
+};
+use hsk_studio_folio::{
+    ChildAlign, ChildPositioning, ChildSizing, ConstraintSchema, ConstraintType, GRID_COUNT_MAX,
+    GRID_GAP_MAX, GridAutoTracks, GridItemsPositioning, StudioChildLayout, StudioConstraint,
+    StudioGridChild, StudioGridLayout, StudioGridTrackSize, TRACK_VALUE_MAX,
 };
 use hsk_studio_folio::{
     StudioFlowStart, StudioFrameOverflow, StudioOverflowDirection, StudioPrototypePage, easing_preset,
@@ -494,6 +506,10 @@ struct Mapper<'a> {
     collections: Vec<StudioVariableCollection>,
     variables: Vec<StudioVariable>,
     record_map: Vec<RecordMapEntry>,
+    /// GRID child layouts waiting for their child's node (lane SMB-FIG-GRID-2): keyed by the
+    /// container's Folio node id and the child's Figma id, applied in `walk_children` to the node
+    /// standing for the child among the container's children.
+    grid_children: BTreeMap<(String, SourceId), StudioChildLayout>,
 }
 
 fn px(value: f64) -> Length {
@@ -1475,7 +1491,12 @@ impl Mapper<'_> {
             "HORIZONTAL" => LayoutMode::Horizontal,
             "VERTICAL" => LayoutMode::Vertical,
             "GRID" => LayoutMode::Grid,
-            "NONE" => return,
+            "NONE" => {
+                if a.grid.is_some() {
+                    self.lose("native.auto_layout.grid", "auto_layout_grid_fields_on_non_grid_frame");
+                }
+                return;
+            }
             _ => {
                 self.lose(
                     format!("native.auto_layout.mode={}", a.mode),
@@ -1496,6 +1517,27 @@ impl Mapper<'_> {
             self.lose("native.auto_layout", "auto_layout_value_out_of_range");
             return;
         }
+        let grid = if mode == LayoutMode::Grid {
+            match self.grid_layout(a.grid.as_ref()) {
+                Ok((grid, children)) => {
+                    for (child, k) in children {
+                        self.grid_children.insert((node.node_id.clone(), child), k);
+                    }
+                    self.grid_background(node);
+                    Some(grid)
+                }
+                Err(code) => {
+                    // Fallback: no auto layout (NONE); the children keep their own geometry.
+                    self.lose("native.auto_layout.grid", code);
+                    return;
+                }
+            }
+        } else {
+            if a.grid.is_some() {
+                self.lose("native.auto_layout.grid", "auto_layout_grid_fields_on_non_grid_frame");
+            }
+            None
+        };
         self.lose(
             "native.auto_layout.sizing_alignment",
             "auto_layout_defaults_for_undecoded_fields",
@@ -1517,7 +1559,188 @@ impl Mapper<'_> {
             padding_left: left,
             strokes_included_in_layout: false,
             item_reverse_z_index: false,
-            grid: None,
+            grid,
+        });
+    }
+
+    /// The stored grid fields of a GRID frame -> STU-DS-146 container record plus each anchored
+    /// child's STU-DS-150 layout (lane SMB-FIG-GRID-2), within lane SMB-FIG-GRID-1's bounds. Any
+    /// missing or out-of-range value is `Err(code)` (the caller falls back to NONE). Studio
+    /// readings (Figma behaviour UNVERIFIED, D5): the counts are the track list lengths (checked
+    /// before any list is built); a track's size is its `maxSizing` (else `minSizing`), a different
+    /// `minSizing` is a typed loss; FLEX without a value is factor 1 (STU-DS-147 default); absent
+    /// gaps are 0; items positioning has no kiwi field and stays `ROW_AUTO_FLOW` (typed loss);
+    /// `gridReflowEnabled` is not mapped (typed loss); a child's vertical alignment is its
+    /// `layout_align` (AUTO = INHERIT) and a non-AUTO horizontal alignment is a typed loss (STU-DS-148
+    /// has no per-child horizontal alignment).
+    fn grid_layout(
+        &mut self,
+        g: Option<&crate::nodes::FigGrid>,
+    ) -> std::result::Result<(StudioGridLayout, Vec<(SourceId, StudioChildLayout)>), &'static str> {
+        let g = g.ok_or("auto_layout_grid_missing")?;
+        let count = |tracks: &[crate::nodes::FigGridTrack]| {
+            u32::try_from(tracks.len())
+                .ok()
+                .filter(|n| (1..=GRID_COUNT_MAX).contains(n))
+                .ok_or("auto_layout_grid_count")
+        };
+        let (rows, columns) = (count(&g.rows)?, count(&g.columns)?);
+        let mut min_dropped = false;
+        let mut sizes = |tracks: &[crate::nodes::FigGridTrack]| {
+            tracks
+                .iter()
+                .map(|t| {
+                    let size = t.size.as_ref().ok_or("auto_layout_grid_track_size_missing")?;
+                    let pick = size
+                        .max
+                        .as_ref()
+                        .or(size.min.as_ref())
+                        .ok_or("auto_layout_grid_track_size_missing")?;
+                    if size.max.is_some() && size.min.as_ref().is_some_and(|m| m != pick) {
+                        min_dropped = true;
+                    }
+                    let value = pick.value.map(wide);
+                    let ok = |v: &f64| v.is_finite() && (0.0..=TRACK_VALUE_MAX).contains(v);
+                    match pick.kind.as_str() {
+                        "FIXED" => value
+                            .filter(ok)
+                            .map(StudioGridTrackSize::fixed)
+                            .ok_or("auto_layout_grid_track_value"),
+                        "FLEX" => Some(value.unwrap_or(1.0))
+                            .filter(ok)
+                            .map(StudioGridTrackSize::flex)
+                            .ok_or("auto_layout_grid_track_value"),
+                        "HUG" => Ok(StudioGridTrackSize::hug()),
+                        _ => Err("auto_layout_grid_track_type_unknown"),
+                    }
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+        };
+        let row_sizes = sizes(&g.rows)?;
+        let column_sizes = sizes(&g.columns)?;
+        let gap = |v: Option<f32>| {
+            Some(v.map_or(0.0, wide))
+                .filter(|v| v.is_finite() && (0.0..=GRID_GAP_MAX).contains(v))
+                .ok_or("auto_layout_grid_gap")
+        };
+        let (row_gap, column_gap) = (gap(g.row_gap)?, gap(g.column_gap)?);
+        let auto_tracks = match g.auto_tracks.as_deref() {
+            None | Some("NONE") => GridAutoTracks::None,
+            Some("ROWS") => GridAutoTracks::Rows,
+            Some(_) => return Err("auto_layout_grid_auto_tracks_unknown"),
+        };
+        let index = |tracks: &[crate::nodes::FigGridTrack], id: SourceId| {
+            tracks
+                .iter()
+                .position(|t| t.id == id)
+                .and_then(|i| u32::try_from(i).ok())
+                .ok_or("auto_layout_grid_anchor_unresolved")
+        };
+        let fits = |anchor: u32, span: u32, n: u32| {
+            span >= 1 && anchor.checked_add(span).is_some_and(|end| end <= n)
+        };
+        let mut children = Vec::with_capacity(g.children.len());
+        let mut horizontal_dropped = false;
+        for (child, gc) in &g.children {
+            let grid_child = match (gc.row_anchor, gc.column_anchor) {
+                (None, None) => None,
+                (Some(r), Some(c)) => {
+                    let (row, column) = (index(&g.rows, r)?, index(&g.columns, c)?);
+                    let (row_span, column_span) =
+                        (gc.row_span.unwrap_or(1), gc.column_span.unwrap_or(1));
+                    if !fits(row, row_span, rows) || !fits(column, column_span, columns) {
+                        return Err("auto_layout_grid_span");
+                    }
+                    Some(StudioGridChild {
+                        grid_row_anchor_index: row,
+                        grid_column_anchor_index: column,
+                        grid_row_span: row_span,
+                        grid_column_span: column_span,
+                    })
+                }
+                _ => return Err("auto_layout_grid_anchor_missing"),
+            };
+            let layout_align = match gc.vertical_align.as_deref() {
+                None | Some("AUTO") => ChildAlign::Inherit,
+                Some("MIN") => ChildAlign::Min,
+                Some("CENTER") => ChildAlign::Center,
+                Some("MAX") => ChildAlign::Max,
+                Some(_) => return Err("auto_layout_grid_child_align_unknown"),
+            };
+            horizontal_dropped |= gc.horizontal_align.as_deref().is_some_and(|h| h != "AUTO");
+            if grid_child.is_none() && layout_align == ChildAlign::Inherit {
+                continue;
+            }
+            children.push((
+                *child,
+                StudioChildLayout {
+                    layout_align,
+                    layout_grow: 0,
+                    layout_positioning: ChildPositioning::Auto,
+                    layout_sizing_horizontal: ChildSizing::Fixed,
+                    layout_sizing_vertical: ChildSizing::Fixed,
+                    grid_child,
+                },
+            ));
+        }
+        if min_dropped {
+            self.lose("native.auto_layout.grid.track", "auto_layout_grid_track_min_dropped");
+        }
+        if horizontal_dropped {
+            self.lose(
+                "native.auto_layout.grid.child",
+                "auto_layout_grid_child_horizontal_align_not_mapped",
+            );
+        }
+        if g.reflow_enabled.is_some() {
+            self.lose("native.auto_layout.grid.reflow", "auto_layout_grid_reflow_not_mapped");
+        }
+        self.lose(
+            "native.auto_layout.grid.items_positioning",
+            "auto_layout_grid_items_positioning_default",
+        );
+        Ok((
+            StudioGridLayout {
+                grid_row_count: rows,
+                grid_column_count: columns,
+                grid_row_gap: row_gap,
+                grid_column_gap: column_gap,
+                grid_row_sizes: row_sizes,
+                grid_column_sizes: column_sizes,
+                grid_auto_tracks: auto_tracks,
+                grid_items_positioning: GridItemsPositioning::RowAutoFlow,
+            },
+            children,
+        ))
+    }
+
+    /// The background layer of a GRID frame (its fill, the frame's bottom-most child) is not a grid
+    /// item: it is absolute and stretched with the frame (STU-DS-048 constraints).
+    fn grid_background(&mut self, frame: &NodeRef) {
+        let Some(layer_id) = self
+            .backgrounds
+            .iter()
+            .find(|b| &b.frame == frame)
+            .map(|b| b.layer_id.clone())
+        else {
+            return;
+        };
+        let d = self.design_for(&NodeRef {
+            node_kind: NodeKind::Layer,
+            node_id: layer_id,
+        });
+        d.child_layout = Some(StudioChildLayout {
+            layout_align: ChildAlign::Inherit,
+            layout_grow: 0,
+            layout_positioning: ChildPositioning::Absolute,
+            layout_sizing_horizontal: ChildSizing::Fixed,
+            layout_sizing_vertical: ChildSizing::Fixed,
+            grid_child: None,
+        });
+        d.constraints = Some(StudioConstraint {
+            schema_id: ConstraintSchema::V1,
+            horizontal: ConstraintType::Stretch,
+            vertical: ConstraintType::Stretch,
         });
     }
 
@@ -2831,6 +3054,11 @@ impl Mapper<'_> {
                 continue;
             };
             self.current = Some(doc.nodes[c].id);
+            if let Parent::Node(p) = &parent
+                && let Some(k) = self.grid_children.remove(&(p.node_id.clone(), doc.nodes[c].id))
+            {
+                self.design_for(&r).child_layout = Some(k);
+            }
             if r.node_kind == NodeKind::Layer {
                 operands.push(r.node_id.clone());
                 if let Some(entry) = clip.and_then(|k| self.clips.get_mut(k)) {
@@ -3276,6 +3504,7 @@ pub fn to_native(
         flow_starts: Vec::new(),
         frame_overflow: Vec::new(),
         frame_overlay: Vec::new(),
+        grid_children: BTreeMap::new(),
     };
     for &root in &doc.roots {
         let r = &doc.nodes[root];

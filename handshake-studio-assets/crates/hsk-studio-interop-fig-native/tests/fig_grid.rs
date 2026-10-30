@@ -360,9 +360,13 @@ fn solved_child_rects_match_the_geometry_figma_stored() {
         assert!((rect.x - x).abs() <= TOL && (rect.y - y).abs() <= TOL, "{name}: solved {rect:?} stored ({x}, {y})");
     }
     println!("FIXTURE_PROVEN: fig_grid solved_vs_stored fixture-button (HORIZONTAL) 2 children within {TOL} px");
-    // GRID: the same frame as a one-row, two-column HUG grid with column gap 24 solves to the
-    // same cells (Studio reading, hand-checked: 24 and 24 + 93 + 24 = 141). Figma's own GRID output
-    // cannot be compared: no Operator fixture holds a GRID frame.
+}
+
+#[test]
+fn grid_frame_solves_from_its_imported_records() {
+    // fixture-button as a one-row, two-column HUG grid with column gap 24 solves to the same cells
+    // (Studio reading, hand-checked: 24 and 24 + 93 + 24 = 141). Figma's own GRID output cannot be
+    // compared: no Operator fixture holds a GRID frame.
     let grid_doc = patched(|k, t| k.grid(t, "fixture-button", &[(ROW_A, "HUG", None)], &[(COL_A, "HUG", None), (COL_B, "HUG", None)], (0.0, 24.0)));
     let gp = map(&grid_doc);
     let cells = solve(&gp, &grid_doc, "fixture-button", &["state=default", "state=hover"]);
