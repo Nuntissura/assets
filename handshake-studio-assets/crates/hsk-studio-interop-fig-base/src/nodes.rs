@@ -13,6 +13,15 @@
 //! `vector_network.py`; open-pencil and OpenFig-org/openfig-core path commands 0 close, 1 move,
 //! 2 line, 4 cubic); command 3 = quadratic (4 floats) is an inference proven only by exact blob
 //! consumption on the fixture glyph blobs. All floats are f32 little-endian.
+//!
+//! GRID auto layout (lane SMB-FIG-GRID-2): a frame's `gridRows` / `gridColumns` (track ids in
+//! fractional-index order), `gridRowsSizing` / `gridColumnsSizing` (min/max sizing per track id),
+//! `gridRowGap` / `gridColumnGap`, `gridAutoTracks` and `gridReflowEnabled` decode into
+//! [`AutoLayout::grid`]; a child's `gridRowAnchor` / `gridColumnAnchor` (track ids), spans and
+//! alignments into a [`FigGridChild`] attached to its parent's [`FigGrid::children`] (the anchors name
+//! the parent's tracks; a placement under a parent without grid fields is a loss). The names are the
+//! ones the embedded schema of the three Operator fixtures declares (test fig_grid_decode); the schema
+//! has no count fields (the counts are the track list lengths) and no items-positioning field.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::container::{FigContainer, IMAGES_PREFIX, Limits};
 use crate::import::{FigImport, SourceId};
@@ -1254,7 +1263,7 @@ fn frame(o: &mut Obj, cx: &mut Cx) -> FramePayload {
         vertical_padding: o.f32(cx, "stackVerticalPadding"),
         padding_right: o.f32(cx, "stackPaddingRight"),
         padding_bottom: o.f32(cx, "stackPaddingBottom"),
-        grid: None,
+        grid: grid_container(o, cx),
     });
     let defs_path = o.sub("componentPropDefs");
     let component_props = o
@@ -1287,6 +1296,188 @@ fn frame(o: &mut Obj, cx: &mut Cx) -> FramePayload {
             v
         }),
         overlay_relative_position: o.vec2(cx, "overlayRelativePosition"),
+    }
+}
+
+/// The grid container fields a frame stores (kiwi names of the files' own schema, lane
+/// SMB-FIG-GRID-2), `None` when it stores none of them.
+const GRID_CONTAINER_FIELDS: [&str; 8] = [
+    "gridRows",
+    "gridColumns",
+    "gridRowsSizing",
+    "gridColumnsSizing",
+    "gridRowGap",
+    "gridColumnGap",
+    "gridAutoTracks",
+    "gridReflowEnabled",
+];
+/// The grid placement fields a child stores.
+const GRID_CHILD_FIELDS: [&str; 6] = [
+    "gridRowAnchor",
+    "gridColumnAnchor",
+    "gridRowSpan",
+    "gridColumnSpan",
+    "gridChildVerticalAlign",
+    "gridChildHorizontalAlign",
+];
+
+fn stores_any(o: &Obj, names: &[&str]) -> bool {
+    o.fields.iter().any(|f| names.contains(&&*f.name))
+}
+
+fn grid_container(o: &mut Obj, cx: &mut Cx) -> Option<FigGrid> {
+    if !stores_any(o, &GRID_CONTAINER_FIELDS) {
+        return None;
+    }
+    let mut rows = grid_tracks(o, cx, "gridRows");
+    let mut columns = grid_tracks(o, cx, "gridColumns");
+    grid_sizes(o, cx, "gridRowsSizing", &mut rows);
+    grid_sizes(o, cx, "gridColumnsSizing", &mut columns);
+    Some(FigGrid {
+        rows,
+        columns,
+        row_gap: o.f32(cx, "gridRowGap"),
+        column_gap: o.f32(cx, "gridColumnGap"),
+        auto_tracks: o.enum_name(cx, "gridAutoTracks"),
+        reflow_enabled: o.bool(cx, "gridReflowEnabled"),
+        children: Vec::new(),
+    })
+}
+
+/// A `GUIDPositionMap` of tracks, in stored order (position bytes, then id). An entry without id
+/// or position, or repeating an id, is left out (loss).
+fn grid_tracks(o: &mut Obj, cx: &mut Cx, name: &str) -> Vec<FigGridTrack> {
+    let Some(mut m) = o.obj(cx, name) else {
+        return Vec::new();
+    };
+    let entries_path = m.sub("entries");
+    let mut out: Vec<FigGridTrack> = Vec::new();
+    for e in m.array(cx, "entries") {
+        let mut eo = Obj::of(e, entries_path.clone());
+        let id = eo.guid(cx, "id");
+        let position = eo.string(cx, "position");
+        eo.finish(cx);
+        match (id, position) {
+            (Some(id), _) if out.iter().any(|t| t.id == id) => {
+                cx.lose(m.path.clone(), "grid_track_duplicate_id");
+            }
+            (Some(id), Some(position)) => out.push(FigGridTrack {
+                id,
+                position,
+                size: None,
+            }),
+            _ => cx.lose(m.path.clone(), "grid_track_incomplete"),
+        }
+    }
+    m.finish(cx);
+    out.sort_by(|a, b| {
+        a.position
+            .as_bytes()
+            .cmp(b.position.as_bytes())
+            .then(a.id.cmp(&b.id))
+    });
+    out
+}
+
+fn track_sizing(o: &mut Obj, cx: &mut Cx, name: &str) -> Option<FigTrackSizing> {
+    let mut so = o.obj(cx, name)?;
+    let kind = so.enum_name(cx, "type");
+    let value = so.f32(cx, "value");
+    so.finish(cx);
+    kind.map(|kind| FigTrackSizing { kind, value })
+}
+
+/// A `GUIDGridTrackSizeMap`: each entry's size goes to the track with its id; an entry naming no
+/// track of the axis, or a second entry for one track, is a loss.
+fn grid_sizes(o: &mut Obj, cx: &mut Cx, name: &str, tracks: &mut [FigGridTrack]) {
+    let Some(mut m) = o.obj(cx, name) else {
+        return;
+    };
+    let entries_path = m.sub("entries");
+    for e in m.array(cx, "entries") {
+        let mut eo = Obj::of(e, entries_path.clone());
+        let id = eo.guid(cx, "id");
+        let size = eo.obj(cx, "trackSize").map(|mut so| {
+            let s = FigTrackSize {
+                min: track_sizing(&mut so, cx, "minSizing"),
+                max: track_sizing(&mut so, cx, "maxSizing"),
+            };
+            so.finish(cx);
+            s
+        });
+        eo.finish(cx);
+        match id.and_then(|id| tracks.iter_mut().find(|t| t.id == id)) {
+            Some(t) if t.size.is_some() => cx.lose(m.path.clone(), "grid_track_size_duplicate"),
+            Some(t) => match size {
+                Some(s) => t.size = Some(s),
+                None => cx.lose(m.path.clone(), "grid_track_size_incomplete"),
+            },
+            None => cx.lose(m.path.clone(), "grid_track_size_orphan"),
+        }
+    }
+    m.finish(cx);
+}
+
+/// The grid placement fields of any node (`None` when it stores none of them).
+fn grid_child(o: &mut Obj, cx: &mut Cx) -> Option<FigGridChild> {
+    if !stores_any(o, &GRID_CHILD_FIELDS) {
+        return None;
+    }
+    Some(FigGridChild {
+        row_anchor: o.guid(cx, "gridRowAnchor"),
+        column_anchor: o.guid(cx, "gridColumnAnchor"),
+        row_span: o.u32(cx, "gridRowSpan"),
+        column_span: o.u32(cx, "gridColumnSpan"),
+        vertical_align: o.enum_name(cx, "gridChildVerticalAlign"),
+        horizontal_align: o.enum_name(cx, "gridChildHorizontalAlign"),
+    })
+}
+
+/// The frame payload of a frame, component or instance node.
+fn frame_payload_mut(p: &mut NodePayload) -> Option<&mut FramePayload> {
+    match p {
+        NodePayload::Frame(f) | NodePayload::Symbol { frame: f, .. } | NodePayload::Instance { frame: f, .. } => Some(f),
+        _ => None,
+    }
+}
+
+/// Attaches each child's grid placement to its parent's grid, in child order; a placement whose
+/// parent stores no grid fields is a loss.
+fn attach_grid_children(nodes: &mut [FigNode], index: &HashMap<SourceId, usize>, cx: &mut Cx) {
+    let mut attach: Vec<(usize, usize, SourceId, FigGridChild)> = Vec::new();
+    for (child, gc) in std::mem::take(&mut cx.grid_children) {
+        let Some(&ci) = index.get(&child) else {
+            continue;
+        };
+        let parent = nodes[ci].parent.and_then(|p| index.get(&p).copied());
+        let grid_parent = parent.filter(|&pi| {
+            frame_payload_mut(&mut nodes[pi].payload)
+                .and_then(|f| f.auto_layout.as_ref())
+                .is_some_and(|a| a.grid.is_some())
+        });
+        match grid_parent {
+            Some(pi) => {
+                let order = nodes[pi]
+                    .children
+                    .iter()
+                    .position(|&k| k == ci)
+                    .unwrap_or(usize::MAX);
+                attach.push((pi, order, child, gc));
+            }
+            None => {
+                cx.current = Some(child);
+                cx.lose("NodeChange.grid", "grid_child_without_grid_parent");
+            }
+        }
+    }
+    attach.sort_by_key(|a| (a.0, a.1));
+    for (pi, _, child, gc) in attach {
+        if let Some(g) = frame_payload_mut(&mut nodes[pi].payload)
+            .and_then(|f| f.auto_layout.as_mut())
+            .and_then(|a| a.grid.as_mut())
+        {
+            g.children.push((child, gc));
+        }
     }
 }
 
@@ -1655,6 +1846,13 @@ pub const COMMON_NODE_FIELDS: &[&str] = &[
     "strokeGeometry",
     "prototypeInteractions",
     "prototypeStartingPoint",
+    // Grid placement (lane SMB-FIG-GRID-2): read on every kind, attached to the parent's grid.
+    "gridRowAnchor",
+    "gridColumnAnchor",
+    "gridRowSpan",
+    "gridColumnSpan",
+    "gridChildVerticalAlign",
+    "gridChildHorizontalAlign",
 ];
 
 fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
@@ -1726,6 +1924,9 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
         n.flow_start = sp.string(cx, "name");
         n.flow_position = sp.string(cx, "position");
         sp.finish(cx);
+    }
+    if let Some(gc) = grid_child(&mut o, cx) {
+        cx.grid_children.push((id, gc));
     }
     n.payload = match n.type_name.as_str() {
         "DOCUMENT" | "GROUP" | "LINE" => NodePayload::None,
@@ -1968,11 +2169,14 @@ pub fn document_from_tree(
         if k & 255 == 0 {
             cancel.check().map_err(|_| FigError::Canceled)?;
         }
+        let placements = cx.grid_children.len();
         let Some(n) = node(c, &mut cx)? else {
             continue;
         };
         if index.contains_key(&n.id) {
             cx.lose("NodeChange.guid", "duplicate_guid");
+            // The dropped node's grid placement goes with it.
+            cx.grid_children.truncate(placements);
             continue;
         }
         index.insert(n.id, nodes.len());
@@ -2023,6 +2227,7 @@ pub fn document_from_tree(
             cx.lose("NodeChange.parentIndex", "unreachable_node");
         }
     }
+    attach_grid_children(&mut nodes, &index, &mut cx);
     let mut doc = FigDocument {
         nodes,
         roots,
