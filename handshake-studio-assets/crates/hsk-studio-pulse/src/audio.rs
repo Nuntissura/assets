@@ -16,6 +16,15 @@
 //!   `equal_power`, default `equal_power`; Studio key, the shipped default's curve is
 //!   UNVERIFIED). A crossfade on a clip with a non-unit speed is `audio_unsupported`.
 //!
+//! - clip pan envelopes (lane SMB-AU-MULTITRACK-3, Folio `StudioClipPanEnvelope`, via
+//!   [`TimelineMixStream::with_clip_envelopes`]): a clip with an envelope gets the score pan lane
+//!   `clamp(track pan + pan, -1, 1)` at `timeline_start + offset_ticks`, evaluated at the points
+//!   and linear between them, held outside them; score's pan law applies per clip (mono
+//!   equal-power `(cos a, sin a)`, `a = (pan + 1) pi/4`; stereo balance `L min(1, 1 - pan)`,
+//!   `R min(1, 1 + pan)`). Adding the track pan is a Studio reading (the bus mix renders each strip
+//!   at track pan 0, so there the lane is the clip envelope itself; module `bus_mix`). Audition's
+//!   clip pan behaviour is UNVERIFIED (D5).
+//!
 //! Timeline positions must sit on the audio sample grid (`not_frame_aligned` otherwise). One score
 //! session mixes at most `hsk_studio_score::MAX_TRACKS` clips; `build_timeline_mix` refuses more
 //! (`limit_exceeded`, before any sample is copied). The session is the master [`AudioClock`] of
@@ -40,7 +49,7 @@ use crate::time::samples_from_ticks_exact;
 use crate::timeline_edit::SourceExtents;
 use crate::transition::{AUDIO_CROSSFADE, check_at};
 use hsk_studio_accord::{CancellationToken, Ticks};
-use hsk_studio_folio::{ClipSource, StudioClipGainEnvelope, StudioSequence, TrackKind, TransitionParameterValue};
+use hsk_studio_folio::{ClipSource, StudioClipGainEnvelope, StudioClipPanEnvelope, StudioSequence, TrackKind, TransitionParameterValue};
 use hsk_studio_score::{
     AutomationLane, ChannelLayout, ClipSpeed, Fade, FadeCurve, MAX_TRACKS, ScoreError, Session,
     TrackSpec,
@@ -106,6 +115,8 @@ struct PlannedClip {
     pan: f64,
     /// Clip gain envelope (lane SMB-AUDITION-SESSION-2): `(absolute timeline sample, dB)`.
     gain: Vec<(u64, f64)>,
+    /// Clip pan envelope (lane SMB-AU-MULTITRACK-3): `(absolute timeline sample, pan)`.
+    pan_env: Vec<(u64, f64)>,
 }
 
 impl PlannedClip {
@@ -141,7 +152,22 @@ impl PlannedClip {
             }
             AutomationLane::new(&points, hsk_studio_score::Interpolation::Linear, (lo, hi)).map_err(score_error)?
         };
-        spec.pan = AutomationLane::constant(self.pan);
+        spec.pan = if self.pan_env.is_empty() {
+            AutomationLane::constant(self.pan)
+        } else {
+            // Track pan plus clip pan, clamped to score's pan range at each point.
+            let (lo, hi) = hsk_studio_score::TRACK_PAN;
+            let mut points = Vec::with_capacity(self.pan_env.len());
+            for (at, pan) in &self.pan_env {
+                let at = at.checked_sub(origin).ok_or(PulseError::Underflow)?;
+                let v = self.pan + pan;
+                if !v.is_finite() {
+                    return Err(PulseError::InvalidInput);
+                }
+                points.push((at, v.clamp(lo, hi)));
+            }
+            AutomationLane::new(&points, hsk_studio_score::Interpolation::Linear, (lo, hi)).map_err(score_error)?
+        };
         spec.fade_in = self.fade_in;
         spec.fade_out = self.fade_out;
         Ok(spec)
@@ -187,6 +213,7 @@ fn plan_clips(
     sources: &dyn AudioSources,
     extents: &dyn SourceExtents,
     gains: &[StudioClipGainEnvelope],
+    pans: &[StudioClipPanEnvelope],
     cancel: &CancellationToken,
 ) -> Result<Vec<PlannedClip>> {
     let mut cuts: Vec<Cut> = Vec::new();
@@ -306,6 +333,14 @@ fn plan_clips(
                 gain.push((at.checked_add(offset).ok_or(PulseError::Overflow)?, point.gain_db));
             }
         }
+        let mut pan_env = Vec::new();
+        if let Some(env) = pans.iter().find(|g| g.clip_id == clip.clip_id) {
+            let at = samples_from_ticks_exact(clip.timeline_start, sample_rate_hz)?;
+            for point in &env.points {
+                let offset = samples_from_ticks_exact(Ticks::new(point.offset_ticks), sample_rate_hz)?;
+                pan_env.push((at.checked_add(offset).ok_or(PulseError::Overflow)?, point.pan));
+            }
+        }
         planned.push(PlannedClip {
             source: clip.source_ref.clone(),
             speed,
@@ -318,6 +353,7 @@ fn plan_clips(
             volume_db: 20.0 * track.volume.log10(),
             pan: track.pan,
             gain,
+            pan_env,
         });
     }
     Ok(planned)
@@ -337,7 +373,7 @@ pub fn build_timeline_mix(
     if audible_clip_count(sequence, &audible) > MAX_TRACKS {
         return Err(PulseError::LimitExceeded);
     }
-    let planned = plan_clips(sequence, sample_rate_hz, &audible, sources, extents, &[], cancel)?;
+    let planned = plan_clips(sequence, sample_rate_hz, &audible, sources, extents, &[], &[], cancel)?;
     let mut specs = Vec::with_capacity(planned.len());
     for p in &planned {
         cancel.check()?;
@@ -442,6 +478,25 @@ impl<S: AudioSources> TimelineMixStream<S> {
         gains: &[StudioClipGainEnvelope],
         cancel: &CancellationToken,
     ) -> Result<Self> {
+        Self::with_clip_envelopes(sequence, sample_rate_hz, max_block_frames, sources, extents, limits, gains, &[], cancel)
+    }
+
+    /// As [`TimelineMixStream::with_clip_gains`] with clip pan envelopes (lane SMB-AU-MULTITRACK-3,
+    /// Folio `StudioClipPanEnvelope`): a clip with an envelope gets the score pan lane
+    /// `clamp(track pan + pan, -1, 1)` at `timeline_start + offset_ticks` (linear between points,
+    /// held outside them; offsets off the sample grid are `not_frame_aligned`; module docs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_clip_envelopes(
+        sequence: &StudioSequence,
+        sample_rate_hz: u32,
+        max_block_frames: usize,
+        sources: S,
+        extents: &dyn SourceExtents,
+        limits: StreamLimits,
+        gains: &[StudioClipGainEnvelope],
+        pans: &[StudioClipPanEnvelope],
+        cancel: &CancellationToken,
+    ) -> Result<Self> {
         cancel.check()?;
         if !(1..=MAX_TRACKS).contains(&limits.group_clips) || max_block_frames == 0 {
             return Err(PulseError::InvalidInput);
@@ -451,7 +506,7 @@ impl<S: AudioSources> TimelineMixStream<S> {
         if audible_clip_count(sequence, &audible) > limits.max_clips {
             return Err(PulseError::LimitExceeded);
         }
-        let mut clips = plan_clips(sequence, sample_rate_hz, &audible, &sources, extents, gains, cancel)?;
+        let mut clips = plan_clips(sequence, sample_rate_hz, &audible, &sources, extents, gains, pans, cancel)?;
         clips.sort_by_key(|c| c.start);
         let mut groups = Vec::new();
         let mut length = 0u64;

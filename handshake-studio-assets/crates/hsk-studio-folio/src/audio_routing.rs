@@ -18,7 +18,16 @@
 //!   value)`, volume a linear gain in `0 ..= MAX_AUDIO_LEVEL` (interpolated linearly in dB by the
 //!   mix, as the fader), pan in `-1 ..= 1` (linear); held outside the points. Where a track has a
 //!   lane, the lane replaces the track's static `volume` / `pan` in the mix. Absent (no entry) the
-//!   routing serializes as before, byte for byte.
+//!   routing serializes as before, byte for byte;
+//! * clip pan envelopes (lane SMB-AU-MULTITRACK-3): per clip, breakpoints `(offset_ticks from the
+//!   clip's timeline start, pan)` with pan in `-1 ..= 1`, linear between points and held outside
+//!   them, beside the clip gain envelopes and kept like them;
+//! * master volume automation (lane SMB-AU-MULTITRACK-3, [`StudioAudioMaster::volume_automation`]):
+//!   breakpoints `(offset_ticks from the sequence start, linear volume)` like a track volume lane;
+//!   where present it replaces the static master `volume` in the mix.
+//!
+//! Absent members (no clip pan envelope, no master lane) are not encoded, so earlier routings
+//! serialize byte for byte.
 //!
 //! A submix track is a bus: its fader and pan are the track's `volume` and `pan`. Folio validates
 //! identity, references, the absence of routing cycles, counts and ranges; the mix itself is pulse's
@@ -49,6 +58,8 @@ pub const CLIP_GAIN_DB: (f64, f64) = (-96.0, 12.0);
 pub const MAX_AUDIO_ROUTINGS: usize = 1024;
 /// Breakpoints one track automation lane may hold (score's automation bound).
 pub const MAX_TRACK_AUTOMATION_POINTS: usize = 4096;
+/// Breakpoints one clip pan envelope may hold (score's automation bound).
+pub const MAX_CLIP_PAN_POINTS: usize = 4096;
 
 /// One send.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -93,6 +104,10 @@ pub struct StudioAudioMaster {
     pub volume: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<StudioAudioEffectInstance>,
+    /// Master volume automation (lane SMB-AU-MULTITRACK-3): offsets from the sequence start, linear
+    /// volumes in `0 ..= MAX_AUDIO_LEVEL`, strictly increasing; empty = none (the static `volume`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_automation: Vec<StudioAutomationPoint>,
 }
 
 /// One breakpoint of a clip gain envelope.
@@ -110,6 +125,24 @@ pub struct StudioClipGainPoint {
 pub struct StudioClipGainEnvelope {
     pub clip_id: String,
     pub points: Vec<StudioClipGainPoint>,
+}
+
+/// One breakpoint of a clip pan envelope (lane SMB-AU-MULTITRACK-3).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioClipPanPoint {
+    /// Ticks from the clip's `timeline_start`.
+    pub offset_ticks: u64,
+    /// `-1 ..= 1` (left to right).
+    pub pan: f64,
+}
+
+/// The pan envelope of one clip (lane SMB-AU-MULTITRACK-3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioClipPanEnvelope {
+    pub clip_id: String,
+    pub points: Vec<StudioClipPanPoint>,
 }
 
 /// The track parameter a [`StudioTrackAutomation`] lane automates.
@@ -164,6 +197,9 @@ pub struct StudioAudioRouting {
     pub clip_gains: Vec<StudioClipGainEnvelope>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub track_automation: Vec<StudioTrackAutomation>,
+    /// Clip pan envelopes (lane SMB-AU-MULTITRACK-3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clip_pans: Vec<StudioClipPanEnvelope>,
 }
 
 impl StudioAudioRouting {
@@ -173,9 +209,10 @@ impl StudioAudioRouting {
             sequence_id: sequence_id.into(),
             routes: Vec::new(),
             bus_effects: Vec::new(),
-            master: StudioAudioMaster { volume: 1.0, effects: Vec::new() },
+            master: StudioAudioMaster { volume: 1.0, effects: Vec::new(), volume_automation: Vec::new() },
             clip_gains: Vec::new(),
             track_automation: Vec::new(),
+            clip_pans: Vec::new(),
         }
     }
 
@@ -308,6 +345,17 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
         return Err(invalid(&target, "master/volume"));
     }
     effects(&r.master.effects, &format!("{target}/master"), cx)?;
+    let m = &r.master.volume_automation;
+    if m.len() > MAX_TRACK_AUTOMATION_POINTS {
+        return Err(invalid(&target, "master/volume_automation"));
+    }
+    cx.nodes(m.len(), &target)?;
+    if m.windows(2).any(|w| w[0].offset_ticks >= w[1].offset_ticks) {
+        return Err(invalid(&target, "master/volume_automation/offset_ticks"));
+    }
+    if m.iter().any(|p| !level(p.value)) {
+        return Err(invalid(&target, "master/volume_automation/value"));
+    }
     let clips: BTreeSet<&str> = seq
         .tracks
         .iter()
@@ -361,6 +409,28 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
             return Err(invalid(&t, "points/value"));
         }
     }
+    cx.nodes(r.clip_pans.len(), &target)?;
+    let mut panned = BTreeSet::new();
+    for g in &r.clip_pans {
+        cx.tick()?;
+        let t = format!("{target}/clip_pans/{}", g.clip_id);
+        if !clips.contains(g.clip_id.as_str()) {
+            return Err(err(Code::InvalidId, t));
+        }
+        if !panned.insert(g.clip_id.as_str()) {
+            return Err(err(Code::DuplicateField, t));
+        }
+        if g.points.is_empty() || g.points.len() > MAX_CLIP_PAN_POINTS {
+            return Err(invalid(&t, "points"));
+        }
+        cx.nodes(g.points.len(), &t)?;
+        if g.points.windows(2).any(|w| w[0].offset_ticks >= w[1].offset_ticks) {
+            return Err(invalid(&t, "points/offset_ticks"));
+        }
+        if g.points.iter().any(|p| !p.pan.is_finite() || !(-1.0..=1.0).contains(&p.pan)) {
+            return Err(invalid(&t, "points/pan"));
+        }
+    }
     Ok(())
 }
 
@@ -373,7 +443,10 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
 /// `offset_ticks` with `gain_db` in [`CLIP_GAIN_DB`]; track automation lanes of audio or submix
 /// tracks of the sequence (unknown or other tracks `InvalidId`), one per track and parameter
 /// (`DuplicateField`), 1..=`MAX_TRACK_AUTOMATION_POINTS` points strictly increasing in `offset_ticks`
-/// with values in [`StudioTrackParam::range`] (`InvalidField`).
+/// with values in [`StudioTrackParam::range`] (`InvalidField`); master volume automation at most
+/// `MAX_TRACK_AUTOMATION_POINTS` points strictly increasing with values in `0 ..= MAX_AUDIO_LEVEL`
+/// (`InvalidField`); clip pan envelopes like clip gain envelopes (clips on audio tracks, one each,
+/// 1..=`MAX_CLIP_PAN_POINTS` points strictly increasing, pan in `-1 ..= 1`).
 pub fn validate_audio_routing(
     set: &StudioAudioRoutingSet,
     document: &StudioDocument,

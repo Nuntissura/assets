@@ -23,6 +23,18 @@
 //!   a volume lane plays the lane; a muted track stays silent). Without lanes the strips are built as
 //!   before (`AutomationLane::constant`). Points off the sample grid are `not_frame_aligned`.
 //!
+//! - Clip pan envelopes (lane SMB-AU-MULTITRACK-3, Folio `StudioClipPanEnvelope`): a clip with an
+//!   envelope is panned inside its strip by score's pan law for its channel count (mono equal-power,
+//!   stereo balance; the strip renders at track pan 0, so the lane is the envelope itself), and the
+//!   track's fader and pan then apply to the strip like any other. A panned mono clip therefore
+//!   plays in the track's stereo strip (it is two channels after its pan), so the track pan acts on
+//!   it as a balance; an unpanned mono clip keeps the mono strip and the equal-power track pan
+//!   (Studio reading, Audition UNVERIFIED, D5). An `audio_crossfade` between clips of different
+//!   strips (mono/stereo, or panned/unpanned mono) is `audio_unsupported`.
+//! - Master volume automation (lane SMB-AU-MULTITRACK-3, Folio `StudioAudioMaster::volume_automation`):
+//!   when present the master fader is `AutomationLane::new(points, Linear, -96..=12 dB)` (each point
+//!   at its exact timeline sample, its linear value in dB), replacing the static master `volume`.
+//!
 //! Seeking ([`TimelineBusStream::seek`]) is score's `MixGraph::seek` (exact from 0; later seeks
 //! exact for bus effects whose memory is under its warm-up).
 #![deny(clippy::arithmetic_side_effects)]
@@ -203,10 +215,16 @@ impl TimelineBusStream {
             }
             let (volume, pan) = track_lanes(routing, track, sample_rate_hz)?;
             let channels_of = |c: &hsk_studio_folio::StudioClip| sources.audio(&c.source_ref).map(<[Vec<f32>]>::len);
+            // Strip class: unpanned mono clips play in the mono strip, stereo and panned mono clips
+            // in the stereo strip (module docs).
+            let class_of = |c: &hsk_studio_folio::StudioClip| match channels_of(c) {
+                Some(1) if routing.clip_pans.iter().any(|p| p.clip_id == c.clip_id) => Some(2),
+                other => other,
+            };
             for (i, clip) in track.clips.iter().enumerate() {
                 if clip.enabled
                     && clip.transitions.tail.as_ref().is_some_and(|t| t.transition_kind == AUDIO_CROSSFADE)
-                    && track.clips.get(i.saturating_add(1)).is_some_and(|n| n.enabled && channels_of(n) != channels_of(clip))
+                    && track.clips.get(i.saturating_add(1)).is_some_and(|n| n.enabled && class_of(n) != class_of(clip))
                 {
                     return Err(PulseError::AudioUnsupported);
                 }
@@ -215,7 +233,7 @@ impl TimelineBusStream {
             for class in [1usize, 2] {
                 let mut only = track.clone();
                 for c in &mut only.clips {
-                    c.enabled = c.enabled && channels_of(c) == Some(class);
+                    c.enabled = c.enabled && class_of(c) == Some(class);
                 }
                 if !only.clips.iter().any(|c| c.enabled) {
                     continue;
@@ -226,7 +244,7 @@ impl TimelineBusStream {
                 only.soloed = false;
                 let mut seq = sequence.clone();
                 seq.tracks = vec![only];
-                let stream = TimelineMixStream::with_clip_gains(
+                let stream = TimelineMixStream::with_clip_envelopes(
                     &seq,
                     sample_rate_hz,
                     max_block_frames,
@@ -234,6 +252,7 @@ impl TimelineBusStream {
                     extents,
                     limits,
                     &routing.clip_gains,
+                    &routing.clip_pans,
                     cancel,
                 )?;
                 strip_tracks.push(Some(track.track_id.clone()));
@@ -273,7 +292,16 @@ impl TimelineBusStream {
             }
             bus_specs.push(bus);
         }
-        let mut master = MasterSpec { effects: Vec::new(), volume_db: AutomationLane::constant(db(routing.master.volume)) };
+        let master_volume = if routing.master.volume_automation.is_empty() {
+            AutomationLane::constant(db(routing.master.volume))
+        } else {
+            let mut points = Vec::with_capacity(routing.master.volume_automation.len());
+            for p in &routing.master.volume_automation {
+                points.push((samples_from_ticks_exact(Ticks::new(p.offset_ticks), sample_rate_hz)?, db(p.value).clamp(TRACK_VOLUME_DB.0, TRACK_VOLUME_DB.1)));
+            }
+            AutomationLane::new(&points, Interpolation::Linear, TRACK_VOLUME_DB).map_err(score_failure)?
+        };
+        let mut master = MasterSpec { effects: Vec::new(), volume_db: master_volume };
         for e in routing.master.effects.iter().filter(|e| e.enabled) {
             master.effects.push(effects(e, sample_rate_hz)?);
         }

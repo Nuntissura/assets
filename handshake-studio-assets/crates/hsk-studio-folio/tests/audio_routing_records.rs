@@ -208,3 +208,62 @@ fn track_automation_validates_round_trips_and_refuses_typed() {
     assert_eq!(parse_audio_routing(text.replacen(r#""param":"pan""#, r#""param":"width""#, 1).as_bytes(), &d, b, &token).unwrap_err().code, Code::InvalidJson);
     assert_eq!(parse_audio_routing(text.replacen(r#""param":"pan""#, r#""param":"pan","mode":"hold""#, 1).as_bytes(), &d, b, &token).unwrap_err().code, Code::InvalidJson);
 }
+
+/// Lane SMB-AU-MULTITRACK-3: clip pan envelopes and master volume automation validate, round-trip,
+/// refuse bad clips, duplicates, unordered points and out-of-range values by type, are charged against
+/// the node budget, and an absent member keeps the routing's encoding byte for byte.
+#[test]
+fn clip_pans_and_master_automation_validate_round_trip_and_refuse_typed() {
+    let token = CancellationToken::default();
+    let b = Budget::default();
+    let d = document();
+    let before = serde_json::to_vec(&routing()).unwrap();
+    let text = String::from_utf8(before.clone()).unwrap();
+    assert!(!text.contains("clip_pans") && !text.contains("volume_automation"), "absent = not encoded");
+    assert_eq!(serde_json::to_vec(&parse_audio_routing(&before, &d, b, &token).unwrap()).unwrap(), before, "byte-identical re-encoding");
+
+    let mut set = routing();
+    set.routings[0].clip_pans = vec![StudioClipPanEnvelope {
+        clip_id: "SCLP-019abcde-0000-7000-8000-000000000002".into(),
+        points: vec![StudioClipPanPoint { offset_ticks: 0, pan: -1.0 }, StudioClipPanPoint { offset_ticks: 2 * F, pan: 1.0 }],
+    }];
+    set.routings[0].master.volume_automation = vec![StudioAutomationPoint { offset_ticks: 0, value: 1.0 }, StudioAutomationPoint { offset_ticks: F, value: MAX_AUDIO_LEVEL }];
+    validate_audio_routing(&set, &d, b, &token).unwrap();
+    let json = serde_json::to_vec(&set).unwrap();
+    assert_eq!(parse_audio_routing(&json, &d, b, &token).unwrap(), set);
+
+    let code = |f: &dyn Fn(&mut StudioAudioRouting)| {
+        let mut s = set.clone();
+        f(&mut s.routings[0]);
+        validate_audio_routing(&s, &d, b, &token).unwrap_err().code
+    };
+    assert_eq!(code(&|r| r.clip_pans[0].clip_id = "SCLP-019abcde-0000-7000-8000-000000000005".into()), Code::InvalidId, "video clip");
+    assert_eq!(code(&|r| r.clip_pans[0].clip_id = "SCLP-nope".into()), Code::InvalidId, "unknown clip");
+    assert_eq!(
+        code(&|r| {
+            let again = r.clip_pans[0].clone();
+            r.clip_pans.push(again);
+        }),
+        Code::DuplicateField
+    );
+    assert_eq!(code(&|r| r.clip_pans[0].points.clear()), Code::InvalidField);
+    assert_eq!(code(&|r| r.clip_pans[0].points[1].offset_ticks = 0), Code::InvalidField, "not increasing");
+    assert_eq!(code(&|r| r.clip_pans[0].points[1].pan = 1.0001), Code::InvalidField);
+    assert_eq!(code(&|r| r.clip_pans[0].points[0].pan = f64::NEG_INFINITY), Code::InvalidField);
+    assert_eq!(
+        code(&|r| r.clip_pans[0].points = (0..=MAX_CLIP_PAN_POINTS as u64).map(|k| StudioClipPanPoint { offset_ticks: k, pan: 0.0 }).collect()),
+        Code::InvalidField,
+        "more than the point bound"
+    );
+    assert_eq!(code(&|r| r.master.volume_automation[1].offset_ticks = 0), Code::InvalidField);
+    assert_eq!(code(&|r| r.master.volume_automation[1].value = MAX_AUDIO_LEVEL * 1.01), Code::InvalidField);
+    assert_eq!(code(&|r| r.master.volume_automation[0].value = f64::NAN), Code::InvalidField);
+    assert_eq!(
+        code(&|r| r.master.volume_automation = (0..=MAX_TRACK_AUTOMATION_POINTS as u64).map(|k| StudioAutomationPoint { offset_ticks: k, value: 1.0 }).collect()),
+        Code::InvalidField
+    );
+    let least = (1..10_000).find(|&n| validate_audio_routing(&routing(), &d, Budget { nodes: n, ..b }, &token).is_ok()).unwrap();
+    assert_eq!(validate_audio_routing(&set, &d, Budget { nodes: least, ..b }, &token).unwrap_err().code, Code::BudgetExceeded);
+    let text = String::from_utf8(json).unwrap();
+    assert_eq!(parse_audio_routing(text.replacen(r#""pan":-1.0"#, r#""pan":-1.0,"curve":"hold""#, 1).as_bytes(), &d, b, &token).unwrap_err().code, Code::InvalidJson);
+}
