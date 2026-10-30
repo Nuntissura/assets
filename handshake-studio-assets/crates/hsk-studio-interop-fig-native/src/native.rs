@@ -1517,6 +1517,7 @@ impl Mapper<'_> {
             padding_left: left,
             strokes_included_in_layout: false,
             item_reverse_z_index: false,
+            grid: None,
         });
     }
 

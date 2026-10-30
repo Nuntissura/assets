@@ -207,6 +207,7 @@ fn add(
         layout_positioning: t.positioning,
         layout_sizing_horizontal: t.sizing.0,
         layout_sizing_vertical: t.sizing.1,
+        grid_child: None,
     });
     let constraints = t.placement.as_ref().map(|p| p.2.clone());
     if t.layout.is_some() || child_layout.is_some() || t.clamps.is_some() || constraints.is_some() {

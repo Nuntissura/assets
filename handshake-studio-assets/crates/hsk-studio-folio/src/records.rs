@@ -28,8 +28,8 @@ use super::{
     Budget, Code, NodeKind, NodeRef, Parent, Payload, Resolution, ResolutionIssue, Resolver,
     Result, StudioDocument,
     autolayout::{
-        ChildPositioning, StudioAutoLayout, StudioChildLayout, StudioConstraint, StudioSizeClamps,
-        validate_auto_layout, validate_clamps,
+        ChildPositioning, LayoutMode, StudioAutoLayout, StudioChildLayout, StudioConstraint,
+        StudioSizeClamps, validate_auto_layout, validate_clamps, validate_grid_child,
     },
     canceled,
     components::{
@@ -489,13 +489,15 @@ fn check_nodes<'a>(
     ids: &mut Namespaces<'a>,
     c: &mut Ctx,
 ) -> Result<()> {
-    let mut flow: BTreeSet<&str> = BTreeSet::new();
+    // Auto-layout containers (flow or GRID) whose children are laid out by them.
+    let mut flow: BTreeMap<&str, &StudioAutoLayout> = BTreeMap::new();
     for n in &r.nodes {
-        if n.auto_layout
+        if let Some(a) = n
+            .auto_layout
             .as_ref()
-            .is_some_and(|a| a.layout_mode.is_flow())
+            .filter(|a| a.layout_mode.is_flow() || a.layout_mode == LayoutMode::Grid)
         {
-            flow.insert(n.node.node_id.as_str());
+            flow.insert(n.node.node_id.as_str(), a);
         }
     }
     let paint_styles: BTreeSet<&str> = r.paint_styles.iter().map(|s| s.style_id.as_str()).collect();
@@ -514,7 +516,8 @@ fn check_nodes<'a>(
             .ok_or_else(|| err(Code::DanglingReference, nid))?;
         ids.entry(nid)?;
         c.nodes(1, nid)?;
-        let in_flow = found.parent.is_some_and(|p| flow.contains(p));
+        let parent_layout = found.parent.and_then(|p| flow.get(p).copied());
+        let in_flow = parent_layout.is_some();
         if let Some(a) = &n.auto_layout {
             if found.kind == NodeKind::PageSpread || !found.container {
                 return Err(err(Code::InvalidField, format!("{nid}/auto_layout")));
@@ -534,6 +537,9 @@ fn check_nodes<'a>(
                 Code::InvalidField,
                 format!("{nid}/child_layout/layout_grow"),
             ));
+        }
+        if let Some(k) = &n.child_layout {
+            validate_grid_child(k, parent_layout, nid)?;
         }
         if n.constraints.is_some() {
             let absolute = n

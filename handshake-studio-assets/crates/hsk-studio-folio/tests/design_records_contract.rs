@@ -545,8 +545,8 @@ fn design_records_round_trip_and_node_rules_are_refused() {
         );
         refused(
             &[("/nodes/0/auto_layout/layout_mode", json!("GRID"))],
-            Code::UnsupportedDescriptor,
-            "/auto_layout/layout_mode",
+            Code::MissingField,
+            "/auto_layout/grid",
         );
         refused(
             &[

@@ -9,13 +9,23 @@
 //! Studio-declared hard bounds of STU-DS-145/149, and two-decimal precision is not enforced. Enumeration
 //! tokens are the spec tokens verbatim.
 //!
-//! Declared gaps, not invented here: `layout_mode` `GRID` and the grid container and child fields
-//! (STU-DS-146/147/150) are recognised and refused as `UnsupportedDescriptor`; the
+//! GRID (lane SMB-FIG-GRID-1): `layout_mode` `GRID` carries the eight STU-DS-146 container fields in
+//! [`StudioAutoLayout::grid`] ([`StudioGridLayout`], track sizes per STU-DS-147) and a grid child
+//! carries the STU-DS-150 anchors and spans in [`StudioChildLayout::grid_child`]. Both members are
+//! skipped when absent, so a record set without them encodes byte-identically to earlier ones
+//! (test `non_grid_records_encode_byte_identically`). `grid` is present exactly when `layout_mode` is
+//! `GRID`; the track lists match the counts; a span past the declared count is a validation error;
+//! `grid_child_index` is read-only and derived (document order), never stored. Solving the grid and
+//! the three STU-DS-146 commands are the components crate's.
+//!
+//! Declared gaps, not invented here: the
 //! `horizontal_padding` / `vertical_padding` convenience writers of STU-DS-144 are not stored (they
 //! are derived by [`StudioAutoLayout::horizontal_padding`] / [`StudioAutoLayout::vertical_padding`]);
 //! the cross-field agreement of container `AUTO`/`FIXED` with child `HUG`/`FILL`/`FIXED`, of
 //! `layout_grow` with `FILL` and of `layout_align` with `STRETCH` is not stated by the spec and is not
-//! enforced here; layout grids (STU-DS-153..156) are not stored.
+//! enforced here; layout grids (STU-DS-153..156) are not stored; the FIXED and FLEX track value
+//! maxima are not declared in source (Studio declares [`TRACK_VALUE_MAX`], `studio_declared`).
+#![deny(clippy::arithmetic_side_effects)]
 use super::{Code, Result, err, values::Ctx};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -29,6 +39,13 @@ pub const SPACING_MAX: f64 = 100_000.0;
 pub const PADDING_MAX: f64 = 100_000.0;
 /// STU-DS-149 `studio_declared` hard maximum of a size clamp.
 pub const CLAMP_MAX: f64 = 100_000.0;
+/// STU-DS-145 grid gap column: hard_min 0, `studio_declared` hard_max 100000.
+pub const GRID_GAP_MAX: f64 = 100_000.0;
+/// STU-DS-146 `grid_row_count` / `grid_column_count`: hard_min 1, `studio_declared` hard_max 1000.
+pub const GRID_COUNT_MAX: u32 = 1000;
+/// STU-DS-147 FIXED (document unit) and FLEX (factor) value maximum; not declared in source,
+/// `studio_declared`. Both have hard_min 0.
+pub const TRACK_VALUE_MAX: f64 = 100_000.0;
 
 /// STU-DS-144 `layout_mode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -114,6 +131,10 @@ pub struct StudioAutoLayout {
     pub padding_left: f64,
     pub strokes_included_in_layout: bool,
     pub item_reverse_z_index: bool,
+    /// STU-DS-146 grid fields; present exactly when `layout_mode` is `GRID`, absent (not encoded)
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<StudioGridLayout>,
 }
 impl StudioAutoLayout {
     /// The STU-DS-144 defaults: `layout_mode` `NONE`, so the frame is not an auto-layout container.
@@ -135,6 +156,7 @@ impl StudioAutoLayout {
             padding_left: 0.0,
             strokes_included_in_layout: false,
             item_reverse_z_index: false,
+            grid: None,
         }
     }
     /// STU-DS-144 `horizontal_padding` read: the left value, and whether left and right differ
@@ -187,6 +209,116 @@ pub struct StudioChildLayout {
     pub layout_positioning: ChildPositioning,
     pub layout_sizing_horizontal: ChildSizing,
     pub layout_sizing_vertical: ChildSizing,
+    /// STU-DS-150 placement in a `GRID` parent; absent (not encoded) for flow children and for
+    /// grid children that auto-flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_child: Option<StudioGridChild>,
+}
+
+/// STU-DS-147 track-size `type`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum GridTrackType {
+    Fixed,
+    Flex,
+    Hug,
+}
+
+/// STU-DS-147 track-size record `{type, value?}`: `value` is the FIXED size (document unit) or the
+/// FLEX factor (default 1), and is absent for HUG.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioGridTrackSize {
+    #[serde(rename = "type")]
+    pub track_type: GridTrackType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+}
+impl StudioGridTrackSize {
+    pub fn hug() -> Self {
+        Self {
+            track_type: GridTrackType::Hug,
+            value: None,
+        }
+    }
+    pub fn fixed(size: f64) -> Self {
+        Self {
+            track_type: GridTrackType::Fixed,
+            value: Some(size),
+        }
+    }
+    pub fn flex(factor: f64) -> Self {
+        Self {
+            track_type: GridTrackType::Flex,
+            value: Some(factor),
+        }
+    }
+}
+
+/// STU-DS-146 `grid_auto_tracks`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum GridAutoTracks {
+    None,
+    Rows,
+}
+
+/// STU-DS-146 `grid_items_positioning`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum GridItemsPositioning {
+    Manual,
+    RowAutoFlow,
+}
+
+/// The eight STU-DS-146 grid container fields.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioGridLayout {
+    /// `1..=1000` (`studio_declared` maximum).
+    pub grid_row_count: u32,
+    pub grid_column_count: u32,
+    /// STU-DS-145 grid column: `0..=100000` (`studio_declared` maximum).
+    pub grid_row_gap: f64,
+    pub grid_column_gap: f64,
+    /// Exactly `grid_row_count` entries.
+    pub grid_row_sizes: Vec<StudioGridTrackSize>,
+    /// Exactly `grid_column_count` entries.
+    pub grid_column_sizes: Vec<StudioGridTrackSize>,
+    pub grid_auto_tracks: GridAutoTracks,
+    pub grid_items_positioning: GridItemsPositioning,
+}
+impl StudioGridLayout {
+    /// The STU-DS-146 defaults: one row and one column, each a HUG track, gaps 0, auto tracks
+    /// `NONE`, `ROW_AUTO_FLOW`.
+    pub fn new() -> Self {
+        Self {
+            grid_row_count: 1,
+            grid_column_count: 1,
+            grid_row_gap: 0.0,
+            grid_column_gap: 0.0,
+            grid_row_sizes: vec![StudioGridTrackSize::hug()],
+            grid_column_sizes: vec![StudioGridTrackSize::hug()],
+            grid_auto_tracks: GridAutoTracks::None,
+            grid_items_positioning: GridItemsPositioning::RowAutoFlow,
+        }
+    }
+}
+impl Default for StudioGridLayout {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// STU-DS-150 grid-child placement: anchors from 0, spans from 1, anchor + span within the
+/// parent's declared counts. `grid_child_index` is derived and not stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioGridChild {
+    pub grid_row_anchor_index: u32,
+    pub grid_column_anchor_index: u32,
+    pub grid_row_span: u32,
+    pub grid_column_span: u32,
 }
 
 /// STU-DS-149 sizing clamps; each bound is `0..=100000` or explicit null (unclamped), and a minimum
@@ -245,11 +377,16 @@ fn within(v: f64, min: f64, max: f64) -> bool {
 pub(crate) fn validate_auto_layout(a: &StudioAutoLayout, target: &str, c: &mut Ctx) -> Result<()> {
     c.tick()?;
     let bad = |what: &str| err(Code::InvalidField, format!("{target}/auto_layout/{what}"));
-    if a.layout_mode == LayoutMode::Grid {
-        return Err(err(
-            Code::UnsupportedDescriptor,
-            format!("{target}/auto_layout/layout_mode"),
-        ));
+    match (a.layout_mode == LayoutMode::Grid, &a.grid) {
+        (true, None) => {
+            return Err(err(
+                Code::MissingField,
+                format!("{target}/auto_layout/grid"),
+            ));
+        }
+        (false, Some(_)) => return Err(bad("grid")),
+        (true, Some(g)) => validate_grid(g, target)?,
+        (false, None) => {}
     }
     if a.layout_wrap == LayoutWrap::Wrap && !a.layout_mode.is_flow() {
         return Err(bad("layout_wrap"));
@@ -278,6 +415,31 @@ pub(crate) fn validate_auto_layout(a: &StudioAutoLayout, target: &str, c: &mut C
         }
     }
     Ok(())
+}
+
+/// STU-DS-147: FIXED and FLEX carry a finite value in `0..=TRACK_VALUE_MAX`; HUG carries none.
+pub fn grid_track_ok(t: &StudioGridTrackSize) -> bool {
+    match (t.track_type, t.value) {
+        (GridTrackType::Hug, None) => true,
+        (GridTrackType::Fixed | GridTrackType::Flex, Some(v)) => within(v, 0.0, TRACK_VALUE_MAX),
+        _ => false,
+    }
+}
+
+/// STU-DS-145/146/147. The counts and the list lengths are compared before any entry is read.
+fn validate_grid(_g: &StudioGridLayout, _target: &str) -> Result<()> {
+    Ok(()) // red: slice 1 stub
+}
+
+/// STU-DS-150: a `grid_child` needs a `GRID` parent and an `AUTO` child; spans are at least 1 and
+/// anchor + span stays within the parent's declared count (a span past the count is a validation
+/// error). `parent` is the auto layout of the child's document parent.
+pub(crate) fn validate_grid_child(
+    _k: &StudioChildLayout,
+    _parent: Option<&StudioAutoLayout>,
+    _target: &str,
+) -> Result<()> {
+    Ok(()) // red: slice 1 stub
 }
 
 pub(crate) fn validate_clamps(k: &StudioSizeClamps, target: &str) -> Result<()> {
