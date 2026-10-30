@@ -168,7 +168,7 @@ impl super::Viewer {
     }
 
     /// Rebuilds the bus stream from the current document and routing at the previous position.
-    fn mixer_rebuild(&mut self) -> Result<(), String> {
+    pub(crate) fn mixer_rebuild(&mut self) -> Result<(), String> {
         let sequence = self.mixer_sequence()?;
         let routing = self.mixer_routing()?;
         let cancel = self.cancel;

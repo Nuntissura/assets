@@ -32,14 +32,27 @@
 //! navigation: [`Viewer::timeline_command`] runs every panel action headlessly, every widget has a
 //! stable name ([`widget`]), and `state_json()["timeline"]` projects the panel. Trims live in
 //! module `trim` / `trim_session`; the Rate Stretch tool, Speed/Duration and slip at speed in
-//! module `rate` (its rustdoc is the manual).
+//! module `rate` (its rustdoc is the manual). Lane SMB-AU-MULTITRACK-1 (feature `audio-batch`)
+//! adds waveform overviews in audio clips, automation lane rows under audio and submix tracks
+//! ([`LaneRow`], [`LANE_PX`]) and clip gain, in module `audio` (its rustdoc is the manual).
 #![deny(clippy::arithmetic_side_effects)]
 
+#[cfg(feature = "audio-batch")]
+mod audio;
+#[cfg(feature = "audio-batch")]
+pub(super) mod audio_ui;
 mod rate;
 mod trim;
 mod trim_session;
 
 pub use rate::{SpeedFix, SpeedForm};
+
+#[cfg(feature = "audio-batch")]
+pub use audio::{
+    AudioLanes, AutomationCommand, CLIP_GAIN_STEP_DB, LanePoint, LaneSpan, LaneTarget, LaneView, MAX_DRAWN_POINTS, MAX_PEAK_COLUMNS_PER_FRAME, PointId, sample_of, value_at,
+};
+#[cfg(feature = "audio-batch")]
+pub use audio_ui::{LANE_BUTTON_PX, LANE_PAD, POINT_PX, lane_value, lane_y, nearest_frame};
 
 pub use trim::{DEFAULT_MULTI_FRAME_STEP, EditMode, EditPoint, MAX_MULTI_FRAME_STEP, MAX_PLANNER_CALLS, TrimKind, TrimOutcome, TrimTool};
 pub use trim_session::{TrimFocus, TrimSession};
@@ -117,6 +130,26 @@ pub mod widget {
     pub const SPEED_INTERPOLATION: &str = "timeline.speed_form.interpolation";
     pub const SPEED_APPLY: &str = "timeline.speed_form.apply";
     pub const SPEED_CANCEL: &str = "timeline.speed_form.cancel";
+    /// Multitrack audio (lane SMB-AU-MULTITRACK-1; module `audio`).
+    pub const WAVEFORMS: &str = "timeline.waveforms";
+    pub const CLIP_GAIN_DOWN: &str = "timeline.clip_gain.down";
+    pub const CLIP_GAIN_UP: &str = "timeline.clip_gain.up";
+    /// The waveform overview drawn in an audio clip block.
+    pub fn clip_waveform(clip_id: &str) -> String {
+        format!("timeline.clip.{clip_id}.waveform")
+    }
+    /// The automation lane button of a track header.
+    pub fn lane_toggle(track_id: &str) -> String {
+        format!("timeline.track.{track_id}.lane")
+    }
+    /// The automation lane row of a track.
+    pub fn lane(track_id: &str) -> String {
+        format!("timeline.lane.{track_id}")
+    }
+    /// One point of a lane: `timeline.lane.<track>.point.<clip id or "seq">.<offset ticks>`.
+    pub fn lane_point(track_id: &str, clip_id: Option<&str>, offset_ticks: u64) -> String {
+        format!("timeline.lane.{track_id}.point.{}.{offset_ticks}", clip_id.unwrap_or("seq"))
+    }
 }
 
 /// Track header column width (pixels).
@@ -127,6 +160,8 @@ pub const RULER_PX: f32 = 22.0;
 pub const WORK_AREA_PX: f32 = 6.0;
 /// Height of one track row (pixels).
 pub const TRACK_PX: f32 = 30.0;
+/// Height of one automation lane row under its track (pixels; lane SMB-AU-MULTITRACK-1).
+pub const LANE_PX: f32 = 44.0;
 /// Width of a clip's trim handle at each end (pixels; narrower clips split into thirds).
 pub const EDGE_PX: f32 = 6.0;
 /// Snap distance in screen pixels, turned into ticks at the current zoom.
@@ -219,6 +254,13 @@ pub struct TrackRow {
     pub rect: egui::Rect,
 }
 
+/// One drawn automation lane row (under the row of `track_id`; lanes start at `lanes_left`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaneRow {
+    pub track_id: String,
+    pub rect: egui::Rect,
+}
+
 /// One drawn clip block. `x0` / `x1` are the unclipped screen positions of its in and out; `rect`
 /// is the block clipped to the lanes (at least one pixel wide).
 #[derive(Clone, Debug, PartialEq)]
@@ -252,6 +294,8 @@ pub struct TimelineLayout {
     pub lanes_left: f32,
     pub ruler: egui::Rect,
     pub tracks: Vec<TrackRow>,
+    /// Automation lane rows (lane SMB-AU-MULTITRACK-1), in draw order.
+    pub lanes: Vec<LaneRow>,
     pub clips: Vec<ClipBlock>,
     pub markers: Vec<MarkerMark>,
     /// `(x, label)` per ruler label.
@@ -272,6 +316,10 @@ impl TimelineLayout {
     /// The drawn row under screen y.
     pub fn track_at(&self, y: f32) -> Option<&TrackRow> {
         self.tracks.iter().find(|t| t.rect.min.y <= y && y < t.rect.max.y)
+    }
+    /// The drawn automation lane row of `track_id`.
+    pub fn lane(&self, track_id: &str) -> Option<&LaneRow> {
+        self.lanes.iter().find(|l| l.track_id == track_id)
     }
 }
 
@@ -298,6 +346,12 @@ fn ruler_step(px_per_frame: f64) -> u64 {
 /// Lays out `sequence` in `area` (module docs; bounded). `markers` are the sequence's visible marker
 /// spans sorted by start ([`hsk_studio_pulse::marker_spans`]).
 pub fn layout(sequence: &StudioSequence, view: &TimelineView, area: egui::Rect, markers: &[(String, TickRange)]) -> TimelineLayout {
+    layout_with_lanes(sequence, view, area, markers, &[])
+}
+
+/// [`layout`] with one automation lane row of [`LANE_PX`] under each track named in `lane_tracks`
+/// (when it fits in `area`).
+pub fn layout_with_lanes(sequence: &StudioSequence, view: &TimelineView, area: egui::Rect, markers: &[(String, TickRange)], lane_tracks: &[String]) -> TimelineLayout {
     let tpf = ticks_per_frame(sequence);
     let lanes_left = area.left() + HEADER_PX;
     let lanes_right = area.right().max(lanes_left);
@@ -307,6 +361,7 @@ pub fn layout(sequence: &StudioSequence, view: &TimelineView, area: egui::Rect, 
         lanes_left,
         ruler,
         tracks: Vec::new(),
+        lanes: Vec::new(),
         clips: Vec::new(),
         markers: Vec::new(),
         ruler_labels: Vec::new(),
@@ -399,6 +454,10 @@ pub fn layout(sequence: &StudioSequence, view: &TimelineView, area: egui::Rect, 
             });
         }
         y += TRACK_PX;
+        if lane_tracks.contains(&track.track_id) && y + LANE_PX <= area.bottom() {
+            out.lanes.push(LaneRow { track_id: track.track_id.clone(), rect: egui::Rect::from_min_max(egui::pos2(area.left(), y), egui::pos2(lanes_right, y + LANE_PX)) });
+            y += LANE_PX;
+        }
     }
     out
 }
@@ -798,6 +857,9 @@ pub struct TimelineState {
     pub composite_preview: bool,
     /// The open Speed/Duration form (lane SMB-PR-RATE-STRETCH-1).
     pub(super) speed_form: Option<SpeedForm>,
+    /// Waveforms, automation lanes and the bound source port (lane SMB-AU-MULTITRACK-1).
+    #[cfg(feature = "audio-batch")]
+    pub(super) audio: AudioLanes,
 }
 
 impl TimelineState {
@@ -833,6 +895,11 @@ impl TimelineState {
     /// The open Speed/Duration form for editing its fields (what typing in the form does).
     pub fn speed_form_mut(&mut self) -> Option<&mut SpeedForm> {
         self.speed_form.as_mut()
+    }
+    /// Waveforms, automation lanes and the bound source port (lane SMB-AU-MULTITRACK-1).
+    #[cfg(feature = "audio-batch")]
+    pub fn audio(&self) -> &AudioLanes {
+        &self.audio
     }
 }
 
@@ -1051,6 +1118,8 @@ impl Viewer {
             session: None,
             composite_preview: false,
             speed_form: None,
+            #[cfg(feature = "audio-batch")]
+            audio: AudioLanes::default(),
         });
         self.say(format!("timeline: sequence {sequence_id} (playhead = program monitor)"));
         Ok(())
@@ -1283,6 +1352,9 @@ impl Viewer {
         if let Some(t) = self.timeline.as_mut() {
             t.synced_revision = revision;
         }
+        // The mixer plays the edited sequence (lane SMB-AU-MULTITRACK-1).
+        #[cfg(feature = "audio-batch")]
+        self.timeline_audio_follow();
         let notes = if planned.notes.is_empty() { String::new() } else { format!("; {}", planned.notes.join("; ")) };
         self.say(format!("timeline: {op} (revision {}){notes}", revision.unwrap_or(0)));
         Ok(())
@@ -1313,7 +1385,8 @@ impl Viewer {
             _ => None,
         };
         let l = t.layout.as_ref();
-        json!({
+        #[allow(unused_mut)]
+        let mut out = json!({
             "sequence_id": t.sequence_id,
             "sequence_found": seq.is_some(),
             "tracks": seq.map_or(0, |s| s.tracks.len()),
@@ -1329,7 +1402,7 @@ impl Viewer {
             "px_per_frame": t.view.px_per_frame,
             "scroll_frames": t.view.scroll_frames,
             "drag": t.drag.as_ref().map(|d| json!({"clip_id": d.clip_id, "kind": d.kind.key(), "preview": d.preview.as_ref().map(|p| json!({"start": p.start.value(), "end": p.end.value(), "track_id": p.track_id, "snapped": p.snapped.as_ref().map(|s| s.kind.key())}))})),
-            "drawn": l.map(|l| json!({"tracks": l.tracks.len(), "tracks_hidden": l.tracks_hidden, "clips": l.clips.len(), "clips_truncated": l.clips_truncated, "unplaceable": l.unplaceable, "markers": l.markers.len()})),
+            "drawn": l.map(|l| json!({"tracks": l.tracks.len(), "tracks_hidden": l.tracks_hidden, "clips": l.clips.len(), "clips_truncated": l.clips_truncated, "unplaceable": l.unplaceable, "markers": l.markers.len(), "lanes": l.lanes.len()})),
             "cache_error": t.cache.as_ref().and_then(|c| c.error),
             "tool": t.tool.key(),
             "multi_frame_step": t.multi_frame_step,
@@ -1338,6 +1411,11 @@ impl Viewer {
             "trim_session": t.session.as_ref().map(TrimSession::json),
             "composite_preview": t.composite_preview,
             "speed_form": t.speed_form.as_ref().map(SpeedForm::json),
-        })
+        });
+        #[cfg(feature = "audio-batch")]
+        {
+            out["audio"] = self.timeline_audio_json();
+        }
+        out
     }
 }
