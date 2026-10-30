@@ -29,7 +29,10 @@ use crate::paragraph::ShapedParagraph;
 use crate::threaded_reflow::{Composition, LayoutProposal, Line};
 use crate::LayoutError;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{AutoSizing, Budget, Code, Diagnostic, Resolver, Snapshot, StudioDocument, VerticalJustification};
+use hsk_studio_folio::{
+    AutoSizing, Budget, Code, Diagnostic, GeometryUnit, Length, Resolver, Snapshot, StudioDocument, VerticalJustification,
+    validate_document,
+};
 
 /// Largest width or height an auto-sized frame may take, pt (declared bound, Studio reading).
 pub const MAX_AUTOSIZE_EXTENT_PT: f64 = 15_552.0;
@@ -68,7 +71,11 @@ impl AutosizeProposal {
     pub fn autosized_frames(&self) -> &[FrameResize] {
         &self.resizes
     }
-    /// The prospective document: `base` with every resized frame's bounds written, validated by Folio.
+    /// The prospective document: `base` (the document the reflow read, same revision) with every
+    /// resized frame's width and height written (x and y kept: top-left reference), validated by
+    /// Folio. The revision is not advanced; committing it stays the host's step. Refusals: a base of
+    /// another revision `stale_revision` (target `autosize.base_revision`), a resize whose frame layer
+    /// is not at its index in `base` `invalid_field` (target `autosize.frame`), and Folio's own codes.
     pub fn autosized_document(
         &self,
         base: &StudioDocument,
@@ -76,8 +83,22 @@ impl AutosizeProposal {
         resolver: &dyn Resolver,
         cancel: &CancellationToken,
     ) -> Result<Snapshot, Diagnostic> {
-        let _ = (base, budget, resolver, cancel);
-        Err(Diagnostic { code: Code::UnsupportedMutation, target: "autosize".into() })
+        let refuse = |code: Code, target: &str| Diagnostic { code, target: target.into() };
+        if base.revision != self.layout.base_revision {
+            return Err(refuse(Code::StaleRevision, "autosize.base_revision"));
+        }
+        let mut document = base.clone();
+        for r in &self.resizes {
+            let frame = document
+                .layers
+                .get_mut(r.frame_index)
+                .filter(|l| l.layer_id == r.frame_id)
+                .and_then(|l| l.text_frame.as_mut())
+                .ok_or_else(|| refuse(Code::InvalidField, "autosize.frame"))?;
+            frame.bounds.width = Length { value: r.after_width_pt, unit: GeometryUnit::Pt };
+            frame.bounds.height = Length { value: r.after_height_pt, unit: GeometryUnit::Pt };
+        }
+        validate_document(document, budget, cancel, resolver)
     }
 }
 
