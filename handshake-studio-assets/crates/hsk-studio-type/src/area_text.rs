@@ -406,7 +406,9 @@ fn container(path: &[BaselineCommand], flatness: f64, limits: &AreaTextLimits) -
     }
     // Signed area (non-zero rule needs some enclosed area).
     let area: f64 = edges.iter().map(|(p, q)| p[0] * q[1] - q[0] * p[1]).sum::<f64>() / 2.0;
-    if edges.is_empty() || !(area.abs() > EPS) || !(hi[0] - lo[0] > EPS && hi[1] - lo[1] > EPS) {
+    // NaN (overflowing coordinates) counts as degenerate.
+    let thin = |v: f64| v.is_nan() || v <= EPS;
+    if edges.is_empty() || thin(area.abs()) || thin(hi[0] - lo[0]) || thin(hi[1] - lo[1]) {
         return Err(AreaTextError::DegenerateContainer);
     }
     // Axis-aligned rectangle of four line segments.
