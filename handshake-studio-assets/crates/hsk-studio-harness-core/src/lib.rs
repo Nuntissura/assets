@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod action;
+pub mod batch;
 #[doc(hidden)]
 pub mod harness;
 pub mod import;
@@ -13,6 +14,7 @@ pub mod manual;
 pub mod panel;
 
 pub use action::{ActionRecord, ActionSet, ActionStep, PlayMode, RecordedValue, RecordingReport};
+pub use batch::{BatchJob, BatchReport};
 pub use harness::{
     AVAILABLE_PROVIDERS, Harness, HarnessError, NOT_PROVEN, Place, PlacementWrite, References, Run, SCHEMA, Selection, default_actor,
 };
