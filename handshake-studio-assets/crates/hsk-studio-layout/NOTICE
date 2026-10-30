@@ -1,0 +1,17 @@
+hsk-studio-layout third-party notices
+
+src/cjk.rs (CJK kinsoku and mojikumi composition, lane SMB-ID-CJK-KINSOKU-1) carries DATA read
+from two W3C Working Group Notes; no code was copied:
+
+- "Requirements for Japanese Text Layout" (JLREQ), https://www.w3.org/TR/jlreq/ : the character
+  classes cl-01..cl-19 (Appendix A), the line-start and line-end prohibition rules behind the shipped
+  hard_kinsoku / soft_kinsoku tables (section 3.1.7) and the punctuation width and spacing rules
+  behind the Japanese mojikumi base sets (sections 3.1.4, 3.2.2, 3.8).
+- "Requirements for Chinese Text Layout" (CLREQ), https://www.w3.org/TR/clreq/ : punctuation width
+  behind simplified_chinese_default and traditional_chinese_default (section 3.1).
+
+Copyright (c) World Wide Web Consortium. Used under the W3C Document License,
+https://www.w3.org/copyright/document-license-2023/ . Values the documents do not state (the
+numbers behind the seventeen set names) are Studio's declared readings, not W3C content.
+
+The en-US hyphenation patterns carry their licence in src/hyphenate.rs (EN_US_LICENCE).

@@ -53,6 +53,7 @@ use crate::typeset::{Justification, TypesetOptions, justify_metrics, paragraph_p
 use crate::folio_input::{Frame, FrameObstacles, FrameVertical, pt, resolve_flow};
 use hsk_studio_folio::{StudioAlignToGrid, StudioLayoutGrids, StudioSingleWordJustification};
 use crate::paragraph::{ShapedParagraph, SpaceParams, build_items};
+use crate::cjk::{CjkGap, CjkLineSpacing, CjkParagraph};
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
@@ -404,6 +405,20 @@ fn reflow_inner(
     grids: Option<&StudioLayoutGrids>,
     cancel: &CancellationToken,
 ) -> Result<LayoutProposal, LayoutError> {
+    reflow_core(req, opts, flow, grids, &[], cancel).map(|r| r.0)
+}
+
+/// `reflow_inner` with one optional CJK paragraph setting per shaped paragraph (lane
+/// SMB-ID-CJK-KINSOKU-1, `cjk::reflow_cjk`; empty = none): also returns the spacing of every
+/// CJK-composed line.
+pub(crate) fn reflow_core(
+    req: &ReflowRequest<'_>,
+    opts: &TypesetOptions<'_>,
+    flow: &StudioLayoutFlowRecords,
+    grids: Option<&StudioLayoutGrids>,
+    cjk: &[Option<CjkParagraph>],
+    cancel: &CancellationToken,
+) -> Result<(LayoutProposal, Vec<CjkLineSpacing>), LayoutError> {
     canceled(cancel)?;
     opts.validate()?;
     if req.expected_revision != req.document.revision {
@@ -493,8 +508,17 @@ fn reflow_inner(
         req.space,
         opts,
         limits,
+        cjk,
         cancel,
     )?;
+    let spacing = composed
+        .cjk
+        .iter()
+        .enumerate()
+        .flat_map(|(frame, lines)| {
+            lines.iter().enumerate().filter_map(move |(line, g)| g.as_ref().map(|gaps| CjkLineSpacing { frame, line, gaps: gaps.clone() }))
+        })
+        .collect();
     let frames = thread
         .iter()
         .zip(composed.lines)
@@ -508,11 +532,14 @@ fn reflow_inner(
             lines,
         })
         .collect();
-    Ok(LayoutProposal {
-        base_revision: req.document.revision,
-        frames,
-        overset: composed.overset,
-    })
+    Ok((
+        LayoutProposal {
+            base_revision: req.document.revision,
+            frames,
+            overset: composed.overset,
+        },
+        spacing,
+    ))
 }
 
 /// One `ParaFlow` per shaped paragraph from the story's overrides (matched by start byte).
@@ -579,6 +606,8 @@ fn paragraph_flows(
 pub(crate) struct Composition {
     pub lines: Vec<Vec<Line>>,
     pub overset: Option<SourceSpan>,
+    /// Per frame, parallel to `lines`: the aki gaps of CJK-composed lines (`None` = not CJK).
+    pub cjk: Vec<Vec<Option<Vec<CjkGap>>>>,
 }
 
 /// The composition core shared by `reflow_typeset`, tables and notes: flows already-styled
@@ -598,7 +627,7 @@ pub(crate) fn compose(
 ) -> Result<Composition, LayoutError> {
     let flows = vec![ParaFlow::Single; paragraphs.len()];
     let pre = vec![0.0; paragraphs.len()];
-    compose_flow(thread, &[], &[], text, paragraphs, stylings, &flows, &pre, composer, req_space, opts, limits, cancel)
+    compose_flow(thread, &[], &[], text, paragraphs, stylings, &flows, &pre, composer, req_space, opts, limits, &[], cancel)
 }
 
 /// Moves the lines of one band (all single-column lines, no obstacles in the frame) so that the
@@ -711,6 +740,7 @@ fn compose_flow(
     req_space: SpaceParams,
     opts: &TypesetOptions<'_>,
     limits: Limits,
+    cjk: &[Option<CjkParagraph>],
     cancel: &CancellationToken,
 ) -> Result<Composition, LayoutError> {
     canceled(cancel)?;
@@ -729,7 +759,9 @@ fn compose_flow(
     if paragraphs.iter().any(|p| p.font_missing) {
         return Err(LayoutError::MissingFont);
     }
-    if paragraphs.iter().any(|p| p.right_to_left || !p.latin_only) {
+    // A paragraph with a CJK composer binding composes CJK runs (lane SMB-ID-CJK-KINSOKU-1).
+    let cjk_of = |i: usize| cjk.get(i).and_then(Option::as_ref);
+    if paragraphs.iter().enumerate().any(|(i, p)| p.right_to_left || (!p.latin_only && cjk_of(i).is_none())) {
         return Err(LayoutError::UnsupportedComposition);
     }
     if paragraphs.iter().any(|p| {
@@ -742,6 +774,7 @@ fn compose_flow(
     }
     let mut frames: Vec<Vec<Line>> = thread.iter().map(|_| Vec::new()).collect();
     let mut metas: Vec<Vec<Meta>> = thread.iter().map(|_| Vec::new()).collect();
+    let mut cjk_lines: Vec<Vec<Option<Vec<CjkGap>>>> = thread.iter().map(|_| Vec::new()).collect();
     // Index of the first line of the current band, per frame (bands start after span paragraphs).
     let mut band_start: Vec<usize> = vec![0; thread.len()];
     let mut band_top: Vec<Option<f64>> = vec![None; thread.len()];
@@ -766,7 +799,22 @@ fn compose_flow(
             limit: h.consecutive_limit,
             double_demerits: h.double_hyphen_demerits,
         });
-        let items = build_items(p, text, pp.space, hyph, pp.hyphenate_last_word)?;
+        // CJK paragraphs: the explicit paragraph scope overrides the named composer's (STU-TYP-136).
+        let cjk_p = cjk_of(pi).map(|c| {
+            let mut c = c.clone();
+            if let Some(scope) = styling.and_then(|s| s.composition.as_ref()).and_then(|k| k.settings.composition_scope) {
+                c.scope = scope;
+            }
+            c
+        });
+        let cjk_items = match &cjk_p {
+            Some(c) => Some(crate::cjk::build(p, text, c, styling.map_or(0.0, |s| s.font_size_pt), pp.space)?),
+            None => None,
+        };
+        let items = match cjk_items.as_ref() {
+            Some(ci) => ci.items.clone(),
+            None => build_items(p, text, pp.space, hyph, pp.hyphenate_last_word)?,
+        };
         let sums = Sums::new(&items);
         let para_alignment = stylings.get(pi).and_then(Option::as_ref).map_or(opts.alignment, |s| s.alignment);
         let justified = matches!(para_alignment, Alignment::Justified | Alignment::JustifiedAll);
@@ -877,7 +925,10 @@ fn compose_flow(
                         return Err(LayoutError::InvalidGeometry);
                     }
                     let width = |_: usize| sub_w;
-                    let b = break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?;
+                    let b = match (&cjk_items, &cjk_p) {
+                        (Some(ci), Some(c)) => crate::cjk::break_lines(ci, &sums, &width, c, cancel)?,
+                        _ => break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?,
+                    };
                     let rows_needed = b.len().div_ceil(count).max(1);
                     let (mut rows, mut at) = (vec![probe], probe.next);
                     while rows.len() < rows_needed {
@@ -923,7 +974,10 @@ fn compose_flow(
             None => {
                 let last_width = slots[slots.len() - 1].width_pt;
                 let width = |line: usize| slots.get(line).map_or(last_width, |s| s.width_pt);
-                break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?
+                match (&cjk_items, &cjk_p) {
+                    (Some(ci), Some(c)) => crate::cjk::break_lines(ci, &sums, &width, c, cancel)?,
+                    _ => break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?,
+                }
             }
         };
         let n = p.glyphs.len();
@@ -999,6 +1053,42 @@ fn compose_flow(
                 break;
             }
             let slot = &slots[k];
+            if let Some(ci) = &cjk_items {
+                // CJK line: set through its aki glue (`cjk::finish_line`); x_start is the first
+                // glyph's origin, the gaps carry the spacing, no Latin justification.
+                let alignment = stylings.get(pi).and_then(Option::as_ref).map_or(opts.alignment, |s| s.alignment);
+                let is_last = k + 1 == breaks.len();
+                let justify = matches!(alignment, Alignment::Justified | Alignment::JustifiedAll) && (!is_last || alignment == Alignment::JustifiedAll);
+                let set = crate::cjk::finish_line(ci, p, item_starts[k], b.item, slot.width_pt, justify);
+                let room = (slot.width_pt - set.lead_pt - set.width_pt).max(0.0);
+                let shift = match alignment {
+                    Alignment::Center => room / 2.0,
+                    Alignment::Right => room,
+                    _ => 0.0,
+                };
+                lines_here.push((
+                    slot.pos,
+                    Line {
+                        paragraph: pi,
+                        baseline_y_pt: slot.baseline_y_pt,
+                        x_start_pt: slot.x_start_pt + shift + set.start_offset_pt,
+                        width_pt: set.width_pt,
+                        available_pt: slot.width_pt,
+                        hang_pt: set.hang_pt,
+                        source,
+                        glyph_range: range,
+                        overfull: b.overfull || set.overfull,
+                        ratio: Some(set.ratio),
+                        hyphenated: false,
+                        justification: None,
+                        column: slot.col,
+                        start_part: None,
+                        end_part: None,
+                    },
+                    Some(set.gaps),
+                ));
+                continue;
+            }
             let hyphenated = items[b.item].flagged;
             // A flagged penalty's width is the hyphen plus Type's line-end change (`build_items`).
             let width_pt = advance(range.start..content_end)
@@ -1083,6 +1173,7 @@ fn compose_flow(
                     start_part,
                     end_part,
                 },
+                None,
             ));
         }
         placed = placed
@@ -1091,8 +1182,9 @@ fn compose_flow(
             .ok_or(LayoutError::BudgetExceeded)?;
         let used = lines_here.len();
         let single = flow == ParaFlow::Single;
-        for (pos, line) in lines_here {
+        for (pos, line, gaps) in lines_here {
             frames[pos].push(line);
+            cjk_lines[pos].push(gaps);
             metas[pos].push(Meta {
                 ascent: p.ascent_pt,
                 height: p.line_height_pt,
@@ -1138,5 +1230,6 @@ fn compose_flow(
     Ok(Composition {
         lines: frames,
         overset,
+        cjk: cjk_lines,
     })
 }
