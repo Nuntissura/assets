@@ -399,8 +399,9 @@ pub const MAX_BOX_KERNEL_TAPS: usize = 6_001;
 /// Largest [`directional_blur_window`] length in pixels (`2 ceil(length / 2) + 1` samples stay
 /// within [`MAX_BOX_KERNEL_TAPS`]).
 pub const MAX_DIRECTIONAL_BLUR_LENGTH_PX: f32 = 6_000.0;
-/// Largest [`radial_blur_window`] amount (both kinds; see [`RadialBlurKind`]).
-pub const MAX_RADIAL_BLUR_AMOUNT: f32 = 100.0;
+/// Largest [`radial_blur_window`] amount (both kinds; see [`RadialBlurKind`]): the After Effects
+/// Radial Blur `Amount` hard maximum (spec module 14 `ADBE Radial Blur` row 1, hard 0..1000).
+pub const MAX_RADIAL_BLUR_AMOUNT: f32 = 1_000.0;
 /// Most samples on one side of a radial blur path (`2 m + 1` samples per pixel, `m` at most this).
 pub const MAX_RADIAL_BLUR_HALF_SAMPLES: u32 = 256;
 /// The declared sub-pixel filter of the directional and radial blurs.
@@ -420,11 +421,12 @@ pub enum BlurAxis {
 /// Path of a radial blur ([`radial_blur_window`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum RadialBlurKind {
-    /// Samples on the circle through the pixel around the centre, total arc `amount` degrees
-    /// centred on the pixel (`-amount / 2 ..= amount / 2`).
+    /// Samples on the circle through the pixel around the centre, total arc `0.36 * amount`
+    /// degrees centred on the pixel (amount 1000 is one full turn, `-180 ..= 180` degrees).
     Spin,
     /// Samples on the ray from the centre through the pixel, at the scales
-    /// `1 - amount / 200 ..= 1 + amount / 200` of the pixel's offset from the centre.
+    /// `1 - amount / 2000 ..= 1 + amount / 2000` of the pixel's offset from the centre (amount
+    /// 1000 spans `0.5 ..= 1.5`).
     Zoom,
 }
 
@@ -754,12 +756,18 @@ fn radial_params(centre: [f32; 2], amount: f32) -> Result<(f64, f64), BlurError>
 
 /// The half sample count `m = min(ceil(extent / 2), MAX_RADIAL_BLUR_HALF_SAMPLES)` at offset
 /// `(ox, oy)` from the centre (sample spacing at most 1 px below the cap); the path extent is the
-/// arc length `r * amount` (radians, spin) or the radial span `r * amount / 100` (zoom).
+/// arc length `r * 0.36 amount` (degrees to radians, spin) or the radial span `r * amount / 1000`
+/// (zoom).
+/// Total spin arc in radians (`0.36 * amount` degrees).
+fn spin_arc_rad(amount: f32) -> f64 {
+    (f64::from(amount) * 0.36).to_radians()
+}
+
 fn radial_half(kind: RadialBlurKind, amount: f32, ox: f64, oy: f64) -> u32 {
     let r = (ox * ox + oy * oy).sqrt();
     let extent = match kind {
-        RadialBlurKind::Spin => r * f64::from(amount).to_radians(),
-        RadialBlurKind::Zoom => r * f64::from(amount) / 100.0,
+        RadialBlurKind::Spin => r * spin_arc_rad(amount),
+        RadialBlurKind::Zoom => r * f64::from(amount) / 1000.0,
     };
     let half = (extent / 2.0).ceil();
     if half.is_nan() || half <= 0.0 {
@@ -796,7 +804,7 @@ pub fn radial_blur_window_cost(
 /// the mean of `2 m + 1` samples on the pixel's path ([`RadialBlurKind`]), `m` per pixel from its
 /// path extent (spacing at most 1 px, at most [`MAX_RADIAL_BLUR_HALF_SAMPLES`]), read with
 /// [`SUBPIXEL_FILTER`]. With `d` the pixel's offset from the centre, sample `k` in `-m ..= m` sits
-/// at `pixel + rot(k * amount / 2m degrees) d - d` (spin) or `pixel + (k * amount / 200m) d`
+/// at `pixel + rot(k * 0.36 amount / 2m degrees) d - d` (spin) or `pixel + (k * amount / 2000m) d`
 /// (zoom), so sample 0 is the pixel itself. Studio reading of After Effects' / Photoshop's Radial
 /// Blur (amount unit, sample counts and quality modes UNVERIFIED, D5): `amount` is
 /// `0..=MAX_RADIAL_BLUR_AMOUNT` for both kinds; amount 0 is the identity. Spin moves colour only
@@ -827,8 +835,8 @@ pub fn radial_blur_window(
             let m = radial_half(kind, amount, ox, oy);
             let mi = i64::from(m);
             let unit = match kind {
-                RadialBlurKind::Spin => f64::from(amount).to_radians() / 2.0 / f64::from(m.max(1)),
-                RadialBlurKind::Zoom => f64::from(amount) / 200.0 / f64::from(m.max(1)),
+                RadialBlurKind::Spin => spin_arc_rad(amount) / 2.0 / f64::from(m.max(1)),
+                RadialBlurKind::Zoom => f64::from(amount) / 2000.0 / f64::from(m.max(1)),
             };
             let mut sum = [0.0_f64; 4];
             for k in mi.checked_neg().ok_or(BlurError::Overflow)?..=mi {

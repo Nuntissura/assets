@@ -341,16 +341,18 @@ mod radial_tests {
 
     #[test]
     fn radial_goldens() {
-        // Spin 60 at distance 1: m = 1, samples at -30, 0, +30 degrees; each rotated sample puts
-        // bilinear weight cos(30) * sin(30)... on the dot pixel: alpha (1 + 2 * 0.866 * 0.5) / 3.
+        // Spin 200 (72 degrees) at distance 1: m = 1, samples at -36, 0, +36 degrees; a sample
+        // rotated by phi lands at centre + (cos phi, +-sin phi), putting bilinear weight
+        // cos phi * (1 - sin phi) on the dot pixel: alpha (1 + 2 cos 36 (1 - sin 36)) / 3.
         let (src, sr) = dot((11, 10), [1.0, 1.0, 1.0, 1.0]);
-        let got = radial_blur_window(UNIT, &src, sr, rect(11, 10, 1, 1), C, 60.0, RadialBlurKind::Spin, WIDE).unwrap();
-        let want = (1.0 + 2.0 * (3.0_f64.sqrt() / 2.0) * 0.5) / 3.0;
+        let got = radial_blur_window(UNIT, &src, sr, rect(11, 10, 1, 1), C, 200.0, RadialBlurKind::Spin, WIDE).unwrap();
+        let phi = 36.0_f64.to_radians();
+        let want = (1.0 + 2.0 * phi.cos() * (1.0 - phi.sin())) / 3.0;
         assert!((f64::from(got[0][3]) - want).abs() < 1e-6, "{got:?} vs {want}");
         assert!((got[0][0] - 1.0).abs() < 1e-6);
-        // Zoom 100 at distance 2: m = 1, scales 0.5, 1, 1.5: the pixels at distance 1, 2, 3 on the ray.
+        // Zoom 1000 at distance 2: m = 1, scales 0.5, 1, 1.5: the pixels at distance 1, 2, 3 on the ray.
         let src = vec![[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]];
-        let got = radial_blur_window(UNIT, &src, rect(11, 10, 3, 1), rect(12, 10, 1, 1), C, 100.0, RadialBlurKind::Zoom, WIDE)
+        let got = radial_blur_window(UNIT, &src, rect(11, 10, 3, 1), rect(12, 10, 1, 1), C, 1000.0, RadialBlurKind::Zoom, WIDE)
             .unwrap();
         close(&got, &[[1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 1.0]], 1e-6, "zoom");
         // Amount 0 is the identity for both kinds; the centre pixel itself is never moved.
@@ -358,7 +360,7 @@ mod radial_tests {
         let p = plane(11, 11, 17);
         for kind in [RadialBlurKind::Spin, RadialBlurKind::Zoom] {
             assert_eq!(radial_blur_window(UNIT, &p, sr, sr, C, 0.0, kind, WIDE).unwrap(), p);
-            let at_centre = radial_blur_window(UNIT, &p, sr, rect(10, 10, 1, 1), C, 100.0, kind, WIDE).unwrap();
+            let at_centre = radial_blur_window(UNIT, &p, sr, rect(10, 10, 1, 1), C, 1000.0, kind, WIDE).unwrap();
             close(&at_centre, &[p[5 * 11 + 5]], 1e-6, "centre pixel");
         }
     }
@@ -388,7 +390,7 @@ mod radial_tests {
 
     #[test]
     fn spin_preserves_radial_distance() {
-        let (pts, mean_d, mean_a) = dot_stats(RadialBlurKind::Spin, 40.0);
+        let (pts, mean_d, mean_a) = dot_stats(RadialBlurKind::Spin, 100.0);
         for (d, ang, a) in &pts {
             assert!((d - 12.0).abs() <= 1.5, "pixel at distance {d}, angle {ang}, alpha {a}");
         }
@@ -400,7 +402,7 @@ mod radial_tests {
 
     #[test]
     fn zoom_preserves_angle() {
-        let (pts, mean_d, mean_a) = dot_stats(RadialBlurKind::Zoom, 50.0);
+        let (pts, mean_d, mean_a) = dot_stats(RadialBlurKind::Zoom, 500.0);
         let bound = (1.5_f64 / 12.0).asin().to_degrees();
         for (d, ang, a) in &pts {
             assert!(ang.abs() <= bound, "pixel at distance {d}, angle {ang} (bound {bound}), alpha {a}");
@@ -416,11 +418,11 @@ mod radial_tests {
         let src = plane(9, 8, 41);
         for kind in [RadialBlurKind::Spin, RadialBlurKind::Zoom] {
             assert_window_independent(rect(-2, -1, 13, 11), &|w| {
-                radial_blur_window(UNIT, &src, sr, w, [4.3, 3.9], 35.0, kind, WIDE).unwrap()
+                radial_blur_window(UNIT, &src, sr, w, [4.3, 3.9], 350.0, kind, WIDE).unwrap()
             });
         }
         let out = rect(0, 0, 9, 8);
-        for (centre, amount) in [([f32::NAN, 0.0], 10.0), ([0.0, f32::INFINITY], 10.0), ([0.0, 0.0], -1.0), ([0.0, 0.0], 100.5), ([0.0, 0.0], f32::NAN)] {
+        for (centre, amount) in [([f32::NAN, 0.0], 10.0), ([0.0, f32::INFINITY], 10.0), ([0.0, 0.0], -1.0), ([0.0, 0.0], 1000.5), ([0.0, 0.0], f32::NAN)] {
             for kind in [RadialBlurKind::Spin, RadialBlurKind::Zoom] {
                 assert_eq!(radial_blur_window(UNIT, &src, sr, out, centre, amount, kind, WIDE), Err(BlurError::Parameter));
                 assert_eq!(radial_blur_window_cost(out, centre, amount, kind), Err(BlurError::Parameter));
