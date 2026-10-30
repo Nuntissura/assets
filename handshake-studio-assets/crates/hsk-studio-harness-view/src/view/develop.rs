@@ -43,8 +43,14 @@
 //! [`DevelopOp::RemoveSpot`], [`DevelopOp::AddDistraction`], [`DevelopOp::RemoveDistraction`]) and
 //! the controls `develop.spot.<i>.<field>` / `develop.distraction.<i>.radius`; the panel section
 //! (module `spot`) places spots on a preview of the rendered frame.
+//!
+//! Lane SMB-LR-EXPORT-GUI-1 adds the export stage (develop's image sizing, output sharpening and
+//! graphic watermark, lane SMB-LR-EXPORT-SIZING-1) as per-document viewer state beside
+//! [`DevelopExport`], its dialog and the TIFF / DNG buttons ([`export_dialog`]). With no stage (the
+//! default) every export runs the unstaged entries and keeps its bytes.
 #![deny(clippy::arithmetic_side_effects)]
 
+pub mod export_dialog;
 mod spot;
 
 use super::Viewer;
@@ -59,7 +65,7 @@ use hsk_studio_develop::{
     ParametricCurve, PointColour, RadialGradient, Threads,
 };
 use hsk_studio_develop::{DistractionArea, RetouchArea, SourceState, SpotType};
-use hsk_studio_develop::{ByteOrder, ExportColourSpace, TiffCompression, TiffExportSettings, develop_to_tiff};
+use hsk_studio_develop::{ByteOrder, ExportColourSpace, TiffCompression, TiffExportSettings, develop_to_tiff, develop_to_tiff_staged};
 use hsk_studio_develop::{DngCompression, DngExportSettings, DngPreview, UnappliedPolicy, decode_container, develop_to_dng, exif_subset};
 use std::cell::RefCell;
 use hsk_studio_folio::{Payload, TileRef};
@@ -729,6 +735,8 @@ pub struct DevelopDoc {
     dng_xmp: Option<Vec<u8>>,
     /// Panel state of the spot-removal section (mode, gesture, preview; module `spot`).
     spot: spot::SpotPanel,
+    /// Export stage and dialog state (module `export_dialog`; off by default).
+    export: export_dialog::ExportDialog,
 }
 
 /// Signature of a raster layer's tile list (placement and content digests, in order).
@@ -881,7 +889,7 @@ impl Viewer {
         let mut base = prepared.recipe.clone();
         base.working_profile.sha256 = digest;
         base.output_profile.sha256 = digest;
-        let mut develop = DevelopDoc { prepared, base, layer_id, import_signature: None, threads: Threads::auto(), cache: RefCell::new(None), original: original.to_vec(), dng_xmp: None, spot: spot::SpotPanel::default() };
+        let mut develop = DevelopDoc { prepared, base, layer_id, import_signature: None, threads: Threads::auto(), cache: RefCell::new(None), original: original.to_vec(), dng_xmp: None, spot: spot::SpotPanel::default(), export: export_dialog::ExportDialog::default() };
         if just_imported {
             // Right after the import the layer holds the identity develop (same route, same recipe).
             develop.import_signature = develop.layer_tiles(self).map(signature);
@@ -957,6 +965,7 @@ impl Viewer {
             "controls": controls(&edit).iter().map(|c| json!({"id": c.id, "label": c.label, "section": c.section, "panel_range": [c.panel_range.0, c.panel_range.1]})).collect::<Vec<_>>(),
             "threads": d.threads.get(),
             "export": {"profile": "sRGB-v4.icc", "profile_sha256": hex(&sha256(SRGB_V4_ICC)), "formats": ["png8", "png16", "jpeg"]},
+            "export_stage": d.export.json(self.develop_export_source_size()),
         })
     }
 
@@ -1076,7 +1085,15 @@ impl Viewer {
     pub fn export_develop(&mut self, path: &Path, format: DevelopExport, overwrite: bool) -> Result<Value, Refusal> {
         let result = self.export_develop_inner(path, format, overwrite);
         match &result {
-            Ok(report) => self.say(format!("exported developed raw {} ({} bytes, {})", path.display(), report["bytes"], format.name())),
+            Ok(report) => {
+                let s = &report["export_stage"];
+                let stage = match s["applied"].as_bool() {
+                    Some(true) => format!("; export stage {} {} -> {}", s["fit_rule"].as_str().unwrap_or(""), s["source_size"], s["output_size"]),
+                    Some(false) => format!("; export stage not applied ({})", s["reason"].as_str().unwrap_or("")),
+                    None => String::new(),
+                };
+                self.say(format!("exported developed raw {} ({} bytes, {}{stage})", path.display(), report["bytes"], format.name()));
+            }
             Err(r) => self.say(format!("develop export refused: {r}")),
         }
         result
@@ -1092,6 +1109,11 @@ impl Viewer {
         let d = self.develop.as_ref().ok_or_else(|| Refusal::new("not_a_raw_document", "the open document was not imported from a camera raw or DNG"))?;
         let (edit, known) = d.current(self);
         let recipe = d.recipe(&edit)?;
+        // The export stage (lane SMB-LR-EXPORT-GUI-1): None = the unstaged entries, today's bytes.
+        let stage = d.export.stage().cloned();
+        if stage.is_some() && !matches!(format, DevelopExport::Dng { .. }) {
+            d.export.ready(self.develop_export_source_size())?;
+        }
         let depth = match format {
             DevelopExport::Png { depth } => depth,
             DevelopExport::Jpeg { .. } => OutputDepth::Eight,
@@ -1125,6 +1147,7 @@ impl Viewer {
                 "route": receipt.as_ref().map(|r| r.route), "math_token": receipt.as_ref().map(|r| r.math_token),
                 "threads": d.threads.get(), "revision": revision, "values_known": known,
                 "values": values_json(&edit),
+                "export_stage": stage.as_ref().map(|_| json!({"applied": false, "reason": "dng_preview_not_staged"})),
             }));
         }
         if let DevelopExport::Tiff { depth, compression, predictor, colour_space, big_endian, big_tiff, dpi } = format {
@@ -1135,8 +1158,20 @@ impl Viewer {
             settings.big_tiff = big_tiff;
             settings.dpi = dpi;
             settings.metadata.software = Some("Handshake Studio develop".to_owned());
-            let (export, receipt) = develop_to_tiff(&d.prepared.plane, &recipe, revision, &settings, SRGB_V4_ICC, d.threads, self.cancel)
-                .map_err(|e| Refusal::new(e.code(), if e.detail().is_empty() { format!("{e:?}") } else { e.detail().to_owned() }))?;
+            let tiff_refusal = |e: hsk_studio_develop::ExportError| Refusal::new(e.code(), if e.detail().is_empty() { format!("{e:?}") } else { e.detail().to_owned() });
+            let (export, receipt, staged) = match &stage {
+                None => {
+                    let (export, receipt) = develop_to_tiff(&d.prepared.plane, &recipe, revision, &settings, SRGB_V4_ICC, d.threads, self.cancel).map_err(tiff_refusal)?;
+                    (export, receipt, None)
+                }
+                Some(stage) => {
+                    // The staged TIFF writes the stage resolution as whole dpi (develop `tiff_from_staged_output`);
+                    // a window / CLI dpi other than that is develop's `resolution_conflict`.
+                    let (export, staged, receipt) =
+                        develop_to_tiff_staged(&d.prepared.plane, &recipe, revision, &settings, stage, SRGB_V4_ICC, d.threads, self.cancel).map_err(tiff_refusal)?;
+                    (export, receipt, Some(staged))
+                }
+            };
             write_atomic(path, &export.bytes).map_err(|code| Refusal::new(code, path.display().to_string()))?;
             return Ok(json!({
                 "format": "tiff", "path": path.to_string_lossy(), "width": export.width, "height": export.height,
@@ -1147,10 +1182,22 @@ impl Viewer {
                 "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
                 "threads": d.threads.get(), "revision": revision, "values_known": known,
                 "values": values_json(&edit),
+                "export_stage": staged.as_ref().map(export_dialog::receipt_json),
             }));
         }
-        let (output, receipt) = hsk_studio_develop::develop_to_output(&d.prepared.plane, &recipe, revision, depth, SRGB_V4_ICC, d.threads, self.cancel)
-            .map_err(|e| Refusal::develop(e, "develop_to_output"))?;
+        let (output, receipt, staged) = match &stage {
+            None => {
+                let (output, receipt) = hsk_studio_develop::develop_to_output(&d.prepared.plane, &recipe, revision, depth, SRGB_V4_ICC, d.threads, self.cancel)
+                    .map_err(|e| Refusal::develop(e, "develop_to_output"))?;
+                (output, receipt, None)
+            }
+            Some(stage) => {
+                let (output, staged, receipt) =
+                    hsk_studio_develop::develop_to_output_staged(&d.prepared.plane, &recipe, revision, depth, SRGB_V4_ICC, stage, d.threads, self.cancel)
+                        .map_err(|e| export_dialog::stage_refusal(&e))?;
+                (output, receipt, Some(staged))
+            }
+        };
         let samples = match output.depth_bits {
             16 => raster::Samples::U16(output.data.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]])).collect()),
             _ => raster::Samples::U8(output.data.clone()),
@@ -1198,6 +1245,7 @@ impl Viewer {
             "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
             "threads": d.threads.get(), "revision": revision, "values_known": known,
             "values": values_json(&edit),
+            "export_stage": staged.as_ref().map(export_dialog::receipt_json),
         }))
     }
 
