@@ -44,7 +44,7 @@
 mod audio;
 #[cfg(feature = "audio-batch")]
 pub(super) mod audio_ui;
-mod envelopes;
+pub(super) mod envelopes;
 mod rate;
 mod trim;
 mod trim_session;

@@ -17,7 +17,10 @@
 //! four points that disagree need the caller's explicit [`FourPointFit`] (`fit_required`). The
 //! edit lands through pulse's `plan_assembly_edit` (Folio-validated prospective sequence) and the
 //! viewer commits it as ONE undoable timeline step (`Run::submit_sequence`). Clip ids are minted
-//! here (pulse mints none) and never collide with a clip id of the document.
+//! here (pulse mints none) and never collide with a clip id of the document. Clip volume envelopes
+//! of the audio routing entry follow the edit in the same step (lane SMB-AU-MULTITRACK-2, scope
+//! extension: an insert that splits and shifts a sync-locked audio clip; module
+//! `timeline::envelopes`, `Run::submit_sequence_and_entry`).
 //!
 //! Keyboard (STU-VID transport and clip command tables, module 14): `J` / `K` / `L` shuttle,
 //! `Shift+J` / `Shift+L` slow shuttle, `Space` play/pause, `Left` / `Right` step one frame
@@ -579,7 +582,14 @@ impl super::Viewer {
             AssemblyMode::Insert => "source_insert",
             AssemblyMode::Overwrite => "source_overwrite",
         };
-        if !self.run.submit_sequence(op, sequence.clone()) {
+        // Clip envelopes follow the edit in the same history step (timeline module `envelopes`).
+        let mut notes = Vec::new();
+        let entry = self.envelopes_for(&sequence, &mut notes).map_err(|e| fail("envelopes_refused", e))?;
+        let submitted = match entry {
+            Some(bytes) => self.run.submit_sequence_and_entry(op, sequence.clone(), super::timeline::envelopes::ROUTING_ENTRY, bytes),
+            None => self.run.submit_sequence(op, sequence.clone()),
+        };
+        if !submitted {
             let code = self
                 .run
                 .ops()

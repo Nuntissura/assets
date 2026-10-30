@@ -383,6 +383,36 @@ fn a_moved_clip_keeps_its_envelope_and_plays_it() {
     assert!((at10 / at20 - 10f64.powf(-0.5)).abs() < 1e-5, "{at10} / {at20}");
 }
 
+/// Scope extension (source monitor): inserting 5 frames of `picture` at frame 20 splits the
+/// sync-locked A1 clip 3 and shifts its right part by 5 frames; both parts get their part of the
+/// envelope (left: points up to 20 plus the -10 dB edge; right, a fresh clip at 25: the rest moved by
+/// -20 frames with the same edge value at its head), clip 4 moves with its envelope unchanged, all in
+/// the insert's one undo step; the routing validates.
+#[test]
+fn source_monitor_insert_splits_the_envelope_of_a_sync_locked_clip() {
+    use hsk_studio_harness_view::view::source_monitor::{AssemblyMode, SourceEdit};
+    let (_s, mut v) = opened("source-insert");
+    with_envelopes(&mut v);
+    let (steps, before) = (undo_steps(&v), v.timeline_sequence().cloned().unwrap());
+    v.open_source_monitor(media("picture"), Ticks::new(20 * F), SequenceFrameRate { ticks_per_frame: F }, 64, 36).unwrap();
+    let m = v.source_monitor_mut().unwrap();
+    m.mark_in(0).unwrap();
+    m.mark_out(4).unwrap();
+    v.timeline_command(TimelineCommand::Scrub(Ticks::new(20 * F))).unwrap();
+    v.source_edit(&SourceEdit { mode: AssemblyMode::Insert, targets: Vec::new(), fit: None }).unwrap_or_else(|e| panic!("{} {}", e.code, e.detail));
+    let seq = v.timeline_sequence().cloned().unwrap();
+    let a1 = seq.tracks.iter().find(|t| t.track_id == tid(2)).unwrap();
+    let starts: Vec<(String, u64)> = a1.clips.iter().map(|c| (c.clip_id.clone(), c.timeline_start.value() / F)).collect();
+    assert_eq!(a1.clips.len(), 3, "{starts:?}");
+    let right = a1.clips.iter().find(|c| c.clip_id != cid(3) && c.clip_id != cid(4)).unwrap();
+    assert_eq!((right.timeline_start, right.source_in), (Ticks::new(25 * F), Ticks::new(25 * F)), "{starts:?}");
+    assert_eq!(clip_now(&v, &cid(4)).timeline_start, Ticks::new(45 * F));
+    assert_points(&points_of(&v, &cid(3)), &[(0, -10.0), (10 * F, 0.0), (20 * F, -10.0)], "left part");
+    assert_points(&points_of(&v, &right.clip_id), &[(0, -10.0), (10 * F, -20.0), (20 * F, -6.0)], "shifted right part");
+    assert_points(&points_of(&v, &cid(4)), &ENV4, "the shifted clip keeps its envelope");
+    undo_restores(&mut v, steps, &before);
+}
+
 // ---- track automation lanes (slice 3) ---------------------------------------------------------------
 
 fn track_points(v: &Viewer, track: u32, param: StudioTrackParam) -> Vec<(u64, f64)> {

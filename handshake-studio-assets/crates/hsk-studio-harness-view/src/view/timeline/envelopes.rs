@@ -14,9 +14,12 @@
 //!   the mix reads the envelope) is put at that edge, so the gain at the new edge is unchanged
 //!   (declared reading; Premiere's / Audition's own handling is UNVERIFIED, D5).
 //! - **Split clips inherit.** A clip of the edited sequence that did not exist before (razor's right
-//!   part, the remnant of an overwrite) gets the envelope of the old clip it was cut from: same audio
-//!   track, same source and speed, its timeline span inside the old clip's span and its source window
-//!   where the old clip played it. Both parts then hold their points plus an edge point.
+//!   part, the remnant of an overwrite, the shifted right part of an insert that splits a
+//!   sync-locked audio clip) gets the envelope of the old clip it was cut from: same audio track,
+//!   same source and speed, its source window inside the old clip's window and apart from the window
+//!   the old clip keeps (wherever it now sits on the timeline). Both parts then hold their points
+//!   plus an edge point. (A fresh audio clip is always a remnant: timeline and source-monitor edits
+//!   add new clips only to video tracks or as cut pieces.)
 //! - **Removed clips lose theirs.** Lift, ripple delete and an overwrite that covers a clip remove the
 //!   clip's envelope, so the routing never names a clip that is gone.
 //!
@@ -116,17 +119,16 @@ fn remap(old: &StudioClip, new: &StudioClip, points: &[StudioClipGainPoint]) -> 
 }
 
 /// Whether `new` (a clip that did not exist in `old_seq`) was cut from `old` (module docs).
-fn cut_from(old: (&str, &StudioClip), new: (&str, &StudioClip)) -> bool {
+/// `survivor` is what became of `old` under its own id (if it is still there).
+fn cut_from(old: (&str, &StudioClip), new: (&str, &StudioClip), survivor: Option<&StudioClip>) -> bool {
     let ((ot, o), (nt, n)) = (old, new);
     if ot != nt || o.source_ref != n.source_ref || o.speed != n.speed {
         return false;
     }
-    let (Some(oe), Some(ne)) = (o.timeline_end(), n.timeline_end()) else { return false };
-    if n.timeline_start < o.timeline_start || ne > oe || n.source_in < o.source_in || n.source_out > o.source_out {
+    if n.source_in < o.source_in || n.source_out > o.source_out {
         return false;
     }
-    // Where `o` played `n`'s first sample is where `n` starts.
-    remap_offset(n, o, 0).is_some_and(|at| i128::from(n.timeline_start.value()).checked_sub(i128::from(o.timeline_start.value())) == Some(at))
+    survivor.is_none_or(|s| n.source_out <= s.source_in || n.source_in >= s.source_out)
 }
 
 /// The clip gain envelopes of `old_seq` rewritten for `new_seq` (module docs). `Err("envelope_overflow")`
@@ -143,11 +145,12 @@ pub(in crate::view) fn follow_edit(old_seq: &StudioSequence, new_seq: &StudioSeq
             out.push(g.clone());
             continue;
         };
-        if let Some(&(_, new)) = after.get(g.clip_id.as_str()) {
+        let survivor = after.get(g.clip_id.as_str()).map(|&(_, c)| c);
+        if let Some(new) = survivor {
             out.push(StudioClipGainEnvelope { clip_id: g.clip_id.clone(), points: remap(old, new, &g.points).ok_or("envelope_overflow")? });
         }
         for &(id, (track, clip)) in &fresh {
-            if !claimed.contains(id) && cut_from((old_track, old), (track, clip)) {
+            if !claimed.contains(id) && cut_from((old_track, old), (track, clip), survivor) {
                 claimed.insert(id);
                 out.push(StudioClipGainEnvelope { clip_id: id.to_owned(), points: remap(old, clip, &g.points).ok_or("envelope_overflow")? });
             }
