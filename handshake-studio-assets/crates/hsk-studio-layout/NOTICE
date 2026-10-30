@@ -24,7 +24,8 @@ from two W3C documents; no code was copied:
   https://www.w3.org/copyright/software-license-2023/ .
 
 (c) and (R) stand for the copyright and registered-trademark signs of the documents' notices.
-The licence texts are at the URLs above. Changes: values the documents do not state (the numbers
-behind the seventeen set names) are Studio's declared readings, not W3C content.
+The full texts of both licences are in LICENSES-W3C next to this file, copied verbatim from the
+URLs above (fetched 2026-10-30). Changes: values the documents do not state (the numbers behind
+the seventeen set names) are Studio's declared readings, not W3C content.
 
 The en-US hyphenation patterns carry their licence in src/hyphenate.rs (EN_US_LICENCE).

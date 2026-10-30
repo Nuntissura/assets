@@ -396,7 +396,8 @@ fn latin_paragraphs_are_unchanged() {
 /// F-R41-1: the CJK data sources cite each document's own permissive licence (JLREQ: W3C Software
 /// and Document Notice and License 2015; CLREQ: W3C Software and Document License 2023) with the
 /// dated version URI, status and copyright line, in the DESCRIPTOR `cjk.sources` entry, the crate
-/// `NOTICE` and the `cjk` module docs; the W3C Document License is cited nowhere.
+/// `NOTICE` and the `cjk` module docs; the W3C Document License is cited nowhere. F-R42-4: `NOTICE`
+/// names `LICENSES-W3C`, which carries the full text of both licences.
 #[test]
 fn cjk_sources_cite_the_w3c_software_and_document_licences() {
     let cjk = &DESCRIPTOR[DESCRIPTOR.find(r#""cjk":{"#).expect("DESCRIPTOR cjk entry")..];
@@ -422,5 +423,42 @@ fn cjk_sources_cite_the_w3c_software_and_document_licences() {
         }
         assert!(["no code copied", "no code was copied", "No code was copied"].iter().any(|s| flat.contains(s)), "{place} lacks the data-only claim");
         assert!(!flat.contains("document-license") && !flat.contains("W3C Document License"), "{place} still cites the W3C Document License");
+    }
+    // F-R42-4: both licences require their full text where users of the derived work can see it;
+    // NOTICE names LICENSES-W3C, which carries both texts verbatim (one paragraph per line).
+    let notice_flat = notice.replace('\n', " ");
+    assert!(notice_flat.contains("The full texts of both licences are in LICENSES-W3C"), "NOTICE does not name LICENSES-W3C");
+    let texts = include_str!("../LICENSES-W3C");
+    let common = [
+        "This work is being provided by the copyright holders under the following license.",
+        "By obtaining and/or copying this work, you (the licensee) agree that you have read, understood, and will comply with the following terms and conditions.",
+        "Permission to copy, modify, and distribute this work, with or without modification, for any purpose and without fee or royalty is hereby granted, provided that you include the following on ALL copies of the work or portions thereof, including modifications:",
+        "- The full text of this NOTICE in a location viewable to users of the redistributed or derivative work.",
+        "THIS WORK IS PROVIDED \"AS IS,\" AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.",
+        "COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.",
+        "The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to the work without specific, written prior permission. Title to copyright in this work will at all times remain with copyright holders.",
+    ];
+    let v2015 = texts.find("\nW3C Software and Document Notice and License, 2015 version\n").expect("LICENSES-W3C lacks the 2015 licence heading");
+    let v2023 = texts.find("\nW3C Software and Document License, 2023 version\n").expect("LICENSES-W3C lacks the 2023 licence heading");
+    assert!(v2015 < v2023, "2015 licence first, then 2023");
+    let (text_2015, text_2023) = (&texts[v2015..v2023], &texts[v2023..]);
+    let specific_2015 = [
+        "https://www.w3.org/Consortium/Legal/2015/copyright-software-and-document",
+        "- Any pre-existing intellectual property disclaimers, notices, or terms and conditions. If none exist, the W3C Software and Document Short Notice should be included.",
+        "- Notice of any changes or modifications, through a copyright statement on the new code or document such as \"This software or document includes material copied from or derived from [title and URI of the W3C document]. Copyright \u{a9} [YEAR] W3C\u{ae} (MIT, ERCIM, Keio, Beihang).\"",
+    ];
+    let specific_2023 = [
+        "https://www.w3.org/copyright/software-license-2023/",
+        "- Any pre-existing intellectual property disclaimers, notices, or terms and conditions. If none exist, the W3C software and document short notice should be included.",
+        "- Notice of any changes or modifications, through a copyright statement on the new code or document such as \"This software or document includes material copied from or derived from [title and URI of the W3C document]. Copyright \u{a9} [$year-of-document] World Wide Web Consortium. https://www.w3.org/copyright/software-license-2023/\"",
+    ];
+    for (version, text, specific) in [("2015", text_2015, specific_2015), ("2023", text_2023, specific_2023)] {
+        let lines: Vec<&str> = text.lines().collect();
+        for line in common.iter().chain(specific[1..].iter()) {
+            assert!(lines.contains(line), "LICENSES-W3C {version} licence lacks the line {line:?}");
+        }
+        assert!(text.contains(specific[0]), "LICENSES-W3C {version} licence lacks its URL");
+        // One copy of each licence per section (no truncated or doubled text).
+        assert_eq!(text.matches(common[0]).count(), 1, "LICENSES-W3C {version}");
     }
 }
