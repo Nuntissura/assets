@@ -62,7 +62,7 @@ fn strokes_render_and_caps_dashes_miter_map() {
     // Measured worst 0.25/255 over the four border probes (exact nib stroke coverage).
     assert!(worst <= 0.3, "stroke border differs by {worst}");
     // Synthetic caps, dashes and miter on the same node: round cap, an odd dash pattern written
-    // twice (Folio needs an even count), miter 10; a marker cap is a typed loss.
+    // twice (Folio needs an even count), miter 10; a marker cap is a stroke marker.
     for n in &mut doc.nodes {
         if n.name.as_deref() == Some("rounded-solid-shadow") {
             n.stroke_cap = Some("ROUND".into());
@@ -85,7 +85,10 @@ fn strokes_render_and_caps_dashes_miter_map() {
     assert_eq!(stroke.cap, StrokeCap::Round);
     assert_eq!(stroke.miter_limit, 10.0);
     assert_eq!(stroke.dash.iter().map(|d| d.value).collect::<Vec<_>>(), [4.0, 2.0, 1.0, 4.0, 2.0, 1.0]);
-    assert_eq!(loss(&p, "native.strokes.cap=ARROW_LINES", "stroke_cap_marker_no_folio_home"), 1);
+    // Since lane SMB-AI-ARROWHEADS-2 a collaborative marker cap is a Folio stroke marker (tests
+    // hsk-studio-interop-fig-native fig_markers), no longer a loss.
+    assert_eq!(loss(&p, "native.strokes.cap=ARROW_LINES", "stroke_cap_marker_no_folio_home"), 0);
+    assert!(p.vector_records.stroke_markers.iter().any(|m| m.start == "ARROW_LINES" && m.end == "ARROW_LINES"));
 }
 
 #[test]
