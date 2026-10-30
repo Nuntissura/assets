@@ -291,18 +291,19 @@ fn razor_splits_the_envelope_between_both_parts() {
     undo_restores(&mut v, steps, &before);
 }
 
-/// Slip by +2 frames: the source window moves 2 frames later under a fixed clip, so the audio (and
-/// its envelope) moves 2 frames earlier: offsets -2 frames, the head point is cut (value at offset 2
-/// between -10 and 0 dB: -8 dB).
+/// Slip by -2 frames (a later source out would need the program monitor's source extents, which
+/// this fixture does not bind: `source_extent_unknown`): the source window moves 2 frames earlier
+/// under a fixed clip, so the audio (and its envelope) moves 2 frames later: offsets +2 frames, the
+/// tail point is cut at 40 (between 32 = -20 dB and 42 = -6 dB: -8.8 dB).
 #[test]
 fn slip_shifts_the_envelope_with_the_audio() {
     let (_s, mut v) = opened("slip");
     with_envelopes(&mut v);
     let (steps, before) = (undo_steps(&v), v.timeline_sequence().cloned().unwrap());
-    v.timeline_command(TimelineCommand::Slip { clip_id: cid(3), delta_frames: 2 }).unwrap();
+    v.timeline_command(TimelineCommand::Slip { clip_id: cid(3), delta_frames: -2 }).unwrap();
     let c = clip_now(&v, &cid(3));
-    assert_eq!((c.timeline_start, c.source_in, c.duration), (Ticks::new(0), Ticks::new(7 * F), Ticks::new(40 * F)), "slip moved the source window");
-    assert_points(&points_of(&v, &cid(3)), &[(0, -8.0), (8 * F, 0.0), (28 * F, -20.0), (38 * F, -6.0)], "slip");
+    assert_eq!((c.timeline_start, c.source_in, c.duration), (Ticks::new(0), Ticks::new(3 * F), Ticks::new(40 * F)), "slip moved the source window");
+    assert_points(&points_of(&v, &cid(3)), &[(2 * F, -10.0), (12 * F, 0.0), (32 * F, -20.0), (40 * F, -8.8)], "slip");
     undo_restores(&mut v, steps, &before);
 }
 
