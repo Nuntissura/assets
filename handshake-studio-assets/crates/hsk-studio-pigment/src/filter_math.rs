@@ -128,7 +128,7 @@ impl std::error::Error for FilterError {}
 impl From<BlurError> for FilterError {
     fn from(e: BlurError) -> Self {
         match e {
-            BlurError::Radius => Self::Parameter,
+            BlurError::Radius | BlurError::Parameter => Self::Parameter,
             BlurError::Shape => Self::Shape,
             BlurError::OverBudget { needed, limit } => Self::OverBudget { needed, limit },
             BlurError::OutOfDomain => Self::OutOfDomain,
@@ -516,6 +516,88 @@ pub fn filter_plane_chunked(
         data.extend(r.ok_or(FilterError::Shape)??);
     }
     Ok(RgbaPlane { bounds: b, data })
+}
+
+/// The declared Find Edges operator ([`find_edges_window`]).
+pub const FIND_EDGES_OPERATOR: &str = "sobel_3x3_premultiplied_per_channel_replicate_border";
+
+/// Predicted peak bytes (the output) and work (sample visits, 9 per pixel) of
+/// [`find_edges_window`].
+pub fn find_edges_window_cost(out: Rect) -> Result<(u64, u64), FilterError> {
+    let area = u64::from(out.width).checked_mul(u64::from(out.height)).ok_or(FilterError::Overflow)?;
+    let bytes = area.checked_mul(SAMPLE_BYTES).ok_or(FilterError::Overflow)?;
+    let work = area.checked_mul(9).ok_or(FilterError::Overflow)?;
+    Ok((bytes, work))
+}
+
+/// Find Edges (lane SMB-PIGMENT-AE-KERNELS-1, for composite's After Effects Find Edges; Studio
+/// reading [`FIND_EDGES_OPERATOR`], After Effects / Photoshop formula UNVERIFIED D5, class
+/// Approximate): per premultiplied colour channel the 3x3 Sobel gradients
+/// `gx = (p[+1,-1] + 2 p[+1,0] + p[+1,+1]) - (p[-1,-1] + 2 p[-1,0] + p[-1,+1])` and `gy` (rows
+/// `+1` minus `-1`, same weights), binary64 in that order, neighbours beyond `src_rect` replaced by
+/// the nearest source pixel (replicated border, so a plane's own edge is not an edge); magnitude
+/// `m = clamp(sqrt(gx^2 + gy^2) / 4, 0, 1)` (a unit step gives 1). The colour is `1 - m` (dark
+/// edges on white) or, with `invert`, `m` (bright edges on black); alpha is the source pixel's;
+/// a pixel whose source alpha is 0 (or that lies beyond `src_rect`) is `[0, 0, 0, 0]`. Unit range
+/// only (the colour refers to the unit white point). Bytes and work ([`find_edges_window_cost`])
+/// are checked against `limits` before any allocation; each output pixel depends only on the
+/// source, so any window split gives the same bytes.
+pub fn find_edges_window(
+    src: &[[f32; 4]],
+    src_rect: Rect,
+    out: Rect,
+    invert: bool,
+    limits: FilterLimits,
+) -> Result<Vec<[f32; 4]>, FilterError> {
+    if src.len() != count(src_rect)? {
+        return Err(FilterError::Shape);
+    }
+    let (bytes, work) = find_edges_window_cost(out)?;
+    if bytes > limits.max_bytes {
+        return Err(FilterError::OverBudget { needed: bytes, limit: limits.max_bytes });
+    }
+    if work > limits.max_work {
+        return Err(FilterError::OverBudget { needed: work, limit: limits.max_work });
+    }
+    let (sx1, sy1) = src_rect.end().map_err(|_| FilterError::Overflow)?;
+    let (ox1, oy1) = out.end().map_err(|_| FilterError::Overflow)?;
+    let mut result: Vec<[f32; 4]> = Vec::new();
+    result
+        .try_reserve_exact(count(out)?)
+        .map_err(|_| FilterError::OverBudget { needed: bytes, limit: limits.max_bytes })?;
+    // Replicated neighbour (only called for a pixel inside `src_rect`, so the rect is not empty).
+    let last_x = sx1.checked_sub(1).ok_or(FilterError::Overflow)?;
+    let last_y = sy1.checked_sub(1).ok_or(FilterError::Overflow)?;
+    let at = |x: i64, y: i64, dx: i64, dy: i64| -> Result<[f64; 4], FilterError> {
+        let nx = x.saturating_add(dx).max(src_rect.x).min(last_x);
+        let ny = y.saturating_add(dy).max(src_rect.y).min(last_y);
+        let p = check(src_at(src, src_rect, nx, ny)?, SampleRange::Unit)?;
+        let a = f64::from(p[3]);
+        Ok([f64::from(p[0]) * a, f64::from(p[1]) * a, f64::from(p[2]) * a, a])
+    };
+    for y in out.y..oy1 {
+        for x in out.x..ox1 {
+            let o = check(src_at(src, src_rect, x, y)?, SampleRange::Unit)?;
+            if o[3] == 0.0 {
+                result.push([0.0; 4]);
+                continue;
+            }
+            let (nw, n, ne) = (at(x, y, -1, -1)?, at(x, y, 0, -1)?, at(x, y, 1, -1)?);
+            let (w, e) = (at(x, y, -1, 0)?, at(x, y, 1, 0)?);
+            let (sw, s, se) = (at(x, y, -1, 1)?, at(x, y, 0, 1)?, at(x, y, 1, 1)?);
+            let mut px = [0.0_f32; 4];
+            for (c, v) in px.iter_mut().take(3).enumerate() {
+                let g = |q: [f64; 4]| q.get(c).copied().unwrap_or(0.0);
+                let gx = (g(ne) + 2.0 * g(e) + g(se)) - (g(nw) + 2.0 * g(w) + g(sw));
+                let gy = (g(sw) + 2.0 * g(s) + g(se)) - (g(nw) + 2.0 * g(n) + g(ne));
+                let m = ((gx * gx + gy * gy).sqrt() / 4.0).clamp(0.0, 1.0);
+                *v = if invert { m as f32 } else { (1.0 - m) as f32 };
+            }
+            px[3] = o[3];
+            result.push(px);
+        }
+    }
+    Ok(result)
 }
 
 /// Filter surface description (Studio readings, parity NOT_PROVEN).
