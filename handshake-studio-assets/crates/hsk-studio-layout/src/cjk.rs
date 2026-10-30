@@ -215,7 +215,7 @@ enum LineEnd {
     Half,
     /// Full-width: its 1/2 em aki kept, not compressed (`one_em`).
     Full,
-    /// Like mid-line: 1/2 em that line adjustment may compress (`no_float`; declared reading).
+    /// Not fixed: 1/2 em that line adjustment may compress to none (`no_float`; declared reading).
     Mid,
     /// 1/2 em compressible to none (CLREQ line-end compression).
     Compressible,
@@ -379,8 +379,9 @@ impl MojikumiRules {
         match self.line_end[group] {
             LineEnd::Half => Aki::ZERO,
             LineEnd::Full => Aki::fixed(0.5),
-            LineEnd::Mid => self.after(a),
-            LineEnd::Compressible => Aki::new(0.0, 0.5, 0.5),
+            // Unfixed at the line end: the half em may compress away (full stops included, which
+            // keep their half em mid-line).
+            LineEnd::Mid | LineEnd::Compressible => Aki::new(0.0, 0.5, 0.5),
         }
     }
     /// Aki before a glyph of class `b` that starts a line, em (an opening bracket starts a line
