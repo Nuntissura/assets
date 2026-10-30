@@ -14,7 +14,7 @@ use hsk_studio_harness_view::view::Viewer;
 use hsk_studio_harness_view::view::mixer::{MixerEdit, effect_templates};
 use hsk_studio_harness_view::view::render::Prefer;
 use hsk_studio_harness_view::view::timeline::{self, AutomationCommand, LANE_BUTTON_PX, LaneTarget, MASTER_ROW, PointId, TimelineCommand, lane_y};
-use hsk_studio_pulse::{AudioSources, SourceExtents};
+use hsk_studio_pulse::{AudioSources, CROSSFADE_PANNED_UNPANNED_MONO, SourceExtents};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -147,13 +147,17 @@ impl folio::Resolver for Any {
 }
 
 fn sequence_package(dir: &Path) -> PathBuf {
+    sequence_package_of(dir, &sequence())
+}
+
+fn sequence_package_of(dir: &Path, sequence: &StudioSequence) -> PathBuf {
     let doc = serde_json::json!({
         "schema_id":"hsk.studio.document@1","document_id":"SDOC-019abcde-0000-7000-8000-000000000004","revision":1,"geometry_unit":"px","colour_mode":3,"bits_per_channel":8,
         "working_space_rgb":null,"working_space_cmyk":null,"working_space_gray":null,"working_space_spot":null,"blending_space":null,
         "artboards":[],"page_spreads":[],
         "layers":[{"schema_id":"hsk.studio.layer@1","layer_id":"SLYR-019abcde-0000-7000-8000-000000000001","name":"group","parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true}],
         "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[],"edges":[],"outputs":[]},
-        "sequences":[serde_json::to_value(sequence()).unwrap()]
+        "sequences":[serde_json::to_value(sequence).unwrap()]
     });
     let token = CancellationToken::default();
     let snapshot = match folio::inspect_bytes(&serde_json::to_vec(&doc).unwrap(), Budget::default(), &token, &Any).unwrap() {
@@ -314,6 +318,41 @@ fn clip_pan_envelopes_follow_timeline_edits() {
     assert_points(&pan_points(&v, &right), &[(0, 0.0), (10 * F, 1.0)], "right part");
     let doc = v.run().snapshot().unwrap().document().clone();
     folio::validate_audio_routing(&v.audio_routing().unwrap().unwrap(), &doc, Budget::default(), &CancellationToken::default()).unwrap();
+}
+
+/// An `audio_crossfade` from clip 3 into clip 4 (both mono): panning clip 3 alone puts the two in
+/// different strips, so the mixer's rebuild is refused `audio_unsupported` and its error names the
+/// case and both clips (engine gap: the pair is not rendered as two stereo sides); panning clip 4
+/// too puts both in the stereo strip and the mixer plays again.
+#[test]
+fn panned_unpanned_crossfade_is_refused_by_name_in_the_mixer() {
+    let scratch = Scratch::new("xfade");
+    let mut seq = sequence();
+    seq.tracks[1].clips[0].transitions.tail = Some(TimelineTransition {
+        schema_id: TransitionSchema::V1,
+        transition_id: "x1".into(),
+        transition_kind: "audio_crossfade".into(),
+        duration: Ticks::new(2 * F),
+        alignment: TransitionAlignment::CenteredOnCut,
+        center_offset: 0,
+        parameters: vec![],
+        repeat_end_frame: false,
+    });
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&sequence_package_of(&scratch.0, &seq)).unwrap_or_else(|e| panic!("{e}"));
+    v.open_multitrack(RATE, 960, sources(), Arc::new(Ext)).unwrap_or_else(|e| panic!("{e}: {}", v.state_json()["status"]));
+    assert!(v.mixer_json()["error"].is_null(), "unpanned crossfade plays: {}", v.mixer_json()["error"]);
+    let a1 = tid(2);
+    let pan = |at: u64| AutomationCommand::AddPoint { track_id: a1.clone(), lane: LaneTarget::ClipPan, at: Ticks::new(at), value: 0.5 };
+    v.multitrack_command(pan(0)).unwrap();
+    let error = v.mixer_json()["error"].as_str().unwrap_or_default().to_owned();
+    for part in ["audio_unsupported", CROSSFADE_PANNED_UNPANNED_MONO, &a1, &cid(3), &cid(4)] {
+        assert!(error.contains(part), "{part} missing from {error:?}");
+    }
+    assert!(v.mixer_render(960).is_err(), "no stream while refused");
+    v.multitrack_command(pan(45 * F)).unwrap();
+    assert!(v.mixer_json()["error"].is_null(), "both panned: {}", v.mixer_json()["error"]);
+    assert!(v.mixer_render(960).is_ok());
 }
 
 /// Hostile clip pan and master commands are refused by name and store nothing.

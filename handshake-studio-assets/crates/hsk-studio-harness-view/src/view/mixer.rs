@@ -31,6 +31,10 @@
 //! field is left as it is. Typed refusals, nothing stored: `fader_automated_no_playhead` (no
 //! timeline on the mixer's sequence), `outside_sequence` (playhead after the sequence end), the
 //! fader's range checks.
+//!
+//! A rebuild refused `audio_unsupported` for a crossfade whose clips play in different strips
+//! (mono/stereo, or a panned and an unpanned mono clip; pulse `strip_crossfade_mismatch`) names the
+//! case, track and clips in the mixer error and status line (lane SMB-AU-MULTITRACK-3).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::audio_batch::EffectSpec;
@@ -40,13 +44,16 @@ use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
 use hsk_studio_folio::{
     self as folio, StudioAudioRouting, StudioAudioRoutingSet, StudioAudioSend, StudioAutomationPoint, StudioSequence, StudioTrackParam, StudioTrackRoute, TrackKind,
 };
-use hsk_studio_pulse::{AudioSources, PulseError, SourceExtents, TimelineBusStream};
+use hsk_studio_pulse::{AudioSources, PulseError, SourceExtents, StripCrossfadeMismatch, TimelineBusStream, strip_crossfade_mismatch};
 use hsk_studio_score::GraphMeters;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// Rebuilds the bus stream of the current sequence and routing.
 type Builder = Box<dyn Fn(&StudioSequence, &StudioAudioRouting, &CancellationToken) -> Result<TimelineBusStream, PulseError>>;
+/// Names an `audio_unsupported` strip crossfade of the current sequence and routing (lane
+/// SMB-AU-MULTITRACK-3; pulse `strip_crossfade_mismatch`).
+type Explainer = Box<dyn Fn(&StudioSequence, &StudioAudioRouting) -> Option<StripCrossfadeMismatch>>;
 
 /// Widget names of the mixer panel (`mixer.<track_id>.<control>` per strip).
 pub mod widget {
@@ -116,6 +123,7 @@ pub struct MixerState {
     rate: u32,
     block: usize,
     builder: Builder,
+    explain: Explainer,
     stream: Option<TimelineBusStream>,
     meters: Option<GraphMeters>,
     strip_tracks: Vec<Option<String>>,
@@ -170,6 +178,8 @@ impl super::Viewer {
         sources: S,
         extents: Arc<dyn SourceExtents>,
     ) -> Result<(), String> {
+        let explained = sources.clone();
+        let explain: Explainer = Box::new(move |seq, routing| strip_crossfade_mismatch(seq, routing, &explained));
         let builder: Builder = Box::new(move |seq, routing, cancel| {
             build_bus_stream(seq, routing, sample_rate_hz, max_block_frames, sources.clone(), extents.as_ref(), cancel)
         });
@@ -178,6 +188,7 @@ impl super::Viewer {
             rate: sample_rate_hz,
             block: max_block_frames,
             builder,
+            explain,
             stream: None,
             meters: None,
             strip_tracks: Vec::new(),
@@ -232,7 +243,12 @@ impl super::Viewer {
                 Ok(())
             }
             Err(e) => {
-                let text = format!("mixer: {}", e.code());
+                // An unsupported crossfade names its track, clips and case.
+                let detail = if e == PulseError::AudioUnsupported { (m.explain)(&sequence, &routing) } else { None };
+                let text = match detail {
+                    Some(d) => format!("mixer: {} ({} on track {}: {} -> {})", e.code(), d.case, d.track_id, d.outgoing, d.incoming),
+                    None => format!("mixer: {}", e.code()),
+                };
                 m.stream = None;
                 m.error = Some(text.clone());
                 Err(text)

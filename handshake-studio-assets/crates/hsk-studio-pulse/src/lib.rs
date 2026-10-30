@@ -26,7 +26,7 @@ mod transition;
 pub use annotate::*;
 pub use assemble::*;
 pub use audio::*;
-pub use bus_mix::{EffectFactory, TimelineBusStream};
+pub use bus_mix::{CROSSFADE_MONO_STEREO, CROSSFADE_PANNED_UNPANNED_MONO, EffectFactory, StripCrossfadeMismatch, TimelineBusStream, strip_crossfade_mismatch};
 pub use comp_audio::*;
 pub use display::*;
 pub use error::{PulseError, Result};

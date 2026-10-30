@@ -216,7 +216,8 @@ fn plain_mix_adds_the_track_pan_and_empty_envelopes_change_nothing() {
 }
 
 /// Refusals: an envelope point off the sample grid; a crossfade between a panned and an unpanned
-/// mono clip (two strips). A master volume lane ramps the master fader linearly in dB and replaces
+/// mono clip (two strips: `audio_unsupported`, named by `strip_crossfade_mismatch`; engine gap, the
+/// pair is not rendered as two stereo sides). A master volume lane ramps the master fader linearly in dB and replaces
 /// the static master volume; its points must sit on the sample grid.
 #[test]
 fn clip_pan_refusals_and_the_master_volume_lane() {
@@ -240,10 +241,26 @@ fn clip_pan_refusals_and_the_master_volume_lane() {
         parameters: vec![],
         repeat_end_frame: false,
     });
+    routing.clip_pans.clear();
+    assert!(TimelineBusStream::new(&xf, &routing, RATE, 960, sources(), &Ext, StreamLimits::default(), &mut f, &token).is_ok(), "neither panned: one strip");
+    assert_eq!(strip_crossfade_mismatch(&xf, &routing, &sources()), None);
     routing.clip_pans = vec![pans(1, &[(0, 0.5)])];
     assert_eq!(TimelineBusStream::new(&xf, &routing, RATE, 960, sources(), &Ext, StreamLimits::default(), &mut f, &token).err(), Some(PulseError::AudioUnsupported));
+    assert_eq!(
+        strip_crossfade_mismatch(&xf, &routing, &sources()),
+        Some(StripCrossfadeMismatch { track_id: tid(1), outgoing: cid(1), incoming: cid(2), case: CROSSFADE_PANNED_UNPANNED_MONO }),
+        "the refusal names the case"
+    );
     routing.clip_pans.push(pans(2, &[(0, 0.5)]));
     assert!(TimelineBusStream::new(&xf, &routing, RATE, 960, sources(), &Ext, StreamLimits::default(), &mut f, &token).is_ok(), "both panned: one strip");
+    assert_eq!(strip_crossfade_mismatch(&xf, &routing, &sources()), None);
+    // A mono -> stereo crossfade names the other case; a muted track is not rendered, so not refused.
+    let mut ms = xf.clone();
+    ms.tracks[0].clips[1].source_ref = source("dc");
+    routing.clip_pans.clear();
+    assert_eq!(strip_crossfade_mismatch(&ms, &routing, &sources()).map(|m| m.case), Some(CROSSFADE_MONO_STEREO));
+    ms.tracks[0].muted = true;
+    assert_eq!(strip_crossfade_mismatch(&ms, &routing, &sources()), None);
 
     // Master: static 0.25 replaced by 1.0 at 0 falling to 0.5 at frame 4 (linear in dB), held after.
     let seq = sequence(vec![track(1, vec![clip(1, "dc", 8, 0)], 0.0)]);

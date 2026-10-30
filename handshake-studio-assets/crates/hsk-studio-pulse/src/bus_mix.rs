@@ -30,7 +30,10 @@
 //!   plays in the track's stereo strip (it is two channels after its pan), so the track pan acts on
 //!   it as a balance; an unpanned mono clip keeps the mono strip and the equal-power track pan
 //!   (Studio reading, Audition UNVERIFIED, D5). An `audio_crossfade` between clips of different
-//!   strips (mono/stereo, or panned/unpanned mono) is `audio_unsupported`.
+//!   strips (mono/stereo, or panned/unpanned mono) is `audio_unsupported`; [`strip_crossfade_mismatch`]
+//!   names the track, the two clips and the case ([`CROSSFADE_MONO_STEREO`],
+//!   [`CROSSFADE_PANNED_UNPANNED_MONO`]). Crossfading the two sides as stereo would need both in one
+//!   strip, which the per-class strip split does not do (engine gap).
 //! - Master volume automation (lane SMB-AU-MULTITRACK-3, Folio `StudioAudioMaster::volume_automation`):
 //!   when present the master fader is `AutomationLane::new(points, Linear, -96..=12 dB)` (each point
 //!   at its exact timeline sample, its linear value in dB), replacing the static master `volume`.
@@ -97,6 +100,65 @@ fn pulse_failure(e: PulseError) -> ScoreError {
         PulseError::LimitExceeded => ScoreError::CapacityExceeded,
         _ => ScoreError::OutOfRange,
     }
+}
+
+/// [`StripCrossfadeMismatch::case`] of a crossfade between a mono and a stereo clip.
+pub const CROSSFADE_MONO_STEREO: &str = "mono_stereo_crossfade";
+/// [`StripCrossfadeMismatch::case`] of a crossfade between a mono clip with a clip pan envelope and
+/// one without (lane SMB-AU-MULTITRACK-3).
+pub const CROSSFADE_PANNED_UNPANNED_MONO: &str = "panned_unpanned_mono_crossfade";
+
+/// An `audio_crossfade` the bus mix refuses (`audio_unsupported`): its two clips play in different
+/// strips (module docs). The refusal's detail for callers ([`strip_crossfade_mismatch`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StripCrossfadeMismatch {
+    pub track_id: String,
+    /// The clip holding the crossfade as its tail.
+    pub outgoing: String,
+    pub incoming: String,
+    /// [`CROSSFADE_MONO_STEREO`] or [`CROSSFADE_PANNED_UNPANNED_MONO`].
+    pub case: &'static str,
+}
+
+/// A track [`TimelineBusStream::new`] renders (enabled, unmuted, solo honoured, volume above 0 or a
+/// volume lane).
+fn audible(track: &StudioTrack, solo: bool, routing: &StudioAudioRouting) -> bool {
+    let automated = routing.track_lane(&track.track_id, StudioTrackParam::Volume).is_some();
+    track.kind == TrackKind::Audio && track.enabled && !track.muted && (!solo || track.soloed) && (track.volume > 0.0 || automated)
+}
+
+/// Strip class of a clip: its channel count, except a mono clip with a clip pan envelope, which
+/// plays in the stereo strip (module docs); `None` when the source is missing.
+fn strip_class(c: &hsk_studio_folio::StudioClip, routing: &StudioAudioRouting, sources: &dyn AudioSources) -> Option<usize> {
+    match sources.audio(&c.source_ref).map(<[Vec<f32>]>::len) {
+        Some(1) if routing.clip_pans.iter().any(|p| p.clip_id == c.clip_id) => Some(2),
+        other => other,
+    }
+}
+
+fn track_crossfade_mismatch(track: &StudioTrack, routing: &StudioAudioRouting, sources: &dyn AudioSources) -> Option<StripCrossfadeMismatch> {
+    for (i, clip) in track.clips.iter().enumerate() {
+        if !clip.enabled || !clip.transitions.tail.as_ref().is_some_and(|t| t.transition_kind == AUDIO_CROSSFADE) {
+            continue;
+        }
+        let Some(next) = track.clips.get(i.saturating_add(1)).filter(|n| n.enabled) else { continue };
+        if strip_class(clip, routing, sources) == strip_class(next, routing, sources) {
+            continue;
+        }
+        let channels = |c: &hsk_studio_folio::StudioClip| sources.audio(&c.source_ref).map(<[Vec<f32>]>::len);
+        let case = if channels(clip) == channels(next) { CROSSFADE_PANNED_UNPANNED_MONO } else { CROSSFADE_MONO_STEREO };
+        return Some(StripCrossfadeMismatch { track_id: track.track_id.clone(), outgoing: clip.clip_id.clone(), incoming: next.clip_id.clone(), case });
+    }
+    None
+}
+
+/// The first crossfade of `sequence` that [`TimelineBusStream::new`] refuses as `audio_unsupported`
+/// because its clips play in different strips (audible tracks only, in track order); `None` when there
+/// is none. Rendering such a pair would need both sides as stereo in one strip, which the strip split
+/// does not do (engine gap, lane SMB-AU-MULTITRACK-3).
+pub fn strip_crossfade_mismatch(sequence: &StudioSequence, routing: &StudioAudioRouting, sources: &dyn AudioSources) -> Option<StripCrossfadeMismatch> {
+    let solo = sequence.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.soloed);
+    sequence.tracks.iter().filter(|t| audible(t, solo, routing)).find_map(|t| track_crossfade_mismatch(t, routing, sources))
 }
 
 /// One timeline track (one channel class) at unity as a score strip source.
@@ -209,25 +271,13 @@ impl TimelineBusStream {
         let mut strip_tracks = Vec::new();
         for track in &sequence.tracks {
             cancel.check()?;
-            let automated = routing.track_lane(&track.track_id, StudioTrackParam::Volume).is_some();
-            if track.kind != TrackKind::Audio || !track.enabled || track.muted || (solo && !track.soloed) || (track.volume <= 0.0 && !automated) {
+            if !audible(track, solo, routing) {
                 continue;
             }
             let (volume, pan) = track_lanes(routing, track, sample_rate_hz)?;
-            let channels_of = |c: &hsk_studio_folio::StudioClip| sources.audio(&c.source_ref).map(<[Vec<f32>]>::len);
-            // Strip class: unpanned mono clips play in the mono strip, stereo and panned mono clips
-            // in the stereo strip (module docs).
-            let class_of = |c: &hsk_studio_folio::StudioClip| match channels_of(c) {
-                Some(1) if routing.clip_pans.iter().any(|p| p.clip_id == c.clip_id) => Some(2),
-                other => other,
-            };
-            for (i, clip) in track.clips.iter().enumerate() {
-                if clip.enabled
-                    && clip.transitions.tail.as_ref().is_some_and(|t| t.transition_kind == AUDIO_CROSSFADE)
-                    && track.clips.get(i.saturating_add(1)).is_some_and(|n| n.enabled && class_of(n) != class_of(clip))
-                {
-                    return Err(PulseError::AudioUnsupported);
-                }
+            let class_of = |c: &hsk_studio_folio::StudioClip| strip_class(c, routing, &sources);
+            if track_crossfade_mismatch(track, routing, &sources).is_some() {
+                return Err(PulseError::AudioUnsupported);
             }
             let (output, sends) = sends_of(&track.track_id)?;
             for class in [1usize, 2] {
