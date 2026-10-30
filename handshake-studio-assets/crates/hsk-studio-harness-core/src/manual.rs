@@ -25,6 +25,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "export", usage: "export SOURCE (--png | --jpeg [--quality 1..100]) OUT [--overwrite]", summary: "Export the composited document as PNG or JPEG (feature viewer): SOURCE (a .handshake package or any importable source) is opened like the viewer opens it, composited with render-cpu, encoded by hsk-studio-interop-raster (PNG 8-bit RGB/RGBA untagged sRGB; JPEG baseline, quality default 90, 4:4:4 at >= 90 else 4:2:0, transparency flattened on white), decoded back to check, then written atomically to exactly OUT. OUT equal to SOURCE is refused unless --overwrite. Without feature viewer: error feature_unavailable." },
     CommandSpec { name: "develop", usage: "develop SOURCE OUT (--png [--depth 8|16] | --jpeg [--quality 1..100]) [--adjust CONTROL VALUE]... [--threads N] [--overwrite]", summary: "Develop a camera raw or DNG and export it (feature viewer): SOURCE is opened like the viewer opens it (import-raw route), every --adjust is applied as ONE develop step (controls develop.exposure, develop.temperature, develop.tint, develop.contrast, develop.highlights, develop.shadows, develop.whites, develop.blacks, develop.vibrance, develop.saturation, develop.clarity, develop.texture, develop.dehaze, develop.sharpen_amount, develop.luminance_noise, develop.colour_noise, develop.sharpen_radius, develop.sharpen_detail, develop.sharpen_masking, develop.grading.<shadows|midtones|highlights|global>.<hue|saturation|luminance>, develop.grading.blending, develop.grading.balance, develop.wb_kelvin and develop.wb_tint (switch to raw-form white balance): fields of hsk-studio-develop's recipe, validated by develop; an out-of-range or non-finite value is develop's typed refusal, e.g. invalid_adjustment, non_finite, stage_overflow) committed through the session's chronicle provider like every viewer edit, then hsk_studio_develop::develop_to_output renders sRGB-transfer samples (PNG 16-bit by default or 8-bit; JPEG 8-bit, quality default 90) that interop-raster encodes with the CC0 sRGB-v4 profile embedded, decodes back and writes atomically to exactly OUT. --threads N (1..64) only changes speed: the output is identical for every count. A source that is not a camera raw is not_a_raw_document; a truncated raw is develop's own decode refusal." },
     CommandSpec { name: "verify", usage: "verify PACKAGE (--expect-revision N | --expect-name LAYER NAME | --expect-visible LAYER true|false)...", summary: "Open a package and check revision and layer values. At least one expectation is required: a verify that would check nothing is a usage error (exit 2), never a pass." },
+    CommandSpec { name: "batch", usage: "batch JOB.json [--provider chronicle.patch] [--references unresolved|trust_all] [--cancel]", summary: "Run a portable batch job (STU-AUT-126..136; JOB.json is BatchJob::export: job_id, source_set explicit_file_list|folder (recurse, include/exclude * and ? patterns on the file name), applied_automation action|command_sequence|none, output_targets (format_id handshake = native package; other formats refused per target), filename_template tokens, error_policy stop_on_first_error|skip_and_continue|retry_then_skip|quarantine (copies, never moves), concurrency 1, post_processing []). Headless and quiet: an enabled always_show step, an ask overwrite policy, an unsupported source kind or template token refuses the job before any file is touched (exit 1, typed code). Prints the receipt set (one receipt per input: path, bytes, sha256, automation and parameters, target paths, outcome, attempts) and the job state. pass: at least one input and every input succeeded; nothing_checked: no input. Edits need --provider chronicle.patch." },
+    CommandSpec { name: "action", usage: "action check SET.json", summary: "Decode an action set artifact strictly (STU-AUT-102..107, 114: unknown, duplicate or missing fields and out-of-domain values are typed refusals, exit 1) and run the automation validators: action_declared_step_count_mismatch, action_shortcut_collision, action_step_command_unresolvable (step kept, listed in unresolvable), action_step_parameter_key_unknown (warning), action_measured_value_missing_unit. Exit 0 when no error-severity diagnostic, else 1." },
 ];
 
 pub const FLAGS: &[(&str, &str)] = &[
@@ -60,8 +62,38 @@ pub fn manual_json(harness: &Harness) -> Value {
         "providers": {"available": AVAILABLE_PROVIDERS, "selected": harness.selection().providers},
         "output": {"schema": SCHEMA, "ops": "one record per operation: op, n, ok, revision, observe{frames,status,outcome}, detail|error", "verdicts": {"pass":"at least one operation ran and every operation succeeded","fail":"an operation failed or was refused","nothing_checked":"no operation ran; never a pass"}, "exit_codes": {"0":"every operation succeeded","1":"an operation failed or was refused (JSON still printed)","2":"usage error"}},
         "panel_controls": topics,
+        "automation": automation_json(),
         "descriptors": harness.collect_descriptors().unwrap_or_default(),
         "not_proven": NOT_PROVEN,
+    })
+}
+
+/// The automation vocabulary (STU-AUT-175: every closed enumeration as its literal tokens) and the
+/// command corpus of `Run` (lane SMB-PS-ACTIONS-1).
+pub fn automation_json() -> Value {
+    use crate::action::{DialogOption, UnitToken, ValueType};
+    use crate::batch::{OverwritePolicy, TemplateToken};
+    json!({
+        "dialog_options": DialogOption::ALL.iter().map(|d| json!({"value": d.value(), "token": d.token()})).collect::<Vec<_>>(),
+        "value_types": ValueType::ALL.iter().map(|t| t.token()).collect::<Vec<_>>(),
+        "unit_tokens": UnitToken::ALL.iter().map(|u| u.token()).collect::<Vec<_>>(),
+        "function_key_index": "0..=12 (0 none, 1..=12 F1..F12)",
+        "color_index": "0..=7 (0 none)",
+        "source_kinds": ["explicit_file_list", "folder", "open_documents (refused)", "selection_within_document (refused)", "catalog_query (refused)"],
+        "applied_automation": ["action", "command_sequence", "none"],
+        "overwrite_policies": OverwritePolicy::ALL.iter().map(|p| p.token()).collect::<Vec<_>>(),
+        "error_policies": ["stop_on_first_error", "skip_and_continue", "retry_then_skip", "quarantine"],
+        "template_tokens": [
+            TemplateToken::OriginalFilename.token(), TemplateToken::OriginalExtension.token(),
+            "sequence (start 0..=2147483647, soft 1..=100000, default 1; padding 0..=10)", TemplateToken::OutputFormat.token(),
+            "custom (text)", "date, time, document_width, document_height, scale_suffix (refused)",
+        ],
+        "validators": [
+            crate::action::CODE_STEP_COUNT_MISMATCH, crate::action::CODE_SHORTCUT_COLLISION, crate::action::CODE_COMMAND_UNRESOLVABLE,
+            crate::action::CODE_PARAMETER_KEY_UNKNOWN, crate::action::CODE_MEASURED_MISSING_UNIT,
+            "batch_always_show_dialog_in_headless", "batch_ask_overwrite_in_headless",
+        ],
+        "commands": crate::action::corpus_json(),
     })
 }
 
@@ -84,6 +116,15 @@ pub fn manual_text(harness: &Harness) -> String {
         for line in t["body"].as_str().unwrap_or("").lines() {
             out += &format!("      {line}\n");
         }
+    }
+    out += "\nAUTOMATION (action records, recording, playback, batch; tokens are literal)\n";
+    for (k, v) in m["automation"].as_object().into_iter().flatten() {
+        if k != "commands" {
+            out += &format!("  {k}: {v}\n");
+        }
+    }
+    for c in crate::action::RUN_COMMANDS {
+        out += &format!("  command {} (Run::{}) recordable={} mutates_authority={}\n", c.command_id, c.run_method, c.recordable, c.mutates_authority);
     }
     out += "\nNOT PROVEN\n";
     for n in NOT_PROVEN {

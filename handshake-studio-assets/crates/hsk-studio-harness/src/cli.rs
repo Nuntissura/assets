@@ -291,8 +291,88 @@ pub fn run(args: &[String]) -> CliOutput {
             }
             execute_develop(&source, &output, format, &adjust, parsed.threads, parsed.overwrite)
         }
+        "batch" => {
+            let [job] = parsed.positional.as_slice() else {
+                return usage("batch needs exactly one JOB.json path");
+            };
+            execute_batch(&parsed, Path::new(job))
+        }
+        "action" => match parsed.positional.as_slice() {
+            [sub, set] if sub == "check" => execute_action_check(Path::new(set)),
+            _ => usage("action needs `check SET.json`"),
+        },
         other => usage(&format!("unknown command `{other}`")),
     }
+}
+
+/// A typed failure of `batch` / `action` before any operation ran (exit 1).
+fn failed(command: &str, error: &str, detail: Value) -> CliOutput {
+    out(1, &json!({"schema":crate::SCHEMA,"command":command,"ok":false,"verdict":"fail","error":error,"detail":detail}))
+}
+
+/// `batch JOB.json` (lane SMB-PS-ACTIONS-1): decode the portable job strictly, run it headless
+/// through `hsk_studio_harness_core::batch::run_batch` and print the receipt set.
+fn execute_batch(parsed: &Parsed, job_path: &Path) -> CliOutput {
+    use hsk_studio_harness_core::batch::{BatchJob, BatchPorts, run_batch};
+    let bytes = match std::fs::read(job_path) {
+        Ok(b) => b,
+        Err(_) => return failed("batch", "job_unreadable", Value::Null),
+    };
+    let job = match BatchJob::decode(&bytes) {
+        Ok(j) => j,
+        Err(e) => return failed("batch", e.code, json!({"path": e.path})),
+    };
+    with_harness("batch", parsed, |h| {
+        let cancel = CancellationToken::default();
+        if parsed.cancel {
+            cancel.cancel();
+        }
+        match run_batch(h, &job, BatchPorts::default(), &cancel) {
+            Err(refusal) => failed("batch", refusal.code, refusal.detail),
+            Ok(report) => {
+                let ran = !report.receipts.is_empty();
+                let ok = ran && report.stopped.is_none() && report.receipts.iter().all(|r| r.outcome == "succeeded");
+                let verdict = if !ran {
+                    "nothing_checked"
+                } else if ok {
+                    "pass"
+                } else {
+                    "fail"
+                };
+                out(i32::from(!ok), &json!({"schema":crate::SCHEMA,"command":"batch","ok":ok,"verdict":verdict,"report":report.to_json()}))
+            }
+        }
+    })
+}
+
+/// `action check SET.json` (lane SMB-PS-ACTIONS-1): strict decode, then the automation validators.
+fn execute_action_check(set_path: &Path) -> CliOutput {
+    use hsk_studio_harness_core::action::{ActionSet, Severity, validate_set};
+    let bytes = match std::fs::read(set_path) {
+        Ok(b) => b,
+        Err(_) => return failed("action check", "action_set_unreadable", Value::Null),
+    };
+    let set = match ActionSet::decode(&bytes) {
+        Ok(s) => s,
+        Err(e) => return failed("action check", e.code, json!({"path": e.path})),
+    };
+    let diagnostics = validate_set(&set);
+    let ok = diagnostics.iter().all(|d| d.severity != Severity::Error);
+    let unresolvable: Vec<Value> = set
+        .actions
+        .iter()
+        .flat_map(|a| a.steps.iter().filter(|s| s.command().is_none()).map(|s| json!({"action_id": a.action_id, "step_index": s.index, "command_id": s.command_id})))
+        .collect();
+    out(
+        i32::from(!ok),
+        &json!({
+            "schema":crate::SCHEMA,"command":"action check","ok":ok,"verdict":if ok { "pass" } else { "fail" },
+            "action_set_id": set.action_set_id, "actions": set.actions.len(),
+            "steps": set.actions.iter().map(|a| a.steps.len()).sum::<usize>(),
+            "diagnostics": diagnostics.iter().map(|d| d.to_json()).collect::<Vec<_>>(),
+            "unresolvable": unresolvable,
+        }),
+    )
 }
 
 #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
