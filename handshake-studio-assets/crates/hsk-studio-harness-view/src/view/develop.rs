@@ -1378,18 +1378,24 @@ impl Viewer {
                 self.drawn.push(name);
             }
         }
+        self.export_dialog_ui(ui);
+        // PNG / JPEG / TIFF run the export stage when it is on and are disabled while it is invalid
+        // (lane SMB-LR-EXPORT-GUI-1); DNG ignores the stage (its preview is not staged).
+        let staged_ok = self.develop.as_ref().is_none_or(|d| d.export.ready(self.develop_export_source_size()).is_ok());
         ui.horizontal_wrapped(|ui| {
             let base = std::path::PathBuf::from(self.save_input.trim());
-            let png = "Export developed PNG 16-bit";
-            if wrap_item(ui, w(super::widget::DEVELOP_EXPORT_PNG), png, egui::TextStyle::Button, |ui| ui.button(png)).on_hover_text("develop_to_output, sRGB-v4 profile embedded, at the save path with extension .develop.png").clicked() {
-                let _ = self.export_develop(&base.with_extension("develop.png"), DevelopExport::Png { depth: OutputDepth::Sixteen }, self.overwrite);
+            let buttons: [(&str, &str, &str, &str, DevelopExport, bool); 4] = [
+                (super::widget::DEVELOP_EXPORT_PNG, "Export developed PNG 16-bit", "develop_to_output (staged when the export settings are on), sRGB-v4 profile embedded, at the save path with extension .develop.png", "develop.png", DevelopExport::Png { depth: OutputDepth::Sixteen }, staged_ok),
+                (super::widget::DEVELOP_EXPORT_JPEG, "Export developed JPEG", "develop_to_output 8-bit (staged when the export settings are on), quality 90, sRGB-v4 profile embedded, extension .develop.jpg", "develop.jpg", DevelopExport::Jpeg { quality: super::export::DEFAULT_JPEG_QUALITY }, staged_ok),
+                (export_dialog::widget::EXPORT_TIFF, "Export developed TIFF", "develop_to_tiff 16-bit uncompressed sRGB (staged when the export settings are on: the stage resolution is written as dpi), extension .develop.tif", "develop.tif", export_dialog::TIFF_BUTTON, staged_ok),
+                (export_dialog::widget::EXPORT_DNG, "Export DNG", "DNG 1.4 with the raw CFA kept and a medium sRGB preview (the export settings do not apply: the DNG preview is not staged), extension .develop.dng", "develop.dng", export_dialog::DNG_BUTTON, true),
+            ];
+            for (name, label, hover, extension, format, enabled) in buttons {
+                if wrap_item(ui, w(name), label, egui::TextStyle::Button, |ui| ui.add_enabled(enabled, egui::Button::new(label))).on_hover_text(hover).clicked() {
+                    let _ = self.export_develop(&base.with_extension(extension), format, self.overwrite);
+                }
+                self.drawn.push(name.into());
             }
-            self.drawn.push(super::widget::DEVELOP_EXPORT_PNG.into());
-            let jpeg = "Export developed JPEG";
-            if wrap_item(ui, w(super::widget::DEVELOP_EXPORT_JPEG), jpeg, egui::TextStyle::Button, |ui| ui.button(jpeg)).on_hover_text("develop_to_output 8-bit, quality 90, sRGB-v4 profile embedded, extension .develop.jpg").clicked() {
-                let _ = self.export_develop(&base.with_extension("develop.jpg"), DevelopExport::Jpeg { quality: super::export::DEFAULT_JPEG_QUALITY }, self.overwrite);
-            }
-            self.drawn.push(super::widget::DEVELOP_EXPORT_JPEG.into());
         });
         (changes, ops)
     }
