@@ -22,7 +22,7 @@
 //! `mesh` (STU-VEC-135) and the raster `StudioGradient` form (noise, separate transparency stop list,
 //! STU-RAS-160) are not stored; effect rows and the per-row effect scope (STU-VEC-023) are not
 //! stored; stroke per-side weights, `stroke_cap`/`stroke_join` per network vertex, dash cap, dash
-//! corner adjustment, gap colour and arrowheads (STU-VEC-143..146) are not stored; gradient
+//! corner adjustment and gap colour (STU-VEC-143..145) are not stored (arrowheads: `vector_markers.rs`); gradient
 //! application mode on strokes (`within`/`along`/`across`, STU-VEC-016) is not stored. Two members
 //! are carried that the spec lists no field for, because SVG and PDF gradients and dashes need them:
 //! the gradient `spread` and the stroke `dash_offset` (STU-VEC-145 states no dash phase).

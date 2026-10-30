@@ -4,11 +4,11 @@
 //! stroke uses nib's trimmed path; dashes never dash a marker; ERD terminators are refused typed.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::vector::{
-    FillRule, OwnedPath, PathElement, PathPoint, REFUSE_MARKER_BRUSH, REFUSE_MARKER_SHAPE_UNBUILT,
-    REFUSE_MARKER_WIDTH_PROFILE, StrokeStyle,
+    FillRule, OwnedPath, PathElement, PathPoint, REFUSE_MARKER_BRUSH, REFUSE_MARKER_NETWORK,
+    REFUSE_MARKER_SHAPE_UNBUILT, REFUSE_MARKER_WIDTH_PROFILE, StrokeStyle,
 };
 use hsk_studio_composite::*;
-use hsk_studio_folio::{StudioDesignRecords, StudioImageSource, StudioVectorRecords};
+use hsk_studio_folio::{StudioDesignRecords, StudioImageSource, StudioVectorNetwork, StudioVectorRecords};
 use hsk_studio_nib::markers::{MarkerAlign, MarkerEnd, MarkerOptions, MarkerShape, MarkerSpec, marker_outlines};
 use hsk_studio_nib::stroke::{StrokeOptions, outline_stroke};
 use hsk_studio_pigment::blend_math::StudioBlendMode;
@@ -34,6 +34,23 @@ impl VectorAssets for Assets {
     }
     fn image(&self, _: &StudioImageSource) -> Option<ImageInfo> {
         None
+    }
+}
+/// The same path promoted to a vector network (one segment, no region).
+struct NetworkAssets;
+impl VectorAssets for NetworkAssets {
+    fn path(&self, path_id: &str) -> Option<OwnedPath> {
+        Assets.path(path_id)
+    }
+    fn image(&self, _: &StudioImageSource) -> Option<ImageInfo> {
+        None
+    }
+    fn network(&self, path_id: &str) -> Option<StudioVectorNetwork> {
+        (path_id == identity("SVPT", 1)).then(|| {
+            serde_json::from_value(json!({"schema_id":"hsk.studio.vector_network@1","path_id":identity("SVPT",1),
+                "vertices":[{"x":2.0,"y":8.0},{"x":40.0,"y":8.0}],"segments":[{"start":0,"end":1}],"regions":[]}))
+            .expect("network shape")
+        })
     }
 }
 fn stroke_row(dash: Value) -> Value {
@@ -168,6 +185,16 @@ fn erd_terminators_and_unsupported_combinations_are_refused_typed() {
         "brush_strokes":[{"style_id":identity("SSTY",1),"row":0,"brush_id":"nib"}]});
     let got = prepare(&d, &records(Some(("arrow.triangle", INSIDE)), brush));
     assert_eq!(got.refusal(&identity("SLYR", 4)), Some(REFUSE_MARKER_BRUSH));
+    // A marker on a vector-network stroke (network endpoint markers, STU-VEC-062, are not built).
+    let mut doc = mixed();
+    assign_all_profiles(&mut doc);
+    doc["geometry_unit"] = json!("px");
+    let marked = records(Some(("arrow.triangle", INSIDE)), json!({}));
+    let got = prepare_vectors(&open(&doc), &d, &marked, &NetworkAssets, BlendSpace::Encoded, &VectorResolution::default(), &CancellationToken::default()).unwrap();
+    assert_eq!(got.refusal(&identity("SLYR", 4)), Some(REFUSE_MARKER_NETWORK));
+    // Without the marker the same network stroke draws (the refusal is the marker's).
+    let plain = prepare_vectors(&open(&doc), &d, &records(None, json!({})), &NetworkAssets, BlendSpace::Encoded, &VectorResolution::default(), &CancellationToken::default()).unwrap();
+    assert_eq!(plain.refusal(&identity("SLYR", 4)), None);
 }
 
 #[test]
