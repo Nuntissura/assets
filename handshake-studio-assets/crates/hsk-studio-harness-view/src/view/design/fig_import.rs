@@ -335,6 +335,39 @@ fn build_package(
         }
         design.nodes.push(serde_json::from_value(json!({"node": {"node_kind": "layer", "node_id": n.node.node_id}, "style_refs": {"fill_style_id": fill}})).map_err(json_err)?);
     }
+    // Auto layout (lane SMB-FIG-GRID-2): a group layer's auto-layout record and its children's child
+    // layouts (an absolute child with its constraints) ride in the entry too, so the window's
+    // auto-layout section edits imported flow and GRID frames.
+    let parent_of = |id: &str| doc.layers.iter().find(|l| l.layer_id == id).and_then(|l| match &l.parent {
+        folio::Parent::Node(p) => Some(p.node_id.as_str()),
+        folio::Parent::Root(()) => None,
+    });
+    let containers: BTreeSet<&str> = proposal
+        .design
+        .nodes
+        .iter()
+        .filter(|n| n.auto_layout.is_some() && n.node.node_kind == NodeKind::Layer && doc.layers.iter().any(|l| l.layer_id == n.node.node_id && l.kind == "group"))
+        .map(|n| n.node.node_id.as_str())
+        .collect();
+    for n in &proposal.design.nodes {
+        let id = n.node.node_id.as_str();
+        let auto_layout = n.auto_layout.clone().filter(|_| containers.contains(id));
+        let child_layout = n.child_layout.clone().filter(|_| parent_of(id).is_some_and(|p| containers.contains(p)));
+        if auto_layout.is_none() && child_layout.is_none() {
+            continue;
+        }
+        let constraints = n.constraints.clone().filter(|_| child_layout.as_ref().is_some_and(|c| c.layout_positioning == folio::ChildPositioning::Absolute));
+        let at = match design.nodes.iter().position(|d| d.node.node_id == id) {
+            Some(i) => i,
+            None => {
+                design.nodes.push(serde_json::from_value(json!({"node": {"node_kind": "layer", "node_id": id}})).map_err(json_err)?);
+                design.nodes.len().saturating_sub(1)
+            }
+        };
+        if let Some(d) = design.nodes.get_mut(at) {
+            (d.auto_layout, d.child_layout, d.constraints) = (auto_layout, child_layout, constraints);
+        }
+    }
     let mut entry = VectorEntry::empty();
     entry.paths = records;
     entry.design = Some(design);

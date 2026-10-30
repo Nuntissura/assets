@@ -15,7 +15,7 @@ use hsk_studio_folio::{ChildSizing, LayoutMode, StudioGridChild, StudioGridTrack
 use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::design::auto_layout::widget;
 use hsk_studio_harness::view::render::Prefer;
-use hsk_studio_harness::view::vector::{ShapeKind, VectorTool};
+use hsk_studio_harness::view::vector::{PaintSpec, ShapeKind, VectorTool};
 
 fn paper(scratch: &Scratch) -> Viewer {
     let source = scratch.0.join("paper.psd");
@@ -207,4 +207,56 @@ fn the_section_ids_drive_the_commands_and_a_frame_without_records_has_no_section
     assert_eq!(v.state_json()["design"]["auto_layout"]["selected"]["child_layout"]["grid_child"]["grid_column_anchor_index"], 1);
     ui_frame(&mut v, &ctx);
     assert!(drew(&v, &widget::child("row_span")), "{:?}", v.drawn());
+}
+
+// ---- gap closures: restyle and import ----------------------------------------------------------
+
+#[test]
+fn restyling_a_grid_child_keeps_its_anchor() {
+    let scratch = Scratch::new("al-restyle");
+    let mut v = paper(&scratch);
+    let (g, k) = frame(&mut v, false);
+    v.set_auto_layout_mode(&g, LayoutMode::Grid).unwrap();
+    v.grid_append_child_at(&g, &k[1], 1, 1).unwrap();
+    let anchor = |v: &mut Viewer| {
+        v.select(Some(k[1].clone()));
+        v.state_json()["design"]["auto_layout"]["selected"]["child_layout"]["grid_child"].clone()
+    };
+    let before = anchor(&mut v);
+    assert_eq!((before["grid_row_anchor_index"].as_u64(), before["grid_column_anchor_index"].as_u64()), (Some(1), Some(1)));
+    // A fill change and a graphic style both rewrite the layer's style reference only.
+    v.set_fill(&k[1], Some(&PaintSpec::Solid([0, 0, 255]))).unwrap();
+    assert_eq!(anchor(&mut v), before);
+    let style = v.add_graphic_style("blue", &k[1]).unwrap();
+    v.apply_graphic_style(&k[0], &style).unwrap();
+    v.apply_graphic_style(&k[1], &style).unwrap();
+    assert_eq!(anchor(&mut v), before);
+    // The records still solve: b stays in cell (1, 1) after a gap change (a and c auto-flow to
+    // (0, 0) and (0, 1); columns 10 and 20, rows 20 (c) and 10 (b), row gap 5: b at (20, 35)).
+    v.set_grid_gaps(&g, 5.0, 0.0).unwrap();
+    near(&v, &k[1], [20.0, 35.0, 40.0, 45.0]);
+}
+
+#[test]
+fn an_imported_flow_frame_shows_its_records_in_the_section() {
+    let scratch = Scratch::new("al-import");
+    let fig = scratch.0.join("fig-components-autolayout.fig");
+    std::fs::copy(format!("{}/../hsk-studio-interop-fig/tests/fixtures/fig-components-autolayout.fig", env!("CARGO_MANIFEST_DIR")), &fig).unwrap();
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.import_fig(&fig, &scratch.0.join("imported.handshake"), false).unwrap();
+    let frame = v.run().snapshot().unwrap().document().layers.iter().find(|l| l.name == "fixture-button" && l.kind == "group").expect("fixture-button frame").layer_id.clone();
+    // The imported HORIZONTAL record (spacing 24, padding 24) rides in the vector entry.
+    let view = v.auto_layout_view(&frame).expect("section");
+    let a = view.auto_layout.expect("auto layout");
+    assert_eq!((a.layout_mode, a.item_spacing, a.padding_left, a.padding_top), (LayoutMode::Horizontal, 24.0, 24.0, 24.0));
+    v.select(Some(frame.clone()));
+    let ctx = egui::Context::default();
+    ui_frame(&mut v, &ctx);
+    assert!(drew(&v, widget::SPACING) && drew(&v, &widget::mode("GRID")), "{:?}", v.drawn());
+    // Its components hold text layers, whose positions live in the text entry: a re-layout is a
+    // typed refusal and changes nothing (one undo step carries one entry).
+    let rev = revision(&v);
+    let e = v.set_auto_layout_spacing(&frame, 30.0, [24.0; 4]).unwrap_err();
+    assert!(e.contains("auto_layout_text_layer_unsupported"), "{e}");
+    assert_eq!(revision(&v), rev);
 }

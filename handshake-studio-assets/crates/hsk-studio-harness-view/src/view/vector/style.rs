@@ -223,6 +223,20 @@ pub(super) fn node(layer_id: &str, style_id: &str) -> Result<folio::StudioNodeDe
     serde_json::from_value(json!({"node": {"node_kind": "layer", "node_id": layer_id}, "style_refs": {"fill_style_id": style_id}})).map_err(|e| format!("style: {e}"))
 }
 
+/// Points `layer_id`'s node entry at fill style `style_id`, keeping the entry's other members (its
+/// auto-layout and child-layout records: lane SMB-FIG-GRID-2, a restyled grid child keeps its
+/// anchor); a layer without an entry gets one.
+pub(super) fn set_fill_ref(design: &mut StudioDesignRecords, layer_id: &str, style_id: &str) -> Result<(), String> {
+    match design.nodes.iter_mut().find(|n| n.node.node_id == layer_id) {
+        Some(n) => {
+            n.style_refs.clear();
+            n.style_refs.insert("fill_style_id".into(), style_id.into());
+        }
+        None => design.nodes.push(node(layer_id, style_id)?),
+    }
+    Ok(())
+}
+
 /// The rows an unstyled layer draws with: its 8-bit fill, and its stroke when it has a width (or a
 /// width profile): butt cap, miter join (limit 4), centred, like nib's default stroke.
 fn legacy_rows(record: &PathRecord, unit: GeometryUnit) -> Result<Vec<StudioAppearanceRow>, String> {
@@ -252,7 +266,7 @@ pub fn effective_design(doc: &StudioDocument, entry: &VectorEntry) -> Result<Stu
     d.document_id.clone_from(&doc.document_id);
     for layer in &doc.layers {
         let Payload::Vector { path_ids } = &layer.payload else { continue };
-        if d.node_design(&layer.layer_id).is_some() {
+        if node_style(&d, &layer.layer_id).is_some() {
             continue;
         }
         let Some(record) = path_ids.first().and_then(|id| entry.path(id)) else { continue };
@@ -260,7 +274,7 @@ pub fn effective_design(doc: &StudioDocument, entry: &VectorEntry) -> Result<Stu
         let rows = legacy_rows(record, doc.geometry_unit)?;
         d.paint_styles.retain(|s| s.style_id != id);
         d.paint_styles.push(paint_style(&id, "Layers/appearance", "appearance", &rows)?);
-        d.nodes.push(node(&layer.layer_id, &id)?);
+        set_fill_ref(&mut d, &layer.layer_id, &id)?;
     }
     Ok(d)
 }
@@ -464,8 +478,7 @@ impl Viewer {
             if !design.paint_styles.iter().any(|s| s.style_id == style_id && is_graphic_style(s)) {
                 return Err(format!("graphic_style: unknown {style_id}"));
             }
-            design.nodes.retain(|n| n.node.node_id != layer_id);
-            design.nodes.push(node(layer_id, style_id)?);
+            set_fill_ref(design, layer_id, style_id)?;
             self.commit_entry("apply_graphic_style", layer_id, &entry)?;
             Ok(layer_id.to_string())
         })();
@@ -574,8 +587,7 @@ impl Viewer {
         }
         design.paint_styles.retain(|s| s.style_id != id);
         design.paint_styles.push(style);
-        design.nodes.retain(|n| n.node.node_id != layer_id);
-        design.nodes.push(node(layer_id, &id)?);
+        set_fill_ref(design, layer_id, &id)?;
         rebind(&mut entry.records, from.as_deref().unwrap_or(&id), if from.is_some() { &before } else { &[] }, &id, &rows, broken);
         if let Some(b) = bind {
             let kind = match &b {

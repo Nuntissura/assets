@@ -15,10 +15,10 @@
 //!
 //! Geometry (Studio readings; Folio layers carry no geometry, the solver reads authored rects):
 //! * A vector layer's rect is the union bounds of its paths; a group's (a frame's) rect is the bounds
-//!   of its frame background when it has one, else the union of its children's rects. A layer
-//!   without vector geometry (a text or pixel layer, an empty group) in the container's subtree is
-//!   refused `auto_layout_child_without_geometry:<id>` (the window moves geometry through the vector
-//!   entry only).
+//!   of its frame background when it has one, else the union of its children's rects. A text layer
+//!   in the container's subtree is refused `auto_layout_text_layer_unsupported:<id>` (its position
+//!   lives in the text entry and one undo step carries one entry); any other layer without vector
+//!   geometry (a pixel layer, an empty group) is refused `auto_layout_child_without_geometry:<id>`.
 //! * Frame background: a group's first (bottom-most) child when it is a vector layer whose bounds
 //!   contain every other child's bounds (the fill layer `.fig` import draws first). It is not a layout
 //!   item: the solver takes it as absolute and stretched with the frame (STU-DS-048) unless its own
@@ -232,6 +232,10 @@ impl Geo<'_> {
     }
 
     fn rect(&self, id: &str) -> Result<Bounds, String> {
+        if matches!(layer(self.doc, id)?.payload, Payload::Text { .. }) {
+            // A text layer's position lives in the text entry; one undo step carries one entry.
+            return Err(format!("auto_layout_text_layer_unsupported:{id}"));
+        }
         self.bounds(id, 0)?.ok_or_else(|| format!("auto_layout_child_without_geometry:{id}"))
     }
 
