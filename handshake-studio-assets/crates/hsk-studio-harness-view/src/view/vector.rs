@@ -77,6 +77,7 @@ pub mod envelope;
 /// sync ea20bcb; enabled by `viewer`).
 #[cfg(feature = "vector-interop")]
 pub mod interop;
+pub mod markers;
 pub mod masking;
 pub mod pdf_export;
 /// Lane SMB-AI-TYPE-PATH-RECOLOR.
@@ -87,6 +88,8 @@ pub mod separations;
 pub mod swatch;
 pub use arrange::{AlignTarget, TransformOp};
 pub use envelope::EnvelopeSpec;
+/// Lane SMB-AI-ARROWHEADS-2.
+pub use markers::MarkerSpec;
 pub use swatch::{SwatchColour, SwatchSpec};
 
 /// Stable widget ids of the vector tools.

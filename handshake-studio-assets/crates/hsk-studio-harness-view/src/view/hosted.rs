@@ -32,7 +32,7 @@ use super::Viewer;
 use super::shell::{Availability, Panel};
 use super::vector::arrange::{Align, Distribute, ReferencePoint, TransformEach};
 use super::vector::brushes::PatternTileLayers;
-use super::vector::{AlignTarget, EnvelopeSpec, LiveTextKind, PaintSpec, PathEdit, RowKind, StrokePanel, TransformOp};
+use super::vector::{AlignTarget, EnvelopeSpec, LiveTextKind, MarkerSpec, PaintSpec, PathEdit, RowKind, StrokePanel, TransformOp};
 use super::widget as vw;
 use hsk_studio_folio::{
     self as folio, StudioAppearanceRow, StudioArtScale, StudioBrushColorization, StudioBrushKind, StudioBrushParam, StudioEnvelopeShape, StudioMaskMode,
@@ -217,6 +217,11 @@ pub enum PanelAction {
     ReduceToBasicAppearance,
     /// Stroke: the stroke panel of the selected layer (`None`: no stroke).
     SetStroke(Option<StrokePanel>),
+    /// Stroke: the arrowheads of the selected layer's first stroke row (`None`: no markers; lane
+    /// SMB-AI-ARROWHEADS-2, [`Viewer::set_stroke_markers`]).
+    SetStrokeMarkers(Option<MarkerSpec>),
+    /// Stroke: the swap command ([`Viewer::swap_stroke_markers`]).
+    SwapStrokeMarkers,
     AddSwatch { name: String, colour: [u8; 3] },
     /// Swatches: links a swatch to the selected layer's fill or stroke (optionally tinted, percent).
     ApplySwatch { swatch_id: String, kind: RowKind, tint: Option<f64> },
@@ -273,7 +278,7 @@ impl PanelAction {
         use HostedPanel as H;
         match self {
             Self::SetFill(_) | Self::ClearAppearance | Self::ReduceToBasicAppearance => H::Appearance,
-            Self::SetStroke(_) => H::Stroke,
+            Self::SetStroke(_) | Self::SetStrokeMarkers(_) | Self::SwapStrokeMarkers => H::Stroke,
             Self::AddSwatch { .. } | Self::ApplySwatch { .. } | Self::DetachSwatch(_) => H::Swatches,
             Self::AddGraphicStyle { .. } | Self::ApplyGraphicStyle(_) | Self::MergeGraphicStyle(_) | Self::RedefineGraphicStyle(_) | Self::BreakGraphicStyle => H::GraphicStyles,
             Self::Align { .. } | Self::Distribute { .. } => H::AlignDistribute,
@@ -295,6 +300,8 @@ impl PanelAction {
                 | Self::ClearAppearance
                 | Self::ReduceToBasicAppearance
                 | Self::SetStroke(_)
+                | Self::SetStrokeMarkers(_)
+                | Self::SwapStrokeMarkers
                 | Self::ApplySwatch { .. }
                 | Self::DetachSwatch(_)
                 | Self::AddGraphicStyle { .. }
@@ -1279,6 +1286,8 @@ impl Viewer {
             PanelAction::ClearAppearance => self.clear_appearance(&layer).map(|_| "appearance cleared".into()),
             PanelAction::ReduceToBasicAppearance => self.reduce_to_basic_appearance(&layer).map(|_| "reduced to basic appearance".into()),
             PanelAction::SetStroke(s) => self.set_stroke(&layer, s.as_ref()).map(|_| "stroke set".into()),
+            PanelAction::SetStrokeMarkers(m) => self.set_stroke_markers(&layer, 0, m).map(|_| "markers set".into()),
+            PanelAction::SwapStrokeMarkers => self.swap_stroke_markers(&layer, 0).map(|_| "markers swapped".into()),
             PanelAction::AddSwatch { name, colour } => self.add_swatch(&name, &PaintSpec::Solid(colour)).map(|id| format!("swatch {id}")),
             PanelAction::ApplySwatch { swatch_id, kind, tint } => self.apply_swatch_tinted(&layer, &swatch_id, kind, tint).map(|_| format!("{} linked to {swatch_id}", kind.token())),
             PanelAction::DetachSwatch(kind) => self.detach_swatch(&layer, kind).map(|_| format!("{} detached", kind.token())),
