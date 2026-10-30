@@ -14,8 +14,11 @@
 //! P3 are renderable. Adobe RGB (1998) and ProPhoto RGB need their own transfer curves and have no ICC
 //! profile in the test corpus: they are the typed refusal [`ExportError::ProfileMissing`] naming the profile.
 //!
-//! Not here (recorded gaps, not silently dropped): output resize and sharpen-for-output (develop has no
-//! resample-for-output or output-sharpening stage; capture sharpening is a recipe control), DNG export
+//! Output resize, output sharpening and the graphic watermark are the export stage ([`crate::export_stage`],
+//! lane SMB-LR-EXPORT-SIZING-1): [`develop_to_tiff_staged`] / [`tiff_from_staged_output`] write the staged image
+//! with the stage's resolution as dpi; the unstaged entries below are unchanged.
+//!
+//! Not here (recorded gaps, not silently dropped): DNG export
 //! (develop reads DNG; it has no DNG writer, only a test-side TIFF/DNG builder), CMYK/Lab/greyscale export
 //! colour modes. Lightroom Classic export equivalence is UNVERIFIED (no oracle, D5).
 #![deny(clippy::arithmetic_side_effects)]
@@ -23,6 +26,8 @@ use crate::output::{check_icc_header, develop_to_output, ClipReport, OutputDepth
 use crate::par::Threads;
 use crate::pipeline::DevelopReceipt;
 use crate::recipe::DevelopRecipe;
+use crate::export_stage::{ExportStage, ExportStageError, ExportStageReceipt, validate_export_stage};
+use crate::output::develop_to_output_staged;
 use crate::{CfaPlane, DevelopError};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_interop_tiff::{
@@ -73,8 +78,8 @@ pub enum TiffCompression {
     Deflate,
 }
 
-/// Export settings record (Lightroom export panel: file settings and colour space; resize and output
-/// sharpening are gaps, see the module notes).
+/// Export settings record (Lightroom export panel: file settings and colour space; resize, output sharpening
+/// and watermark are the export stage, see the module notes).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TiffExportSettings {
     pub depth: OutputDepth,
@@ -114,6 +119,8 @@ pub enum ExportError {
     ProfileMismatch(&'static str),
     /// Settings or image inconsistent (stable code inside).
     Invalid(&'static str),
+    /// An export-stage refusal (sizing, sharpening, watermark; lane SMB-LR-EXPORT-SIZING-1).
+    Stage(ExportStageError),
 }
 
 impl ExportError {
@@ -124,6 +131,7 @@ impl ExportError {
             Self::ProfileMissing(_) => "colour_space_profile_missing",
             Self::ProfileMismatch(_) => "profile_colour_space_mismatch",
             Self::Invalid(c) => c,
+            Self::Stage(e) => e.code(),
         }
     }
 
@@ -131,6 +139,7 @@ impl ExportError {
     pub fn detail(&self) -> &'static str {
         match self {
             Self::ProfileMissing(d) | Self::ProfileMismatch(d) => d,
+            Self::Stage(e) => e.detail(),
             _ => "",
         }
     }
@@ -139,6 +148,15 @@ impl ExportError {
 impl From<DevelopError> for ExportError {
     fn from(e: DevelopError) -> Self {
         Self::Develop(e)
+    }
+}
+
+impl From<ExportStageError> for ExportError {
+    fn from(e: ExportStageError) -> Self {
+        match e {
+            ExportStageError::Develop(d) => Self::Develop(d),
+            other => Self::Stage(other),
+        }
     }
 }
 
@@ -317,4 +335,59 @@ pub fn develop_to_tiff(
     check_profile_is(icc, settings.colour_space)?;
     let (out, receipt) = develop_to_output(plane, recipe, recipe_revision, settings.depth, icc, threads, cancel)?;
     Ok((tiff_from_output(&out, settings)?, receipt))
+}
+
+/// Whole dpi of a stage resolution (rounded half up), refused outside 1..=[`MAX_DPI`].
+fn stage_dpi(ppi: f64) -> Result<u32, ExportError> {
+    let dpi = (ppi + 0.5).floor();
+    if !dpi.is_finite() || dpi < 1.0 || dpi > f64::from(MAX_DPI) {
+        return Err(ExportError::Invalid("invalid_resolution"));
+    }
+    Ok(dpi as u32)
+}
+
+/// Encode an output rendered from a staged image, writing the stage's resolution as dpi (`receipt.resolution_ppi`
+/// rounded half up). `settings.dpi` must be `None` or that same value (`resolution_conflict`); the output size must
+/// be the receipt's (`stage_receipt_mismatch`). Otherwise exactly [`tiff_from_output`].
+pub fn tiff_from_staged_output(
+    out: &OutputImage,
+    settings: &TiffExportSettings,
+    receipt: &ExportStageReceipt,
+) -> Result<TiffExport, ExportError> {
+    if (out.width, out.height) != receipt.output_size {
+        return Err(ExportError::Invalid("stage_receipt_mismatch"));
+    }
+    let dpi = stage_dpi(receipt.resolution_ppi)?;
+    if settings.dpi.is_some_and(|d| d != dpi) {
+        return Err(ExportError::Invalid("resolution_conflict"));
+    }
+    let mut staged = settings.clone();
+    staged.dpi = Some(dpi);
+    tiff_from_output(out, &staged)
+}
+
+/// [`develop_to_tiff`] with the export stage: develop, stage, render, encode with the stage's dpi. TIFF settings,
+/// the profile and every stage setting are checked before any development work.
+#[allow(clippy::too_many_arguments)]
+pub fn develop_to_tiff_staged(
+    plane: &CfaPlane,
+    recipe: &DevelopRecipe,
+    recipe_revision: u64,
+    settings: &TiffExportSettings,
+    stage: &ExportStage,
+    icc: &[u8],
+    threads: Threads,
+    cancel: &CancellationToken,
+) -> Result<(TiffExport, ExportStageReceipt, DevelopReceipt), ExportError> {
+    validate(settings)?;
+    check_icc_header(icc)?;
+    check_profile_is(icc, settings.colour_space)?;
+    validate_export_stage(stage)?;
+    let dpi = stage_dpi(stage.sizing.pixels_per_inch())?;
+    if settings.dpi.is_some_and(|d| d != dpi) {
+        return Err(ExportError::Invalid("resolution_conflict"));
+    }
+    let (out, stage_receipt, receipt) =
+        develop_to_output_staged(plane, recipe, recipe_revision, settings.depth, icc, stage, threads, cancel)?;
+    Ok((tiff_from_staged_output(&out, settings, &stage_receipt)?, stage_receipt, receipt))
 }

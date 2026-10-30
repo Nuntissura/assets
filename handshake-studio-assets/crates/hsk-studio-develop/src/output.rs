@@ -26,6 +26,7 @@ use crate::par::Threads;
 use crate::pipeline::{DevelopReceipt, DevelopedImage, develop_to_image_threads};
 use crate::recipe::DevelopRecipe;
 use crate::CfaPlane;
+use crate::export_stage::{ExportStage, ExportStageError, ExportStageReceipt, apply_export_stage, validate_export_stage};
 use hsk_studio_accord::CancellationToken;
 use sha2::{Digest, Sha256};
 
@@ -171,4 +172,29 @@ pub fn develop_to_output(
     let (image, receipt) = develop_to_image_threads(plane, recipe, recipe_revision, threads, cancel)?;
     let output = render_output(&image, depth, icc, Some(recipe.output_profile.sha256))?;
     Ok((output, receipt))
+}
+
+/// [`develop_to_output`] with the export stage (sizing, output sharpening, watermark) between development and the
+/// output transfer (lane SMB-LR-EXPORT-SIZING-1). Stage settings, then the profile header and recipe hash, are
+/// checked before any development work. The output's `clip` equals the receipt's `out_of_range`.
+#[allow(clippy::too_many_arguments)]
+pub fn develop_to_output_staged(
+    plane: &CfaPlane,
+    recipe: &DevelopRecipe,
+    recipe_revision: u64,
+    depth: OutputDepth,
+    icc: &[u8],
+    stage: &ExportStage,
+    threads: Threads,
+    cancel: &CancellationToken,
+) -> Result<(OutputImage, ExportStageReceipt, DevelopReceipt), ExportStageError> {
+    validate_export_stage(stage)?;
+    check_icc_header(icc)?;
+    if Sha256::digest(icc).as_slice() != recipe.output_profile.sha256 {
+        return Err(DevelopError::InvalidProfile.into());
+    }
+    let (image, receipt) = develop_to_image_threads(plane, recipe, recipe_revision, threads, cancel)?;
+    let (staged, stage_receipt) = apply_export_stage(&image, stage, cancel)?;
+    let output = render_output(&staged, depth, icc, Some(recipe.output_profile.sha256))?;
+    Ok((output, stage_receipt, receipt))
 }

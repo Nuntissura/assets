@@ -32,7 +32,13 @@
 //!   weights are normalised to sum 1 and accumulated as differences from the first tap, so a flat field stays
 //!   exactly flat. Values are not clamped here: the cubic's lobes may leave 0..1 and [`crate::render_output`]
 //!   clamps and counts them (receipt `out_of_range`).
-//! * Resolution is recorded in the receipt (`resolution_ppi`); the TIFF path writes it as whole dpi.
+//! * Resolution is recorded in the receipt (`resolution_ppi`); the TIFF path ([`crate::tiff_from_staged_output`])
+//!   writes it as whole dpi, rounded half up (96 ppcm = 243.84 ppi is written 244).
+//!
+//! Entry points (additive; the unstaged `develop_to_output`, `develop_to_tiff` and `TiffExportSettings::new` are
+//! unchanged): [`apply_export_stage`] on a [`DevelopedImage`]; [`crate::develop_to_output_staged`] (develop, stage,
+//! render; returns the [`ExportStageReceipt`] beside the output); [`crate::develop_to_tiff_staged`] and
+//! [`crate::tiff_from_staged_output`] for TIFF. Settings are refused before any development work.
 //!
 //! Output sharpening (Studio reading; Lightroom's algorithm is not public, UNVERIFIED, D5): an unsharp mask on the
 //! sized linear-light image, `out = x + strength (x - G(x))`, G a separable normalised discrete Gaussian of sigma
@@ -1000,13 +1006,9 @@ fn count_out_of_range(rgb: &[f32]) -> Result<ClipReport, DevelopError> {
     Ok(clip)
 }
 
-/// Run the export stage on a developed linear-light image. Settings are checked before any pixel work; the image
-/// must be consistent and finite.
-pub fn apply_export_stage(
-    image: &DevelopedImage,
-    stage: &ExportStage,
-    cancel: &CancellationToken,
-) -> Result<(DevelopedImage, ExportStageReceipt), ExportStageError> {
+/// Check every stage setting (and the watermark source when `use_watermark` is on) without touching pixels; returns
+/// the sharpening row when output sharpening is on. The staged entries call it before any development work.
+pub fn validate_export_stage(stage: &ExportStage) -> Result<Option<SharpenRow>, ExportStageError> {
     stage.sizing.validate()?;
     if SharpenAmount::from_level(stage.sharpening.level).is_none() {
         return Err(ExportStageError::OutOfRange("output_sharpening_level"));
@@ -1015,11 +1017,21 @@ pub fn apply_export_stage(
     if stage.watermark.use_watermark {
         stage.watermark.graphic()?;
     }
-    let sharpening = if stage.sharpening.enabled {
-        Some(sharpen_row(stage.sharpening.media, stage.sharpening.level, stage.sizing.pixels_per_inch())?)
+    if stage.sharpening.enabled {
+        Ok(Some(sharpen_row(stage.sharpening.media, stage.sharpening.level, stage.sizing.pixels_per_inch())?))
     } else {
-        None
-    };
+        Ok(None)
+    }
+}
+
+/// Run the export stage on a developed linear-light image. Settings are checked before any pixel work; the image
+/// must be consistent and finite.
+pub fn apply_export_stage(
+    image: &DevelopedImage,
+    stage: &ExportStage,
+    cancel: &CancellationToken,
+) -> Result<(DevelopedImage, ExportStageReceipt), ExportStageError> {
+    let sharpening = validate_export_stage(stage)?;
     let pixels = usize::try_from(u64::from(image.width).checked_mul(u64::from(image.height)).ok_or(DevelopError::Overflow)?)
         .map_err(|_| DevelopError::Overflow)?;
     if image.width == 0 || image.height == 0 || pixels.checked_mul(3) != Some(image.rgb.len()) {
