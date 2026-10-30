@@ -64,12 +64,11 @@ impl super::Viewer {
             .iter()
             .find(|s| s.sequence_id == sequence_id)
             .ok_or_else(|| format!("bus stream: unknown sequence {sequence_id}"))?;
-        let routing = self
-            .audio_routing()?
-            .and_then(|set| set.routings.into_iter().find(|r| r.sequence_id == sequence_id))
-            .unwrap_or_else(|| StudioAudioRouting::new(sequence_id));
+        let set = self.audio_routing()?.unwrap_or_default();
+        let routing = set.routings.iter().find(|r| r.sequence_id == sequence_id).cloned().unwrap_or_else(|| StudioAudioRouting::new(sequence_id));
         let sequences = &snapshot.document().sequences;
-        let nested = NestedAudioSources::new(sequences, sequence, sources, sample_rate_hz, max_block_frames, extents, StreamLimits::default(), self.cancel)
+        // Lane SMB-PR-NEST-2: the nested mixes apply their own clip gain and pan envelopes.
+        let nested = NestedAudioSources::with_routing(sequences, sequence, sources, &set, sample_rate_hz, max_block_frames, extents, StreamLimits::default(), self.cancel)
             .map_err(|e| format!("bus stream: {}", e.code()))?;
         if let Some(r) = nested.reports().first() {
             return Err(format!("bus stream: nested audio unresolved: sequence {} ({}) used by {:?}", r.sequence_id, r.code, r.clip_ids));

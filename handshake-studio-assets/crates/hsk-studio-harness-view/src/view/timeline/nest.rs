@@ -23,13 +23,19 @@
 //! - A nested clip is an ordinary clip to every timeline edit (trim, move, razor): its source
 //!   length is the nested sequence's duration (pulse `NestedExtents`, used by every planner here),
 //!   so a trim moves only the window onto the nested sequence ([STU-VID-030] "opaque").
-//! - The program monitor shows nested clips through pulse `frame_layers_nested`; the timeline keeps
-//!   its document sequences current (`nest_sync_monitor`).
+//! - The program monitor shows nested clips through pulse `frame_layers_nested`; its host keeps the
+//!   document sequences current on every refresh and when it opens (`nest_sync_monitor`, lane
+//!   SMB-PR-NEST-2), with or without the timeline panel.
+//! - Clip gain and pan envelopes (the audio routing entry) follow (lane SMB-PR-NEST-2): Nest moves
+//!   the nested clips' envelopes from the parent's routing to the new sequence's routing unchanged
+//!   (offsets are ticks from the clip's own start), Make Subsequence copies them under the copies'
+//!   ids (cut at a range edge like a trim); the sequences and the routing entry are ONE undo step
+//!   (`Run::submit_sequence_edits_and_entry`), and the nested mix applies them (pulse
+//!   `NestedAudioSources::with_routing`), so the parent sounds the same before and after a nest.
 //!
 //! Studio readings: Premiere's receiving track, track mirroring and range cut are UNVERIFIED (D5;
-//! pulse module `nest`). Declared gap: a clip with a clip gain or pan envelope in the audio routing
-//! entry is refused `nest_clip_envelopes_unsupported` (the envelope is keyed by the parent sequence;
-//! moving it with the clip is not implemented). Ids are minted here (pulse mints none).
+//! pulse module `nest`); an envelope moves with its clip unchanged, in clip-relative ticks (Studio
+//! reading, no spec clause; Premiere UNVERIFIED). Ids are minted here (pulse mints none).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::{TimelineCommand, envelopes, find_clip, mint_clip_ids, mint_key, sequence_in};
@@ -138,12 +144,24 @@ impl Viewer {
     }
 
     /// The program monitor resolves nested clips against the current document (one copy of the
-    /// document's sequences per revision).
-    pub(super) fn nest_sync_monitor(&mut self) {
+    /// document's sequences per revision). Lane SMB-PR-NEST-2: the monitor host calls it on every
+    /// refresh (`Viewer::monitor_ui`), so the monitor follows an edit, undo or redo whether or not
+    /// the timeline panel is open; on a new revision the monitor's own sequence is replaced too
+    /// when the document's copy of it changed (the timeline's own sync then finds nothing to do).
+    pub(in crate::view) fn nest_sync_monitor(&mut self) {
         let Some(doc) = self.run.snapshot().map(|s| s.document()) else { return };
         let Some(m) = self.monitor.as_mut() else { return };
-        if m.monitor.document_revision() != Some(doc.revision) {
-            m.monitor.set_document(Some(doc.revision), doc.sequences.clone());
+        if m.monitor.document_revision() == Some(doc.revision) {
+            return;
+        }
+        m.monitor.set_document(Some(doc.revision), doc.sequences.clone());
+        let own = m.monitor.sequence().sequence_id.clone();
+        let replaced = match doc.sequences.iter().find(|s| s.sequence_id == own) {
+            Some(seq) if seq != m.monitor.sequence() => m.monitor.replace_sequence(seq.clone(), &m.clock).err(),
+            _ => None,
+        };
+        if let Some(e) = replaced {
+            self.say(format!("program monitor: kept the previous sequence ({} {})", e.code, e.detail));
         }
     }
 
@@ -162,31 +180,96 @@ impl Viewer {
             let ids = ids_for(doc, &seq, "nest", "Nested Sequence", 4, 0);
             plan_nest(snap, seq_id, doc.revision, &clips, &ids, ctx).map_err(|e| e.code().to_owned())
         })?;
-        self.nest_envelope_guard(&proposal)?;
-        self.nest_commit("sequence.nest", &proposal)?;
+        let entry = self.nest_envelopes(&proposal)?;
+        self.nest_commit("sequence.nest", &proposal, entry)?;
         if let Some(t) = self.timeline.as_mut() {
             t.selected = proposal.nested_clip_ids().first().cloned();
         }
         Ok(())
     }
 
-    /// Refuses a nest that would move a clip whose envelope the routing entry keys by the parent.
-    fn nest_envelope_guard(&self, proposal: &NestProposal) -> Result<(), String> {
-        let Some(SequenceChange::Replace { expect, write }) = proposal.changes().get(1) else { return Ok(()) };
-        let kept: BTreeSet<&str> = write.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.clip_id.as_str()).collect();
-        let moved: BTreeSet<&str> = expect.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.clip_id.as_str()).filter(|id| !kept.contains(id)).collect();
-        let Some(bytes) = self.run.document_entry(envelopes::ROUTING_ENTRY) else { return Ok(()) };
-        let Ok(set) = serde_json::from_slice::<folio::StudioAudioRoutingSet>(bytes) else { return Ok(()) };
-        let enveloped = set
-            .routings
-            .iter()
-            .filter(|r| r.sequence_id == expect.sequence_id)
-            .flat_map(|r| r.clip_gains.iter().map(|g| g.clip_id.as_str()).chain(r.clip_pans.iter().map(|p| p.clip_id.as_str())))
-            .find(|id| moved.contains(id));
-        match enveloped {
-            Some(id) => Err(format!("nest_clip_envelopes_unsupported {id}")),
-            None => Ok(()),
+    /// The routing entry to commit with `proposal` (lane SMB-PR-NEST-2), or `None` to commit the
+    /// sequences alone (no entry, no envelope of a moved or copied clip). Nest moves the moved
+    /// clips' gain and pan envelopes from the parent's routing to the new sequence's routing
+    /// unchanged (offsets are ticks from the clip's own `timeline_start`); Make Subsequence copies
+    /// them under the copies' ids, re-anchored to each copy's source window (a range piece cut at
+    /// an edge gets the envelope cut there, module `envelopes`). The rest of every routing (bus
+    /// routes, sends, effects, track automation) stays as it is. Folio validates the new set
+    /// against the proposed document; a refusal refuses the step (`routing_invalid`). An entry
+    /// that does not validate before the step is left as it is and reported.
+    fn nest_envelopes(&mut self, proposal: &NestProposal) -> Result<Option<Vec<u8>>, String> {
+        let Some(bytes) = self.run.document_entry(envelopes::ROUTING_ENTRY) else { return Ok(None) };
+        let snapshot = self.run.snapshot().ok_or("not_open")?;
+        let doc = snapshot.document();
+        let mut set = match folio::parse_audio_routing(bytes, doc, folio::Budget::default(), self.cancel) {
+            Ok(set) => set,
+            Err(d) => {
+                let line = format!("timeline: audio routing left as is (invalid before the step: {:?} {})", d.code, d.target);
+                self.say(line);
+                return Ok(None);
+            }
+        };
+        let new_id = proposal.sequence_id().to_owned();
+        let (parent_id, gains, pans) = match proposal.changes().get(1) {
+            // Nest: the clips that left the parent take their envelopes with them.
+            Some(SequenceChange::Replace { expect, write }) => {
+                let kept: BTreeSet<&str> = write.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.clip_id.as_str()).collect();
+                let moved: BTreeSet<String> = expect.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.clip_id.as_str()).filter(|id| !kept.contains(id)).map(str::to_owned).collect();
+                let Some(parent) = set.routings.iter_mut().find(|r| r.sequence_id == expect.sequence_id) else { return Ok(None) };
+                let (gains, kept_gains): (Vec<_>, Vec<_>) = parent.clip_gains.drain(..).partition(|g| moved.contains(&g.clip_id));
+                let (pans, kept_pans): (Vec<_>, Vec<_>) = parent.clip_pans.drain(..).partition(|p| moved.contains(&p.clip_id));
+                parent.clip_gains = kept_gains;
+                parent.clip_pans = kept_pans;
+                (expect.sequence_id.clone(), gains, pans)
+            }
+            // Make Subsequence: the copies get the envelopes of the clips they copy.
+            _ => {
+                let copies = proposal.copied_clips();
+                let Some(parent_id) = self.timeline.as_ref().map(|t| t.sequence_id.clone()) else { return Ok(None) };
+                let Some(parent) = doc.sequences.iter().find(|s| s.sequence_id == parent_id) else { return Ok(None) };
+                let Some(routing) = set.routings.iter().find(|r| r.sequence_id == parent_id) else { return Ok(None) };
+                let Some(new_seq) = proposal.snapshot().document().sequences.iter().find(|s| s.sequence_id == new_id) else { return Ok(None) };
+                let copy_of = |id: &str| copies.iter().find(|(from, _)| from == id).map(|(_, to)| to.clone());
+                let mut gains: Vec<folio::StudioClipGainEnvelope> = routing.clip_gains.iter().filter_map(|g| copy_of(g.clip_id.as_str()).map(|to| folio::StudioClipGainEnvelope { clip_id: to, points: g.points.clone() })).collect();
+                let mut pans: Vec<folio::StudioClipPanEnvelope> = routing.clip_pans.iter().filter_map(|p| copy_of(p.clip_id.as_str()).map(|to| folio::StudioClipPanEnvelope { clip_id: to, points: p.points.clone() })).collect();
+                if !gains.is_empty() || !pans.is_empty() {
+                    // The parent clips under their copies' ids in the new sequence: the envelope
+                    // follows each copy's source window as a trim does (module `envelopes`).
+                    let mut original = new_seq.clone();
+                    for c in original.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+                        if let Some((from, _)) = copies.iter().find(|(_, to)| *to == c.clip_id)
+                            && let Some((_, source)) = find_clip(parent, from)
+                        {
+                            let id = c.clip_id.clone();
+                            c.clone_from(source);
+                            c.clip_id = id;
+                        }
+                    }
+                    gains = envelopes::follow_edit(&original, new_seq, &gains)?;
+                    pans = envelopes::follow_pans(&original, new_seq, &pans)?;
+                }
+                (parent_id, gains, pans)
+            }
+        };
+        if gains.is_empty() && pans.is_empty() {
+            return Ok(None);
         }
+        let moved = gains.len().saturating_add(pans.len());
+        match set.routings.iter_mut().find(|r| r.sequence_id == new_id) {
+            Some(r) => {
+                r.clip_gains.extend(gains);
+                r.clip_pans.extend(pans);
+            }
+            None => {
+                let mut r = folio::StudioAudioRouting::new(new_id.clone());
+                r.clip_gains = gains;
+                r.clip_pans = pans;
+                set.routings.push(r);
+            }
+        }
+        folio::validate_audio_routing(&set, proposal.snapshot().document(), folio::Budget::default(), self.cancel).map_err(|d| format!("routing_invalid {:?} {}", d.code, d.target))?;
+        self.say(format!("timeline: {moved} clip envelope(s) of {parent_id} follow into {new_id}"));
+        serde_json::to_vec(&set).map(Some).map_err(|e| e.to_string())
     }
 
     fn timeline_make_subsequence(&mut self, ids: &[String]) -> Result<(), String> {
@@ -211,12 +294,19 @@ impl Viewer {
             let ids = ids_for(doc, &seq, "subsequence", "Subsequence", n, r);
             plan_make_subsequence(snap, seq_id, doc.revision, &source, &ids, ctx).map_err(|e| e.code().to_owned())
         })?;
-        self.nest_commit("sequence.make_subsequence", &proposal)
+        let entry = self.nest_envelopes(&proposal)?;
+        self.nest_commit("sequence.make_subsequence", &proposal, entry)
     }
 
-    /// Commits a proposal as ONE undo step and lets the monitor and mixer follow.
-    fn nest_commit(&mut self, op: &str, proposal: &NestProposal) -> Result<(), String> {
-        if !self.run.submit_sequence_edits(op, to_session(proposal.changes())) {
+    /// Commits a proposal (and `entry`, the routing set its envelopes follow into, lane
+    /// SMB-PR-NEST-2) as ONE undo step and lets the monitor and mixer follow.
+    fn nest_commit(&mut self, op: &str, proposal: &NestProposal, entry: Option<Vec<u8>>) -> Result<(), String> {
+        let edits = to_session(proposal.changes());
+        let committed = match entry {
+            Some(bytes) => self.run.submit_sequence_edits_and_entry(op, edits, envelopes::ROUTING_ENTRY, bytes),
+            None => self.run.submit_sequence_edits(op, edits),
+        };
+        if !committed {
             let code = self.run.ops().last().and_then(|o| o.get("error").and_then(serde_json::Value::as_str)).unwrap_or("submit_failed").to_owned();
             return Err(format!("submit_failed {code}"));
         }

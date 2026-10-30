@@ -383,15 +383,18 @@ impl Viewer {
 
     /// Opens the program monitor on sequence `sequence_id` of the open document at
     /// `width` x `height` (lane SMB-PULSE-PLAYBACK). Frames need a decoder: see
-    /// [`Viewer::set_monitor_sources`].
+    /// [`Viewer::set_monitor_sources`]. The monitor gets the document's sequences at once (lane
+    /// SMB-PR-NEST-2), so a nested sequence clip resolves without the timeline panel.
     pub fn open_monitor(&mut self, sequence_id: &str, width: u32, height: u32) -> Result<(), monitor::MonitorFail> {
-        let sequence = self
-            .run
-            .snapshot()
-            .and_then(|s| s.document().sequences.iter().find(|q| q.sequence_id == sequence_id))
+        let doc = self.run.snapshot().map(|s| s.document());
+        let sequence = doc
+            .and_then(|d| d.sequences.iter().find(|q| q.sequence_id == sequence_id))
             .cloned()
             .ok_or(monitor::MonitorFail { code: "unknown_sequence", detail: sequence_id.to_owned() })?;
-        let program = monitor::ProgramMonitor::new(sequence, width, height, monitor::DropPolicy::DropLate)?;
+        let mut program = monitor::ProgramMonitor::new(sequence, width, height, monitor::DropPolicy::DropLate)?;
+        if let Some(d) = doc {
+            program.set_document(Some(d.revision), d.sequences.clone());
+        }
         self.monitor = Some(MonitorState {
             monitor: program,
             sources: None,
@@ -417,6 +420,9 @@ impl Viewer {
     }
 
     fn monitor_ui(&mut self, ctx: &egui::Context) {
+        // Lane SMB-PR-NEST-2: the monitor follows the document (nested sequences, its own sequence)
+        // on every refresh, whether or not the timeline panel is open.
+        self.nest_sync_monitor();
         let Some(m) = &mut self.monitor else { return };
         if let Some(sources) = &m.sources {
             let _ = m.monitor.refresh(&m.clock, sources.as_ref(), m.extents.as_ref(), self.cancel);

@@ -366,22 +366,26 @@ fn program_monitor_asks_for_the_nested_sequences_media() {
 }
 
 /// A clip whose clip gain envelope lives in the audio routing entry (keyed by the parent sequence)
-/// is refused typed by Nest; the document and history are unchanged (a follow-up lane moves
-/// envelopes with nested clips).
+/// nests with its envelope (lane SMB-PR-NEST-2 closed NEST-1's `nest_clip_envelopes_unsupported`
+/// refusal): one history step, the envelope now in the new sequence's routing, unchanged (the full
+/// proof is tests/viewer_timeline_nest_2.rs).
 #[cfg(feature = "audio-batch")]
 #[test]
-fn nest_refuses_a_clip_with_a_routing_envelope() {
+fn nest_moves_a_clip_routing_envelope_with_the_clip() {
     let (_s, mut v, _ctx) = opened("envelope");
     let mut routing = StudioAudioRouting::new("seq-main");
-    routing.clip_gains.push(StudioClipGainEnvelope { clip_id: cid(3), points: vec![StudioClipGainPoint { offset_ticks: 0, gain_db: -6.0 }] });
+    let envelope = StudioClipGainEnvelope { clip_id: cid(3), points: vec![StudioClipGainPoint { offset_ticks: 0, gain_db: -6.0 }] };
+    routing.clip_gains.push(envelope.clone());
     v.set_audio_routing(&StudioAudioRoutingSet { routings: vec![routing] }).unwrap();
-    let before = sequences(&v);
-    let undo = undo_labels(&v);
+    let undo = undo_labels(&v).len();
     // Clip 1's link group brings clip 3 along.
-    let e = v.timeline_command(TimelineCommand::Nest(vec![cid(1)])).unwrap_err();
-    assert_eq!(e, format!("nest_clip_envelopes_unsupported {}", cid(3)));
-    assert_eq!(sequences(&v), before, "nothing changed");
-    assert_eq!(undo_labels(&v), undo, "no history step");
+    v.timeline_command(TimelineCommand::Nest(vec![cid(1)])).unwrap_or_else(|e| panic!("{e}: {}", status(&v)));
+    let inner = assert_nested(&v);
+    assert_eq!(undo_labels(&v).len(), undo + 1, "one history step");
+    let set = v.audio_routing().unwrap().unwrap();
+    let find = |id: &str| set.routings.iter().find(|r| r.sequence_id == id).cloned().unwrap();
+    assert!(find("seq-main").clip_gains.is_empty());
+    assert_eq!(find(&inner).clip_gains, [envelope]);
 }
 
 /// Export of a sequence holding a nested clip never drops it silently: the job is refused

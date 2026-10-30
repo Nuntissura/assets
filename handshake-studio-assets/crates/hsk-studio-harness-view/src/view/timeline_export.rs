@@ -9,8 +9,15 @@
 //! box average of the 2 (4:2:2) or 2x2 (4:2:0) full-resolution values, nearest-integer rounding; the
 //! stream is tagged BT.709 (primaries 1, transfer 1, matrix 1). The range is exact: `in`/`out` must be
 //! whole frames of the sequence and the audio start a whole sample, else the export is refused before
-//! anything renders. A sequence with an enabled nested sequence clip is refused `nest_unresolved`
-//! naming the clip (lane SMB-PR-NEST-1: the job holds no document to resolve it).
+//! anything renders. Nested sequence clips (lane SMB-PR-NEST-2) resolve through
+//! [`timeline_export_job_with`] and the document's [`NestedDocument`]: the video through the program
+//! monitor's own path ([`ProgramMonitor::set_document`], pulse `frame_layers_nested`), the sound through
+//! pulse `NestedAudioSources::with_routing` wrapping the job's sources (each nested sequence's mix with
+//! its clip envelopes, the same nested mix the mixer plays). [`timeline_export_job`] holds no document:
+//! a sequence with an enabled nested sequence clip is refused there `nest_unresolved` naming the clip
+//! (lane SMB-PR-NEST-1). A nested clip never exports black or silent: a nested sequence the document
+//! does not hold or whose sound cannot be rendered refuses the job `nest_unresolved`, an inner frame
+//! the source cannot give fails the export (`export-frame-unavailable`).
 #![deny(clippy::arithmetic_side_effects)]
 
 /// Render queue from compositions (lane SMB-AE-MOTION-TOOLS slice 4).
@@ -20,8 +27,8 @@ pub mod render_queue;
 
 use super::monitor::{DropPolicy, FrameSource, MonitorFail, ProgramMonitor};
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND, Ticks};
-use hsk_studio_folio::StudioSequence;
-use hsk_studio_pulse::{AudioSources, SourceExtents, StreamLimits, TimelineMixStream};
+use hsk_studio_folio::{StudioAudioRoutingSet, StudioSequence};
+use hsk_studio_pulse::{AudioSources, NestedAudioSources, NestedExtents, SourceExtents, StreamLimits, TimelineMixStream};
 use hsk_studio_reel::{
     ChromaFormat, ColorInfo, ColorOrigin, ExportAudioSource, ExportJob, ExportLimits, ExportRecipe,
     ExportVideoSource, ReelError, SourceSpan, VideoFormat,
@@ -249,11 +256,47 @@ pub struct TimelineExport<VS, AS, E> {
     pub artifact: String,
 }
 
+/// The document a timeline export resolves nested sequence clips against (lane SMB-PR-NEST-2): its
+/// sequences and its audio routing set (only each nested sequence's clip envelopes are read).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NestedDocument {
+    pub sequences: Vec<StudioSequence>,
+    pub routing: StudioAudioRoutingSet,
+}
+
+impl NestedDocument {
+    /// No document: a nested sequence clip is refused `nest_unresolved`.
+    pub fn none() -> Self {
+        Self::default()
+    }
+    pub fn new(sequences: Vec<StudioSequence>, routing: StudioAudioRoutingSet) -> Self {
+        Self { sequences, routing }
+    }
+}
+
 /// Build the reel export job of a timeline range. Refused here (before anything renders): a range that
 /// is not whole frames, an audio start that is not a whole sample, a monitor raster the monitor refuses,
-/// a mixdown pulse cannot plan.
+/// a mixdown pulse cannot plan, an enabled nested sequence clip (no document: see
+/// [`timeline_export_job_with`]).
 pub fn timeline_export_job<VS, AS, E>(
     t: TimelineExport<VS, AS, E>,
+    cancel: &CancellationToken,
+) -> Result<ExportJob, MonitorFail>
+where
+    VS: FrameSource + Send + 'static,
+    AS: AudioSources + Send + 'static,
+    E: SourceExtents + Send + 'static,
+{
+    timeline_export_job_with(t, NestedDocument::none(), cancel)
+}
+
+/// [`timeline_export_job`] resolving nested sequence clips against `nested` (lane SMB-PR-NEST-2; module
+/// docs). Further refusals: `nest_unresolved` for an enabled nested clip whose sequence `nested` does not
+/// hold (every one when `nested` holds no sequence), or whose sound pulse cannot render (an inner source
+/// missing, a cycle, a refused envelope), naming the nested sequence and its clips.
+pub fn timeline_export_job_with<VS, AS, E>(
+    t: TimelineExport<VS, AS, E>,
+    nested: NestedDocument,
     cancel: &CancellationToken,
 ) -> Result<ExportJob, MonitorFail>
 where
@@ -271,21 +314,27 @@ where
     {
         return Err(fail("export_range", "in/out must be whole frames, in < out"));
     }
-    // Lane SMB-PR-NEST-1: the export holds no document to resolve a nested sequence clip, so it is
-    // refused naming the clip instead of rendering it black or silent (V4-03).
-    let nested = t.sequence.tracks.iter().filter(|tr| tr.enabled).flat_map(|tr| tr.clips.iter()).filter(|c| c.enabled).find_map(|c| match &c.source_ref {
-        hsk_studio_folio::ClipSource::Sequence { sequence_id } => Some((c.clip_id.as_str(), sequence_id.as_str())),
+    // Lane SMB-PR-NEST-1: a nested sequence clip the export cannot resolve (no document, or one that
+    // does not hold its sequence) is refused naming the clip instead of rendering it black or silent
+    // (V4-03).
+    let unresolved = t.sequence.tracks.iter().filter(|tr| tr.enabled).flat_map(|tr| tr.clips.iter()).filter(|c| c.enabled).find_map(|c| match &c.source_ref {
+        hsk_studio_folio::ClipSource::Sequence { sequence_id } if !nested.sequences.iter().any(|s| &s.sequence_id == sequence_id) => Some((c.clip_id.as_str(), sequence_id.as_str())),
         _ => None,
     });
-    if let Some((clip, sequence)) = nested {
-        return Err(fail("nest_unresolved", format!("{clip}: nested sequence {sequence} (export does not resolve nested sequences)")));
+    if let Some((clip, sequence)) = unresolved {
+        let why = if nested.sequences.is_empty() { "export does not resolve nested sequences" } else { "not in the document" };
+        return Err(fail("nest_unresolved", format!("{clip}: nested sequence {sequence} ({why})")));
     }
     let frames = t
         .out_tick
         .saturating_sub(t.in_tick)
         .checked_div(tpf)
         .unwrap_or(0);
-    let monitor = ProgramMonitor::new(t.sequence.clone(), t.width, t.height, DropPolicy::PresentEveryFrame)?;
+    let mut monitor = ProgramMonitor::new(t.sequence.clone(), t.width, t.height, DropPolicy::PresentEveryFrame)?;
+    if !nested.sequences.is_empty() {
+        // The program monitor's own nested resolution (lane SMB-PR-NEST-2).
+        monitor.set_document(None, nested.sequences.clone());
+    }
     let format = VideoFormat {
         width: t.width,
         height: t.height,
@@ -327,25 +376,57 @@ where
                 .unwrap_or(0);
             let end = u64::try_from(end_samples).map_err(|_| fail("export_range", "overflow"))?;
             let block = 4800usize;
-            let mix = TimelineMixStream::new(
-                &t.sequence,
-                rate,
-                block,
-                sources,
-                &t.audio_extents,
-                StreamLimits::default(),
-                cancel,
-            )
-            .map_err(|e| fail("mixdown", e.code()))?;
-            Some(Box::new(TimelineAudio {
-                mix,
-                start,
-                frames: end.saturating_sub(start),
-                rate,
-                block,
-                left: Vec::new(),
-                right: Vec::new(),
-            }))
+            if nested.sequences.is_empty() {
+                let mix = TimelineMixStream::new(
+                    &t.sequence,
+                    rate,
+                    block,
+                    sources,
+                    &t.audio_extents,
+                    StreamLimits::default(),
+                    cancel,
+                )
+                .map_err(|e| fail("mixdown", e.code()))?;
+                Some(Box::new(TimelineAudio {
+                    mix,
+                    start,
+                    frames: end.saturating_sub(start),
+                    rate,
+                    block,
+                    left: Vec::new(),
+                    right: Vec::new(),
+                }))
+            } else {
+                // Lane SMB-PR-NEST-2: nested sequence clips play their nested mix (with its clip
+                // envelopes); one that cannot be rendered refuses the job instead of exporting silence.
+                let sources = NestedAudioSources::with_routing(
+                    &nested.sequences,
+                    &t.sequence,
+                    sources,
+                    &nested.routing,
+                    rate,
+                    block,
+                    &t.audio_extents,
+                    StreamLimits::default(),
+                    cancel,
+                )
+                .map_err(|e| fail("mixdown", e.code()))?;
+                if let Some(r) = sources.reports().first() {
+                    return Err(fail("nest_unresolved", format!("{:?}: nested sequence {} audio ({})", r.clip_ids, r.sequence_id, r.code)));
+                }
+                let extents = NestedExtents::new(&nested.sequences, &t.audio_extents);
+                let mix = TimelineMixStream::new(&t.sequence, rate, block, sources, &extents, StreamLimits::default(), cancel)
+                    .map_err(|e| fail("mixdown", e.code()))?;
+                Some(Box::new(TimelineAudio {
+                    mix,
+                    start,
+                    frames: end.saturating_sub(start),
+                    rate,
+                    block,
+                    left: Vec::new(),
+                    right: Vec::new(),
+                }))
+            }
         }
     };
     Ok(ExportJob {

@@ -172,6 +172,10 @@ pub struct ProgramMonitor {
     /// document revision they are from.
     document: Vec<StudioSequence>,
     document_revision: Option<u64>,
+    /// Set by [`ProgramMonitor::set_document`] (lane SMB-PR-NEST-2): the next refresh renders the
+    /// held frame again even when the scheduler holds it (a paused monitor whose nested sequence
+    /// changed shows the change).
+    represent: bool,
 }
 
 /// Default prefetch distance in frames.
@@ -230,14 +234,18 @@ impl ProgramMonitor {
             prefetched: 0,
             document: Vec::new(),
             document_revision: None,
+            represent: false,
         })
     }
     /// The document's sequences at `revision`, so nested sequence clips resolve (lane
-    /// SMB-PR-NEST-1); the shown frame is dropped so the next refresh renders with them.
+    /// SMB-PR-NEST-1); the shown frame is dropped so the next refresh renders with them, paused
+    /// or playing (lane SMB-PR-NEST-2: a paused scheduler holds its frame, so the refresh renders
+    /// the playhead frame itself).
     pub fn set_document(&mut self, revision: Option<u64>, sequences: Vec<StudioSequence>) {
         self.document = sequences;
         self.document_revision = revision;
         self.shown = None;
+        self.represent = true;
     }
     /// The document revision of the sequences set by [`ProgramMonitor::set_document`].
     pub fn document_revision(&self) -> Option<u64> {
@@ -382,9 +390,16 @@ impl ProgramMonitor {
             .scheduler
             .poll(clock)
             .map_err(|e| fail("poll", e.code()))?;
-        let FrameAction::Present { frame, tick } = decision.action else {
-            return Ok(None);
+        let (frame, tick) = match decision.action {
+            FrameAction::Present { frame, tick } => (frame, tick),
+            // The document changed under a paused monitor: render the held frame again.
+            FrameAction::Hold if self.represent && self.scheduler.transport() != Transport::Playing => {
+                let tick = self.scheduler.playhead();
+                (self.scheduler.frame_of(tick), tick)
+            }
+            _ => return Ok(None),
         };
+        self.represent = false;
         match self.render_at(tick, sources, extents, cancel) {
             Ok(image) => {
                 self.shown = Some(ProgramFrame { frame, tick, image });
