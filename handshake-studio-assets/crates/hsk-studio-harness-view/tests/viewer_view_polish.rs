@@ -312,3 +312,37 @@ fn path_edits_echo_live_text_counts_and_the_summary_shows_them() {
     v.render_if_dirty();
     assert!(!status(&v).split_off(before).iter().any(|l| l.starts_with("live text")), "{:?}", status(&v));
 }
+
+/// The original one-corner version (lane SMB-AI-AREA-TYPE-4): dragging ONLY the bottom-right
+/// corner turns the frame into the slanted quadrilateral 10,10 / 40,10 / 90,60 / 10,30, whose bands
+/// are all narrower than "Overset" (run 2 at 21d16891 placed 0 of 32; Type now breaks a word no
+/// band holds, as a rectangle does). More glyphs are placed, the change is echoed, and one undo /
+/// redo restores each frame's counts.
+#[test]
+fn one_corner_drag_to_a_slanted_frame_places_more_and_echoes() {
+    let (_s, mut v) = paper("echo-one-corner");
+    let rect = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [40.0, 30.0], false).unwrap();
+    v.select(Some(rect.clone()));
+    v.bind_live_text(&rect, "Overset area text flows on and on", LiveTextKind::Area { inset_pt: 0.0 }).unwrap();
+    v.render_if_dirty();
+    let counts = |v: &Viewer| v.vector_text_reports().unwrap()[0].report.outcome.as_ref().map(|d| (d.placed, d.overset_count)).unwrap();
+    let (placed0, overset0) = counts(&v);
+    assert!(placed0 > 0 && overset0 > 0, "{placed0}/{overset0}");
+    let before = status(&v).len();
+    v.direct_drag([40.0, 30.0], [90.0, 60.0], Constraint::Free, false, 2.0).unwrap();
+    v.render_if_dirty();
+    let (placed1, overset1) = counts(&v);
+    assert!(placed1 > placed0 && overset1 < overset0, "{placed0}/{overset0} -> {placed1}/{overset1}");
+    let new: Vec<String> = status(&v).split_off(before);
+    let want = if overset1 > 0 { format!("{placed1} glyphs placed, {overset1} overset") } else { format!("{placed1} glyphs placed") };
+    assert!(new.iter().any(|l| l.starts_with("live text STXT-") && l.ends_with(&want)), "{want} not echoed: {new:?}");
+    assert!(v.hosted_summary(HostedPanel::PathOperations).ends_with(&want), "{}", v.hosted_summary(HostedPanel::PathOperations));
+    let before_undo = status(&v).len();
+    v.undo().unwrap();
+    v.render_if_dirty();
+    assert_eq!(counts(&v), (placed0, overset0));
+    assert!(status(&v).split_off(before_undo).iter().any(|l| l.ends_with(&format!("{placed0} glyphs placed, {overset0} overset"))), "{:?}", status(&v));
+    v.redo().unwrap();
+    v.render_if_dirty();
+    assert_eq!(counts(&v), (placed1, overset1));
+}
