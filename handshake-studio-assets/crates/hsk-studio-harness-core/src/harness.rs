@@ -16,8 +16,8 @@ use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_folio::{self as folio, Parent, Resolution, Resolver, StudioLayer, TileRef};
 use hsk_studio_observe::{Budget, DeliveryClass, DeliveryError, FailureCode, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_session::{
-    Applied, CHRONICLE_PROVIDER_ID, ChronicleProvider, Failed, ProviderRegistry, ReportStatus, Session, SessionConfig,
-    SessionPorts,
+    Applied, CHRONICLE_PROVIDER_ID, ChronicleProvider, Failed, MULTICAM_ENTRY, MulticamStep, ProviderRegistry, ReportStatus, SequenceEdit, Session,
+    SessionConfig, SessionPorts,
 };
 use serde_json::{Value, json};
 use std::path::Path;
@@ -308,6 +308,9 @@ struct HistoryStep {
     /// in stack order (newest last). Undo / redo apply them newest-first as ONE history step; the
     /// other fields are unused (`label` names the group).
     group: Option<Vec<HistoryStep>>,
+    /// A multi-sequence step (lane SMB-PR-NEST-1: Nest, Make Subsequence) that undoes / redoes
+    /// this step through `Session::submit_multicam` with the multicam records passed through.
+    sequences: Option<MulticamStep>,
 }
 
 /// A session document entry as it was before a step (`None` = absent).
@@ -599,7 +602,7 @@ impl Run<'_> {
             self.redo_stack = saved_redo;
             Value::Null
         } else {
-            self.undo_stack.push(HistoryStep { label: label.clone(), inverse: Value::Null, entry: None, timeline: None, group: Some(inner) });
+            self.undo_stack.push(HistoryStep { label: label.clone(), inverse: Value::Null, entry: None, timeline: None, group: Some(inner), sequences: None });
             json!(label)
         };
         let skipped: Vec<u64> = action.steps.iter().filter(|s| !s.enabled).map(|s| s.index).collect();
@@ -631,7 +634,7 @@ impl Run<'_> {
         let regroup = |stack: &mut Vec<HistoryStep>, base: usize, label: &str| {
             if stack.len() > base {
                 let steps: Vec<HistoryStep> = stack.drain(base..).collect();
-                stack.push(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps) });
+                stack.push(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps), sequences: None });
             }
         };
         if done == n {
@@ -916,7 +919,7 @@ impl Run<'_> {
                 if applied.changed
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None, timeline: None, group: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None, timeline: None, group: None, sequences: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -1032,7 +1035,7 @@ impl Run<'_> {
                     if applied.changed
                         && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                     {
-                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None, group: None });
+                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None, group: None, sequences: None });
                         self.redo_stack.clear();
                     }
                 }
@@ -1060,7 +1063,7 @@ impl Run<'_> {
                     step.entry = Some(restore);
                 }
             } else {
-                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None });
+                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None });
                 self.redo_stack.clear();
             }
         }
@@ -1097,7 +1100,7 @@ impl Run<'_> {
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
                     let first = writes.first().map_or("", |w| w.layer_id.as_str());
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None, timeline: None, group: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None, timeline: None, group: None, sequences: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -1166,7 +1169,7 @@ impl Run<'_> {
             }
         } else {
             // The structure edit changed nothing: the step is entry-only.
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None });
             self.redo_stack.clear();
         }
         true
@@ -1283,7 +1286,7 @@ impl Run<'_> {
             true
         } else {
             let before = self.frames.count();
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None });
             self.redo_stack.clear();
             self.own_op(op, before, Ok(json!({"layer_id": layer_id, "entry": token, "tiles_changed": false})))
         }
@@ -1310,7 +1313,7 @@ impl Run<'_> {
         match session.submit_timeline(&step, revision, cancel) {
             Ok(applied) => {
                 if applied.timeline_inverse.is_some() {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None, sequences: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({"sequence_id": sequence_id, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
@@ -1334,6 +1337,75 @@ impl Run<'_> {
     pub fn submit_sequence_and_entry(&mut self, op: &str, write: folio::StudioSequence, token: &str, bytes: Vec<u8>) -> bool {
         self.note_unrecordable("document.submit_sequence_and_entry");
         self.keeping_redo_without_new_step(|run| run.sequence_and_entry_step(op, write, token, bytes))
+    }
+
+    /// ONE undoable step (lane SMB-PR-NEST-1, [STU-VID-030] / [STU-VID-040]) that replaces, inserts
+    /// and removes document sequences together through the session's multi-sequence step
+    /// (`Session::submit_multicam`): Nest is an insert of the new sequence plus a replace of the
+    /// parent, Make Subsequence an insert. The multicam records entry passes through unchanged
+    /// (`records_expect == records_write ==` the live entry), so only sequences change; undo / redo
+    /// submit the step's inverse. The history label and the record are `op` (for example
+    /// `sequence.nest`); the session's receipt keeps its provider name `multicam.step` (a session
+    /// reading, not renamed here). Folio validates the result; a refusal changes nothing
+    /// (`value_conflict`, `invalid_target`, `invalid_input`, `folio_rejected`, ...;
+    /// `multicam_records_invalid` when the stored records do not parse). One record `op`; while
+    /// recording it is reported once as `document.submit_sequence_edits` (not recordable).
+    pub fn submit_sequence_edits(&mut self, op: &str, edits: Vec<SequenceEdit>) -> bool {
+        self.note_unrecordable("document.submit_sequence_edits");
+        let before = self.frames.count();
+        let n = self.op_no();
+        let cancel = self.cancel;
+        if self.session.is_none() {
+            return self.push(op, before, Err("not_open"), None, None);
+        }
+        let records = match self.live_multicam_records() {
+            Ok(r) => r,
+            Err(code) => return self.own_op(op, before, Err(code)),
+        };
+        let ids: Vec<String> = edits
+            .iter()
+            .map(|e| match e {
+                SequenceEdit::Replace { expect, .. } | SequenceEdit::Remove { expect } => expect.sequence_id.clone(),
+                SequenceEdit::Insert { write, .. } => write.sequence_id.clone(),
+            })
+            .collect();
+        let step = MulticamStep { command_id: format!("{op}-{n}"), correlation_id: n, sequences: edits, records_expect: records.clone(), records_write: records };
+        let Some(session) = self.session.as_mut() else {
+            return self.push(op, before, Err("not_open"), None, None);
+        };
+        let revision = session.document_revision();
+        match session.submit_multicam(&step, revision, cancel) {
+            Ok(applied) => {
+                if applied.multicam_inverse.is_some() {
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {}", ids.join(",")), inverse: Value::Null, entry: None, timeline: None, group: None, sequences: applied.multicam_inverse.clone() });
+                    self.redo_stack.clear();
+                }
+                let detail = json!({"sequence_ids": ids, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed, "provider": applied.provider});
+                self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
+            }
+            Err(f) => {
+                let revision = self.revision();
+                self.push(op, before, Err(f.code()), Some(f.report), revision)
+            }
+        }
+    }
+
+    /// The working session's multicam records entry as stored (`None` = no entry);
+    /// `multicam_records_invalid` when its bytes do not parse.
+    fn live_multicam_records(&self) -> Result<Option<folio::StudioMulticamRecords>, &'static str> {
+        match self.session.as_ref().and_then(|s| s.document_entry(MULTICAM_ENTRY)) {
+            None => Ok(None),
+            Some(bytes) => serde_json::from_slice(bytes).map(Some).map_err(|_| "multicam_records_invalid"),
+        }
+    }
+
+    /// Puts a step that could not be applied back on the stack it came from.
+    fn restore_step(&mut self, undo: bool, step: HistoryStep) {
+        if undo {
+            self.undo_stack.push(step);
+        } else {
+            self.redo_stack.push(step);
+        }
     }
 
     fn sequence_and_entry_step(&mut self, op: &str, write: folio::StudioSequence, token: &str, bytes: Vec<u8>) -> bool {
@@ -1368,7 +1440,7 @@ impl Run<'_> {
             }
         } else {
             // The sequence did not change: the step is entry-only.
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None });
             self.redo_stack.clear();
         }
         true
@@ -1456,7 +1528,7 @@ impl Run<'_> {
                         None => None,
                     };
                     let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: applied.timeline_inverse.clone(), group: None };
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: applied.timeline_inverse.clone(), group: None, sequences: None };
                     if undo {
                         self.redo_stack.push(next);
                     } else {
@@ -1475,13 +1547,52 @@ impl Run<'_> {
                 }
             };
         }
+        if let Some(mut submit) = step.sequences.clone() {
+            // A multi-sequence step (lane SMB-PR-NEST-1): submit its inverse under fresh identity
+            // with the live multicam records passed through; its inverse goes to the other stack.
+            let n = self.op_no();
+            let cancel = self.cancel;
+            submit.command_id = format!("{op}-{n}");
+            submit.correlation_id = n;
+            let records = match self.live_multicam_records() {
+                Ok(r) => r,
+                Err(code) => {
+                    self.restore_step(undo, step);
+                    return if self.session.is_some() { self.own_op(op, before, Err(code)) } else { self.push(op, before, Err(code), None, None) };
+                }
+            };
+            submit.records_expect.clone_from(&records);
+            submit.records_write = records;
+            let Some(session) = self.session.as_mut() else {
+                self.restore_step(undo, step);
+                return self.push(op, before, Err("not_open"), None, None);
+            };
+            let revision = session.document_revision();
+            return match session.submit_multicam(&submit, revision, cancel) {
+                Ok(applied) => {
+                    let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: None, timeline: None, group: None, sequences: applied.multicam_inverse.clone() };
+                    if undo {
+                        self.redo_stack.push(next);
+                    } else {
+                        self.undo_stack.push(next);
+                    }
+                    self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
+                }
+                Err(f) => {
+                    self.restore_step(undo, step);
+                    let revision = self.revision();
+                    self.push(op, before, Err(f.code()), Some(f.report), revision)
+                }
+            };
+        }
         if step.inverse.is_null() {
             // An entry-only step: swap the session document entry, nothing to submit.
             let swapped = step.entry.as_ref().map(|e| self.swap_entry(e));
             return match swapped {
                 Some(Ok(previous)) => {
                     let detail = json!({"step": step.label, "entry": step.entry.as_ref().map(|e| e.token.clone()), "changed": true});
-                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None };
+                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: None };
                     if undo {
                         self.redo_stack.push(entry);
                     } else {
@@ -1528,7 +1639,7 @@ impl Run<'_> {
                     self.expectations.push(Expectation { layer_id: layer, field, expected: write["value"]["value"].clone() });
                 }
                 let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None, group: None };
+                let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None, group: None, sequences: None };
                 if undo {
                     self.redo_stack.push(entry);
                 } else {
