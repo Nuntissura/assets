@@ -813,6 +813,50 @@ impl Run<'_> {
         }
     }
 
+    /// ONE undoable step (lane SMB-AI-AREA-TYPE-3): a structure edit exactly like
+    /// [`Run::restructure`] and the session document entry `token` set to `bytes` inside the same
+    /// history step, so undo/redo restore the layers and the entry together (a text layer replaced
+    /// by a vector layer whose records live in the entry). A refused structure edit changes
+    /// nothing; a refused entry write undoes the structure edit (no split step). Records: the
+    /// `restructure` record `op`, plus an `op` refusal record when the entry write is refused.
+    pub fn restructure_and_entry(&mut self, op: &str, writes: &[PlacementWrite], token: &str, bytes: Vec<u8>) -> bool {
+        let previous = match self.session.as_ref() {
+            Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
+            None => {
+                let before = self.frames.count();
+                return self.push(op, before, Err("not_open"), None, None);
+            }
+        };
+        let depth = self.undo_stack.len();
+        if !self.restructure(op, writes) {
+            return false;
+        }
+        let cancel = self.cancel;
+        let set = match self.session.as_mut() {
+            Some(s) => s.set_document_entry(token, Some(bytes), cancel).map_err(|e| e.code()),
+            None => Err("not_open"),
+        };
+        if let Err(code) = set {
+            // A committed structure step without its entry would split the step: undo it.
+            if self.undo_stack.len() > depth {
+                let _ = self.undo();
+            }
+            let before = self.frames.count();
+            return self.own_op(op, before, Err(code));
+        }
+        let restore = EntryRestore { token: token.to_string(), bytes: previous };
+        if self.undo_stack.len() > depth {
+            if let Some(step) = self.undo_stack.last_mut() {
+                step.entry = Some(restore);
+            }
+        } else {
+            // The structure edit changed nothing: the step is entry-only.
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None });
+            self.redo_stack.clear();
+        }
+        true
+    }
+
     fn submit_structure(&mut self, writes: &[PlacementWrite], n: u64) -> Result<Applied, Fail> {
         if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
             return Err(Fail::Refused("provider_not_selected"));
