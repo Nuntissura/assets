@@ -23,9 +23,14 @@
 //! every scanline are kept, each is shrunk by the inset on both sides, and the WIDEST is used (ties:
 //! leftmost; the band rule for concave shapes is a spec gap, STU-TYP-002). Greedy fill: whole words
 //! while they fit; a word that does not fit an empty line skips the band (the baseline moves down
-//! one leading) when the band is narrower than the container's inset bounding box, otherwise it is
-//! broken between glyphs (a glyph wider than the box stops the layout: overset). Every glyph that
-//! does not fit is OVERSET and reported ([`AreaTextLayout::overset_from`]); nothing is dropped.
+//! one leading) when the band is narrower than the container's inset bounding box AND a later band
+//! holds the word (look-ahead down the leading chain of the word's run to the inset bottom; every
+//! look-ahead band counts against `max_bands`); otherwise it is broken between glyphs in this band.
+//! A narrowed band that holds not even one glyph is skipped; on a full-width band a glyph wider than
+//! the box stops the layout (overset). (Lane SMB-AI-AREA-TYPE-4: without the look-ahead a word wider
+//! than every band of a slanted or concave container skipped every band, and the story placed
+//! nothing, test `one_corner_drag_quadrilateral_places_the_story`.) Every glyph that does not fit
+//! is OVERSET and reported ([`AreaTextLayout::overset_from`]); nothing is dropped.
 //! `align` places each line's ink width (trailing spaces excluded) left, centred or right inside its
 //! interval. A placed glyph's transform maps glyph space (x along the advance, y UP, points) to
 //! document space: `[1, 0, 0, -1, x, baseline]`.
@@ -144,7 +149,7 @@ pub struct AreaTextLimits {
     pub max_vertices: usize,
     pub max_glyphs: usize,
     pub max_runs: usize,
-    /// Bands visited (placed lines plus skipped bands).
+    /// Bands visited (placed lines, skipped bands and look-ahead bands).
     pub max_bands: usize,
 }
 impl Default for AreaTextLimits {
@@ -553,6 +558,28 @@ fn first_offset(o: &AreaTextOptions, r: &ComposeRun) -> f64 {
     v.max(o.first_baseline_min_pt)
 }
 
+/// The widest interval of the band `[band_top, band_bottom]` after the inset (module docs): the
+/// intervals inside on every scanline of the band extended by the inset, shrunk by the inset;
+/// ties leftmost. `rect_band`: a bottomless rectangle (its full width).
+fn band_interval(c: &Container, rect_band: bool, inset: f64, band_top: f64, band_bottom: f64) -> Option<(f64, f64)> {
+    let bb = c.bbox();
+    let (s0, s1) = (band_top - inset, band_bottom + inset);
+    let mut kept: Option<Vec<(f64, f64)>> = None;
+    for k in 0..SCANLINES {
+        let f = k as f64 / (SCANLINES.saturating_sub(1)) as f64;
+        let y = (s0 + NUDGE) + (s1 - s0 - 2.0 * NUDGE).max(0.0) * f;
+        let iv = if rect_band { vec![(bb[0], bb[2])] } else { c.scan(y) };
+        kept = Some(match kept {
+            None => iv,
+            Some(prev) => intersect(&prev, &iv),
+        });
+    }
+    kept.unwrap_or_default().into_iter().map(|(a, z)| (a + inset, z - inset)).filter(|(a, z)| z >= a).fold(None::<(f64, f64)>, |best, iv| match best {
+        Some(bst) if bst.1 - bst.0 >= iv.1 - iv.0 => Some(bst),
+        _ => Some(iv),
+    })
+}
+
 /// Greedy composition into `c` (module docs). `bottomless`: a rectangle without a bottom edge.
 fn compose(c: &Container, bottomless: bool, runs: &[ComposeRun], glyphs: &[ComposeGlyph], run_of: &[usize], o: &AreaTextOptions, limits: &AreaTextLimits) -> Result<Composed, AreaTextError> {
     let bb = c.bbox();
@@ -564,6 +591,12 @@ fn compose(c: &Container, bottomless: bool, runs: &[ComposeRun], glyphs: &[Compo
     let mut i = 0_usize;
     let mut baseline: Option<f64> = None;
     let mut bands = 0_usize;
+    let rect_band = bottomless && matches!(c, Container::Rect { .. });
+    // Look-ahead caches: `fits_at` = (glyph, baseline of the first later band holding its word);
+    // `unfit` = (run, baseline, widest): no band after `baseline` on that run's leading chain is
+    // wider than `widest` (both stay valid while the lines keep starting with that run).
+    let mut fits_at: Option<(usize, f64)> = None;
+    let mut unfit: Option<(usize, f64, f64)> = None;
     while i < glyphs.len() {
         bands = bands.saturating_add(1);
         if bands > limits.max_bands {
@@ -580,29 +613,11 @@ fn compose(c: &Container, bottomless: bool, runs: &[ComposeRun], glyphs: &[Compo
         if band_bottom > bottom + EPS || !band_top.is_finite() {
             break;
         }
-        // Intervals inside on every scanline of the band extended by the inset.
-        let (s0, s1) = (band_top - inset, band_bottom + inset);
-        let mut kept: Option<Vec<(f64, f64)>> = None;
-        let rect_band = bottomless && matches!(c, Container::Rect { .. });
-        for k in 0..SCANLINES {
-            let f = k as f64 / (SCANLINES.saturating_sub(1)) as f64;
-            let y = (s0 + NUDGE) + (s1 - s0 - 2.0 * NUDGE).max(0.0) * f;
-            let iv = if rect_band { vec![(bb[0], bb[2])] } else { c.scan(y) };
-            kept = Some(match kept {
-                None => iv,
-                Some(prev) => intersect(&prev, &iv),
-            });
+        // The look-ahead caches belong to the leading chain of the run that starts the line.
+        if unfit.is_some_and(|u| u.0 != run_of[i]) {
+            unfit = None;
         }
-        let widest = kept
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(a, z)| (a + inset, z - inset))
-            .filter(|(a, z)| z >= a)
-            .fold(None::<(f64, f64)>, |best, iv| match best {
-                Some(bst) if bst.1 - bst.0 >= iv.1 - iv.0 => Some(bst),
-                _ => Some(iv),
-            });
-        let Some((left, right)) = widest else {
+        let Some((left, right)) = band_interval(c, rect_band, inset, band_top, band_bottom) else {
             continue;
         };
         let avail = right - left;
@@ -615,11 +630,55 @@ fn compose(c: &Container, bottomless: bool, runs: &[ComposeRun], glyphs: &[Compo
             let (next, ink, trailing, para) = word(glyphs, end);
             if end == from || width + pending + ink <= avail + EPS {
                 if end == from && ink > avail + EPS {
-                    // An empty line that cannot hold the word.
-                    if avail < full - EPS {
-                        break; // narrowed band: skip it
+                    // An empty line that cannot hold the word. A narrowed band is skipped only
+                    // when a later band holds the word (module docs); otherwise the word breaks
+                    // between glyphs here, as on a full-width band.
+                    let narrowed = avail < full - EPS;
+                    if narrowed {
+                        let holds = match (fits_at, unfit) {
+                            (Some((g, at)), _) if g == i && at > b => true,
+                            (_, Some((_, after, widest))) if b >= after && ink > widest + EPS => false,
+                            _ => {
+                                // Walk the bands after this one; the word's first glyph starts
+                                // each of them, so they follow its run's leading.
+                                let mut nb = b;
+                                let mut widest = f64::NEG_INFINITY;
+                                let mut found = None;
+                                loop {
+                                    nb += r.leading_pt;
+                                    bands = bands.saturating_add(1);
+                                    if bands > limits.max_bands {
+                                        return Err(AreaTextError::OverLimit("max_bands"));
+                                    }
+                                    let (t, z) = ((nb - r.ascent_pt).max(top), nb + r.descent_pt);
+                                    if z > bottom + EPS || !t.is_finite() {
+                                        break;
+                                    }
+                                    if let Some((a, e)) = band_interval(c, rect_band, inset, t, z) {
+                                        if ink <= e - a + EPS {
+                                            found = Some(nb);
+                                            break;
+                                        }
+                                        widest = widest.max(e - a);
+                                    }
+                                }
+                                match found {
+                                    Some(at) => {
+                                        fits_at = Some((i, at));
+                                        true
+                                    }
+                                    None => {
+                                        unfit = Some((run_of[i], b, widest));
+                                        false
+                                    }
+                                }
+                            }
+                        };
+                        if holds {
+                            break; // skip this band
+                        }
                     }
-                    // Full-width band: break between glyphs.
+                    // Break between glyphs.
                     let mut k = end;
                     let mut w = 0.0;
                     while k < glyphs.len() && glyphs[k].brk == GlyphBreak::None && w + glyphs[k].advance_pt <= avail + EPS {
@@ -627,6 +686,9 @@ fn compose(c: &Container, bottomless: bool, runs: &[ComposeRun], glyphs: &[Compo
                         k = k.saturating_add(1);
                     }
                     if k == end {
+                        if narrowed {
+                            break; // not one glyph fits this band: try the next
+                        }
                         out.overset_from = Some(i);
                         return Ok(out);
                     }
