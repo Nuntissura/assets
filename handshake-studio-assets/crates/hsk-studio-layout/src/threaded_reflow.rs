@@ -422,14 +422,16 @@ pub fn reflow_flow(
 }
 
 /// `reflow_flow` that also reports the STU-LAY-119 auto-size of the thread (lane
-/// SMB-ID-FRAME-AUTOSIZE-1): the composed proposal plus one `FrameResize` per auto-sized frame.
+/// SMB-ID-FRAME-AUTOSIZE-1, `autosize` module): the proposal composed in the auto-sized frame (the
+/// same lines every reflow entry point returns) plus one `FrameResize` per auto-sized frame.
 pub fn reflow_autosize(
     req: &ReflowRequest<'_>,
     opts: &TypesetOptions<'_>,
     flow: &StudioLayoutFlowRecords,
     cancel: &CancellationToken,
 ) -> Result<crate::autosize::AutosizeProposal, LayoutError> {
-    Ok(crate::autosize::AutosizeProposal { layout: reflow_flow(req, opts, flow, cancel)?, resizes: Vec::new() })
+    let (layout, _, resizes) = reflow_sized(req, opts, flow, None, &[], cancel)?;
+    Ok(crate::autosize::AutosizeProposal { layout, resizes })
 }
 
 /// `reflow_flow` with the Folio grid records (`hsk.studio.layout_grids@1`): paragraphs marked in
@@ -466,6 +468,19 @@ pub(crate) fn reflow_core(
     cjk: &[Option<CjkParagraph>],
     cancel: &CancellationToken,
 ) -> Result<(LayoutProposal, Vec<CjkLineSpacing>), LayoutError> {
+    reflow_sized(req, opts, flow, grids, cjk, cancel).map(|(p, s, _)| (p, s))
+}
+
+/// `reflow_core` that also returns the STU-LAY-119 resizes (`autosize` module). Without an
+/// auto-sized frame the thread is composed once, exactly as before auto-size existed.
+fn reflow_sized(
+    req: &ReflowRequest<'_>,
+    opts: &TypesetOptions<'_>,
+    flow: &StudioLayoutFlowRecords,
+    grids: Option<&StudioLayoutGrids>,
+    cjk: &[Option<CjkParagraph>],
+    cancel: &CancellationToken,
+) -> Result<(LayoutProposal, Vec<CjkLineSpacing>, Vec<crate::autosize::FrameResize>), LayoutError> {
     canceled(cancel)?;
     opts.validate()?;
     if req.expected_revision != req.document.revision {
@@ -484,7 +499,7 @@ pub(crate) fn reflow_core(
         req.obstacles,
         Some(flow),
     )?;
-    let (text, thread, mut verticals) = (input.text, input.frames, input.verticals);
+    let (text, mut thread, mut verticals) = (input.text, input.frames, input.verticals);
     let mut aligns = Vec::new();
     if let Some(g) = grids {
         if g.document_id != req.document.document_id {
@@ -542,22 +557,11 @@ pub(crate) fn reflow_core(
         return Err(LayoutError::UnsupportedComposition);
     }
     let paragraphs: &[ShapedParagraph] = anchored.as_deref().unwrap_or(paragraphs);
-    let composed = compose_flow(
-        &thread,
-        &verticals,
-        &aligns,
-        text,
-        paragraphs,
-        &stylings,
-        &flows,
-        &pre,
-        req.composer,
-        req.space,
-        opts,
-        limits,
-        cjk,
-        cancel,
-    )?;
+    let mut compose = |t: &[Frame<'_>], v: &[FrameVertical]| {
+        compose_flow(t, v, &aligns, text, paragraphs, &stylings, &flows, &pre, req.composer, req.space, opts, limits, cjk, cancel)
+    };
+    let resize = crate::autosize::autosize(&mut thread, &verticals, paragraphs, &mut compose, cancel)?;
+    let composed = compose(&thread, &verticals)?;
     let spacing = composed
         .cjk
         .iter()
@@ -586,6 +590,7 @@ pub(crate) fn reflow_core(
             overset: composed.overset,
         },
         spacing,
+        resize.into_iter().collect(),
     ))
 }
 

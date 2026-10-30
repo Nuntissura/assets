@@ -141,7 +141,7 @@ fn supported(story: &StudioTextStory, f: &StudioTextFrame, columns: bool) -> Res
     if rtl
         || (f.text_column_count != 1 && !columns)
         || (f.vertical_justification != VerticalJustification::Top && !columns)
-        || f.auto_sizing_type != AutoSizing::Off
+        || (f.auto_sizing_type != AutoSizing::Off && !columns)
         || (f.first_baseline_offset != FirstBaseline::Fixed && !columns)
     {
         return Err(LayoutError::UnsupportedComposition);
@@ -334,6 +334,19 @@ pub(crate) fn resolve_flow<'a>(
     }
     for (_, _, f) in &chain {
         supported(story, f, flow.is_some())?;
+    }
+    // STU-LAY-119 on the threaded reflow (lane SMB-ID-FRAME-AUTOSIZE-1): only the last frame of the
+    // thread auto-sizes, and only height-only auto-size takes several columns (`autosize` module).
+    for (i, (_, _, f)) in chain.iter().enumerate() {
+        if f.auto_sizing_type == AutoSizing::Off {
+            continue;
+        }
+        if i + 1 != chain.len() {
+            return Err(LayoutError::AutosizeThreadedFrame);
+        }
+        if f.text_column_count > 1 && f.auto_sizing_type != AutoSizing::HeightOnly {
+            return Err(LayoutError::AutosizeMultiColumn);
+        }
     }
     Ok(Input { text, frames, verticals })
 }
