@@ -422,9 +422,10 @@ impl Viewer {
         let design = effective_design(doc, &entry)?;
         let records = entry.folio_records(&doc.document_id);
         // Live path and area text (lane SMB-AI-AREA-TYPE-3): the canvas's shaping, fills encoded
-        // for this plan; a story that cannot be shaped keeps its typed report as a loss.
-        let text = self.text_entry().ok();
-        let assets = self.live_text_assets_in(&entry, text.as_ref(), hsk_studio_composite::BlendSpace::Encoded);
+        // for this plan; a story that cannot be shaped keeps its typed report as a loss (with the
+        // text entry's decode error when the entry does not decode).
+        let text = self.text_entry();
+        let assets = self.live_text_assets_in(&entry, &text, hsk_studio_composite::BlendSpace::Encoded);
         let (layers, refused) = expand_vectors(snap, &design, &records, &assets, hsk_studio_composite::BlendSpace::Encoded, &VectorResolution::default(), self.cancel)
             .map_err(|e| format!("svg_export: {e:?}"))?;
         let expanded: BTreeMap<&str, &hsk_studio_composite::vector::ExpandedLayer> = layers.iter().map(|l| (l.layer_id.as_str(), l)).collect();

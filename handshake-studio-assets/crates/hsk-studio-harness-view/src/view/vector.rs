@@ -1275,12 +1275,13 @@ impl Viewer {
     /// [`LiveTextAssets`] in linear light over the result of [`Viewer::text_entry`]: a decode
     /// error stays the reason of every story left unshaped.
     fn live_text_assets<'a>(&'a self, entry: &'a VectorEntry, text: &'a Result<super::text::TextEntry, String>) -> LiveTextAssets<'a> {
-        LiveTextAssets { text_error: text.as_ref().err().map(String::as_str), ..self.live_text_assets_in(entry, text.as_ref().ok(), hsk_studio_composite::BlendSpace::LinearLight) }
+        self.live_text_assets_in(entry, text, hsk_studio_composite::BlendSpace::LinearLight)
     }
 
     /// [`Self::live_text_assets`] for a plan in `space` (the exports use `Encoded`).
-    fn live_text_assets_in<'a>(&'a self, entry: &'a VectorEntry, text: Option<&'a super::text::TextEntry>, space: hsk_studio_composite::BlendSpace) -> LiveTextAssets<'a> {
-        LiveTextAssets { entry: EntryAssets(entry), text, text_error: None, fonts: &self.fonts, cancel: self.cancel, space, unshaped: std::cell::RefCell::new(Vec::new()) }
+    /// A text entry that does not decode keeps its decode error (`text_entry_unavailable: <error>`).
+    fn live_text_assets_in<'a>(&'a self, entry: &'a VectorEntry, text: &'a Result<super::text::TextEntry, String>, space: hsk_studio_composite::BlendSpace) -> LiveTextAssets<'a> {
+        LiveTextAssets { entry: EntryAssets(entry), text: text.as_ref().ok(), text_error: text.as_ref().err().map(String::as_str), fonts: &self.fonts, cancel: self.cancel, space, unshaped: std::cell::RefCell::new(Vec::new()) }
     }
 
     /// The live path- and area-text bindings of the open document as the window draws them (lane

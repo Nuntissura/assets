@@ -207,3 +207,34 @@ fn exports_carry_live_text_and_keep_the_unshaped_report() {
         assert!(l.iter().any(|x| x.starts_with(&story) && x.contains(TEXT_NOT_PROVIDED) && x.contains("(text_")), "{l:?}");
     }
 }
+
+/// A document whose `text` entry does not decode still exports; every live story's loss line
+/// carries the decode error (`text_entry_unavailable: <decode error>`, the same reason the canvas
+/// reports since SMB-R41-FOLLOWUPS-1).
+#[test]
+fn exports_name_the_text_entry_decode_error() {
+    use hsk_studio_accord::CancellationToken;
+    use hsk_studio_harness_core::harness::{Harness, References, Selection, default_actor};
+    let (s, mut v) = paper("exports-decode");
+    let container = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [80.0, 54.0], false).unwrap();
+    let story = v.bind_live_text(&container, "Area text", LiveTextKind::Area { inset_pt: 2.0 }).unwrap();
+    let saved = s.0.join("live.handshake");
+    v.save(&saved, false).unwrap();
+    let harness = Harness::new(Selection { providers: vec![], references: References::TrustAll }).unwrap();
+    let cancel = CancellationToken::default();
+    let mut run = harness.run(default_actor(), &cancel);
+    assert!(run.open_path(&saved));
+    run.set_document_entry(hsk_studio_harness_view::view::text::ENTRY, Some(b"{not json".to_vec())).unwrap();
+    let corrupt = s.0.join("corrupt.handshake");
+    assert!(run.save_to(&corrupt));
+    let mut w = Viewer::new(Prefer::Cpu);
+    w.open(&corrupt).unwrap();
+    let decode = w.text_entry().unwrap_err();
+    let want = format!("{story}: {TEXT_NOT_PROVIDED} (text_entry_unavailable: {decode})");
+    let (_, svg_losses) = w.vector_svg().unwrap();
+    let (_, pdf_losses) = w.vector_pdf_bytes().unwrap();
+    let (_, sep_losses) = w.vector_separations(&VectorSeparationOptions::default()).unwrap();
+    for l in [&svg_losses, &pdf_losses, &sep_losses] {
+        assert!(l.contains(&want), "{want} not in {l:?}");
+    }
+}
