@@ -10,6 +10,7 @@
 //! and `an_empty_run_is_nothing_checked_not_a_pass` in `tests/harness_headless.rs`.
 #![deny(clippy::arithmetic_side_effects)]
 
+use crate::action::{self, ActionRecord, Call, DialogOption, NotRecordable, PlayMode, RecordedValue, Recording, RecordingReport, UnitToken};
 use crate::panel::{self, PanelValues, Route};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_folio::{self as folio, Parent, Resolution, Resolver, StudioLayer, TileRef};
@@ -213,6 +214,8 @@ impl Harness {
             expectations: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            recording: None,
+            quiet: false,
         }
     }
 }
@@ -301,6 +304,10 @@ struct HistoryStep {
     /// A timeline step (lane SMB-AUDITION-UI: mixer faders, pan, mute, solo) that undoes / redoes
     /// this step through `Session::submit_timeline`.
     timeline: Option<hsk_studio_session::TimelineStep>,
+    /// A group step (lane SMB-PS-ACTIONS-1: one replayed action, [STU-AUT-004]): the inner steps
+    /// in stack order (newest last). Undo / redo apply them newest-first as ONE history step; the
+    /// other fields are unused (`label` names the group).
+    group: Option<Vec<HistoryStep>>,
 }
 
 /// A session document entry as it was before a step (`None` = absent).
@@ -337,6 +344,11 @@ pub struct Run<'a> {
     undo_stack: Vec<HistoryStep>,
     /// Redo history: the inverses of undone steps, newest last; any new edit clears it.
     redo_stack: Vec<HistoryStep>,
+    /// The action being recorded (lane SMB-PS-ACTIONS-1, [`Run::start_recording`]).
+    recording: Option<Recording>,
+    /// Set while an operation runs other public operations internally (and during playback): they
+    /// are neither recorded nor reported as not recordable.
+    quiet: bool,
 }
 
 impl Run<'_> {
@@ -403,10 +415,252 @@ impl Run<'_> {
         self.session.as_ref()?.snapshot().document().layers.iter().find(|l| l.layer_id == id)
     }
 
+    // ----- recording hooks (lane SMB-PS-ACTIONS-1) ----------------------------------------------
+
+    /// Runs `f` with recording suppressed (an operation's internal calls of other operations).
+    fn quietly<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let prev = std::mem::replace(&mut self.quiet, true);
+        let r = f(self);
+        self.quiet = prev;
+        r
+    }
+
+    /// A `recordable: false` operation ran: a typed report entry while recording ([STU-AUT-109]).
+    fn note_unrecordable(&mut self, command_id: &'static str) {
+        self.note_unrecordable_because(command_id, "recordable_false");
+    }
+
+    fn note_unrecordable_because(&mut self, command_id: &'static str, reason: &'static str) {
+        if !self.quiet
+            && let Some(r) = self.recording.as_mut()
+        {
+            r.not_recordable.push(NotRecordable { command_id, reason });
+        }
+    }
+
+    /// A recordable operation finished: a successful one appends its step, a refused one is
+    /// reported and not recorded. Returns `ok`.
+    fn record(&mut self, ok: bool, command_id: &'static str, params: impl FnOnce() -> Vec<(&'static str, RecordedValue)>) -> bool {
+        if self.quiet || self.recording.is_none() {
+            return ok;
+        }
+        let error = self.ops.last().and_then(|o| o["error"].as_str()).unwrap_or("refused").to_string();
+        if let Some(r) = self.recording.as_mut() {
+            if ok {
+                r.push_step(command_id, params());
+            } else {
+                r.refused.push((command_id.to_string(), error));
+            }
+        }
+        ok
+    }
+
+    /// Records a harness-owned result: with a frame when a session exists, unaddressed otherwise.
+    fn own_or_push(&mut self, op: &str, before: usize, result: Result<Value, &'static str>) -> bool {
+        if self.session.is_some() { self.own_op(op, before, result) } else { self.push(op, before, result, None, None) }
+    }
+
+    /// Starts recording an action (`action_id` = `SACT-{uuid_v7}`, checked as text): each
+    /// successful recordable operation from now on appends one step ([STU-AUT-109]). One record
+    /// `action_record_start` (`already_recording`, `action_id_malformed`).
+    pub fn start_recording(&mut self, action_id: &str, name: &str) -> bool {
+        let before = self.frames.count();
+        let result = if self.recording.is_some() {
+            Err("already_recording")
+        } else if !action::action_id_ok(action_id) {
+            Err("action_id_malformed")
+        } else {
+            self.recording = Some(Recording::new(action_id, name));
+            Ok(json!({"action_id": action_id}))
+        };
+        self.own_or_push("action_record_start", before, result)
+    }
+
+    /// Stops recording: the recorded action (`declared_step_count` = its steps) and the report of
+    /// what was not recorded. One record `action_record_stop` (`not_recording`).
+    pub fn stop_recording(&mut self) -> Option<(ActionRecord, RecordingReport)> {
+        let before = self.frames.count();
+        let Some(recording) = self.recording.take() else {
+            self.own_or_push("action_record_stop", before, Err("not_recording"));
+            return None;
+        };
+        let (action, report) = recording.finish();
+        self.own_or_push("action_record_stop", before, Ok(report.to_json()));
+        Some((action, report))
+    }
+
+    /// Plays `action` on the working session ([STU-AUT-109], [STU-AUT-004]): every enabled step
+    /// runs through the same public `Run` method the original edit used (its own op record, same
+    /// op name); disabled steps are skipped and kept. Every enabled step is resolved first
+    /// (`action_step_command_unresolvable`, `action_step_not_playable`,
+    /// `action_step_parameter_invalid`) and, headless, an enabled `always_show` step refuses
+    /// (`action_always_show_dialog_in_headless`) before any step runs. A step whose layer does not
+    /// resolve (`action_step_reference_unresolved`), a refused step (`action_step_failed`) or a
+    /// cancellation between steps (`canceled`) rolls back the steps already applied: document
+    /// values and the undo/redo history are as before (the revision advances). Success leaves ONE
+    /// undo step, `action <name>`. One record `action_play` after the steps' records.
+    pub fn play_action(&mut self, action: &ActionRecord, mode: PlayMode) -> bool {
+        self.note_unrecordable("action.play");
+        self.quietly(|run| run.play_inner(action, mode))
+    }
+
+    fn play_refusal(&mut self, before: usize, code: &'static str, detail: Value) -> bool {
+        let ok = self.own_or_push("action_play", before, Err(code));
+        if let Some(record) = self.ops.last_mut() {
+            record["detail"] = detail;
+        }
+        ok
+    }
+
+    fn play_inner(&mut self, action: &ActionRecord, mode: PlayMode) -> bool {
+        if self.session.is_none() {
+            let before = self.frames.count();
+            return self.push("action_play", before, Err("not_open"), None, None);
+        }
+        let enabled: Vec<&action::ActionStep> = action.steps.iter().filter(|s| s.enabled).collect();
+        if mode == PlayMode::Headless
+            && let Some(s) = enabled.iter().find(|s| s.dialog_options == DialogOption::AlwaysShow)
+        {
+            let before = self.frames.count();
+            let detail = json!({"action_id": action.action_id, "step_index": s.index, "command_id": s.command_id});
+            return self.play_refusal(before, "action_always_show_dialog_in_headless", detail);
+        }
+        let mut calls = Vec::with_capacity(enabled.len());
+        for s in &enabled {
+            match action::call_of(s) {
+                Ok(call) => calls.push((*s, call)),
+                Err(fault) => {
+                    let before = self.frames.count();
+                    let detail = json!({"action_id": action.action_id, "step_index": s.index, "command_id": s.command_id, "key": fault.key});
+                    return self.play_refusal(before, fault.code, detail);
+                }
+            }
+        }
+        // Interactive playback has no dialog host in the engine: the steps that would show one are
+        // listed (GUI gap). Headless: show_in_interactive_playback and show_if_configured are
+        // suppressed (Studio reading of [STU-AUT-105], UNVERIFIED (D5)).
+        let dialogs_not_shown: Vec<u64> = match mode {
+            PlayMode::Headless => Vec::new(),
+            PlayMode::Interactive => enabled
+                .iter()
+                .filter(|s| match s.dialog_options {
+                    DialogOption::Silent => false,
+                    DialogOption::ShowIfConfigured => s.with_dialog,
+                    DialogOption::ShowInInteractivePlayback | DialogOption::AlwaysShow => true,
+                })
+                .map(|s| s.index)
+                .collect(),
+        };
+        let depth = self.undo_stack.len();
+        let saved_redo = std::mem::take(&mut self.redo_stack);
+        let mut fault: Option<(&'static str, &action::ActionStep, Value)> = None;
+        for (step, call) in calls {
+            if self.cancel.check().is_err() {
+                fault = Some(("canceled", step, Value::Null));
+                break;
+            }
+            if let Some(missing) = call.layers().into_iter().find(|l| self.layer(l).is_none()) {
+                fault = Some(("action_step_reference_unresolved", step, json!({"reference": missing})));
+                break;
+            }
+            let ok = match call {
+                Call::Rename { layer, name } => self.rename(&layer, &name, None),
+                Call::SetVisible { layer, visible } => self.set_visible(&layer, visible, None),
+                Call::SetOpacity { layer, percent } => self.set_opacity(&layer, percent, None),
+                Call::SetBlendMode { layer, mode } => self.set_blend_mode(&layer, mode, None),
+                Call::PanelSet { layer, control, value } => self.panel_set(&layer, &control, &value, None),
+                Call::Restructure { op, writes } => self.restructure(&op, &writes),
+            };
+            if !ok {
+                let cause = self.ops.last().map_or(Value::Null, |o| o["error"].clone());
+                fault = Some(("action_step_failed", step, json!({"cause": cause})));
+                break;
+            }
+        }
+        if let Some((code, step, extra)) = fault {
+            // Roll back newest-first; the rollback's redo entries are dropped and the history the
+            // replay found is restored.
+            let mut restored = true;
+            while self.undo_stack.len() > depth {
+                if !self.history_step(true) {
+                    restored = false;
+                    break;
+                }
+            }
+            self.redo_stack = saved_redo;
+            let before = self.frames.count();
+            let detail = json!({"action_id": action.action_id, "step_index": step.index, "command_id": step.command_id, "detail": extra, "rolled_back": restored});
+            return self.play_refusal(before, if restored { code } else { "action_rollback_failed" }, detail);
+        }
+        let inner: Vec<HistoryStep> = self.undo_stack.drain(depth..).collect();
+        let label = format!("action {}", action.name);
+        let history_label = if inner.is_empty() {
+            // Nothing changed: like an unchanged edit, the redo history stays.
+            self.redo_stack = saved_redo;
+            Value::Null
+        } else {
+            self.undo_stack.push(HistoryStep { label: label.clone(), inverse: Value::Null, entry: None, timeline: None, group: Some(inner) });
+            json!(label)
+        };
+        let skipped: Vec<u64> = action.steps.iter().filter(|s| !s.enabled).map(|s| s.index).collect();
+        let before = self.frames.count();
+        let detail = json!({
+            "action_id": action.action_id, "name": action.name, "steps_played": enabled.len(), "skipped": skipped,
+            "dialogs_not_shown": dialogs_not_shown, "history_label": history_label,
+        });
+        self.own_op("action_play", before, Ok(detail))
+    }
+
+    /// Undo (or redo) of a group step: its inner steps go back on the source history and are
+    /// applied one by one (each writes its own record), then the steps they produced are grouped
+    /// again on the other history. A failing inner step re-applies the ones already done, regroups
+    /// and records `history_group_failed`.
+    fn group_step(&mut self, undo: bool, label: String, inner: Vec<HistoryStep>) -> bool {
+        let n = inner.len();
+        let source_base = if undo { self.undo_stack.len() } else { self.redo_stack.len() };
+        if undo {
+            self.undo_stack.extend(inner);
+        } else {
+            self.redo_stack.extend(inner);
+        }
+        let target_base = if undo { self.redo_stack.len() } else { self.undo_stack.len() };
+        let mut done = 0usize;
+        while done < n && self.history_step(undo) {
+            done = done.saturating_add(1);
+        }
+        let regroup = |stack: &mut Vec<HistoryStep>, base: usize, label: &str| {
+            if stack.len() > base {
+                let steps: Vec<HistoryStep> = stack.drain(base..).collect();
+                stack.push(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps) });
+            }
+        };
+        if done == n {
+            if undo {
+                regroup(&mut self.redo_stack, target_base, &label);
+            } else {
+                regroup(&mut self.undo_stack, target_base, &label);
+            }
+            return true;
+        }
+        let mut restored = true;
+        for _ in 0..done {
+            if !self.history_step(!undo) {
+                restored = false;
+                break;
+            }
+        }
+        regroup(&mut self.undo_stack, if undo { source_base } else { target_base }, &label);
+        regroup(&mut self.redo_stack, if undo { target_base } else { source_base }, &label);
+        let before = self.frames.count();
+        let op = if undo { "undo" } else { "redo" };
+        self.own_op(op, before, Err(if restored { "history_group_failed" } else { "history_group_rollback_failed" }))
+    }
+
     // ----- operations ----------------------------------------------------------------------
 
     /// Opens a package file as the working session.
     pub fn open_path(&mut self, path: &Path) -> bool {
+        self.note_unrecordable("document.open");
         let before = self.frames.count();
         let opened = Session::open_path(path, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
         self.finish_open("open", before, opened, false)
@@ -414,6 +668,7 @@ impl Run<'_> {
 
     /// Opens package bytes as the working session.
     pub fn open_bytes(&mut self, bytes: &[u8]) -> bool {
+        self.note_unrecordable("document.open");
         let before = self.frames.count();
         let opened = Session::open_bytes(bytes, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
         self.finish_open("open", before, opened, false)
@@ -435,6 +690,7 @@ impl Run<'_> {
     /// from the returned package.
     #[cfg(feature = "import")]
     pub fn open_import_detailed(&mut self, bytes: &[u8]) -> Option<(Vec<u8>, Value)> {
+        self.note_unrecordable("document.import");
         let before = self.frames.count();
         let resolver = self.harness.resolver();
         let (package, imported) = match crate::import::convert_to_native(bytes, resolver.as_ref(), self.cancel) {
@@ -498,6 +754,7 @@ impl Run<'_> {
 
     /// Read-only summary of the working document.
     pub fn summary(&mut self) -> bool {
+        self.note_unrecordable("document.summary");
         let before = self.frames.count();
         if self.cancel.check().is_err() {
             return self.own_op("summary", before, Err("canceled"));
@@ -550,6 +807,7 @@ impl Run<'_> {
 
     /// Projects the control panel bound to `layer_id` (agent JSON; nothing is edited).
     pub fn panel(&mut self, layer_id: &str) -> bool {
+        self.note_unrecordable("layer.panel");
         let before = self.frames.count();
         if self.cancel.check().is_err() {
             return self.own_op("panel", before, Err("canceled"));
@@ -567,18 +825,31 @@ impl Run<'_> {
 
     /// Renames a layer through the selected chronicle provider.
     pub fn rename(&mut self, layer_id: &str, name: &str, expected_revision: Option<u64>) -> bool {
-        self.property_edit("rename", layer_id, Prop::Name, PropValue::Text(name.to_string()), expected_revision)
+        let ok = self.property_edit("rename", layer_id, Prop::Name, PropValue::Text(name.to_string()), expected_revision);
+        self.record(ok, action::CMD_RENAME, || vec![("layer", RecordedValue::Reference(layer_id.to_string())), ("name", RecordedValue::String(name.to_string()))])
     }
 
     /// Shows or hides a layer through the selected chronicle provider.
     pub fn set_visible(&mut self, layer_id: &str, visible: bool, expected_revision: Option<u64>) -> bool {
-        self.property_edit("set_visible", layer_id, Prop::Visible, PropValue::Bool(visible), expected_revision)
+        let ok = self.property_edit("set_visible", layer_id, Prop::Visible, PropValue::Bool(visible), expected_revision);
+        self.record(ok, action::CMD_SET_VISIBLE, || vec![("layer", RecordedValue::Reference(layer_id.to_string())), ("visible", RecordedValue::Boolean(visible))])
     }
 
     /// Edits a panel control: the value is parsed and validated by the control descriptor, applied
     /// to the panel's `ValueStore`, then committed through the control's route. A refused commit
     /// is undone in the store. Appearance controls have no route and are refused.
     pub fn panel_set(&mut self, layer_id: &str, control_id: &str, text: &str, expected_revision: Option<u64>) -> bool {
+        let ok = self.panel_set_inner(layer_id, control_id, text, expected_revision);
+        self.record(ok, action::CMD_PANEL_SET, || {
+            vec![
+                ("layer", RecordedValue::Reference(layer_id.to_string())),
+                ("control", RecordedValue::String(control_id.to_string())),
+                ("value", RecordedValue::String(text.to_string())),
+            ]
+        })
+    }
+
+    fn panel_set_inner(&mut self, layer_id: &str, control_id: &str, text: &str, expected_revision: Option<u64>) -> bool {
         let before = self.frames.count();
         let Some(layer) = self.layer(layer_id) else {
             let code = if self.session.is_some() { "unknown_layer" } else { "not_open" };
@@ -645,7 +916,7 @@ impl Run<'_> {
                 if applied.changed
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None, timeline: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None, timeline: None, group: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -682,18 +953,23 @@ impl Run<'_> {
 
     /// Sets a layer's opacity (percent) through chronicle (undoable).
     pub fn set_opacity(&mut self, layer_id: &str, percent: f64, expected_revision: Option<u64>) -> bool {
-        self.property_edit("set_opacity", layer_id, Prop::Opacity, PropValue::Number(percent), expected_revision)
+        let ok = self.property_edit("set_opacity", layer_id, Prop::Opacity, PropValue::Number(percent), expected_revision);
+        self.record(ok, action::CMD_SET_OPACITY, || {
+            vec![("layer", RecordedValue::Reference(layer_id.to_string())), ("opacity", RecordedValue::Measured { value: percent, unit: Some(UnitToken::Percent) })]
+        })
     }
 
     /// Sets a layer's blend mode (StudioBlendMode discriminant) through chronicle (undoable).
     pub fn set_blend_mode(&mut self, layer_id: &str, mode: u16, expected_revision: Option<u64>) -> bool {
-        self.property_edit("set_blend_mode", layer_id, Prop::BlendMode, PropValue::Number(f64::from(mode)), expected_revision)
+        let ok = self.property_edit("set_blend_mode", layer_id, Prop::BlendMode, PropValue::Number(f64::from(mode)), expected_revision);
+        self.record(ok, action::CMD_SET_BLEND_MODE, || vec![("layer", RecordedValue::Reference(layer_id.to_string())), ("blend_mode", RecordedValue::Number(f64::from(mode)))])
     }
 
     /// Replaces a raster layer's tile list (a pixel edit) through chronicle (undoable). Every new
     /// tile body must be staged first ([`Run::stage_tile`]); otherwise the session refuses
     /// `missing_asset`.
     pub fn set_tiles(&mut self, op: &str, layer_id: &str, tiles: Vec<TileRef>) -> bool {
+        self.note_unrecordable("layer.set_tiles");
         self.property_edit(op, layer_id, Prop::Tiles, PropValue::Tiles(tiles), None)
     }
 
@@ -701,6 +977,7 @@ impl Run<'_> {
     /// SMB-ILLUSTRATOR-PEN-2; undoable, the layer keeps its id). The caller makes the new path
     /// records available first (the viewer's `vector` document entry).
     pub fn set_vector_paths(&mut self, op: &str, layer_id: &str, path_ids: Vec<String>) -> bool {
+        self.note_unrecordable("layer.set_vector_paths");
         self.property_edit(op, layer_id, Prop::VectorPaths, PropValue::PathIds(path_ids), None)
     }
 
@@ -709,6 +986,7 @@ impl Run<'_> {
     /// (when given) inside the same history step, so undo/redo restore both together. Without
     /// path writes the step is entry-only. One record `op`.
     pub fn set_vector_paths_and_entry(&mut self, op: &str, writes: &[(String, Vec<String>)], entry: Option<(&str, Vec<u8>)>) -> bool {
+        self.note_unrecordable("layer.set_vector_paths_and_entry");
         let before = self.frames.count();
         let Some(session) = self.session.as_ref() else {
             return self.push(op, before, Err("not_open"), None, None);
@@ -734,7 +1012,7 @@ impl Run<'_> {
                     if applied.changed
                         && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                     {
-                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None });
+                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None, group: None });
                         self.redo_stack.clear();
                     }
                 }
@@ -753,7 +1031,7 @@ impl Run<'_> {
             if let Err(code) = set {
                 // A committed path step without its entry would split the step: undo the paths.
                 if self.undo_stack.len() > depth {
-                    let _ = self.undo();
+                    let _ = self.quietly(Self::undo);
                 }
                 return self.own_op(op, before, Err(code));
             }
@@ -762,7 +1040,7 @@ impl Run<'_> {
                     step.entry = Some(restore);
                 }
             } else {
-                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None });
+                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None });
                 self.redo_stack.clear();
             }
         }
@@ -780,6 +1058,17 @@ impl Run<'_> {
     /// applied in order (create, delete, move: new layer, duplicate, delete, reorder, group,
     /// ungroup). Undoable as one step. One record `op`.
     pub fn restructure(&mut self, op: &str, writes: &[PlacementWrite]) -> bool {
+        if writes.iter().any(|w| w.create.is_some()) {
+            // A create carries a whole layer record and graph operation: not replayable from the
+            // recorded value types, so not recorded (placement-only writes are).
+            self.note_unrecordable_because(action::CMD_RESTRUCTURE, "restructure_create_payload");
+            return self.quietly(|run| run.restructure_inner(op, writes));
+        }
+        let ok = self.restructure_inner(op, writes);
+        self.record(ok, action::CMD_RESTRUCTURE, || vec![("op", RecordedValue::String(op.to_string())), ("writes", RecordedValue::List(writes.iter().map(action::placement_value).collect()))])
+    }
+
+    fn restructure_inner(&mut self, op: &str, writes: &[PlacementWrite]) -> bool {
         let before = self.frames.count();
         let n = self.op_no();
         match self.submit_structure(writes, n) {
@@ -788,7 +1077,7 @@ impl Run<'_> {
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
                     let first = writes.first().map_or("", |w| w.layer_id.as_str());
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None, timeline: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None, timeline: None, group: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -820,6 +1109,7 @@ impl Run<'_> {
     /// nothing; a refused entry write undoes the structure edit (no split step). Records: the
     /// `restructure` record `op`, plus an `op` refusal record when the entry write is refused.
     pub fn restructure_and_entry(&mut self, op: &str, writes: &[PlacementWrite], token: &str, bytes: Vec<u8>) -> bool {
+        self.note_unrecordable("layer.restructure_and_entry");
         let previous = match self.session.as_ref() {
             Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
             None => {
@@ -828,7 +1118,7 @@ impl Run<'_> {
             }
         };
         let depth = self.undo_stack.len();
-        if !self.restructure(op, writes) {
+        if !self.quietly(|run| run.restructure_inner(op, writes)) {
             return false;
         }
         let cancel = self.cancel;
@@ -839,7 +1129,7 @@ impl Run<'_> {
         if let Err(code) = set {
             // A committed structure step without its entry would split the step: undo it.
             if self.undo_stack.len() > depth {
-                let _ = self.undo();
+                let _ = self.quietly(Self::undo);
             }
             let before = self.frames.count();
             return self.own_op(op, before, Err(code));
@@ -851,7 +1141,7 @@ impl Run<'_> {
             }
         } else {
             // The structure edit changed nothing: the step is entry-only.
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None });
             self.redo_stack.clear();
         }
         true
@@ -907,6 +1197,7 @@ impl Run<'_> {
     /// Sets or removes a session document entry (`selection`, `text`; saved with the package as
     /// `studio/<token>.<sha256>`, restored on reopen). No record: it is saved by the next `save`.
     pub fn set_document_entry(&mut self, token: &str, bytes: Option<Vec<u8>>) -> Result<(), &'static str> {
+        self.note_unrecordable("document.set_document_entry");
         let cancel = self.cancel;
         let session = self.session.as_mut().ok_or("not_open")?;
         session.set_document_entry(token, bytes, cancel).map_err(|e| e.code())
@@ -927,6 +1218,7 @@ impl Run<'_> {
     /// restore both as one step. Without a tile change the step is entry-only (still one history
     /// step, op `op`). One record `op`.
     pub fn set_tiles_and_entry(&mut self, op: &str, layer_id: &str, tiles: Option<Vec<TileRef>>, token: &str, bytes: Vec<u8>) -> bool {
+        self.note_unrecordable("layer.set_tiles_and_entry");
         let previous = match self.session.as_ref() {
             Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
             None => {
@@ -936,7 +1228,7 @@ impl Run<'_> {
         };
         let depth = self.undo_stack.len();
         if let Some(tiles) = tiles
-            && !self.set_tiles(op, layer_id, tiles)
+            && !self.quietly(|run| run.set_tiles(op, layer_id, tiles))
         {
             return false;
         }
@@ -949,7 +1241,7 @@ impl Run<'_> {
         if let Err(code) = set {
             // A committed tile step without its entry would split the step: undo the tiles.
             if self.undo_stack.len() > depth {
-                let _ = self.undo();
+                let _ = self.quietly(Self::undo);
             }
             let before = self.frames.count();
             return self.own_op(op, before, Err(code));
@@ -961,7 +1253,7 @@ impl Run<'_> {
             true
         } else {
             let before = self.frames.count();
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None });
             self.redo_stack.clear();
             self.own_op(op, before, Ok(json!({"layer_id": layer_id, "entry": token, "tiles_changed": false})))
         }
@@ -972,6 +1264,7 @@ impl Run<'_> {
     /// fields); undo / redo submit the step's inverse. Folio validates the result (refusals change
     /// nothing). One record `op`.
     pub fn submit_sequence(&mut self, op: &str, write: folio::StudioSequence) -> bool {
+        self.note_unrecordable("document.submit_sequence");
         let before = self.frames.count();
         let n = self.op_no();
         let cancel = self.cancel;
@@ -987,7 +1280,7 @@ impl Run<'_> {
         match session.submit_timeline(&step, revision, cancel) {
             Ok(applied) => {
                 if applied.timeline_inverse.is_some() {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone() });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({"sequence_id": sequence_id, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
@@ -1008,6 +1301,7 @@ impl Run<'_> {
     /// Stages a tile body in the working session (no record; nothing changes until a
     /// [`Run::set_tiles`] names it). `None` without a session or when the session refuses it.
     pub fn stage_tile(&mut self, bytes: Vec<u8>) -> Result<folio::ContentDigest, &'static str> {
+        self.note_unrecordable("document.stage_tile");
         let cancel = self.cancel;
         let session = self.session.as_mut().ok_or("not_open")?;
         session.stage_tile(bytes, cancel).map_err(|e| e.code())
@@ -1022,11 +1316,13 @@ impl Run<'_> {
     /// Undoes the newest committed step by submitting chronicle's inverse; the step moves to the
     /// redo history. One record `undo` (`nothing_to_undo` when the history is empty).
     pub fn undo(&mut self) -> bool {
+        self.note_unrecordable("history.undo");
         self.history_step(true)
     }
 
     /// Re-applies the newest undone step. One record `redo` (`nothing_to_redo` when empty).
     pub fn redo(&mut self) -> bool {
+        self.note_unrecordable("history.redo");
         self.history_step(false)
     }
 
@@ -1045,6 +1341,10 @@ impl Run<'_> {
         let Some(step) = popped else {
             let code = if undo { "nothing_to_undo" } else { "nothing_to_redo" };
             return if self.session.is_some() { self.own_op(op, before, Err(code)) } else { self.push(op, before, Err(code), None, None) };
+        };
+        let step = match step {
+            HistoryStep { label, group: Some(inner), .. } => return self.group_step(undo, label, inner),
+            other => other,
         };
         if let Some(timeline) = step.timeline.clone() {
             // A timeline step: submit it under fresh identity; its inverse goes to the other stack.
@@ -1065,7 +1365,7 @@ impl Run<'_> {
             return match session.submit_timeline(&submit, revision, cancel) {
                 Ok(applied) => {
                     let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone() };
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None };
                     if undo {
                         self.redo_stack.push(next);
                     } else {
@@ -1090,7 +1390,7 @@ impl Run<'_> {
             return match swapped {
                 Some(Ok(previous)) => {
                     let detail = json!({"step": step.label, "entry": step.entry.as_ref().map(|e| e.token.clone()), "changed": true});
-                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None };
+                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None };
                     if undo {
                         self.redo_stack.push(entry);
                     } else {
@@ -1137,7 +1437,7 @@ impl Run<'_> {
                     self.expectations.push(Expectation { layer_id: layer, field, expected: write["value"]["value"].clone() });
                 }
                 let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None };
+                let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None, group: None };
                 if undo {
                     self.redo_stack.push(entry);
                 } else {
@@ -1203,6 +1503,7 @@ impl Run<'_> {
 
     /// Atomically saves the working session to `path`.
     pub fn save_to(&mut self, path: &Path) -> bool {
+        self.note_unrecordable("document.save");
         let before = self.frames.count();
         let cancel = self.cancel;
         let Some(session) = self.session.as_mut() else {
@@ -1222,6 +1523,7 @@ impl Run<'_> {
 
     /// Serializes the working session to verified in-memory package bytes.
     pub fn checkpoint(&mut self) -> Option<Vec<u8>> {
+        self.note_unrecordable("document.checkpoint");
         let before = self.frames.count();
         let cancel = self.cancel;
         let Some(session) = self.session.as_mut() else {
@@ -1244,6 +1546,7 @@ impl Run<'_> {
 
     /// Opens a second, independent session on saved bytes (the reopen half of save/reopen/verify).
     pub fn reopen_bytes(&mut self, bytes: &[u8]) -> bool {
+        self.note_unrecordable("document.reopen");
         let before = self.frames.count();
         let opened = Session::open_bytes(bytes, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
         self.finish_open("reopen", before, opened, true)
@@ -1251,6 +1554,7 @@ impl Run<'_> {
 
     /// Opens a second, independent session on a saved file.
     pub fn reopen_path(&mut self, path: &Path) -> bool {
+        self.note_unrecordable("document.reopen");
         let before = self.frames.count();
         let opened = Session::open_path(path, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
         self.finish_open("reopen", before, opened, true)
@@ -1259,6 +1563,7 @@ impl Run<'_> {
     /// Verifies the reopened session against the working one and every edit this run committed:
     /// same revision, byte-identical encoded document, and each edited value present.
     pub fn verify_reopened(&mut self) -> bool {
+        self.note_unrecordable("document.verify");
         let before = self.frames.count();
         let (Some(live), Some(again)) = (self.session.as_ref(), self.reopened.as_ref()) else {
             return self.push("verify", before, Err("nothing_to_verify"), None, None);
@@ -1281,6 +1586,7 @@ impl Run<'_> {
     /// run) is refused as `nothing_to_check`, not reported as a pass (test
     /// `verify_checks_something_and_save_never_clobbers_the_input`).
     pub fn verify_live(&mut self, revision: Option<u64>, expectations: Vec<(String, &'static str, Value)>) -> bool {
+        self.note_unrecordable("document.verify");
         let before = self.frames.count();
         for (layer_id, field, expected) in expectations {
             self.expectations.push(Expectation { layer_id, field, expected });
