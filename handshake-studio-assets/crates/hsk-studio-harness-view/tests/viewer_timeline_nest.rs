@@ -364,3 +364,72 @@ fn program_monitor_asks_for_the_nested_sequences_media() {
     assert_eq!(probe.0.lock().unwrap().as_slice(), [(media("a"), Ticks::new(16 * F))]);
     println!("NOT_PROVEN: program-monitor pixels of a nested clip (no frame decoder bound on a document sequence)");
 }
+
+/// A clip whose clip gain envelope lives in the audio routing entry (keyed by the parent sequence)
+/// is refused typed by Nest; the document and history are unchanged (a follow-up lane moves
+/// envelopes with nested clips).
+#[cfg(feature = "audio-batch")]
+#[test]
+fn nest_refuses_a_clip_with_a_routing_envelope() {
+    let (_s, mut v, _ctx) = opened("envelope");
+    let mut routing = StudioAudioRouting::new("seq-main");
+    routing.clip_gains.push(StudioClipGainEnvelope { clip_id: cid(3), points: vec![StudioClipGainPoint { offset_ticks: 0, gain_db: -6.0 }] });
+    v.set_audio_routing(&StudioAudioRoutingSet { routings: vec![routing] }).unwrap();
+    let before = sequences(&v);
+    let undo = undo_labels(&v);
+    // Clip 1's link group brings clip 3 along.
+    let e = v.timeline_command(TimelineCommand::Nest(vec![cid(1)])).unwrap_err();
+    assert_eq!(e, format!("nest_clip_envelopes_unsupported {}", cid(3)));
+    assert_eq!(sequences(&v), before, "nothing changed");
+    assert_eq!(undo_labels(&v), undo, "no history step");
+}
+
+/// Export of a sequence holding a nested clip never drops it silently: the job is refused
+/// `nest_unresolved` naming the nested clip, before anything renders.
+#[cfg(feature = "media")]
+#[test]
+fn export_refuses_a_nested_clip_typed() {
+    use hsk_studio_harness_view::view::timeline_export::{TimelineExport, timeline_export_job};
+    use hsk_studio_reel::{ChromaFormat, Container, ExportRecipe, Vc3Profile, VideoCodecChoice};
+    let (s, mut v, _ctx) = opened("export");
+    v.timeline_command(TimelineCommand::Nest(vec![cid(1)])).unwrap();
+    let main = sequences(&v)[0].clone();
+    let nested = nested_clip(&v);
+    struct Unknown;
+    impl hsk_studio_pulse::SourceExtents for Unknown {
+        fn extent(&self, _: &ClipSource) -> Option<Ticks> {
+            None
+        }
+    }
+    #[derive(Clone)]
+    struct Silent;
+    impl hsk_studio_pulse::AudioSources for Silent {
+        fn audio(&self, _: &ClipSource) -> Option<&[Vec<f32>]> {
+            None
+        }
+    }
+    let job = timeline_export_job(
+        TimelineExport {
+            sequence: main,
+            in_tick: 0,
+            out_tick: 20 * F,
+            recipe: ExportRecipe { recipe_id: "r".into(), container: Container::Mov, video: Some(VideoCodecChoice::Vc3(Vc3Profile::DnxhrHq)), audio: None },
+            width: 64,
+            height: 32,
+            bit_depth: 8,
+            chroma: ChromaFormat::Yuv422,
+            video_sources: Probe::default(),
+            video_extents: Unknown,
+            audio: Some((Silent, 48_000)),
+            audio_extents: Unknown,
+            output: s.0.join("never.mov"),
+            overwrite: false,
+            artifact: "nest".into(),
+        },
+        &CancellationToken::default(),
+    );
+    let e = job.err().expect("refused");
+    assert_eq!(e.code, "nest_unresolved");
+    assert!(e.detail.starts_with(&nested.clip_id), "{}", e.detail);
+    assert!(!s.0.join("never.mov").exists());
+}
