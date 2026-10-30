@@ -292,7 +292,8 @@ pub(super) fn validate_entry_styles(design: Option<&StudioDesignRecords>, docume
             }
         }
         for n in &d.nodes {
-            let refs_ok = n.style_refs.len() == 1 && n.style_refs.get("fill_style_id").is_some_and(|s| ids.contains(s.as_str()));
+            // Lane SMB-FIG-GRID-2: an auto-layout or child-layout entry may carry no style refs.
+            let refs_ok = (n.style_refs.len() == 1 && n.style_refs.get("fill_style_id").is_some_and(|s| ids.contains(s.as_str()))) || (n.style_refs.is_empty() && (n.auto_layout.is_some() || n.child_layout.is_some()));
             if serde_json::to_value(&n.node).ok().and_then(|v| v.get("node_kind").cloned()) != Some(json!("layer")) || !refs_ok {
                 return Err(format!("vector_entry_design: node {}", n.node.node_id));
             }
