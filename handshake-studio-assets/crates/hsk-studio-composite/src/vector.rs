@@ -1032,6 +1032,16 @@ pub const REFUSE_BRUSH: &str = "vector_brush";
 pub const REFUSE_BRUSH_KIND: &str = "vector_brush_kind";
 /// Colorization tints and shades or hue shift, or tints over a non-solid stroke paint.
 pub const REFUSE_BRUSH_COLORIZATION: &str = "vector_brush_colorization";
+/// A stroke marker token with no built shape (the six `ERD_*` connector terminators of
+/// STU-VEC-146); no substitute is drawn. Other marker refusals carry nib's
+/// `hsk_studio_nib::markers::MarkerError::code`.
+pub const REFUSE_MARKER_SHAPE_UNBUILT: &str = "marker_shape_unbuilt";
+/// Stroke markers on a brushed stroke row (no defined marker over brush art).
+pub const REFUSE_MARKER_BRUSH: &str = "vector_marker_brush";
+/// Stroke markers on a vector-network stroke (network endpoint markers, STU-VEC-062, not built).
+pub const REFUSE_MARKER_NETWORK: &str = "vector_marker_network";
+/// Stroke markers on a width-profiled path (the marker size follows a uniform weight).
+pub const REFUSE_MARKER_WIDTH_PROFILE: &str = "vector_marker_width_profile";
 
 /// Caller-owned resolution of what Folio references by id: `SVPT` path geometry (in plan pixels:
 /// the caller applies the document unit and resolution) and decoded image paint bytes.
