@@ -15,6 +15,13 @@
 //!   routing. Effect instances are built by the caller's factory (pulse knows no processor kinds).
 //! - Sends: linear `level` -> dB (floored at -96), `pre_fader`, `pan`; routes are Folio-validated
 //!   (call `validate_audio_routing` first); unknown ids here are `invalid_input`.
+//! - Track automation (lane SMB-AU-MULTITRACK-2, Folio `StudioTrackAutomation`): a track with a
+//!   `volume` lane gets the score fader lane `AutomationLane::new(points, Linear, -96..=12 dB)` with
+//!   each point at its exact timeline sample and its linear value in dB (floored at -96, capped at
+//!   +12), so the fader moves linearly in dB between points and holds outside them; a `pan` lane
+//!   likewise (linear). The lane replaces the static `volume` / `pan` (an audio track at volume 0 with
+//!   a volume lane plays the lane; a muted track stays silent). Without lanes the strips are built as
+//!   before (`AutomationLane::constant`). Points off the sample grid are `not_frame_aligned`.
 //!
 //! Seeking ([`TimelineBusStream::seek`]) is score's `MixGraph::seek` (exact from 0; later seeks
 //! exact for bus effects whose memory is under its warm-up).
@@ -23,13 +30,15 @@
 use crate::audio::{AudioSources, StreamLimits, TimelineMixStream};
 use crate::error::{PulseError, Result};
 use crate::playback::AudioClock;
+use crate::time::samples_from_ticks_exact;
 use crate::timeline_edit::SourceExtents;
 use crate::transition::AUDIO_CROSSFADE;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{StudioAudioEffectInstance, StudioAudioRouting, StudioSequence, TrackKind};
+use hsk_studio_accord::Ticks;
+use hsk_studio_folio::{StudioAudioEffectInstance, StudioAudioRouting, StudioSequence, StudioTrack, StudioTrackParam, TrackKind};
 use hsk_studio_score::{
-    AutomationLane, BusSpec, ChannelLayout, Destination, EffectSlot, GraphMeters, MasterSpec, MixGraph, ScoreError,
-    SeekMode, SendSpec, SendTap, StripSource, StripSpec, TRACK_VOLUME_DB,
+    AutomationLane, BusSpec, ChannelLayout, Destination, EffectSlot, GraphMeters, Interpolation, MasterSpec, MixGraph,
+    ScoreError, SeekMode, SendSpec, SendTap, StripSource, StripSpec, TRACK_VOLUME_DB,
 };
 
 /// Builds one bus or master effect from its stored instance at the mix rate (stereo in and out),
@@ -40,6 +49,24 @@ pub type EffectFactory<'a> = dyn FnMut(&StudioAudioEffectInstance, u32) -> Resul
 fn db(linear: f64) -> f64 {
     let lo = TRACK_VOLUME_DB.0;
     if linear > 0.0 { (20.0 * linear.log10()).max(lo) } else { lo }
+}
+
+/// The fader (dB) and pan lanes of `track`: its automation lanes when the routing has them, else
+/// its static values (module docs).
+fn track_lanes(routing: &StudioAudioRouting, track: &StudioTrack, rate: u32) -> Result<(AutomationLane, AutomationLane)> {
+    let lane = |param: StudioTrackParam, fallback: f64, map: &dyn Fn(f64) -> f64, range: (f64, f64)| -> Result<AutomationLane> {
+        let Some(a) = routing.track_lane(&track.track_id, param) else {
+            return Ok(AutomationLane::constant(fallback));
+        };
+        let mut points = Vec::with_capacity(a.points.len());
+        for p in &a.points {
+            points.push((samples_from_ticks_exact(Ticks::new(p.offset_ticks), rate)?, map(p.value).clamp(range.0, range.1)));
+        }
+        AutomationLane::new(&points, Interpolation::Linear, range).map_err(score_failure)
+    };
+    let volume = lane(StudioTrackParam::Volume, db(track.volume), &db, TRACK_VOLUME_DB)?;
+    let pan = lane(StudioTrackParam::Pan, track.pan, &|v| v, (-1.0, 1.0))?;
+    Ok((volume, pan))
 }
 
 fn score_failure(e: ScoreError) -> PulseError {
@@ -170,9 +197,11 @@ impl TimelineBusStream {
         let mut strip_tracks = Vec::new();
         for track in &sequence.tracks {
             cancel.check()?;
-            if track.kind != TrackKind::Audio || !track.enabled || track.muted || (solo && !track.soloed) || track.volume <= 0.0 {
+            let automated = routing.track_lane(&track.track_id, StudioTrackParam::Volume).is_some();
+            if track.kind != TrackKind::Audio || !track.enabled || track.muted || (solo && !track.soloed) || (track.volume <= 0.0 && !automated) {
                 continue;
             }
+            let (volume, pan) = track_lanes(routing, track, sample_rate_hz)?;
             let channels_of = |c: &hsk_studio_folio::StudioClip| sources.audio(&c.source_ref).map(<[Vec<f32>]>::len);
             for (i, clip) in track.clips.iter().enumerate() {
                 if clip.enabled
@@ -210,8 +239,8 @@ impl TimelineBusStream {
                 strip_tracks.push(Some(track.track_id.clone()));
                 strips.push(StripSpec::source(
                     Box::new(TrackStrip { stream, channels: class }),
-                    AutomationLane::constant(db(track.volume)),
-                    AutomationLane::constant(track.pan),
+                    volume.clone(),
+                    pan.clone(),
                     output,
                     sends.clone(),
                 ));
@@ -231,8 +260,9 @@ impl TimelineBusStream {
         for &t in &buses {
             let track = &sequence.tracks[t];
             let mut bus = BusSpec::new(track.name.clone());
-            bus.volume_db = AutomationLane::constant(if track.muted { TRACK_VOLUME_DB.0 } else { db(track.volume) });
-            bus.pan = AutomationLane::constant(track.pan);
+            let (volume, pan) = track_lanes(routing, track, sample_rate_hz)?;
+            bus.volume_db = if track.muted { AutomationLane::constant(TRACK_VOLUME_DB.0) } else { volume };
+            bus.pan = pan;
             let (output, sends) = sends_of(&track.track_id)?;
             bus.output = output;
             bus.sends = sends;

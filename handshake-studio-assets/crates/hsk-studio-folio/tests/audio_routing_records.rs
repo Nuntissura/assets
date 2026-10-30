@@ -148,3 +148,63 @@ fn audio_routing_round_trips_and_refuses_bad_references_cycles_and_ranges() {
     let dup = String::from_utf8(json).unwrap().replacen("\"volume\":0.8", "\"volume\":0.8,\"volume\":0.9", 1);
     assert_eq!(parse_audio_routing(dup.as_bytes(), &d, b, &token).unwrap_err().code, Code::DuplicateField);
 }
+
+fn lane(track: u32, param: StudioTrackParam, points: &[(u64, f64)]) -> StudioTrackAutomation {
+    StudioTrackAutomation { track_id: id(track), param, points: points.iter().map(|&(offset_ticks, value)| StudioAutomationPoint { offset_ticks, value }).collect() }
+}
+
+/// Lane SMB-AU-MULTITRACK-2: track volume / pan automation validates, round-trips, refuses unknown
+/// or non-audio tracks, duplicates, unordered points and out-of-range values by type, and an absent
+/// list keeps the routing's encoding byte for byte.
+#[test]
+fn track_automation_validates_round_trips_and_refuses_typed() {
+    let token = CancellationToken::default();
+    let b = Budget::default();
+    let d = document();
+    let before = serde_json::to_vec(&routing()).unwrap();
+    assert!(!String::from_utf8(before.clone()).unwrap().contains("track_automation"), "absent = not encoded");
+    let parsed = parse_audio_routing(&before, &d, b, &token).unwrap();
+    assert!(parsed.routings[0].track_automation.is_empty());
+    assert_eq!(serde_json::to_vec(&parsed).unwrap(), before, "byte-identical re-encoding without automation");
+
+    let mut set = routing();
+    set.routings[0].track_automation = vec![
+        lane(1, StudioTrackParam::Volume, &[(0, 1.0), (2 * F, 0.5), (3 * F, MAX_AUDIO_LEVEL)]),
+        lane(1, StudioTrackParam::Pan, &[(0, -1.0), (F, 1.0)]),
+        lane(3, StudioTrackParam::Volume, &[(F, 0.0)]),
+    ];
+    validate_audio_routing(&set, &d, b, &token).unwrap();
+    let json = serde_json::to_vec(&set).unwrap();
+    assert!(String::from_utf8(json.clone()).unwrap().contains(r#""param":"volume""#));
+    assert_eq!(parse_audio_routing(&json, &d, b, &token).unwrap(), set);
+    assert_eq!(set.routings[0].track_lane(&id(1), StudioTrackParam::Pan).map(|l| l.points.len()), Some(2));
+    assert!(set.routings[0].track_lane(&id(2), StudioTrackParam::Pan).is_none());
+
+    let code = |f: &dyn Fn(&mut StudioAudioRouting)| {
+        let mut s = set.clone();
+        f(&mut s.routings[0]);
+        validate_audio_routing(&s, &d, b, &token).unwrap_err().code
+    };
+    assert_eq!(code(&|r| r.track_automation[0].track_id = "STRK-nope".into()), Code::InvalidId, "unknown track");
+    assert_eq!(code(&|r| r.track_automation[0].track_id = id(5)), Code::InvalidId, "video track");
+    assert_eq!(code(&|r| r.track_automation[1].param = StudioTrackParam::Volume), Code::DuplicateField);
+    assert_eq!(code(&|r| r.track_automation[0].points.clear()), Code::InvalidField);
+    assert_eq!(code(&|r| r.track_automation[0].points[1].offset_ticks = 0), Code::InvalidField, "not increasing");
+    assert_eq!(code(&|r| r.track_automation[0].points[1].value = MAX_AUDIO_LEVEL * 1.01), Code::InvalidField);
+    assert_eq!(code(&|r| r.track_automation[0].points[1].value = -0.01), Code::InvalidField);
+    assert_eq!(code(&|r| r.track_automation[0].points[1].value = f64::NAN), Code::InvalidField);
+    assert_eq!(code(&|r| r.track_automation[1].points[0].value = -1.5), Code::InvalidField, "pan range");
+    assert_eq!(
+        code(&|r| r.track_automation[2].points = (0..=MAX_TRACK_AUTOMATION_POINTS as u64).map(|k| StudioAutomationPoint { offset_ticks: k, value: 1.0 }).collect()),
+        Code::InvalidField,
+        "more than the point bound"
+    );
+    // Lanes and their points are charged: the smallest node budget the routing passes without
+    // automation is too small with it.
+    let least = (1..10_000).find(|&n| validate_audio_routing(&routing(), &d, Budget { nodes: n, ..b }, &token).is_ok()).unwrap();
+    assert_eq!(validate_audio_routing(&set, &d, Budget { nodes: least, ..b }, &token).unwrap_err().code, Code::BudgetExceeded);
+    // Wire refusals: an unknown parameter or an unknown field.
+    let text = String::from_utf8(json).unwrap();
+    assert_eq!(parse_audio_routing(text.replacen(r#""param":"pan""#, r#""param":"width""#, 1).as_bytes(), &d, b, &token).unwrap_err().code, Code::InvalidJson);
+    assert_eq!(parse_audio_routing(text.replacen(r#""param":"pan""#, r#""param":"pan","mode":"hold""#, 1).as_bytes(), &d, b, &token).unwrap_err().code, Code::InvalidJson);
+}

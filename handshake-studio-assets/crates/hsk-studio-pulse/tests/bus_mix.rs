@@ -232,3 +232,65 @@ fn all_to_master_equals_the_plain_mix_and_refusals_are_typed() {
     assert!(sl.iter().all(|v| *v == 0.0));
     assert_eq!(s.position(), 960);
 }
+
+fn automation(track: u32, param: StudioTrackParam, points: &[(u64, f64)]) -> StudioTrackAutomation {
+    StudioTrackAutomation { track_id: id(track), param, points: points.iter().map(|&(offset_ticks, value)| StudioAutomationPoint { offset_ticks, value }).collect() }
+}
+
+/// Lane SMB-AU-MULTITRACK-2: a track volume lane replaces the static fader and ramps linearly in dB
+/// between its points (held after the last); a submix pan lane ramps the bus balance linearly. Oracle:
+/// the stated laws on a stereo DC source (`0.25 * 10^(dB/20)`, balance `L min(1, 1 - pan)`,
+/// `R min(1, 1 + pan)`). Points off the sample grid are refused.
+#[test]
+fn track_volume_and_pan_lanes_automate_the_mixdown() {
+    let token = CancellationToken::default();
+    let half_db = 20.0 * 0.5f64.log10();
+    // Volume: the static 0.25 is replaced by unity at 0 falling to one half at frame 5.
+    let seq = sequence(vec![track(1, TrackKind::Audio, vec![clip(1, "dc", 10, 0)], 0.25, 0.0)]);
+    let mut routing = StudioAudioRouting::new("seq-main");
+    routing.track_automation = vec![automation(1, StudioTrackParam::Volume, &[(0, 1.0), (5 * F, 0.5)])];
+    let mut f = factory();
+    let mut stream = TimelineBusStream::new(&seq, &routing, RATE, 960, Sources::new(), &Ext, StreamLimits::default(), &mut f, &token).unwrap();
+    let [l, r] = render(&mut stream, 8 * SPF, 960);
+    for k in [0usize, 1, 960, 4800, 9599, 9600, 12_000] {
+        let gain_db = if k < 5 * SPF { half_db * k as f64 / (5 * SPF) as f64 } else { half_db };
+        let want = 0.25 * 10f64.powf(gain_db / 20.0);
+        assert!((f64::from(l[k]) - want).abs() < 2e-6, "volume L {k}: {} vs {want}", l[k]);
+        assert!((f64::from(r[k]) - want).abs() < 2e-6, "volume R {k}");
+    }
+    // A volume lane plays a track whose static volume is 0.
+    let mut zero = seq.clone();
+    zero.tracks[0].volume = 0.0;
+    let mut f = factory();
+    let mut z = TimelineBusStream::new(&zero, &routing, RATE, 960, Sources::new(), &Ext, StreamLimits::default(), &mut f, &token).unwrap();
+    let [zl, _] = render(&mut z, 960, 960);
+    assert!((f64::from(zl[0]) - 0.25).abs() < 2e-6, "{}", zl[0]);
+
+    // Pan on the submix bus: -1 at 0 to +1 at frame 4.
+    let seq = sequence(vec![track(1, TrackKind::Audio, vec![clip(1, "dc", 10, 0)], 1.0, 0.0), track(3, TrackKind::Submix, Vec::new(), 1.0, 0.0)]);
+    let mut routing = StudioAudioRouting::new("seq-main");
+    routing.routes = vec![StudioTrackRoute { track_id: id(1), output: Some(id(3)), sends: vec![] }];
+    routing.track_automation = vec![automation(3, StudioTrackParam::Pan, &[(0, -1.0), (4 * F, 1.0)])];
+    let mut f = factory();
+    let mut stream = TimelineBusStream::new(&seq, &routing, RATE, 960, Sources::new(), &Ext, StreamLimits::default(), &mut f, &token).unwrap();
+    let [l, r] = render(&mut stream, 6 * SPF, 960);
+    for k in [0usize, 1920, 3840, 5760, 7680, 9000] {
+        let pan = if k < 4 * SPF { -1.0 + 2.0 * k as f64 / (4 * SPF) as f64 } else { 1.0 };
+        let (wl, wr) = (0.25 * (1.0 - pan).min(1.0), 0.25 * (1.0 + pan).min(1.0));
+        assert!((f64::from(l[k]) - wl).abs() < 2e-6, "pan L {k}: {} vs {wl}", l[k]);
+        assert!((f64::from(r[k]) - wr).abs() < 2e-6, "pan R {k}: {} vs {wr}", r[k]);
+    }
+    // Without lanes the same routing mixes as the static values (centre: both sides 0.25).
+    routing.track_automation.clear();
+    let mut f = factory();
+    let mut flat = TimelineBusStream::new(&seq, &routing, RATE, 960, Sources::new(), &Ext, StreamLimits::default(), &mut f, &token).unwrap();
+    let [fl, fr] = render(&mut flat, 960, 960);
+    assert!((f64::from(fl[500]) - 0.25).abs() < 2e-6 && (f64::from(fr[500]) - 0.25).abs() < 2e-6);
+    // One tick is not a whole sample at 48 kHz.
+    routing.track_automation = vec![automation(3, StudioTrackParam::Pan, &[(1, 0.0)])];
+    let mut f = factory();
+    assert_eq!(
+        TimelineBusStream::new(&seq, &routing, RATE, 960, Sources::new(), &Ext, StreamLimits::default(), &mut f, &token).err(),
+        Some(PulseError::NotFrameAligned)
+    );
+}
