@@ -57,8 +57,47 @@ struct Parsed {
     quality: Option<u8>,
     /// develop: `--adjust CONTROL VALUE` (value kept as text; parsed as a number by `develop`).
     adjust: Vec<(String, String)>,
+    /// develop: export stage flags in command-line order (lane SMB-LR-EXPORT-GUI-1).
+    stage: Vec<StageArg>,
     threads: Option<usize>,
     depth: Option<u8>,
+}
+
+/// One develop export stage flag (lane SMB-LR-EXPORT-GUI-1), mapped one to one onto the export
+/// dialog's fields (`Viewer::set_develop_export_field`, ids `develop.export.<key>`), so a command line
+/// and the window build the same `ExportStage`:
+/// `--export-set KEY VALUE` writes field KEY; `--long-edge N` = stage on, resize_type LongEdge,
+/// max_width N; `--sharpen MEDIA:AMOUNT` (screen|glossy|matte : low|standard|high) = stage on,
+/// output sharpening on with that media and level 1|2|3; `--watermark FILE` = stage on, use_watermark,
+/// the PNG / JPEG graphic loaded like the dialog's file dialog does.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+enum StageArg {
+    Set(String, String),
+    Watermark(PathBuf),
+}
+
+fn stage_on() -> StageArg {
+    StageArg::Set("stage".into(), "true".into())
+}
+
+fn sharpen_args(value: &str) -> Result<Vec<StageArg>, String> {
+    let bad = || format!("--sharpen must be screen|glossy|matte:low|standard|high, got `{value}`");
+    let (media, amount) = value.split_once(':').ok_or_else(bad)?;
+    let media = match media {
+        "screen" => "Screen",
+        "glossy" => "Glossy",
+        "matte" => "Matte",
+        _ => return Err(bad()),
+    };
+    let level = match amount {
+        "low" => "1",
+        "standard" => "2",
+        "high" => "3",
+        _ => return Err(bad()),
+    };
+    let set = |k: &str, v: &str| StageArg::Set(k.into(), v.into());
+    Ok(vec![stage_on(), set("output_sharpening_enabled", "true"), set("output_sharpening_media", media), set("output_sharpening_level", level)])
 }
 
 fn boolean(s: &str) -> Result<bool, String> {
@@ -123,6 +162,19 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--adjust" => {
                 let control = take(&mut i, "develop control id")?;
                 p.adjust.push((control, take(&mut i, "value")?));
+            }
+            "--export-set" => {
+                let key = take(&mut i, "export setting key")?;
+                p.stage.push(StageArg::Set(key, take(&mut i, "value")?));
+            }
+            "--long-edge" => {
+                let edge = take(&mut i, "long edge")?;
+                p.stage.extend([stage_on(), StageArg::Set("resize_type".into(), "LongEdge".into()), StageArg::Set("max_width".into(), edge)]);
+            }
+            "--sharpen" => p.stage.extend(sharpen_args(&take(&mut i, "sharpening (media:amount)")?)?),
+            "--watermark" => {
+                let file = PathBuf::from(take(&mut i, "watermark graphic path")?);
+                p.stage.extend([stage_on(), StageArg::Set("use_watermark".into(), "true".into()), StageArg::Watermark(file)]);
             }
             "--threads" => {
                 p.threads = Some(take(&mut i, "thread count")?.parse::<usize>().map_err(|_| "threads must be an unsigned integer".to_string())?)
@@ -289,7 +341,7 @@ pub fn run(args: &[String]) -> CliOutput {
             if !parsed.overwrite && same_file(&output, &source) {
                 return usage("OUT names the SOURCE file; pass --overwrite to replace it, or develop to another path");
             }
-            execute_develop(&source, &output, format, &adjust, parsed.threads, parsed.overwrite)
+            execute_develop(&source, &output, format, &adjust, &parsed.stage, parsed.threads, parsed.overwrite)
         }
         "batch" => {
             let [job] = parsed.positional.as_slice() else {
@@ -437,7 +489,7 @@ fn tiff_choice(parsed: &Parsed, depth: Option<u8>) -> Result<DevelopChoice, Stri
 /// `--adjust` as ONE develop step through the viewer (chronicle `tiles` commit, undoable), then
 /// `develop_to_output` and encode with the sRGB-v4 profile embedded. Refusals carry their stable code.
 #[cfg(feature = "viewer")]
-fn execute_develop(source: &Path, output: &Path, format: DevelopChoice, adjust: &[(String, f64)], threads: Option<usize>, overwrite: bool) -> CliOutput {
+fn execute_develop(source: &Path, output: &Path, format: DevelopChoice, adjust: &[(String, f64)], stage: &[StageArg], threads: Option<usize>, overwrite: bool) -> CliOutput {
     use crate::view::{Viewer, develop::DevelopExport, render::Prefer};
     use hsk_studio_develop::OutputDepth;
     let fail = |error: &str, detail: Value| out(1, &json!({"schema":crate::SCHEMA,"command":"develop","ok":false,"verdict":"fail","error":error,"detail":detail}));
@@ -460,6 +512,16 @@ fn execute_develop(source: &Path, output: &Path, format: DevelopChoice, adjust: 
         match viewer.set_develop_many(&changes) {
             Ok(revision) => step = json!({"revision": revision, "history": viewer.run().history()}),
             Err(r) => return fail(r.code, json!({"stage":"adjust","message":r.detail})),
+        }
+    }
+    // Export stage flags, in order, through the dialog's own field path (lane SMB-LR-EXPORT-GUI-1).
+    for arg in stage {
+        let (result, what) = match arg {
+            StageArg::Set(key, value) => (viewer.set_develop_export_field(&format!("develop.export.{key}"), value), key.clone()),
+            StageArg::Watermark(path) => (viewer.load_develop_watermark(path), "watermark".to_owned()),
+        };
+        if let Err(r) = result {
+            return fail(r.code, json!({"stage":"export_stage","setting":what,"message":r.detail}));
         }
     }
     if let DevelopChoice::Dng { xmp: Some(path), .. } = &format {
@@ -524,7 +586,7 @@ fn execute_develop(source: &Path, output: &Path, format: DevelopChoice, adjust: 
 }
 
 #[cfg(not(feature = "viewer"))]
-fn execute_develop(_: &Path, _: &Path, _: DevelopChoice, _: &[(String, f64)], _: Option<usize>, _: bool) -> CliOutput {
+fn execute_develop(_: &Path, _: &Path, _: DevelopChoice, _: &[(String, f64)], _: &[StageArg], _: Option<usize>, _: bool) -> CliOutput {
     out(1, &json!({"schema":crate::SCHEMA,"command":"develop","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"viewer"}}))
 }
 
