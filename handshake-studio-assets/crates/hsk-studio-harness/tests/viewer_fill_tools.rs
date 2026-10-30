@@ -184,7 +184,7 @@ fn edit_fill_of_a_selection_and_typed_refusals() {
     v.clear_selection();
     // Non-pixel layers are refused, naming the kind; nothing is rasterized (STU-RAS-170).
     let rect = v.draw_shape(ShapeKind::Rectangle, [4.0, 4.0], [12.0, 12.0], false).unwrap();
-    let group = v.group_layers(&[art.clone()], "Group").unwrap();
+    let group = v.group_layers(std::slice::from_ref(&art), "Group").unwrap();
     for layer in [rect.as_str(), group.as_str()] {
         let r = revision(&v);
         let e = v.fill_gradient(layer, [0.0, 0.0], [10.0, 0.0], &FillSettings::default()).unwrap_err();
