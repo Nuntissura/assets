@@ -230,3 +230,125 @@ fn gradient_hostile_input_refuses_typed() {
     let tiny = ToolLimits { max_work_bytes: 64 };
     assert_eq!(gradient_fill(&img.view(), None, CANVAS, DragLine { from: [0.0, 0.0], to: [8.0, 0.0] }, &g, &p, &tiny).unwrap_err().code(), "budget_exceeded");
 }
+
+// ---- slice 2: paint bucket and Edit > Fill ------------------------------------------------------
+
+const RED: [f32; 3] = [1.0, 0.0, 0.0];
+const HARD: FloodOptions = FloodOptions { tolerance: 0.0, contiguous: true, anti_alias: false };
+
+/// White with two black 2x2 islands at (1..3, 1..3) and (5..7, 5..7).
+fn islands() -> Img {
+    Img::new(CANVAS, |x, y| {
+        let island = ((1..3).contains(&x) && (1..3).contains(&y)) || ((5..7).contains(&x) && (5..7).contains(&y));
+        if island { grey(0.0) } else { grey(1.0) }
+    })
+}
+
+fn flood(target: &Img, sample: Option<&Img>, seed: [f64; 2], opts: &FloodOptions, content: &FillContent<'_>, paint: &FillPaint, sel: Option<&CoveragePlane>) -> Result<FillResult, FillError> {
+    let s = sample.map(Img::view);
+    flood_fill(&target.view(), s.as_ref(), seed, opts, content, paint, sel, CANVAS, &ToolLimits::default())
+}
+
+fn covered(r: &FillResult) -> Vec<(i64, i64)> {
+    let mut out = Vec::new();
+    for y in 0..8 {
+        for x in 0..8 {
+            if r.coverage.at(x, y) != 0 {
+                out.push((x, y));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn bucket_contiguous_against_global_and_sample_merged() {
+    let img = islands();
+    let p = FillPaint::default();
+    let first = vec![(1, 1), (2, 1), (1, 2), (2, 2)];
+    let r = ok(flood(&img, None, [1.5, 1.5], &HARD, &FillContent::Colour(RED), &p, None));
+    assert_eq!(covered(&r), first);
+    assert!(first.iter().all(|&(x, y)| r.coverage.at(x, y) == u16::MAX && px(&r, x, y) == [1.0, 0.0, 0.0, 1.0]));
+    let global = FloodOptions { contiguous: false, ..HARD };
+    let r = ok(flood(&img, None, [1.5, 1.5], &global, &FillContent::Colour(RED), &p, None));
+    assert_eq!(covered(&r), vec![(1, 1), (2, 1), (1, 2), (2, 2), (5, 5), (6, 5), (5, 6), (6, 6)]);
+    // A caller-supplied merged frame decides the region; the target only receives the paint.
+    let blank = Img::new(CANVAS, |_, _| grey(1.0));
+    let r = ok(flood(&blank, Some(&img), [6.5, 6.5], &HARD, &FillContent::Colour(RED), &p, None));
+    assert_eq!(covered(&r), vec![(5, 5), (6, 5), (5, 6), (6, 6)]);
+    // The selection clips the flood: only its column x = 1 of the first island.
+    let sel = CoveragePlane { bounds: Rect { x: 0, y: 0, width: 2, height: 8 }, data: vec![u16::MAX; 16] };
+    let r = ok(flood(&img, None, [1.5, 1.5], &HARD, &FillContent::Colour(RED), &p, Some(&sel)));
+    assert_eq!(covered(&r), vec![(1, 1), (1, 2)]);
+}
+
+#[test]
+fn bucket_tolerance_and_anti_alias_at_a_known_boundary() {
+    // Columns 0..4 at 100/255, columns 4..8 at 120/255: 20 levels apart.
+    let img = Img::new(CANVAS, |x, _| grey(if x < 4 { 100.0 / 255.0 } else { 120.0 / 255.0 }));
+    let p = FillPaint::default();
+    let r = ok(flood(&img, None, [1.0, 1.0], &HARD, &FillContent::Colour(RED), &p, None));
+    assert_eq!(covered(&r).len(), 32);
+    assert!(covered(&r).iter().all(|&(x, _)| x < 4));
+    let r = ok(flood(&img, None, [1.0, 1.0], &FloodOptions { tolerance: 32.0, ..HARD }, &FillContent::Colour(RED), &p, None));
+    assert_eq!(covered(&r).len(), 64);
+    // Anti-alias off: a hard edge (only 0 or full coverage; the column past the edge untouched).
+    let r = ok(flood(&img, None, [1.0, 1.0], &HARD, &FillContent::Colour(RED), &p, None));
+    assert!(r.coverage.data.iter().all(|v| *v == 0 || *v == u16::MAX));
+    assert_eq!((r.coverage.at(3, 3), r.coverage.at(4, 3)), (u16::MAX, 0));
+    // Anti-alias on: the wand's 3x3 box mean on the boundary (6/9 inside, 3/9 outside).
+    let r = ok(flood(&img, None, [1.0, 1.0], &FloodOptions { anti_alias: true, ..HARD }, &FillContent::Colour(RED), &p, None));
+    assert_eq!((r.coverage.at(3, 3), r.coverage.at(4, 3), r.coverage.at(5, 3)), (43690, 21845, 0));
+}
+
+#[test]
+fn bucket_and_edit_fill_with_pattern_tiles_at_a_phase() {
+    let img = Img::new(CANVAS, |_, _| grey(1.0));
+    let p = FillPaint::default();
+    // 1x1 pattern (legal, STU-RAS-161): every covered pixel is its colour.
+    let one = [[0.2, 0.4, 0.6, 1.0]];
+    let tile = PatternTile { id: "pat-1", name: "dot", width: 1, height: 1, pixels: &one, origin: [0, 0] };
+    let r = ok(flood(&img, None, [3.0, 3.0], &HARD, &FillContent::Pattern(tile), &p, None));
+    assert_eq!(covered(&r).len(), 64);
+    assert!(covered(&r).iter().all(|&(x, y)| px(&r, x, y) == one[0]));
+    // 3x2 pattern from origin (1, 1): pixel (x, y) takes P[(y - 1) mod 2][(x - 1) mod 3].
+    let pat: Vec<[f32; 4]> = (0..6).map(|i| [(i % 3) as f32 / 4.0, (i / 3) as f32 / 4.0, 0.5, 1.0]).collect();
+    let at = |u: usize, v: usize| pat[v * 3 + u];
+    let tile = PatternTile { id: "pat-32", name: "grid", width: 3, height: 2, pixels: &pat, origin: [1, 1] };
+    let r = ok(fill_selection(&img.view(), None, CANVAS, &FillContent::Pattern(tile), &p, &ToolLimits::default()));
+    assert_eq!(px(&r, 1, 1), at(0, 0));
+    assert_eq!(px(&r, 0, 0), at(2, 1));
+    assert_eq!(px(&r, 5, 4), at(1, 1));
+    assert_eq!(px(&r, 3, 2), at(2, 1));
+    // Edit > Fill of a feathered selection: the coverage is the selection; opacity 0.5 over white.
+    let sel = CoveragePlane { bounds: Rect { x: 2, y: 2, width: 2, height: 1 }, data: vec![u16::MAX, 30000] };
+    let r = ok(fill_selection(&img.view(), Some(&sel), CANVAS, &FillContent::Colour(RED), &FillPaint { opacity: 0.5, ..p }, &ToolLimits::default()));
+    assert_eq!(r.bounds, sel.bounds);
+    assert_eq!(r.coverage, sel);
+    assert!(near(px(&r, 2, 2), [1.0, 0.5, 0.5, 1.0]), "{:?}", px(&r, 2, 2));
+}
+
+#[test]
+fn bucket_hostile_input_refuses_typed() {
+    let img = islands();
+    let p = FillPaint::default();
+    let red = FillContent::Colour(RED);
+    let code = |r: Result<FillResult, FillError>| r.unwrap_err().code();
+    assert_eq!(code(flood(&img, None, [-1.0, 2.0], &HARD, &red, &p, None)), "seed_outside_canvas");
+    assert_eq!(code(flood(&img, None, [8.0, 0.0], &HARD, &red, &p, None)), "seed_outside_canvas");
+    assert_eq!(code(flood(&img, None, [f64::NAN, 0.0], &HARD, &red, &p, None)), "nonfinite");
+    assert_eq!(code(flood(&img, None, [0.0, f64::NEG_INFINITY], &HARD, &red, &p, None)), "nonfinite");
+    assert_eq!(code(flood(&img, None, [1.0, 1.0], &HARD, &red, &FillPaint { opacity: 2.0, ..p }, None)), "opacity_out_of_range");
+    assert_eq!(code(flood(&img, None, [1.0, 1.0], &FloodOptions { tolerance: -1.0, ..HARD }, &red, &p, None)), "tool_out_of_range");
+    assert_eq!(code(flood(&img, None, [1.0, 1.0], &FloodOptions { tolerance: f64::NAN, ..HARD }, &red, &p, None)), "nonfinite");
+    let pattern = |id: &'static str, width: u32, height: u32, pixels: &'static [[f32; 4]], origin: [i64; 2]| FillContent::Pattern(PatternTile { id, name: "n", width, height, pixels, origin });
+    assert_eq!(code(flood(&img, None, [1.0, 1.0], &HARD, &pattern("p", 0, 0, &[], [0, 0]), &p, None)), "pattern_empty");
+    assert_eq!(code(flood(&img, None, [1.0, 1.0], &HARD, &pattern("p", 2, 1, &[[0.0, 0.0, 0.0, 1.0]], [0, 0]), &p, None)), "pattern_shape");
+    assert_eq!(code(flood(&img, None, [1.0, 1.0], &HARD, &pattern("p", 1, 1, &[[f32::NAN, 0.0, 0.0, 1.0]], [0, 0]), &p, None)), "pattern_shape");
+    assert_eq!(code(flood(&img, None, [1.0, 1.0], &HARD, &pattern("p", 5000, 1, &[], [0, 0]), &p, None)), "pattern_too_large");
+    assert_eq!(code(flood(&img, None, [1.0, 1.0], &HARD, &pattern("", 1, 1, &[[0.0, 0.0, 0.0, 1.0]], [0, 0]), &p, None)), "pattern_id_missing");
+    assert_eq!(code(flood(&img, None, [1.0, 1.0], &HARD, &pattern("p", 1, 1, &[[0.0, 0.0, 0.0, 1.0]], [i64::MIN, 0]), &p, None)), "pattern_origin_out_of_range");
+    let short = ColourView { bounds: CANVAS, colour: &img.colour[..12], alpha: &img.alpha };
+    assert_eq!(flood_fill(&img.view(), Some(&short), [1.0, 1.0], &HARD, &red, &p, None, CANVAS, &ToolLimits::default()).unwrap_err().code(), "malformed_stride");
+    assert_eq!(fill_selection(&img.view(), None, CANVAS, &red, &FillPaint { mode: StudioBlendMode::PassThrough, ..p }, &ToolLimits::default()).unwrap_err().code(), "blend_group_only");
+}
