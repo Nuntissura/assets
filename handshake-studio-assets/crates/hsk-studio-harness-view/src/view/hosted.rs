@@ -15,7 +15,11 @@
 //!
 //! Model navigation ([STU-CMP-110], [STU-SHL-009]): every panel window has the stable widget name
 //! `panel.<key>` and its controls `panel.<key>.<control>` ([`widget`]); [`Viewer::hosted_action`]
-//! runs any panel action headlessly (the exact call a button makes); `Viewer::state_json()["shell"]`
+//! runs any panel action headlessly (the exact call a button makes); the Stroke panel's arrowhead
+//! controls are `panel.stroke.marker.*` (lane SMB-AI-ARROWHEADS-2: start and end pickers of none
+//! plus the 18 drawn tokens grouped by suite, an imported `ERD_*` terminator shown read-only as
+//! stored, not drawn; start and end scale; alignment; apply, none and swap acting on the selected
+//! layer's first stroke row); `Viewer::state_json()["shell"]`
 //! projects each hosted panel (`hosted.<key>`: open, visible, summary, last result, panel state) and
 //! the key state of the shell-hosted surfaces (`surfaces`: layout editor, program monitor, source
 //! monitor, prototype player). Panels are egui windows inside the one viewport: opening one never
@@ -35,7 +39,7 @@ use super::vector::brushes::PatternTileLayers;
 use super::vector::{AlignTarget, EnvelopeSpec, LiveTextKind, MarkerSpec, PaintSpec, PathEdit, RowKind, StrokePanel, TransformOp};
 use super::widget as vw;
 use hsk_studio_folio::{
-    self as folio, StudioAppearanceRow, StudioArtScale, StudioBrushColorization, StudioBrushKind, StudioBrushParam, StudioEnvelopeShape, StudioMaskMode,
+    self as folio, StudioAppearanceRow, StudioArrowAlignment, StudioArrowhead, StudioArrowheadSuite, StudioArtScale, StudioBrushColorization, StudioBrushKind, StudioBrushParam, StudioEnvelopeShape, StudioMaskMode,
     StudioPatternFit, StudioPatternTiles, StudioRotationRelative, StudioWarpAxis, StudioWarpStyle,
 };
 use hsk_studio_nib::Mirroring;
@@ -381,6 +385,12 @@ pub struct HostedState {
     stroke_dash: String,
     stroke_dash_offset: f64,
     stroke_align: folio::StrokeAlign,
+    /// Stroke panel arrowheads (lane SMB-AI-ARROWHEADS-2).
+    marker_start: StudioArrowhead,
+    marker_end: StudioArrowhead,
+    marker_start_scale: f64,
+    marker_end_scale: f64,
+    marker_align: StudioArrowAlignment,
     swatch_name: String,
     swatch_colour: [u8; 3],
     swatch_tint: f64,
@@ -458,6 +468,11 @@ impl Default for HostedState {
             stroke_dash: String::new(),
             stroke_dash_offset: 0.0,
             stroke_align: folio::StrokeAlign::Center,
+            marker_start: StudioArrowhead::ArrowNone,
+            marker_end: StudioArrowhead::ArrowTriangle,
+            marker_start_scale: folio::DEFAULT_MARKER_SCALE,
+            marker_end_scale: folio::DEFAULT_MARKER_SCALE,
+            marker_align: StudioArrowAlignment::InsidePath,
             swatch_name: "Swatch".into(),
             swatch_colour: [0, 0, 255],
             swatch_tint: 50.0,
@@ -537,6 +552,8 @@ struct PanelView {
     styles: Vec<(String, String)>,
     brushes: Vec<(String, String)>,
     summaries: BTreeMap<HostedPanel, String>,
+    /// The markers of the selected layer's first stroke row (Stroke panel).
+    markers: Option<MarkerSpec>,
 }
 
 fn name_of(rows: &[(String, String)], id: &str) -> String {
@@ -611,6 +628,31 @@ fn targets_ui(ui: &mut egui::Ui, drawn: &mut Vec<String>, key: &str, targets: &m
         }
         drawn.push(name);
     }
+}
+
+/// An arrowhead picker: none, then the drawn tokens of the layout and collaborative suites (the
+/// connector terminators are stored, not drawn, and not offered).
+fn marker_choice(ui: &mut egui::Ui, drawn: &mut Vec<String>, name: String, label: &str, v: &mut StudioArrowhead) {
+    egui::ComboBox::new(vw::id(&name), label).selected_text(v.token()).show_ui(ui, |ui| {
+        ui.selectable_value(v, StudioArrowhead::ArrowNone, "none");
+        for (suite, title) in [(StudioArrowheadSuite::Layout, "Layout suite"), (StudioArrowheadSuite::Collaborative, "Collaborative suite")] {
+            ui.separator();
+            ui.label(title);
+            for a in StudioArrowhead::ALL.into_iter().filter(|a| a.suite() == suite && !a.is_none()) {
+                ui.selectable_value(v, a, a.token());
+            }
+        }
+    });
+    drawn.push(name);
+}
+
+/// A percent field bounded to the marker scale range.
+fn marker_scale(ui: &mut egui::Ui, drawn: &mut Vec<String>, name: String, label: &str, v: &mut f64) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.push_id(vw::id(&name), |ui| ui.add(egui::DragValue::new(v).range(folio::MARKER_SCALE_MIN..=folio::MARKER_SCALE_MAX).speed(1.0).suffix(" %")));
+    });
+    drawn.push(name);
 }
 
 fn parse_dash(text: &str) -> Result<Vec<f64>, String> {
@@ -710,6 +752,38 @@ impl HostedState {
                     }
                     if button(ui, drawn, c("none"), "No Stroke", has) {
                         actions.push(PanelAction::SetStroke(None));
+                    }
+                });
+                ui.separator();
+                ui.label("Arrowheads");
+                // An imported connector terminator: stored, not drawn, shown read-only.
+                for (end, token) in [("start", view.markers.map(|m| m.start)), ("end", view.markers.map(|m| m.end))] {
+                    if let Some(t) = token.filter(|t| t.suite() == StudioArrowheadSuite::Connector) {
+                        let name = c(&format!("marker.{end}.stored"));
+                        ui.push_id(vw::id(&name), |ui| ui.label(format!("{end}: {} (stored, not drawn)", t.token())));
+                        drawn.push(name);
+                    }
+                }
+                marker_choice(ui, drawn, c("marker.start"), "Start", &mut self.marker_start);
+                marker_choice(ui, drawn, c("marker.end"), "End", &mut self.marker_end);
+                marker_scale(ui, drawn, c("marker.start_scale"), "Start scale", &mut self.marker_start_scale);
+                marker_scale(ui, drawn, c("marker.end_scale"), "End scale", &mut self.marker_end_scale);
+                choice(ui, drawn, c("marker.align"), "Align", &mut self.marker_align, &[(StudioArrowAlignment::InsidePath, "tip at path end"), (StudioArrowAlignment::OutsidePath, "tip beyond path end")]);
+                ui.horizontal(|ui| {
+                    if button(ui, drawn, c("marker.apply"), "Apply Arrowheads", has) {
+                        actions.push(PanelAction::SetStrokeMarkers(Some(MarkerSpec {
+                            start: self.marker_start,
+                            end: self.marker_end,
+                            start_scale: self.marker_start_scale,
+                            end_scale: self.marker_end_scale,
+                            alignment: self.marker_align,
+                        })));
+                    }
+                    if button(ui, drawn, c("marker.none"), "No Arrowheads", has) {
+                        actions.push(PanelAction::SetStrokeMarkers(None));
+                    }
+                    if button(ui, drawn, c("marker.swap"), "Swap", has && view.markers.is_some()) {
+                        actions.push(PanelAction::SwapStrokeMarkers);
                     }
                 });
             }
@@ -1167,6 +1241,7 @@ impl Viewer {
             styles: if wants(HostedPanel::GraphicStyles) { self.graphic_styles().unwrap_or_default() } else { Vec::new() },
             brushes: if wants(HostedPanel::Brushes) { self.brushes().unwrap_or_default() } else { Vec::new() },
             summaries: shown.iter().map(|p| (*p, self.hosted_summary(*p))).collect(),
+            markers: if wants(HostedPanel::Stroke) { self.selected_markers() } else { None },
             selected,
             vectors,
             layers,
@@ -1261,6 +1336,13 @@ impl Viewer {
         "needs feature audio-batch".into()
     }
 
+    /// The markers of the selected layer's first stroke row, if any (Stroke panel).
+    fn selected_markers(&self) -> Option<MarkerSpec> {
+        let id = self.selected.as_deref()?;
+        let row = self.first_stroke_row(id).ok()?;
+        self.stroke_markers(id, row).ok().flatten()
+    }
+
     /// Runs one hosted panel action (the exact call its control makes). The result is also kept as
     /// the panel's last result and said in the status log.
     pub fn hosted_action(&mut self, action: PanelAction) -> Result<String, String> {
@@ -1286,8 +1368,14 @@ impl Viewer {
             PanelAction::ClearAppearance => self.clear_appearance(&layer).map(|_| "appearance cleared".into()),
             PanelAction::ReduceToBasicAppearance => self.reduce_to_basic_appearance(&layer).map(|_| "reduced to basic appearance".into()),
             PanelAction::SetStroke(s) => self.set_stroke(&layer, s.as_ref()).map(|_| "stroke set".into()),
-            PanelAction::SetStrokeMarkers(m) => self.set_stroke_markers(&layer, 0, m).map(|_| "markers set".into()),
-            PanelAction::SwapStrokeMarkers => self.swap_stroke_markers(&layer, 0).map(|_| "markers swapped".into()),
+            PanelAction::SetStrokeMarkers(m) => {
+                let row = self.first_stroke_row(&layer)?;
+                self.set_stroke_markers(&layer, row, m).map(|_| if m.is_some() { "arrowheads set".into() } else { "arrowheads removed".into() })
+            }
+            PanelAction::SwapStrokeMarkers => {
+                let row = self.first_stroke_row(&layer)?;
+                self.swap_stroke_markers(&layer, row).map(|_| "arrowheads swapped".into())
+            }
             PanelAction::AddSwatch { name, colour } => self.add_swatch(&name, &PaintSpec::Solid(colour)).map(|id| format!("swatch {id}")),
             PanelAction::ApplySwatch { swatch_id, kind, tint } => self.apply_swatch_tinted(&layer, &swatch_id, kind, tint).map(|_| format!("{} linked to {swatch_id}", kind.token())),
             PanelAction::DetachSwatch(kind) => self.detach_swatch(&layer, kind).map(|_| format!("{} detached", kind.token())),
@@ -1392,6 +1480,11 @@ impl Viewer {
                     "window": widget::window(p.key()),
                 });
                 match p {
+                    HostedPanel::Stroke => {
+                        v["markers"] = self.selected_markers().map_or(Value::Null, |m| {
+                            json!({"start": m.start.token(), "end": m.end.token(), "start_scale": m.start_scale, "end_scale": m.end_scale, "alignment": m.alignment})
+                        });
+                    }
                     HostedPanel::Swatches => v["swatches"] = json!(self.swatches().unwrap_or_default()),
                     HostedPanel::GraphicStyles => v["styles"] = json!(self.graphic_styles().unwrap_or_default()),
                     HostedPanel::Brushes => v["brushes"] = json!(self.brushes().unwrap_or_default()),
