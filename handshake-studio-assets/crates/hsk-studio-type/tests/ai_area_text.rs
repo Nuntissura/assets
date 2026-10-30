@@ -110,15 +110,21 @@ fn area_text_wraps_inside_a_circle_container() {
     }
     let inset = lay(&circle(cx, cy, r), &glyphs, &AreaTextOptions { inset_pt: 10.0, ..Default::default() });
     // First baseline 10 + 8; every interval at least 10 inside the circle on the band edges.
-    // The 0.05 radial bound becomes 0.05 r / half-width along x where the edge is steep (lane
-    // SMB-AI-AREA-TYPE-4: the bottom band at 186, 19.8 pt, now holds a broken word; there the
-    // kappa circle lies 0.098 pt outside the true one at y = 198, slope r / hw = 5.03).
+    // Tolerance (lane SMB-AI-AREA-TYPE-4): the container error is radial, delta = 0.05 (Bezier
+    // circle < 0.03 + flattening 0.01, as above). On the scanline at distance d from the centre the
+    // circle's x is sqrt(r^2 - d^2) = hw, and dx/dr = r / hw there, so a radial error delta moves
+    // the interval end by delta r / hw along x (1x where the edge is vertical, growing toward the
+    // poles). The bottom band at 186 (19.8 pt) now holds a broken word; there the kappa circle lies
+    // 0.098 pt outside the true one at y = 198 (hw 19.9, r / hw = 5.03). Bound: a placed line holds
+    // at least one 5 pt glyph, so hw - 10 >= 2.5 and hw >= 12.5 (asserted), capping the tolerance
+    // at 0.05 x 100 / 12.5 = 0.4 pt; it cannot grow without bound as hw -> 0.
     assert!(inset.lines.iter().all(|l| l.baseline_y >= 18.0 - EPS));
     for line in &inset.lines {
         let (t, bot) = (line.baseline_y - 8.0 - 10.0, line.baseline_y + 2.0 + 10.0);
         let d = (t - cy).abs().max((bot - cy).abs());
         let hw0 = (r * r - d * d).sqrt();
-        let (hw, tol) = (hw0 - 10.0, 0.05 * r / hw0);
+        assert!(hw0 >= 12.5, "a placed line narrower than one glyph: {line:?}");
+        let (hw, tol) = (hw0 - 10.0, (0.05 * r / hw0).min(0.4));
         assert!((line.left - (cx - hw)).abs() < tol && (line.right - (cx + hw)).abs() < tol, "inset interval {line:?} (tolerance {tol})");
     }
     // A ring (circle with an oppositely wound, off-centre hole of r 30 about (110, 100)): the band
