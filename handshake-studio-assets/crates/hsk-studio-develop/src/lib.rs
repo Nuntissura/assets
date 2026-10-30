@@ -26,6 +26,8 @@ pub mod curves;
 pub mod detail;
 pub mod effects;
 pub mod geometry;
+/// HDR merge of bracketed raws through the develop stages and pigment's merge (lane SMB-HDR-MERGE-1).
+pub mod hdr_merge;
 pub mod lens_profile;
 pub mod optics;
 pub mod upright;
