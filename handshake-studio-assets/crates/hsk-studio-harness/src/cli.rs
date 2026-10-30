@@ -61,6 +61,16 @@ struct Parsed {
     stage: Vec<StageArg>,
     threads: Option<usize>,
     depth: Option<u8>,
+    /// export-sequence (lane SMB-PR-SEQ-EXPORT-UI-1): `--sequence`, `--preset`, `--in` / `--out` (ticks, kept as
+    /// text and checked by the command), `--output`, `--media FILE`..., `--width`, `--height`.
+    sequence: Option<String>,
+    preset: Option<String>,
+    in_tick: Option<String>,
+    out_tick: Option<String>,
+    output: Option<PathBuf>,
+    media: Vec<PathBuf>,
+    width: Option<u32>,
+    height: Option<u32>,
 }
 
 /// One develop export stage flag (lane SMB-LR-EXPORT-GUI-1), mapped one to one onto the export
@@ -181,6 +191,14 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
                 let file = PathBuf::from(take(&mut i, "watermark graphic path")?);
                 p.stage.extend([stage_on(), StageArg::Set("use_watermark".into(), "true".into()), StageArg::Watermark(file)]);
             }
+            "--sequence" => p.sequence = Some(take(&mut i, "sequence id")?),
+            "--preset" => p.preset = Some(take(&mut i, "export preset id")?),
+            "--in" => p.in_tick = Some(take(&mut i, "in tick")?),
+            "--out" => p.out_tick = Some(take(&mut i, "out tick")?),
+            "--output" => p.output = Some(PathBuf::from(take(&mut i, "output path")?)),
+            "--media" => p.media.push(PathBuf::from(take(&mut i, "media file path")?)),
+            "--width" => p.width = Some(take(&mut i, "width")?.parse::<u32>().ok().filter(|w| *w > 0).ok_or_else(|| "width must be a positive integer".to_string())?),
+            "--height" => p.height = Some(take(&mut i, "height")?.parse::<u32>().ok().filter(|h| *h > 0).ok_or_else(|| "height must be a positive integer".to_string())?),
             "--threads" => {
                 p.threads = Some(take(&mut i, "thread count")?.parse::<usize>().map_err(|_| "threads must be an unsigned integer".to_string())?)
             }
@@ -347,6 +365,42 @@ pub fn run(args: &[String]) -> CliOutput {
                 return usage("OUT names the SOURCE file; pass --overwrite to replace it, or develop to another path");
             }
             execute_develop(&source, &output, format, &adjust, &parsed.stage, parsed.threads, parsed.overwrite)
+        }
+        "export-sequence" => {
+            let [package] = parsed.positional.as_slice() else {
+                return usage("export-sequence needs exactly one PACKAGE path");
+            };
+            let Some(sequence) = parsed.sequence.clone() else {
+                return usage("export-sequence needs --sequence ID");
+            };
+            let Some(preset) = parsed.preset.clone() else {
+                return usage("export-sequence needs --preset ID");
+            };
+            let Some(output) = parsed.output.clone() else {
+                return usage("export-sequence needs --output PATH");
+            };
+            let tick = |text: Option<&str>, flag: &str| -> Result<Option<u64>, CliOutput> {
+                text.map(|t| t.parse::<u64>().map_err(|_| usage(&format!("{flag} must be a tick count (unsigned integer, 254016000000 per second), got `{t}`")))).transpose()
+            };
+            let (in_tick, out_tick) = match (tick(parsed.in_tick.as_deref(), "--in"), tick(parsed.out_tick.as_deref(), "--out")) {
+                (Ok(a), Ok(b)) => (a, b),
+                (Err(o), _) | (_, Err(o)) => return o,
+            };
+            if in_tick.is_some() != out_tick.is_some() {
+                return usage("--in and --out go together");
+            }
+            let args = SequenceExport {
+                sequence,
+                preset,
+                in_tick,
+                out_tick,
+                output,
+                overwrite: parsed.overwrite,
+                media: parsed.media.clone(),
+                width: parsed.width.unwrap_or(1920),
+                height: parsed.height.unwrap_or(1080),
+            };
+            execute_export_sequence(Path::new(package), &args)
         }
         "batch" => {
             let [job] = parsed.positional.as_slice() else {
@@ -691,6 +745,72 @@ fn execute_export(source: &Path, output: &Path, format: ExportChoice, overwrite:
 #[cfg(not(feature = "viewer"))]
 fn execute_export(_: &Path, _: &Path, _: ExportChoice, _: bool) -> CliOutput {
     out(1, &json!({"schema":crate::SCHEMA,"command":"export","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"viewer"}}))
+}
+
+/// `export-sequence PACKAGE --sequence ID --preset ID [--in T --out T] --output OUT [--overwrite] [--media FILE]...
+/// [--width W --height H] [--json]` (lane SMB-PR-SEQ-EXPORT-UI-1).
+#[cfg_attr(not(feature = "media"), allow(dead_code))]
+struct SequenceExport {
+    sequence: String,
+    preset: String,
+    in_tick: Option<u64>,
+    out_tick: Option<u64>,
+    output: PathBuf,
+    overwrite: bool,
+    media: Vec<PathBuf>,
+    width: u32,
+    height: u32,
+}
+
+/// Opens the package headlessly like the viewer, binds every `--media` file to the program monitor through
+/// reel's decoders (`Viewer::bind_program_media`: clip sources `sha256:<hex>`), and runs `Viewer::export_sequence`
+/// (the window's Export Media runs the same method): same refusals, same result JSON (`export.receipt` is reel's
+/// receipt). Exit 0 only when the receipt's outcome is `complete`. A relative OUT is relative to the current
+/// directory.
+#[cfg(feature = "media")]
+fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
+    use crate::view::{Viewer, render::Prefer, timeline::ExportSequenceRequest};
+    let fail = |error: &str, detail: Value| out(1, &json!({"schema":crate::SCHEMA,"command":"export-sequence","ok":false,"verdict":"fail","error":error,"detail":detail}));
+    let mut viewer = Viewer::new(Prefer::Cpu);
+    if let Err(message) = viewer.open(package) {
+        return fail("open_failed", json!({"stage":"open","message":message}));
+    }
+    let mut files = Vec::with_capacity(a.media.len());
+    for path in &a.media {
+        // Bounded before reading (reel's in-memory media limit).
+        match std::fs::metadata(path) {
+            Ok(m) if m.len() <= crate::view::media::MAX_MEDIA_BYTES as u64 => match std::fs::read(path) {
+                Ok(b) => files.push(b),
+                Err(_) => return fail("media_unreadable", json!({"stage":"media","path":path.to_string_lossy()})),
+            },
+            Ok(_) => return fail("media_too_large", json!({"stage":"media","path":path.to_string_lossy()})),
+            Err(_) => return fail("media_unreadable", json!({"stage":"media","path":path.to_string_lossy()})),
+        }
+    }
+    if !files.is_empty()
+        && let Err(e) = viewer.bind_program_media(&a.sequence, files, a.width, a.height)
+    {
+        return fail(e.code, json!({"stage":"media","message":e.detail}));
+    }
+    let output = std::path::absolute(&a.output).unwrap_or_else(|_| a.output.clone());
+    let mut request = ExportSequenceRequest::new(&a.preset, output);
+    request.in_tick = a.in_tick;
+    request.out_tick = a.out_tick;
+    request.width = a.width;
+    request.height = a.height;
+    request.overwrite = a.overwrite;
+    match viewer.export_sequence(&a.sequence, request) {
+        Ok(export) => {
+            let ok = export["receipt"]["outcome"] == "complete";
+            out(i32::from(!ok), &json!({"schema":crate::SCHEMA,"command":"export-sequence","ok":ok,"verdict":if ok { "pass" } else { "fail" },"export":export}))
+        }
+        Err(e) => fail(e.code, json!({"stage":"export","message":e.detail})),
+    }
+}
+
+#[cfg(not(feature = "media"))]
+fn execute_export_sequence(_: &Path, _: &SequenceExport) -> CliOutput {
+    out(1, &json!({"schema":crate::SCHEMA,"command":"export-sequence","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"media"}}))
 }
 
 fn with_harness(command: &str, parsed: &Parsed, f: impl FnOnce(&Harness) -> CliOutput) -> CliOutput {
