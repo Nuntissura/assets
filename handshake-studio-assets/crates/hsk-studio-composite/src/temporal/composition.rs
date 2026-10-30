@@ -312,13 +312,76 @@ pub(crate) fn keyed_property(layer_id: &str, v: &hsk_studio_folio::StudioKeyedVa
     )
 }
 
-/// The masks of one layer: mode, inverted, closed and the path stream, plus the colour tag and
-/// revision their matte plan is built with.
+/// One mask of a layer: the Folio mask's id, mode, inverted and closed flags, its path stream and
+/// its optional feather, opacity and expansion streams (lane SMB-AE-MASK-FEATHER-1).
+#[derive(Clone, Debug)]
+struct LayerMask {
+    mask_id: String,
+    mode: hsk_studio_folio::StudioCompositionMaskMode,
+    inverted: bool,
+    closed: bool,
+    path: Property,
+    feather: Option<Property>,
+    opacity: Option<Property>,
+    expansion: Option<Property>,
+}
+
+/// Masks at a tick with their shapes, the input of `mask_paths::mask_coverage_shaped`.
+type ShapedMasks = Vec<(crate::mask_paths::MaskAtTick, crate::mask_paths::MaskShape)>;
+
+/// The masks of one layer, plus the colour tag and revision their matte plan is built with.
 #[derive(Clone, Debug)]
 struct LayerMasks {
-    masks: Vec<(hsk_studio_folio::StudioCompositionMaskMode, bool, bool, Property)>,
+    masks: Vec<LayerMask>,
     space: ColourTag,
     revision: u64,
+}
+impl LayerMasks {
+    /// Every mask at `tick`: its path and its shape, each stream sampled like the path (absent
+    /// streams take the identity shape: no feather, opacity 1, no expansion).
+    fn at(&self, layer_id: &str, tick: i64, cancel: &CancellationToken) -> Result<ShapedMasks, TemporalError> {
+        let mut at = Vec::with_capacity(self.masks.len());
+        for m in &self.masks {
+            let path = sample(layer_id, Some(&m.path), m.path.dimension(), tick, cancel)?.unwrap_or_default();
+            let mut shape = crate::mask_paths::MaskShape::default();
+            if let Some(v) = sample(layer_id, m.feather.as_ref(), hsk_studio_folio::StudioCompositionMask::FEATHER_COMPONENTS, tick, cancel)? {
+                shape.feather_px = [v[0], v[1]];
+            }
+            if let Some(v) = sample(layer_id, m.opacity.as_ref(), 1, tick, cancel)? {
+                shape.opacity = v[0];
+            }
+            if let Some(v) = sample(layer_id, m.expansion.as_ref(), 1, tick, cancel)? {
+                shape.expansion_px = v[0];
+            }
+            at.push((crate::mask_paths::MaskAtTick { mode: m.mode, inverted: m.inverted, closed: m.closed, path }, shape));
+        }
+        Ok(at)
+    }
+
+    /// The combined shaped coverage of the masks at `tick` over `rect` (`mask_paths`
+    /// `mask_coverage_shaped`; `max_pixels` bounds every plane, the feather-grown one included). A
+    /// refusal names the mask: `Unsupported { layer_id: "<layer>/masks/<mask_id>", feature: code }`.
+    fn coverage(
+        &self,
+        layer_id: &str,
+        tick: i64,
+        cancel: &CancellationToken,
+        matrix: &Affine2,
+        rect: Rect,
+        max_pixels: u64,
+    ) -> Result<Option<Vec<f32>>, TemporalError> {
+        let at = self.at(layer_id, tick, cancel)?;
+        crate::mask_paths::mask_coverage_shaped(&at, matrix, rect, max_pixels).map_err(|r| {
+            let mask_id = self.masks.get(r.mask).map_or("", |m| m.mask_id.as_str());
+            unsupported(&format!("{layer_id}/masks/{mask_id}"), r.code)
+        })
+    }
+}
+
+/// The plane bound of a layer's mask coverage: the rect itself, or the clip-plane maximum when that
+/// is larger (room for a feather's support around the rect).
+fn mask_plane_bound(rect_pixels: u64) -> u64 {
+    rect_pixels.max(crate::vector::MAX_CLIP_PIXELS)
 }
 
 /// The motion `Property` of a mask's path stream (the vertex list), through the same keyframe
@@ -988,9 +1051,19 @@ impl CompositionTemporalSource {
                     if !matches!(content, Content::Tiles { .. } | Content::Static { .. } | Content::Precomp { collapse: false, .. }) {
                         return Err(unsupported(id, crate::mask_paths::COMPOSITION_MASK_PATH_CONTENT));
                     }
+                    let shape = |v: &Option<hsk_studio_folio::StudioKeyedValue>| v.as_ref().map(|v| keyed_property(id, v)).transpose();
                     let mut masks = Vec::with_capacity(l.masks.len());
                     for m in &l.masks {
-                        masks.push((m.mode, m.inverted, m.closed, mask_property(id, m)?));
+                        masks.push(LayerMask {
+                            mask_id: m.mask_id.clone(),
+                            mode: m.mode,
+                            inverted: m.inverted,
+                            closed: m.closed,
+                            path: mask_property(id, m)?,
+                            feather: shape(&m.feather)?,
+                            opacity: shape(&m.opacity)?,
+                            expansion: shape(&m.expansion)?,
+                        });
                     }
                     Some(LayerMasks { masks, space: input.space, revision: doc.revision })
                 },
@@ -1572,14 +1645,9 @@ impl CompositionTemporalSource {
             None => None,
             Some(_) if !l.effects.is_empty() => None,
             Some(lm) => {
-                let mut at = Vec::with_capacity(lm.masks.len());
-                for (mode, inverted, closed, p) in &lm.masks {
-                    let path = sample(&l.layer_id, Some(p), p.dimension(), tick, cancel)?.unwrap_or_default();
-                    at.push(crate::mask_paths::MaskAtTick { mode: *mode, inverted: *inverted, closed: *closed, path });
-                }
                 let o = l.content.origin();
                 let px = u64::from(bounds.width).checked_mul(u64::from(bounds.height)).ok_or(CompositeError::Overflow)?;
-                crate::mask_paths::mask_coverage(&at, &Affine2::translate(o[0], o[1]), bounds, px).map_err(|code| unsupported(&l.layer_id, code))?
+                lm.coverage(&l.layer_id, tick, cancel, &Affine2::translate(o[0], o[1]), bounds, mask_plane_bound(px))?
             }
         };
         let track_matte = layer.matte;
@@ -2310,14 +2378,9 @@ impl CompositionTemporalSource {
                 }
                 let o = l.content.origin();
                 let to_comp = Affine2::translate(o[0], o[1]).then(Self::matrix(comp, l, tick, cancel)?);
-                let mut at = Vec::with_capacity(lm.masks.len());
-                for (mode, inverted, closed, p) in &lm.masks {
-                    let path = sample(&l.layer_id, Some(p), p.dimension(), tick, cancel)?.unwrap_or_default();
-                    at.push(crate::mask_paths::MaskAtTick { mode: *mode, inverted: *inverted, closed: *closed, path });
-                }
                 let rect = Rect { x: 0, y: 0, width: comp.width, height: comp.height };
                 let px = u64::from(comp.width).checked_mul(u64::from(comp.height)).ok_or(CompositeError::Overflow)?;
-                match crate::mask_paths::mask_coverage(&at, &to_comp, rect, px).map_err(|code| unsupported(&l.layer_id, code))? {
+                match lm.coverage(&l.layer_id, tick, cancel, &to_comp, rect, mask_plane_bound(px))? {
                     None => None,
                     Some(cov) => Some(crate::mask_paths::coverage_matte(&cov, rect, &l.layer_id, lm.space, lm.revision)?),
                 }

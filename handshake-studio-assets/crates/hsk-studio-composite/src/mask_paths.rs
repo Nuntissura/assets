@@ -225,11 +225,11 @@ fn feather_taps(radius: f64) -> Result<(Vec<f32>, u32), &'static str> {
     Ok((taps, support))
 }
 
-/// The tap-weighted sum of `values` (a weighted mean of values in `0..=1`; the taps sum to 1),
-/// accumulated in f64 and stored f32 like the plane.
+/// The tap-weighted sum of `values` (a weighted mean of values in `0..=1`; the f32 taps sum to 1
+/// within rounding), accumulated in f64, stored f32 like the plane and clamped into `0..=1`.
 #[allow(clippy::cast_possible_truncation)]
 fn dot(values: &mut dyn Iterator<Item = f32>, taps: &[f32]) -> f32 {
-    values.zip(taps).map(|(v, t)| f64::from(v) * f64::from(*t)).sum::<f64>() as f32
+    (values.zip(taps).map(|(v, t)| f64::from(v) * f64::from(*t)).sum::<f64>() as f32).clamp(0.0, 1.0)
 }
 
 /// `plane` (row-major over a rect `width` wide) blurred by `kx` along x then `ky` along y, keeping

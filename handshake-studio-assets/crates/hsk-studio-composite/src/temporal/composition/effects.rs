@@ -212,13 +212,8 @@ impl CompositionTemporalSource {
         let mask = match &l.masks {
             None => None,
             Some(lm) => {
-                let mut at = Vec::with_capacity(lm.masks.len());
-                for (mode, inverted, closed, p) in &lm.masks {
-                    let path = sample(id, Some(p), p.dimension(), tick, cancel)?.unwrap_or_default();
-                    at.push(crate::mask_paths::MaskAtTick { mode: *mode, inverted: *inverted, closed: *closed, path });
-                }
                 let o = l.content.origin();
-                crate::mask_paths::mask_coverage(&at, &Affine2::translate(o[0], o[1]), rect, rect.area()).map_err(|code| unsupported(id, code))?
+                lm.coverage(id, tick, cancel, &Affine2::translate(o[0], o[1]), rect, super::mask_plane_bound(rect.area()))?
             }
         };
         let mut effects = Vec::with_capacity(l.effects.len());
