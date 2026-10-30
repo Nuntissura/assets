@@ -182,6 +182,61 @@ pub struct AutoLayout {
     pub vertical_padding: Option<f32>,
     pub padding_right: Option<f32>,
     pub padding_bottom: Option<f32>,
+    /// The grid container fields (lane SMB-FIG-GRID-2), present when the node stores any of them
+    /// (whatever `mode` is; mapping uses them only under `GRID`).
+    pub grid: Option<FigGrid>,
+}
+
+/// One `GridTrackSizingFunction` (`type` as stored: `FLEX`, `FIXED`, `HUG`; `value` as stored).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FigTrackSizing {
+    pub kind: String,
+    pub value: Option<f32>,
+}
+
+/// One `GridTrackSize`: the stored `minSizing` and `maxSizing` functions.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FigTrackSize {
+    pub min: Option<FigTrackSizing>,
+    pub max: Option<FigTrackSizing>,
+}
+
+/// One grid track: a `gridRows` / `gridColumns` (`GUIDPositionMap`) entry and the size its
+/// `gridRowsSizing` / `gridColumnsSizing` (`GUIDGridTrackSizeMap`) entry gives it (`None`: no entry).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FigGridTrack {
+    pub id: SourceId,
+    pub position: String,
+    pub size: Option<FigTrackSize>,
+}
+
+/// The grid placement a child stores (`gridRowAnchor` / `gridColumnAnchor` are track ids of the
+/// parent's `gridRows` / `gridColumns`; spans and alignments as stored).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FigGridChild {
+    pub row_anchor: Option<SourceId>,
+    pub column_anchor: Option<SourceId>,
+    pub row_span: Option<u32>,
+    pub column_span: Option<u32>,
+    pub vertical_align: Option<String>,
+    pub horizontal_align: Option<String>,
+}
+
+/// The grid container fields of a frame. Tracks are in stored order (fractional-index `position`
+/// byte order, then id); the schema has no count fields, the counts are the track list lengths.
+/// `children` holds the placements of the node's children that store grid fields, in child order
+/// (a child's grid fields are attached here, to the parent whose track ids they name).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FigGrid {
+    pub rows: Vec<FigGridTrack>,
+    pub columns: Vec<FigGridTrack>,
+    pub row_gap: Option<f32>,
+    pub column_gap: Option<f32>,
+    /// `gridAutoTracks` as stored (`NONE`, `ROWS`).
+    pub auto_tracks: Option<String>,
+    /// `gridReflowEnabled` as stored (its meaning is UNVERIFIED; not mapped).
+    pub reflow_enabled: Option<bool>,
+    pub children: Vec<(SourceId, FigGridChild)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -547,6 +602,8 @@ struct Cx<'a> {
     loss: BTreeMap<(String, &'static str), (u32, Option<SourceId>)>,
     decoded: BTreeMap<String, u32>,
     current: Option<SourceId>,
+    /// Grid placements read from children, attached to their parents after linking.
+    grid_children: Vec<(SourceId, FigGridChild)>,
     /// `None`: blobs cannot be resolved (loss already recorded).
     blobs: Option<Vec<&'a [u8]>>,
     container: Option<&'a FigContainer>,
@@ -983,6 +1040,7 @@ pub fn decode_path_blob(blob: &[u8], limits: &Limits) -> Result<Vec<PathCommand>
         loss: BTreeMap::new(),
         decoded: BTreeMap::new(),
         current: None,
+        grid_children: Vec::new(),
         blobs: None,
         container: None,
         geometry_budget: limits.max_tree_values,
@@ -1196,6 +1254,7 @@ fn frame(o: &mut Obj, cx: &mut Cx) -> FramePayload {
         vertical_padding: o.f32(cx, "stackVerticalPadding"),
         padding_right: o.f32(cx, "stackPaddingRight"),
         padding_bottom: o.f32(cx, "stackPaddingBottom"),
+        grid: None,
     });
     let defs_path = o.sub("componentPropDefs");
     let component_props = o
@@ -1872,6 +1931,7 @@ pub fn document_from_tree(
         loss: BTreeMap::new(),
         decoded: BTreeMap::new(),
         current: None,
+        grid_children: Vec::new(),
         blobs: None,
         container,
         geometry_budget: limits.max_tree_values,
