@@ -578,16 +578,6 @@ pub fn marker_outlines(
     stroke_width: f64,
     options: &MarkerOptions,
 ) -> Result<MarkerOutlines, MarkerError> {
-    let _ = (path, spec, stroke_width, options, build as fn(&OwnedPath, &MarkerSpec, f64, &MarkerOptions) -> Result<MarkerOutlines, MarkerError>);
-    Err(MarkerError::InvalidGeometry)
-}
-
-fn build(
-    path: &OwnedPath,
-    spec: &MarkerSpec,
-    stroke_width: f64,
-    options: &MarkerOptions,
-) -> Result<MarkerOutlines, MarkerError> {
     let accuracy = options.arclen_accuracy;
     if !accuracy.is_finite() || !(1e-12..=1.0).contains(&accuracy) {
         return Err(MarkerError::InvalidOptions);
@@ -662,7 +652,7 @@ fn build(
         let lengths: Vec<f64> = sub.segs.iter().map(|s| s.length(accuracy)).collect();
         let total: f64 = lengths.iter().sum();
         let (from, to) = (head, total - tail);
-        if !(from < to) {
+        if to <= from {
             out.consumed_subpaths.push(index);
             continue;
         }

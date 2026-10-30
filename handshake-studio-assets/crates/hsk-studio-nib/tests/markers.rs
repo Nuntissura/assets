@@ -81,12 +81,12 @@ fn triangle_on_a_thirty_degree_line() {
     close(&vertices(&inside.markers[0].outline), &want);
     // By hand: B = (12.124355652982141, 7), vertices (10.624355652982141, 9.598076211353316) and
     // (13.624355652982141, 4.401923788646684).
-    let by_hand = [(10.624_355_652_982_141, 9.598_076_211_353_316), (13.624_355_652_982_141, 4.401_923_788_646_684)];
+    let by_hand = [(10.624_355_652_982_14, 9.598_076_211_353_316), (13.624_355_652_982_14, 4.401_923_788_646_684)];
     for (w, h) in want[1..].iter().zip(by_hand) {
         assert!((w.0 - h.0).abs() < EPS && (w.1 - h.1).abs() < EPS, "{w:?} vs {h:?}");
     }
     let t = last_point(&inside.trimmed);
-    assert!((t.x - 12.124_355_652_982_141).abs() < EPS && (t.y - 7.0).abs() < EPS, "trimmed end {t:?}");
+    assert!((t.x - 12.124_355_652_982_14).abs() < EPS && (t.y - 7.0).abs() < EPS, "trimmed end {t:?}");
     let outside = run(&l, spec(None, end(MarkerShape::Triangle, 100.0), MarkerAlign::OutsidePath), 2.0).unwrap();
     let tip = (e.0 + 6.0 * c, e.1 + 6.0 * sn);
     close(
