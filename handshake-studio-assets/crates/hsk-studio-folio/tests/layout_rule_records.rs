@@ -214,15 +214,15 @@ fn alternate_layout_names_follow_the_captured_rules() {
 #[test]
 fn linked_story_and_page_item_options_are_separate() {
     let parent = story(1, "Parent text");
-    let fp = linked_story_fingerprint(&parent);
-    assert_eq!(fp.len(), 16);
+    let fp = linked_story_fingerprint(&parent).unwrap();
+    assert_eq!(fp.len(), LINK_FINGERPRINT_HEX);
     let mut renamed = parent.clone();
     renamed.story_id = stxt(7);
-    assert_eq!(linked_story_fingerprint(&renamed), fp, "the id is not content");
+    assert_eq!(linked_story_fingerprint(&renamed).unwrap(), fp, "the id is not content");
     let links = json!([{"child_story_id":stxt(2),"parent_story_id":stxt(1),
         "options":{"update_policy":"warn_on_change","remove_forced_line_breaks":true},"synced_parent_fingerprint":fp}]);
     let doc = document();
-    let item_fp = linked_page_item_fingerprint(&doc.layers[3]);
+    let item_fp = linked_page_item_fingerprint(&doc.layers[3]).unwrap();
     let items = json!([{"child_layer_id":slyr(5),"parent_layer_id":slyr(4),
         "options":{"update_policy":"auto_update"},"synced_parent_fingerprint":item_fp}]);
     let mut v = with("linked_stories", links);
@@ -232,12 +232,12 @@ fn linked_story_and_page_item_options_are_separate() {
     let link = r.linked_story(&stxt(2)).unwrap();
     assert_eq!(link.options, StudioLinkedStoryOptions { update_policy: StudioLinkUpdatePolicy::WarnOnChange, remove_forced_line_breaks: true });
     assert_eq!(r.linked_page_items[0].options, StudioLinkedPageItemOptions { update_policy: StudioLinkUpdatePolicy::AutoUpdate });
-    assert_eq!(link.state(&parent), StudioLinkState::UpToDate);
-    assert_eq!(link.state(&story(1, "Parent text, edited")), StudioLinkState::OutOfDate);
-    assert_eq!(r.linked_page_items[0].state(&doc.layers[3]), StudioLinkState::UpToDate);
+    assert_eq!(link.state(&parent), Ok(StudioLinkState::UpToDate));
+    assert_eq!(link.state(&story(1, "Parent text, edited")), Ok(StudioLinkState::OutOfDate));
+    assert_eq!(r.linked_page_items[0].state(&doc.layers[3]), Ok(StudioLinkState::UpToDate));
     let mut hidden = doc.layers[3].clone();
     hidden.visible = false;
-    assert_eq!(r.linked_page_items[0].state(&hidden), StudioLinkState::OutOfDate);
+    assert_eq!(r.linked_page_items[0].state(&hidden), Ok(StudioLinkState::OutOfDate));
     // The page-item options do not accept story-only members, and vice versa.
     let wrong = json!([{"child_layer_id":slyr(5),"parent_layer_id":slyr(4),
         "options":{"update_policy":"auto_update","remove_forced_line_breaks":true},"synced_parent_fingerprint":item_fp}]);
@@ -256,6 +256,7 @@ fn linked_story_and_page_item_options_are_separate() {
     assert_eq!(code(&with("linked_stories", json!([link(2, 1, &fp), link(1, 2, &fp)]))), Code::RenderCycle);
     assert_eq!(code(&with("linked_stories", json!([link(2, 1, "XYZ")]))), Code::InvalidField);
     assert_eq!(code(&with("linked_stories", json!([link(2, 1, "0123456789ABCDEF")]))), Code::InvalidField, "uppercase");
+    assert_eq!(code(&with("linked_stories", json!([link(2, 1, &fp[..32])]))), Code::InvalidField, "neither 64 nor 16 digits");
     assert!(check(&with("linked_stories", json!([link(2, 1, &fp), link(3, 2, &fp)]))).is_ok(), "chains are allowed");
     let item = |c: u32, p: u32| {
         json!({"child_layer_id":slyr(c),"parent_layer_id":slyr(p),"options":{"update_policy":"warn_on_change"},
@@ -286,4 +287,53 @@ fn absent_layout_rules_keep_documents_byte_identical() {
     let mut unknown = base();
     unknown["layout_rule"] = json!("scale");
     assert!(serde_json::from_value::<StudioLayoutRuleRecords>(unknown).is_err(), "deny_unknown_fields");
+}
+
+/// FNV-1a 64 as records before F-R40-6 stored it (16 lowercase hex digits).
+fn legacy_fnv(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// F-R40-6: link fingerprints are SHA-256 (64 hex digits), never the FNV-1a 64 value of the same
+/// content; a record carrying a legacy FNV value still validates, but its link reads
+/// `StaleFingerprint` even when that FNV value matches the parent's current content, so a stored
+/// FNV value never compares equal or unequal by accident; a sync writes a SHA-256 value again.
+#[test]
+fn link_fingerprints_are_sha256_and_legacy_fnv_values_read_stale() {
+    let parent = story(1, "Parent text");
+    let doc = document();
+    let layer = &doc.layers[3];
+    let story_bytes = serde_json::to_vec(&(&parent.text_kind, &parent.story_direction, &parent.content, &parent.paragraphs, &parent.character_ranges)).unwrap();
+    let layer_bytes = serde_json::to_vec(&(&layer.kind, &layer.payload, layer.visible, &layer.appearance)).unwrap();
+    let (fp, item_fp) = (linked_story_fingerprint(&parent).unwrap(), linked_page_item_fingerprint(layer).unwrap());
+    for f in [&fp, &item_fp] {
+        assert_eq!(f.len(), 64, "{f}");
+        assert!(f.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{f}");
+    }
+    assert_ne!(fp, item_fp);
+    let (old_fp, old_item_fp) = (legacy_fnv(&story_bytes), legacy_fnv(&layer_bytes));
+    assert_eq!(old_fp.len(), LEGACY_FINGERPRINT_HEX);
+    let links = json!([{"child_story_id":stxt(2),"parent_story_id":stxt(1),
+        "options":{"update_policy":"warn_on_change","remove_forced_line_breaks":false},"synced_parent_fingerprint":old_fp}]);
+    let items = json!([{"child_layer_id":slyr(5),"parent_layer_id":slyr(4),
+        "options":{"update_policy":"auto_update"},"synced_parent_fingerprint":old_item_fp}]);
+    let mut v = with("linked_stories", links);
+    v["linked_page_items"] = items;
+    assert!(check(&v).is_ok(), "a legacy FNV record still validates");
+    let r = round_trip(&v);
+    let link = r.linked_story(&stxt(2)).unwrap();
+    assert_eq!(link.state(&parent), Ok(StudioLinkState::StaleFingerprint), "a matching FNV value is not up to date");
+    assert_eq!(link.state(&story(1, "Parent text, edited")), Ok(StudioLinkState::StaleFingerprint));
+    assert_eq!(r.linked_page_items[0].state(layer), Ok(StudioLinkState::StaleFingerprint));
+    // A sync writes the SHA-256 value, after which the ordinary comparison applies.
+    let mut synced = r.clone();
+    synced.linked_stories[0].synced_parent_fingerprint = fp;
+    synced.linked_page_items[0].synced_parent_fingerprint = item_fp;
+    assert_eq!(synced.linked_stories[0].state(&parent), Ok(StudioLinkState::UpToDate));
+    assert_eq!(synced.linked_page_items[0].state(layer), Ok(StudioLinkState::UpToDate));
 }

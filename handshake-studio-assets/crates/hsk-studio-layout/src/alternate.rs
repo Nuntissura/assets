@@ -288,7 +288,7 @@ pub fn create_alternate_layout(
                     child_layer_id: child_id.clone(),
                     parent_layer_id: src_layer.layer_id.clone(),
                     options: req.item_options.clone(),
-                    synced_parent_fingerprint: linked_page_item_fingerprint(src_layer),
+                    synced_parent_fingerprint: linked_page_item_fingerprint(src_layer)?,
                 });
                 g.graphic_frames.len().checked_sub(1).ok_or(LayoutError::InvalidInput)?
             }
@@ -324,7 +324,7 @@ pub fn create_alternate_layout(
             child_story_id: child.story_id.clone(),
             parent_story_id: parent.story_id.clone(),
             options: req.story_options.clone(),
-            synced_parent_fingerprint: linked_story_fingerprint(parent),
+            synced_parent_fingerprint: linked_story_fingerprint(parent)?,
         });
         child_stories.push(child);
     }
@@ -426,7 +426,7 @@ pub fn update_linked_stories(
         let link = &records.linked_stories[i];
         let find = |id: &str| all.iter().position(|s| s.story_id == id).ok_or_else(|| LayoutRuleError::StoryMissing(id.to_owned()));
         let (pi, ci) = (find(&link.parent_story_id)?, find(&link.child_story_id)?);
-        let outcome = if link.state(&all[pi]) == hsk_studio_folio::StudioLinkState::UpToDate {
+        let outcome = if link.state(&all[pi])? == hsk_studio_folio::StudioLinkState::UpToDate {
             LinkOutcome::UpToDate
         } else if link.options.update_policy == StudioLinkUpdatePolicy::AutoUpdate || accept.contains(&link.child_story_id) {
             let parent = all[pi].clone();
@@ -436,7 +436,7 @@ pub fn update_linked_stories(
             child.content = parent.content.clone();
             child.paragraphs = parent.paragraphs.clone();
             child.character_ranges = parent.character_ranges.clone();
-            out.linked_stories[i].synced_parent_fingerprint = linked_story_fingerprint(&parent);
+            out.linked_stories[i].synced_parent_fingerprint = linked_story_fingerprint(&parent)?;
             LinkOutcome::Updated
         } else {
             LinkOutcome::Warned
@@ -461,7 +461,7 @@ pub fn update_linked_page_items(
         let link = &records.linked_page_items[i];
         let find = |id: &str| doc.layers.iter().position(|l| l.layer_id == id).ok_or_else(|| LayoutRuleError::LinkMissing(id.to_owned()));
         let (pi, ci) = (find(&link.parent_layer_id)?, find(&link.child_layer_id)?);
-        let outcome = if link.state(&doc.layers[pi]) == hsk_studio_folio::StudioLinkState::UpToDate {
+        let outcome = if link.state(&doc.layers[pi])? == hsk_studio_folio::StudioLinkState::UpToDate {
             LinkOutcome::UpToDate
         } else if link.options.update_policy == StudioLinkUpdatePolicy::AutoUpdate || accept.contains(&link.child_layer_id) {
             let parent = doc.layers[pi].clone();
@@ -470,7 +470,7 @@ pub fn update_linked_page_items(
             child.payload = parent.payload.clone();
             child.visible = parent.visible;
             child.appearance = parent.appearance.clone();
-            out.linked_page_items[i].synced_parent_fingerprint = linked_page_item_fingerprint(&parent);
+            out.linked_page_items[i].synced_parent_fingerprint = linked_page_item_fingerprint(&parent)?;
             LinkOutcome::Updated
         } else {
             LinkOutcome::Warned

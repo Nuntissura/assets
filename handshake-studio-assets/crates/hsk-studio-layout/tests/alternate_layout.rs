@@ -201,9 +201,9 @@ fn linked_story_goes_out_of_date_and_updates() {
     let p = create_alternate_layout(&req, &mut ids(), &Default::default()).expect("create");
     let link = p.records.linked_story(&p.child_stories[0].story_id).unwrap().clone();
     assert_eq!(link.parent_story_id, id("STXT", 1));
-    assert_eq!(link.state(&f.stories[0].0), StudioLinkState::UpToDate);
+    assert_eq!(link.state(&f.stories[0].0), Ok(StudioLinkState::UpToDate));
     let (edited, _) = story(1, "edited parent text", &[(0, 18)]);
-    assert_eq!(link.state(&edited), StudioLinkState::OutOfDate);
+    assert_eq!(link.state(&edited), Ok(StudioLinkState::OutOfDate));
     let all = vec![edited.clone(), f.stories[1].0.clone(), p.child_stories[0].clone(), p.child_stories[1].clone()];
     let u = update_linked_stories(&p.records, &all, &[]).expect("update");
     let outcome = |c: &str| u.updates.iter().find(|x| x.child_id == c).unwrap().outcome;
@@ -211,7 +211,7 @@ fn linked_story_goes_out_of_date_and_updates() {
     assert_eq!(outcome(&p.child_stories[1].story_id), LinkOutcome::UpToDate);
     let child = u.stories.iter().find(|s| s.story_id == p.child_stories[0].story_id).unwrap();
     assert_eq!((&child.content, &child.paragraphs), (&edited.content, &edited.paragraphs));
-    assert_eq!(u.records.linked_story(&child.story_id).unwrap().state(&edited), StudioLinkState::UpToDate);
+    assert_eq!(u.records.linked_story(&child.story_id).unwrap().state(&edited), Ok(StudioLinkState::UpToDate));
     assert_eq!(update_linked_stories(&p.records, &all[..2], &[]).unwrap_err().code(), "story_missing");
 
     let mut doc = p.document.clone();
@@ -221,7 +221,7 @@ fn linked_story_goes_out_of_date_and_updates() {
     assert_eq!(ups[0].outcome, LinkOutcome::Updated);
     let child = d2.layers.iter().find(|l| l.layer_id == ups[0].child_id).unwrap();
     assert!(!child.visible);
-    assert_eq!(r2.linked_page_items[0].state(d2.layers.iter().find(|l| l.layer_id == id("SLYR", 9)).unwrap()), StudioLinkState::UpToDate);
+    assert_eq!(r2.linked_page_items[0].state(d2.layers.iter().find(|l| l.layer_id == id("SLYR", 9)).unwrap()), Ok(StudioLinkState::UpToDate));
     let before = p.document.layers.iter().find(|l| l.layer_id == ups[0].child_id).unwrap();
     assert_eq!((&child.parent, &child.name), (&before.parent, &before.name), "geometry/identity kept");
 }
@@ -242,7 +242,7 @@ fn warn_on_parent_change_does_not_overwrite() {
     assert_eq!(u.updates.iter().find(|x| x.child_id == child_id).unwrap().outcome, LinkOutcome::Warned);
     let child = u.stories.iter().find(|s| s.story_id == child_id).unwrap();
     assert_eq!(child, &p.child_stories[0], "not overwritten");
-    assert_eq!(u.records.linked_story(&child_id).unwrap().state(&edited), StudioLinkState::OutOfDate);
+    assert_eq!(u.records.linked_story(&child_id).unwrap().state(&edited), Ok(StudioLinkState::OutOfDate));
     let u = update_linked_stories(&p.records, &all, std::slice::from_ref(&child_id)).expect("accepted");
     assert_eq!(u.updates.iter().find(|x| x.child_id == child_id).unwrap().outcome, LinkOutcome::Updated);
     assert_eq!(u.stories.iter().find(|s| s.story_id == child_id).unwrap().content, edited.content);
