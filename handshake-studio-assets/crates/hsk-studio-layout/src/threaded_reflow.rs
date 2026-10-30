@@ -286,7 +286,7 @@ fn next_slot(
     mode: Mode,
     verticals: &[FrameVertical],
     snap: bool,
-    blocked: &mut bool,
+    blocked: &mut Option<FirstBaselineUnavailable>,
     scans: &mut usize,
     scan_cap: usize,
     cancel: &CancellationToken,
@@ -311,8 +311,8 @@ fn next_slot(
             (None, Some(first)) => first,
             (None, None) => match frame_first(f, verticals.get(cur.pos), p) {
                 Ok(first) => first,
-                Err(_) => {
-                    *blocked = true;
+                Err(e) => {
+                    *blocked = Some(e);
                     return Ok(None);
                 }
             },
@@ -881,7 +881,7 @@ fn compose_flow(
         let remaining = limits.max_lines.saturating_sub(placed);
         let slot_cap = items.len().min(remaining.saturating_add(1));
         let scan_cap = scan_cap_base.saturating_add(items.len());
-        let (mut slots, mut scans, mut blocked) = (Vec::new(), 0usize, false);
+        let (mut slots, mut scans, mut blocked) = (Vec::new(), 0usize, None);
         let descent = p.line_height_pt - p.ascent_pt;
         let flow = flows[pi];
         let mut breaks = None;
@@ -1025,8 +1025,8 @@ fn compose_flow(
             }
         }
         if slots.is_empty() {
-            if blocked {
-                return Err(LayoutError::UnsupportedComposition);
+            if let Some(e) = blocked {
+                return Err(LayoutError::FirstBaselineMetricUnavailable(e));
             }
             overset = Some(SourceSpan {
                 start: p.source.start,
@@ -1111,8 +1111,8 @@ fn compose_flow(
             });
             let extra_glyph = items[b.item].end_part.is_some_and(|e| e.extra && items[b.item].flagged);
             if k >= slots.len() {
-                if blocked {
-                    return Err(LayoutError::UnsupportedComposition);
+                if let Some(e) = blocked {
+                    return Err(LayoutError::FirstBaselineMetricUnavailable(e));
                 }
                 overset = Some(SourceSpan {
                     start: source.start,

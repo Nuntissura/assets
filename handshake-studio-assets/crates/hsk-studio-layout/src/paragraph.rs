@@ -60,8 +60,8 @@ pub struct ShapedParagraph {
 
 /// A STU-LAY-120 first-baseline kind whose metric the paragraph does not carry (a face without the
 /// OS/2 value, or a source that states no font size). `code()` is
-/// `first_baseline_metric_unavailable:<kind>`; the threaded reflow refuses such a frame with
-/// `LayoutError::UnsupportedComposition` (the refusal these kinds had before they composed).
+/// `first_baseline_metric_unavailable:<kind>`; the threaded reflow refuses a frame a line needs with
+/// `LayoutError::FirstBaselineMetricUnavailable` carrying it (lane SMB-ID-FRAME-AUTOSIZE-2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FirstBaselineUnavailable {
     pub kind: FirstBaseline,
@@ -143,8 +143,10 @@ impl ShapedParagraph {
     /// Flattens a Type-shaped paragraph. A `Prepared` result never carries a missing font (Type
     /// refuses instead), so `font_missing` is false; right-to-left, odd bidi levels and scripts other
     /// than Latn/Zyyy mark the paragraph unsupported so `reflow` refuses it instead of mis-laying it.
-    /// The em box height is the first run's font size; Type's public API states no OS/2 cap or x
-    /// height, so those stay unknown until the host supplies them (`with_face_metrics`).
+    /// The first-baseline metrics are the first run's: em box height = its font size, cap and x
+    /// height = Type's `Run::cap_height_pt` / `Run::x_height_pt` (OS/2 `sCapHeight` / `sxHeight`;
+    /// `None` when the face lacks them), so hosts need no `with_face_metrics` (lane
+    /// SMB-ID-FRAME-AUTOSIZE-2; interop-layout tests/idml_frame_autosize.rs).
     pub fn from_type(p: &ty::ParagraphResult<'_>, line_height_pt: f64, ascent_pt: f64) -> Self {
         let mut glyphs = Vec::new();
         let (mut line_end_advances, mut ligature_parts) = (Vec::new(), Vec::new());
@@ -186,8 +188,8 @@ impl ShapedParagraph {
             latin_only: latin,
             line_end_advances,
             ligature_parts,
-            cap_height_pt: None,
-            x_height_pt: None,
+            cap_height_pt: p.runs().first().and_then(|r| r.cap_height_pt()),
+            x_height_pt: p.runs().first().and_then(|r| r.x_height_pt()),
             em_box_pt: p.runs().first().map(|r| r.font_size_pt()),
         }
     }
