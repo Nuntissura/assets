@@ -121,10 +121,15 @@ fn create_outlines_replaces_live_and_point_text_as_one_undo_step() {
     assert!(status(&v).contains("glyphs placed"), "{}", status(&v));
     let live = inked(&mut v);
     assert!(live.len() > 40, "too little ink: {}", live.len());
-    v.hosted_action(PanelAction::CreateOutlines).unwrap();
+    let said = v.hosted_action(PanelAction::CreateOutlines).unwrap();
     assert!(v.vector_text_reports().unwrap().is_empty(), "the binding stays");
+    // The outlines are their own vector layer (a vector layer has one appearance, its first
+    // path's: appended to the unfilled container they would draw nothing); the container stays.
+    let shapes = v.layers().into_iter().find(|r| said.ends_with(&r.layer_id)).map(|r| (r.layer_id, r.kind));
+    assert!(shapes.as_ref().is_some_and(|(id, k)| *id != container && k == "vector"), "{said}: {shapes:?}");
     assert_eq!(kind(&v, &container).as_deref(), Some("vector"));
     let outlined = inked(&mut v);
+    assert!(!outlined.is_empty(), "the outlines draw nothing");
     // The same glyph geometry as filled paths: the pixel sets differ by antialiasing only.
     let differ = live.iter().filter(|p| !outlined.contains(p)).count() + outlined.iter().filter(|p| !live.contains(p)).count();
     assert!(differ * 10 <= live.len(), "{differ} of {} pixels differ", live.len());

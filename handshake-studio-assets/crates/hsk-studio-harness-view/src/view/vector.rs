@@ -1472,48 +1472,66 @@ impl Viewer {
         }
     }
 
-    /// The new layer that replaces `old` (same parent and name, directly above `old`, which is
-    /// removed in the same transaction): its id and the placement writes. `payload` may name the
-    /// story `STXT-<new layer uuid>` by a `story_id` of `""`.
-    fn replacement(&self, old: &str, kind: &str, payload: Value) -> Result<(String, Vec<PlacementWrite>), String> {
+    /// `n` fresh layer ids: never one the document holds nor one the text or vector entry still
+    /// names (a layer an undo can bring back keeps its record and story there).
+    fn free_layer_ids(&self, n: usize) -> Result<Vec<String>, String> {
         let doc = self.vdoc()?;
-        let (parent, _) = self.run.placement(old).ok_or_else(|| format!("{old} is not in a layer stack"))?;
-        let name = doc.layers.iter().find(|l| l.layer_id == old).map(|l| l.name.clone()).unwrap_or_default();
-        // Never an id the text or vector entry still names (a layer an undo can bring back keeps
-        // its record and story there).
         let text_entry = self.text_entry().unwrap_or_else(|_| super::text::TextEntry::empty(&doc.document_id));
         let entry = self.vector_entry()?;
-        let taken = |id: &str| {
+        let taken = |id: &str, out: &[String]| {
             let story = format!("STXT-{}", id.get(5..).unwrap_or_default());
-            text_entry.layers.iter().any(|l| l.layer_id == id)
+            out.iter().any(|o| o == id)
+                || text_entry.layers.iter().any(|l| l.layer_id == id)
                 || text_entry.stories.iter().any(|s| s.story_id == story)
                 || entry.records.area_texts.iter().any(|a| a.container_layer_id == id || a.text_id == story)
                 || entry.records.path_texts.iter().any(|p| p.path_layer_id == id || p.story_id == story)
         };
+        let mut out: Vec<String> = Vec::with_capacity(n);
         let mut salt = u64::try_from(doc.layers.len()).unwrap_or(0);
-        let mut id = super::layers::mint_layer_id(doc, salt);
-        for _ in 0..4096 {
-            if !taken(&id) {
+        for _ in 0..n.saturating_add(4096) {
+            if out.len() == n {
                 break;
             }
+            let id = super::layers::mint_layer_id(doc, salt);
             salt = salt.wrapping_add(1);
-            id = super::layers::mint_layer_id(doc, salt);
+            if !taken(&id, &out) {
+                out.push(id);
+            }
         }
-        if taken(&id) {
-            return Err("no free layer id".into());
+        if out.len() == n { Ok(out) } else { Err("no free layer id".into()) }
+    }
+
+    /// New layers (`kind`, one payload each) stacked directly above `anchor` in its parent, the
+    /// first lowest; their ids and the create writes. Each is named like `anchor` plus `suffix`. A
+    /// payload `story_id` of `""` becomes `STXT-<new layer uuid>`.
+    fn layers_above(&self, anchor: &str, kind: &str, payloads: Vec<Value>, suffix: &str) -> Result<(Vec<String>, Vec<PlacementWrite>), String> {
+        let doc = self.vdoc()?;
+        let (parent, _) = self.run.placement(anchor).ok_or_else(|| format!("{anchor} is not in a layer stack"))?;
+        let base = doc.layers.iter().find(|l| l.layer_id == anchor).map(|l| l.name.clone()).unwrap_or_default();
+        let name = format!("{base}{suffix}");
+        let ids = self.free_layer_ids(payloads.len())?;
+        let mut writes = Vec::with_capacity(ids.len());
+        let mut below = anchor.to_string();
+        for (id, mut payload) in ids.iter().zip(payloads) {
+            if let Some(story) = payload.get_mut("story_id")
+                && story.as_str() == Some("")
+            {
+                *story = json!(format!("STXT-{}", id.get(5..).unwrap_or_default()));
+            }
+            let layer = super::layers::new_layer(id, &name, &parent, kind, payload)?;
+            let operation = super::layers::operation_for(id, false)?;
+            writes.push(PlacementWrite { layer_id: id.clone(), to: Some(Place::Before(below.clone())), create: Some((layer, operation)) });
+            below.clone_from(id);
         }
-        let mut payload = payload;
-        if let Some(story) = payload.get_mut("story_id")
-            && story.as_str() == Some("")
-        {
-            *story = json!(format!("STXT-{}", id.get(5..).unwrap_or_default()));
-        }
-        let layer = super::layers::new_layer(&id, &name, &parent, kind, payload)?;
-        let operation = super::layers::operation_for(&id, false)?;
-        let writes = vec![
-            PlacementWrite { layer_id: id.clone(), to: Some(Place::Before(old.to_string())), create: Some((layer, operation)) },
-            PlacementWrite { layer_id: old.to_string(), to: None, create: None },
-        ];
+        Ok((ids, writes))
+    }
+
+    /// The new layer that replaces `old` (same parent and name, directly above `old`, which is
+    /// removed in the same transaction): its id and the placement writes.
+    fn replacement(&self, old: &str, kind: &str, payload: Value) -> Result<(String, Vec<PlacementWrite>), String> {
+        let (ids, mut writes) = self.layers_above(old, kind, vec![payload], "")?;
+        let id = ids.into_iter().next().ok_or("no free layer id")?;
+        writes.push(PlacementWrite { layer_id: old.to_string(), to: None, create: None });
         Ok((id, writes))
     }
 
@@ -1621,17 +1639,17 @@ impl Viewer {
     /// layer's live text, as ONE undo step:
     /// - a vector layer with a live path- or area-text binding: composite's
     ///   `create_text_outlines` (the geometry the canvas draws; overset glyphs are not outlined)
-    ///   becomes one filled path per paint row (the glyph compound paths of that row, non-zero,
-    ///   fill = the row colour sRGB-encoded) appended to the layer's paths, and the binding is
-    ///   removed: one chronicle `vector_paths` write and the vector entry in the same step
-    ///   ([`hsk_studio_harness_core::Run::set_vector_paths_and_entry`]); the container / baseline
-    ///   path stays as it is (declared reading; Illustrator UNVERIFIED, D5);
-    /// - a point-text layer: Type's `create_outlines` over the point layout becomes a vector layer
-    ///   with one path per paint row that replaces the text layer
-    ///   ([`hsk_studio_harness_core::Run::restructure_and_entry`]).
+    ///   becomes one new vector layer per paint row (one path: the glyph compound paths of that
+    ///   row, non-zero, fill = the row colour sRGB-encoded) stacked directly above the layer in row
+    ///   order, and the binding is removed, in one step
+    ///   ([`hsk_studio_harness_core::Run::restructure_and_entry`]); the container / baseline layer
+    ///   stays as it is (declared reading; Illustrator UNVERIFIED, D5). One layer per row because a
+    ///   vector layer has ONE appearance, its first path's style (`style::effective_design`);
+    /// - a point-text layer: the same layers from Type's `create_outlines` over the point layout,
+    ///   replacing the text layer in the same step.
     ///
     /// A story that cannot be shaped is refused with composite's `vector_text_not_provided` and the
-    /// viewer's reason (nothing changes). Selects and returns the outlined layer.
+    /// viewer's reason (nothing changes). Selects and returns the first (lowest) outline layer.
     pub fn create_outlines(&mut self, layer_id: &str) -> Result<String, String> {
         let r = (|| {
             let op = "create_outlines";
@@ -1659,11 +1677,14 @@ impl Viewer {
                         .collect::<Result<Vec<_>, String>>()?;
                     let mut entry = self.vector_entry()?;
                     let ids = self.outline_records(op, &mut entry, rows)?;
-                    let (id, writes) = self.replacement(layer_id, "vector", json!({"payload_kind": "vector", "path_ids": ids}))?;
-                    self.replace_with_entry(op, &writes, &entry, &id)?;
-                    Ok(id)
+                    let payloads = ids.iter().map(|p| json!({"payload_kind": "vector", "path_ids": [p]})).collect();
+                    let (layers, mut writes) = self.layers_above(layer_id, "vector", payloads, "")?;
+                    writes.push(PlacementWrite { layer_id: layer_id.to_string(), to: None, create: None });
+                    let first = layers.first().cloned().ok_or_else(|| format!("{op}: nothing to outline"))?;
+                    self.replace_with_entry(op, &writes, &entry, &first)?;
+                    Ok(first)
                 }
-                Payload::Vector { path_ids } => {
+                Payload::Vector { .. } => {
                     let mut entry = self.vector_entry()?;
                     let text_id = Self::live_binding(&entry, layer_id).ok_or_else(|| format!("{op}: {layer_id} holds no live text"))?;
                     let text = self.text_entry();
@@ -1681,15 +1702,11 @@ impl Viewer {
                     let ids = self.outline_records(op, &mut entry, outcome?)?;
                     entry.records.path_texts.retain(|p| p.story_id != text_id);
                     entry.records.area_texts.retain(|a| a.text_id != text_id);
-                    if !entry_persistable() {
-                        return Err(format!("{op}: vector_entry_not_persistable"));
-                    }
-                    let bytes = entry.to_bytes(&self.vdoc()?.document_id)?;
-                    let all: Vec<String> = path_ids.into_iter().chain(ids).collect();
-                    let ok = self.run.set_vector_paths_and_entry(op, &[(layer_id.to_string(), all)], Some((ENTRY, bytes)));
-                    self.after_edit(ok, format!("{op} {layer_id}"))?;
-                    self.selected = Some(layer_id.to_string());
-                    Ok(layer_id.to_string())
+                    let payloads = ids.iter().map(|p| json!({"payload_kind": "vector", "path_ids": [p]})).collect();
+                    let (layers, writes) = self.layers_above(layer_id, "vector", payloads, " outlines")?;
+                    let first = layers.first().cloned().ok_or_else(|| format!("{op}: nothing to outline"))?;
+                    self.replace_with_entry(op, &writes, &entry, &first)?;
+                    Ok(first)
                 }
                 _ => Err(format!("{op}: select a point-text layer or a vector layer with live text")),
             }
