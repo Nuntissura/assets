@@ -106,9 +106,10 @@ fn gradient_geometries_from_the_drag_line_hand_computed() {
     assert!(near(px(&r, 7, 4), grey(0.0)));
     // Diamond on an axis, same drag: t = (|v.u| + |v.n|) / 4.
     let r = ok(run(&img, None, [4.5, 4.5], [8.5, 4.5], &grad(GradientGeometry::Diamond, &BW, &OPAQUE), &p));
-    assert!(near(px(&r, 6, 4), grey(0.375)));
-    assert!(near(px(&r, 4, 6), grey(0.375)));
-    assert!(near(px(&r, 5, 5), grey(0.25)));
+    assert!(near(px(&r, 5, 4), grey(0.25)), "{:?}", px(&r, 5, 4)); // v = (1, 0)
+    assert!(near(px(&r, 5, 5), grey(0.5))); // v = (1, 1): the L1 norm, not the radius
+    assert!(near(px(&r, 6, 5), grey(0.75))); // v = (2, 1)
+    assert!(near(px(&r, 4, 6), grey(0.5))); // v = (0, 2)
 }
 
 #[test]

@@ -659,7 +659,7 @@ fn gradient_t(o: &GradientOverlayOp, x: i64, y: i64, bounds: (i64, i64, u32, u32
 
 /// Colour and stop opacity of the gradient at `t`: the first stop at or below its position, the
 /// last at or above, linear interpolation between the enclosing stops otherwise.
-fn gradient_sample(o: &GradientOverlayOp, t: f64) -> ([f32; 3], f32) {
+pub(crate) fn gradient_sample(o: &GradientOverlayOp, t: f64) -> ([f32; 3], f32) {
     let stops = o.used_stops();
     let t = t as f32;
     let (Some(first), Some(last)) = (stops.first(), stops.last()) else {
