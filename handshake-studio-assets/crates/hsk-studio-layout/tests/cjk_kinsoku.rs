@@ -38,6 +38,7 @@ fn starts(ls: &[CjkComposedLine]) -> Vec<usize> {
 /// starts with a character of the table's line-start set (JLREQ hard and soft tables).
 #[test]
 fn cant_begin_chars_never_start_a_line() {
+    println!("NOT_PROVEN: equality with InDesign's shipped kinsoku sets (no InDesign CJK oracle case, D5)");
     let texts = ["漢字。漢字、漢字」漢字ー漢字ッ漢字", "「漢字」、漢字。漢字！漢字・漢字ァ漢字", "漢漢漢漢。漢漢漢、漢漢」。漢"];
     for name in ["hard_kinsoku", "soft_kinsoku"] {
         let k = KinsokuSet::shipped(name).unwrap();
@@ -86,6 +87,7 @@ fn cant_begin_chars_never_start_a_line() {
 /// takes the smaller adjustment (5 pt shrink against 10 pt stretch).
 #[test]
 fn push_in_and_push_out_choose_differently() {
+    println!("NOT_PROVEN: InDesign's push-in / push-out tie rules (no InDesign CJK oracle case, D5)");
     let text = "漢、漢漢。漢漢";
     let mut c = single(hard(), StudioMojikumiBaseSet::LineEndAllOneHalfEm);
     let push_in = lines(text, &c, 40.0);
@@ -134,6 +136,7 @@ fn rensuuji_keeps_digit_runs_together() {
 /// hangs past the measure (standard: only when it does not fit; forced: always at a line end).
 #[test]
 fn burasagari_hangs_the_period() {
+    println!("NOT_PROVEN: InDesign's hanging width (no InDesign CJK oracle case, D5)");
     let c = single(hard(), StudioMojikumiBaseSet::Nothing);
     assert_eq!(starts(&lines("漢漢漢。漢", &c, 30.0)), vec![0, 2], "no hanging: pushed out");
     let mut c = c;
@@ -293,6 +296,8 @@ fn request<'a>(doc: &'a StudioDocument, st: &'a StudioTextStory, paragraphs: &'a
 /// an unresolvable composer name is refused, never a fallback.
 #[test]
 fn cjk_paragraph_composes_in_both_scopes() {
+    println!("NOT_PROVEN: the aki values of InDesign's 17 mojikumi sets (no InDesign CJK oracle case, D5)");
+    println!("NOT_PROVEN: the real-shaper CJK path (synthetic fixed advances; no checked-in CJK-capable test font found in the corpus)");
     let text = "漢字「漢字」、漢字。漢字漢字漢字ー漢字、漢字漢字。";
     let cs = chars_of(text);
     let doc = document(45.0, 300.0);
@@ -386,4 +391,36 @@ fn latin_paragraphs_are_unchanged() {
     let n_latin = latin_lines.len();
     assert!(both.spacing.iter().all(|s| s.frame == 0 && s.line >= n_latin));
     assert_eq!(both.spacing.len(), both.proposal.frames[0].lines.len() - n_latin);
+}
+
+/// F-R41-1: the CJK data sources cite each document's own permissive licence (JLREQ: W3C Software
+/// and Document Notice and License 2015; CLREQ: W3C Software and Document License 2023) with the
+/// dated version URI, status and copyright line, in the DESCRIPTOR `cjk.sources` entry, the crate
+/// `NOTICE` and the `cjk` module docs; the W3C Document License is cited nowhere.
+#[test]
+fn cjk_sources_cite_the_w3c_software_and_document_licences() {
+    let cjk = &DESCRIPTOR[DESCRIPTOR.find(r#""cjk":{"#).expect("DESCRIPTOR cjk entry")..];
+    let start = cjk.find(r#""sources":""#).expect("cjk.sources") + r#""sources":""#.len();
+    let sources = &cjk[start..start + cjk[start..].find('"').expect("cjk.sources end")];
+    let notice = include_str!("../NOTICE");
+    let module = include_str!("../src/cjk.rs");
+    let required = [
+        "https://www.w3.org/TR/2020/NOTE-jlreq-20200811/",
+        "W3C Working Group Note 11 August 2020",
+        "Copyright (c) 2020 W3C(R) (MIT, ERCIM, Keio, Beihang)",
+        "https://www.w3.org/Consortium/Legal/2015/copyright-software-and-document",
+        "https://www.w3.org/TR/2026/DNOTE-clreq-20261007/",
+        "W3C Group Note Draft 07 October 2026",
+        "Copyright (c) 2015-2026 World Wide Web Consortium",
+        "https://www.w3.org/copyright/software-license-2023/",
+    ];
+    for (place, text) in [("DESCRIPTOR cjk.sources", sources), ("NOTICE", notice), ("src/cjk.rs", module)] {
+        // Doc comments wrap lines: compare with the `//!` prefixes and line breaks folded to spaces.
+        let flat = text.replace("\n//! ", " ").replace("\n  ", " ").replace('\n', " ");
+        for needle in required {
+            assert!(flat.contains(needle), "{place} lacks {needle:?}");
+        }
+        assert!(["no code copied", "no code was copied", "No code was copied"].iter().any(|s| flat.contains(s)), "{place} lacks the data-only claim");
+        assert!(!flat.contains("document-license") && !flat.contains("W3C Document License"), "{place} still cites the W3C Document License");
+    }
 }

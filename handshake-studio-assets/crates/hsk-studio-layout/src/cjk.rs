@@ -3,13 +3,19 @@
 //! Folio `hsk.studio.cjk_composition@1`) binds CJK tables. Vertical text, tate-chu-yoko, ruby,
 //! kenten and warichu are not composed here.
 //!
-//! Data sources and licence: the character classes (cl-01..cl-19, cl-24, cl-26, cl-27), the shipped
-//! `hard_kinsoku` / `soft_kinsoku` tables and the class-pair spacing rules of the Japanese base sets
-//! are DATA read from the W3C Working Group Note "Requirements for Japanese Text Layout" (JLREQ,
-//! https://www.w3.org/TR/jlreq/, sections 3.1 and 3.8 and Appendix A; W3C Document License); the two
-//! Chinese defaults follow "Requirements for Chinese Text Layout" (CLREQ, https://www.w3.org/TR/clreq/,
-//! section 3.1 punctuation width). No code was copied. Where those documents give no single value
-//! (the seventeen InDesign set names carry no published numbers) the values below are declared
+//! Data sources and licence (full notices in the crate's `NOTICE`): the character classes
+//! (cl-01..cl-19, cl-24, cl-26, cl-27), the shipped `hard_kinsoku` / `soft_kinsoku` tables and the
+//! class-pair spacing rules of the Japanese base sets are DATA read from "Requirements for Japanese
+//! Text Layout" (JLREQ), W3C Working Group Note 11 August 2020,
+//! https://www.w3.org/TR/2020/NOTE-jlreq-20200811/ (sections 3.1 and 3.8 and Appendix A;
+//! Copyright (c) 2020 W3C(R) (MIT, ERCIM, Keio, Beihang); W3C Software and Document Notice and
+//! License, 2015 version, https://www.w3.org/Consortium/Legal/2015/copyright-software-and-document);
+//! the two Chinese defaults follow "Requirements for Chinese Text Layout" (CLREQ), W3C Group Note
+//! Draft 07 October 2026, https://www.w3.org/TR/2026/DNOTE-clreq-20261007/ (section 3.1 punctuation
+//! width; Copyright (c) 2015-2026 World Wide Web Consortium; W3C Software and Document License,
+//! 2023 version, https://www.w3.org/copyright/software-license-2023/). No code was copied. Where
+//! those documents give no single value (the seventeen InDesign set names carry no published
+//! numbers) the values below are declared
 //! Studio readings, listed in the lane notes as spec deltas; equality with InDesign's Japanese
 //! composer and its shipped sets is UNVERIFIED (D5, no oracle case).
 //!

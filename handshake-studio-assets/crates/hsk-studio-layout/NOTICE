@@ -1,17 +1,30 @@
 hsk-studio-layout third-party notices
 
 src/cjk.rs (CJK kinsoku and mojikumi composition, lane SMB-ID-CJK-KINSOKU-1) carries DATA read
-from two W3C Working Group Notes; no code was copied:
+from two W3C documents; no code was copied:
 
-- "Requirements for Japanese Text Layout" (JLREQ), https://www.w3.org/TR/jlreq/ : the character
-  classes cl-01..cl-19 (Appendix A), the line-start and line-end prohibition rules behind the shipped
-  hard_kinsoku / soft_kinsoku tables (section 3.1.7) and the punctuation width and spacing rules
-  behind the Japanese mojikumi base sets (sections 3.1.4, 3.2.2, 3.8).
-- "Requirements for Chinese Text Layout" (CLREQ), https://www.w3.org/TR/clreq/ : punctuation width
-  behind simplified_chinese_default and traditional_chinese_default (section 3.1).
+- "Requirements for Japanese Text Layout" (JLREQ), W3C Working Group Note 11 August 2020,
+  this version https://www.w3.org/TR/2020/NOTE-jlreq-20200811/ (latest published version
+  https://www.w3.org/TR/jlreq/): the character classes cl-01..cl-19 (Appendix A), the line-start
+  and line-end prohibition rules behind the shipped hard_kinsoku / soft_kinsoku tables (section
+  3.1.7) and the punctuation width and spacing rules behind the Japanese mojikumi base sets
+  (sections 3.1.4, 3.2.2, 3.8).
+  Notice of the document: Copyright (c) 2020 W3C(R) (MIT, ERCIM, Keio, Beihang). W3C liability,
+  trademark and permissive document license rules apply.
+  Licence: W3C Software and Document Notice and License, 2015 version (in effect 13 May 2015 to
+  31 December 2022), https://www.w3.org/Consortium/Legal/2015/copyright-software-and-document
+  (also published at https://www.w3.org/copyright/software-license-2015/).
+- "Requirements for Chinese Text Layout" (CLREQ), W3C Group Note Draft 07 October 2026,
+  this version https://www.w3.org/TR/2026/DNOTE-clreq-20261007/ (latest published version
+  https://www.w3.org/TR/clreq/): punctuation width behind simplified_chinese_default and
+  traditional_chinese_default (section 3.1).
+  Notice of the document: Copyright (c) 2015-2026 World Wide Web Consortium. W3C(R) liability,
+  trademark and permissive document license rules apply.
+  Licence: W3C Software and Document License, 2023 version (in effect since 1 January 2023),
+  https://www.w3.org/copyright/software-license-2023/ .
 
-Copyright (c) World Wide Web Consortium. Used under the W3C Document License,
-https://www.w3.org/copyright/document-license-2023/ . Values the documents do not state (the
-numbers behind the seventeen set names) are Studio's declared readings, not W3C content.
+(c) and (R) stand for the copyright and registered-trademark signs of the documents' notices.
+The licence texts are at the URLs above. Changes: values the documents do not state (the numbers
+behind the seventeen set names) are Studio's declared readings, not W3C content.
 
 The en-US hyphenation patterns carry their licence in src/hyphenate.rs (EN_US_LICENCE).
