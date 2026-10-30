@@ -16,6 +16,7 @@ use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::design::auto_layout::widget;
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_harness::view::vector::{PaintSpec, ShapeKind, VectorTool};
+use hsk_studio_prism::{ColorizeMethod, RecolorAdjust, RecolorRow, RecolorTable};
 
 fn paper(scratch: &Scratch) -> Viewer {
     let source = scratch.0.join("paper.psd");
@@ -259,4 +260,21 @@ fn an_imported_flow_frame_shows_its_records_in_the_section() {
     let e = v.set_auto_layout_spacing(&frame, 30.0, [24.0; 4]).unwrap_err();
     assert!(e.contains("auto_layout_text_layer_unsupported"), "{e}");
     assert_eq!(revision(&v), rev);
+}
+
+#[test]
+fn recolouring_a_grid_child_keeps_its_anchor() {
+    let scratch = Scratch::new("al-recolor");
+    let mut v = paper(&scratch);
+    let (g, k) = frame(&mut v, false);
+    v.set_auto_layout_mode(&g, LayoutMode::Grid).unwrap();
+    v.grid_append_child_at(&g, &k[1], 1, 1).unwrap();
+    v.select(Some(k[1].clone()));
+    let before = v.state_json()["design"]["auto_layout"]["selected"]["child_layout"].clone();
+    assert_eq!(before["grid_child"]["grid_row_anchor_index"], 1, "{before}");
+    let colour = v.artwork_colours(&[k[1].clone()]).unwrap()[0].rgb;
+    let table = RecolorTable { rows: vec![RecolorRow { current: vec![colour], new: Some([0.0, 0.0, 1.0]) }], method: ColorizeMethod::Exact, ..RecolorTable::default() };
+    let report = v.recolor_artwork(&[k[1].clone()], &table, &RecolorAdjust::default()).unwrap();
+    assert_eq!(report.layers, vec![k[1].clone()]);
+    assert_eq!(v.state_json()["design"]["auto_layout"]["selected"]["child_layout"], before);
 }
