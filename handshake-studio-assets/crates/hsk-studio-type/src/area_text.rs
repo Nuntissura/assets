@@ -520,14 +520,16 @@ struct Composed {
     bottom: Option<f64>,
 }
 
-fn place_line(out: &mut Composed, glyphs: &[ComposeGlyph], run_of: &[usize], from: usize, to: usize, x: f64, baseline: f64, left: f64, right: f64, width: f64) {
-    let line = out.lines.len();
-    let mut pen = x;
-    for (k, g) in glyphs.iter().enumerate().take(to).skip(from) {
-        out.glyphs.push(PlacedTextGlyph { index: k, run: run_of[k], line, transform: [1.0, 0.0, 0.0, -1.0, pen, baseline] });
+/// Places the glyphs `[first_glyph, first_glyph + glyph_count)` of `line` from its pen `x`.
+fn place_line(out: &mut Composed, glyphs: &[ComposeGlyph], run_of: &[usize], line: ComposedLine) {
+    let index = out.lines.len();
+    let mut pen = line.x;
+    let to = line.first_glyph.saturating_add(line.glyph_count);
+    for (k, g) in glyphs.iter().enumerate().take(to).skip(line.first_glyph) {
+        out.glyphs.push(PlacedTextGlyph { index: k, run: run_of[k], line: index, transform: [1.0, 0.0, 0.0, -1.0, pen, line.baseline_y] });
         pen += width_of(g);
     }
-    out.lines.push(ComposedLine { baseline_y: baseline, left, right, x, width_pt: width, first_glyph: from, glyph_count: to.saturating_sub(from) });
+    out.lines.push(line);
 }
 
 fn align_x(align: TextAlign, left: f64, avail: f64, width: f64) -> f64 {
@@ -644,7 +646,7 @@ fn compose(c: &Container, bottomless: bool, runs: &[ComposeRun], glyphs: &[Compo
             continue; // skipped band
         }
         let x = align_x(o.align, left, avail, width);
-        place_line(&mut out, glyphs, run_of, from, end, x, b, left, right, width);
+        place_line(&mut out, glyphs, run_of, ComposedLine { baseline_y: b, left, right, x, width_pt: width, first_glyph: from, glyph_count: end.saturating_sub(from) });
         out.bottom = Some(band_bottom);
         i = end;
     }
@@ -785,7 +787,7 @@ pub fn layout_point_text(origin: [f64; 2], runs: &[ComposeRun], glyphs: &[Compos
             TextAlign::Center => origin[0] - width / 2.0,
             TextAlign::Right => origin[0] - width,
         };
-        place_line(&mut out, glyphs, &run_of, from, i, x, b, x, x + width, width);
+        place_line(&mut out, glyphs, &run_of, ComposedLine { baseline_y: b, left: x, right: x + width, x, width_pt: width, first_glyph: from, glyph_count: i.saturating_sub(from) });
         let line_box = [x, b - r.ascent_pt, x + width, b + r.descent_pt];
         bounds = Some(match bounds {
             None => line_box,
