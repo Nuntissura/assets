@@ -10,6 +10,7 @@ mod adjust_layout;
 mod adobe_composer;
 mod alternate;
 mod anchors;
+mod autosize;
 mod book;
 mod breaker;
 mod cjk;
@@ -108,8 +109,10 @@ pub use styles::{
     resolve_style_composition,
 };
 pub use threaded_reflow::{
-    FramePlacement, LayoutProposal, Limits, Line, LinePart, ReflowRequest, reflow, reflow_flow, reflow_grid, reflow_typeset,
+    FramePlacement, LayoutProposal, Limits, Line, LinePart, ReflowRequest, reflow, reflow_autosize, reflow_flow, reflow_grid,
+    reflow_typeset,
 };
+pub use autosize::{AUTOSIZE_TOLERANCE_PT, AutosizeProposal, FrameResize, MAX_AUTOSIZE_EXTENT_PT, MAX_AUTOSIZE_ITERATIONS};
 pub use preflight::{
     MAX_PREFLIGHT_FINDINGS, PREFLIGHT_RULES, PreflightError, PreflightFinding, PreflightInput, PreflightProfile, PreflightReport,
     PreflightRuleInstance, Severity, run_preflight,
@@ -155,6 +158,14 @@ pub enum LayoutError {
     UnsupportedComposition,
     BudgetExceeded,
     Canceled,
+    /// STU-LAY-119 auto-size on a frame that has a next frame in its thread (Studio reading: only the
+    /// last frame of a thread, or an unthreaded frame, auto-sizes; UNVERIFIED, D5).
+    AutosizeThreadedFrame,
+    /// A width or proportional auto-size on a frame of more than one column.
+    AutosizeMultiColumn,
+    /// The story does not fit the auto-sized frame at the declared extent bound
+    /// (`MAX_AUTOSIZE_EXTENT_PT`), for example an unbreakable run wider than the bound.
+    AutosizeOverBound,
 }
 impl LayoutError {
     pub const fn code(self) -> &'static str {
@@ -167,6 +178,9 @@ impl LayoutError {
             Self::UnsupportedComposition => "unsupported_composition",
             Self::BudgetExceeded => "budget_exceeded",
             Self::Canceled => "canceled",
+            Self::AutosizeThreadedFrame => "autosize_threaded_frame",
+            Self::AutosizeMultiColumn => "autosize_multi_column",
+            Self::AutosizeOverBound => "autosize_over_bound",
         }
     }
     /// `None` for cancellation (reported as the Canceled outcome).
@@ -174,7 +188,9 @@ impl LayoutError {
         match self {
             Self::Canceled => None,
             Self::MissingFont => Some(FailureCode::Unavailable),
-            Self::UnsupportedComposition => Some(FailureCode::Unsupported),
+            Self::UnsupportedComposition | Self::AutosizeThreadedFrame | Self::AutosizeMultiColumn => {
+                Some(FailureCode::Unsupported)
+            }
             _ => Some(FailureCode::Validation),
         }
     }

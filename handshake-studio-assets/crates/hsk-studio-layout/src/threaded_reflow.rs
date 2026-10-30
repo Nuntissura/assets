@@ -421,6 +421,17 @@ pub fn reflow_flow(
     reflow_inner(req, opts, flow, None, cancel)
 }
 
+/// `reflow_flow` that also reports the STU-LAY-119 auto-size of the thread (lane
+/// SMB-ID-FRAME-AUTOSIZE-1): the composed proposal plus one `FrameResize` per auto-sized frame.
+pub fn reflow_autosize(
+    req: &ReflowRequest<'_>,
+    opts: &TypesetOptions<'_>,
+    flow: &StudioLayoutFlowRecords,
+    cancel: &CancellationToken,
+) -> Result<crate::autosize::AutosizeProposal, LayoutError> {
+    Ok(crate::autosize::AutosizeProposal { layout: reflow_flow(req, opts, flow, cancel)?, resizes: Vec::new() })
+}
+
 /// `reflow_flow` with the Folio grid records (`hsk.studio.layout_grids@1`): paragraphs marked in
 /// `paragraph_alignments` align to the frame's baseline grid (module notes). A record set of
 /// another document, or an alignment whose start is no paragraph of the story, is `invalid_input`.

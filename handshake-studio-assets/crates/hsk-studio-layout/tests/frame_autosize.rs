@@ -167,3 +167,173 @@ fn hostile_first_baseline_metrics_are_invalid_geometry() {
     frame(&mut d, 0).minimum_first_baseline_offset = len(0.0);
     assert_eq!(baselines(&run(&d, &st, &p, &records()).expect("placed"), 0), [9.0, 21.0]);
 }
+
+// ---- slice 2: auto-size (STU-LAY-119) ---------------------------------------------------------------
+
+fn autosize_with(
+    doc: &StudioDocument,
+    st: &StudioTextStory,
+    paras: &[ShapedParagraph],
+    cancel: &hsk_studio_accord::CancellationToken,
+) -> Result<AutosizeProposal, LayoutError> {
+    reflow_autosize(
+        &ReflowRequest {
+            document: doc,
+            story: st,
+            resolved_text: None,
+            paragraphs: paras,
+            obstacles: &[],
+            composer: Composer::FirstFit,
+            space: SpaceParams::default(),
+            expected_revision: doc.revision,
+            limits: Limits::default(),
+        },
+        &TypesetOptions::default(),
+        &records(),
+        cancel,
+    )
+}
+fn autosize(doc: &StudioDocument, st: &StudioTextStory, paras: &[ShapedParagraph]) -> Result<AutosizeProposal, LayoutError> {
+    autosize_with(doc, st, paras, &Default::default())
+}
+/// The one resize: (before w, before h, after w, after h).
+fn resized(p: &AutosizeProposal) -> (f64, f64, f64, f64) {
+    assert_eq!(p.autosized_frames().len(), 1);
+    let r = &p.autosized_frames()[0];
+    (r.before_width_pt, r.before_height_pt, r.after_width_pt, r.after_height_pt)
+}
+fn sized(text: &str, s: Spec, kind: AutoSizing) -> (StudioDocument, StudioTextStory, Vec<ShapedParagraph>) {
+    let (mut doc, st, paras) = single(text, s);
+    frame(&mut doc, 0).auto_sizing_type = kind;
+    (doc, st, paras)
+}
+
+/// Height only: the frame keeps its top edge and width; its height is the last line's bottom plus the
+/// bottom inset. 60 pt inset width sets two 4-letter words per line; fixed first baseline 10, leading
+/// 12, descent 2, insets 2. Three lines: last baseline 34, height 34 + 2 + 2 = 38 (the authored 100
+/// shrinks). One more line: 46 + 4 = 50 (an authored 20 grows). One line: 10 + 4 = 14. Two columns
+/// (60 pt each, gutter 4): three lines fit at the smallest height holding two lines in column 0 and
+/// one in column 1: 22 + 4 = 26. The lines are those of the sized frame (`reflow_flow` agrees).
+#[test]
+fn height_only_fits_the_last_line_and_grows_and_shrinks() {
+    for (text, h, after) in [
+        ("aaaa bbbb cccc dddd eeee ffff", 100.0, 38.0),
+        ("aaaa bbbb cccc dddd eeee ffff gggg", 20.0, 50.0),
+        ("aaaa", 100.0, 14.0),
+    ] {
+        let (doc, st, paras) = sized(text, spec(0, 10.0, 10.0, 64.0, h), AutoSizing::HeightOnly);
+        let p = autosize(&doc, &st, &paras).expect("auto-sized");
+        assert_eq!(resized(&p), (64.0, h, 64.0, after), "{text}");
+        assert_eq!(p.layout.overset, None);
+        let last = baselines(&p.layout, 0).last().copied().expect("lines");
+        assert_eq!(last + 2.0 + 2.0, after);
+        assert_eq!(run(&doc, &st, &paras, &records()).expect("reflow"), p.layout);
+    }
+    let mut s = spec(0, 10.0, 10.0, 128.0, 100.0);
+    s.columns = 2;
+    s.gutter = 4.0;
+    let (doc, st, paras) = sized("aaaa bbbb cccc dddd eeee ffff", s, AutoSizing::HeightOnly);
+    let p = autosize(&doc, &st, &paras).expect("auto-sized");
+    assert_eq!(resized(&p), (128.0, 100.0, 128.0, 26.0));
+    let placed: Vec<(usize, f64)> = p.layout.frames[0].lines.iter().map(|l| (l.column, l.baseline_y_pt)).collect();
+    assert_eq!(placed, [(0, 10.0), (0, 22.0), (1, 10.0)]);
+    assert!(p.autosized_frames()[0].compositions <= MAX_AUTOSIZE_ITERATIONS);
+}
+
+/// Width only: lines do not wrap; the width is the widest line plus the insets (left 2, right 3),
+/// the height stays. "aaaa bbbb cccc" is 84 pt, "dd" 12 pt: width 84 + 5 = 89. Height and width: the
+/// same width and the height of the two lines: 22 + 2 + 2 = 26.
+#[test]
+fn width_only_is_the_widest_line_plus_the_insets() {
+    let text = "aaaa bbbb cccc\ndd";
+    for (kind, after_h) in [(AutoSizing::WidthOnly, 100.0), (AutoSizing::HeightAndWidth, 26.0)] {
+        let (st, paras) = story(1, text, &[(0, 14), (15, 17)]);
+        let mut doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 64.0, 100.0), None, None)], [PageSide::RightHand, PageSide::LeftHand]);
+        frame(&mut doc, 0).inset_spacing = LayoutEdges { top: len(2.0), right: len(3.0), bottom: len(2.0), left: len(2.0) };
+        frame(&mut doc, 0).auto_sizing_type = kind;
+        let p = autosize(&doc, &st, &paras).expect("auto-sized");
+        assert_eq!(resized(&p), (64.0, 100.0, 89.0, after_h), "{kind:?}");
+        let lines: Vec<(f64, f64, f64)> = p.layout.frames[0].lines.iter().map(|l| (l.baseline_y_pt, l.x_start_pt, l.width_pt)).collect();
+        assert_eq!(lines, [(10.0, 2.0, 84.0), (22.0, 2.0, 12.0)], "{kind:?}");
+        assert_eq!(p.layout.overset, None);
+    }
+}
+
+/// Proportional: the smallest uniform scale s of the authored 64 x 32 frame (insets 2, fixed first
+/// baseline 10) at which the story fits. Three lines of two words need 32 s >= 34 + 2 + 2 (s >=
+/// 1.1875) and fit the inset width 64 s - 4 >= 54; below 1.1875 two words per line still need three
+/// lines and one word per line needs six: s = 1.1875, 76 x 38. Bisection stops within
+/// AUTOSIZE_TOLERANCE_PT on the larger side; the aspect ratio is kept.
+#[test]
+fn proportional_keeps_the_aspect_and_fits() {
+    let (doc, st, paras) = sized("aaaa bbbb cccc dddd eeee ffff", spec(0, 10.0, 10.0, 64.0, 32.0), AutoSizing::HeightAndWidthProportionally);
+    let p = autosize(&doc, &st, &paras).expect("auto-sized");
+    let (bw, bh, w, h) = resized(&p);
+    assert_eq!((bw, bh), (64.0, 32.0));
+    assert!((76.0..=76.0 + AUTOSIZE_TOLERANCE_PT).contains(&w), "{w}");
+    assert!((w / h - 2.0).abs() < 1e-12, "{w} x {h}");
+    assert_eq!(p.layout.overset, None);
+    assert_eq!(baselines(&p.layout, 0), [10.0, 22.0, 34.0]);
+    let r = &p.autosized_frames()[0];
+    assert!(r.compositions >= 2 && r.compositions <= MAX_AUTOSIZE_ITERATIONS, "{}", r.compositions);
+    // Just below the found scale the story no longer fits the frame.
+    let mut below = doc.clone();
+    frame(&mut below, 0).auto_sizing_type = AutoSizing::Off;
+    frame(&mut below, 0).bounds.width = len(75.9);
+    frame(&mut below, 0).bounds.height = len(37.95);
+    assert!(run(&below, &st, &paras, &records()).expect("reflow").overset.is_some());
+}
+
+/// Auto-size only on the last frame of a thread (or an unthreaded frame): a frame with a next frame
+/// is refused typed. Width and proportional kinds with more than one column are refused typed. Off is
+/// the plain reflow with no resize.
+#[test]
+fn mid_thread_and_multi_column_autosize_refuse_typed_and_off_is_unchanged() {
+    let text = "aaaa bbbb cccc";
+    let (st, paras) = story(1, text, &[(0, text.len() as u64)]);
+    let thread = document(
+        vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 64.0, 16.0), None, Some(2)), frame_layer(2, 1, spec(0, 10.0, 100.0, 64.0, 40.0), Some(1), None)],
+        [PageSide::RightHand, PageSide::LeftHand],
+    );
+    for kind in [AutoSizing::HeightOnly, AutoSizing::WidthOnly, AutoSizing::HeightAndWidth, AutoSizing::HeightAndWidthProportionally] {
+        let mut d = thread.clone();
+        frame(&mut d, 0).auto_sizing_type = kind;
+        assert_eq!(autosize(&d, &st, &paras), Err(LayoutError::AutosizeThreadedFrame), "{kind:?}");
+        assert_eq!(run(&d, &st, &paras, &records()).unwrap_err().code(), "autosize_threaded_frame");
+        // The last frame of the thread auto-sizes.
+        let mut d = thread.clone();
+        frame(&mut d, 1).auto_sizing_type = kind;
+        assert_eq!(autosize(&d, &st, &paras).expect("last frame").autosized_frames().len(), 1, "{kind:?}");
+    }
+    let mut s = spec(0, 10.0, 10.0, 128.0, 100.0);
+    s.columns = 2;
+    for kind in [AutoSizing::WidthOnly, AutoSizing::HeightAndWidth, AutoSizing::HeightAndWidthProportionally] {
+        let (doc, st, paras) = sized(text, s, kind);
+        assert_eq!(autosize(&doc, &st, &paras), Err(LayoutError::AutosizeMultiColumn), "{kind:?}");
+    }
+    let (doc, st, paras) = sized(text, spec(0, 10.0, 10.0, 64.0, 100.0), AutoSizing::Off);
+    let p = autosize(&doc, &st, &paras).expect("off");
+    assert!(p.autosized_frames().is_empty());
+    assert_eq!(p.layout, run(&doc, &st, &paras, &records()).expect("reflow"));
+}
+
+/// Hostile input (V4-01/02): a run wider than the extent bound cannot fit at any width (width and
+/// proportional kinds) and a story taller than the bound cannot fit at any height: both are refused
+/// by the declared bound, never by looping. A canceled token stops the sizing.
+#[test]
+fn unfit_story_refuses_by_the_bound_and_sizing_honours_cancel() {
+    let wide = "x";
+    for kind in [AutoSizing::WidthOnly, AutoSizing::HeightAndWidth, AutoSizing::HeightAndWidthProportionally] {
+        let (doc, st, _) = sized(wide, spec(0, 10.0, 10.0, 64.0, 100.0), kind);
+        let glyph = ShapedParagraph::from_fixed_advance(wide, SourceSpan { start: 0, end: 1 }, MAX_AUTOSIZE_EXTENT_PT + 1.0, 12.0, 10.0).expect("glyph");
+        assert_eq!(autosize(&doc, &st, &[glyph]), Err(LayoutError::AutosizeOverBound), "{kind:?}");
+    }
+    // 1400 one-letter words, one per 6 pt line: 10 + 1399 * 12 + 4 = 16802 pt > 15552.
+    let tall = vec!["a"; 1400].join(" ");
+    let (doc, st, paras) = sized(&tall, spec(0, 10.0, 10.0, 10.0, 100.0), AutoSizing::HeightOnly);
+    assert_eq!(autosize(&doc, &st, &paras), Err(LayoutError::AutosizeOverBound));
+    let (doc, st, paras) = sized("aaaa bbbb cccc dddd eeee ffff", spec(0, 10.0, 10.0, 64.0, 32.0), AutoSizing::HeightAndWidthProportionally);
+    let stop = hsk_studio_accord::CancellationToken::default();
+    stop.cancel();
+    assert_eq!(autosize_with(&doc, &st, &paras, &stop), Err(LayoutError::Canceled));
+}
