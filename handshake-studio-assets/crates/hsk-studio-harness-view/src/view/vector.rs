@@ -814,10 +814,13 @@ impl hsk_studio_composite::VectorAssets for EntryAssets<'_> {
 /// document's `text` entry with the viewer's fonts (`text::shaped_story`: the text layers' font
 /// resolution and shaping). A story that cannot be shaped (absent, stored content, unknown font,
 /// mixed faces, a Type refusal) stays `None`: composite draws the layer without it and reports
-/// `vector_text_not_provided`; the reason is kept for [`Viewer::vector_text_reports`].
+/// `vector_text_not_provided`; the reason is kept for [`Viewer::vector_text_reports`] (a text
+/// entry that does not decode: `text_entry_unavailable: <decode error>`).
 struct LiveTextAssets<'a> {
     entry: EntryAssets<'a>,
     text: Option<&'a super::text::TextEntry>,
+    /// Why `text` is `None` when the document's text entry did not decode (F-R41-5).
+    text_error: Option<&'a str>,
     fonts: &'a [super::text::FontFile],
     cancel: &'a hsk_studio_accord::CancellationToken,
     /// The plan's blend space: story fills are linear light; an `Encoded` plan (the exports) gets
@@ -863,7 +866,7 @@ impl hsk_studio_composite::VectorAssets for LiveTextAssets<'_> {
     fn shaped_story(&self, text_id: &str) -> Option<hsk_studio_composite::vector_text::ShapedStory> {
         let shaped = match self.text {
             Some(entry) => super::text::shaped_story(entry, self.fonts, text_id, self.cancel),
-            None => Err("text_entry_unavailable".into()),
+            None => Err(self.text_error.map_or_else(|| "text_entry_unavailable".into(), |e| format!("text_entry_unavailable: {e}"))),
         };
         let mut shaped = shaped.map_err(|e| self.unshaped.borrow_mut().push((text_id.to_string(), e))).ok()?;
         if self.space == hsk_studio_composite::BlendSpace::Encoded {
@@ -1229,8 +1232,8 @@ impl Viewer {
     pub fn render_folio_vectors(&self, design: &folio::StudioDesignRecords, records: &folio::StudioVectorRecords) -> Result<super::render::Frame, String> {
         let snap = self.run.snapshot().ok_or("render_folio_vectors: nothing open")?;
         let entry = self.vector_entry()?;
-        let text = self.text_entry().ok();
-        let prepared = hsk_studio_composite::prepare_vectors(snap, design, records, &self.live_text_assets(&entry, text.as_ref()), hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)
+        let text = self.text_entry();
+        let prepared = hsk_studio_composite::prepare_vectors(snap, design, records, &self.live_text_assets(&entry, &text), hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)
             .map_err(|e| format!("vector_prepare: {e:?}"))?;
         for l in &snap.document().layers {
             if let Some(code) = prepared.refusal(&l.layer_id) {
@@ -1257,8 +1260,8 @@ impl Viewer {
         let entry = self.vector_entry()?;
         let design = style::effective_design(doc, &entry)?;
         let records = entry.folio_records(&doc.document_id);
-        let text = self.text_entry().ok();
-        let assets = self.live_text_assets(&entry, text.as_ref());
+        let text = self.text_entry();
+        let assets = self.live_text_assets(&entry, &text);
         let prepared = hsk_studio_composite::prepare_vectors(snap, &design, &records, &assets, hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)
             .map_err(|e| format!("vector_prepare: {e:?}"))?;
         for l in &doc.layers {
@@ -1269,13 +1272,15 @@ impl Viewer {
         Ok(Some((prepared, assets.unshaped.into_inner())))
     }
 
-    fn live_text_assets<'a>(&'a self, entry: &'a VectorEntry, text: Option<&'a super::text::TextEntry>) -> LiveTextAssets<'a> {
-        self.live_text_assets_in(entry, text, hsk_studio_composite::BlendSpace::LinearLight)
+    /// [`LiveTextAssets`] in linear light over the result of [`Viewer::text_entry`]: a decode
+    /// error stays the reason of every story left unshaped.
+    fn live_text_assets<'a>(&'a self, entry: &'a VectorEntry, text: &'a Result<super::text::TextEntry, String>) -> LiveTextAssets<'a> {
+        LiveTextAssets { text_error: text.as_ref().err().map(String::as_str), ..self.live_text_assets_in(entry, text.as_ref().ok(), hsk_studio_composite::BlendSpace::LinearLight) }
     }
 
     /// [`Self::live_text_assets`] for a plan in `space` (the exports use `Encoded`).
     fn live_text_assets_in<'a>(&'a self, entry: &'a VectorEntry, text: Option<&'a super::text::TextEntry>, space: hsk_studio_composite::BlendSpace) -> LiveTextAssets<'a> {
-        LiveTextAssets { entry: EntryAssets(entry), text, fonts: &self.fonts, cancel: self.cancel, space, unshaped: std::cell::RefCell::new(Vec::new()) }
+        LiveTextAssets { entry: EntryAssets(entry), text, text_error: None, fonts: &self.fonts, cancel: self.cancel, space, unshaped: std::cell::RefCell::new(Vec::new()) }
     }
 
     /// The live path- and area-text bindings of the open document as the window draws them (lane
@@ -1661,10 +1666,10 @@ impl Viewer {
                 Payload::Vector { path_ids } => {
                     let mut entry = self.vector_entry()?;
                     let text_id = Self::live_binding(&entry, layer_id).ok_or_else(|| format!("{op}: {layer_id} holds no live text"))?;
-                    let text = self.text_entry().ok();
+                    let text = self.text_entry();
                     let records = entry.folio_records(&doc.document_id);
                     let outcome = {
-                        let assets = self.live_text_assets(&entry, text.as_ref());
+                        let assets = self.live_text_assets(&entry, &text);
                         match hsk_studio_composite::vector_text::create_text_outlines(&records, &text_id, &assets) {
                             Ok((_, rows, _)) => Ok(rows.into_iter().map(|r| (r.paint, r.paths)).collect::<Vec<_>>()),
                             Err(code) => {
