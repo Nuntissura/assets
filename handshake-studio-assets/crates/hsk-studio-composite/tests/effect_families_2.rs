@@ -9,7 +9,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::composition::{
     ChannelAdjustment, ColourEffect, EffectError, EffectedContent, EntryComposite, GeneratorComposite, GlowColours, GlowEffect, GlowLooping,
-    GlowOriginal, SceneEffect, SceneEffectEntry, apply_effects, box_taps,
+    GlowOriginal, SceneEffect, SceneEffectEntry, apply_effects,
 };
 use hsk_studio_composite::temporal::composition::{
     COMPOSITION_EFFECT_KERNEL, COMPOSITION_EFFECT_OPTION, CompositionInput, CompositionTemporalSource,
@@ -20,8 +20,12 @@ use hsk_studio_pigment::adjust_math::{
     AdjustmentOp, ColourBalance, Exposure, GradientMap, GradientMapStop, HueSaturation, Levels, LevelsRecord,
 };
 use hsk_studio_pigment::blend_math::StudioBlendMode;
-use hsk_studio_pigment::blur_math::{BlurScope, LayerBlur};
+use hsk_studio_pigment::blur_math::{
+    BlurAxis, BlurLimits, BlurScope, LayerBlur, RadialBlurKind, box_kernel, radial_blur_window, unpremultiply,
+};
+use hsk_studio_pigment::render_plan::SampleRange;
 use hsk_studio_pigment::render_plan::{AlphaConvention, SampleFormat};
+use hsk_studio_pigment::Rect;
 use serde_json::{Value, json};
 
 mod common;
@@ -64,6 +68,7 @@ fn glow(threshold: f64, original: GlowOriginal, mode: StudioBlendMode, colours: 
             based_on_alpha: false,
             threshold,
             taps: gaussian(2.0),
+            axis: None,
             intensity: 1.0,
             original,
             mode,
@@ -160,7 +165,7 @@ fn blur_family_runs_pigment_kernels_with_edges_and_dimensions() {
         // Gaussian on an impulse: the texel (4 + dx, 4 + dy) is taps[dx] taps[dy] (pigment's taps).
         let taps = gaussian(2.0);
         assert_eq!(taps.len(), 7);
-        let out = run_on(9, 9, impulse(9, 9, 4, 4), &[entry("b", SceneEffect::Blur { taps: taps.clone(), repeat_edges: false })]);
+        let out = run_on(9, 9, impulse(9, 9, 4, 4), &[entry("b", SceneEffect::Blur { taps: taps.clone(), axis: None, repeat_edges: false })]);
         let mut sum = 0.0;
         for y in 0..9u32 {
             for x in 0..9u32 {
@@ -176,39 +181,74 @@ fn blur_family_runs_pigment_kernels_with_edges_and_dimensions() {
         // Repeat Edge Pixels: a flat field stays flat; without it the corner sees transparency
         // beyond the rect: alpha = (centre tap + one side)^2.
         let field = [0.25, 0.5, 0.75, 1.0];
-        let rep = run_on(9, 7, flat(9, 7, field), &[entry("b", SceneEffect::Blur { taps: taps.clone(), repeat_edges: true })]);
+        let rep = run_on(9, 7, flat(9, 7, field), &[entry("b", SceneEffect::Blur { taps: taps.clone(), axis: None, repeat_edges: true })]);
         assert!(rep.iter().all(|p| p.iter().zip(field).all(|(a, b)| close(*a, b, 1e-6))), "{:?}", rep[0]);
-        let cut = run_on(9, 7, flat(9, 7, field), &[entry("b", SceneEffect::Blur { taps: taps.clone(), repeat_edges: false })]);
+        let cut = run_on(9, 7, flat(9, 7, field), &[entry("b", SceneEffect::Blur { taps: taps.clone(), axis: None, repeat_edges: false })]);
         let half: f32 = taps[3..].iter().sum();
         assert!(close(cut[0][3], half * half, 1e-6), "{} vs {}", cut[0][3], half * half);
-        // Fast Box Blur taps: the iterated box, normalised.
-        let b = box_taps(1, 2).unwrap();
+        // Fast Box Blur taps: pigment's iterated box, normalised.
+        let b = box_kernel(1, 2).unwrap();
         let want = [1.0, 2.0, 3.0, 2.0, 1.0].map(|v: f32| v / 9.0);
         assert!(b.len() == 5 && b.iter().zip(want).all(|(a, w)| close(*a, w, 1e-7)), "{b:?}");
-        assert_eq!(box_taps(2, 1).unwrap().len(), 5);
-        assert!(box_taps(2, 1).unwrap().iter().all(|t| close(*t, 0.2, 1e-7)));
-        assert_eq!(box_taps(0, 3), Some(vec![1.0]));
-        assert_eq!(box_taps(1000, 50), None, "more than MAX_EFFECT_TAPS");
-        let boxed = run_on(9, 9, impulse(9, 9, 4, 4), &[entry("b", SceneEffect::Blur { taps: box_taps(1, 1).unwrap(), repeat_edges: false })]);
+        let boxed = run_on(9, 9, impulse(9, 9, 4, 4), &[entry("b", SceneEffect::Blur { taps: box_kernel(1, 1).unwrap(), axis: None, repeat_edges: false })]);
         assert!(close(boxed[3 * 9 + 5][3], 1.0 / 9.0, 1e-6) && boxed[2 * 9 + 4][3] == 0.0);
         // Folio rows lower onto those kernels: Gaussian Blurriness = pigment radius, default repeat on.
         let g = lowered_one(json!({"effect_id":"g","filter_kind":"gaussian_blur","values":{"blurriness":constant(json!([2.0]))}}));
-        assert_eq!(g, SceneEffect::Blur { taps: taps.clone(), repeat_edges: true });
+        assert_eq!(g, SceneEffect::Blur { taps: taps.clone(), axis: None, repeat_edges: true });
         let g = lowered_one(json!({"effect_id":"g","filter_kind":"gaussian_blur","values":{
             "blurriness":constant(json!([2.0])),"repeat_edge_pixels":constant(json!([0.0]))}}));
-        assert_eq!(g, SceneEffect::Blur { taps, repeat_edges: false });
+        assert_eq!(g, SceneEffect::Blur { taps: taps.clone(), axis: None, repeat_edges: false });
         // Fast Box: radius 1.4 rounds to 1, iterations 2.5 to 3.
         let fb = lowered_one(json!({"effect_id":"f","filter_kind":"fast_box_blur","values":{
             "blur_radius":constant(json!([1.4])),"iterations":constant(json!([2.5]))}}));
-        assert_eq!(fb, SceneEffect::Blur { taps: box_taps(1, 3).unwrap(), repeat_edges: true });
-        // No one-axis or directional / radial kernel in pigment: refused typed, never approximated.
+        assert_eq!(fb, SceneEffect::Blur { taps: box_kernel(1, 3).unwrap(), axis: None, repeat_edges: true });
+        // Blur Dimensions Horizontal / Vertical: pigment's one-axis pass.
+        let h = run_on(9, 9, impulse(9, 9, 4, 4), &[entry("b", SceneEffect::Blur { taps: taps.clone(), axis: Some(BlurAxis::Horizontal), repeat_edges: false })]);
+        for dx in -3i64..=3 {
+            assert!(close(h[(4 * 9 + 4 + dx) as usize][3], taps[(dx + 3) as usize], 1e-6), "dx {dx}");
+        }
+        assert_eq!(h[3 * 9 + 4], [0.0; 4], "nothing vertical");
+        let g = lowered_one(json!({"effect_id":"g","filter_kind":"gaussian_blur","values":{
+            "blurriness":constant(json!([2.0])),"blur_dimensions":constant(json!([3.0]))}}));
+        assert_eq!(g, SceneEffect::Blur { taps: taps.clone(), axis: Some(BlurAxis::Vertical), repeat_edges: true });
+        // Directional Blur: Direction clockwise from screen-up -> pigment angle 90 - Direction;
+        // Direction 90 with length 2 is the horizontal box of three.
+        let d = lowered_one(json!({"effect_id":"d","filter_kind":"directional_blur","values":{
+            "direction":constant(json!([90.0])),"blur_length":constant(json!([2.0]))}}));
+        assert_eq!(d, SceneEffect::DirectionalBlur { angle_deg: 0.0, length_px: 2.0 });
+        let line = run_on(9, 9, impulse(9, 9, 4, 4), &[entry("d", d)]);
+        for x in 3..=5usize {
+            assert!(close(line[4 * 9 + x][3], 1.0 / 3.0, 1e-6), "x {x}: {:?}", line[4 * 9 + x]);
+        }
+        assert!(close(line[3 * 9 + 4][3], 0.0, 1e-7));
+        let up = run_on(9, 9, impulse(9, 9, 4, 4), &[entry("d", SceneEffect::DirectionalBlur { angle_deg: 90.0, length_px: 2.0 })]);
+        assert!(close(up[3 * 9 + 4][3], 1.0 / 3.0, 1e-6) && close(up[4 * 9 + 3][3], 0.0, 1e-7));
+        // Radial Blur: Center a layer point, Amount 1:1, Type 2 = Zoom; pixels from pigment's kernel.
+        let r = lowered_one(json!({"effect_id":"r","filter_kind":"radial_blur","values":{
+            "center":constant(json!([0.25,0.5])),"amount":constant(json!([40.0])),"type":constant(json!([2.0]))}}));
+        assert_eq!(r, SceneEffect::RadialBlur { centre: [4.0, 6.0], amount: 40.0, kind: RadialBlurKind::Zoom });
+        let spun = run(&[entry("r", SceneEffect::RadialBlur { centre: [8.0, 6.0], amount: 100.0, kind: RadialBlurKind::Spin })]);
+        let plane: Vec<[f32; 4]> = premultiplied_source().iter().map(|p| unpremultiply(*p)).collect();
+        let rect = Rect { x: 0, y: 0, width: W, height: H };
+        let limits = BlurLimits { max_bytes: 1 << 30, max_work: 1 << 34 };
+        let want = radial_blur_window(SampleRange::Unit, &plane, rect, rect, [8.0, 6.0], 100.0, RadialBlurKind::Spin, limits).unwrap();
+        assert!(straight(&spun).iter().zip(&want).all(|(a, b)| a.iter().zip(b).all(|(x, y)| close(*x, *y, 1e-5))));
+        assert_ne!(spun, premultiplied_source());
+        // Find Edges on a flat opaque field: no edge, colour 1 (inverted 0), alpha kept; Blend With
+        // Original mixes premultiplied.
+        let grey = flat(9, 9, [0.25, 0.25, 0.25, 1.0]);
+        for (invert, blend, want) in [(false, 0.0, 1.0), (true, 0.0, 0.0), (false, 0.5, 0.625)] {
+            let out = run_on(9, 9, grey.clone(), &[entry("e", SceneEffect::FindEdges { invert, blend })]);
+            assert!(out.iter().all(|p| p[..3].iter().all(|c| close(*c, want, 1e-6)) && close(p[3], 1.0, 1e-7)), "{invert} {blend}: {:?}", out[0]);
+        }
+        assert_eq!(
+            lowered_one(json!({"effect_id":"e","filter_kind":"find_edges","values":{"invert":constant(json!([1.0]))}})),
+            SceneEffect::FindEdges { invert: true, blend: 0.0 }
+        );
+        // Above pigment's bounds: refused typed, never approximated.
         let k = |e: Value| refusal(one(e));
-        assert_eq!(k(json!({"effect_id":"g","filter_kind":"gaussian_blur","values":{"blur_dimensions":constant(json!([2.0]))}})), COMPOSITION_EFFECT_KERNEL);
-        assert_eq!(k(json!({"effect_id":"f","filter_kind":"fast_box_blur","values":{"blur_dimensions":constant(json!([3.0]))}})), COMPOSITION_EFFECT_KERNEL);
         assert_eq!(k(json!({"effect_id":"g","filter_kind":"gaussian_blur","values":{"blurriness":constant(json!([1500.0]))}})), COMPOSITION_EFFECT_KERNEL);
-        assert_eq!(k(json!({"effect_id":"d","filter_kind":"directional_blur","values":{"blur_length":constant(json!([5.0]))}})), COMPOSITION_EFFECT_KERNEL);
-        assert_eq!(k(json!({"effect_id":"r","filter_kind":"radial_blur"})), COMPOSITION_EFFECT_KERNEL);
-        assert_eq!(k(json!({"effect_id":"e","filter_kind":"find_edges"})), COMPOSITION_EFFECT_KERNEL);
+        assert_eq!(k(json!({"effect_id":"f","filter_kind":"fast_box_blur","values":{"blur_radius":constant(json!([3000.0]))}})), COMPOSITION_EFFECT_KERNEL);
         // A Folio hard bound still refuses first (STU-FX-104).
         assert!(k(json!({"effect_id":"g","filter_kind":"gaussian_blur","values":{"blurriness":constant(json!([30001.0]))}}))
             .contains("effect_param_out_of_range"));
@@ -220,22 +260,26 @@ fn blur_radius_zero_is_identity() {
     bounded_case("blur_radius_zero_is_identity", || {
         let src = premultiplied_source();
         for repeat_edges in [false, true] {
-            assert_eq!(run(&[entry("b", SceneEffect::Blur { taps: vec![1.0], repeat_edges })]), src, "bit for bit");
+            assert_eq!(run(&[entry("b", SceneEffect::Blur { taps: vec![1.0], axis: None, repeat_edges })]), src, "bit for bit");
         }
         assert_eq!(gaussian(0.0), vec![1.0]);
-        let identity = SceneEffect::Blur { taps: vec![1.0], repeat_edges: true };
+        let identity = SceneEffect::Blur { taps: vec![1.0], axis: None, repeat_edges: true };
         assert_eq!(lowered_one(json!({"effect_id":"g","filter_kind":"gaussian_blur"})), identity);
         assert_eq!(lowered_one(json!({"effect_id":"f","filter_kind":"fast_box_blur"})), identity);
-        let none = SceneEffect::Blur { taps: vec![1.0], repeat_edges: false };
-        assert_eq!(lowered_one(json!({"effect_id":"d","filter_kind":"directional_blur","values":{"direction":constant(json!([30.0]))}})), none);
-        assert_eq!(lowered_one(json!({"effect_id":"r","filter_kind":"radial_blur","values":{"amount":constant(json!([0.0]))}})), none);
-        assert_eq!(lowered_one(json!({"effect_id":"e","filter_kind":"find_edges","values":{"blend_with_original":constant(json!([1.0]))}})), none);
+        // Directional length 0, radial amount 0 and Find Edges fully blended back are the identity bit for bit.
+        let d = lowered_one(json!({"effect_id":"d","filter_kind":"directional_blur","values":{"direction":constant(json!([30.0]))}}));
+        assert_eq!(d, SceneEffect::DirectionalBlur { angle_deg: 60.0, length_px: 0.0 });
+        let r = lowered_one(json!({"effect_id":"r","filter_kind":"radial_blur","values":{"amount":constant(json!([0.0]))}}));
+        let e = lowered_one(json!({"effect_id":"e","filter_kind":"find_edges","values":{"blend_with_original":constant(json!([1.0]))}}));
+        for effect in [d, r, e] {
+            assert_eq!(run(&[entry("i", effect.clone())]), src, "{effect:?}");
+        }
         // Hostile kernels are refused before any buffer: even taps, negative or non-finite taps.
         let mut b = premultiplied_source();
         let cancel = CancellationToken::default();
         for taps in [vec![0.5, 0.5], vec![-1.0, 3.0, -1.0], vec![f32::NAN], vec![0.0]] {
             assert_eq!(
-                apply_effects(W, H, &mut b, &[entry("b", SceneEffect::Blur { taps, repeat_edges: false })], &cancel),
+                apply_effects(W, H, &mut b, &[entry("b", SceneEffect::Blur { taps, axis: None, repeat_edges: false })], &cancel),
                 Err(EffectError::Parameter(0))
             );
         }
@@ -250,7 +294,7 @@ fn animated_effect_parameters_evaluate_per_frame() {
             {"time":0,"value":[0.0],"in_interp":"linear","out_interp":"linear"},
             {"time":f(2),"value":[8.0],"in_interp":"linear","out_interp":"linear"}]}}});
         let taps_at = |frame: u64| match lowered(one(blur.clone()), frame).unwrap().effects[0].effect.clone() {
-            SceneEffect::Blur { taps, repeat_edges: true } => taps,
+            SceneEffect::Blur { taps, axis: None, repeat_edges: true } => taps,
             other => panic!("{other:?}"),
         };
         assert_eq!(taps_at(0), vec![1.0]);
@@ -318,6 +362,7 @@ fn glow_builds_from_threshold_blur_and_blend() {
                 based_on_alpha: false,
                 threshold: 153.0 / 255.0,
                 taps,
+                axis: None,
                 intensity: 1.0,
                 original: GlowOriginal::Behind,
                 mode: StudioBlendMode::LinearDodgeAdd,
@@ -329,7 +374,11 @@ fn glow_builds_from_threshold_blur_and_blend() {
         assert_eq!(k(json!({"glow_operation":constant(json!([5.0]))})), COMPOSITION_EFFECT_OPTION);
         assert_eq!(k(json!({"glow_operation":constant(json!([1.0]))})), COMPOSITION_EFFECT_OPTION);
         assert_eq!(k(json!({"glow_colors":constant(json!([2.0])),"color_phase":constant(json!([0.1]))})), COMPOSITION_EFFECT_OPTION);
-        assert_eq!(k(json!({"glow_dimensions":constant(json!([2.0]))})), COMPOSITION_EFFECT_KERNEL);
+        let SceneEffect::Glow(h) = lowered_one(json!({"effect_id":"g","filter_kind":"glow","values":{"glow_dimensions":constant(json!([2.0]))}}))
+        else {
+            panic!()
+        };
+        assert_eq!(h.axis, Some(BlurAxis::Horizontal));
     });
 }
 

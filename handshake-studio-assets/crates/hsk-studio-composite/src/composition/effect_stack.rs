@@ -53,14 +53,19 @@
 //! Blur, glow and colour families and entry semantics (lane SMB-AE-EFFECT-FAMILIES-2, parity
 //! AE-17; Studio readings, After Effects' maths UNVERIFIED, D5). These kernels run over the whole
 //! pre-entry buffer and REUSE pigment's single owners (CX-CAP-001), never a copy:
-//! - `Blur`: pigment `blur_math::blur_window` (premultiplied separable convolution, both axes) on
-//!   the straight pre-entry buffer (`blur_math::unpremultiply`) with the entry's taps: Gaussian Blur
-//!   takes pigment's Gaussian (`LayerBlur::taps`, `sigma = radius / 2`); Fast Box Blur the iterated
-//!   box of [`box_taps`] (a uniform tap vector repeated `iterations` times, the only weights authored
-//!   here). `repeat_edges` extends the source by its border texels over the kernel support (Repeat
-//!   Edge Pixels), else the source is transparent beyond the rect. The output is clipped to the
-//!   content rect (the layer does not grow). A single tap `[1.0]` is the identity: the pre-entry
-//!   buffer is kept bit for bit.
+//! - `Blur`: pigment `blur_math::blur_window` (premultiplied separable convolution, both axes) or
+//!   `blur_window_axis` (one axis: Blur Dimensions Horizontal / Vertical) on the straight pre-entry
+//!   buffer (`blur_math::unpremultiply`) with the entry's taps: Gaussian Blur takes pigment's
+//!   Gaussian (`LayerBlur::taps`, `sigma = radius / 2`); Fast Box Blur pigment's iterated box
+//!   (`box_kernel`). `repeat_edges` extends the source by its border texels over the kernel support
+//!   (Repeat Edge Pixels), else the source is transparent beyond the rect. The output is clipped to
+//!   the content rect (the layer does not grow). A single tap `[1.0]` is the identity: the
+//!   pre-entry buffer is kept bit for bit.
+//! - `DirectionalBlur` / `RadialBlur` / `FindEdges`: pigment's `directional_blur_window`,
+//!   `radial_blur_window` (Spin | Zoom) and `filter_math::find_edges_window` (lane
+//!   SMB-PIGMENT-AE-KERNELS-1) on the straight pre-entry buffer, transparent beyond the rect; Find
+//!   Edges mixes the original back in by `blend` (premultiplied). Length 0, amount 0 and blend 1 are
+//!   the identity bit for bit.
 //! - `Glow`: bright pass by pigment's `Threshold` adjustment on the straight colour (or on alpha,
 //!   `based_on_alpha`); threshold `0` (or below one 8-bit level) passes every texel and `1` (100 %)
 //!   none; the passed texels are blurred by `blur_window`, scaled by `intensity` in premultiplied
@@ -91,7 +96,12 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::adjust_math::{AdjustmentOp, PreparedAdjustment};
 use hsk_studio_pigment::blend_math::{Exactness, ExactnessLedger, PixelSite, Rgba, StudioBlendMode, blend_rgb, composite_over};
-use hsk_studio_pigment::blur_math::{BlurError, BlurLimits, blur_window, unpremultiply};
+use hsk_studio_pigment::blur_math::{
+    BlurAxis, BlurError, BlurLimits, MAX_BOX_KERNEL_TAPS, MAX_DIRECTIONAL_BLUR_LENGTH_PX, MAX_RADIAL_BLUR_AMOUNT, RadialBlurKind,
+    blur_window, blur_window_axis, directional_blur_window, radial_blur_window, unpremultiply,
+};
+use hsk_studio_pigment::filter_math::{FilterError, FilterLimits, find_edges_window};
+use hsk_studio_pigment::render_plan::SampleRange;
 use hsk_studio_pigment::transform_math::ResampleFilter;
 use std::f64::consts::{FRAC_2_PI, TAU};
 
@@ -102,8 +112,9 @@ pub const EFFECT_STACK_OPERATOR: &str = "composition_effect_stack";
 pub const MAX_SCENE_EFFECTS: usize = 128;
 /// Most `entries x pixels` one stack evaluates.
 pub const MAX_EFFECT_WORK: u64 = 1 << 34;
-/// Most taps of one blur kernel (pigment's Gaussian at its largest radius has 3001).
-pub const MAX_EFFECT_TAPS: usize = 6001;
+/// Most taps of one blur kernel (pigment's `MAX_BOX_KERNEL_TAPS`; its Gaussian at the largest
+/// radius has 3001).
+pub const MAX_EFFECT_TAPS: usize = MAX_BOX_KERNEL_TAPS;
 /// Most bytes one blur of the stack holds (the padded source, pigment's window and its output).
 pub const MAX_EFFECT_BLUR_BYTES: u64 = 1 << 30;
 
@@ -166,6 +177,8 @@ pub struct GlowEffect {
     pub based_on_alpha: bool,
     pub threshold: f64,
     pub taps: Vec<f32>,
+    /// Glow Dimensions: `None` = both axes, else the one axis.
+    pub axis: Option<BlurAxis>,
     pub intensity: f64,
     pub original: GlowOriginal,
     /// The glow operation (used by [`GlowOriginal::Behind`]).
@@ -197,42 +210,6 @@ pub struct EntryComposite {
     pub mask: Option<Vec<f32>>,
 }
 
-/// The normalised taps of `iterations` passes of a box `2 half_width + 1` wide (Fast Box Blur;
-/// `half_width` or `iterations` 0 is the identity `[1.0]`); `None` when the kernel would have more
-/// than [`MAX_EFFECT_TAPS`] taps.
-pub fn box_taps(half_width: u32, iterations: u32) -> Option<Vec<f32>> {
-    if half_width == 0 || iterations == 0 {
-        return Some(vec![1.0]);
-    }
-    let half = usize::try_from(half_width).ok()?;
-    let width = half.checked_mul(2)?.checked_add(1)?;
-    let len = half.checked_mul(2)?.checked_mul(usize::try_from(iterations).ok()?)?.checked_add(1)?;
-    if len > MAX_EFFECT_TAPS {
-        return None;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let fw = width as f64;
-    let mut cur = vec![1.0_f64];
-    for _ in 0..iterations {
-        let n = cur.len().checked_add(width.checked_sub(1)?)?;
-        let mut next = Vec::with_capacity(n);
-        let mut acc = 0.0_f64;
-        for i in 0..n {
-            if let Some(v) = cur.get(i) {
-                acc += v;
-            }
-            if let Some(v) = i.checked_sub(width).and_then(|j| cur.get(j)) {
-                acc -= v;
-            }
-            next.push((acc / fw).max(0.0));
-        }
-        cur = next;
-    }
-    let sum: f64 = cur.iter().sum();
-    #[allow(clippy::cast_possible_truncation)]
-    let taps: Vec<f32> = cur.iter().map(|v| (v / sum) as f32).collect();
-    Some(taps)
-}
 
 /// How a generator's pixels combine with the layer (the generators' `Blending Mode` options 1 and
 /// 2; every other option is refused by the adapter).
@@ -255,7 +232,15 @@ pub enum SceneEffect {
     Circle { centre: [f64; 2], radius_px: f64, feather_px: f64, colour: [f64; 4], opacity: f64, composite: GeneratorComposite },
     Checkerboard { anchor: [f64; 2], cell: [f64; 2], colour: [f64; 4], opacity: f64, composite: GeneratorComposite },
     /// Gaussian Blur / Fast Box Blur (module docs).
-    Blur { taps: Vec<f32>, repeat_edges: bool },
+    /// `axis`: `None` = both axes (Blur Dimensions `Horizontal and Vertical`), else the one axis.
+    Blur { taps: Vec<f32>, axis: Option<BlurAxis>, repeat_edges: bool },
+    /// Directional Blur: pigment's `directional_blur_window` angle (from +x towards screen-up) and
+    /// segment length in surface pixels.
+    DirectionalBlur { angle_deg: f64, length_px: f64 },
+    /// Radial Blur around `centre` (surface pixels) by pigment's `radial_blur_window`.
+    RadialBlur { centre: [f64; 2], amount: f64, kind: RadialBlurKind },
+    /// Find Edges (pigment `find_edges_window`); `blend` (`0..=1`) mixes the original back in.
+    FindEdges { invert: bool, blend: f64 },
     Glow(Box<GlowEffect>),
     Colour(Box<ColourEffect>),
     /// An entry's blend mode and effect mask around its effect (module docs).
@@ -346,6 +331,13 @@ fn effect_ok(effect: &SceneEffect) -> bool {
                 finite(anchor) && finite(cell) && cell.iter().all(|c| *c > 0.0) && finite(colour) && unit(*opacity)
             }
             SceneEffect::Blur { taps, .. } => taps_ok(taps),
+            SceneEffect::DirectionalBlur { angle_deg, length_px } => {
+                angle_deg.is_finite() && length_px.is_finite() && (0.0..=f64::from(MAX_DIRECTIONAL_BLUR_LENGTH_PX)).contains(length_px)
+            }
+            SceneEffect::RadialBlur { centre, amount, .. } => {
+                finite(centre) && centre.iter().all(|c| c.abs() <= 1.0e9) && amount.is_finite() && (0.0..=f64::from(MAX_RADIAL_BLUR_AMOUNT)).contains(amount)
+            }
+            SceneEffect::FindEdges { blend, .. } => unit(*blend),
             SceneEffect::Glow(g) => {
                 taps_ok(&g.taps)
                     && unit(g.threshold)
@@ -493,10 +485,19 @@ fn evaluate(effect: &SceneEffect, src: &[[f32; 4]], w: u32, h: u32, u: f64, v: f
             generated(g, pre, *composite)
         }
         // Whole-buffer kernels ([`whole_buffer`]) never reach the per-texel path.
-        SceneEffect::Blur { .. } | SceneEffect::Glow(_) | SceneEffect::Colour(_) | SceneEffect::Composite(_) => pre,
+        SceneEffect::Blur { .. }
+        | SceneEffect::DirectionalBlur { .. }
+        | SceneEffect::RadialBlur { .. }
+        | SceneEffect::FindEdges { .. }
+        | SceneEffect::Glow(_)
+        | SceneEffect::Colour(_)
+        | SceneEffect::Composite(_) => pre,
     }
 }
 
+fn straight_of(src: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    src.iter().map(|p| unpremultiply(*p)).collect()
+}
 fn widen(p: [f32; 4]) -> [f64; 4] {
     [f64::from(p[0]), f64::from(p[1]), f64::from(p[2]), f64::from(p[3])]
 }
@@ -516,17 +517,26 @@ fn narrow(p: [f64; 4]) -> [f32; 4] {
 
 /// pigment's `blur_window` over the straight plane `straight` (`w x h`) with `taps`, border texels
 /// repeated over the support when `repeat` (module docs). Every buffer is bounded before allocation.
-fn blur_plane(straight: &[[f32; 4]], w: u32, h: u32, taps: &[f32], repeat: bool, index: usize) -> Result<Vec<[f32; 4]>, EffectError> {
+#[allow(clippy::too_many_arguments)]
+fn blur_plane(
+    straight: &[[f32; 4]],
+    w: u32,
+    h: u32,
+    taps: &[f32],
+    axis: Option<BlurAxis>,
+    repeat: bool,
+    index: usize,
+) -> Result<Vec<[f32; 4]>, EffectError> {
     let out = Rect { x: 0, y: 0, width: w, height: h };
     let limits = BlurLimits { max_bytes: MAX_EFFECT_BLUR_BYTES, max_work: MAX_EFFECT_WORK };
-    let mapped = |e: BlurError| match e {
-        BlurError::OverBudget { .. } => EffectError::OverBudget,
-        BlurError::Overflow => EffectError::Overflow,
-        _ => EffectError::Parameter(index),
+    let mapped = |e: BlurError| blur_err(e, index);
+    let run = |plane: &[[f32; 4]], rect: Rect| match axis {
+        None => blur_window(plane, rect, out, taps, limits).map_err(mapped),
+        Some(a) => blur_window_axis(SampleRange::Unit, plane, rect, out, taps, a, limits).map_err(mapped),
     };
     let pad = u32::try_from(taps.len().checked_div(2).ok_or(EffectError::Overflow)?).map_err(|_| EffectError::Overflow)?;
     if !repeat || pad == 0 || w == 0 || h == 0 {
-        return blur_window(straight, out, out, taps, limits).map_err(mapped);
+        return run(straight, out);
     }
     let twice = pad.checked_mul(2).ok_or(EffectError::Overflow)?;
     let pw = w.checked_add(twice).ok_or(EffectError::Overflow)?;
@@ -551,8 +561,22 @@ fn blur_plane(straight: &[[f32; 4]], w: u32, h: u32, taps: &[f32], repeat: bool,
         }
     }
     let origin = 0_i64.checked_sub(pad64).ok_or(EffectError::Overflow)?;
-    let rect = Rect { x: origin, y: origin, width: pw, height: ph };
-    blur_window(&plane, rect, out, taps, limits).map_err(mapped)
+    run(&plane, Rect { x: origin, y: origin, width: pw, height: ph })
+}
+
+fn blur_err(e: BlurError, index: usize) -> EffectError {
+    match e {
+        BlurError::OverBudget { .. } => EffectError::OverBudget,
+        BlurError::Overflow => EffectError::Overflow,
+        _ => EffectError::Parameter(index),
+    }
+}
+fn filter_err(e: FilterError, index: usize) -> EffectError {
+    match e {
+        FilterError::OverBudget { .. } => EffectError::OverBudget,
+        FilterError::Overflow => EffectError::Overflow,
+        _ => EffectError::Parameter(index),
+    }
 }
 
 /// The glow of `src` (premultiplied, `w x h`) as premultiplied texels (module docs).
@@ -579,7 +603,7 @@ fn glow(g: &GlowEffect, index: usize, src: &[[f32; 4]], w: u32, h: u32, cancel: 
         bright.push([s[0], s[1], s[2], s[3] * pass]);
     }
     cancel.check().map_err(|_| EffectError::Canceled)?;
-    let blurred = if identity_taps(&g.taps) { bright } else { blur_plane(&bright, w, h, &g.taps, false, index)? };
+    let blurred = if identity_taps(&g.taps) { bright } else { blur_plane(&bright, w, h, &g.taps, g.axis, false, index)? };
     let wu = usize::try_from(w).map_err(|_| EffectError::Overflow)?.max(1);
     let mut out = Vec::with_capacity(src.len());
     for ((pre_row, s_row), b_row) in src.chunks(wu).zip(straight.chunks(wu)).zip(blurred.chunks(wu)) {
@@ -659,10 +683,54 @@ fn whole_buffer(
 ) -> Result<Option<Vec<[f64; 4]>>, EffectError> {
     Ok(Some(match effect {
         SceneEffect::Blur { taps, .. } if identity_taps(taps) => src.iter().map(|p| widen(*p)).collect(),
-        SceneEffect::Blur { taps, repeat_edges } => {
-            let straight: Vec<[f32; 4]> = src.iter().map(|p| unpremultiply(*p)).collect();
+        SceneEffect::DirectionalBlur { length_px, .. } if *length_px <= 0.0 => src.iter().map(|p| widen(*p)).collect(),
+        SceneEffect::RadialBlur { amount, .. } if *amount <= 0.0 => src.iter().map(|p| widen(*p)).collect(),
+        SceneEffect::FindEdges { blend, .. } if *blend >= 1.0 => src.iter().map(|p| widen(*p)).collect(),
+        SceneEffect::Blur { taps, axis, repeat_edges } => {
+            let straight = straight_of(src);
             cancel.check().map_err(|_| EffectError::Canceled)?;
-            blur_plane(&straight, w, h, taps, *repeat_edges, index)?.into_iter().map(premultiply).collect()
+            blur_plane(&straight, w, h, taps, *axis, *repeat_edges, index)?.into_iter().map(premultiply).collect()
+        }
+        SceneEffect::DirectionalBlur { angle_deg, length_px } => {
+            let straight = straight_of(src);
+            cancel.check().map_err(|_| EffectError::Canceled)?;
+            let rect = Rect { x: 0, y: 0, width: w, height: h };
+            let limits = BlurLimits { max_bytes: MAX_EFFECT_BLUR_BYTES, max_work: MAX_EFFECT_WORK };
+            #[allow(clippy::cast_possible_truncation)]
+            let (angle, length) = (angle_deg.rem_euclid(360.0) as f32, *length_px as f32);
+            directional_blur_window(SampleRange::Unit, &straight, rect, rect, angle, length, limits)
+                .map_err(|e| blur_err(e, index))?
+                .into_iter()
+                .map(premultiply)
+                .collect()
+        }
+        SceneEffect::RadialBlur { centre, amount, kind } => {
+            let straight = straight_of(src);
+            cancel.check().map_err(|_| EffectError::Canceled)?;
+            let rect = Rect { x: 0, y: 0, width: w, height: h };
+            let limits = BlurLimits { max_bytes: MAX_EFFECT_BLUR_BYTES, max_work: MAX_EFFECT_WORK };
+            #[allow(clippy::cast_possible_truncation)]
+            let (c, a) = ([centre[0] as f32, centre[1] as f32], *amount as f32);
+            radial_blur_window(SampleRange::Unit, &straight, rect, rect, c, a, *kind, limits)
+                .map_err(|e| blur_err(e, index))?
+                .into_iter()
+                .map(premultiply)
+                .collect()
+        }
+        SceneEffect::FindEdges { invert, blend } => {
+            let straight = straight_of(src);
+            cancel.check().map_err(|_| EffectError::Canceled)?;
+            let rect = Rect { x: 0, y: 0, width: w, height: h };
+            let limits = FilterLimits { max_bytes: MAX_EFFECT_BLUR_BYTES, max_work: MAX_EFFECT_WORK };
+            let edges = find_edges_window(&straight, rect, rect, *invert, limits).map_err(|e| filter_err(e, index))?;
+            edges
+                .into_iter()
+                .zip(src)
+                .map(|(e, p)| {
+                    let (e, p) = (premultiply(e), widen(*p));
+                    [0usize, 1, 2, 3].map(|k| e[k] * (1.0 - blend) + p[k] * blend)
+                })
+                .collect()
         }
         SceneEffect::Glow(g) => glow(g, index, src, w, h, cancel)?,
         SceneEffect::Colour(c) => colour(c, index, src, usize::try_from(w).map_err(|_| EffectError::Overflow)?, cancel)?,
@@ -673,7 +741,12 @@ fn whole_buffer(
 /// Whether `effect` runs as a whole-buffer kernel (it holds extra working surfaces).
 fn whole_buffer_kind(effect: &SceneEffect) -> bool {
     match effect {
-        SceneEffect::Blur { .. } | SceneEffect::Glow(_) | SceneEffect::Colour(_) => true,
+        SceneEffect::Blur { .. }
+        | SceneEffect::DirectionalBlur { .. }
+        | SceneEffect::RadialBlur { .. }
+        | SceneEffect::FindEdges { .. }
+        | SceneEffect::Glow(_)
+        | SceneEffect::Colour(_) => true,
         SceneEffect::Composite(c) => whole_buffer_kind(&c.effect),
         _ => false,
     }

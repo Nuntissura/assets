@@ -34,11 +34,14 @@
 //! - Gaussian Blur `Blurriness` is pigment's blur radius in layer pixels (`sigma = radius / 2`),
 //!   at most pigment's `MAX_BLUR_RADIUS_PX` (1000; above: kernel refusal). Fast Box Blur `Blur
 //!   Radius` rounds half up to the box half-width and `Iterations` half up to the pass count
-//!   ([`box_taps`], at most `MAX_EFFECT_TAPS` taps). `Blur Dimensions` / `Glow Dimensions` other
-//!   than `Horizontal and Vertical` need a one-axis kernel pigment does not have (kernel refusal).
-//! - Directional Blur with `Blur Length` above 0, Radial Blur with `Amount` above 0 and Find Edges
-//!   with `Blend With Original` below 1 need kernels pigment does not have (kernel refusal); at
-//!   those identity values the entry is the identity.
+//!   (pigment `box_kernel`, at most `MAX_BOX_KERNEL_TAPS` taps; above: kernel refusal). `Blur
+//!   Dimensions` / `Glow Dimensions` `Horizontal` / `Vertical` run pigment's one-axis pass.
+//! - Directional Blur (pigment `directional_blur_window`): `Direction` is measured clockwise from
+//!   screen-up, so pigment's angle (from +x towards screen-up) is `90 - Direction`; `Blur Length`
+//!   is the segment length in layer pixels. Radial Blur (pigment `radial_blur_window`): `Amount`
+//!   1:1, `Center` a layer point, `Type` Spin | Zoom; `Antialiasing (Best Quality)` and `Random
+//!   Seed` do not change pigment's kernel (no quality modes, no dither). Find Edges (pigment
+//!   `find_edges_window`): the `invert` row, `Blend With Original` mixes the original back in.
 //! - Glow: `Glow Threshold` `v` is the fraction `v / 255`; `Glow Radius` is the blur radius;
 //!   `Glow Operation` maps to the pigment blend mode of the same name (`Add` = linear dodge (add));
 //!   `None`, `Dissolve` and the stencil / silhouette / luminescent / alpha-add operations, `Arbitrary
@@ -64,7 +67,7 @@ use super::{CompLayer, CompositionTemporalSource, Content, keyed_property, unsup
 use crate::CompositeError;
 use crate::composition::{
     ChannelAdjustment, ColourEffect, EffectedContent, EntryComposite, GeneratorComposite, GlowColours, GlowEffect, GlowLooping,
-    GlowOriginal, SceneContent, SceneEffect, SceneEffectEntry, box_taps,
+    GlowOriginal, SceneContent, SceneEffect, SceneEffectEntry,
 };
 use crate::temporal::TemporalError;
 use crate::temporal::motion::sample;
@@ -76,7 +79,7 @@ use hsk_studio_pigment::adjust_math::{
     AdjustmentOp, ColourBalance, Exposure, GradientMap, GradientMapStop, HueSaturation, Levels, LevelsRecord,
 };
 use hsk_studio_pigment::blend_math::{BlendSpace, StudioBlendMode, blend_rgb};
-use hsk_studio_pigment::blur_math::{BlurScope, LayerBlur, MAX_BLUR_RADIUS_PX};
+use hsk_studio_pigment::blur_math::{BlurAxis, BlurScope, LayerBlur, MAX_BLUR_RADIUS_PX, RadialBlurKind, box_kernel};
 use hsk_studio_pigment::transform_math::Affine2;
 use std::collections::BTreeMap;
 
@@ -213,9 +216,13 @@ impl At<'_> {
     fn no_kernel(&self) -> TemporalError {
         unsupported(self.id, COMPOSITION_EFFECT_KERNEL)
     }
-    /// `Blur Dimensions` / `Glow Dimensions`: only `Horizontal and Vertical` has a pigment kernel.
-    fn both_axes(&self, key: &str) -> Result<(), TemporalError> {
-        if self.option(key)? == 1 { Ok(()) } else { Err(self.no_kernel()) }
+    /// `Blur Dimensions` / `Glow Dimensions`: `None` = both axes, else pigment's one-axis pass.
+    fn axis(&self, key: &str) -> Result<Option<BlurAxis>, TemporalError> {
+        Ok(match self.option(key)? {
+            2 => Some(BlurAxis::Horizontal),
+            3 => Some(BlurAxis::Vertical),
+            _ => None,
+        })
     }
     /// pigment's Gaussian taps of `radius` layer pixels (module docs).
     fn gaussian(&self, radius: f64) -> Result<Vec<f32>, TemporalError> {
@@ -232,9 +239,6 @@ impl At<'_> {
             return Err(self.refused());
         }
         Ok(SceneEffect::Colour(Box::new(ColourEffect { ops, blend })))
-    }
-    fn identity() -> SceneEffect {
-        SceneEffect::Blur { taps: vec![1.0], repeat_edges: false }
     }
 
     fn effect(&self) -> Result<SceneEffect, TemporalError> {
@@ -304,35 +308,34 @@ impl At<'_> {
                     composite: self.composite()?,
                 }
             }
-            StudioCompositionEffectKind::GaussianBlur => {
-                self.both_axes("blur_dimensions")?;
-                SceneEffect::Blur { taps: self.gaussian(self.one("blurriness")?)?, repeat_edges: self.flag("repeat_edge_pixels")? }
-            }
+            StudioCompositionEffectKind::GaussianBlur => SceneEffect::Blur {
+                taps: self.gaussian(self.one("blurriness")?)?,
+                axis: self.axis("blur_dimensions")?,
+                repeat_edges: self.flag("repeat_edge_pixels")?,
+            },
             StudioCompositionEffectKind::FastBoxBlur => {
-                self.both_axes("blur_dimensions")?;
                 // Hard bounds 0..30000 and 1..50 (checked by `value`): finite, non-negative, in u32.
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let (half, passes) = ((self.one("blur_radius")? + 0.5).floor() as u32, (self.one("iterations")? + 0.5).floor() as u32);
-                let taps = box_taps(half, passes).ok_or_else(|| self.no_kernel())?;
-                SceneEffect::Blur { taps, repeat_edges: self.flag("repeat_edge_pixels")? }
+                let taps = box_kernel(half, passes).map_err(|_| self.no_kernel())?;
+                SceneEffect::Blur { taps, axis: self.axis("blur_dimensions")?, repeat_edges: self.flag("repeat_edge_pixels")? }
             }
-            StudioCompositionEffectKind::DirectionalBlur => {
-                if self.one("blur_length")? > 0.0 {
-                    return Err(self.no_kernel());
-                }
-                Self::identity()
-            }
+            StudioCompositionEffectKind::DirectionalBlur => SceneEffect::DirectionalBlur {
+                angle_deg: 90.0 - self.one("direction")?,
+                length_px: self.one("blur_length")?,
+            },
             StudioCompositionEffectKind::RadialBlur => {
-                if self.one("amount")? > 0.0 {
-                    return Err(self.no_kernel());
+                // Sampled so a value outside its hard bounds is refused like every row.
+                self.option("antialiasing_best_quality")?;
+                self.one("random_seed")?;
+                SceneEffect::RadialBlur {
+                    centre: self.point("center")?,
+                    amount: self.one("amount")?,
+                    kind: if self.option("type")? == 2 { RadialBlurKind::Zoom } else { RadialBlurKind::Spin },
                 }
-                Self::identity()
             }
             StudioCompositionEffectKind::FindEdges => {
-                if self.one("blend_with_original")? < 1.0 {
-                    return Err(self.no_kernel());
-                }
-                Self::identity()
+                SceneEffect::FindEdges { invert: self.flag("invert")?, blend: self.one("blend_with_original")? }
             }
             StudioCompositionEffectKind::Glow => self.glow()?,
             StudioCompositionEffectKind::ColorBalance => {
@@ -441,7 +444,6 @@ impl At<'_> {
 
     /// Glow (module docs).
     fn glow(&self) -> Result<SceneEffect, TemporalError> {
-        self.both_axes("glow_dimensions")?;
         let original = match self.option("composite_original")? {
             1 => GlowOriginal::OnTop,
             2 => GlowOriginal::Behind,
@@ -495,6 +497,7 @@ impl At<'_> {
             based_on_alpha: self.option("glow_based_on")? == 1,
             threshold: self.one("glow_threshold")? / 255.0,
             taps: self.gaussian(self.one("glow_radius")?)?,
+            axis: self.axis("glow_dimensions")?,
             intensity: self.one("glow_intensity")?,
             original,
             mode,
