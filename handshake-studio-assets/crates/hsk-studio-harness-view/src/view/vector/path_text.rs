@@ -8,9 +8,13 @@
 //! layer (text to outlines, STU-VEC-038) filled with the vector tool's fill, as ONE undo step.
 //! Run metrics: the run's ascent and descent are the ink extents of its glyph outlines (Type
 //! exposes no font ascender/descender tables to the harness; a declared approximation), and the
-//! em and ICF boxes equal those extents. Declared gaps: a live (editable) path-text layer bound to
-//! a story through `StudioPathText` is not drawn by the viewer yet (the record round-trips in
-//! Folio); one font, one size, one run per call. Illustrator parity UNVERIFIED (D5).
+//! em and ICF boxes equal those extents. One font, one size, one run per call. Illustrator parity
+//! UNVERIFIED (D5).
+//!
+//! This module is the one-shot path: a live (editable) story bound through Folio `StudioPathText`
+//! / `StudioAreaText` is drawn by the window and redrawn on every path or story edit (lane
+//! SMB-AI-AREA-TYPE-2: `Viewer::bind_live_text`, composite `VectorAssets::shaped_story`), and its
+//! Create Outlines is `Viewer::create_outlines` (lane SMB-AI-AREA-TYPE-3).
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::Viewer;
 use super::super::text::shaped_glyphs;
