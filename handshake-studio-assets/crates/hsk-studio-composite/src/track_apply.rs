@@ -442,8 +442,11 @@ pub fn corner_pin_quad_at(pin: &StudioCornerPin, tick: i64) -> Result<Quad, Trac
 /// untouched): `path` is the start-frame mask (layer space, six numbers per vertex: `x, y, in_dx,
 /// in_dy, out_dx, out_dy`), mapped through each `Tracked` frame's homography (a vertex `v` to
 /// `H(v)`, a handle `t` to `H(v + t) - H(v)`), one linear keyframe per frame at its tick (STU-CMP-065
-/// "Planar / mask tracking ... producing an animated mask path"). A mask with the same id is
-/// replaced, otherwise the mask is appended. Layer space is the tracked footage's pixel space (the
+/// "Planar / mask tracking ... producing an animated mask path"). A mask with the same id keeps
+/// its `inverted` flag and its feather, opacity and expansion streams (lane SMB-AE-MASK-FEATHER-2;
+/// Studio reading: a track apply replaces the path, its keyframes and the mode only; After Effects'
+/// behaviour is UNVERIFIED, D5); otherwise the mask is appended with those absent (not inverted,
+/// no feather, opacity 1, no expansion). Layer space is the tracked footage's pixel space (the
 /// footage placed at the layer origin).
 pub fn apply_planar_mask(
     target: &StudioCompositionLayer,
@@ -484,21 +487,26 @@ pub fn apply_planar_mask(
         keys.push(key(timing.tick(f.frame)?, value));
     }
     let static_value = keys.first().map(|k| k.value.clone()).unwrap_or_default();
-    let mask = hsk_studio_folio::StudioCompositionMask {
-        mask_id: mask_id.to_owned(),
-        mode,
-        inverted: false,
-        closed: true,
-        static_value,
-        keyframes: keys,
-        feather: None,
-        opacity: None,
-        expansion: None,
-    };
     let mut out = target.clone();
     match out.masks.iter_mut().find(|m| m.mask_id == mask_id) {
-        Some(m) => *m = mask,
-        None => out.masks.push(mask),
+        // Path, keyframes and mode only; inverted, feather, opacity and expansion are kept.
+        Some(m) => {
+            m.mode = mode;
+            m.closed = true;
+            m.static_value = static_value;
+            m.keyframes = keys;
+        }
+        None => out.masks.push(hsk_studio_folio::StudioCompositionMask {
+            mask_id: mask_id.to_owned(),
+            mode,
+            inverted: false,
+            closed: true,
+            static_value,
+            keyframes: keys,
+            feather: None,
+            opacity: None,
+            expansion: None,
+        }),
     }
     Ok(out)
 }
