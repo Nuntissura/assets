@@ -31,6 +31,11 @@ pub(super) fn recs_of(r: &StudioVectorRecords, unit_pt: f64) -> Recs<'_> {
             .iter()
             .map(|a| (a.layer_id.as_str(), a))
             .collect(),
+        markers: r
+            .stroke_markers
+            .iter()
+            .map(|m| ((m.style_id.as_str(), m.row), m))
+            .collect(),
         unit_pt,
     }
 }

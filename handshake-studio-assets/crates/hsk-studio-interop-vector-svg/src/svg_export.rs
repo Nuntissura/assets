@@ -5,6 +5,20 @@
 //! it is read. `export_proposal` also writes the Folio vector records (`records`): patterns,
 //! clips and masks become `<pattern>`, `<clipPath>` and `<mask>` definitions in `<defs>`, and the
 //! clip/mask attachment of a layer becomes its `clip-path` and `mask` attributes.
+//!
+//! Stroke markers (lane SMB-AI-ARROWHEADS-2, STU-VEC-146): `export_proposal` writes each end of a
+//! Folio `stroke_markers` entry on a solid stroke row as a `marker-start` / `marker-end` reference
+//! to a `<marker>` definition holding nib's marker outline (`hsk_studio_nib::markers`) in units of
+//! the marker size: `markerUnits="strokeWidth"`, `orient="auto-start-reverse"`, the `viewBox` the
+//! outline's box, `markerWidth` / `markerHeight` that box times scale / 100, `refX` the tip
+//! (`inside_path`) or the back (`outside_path`). The recognised import shapes are written in the
+//! form the import reads back (`arrow.triangle` and `arrow.simple` as nib's polygon, circles as
+//! `<circle>`, squares as `<rect>`), so export then import keeps their tokens, scales and alignment
+//! (test svg_markers::export_then_import_gives_the_same_markers). Typed losses: an `ERD_*`
+//! terminator (`marker_shape_unbuilt`, nib's code) or any marker nib refuses, a marker on a
+//! non-solid or pattern-bound row (`marker_paint_not_exported`), a collaborative-suite token whose
+//! name SVG cannot hold (`marker_token_not_exported`, the shape is exact) and the inside-path stroke
+//! trim SVG does not apply (`marker_stroke_not_trimmed`).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Result, VectorError};
 use crate::model::*;
@@ -14,11 +28,12 @@ use hsk_studio_folio::{
     Length as FolioLength, Parent, Payload, ProfileBinding, Resolution, StrokeAlign, StrokeCap,
     StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords, StudioDocument,
     StudioGradient, StudioGradientGeometry, StudioLayer, StudioMaskAttachment, StudioNodeDesign,
-    StudioPaint, StudioPaintStyle, StudioPattern, StudioStrokeStyle, StudioVectorClip,
+    StudioPaint, StudioPaintStyle, StudioPattern, StudioStrokeMarkers, StudioStrokeStyle, StudioVectorClip,
     StudioVectorMask, StudioVectorRecords, Unresolved, validate_paint_style,
     validate_vector_records,
 };
 use hsk_studio_nib::Winding;
+use hsk_studio_nib::markers::{MarkerAlign, MarkerEnd, MarkerOptions, MarkerShape, MarkerSpec, marker_outlines};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 mod records;
@@ -416,11 +431,13 @@ enum Row<'a> {
         stroke: &'a StudioStrokeStyle,
         opacity: f64,
         pattern: Option<String>,
+        /// The row's stroke markers (module docs).
+        markers: Option<&'a StudioStrokeMarkers>,
     },
 }
 
 type FillRow<'a> = Option<(&'a StudioPaint, f64, Option<&'a str>)>;
-type StrokeRow<'a> = Option<(&'a StudioPaint, &'a StudioStrokeStyle, f64, Option<&'a str>)>;
+type StrokeRow<'a> = Option<(&'a StudioPaint, &'a StudioStrokeStyle, f64, Option<&'a str>, Option<&'a StudioStrokeMarkers>)>;
 
 fn fill_of<'r>(row: &'r Row<'_>) -> FillRow<'r> {
     match row {
@@ -440,7 +457,8 @@ fn stroke_of<'r>(row: &'r Row<'_>) -> StrokeRow<'r> {
             stroke,
             opacity,
             pattern,
-        } => Some((*paint, *stroke, *opacity, pattern.as_deref())),
+            markers,
+        } => Some((*paint, *stroke, *opacity, pattern.as_deref(), *markers)),
         Row::Fill { .. } => None,
     }
 }
@@ -461,6 +479,8 @@ struct Recs<'a> {
     patterns: BTreeMap<&'a str, &'a StudioPattern>,
     /// Pattern binding by `(style id, row)`.
     paints: BTreeMap<(&'a str, u32), &'a hsk_studio_folio::StudioPatternPaint>,
+    /// Stroke markers by `(style id, row)`.
+    markers: BTreeMap<(&'a str, u32), &'a StudioStrokeMarkers>,
     attach: BTreeMap<&'a str, &'a StudioMaskAttachment>,
     /// Points per document unit (matrix translations are in the document unit).
     unit_pt: f64,
@@ -493,6 +513,8 @@ struct Writer<'a> {
     /// Layer names already written as `id`; definition content skips a name used before.
     emitted: BTreeSet<String>,
     in_def: bool,
+    /// `<marker>` definition ids by shape, scale, alignment and paint.
+    marker_ids: BTreeMap<String, String>,
 }
 
 impl<'a> Writer<'a> {
@@ -541,7 +563,7 @@ impl<'a> Writer<'a> {
                 }
             }
         }
-        if let Some((paint, st, opacity, pattern)) = stroke {
+        if let Some((paint, st, opacity, pattern, markers)) = stroke {
             let value = self.paint_value(paint, pattern, label);
             let width = to_pt(&st.weight, self.ppi)?;
             out.push_str(&format!(
@@ -584,8 +606,132 @@ impl<'a> Writer<'a> {
                     "stroke_align_center_assumed",
                 );
             }
+            if let Some(m) = markers {
+                let refs = self.marker_attrs(m, paint, opacity, pattern, label);
+                out.push_str(&refs);
+            }
         }
         Ok(out)
+    }
+
+    /// ` marker-start="url(#..)" marker-end="url(#..)"` of a stroke row's markers (module docs).
+    fn marker_attrs(
+        &mut self,
+        m: &StudioStrokeMarkers,
+        paint: &StudioPaint,
+        opacity: f64,
+        pattern: Option<&str>,
+        label: &str,
+    ) -> String {
+        let mut out = String::new();
+        let colour = match (paint, pattern) {
+            (StudioPaint::Solid { colour }, None) => colour,
+            _ => {
+                note(&mut self.loss, label, LossKind::Unsupported, "marker_paint_not_exported");
+                return out;
+            }
+        };
+        let ink = hex(colour, label, &mut self.loss);
+        for (token, scale, attr) in [(&m.start, m.start_scale, "marker-start"), (&m.end, m.end_scale, "marker-end")] {
+            match MarkerShape::from_token(token) {
+                Ok(None) => {}
+                Err(e) => note(&mut self.loss, label, LossKind::Unsupported, e.code()),
+                Ok(Some(shape)) => {
+                    let collaborative = hsk_studio_folio::StudioArrowhead::from_token(token)
+                        .is_some_and(|a| a.suite() == hsk_studio_folio::StudioArrowheadSuite::Collaborative);
+                    if collaborative {
+                        note(&mut self.loss, label, LossKind::Ignored, "marker_token_not_exported");
+                    }
+                    match self.marker_def(shape, scale, m.alignment, &ink, opacity) {
+                        Some(id) => out.push_str(&format!(" {attr}=\"url(#{id})\"")),
+                        None => note(&mut self.loss, label, LossKind::Unsupported, "marker_shape_not_exported"),
+                    }
+                }
+            }
+        }
+        if !out.is_empty() && m.alignment == hsk_studio_folio::StudioArrowAlignment::InsidePath {
+            note(&mut self.loss, label, LossKind::Approximated, "marker_stroke_not_trimmed");
+        }
+        out
+    }
+
+    /// Id of the `<marker>` definition of one marker end, written on first use.
+    fn marker_def(
+        &mut self,
+        shape: MarkerShape,
+        scale: f64,
+        alignment: hsk_studio_folio::StudioArrowAlignment,
+        ink: &str,
+        opacity: f64,
+    ) -> Option<String> {
+        let key = format!("{}|{scale}|{alignment:?}|{ink}|{opacity}", shape.token());
+        if let Some(id) = self.marker_ids.get(&key) {
+            return Some(id.clone());
+        }
+        // Nib's outline at marker size 1: the end of a horizontal stroke of width 1 at scale 100,
+        // tip at the origin pointing +x, so local (u, v) = (x, y).
+        let probe = hsk_studio_nib::OwnedPath {
+            elements: vec![
+                hsk_studio_nib::PathElement::MoveTo(hsk_studio_nib::PathPoint::new(-10.0, 0.0)),
+                hsk_studio_nib::PathElement::LineTo(hsk_studio_nib::PathPoint::new(0.0, 0.0)),
+            ],
+            fill_rule: hsk_studio_nib::FillRule::NonZero,
+        };
+        let spec = MarkerSpec { start: None, end: Some(MarkerEnd { shape, scale: 100.0 }), align: MarkerAlign::InsidePath };
+        let outline = marker_outlines(&probe, &spec, 1.0, &MarkerOptions::default()).ok()?.markers.into_iter().next()?.outline;
+        let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        let mut d = Vec::with_capacity(outline.elements.len());
+        for e in &outline.elements {
+            use hsk_studio_nib::PathElement as E;
+            let (cmd, pts): (&str, Vec<hsk_studio_nib::PathPoint>) = match *e {
+                E::MoveTo(a) => ("M", vec![a]),
+                E::LineTo(a) => ("L", vec![a]),
+                E::QuadTo(c, a) => ("Q", vec![c, a]),
+                E::CubicTo(c1, c2, a) => ("C", vec![c1, c2, a]),
+                E::Close => ("Z", Vec::new()),
+            };
+            for q in &pts {
+                b = [b[0].min(q.x), b[1].min(q.y), b[2].max(q.x), b[3].max(q.y)];
+            }
+            let coords: Vec<String> = pts.iter().map(|q| format!("{} {}", num(q.x), num(q.y))).collect();
+            d.push(format!("{cmd}{}", coords.join(" ")));
+        }
+        let (w, h) = (b[2] - b[0], b[3] - b[1]);
+        if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+            return None;
+        }
+        let f = scale / 100.0;
+        let fill_opacity = if opacity < 100.0 { format!(" fill-opacity=\"{}\"", num(opacity / 100.0)) } else { String::new() };
+        let stroke_opacity = if opacity < 100.0 { format!(" stroke-opacity=\"{}\"", num(opacity / 100.0)) } else { String::new() };
+        let fill = format!(" fill=\"{ink}\"{fill_opacity}");
+        let hollow = format!(" fill=\"none\" stroke=\"{ink}\" stroke-width=\"0.5\"{stroke_opacity}");
+        let body = match shape {
+            MarkerShape::CircleSolid => format!("<circle cx=\"-1.5\" cy=\"0\" r=\"1.5\"{fill}/>"),
+            MarkerShape::Circle => format!("<circle cx=\"-1.5\" cy=\"0\" r=\"1.25\"{hollow}/>"),
+            MarkerShape::SquareSolid => format!("<rect x=\"-3\" y=\"-1.5\" width=\"3\" height=\"3\"{fill}/>"),
+            MarkerShape::Square => format!("<rect x=\"-2.75\" y=\"-1.25\" width=\"2.5\" height=\"2.5\"{hollow}/>"),
+            _ => {
+                let rule = if outline.fill_rule == hsk_studio_nib::FillRule::EvenOdd { " fill-rule=\"evenodd\"" } else { "" };
+                format!("<path d=\"{}\"{fill}{rule}/>", d.join(" "))
+            }
+        };
+        let ref_x = match alignment {
+            hsk_studio_folio::StudioArrowAlignment::InsidePath => 0.0,
+            hsk_studio_folio::StudioArrowAlignment::OutsidePath => -shape.length(),
+        };
+        let id = self.defs.fresh("m");
+        self.defs.text.push_str(&format!(
+            "    <marker id=\"{id}\" viewBox=\"{} {} {} {}\" refX=\"{}\" refY=\"0\" markerWidth=\"{}\" markerHeight=\"{}\" markerUnits=\"strokeWidth\" orient=\"auto-start-reverse\">\n      {body}\n    </marker>\n",
+            num(b[0]),
+            num(b[1]),
+            num(w),
+            num(h),
+            num(ref_x),
+            num(w * f),
+            num(h * f),
+        ));
+        self.marker_ids.insert(key, id.clone());
+        Some(id)
     }
 
     fn element(
@@ -729,11 +875,15 @@ impl<'a> Writer<'a> {
                         ..
                     } => {
                         let pattern = self.ref_pattern(&style.style_id, index, label);
+                        let markers = u32::try_from(index).ok().and_then(|row| {
+                            self.recs.as_ref().and_then(|r| r.markers.get(&(style.style_id.as_str(), row)).copied())
+                        });
                         rows.push(Row::Stroke {
                             paint,
                             stroke,
                             opacity: *opacity,
                             pattern,
+                            markers,
                         });
                     }
                 }
@@ -882,6 +1032,7 @@ fn writer(
         pattern_ids: BTreeMap::new(),
         emitted: BTreeSet::new(),
         in_def: false,
+        marker_ids: BTreeMap::new(),
     }
 }
 
@@ -995,7 +1146,8 @@ pub fn export_proposal_with_loss(
         .saturating_add(records.pattern_paints.len())
         .saturating_add(records.clips.len())
         .saturating_add(records.masks.len())
-        .saturating_add(records.attachments.len());
+        .saturating_add(records.attachments.len())
+        .saturating_add(records.stroke_markers.len());
     if record_count > 0 {
         let default = Budget::default();
         let budget = Budget {

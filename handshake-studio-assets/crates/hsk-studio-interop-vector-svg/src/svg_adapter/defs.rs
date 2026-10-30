@@ -45,6 +45,8 @@ pub(super) struct Records {
     pub(super) clips: Vec<StudioVectorClip>,
     pub(super) masks: Vec<StudioVectorMask>,
     pub(super) attachments: Vec<StudioMaskAttachment>,
+    /// Stroke markers of the paint styles (lane SMB-AI-ARROWHEADS-2, `svg_adapter` module docs).
+    pub(super) stroke_markers: Vec<StudioStrokeMarkers>,
 }
 
 impl Records {
@@ -55,6 +57,7 @@ impl Records {
         records.clips = self.clips;
         records.masks = self.masks;
         records.attachments = self.attachments;
+        records.stroke_markers = self.stroke_markers;
         records
     }
 }
@@ -135,6 +138,7 @@ pub(super) struct Mark {
     clips: usize,
     masks: usize,
     attachments: usize,
+    stroke_markers: usize,
     nodes: usize,
     styles: usize,
     provenance: usize,
@@ -276,6 +280,7 @@ impl<'d> Importer<'_, 'd> {
             clips: self.records.clips.len(),
             masks: self.records.masks.len(),
             attachments: self.records.attachments.len(),
+            stroke_markers: self.records.stroke_markers.len(),
             nodes: self.nodes.len(),
             styles: self.styles.len(),
             provenance: self.gradient_provenance.len(),
@@ -294,6 +299,7 @@ impl<'d> Importer<'_, 'd> {
         self.records.clips.truncate(mark.clips);
         self.records.masks.truncate(mark.masks);
         self.records.attachments.truncate(mark.attachments);
+        self.records.stroke_markers.truncate(mark.stroke_markers);
         self.attach_index.retain(|_, i| *i < mark.attachments);
         self.nodes.truncate(mark.nodes);
         self.styles.truncate(mark.styles);

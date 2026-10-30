@@ -1,6 +1,26 @@
 //! SVG import into a Folio proposal plus nib anchor geometry, and deterministic SVG export of the
 //! supported subset. Input is hostile: DTD internal subsets are refused, no link is ever
 //! followed, and node, depth, segment and byte budgets are enforced while decoding.
+//!
+//! Stroke markers (lane SMB-AI-ARROWHEADS-2, STU-VEC-146): `marker-start` / `marker-end` on a
+//! stroked `path`, `line`, `polyline` or `polygon` become a Folio `stroke_markers` entry on the
+//! element's stroke row when the referenced local `<marker>` holds exactly one recognised shape
+//! child (no transform) and has `orient="auto-start-reverse"`, or `orient="auto"` (at the start
+//! the shape is read turned half a turn, since `auto` points it into the path). Recognised, in
+//! stroke widths around `refX`/`refY` (`viewBox` meet/slice scale, `markerUnits`):
+//! a closed three-vertex polygon or path whose tip lies on the axis and whose base half width is
+//! half its length = `arrow.triangle`; an open three-point chevron of the same proportion, or
+//! nib's own six-vertex `arrow.simple` outline = `arrow.simple`; a circle = `arrow.circle_solid`
+//! (filled) or `arrow.circle` (`fill="none"`, stroked); a square rect = `arrow.square_solid` or
+//! `arrow.square`. Scale = 100 x the shape's length along the path (outer edge, stroke widths) /
+//! the token's nib length (3), rounded to 1e-6, refused outside 1..=1000. The tip on the
+//! reference point is `arrow_align.inside_path`, the back on it `arrow_align.outside_path`; both
+//! ends share one alignment (the start is dropped when they differ). The recognition table and the
+//! scale mapping are Studio readings, UNVERIFIED (D5). Everything else, `marker-mid`, the
+//! `marker` shorthand and markers on elements without a stroke row keep the typed loss
+//! `unsupported_marker` (one per use, plus one per `<marker>` no use stored); a non-local
+//! reference is `external_marker_denied`. Marker content is never walked, so a marker that
+//! references itself cannot recurse (tests: svg_markers).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Result, VectorError};
 use crate::gzip;
@@ -16,6 +36,7 @@ use hsk_studio_folio::{
     StudioGradient, StudioGradientGeometry, StudioGradientStop, StudioLayer, StudioLayerGraph,
     StudioMaskAttachment, StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioPattern,
     StudioPatternPaint, StudioPublishing, StudioStrokeStyle, StudioVectorClip, StudioVectorMask,
+    StudioArrowAlignment, StudioArrowhead, StudioStrokeMarkers,
     StudioVectorRecords, StyleKind, StyleRegistrySchema, TileRef, Unresolved,
     validate_design_records, validate_document, validate_vector_records,
 };
@@ -320,6 +341,9 @@ struct Inherited {
     stroke_first: bool,
     /// `clip-rule`: only read for shapes inside a `clipPath`.
     clip_rule: Winding,
+    /// `marker-start` / `marker-end`: the id of a local `<marker>` (module docs).
+    marker_start: Option<Rc<str>>,
+    marker_end: Option<Rc<str>>,
 }
 
 impl Inherited {
@@ -340,6 +364,8 @@ impl Inherited {
             dash_offset: 0.0,
             stroke_first: false,
             clip_rule: Winding::NonZero,
+            marker_start: None,
+            marker_end: None,
         }
     }
 }
@@ -547,6 +573,9 @@ struct Importer<'a, 'd> {
     ordinal: usize,
     /// Element depth of the shape whose paint is being resolved.
     cur_depth: usize,
+    /// `<marker>` elements seen: node id -> locator; and those a use stored (module docs).
+    marker_defs: BTreeMap<u32, String>,
+    markers_stored: BTreeSet<u32>,
 }
 
 /// Imports an SVG into a Folio proposal (nodes) plus nib anchor geometry, with a typed loss report.
@@ -679,6 +708,8 @@ pub fn import_svg(
         attach_index: BTreeMap::new(),
         ordinal: 0,
         cur_depth: 0,
+        marker_defs: BTreeMap::new(),
+        markers_stored: BTreeSet::new(),
     };
     let document_id = imp.mint_id("SDOC")?;
     let artboard_id = imp.mint_id("SART")?;
@@ -750,6 +781,7 @@ pub fn import_svg(
         root_loc,
     )?;
     imp.finish_definitions();
+    imp.finish_markers();
 
     let Importer {
         loss,
@@ -846,7 +878,8 @@ pub fn import_svg(
         .saturating_add(vector_records.pattern_paints.len())
         .saturating_add(vector_records.clips.len())
         .saturating_add(vector_records.masks.len())
-        .saturating_add(vector_records.attachments.len());
+        .saturating_add(vector_records.attachments.len())
+        .saturating_add(vector_records.stroke_markers.len());
     if record_count > 0 {
         let record_budget = Budget {
             nodes: record_count.saturating_add(8),
@@ -1046,6 +1079,11 @@ impl<'d> Importer<'_, 'd> {
                 self.definition_note(el, loc);
                 Ok(())
             }
+            // Read where a `marker-start` / `marker-end` names it (module docs).
+            "marker" => {
+                self.marker_defs.entry(el.id().get()).or_insert_with(|| loc.to_owned());
+                Ok(())
+            }
             "title" | "desc" | "metadata" => {
                 self.note(loc, LossKind::Ignored, "metadata");
                 Ok(())
@@ -1083,6 +1121,8 @@ impl<'d> Importer<'_, 'd> {
                 self.note(&child_loc, LossKind::Ignored, "metadata");
             } else if matches!(tag, "pattern" | "clipPath" | "mask") {
                 self.definition_note(child, &child_loc);
+            } else if tag == "marker" {
+                self.marker_defs.entry(child.id().get()).or_insert(child_loc);
             } else {
                 self.note(&child_loc, LossKind::Unsupported, unsupported_code(tag));
             }
@@ -1271,10 +1311,108 @@ impl<'d> Importer<'_, 'd> {
             "mix-blend-mode" if value != "normal" => {
                 self.note(loc, LossKind::Unsupported, "unsupported_mix_blend_mode");
             }
-            "marker-start" | "marker-mid" | "marker-end" if value != "none" => {
+            "marker-start" | "marker-end" => {
+                let v = value.trim();
+                if v.eq_ignore_ascii_case("inherit") {
+                    return;
+                }
+                let target = if v.eq_ignore_ascii_case("none") {
+                    None
+                } else {
+                    // `url()` is tokenised (case, quotes, escapes, whitespace), never matched as text.
+                    match css::url_function(v) {
+                        Some(f) if f.rest.trim().is_empty() => match f.target {
+                            css::UrlTarget::Local(id) => Some(Rc::from(id)),
+                            css::UrlTarget::External => {
+                                self.note(loc, LossKind::ExternalDenied, "external_marker_denied");
+                                None
+                            }
+                            css::UrlTarget::Malformed => {
+                                self.note(loc, LossKind::Unsupported, "unsupported_marker");
+                                None
+                            }
+                        },
+                        _ => {
+                            self.note(loc, LossKind::Unsupported, "unsupported_marker");
+                            None
+                        }
+                    }
+                };
+                if name == "marker-start" {
+                    st.marker_start = target;
+                } else {
+                    st.marker_end = target;
+                }
+            }
+            // No Studio home: the mid markers and the shorthand.
+            "marker-mid" | "marker" if !value.trim().eq_ignore_ascii_case("none") => {
                 self.note(loc, LossKind::Unsupported, "unsupported_marker");
             }
             _ => {}
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Stroke markers (module docs)
+    // ------------------------------------------------------------------------------------------
+
+    /// The marker ends of a shape element; `None` (each unusable reference a typed loss) when it
+    /// has no marker that maps.
+    fn marker_ends(&mut self, el: Node, st: &Inherited, stroked: bool, loc: &str) -> Option<MarkerEnds> {
+        if st.marker_start.is_none() && st.marker_end.is_none() {
+            return None;
+        }
+        let markable = matches!(el.tag_name().name(), "path" | "line" | "polyline" | "polygon");
+        if !markable || !stroked || !(st.stroke_width > 0.0 && st.stroke_width.is_finite()) {
+            self.note(loc, LossKind::Unsupported, "unsupported_marker");
+            return None;
+        }
+        let mut read = |id: &Option<Rc<str>>, at_start: bool| -> Option<RecognisedMarker> {
+            let id = id.as_deref()?;
+            let found = self.ids.get(id).copied().filter(|m| {
+                m.tag_name().name() == "marker" && m.tag_name().namespace() == Some(SVG_NS)
+            });
+            match found.and_then(|m| recognise_marker(m, at_start, st.stroke_width).map(|r| (m, r))) {
+                Some((m, r)) => {
+                    self.markers_stored.insert(m.id().get());
+                    Some(r)
+                }
+                None => {
+                    self.note(loc, LossKind::Unsupported, "unsupported_marker");
+                    None
+                }
+            }
+        };
+        let start = read(&st.marker_start, true);
+        let end = read(&st.marker_end, false);
+        let (start, end) = match (start, end) {
+            (Some(s), Some(e)) if s.2 != e.2 => {
+                // One alignment per entry: the end keeps its marker, the start is reported.
+                self.note(loc, LossKind::Unsupported, "unsupported_marker");
+                (None, Some(e))
+            }
+            other => other,
+        };
+        let alignment = end.or(start)?.2;
+        let none = (StudioArrowhead::ArrowNone, hsk_studio_folio::DEFAULT_MARKER_SCALE);
+        Some(MarkerEnds {
+            start: start.map_or(none, |r| (r.0, r.1)),
+            end: end.map_or(none, |r| (r.0, r.1)),
+            alignment,
+        })
+    }
+
+    /// Reports every `<marker>` no use stored (see `marker_defs`).
+    fn finish_markers(&mut self) {
+        let defs = std::mem::take(&mut self.marker_defs);
+        for (id, loc) in defs {
+            if !self.markers_stored.contains(&id) {
+                self.loss.push(LossEntry {
+                    path: loc,
+                    kind: LossKind::Unsupported,
+                    code: "unsupported_marker",
+                });
+            }
         }
     }
 
@@ -1906,8 +2044,9 @@ impl<'d> Importer<'_, 'd> {
         rows: Vec<StudioAppearanceRow>,
         units: Vec<(usize, GradientUnits)>,
         bindings: Vec<(usize, PatternBinding)>,
+        markers: Option<(usize, MarkerEnds)>,
     ) -> Result<String> {
-        let key = format!("{rows:?}{units:?}{bindings:?}");
+        let key = format!("{rows:?}{units:?}{bindings:?}{markers:?}");
         if let Some(&i) = self.style_index.get(&key) {
             return Ok(self.styles[i].style_id.clone());
         }
@@ -1927,6 +2066,18 @@ impl<'d> Importer<'_, 'd> {
                 placement: hsk_studio_folio::StudioPatternPlacement::Matrix {
                     matrix: binding.matrix,
                 },
+            });
+        }
+        // The stroke row's markers, bound like the pattern rows (rollbacks cut both).
+        if let Some((row, m)) = markers {
+            self.records.stroke_markers.push(StudioStrokeMarkers {
+                style_id: style_id.clone(),
+                row: u32::try_from(row).map_err(|_| VectorError::InvalidGeometry)?,
+                start: m.start.0.token().to_owned(),
+                end: m.end.0.token().to_owned(),
+                start_scale: m.start.1,
+                end_scale: m.end.1,
+                alignment: m.alignment,
             });
         }
         self.gradient_provenance
@@ -2050,10 +2201,16 @@ impl<'d> Importer<'_, 'd> {
             units.extend(row_units.map(|u| (index, u)));
             bindings.extend(binding.map(|b| (index, b)));
         }
+        let stroke_index = rows
+            .iter()
+            .position(|r| matches!(r, StudioAppearanceRow::Stroke { .. }));
+        let markers = self
+            .marker_ends(el, st, stroke_index.is_some(), loc)
+            .and_then(|m| stroke_index.map(|i| (i, m)));
         let style_id = if rows.is_empty() {
             None
         } else {
-            Some(self.style_id(rows, units, bindings)?)
+            Some(self.style_id(rows, units, bindings, markers)?)
         };
         let layer_id = self.mint_id("SLYR")?;
         let first_path = self.paths.len();
@@ -2452,6 +2609,257 @@ fn bbox_of<'a>(
         }
     }
     b
+}
+
+// ----------------------------------------------------------------------------------------------
+// Marker recognition (module docs; Studio readings, UNVERIFIED)
+// ----------------------------------------------------------------------------------------------
+
+/// The two ends and the alignment of one element's markers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MarkerEnds {
+    start: (StudioArrowhead, f64),
+    end: (StudioArrowhead, f64),
+    alignment: StudioArrowAlignment,
+}
+
+/// A recognised marker: token, scale percent, alignment.
+type RecognisedMarker = (StudioArrowhead, f64, StudioArrowAlignment);
+
+/// Most vertices of a recognised marker polygon (anything longer is not recognised).
+const MARKER_MAX_POINTS: usize = 8;
+/// Nib's `arrow.simple` outline (units of the marker size, tip first).
+const NIB_SIMPLE: [[f64; 2]; 6] = [[0.0, 0.0], [-3.0, 1.5], [-3.0, 0.5], [-1.0, 0.0], [-3.0, -0.5], [-3.0, -1.5]];
+/// Nib length of every recognised token (marker sizes behind the tip).
+const NIB_LENGTH: f64 = 3.0;
+
+/// A plain number attribute (`None` when absent; `Err` when not a finite plain or px number).
+fn marker_number(el: Node, name: &str) -> std::result::Result<Option<f64>, ()> {
+    let Some(v) = plain_attr(el, name) else {
+        return Ok(None);
+    };
+    let l = svgtypes::Length::from_str(v.trim()).map_err(|_| ())?;
+    if !matches!(l.unit, svgtypes::LengthUnit::None | svgtypes::LengthUnit::Px) || !l.number.is_finite() {
+        return Err(());
+    }
+    Ok(Some(l.number))
+}
+
+/// Paint property of a marker shape child: `true` when present and not `none`.
+fn painted(props: &[(String, String)], name: &str, default: bool) -> bool {
+    props
+        .iter()
+        .rev()
+        .find(|(n, _)| n == name)
+        .map_or(default, |(_, v)| !v.trim().eq_ignore_ascii_case("none"))
+}
+
+/// The vertices of a marker polygon child (no curves, one subpath) and whether it is closed.
+fn marker_polygon(child: Node) -> Option<(Vec<[f64; 2]>, bool)> {
+    let tag = child.tag_name().name();
+    let mut pts: Vec<[f64; 2]> = Vec::new();
+    let mut closed = false;
+    if tag == "path" {
+        use svgtypes::SimplePathSegment as S;
+        for seg in svgtypes::SimplifyingPathParser::from(plain_attr(child, "d")?).take(MARKER_MAX_POINTS.saturating_add(2)) {
+            if closed {
+                return None;
+            }
+            match seg.ok()? {
+                S::MoveTo { x, y } if pts.is_empty() => pts.push([x, y]),
+                S::LineTo { x, y } if !pts.is_empty() => pts.push([x, y]),
+                S::ClosePath => closed = true,
+                _ => return None,
+            }
+        }
+        if closed && pts.len() >= 2 && pts.first() == pts.last() {
+            pts.pop();
+        }
+    } else {
+        closed = tag == "polygon";
+        for (x, y) in svgtypes::PointsParser::from(plain_attr(child, "points")?).take(MARKER_MAX_POINTS.saturating_add(1)) {
+            pts.push([x, y]);
+        }
+    }
+    (pts.len() <= MARKER_MAX_POINTS && pts.iter().flatten().all(|v| v.is_finite())).then_some((pts, closed))
+}
+
+/// Reads one `<marker>` as a token (module docs). `at_start`: the use is `marker-start`;
+/// `stroke_width`: the element's stroke width in user units (> 0).
+fn recognise_marker(marker: Node, at_start: bool, stroke_width: f64) -> Option<RecognisedMarker> {
+    let flip = match plain_attr(marker, "orient").map(str::trim) {
+        Some("auto-start-reverse") => false,
+        Some("auto") => at_start,
+        _ => return None,
+    };
+    // Marker content unit -> stroke widths.
+    let per = match plain_attr(marker, "markerUnits").map(str::trim) {
+        None | Some("strokeWidth") => 1.0,
+        Some("userSpaceOnUse") => 1.0 / stroke_width,
+        Some(_) => return None,
+    };
+    let mw = marker_number(marker, "markerWidth").ok()?.unwrap_or(3.0);
+    let mh = marker_number(marker, "markerHeight").ok()?.unwrap_or(3.0);
+    if !(mw > 0.0 && mh > 0.0) {
+        return None;
+    }
+    let k = match plain_attr(marker, "viewBox") {
+        None => 1.0,
+        Some(v) => {
+            let vb = svgtypes::ViewBox::from_str(v).ok()?;
+            if !(vb.w.is_finite() && vb.h.is_finite() && vb.x.is_finite() && vb.y.is_finite() && vb.w > 0.0 && vb.h > 0.0) {
+                return None;
+            }
+            let par = plain_attr(marker, "preserveAspectRatio")
+                .map(|t| svgtypes::AspectRatio::from_str(t).ok())
+                .unwrap_or(Some(svgtypes::AspectRatio::default()))?;
+            let (sx, sy) = (mw / vb.w, mh / vb.h);
+            if par.align == svgtypes::Align::None {
+                if (sx - sy).abs() > 1e-9 * sx.max(sy) {
+                    return None;
+                }
+                sx
+            } else if par.slice {
+                sx.max(sy)
+            } else {
+                sx.min(sy)
+            }
+        }
+    };
+    let rx = marker_number(marker, "refX").ok()?.unwrap_or(0.0);
+    let ry = marker_number(marker, "refY").ok()?.unwrap_or(0.0);
+    let f = k * per;
+    if !(f.is_finite() && f > 0.0) {
+        return None;
+    }
+    // Content point -> Studio local (u along the out-of-path direction, v its normal), stroke
+    // widths. `orient="auto"` at the start points the content into the path: half a turn.
+    let local = |x: f64, y: f64| -> [f64; 2] {
+        let (u, v) = ((x - rx) * f, (y - ry) * f);
+        if flip { [-u, -v] } else { [u, v] }
+    };
+    let mut children = marker.children().filter(Node::is_element);
+    let child = children.next()?;
+    if children.next().is_some()
+        || child.tag_name().namespace() != Some(SVG_NS)
+        || plain_attr(child, "transform").is_some()
+    {
+        return None;
+    }
+    let props = collect_props(child);
+    let number = |name: &str, default: f64| -> Option<f64> {
+        match props.iter().rev().find(|(n, _)| n == name) {
+            None => Some(default),
+            Some((_, v)) => {
+                let l = svgtypes::Length::from_str(v.trim()).ok()?;
+                (matches!(l.unit, svgtypes::LengthUnit::None | svgtypes::LengthUnit::Px) && l.number.is_finite()).then_some(l.number)
+            }
+        }
+    };
+    let filled = painted(&props, "fill", true);
+    let stroked = painted(&props, "stroke", false);
+    let hollow = !filled;
+    let sw = if hollow {
+        let w = number("stroke-width", 1.0)?;
+        if !(stroked && w > 0.0) {
+            return None;
+        }
+        w
+    } else {
+        0.0
+    };
+    let tol = |extent: f64| 1e-6 * extent.abs().max(1e-12);
+    // (token, front u, back u, centre v, extent u) in stroke widths.
+    let (token, front, back, centre, extent) = match child.tag_name().name() {
+        "circle" => {
+            let (cx, cy, r) = (number("cx", 0.0)?, number("cy", 0.0)?, number("r", 0.0)?);
+            if !(r > 0.0 && r.is_finite()) || (hollow && sw >= 2.0 * r) {
+                return None;
+            }
+            let outer = (r + sw / 2.0) * f;
+            let [cu, cv] = local(cx, cy);
+            let token = if hollow { StudioArrowhead::ArrowCircle } else { StudioArrowhead::ArrowCircleSolid };
+            (token, cu + outer, cu - outer, cv, 2.0 * outer)
+        }
+        "rect" => {
+            let (x, y, w, h) = (number("x", 0.0)?, number("y", 0.0)?, number("width", 0.0)?, number("height", 0.0)?);
+            if !(w > 0.0 && h > 0.0) || (w - h).abs() > tol(w) || plain_attr(child, "rx").is_some() || plain_attr(child, "ry").is_some() {
+                return None;
+            }
+            if hollow && sw >= w {
+                return None;
+            }
+            let half = sw / 2.0;
+            let [a, b] = [local(x - half, y - half), local(x + w + half, y + h + half)];
+            let token = if hollow { StudioArrowhead::ArrowSquare } else { StudioArrowhead::ArrowSquareSolid };
+            (token, a[0].max(b[0]), a[0].min(b[0]), (a[1] + b[1]) / 2.0, (a[0] - b[0]).abs())
+        }
+        "path" | "polygon" | "polyline" => {
+            let (pts, closed) = marker_polygon(child)?;
+            // A closed shape is filled; an open chevron is drawn by its stroke alone.
+            if closed == hollow {
+                return None;
+            }
+            let pts: Vec<[f64; 2]> = pts.into_iter().map(|p| local(p[0], p[1])).collect();
+            let tip = pts.iter().enumerate().max_by(|a, b| a.1[0].total_cmp(&b.1[0])).map(|(i, p)| (i, *p))?;
+            match (pts.len(), closed) {
+                // Triangle, or an open chevron whose middle point is the tip.
+                (3, true) | (3, false) if closed || tip.0 == 1 => {
+                    let base: Vec<[f64; 2]> = pts.iter().enumerate().filter(|(i, _)| *i != tip.0).map(|(_, p)| *p).collect();
+                    let (b1, b2) = (base[0], base[1]);
+                    let length = tip.1[0] - b1[0];
+                    let half = (b1[1] - b2[1]).abs() / 2.0;
+                    if !(length > 0.0 && length.is_finite())
+                        || (b1[0] - b2[0]).abs() > tol(length)
+                        || tip.1[1].abs() > tol(length)
+                        || (b1[1] + b2[1]).abs() > tol(length)
+                        || (half / length - 0.5).abs() > 1e-6
+                    {
+                        return None;
+                    }
+                    let token = if closed { StudioArrowhead::ArrowTriangle } else { StudioArrowhead::ArrowSimple };
+                    (token, tip.1[0], b1[0], 0.0, length)
+                }
+                // Nib's own arrow.simple outline, either direction around.
+                (6, true) => {
+                    let length = tip.1[0] - pts.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+                    let size = length / NIB_LENGTH;
+                    if !(size > 0.0 && size.is_finite()) {
+                        return None;
+                    }
+                    let n = pts.len();
+                    let at = |j: usize, dir: bool| -> [f64; 2] {
+                        let i = if dir { tip.0.saturating_add(j) } else { tip.0.saturating_add(n).saturating_sub(j) };
+                        pts[i.checked_rem(n).unwrap_or(0)]
+                    };
+                    let fits = |dir: bool| {
+                        NIB_SIMPLE.iter().enumerate().all(|(j, q)| {
+                            let p = at(j, dir);
+                            (p[0] - tip.1[0] - q[0] * size).abs() <= tol(length) && (p[1] - q[1] * size).abs() <= tol(length)
+                        })
+                    };
+                    if !(fits(true) || fits(false)) {
+                        return None;
+                    }
+                    (StudioArrowhead::ArrowSimple, tip.1[0], tip.1[0] - length, 0.0, length)
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    if centre.abs() > tol(extent) {
+        return None;
+    }
+    let alignment = if front.abs() <= tol(extent) {
+        StudioArrowAlignment::InsidePath
+    } else if back.abs() <= tol(extent) {
+        StudioArrowAlignment::OutsidePath
+    } else {
+        return None;
+    };
+    let scale = (100.0 * extent / NIB_LENGTH * 1e6).round() / 1e6;
+    (scale.is_finite() && (1.0..=1000.0).contains(&scale)).then_some((token, scale, alignment))
 }
 
 fn point(v: [f64; 2]) -> Result<Point> {
