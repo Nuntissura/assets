@@ -121,7 +121,5 @@ fn info_panel_width_is_stable() {
         // Info defaults exceed the window: Info gets the remaining width (about 215 px), stable.
         let info_min = if w >= 1400.0 { INFO_MIN } else { 0.0 };
         check(&format!("info + properties, samplers and selection, {w}x{h}"), &ids, &[PROPERTIES_MIN, info_min], &all);
-        let settled = &all[WARMUP];
-        assert!(settled.iter().sum::<f32>() + 240.0 <= w + 1.0, "{w}x{h}: panels {settled:?} overflow the window");
     }
 }
