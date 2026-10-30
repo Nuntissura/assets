@@ -100,7 +100,7 @@ fn sequence() -> StudioSequence {
         sequence_id: "seq-main".into(),
         name: "main".into(),
         frame_rate: SequenceFrameRate { ticks_per_frame: F },
-        duration: Ticks::new(60 * F),
+        duration: Ticks::new(50 * F),
         tracks: vec![
             track(1, TrackKind::Video, "V1", vec![clip(1, "picture", 0, 20, 10)]),
             track(2, TrackKind::Audio, "A1", vec![clip(3, "half", 0, 50, 0)]),
@@ -241,8 +241,10 @@ fn settle(v: &mut Viewer, ctx: &egui::Context) -> timeline::TimelineLayout {
     for _ in 0..8 {
         frame(v, ctx, vec![]);
         let now = v.timeline().and_then(|t| t.layout()).cloned();
-        if now.is_some() && now == last {
-            return now.unwrap();
+        if let Some(l) = &now
+            && now == last
+        {
+            return l.clone();
         }
         last = now;
     }
