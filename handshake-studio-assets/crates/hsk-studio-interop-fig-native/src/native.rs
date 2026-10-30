@@ -25,6 +25,15 @@
 //! [`MAX_EXPANDED_NODES`]; test fig_instances_frames::hostile_instances_refused_before_allocation);
 //! text layers record their lines and runs from Figma's stored layout ([`FigTextLayout`]).
 //!
+//! Stroke markers (lane SMB-AI-ARROWHEADS-2, STU-VEC-146): a Figma marker stroke cap of the
+//! collaborative suite (`ARROW_LINES`, `ARROW_EQUILATERAL`, `TRIANGLE_FILLED`, `DIAMOND_FILLED`,
+//! `CIRCLE_FILLED`) or a connector terminator (`ERD_*`) becomes a Folio `stroke_markers` entry on
+//! every stroke row of the node, the token verbatim at both ends (one node-level cap marks both
+//! ends of an open path: Studio reading, UNVERIFIED), scale 100 (`studio_declared`), the tip at the
+//! path end (`arrow_align.inside_path`, Studio reading); the row's own cap is butt. A VECTOR node's
+//! cap (vector-network endpoints, STU-VEC-062, not built) and caps outside the catalogue (washi
+//! tape) stay the typed loss `stroke_cap_marker_no_folio_home` (tests: fig_markers).
+//!
 //! Not mapped (typed losses): geometry of containers without fill or clip, the
 //! boolean result outline, stroke outlines (derived from the path plus the stroke row), transforms
 //! and sizes of nodes without emitted geometry, image paints, effects, masks, text fonts and run
@@ -53,6 +62,7 @@ use hsk_studio_folio::{
     StrokeCap, StrokeJoin, StudioAppearanceRow, StudioArtboard, StudioColor, StudioDesignRecords,
     StudioDocument, StudioGradient, StudioGradientGeometry, StudioGradientStop, StudioLayer,
     StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioPublishing,
+    StudioArrowAlignment, StudioArrowhead, StudioArrowheadSuite, StudioStrokeMarkers,
     StudioStrokeStyle, StyleKind, StyleRegistrySchema, validate_design_records, validate_document,
 };
 use hsk_studio_folio::{
@@ -458,6 +468,8 @@ struct Mapper<'a> {
     fx: Vec<StudioRasterLayerRecord>,
     image_paint_records: Vec<StudioImagePaint>,
     boolean_groups: Vec<StudioBooleanGroup>,
+    /// Stroke markers of the minted paint styles (lane SMB-AI-ARROWHEADS-2).
+    stroke_markers: Vec<StudioStrokeMarkers>,
     /// Image paint produced by the last `paint` call, bound to its row by `style`.
     pending_image: Option<StudioImagePaint>,
     text_styles: Vec<FigTextStyle>,
@@ -906,6 +918,7 @@ impl Mapper<'_> {
     ) -> Result<()> {
         let mut rows = Vec::new();
         let mut images: Vec<StudioImagePaint> = Vec::new();
+        let mut markers: Vec<(u32, StudioArrowhead)> = Vec::new();
         let none: &[Paint] = &[];
         for p in if fills { &n.fills[..] } else { none } {
             self.pending_image = None;
@@ -935,17 +948,31 @@ impl Mapper<'_> {
                 _ => StrokeAlign::Center,
             };
             let weight = wide(n.stroke_weight.unwrap_or(1.0)).max(0.0);
-            // Figma caps: NONE = butt, ROUND, SQUARE = projecting; marker caps (arrows, ERD,
-            // washi tape) have no Folio stroke cap: butt with a typed loss.
+            // Figma caps: NONE = butt, ROUND, SQUARE = projecting. A marker cap of the
+            // STU-VEC-146 catalogue is a stroke marker on both ends of every stroke row and the
+            // row's cap is butt (module docs); a vector network's cap and other marker caps
+            // (washi tape) have no Folio home: butt with a typed loss.
+            let network = matches!(n.payload, NodePayload::Vector { .. });
+            let mut marker = None;
             let cap = match n.stroke_cap.as_deref() {
                 None | Some("NONE") => StrokeCap::Butt,
                 Some("ROUND") => StrokeCap::Round,
                 Some("SQUARE") => StrokeCap::Projecting,
                 Some(other) => {
-                    self.lose(
-                        format!("native.strokes.cap={other}"),
-                        "stroke_cap_marker_no_folio_home",
-                    );
+                    let token = StudioArrowhead::from_token(other).filter(|a| {
+                        !network
+                            && matches!(
+                                a.suite(),
+                                StudioArrowheadSuite::Collaborative | StudioArrowheadSuite::Connector
+                            )
+                    });
+                    match token {
+                        Some(a) => marker = Some(a),
+                        None => self.lose(
+                            format!("native.strokes.cap={other}"),
+                            "stroke_cap_marker_no_folio_home",
+                        ),
+                    }
                     StrokeCap::Butt
                 }
             };
@@ -975,6 +1002,9 @@ impl Mapper<'_> {
                         images.push(img);
                     }
                     let blend_mode = self.paint_blend(p, "strokes");
+                    if let Some(a) = marker {
+                        markers.push((u32::try_from(rows.len()).unwrap_or(u32::MAX), a));
+                    }
                     rows.push(StudioAppearanceRow::Stroke {
                         paint,
                         stroke: StudioStrokeStyle {
@@ -1015,6 +1045,15 @@ impl Mapper<'_> {
         for mut img in images {
             img.style_id = style_id.clone();
             self.image_paint_records.push(img);
+        }
+        for (row, a) in markers {
+            self.stroke_markers.push(StudioStrokeMarkers::new(
+                style_id.clone(),
+                row,
+                a,
+                a,
+                StudioArrowAlignment::InsidePath,
+            ));
         }
         self.design_for(&node)
             .style_refs
@@ -3192,6 +3231,7 @@ pub fn to_native(
         fx: Vec::new(),
         image_paint_records: Vec::new(),
         boolean_groups: Vec::new(),
+        stroke_markers: Vec::new(),
         pending_image: None,
         text_styles: Vec::new(),
         text_style_ids: HashMap::new(),
@@ -3257,6 +3297,7 @@ pub fn to_native(
         fx,
         image_paint_records,
         boolean_groups,
+        stroke_markers,
         text_styles,
         mask_plans,
         components,
@@ -3500,6 +3541,7 @@ pub fn to_native(
     }
     vector_records.image_paints = image_paint_records;
     vector_records.boolean_groups = boolean_groups;
+    vector_records.stroke_markers = stroke_markers;
     validate_vector_records(
         &vector_records,
         snapshot.document(),

@@ -16,6 +16,13 @@
 //! as a clip of its geometry, noted), blend modes PDF lacks, text without stored glyph outlines.
 //! Text is written as Figma's own laid-out glyph outlines (exact shapes, not extractable text:
 //! loss note `text_as_outlines`). Tests: fig_export.
+//!
+//! Stroke markers (lane SMB-AI-ARROWHEADS-2): PDF has no marker cap, so a marked stroke row is
+//! written the way Studio draws it: the path trimmed by nib's `markers::marker_outlines` stroked
+//! with a butt cap, and every marker outline filled in the stroke colour (a Figma `.fig` writer
+//! does not exist; this is the export of the cap). A marker nib does not build (the `ERD_*`
+//! terminators) or refuses is the typed loss `export.stroke.markers` with nib's code and the
+//! stroke is written unmarked (tests: fig_markers).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::import::SourceId;
 use crate::native::{FigTextLayout, NativeProposal};
@@ -27,6 +34,7 @@ use hsk_studio_folio::{
     StrokeCap as FolioCap, StrokeJoin as FolioJoin, StudioAppearanceRow, StudioGradientGeometry,
     StudioImagePaint, StudioImageScale, StudioImageSource, StudioLayer, StudioPaint,
 };
+use hsk_studio_nib::markers::{MarkerAlign, MarkerEnd, MarkerOptions, MarkerShape, MarkerSpec, marker_outlines};
 use hsk_studio_nib::{FillRule as NibRule, OwnedPath, PathElement};
 use hsk_studio_press::{
     BlendMode, Colour, DrawState, ExportOptions, ExportReceipt, FillRule, Gradient, GradientGeometry,
@@ -453,6 +461,28 @@ impl<'a> Lower<'a> {
         Ok(())
     }
 
+    /// The nib marker spec of stroke row `row` of style `style_id`; `None` without markers (or with
+    /// `NONE` at both ends) and when nib refuses a token (typed loss, the stroke is drawn plain).
+    fn markers(&mut self, style_id: &str, row: usize) -> Option<MarkerSpec> {
+        let m = self.p.vector_records.stroke_marker(style_id, u32::try_from(row).ok()?)?.clone();
+        let end = |token: &str, scale: f64| MarkerShape::from_token(token).map(|s| s.map(|shape| MarkerEnd { shape, scale }));
+        match (end(&m.start, m.start_scale), end(&m.end, m.end_scale)) {
+            (Ok(start), Ok(end)) if start.is_some() || end.is_some() => Some(MarkerSpec {
+                start,
+                end,
+                align: match m.alignment {
+                    hsk_studio_folio::StudioArrowAlignment::InsidePath => MarkerAlign::InsidePath,
+                    hsk_studio_folio::StudioArrowAlignment::OutsidePath => MarkerAlign::OutsidePath,
+                },
+            }),
+            (Ok(_), Ok(_)) => None,
+            (Err(e), _) | (_, Err(e)) => {
+                self.lose("export.stroke.markers", e.code());
+                None
+            }
+        }
+    }
+
     fn rows(&self, layer_id: &str) -> Option<(&'a str, &'a [StudioAppearanceRow])> {
         let p: &'a NativeProposal = self.p;
         let d = p.design.nodes.iter().find(|d| d.node.node_id == layer_id)?;
@@ -574,16 +604,34 @@ impl<'a> Lower<'a> {
                         // PDF's default miter limit (10) is used; Figma stores its own (default 4).
                         self.lose("export.stroke.miter_limit", "stroke_miter_limit_pdf_default");
                     }
-                    for (cmds, rule, _) in &geo {
+                    let markers = self.markers(&style_id, i);
+                    let ink = Colour::DeviceRgb([colour.r, colour.g, colour.b]);
+                    for (cmds, rule, path) in &geo {
+                        // Markers: the trimmed path is stroked, the outlines filled (module docs).
+                        let mut stroked = None;
+                        let mut outlines = Vec::new();
+                        if let Some(spec) = &markers {
+                            match marker_outlines(path, spec, stroke.weight.value, &MarkerOptions::default()) {
+                                Ok(o) => {
+                                    stroked = Some(self.commands(&o.trimmed));
+                                    outlines = o.markers.iter().map(|m| (self.commands(&m.outline), Self::rule(m.outline.fill_rule))).collect();
+                                }
+                                Err(e) => self.lose("export.stroke.markers", e.code()),
+                            }
+                        }
+                        let stroked = stroked.as_ref().unwrap_or(cmds);
                         // An inside stroke: twice the width, clipped to the shape.
                         if inside {
                             self.ex.push_clip(self.page, cmds, *rule).map_err(press_err)?;
                         }
-                        self.ex
-                            .stroke_path(self.page, cmds, Colour::DeviceRgb([colour.r, colour.g, colour.b]), style)
-                            .map_err(press_err)?;
+                        if !stroked.is_empty() {
+                            self.ex.stroke_path(self.page, stroked, ink, style).map_err(press_err)?;
+                        }
                         if inside {
                             self.ex.pop_clip(self.page).map_err(press_err)?;
+                        }
+                        for (outline, outline_rule) in &outlines {
+                            self.ex.fill_path(self.page, outline, *outline_rule, ink).map_err(press_err)?;
                         }
                     }
                 }
