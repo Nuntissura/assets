@@ -401,8 +401,9 @@ fn lane_clicks_and_drags_edit_points_at_their_pixels() {
     click(&mut v, &ctx, egui::pos2(x20 + 10.0 * ppf, handle.y), egui::PointerButton::Secondary);
     assert_eq!(undo_steps(&v), steps + 3, "{}", v.state_json()["status"]);
     assert!(routing(&v).clip_gains.is_empty());
-    // The button cycles on: volume (static), pan (static), then none.
-    for want in [Some(LaneTarget::TrackVolume), Some(LaneTarget::TrackPan), None] {
+    // The button cycles on: volume (static), pan (static), clip pan (lane SMB-AU-MULTITRACK-3), then
+    // none.
+    for want in [Some(LaneTarget::TrackVolume), Some(LaneTarget::TrackPan), Some(LaneTarget::ClipPan), None] {
         v.multitrack_command(AutomationCommand::CycleLane { track_id: a1.clone() }).unwrap();
         assert_eq!(v.timeline().unwrap().audio().lane(&a1), want.as_ref());
     }
