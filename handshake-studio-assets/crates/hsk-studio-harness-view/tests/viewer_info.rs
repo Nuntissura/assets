@@ -117,6 +117,7 @@ fn open_info(v: &mut Viewer, ctx: &egui::Context) {
 
 #[test]
 fn info_opens_from_the_workspace_menu_and_shortcut() {
+    println!("NOT_PROVEN: the Info panel's GPU shared-device display path (the panel reads the render-cpu read-back) and a real desktop window");
     let mut v = Viewer::new(Prefer::Cpu);
     let ctx = egui::Context::default();
     settle(&mut v, &ctx);
@@ -152,6 +153,7 @@ fn info_opens_from_the_workspace_menu_and_shortcut() {
 
 #[test]
 fn hovering_the_canvas_reads_the_pixel_under_the_pointer() {
+    println!("NOT_PROVEN: equality with Photoshop's Info panel readout (no D5 case for PS-30)");
     let (_s, mut v) = opened("hover");
     let ctx = egui::Context::default();
     open_info(&mut v, &ctx);
@@ -187,6 +189,7 @@ fn hovering_the_canvas_reads_the_pixel_under_the_pointer() {
 
 #[test]
 fn histogram_numbers_are_in_state_json() {
+    println!("NOT_PROVEN: equality with Photoshop's Histogram panel (no D5 case for PS-30)");
     let (_s, mut v) = opened("histogram");
     let ctx = egui::Context::default();
     open_info(&mut v, &ctx);
@@ -247,6 +250,7 @@ fn histogram_updates_after_an_edit() {
 
 #[test]
 fn four_samplers_read_live_values() {
+    println!("NOT_PROVEN: equality with Photoshop's colour samplers (no D5 case for PS-30)");
     let (_s, mut v) = opened("samplers");
     let ctx = egui::Context::default();
     open_info(&mut v, &ctx);
