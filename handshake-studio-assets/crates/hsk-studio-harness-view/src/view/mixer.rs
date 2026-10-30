@@ -44,13 +44,14 @@ use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
 use hsk_studio_folio::{
     self as folio, StudioAudioRouting, StudioAudioRoutingSet, StudioAudioSend, StudioAutomationPoint, StudioSequence, StudioTrackParam, StudioTrackRoute, TrackKind,
 };
-use hsk_studio_pulse::{AudioSources, PulseError, SourceExtents, StripCrossfadeMismatch, TimelineBusStream, strip_crossfade_mismatch};
+use hsk_studio_pulse::{AudioSources, NestAudioReport, NestedAudioSources, NestedExtents, PulseError, SourceExtents, StreamLimits, StripCrossfadeMismatch, TimelineBusStream, strip_crossfade_mismatch};
 use hsk_studio_score::GraphMeters;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-/// Rebuilds the bus stream of the current sequence and routing.
-type Builder = Box<dyn Fn(&StudioSequence, &StudioAudioRouting, &CancellationToken) -> Result<TimelineBusStream, PulseError>>;
+/// Rebuilds the bus stream of the current sequence and routing (with the document's sequences for
+/// nested sequence clips, lane SMB-PR-NEST-1) and reports the nested sequences that play silent.
+type Builder = Box<dyn Fn(&[StudioSequence], &StudioSequence, &StudioAudioRouting, &CancellationToken) -> Result<(TimelineBusStream, Vec<NestAudioReport>), PulseError>>;
 /// Names an `audio_unsupported` strip crossfade of the current sequence and routing (lane
 /// SMB-AU-MULTITRACK-3; pulse `strip_crossfade_mismatch`).
 type Explainer = Box<dyn Fn(&StudioSequence, &StudioAudioRouting) -> Option<StripCrossfadeMismatch>>;
@@ -129,6 +130,9 @@ pub struct MixerState {
     strip_tracks: Vec<Option<String>>,
     bus_tracks: Vec<String>,
     error: Option<String>,
+    /// Nested sequences that play as silence and why (lane SMB-PR-NEST-1; never silent: shown in
+    /// the status line and `mixer_json()["nest_reports"]`).
+    nest_reports: Vec<String>,
 }
 
 fn db(linear: f64) -> f64 {
@@ -180,8 +184,12 @@ impl super::Viewer {
     ) -> Result<(), String> {
         let explained = sources.clone();
         let explain: Explainer = Box::new(move |seq, routing| strip_crossfade_mismatch(seq, routing, &explained));
-        let builder: Builder = Box::new(move |seq, routing, cancel| {
-            build_bus_stream(seq, routing, sample_rate_hz, max_block_frames, sources.clone(), extents.as_ref(), cancel)
+        let builder: Builder = Box::new(move |document, seq, routing, cancel| {
+            // Nested sequence clips play their nested mix (pulse NestedAudioSources).
+            let nested = NestedAudioSources::new(document, seq, sources.clone(), sample_rate_hz, max_block_frames, extents.as_ref(), StreamLimits::default(), cancel)?;
+            let reports = nested.reports().to_vec();
+            let ext = NestedExtents::new(document, extents.as_ref());
+            build_bus_stream(seq, routing, sample_rate_hz, max_block_frames, nested, &ext, cancel).map(|s| (s, reports))
         });
         self.mixer = Some(MixerState {
             sequence_id: sequence_id.to_owned(),
@@ -194,6 +202,7 @@ impl super::Viewer {
             strip_tracks: Vec::new(),
             bus_tracks: Vec::new(),
             error: None,
+            nest_reports: Vec::new(),
         });
         self.mixer_rebuild()
     }
@@ -226,16 +235,23 @@ impl super::Viewer {
         let sequence = self.mixer_sequence()?;
         let routing = self.mixer_routing()?;
         let cancel = self.cancel;
+        let document: Vec<StudioSequence> = self.run.snapshot().map(|s| s.document().sequences.clone()).unwrap_or_default();
         let m = self.mixer.as_mut().ok_or("mixer: not open")?;
         let position = m.stream.as_ref().map_or(0, TimelineBusStream::position);
-        let built = (m.builder)(&sequence, &routing, cancel).and_then(|mut s| {
+        let built = (m.builder)(&document, &sequence, &routing, cancel).and_then(|(mut s, reports)| {
             if position > 0 {
                 s.seek(position, cancel)?;
             }
-            Ok(s)
+            Ok((s, reports))
         });
         match built {
-            Ok(s) => {
+            Ok((s, reports)) => {
+                m.nest_reports = reports.iter().map(|r| format!("nested sequence {} plays silent ({}) in {:?}", r.sequence_id, r.code, r.clip_ids)).collect();
+                if !m.nest_reports.is_empty() {
+                    let text = m.nest_reports.join("; ");
+                    self.say(format!("mixer: {text}"));
+                }
+                let Some(m) = self.mixer.as_mut() else { return Err("mixer: not open".into()) };
                 m.strip_tracks = s.strip_tracks().to_vec();
                 m.bus_tracks = s.bus_tracks().to_vec();
                 m.stream = Some(s);
@@ -612,6 +628,7 @@ impl super::Viewer {
             "position": m.stream.as_ref().map(TimelineBusStream::position),
             "latency": m.stream.as_ref().map(|s| s.latency().total),
             "error": m.error,
+            "nest_reports": m.nest_reports,
             "strips": strips,
             "master": {
                 "volume": routing.as_ref().map(|r| r.master.volume),

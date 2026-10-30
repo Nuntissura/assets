@@ -39,7 +39,8 @@
 //! committed here (trim, slip, razor, lift, ripple delete, move, rate) in the same history step
 //! (`Run::submit_sequence_and_entry`), module `envelopes`. Lane SMB-AU-MULTITRACK-3: clip pan
 //! envelopes follow the same way, and [`layout_full`] lays out a master row ([`MASTER_ROW`]) under
-//! the tracks with its lane (module `audio`).
+//! the tracks with its lane (module `audio`). Lane SMB-PR-NEST-1: Nest, Make Subsequence, Open
+//! Nested and Back to Parent ([STU-VID-030]), module `nest` (its rustdoc is the manual).
 #![deny(clippy::arithmetic_side_effects)]
 
 #[cfg(feature = "audio-batch")]
@@ -47,11 +48,13 @@ mod audio;
 #[cfg(feature = "audio-batch")]
 pub(super) mod audio_ui;
 pub(super) mod envelopes;
+mod nest;
 mod rate;
 mod trim;
 mod trim_session;
 
 pub use rate::{SpeedFix, SpeedForm};
+pub use nest::is_nested;
 
 #[cfg(feature = "audio-batch")]
 pub use audio::{
@@ -147,6 +150,13 @@ pub mod widget {
     pub const CLIP_GAIN_UP: &str = "timeline.clip_gain.up";
     /// The master row (lane SMB-AU-MULTITRACK-3); its lane button is `lane_toggle("master")`.
     pub const MASTER: &str = "timeline.master";
+    /// Nesting (lane SMB-PR-NEST-1; module `nest`).
+    pub const NEST: &str = "timeline.nest";
+    pub const MAKE_SUBSEQUENCE: &str = "timeline.make_subsequence";
+    pub const OPEN_NESTED: &str = "timeline.open_nested";
+    pub const BACK_TO_PARENT: &str = "timeline.back_to_parent";
+    /// The nesting path shown above the lanes (`parent > nested`).
+    pub const NEST_PATH: &str = "timeline.nest_path";
     /// The waveform overview drawn in an audio clip block.
     pub fn clip_waveform(clip_id: &str) -> String {
         format!("timeline.clip.{clip_id}.waveform")
@@ -732,6 +742,18 @@ pub enum TimelineCommand {
     SpeedDurationApply,
     /// Closes the form without a change.
     SpeedDurationCancel,
+    // ---- nesting (lane SMB-PR-NEST-1; module `nest`) ----
+    /// Replaces these clips (empty: the selected clip) and their link groups with one nested clip
+    /// per kind whose source is a new sequence holding them ([STU-VID-030] `Nest`); one undo step.
+    Nest(Vec<String>),
+    /// A new sequence from these clips (empty: the selected clip, else the program monitor's
+    /// in-to-out range); the open sequence is unchanged; one undo step.
+    MakeSubsequence(Vec<String>),
+    /// Opens the nested sequence of this clip (`None`: the selected clip) in the timeline, the
+    /// explicit reveal command; the sequence it came from goes on the back stack.
+    OpenNested(Option<String>),
+    /// Returns to the sequence the last Open Nested came from.
+    BackToParent,
 }
 
 impl TimelineCommand {
@@ -781,6 +803,10 @@ impl TimelineCommand {
             Self::SpeedDurationOpen => "speed_duration_open",
             Self::SpeedDurationApply => "speed_duration_apply",
             Self::SpeedDurationCancel => "speed_duration_cancel",
+            Self::Nest(_) => "nest",
+            Self::MakeSubsequence(_) => "make_subsequence",
+            Self::OpenNested(_) => "open_nested",
+            Self::BackToParent => "back_to_parent",
         }
     }
     /// The recovered command id of the module 14 command tables ([STU-VID-041]) this action runs,
@@ -817,6 +843,9 @@ impl TimelineCommand {
             Self::ToggleCompositePreview => "cmd.timeline.composite.preview.during.trim",
             Self::SetTool(TrimTool::RateStretch) => CMD_TOOL_RATE_STRETCH,
             Self::SpeedDurationOpen | Self::SpeedDuration { .. } | Self::SpeedDurationApply => CMD_CLIP_SPEED,
+            Self::Nest(_) => hsk_studio_pulse::CMD_NEST,
+            Self::MakeSubsequence(_) => hsk_studio_pulse::CMD_MAKE_SUBSEQUENCE,
+            Self::OpenNested(_) => hsk_studio_pulse::CMD_REVEAL_NESTED,
             _ => return None,
         })
     }
@@ -831,7 +860,8 @@ impl TimelineCommand {
 /// multi-frame step; Alt+, / Alt+. slide one frame, with Shift the step) and the harness clip nudge
 /// Alt+Left / Right (with Shift the step; Premiere's binding UNVERIFIED). Lane SMB-PR-RATE-STRETCH-1
 /// adds `R` (Rate Stretch tool, `cmd.tools.05ratestretch`) and `Ctrl+R` (Speed/Duration form,
-/// `cmd.clip.speed`).
+/// `cmd.clip.speed`). Lane SMB-PR-NEST-1 adds the module 14 bindings `Shift+U` (Make Subsequence,
+/// `cmd.sequence.makesubsequence`) and `Ctrl+Alt+F` (Open Nested, `cmd.tlnav.reveal.nested.sequence`).
 pub fn key_command(key: egui::Key, m: egui::Modifiers) -> Option<TimelineCommand> {
     use egui::Key;
     Some(match key {
@@ -839,6 +869,8 @@ pub fn key_command(key: egui::Key, m: egui::Modifiers) -> Option<TimelineCommand
         Key::Comma | Key::Period if m.alt && !m.command => TimelineCommand::SlideNudge { right: key == Key::Period, many: m.shift },
         Key::ArrowLeft | Key::ArrowRight if m.alt && !m.command => TimelineCommand::ClipNudge { right: key == Key::ArrowRight, many: m.shift },
         Key::K if m.command && !m.shift => TimelineCommand::RazorAtPlayhead,
+        Key::U if m.shift && !m.command && !m.alt => TimelineCommand::MakeSubsequence(Vec::new()),
+        Key::F if m.command && m.alt && !m.shift => TimelineCommand::OpenNested(None),
         Key::R if m.command && !m.shift && !m.alt => TimelineCommand::SpeedDurationOpen,
         Key::R if m.is_none() => TimelineCommand::SetTool(TrimTool::RateStretch),
         Key::Backspace if m.alt => TimelineCommand::RippleDelete,
@@ -890,6 +922,9 @@ pub struct TimelineState {
     /// Waveforms, automation lanes and the bound source port (lane SMB-AU-MULTITRACK-1).
     #[cfg(feature = "audio-batch")]
     pub(super) audio: AudioLanes,
+    /// Open Nested back stack (lane SMB-PR-NEST-1): the sequences left, oldest first, with the
+    /// playhead each one had.
+    pub(super) nest_back: Vec<(String, Option<Ticks>)>,
 }
 
 impl TimelineState {
@@ -930,6 +965,10 @@ impl TimelineState {
     #[cfg(feature = "audio-batch")]
     pub fn audio(&self) -> &AudioLanes {
         &self.audio
+    }
+    /// The sequences Open Nested left, oldest first (Back to Parent returns to the last).
+    pub fn nest_back(&self) -> impl Iterator<Item = &str> {
+        self.nest_back.iter().map(|(id, _)| id.as_str())
     }
 }
 
@@ -1150,6 +1189,7 @@ impl Viewer {
             speed_form: None,
             #[cfg(feature = "audio-batch")]
             audio: AudioLanes::default(),
+            nest_back: Vec::new(),
         });
         self.say(format!("timeline: sequence {sequence_id} (playhead = program monitor)"));
         Ok(())
@@ -1183,6 +1223,8 @@ impl Viewer {
     /// Replaces the program monitor's sequence when the document's changed (an edit, undo or
     /// redo); one comparison per document revision.
     pub(super) fn timeline_sync_monitor(&mut self) {
+        // Nested sequence clips resolve against the document (module `nest`).
+        self.nest_sync_monitor();
         let revision = self.run.snapshot().map(|s| s.document().revision);
         let Some(t) = self.timeline.as_mut() else { return };
         if t.synced_revision == revision {
@@ -1257,6 +1299,9 @@ impl Viewer {
             return result;
         }
         if let Some(result) = self.timeline_rate_command(command) {
+            return result;
+        }
+        if let Some(result) = self.timeline_nest_command(command) {
             return result;
         }
         let t = self.timeline.as_mut().ok_or("no_timeline")?;
@@ -1397,15 +1442,19 @@ impl Viewer {
     }
 
     /// Plans on the current snapshot with the program monitor's source extents (unknown without a
-    /// monitor); commits nothing.
+    /// monitor); a nested sequence clip's source length is its sequence's duration (lane
+    /// SMB-PR-NEST-1, pulse `NestedExtents`: trimming it moves only the window onto the nested
+    /// sequence). Commits nothing.
     fn timeline_plan<T>(&self, plan: impl FnOnce(&folio::Snapshot, &str, &EditContext) -> Result<T, String>) -> Result<T, String> {
         let sequence_id = self.timeline.as_ref().map(|t| t.sequence_id.clone()).ok_or("no_timeline")?;
         let snapshot = self.run.snapshot().ok_or("not_open")?;
         let unknown = UnknownExtents;
-        let extents: &dyn SourceExtents = match self.monitor.as_ref() {
+        let monitor: &dyn SourceExtents = match self.monitor.as_ref() {
             Some(m) => m.extents.as_ref(),
             None => &unknown,
         };
+        let nested = hsk_studio_pulse::NestedExtents::new(&snapshot.document().sequences, monitor);
+        let extents: &dyn SourceExtents = &nested;
         let ctx = EditContext { budget: folio::Budget::default(), resolver: &crate::harness::TrustAll, extents, cancel: self.cancel };
         plan(snapshot, &sequence_id, &ctx)
     }
@@ -1447,6 +1496,7 @@ impl Viewer {
             "trim_session": t.session.as_ref().map(TrimSession::json),
             "composite_preview": t.composite_preview,
             "speed_form": t.speed_form.as_ref().map(SpeedForm::json),
+            "nest_back": t.nest_back.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
         });
         #[cfg(feature = "audio-batch")]
         {

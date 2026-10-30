@@ -12,7 +12,7 @@
 use super::audio_batch::EffectSpec;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{self as folio, StudioAudioRouting, StudioAudioRoutingSet};
-use hsk_studio_pulse::{AudioSources, PulseError, SourceExtents, StreamLimits, TimelineBusStream};
+use hsk_studio_pulse::{AudioSources, NestedAudioSources, NestedExtents, PulseError, SourceExtents, StreamLimits, TimelineBusStream};
 use hsk_studio_score as score;
 
 /// Session document entry holding the routing set (JSON).
@@ -45,7 +45,10 @@ impl super::Viewer {
     }
 
     /// Pulse's bus stream of sequence `sequence_id` with its stored routing (or everything to the
-    /// master when none is stored), for playback (`AudioOut::with_buses`) or export.
+    /// master when none is stored), for playback (`AudioOut::with_buses`) or export. Nested sequence
+    /// clips play their nested sequence's mix (lane SMB-PR-NEST-1, pulse `NestedAudioSources`); a
+    /// nested sequence that cannot be rendered refuses the stream (`nested audio unresolved`), so an
+    /// export never carries silence in its place.
     pub fn bus_stream<S: AudioSources + Clone + Send + 'static>(
         &self,
         sequence_id: &str,
@@ -65,7 +68,14 @@ impl super::Viewer {
             .audio_routing()?
             .and_then(|set| set.routings.into_iter().find(|r| r.sequence_id == sequence_id))
             .unwrap_or_else(|| StudioAudioRouting::new(sequence_id));
-        build_bus_stream(sequence, &routing, sample_rate_hz, max_block_frames, sources, extents, self.cancel)
+        let sequences = &snapshot.document().sequences;
+        let nested = NestedAudioSources::new(sequences, sequence, sources, sample_rate_hz, max_block_frames, extents, StreamLimits::default(), self.cancel)
+            .map_err(|e| format!("bus stream: {}", e.code()))?;
+        if let Some(r) = nested.reports().first() {
+            return Err(format!("bus stream: nested audio unresolved: sequence {} ({}) used by {:?}", r.sequence_id, r.code, r.clip_ids));
+        }
+        let extents = NestedExtents::new(sequences, extents);
+        build_bus_stream(sequence, &routing, sample_rate_hz, max_block_frames, nested, &extents, self.cancel)
             .map_err(|e| format!("bus stream: {}", e.code()))
     }
 }

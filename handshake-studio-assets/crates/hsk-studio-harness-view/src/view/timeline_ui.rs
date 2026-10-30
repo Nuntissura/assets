@@ -8,7 +8,9 @@
 //! the clip name, so the panel is navigable without pixels. Lane SMB-PR-RATE-STRETCH-1 adds the
 //! Rate Stretch tool (edge drags) and the Speed/Duration form row (`Ctrl+R`). Lane
 //! SMB-AU-MULTITRACK-1 (feature `audio-batch`) adds waveforms in audio clips, the automation lane
-//! rows and the clip gain buttons (module `timeline::audio_ui`).
+//! rows and the clip gain buttons (module `timeline::audio_ui`). Lane SMB-PR-NEST-1 adds the Nest,
+//! Make Subsequence, Open Nested and Back to Parent buttons, the nesting path label, and a
+//! double-click on a nested sequence clip opens it (module `timeline::nest`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::Viewer;
@@ -212,6 +214,19 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
         button(ui, out, widget::LIFT, "Lift", "Remove the selected clip and leave a gap (Delete)", selected.is_some(), TimelineCommand::Lift);
         button(ui, out, widget::RIPPLE_DELETE, "Ripple Delete", "Remove the selected clip and close the gap (Alt+Backspace)", selected.is_some(), TimelineCommand::RippleDelete);
         ui.add_space(12.0);
+        // Nesting (lane SMB-PR-NEST-1).
+        let nested_selected = selected.as_deref().is_some_and(|id| super::timeline::is_nested(seq, id));
+        button(ui, out, widget::NEST, "Nest", "Replace the selected clip and its linked clips with a nested sequence (one undo step)", selected.is_some(), TimelineCommand::Nest(Vec::new()));
+        button(ui, out, widget::MAKE_SUBSEQUENCE, "Make Subsequence", "New sequence from the selected clip, else the in-to-out range; this sequence is unchanged (Shift+U)", true, TimelineCommand::MakeSubsequence(Vec::new()));
+        button(ui, out, widget::OPEN_NESTED, "Open Nested", "Open the selected nested sequence clip in the timeline (Ctrl+Alt+F, or double-click it)", nested_selected, TimelineCommand::OpenNested(None));
+        let depth = t.nest_back().count();
+        button(ui, out, widget::BACK_TO_PARENT, "Back to Parent", "Return to the sequence Open Nested came from", depth > 0, TimelineCommand::BackToParent);
+        if depth > 0 {
+            let path: Vec<&str> = t.nest_back().chain(std::iter::once(t.sequence_id())).collect();
+            ui.label(path.join(" > "));
+            out.drawn.push(widget::NEST_PATH.into());
+        }
+        ui.add_space(12.0);
         button(ui, out, widget::ADD_MARKER, "Add Marker", "Sequence marker at the playhead (M)", playhead.is_some(), TimelineCommand::AddMarker);
         button(ui, out, widget::PREVIOUS_MARKER, "Previous Marker", "Ctrl+Shift+M", playhead.is_some(), TimelineCommand::PreviousMarker);
         button(ui, out, widget::NEXT_MARKER, "Next Marker", "Shift+M", playhead.is_some(), TimelineCommand::NextMarker);
@@ -363,6 +378,10 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
             if let Some(mode) = mode {
                 out.commands.push(TimelineCommand::EditPointAt { clip_id: target_clip.clone(), mode });
             }
+        }
+        // A double-click on a nested sequence clip opens it (lane SMB-PR-NEST-1).
+        if body.double_clicked() && super::timeline::is_nested(seq, &b.clip_id) {
+            out.commands.push(TimelineCommand::OpenNested(Some(b.clip_id.clone())));
         }
         let ours = dragged.as_deref() == Some(target_clip.as_str());
         if r.drag_started() {

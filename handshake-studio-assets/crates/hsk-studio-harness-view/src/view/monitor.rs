@@ -10,6 +10,12 @@
 //! timeline audio (`hsk_studio_pulse::build_timeline_mix`), a [`WallClock`] in the desktop viewer
 //! when there is no audio device, or pulse's `HeadlessClock` in tests. Everything here runs
 //! without a window (test `tests/viewer_monitor.rs`).
+//!
+//! Nested sequences (lane SMB-PR-NEST-1, [STU-VID-030]): with the document's sequences set
+//! ([`ProgramMonitor::set_document`]; the timeline keeps them current) a clip whose source is a
+//! sequence shows that sequence's layers at the mapped tick (pulse `frame_layers_nested`, at most
+//! [`MAX_NESTED_LAYERS`] layers), and its length bounds the clip's handles (pulse `NestedExtents`);
+//! a nested clip that cannot be expanded is the typed failure `nest_unresolved`.
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::{CancellationToken, Ticks};
@@ -28,7 +34,7 @@ pub use hsk_studio_pulse::{
     AudioClock, DropPolicy, FrameAction, FrameLayer, HeadlessClock, PlaySpeed, PlaybackScheduler,
     Transport,
 };
-use hsk_studio_pulse::{SourceExtents, frame_layers, prefetch_layers};
+use hsk_studio_pulse::{NestedExtents, SourceExtents, frame_layers, frame_layers_nested, prefetch_layers};
 use hsk_studio_render_cpu::Renderer;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -53,6 +59,8 @@ pub mod widget {
 
 /// Largest monitor raster (pixels).
 pub const MAX_MONITOR_PIXELS: u64 = 16 * 1024 * 1024;
+/// Most layers one program frame shows with nested sequences expanded (lane SMB-PR-NEST-1).
+pub const MAX_NESTED_LAYERS: usize = 256;
 
 /// One decoded source frame: `rgb_f32le` colour and `f32le` straight alpha, tightly packed, in
 /// the monitor's plan colour tag, with their SHA-256 (render-cpu verifies them).
@@ -160,6 +168,10 @@ pub struct ProgramMonitor {
     /// Frames named to the source's prefetch after each presented frame (0 disables).
     prefetch_ahead: usize,
     prefetched: u64,
+    /// The document's sequences, for nested sequence clips (lane SMB-PR-NEST-1), and the
+    /// document revision they are from.
+    document: Vec<StudioSequence>,
+    document_revision: Option<u64>,
 }
 
 /// Default prefetch distance in frames.
@@ -216,7 +228,20 @@ impl ProgramMonitor {
             renderer: Renderer::new(64).map_err(|e| fail("renderer", format!("{e:?}")))?,
             prefetch_ahead: DEFAULT_PREFETCH_AHEAD,
             prefetched: 0,
+            document: Vec::new(),
+            document_revision: None,
         })
+    }
+    /// The document's sequences at `revision`, so nested sequence clips resolve (lane
+    /// SMB-PR-NEST-1); the shown frame is dropped so the next refresh renders with them.
+    pub fn set_document(&mut self, revision: Option<u64>, sequences: Vec<StudioSequence>) {
+        self.document = sequences;
+        self.document_revision = revision;
+        self.shown = None;
+    }
+    /// The document revision of the sequences set by [`ProgramMonitor::set_document`].
+    pub fn document_revision(&self) -> Option<u64> {
+        self.document_revision
     }
     /// Sets the prefetch distance; `prefetch_ahead` above pulse's `MAX_PREFETCH_FRAMES`.
     pub fn set_prefetch_ahead(&mut self, frames: usize) -> Result<(), MonitorFail> {
@@ -396,8 +421,17 @@ impl ProgramMonitor {
         extents: &dyn SourceExtents,
         cancel: &CancellationToken,
     ) -> Result<RenderedScene, MonitorFail> {
-        let layers = frame_layers(&self.sequence, tick, extents, cancel)
-            .map_err(|e| fail("frame_layers", e.code()))?;
+        let layers = if self.document.is_empty() {
+            frame_layers(&self.sequence, tick, extents, cancel).map_err(|e| fail("frame_layers", e.code()))?
+        } else {
+            let nested = NestedExtents::new(&self.document, extents);
+            let frame = frame_layers_nested(&self.document, &self.sequence, tick, &nested, MAX_NESTED_LAYERS, cancel)
+                .map_err(|e| fail("frame_layers", e.code()))?;
+            if let Some(u) = frame.unresolved.first() {
+                return Err(fail("nest_unresolved", format!("{}: {}", u.clip_id, u.code)));
+            }
+            frame.layers.into_iter().map(|l| l.layer).collect()
+        };
         let mut frames = Vec::with_capacity(layers.len());
         let mut scene_layers = Vec::with_capacity(layers.len());
         for (i, layer) in layers.iter().enumerate() {
