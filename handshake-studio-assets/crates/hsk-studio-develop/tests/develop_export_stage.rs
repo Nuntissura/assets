@@ -192,3 +192,114 @@ fn hostile_sizing_settings_get_typed_refusals() {
     let e = apply_export_stage(&src, &stage(s), &cancel).unwrap_err();
     assert_eq!(e.code(), DevelopError::Canceled.code());
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Slice 2: output sharpening (unsharp mask after sizing; Lightroom's algorithm is not public, UNVERIFIED, D5).
+
+const SRGB_V4: &[u8] = include_bytes!("profiles/sRGB-v4.icc");
+
+/// The stated table (Studio reading): Gaussian sigma in output pixels (Screen 0.5 px; Glossy 1/240 in and Matte
+/// 1/160 in, times the output ppi) and strength per level 1..3.
+fn stated(media: SharpenMedia, level: u8, ppi: f64) -> (f64, f64) {
+    let sigma = match media {
+        SharpenMedia::Screen => 0.5,
+        SharpenMedia::Glossy => ppi / 240.0,
+        SharpenMedia::Matte => ppi / 160.0,
+    };
+    let per_level = match media {
+        SharpenMedia::Screen => [0.4, 0.8, 1.2],
+        SharpenMedia::Glossy => [0.5, 1.0, 1.5],
+        SharpenMedia::Matte => [0.6, 1.2, 1.8],
+    };
+    (sigma, per_level[usize::from(level - 1)])
+}
+
+/// Centre weight of the normalised discrete Gaussian over -R..=R, R = max(1, ceil(3 sigma)).
+fn centre_weight(sigma: f64) -> (f64, u32) {
+    let r = (3.0 * sigma).ceil().max(1.0) as i32;
+    let sum: f64 = (-r..=r).map(|d| (-f64::from(d * d) / (2.0 * sigma * sigma)).exp()).sum();
+    (1.0 / sum, r as u32)
+}
+
+fn sharpen_stage(media: SharpenMedia, level: u8, resolution: f64) -> ExportStage {
+    let mut s = ExportStage::default();
+    s.sizing.constrain_size = false;
+    s.sizing.resolution = resolution;
+    s.sharpening = OutputSharpening { enabled: true, media, level };
+    s
+}
+
+fn step(width: u32, height: u32, at: u32, a: f32, b: f32) -> DevelopedImage {
+    let rgb = (0..height).flat_map(|_| (0..width).map(move |x| if x < at { a } else { b })).flat_map(|v| [v; 3]).collect();
+    image(rgb, width, height)
+}
+
+/// A vertical step a -> b gains, on each side of the edge, the overshoot of an unsharp mask with the stated row:
+/// out(edge) = b + s (b - a)(1 - w0) / 2 and out(edge - 1) = a - s (b - a)(1 - w0) / 2, where w0 is the Gaussian's
+/// normalised centre weight (half the kernel, plus half the centre tap, lies on the pixel's own side).
+#[test]
+fn step_edge_gains_the_stated_overshoot_per_media_and_level() {
+    let (a, b) = (0.3f32, 0.7f32);
+    let src = step(40, 4, 20, a, b);
+    for media in [SharpenMedia::Screen, SharpenMedia::Glossy, SharpenMedia::Matte] {
+        for level in 1..=3u8 {
+            let (out, receipt) = apply_export_stage(&src, &sharpen_stage(media, level, 240.0), &CancellationToken::default()).unwrap();
+            let (sigma, strength) = stated(media, level, 240.0);
+            let (w0, radius) = centre_weight(sigma);
+            let row = receipt.sharpening.expect("sharpening row");
+            assert_eq!((row.media, row.level, row.kernel_radius), (media, level, radius), "{media:?} {level}");
+            assert!((row.sigma_px - sigma).abs() < 1e-12 && (row.strength - strength).abs() < 1e-12, "{media:?} {level}: {row:?}");
+            let over = strength * f64::from(b - a) * (1.0 - w0) / 2.0;
+            for y in 0..4usize {
+                let at = |x: usize| f64::from(out.rgb[(y * 40 + x) * 3]);
+                assert!((at(20) - (f64::from(b) + over)).abs() < 1e-6, "{media:?} {level} bright side {} want {}", at(20), f64::from(b) + over);
+                assert!((at(19) - (f64::from(a) - over)).abs() < 1e-6, "{media:?} {level} dark side {}", at(19));
+                assert_eq!(at(0), f64::from(a), "far from the edge nothing changes");
+                assert_eq!(at(39), f64::from(b));
+            }
+        }
+    }
+    // The kernel scales with the output resolution for print media (Matte at 480 ppi: sigma 3 px) and not for Screen.
+    let (_, r) = apply_export_stage(&src, &sharpen_stage(SharpenMedia::Matte, 2, 480.0), &CancellationToken::default()).unwrap();
+    assert_eq!(r.sharpening.unwrap().sigma_px, 3.0);
+    let (_, r) = apply_export_stage(&src, &sharpen_stage(SharpenMedia::Screen, 2, 480.0), &CancellationToken::default()).unwrap();
+    assert_eq!(r.sharpening.unwrap().sigma_px, 0.5);
+}
+
+/// A flat field is unchanged, bit for bit, by every (media, level).
+#[test]
+fn flat_field_is_unchanged_by_output_sharpening() {
+    let src = flat(17, 9, 0.4);
+    for media in [SharpenMedia::Screen, SharpenMedia::Glossy, SharpenMedia::Matte] {
+        for level in 1..=3u8 {
+            let (out, receipt) = apply_export_stage(&src, &sharpen_stage(media, level, 300.0), &CancellationToken::default()).unwrap();
+            assert_eq!(out, src, "{media:?} {level}");
+            assert_eq!(receipt.out_of_range, ClipReport::default());
+        }
+    }
+}
+
+/// Sharpening a 0 -> 1 step pushes values out of 0..1; the stage counts them and the output transfer clamps and
+/// counts exactly those (Matte High at 240 ppi: sigma 1.5, R 5, so 5 columns each side, 4 rows, 3 channels = 60).
+/// Level 0 and 4 are typed refusals (STU-IO-137 hard 1..3).
+#[test]
+fn sharpening_clip_is_counted_in_the_clip_report() {
+    let src = step(40, 4, 20, 0.0, 1.0);
+    let (out, receipt) = apply_export_stage(&src, &sharpen_stage(SharpenMedia::Matte, 3, 240.0), &CancellationToken::default()).unwrap();
+    assert_eq!(receipt.out_of_range, ClipReport { below_zero: 60, above_one: 60 });
+    assert_eq!(receipt.sharpen_out_of_range, receipt.out_of_range, "sizing was off, so sharpening made all of them");
+    let rendered = render_output(&out, OutputDepth::Eight, SRGB_V4, None).unwrap();
+    assert_eq!(rendered.clip, receipt.out_of_range);
+    for level in [0u8, 4, u8::MAX] {
+        let e = apply_export_stage(&src, &sharpen_stage(SharpenMedia::Glossy, level, 240.0), &CancellationToken::default()).unwrap_err();
+        assert_eq!((e.code(), e.detail()), ("export_setting_out_of_range", "output_sharpening_level"), "level {level}");
+    }
+    // A print kernel wider than the stage bound (sigma above 64 px) is refused, never truncated.
+    let e = apply_export_stage(&src, &sharpen_stage(SharpenMedia::Matte, 2, 1e6), &CancellationToken::default()).unwrap_err();
+    assert_eq!((e.code(), e.detail()), ("export_setting_out_of_range", "output_sharpening_radius"));
+    // Disabled sharpening records no row and changes nothing.
+    let mut off = sharpen_stage(SharpenMedia::Matte, 3, 240.0);
+    off.sharpening.enabled = false;
+    let (o, r) = apply_export_stage(&src, &off, &CancellationToken::default()).unwrap();
+    assert_eq!((o, r.sharpening), (src, None));
+}
