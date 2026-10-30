@@ -700,7 +700,11 @@ fn folio_inputs_select_the_story_thread_and_unsupported_properties_are_refused()
                 (10.0, 16.0)
             );
             assert_eq!(unsupported(&|c| c.frame_mut(0).auto_sizing_type = AutoSizing::HeightOnly), refused);
-            assert_eq!(unsupported(&|c| c.frame_mut(0).first_baseline_offset = FirstBaseline::Ascent), refused);
+            // First baselines other than fixed compose since SMB-ID-FRAME-AUTOSIZE-1 (tests/
+            // frame_autosize.rs): inset top 0 + max(ascent 10, minimum 10) = baseline 10.
+            let mut ascent = Case::new(text, specs.clone(), Composer::FirstFit);
+            ascent.frame_mut(0).first_baseline_offset = FirstBaseline::Ascent;
+            assert_eq!(ascent.ok().frames[0].lines[0].baseline_y_pt, 10.0);
             assert_eq!(
                 unsupported(&|c| c.story.text_kind = StoryTextKind::Point),
                 LayoutError::InvalidInput

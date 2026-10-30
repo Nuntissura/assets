@@ -61,6 +61,14 @@ pub(crate) struct FrameVertical {
     /// Baseline grid `(origin, step)` in frame coordinates for grid-aligned paragraphs
     /// (`reflow_grid`); `None` = no alignment.
     pub grid: Option<(f64, f64)>,
+    /// STU-LAY-120 first-baseline kind (lane SMB-ID-FRAME-AUTOSIZE-1). Other than `fixed`, the first
+    /// baseline of a column is the inset top plus the larger of the kind's metric of the column's
+    /// first line and `first_min_pt` (STU-LAY-118 `minimum_first_baseline_offset`); `fixed` keeps
+    /// `Frame::first_baseline_pt` (measured from the frame top, unchanged).
+    pub first_kind: FirstBaseline,
+    pub first_min_pt: f64,
+    /// STU-LAY-119 auto-sizing type (threaded reflow only; `autosize` module).
+    pub auto: AutoSizing,
 }
 impl Frame<'_> {
     /// Inset-area x range of column `c` in frame coordinates (equal widths, gutters between).
@@ -122,8 +130,8 @@ pub(crate) fn story_text<'a>(
 }
 
 /// What this slice composes: one column (several on the threaded reflow), top-aligned (any STU-LAY-121
-/// member on the threaded reflow), fixed-size frames, an explicit fixed first baseline,
-/// left-to-right Area stories. Everything else is a typed refusal.
+/// member on the threaded reflow), fixed-size frames, an explicit fixed first baseline (any STU-LAY-120
+/// member on the threaded reflow), left-to-right Area stories. Everything else is a typed refusal.
 fn supported(story: &StudioTextStory, f: &StudioTextFrame, columns: bool) -> Result<(), LayoutError> {
     let rtl = story.story_direction == StoryDirection::RightToLeft
         || story
@@ -134,7 +142,7 @@ fn supported(story: &StudioTextStory, f: &StudioTextFrame, columns: bool) -> Res
         || (f.text_column_count != 1 && !columns)
         || (f.vertical_justification != VerticalJustification::Top && !columns)
         || f.auto_sizing_type != AutoSizing::Off
-        || f.first_baseline_offset != FirstBaseline::Fixed
+        || (f.first_baseline_offset != FirstBaseline::Fixed && !columns)
     {
         return Err(LayoutError::UnsupportedComposition);
     }
@@ -250,6 +258,9 @@ pub(crate) fn resolve_flow<'a>(
         let i = &f.inset_spacing;
         let (top, right, bottom, left) = (pt(&i.top)?, pt(&i.right)?, pt(&i.bottom)?, pt(&i.left)?);
         let baseline = pt(&f.minimum_first_baseline_offset)?;
+        // A fixed first baseline is measured from the frame top and must lie inside the inset; the
+        // minimum of the other kinds (threaded reflow) is measured from the inset top.
+        let fixed = flow.is_none() || f.first_baseline_offset == FirstBaseline::Fixed;
         if w <= 0.0
             || h <= 0.0
             || top < 0.0
@@ -258,7 +269,8 @@ pub(crate) fn resolve_flow<'a>(
             || left < 0.0
             || left + right >= w
             || top + bottom >= h
-            || baseline < top
+            || (fixed && baseline < top)
+            || baseline < 0.0
         {
             return Err(LayoutError::InvalidGeometry);
         }
@@ -315,6 +327,9 @@ pub(crate) fn resolve_flow<'a>(
             vjust: if flow.is_some() { f.vertical_justification } else { VerticalJustification::Top },
             threshold_pt: vthreshold_pt,
             grid: None,
+            first_kind: if flow.is_some() { f.first_baseline_offset } else { FirstBaseline::Fixed },
+            first_min_pt: baseline,
+            auto: if flow.is_some() { f.auto_sizing_type } else { AutoSizing::Off },
         });
     }
     for (_, _, f) in &chain {

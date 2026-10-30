@@ -51,8 +51,8 @@ use crate::hyphenate::Hyphenator;
 use crate::styles::{Alignment, ParagraphStyling};
 use crate::typeset::{Justification, TypesetOptions, justify_metrics, paragraph_params};
 use crate::folio_input::{Frame, FrameObstacles, FrameVertical, pt, resolve_flow};
-use hsk_studio_folio::{StudioAlignToGrid, StudioLayoutGrids, StudioSingleWordJustification};
-use crate::paragraph::{ShapedParagraph, SpaceParams, build_items};
+use hsk_studio_folio::{FirstBaseline, StudioAlignToGrid, StudioLayoutGrids, StudioSingleWordJustification};
+use crate::paragraph::{FirstBaselineUnavailable, ShapedParagraph, SpaceParams, build_items};
 use crate::cjk::{CjkGap, CjkLineSpacing, CjkParagraph};
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
@@ -169,7 +169,9 @@ pub struct LayoutProposal {
 
 /// Position of the flow: frame `pos`, column `col`, line slot `line` of the current band, plus
 /// extra vertical space (`extra`, split paragraphs). `band` is the y of the band top in frame
-/// coordinates (`None` = frame top, whose first baseline is the frame's fixed offset).
+/// coordinates (`None` = frame top, whose first baseline is the frame's first-baseline offset).
+/// `first` is that offset once the column's first line fixed it (STU-LAY-120 kinds other than
+/// `fixed` take the metric of the column's first line); `None` = not yet fixed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Cursor {
     pos: usize,
@@ -177,6 +179,7 @@ struct Cursor {
     line: usize,
     band: Option<f64>,
     extra: f64,
+    first: Option<f64>,
 }
 impl Cursor {
     const fn frame(pos: usize) -> Self {
@@ -186,6 +189,7 @@ impl Cursor {
             line: 0,
             band: None,
             extra: 0.0,
+            first: None,
         }
     }
 }
@@ -220,6 +224,8 @@ struct Meta {
     ascent: f64,
     height: f64,
     single: bool,
+    /// First-baseline offset of the line's frame for the line's paragraph (`frame_first`).
+    first: Option<f64>,
 }
 
 /// Widest gap of `[lo, hi]` left by obstacles that overlap the line box.
@@ -250,24 +256,41 @@ fn free_interval(f: &Frame<'_>, lo: f64, hi: f64, top: f64, bottom: f64) -> (f64
     best
 }
 
-fn baseline_of(f: &Frame<'_>, cur: &Cursor, height: f64, ascent: f64) -> f64 {
-    let base = cur.band.map_or(f.first_baseline_pt, |t| t + ascent);
+fn baseline_of(cur: &Cursor, first: f64, height: f64, ascent: f64) -> f64 {
+    let base = cur.band.map_or(first, |t| t + ascent);
     base + cur.line as f64 * height + cur.extra
 }
 
+/// First-baseline offset from the top of frame `f` when paragraph `p` sets the first line of a column
+/// (STU-LAY-120): `fixed` (and every caller without frame options) is the frame's explicit offset;
+/// the other kinds are the inset top plus the larger of the kind's metric and the minimum offset. A
+/// metric the paragraph does not carry is `FirstBaselineUnavailable` (`first_baseline_metric`).
+fn frame_first(f: &Frame<'_>, v: Option<&FrameVertical>, p: &ShapedParagraph) -> Result<f64, FirstBaselineUnavailable> {
+    match v {
+        Some(v) if v.first_kind != FirstBaseline::Fixed => {
+            Ok(f.inset_top_pt + p.first_baseline_metric(v.first_kind)?.max(v.first_min_pt))
+        }
+        _ => Ok(f.first_baseline_pt),
+    }
+}
+
+/// The next line slot for paragraph `p` at or after `cur`. A frame whose first baseline needs a metric
+/// `p` does not carry ends the search (`Ok(None)`) and sets `blocked`: the caller refuses the reflow
+/// only when it needs that slot (a frame no line reaches is never refused).
 #[allow(clippy::too_many_arguments)]
 fn next_slot(
     thread: &[Frame<'_>],
     mut cur: Cursor,
-    height: f64,
-    ascent: f64,
+    p: &ShapedParagraph,
     mode: Mode,
     verticals: &[FrameVertical],
     snap: bool,
+    blocked: &mut bool,
     scans: &mut usize,
     scan_cap: usize,
     cancel: &CancellationToken,
 ) -> Result<Option<Slot>, LayoutError> {
+    let (height, ascent) = (p.line_height_pt, p.ascent_pt);
     let descent = height - ascent;
     while let Some(f) = thread.get(cur.pos) {
         *scans += 1;
@@ -282,7 +305,18 @@ fn next_slot(
             cur = Cursor::frame(cur.pos + 1);
             continue;
         }
-        let mut baseline = baseline_of(f, &cur, height, ascent);
+        let first = match (cur.band, cur.first) {
+            (Some(_), _) => 0.0,
+            (None, Some(first)) => first,
+            (None, None) => match frame_first(f, verticals.get(cur.pos), p) {
+                Ok(first) => first,
+                Err(_) => {
+                    *blocked = true;
+                    return Ok(None);
+                }
+            },
+        };
+        let mut baseline = baseline_of(&cur, first, height, ascent);
         let mut delta = 0.0;
         if snap && let Some((o, step)) = verticals.get(cur.pos).and_then(|v| v.grid) {
             let snapped = o + ((baseline - o) / step - EPS).ceil() * step;
@@ -295,6 +329,7 @@ fn next_slot(
                     col: cur.col + 1,
                     line: 0,
                     extra: 0.0,
+                    first: None,
                     ..cur
                 }
             } else {
@@ -307,6 +342,7 @@ fn next_slot(
         let next = Cursor {
             line: cur.line + 1,
             extra: cur.extra + delta,
+            first: if cur.band.is_none() { Some(first) } else { cur.first },
             ..cur
         };
         if x1 - x0 > EPS {
@@ -650,8 +686,13 @@ fn balance_band(f: &Frame<'_>, band: Option<f64>, lines: &mut [Line], meta: &[Me
             line: row,
             band,
             extra: 0.0,
+            first: None,
         };
-        let baseline = baseline_of(f, &cur, m.height, m.ascent);
+        // The column's first line fixes its first baseline (known: that line was placed there).
+        let Some(first) = meta[col * k].first else {
+            return false;
+        };
+        let baseline = baseline_of(&cur, first, m.height, m.ascent);
         if baseline + (m.height - m.ascent) > bottom {
             return false;
         }
@@ -769,6 +810,7 @@ fn compose_flow(
             || p.line_height_pt <= 0.0
             || p.ascent_pt < 0.0
             || p.ascent_pt > p.line_height_pt
+            || [p.cap_height_pt, p.x_height_pt, p.em_box_pt].into_iter().flatten().any(|v| !(v.is_finite() && v >= 0.0))
     }) {
         return Err(LayoutError::InvalidGeometry);
     }
@@ -822,7 +864,7 @@ fn compose_flow(
         let remaining = limits.max_lines.saturating_sub(placed);
         let slot_cap = items.len().min(remaining.saturating_add(1));
         let scan_cap = scan_cap_base.saturating_add(items.len());
-        let (mut slots, mut scans) = (Vec::new(), 0usize);
+        let (mut slots, mut scans, mut blocked) = (Vec::new(), 0usize, false);
         let descent = p.line_height_pt - p.ascent_pt;
         let flow = flows[pi];
         let mut breaks = None;
@@ -835,7 +877,7 @@ fn compose_flow(
                     let mut c = cursor;
                     c.extra += pre[pi];
                     if let Some(s) =
-                        next_slot(thread, c, p.line_height_pt, p.ascent_pt, Mode::Column, verticals, false, &mut scans, scan_cap, cancel)?
+                        next_slot(thread, c, p, Mode::Column, verticals, false, &mut blocked, &mut scans, scan_cap, cancel)?
                         && (s.pos != cursor.pos || s.col != cursor.col)
                     {
                         c = Cursor {
@@ -844,6 +886,7 @@ fn compose_flow(
                             line: 0,
                             band: if s.pos == cursor.pos { cursor.band } else { None },
                             extra: pre[pi],
+                            first: None,
                         };
                     }
                     cursor = c;
@@ -856,7 +899,7 @@ fn compose_flow(
                         StudioAlignToGrid::AllLines => true,
                         StudioAlignToGrid::FirstLineOnly => slots.is_empty(),
                     };
-                    match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Column, verticals, snap, &mut scans, scan_cap, cancel)? {
+                    match next_slot(thread, at, p, Mode::Column, verticals, snap, &mut blocked, &mut scans, scan_cap, cancel)? {
                         Some(s) => {
                             at = s.next;
                             slots.push(s);
@@ -890,14 +933,16 @@ fn compose_flow(
                             line: 0,
                             band: Some(bottom + before),
                             extra: 0.0,
+                            first: None,
                         };
                     } else {
                         cursor.col = 0;
+                        cursor.first = None;
                     }
                 }
                 let mut at = cursor;
                 while slots.len() < slot_cap {
-                    match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Span, verticals, false, &mut scans, scan_cap, cancel)? {
+                    match next_slot(thread, at, p, Mode::Span, verticals, false, &mut blocked, &mut scans, scan_cap, cancel)? {
                         Some(s) => {
                             at = s.next;
                             slots.push(s);
@@ -912,7 +957,7 @@ fn compose_flow(
                 }
                 let mut start = cursor;
                 while let Some(probe) =
-                    next_slot(thread, start, p.line_height_pt, p.ascent_pt, Mode::Column, verticals, false, &mut scans, scan_cap, cancel)?
+                    next_slot(thread, start, p, Mode::Column, verticals, false, &mut blocked, &mut scans, scan_cap, cancel)?
                 {
                     let f = &thread[probe.pos];
                     if !f.obstacles.is_empty() {
@@ -932,7 +977,7 @@ fn compose_flow(
                     let rows_needed = b.len().div_ceil(count).max(1);
                     let (mut rows, mut at) = (vec![probe], probe.next);
                     while rows.len() < rows_needed {
-                        match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Column, verticals, false, &mut scans, scan_cap, cancel)? {
+                        match next_slot(thread, at, p, Mode::Column, verticals, false, &mut blocked, &mut scans, scan_cap, cancel)? {
                             Some(s) if s.pos == probe.pos => {
                                 at = s.next;
                                 rows.push(s);
@@ -963,6 +1008,9 @@ fn compose_flow(
             }
         }
         if slots.is_empty() {
+            if blocked {
+                return Err(LayoutError::UnsupportedComposition);
+            }
             overset = Some(SourceSpan {
                 start: p.source.start,
                 end: story_end,
@@ -1046,6 +1094,9 @@ fn compose_flow(
             });
             let extra_glyph = items[b.item].end_part.is_some_and(|e| e.extra && items[b.item].flagged);
             if k >= slots.len() {
+                if blocked {
+                    return Err(LayoutError::UnsupportedComposition);
+                }
                 overset = Some(SourceSpan {
                     start: source.start,
                     end: story_end,
@@ -1189,6 +1240,7 @@ fn compose_flow(
                 ascent: p.ascent_pt,
                 height: p.line_height_pt,
                 single,
+                first: frame_first(&thread[pos], verticals.get(pos), p).ok(),
             });
         }
         if overset.is_some() {
@@ -1207,6 +1259,7 @@ fn compose_flow(
                     line: 0,
                     band: Some(top),
                     extra: 0.0,
+                    first: None,
                 }
             }
             ParaFlow::Split { after, .. } => {
