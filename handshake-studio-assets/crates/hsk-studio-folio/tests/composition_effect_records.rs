@@ -212,6 +212,10 @@ fn colour_parameters_carry_a_profile_reference_additively() {
         "colour_profiles":{"map_black_to":{"colour_profile_id":p2},"map_white_to":{"colour_profile_id":null}}}));
     assert_eq!(check(&with).unwrap(), Vec::<ResolutionIssue>::new());
     let r: StudioCompositionRecords = serde_json::from_value(with.clone()).unwrap();
+    let e = &r.compositions[0].layers[0].effects[0];
+    assert_eq!(e.colour_profiles["map_black_to"].colour_profile_id, ProfileBinding::Assigned(p2.clone()));
+    assert_eq!(e.colour_profiles["map_white_to"].colour_profile_id, ProfileBinding::Unassigned(()));
+    assert!(StudioCompositionEffect::new("x", StudioCompositionEffectKind::Tint).colour_profiles.is_empty());
     let first = serde_json::to_vec(&r).unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&first).unwrap(), with);
     let back: StudioCompositionRecords = serde_json::from_slice(&first).unwrap();

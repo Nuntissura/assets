@@ -38,9 +38,10 @@
 //!   0; a hard range admitting only 0 contradicts the effect's purpose and [STU-FX-112] `angle`
 //!   "wraps rather than clamps unless a hard bound is declared", so the row is read as the
 //!   capture's no-range encoding: `bound_state = unbounded_in_source`, all four bounds `None`.
-//! - Colour parameters carry no `StudioColorProfile` reference ([STU-FX-118] requires one); their
-//!   four channels are straight RGBA in the composition plan's colour tag (the gap is recorded).
-//!   Defaults are the record's `ARGB #AARRGGBB` values divided by 255.
+//! - Colour parameters: four channels, straight RGBA encoded in the profile the parameter's
+//!   [STU-FX-118] `StudioColorProfile` reference names
+//!   ([`StudioCompositionEffect::colour_profiles`], lane SMB-R43-FOLLOWUPS-1). Defaults are the
+//!   record's `ARGB #AARRGGBB` values divided by 255.
 //! - Percent-unit rows with hard range `0..1` (`Blend With Original`, `Interpolation`) store the
 //!   fraction as recorded; rows with hard range `0..100` store percent.
 //!
@@ -67,6 +68,18 @@
 //! - Brightness & Contrast and Camera Lens Blur have no [STU-FX-131] record ([STU-FX-146] gap) and
 //!   are not kinds here.
 //!
+//! Lane SMB-R43-FOLLOWUPS-1 (round finding F-R43-4, [STU-FX-118] "carries a required
+//! StudioColorProfile reference"): [`StudioCompositionEffect::colour_profiles`] maps the
+//! `param_key` of a `color` row to its profile reference, in the `StudioColor` shape
+//! ([`StudioEffectColourProfile::colour_profile_id`]: an `SCPF` id, or explicit null for the
+//! document's RGB working space). Additive: a record without the member keeps its bytes (test
+//! `tests/composition_effect_records.rs`
+//! `colour_parameters_carry_a_profile_reference_additively`). Folio validates the references it
+//! finds (a key that is not a `color` row of the kind is `InvalidField` at
+//! `{layer}/effects/{effect_id}/colour_profiles`; the id is checked and resolved like every
+//! profile binding) and accepts a colour parameter without one: the renderer refuses that
+//! parameter typed when the effect is applied, not at load.
+//!
 //! Folio hard ceilings (not spec bounds): [`MAX_LAYER_EFFECTS`] entries per layer ([STU-FX-006b]
 //! "no fixed per-kind instance limit beyond a document-level performance budget"), effect ids are
 //! stack-local keys `[A-Za-z0-9_-]{1,64}`, values finite and within `MAX_STREAM_ABS_VALUE`.
@@ -77,7 +90,7 @@
 use super::{MAX_STREAM_ABS_VALUE, StudioInterpolation, StudioKeyedValue, check, validate_keyed};
 use crate::appearance::{BLEND_LAST, BLEND_NORMAL, BLEND_PASS_THROUGH, BLEND_TOOL_ONLY};
 use crate::values::Ctx;
-use crate::{Code, Result, err};
+use crate::{Code, ProfileBinding, Result, err};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -783,6 +796,15 @@ fn is_normal_mode(v: &u16) -> bool {
     *v == BLEND_NORMAL
 }
 
+/// The [STU-FX-118] `StudioColorProfile` reference of one colour parameter (module docs).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioEffectColourProfile {
+    /// An `SCPF` id, or explicit null for the document's RGB working space (as `StudioColor`).
+    #[serde(deserialize_with = "crate::required")]
+    pub colour_profile_id: ProfileBinding,
+}
+
 /// One entry of a composition layer's effect stack ([STU-FX-002]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -814,6 +836,10 @@ pub struct StudioCompositionEffect {
     /// Values keyed by [`StudioEffectParamSpec::param_key`]; an absent key takes the row default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub values: BTreeMap<String, StudioKeyedValue>,
+    /// [STU-FX-118] profile reference per colour parameter, keyed by the `param_key` of a `color`
+    /// row of the kind (module docs). Absent = none; not encoded when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub colour_profiles: BTreeMap<String, StudioEffectColourProfile>,
 }
 
 impl StudioCompositionEffect {
@@ -828,6 +854,7 @@ impl StudioCompositionEffect {
             blend_mode: BLEND_NORMAL,
             mask_id: None,
             values: BTreeMap::new(),
+            colour_profiles: BTreeMap::new(),
         }
     }
     /// The static value of `param_key`, else its default (`None` for a key the kind lacks).
@@ -877,6 +904,12 @@ pub(super) fn validate_effects(effects: &[StudioCompositionEffect], mask_ids: &B
             let held = v.keyframes.iter().all(|k| k.in_interp == StudioInterpolation::Hold && k.out_interp == StudioInterpolation::Hold);
             check(spec.interpolable || held, &tv, "keyframes/interpolation")?;
             check(spec.animatable || v.keyframes.is_empty(), &tv, "keyframes")?;
+        }
+        cx.nodes(e.colour_profiles.len(), &te)?;
+        for (name, p) in &e.colour_profiles {
+            let colour = e.filter_kind.param(name).is_some_and(|s| s.kind == StudioParameterKind::Color);
+            check(colour, &te, "colour_profiles")?;
+            cx.profile(&p.colour_profile_id, &format!("{te}/colour_profiles/{name}"))?;
         }
     }
     Ok(())
