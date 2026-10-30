@@ -566,3 +566,39 @@ fn entry_blend_modes_and_masks_compose_like_layers() {
         assert_eq!(refusal(one(json!({"effect_id":"i","filter_kind":"invert","blend_mode":3}))), COMPOSITION_EFFECT_OPTION);
     });
 }
+
+/// The refused parameter of records `extra`: the adapter feature and the layer id naming it.
+fn refused_param(extra: Value) -> (String, String) {
+    match lowered(extra, 0) {
+        Err(TemporalError::Unsupported { layer_id, feature }) => (feature.to_owned(), layer_id),
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+/// Lane SMB-R43-FOLLOWUPS-1 (round finding F-R43-4, STU-FX-118 "Every `color` parameter carries a
+/// required `StudioColorProfile` reference"): a colour parameter the lowering reads without a
+/// reference is refused typed when the effect is applied, naming the parameter; its stored value
+/// or default is never read as plan units.
+#[test]
+fn colour_parameter_without_a_profile_reference_is_refused() {
+    bounded_case("colour_parameter_without_a_profile_reference_is_refused", || {
+        let layer = identity("SLYR", 2);
+        let named = |e: Value, key: &str| {
+            let effect_id = e["effect_id"].as_str().unwrap().to_owned();
+            assert_eq!(refused_param(one(e)), (COMPOSITION_EFFECT_OPTION.to_owned(), format!("{layer}/effects/{effect_id}/{key}")));
+        };
+        named(json!({"effect_id":"t","filter_kind":"tint"}), "map_black_to");
+        named(json!({"effect_id":"t","filter_kind":"tint","values":{"map_black_to":constant(json!([0.2,0.1,0.0,1.0]))}}), "map_black_to");
+        named(json!({"effect_id":"r","filter_kind":"tritone"}), "shadows");
+        named(json!({"effect_id":"g","filter_kind":"glow","values":{"glow_colors":constant(json!([2.0]))}}), "color_a");
+        named(json!({"effect_id":"c","filter_kind":"circle"}), "color");
+        named(json!({"effect_id":"k","filter_kind":"checkerboard"}), "color");
+        named(json!({"effect_id":"m","filter_kind":"gradient_ramp"}), "start_color");
+        // One reference of two: the other parameter is named.
+        let half = json!({"effect_id":"t","filter_kind":"tint","colour_profiles":{"map_black_to":{"colour_profile_id":identity("SCPF",1)}}});
+        named(half, "map_white_to");
+        // A kind that reads no colour, and Glow with its original colours, need no reference.
+        assert!(matches!(lowered_one(json!({"effect_id":"i","filter_kind":"invert"})), SceneEffect::Colour(_)));
+        assert!(matches!(lowered_one(json!({"effect_id":"g","filter_kind":"glow"})), SceneEffect::Glow(_)));
+    });
+}

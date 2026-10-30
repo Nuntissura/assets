@@ -449,6 +449,36 @@ mod radial_tests {
             Err(BlurError::OutOfDomain)
         );
     }
+
+    /// F-R43-3: a hostile output rectangle is refused against the caller's limits BEFORE the
+    /// per-pixel sample walk (area x 16 bytes, area x 4 work: at least one sample of four corners
+    /// per pixel), so the call returns without visiting its pixels or allocating. Without the
+    /// pre-check the walk visits 10^12 (or ~1.8 x 10^19) pixels and the test runs into the
+    /// per-test cap.
+    #[test]
+    fn radial_hostile_rect_is_refused_before_the_walk() {
+        let (src, sr) = dot((0, 0), [1.0; 4]);
+        let side = 1_000_000_u32;
+        let huge = rect(0, 0, side, side);
+        let area = u64::from(side) * u64::from(side);
+        let small = BlurLimits { max_bytes: 1 << 20, max_work: 1 << 24 };
+        let bytes_only = BlurLimits { max_bytes: u64::MAX, max_work: 1 << 24 };
+        let widest = rect(-5, 7, u32::MAX, u32::MAX);
+        for kind in [RadialBlurKind::Spin, RadialBlurKind::Zoom] {
+            for amount in [0.0, 100.0, 1000.0] {
+                assert_eq!(
+                    radial_blur_window(UNIT, &src, sr, huge, [0.0, 0.0], amount, kind, small),
+                    Err(BlurError::OverBudget { needed: area * 16, limit: 1 << 20 })
+                );
+                assert_eq!(
+                    radial_blur_window(UNIT, &src, sr, huge, [0.0, 0.0], amount, kind, bytes_only),
+                    Err(BlurError::OverBudget { needed: area * 4, limit: 1 << 24 })
+                );
+                // u32::MAX x u32::MAX: the byte product overflows u64 (checked, typed).
+                assert_eq!(radial_blur_window(UNIT, &src, sr, widest, [0.0, 0.0], amount, kind, small), Err(BlurError::Overflow));
+            }
+        }
+    }
 }
 
 mod find_edges_tests {

@@ -189,3 +189,72 @@ fn hostile_effect_records_are_refused_typed() {
         assert!(serde_json::from_value::<StudioCompositionRecords>(with_effects(json!([bad]))).is_err());
     }
 }
+
+/// Lane SMB-R43-FOLLOWUPS-1 (round finding F-R43-4, STU-FX-118 "Every `color` parameter carries a
+/// required `StudioColorProfile` reference"): `StudioCompositionEffect::colour_profiles` maps a
+/// colour row to its reference in the `StudioColor` shape. Additive: records without it keep their
+/// bytes; a colour parameter without a reference loads (the renderer refuses it when the effect is
+/// applied); a reference on a row that is not a colour, a bad id or a bad shape is refused typed.
+#[test]
+fn colour_parameters_carry_a_profile_reference_additively() {
+    let one = |e: Value| with_effects(json!([e]));
+    let t = identity("SLYR", 1);
+    // No member: the colour value loads and the bytes round trip unchanged (no `colour_profiles` key).
+    let bare = one(json!({"effect_id":"t","filter_kind":"tint","values":{"map_black_to":constant(json!([0.2,0.1,0.0,1.0]))}}));
+    check(&bare).unwrap();
+    let r: StudioCompositionRecords = serde_json::from_value(bare.clone()).unwrap();
+    let bytes = serde_json::to_vec(&r).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("colour_profiles"));
+    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), bare);
+    // With references (an SCPF id, explicit null = the document's RGB working space): valid, byte-identical round trip.
+    let p2 = identity("SCPF", 2);
+    let with = one(json!({"effect_id":"t","filter_kind":"tint","values":{"map_black_to":constant(json!([0.2,0.1,0.0,1.0]))},
+        "colour_profiles":{"map_black_to":{"colour_profile_id":p2},"map_white_to":{"colour_profile_id":null}}}));
+    assert_eq!(check(&with).unwrap(), Vec::<ResolutionIssue>::new());
+    let r: StudioCompositionRecords = serde_json::from_value(with.clone()).unwrap();
+    let first = serde_json::to_vec(&r).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&first).unwrap(), with);
+    let back: StudioCompositionRecords = serde_json::from_slice(&first).unwrap();
+    assert_eq!(serde_json::to_vec(&back).unwrap(), first);
+    // Every colour row of every kind takes one (Tritone, Glow A & B, the generators).
+    let glow = one(json!({"effect_id":"g","filter_kind":"glow","colour_profiles":{
+        "color_a":{"colour_profile_id":p2},"color_b":{"colour_profile_id":p2}}}));
+    check(&glow).unwrap();
+    for (kind, key) in [("tritone", "midtones"), ("circle", "color"), ("checkerboard", "color"), ("gradient_ramp", "end_color")] {
+        check(&one(json!({"effect_id":"k","filter_kind":kind,"colour_profiles":{key:{"colour_profile_id":p2}}}))).unwrap();
+    }
+    // An unavailable profile is a resolution issue at the parameter's target, like every binding.
+    struct NoProfiles;
+    impl Resolver for NoProfiles {
+        fn primitive(&self, _: &str, _: &str) -> Resolution {
+            Resolution::Available
+        }
+        fn profile(&self, _: &str) -> Resolution {
+            Resolution::Absent
+        }
+        fn tile(&self, _: &TileRef) -> Resolution {
+            Resolution::Available
+        }
+        fn format_supported(&self, _: &str) -> bool {
+            true
+        }
+        fn primitive_layer_binding(&self, _: &str, _: &str) -> bool {
+            true
+        }
+    }
+    let r: StudioCompositionRecords = serde_json::from_value(with.clone()).unwrap();
+    let issues = validate_composition_records(&r, &document(), Budget::default(), &CancellationToken::default(), &NoProfiles).unwrap();
+    assert_eq!(issues, vec![ResolutionIssue { target: format!("{t}/effects/t/colour_profiles/map_black_to/colour_profile"), disposition: Resolution::Absent }]);
+    // Hostile: a key that is not a colour row of the kind, an unknown key, an id of another kind.
+    let scalar = one(json!({"effect_id":"t","filter_kind":"tint","colour_profiles":{"amount_to_tint":{"colour_profile_id":p2}}}));
+    assert_eq!(refusal(&scalar), format!("InvalidField:{t}/effects/t/colour_profiles"));
+    let unknown = one(json!({"effect_id":"t","filter_kind":"tint","colour_profiles":{"no_such_row":{"colour_profile_id":p2}}}));
+    assert_eq!(refusal(&unknown), format!("InvalidField:{t}/effects/t/colour_profiles"));
+    let wrong = one(json!({"effect_id":"t","filter_kind":"tint","colour_profiles":{"map_black_to":{"colour_profile_id":identity("SLYR",9)}}}));
+    assert_eq!(refusal(&wrong), format!("InvalidId:{t}/effects/t/colour_profiles/map_black_to"));
+    // Shapes refused at decode: a missing member (null must be explicit), an unknown member, a bare string.
+    for bad in [json!({}), json!({"colour_profile_id":p2,"intent":"perceptual"}), json!(p2)] {
+        let v = one(json!({"effect_id":"t","filter_kind":"tint","colour_profiles":{"map_black_to":bad}}));
+        assert!(serde_json::from_value::<StudioCompositionRecords>(v).is_err(), "{bad}");
+    }
+}
