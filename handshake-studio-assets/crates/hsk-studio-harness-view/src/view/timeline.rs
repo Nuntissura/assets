@@ -40,7 +40,10 @@
 //! (`Run::submit_sequence_and_entry`), module `envelopes`. Lane SMB-AU-MULTITRACK-3: clip pan
 //! envelopes follow the same way, and [`layout_full`] lays out a master row ([`MASTER_ROW`]) under
 //! the tracks with its lane (module `audio`). Lane SMB-PR-NEST-1: Nest, Make Subsequence, Open
-//! Nested and Back to Parent ([STU-VID-030]), module `nest` (its rustdoc is the manual).
+//! Nested and Back to Parent ([STU-VID-030]), module `nest` (its rustdoc is the manual). Lane
+//! SMB-PR-SEQ-EXPORT-UI-1 (feature `media`): Export Media, a sequence to a media file headless
+//! ([`Viewer::export_sequence`]) and from the toolbar form, module `export_media` (its rustdoc is
+//! the manual).
 #![deny(clippy::arithmetic_side_effects)]
 
 #[cfg(feature = "audio-batch")]
@@ -48,6 +51,8 @@ mod audio;
 #[cfg(feature = "audio-batch")]
 pub(super) mod audio_ui;
 pub(super) mod envelopes;
+#[cfg(feature = "media")]
+mod export_media;
 mod nest;
 mod rate;
 mod trim;
@@ -55,6 +60,8 @@ mod trim_session;
 
 pub use rate::{SpeedFix, SpeedForm};
 pub use nest::is_nested;
+#[cfg(feature = "media")]
+pub use export_media::{DEFAULT_AUDIO_RATE, DEFAULT_HEIGHT, DEFAULT_WIDTH, ExportForm, ExportMediaState, ExportSequenceRequest, ExtentTable, FRAMES_PER_POLL, offered_presets};
 
 #[cfg(feature = "audio-batch")]
 pub use audio::{
@@ -157,6 +164,21 @@ pub mod widget {
     pub const BACK_TO_PARENT: &str = "timeline.back_to_parent";
     /// The nesting path shown above the lanes (`parent > nested`).
     pub const NEST_PATH: &str = "timeline.nest_path";
+    /// Export Media (lane SMB-PR-SEQ-EXPORT-UI-1; module `export_media`): the toolbar button, the
+    /// form row and its fields.
+    pub const EXPORT_MEDIA: &str = "timeline.export_media";
+    pub const EXPORT_FORM: &str = "timeline.export_media.form";
+    pub const EXPORT_PRESET: &str = "timeline.export_media.preset";
+    pub const EXPORT_IN: &str = "timeline.export_media.in";
+    pub const EXPORT_OUT: &str = "timeline.export_media.out";
+    pub const EXPORT_WIDTH: &str = "timeline.export_media.width";
+    pub const EXPORT_HEIGHT: &str = "timeline.export_media.height";
+    pub const EXPORT_OUTPUT: &str = "timeline.export_media.output";
+    pub const EXPORT_OVERWRITE: &str = "timeline.export_media.overwrite";
+    pub const EXPORT_RUN: &str = "timeline.export_media.export";
+    pub const EXPORT_CANCEL: &str = "timeline.export_media.cancel";
+    /// The running export's progress label.
+    pub const EXPORT_PROGRESS: &str = "timeline.export_media.progress";
     /// The waveform overview drawn in an audio clip block.
     pub fn clip_waveform(clip_id: &str) -> String {
         format!("timeline.clip.{clip_id}.waveform")
@@ -754,6 +776,14 @@ pub enum TimelineCommand {
     OpenNested(Option<String>),
     /// Returns to the sequence the last Open Nested came from.
     BackToParent,
+    // ---- Export Media (lane SMB-PR-SEQ-EXPORT-UI-1; module `export_media`, feature `media`) ----
+    /// Opens the Export Media form on the timeline's sequence (Studio id `export_media_open`;
+    /// Premiere's command id UNVERIFIED, none claimed).
+    ExportMediaOpen,
+    /// Starts the form's export on the queue's worker and closes the form.
+    ExportMediaRun,
+    /// Closes the form, or cancels the running export.
+    ExportMediaCancel,
 }
 
 impl TimelineCommand {
@@ -807,6 +837,9 @@ impl TimelineCommand {
             Self::MakeSubsequence(_) => "make_subsequence",
             Self::OpenNested(_) => "open_nested",
             Self::BackToParent => "back_to_parent",
+            Self::ExportMediaOpen => "export_media_open",
+            Self::ExportMediaRun => "export_media_run",
+            Self::ExportMediaCancel => "export_media_cancel",
         }
     }
     /// The recovered command id of the module 14 command tables ([STU-VID-041]) this action runs,
@@ -925,6 +958,10 @@ pub struct TimelineState {
     /// Open Nested back stack (lane SMB-PR-NEST-1): the sequences left, oldest first, with the
     /// playhead each one had.
     pub(super) nest_back: Vec<(String, Option<Ticks>)>,
+    /// Export Media form, running export, last result and sound port (lane
+    /// SMB-PR-SEQ-EXPORT-UI-1).
+    #[cfg(feature = "media")]
+    pub(super) export: ExportMediaState,
 }
 
 impl TimelineState {
@@ -969,6 +1006,11 @@ impl TimelineState {
     /// The sequences Open Nested left, oldest first (Back to Parent returns to the last).
     pub fn nest_back(&self) -> impl Iterator<Item = &str> {
         self.nest_back.iter().map(|(id, _)| id.as_str())
+    }
+    /// Export Media state (lane SMB-PR-SEQ-EXPORT-UI-1).
+    #[cfg(feature = "media")]
+    pub fn export(&self) -> &ExportMediaState {
+        &self.export
     }
 }
 
@@ -1190,6 +1232,8 @@ impl Viewer {
             #[cfg(feature = "audio-batch")]
             audio: AudioLanes::default(),
             nest_back: Vec::new(),
+            #[cfg(feature = "media")]
+            export: ExportMediaState::default(),
         });
         self.say(format!("timeline: sequence {sequence_id} (playhead = program monitor)"));
         Ok(())
@@ -1303,6 +1347,14 @@ impl Viewer {
         }
         if let Some(result) = self.timeline_nest_command(command) {
             return result;
+        }
+        #[cfg(feature = "media")]
+        if let Some(result) = self.timeline_export_command(command) {
+            return result;
+        }
+        #[cfg(not(feature = "media"))]
+        if matches!(command, TimelineCommand::ExportMediaOpen | TimelineCommand::ExportMediaRun | TimelineCommand::ExportMediaCancel) {
+            return Err("feature_unavailable: media".into());
         }
         let t = self.timeline.as_mut().ok_or("no_timeline")?;
         match command {
@@ -1501,6 +1553,10 @@ impl Viewer {
         #[cfg(feature = "audio-batch")]
         {
             out["audio"] = self.timeline_audio_json();
+        }
+        #[cfg(feature = "media")]
+        {
+            out["export"] = t.export.json();
         }
         out
     }

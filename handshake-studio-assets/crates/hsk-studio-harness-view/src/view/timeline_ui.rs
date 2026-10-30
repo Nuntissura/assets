@@ -10,7 +10,9 @@
 //! SMB-AU-MULTITRACK-1 (feature `audio-batch`) adds waveforms in audio clips, the automation lane
 //! rows and the clip gain buttons (module `timeline::audio_ui`). Lane SMB-PR-NEST-1 adds the Nest,
 //! Make Subsequence, Open Nested and Back to Parent buttons, the nesting path label, and a
-//! double-click on a nested sequence clip opens it (module `timeline::nest`).
+//! double-click on a nested sequence clip opens it (module `timeline::nest`). Lane
+//! SMB-PR-SEQ-EXPORT-UI-1 (feature `media`) adds the `Export Media...` button, the export form row
+//! and the progress label (module `timeline::export_media`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::Viewer;
@@ -73,6 +75,11 @@ impl Viewer {
         }
         self.timeline_sync_monitor();
         self.timeline_refresh_cache();
+        // A running export gets its decoded frames from this thread (module `timeline::export_media`).
+        #[cfg(feature = "media")]
+        let exporting = self.timeline_export_poll();
+        #[cfg(not(feature = "media"))]
+        let exporting = false;
         #[allow(unused_mut)]
         let mut extra = Extra::default();
         #[cfg(feature = "audio-batch")]
@@ -143,6 +150,9 @@ impl Viewer {
         }
         if playing || self.timeline.as_ref().is_some_and(|t| t.drag.is_some()) {
             ctx.request_repaint();
+        }
+        if exporting {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 
@@ -226,6 +236,18 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
             ui.label(path.join(" > "));
             out.drawn.push(widget::NEST_PATH.into());
         }
+        // Export Media (lane SMB-PR-SEQ-EXPORT-UI-1).
+        #[cfg(feature = "media")]
+        {
+            ui.add_space(12.0);
+            let idle = !t.export().running() && t.export().form().is_none();
+            button(ui, out, widget::EXPORT_MEDIA, "Export Media...", "Export this sequence (nested clips included) to a media file in the background", idle, TimelineCommand::ExportMediaOpen);
+            if let Some(p) = t.export().progress_label() {
+                ui.label(p);
+                out.drawn.push(widget::EXPORT_PROGRESS.into());
+                button(ui, out, widget::EXPORT_CANCEL, "Cancel Export", "Stop the running export (no file is published)", true, TimelineCommand::ExportMediaCancel);
+            }
+        }
         ui.add_space(12.0);
         button(ui, out, widget::ADD_MARKER, "Add Marker", "Sequence marker at the playhead (M)", playhead.is_some(), TimelineCommand::AddMarker);
         button(ui, out, widget::PREVIOUS_MARKER, "Previous Marker", "Ctrl+Shift+M", playhead.is_some(), TimelineCommand::PreviousMarker);
@@ -268,6 +290,10 @@ fn panel(ui: &mut egui::Ui, sequence: Option<&StudioSequence>, t: &mut TimelineS
     }
     if t.speed_form().is_some() {
         speed_form_row(ui, seq, t, out);
+    }
+    #[cfg(feature = "media")]
+    if t.export().form().is_some() {
+        export_form_row(ui, t, out);
     }
     let size = egui::vec2(ui.available_width().max(HEADER_PX + 40.0), ui.available_height().max(RULER_PX + WORK_AREA_PX + 30.0));
     let (area, bg) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
@@ -445,6 +471,49 @@ fn speed_form_row(ui: &mut egui::Ui, seq: &StudioSequence, t: &mut TimelineState
             });
             button(ui, out, widget::SPEED_APPLY, "Apply", "Set the speed or duration as one undo step (Ctrl+R opens this form)", true, TimelineCommand::SpeedDurationApply);
             button(ui, out, widget::SPEED_CANCEL, "Cancel", "Close without a change", true, TimelineCommand::SpeedDurationCancel);
+        });
+    });
+}
+
+/// The Export Media form row (module `timeline::export_media`): preset picker, in / out frames,
+/// raster, output path, overwrite, Export and Cancel; a refused Export shows its typed error.
+#[cfg(feature = "media")]
+fn export_form_row(ui: &mut egui::Ui, t: &mut TimelineState, out: &mut Outcome) {
+    let Some(form) = t.export.form.as_mut() else { return };
+    out.drawn.push(widget::EXPORT_FORM.into());
+    egui::ScrollArea::horizontal().id_salt(vw::id(widget::EXPORT_FORM)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong(format!("Export Media: {}", form.sequence_id));
+            let name = form.presets.iter().find(|(id, _)| *id == form.preset_id).map_or_else(|| form.preset_id.clone(), |(_, n)| n.clone());
+            ui.push_id(vw::id(widget::EXPORT_PRESET), |ui| {
+                egui::ComboBox::from_id_salt(vw::id(widget::EXPORT_PRESET)).selected_text(name).show_ui(ui, |ui| {
+                    for (id, label) in &form.presets {
+                        ui.selectable_value(&mut form.preset_id, id.clone(), label);
+                    }
+                })
+            });
+            out.drawn.push(widget::EXPORT_PRESET.into());
+            for (name, label, text, width) in [
+                (widget::EXPORT_IN, "In", &mut form.in_frame, 56.0),
+                (widget::EXPORT_OUT, "Out (incl.)", &mut form.out_frame, 56.0),
+                (widget::EXPORT_WIDTH, "W", &mut form.width, 48.0),
+                (widget::EXPORT_HEIGHT, "H", &mut form.height, 48.0),
+                (widget::EXPORT_OUTPUT, "Output", &mut form.output, 220.0),
+            ] {
+                ui.label(label);
+                let r = ui.push_id(vw::id(name), |ui| ui.add(egui::TextEdit::singleline(text).desired_width(width))).inner;
+                out.drawn.push(name.into());
+                if r.changed() {
+                    form.error = None;
+                }
+            }
+            let _ = ui.push_id(vw::id(widget::EXPORT_OVERWRITE), |ui| ui.checkbox(&mut form.overwrite, "Overwrite"));
+            out.drawn.push(widget::EXPORT_OVERWRITE.into());
+            if let Some(e) = &form.error {
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), e.as_str());
+            }
+            button(ui, out, widget::EXPORT_RUN, "Export", "Export in the background (the output path is relative to the save path's folder)", true, TimelineCommand::ExportMediaRun);
+            button(ui, out, widget::EXPORT_CANCEL, "Cancel", "Close without exporting", true, TimelineCommand::ExportMediaCancel);
         });
     });
 }
