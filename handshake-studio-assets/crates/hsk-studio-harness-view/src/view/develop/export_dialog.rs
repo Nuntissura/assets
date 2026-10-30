@@ -7,8 +7,10 @@
 //! * The stage is per developed document (`DevelopDoc`) and OFF by default: no stage means the
 //!   unstaged develop entries run, so every export is byte-identical to the exports before this lane
 //!   (pinned in `harness tests/viewer_develop_export_stage.rs`). Switching it on starts from
-//!   `ExportStage::default()`, develop's own defaults (`EXPORT_STAGE_KEYS` names each one's source;
-//!   `studio_declared` ones are labelled so in the dialog). This module restates no default and no bound.
+//!   [`dialog_start`]: develop's defaults (`EXPORT_STAGE_KEYS` names each one's source;
+//!   `studio_declared` ones are labelled so in the dialog) with every group off (`constrain_size`
+//!   false; Studio reading, Lightroom UNVERIFIED), and a stage with no group on still exports the
+//!   unstaged bytes ([`any_group_on`]). This module restates no bound.
 //! * Every field has a stable id `develop.export.<key>` (the keys of `EXPORT_STAGE_KEYS`, plus
 //!   `watermark_size_value`, `watermark_text` and `watermark_graphic`); [`Viewer::set_develop_export_field`]
 //!   writes one field from its text exactly as the window does, so agents, the CLI and the window share
@@ -166,6 +168,23 @@ pub(in crate::view) struct ExportDialog {
     file: Option<FileDialog>,
 }
 
+/// The stage the dialog's switch starts from: develop's `ExportStage::default()` with every group off
+/// (`constrain_size` false; sharpening and watermark are already off there), so switching on changes
+/// nothing until a group is turned on. Studio reading (Lightroom UNVERIFIED, D5); develop's defaults
+/// are unchanged and every other field keeps develop's default.
+pub fn dialog_start() -> ExportStage {
+    let mut stage = ExportStage::default();
+    stage.sizing.constrain_size = false;
+    stage
+}
+
+/// Whether any group of `stage` acts: image sizing (`constrain_size`), output sharpening
+/// (`enabled`) or watermarking (`use_watermark`). A stage with no group on exports through the
+/// unstaged entries (byte-identical to no stage; its resolution is part of the off sizing group).
+pub fn any_group_on(stage: &ExportStage) -> bool {
+    stage.sizing.constrain_size || stage.sharpening.enabled || stage.watermark.use_watermark
+}
+
 fn field_key(id: &str) -> Option<&'static str> {
     let key = id.strip_prefix("develop.export.")?;
     let all = EXPORT_STAGE_KEYS.iter().map(|k| k.key).chain(["stage", "watermark_size_value", "watermark_text", "watermark_graphic"]);
@@ -276,7 +295,7 @@ impl ExportDialog {
         if key == "stage" {
             let on = boolean(value).ok_or_else(|| not_a_value(key, value))?;
             if on != self.stage.is_some() {
-                self.set_stage(on.then(ExportStage::default));
+                self.set_stage(on.then(dialog_start));
             }
             return Ok(());
         }

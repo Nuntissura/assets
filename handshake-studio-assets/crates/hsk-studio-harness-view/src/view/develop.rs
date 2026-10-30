@@ -1110,10 +1110,17 @@ impl Viewer {
         let (edit, known) = d.current(self);
         let recipe = d.recipe(&edit)?;
         // The export stage (lane SMB-LR-EXPORT-GUI-1): None = the unstaged entries, today's bytes.
-        let stage = d.export.stage().cloned();
-        if stage.is_some() && !matches!(format, DevelopExport::Dng { .. }) {
+        // A set stage with no group on runs the unstaged entries too (same bytes); its fields are still checked.
+        let set = d.export.stage().is_some();
+        let stage = d.export.stage().filter(|s| export_dialog::any_group_on(s)).cloned();
+        if set && !matches!(format, DevelopExport::Dng { .. }) {
             d.export.ready(self.develop_export_source_size())?;
         }
+        let not_applied = |staged: Option<Value>| match staged {
+            Some(r) => Some(r),
+            None if set => Some(json!({"applied": false, "reason": "no_group_enabled"})),
+            None => None,
+        };
         let depth = match format {
             DevelopExport::Png { depth } => depth,
             DevelopExport::Jpeg { .. } => OutputDepth::Eight,
@@ -1147,7 +1154,7 @@ impl Viewer {
                 "route": receipt.as_ref().map(|r| r.route), "math_token": receipt.as_ref().map(|r| r.math_token),
                 "threads": d.threads.get(), "revision": revision, "values_known": known,
                 "values": values_json(&edit),
-                "export_stage": stage.as_ref().map(|_| json!({"applied": false, "reason": "dng_preview_not_staged"})),
+                "export_stage": set.then(|| json!({"applied": false, "reason": "dng_preview_not_staged"})),
             }));
         }
         if let DevelopExport::Tiff { depth, compression, predictor, colour_space, big_endian, big_tiff, dpi } = format {
@@ -1182,7 +1189,7 @@ impl Viewer {
                 "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
                 "threads": d.threads.get(), "revision": revision, "values_known": known,
                 "values": values_json(&edit),
-                "export_stage": staged.as_ref().map(export_dialog::receipt_json),
+                "export_stage": not_applied(staged.as_ref().map(export_dialog::receipt_json)),
             }));
         }
         let (output, receipt, staged) = match &stage {
@@ -1245,7 +1252,7 @@ impl Viewer {
             "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
             "threads": d.threads.get(), "revision": revision, "values_known": known,
             "values": values_json(&edit),
-            "export_stage": staged.as_ref().map(export_dialog::receipt_json),
+            "export_stage": not_applied(staged.as_ref().map(export_dialog::receipt_json)),
         }))
     }
 

@@ -66,8 +66,8 @@ struct Parsed {
 /// One develop export stage flag (lane SMB-LR-EXPORT-GUI-1), mapped one to one onto the export
 /// dialog's fields (`Viewer::set_develop_export_field`, ids `develop.export.<key>`), so a command line
 /// and the window build the same `ExportStage`:
-/// `--export-set KEY VALUE` writes field KEY; `--long-edge N` = stage on, resize_type LongEdge,
-/// max_width N; `--sharpen MEDIA:AMOUNT` (screen|glossy|matte : low|standard|high) = stage on,
+/// `--export-set KEY VALUE` writes field KEY (the stage starts with every group off, as in the dialog);
+/// `--long-edge N` = stage on, constrain_size, resize_type LongEdge, max_width N; `--sharpen MEDIA:AMOUNT` (screen|glossy|matte : low|standard|high) = stage on,
 /// output sharpening on with that media and level 1|2|3; `--watermark FILE` = stage on, use_watermark,
 /// the PNG / JPEG graphic loaded like the dialog's file dialog does.
 #[derive(Clone, Debug, PartialEq)]
@@ -169,7 +169,12 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             }
             "--long-edge" => {
                 let edge = take(&mut i, "long edge")?;
-                p.stage.extend([stage_on(), StageArg::Set("resize_type".into(), "LongEdge".into()), StageArg::Set("max_width".into(), edge)]);
+                p.stage.extend([
+                    stage_on(),
+                    StageArg::Set("constrain_size".into(), "true".into()),
+                    StageArg::Set("resize_type".into(), "LongEdge".into()),
+                    StageArg::Set("max_width".into(), edge),
+                ]);
             }
             "--sharpen" => p.stage.extend(sharpen_args(&take(&mut i, "sharpening (media:amount)")?)?),
             "--watermark" => {
