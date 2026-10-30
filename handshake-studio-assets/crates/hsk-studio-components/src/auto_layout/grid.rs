@@ -557,9 +557,6 @@ pub fn grid_append_child_at(
     row: u32,
     column: u32,
 ) -> R<StudioDesignRecords> {
-    if std::hint::black_box(true) {
-        return Err(E::UnsupportedLayout("grid".to_owned())); // red stub
-    }
     let g = grid_container(design, container)?;
     if !design.children_of(container).contains(&node) {
         return Err(E::NoSuchNode(node.to_owned()));
@@ -718,9 +715,6 @@ fn reorder(design: &Design, container: &str, m: &GridTrackMove, rows: bool) -> R
 /// tracks. Anchored children move with their rows; refused: not a GRID container, an index out of
 /// range, or a move that would split a child spanning several rows.
 pub fn grid_reorder_rows(design: &Design, container: &str, options: &GridTrackMove) -> R<GridReorder> {
-    if std::hint::black_box(true) {
-        return Err(E::UnsupportedLayout("grid".to_owned())); // red stub
-    }
     reorder(design, container, options, true)
 }
 
@@ -730,8 +724,5 @@ pub fn grid_reorder_columns(
     container: &str,
     options: &GridTrackMove,
 ) -> R<GridReorder> {
-    if std::hint::black_box(true) {
-        return Err(E::UnsupportedLayout("grid".to_owned())); // red stub
-    }
     reorder(design, container, options, false)
 }
