@@ -605,14 +605,23 @@ fn folio_created_document_exports_idml_and_round_trips() {
         ]
     );
 
-    // The Folio group layer is reported, nothing else is.
-    assert_eq!(e.loss.len(), 1);
+    // The Folio group layer is reported, and the auto-size reference point of the height-only frame
+    // that IDML export cannot state (lane SMB-ID-FRAME-AUTOSIZE-2); nothing else is.
+    assert_eq!(e.loss.len(), 2);
     assert!(has(
         &e.loss,
         "document",
         "group",
         LossKind::Unsupported,
         "folio_layer_not_exported",
+        1
+    ));
+    assert!(has(
+        &e.loss,
+        "document",
+        "TextFramePreference",
+        LossKind::Approximated,
+        "auto_sizing_reference_point_not_exported",
         1
     ));
 
