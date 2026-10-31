@@ -16,7 +16,8 @@ use hsk_studio_pigment::render_plan::{
 };
 use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_prism::{ViewTransformId, profile_hash};
-use hsk_studio_render_gpu::{BackendChoice, DeviceOptions, GpuBackend, GpuError, Reason};
+use hsk_studio_render_gpu::{AdmissionRequest, DeviceOptions, GpuBackend, GpuError, Reason, UnavailablePort};
+use std::sync::Arc;
 
 /// Bound on |GPU - CPU reference| per channel (absolute; view output is in [0, 1]): the GPU
 /// composite is within 1e-6 relative of pigment (tests/gpu_extended_range.rs) and the view's
@@ -185,7 +186,7 @@ fn gpu_view_stage_matches_the_cpu_reference_and_the_texture_path_runs_the_wgsl_v
     let cancel = CancellationToken::default();
     let stage = view_stage();
 
-    let none = GpuBackend::new(DeviceOptions { backend: BackendChoice::None, ..DeviceOptions::default() });
+    let none = GpuBackend::with_grant(Arc::new(UnavailablePort::new()), AdmissionRequest::asset_local(), DeviceOptions::default());
     let mut g = grid();
     assert_eq!(
         none.execute_extended_detailed(&p, &stage, &request(), &src, &cancel, &mut g).unwrap_err(),

@@ -16,7 +16,8 @@ use hsk_studio_pigment::render_plan::{
     SourceKey, StudioBlendMode, TilePlanes, TileSink,
 };
 use hsk_studio_pigment::Mask;
-use hsk_studio_render_gpu::{BackendChoice, DeviceOptions, GpuBackend, GpuError, Reason};
+use hsk_studio_render_gpu::{AdmissionRequest, DeviceOptions, GpuBackend, GpuError, Reason, UnavailablePort};
+use std::sync::Arc;
 
 const TOLERANCE: f32 = 1e-6;
 const R: Rect = Rect { x: 0, y: 0, width: 4, height: 2 };
@@ -94,7 +95,7 @@ fn gpu_overflow_is_the_cpu_refusal_and_nuke_modes_match_pigment() {
     let blurred = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(2), 1).with_filters(vec![LayerFilter::HighPass { radius_px: 1.0 }])])
         .with_output(OutputStage::new(SampleRange::Extended, None));
     let simple = plan(vec![solid([2.0, 1.0, 1.0, 1.0]), solid([0.5, 0.5, 0.5, 1.0]), group(vec![layer(0, StudioBlendMode::Normal, 1.0), layer(1, StudioBlendMode::Normal, 1.0)])]);
-    let none = GpuBackend::new(DeviceOptions { backend: BackendChoice::None, ..DeviceOptions::default() });
+    let none = GpuBackend::with_grant(Arc::new(UnavailablePort::new()), AdmissionRequest::asset_local(), DeviceOptions::default());
     let mut grid = Grid::default();
     assert_eq!(
         none.execute_extended_detailed(&simple, &blurred, &request(), &NoSources, &cancel, &mut grid).unwrap_err(),

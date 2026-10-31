@@ -4,14 +4,14 @@
 //! Claim, per rule below: the error `prepare` returns on its own (admission bypassed) is equal to
 //! the error pigment's `admit` returns for the same plan on this backend, and that error is built
 //! from pigment's exported constants and operator enums, never a literal spelled here. The test
-//! needs no adapter: `prepare` is host-side and the backend is constructed with the explicit
-//! no-device switch, so it proves its claim on every machine (no `NOT_PROVEN`). Backend-owned keys
+//! needs no adapter: `prepare` is host-side and the backend is constructed on the wgpu-free
+//! `UnavailablePort`, so it proves its claim on every machine (no `NOT_PROVEN`). Backend-owned keys
 //! (`plan_shape`, `effect_cost`, ...) are out of scope: pigment's admission does not define those
 //! rules. Lane SMB-FX-OPS-ADOPT adds the rules pigment took over in SMB-PIGMENT-FX-OPS and
 //! SMB-PIGMENT-ADMIT-PARITY (`mask_on_pass_through`, `alpha_premultiplied`,
 //! `effects_with_blend_if`) and the declarations of `effects_nested` and `alpha_premultiplied`.
 use super::*;
-use crate::device::BackendChoice;
+use crate::client::UnavailablePort;
 use hsk_studio_pigment::Mask;
 use hsk_studio_pigment::coverage_math::{BlendChannel, BlendRangeEntry, IDENTITY_RANGE};
 use hsk_studio_pigment::effect_math::{
@@ -103,10 +103,11 @@ fn request() -> ExecuteRequest {
 
 /// What shared admission says about `plan` on this backend, and what `prepare` says on its own.
 fn admission_and_prepare(plan: &RenderPlan<NoVector>) -> (BackendError, GpuError) {
-    let backend = GpuBackend::new(DeviceOptions {
-        backend: BackendChoice::None,
-        ..DeviceOptions::default()
-    });
+    let backend = GpuBackend::with_grant(
+        Arc::new(UnavailablePort::new()),
+        AdmissionRequest::asset_local(),
+        DeviceOptions::default(),
+    );
     let admitted = admit(plan, &backend, &request(), &CancellationToken::default())
         .expect_err("shared admission refuses this plan");
     let prepared = prepare(plan, &NoSources, None, 1 << 20)
@@ -252,10 +253,11 @@ fn defence_in_depth_refusal_keys_are_pigments() {
         (EffectFeature::GlowJitter, glow().with_jitter(0.5)),
     ];
     let glow_plan = one_layer_plan(white(), mk_layer(0, StudioBlendMode::Normal, 1.0, 1.0));
-    let backend = GpuBackend::new(DeviceOptions {
-        backend: BackendChoice::None,
-        ..DeviceOptions::default()
-    });
+    let backend = GpuBackend::with_grant(
+        Arc::new(UnavailablePort::new()),
+        AdmissionRequest::asset_local(),
+        DeviceOptions::default(),
+    );
     for (feature, op) in features {
         let envelope = PlanExtensions::from_layers(vec![
             LayerExtension::new(PlanNodeId(1), 0).with_effects(vec![EffectOp::OuterGlow(op)]),
@@ -290,10 +292,11 @@ fn overlay_fx(group: u32, layer: u32) -> LayerExtension {
     )])
 }
 fn headless_backend() -> GpuBackend {
-    GpuBackend::new(DeviceOptions {
-        backend: BackendChoice::None,
-        ..DeviceOptions::default()
-    })
+    GpuBackend::with_grant(
+        Arc::new(UnavailablePort::new()),
+        AdmissionRequest::asset_local(),
+        DeviceOptions::default(),
+    )
 }
 
 /// SMB-FX-OPS-ADOPT: the declarations for the three operators pigment added, and the exactness

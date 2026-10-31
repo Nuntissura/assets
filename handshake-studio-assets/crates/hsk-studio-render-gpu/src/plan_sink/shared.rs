@@ -30,10 +30,14 @@
 //! refused as `Backend(Sink(Rejected))` before any device work. The commands are submitted on the
 //! caller's queue, so a later submission on that queue (egui's frame) sees the finished texture.
 //! Device loss is the host's to detect: no device-lost or uncaptured-error callback is installed
-//! on a shared device (see `GpuContext::from_external`).
+//! on a shared device (see `device::external_lease`). The device enters through the GPU client
+//! port's external-device adapter (lane SMB-GPU-CLIENT-PORT-1): the backend holds a `Host`-shaped
+//! grant, so this is the one place a wgpu type crosses the port boundary, behind this feature.
 #![deny(clippy::arithmetic_side_effects)]
-use super::{GpuBackend, GpuStats, State, overflow, unsupported};
-use crate::device::{DeviceOptions, GpuContext};
+use super::{GpuBackend, GpuStats, overflow, unsupported};
+use crate::client::{AdmissionRequest, ClientRef, ExternalPort, GpuOperation, ModuleRef};
+use crate::device::{DeviceOptions, external_lease};
+use std::sync::Arc;
 use crate::error::GpuError;
 use crate::pipeline::PipelineFault;
 use hsk_studio_accord::CancellationToken;
@@ -47,7 +51,7 @@ use hsk_studio_pigment::render_plan::{
 pub const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Machine-readable facts of this module (the crate DESCRIPTOR is unchanged).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-RENDER_GPU.shared","lane":"SMB-RENDER-GPU-SHARED-DEVICE","feature":"shared-device (default off: the default build keeps no wgpu type in a public signature, STU-ARC-002)","api":"SharedDevice::new(&wgpu::Device, &wgpu::Queue, wgpu::AdapterInfo, DeviceOptions) -> Result<SharedDevice, GpuError>; render_to_texture(plan, Option<&PlanExtensions>, request, sources, cancel, &wgpu::Texture) -> Result<(RenderReceipt, GpuStats), GpuError>; backend() -> &GpuBackend (the same device through the TileSink path)","output":"Rgba8Unorm storage texture, gamma-space premultiplied 8-bit (egui texture convention), written at the chunk position relative to the plan extent origin; no read-back of the frame (GpuStats.bytes_read_back stays 0 for unit-range plans; an extended-range plan reads one 4-byte overflow flag: the pass skips a texel holding the overflow marker or a non-finite value and sets the flag, and render_to_texture returns Unsupported{sample_range_outside_unit}, test gpu_extended_envelope gpu_overflow_in_envelope_operations_and_on_the_shared_texture_is_typed)","refused":"texture not Rgba8Unorm, not 2D, multisampled, without STORAGE_BINDING or smaller than the plan extent: Backend(Sink(Rejected)) before any device work","loss":"no callbacks installed on the caller's device; the host detects loss","proven_by":"tests/shared_device.rs shared_device_renders_into_the_callers_texture_without_readback (live adapter, tests/gpu-proof.toml policy), shared_target_refusals_happen_before_device_work"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-RENDER_GPU.shared","lane":"SMB-RENDER-GPU-SHARED-DEVICE","feature":"shared-device (default off: the default build keeps no wgpu type in a public signature, STU-ARC-002)","api":"SharedDevice::new(&wgpu::Device, &wgpu::Queue, wgpu::AdapterInfo, DeviceOptions) -> Result<SharedDevice, GpuError>; render_to_texture(plan, Option<&PlanExtensions>, request, sources, cancel, &wgpu::Texture) -> Result<(RenderReceipt, GpuStats), GpuError>; backend() -> &GpuBackend (the same device through the TileSink path)","output":"Rgba8Unorm storage texture, gamma-space premultiplied 8-bit (egui texture convention), written at the chunk position relative to the plan extent origin; no read-back of the frame (GpuStats.bytes_read_back stays 0 for unit-range plans; an extended-range plan reads one 4-byte overflow flag: the pass skips a texel holding the overflow marker or a non-finite value and sets the flag, and render_to_texture returns Unsupported{sample_range_outside_unit}, test gpu_extended_envelope gpu_overflow_in_envelope_operations_and_on_the_shared_texture_is_typed)","refused":"texture not Rgba8Unorm, not 2D, multisampled, without STORAGE_BINDING or smaller than the plan extent: Backend(Sink(Rejected)) before any device work","loss":"no callbacks installed on the caller's device; the host detects loss","port":"lane SMB-GPU-CLIENT-PORT-1: the caller's device enters through the GPU client port's external-device adapter; the backend holds a Host-shaped grant (operation display, unregistered module and client) whose residency budget is DeviceOptions.residency_budget_bytes (studio_declared) until a host supplies one; every submission is authorised by that port; reacquire is DeviceLost (recovery is the host's, render-gpu opens no device of its own); this is the one place a wgpu type crosses the port boundary, behind this feature, asset-local test host (eframe) only (test client_port shared_device_backend_holds_a_host_grant_budgeted_from_options)","proven_by":"tests/shared_device.rs shared_device_renders_into_the_callers_texture_without_readback (live adapter, tests/gpu-proof.toml policy), shared_target_refusals_happen_before_device_work"}"#;
 
 const PARAMS_BYTES: u64 = 32;
 const WORKGROUP: u32 = 8;
@@ -410,11 +414,29 @@ impl SharedDevice {
         adapter: wgpu::AdapterInfo,
         options: DeviceOptions,
     ) -> Result<Self, PipelineFault> {
-        let ctx = GpuContext::from_external(device.clone(), queue.clone(), adapter, &options)?;
-        let generation = ctx.generation();
+        // The caller's device enters through the external-device adapter of the GPU client port
+        // (lane SMB-GPU-CLIENT-PORT-1): the backend holds a `Host`-shaped grant whose residency
+        // budget is `options.residency_budget_bytes` (`studio_declared`) until a host supplies
+        // one, every submission is authorised by that port, and a rebind after a loss is the
+        // host's (`DeviceLost`, never a device of render-gpu's own). The signature is unchanged
+        // (no new public item names a wgpu type); the request is the display operation of an
+        // unregistered module and client until the host grants the device.
+        let request = AdmissionRequest::new(
+            GpuOperation::Display,
+            ModuleRef::UNREGISTERED,
+            ClientRef::UNREGISTERED,
+        );
+        let lease = external_lease(device.clone(), queue.clone(), adapter);
+        let port = Arc::new(ExternalPort::new(lease, options.residency_budget_bytes));
+        let backend = GpuBackend::with_grant(port, request, options);
+        if let Some(error) = backend.failure() {
+            return Err(backend.pipeline_fault().unwrap_or_else(|| {
+                PipelineFault::new(error.code(), "hsk-studio-render-gpu", "grant", "grant refused")
+            }));
+        }
         let output = OutputPipeline::new(device)?;
         Ok(Self {
-            backend: GpuBackend::with_state(options, State::Ready(Box::new(ctx)), generation),
+            backend,
             output,
             device: device.clone(),
             queue: queue.clone(),

@@ -15,7 +15,8 @@ use hsk_studio_pigment::render_plan::{
 };
 use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_prism::profile_hash;
-use hsk_studio_render_gpu::{BackendChoice, DeviceOptions, GpuBackend, Reason};
+use hsk_studio_render_gpu::{AdmissionRequest, DeviceOptions, GpuBackend, Reason, UnavailablePort};
+use std::sync::Arc;
 use hsk_studio_type::FontBytes;
 
 #[path = "../../hsk-studio-composite/tests/common/text_shaping.rs"]
@@ -43,13 +44,37 @@ fn require_gpu() -> bool {
     require.expect("tests/gpu-proof.toml require_gpu")
         || std::env::var("HSK_STUDIO_TEST_REQUIRE_GPU").as_deref() == Ok("1")
 }
-fn backend_from_env() -> BackendChoice {
+/// `HSK_STUDIO_TEST_GPU_BACKEND` (lane SMB-GPU-CLIENT-PORT-1): `none` = the wgpu-free
+/// `UnavailablePort`, unset or `auto` = the transient adapter's platform order (Vulkan first on
+/// Windows), `vulkan|dx12|metal` through the test-only feature `asset-local-backends`; without it
+/// only `vulkan` is accepted and only when the default actually opened Vulkan (never silently
+/// proven on another backend).
+fn env_backend(options: DeviceOptions) -> GpuBackend {
     match std::env::var("HSK_STUDIO_TEST_GPU_BACKEND").as_deref() {
-        Ok("none") => BackendChoice::None,
-        Ok("vulkan") => BackendChoice::Vulkan,
-        Ok("dx12") => BackendChoice::Dx12,
-        Ok("metal") => BackendChoice::Metal,
-        _ => BackendChoice::Auto,
+        Ok("none") => GpuBackend::with_grant(Arc::new(UnavailablePort::new()), AdmissionRequest::asset_local(), options),
+        Ok("auto") | Err(_) => GpuBackend::new(options),
+        Ok(other) => selected_backend(options, other),
+    }
+}
+#[cfg(feature = "asset-local-backends")]
+fn selected_backend(options: DeviceOptions, key: &str) -> GpuBackend {
+    let backend = match key {
+        "vulkan" => hsk_studio_render_gpu::BackendChoice::Vulkan,
+        "dx12" => hsk_studio_render_gpu::BackendChoice::Dx12,
+        "metal" => hsk_studio_render_gpu::BackendChoice::Metal,
+        other => panic!("HSK_STUDIO_TEST_GPU_BACKEND={other:?} is not none|auto|vulkan|dx12|metal"),
+    };
+    GpuBackend::new(DeviceOptions { backend, ..options })
+}
+#[cfg(not(feature = "asset-local-backends"))]
+fn selected_backend(options: DeviceOptions, key: &str) -> GpuBackend {
+    let backend = GpuBackend::new(options);
+    let opened = backend.device_info().map(|info| info.backend);
+    match (key, opened) {
+        ("vulkan", Some("vulkan") | None) => backend,
+        (other, opened) => panic!(
+            "HSK_STUDIO_TEST_GPU_BACKEND={other:?} needs the test-only feature asset-local-backends (the transient default opened {opened:?})"
+        ),
     }
 }
 fn prepared() -> PreparedText {
@@ -107,7 +132,7 @@ impl TileSink for Image {
 fn gpu_renders_lowered_text_like_cpu() {
     let text = prepared();
     let low = text_layer_render_plan(&text, LAYER, 7, target()).unwrap();
-    let backend = GpuBackend::new(DeviceOptions { chunk_side: 16, backend: backend_from_env(), ..DeviceOptions::default() });
+    let backend = env_backend(DeviceOptions { chunk_side: 16, ..DeviceOptions::default() });
     if backend.device_info().is_none() {
         if let Some(failure) = backend.failure() {
             panic!("text render: adapter present but the backend failed: {failure} ({failure:?})");

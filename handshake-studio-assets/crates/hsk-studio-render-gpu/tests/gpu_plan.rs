@@ -32,12 +32,12 @@ use hsk_studio_pigment::render_plan::{
 };
 use hsk_studio_pigment::{Mask, Rect};
 #[cfg(feature = "test-faults")]
-use hsk_studio_render_gpu::GpuContext;
+use hsk_studio_render_gpu::GpuClientPort;
 use hsk_studio_render_gpu::{
-    BackendChoice, DeviceInfo, DeviceOptions, GpuBackend, GpuError, Reason, Residency, ResidentKey,
-    gpu_adjust_supported, gpu_blend_qualifies, gpu_blend_supported,
+    AdmissionRequest, DeviceInfo, DeviceOptions, GpuBackend, GpuError, Reason, Residency,
+    ResidentKey, UnavailablePort, gpu_adjust_supported, gpu_blend_qualifies, gpu_blend_supported,
 };
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 #[cfg(feature = "test-faults")]
 use std::time::Instant;
 
@@ -372,15 +372,48 @@ impl TileSink for Image {
     }
 }
 
-/// `HSK_STUDIO_TEST_GPU_BACKEND=none|vulkan|dx12|metal|auto` selects the backend of the GPU test:
-/// `none` reproduces a machine without an adapter, the others qualify the proof per backend.
-fn backend_from_env() -> BackendChoice {
-    match std::env::var("HSK_STUDIO_TEST_GPU_BACKEND").as_deref() {
-        Ok("none") => BackendChoice::None,
-        Ok("vulkan") => BackendChoice::Vulkan,
-        Ok("dx12") => BackendChoice::Dx12,
-        Ok("metal") => BackendChoice::Metal,
-        _ => BackendChoice::Auto,
+/// `HSK_STUDIO_TEST_GPU_BACKEND` as given (`auto` when unset).
+fn backend_key_from_env() -> String {
+    std::env::var("HSK_STUDIO_TEST_GPU_BACKEND").unwrap_or_else(|_| "auto".to_owned())
+}
+/// The backend of a GPU test (lane SMB-GPU-CLIENT-PORT-1): `HSK_STUDIO_TEST_GPU_BACKEND` = `none`
+/// is the wgpu-free `UnavailablePort` (a machine without an adapter); unset or `auto` is the
+/// transient adapter's platform order (Vulkan first on Windows); `vulkan|dx12|metal` qualify the
+/// proof per backend through the test-only feature `asset-local-backends`. Without that feature
+/// only `vulkan` is accepted, and only when the transient default actually opened Vulkan: a
+/// request is never silently proven on another backend (GUI-DESKTOP-026).
+fn env_backend(options: DeviceOptions) -> GpuBackend {
+    match backend_key_from_env().as_str() {
+        "none" => GpuBackend::with_grant(
+            Arc::new(UnavailablePort::new()),
+            AdmissionRequest::asset_local(),
+            options,
+        ),
+        "auto" => GpuBackend::new(options),
+        other => selected_backend(options, other),
+    }
+}
+#[cfg(feature = "asset-local-backends")]
+fn selected_backend(options: DeviceOptions, key: &str) -> GpuBackend {
+    use hsk_studio_render_gpu::BackendChoice;
+    let backend = match key {
+        "vulkan" => BackendChoice::Vulkan,
+        "dx12" => BackendChoice::Dx12,
+        "metal" => BackendChoice::Metal,
+        other => panic!("HSK_STUDIO_TEST_GPU_BACKEND={other:?} is not none|auto|vulkan|dx12|metal"),
+    };
+    GpuBackend::new(DeviceOptions { backend, ..options })
+}
+#[cfg(not(feature = "asset-local-backends"))]
+fn selected_backend(options: DeviceOptions, key: &str) -> GpuBackend {
+    let backend = GpuBackend::new(options);
+    let opened = backend.device_info().map(|info| info.backend);
+    match (key, opened) {
+        ("vulkan", Some("vulkan") | None) => backend,
+        (other, opened) => panic!(
+            "HSK_STUDIO_TEST_GPU_BACKEND={other:?} needs the test-only feature asset-local-backends \
+             (the transient default opened {opened:?})"
+        ),
     }
 }
 /// One backend for the GPU-execution tests (acquiring a device takes seconds). Created on first
@@ -388,18 +421,40 @@ fn backend_from_env() -> BackendChoice {
 fn shared_backend() -> &'static GpuBackend {
     static SHARED: OnceLock<GpuBackend> = OnceLock::new();
     SHARED.get_or_init(|| {
-        GpuBackend::new(DeviceOptions {
+        env_backend(DeviceOptions {
             chunk_side: 16,
-            backend: backend_from_env(),
             ..DeviceOptions::default()
         })
     })
 }
-fn no_adapter() -> DeviceOptions {
-    DeviceOptions {
-        backend: BackendChoice::None,
-        ..DeviceOptions::default()
+/// `DeviceOptions` carrying the env selection where the test-only feature exists (the
+/// fault-injection constructors take options, not a port).
+#[cfg(feature = "test-faults")]
+fn env_options() -> DeviceOptions {
+    #[cfg(feature = "asset-local-backends")]
+    {
+        use hsk_studio_render_gpu::BackendChoice;
+        let backend = match backend_key_from_env().as_str() {
+            "none" => BackendChoice::None,
+            "vulkan" => BackendChoice::Vulkan,
+            "dx12" => BackendChoice::Dx12,
+            "metal" => BackendChoice::Metal,
+            _ => BackendChoice::Auto,
+        };
+        DeviceOptions { backend, ..DeviceOptions::default() }
     }
+    #[cfg(not(feature = "asset-local-backends"))]
+    {
+        DeviceOptions::default()
+    }
+}
+/// The wgpu-free no-device backend (the old `BackendChoice::None`).
+fn no_adapter() -> GpuBackend {
+    GpuBackend::with_grant(
+        Arc::new(UnavailablePort::new()),
+        AdmissionRequest::asset_local(),
+        DeviceOptions::default(),
+    )
 }
 /// The checked-in GPU proof policy (`tests/gpu-proof.toml`), compiled in so no test reads a path and
 /// the round (which unsets every HSK_* variable) sees the committed value.
@@ -525,7 +580,7 @@ fn no_adapter_is_not_a_green_gpu_proof_when_the_gpu_is_required() {
 
     // strict gate on a machine without an adapter (forced `none` backend): a FAILURE whose message
     // starts with the NOT_PROVEN marker
-    let backend = GpuBackend::new(no_adapter());
+    let backend = no_adapter();
     let strict = gate(&backend, "regression probe", true);
     assert!(
         matches!(&strict, Err(m) if m.starts_with("NOT_PROVEN: no adapter")),
@@ -555,7 +610,7 @@ fn no_adapter_is_not_a_green_gpu_proof_when_the_gpu_is_required() {
 
 #[test]
 fn admission_refusals_run_without_adapter() {
-    let backend = GpuBackend::new(no_adapter());
+    let backend = no_adapter();
     let extent = rect(0, 0, 4, 4);
     let sources = Sources::default();
     let mut sink = Image::new(extent);
@@ -960,7 +1015,7 @@ fn admission_refusals_run_without_adapter() {
 /// admission, before any source lookup or device work, and the receipt carries `normal: fitted`.
 #[test]
 fn leaf_root_reports_the_blend_kernel_class() {
-    let backend = GpuBackend::new(no_adapter());
+    let backend = no_adapter();
     let extent = rect(0, 0, 3, 2);
     let none = Sources::default();
     let mut sink = Image::new(extent);
@@ -1047,11 +1102,16 @@ fn leaf_root_reports_the_blend_kernel_class() {
 #[test]
 fn injected_loss_latch_and_unavailable_are_explicit() {
     let token = CancellationToken::default();
-    match GpuContext::acquire(&no_adapter(), &token) {
-        Err(GpuError::Unavailable(Reason::NoAdapter)) => {}
-        Err(other) => panic!("expected Unavailable(NoAdapter), got {other}"),
-        Ok(_) => panic!("BackendChoice::None must not acquire a device"),
+    // the no-device port never admits (lane SMB-GPU-CLIENT-PORT-1: the old BackendChoice::None)
+    let none = UnavailablePort::new();
+    match none.admit(&AdmissionRequest::asset_local(), &token) {
+        Err(refusal) => assert_eq!(GpuError::from(refusal), GpuError::Unavailable(Reason::NoAdapter)),
+        Ok(_) => panic!("UnavailablePort must not admit a device"),
     }
+    assert_eq!(
+        no_adapter().reacquire(&token),
+        Err(GpuError::Unavailable(Reason::NoAdapter))
+    );
 
     // Injected loss (the state the real callback latches): every execute reports it, stale
     // generations are never silently replaced, and a failed re-acquire keeps the loss.
@@ -1064,7 +1124,7 @@ fn injected_loss_latch_and_unavailable_are_explicit() {
     );
     let sources = Sources::default();
     let mut sink = Image::new(extent);
-    let lost = GpuBackend::with_injected_loss(no_adapter(), 7);
+    let lost = GpuBackend::with_injected_loss(DeviceOptions::default(), 7);
     for _ in 0..2 {
         assert_eq!(
             run(
@@ -1080,9 +1140,13 @@ fn injected_loss_latch_and_unavailable_are_explicit() {
     assert!(lost.is_lost());
     assert_eq!(lost.generation(), 7);
     assert_eq!(lost.identity().generation, 7);
+    // a refused rebind (here canceled, hardware-independent) keeps the loss: stale generations
+    // stay refused
+    let canceled = CancellationToken::default();
+    canceled.cancel();
     assert_eq!(
-        lost.reacquire(&token),
-        Err(GpuError::Unavailable(Reason::NoAdapter))
+        lost.reacquire(&canceled),
+        Err(GpuError::Backend(BackendError::Canceled))
     );
     assert_eq!(
         run(
@@ -1094,6 +1158,8 @@ fn injected_loss_latch_and_unavailable_are_explicit() {
         ),
         Err(BackendError::DeviceLost { generation: 7 })
     );
+    assert!(lost.is_lost());
+    assert_eq!(lost.generation(), 7);
     assert_eq!((sink.accepted, lost.resident_bytes()), (0, 0));
 }
 
@@ -1107,10 +1173,7 @@ fn injected_loss_latch_and_unavailable_are_explicit() {
 fn device_destroy_is_detected_by_the_lost_callback() {
     let _guard = device_lock();
     // Own backend: the shared GPU-test backend must stay alive.
-    let live = GpuBackend::new(DeviceOptions {
-        backend: backend_from_env(),
-        ..DeviceOptions::default()
-    });
+    let live = env_backend(DeviceOptions::default());
     let Some(info) = gpu_gate(&live, "device-loss detection").unwrap_or_else(|e| panic!("{e}"))
     else {
         return;
@@ -1292,13 +1355,7 @@ fn residency_accounting_never_overflows() {
 fn pipeline_failure_is_typed_and_fails_the_gpu_gate() {
     const BROKEN_WGSL: &str = "@compute @workgroup_size(8, 8, 1)\nfn composite() {\n    let x: f32 = no_such_symbol;\n}\n";
     let _guard = device_lock();
-    let broken = GpuBackend::with_shader_source(
-        DeviceOptions {
-            backend: backend_from_env(),
-            ..DeviceOptions::default()
-        },
-        BROKEN_WGSL,
-    );
+    let broken = GpuBackend::with_shader_source(env_options(), BROKEN_WGSL);
     if broken.unavailable_reason() == Some(Reason::NoAdapter) {
         // No adapter at all: acquisition stops before any shader exists. The gate decides
         // (NOT_PROVEN here, a failure while tests/gpu-proof.toml says require_gpu = true).
@@ -1319,7 +1376,7 @@ fn pipeline_failure_is_typed_and_fails_the_gpu_gate() {
     assert!(gate.is_err(), "gate must fail, got {gate:?}");
     eprintln!(
         "PIPELINE_FAILURE: backend {} with an adapter: {:?}; gate refuses to skip",
-        backend_from_env().key(),
+        backend_key_from_env(),
         broken.failure()
     );
     // every execute reports the typed failure; at the port its code is never no_adapter/no_device
@@ -1371,6 +1428,9 @@ fn no_wgpu_types_in_public_api() {
     // the descriptor must be free of wgpu paths (private/`pub(crate)` items may use them).
     let sources = [
         ("lib.rs", include_str!("../src/lib.rs")),
+        ("client.rs", include_str!("../src/client.rs")),
+        ("client/transient.rs", include_str!("../src/client/transient.rs")),
+        ("client/external.rs", include_str!("../src/client/external.rs")),
         ("device.rs", include_str!("../src/device.rs")),
         ("ext.rs", include_str!("../src/ext.rs")),
         ("kernel.rs", include_str!("../src/kernel.rs")),
@@ -3400,7 +3460,7 @@ fn ext_adjustment_layer_parity() {
 /// happen before any device work (no adapter is needed to prove them).
 #[test]
 fn ext_refusals_and_capabilities_run_without_adapter() {
-    let backend = GpuBackend::new(no_adapter());
+    let backend = no_adapter();
     let extent = rect(0, 0, 8, 8);
     let back = OwnedTile::random(8, 8, 3);
     let mask = OwnedMask::from_u8(extent, vec![200; 64]);
@@ -4727,7 +4787,7 @@ fn fx_stack_mask_group_and_nesting_parity() {
 /// refusals happen before any device work.
 #[test]
 fn fx_admission_and_refusals_run_without_adapter() {
-    let backend = GpuBackend::new(no_adapter());
+    let backend = no_adapter();
     let extent = rect(0, 0, 8, 8);
     let back = OwnedTile::random(8, 8, 3);
     let sources = Sources::with_tiles(vec![(1, back)]);

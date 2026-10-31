@@ -24,6 +24,11 @@
 //! operators. Mask coverages are computed on the host with render-cpu's exact conversion, so the
 //! mask values the shader multiplies by are bit-identical to the CPU path's.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::client::{
+    AdmissionRequest, ByteQuantity, ClientRefusal, DenialCode, GpuClientPort, GpuGrant, GrantInfo,
+    PortCounters, PortEvent, SettleError, SettleOutcome, SettleReceipt, Settlement,
+    TransientAdapter, TransientOptions,
+};
 use crate::device::{DeviceInfo, DeviceOptions, GpuContext};
 use crate::error::{GpuError, Reason};
 use crate::pipeline::{ErrorScopes, PipelineFault};
@@ -57,7 +62,7 @@ use hsk_studio_pigment::render_plan::{
     RenderReceipt, SAMPLE_RANGE_OPERATOR, SampleFormat, SourceKey, StudioBlendMode, TileInput,
     TilePlanes, TileSink, admit, admit_extended,
 };
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 pub const RENDERER_NAME: &str = "hsk-studio-render-gpu";
@@ -1286,16 +1291,24 @@ enum State {
         adapter: String,
     },
     Unavailable(Reason),
-    /// Adapter and device were acquired but the backend cannot run: the shader or pipeline failed
-    /// validation (`GpuError::Pipeline`). A defect, not "no GPU": reported as that error.
+    /// A grant was refused as `Denied` or `Canceled`, or adapter and device were granted but the
+    /// backend cannot run: the shader or pipeline failed validation (`GpuError::Pipeline`). A
+    /// defect or a denial, not "no GPU": reported as that error.
     Failed(GpuError),
 }
 struct Inner {
     state: State,
+    /// The grant of the GPU client port the device came through (`None` after a refused
+    /// admission or a release). Settled exactly once: by `release`, or as abandoned on drop.
+    grant: Option<GpuGrant>,
     residency: Residency,
-    /// Generation of the most recent device (0 = none yet); the next acquire is `last + 1`.
+    /// Generation of the most recent device (0 = none yet): the grant's generation.
     last_generation: u64,
+    /// Highest residency charge over the grant's life (the settlement's measured peak).
+    peak_bytes: u64,
     stats: Option<GpuStats>,
+    /// The most recent terminal port outcome (closed code, `report::report_port`).
+    last_port_event: Option<PortEvent>,
     /// Detail of the most recent pipeline creation failure (acquire, reacquire or the test-faults
     /// probe); cleared by a successful (re)acquire.
     pipeline_fault: Option<PipelineFault>,
@@ -1304,9 +1317,50 @@ struct Inner {
     submit_fault: Option<PipelineFault>,
 }
 
-/// GPU backend over the pigment `RenderBackend` port. Device use is serialised by one mutex.
+/// Bound on the wait for the device to finish its submissions before a settlement.
+const SETTLE_IDLE_WAIT: Duration = Duration::from_secs(10);
+
+/// What a granted device turned into on this backend: the state and a pipeline fault detail.
+fn context_state(
+    lease: Option<Box<crate::device::DeviceLease>>,
+    generation: u64,
+    options: &DeviceOptions,
+    shader: Option<&str>,
+) -> (State, Option<PipelineFault>) {
+    let Some(lease) = lease else {
+        // A grant without a device (a host grant before the device hand-off exists).
+        return (State::Unavailable(Reason::NoDevice), None);
+    };
+    match GpuContext::from_lease(*lease, generation, options, shader) {
+        Ok(ctx) => (State::Ready(Box::new(ctx)), None),
+        Err(failure) => match failure.error {
+            GpuError::Unavailable(reason) => (State::Unavailable(reason), None),
+            // A device existed but the backend cannot run (shader/pipeline creation): kept as
+            // its own typed failure, distinct from `Unavailable`, with its detail.
+            error => (State::Failed(error), failure.fault.map(|f| *f)),
+        },
+    }
+}
+/// The backend state of a refused admission.
+fn refused_state(refusal: ClientRefusal) -> State {
+    match refusal {
+        ClientRefusal::Unavailable(reason) => State::Unavailable(reason),
+        ClientRefusal::Lost { generation } => State::Lost {
+            generation,
+            adapter: String::new(),
+        },
+        other => State::Failed(GpuError::from(other)),
+    }
+}
+
+/// GPU backend over the pigment `RenderBackend` port, a typed client of the GPU client port
+/// (lane SMB-GPU-CLIENT-PORT-1): its device comes through a grant, its residency budget is the
+/// grant's, every submission is authorised by the port first and the grant settles exactly once.
+/// Device use is serialised by one mutex.
 pub struct GpuBackend {
     options: DeviceOptions,
+    port: Arc<dyn GpuClientPort>,
+    request: AdmissionRequest,
     /// WGSL override for fault injection (`None` = the generated shader).
     shader: Option<String>,
     /// Deprecated alias (`with_display_transform`): the output stage a plan without one runs with.
@@ -1315,10 +1369,30 @@ pub struct GpuBackend {
 }
 
 impl GpuBackend {
-    /// Try to acquire a headless device now. Returns a backend, not a `Result`: when there is no
-    /// device the backend exists in the `Unavailable` state and every `execute` reports it (after admission) as a typed error.
+    /// Asset-local compatibility constructor: [`GpuBackend::with_grant`] on a fresh
+    /// [`TransientAdapter`] built from `options` with the asset-local request
+    /// ([`AdmissionRequest::asset_local`]). Its results are asset-local evidence, never host
+    /// acceptance (MT-36248 AC-HOST-005). Returns a backend, not a `Result`: when there is no
+    /// device the backend exists in the `Unavailable` state and every `execute` reports it (after
+    /// admission) as a typed error.
     pub fn new(options: DeviceOptions) -> Self {
-        Self::acquire_into(options, None)
+        Self::admit_into(Self::transient(&options), AdmissionRequest::asset_local(), options, None)
+    }
+
+    /// A backend on a grant of `port` for `request`: the port admits (a refusal is the typed
+    /// state: `Unavailable`, `Lost`, or `Failed` for a denial), the residency budget is the
+    /// grant's `budget_bytes`, `reacquire` rebinds through the port and [`GpuBackend::release`]
+    /// settles the grant once with the measured residency numbers.
+    pub fn with_grant(
+        port: Arc<dyn GpuClientPort>,
+        request: AdmissionRequest,
+        options: DeviceOptions,
+    ) -> Self {
+        Self::admit_into(port, request, options, None)
+    }
+
+    fn transient(options: &DeviceOptions) -> Arc<dyn GpuClientPort> {
+        Arc::new(TransientAdapter::new(TransientOptions::from(options)))
     }
 
     /// Fault-injection constructor (V4-04: compiled only with the `test-faults` feature): acquire
@@ -1328,60 +1402,81 @@ impl GpuBackend {
     /// pipeline_failure_is_typed_and_fails_the_gpu_gate).
     #[cfg(feature = "test-faults")]
     pub fn with_shader_source(options: DeviceOptions, wgsl: &str) -> Self {
-        Self::acquire_into(options, Some(wgsl.to_owned()))
+        Self::admit_into(
+            Self::transient(&options),
+            AdmissionRequest::asset_local(),
+            options,
+            Some(wgsl.to_owned()),
+        )
     }
 
-    fn acquire_into(options: DeviceOptions, shader: Option<String>) -> Self {
-        let acquired = GpuContext::acquire_with(
-            &options,
-            &CancellationToken::default(),
-            0,
-            shader.as_deref(),
-        );
-        let mut fault = None;
-        let (state, last_generation) = match acquired {
-            Ok(ctx) => {
-                let generation = ctx.generation();
-                (State::Ready(Box::new(ctx)), generation)
-            }
-            Err(failure) => match failure.error {
-                GpuError::Unavailable(reason) => (State::Unavailable(reason), 0),
-                // A device existed but the backend cannot run (shader/pipeline creation): kept as
-                // its own typed failure, distinct from `Unavailable`, with its detail.
-                error => {
-                    fault = failure.fault.map(|f| *f);
-                    (State::Failed(error), 0)
+    fn admit_into(
+        port: Arc<dyn GpuClientPort>,
+        request: AdmissionRequest,
+        options: DeviceOptions,
+        shader: Option<String>,
+    ) -> Self {
+        let (state, grant, fault, event) =
+            match port.admit(&request, &CancellationToken::default()) {
+                Ok(mut grant) => {
+                    let (state, fault) = context_state(
+                        grant.take_lease(),
+                        grant.generation(),
+                        &options,
+                        shader.as_deref(),
+                    );
+                    (state, Some(grant), fault, PortEvent::Admitted)
                 }
-            },
-        };
-        let mut backend = Self::with_state(options, state, last_generation);
+                Err(refusal) => (refused_state(refusal), None, None, PortEvent::Refused(refusal)),
+            };
+        let mut backend = Self::with_state(port, request, options, state, grant);
         backend.shader = shader;
-        backend.lock().pipeline_fault = fault;
+        let inner = backend.inner.get_mut().unwrap_or_else(PoisonError::into_inner);
+        inner.pipeline_fault = fault;
+        inner.last_port_event = Some(event);
         backend
     }
 
     /// Fault-injection constructor (V4-04: compiled only with the `test-faults` feature): a
     /// backend whose device of `generation` was already lost (the state the real device-lost
-    /// callback latches). Lets tests exercise `DeviceLost` and `reacquire` without hardware.
+    /// callback latches), on a transient-adapter grant of that generation without a device. Lets
+    /// tests exercise `DeviceLost` and `reacquire` (a rebind to `generation + 1`) without hardware.
     #[cfg(feature = "test-faults")]
     pub fn with_injected_loss(options: DeviceOptions, generation: u64) -> Self {
+        let transient = TransientAdapter::new(TransientOptions::from(&options));
+        let request = AdmissionRequest::asset_local();
+        let grant = transient.inject_lost_grant(&request, generation);
         let state = State::Lost {
             generation,
             adapter: String::from("injected"),
         };
-        Self::with_state(options, state, generation)
+        Self::with_state(Arc::new(transient), request, options, state, Some(grant))
     }
 
-    fn with_state(options: DeviceOptions, state: State, last_generation: u64) -> Self {
+    fn with_state(
+        port: Arc<dyn GpuClientPort>,
+        request: AdmissionRequest,
+        options: DeviceOptions,
+        state: State,
+        grant: Option<GpuGrant>,
+    ) -> Self {
+        let (budget, last_generation) = grant
+            .as_ref()
+            .map_or((0, 0), |g| (g.budget_bytes(), g.generation()));
         Self {
             options,
+            port,
+            request,
             shader: None,
             display: None,
             inner: Mutex::new(Inner {
                 state,
-                residency: Residency::new(options.residency_budget_bytes),
+                grant,
+                residency: Residency::new(budget),
                 last_generation,
+                peak_bytes: 0,
                 stats: None,
+                last_port_event: None,
                 pipeline_fault: None,
                 submit_fault: None,
             }),
@@ -1405,9 +1500,43 @@ impl GpuBackend {
         }
         inner
     }
+    /// Ask the port whether the held grant may submit now (before every submission: a stale,
+    /// superseded or revoked grant never submits, GUI-DESKTOP-036). A ready device without a grant
+    /// does not exist.
+    fn authorize(&self, inner: &mut Inner) -> Result<(), GpuError> {
+        let verdict = match &inner.grant {
+            Some(grant) => self.port.authorize(grant),
+            None => Err(ClientRefusal::Denied(DenialCode::Revoked)),
+        };
+        verdict.map_err(|refusal| {
+            inner.last_port_event = Some(PortEvent::Refused(refusal));
+            GpuError::from(refusal)
+        })
+    }
 
     pub fn options(&self) -> DeviceOptions {
         self.options
+    }
+    /// The admission request this backend's grants carry (module, client, device attribution).
+    pub fn request(&self) -> AdmissionRequest {
+        self.request
+    }
+    /// The held grant (`None` after a refused admission or a release).
+    pub fn grant_info(&self) -> Option<GrantInfo> {
+        self.lock().grant.as_ref().map(GpuGrant::info)
+    }
+    /// The residency budget in force: the grant's `budget_bytes` (0 without a grant).
+    pub fn residency_budget_bytes(&self) -> u64 {
+        self.lock().residency.budget_bytes()
+    }
+    /// The closed counters of the port this backend is a client of.
+    pub fn port_counters(&self) -> PortCounters {
+        self.port.counters()
+    }
+    /// The most recent terminal port outcome of this backend (admission, refusal, rebind,
+    /// settlement), for `report::report_port`.
+    pub fn last_port_event(&self) -> Option<PortEvent> {
+        self.lock().last_port_event
     }
     /// Deprecated alias (lane SMB-RENDER-SCENE-DISPLAY; the output stage now lives in the plan,
     /// pigment `PlanExtensions::with_output`): a plan whose envelope has the default output stage
@@ -1438,7 +1567,8 @@ impl GpuBackend {
         }
     }
     /// The typed failure of a backend whose adapter and device exist but whose shader or pipeline
-    /// failed (`GpuError::Pipeline`); `None` in every other state. Distinct from `Unavailable` (test
+    /// failed (`GpuError::Pipeline`), or whose grant was denied (`GpuError::Denied`); `None` in
+    /// every other state. Distinct from `Unavailable` (test
     /// pipeline_failure_is_typed_and_fails_the_gpu_gate).
     pub fn failure(&self) -> Option<GpuError> {
         match &self.lock().state {
@@ -1536,32 +1666,84 @@ impl GpuBackend {
             _ => false,
         }
     }
-    /// Explicit recovery: acquire a successor device (generation + 1) and drop all residency.
-    /// `execute` does not call it (test device_destroy_is_detected_by_the_lost_callback: the
-    /// next execute after a destroy is `DeviceLost`). On failure the previous state is kept (a lost device
-    /// stays lost, so stale generations are still refused).
+    /// Explicit recovery through the port: rebind the held grant (generation + 1, the port closes
+    /// the old grant) or, without a grant, admit again; then drop all residency (the budget is the
+    /// new grant's). `execute` does not call it (test
+    /// device_destroy_is_detected_by_the_lost_callback: the next execute after a destroy is
+    /// `DeviceLost`). A refused rebind keeps the previous state (a lost device stays lost, so stale
+    /// generations are still refused); a successor whose pipelines fail is the typed `Failed`.
     pub fn reacquire(&self, cancel: &CancellationToken) -> Result<u64, GpuError> {
         let mut inner = self.lock();
-        let ctx = match GpuContext::acquire_with(
-            &self.options,
-            cancel,
-            inner.last_generation,
-            self.shader.as_deref(),
-        ) {
-            Ok(ctx) => ctx,
-            Err(failure) => {
-                if failure.fault.is_some() {
-                    inner.pipeline_fault = failure.fault.map(|f| *f);
-                }
-                return Err(failure.error);
+        let next = match &inner.grant {
+            Some(grant) => self.port.rebind(grant, cancel),
+            None => self.port.admit(&self.request, cancel),
+        };
+        let mut grant = match next {
+            Ok(grant) => grant,
+            Err(refusal) => {
+                inner.last_port_event = Some(PortEvent::Refused(refusal));
+                return Err(GpuError::from(refusal));
             }
         };
-        let generation = ctx.generation();
-        inner.pipeline_fault = None;
-        inner.state = State::Ready(Box::new(ctx));
+        let generation = grant.generation();
+        inner.last_port_event = Some(if inner.grant.is_some() {
+            PortEvent::Rebound { generation }
+        } else {
+            PortEvent::Admitted
+        });
+        let (state, fault) = context_state(
+            grant.take_lease(),
+            generation,
+            &self.options,
+            self.shader.as_deref(),
+        );
+        inner.residency = Residency::new(grant.budget_bytes());
+        inner.peak_bytes = 0;
+        inner.grant = Some(grant);
         inner.last_generation = generation;
-        inner.residency.clear();
-        Ok(generation)
+        let outcome = match &state {
+            State::Ready(_) => Ok(generation),
+            State::Lost { generation, .. } => Err(GpuError::DeviceLost {
+                generation: *generation,
+            }),
+            State::Unavailable(reason) => Err(GpuError::Unavailable(*reason)),
+            State::Failed(error) => Err(*error),
+        };
+        if outcome.is_ok() {
+            inner.pipeline_fault = None;
+        } else if fault.is_some() {
+            inner.pipeline_fault = fault;
+        }
+        inner.state = state;
+        outcome
+    }
+
+    /// Settle the held grant exactly once (MT-36248 AC-HOST-003): retained and peak are the
+    /// measured residency charges, native driver bytes `Unknown`; a live device is first waited on
+    /// (bounded), and work that may still run is reported, so the port refuses the settlement as
+    /// `InFlight` instead of releasing in-flight ownership. Without a grant (refused admission) the
+    /// result is `StaleGrant`. A backend dropped without `release` settles as `Abandoned` (counted
+    /// by the port, never silent).
+    pub fn release(self) -> Result<SettleReceipt, SettleError> {
+        let mut inner = self.lock();
+        let Some(grant) = inner.grant.take() else {
+            return Err(SettleError::StaleGrant);
+        };
+        let settlement = settlement_of(&inner, None);
+        match self.port.settle(&grant, settlement) {
+            Ok(receipt) => {
+                inner.last_port_event = Some(PortEvent::Settled(settlement.outcome));
+                Ok(receipt)
+            }
+            Err(error) => {
+                inner.last_port_event = Some(PortEvent::SettleRefused(error));
+                if error == SettleError::InFlight {
+                    // still owned: the drop settles it as abandoned once the device is idle
+                    inner.grant = Some(grant);
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Execute with the detailed internal error and the device-side counters. Order: admission
@@ -1649,6 +1831,9 @@ impl GpuBackend {
 
         let mut guard = self.lock_refreshed();
         let inner = &mut *guard;
+        if matches!(inner.state, State::Ready(_)) {
+            self.authorize(inner)?;
+        }
         let ctx = match &inner.state {
             State::Ready(ctx) => ctx,
             State::Lost { generation, .. } => {
@@ -1714,6 +1899,7 @@ impl GpuBackend {
                 let error = fault.error();
                 let generation = ctx.generation();
                 let adapter = ctx.info().text();
+                inner.peak_bytes = inner.peak_bytes.max(residency.peak_used());
                 residency.release_since(mark);
                 inner.state = State::Lost { generation, adapter };
                 inner.submit_fault = Some(fault);
@@ -1724,6 +1910,7 @@ impl GpuBackend {
         inner.submit_fault = detail;
         stats.peak_resident_bytes = residency.peak_used();
         stats.evictions = residency.evictions().saturating_sub(evictions_before);
+        inner.peak_bytes = inner.peak_bytes.max(stats.peak_resident_bytes);
         residency.release_since(mark);
         let chunks = match result {
             Ok(chunks) => chunks,
@@ -1748,6 +1935,38 @@ impl GpuBackend {
         };
         inner.stats = Some(stats);
         Ok((receipt, stats))
+    }
+}
+
+/// The settlement of a backend's grant: measured residency charges (retained now, peak over the
+/// grant's life), native driver bytes `Unknown` (GPU-QUOTA-015), submissions that may still run
+/// after a bounded wait on a live device, and the outcome of its state (`abandoned` overrides).
+fn settlement_of(inner: &Inner, abandoned: Option<SettleOutcome>) -> Settlement {
+    let (in_flight, outcome) = match &inner.state {
+        State::Ready(ctx) => (u32::from(!ctx.wait_idle(SETTLE_IDLE_WAIT)), SettleOutcome::Completed),
+        State::Lost { .. } => (0, SettleOutcome::Lost),
+        State::Failed(GpuError::Backend(BackendError::Canceled)) => (0, SettleOutcome::Canceled),
+        State::Failed(_) | State::Unavailable(_) => (0, SettleOutcome::Failed),
+    };
+    Settlement {
+        retained: ByteQuantity::Measured(inner.residency.used()),
+        peak: ByteQuantity::Measured(inner.peak_bytes.max(inner.residency.peak_used())),
+        evictions: inner.residency.evictions(),
+        native_driver: ByteQuantity::Unknown,
+        in_flight,
+        outcome: abandoned.unwrap_or(outcome),
+    }
+}
+
+/// A backend dropped without [`GpuBackend::release`] settles its grant as `Abandoned` (the port
+/// counts it); work still in flight is never settled (the port refuses with `InFlight`).
+impl Drop for GpuBackend {
+    fn drop(&mut self) {
+        let inner = self.inner.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if let Some(grant) = inner.grant.take() {
+            let settlement = settlement_of(inner, Some(SettleOutcome::Abandoned));
+            let _ = self.port.settle(&grant, settlement);
+        }
     }
 }
 
@@ -1798,6 +2017,11 @@ impl RenderBackend<NoVector> for GpuBackend {
         cancel: &CancellationToken,
     ) -> Option<Result<(), BackendError>> {
         let mut guard = self.lock_refreshed();
+        if matches!(guard.state, State::Ready(_))
+            && let Err(error) = self.authorize(&mut guard)
+        {
+            return Some(Err(error.into()));
+        }
         let (result, detail) = match &guard.state {
             State::Ready(ctx) => {
                 ctx.clear_fault_detail();

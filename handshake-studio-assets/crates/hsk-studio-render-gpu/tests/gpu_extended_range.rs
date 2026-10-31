@@ -15,7 +15,8 @@ use hsk_studio_pigment::render_plan::{
 };
 use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_prism::profile_hash;
-use hsk_studio_render_gpu::{BackendChoice, DeviceOptions, GpuBackend, GpuError, Reason};
+use hsk_studio_render_gpu::{AdmissionRequest, DeviceOptions, GpuBackend, GpuError, Reason, UnavailablePort};
+use std::sync::Arc;
 
 /// Bound on |GPU - pigment| relative to max(1, |reference|): binary32 kernel arithmetic (FMA,
 /// division) against pigment's binary32 sequence. Measured values are printed.
@@ -185,7 +186,7 @@ fn gpu_extended_range_matches_pigment_and_the_unit_default_is_unchanged() {
     let src = Sources(entries);
     let cancel = CancellationToken::default();
 
-    let none = GpuBackend::new(DeviceOptions { backend: BackendChoice::None, ..DeviceOptions::default() });
+    let none = GpuBackend::with_grant(Arc::new(UnavailablePort::new()), AdmissionRequest::asset_local(), DeviceOptions::default());
     let mut grid = Grid::new();
     let floor = request(Exactness::Approximate);
     assert_eq!(

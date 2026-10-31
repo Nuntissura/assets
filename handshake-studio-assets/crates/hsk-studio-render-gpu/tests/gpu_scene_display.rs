@@ -16,9 +16,10 @@ use hsk_studio_pigment::render_plan::{
 use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_prism::profile_hash;
 use hsk_studio_render_gpu::{
-    BackendChoice, DISPLAY_CLIP_OPERATOR, DeviceOptions, DisplayTransform, GpuBackend, GpuError,
-    Reason,
+    AdmissionRequest, DISPLAY_CLIP_OPERATOR, DeviceOptions, DisplayTransform, GpuBackend, GpuError,
+    Reason, UnavailablePort,
 };
+use std::sync::Arc;
 
 /// CPU/GPU parity bound on straight colour and alpha (binary32 kernel vs pigment's binary32
 /// `composite_over`; FMA and division may differ in the last ulps). Measured values are printed.
@@ -183,12 +184,14 @@ fn gpu_clip_matches_the_clipped_oracle_and_undeclared_stays_refused() {
         exactness: Exactness::Unsupported,
     });
 
-    let none = DeviceOptions { backend: BackendChoice::None, ..DeviceOptions::default() };
+    let none = || {
+        GpuBackend::with_grant(Arc::new(UnavailablePort::new()), AdmissionRequest::asset_local(), DeviceOptions::default())
+    };
     let mut grid = Grid::new();
-    let plain = GpuBackend::new(none);
+    let plain = none();
     assert_eq!(plain.display_transform(), None);
     assert_eq!(plain.execute_detailed(&p, &request(Exactness::Approximate), &src, &cancel, &mut grid).unwrap_err(), refused);
-    let clip = GpuBackend::new(none).with_display_transform(DisplayTransform::Clip);
+    let clip = none().with_display_transform(DisplayTransform::Clip);
     assert_eq!(
         clip.execute_detailed(&p, &request(Exactness::Approximate), &src, &cancel, &mut grid).unwrap_err(),
         GpuError::Unavailable(Reason::NoAdapter)

@@ -1,6 +1,8 @@
-//! Headless device lifecycle: adapter/device acquire (no surface, no window, no focus), a
-//! generation counter, device-loss latching and typed `Unavailable`. wgpu types stay private
-//! fields; everything public here is plain data (STU-ARC-002).
+//! Device lifecycle behind the GPU client port (lane SMB-GPU-CLIENT-PORT-1): the transient
+//! adapter's headless lease (no surface, no window, no focus), the shared-device lease, the
+//! per-generation context the backend builds on a lease, device-loss latching and typed
+//! `Unavailable`. wgpu types stay crate-private; everything public here is plain data
+//! (STU-ARC-002), and no public item opens a device.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{GpuError, Reason};
 use crate::kernel::Kernel;
@@ -31,17 +33,23 @@ pub(crate) fn block_on_bounded<F: Future>(future: F, limit: Option<Duration>) ->
     }
 }
 
+/// Asset-local backend selection of the transient adapter (feature `asset-local-backends`: test
+/// hosts only, lane SMB-GPU-CLIENT-PORT-1). No product build enables it: on the product path the
+/// GPU owner decides behind the client port, and the transient stand-in uses its platform order.
+#[cfg(feature = "asset-local-backends")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendChoice {
-    /// Platform-preferred order: Windows DX12 then Vulkan; Apple Metal; elsewhere Vulkan.
+    /// Platform order of the transient adapter: Windows Vulkan then DX12; Apple Metal; elsewhere
+    /// Vulkan.
     Auto,
     Vulkan,
     Dx12,
     Metal,
-    /// Do not acquire a device: `acquire` returns `Unavailable(NoAdapter)` (explicit kill switch,
-    /// and the hardware-independent way to exercise the unavailable path).
+    /// Do not acquire a device: admission is `Unavailable(NoAdapter)` (explicit kill switch;
+    /// wgpu-free tests use `client::UnavailablePort`).
     None,
 }
+#[cfg(feature = "asset-local-backends")]
 impl BackendChoice {
     pub const fn key(self) -> &'static str {
         match self {
@@ -52,23 +60,55 @@ impl BackendChoice {
             Self::None => "none",
         }
     }
+    /// The candidate APIs of this selection on `platform` (`Auto` = the transient platform order).
+    pub(crate) fn candidates(self, platform: crate::client::Platform) -> &'static [GpuApi] {
+        match self {
+            Self::Auto => platform.candidates(),
+            Self::Vulkan => &[GpuApi::Vulkan],
+            Self::Dx12 => &[GpuApi::Dx12],
+            Self::Metal => &[GpuApi::Metal],
+            Self::None => &[],
+        }
+    }
+}
+
+/// A graphics API the transient adapter can open (crate-private; never in a public signature).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GpuApi {
+    Vulkan,
+    Dx12,
+    Metal,
+}
+impl GpuApi {
+    fn backends(self) -> wgpu::Backends {
+        match self {
+            Self::Vulkan => wgpu::Backends::VULKAN,
+            Self::Dx12 => wgpu::Backends::DX12,
+            Self::Metal => wgpu::Backends::METAL,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceOptions {
+    /// Asset-local backend selection of the transient adapter (feature `asset-local-backends`).
+    #[cfg(feature = "asset-local-backends")]
     pub backend: BackendChoice,
     /// Cap for any single device buffer, further limited by the device's own limits.
     pub max_buffer_bytes: u64,
-    /// Budget for all live device allocations of one backend (see `residency`).
+    /// Residency budget the transient adapter (and `SharedDevice`, until a host supplies one)
+    /// declares on its grant (`studio_declared`, asset-local). The backend's residency budget is
+    /// the grant's `budget_bytes`, never this field directly.
     pub residency_budget_bytes: u64,
     /// Longest chunk side (texels) the executor will use; shrinks to fit the budgets.
     pub chunk_side: u32,
-    /// Bound on adapter and device requests.
+    /// Bound on adapter and device requests of the transient adapter.
     pub acquire_timeout: Duration,
 }
 impl Default for DeviceOptions {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "asset-local-backends")]
             backend: BackendChoice::Auto,
             max_buffer_bytes: 64 << 20,
             residency_budget_bytes: 256 << 20,
@@ -118,16 +158,22 @@ impl DeviceInfo {
     }
 }
 
+/// Plain backend key of a wgpu backend (a DX12 or GL key never proves a Vulkan row:
+/// GUI-DESKTOP-026).
+fn backend_key(backend: wgpu::Backend) -> &'static str {
+    match backend {
+        wgpu::Backend::Vulkan => "vulkan",
+        wgpu::Backend::Dx12 => "dx12",
+        wgpu::Backend::Metal => "metal",
+        wgpu::Backend::Gl => "gl",
+        _ => "other",
+    }
+}
+
 /// Plain-data description of an adapter at `generation`.
 fn info_of(raw: wgpu::AdapterInfo, generation: u64) -> DeviceInfo {
     DeviceInfo {
-        backend: match raw.backend {
-            wgpu::Backend::Vulkan => "vulkan",
-            wgpu::Backend::Dx12 => "dx12",
-            wgpu::Backend::Metal => "metal",
-            wgpu::Backend::Gl => "gl",
-            _ => "other",
-        },
+        backend: backend_key(raw.backend),
         adapter_kind: match raw.device_type {
             wgpu::DeviceType::DiscreteGpu => AdapterKind::Discrete,
             wgpu::DeviceType::IntegratedGpu => AdapterKind::Integrated,
@@ -158,7 +204,7 @@ pub(crate) struct Injected {
     pub(crate) panic: bool,
 }
 
-/// Failure of [`GpuContext::acquire_with`]: the typed error and, for a pipeline failure, its
+/// Failure of [`GpuContext::from_lease`]: the typed error and, for a pipeline failure, its
 /// detail.
 #[derive(Debug)]
 pub(crate) struct AcquireFailure {
@@ -193,9 +239,134 @@ struct Signals {
     injected: Mutex<Option<crate::pipeline::InjectedFault>>,
 }
 
-/// One device generation. All wgpu objects are private; a lost context is not reused: acquire a
-/// new one with a higher generation (test device_destroy_is_detected_by_the_lost_callback).
-pub struct GpuContext {
+/// A device handed to the backend through a grant (crate-private: `client::GpuGrant` carries it,
+/// no public signature names it). The owner that opened the device installed its callbacks; an
+/// external (host) device has none of ours.
+pub(crate) struct DeviceLease {
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    adapter: wgpu::AdapterInfo,
+    signals: Arc<Signals>,
+    /// A caller-owned device (`SharedDevice`): no callbacks of ours, loss is the host's to detect.
+    external: bool,
+}
+impl DeviceLease {
+    /// Plain backend key of the leased device (`vulkan`, `dx12`, `metal`, `gl`, `other`).
+    pub(crate) fn backend_key(&self) -> &'static str {
+        backend_key(self.adapter.backend)
+    }
+}
+
+/// Open a headless device on the first of `apis` that has an adapter (no surface, no window, no
+/// focus; downlevel limits; validation layers off) and install the device-lost and
+/// uncaptured-error latches. Only the transient adapter calls this: it is the asset-local stand-in
+/// for the GPU owner (lane SMB-GPU-CLIENT-PORT-1). No candidate at all is `Unavailable(NoAdapter)`.
+pub(crate) fn acquire_lease(
+    apis: &[GpuApi],
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> Result<DeviceLease, GpuError> {
+    let canceled = |_| GpuError::Backend(BackendError::Canceled);
+    cancel.check().map_err(canceled)?;
+    let mut failure = Reason::NoAdapter;
+    let mut found = None;
+    // One backend per instance: a single-backend instance initialises in a fraction of the time
+    // of a multi-backend one.
+    for &api in apis {
+        cancel.check().map_err(canceled)?;
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: api.backends(),
+            // No validation layers or debug overlays: quiet, deterministic headless operation.
+            flags: wgpu::InstanceFlags::empty(),
+            ..wgpu::InstanceDescriptor::default()
+        });
+        match block_on_bounded(
+            instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            }),
+            Some(timeout),
+        ) {
+            Some(Ok(adapter)) => {
+                found = Some(adapter);
+                break;
+            }
+            Some(Err(_)) => failure = Reason::NoAdapter,
+            None => failure = Reason::Timeout,
+        }
+    }
+    let adapter = found.ok_or(GpuError::Unavailable(failure))?;
+    cancel.check().map_err(canceled)?;
+
+    let limits = wgpu::Limits::downlevel_defaults();
+    let (device, queue) = block_on_bounded(
+        adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("hsk-studio-render-gpu"),
+            required_features: wgpu::Features::empty(),
+            required_limits: limits.clone(),
+            ..wgpu::DeviceDescriptor::default()
+        }),
+        Some(timeout),
+    )
+    .ok_or(GpuError::Unavailable(Reason::Timeout))?
+    .map_err(|_| GpuError::Unavailable(Reason::NoDevice))?;
+
+    let signals = Arc::new(Signals::default());
+    let lost = Arc::clone(&signals);
+    device.set_device_lost_callback(move |_reason, _message| {
+        lost.lost.store(true, Ordering::Release);
+    });
+    let fault = Arc::clone(&signals);
+    device.on_uncaptured_error(Arc::new(move |_error: wgpu::Error| {
+        fault.fault.store(true, Ordering::Release);
+    }));
+    Ok(DeviceLease {
+        device,
+        queue,
+        adapter: adapter.get_info(),
+        signals,
+        external: false,
+    })
+}
+
+/// Lease a caller-owned device and queue (feature `shared-device`, lane
+/// SMB-RENDER-GPU-SHARED-DEVICE; `client::ExternalPort` is the only caller). No adapter or device
+/// is requested and no device-lost or uncaptured-error callback is installed: wgpu keeps one
+/// callback of each per device and the host (egui-wgpu) owns them, so loss detection stays the
+/// host's.
+#[cfg(feature = "shared-device")]
+pub(crate) fn external_lease(
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    adapter: wgpu::AdapterInfo,
+) -> DeviceLease {
+    DeviceLease {
+        device,
+        queue,
+        adapter,
+        signals: Arc::new(Signals::default()),
+        external: true,
+    }
+}
+#[cfg(feature = "shared-device")]
+impl Clone for DeviceLease {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            adapter: self.adapter.clone(),
+            signals: Arc::clone(&self.signals),
+            external: self.external,
+        }
+    }
+}
+
+/// One device generation. All wgpu objects are private and the type is crate-private: a device
+/// reaches the backend only through a grant of the GPU client port (lane SMB-GPU-CLIENT-PORT-1).
+/// A lost context is not reused: the port rebinds to a successor with a higher generation (test
+/// device_destroy_is_detected_by_the_lost_callback).
+pub(crate) struct GpuContext {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     pub(crate) kernel: Kernel,
@@ -206,115 +377,43 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    /// Acquire headless at generation 1.
-    pub fn acquire(options: &DeviceOptions, cancel: &CancellationToken) -> Result<Self, GpuError> {
-        Self::acquire_next(options, cancel, 0)
-    }
-
-    /// Acquire as the successor of `previous_generation` (generation + 1), so handles from the
-    /// previous device are refused by generation.
-    pub fn acquire_next(
-        options: &DeviceOptions,
-        cancel: &CancellationToken,
-        previous_generation: u64,
-    ) -> Result<Self, GpuError> {
-        Self::acquire_with(options, cancel, previous_generation, None).map_err(GpuError::from)
-    }
-
-    /// `acquire_next` with an optional WGSL override (`None` = the generated shader). The override
-    /// exists only for fault injection: a shader that fails validation yields the typed
-    /// `GpuError::Pipeline`, not `Unavailable` (test
+    /// Build the compute pipelines on the leased device at `generation`, with an optional WGSL
+    /// override (`None` = the generated shader; the override exists only for fault injection: a
+    /// shader that fails validation yields the typed `GpuError::Pipeline`, not `Unavailable`, test
     /// pipeline_failure_is_typed_and_fails_the_gpu_gate). A pipeline failure carries its
-    /// [`PipelineFault`] detail (label, class, backend message) in the [`AcquireFailure`].
-    pub(crate) fn acquire_with(
+    /// [`PipelineFault`] detail (label, class, backend message) in the [`AcquireFailure`]. On a
+    /// device whose latches are ours, a loss during the build is the typed loss of this generation
+    /// and an error that bypassed the scopes (the uncaptured latch) is a pipeline failure, both
+    /// decided before any dispatch; an external device has no latch of ours.
+    pub(crate) fn from_lease(
+        lease: DeviceLease,
+        generation: u64,
         options: &DeviceOptions,
-        cancel: &CancellationToken,
-        previous_generation: u64,
         shader: Option<&str>,
     ) -> Result<Self, AcquireFailure> {
-        let canceled = |_| GpuError::Backend(BackendError::Canceled);
-        cancel.check().map_err(canceled)?;
-        let candidates: &[wgpu::Backends] = match options.backend {
-            BackendChoice::None => return Err(GpuError::Unavailable(Reason::NoAdapter).into()),
-            // Platform-preferred order, one backend per instance: a single-backend instance
-            // initialises in a fraction of the time of a multi-backend one.
-            BackendChoice::Auto if cfg!(windows) => &[wgpu::Backends::DX12, wgpu::Backends::VULKAN],
-            BackendChoice::Auto if cfg!(target_vendor = "apple") => &[wgpu::Backends::METAL],
-            BackendChoice::Auto => &[wgpu::Backends::VULKAN],
-            BackendChoice::Vulkan => &[wgpu::Backends::VULKAN],
-            BackendChoice::Dx12 => &[wgpu::Backends::DX12],
-            BackendChoice::Metal => &[wgpu::Backends::METAL],
-        };
-        let mut failure = Reason::NoAdapter;
-        let mut found = None;
-        for &backends in candidates {
-            cancel.check().map_err(canceled)?;
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                backends,
-                // No validation layers or debug overlays: quiet, deterministic headless operation.
-                flags: wgpu::InstanceFlags::empty(),
-                ..wgpu::InstanceDescriptor::default()
-            });
-            match block_on_bounded(
-                instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    force_fallback_adapter: false,
-                    compatible_surface: None,
-                }),
-                Some(options.acquire_timeout),
-            ) {
-                Some(Ok(adapter)) => {
-                    found = Some(adapter);
-                    break;
-                }
-                Some(Err(_)) => failure = Reason::NoAdapter,
-                None => failure = Reason::Timeout,
+        let DeviceLease {
+            device,
+            queue,
+            adapter,
+            signals,
+            external,
+        } = lease;
+        let kernel = Kernel::new(&device, shader).map_err(AcquireFailure::from)?;
+        if !external {
+            let _ = device.poll(wgpu::PollType::Poll);
+            if signals.lost.load(Ordering::Acquire) {
+                return Err(GpuError::DeviceLost { generation }.into());
+            }
+            if signals.fault.swap(false, Ordering::AcqRel) {
+                return Err(AcquireFailure::from(PipelineFault::new(
+                    "pipeline_create",
+                    "hsk-studio-render-gpu",
+                    "uncaptured",
+                    "an error reached the uncaptured-error handler while the pipelines were built",
+                )));
             }
         }
-        let adapter = found.ok_or(GpuError::Unavailable(failure))?;
-        cancel.check().map_err(canceled)?;
-
-        let limits = wgpu::Limits::downlevel_defaults();
-        let (device, queue) = block_on_bounded(
-            adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("hsk-studio-render-gpu"),
-                required_features: wgpu::Features::empty(),
-                required_limits: limits.clone(),
-                ..wgpu::DeviceDescriptor::default()
-            }),
-            Some(options.acquire_timeout),
-        )
-        .ok_or(GpuError::Unavailable(Reason::Timeout))?
-        .map_err(|_| GpuError::Unavailable(Reason::NoDevice))?;
-
-        let signals = Arc::new(Signals::default());
-        let lost = Arc::clone(&signals);
-        device.set_device_lost_callback(move |_reason, _message| {
-            lost.lost.store(true, Ordering::Release);
-        });
-        let fault = Arc::clone(&signals);
-        device.on_uncaptured_error(Arc::new(move |_error: wgpu::Error| {
-            fault.fault.store(true, Ordering::Release);
-        }));
-
-        let generation = previous_generation.saturating_add(1);
-        let kernel = Kernel::new(&device, shader).map_err(AcquireFailure::from)?;
-        // Decided before any dispatch: a loss during the build is the typed loss of this
-        // generation, and an error that bypassed the scopes (the uncaptured latch) is a pipeline
-        // failure, not a later `device_fault`.
-        let _ = device.poll(wgpu::PollType::Poll);
-        if signals.lost.load(Ordering::Acquire) {
-            return Err(GpuError::DeviceLost { generation }.into());
-        }
-        if signals.fault.swap(false, Ordering::AcqRel) {
-            return Err(AcquireFailure::from(PipelineFault::new(
-                "pipeline_create",
-                "hsk-studio-render-gpu",
-                "uncaptured",
-                "an error reached the uncaptured-error handler while the pipelines were built",
-            )));
-        }
-        let info = info_of(adapter.get_info(), generation);
+        let info = info_of(adapter, generation);
         let max_buffer_bytes = buffer_cap(&device, options);
         Ok(Self {
             device,
@@ -326,29 +425,15 @@ impl GpuContext {
         })
     }
 
-    /// Wrap a caller-owned device and queue (feature `shared-device`, lane
-    /// SMB-RENDER-GPU-SHARED-DEVICE; `plan_sink::shared::SharedDevice` is the only caller). No
-    /// adapter or device is requested and no device-lost or uncaptured-error callback is installed:
-    /// wgpu keeps one callback of each per device and the host (egui-wgpu) owns them, so loss
-    /// detection stays the host's. The compute pipelines are built on the caller's device; a
-    /// device whose limits cannot hold them is the typed `GpuError::Pipeline`.
-    #[cfg(feature = "shared-device")]
-    pub(crate) fn from_external(
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        adapter: wgpu::AdapterInfo,
-        options: &DeviceOptions,
-    ) -> Result<Self, PipelineFault> {
-        let kernel = Kernel::new(&device, None)?;
-        let max_buffer_bytes = buffer_cap(&device, options);
-        Ok(Self {
-            device,
-            queue,
-            kernel,
-            signals: Arc::new(Signals::default()),
-            info: info_of(adapter, 1),
-            max_buffer_bytes,
-        })
+    /// Wait (bounded) until every submission on this device finished; `false` when work may still
+    /// be in flight at the bound (the settlement then reports it: GUI-DESKTOP-033/034).
+    pub(crate) fn wait_idle(&self, limit: Duration) -> bool {
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(limit),
+            })
+            .is_ok()
     }
 
     pub fn info(&self) -> &DeviceInfo {

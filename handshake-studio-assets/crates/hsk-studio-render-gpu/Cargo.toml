@@ -9,6 +9,10 @@ default = []
 test-faults = []
 # Render into a caller-owned wgpu device/queue/texture (plan_sink::shared; names wgpu types publicly).
 shared-device = []
+# Asset-local test hosts only (lane SMB-GPU-CLIENT-PORT-1, MT-36248 AC-HOST-005): the public
+# `BackendChoice` and the `DeviceOptions.backend` field of the transient in-process adapter. No
+# product build enables it; the product path is the GPU client port (`client`).
+asset-local-backends = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }

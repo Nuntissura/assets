@@ -17,7 +17,8 @@ use hsk_studio_pigment::transform_math::{
     Affine2, EdgeMode, LayerTransform, PreparedTransform, ResampleFilter, TransformError,
 };
 use hsk_studio_pigment::{Mask, Rect};
-use hsk_studio_render_gpu::{BackendChoice, DeviceOptions, GpuBackend, Reason};
+use hsk_studio_render_gpu::{AdmissionRequest, DeviceOptions, GpuBackend, Reason, UnavailablePort};
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 /// Established render-gpu tolerance against pigment's reference (START_LOG 2026-10-11T05:31:12Z:
@@ -487,10 +488,7 @@ fn gpu_linked_mask_follows_the_content() {
 
 #[test]
 fn transform_admission_refusals_run_without_adapter() {
-    let none = GpuBackend::new(DeviceOptions {
-        backend: BackendChoice::None,
-        ..DeviceOptions::default()
-    });
+    let none = GpuBackend::with_grant(Arc::new(UnavailablePort::new()), AdmissionRequest::asset_local(), DeviceOptions::default());
     let tile = Tile::new(9, 7);
     let sources = Sources {
         tile: &tile,

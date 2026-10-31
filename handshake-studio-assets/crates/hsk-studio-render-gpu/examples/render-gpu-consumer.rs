@@ -1,5 +1,6 @@
 //! Render-gpu consumer (headless: no window, no surface, no focus).
-//! `--descriptor` prints the module descriptor. `--probe [auto|vulkan|dx12|metal|none]` acquires a device and prints one JSON
+//! `--descriptor` prints the module descriptor. `--probe [auto|none|vulkan|dx12|metal]` (the last three with the
+//! test-only feature `asset-local-backends`) acquires a device through the transient adapter and prints one JSON
 //! line with the backend/adapter kind/generation, or the typed unavailable reason (exit 3), or the
 //! typed pipeline failure of a present adapter (exit 1: a defect, reported separately from "no GPU", exit 3).
 //! `--selftest` renders the hand-computed oracle (backdrop 0.2/0.4/0.6, red source at opacity 0.5;
@@ -12,7 +13,8 @@ use hsk_studio_pigment::render_plan::{
     OutputTarget, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan, SampleFormat,
     SinkError, SourceKey, StudioBlendMode, TilePlanes, TileSink,
 };
-use hsk_studio_render_gpu::{BackendChoice, DESCRIPTOR, DeviceOptions, GpuBackend};
+use hsk_studio_render_gpu::{AdmissionRequest, DESCRIPTOR, DeviceOptions, GpuBackend, UnavailablePort};
+use std::sync::Arc;
 use std::env;
 use std::process::ExitCode;
 
@@ -44,19 +46,44 @@ fn json_text(text: &str) -> String {
         .collect()
 }
 
-fn probe(choice: Option<&str>) -> ExitCode {
+/// The probed backend (lane SMB-GPU-CLIENT-PORT-1): `none` is the wgpu-free `UnavailablePort`,
+/// `auto` the transient adapter's platform order (Vulkan first on Windows); `vulkan|dx12|metal`
+/// need the test-only feature `asset-local-backends` (exit 2 without it). The transient adapter is
+/// asset-local: a probe is evidence, never host acceptance.
+fn probe_backend(choice: Option<&str>) -> Option<GpuBackend> {
+    match choice {
+        None | Some("auto") => Some(GpuBackend::new(DeviceOptions::default())),
+        Some("none") => Some(GpuBackend::with_grant(
+            Arc::new(UnavailablePort::new()),
+            AdmissionRequest::asset_local(),
+            DeviceOptions::default(),
+        )),
+        Some(other) => selected(other),
+    }
+}
+#[cfg(feature = "asset-local-backends")]
+fn selected(choice: &str) -> Option<GpuBackend> {
+    use hsk_studio_render_gpu::BackendChoice;
     let backend = match choice {
-        None | Some("auto") => BackendChoice::Auto,
-        Some("vulkan") => BackendChoice::Vulkan,
-        Some("dx12") => BackendChoice::Dx12,
-        Some("metal") => BackendChoice::Metal,
-        Some("none") => BackendChoice::None,
-        Some(_) => return ExitCode::from(2),
+        "vulkan" => BackendChoice::Vulkan,
+        "dx12" => BackendChoice::Dx12,
+        "metal" => BackendChoice::Metal,
+        _ => return None,
     };
-    let backend = GpuBackend::new(DeviceOptions {
+    Some(GpuBackend::new(DeviceOptions {
         backend,
         ..DeviceOptions::default()
-    });
+    }))
+}
+#[cfg(not(feature = "asset-local-backends"))]
+fn selected(_: &str) -> Option<GpuBackend> {
+    None
+}
+
+fn probe(choice: Option<&str>) -> ExitCode {
+    let Some(backend) = probe_backend(choice) else {
+        return ExitCode::from(2);
+    };
     if let Some(failure) = backend.failure() {
         println!("{{\"pipeline_failed\":\"{}\"}}", failure.code());
         return ExitCode::from(1);

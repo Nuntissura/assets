@@ -2,6 +2,7 @@
 //! `pigment::render_plan::BackendError` at the port (`From<GpuError> for BackendError`).
 //! Plain data only: no wgpu type appears here (STU-ARC-002).
 #![deny(clippy::arithmetic_side_effects)]
+use crate::client::{ClientRefusal, DenialCode};
 use hsk_studio_pigment::render_plan::BackendError;
 
 /// Why no device could be acquired. Determinate typed outcome, not a panic or a skip (tests
@@ -45,6 +46,9 @@ pub enum GpuError {
     /// environment condition: distinct from `Unavailable` (no adapter/device), so a test or a
     /// supervisor can tell it from "no GPU here" (test pipeline_failure_is_typed_and_fails_the_gpu_gate).
     Pipeline(&'static str),
+    /// The GPU client port denied the grant (lane SMB-GPU-CLIENT-PORT-1): budget exceeded, quota
+    /// unavailable or revoked (a revoked or stale grant never authorises a submission).
+    Denied(DenialCode),
 }
 impl From<BackendError> for GpuError {
     fn from(error: BackendError) -> Self {
@@ -65,6 +69,7 @@ impl From<GpuError> for BackendError {
             // The port vocabulary has no internal-defect variant; the code (`shader_validation`)
             // keeps it distinct from `no_adapter` / `no_device` at the port.
             GpuError::Pipeline(what) => BackendError::Unavailable(what),
+            GpuError::Denied(code) => BackendError::Unavailable(code.code()),
         }
     }
 }
@@ -76,6 +81,7 @@ impl GpuError {
             Self::DeviceLost { .. } => "device_lost",
             Self::BudgetExceeded { .. } => "budget_exceeded",
             Self::Gpu(what) | Self::Pipeline(what) => what,
+            Self::Denied(code) => code.code(),
         }
     }
 }
@@ -90,3 +96,17 @@ impl std::fmt::Display for GpuError {
     }
 }
 impl std::error::Error for GpuError {}
+
+/// A port refusal at the `GpuBackend` boundary: `Unavailable` and `Lost` keep their typed meaning
+/// (`Unavailable(reason)`, `DeviceLost { generation }`), a denial is `Denied(code)` and a canceled
+/// admission the port's `Canceled`.
+impl From<ClientRefusal> for GpuError {
+    fn from(refusal: ClientRefusal) -> Self {
+        match refusal {
+            ClientRefusal::Unavailable(reason) => Self::Unavailable(reason),
+            ClientRefusal::Lost { generation } => Self::DeviceLost { generation },
+            ClientRefusal::Denied(code) => Self::Denied(code),
+            ClientRefusal::Canceled => Self::Backend(BackendError::Canceled),
+        }
+    }
+}

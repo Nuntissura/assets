@@ -20,7 +20,8 @@ use hsk_studio_pigment::render_plan::{
     TilePlanes, TileSink,
 };
 use hsk_studio_pigment::{Mask, Rect};
-use hsk_studio_render_gpu::{DeviceOptions, GpuBackend, Reason};
+use hsk_studio_render_gpu::{AdmissionRequest, DeviceOptions, GpuBackend, Reason, UnavailablePort};
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 const EXTENT: Rect = Rect { x: 0, y: 0, width: 289, height: 17 };
@@ -284,7 +285,7 @@ fn gpu_colour_lookup_65_cube_and_table_budget() {
 /// cube whose table length disagrees with its side is a parameter error before any upload.
 #[test]
 fn second_set_refusals_are_typed_without_adapter() {
-    let b = GpuBackend::new(DeviceOptions { backend: hsk_studio_render_gpu::BackendChoice::None, ..DeviceOptions::default() });
+    let b = GpuBackend::with_grant(Arc::new(UnavailablePort::new()), AdmissionRequest::asset_local(), DeviceOptions::default());
     let tile = Tile::new();
     let p = plan(&tile, StudioBlendMode::Normal, 1.0);
     let refused = |op: AdjustmentOp, key: &str| {

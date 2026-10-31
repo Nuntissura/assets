@@ -12,7 +12,8 @@ use hsk_studio_pigment::render_plan::{
     SampleFormat, SinkError, SourceKey, StudioBlendMode, TilePlanes, TileSink,
 };
 use hsk_studio_pigment::{Mask, Rect};
-use hsk_studio_render_gpu::{BackendChoice, DeviceOptions, GpuBackend};
+use hsk_studio_render_gpu::{AdmissionRequest, DeviceOptions, GpuBackend, UnavailablePort};
+use std::sync::Arc;
 
 fn rect(x: i64, y: i64, width: u32, height: u32) -> Rect {
     Rect { x, y, width, height }
@@ -83,8 +84,11 @@ fn gpu_content_aware_fill_is_refused_before_any_device_work() {
         operator: "content_aware_fill",
         exactness: Exactness::Unsupported,
     });
-    for choice in [BackendChoice::None, BackendChoice::Auto] {
-        let backend = GpuBackend::new(DeviceOptions { backend: choice, ..DeviceOptions::default() });
+    // the wgpu-free no-device port, then the asset-local transient adapter (a live device when present)
+    for (choice, backend) in [
+        ("unavailable_port", GpuBackend::with_grant(Arc::new(UnavailablePort::new()), AdmissionRequest::asset_local(), DeviceOptions::default())),
+        ("transient", GpuBackend::new(DeviceOptions::default())),
+    ] {
         assert_eq!(backend.extension_exactness(ExtOperator::ContentAwareFill), Exactness::Unsupported);
         let request = ExecuteRequest {
             expected_revision: 4,
@@ -107,7 +111,7 @@ fn gpu_content_aware_fill_is_refused_before_any_device_work() {
         eprintln!("{choice:?}: refused before device work (device {:?})", backend.device_info().map(|i| i.text()));
     }
     // Control: without the fill, the none backend reaches the device check (Unavailable).
-    let none = GpuBackend::new(DeviceOptions { backend: BackendChoice::None, ..DeviceOptions::default() });
+    let none = GpuBackend::with_grant(Arc::new(UnavailablePort::new()), AdmissionRequest::asset_local(), DeviceOptions::default());
     let request = ExecuteRequest { expected_revision: 4, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 26 };
     let mut sink = Count::default();
     let plain = none.execute(&plan(), &request, &NoSources, &CancellationToken::default(), &mut sink);
