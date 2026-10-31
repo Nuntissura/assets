@@ -57,7 +57,12 @@
 //! is no depth constant (STU-VID-030 "no fixed depth limit"): recursion is bounded by a cycle guard
 //! (a sequence on the current path) and the caller's budget ([`StreamLimits::max_resident_frames`]
 //! for all nested buffers together, checked before each allocation; `max_layers` for frames) and the
-//! cancel token. A nested sequence that cannot be rendered (an inner source missing, a refusal of the
+//! cancel token. The frame budget is a visit budget (R44 finding F-R44-7, lane SMB-R44-FOLLOWUPS-1):
+//! [`frame_layers_nested`] charges EVERY layer it visits against `max_layers` (a media layer it
+//! returns, a Sequence layer it expands and an unresolved one it records), before the work, so an
+//! acyclic document whose sequences nest each other on k tracks (k^depth visits) is refused
+//! `limit_exceeded` after at most `max_layers` visits instead of walking the fan-out (test
+//! `nest::nested_frame_fan_out_is_bounded_by_the_layer_budget`). A nested sequence that cannot be rendered (an inner source missing, a refusal of the
 //! inner mix, a cycle, an unknown sequence) gets a typed [`NestAudioReport`] and plays as silence of
 //! its length, so the parent mix still renders and the loss is reported, never silent (V4-03; tests
 //! in tests/nest.rs).
@@ -698,13 +703,15 @@ pub struct NestedFrame {
 
 /// [`frame_layers`] of `sequence` at `tick` with every Sequence-source layer replaced by the
 /// nested sequence's layers at that layer's source tick, recursively (module docs). `sequences` are
-/// the document's sequences; more than `max_layers` layers in total is `limit_exceeded`.
+/// the document's sequences; more than `max_layers` visited layers in total (media, expanded
+/// Sequence and unresolved layers alike, R44 F-R44-7) is `limit_exceeded`.
 pub fn frame_layers_nested(sequences: &[StudioSequence], sequence: &StudioSequence, tick: Ticks, extents: &dyn SourceExtents, max_layers: usize, cancel: &CancellationToken) -> crate::Result<NestedFrame> {
     let nested = NestedExtents::new(sequences, extents);
     let mut out = NestedFrame::default();
     let mut path = Vec::new();
     let mut stack = vec![sequence.sequence_id.clone()];
-    expand(sequences, sequence, tick, 1.0, &nested, max_layers, &mut path, &mut stack, &mut out, cancel)?;
+    let mut visits = 0usize;
+    expand(sequences, sequence, tick, 1.0, &nested, max_layers, &mut visits, &mut path, &mut stack, &mut out, cancel)?;
     Ok(out)
 }
 
@@ -716,6 +723,7 @@ fn expand(
     weight: f64,
     extents: &NestedExtents<'_>,
     max_layers: usize,
+    visits: &mut usize,
     path: &mut Vec<String>,
     stack: &mut Vec<String>,
     out: &mut NestedFrame,
@@ -723,10 +731,12 @@ fn expand(
 ) -> crate::Result<()> {
     for layer in frame_layers(sequence, tick, extents, cancel)? {
         cancel.check()?;
+        // Visit budget (module docs, F-R44-7): every layer is charged before its work.
+        *visits = visits.checked_add(1).ok_or(PulseError::Overflow)?;
+        if *visits > max_layers {
+            return Err(PulseError::LimitExceeded);
+        }
         let ClipSource::Sequence { sequence_id } = &layer.source else {
-            if out.layers.len() >= max_layers {
-                return Err(PulseError::LimitExceeded);
-            }
             let mut layer = layer;
             layer.weight *= weight;
             out.layers.push(NestedLayer { path: path.clone(), layer });
@@ -742,7 +752,7 @@ fn expand(
         };
         path.push(layer.clip_id.clone());
         stack.push(sequence_id.clone());
-        let result = expand(sequences, inner, layer.source_tick, weight * layer.weight, extents, max_layers, path, stack, out, cancel);
+        let result = expand(sequences, inner, layer.source_tick, weight * layer.weight, extents, max_layers, visits, path, stack, out, cancel);
         path.pop();
         stack.pop();
         result?;
