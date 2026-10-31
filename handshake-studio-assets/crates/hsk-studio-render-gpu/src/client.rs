@@ -17,8 +17,8 @@ use crate::device::DeviceLease;
 use crate::error::Reason;
 use hsk_studio_accord::CancellationToken;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 mod transient;
 pub use transient::{TRANSIENT_DESCRIPTOR, TransientAdapter, TransientOptions};
@@ -171,6 +171,10 @@ pub struct GpuGrant {
     info: GrantInfo,
     /// Identity of the issuing ledger: a grant of another port is a stale grant there.
     ledger: u64,
+    /// Compact tombstone shared with the ledger's live record (R46 F-R46-5): how the owner closed
+    /// the grant (`TOMB_*`) once the ledger dropped the record, so a closed grant is classified
+    /// without a record kept for ever.
+    tomb: Arc<AtomicU8>,
     /// The device the backend runs on (crate-private; taken once by the backend).
     lease: Option<Box<DeviceLease>>,
 }
@@ -407,6 +411,16 @@ impl PortCounters {
     }
 }
 
+/// How a fault-injection hook closes a held grant (feature `test-faults`, V4-04; R46 F-R46-3).
+#[cfg(feature = "test-faults")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrantClosure {
+    /// The owner revoked the grant: later submissions are `Denied(Revoked)`.
+    Revoked,
+    /// The owner rebound the grant elsewhere: later submissions are `Lost { generation }`.
+    Superseded,
+}
+
 /// The client contract toward the one GPU owner. Implemented by the host owner (MT-203) and, until
 /// it exists, by [`TransientAdapter`] (asset-local) and [`UnavailablePort`].
 pub trait GpuClientPort: Send + Sync {
@@ -432,6 +446,13 @@ pub trait GpuClientPort: Send + Sync {
         cancel: &CancellationToken,
     ) -> Result<GpuGrant, ClientRefusal>;
     fn counters(&self) -> PortCounters;
+    /// Fault injection (feature `test-faults`, V4-04; R46 F-R46-3): close `grant` as the owner
+    /// would. A port without the hook closes nothing (`false`).
+    #[cfg(feature = "test-faults")]
+    fn inject_closure(&self, grant: &GpuGrant, closure: GrantClosure) -> bool {
+        let _ = (grant, closure);
+        false
+    }
 }
 
 /// The wgpu-free kill switch: no device, ever (`Unavailable(no_adapter)`); replaces the old
@@ -482,26 +503,42 @@ enum GrantState {
     Superseded,
     Revoked,
 }
-#[derive(Clone, Copy, Debug)]
+/// Tombstone values of a grant (`GpuGrant::tomb`).
+const TOMB_LIVE: u8 = 0;
+const TOMB_SETTLED: u8 = 1;
+const TOMB_SUPERSEDED: u8 = 2;
+/// The ledger's record of a live grant (open, or revoked and not yet settled).
+#[derive(Debug)]
 struct Record {
     generation: u64,
+    /// `Open` or `Revoked` (settled and superseded grants have no record).
     state: GrantState,
+    tomb: Arc<AtomicU8>,
 }
+/// Bounded bookkeeping (R46 F-R46-5): only live grants keep a record; a settled or superseded
+/// grant's record is dropped and its state survives in the grant's own tombstone. Ids are
+/// monotone, so an id this ledger issued without a record is closed. `open` counts the open
+/// grants (no scan).
 #[derive(Default)]
 struct LedgerState {
     next_id: u64,
-    records: BTreeMap<u64, Record>,
+    live: BTreeMap<u64, Record>,
+    open: u64,
     counters: PortCounters,
 }
 impl LedgerState {
     fn event(&mut self, event: PortEvent) {
         self.counters.count(event);
     }
-    fn open(&mut self) -> u64 {
-        self.records
-            .values()
-            .filter(|r| r.state == GrantState::Open)
-            .fold(0_u64, |n, _| n.saturating_add(1))
+    /// Drop the record of `id` and close its grant with tombstone `tomb`; an open grant leaves the
+    /// open count.
+    fn close(&mut self, id: u64, tomb: u8) {
+        if let Some(record) = self.live.remove(&id) {
+            record.tomb.store(tomb, Ordering::Release);
+            if record.state == GrantState::Open {
+                self.open = self.open.saturating_sub(1);
+            }
+        }
     }
 }
 
@@ -589,13 +626,16 @@ impl GrantLedger {
         let mut state = self.lock();
         state.next_id = state.next_id.saturating_add(1);
         let id = state.next_id;
-        state.records.insert(
+        let tomb = Arc::new(AtomicU8::new(TOMB_LIVE));
+        state.live.insert(
             id,
             Record {
                 generation: parts.generation,
                 state: GrantState::Open,
+                tomb: Arc::clone(&tomb),
             },
         );
+        state.open = state.open.saturating_add(1);
         state.event(PortEvent::Admitted);
         GpuGrant {
             info: GrantInfo {
@@ -611,24 +651,32 @@ impl GrantLedger {
                 client: request.client,
             },
             ledger: self.key,
+            tomb,
             lease: parts.lease,
         }
     }
-    /// The record of `grant`, or `None` for a grant this ledger did not issue (or whose generation
-    /// differs from the record: forged or of another lineage).
-    fn record_of(state: &LedgerState, key: u64, grant: &GpuGrant) -> Option<Record> {
-        if grant.ledger != key {
+    /// The state of `grant` here, or `None` for a grant this ledger did not issue (or whose
+    /// generation differs from its record: of another lineage). A live grant answers from its
+    /// record, a closed one (an issued id without a record) from its tombstone.
+    fn state_of(state: &LedgerState, key: u64, grant: &GpuGrant) -> Option<GrantState> {
+        if grant.ledger != key || grant.info.id.0 == 0 || grant.info.id.0 > state.next_id {
             return None;
         }
-        state
-            .records
-            .get(&grant.info.id.0)
-            .copied()
-            .filter(|r| r.generation == grant.info.generation)
+        match state.live.get(&grant.info.id.0) {
+            Some(r) if Arc::ptr_eq(&r.tomb, &grant.tomb) && r.generation == grant.info.generation => {
+                Some(r.state)
+            }
+            Some(_) => None,
+            None => match grant.tomb.load(Ordering::Acquire) {
+                TOMB_SETTLED => Some(GrantState::Settled),
+                TOMB_SUPERSEDED => Some(GrantState::Superseded),
+                _ => None,
+            },
+        }
     }
     pub fn authorize(&self, grant: &GpuGrant) -> Result<(), ClientRefusal> {
         let mut state = self.lock();
-        let refusal = match Self::record_of(&state, self.key, grant).map(|r| r.state) {
+        let refusal = match Self::state_of(&state, self.key, grant) {
             Some(GrantState::Open) => return Ok(()),
             Some(GrantState::Superseded) => ClientRefusal::Lost {
                 generation: grant.info.generation,
@@ -646,7 +694,7 @@ impl GrantLedger {
         settlement: Settlement,
     ) -> Result<SettleReceipt, SettleError> {
         let mut state = self.lock();
-        let verdict = match Self::record_of(&state, self.key, grant).map(|r| r.state) {
+        let verdict = match Self::state_of(&state, self.key, grant) {
             None => Err(SettleError::StaleGrant),
             Some(GrantState::Settled) => Err(SettleError::DoubleRelease),
             Some(GrantState::Superseded) => Err(SettleError::LateRelease),
@@ -658,9 +706,7 @@ impl GrantLedger {
         };
         match verdict {
             Ok(()) => {
-                if let Some(record) = state.records.get_mut(&grant.info.id.0) {
-                    record.state = GrantState::Settled;
-                }
+                state.close(grant.info.id.0, TOMB_SETTLED);
                 state.event(PortEvent::Settled(settlement.outcome));
                 Ok(SettleReceipt {
                     grant: grant.info,
@@ -676,7 +722,7 @@ impl GrantLedger {
     /// Whether `grant` may be rebound: its generation when it is the open grant of its lineage.
     pub fn check_rebind(&self, grant: &GpuGrant) -> Result<u64, ClientRefusal> {
         let mut state = self.lock();
-        let refusal = match Self::record_of(&state, self.key, grant).map(|r| r.state) {
+        let refusal = match Self::state_of(&state, self.key, grant) {
             Some(GrantState::Open) => return Ok(grant.info.generation),
             Some(GrantState::Superseded) => ClientRefusal::Lost {
                 generation: grant.info.generation,
@@ -726,16 +772,13 @@ impl GrantLedger {
         };
         {
             let mut state = self.lock();
-            let open = Self::record_of(&state, self.key, old)
-                .is_some_and(|r| r.state == GrantState::Open);
+            let open = Self::state_of(&state, self.key, old) == Some(GrantState::Open);
             if !open {
                 let refusal = ClientRefusal::Denied(DenialCode::Revoked);
                 state.event(PortEvent::Refused(refusal));
                 return Err(refusal);
             }
-            if let Some(record) = state.records.get_mut(&old.info.id.0) {
-                record.state = GrantState::Superseded;
-            }
+            state.close(old.info.id.0, TOMB_SUPERSEDED);
             parts.generation = old.info.generation.saturating_add(1);
             state.event(PortEvent::Rebound {
                 generation: parts.generation,
@@ -747,17 +790,38 @@ impl GrantLedger {
     /// and still settles once. `false` for a grant that is not open here.
     pub fn revoke(&self, grant: &GpuGrant) -> bool {
         let mut state = self.lock();
-        let open =
-            Self::record_of(&state, self.key, grant).is_some_and(|r| r.state == GrantState::Open);
-        if open && let Some(record) = state.records.get_mut(&grant.info.id.0) {
+        let open = Self::state_of(&state, self.key, grant) == Some(GrantState::Open);
+        if open && let Some(record) = state.live.get_mut(&grant.info.id.0) {
             record.state = GrantState::Revoked;
+            state.open = state.open.saturating_sub(1);
         }
         open
     }
+    /// Fault injection (feature `test-faults`, V4-04; R46 F-R46-3): close an open `grant` as the
+    /// owner would, revoked, or superseded without a successor (a rebind elsewhere). `false` when
+    /// it is not open here.
+    #[cfg(feature = "test-faults")]
+    pub fn inject_closure(&self, grant: &GpuGrant, closure: GrantClosure) -> bool {
+        match closure {
+            GrantClosure::Revoked => self.revoke(grant),
+            GrantClosure::Superseded => {
+                let mut state = self.lock();
+                let open = Self::state_of(&state, self.key, grant) == Some(GrantState::Open);
+                if open {
+                    state.close(grant.info.id.0, TOMB_SUPERSEDED);
+                }
+                open
+            }
+        }
+    }
+    /// Records the ledger holds: live grants only (open, or revoked and not yet settled); settled
+    /// and superseded grants keep no record (R46 F-R46-5).
+    pub fn live_records(&self) -> usize {
+        self.lock().live.len()
+    }
     pub fn counters(&self) -> PortCounters {
         let mut state = self.lock();
-        let open = state.open();
-        state.counters.outstanding = open;
+        state.counters.outstanding = state.open;
         state.counters
     }
 }

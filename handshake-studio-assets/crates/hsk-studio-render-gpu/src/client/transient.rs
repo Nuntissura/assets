@@ -93,6 +93,9 @@ pub struct TransientAdapter {
     options: TransientOptions,
     ledger: GrantLedger,
     next_device: AtomicU64,
+    /// Test-only candidate list replacing the platform order (feature `test-faults`).
+    #[cfg(feature = "test-faults")]
+    pinned: Option<&'static [GpuApi]>,
 }
 impl TransientAdapter {
     pub fn new(options: TransientOptions) -> Self {
@@ -100,7 +103,27 @@ impl TransientAdapter {
             options,
             ledger: GrantLedger::new(),
             next_device: AtomicU64::new(1),
+            #[cfg(feature = "test-faults")]
+            pinned: None,
         }
+    }
+    /// Test-only port (feature `test-faults`, V4-04; R46 F-R46-2): the transient adapter opening
+    /// DX12 only, so a test proves a DX12 row (the FXC shader-compiler class) explicitly while the
+    /// platform order is Vulkan first. Off Windows no DX12 adapter exists: admission is then
+    /// `Unavailable(no_adapter)`.
+    #[cfg(feature = "test-faults")]
+    pub fn dx12_for_tests(options: TransientOptions) -> Self {
+        Self {
+            pinned: Some(&[GpuApi::Dx12]),
+            ..Self::new(options)
+        }
+    }
+    fn candidates(&self) -> &'static [GpuApi] {
+        #[cfg(feature = "test-faults")]
+        if let Some(pinned) = self.pinned {
+            return pinned;
+        }
+        self.options.candidates()
     }
     pub fn options(&self) -> TransientOptions {
         self.options
@@ -116,7 +139,7 @@ impl TransientAdapter {
         self.ledger.refuse(refusal)
     }
     fn parts(&self, device: DeviceRef, generation: u64, cancel: &CancellationToken) -> Result<GrantParts, ClientRefusal> {
-        let lease = acquire_lease(self.options.candidates(), self.options.acquire_timeout, cancel)
+        let lease = acquire_lease(self.candidates(), self.options.acquire_timeout, cancel)
             .map_err(|e| self.refusal_of(e))?;
         Ok(GrantParts {
             generation,
@@ -188,6 +211,10 @@ impl GpuClientPort for TransientAdapter {
     }
     fn counters(&self) -> PortCounters {
         self.ledger.counters()
+    }
+    #[cfg(feature = "test-faults")]
+    fn inject_closure(&self, grant: &GpuGrant, closure: super::GrantClosure) -> bool {
+        self.ledger.inject_closure(grant, closure)
     }
 }
 

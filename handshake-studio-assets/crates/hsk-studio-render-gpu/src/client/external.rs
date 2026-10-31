@@ -69,4 +69,8 @@ impl GpuClientPort for ExternalPort {
     fn counters(&self) -> PortCounters {
         self.ledger.counters()
     }
+    #[cfg(feature = "test-faults")]
+    fn inject_closure(&self, grant: &GpuGrant, closure: super::GrantClosure) -> bool {
+        self.ledger.inject_closure(grant, closure)
+    }
 }

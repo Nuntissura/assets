@@ -129,6 +129,9 @@ struct OutputPipeline {
     /// Stage-6a view parameters (`hsk_studio_prism::view_gpu_params`), written per chunk when the
     /// plan declares an SDR view (lane SMB-PRISM-VIEW-TRANSFORM-2).
     view_params: wgpu::Buffer,
+    /// Overflow-flag writes queued so far (feature `test-faults`: R46 F-R46-4 proof).
+    #[cfg(feature = "test-faults")]
+    flag_resets: std::sync::atomic::AtomicU64,
 }
 
 impl OutputPipeline {
@@ -247,6 +250,8 @@ impl OutputPipeline {
                 flag,
                 flag_readback,
                 view_params,
+                #[cfg(feature = "test-faults")]
+                flag_resets: std::sync::atomic::AtomicU64::new(0),
             }
         })
     }
@@ -272,6 +277,15 @@ pub(in crate::plan_sink) struct TextureOut<'a> {
 }
 
 impl TextureOut<'_> {
+    /// A fresh overflow flag for this execution on the caller's queue (ordered before every pass).
+    /// Called by `execute_inner` only after the grant is authorised and the device is ready (R46
+    /// F-R46-4): a refused execution queues no device work under an unauthorised grant.
+    pub(in crate::plan_sink) fn reset_flag(&self) {
+        self.queue.write_buffer(&self.pipeline.flag, 0, &[0u8; FLAG_BYTES as usize]);
+        #[cfg(feature = "test-faults")]
+        self.pipeline.flag_resets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Encode the central `rect` of the finished frame in `level` (frame width `frame_width`,
     /// effect margin `margin`) into the target texture and submit on the caller's queue.
     pub(in crate::plan_sink) fn write_chunk_in(
@@ -458,6 +472,13 @@ impl SharedDevice {
         &self.backend
     }
 
+    /// Overflow-flag writes this device queued (feature `test-faults`, V4-04; R46 F-R46-4): one per
+    /// authorised texture execution, none for a refused one.
+    #[cfg(feature = "test-faults")]
+    pub fn overflow_flag_writes(&self) -> u64 {
+        self.output.flag_resets.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Render `plan` (with its envelope when `extensions` is `Some`) into `target`. Same order and
     /// typed failures as [`GpuBackend::execute_detailed`]; the target is checked first.
     pub fn render_to_texture(
@@ -496,8 +517,8 @@ impl SharedDevice {
                 .and_then(|d| d.view())
                 .and_then(hsk_studio_prism::view_gpu_params),
         };
-        // A fresh overflow flag for this execution (ordered before every pass on the queue).
-        self.queue.write_buffer(&self.output.flag, 0, &[0u8; FLAG_BYTES as usize]);
+        // The fresh overflow flag is written by execute_inner after admission and authorisation
+        // (TextureOut::reset_flag, R46 F-R46-4), still before every pass on the queue.
         self.backend.execute_inner(
             plan,
             extensions,

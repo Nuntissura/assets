@@ -6,7 +6,11 @@
 //! a host-owned device). These proofs run on a live adapter and follow `tests/gpu-proof.toml`
 //! (V4-03): without an adapter they FAIL with `NOT_PROVEN: no adapter` while `require_gpu = true`;
 //! on an adapter whose backend is not DX12 the FXC-specific assertions print a `NOT_PROVEN:` line
-//! (the backend compiler differs) while the typed-refusal assertions still run.
+//! (the backend compiler differs) while the typed-refusal assertions still run. R46 F-R46-2 (lane
+//! SMB-R46-FOLLOWUPS-1): the transient platform order is Vulkan first on Windows, so on Windows each
+//! FXC test also runs a row explicitly on DX12 (`TransientAdapter::dx12_for_tests`, test-faults),
+//! which proves the FXC class; the platform-order row stays as an extra row and prints the
+//! `NOT_PROVEN:` line only when no DX12 row ran.
 #![cfg(feature = "test-faults")]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::{Mask, Rect};
@@ -16,9 +20,10 @@ use hsk_studio_pigment::render_plan::{
     SourceKey, StudioBlendMode, TilePlanes, TileSink,
 };
 use hsk_studio_render_gpu::{
-    DeviceOptions, FAULT_MESSAGE_MAX_BYTES, GpuBackend, GpuError, PipelineFault, Reason,
+    AdmissionRequest, DeviceOptions, FAULT_MESSAGE_MAX_BYTES, GpuBackend, GpuError, PipelineFault,
+    Reason, TransientAdapter, TransientOptions,
 };
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// Accepted by naga (valid WGSL), rejected by FXC: a data-dependent write to a vector component
 /// inside a loop whose trip count is data-dependent (FXC cannot unroll it and cannot address a
@@ -153,31 +158,59 @@ impl TileSink for Image {
     }
 }
 
-/// FXC-specific expectations of a fault, or a `NOT_PROVEN:` line on another backend.
-fn check_fxc_fault(fault: &PipelineFault, backend: &str, label: &str) {
+/// FXC-specific expectations of a fault on DX12.
+fn check_fxc_fault(fault: &PipelineFault, label: &str) {
     assert_eq!(fault.code, "pipeline_create", "{fault}");
     assert_eq!(fault.label, label, "{fault}");
-    if backend == "dx12" {
-        assert_eq!(fault.class, "internal", "{fault}");
-        assert!(fault.message.contains("D3DCompile"), "backend message missing: {fault}");
-    } else {
-        eprintln!("NOT_PROVEN: backend {backend} is not dx12; the FXC rejection class was not exercised ({fault})");
+    assert_eq!(fault.class, "internal", "{fault}");
+    assert!(fault.message.contains("D3DCompile"), "backend message missing: {fault}");
+}
+
+/// The test-only DX12 port (R46 F-R46-2): the transient adapter opening DX12 only.
+fn dx12_port() -> Arc<TransientAdapter> {
+    Arc::new(TransientAdapter::dx12_for_tests(TransientOptions::default()))
+}
+
+/// The DX12 row of an FXC test: `true` on a live DX12 device (asserted to be DX12), `false`
+/// off Windows (no DX12) or without an adapter under a permissive policy.
+fn dx12_row(backend: &GpuBackend, what: &str) -> bool {
+    if !cfg!(windows) {
+        return false;
     }
+    if !adapter_present(backend, what) {
+        return false;
+    }
+    assert_eq!(backend.grant_info().map(|g| g.backend), Some("dx12"), "{what}: the DX12 row runs on DX12");
+    true
 }
 
 /// A backend whose shader FXC rejects is the typed pipeline failure at construction, with the
 /// failing pipeline's label and FXC's message, before any dispatch: never `device_fault`, never a
-/// panic, never `Unavailable`; no sink call.
+/// panic, never `Unavailable`; no sink call. Rows: explicit DX12 (Windows; the FXC class), then
+/// the transient platform order (Vulkan first on Windows).
 #[test]
 fn fxc_rejected_kernel_is_a_typed_refusal_before_any_dispatch() {
     let _guard = device_lock();
+    let on_dx12 = GpuBackend::with_shader_source_on(
+        dx12_port(),
+        AdmissionRequest::asset_local(),
+        DeviceOptions::default(),
+        FXC_REJECTED_WGSL,
+    );
+    let fxc_proven = dx12_row(&on_dx12, "FXC-rejected kernel typing (dx12 row)");
+    if fxc_proven {
+        let fault = on_dx12.pipeline_fault().expect("pipeline fault detail");
+        eprintln!("PIPELINE_FAULT (dx12 row): {fault}");
+        check_fxc_fault(&fault, "hsk-studio-render-gpu composite");
+        fxc_rejected_row(&on_dx12, fault);
+    }
+    drop(on_dx12);
     let broken = GpuBackend::with_shader_source(DeviceOptions::default(), FXC_REJECTED_WGSL);
     if !adapter_present(&broken, "FXC-rejected kernel typing") {
         return;
     }
     let fault = broken.pipeline_fault().expect("pipeline fault detail");
     eprintln!("PIPELINE_FAULT: {fault}");
-    assert_eq!(broken.failure(), Some(GpuError::Pipeline("pipeline_create")));
     // The backend name comes from a live device: build a sound backend for it.
     let backend = GpuBackend::new(DeviceOptions::default())
         .device_info()
@@ -189,14 +222,25 @@ fn fxc_rejected_kernel_is_a_typed_refusal_before_any_dispatch() {
     // composite, whose entry point `composite_ext` the WGSL lacks: still the typed
     // pipeline_create at construction, before any dispatch, now in the validation class.
     if backend == "dx12" {
-        check_fxc_fault(&fault, backend, "hsk-studio-render-gpu composite");
+        check_fxc_fault(&fault, "hsk-studio-render-gpu composite");
     } else {
         assert_eq!(fault.code, "pipeline_create", "{fault}");
         assert_eq!(fault.label, "hsk-studio-render-gpu composite envelope", "{fault}");
         assert_eq!(fault.class, "validation", "{fault}");
         assert!(fault.message.contains("composite_ext"), "{fault}");
-        eprintln!("NOT_PROVEN: backend {backend} is not dx12; the FXC rejection class was not exercised ({fault})");
+        if fxc_proven {
+            eprintln!("FXC_ROW: backend {backend} builds the composite pipeline; the FXC class is proven on the dx12 row");
+        } else {
+            eprintln!("NOT_PROVEN: backend {backend} is not dx12 and no dx12 row ran; the FXC rejection class was not exercised ({fault})");
+        }
     }
+    fxc_rejected_row(&broken, fault);
+}
+
+/// The backend-independent half of the FXC test on one row: typed failure, bounded and redacted
+/// message, no sink call, and the same failure after a re-acquire.
+fn fxc_rejected_row(broken: &GpuBackend, fault: PipelineFault) {
+    assert_eq!(broken.failure(), Some(GpuError::Pipeline("pipeline_create")));
     assert!(fault.message.len() <= FAULT_MESSAGE_MAX_BYTES);
     // machine paths are redacted (lane SMB-RENDER-GPU-SUBMIT-FAULT): FXC names the source by the
     // working directory plus the label; only the file name stays
@@ -225,13 +269,27 @@ fn fxc_rejected_kernel_is_a_typed_refusal_before_any_dispatch() {
 /// On one live device: a naga-rejected and an FXC-rejected probe kernel are typed refusals, the
 /// uncaptured-error latch stays clear, a valid probe kernel is then built, and the backend's own
 /// pipelines still render a plan with the expected pixels on the same device (same generation).
+/// Rows: explicit DX12 (Windows; FXC rejects the probe), then the transient platform order.
 #[test]
 fn probe_failure_leaves_the_device_usable() {
     let _guard = device_lock();
-    let backend = GpuBackend::new(DeviceOptions { chunk_side: 8, ..DeviceOptions::default() });
+    let options = DeviceOptions { chunk_side: 8, ..DeviceOptions::default() };
+    let on_dx12 = GpuBackend::with_grant(dx12_port(), AdmissionRequest::asset_local(), options);
+    let fxc_proven = dx12_row(&on_dx12, "pipeline-fault device reuse (dx12 row)");
+    if fxc_proven {
+        probe_row(&on_dx12, true);
+    }
+    drop(on_dx12);
+    let backend = GpuBackend::new(options);
     if !adapter_present(&backend, "pipeline-fault device reuse") {
         return;
     }
+    probe_row(&backend, fxc_proven);
+}
+
+/// One row of [`probe_failure_leaves_the_device_usable`]; `fxc_proven`: a DX12 row proved the FXC
+/// class (so a non-DX12 row prints no `NOT_PROVEN:` line).
+fn probe_row(backend: &GpuBackend, fxc_proven: bool) {
     let info = backend.device_info().expect("live device");
     eprintln!("ADAPTER: {}", info.text());
 
@@ -261,13 +319,17 @@ fn probe_failure_leaves_the_device_usable() {
         );
         let fxc = backend.pipeline_fault().expect("detail");
         eprintln!("PROBE_FAULT: {fxc}");
-        check_fxc_fault(&fxc, info.backend, "hsk-studio-render-gpu probe");
+        check_fxc_fault(&fxc, "hsk-studio-render-gpu probe");
     } else {
         assert_eq!(backend.probe_pipeline(FXC_REJECTED_WGSL, "composite"), Ok(()));
-        eprintln!(
-            "NOT_PROVEN: backend {} is not dx12; the FXC-rejected probe kernel builds there, the FXC rejection class was not exercised",
-            info.backend
-        );
+        if fxc_proven {
+            eprintln!("FXC_ROW: backend {} builds the FXC-rejected probe kernel; the FXC class is proven on the dx12 row", info.backend);
+        } else {
+            eprintln!(
+                "NOT_PROVEN: backend {} is not dx12 and no dx12 row ran; the FXC-rejected probe kernel builds there, the FXC rejection class was not exercised",
+                info.backend
+            );
+        }
     }
 
     assert_eq!(backend.probe_pipeline(VALID_WGSL, "composite"), Ok(()));
@@ -307,6 +369,23 @@ fn probe_hook_is_gated_and_the_fault_is_plain_data() {
         lines[at.saturating_sub(3)..at].iter().any(|l| l.trim() == "#[cfg(feature = \"test-faults\")]"),
         "probe_pipeline without the test-faults gate"
     );
+    // R46 F-R46-2/-3/-4/-5 hooks: every new fault-injection item is behind test-faults (V4-04).
+    for (source, item) in [
+        (plan_sink, "pub fn with_shader_source_on"),
+        (plan_sink, "pub fn inject_grant_closure"),
+        (include_str!("../src/client/transient.rs"), "pub fn dx12_for_tests"),
+        (include_str!("../src/client.rs"), "pub fn inject_closure"),
+        (include_str!("../src/client.rs"), "fn inject_closure(&self, grant: &GpuGrant, closure: GrantClosure) -> bool {"),
+        (include_str!("../src/client.rs"), "pub enum GrantClosure"),
+        (include_str!("../src/plan_sink/shared.rs"), "pub fn overflow_flag_writes"),
+    ] {
+        let lines: Vec<&str> = source.lines().collect();
+        let at = lines.iter().position(|l| l.trim_start().starts_with(item)).unwrap_or_else(|| panic!("{item}"));
+        assert!(
+            lines[at.saturating_sub(4)..at].iter().any(|l| l.trim() == "#[cfg(feature = \"test-faults\")]"),
+            "{item} without the test-faults gate"
+        );
+    }
     for line in include_str!("../src/pipeline.rs").lines() {
         let t = line.trim_start();
         if t.starts_with("pub ") {

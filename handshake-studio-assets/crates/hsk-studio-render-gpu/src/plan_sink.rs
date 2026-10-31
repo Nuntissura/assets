@@ -1410,6 +1410,32 @@ impl GpuBackend {
         )
     }
 
+    /// Fault-injection constructor (V4-04: compiled only with the `test-faults` feature; R46
+    /// F-R46-2): [`GpuBackend::with_shader_source`] on a grant of `port` for `request`, so a test
+    /// chooses the port (for example `TransientAdapter::dx12_for_tests`, the FXC compiler class).
+    #[cfg(feature = "test-faults")]
+    pub fn with_shader_source_on(
+        port: Arc<dyn GpuClientPort>,
+        request: AdmissionRequest,
+        options: DeviceOptions,
+        wgsl: &str,
+    ) -> Self {
+        Self::admit_into(port, request, options, Some(wgsl.to_owned()))
+    }
+
+    /// Fault-injection hook (V4-04: compiled only with the `test-faults` feature; R46 F-R46-3):
+    /// the port closes the held grant as its owner would (revoked, or superseded by a rebind
+    /// elsewhere) while the device stays ready, so the next `execute` or `execute_grade` meets the
+    /// refusal of `authorize`. `false` when no grant is held or the port has no hook.
+    #[cfg(feature = "test-faults")]
+    pub fn inject_grant_closure(&self, closure: crate::client::GrantClosure) -> bool {
+        let inner = self.lock();
+        inner
+            .grant
+            .as_ref()
+            .is_some_and(|grant| self.port.inject_closure(grant, closure))
+    }
+
     fn admit_into(
         port: Arc<dyn GpuClientPort>,
         request: AdmissionRequest,
@@ -1844,6 +1870,11 @@ impl GpuBackend {
             State::Unavailable(reason) => return Err(GpuError::Unavailable(*reason)),
             State::Failed(error) => return Err(*error),
         };
+        // The texture output's overflow flag is written only now, under an authorised grant on a
+        // ready device (R46 F-R46-4: it was queued before authorize), and before every pass.
+        if let Some(out) = texture {
+            out.reset_flag();
+        }
         let keyed = match (keyed_plan, extensions) {
             (true, Some(e)) => Some(key::run(ctx, plan, e, sources, request, cancel)?),
             _ => None,
@@ -4499,6 +4530,9 @@ use shared::TextureOut;
 struct TextureOut<'a>(std::convert::Infallible, std::marker::PhantomData<&'a ()>);
 #[cfg(not(feature = "shared-device"))]
 impl TextureOut<'_> {
+    fn reset_flag(&self) {
+        match self.0 {}
+    }
     fn write_chunk_in(&self, _: &wgpu::Buffer, _: Rect, _: u32, _: u32, _: bool) -> Result<(), GpuError> {
         match self.0 {}
     }

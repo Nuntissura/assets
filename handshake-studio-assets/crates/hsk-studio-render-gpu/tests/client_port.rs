@@ -446,3 +446,208 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
+
+// ---- R46 findings F-R46-3, F-R46-4, F-R46-5 (lane SMB-R46-FOLLOWUPS-1) ----------------------------
+
+/// F-R46-5: the ledger keeps a record only for live grants (open, or revoked and unsettled), keeps
+/// an open count instead of scanning, and still classifies long-closed grants exactly from their
+/// tombstones: DoubleRelease for a settled one, LateRelease and Lost for a superseded one, after
+/// 10 000 further grants came and went.
+#[test]
+fn grant_ledger_keeps_only_live_records_and_classifies_closed_grants_exactly() {
+    let ledger = GrantLedger::new();
+    let budget = 1 << 30;
+    let done = || Settlement::empty(SettleOutcome::Completed);
+    let first = ledger.issue_host(&attributed(), budget, 41, "vulkan").unwrap();
+    let old = ledger.issue_host(&attributed(), budget, 41, "vulkan").unwrap();
+    let successor = ledger.rebind_host(&old, budget, "vulkan").unwrap();
+    assert!(ledger.settle(&first, done()).is_ok());
+    for _ in 0..10_000 {
+        let g = ledger.issue_host(&attributed(), budget, 41, "vulkan").unwrap();
+        assert!(ledger.settle(&g, done()).is_ok());
+    }
+    let revoked = ledger.issue_host(&attributed(), budget, 41, "vulkan").unwrap();
+    assert!(ledger.revoke(&revoked));
+    assert_eq!(ledger.live_records(), 2, "the open successor and the unsettled revoked grant only");
+    let c = ledger.counters();
+    assert_eq!((c.admitted, c.settled, c.rebound, c.outstanding), (10_004, 10_001, 1, 1), "{c:?}");
+    assert_eq!(ledger.settle(&first, done()), Err(SettleError::DoubleRelease));
+    assert_eq!(ledger.authorize(&first), Err(ClientRefusal::Denied(DenialCode::Revoked)));
+    assert_eq!(ledger.settle(&old, Settlement::empty(SettleOutcome::Lost)), Err(SettleError::LateRelease));
+    assert_eq!(ledger.authorize(&old), Err(ClientRefusal::Lost { generation: 1 }));
+    assert_eq!(ledger.check_rebind(&old), Err(ClientRefusal::Lost { generation: 1 }));
+    assert_eq!(ledger.authorize(&revoked), Err(ClientRefusal::Denied(DenialCode::Revoked)));
+    assert_eq!(GrantLedger::new().settle(&successor, done()), Err(SettleError::StaleGrant));
+    assert_eq!(ledger.authorize(&successor), Ok(()));
+    assert!(ledger.settle(&revoked, Settlement::empty(SettleOutcome::Canceled)).is_ok(), "a revoked grant settles once");
+    assert!(ledger.settle(&successor, done()).is_ok());
+    assert_eq!(ledger.live_records(), 0);
+    let c = ledger.counters();
+    assert_eq!((c.settled, c.double_release, c.late_release, c.outstanding), (10_003, 1, 1, 0), "{c:?}");
+}
+
+/// F-R46-3: every `PortEvent` reaches a capture sink through `report_port` as exactly one terminal
+/// frame carrying `port_outcome_of(event)` and no event text; a canceled token is rewritten to
+/// Canceled by Observe.
+#[test]
+fn report_port_emits_one_terminal_frame_per_port_event() {
+    use hsk_studio_accord::{ActorContext, DomainId};
+    use hsk_studio_observe::{Budget, DeliveryClass, DeliveryError, Observe, SinkPort};
+    use hsk_studio_render_gpu::report_port;
+    struct Frames(Vec<(DeliveryClass, Vec<u8>)>);
+    impl SinkPort for Frames {
+        fn try_send(&mut self, class: DeliveryClass, bytes: &[u8]) -> Result<(), DeliveryError> {
+            self.0.push((class, bytes.to_vec()));
+            Ok(())
+        }
+    }
+    let observe = || {
+        let actor = ActorContext::new("a", "p", "oa", "op", "space", "session").unwrap();
+        let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+        Observe::new(42, 7, resource, actor, Budget::new(0, 0).unwrap())
+    };
+    let events = [
+        PortEvent::Admitted,
+        PortEvent::Refused(ClientRefusal::Canceled),
+        PortEvent::Refused(ClientRefusal::Unavailable(Reason::NoAdapter)),
+        PortEvent::Refused(ClientRefusal::Lost { generation: 1 }),
+        PortEvent::Refused(ClientRefusal::Denied(DenialCode::BudgetExceeded)),
+        PortEvent::Refused(ClientRefusal::Denied(DenialCode::QuotaUnavailable)),
+        PortEvent::Refused(ClientRefusal::Denied(DenialCode::Revoked)),
+        PortEvent::Settled(SettleOutcome::Completed),
+        PortEvent::Settled(SettleOutcome::Canceled),
+        PortEvent::Settled(SettleOutcome::Failed),
+        PortEvent::Settled(SettleOutcome::Lost),
+        PortEvent::Settled(SettleOutcome::Abandoned),
+        PortEvent::SettleRefused(SettleError::DoubleRelease),
+        PortEvent::SettleRefused(SettleError::LateRelease),
+        PortEvent::SettleRefused(SettleError::StaleGrant),
+        PortEvent::SettleRefused(SettleError::InFlight),
+        PortEvent::Rebound { generation: 2 },
+    ];
+    let cancel = CancellationToken::default();
+    for event in events {
+        let (mut o, mut frames) = (observe(), Frames(Vec::new()));
+        let receipt = report_port(event, 42, 7, &cancel, &mut o, &mut frames).expect("delivered");
+        assert_eq!((receipt.outcome, receipt.correlation_id, receipt.revision), (port_outcome_of(event), 42, 7), "{event:?}");
+        assert_eq!(frames.0.len(), 1, "{event:?}");
+        assert_eq!(frames.0[0].0, DeliveryClass::Terminal);
+        let code = event.code().as_bytes();
+        assert!(!frames.0[0].1.windows(code.len()).any(|w| w == code), "{event:?}: event text in the frame");
+        assert!(report_port(event, 42, 7, &cancel, &mut o, &mut frames).is_err(), "one terminal frame only");
+        assert_eq!(frames.0.len(), 1);
+    }
+    let canceled = CancellationToken::default();
+    canceled.cancel();
+    let (mut o, mut frames) = (observe(), Frames(Vec::new()));
+    let receipt = report_port(PortEvent::Admitted, 42, 7, &canceled, &mut o, &mut frames).expect("delivered");
+    assert_eq!(receipt.outcome, Outcome::Canceled);
+}
+
+/// Live, feature `test-faults` (F-R46-3): the port revokes, or supersedes, the grant a live
+/// transient backend holds while its device stays ready; `execute` and `execute_grade` then refuse
+/// with the authorize refusal (`Denied(revoked)` / `Lost`), with no sink call and the grade surface
+/// untouched, and the refusal is the backend's last port event.
+#[cfg(feature = "test-faults")]
+#[test]
+fn a_closed_held_grant_refuses_execute_and_grade_without_device_work() {
+    use hsk_studio_pigment::render_plan::GradeSurface;
+    use hsk_studio_render_gpu::client::GrantClosure;
+    let _guard = device_lock();
+    let program = hsk_studio_prism::grade::GradeProgram {
+        input_lut: None,
+        exposure_gain: 2.0,
+        primary: None,
+        tone: None,
+        saturation: 1.0,
+        vibrance: None,
+        look: None,
+        faded_floor: 0.0,
+        rgb_curves: [None, None, None, None],
+        hsl_curves: [None, None, None, None, None],
+        wheels: None,
+        secondaries: Vec::new(),
+        vignette: None,
+        luma: [0.2126, 0.7152, 0.0722],
+    };
+    for (closure, refused, event) in [
+        (GrantClosure::Revoked, BackendError::Unavailable("grant_revoked"), ClientRefusal::Denied(DenialCode::Revoked)),
+        (GrantClosure::Superseded, BackendError::DeviceLost { generation: 1 }, ClientRefusal::Lost { generation: 1 }),
+    ] {
+        let transient = Arc::new(TransientAdapter::new(TransientOptions::default()));
+        let backend = GpuBackend::with_grant(transient.clone(), attributed(), DeviceOptions::default());
+        if !live(&backend, "closed held grant") {
+            return;
+        }
+        let cancel = CancellationToken::default();
+        let mut sink = Image::new();
+        backend.execute(&plan(), &request(), &NoSources, &cancel, &mut sink).expect("live before the closure");
+        let calls = sink.calls;
+        let mut colour: Vec<u8> = [0.25_f32; 12].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let alpha: Vec<u8> = [1.0_f32; 4].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let before = colour.clone();
+        assert!(backend.inject_grant_closure(closure), "{closure:?}");
+        assert_eq!(backend.execute(&plan(), &request(), &NoSources, &cancel, &mut sink).map(|_| ()), Err(refused), "{closure:?}");
+        assert_eq!(sink.calls, calls, "{closure:?}: no sink call");
+        assert_eq!(backend.last_port_event(), Some(PortEvent::Refused(event)));
+        let mut surface = GradeSurface { width: 2, height: 2, colour: &mut colour, alpha: &alpha };
+        assert_eq!(backend.execute_grade(&program, &mut surface, &cancel), Some(Err(refused)), "{closure:?}");
+        assert_eq!(colour, before, "{closure:?}: grade surface untouched");
+        assert!(!backend.is_lost(), "{closure:?}: the device itself stays ready");
+        assert!(!backend.inject_grant_closure(closure), "a closed grant cannot be closed again");
+        let c = transient.counters();
+        assert_eq!((c.admitted, c.outstanding), (1, 0), "{closure:?} {c:?}");
+    }
+}
+
+/// Live, features `shared-device` and `test-faults` (F-R46-4): `SharedDevice::render_to_texture`
+/// writes its overflow flag only after admission and authorisation: an authorised render queues
+/// one flag write, a render under a revoked grant is refused `Denied(revoked)` and queues none.
+#[cfg(all(feature = "shared-device", feature = "test-faults"))]
+#[test]
+fn shared_texture_flag_is_written_only_under_an_authorised_grant() {
+    use hsk_studio_render_gpu::client::GrantClosure;
+    use hsk_studio_render_gpu::{SharedDevice, TARGET_FORMAT};
+    let _guard = device_lock();
+    let backends = if cfg!(windows) { wgpu::Backends::VULKAN | wgpu::Backends::DX12 } else { wgpu::Backends::PRIMARY };
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends, flags: wgpu::InstanceFlags::empty(), ..Default::default() });
+    let adapter = match block(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        force_fallback_adapter: false,
+        compatible_surface: None,
+    })) {
+        Ok(adapter) => adapter,
+        Err(_) if !require_gpu() => {
+            eprintln!("NOT_PROVEN: no adapter; shared-texture flag order not run");
+            return;
+        }
+        Err(_) => panic!("NOT_PROVEN: no adapter; shared-texture flag order requires a GPU (tests/gpu-proof.toml require_gpu = true)"),
+    };
+    let (device, queue) = block(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("test host device"),
+        required_limits: wgpu::Limits::downlevel_defaults(),
+        ..Default::default()
+    }))
+    .expect("adapter present but no device");
+    let shared = SharedDevice::new(&device, &queue, adapter.get_info(), DeviceOptions::default()).expect("shared device");
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test target"),
+        size: wgpu::Extent3d { width: EXTENT.width, height: EXTENT.height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: TARGET_FORMAT,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let cancel = CancellationToken::default();
+    shared.render_to_texture(&plan(), None, &request(), &NoSources, &cancel, &target).expect("authorised render");
+    assert_eq!(shared.overflow_flag_writes(), 1, "one flag write per authorised render");
+    assert!(shared.backend().inject_grant_closure(GrantClosure::Revoked));
+    assert_eq!(
+        shared.render_to_texture(&plan(), None, &request(), &NoSources, &cancel, &target).map(|_| ()),
+        Err(GpuError::Denied(DenialCode::Revoked))
+    );
+    assert_eq!(shared.overflow_flag_writes(), 1, "a refused render queues no flag write");
+    eprintln!("GPU_CLIENT_SHARED_FLAG: host device {} flag writes {}", adapter.get_info().backend, shared.overflow_flag_writes());
+}
