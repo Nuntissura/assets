@@ -394,9 +394,14 @@ mod export_media {
     /// The fixture open with the program monitor's counting frame source, the tone as the sound
     /// port, clip 1 nested, and `port` bound as the viewer's job port.
     fn viewer(label: &str, port: Arc<Recording>) -> (Scratch, Viewer, Arc<AtomicU64>) {
+        viewer_in(label, port, crate::support_context::context())
+    }
+
+    /// [`viewer`] on the run context `context`.
+    fn viewer_in(label: &str, port: Arc<Recording>, context: hsk_studio_harness_core::RunContext) -> (Scratch, Viewer, Arc<AtomicU64>) {
         let scratch = Scratch::new(label);
         let frames = Arc::new(AtomicU64::new(0));
-        let mut v = crate::support_context::viewer(Prefer::Cpu);
+        let mut v = Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), context);
         v.open(&package(&scratch.0, vec![main_sequence()])).unwrap_or_else(|e| panic!("{e}"));
         v.open_monitor("seq-main", 64, 32).unwrap();
         v.set_monitor_sources(Box::new(Solids(Arc::clone(&frames))), Box::new(Known));
@@ -499,6 +504,51 @@ mod export_media {
         let (x, y) = (32usize, 16usize);
         let got = rgb(yp[y * w + x], cb[y * (w / 2) + x / 2], cr[y * (w / 2) + x / 2]);
         assert!((0..3).all(|c| (got[c] - RED[c]).abs() <= 0.03), "the bound snapshot's red: {got:?}");
+    }
+
+    /// Terminal job frames, counted (codes and correlations travel in the settlement).
+    #[derive(Clone, Default)]
+    struct JobFrames(Arc<AtomicU64>);
+    impl hsk_studio_observe::SinkPort for JobFrames {
+        fn try_send(&mut self, class: hsk_studio_observe::DeliveryClass, _: &[u8]) -> Result<(), hsk_studio_observe::DeliveryError> {
+            assert_eq!(class, hsk_studio_observe::DeliveryClass::Terminal, "job frames are terminal");
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// R48 F-R48-3 (lane SMB-R47-FOLLOWUPS-1): each Export Media job takes its own correlation from
+    /// the viewer's run context (here a source starting at 9000, so neither the queue ordinal 0 nor
+    /// an item id can pass for it); the two jobs' correlations differ, and each job's observe frame
+    /// carries its job's correlation (`frame_correlation`); one terminal frame per job.
+    #[test]
+    fn two_export_media_jobs_carry_their_own_run_correlations() {
+        let port = Arc::new(Recording::default());
+        let actor = hsk_studio_accord::ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap();
+        let context = hsk_studio_harness_core::RunContext::new(
+            actor,
+            hsk_studio_harness_core::ClientSessionId::parse("job-correlations").unwrap(),
+            Arc::new(hsk_studio_harness_core::TransientCorrelation::starting_at(9000)),
+        );
+        let (s, mut v, _) = viewer_in("correlations", port.clone(), context);
+        let frames = JobFrames::default();
+        v.set_job_sink(Box::new(frames.clone()));
+        let mut correlations = Vec::new();
+        for name in ["one.mov", "two.mov"] {
+            let mut r = ExportSequenceRequest::new(PRESET, s.0.join(name));
+            r.width = 64;
+            r.height = 32;
+            let result = v.export_sequence("seq-main", r).unwrap_or_else(|e| panic!("{}: {}", e.code, e.detail));
+            let job = &result["job"];
+            assert_eq!(job["outcome"], "completed", "{result}");
+            let c = job["correlation"].as_u64().unwrap_or_else(|| panic!("a correlation: {job}"));
+            assert_eq!(job["frame_correlation"].as_u64(), Some(c), "the job's frame carries its correlation: {job}");
+            correlations.push(c);
+        }
+        assert_ne!(correlations[0], correlations[1], "one correlation per job");
+        assert!(correlations.iter().all(|&c| c >= 9000), "from the run's correlation source, never an ordinal: {correlations:?}");
+        assert_eq!(frames.0.load(Ordering::SeqCst), 2, "one terminal frame per job");
+        assert_eq!(port.released(), vec![1, 2]);
     }
 
     fn read(bytes: &[u8], count: u64) -> Vec<(i64, Vec<u8>)> {

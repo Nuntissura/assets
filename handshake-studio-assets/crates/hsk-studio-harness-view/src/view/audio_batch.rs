@@ -366,7 +366,9 @@ impl AudioBatchQueue {
             // Admitted before the item starts; the item's own token is the admission's cancel.
             let revision = self.admission.revision();
             let bytes = std::fs::metadata(&job.input).map_or(0, |m| m.len());
-            let request = self.admission.request(hsk_studio_session::Action::Export, bytes, revision, item.handle.id);
+            // One correlation per job from the admission's source (the viewer's run context when bound;
+            // R48 F-R48-3: never the item id).
+            let request = self.admission.request(hsk_studio_session::Action::Export, bytes, revision, self.admission.next_correlation());
             let admitted = match self.admission.admit(request, revision, &item.handle.cancel) {
                 Ok(admitted) => Some(admitted),
                 Err(refusal) => {
@@ -392,6 +394,9 @@ impl AudioBatchQueue {
                 let settled = match &receipt.outcome {
                     BatchOutcome::Complete => admitted.complete(revision),
                     BatchOutcome::Canceled => admitted.settle(hsk_studio_session::JobOutcome::Canceled),
+                    // `*code` is the `&'static str` the outcome needs; the lint's `code` would be a
+                    // borrow-scoped `&str` and does not compile (R48 F-R48-8).
+                    #[allow(clippy::explicit_auto_deref)]
                     BatchOutcome::Failed { code, .. } => admitted.settle(hsk_studio_session::JobOutcome::Failed(*code)),
                 };
                 receipt.job = settlement_json(&settled);

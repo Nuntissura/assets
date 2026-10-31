@@ -19,8 +19,18 @@
 //!   worker's receipt arrives (GUI-DESKTOP-033). A receipt that never arrives (worker panic) settles
 //!   `failed` `export_worker`.
 //! - **Attribution.** Each request carries the Run's actor, the open document (none: a resource-less
-//!   job bounded by the lifecycle's own admission, see session `jobs.rs`), the action, a cost and the
-//!   document revision the job's input was taken from.
+//!   job bounded by the lifecycle's own admission, see session `jobs.rs`), the action, a cost, the
+//!   document revision the job's input was taken from and its own correlation: one per submitted job,
+//!   minted from the viewer's `RunContext` correlation source ([`JobAdmission::next_correlation`],
+//!   R48 F-R48-3), never a queue ordinal, an item id or a revision; every frame of that job (refusal
+//!   or settlement) carries it, and [`settlement_json`] reports it (`correlation`).
+//! - **Deadline.** The viewer's job classes have no deadline by nature (lane SMB-R47-FOLLOWUPS-1
+//!   notes, HBR-HOST-004): an Export Media / reel export-queue item and an audio batch item each
+//!   produce the operator's requested file, whose run time scales with its length; the operator ends
+//!   one by cancel, and a late file is still the requested one. They admit through
+//!   `JobLifecycle::admit` (no deadline); a job class with one admits through session
+//!   `JobLifecycle::admit_by` and settles `deadline_exceeded`. Previews are not admitted (supersession
+//!   bounds them, `super::preview_gate`).
 //! - **Diagnostics.** [`Viewer::job_counts`] (`state_json()["jobs"]` is not added: no `mod.rs`
 //!   surface), one Observe terminal frame per outcome (codes and counters only).
 //! - **Scope.** reel itself is unchanged (no reel -> session edge): product code builds reel queues
@@ -31,7 +41,7 @@
 use super::Viewer;
 #[cfg(feature = "media")]
 use super::monitor::MonitorFail;
-use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+use hsk_studio_accord::{ActorContext, CancellationToken, CorrelationId, CorrelationSource, DomainId, TransientCorrelation};
 use hsk_studio_observe::SinkPort;
 use hsk_studio_session::{
     Action, AdmissionJobPort, AdmittedJob, Cost, JobAdmissionRefusal, JobCounts, JobKind, JobLifecycle, JobOutcome, JobPort,
@@ -53,7 +63,8 @@ impl Default for ViewerJobs {
     }
 }
 
-/// A cloneable admission handle: port, lifecycle and attribution (actor, resource).
+/// A cloneable admission handle: port, lifecycle, attribution (actor, resource) and the correlation
+/// source every submitted job takes its own correlation from (clones share it).
 #[derive(Clone)]
 pub struct JobAdmission {
     port: Arc<dyn JobPort>,
@@ -62,6 +73,17 @@ pub struct JobAdmission {
     resource: Option<DomainId>,
     /// The document revision when the handle was made (0 with nothing open).
     revision: u64,
+    correlations: Arc<dyn CorrelationSource>,
+}
+
+/// The viewer's run context as a correlation source: each `next` is the next correlation of the
+/// run's source (the one its commands take theirs from).
+struct RunCorrelations(hsk_studio_harness_core::RunContext);
+
+impl CorrelationSource for RunCorrelations {
+    fn next(&self) -> CorrelationId {
+        self.0.command(None, 0, None).correlation()
+    }
 }
 
 impl std::fmt::Debug for JobAdmission {
@@ -71,8 +93,22 @@ impl std::fmt::Debug for JobAdmission {
 }
 
 impl JobAdmission {
+    /// Jobs take their correlations from a fresh in-memory source until [`Self::with_correlations`]
+    /// binds the caller's.
     pub fn new(port: Arc<dyn JobPort>, lifecycle: JobLifecycle, actor: ActorContext, resource: Option<DomainId>) -> Self {
-        Self { port, lifecycle, actor, resource, revision: 0 }
+        Self { port, lifecycle, actor, resource, revision: 0, correlations: Arc::new(TransientCorrelation::new()) }
+    }
+
+    /// Jobs take their correlations from `source` (the viewer binds its run context's).
+    #[must_use]
+    pub fn with_correlations(mut self, source: Arc<dyn CorrelationSource>) -> Self {
+        self.correlations = source;
+        self
+    }
+
+    /// The correlation of the next submitted job (one per job, R48 F-R48-3).
+    pub fn next_correlation(&self) -> u64 {
+        self.correlations.next().value()
     }
 
     /// The document revision synchronous jobs are bound to (they cannot outlive it).
@@ -110,9 +146,14 @@ impl JobAdmission {
     }
 }
 
-/// Settlement JSON: `{outcome, ticket, bound_revision, head_revision?}` (codes and numbers only).
+/// Settlement JSON: `{outcome, ticket, bound_revision, correlation, frame_correlation?,
+/// head_revision?}` (codes and numbers only; `correlation` is the job's, `frame_correlation` the one
+/// its delivered observe frame carried).
 pub fn settlement_json(s: &JobSettlement) -> Value {
-    let mut v = json!({"outcome": s.outcome.code(), "ticket": s.ticket.map(|t| t.0), "bound_revision": s.bound_revision});
+    let mut v = json!({"outcome": s.outcome.code(), "ticket": s.ticket.map(|t| t.0), "bound_revision": s.bound_revision, "correlation": s.correlation_id});
+    if let hsk_studio_session::ReportStatus::Delivered(receipt) = &s.report {
+        v["frame_correlation"] = json!(receipt.correlation_id);
+    }
     match s.outcome {
         JobOutcome::CompletedStale { head, .. } => v["head_revision"] = json!(head),
         JobOutcome::Superseded { revision } => v["superseding_revision"] = json!(revision),
@@ -128,6 +169,7 @@ pub fn refusal_json(r: JobAdmissionRefusal) -> Value {
         JobAdmissionRefusal::Overloaded { retry_after_ms } => json!({"refused": r.code(), "retry_after_ms": retry_after_ms}),
         JobAdmissionRefusal::Canceled => json!({"refused": r.code()}),
         JobAdmissionRefusal::StaleRevision { expected, head } => json!({"refused": r.code(), "expected": expected, "head": head}),
+        JobAdmissionRefusal::DeadlineExceeded => json!({"refused": r.code()}),
     }
 }
 
@@ -164,13 +206,16 @@ impl Viewer {
     /// The admission handle for a job of the open document (none open: resource-less).
     pub(in crate::view) fn job_admission(&self) -> JobAdmission {
         let resource = self.run.snapshot().and_then(|s| DomainId::parse(&s.document().document_id).ok());
-        JobAdmission::new(Arc::clone(&self.jobs.port), self.jobs.lifecycle.clone(), self.run.actor().clone(), resource).with_revision(self.document_head())
+        JobAdmission::new(Arc::clone(&self.jobs.port), self.jobs.lifecycle.clone(), self.run.actor().clone(), resource)
+            .with_revision(self.document_head())
+            .with_correlations(Arc::new(RunCorrelations(self.run.context().clone())))
     }
 
     /// Records a replaceable preview at `bound_revision` superseded by `revision` (counted and
     /// emitted; nothing was admitted).
     pub(in crate::view) fn record_superseded_preview(&self, bound_revision: u64, revision: u64) -> JobSettlement {
-        let mut request = self.job_admission().request(Action::Edit, 0, bound_revision, bound_revision);
+        let admission = self.job_admission();
+        let mut request = admission.request(Action::Edit, 0, bound_revision, admission.next_correlation());
         request.kind = JobKind::Replaceable;
         self.jobs.lifecycle.record_superseded(&request, revision)
     }
@@ -200,7 +245,7 @@ impl AdmittedExportQueue {
     /// Admits one export of `bytes` working set taken from `bound_revision` while the head is
     /// `head_revision`, then submits it; a refusal submits nothing.
     pub fn submit(&mut self, job: hsk_studio_reel::ExportJob, bytes: u64, bound_revision: u64, head_revision: u64, cancel: &CancellationToken) -> Result<hsk_studio_reel::ExportHandle, JobAdmissionRefusal> {
-        let correlation = u64::try_from(self.pending.pending.len()).unwrap_or(u64::MAX);
+        let correlation = self.admission.next_correlation();
         let admitted = self.admission.admit(self.admission.request(Action::Export, bytes, bound_revision, correlation), head_revision, cancel)?;
         let handle = self.queue.submit(job);
         self.pending.pending.push((handle.id, admitted));
@@ -262,6 +307,9 @@ pub fn settle_export(job: AdmittedJob, receipt: &hsk_studio_reel::ExportReceipt,
     match &receipt.outcome {
         hsk_studio_reel::ExportOutcome::Complete => job.complete(head_revision),
         hsk_studio_reel::ExportOutcome::Canceled => job.settle(JobOutcome::Canceled),
+        // `*code` is the `&'static str` the outcome needs; the lint's `code` would be a borrow-scoped
+        // `&str` (deref coercion of `&&'static str`) and does not compile (R48 F-R48-8).
+        #[allow(clippy::explicit_auto_deref)]
         hsk_studio_reel::ExportOutcome::Failed { code, .. } => job.settle(JobOutcome::Failed(*code)),
     }
 }
