@@ -923,3 +923,27 @@ pub(crate) fn points(value: i32, size: f64, scale: u32) -> ProviderResult<f64> {
     }
     Ok(if value == 0.0 { 0.0 } else { value })
 }
+/// STU-TYP-173 feature availability query (additive; SMB-TYPE-OT-FEATURES-1).
+impl TextEngine {
+    /// The feature tags `query.font` declares (GSUB and GPOS, all scripts and language systems,
+    /// sorted and deduplicated) with per-tag alternate counts. The font is loaded only through the
+    /// caller's resolver (`fonts::load`: revision, lease and content-hash checks); layout tables are
+    /// read by the bounded reader in `features.rs` (counts checked against `Limits::features` and
+    /// `Limits::lookups` per table and summed, before allocation).
+    pub fn font_features<'a>(
+        &self,
+        query: FeatureQuery<'a>,
+        ports: &Ports<'a>,
+    ) -> Result<FontFeatures, FeatureError> {
+        crate::features::query(query, ports)
+    }
+    /// Per-font `check_opentype_feature(tag)`: true only when the font declares `tag`.
+    pub fn check_opentype_feature<'a>(
+        &self,
+        query: FeatureQuery<'a>,
+        ports: &Ports<'a>,
+        tag: FeatureTag,
+    ) -> Result<bool, FeatureError> {
+        Ok(self.font_features(query, ports)?.check_opentype_feature(tag))
+    }
+}
