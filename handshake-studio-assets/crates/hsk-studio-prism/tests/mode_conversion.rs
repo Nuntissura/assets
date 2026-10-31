@@ -231,3 +231,140 @@ fn mt_31179_matrix_is_studio_normative_never_vendor() {
     assert!(MODE_CONVERSION_DESCRIPTOR.contains("\"source\":\"studio_normative\",\"vendor_derived\":false"));
     assert!(DESCRIPTOR.contains("\"mode_conversion\":\"see MODE_CONVERSION_DESCRIPTOR"));
 }
+
+// ---------------------------------------------------------------- slice 2: grayscale -> bitmap (MT-31175, MT-31176)
+
+use hsk_studio_prism::mode::bitmap::{grayscale_to_bitmap, BitmapMethod, BitmapOptions, GrayPlane, HalftoneShape, PatternTile};
+
+fn opts(method: BitmapMethod) -> BitmapOptions {
+    BitmapOptions { method, ..BitmapOptions::default() }
+}
+
+#[test]
+fn mt_31175_bitmap_threshold_and_pattern_dither_values() {
+    let src = [0_u8, 127, 128, 255];
+    let plane = GrayPlane::Eight { width: 4, height: 1, data: &src };
+    let o = BitmapOptions { threshold: Some(50.0), ..opts(BitmapMethod::HalfThreshold) };
+    let r = grayscale_to_bitmap(&plane, 72.0, &o, None).unwrap();
+    assert_eq!((r.plane.stride, r.plane.data.clone()), (1, vec![0xC0]));
+    let src16 = [0_u16, 32_767, 32_768, 65_535];
+    let r16 = grayscale_to_bitmap(&GrayPlane::Sixteen { width: 4, height: 1, data: &src16 }, 72.0, &o, None).unwrap();
+    assert_eq!(r16.plane.data, vec![0xC0]);
+    // 8 x 8 Bayer: tone 128/255 is white where the index is <= 31; row 0 = 0,32,8,40,2,34,10,42.
+    let gray = [128_u8; 64];
+    let p = grayscale_to_bitmap(&GrayPlane::Eight { width: 8, height: 8, data: &gray }, 72.0, &opts(BitmapMethod::PatternDither), None).unwrap();
+    assert_eq!(p.plane.data[0], 0x55);
+    assert_eq!(p.plane.black_count(), 32);
+    // Width 10 pads rows to two bytes.
+    let ten = [255_u8; 10];
+    let t = grayscale_to_bitmap(&GrayPlane::Eight { width: 10, height: 1, data: &ten }, 72.0, &o, None).unwrap();
+    assert_eq!((t.plane.stride, t.plane.data.len(), t.plane.black_count()), (2, 2, 0));
+}
+
+#[test]
+fn mt_31175_bitmap_diffusion_is_deterministic_and_tone_preserving() {
+    let two = [128_u8, 128];
+    let d = grayscale_to_bitmap(&GrayPlane::Eight { width: 2, height: 1, data: &two }, 72.0, &BitmapOptions::default(), None).unwrap();
+    // 128/255 >= 0.5 -> white, error -0.498; next 0.502 - 0.218 = 0.284 -> black.
+    assert_eq!(d.plane.data, vec![0x40]);
+    let quarter = [64_u8; 256];
+    let plane = GrayPlane::Eight { width: 16, height: 16, data: &quarter };
+    let a = grayscale_to_bitmap(&plane, 72.0, &BitmapOptions::default(), None).unwrap();
+    let b = grayscale_to_bitmap(&plane, 72.0, &BitmapOptions::default(), None).unwrap();
+    assert_eq!(a, b);
+    let black = a.plane.black_count();
+    assert!((184..=200).contains(&black), "tone 64/255 -> about 192 of 256 black, got {black}");
+}
+
+#[test]
+fn mt_31175_bitmap_halftone_and_custom_pattern() {
+    for shape in HalftoneShape::ALL {
+        let o = BitmapOptions { frequency: Some(10.0), angle: Some(45.0), shape: Some(*shape), ..opts(BitmapMethod::HalftoneScreen) };
+        let black = [0_u8; 72 * 72];
+        let white = [255_u8; 72 * 72];
+        let mid = [128_u8; 72 * 72];
+        let run = |d: &[u8]| grayscale_to_bitmap(&GrayPlane::Eight { width: 72, height: 72, data: d }, 72.0, &o, None).unwrap().plane.black_count();
+        assert_eq!(run(&black), 72 * 72, "{shape:?}");
+        assert_eq!(run(&white), 0, "{shape:?}");
+        let m = run(&mid);
+        assert!((72 * 72 * 3 / 10..=72 * 72 * 7 / 10).contains(&m), "{shape:?} mid tone black count {m}");
+    }
+    let tile_data = [0_u8, 255];
+    let tile = PatternTile { width: 2, height: 1, data: &tile_data };
+    let o = BitmapOptions { pattern_name: Some("checker".into()), ..opts(BitmapMethod::CustomPattern) };
+    let src = [128_u8; 4];
+    let r = grayscale_to_bitmap(&GrayPlane::Eight { width: 4, height: 1, data: &src }, 72.0, &o, Some(tile)).unwrap();
+    assert_eq!(r.plane.data, vec![0x50]);
+}
+
+#[test]
+fn mt_31175_failed_conversion_preserves_the_source_and_refuses_typed() {
+    let src = vec![10_u8, 20, 30, 40];
+    let before = src.clone();
+    let plane = GrayPlane::Eight { width: 4, height: 1, data: &src };
+    let custom = opts(BitmapMethod::CustomPattern);
+    assert_eq!(code(grayscale_to_bitmap(&plane, 72.0, &custom, None)), "pattern_missing");
+    let named = BitmapOptions { pattern_name: Some("p".into()), ..custom.clone() };
+    assert_eq!(code(grayscale_to_bitmap(&plane, 72.0, &named, None)), "pattern_missing");
+    let t = [1_u8; 3];
+    assert_eq!(code(grayscale_to_bitmap(&plane, 72.0, &named, Some(PatternTile { width: 2, height: 2, data: &t }))), "pattern_invalid");
+    let tile_ok = PatternTile { width: 1, height: 1, data: &t[..1] };
+    assert_eq!(code(grayscale_to_bitmap(&plane, 72.0, &custom, Some(tile_ok))), "pattern_missing");
+    let hi = BitmapOptions { resolution: 300.0, ..BitmapOptions::default() };
+    assert_eq!(code(grayscale_to_bitmap(&plane, 72.0, &hi, None)), "bitmap_resample_not_in_prism");
+    assert_eq!(code(grayscale_to_bitmap(&plane, 72.0, &opts(BitmapMethod::HalfThreshold), None)), "parameter_required");
+    let ht = opts(BitmapMethod::HalftoneScreen);
+    assert_eq!(grayscale_to_bitmap(&plane, 72.0, &ht, None), Err(ModeError::ParameterRequired("bitmap.frequency")));
+    let zero = BitmapOptions { frequency: Some(0.0), angle: Some(0.0), shape: Some(HalftoneShape::Round), ..ht.clone() };
+    assert_eq!(grayscale_to_bitmap(&plane, 72.0, &zero, None), Err(ModeError::InvalidParameter("bitmap.frequency")));
+    let nan = BitmapOptions { frequency: Some(f64::NAN), ..zero.clone() };
+    assert_eq!(code(grayscale_to_bitmap(&plane, 72.0, &nan, None)), "non_finite_parameter");
+    let no_shape = BitmapOptions { frequency: Some(10.0), shape: None, ..zero };
+    assert_eq!(grayscale_to_bitmap(&plane, 72.0, &no_shape, None), Err(ModeError::ParameterRequired("bitmap.shape")));
+    assert_eq!(src, before);
+}
+
+#[test]
+fn mt_31175_bitmap_dims_u32_max_and_aggregate_over_budget() {
+    let tiny = [0_u8; 4];
+    let huge = GrayPlane::Eight { width: u32::MAX, height: u32::MAX, data: &tiny };
+    assert_eq!(code(grayscale_to_bitmap(&huge, 72.0, &BitmapOptions::default(), None)), "pixel_budget_exceeded");
+    let over = GrayPlane::Eight { width: 20_000, height: 20_000, data: &tiny };
+    assert_eq!(code(grayscale_to_bitmap(&over, 72.0, &BitmapOptions::default(), None)), "pixel_budget_exceeded");
+    let short = GrayPlane::Eight { width: 3, height: 2, data: &tiny };
+    assert_eq!(code(grayscale_to_bitmap(&short, 72.0, &BitmapOptions::default(), None)), "buffer_length_mismatch");
+    let empty = GrayPlane::Eight { width: 0, height: 4, data: &[] };
+    assert_eq!(code(grayscale_to_bitmap(&empty, 72.0, &BitmapOptions::default(), None)), "empty_image");
+}
+
+#[test]
+fn mt_31176_bitmap_option_defaults() {
+    assert_eq!(BitmapOptions::default().method, BitmapMethod::DiffusionDither);
+    assert_eq!(BitmapOptions::default().resolution, 72.0);
+    let methods: Vec<&str> = BitmapMethod::ALL.iter().map(|m| m.token()).collect();
+    assert_eq!(methods, ["half_threshold", "pattern_dither", "diffusion_dither", "halftone_screen", "custom_pattern"]);
+}
+
+#[test]
+fn mt_31176_inert_method_fields_round_trip() {
+    let o = BitmapOptions {
+        method: BitmapMethod::HalfThreshold,
+        resolution: 72.0,
+        pattern_name: Some("dots \"x\"".into()),
+        frequency: Some(53.0),
+        angle: Some(45.0),
+        shape: Some(HalftoneShape::Cross),
+        threshold: Some(50.0),
+    };
+    let src = [0_u8, 255];
+    let r = grayscale_to_bitmap(&GrayPlane::Eight { width: 2, height: 1, data: &src }, 72.0, &o, None).unwrap();
+    assert_eq!(r.options, o);
+    let j = r.options.to_json();
+    for needle in ["\"method\":\"half_threshold\"", "\"frequency\":53.0", "\"angle\":45.0", "\"shape\":\"cross\"", "\"pattern_name\":\"dots \\\"x\\\"\""] {
+        assert!(j.contains(needle), "{j} lacks {needle}");
+    }
+    let unset = BitmapOptions::default().to_json();
+    assert!(unset.contains("\"frequency\":\"UNKNOWN\"") && unset.contains("\"shape\":null"), "{unset}");
+    let tokens: Vec<&str> = HalftoneShape::ALL.iter().map(|s| s.token()).collect();
+    assert_eq!(tokens, ["round", "diamond", "ellipse", "line", "square", "cross"]);
+}

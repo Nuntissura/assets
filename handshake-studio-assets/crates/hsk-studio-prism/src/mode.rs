@@ -29,6 +29,7 @@
 //! only from 8-bit RGB) and the discard classification.
 #![deny(clippy::arithmetic_side_effects)]
 
+pub mod bitmap;
 
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::{Budget, FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};
@@ -222,6 +223,7 @@ macro_rules! token_enum {
         }
     };
 }
+pub(crate) use token_enum;
 
 token_enum! {
     /// STU-COL-118 `document_mode`.
@@ -624,6 +626,23 @@ pub const INDEXED_DITHER_AMOUNT: ParamRow =
 pub const BITMAP_PARAM_ROWS: [ParamRow; 4] = [BITMAP_RESOLUTION, BITMAP_FREQUENCY, BITMAP_ANGLE, BITMAP_THRESHOLD];
 /// The indexed parameter table, in spec order.
 pub const INDEXED_PARAM_ROWS: [ParamRow; 2] = [INDEXED_COLORS, INDEXED_DITHER_AMOUNT];
+
+/// Pixel count of a `width` x `height` x `samples` buffer of `len` elements: `empty_image`,
+/// `pixel_budget_exceeded` (before any allocation) or `buffer_length_mismatch`.
+pub(crate) fn check_plane(width: u32, height: u32, samples: u64, len: usize) -> Result<usize, ModeError> {
+    if width == 0 || height == 0 {
+        return Err(ModeError::EmptyImage);
+    }
+    let pixels = u64::from(width).checked_mul(u64::from(height)).ok_or(ModeError::PixelBudgetExceeded)?;
+    if pixels > MAX_MODE_PIXELS {
+        return Err(ModeError::PixelBudgetExceeded);
+    }
+    let want = pixels.checked_mul(samples).ok_or(ModeError::PixelBudgetExceeded)?;
+    if u64::try_from(len).ok() != Some(want) {
+        return Err(ModeError::BufferLengthMismatch);
+    }
+    usize::try_from(pixels).map_err(|_| ModeError::PixelBudgetExceeded)
+}
 
 /// Caller-owned attribution of one conversion's terminal outcome.
 #[derive(Clone, Debug)]
