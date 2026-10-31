@@ -171,31 +171,31 @@ pub mod host_mirror {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u16)]
 pub enum RingCode {
-    Progress,
-    Success,
-    FailureValidation,
-    FailureUnavailable,
-    FailureLoss,
-    FailureUnsupported,
-    Canceled,
-    DeliverySaturated,
-    DeliveryRejected,
-    DeliveryUnavailable,
-    DeliveryIndeterminate,
+    Progress = 0x5300,
+    Success = 0x5301,
+    FailureValidation = 0x5302,
+    FailureUnavailable = 0x5303,
+    FailureLoss = 0x5304,
+    FailureUnsupported = 0x5305,
+    Canceled = 0x5306,
+    DeliverySaturated = 0x5310,
+    DeliveryRejected = 0x5311,
+    DeliveryUnavailable = 0x5312,
+    DeliveryIndeterminate = 0x5313,
     /// Reserved for render-gpu client outcomes (SMB-GPU-CLIENT-PORT-1); no observe producer emits it.
-    GpuUnavailable,
+    GpuUnavailable = 0x5320,
     /// Reserved (render-gpu); no observe producer emits it.
-    GpuDeviceLost,
+    GpuDeviceLost = 0x5321,
     /// Reserved (render-gpu); no observe producer emits it.
-    GpuAdmissionDenied,
+    GpuAdmissionDenied = 0x5322,
     /// Reserved (render-gpu); no observe producer emits it.
-    GpuBudgetExceeded,
+    GpuBudgetExceeded = 0x5323,
     /// Reserved (render-gpu); no observe producer emits it.
-    GpuDoubleRelease,
+    GpuDoubleRelease = 0x5324,
     /// Reserved (render-gpu); no observe producer emits it.
-    GpuLateRelease,
+    GpuLateRelease = 0x5325,
     /// Reserved (render-gpu); no observe producer emits it.
-    GpuRebound,
+    GpuRebound = 0x5326,
 }
 impl RingCode {
     /// Every code, in discriminant order.
@@ -234,14 +234,52 @@ impl RingCode {
     }
     /// Closed decode; any value outside [`RingCode::ALL`] is `None`.
     pub const fn from_u16(raw: u16) -> Option<Self> {
-        let _ = raw;
-        None
+        Some(match raw {
+            0x5300 => Self::Progress,
+            0x5301 => Self::Success,
+            0x5302 => Self::FailureValidation,
+            0x5303 => Self::FailureUnavailable,
+            0x5304 => Self::FailureLoss,
+            0x5305 => Self::FailureUnsupported,
+            0x5306 => Self::Canceled,
+            0x5310 => Self::DeliverySaturated,
+            0x5311 => Self::DeliveryRejected,
+            0x5312 => Self::DeliveryUnavailable,
+            0x5313 => Self::DeliveryIndeterminate,
+            0x5320 => Self::GpuUnavailable,
+            0x5321 => Self::GpuDeviceLost,
+            0x5322 => Self::GpuAdmissionDenied,
+            0x5323 => Self::GpuBudgetExceeded,
+            0x5324 => Self::GpuDoubleRelease,
+            0x5325 => Self::GpuLateRelease,
+            0x5326 => Self::GpuRebound,
+            _ => return None,
+        })
     }
     /// Projection onto today's host `DiagEventCode` (@292d7a1c): `Other` for every Studio code, because the
     /// host has allocated no Studio or GUI code. The Studio code is lost in that projection. Exhaustive (no
     /// wildcard) so a new code must choose its projection.
     pub const fn host_event_code(self) -> u16 {
-        self as u16
+        match self {
+            Self::Progress
+            | Self::Success
+            | Self::FailureValidation
+            | Self::FailureUnavailable
+            | Self::FailureLoss
+            | Self::FailureUnsupported
+            | Self::Canceled
+            | Self::DeliverySaturated
+            | Self::DeliveryRejected
+            | Self::DeliveryUnavailable
+            | Self::DeliveryIndeterminate
+            | Self::GpuUnavailable
+            | Self::GpuDeviceLost
+            | Self::GpuAdmissionDenied
+            | Self::GpuBudgetExceeded
+            | Self::GpuDoubleRelease
+            | Self::GpuLateRelease
+            | Self::GpuRebound => host_mirror::OTHER,
+        }
     }
 }
 
@@ -583,13 +621,34 @@ pub const RING_DELIVERY_ERRORS_ALL: [DeliveryError; 4] = [
 
 /// Studio reading of an outcome (table in the module docs). Exhaustive, no wildcard.
 pub const fn ring_of_outcome(outcome: Outcome) -> RingKind {
-    let _ = outcome;
-    unimplemented!()
+    match outcome {
+        Outcome::Progress => (RingCode::Progress, RingPhase::Tick, RingSeverity::Info),
+        Outcome::Success => (RingCode::Success, RingPhase::End, RingSeverity::Info),
+        Outcome::Failure(FailureCode::Validation) => {
+            (RingCode::FailureValidation, RingPhase::End, RingSeverity::Warn)
+        }
+        Outcome::Failure(FailureCode::Unavailable) => {
+            (RingCode::FailureUnavailable, RingPhase::End, RingSeverity::Error)
+        }
+        Outcome::Failure(FailureCode::Loss) => (RingCode::FailureLoss, RingPhase::End, RingSeverity::Error),
+        Outcome::Failure(FailureCode::Unsupported) => {
+            (RingCode::FailureUnsupported, RingPhase::End, RingSeverity::Warn)
+        }
+        Outcome::Canceled => (RingCode::Canceled, RingPhase::End, RingSeverity::Warn),
+    }
 }
 /// Studio reading of a delivery refusal (table in the module docs). Exhaustive, no wildcard.
 pub const fn ring_of_delivery(error: DeliveryError) -> RingKind {
-    let _ = error;
-    unimplemented!()
+    match error {
+        DeliveryError::Saturated => (RingCode::DeliverySaturated, RingPhase::Degraded, RingSeverity::Warn),
+        DeliveryError::Rejected => (RingCode::DeliveryRejected, RingPhase::Degraded, RingSeverity::Error),
+        DeliveryError::Unavailable => {
+            (RingCode::DeliveryUnavailable, RingPhase::Degraded, RingSeverity::Error)
+        }
+        DeliveryError::Indeterminate => {
+            (RingCode::DeliveryIndeterminate, RingPhase::Degraded, RingSeverity::Error)
+        }
+    }
 }
 
 /// Typed refusal of [`RingProducerPort::try_record`]; closed.
