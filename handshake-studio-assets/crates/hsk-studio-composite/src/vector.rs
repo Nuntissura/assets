@@ -44,7 +44,11 @@
 //! terminators are refused ([`REFUSE_MARKER_SHAPE_UNBUILT`]), as are markers on a brushed row, a
 //! network stroke or a width-profiled path; other nib marker refusals carry nib's code. The
 //! supersampled mode keeps its stroke refusal (no marker is drawn there). Shapes: nib's table,
-//! UNVERIFIED (D5).
+//! UNVERIFIED (D5). Subpaths that get no marker are reported, never silent (R44 finding F-R44-10,
+//! lane SMB-R44-FOLLOWUPS-1): nib's `closed_subpaths` (a closed subpath has no ends, so its stroke is
+//! drawn without markers) and `consumed_subpaths` (an open subpath the inside-path trims consumed
+//! entirely: neither its stroke nor its markers are drawn) of a marked row become a [`MarkerNote`]
+//! on the layer ([`PreparedVectors::marker_notes`]; tests `vector_markers`).
 //!
 //! Refusals are typed per layer and never dropped (`PreparedVectors::refusal`): unresolved paths or
 //! images, gradients, strokes, colour profiles composite would have to convert, budgets. Hostile sizes
@@ -347,6 +351,26 @@ impl VectorPlane {
     }
 }
 
+/// What a marked stroke row of a drawn layer did not mark (module docs, R44 F-R44-10): nib's
+/// subpath reports per base path, as `(path index in the row's stroke geometry, subpath index)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkerNote {
+    pub layer_id: String,
+    /// The stroke row of the layer's style (Folio `StudioStrokeMarkers::row`).
+    pub row: u32,
+    /// Closed subpaths: stroked, with no marker (no ends).
+    pub closed_subpaths: Vec<(usize, usize)>,
+    /// Open subpaths the inside-path trims consumed entirely: neither stroke nor marker drawn.
+    pub consumed_subpaths: Vec<(usize, usize)>,
+}
+impl MarkerNote {
+    /// Typed code: `marker_closed_subpath` when a closed subpath is reported, else
+    /// `marker_subpath_consumed`.
+    pub fn code(&self) -> &'static str {
+        if self.closed_subpaths.is_empty() { "marker_subpath_consumed" } else { "marker_closed_subpath" }
+    }
+}
+
 /// Prepared vector layers keyed by layer id, and the typed refusal of every layer that could not
 /// be prepared (rendering it is `Unavailable` with that code).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -363,8 +387,18 @@ pub struct PreparedVectors {
     pending: Vec<crate::vector_mask::PendingMaskSource>,
     /// Live path and area text bindings and what was drawn of each (`crate::vector_text`).
     texts: Vec<crate::vector_text::TextReport>,
+    /// Marked stroke rows with subpaths that got no marker (R44 F-R44-10; [`MarkerNote`]).
+    marker_notes: Vec<MarkerNote>,
 }
 impl PreparedVectors {
+    /// The marker notes of `layer_id` (module docs; empty when every subpath was marked).
+    pub fn marker_notes(&self, layer_id: &str) -> Vec<&MarkerNote> {
+        self.marker_notes.iter().filter(|n| n.layer_id == layer_id).collect()
+    }
+    /// Every marker note, in layer order.
+    pub fn all_marker_notes(&self) -> &[MarkerNote] {
+        &self.marker_notes
+    }
     /// Masks waiting for their source to be rendered by the caller's backend (raster, text or
     /// image-paint content): lower each with [`crate::mask_source_lowerings`], execute it, then
     /// [`Self::resolve_mask_source`] (or [`Self::fail_mask_source`]).
@@ -1210,6 +1244,8 @@ struct FolioCx<'a> {
     /// keeps the earlier Folio behaviour (`vector_stroke_not_rendered`, `paint_gradient`) so pinned
     /// consumers of the default are unchanged.
     nib: bool,
+    /// Marker notes of the layer being prepared (R44 F-R44-10), drained per layer.
+    marker_notes: std::cell::RefCell<Vec<MarkerNote>>,
 }
 
 impl FolioCx<'_> {
@@ -1794,7 +1830,8 @@ impl FolioCx<'_> {
         };
         let mut trimmed = Vec::with_capacity(bases.len());
         let mut markers = Vec::new();
-        for (path, _) in bases {
+        let mut note = MarkerNote { layer_id: String::new(), row: m.row, closed_subpaths: Vec::new(), consumed_subpaths: Vec::new() };
+        for (k, (path, _)) in bases.iter().enumerate() {
             if path.elements.is_empty() {
                 continue;
             }
@@ -1803,7 +1840,13 @@ impl FolioCx<'_> {
                 trimmed.push(o.trimmed);
             }
             markers.extend(o.markers.into_iter().map(|p| p.outline));
+            // F-R44-10: nib's report is kept (module docs), not dropped.
+            if spec.start.is_some() || spec.end.is_some() {
+                note.closed_subpaths.extend(o.closed_subpaths.into_iter().map(|i| (k, i)));
+                note.consumed_subpaths.extend(o.consumed_subpaths.into_iter().map(|i| (k, i)));
+            }
         }
+        let _ = note;
         let mut out: Vec<OwnedPath> =
             crate::vector_nib::stroke_outline(&VectorGeometry::Paths(trimmed), style)?
                 .into_iter()
@@ -2004,10 +2047,12 @@ pub fn prepare_vectors(
         space,
         unit_px: doc.geometry_unit == hsk_studio_folio::GeometryUnit::Px,
         nib: res.coverage == VectorCoverage::Exact,
+        marker_notes: std::cell::RefCell::default(),
     };
     let mut specs = Vec::new();
     let mut refused: Vec<(String, &'static str)> = Vec::new();
     let mut texts = Vec::new();
+    let mut marker_notes = Vec::new();
     for l in &doc.layers {
         cancel.check().map_err(|_| CompositeError::Canceled)?;
         let drawn = matches!(l.payload, hsk_studio_folio::Payload::Vector { .. })
@@ -2033,12 +2078,20 @@ pub fn prepare_vectors(
                 fills.extend(crate::vector_text::text_rows(vectors, &l.layer_id, assets, &mut texts)?);
                 Ok((geometry, fills))
             });
+        // The layer's marker notes (F-R44-10): kept for a prepared layer, dropped with a refused one.
+        let notes = std::mem::take(&mut *cx.marker_notes.borrow_mut());
         match prepared {
-            Ok((geometry, fills)) => specs.push(VectorLayerSpec {
-                layer_id: l.layer_id.clone(),
-                geometry,
-                fills,
-            }),
+            Ok((geometry, fills)) => {
+                marker_notes.extend(notes.into_iter().map(|mut n| {
+                    n.layer_id.clone_from(&l.layer_id);
+                    n
+                }));
+                specs.push(VectorLayerSpec {
+                    layer_id: l.layer_id.clone(),
+                    geometry,
+                    fills,
+                })
+            }
             Err(code) => refused.push((l.layer_id.clone(), code)),
         }
     }
@@ -2047,6 +2100,9 @@ pub fn prepare_vectors(
         out.push_refusal(&layer, code);
     }
     out.texts = texts;
+    // A layer the draw step refused keeps its refusal only.
+    marker_notes.retain(|n| out.refusal(&n.layer_id).is_none());
+    out.marker_notes = marker_notes;
     // Vector clips (StudioVectorClip, Figma frame clipping): the clipped layer is cut by the
     // nib outline of the source layer's geometry under the clip rule.
     for a in &vectors.attachments {
@@ -2396,6 +2452,7 @@ pub fn expand_vectors(
         space,
         unit_px: doc.geometry_unit == hsk_studio_folio::GeometryUnit::Px,
         nib: res.coverage == VectorCoverage::Exact,
+        marker_notes: std::cell::RefCell::default(),
     };
     let (mut out, mut refused) = (Vec::new(), Vec::new());
     for l in &doc.layers {

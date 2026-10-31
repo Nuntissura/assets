@@ -270,6 +270,24 @@ impl DisplayEncoding {
         };
         Ok(to_f32([f(x[0]), f(x[1]), f(x[2])]))
     }
+    /// Decode display code values back to linear values: the exact inverse of [`Self::encode`]
+    /// on its output domain `[0, 1]` (input clamped there first, as `encode` clamps its input).
+    /// `Srgb` is CTL `moncurve_f` (gamma 2.4, offset 0.055: breakpoint `offs / (gamma - 1)`,
+    /// linear slope `1 / rs` of [`Self::encode`]'s segment, so the segments meet where `encode`'s
+    /// do, not at the IEC 0.04045 / 12.92 constants); `Bt1886` is `V^2.4` (CTL `bt1886_f` with
+    /// L_W 1, L_B 0) and `Gamma22` is `V^2.2`. `Pq` is refused [`Error::DecodeUnsupported`]:
+    /// Prism carries no ST 2084 inverse (`ST2084_2_Y`) and does not guess one. A NaN or infinite
+    /// channel is `nonfinite_channel`. Proven by `tests/view_transform_decode.rs`.
+    pub fn decode(self, encoded: [f32; 3]) -> Result<[f32; 3], Error> {
+        let x = finite(encoded)?;
+        let f = |v: f64| match self {
+            Self::Srgb => Ok(moncurve_f(v.clamp(0.0, 1.0), 2.4, 0.055)),
+            Self::Bt1886 => Ok(pow(v.clamp(0.0, 1.0), 2.4)),
+            Self::Gamma22 => Ok(pow(v.clamp(0.0, 1.0), 2.2)),
+            Self::Pq => Err(Error::DecodeUnsupported),
+        };
+        Ok(to_f32([f(x[0])?, f(x[1])?, f(x[2])?]))
+    }
 }
 
 /// Typed refusal of [`select_view`].
@@ -317,7 +335,7 @@ pub fn select_view(display: &str, peak_nits: u32) -> Result<(ViewTransformId, Di
 }
 
 /// Machine-readable description of the view transforms (manual / model surface).
-pub const VIEW_TRANSFORM_DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PRISM","path":"view_transform","lanes":["SMB-PRISM-VIEW-TRANSFORM","SMB-PRISM-VIEW-TRANSFORM-2"],"stage":"STU-COL-161 6a display transform","api":"ViewTransformId::apply([f32;3]) (working space) / apply_from(SceneInput, [f32;3]) -> Result<[f32;3], Error>; ViewTransform{view,input}::apply / apply_in_place; aces1_sdr_video_from_aces2065; DisplayEncoding::encode; select_view(display_target, peak_nits) -> (view, encoding) | ViewSelectError view_unknown_display | view_not_built; view_gpu_params + VIEW_WGSL (SDR views on the GPU)","inputs":{"linear_srgb":"Prism working space, Bradford D65 -> ACES white to ACES2065-1","acescg":"AP1, published ACEScg TRA_2 matrix to ACES2065-1 (S-2014-004)","aces2065_1":"AP0, unchanged"},"views":[{"key":"aces1_sdr_video_100nits_dim","ctl":"RRT + ODT.Academy.sRGB_100nits_dim / Rec709_100nits_dim","output":"linear Rec.709 [0,1]","displays":["srgb_display (srgb_piecewise)","rec1886_rec709_display (bt1886_gamma24)","gamma22_rec709_display (gamma22)"]},{"key":"aces1_sdr_video_100nits_dim_display_p3","ctl":"RRT + ODT.Academy.DisplayP3_dim","output":"linear P3-D65 [0,1]","displays":["display_p3_display (srgb_piecewise)"]},{"key":"aces1_hdr_video_{1000,2000,4000}nits_15nits_rec2020","ctl":"RRTODT.Academy.Rec2020_{1000,2000,4000}nits_15nits_ST2084 (ACESlib.OutputTransforms, SSTS)","output":"linear Rec.2020 in units of 100 cd/m2, stretched black","displays":["rec2100_pq_display at aces_view.peak_luminance 1000, 2000, 4000 (st2084_pq)"]}],"not_built":["p3_d65_display","rec2100_hlg_display","rec2100_pq_display at other peaks (500)","SDR targets at a peak other than 100","HDR views on the GPU (view_gpu_params None)","OCIO configuration runtime","curves the spec does not name"],"proven_by":["tests/view_transform.rs","tests/view_transform_2.rs"],"hostile":"NaN or infinite channel -> nonfinite_channel; negative channels admitted (RRT clamps them)","determinism":"binary64, IEEE basic operations and Prism's own ln/exp/atan, no libm, no FMA; allocation-free; the WGSL form is binary32","licence":"ACES (A.M.P.A.S.) permissive terms, LICENSE-ACES.txt"}"#;
+pub const VIEW_TRANSFORM_DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PRISM","path":"view_transform","lanes":["SMB-PRISM-VIEW-TRANSFORM","SMB-PRISM-VIEW-TRANSFORM-2"],"stage":"STU-COL-161 6a display transform","api":"ViewTransformId::apply([f32;3]) (working space) / apply_from(SceneInput, [f32;3]) -> Result<[f32;3], Error>; ViewTransform{view,input}::apply / apply_in_place; aces1_sdr_video_from_aces2065; DisplayEncoding::encode; DisplayEncoding::decode (exact inverse of encode on [0,1]: srgb moncurve_f, bt1886 V^2.4, gamma22 V^2.2; st2084_pq refused decode_unsupported, no ST 2084 inverse carried); select_view(display_target, peak_nits) -> (view, encoding) | ViewSelectError view_unknown_display | view_not_built; view_gpu_params + VIEW_WGSL (SDR views on the GPU)","inputs":{"linear_srgb":"Prism working space, Bradford D65 -> ACES white to ACES2065-1","acescg":"AP1, published ACEScg TRA_2 matrix to ACES2065-1 (S-2014-004)","aces2065_1":"AP0, unchanged"},"views":[{"key":"aces1_sdr_video_100nits_dim","ctl":"RRT + ODT.Academy.sRGB_100nits_dim / Rec709_100nits_dim","output":"linear Rec.709 [0,1]","displays":["srgb_display (srgb_piecewise)","rec1886_rec709_display (bt1886_gamma24)","gamma22_rec709_display (gamma22)"]},{"key":"aces1_sdr_video_100nits_dim_display_p3","ctl":"RRT + ODT.Academy.DisplayP3_dim","output":"linear P3-D65 [0,1]","displays":["display_p3_display (srgb_piecewise)"]},{"key":"aces1_hdr_video_{1000,2000,4000}nits_15nits_rec2020","ctl":"RRTODT.Academy.Rec2020_{1000,2000,4000}nits_15nits_ST2084 (ACESlib.OutputTransforms, SSTS)","output":"linear Rec.2020 in units of 100 cd/m2, stretched black","displays":["rec2100_pq_display at aces_view.peak_luminance 1000, 2000, 4000 (st2084_pq)"]}],"not_built":["p3_d65_display","rec2100_hlg_display","rec2100_pq_display at other peaks (500)","SDR targets at a peak other than 100","HDR views on the GPU (view_gpu_params None)","OCIO configuration runtime","curves the spec does not name"],"proven_by":["tests/view_transform.rs","tests/view_transform_2.rs","tests/view_transform_decode.rs"],"hostile":"NaN or infinite channel -> nonfinite_channel; negative channels admitted (RRT clamps them)","determinism":"binary64, IEEE basic operations and Prism's own ln/exp/atan, no libm, no FMA; allocation-free; the WGSL form is binary32","licence":"ACES (A.M.P.A.S.) permissive terms, LICENSE-ACES.txt"}"#;
 
 // ------------------------------------------------------------------ ACES 1.x pipelines
 
@@ -960,6 +978,19 @@ fn moncurve_r(y: f64, gamma: f64, offs: f64) -> f64 {
         (1.0 + offs) * pow(y, 1.0 / gamma) - offs
     } else {
         y * rs
+    }
+}
+
+/// CTL `moncurve_f` (encoded -> linear), the inverse of [`moncurve_r`]: `((x + offs) / (1 + offs))^gamma`
+/// from the breakpoint `offs / (gamma - 1)` (= `moncurve_r(yb)`), `x * fs` below it with
+/// `fs = 1 / rs` written in its closed form.
+fn moncurve_f(x: f64, gamma: f64, offs: f64) -> f64 {
+    let fs = ((gamma - 1.0) / offs) * pow(offs * gamma / ((gamma - 1.0) * (1.0 + offs)), gamma);
+    let xb = offs / (gamma - 1.0);
+    if x >= xb {
+        pow((x + offs) / (1.0 + offs), gamma)
+    } else {
+        x * fs
     }
 }
 

@@ -21,6 +21,11 @@
 //! `StrokeGeometry`), written as filled paths like every other row (test
 //! viewer_vector_markers::vector_pdf_export_writes_the_marker_outlines); a marker composite refuses
 //! (`ERD_*` terminators, brushed rows, width profiles, networks) refuses its layer (`refused:<code>`).
+//! One row is written as one fill per fill rule; a row that needs two (a nib ring marker,
+//! `arrow.circle` / `arrow.square`, is even-odd beside the non-zero stroke outline) below full
+//! opacity or under a blend mode is drawn opaque and normal into one transparency group painted
+//! once with the row's alpha and mode, so the overlap of its parts is not painted twice (R44 finding
+//! F-R44-5, lane SMB-R44-FOLLOWUPS-1; unit test `pdf_export::tests`).
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::Viewer;
 use super::style::effective_design;
@@ -126,6 +131,25 @@ fn commands(paths: &[OwnedPath], page: Page) -> Vec<PathCommand> {
     out
 }
 
+/// Draws the parts of one row (one fill per fill rule) with the row's `alpha` and `mode` applied
+/// ONCE (module docs, R44 F-R44-5): a single part takes the draw state itself; several parts below
+/// full opacity or under a blend mode are drawn opaque and normal into one transparency group
+/// painted with `alpha` and `mode`.
+fn draw_parts(
+    ex: &mut PdfExport,
+    handle: PageHandle,
+    parts: &[(FillRule, Vec<PathCommand>)],
+    alpha: f64,
+    mode: BlendMode,
+    mut draw: impl FnMut(&mut PdfExport, &[PathCommand], FillRule) -> Result<(), hsk_studio_press::ExportError>,
+) -> Result<(), hsk_studio_press::ExportError> {
+    for (rule, cmds) in parts {
+        ex.set_draw_state(handle, DrawState { fill_alpha: alpha, stroke_alpha: 1.0, blend: mode })?;
+        draw(ex, cmds, *rule)?;
+    }
+    Ok(())
+}
+
 /// Everything one export walk reads.
 struct Walk<'a> {
     doc: &'a folio::StudioDocument,
@@ -157,36 +181,37 @@ impl Walk<'_> {
                 BlendMode::Normal
             });
             // One fill per fill rule (paths of one rule share one PDF path).
+            let mut parts: Vec<(FillRule, Vec<PathCommand>)> = Vec::with_capacity(2);
             for even_odd in [false, true] {
                 let part: Vec<OwnedPath> = row.paths.iter().filter(|p| (p.fill_rule == hsk_studio_nib::FillRule::EvenOdd) == even_odd).cloned().collect();
                 if part.is_empty() {
                     continue;
                 }
-                let cmds = commands(&part, self.page);
-                let rule = if even_odd { FillRule::EvenOdd } else { FillRule::NonZero };
-                match &row.paint {
-                    FillPaint::Solid(c) => {
-                        let alpha = f64::from(c[3]) * f64::from(row.opacity);
-                        ex.set_draw_state(self.handle, DrawState { fill_alpha: alpha.clamp(0.0, 1.0), stroke_alpha: 1.0, blend: mode }).map_err(Self::err)?;
-                        ex.fill_path(self.handle, &cmds, rule, Colour::DeviceRgb([f64::from(c[0]), f64::from(c[1]), f64::from(c[2])])).map_err(Self::err)?;
-                    }
-                    FillPaint::Gradient(g) => {
-                        ex.set_draw_state(self.handle, DrawState { fill_alpha: f64::from(row.opacity).clamp(0.0, 1.0), stroke_alpha: 1.0, blend: mode }).map_err(Self::err)?;
-                        let stops: Vec<GradientStop> = g.stops.iter().map(|s| GradientStop { offset: s.offset, colour: [f64::from(s.colour[0]), f64::from(s.colour[1]), f64::from(s.colour[2])], opacity: f64::from(s.colour[3]), midpoint: s.midpoint }).collect();
-                        let geometry = match g.geometry {
-                            hsk_studio_nib::raster::GradientGeometry::Linear { x1, y1, x2, y2 } => GradientGeometry::Axial { from: [x1, y1], to: [x2, y2] },
-                            hsk_studio_nib::raster::GradientGeometry::Radial { cx, cy, r, fx, fy, fr } => GradientGeometry::Radial { from: [fx, fy], from_radius: fr, to: [cx, cy], to_radius: r },
-                        };
-                        let spread = match g.spread {
-                            hsk_studio_nib::raster::Spread::Pad => GradientSpread::Pad,
-                            hsk_studio_nib::raster::Spread::Repeat => GradientSpread::Repeat,
-                            hsk_studio_nib::raster::Spread::Reflect => GradientSpread::Reflect,
-                        };
-                        let shading = Gradient { geometry, stops: &stops, extend: [true, true], spread, matrix: compose(self.page.affine(), g.transform), profile: None };
-                        ex.fill_path_gradient(self.handle, &cmds, rule, &shading).map_err(Self::err)?;
-                    }
-                    _ => losses.push(format!("{layer_id}: paint_not_exported")),
+                parts.push((if even_odd { FillRule::EvenOdd } else { FillRule::NonZero }, commands(&part, self.page)));
+            }
+            match &row.paint {
+                FillPaint::Solid(c) => {
+                    let alpha = (f64::from(c[3]) * f64::from(row.opacity)).clamp(0.0, 1.0);
+                    let colour = Colour::DeviceRgb([f64::from(c[0]), f64::from(c[1]), f64::from(c[2])]);
+                    draw_parts(ex, self.handle, &parts, alpha, mode, |ex, cmds, rule| ex.fill_path(self.handle, cmds, rule, colour)).map_err(Self::err)?;
                 }
+                FillPaint::Gradient(g) => {
+                    let stops: Vec<GradientStop> = g.stops.iter().map(|s| GradientStop { offset: s.offset, colour: [f64::from(s.colour[0]), f64::from(s.colour[1]), f64::from(s.colour[2])], opacity: f64::from(s.colour[3]), midpoint: s.midpoint }).collect();
+                    let geometry = match g.geometry {
+                        hsk_studio_nib::raster::GradientGeometry::Linear { x1, y1, x2, y2 } => GradientGeometry::Axial { from: [x1, y1], to: [x2, y2] },
+                        hsk_studio_nib::raster::GradientGeometry::Radial { cx, cy, r, fx, fy, fr } => GradientGeometry::Radial { from: [fx, fy], from_radius: fr, to: [cx, cy], to_radius: r },
+                    };
+                    let spread = match g.spread {
+                        hsk_studio_nib::raster::Spread::Pad => GradientSpread::Pad,
+                        hsk_studio_nib::raster::Spread::Repeat => GradientSpread::Repeat,
+                        hsk_studio_nib::raster::Spread::Reflect => GradientSpread::Reflect,
+                    };
+                    let shading = Gradient { geometry, stops: &stops, extend: [true, true], spread, matrix: compose(self.page.affine(), g.transform), profile: None };
+                    let alpha = f64::from(row.opacity).clamp(0.0, 1.0);
+                    draw_parts(ex, self.handle, &parts, alpha, mode, |ex, cmds, rule| ex.fill_path_gradient(self.handle, cmds, rule, &shading)).map_err(Self::err)?;
+                }
+                // One loss per part, as before.
+                _ => losses.extend(parts.iter().map(|_| format!("{layer_id}: paint_not_exported"))),
             }
         }
         Ok(())
@@ -338,5 +363,57 @@ impl Viewer {
             Ok(losses)
         })();
         self.report(r)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! R44 F-R44-5: a row of two fill-rule parts (a non-zero stroke outline and an even-odd ring
+    //! marker that overlap) at 50 % is written as one group of opacity 0.5 holding two opaque
+    //! fills, read back from the PDF content by press's own reader; a single part keeps the plain
+    //! draw state; at full opacity and Normal no group is written.
+    use super::*;
+    use hsk_studio_press::{VectorItem, VectorPaint, read_vector_pages};
+
+    fn square(x: f64, y: f64, s: f64) -> Vec<PathCommand> {
+        vec![PathCommand::MoveTo(x, y), PathCommand::LineTo(x + s, y), PathCommand::LineTo(x + s, y + s), PathCommand::LineTo(x, y + s), PathCommand::Close]
+    }
+
+    fn items(parts: &[(FillRule, Vec<PathCommand>)], alpha: f64) -> Vec<VectorItem> {
+        let mut ex = PdfExport::new(ExportOptions::default(), &Limits::default()).unwrap();
+        let handle = ex.add_page(PageSpec { media_box_pt: [0.0, 0.0, 100.0, 100.0], trim_box_pt: None, bleed_box_pt: None }).unwrap();
+        let blue = Colour::DeviceRgb([0.0, 0.0, 1.0]);
+        draw_parts(&mut ex, handle, parts, alpha, BlendMode::Normal, |ex, cmds, rule| ex.fill_path(handle, cmds, rule, blue)).unwrap();
+        let (bytes, _) = ex.finish(&hsk_studio_accord::CancellationToken::default()).unwrap();
+        read_vector_pages(&bytes, 1 << 24, &hsk_studio_accord::CancellationToken::default()).unwrap().remove(0).items
+    }
+
+    fn alphas(items: &[VectorItem]) -> Vec<f32> {
+        items.iter().filter_map(|i| match i {
+            VectorItem::Draw { paint: VectorPaint::Solid(c), .. } => Some(c[3]),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn two_rule_parts_at_half_opacity_are_one_group_painted_once() {
+        let mut ring = square(30.0, 10.0, 40.0);
+        ring.extend(square(40.0, 20.0, 20.0));
+        let parts = vec![(FillRule::NonZero, square(10.0, 30.0, 40.0)), (FillRule::EvenOdd, ring)];
+        let got = items(&parts, 0.5);
+        let groups: Vec<f32> = got.iter().filter_map(|i| match i {
+            VectorItem::PushGroup { opacity, .. } => Some(*opacity),
+            _ => None,
+        }).collect();
+        assert_eq!(groups.len(), 1, "{got:?}");
+        assert!((groups[0] - 0.5).abs() < 1e-6, "{groups:?}");
+        assert!(matches!(got.first(), Some(VectorItem::PushGroup { .. })) && matches!(got.last(), Some(VectorItem::PopGroup)), "both fills inside the group: {got:?}");
+        assert_eq!(alphas(&got), [1.0, 1.0], "the fills are opaque inside the group: {got:?}");
+        // One part: the plain draw state, no group. Full opacity: no group either.
+        let one = items(&parts[..1], 0.5);
+        // (The written alpha reads back through 8-bit precision: 128 / 255.)
+        assert!(!one.iter().any(|i| matches!(i, VectorItem::PushGroup { .. })) && alphas(&one).iter().all(|a| (a - 0.5).abs() < 0.01) && alphas(&one).len() == 1, "{one:?}");
+        let opaque = items(&parts, 1.0);
+        assert!(!opaque.iter().any(|i| matches!(i, VectorItem::PushGroup { .. })) && alphas(&opaque) == [1.0, 1.0], "{opaque:?}");
     }
 }

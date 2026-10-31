@@ -393,7 +393,9 @@ fn nest_moves_clip_envelopes_in_one_step_and_the_parent_mix_is_unchanged() {
 
 /// `Run::submit_sequence_edits_and_entry` with an entry write the session refuses (an unknown
 /// token, typed `unsafe_name`): the sequences, the routing entry and the history are unchanged
-/// (the committed sequence step is rolled back, no split step).
+/// (the committed sequence step is rolled back, no split step). R44 F-R44-13 (lane
+/// SMB-R44-FOLLOWUPS-1): the history holds a redo entry before the refused write (a second entry
+/// write undone once), and that redo history survives the rollback unchanged (the F-R42-2 property).
 #[cfg(feature = "audio-batch")]
 #[test]
 fn refused_entry_write_leaves_sequences_and_entry_unchanged() {
@@ -407,6 +409,10 @@ fn refused_entry_write_leaves_sequences_and_entry_unchanged() {
     let mut run = h.run(default_actor(), &cancel);
     assert!(run.open_path(&path), "{:?}", run.ops().last());
     run.set_document_entry("audio_routing", Some(serde_json::to_vec(&enveloped_routing()).unwrap())).unwrap();
+    // A redo history to preserve: a second entry write as one undoable step, undone once.
+    assert!(run.set_tiles_and_entry("audio_routing.write", "", None, "audio_routing", b"{\"routings\":[]}".to_vec()), "{:?}", run.ops().last());
+    assert!(run.undo(), "{:?}", run.ops().last());
+    assert_eq!(run.document_entry("audio_routing").map(<[u8]>::to_vec), Some(serde_json::to_vec(&enveloped_routing()).unwrap()));
     let snap = run.snapshot().unwrap().clone();
     let ids = NestIds {
         sequence_id: "nest-1".into(),
@@ -431,6 +437,7 @@ fn refused_entry_write_leaves_sequences_and_entry_unchanged() {
     let seqs = |run: &hsk_studio_harness_core::Run<'_>| run.snapshot().unwrap().document().sequences.clone();
     let entry = |run: &hsk_studio_harness_core::Run<'_>| run.document_entry("audio_routing").map(<[u8]>::to_vec);
     let (s0, e0, h0) = (seqs(&run), entry(&run), run.history());
+    assert_eq!(h0["redo"].as_array().map(Vec::len), Some(1), "one redo entry before the refused write: {h0}");
     assert!(!run.submit_sequence_edits_and_entry("sequence.nest", edits(), "not-a-token", b"x".to_vec()));
     assert_eq!(run.ops().last().unwrap()["error"], "unsafe_name", "{:?}", run.ops().last());
     assert_eq!(seqs(&run), s0, "the sequence step was rolled back");
@@ -545,7 +552,7 @@ mod export {
             None
         }
     }
-    fn job<V: FrameSource + Send + 'static, A: hsk_studio_pulse::AudioSources + Send + 'static>(
+    fn job<V: FrameSource + Send + 'static, A: hsk_studio_pulse::AudioSources + Send + Sync + 'static>(
         sequence: StudioSequence,
         video: V,
         audio: Option<A>,
@@ -636,6 +643,88 @@ mod export {
             assert!((g - w).abs() <= 1e-6, "sample {i}: {g} vs {w}");
         }
         assert!(want.iter().any(|x| x.abs() > 0.01), "the range is not silent");
+    }
+
+    /// The exported PCM (track 2) of `bytes` over `frames` frames, interleaved stereo.
+    fn pcm(bytes: &[u8], frames: u64) -> Vec<f32> {
+        let audio = read(bytes, 2, frames * SPF as u64);
+        audio.chunks.iter().flat_map(|c| c.1.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect::<Vec<_>>()).collect()
+    }
+
+    /// Runs one export job to its file and returns the file's bytes.
+    fn run_job(job: ExportJob, out: &Path) -> Vec<u8> {
+        let mut queue = ExportQueue::new();
+        let _handle = queue.submit(job);
+        let receipt = queue.run().remove(0);
+        assert_eq!(receipt.outcome, ExportOutcome::Complete, "{receipt:?}");
+        std::fs::read(out).unwrap()
+    }
+
+    /// Interleaves `frames` frames of a planar stereo mix.
+    fn interleave(mix: &[Vec<f32>; 2], frames: usize) -> Vec<f32> {
+        (0..frames * SPF).flat_map(|i| [mix[0][i], mix[1][i]]).collect()
+    }
+
+    /// R44 F-R44-13 (lane SMB-R44-FOLLOWUPS-1): export with MOVED envelopes end to end. `seq-main`
+    /// carries the gain and pan envelopes of clip 3 (`enveloped_routing`); after Nest of clip 1 they
+    /// live in the nested sequence's routing, and the export of `seq-main` with the document's
+    /// routing equals the mix of `seq-main` BEFORE the nest (its bus stream with the envelopes) within
+    /// 1e-6 over frames [0, 20).
+    #[cfg(feature = "audio-batch")]
+    #[test]
+    fn export_with_moved_envelopes_equals_the_pre_nest_mix() {
+        let (s, mut v) = opened("export-envelopes");
+        v.set_audio_routing(&enveloped_routing()).unwrap();
+        let before = main_mix(&v);
+        v.timeline_command(TimelineCommand::Nest(vec![cid(1)])).unwrap_or_else(|e| panic!("{e}: {}", status(&v)));
+        let doc = sequences(&v);
+        let routing = v.audio_routing().unwrap().unwrap();
+        assert!(routing_of(&v, "seq-main").clip_gains.is_empty(), "the envelopes moved");
+        let out = s.0.join("nested-envelopes.mov");
+        let bytes = run_job(job(doc[0].clone(), all_solids(), Some(tone()), out.clone(), NestedDocument::new(doc.clone(), routing)).unwrap_or_else(|e| panic!("{} {}", e.code, e.detail)), &out);
+        let (got, want) = (pcm(&bytes, 20), interleave(&before, 20));
+        assert_eq!(got.len(), want.len());
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() <= 1e-6, "sample {i}: {g} vs pre-nest mix {w}");
+        }
+        assert!(want.iter().any(|x| x.abs() > 0.01), "the range is not silent");
+    }
+
+    /// R44 F-R44-3 (lane SMB-R44-FOLLOWUPS-1): the root mix of an export is the stream the mixer
+    /// plays. `seq-main` (no nest) with a clip pan envelope on clip 3 and a master volume lane
+    /// exports PCM equal to `Viewer::bus_stream`'s render of the same routing within 1e-6 over frames
+    /// [0, 20); negative control: pulse's plain `TimelineMixStream` of the same sequence differs by
+    /// more than 1e-3 there (the export before this lane).
+    #[cfg(feature = "audio-batch")]
+    #[test]
+    fn export_root_mix_equals_the_bus_stream_with_a_clip_pan_and_a_master_lane() {
+        let (s, mut v) = opened("export-root-mix");
+        let mut r = StudioAudioRouting::new("seq-main");
+        r.clip_pans.push(pan_envelope(&cid(3)));
+        r.master.volume_automation = vec![StudioAutomationPoint { offset_ticks: 0, value: 1.0 }, StudioAutomationPoint { offset_ticks: 16 * F, value: 0.25 }];
+        let set = StudioAudioRoutingSet { routings: vec![r] };
+        v.set_audio_routing(&set).unwrap();
+        let mixer = main_mix(&v);
+        let main = sequences(&v)[0].clone();
+        let out = s.0.join("root-mix.mov");
+        let bytes = run_job(job(main.clone(), all_solids(), Some(tone()), out.clone(), NestedDocument::new(sequences(&v), v.audio_routing().unwrap().unwrap())).unwrap_or_else(|e| panic!("{} {}", e.code, e.detail)), &out);
+        let (got, want) = (pcm(&bytes, 20), interleave(&mixer, 20));
+        assert_eq!(got.len(), want.len());
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() <= 1e-6, "sample {i}: export {g} vs bus stream {w}");
+        }
+        assert!(want.iter().any(|x| x.abs() > 0.01), "the range is not silent");
+        // Negative control: the plain mix ignores the pan envelope and the master lane.
+        let cancel = CancellationToken::default();
+        let mut plain = hsk_studio_pulse::TimelineMixStream::new(&main, 48_000, 960, tone(), &Known, hsk_studio_pulse::StreamLimits::default(), &cancel).unwrap();
+        let n = 20 * SPF;
+        let (mut l, mut rr) = (vec![0f32; n], vec![0f32; n]);
+        for at in (0..n).step_by(960) {
+            plain.render(&mut l[at..at + 960], &mut rr[at..at + 960], &cancel).unwrap();
+        }
+        let plain: Vec<f32> = l.iter().zip(&rr).flat_map(|(a, b)| [*a, *b]).collect();
+        let worst = got.iter().zip(&plain).map(|(g, p)| (g - p).abs()).fold(0f32, f32::max);
+        assert!(worst > 1e-3, "the plain mix must differ (worst {worst})");
     }
 
     /// A nested clip never exports black or silent: an inner video source the decoder cannot give

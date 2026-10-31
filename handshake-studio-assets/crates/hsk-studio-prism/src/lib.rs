@@ -71,6 +71,8 @@ pub enum Error {
     UnsupportedAdmission,
     RetirementUnavailable,
     DiagnosticDelivery(hsk_studio_observe::Error),
+    /// A display encoding Prism cannot invert (`DisplayEncoding::decode` of PQ: no ST 2084 inverse).
+    DecodeUnsupported,
 }
 impl Error {
     pub const fn code(self) -> &'static str {
@@ -100,6 +102,7 @@ impl Error {
             Self::UnsupportedAdmission => "unsupported_admission",
             Self::RetirementUnavailable => "retirement_unavailable",
             Self::DiagnosticDelivery(_) => "diagnostic_delivery",
+            Self::DecodeUnsupported => "decode_unsupported",
         }
     }
 }

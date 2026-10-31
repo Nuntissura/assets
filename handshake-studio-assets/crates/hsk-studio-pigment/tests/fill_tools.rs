@@ -352,3 +352,42 @@ fn bucket_hostile_input_refuses_typed() {
     assert_eq!(flood_fill(&img.view(), Some(&short), [1.0, 1.0], &HARD, &red, &p, None, CANVAS, &ToolLimits::default()).unwrap_err().code(), "malformed_stride");
     assert_eq!(fill_selection(&img.view(), None, CANVAS, &red, &FillPaint { mode: StudioBlendMode::PassThrough, ..p }, &ToolLimits::default()).unwrap_err().code(), "blend_group_only");
 }
+
+// ---- R44 finding F-R44-1 (SMB-R44-FOLLOWUPS-1): unpainted pixels are not rewritten ---------------
+
+#[test]
+fn unpainted_pixels_get_coverage_zero_and_keep_their_bytes() {
+    // Every pixel the paint leaves unpainted keeps its own bytes bit for bit (the viewer's HDR
+    // case, linear 1.5 and 0.002, is proven end to end in harness-view tests/viewer_fill_hdr.rs).
+    let img = Img::new(CANVAS, |x, _| if x % 2 == 0 { [0.9, 0.002, 0.25, 1.0] } else { [0.002, 0.6, 0.75, 0.5] });
+    let fg = [ColourStop { location: 0, midpoint: 50.0, colour: [0.2, 0.4, 0.6] }, ColourStop { location: 4096, midpoint: 50.0, colour: [0.2, 0.4, 0.6] }];
+    let fade = [TransparencyStop { location: 0, midpoint: 50.0, opacity: 100.0 }, TransparencyStop { location: 4096, midpoint: 50.0, opacity: 0.0 }];
+    let g = grad(GradientGeometry::Linear, &fg, &fade);
+    // The default foreground-to-transparent drag ends at x = 4: columns 4..8 are past its end.
+    let r = ok(run(&img, None, [0.0, 0.0], [4.0, 0.0], &g, &FillPaint::default()));
+    assert_eq!(r.bounds, CANVAS);
+    let own = |x: i64, y: i64| {
+        let i = (y as usize) * 8 + x as usize;
+        let f = |b: &[u8], k: usize| f32::from_le_bytes(b[k * 4..k * 4 + 4].try_into().unwrap());
+        [f(&img.colour, i * 3), f(&img.colour, i * 3 + 1), f(&img.colour, i * 3 + 2), f(&img.alpha, i)]
+    };
+    for y in 0..8 {
+        for x in 0..8 {
+            let (cov, out) = (r.coverage.at(x, y), px(&r, x, y));
+            if x >= 4 {
+                assert_eq!(cov, 0, "({x}, {y}) past the drag end is unpainted");
+                assert_eq!(out.map(f32::to_bits), own(x, y).map(f32::to_bits), "({x}, {y}) keeps its bytes");
+            } else {
+                assert_eq!(cov, u16::MAX, "({x}, {y}) painted");
+            }
+        }
+    }
+    // Opacity 0 paints nothing at all: refused like an empty region, never a rewrite.
+    let code = run(&img, None, [0.0, 0.0], [4.0, 0.0], &g, &FillPaint { opacity: 0.0, ..FillPaint::default() }).unwrap_err().code();
+    assert_eq!(code, "nothing_to_fill");
+    // Behind and clear with an unpainted source also leave the pixel alone (coverage 0).
+    for mode in [StudioBlendMode::Behind, StudioBlendMode::Clear] {
+        let r = ok(run(&img, None, [0.0, 0.0], [4.0, 0.0], &g, &FillPaint { mode, ..FillPaint::default() }));
+        assert!((4..8).all(|x| r.coverage.at(x, 3) == 0), "{mode:?}");
+    }
+}

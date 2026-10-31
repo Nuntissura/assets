@@ -188,3 +188,49 @@ fn unknown_marker_cap_keeps_the_old_loss() {
     assert!(p.vector_records.stroke_markers.is_empty());
     assert_eq!(cap_losses(&p), vec![("native.strokes.cap=WASHI_TAPE_1".to_owned(), "stroke_cap_marker_no_folio_home", 1)]);
 }
+
+/// R44 finding F-R44-5 (lane SMB-R44-FOLLOWUPS-1): at 50 % stroke opacity the marked stroke is
+/// painted ONCE. From the PDF content (press's own reader of the exported bytes): the trimmed
+/// stroke and every marker outline are drawn opaque (alpha 1) inside one transparency group whose
+/// opacity is 0.5, and nothing of them is drawn at 0.5 outside it. From the render: no pixel is
+/// darker than a pixel of the stroke alone (a double application at 50 % black would leave 25 %
+/// paper in the overlap, a third of the stroke-only level; 6 of 765 levels allow edge rounding).
+/// At full opacity no group is written (the opaque export is unchanged).
+#[test]
+fn half_opacity_markers_are_painted_once_in_one_group() {
+    let cancel = CancellationToken::default();
+    let mut doc = patched("line-outline", "TRIANGLE_FILLED", 8.0);
+    let n = doc.nodes.iter_mut().find(|n| n.name.as_deref() == Some("line-outline")).unwrap();
+    n.strokes = vec![Paint { opacity: Some(0.5), ..BLACK }];
+    let p = map(&doc);
+    let (_, _, row) = stroke_row(&p, &layer_id(&p, "line-outline"));
+    let StudioAppearanceRow::Stroke { opacity, .. } = row else { unreachable!() };
+    assert!((opacity - 50.0).abs() < 1e-9, "row opacity {opacity}");
+    let (pdf, _) = export_line(&p);
+    let pages = hsk_studio_press::read_vector_pages(&pdf.bytes, 1 << 24, &cancel).unwrap();
+    let items = &pages[0].items;
+    let open = items.iter().position(|i| matches!(i, hsk_studio_press::VectorItem::PushGroup { .. })).expect("one group");
+    let close = items.iter().rposition(|i| matches!(i, hsk_studio_press::VectorItem::PopGroup)).expect("group closed");
+    let hsk_studio_press::VectorItem::PushGroup { opacity, .. } = &items[open] else { unreachable!() };
+    assert!((opacity - 0.5).abs() < 1e-6, "group opacity {opacity}");
+    let alpha = |i: &hsk_studio_press::VectorItem| match i {
+        hsk_studio_press::VectorItem::Draw { paint: hsk_studio_press::VectorPaint::Solid(c), mode, .. } => Some((c[3], matches!(mode, hsk_studio_press::VectorMode::Stroke(_)))),
+        _ => None,
+    };
+    let inside: Vec<(f32, bool)> = items[open..close].iter().filter_map(alpha).collect();
+    assert!(inside.iter().any(|(_, s)| *s) && inside.iter().any(|(_, s)| !*s), "stroke and marker fills in the group: {inside:?}");
+    assert!(inside.iter().all(|(a, _)| (*a - 1.0).abs() < 1e-6), "drawn opaque inside the group: {inside:?}");
+    let outside: Vec<(f32, bool)> = items[..open].iter().chain(&items[close..]).filter_map(alpha).collect();
+    assert!(outside.iter().all(|(a, _)| (*a - 1.0).abs() < 1e-6), "no half-alpha draw outside the group: {outside:?}");
+    // Render: the overlap is no darker than the stroke alone.
+    let page = render_frame_export(&pdf, &cancel).unwrap();
+    let lum = |x: u32, y: u32| page.pixel(x, y).map(|c| c.iter().map(|v| u32::from(*v)).sum::<u32>()).unwrap();
+    let stroke_only = lum(10, 20);
+    assert!((300..500).contains(&stroke_only), "50 % black over paper: {stroke_only}");
+    let darkest = (0..page.width).flat_map(|x| (0..page.height).map(move |y| (x, y))).map(|(x, y)| lum(x, y)).min().unwrap();
+    assert!(darkest + 6 >= stroke_only, "a darker overlap ({darkest}) than the stroke alone ({stroke_only})");
+    // Opaque: no group.
+    let (opaque, _) = export_line(&map(&patched("line-outline", "TRIANGLE_FILLED", 8.0)));
+    let pages = hsk_studio_press::read_vector_pages(&opaque.bytes, 1 << 24, &cancel).unwrap();
+    assert!(!pages[0].items.iter().any(|i| matches!(i, hsk_studio_press::VectorItem::PushGroup { .. })));
+}

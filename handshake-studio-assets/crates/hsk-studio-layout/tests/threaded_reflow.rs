@@ -706,9 +706,12 @@ fn folio_inputs_select_the_story_thread_and_unsupported_properties_are_refused()
                 LayoutError::AutosizeThreadedFrame
             );
             // First baselines other than fixed compose since SMB-ID-FRAME-AUTOSIZE-1 (tests/
-            // frame_autosize.rs): inset top 0 + max(ascent 10, minimum 10) = baseline 10.
+            // frame_autosize.rs): inset top 0 + max(ascent 10, minimum 4) = baseline 10. R44 F-R44-9
+            // (lane SMB-R44-FOLLOWUPS-1): the minimum (4) lies below the ascent, so the fixed path
+            // would put the baseline at 4 and this pin tells the two apart.
             let mut ascent = Case::new(text, specs.clone(), Composer::FirstFit);
             ascent.frame_mut(0).first_baseline_offset = FirstBaseline::Ascent;
+            ascent.frame_mut(0).minimum_first_baseline_offset = len(4.0);
             assert_eq!(ascent.ok().frames[0].lines[0].baseline_y_pt, 10.0);
             assert_eq!(
                 unsupported(&|c| c.story.text_kind = StoryTextKind::Point),

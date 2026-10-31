@@ -762,6 +762,9 @@ struct SequenceExport {
     height: u32,
 }
 
+/// Total bytes of all `--media` and `--audio` files (red stub of R44 F-R44-15; enforced in the green commit).
+pub const MAX_EXPORT_INPUT_BYTES: u64 = 2_147_483_648;
+
 /// Opens the package headlessly like the viewer, binds every `--media` file to the program monitor through
 /// reel's decoders (`Viewer::bind_program_media`: clip sources `sha256:<hex>`), and runs `Viewer::export_sequence`
 /// (the window's Export Media runs the same method): same refusals, same result JSON (`export.receipt` is reel's

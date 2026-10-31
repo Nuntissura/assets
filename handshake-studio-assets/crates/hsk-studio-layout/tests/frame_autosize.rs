@@ -232,7 +232,10 @@ fn sized(text: &str, s: Spec, kind: AutoSizing) -> (StudioDocument, StudioTextSt
 /// 12, descent 2, insets 2. Three lines: last baseline 34, height 34 + 2 + 2 = 38 (the authored 100
 /// shrinks). One more line: 46 + 4 = 50 (an authored 20 grows). One line: 10 + 4 = 14. Two columns
 /// (60 pt each, gutter 4): three lines fit at the smallest height holding two lines in column 0 and
-/// one in column 1: 22 + 4 = 26. The lines are those of the sized frame (`reflow_flow` agrees).
+/// one in column 1: 22 + 4 = 26. R44 F-R44-6 (lane SMB-R44-FOLLOWUPS-1; this lane's pin changed):
+/// the plain `reflow_flow` composes the authored size, equal to the same frame with auto-size off,
+/// and differs from `reflow_autosize` where the size changes the lines (the authored 20 pt frame
+/// holds one line and oversets the rest; the sized 50 pt frame holds all four).
 #[test]
 fn height_only_fits_the_last_line_and_grows_and_shrinks() {
     for (text, h, after) in [
@@ -246,7 +249,13 @@ fn height_only_fits_the_last_line_and_grows_and_shrinks() {
         assert_eq!(p.layout.overset, None);
         let last = baselines(&p.layout, 0).last().copied().expect("lines");
         assert_eq!(last + 2.0 + 2.0, after);
-        assert_eq!(run(&doc, &st, &paras, &records()).expect("reflow"), p.layout);
+        let plain = run(&doc, &st, &paras, &records()).expect("reflow");
+        let mut authored = doc.clone();
+        frame(&mut authored, 0).auto_sizing_type = AutoSizing::Off;
+        assert_eq!(plain, run(&authored, &st, &paras, &records()).expect("authored reflow"), "{text}: the authored size");
+        if h < after {
+            assert!(plain.overset.is_some() && plain != p.layout, "{text}: the authored frame oversets, the sized one does not");
+        }
     }
     let mut s = spec(0, 10.0, 10.0, 128.0, 100.0);
     s.columns = 2;

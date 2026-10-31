@@ -502,3 +502,52 @@ fn make_subsequence_lists_the_copies_of_each_parent_clip() {
         assert!(n.copied_clips().is_empty());
     });
 }
+
+/// R44 finding F-R44-7 (lane SMB-R44-FOLLOWUPS-1): a valid, acyclic document in which each of 12
+/// sequences nests the one below it on 4 tracks (4^12 = 16777216 leaf visits) is refused
+/// `limit_exceeded` by the layer budget, charged per visited layer (expanded Sequence layers
+/// included), not walked until the cancel token. The refusal is asserted, never a time. The same
+/// shape one level deep (seq-1 nests seq-0 on 4 tracks: 4 Sequence layers + 16 media layers = 20
+/// visits) resolves under a budget of 20 and is refused at 19, so expansions are charged, not only
+/// media layers.
+#[test]
+fn nested_frame_fan_out_is_bounded_by_the_layer_budget() {
+    bounded_case("fan-out", || {
+        // seq-0: 4 media tracks. seq-k (k = 1..=12): 4 video tracks, each one clip nesting seq-(k-1).
+        let (mut clip_n, mut track_n) = (100u32, 100u32);
+        fn next(c: &mut u32) -> u32 {
+            *c += 1;
+            *c
+        }
+        let build = |depth: u32, clip_n: &mut u32, track_n: &mut u32| -> Vec<StudioSequence> {
+            let mut out = Vec::new();
+            let leaf: Vec<StudioTrack> = (0..4).map(|i| track(next(track_n), TrackKind::Video, i, vec![clip(next(clip_n), media("m"), 0, 10, 0)])).collect();
+            out.push(sequence("seq-0", leaf));
+            for k in 1..=depth {
+                let below = format!("seq-{}", k - 1);
+                let tracks: Vec<StudioTrack> = (0..4).map(|i| track(next(track_n), TrackKind::Video, i, vec![clip(next(clip_n), nested(&below), 0, 10, 0)])).collect();
+                out.push(sequence(&format!("seq-{k}"), tracks));
+            }
+            out
+        };
+        let deep = document(build(12, &mut clip_n, &mut track_n));
+        let top = deep.document().sequences.last().unwrap().clone();
+        assert_eq!(top.sequence_id, "seq-12");
+        let cancel = CancellationToken::default();
+        let e = frame_layers_nested(&deep.document().sequences, &top, Ticks::new(2 * F), &Known, 256, &cancel).unwrap_err();
+        assert_eq!(e.code(), "limit_exceeded");
+        assert!(cancel.check().is_ok(), "refused by the budget, not by cancellation");
+        // One level: 4 Sequence layers + 16 media layers = 20 visits.
+        let shallow = document(build(1, &mut clip_n, &mut track_n));
+        let top = shallow.document().sequences.last().unwrap().clone();
+        let frame = frame_layers_nested(&shallow.document().sequences, &top, Ticks::new(2 * F), &Known, 20, &cancel).unwrap();
+        assert_eq!((frame.layers.len(), frame.unresolved.len()), (16, 0));
+        assert_eq!(frame_layers_nested(&shallow.document().sequences, &top, Ticks::new(2 * F), &Known, 19, &cancel).unwrap_err().code(), "limit_exceeded");
+        // Unresolved layers are charged too: 4 tracks nesting an unknown sequence need 4 visits.
+        let lost = sequence("seq-lost", (0..4).map(|i| track(next(&mut track_n), TrackKind::Video, i, vec![clip(next(&mut clip_n), nested("seq-none"), 0, 10, 0)])).collect());
+        let lone = vec![lost.clone()];
+        let frame = frame_layers_nested(&lone, &lost, Ticks::new(2 * F), &Known, 4, &cancel).unwrap();
+        assert_eq!(frame.unresolved.len(), 4);
+        assert_eq!(frame_layers_nested(&lone, &lost, Ticks::new(2 * F), &Known, 3, &cancel).unwrap_err().code(), "limit_exceeded");
+    });
+}
