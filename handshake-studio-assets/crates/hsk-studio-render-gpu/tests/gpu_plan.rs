@@ -3262,6 +3262,133 @@ fn threshold_tie_at_the_cut_is_either_side_and_off_tie_pixels_match() {
     assert_eq!((err, ties), (0.0, 1), "off-tie pixels match pigment exactly");
 }
 
+/// GPU and pigment Threshold outputs (red channel) of one opaque row of straight `pixels` at
+/// `level`.
+fn threshold_row(backend: &GpuBackend, pixels: &[[f32; 3]], level: f32) -> (Vec<f32>, Vec<f32>) {
+    let width = u32::try_from(pixels.len()).expect("row width");
+    let extent = rect(0, 0, width, 1);
+    let tile = OwnedTile::from_pixels(width, 1, |x, _| {
+        let [r, g, b] = pixels[x as usize];
+        [r, g, b, 1.0]
+    });
+    let sources = Sources::with_tiles(vec![(1, tile)]);
+    let plan = plan_of(
+        44,
+        extent,
+        vec![sources.tiles[0].1.input(1, extent), solid(extent, [0.0; 4])],
+        vec![
+            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+            layer(1, StudioBlendMode::Normal, 1.0, 1.0),
+        ],
+    );
+    let ext = PlanExtensions::from_layers(vec![
+        LayerExtension::new(plan.root, 1).with_adjustment(AdjustmentOp::Threshold { level }),
+    ]);
+    let mut sink = Image::new(extent);
+    backend
+        .execute_extended(
+            &plan,
+            &ext,
+            &request(plan.revision, Exactness::Approximate),
+            &sources,
+            &CancellationToken::default(),
+            &mut sink,
+        )
+        .expect("threshold row executes on the device");
+    let reference = Reference { plan: &plan, sources: &sources, ext: Some(&ext) };
+    let cpu = (0..i64::from(width))
+        .map(|x| {
+            let mut px = [0.0_f32; 4];
+            reference.group(plan.root.0 as usize, x, 0, &mut px);
+            px[0]
+        })
+        .collect();
+    (sink.px.iter().map(|p| p[0]).collect(), cpu)
+}
+
+/// F-R46-1 (lane SMB-R46-FOLLOWUPS-1), measured per backend: the tie pixel (7/16, 10/16, 0) of
+/// the threshold-128 lattice case, whose pigment luminance (binary32, `blend_math::lum`) equals
+/// the cut exactly, under the levels whose binary32 cut `level - 0.5 / 255` (the kernel's own
+/// subtraction) steps through the f32 values next to the cut. The step where the GPU flips from
+/// white to black brackets the GPU's luminance bits; every step must decide as pigment does.
+#[test]
+fn threshold_tie_decides_as_pigment_at_every_cut_step() {
+    let _guard = device_lock();
+    let backend = shared_backend();
+    let Some(info) = gpu_gate(backend, "threshold tie cut steps").unwrap_or_else(|e| panic!("{e}"))
+    else {
+        return;
+    };
+    let rgb = [7.0_f32 / 16.0, 10.0 / 16.0, 0.0];
+    let lum = hsk_studio_pigment::blend_math::lum(rgb);
+    let level = 128.0_f32 / 255.0;
+    let cut = level - 0.5 / 255.0;
+    assert_eq!(lum.to_bits(), cut.to_bits(), "the probe pixel ties the cut in pigment");
+    let (mut white_max, mut black_min, mut split) = (None::<u32>, None::<u32>, Vec::new());
+    for step in -3_i32..=2 {
+        let l = f32::from_bits(level.to_bits().wrapping_add_signed(step));
+        let c = l - 0.5 / 255.0;
+        let (gpu, cpu) = threshold_row(backend, &[rgb], l);
+        assert_eq!(cpu[0], if lum >= c { 1.0 } else { 0.0 }, "pigment rule at cut 0x{:08x}", c.to_bits());
+        eprintln!(
+            "THRESHOLD_TIE_STEP backend {}: level 0x{:08x} cut 0x{:08x} gpu {} pigment {}",
+            info.backend,
+            l.to_bits(),
+            c.to_bits(),
+            gpu[0],
+            cpu[0]
+        );
+        if gpu[0] == 1.0 {
+            white_max = white_max.max(Some(c.to_bits()));
+        } else {
+            black_min = Some(black_min.map_or(c.to_bits(), |b| b.min(c.to_bits())));
+        }
+        if gpu[0] != cpu[0] {
+            split.push(c.to_bits());
+        }
+    }
+    eprintln!(
+        "THRESHOLD_TIE_BITS backend {}: pigment lum 0x{:08x} cut 0x{:08x}; gpu lum >= {} and < {}",
+        info.backend,
+        lum.to_bits(),
+        cut.to_bits(),
+        white_max.map_or_else(|| "(no white step)".to_owned(), |b| format!("0x{b:08x}")),
+        black_min.map_or_else(|| "(no black step)".to_owned(), |b| format!("0x{b:08x}"))
+    );
+    assert!(split.is_empty(), "GPU decides the tie unlike pigment at cuts {split:08x?}");
+}
+
+/// F-R46-1: every 8-bit colour whose real-arithmetic luminance ties level 128
+/// (30 R + 59 G + 11 B = 12750 over codes, 1110 colours) decides as pigment does on the GPU.
+#[test]
+fn threshold_8bit_ties_at_level_128_match_pigment() {
+    let _guard = device_lock();
+    let backend = shared_backend();
+    let Some(info) = gpu_gate(backend, "threshold 8-bit ties").unwrap_or_else(|e| panic!("{e}"))
+    else {
+        return;
+    };
+    let mut pixels = Vec::new();
+    for r in 0..=255_i32 {
+        for g in 0..=255_i32 {
+            let rest = 12_750 - 30 * r - 59 * g;
+            if rest >= 0 && rest % 11 == 0 && rest / 11 <= 255 {
+                pixels.push([r as f32 / 255.0, g as f32 / 255.0, (rest / 11) as f32 / 255.0]);
+            }
+        }
+    }
+    assert_eq!(pixels.len(), 1110);
+    let (gpu, cpu) = threshold_row(backend, &pixels, 128.0 / 255.0);
+    let differ = gpu.iter().zip(&cpu).filter(|(g, c)| g != c).count();
+    eprintln!(
+        "THRESHOLD_8BIT_TIES backend {}: {differ} of {} differ from pigment (pigment white {})",
+        info.backend,
+        pixels.len(),
+        cpu.iter().filter(|&&v| v == 1.0).count()
+    );
+    assert_eq!(differ, 0, "8-bit tie colours decided unlike pigment");
+}
+
 #[test]
 fn ext_adjustment_layer_parity() {
     let _guard = device_lock();
