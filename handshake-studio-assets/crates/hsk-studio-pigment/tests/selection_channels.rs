@@ -243,3 +243,121 @@ fn tile_bytes_resolve_by_record_digest() {
     assert_eq!(t.artifact_manifest_id, format!("manifest-{}", &t.content_digest.digest[..16]));
     assert_eq!(t.object_key, "ch_0_1");
 }
+
+// ---- Slice 3: channel list operations (MT-050 AC-001 record half, Duplicate of AC-002).
+
+/// Two channels `a` (masked-area alpha) and `b` (spot), both saved from the fixture selection.
+fn two_channels() -> ChannelEdit {
+    let plane = selection();
+    let first = save(&StudioRasterRecords::new(sdoc()), &plane, &new_channel("a", StudioChannelKind::MaskedAreaAlpha, 16), &none());
+    let second = save(&first.records, &plane, &new_channel("b", StudioChannelKind::SpotColour, 8), &none());
+    let mut payloads = first.payloads;
+    payloads.extend(second.payloads);
+    ChannelEdit { records: second.records, payloads }
+}
+fn ok<T: std::fmt::Debug>(out: Attributed<T>) -> T {
+    assert_eq!(out.delivery.as_ref().map(|r| r.outcome), Ok(Outcome::Success), "success frame for {:?}", out.result);
+    out.result.unwrap()
+}
+fn err<T: std::fmt::Debug>(out: Attributed<T>) -> ChannelError {
+    assert!(matches!(out.delivery.as_ref().map(|r| r.outcome), Ok(Outcome::Failure(_))), "failure frame");
+    out.result.unwrap_err()
+}
+fn ids(r: &StudioRasterRecords) -> Vec<&str> {
+    r.channels.iter().map(|c| c.channel_id.as_str()).collect()
+}
+
+#[test]
+fn list_operations_return_new_record_sets() {
+    let base = two_channels();
+    let (cancel, mut sink) = (CancellationToken::default(), Frames::default());
+    // Rename keeps id and tiles.
+    let renamed = ok(rename_channel(&base.records, "a", "Saved hair", &cmd(), &cancel, &mut sink));
+    assert_eq!(renamed.channel("a").unwrap().name, "Saved hair");
+    assert_eq!(renamed.channel("a").unwrap().tiles, base.records.channel("a").unwrap().tiles);
+    assert_eq!(base.records.channel("a").unwrap().name, "Alpha a", "input unchanged");
+    // Reorder.
+    let reordered = ok(reorder_channel(&base.records, "b", 0, &cmd(), &cancel, &mut sink));
+    assert_eq!(ids(&reordered), ["b", "a"]);
+    // Visibility.
+    let shown = ok(set_channel_visibility(&base.records, "b", true, &cmd(), &cancel, &mut sink));
+    assert!(shown.channel("b").unwrap().visible && !base.records.channel("b").unwrap().visible);
+    // Duplicate: placed after the source, same content, tiles follow the new id.
+    let dup = ok(duplicate_channel(&base.records, "a", "a-copy", "Alpha a copy", &cmd(), &cancel, &mut sink));
+    assert_eq!(ids(&dup), ["a", "a-copy", "b"]);
+    let (src, copy) = (dup.channel("a").unwrap(), dup.channel("a-copy").unwrap());
+    assert!(copy.tiles.iter().all(|t| t.layer_id == "a-copy"));
+    assert_eq!(
+        copy.tiles.iter().map(|t| &t.content_digest).collect::<Vec<_>>(),
+        src.tiles.iter().map(|t| &t.content_digest).collect::<Vec<_>>()
+    );
+    let limits = SelectionLimits::default();
+    assert_eq!(
+        load_selection(copy, base.payloads.as_slice(), None, CombineMode::Replace, &limits, &cancel),
+        load_selection(src, base.payloads.as_slice(), None, CombineMode::Replace, &limits, &cancel)
+    );
+    // Delete.
+    let deleted = ok(delete_channel(&base.records, "a", &cmd(), &cancel, &mut sink));
+    assert_eq!(ids(&deleted), ["b"]);
+    // Every operation emitted exactly one terminal frame.
+    assert_eq!(sink.0.len(), 5);
+    assert!(sink.0.iter().all(|(c, _)| *c == DeliveryClass::Terminal));
+}
+
+#[test]
+fn list_operation_refusals_are_typed() {
+    let base = two_channels();
+    let (cancel, mut sink) = (CancellationToken::default(), Frames::default());
+    let r = &base.records;
+    assert_eq!(err(rename_channel(r, "nope", "x", &cmd(), &cancel, &mut sink)), ChannelError::UnknownChannel);
+    assert_eq!(err(rename_channel(r, "a", &"n".repeat(MAX_CHANNEL_NAME_BYTES + 1), &cmd(), &cancel, &mut sink)), ChannelError::NameTooLong);
+    assert_eq!(err(rename_channel(r, "a", "tab\there", &cmd(), &cancel, &mut sink)), ChannelError::InvalidName);
+    assert_eq!(err(reorder_channel(r, "a", 2, &cmd(), &cancel, &mut sink)), ChannelError::IndexOutOfRange);
+    assert_eq!(err(set_channel_visibility(r, "nope", true, &cmd(), &cancel, &mut sink)), ChannelError::UnknownChannel);
+    assert_eq!(err(duplicate_channel(r, "a", "b", "copy", &cmd(), &cancel, &mut sink)), ChannelError::DuplicateChannel);
+    assert_eq!(err(duplicate_channel(r, "a", "bad id", "copy", &cmd(), &cancel, &mut sink)), ChannelError::Record(hsk_studio_folio::Code::InvalidId));
+    assert_eq!(err(delete_channel(r, "nope", &cmd(), &cancel, &mut sink)), ChannelError::UnknownChannel);
+    let canceled = CancellationToken::default();
+    canceled.cancel();
+    let out = delete_channel(r, "a", &cmd(), &canceled, &mut sink);
+    assert_eq!(out.result.unwrap_err(), ChannelError::Canceled);
+    assert_eq!(out.delivery.unwrap().outcome, Outcome::Canceled);
+}
+
+#[test]
+fn kind_conversion_inverts_samples_only_across_polarity() {
+    let base = two_channels();
+    let (cancel, mut sink) = (CancellationToken::default(), Frames::default());
+    let limits = SelectionLimits::default();
+    let before = load_selection(base.records.channel("a").unwrap(), base.payloads.as_slice(), None, CombineMode::Replace, &limits, &cancel).unwrap();
+    // Masked-area -> selected-area: samples inverted, the loaded selection is unchanged.
+    let converted = ok(convert_channel_kind(&base.records, "a", StudioChannelKind::SelectedAreaAlpha, base.payloads.as_slice(), &mut Mint, &limits, &cmd(), &cancel, &mut sink));
+    let a = converted.records.channel("a").unwrap();
+    assert_eq!(a.kind, StudioChannelKind::SelectedAreaAlpha);
+    assert_eq!(converted.payloads.len(), a.tiles.len());
+    let after = load_selection(a, converted.payloads.as_slice(), None, CombineMode::Replace, &limits, &cancel).unwrap();
+    assert_eq!(after, before, "the selection a channel loads as survives a kind change");
+    let old = base.records.channel("a").unwrap();
+    let tone = |payloads: &[ChannelTilePayload], t: &TileRef| {
+        let p = payloads.iter().find(|p| p.sha256_hex == t.content_digest.digest).unwrap();
+        u16::from_le_bytes([p.bytes[0], p.bytes[1]])
+    };
+    assert_eq!(tone(&converted.payloads, &a.tiles[0]), u16::MAX - tone(&base.payloads, &old.tiles[0]));
+    // Padding beyond the extent stays zero (column 2 spans x 256..384 of a 300-wide raster).
+    let edge = converted.payloads.iter().find(|p| p.column == 2 && p.row == 0).unwrap();
+    assert!(edge.bytes[(300 - 256) * 2..128 * 2].iter().all(|b| *b == 0));
+    // And back: the original bytes return.
+    let back = ok(convert_channel_kind(&converted.records, "a", StudioChannelKind::MaskedAreaAlpha, converted.payloads.as_slice(), &mut Mint, &limits, &cmd(), &cancel, &mut sink));
+    assert_eq!(
+        back.records.channel("a").unwrap().tiles.iter().map(|t| &t.content_digest).collect::<Vec<_>>(),
+        old.tiles.iter().map(|t| &t.content_digest).collect::<Vec<_>>()
+    );
+    // Spot -> selected-area: same polarity, only the kind changes (no payloads).
+    let spot = ok(convert_channel_kind(&base.records, "b", StudioChannelKind::SelectedAreaAlpha, base.payloads.as_slice(), &mut Mint, &limits, &cmd(), &cancel, &mut sink));
+    assert!(spot.payloads.is_empty());
+    assert_eq!(spot.records.channel("b").unwrap().tiles, base.records.channel("b").unwrap().tiles);
+    // Same kind, unknown channel, missing bytes are typed.
+    assert_eq!(err(convert_channel_kind(&base.records, "a", StudioChannelKind::MaskedAreaAlpha, base.payloads.as_slice(), &mut Mint, &limits, &cmd(), &cancel, &mut sink)), ChannelError::NoChange);
+    assert_eq!(err(convert_channel_kind(&base.records, "z", StudioChannelKind::SpotColour, base.payloads.as_slice(), &mut Mint, &limits, &cmd(), &cancel, &mut sink)), ChannelError::UnknownChannel);
+    assert_eq!(err(convert_channel_kind(&base.records, "a", StudioChannelKind::SpotColour, none().as_slice(), &mut Mint, &limits, &cmd(), &cancel, &mut sink)), ChannelError::TileMissing);
+}

@@ -645,3 +645,252 @@ pub fn save_selection(
     let result = save(records, plane, target, grid, tiles, mint, limits, cancel);
     finish(result, &records.document_id, cmd, sink)
 }
+
+// ---- Channel list operations (STU-RAS-031 record half: rename, reorder, visibility, duplicate,
+// delete, kind conversion; MT-050 AC-001 and Duplicate of AC-002). Each takes the caller's command
+// context, returns a new record set validated by Folio and emits one terminal Observe frame.
+
+fn position(records: &StudioRasterRecords, channel_id: &str) -> Result<usize, ChannelError> {
+    records
+        .channels
+        .iter()
+        .position(|c| c.channel_id == channel_id)
+        .ok_or(ChannelError::UnknownChannel)
+}
+
+fn edit(
+    records: &StudioRasterRecords,
+    cmd: &CommandContext,
+    cancel: &CancellationToken,
+    sink: &mut (impl SinkPort + ?Sized),
+    change: impl FnOnce(&mut StudioRasterRecords) -> Result<(), ChannelError>,
+) -> Attributed<StudioRasterRecords> {
+    let result = cancel
+        .check()
+        .map_err(|_| ChannelError::Canceled)
+        .and_then(|()| {
+            let mut out = records.clone();
+            change(&mut out)?;
+            validated(out, cancel)
+        });
+    finish(result, &records.document_id, cmd, sink)
+}
+
+/// Renames a channel (its id and tiles are kept).
+pub fn rename_channel(
+    records: &StudioRasterRecords,
+    channel_id: &str,
+    name: &str,
+    cmd: &CommandContext,
+    cancel: &CancellationToken,
+    sink: &mut (impl SinkPort + ?Sized),
+) -> Attributed<StudioRasterRecords> {
+    edit(records, cmd, cancel, sink, |out| {
+        let at = position(out, channel_id)?;
+        check_name(name)?;
+        out.channels[at].name = name.to_owned();
+        Ok(())
+    })
+}
+
+/// Moves a channel to `to_index` of the panel order (the others keep their relative order).
+pub fn reorder_channel(
+    records: &StudioRasterRecords,
+    channel_id: &str,
+    to_index: usize,
+    cmd: &CommandContext,
+    cancel: &CancellationToken,
+    sink: &mut (impl SinkPort + ?Sized),
+) -> Attributed<StudioRasterRecords> {
+    edit(records, cmd, cancel, sink, |out| {
+        let at = position(out, channel_id)?;
+        if to_index >= out.channels.len() {
+            return Err(ChannelError::IndexOutOfRange);
+        }
+        let moved = out.channels.remove(at);
+        out.channels.insert(to_index, moved);
+        Ok(())
+    })
+}
+
+/// Shows or hides a channel.
+pub fn set_channel_visibility(
+    records: &StudioRasterRecords,
+    channel_id: &str,
+    visible: bool,
+    cmd: &CommandContext,
+    cancel: &CancellationToken,
+    sink: &mut (impl SinkPort + ?Sized),
+) -> Attributed<StudioRasterRecords> {
+    edit(records, cmd, cancel, sink, |out| {
+        let at = position(out, channel_id)?;
+        out.channels[at].visible = visible;
+        Ok(())
+    })
+}
+
+/// Duplicates a channel under a new id and name, placed right after the source. The copy names
+/// the same tile content (same digests and artifact handles; only `layer_id` follows the new id),
+/// so no bytes are written.
+#[allow(clippy::too_many_arguments)]
+pub fn duplicate_channel(
+    records: &StudioRasterRecords,
+    channel_id: &str,
+    new_channel_id: &str,
+    new_name: &str,
+    cmd: &CommandContext,
+    cancel: &CancellationToken,
+    sink: &mut (impl SinkPort + ?Sized),
+) -> Attributed<StudioRasterRecords> {
+    edit(records, cmd, cancel, sink, |out| {
+        let at = position(out, channel_id)?;
+        check_name(new_name)?;
+        if out.channel(new_channel_id).is_some() {
+            return Err(ChannelError::DuplicateChannel);
+        }
+        if out.channels.len() >= hsk_studio_folio::MAX_CHANNELS {
+            return Err(ChannelError::BudgetExceeded);
+        }
+        let mut copy = out.channels[at].clone();
+        copy.channel_id = new_channel_id.to_owned();
+        copy.name = new_name.to_owned();
+        for t in &mut copy.tiles {
+            t.layer_id = new_channel_id.to_owned();
+        }
+        out.channels.insert(at.saturating_add(1), copy);
+        Ok(())
+    })
+}
+
+/// Deletes a channel.
+pub fn delete_channel(
+    records: &StudioRasterRecords,
+    channel_id: &str,
+    cmd: &CommandContext,
+    cancel: &CancellationToken,
+    sink: &mut (impl SinkPort + ?Sized),
+) -> Attributed<StudioRasterRecords> {
+    edit(records, cmd, cancel, sink, |out| {
+        let at = position(out, channel_id)?;
+        out.channels.remove(at);
+        Ok(())
+    })
+}
+
+/// Inverts the stored tone of every in-extent sample of one tile (padding stays zero bytes).
+fn invert_tile(channel: &StudioChannelRecord, tile: &TileRef, bytes: &[u8], layout: &Layout) -> Result<Vec<u8>, ChannelError> {
+    let mut out = bytes.to_vec();
+    let e = i64::from(layout.edge);
+    let (x0, y0) = (tile.column.saturating_mul(e), tile.row.saturating_mul(e));
+    let (width, height) = (i64::from(channel.width), i64::from(channel.height));
+    for (dy, line) in out.chunks_exact_mut(layout.row_bytes()).enumerate() {
+        let y = y0.saturating_add(dy as i64);
+        for (dx, s) in line.chunks_exact_mut(layout.sample_bytes).enumerate() {
+            let x = x0.saturating_add(dx as i64);
+            if !((0..width).contains(&x) && (0..height).contains(&y)) {
+                continue;
+            }
+            match channel.depth {
+                8 => s[0] = u8::MAX.wrapping_sub(s[0]),
+                16 => {
+                    let v = u16::MAX.wrapping_sub(u16::from_le_bytes([s[0], s[1]]));
+                    s.copy_from_slice(&v.to_le_bytes());
+                }
+                _ => {
+                    let f = f32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+                    if !f.is_finite() {
+                        return Err(ChannelError::Nonfinite);
+                    }
+                    s.copy_from_slice(&(1.0 - f).to_le_bytes());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn convert(
+    records: &StudioRasterRecords,
+    channel_id: &str,
+    kind: StudioChannelKind,
+    tiles: &(impl ChannelTileBytes + ?Sized),
+    mint: &mut dyn ChannelTileMint,
+    limits: &SelectionLimits,
+    cancel: &CancellationToken,
+) -> Result<ChannelEdit, ChannelError> {
+    cancel.check().map_err(|_| ChannelError::Canceled)?;
+    let at = position(records, channel_id)?;
+    let channel = &records.channels[at];
+    if channel.kind == kind {
+        return Err(ChannelError::NoChange);
+    }
+    let mut out = records.clone();
+    let mut payloads = Vec::new();
+    if polarity_differs(channel.kind, kind) {
+        let first = channel.tiles.first().ok_or(ChannelError::TileMissing)?;
+        let edge = first.width.value;
+        if !(edge >= 1.0 && edge <= f64::from(MAX_TILE_EDGE) && edge.fract() == 0.0) || first.height.value != edge {
+            return Err(ChannelError::TileEdge);
+        }
+        // Integral and in range: exact.
+        let layout = Layout::new(channel.width, channel.height, edge as u32, channel.depth, limits)?;
+        let format = channel_tile_format(channel.depth).ok_or(ChannelError::DepthUnsupported)?;
+        let mut refs = Vec::with_capacity(channel.tiles.len());
+        payloads.reserve(channel.tiles.len());
+        for t in &channel.tiles {
+            cancel.check().map_err(|_| ChannelError::Canceled)?;
+            let bytes = tiles.bytes(t).ok_or(ChannelError::TileMissing)?;
+            if bytes.len() != layout.cell_bytes {
+                return Err(ChannelError::TileSize);
+            }
+            if hash_hex(&profile_hash(bytes)) != t.content_digest.digest {
+                return Err(ChannelError::HashMismatch);
+            }
+            let inverted = invert_tile(channel, t, bytes, &layout)?;
+            let sha = hash_hex(&profile_hash(&inverted));
+            let mut r = t.clone();
+            r.content_digest = ContentDigest {
+                algorithm: "sha256".to_owned(),
+                digest: sha.clone(),
+            };
+            r.artifact_manifest_id = mint.artifact_manifest_id(channel_id, &t.object_key, &sha);
+            payloads.push(ChannelTilePayload {
+                channel_id: channel_id.to_owned(),
+                object_key: t.object_key.clone(),
+                column: t.column,
+                row: t.row,
+                format,
+                bytes: inverted,
+                sha256_hex: sha,
+            });
+            refs.push(r);
+        }
+        out.channels[at].tiles = refs;
+    }
+    out.channels[at].kind = kind;
+    Ok(ChannelEdit {
+        records: validated(out, cancel)?,
+        payloads,
+    })
+}
+
+/// Converts a channel to another kind keeping the selection it loads as: across polarities
+/// (masked-area alpha <-> selected-area alpha or spot) every in-extent sample is inverted and the
+/// new tiles are returned as payloads; between selected-area alpha and spot only the kind changes.
+/// The two alpha kinds are never merged; the same kind is [`ChannelError::NoChange`]. Tile sizes and
+/// digests are checked before any sample is inverted.
+#[allow(clippy::too_many_arguments)]
+pub fn convert_channel_kind(
+    records: &StudioRasterRecords,
+    channel_id: &str,
+    kind: StudioChannelKind,
+    tiles: &(impl ChannelTileBytes + ?Sized),
+    mint: &mut dyn ChannelTileMint,
+    limits: &SelectionLimits,
+    cmd: &CommandContext,
+    cancel: &CancellationToken,
+    sink: &mut (impl SinkPort + ?Sized),
+) -> Attributed<ChannelEdit> {
+    let result = convert(records, channel_id, kind, tiles, mint, limits, cancel);
+    finish(result, &records.document_id, cmd, sink)
+}
