@@ -6,7 +6,7 @@
 //! Like [`ActorContext`], every field is a bounded transport identifier: a context grants
 //! nothing. A host maps its own wire envelope onto this type through one adapter
 //! (`hsk-studio-kernel-bindings` `CommandContextWire`). Correlations are opaque `u64` values so
-//! they fit Observe's correlation field; they are never an operation ordinal.
+//! they fit Observe's correlation field; they are not an operation ordinal.
 use crate::{ActorContext, Result, ValidationError};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -93,7 +93,7 @@ pub trait CorrelationSource: Send + Sync {
     fn next(&self) -> CorrelationId;
 }
 
-/// Monotonic in-memory correlations, process-local and never persisted (asset-local: a host
+/// Monotonic in-memory correlations, process-local and memory only (asset-local: a host
 /// replaces it with a source bound to its own trace ids). Saturates at `u64::MAX`.
 #[derive(Debug)]
 pub struct TransientCorrelation(AtomicU64);
