@@ -105,8 +105,10 @@ fn json_output_is_stable_and_manual_comes_from_the_descriptors() {
     assert_eq!(exit, 0);
     assert_eq!(keys(&open), ["command", "not_proven", "observe", "ok", "ops", "schema", "selection", "verdict"]);
     assert!(open["schema"] == "hsk.studio.harness@1" && open["selection"]["providers"].as_array().unwrap().is_empty());
-    assert_eq!(keys(&open["ops"][0]), ["detail", "n", "observe", "ok", "op", "revision"]);
-    assert_eq!(keys(&open["ops"][0]["observe"]), ["frames", "outcome", "status"]);
+    // Lane SMB-ATTRIBUTION-1: every op record carries the actor and its command id, correlation and
+    // causation (null for the session-owned open); a delivered report names its frame's correlation.
+    assert_eq!(keys(&open["ops"][0]), ["actor", "causation", "command_id", "correlation", "detail", "n", "observe", "ok", "op", "revision"]);
+    assert_eq!(keys(&open["ops"][0]["observe"]), ["correlation", "frames", "outcome", "status"]);
     let again = cli::run(&["open".to_string(), p.to_string()]).stdout;
     assert_eq!(again, cli::run(&["open".to_string(), p.to_string()]).stdout);
     assert_eq!(open["ops"][1]["detail"]["unresolved_references"], 1, "default references are honest: unresolved");
