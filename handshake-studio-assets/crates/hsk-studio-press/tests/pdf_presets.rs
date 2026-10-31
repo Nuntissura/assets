@@ -117,10 +117,10 @@ fn every_setting_declares_its_group() {
             "security"
         ]
     );
-    assert_eq!(SETTINGS.len(), 74);
+    assert_eq!(SETTINGS.len(), 77);
     let count = |g: PdfGroup| SETTINGS.iter().filter(|s| s.group == g).count();
     let counts: Vec<usize> = PdfGroup::ALL.iter().map(|g| count(*g)).collect();
-    assert_eq!(counts, [9, 7, 16, 16, 16, 5, 1, 3, 1, 0]);
+    assert_eq!(counts, [10, 7, 16, 16, 16, 6, 1, 4, 1, 0]);
     let mut keys: Vec<String> = SETTINGS.iter().map(|s| s.setting().key()).collect();
     keys.sort();
     keys.dedup();
@@ -152,7 +152,7 @@ fn every_setting_declares_its_group() {
     assert_eq!(family(PdfGroup::MonochromeImages), colour);
     assert_eq!(
         family(PdfGroup::General),
-        ["compatibility_level", "start_page", "end_page", "thumbnails", "optimisation", "binding", "auto_rotate_pages", "compress_objects", "image_memory"]
+        ["compatibility_level", "start_page", "end_page", "thumbnails", "optimisation", "binding", "auto_rotate_pages", "compress_objects", "image_memory", "allow_transparency"]
     );
     assert_eq!(
         family(PdfGroup::Fonts),
@@ -164,12 +164,15 @@ fn every_setting_declares_its_group() {
         declared,
         [
             "general.image_memory",
+            "general.allow_transparency",
             "colour_management.colour_conversion_strategy",
             "colour_management.transfer_function_info",
             "colour_management.ucr_and_black_generation",
             "colour_management.default_rendering_intent",
             "colour_management.overprint_mode",
+            "colour_management.preserve_overprint",
             "output_intent.output_intent_profile",
+            "standards_compliance.compliance_check",
             "postscript_and_dsc.dsc_reporting_level"
         ]
     );
@@ -185,14 +188,14 @@ fn every_setting_declares_its_group() {
     assert_eq!(fam.base_quality_dictionary[1].value, QualityValue::Numbers(vec![1.0; 4]));
 }
 
-/// STU-IO-128: the fourteen enumerations exactly as tabled, exact tokens, studio-declared members
+/// STU-IO-128: the fourteen enumerations exactly as tabled (plus the STU-LAY-159 additions), exact tokens, studio-declared members
 /// labelled, single-observed-value rows partial.
 #[test]
 fn domains_are_exact() {
     use Basis::{Spec as S, StudioDeclared as D};
     use DomainCompleteness::{Complete as C, Partial as P};
     type Row = (&'static str, &'static [(&'static str, Basis)], DomainCompleteness);
-    let expected: [Row; 14] = [
+    let expected: [Row; 15] = [
         ("compatibility_level", &[("1.3", S), ("1.4", S), ("1.5", S)], C),
         (
             "colour_conversion_strategy",
@@ -200,7 +203,7 @@ fn domains_are_exact() {
             C,
         ),
         ("downsample_type", &[("Bicubic", S), ("None", S)], C),
-        ("image_filter", &[("DCTEncode", S), ("FlateEncode", S)], C),
+        ("image_filter", &[("DCTEncode", S), ("FlateEncode", S), ("CCITTFaxEncode", S)], C),
         ("auto_filter_strategy", &[("JPEG", S), ("JPEG2000", S)], C),
         ("minimum_resolution_policy", &[("OK", S), ("Warning", S)], C),
         ("transfer_function_info", &[("Apply", S), ("Remove", S)], C),
@@ -211,8 +214,9 @@ fn domains_are_exact() {
         ("overprint_mode", &[("1", S)], P),
         ("cannot_embed_font_policy", &[("Warning", S), ("Error", D), ("OK", D)], P),
         ("default_rendering_intent", &[("Default", S)], P),
+        ("compliance_check", &[("none", S), ("PDF/X-1a:2001", S), ("PDF/X-3:2002", S), ("PDF/X-4:2007", S)], P),
     ];
-    assert_eq!(EnumDomain::ALL.len(), 14);
+    assert_eq!(EnumDomain::ALL.len(), 15);
     for (domain, (setting, members, completeness)) in EnumDomain::ALL.iter().zip(expected) {
         assert_eq!(domain.setting(), setting);
         let got: Vec<(&str, Basis)> = domain.members().iter().map(|m| (m.token, m.basis)).collect();
@@ -229,7 +233,7 @@ fn domains_are_exact() {
         (EnumDomain::CompatibilityLevel, "1.6"),
         (EnumDomain::CompatibilityLevel, "2.0"),
         (EnumDomain::ImageFilter, "dctencode"),
-        (EnumDomain::ImageFilter, "CCITTFaxEncode"),
+        (EnumDomain::ImageFilter, "ccittfaxencode"),
         (EnumDomain::ColourConversionStrategy, "srgb"),
         (EnumDomain::Binding, "right"),
         (EnumDomain::CannotEmbedFontPolicy, "Ok"),

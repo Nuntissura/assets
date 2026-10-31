@@ -33,7 +33,26 @@
 //! Hostile input (V4-01/02): the draft's setting count, every list, the locale map, every name and
 //! text are bounded and checked before anything is allocated; every refusal is a typed
 //! [`PresetError`] (tests `hostile_sizes_refuse_before_allocation`, `hostile_values_refuse_typed`).
+//!
+//! Stock contract additions (lane SMB-PDF-STOCK-PRESETS-1, STU-LAY-159):
+//! - `standards_compliance.compliance_check` ([`ComplianceCheck`], partial): any member but `none`
+//!   asserts a standard, so the STU-IO-130 output-intent rule applies to it, and `PDF/X-4:2007`
+//!   refuses `standard_level_conflict` at resolution (SD-13; no level of the domain reaches 1.6).
+//! - `general.allow_transparency` and `colour_management.preserve_overprint` (group basis
+//!   studio_declared); resolution marks both not applied (the writer has neither option).
+//! - `image_filter` admits `CCITTFaxEncode` (STU-LAY-159 common default; SD-14) on
+//!   `monochrome_images.filter` only; elsewhere it refuses `filter_not_admitted_for_group`.
+//! - [`PdfPreset::page_range`] returns a nullable end; the STU-IO-129 `-1` sentinel stays inside the
+//!   `end_page` setting (SD-15).
+//! - F-R49-6: the applied `subset_fonts` row carries [`ReceiptNote::NameKeyedCffEmbeddedWhole`]
+//!   when subsetting is on: press-write subsets TrueType and CID-keyed CFF programs and embeds
+//!   name-keyed OpenType-CFF whole (press-write `PdfExport::embed_font`).
+//!
+//! The stock catalogue is [`stock`] (`src/preset/stock.rs`), the canonical text codec [`codec`].
 #![deny(clippy::arithmetic_side_effects)]
+
+pub mod codec;
+pub mod stock;
 
 use hsk_studio_observe::{FailureCode, Outcome};
 use hsk_studio_press_write::{ExportError, ExportOptions, OutputIntent, PdfX4};
@@ -193,7 +212,14 @@ pdf_enum!(ColourConversionStrategy, "colour_conversion_strategy", Complete, [
     Srgb = "sRGB": Spec,
 ]);
 pdf_enum!(DownsampleType, "downsample_type", Complete, [Bicubic = "Bicubic": Spec, None = "None": Spec]);
-pdf_enum!(ImageFilter, "image_filter", Complete, [DctEncode = "DCTEncode": Spec, FlateEncode = "FlateEncode": Spec]);
+pdf_enum!(
+    /// `CCITTFaxEncode` is the STU-LAY-159 stock monochrome filter (SD-14: STU-IO-128 lists only
+    /// the first two); it is admitted on `monochrome_images.filter` only.
+    ImageFilter, "image_filter", Complete, [
+    DctEncode = "DCTEncode": Spec,
+    FlateEncode = "FlateEncode": Spec,
+    CcittFaxEncode = "CCITTFaxEncode": Spec,
+]);
 pdf_enum!(AutoFilterStrategy, "auto_filter_strategy", Complete, [Jpeg = "JPEG": Spec, Jpeg2000 = "JPEG2000": Spec]);
 pdf_enum!(MinimumResolutionPolicy, "minimum_resolution_policy", Complete, [Ok = "OK": Spec, Warning = "Warning": Spec]);
 pdf_enum!(TransferFunctionInfo, "transfer_function_info", Complete, [Apply = "Apply": Spec, Remove = "Remove": Spec]);
@@ -213,10 +239,19 @@ pdf_enum!(
     Ok = "OK": StudioDeclared,
 ]);
 pdf_enum!(DefaultRenderingIntent, "default_rendering_intent", Partial, [Default = "Default": Spec]);
+pdf_enum!(
+    /// The STU-LAY-159 compliance-check row, carried apart from the preset name: the stock preset
+    /// named `PDF/X-4` declares `PDF/X-4:2007`. Partial: the captured stock set shows four values.
+    ComplianceCheck, "compliance_check", Partial, [
+    None = "none": Spec,
+    PdfX1a2001 = "PDF/X-1a:2001": Spec,
+    PdfX3_2002 = "PDF/X-3:2002": Spec,
+    PdfX4_2007 = "PDF/X-4:2007": Spec,
+]);
 
 macro_rules! domains {
     ($($t:ident),+ $(,)?) => {
-        /// The fourteen STU-IO-128 enumerations.
+        /// The fourteen STU-IO-128 enumerations plus `compliance_check` (STU-LAY-159).
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum EnumDomain {
             $($t),+
@@ -244,7 +279,7 @@ macro_rules! domains {
                 }
             }
         }
-        /// A typed member of one of the fourteen enumerations.
+        /// A typed member of one of the enumerations.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum EnumValue {
             $($t($t)),+
@@ -278,6 +313,7 @@ domains!(
     OverprintMode,
     CannotEmbedFontPolicy,
     DefaultRenderingIntent,
+    ComplianceCheck,
 );
 
 /// One field of a numeric contract: a value, `unknown` (the source declares a value, not a bound)
@@ -455,6 +491,7 @@ pub static SETTINGS: &[SettingSpec] = settings_table!(
         s(PdfGroup::General, "auto_rotate_pages", Basis::Spec, SettingKind::Enum(EnumDomain::AutoRotatePages)),
         s(PdfGroup::General, "compress_objects", Basis::Spec, SettingKind::Enum(EnumDomain::CompressObjects)),
         s(PdfGroup::General, "image_memory", Basis::StudioDeclared, SettingKind::Integer(&IMAGE_MEMORY)),
+        s(PdfGroup::General, "allow_transparency", Basis::StudioDeclared, SettingKind::Bool),
         s(PdfGroup::Fonts, "embed_all_fonts", Basis::Spec, SettingKind::Bool),
         s(PdfGroup::Fonts, "subset_fonts", Basis::Spec, SettingKind::Bool),
         s(PdfGroup::Fonts, "max_subset_percent", Basis::Spec, SettingKind::Integer(&MAX_SUBSET_PERCENT)),
@@ -470,10 +507,12 @@ pub static SETTINGS: &[SettingSpec] = settings_table!(
         s(PdfGroup::ColourManagement, "ucr_and_black_generation", Basis::StudioDeclared, SettingKind::Enum(EnumDomain::UcrAndBlackGeneration)),
         s(PdfGroup::ColourManagement, "default_rendering_intent", Basis::StudioDeclared, SettingKind::Enum(EnumDomain::DefaultRenderingIntent)),
         s(PdfGroup::ColourManagement, "overprint_mode", Basis::StudioDeclared, SettingKind::Enum(EnumDomain::OverprintMode)),
+        s(PdfGroup::ColourManagement, "preserve_overprint", Basis::StudioDeclared, SettingKind::Bool),
         s(PdfGroup::OutputIntent, "output_intent_profile", Basis::StudioDeclared, SettingKind::Text),
         s(PdfGroup::StandardsCompliance, "standard_check_1a", Basis::Spec, SettingKind::Bool),
         s(PdfGroup::StandardsCompliance, "standard_check_3", Basis::Spec, SettingKind::Bool),
         s(PdfGroup::StandardsCompliance, "standard_compliant_only", Basis::Spec, SettingKind::Bool),
+        s(PdfGroup::StandardsCompliance, "compliance_check", Basis::StudioDeclared, SettingKind::Enum(EnumDomain::ComplianceCheck)),
         s(PdfGroup::PostscriptAndDsc, "dsc_reporting_level", Basis::StudioDeclared, SettingKind::Integer(&DSC_REPORTING_LEVEL)),
     ]
 );
@@ -528,6 +567,11 @@ pub enum PresetError {
     StandardComplianceNotProvable,
     /// The caller supplied an output intent the preset does not declare (`output_intent_profile` empty).
     OutputIntentNotDeclared,
+    /// `CCITTFaxEncode` on an image group other than `monochrome_images` (SD-14).
+    FilterNotAdmittedForGroup(SettingRef),
+    /// A stock PDF/X preset: STU-IO-130 requires an output-intent profile and STU-LAY-159 captured
+    /// none (SD-18), so the preset is not built.
+    StockOutputIntentNotCaptured,
 }
 impl PresetError {
     pub const fn code(&self) -> &'static str {
@@ -559,6 +603,8 @@ impl PresetError {
             Self::StandardLevelConflict(_) => "standard_level_conflict",
             Self::StandardComplianceNotProvable => "standard_compliance_not_provable",
             Self::OutputIntentNotDeclared => "output_intent_not_declared",
+            Self::FilterNotAdmittedForGroup(_) => "filter_not_admitted_for_group",
+            Self::StockOutputIntentNotCaptured => "stock_output_intent_not_captured",
         }
     }
     /// The setting a refusal names, if any.
@@ -573,7 +619,8 @@ impl PresetError {
             | Self::ListTooLong(r)
             | Self::FontNameInvalid(r)
             | Self::QualityDictionaryInvalid(r)
-            | Self::TextInvalid(r) => Some(*r),
+            | Self::TextInvalid(r)
+            | Self::FilterNotAdmittedForGroup(r) => Some(*r),
             _ => None,
         }
     }
@@ -589,14 +636,16 @@ impl std::fmt::Display for PresetError {
 impl std::error::Error for PresetError {}
 
 /// Maps a preset result onto the closed Observe outcome vocabulary (codes only, no text); emit it
-/// with [`crate::report`]. The SD-13 and standards refusals are `Unsupported`, the rest `Validation`.
+/// with [`crate::report`]. The SD-13, standards and stock output-intent refusals are `Unsupported`,
+/// the rest `Validation`.
 pub fn preset_outcome_for<T>(result: &Result<T, PresetError>) -> Outcome {
     match result {
         Ok(_) => Outcome::Success,
         Err(
             PresetError::CompatibilityLevelNotWritable(_)
             | PresetError::StandardLevelConflict(_)
-            | PresetError::StandardComplianceNotProvable,
+            | PresetError::StandardComplianceNotProvable
+            | PresetError::StockOutputIntentNotCaptured,
         ) => Outcome::Failure(FailureCode::Unsupported),
         Err(_) => Outcome::Failure(FailureCode::Validation),
     }
@@ -852,7 +901,13 @@ fn parse_value(spec: &SettingSpec, input: SettingInput<'_>) -> Result<SettingVal
             check(c, n as f64)?;
             Ok(SettingValue::Real(n as f64))
         }
-        (SettingKind::Enum(d), SettingInput::Token(t)) => d.parse(t).map(SettingValue::Enum).ok_or(PresetError::UnknownMember(r)),
+        (SettingKind::Enum(d), SettingInput::Token(t)) => {
+            let v = d.parse(t).ok_or(PresetError::UnknownMember(r))?;
+            if v == EnumValue::ImageFilter(ImageFilter::CcittFaxEncode) && spec.group != PdfGroup::MonochromeImages {
+                return Err(PresetError::FilterNotAdmittedForGroup(r));
+            }
+            Ok(SettingValue::Enum(v))
+        }
         (SettingKind::Enum(EnumDomain::OverprintMode), SettingInput::Integer(n)) => match n {
             1 => Ok(SettingValue::Enum(EnumValue::OverprintMode(OverprintMode::One))),
             _ => Err(PresetError::UnknownMember(r)),
@@ -958,11 +1013,14 @@ pub struct StandardsSettings<'p> {
     pub standard_check_3: bool,
     pub standard_compliant_only: bool,
     pub output_intent_profile: &'p str,
+    /// STU-LAY-159 compliance check, carried apart from the preset name.
+    pub compliance_check: ComplianceCheck,
 }
 impl StandardsSettings<'_> {
-    /// Whether the preset asserts a standard (a standard check is on).
+    /// Whether the preset asserts a standard: a standard check is on, or `compliance_check` is any
+    /// member but `none`. `standard_compliant_only` alone asserts none (SD-20 reading).
     pub const fn asserts_standard(&self) -> bool {
-        self.standard_check_1a || self.standard_check_3
+        self.standard_check_1a || self.standard_check_3 || !matches!(self.compliance_check, ComplianceCheck::None)
     }
 }
 
@@ -991,10 +1049,27 @@ pub enum SettingStatus {
     Applied,
     NotApplied { code: &'static str },
 }
+/// A typed exception recorded on a receipt row whose status alone would over-state what the
+/// writer does (F-R49-6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiptNote {
+    /// `subset_fonts` is on: press-write subsets TrueType and CID-keyed CFF programs, and embeds a
+    /// name-keyed OpenType-CFF font whole (press-write `PdfExport::embed_font`).
+    NameKeyedCffEmbeddedWhole,
+}
+impl ReceiptNote {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NameKeyedCffEmbeddedWhole => "name_keyed_cff_embedded_whole",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SettingReceipt {
     pub setting: SettingRef,
     pub status: SettingStatus,
+    /// The writer exception on this row, if any; `None` on every row but an applied `subset_fonts`.
+    pub note: Option<ReceiptNote>,
 }
 /// Every setting, applied or not, plus the soft-bound warnings. Conformance stays `not_proven`.
 #[derive(Clone, Debug, PartialEq)]
@@ -1008,6 +1083,11 @@ impl ResolveReceipt {
     pub fn status(&self, key: &str) -> Option<SettingStatus> {
         let i = key_position(key)?;
         self.entries.get(i).map(|e| e.status)
+    }
+    /// The typed note of `group.name`, if the row carries one.
+    pub fn note(&self, key: &str) -> Option<ReceiptNote> {
+        let i = key_position(key)?;
+        self.entries.get(i).and_then(|e| e.note)
     }
 }
 /// A preset resolved onto the writer's options.
@@ -1098,6 +1178,57 @@ impl PdfPreset {
         let preset = Self { id: draft.id.to_owned(), name: draft.name.to_owned(), descriptions, source, values };
         preset.check_standards()?;
         Ok(preset)
+    }
+
+    /// [`Self::from_draft`] over owned `(group.name, value)` pairs (the stock catalogue and the
+    /// codec use it). Every value is validated again as a draft input; nothing bypasses a refusal.
+    pub fn from_values(head: &PresetDraft<'_>, values: &[(String, SettingValue)]) -> Result<Self, PresetError> {
+        if values.len() > MAX_PRESET_ENTRIES {
+            return Err(PresetError::TooManySettings);
+        }
+        let names: Vec<Vec<&str>> = values
+            .iter()
+            .map(|(_, v)| match v {
+                SettingValue::FontList(l) => l.iter().map(String::as_str).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let quality: Vec<Vec<(&str, QualityInput<'_>)>> = values
+            .iter()
+            .map(|(_, v)| match v {
+                SettingValue::Quality(q) => q
+                    .iter()
+                    .map(|e| {
+                        let input = match &e.value {
+                            QualityValue::Number(x) => QualityInput::Number(*x),
+                            QualityValue::Integer(n) => QualityInput::Integer(*n),
+                            QualityValue::Bool(b) => QualityInput::Bool(*b),
+                            QualityValue::Name(n) => QualityInput::Name(n.as_str()),
+                            QualityValue::Numbers(xs) => QualityInput::Numbers(xs.as_slice()),
+                        };
+                        (e.key.as_str(), input)
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let entries: Vec<(&str, SettingInput<'_>)> = values
+            .iter()
+            .zip(names.iter().zip(&quality))
+            .map(|((key, v), (n, q))| {
+                let input = match v {
+                    SettingValue::Bool(b) => SettingInput::Bool(*b),
+                    SettingValue::Integer(i) => SettingInput::Integer(*i),
+                    SettingValue::Real(x) => SettingInput::Real(*x),
+                    SettingValue::Enum(e) => SettingInput::Token(e.token()),
+                    SettingValue::FontList(_) => SettingInput::Names(n.as_slice()),
+                    SettingValue::Quality(_) => SettingInput::Quality(q.as_slice()),
+                    SettingValue::Text(t) => SettingInput::Text(t.as_str()),
+                };
+                (key.as_str(), input)
+            })
+            .collect();
+        Self::from_draft(&PresetDraft { settings: &entries, ..*head })
     }
 
     fn check_standards(&self) -> Result<(), PresetError> {
@@ -1213,7 +1344,20 @@ impl PdfPreset {
             standard_check_3: self.bool_at(PdfGroup::StandardsCompliance, "standard_check_3"),
             standard_compliant_only: self.bool_at(PdfGroup::StandardsCompliance, "standard_compliant_only"),
             output_intent_profile: profile,
+            compliance_check: enum_at!(self, PdfGroup::StandardsCompliance, "compliance_check", ComplianceCheck),
         }
+    }
+    /// The page range: start page and a nullable end, `None` = to the last page (STU-LAY-159). The
+    /// STU-IO-129 `-1` sentinel stays inside `end_page` (SD-15). Both settings have no known hard
+    /// maximum; a stored page number above `u32::MAX` reads as `u32::MAX` (no page past it exists).
+    pub fn page_range(&self) -> (u32, Option<u32>) {
+        let page = |n: i64| u32::try_from(n).unwrap_or(u32::MAX);
+        let start = page(self.int_at(PdfGroup::General, "start_page"));
+        let end = match self.int_at(PdfGroup::General, "end_page") {
+            -1 => None,
+            n => Some(page(n)),
+        };
+        (start, end)
     }
     /// Every numeric setting inside its hard bounds and outside a soft bound.
     pub fn warnings(&self) -> Vec<PresetWarning> {
@@ -1289,9 +1433,10 @@ impl PdfPreset {
     /// setting as applied or not applied with a code.
     ///
     /// Refusals, in order: `compatibility_level_not_writable` (1.3, SD-13), `standard_level_conflict`
-    /// (PDF/X-4 requested; it needs 1.6+, SD-13), `standard_compliance_not_provable`
-    /// (`standard_compliant_only` with a standard check the writer does not implement),
-    /// `output_intent_not_declared` (an intent supplied while `output_intent_profile` is empty).
+    /// (PDF/X-4 requested, or `compliance_check` `PDF/X-4:2007`; it needs 1.6+, SD-13),
+    /// `standard_compliance_not_provable` (`standard_compliant_only` with a standard the writer does
+    /// not check, SD-19), `output_intent_not_declared` (an intent supplied while
+    /// `output_intent_profile` is empty).
     pub fn resolve<'a>(&self, request: ResolveRequest<'a>) -> Result<Resolution<'a>, PresetError> {
         let level = self.compatibility_level();
         let version = match level {
@@ -1299,10 +1444,10 @@ impl PdfPreset {
             CompatibilityLevel::V1_4 => "1.4",
             CompatibilityLevel::V1_5 => "1.5",
         };
-        if request.pdfx4.is_some() {
+        let standards = self.standards();
+        if request.pdfx4.is_some() || standards.compliance_check == ComplianceCheck::PdfX4_2007 {
             return Err(PresetError::StandardLevelConflict(level));
         }
-        let standards = self.standards();
         if standards.standard_compliant_only && standards.asserts_standard() {
             return Err(PresetError::StandardComplianceNotProvable);
         }
@@ -1311,7 +1456,11 @@ impl PdfPreset {
         }
         let entries = self
             .settings()
-            .map(|(spec, value)| SettingReceipt { setting: spec.setting(), status: self.status(spec, value, &request) })
+            .map(|(spec, value)| {
+                let note = (spec.group == PdfGroup::Fonts && spec.name == "subset_fonts" && matches!(value, SettingValue::Bool(true)))
+                    .then_some(ReceiptNote::NameKeyedCffEmbeddedWhole);
+                SettingReceipt { setting: spec.setting(), status: self.status(spec, value, &request), note }
+            })
             .collect();
         let options = ExportOptions {
             version,
@@ -1360,6 +1509,12 @@ impl PdfPreset {
                 when(matches!(value, Sv::Enum(EnumValue::CompressObjects(CompressObjects::Off))), "object_compression_not_implemented")
             }
             "image_memory" => not_applied("interpreter_setting_not_implemented"),
+            "allow_transparency" => not_applied("transparency_flattening_not_implemented"),
+            "preserve_overprint" => not_applied("overprint_not_implemented"),
+            "compliance_check" => when(
+                matches!(value, Sv::Enum(EnumValue::ComplianceCheck(ComplianceCheck::None))),
+                "standard_check_not_implemented",
+            ),
             "embed_all_fonts" | "embed_open_type" => when(flag(value), "writer_embeds_every_font"),
             "max_subset_percent" => not_applied("subset_threshold_not_implemented"),
             "never_embed" => when(matches!(value, Sv::FontList(l) if l.is_empty()), "writer_embeds_every_font"),
@@ -1381,5 +1536,28 @@ impl PdfPreset {
             "standard_compliant_only" => SettingStatus::Applied,
             _ => not_applied("postscript_setting_not_implemented"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-R49-6: an applied `subset_fonts` row carries the typed name-keyed OpenType-CFF exception;
+    /// with subsetting off, and on every other row, there is no note. The status stays `Applied`.
+    #[test]
+    fn subset_fonts_receipt_notes_name_keyed_cff() {
+        let shipped = stock::STOCK_PRESETS[0].to_preset().unwrap();
+        let rec = shipped.resolve(ResolveRequest::default()).unwrap().receipt;
+        assert_eq!(rec.status("fonts.subset_fonts"), Some(SettingStatus::Applied));
+        assert_eq!(rec.note("fonts.subset_fonts"), Some(ReceiptNote::NameKeyedCffEmbeddedWhole));
+        assert_eq!(ReceiptNote::NameKeyedCffEmbeddedWhole.code(), "name_keyed_cff_embedded_whole");
+        assert_eq!(rec.entries.iter().filter(|e| e.note.is_some()).count(), 1);
+        let mut off = shipped.edit_copy("operator.no-subset", "No subset").unwrap();
+        off.set("fonts.subset_fonts", SettingInput::Bool(false)).unwrap();
+        let rec = off.resolve(ResolveRequest::default()).unwrap().receipt;
+        assert_eq!(rec.status("fonts.subset_fonts"), Some(SettingStatus::Applied));
+        assert!(rec.entries.iter().all(|e| e.note.is_none()));
+        assert_eq!(rec.note("fonts.nope"), None);
     }
 }
