@@ -11,6 +11,7 @@ pub mod lower_plan;
 pub mod lower_render_plan;
 pub mod mask_paths;
 pub mod particles;
+pub mod simulations;
 pub mod temporal;
 pub mod text;
 pub mod three_d;

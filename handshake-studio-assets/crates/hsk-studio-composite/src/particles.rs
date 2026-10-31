@@ -136,7 +136,7 @@ impl From<ParticleError> for CompositeError {
 
 type Result<T> = std::result::Result<T, ParticleError>;
 
-fn finite_in(v: f64, lo: f64, hi: f64, field: &'static str) -> Result<()> {
+pub(crate) fn finite_in(v: f64, lo: f64, hi: f64, field: &'static str) -> Result<()> {
     if v.is_finite() && (lo..=hi).contains(&v) { Ok(()) } else { Err(ParticleError::Parameter(field)) }
 }
 
@@ -513,21 +513,21 @@ pub struct ParticleState {
 
 // ---- Seeded randomness and noise ----
 
-fn splitmix64(mut z: u64) -> u64 {
+pub(crate) fn splitmix64(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
 }
 
-struct Draws(u64);
+pub(crate) struct Draws(u64);
 
 impl Draws {
-    fn new(seed: u64, index: u64) -> Self {
+    pub(crate) fn new(seed: u64, index: u64) -> Self {
         Self(splitmix64(seed ^ splitmix64(index)))
     }
     /// Uniform in `[0, 1)` (53 bits).
-    fn uniform(&mut self) -> f64 {
+    pub(crate) fn uniform(&mut self) -> f64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         (splitmix64(self.0) >> 11) as f64 / (1u64 << 53) as f64
     }
@@ -593,7 +593,7 @@ fn step(world: &ParticleWorld, p: &mut [f64; 2], v: &mut [f64; 2], t: f64, h: f6
     }
 }
 
-fn lerp3(a: [f32; 3], b: [f32; 3], t: f64) -> [f32; 3] {
+pub(crate) fn lerp3(a: [f32; 3], b: [f32; 3], t: f64) -> [f32; 3] {
     let t = t as f32;
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
 }
@@ -806,7 +806,7 @@ impl ParticleFrame {
 }
 
 /// Footprint (x0, y0, x1, y1) clipped to the raster, `None` when empty or outside.
-fn footprint(c: [f64; 2], half: [f64; 2], w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+pub(crate) fn footprint(c: [f64; 2], half: [f64; 2], w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
     let x0 = (c[0] - half[0] - 1.0).floor().max(0.0);
     let y0 = (c[1] - half[1] - 1.0).floor().max(0.0);
     let x1 = (c[0] + half[0] + 1.0).ceil().min(f64::from(w));
@@ -824,7 +824,7 @@ fn half_extent(world: &ParticleWorld, size: f64) -> [f64; 2] {
     }
 }
 
-fn over(dst: &mut [f32; 4], src: [f32; 4]) {
+pub(crate) fn over(dst: &mut [f32; 4], src: [f32; 4]) {
     let k = 1.0 - src[3];
     for (d, s) in dst.iter_mut().zip(src) {
         *d = s + *d * k;
