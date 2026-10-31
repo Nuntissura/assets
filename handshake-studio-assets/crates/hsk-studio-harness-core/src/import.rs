@@ -783,8 +783,14 @@ mod with_package {
         for mask in &proposal.mask_tiles {
             assets.insert(mask.coverage.clone());
         }
+        // Alpha and spot channel planes (StudioRasterRecords.channels): their TileRefs live in the
+        // records entry, so their bytes are package assets like layer and mask tiles (F-R50-6).
+        for tile in &proposal.channel_tiles {
+            assets.insert(tile.bytes.clone());
+        }
+        let has_records = !proposal.raster_records.layers.is_empty() || !proposal.raster_records.channels.is_empty();
         let mut imports = Vec::new();
-        if !proposal.raster_records.layers.is_empty() {
+        if has_records {
             let records = serde_json::to_vec(&proposal.raster_records).map_err(|_| ImportError::Package("records_encode"))?;
             imports.push(ImportEntry::new(ImportRole::Records, records));
         }
@@ -799,7 +805,7 @@ mod with_package {
             "layers": proposal.snapshot.document().layers.len(),
             "tiles": proposal.tiles.len(),
             "mask_tiles": proposal.mask_tiles.len(),
-            "records": !proposal.raster_records.layers.is_empty(),
+            "records": has_records,
             "loss": proposal.loss.entries.iter().map(|e| json!({"path":e.path,"kind":e.kind.as_str(),"code":e.code})).collect::<Vec<_>>(),
             "not_proven": RECEIPT_NOT_PROVEN,
         });
