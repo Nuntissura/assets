@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod adapter;
+mod business_event;
 mod ckc;
 mod ckc_library;
 mod ckc_rules;
@@ -34,6 +35,12 @@ pub use ckc_library::{
 pub use ckc_rules::{LibraryRecord, RecordFacts, RuleContext, Verdict};
 #[cfg(any(test, feature = "ckc-test-double"))]
 pub use ckc_double::{AssetFacts, CkcTestDouble, DoubleCollection};
+pub use business_event::{
+    BusinessEventError, BusinessEventPort, EventAttribution, EventDeliveryError, MAX_ARTIFACT_REFS,
+    MAX_CLIENT_SESSION_BYTES, MAX_COMMAND_ID_BYTES, MAX_EVENT_BYTES, NOT_PRODUCED_ASSET_LOCALLY,
+    NotProducedReason, StudioBusinessEvent, StudioEventVariant, business_event_id,
+    decode_business_event, encode_business_event,
+};
 pub use host::{DiagnosticRecord, HostBridge, HostConfig, TransientHost};
 #[cfg(any(test, feature = "test-faults"))]
 pub use host::Fault;
