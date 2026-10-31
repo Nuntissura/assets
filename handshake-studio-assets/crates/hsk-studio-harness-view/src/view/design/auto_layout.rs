@@ -55,6 +55,7 @@ use hsk_studio_nib::PathPoint;
 use hsk_studio_nib::arrange::{self as nib_arrange, Bounds};
 use hsk_studio_nib::raster::Affine;
 use serde_json::{Value, json};
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Stable widget ids of the auto-layout section.
@@ -174,13 +175,33 @@ fn contains(outer: &Bounds, inner: &Bounds) -> bool {
     inner.min[0] >= outer.min[0] - EPS && inner.min[1] >= outer.min[1] - EPS && inner.max[0] <= outer.max[0] + EPS && inner.max[1] <= outer.max[1] + EPS
 }
 
-/// Read-only geometry of the open document's vector entry.
+/// Read-only geometry of the open document's vector entry, for ONE command. F-R45-2 (lane
+/// SMB-R46-FOLLOWUPS-1): a layer's rect is computed once and memoised, every computed rect is
+/// charged against [`MAX_SUBTREE`] before its walk, and the background test walks the siblings one
+/// level deeper (it used to restart the depth count at 0), so the walk is linear in the layers it
+/// visits instead of exponential in the nesting.
 struct Geo<'a> {
     doc: &'a StudioDocument,
     entry: &'a VectorEntry,
+    rects: RefCell<BTreeMap<String, Option<Bounds>>>,
+    walked: Cell<usize>,
 }
 
-impl Geo<'_> {
+impl<'a> Geo<'a> {
+    fn new(doc: &'a StudioDocument, entry: &'a VectorEntry) -> Self {
+        Self { doc, entry, rects: RefCell::new(BTreeMap::new()), walked: Cell::new(0) }
+    }
+
+    /// Charge one rect computation; refused once the command walked [`MAX_SUBTREE`] rects.
+    fn charge(&self) -> Result<(), String> {
+        let walked = self.walked.get().saturating_add(1);
+        if walked > MAX_SUBTREE {
+            return Err("auto_layout: container subtree over budget".into());
+        }
+        self.walked.set(walked);
+        Ok(())
+    }
+
     /// Union bounds of a vector layer's own paths (`None`: not a vector layer or no geometry).
     fn paths(&self, id: &str) -> Result<Option<Bounds>, String> {
         let Payload::Vector { path_ids } = &layer(self.doc, id)?.payload else { return Ok(None) };
@@ -197,11 +218,16 @@ impl Geo<'_> {
 
     /// The frame background of group `id` (module reading), if any.
     fn background(&self, id: &str) -> Result<Option<String>, String> {
+        self.background_at(id, 0)
+    }
+
+    /// [`Geo::background`] of a group met at `depth`: its siblings are walked at `depth + 1`.
+    fn background_at(&self, id: &str, depth: usize) -> Result<Option<String>, String> {
         let kids = children(self.doc, id);
         let Some((first, rest)) = kids.split_first() else { return Ok(None) };
         let Some(bg) = self.paths(first)? else { return Ok(None) };
         for k in rest {
-            if let Some(b) = self.bounds(k, 0)?
+            if let Some(b) = self.bounds(k, depth.saturating_add(1))?
                 && !contains(&bg, &b)
             {
                 return Ok(None);
@@ -210,16 +236,28 @@ impl Geo<'_> {
         Ok(Some((*first).to_owned()))
     }
 
-    /// The rect of a layer (module reading); `None` without vector geometry.
+    /// The rect of a layer (module reading); `None` without vector geometry. Memoised per layer
+    /// for the command; each computed rect is charged before its walk.
     fn bounds(&self, id: &str, depth: usize) -> Result<Option<Bounds>, String> {
         if depth > 64 {
             return Err("auto_layout: nesting too deep".into());
         }
+        let known = self.rects.borrow().get(id).copied();
+        if let Some(rect) = known {
+            return Ok(rect);
+        }
+        self.charge()?;
+        let rect = self.walk(id, depth)?;
+        self.rects.borrow_mut().insert(id.to_owned(), rect);
+        Ok(rect)
+    }
+
+    fn walk(&self, id: &str, depth: usize) -> Result<Option<Bounds>, String> {
         let l = layer(self.doc, id)?;
         if !is_group(l) {
             return self.paths(id);
         }
-        if let Some(bg) = self.background(id)? {
+        if let Some(bg) = self.background_at(id, depth)? {
             return self.paths(&bg);
         }
         let mut out = None;
@@ -431,7 +469,7 @@ impl Viewer {
             if !is_group(layer(&doc, node)?) {
                 return Err(format!("auto_layout_not_a_frame:{node}"));
             }
-            let geo = Geo { doc: &doc, entry: &entry };
+            let geo = Geo::new(&doc, &entry);
             let bg = geo.background(node)?;
             let kids: Vec<&str> = children(&doc, node).into_iter().filter(|k| Some(*k) != bg.as_deref()).collect();
             let in_flow = u32::try_from(kids.iter().filter(|k| records.nodes.iter().find(|d| d.node.node_id == **k).and_then(|d| d.child_layout.as_ref()).is_none_or(|c| c.layout_positioning == ChildPositioning::Auto)).count()).map_err(|_| "auto_layout: children")?;
@@ -618,7 +656,7 @@ impl Viewer {
         if !is_group(layer(&doc, container)?) {
             return Err(format!("auto_layout_not_a_frame:{container}"));
         }
-        let geo = Geo { doc: &doc, entry: &entry };
+        let geo = Geo::new(&doc, &entry);
         let (local, abs, backgrounds) = locals(&geo, container)?;
         // Solver input: frame backgrounds are absolute and stretched unless their records say otherwise.
         let mut solve_records = records.clone();
@@ -1030,4 +1068,86 @@ fn rewrite(doc: &StudioDocument, entry: &mut VectorEntry, moves: &BTreeMap<Strin
         writes.push((layer_id.clone(), ids));
     }
     Ok(writes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hsk_studio_nib::FillRule;
+    use hsk_studio_nib::anchor_path::{AnchorPath, Contour, EditAnchor};
+
+    fn group(id: &str, parent: Option<&str>) -> Value {
+        let parent = parent.map_or(Value::Null, |p| json!({"node_kind":"layer","node_id":p}));
+        json!({"schema_id":"hsk.studio.layer@1","layer_id":id,"name":id,"parent":parent,"kind":"group","payload":{"payload_kind":"group"},"visible":true})
+    }
+    fn shape(id: &str, parent: &str) -> Value {
+        json!({"schema_id":"hsk.studio.layer@1","layer_id":id,"name":id,"parent":{"node_kind":"layer","node_id":parent},"kind":"vector",
+            "payload":{"payload_kind":"vector","path_ids":[format!("{id}-path")]},"visible":true})
+    }
+    fn document(layers: Vec<Value>) -> StudioDocument {
+        serde_json::from_value(json!({
+            "schema_id":"hsk.studio.document@1","document_id":"SDOC-019abcde-0000-7000-8000-000000000001","revision":1,"geometry_unit":"px",
+            "colour_mode":3,"bits_per_channel":8,"working_space_rgb":null,"working_space_cmyk":null,"working_space_gray":null,
+            "working_space_spot":null,"blending_space":null,"artboards":[],"page_spreads":[],"layers":layers,
+            "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[],"edges":[],"outputs":[]}
+        }))
+        .expect("document shape")
+    }
+    fn rect_path(id: &str, [x0, y0, x1, y1]: [f64; 4]) -> PathRecord {
+        let anchors = vec![EditAnchor::corner(x0, y0), EditAnchor::corner(x1, y0), EditAnchor::corner(x1, y1), EditAnchor::corner(x0, y1)];
+        let path = AnchorPath { contours: vec![Contour { anchors, closed: true }], fill_rule: FillRule::NonZero };
+        PathRecord::plain(format!("{id}-path"), path, vector::VectorStyle { fill: Some([0, 0, 0]), stroke: None, stroke_width: 0.0 })
+    }
+
+    /// F-R45-2 (lane SMB-R46-FOLLOWUPS-1): a chain of 40 nested groups, each with a small first
+    /// vector that does not contain the next group, cost 2^40 rect walks before (the background test
+    /// restarted the walk at depth 0 and every failed test walked the children again). Now each
+    /// layer's rect is computed once: the frame rect returns with 81 rects walked.
+    #[test]
+    fn nested_frame_rect_walk_is_linear_and_memoised() {
+        const DEPTH: usize = 40;
+        let mut layers = Vec::new();
+        let mut entry = VectorEntry::empty();
+        for i in 0..DEPTH {
+            let g = format!("g{i}");
+            let parent = i.checked_sub(1).map(|p| format!("g{p}"));
+            layers.push(group(&g, parent.as_deref()));
+            let s = format!("s{i}");
+            layers.push(shape(&s, &g));
+            entry.paths.push(rect_path(&s, [0.0, 0.0, 1.0, 1.0]));
+        }
+        let last = format!("g{}", DEPTH.saturating_sub(1));
+        layers.push(shape("far", &last));
+        entry.paths.push(rect_path("far", [100.0, 100.0, 110.0, 110.0]));
+        let doc = document(layers);
+        let geo = Geo::new(&doc, &entry);
+        let b = geo.rect("g0").expect("frame rect");
+        assert_eq!((b.min, b.max), ([0.0, 0.0], [110.0, 110.0]));
+        assert_eq!(geo.walked.get(), DEPTH.saturating_mul(2).saturating_add(1), "each layer walked once");
+        assert_eq!(geo.background("g0").expect("background"), None, "the far vector is outside s0");
+        assert_eq!(geo.walked.get(), DEPTH.saturating_mul(2).saturating_add(1), "memoised: no second walk");
+    }
+
+    /// F-R45-2: the walk is charged against MAX_SUBTREE before it runs: a frame of more layers is
+    /// refused typed, and a frame at the bound still has its rect.
+    #[test]
+    fn frame_rect_walk_is_charged_against_the_subtree_budget() {
+        let build = |n: usize| {
+            let mut layers = vec![group("frame", None)];
+            let mut entry = VectorEntry::empty();
+            for i in 0..n {
+                let s = format!("k{i}");
+                layers.push(shape(&s, "frame"));
+                entry.paths.push(rect_path(&s, [0.0, 0.0, 2.0, 2.0]));
+            }
+            (document(layers), entry)
+        };
+        // the frame and its children but the background (read as paths) are charged: n rects
+        let (doc, entry) = build(MAX_SUBTREE.saturating_add(1));
+        assert_eq!(Geo::new(&doc, &entry).rect("frame").map(|_| ()), Err("auto_layout: container subtree over budget".to_owned()));
+        let (doc, entry) = build(MAX_SUBTREE);
+        let geo = Geo::new(&doc, &entry);
+        assert!(geo.rect("frame").is_ok(), "a frame walking exactly the bound has its rect");
+        assert_eq!(geo.walked.get(), MAX_SUBTREE);
+    }
 }
