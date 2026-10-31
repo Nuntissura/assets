@@ -191,7 +191,7 @@ fn dx12_row(backend: &GpuBackend, what: &str) -> bool {
 #[test]
 fn fxc_rejected_kernel_is_a_typed_refusal_before_any_dispatch() {
     let _guard = device_lock();
-    let on_dx12 = GpuBackend::with_shader_source_on(
+    let on_dx12 = GpuBackend::with_grant_and_shader_source(
         dx12_port(),
         AdmissionRequest::asset_local(),
         DeviceOptions::default(),
@@ -371,7 +371,7 @@ fn probe_hook_is_gated_and_the_fault_is_plain_data() {
     );
     // R46 F-R46-2/-3/-4/-5 hooks: every new fault-injection item is behind test-faults (V4-04).
     for (source, item) in [
-        (plan_sink, "pub fn with_shader_source_on"),
+        (plan_sink, "pub fn with_grant_and_shader_source"),
         (plan_sink, "pub fn inject_grant_closure"),
         (include_str!("../src/client/transient.rs"), "pub fn dx12_for_tests"),
         (include_str!("../src/client.rs"), "pub fn inject_closure"),

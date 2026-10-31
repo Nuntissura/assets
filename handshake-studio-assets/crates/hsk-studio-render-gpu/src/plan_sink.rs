@@ -1414,7 +1414,7 @@ impl GpuBackend {
     /// F-R46-2): [`GpuBackend::with_shader_source`] on a grant of `port` for `request`, so a test
     /// chooses the port (for example `TransientAdapter::dx12_for_tests`, the FXC compiler class).
     #[cfg(feature = "test-faults")]
-    pub fn with_shader_source_on(
+    pub fn with_grant_and_shader_source(
         port: Arc<dyn GpuClientPort>,
         request: AdmissionRequest,
         options: DeviceOptions,
