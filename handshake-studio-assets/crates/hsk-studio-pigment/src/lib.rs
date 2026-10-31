@@ -26,6 +26,8 @@ pub mod render_plan;
 pub mod retouch;
 pub mod select_tools;
 pub mod selection;
+/// Save a selection to a persistent Folio channel and load it back (lane SMB-FOLIO-CHANNEL-RECORD).
+pub mod selection_channel_roundtrip;
 pub mod settings;
 pub mod smart_filter;
 pub mod tile;
