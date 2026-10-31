@@ -250,6 +250,21 @@ pub(crate) fn decode_all(
     max_frames: u64,
     cancel: &CancellationToken,
 ) -> Result<Vec<f32>, ReelError> {
+    decode_all_within(source, shape, max_frames, None, cancel)
+}
+
+/// [`decode_all`] with an optional bound on the kept interleaved samples (frames x channels; R47
+/// F-R47-1): a declared total over it is refused before any payload is read, and before each block is
+/// kept the kept samples plus the block's are checked against it, so the output never holds more than
+/// `max_samples` samples. The output grows by doubling, capped at `max_samples` (never reserving above
+/// it). Over the bound: `LimitExceeded { what: "audio-sample-budget" }`. `None` is [`decode_all`].
+pub(crate) fn decode_all_within(
+    source: &mut dyn FrameSource,
+    shape: &StreamShape,
+    max_frames: u64,
+    max_samples: Option<u64>,
+    cancel: &CancellationToken,
+) -> Result<Vec<f32>, ReelError> {
     let channels = usize::from(shape.channels);
     if let Some(total) = shape.total
         && total > max_frames
@@ -258,6 +273,15 @@ pub(crate) fn decode_all(
             what: "audio-frame-budget",
         });
     }
+    let sample_budget = || ReelError::LimitExceeded {
+        what: "audio-sample-budget",
+    };
+    if let (Some(total), Some(limit)) = (shape.total, max_samples)
+        && total.saturating_mul(u64::from(shape.channels)) > limit
+    {
+        return Err(sample_budget());
+    }
+    let sample_cap = max_samples.map(|s| usize::try_from(s).unwrap_or(usize::MAX));
     let mut out: Vec<f32> = Vec::new();
     let mut block = Vec::new();
     let mut decoded: u64 = 0;
@@ -299,10 +323,25 @@ pub(crate) fn decode_all(
             usize::try_from(lo).unwrap_or(0).saturating_mul(channels),
             usize::try_from(hi).unwrap_or(0).saturating_mul(channels),
         );
-        out.try_reserve(b.saturating_sub(a))
-            .map_err(|_| ReelError::LimitExceeded {
-                what: "audio-alloc",
-            })?;
+        let adding = b.saturating_sub(a);
+        let alloc = |_: std::collections::TryReserveError| ReelError::LimitExceeded {
+            what: "audio-alloc",
+        };
+        match sample_cap {
+            None => out.try_reserve(adding).map_err(alloc)?,
+            Some(cap) => {
+                let needed = out.len().saturating_add(adding);
+                if needed > cap {
+                    return Err(sample_budget());
+                }
+                if needed > out.capacity() {
+                    // Amortised doubling, never past the budget (no allocation above it).
+                    let target = out.capacity().saturating_mul(2).max(needed).min(cap);
+                    out.try_reserve_exact(target.saturating_sub(out.len()))
+                        .map_err(alloc)?;
+                }
+            }
+        }
         out.extend_from_slice(block.get(a..b).unwrap_or(&[]));
         if end.is_some_and(|e| decoded >= e) {
             break;

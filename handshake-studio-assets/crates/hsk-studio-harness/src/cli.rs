@@ -780,9 +780,10 @@ pub const MAX_EXPORT_AUDIO_FILES: usize = 16;
 
 /// Total planar f32 bytes (frames x channels x 4) all `--audio` decodes of one `export-sequence` may hold (R46
 /// F-R46-7): one stereo file at the viewer import's own frame bound (`ImportLimits::max_frames`, 3 h at 48 kHz),
-/// 518 400 000 x 2 x 4. Every decode gets the remainder as reel's frame limit (in mono frames, so a file whose
-/// frame count alone does not fit is refused before its PCM buffer exists) and is charged frames x channels x 4
-/// before it is kept. Over it: `audio_too_large` (stage `audio`, with `decoded_limit`).
+/// 518 400 000 x 2 x 4. Every decode gets the remainder as reel's sample budget (`decode_audio_file_within`, R47
+/// F-R47-1: kept frames x channels checked per decoded block before it is kept, so one decode never holds more
+/// than the remainder, whatever its channel count) and is charged frames x channels x 4 before it is kept. Over
+/// it: `audio_too_large` (stage `audio`, with `decoded_limit`).
 pub const MAX_EXPORT_AUDIO_DECODED_BYTES: u64 = 4_147_200_000;
 
 /// The `--audio` files of an `export-sequence` as the export's sound port (R44 F-R44-2): each file decoded by
@@ -829,11 +830,15 @@ fn cli_audio_within(files: Vec<(PathBuf, Vec<u8>)>, budget: u64, cancel: &Cancel
     for (path, bytes) in files {
         let name = path.to_string_lossy().into_owned();
         let digest = hsk_studio_reel::full_digest(&mut std::io::Cursor::new(&bytes[..]), 1 << 20, cancel).map_err(|e| decode_fail(&name, e.to_string()))?;
-        // The remainder in mono frames (every frame holds at least one 4-byte sample) is reel's frame limit.
+        // The remainder in 4-byte samples is reel's sample budget (R47 F-R47-1: frames x channels, checked
+        // per block before it is kept, so one decode never holds more than the remainder) and, in mono
+        // frames, its frame limit.
         let remaining = budget.saturating_sub(charged);
-        let frame_limit = limits.max_frames.min(remaining.checked_div(4).unwrap_or(0));
-        let decoded = hsk_studio_reel::decode_audio_file(&mut std::io::Cursor::new(&bytes[..]), &hsk_studio_reel::Limits::default(), frame_limit, cancel)
+        let sample_limit = remaining.checked_div(4).unwrap_or(0);
+        let frame_limit = limits.max_frames.min(sample_limit);
+        let decoded = hsk_studio_reel::audio::decode_audio_file_within(&mut std::io::Cursor::new(&bytes[..]), &hsk_studio_reel::Limits::default(), frame_limit, sample_limit, cancel)
             .map_err(|e| match e {
+                hsk_studio_reel::ReelError::LimitExceeded { what: "audio-sample-budget" } => too_large(&name),
                 hsk_studio_reel::ReelError::LimitExceeded { what: "audio-frame-budget" } if frame_limit < limits.max_frames => too_large(&name),
                 e => decode_fail(&name, e.to_string()),
             })?;
@@ -1131,9 +1136,13 @@ mod audio_budget_tests {
         // 4000 left = 1000 mono frames: a 1001-frame mono file is over reel's frame limit
         let r = refusal(vec![file("a.wav", 2, 500), file("c.wav", 1, 1001)], 8000);
         assert_eq!((r.0.as_str(), r.1["path"].as_str()), ("audio_too_large", Some("c.wav")));
-        // 600 stereo frames pass the frame limit (1000) but cost 4800 > 4000
+        // 600 stereo frames pass the frame limit (1000) but hold 1200 samples > 1000: reel's sample budget
+        // refuses them before the block is kept (R47 F-R47-1)
         let r = refusal(vec![file("a.wav", 2, 500), file("d.wav", 2, 600)], 8000);
         assert_eq!((r.0.as_str(), r.1["path"].as_str()), ("audio_too_large", Some("d.wav")));
+        // an 8-channel file of 200 frames (1600 samples) within a 1000-sample remainder: the same refusal
+        let r = refusal(vec![file("a.wav", 2, 500), file("f.wav", 8, 200)], 8000);
+        assert_eq!((r.0.as_str(), r.1["path"].as_str(), r.1["decoded_limit"].as_u64()), ("audio_too_large", Some("f.wav"), Some(8000)));
         assert!(cli_audio_within(vec![file("a.wav", 2, 500), file("e.wav", 2, 500)], 8000, &cancel).is_ok(), "exactly the budget");
         assert_eq!(Some(MAX_EXPORT_AUDIO_DECODED_BYTES), crate::view::audio_import::ImportLimits::default().max_frames.checked_mul(8), "stereo f32 at the import frame bound");
     }

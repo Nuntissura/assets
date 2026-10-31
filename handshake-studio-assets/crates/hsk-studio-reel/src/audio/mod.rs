@@ -229,6 +229,22 @@ pub fn decode_audio_file(
     provider::decode_file(src, limits, max_frames, cancel, None)
 }
 
+/// `decode_audio_file` that also refuses before allocation when the decoded audio would hold more than
+/// `max_samples` interleaved samples (frames x channels; R47 F-R47-1): a declared total over it is
+/// refused before any payload is read, and before each decoded block is kept the kept samples plus the
+/// block's are checked, so the returned buffer never holds, nor reserves, more than `max_samples` f32
+/// samples. Over it: `ReelError::LimitExceeded { what: "audio-sample-budget" }`. `max_frames` keeps its
+/// meaning (samples per channel). Test: `tests/audio_sample_budget.rs`.
+pub fn decode_audio_file_within(
+    src: &mut dyn ReadSeek,
+    limits: &Limits,
+    max_frames: u64,
+    max_samples: u64,
+    cancel: &CancellationToken,
+) -> Result<DecodedAudio, ReelError> {
+    provider::decode_file_within(src, limits, max_frames, Some(max_samples), cancel, None)
+}
+
 /// `decode_audio_file` with an external audio decoder for the codecs it supports (D24-A: AAC through the
 /// OS decoder in reel-native's worker); `None` is `decode_audio_file`.
 pub fn decode_audio_file_with(

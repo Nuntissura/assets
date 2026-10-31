@@ -555,13 +555,27 @@ pub(crate) fn decode_file(
     cancel: &CancellationToken,
     external: Option<&dyn ExternalAudioDecoder>,
 ) -> Result<DecodedAudio, ReelError> {
-    if let Some(decoded) = decode_wav_file(src, limits, max_frames, cancel)? {
+    decode_file_within(src, limits, max_frames, None, cancel, external)
+}
+
+/// [`decode_file`] with an optional bound on the kept interleaved samples (`engine::decode_all_within`,
+/// R47 F-R47-1).
+pub(crate) fn decode_file_within(
+    src: &mut dyn ReadSeek,
+    limits: &Limits,
+    max_frames: u64,
+    max_samples: Option<u64>,
+    cancel: &CancellationToken,
+    external: Option<&dyn ExternalAudioDecoder>,
+) -> Result<DecodedAudio, ReelError> {
+    if let Some(decoded) = decode_wav_file(src, limits, max_frames, max_samples, cancel)? {
         return Ok(decoded);
     }
     let kind = detect_kind(src)?;
     let mut opened = open_stream(kind, src, limits, cancel, Open::Decode(external))?;
     let shape = opened.shape;
-    let interleaved = engine::decode_all(opened.frame_source(), &shape, max_frames, cancel)?;
+    let interleaved =
+        engine::decode_all_within(opened.frame_source(), &shape, max_frames, max_samples, cancel)?;
     let whole = shape
         .total
         .is_none_or(|t| interleaved.len() as u64 == t.saturating_mul(u64::from(shape.channels)));
@@ -596,6 +610,7 @@ fn decode_wav_file(
     src: &mut dyn ReadSeek,
     limits: &Limits,
     max_frames: u64,
+    max_samples: Option<u64>,
     cancel: &CancellationToken,
 ) -> Result<Option<DecodedAudio>, ReelError> {
     let len = source_len(src)?;
@@ -616,7 +631,7 @@ fn decode_wav_file(
     let (info, mask) = wav_file::parse(src, len, limits, cancel)?;
     let shape = aiff::shape(&info);
     let mut reader = aiff::AiffReader::open(src, info)?;
-    let interleaved = engine::decode_all(&mut reader, &shape, max_frames, cancel)?;
+    let interleaved = engine::decode_all_within(&mut reader, &shape, max_frames, max_samples, cancel)?;
     Ok(Some(DecodedAudio {
         sample_rate: shape.rate,
         channels: shape.channels,
