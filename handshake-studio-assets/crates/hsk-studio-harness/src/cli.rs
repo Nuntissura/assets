@@ -62,13 +62,15 @@ struct Parsed {
     threads: Option<usize>,
     depth: Option<u8>,
     /// export-sequence (lane SMB-PR-SEQ-EXPORT-UI-1): `--sequence`, `--preset`, `--in` / `--out` (ticks, kept as
-    /// text and checked by the command), `--output`, `--media FILE`..., `--width`, `--height`.
+    /// text and checked by the command), `--output`, `--media FILE`..., `--audio FILE`... (R44 F-R44-2), `--width`,
+    /// `--height`.
     sequence: Option<String>,
     preset: Option<String>,
     in_tick: Option<String>,
     out_tick: Option<String>,
     output: Option<PathBuf>,
     media: Vec<PathBuf>,
+    audio: Vec<PathBuf>,
     width: Option<u32>,
     height: Option<u32>,
 }
@@ -197,6 +199,7 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--out" => p.out_tick = Some(take(&mut i, "out tick")?),
             "--output" => p.output = Some(PathBuf::from(take(&mut i, "output path")?)),
             "--media" => p.media.push(PathBuf::from(take(&mut i, "media file path")?)),
+            "--audio" => p.audio.push(PathBuf::from(take(&mut i, "audio file path")?)),
             "--width" => p.width = Some(take(&mut i, "width")?.parse::<u32>().ok().filter(|w| *w > 0).ok_or_else(|| "width must be a positive integer".to_string())?),
             "--height" => p.height = Some(take(&mut i, "height")?.parse::<u32>().ok().filter(|h| *h > 0).ok_or_else(|| "height must be a positive integer".to_string())?),
             "--threads" => {
@@ -397,6 +400,7 @@ pub fn run(args: &[String]) -> CliOutput {
                 output,
                 overwrite: parsed.overwrite,
                 media: parsed.media.clone(),
+                audio: parsed.audio.clone(),
                 width: parsed.width.unwrap_or(1920),
                 height: parsed.height.unwrap_or(1080),
             };
@@ -748,7 +752,7 @@ fn execute_export(_: &Path, _: &Path, _: ExportChoice, _: bool) -> CliOutput {
 }
 
 /// `export-sequence PACKAGE --sequence ID --preset ID [--in T --out T] --output OUT [--overwrite] [--media FILE]...
-/// [--width W --height H] [--json]` (lane SMB-PR-SEQ-EXPORT-UI-1).
+/// [--audio FILE]... [--width W --height H] [--json]` (lane SMB-PR-SEQ-EXPORT-UI-1; `--audio`: R44 F-R44-2).
 #[cfg_attr(not(feature = "media"), allow(dead_code))]
 struct SequenceExport {
     sequence: String,
@@ -758,18 +762,85 @@ struct SequenceExport {
     output: PathBuf,
     overwrite: bool,
     media: Vec<PathBuf>,
+    audio: Vec<PathBuf>,
     width: u32,
     height: u32,
 }
 
-/// Total bytes of all `--media` and `--audio` files (red stub of R44 F-R44-15; enforced in the green commit).
+/// Total bytes of all `--media` and `--audio` files one `export-sequence` reads into memory, checked from the file
+/// sizes before any file is read (R44 F-R44-15; Studio reading: the in-memory limit of ONE media item,
+/// `view::media::MAX_MEDIA_BYTES`, 2 GiB, also bounds the sum, so N files never hold N x 2 GiB). Over it:
+/// `media_too_large` (stage `media` or `audio`, with `total_limit`).
 pub const MAX_EXPORT_INPUT_BYTES: u64 = 2_147_483_648;
 
+/// The `--audio` files of an `export-sequence` as the export's sound port (R44 F-R44-2): each file decoded by
+/// reel's audio decoder (`hsk_studio_reel::decode_audio_file`, as the viewer's audio import) and keyed as the clip
+/// source `sha256:<hex>` of its bytes, exactly as `Viewer::bind_program_media` keys video. Port adapter only: no
+/// codec here.
+#[cfg(feature = "media")]
+struct CliAudio(Vec<(hsk_studio_folio::ClipSource, hsk_studio_accord::Ticks, Vec<Vec<f32>>)>);
+#[cfg(feature = "media")]
+impl hsk_studio_pulse::AudioSources for CliAudio {
+    fn audio(&self, source: &hsk_studio_folio::ClipSource) -> Option<&[Vec<f32>]> {
+        self.0.iter().find(|(s, _, _)| s == source).map(|(_, _, p)| p.as_slice())
+    }
+}
+#[cfg(feature = "media")]
+impl hsk_studio_pulse::SourceExtents for CliAudio {
+    fn extent(&self, source: &hsk_studio_folio::ClipSource) -> Option<hsk_studio_accord::Ticks> {
+        self.0.iter().find(|(s, _, _)| s == source).map(|(_, t, _)| *t)
+    }
+}
+
+/// A typed refusal of [`cli_audio`]: error code and detail JSON.
+#[cfg(feature = "media")]
+type AudioRefusal = (String, Value);
+
+/// Decodes the `--audio` files (bytes already read) into one port at their shared rate; `None` without files.
+/// Refusals (stage `audio`): `audio_decode` (reel's message), `audio_empty`, `audio_rate_mismatch` (files at
+/// different rates: this path has no resampler).
+#[cfg(feature = "media")]
+fn cli_audio(files: Vec<(PathBuf, Vec<u8>)>, cancel: &CancellationToken) -> Result<Option<(CliAudio, u32)>, AudioRefusal> {
+    let limits = crate::view::audio_import::ImportLimits::default();
+    let decode_fail = |name: &str, message: String| ("audio_decode".to_string(), json!({"stage":"audio","path":name,"message":message}));
+    let mut port = Vec::with_capacity(files.len());
+    let mut rate: Option<u32> = None;
+    for (path, bytes) in files {
+        let name = path.to_string_lossy().into_owned();
+        let digest = hsk_studio_reel::full_digest(&mut std::io::Cursor::new(&bytes[..]), 1 << 20, cancel).map_err(|e| decode_fail(&name, e.to_string()))?;
+        let decoded = hsk_studio_reel::decode_audio_file(&mut std::io::Cursor::new(&bytes[..]), &hsk_studio_reel::Limits::default(), limits.max_frames, cancel)
+            .map_err(|e| decode_fail(&name, e.to_string()))?;
+        let frames = u64::try_from(decoded.frames()).map_err(|_| decode_fail(&name, "frame count".into()))?;
+        if frames == 0 || decoded.channels == 0 {
+            return Err(("audio_empty".into(), json!({"stage":"audio","path":name})));
+        }
+        match rate {
+            Some(r) if r != decoded.sample_rate => {
+                return Err(("audio_rate_mismatch".into(), json!({"stage":"audio","path":name,"rate":decoded.sample_rate,"expected":r})));
+            }
+            _ => rate = Some(decoded.sample_rate),
+        }
+        let extent = hsk_studio_pulse::ticks_from_samples(frames, decoded.sample_rate).map_err(|e| decode_fail(&name, format!("{e:?}")))?;
+        let hex = hsk_studio_reel::hex(&digest);
+        let source = hsk_studio_folio::ClipSource::Media {
+            artifact_manifest_id: format!("sha256:{hex}"),
+            content_digest: hsk_studio_folio::ContentDigest { algorithm: "sha256".into(), digest: hex },
+            asset_id: None,
+        };
+        port.push((source, extent, decoded.planar()));
+    }
+    Ok(rate.map(|r| (CliAudio(port), r)))
+}
+
 /// Opens the package headlessly like the viewer, binds every `--media` file to the program monitor through
-/// reel's decoders (`Viewer::bind_program_media`: clip sources `sha256:<hex>`), and runs `Viewer::export_sequence`
-/// (the window's Export Media runs the same method): same refusals, same result JSON (`export.receipt` is reel's
-/// receipt). Exit 0 only when the receipt's outcome is `complete`. A relative OUT is relative to the current
-/// directory.
+/// reel's decoders (`Viewer::bind_program_media`: clip sources `sha256:<hex>`) and every `--audio` file as the
+/// export's sound port (`Viewer::set_export_audio`, [`cli_audio`]), and runs `Viewer::export_sequence` (the window's
+/// Export Media runs the same method): same refusals, same result JSON (`export.receipt` is reel's receipt). Exit 0
+/// only when the receipt's outcome is `complete`. A relative OUT is relative to the current directory. Before any
+/// file is read (R44 F-R44-15): an `--out` past the sequence end (its duration rounded up to a whole frame) is
+/// `export_range` (stage `range`), the summed `--media` and `--audio` sizes are checked against
+/// [`MAX_EXPORT_INPUT_BYTES`], and an OUT that cannot be made absolute is `output_unresolved` (stage `output`).
+/// Tests: `tests/cli_export_sequence.rs`.
 #[cfg(feature = "media")]
 fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
     use crate::view::{Viewer, render::Prefer, timeline::ExportSequenceRequest};
@@ -778,16 +849,47 @@ fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
     if let Err(message) = viewer.open(package) {
         return fail("open_failed", json!({"stage":"open","message":message}));
     }
+    // --out past the sequence end: refused before any media is read.
+    if let Some(out_tick) = a.out_tick
+        && let Some(sequence) = viewer.run().snapshot().and_then(|s| s.document().sequences.iter().find(|q| q.sequence_id == a.sequence))
+    {
+        let tpf = sequence.frame_rate.ticks_per_frame.max(1);
+        let end = sequence.duration.value().div_ceil(tpf).checked_mul(tpf).unwrap_or(u64::MAX);
+        if out_tick > end {
+            return fail("export_range", json!({"stage":"range","out_tick":out_tick,"sequence_end":end}));
+        }
+    }
+    let output = match std::path::absolute(&a.output) {
+        Ok(p) => p,
+        Err(e) => return fail("output_unresolved", json!({"stage":"output","path":a.output.to_string_lossy(),"message":e.to_string()})),
+    };
+    // Sizes first, every file, before reading any (the total bound and reel's per-item limit).
+    let mut total = 0u64;
+    for (path, stage) in a.media.iter().map(|p| (p, "media")).chain(a.audio.iter().map(|p| (p, "audio"))) {
+        match std::fs::metadata(path) {
+            Ok(m) if m.len() <= crate::view::media::MAX_MEDIA_BYTES as u64 => {
+                total = total.saturating_add(m.len());
+                if total > MAX_EXPORT_INPUT_BYTES {
+                    return fail("media_too_large", json!({"stage":stage,"path":path.to_string_lossy(),"total_limit":MAX_EXPORT_INPUT_BYTES}));
+                }
+            }
+            Ok(_) => return fail("media_too_large", json!({"stage":stage,"path":path.to_string_lossy()})),
+            Err(_) => return fail("media_unreadable", json!({"stage":stage,"path":path.to_string_lossy()})),
+        }
+    }
+    let read = |path: &PathBuf, stage: &str| std::fs::read(path).map_err(|_| fail("media_unreadable", json!({"stage":stage,"path":path.to_string_lossy()})));
     let mut files = Vec::with_capacity(a.media.len());
     for path in &a.media {
-        // Bounded before reading (reel's in-memory media limit).
-        match std::fs::metadata(path) {
-            Ok(m) if m.len() <= crate::view::media::MAX_MEDIA_BYTES as u64 => match std::fs::read(path) {
-                Ok(b) => files.push(b),
-                Err(_) => return fail("media_unreadable", json!({"stage":"media","path":path.to_string_lossy()})),
-            },
-            Ok(_) => return fail("media_too_large", json!({"stage":"media","path":path.to_string_lossy()})),
-            Err(_) => return fail("media_unreadable", json!({"stage":"media","path":path.to_string_lossy()})),
+        match read(path, "media") {
+            Ok(b) => files.push(b),
+            Err(o) => return o,
+        }
+    }
+    let mut sounds = Vec::with_capacity(a.audio.len());
+    for path in &a.audio {
+        match read(path, "audio") {
+            Ok(b) => sounds.push((path.clone(), b)),
+            Err(o) => return o,
         }
     }
     if !files.is_empty()
@@ -795,7 +897,17 @@ fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
     {
         return fail(e.code, json!({"stage":"media","message":e.detail}));
     }
-    let output = std::path::absolute(&a.output).unwrap_or_else(|_| a.output.clone());
+    match cli_audio(sounds, &CancellationToken::default()) {
+        Ok(Some((port, rate))) => {
+            let port = std::sync::Arc::new(port);
+            let extents: std::sync::Arc<dyn hsk_studio_pulse::SourceExtents + Send + Sync> = port.clone();
+            if let Err(message) = viewer.set_export_audio(SharedCliAudio(port), extents, rate) {
+                return fail("audio_port", json!({"stage":"audio","message":message}));
+            }
+        }
+        Ok(None) => {}
+        Err((code, detail)) => return fail(&code, detail),
+    }
     let mut request = ExportSequenceRequest::new(&a.preset, output);
     request.in_tick = a.in_tick;
     request.out_tick = a.out_tick;
@@ -807,7 +919,18 @@ fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
             let ok = export["receipt"]["outcome"] == "complete";
             out(i32::from(!ok), &json!({"schema":crate::SCHEMA,"command":"export-sequence","ok":ok,"verdict":if ok { "pass" } else { "fail" },"export":export}))
         }
+        Err(e) if e.code == "audio_sources_missing" => fail(e.code, json!({"stage":"export","message":e.detail,"hint":"pass the clip's sound file with --audio FILE"})),
         Err(e) => fail(e.code, json!({"stage":"export","message":e.detail})),
+    }
+}
+
+/// [`CliAudio`] shared between the sound port and its extents.
+#[cfg(feature = "media")]
+struct SharedCliAudio(std::sync::Arc<CliAudio>);
+#[cfg(feature = "media")]
+impl hsk_studio_pulse::AudioSources for SharedCliAudio {
+    fn audio(&self, source: &hsk_studio_folio::ClipSource) -> Option<&[Vec<f32>]> {
+        self.0.audio(source)
     }
 }
 
