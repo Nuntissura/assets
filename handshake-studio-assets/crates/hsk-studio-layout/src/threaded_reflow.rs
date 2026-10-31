@@ -423,15 +423,21 @@ pub fn reflow_flow(
 }
 
 /// `reflow_flow` that also reports the STU-LAY-119 auto-size of the thread (lane
-/// SMB-ID-FRAME-AUTOSIZE-1, `autosize` module): the proposal composed in the auto-sized frame (the
-/// same lines every reflow entry point returns) plus one `FrameResize` per auto-sized frame.
+/// SMB-ID-FRAME-AUTOSIZE-1, `autosize` module): the proposal composed in the auto-sized frame plus
+/// one `FrameResize` per auto-sized frame. This is the ONLY entry point that resizes (R44 finding
+/// F-R44-6, lane SMB-R44-FOLLOWUPS-1): `reflow`, `reflow_typeset`, `reflow_flow`, `reflow_grid` and
+/// `reflow_cjk` compose an auto-sized frame at its authored size, so their proposal matches the
+/// document's frame (the same lines as the auto-sized layout only where the size does not change
+/// them; tests/frame_autosize.rs `height_only_fits_the_last_line_and_grows_and_shrinks`). The
+/// auto-size refusals of the thread (`autosize_threaded_frame`, `autosize_multi_column`) are read
+/// from the frames and stay on every entry point.
 pub fn reflow_autosize(
     req: &ReflowRequest<'_>,
     opts: &TypesetOptions<'_>,
     flow: &StudioLayoutFlowRecords,
     cancel: &CancellationToken,
 ) -> Result<crate::autosize::AutosizeProposal, LayoutError> {
-    let (layout, _, resizes) = reflow_sized(req, opts, flow, None, &[], cancel)?;
+    let (layout, _, resizes) = reflow_sized(req, opts, flow, None, &[], true, cancel)?;
     Ok(crate::autosize::AutosizeProposal { layout, resizes })
 }
 
@@ -469,17 +475,21 @@ pub(crate) fn reflow_core(
     cjk: &[Option<CjkParagraph>],
     cancel: &CancellationToken,
 ) -> Result<(LayoutProposal, Vec<CjkLineSpacing>), LayoutError> {
-    reflow_sized(req, opts, flow, grids, cjk, cancel).map(|(p, s, _)| (p, s))
+    // R44 F-R44-6: the plain entry points keep the authored frame size (see `reflow_autosize`).
+    reflow_sized(req, opts, flow, grids, cjk, false, cancel).map(|(p, s, _)| (p, s))
 }
 
-/// `reflow_core` that also returns the STU-LAY-119 resizes (`autosize` module). Without an
-/// auto-sized frame the thread is composed once, exactly as before auto-size existed.
+/// `reflow_core` that also returns the STU-LAY-119 resizes (`autosize` module) when `autosize` is
+/// set (only `reflow_autosize`); otherwise, and without an auto-sized frame, the thread is composed
+/// once at its authored sizes, exactly as before auto-size existed.
+#[allow(clippy::too_many_arguments)]
 fn reflow_sized(
     req: &ReflowRequest<'_>,
     opts: &TypesetOptions<'_>,
     flow: &StudioLayoutFlowRecords,
     grids: Option<&StudioLayoutGrids>,
     cjk: &[Option<CjkParagraph>],
+    autosize: bool,
     cancel: &CancellationToken,
 ) -> Result<(LayoutProposal, Vec<CjkLineSpacing>, Vec<crate::autosize::FrameResize>), LayoutError> {
     canceled(cancel)?;
@@ -561,7 +571,7 @@ fn reflow_sized(
     let mut compose = |t: &[Frame<'_>], v: &[FrameVertical]| {
         compose_flow(t, v, &aligns, text, paragraphs, &stylings, &flows, &pre, req.composer, req.space, opts, limits, cjk, cancel)
     };
-    let resize = crate::autosize::autosize(&mut thread, &mut verticals, paragraphs, &mut compose, cancel)?;
+    let resize = if autosize { crate::autosize::autosize(&mut thread, &mut verticals, paragraphs, &mut compose, cancel)? } else { None };
     let composed = compose(&thread, &verticals)?;
     let spacing = composed
         .cjk
