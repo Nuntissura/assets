@@ -661,6 +661,16 @@ pub enum RingRefusal {
 }
 
 /// Producer side of the host's preallocated ring hand-off.
+///
+/// Contract for every implementation: `try_record` is non-blocking and non-allocating, does constant bounded
+/// work, takes no lock and makes no syscall, so it may be called from a real-time thread. The trait itself
+/// asks for nothing that blocks or allocates: the record is a fixed-size `Copy` value passed by reference
+/// (no ownership transfer, no drop glue), the result is a `Copy` `Result<(), RingRefusal>`, and the trait
+/// holds no `Mutex` or other lock. `&mut self` gives one producer handle per thread, matching the host's SPSC
+/// `DiagRingWriter`; the trait is `Send`, not `Sync`. Real-time audio callbacks never call observe; this port
+/// is for the host's preallocated hand-off, not for those callbacks. Proven for a test producer by
+/// `tests/ring_port.rs` `producer_records_from_a_second_thread_and_saturation_is_typed` (zero allocations,
+/// counting allocator); an implementation's own body is its owner's proof.
 pub trait RingProducerPort: Send {
     fn try_record(&mut self, record: &RingRecord) -> Result<(), RingRefusal>;
 }
