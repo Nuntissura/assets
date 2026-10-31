@@ -297,7 +297,9 @@ pub fn export_psd(
 /// Writes the edits of `edited` (the document's raster records after editing) to the alpha and
 /// spot channels the import mapped (`ImportProposal::channel_map`, lane SMB-FOLIO-CHANNEL-RECORD,
 /// MT-038 AC-003). All-or-nothing like [`apply_edits`]. Written back: names (resources 1006 and,
-/// when present, 1045), kind, colour and opacity (resource 1077 entry; the stored colour space and
+/// when present, 1045; a name the 1006 Latin-1 Pascal entry cannot carry exactly, a character above
+/// U+00FF written `?` or a cut at 255 bytes, is the typed loss `channel_name_transcoded`, test
+/// `renamed_channel_names_the_pascal_list_cannot_carry_are_typed_losses`), kind, colour and opacity (resource 1077 entry; the stored colour space and
 /// components stay when the colour is unedited), and samples (the merged image data is re-encoded
 /// raw with the edited extra planes; colour planes and the merged transparency keep their samples,
 /// so the composite is not marked stale). `channel_tiles` serves the edited tile bytes by digest
@@ -437,9 +439,16 @@ fn channel_edits_in_place(
             {
                 slot.clone_from(&c.name);
             }
-            if pascal.as_ref().is_some_and(|l| l.len() > i) || unicode.as_ref().is_some_and(|l| l.len() > i) {
+            let pascal_written = pascal.as_ref().is_some_and(|l| l.len() > i);
+            if pascal_written || unicode.as_ref().is_some_and(|l| l.len() > i) {
                 names_changed = true;
                 report.applied(&path, "channel_name");
+                // The 1006 entry carries the name exactly only when every character is Latin-1 and
+                // the name fits 255 bytes (F-R50-5); the 1045 entry, when present, keeps it exact.
+                let exact = c.name.chars().all(|ch| u32::from(ch) <= 0xFF) && c.name.chars().count() <= 255;
+                if pascal_written && !exact {
+                    report.lost(&format!("{path}/name"), LossKind::Transformed, "channel_name_transcoded");
+                }
             } else {
                 report.lost(&format!("{path}/name"), LossKind::Unsupported, "channel_name_resource_absent");
             }
