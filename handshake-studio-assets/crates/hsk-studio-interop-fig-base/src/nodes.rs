@@ -2080,61 +2080,123 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
     Ok(Some(n))
 }
 
-fn resolve_variables(doc: &mut FigDocument, cx: &mut Cx) {
+/// What one alias hop of a VARIABLE node finds, computed once per variable (R47 F-R47-4).
+#[derive(Clone, Copy)]
+enum VariableHop {
+    /// Its set is missing or is not a VARIABLE_SET.
+    SetMissing,
+    /// Its set has more than one mode (or none).
+    MultiMode,
+    /// Index into its `values` of the first entry for the set's single mode.
+    Value(usize),
+    /// No entry for the set's single mode.
+    ModeValueMissing,
+}
+
+/// Follows every VARIABLE's alias chain (at most 16 hops) to its value for the set's single mode.
+/// R47 F-R47-4: each variable's value for its set's mode is found ONCE (one pass over its value list),
+/// so the walk costs one lookup per hop instead of a scan of the current variable's whole value list
+/// per hop (N variables aliasing one hub of V values cost about 15 N V comparisons before); the
+/// caller's token is polled every 256 variables and every 4096 values. Returns the work done (values
+/// compared plus hops), bounded by the total value count plus 16 hops per variable (test
+/// `variable_alias_walk_is_linear_and_cancellable`). Losses are recorded per resolved variable as
+/// before.
+fn resolve_variables(doc: &mut FigDocument, cx: &mut Cx) -> Result<u64> {
+    let canceled = |cx: &Cx| cx.cancel.check().map_err(|_| FigError::Canceled);
     let index: HashMap<SourceId, usize> = doc
         .nodes
         .iter()
         .enumerate()
         .map(|(i, n)| (n.id, i))
         .collect();
-    let mut resolved = Vec::new();
-    for (i, n) in doc.nodes.iter().enumerate() {
+    let mut work: u64 = 0;
+    let mut hops: Vec<Option<VariableHop>> = Vec::with_capacity(doc.nodes.len());
+    for (k, n) in doc.nodes.iter().enumerate() {
+        if k & 255 == 0 {
+            canceled(cx)?;
+        }
         let NodePayload::Variable(var) = &n.payload else {
+            hops.push(None);
             continue;
         };
+        let set = var
+            .set_id
+            .and_then(|s| index.get(&s))
+            .map(|&si| &doc.nodes[si].payload);
+        let hop = match set {
+            Some(NodePayload::VariableSet { modes }) if modes.len() == 1 => {
+                let mode = modes[0].id;
+                let mut found = VariableHop::ModeValueMissing;
+                for (j, (m, _)) in var.values.iter().enumerate() {
+                    if j & 4095 == 4095 {
+                        canceled(cx)?;
+                    }
+                    work = work.saturating_add(1);
+                    if *m == mode {
+                        found = VariableHop::Value(j);
+                        break;
+                    }
+                }
+                found
+            }
+            Some(NodePayload::VariableSet { .. }) => VariableHop::MultiMode,
+            _ => VariableHop::SetMissing,
+        };
+        hops.push(Some(hop));
+    }
+    let mut resolved = Vec::new();
+    for (i, n) in doc.nodes.iter().enumerate() {
+        if i & 255 == 0 {
+            canceled(cx)?;
+        }
+        if !matches!(n.payload, NodePayload::Variable(_)) {
+            continue;
+        }
         cx.current = Some(n.id);
-        let mut cur = var;
+        let mut cur = i;
         let mut out = None;
         let mut done = false;
         for _ in 0..16 {
-            let modes = cur
-                .set_id
-                .and_then(|s| index.get(&s))
-                .map(|&si| &doc.nodes[si].payload);
-            let Some(NodePayload::VariableSet { modes }) = modes else {
-                cx.lose("VARIABLE.variableSetID", "variable_set_missing");
+            work = work.saturating_add(1);
+            let (Some(Some(hop)), NodePayload::Variable(var)) = (hops.get(cur), &doc.nodes[cur].payload) else {
+                // `cur` is always a VARIABLE node: the walk only moves to one.
                 done = true;
                 break;
             };
-            if modes.len() != 1 {
-                cx.lose(
-                    "VARIABLE.variableSetModes",
-                    "variable_multi_mode_unresolved",
-                );
-                done = true;
-                break;
-            }
-            match cur.values.iter().find(|(m, _)| *m == modes[0].id) {
-                Some((_, VariableValue::Alias(target))) => {
-                    match index.get(target).map(|&ti| &doc.nodes[ti].payload) {
-                        Some(NodePayload::Variable(next)) => cur = next,
+            match *hop {
+                VariableHop::SetMissing => {
+                    cx.lose("VARIABLE.variableSetID", "variable_set_missing");
+                    done = true;
+                    break;
+                }
+                VariableHop::MultiMode => {
+                    cx.lose(
+                        "VARIABLE.variableSetModes",
+                        "variable_multi_mode_unresolved",
+                    );
+                    done = true;
+                    break;
+                }
+                VariableHop::ModeValueMissing => {
+                    cx.lose("VARIABLE.variableDataValues", "variable_mode_value_missing");
+                    done = true;
+                    break;
+                }
+                VariableHop::Value(j) => match &var.values[j].1 {
+                    VariableValue::Alias(target) => match index.get(target) {
+                        Some(&ti) if matches!(doc.nodes[ti].payload, NodePayload::Variable(_)) => cur = ti,
                         _ => {
                             cx.lose("VARIABLE.alias", "variable_alias_unresolved");
                             done = true;
                             break;
                         }
+                    },
+                    v => {
+                        out = Some(v.clone());
+                        done = true;
+                        break;
                     }
-                }
-                Some((_, v)) => {
-                    out = Some(v.clone());
-                    done = true;
-                    break;
-                }
-                None => {
-                    cx.lose("VARIABLE.variableDataValues", "variable_mode_value_missing");
-                    done = true;
-                    break;
-                }
+                },
             }
         }
         if !done {
@@ -2148,6 +2210,7 @@ fn resolve_variables(doc: &mut FigDocument, cx: &mut Cx) {
             var.resolved = out;
         }
     }
+    Ok(work)
 }
 
 /// Builds the typed node tree from a decoded `Message` value tree. `container` (when given) lets
@@ -2276,7 +2339,7 @@ pub fn document_from_tree(
             })
             .unwrap_or_default(),
     };
-    resolve_variables(&mut doc, &mut cx);
+    resolve_variables(&mut doc, &mut cx)?;
     doc.loss = cx
         .loss
         .into_iter()
@@ -2340,5 +2403,82 @@ mod tests {
         let mut o = Obj::of(&node, "NodeChange");
         assert_eq!(grid_tracks(&mut o, &mut cx, "gridRows").map(|t| t.len()).ok(), Some(0));
         assert!(cx.loss.contains_key(&("NodeChange.gridRows".to_owned(), "grid_track_incomplete")));
+    }
+
+    fn guid(local: u32) -> KiwiValue {
+        KiwiValue::Struct(vec![field("sessionID", KiwiValue::Uint(7)), field("localID", KiwiValue::Uint(local))])
+    }
+
+    fn typed_node(local: u32, kind: &str, mut rest: Vec<KiwiField>) -> KiwiValue {
+        let mut fields = vec![field("guid", guid(local)), field("type", KiwiValue::Enum { value: 0, name: Some(Arc::from(kind)) })];
+        fields.append(&mut rest);
+        KiwiValue::Message(fields)
+    }
+
+    fn variable_node(local: u32, set: u32, entries: Vec<(u32, KiwiValue)>) -> KiwiValue {
+        let entries = entries
+            .into_iter()
+            .map(|(mode, value)| {
+                KiwiValue::Struct(vec![
+                    field("modeID", guid(mode)),
+                    field("variableData", KiwiValue::Struct(vec![field("value", KiwiValue::Struct(vec![field(if matches!(value, KiwiValue::Float(_)) { "floatValue" } else { "alias" }, value)]))])),
+                ])
+            })
+            .collect();
+        typed_node(local, "VARIABLE", vec![
+            field("variableSetID", KiwiValue::Struct(vec![field("guid", guid(set))])),
+            field("variableDataValues", KiwiValue::Struct(vec![field("entries", KiwiValue::Array(entries))])),
+        ])
+    }
+
+    /// R47 F-R47-4 (lane SMB-R47-FOLLOWUPS-1): N variables aliasing one hub variable whose single-mode
+    /// value list holds V entries (the set's mode last) resolve with work bounded by V + 17 N + 1 (each
+    /// variable's value for its mode is found once; the walk then costs one lookup per hop), not about
+    /// N V; a canceled token stops the pass with `Canceled`.
+    #[test]
+    fn variable_alias_walk_is_linear_and_cancellable() {
+        const N: u32 = 2_000;
+        const V: u32 = 20_000;
+        const SET: u32 = 1;
+        const MODE: u32 = 900_000;
+        const HUB: u32 = 2;
+        let mut hub_values: Vec<(u32, KiwiValue)> = (0..V - 1).map(|m| (500_000 + m, KiwiValue::Float(0.25))).collect();
+        hub_values.push((MODE, KiwiValue::Float(0.5)));
+        let mut changes = vec![
+            typed_node(SET, "VARIABLE_SET", vec![field("variableSetModes", KiwiValue::Array(vec![KiwiValue::Struct(vec![field("id", guid(MODE))])]))]),
+            variable_node(HUB, SET, hub_values),
+        ];
+        changes.extend((0..N).map(|k| variable_node(10 + k, SET, vec![(MODE, KiwiValue::Struct(vec![field("guid", guid(HUB))]))])));
+        let message = KiwiValue::Message(vec![field("nodeChanges", KiwiValue::Array(changes))]);
+        let live = CancellationToken::default();
+        let mut doc = document_from_tree(&message, None, &Limits::default(), &live).expect("decodes");
+        let resolved: Vec<Option<VariableValue>> = doc
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.payload {
+                NodePayload::Variable(v) => Some(v.resolved.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(resolved.len(), usize::try_from(N + 1).unwrap());
+        assert!(resolved.iter().all(|r| *r == Some(VariableValue::Float(0.5))), "every alias resolves to the hub's mode value");
+        let mut cx = Cx {
+            loss: BTreeMap::new(),
+            decoded: BTreeMap::new(),
+            current: None,
+            grid_children: Vec::new(),
+            blobs: None,
+            container: None,
+            geometry_budget: 1 << 20,
+            cancel: &live,
+        };
+        let work = resolve_variables(&mut doc, &mut cx).expect("a live token");
+        let bound = u64::from(V) + 17 * u64::from(N) + 1;
+        assert!(work <= bound, "work {work} over the linear bound {bound} (was about N x V = {})", u64::from(N) * u64::from(V));
+        assert!(cx.loss.is_empty(), "{:?}", cx.loss);
+        let canceled = CancellationToken::default();
+        canceled.cancel();
+        cx.cancel = &canceled;
+        assert!(matches!(resolve_variables(&mut doc, &mut cx), Err(FigError::Canceled)));
     }
 }
