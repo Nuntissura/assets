@@ -9,6 +9,7 @@ mod audio_amplitude;
 mod date;
 mod depgraph;
 mod error;
+mod expr_catalogue;
 mod expression;
 mod graph;
 mod keyframe;
@@ -39,6 +40,10 @@ pub use assistants::{
     make_continuous, rove, sequence_layers, set_interpolation, toggle_hold,
 };
 pub use error::MotionError;
+pub use expr_catalogue::{
+    EXPR_IDENTIFIER_COUNT, EXPR_SIGNATURES, ExprBinding, ExprCatalogueError, ExprCategory, ExprIdentifier, ExprParam,
+    ExprProvenance, ExprSignature, canonical_spelling, dual_spellings, expr_binding, expr_identifier, expr_identifiers,
+};
 pub use expression::{
     ExprError, ExprErrorCode, ExprRequest, ExpressionProvider, Fuel, HostRead, NoHost, NoProvider,
     SourceSpan,
