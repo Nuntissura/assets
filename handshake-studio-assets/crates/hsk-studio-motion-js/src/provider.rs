@@ -28,18 +28,22 @@ use std::{
 /// Provider/profile identifier recorded in Motion receipts.
 pub const PROFILE_ID: &str = "motion-js-es2018@1";
 
-/// After Effects expression globals bound for JavaScript engines (lane SMB-AI-AE-ORACLE-FOLLOWUPS
-/// slice 4; D5 oracle AE-03, After Effects 26.5): `value` (the pre-expression value: a number for one
-/// component, an array otherwise; `undefined` when Motion passes no base, i.e. a property without
-/// keyframes), `time` (the evaluation tick in seconds) and `linear(t, tMin, tMax, value1, value2)` /
-/// `linear(t, value1, value2)` (`t` in 0..1): `value1` at or below `tMin`, `value2` at or above
-/// `tMax`, linear in between, per component for arrays. They are declared by a one-line trusted
-/// prelude in front of the (already validated) user source; spans are reported on the user's lines.
-/// Measured against the oracle: `value*2`, `value + time*10`, `linear(time, 0, 2, 0, 180)` on a
-/// one-component keyframed property; arrays, `tMin > tMax` and static properties are UNVERIFIED.
-pub const AE_GLOBALS_PRELUDE: &str = "function linear(t, a, b, c, d) { if (c === undefined) { c = a; d = b; a = 0; b = 1; } if (t <= a) { return c; } if (t >= b) { return d; } var f = (t - a) / (b - a); if (Array.isArray(c)) { var o = []; for (var i = 0; i < c.length; i++) { o.push(c[i] + (d[i] - c[i]) * f); } return o; } return c + (d - c) * f; }";
+#[path = "prelude.rs"]
+mod prelude;
 
-/// `value`/`time` declarations plus [`AE_GLOBALS_PRELUDE`] on one line, then the user source.
+/// After Effects expression globals for JavaScript engines: `value` (the pre-expression value: a
+/// number for one component, an array otherwise; `undefined` when Motion passes no base, i.e. a
+/// property without keyframes) and `time` (the evaluation tick in seconds) are declared in front of
+/// the prelude; `linear(t, tMin, tMax, value1, value2)` / `linear(t, value1, value2)` (D5 oracle
+/// AE-03, After Effects 26.5: `value*2`, `value + time*10`, `linear(time, 0, 2, 0, 180)` on a
+/// one-component keyframed property; arrays, `tMin > tMax` and static properties UNVERIFIED) and the
+/// rest of the library (lane SMB-AE-EXPR-LIBRARY-1, see `prelude.rs`) are bound by the one-line
+/// trusted prelude in front of the (already validated) user source; spans are reported on the
+/// user's lines.
+pub use prelude::AE_GLOBALS_PRELUDE;
+
+/// `value`/`time` declarations plus [`AE_GLOBALS_PRELUDE`] and its catalogue-derived call on one line,
+/// then the user source.
 fn with_ae_globals(request: &ExprRequest<'_>) -> String {
     let number = |v: f64| format!("{v}");
     let value = match request.base {
@@ -48,8 +52,13 @@ fn with_ae_globals(request: &ExprRequest<'_>) -> String {
         Some(many) => format!("[{}]", many.iter().map(|v| number(*v)).collect::<Vec<_>>().join(", ")),
     };
     let time = request.tick.value() as f64 / TICKS_PER_SECOND as f64;
-    format!("var value = {value}, time = {}; {AE_GLOBALS_PRELUDE}
-{}", number(time), request.source)
+    format!(
+        "var value = {value}, time = {}; {AE_GLOBALS_PRELUDE}{}
+{}",
+        number(time),
+        prelude::prelude_call(),
+        request.source
+    )
 }
 
 /// Moves an engine span from the prelude-prefixed source back onto the user's source (one line up;
