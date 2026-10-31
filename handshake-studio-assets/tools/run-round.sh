@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Studio round entrypoint: the single checked-in build + test invocation for validator rounds (CX-VAL-007).
 # Usage: tools/run-round.sh --results DIR --target-dir DIR [--dev] [--canary] (--all | CRATE...)
+#        tools/run-round.sh --print-plan [--dev] [--canary] (--all | CRATE...)
 #   CRATE      hsk-studio-<name> or <name>; --all = every workspace member.
+#   --print-plan  print every unit of this selection with the exact cargo/nextest argv the run executes (built by the
+#              same helpers; <results> and <target> stand for the dirs) and exit 0: read-only (`cargo metadata
+#              --no-deps --offline` into a temp dir), no lock, no build, no results or target dir, no export check.
 #   --dev      allow the git edit tree; otherwise the workspace must be an export with ROUND_IDENTITY.json
 #              in its parent or grandparent whose manifest_sha256 (sorted "<sha256>  <relpath>\n" lines over
 #              the export dir beside it, named src/) matches. Exports get current mtimes on all workspace files
@@ -24,6 +28,15 @@
 #              (prebuild/UNIT+BIN.*; a failure is recorded as that unit's build failure; F-R32-2).
 #   default    union over the selection, default features: one build (nextest --no-run) + one run (--no-fail-fast);
 #              files at the results root (build.*, run.*, list.txt, canary-filter.txt, junit.xml) as before.
+#              The build is always `--workspace` (F-R47-8, 2026-10-31): resolver 2 unifies dependency features over
+#              the packages being built, so a scoped `-p` list gave unchanged dependencies other metadata hashes than
+#              the full round's build (R47: +11.0 GiB, 4948 files) and every new package set added another identity
+#              set. A scoped selection builds the same --workspace set (shared identities; a compile error in any
+#              member now fails the scoped build too) and runs `--workspace -E 'package(=A) | package(=B) ...'`:
+#              package() is a binary-level predicate, so other members' test binaries are neither listed nor
+#              reported (junit, counts, per-crate, timed_out, NOT_PROVEN cover only the selection, as with -p);
+#              the canary list takes the same filter and its first-test filter replaces it for the run. --all is
+#              unchanged (`--workspace`, no -E). GPU test lock: --all, or render-gpu in the selection.
 #              Per-test timeouts: .config/nextest.toml slow-timeout (CX-EXEC-005); a junit <failure type="test
 #              timeout"> is reported timed_out (round.json timed_out_tests), not failed (aggregator self-check).
 #   features   per selected crate and feature set declared in .config/round-features.toml: -p CRATE --features SET,
@@ -61,7 +74,7 @@
 #   waits print to stderr; results/disk-lock.json and round.json "disk_lock" record holds, yields, waits and broken
 #   stale locks; giving up (STUDIO_DISK_BUILD_LOCK_TIMEOUT_S, default 7200) or a protocol mismatch exits 75.
 # GPU test lock (SMB-STEWARD-GPU-CONTENTION 2026-10-20; dbl_gpu_run in tools/disk-build-lock.sh): a unit whose selection
-#   includes hsk-studio-render-gpu (or --workspace) runs its test step holding the machine-wide GPU test lock (class
+#   includes hsk-studio-render-gpu (or is --all) runs its test step holding the machine-wide GPU test lock (class
 #   round = queue priority; root STUDIO_GPU_TEST_LOCK_DIR or <sole artifact root>/.gpu-test-lock), so GPU tests of the
 #   other build slot never overlap; the build step stays outside it. Giving up waiting is the unit's run status 75.
 # Tree binding: <target-dir>/.studio-workspace-root binds the target dir to ONE workspace root (`cargo
@@ -102,10 +115,11 @@ jstr() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; s=${s//$'\r'
 abspath() { local p; p=$(realpath -m -- "$1"); command -v cygpath >/dev/null && p=$(cygpath -m "$p"); printf '%s' "$p"; }
 under() { case "$1/" in "$2"/*) return 0;; *) return 1;; esac; }
 
-dev=0 canary=0 all=0 results="" target="" crates=()
+dev=0 canary=0 all=0 print_plan=0 results="" target="" crates=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --dev) dev=1 ;;
+    --print-plan) print_plan=1 ;;
     --canary) canary=1 ;;
     --all) all=1 ;;
     --results) results=${2:?--results needs a dir}; shift ;;
@@ -117,13 +131,293 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$results" ] && [ -n "$target" ] || die "--results and --target-dir are required"
+[ $print_plan -eq 1 ] || { [ -n "$results" ] && [ -n "$target" ]; } || die "--results and --target-dir are required"
 { [ $all -eq 1 ] && [ ${#crates[@]} -eq 0 ]; } || { [ $all -eq 0 ] && [ ${#crates[@]} -gt 0 ]; } \
   || die "give --all or a crate list (not both)"
 py=$(command -v python || command -v python3) || die "python 3.11+ required"
 "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' || die "python 3.11+ required (tomllib)"
 
 root=$(abspath "$(dirname "${BASH_SOURCE[0]}")/..")
+# plan_units METADATA_JSON -> units.plan.tsv rows on stdout: selection, feature matrix units, doctest units and the
+# doctest per-test budget (read-only; shared by the run and --print-plan).
+plan_units() {
+"$py" -X utf8 -I - "$1" "$root/.config/round-features.toml" "$all" ${crates[@]+"${crates[@]}"} <<'PY'
+import json, pathlib, sys, tomllib
+
+sys.stdout.reconfigure(newline="\n")  # Windows text mode would end rows with CR (status "run\r")
+meta = json.load(open(sys.argv[1], encoding="utf-8"))
+matrix_path, sel_all, asked = pathlib.Path(sys.argv[2]), sys.argv[3] == "1", sys.argv[4:]
+ids = set(meta["workspace_members"])
+members = {p["name"]: p for p in meta["packages"] if p["id"] in ids}
+unknown = [c for c in asked if c not in members]
+if unknown:
+    sys.exit("run-round: not workspace members: " + " ".join(unknown))
+selected = sorted(members) if sel_all else list(dict.fromkeys(asked))
+if not matrix_path.exists():
+    sys.exit("run-round: .config/round-features.toml missing")
+doc = tomllib.loads(matrix_path.read_text(encoding="utf-8"))
+if doc.get("schema") != "hsk.studio.round-features@2":
+    sys.exit("run-round: round-features.toml schema must be hsk.studio.round-features@2")
+budget = doc.get("doctest", {}).get("per-test-timeout-s")
+if not (isinstance(budget, int) and not isinstance(budget, bool) and 1 <= budget <= 3600):
+    sys.exit("run-round: round-features.toml [doctest] per-test-timeout-s must be an integer 1..3600")
+matrix = {}
+for crate, sets in doc.get("crates", {}).items():
+    ok = isinstance(sets, list) and all(
+        isinstance(s, list) and s and all(isinstance(f, str) and f and "," not in f for f in s) for s in sets)
+    if not ok:
+        sys.exit(f"run-round: round-features.toml {crate}: expected a list of non-empty feature-name lists")
+    matrix[crate] = [sorted(set(s)) for s in sets]
+LIB = {"lib", "rlib", "dylib", "proc-macro"}
+feature_units, doc_units = [], []
+for crate in sorted(c for c in matrix if c not in members):
+    for s in matrix[crate]:
+        feature_units.append(("features", crate, ",".join(s), "crate_absent"))
+for crate in selected:
+    pkg = members[crate]
+    has_doc = any(LIB & set(t["kind"]) and t.get("doctest", True) for t in pkg["targets"])
+    for s in [[]] + matrix.get(crate, []):
+        missing = [f for f in s if f not in pkg.get("features", {})]
+        status = "feature_absent:" + ",".join(missing) if missing else "run"
+        if s:
+            feature_units.append(("features", crate, ",".join(s), status))
+        doc_units.append(("doctest", crate, ",".join(s), status if status != "run" or has_doc else "no_doctest_lib"))
+# [ignored]: (crate, feature set) units that run only the crate's #[ignore]d tests; an empty set = default features.
+ignored = {}
+for crate, sets in doc.get("ignored", {}).items():
+    ok = isinstance(sets, list) and sets and all(
+        isinstance(s, list) and all(isinstance(f, str) and f and "," not in f for f in s) for s in sets)
+    if not ok:
+        sys.exit(f"run-round: round-features.toml [ignored] {crate}: expected a list of feature-name lists")
+    ignored[crate] = [sorted(set(s)) for s in sets]
+ignored_units = []
+for crate in sorted(ignored):
+    if crate not in members:
+        ignored_units += [("ignored", crate, ",".join(s), "crate_absent") for s in ignored[crate]]
+    elif crate in selected:
+        for s in ignored[crate]:
+            missing = [f for f in s if f not in members[crate].get("features", {})]
+            ignored_units.append(("ignored", crate, ",".join(s), "feature_absent:" + ",".join(missing) if missing else "run"))
+# [prebuild]: "CRATE+F1+F2" (a declared features unit) = [[package, bin, feature...], ...]: worker binaries that
+# unit's tests spawn from <target>/debug (F-R32-2); built from the candidate into the run's own target right before
+# that unit (a prebuild row precedes it; a failed prebuild is that unit's build failure).
+prebuild = {}
+for unit, specs in doc.get("prebuild", {}).items():
+    ok = isinstance(specs, list) and specs and all(
+        isinstance(s, list) and len(s) >= 2 and all(isinstance(x, str) and x and "," not in x and "|" not in x for x in s)
+        for s in specs)
+    if not ok:
+        sys.exit(f"run-round: round-features.toml [prebuild] {unit}: expected a list of [package, bin, feature...] lists")
+    prebuild[unit] = specs
+# Keys are checked against the whole declared [crates] table (a typo is refused for every selection); rows are emitted
+# below only for units of the current plan, so a scoped selection without the unit's crate builds no worker (R39
+# scoped render-gpu re-run was refused here when the check used the selection's units).
+declared = {"+".join([c] + s) for c, sets in matrix.items() for s in sets}
+for unit in prebuild:
+    if unit not in declared:
+        sys.exit(f"run-round: round-features.toml [prebuild] {unit}: not a declared [crates] features unit")
+rows = []
+for kind, crate, feats, status in feature_units + ignored_units + doc_units:
+    unit = "+".join([crate] + feats.split(",")) if kind == "features" and feats else None
+    if unit in prebuild and status == "run":
+        for pkg, binary, *bfeats in prebuild[unit]:
+            rows.append(("prebuild", unit, f"{pkg}|{binary}|{','.join(bfeats) or '-'}", "run"))
+    rows.append((kind, crate, feats, status))
+print(f"config\tdoctest-per-test-timeout-s\t{budget}\t-")
+for kind, crate, feats, status in rows:
+    print(f"{kind}\t{crate}\t{feats or '-'}\t{status}")
+PY
+}
+# fixture_step RESULTS TARGET -> fixtures/units.tsv rows on stdout (RR_PRINT_PLAN=1: the build commands only).
+fixture_step() {
+"$py" -X utf8 -I - "$root" "$1" "$2" "$identity_sha" "$all" ${crates[@]+"${crates[@]}"} <<'PY'
+import datetime, hashlib, json, os, pathlib, shlex, subprocess, sys, tomllib
+
+sys.stdout.reconfigure(newline="\n")
+root, res, target, sha, sel_all, asked = (pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]),
+                                          pathlib.Path(sys.argv[3]), sys.argv[4], sys.argv[5] == "1", sys.argv[6:])
+cfg_path = root / ".config" / "oracle-fixtures.toml"
+cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {"fixture": []}
+if cfg_path.exists() and cfg.get("schema") != "hsk.studio.oracle-fixtures@1":
+    sys.exit("run-round: oracle-fixtures.toml schema must be hsk.studio.oracle-fixtures@1")
+meta = json.loads((res / "metadata.json").read_text(encoding="utf-8"))
+ids = set(meta["workspace_members"])
+members = {p["name"] for p in meta["packages"] if p["id"] in ids}
+selected = members if sel_all else set(asked)
+# RR_PRINT_PLAN=1 (--print-plan): print each needed fixture's build command; nothing is read from the corpus,
+# built or placed.
+printing = os.environ.get("RR_PRINT_PLAN") == "1"
+corpus = {} if printing else json.loads((res / "oracle-corpus.json").read_text(encoding="utf-8"))
+lib_file = {"win32": "{}.dll", "darwin": "lib{}.dylib"}.get(sys.platform, "lib{}.so")
+def tree_sha(d):
+    lines = []
+    for f in sorted((p for p in d.rglob("*") if p.is_file()), key=lambda p: p.relative_to(d).as_posix()):
+        lines.append(f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.relative_to(d).as_posix()}\n")
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+for fx in cfg.get("fixture", []):
+    fid, safe = fx["id"], fx["id"].replace("/", "+")
+    if not set(fx["needed_by"]) & selected:
+        continue
+    manifest = root / fx["manifest"]
+    tdir = target / "fixtures" / safe
+    cmd = ["cargo", "build", "--offline", "--locked", "--manifest-path", str(manifest), "--target-dir", str(tdir),
+           # Byte-reproducible library (same sha256 from any target dir, export root or profile env; --config
+           # outranks CARGO_PROFILE_* env): no debuginfo/PDB path, no incremental state, no PE timestamp.
+           "--config", "profile.dev.debug=0", "--config", 'profile.dev.strip="symbols"',
+           "--config", "profile.dev.incremental=false"]
+    if sys.platform == "win32":
+        cmd += ["--config", 'build.rustflags=["-Clink-arg=/Brepro"]']
+    if printing:
+        print(f"fixture:{fid}\t{shlex.join(cmd)}")
+        continue
+    if not corpus.get("present"):
+        print(f"fixture:{fid}\tfixture\t{fx['needed_by'][0]}\t-\tcorpus_absent\t-\t-\t-")
+        continue
+    with open(res / "fixtures" / f"{safe}.build.stdout.txt", "wb") as so, \
+            open(res / "fixtures" / f"{safe}.build.stderr.txt", "wb") as se:
+        rc = subprocess.run(cmd, stdout=so, stderr=se, stdin=subprocess.DEVNULL).returncode
+    status, dest_rel = "run", f"fixtures/{safe}"
+    if rc == 0:
+        name = lib_file.format(fx["lib"])
+        built = tdir / "debug" / name
+        data = built.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        dest = pathlib.Path(corpus["root"]) / fx["dest"]
+        rel = f"sha256/{digest}/{name}"   # content-addressed: a name never holds other bytes
+        lib_path = dest / rel
+        placed = "existing"
+        if not lib_path.is_file() or hashlib.sha256(lib_path.read_bytes()).hexdigest() != digest:
+            lib_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = lib_path.parent / f".{name}.tmp-{os.getpid()}"
+            tmp.write_bytes(data)
+            os.replace(tmp, lib_path)
+            placed = "written"
+        record = {"schema": "hsk.studio.oracle-fixture@1", "id": fid, "library": rel,
+                  "sha256": digest, "source_manifest": fx["manifest"],
+                  "source_sha256": tree_sha(manifest.parent / "src"), "round_sha": sha,
+                  "built_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        # Keep an existing MANIFEST.json that already names these exact library and source bytes (only round_sha and
+        # built_at would differ): a concurrent owner's run then never sees its bound manifest change (exit 76).
+        same = ("id", "library", "sha256", "source_manifest", "source_sha256")
+        try:
+            old_bytes = (dest / "MANIFEST.json").read_bytes()
+            old = json.loads(old_bytes)
+        except (OSError, ValueError):
+            old_bytes, old = None, None
+        if isinstance(old, dict) and old.get("schema") == record["schema"] and all(old.get(k) == record[k] for k in same):
+            record, manifest_bytes, manifest_state = old, old_bytes, "kept"
+        else:
+            manifest_bytes = (json.dumps(record, indent=1) + "\n").encode("utf-8")
+            tmp = dest / f".MANIFEST.json.tmp-{os.getpid()}"
+            tmp.write_bytes(manifest_bytes)
+            os.replace(tmp, dest / "MANIFEST.json")
+            manifest_state = "written"
+        binding = dict(record, manifest_state=manifest_state, manifest_path=f"{fx['dest']}/MANIFEST.json",
+                       manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                       library_path=f"{fx['dest']}/{rel}", placed=placed, built_from=built.as_posix())
+        (res / "fixtures" / f"{safe}.json").write_text(json.dumps(binding, indent=1) + "\n", encoding="utf-8",
+                                                       newline="\n")
+    print(f"fixture:{fid}\tfixture\t{fx['needed_by'][0]}\t-\t{status}\t{rc}\t-\t{dest_rel}")
+PY
+}
+# Unit commands: one builder per command shape, used by the run and by --print-plan (the printed plan is the argv the
+# run executes). Each sets CMD from the globals nx, locked and profile.
+fa_for() { FA=(); [ "$1" = - ] || FA=(--features "$1"); }   # FEATURES ('-' = default features) -> FA
+set_nx() { nx=(--user-config-file none --tool-config-file "run-round:$toolcfg"); }
+# nx_build_cmd FEATURES ARGS...: the unit's build (cargo nextest run --no-run).
+nx_build_cmd() {
+  fa_for "$1"; shift
+  CMD=(cargo nextest run "${nx[@]}" --no-run ${locked[@]+"${locked[@]}"} "$@" ${FA[@]+"${FA[@]}"})
+}
+# nx_list_cmd FILTER FEATURES ARGS...: the canary's test list; FILTER '' = no -E.
+nx_list_cmd() {
+  local f=$1; fa_for "$2"; shift 2
+  CMD=(cargo nextest list "${nx[@]}" --message-format oneline ${locked[@]+"${locked[@]}"} "$@" ${FA[@]+"${FA[@]}"})
+  [ -z "$f" ] || CMD+=(-E "$f")
+}
+# nx_run_cmd FILTER FEATURES ARGS...: the unit's test run; FILTER '' = no -E.
+nx_run_cmd() {
+  local f=$1; fa_for "$2"; shift 2
+  CMD=(cargo nextest run "${nx[@]}" --no-fail-fast --no-tests=warn --profile "$profile" ${locked[@]+"${locked[@]}"} "$@" ${FA[@]+"${FA[@]}"})
+  [ -z "$f" ] || CMD+=(-E "$f")
+}
+prebuild_cmd() {   # PACKAGE BIN FEATURES
+  fa_for "$3"
+  CMD=(cargo build ${locked[@]+"${locked[@]}"} -p "$1" --bin "$2" ${FA[@]+"${FA[@]}"})
+}
+doc_cmd() { CMD=(cargo test --doc "$@" -- --test-threads=1); }   # CARGO_ARGS...
+crate_gpu() { [ "$1" = hsk-studio-render-gpu ] && echo 1 || echo 0; }   # a -p CRATE unit takes the GPU test lock
+# default_selection -> DEF_SEL, DEF_FILTER, DEF_GPU (F-R47-8, header "default"): the build is --workspace for every
+# selection, so full and scoped rounds resolve dependency features over the same package set and share artifact
+# identities; a scoped selection narrows only the run (and the canary list) to its packages with a binary-level
+# package() filterset. --all: no filter (the command is unchanged).
+default_selection() {
+  local c
+  DEF_SEL=(--workspace) DEF_FILTER="" DEF_GPU=$all
+  for c in ${crates[@]+"${crates[@]}"}; do
+    DEF_FILTER+="${DEF_FILTER:+ | }package(=$c)"
+    [ "$c" != hsk-studio-render-gpu ] || DEF_GPU=1
+  done
+}
+
+if [ $print_plan -eq 1 ]; then
+  # Same selection, plan and command builders as a run; nothing is locked, built, touched or written beyond a temp dir.
+  show_cmd() {   # LABEL: LABEL<TAB>CMD, an argument quoted only when it holds other than plain characters
+    local a out=""
+    for a in "${CMD[@]}"; do
+      case $a in
+        *\'*) out+=" $(printf '%q' "$a")" ;;
+        ''|*[!A-Za-z0-9_./:=,+@%-]*) out+=" '$a'" ;;
+        *) out+=" $a" ;;
+      esac
+    done
+    printf '%s\t%s\n' "$1" "${out# }"
+  }
+  show_nextest_unit() {   # LABEL FEATURES GPU FILTER ARGS...: what nextest_unit runs
+    local label=$1 feats=$2 gpu=$3 filter=$4; shift 4
+    nx_build_cmd "$feats" "$@"; show_cmd "$label build"
+    if [ $canary -eq 1 ]; then
+      nx_list_cmd "$filter" "$feats" "$@"; show_cmd "$label list"
+      filter="<first listed test of every package in the list>"
+    fi
+    nx_run_cmd "$filter" "$feats" "$@"
+    show_cmd "$label run$([ "$gpu" = 1 ] && echo ' [gpu test lock]')"
+  }
+  locked=(); [ $dev -eq 1 ] || locked=(--locked)
+  profile=default; [ $canary -eq 0 ] || profile=canary
+  toolcfg="<results>/nextest-store.toml"; set_nx
+  identity_sha=""
+  ptmp=$(mktemp -d) || die "mktemp -d failed"
+  trap 'rm -rf "$ptmp"' EXIT
+  (cd "$root" && cargo metadata --no-deps --offline --format-version 1 ${locked[@]+"${locked[@]}"}) \
+    >"$ptmp/metadata.json" 2>"$ptmp/metadata.stderr.txt" || { cat "$ptmp/metadata.stderr.txt" >&2; die "cargo metadata --no-deps failed"; }
+  plan_units "$ptmp/metadata.json" >"$ptmp/units.plan.tsv" || die "selection or .config/round-features.toml invalid (see above)"
+  printf '# run-round --print-plan: selection %s; %s; profile %s; <results>/<target> = the run'"'"'s dirs\n' \
+    "$([ $all -eq 1 ] && echo --all || echo "${crates[*]}")" "$([ $dev -eq 1 ] && echo dev || echo export)" "$profile"
+  RR_PRINT_PLAN=1 fixture_step "$ptmp" "<target>" || die "oracle fixture plan failed"
+  default_selection
+  show_nextest_unit default - "$DEF_GPU" "$DEF_FILTER" "${DEF_SEL[@]}"
+  while IFS=$'\t' read -r kind crate feats status; do
+    status=${status%$'\r'}
+    if [ "$kind" = config ]; then printf 'config\t%s = %s\n' "$crate" "$feats"; continue; fi
+    if [ "$kind" = prebuild ]; then
+      IFS='|' read -r pb_pkg pb_bin pb_feats <<<"$feats"
+      prebuild_cmd "$pb_pkg" "$pb_bin" "$pb_feats"; show_cmd "prebuild:$crate:$pb_bin"
+      continue
+    fi
+    name=$crate; [ "$feats" = - ] || name="$crate+${feats//,/+}"
+    if [ "$status" != run ]; then printf '%s:%s\t(%s: recorded, not run)\n' "$kind" "$name" "$status"; continue; fi
+    case $kind in
+      features) show_nextest_unit "features:$name" "$feats" "$(crate_gpu "$crate")" "" -p "$crate" ;;
+      ignored)
+        if [ $canary -eq 1 ]; then nx_build_cmd "$feats" -p "$crate" --run-ignored only; show_cmd "ignored:$name build (canary: no run)"
+        else show_nextest_unit "ignored:$name" "$feats" "$(crate_gpu "$crate")" "" -p "$crate" --run-ignored only; fi ;;
+      *) fa_for "$feats"; doc_cmd ${locked[@]+"${locked[@]}"} -p "$crate" ${FA[@]+"${FA[@]}"}; show_cmd "doctest:$name" ;;
+    esac
+  done <"$ptmp/units.plan.tsv"
+  exit 0
+fi
+
 target=$(abspath "$target")
 results=$(abspath "$results")
 # Disk-wide build lock (tools/disk-build-lock.sh). The round holds it for its whole run, so its cargo calls (and the
@@ -277,7 +571,7 @@ mkdir -p "$TMP"
 # target) or under the owner on the sole root (SSD target, CX-984-014).
 toolcfg="$results/nextest-store.toml"
 printf '[store]\ndir = "%s"\n' "$store_dir" >"$toolcfg"
-nx=(--user-config-file none --tool-config-file "run-round:$toolcfg")
+set_nx
 cd "$root"
 
 if [ $dev -eq 0 ]; then
@@ -376,93 +670,7 @@ esac
 cargo metadata --no-deps --offline --format-version 1 ${locked[@]+"${locked[@]}"} >"$results/metadata.json" 2>"$results/metadata.stderr.txt" \
   || die "cargo metadata --no-deps failed (metadata.stderr.txt)"
 plan="$results/units.plan.tsv"
-"$py" -X utf8 -I - "$results/metadata.json" "$root/.config/round-features.toml" "$all" ${crates[@]+"${crates[@]}"} >"$plan" <<'PY' \
-  || die "selection or .config/round-features.toml invalid (see above)"
-import json, pathlib, sys, tomllib
-
-sys.stdout.reconfigure(newline="\n")  # Windows text mode would end rows with CR (status "run\r")
-meta = json.load(open(sys.argv[1], encoding="utf-8"))
-matrix_path, sel_all, asked = pathlib.Path(sys.argv[2]), sys.argv[3] == "1", sys.argv[4:]
-ids = set(meta["workspace_members"])
-members = {p["name"]: p for p in meta["packages"] if p["id"] in ids}
-unknown = [c for c in asked if c not in members]
-if unknown:
-    sys.exit("run-round: not workspace members: " + " ".join(unknown))
-selected = sorted(members) if sel_all else list(dict.fromkeys(asked))
-if not matrix_path.exists():
-    sys.exit("run-round: .config/round-features.toml missing")
-doc = tomllib.loads(matrix_path.read_text(encoding="utf-8"))
-if doc.get("schema") != "hsk.studio.round-features@2":
-    sys.exit("run-round: round-features.toml schema must be hsk.studio.round-features@2")
-budget = doc.get("doctest", {}).get("per-test-timeout-s")
-if not (isinstance(budget, int) and not isinstance(budget, bool) and 1 <= budget <= 3600):
-    sys.exit("run-round: round-features.toml [doctest] per-test-timeout-s must be an integer 1..3600")
-matrix = {}
-for crate, sets in doc.get("crates", {}).items():
-    ok = isinstance(sets, list) and all(
-        isinstance(s, list) and s and all(isinstance(f, str) and f and "," not in f for f in s) for s in sets)
-    if not ok:
-        sys.exit(f"run-round: round-features.toml {crate}: expected a list of non-empty feature-name lists")
-    matrix[crate] = [sorted(set(s)) for s in sets]
-LIB = {"lib", "rlib", "dylib", "proc-macro"}
-feature_units, doc_units = [], []
-for crate in sorted(c for c in matrix if c not in members):
-    for s in matrix[crate]:
-        feature_units.append(("features", crate, ",".join(s), "crate_absent"))
-for crate in selected:
-    pkg = members[crate]
-    has_doc = any(LIB & set(t["kind"]) and t.get("doctest", True) for t in pkg["targets"])
-    for s in [[]] + matrix.get(crate, []):
-        missing = [f for f in s if f not in pkg.get("features", {})]
-        status = "feature_absent:" + ",".join(missing) if missing else "run"
-        if s:
-            feature_units.append(("features", crate, ",".join(s), status))
-        doc_units.append(("doctest", crate, ",".join(s), status if status != "run" or has_doc else "no_doctest_lib"))
-# [ignored]: (crate, feature set) units that run only the crate's #[ignore]d tests; an empty set = default features.
-ignored = {}
-for crate, sets in doc.get("ignored", {}).items():
-    ok = isinstance(sets, list) and sets and all(
-        isinstance(s, list) and all(isinstance(f, str) and f and "," not in f for f in s) for s in sets)
-    if not ok:
-        sys.exit(f"run-round: round-features.toml [ignored] {crate}: expected a list of feature-name lists")
-    ignored[crate] = [sorted(set(s)) for s in sets]
-ignored_units = []
-for crate in sorted(ignored):
-    if crate not in members:
-        ignored_units += [("ignored", crate, ",".join(s), "crate_absent") for s in ignored[crate]]
-    elif crate in selected:
-        for s in ignored[crate]:
-            missing = [f for f in s if f not in members[crate].get("features", {})]
-            ignored_units.append(("ignored", crate, ",".join(s), "feature_absent:" + ",".join(missing) if missing else "run"))
-# [prebuild]: "CRATE+F1+F2" (a declared features unit) = [[package, bin, feature...], ...]: worker binaries that
-# unit's tests spawn from <target>/debug (F-R32-2); built from the candidate into the run's own target right before
-# that unit (a prebuild row precedes it; a failed prebuild is that unit's build failure).
-prebuild = {}
-for unit, specs in doc.get("prebuild", {}).items():
-    ok = isinstance(specs, list) and specs and all(
-        isinstance(s, list) and len(s) >= 2 and all(isinstance(x, str) and x and "," not in x and "|" not in x for x in s)
-        for s in specs)
-    if not ok:
-        sys.exit(f"run-round: round-features.toml [prebuild] {unit}: expected a list of [package, bin, feature...] lists")
-    prebuild[unit] = specs
-# Keys are checked against the whole declared [crates] table (a typo is refused for every selection); rows are emitted
-# below only for units of the current plan, so a scoped selection without the unit's crate builds no worker (R39
-# scoped render-gpu re-run was refused here when the check used the selection's units).
-declared = {"+".join([c] + s) for c, sets in matrix.items() for s in sets}
-for unit in prebuild:
-    if unit not in declared:
-        sys.exit(f"run-round: round-features.toml [prebuild] {unit}: not a declared [crates] features unit")
-rows = []
-for kind, crate, feats, status in feature_units + ignored_units + doc_units:
-    unit = "+".join([crate] + feats.split(",")) if kind == "features" and feats else None
-    if unit in prebuild and status == "run":
-        for pkg, binary, *bfeats in prebuild[unit]:
-            rows.append(("prebuild", unit, f"{pkg}|{binary}|{','.join(bfeats) or '-'}", "run"))
-    rows.append((kind, crate, feats, status))
-print(f"config\tdoctest-per-test-timeout-s\t{budget}\t-")
-for kind, crate, feats, status in rows:
-    print(f"{kind}\t{crate}\t{feats or '-'}\t{status}")
-PY
+plan_units "$results/metadata.json" >"$plan" || die "selection or .config/round-features.toml invalid (see above)"
 
 # Oracle corpus: resolve the commit-free root as tests do (.config/oracle-corpus.toml): `corpus_json resolve` before
 # the fixtures (root only), `corpus_json bind` after they are placed, so the bound content (oracle-corpus.json +
@@ -516,35 +724,40 @@ profile=default
 units="$results/units.tsv"   # unit kind crate features status build_exit run_exit dir ('-' = none)
 : >"$units"
 rec() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >>"$units"; }
-canary_filter() {   # first listed test of every package in list file $1
-  awk '{ split($1, b, "::"); if (!(b[1] in seen)) { seen[b[1]] = 1;
+# canary_filter LIST [FILTER]: first listed test of every package in list file LIST; a package(=NAME) FILTER (the
+# default unit's scoped selection) also drops any listed package it does not name.
+canary_filter() {
+  awk -v only="${2:-}" 'BEGIN { s = only; while (match(s, /package\(=[^)]*\)/)) {
+        keep[substr(s, RSTART + 9, RLENGTH - 10)] = 1; scoped = 1; s = substr(s, RSTART + RLENGTH) } }
+    { split($1, b, "::"); if (scoped && !(b[1] in keep)) next; if (!(b[1] in seen)) { seen[b[1]] = 1;
       printf "%s(binary_id(=%s) & test(=%s))", (n++ ? " | " : ""), $1, $2 } }' "$1"
 }
-# nextest_unit DIR FEATURES SELECTION... -> U_BUILD, U_RUN ('-' when not run), U_FILTER
+# nextest_unit DIR FEATURES GPU FILTER ARGS... -> U_BUILD, U_RUN ('-' when not run), U_FILTER (canary first-test filter)
+# GPU 1: the run step holds the GPU test lock. FILTER: the unit's package filterset ('' = none; default_selection),
+# applied to the canary list and the run; the canary's first-test filter (selected packages only) replaces it there.
 nextest_unit() {
-  local d=$1 feats=$2; shift 2
-  local fa=() le run
-  [ "$feats" != - ] && fa=(--features "$feats")
+  local d=$1 feats=$2 gpu=$3 filter=$4 le; shift 4
   U_RUN=- U_FILTER=""
   mkdir -p "$d"
-  cargo nextest run "${nx[@]}" --no-run ${locked[@]+"${locked[@]}"} "$@" ${fa[@]+"${fa[@]}"} >"$d/build.stdout.txt" 2>"$d/build.stderr.txt"
+  nx_build_cmd "$feats" "$@"
+  "${CMD[@]}" >"$d/build.stdout.txt" 2>"$d/build.stderr.txt"
   U_BUILD=$?
   if [ $U_BUILD -eq 0 ] && [ $canary -eq 1 ]; then
-    cargo nextest list "${nx[@]}" --message-format oneline ${locked[@]+"${locked[@]}"} "$@" ${fa[@]+"${fa[@]}"} >"$d/list.txt" 2>"$d/list.stderr.txt"
+    nx_list_cmd "$filter" "$feats" "$@"
+    "${CMD[@]}" >"$d/list.txt" 2>"$d/list.stderr.txt"
     le=$?
-    U_FILTER=$(canary_filter "$d/list.txt")
+    U_FILTER=$(canary_filter "$d/list.txt" "$filter")
     printf '%s\n' "$U_FILTER" >"$d/canary-filter.txt"
     if [ $le -ne 0 ]; then U_BUILD=$le; elif [ -z "$U_FILTER" ]; then U_BUILD=3; fi
   fi
   if [ $U_BUILD -eq 0 ]; then
-    run=(cargo nextest run "${nx[@]}" --no-fail-fast --no-tests=warn --profile "$profile" ${locked[@]+"${locked[@]}"} "$@" ${fa[@]+"${fa[@]}"})
-    [ -n "$U_FILTER" ] && run+=(-E "$U_FILTER")
+    nx_run_cmd "${U_FILTER:-$filter}" "$feats" "$@"
     rm -f "$store_dir/$profile/junit.xml"
-    case " $* " in
-      *" --workspace "*|*" hsk-studio-render-gpu "*)
-        dbl_gpu_run "$gpu_root" round "$lock_owner" "gpu tests: $lock_label" "${run[@]}" >"$d/run.stdout.txt" 2>"$d/run.stderr.txt" ;;
-      *) "${run[@]}" >"$d/run.stdout.txt" 2>"$d/run.stderr.txt" ;;
-    esac
+    if [ "$gpu" = 1 ]; then
+      dbl_gpu_run "$gpu_root" round "$lock_owner" "gpu tests: $lock_label" "${CMD[@]}" >"$d/run.stdout.txt" 2>"$d/run.stderr.txt"
+    else
+      "${CMD[@]}" >"$d/run.stdout.txt" 2>"$d/run.stderr.txt"
+    fi
     U_RUN=$?
     [ -f "$store_dir/$profile/junit.xml" ] && cp "$store_dir/$profile/junit.xml" "$d/junit.xml"
   fi
@@ -568,7 +781,8 @@ kill_tree() {
 doctest_unit() {
   local out=$1 err=$2 pid last pend="" since=0 now t; shift 2
   D_TIMEOUT=""
-  cargo test --doc "$@" -- --test-threads=1 >"$out" 2>"$err" &
+  doc_cmd "$@"
+  "${CMD[@]}" >"$out" 2>"$err" &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     sleep 1
@@ -597,7 +811,7 @@ doctest_unit() {
   return 0
 }
 
-if [ $all -eq 1 ]; then sel=(--workspace); else sel=(); for c in "${crates[@]}"; do sel+=(-p "$c"); done; fi
+default_selection
 doctest_budget=$(awk -F'\t' '$1 == "config" && $2 == "doctest-per-test-timeout-s" { print $3 }' "$plan")
 # Disk-wide build lock (class round = queue priority): held for every cargo unit (fixture, default, feature, doctest);
 # between units, once the round has held it for STUDIO_DISK_BUILD_LOCK_ROUND_SLICE_S (default 300) s, it yields
@@ -631,95 +845,12 @@ lock_unit
 # them via the corpus convention. fixtures/<id>.json binds library path, sha256 and MANIFEST.json sha256; the corpus
 # is hashed after placement, and both are re-verified after the units (fixture_binding; changed = exit 76).
 mkdir -p "$results/fixtures"
-"$py" -X utf8 -I - "$root" "$results" "$target" "$identity_sha" "$all" ${crates[@]+"${crates[@]}"} \
-  >"$results/fixtures/units.tsv" 2>"$results/fixtures/step.stderr.txt" <<'PY'
-import datetime, hashlib, json, os, pathlib, subprocess, sys, tomllib
-
-sys.stdout.reconfigure(newline="\n")
-root, res, target, sha, sel_all, asked = (pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]),
-                                          pathlib.Path(sys.argv[3]), sys.argv[4], sys.argv[5] == "1", sys.argv[6:])
-cfg_path = root / ".config" / "oracle-fixtures.toml"
-cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {"fixture": []}
-if cfg_path.exists() and cfg.get("schema") != "hsk.studio.oracle-fixtures@1":
-    sys.exit("run-round: oracle-fixtures.toml schema must be hsk.studio.oracle-fixtures@1")
-meta = json.loads((res / "metadata.json").read_text(encoding="utf-8"))
-ids = set(meta["workspace_members"])
-members = {p["name"] for p in meta["packages"] if p["id"] in ids}
-selected = members if sel_all else set(asked)
-corpus = json.loads((res / "oracle-corpus.json").read_text(encoding="utf-8"))
-lib_file = {"win32": "{}.dll", "darwin": "lib{}.dylib"}.get(sys.platform, "lib{}.so")
-def tree_sha(d):
-    lines = []
-    for f in sorted((p for p in d.rglob("*") if p.is_file()), key=lambda p: p.relative_to(d).as_posix()):
-        lines.append(f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.relative_to(d).as_posix()}\n")
-    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
-for fx in cfg.get("fixture", []):
-    fid, safe = fx["id"], fx["id"].replace("/", "+")
-    if not set(fx["needed_by"]) & selected:
-        continue
-    if not corpus.get("present"):
-        print(f"fixture:{fid}\tfixture\t{fx['needed_by'][0]}\t-\tcorpus_absent\t-\t-\t-")
-        continue
-    manifest = root / fx["manifest"]
-    tdir = target / "fixtures" / safe
-    cmd = ["cargo", "build", "--offline", "--locked", "--manifest-path", str(manifest), "--target-dir", str(tdir),
-           # Byte-reproducible library (same sha256 from any target dir, export root or profile env; --config
-           # outranks CARGO_PROFILE_* env): no debuginfo/PDB path, no incremental state, no PE timestamp.
-           "--config", "profile.dev.debug=0", "--config", 'profile.dev.strip="symbols"',
-           "--config", "profile.dev.incremental=false"]
-    if sys.platform == "win32":
-        cmd += ["--config", 'build.rustflags=["-Clink-arg=/Brepro"]']
-    with open(res / "fixtures" / f"{safe}.build.stdout.txt", "wb") as so, \
-            open(res / "fixtures" / f"{safe}.build.stderr.txt", "wb") as se:
-        rc = subprocess.run(cmd, stdout=so, stderr=se, stdin=subprocess.DEVNULL).returncode
-    status, dest_rel = "run", f"fixtures/{safe}"
-    if rc == 0:
-        name = lib_file.format(fx["lib"])
-        built = tdir / "debug" / name
-        data = built.read_bytes()
-        digest = hashlib.sha256(data).hexdigest()
-        dest = pathlib.Path(corpus["root"]) / fx["dest"]
-        rel = f"sha256/{digest}/{name}"   # content-addressed: a name never holds other bytes
-        lib_path = dest / rel
-        placed = "existing"
-        if not lib_path.is_file() or hashlib.sha256(lib_path.read_bytes()).hexdigest() != digest:
-            lib_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = lib_path.parent / f".{name}.tmp-{os.getpid()}"
-            tmp.write_bytes(data)
-            os.replace(tmp, lib_path)
-            placed = "written"
-        record = {"schema": "hsk.studio.oracle-fixture@1", "id": fid, "library": rel,
-                  "sha256": digest, "source_manifest": fx["manifest"],
-                  "source_sha256": tree_sha(manifest.parent / "src"), "round_sha": sha,
-                  "built_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
-        # Keep an existing MANIFEST.json that already names these exact library and source bytes (only round_sha and
-        # built_at would differ): a concurrent owner's run then never sees its bound manifest change (exit 76).
-        same = ("id", "library", "sha256", "source_manifest", "source_sha256")
-        try:
-            old_bytes = (dest / "MANIFEST.json").read_bytes()
-            old = json.loads(old_bytes)
-        except (OSError, ValueError):
-            old_bytes, old = None, None
-        if isinstance(old, dict) and old.get("schema") == record["schema"] and all(old.get(k) == record[k] for k in same):
-            record, manifest_bytes, manifest_state = old, old_bytes, "kept"
-        else:
-            manifest_bytes = (json.dumps(record, indent=1) + "\n").encode("utf-8")
-            tmp = dest / f".MANIFEST.json.tmp-{os.getpid()}"
-            tmp.write_bytes(manifest_bytes)
-            os.replace(tmp, dest / "MANIFEST.json")
-            manifest_state = "written"
-        binding = dict(record, manifest_state=manifest_state, manifest_path=f"{fx['dest']}/MANIFEST.json",
-                       manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
-                       library_path=f"{fx['dest']}/{rel}", placed=placed, built_from=built.as_posix())
-        (res / "fixtures" / f"{safe}.json").write_text(json.dumps(binding, indent=1) + "\n", encoding="utf-8",
-                                                       newline="\n")
-    print(f"fixture:{fid}\tfixture\t{fx['needed_by'][0]}\t-\t{status}\t{rc}\t-\t{dest_rel}")
-PY
+fixture_step "$results" "$target" >"$results/fixtures/units.tsv" 2>"$results/fixtures/step.stderr.txt"
 [ $? -eq 0 ] || { reason="oracle fixture step failed (fixtures/step.stderr.txt)"; cat "$results/fixtures/step.stderr.txt" >&2; exit 2; }
 unlock_unit
 corpus_json bind   # after placement: binds the corpus the tests will load
 lock_unit
-nextest_unit "$results" - "${sel[@]}"
+nextest_unit "$results" - "$DEF_GPU" "$DEF_FILTER" "${DEF_SEL[@]}"
 unlock_unit
 rec default nextest '*' - run "$U_BUILD" "$U_RUN" .
 cat "$results/fixtures/units.tsv" >>"$units"
@@ -733,11 +864,10 @@ while IFS=$'\t' read -r kind crate feats status; do
     # [prebuild] (F-R32-2): a worker binary the next features unit ($crate = its unit name) spawns from
     # <target>/debug, built from this candidate into this run's target; a failure fails that unit's build.
     IFS='|' read -r pb_pkg pb_bin pb_feats <<<"$feats"
-    pfa=(); [ "$pb_feats" != - ] && pfa=(--features "$pb_feats")
+    prebuild_cmd "$pb_pkg" "$pb_bin" "$pb_feats"
     mkdir -p "$results/prebuild"
     lock_unit
-    cargo build ${locked[@]+"${locked[@]}"} -p "$pb_pkg" --bin "$pb_bin" ${pfa[@]+"${pfa[@]}"} \
-      >"$results/prebuild/$crate+$pb_bin.stdout.txt" 2>"$results/prebuild/$crate+$pb_bin.stderr.txt"
+    "${CMD[@]}" >"$results/prebuild/$crate+$pb_bin.stdout.txt" 2>"$results/prebuild/$crate+$pb_bin.stderr.txt"
     pb_rc=$?
     unlock_unit
     rec "prebuild:$crate:$pb_bin" build "$pb_pkg" "$pb_feats" run "$pb_rc" - "prebuild/$crate+$pb_bin"
@@ -752,29 +882,28 @@ while IFS=$'\t' read -r kind crate feats status; do
     rec "features:$name" nextest "$crate" "$feats" run "${prebuild_fail[$name]}" - "features/$name"
   elif [ "$kind" = features ]; then
     lock_unit
-    nextest_unit "$results/features/$name" "$feats" -p "$crate"
+    nextest_unit "$results/features/$name" "$feats" "$(crate_gpu "$crate")" "" -p "$crate"
     unlock_unit
     rec "features:$name" nextest "$crate" "$feats" run "$U_BUILD" "$U_RUN" "features/$name"
   elif [ "$kind" = ignored ] && [ $canary -eq 1 ]; then
     # Canary: corpus sweeps exceed the canary profile's 30 s cap by design; build them (no run).
-    fa=(); [ "$feats" != - ] && fa=(--features "$feats")
+    nx_build_cmd "$feats" -p "$crate" --run-ignored only
     mkdir -p "$results/ignored/$name"
     lock_unit
-    cargo nextest run "${nx[@]}" --no-run ${locked[@]+"${locked[@]}"} -p "$crate" --run-ignored only ${fa[@]+"${fa[@]}"} \
-      >"$results/ignored/$name/build.stdout.txt" 2>"$results/ignored/$name/build.stderr.txt"
+    "${CMD[@]}" >"$results/ignored/$name/build.stdout.txt" 2>"$results/ignored/$name/build.stderr.txt"
     b=$?
     unlock_unit
     rec "ignored:$name" nextest "$crate" "$feats" run "$b" - "ignored/$name"
   elif [ "$kind" = ignored ]; then
     lock_unit
-    nextest_unit "$results/ignored/$name" "$feats" -p "$crate" --run-ignored only
+    nextest_unit "$results/ignored/$name" "$feats" "$(crate_gpu "$crate")" "" -p "$crate" --run-ignored only
     unlock_unit
     rec "ignored:$name" nextest "$crate" "$feats" run "$U_BUILD" "$U_RUN" "ignored/$name"
   else
-    fa=(); [ "$feats" != - ] && fa=(--features "$feats")
+    fa_for "$feats"
     lock_unit
     doctest_unit "$results/doctest/$name.stdout.txt" "$results/doctest/$name.stderr.txt" \
-      ${locked[@]+"${locked[@]}"} -p "$crate" ${fa[@]+"${fa[@]}"}
+      ${locked[@]+"${locked[@]}"} -p "$crate" ${FA[@]+"${FA[@]}"}
     unlock_unit
     # A library that does not compile is a build failure; anything else is the doctest run's verdict.
     if [ $D_EXIT -ne 0 ] && [ -z "$D_TIMEOUT" ] && grep -q '^error: could not compile' "$results/doctest/$name.stderr.txt"; then
