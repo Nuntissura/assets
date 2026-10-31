@@ -23,7 +23,12 @@
 //!   calling thread headless, the UI thread in the window, at most [`FRAMES_PER_POLL`] per drawn
 //!   frame); compositing, conversion, encoding and muxing run on the worker.
 //! - **Sound** comes from the port given to [`Viewer::set_export_audio`] (the same `AudioSources`
-//!   kind the mixer plays; the mixer keeps its own port inside its stream builder). An export is
+//!   kind the mixer plays; the mixer keeps its own port inside its stream builder). The root mix is
+//!   the stream the mixer plays (R44 F-R44-3, `timeline_export` module docs "root mix"): with the
+//!   document's stored routing (clip gain and pan envelopes, track and master automation, bus
+//!   routes, sends, bus and master effects) or a submix track, the export renders pulse's
+//!   `TimelineBusStream` built as `Viewer::bus_stream` builds it, so the file holds what the mixer
+//!   plays (`tests/viewer_timeline_export_bus.rs`); without them the plain timeline mix. An export is
 //!   never silent in place of sound: without a port, a sequence whose enabled audio tracks (nested
 //!   ones included) hold an enabled media clip is refused `audio_sources_missing` naming the clip;
 //!   with a port that lacks a clip's sound, pulse refuses the mix (`mixdown`, or `nest_unresolved`

@@ -18,6 +18,18 @@
 //! (lane SMB-PR-NEST-1). A nested clip never exports black or silent: a nested sequence the document
 //! does not hold or whose sound cannot be rendered refuses the job `nest_unresolved`, an inner frame
 //! the source cannot give fails the export (`export-frame-unavailable`).
+//!
+//! Root mix (R44 finding F-R44-3, lane SMB-R44-FOLLOWUPS-1): when the [`NestedDocument`]'s routing set holds a
+//! routing for the exported sequence other than `StudioAudioRouting::new` (clip gain or pan envelopes, track or
+//! master automation, bus routes, sends, bus or master effects, a master volume), or the sequence has a submix
+//! track, the root mix is pulse's [`TimelineBusStream`] built exactly as `Viewer::bus_stream` builds the stream
+//! the mixer plays (`NestedAudioSources::with_routing` over the job's sources, `NestedExtents`,
+//! `audio_session::build_bus_stream` with the bus effect factory), so the file holds what the mixer plays. In a
+//! build without feature `audio-batch` the bus and master effects cannot be built: an effect refuses the job
+//! `mixdown` (`audio_unsupported`), never an export without it. Otherwise (no routing to apply) the root mix is
+//! pulse's `TimelineMixStream`, as before. Tests: `tests/viewer_timeline_export_bus.rs` (the export equals the
+//! bus stream within 1e-6; the plain mix differs), `tests/viewer_timeline_nest_2.rs` (nested export with moved
+//! envelopes equals the pre-nest bus mix).
 #![deny(clippy::arithmetic_side_effects)]
 
 /// Render queue from compositions (lane SMB-AE-MOTION-TOOLS slice 4).
@@ -27,8 +39,9 @@ pub mod render_queue;
 
 use super::monitor::{DropPolicy, FrameSource, MonitorFail, ProgramMonitor};
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND, Ticks};
-use hsk_studio_folio::{StudioAudioRoutingSet, StudioSequence};
-use hsk_studio_pulse::{AudioSources, NestedAudioSources, NestedExtents, SourceExtents, StreamLimits, TimelineMixStream};
+use hsk_studio_folio::{StudioAudioRouting, StudioAudioRoutingSet, StudioSequence, TrackKind};
+use hsk_studio_pulse::{AudioSources, NestedAudioSources, NestedExtents, SourceExtents, StreamLimits, TimelineBusStream, TimelineMixStream};
+use std::sync::Arc;
 use hsk_studio_reel::{
     ChromaFormat, ColorInfo, ColorOrigin, ExportAudioSource, ExportJob, ExportLimits, ExportRecipe,
     ExportVideoSource, ReelError, SourceSpan, VideoFormat,
@@ -177,9 +190,70 @@ impl<S: FrameSource + Send, E: SourceExtents + Send> ExportVideoSource for Timel
     }
 }
 
+/// The root mix of an export (module docs: root mix).
+enum RootMix<S: AudioSources> {
+    Plain(TimelineMixStream<S>),
+    Bus(Box<TimelineBusStream>),
+}
+
+impl<S: AudioSources> RootMix<S> {
+    fn position(&self) -> u64 {
+        match self {
+            Self::Plain(m) => m.position(),
+            Self::Bus(m) => m.position(),
+        }
+    }
+    fn seek(&mut self, at: u64, cancel: &CancellationToken) -> Result<(), hsk_studio_pulse::PulseError> {
+        match self {
+            Self::Plain(m) => {
+                m.seek(at);
+                Ok(())
+            }
+            Self::Bus(m) => m.seek(at, cancel),
+        }
+    }
+    fn render(&mut self, left: &mut [f32], right: &mut [f32], cancel: &CancellationToken) -> Result<(), hsk_studio_pulse::PulseError> {
+        match self {
+            Self::Plain(m) => m.render(left, right, cancel),
+            Self::Bus(m) => m.render(left, right, cancel),
+        }
+    }
+}
+
+/// The job's sources shared between the bus stream's strips (`TimelineBusStream` clones its sources).
+struct SharedSources<S>(Arc<S>);
+impl<S> Clone for SharedSources<S> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+impl<S: AudioSources> AudioSources for SharedSources<S> {
+    fn audio(&self, source: &hsk_studio_folio::ClipSource) -> Option<&[Vec<f32>]> {
+        self.0.audio(source)
+    }
+}
+
+/// The routing the root mix must apply (module docs: root mix): `Some` when the routing set holds a non-default
+/// routing for `sequence` or the sequence has a submix track.
+fn root_routing(sequence: &StudioSequence, set: &StudioAudioRoutingSet) -> Option<StudioAudioRouting> {
+    let default = StudioAudioRouting::new(sequence.sequence_id.as_str());
+    let stored = set.routings.iter().find(|r| r.sequence_id == sequence.sequence_id);
+    let submix = sequence.tracks.iter().any(|t| t.kind == TrackKind::Submix);
+    match stored {
+        Some(r) if *r != default => Some(r.clone()),
+        _ if submix => Some(default),
+        _ => None,
+    }
+}
+
+/// Boxes a root mix of `frames` samples from `start` as the job's audio source.
+fn audio_source<S: AudioSources + Send + 'static>(mix: RootMix<S>, start: u64, frames: u64, rate: u32, block: usize) -> Box<dyn ExportAudioSource> {
+    Box::new(TimelineAudio { mix, start, frames, rate, block, left: Vec::new(), right: Vec::new() })
+}
+
 /// Score mixdown of `[in, out)` (stereo) as an export audio source.
 pub struct TimelineAudio<S: AudioSources> {
-    mix: TimelineMixStream<S>,
+    mix: RootMix<S>,
     start: u64,
     frames: u64,
     rate: u32,
@@ -210,7 +284,10 @@ impl<S: AudioSources + Send> ExportAudioSource for TimelineAudio<S> {
             .checked_add(first)
             .ok_or(ReelError::LimitExceeded { what: "tick-range" })?;
         if self.mix.position() != at {
-            self.mix.seek(at);
+            self.mix.seek(at, cancel).map_err(|e| match e {
+                hsk_studio_pulse::PulseError::Canceled => ReelError::Canceled,
+                _ => ReelError::Unsupported { what: "export-mixdown-failed" },
+            })?;
         }
         let mut left = u64::from(frames);
         while left > 0 {
@@ -284,7 +361,7 @@ pub fn timeline_export_job<VS, AS, E>(
 ) -> Result<ExportJob, MonitorFail>
 where
     VS: FrameSource + Send + 'static,
-    AS: AudioSources + Send + 'static,
+    AS: AudioSources + Send + Sync + 'static,
     E: SourceExtents + Send + 'static,
 {
     timeline_export_job_with(t, NestedDocument::none(), cancel)
@@ -293,7 +370,9 @@ where
 /// [`timeline_export_job`] resolving nested sequence clips against `nested` (lane SMB-PR-NEST-2; module
 /// docs). Further refusals: `nest_unresolved` for an enabled nested clip whose sequence `nested` does not
 /// hold (every one when `nested` holds no sequence), or whose sound pulse cannot render (an inner source
-/// missing, a cycle, a refused envelope), naming the nested sequence and its clips.
+/// missing, a cycle, a refused envelope), naming the nested sequence and its clips. The root mix follows the
+/// module docs (root mix): with routing to apply it is the bus stream the mixer plays (R44 F-R44-3; sources are
+/// shared between its strips, hence `AS: Sync`), and a bus stream pulse refuses is `mixdown`.
 pub fn timeline_export_job_with<VS, AS, E>(
     t: TimelineExport<VS, AS, E>,
     nested: NestedDocument,
@@ -301,7 +380,7 @@ pub fn timeline_export_job_with<VS, AS, E>(
 ) -> Result<ExportJob, MonitorFail>
 where
     VS: FrameSource + Send + 'static,
-    AS: AudioSources + Send + 'static,
+    AS: AudioSources + Send + Sync + 'static,
     E: SourceExtents + Send + 'static,
 {
     let tpf = t.sequence.frame_rate.ticks_per_frame;
@@ -376,26 +455,39 @@ where
                 .unwrap_or(0);
             let end = u64::try_from(end_samples).map_err(|_| fail("export_range", "overflow"))?;
             let block = 4800usize;
-            if nested.sequences.is_empty() {
-                let mix = TimelineMixStream::new(
+            let frames = end.saturating_sub(start);
+            if let Some(routing) = root_routing(&t.sequence, &nested.routing) {
+                // R44 F-R44-3: the stream the mixer plays (`Viewer::bus_stream`'s composition).
+                let inner = NestedAudioSources::with_routing(
+                    &nested.sequences,
                     &t.sequence,
+                    SharedSources(Arc::new(sources)),
+                    &nested.routing,
                     rate,
                     block,
-                    sources,
                     &t.audio_extents,
                     StreamLimits::default(),
                     cancel,
                 )
                 .map_err(|e| fail("mixdown", e.code()))?;
-                Some(Box::new(TimelineAudio {
-                    mix,
-                    start,
-                    frames: end.saturating_sub(start),
-                    rate,
-                    block,
-                    left: Vec::new(),
-                    right: Vec::new(),
-                }))
+                if let Some(r) = inner.reports().first() {
+                    return Err(fail("nest_unresolved", format!("{:?}: nested sequence {} audio ({})", r.clip_ids, r.sequence_id, r.code)));
+                }
+                let extents = NestedExtents::new(&nested.sequences, &t.audio_extents);
+                #[cfg(feature = "audio-batch")]
+                let bus = super::audio_session::build_bus_stream(&t.sequence, &routing, rate, block, inner, &extents, cancel);
+                #[cfg(not(feature = "audio-batch"))]
+                let bus = {
+                    // No score effect builder in this build: an effect refuses the stream.
+                    let factory: &mut hsk_studio_pulse::EffectFactory<'_> = &mut |_, _| Err(hsk_studio_pulse::PulseError::AudioUnsupported);
+                    TimelineBusStream::new(&t.sequence, &routing, rate, block, inner, &extents, StreamLimits::default(), factory, cancel)
+                };
+                let bus = bus.map_err(|e| fail("mixdown", e.code()))?;
+                Some(audio_source::<AS>(RootMix::Bus(Box::new(bus)), start, frames, rate, block))
+            } else if nested.sequences.is_empty() {
+                let mix = TimelineMixStream::new(&t.sequence, rate, block, sources, &t.audio_extents, StreamLimits::default(), cancel)
+                    .map_err(|e| fail("mixdown", e.code()))?;
+                Some(audio_source(RootMix::Plain(mix), start, frames, rate, block))
             } else {
                 // Lane SMB-PR-NEST-2: nested sequence clips play their nested mix (with its clip
                 // envelopes); one that cannot be rendered refuses the job instead of exporting silence.
@@ -417,15 +509,7 @@ where
                 let extents = NestedExtents::new(&nested.sequences, &t.audio_extents);
                 let mix = TimelineMixStream::new(&t.sequence, rate, block, sources, &extents, StreamLimits::default(), cancel)
                     .map_err(|e| fail("mixdown", e.code()))?;
-                Some(Box::new(TimelineAudio {
-                    mix,
-                    start,
-                    frames: end.saturating_sub(start),
-                    rate,
-                    block,
-                    left: Vec::new(),
-                    right: Vec::new(),
-                }))
+                Some(audio_source(RootMix::Plain(mix), start, frames, rate, block))
             }
         }
     };

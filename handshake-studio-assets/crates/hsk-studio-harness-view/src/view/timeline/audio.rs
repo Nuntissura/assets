@@ -805,8 +805,8 @@ impl Viewer {
             }
             let track = seq.tracks.iter().find(|t| t.track_id == track_id).ok_or("unknown_track")?;
             let mut edit = match lane {
-                LaneTarget::ClipVolume if track.kind == TrackKind::Audio => LaneEdit::Clip { routing, track },
-                LaneTarget::ClipPan if track.kind == TrackKind::Audio => LaneEdit::ClipPan { routing, track },
+                LaneTarget::ClipVolume if track.kind == TrackKind::Audio => LaneEdit::Clip { routing, track, rate },
+                LaneTarget::ClipPan if track.kind == TrackKind::Audio => LaneEdit::ClipPan { routing, track, rate },
                 LaneTarget::TrackVolume | LaneTarget::TrackPan if matches!(track.kind, TrackKind::Audio | TrackKind::Submix) => {
                     let param = if *lane == LaneTarget::TrackVolume { StudioTrackParam::Volume } else { StudioTrackParam::Pan };
                     LaneEdit::Track { routing, track_id, param, rate, end: seq.duration }
@@ -862,12 +862,13 @@ impl Viewer {
 
 /// The record one lane edit changes.
 enum LaneEdit<'a> {
-    Clip { routing: &'a mut StudioAudioRouting, track: &'a folio::StudioTrack },
+    /// A clip volume (gain) envelope; `rate` is the lanes' sample rate (R44 F-R44-12: points on the sample grid).
+    Clip { routing: &'a mut StudioAudioRouting, track: &'a folio::StudioTrack, rate: u32 },
     /// A track volume / pan lane; `end` is the sequence duration.
     Track { routing: &'a mut StudioAudioRouting, track_id: &'a str, param: StudioTrackParam, rate: u32, end: Ticks },
     Bus { instance: &'a mut folio::StudioAudioEffectInstance, key: &'a str, range: (f64, f64), rate: u32 },
     /// The clip pan envelopes of an audio track (lane SMB-AU-MULTITRACK-3).
-    ClipPan { routing: &'a mut StudioAudioRouting, track: &'a folio::StudioTrack },
+    ClipPan { routing: &'a mut StudioAudioRouting, track: &'a folio::StudioTrack, rate: u32 },
     /// The master volume automation; `end` is the sequence duration (lane SMB-AU-MULTITRACK-3).
     Master { routing: &'a mut StudioAudioRouting, rate: u32, end: Ticks },
 }
@@ -911,7 +912,7 @@ impl LaneEdit<'_> {
     /// is replaced by an add and refuses a move (`point_exists`).
     fn put(&mut self, from: Option<&PointId>, at: Ticks, value: f64) -> Result<(), String> {
         match self {
-            Self::Clip { routing, track } => {
+            Self::Clip { routing, track, rate } => {
                 let value = checked_value(value, CLIP_GAIN_DB)?;
                 let clip = match from {
                     Some(p) => {
@@ -925,6 +926,10 @@ impl LaneEdit<'_> {
                     return Err("outside_clip".into());
                 }
                 let offset = at.value().saturating_sub(clip.timeline_start.value());
+                // R44 F-R44-12: the point's timeline tick must be a whole sample, like the Track,
+                // Master and Bus lanes (pulse refuses an off-grid envelope point when it mixes).
+                let absolute = clip.timeline_start.value().checked_add(offset).ok_or("overflow")?;
+                samples_from_ticks_exact(Ticks::new(absolute), *rate).map_err(|_| "not_sample_aligned".to_owned())?;
                 let i = match routing.clip_gains.iter().position(|g| g.clip_id == clip.clip_id) {
                     Some(i) => i,
                     None if from.is_none() => {
@@ -994,7 +999,7 @@ impl LaneEdit<'_> {
                 list.sort_by(|a, b| a.key.cmp(&b.key).then(a.offset_ticks.cmp(&b.offset_ticks)));
                 Ok(())
             }
-            Self::ClipPan { routing, track } => {
+            Self::ClipPan { routing, track, rate } => {
                 let value = checked_value(value, (-1.0, 1.0))?;
                 let clip = match from {
                     Some(p) => {
@@ -1008,6 +1013,9 @@ impl LaneEdit<'_> {
                     return Err("outside_clip".into());
                 }
                 let offset = at.value().saturating_sub(clip.timeline_start.value());
+                // R44 F-R44-12: as the clip volume arm.
+                let absolute = clip.timeline_start.value().checked_add(offset).ok_or("overflow")?;
+                samples_from_ticks_exact(Ticks::new(absolute), *rate).map_err(|_| "not_sample_aligned".to_owned())?;
                 let mut points = pan_points(routing, &clip.clip_id);
                 if from.is_some() && points.is_empty() {
                     return Err("unknown_point".into());
