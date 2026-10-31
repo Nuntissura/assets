@@ -53,6 +53,12 @@ pub const IMPORT_CLIP_ID: &str = "SCLP-019abcde-0000-7000-8000-00000000a001";
 #[allow(clippy::approx_constant)] // the value printed in Table 2, kept for traceability
 pub const BS775_K: f32 = 0.7071;
 
+/// Default [`ImportLimits::max_frames`]: 3 hours at 48 kHz.
+pub const DEFAULT_MAX_FRAMES: u64 = 48_000 * 60 * 60 * 3;
+/// Default [`ImportLimits::max_samples`]: twice [`DEFAULT_MAX_FRAMES`], the stereo bound the
+/// `export-sequence` audio budget uses (1 036 800 000 samples x 4 bytes = 4 147 200 000 bytes).
+pub const DEFAULT_MAX_SAMPLES: u64 = 48_000 * 60 * 60 * 3 * 2;
+
 /// Bounds of one import (authored values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImportLimits {
@@ -60,14 +66,17 @@ pub struct ImportLimits {
     pub max_file_bytes: u64,
     /// Most decoded samples per channel (checked by reel before the PCM buffer is allocated).
     pub max_frames: u64,
+    /// Most decoded samples in all, frames x channels (default [`DEFAULT_MAX_SAMPLES`]; F-R49-2). Frames
+    /// alone do not bound an 8-channel file. Over it: `audio_too_large`.
+    pub max_samples: u64,
 }
 
 impl Default for ImportLimits {
     fn default() -> Self {
         Self {
             max_file_bytes: 1 << 30,
-            // 3 hours at 48 kHz.
-            max_frames: 48_000 * 60 * 60 * 3,
+            max_frames: DEFAULT_MAX_FRAMES,
+            max_samples: DEFAULT_MAX_SAMPLES,
         }
     }
 }
@@ -270,7 +279,9 @@ pub fn import_audio(
 /// Decodes `src` (any audio file reel's whole-file import detects, WAV included) and folds it to stereo
 /// when it has more than 2 channels or `options` maps its channels. Refusals, all before the PCM buffer
 /// exists unless stated: `audio_decode` (reel code: unknown format, corrupt stream, `limit_exceeded`
-/// above `limits.max_frames`), `audio_channel_map` / `audio_channel_map_required` (after decode),
+/// above `limits.max_frames`), `audio_too_large` (the decoded samples, frames x channels, would pass
+/// `limits.max_samples`: refused before the block that passes it is kept; test
+/// `tests/audio_import_budget.rs`), `audio_channel_map` / `audio_channel_map_required` (after decode),
 /// `audio_empty` (no samples), `audio_rate` (a rate whose sample period is not a whole number of ticks).
 pub fn import_audio_with(
     src: &mut (impl Read + Seek),
@@ -294,8 +305,21 @@ pub fn import_audio_external(
 ) -> Result<ImportedAudio, MonitorFail> {
     let digest = reel::full_digest(src, 1 << 20, cancel).map_err(|e| reel_fail(&e))?;
     src.rewind().map_err(|e| fail("audio_read", e.to_string()))?;
-    let decoded = reel::decode_audio_file_with(src, &reel::Limits::default(), limits.max_frames, cancel, external)
-        .map_err(|e| reel_fail(&e))?;
+    let decoded = reel::audio::decode_audio_file_within_with(
+        src,
+        &reel::Limits::default(),
+        limits.max_frames,
+        limits.max_samples,
+        cancel,
+        external,
+    )
+    .map_err(|e| match e {
+        reel::ReelError::LimitExceeded { what: "audio-sample-budget" } => fail(
+            "audio_too_large",
+            format!("decoded audio over {} samples (frames x channels)", limits.max_samples),
+        ),
+        e => reel_fail(&e),
+    })?;
     let frames = u64::try_from(decoded.frames()).map_err(|_| fail("audio_decode", "frame count"))?;
     if frames == 0 || decoded.channels == 0 {
         return Err(fail("audio_empty", "no samples"));
