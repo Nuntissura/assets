@@ -41,7 +41,8 @@
 //! and has no Studio or GUI code at 292d7a1c. Until Handshake allocates the block, the host projection
 //! ([`RingCode::host_event_code`]) is `Other` (65535) for every Studio code and the Studio code is lost in the
 //! 56-byte core; it survives only in this record's `code` field. The code is never put into `counter_a` or
-//! `counter_b`, whose meaning is per code.
+//! `counter_b`, whose meaning is per code. [`RingRecord::to_le_bytes`] carries the Studio code in bytes 0..2;
+//! the host write is [`RingRecord::host_core_le_bytes`], the 56-byte core with the projected `event_code`.
 //!
 //! | code | value | phase | severity | source |
 //! |---|---|---|---|---|
@@ -607,6 +608,19 @@ impl RingRecord {
         let [process_lo, process_hi] = self.process.get();
         out[OFF_PROCESS..OFF_PROCESS_HI].copy_from_slice(&process_lo.to_le_bytes());
         out[OFF_PROCESS_HI..RING_RECORD_BYTES].copy_from_slice(&process_hi.to_le_bytes());
+        out
+    }
+    /// The 56-byte `DiagEvent` core as the host writes it (R46 F-R46-6, lane SMB-OBSERVE-RING-PORT-1 follow-up
+    /// SMB-R46-FOLLOWUPS-1): bytes 0..2 carry [`RingCode::host_event_code`] (a `DiagEventCode` of
+    /// [`host_mirror::EVENT_CODES`], today `Other` for every Studio code), bytes 2..56 equal
+    /// [`RingRecord::to_le_bytes`]. [`RingRecord::to_le_bytes`] carries the Studio code in bytes 0..2 and is not a
+    /// host write: an adapter onto `DiagRingWriter` copies this core, never the first 56 bytes of the record.
+    /// Pinned by `tests/ring_port.rs` `host_core_carries_the_host_event_code_and_the_record_core`.
+    pub fn host_core_le_bytes(&self) -> [u8; RING_CORE_BYTES] {
+        let full = self.to_le_bytes();
+        let mut out = [0u8; RING_CORE_BYTES];
+        out.copy_from_slice(&full[..RING_CORE_BYTES]);
+        out[OFF_CODE..OFF_PHASE].copy_from_slice(&self.code.host_event_code().to_le_bytes());
         out
     }
 }

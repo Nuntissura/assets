@@ -512,3 +512,24 @@ fn descriptor_declares_the_ring_port() {
     }
     assert!(DESCRIPTOR.ends_with("}}"));
 }
+
+/// R46 F-R46-6 (lane SMB-R46-FOLLOWUPS-1): the host write is `host_core_le_bytes`: for every record (all outcome,
+/// delivery and reserved GPU codes) bytes 0..2 are the record code's `host_event_code`, a `DiagEventCode` of the
+/// schema.rs @292d7a1c table (`host_mirror::EVENT_CODES`; today `Other` for every Studio code), and bytes 2..56
+/// equal the record's own core; `to_le_bytes` keeps the Studio code (never an allowlisted host code).
+#[test]
+fn host_core_carries_the_host_event_code_and_the_record_core() {
+    let records = every_record();
+    assert_eq!(records.len(), RingCode::ALL.len());
+    for record in records {
+        let (core, full) = (record.host_core_le_bytes(), record.to_le_bytes());
+        let host = u16::from_le_bytes([core[0], core[1]]);
+        assert_eq!(host, record.code().host_event_code());
+        assert!(host_mirror::EVENT_CODES.contains(&host), "{host} not a DiagEventCode");
+        assert_eq!(host, host_mirror::OTHER, "no Studio code allocated at 292d7a1c");
+        assert_eq!(core[2..], full[2..RING_CORE_BYTES]);
+        let studio = u16::from_le_bytes([full[0], full[1]]);
+        assert_eq!(studio, record.code().as_u16());
+        assert!(!host_mirror::EVENT_CODES.contains(&studio), "to_le_bytes keeps the Studio code");
+    }
+}
