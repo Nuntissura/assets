@@ -1,6 +1,7 @@
 //! Source-only, caller-granted text shaping. No host font discovery or document mutation.
 mod admission;
 mod area_text;
+mod catalog;
 mod contract;
 mod create_outlines;
 mod descriptor;
@@ -21,6 +22,7 @@ pub use admission::{
     RetirementPort,
 };
 pub use area_text::*;
+pub use catalog::*;
 pub use contract::*;
 pub use create_outlines::*;
 pub use descriptor::descriptor;
