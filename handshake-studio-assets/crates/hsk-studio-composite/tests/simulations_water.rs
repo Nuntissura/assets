@@ -512,3 +512,152 @@ fn caustics_bounds_are_refused_before_allocation() {
     stop.cancel();
     assert_eq!(caustics(flat(2, 2)).render(8, 8, 0, &limits(), &stop).unwrap_err(), ParticleError::Canceled);
 }
+
+// ---- Slice 3: Bubbles (MT-34186) ----
+
+fn fizz() -> Bubbles {
+    Bubbles {
+        seed: 11,
+        start_tick: 0,
+        preroll: 0.0,
+        rate: 12.0,
+        life: 6.0,
+        life_random: 0.0,
+        region: [0.0, 0.0, 64.0, 96.0],
+        rise_speed: 40.0,
+        rise_speed_random: 0.0,
+        wobble_amplitude: 0.0,
+        wobble_frequency: 1.0,
+        size: 6.0,
+        size_random: 0.0,
+        growth: 1.5,
+        opacity: 1.0,
+        shading: BubbleShading::default(),
+    }
+}
+
+#[test]
+fn bubbles_rise_wobble_grow_and_pop_in_closed_form() {
+    let cancel = CancellationToken::default();
+    let b = fizz();
+    let at = |b: &Bubbles, tick| b.states_at(tick, &limits(), &cancel).unwrap();
+    let (s1, s2) = (at(&b, 30 * TPF), at(&b, 45 * TPF));
+    let mut shared = 0;
+    for p in &s2 {
+        assert_eq!(p.velocity, [0.0, -40.0]);
+        assert!((p.size - (6.0 + 1.5 * p.age)).abs() < 1e-9, "linear growth");
+        if let Some(q) = s1.iter().find(|q| q.index == p.index) {
+            shared += 1;
+            assert_eq!(p.position[0], q.position[0], "no wobble: straight up");
+            assert!((q.position[1] - p.position[1] - 20.0).abs() < 1e-9, "40 px/s for 0.5 s");
+            assert!((p.size - q.size - 0.75).abs() < 1e-9);
+        }
+    }
+    assert!(shared > 3, "{shared}");
+    // Not surface-bound: they rise through the whole region and pop at its top (96 / 40 = 2.4 s).
+    let late = at(&b, 300 * TPF);
+    assert!((20..=40).contains(&late.len()), "{}", late.len());
+    for p in &late {
+        assert!(p.position[1] > 0.0 && p.position[1] <= 96.0 && p.age < 2.4 + 1e-9 && p.life <= 2.4 + 1e-9);
+        assert!((0.0..=64.0).contains(&p.position[0]));
+    }
+    assert!(late.iter().any(|p| p.position[1] < 32.0) && late.iter().any(|p| p.position[1] > 64.0));
+    assert!(late.windows(2).all(|w| w[0].index < w[1].index), "draw order: ascending slot index");
+    // Without rise they pop at the end of their life, where they were born.
+    let mut still = fizz();
+    still.rise_speed = 0.0;
+    still.life = 2.0;
+    let s = at(&still, 300 * TPF);
+    assert!(!s.is_empty() && s.iter().all(|p| p.position[1] == 96.0 && p.age < 2.0));
+    // Wobble and rise share stay inside their declared envelopes.
+    let mut wob = fizz();
+    wob.wobble_amplitude = 5.0;
+    wob.rise_speed_random = 0.5;
+    let (w1, w2) = (at(&wob, 60 * TPF), at(&wob, 63 * TPF));
+    for p in &w2 {
+        assert!((-5.0..=69.0).contains(&p.position[0]));
+        assert!((-60.0..=-20.0).contains(&p.velocity[1]));
+        assert!(p.velocity[0].abs() <= 5.0 * std::f64::consts::TAU * 1.5 + 1e-9);
+    }
+    assert!(w2.iter().any(|p| w1.iter().any(|q| q.index == p.index && (q.position[0] - p.position[0]).abs() > 0.05)), "the wobble moves sideways");
+}
+
+#[test]
+fn bubbles_are_random_access_and_deterministic() {
+    let cancel = CancellationToken::default();
+    let frame = |b: &Bubbles, f: u64| b.render(64, 96, f * TPF, &limits(), &cancel).unwrap();
+    let direct = frame(&fizz(), 50);
+    assert!(direct.drawn > 0 && direct.premultiplied.iter().any(|p| p[3] > 0.0));
+    assert_eq!(frame(&fizz(), 50), direct);
+    let _ = frame(&fizz(), 90);
+    assert_eq!(frame(&fizz(), 50).digest(), direct.digest(), "scrubbing back equals forward play");
+    let mut seeded = fizz();
+    seeded.seed = 12;
+    assert_ne!(frame(&seeded, 50).digest(), direct.digest());
+    let mut late = fizz();
+    late.start_tick = 30 * TPF;
+    assert_eq!(frame(&late, 80), direct, "the start tick shifts the frames");
+    assert!(late.states_at(29 * TPF, &limits(), &cancel).unwrap().is_empty(), "nothing before the start tick");
+    assert!(frame(&late, 10).premultiplied.iter().all(|p| *p == [0.0; 4]));
+    let mut pre = fizz();
+    pre.preroll = 1.0;
+    pre.start_tick = 30 * TPF;
+    assert_eq!(frame(&pre, 30), frame(&fizz(), 30), "a 1 s preroll is 1 s already simulated at the start");
+    // Bubbles render through the shared bubble path.
+    let b = fizz();
+    let parts = b.states_at(50 * TPF, &limits(), &cancel).unwrap();
+    assert_eq!(bubbles::render_bubble_marks(&parts, &b.shading, 64, 96, &limits(), &cancel).unwrap(), direct);
+}
+
+#[test]
+fn bubble_shading_is_declared_once() {
+    let s = BubbleShading::default();
+    for r in bubbles::BUBBLE_SHADING_ROWS {
+        assert!(r.key.starts_with("shading."));
+        assert_eq!(s.param(r.key), Some(r.default), "{}", r.key);
+        assert!(Bubbles::rows().contains(&r));
+    }
+    let close = |a: f32, b: f64| (f64::from(a) - b).abs() < 1e-6;
+    // Centre: the fill; near the edge: the rim; up-left: the white highlight; outside: nothing.
+    let centre = s.sample([0.0, 0.0], 10.0);
+    assert!(close(centre[3], s.fill_opacity));
+    assert!(close(centre[0], f64::from(s.colour[0]) * s.fill_opacity));
+    let rim = s.sample([9.5, 0.0], 10.0);
+    assert!(rim[3] > centre[3] + 0.3, "{rim:?}");
+    let o = bubbles::HIGHLIGHT_OFFSET * 10.0;
+    let high = s.sample([-o, -o], 10.0);
+    let mirror = s.sample([o, o], 10.0);
+    assert!(close(high[3], s.highlight_opacity + s.fill_opacity * (1.0 - s.highlight_opacity)), "{high:?}");
+    assert!(high[0] > mirror[0] && high[3] > mirror[3]);
+    assert_eq!(s.sample([11.0, 0.0], 10.0), [0.0; 4]);
+    // Premultiplied: colour never above alpha.
+    for d in [[0.0, 0.0], [9.5, 0.0], [-o, -o], [3.0, -7.0]] {
+        let p = s.sample(d, 10.0);
+        assert!(p[..3].iter().all(|c| *c <= p[3] + 1e-6), "{p:?}");
+    }
+    let mut b = Simulation::Bubbles(fizz());
+    let before = b.clone();
+    assert_eq!(b.set_param("shading.rim_opacity", 2.0), Err(ParticleError::Parameter("shading.rim_opacity")));
+    assert_eq!(b, before);
+    b.set_param("shading.rim_opacity", 0.5).unwrap();
+    assert_eq!(b.param("shading.rim_opacity"), Some(0.5));
+}
+
+#[test]
+fn bubbles_budget_is_refused_before_allocation() {
+    let cancel = CancellationToken::default();
+    let mut bomb = fizz();
+    bomb.rate = 1.0e6;
+    bomb.life = 600.0;
+    assert_eq!(bomb.render(8, 8, 600 * SEC, &limits(), &cancel).unwrap_err(), ParticleError::Count);
+    let mut far = fizz();
+    far.rate = 1.0e6;
+    assert_eq!(far.render(8, 8, u64::MAX, &limits(), &cancel).unwrap_err(), ParticleError::Count, "far into the timeline the alive window stays bounded");
+    let mut huge = fizz();
+    huge.size = 4096.0;
+    let work = ParticleLimits { max_raster_work: 1000, ..ParticleLimits::default() };
+    assert_eq!(huge.render(256, 256, 60 * TPF, &work, &cancel).unwrap_err(), ParticleError::Work);
+    let stop = CancellationToken::default();
+    stop.cancel();
+    assert_eq!(fizz().render(8, 8, 60 * TPF, &limits(), &stop).unwrap_err(), ParticleError::Canceled);
+}

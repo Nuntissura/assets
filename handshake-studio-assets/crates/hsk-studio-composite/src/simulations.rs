@@ -35,15 +35,17 @@
 //! count and the raster work are checked BEFORE allocation; refusals are [`ParticleError`] codes.
 //! After Effects parity of all four types is UNVERIFIED (D5).
 //!
-//! **Water family (lane SMB-AE-WATER-SIMS-1).** Wave world (MT-34181, [`wave_world`]) and Caustics
-//! (MT-34182, [`caustics`]) follow the same identity, record, bounds and output rules. Wave world
-//! is a stateful step simulation: every frame is re-simulated from the start tick on a fixed step
-//! grid (a Wave world may also resume from a [`WaveState`] checkpoint of the same record, which
-//! gives the same field), single-threaded in a fixed order. Caustics is a pure function of a
+//! **Water family (lane SMB-AE-WATER-SIMS-1).** Wave world (MT-34181, [`wave_world`]), Caustics
+//! (MT-34182, [`caustics`]) and Bubbles (MT-34186, [`bubbles`]) follow the same identity, record,
+//! bounds and output rules. Wave world is a stateful step simulation: every frame is re-simulated
+//! from the start tick on a fixed step grid (a Wave world may also resume from a [`WaveState`]
+//! checkpoint of the same record, which gives the same field), single-threaded in a fixed order.
+//! Bubbles is closed form on the slot grid like Rain. Caustics is a pure function of a
 //! [`HeightField`] (a Wave world at the tick, or a caller field) and a bottom image.
 //! [`SimulationKind::ALL`] keeps its published five particle-family kinds;
 //! [`SimulationKind::EVERY`] lists every kind.
 #![deny(clippy::arithmetic_side_effects)]
+pub mod bubbles;
 pub mod caustics;
 pub mod classic;
 pub mod precipitation;
@@ -63,6 +65,7 @@ pub use precipitation::{DepthLayer, Precipitation, Rain, Snow};
 pub use star_burst::{BurstMode, StarBurst};
 pub use wave_world::{EdgeMode, HeightField, ProducerShape, WaveProducer, WaveState, WaveWorld};
 pub use caustics::{CausticSurface, Caustics, WaterBottom};
+pub use bubbles::{BubbleShading, Bubbles};
 
 pub(crate) type Result<T> = std::result::Result<T, ParticleError>;
 
@@ -81,6 +84,7 @@ pub enum SimulationKind {
     StarBurst,
     WaveWorld,
     Caustics,
+    Bubbles,
 }
 
 impl SimulationKind {
@@ -88,9 +92,9 @@ impl SimulationKind {
     /// lists every implemented kind.
     pub const ALL: [Self; 5] = [Self::ParticleWorld, Self::ParticleSystemsClassic, Self::Rain, Self::Snow, Self::StarBurst];
     /// The water family (lane SMB-AE-WATER-SIMS-1).
-    pub const WATER: [Self; 2] = [Self::WaveWorld, Self::Caustics];
+    pub const WATER: [Self; 3] = [Self::WaveWorld, Self::Caustics, Self::Bubbles];
     /// Every implemented kind: [`Self::ALL`] then [`Self::WATER`].
-    pub const EVERY: [Self; 7] = [
+    pub const EVERY: [Self; 8] = [
         Self::ParticleWorld,
         Self::ParticleSystemsClassic,
         Self::Rain,
@@ -98,6 +102,7 @@ impl SimulationKind {
         Self::StarBurst,
         Self::WaveWorld,
         Self::Caustics,
+        Self::Bubbles,
     ];
 
     /// The stable id.
@@ -110,6 +115,7 @@ impl SimulationKind {
             Self::StarBurst => "hsk.studio.simulation.star_burst",
             Self::WaveWorld => "hsk.studio.simulation.wave_world",
             Self::Caustics => "hsk.studio.simulation.caustics",
+            Self::Bubbles => "hsk.studio.simulation.bubbles",
         }
     }
 
@@ -123,6 +129,7 @@ impl SimulationKind {
             Self::StarBurst => "Star burst",
             Self::WaveWorld => "Wave world",
             Self::Caustics => "Caustics",
+            Self::Bubbles => "Bubbles",
         }
     }
 
@@ -139,6 +146,7 @@ impl SimulationKind {
             Self::StarBurst => &["CC Star Burst"],
             Self::WaveWorld => &["APC Wave World"],
             Self::Caustics => &["APC Caustics"],
+            Self::Bubbles => &["CC Bubbles"],
         }
     }
 
@@ -153,8 +161,9 @@ impl SimulationKind {
     }
 
     /// The authored parameter rows; `None` for the particle world (its record is the typed
-    /// [`ParticleWorld`] struct of lane SMB-AE-PARTICLES-AUDIO-PRESETS). Wave world's per-producer
-    /// rows are [`wave_world::WAVE_PRODUCER_ROWS`].
+    /// [`ParticleWorld`] struct of lane SMB-AE-PARTICLES-AUDIO-PRESETS). Bubbles includes the
+    /// shared `shading.*` rows ([`bubbles::BUBBLE_SHADING_ROWS`]); Wave world's per-producer rows
+    /// are [`wave_world::WAVE_PRODUCER_ROWS`].
     pub fn params(self) -> Option<Vec<ParamRow>> {
         match self {
             Self::ParticleWorld => None,
@@ -164,6 +173,7 @@ impl SimulationKind {
             Self::StarBurst => Some(star_burst::STAR_BURST_ROWS.to_vec()),
             Self::WaveWorld => Some(wave_world::WAVE_WORLD_ROWS.to_vec()),
             Self::Caustics => Some(caustics::CAUSTICS_ROWS.to_vec()),
+            Self::Bubbles => Some(bubbles::Bubbles::rows()),
         }
     }
 }
@@ -435,6 +445,7 @@ pub enum Simulation {
     StarBurst(StarBurst),
     WaveWorld(WaveWorld),
     Caustics(Caustics),
+    Bubbles(Bubbles),
 }
 
 impl Simulation {
@@ -448,6 +459,7 @@ impl Simulation {
             SimulationKind::StarBurst => Self::StarBurst(StarBurst::default()),
             SimulationKind::WaveWorld => Self::WaveWorld(WaveWorld::default()),
             SimulationKind::Caustics => Self::Caustics(Caustics::default()),
+            SimulationKind::Bubbles => Self::Bubbles(Bubbles::default()),
         }
     }
 
@@ -460,6 +472,7 @@ impl Simulation {
             Self::StarBurst(_) => SimulationKind::StarBurst,
             Self::WaveWorld(_) => SimulationKind::WaveWorld,
             Self::Caustics(_) => SimulationKind::Caustics,
+            Self::Bubbles(_) => SimulationKind::Bubbles,
         }
     }
 
@@ -472,6 +485,7 @@ impl Simulation {
             Self::StarBurst(s) => s.validate(),
             Self::WaveWorld(w) => w.validate(),
             Self::Caustics(c) => c.validate(),
+            Self::Bubbles(b) => b.validate(),
         }
     }
 
@@ -485,6 +499,7 @@ impl Simulation {
             Self::StarBurst(s) => s.param(key),
             Self::WaveWorld(w) => w.param(key),
             Self::Caustics(c) => c.param(key),
+            Self::Bubbles(b) => b.param(key),
         }
     }
 
@@ -499,6 +514,7 @@ impl Simulation {
             Self::StarBurst(s) => s.set_param(key, value),
             Self::WaveWorld(w) => w.set_param(key, value),
             Self::Caustics(c) => c.set_param(key, value),
+            Self::Bubbles(b) => b.set_param(key, value),
         }
     }
 
@@ -522,6 +538,7 @@ impl Simulation {
             Self::StarBurst(s) => s.render(width, height, tick, limits, cancel),
             Self::WaveWorld(w) => w.render(width, height, tick, limits, cancel),
             Self::Caustics(c) => c.render(width, height, tick, limits, cancel),
+            Self::Bubbles(b) => b.render(width, height, tick, limits, cancel),
         }
     }
 }
