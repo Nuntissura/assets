@@ -25,18 +25,25 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{Payload, Snapshot};
+use hsk_studio_folio::{Payload, Snapshot, StudioChannelRecord, StudioRasterRecords};
+use hsk_studio_pigment::selection_channel_roundtrip::ChannelTilePayload;
+use hsk_studio_prism::{hash_hex, profile_hash};
 
 use crate::blend::{StudioBlendMode, psd_key_for};
-use crate::document::PsdDocument;
+use crate::document::{ImageData, PsdDocument};
 use crate::error::{PsdError, Result};
 use crate::header::{ColorMode, Header};
 use crate::layers::{KEY_SECTION_DIVIDER, KEY_SECTION_DIVIDER_NESTED, PsdChannel, PsdLayer, TaggedBlock};
 use crate::limits::Limits;
 use crate::loss::{LossEntry, LossKind, LossReport};
 use crate::pixels::Plane;
-use crate::proposal::{ALPHA_BYTES, COLOUR_BYTES, ImportProposal, TILE_EDGE, TileBlob, floor_div, imported_look};
-use crate::resources::{ImageResources, RESOURCE_VERSION_INFO};
+use crate::proposal::{
+    ALPHA_BYTES, COLOUR_BYTES, ImportProposal, TILE_EDGE, TileBlob, display_of_colour, floor_div, imported_look, mode_of_kind,
+};
+use crate::resources::{
+    DISPLAY_INFO_ENTRY_BYTES, ImageResources, RESOURCE_ALPHA_NAMES_PASCAL, RESOURCE_ALPHA_NAMES_UNICODE, RESOURCE_DISPLAY_INFO,
+    RESOURCE_VERSION_INFO, encode_alpha_names_pascal, encode_alpha_names_unicode,
+};
 use crate::samples::{
     SixteenBitScale, linear_to_srgb, read_f32_le, row_major, sample_range, size_add, size_mul, unit_to_sample,
 };
@@ -285,6 +292,212 @@ pub fn export_psd(
     let mut working = doc.clone();
     let report = apply_edits_in_place(&mut working, proposal, edited, opts)?;
     Ok((write_psd(&working, opts.limits)?, report))
+}
+
+/// Writes the edits of `edited` (the document's raster records after editing) to the alpha and
+/// spot channels the import mapped (`ImportProposal::channel_map`, lane SMB-FOLIO-CHANNEL-RECORD,
+/// MT-038 AC-003). All-or-nothing like [`apply_edits`]. Written back: names (resources 1006 and,
+/// when present, 1045), kind, colour and opacity (resource 1077 entry; the stored colour space and
+/// components stay when the colour is unedited), and samples (the merged image data is re-encoded
+/// raw with the edited extra planes; colour planes and the merged transparency keep their samples,
+/// so the composite is not marked stale). `channel_tiles` serves the edited tile bytes by digest
+/// (size and digest checked; a missing tile is a typed error). Edits PSD cannot take here are typed
+/// losses and left out: added, removed or reordered channels, a changed extent or depth,
+/// visibility, an edited channel without a 1077 resource to hold its display edit. An unedited
+/// record set changes nothing, so the file re-emits byte-identically (test
+/// `unmodified_channels_reexport_byte_identically`).
+pub fn apply_channel_edits(
+    doc: &mut PsdDocument,
+    proposal: &ImportProposal,
+    edited: &StudioRasterRecords,
+    channel_tiles: &[ChannelTilePayload],
+    limits: &Limits,
+) -> Result<ExportReport> {
+    let mut working = doc.clone();
+    let mut report = ExportReport::default();
+    channel_edits_in_place(&mut working, proposal, edited, channel_tiles, limits, &mut report)?;
+    *doc = working;
+    Ok(report)
+}
+
+/// [`export_psd`] plus [`apply_channel_edits`] in one all-or-nothing pass; one report.
+pub fn export_psd_with_channels(
+    doc: &PsdDocument,
+    proposal: &ImportProposal,
+    edited: &Snapshot,
+    edited_records: &StudioRasterRecords,
+    channel_tiles: &[ChannelTilePayload],
+    opts: &ExportOptions<'_>,
+) -> Result<(Vec<u8>, ExportReport)> {
+    let mut working = doc.clone();
+    let mut report = apply_edits_in_place(&mut working, proposal, edited, opts)?;
+    channel_edits_in_place(&mut working, proposal, edited_records, channel_tiles, opts.limits, &mut report)?;
+    Ok((write_psd(&working, opts.limits)?, report))
+}
+
+fn digests(c: &StudioChannelRecord) -> Vec<(&str, i64, i64, &str)> {
+    c.tiles.iter().map(|t| (t.object_key.as_str(), t.column, t.row, t.content_digest.digest.as_str())).collect()
+}
+
+/// The extent samples of an edited channel as a big-endian plane at the file depth.
+fn channel_plane(c: &StudioChannelRecord, tiles: &[ChannelTilePayload], header: &Header) -> Result<Vec<u8>> {
+    let per = usize::from(header.depth / 8);
+    let (width, height) = (header.width as usize, header.height as usize);
+    let edge = TILE_EDGE as usize;
+    let cell_bytes = size_mul(size_mul(edge, edge)?, per)?;
+    let mut plane = vec![0u8; size_mul(size_mul(width, height)?, per)?];
+    for t in &c.tiles {
+        let edge_ok = t.width.value == f64::from(TILE_EDGE) && t.height.value == f64::from(TILE_EDGE);
+        if !edge_ok {
+            return Err(PsdError::Encode("channel_tile_edge"));
+        }
+        let bytes = tiles
+            .iter()
+            .find(|p| p.sha256_hex == t.content_digest.digest)
+            .map(|p| p.bytes.as_slice())
+            .ok_or(PsdError::Encode("channel_tile_missing"))?;
+        if bytes.len() != cell_bytes {
+            return Err(PsdError::Encode("tile_blob_size"));
+        }
+        if hash_hex(&profile_hash(bytes)) != t.content_digest.digest {
+            return Err(PsdError::Encode("channel_tile_digest"));
+        }
+        let (x0, y0) = (
+            usize::try_from(t.column).map_err(|_| PsdError::Encode("channel_tile_grid"))?,
+            usize::try_from(t.row).map_err(|_| PsdError::Encode("channel_tile_grid"))?,
+        );
+        let (x0, y0) = (size_mul(x0, edge)?, size_mul(y0, edge)?);
+        for y in y0..height.min(size_add(y0, edge)?) {
+            for x in x0..width.min(size_add(x0, edge)?) {
+                let (dy, dx) = (y.saturating_sub(y0) as i64, x.saturating_sub(x0) as i64);
+                let src = bytes.get(sample_range(row_major(dy, dx, edge)?, per)?).ok_or(PsdError::Overflow)?;
+                let dst = plane.get_mut(sample_range(row_major(y as i64, x as i64, width)?, per)?).ok_or(PsdError::Overflow)?;
+                // Little-endian tile samples -> big-endian file samples (8-bit copies).
+                for (k, b) in dst.iter_mut().enumerate() {
+                    *b = *src.get(per.saturating_sub(1).saturating_sub(k)).ok_or(PsdError::Overflow)?;
+                }
+            }
+        }
+    }
+    Ok(plane)
+}
+
+fn channel_edits_in_place(
+    doc: &mut PsdDocument,
+    proposal: &ImportProposal,
+    edited: &StudioRasterRecords,
+    channel_tiles: &[ChannelTilePayload],
+    limits: &Limits,
+    report: &mut ExportReport,
+) -> Result<()> {
+    let map = &proposal.channel_map;
+    for c in &edited.channels {
+        if !map.iter().any(|e| e.channel_id == c.channel_id) {
+            report.lost("channels", LossKind::Unsupported, "channel_added_in_edit_not_exported");
+        }
+    }
+    let imported_order: Vec<&str> =
+        map.iter().filter(|e| edited.channel(&e.channel_id).is_some()).map(|e| e.channel_id.as_str()).collect();
+    let edited_order: Vec<&str> =
+        edited.channels.iter().filter(|c| map.iter().any(|e| e.channel_id == c.channel_id)).map(|c| c.channel_id.as_str()).collect();
+    if imported_order != edited_order {
+        report.lost("channels", LossKind::Unsupported, "channel_reorder_not_exported");
+    }
+    // Resource counts are bounded by the header's channel count (`1..=56`).
+    let extras = usize::from(doc.header.channels);
+    let mut pascal = doc.resources.alpha_names_pascal(extras).ok().flatten();
+    let mut unicode = doc.resources.alpha_names_unicode(extras, limits.max_name_units).ok().flatten();
+    let mut display = doc.resources.display_info(extras).ok().flatten();
+    let (mut names_changed, mut display_changed) = (false, false);
+    let mut planes: Vec<(usize, Vec<u8>)> = Vec::new();
+    for entry in map {
+        let path = format!("channel[{}]", entry.extra_index);
+        let Some(c) = edited.channel(&entry.channel_id) else {
+            report.lost(&path, LossKind::Unsupported, "channel_removed_in_edit_not_exported");
+            continue;
+        };
+        let was = &entry.record;
+        if (c.width, c.height, c.depth) != (was.width, was.height, was.depth) {
+            report.lost(&path, LossKind::Unsupported, "channel_geometry_changed_not_exported");
+            continue;
+        }
+        if c.visible != was.visible {
+            report.lost(&format!("{path}/visible"), LossKind::Transformed, "channel_visibility_not_exported");
+        }
+        if c.name != was.name {
+            let i = entry.extra_index;
+            let latin1: Vec<u8> = c.name.chars().map(|ch| u8::try_from(u32::from(ch)).unwrap_or(b'?')).take(255).collect();
+            if let Some(list) = pascal.as_mut()
+                && let Some(slot) = list.get_mut(i)
+            {
+                *slot = latin1;
+            }
+            if let Some(list) = unicode.as_mut()
+                && let Some(slot) = list.get_mut(i)
+            {
+                slot.clone_from(&c.name);
+            }
+            if pascal.as_ref().is_some_and(|l| l.len() > i) || unicode.as_ref().is_some_and(|l| l.len() > i) {
+                names_changed = true;
+                report.applied(&path, "channel_name");
+            } else {
+                report.lost(&format!("{path}/name"), LossKind::Unsupported, "channel_name_resource_absent");
+            }
+        }
+        if (c.kind, &c.colour, c.opacity) != (was.kind, &was.colour, was.opacity) {
+            match display.as_mut().and_then(|(_, e)| e.get_mut(entry.extra_index)) {
+                Some(d) => {
+                    d.mode = mode_of_kind(c.kind);
+                    if c.colour != was.colour {
+                        let (space, colour) = display_of_colour(&c.colour);
+                        d.colour_space = space;
+                        d.colour = colour;
+                    }
+                    d.opacity = c.opacity.round().clamp(0.0, 100.0) as u16;
+                    display_changed = true;
+                    report.applied(&path, "channel_display");
+                }
+                None => report.lost(&format!("{path}/display"), LossKind::Unsupported, "channel_display_info_absent"),
+            }
+        }
+        if digests(c) != digests(was) {
+            planes.push((entry.plane, channel_plane(c, channel_tiles, &doc.header)?));
+            report.applied(&path, "channel_pixels");
+        }
+    }
+    if names_changed {
+        if let Some(names) = &pascal {
+            doc.resources.replace_data(RESOURCE_ALPHA_NAMES_PASCAL, encode_alpha_names_pascal(names));
+        }
+        if let Some(names) = &unicode {
+            doc.resources.replace_data(RESOURCE_ALPHA_NAMES_UNICODE, encode_alpha_names_unicode(names, limits.max_name_units));
+        }
+    }
+    if display_changed && let Some((version, entries)) = &display {
+        let old = doc.resources.find(RESOURCE_DISPLAY_INFO).map(|b| b.data.clone()).unwrap_or_default();
+        let mut data = version.to_be_bytes().to_vec();
+        for e in entries {
+            e.encode(&mut data);
+        }
+        // Bytes after the last whole entry stay as read.
+        let whole = size_add(4, size_mul(entries.len(), DISPLAY_INFO_ENTRY_BYTES)?)?;
+        data.extend_from_slice(old.get(whole..).unwrap_or_default());
+        doc.resources.replace_data(RESOURCE_DISPLAY_INFO, data);
+    }
+    if !planes.is_empty() {
+        let image = doc
+            .decode_merged(limits, &CancellationToken::default())?
+            .ok_or(PsdError::Encode("channel_planes_missing"))?;
+        let mut data = Vec::new();
+        for (index, plane) in image.planes.iter().enumerate() {
+            match planes.iter().find(|(p, _)| *p == index) {
+                Some((_, edited)) => data.extend_from_slice(edited),
+                None => data.extend_from_slice(&plane.bytes),
+            }
+        }
+        doc.image_data = Some(ImageData { compression: 0, data });
+    }
+    Ok(())
 }
 
 fn put_sample(plane: &mut [u8], index: usize, raw: u32, depth: u16) -> Result<()> {

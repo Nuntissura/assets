@@ -36,9 +36,11 @@
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    ADJUSTMENT_SCHEMA, Budget, Inspection, Resolution, Resolver, Snapshot, StudioAdjustment, StudioRasterLayerRecord,
-    StudioRasterRecords, inspect_bytes, validate_raster_records,
+    ADJUSTMENT_SCHEMA, Budget, Inspection, MAX_CHANNEL_NAME_BYTES, Resolution, Resolver, Snapshot, StudioAdjustment,
+    StudioChannelColour, StudioChannelKind, StudioChannelRecord, StudioRasterLayerRecord, StudioRasterRecords,
+    channel_tile_format, inspect_bytes, validate_raster_records,
 };
+use hsk_studio_pigment::selection_channel_roundtrip::ChannelTilePayload;
 use hsk_studio_pigment::Grid;
 use hsk_studio_pigment::render_plan::{ExtOperator, PASS_THROUGH_MASK_OPERATOR};
 use hsk_studio_prism::{hash_hex, profile_hash};
@@ -59,7 +61,7 @@ use crate::layers::{GroupRole, PsdLayer, Rect};
 use crate::limits::Limits;
 use crate::loss::{LossKind, LossReport, key_text};
 use crate::pixels::Plane;
-use crate::resources::{RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED};
+use crate::resources::{ChannelDisplayInfo, RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED};
 use crate::samples::{SixteenBitScale, row_major, sample_range, size_add, size_mul, srgb_to_linear, write_f32_le};
 
 /// Pigment tile edge in pixels (columns and rows are cells of a canvas-origin grid).
@@ -351,8 +353,13 @@ pub struct ImportProposal {
     pub provenance: Provenance,
     /// Adjustment records, mask density/feather, Blend-If, knockout and effect stacks of the
     /// document (empty when the file has none or the host's resolver binds no adjustment
-    /// primitive). It passes `validate_raster_records` against `snapshot` when non-empty.
+    /// primitive), and its alpha and spot channels (`channels`, lane SMB-FOLIO-CHANNEL-RECORD).
+    /// It passes `validate_raster_records` against `snapshot` when non-empty.
     pub raster_records: StudioRasterRecords,
+    /// Tile bytes of `raster_records.channels` (one per grid cell, digest = the record's).
+    pub channel_tiles: Vec<ChannelTilePayload>,
+    /// Where each imported channel came from (the export compares against it).
+    pub channel_map: Vec<ChannelMapEntry>,
 }
 
 impl ImportProposal {
@@ -2339,7 +2346,15 @@ fn build(
     let mut raster_records = StudioRasterRecords::new(document_id);
     raster_records.layers = std::mem::take(&mut b.records);
     raster_records.placed_sources = std::mem::take(&mut b.placed_sources);
-    if !raster_records.layers.is_empty() {
+    let channels = if matches!(pixels, Pixels::Psd) {
+        import_channels(doc, cfg, &mut *b.mint, &b.profile_id, &mut b.loss, b.tile_bytes, cancel)?
+    } else {
+        ChannelImport::default()
+    };
+    let channel_tiles = channels.payloads;
+    let channel_map = channels.map;
+    raster_records.channels = channels.records;
+    if !raster_records.layers.is_empty() || !raster_records.channels.is_empty() {
         // Folio charges one node per record layer and one per effect instance (`validate_raster_records`).
         // Both counts are the importer's own and are bounded before this point: record layers by
         // `Limits::max_layers`, kept effect instances by `MAX_EFFECTS_PER_PLAN` counted plus
@@ -2356,6 +2371,9 @@ fn build(
             .len()
             .checked_add(b.effect_tally.kept())
             .and_then(|n| n.checked_add(raster_records.placed_sources.len()))
+            // One node per channel and per channel tile (`validate_raster_records`).
+            .and_then(|n| n.checked_add(raster_records.channels.len()))
+            .and_then(|n| n.checked_add(channel_tiles.len()))
             .ok_or(PsdError::Overflow)?;
         let records_budget = Budget { nodes: cfg.budget.nodes.max(needed), ..cfg.budget };
         // The parsers pre-check the Folio ranges; a rejection here is a mapping defect, not input
@@ -2391,5 +2409,320 @@ fn build(
             display,
         },
         raster_records,
+        channel_tiles,
+        channel_map,
     })
+}
+
+// ---- Alpha and spot channels (lane SMB-FOLIO-CHANNEL-RECORD; STU-RAS-022/031/144, MT-038 AC-003) ----
+//
+// The extra planes of the merged image (header channels after the colour channels) become Folio
+// `StudioRasterRecords.channels`, except the merged transparency (the first extra plane of a file
+// with a negative layer count, or the extra plane whose alpha identifier (1053) is 0: psd-tools
+// `get_transparency_index`, corpus `transparentbg.psd`). Per extra plane `i`:
+// - name: resource 1045 entry `i` (Unicode, trailing NUL dropped), else 1006 entry `i` (Pascal,
+//   bytes read as Latin-1), else `Alpha <n>`; control characters become `?` and a name over the
+//   Folio bound is cut at a character boundary (loss `channel_name_transformed`);
+// - kind from DisplayInfo (1077) mode: 1 = masked_area_alpha, 0 = selected_area_alpha, 2 =
+//   spot_colour. Reading: the corpus file `cmyk-alpha-spot.psd` stores Photoshop's default alpha
+//   options (red, 50 percent) as mode 1, and Photoshop's default is "Masked Areas"; Photoshop
+//   semantics UNVERIFIED (D5). An unknown mode or a missing entry reads as masked_area_alpha with a
+//   loss entry;
+// - colour from the 1077 colour space and components: 0 RGB, 1 HSB, 2 CMYK (`raw / 65535`, as
+//   stored), 7 Lab (`L = raw / 100`, `a`, `b` = signed raw / 100), 8 Gray (`raw / 10000`); any other
+//   space (the corpus spot "light teal" stores space 9009) reads as RGB red with
+//   `channel_display_colour_space_unmapped`, and its raw entry is written back unchanged unless the
+//   colour is edited; opacity percent (spot: solidity) from the entry, clamped to 100;
+// - samples copied exactly: the stored tone (`0` black), 8-bit as is, 16-bit big-endian to
+//   little-endian `coverage_u16le`, 32-bit float bits to `coverage_f32le`, in 256-pixel grid cells
+//   from the canvas origin (edge padding zero), one [`ChannelTilePayload`] per cell, and
+//   `visible = false` (PSD stores no channel visibility here; UNVERIFIED).
+// Bounds (V4-01/02): the extra count comes from the header (`1..=56`), every resource count is
+// checked against it before allocating, Unicode names against `Limits::max_name_units`, the merged
+// planes against `Limits::max_pixels` and `max_decoded_bytes`, and the channel tile bytes against
+// `max_decoded_bytes` (together with the layer tile bytes already produced) before any cell is
+// allocated. A resource that does not parse keeps its
+// bytes and is reported (`channel_resource_unreadable`); the channels then take default names,
+// kinds and colours. Depth 1 (bitmap) channels are not mapped (`channel_depth_unmapped`).
+
+/// One imported channel: where it came from in the file and the record the import produced (the
+/// export compares the edited record against it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMapEntry {
+    pub channel_id: String,
+    /// Plane index in the merged image data (colour planes first).
+    pub plane: usize,
+    /// Index among the extra planes (the position in resources 1006/1045/1053/1077).
+    pub extra_index: usize,
+    /// The 1077 entry as stored (`None` when absent).
+    pub display: Option<ChannelDisplayInfo>,
+    /// The record as imported.
+    pub record: StudioChannelRecord,
+}
+
+/// Colour planes of a mode in the merged image (the rest are extra planes).
+pub(crate) fn merged_colour_planes(mode: ColorMode, channels: usize) -> usize {
+    match mode {
+        ColorMode::Rgb | ColorMode::Lab => 3,
+        ColorMode::Cmyk => 4,
+        ColorMode::Multichannel => channels,
+        ColorMode::Grayscale | ColorMode::Duotone | ColorMode::Indexed | ColorMode::Bitmap => 1,
+    }
+}
+
+/// The channel kind a 1077 mode byte reads as (`None` = unknown mode).
+pub(crate) fn kind_of_mode(mode: u8) -> Option<StudioChannelKind> {
+    match mode {
+        0 => Some(StudioChannelKind::SelectedAreaAlpha),
+        1 => Some(StudioChannelKind::MaskedAreaAlpha),
+        2 => Some(StudioChannelKind::SpotColour),
+        _ => None,
+    }
+}
+
+/// The 1077 mode byte of a kind (inverse of [`kind_of_mode`]).
+pub(crate) fn mode_of_kind(kind: StudioChannelKind) -> u8 {
+    match kind {
+        StudioChannelKind::SelectedAreaAlpha => 0,
+        StudioChannelKind::MaskedAreaAlpha => 1,
+        StudioChannelKind::SpotColour => 2,
+    }
+}
+
+/// Display colour of a 1077 entry (`None` = colour space not mapped).
+pub(crate) fn colour_of_display(d: &ChannelDisplayInfo) -> Option<StudioChannelColour> {
+    let unit = |v: u16| f64::from(v) / 65535.0;
+    let [c0, c1, c2, c3] = d.colour;
+    let signed = |v: u16| f64::from(i16::from_be_bytes(v.to_be_bytes())) / 100.0;
+    let colour = match d.colour_space {
+        0 => StudioChannelColour::Rgb { r: unit(c0), g: unit(c1), b: unit(c2) },
+        1 => StudioChannelColour::Hsb { h: unit(c0), s: unit(c1), b: unit(c2) },
+        2 => StudioChannelColour::Cmyk { c: unit(c0), m: unit(c1), y: unit(c2), k: unit(c3) },
+        7 if c0 <= 10_000 => StudioChannelColour::Lab { l: f64::from(c0) / 100.0, a: signed(c1), b: signed(c2) },
+        8 if c0 <= 10_000 => StudioChannelColour::Gray { gray: f64::from(c0) / 10_000.0 },
+        _ => return None,
+    };
+    // Lab a/b outside -128..=127 have no Folio value.
+    match colour {
+        StudioChannelColour::Lab { a, b, .. } if !((-128.0..=127.0).contains(&a) && (-128.0..=127.0).contains(&b)) => None,
+        c => Some(c),
+    }
+}
+
+/// The 1077 colour space and components of a display colour (inverse of [`colour_of_display`]).
+pub(crate) fn display_of_colour(c: &StudioChannelColour) -> (u16, [u16; 4]) {
+    let raw = |v: f64, scale: f64| (v * scale).round().clamp(0.0, 65535.0) as u16;
+    let signed = |v: f64| u16::from_be_bytes(((v * 100.0).round().clamp(-32768.0, 32767.0) as i16).to_be_bytes());
+    match *c {
+        StudioChannelColour::Rgb { r, g, b } => (0, [raw(r, 65535.0), raw(g, 65535.0), raw(b, 65535.0), 0]),
+        StudioChannelColour::Hsb { h, s, b } => (1, [raw(h, 65535.0), raw(s, 65535.0), raw(b, 65535.0), 0]),
+        StudioChannelColour::Cmyk { c, m, y, k } => (2, [raw(c, 65535.0), raw(m, 65535.0), raw(y, 65535.0), raw(k, 65535.0)]),
+        StudioChannelColour::Lab { l, a, b } => (7, [raw(l, 100.0), signed(a), signed(b), 0]),
+        StudioChannelColour::Gray { gray } => (8, [raw(gray, 10_000.0), 0, 0, 0]),
+    }
+}
+
+/// The fallback display colour of a channel whose colour space is not mapped.
+pub(crate) const FALLBACK_CHANNEL_COLOUR: StudioChannelColour = StudioChannelColour::Rgb { r: 1.0, g: 0.0, b: 0.0 };
+
+/// A Folio channel name from a stored one (control characters `?`, cut to the Folio bound).
+fn channel_name(raw: &str, fallback: usize) -> (String, bool) {
+    let mut changed = false;
+    let mut name: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_control() {
+                changed = true;
+                '?'
+            } else {
+                c
+            }
+        })
+        .collect();
+    if name.len() > MAX_CHANNEL_NAME_BYTES {
+        let mut cut = MAX_CHANNEL_NAME_BYTES;
+        while !name.is_char_boundary(cut) {
+            cut = cut.saturating_sub(1);
+        }
+        name.truncate(cut);
+        changed = true;
+    }
+    if name.is_empty() {
+        return (format!("Alpha {}", fallback.saturating_add(1)), true);
+    }
+    (name, changed)
+}
+
+fn lose(loss: &mut LossReport, path: String, kind: LossKind, code: &'static str) {
+    loss.entries.push(crate::loss::LossEntry { path, kind, code });
+}
+
+/// What [`import_channels`] produced.
+#[derive(Default)]
+struct ChannelImport {
+    records: Vec<StudioChannelRecord>,
+    payloads: Vec<ChannelTilePayload>,
+    map: Vec<ChannelMapEntry>,
+}
+
+fn import_channels(
+    doc: &PsdDocument,
+    cfg: &ProposalConfig<'_>,
+    mint: &mut dyn IdMint,
+    profile_id: &str,
+    loss: &mut LossReport,
+    tile_bytes: usize,
+    cancel: &CancellationToken,
+) -> Result<ChannelImport> {
+    let header = &doc.header;
+    let planes = usize::from(header.channels);
+    let colour = merged_colour_planes(header.color_mode, planes);
+    let extras = planes.saturating_sub(colour);
+    if extras == 0 {
+        return Ok(ChannelImport::default());
+    }
+    let merged_alpha = doc.layer_section.layer_info.as_ref().is_some_and(|i| i.merged_alpha);
+    let unreadable = |loss: &mut LossReport, id: u16| {
+        lose(loss, format!("resource[{id}]"), LossKind::Transformed, "channel_resource_unreadable");
+    };
+    let res = &doc.resources;
+    let ids = res.alpha_identifiers(extras).unwrap_or_else(|_| {
+        unreadable(loss, crate::resources::RESOURCE_ALPHA_IDENTIFIERS);
+        None
+    });
+    let is_transparency = |i: usize| (i == 0 && merged_alpha) || ids.as_ref().and_then(|v| v.get(i)) == Some(&0);
+    let channel_indices: Vec<usize> = (0..extras).filter(|&i| !is_transparency(i)).collect();
+    if channel_indices.is_empty() {
+        return Ok(ChannelImport::default());
+    }
+    if !matches!(header.depth, 8 | 16 | 32) {
+        lose(loss, "document/channels".into(), LossKind::Unsupported, "channel_depth_unmapped");
+        return Ok(ChannelImport::default());
+    }
+    let unicode = res.alpha_names_unicode(extras, cfg.limits.max_name_units).unwrap_or_else(|_| {
+        unreadable(loss, crate::resources::RESOURCE_ALPHA_NAMES_UNICODE);
+        None
+    });
+    let pascal = res.alpha_names_pascal(extras).unwrap_or_else(|_| {
+        unreadable(loss, crate::resources::RESOURCE_ALPHA_NAMES_PASCAL);
+        None
+    });
+    let display = res.display_info(extras).unwrap_or_else(|_| {
+        unreadable(loss, crate::resources::RESOURCE_DISPLAY_INFO);
+        None
+    });
+    // Channel tile bytes plus the tile bytes already produced, checked before any plane is decoded
+    // or cell allocated.
+    let edge = TILE_EDGE;
+    let cols = header.width.div_ceil(edge) as usize;
+    let rows = header.height.div_ceil(edge) as usize;
+    let per = usize::from(header.depth / 8);
+    let cell_bytes = size_mul(CELL_PIXELS, per)?;
+    let total = size_mul(size_mul(size_mul(cols, rows)?, cell_bytes)?, channel_indices.len())?;
+    if size_add(total, tile_bytes)? > cfg.limits.max_decoded_bytes {
+        return Err(PsdError::PixelLimit);
+    }
+    let Some(image) = doc.decode_merged(cfg.limits, cancel)? else {
+        lose(loss, "document/channels".into(), LossKind::Unsupported, "channel_planes_missing");
+        return Ok(ChannelImport::default());
+    };
+    let format = channel_tile_format(header.depth as u8).ok_or(PsdError::BadDepth)?;
+    let mut out = ChannelImport::default();
+    let (width, height) = (header.width as usize, header.height as usize);
+    for &i in &channel_indices {
+        cancel.check()?;
+        let plane_index = size_add(colour, i)?;
+        let Some(plane) = image.planes.get(plane_index) else {
+            lose(loss, format!("channel[{i}]"), LossKind::Unsupported, "channel_planes_missing");
+            continue;
+        };
+        let channel_id = format!("psd-channel-{plane_index}");
+        let path = format!("channel[{i}]");
+        let stored = unicode
+            .as_ref()
+            .and_then(|v| v.get(i).cloned())
+            .or_else(|| pascal.as_ref().and_then(|v| v.get(i)).map(|b| b.iter().map(|&c| char::from(c)).collect()));
+        let (name, renamed) = channel_name(stored.as_deref().unwrap_or(""), i);
+        if renamed {
+            lose(loss, format!("{path}/name"), LossKind::Transformed, "channel_name_transformed");
+        }
+        let entry = display.as_ref().and_then(|(_, e)| e.get(i)).copied();
+        let kind = match entry.map(|e| kind_of_mode(e.mode)) {
+            Some(Some(kind)) => kind,
+            Some(None) => {
+                lose(loss, format!("{path}/kind"), LossKind::Transformed, "channel_display_mode_unknown");
+                StudioChannelKind::MaskedAreaAlpha
+            }
+            None => {
+                lose(loss, format!("{path}/kind"), LossKind::Transformed, "channel_display_info_absent");
+                StudioChannelKind::MaskedAreaAlpha
+            }
+        };
+        let colour = match entry.as_ref().map(colour_of_display) {
+            Some(Some(c)) => c,
+            Some(None) => {
+                lose(loss, format!("{path}/colour"), LossKind::Transformed, "channel_display_colour_space_unmapped");
+                FALLBACK_CHANNEL_COLOUR
+            }
+            None => FALLBACK_CHANNEL_COLOUR,
+        };
+        let opacity = match entry {
+            Some(e) if e.opacity > 100 => {
+                lose(loss, format!("{path}/opacity"), LossKind::Transformed, "channel_opacity_clamped");
+                100.0
+            }
+            Some(e) => f64::from(e.opacity),
+            None => 50.0,
+        };
+        let mut tiles = Vec::with_capacity(size_mul(cols, rows)?);
+        for row in 0..rows {
+            for column in 0..cols {
+                cancel.check()?;
+                let mut bytes = vec![0u8; cell_bytes];
+                let (x0, y0) = (size_mul(column, TILE_EDGE as usize)?, size_mul(row, TILE_EDGE as usize)?);
+                let y_end = height.min(size_add(y0, TILE_EDGE as usize)?);
+                let x_end = width.min(size_add(x0, TILE_EDGE as usize)?);
+                for y in y0..y_end {
+                    for x in x0..x_end {
+                        let src = sample_range(row_major(y as i64, x as i64, width)?, per)?;
+                        let (dy, dx) = (y.saturating_sub(y0) as i64, x.saturating_sub(x0) as i64);
+                        let dst = sample_range(row_major(dy, dx, TILE_EDGE as usize)?, per)?;
+                        let s = plane.bytes.get(src).ok_or(PsdError::ChannelSize)?;
+                        let d = bytes.get_mut(dst).ok_or(PsdError::Overflow)?;
+                        // Big-endian as stored -> little-endian tile samples (8-bit copies).
+                        for (k, b) in d.iter_mut().enumerate() {
+                            *b = *s.get(per.saturating_sub(1).saturating_sub(k)).ok_or(PsdError::Overflow)?;
+                        }
+                    }
+                }
+                let object_key = format!("ch_{column}_{row}");
+                let sha = hash_hex(&profile_hash(&bytes));
+                tiles.push(json!({
+                    "object_key": object_key, "layer_id": channel_id, "column": column, "row": row,
+                    "width": px(f64::from(TILE_EDGE)), "height": px(f64::from(TILE_EDGE)),
+                    "format": format, "colour_profile_id": profile_id,
+                    "schema_id": "hsk.studio.raster_tile@1",
+                    "content_digest": {"algorithm": "sha256", "digest": sha},
+                    "artifact_manifest_id": mint.tile_manifest_id(&channel_id, &object_key),
+                }));
+                out.payloads.push(ChannelTilePayload {
+                    channel_id: channel_id.clone(),
+                    object_key,
+                    column: column as i64,
+                    row: row as i64,
+                    format,
+                    bytes,
+                    sha256_hex: sha,
+                });
+            }
+        }
+        let record: StudioChannelRecord = serde_json::from_value(json!({
+            "channel_id": channel_id, "name": name, "kind": kind, "visible": false, "colour": colour,
+            "opacity": opacity, "depth": header.depth, "width": header.width, "height": header.height, "tiles": tiles,
+        }))
+        .map_err(|_| PsdError::Encode("channel_record"))?;
+        out.map.push(ChannelMapEntry { channel_id, plane: plane_index, extra_index: i, display: entry, record: record.clone() });
+        out.records.push(record);
+    }
+    Ok(out)
 }

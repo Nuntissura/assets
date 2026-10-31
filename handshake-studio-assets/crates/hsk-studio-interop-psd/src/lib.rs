@@ -45,7 +45,7 @@ pub use document::{
     ImageData, LayerInfo, LayerInfoLocation, LayerSection, MergedImage, MergedStatus, PsdDocument, TreeNode, read_psd,
 };
 pub use error::{PsdError, Result};
-pub use export::{ExportOptions, ExportReport, apply_edits, export_psd};
+pub use export::{ExportOptions, ExportReport, apply_channel_edits, apply_edits, export_psd, export_psd_with_channels};
 pub use header::{ColorMode, HEADER_BYTES, Header};
 pub use image_source::{ImageSourceCanvas, image_source_document};
 pub use layers::{BlendRanges, GroupRole, LayerMask, PsdChannel, PsdLayer, Rect, TaggedBlock};
@@ -54,14 +54,16 @@ pub use loss::{LossEntry, LossKind, LossReport, key_text};
 pub use patterns::{MAX_PATTERNS, MAX_PATTERN_SIDE};
 pub use pixels::Plane;
 pub use proposal::{
-    DisplayConversion, GAMUT_CLAMP_TOLERANCE, IdMint, ImportProposal, LayerExtras, LayerMapEntry, MaskTileBlob,
+    ChannelMapEntry, DisplayConversion, GAMUT_CLAMP_TOLERANCE, IdMint, ImportProposal, LayerExtras, LayerMapEntry, MaskTileBlob,
     PatternTileBlob, ProposalConfig, Provenance, RasterSource, SourceIdentity, TILE_EDGE, TileBlob, raster_proposal, to_proposal,
 };
 pub use report::{ReportContext, outcome_of, report};
 pub use samples::{SixteenBitScale, linear_to_srgb, sample_to_unit, srgb_to_linear, unit_to_sample};
 pub use writer::write_psd;
 pub use resources::{
-    ImageResource, ImageResources, RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED, RESOURCE_VERSION_INFO, VersionInfo,
+    ChannelDisplayInfo, DISPLAY_INFO_ENTRY_BYTES, ImageResource, ImageResources, RESOURCE_ALPHA_IDENTIFIERS,
+    RESOURCE_ALPHA_NAMES_PASCAL, RESOURCE_ALPHA_NAMES_UNICODE, RESOURCE_DISPLAY_INFO, RESOURCE_ICC_PROFILE,
+    RESOURCE_ICC_UNTAGGED, RESOURCE_VERSION_INFO, VersionInfo,
 };
 
 /// Machine-readable module descriptor (limits and honest capability statement).
@@ -72,10 +74,11 @@ pub const DESCRIPTOR: &str = concat!(
     "\"compressions\":{\"raw\":\"spec\",\"rle_packbits\":\"spec\",\"zip\":\"zlib,behaviour-reference\",\"zip_prediction\":\"depth8,behaviour-reference;depth16_32:unverified\"},",
     "\"limits\":{\"max_input_bytes\":536870912,\"max_layers\":8192,\"max_pixels\":268435456,\"max_decoded_bytes\":1073741824,",
     "\"max_tagged_block_bytes\":268435456,\"max_tagged_blocks\":16384,\"max_name_units\":1024,\"max_resources\":65536,\"max_group_depth\":128},",
+    "\"channels\":\"extra merged planes except the merged transparency (negative layer count first extra, or alpha identifier 0) -> ImportProposal::raster_records.channels + channel_tiles + channel_map; names 1045 then 1006, kind from 1077 mode 1 masked_area 0 selected_area 2 spot (reading of corpus defaults, Photoshop UNVERIFIED), colour spaces rgb hsb cmyk lab gray else red with loss; samples copied exactly; apply_channel_edits / export_psd_with_channels write names, display entry and samples back; added removed reordered channels, geometry and visibility are typed losses; unmodified re-emits byte-identically (tests psd_alpha_channels)\",",
     "\"api\":\"read_psd / image_source_document (TIFF tag 37724 layer records, 8BIM/8B64 and byte-swapped MIB8/46B8, 8-bit little-endian, import-only) / write_psd / to_proposal / raster_proposal / export_psd / apply_edits / report; PsdDocument::{tree,loss_report,decode_merged,merged_oracle_rgba8}\",",
     "\"capabilities\":[\"layer_records_groups_resources\",\"byte_exact_rewrite\",\"typed_loss_report\",",
     "\"folio_proposal_hierarchy_appearance_masks\",\"layerless_merged_image_as_one_raster_layer\",\"raster_source_proposal_shared_tile_mapping\",\"pigment_tiles_8_16_32_bit_full_precision\",\"embedded_icc_rgb_via_converter_when_accepted\",",
-    "\"observe_terminal_frame\",\"export_edited_folio_layer_properties_preserving_original_bytes\",",
+    "\"observe_terminal_frame\",\"alpha_spot_channels_to_folio_channel_records_and_back_resources_1006_1045_1053_1077\",\"export_edited_folio_layer_properties_preserving_original_bytes\",",
     "\"cmyk_embedded_icc_display_conversion_8_16_bit\",\"lab_pcs_native_display_conversion_8_16_bit\",\"gray_ktrc_icc_display_conversion_8_16_bit\",",
     "\"raster_records_adjustments_levels_curves_hue_saturation_brightness_contrast_exposure_invert_threshold_posterize\",",
     "\"raster_records_blend_if_mask_density_feather_knockout_blend_toggles\",\"raster_records_lfx2_effect_stack_not_rendered\",",
