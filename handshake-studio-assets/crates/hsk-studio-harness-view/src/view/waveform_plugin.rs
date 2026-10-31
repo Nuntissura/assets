@@ -11,7 +11,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::waveform::{PluginEdit, PluginHost};
-use hsk_studio_accord::CancellationToken;
+use hsk_studio_accord::{ActorContext, CancellationToken};
 use hsk_studio_score::{self as score, PasteMode, WaveBuffer, WaveClip, WaveEditReport};
 use hsk_studio_score_plugin::{
     ApprovedPlugin, HostOptions, IsolatedHost, Parameter, PluginFormat, PluginGrant, PluginProcessor, PluginProvider, ProcessConfig,
@@ -59,7 +59,7 @@ fn perr(e: hsk_studio_score_plugin::PluginError) -> String {
 }
 
 impl PluginHost for PluginRegistry {
-    fn run(&self, buffer: &mut WaveBuffer, edit: &PluginEdit, cancel: &CancellationToken) -> Result<WaveEditReport, String> {
+    fn run(&self, buffer: &mut WaveBuffer, edit: &PluginEdit, actor: &ActorContext, cancel: &CancellationToken) -> Result<WaveEditReport, String> {
         let reg = self.plugins.get(&edit.content_sha256).ok_or_else(|| format!("waveform_plugin_unregistered: {}", edit.content_sha256))?;
         let clip = buffer.copy(edit.selection).map_err(|e| format!("waveform_{}", e.code()))?;
         let channels = clip.channels.len();
@@ -86,7 +86,7 @@ impl PluginHost for PluginRegistry {
             let mut processor = PluginProcessor::new(instance.as_mut(), PLUGIN_CALL_DEADLINE);
             let resource = hsk_studio_accord::DomainId::parse(super::audio_import::IMPORT_CLIP_ID).map_err(|_| "waveform_plugin: resource id".to_owned())?;
             let engine = score::Engine::new(resource.clone(), 1);
-            let ctx = score::RequestContext { resource, actor: Some(crate::harness::default_actor()), expected_revision: 1 };
+            let ctx = score::RequestContext { resource, actor: Some(actor.clone()), expected_revision: 1 };
             let inputs: Vec<&[f32]> = clip.channels.iter().map(Vec::as_slice).collect();
             let request = score::BounceRequest { sample_rate_hz: rate, layout: &layout, start_sample: 0, channels: &inputs, block_frames: PLUGIN_BLOCK };
             let mut block = score::OutputBlock::with_capacity(layout.clone(), PLUGIN_BLOCK).map_err(|e| format!("waveform_{}", e.code()))?;

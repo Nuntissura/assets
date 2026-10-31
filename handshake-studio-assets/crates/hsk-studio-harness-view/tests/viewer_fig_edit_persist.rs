@@ -7,6 +7,8 @@
 //! `.fig` round trip has no oracle here (no `.fig` export from the window; NOT_PROVEN below).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{self as folio, StudioValue};
 use hsk_studio_harness_view::view::Viewer;
@@ -55,7 +57,7 @@ fn fig() -> FigDocument {
 /// Opens the fixture through FILE > Open with the "Design file (.fig)" filter.
 fn opened(label: &str) -> (Scratch, Viewer) {
     let scratch = Scratch::new(label);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     let src = scratch.0.join(FIXTURE);
     std::fs::copy(fixture_path(FIXTURE), &src).unwrap();
     v.shell_command(ShellCommand::Open).unwrap();
@@ -95,7 +97,7 @@ fn undo_depth(v: &Viewer) -> usize {
 }
 
 fn reopen(path: &Path) -> Viewer {
-    let mut w = Viewer::new(Prefer::Cpu);
+    let mut w = crate::support_context::viewer(Prefer::Cpu);
     w.open(path).unwrap();
     w
 }
@@ -271,7 +273,7 @@ fn reopened_instance_accepts_further_commands() {
 /// depth) is reported whole and is never overwritten. The stored bytes stay unchanged.
 #[test]
 fn stale_design_entry_reads_as_a_diagnostic() {
-    use hsk_studio_harness_core::harness::{Harness, References, Selection, default_actor};
+    use hsk_studio_harness_core::harness::{Harness, References, Selection};
     let (s, mut v) = opened("stale");
     let fig = fig();
     let inst = instance_layer(&v, &fig, "button-instance-3");
@@ -297,7 +299,7 @@ fn stale_design_entry_reads_as_a_diagnostic() {
     for (what, bytes, code, target, whole) in cases {
         let harness = Harness::new(Selection { providers: vec![], references: References::TrustAll }).unwrap();
         let cancel = CancellationToken::default();
-        let mut run = harness.run(default_actor(), &cancel);
+        let mut run = harness.run(crate::support_context::context(), &cancel);
         assert!(run.open_path(&edited), "{what}");
         run.set_document_entry(ENTRY, Some(bytes.clone())).unwrap();
         let path = s.0.join(format!("stale-{}.handshake", what.replace(' ', "-")));

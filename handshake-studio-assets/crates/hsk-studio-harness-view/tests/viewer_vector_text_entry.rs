@@ -5,14 +5,15 @@
 //! (`Run::set_document_entry`) into a saved package that the viewer then reopens.
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 #[path = "../../hsk-studio-harness/tests/common/mod.rs"]
 mod common;
 
 use common::{Scratch, solid_psd};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::vector_text::TEXT_NOT_PROVIDED;
-use hsk_studio_harness_core::harness::{Harness, References, Selection, default_actor};
-use hsk_studio_harness_view::view::Viewer;
+use hsk_studio_harness_core::harness::{Harness, References, Selection};
 use hsk_studio_harness_view::view::render::Prefer;
 use hsk_studio_harness_view::view::text;
 use hsk_studio_harness_view::view::vector::{LiveTextKind, ShapeKind, VectorTool};
@@ -22,7 +23,7 @@ fn corrupt_text_entry_names_its_decode_error() {
     let scratch = Scratch::new("vector-text-entry");
     let source = scratch.0.join("paper.psd");
     std::fs::write(&source, solid_psd(96, 64, "paper", [255, 255, 255])).unwrap();
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&source).unwrap();
     v.set_vector_tool(VectorTool { fill_on: false, stroke_on: false, stroke: [255, 255, 255], ..VectorTool::default() });
     let container = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [80.0, 54.0], false).unwrap();
@@ -35,12 +36,12 @@ fn corrupt_text_entry_names_its_decode_error() {
     for (what, bytes, code) in cases {
         let harness = Harness::new(Selection { providers: vec![], references: References::TrustAll }).unwrap();
         let cancel = CancellationToken::default();
-        let mut run = harness.run(default_actor(), &cancel);
+        let mut run = harness.run(crate::support_context::context(), &cancel);
         assert!(run.open_path(&saved), "{what}");
         run.set_document_entry(text::ENTRY, Some(bytes.to_vec())).unwrap();
         let corrupt = scratch.0.join(format!("corrupt-{what}.handshake"));
         assert!(run.save_to(&corrupt), "{what}");
-        let mut w = Viewer::new(Prefer::Cpu);
+        let mut w = crate::support_context::viewer(Prefer::Cpu);
         w.open(&corrupt).unwrap_or_else(|e| panic!("{what}: {e}"));
         let decode = w.text_entry().unwrap_err();
         assert!(decode.starts_with(code), "{what}: {decode}");

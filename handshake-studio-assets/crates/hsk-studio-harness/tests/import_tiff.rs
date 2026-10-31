@@ -8,7 +8,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio as folio;
 use hsk_studio_harness::import::{ImportError, SourceFormat, SourceMint, convert_to_native, import, sniff};
-use hsk_studio_harness::{Harness, References, Selection, default_actor};
+use hsk_studio_harness::{Harness, References, Selection, asset_local_test_context};
 use hsk_studio_interop_psd as psd;
 use hsk_studio_interop_tiff as tiff;
 use hsk_studio_package::{ImportRole, Limits, read_package};
@@ -143,7 +143,7 @@ fn photoshop_tiff_imports_its_composite_exactly_and_records_the_layers_as_typed_
 
     // Open directly: one raster layer in a live session.
     let h = harness();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_import(&bytes));
     assert!(run.summary());
     let report = run.finish("import");
@@ -279,7 +279,7 @@ fn photoshop_tiff_imports_its_layers_through_interop_psd() {
 
     // Open directly: two raster layers in a live session.
     let h = harness();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_import(&bytes));
     assert!(run.summary());
     let report = run.finish("import");

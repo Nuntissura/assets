@@ -7,7 +7,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio as folio;
 use hsk_studio_harness::import::{ImportError, SourceFormat, convert_to_native, import, sniff};
-use hsk_studio_harness::{Harness, References, Selection, default_actor};
+use hsk_studio_harness::{Harness, References, Selection, asset_local_test_context};
 use hsk_studio_interop_raster as raster;
 use hsk_studio_package::{ImportRole, Limits, read_package};
 use serde_json::Value;
@@ -44,7 +44,7 @@ fn png_imports_as_one_raster_layer_with_receipt_and_original() {
 
     // Open directly: one raster layer in a live session.
     let h = Harness::new(Selection { providers: Vec::new(), references: References::TrustAll }).unwrap();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_import(&bytes));
     assert!(run.summary());
     let report = run.finish("import");

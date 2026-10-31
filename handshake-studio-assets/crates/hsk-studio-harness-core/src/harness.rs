@@ -12,7 +12,8 @@
 
 use crate::action::{self, ActionRecord, Call, DialogOption, NotRecordable, PlayMode, RecordedValue, Recording, RecordingReport, UnitToken};
 use crate::panel::{self, PanelValues, Route};
-use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+use crate::context::RunContext;
+use hsk_studio_accord::{ActorContext, CancellationToken, CausationId, CommandContext, CommandId, DomainId};
 use hsk_studio_folio::{self as folio, Parent, Resolution, Resolver, StudioLayer, TileRef};
 use hsk_studio_observe::{Budget, DeliveryClass, DeliveryError, FailureCode, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_session::{
@@ -202,12 +203,16 @@ impl Harness {
             .collect()
     }
 
-    pub fn run<'a>(&'a self, actor: ActorContext, cancel: &'a CancellationToken) -> Run<'a> {
+    /// A run attributed to `context` (lane SMB-ATTRIBUTION-1): every mutating command mints its
+    /// own command context (actor, client session, command id, base revision, correlation) from it.
+    pub fn run<'a>(&'a self, context: RunContext, cancel: &'a CancellationToken) -> Run<'a> {
         Run {
             harness: self,
             cancel,
             frames: Frames::default(),
-            actor,
+            context,
+            current: None,
+            last_command: None,
             ops: Vec::new(),
             session: None,
             reopened: None,
@@ -218,12 +223,6 @@ impl Harness {
             quiet: false,
         }
     }
-}
-
-/// The attribution the harness uses unless the caller supplies one.
-pub fn default_actor() -> ActorContext {
-    ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session")
-        .expect("static actor literals satisfy accord bounds")
 }
 
 fn outcome_name(o: Outcome) -> &'static str {
@@ -240,7 +239,7 @@ fn outcome_name(o: Outcome) -> &'static str {
 
 fn observe_json(report: ReportStatus, frames: usize) -> Value {
     match report {
-        ReportStatus::Delivered(r) => json!({"frames":frames,"status":"delivered","outcome":outcome_name(r.outcome)}),
+        ReportStatus::Delivered(r) => json!({"frames":frames,"status":"delivered","outcome":outcome_name(r.outcome),"correlation":r.correlation_id}),
         ReportStatus::Undelivered(e) => json!({"frames":frames,"status":"undelivered","error":e.code()}),
         ReportStatus::Unaddressed => json!({"frames":frames,"status":"unaddressed"}),
     }
@@ -311,6 +310,23 @@ struct HistoryStep {
     /// A multi-sequence step (lane SMB-PR-NEST-1: Nest, Make Subsequence) that undoes / redoes
     /// this step through `Session::submit_multicam` with the multicam records passed through.
     sequences: Option<MulticamStep>,
+    /// The command that made this step (lane SMB-ATTRIBUTION-1): actor, client session, command
+    /// id, base revision, correlation and causation.
+    ctx: CommandContext,
+    /// The document revision the command produced.
+    revision: u64,
+}
+
+impl HistoryStep {
+    /// The step's attribution as shown by [`Run::history`].
+    fn attribution(&self) -> Value {
+        json!({
+            "label": self.label, "actor": actor_json(self.ctx.actor()), "client_session": self.ctx.client_session().as_str(),
+            "command_id": self.ctx.command().map(CommandId::as_str), "base_revision": self.ctx.base_revision(),
+            "revision": self.revision, "correlation": self.ctx.correlation().value(),
+            "causation": self.ctx.causation().map(CausationId::value),
+        })
+    }
 }
 
 /// A session document entry as it was before a step (`None` = absent).
@@ -338,7 +354,12 @@ pub struct Run<'a> {
     harness: &'a Harness,
     cancel: &'a CancellationToken,
     frames: Frames,
-    actor: ActorContext,
+    context: RunContext,
+    /// The command context of the operation in progress; the next record takes it.
+    current: Option<CommandContext>,
+    /// The command context the newest record took (a `*_and_entry` step's entry refusal and
+    /// entry-only step keep their command's correlation).
+    last_command: Option<CommandContext>,
     ops: Vec<Value>,
     session: Option<Session>,
     reopened: Option<Session>,
@@ -355,6 +376,29 @@ pub struct Run<'a> {
 }
 
 impl Run<'_> {
+    /// The run's attribution (lane SMB-ATTRIBUTION-1).
+    pub fn context(&self) -> &RunContext {
+        &self.context
+    }
+
+    /// The actor every command of this run is attributed to.
+    pub fn actor(&self) -> &ActorContext {
+        self.context.actor()
+    }
+
+    /// Mints the command context of a mutating command issued against `base` (the working
+    /// revision when `None`); the operation's record takes it.
+    fn begin_at(&mut self, command: &'static str, base: Option<u64>, causation: Option<CausationId>) -> CommandContext {
+        let base = base.or_else(|| self.revision()).unwrap_or(0);
+        let ctx = self.context.command(Some(command), base, causation);
+        self.current = Some(ctx.clone());
+        ctx
+    }
+
+    fn begin(&mut self, command: &'static str, causation: Option<CausationId>) -> CommandContext {
+        self.begin_at(command, None, causation)
+    }
+
     fn op_no(&self) -> u64 {
         u64::try_from(self.ops.len()).unwrap_or(u64::MAX).saturating_add(1)
     }
@@ -372,7 +416,17 @@ impl Run<'_> {
             None => json!({"frames":frames,"status":"unaddressed"}),
         };
         let ok = result.is_ok();
-        let mut record = json!({"op":op,"n":self.op_no(),"ok":ok,"revision":revision,"observe":observe});
+        // `n` is a local ordinal only; the correlation is the command context's (null for an
+        // operation that minted none, e.g. a refusal before any document is open).
+        let ctx = self.current.take();
+        let mut record = json!({
+            "op":op,"n":self.op_no(),"ok":ok,"revision":revision,"observe":observe,
+            "actor": actor_json(self.context.actor()),
+            "command_id": ctx.as_ref().and_then(CommandContext::command).map(CommandId::as_str),
+            "correlation": ctx.as_ref().map(|c| c.correlation().value()),
+            "causation": ctx.as_ref().and_then(CommandContext::causation).map(CausationId::value),
+        });
+        self.last_command = ctx;
         match result {
             Ok(detail) => record["detail"] = detail,
             Err(code) => record["error"] = json!(code),
@@ -387,9 +441,10 @@ impl Run<'_> {
         let doc = session.snapshot().document();
         let resource = DomainId::parse(&doc.document_id).ok()?;
         let budget = Budget::new(0, 0).ok()?;
-        let n = self.op_no();
-        let mut observe = Observe::new(n, doc.revision, resource, self.actor.clone(), budget);
-        let observation = Observation { correlation_id: n, revision: doc.revision, outcome, progress: None, private_project_text: None };
+        // The frame carries the operation's command correlation (own_op mints one), never `n`.
+        let correlation = self.current.as_ref()?.correlation().value();
+        let mut observe = Observe::new(correlation, doc.revision, resource, self.context.actor().clone(), budget);
+        let observation = Observation { correlation_id: correlation, revision: doc.revision, outcome, progress: None, private_project_text: None };
         let mut sink = FrameSink(self.frames.clone());
         Some(match observe.emit(observation, self.cancel, &mut sink) {
             Ok(receipt) => ReportStatus::Delivered(receipt),
@@ -409,6 +464,11 @@ impl Run<'_> {
             Err("unsupported_route" | "no_commit_route" | "provider_not_selected") => Outcome::Failure(FailureCode::Unsupported),
             Err(_) => Outcome::Failure(FailureCode::Validation),
         };
+        if self.current.is_none() && self.session.is_some() {
+            // A harness-owned operation without a command id still gets its own correlation.
+            let base = self.revision().unwrap_or(0);
+            self.current = Some(self.context.command(None, base, None));
+        }
         let report = self.emit_own(outcome);
         let revision = self.revision();
         self.push(op, before, result, report, revision)
@@ -597,12 +657,14 @@ impl Run<'_> {
         }
         let inner: Vec<HistoryStep> = self.undo_stack.drain(depth..).collect();
         let label = format!("action {}", action.name);
+        let ctx = self.begin("action.play", None);
         let history_label = if inner.is_empty() {
             // Nothing changed: like an unchanged edit, the redo history stays.
             self.redo_stack = saved_redo;
             Value::Null
         } else {
-            self.undo_stack.push(HistoryStep { label: label.clone(), inverse: Value::Null, entry: None, timeline: None, group: Some(inner), sequences: None });
+            let revision = self.revision().unwrap_or(0);
+            self.undo_stack.push(HistoryStep { label: label.clone(), inverse: Value::Null, entry: None, timeline: None, group: Some(inner), sequences: None, ctx, revision });
             json!(label)
         };
         let skipped: Vec<u64> = action.steps.iter().filter(|s| !s.enabled).map(|s| s.index).collect();
@@ -634,7 +696,10 @@ impl Run<'_> {
         let regroup = |stack: &mut Vec<HistoryStep>, base: usize, label: &str| {
             if stack.len() > base {
                 let steps: Vec<HistoryStep> = stack.drain(base..).collect();
-                stack.push(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps), sequences: None });
+                // The regrouped step carries the attribution of its newest inner step.
+                if let Some((ctx, revision)) = steps.last().map(|s| (s.ctx.clone(), s.revision)) {
+                    stack.push(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps), sequences: None, ctx, revision });
+                }
             }
         };
         if done == n {
@@ -665,7 +730,7 @@ impl Run<'_> {
     pub fn open_path(&mut self, path: &Path) -> bool {
         self.note_unrecordable("document.open");
         let before = self.frames.count();
-        let opened = Session::open_path(path, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
+        let opened = Session::open_path(path, SessionConfig::new(self.context.actor().clone()), self.ports(), self.cancel);
         self.finish_open("open", before, opened, false)
     }
 
@@ -673,7 +738,7 @@ impl Run<'_> {
     pub fn open_bytes(&mut self, bytes: &[u8]) -> bool {
         self.note_unrecordable("document.open");
         let before = self.frames.count();
-        let opened = Session::open_bytes(bytes, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
+        let opened = Session::open_bytes(bytes, SessionConfig::new(self.context.actor().clone()), self.ports(), self.cancel);
         self.finish_open("open", before, opened, false)
     }
 
@@ -696,7 +761,7 @@ impl Run<'_> {
         self.note_unrecordable("document.import");
         let before = self.frames.count();
         let resolver = self.harness.resolver();
-        let (package, imported) = match crate::import::convert_to_native(bytes, resolver.as_ref(), self.cancel) {
+        let (package, imported) = match crate::import::convert_to_native_as(bytes, resolver.as_ref(), self.context.actor(), self.cancel) {
             Ok(done) => done,
             Err(e) => {
                 self.push("import", before, Err(e.code()), None, None);
@@ -714,7 +779,7 @@ impl Run<'_> {
             "layers": imported.receipt["layers"],
             "not_proven": imported.receipt["not_proven"],
         });
-        let opened = Session::open_bytes(&package, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
+        let opened = Session::open_bytes(&package, SessionConfig::new(self.context.actor().clone()), self.ports(), self.cancel);
         let ok = self.finish_open("import", before, opened, false);
         if let Some(record) = self.ops.last_mut() {
             if record["detail"].is_object() {
@@ -828,13 +893,13 @@ impl Run<'_> {
 
     /// Renames a layer through the selected chronicle provider.
     pub fn rename(&mut self, layer_id: &str, name: &str, expected_revision: Option<u64>) -> bool {
-        let ok = self.property_edit("rename", layer_id, Prop::Name, PropValue::Text(name.to_string()), expected_revision);
+        let ok = self.property_edit("rename", layer_id, Prop::Name, PropValue::Text(name.to_string()), expected_revision, action::CMD_RENAME);
         self.record(ok, action::CMD_RENAME, || vec![("layer", RecordedValue::Reference(layer_id.to_string())), ("name", RecordedValue::String(name.to_string()))])
     }
 
     /// Shows or hides a layer through the selected chronicle provider.
     pub fn set_visible(&mut self, layer_id: &str, visible: bool, expected_revision: Option<u64>) -> bool {
-        let ok = self.property_edit("set_visible", layer_id, Prop::Visible, PropValue::Bool(visible), expected_revision);
+        let ok = self.property_edit("set_visible", layer_id, Prop::Visible, PropValue::Bool(visible), expected_revision, action::CMD_SET_VISIBLE);
         self.record(ok, action::CMD_SET_VISIBLE, || vec![("layer", RecordedValue::Reference(layer_id.to_string())), ("visible", RecordedValue::Boolean(visible))])
     }
 
@@ -888,7 +953,7 @@ impl Run<'_> {
             (Route::ChronicleBlendMode, hsk_studio_controls::Value::Int(i)) => (Prop::BlendMode, PropValue::Number(*i as f64)),
             _ => return self.own_op("panel_set", before, Err("unsupported_route")),
         };
-        let ok = self.property_edit("panel_set", layer_id, prop, new, expected_revision);
+        let ok = self.property_edit("panel_set", layer_id, prop, new, expected_revision, action::CMD_PANEL_SET);
         if !ok {
             // The commit was refused: the panel's store must not keep the rejected value.
             let _ = panel.store.undo(&panel.registry, &event, None);
@@ -900,10 +965,10 @@ impl Run<'_> {
         ok
     }
 
-    fn property_edit(&mut self, op: &str, layer_id: &str, prop: Prop, new: PropValue, expected_revision: Option<u64>) -> bool {
+    fn property_edit(&mut self, op: &str, layer_id: &str, prop: Prop, new: PropValue, expected_revision: Option<u64>, command: &'static str) -> bool {
         let before = self.frames.count();
-        let n = self.op_no();
-        let result = self.submit_property(layer_id, prop, &new, expected_revision, n);
+        let ctx = self.begin_at(command, expected_revision, None);
+        let result = self.submit_property(layer_id, prop, &new, expected_revision, &ctx);
         match result {
             Ok(applied) => {
                 let field = prop.field();
@@ -919,12 +984,12 @@ impl Run<'_> {
                 if applied.changed
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None, timeline: None, group: None, sequences: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None, timeline: None, group: None, sequences: None, ctx, revision: applied.revision });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
                     "layer_id": layer_id, "field": field, "provider": applied.provider, "command": applied.command_id,
-                    "previous_revision": applied.previous_revision, "revision": applied.revision,
+                    "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id,
                     "changed": applied.changed, "has_inverse": applied.inverse.is_some(), "replayed": applied.replayed,
                 });
                 self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
@@ -943,20 +1008,20 @@ impl Run<'_> {
         }
     }
 
-    fn submit_property(&mut self, layer_id: &str, prop: Prop, new: &PropValue, expected: Option<u64>, n: u64) -> Result<Applied, Fail> {
+    fn submit_property(&mut self, layer_id: &str, prop: Prop, new: &PropValue, expected: Option<u64>, ctx: &CommandContext) -> Result<Applied, Fail> {
         if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
             return Err(Fail::Refused("provider_not_selected"));
         }
         let cancel = self.cancel;
         let session = self.session.as_mut().ok_or(Fail::Refused("not_open"))?;
-        let params = patch_json(session, &self.actor, layer_id, prop, new, n).map_err(Fail::Refused)?;
+        let params = patch_json(session, ctx, layer_id, prop, new).map_err(Fail::Refused)?;
         let revision = expected.unwrap_or_else(|| session.document_revision());
         session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
     }
 
     /// Sets a layer's opacity (percent) through chronicle (undoable).
     pub fn set_opacity(&mut self, layer_id: &str, percent: f64, expected_revision: Option<u64>) -> bool {
-        let ok = self.property_edit("set_opacity", layer_id, Prop::Opacity, PropValue::Number(percent), expected_revision);
+        let ok = self.property_edit("set_opacity", layer_id, Prop::Opacity, PropValue::Number(percent), expected_revision, action::CMD_SET_OPACITY);
         self.record(ok, action::CMD_SET_OPACITY, || {
             vec![("layer", RecordedValue::Reference(layer_id.to_string())), ("opacity", RecordedValue::Measured { value: percent, unit: Some(UnitToken::Percent) })]
         })
@@ -964,7 +1029,7 @@ impl Run<'_> {
 
     /// Sets a layer's blend mode (StudioBlendMode discriminant) through chronicle (undoable).
     pub fn set_blend_mode(&mut self, layer_id: &str, mode: u16, expected_revision: Option<u64>) -> bool {
-        let ok = self.property_edit("set_blend_mode", layer_id, Prop::BlendMode, PropValue::Number(f64::from(mode)), expected_revision);
+        let ok = self.property_edit("set_blend_mode", layer_id, Prop::BlendMode, PropValue::Number(f64::from(mode)), expected_revision, action::CMD_SET_BLEND_MODE);
         self.record(ok, action::CMD_SET_BLEND_MODE, || vec![("layer", RecordedValue::Reference(layer_id.to_string())), ("blend_mode", RecordedValue::Number(f64::from(mode)))])
     }
 
@@ -973,7 +1038,7 @@ impl Run<'_> {
     /// `missing_asset`.
     pub fn set_tiles(&mut self, op: &str, layer_id: &str, tiles: Vec<TileRef>) -> bool {
         self.note_unrecordable("layer.set_tiles");
-        self.property_edit(op, layer_id, Prop::Tiles, PropValue::Tiles(tiles), None)
+        self.property_edit(op, layer_id, Prop::Tiles, PropValue::Tiles(tiles), None, "layer.set_tiles")
     }
 
     /// Replaces a vector layer's path id list through chronicle `vector_paths` (lane
@@ -981,7 +1046,7 @@ impl Run<'_> {
     /// records available first (the viewer's `vector` document entry).
     pub fn set_vector_paths(&mut self, op: &str, layer_id: &str, path_ids: Vec<String>) -> bool {
         self.note_unrecordable("layer.set_vector_paths");
-        self.property_edit(op, layer_id, Prop::VectorPaths, PropValue::PathIds(path_ids), None)
+        self.property_edit(op, layer_id, Prop::VectorPaths, PropValue::PathIds(path_ids), None, "layer.set_vector_paths")
     }
 
     /// ONE undoable step (lane SMB-ILLUSTRATOR-TOOLS-2): the `vector_paths` of every layer in
@@ -1016,16 +1081,16 @@ impl Run<'_> {
         };
         let previous = entry.as_ref().map(|(token, _)| EntryRestore { token: (*token).to_string(), bytes: session.document_entry(token).map(<[u8]>::to_vec) });
         let depth = self.undo_stack.len();
+        let ctx = self.begin("layer.set_vector_paths_and_entry", None);
         if !writes.is_empty() {
             if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
                 return self.own_op(op, before, Err("provider_not_selected"));
             }
-            let n = self.op_no();
             let cancel = self.cancel;
             let Some(session) = self.session.as_mut() else {
                 return self.push(op, before, Err("not_open"), None, None);
             };
-            let params = match patch_json_vector_paths(session, &self.actor, writes, n) {
+            let params = match patch_json_vector_paths(session, &ctx, writes) {
                 Ok(p) => p,
                 Err(code) => return self.own_op(op, before, Err(code)),
             };
@@ -1035,7 +1100,7 @@ impl Run<'_> {
                     if applied.changed
                         && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                     {
-                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None, group: None, sequences: None });
+                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None, group: None, sequences: None, ctx: ctx.clone(), revision: applied.revision });
                         self.redo_stack.clear();
                     }
                 }
@@ -1056,6 +1121,7 @@ impl Run<'_> {
                 if self.undo_stack.len() > depth {
                     let _ = self.quietly(Self::undo);
                 }
+                self.current = Some(ctx);
                 return self.own_op(op, before, Err(code));
             }
             if self.undo_stack.len() > depth {
@@ -1063,7 +1129,8 @@ impl Run<'_> {
                     step.entry = Some(restore);
                 }
             } else {
-                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None });
+                let revision = self.revision().unwrap_or(0);
+                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
                 self.redo_stack.clear();
             }
         }
@@ -1085,28 +1152,28 @@ impl Run<'_> {
             // A create carries a whole layer record and graph operation: not replayable from the
             // recorded value types, so not recorded (placement-only writes are).
             self.note_unrecordable_because(action::CMD_RESTRUCTURE, "restructure_create_payload");
-            return self.quietly(|run| run.restructure_inner(op, writes));
+            return self.quietly(|run| run.restructure_inner(op, writes, action::CMD_RESTRUCTURE));
         }
-        let ok = self.restructure_inner(op, writes);
+        let ok = self.restructure_inner(op, writes, action::CMD_RESTRUCTURE);
         self.record(ok, action::CMD_RESTRUCTURE, || vec![("op", RecordedValue::String(op.to_string())), ("writes", RecordedValue::List(writes.iter().map(action::placement_value).collect()))])
     }
 
-    fn restructure_inner(&mut self, op: &str, writes: &[PlacementWrite]) -> bool {
+    fn restructure_inner(&mut self, op: &str, writes: &[PlacementWrite], command: &'static str) -> bool {
         let before = self.frames.count();
-        let n = self.op_no();
-        match self.submit_structure(writes, n) {
+        let ctx = self.begin(command, None);
+        match self.submit_structure(writes, &ctx) {
             Ok(applied) => {
                 if applied.changed
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
                     let first = writes.first().map_or("", |w| w.layer_id.as_str());
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None, timeline: None, group: None, sequences: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None, timeline: None, group: None, sequences: None, ctx, revision: applied.revision });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
                     "layers": writes.iter().map(|w| w.layer_id.clone()).collect::<Vec<_>>(),
                     "provider": applied.provider, "command": applied.command_id,
-                    "previous_revision": applied.previous_revision, "revision": applied.revision,
+                    "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id,
                     "changed": applied.changed, "has_inverse": applied.inverse.is_some(),
                 });
                 self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
@@ -1146,9 +1213,10 @@ impl Run<'_> {
             }
         };
         let depth = self.undo_stack.len();
-        if !self.quietly(|run| run.restructure_inner(op, writes)) {
+        if !self.quietly(|run| run.restructure_inner(op, writes, "layer.restructure_and_entry")) {
             return false;
         }
+        let ctx = self.last_command.clone();
         let cancel = self.cancel;
         let set = match self.session.as_mut() {
             Some(s) => s.set_document_entry(token, Some(bytes), cancel).map_err(|e| e.code()),
@@ -1160,6 +1228,7 @@ impl Run<'_> {
                 let _ = self.quietly(Self::undo);
             }
             let before = self.frames.count();
+            self.current = ctx;
             return self.own_op(op, before, Err(code));
         }
         let restore = EntryRestore { token: token.to_string(), bytes: previous };
@@ -1168,14 +1237,15 @@ impl Run<'_> {
                 step.entry = Some(restore);
             }
         } else {
-            // The structure edit changed nothing: the step is entry-only.
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None });
+            // The structure edit changed nothing: the step is entry-only (same command).
+            let (ctx, revision) = self.entry_only_attribution(ctx, "layer.restructure_and_entry");
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
             self.redo_stack.clear();
         }
         true
     }
 
-    fn submit_structure(&mut self, writes: &[PlacementWrite], n: u64) -> Result<Applied, Fail> {
+    fn submit_structure(&mut self, writes: &[PlacementWrite], ctx: &CommandContext) -> Result<Applied, Fail> {
         if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
             return Err(Fail::Refused("provider_not_selected"));
         }
@@ -1183,7 +1253,6 @@ impl Run<'_> {
             return Err(Fail::Refused("nothing_to_change"));
         }
         let cancel = self.cancel;
-        let actor = actor_json(&self.actor);
         let session = self.session.as_mut().ok_or(Fail::Refused("not_open"))?;
         let mut reads = Vec::new();
         let mut wire = Vec::new();
@@ -1211,9 +1280,9 @@ impl Run<'_> {
             "transport_version": 1,
             "document_id": session.snapshot().document().document_id,
             "base_revision": session.document_revision(),
-            "command_id": format!("harness-op-{n}"),
-            "correlation_id": n,
-            "actor": actor,
+            "command_id": command_text(ctx),
+            "correlation_id": ctx.correlation().value(),
+            "actor": actor_json(ctx.actor()),
             "reads": reads,
             "writes": wire,
         });
@@ -1260,10 +1329,12 @@ impl Run<'_> {
             }
         };
         let depth = self.undo_stack.len();
-        if let Some(tiles) = tiles
-            && !self.quietly(|run| run.set_tiles(op, layer_id, tiles))
-        {
-            return false;
+        let mut ctx = None;
+        if let Some(tiles) = tiles {
+            if !self.quietly(|run| run.property_edit(op, layer_id, Prop::Tiles, PropValue::Tiles(tiles), None, "layer.set_tiles_and_entry")) {
+                return false;
+            }
+            ctx = self.last_command.clone();
         }
         let cancel = self.cancel;
         let set = match self.session.as_mut() {
@@ -1277,6 +1348,7 @@ impl Run<'_> {
                 let _ = self.quietly(Self::undo);
             }
             let before = self.frames.count();
+            self.current = ctx;
             return self.own_op(op, before, Err(code));
         }
         if self.undo_stack.len() > depth {
@@ -1286,7 +1358,9 @@ impl Run<'_> {
             true
         } else {
             let before = self.frames.count();
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None });
+            let (ctx, revision) = self.entry_only_attribution(ctx, "layer.set_tiles_and_entry");
+            self.current = Some(ctx.clone());
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
             self.redo_stack.clear();
             self.own_op(op, before, Ok(json!({"layer_id": layer_id, "entry": token, "tiles_changed": false})))
         }
@@ -1298,9 +1372,16 @@ impl Run<'_> {
     /// nothing). One record `op`.
     pub fn submit_sequence(&mut self, op: &str, write: folio::StudioSequence) -> bool {
         self.note_unrecordable("document.submit_sequence");
+        self.submit_sequence_as(op, write, "document.submit_sequence")
+    }
+
+    fn submit_sequence_as(&mut self, op: &str, write: folio::StudioSequence, command: &'static str) -> bool {
         let before = self.frames.count();
-        let n = self.op_no();
         let cancel = self.cancel;
+        if self.session.is_none() {
+            return self.push(op, before, Err("not_open"), None, None);
+        }
+        let ctx = self.begin(command, None);
         let Some(session) = self.session.as_mut() else {
             return self.push(op, before, Err("not_open"), None, None);
         };
@@ -1308,15 +1389,15 @@ impl Run<'_> {
             return self.own_op(op, before, Err("unknown_sequence"));
         };
         let sequence_id = write.sequence_id.clone();
-        let step = hsk_studio_session::TimelineStep { command_id: format!("{op}-{n}"), correlation_id: n, sequence_id: sequence_id.clone(), expect, write };
+        let step = hsk_studio_session::TimelineStep { command_id: command_text(&ctx).to_string(), correlation_id: ctx.correlation().value(), sequence_id: sequence_id.clone(), expect, write };
         let revision = session.document_revision();
         match session.submit_timeline(&step, revision, cancel) {
             Ok(applied) => {
                 if applied.timeline_inverse.is_some() {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None, sequences: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None, sequences: None, ctx, revision: applied.revision });
                     self.redo_stack.clear();
                 }
-                let detail = json!({"sequence_id": sequence_id, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
+                let detail = json!({"sequence_id": sequence_id, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
                 self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
             }
             Err(f) => {
@@ -1352,12 +1433,16 @@ impl Run<'_> {
     /// recording it is reported once as `document.submit_sequence_edits` (not recordable).
     pub fn submit_sequence_edits(&mut self, op: &str, edits: Vec<SequenceEdit>) -> bool {
         self.note_unrecordable("document.submit_sequence_edits");
+        self.submit_sequence_edits_as(op, edits, "document.submit_sequence_edits")
+    }
+
+    fn submit_sequence_edits_as(&mut self, op: &str, edits: Vec<SequenceEdit>, command: &'static str) -> bool {
         let before = self.frames.count();
-        let n = self.op_no();
         let cancel = self.cancel;
         if self.session.is_none() {
             return self.push(op, before, Err("not_open"), None, None);
         }
+        let ctx = self.begin(command, None);
         let records = match self.live_multicam_records() {
             Ok(r) => r,
             Err(code) => return self.own_op(op, before, Err(code)),
@@ -1369,7 +1454,7 @@ impl Run<'_> {
                 SequenceEdit::Insert { write, .. } => write.sequence_id.clone(),
             })
             .collect();
-        let step = MulticamStep { command_id: format!("{op}-{n}"), correlation_id: n, sequences: edits, records_expect: records.clone(), records_write: records };
+        let step = MulticamStep { command_id: command_text(&ctx).to_string(), correlation_id: ctx.correlation().value(), sequences: edits, records_expect: records.clone(), records_write: records };
         let Some(session) = self.session.as_mut() else {
             return self.push(op, before, Err("not_open"), None, None);
         };
@@ -1377,10 +1462,10 @@ impl Run<'_> {
         match session.submit_multicam(&step, revision, cancel) {
             Ok(applied) => {
                 if applied.multicam_inverse.is_some() {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {}", ids.join(",")), inverse: Value::Null, entry: None, timeline: None, group: None, sequences: applied.multicam_inverse.clone() });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {}", ids.join(",")), inverse: Value::Null, entry: None, timeline: None, group: None, sequences: applied.multicam_inverse.clone(), ctx, revision: applied.revision });
                     self.redo_stack.clear();
                 }
-                let detail = json!({"sequence_ids": ids, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed, "provider": applied.provider});
+                let detail = json!({"sequence_ids": ids, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed, "provider": applied.provider});
                 self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
             }
             Err(f) => {
@@ -1413,9 +1498,10 @@ impl Run<'_> {
             }
         };
         let depth = self.undo_stack.len();
-        if !self.quietly(|run| run.submit_sequence_edits(op, edits)) {
+        if !self.quietly(|run| run.submit_sequence_edits_as(op, edits, "document.submit_sequence_edits_and_entry")) {
             return false;
         }
+        let ctx = self.last_command.clone();
         let cancel = self.cancel;
         let set = match self.session.as_mut() {
             Some(s) => s.set_document_entry(token, Some(bytes), cancel).map_err(|e| e.code()),
@@ -1427,6 +1513,7 @@ impl Run<'_> {
                 let _ = self.quietly(Self::undo);
             }
             let before = self.frames.count();
+            self.current = ctx;
             return self.own_op(op, before, Err(code));
         }
         let restore = EntryRestore { token: token.to_string(), bytes: previous };
@@ -1435,8 +1522,9 @@ impl Run<'_> {
                 step.entry = Some(restore);
             }
         } else {
-            // The sequences did not change: the step is entry-only.
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None });
+            // The sequences did not change: the step is entry-only (same command).
+            let (ctx, revision) = self.entry_only_attribution(ctx, "document.submit_sequence_edits_and_entry");
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
             self.redo_stack.clear();
         }
         true
@@ -1449,6 +1537,13 @@ impl Run<'_> {
             None => Ok(None),
             Some(bytes) => serde_json::from_slice(bytes).map(Some).map_err(|_| "multicam_records_invalid"),
         }
+    }
+
+    /// The attribution of an entry-only step: the command whose record the call wrote (`ctx`), or
+    /// a fresh context for `command` when no record took one.
+    fn entry_only_attribution(&self, ctx: Option<CommandContext>, command: &'static str) -> (CommandContext, u64) {
+        let revision = self.revision().unwrap_or(0);
+        (ctx.unwrap_or_else(|| self.context.command(Some(command), revision, None)), revision)
     }
 
     /// Puts a step that could not be applied back on the stack it came from.
@@ -1469,9 +1564,10 @@ impl Run<'_> {
             }
         };
         let depth = self.undo_stack.len();
-        if !self.quietly(|run| run.submit_sequence(op, write)) {
+        if !self.quietly(|run| run.submit_sequence_as(op, write, "document.submit_sequence_and_entry")) {
             return false;
         }
+        let ctx = self.last_command.clone();
         let cancel = self.cancel;
         let set = match self.session.as_mut() {
             Some(s) => s.set_document_entry(token, Some(bytes), cancel).map_err(|e| e.code()),
@@ -1483,6 +1579,7 @@ impl Run<'_> {
                 let _ = self.quietly(Self::undo);
             }
             let before = self.frames.count();
+            self.current = ctx;
             return self.own_op(op, before, Err(code));
         }
         let restore = EntryRestore { token: token.to_string(), bytes: previous };
@@ -1491,8 +1588,9 @@ impl Run<'_> {
                 step.entry = Some(restore);
             }
         } else {
-            // The sequence did not change: the step is entry-only.
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None });
+            // The sequence did not change: the step is entry-only (same command).
+            let (ctx, revision) = self.entry_only_attribution(ctx, "document.submit_sequence_and_entry");
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
             self.redo_stack.clear();
         }
         true
@@ -1531,11 +1629,15 @@ impl Run<'_> {
         self.history_step(false)
     }
 
-    /// Labels of the undo and redo histories, oldest first.
+    /// Labels of the undo and redo histories, oldest first, and each step's attribution (lane
+    /// SMB-ATTRIBUTION-1: `undo_steps` / `redo_steps` = label, actor, client session, command id,
+    /// base revision, revision, correlation, causation).
     pub fn history(&self) -> Value {
         json!({
             "undo": self.undo_stack.iter().map(|s| s.label.clone()).collect::<Vec<_>>(),
             "redo": self.redo_stack.iter().map(|s| s.label.clone()).collect::<Vec<_>>(),
+            "undo_steps": self.undo_stack.iter().map(HistoryStep::attribution).collect::<Vec<_>>(),
+            "redo_steps": self.redo_stack.iter().map(HistoryStep::attribution).collect::<Vec<_>>(),
         })
     }
 
@@ -1551,13 +1653,14 @@ impl Run<'_> {
             HistoryStep { label, group: Some(inner), .. } => return self.group_step(undo, label, inner),
             other => other,
         };
+        // A fresh command for the undo / redo, caused by the step it reverses.
+        let ctx = self.begin(if undo { "history.undo" } else { "history.redo" }, Some(CausationId::from(step.ctx.correlation())));
         if let Some(timeline) = step.timeline.clone() {
             // A timeline step: submit it under fresh identity; its inverse goes to the other stack.
-            let n = self.op_no();
             let cancel = self.cancel;
             let mut submit = timeline;
-            submit.command_id = format!("{op}-{n}");
-            submit.correlation_id = n;
+            submit.command_id = command_text(&ctx).to_string();
+            submit.correlation_id = ctx.correlation().value();
             let Some(session) = self.session.as_mut() else {
                 if undo {
                     self.undo_stack.push(step);
@@ -1579,8 +1682,8 @@ impl Run<'_> {
                         }
                         None => None,
                     };
-                    let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: applied.timeline_inverse.clone(), group: None, sequences: None };
+                    let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: applied.timeline_inverse.clone(), group: None, sequences: None, ctx, revision: applied.revision };
                     if undo {
                         self.redo_stack.push(next);
                     } else {
@@ -1602,10 +1705,9 @@ impl Run<'_> {
         if let Some(mut submit) = step.sequences.clone() {
             // A multi-sequence step (lane SMB-PR-NEST-1): submit its inverse under fresh identity
             // with the live multicam records passed through; its inverse goes to the other stack.
-            let n = self.op_no();
             let cancel = self.cancel;
-            submit.command_id = format!("{op}-{n}");
-            submit.correlation_id = n;
+            submit.command_id = command_text(&ctx).to_string();
+            submit.correlation_id = ctx.correlation().value();
             let records = match self.live_multicam_records() {
                 Ok(r) => r,
                 Err(code) => {
@@ -1633,8 +1735,8 @@ impl Run<'_> {
                         }
                         None => None,
                     };
-                    let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: applied.multicam_inverse.clone() };
+                    let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: applied.multicam_inverse.clone(), ctx, revision: applied.revision };
                     if undo {
                         self.redo_stack.push(next);
                     } else {
@@ -1655,7 +1757,8 @@ impl Run<'_> {
             return match swapped {
                 Some(Ok(previous)) => {
                     let detail = json!({"step": step.label, "entry": step.entry.as_ref().map(|e| e.token.clone()), "changed": true});
-                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: None };
+                    let revision = self.revision().unwrap_or(0);
+                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: None, ctx, revision };
                     if undo {
                         self.redo_stack.push(entry);
                     } else {
@@ -1674,8 +1777,7 @@ impl Run<'_> {
                 None => self.own_op(op, before, Err("empty_history_step")),
             };
         }
-        let n = self.op_no();
-        match self.submit_inverse(&step.inverse, n) {
+        match self.submit_inverse(&step.inverse, &ctx) {
             Ok(applied) => {
                 // The entry of the step comes back with the chronicle inverse (refused: the step
                 // stays applied in chronicle, so it is reported, never silently split).
@@ -1701,8 +1803,8 @@ impl Run<'_> {
                     self.expectations.retain(|e| !(e.layer_id == layer && e.field == field));
                     self.expectations.push(Expectation { layer_id: layer, field, expected: write["value"]["value"].clone() });
                 }
-                let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None, group: None, sequences: None };
+                let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
+                let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None, group: None, sequences: None, ctx, revision: applied.revision };
                 if undo {
                     self.redo_stack.push(entry);
                 } else {
@@ -1728,12 +1830,11 @@ impl Run<'_> {
         }
     }
 
-    fn submit_inverse(&mut self, inverse: &Value, n: u64) -> Result<Applied, Fail> {
+    fn submit_inverse(&mut self, inverse: &Value, ctx: &CommandContext) -> Result<Applied, Fail> {
         if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
             return Err(Fail::Refused("provider_not_selected"));
         }
         let cancel = self.cancel;
-        let actor = actor_json(&self.actor);
         let session = self.session.as_mut().ok_or(Fail::Refused("not_open"))?;
         // The history is last-in first-out: every later step was undone before this one, and
         // those undos advanced the revisions this inverse quotes. Its reads are refreshed to the
@@ -1755,9 +1856,9 @@ impl Run<'_> {
             "transport_version": 1,
             "document_id": inverse["document_id"],
             "base_revision": session.document_revision(),
-            "command_id": format!("harness-op-{n}"),
-            "correlation_id": n,
-            "actor": actor,
+            "command_id": command_text(ctx),
+            "correlation_id": ctx.correlation().value(),
+            "actor": actor_json(ctx.actor()),
             "reads": reads,
             "writes": inverse["writes"],
         });
@@ -1813,7 +1914,7 @@ impl Run<'_> {
     pub fn reopen_bytes(&mut self, bytes: &[u8]) -> bool {
         self.note_unrecordable("document.reopen");
         let before = self.frames.count();
-        let opened = Session::open_bytes(bytes, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
+        let opened = Session::open_bytes(bytes, SessionConfig::new(self.context.actor().clone()), self.ports(), self.cancel);
         self.finish_open("reopen", before, opened, true)
     }
 
@@ -1821,7 +1922,7 @@ impl Run<'_> {
     pub fn reopen_path(&mut self, path: &Path) -> bool {
         self.note_unrecordable("document.reopen");
         let before = self.frames.count();
-        let opened = Session::open_path(path, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
+        let opened = Session::open_path(path, SessionConfig::new(self.context.actor().clone()), self.ports(), self.cancel);
         self.finish_open("reopen", before, opened, true)
     }
 
@@ -1925,7 +2026,7 @@ impl Run<'_> {
 /// session's own revision vector, so the patch quotes what the session holds (exercised by every
 /// edit in `open_edit_save_reopen_verify_end_to_end`).
 /// One chronicle patch of several `vector_paths` writes (lane SMB-ILLUSTRATOR-TOOLS-2).
-fn patch_json_vector_paths(session: &Session, actor: &ActorContext, writes: &[(String, Vec<String>)], n: u64) -> Result<Vec<u8>, &'static str> {
+fn patch_json_vector_paths(session: &Session, ctx: &CommandContext, writes: &[(String, Vec<String>)]) -> Result<Vec<u8>, &'static str> {
     let doc = session.snapshot().document();
     let mut reads = Vec::with_capacity(writes.len());
     let mut wire = Vec::with_capacity(writes.len());
@@ -1948,16 +2049,16 @@ fn patch_json_vector_paths(session: &Session, actor: &ActorContext, writes: &[(S
         "transport_version": 1,
         "document_id": doc.document_id,
         "base_revision": session.document_revision(),
-        "command_id": format!("harness-op-{n}"),
-        "correlation_id": n,
-        "actor": actor_json(actor),
+        "command_id": command_text(ctx),
+        "correlation_id": ctx.correlation().value(),
+        "actor": actor_json(ctx.actor()),
         "reads": reads,
         "writes": wire,
     });
     serde_json::to_vec(&patch).map_err(|_| "patch_encoding")
 }
 
-fn patch_json(session: &Session, actor: &ActorContext, layer_id: &str, prop: Prop, new: &PropValue, n: u64) -> Result<Vec<u8>, &'static str> {
+fn patch_json(session: &Session, ctx: &CommandContext, layer_id: &str, prop: Prop, new: &PropValue) -> Result<Vec<u8>, &'static str> {
     let layer = session.snapshot().document().layers.iter().find(|l| l.layer_id == layer_id).ok_or("unknown_layer")?;
     let property = prop.field();
     let current = match prop {
@@ -1987,9 +2088,9 @@ fn patch_json(session: &Session, actor: &ActorContext, layer_id: &str, prop: Pro
         "transport_version": 1,
         "document_id": session.snapshot().document().document_id,
         "base_revision": session.document_revision(),
-        "command_id": format!("harness-op-{n}"),
-        "correlation_id": n,
-        "actor": actor_json(actor),
+        "command_id": command_text(ctx),
+        "correlation_id": ctx.correlation().value(),
+        "actor": actor_json(ctx.actor()),
         "reads": [{"address": address, "expected_revision": revision, "expected_value": current}],
         "writes": [{"address": address, "value": wanted}],
     });
@@ -2052,6 +2153,12 @@ fn place_wire(to: Option<&Place>, create: Option<&(StudioLayer, folio::Operation
         v
     });
     json!({"value_kind": "place", "value": value})
+}
+
+/// The chronicle `command_id` of a command context: its registered command id (every mutating
+/// `Run` command has one; the fallback names the harness without an ordinal).
+fn command_text(ctx: &CommandContext) -> &str {
+    ctx.command().map_or("harness.command", CommandId::as_str)
 }
 
 /// The chronicle `Actor` wire form of the run's attribution.

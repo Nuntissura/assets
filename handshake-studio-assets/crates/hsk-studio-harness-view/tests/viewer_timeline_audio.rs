@@ -9,6 +9,8 @@
 //! layout.
 #![cfg(feature = "audio-batch")]
 
+mod support_context;
+
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
@@ -193,7 +195,7 @@ fn sequence_package(dir: &Path) -> PathBuf {
 /// Opens the fixture and binds the multitrack view (timeline, mixer, source port).
 fn opened(label: &str) -> (Scratch, Viewer, egui::Context) {
     let scratch = Scratch::new(label);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&sequence_package(&scratch.0)).unwrap_or_else(|e| panic!("{e}"));
     bind(&mut v);
     (scratch, v, egui::Context::default())

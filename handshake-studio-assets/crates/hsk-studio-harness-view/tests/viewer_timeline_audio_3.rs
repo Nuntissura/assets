@@ -8,6 +8,8 @@
 //! the run's history and Folio's validation.
 #![cfg(feature = "audio-batch")]
 
+mod support_context;
+
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
@@ -184,7 +186,7 @@ fn sequence_package_of(dir: &Path, sequence: &StudioSequence) -> PathBuf {
 /// Opens the fixture and binds the multitrack view (timeline, mixer, source port).
 fn opened(label: &str) -> (Scratch, Viewer) {
     let scratch = Scratch::new(label);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&sequence_package(&scratch.0)).unwrap_or_else(|e| panic!("{e}"));
     v.open_multitrack(RATE, 960, sources(), Arc::new(Ext)).unwrap_or_else(|e| panic!("{e}: {}", v.state_json()["status"]));
     (scratch, v)
@@ -338,7 +340,7 @@ fn panned_unpanned_crossfade_is_refused_by_name_in_the_mixer() {
         parameters: vec![],
         repeat_end_frame: false,
     });
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&sequence_package_of(&scratch.0, &seq)).unwrap_or_else(|e| panic!("{e}"));
     v.open_multitrack(RATE, 960, sources(), Arc::new(Ext)).unwrap_or_else(|e| panic!("{e}: {}", v.state_json()["status"]));
     assert!(v.mixer_json()["error"].is_null(), "unpanned crossfade plays: {}", v.mixer_json()["error"]);
@@ -516,7 +518,7 @@ fn automated_fader_shows_auto_and_writes_the_lane_at_the_playhead() {
     // Without a timeline there is no playhead: refused by name, nothing stored.
     let saved = s.0.join("automated.handshake");
     v.save(&saved, false).unwrap();
-    let mut w = Viewer::new(Prefer::Cpu);
+    let mut w = crate::support_context::viewer(Prefer::Cpu);
     w.open(&saved).unwrap_or_else(|e| panic!("{e}"));
     w.open_mixer("seq-main", RATE, 960, sources(), Arc::new(Ext)).unwrap();
     let before = w.run().document_entry("audio_routing").map(<[u8]>::to_vec);

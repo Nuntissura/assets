@@ -20,8 +20,9 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::action::{self, ActionRecord, ActionStep, DecodeError, DialogOption, Obj, PlayMode, parse_strict};
-use crate::harness::{Harness, Run, default_actor};
-use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+use crate::context::RunContext;
+use crate::harness::{Harness, Run};
+use hsk_studio_accord::{CancellationToken, DomainId};
 use hsk_studio_session::{Action as JobAction, Cost, JobPort, JobScope, JobTicket};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -443,13 +444,32 @@ impl JobState {
     }
 }
 
-/// What the runner is given besides the job: the optional Job Runtime port, the attribution, and an
-/// optional state callback (called at start, at each input start and after each input).
-#[derive(Default)]
+/// What the runner is given besides the job: the optional Job Runtime port, the caller's required
+/// attribution (lane SMB-ATTRIBUTION-1: there is no default actor, so ports without a context do
+/// not exist), and an optional state callback (called at start, at each input start and after each
+/// input).
+///
+/// ```compile_fail,E0599
+/// // No `Default`: a batch without the caller's attribution does not compile.
+/// let _ = hsk_studio_harness_core::batch::BatchPorts::default();
+/// ```
+///
+/// ```compile_fail,E0063
+/// // The context field is required in a literal too.
+/// let _ = hsk_studio_harness_core::batch::BatchPorts { jobs: None, on_state: None };
+/// ```
 pub struct BatchPorts<'a> {
     pub jobs: Option<Arc<dyn JobPort>>,
-    pub actor: Option<ActorContext>,
+    /// Every input's run is attributed to this context (one correlation source for the job).
+    pub context: RunContext,
     pub on_state: Option<&'a mut dyn FnMut(&JobState)>,
+}
+
+impl BatchPorts<'_> {
+    /// Ports with the caller's attribution, no Job Runtime port and no state callback.
+    pub fn new(context: RunContext) -> Self {
+        Self { jobs: None, context, on_state: None }
+    }
 }
 
 /// A job that refused to start: nothing was read or written.
@@ -768,8 +788,7 @@ struct Attempt {
 pub fn run_batch(harness: &Harness, job: &BatchJob, ports: BatchPorts<'_>, cancel: &CancellationToken) -> Result<BatchReport, BatchRefusal> {
     let mut warnings = check_start(job)?;
     let inputs = enumerate(job, &mut warnings)?;
-    let BatchPorts { jobs, actor, mut on_state } = ports;
-    let actor = actor.unwrap_or_else(default_actor);
+    let BatchPorts { jobs, context, mut on_state } = ports;
     let mut state = JobState { total: inputs.len(), ..JobState::default() };
     let mut emit = |s: &JobState| {
         if let Some(cb) = on_state.as_mut() {
@@ -799,7 +818,7 @@ pub fn run_batch(harness: &Harness, job: &BatchJob, ports: BatchPorts<'_>, cance
         let (attempt, failure) = loop {
             attempts = attempts.saturating_add(1);
             let mut attempt = Attempt::default();
-            let result = process(harness, job, &actor, jobs.as_ref(), cancel, input, position, &mut written, &mut attempt);
+            let result = process(harness, job, &context, jobs.as_ref(), cancel, input, position, &mut written, &mut attempt);
             match result {
                 Ok(()) => break (attempt, None),
                 Err(f) if f.retryable && attempts < max_attempts && f.code != "canceled" => {
@@ -887,7 +906,7 @@ fn last_error(run: &Run<'_>, fallback: &str) -> String {
 fn process(
     harness: &Harness,
     job: &BatchJob,
-    actor: &ActorContext,
+    context: &RunContext,
     jobs: Option<&Arc<dyn JobPort>>,
     cancel: &CancellationToken,
     input: &Path,
@@ -905,7 +924,7 @@ fn process(
     let bytes = std::fs::read(input).map_err(|_| Failure::before_output("read", "input_unreadable"))?;
     out.input_bytes = u64::try_from(bytes.len()).ok();
     out.digest_note = Some("input_not_opened".to_string());
-    let mut run = harness.run(actor.clone(), cancel);
+    let mut run = harness.run(context.clone(), cancel);
     if !run.open_bytes(&bytes) {
         return Err(Failure::before_output("open", last_error(&run, "open_failed")));
     }

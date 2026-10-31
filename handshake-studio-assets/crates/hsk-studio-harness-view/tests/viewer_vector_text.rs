@@ -8,6 +8,8 @@
 //! composite reports and the undo history. Illustrator area-type behaviour is UNVERIFIED (D5).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 #[path = "../../hsk-studio-harness/tests/common/mod.rs"]
 mod common;
 
@@ -25,7 +27,7 @@ fn paper(label: &str) -> (Scratch, Viewer) {
     let scratch = Scratch::new(&format!("vector-text-{label}"));
     let source = scratch.0.join("paper.psd");
     std::fs::write(&source, solid_psd(W as u32, H as u32, "paper", [255, 255, 255])).unwrap();
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&source).unwrap();
     v.set_vector_tool(VectorTool { fill_on: false, stroke_on: false, stroke: [255, 255, 255], ..VectorTool::default() });
     v.text_size_pt = 12.0;

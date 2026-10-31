@@ -352,7 +352,7 @@ fn character<'f>(styles: &StudioTypeStyleRecords, id: &str, fonts: &'f [FontFile
 /// sets left); a glyph whose cluster starts with a space or tab is a break opportunity, a line
 /// feed or U+2029 ends its paragraph; glyph x/y offsets are not carried (composite's
 /// `ShapedGlyph` has none). Errors are typed strings; the caller keeps the story unshaped.
-pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str, cancel: &CancellationToken) -> Result<hsk_studio_composite::vector_text::ShapedStory, String> {
+pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str, actor: &ActorContext, cancel: &CancellationToken) -> Result<hsk_studio_composite::vector_text::ShapedStory, String> {
     use hsk_studio_composite::FillPaint;
     use hsk_studio_composite::vector_text::{ShapedGlyph, ShapedRun, ShapedStory};
     let story = entry.stories.iter().find(|s| s.story_id == text_id).ok_or_else(|| format!("text_story_missing: {text_id}"))?;
@@ -382,7 +382,7 @@ pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str,
         ranges.push((r.start, r.end, paint));
     }
     let (font, size_pt) = face.ok_or_else(|| format!("text_story_unstyled: {text_id}"))?;
-    let shaped = shaped_glyphs(font, text, size_pt, cancel)?;
+    let shaped = shaped_glyphs(font, text, size_pt, actor, cancel)?;
     let ids: Vec<u32> = shaped.iter().map(|g| g.glyph_id).collect();
     let outlines = ty::glyph_outlines(&ty::FontBytes { bytes: &font.bytes, resource: font.resource() }, &ids, &ty::OutlineLimits::default(), cancel).map_err(|e| format!("text_outlines {text_id}: {}", e.code()))?;
     if outlines.len() != shaped.len() {
@@ -437,8 +437,9 @@ pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str,
 
 /// Shapes and rasterises every text layer of `doc` that the entry describes (layers without a
 /// record are left to composite, which refuses them `text_layer_not_prepared`).
-pub fn prepare(doc: &StudioDocument, entry: &TextEntry, fonts: &[FontFile], cancel: &CancellationToken) -> Result<PreparedText, String> {
-    shape_layers(doc, entry, fonts, cancel, |inputs, resolution| {
+/// The shaping requests are attributed to `actor`, the caller's (lane SMB-ATTRIBUTION-1).
+pub fn prepare(doc: &StudioDocument, entry: &TextEntry, fonts: &[FontFile], actor: &ActorContext, cancel: &CancellationToken) -> Result<PreparedText, String> {
+    shape_layers(doc, entry, fonts, actor, cancel, |inputs, resolution| {
         prepare_text(inputs, resolution, cancel).map_err(|e| format!("text_prepare: {e:?}"))
     })
 }
@@ -454,9 +455,10 @@ pub fn animated_glyphs(
     doc: &StudioDocument,
     entry: &TextEntry,
     fonts: &[FontFile],
+    actor: &ActorContext,
     cancel: &CancellationToken,
 ) -> Result<std::collections::BTreeMap<String, (Vec<hsk_studio_composite::text::animate::AnimatedGlyph>, [f32; 4])>, String> {
-    shape_layers(doc, entry, fonts, cancel, |inputs, resolution| {
+    shape_layers(doc, entry, fonts, actor, cancel, |inputs, resolution| {
         let mut out = std::collections::BTreeMap::new();
         for input in inputs {
             let glyphs = hsk_studio_composite::text::animate::glyphs_from_runs(input.runs, resolution, cancel)
@@ -471,6 +473,7 @@ fn shape_layers<R>(
     doc: &StudioDocument,
     entry: &TextEntry,
     fonts: &[FontFile],
+    actor: &ActorContext,
     cancel: &CancellationToken,
     finish: impl FnOnce(&[TextLayerInput<'_>], &TextResolution) -> Result<R, String>,
 ) -> Result<R, String> {
@@ -486,7 +489,6 @@ fn shape_layers<R>(
         draws.push(Draw { layer_id: &layer.layer_id, text, font, size_pt, origin: record.origin_px, fill });
     }
     let resolution = TextResolution::at_ppi(72.0);
-    let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "harness-text").map_err(|_| "text_actor")?;
     let document = DomainId::parse(&doc.document_id).map_err(|_| "text_document_id")?;
     let ledger = Ledger(Mutex::new(LedgerState::default()));
     let resolver = Fonts { files: fonts, ledger: &ledger };
@@ -562,7 +564,7 @@ fn shape_layers<R>(
             resolver_revision: 1,
             cancel_epoch: 1,
             cancellation: cancel,
-            actor: &actor,
+            actor,
             correlation_id: "harness-text",
             observation_correlation: 1,
             limits: limits(),
@@ -614,7 +616,7 @@ impl super::Viewer {
         if !snap.document().layers.iter().any(|l| matches!(l.payload, Payload::Text { .. })) {
             return Ok(PreparedText::default());
         }
-        prepare(snap.document(), &self.text_entry()?, &self.fonts, self.cancel)
+        prepare(snap.document(), &self.text_entry()?, &self.fonts, self.run.actor(), self.cancel)
     }
 
     /// Places a point-text layer whose first baseline starts at document pixel (`x`, `y`): a Folio
@@ -703,8 +705,8 @@ impl super::Viewer {
 /// Glyph ids and pen x offsets (pt, from the origin) of `text` shaped in one line at `size_pt`
 /// with `font`, exactly as [`prepare`] lays a point-text layer out (lane SMB-ILLUSTRATOR-INTEROP-2:
 /// an imported PDF text run stays text only when this layout reproduces its glyphs).
-pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, cancel: &CancellationToken) -> Result<Vec<(u32, f64)>, String> {
-    shape_probe(font, text, size_pt, cancel, |inputs, resolution| {
+pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<(u32, f64)>, String> {
+    shape_probe(font, text, size_pt, actor, cancel, |inputs, resolution| {
         let mut out = Vec::new();
         for input in inputs {
             for r in input.runs {
@@ -721,12 +723,12 @@ pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, cancel: &Ca
 
 /// Glyph id, advance and offsets (pt) of every glyph of `text` shaped in one line at `size_pt`
 /// with `font`, as [`shaped_line`] shapes it (lane SMB-AI-TYPE-PATH-RECOLOR: type on a path).
-pub(crate) fn shaped_glyphs(font: &FontFile, text: &str, size_pt: f64, cancel: &CancellationToken) -> Result<Vec<ty::Glyph>, String> {
-    shape_probe(font, text, size_pt, cancel, |inputs, _| Ok(inputs.iter().flat_map(|i| i.runs.iter()).flat_map(|r| r.run.glyphs().iter().copied()).collect()))
+pub(crate) fn shaped_glyphs(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<ty::Glyph>, String> {
+    shape_probe(font, text, size_pt, actor, cancel, |inputs, _| Ok(inputs.iter().flat_map(|i| i.runs.iter()).flat_map(|r| r.run.glyphs().iter().copied()).collect()))
 }
 
 /// Shapes `text` as a one-line probe point-text layer and hands the shaped layer to `finish`.
-fn shape_probe<R>(font: &FontFile, text: &str, size_pt: f64, cancel: &CancellationToken, finish: impl FnOnce(&[TextLayerInput<'_>], &TextResolution) -> Result<R, String>) -> Result<R, String> {
+fn shape_probe<R>(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken, finish: impl FnOnce(&[TextLayerInput<'_>], &TextResolution) -> Result<R, String>) -> Result<R, String> {
     const DOC: &str = "SDOC-019a0000-0000-7000-8000-000000000001";
     const LAYER: &str = "SLYR-019a0000-0000-7000-8000-000000000002";
     const STORY: &str = "STXT-019a0000-0000-7000-8000-000000000003";
@@ -755,5 +757,5 @@ fn shape_probe<R>(font: &FontFile, text: &str, size_pt: f64, cancel: &Cancellati
     ]))
     .map_err(|e| format!("text_probe_styles: {e}"))?;
     let entry = TextEntry { schema: ENTRY_SCHEMA.into(), layers: vec![TextLayerRecord { layer_id: LAYER.into(), story_id: STORY.into(), origin_px: [0.0, 0.0], paragraph_style: PARA.into(), character_style: CHAR.into() }], stories: vec![story], styles };
-    shape_layers(&doc, &entry, std::slice::from_ref(font), cancel, finish)
+    shape_layers(&doc, &entry, std::slice::from_ref(font), actor, cancel, finish)
 }

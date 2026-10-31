@@ -8,6 +8,8 @@
 //! monitor's sequence and playhead.
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
@@ -227,7 +229,7 @@ fn history(v: &Viewer) -> Value {
 
 fn opened(label: &str) -> (Scratch, Viewer, egui::Context) {
     let scratch = Scratch::new(label);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     let ctx = egui::Context::default();
     v.open(&sequence_package(&scratch.0)).unwrap_or_else(|e| panic!("{e}"));
     (scratch, v, ctx)
@@ -254,7 +256,7 @@ fn ak_click(id: egui::accesskit::NodeId) -> egui::Event {
 /// program monitor: one clock); F10 hides and shows it; without a sequence the entry is refused.
 #[test]
 fn timeline_opens_from_the_workspace_menu_and_f10() {
-    let mut empty = Viewer::new(Prefer::Cpu);
+    let mut empty = crate::support_context::viewer(Prefer::Cpu);
     assert_eq!(empty.state_json()["shell"]["panels"]["timeline"]["availability"], "unavailable");
     assert!(empty.toggle_panel(Panel::Timeline).unwrap_err().contains("no sequence"));
 

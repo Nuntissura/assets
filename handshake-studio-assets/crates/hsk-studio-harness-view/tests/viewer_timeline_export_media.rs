@@ -17,6 +17,8 @@
 //! Export Media dialog is UNVERIFIED (D5): the form is the Studio reading.
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 #[cfg(feature = "media")]
 mod export_media {
     use hsk_studio_accord::{CancellationToken, Ticks};
@@ -233,7 +235,7 @@ mod export_media {
     /// as the export's sound port, and clip 1 (with linked clip 3) nested.
     fn nested_viewer(label: &str, sound: bool) -> (Scratch, Viewer) {
         let scratch = Scratch::new(label);
-        let mut v = Viewer::new(Prefer::Cpu);
+        let mut v = crate::support_context::viewer(Prefer::Cpu);
         v.open(&package(&scratch.0, vec![main_sequence()])).unwrap_or_else(|e| panic!("{e}"));
         v.open_monitor("seq-main", 64, 32).unwrap();
         v.set_monitor_sources(Box::new(Solids), Box::new(Known));
@@ -337,7 +339,7 @@ mod export_media {
     #[test]
     fn export_without_a_frame_decoder_is_refused_typed() {
         let scratch = Scratch::new("no-decoder");
-        let mut v = Viewer::new(Prefer::Cpu);
+        let mut v = crate::support_context::viewer(Prefer::Cpu);
         v.open(&package(&scratch.0, vec![main_sequence()])).unwrap_or_else(|e| panic!("{e}"));
         let out = scratch.0.join("never.mov");
         let e = v.export_sequence("seq-main", request(&out)).expect_err("no decoder");
@@ -376,7 +378,7 @@ mod export_media {
     fn sequence_with_audio_clips_and_no_sound_is_refused_never_silent() {
         let scratch = Scratch::new("no-sound");
         let out = scratch.0.join("never.mov");
-        let mut v = Viewer::new(Prefer::Cpu);
+        let mut v = crate::support_context::viewer(Prefer::Cpu);
         v.open(&package(&scratch.0, vec![main_sequence()])).unwrap();
         v.open_monitor("seq-main", 64, 32).unwrap();
         v.set_monitor_sources(Box::new(Solids), Box::new(Known));

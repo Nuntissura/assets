@@ -9,7 +9,9 @@
 //! `hsk-studio-package` (feature `import`); without it they print NOT_PROVEN.
 
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_harness_core::{Harness, Place, PlacementWrite, Run, Selection, default_actor};
+use hsk_studio_harness_core::{Harness, Place, PlacementWrite, Run, Selection};
+mod support;
+use support::test_context;
 use serde_json::{Value, json};
 
 const FIXTURE: &[u8] = include_bytes!("../../hsk-studio-harness/tests/fixtures/demo.handshake");
@@ -94,7 +96,7 @@ fn restructure_and_entry_refused_entry_keeps_the_redo_history() {
     let h = harness();
     let cancel = CancellationToken::default();
     for prior_redo in [false, true] {
-        let mut run = h.run(default_actor(), &cancel);
+        let mut run = h.run(test_context(), &cancel);
         assert!(run.open_bytes(FIXTURE));
         if prior_redo {
             earlier_redo_step(&mut run);
@@ -109,7 +111,7 @@ fn set_tiles_and_entry_refused_entry_keeps_the_redo_history() {
     let h = harness();
     let cancel = CancellationToken::default();
     for prior_redo in [false, true] {
-        let mut run = h.run(default_actor(), &cancel);
+        let mut run = h.run(test_context(), &cancel);
         assert!(run.open_bytes(FIXTURE));
         assert_eq!(tile_count(&run, L2), 1);
         if prior_redo {
@@ -125,7 +127,7 @@ fn set_vector_paths_and_entry_refused_entry_keeps_the_redo_history() {
     let h = harness();
     let cancel = CancellationToken::default();
     for prior_redo in [false, true] {
-        let mut run = h.run(default_actor(), &cancel);
+        let mut run = h.run(test_context(), &cancel);
         assert!(run.open_bytes(FIXTURE));
         assert!(run.restructure("new_vector", &[layer(VEC, "vector", json!({"payload_kind": "vector", "path_ids": []}))]), "{:?}", run.ops().last());
         if prior_redo {
@@ -263,7 +265,7 @@ mod sequence {
         let cancel = CancellationToken::default();
         let bytes = package();
         for prior_redo in [false, true] {
-            let mut run = h.run(default_actor(), &cancel);
+            let mut run = h.run(test_context(), &cancel);
             assert!(run.open_bytes(&bytes), "{:?}", run.ops().last());
             assert!((volume(&run) - 1.0).abs() < 1e-9);
             if prior_redo {
@@ -294,7 +296,7 @@ mod sequence {
         let h = harness();
         let cancel = CancellationToken::default();
         let bytes = package();
-        let mut run = h.run(default_actor(), &cancel);
+        let mut run = h.run(test_context(), &cancel);
         assert!(run.open_bytes(&bytes));
         assert!(run.start_recording(ACT, "mix"));
         // Accepted: one step (sequence and entry); refused entry write: rolled back.

@@ -6,6 +6,8 @@
 //! second, 5292000 ticks per sample at 48 kHz), the run's history and the stored routing.
 #![cfg(feature = "audio-batch")]
 
+mod support_context;
+
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
@@ -159,7 +161,7 @@ fn entry(v: &Viewer) -> Option<Vec<u8>> {
 #[test]
 fn clip_volume_and_clip_pan_points_off_the_sample_grid_are_refused_without_a_step() {
     let scratch = Scratch::new("grid");
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&package(&scratch.0)).unwrap_or_else(|e| panic!("{e}"));
     v.open_multitrack(RATE, 960, Sources(Arc::new(vec![vec![0.5; 40 * SPF]])), Arc::new(Ext)).unwrap_or_else(|e| panic!("{e}: {}", v.state_json()["status"]));
     assert_eq!(TPS * u64::from(RATE), 254_016_000_000, "whole ticks per sample");

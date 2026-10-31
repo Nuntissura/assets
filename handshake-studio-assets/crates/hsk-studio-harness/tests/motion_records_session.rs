@@ -316,7 +316,7 @@ fn text_animator_glyphs_come_from_type_shaping() {
     let entry = v.text_entry().unwrap();
     let fonts = [FontFile::bundled().unwrap()];
     let cancel = CancellationToken::default();
-    let glyphs = animated_glyphs(&doc, &entry, &fonts, &cancel).unwrap();
+    let glyphs = animated_glyphs(&doc, &entry, &fonts, hsk_studio_harness::asset_local_test_context().actor(), &cancel).unwrap();
     let (g, fill) = &glyphs[&id];
     // Three shaped glyphs (H, space, i); the space has no outline; anchors advance left to right
     // from the record's pen origin (4, 34) on the baseline.
@@ -330,7 +330,7 @@ fn text_animator_glyphs_come_from_type_shaping() {
     let chars = hsk_studio_composite::text::animate::text_chars(g);
     let ident = evaluate_text_animators(&chars, &[], [0.0, 0.0, 0.0, 1.0], 0.0).unwrap();
     let content = hsk_studio_composite::text::animate::animated_text_content(&id, g, &ident, *fill, SPACE, 1, &RasterOptions::default(), &cancel).unwrap().unwrap();
-    let plane = prepare(&doc, &entry, &fonts, &cancel).unwrap();
+    let plane = prepare(&doc, &entry, &fonts, hsk_studio_harness::asset_local_test_context().actor(), &cancel).unwrap();
     let rect = plane.plane(&id).unwrap().placement.unwrap();
     for (a, b) in [(content.rect.x, rect.x), (content.rect.y, rect.y), (content.rect.x + i64::from(content.rect.width), rect.x + i64::from(rect.width)), (content.rect.y + i64::from(content.rect.height), rect.y + i64::from(rect.height))] {
         assert!((a - b).abs() <= 1, "nib {:?} vs type {:?}", content.rect, rect);

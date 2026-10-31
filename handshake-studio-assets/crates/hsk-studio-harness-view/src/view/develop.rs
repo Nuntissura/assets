@@ -57,7 +57,7 @@ use super::Viewer;
 use super::develop_entry;
 use super::wrap::wrap_item;
 use super::export::write_atomic;
-use crate::import::{RawPrepared, SourceFormat, raw_prepare, raw_proposal};
+use crate::import::{RawPrepared, SourceFormat, raw_prepare, raw_proposal_as};
 use hsk_studio_controls::{ChangeSource, ControlError, ControlSpec, NumberSpec, Registry, SectionSpec, Value as ControlValue, ValueStore};
 use hsk_studio_develop::{
     AbsoluteWhiteBalance, Adjustments, BAND_NAMES, BaselineExposure, Brush, ColourGrading, ColourMixer, ColourRange, Correction, Detail,
@@ -1027,7 +1027,7 @@ impl Viewer {
         }
         let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
         let (image, _) = hsk_studio_develop::develop_to_image_threads(&d.prepared.plane, &recipe, revision, d.threads, self.cancel).map_err(|e| Refusal::develop(e, "develop"))?;
-        let (proposal, _) = raw_proposal(&d.prepared, image, &crate::harness::TrustAll, self.cancel).map_err(|e| Refusal::new(e.code(), format!("tiling: {e}")))?;
+        let (proposal, _) = raw_proposal_as(&d.prepared, image, &crate::harness::TrustAll, self.run.actor(), self.cancel).map_err(|e| Refusal::new(e.code(), format!("tiling: {e}")))?;
         let tiles = d.layer_tiles(self).ok_or_else(|| Refusal::new("develop_layer_missing", format!("layer {} is gone or not raster", d.layer_id)))?.to_vec();
         let layer_id = d.layer_id.clone();
         let mut edited = tiles.clone();

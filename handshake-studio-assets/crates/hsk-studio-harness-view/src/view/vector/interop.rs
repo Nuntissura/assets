@@ -14,7 +14,7 @@
 use super::super::Viewer;
 use super::style::effective_design;
 use super::{ENTRY, PathRecord, VectorEntry, VectorStyle};
-use hsk_studio_accord::CancellationToken;
+use hsk_studio_accord::{ActorContext, CancellationToken};
 use hsk_studio_composite::FillPaint;
 use hsk_studio_composite::vector::{VectorResolution, expand_vectors};
 use hsk_studio_folio::{self as folio, GeometryUnit, Length, StudioAppearanceRow, StudioPaint};
@@ -32,6 +32,8 @@ const PX: f64 = 96.0 / 72.0;
 /// embedded font cannot lay it out may still match one of them by PostScript name).
 pub struct PressDrawing<'f> {
     pub fonts: &'f [super::super::text::FontFile],
+    /// The caller's attribution of the shaping probes (lane SMB-ATTRIBUTION-1).
+    pub actor: &'f ActorContext,
 }
 
 fn els(path: &[hsk_studio_press::VectorEl]) -> Vec<iv::PdfEl> {
@@ -125,13 +127,13 @@ impl iv::PdfDrawingProvider for PressDrawing<'_> {
         let cancel = CancellationToken::default();
         if let Some(bytes) = run.font.bytes.as_ref() {
             let font = super::super::text::FontFile::new("ai-import-probe", bytes.to_vec());
-            if super::super::text::shaped_line(&font, run.text, run.size_pt, &cancel).is_ok_and(|s| fits(&s, true)) {
+            if super::super::text::shaped_line(&font, run.text, run.size_pt, self.actor, &cancel).is_ok_and(|s| fits(&s, true)) {
                 return Some(iv::PdfTextFont::Embedded);
             }
         }
         let name = run.font.postscript_name.as_deref()?;
         let installed = self.fonts.iter().find(|f| f.family == name)?;
-        let shaped = super::super::text::shaped_line(installed, run.text, run.size_pt, &cancel).ok()?;
+        let shaped = super::super::text::shaped_line(installed, run.text, run.size_pt, self.actor, &cancel).ok()?;
         fits(&shaped, false).then(|| iv::PdfTextFont::Installed(installed.family.clone()))
     }
 }
@@ -197,10 +199,10 @@ fn record(p: &iv::VectorPath) -> Result<PathRecord, String> {
 }
 
 /// A native package of the `.ai` file and the import losses (module docs).
-pub fn ai_to_package(bytes: &[u8], fonts: &[super::super::text::FontFile], cancel: &CancellationToken) -> Result<(Vec<u8>, Vec<String>), String> {
+pub fn ai_to_package(bytes: &[u8], fonts: &[super::super::text::FontFile], actor: &ActorContext, cancel: &CancellationToken) -> Result<(Vec<u8>, Vec<String>), String> {
     let digest = hsk_studio_package::sha256_hex_of(bytes);
     let mut mint = DigestMint { stem: digest.clone(), next: 1 };
-    let ai = iv::import_ai_document(bytes, &iv::ImportPolicy::default(), &PressDrawing { fonts }, &mut mint, cancel).map_err(|e| format!("ai_import: {e:?}"))?;
+    let ai = iv::import_ai_document(bytes, &iv::ImportPolicy::default(), &PressDrawing { fonts, actor }, &mut mint, cancel).map_err(|e| format!("ai_import: {e:?}"))?;
     let proposal = &ai.proposal;
     let losses: Vec<String> = proposal.loss.iter().map(|l| format!("{}: {}", l.path, l.code)).collect();
     let mut doc = proposal.snapshot.document().clone();
@@ -406,7 +408,7 @@ impl Viewer {
                 return Err(format!("ai_import: {} exists", dest.display()));
             }
             let bytes = std::fs::read(source).map_err(|e| format!("ai_import: {e}"))?;
-            let (package, losses) = ai_to_package(&bytes, &self.fonts, self.cancel)?;
+            let (package, losses) = ai_to_package(&bytes, &self.fonts, self.run.actor(), self.cancel)?;
             super::super::export::write_atomic(dest, &package).map_err(|e| format!("ai_import: {e}"))?;
             self.open(dest)?;
             Ok(losses)

@@ -9,6 +9,8 @@
 //! default multi-frame step and ripple / roll toggle feel (no Premiere oracle).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
@@ -179,7 +181,7 @@ fn opened_with(label: &str, extents: bool, edit: impl FnOnce(&mut StudioSequence
     let scratch = Scratch::new(label);
     let mut seq = sequence();
     edit(&mut seq);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     let ctx = egui::Context::default();
     v.open(&sequence_package(&scratch.0, seq)).unwrap_or_else(|e| panic!("{e}"));
     v.shell_command(ShellCommand::Panel(Panel::Timeline)).unwrap();

@@ -70,11 +70,10 @@ impl hsk_studio_observe::SinkPort for Quiet {
 }
 
 /// One colour through Prism into encoded sRGB (CMYK with `icc`, else Lab).
-fn prism_rgb(icc: Option<&[u8]>, pixel: &[f32]) -> Result<[f64; 3], String> {
-    use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+fn prism_rgb(icc: Option<&[u8]>, pixel: &[f32], actor: &hsk_studio_accord::ActorContext) -> Result<[f64; 3], String> {
+    use hsk_studio_accord::{CancellationToken, DomainId};
     use hsk_studio_prism::{Intent, ProfileInput, WideEngine, WideSource, WideTransformRequest, profile_hash};
     let fail = |c: &str| format!("swatch_convert: {c}");
-    let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "harness-swatch").map_err(|_| fail("actor"))?;
     let destination_id = DomainId::parse("SCPF-019abcde-0000-7000-8000-00000000a001").map_err(|_| fail("id"))?;
     let source_id = DomainId::parse("SCPF-019abcde-0000-7000-8000-00000000a002").map_err(|_| fail("id"))?;
     let resource = DomainId::parse("SSWT-019abcde-0000-7000-8000-00000000a003").map_err(|_| fail("id"))?;
@@ -85,7 +84,7 @@ fn prism_rgb(icc: Option<&[u8]>, pixel: &[f32]) -> Result<[f64; 3], String> {
         None => WideSource::Lab,
     };
     let mut engine = WideEngine::new(actor.clone(), 2).map_err(|e| fail(e.code()))?;
-    let request = WideTransformRequest { source, destination, pixels: pixel, intent: Intent::RelativeColorimetric, black_point_compensation: false, revision: 0, expected_revision: 0, correlation_id: 1, resource_id: &resource, actor: &actor };
+    let request = WideTransformRequest { source, destination, pixels: pixel, intent: Intent::RelativeColorimetric, black_point_compensation: false, revision: 0, expected_revision: 0, correlation_id: 1, resource_id: &resource, actor };
     let out = engine.transform(&request, &CancellationToken::default(), &mut Quiet).map_err(|f| fail(f.error.code()))?;
     match out.pixels.as_slice() {
         [r, g, b, ..] => Ok([f64::from(*r).clamp(0.0, 1.0), f64::from(*g).clamp(0.0, 1.0), f64::from(*b).clamp(0.0, 1.0)]),
@@ -143,37 +142,37 @@ fn source(records: &folio::StudioVectorRecords, s: &StudioSwatch, extra: f64) ->
 }
 
 /// The resolved encoded-sRGB colour of a colour swatch.
-fn resolve_rgb(entry: &VectorEntry, doc: &folio::StudioDocument, s: &StudioSwatch, extra: f64) -> Result<[f64; 3], String> {
+fn resolve_rgb(entry: &VectorEntry, doc: &folio::StudioDocument, s: &StudioSwatch, extra: f64, actor: &hsk_studio_accord::ActorContext) -> Result<[f64; 3], String> {
     let (model, c, profile) = source(&entry.records, s, extra)?;
     let f = |v: &[f64]| -> Vec<f32> { v.iter().map(|x| *x as f32).collect() };
     match model {
         StudioColorModel::Rgb => Ok([c[0], c[1], c[2]]),
         StudioColorModel::Gray => Ok([c[0], c[0], c[0]]),
-        StudioColorModel::Lab => prism_rgb(None, &f(&c)),
+        StudioColorModel::Lab => prism_rgb(None, &f(&c), actor),
         StudioColorModel::Cmyk => {
             let icc = cmyk_bytes(entry, doc, profile.as_deref()).ok_or("swatch: the document has no CMYK profile (set_document_cmyk_profile)")?;
-            prism_rgb(Some(&icc), &f(&c))
+            prism_rgb(Some(&icc), &f(&c), actor)
         }
     }
 }
 
 /// The stand-in paint of a swatch for one binding (`tint` percent per use).
-pub(super) fn stand_in(entry: &VectorEntry, doc: &folio::StudioDocument, swatch_id: &str, tint: Option<f64>) -> Result<StudioPaint, String> {
+pub(super) fn stand_in(entry: &VectorEntry, doc: &folio::StudioDocument, swatch_id: &str, tint: Option<f64>, actor: &hsk_studio_accord::ActorContext) -> Result<StudioPaint, String> {
     let s = entry.records.swatch(swatch_id).ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
     if s.swatch_kind == StudioSwatchKind::Gradient {
         let g = s.gradient.clone().ok_or("swatch: gradient")?;
         return Ok(StudioPaint::Gradient { gradient: g });
     }
-    let [r, g, b] = resolve_rgb(entry, doc, s, tint.unwrap_or(100.0) / 100.0)?;
+    let [r, g, b] = resolve_rgb(entry, doc, s, tint.unwrap_or(100.0) / 100.0, actor)?;
     Ok(StudioPaint::Solid { colour: folio::StudioColor { r, g, b, colour_profile_id: folio::ProfileBinding::Unassigned(()) } })
 }
 
 /// Rewrites the stand-in paint of every row bound to `swatch_id` or to a tint of it.
-pub(super) fn propagate(entry: &mut VectorEntry, doc: &folio::StudioDocument, swatch_id: &str) -> Result<(), String> {
+pub(super) fn propagate(entry: &mut VectorEntry, doc: &folio::StudioDocument, swatch_id: &str, actor: &hsk_studio_accord::ActorContext) -> Result<(), String> {
     let tints: Vec<String> = entry.records.swatches.iter().filter(|s| s.base_swatch_ref.as_deref() == Some(swatch_id)).map(|s| s.swatch_id.clone()).collect();
     let bound: Vec<folio::StudioSwatchPaint> = entry.records.swatch_paints.iter().filter(|p| p.swatch_id == swatch_id || tints.contains(&p.swatch_id)).cloned().collect();
     for p in bound {
-        let paint = stand_in(entry, doc, &p.swatch_id, p.tint)?;
+        let paint = stand_in(entry, doc, &p.swatch_id, p.tint, actor)?;
         let design = entry.design.as_mut().ok_or("swatch: design")?;
         let Some(style) = design.paint_styles.iter_mut().find(|s| s.style_id == p.style_id) else { continue };
         if let Some(row) = usize::try_from(p.row).ok().and_then(|i| style.rows.get_mut(i)) {
@@ -258,7 +257,7 @@ impl Viewer {
     pub fn swatch_colour(&self, swatch_id: &str) -> Result<[f64; 3], String> {
         let entry = self.vector_entry()?;
         let s = entry.records.swatch(swatch_id).ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
-        resolve_rgb(&entry, self.vdoc()?, s, 1.0)
+        resolve_rgb(&entry, self.vdoc()?, s, 1.0, self.run.actor())
     }
 
     /// Creates a global RGB swatch (solid paint) or a gradient swatch: ONE undo step. Returns its
@@ -284,7 +283,7 @@ impl Viewer {
             }
             let id = s.swatch_id.clone();
             entry.records.swatches.push(s);
-            let paint = stand_in(&entry, doc, &id, None)?;
+            let paint = stand_in(&entry, doc, &id, None, self.run.actor())?;
             let companion = companion_id(&id)?;
             let design = entry.design.get_or_insert_with(|| StudioDesignRecords::new(doc.document_id.clone()));
             design.paint_styles.push(paint_style(&companion, name, &format!("{SWATCH_KEY}{n}"), &[fill_row(paint)])?);
@@ -311,7 +310,7 @@ impl Viewer {
             let i = entry.records.swatches.iter().position(|s| s.swatch_id == swatch_id).ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
             let name = entry.records.swatches[i].name.clone();
             entry.records.swatches[i] = record(&doc.document_id, 0, &name, spec, Some(swatch_id))?;
-            propagate(&mut entry, doc, swatch_id)?;
+            propagate(&mut entry, doc, swatch_id, self.run.actor())?;
             self.validate_records(&entry)?;
             self.commit_entry("edit_swatch", swatch_id, &entry)?;
             Ok(swatch_id.to_string())
@@ -333,7 +332,7 @@ impl Viewer {
                 return Err("swatch: tint percent".into());
             }
             let entry = self.vector_entry()?;
-            let paint = stand_in(&entry, self.vdoc()?, swatch_id, tint)?;
+            let paint = stand_in(&entry, self.vdoc()?, swatch_id, tint, self.run.actor())?;
             let width = self.vector_path(layer_id)?.style.stroke_width;
             let bind = super::style::Bind::Swatch { kind, swatch_id: swatch_id.to_string(), tint };
             self.restyle("apply_swatch", layer_id, Some(bind), |rows, unit| {
@@ -394,7 +393,7 @@ impl Viewer {
                 return Err("cmyk_profile: size".into());
             }
             // Prism admits it (a CMYK device profile it can convert from).
-            prism_rgb(Some(icc), &[0.0, 0.0, 0.0, 0.0])?;
+            prism_rgb(Some(icc), &[0.0, 0.0, 0.0, 0.0], self.run.actor())?;
             let doc = self.vdoc()?;
             let mut entry = self.vector_entry()?;
             let digest = hsk_studio_prism::hash_hex(&hsk_studio_prism::profile_hash(icc));
@@ -415,7 +414,7 @@ impl Viewer {
             entry.icc.insert(digest, icc.to_vec());
             let cmyk: Vec<String> = entry.records.swatches.iter().filter(|s| s.color_model == Some(StudioColorModel::Cmyk) || s.spot.as_ref().is_some_and(|i| i.measured_lab.is_none() && i.alternate_space == Some(StudioColorModel::Cmyk))).map(|s| s.swatch_id.clone()).collect();
             for sw in cmyk {
-                propagate(&mut entry, doc, &sw)?;
+                propagate(&mut entry, doc, &sw, self.run.actor())?;
             }
             self.validate_records(&entry)?;
             self.commit_entry("set_document_cmyk_profile", &id, &entry)?;

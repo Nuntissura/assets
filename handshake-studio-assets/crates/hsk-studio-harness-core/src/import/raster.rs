@@ -19,7 +19,7 @@
 
 use super::with_package::{SourceMint, package_proposal};
 use super::{ImportError, ImportedDocument, SourceFormat};
-use hsk_studio_accord::CancellationToken;
+use hsk_studio_accord::{ActorContext, CancellationToken};
 use hsk_studio_folio::{self as folio, Resolver};
 use hsk_studio_interop_psd as psd;
 use hsk_studio_interop_raster as raster;
@@ -29,6 +29,7 @@ pub(crate) fn import_raster(
     bytes: &[u8],
     format: SourceFormat,
     resolver: &dyn Resolver,
+    actor: &ActorContext,
     cancel: &CancellationToken,
 ) -> Result<ImportedDocument, ImportError> {
     let importer = |code: &'static str| ImportError::Importer { format, code };
@@ -74,7 +75,7 @@ pub(crate) fn import_raster(
     let source = psd::SourceIdentity::of(bytes);
     let mut mint = SourceMint::new(&source.sha256);
     let mut frames = super::colour::FrameCount::default();
-    let mut converter = super::colour::converter(format, &mint, &mut frames)?;
+    let mut converter = super::colour::converter(format, &mint, &mut frames, actor)?;
     let limits = psd::Limits::default();
     let cfg = psd::ProposalConfig::new(&limits, folio::Budget::default(), resolver);
     let psd_error = |e: psd::PsdError| if e == psd::PsdError::Canceled { ImportError::Canceled } else { importer(e.code()) };

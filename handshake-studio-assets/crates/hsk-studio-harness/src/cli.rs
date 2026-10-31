@@ -7,7 +7,8 @@
 //! `edit --save OUT` where OUT is the input PACKAGE is a usage error unless `--overwrite` is given.
 #![deny(clippy::arithmetic_side_effects)]
 
-use crate::harness::{Harness, HarnessError, References, Selection, default_actor};
+use crate::harness::{Harness, HarnessError, References, Selection};
+use hsk_studio_harness_core::asset_local_test_context;
 use crate::manual::{manual_json, manual_text};
 use hsk_studio_accord::CancellationToken;
 use serde_json::{Value, json};
@@ -442,7 +443,7 @@ fn execute_batch(parsed: &Parsed, job_path: &Path) -> CliOutput {
         if parsed.cancel {
             cancel.cancel();
         }
-        match run_batch(h, &job, BatchPorts::default(), &cancel) {
+        match run_batch(h, &job, BatchPorts::new(asset_local_test_context()), &cancel) {
             Err(refusal) => failed("batch", refusal.code, refusal.detail),
             Ok(report) => {
                 let ran = !report.receipts.is_empty();
@@ -675,7 +676,7 @@ fn execute_import(harness: &Harness, parsed: &Parsed, input: &Path) -> CliOutput
     if parsed.cancel {
         cancel.cancel();
     }
-    let mut run = harness.run(default_actor(), &cancel);
+    let mut run = harness.run(asset_local_test_context(), &cancel);
     if run.open_import(&bytes) {
         run.summary();
         let reopened = match &parsed.save {
@@ -1020,7 +1021,7 @@ fn execute(command: &str, harness: &Harness, parsed: &Parsed, package: &Path) ->
     if parsed.cancel {
         cancel.cancel();
     }
-    let mut run = harness.run(default_actor(), &cancel);
+    let mut run = harness.run(asset_local_test_context(), &cancel);
     let opened = run.open_path(package);
     match command {
         "open" => {

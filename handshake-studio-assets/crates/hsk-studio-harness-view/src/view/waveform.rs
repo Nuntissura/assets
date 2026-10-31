@@ -48,7 +48,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::audio_batch::EffectSpec;
-use hsk_studio_accord::CancellationToken;
+use hsk_studio_accord::{ActorContext, CancellationToken};
 use hsk_studio_folio as folio;
 use hsk_studio_score::{
     self as score, ALL_CHANNELS, FadeCurve, FadeDirection, PasteMode, ScoreError, SnapDirection, SpectralMaskOp, SpectralRegion,
@@ -132,9 +132,10 @@ pub struct PluginEdit {
 /// Most plugin parameters of one operation.
 pub const MAX_PLUGIN_PARAMETERS: usize = 256;
 
-/// Runs hosted plugins for the edit list (the editor's registry).
+/// Runs hosted plugins for the edit list (the editor's registry). `actor` is the caller's (the
+/// viewer run's) attribution of the bounce (lane SMB-ATTRIBUTION-1).
 pub trait PluginHost {
-    fn run(&self, buffer: &mut WaveBuffer, edit: &PluginEdit, cancel: &CancellationToken) -> Result<WaveEditReport, String>;
+    fn run(&self, buffer: &mut WaveBuffer, edit: &PluginEdit, actor: &ActorContext, cancel: &CancellationToken) -> Result<WaveEditReport, String>;
 }
 
 /// The registry of a build without hosting: every plugin operation is refused.
@@ -146,7 +147,7 @@ pub struct PluginRegistry {
 
 #[cfg(not(feature = "audio-plugin"))]
 impl PluginHost for PluginRegistry {
-    fn run(&self, _: &mut WaveBuffer, _: &PluginEdit, _: &CancellationToken) -> Result<WaveEditReport, String> {
+    fn run(&self, _: &mut WaveBuffer, _: &PluginEdit, _: &ActorContext, _: &CancellationToken) -> Result<WaveEditReport, String> {
         Err("waveform_plugin_hosting_unavailable: built without feature audio-plugin".into())
     }
 }
@@ -488,7 +489,7 @@ fn effect_spec(effect: &folio::StudioAudioEffectInstance) -> Result<EffectSpec, 
 const EFFECT_BLOCK: usize = 4096;
 
 /// Runs `spec` over `clip` (1 or 2 channels) at `rate` through a score chain bounce.
-fn bounce_effect(clip: &[Vec<f32>], rate: u32, spec: &EffectSpec, cancel: &CancellationToken) -> Result<Vec<Vec<f32>>, String> {
+fn bounce_effect(clip: &[Vec<f32>], rate: u32, spec: &EffectSpec, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<Vec<f32>>, String> {
     let channels = clip.len();
     let layout = match channels {
         1 => score::ChannelLayout::mono(score::STEREO_LABELS[0]),
@@ -500,7 +501,7 @@ fn bounce_effect(clip: &[Vec<f32>], rate: u32, spec: &EffectSpec, cancel: &Cance
     let mut chain = score::Chain::new(layout.clone(), EFFECT_BLOCK, vec![stage]).map_err(code)?;
     let resource = hsk_studio_accord::DomainId::parse(super::audio_import::IMPORT_CLIP_ID).map_err(|_| "waveform_effect: resource id".to_owned())?;
     let engine = score::Engine::new(resource.clone(), 1);
-    let ctx = score::RequestContext { resource, actor: Some(crate::harness::default_actor()), expected_revision: 1 };
+    let ctx = score::RequestContext { resource, actor: Some(actor.clone()), expected_revision: 1 };
     let inputs: Vec<&[f32]> = clip.iter().map(Vec::as_slice).collect();
     let request = score::BounceRequest { sample_rate_hz: rate, layout: &layout, start_sample: 0, channels: &inputs, block_frames: EFFECT_BLOCK };
     let mut block = score::OutputBlock::with_capacity(layout.clone(), EFFECT_BLOCK).map_err(code)?;
@@ -523,10 +524,10 @@ fn code(e: ScoreError) -> String {
     format!("waveform_{}", e.code())
 }
 
-/// Applies one operation (`clip`: the referenced audio of a paste).
-pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip>, plugins: &dyn PluginHost, cancel: &CancellationToken) -> Result<WaveEditReport, String> {
+/// Applies one operation (`clip`: the referenced audio of a paste), attributed to `actor`.
+pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip>, plugins: &dyn PluginHost, actor: &ActorContext, cancel: &CancellationToken) -> Result<WaveEditReport, String> {
     match op {
-        WaveformOp::Plugin(p) => return plugins.run(buffer, p, cancel),
+        WaveformOp::Plugin(p) => return plugins.run(buffer, p, actor, cancel),
         WaveformOp::Delete { start, end } => buffer.delete(*start, *end, cancel),
         WaveformOp::Paste { at, mode, channels, .. } => {
             let clip = clip.ok_or("waveform_clip_missing")?;
@@ -543,7 +544,7 @@ pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip
         WaveformOp::Effect { selection, effect } => {
             let spec = effect_spec(effect)?;
             let clip = buffer.copy(*selection).map_err(code)?;
-            let processed = bounce_effect(&clip.channels, buffer.sample_rate_hz(), &spec, cancel)?;
+            let processed = bounce_effect(&clip.channels, buffer.sample_rate_hz(), &spec, actor, cancel)?;
             return buffer.paste(selection.start, &WaveClip { channels: processed }, PasteMode::Overwrite, selection.channels, cancel).map_err(code);
         }
         WaveformOp::Spectral(e) => {
@@ -557,7 +558,7 @@ pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip
 }
 
 /// The source with `ops` replayed (pasted clips re-derived from their prefixes).
-pub fn replay(source: &WaveBuffer, ops: &[WaveformOp], plugins: &dyn PluginHost, cancel: &CancellationToken) -> Result<WaveBuffer, String> {
+pub fn replay(source: &WaveBuffer, ops: &[WaveformOp], plugins: &dyn PluginHost, actor: &ActorContext, cancel: &CancellationToken) -> Result<WaveBuffer, String> {
     let mut wanted: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (i, op) in ops.iter().enumerate() {
         if let WaveformOp::Paste { clip, .. } = op {
@@ -573,7 +574,7 @@ pub fn replay(source: &WaveBuffer, ops: &[WaveformOp], plugins: &dyn PluginHost,
             }
         }
         let Some(op) = ops.get(i) else { break };
-        apply_op(&mut buffer, op, clips.get(&i), plugins, cancel).map_err(|e| format!("op {i} ({}): {e}", op.name()))?;
+        apply_op(&mut buffer, op, clips.get(&i), plugins, actor, cancel).map_err(|e| format!("op {i} ({}): {e}", op.name()))?;
     }
     Ok(buffer)
 }
@@ -665,6 +666,7 @@ impl super::Viewer {
     fn waveform_sync(&mut self) -> Result<(), String> {
         let ops = self.waveform_ops()?;
         let cancel = self.cancel;
+        let actor = self.run.actor().clone();
         let w = self.waveform.as_mut().ok_or("waveform: not open")?;
         if w.cache.as_ref().is_some_and(|(o, _)| *o == ops) {
             return Ok(());
@@ -674,9 +676,9 @@ impl super::Viewer {
         let result = match w.cache.take() {
             Some((done, mut buffer)) if incremental => ops[done.len()..]
                 .iter()
-                .try_for_each(|op| apply_op(&mut buffer, op, None, &w.plugins, cancel).map(|_| ()))
+                .try_for_each(|op| apply_op(&mut buffer, op, None, &w.plugins, &actor, cancel).map(|_| ()))
                 .map(|()| buffer),
-            _ => replay(&w.source, &ops, &w.plugins, cancel),
+            _ => replay(&w.source, &ops, &w.plugins, &actor, cancel),
         };
         match result {
             Ok(buffer) => {
@@ -698,7 +700,7 @@ impl super::Viewer {
         let ops = self.waveform_ops()?;
         match &w.cache {
             Some((o, b)) if *o == ops => Ok(b.clone()),
-            _ => replay(&w.source, &ops, &w.plugins, self.cancel),
+            _ => replay(&w.source, &ops, &w.plugins, self.run.actor(), self.cancel),
         }
     }
 
@@ -741,6 +743,7 @@ impl super::Viewer {
     pub fn waveform_edit(&mut self, edit: WaveformEdit) -> Result<Value, String> {
         self.waveform_sync()?;
         let cancel = self.cancel;
+        let actor = self.run.actor().clone();
         let w = self.waveform.as_mut().ok_or("waveform: not open")?;
         let (ops, current) = w.cache.as_ref().ok_or("waveform: no audio")?;
         let n = ops.len();
@@ -779,7 +782,7 @@ impl super::Viewer {
             return Err("waveform_too_many_ops".into());
         }
         let mut next = current.clone();
-        let report = apply_op(&mut next, &op, clip.as_ref(), &w.plugins, cancel)?;
+        let report = apply_op(&mut next, &op, clip.as_ref(), &w.plugins, &actor, cancel)?;
         let mut list = ops.clone();
         list.push(op.clone());
         let doc = WaveformDocument { source: w.identity.clone(), ops: list.clone() };

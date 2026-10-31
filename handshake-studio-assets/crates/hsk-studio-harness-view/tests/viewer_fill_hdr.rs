@@ -6,6 +6,8 @@
 //! the undo history (undo restores the tiles byte-identical).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 #[path = "../../hsk-studio-harness/tests/common/mod.rs"]
 mod common;
 
@@ -117,7 +119,7 @@ fn gradient_keeps_unpainted_hdr_bytes_and_decodes_through_prism() {
     let scratch = Scratch::new("fill-hdr");
     let path = scratch.0.join("hdr.psd");
     std::fs::write(&path, hdr_psd()).unwrap();
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&path).unwrap_or_else(|e| panic!("{e}"));
     let layer = v.layers().into_iter().find(|r| r.name == "hdr").unwrap_or_else(|| panic!("{}", v.state_json())).layer_id;
     let before_tiles = tiles(&v, &layer);

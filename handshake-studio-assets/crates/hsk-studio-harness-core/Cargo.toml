@@ -13,6 +13,11 @@ import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "
 import-pdf = ["import", "dep:hsk-studio-press"]
 import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster"]
 import-affinity = ["import-raster", "dep:hsk-studio-interop-affinity"]
+# Lane SMB-ATTRIBUTION-1: the asset-local test host's fixed context (asset_local_test_context) and the
+# import entry points without an actor argument; not in a default build. The harness (the asset-local
+# test host) enables it. This crate's own tests build their own RunContext (tests/support), so they need
+# no feature in any round unit (rule 4e; a self dev-dependency would break step 0's cargo metadata --locked).
+asset-local-test-host = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }

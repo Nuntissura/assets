@@ -11,6 +11,8 @@
 //! composite's reports, the status log, undo / redo. Illustrator behaviour UNVERIFIED (D5).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 #[path = "../../hsk-studio-harness/tests/common/mod.rs"]
 mod common;
 
@@ -64,7 +66,7 @@ fn properties_rows(v: &mut Viewer, w: f32, h: f32, frames: usize) -> (egui::Rect
 fn psd_viewer(scratch: &Scratch) -> Viewer {
     let path = scratch.0.join("solid.psd");
     std::fs::write(&path, solid_psd(64, 48, "paper", [120, 130, 140])).unwrap();
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&path).unwrap_or_else(|e| panic!("{e}"));
     v
 }
@@ -118,7 +120,7 @@ fn paper(label: &str) -> (Scratch, Viewer) {
     let scratch = Scratch::new(&format!("view-polish-{label}"));
     let source = scratch.0.join("paper.psd");
     std::fs::write(&source, solid_psd(W as u32, H as u32, "paper", [255, 255, 255])).unwrap();
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&source).unwrap();
     v.set_vector_tool(VectorTool { fill_on: false, stroke_on: false, stroke: [255, 255, 255], ..VectorTool::default() });
     v.text_size_pt = 12.0;
@@ -227,12 +229,12 @@ fn create_outlines_is_a_type_menu_leaf_with_ctrl_shift_o() {
     keys.sort_unstable();
     keys.dedup();
     assert_eq!(keys.len(), n, "a shortcut bound twice");
-    let bar = Viewer::new(Prefer::Cpu).menu_bar();
+    let bar = crate::support_context::viewer(Prefer::Cpu).menu_bar();
     let titles: Vec<&str> = bar.titles.iter().map(|t| t.label.as_str()).collect();
     assert_eq!(titles, ["File", "Edit", "View", "Type", "Color", "Workspace", "Help"], "[STU-SHL-011] TYPE between VIEW and COLOR");
 
     // Refused with the menu's reason: nothing open, then no layer selected.
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     assert!(v.shell_command(ShellCommand::CreateOutlines).unwrap_err().contains("nothing open"));
     let (_s, mut v) = paper("outlines-key");
     let text = v.place_text(8.0, 40.0, "Outline me").unwrap();

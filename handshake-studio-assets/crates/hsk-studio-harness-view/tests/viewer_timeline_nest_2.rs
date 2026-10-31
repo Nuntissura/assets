@@ -20,6 +20,8 @@
 //! reading.
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
@@ -178,7 +180,7 @@ fn package(dir: &Path, sequences: Vec<StudioSequence>) -> PathBuf {
 /// The viewer with `sequences` open and NO panel opened.
 fn opened_with(label: &str, sequences: Vec<StudioSequence>) -> (Scratch, Viewer) {
     let scratch = Scratch::new(label);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&package(&scratch.0, sequences)).unwrap_or_else(|e| panic!("{e}"));
     (scratch, v)
 }
@@ -399,14 +401,14 @@ fn nest_moves_clip_envelopes_in_one_step_and_the_parent_mix_is_unchanged() {
 #[cfg(feature = "audio-batch")]
 #[test]
 fn refused_entry_write_leaves_sequences_and_entry_unchanged() {
-    use hsk_studio_harness_core::{Harness, Selection, default_actor};
+    use hsk_studio_harness_core::{Harness, Selection};
     use hsk_studio_pulse::{EditContext, NestIds, SequenceChange, plan_nest};
     use hsk_studio_session::SequenceEdit;
     let scratch = Scratch::new("refused");
     let path = package(&scratch.0, vec![main_sequence()]);
     let h = Harness::new(Selection { providers: vec!["chronicle.patch".to_string()], ..Selection::default() }).unwrap();
     let cancel = CancellationToken::default();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(crate::support_context::context(), &cancel);
     assert!(run.open_path(&path), "{:?}", run.ops().last());
     run.set_document_entry("audio_routing", Some(serde_json::to_vec(&enveloped_routing()).unwrap())).unwrap();
     // A redo history to preserve: a second entry write as one undoable step, undone once.

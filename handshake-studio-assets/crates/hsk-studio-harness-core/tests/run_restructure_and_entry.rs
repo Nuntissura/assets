@@ -4,7 +4,9 @@
 //! structure edit creates a new raster layer at the top of the root stack.
 
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_harness_core::{Harness, Place, PlacementWrite, Selection, default_actor};
+use hsk_studio_harness_core::{Harness, Place, PlacementWrite, Selection};
+mod support;
+use support::test_context;
 use serde_json::json;
 
 const FIXTURE: &[u8] = include_bytes!("../../hsk-studio-harness/tests/fixtures/demo.handshake");
@@ -36,7 +38,7 @@ fn has_layer(run: &hsk_studio_harness_core::Run<'_>, id: &str) -> bool {
 fn structure_and_entry_undo_and_redo_as_one_step() {
     let h = harness();
     let cancel = CancellationToken::default();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE));
     assert!(run.document_entry(TOKEN).is_none());
     let ok = run.restructure_and_entry("replace", &[create()], TOKEN, b"{\"v\":1}".to_vec());
@@ -58,7 +60,7 @@ fn structure_and_entry_undo_and_redo_as_one_step() {
 fn refused_structure_or_entry_changes_nothing() {
     let h = harness();
     let cancel = CancellationToken::default();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE));
     // No writes: the structure edit is refused, the entry is not written.
     assert!(!run.restructure_and_entry("replace", &[], TOKEN, b"x".to_vec()));
@@ -68,6 +70,6 @@ fn refused_structure_or_entry_changes_nothing() {
     assert!(!has_layer(&run, NEW));
     assert!(run.history()["undo"].as_array().unwrap().is_empty(), "{}", run.history());
     // Not open: refused.
-    let mut closed = h.run(default_actor(), &cancel);
+    let mut closed = h.run(test_context(), &cancel);
     assert!(!closed.restructure_and_entry("replace", &[], TOKEN, b"x".to_vec()));
 }

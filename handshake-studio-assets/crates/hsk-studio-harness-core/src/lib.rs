@@ -7,6 +7,7 @@
 
 pub mod action;
 pub mod batch;
+pub mod context;
 #[doc(hidden)]
 pub mod harness;
 pub mod import;
@@ -15,6 +16,10 @@ pub mod panel;
 
 pub use action::{ActionRecord, ActionSet, ActionStep, PlayMode, RecordedValue, RecordingReport};
 pub use batch::{BatchJob, BatchReport};
-pub use harness::{
-    AVAILABLE_PROVIDERS, Harness, HarnessError, NOT_PROVEN, Place, PlacementWrite, References, Run, SCHEMA, Selection, default_actor,
-};
+pub use harness::{AVAILABLE_PROVIDERS, Harness, HarnessError, NOT_PROVEN, Place, PlacementWrite, References, Run, SCHEMA, Selection};
+// Lane SMB-ATTRIBUTION-1: the run's attribution and accord's command-context types, re-exported so
+// callers (harness-view, the CLI) need no further edge.
+pub use context::RunContext;
+#[cfg(feature = "asset-local-test-host")]
+pub use context::asset_local_test_context;
+pub use hsk_studio_accord::{CausationId, ClientSessionId, CommandContext, CommandId, CorrelationId, CorrelationSource, TransientCorrelation};

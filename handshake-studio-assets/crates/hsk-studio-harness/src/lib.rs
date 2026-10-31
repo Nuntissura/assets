@@ -28,7 +28,8 @@ pub use hsk_studio_harness_view::layout_ui;
 pub use hsk_studio_harness_view::view;
 
 pub use hsk_studio_harness_core::{
-    AVAILABLE_PROVIDERS, Harness, HarnessError, NOT_PROVEN, Place, PlacementWrite, References, Run, SCHEMA, Selection, default_actor,
+    AVAILABLE_PROVIDERS, Harness, HarnessError, NOT_PROVEN, Place, PlacementWrite, References, Run, RunContext, SCHEMA, Selection,
+    asset_local_test_context,
 };
 
 /// Machine-readable crate descriptor (same convention as the other Studio crates).

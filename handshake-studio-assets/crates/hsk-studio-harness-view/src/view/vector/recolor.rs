@@ -268,7 +268,7 @@ impl Viewer {
                 if let Some(s) = entry.records.swatches.iter_mut().find(|s| &s.swatch_id == sid) {
                     s.components = new.to_vec();
                 }
-                propagate(&mut entry, doc, sid)?;
+                propagate(&mut entry, doc, sid, self.run.actor())?;
                 report.swatches.push(sid.clone());
             }
             report.skipped = skipped.into_iter().collect();

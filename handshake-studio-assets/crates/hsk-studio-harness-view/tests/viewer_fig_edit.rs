@@ -8,6 +8,8 @@
 //! here (UNVERIFIED, D5).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{self as folio, Payload, StudioValue};
 use hsk_studio_harness_view::view::Viewer;
@@ -119,7 +121,7 @@ fn open_through_dialog(v: &mut Viewer, scratch: &Scratch, name: &str) -> PathBuf
 
 fn opened(label: &str, name: &str) -> (Scratch, Viewer, PathBuf) {
     let scratch = Scratch::new(label);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     let dest = open_through_dialog(&mut v, &scratch, name);
     (scratch, v, dest)
 }
@@ -220,7 +222,7 @@ fn opening_a_fig_yields_an_editable_native_document() {
     // Save and reopen: the same document and entries.
     let saved = scratch.0.join("saved.handshake");
     v.save(&saved, false).unwrap();
-    let mut w = Viewer::new(Prefer::Cpu);
+    let mut w = crate::support_context::viewer(Prefer::Cpu);
     w.open(&saved).unwrap();
     assert_eq!(doc(&w).layers, d.layers);
     assert_eq!(w.vector_entry().unwrap(), entry);
@@ -310,7 +312,7 @@ fn fig_import_receipt_lists_losses() {
 #[test]
 fn hostile_fig_bytes_are_refused_bounded() {
     let scratch = Scratch::new("hostile");
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     let real = std::fs::read(fixture_path("fig-components-autolayout.fig")).unwrap();
     let mut garbage = b"fig-kiwi".to_vec();
     garbage.extend([0xffu8; 64]);
@@ -384,7 +386,7 @@ fn prototype_player_still_opens_fig_files() {
     assert_eq!(open.first(), Some(&"Documents and images"));
     assert_eq!(open.last(), Some(&"All files"));
     assert!(open.contains(&"Design file (.fig)"));
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open_prototype(&std::fs::read(fixture_path("fig-prototype-pages.fig")).unwrap()).unwrap();
     assert!(v.prototype().is_some());
     assert!(v.run().snapshot().is_none(), "the player does not open a document");

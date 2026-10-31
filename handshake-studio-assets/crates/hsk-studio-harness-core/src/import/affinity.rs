@@ -17,7 +17,7 @@
 
 use super::with_package::{SourceMint, package_proposal};
 use super::{ImportError, ImportedDocument, SourceFormat};
-use hsk_studio_accord::CancellationToken;
+use hsk_studio_accord::{ActorContext, CancellationToken};
 use hsk_studio_folio::{self as folio, Resolver};
 use hsk_studio_interop_affinity as affinity;
 use hsk_studio_interop_psd as psd;
@@ -30,7 +30,7 @@ fn refusal(e: affinity::AffinityError) -> ImportError {
     if e == affinity::AffinityError::Canceled { ImportError::Canceled } else { ImportError::Importer { format: FORMAT, code: e.code() } }
 }
 
-pub(crate) fn import_preview(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+pub(crate) fn import_preview(bytes: &[u8], resolver: &dyn Resolver, actor: &ActorContext, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
     cancel.check().map_err(|_| ImportError::Canceled)?;
     let limits = affinity::Limits::default();
     let container = affinity::KaContainer::parse(bytes, &limits).map_err(refusal)?;
@@ -76,7 +76,7 @@ pub(crate) fn import_preview(bytes: &[u8], resolver: &dyn Resolver, cancel: &Can
     let source = psd::SourceIdentity::of(bytes);
     let mut mint = SourceMint::new(&source.sha256);
     let mut frames = super::colour::FrameCount::default();
-    let mut converter = super::colour::converter(FORMAT, &mint, &mut frames)?;
+    let mut converter = super::colour::converter(FORMAT, &mint, &mut frames, actor)?;
     let psd_limits = psd::Limits::default();
     let cfg = psd::ProposalConfig::new(&psd_limits, folio::Budget::default(), resolver);
     let psd_error = |e: psd::PsdError| if e == psd::PsdError::Canceled { ImportError::Canceled } else { importer(e.code()) };

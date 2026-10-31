@@ -12,6 +12,8 @@
 //! NOT_PROVEN: a real desktop window (the same `Viewer::ui` draws there).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 #[path = "../../hsk-studio-harness/tests/common/mod.rs"]
 mod common;
 
@@ -58,7 +60,7 @@ fn check(label: &str, ids: &[&str], mins: &[f32], all: &[Vec<f32>]) {
 fn psd_viewer(scratch: &Scratch) -> Viewer {
     let path = scratch.0.join("solid.psd");
     std::fs::write(&path, solid_psd(64, 48, "paper", [120, 130, 140])).unwrap();
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&path).unwrap_or_else(|e| panic!("{e}"));
     v
 }
@@ -67,7 +69,7 @@ fn psd_viewer(scratch: &Scratch) -> Viewer {
 fn properties_panel_width_is_stable() {
     // Nothing open: the panel holds only short lines ("Select a layer.").
     for (w, h) in [(1400.0, 900.0), (900.0, 700.0)] {
-        let mut v = Viewer::new(Prefer::Cpu);
+        let mut v = crate::support_context::viewer(Prefer::Cpu);
         let all = widths(&mut v, &[widget::PROPERTIES_PANEL], w, h);
         check(&format!("properties, nothing open, {w}x{h}"), &[widget::PROPERTIES_PANEL], &[PROPERTIES_MIN], &all);
     }
@@ -89,7 +91,7 @@ fn develop_panel_width_is_stable() {
     let dng = scratch.0.join("raw.dng");
     std::fs::write(&dng, synthetic_dng(64, 48)).unwrap();
     for (w, h) in [(1400.0, 900.0), (900.0, 700.0)] {
-        let mut v = Viewer::new(Prefer::Cpu);
+        let mut v = crate::support_context::viewer(Prefer::Cpu);
         v.open(&dng).unwrap_or_else(|e| panic!("{e}"));
         assert!(v.develop_available());
         let all = widths(&mut v, &[widget::PROPERTIES_PANEL], w, h);
@@ -106,7 +108,7 @@ fn info_panel_width_is_stable() {
     let scratch = Scratch::new("side-info");
     for (w, h) in [(1400.0, 900.0), (900.0, 700.0)] {
         // Nothing open, then a document with samplers and a selection (the longest rows).
-        let mut v = Viewer::new(Prefer::Cpu);
+        let mut v = crate::support_context::viewer(Prefer::Cpu);
         v.shell_command(ShellCommand::Panel(Panel::Info)).unwrap();
         let ids = [widget::PROPERTIES_PANEL, info::widget::PANEL];
         let all = widths(&mut v, &ids, w, h);

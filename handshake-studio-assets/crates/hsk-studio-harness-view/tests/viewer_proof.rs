@@ -8,6 +8,8 @@
 //! history and the exported file bytes.
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 use hsk_studio_accord::{CancellationToken, DomainId};
 use hsk_studio_folio::{self as folio, ContentDigest, ProofColourVision, ShippedProofProfile, StudioProofIntent, StudioProofProfile};
 use hsk_studio_harness_view::view::Viewer;
@@ -106,7 +108,7 @@ fn psd_at(dir: &Path) -> PathBuf {
 
 /// A viewer with the chart open and rendered (render-cpu).
 fn opened(scratch: &Scratch) -> Viewer {
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&psd_at(&scratch.0)).unwrap();
     v.render_if_dirty();
     assert!(v.frame().is_some(), "{:?}", v.render_error());
@@ -177,7 +179,7 @@ fn not_proven_lines() {
 
 #[test]
 fn proof_menus_list_the_spec_leaves() {
-    let v = Viewer::new(Prefer::Cpu);
+    let v = crate::support_context::viewer(Prefer::Cpu);
     let bar = v.menu_bar();
     assert_eq!(bar.audit(), vec![]);
     let titles: Vec<&str> = bar.titles.iter().map(|t| t.label.as_str()).collect();
@@ -219,7 +221,7 @@ fn proof_menus_list_the_spec_leaves() {
 
 #[test]
 fn proof_menu_is_unavailable_without_a_document() {
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     let bar = v.menu_bar();
     for l in ProofMenuLeaf::all() {
         let node = bar.find(&l.id()).unwrap();
@@ -379,7 +381,7 @@ fn custom_condition_and_save_preset_round_trip_through_save_and_reopen() {
     let path = scratch.0.join("proofed.handshake");
     v.save(&path, false).unwrap();
     let view_before = v.proof_frame().unwrap().unwrap();
-    let mut w = Viewer::new(Prefer::Cpu);
+    let mut w = crate::support_context::viewer(Prefer::Cpu);
     w.open(&path).unwrap();
     assert_eq!(w.proof_records().unwrap().unwrap(), saved);
     assert_eq!(w.proof_frame().unwrap().unwrap(), view_before);
@@ -569,7 +571,7 @@ fn state_json_reports_area_fraction_and_regions() {
 
 #[test]
 fn hostile_proof_entries_read_as_folio_diagnostics() {
-    use hsk_studio_harness_core::harness::{Harness, References, Selection, default_actor};
+    use hsk_studio_harness_core::harness::{Harness, References, Selection};
     let scratch = Scratch::new("hostile");
     let doc_id = {
         let v = opened(&scratch);
@@ -593,12 +595,12 @@ fn hostile_proof_entries_read_as_folio_diagnostics() {
     for (what, bytes, code, target) in cases {
         let harness = Harness::new(Selection { providers: vec![], references: References::TrustAll }).unwrap();
         let cancel = CancellationToken::default();
-        let mut run = harness.run(default_actor(), &cancel);
+        let mut run = harness.run(crate::support_context::context(), &cancel);
         assert!(run.open_import(&psd()));
         run.set_document_entry(proof::ENTRY, Some(bytes.clone())).unwrap();
         let path = scratch.0.join(format!("hostile-{}.handshake", what.replace(' ', "-")));
         assert!(run.save_to(&path), "{what}");
-        let mut v = Viewer::new(Prefer::Cpu);
+        let mut v = crate::support_context::viewer(Prefer::Cpu);
         v.open(&path).unwrap();
         v.render_if_dirty();
         let e = v.proof_records().unwrap_err();

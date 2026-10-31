@@ -63,7 +63,7 @@ impl Viewer {
         }
         let font = self.fonts.iter().find(|f| f.family == spec.family).ok_or_else(|| format!("path_text: font {} is not registered", spec.family))?;
         let cancel = CancellationToken::default();
-        let glyphs = shaped_glyphs(font, &spec.text, spec.size_pt, &cancel)?;
+        let glyphs = shaped_glyphs(font, &spec.text, spec.size_pt, self.run.actor(), &cancel)?;
         let ids: Vec<u32> = glyphs.iter().map(|g| g.glyph_id).collect();
         let resource = ty::FontResource { identity: &font.family, location: &font.family, content_hash: font.hash, face_index: 0, resource_revision: 1, grant_revision: 1 };
         let outlines = ty::glyph_outlines(&ty::FontBytes { bytes: &font.bytes, resource }, &ids, &ty::OutlineLimits::default(), &cancel).map_err(|e| format!("path_text: {}", e.code()))?;

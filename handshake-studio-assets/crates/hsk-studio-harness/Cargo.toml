@@ -26,8 +26,10 @@ audio-plugin = ["audio-batch", "dep:hsk-studio-score-plugin", "hsk-studio-harnes
 studio-aac = ["media", "hsk-studio-reel/studio-aac", "hsk-studio-harness-view/studio-aac"]
 
 [dependencies]
-hsk-studio-harness-core = { path = "../hsk-studio-harness-core", version = "=0.1.0", default-features = false }
-hsk-studio-harness-view = { path = "../hsk-studio-harness-view", version = "=0.1.0", default-features = false }
+# Lane SMB-ATTRIBUTION-1: this crate IS the asset-local test host (SC-2), so it enables the halves'
+# asset-local-test-host feature (the one fixed context, Viewer::new) in its normal dependencies.
+hsk-studio-harness-core = { path = "../hsk-studio-harness-core", version = "=0.1.0", default-features = false, features = ["asset-local-test-host"] }
+hsk-studio-harness-view = { path = "../hsk-studio-harness-view", version = "=0.1.0", default-features = false, features = ["asset-local-test-host"] }
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
 hsk-studio-session = { path = "../hsk-studio-session", version = "=0.1.0", default-features = false }

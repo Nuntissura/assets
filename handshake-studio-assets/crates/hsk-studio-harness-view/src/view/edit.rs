@@ -516,7 +516,7 @@ impl Viewer {
         let colour = b.rgb8.map(linear);
         let document = DomainId::parse(&doc.document_id).map_err(|_| "paint: document id")?;
         let layer_domain = DomainId::parse(layer_id).map_err(|_| "paint: layer id")?;
-        let actor = crate::harness::default_actor();
+        let actor = self.run.actor().clone();
         let mut edited = tiles.clone();
         let mut staged = Vec::new();
         for (i, (tile, rect)) in tiles.iter().zip(&rects).enumerate() {

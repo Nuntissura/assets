@@ -7,7 +7,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio as folio;
 use hsk_studio_harness::import::{ImportError, ImportSettings, SourceFormat, convert_to_native, import, import_with, sniff};
-use hsk_studio_harness::{Harness, References, Selection, cli, default_actor};
+use hsk_studio_harness::{Harness, References, Selection, cli, asset_local_test_context};
 use hsk_studio_package::{ImportRole, Limits, read_package};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -119,7 +119,7 @@ fn psd_converts_to_a_native_package_that_opens_in_a_session_with_receipt_and_ori
 
     // Open directly through the harness: the session holds the same layer count; save/reopen/verify.
     let h = harness();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_import(&bytes));
     assert!(run.summary());
     let Some(checkpoint) = run.checkpoint() else {
@@ -193,7 +193,7 @@ fn unknown_and_not_yet_importable_formats_are_typed_refusals() {
     assert_eq!(import(&two_layer_psd(), &r, &canceled).err(), Some(ImportError::Canceled));
     // Through the harness: a refusal is one unaddressed record with the typed code and detail.
     let h = harness();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(!run.open_import(b"%PDF-1.4"));
     let report = run.finish("import");
     assert_eq!(report["verdict"], "fail");
@@ -502,7 +502,7 @@ fn dng_converts_to_one_developed_raster_layer_and_opens_in_a_session() {
     assert_eq!(sniff(&bytes), Some(SourceFormat::Tiff));
     let cancel = CancellationToken::default();
     let h = harness();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_import(&bytes), "DNG imported");
     assert!(run.summary());
     let Some(checkpoint) = run.checkpoint() else {

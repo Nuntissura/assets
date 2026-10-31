@@ -7,7 +7,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio as folio;
 use hsk_studio_harness::import::{SourceFormat, convert_to_native, sniff};
-use hsk_studio_harness::{Harness, References, Selection, default_actor};
+use hsk_studio_harness::{Harness, References, Selection, asset_local_test_context};
 use hsk_studio_package::{ImportRole, Limits, read_package, sha256_hex_of};
 use serde_json::Value;
 
@@ -71,7 +71,7 @@ fn pdf_is_carried_with_its_original_and_a_pages_not_imported_receipt() {
 
     // Open directly: the carried document opens in a live session with no layers.
     let h = Harness::new(Selection { providers: Vec::new(), references: References::TrustAll }).unwrap();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_import(&bytes));
     assert!(run.summary());
     let report = run.finish("import");

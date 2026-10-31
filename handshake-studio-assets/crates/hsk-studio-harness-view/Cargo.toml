@@ -24,6 +24,11 @@ audio-device = ["viewer", "dep:hsk-studio-score-device"]
 audio-batch = ["media", "dep:hsk-studio-score"]
 audio-plugin = ["audio-batch", "dep:hsk-studio-score-plugin"]
 studio-aac = ["media", "hsk-studio-reel/studio-aac"]
+# Lane SMB-ATTRIBUTION-1: Viewer::new / Viewer::with_gpu_options on the asset-local test host's fixed
+# context (hosts use Viewer::with_context); not in a default build. The harness (the asset-local test
+# host) enables it. This crate's own tests build their viewers with Viewer::with_context and their own
+# RunContext (tests/support_context), so they need no feature in any round unit (rule 4e).
+asset-local-test-host = ["hsk-studio-harness-core/asset-local-test-host"]
 
 [dependencies]
 hsk-studio-harness-core = { path = "../hsk-studio-harness-core", version = "=0.1.0", default-features = false }

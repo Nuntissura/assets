@@ -6,7 +6,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_harness::cli;
 use hsk_studio_harness::manual::COMMANDS;
-use hsk_studio_harness::{Harness, HarnessError, Selection, default_actor};
+use hsk_studio_harness::{Harness, HarnessError, Selection, asset_local_test_context};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -61,7 +61,7 @@ impl Drop for Scratch {
 fn open_edit_save_reopen_verify_end_to_end() {
     let h = harness(&["chronicle.patch"]);
     let cancel = CancellationToken::default();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE) && run.summary());
     assert!(run.rename(L1, "renamed", None));
     // Panel route: the value is parsed by the control descriptor, set in the ValueStore, then
@@ -86,7 +86,7 @@ fn open_edit_save_reopen_verify_end_to_end() {
     assert_eq!(verify["expectations"].as_array().unwrap().len(), 3);
 
     // Independent read: a fresh run on the checkpoint bytes sees the edits.
-    let mut again = h.run(default_actor(), &cancel);
+    let mut again = h.run(asset_local_test_context(), &cancel);
     assert!(again.open_bytes(&bytes) && again.summary());
     let r2 = again.finish("test");
     let summary = op(&r2, "summary");
@@ -145,7 +145,7 @@ fn refusals_are_typed_and_nothing_is_committed() {
     let cancel = CancellationToken::default();
     let h = harness(&["chronicle.patch"]);
     let failing = |h: &Harness, f: &dyn Fn(&mut hsk_studio_harness::Run<'_>) -> bool| -> (String, Value) {
-        let mut run = h.run(default_actor(), &cancel);
+        let mut run = h.run(asset_local_test_context(), &cancel);
         assert!(run.open_bytes(FIXTURE));
         assert!(!f(&mut run));
         let report = run.finish("test");
@@ -178,7 +178,7 @@ fn refusals_are_typed_and_nothing_is_committed() {
     // A cancelled token refuses the open itself; nothing is opened, nothing is written.
     let token = CancellationToken::default();
     token.cancel();
-    let mut run = h.run(default_actor(), &token);
+    let mut run = h.run(asset_local_test_context(), &token);
     assert!(!run.open_bytes(FIXTURE));
     let report = run.finish("test");
     assert_eq!(report["ops"][0]["error"], "canceled");
@@ -254,7 +254,7 @@ fn verify_checks_something_and_save_never_clobbers_the_input() {
     // in the run counts as something to check.
     let h = harness(&["chronicle.patch"]);
     let cancel = CancellationToken::default();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE));
     assert!(!run.verify_live(None, Vec::new()));
     assert!(run.rename(L1, "renamed", None));
@@ -287,10 +287,10 @@ fn verify_checks_something_and_save_never_clobbers_the_input() {
 fn an_empty_run_is_nothing_checked_not_a_pass() {
     let h = harness(&[]);
     let cancel = CancellationToken::default();
-    let report = h.run(default_actor(), &cancel).finish("test");
+    let report = h.run(asset_local_test_context(), &cancel).finish("test");
     assert!(report["ok"] == false && report["verdict"] == "nothing_checked" && report["ops"].as_array().unwrap().is_empty(), "{report}");
     // One successful operation is evidence; the same report then passes.
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE));
     let report = run.finish("test");
     assert!(report["ok"] == true && report["verdict"] == "pass", "{report}");

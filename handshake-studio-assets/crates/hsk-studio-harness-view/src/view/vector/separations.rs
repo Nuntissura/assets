@@ -56,8 +56,8 @@ impl Default for VectorSeparationOptions {
 }
 
 /// Encoded sRGB -> CMYK through Prism into `icc` (relative colorimetric).
-fn rgb_to_cmyk(icc: &[u8], rgb: [f64; 3]) -> Option<[f64; 4]> {
-    use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+fn rgb_to_cmyk(icc: &[u8], rgb: [f64; 3], actor: &hsk_studio_accord::ActorContext) -> Option<[f64; 4]> {
+    use hsk_studio_accord::{CancellationToken, DomainId};
     use hsk_studio_prism::{Intent, ProfileInput, WideEngine, WideSource, WideTransformRequest, profile_hash};
     struct Quiet;
     impl hsk_studio_observe::SinkPort for Quiet {
@@ -65,7 +65,6 @@ fn rgb_to_cmyk(icc: &[u8], rgb: [f64; 3]) -> Option<[f64; 4]> {
             Ok(())
         }
     }
-    let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "harness-separations").ok()?;
     let destination_id = DomainId::parse("SCPF-019abcde-0000-7000-8000-00000000a011").ok()?;
     let source_id = DomainId::parse("SCPF-019abcde-0000-7000-8000-00000000a012").ok()?;
     let resource = DomainId::parse("SSWT-019abcde-0000-7000-8000-00000000a013").ok()?;
@@ -81,7 +80,7 @@ fn rgb_to_cmyk(icc: &[u8], rgb: [f64; 3]) -> Option<[f64; 4]> {
         expected_revision: 0,
         correlation_id: 1,
         resource_id: &resource,
-        actor: &actor,
+        actor,
     };
     let mut engine = WideEngine::new(actor.clone(), 2).ok()?;
     let out = engine.transform(&request, &CancellationToken::default(), &mut Quiet).ok()?;
@@ -156,6 +155,8 @@ struct Walk<'a> {
     page: ([f64; 2], f64),
     cmyk_icc: Option<Vec<u8>>,
     overprint_black: bool,
+    /// The viewer run's actor: the attribution of the Prism conversions (lane SMB-ATTRIBUTION-1).
+    actor: &'a hsk_studio_accord::ActorContext,
 }
 
 impl Walk<'_> {
@@ -176,7 +177,7 @@ impl Walk<'_> {
                 }
             }
         }
-        self.cmyk_icc.as_deref().and_then(|icc| rgb_to_cmyk(icc, rgb)).map(SepPaint::Process)
+        self.cmyk_icc.as_deref().and_then(|icc| rgb_to_cmyk(icc, rgb, self.actor)).map(SepPaint::Process)
     }
 
     fn rows(&self, s: &mut Separator<'_>, layer_id: &str, losses: &mut Vec<String>) -> Result<(), String> {
@@ -319,6 +320,7 @@ impl Viewer {
             page: (o, h),
             cmyk_icc: cmyk_bytes(&entry, doc, None),
             overprint_black: options.overprint_black,
+            actor: self.run.actor(),
         };
         walk.walk(&mut s, None, &mut losses, 0)?;
         let mut preview = s.finish();

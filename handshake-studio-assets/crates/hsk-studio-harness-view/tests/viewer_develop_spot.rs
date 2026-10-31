@@ -8,6 +8,8 @@
 //! tool behaviour (no Lightroom oracle, D5); a real desktop window.
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 #[path = "../../hsk-studio-harness/tests/common/mod.rs"]
 mod common;
 
@@ -25,7 +27,7 @@ const W: u32 = 640;
 const H: u32 = 320;
 
 fn open(path: &Path) -> Viewer {
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
     assert!(v.develop_available(), "{}", v.develop_json());
     v

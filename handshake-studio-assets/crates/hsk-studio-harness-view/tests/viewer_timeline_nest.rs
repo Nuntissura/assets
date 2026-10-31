@@ -9,6 +9,8 @@
 //! window; Premiere's receiving track, track mirroring and range cut (no Premiere oracle, D5).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
@@ -156,7 +158,7 @@ fn package(dir: &Path) -> PathBuf {
 /// The viewer with the fixture open and the timeline shown (source lengths unknown).
 fn opened(label: &str) -> (Scratch, Viewer, egui::Context) {
     let scratch = Scratch::new(label);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     let ctx = egui::Context::default();
     v.open(&package(&scratch.0)).unwrap_or_else(|e| panic!("{e}"));
     v.shell_command(ShellCommand::Panel(Panel::Timeline)).unwrap();

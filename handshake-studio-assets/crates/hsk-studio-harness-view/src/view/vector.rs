@@ -825,6 +825,8 @@ struct LiveTextAssets<'a> {
     /// Why `text` is `None` when the document's text entry did not decode (F-R41-5).
     text_error: Option<&'a str>,
     fonts: &'a [super::text::FontFile],
+    /// The viewer run's actor, the attribution of the shaping (lane SMB-ATTRIBUTION-1).
+    actor: &'a hsk_studio_accord::ActorContext,
     cancel: &'a hsk_studio_accord::CancellationToken,
     /// The plan's blend space: story fills are linear light; an `Encoded` plan (the exports) gets
     /// them sRGB-encoded so exported text keeps the canvas colour.
@@ -868,7 +870,7 @@ impl hsk_studio_composite::VectorAssets for LiveTextAssets<'_> {
     }
     fn shaped_story(&self, text_id: &str) -> Option<hsk_studio_composite::vector_text::ShapedStory> {
         let shaped = match self.text {
-            Some(entry) => super::text::shaped_story(entry, self.fonts, text_id, self.cancel),
+            Some(entry) => super::text::shaped_story(entry, self.fonts, text_id, self.actor, self.cancel),
             None => Err(self.text_error.map_or_else(|| "text_entry_unavailable".into(), |e| format!("text_entry_unavailable: {e}"))),
         };
         let mut shaped = shaped.map_err(|e| self.unshaped.borrow_mut().push((text_id.to_string(), e))).ok()?;
@@ -1284,7 +1286,7 @@ impl Viewer {
     /// [`Self::live_text_assets`] for a plan in `space` (the exports use `Encoded`).
     /// A text entry that does not decode keeps its decode error (`text_entry_unavailable: <error>`).
     fn live_text_assets_in<'a>(&'a self, entry: &'a VectorEntry, text: &'a Result<super::text::TextEntry, String>, space: hsk_studio_composite::BlendSpace) -> LiveTextAssets<'a> {
-        LiveTextAssets { entry: EntryAssets(entry), text: text.as_ref().ok(), text_error: text.as_ref().err().map(String::as_str), fonts: &self.fonts, cancel: self.cancel, space, unshaped: std::cell::RefCell::new(Vec::new()) }
+        LiveTextAssets { entry: EntryAssets(entry), text: text.as_ref().ok(), text_error: text.as_ref().err().map(String::as_str), fonts: &self.fonts, actor: self.run.actor(), cancel: self.cancel, space, unshaped: std::cell::RefCell::new(Vec::new()) }
     }
 
     /// The live path- and area-text bindings of the open document as the window draws them (lane
@@ -1604,7 +1606,7 @@ impl Viewer {
     /// The shaped story and point layout of a text layer record (left-aligned from its origin, as
     /// text layers draw).
     fn point_layout(&self, text_entry: &super::text::TextEntry, record: &super::text::TextLayerRecord) -> Result<(hsk_studio_composite::vector_text::ShapedStory, ty::PointTextLayout), String> {
-        let shaped = super::text::shaped_story(text_entry, &self.fonts, &record.story_id, self.cancel)?;
+        let shaped = super::text::shaped_story(text_entry, &self.fonts, &record.story_id, self.run.actor(), self.cancel)?;
         let runs: Vec<ty::ComposeRun> = shaped.runs.iter().map(|r| r.metrics).collect();
         let glyphs: Vec<ty::ComposeGlyph> = shaped.glyphs.iter().map(|g| ty::ComposeGlyph { advance_pt: g.advance_pt, brk: g.brk }).collect();
         let layout = ty::layout_point_text(record.origin_px, &runs, &glyphs, ty::TextAlign::Left, &ty::AreaTextLimits::default()).map_err(|e| format!("point_text_layout: {e:?}"))?;
@@ -1663,7 +1665,7 @@ impl Viewer {
         let mut entry = self.vector_entry()?;
         let binding = entry.records.area_texts.iter().find(|a| a.container_layer_id == layer_id).cloned().ok_or_else(|| format!("{op}: {layer_id} holds no area text"))?;
         let mut text_entry = self.text_entry()?;
-        let shaped = super::text::shaped_story(&text_entry, &self.fonts, &binding.text_id, self.cancel)?;
+        let shaped = super::text::shaped_story(&text_entry, &self.fonts, &binding.text_id, self.run.actor(), self.cancel)?;
         let container = entry.path(&binding.container_id).ok_or_else(|| format!("vector_path_unresolved: {}", binding.container_id))?.path.to_owned_path().map_err(|e| format!("{op}: {}", e.code()))?;
         let commands = baseline_of(&container);
         let options = area_options(&binding, shaped.align);

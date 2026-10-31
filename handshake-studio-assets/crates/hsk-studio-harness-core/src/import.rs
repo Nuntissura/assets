@@ -267,7 +267,7 @@ mod colour;
 #[cfg(feature = "import")]
 mod with_package {
     use super::*;
-    use hsk_studio_accord::CancellationToken;
+    use hsk_studio_accord::{ActorContext, CancellationToken};
     use hsk_studio_folio::{Resolver, Snapshot};
     use hsk_studio_package::{Extras, ImportEntry, Limits as PackageLimits, MemoryAssetSource, WriteOptions, write_package_with};
     use serde_json::Value;
@@ -318,24 +318,39 @@ mod with_package {
         pub approximate_colour: bool,
     }
 
-    /// Sniffs `bytes` and runs the selected importer with the default (strict) settings.
+    /// Sniffs `bytes` and runs the selected importer with the default (strict) settings, attributed
+    /// to the asset-local test host's actor (feature `asset-local-test-host`; hosts call
+    /// [`import_as`] with their own actor).
+    #[cfg(feature = "asset-local-test-host")]
     pub fn import(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
-        import_with(bytes, resolver, cancel, &ImportSettings::default())
+        import_as(bytes, resolver, crate::asset_local_test_context().actor(), cancel)
     }
 
-    /// [`import`] with explicit [`ImportSettings`].
+    /// [`import_with`] for the asset-local test host's actor (feature `asset-local-test-host`).
+    #[cfg(feature = "asset-local-test-host")]
     pub fn import_with(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken, settings: &ImportSettings) -> Result<ImportedDocument, ImportError> {
+        import_with_as(bytes, resolver, crate::asset_local_test_context().actor(), cancel, settings)
+    }
+
+    /// Sniffs `bytes` and runs the selected importer with the default (strict) settings; the colour
+    /// conversion (Prism) is attributed to `actor`, the caller's (lane SMB-ATTRIBUTION-1).
+    pub fn import_as(bytes: &[u8], resolver: &dyn Resolver, actor: &ActorContext, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        import_with_as(bytes, resolver, actor, cancel, &ImportSettings::default())
+    }
+
+    /// [`import_as`] with explicit [`ImportSettings`].
+    pub fn import_with_as(bytes: &[u8], resolver: &dyn Resolver, actor: &ActorContext, cancel: &CancellationToken, settings: &ImportSettings) -> Result<ImportedDocument, ImportError> {
         cancel.check().map_err(|_| ImportError::Canceled)?;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SOURCE_BYTES {
             return Err(ImportError::Package("entry_too_large"));
         }
         let format = sniff(bytes).ok_or(ImportError::FormatUnrecognised)?;
         let mut imported = match format {
-            SourceFormat::Psd | SourceFormat::Psb => psd_route(bytes, format, resolver, cancel),
-            SourceFormat::Tiff => tiff_family(bytes, resolver, cancel, settings),
-            SourceFormat::CameraRaw => raw_route(bytes, format, resolver, cancel, settings),
+            SourceFormat::Psd | SourceFormat::Psb => psd_route(bytes, format, resolver, actor, cancel),
+            SourceFormat::Tiff => tiff_family(bytes, resolver, actor, cancel, settings),
+            SourceFormat::CameraRaw => raw_route(bytes, format, resolver, actor, cancel, settings),
             SourceFormat::Pdf => pdf_route(bytes, resolver, cancel),
-            SourceFormat::Png | SourceFormat::Jpeg | SourceFormat::Webp => raster_route(bytes, format, resolver, cancel),
+            SourceFormat::Png | SourceFormat::Jpeg | SourceFormat::Webp => raster_route(bytes, format, resolver, actor, cancel),
             // Lead decision 2026-10-16: interchange first; the default import never decodes a native file.
             SourceFormat::Affinity => Err(affinity_refusal(bytes)),
         }?;
@@ -373,8 +388,14 @@ mod with_package {
     /// lossy (`affinity_layers_not_decoded`), with the original `.af*` bytes carried. [`import`] keeps
     /// refusing Affinity files with `affinity_native_use_export`; a host calls this only on an explicit
     /// user choice. Non-Affinity bytes are `format_unrecognised`.
-    #[cfg(feature = "import-affinity")]
+    #[cfg(all(feature = "import-affinity", feature = "asset-local-test-host"))]
     pub fn import_affinity_preview(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        import_affinity_preview_as(bytes, resolver, crate::asset_local_test_context().actor(), cancel)
+    }
+
+    /// [`import_affinity_preview`] with the colour conversion attributed to `actor`, the caller's.
+    #[cfg(feature = "import-affinity")]
+    pub fn import_affinity_preview_as(bytes: &[u8], resolver: &dyn Resolver, actor: &ActorContext, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
         cancel.check().map_err(|_| ImportError::Canceled)?;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SOURCE_BYTES {
             return Err(ImportError::Package("entry_too_large"));
@@ -382,24 +403,37 @@ mod with_package {
         if sniff(bytes) != Some(SourceFormat::Affinity) {
             return Err(ImportError::FormatUnrecognised);
         }
-        let mut imported = super::affinity::import_preview(bytes, resolver, cancel)?;
+        let mut imported = super::affinity::import_preview(bytes, resolver, actor, cancel)?;
         bind_blending_space(&mut imported, resolver, cancel)?;
         Ok(imported)
     }
 
-    /// Import, then native container bytes (convert to native).
+    /// Import, then native container bytes (convert to native), attributed to the asset-local test
+    /// host's actor (feature `asset-local-test-host`; hosts call [`convert_to_native_as`]).
+    #[cfg(feature = "asset-local-test-host")]
     pub fn convert_to_native(
         bytes: &[u8],
         resolver: &dyn Resolver,
         cancel: &CancellationToken,
     ) -> Result<(Vec<u8>, ImportedDocument), ImportError> {
-        let imported = import(bytes, resolver, cancel)?;
+        convert_to_native_as(bytes, resolver, crate::asset_local_test_context().actor(), cancel)
+    }
+
+    /// Import with the colour conversion attributed to `actor` (the caller's, e.g. the
+    /// [`crate::Run`]'s), then native container bytes.
+    pub fn convert_to_native_as(
+        bytes: &[u8],
+        resolver: &dyn Resolver,
+        actor: &ActorContext,
+        cancel: &CancellationToken,
+    ) -> Result<(Vec<u8>, ImportedDocument), ImportError> {
+        let imported = import_as(bytes, resolver, actor, cancel)?;
         let package = imported.to_package(cancel)?;
         Ok((package, imported))
     }
 
     #[cfg(not(feature = "import-psd"))]
-    fn psd_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+    fn psd_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &ActorContext, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
         Err(ImportError::FormatUnavailable { format, feature: format.feature(), reason: "feature_not_enabled" })
     }
 
@@ -416,17 +450,17 @@ mod with_package {
 
     /// PNG / JPEG / WebP through `hsk-studio-interop-raster` (feature `import-raster`, module `raster`).
     #[cfg(feature = "import-raster")]
-    fn raster_route(bytes: &[u8], format: SourceFormat, resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
-        super::raster::import_raster(bytes, format, resolver, cancel)
+    fn raster_route(bytes: &[u8], format: SourceFormat, resolver: &dyn Resolver, actor: &ActorContext, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        super::raster::import_raster(bytes, format, resolver, actor, cancel)
     }
 
     #[cfg(not(feature = "import-raster"))]
-    fn raster_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+    fn raster_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &ActorContext, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
         Err(ImportError::FormatUnavailable { format, feature: "import-raster", reason: "feature_not_enabled" })
     }
 
     #[cfg(not(feature = "import-raw"))]
-    fn raw_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &CancellationToken, _: &ImportSettings) -> Result<ImportedDocument, ImportError> {
+    fn raw_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &ActorContext, _: &CancellationToken, _: &ImportSettings) -> Result<ImportedDocument, ImportError> {
         Err(ImportError::FormatUnavailable { format, feature: "import-raw", reason: "feature_not_enabled" })
     }
 
@@ -438,13 +472,13 @@ mod with_package {
     /// plain TIFF only when no marker is present (otherwise develop's refusal stands); without
     /// `import-raw` a marked file is `format_unavailable` (format `camera_raw`, feature `import-raw`).
     /// Tests: `tests/import_tiff.rs` `camera_raw_never_imports_as_plain_tiff_without_import_raw`.
-    fn tiff_family(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken, settings: &ImportSettings) -> Result<ImportedDocument, ImportError> {
+    fn tiff_family(bytes: &[u8], resolver: &dyn Resolver, actor: &ActorContext, cancel: &CancellationToken, settings: &ImportSettings) -> Result<ImportedDocument, ImportError> {
         #[cfg(feature = "import-raw")]
         {
             let not_raw = hsk_studio_develop::DevelopError::UnsupportedContainer.code();
-            match raw_route(bytes, SourceFormat::Tiff, resolver, cancel, settings) {
+            match raw_route(bytes, SourceFormat::Tiff, resolver, actor, cancel, settings) {
                 Err(ImportError::Importer { code, .. }) if code == not_raw && camera_raw_marker(bytes).is_none() => {
-                    plain_tiff(bytes, resolver, cancel, "develop_unsupported_container")
+                    plain_tiff(bytes, resolver, actor, cancel, "develop_unsupported_container")
                 }
                 other => other,
             }
@@ -459,7 +493,7 @@ mod with_package {
                     reason: "feature_not_enabled",
                 });
             }
-            plain_tiff(bytes, resolver, cancel, "container_markers_absent")
+            plain_tiff(bytes, resolver, actor, cancel, "container_markers_absent")
         }
     }
 
@@ -475,7 +509,7 @@ mod with_package {
     }
 
     #[cfg(not(feature = "import-tiff"))]
-    fn plain_tiff(_: &[u8], _: &dyn Resolver, _: &CancellationToken, _: &'static str) -> Result<ImportedDocument, ImportError> {
+    fn plain_tiff(_: &[u8], _: &dyn Resolver, _: &ActorContext, _: &CancellationToken, _: &'static str) -> Result<ImportedDocument, ImportError> {
         Err(ImportError::FormatUnavailable { format: SourceFormat::Tiff, feature: "import-tiff", reason: "feature_not_enabled" })
     }
 
@@ -483,10 +517,11 @@ mod with_package {
     fn plain_tiff(
         bytes: &[u8],
         resolver: &dyn Resolver,
+        actor: &ActorContext,
         cancel: &CancellationToken,
         camera_raw_check: &'static str,
     ) -> Result<ImportedDocument, ImportError> {
-        super::tiff::import_tiff(bytes, resolver, cancel, camera_raw_check)
+        super::tiff::import_tiff(bytes, resolver, actor, cancel, camera_raw_check)
     }
 
     /// Camera raw through `hsk-studio-develop` (feature `import-raw`): `decode_container` decides the
@@ -500,6 +535,7 @@ mod with_package {
         bytes: &[u8],
         format: SourceFormat,
         resolver: &dyn Resolver,
+        actor: &ActorContext,
         cancel: &CancellationToken,
         settings: &ImportSettings,
     ) -> Result<ImportedDocument, ImportError> {
@@ -508,7 +544,7 @@ mod with_package {
         let (image, receipt) = develop::develop_to_image(&prepared.plane, &prepared.recipe, 1, cancel).map_err(|e| prepared.refusal(e))?;
         let (window, window_report, colour_route) = (prepared.window, prepared.window_report, prepared.colour_route);
         let (colour_loss, colour_cct, illuminant_weight) = (prepared.colour_loss, prepared.colour_cct, prepared.illuminant_weight);
-        let (mut proposal, frames) = raw_proposal(&prepared, image, resolver, cancel)?;
+        let (mut proposal, frames) = raw_proposal_as(&prepared, image, resolver, actor, cancel)?;
         if let Some(code) = colour_loss {
             proposal.loss.entries.push(hsk_studio_interop_psd::LossEntry { path: "document/colour".into(), kind: hsk_studio_interop_psd::LossKind::Transformed, code });
         }
@@ -628,18 +664,30 @@ mod with_package {
 
     /// One developed image as interop-psd's raster proposal (one 32-bit `Background` layer through
     /// `raster_proposal` and the Prism converter, the import's tiling) and the Prism frame count.
-    #[cfg(feature = "import-raw")]
+    #[cfg(all(feature = "import-raw", feature = "asset-local-test-host"))]
     pub fn raw_proposal(
         prepared: &RawPrepared,
         image: hsk_studio_develop::DevelopedImage,
         resolver: &dyn Resolver,
         cancel: &CancellationToken,
     ) -> Result<(hsk_studio_interop_psd::ImportProposal, u64), ImportError> {
+        raw_proposal_as(prepared, image, resolver, crate::asset_local_test_context().actor(), cancel)
+    }
+
+    /// [`raw_proposal`] with the colour conversion attributed to `actor`, the caller's.
+    #[cfg(feature = "import-raw")]
+    pub fn raw_proposal_as(
+        prepared: &RawPrepared,
+        image: hsk_studio_develop::DevelopedImage,
+        resolver: &dyn Resolver,
+        actor: &ActorContext,
+        cancel: &CancellationToken,
+    ) -> Result<(hsk_studio_interop_psd::ImportProposal, u64), ImportError> {
         use hsk_studio_interop_psd as psd;
         let format = prepared.format;
         let mut mint = prepared.mint.clone();
         let mut frames = super::colour::FrameCount::default();
-        let mut converter = super::colour::converter(format, &mint, &mut frames)?;
+        let mut converter = super::colour::converter(format, &mint, &mut frames, actor)?;
         let pixels = (image.width as usize).checked_mul(image.height as usize).ok_or(ImportError::Package("dimensions"))?;
         if Some(image.rgb.len()) != pixels.checked_mul(3) {
             return Err(ImportError::Package("developed_image_size"));
@@ -679,6 +727,7 @@ mod with_package {
         bytes: &[u8],
         format: SourceFormat,
         resolver: &dyn Resolver,
+        actor: &ActorContext,
         cancel: &CancellationToken,
     ) -> Result<ImportedDocument, ImportError> {
         use hsk_studio_interop_psd as psd;
@@ -691,7 +740,7 @@ mod with_package {
         let cfg = psd::ProposalConfig::new(&limits, folio::Budget::default(), resolver);
         let mut mint = SourceMint::new(&source.sha256);
         let mut frames = super::colour::FrameCount::default();
-        let mut converter = super::colour::converter(format, &mint, &mut frames)?;
+        let mut converter = super::colour::converter(format, &mint, &mut frames, actor)?;
         let proposal = psd::to_proposal(&doc, &source, &cfg, &mut mint, Some(&mut converter), cancel).map_err(refusal)?;
         drop(converter);
         let colour = super::colour::summary(&proposal, frames.0, "embedded PSD profile (resource 1039) -> working space");

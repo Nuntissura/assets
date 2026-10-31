@@ -5,7 +5,9 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_harness_core::action::{ActionStep, DialogOption, UnitToken};
 use hsk_studio_harness_core::batch::{self, Automation, BatchPorts, ErrorPolicy, JobState, OutputTarget, OverwritePolicy, SourceSet, TemplateToken};
-use hsk_studio_harness_core::{ActionRecord, BatchJob, Harness, RecordedValue, Selection, default_actor};
+use hsk_studio_harness_core::{ActionRecord, BatchJob, Harness, RecordedValue, Selection};
+mod support;
+use support::test_context;
 use hsk_studio_session::{Cost, JobPort, JobRefused, JobScope, JobTicket};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -98,7 +100,7 @@ fn files(paths: &[&PathBuf]) -> SourceSet {
 /// Reopens an output in a fresh run and checks the action's values.
 fn applied(h: &Harness, path: &Path) -> bool {
     let cancel = CancellationToken::default();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(test_context(), &cancel);
     run.open_path(path) && run.verify_live(None, vec![(L1.into(), "name", json!("batched")), (L2.into(), "opacity", json!(25.0))])
 }
 
@@ -115,7 +117,7 @@ fn three_fixture_copies_give_three_outputs_with_the_action_applied() {
     let cancel = CancellationToken::default();
     let mut states: Vec<JobState> = Vec::new();
     let mut on_state = |st: &JobState| states.push(st.clone());
-    let report = batch::run_batch(&h, &job(source, vec![target(&out, OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue), BatchPorts { on_state: Some(&mut on_state), ..BatchPorts::default() }, &cancel).unwrap();
+    let report = batch::run_batch(&h, &job(source, vec![target(&out, OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue), BatchPorts { on_state: Some(&mut on_state), ..BatchPorts::new(test_context()) }, &cancel).unwrap();
     assert_eq!(report.receipts.len(), 3, "{}", report.to_json());
     for (r, n) in report.receipts.iter().zip(["a", "b", "c"]) {
         assert_eq!(r.outcome, "succeeded", "{}", r.to_json());
@@ -150,20 +152,20 @@ fn collisions_rename_or_skip_and_unsupported_formats_refuse_per_target() {
     std::fs::write(out.join("a_out.handshake"), b"existing").unwrap();
     let h = harness();
     let cancel = CancellationToken::default();
-    let r = batch::run_batch(&h, &job(files(&[&a]), vec![target(&out, OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue), BatchPorts::default(), &cancel).unwrap();
+    let r = batch::run_batch(&h, &job(files(&[&a]), vec![target(&out, OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue), BatchPorts::new(test_context()), &cancel).unwrap();
     let t = &r.receipts[0].targets[0];
     assert!(t.outcome == "written" && t.path.as_deref().unwrap().ends_with("a_out-1.handshake"), "{}", r.to_json());
     assert!(applied(&h, &out.join("a_out-1.handshake")));
     assert_eq!(std::fs::read(out.join("a_out.handshake")).unwrap(), b"existing");
 
-    let r = batch::run_batch(&h, &job(files(&[&a]), vec![target(&out, OverwritePolicy::Skip)], ErrorPolicy::SkipAndContinue), BatchPorts::default(), &cancel).unwrap();
+    let r = batch::run_batch(&h, &job(files(&[&a]), vec![target(&out, OverwritePolicy::Skip)], ErrorPolicy::SkipAndContinue), BatchPorts::new(test_context()), &cancel).unwrap();
     assert_eq!(r.receipts[0].targets[0].outcome, "skipped_existing");
     assert_eq!(std::fs::read(out.join("a_out.handshake")).unwrap(), b"existing", "skip leaves the existing file alone");
     assert!(!out.join("a_out-2.handshake").exists());
 
     let mut png = target(&s.dir("png"), OverwritePolicy::Rename);
     png.format_id = "png".into();
-    let r = batch::run_batch(&h, &job(files(&[&a]), vec![png, target(&s.dir("native"), OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue), BatchPorts::default(), &cancel).unwrap();
+    let r = batch::run_batch(&h, &job(files(&[&a]), vec![png, target(&s.dir("native"), OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue), BatchPorts::new(test_context()), &cancel).unwrap();
     let rc = &r.receipts[0];
     assert!(rc.targets[0].outcome == "refused" && rc.targets[0].code.as_deref() == Some("batch_output_format_unsupported"), "{}", rc.to_json());
     assert_eq!(rc.targets[1].outcome, "written");
@@ -179,7 +181,7 @@ fn a_corrupt_input_fails_alone_or_stops_the_job() {
     let h = harness();
     let cancel = CancellationToken::default();
     let out = s.dir("out");
-    let r = batch::run_batch(&h, &job(files(&[&a, &bad, &c]), vec![target(&out, OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue), BatchPorts::default(), &cancel).unwrap();
+    let r = batch::run_batch(&h, &job(files(&[&a, &bad, &c]), vec![target(&out, OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue), BatchPorts::new(test_context()), &cancel).unwrap();
     let outcomes: Vec<&str> = r.receipts.iter().map(|x| x.outcome).collect();
     assert_eq!(outcomes, ["succeeded", "failed", "succeeded"], "{}", r.to_json());
     let failed = &r.receipts[1];
@@ -189,14 +191,14 @@ fn a_corrupt_input_fails_alone_or_stops_the_job() {
     assert!(out.join("c_out.handshake").exists());
 
     let out2 = s.dir("out2");
-    let r = batch::run_batch(&h, &job(files(&[&a, &bad, &c]), vec![target(&out2, OverwritePolicy::Rename)], ErrorPolicy::StopOnFirstError), BatchPorts::default(), &cancel).unwrap();
+    let r = batch::run_batch(&h, &job(files(&[&a, &bad, &c]), vec![target(&out2, OverwritePolicy::Rename)], ErrorPolicy::StopOnFirstError), BatchPorts::new(test_context()), &cancel).unwrap();
     assert_eq!(r.receipts.len(), 2);
     assert_eq!(r.stopped, Some("stop_on_first_error"));
     assert!(out2.join("a_out.handshake").exists() && !out2.join("c_out.handshake").exists());
 
     // Quarantine copies the failing input (never moves it).
     let q = s.dir("quarantine");
-    let r = batch::run_batch(&h, &job(files(&[&bad]), vec![target(&s.dir("out3"), OverwritePolicy::Rename)], ErrorPolicy::Quarantine { folder: q.to_string_lossy().into_owned() }), BatchPorts::default(), &cancel).unwrap();
+    let r = batch::run_batch(&h, &job(files(&[&bad]), vec![target(&s.dir("out3"), OverwritePolicy::Rename)], ErrorPolicy::Quarantine { folder: q.to_string_lossy().into_owned() }), BatchPorts::new(test_context()), &cancel).unwrap();
     assert!(r.receipts[0].quarantined_to.as_deref().unwrap().ends_with("b.handshake"));
     assert!(bad.exists() && q.join("b.handshake").exists());
 }
@@ -211,7 +213,7 @@ fn always_show_ask_and_unsupported_configurations_refuse_before_any_file_is_touc
     let mut j = job(files(&[&a]), vec![target(&out, OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue);
     let Automation::Action(action) = &mut j.applied_automation else { unreachable!() };
     action.steps[1].dialog_options = DialogOption::AlwaysShow;
-    let e = batch::run_batch(&h, &j, BatchPorts::default(), &cancel).unwrap_err();
+    let e = batch::run_batch(&h, &j, BatchPorts::new(test_context()), &cancel).unwrap_err();
     assert_eq!(e.code, "batch_always_show_dialog_in_headless");
     assert!(e.detail["action_id"] == ACT && e.detail["step_index"] == 1, "{}", e.to_json());
     // A disabled always_show step does not block.
@@ -220,7 +222,7 @@ fn always_show_ask_and_unsupported_configurations_refuse_before_any_file_is_touc
     assert!(batch::check_start(&j).is_ok());
 
     let mut ask = job(files(&[&a]), vec![target(&out, OverwritePolicy::Ask)], ErrorPolicy::SkipAndContinue);
-    let e = batch::run_batch(&h, &ask, BatchPorts::default(), &cancel).unwrap_err();
+    let e = batch::run_batch(&h, &ask, BatchPorts::new(test_context()), &cancel).unwrap_err();
     assert!(e.code == "batch_ask_overwrite_in_headless" && e.detail["job_id"] == "job-1");
     ask.output_targets[0].overwrite_policy = OverwritePolicy::Rename;
 
@@ -240,7 +242,7 @@ fn always_show_ask_and_unsupported_configurations_refuse_before_any_file_is_touc
     for (code, f) in refusals {
         let mut j = ask.clone();
         f(&mut j);
-        let e = batch::run_batch(&h, &j, BatchPorts::default(), &cancel).unwrap_err();
+        let e = batch::run_batch(&h, &j, BatchPorts::new(test_context()), &cancel).unwrap_err();
         assert_eq!(e.code, code, "{}", e.to_json());
     }
     assert!(!out.exists(), "no output folder was created by a refused job");
@@ -267,7 +269,7 @@ fn cancelling_after_the_first_input_stops_the_job() {
         }
     };
     let j = job(files(&ins.iter().collect::<Vec<_>>()), vec![target(&out, OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue);
-    let r = batch::run_batch(&h, &j, BatchPorts { on_state: Some(&mut on_state), ..BatchPorts::default() }, &cancel).unwrap();
+    let r = batch::run_batch(&h, &j, BatchPorts { on_state: Some(&mut on_state), ..BatchPorts::new(test_context()) }, &cancel).unwrap();
     assert_eq!(r.receipts.len(), 1);
     assert!(r.state.cancelled && r.stopped == Some("cancelled") && r.state.done == 1 && r.state.total == 3, "{}", r.to_json());
     assert!(out.join("a_out.handshake").exists() && !out.join("b_out.handshake").exists());
@@ -314,7 +316,7 @@ fn a_job_port_refusing_once_triggers_a_retry_and_every_ticket_is_released() {
     let cancel = CancellationToken::default();
     let jobs = Jobs::new(1);
     let j = job(files(&[&a]), vec![target(&s.dir("out"), OverwritePolicy::Rename)], ErrorPolicy::RetryThenSkip { retry_count: 2, backoff_ms: 250 });
-    let r = batch::run_batch(&h, &j, BatchPorts { jobs: Some(jobs.clone()), ..BatchPorts::default() }, &cancel).unwrap();
+    let r = batch::run_batch(&h, &j, BatchPorts { jobs: Some(jobs.clone()), ..BatchPorts::new(test_context()) }, &cancel).unwrap();
     let rc = &r.receipts[0];
     assert!(rc.outcome == "succeeded" && rc.attempts == 2, "{}", rc.to_json());
     assert_eq!(rc.retries, vec![json!({"attempt": 1, "stage": "admission", "code": "job_admission_refused(retry_after_ms=7)", "backoff_ms": 250, "slept": false})]);
@@ -324,13 +326,13 @@ fn a_job_port_refusing_once_triggers_a_retry_and_every_ticket_is_released() {
     // skip_and_continue: the refusal fails the input; a failing automation still releases its ticket.
     let refusing = Jobs::new(1);
     let mut failing = job(files(&[&a, &a]), vec![target(&s.dir("out2"), OverwritePolicy::Rename)], ErrorPolicy::SkipAndContinue);
-    let r = batch::run_batch(&h, &failing, BatchPorts { jobs: Some(refusing.clone()), ..BatchPorts::default() }, &cancel).unwrap();
+    let r = batch::run_batch(&h, &failing, BatchPorts { jobs: Some(refusing.clone()), ..BatchPorts::new(test_context()) }, &cancel).unwrap();
     assert_eq!(r.receipts.iter().map(|x| x.outcome).collect::<Vec<_>>(), ["failed", "succeeded"]);
     assert_eq!(r.receipts[0].error.as_ref().unwrap()["stage"], "admission");
     assert_eq!((refusing.admitted.load(Ordering::SeqCst), refusing.released.load(Ordering::SeqCst)), (1, 1));
     failing.applied_automation = Automation::CommandSequence(vec![step(0, "layer.rename", vec![("layer", RecordedValue::Reference("SLYR-019abcde-0000-7000-8000-0000000000ff".into())), ("name", RecordedValue::String("x".into()))])]);
     let counting = Jobs::new(0);
-    let r = batch::run_batch(&h, &failing, BatchPorts { jobs: Some(counting.clone()), ..BatchPorts::default() }, &cancel).unwrap();
+    let r = batch::run_batch(&h, &failing, BatchPorts { jobs: Some(counting.clone()), ..BatchPorts::new(test_context()) }, &cancel).unwrap();
     assert!(r.receipts.iter().all(|x| x.outcome == "failed" && x.error.as_ref().unwrap()["code"] == "action_step_reference_unresolved"), "{}", r.to_json());
     assert_eq!((counting.admitted.load(Ordering::SeqCst), counting.released.load(Ordering::SeqCst)), (2, 2));
 }

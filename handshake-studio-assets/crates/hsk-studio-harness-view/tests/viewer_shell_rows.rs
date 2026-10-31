@@ -8,6 +8,8 @@
 //! NOT_PROVEN: a real desktop window (the same `Viewer::ui` draws there).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 use egui::containers::panel::PanelState;
 use hsk_studio_harness_view::view::Viewer;
 use hsk_studio_harness_view::view::edit::Tool;
@@ -46,7 +48,7 @@ fn check(label: &str, all: &[(f32, f32)], max_toolbar: f32) {
 #[test]
 fn toolbar_and_layers_stable_on_default_viewport() {
     // The desktop binary's default viewport (studio-harness.rs: 1400 x 900).
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     let all = sizes(&mut v, 1400.0, 900.0);
     check("default tool, 1400x900", &all, 200.0);
 }
@@ -54,7 +56,7 @@ fn toolbar_and_layers_stable_on_default_viewport() {
 #[test]
 fn toolbar_and_layers_stable_with_vector_options() {
     // A vector tool adds the fill / stroke / shape option items to the tool row.
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.set_tool(Tool::Star);
     let all = sizes(&mut v, 1400.0, 900.0);
     check("star tool, 1400x900", &all, 200.0);
@@ -63,7 +65,7 @@ fn toolbar_and_layers_stable_with_vector_options() {
 #[test]
 fn toolbar_and_layers_stable_on_narrow_viewport() {
     // More wrapping: still one size, and the toolbar leaves most of the window to the canvas.
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.set_tool(Tool::Star);
     let all = sizes(&mut v, 900.0, 700.0);
     check("star tool, 900x700", &all, 350.0);

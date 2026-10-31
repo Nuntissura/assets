@@ -17,7 +17,7 @@
 
 use super::with_package::SourceMint;
 use super::{ImportError, SourceFormat};
-use hsk_studio_accord::DomainId;
+use hsk_studio_accord::{ActorContext, DomainId};
 use hsk_studio_interop_psd as psd;
 use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
 use hsk_studio_prism::{Prism, hash_hex, profile_hash};
@@ -40,15 +40,18 @@ impl SinkPort for FrameCount {
     }
 }
 
-/// A Prism-backed converter for one import. Profile and resource ids come from reserved counters of
-/// the source's deterministic mint, so they never collide with the minted document identities.
+/// A Prism-backed converter for one import, attributed to the caller's `actor` (lane
+/// SMB-ATTRIBUTION-1: the Run's, or the host's). Profile and resource ids come from reserved
+/// counters of the source's deterministic mint, so they never collide with the minted document
+/// identities.
 pub(crate) fn converter<'s>(
     format: SourceFormat,
     mint: &SourceMint,
     sink: &'s mut FrameCount,
+    actor: &ActorContext,
 ) -> Result<psd::PrismConverter<'s>, ImportError> {
     let id = |prefix: &str, k: u32| DomainId::parse(&mint.reserved(prefix, k)).map_err(|_| ImportError::Importer { format, code: "colour_id" });
-    let actor = crate::default_actor();
+    let actor = actor.clone();
     let prism = Prism::new(actor.clone(), PRISM_CACHE_ENTRIES).map_err(|e| ImportError::Importer { format, code: e.code() })?;
     let route = psd::PrismRoute {
         actor,

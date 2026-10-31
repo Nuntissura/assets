@@ -8,6 +8,8 @@
 //! UNVERIFIED (D5).
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 #[path = "../../hsk-studio-harness/tests/common/mod.rs"]
 mod common;
 
@@ -27,7 +29,7 @@ fn paper(label: &str) -> (Scratch, Viewer) {
     let scratch = Scratch::new(&format!("vector-text-tools-{label}"));
     let source = scratch.0.join("paper.psd");
     std::fs::write(&source, solid_psd(W as u32, H as u32, "paper", [255, 255, 255])).unwrap();
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&source).unwrap();
     v.set_vector_tool(VectorTool { fill_on: false, stroke_on: false, stroke: [255, 255, 255], ..VectorTool::default() });
     v.text_size_pt = 12.0;
@@ -214,7 +216,7 @@ fn exports_carry_live_text_and_keep_the_unshaped_report() {
 #[test]
 fn exports_name_the_text_entry_decode_error() {
     use hsk_studio_accord::CancellationToken;
-    use hsk_studio_harness_core::harness::{Harness, References, Selection, default_actor};
+    use hsk_studio_harness_core::harness::{Harness, References, Selection};
     let (s, mut v) = paper("exports-decode");
     let container = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [80.0, 54.0], false).unwrap();
     let story = v.bind_live_text(&container, "Area text", LiveTextKind::Area { inset_pt: 2.0 }).unwrap();
@@ -222,12 +224,12 @@ fn exports_name_the_text_entry_decode_error() {
     v.save(&saved, false).unwrap();
     let harness = Harness::new(Selection { providers: vec![], references: References::TrustAll }).unwrap();
     let cancel = CancellationToken::default();
-    let mut run = harness.run(default_actor(), &cancel);
+    let mut run = harness.run(crate::support_context::context(), &cancel);
     assert!(run.open_path(&saved));
     run.set_document_entry(hsk_studio_harness_view::view::text::ENTRY, Some(b"{not json".to_vec())).unwrap();
     let corrupt = s.0.join("corrupt.handshake");
     assert!(run.save_to(&corrupt));
-    let mut w = Viewer::new(Prefer::Cpu);
+    let mut w = crate::support_context::viewer(Prefer::Cpu);
     w.open(&corrupt).unwrap();
     let decode = w.text_entry().unwrap_err();
     let want = format!("{story}: {TEXT_NOT_PROVIDED} (text_entry_unavailable: {decode})");

@@ -15,7 +15,7 @@ use hsk_studio_harness::view::develop::{DevelopExport, DevelopOp};
 use hsk_studio_harness::view::develop_entry::{self, MAX_ENTRY_BYTES};
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_harness::view::{Viewer, widget};
-use hsk_studio_harness::{Harness, References, Selection, default_actor};
+use hsk_studio_harness::{Harness, References, Selection, asset_local_test_context};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -208,7 +208,7 @@ fn hostile_develop_entries_are_typed_refusals() {
     for (name, entry, code) in [("junk", cases[1].1.clone(), "develop_entry_json"), ("range", out_of_range, DevelopError::InvalidAdjustment.code())] {
         let harness = Harness::new(Selection { providers: vec![], references: References::TrustAll }).unwrap();
         let cancel = CancellationToken::default();
-        let mut run = harness.run(default_actor(), &cancel);
+        let mut run = harness.run(asset_local_test_context(), &cancel);
         assert!(run.open_import(&bytes));
         run.set_document_entry("develop", Some(entry)).unwrap();
         let path = scratch.0.join(format!("{name}.handshake"));

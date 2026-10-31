@@ -29,7 +29,7 @@
 
 use super::with_package::{SourceMint, package_proposal};
 use super::{ImportError, ImportedDocument, SourceFormat};
-use hsk_studio_accord::CancellationToken;
+use hsk_studio_accord::{ActorContext, CancellationToken};
 use hsk_studio_folio::{self as folio, Resolver};
 use hsk_studio_interop_psd as psd;
 use hsk_studio_interop_tiff as tiff;
@@ -47,6 +47,7 @@ fn importer(code: &'static str) -> ImportError {
 pub(crate) fn import_tiff(
     bytes: &[u8],
     resolver: &dyn Resolver,
+    actor: &ActorContext,
     cancel: &CancellationToken,
     camera_raw_check: &'static str,
 ) -> Result<ImportedDocument, ImportError> {
@@ -69,7 +70,7 @@ pub(crate) fn import_tiff(
     let source = psd::SourceIdentity::of(bytes);
     let mut mint = SourceMint::new(&source.sha256);
     let mut frames = super::colour::FrameCount::default();
-    let mut converter = super::colour::converter(FORMAT, &mint, &mut frames)?;
+    let mut converter = super::colour::converter(FORMAT, &mint, &mut frames, actor)?;
     let limits = psd::Limits::default();
     let cfg = psd::ProposalConfig::new(&limits, folio::Budget::default(), resolver);
     let psd_error = |e: psd::PsdError| if e == psd::PsdError::Canceled { ImportError::Canceled } else { importer(e.code()) };

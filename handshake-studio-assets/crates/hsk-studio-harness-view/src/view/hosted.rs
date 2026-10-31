@@ -1444,7 +1444,7 @@ impl Viewer {
         if items.is_empty() {
             return Err("nothing queued".into());
         }
-        let mut queue = AudioBatchQueue::new(crate::harness::default_actor());
+        let mut queue = AudioBatchQueue::new(self.run.actor().clone());
         for item in items {
             let artifact = item.output.file_name().map_or_else(|| "output".to_owned(), |n| n.to_string_lossy().into_owned());
             let _handle = queue.submit(AudioBatchJob {

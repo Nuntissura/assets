@@ -5,7 +5,9 @@
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_harness_core::action::{self, ActionSet, DialogOption, UnitToken};
-use hsk_studio_harness_core::{ActionRecord, Harness, Place, PlacementWrite, PlayMode, RecordedValue, Run, Selection, default_actor};
+use hsk_studio_harness_core::{ActionRecord, Harness, Place, PlacementWrite, PlayMode, RecordedValue, Run, Selection};
+mod support;
+use support::test_context;
 use serde_json::{Value, json};
 
 const FIXTURE: &[u8] = include_bytes!("../../hsk-studio-harness/tests/fixtures/demo.handshake");
@@ -35,7 +37,7 @@ fn undo_labels(run: &Run<'_>) -> Value {
 
 /// Records rename L1, opacity L2 40 %, show L2. Returns the action and the recording's op names.
 fn record_three(h: &Harness, cancel: &CancellationToken) -> (ActionRecord, action::RecordingReport, Vec<String>) {
-    let mut run = h.run(default_actor(), cancel);
+    let mut run = h.run(test_context(), cancel);
     assert!(run.open_bytes(FIXTURE));
     assert!(run.start_recording(ACT, "tidy"));
     assert!(run.rename(L1, "tidied", None));
@@ -74,7 +76,7 @@ fn replay_is_one_undo_step_with_the_same_ops_and_one_undo_reverts_all() {
     let cancel = CancellationToken::default();
     let (action, _, recorded_ops) = record_three(&h, &cancel);
 
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE));
     let (l1, l2) = (values(&run, L1), values(&run, L2));
     assert!(run.play_action(&action, PlayMode::Headless), "{:?}", run.ops().last());
@@ -118,7 +120,7 @@ fn a_failing_step_leaves_content_and_history_unchanged() {
     }
     action.declared_step_count = 4;
 
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE));
     // A redo entry the replay must keep.
     assert!(run.rename(L2, "before", None) && run.undo());
@@ -158,7 +160,7 @@ fn a_disabled_step_is_skipped_and_kept() {
     let cancel = CancellationToken::default();
     let (mut action, _, _) = record_three(&h, &cancel);
     action.steps[0].enabled = false;
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE));
     let l1 = values(&run, L1);
     assert!(run.play_action(&action, PlayMode::Headless), "{:?}", run.ops().last());
@@ -177,7 +179,7 @@ fn dialog_policy_in_headless_and_interactive_playback() {
     let (mut action, _, _) = record_three(&h, &cancel);
     action.steps[1].dialog_options = DialogOption::AlwaysShow;
     action.steps[2].dialog_options = DialogOption::ShowInInteractivePlayback;
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE));
     let revision = run.snapshot().unwrap().document().revision;
     assert!(!run.play_action(&action, PlayMode::Headless));
@@ -199,7 +201,7 @@ fn dialog_policy_in_headless_and_interactive_playback() {
 fn non_recordable_operations_are_reported_never_silently_dropped() {
     let h = harness();
     let cancel = CancellationToken::default();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(test_context(), &cancel);
     assert!(run.open_bytes(FIXTURE));
     assert!(!run.start_recording("SACT-bad", "x"));
     assert_eq!(run.ops().last().unwrap()["error"], "action_id_malformed");

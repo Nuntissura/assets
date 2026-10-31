@@ -7,6 +7,8 @@
 //! each) and the mixer's bus stream plays them (ratios 10^(dB/20), pan direction).
 #![cfg(feature = "audio-batch")]
 
+mod support_context;
+
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
@@ -178,7 +180,7 @@ fn sequence_package(dir: &Path) -> PathBuf {
 /// Opens the fixture and binds the multitrack view (timeline, mixer, source port).
 fn opened(label: &str) -> (Scratch, Viewer) {
     let scratch = Scratch::new(label);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&sequence_package(&scratch.0)).unwrap_or_else(|e| panic!("{e}"));
     v.open_multitrack(RATE, 960, sources(), Arc::new(Ext)).unwrap_or_else(|e| panic!("{e}: {}", v.state_json()["status"]));
     (scratch, v)
@@ -346,7 +348,7 @@ fn lift_never_leaves_a_dangling_envelope() {
     assert_points(&points_of(&v, &cid(4)), &ENV4, "the other envelope stays");
     let saved = s.0.join("lifted.handshake");
     v.save(&saved, false).unwrap();
-    let mut w = Viewer::new(Prefer::Cpu);
+    let mut w = crate::support_context::viewer(Prefer::Cpu);
     w.open(&saved).unwrap_or_else(|e| panic!("{e}"));
     let set = w.audio_routing().expect("the reopened routing validates").expect("routing saved");
     let doc = w.run().snapshot().unwrap().document().clone();

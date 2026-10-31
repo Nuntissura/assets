@@ -98,6 +98,7 @@ pub mod vector;
 mod wrap;
 
 use crate::harness::{Harness, References, Run, Selection};
+use hsk_studio_harness_core::RunContext;
 use crate::panel::{self, PanelValues, Route};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Parent, StudioLayer};
@@ -193,6 +194,9 @@ pub struct Viewer {
     /// The application's harness (FILE > Close starts a fresh run on it).
     harness: &'static Harness,
     run: Run<'static>,
+    /// The host session's attribution (lane SMB-ATTRIBUTION-1): every run of this viewer (FILE >
+    /// Close starts a fresh one) is attributed to it and shares its correlation source.
+    context: RunContext,
     /// Menu bar, dialogs, recent files, panel visibility, hosted layout editor (module [`shell`]).
     shell: shell::ShellState,
     pub path_input: String,
@@ -280,14 +284,24 @@ const MAX_STATUS: usize = 200;
 
 impl Viewer {
     /// A viewer with the chronicle provider selected (edits commit through the session) and
-    /// development references (`trust_all`, recorded in every harness report).
+    /// development references (`trust_all`, recorded in every harness report), attributed to the
+    /// asset-local test host's fixed context (feature `asset-local-test-host`; hosts use
+    /// [`Viewer::with_context`]).
+    #[cfg(feature = "asset-local-test-host")]
     pub fn new(prefer: Prefer) -> Self {
         Self::with_gpu_options(prefer, hsk_studio_render_gpu::DeviceOptions::default())
     }
 
     /// As [`Viewer::new`] with explicit render-gpu device options (tests pass `BackendChoice::None`
     /// to prove the render-cpu fallback without touching a GPU).
+    #[cfg(feature = "asset-local-test-host")]
     pub fn with_gpu_options(prefer: Prefer, gpu_options: hsk_studio_render_gpu::DeviceOptions) -> Self {
+        Self::with_context(prefer, gpu_options, hsk_studio_harness_core::asset_local_test_context())
+    }
+
+    /// A viewer attributed to the host session's `context` (lane SMB-ATTRIBUTION-1): every edit,
+    /// fill, effect and batch it runs carries that actor, client session and correlation source.
+    pub fn with_context(prefer: Prefer, gpu_options: hsk_studio_render_gpu::DeviceOptions, context: RunContext) -> Self {
         let selection = Selection { providers: vec![hsk_studio_session::CHRONICLE_PROVIDER_ID.to_string()], references: References::TrustAll };
         // The application owns one harness and one token for its whole life; a `Run` borrows both.
         let harness: &'static Harness = Box::leak(Box::new(Harness::new(selection).expect("the chronicle provider is available")));
@@ -295,7 +309,8 @@ impl Viewer {
         #[allow(unused_mut)]
         let mut viewer = Self {
             harness,
-            run: harness.run(crate::harness::default_actor(), cancel),
+            run: harness.run(context.clone(), cancel),
+            context,
             shell: shell::ShellState::default(),
             path_input: String::new(),
             save_input: String::new(),

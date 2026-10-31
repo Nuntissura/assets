@@ -459,7 +459,7 @@ impl Viewer {
     /// Commits a fill result to `layer_id` as one chronicle `tiles` edit named `label`.
     fn commit_fill(&mut self, label: &str, layer_id: &str, t: Target, result: FillResult) -> Result<u64, String> {
         let linear: Vec<u8> = f32s(&result.colour).flat_map(|v| decode(v).to_le_bytes()).collect();
-        let actor = crate::harness::default_actor();
+        let actor = self.run.actor().clone();
         let mut edited = t.tiles.clone();
         let mut staged = Vec::new();
         for (i, (tile, rect)) in t.tiles.iter().zip(&t.rects).enumerate() {

@@ -6,6 +6,8 @@
 //! PS-30); the GPU shared-device display path and a real desktop window.
 #![cfg(feature = "viewer")]
 
+mod support_context;
+
 #[path = "../../hsk-studio-harness/tests/common/mod.rs"]
 mod common;
 
@@ -67,7 +69,7 @@ fn two_layers(scratch: &Scratch) -> PathBuf {
 fn opened(label: &str) -> (Scratch, Viewer) {
     let scratch = Scratch::new(&format!("info-{label}"));
     let path = two_layers(&scratch);
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&path).unwrap_or_else(|e| panic!("open: {e}"));
     v.render_if_dirty();
     (scratch, v)
@@ -118,7 +120,7 @@ fn open_info(v: &mut Viewer, ctx: &egui::Context) {
 #[test]
 fn info_opens_from_the_workspace_menu_and_shortcut() {
     println!("NOT_PROVEN: the Info panel's GPU shared-device display path (the panel reads the render-cpu read-back) and a real desktop window");
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     let ctx = egui::Context::default();
     settle(&mut v, &ctx);
     let panel = |v: &Viewer| v.state_json()["shell"]["panels"]["info"].clone();
@@ -376,7 +378,7 @@ fn samplers_survive_save_and_reopen() {
     assert_eq!(records.samplers.len(), 2);
     let out = s.0.join("info.handshake");
     v.save(&out, false).unwrap();
-    let mut w = Viewer::new(Prefer::Cpu);
+    let mut w = crate::support_context::viewer(Prefer::Cpu);
     w.open(&out).unwrap();
     assert_eq!(w.info_records().unwrap(), records);
     w.render_if_dirty();
@@ -412,7 +414,7 @@ fn hostile_info_entries_are_refused() {
     assert!(InfoRecords::parse(b"[1,2]").unwrap_err().contains("not_an_object"));
     assert!(InfoRecords::parse(&b"[".repeat(200_000)[..info::MAX_ENTRY_BYTES]).is_err());
     // Nothing open: commands are refused.
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     assert!(v.info_command(InfoCommand::AddSampler { x: 0.0, y: 0.0 }).unwrap_err().contains("nothing open"));
     assert!(v.info_eyedropper(0.0, 0.0).is_err());
 }

@@ -10,7 +10,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_harness::view::{Viewer, widget};
-use hsk_studio_harness::{Harness, References, Selection, default_actor};
+use hsk_studio_harness::{Harness, References, Selection, asset_local_test_context};
 
 mod common;
 use common::{Scratch, two_layer_psd};
@@ -73,7 +73,7 @@ fn viewer_opens_renders_toggles_a_layer_and_saves() {
     // Independent reopen: the hidden layer stays hidden, the import receipt is carried.
     let h = Harness::new(Selection { providers: Vec::new(), references: References::TrustAll }).unwrap();
     let cancel = CancellationToken::default();
-    let mut run = h.run(default_actor(), &cancel);
+    let mut run = h.run(asset_local_test_context(), &cancel);
     assert!(run.open_path(&out));
     assert!(run.verify_live(Some(revision), vec![(top.clone(), "visible", serde_json::json!(false))]));
     assert_eq!(run.finish("verify")["verdict"], "pass");

@@ -1389,7 +1389,7 @@ impl Viewer {
     /// Closes the open document and every document-bound surface (FILE > Close); the recent list,
     /// panel visibility and render preference stay.
     pub fn close(&mut self) {
-        self.run = self.harness.run(crate::harness::default_actor(), self.cancel);
+        self.run = self.harness.run(self.context.clone(), self.cancel);
         self.source = None;
         self.assets = super::render::Assets::new();
         self.receipt = None;
