@@ -183,7 +183,20 @@ fn fxc_rejected_kernel_is_a_typed_refusal_before_any_dispatch() {
         .device_info()
         .expect("a sound backend on the same adapter")
         .backend;
-    check_fxc_fault(&fault, backend, "hsk-studio-render-gpu composite");
+    // Per-backend expectation (lane SMB-GPU-CLIENT-PORT-1, lead-approved: the transient adapter is
+    // Vulkan first on Windows). On dx12 FXC rejects the composite pipeline. Another backend's
+    // compiler accepts that WGSL, so the first failing pipeline is the next one, the envelope
+    // composite, whose entry point `composite_ext` the WGSL lacks: still the typed
+    // pipeline_create at construction, before any dispatch, now in the validation class.
+    if backend == "dx12" {
+        check_fxc_fault(&fault, backend, "hsk-studio-render-gpu composite");
+    } else {
+        assert_eq!(fault.code, "pipeline_create", "{fault}");
+        assert_eq!(fault.label, "hsk-studio-render-gpu composite envelope", "{fault}");
+        assert_eq!(fault.class, "validation", "{fault}");
+        assert!(fault.message.contains("composite_ext"), "{fault}");
+        eprintln!("NOT_PROVEN: backend {backend} is not dx12; the FXC rejection class was not exercised ({fault})");
+    }
     assert!(fault.message.len() <= FAULT_MESSAGE_MAX_BYTES);
     // machine paths are redacted (lane SMB-RENDER-GPU-SUBMIT-FAULT): FXC names the source by the
     // working directory plus the label; only the file name stays
@@ -239,13 +252,23 @@ fn probe_failure_leaves_the_device_usable() {
     let cut = backend.pipeline_fault().expect("detail");
     assert!(cut.message.len() <= FAULT_MESSAGE_MAX_BYTES, "{}", cut.message.len());
 
-    assert_eq!(
-        backend.probe_pipeline(FXC_REJECTED_WGSL, "composite"),
-        Err(GpuError::Pipeline("pipeline_create"))
-    );
-    let fxc = backend.pipeline_fault().expect("detail");
-    eprintln!("PROBE_FAULT: {fxc}");
-    check_fxc_fault(&fxc, info.backend, "hsk-studio-render-gpu probe");
+    // Per-backend expectation (lane SMB-GPU-CLIENT-PORT-1, lead-approved): only FXC (dx12) rejects
+    // this WGSL; on another backend the probe builds, which also shows the device stays usable.
+    if info.backend == "dx12" {
+        assert_eq!(
+            backend.probe_pipeline(FXC_REJECTED_WGSL, "composite"),
+            Err(GpuError::Pipeline("pipeline_create"))
+        );
+        let fxc = backend.pipeline_fault().expect("detail");
+        eprintln!("PROBE_FAULT: {fxc}");
+        check_fxc_fault(&fxc, info.backend, "hsk-studio-render-gpu probe");
+    } else {
+        assert_eq!(backend.probe_pipeline(FXC_REJECTED_WGSL, "composite"), Ok(()));
+        eprintln!(
+            "NOT_PROVEN: backend {} is not dx12; the FXC-rejected probe kernel builds there, the FXC rejection class was not exercised",
+            info.backend
+        );
+    }
 
     assert_eq!(backend.probe_pipeline(VALID_WGSL, "composite"), Ok(()));
 
