@@ -143,9 +143,17 @@ fn draw_parts(
     mode: BlendMode,
     mut draw: impl FnMut(&mut PdfExport, &[PathCommand], FillRule) -> Result<(), hsk_studio_press::ExportError>,
 ) -> Result<(), hsk_studio_press::ExportError> {
-    for (rule, cmds) in parts {
+    let group = parts.len() > 1 && (alpha < 1.0 || mode != BlendMode::Normal);
+    if group {
+        ex.begin_group(handle)?;
+    } else {
         ex.set_draw_state(handle, DrawState { fill_alpha: alpha, stroke_alpha: 1.0, blend: mode })?;
+    }
+    for (rule, cmds) in parts {
         draw(ex, cmds, *rule)?;
+    }
+    if group {
+        ex.end_group(handle, GroupStyle { opacity: alpha, blend: mode, isolated: true, knockout: false, soft_mask: None })?;
     }
     Ok(())
 }

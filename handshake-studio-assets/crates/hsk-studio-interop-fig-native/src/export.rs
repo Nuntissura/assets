@@ -22,7 +22,11 @@
 //! with a butt cap, and every marker outline filled in the stroke colour (a Figma `.fig` writer
 //! does not exist; this is the export of the cap). A marker nib does not build (the `ERD_*`
 //! terminators) or refuses is the typed loss `export.stroke.markers` with nib's code and the
-//! stroke is written unmarked (tests: fig_markers).
+//! stroke is written unmarked (tests: fig_markers). Below full opacity or under a blend mode the
+//! stroke and its markers are drawn opaque into one transparency group painted once with the row's
+//! alpha and mode, so where marker and stroke overlap the ink is applied once, as composite's
+//! united coverage does (R44 finding F-R44-5; test fig_markers
+//! `half_opacity_markers_are_painted_once_in_one_group`).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::import::SourceId;
 use crate::native::{FigTextLayout, NativeProposal};
@@ -584,7 +588,8 @@ impl<'a> Lower<'a> {
                         continue;
                     }
                     let blend = blend_of(*blend_mode).unwrap_or(BlendMode::Normal);
-                    self.state((opacity / 100.0).clamp(0.0, 1.0), blend)?;
+                    let alpha = (opacity / 100.0).clamp(0.0, 1.0);
+                    self.state(alpha, blend)?;
                     let inside = stroke.align == FolioAlign::Inside;
                     let width = stroke.weight.value * self.scale * if inside { 2.0 } else { 1.0 };
                     let style = StrokeStyle {
@@ -620,6 +625,14 @@ impl<'a> Lower<'a> {
                             }
                         }
                         let stroked = stroked.as_ref().unwrap_or(cmds);
+                        // R44 F-R44-5: stroke and markers are ONE coverage (composite unites them),
+                        // so below full opacity or under a blend mode they are drawn opaque and
+                        // normal into one transparency group painted once with the row's alpha and
+                        // mode; the overlap is not painted twice.
+                        let group = !outlines.is_empty() && (alpha < 1.0 || blend != BlendMode::Normal);
+                        if group {
+                            self.ex.begin_group(self.page).map_err(press_err)?;
+                        }
                         // An inside stroke: twice the width, clipped to the shape.
                         if inside {
                             self.ex.push_clip(self.page, cmds, *rule).map_err(press_err)?;
@@ -632,6 +645,10 @@ impl<'a> Lower<'a> {
                         }
                         for (outline, outline_rule) in &outlines {
                             self.ex.fill_path(self.page, outline, *outline_rule, ink).map_err(press_err)?;
+                        }
+                        if group {
+                            let style = GroupStyle { opacity: alpha, blend, isolated: true, knockout: false, soft_mask: None };
+                            self.ex.end_group(self.page, style).map_err(press_err)?;
                         }
                     }
                 }
