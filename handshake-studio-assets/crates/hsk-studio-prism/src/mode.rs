@@ -31,6 +31,7 @@
 
 pub mod bitmap;
 pub mod color_table;
+pub mod indexed;
 
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::{Budget, FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};

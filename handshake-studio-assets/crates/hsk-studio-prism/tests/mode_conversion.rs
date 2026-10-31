@@ -373,10 +373,6 @@ fn mt_31176_inert_method_fields_round_trip() {
 
 use hsk_studio_prism::mode::color_table::{shipped_table, ColorTable, ShippedTable, ACT_BLOCK_BYTES, ACT_TRAILER_BYTES};
 
-const RED: [u8; 3] = [255, 0, 0];
-const GREEN: [u8; 3] = [0, 255, 0];
-const BLUE: [u8; 3] = [0, 0, 255];
-
 #[test]
 fn mt_31177_color_table_encode_decode_is_identity() {
     let t = ColorTable::new(&[RED, GREEN, BLUE], Some(1)).unwrap();
@@ -444,4 +440,181 @@ fn mt_31177_color_table_aggregate_over_budget() {
     let mut over = vec![[1_u8, 2, 3]; 256];
     over.push([0, 0, 0]);
     assert_eq!(code(ColorTable::new(&over, None)), "color_table_over_256");
+}
+
+// ---------------------------------------------------------------- slice 4: RGB -> indexed (MT-31175, MT-31177)
+
+use hsk_studio_prism::mode::indexed::{rgb_to_indexed, ForcedColors, IndexedDither, IndexedEnv, IndexedOptions, Matte, Palette, RgbImage};
+
+const RED: [u8; 3] = [255, 0, 0];
+const GREEN: [u8; 3] = [0, 255, 0];
+const BLUE: [u8; 3] = [0, 0, 255];
+
+fn flat(px: &[[u8; 3]]) -> Vec<u8> {
+    px.iter().flatten().copied().collect()
+}
+
+#[test]
+fn mt_31175_indexed_exact_web_uniform_palettes() {
+    let data = flat(&[RED, GREEN, RED, BLUE]);
+    let img = RgbImage::Rgb8 { width: 2, height: 2, data: &data };
+    let r = rgb_to_indexed(&img, &IndexedOptions::default(), &IndexedEnv::default()).unwrap();
+    assert_eq!(r.table.entries(), &[RED, GREEN, BLUE]);
+    assert_eq!(r.indices, vec![0, 1, 0, 2]);
+    assert_eq!((r.colors_used(), r.table.transparency_index()), (3, None));
+
+    let many: Vec<[u8; 3]> = (0..272_u32).map(|i| [(i % 256) as u8, (i / 256) as u8, 7]).collect();
+    let d = flat(&many);
+    let big = RgbImage::Rgb8 { width: 17, height: 16, data: &d };
+    assert_eq!(code(rgb_to_indexed(&big, &IndexedOptions::default(), &IndexedEnv::default())), "exact_palette_over_256");
+
+    let w = flat(&[[10, 10, 10], [250, 0, 0]]);
+    let web = rgb_to_indexed(&RgbImage::Rgb8 { width: 2, height: 1, data: &w }, &IndexedOptions::new(Palette::Web), &IndexedEnv::default()).unwrap();
+    assert_eq!((web.table.len(), web.indices.clone()), (216, vec![0, 180]));
+
+    let mut u = IndexedOptions::new(Palette::Uniform);
+    u.set_colors(8).unwrap();
+    let uni = rgb_to_indexed(&RgbImage::Rgb8 { width: 2, height: 1, data: &w }, &u, &IndexedEnv::default()).unwrap();
+    assert_eq!(uni.table.len(), 8);
+    assert_eq!(uni.table.entries()[4], [255, 0, 0]);
+    assert_eq!(uni.indices, vec![0, 4]);
+}
+
+#[test]
+fn mt_31175_indexed_local_palettes_bounded_and_deterministic() {
+    let ramp: Vec<[u8; 3]> = (0..256_u32).map(|i| [i as u8, (255 - i) as u8, (i / 2) as u8]).collect();
+    let d = flat(&ramp);
+    let img = RgbImage::Rgb8 { width: 16, height: 16, data: &d };
+    for p in [Palette::LocalAdaptive, Palette::LocalPerceptual, Palette::LocalSelective] {
+        let mut o = IndexedOptions::new(p);
+        o.set_colors(4).unwrap();
+        let a = rgb_to_indexed(&img, &o, &IndexedEnv::default()).unwrap();
+        let b = rgb_to_indexed(&img, &o, &IndexedEnv::default()).unwrap();
+        assert_eq!(a, b, "{p:?} same input, same bytes");
+        assert!((2..=4).contains(&a.table.len()), "{p:?} {}", a.table.len());
+        assert!(a.indices.iter().all(|i| usize::from(*i) < a.table.len()));
+        // Few colours: the distinct colours themselves.
+        let few = flat(&[RED, GREEN]);
+        let f = rgb_to_indexed(&RgbImage::Rgb8 { width: 2, height: 1, data: &few }, &o, &IndexedEnv::default()).unwrap();
+        assert_eq!(f.table.entries(), &[RED, GREEN]);
+    }
+    for p in [Palette::MasterAdaptive, Palette::MasterPerceptual, Palette::MasterSelective] {
+        assert_eq!(code(rgb_to_indexed(&img, &IndexedOptions::new(p), &IndexedEnv::default())), "master_palette_needs_several_images");
+    }
+    for p in [Palette::MacOs, Palette::Windows, Palette::Previous] {
+        assert_eq!(code(rgb_to_indexed(&img, &IndexedOptions::new(p), &IndexedEnv::default())), "palette_table_not_captured");
+    }
+    assert_eq!(rgb_to_indexed(&img, &IndexedOptions::new(Palette::Uniform), &IndexedEnv::default()), Err(ModeError::ParameterRequired("indexed.colors")));
+    let mut zero = IndexedOptions::new(Palette::LocalAdaptive);
+    zero.set_colors(0).unwrap();
+    assert_eq!(code(rgb_to_indexed(&img, &zero, &IndexedEnv::default())), "empty_palette");
+}
+
+#[test]
+fn mt_31175_indexed_transparency_matte_forced() {
+    let px = [255_u8, 0, 0, 255, 0, 0, 0, 0];
+    let img = RgbImage::Rgba8 { width: 2, height: 1, data: &px };
+    let mut o = IndexedOptions::default();
+    o.transparency = true;
+    let r = rgb_to_indexed(&img, &o, &IndexedEnv::default()).unwrap();
+    assert_eq!(r.table.entries(), &[RED, [0, 0, 0]]);
+    assert_eq!((r.table.transparency_index(), r.indices.clone()), (Some(1), vec![0, 1]));
+
+    let half = [0_u8, 0, 0, 128];
+    let mut m = IndexedOptions::default();
+    m.matte = Matte::White;
+    let h = rgb_to_indexed(&RgbImage::Rgba8 { width: 1, height: 1, data: &half }, &m, &IndexedEnv::default()).unwrap();
+    assert_eq!(h.table.entries(), &[[127, 127, 127]]);
+    m.matte = Matte::ForegroundColor;
+    assert_eq!(code(rgb_to_indexed(&RgbImage::Rgba8 { width: 1, height: 1, data: &half }, &m, &IndexedEnv::default())), "matte_color_required");
+    let env = IndexedEnv { foreground_color: Some([0, 0, 255]), ..IndexedEnv::default() };
+    let fg = rgb_to_indexed(&RgbImage::Rgba8 { width: 1, height: 1, data: &half }, &m, &env).unwrap();
+    assert_eq!(fg.table.entries(), &[[0, 0, 127]]);
+
+    let one = flat(&[RED]);
+    let mut f = IndexedOptions::default();
+    f.forced = ForcedColors::BlackWhite;
+    let fr = rgb_to_indexed(&RgbImage::Rgb8 { width: 1, height: 1, data: &one }, &f, &IndexedEnv::default()).unwrap();
+    assert_eq!((fr.table.entries(), fr.indices.as_slice()), (&[[0, 0, 0], [255, 255, 255], RED][..], &[2_u8][..]));
+    let mut fu = IndexedOptions::new(Palette::Uniform);
+    fu.forced = ForcedColors::Web;
+    fu.set_colors(10).unwrap();
+    assert_eq!(code(rgb_to_indexed(&RgbImage::Rgb8 { width: 1, height: 1, data: &one }, &fu, &IndexedEnv::default())), "forced_colors_exceed_count");
+}
+
+#[test]
+fn mt_31175_indexed_dither_modes_and_preserve_exact() {
+    let mid = [128_u8; 8 * 8 * 3];
+    let img = RgbImage::Rgb8 { width: 8, height: 8, data: &mid };
+    let mut o = IndexedOptions::new(Palette::Uniform);
+    o.set_colors(8).unwrap();
+    let plain = rgb_to_indexed(&img, &o, &IndexedEnv::default()).unwrap();
+    assert!(plain.indices.iter().all(|i| *i == 7), "128 is nearer 255 than 0");
+    o.dither = IndexedDither::Diffusion;
+    assert_eq!(rgb_to_indexed(&img, &o, &IndexedEnv::default()), Err(ModeError::ParameterRequired("indexed.dither_amount")));
+    o.set_dither_amount(100).unwrap();
+    let dif = rgb_to_indexed(&img, &o, &IndexedEnv::default()).unwrap();
+    assert!(dif.indices.contains(&0) && dif.indices.contains(&7));
+    assert_eq!(dif, rgb_to_indexed(&img, &o, &IndexedEnv::default()).unwrap());
+    o.dither = IndexedDither::Pattern;
+    assert_eq!(rgb_to_indexed(&img, &o, &IndexedEnv::default()).unwrap(), rgb_to_indexed(&img, &o, &IndexedEnv::default()).unwrap());
+
+    // Noise needs an explicit seed; the seed fixes the bytes.
+    let pair: Vec<[u8; 3]> = (0..256).map(|i| if i % 2 == 0 { [100, 100, 100] } else { [110, 110, 110] }).collect();
+    let d = flat(&pair);
+    let two = RgbImage::Rgb8 { width: 16, height: 16, data: &d };
+    let mut n = IndexedOptions::default();
+    n.dither = IndexedDither::Noise;
+    assert_eq!(rgb_to_indexed(&two, &n, &IndexedEnv::default()), Err(ModeError::ParameterRequired("indexed.noise_seed")));
+    let env = IndexedEnv { noise_seed: Some(7), ..IndexedEnv::default() };
+    let a = rgb_to_indexed(&two, &n, &env).unwrap();
+    assert_eq!(a, rgb_to_indexed(&two, &n, &env).unwrap());
+    let exact: Vec<u8> = (0..256).map(|i| (i % 2) as u8).collect();
+    assert_ne!(a.indices, exact, "noise moves some pixels to the neighbouring entry");
+    n.preserve_exact_colors = true;
+    assert_eq!(rgb_to_indexed(&two, &n, &env).unwrap().indices, exact, "exact colours are preserved");
+}
+
+#[test]
+fn mt_31175_indexed_dims_u32_max_and_aggregate_over_budget() {
+    let tiny = [0_u8; 8];
+    let img = RgbImage::Rgba8 { width: u32::MAX, height: 2, data: &tiny };
+    assert_eq!(code(rgb_to_indexed(&img, &IndexedOptions::default(), &IndexedEnv::default())), "pixel_budget_exceeded");
+    let over = RgbImage::Rgb8 { width: 20_000, height: 20_000, data: &tiny };
+    assert_eq!(code(rgb_to_indexed(&over, &IndexedOptions::default(), &IndexedEnv::default())), "pixel_budget_exceeded");
+    let short = RgbImage::Rgb8 { width: 2, height: 2, data: &tiny };
+    assert_eq!(code(rgb_to_indexed(&short, &IndexedOptions::default(), &IndexedEnv::default())), "buffer_length_mismatch");
+    let empty = RgbImage::Rgb8 { width: 4, height: 0, data: &[] };
+    assert_eq!(code(rgb_to_indexed(&empty, &IndexedOptions::default(), &IndexedEnv::default())), "empty_image");
+}
+
+#[test]
+fn mt_31177_read_only_counts_and_dither_amount_bounds() {
+    for p in Palette::ALL {
+        let mut o = IndexedOptions::new(*p);
+        let read_only = matches!(p, Palette::Exact | Palette::MacOs | Palette::Windows | Palette::Web | Palette::Previous);
+        assert_eq!(p.colors_read_only(), read_only, "{p:?}");
+        if read_only {
+            assert_eq!(code(o.set_colors(16)), "indexed_colors_read_only");
+            assert_eq!(o.colors(), None);
+        } else {
+            assert_eq!(code(o.set_colors(257)), "parameter_out_of_range");
+            o.set_colors(256).unwrap();
+            assert_eq!(o.colors(), Some(256));
+        }
+    }
+    assert_eq!(Palette::ALL.len(), 12);
+    assert_eq!(IndexedOptions::default().palette(), Palette::Exact);
+    let mut o = IndexedOptions::default();
+    assert_eq!(code(o.set_dither_amount(0)), "parameter_out_of_range");
+    assert_eq!(code(o.set_dither_amount(101)), "parameter_out_of_range");
+    o.set_dither_amount(1).unwrap();
+    o.set_dither_amount(100).unwrap();
+    assert_eq!(o.dither_amount(), Some(100));
+    // Inert while dither is not diffusion: kept and returned unchanged.
+    let px = flat(&[RED]);
+    let r = rgb_to_indexed(&RgbImage::Rgb8 { width: 1, height: 1, data: &px }, &o, &IndexedEnv::default()).unwrap();
+    assert_eq!(r.options.dither_amount(), Some(100));
+    let mattes: Vec<&str> = Matte::ALL.iter().map(|m| m.token()).collect();
+    assert_eq!(mattes, ["none", "foreground_color", "background_color", "white", "black", "semi_gray", "netscape_gray"]);
 }
