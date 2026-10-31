@@ -170,8 +170,8 @@ mod timescale;
 pub use timescale::{Conversion, Rounding, Timescale};
 mod business_event;
 pub use business_event::{
-    BusinessEventDeliveryError, BusinessEventRecord, BusinessEventSink,
-    MAX_BUSINESS_EVENT_ARTIFACTS, StudioBusinessEventId, business_event_id,
+    BusinessEventDeliveryError, BusinessEventRecord, BusinessEventSink, ENTRY_EVENT_SEQUENCE_BIT,
+    MAX_BUSINESS_EVENT_ARTIFACTS, StudioBusinessEventId, business_event_id, entry_event_sequence,
 };
 mod command;
 pub use command::{

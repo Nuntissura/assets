@@ -491,11 +491,13 @@ impl Run<'_> {
     /// `missing_command_id` and counted (lead decision 2026-10-31). No sink: `no_sink`, nothing
     /// emitted.
     fn emit_business_event(&mut self, event: StudioBusinessEventId, ctx: &CommandContext, revision: u64, artifacts: &[&str]) {
-        let entry = self.business_event_entry(event, ctx, revision, artifacts);
+        let entry = self.business_event_entry(event, ctx, revision, artifacts, None);
         self.pending_events.push(entry);
     }
 
-    fn business_event_entry(&mut self, event: StudioBusinessEventId, ctx: &CommandContext, revision: u64, artifacts: &[&str]) -> Value {
+    /// `sequence`: the event's sequence when it is not the next of `revision`'s per-run counter (an
+    /// entry-only event, [`hsk_studio_accord::entry_event_sequence`]); `None` numbers it 0, 1, ...
+    fn business_event_entry(&mut self, event: StudioBusinessEventId, ctx: &CommandContext, revision: u64, artifacts: &[&str], sequence: Option<u64>) -> Value {
         let wire = event.as_str();
         if ctx.command().is_none() {
             self.event_stats.refused = self.event_stats.refused.saturating_add(1);
@@ -506,11 +508,17 @@ impl Run<'_> {
             self.event_stats.refused = self.event_stats.refused.saturating_add(1);
             return json!({"event": wire, "delivery": "refused", "error": "not_open"});
         };
-        let sequence = match self.event_sequence {
-            Some((r, next)) if r == revision => next,
-            _ => 0,
+        let sequence = match sequence {
+            Some(entry_only) => entry_only,
+            None => {
+                let next = match self.event_sequence {
+                    Some((r, next)) if r == revision => next,
+                    _ => 0,
+                };
+                self.event_sequence = Some((revision, next.saturating_add(1)));
+                next
+            }
         };
-        self.event_sequence = Some((revision, sequence.saturating_add(1)));
         // Artifact refs are typed accord ids only; anything else is left out, never copied as text.
         let refs: Vec<&str> = artifacts.iter().copied().filter(|a| DomainId::parse(a).is_ok()).take(MAX_BUSINESS_EVENT_ARTIFACTS).collect();
         let record = match BusinessEventRecord::new(event, &document, revision, sequence, ctx.clone()).and_then(|r| r.with_artifacts(&refs)) {
@@ -541,14 +549,24 @@ impl Run<'_> {
         }
     }
 
-    /// The entry part of a step: the event its token maps to, unless the step already emitted it.
-    fn emit_entry_business_event(&mut self, token: &str, ctx: &CommandContext, already: Option<StudioBusinessEventId>) {
-        if let Some(event) = entry_business_event(token)
-            && already != Some(event)
-        {
-            let revision = self.revision().unwrap_or(0);
-            self.emit_business_event(event, ctx, revision, &[]);
+    /// The entry part of a step: the event its token maps to, unless the step already emitted it, and
+    /// only when the entry bytes changed (R48 F-R48-2: `before` is the step's `EntryRestore` bytes, the
+    /// entry now holds what the step wrote; equal bytes emit nothing, as a no-change commit does).
+    /// `entry_only`: the step made no document revision, so the event is minted at the previous
+    /// commit's revision with [`hsk_studio_accord::entry_event_sequence`] (R48 F-R48-1: an id that
+    /// survives runs); otherwise it is the next event of the step's own new revision.
+    fn emit_entry_business_event(&mut self, token: &str, ctx: &CommandContext, already: Option<StudioBusinessEventId>, before: Option<&[u8]>, entry_only: bool) {
+        let Some(event) = entry_business_event(token).filter(|e| already != Some(*e)) else {
+            return;
+        };
+        let after = self.session.as_ref().and_then(|s| s.document_entry(token)).map(<[u8]>::to_vec);
+        if after.as_deref() == before {
+            return;
         }
+        let revision = self.revision().unwrap_or(0);
+        let sequence = entry_only.then(|| hsk_studio_accord::entry_event_sequence(event, token, before, after.as_deref(), ctx));
+        let entry = self.business_event_entry(event, ctx, revision, &[], sequence);
+        self.pending_events.push(entry);
     }
 
     /// Puts emitted events into the newest op record (a step whose record was written before its
@@ -1178,7 +1196,7 @@ impl Run<'_> {
         let session = self.session.as_mut().ok_or(Fail::Refused("not_open"))?;
         let params = patch_json(session, ctx, layer_id, prop, new).map_err(Fail::Refused)?;
         let revision = expected.unwrap_or_else(|| session.document_revision());
-        session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
+        session.submit_as(ctx, CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
     }
 
     /// Sets a layer's opacity (percent) through chronicle (undoable).
@@ -1258,7 +1276,7 @@ impl Run<'_> {
                 Err(code) => return self.own_op(op, before, Err(code)),
             };
             let revision = session.document_revision();
-            match session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel) {
+            match session.submit_as(&ctx, CHRONICLE_PROVIDER_ID, &params, revision, cancel) {
                 Ok(applied) => {
                     if applied.changed && !applied.replayed {
                         let layers: Vec<&str> = writes.iter().map(|(l, _)| l.as_str()).collect();
@@ -1296,7 +1314,8 @@ impl Run<'_> {
                 self.current = Some(ctx);
                 return self.own_op(op, before, Err(code));
             }
-            self.emit_entry_business_event(token, &ctx, emitted);
+            let entry_only = self.undo_stack.len() <= depth;
+            self.emit_entry_business_event(token, &ctx, emitted, restore.bytes.as_deref(), entry_only);
             if self.undo_stack.len() > depth {
                 if let Some(step) = self.undo_stack.last_mut() {
                     step.entry = Some(restore);
@@ -1412,16 +1431,16 @@ impl Run<'_> {
         }
         let restore = EntryRestore { token: token.to_string(), bytes: previous };
         if self.undo_stack.len() > depth {
+            if let Some(ctx) = ctx {
+                self.emit_entry_business_event(token, &ctx, None, restore.bytes.as_deref(), false);
+            }
             if let Some(step) = self.undo_stack.last_mut() {
                 step.entry = Some(restore);
-            }
-            if let Some(ctx) = ctx {
-                self.emit_entry_business_event(token, &ctx, None);
             }
         } else {
             // The structure edit changed nothing: the step is entry-only (same command).
             let (ctx, revision) = self.entry_only_attribution(ctx, "layer.restructure_and_entry");
-            self.emit_entry_business_event(token, &ctx, None);
+            self.emit_entry_business_event(token, &ctx, None, restore.bytes.as_deref(), true);
             self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
             self.redo_stack.clear();
         }
@@ -1473,7 +1492,7 @@ impl Run<'_> {
         });
         let params = serde_json::to_vec(&patch).map_err(|_| Fail::Refused("patch_encoding"))?;
         let revision = session.document_revision();
-        session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
+        session.submit_as(ctx, CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
     }
 
     /// Sets or removes a session document entry (`selection`, `text`; saved with the package as
@@ -1537,19 +1556,19 @@ impl Run<'_> {
             return self.own_op(op, before, Err(code));
         }
         if self.undo_stack.len() > depth {
-            if let Some(step) = self.undo_stack.last_mut() {
-                step.entry = Some(restore);
-            }
             if let Some(ctx) = ctx {
                 // The tile record was written before the entry part ran.
-                self.emit_entry_business_event(token, &ctx, None);
+                self.emit_entry_business_event(token, &ctx, None, restore.bytes.as_deref(), false);
                 self.attach_events_to_last_record();
+            }
+            if let Some(step) = self.undo_stack.last_mut() {
+                step.entry = Some(restore);
             }
             true
         } else {
             let before = self.frames.count();
             let (ctx, revision) = self.entry_only_attribution(ctx, "layer.set_tiles_and_entry");
-            self.emit_entry_business_event(token, &ctx, None);
+            self.emit_entry_business_event(token, &ctx, None, restore.bytes.as_deref(), true);
             self.current = Some(ctx.clone());
             self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
             self.redo_stack.clear();
@@ -1582,7 +1601,7 @@ impl Run<'_> {
         let sequence_id = write.sequence_id.clone();
         let step = hsk_studio_session::TimelineStep { command_id: command_text(&ctx).to_string(), correlation_id: ctx.correlation().value(), sequence_id: sequence_id.clone(), expect, write };
         let revision = session.document_revision();
-        match session.submit_timeline(&step, revision, cancel) {
+        match session.submit_timeline_as(&ctx, &step, revision, cancel) {
             Ok(applied) => {
                 if applied.timeline_inverse.is_some() {
                     self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None, sequences: None, ctx, revision: applied.revision });
@@ -1650,7 +1669,7 @@ impl Run<'_> {
             return self.push(op, before, Err("not_open"), None, None);
         };
         let revision = session.document_revision();
-        match session.submit_multicam(&step, revision, cancel) {
+        match session.submit_multicam_as(&ctx, &step, revision, cancel) {
             Ok(applied) => {
                 if applied.multicam_inverse.is_some() {
                     self.undo_stack.push(HistoryStep { label: format!("{op} {}", ids.join(",")), inverse: Value::Null, entry: None, timeline: None, group: None, sequences: applied.multicam_inverse.clone(), ctx, revision: applied.revision });
@@ -1862,7 +1881,7 @@ impl Run<'_> {
                 return self.push(op, before, Err("not_open"), None, None);
             };
             let revision = session.document_revision();
-            return match session.submit_timeline(&submit, revision, cancel) {
+            return match session.submit_timeline_as(&ctx, &submit, revision, cancel) {
                 Ok(applied) => {
                     // The step's entry comes back with the sequence (submit_sequence_and_entry;
                     // refused: the sequence step stays applied, reported, never silently split).
@@ -1917,7 +1936,7 @@ impl Run<'_> {
                 return self.push(op, before, Err("not_open"), None, None);
             };
             let revision = session.document_revision();
-            return match session.submit_multicam(&submit, revision, cancel) {
+            return match session.submit_multicam_as(&ctx, &submit, revision, cancel) {
                 Ok(applied) => {
                     // The step's entry comes back with the sequences (lane SMB-PR-NEST-2,
                     // submit_sequence_edits_and_entry; refused: the sequence step stays applied,
@@ -1956,7 +1975,15 @@ impl Run<'_> {
                 Some(Ok(previous)) => {
                     let detail = json!({"step": step.label, "entry": step.entry.as_ref().map(|e| e.token.clone()), "changed": true});
                     let revision = self.revision().unwrap_or(0);
-                    self.emit_business_event(history_event, &ctx, revision, &[]);
+                    // Entry-only: no new revision, so the id comes from the swap itself (R48 F-R48-1);
+                    // a swap that changed no byte emits nothing (F-R48-2).
+                    if let (Some(restored), Some(replaced)) = (step.entry.as_ref(), previous.as_ref())
+                        && restored.bytes != replaced.bytes
+                    {
+                        let sequence = hsk_studio_accord::entry_event_sequence(history_event, &restored.token, replaced.bytes.as_deref(), restored.bytes.as_deref(), &ctx);
+                        let entry = self.business_event_entry(history_event, &ctx, revision, &[], Some(sequence));
+                        self.pending_events.push(entry);
+                    }
                     let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: None, ctx, revision };
                     if undo {
                         self.redo_stack.push(entry);
@@ -2066,7 +2093,7 @@ impl Run<'_> {
         });
         let params = serde_json::to_vec(&patch).map_err(|_| Fail::Refused("patch_encoding"))?;
         let revision = session.document_revision();
-        session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
+        session.submit_as(ctx, CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
     }
 
     /// Atomically saves the working session to `path`.

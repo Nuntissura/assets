@@ -223,6 +223,134 @@ fn actions_and_entry_steps_emit_per_commit_with_their_causation() {
     assert_eq!(captured(&capture).len(), before + 1);
 }
 
+/// A sink that keeps the first record per event id and counts a different record under a stored id
+/// (the immutable-envelope collision refusal of a host or kernel-bindings sink) and an identical one
+/// (a replay).
+#[derive(Default)]
+struct ById {
+    records: std::collections::BTreeMap<String, BusinessEventRecord>,
+    collisions: u64,
+    replays: u64,
+}
+
+impl BusinessEventSink for ById {
+    fn try_emit(&mut self, record: &BusinessEventRecord) -> Result<(), BusinessEventDeliveryError> {
+        match self.records.get(&record.event_id()) {
+            Some(stored) if stored == record => {
+                self.replays += 1;
+                Ok(())
+            }
+            Some(_) => {
+                self.collisions += 1;
+                Err(BusinessEventDeliveryError::Rejected)
+            }
+            None => {
+                self.records.insert(record.event_id(), record.clone());
+                Ok(())
+            }
+        }
+    }
+}
+
+const ENTRY_BIT: u64 = 1 << 63;
+
+/// R48 F-R48-1 (lane SMB-R47-FOLLOWUPS-1): two runs on one saved package, each with an entry-only
+/// develop edit at the same document revision, mint disjoint event ids and no counted collision.
+/// Measured first: every run builds its context as a host would after a restart, with its
+/// correlations again from 1000 (the asset-local test host's `TransientCorrelation::new()` restarts
+/// at 1 per CLI invocation the same way), so the two runs' develop commands carry the SAME
+/// correlation and command id: neither identifies the event across runs. The entry-only id comes
+/// from the entry change itself (accord `entry_event_sequence`, top bit set); the commit that made
+/// the revision keeps sequence 0 of it.
+#[test]
+fn entry_only_events_of_two_runs_on_one_saved_package_have_disjoint_ids() {
+    let h = harness();
+    let cancel = CancellationToken::default();
+    let sink = Arc::new(Mutex::new(ById::default()));
+    let context = || {
+        let shared: SharedBusinessEventSink = sink.clone();
+        plain_context().with_business_events(shared)
+    };
+    // Run 0 makes the revision (a commit, LAYER_MUTATED at R#0) and saves.
+    let mut run0 = h.run(context(), &cancel);
+    assert!(run0.open_bytes(FIXTURE));
+    assert!(run0.rename(L2, "saved", None), "{}", last(&run0));
+    let revision = run0.snapshot().unwrap().document().revision;
+    let saved = run0.checkpoint().expect("checkpoint");
+    let mut develop = Vec::new();
+    for exposure in ["0.5", "0.7"] {
+        let mut run = h.run(context(), &cancel);
+        assert!(run.open_bytes(&saved));
+        assert!(run.set_tiles_and_entry("develop", L2, None, "develop", format!("{{\"exposure\":{exposure}}}").into_bytes()), "{}", last(&run));
+        let op = last(&run);
+        assert_eq!(run.snapshot().unwrap().document().revision, revision, "entry-only: no new revision");
+        assert_eq!(op["business_events"][0]["delivery"], "delivered", "{op}");
+        develop.push(op);
+    }
+    // The measurement: both runs' develop commands carry the same correlation and command id.
+    assert_eq!(develop[0]["correlation"], develop[1]["correlation"], "a restarted correlation source");
+    assert_eq!(develop[0]["command_id"], develop[1]["command_id"]);
+    let sink = sink.lock().unwrap();
+    assert_eq!((sink.collisions, sink.replays), (0, 0), "no counted collision");
+    let records: Vec<&BusinessEventRecord> = sink.records.values().collect();
+    assert_eq!(records.len(), 3, "LAYER_MUTATED and two RAW_DEVELOPED: {:?}", sink.records.keys().collect::<Vec<_>>());
+    let raw: Vec<&&BusinessEventRecord> = records.iter().filter(|r| r.event() == StudioBusinessEventId::RawDeveloped).collect();
+    assert_eq!(raw.len(), 2);
+    assert!(raw.iter().all(|r| r.revision() == revision && r.sequence() & ENTRY_BIT != 0), "entry-only sequences carry the top bit");
+    assert_ne!(raw[0].event_id(), raw[1].event_id());
+    let commit = records.iter().find(|r| r.event() == StudioBusinessEventId::LayerMutated).unwrap();
+    assert_eq!((commit.revision(), commit.sequence()), (revision, 0));
+}
+
+/// R48 F-R48-2: the `text` and `vector` entry tokens map to TEXT_EDITED and VECTOR_PATH_EDITED; an
+/// entry rewritten with identical bytes emits nothing (as a no-change commit), and the undo of such a
+/// step swaps identical bytes and emits nothing either, while the undo of a real entry change emits
+/// HISTORY_UNDONE with an entry-only id.
+#[test]
+fn text_and_vector_entries_emit_their_events_and_identical_bytes_emit_nothing() {
+    let h = harness();
+    let cancel = CancellationToken::default();
+    let capture = Arc::new(Mutex::new(Capture::default()));
+    let mut run = h.run(context_with(&capture), &cancel);
+    assert!(run.open_bytes(FIXTURE));
+    let revision = run.snapshot().unwrap().document().revision;
+    let n = captured(&capture).len();
+    assert!(run.set_tiles_and_entry("type", L2, None, "text", b"{\"stories\":[1]}".to_vec()), "{}", last(&run));
+    assert!(run.set_vector_paths_and_entry("pen", &[], Some(("vector", b"{\"paths\":[1]}".to_vec()))), "{}", last(&run));
+    let records = captured(&capture);
+    let events: Vec<StudioBusinessEventId> = records[n..].iter().map(BusinessEventRecord::event).collect();
+    assert_eq!(events, [StudioBusinessEventId::TextEdited, StudioBusinessEventId::VectorPathEdited]);
+    for record in &records[n..] {
+        assert_eq!(record.revision(), revision, "entry-only events are minted at the open revision");
+        assert_ne!(record.sequence() & ENTRY_BIT, 0, "entry-only sequence");
+    }
+    assert_eq!(last(&run)["business_events"][0]["event"], "STUDIO_VECTOR_PATH_EDITED", "{}", last(&run));
+
+    // Identical bytes: the steps succeed and emit nothing.
+    let n = captured(&capture).len();
+    assert!(run.set_tiles_and_entry("type", L2, None, "text", b"{\"stories\":[1]}".to_vec()), "{}", last(&run));
+    assert!(last(&run).get("business_events").is_none(), "{}", last(&run));
+    assert!(run.set_vector_paths_and_entry("pen", &[], Some(("vector", b"{\"paths\":[1]}".to_vec()))), "{}", last(&run));
+    assert!(last(&run).get("business_events").is_none(), "{}", last(&run));
+    assert_eq!(captured(&capture).len(), n, "no-change entry writes emit nothing");
+    // Undo of the no-change vector step swaps identical bytes: nothing.
+    assert!(run.undo(), "{}", last(&run));
+    assert!(last(&run).get("business_events").is_none(), "{}", last(&run));
+    assert_eq!(captured(&capture).len(), n);
+    // Undo of the no-change text step: nothing; then the undo of the real vector change: HISTORY_UNDONE.
+    assert!(run.undo(), "{}", last(&run));
+    assert_eq!(captured(&capture).len(), n);
+    assert!(run.undo(), "{}", last(&run));
+    let records = captured(&capture);
+    assert_eq!(records.len(), n + 1, "{}", last(&run));
+    let undone = records.last().unwrap();
+    assert_eq!((undone.event(), undone.revision()), (StudioBusinessEventId::HistoryUndone, revision));
+    assert_ne!(undone.sequence() & ENTRY_BIT, 0);
+    assert_eq!(run.document_entry("vector"), None, "the vector entry is gone again");
+    let ids: std::collections::BTreeSet<String> = records.iter().map(BusinessEventRecord::event_id).collect();
+    assert_eq!(ids.len(), records.len(), "every id of the run is distinct");
+}
+
 /// A 1x1 RGBA PNG (precomputed bytes; no codec in this test).
 #[cfg(feature = "import-raster")]
 const PNG_1X1: &[u8] = &[

@@ -5,8 +5,9 @@
 //! correlation, never the op ordinal `n`; undo / redo are fresh commands caused by the step they
 //! reverse. Correlation sources start at 1000 / 5000, so an ordinal can never pass for one.
 //! Fixture: the harness crate's `tests/fixtures/demo.handshake` (raster layer ...0002).
-//! Session-owned report frames (open, submit, save) keep the session's own counter (session is not
-//! in this lane); the harness-owned frames are the ones asserted.
+//! Session-owned report frames of open and save keep the session's own counter; since lane
+//! SMB-R47-FOLLOWUPS-1 (R48 F-R48-6) every commit frame carries the command correlation
+//! (`commit_frames_carry_the_command_correlation`).
 
 use hsk_studio_accord::{ActorContext, CancellationToken};
 use hsk_studio_harness_core::{ClientSessionId, Harness, Run, RunContext, Selection, TransientCorrelation};
@@ -132,4 +133,89 @@ fn undo_and_redo_are_caused_by_the_step_they_reverse() {
     let undo_step = &run.history()["undo_steps"][0];
     assert_eq!((undo_step["correlation"].as_u64(), undo_step["causation"].as_u64()), (Some(r), Some(u)), "{undo_step}");
     assert_eq!(undo_step["revision"], redo["revision"], "{undo_step}");
+}
+
+const VEC: &str = "SLYR-019abcde-0000-7000-8000-0000000000bb";
+const PATH: &str = "SVPT-019abcde-0000-7000-8000-0000000000b1";
+
+/// One commit step of [`commit_frames_carry_the_command_correlation`]: a label and the call.
+type Step = (&'static str, Box<dyn Fn(&mut Run<'_>) -> bool>);
+
+/// A sequence `seq-attr` with one empty audio track A1 at `volume` (duration 0 = its content end).
+fn sequence(volume: f64) -> hsk_studio_folio::StudioSequence {
+    use hsk_studio_folio::{SequenceFrameRate, SequenceSchema, StudioSequence, StudioTrack, TrackKind, TrackSchema};
+    StudioSequence {
+        schema_id: SequenceSchema::V1,
+        sequence_id: "seq-attr".into(),
+        name: "attr".into(),
+        frame_rate: SequenceFrameRate { ticks_per_frame: 10_160_640_000 },
+        duration: hsk_studio_accord::Ticks::new(0),
+        tracks: vec![StudioTrack {
+            schema_id: TrackSchema::V1,
+            track_id: "STRK-019abcde-0000-7000-8000-0000000000a1".into(),
+            kind: TrackKind::Audio,
+            index: 0,
+            name: "A1".into(),
+            enabled: true,
+            locked: false,
+            sync_locked: true,
+            targeted: true,
+            muted: false,
+            soloed: false,
+            clips: Vec::new(),
+            volume,
+            pan: 0.0,
+        }],
+        markers: Vec::new(),
+        work_area: None,
+    }
+}
+
+/// R48 F-R48-6 (lane SMB-R47-FOLLOWUPS-1): the session-owned commit frame of every mutating command
+/// carries the command's correlation (`Session::submit_as` / `submit_timeline_as` /
+/// `submit_multicam_as` take the command context), so for rename, property, tile, path, structure and
+/// sequence commits and their undo / redo the op record's `observe.correlation` equals its
+/// `correlation`, never the session's operation counter. Correlations start at 7000. The fixture's
+/// layer ...0002 is hidden, so the property step shows it (a hide would change nothing).
+#[test]
+fn commit_frames_carry_the_command_correlation() {
+    let h = harness();
+    let cancel = CancellationToken::default();
+    let mut run = h.run(context("erin", 7000), &cancel);
+    assert!(run.open_bytes(FIXTURE));
+    let vector = {
+        let record = serde_json::from_value(serde_json::json!({
+            "schema_id": "hsk.studio.layer@1", "layer_id": VEC, "name": "vector", "parent": null,
+            "kind": "vector", "payload": {"payload_kind": "vector", "path_ids": []}, "visible": true,
+        }))
+        .unwrap();
+        let operation = serde_json::from_value(serde_json::json!({"layer_id": VEC, "operation_key": "source", "operation_kind": "source", "inputs": [],
+            "outputs": [{"port_key": "out", "value_type": "image", "cardinality": "one", "semantic": "source"}]}))
+        .unwrap();
+        hsk_studio_harness_core::PlacementWrite { layer_id: VEC.to_string(), to: Some(hsk_studio_harness_core::Place::AtBeginning(None)), create: Some((record, operation)) }
+    };
+    let steps: Vec<Step> = vec![
+        ("rename", Box::new(|r: &mut Run<'_>| r.rename(L2, "e", None))),
+        ("visible", Box::new(|r: &mut Run<'_>| r.set_visible(L2, true, None))),
+        ("opacity", Box::new(|r: &mut Run<'_>| r.set_opacity(L2, 40.0, None))),
+        ("tiles", Box::new(|r: &mut Run<'_>| r.set_tiles("clear", L2, Vec::new()))),
+        ("structure", Box::new(move |r: &mut Run<'_>| r.restructure("new_vector", std::slice::from_ref(&vector)))),
+        ("path", Box::new(|r: &mut Run<'_>| r.set_vector_paths("pen", VEC, vec![PATH.to_string()]))),
+        ("sequence insert", Box::new(|r: &mut Run<'_>| r.submit_sequence_edits("add", vec![hsk_studio_session::SequenceEdit::Insert { at: 0, write: sequence(1.0) }]))),
+        ("sequence", Box::new(|r: &mut Run<'_>| r.submit_sequence("fader", sequence(0.5)))),
+        ("undo", Box::new(|r: &mut Run<'_>| r.undo())),
+        ("redo", Box::new(|r: &mut Run<'_>| r.redo())),
+    ];
+    let opened = run.snapshot().unwrap().document().revision;
+    for (what, step) in steps {
+        let before = run.snapshot().unwrap().document().revision;
+        assert!(step(&mut run), "{what}: {}", last(&run));
+        let record = last(&run);
+        assert!(record["revision"].as_u64().is_some_and(|r| r > before), "{what} committed a revision: {record}");
+        let c = correlation(&record);
+        assert!(c >= 7000, "{what}: {record}");
+        assert_eq!(record["observe"]["status"], "delivered", "{what}: {record}");
+        assert_eq!(record["observe"]["correlation"].as_u64(), Some(c), "{what}: the commit frame carries the command correlation: {record}");
+    }
+    assert!(run.snapshot().unwrap().document().revision > opened);
 }

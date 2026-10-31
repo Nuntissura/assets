@@ -192,6 +192,74 @@ pub fn business_event_id(document: &DomainId, revision: u64, sequence: u64) -> S
     format!("{}@{revision}#{sequence}", document.as_str())
 }
 
+/// Bit set in the sequence of every entry-only event ([`entry_event_sequence`]) and in no commit
+/// event's sequence (commit events number the events of their own revision 0, 1, ...), so the two id
+/// spaces of one revision never meet.
+pub const ENTRY_EVENT_SEQUENCE_BIT: u64 = 1 << 63;
+
+/// The sequence of an entry-only business event (R48 F-R48-1): an event whose session document
+/// entry changed (`entry` token, bytes `before` -> `after`, `None` = absent) without a new document
+/// revision, so it is minted at the revision of the previous commit. A per-run counter restarts in
+/// every run (another CLI invocation, a reopened package) and would mint an earlier run's id at that
+/// revision. This sequence is instead derived from what the event is: the event, the entry token,
+/// both entry states and the committing command's context (actor, client session, command id,
+/// correlation, causation), hashed with 64-bit FNV-1a and the SplitMix64 finalizer into the low 63
+/// bits, with [`ENTRY_EVENT_SEQUENCE_BIT`] set. Two runs that change an entry differently mint
+/// different ids; two records with the same id carry the same context (the envelope's fields), so a
+/// sink sees a replay, not a collision, unless 63-bit hashes collide (a lost event, counted by the
+/// sink). Deterministic: the same inputs give the same sequence on every run and platform. Test
+/// `entry_event_sequences_are_deterministic_and_disjoint_from_commit_sequences`.
+pub fn entry_event_sequence(
+    event: StudioBusinessEventId,
+    entry: &str,
+    before: Option<&[u8]>,
+    after: Option<&[u8]>,
+    context: &CommandContext,
+) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut bytes = |data: &[u8]| {
+        for &b in data {
+            h = (h ^ u64::from(b)).wrapping_mul(PRIME);
+        }
+    };
+    // Every field is framed (presence and length first), so no two field lists share a byte stream.
+    let mut field = |data: Option<&[u8]>| match data {
+        None => bytes(&[0]),
+        Some(d) => {
+            bytes(&[1]);
+            bytes(&u64::try_from(d.len()).unwrap_or(u64::MAX).to_le_bytes());
+            bytes(d);
+        }
+    };
+    field(Some(b"hsk.studio.entry_event_sequence@1"));
+    field(Some(event.as_str().as_bytes()));
+    field(Some(entry.as_bytes()));
+    field(before);
+    field(after);
+    let actor = context.actor();
+    for part in [
+        actor.account_id(),
+        actor.principal_id(),
+        actor.owner_account_id(),
+        actor.owner_principal_id(),
+        actor.access_space_id(),
+        actor.session_id(),
+        context.client_session().as_str(),
+    ] {
+        field(Some(part.as_bytes()));
+    }
+    field(context.command().map(|c| c.as_str().as_bytes()));
+    field(Some(&context.correlation().value().to_le_bytes()));
+    let causation = context.causation().map(|c| c.value().to_le_bytes());
+    field(causation.as_ref().map(|c| c.as_slice()));
+    let mut z = h;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    (z & !ENTRY_EVENT_SEQUENCE_BIT) | ENTRY_EVENT_SEQUENCE_BIT
+}
+
 /// What a producer hands over after the session accepted a commit: which event, of which
 /// document, at which exact revision, the committing command's context and typed artifact refs.
 /// Ids only. Built through [`BusinessEventRecord::new`], so the document is always an `SDOC` id.
@@ -312,4 +380,55 @@ impl std::error::Error for BusinessEventDeliveryError {}
 /// sink delivers to the Flight Recorder / EventLedger (MT-36230).
 pub trait BusinessEventSink: Send {
     fn try_emit(&mut self, record: &BusinessEventRecord) -> Result<(), BusinessEventDeliveryError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ActorContext, CausationId, ClientSessionId, CommandId, CorrelationId};
+
+    fn context(correlation: u64) -> CommandContext {
+        let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap();
+        CommandContext::new(
+            actor,
+            ClientSessionId::parse("window").unwrap(),
+            Some(CommandId::parse("layer.set_tiles_and_entry").unwrap()),
+            3,
+            CorrelationId::new(correlation),
+            Some(CausationId::new(1)),
+        )
+    }
+
+    /// R48 F-R48-1: the same inputs give the same sequence; another entry state, token, event or
+    /// correlation gives another; every entry sequence has the top bit, which no commit sequence
+    /// (0, 1, ... per revision) has. Pinned value: the hash is part of the persisted event id.
+    #[test]
+    fn entry_event_sequences_are_deterministic_and_disjoint_from_commit_sequences() {
+        let raw = StudioBusinessEventId::RawDeveloped;
+        let a = entry_event_sequence(raw, "develop", None, Some(b"{\"exposure\":1}"), &context(1));
+        assert_eq!(a, entry_event_sequence(raw, "develop", None, Some(b"{\"exposure\":1}"), &context(1)));
+        assert_ne!(a & ENTRY_EVENT_SEQUENCE_BIT, 0);
+        let others = [
+            entry_event_sequence(raw, "develop", None, Some(b"{\"exposure\":2}"), &context(1)),
+            entry_event_sequence(raw, "develop", Some(b""), Some(b"{\"exposure\":1}"), &context(1)),
+            entry_event_sequence(raw, "develop", Some(b"{\"exposure\":1}"), None, &context(1)),
+            entry_event_sequence(raw, "text", None, Some(b"{\"exposure\":1}"), &context(1)),
+            entry_event_sequence(StudioBusinessEventId::HistoryUndone, "develop", None, Some(b"{\"exposure\":1}"), &context(1)),
+            entry_event_sequence(raw, "develop", None, Some(b"{\"exposure\":1}"), &context(2)),
+        ];
+        for (i, s) in others.iter().enumerate() {
+            assert_ne!(*s, a, "input {i} changes the sequence");
+            assert_ne!(s & ENTRY_EVENT_SEQUENCE_BIT, 0);
+        }
+        // Framing: moving bytes between before and after changes the sequence.
+        assert_ne!(
+            entry_event_sequence(raw, "develop", Some(b"ab"), Some(b"c"), &context(1)),
+            entry_event_sequence(raw, "develop", Some(b"a"), Some(b"bc"), &context(1)),
+        );
+        let doc = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+        assert_ne!(business_event_id(&doc, 4, a), business_event_id(&doc, 4, 0));
+        assert_eq!(a, PINNED_ENTRY_SEQUENCE, "the entry sequence of these inputs is pinned: 0x{a:016x}");
+    }
+
+    const PINNED_ENTRY_SEQUENCE: u64 = 0xb79d_74b5_5bcc_aad4;
 }
