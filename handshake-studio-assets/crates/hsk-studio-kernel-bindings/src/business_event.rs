@@ -1,14 +1,15 @@
-//! Studio business events (STU-CON-003, STU-CON-013, STU-CON-014; MT-36230 asset side, lane
-//! SMB-BUSINESS-EVENTS-1). The 22 canonical wire variants with their `studio.*` family and exact
-//! `FR-EVT-STUDIO-*` business id, the typed `hsk.studio.business_event@1` envelope, and the
-//! delivery port the binding emits through. The binding emits, never a leaf engine: no leaf crate
-//! names these types.
+//! Studio business-event envelope (STU-CON-003, STU-CON-013, STU-CON-014; MT-36230 asset side,
+//! lane SMB-BUSINESS-EVENTS-1). The vocabulary lives in `hsk-studio-accord` (lead decision
+//! 2026-10-31, option C: the closed catalog `StudioBusinessEventId`, `BusinessEventRecord` and the
+//! `BusinessEventSink` with its closed delivery error), so a producer such as harness-core's Run
+//! emits records without a module edge to this crate. This binding owns the canonical
+//! `hsk.studio.business_event@1` envelope: it is built from a record, encoded and decoded here.
 //!
-//! The envelope carries ids and digests only (document, actor, client session, event id, sequence,
-//! correlation, causation, exact revision, command id, optional input/output digests and typed
-//! artifact refs). It has no field that can hold document text, a label, a path or a font name
-//! (test `envelopes_carry_ids_and_digests_only`). Its wire is compact JSON in canonical field
-//! order; decoding refuses everything the encoder cannot produce (test
+//! The envelope carries ids and digests only (document, actor, client session, event id, revision,
+//! sequence, correlation, causation, command id, optional input/output digests and typed artifact
+//! refs). It has no field that can hold document text, a label, a path or a font name (test
+//! `envelopes_carry_ids_and_digests_only`). Its wire is compact JSON in canonical field order;
+//! decoding refuses everything the encoder cannot produce (test
 //! `envelopes_are_strict_and_refuse_typed`).
 //!
 //! Registration in the host's closed Flight Recorder / kernel event enums, durable delivery and
@@ -17,8 +18,9 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::wire::ActorWire;
 use hsk_studio_accord::{
-    ActorContext, CausationId, ClientSessionId, CommandContext, CommandId, CorrelationId, DomainId,
-    SCHEMA_STUDIO_BUSINESS_EVENT, SCHEMA_STUDIO_DOCUMENT, SchemaId,
+    ActorContext, BusinessEventRecord, CausationId, ClientSessionId, CommandId, CorrelationId,
+    DomainId, MAX_BUSINESS_EVENT_ARTIFACTS, SCHEMA_STUDIO_BUSINESS_EVENT, SCHEMA_STUDIO_DOCUMENT,
+    SchemaId, StudioBusinessEventId, business_event_id,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,184 +28,11 @@ use serde::{Deserialize, Serialize};
 /// encoded. The largest valid event (every bound at its maximum) fits
 /// (`envelopes_are_strict_and_refuse_typed`).
 pub const MAX_EVENT_BYTES: usize = 8 * 1024;
-/// Most typed artifact refs one event carries; checked before any ref is copied.
-pub const MAX_ARTIFACT_REFS: usize = 64;
-/// Longest command id (`[a-z0-9._-]`).
+/// Longest command id (`[a-z0-9._-]`, the RUN_COMMANDS grammar).
 pub const MAX_COMMAND_ID_BYTES: usize = 64;
 
-/// The 22 canonical Studio business events (STU-CON-003 wire identities, STU-CON-014 catalog).
-/// Every match over it is exhaustive, so a new variant does not compile until it has a wire
-/// name, a family and a business id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StudioEventVariant {
-    DocumentCreated,
-    DocumentPromoted,
-    LayerCreated,
-    LayerMutated,
-    SelectionChanged,
-    MaskApplied,
-    AdjustmentApplied,
-    EffectApplied,
-    VectorPathEdited,
-    TextEdited,
-    StyleApplied,
-    ComponentPublished,
-    VariableSet,
-    PrototypeEdited,
-    RawDeveloped,
-    ExportRendered,
-    ImportCompleted,
-    EditProposalRecorded,
-    EditPromoted,
-    EditRejected,
-    HistoryUndone,
-    HistoryRedone,
-}
-
-impl StudioEventVariant {
-    /// All 22, in the STU-CON-014 table order.
-    pub const ALL: [Self; 22] = [
-        Self::DocumentCreated,
-        Self::DocumentPromoted,
-        Self::LayerCreated,
-        Self::LayerMutated,
-        Self::SelectionChanged,
-        Self::MaskApplied,
-        Self::AdjustmentApplied,
-        Self::EffectApplied,
-        Self::VectorPathEdited,
-        Self::TextEdited,
-        Self::StyleApplied,
-        Self::ComponentPublished,
-        Self::VariableSet,
-        Self::PrototypeEdited,
-        Self::RawDeveloped,
-        Self::ExportRendered,
-        Self::ImportCompleted,
-        Self::EditProposalRecorded,
-        Self::EditPromoted,
-        Self::EditRejected,
-        Self::HistoryUndone,
-        Self::HistoryRedone,
-    ];
-
-    /// The canonical wire variant (`STUDIO_*`, STU-CON-003).
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::DocumentCreated => "STUDIO_DOCUMENT_CREATED",
-            Self::DocumentPromoted => "STUDIO_DOCUMENT_PROMOTED",
-            Self::LayerCreated => "STUDIO_LAYER_CREATED",
-            Self::LayerMutated => "STUDIO_LAYER_MUTATED",
-            Self::SelectionChanged => "STUDIO_SELECTION_CHANGED",
-            Self::MaskApplied => "STUDIO_MASK_APPLIED",
-            Self::AdjustmentApplied => "STUDIO_ADJUSTMENT_APPLIED",
-            Self::EffectApplied => "STUDIO_EFFECT_APPLIED",
-            Self::VectorPathEdited => "STUDIO_VECTOR_PATH_EDITED",
-            Self::TextEdited => "STUDIO_TEXT_EDITED",
-            Self::StyleApplied => "STUDIO_STYLE_APPLIED",
-            Self::ComponentPublished => "STUDIO_COMPONENT_PUBLISHED",
-            Self::VariableSet => "STUDIO_VARIABLE_SET",
-            Self::PrototypeEdited => "STUDIO_PROTOTYPE_EDITED",
-            Self::RawDeveloped => "STUDIO_RAW_DEVELOPED",
-            Self::ExportRendered => "STUDIO_EXPORT_RENDERED",
-            Self::ImportCompleted => "STUDIO_IMPORT_COMPLETED",
-            Self::EditProposalRecorded => "STUDIO_EDIT_PROPOSAL_RECORDED",
-            Self::EditPromoted => "STUDIO_EDIT_PROMOTED",
-            Self::EditRejected => "STUDIO_EDIT_REJECTED",
-            Self::HistoryUndone => "STUDIO_HISTORY_UNDONE",
-            Self::HistoryRedone => "STUDIO_HISTORY_REDONE",
-        }
-    }
-
-    /// The `studio.*` event family (STU-ARC-003 names, STU-CON-014 mapping).
-    pub const fn family(self) -> &'static str {
-        match self {
-            Self::DocumentCreated
-            | Self::DocumentPromoted
-            | Self::LayerCreated
-            | Self::LayerMutated
-            | Self::SelectionChanged
-            | Self::ImportCompleted => "studio.document",
-            Self::MaskApplied => "studio.raster",
-            Self::AdjustmentApplied | Self::RawDeveloped => "studio.color",
-            Self::EffectApplied => "studio.effect",
-            Self::VectorPathEdited => "studio.vector",
-            Self::TextEdited => "studio.typography",
-            Self::StyleApplied => "studio.layout",
-            Self::ComponentPublished | Self::VariableSet => "studio.design_system",
-            Self::PrototypeEdited => "studio.prototype",
-            Self::ExportRendered => "studio.export",
-            Self::EditProposalRecorded | Self::EditPromoted | Self::EditRejected => {
-                "studio.proposal"
-            }
-            Self::HistoryUndone | Self::HistoryRedone => "studio.history",
-        }
-    }
-
-    /// The exact Flight Recorder business id (`FR-EVT-STUDIO-*`).
-    pub const fn business_id(self) -> &'static str {
-        match self {
-            Self::DocumentCreated => "FR-EVT-STUDIO-DOCUMENT-CREATED",
-            Self::DocumentPromoted => "FR-EVT-STUDIO-DOCUMENT-PROMOTED",
-            Self::LayerCreated => "FR-EVT-STUDIO-LAYER-CREATED",
-            Self::LayerMutated => "FR-EVT-STUDIO-LAYER-MUTATED",
-            Self::SelectionChanged => "FR-EVT-STUDIO-SELECTION-CHANGED",
-            Self::MaskApplied => "FR-EVT-STUDIO-MASK-APPLIED",
-            Self::AdjustmentApplied => "FR-EVT-STUDIO-ADJUSTMENT-APPLIED",
-            Self::EffectApplied => "FR-EVT-STUDIO-EFFECT-APPLIED",
-            Self::VectorPathEdited => "FR-EVT-STUDIO-VECTOR-PATH-EDITED",
-            Self::TextEdited => "FR-EVT-STUDIO-TEXT-EDITED",
-            Self::StyleApplied => "FR-EVT-STUDIO-STYLE-APPLIED",
-            Self::ComponentPublished => "FR-EVT-STUDIO-COMPONENT-PUBLISHED",
-            Self::VariableSet => "FR-EVT-STUDIO-VARIABLE-SET",
-            Self::PrototypeEdited => "FR-EVT-STUDIO-PROTOTYPE-EDITED",
-            Self::RawDeveloped => "FR-EVT-STUDIO-RAW-DEVELOPED",
-            Self::ExportRendered => "FR-EVT-STUDIO-EXPORT-RENDERED",
-            Self::ImportCompleted => "FR-EVT-STUDIO-IMPORT-COMPLETED",
-            Self::EditProposalRecorded => "FR-EVT-STUDIO-EDIT-PROPOSAL-RECORDED",
-            Self::EditPromoted => "FR-EVT-STUDIO-EDIT-PROMOTED",
-            Self::EditRejected => "FR-EVT-STUDIO-EDIT-REJECTED",
-            Self::HistoryUndone => "FR-EVT-STUDIO-HISTORY-UNDONE",
-            Self::HistoryRedone => "FR-EVT-STUDIO-HISTORY-REDONE",
-        }
-    }
-
-    /// Whether the event describes an accepted document change. Selection, proposal and rejection
-    /// events describe view, audit or proposal state and never claim a document promotion
-    /// (STU-CON-014); their `revision` is the revision they observed, not a successor.
-    pub const fn claims_document_promotion(self) -> bool {
-        match self {
-            Self::SelectionChanged | Self::EditProposalRecorded | Self::EditRejected => false,
-            Self::DocumentCreated
-            | Self::DocumentPromoted
-            | Self::LayerCreated
-            | Self::LayerMutated
-            | Self::MaskApplied
-            | Self::AdjustmentApplied
-            | Self::EffectApplied
-            | Self::VectorPathEdited
-            | Self::TextEdited
-            | Self::StyleApplied
-            | Self::ComponentPublished
-            | Self::VariableSet
-            | Self::PrototypeEdited
-            | Self::RawDeveloped
-            | Self::ExportRendered
-            | Self::ImportCompleted
-            | Self::EditPromoted
-            | Self::HistoryUndone
-            | Self::HistoryRedone => true,
-        }
-    }
-
-    /// The variant with this exact wire name.
-    pub fn parse(wire: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|v| v.as_str() == wire)
-    }
-}
-
-/// Why a variant has no asset-local producer. Each is typed and tested in the catalog and is
-/// NOT_PROVEN as an emission until a producer exists.
+/// Why a variant has no asset-local producer. Each is typed in the catalog and is NOT_PROVEN as an
+/// emission until a producer exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotProducedReason {
     /// No promotion or proposal flow exists in the asset-local Run.
@@ -228,17 +57,23 @@ impl NotProducedReason {
 }
 
 /// The variants nothing asset-local produces, with the reason. Never a fake producer
-/// (`variants_without_a_producer_are_listed_not_faked`).
-pub const NOT_PRODUCED_ASSET_LOCALLY: [(StudioEventVariant, NotProducedReason); 9] = [
-    (StudioEventVariant::DocumentPromoted, NotProducedReason::NoPromotionOrProposalFlow),
-    (StudioEventVariant::EditProposalRecorded, NotProducedReason::NoPromotionOrProposalFlow),
-    (StudioEventVariant::EditPromoted, NotProducedReason::NoPromotionOrProposalFlow),
-    (StudioEventVariant::EditRejected, NotProducedReason::NoPromotionOrProposalFlow),
-    (StudioEventVariant::SelectionChanged, NotProducedReason::ViewStateNotACommit),
-    (StudioEventVariant::ComponentPublished, NotProducedReason::NoMappedCommand),
-    (StudioEventVariant::VariableSet, NotProducedReason::NoMappedCommand),
-    (StudioEventVariant::PrototypeEdited, NotProducedReason::NoMappedCommand),
-    (StudioEventVariant::ExportRendered, NotProducedReason::ExportOutsideRun),
+/// (`variants_without_a_producer_are_listed_not_faked`). harness-core's Run produces the other
+/// nine: DOCUMENT_CREATED, LAYER_CREATED, LAYER_MUTATED, VECTOR_PATH_EDITED, TEXT_EDITED,
+/// RAW_DEVELOPED, IMPORT_COMPLETED, HISTORY_UNDONE and HISTORY_REDONE.
+pub const NOT_PRODUCED_ASSET_LOCALLY: [(StudioBusinessEventId, NotProducedReason); 13] = [
+    (StudioBusinessEventId::DocumentPromoted, NotProducedReason::NoPromotionOrProposalFlow),
+    (StudioBusinessEventId::EditProposalRecorded, NotProducedReason::NoPromotionOrProposalFlow),
+    (StudioBusinessEventId::EditPromoted, NotProducedReason::NoPromotionOrProposalFlow),
+    (StudioBusinessEventId::EditRejected, NotProducedReason::NoPromotionOrProposalFlow),
+    (StudioBusinessEventId::SelectionChanged, NotProducedReason::ViewStateNotACommit),
+    (StudioBusinessEventId::MaskApplied, NotProducedReason::NoMappedCommand),
+    (StudioBusinessEventId::AdjustmentApplied, NotProducedReason::NoMappedCommand),
+    (StudioBusinessEventId::EffectApplied, NotProducedReason::NoMappedCommand),
+    (StudioBusinessEventId::StyleApplied, NotProducedReason::NoMappedCommand),
+    (StudioBusinessEventId::ComponentPublished, NotProducedReason::NoMappedCommand),
+    (StudioBusinessEventId::VariableSet, NotProducedReason::NoMappedCommand),
+    (StudioBusinessEventId::PrototypeEdited, NotProducedReason::NoMappedCommand),
+    (StudioBusinessEventId::ExportRendered, NotProducedReason::ExportOutsideRun),
 ];
 
 /// Why an event was not built, encoded or decoded. Codes are stable snake_case, one per cause.
@@ -269,10 +104,8 @@ pub enum BusinessEventError {
     /// Not a valid accord domain id, or repeated.
     InvalidArtifact,
     TooManyArtifacts,
-    /// The event id is not the one derived from document and sequence.
+    /// The event id is not the one derived from document, revision and sequence.
     EventIdMismatch,
-    /// The same event id was already recorded with a different envelope (STU-CON-013).
-    EnvelopeCollision,
     NonCanonical,
     EncodeFailed,
 }
@@ -301,7 +134,6 @@ impl BusinessEventError {
             Self::InvalidArtifact => "invalid_artifact",
             Self::TooManyArtifacts => "too_many_artifacts",
             Self::EventIdMismatch => "event_id_mismatch",
-            Self::EnvelopeCollision => "envelope_collision",
             Self::NonCanonical => "non_canonical",
             Self::EncodeFailed => "encode_failed",
         }
@@ -316,30 +148,25 @@ impl std::fmt::Display for BusinessEventError {
 
 impl std::error::Error for BusinessEventError {}
 
-/// One typed `hsk.studio.business_event@1` envelope. Built only through [`StudioBusinessEvent::new`]
-/// or [`decode_business_event`], so every value satisfies the construction rules: an `SDOC`
-/// document, the event id derived from document and sequence, bounded ids and digests only.
+/// One typed `hsk.studio.business_event@1` envelope. Built only through
+/// [`StudioBusinessEvent::from_record`] or [`decode_business_event`], so every value satisfies the
+/// construction rules: an `SDOC` document, the event id derived from document, revision and
+/// sequence, a RUN_COMMANDS command id, bounded ids and digests only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StudioBusinessEvent {
-    variant: StudioEventVariant,
+    event: StudioBusinessEventId,
     document: DomainId,
     actor: ActorContext,
     client_session: ClientSessionId,
     event_id: String,
+    revision: u64,
     sequence: u64,
     correlation: CorrelationId,
     causation: Option<CausationId>,
-    revision: u64,
     command_id: CommandId,
     input_digest: Option<String>,
     output_digest: Option<String>,
     artifacts: Vec<DomainId>,
-}
-
-/// The deterministic event id of `sequence` in `document` (STU-CON-013 deterministic identity;
-/// the host adds its workspace partition).
-pub fn business_event_id(document: &DomainId, sequence: u64) -> String {
-    format!("{}#{sequence}", document.as_str())
 }
 
 fn valid_command_id(value: &str) -> bool {
@@ -369,7 +196,7 @@ fn digest(value: Option<&str>) -> Result<Option<String>, BusinessEventError> {
 
 /// Bounded first, then validated one by one; a repeated ref is refused.
 fn artifact_refs<'s>(refs: impl ExactSizeIterator<Item = &'s str>) -> Result<Vec<DomainId>, BusinessEventError> {
-    if refs.len() > MAX_ARTIFACT_REFS {
+    if refs.len() > MAX_BUSINESS_EVENT_ARTIFACTS {
         return Err(BusinessEventError::TooManyArtifacts);
     }
     let mut out: Vec<DomainId> = Vec::with_capacity(refs.len());
@@ -384,63 +211,30 @@ fn artifact_refs<'s>(refs: impl ExactSizeIterator<Item = &'s str>) -> Result<Vec
 }
 
 impl StudioBusinessEvent {
-    /// Builds the event of the committed command `context` for `document` at `sequence` and the
-    /// exact successor `revision`. Actor, client session, command id, correlation and causation
-    /// come from the context (SMB-ATTRIBUTION-1). The command id is required: a context without
-    /// one is `missing_command_id` (lead decision 2026-10-31: every committed command has a
-    /// RUN_COMMANDS id), and it must be `[a-z0-9._-]`, at most 64 bytes. Every bound is checked
-    /// before anything is copied.
-    pub fn new(
-        variant: StudioEventVariant,
-        document: &str,
-        context: &CommandContext,
-        sequence: u64,
-        revision: u64,
-    ) -> Result<Self, BusinessEventError> {
-        Self::build(
-            variant,
-            document,
-            context.actor(),
-            context.client_session(),
-            context.command(),
-            context.correlation(),
-            context.causation(),
-            sequence,
-            revision,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn build(
-        variant: StudioEventVariant,
-        document: &str,
-        actor: &ActorContext,
-        client_session: &ClientSessionId,
-        command: Option<&CommandId>,
-        correlation: CorrelationId,
-        causation: Option<CausationId>,
-        sequence: u64,
-        revision: u64,
-    ) -> Result<Self, BusinessEventError> {
-        let command = command.ok_or(BusinessEventError::MissingCommandId)?;
+    /// The envelope of an accord record: event, document, revision, sequence, artifacts and the
+    /// committing command's context (actor, client session, command id, correlation, causation).
+    /// A context without a command id is `missing_command_id` (lead decision 2026-10-31); a command
+    /// id outside the RUN_COMMANDS grammar `[a-z0-9._-]{1,64}` is `invalid_command_id`.
+    pub fn from_record(record: &BusinessEventRecord) -> Result<Self, BusinessEventError> {
+        let context = record.context();
+        let command = context.command().ok_or(BusinessEventError::MissingCommandId)?;
         if !valid_command_id(command.as_str()) {
             return Err(BusinessEventError::InvalidCommandId);
         }
-        let document = document_id(document)?;
         Ok(Self {
-            variant,
-            event_id: business_event_id(&document, sequence),
-            document,
-            actor: actor.clone(),
-            client_session: client_session.clone(),
-            sequence,
-            correlation,
-            causation,
-            revision,
+            event: record.event(),
+            document: record.document().clone(),
+            actor: context.actor().clone(),
+            client_session: context.client_session().clone(),
+            event_id: record.event_id(),
+            revision: record.revision(),
+            sequence: record.sequence(),
+            correlation: context.correlation(),
+            causation: context.causation(),
             command_id: command.clone(),
             input_digest: None,
             output_digest: None,
-            artifacts: Vec::new(),
+            artifacts: record.artifacts().to_vec(),
         })
     }
 
@@ -451,14 +245,8 @@ impl StudioBusinessEvent {
         Ok(self)
     }
 
-    /// Adds typed artifact refs (accord domain ids: layers, paths, stories, ...).
-    pub fn with_artifacts(mut self, refs: &[&str]) -> Result<Self, BusinessEventError> {
-        self.artifacts = artifact_refs(refs.iter().copied())?;
-        Ok(self)
-    }
-
-    pub fn variant(&self) -> StudioEventVariant {
-        self.variant
+    pub fn event(&self) -> StudioBusinessEventId {
+        self.event
     }
     pub fn document(&self) -> &DomainId {
         &self.document
@@ -472,6 +260,9 @@ impl StudioBusinessEvent {
     pub fn event_id(&self) -> &str {
         &self.event_id
     }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
     pub fn sequence(&self) -> u64 {
         self.sequence
     }
@@ -480,9 +271,6 @@ impl StudioBusinessEvent {
     }
     pub fn causation(&self) -> Option<CausationId> {
         self.causation
-    }
-    pub fn revision(&self) -> u64 {
-        self.revision
     }
     pub fn command_id(&self) -> &CommandId {
         &self.command_id
@@ -500,17 +288,17 @@ impl StudioBusinessEvent {
     fn wire(&self) -> EventWire {
         EventWire {
             schema_id: SCHEMA_STUDIO_BUSINESS_EVENT.to_owned(),
-            variant: self.variant.as_str().to_owned(),
-            event_family: self.variant.family().to_owned(),
-            business_id: self.variant.business_id().to_owned(),
+            variant: self.event.as_str().to_owned(),
+            event_family: self.event.family().to_owned(),
+            business_id: self.event.business_id().to_owned(),
             document: self.document.as_str().to_owned(),
             actor: ActorWire::from_context(&self.actor),
             client_session: self.client_session.as_str().to_owned(),
             event_id: self.event_id.clone(),
+            revision: self.revision,
             sequence: self.sequence,
             correlation: self.correlation.value(),
             causation: self.causation.map(CausationId::value),
-            revision: self.revision,
             command_id: self.command_id.as_str().to_owned(),
             input_digest: self.input_digest.clone(),
             output_digest: self.output_digest.clone(),
@@ -531,10 +319,10 @@ struct EventWire {
     actor: ActorWire,
     client_session: String,
     event_id: String,
+    revision: u64,
     sequence: u64,
     correlation: u64,
     causation: Option<u64>,
-    revision: u64,
     command_id: String,
     input_digest: Option<String>,
     output_digest: Option<String>,
@@ -546,37 +334,39 @@ impl EventWire {
         if self.schema_id != SCHEMA_STUDIO_BUSINESS_EVENT {
             return Err(BusinessEventError::WrongSchema);
         }
-        let variant = StudioEventVariant::parse(&self.variant).ok_or(BusinessEventError::UnknownVariant)?;
-        if self.event_family != variant.family() {
+        let event = StudioBusinessEventId::parse(&self.variant).ok_or(BusinessEventError::UnknownVariant)?;
+        if self.event_family != event.family() {
             return Err(BusinessEventError::FamilyMismatch);
         }
-        if self.business_id != variant.business_id() {
+        if self.business_id != event.business_id() {
             return Err(BusinessEventError::BusinessIdMismatch);
         }
+        let document = document_id(&self.document)?;
         let actor = self.actor.to_context().map_err(|_| BusinessEventError::InvalidActor)?;
         let client_session = ClientSessionId::parse(&self.client_session)
             .map_err(|_| BusinessEventError::InvalidClientSession)?;
-        let command = CommandId::parse(&self.command_id).map_err(|_| BusinessEventError::InvalidCommandId)?;
-        let event = StudioBusinessEvent::build(
-            variant,
-            &self.document,
-            &actor,
-            &client_session,
-            Some(&command),
-            CorrelationId::new(self.correlation),
-            self.causation.map(CausationId::new),
-            self.sequence,
-            self.revision,
-        )?
-        .with_digests(self.input_digest.as_deref(), self.output_digest.as_deref())?;
-        let event = StudioBusinessEvent {
-            artifacts: artifact_refs(self.artifacts.iter().map(String::as_str))?,
-            ..event
-        };
-        if self.event_id != event.event_id {
+        let command_id = CommandId::parse(&self.command_id).map_err(|_| BusinessEventError::InvalidCommandId)?;
+        if !valid_command_id(command_id.as_str()) {
+            return Err(BusinessEventError::InvalidCommandId);
+        }
+        if self.event_id != business_event_id(&document, self.revision, self.sequence) {
             return Err(BusinessEventError::EventIdMismatch);
         }
-        Ok(event)
+        Ok(StudioBusinessEvent {
+            event,
+            document,
+            actor,
+            client_session,
+            event_id: self.event_id,
+            revision: self.revision,
+            sequence: self.sequence,
+            correlation: CorrelationId::new(self.correlation),
+            causation: self.causation.map(CausationId::new),
+            command_id,
+            input_digest: digest(self.input_digest.as_deref())?,
+            output_digest: digest(self.output_digest.as_deref())?,
+            artifacts: artifact_refs(self.artifacts.iter().map(String::as_str))?,
+        })
     }
 }
 
@@ -632,53 +422,4 @@ pub fn decode_business_event(bytes: &[u8]) -> Result<StudioBusinessEvent, Busine
         return Err(BusinessEventError::NonCanonical);
     }
     Ok(event)
-}
-
-/// Why a business event was not delivered. Closed; the semantics are observe's `DeliveryError`:
-/// all-or-none and nonblocking, and an adapter that cannot know whether the event escaped returns
-/// `Indeterminate`, never `Ok`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EventDeliveryError {
-    Saturated,
-    Rejected,
-    Unavailable,
-    Indeterminate,
-}
-
-impl EventDeliveryError {
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::Saturated => "saturated",
-            Self::Rejected => "rejected",
-            Self::Unavailable => "unavailable",
-            Self::Indeterminate => "indeterminate",
-        }
-    }
-
-    /// `Indeterminate` alone: the event may have escaped, so the caller must reconcile before it
-    /// can call the event delivered or lost.
-    pub const fn needs_reconciliation(self) -> bool {
-        matches!(self, Self::Indeterminate)
-    }
-}
-
-impl std::fmt::Display for EventDeliveryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.code())
-    }
-}
-
-impl std::error::Error for EventDeliveryError {}
-
-/// Where the binding emits business events. A real adapter delivers to the host's Flight
-/// Recorder and EventLedger (MT-36230); the asset-local [`crate::TransientBusinessEvents`] keeps
-/// them in memory.
-pub trait BusinessEventPort: Send + Sync {
-    fn try_emit(&self, event: &StudioBusinessEvent) -> Result<(), EventDeliveryError>;
-}
-
-impl<T: BusinessEventPort + ?Sized> BusinessEventPort for std::sync::Arc<T> {
-    fn try_emit(&self, event: &StudioBusinessEvent) -> Result<(), EventDeliveryError> {
-        (**self).try_emit(event)
-    }
 }
