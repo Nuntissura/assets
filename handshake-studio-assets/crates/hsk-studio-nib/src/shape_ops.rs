@@ -64,16 +64,16 @@ pub const MAX_POLYSTAR_POINTS: f64 = 1000.0;
 pub const MAX_OFFSET_COPIES: u32 = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Seg {
+pub(crate) enum Seg {
     Line(PathPoint, PathPoint),
     Cubic(PathPoint, PathPoint, PathPoint, PathPoint),
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Sub {
-    segs: Vec<Seg>,
-    start: PathPoint,
-    closed: bool,
+pub(crate) struct Sub {
+    pub(crate) segs: Vec<Seg>,
+    pub(crate) start: PathPoint,
+    pub(crate) closed: bool,
 }
 
 fn p(x: f64, y: f64) -> PathPoint {
@@ -105,17 +105,17 @@ fn param(name: &'static str, v: f64) -> Result<f64, Error> {
 }
 
 impl Seg {
-    fn start(&self) -> PathPoint {
+    pub(crate) fn start(&self) -> PathPoint {
         match *self {
             Seg::Line(a, _) | Seg::Cubic(a, _, _, _) => a,
         }
     }
-    fn end(&self) -> PathPoint {
+    pub(crate) fn end(&self) -> PathPoint {
         match *self {
             Seg::Line(_, b) | Seg::Cubic(_, _, _, b) => b,
         }
     }
-    fn at(&self, t: f64) -> PathPoint {
+    pub(crate) fn at(&self, t: f64) -> PathPoint {
         match *self {
             Seg::Line(a, b) => lerp(a, b, t),
             Seg::Cubic(a, b, c, d) => {
@@ -162,7 +162,7 @@ impl Seg {
             }
         }
     }
-    fn length(&self) -> f64 {
+    pub(crate) fn length(&self) -> f64 {
         self.length_to(1.0)
     }
     /// Parameter at arc length `len` (clamped to the segment).
@@ -188,7 +188,7 @@ impl Seg {
         0.5 * (lo + hi)
     }
     /// The piece of the segment between parameters `t0 <= t1`.
-    fn piece(&self, t0: f64, t1: f64) -> Seg {
+    pub(crate) fn piece(&self, t0: f64, t1: f64) -> Seg {
         match *self {
             Seg::Line(..) => Seg::Line(self.at(t0), self.at(t1)),
             Seg::Cubic(a, b, c, d) => {
@@ -212,7 +212,7 @@ impl Seg {
             Seg::Cubic(a, b, c, d) => Seg::Cubic(f(a), f(b), f(c), f(d)),
         }
     }
-    fn as_cubic(&self) -> (PathPoint, PathPoint, PathPoint, PathPoint) {
+    pub(crate) fn as_cubic(&self) -> (PathPoint, PathPoint, PathPoint, PathPoint) {
         match *self {
             Seg::Line(a, b) => (a, a, b, b),
             Seg::Cubic(a, b, c, d) => (a, b, c, d),
@@ -220,7 +220,7 @@ impl Seg {
     }
 }
 
-fn subpaths(path: &OwnedPath) -> Result<Vec<Sub>, Error> {
+pub(crate) fn subpaths(path: &OwnedPath) -> Result<Vec<Sub>, Error> {
     path.validate(&PathLimits { max_elements: MAX_OP_ELEMENTS, require_closed: false })?;
     let mut out: Vec<Sub> = Vec::new();
     let mut cur: Option<Sub> = None;
@@ -265,7 +265,7 @@ fn subpaths(path: &OwnedPath) -> Result<Vec<Sub>, Error> {
     Ok(out)
 }
 
-fn emit(subs: &[Sub], fill_rule: FillRule) -> Result<OwnedPath, Error> {
+pub(crate) fn emit(subs: &[Sub], fill_rule: FillRule) -> Result<OwnedPath, Error> {
     let mut path = OwnedPath::new(fill_rule);
     for s in subs {
         if s.segs.is_empty() {
@@ -847,7 +847,7 @@ fn wrap_next(i: usize, n: usize) -> usize {
 }
 
 /// Points at `pieces` equal arc-length steps along a segment (end point excluded).
-fn spaced_points(seg: &Seg, pieces: u32) -> Vec<(PathPoint, PathPoint)> {
+pub(crate) fn spaced_points(seg: &Seg, pieces: u32) -> Vec<(PathPoint, PathPoint)> {
     let total = seg.length();
     (0..pieces)
         .map(|j| {
@@ -880,7 +880,7 @@ fn catmull(pts: &[PathPoint], closed: bool) -> Vec<Seg> {
         .collect()
 }
 
-fn polyline_sub(pts: Vec<PathPoint>, closed: bool, smooth: bool) -> Sub {
+pub(crate) fn polyline_sub(pts: Vec<PathPoint>, closed: bool, smooth: bool) -> Sub {
     let segs = if smooth {
         catmull(&pts, closed)
     } else {
