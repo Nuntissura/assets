@@ -15,7 +15,7 @@
 //! - Text: [`super::text`] (lane SMB-HARNESS-UI-3): a click places a point-text layer.
 use super::Viewer;
 use super::brush_mix::{self, MixTarget};
-use hsk_studio_accord::DomainId;
+use hsk_studio_accord::{BoundSource, DomainId, Redaction, SettingConstraint, SettingEntry, SettingScope, SettingValue};
 use hsk_studio_folio::{Payload, TileRef};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::brush::{
@@ -215,6 +215,51 @@ impl Default for BrushSettings {
     fn default() -> Self {
         Self { diameter_px: 24.0, hardness_pct: 80.0, spacing_pct: 25.0, opacity_pct: 100.0, rgb8: [220, 30, 40] }
     }
+}
+
+pub const BRUSH_DIAMETER: &str = "studio.harness-view.brush.diameter";
+pub const BRUSH_HARDNESS: &str = "studio.harness-view.brush.hardness";
+pub const BRUSH_SPACING: &str = "studio.harness-view.brush.spacing";
+pub const BRUSH_OPACITY: &str = "studio.harness-view.brush.opacity";
+
+const fn brush_entry(id: &'static str, label: &'static str, unit: &'static str, min: f64, max: f64, default: f64) -> SettingEntry {
+    SettingEntry {
+        id,
+        module: "harness-view",
+        feature: "brush",
+        label,
+        unit: Some(unit),
+        constraint: SettingConstraint::FloatRange { min, max },
+        default: SettingValue::Float(default),
+        scope: SettingScope::Workspace,
+        redaction: Redaction::Public,
+        bound_source: BoundSource::StudioDeclared,
+    }
+}
+
+/// [`BrushSettings`] as typed settings entries (lane SMB-SETTINGS-SCHEMA-1, RF-09 phase 0), module
+/// tab `harness-view`, feature subtab `brush`; joined into the Studio catalog by
+/// [`super::settings_catalog`]. Defaults equal [`BrushSettings::default`] field for field. Bounds
+/// lie inside pigment's brush domain (`BrushTip::validate`: diameter 1..=5000 px, hardness
+/// 0..=100 %, spacing above 0 with no upper clamp; the dynamics opacity channel 0..=100 %); the
+/// spacing maximum 1000 % is a Studio reading (Photoshop's range UNVERIFIED, D5). The colour
+/// (`rgb8`) gets no entry: it is per-stroke tool state and Handshake's constraints have no colour
+/// kind (SyntaxColorMap is editor-only).
+pub const BRUSH_SETTING_ENTRIES: &[SettingEntry] = &[
+    brush_entry(BRUSH_DIAMETER, "Brush size", "px", 1.0, 5000.0, 24.0),
+    brush_entry(BRUSH_HARDNESS, "Brush hardness", "%", 0.0, 100.0, 80.0),
+    brush_entry(BRUSH_SPACING, "Brush spacing", "%", 1.0, 1000.0, 25.0),
+    brush_entry(BRUSH_OPACITY, "Brush opacity", "%", 0.0, 100.0, 100.0),
+];
+
+/// The current values of `b` as `(id, value)` pairs in [`BRUSH_SETTING_ENTRIES`] order.
+pub fn brush_values(b: &BrushSettings) -> [(&'static str, SettingValue<'static>); 4] {
+    [
+        (BRUSH_DIAMETER, SettingValue::Float(b.diameter_px)),
+        (BRUSH_HARDNESS, SettingValue::Float(b.hardness_pct)),
+        (BRUSH_SPACING, SettingValue::Float(b.spacing_pct)),
+        (BRUSH_OPACITY, SettingValue::Float(b.opacity_pct)),
+    ]
 }
 
 /// Editing state held by the viewer.

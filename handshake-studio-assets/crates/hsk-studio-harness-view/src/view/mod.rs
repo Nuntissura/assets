@@ -89,6 +89,7 @@ pub mod render;
 /// One admitted job path for the local queues and the preview stale-frame gate (lane SMB-JOB-ADMISSION-1).
 pub mod job_admission;
 pub mod preview_gate;
+pub mod settings_catalog;
 /// Soft proofing in the window: VIEW / COLOR > Proof, proof preview and gamut overlay on the canvas,
 /// `state_json()["proof"]` (lane SMB-PS-SOFT-PROOF-2).
 pub mod proof;
