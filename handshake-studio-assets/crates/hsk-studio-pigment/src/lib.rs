@@ -26,6 +26,7 @@ pub mod render_plan;
 pub mod retouch;
 pub mod select_tools;
 pub mod selection;
+pub mod settings;
 pub mod smart_filter;
 pub mod tile;
 pub mod track_math;
