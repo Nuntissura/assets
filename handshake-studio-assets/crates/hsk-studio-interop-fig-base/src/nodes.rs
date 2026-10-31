@@ -29,7 +29,7 @@ use crate::kiwi::schema_and_message;
 use crate::kiwi_value::{KiwiField, KiwiValue, decode_tree};
 use crate::{FigError, Result};
 use hsk_studio_accord::CancellationToken;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vec2 {
@@ -1254,17 +1254,20 @@ fn corners(o: &mut Obj, cx: &mut Cx) -> (Option<f32>, Option<[f32; 4]>) {
     (r, radii)
 }
 
-fn frame(o: &mut Obj, cx: &mut Cx) -> FramePayload {
+fn frame(o: &mut Obj, cx: &mut Cx) -> Result<FramePayload> {
     let (corner_radius, corner_radii) = corners(o, cx);
-    let auto_layout = o.enum_name(cx, "stackMode").map(|mode| AutoLayout {
-        mode,
-        spacing: o.f32(cx, "stackSpacing"),
-        horizontal_padding: o.f32(cx, "stackHorizontalPadding"),
-        vertical_padding: o.f32(cx, "stackVerticalPadding"),
-        padding_right: o.f32(cx, "stackPaddingRight"),
-        padding_bottom: o.f32(cx, "stackPaddingBottom"),
-        grid: grid_container(o, cx),
-    });
+    let auto_layout = match o.enum_name(cx, "stackMode") {
+        Some(mode) => Some(AutoLayout {
+            mode,
+            spacing: o.f32(cx, "stackSpacing"),
+            horizontal_padding: o.f32(cx, "stackHorizontalPadding"),
+            vertical_padding: o.f32(cx, "stackVerticalPadding"),
+            padding_right: o.f32(cx, "stackPaddingRight"),
+            padding_bottom: o.f32(cx, "stackPaddingBottom"),
+            grid: grid_container(o, cx)?,
+        }),
+        None => None,
+    };
     let defs_path = o.sub("componentPropDefs");
     let component_props = o
         .array(cx, "componentPropDefs")
@@ -1280,7 +1283,7 @@ fn frame(o: &mut Obj, cx: &mut Cx) -> FramePayload {
             def
         })
         .collect();
-    FramePayload {
+    Ok(FramePayload {
         corner_radius,
         corner_radii,
         mask_disabled: o.bool(cx, "frameMaskDisabled"),
@@ -1296,7 +1299,7 @@ fn frame(o: &mut Obj, cx: &mut Cx) -> FramePayload {
             v
         }),
         overlay_relative_position: o.vec2(cx, "overlayRelativePosition"),
-    }
+    })
 }
 
 /// The grid container fields a frame stores (kiwi names of the files' own schema, lane
@@ -1325,15 +1328,15 @@ fn stores_any(o: &Obj, names: &[&str]) -> bool {
     o.fields.iter().any(|f| names.contains(&&*f.name))
 }
 
-fn grid_container(o: &mut Obj, cx: &mut Cx) -> Option<FigGrid> {
+fn grid_container(o: &mut Obj, cx: &mut Cx) -> Result<Option<FigGrid>> {
     if !stores_any(o, &GRID_CONTAINER_FIELDS) {
-        return None;
+        return Ok(None);
     }
-    let mut rows = grid_tracks(o, cx, "gridRows");
-    let mut columns = grid_tracks(o, cx, "gridColumns");
-    grid_sizes(o, cx, "gridRowsSizing", &mut rows);
-    grid_sizes(o, cx, "gridColumnsSizing", &mut columns);
-    Some(FigGrid {
+    let mut rows = grid_tracks(o, cx, "gridRows")?;
+    let mut columns = grid_tracks(o, cx, "gridColumns")?;
+    grid_sizes(o, cx, "gridRowsSizing", &mut rows)?;
+    grid_sizes(o, cx, "gridColumnsSizing", &mut columns)?;
+    Ok(Some(FigGrid {
         rows,
         columns,
         row_gap: o.f32(cx, "gridRowGap"),
@@ -1341,31 +1344,48 @@ fn grid_container(o: &mut Obj, cx: &mut Cx) -> Option<FigGrid> {
         auto_tracks: o.enum_name(cx, "gridAutoTracks"),
         reflow_enabled: o.bool(cx, "gridReflowEnabled"),
         children: Vec::new(),
-    })
+    }))
 }
 
+/// Most entries one GRID track list or sizing list may hold at decode: Folio's track bound
+/// (`GRID_COUNT_MAX`, 1000). A longer list is refused whole as a typed loss before any per-entry
+/// work (F-R45-1, lane SMB-R46-FOLLOWUPS-1: the kiwi arrays are bounded only by `Limits`, 16M).
+const GRID_ENTRIES_MAX: usize = hsk_studio_folio::GRID_COUNT_MAX as usize;
+
 /// A `GUIDPositionMap` of tracks, in stored order (position bytes, then id). An entry without id
-/// or position, or repeating an id, is left out (loss).
-fn grid_tracks(o: &mut Obj, cx: &mut Cx, name: &str) -> Vec<FigGridTrack> {
+/// or position, or repeating an id, is left out (loss); a list of more than [`GRID_ENTRIES_MAX`]
+/// entries is left out whole (`grid_track_count_over_limit`). Cancellable per entry.
+fn grid_tracks(o: &mut Obj, cx: &mut Cx, name: &str) -> Result<Vec<FigGridTrack>> {
     let Some(mut m) = o.obj(cx, name) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let entries_path = m.sub("entries");
-    let mut out: Vec<FigGridTrack> = Vec::new();
-    for e in m.array(cx, "entries") {
+    let entries = m.array(cx, "entries");
+    if entries.len() > GRID_ENTRIES_MAX {
+        cx.lose(m.path.clone(), "grid_track_count_over_limit");
+        m.finish(cx);
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<FigGridTrack> = Vec::with_capacity(entries.len());
+    let mut seen: HashSet<SourceId> = HashSet::with_capacity(entries.len());
+    for e in entries {
+        cx.cancel.check().map_err(|_| FigError::Canceled)?;
         let mut eo = Obj::of(e, entries_path.clone());
         let id = eo.guid(cx, "id");
         let position = eo.string(cx, "position");
         eo.finish(cx);
         match (id, position) {
-            (Some(id), _) if out.iter().any(|t| t.id == id) => {
+            (Some(id), _) if seen.contains(&id) => {
                 cx.lose(m.path.clone(), "grid_track_duplicate_id");
             }
-            (Some(id), Some(position)) => out.push(FigGridTrack {
-                id,
-                position,
-                size: None,
-            }),
+            (Some(id), Some(position)) => {
+                seen.insert(id);
+                out.push(FigGridTrack {
+                    id,
+                    position,
+                    size: None,
+                });
+            }
             _ => cx.lose(m.path.clone(), "grid_track_incomplete"),
         }
     }
@@ -1376,7 +1396,7 @@ fn grid_tracks(o: &mut Obj, cx: &mut Cx, name: &str) -> Vec<FigGridTrack> {
             .cmp(b.position.as_bytes())
             .then(a.id.cmp(&b.id))
     });
-    out
+    Ok(out)
 }
 
 fn track_sizing(o: &mut Obj, cx: &mut Cx, name: &str) -> Option<FigTrackSizing> {
@@ -1388,13 +1408,23 @@ fn track_sizing(o: &mut Obj, cx: &mut Cx, name: &str) -> Option<FigTrackSizing> 
 }
 
 /// A `GUIDGridTrackSizeMap`: each entry's size goes to the track with its id; an entry naming no
-/// track of the axis, or a second entry for one track, is a loss.
-fn grid_sizes(o: &mut Obj, cx: &mut Cx, name: &str, tracks: &mut [FigGridTrack]) {
+/// track of the axis, or a second entry for one track, is a loss; a list of more than
+/// [`GRID_ENTRIES_MAX`] entries is left out whole (`grid_track_size_count_over_limit`). Tracks are
+/// found through an id index; cancellable per entry.
+fn grid_sizes(o: &mut Obj, cx: &mut Cx, name: &str, tracks: &mut [FigGridTrack]) -> Result<()> {
     let Some(mut m) = o.obj(cx, name) else {
-        return;
+        return Ok(());
     };
     let entries_path = m.sub("entries");
-    for e in m.array(cx, "entries") {
+    let entries = m.array(cx, "entries");
+    if entries.len() > GRID_ENTRIES_MAX {
+        cx.lose(m.path.clone(), "grid_track_size_count_over_limit");
+        m.finish(cx);
+        return Ok(());
+    }
+    let at: HashMap<SourceId, usize> = tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+    for e in entries {
+        cx.cancel.check().map_err(|_| FigError::Canceled)?;
         let mut eo = Obj::of(e, entries_path.clone());
         let id = eo.guid(cx, "id");
         let size = eo.obj(cx, "trackSize").map(|mut so| {
@@ -1406,7 +1436,7 @@ fn grid_sizes(o: &mut Obj, cx: &mut Cx, name: &str, tracks: &mut [FigGridTrack])
             s
         });
         eo.finish(cx);
-        match id.and_then(|id| tracks.iter_mut().find(|t| t.id == id)) {
+        match id.and_then(|id| at.get(&id)).and_then(|&i| tracks.get_mut(i)) {
             Some(t) if t.size.is_some() => cx.lose(m.path.clone(), "grid_track_size_duplicate"),
             Some(t) => match size {
                 Some(s) => t.size = Some(s),
@@ -1416,6 +1446,7 @@ fn grid_sizes(o: &mut Obj, cx: &mut Cx, name: &str, tracks: &mut [FigGridTrack])
         }
     }
     m.finish(cx);
+    Ok(())
 }
 
 /// The grid placement fields of any node (`None` when it stores none of them).
@@ -1935,7 +1966,7 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
             background_enabled: o.bool(cx, "backgroundEnabled"),
             internal_only: o.bool(cx, "internalOnly"),
         },
-        "FRAME" | "SECTION" => NodePayload::Frame(frame(&mut o, cx)),
+        "FRAME" | "SECTION" => NodePayload::Frame(frame(&mut o, cx)?),
         "RECTANGLE" | "ROUNDED_RECTANGLE" => {
             let (corner_radius, corner_radii) = corners(&mut o, cx);
             NodePayload::Rectangle {
@@ -1994,7 +2025,7 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
             NodePayload::Text(text(&mut o, cx, &base)?)
         }
         "SYMBOL" => {
-            let frame = frame(&mut o, cx);
+            let frame = frame(&mut o, cx)?;
             let specs_path = o.sub("variantPropSpecs");
             let variant = o
                 .array(cx, "variantPropSpecs")
@@ -2016,7 +2047,7 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
             }
         }
         "INSTANCE" => NodePayload::Instance {
-            frame: frame(&mut o, cx),
+            frame: frame(&mut o, cx)?,
             instance: instance(&mut o, cx)?,
         },
         "VARIABLE" => NodePayload::Variable(variable(&mut o, cx)),
@@ -2270,4 +2301,44 @@ pub fn decode_document(
     let (schema, message) = schema_and_message(&import.container, limits, cancel)?;
     let tree = decode_tree(&schema, &message, "Message", limits, cancel)?;
     document_from_tree(&tree, Some(&import.container), limits, cancel)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn field(name: &str, value: KiwiValue) -> KiwiField {
+        KiwiField { name: Arc::from(name), id: 0, value }
+    }
+
+    /// F-R45-1 (lane SMB-R46-FOLLOWUPS-1): the GRID track and sizing loops poll the caller's token
+    /// per entry, so one hostile node no longer runs to its end after a cancel (document_from_tree
+    /// polls only between nodes).
+    #[test]
+    fn grid_entry_loops_are_cancellable_inside_one_node() {
+        let entry = KiwiValue::Message(vec![field("position", KiwiValue::String("!".into()))]);
+        let map = KiwiValue::Message(vec![field("entries", KiwiValue::Array(vec![entry.clone(), entry]))]);
+        let node = KiwiValue::Message(vec![field("gridRows", map.clone()), field("gridRowsSizing", map)]);
+        let canceled = CancellationToken::default();
+        canceled.cancel();
+        let live = CancellationToken::default();
+        let mut cx = Cx {
+            loss: BTreeMap::new(),
+            decoded: BTreeMap::new(),
+            current: None,
+            grid_children: Vec::new(),
+            blobs: None,
+            container: None,
+            geometry_budget: 1 << 20,
+            cancel: &canceled,
+        };
+        let mut o = Obj::of(&node, "NodeChange");
+        assert!(matches!(grid_tracks(&mut o, &mut cx, "gridRows"), Err(FigError::Canceled)));
+        assert!(matches!(grid_sizes(&mut o, &mut cx, "gridRowsSizing", &mut []), Err(FigError::Canceled)));
+        cx.cancel = &live;
+        let mut o = Obj::of(&node, "NodeChange");
+        assert_eq!(grid_tracks(&mut o, &mut cx, "gridRows").map(|t| t.len()).ok(), Some(0));
+        assert!(cx.loss.contains_key(&("NodeChange.gridRows".to_owned(), "grid_track_incomplete")));
+    }
 }

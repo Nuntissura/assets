@@ -234,3 +234,38 @@ fn fixtures_without_grid_fields_decode_without_grid() {
         assert!(doc.loss.iter().all(|l| !l.path.contains("grid")), "{name}: {:?}", doc.loss);
     }
 }
+
+/// F-R45-1 (lane SMB-R46-FOLLOWUPS-1), hostile counts: a track list or sizing list longer than
+/// Folio's 1000-track bound is refused whole as a typed loss before any per-entry work (200 001
+/// distinct ids cost about 2 x 10^10 id comparisons in the old linear duplicate scan); exactly 1000
+/// entries still decode, with each size found through the id index.
+#[test]
+fn grid_track_lists_over_the_count_bound_are_refused_before_entry_work() {
+    const BOUND: u32 = 1000;
+    let many = |n: u32| (0..n).map(|i| (1_000 + i, "!")).collect::<Vec<_>>();
+    let doc = grid_document(|k, tree| {
+        let frame = node_fields(tree, "horizontal-stack");
+        set(frame, k.field("NodeChange", "gridRows", k.tracks(&many(200_001))));
+        let sizes: Vec<(u32, Sizing, Sizing)> = (0..BOUND + 1).map(|i| (COL_A + i % 3, None, Some(("HUG", None)))).collect();
+        set(frame, k.field("NodeChange", "gridColumnsSizing", k.sizes(&sizes)));
+    });
+    let g = grid_of(&doc, "horizontal-stack");
+    assert!(g.rows.is_empty(), "an over-bound track list is left out whole");
+    assert_eq!(doc.loss_count("NodeChange.gridRows", "grid_track_count_over_limit"), 1);
+    assert_eq!(g.columns.len(), 3, "the columns themselves are within the bound");
+    assert!(g.columns.iter().all(|c| c.size.is_none()), "an over-bound sizing list is left out whole");
+    assert_eq!(doc.loss_count("NodeChange.gridColumnsSizing", "grid_track_size_count_over_limit"), 1);
+    assert_eq!(doc.loss_count("NodeChange.gridColumnsSizing", "grid_track_size_duplicate"), 0, "no entry was visited");
+
+    let doc = grid_document(|k, tree| {
+        let frame = node_fields(tree, "horizontal-stack");
+        set(frame, k.field("NodeChange", "gridRows", k.tracks(&many(BOUND))));
+        let sizes: Vec<(u32, Sizing, Sizing)> = (0..BOUND).map(|i| (1_000 + i, None, Some(("FIXED", Some(i as f32))))).collect();
+        set(frame, k.field("NodeChange", "gridRowsSizing", k.sizes(&sizes)));
+    });
+    let g = grid_of(&doc, "horizontal-stack");
+    assert_eq!(g.rows.len(), BOUND as usize, "exactly the bound decodes");
+    assert!(g.rows.iter().all(|t| t.size.as_ref().and_then(|s| s.max.as_ref()).and_then(|m| m.value) == Some((t.id.local - 1_000) as f32)));
+    assert_eq!(doc.loss_count("NodeChange.gridRows", "grid_track_count_over_limit"), 0);
+    assert_eq!(doc.loss_count("NodeChange.gridRowsSizing", "grid_track_size_count_over_limit"), 0);
+}
