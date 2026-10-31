@@ -356,3 +356,159 @@ fn wave_world_budget_is_refused_before_allocation() {
     stop.cancel();
     assert_eq!(w.state_at(SEC, &limits(), &stop).unwrap_err(), ParticleError::Canceled);
 }
+
+// ---- Slice 2: Caustics (MT-34182) ----
+
+fn flat(width: u32, height: u32) -> HeightField {
+    HeightField { width, height, heights: vec![0.0; (width * height) as usize], range: 1.0 }
+}
+
+fn lens(n: u32, sign: f32) -> HeightField {
+    let mut heights = Vec::new();
+    for y in 0..n {
+        for x in 0..n {
+            let c = f64::from(n) / 2.0;
+            let (dx, dy) = ((f64::from(x) + 0.5 - c) / 3.0, (f64::from(y) + 0.5 - c) / 3.0);
+            heights.push(sign * (-(dx * dx + dy * dy)).exp() as f32);
+        }
+    }
+    HeightField { width: n, height: n, heights, range: 1.0 }
+}
+
+fn caustics(field: HeightField) -> Caustics {
+    Caustics {
+        surface: CausticSurface::Field(field),
+        bottom: None,
+        light_direction: 30.0,
+        light_elevation: 55.0,
+        refractive_index: 1.33,
+        depth: 32.0,
+        surface_height: 8.0,
+        caustic_strength: 1.0,
+        surface_opacity: 0.0,
+        surface_colour: [0.75, 0.875, 1.0],
+        bottom_colour: [0.375, 0.5625, 0.625],
+    }
+}
+
+#[test]
+fn caustics_flat_surface_is_exact_and_tilt_refracts_by_snell() {
+    let cancel = CancellationToken::default();
+    // A flat surface lights every pixel exactly once and refracts nothing, whatever the light.
+    let c = caustics(flat(4, 4));
+    assert!(c.light_map(24, 16, 0, &limits(), &cancel).unwrap().iter().all(|l| *l == 1.0));
+    let frame = c.render(24, 16, 0, &limits(), &cancel).unwrap();
+    assert!(frame.premultiplied.iter().all(|p| *p == [0.375, 0.5625, 0.625, 1.0]));
+    // The surface tint goes over the lit bottom.
+    let mut tinted = caustics(flat(4, 4));
+    tinted.surface_opacity = 0.5;
+    let t = [0.75f32 * 0.5, 0.875 * 0.5, 0.5, 0.5];
+    let b = [0.375f32, 0.5625, 0.625, 1.0];
+    let want: [f32; 4] = std::array::from_fn(|i| t[i] + b[i] * (1.0 - t[3]));
+    assert!(tinted.render(8, 8, 0, &limits(), &cancel).unwrap().premultiplied.iter().all(|p| *p == want));
+    // A bottom image comes through a flat surface unchanged.
+    let mut img = Vec::new();
+    for y in 0..16u32 {
+        for x in 0..24u32 {
+            let a = 0.5 + y as f32 / 64.0;
+            img.push([x as f32 / 32.0 * a, 0.25 * a, (23 - x) as f32 / 32.0 * a, a]);
+        }
+    }
+    let mut seen = caustics(flat(4, 4));
+    seen.bottom = Some(WaterBottom { width: 24, height: 16, premultiplied: img.clone() });
+    assert_eq!(seen.render(24, 16, 0, &limits(), &cancel).unwrap().premultiplied, img);
+    // A tilted plane (slope 0.2 px/px across the interior) shifts the view by Snell's law:
+    // (depth + h) tan(theta_i - theta_t), sin theta_t = sin theta_i / n, toward the rising side.
+    let ramp = HeightField { width: 2, height: 2, heights: vec![0.0, 1.0, 0.0, 1.0], range: 1.0 };
+    let mut tilt = caustics(ramp.clone());
+    tilt.surface_height = 3.2;
+    tilt.light_elevation = 90.0;
+    let offs = tilt.view_offsets(32, 8, 0, &limits(), &cancel).unwrap();
+    let light = tilt.light_map(32, 8, 0, &limits(), &cancel).unwrap();
+    let ti = 0.2f64.atan();
+    let tt = (ti.sin() / 1.33).asin();
+    for x in 10..=21usize {
+        let h = ramp.sample((x as f64 + 0.5) / 32.0, 3.5 / 8.0) * 3.2;
+        let want = (32.0 + h) * (ti - tt).tan();
+        let o = offs[3 * 32 + x];
+        assert!((o[0] - want).abs() < 1e-9 && o[1].abs() < 1e-12, "x {x}: {o:?} vs {want}");
+        assert!(o[0] > 0.0);
+        if (12..=20).contains(&x) {
+            assert!((0.97..=1.0).contains(&light[3 * 32 + x]), "a plane neither focuses nor loses light: {}", light[3 * 32 + x]);
+        }
+    }
+}
+
+#[test]
+fn caustics_focus_conserve_and_consume_the_wave_world() {
+    let cancel = CancellationToken::default();
+    let mut c = caustics(lens(16, 1.0));
+    c.light_elevation = 90.0;
+    let light = c.light_map(48, 48, 0, &limits(), &cancel).unwrap();
+    let (max, min, sum) = (light.iter().copied().fold(0.0, f64::max), light.iter().copied().fold(f64::MAX, f64::min), light.iter().sum::<f64>());
+    assert!(max > 2.0, "a bump focuses light ({max})");
+    assert!(min < 1.0, "and spreads it elsewhere ({min})");
+    assert!(sum <= 48.0 * 48.0 + 1e-6 && sum > 0.99 * 48.0 * 48.0, "light is moved, not created ({sum})");
+    let mut trough = c.clone();
+    trough.surface = CausticSurface::Field(lens(16, -1.0));
+    let tmax = trough.light_map(48, 48, 0, &limits(), &cancel).unwrap().into_iter().fold(0.0, f64::max);
+    assert!(tmax < max, "a trough spreads more than it focuses ({tmax} vs {max})");
+    // The caustic pattern shows on the bottom; strength 0 leaves the bottom unlit by caustics.
+    c.bottom_colour = [0.25; 3];
+    let r: Vec<f32> = c.render(48, 48, 0, &limits(), &cancel).unwrap().premultiplied.iter().map(|p| p[0]).collect();
+    assert!(r.iter().copied().fold(0.0, f32::max) > 0.5 && r.iter().copied().fold(1.0, f32::min) < 0.25);
+    let mut plain = c.clone();
+    plain.caustic_strength = 0.0;
+    assert!(plain.render(48, 48, 0, &limits(), &cancel).unwrap().premultiplied.iter().all(|p| *p == [0.25, 0.25, 0.25, 1.0]));
+    // Wave world's height field is the surface: simulating at the tick equals handing the field in.
+    let mut w = pool(EdgeMode::Reflect);
+    w.grid = [24, 24];
+    w.damping = 0.2;
+    w.producers = vec![point(0.4, 0.5, 1.0, 1.5, 0.0)];
+    let mut sim = caustics(flat(1, 1));
+    sim.surface = CausticSurface::Wave(w.clone());
+    let tick = 40 * TPF;
+    let given = caustics(w.height_field_at(tick, &limits(), &cancel).unwrap());
+    let direct = sim.render(32, 32, tick, &limits(), &cancel).unwrap();
+    assert_eq!(direct, given.render(32, 32, 0, &limits(), &cancel).unwrap());
+    assert_eq!(given.render(32, 32, 0, &limits(), &cancel).unwrap(), given.render(32, 32, 99 * TPF, &limits(), &cancel).unwrap(), "a caller field is the same at every tick");
+    assert_ne!(direct, caustics(flat(1, 1)).render(32, 32, tick, &limits(), &cancel).unwrap(), "the waves refract the bottom");
+    // STU-CMP-075a through the wave: scrubbing back, the same record and seed give the same frame.
+    let _ = sim.render(32, 32, 70 * TPF, &limits(), &cancel).unwrap();
+    assert_eq!(sim.render(32, 32, tick, &limits(), &cancel).unwrap().digest(), direct.digest());
+    assert_eq!(sim.clone().render(32, 32, tick, &limits(), &cancel).unwrap().digest(), direct.digest());
+}
+
+#[test]
+fn caustics_bounds_are_refused_before_allocation() {
+    let cancel = CancellationToken::default();
+    let with_bottom = |width, height, premultiplied: Vec<[f32; 4]>| {
+        let mut c = caustics(flat(2, 2));
+        c.bottom = Some(WaterBottom { width, height, premultiplied });
+        c.render(8, 8, 0, &limits(), &cancel).map(|_| ())
+    };
+    let refused = Err(ParticleError::Parameter("bottom"));
+    assert_eq!(with_bottom(u32::MAX, u32::MAX, Vec::new()), refused);
+    assert_eq!(with_bottom(1 << 13, 1 << 12, Vec::new()), refused, "over MAX_SOURCE_PIXELS, checked before the pixels");
+    assert_eq!(with_bottom(2, 2, vec![[0.0; 4]; 3]), refused);
+    assert_eq!(with_bottom(1, 1, vec![[0.6, 0.0, 0.0, 0.5]]), Err(ParticleError::Parameter("bottom_pixels")), "colour above alpha");
+    assert_eq!(with_bottom(1, 1, vec![[f32::NAN, 0.0, 0.0, 1.0]]), Err(ParticleError::Parameter("bottom_pixels")));
+    let mut c = caustics(flat(2, 2));
+    c.surface = CausticSurface::Field(HeightField { width: 2, height: 2, heights: vec![0.0], range: 1.0 });
+    assert_eq!(c.render(8, 8, 0, &limits(), &cancel).unwrap_err(), ParticleError::Parameter("height_field"));
+    let mut big = pool(EdgeMode::Reflect);
+    big.grid = [1024, 1024];
+    c.surface = CausticSurface::Wave(big);
+    assert_eq!(c.render(8, 8, 100 * SEC, &limits(), &cancel).unwrap_err(), ParticleError::Work, "the surface's steps x cells");
+    c.surface = CausticSurface::Wave(pool(EdgeMode::Reflect));
+    assert_eq!(c.render(8, 8, u64::MAX, &limits(), &cancel).unwrap_err(), ParticleError::Window);
+    let work = ParticleLimits { max_raster_work: 100, ..ParticleLimits::default() };
+    assert_eq!(caustics(flat(2, 2)).render(16, 16, 0, &work, &cancel).unwrap_err(), ParticleError::Work);
+    let mut cfl = pool(EdgeMode::Reflect);
+    cfl.wave_speed = 100.0;
+    c.surface = CausticSurface::Wave(cfl);
+    assert_eq!(c.render(8, 8, 0, &limits(), &cancel).unwrap_err(), ParticleError::Parameter("cfl"));
+    let stop = CancellationToken::default();
+    stop.cancel();
+    assert_eq!(caustics(flat(2, 2)).render(8, 8, 0, &limits(), &stop).unwrap_err(), ParticleError::Canceled);
+}

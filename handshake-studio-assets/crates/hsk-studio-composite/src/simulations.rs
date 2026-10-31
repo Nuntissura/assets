@@ -35,13 +35,16 @@
 //! count and the raster work are checked BEFORE allocation; refusals are [`ParticleError`] codes.
 //! After Effects parity of all four types is UNVERIFIED (D5).
 //!
-//! **Water family (lane SMB-AE-WATER-SIMS-1).** Wave world (MT-34181, [`wave_world`]) follows the
-//! same identity, record, bounds and output rules. Wave world is a stateful step simulation: every
-//! frame is re-simulated from the start tick on a fixed step grid (a Wave world may also resume
-//! from a [`WaveState`] checkpoint of the same record, which gives the same field), single-threaded
-//! in a fixed order. [`SimulationKind::ALL`] keeps its published five particle-family kinds;
+//! **Water family (lane SMB-AE-WATER-SIMS-1).** Wave world (MT-34181, [`wave_world`]) and Caustics
+//! (MT-34182, [`caustics`]) follow the same identity, record, bounds and output rules. Wave world
+//! is a stateful step simulation: every frame is re-simulated from the start tick on a fixed step
+//! grid (a Wave world may also resume from a [`WaveState`] checkpoint of the same record, which
+//! gives the same field), single-threaded in a fixed order. Caustics is a pure function of a
+//! [`HeightField`] (a Wave world at the tick, or a caller field) and a bottom image.
+//! [`SimulationKind::ALL`] keeps its published five particle-family kinds;
 //! [`SimulationKind::EVERY`] lists every kind.
 #![deny(clippy::arithmetic_side_effects)]
+pub mod caustics;
 pub mod classic;
 pub mod precipitation;
 pub mod star_burst;
@@ -59,6 +62,7 @@ pub use classic::{ClassicParticleType, ParticleSystemsClassic};
 pub use precipitation::{DepthLayer, Precipitation, Rain, Snow};
 pub use star_burst::{BurstMode, StarBurst};
 pub use wave_world::{EdgeMode, HeightField, ProducerShape, WaveProducer, WaveState, WaveWorld};
+pub use caustics::{CausticSurface, Caustics, WaterBottom};
 
 pub(crate) type Result<T> = std::result::Result<T, ParticleError>;
 
@@ -76,6 +80,7 @@ pub enum SimulationKind {
     Snow,
     StarBurst,
     WaveWorld,
+    Caustics,
 }
 
 impl SimulationKind {
@@ -83,15 +88,16 @@ impl SimulationKind {
     /// lists every implemented kind.
     pub const ALL: [Self; 5] = [Self::ParticleWorld, Self::ParticleSystemsClassic, Self::Rain, Self::Snow, Self::StarBurst];
     /// The water family (lane SMB-AE-WATER-SIMS-1).
-    pub const WATER: [Self; 1] = [Self::WaveWorld];
+    pub const WATER: [Self; 2] = [Self::WaveWorld, Self::Caustics];
     /// Every implemented kind: [`Self::ALL`] then [`Self::WATER`].
-    pub const EVERY: [Self; 6] = [
+    pub const EVERY: [Self; 7] = [
         Self::ParticleWorld,
         Self::ParticleSystemsClassic,
         Self::Rain,
         Self::Snow,
         Self::StarBurst,
         Self::WaveWorld,
+        Self::Caustics,
     ];
 
     /// The stable id.
@@ -103,6 +109,7 @@ impl SimulationKind {
             Self::Snow => "hsk.studio.simulation.snow",
             Self::StarBurst => "hsk.studio.simulation.star_burst",
             Self::WaveWorld => "hsk.studio.simulation.wave_world",
+            Self::Caustics => "hsk.studio.simulation.caustics",
         }
     }
 
@@ -115,6 +122,7 @@ impl SimulationKind {
             Self::Snow => "Snow",
             Self::StarBurst => "Star burst",
             Self::WaveWorld => "Wave world",
+            Self::Caustics => "Caustics",
         }
     }
 
@@ -130,6 +138,7 @@ impl SimulationKind {
             Self::Snow => &["CC Snow", "CSSnowfall"],
             Self::StarBurst => &["CC Star Burst"],
             Self::WaveWorld => &["APC Wave World"],
+            Self::Caustics => &["APC Caustics"],
         }
     }
 
@@ -154,6 +163,7 @@ impl SimulationKind {
             Self::Snow => Some(precipitation::Snow::rows()),
             Self::StarBurst => Some(star_burst::STAR_BURST_ROWS.to_vec()),
             Self::WaveWorld => Some(wave_world::WAVE_WORLD_ROWS.to_vec()),
+            Self::Caustics => Some(caustics::CAUSTICS_ROWS.to_vec()),
         }
     }
 }
@@ -424,6 +434,7 @@ pub enum Simulation {
     Snow(Snow),
     StarBurst(StarBurst),
     WaveWorld(WaveWorld),
+    Caustics(Caustics),
 }
 
 impl Simulation {
@@ -436,6 +447,7 @@ impl Simulation {
             SimulationKind::Snow => Self::Snow(Snow::default()),
             SimulationKind::StarBurst => Self::StarBurst(StarBurst::default()),
             SimulationKind::WaveWorld => Self::WaveWorld(WaveWorld::default()),
+            SimulationKind::Caustics => Self::Caustics(Caustics::default()),
         }
     }
 
@@ -447,6 +459,7 @@ impl Simulation {
             Self::Snow(_) => SimulationKind::Snow,
             Self::StarBurst(_) => SimulationKind::StarBurst,
             Self::WaveWorld(_) => SimulationKind::WaveWorld,
+            Self::Caustics(_) => SimulationKind::Caustics,
         }
     }
 
@@ -458,6 +471,7 @@ impl Simulation {
             Self::Snow(s) => s.validate(),
             Self::StarBurst(s) => s.validate(),
             Self::WaveWorld(w) => w.validate(),
+            Self::Caustics(c) => c.validate(),
         }
     }
 
@@ -470,6 +484,7 @@ impl Simulation {
             Self::Snow(s) => s.param(key),
             Self::StarBurst(s) => s.param(key),
             Self::WaveWorld(w) => w.param(key),
+            Self::Caustics(c) => c.param(key),
         }
     }
 
@@ -483,6 +498,7 @@ impl Simulation {
             Self::Snow(s) => s.set_param(key, value),
             Self::StarBurst(s) => s.set_param(key, value),
             Self::WaveWorld(w) => w.set_param(key, value),
+            Self::Caustics(c) => c.set_param(key, value),
         }
     }
 
@@ -505,6 +521,7 @@ impl Simulation {
             Self::Snow(s) => s.render(width, height, tick, limits, cancel),
             Self::StarBurst(s) => s.render(width, height, tick, limits, cancel),
             Self::WaveWorld(w) => w.render(width, height, tick, limits, cancel),
+            Self::Caustics(c) => c.render(width, height, tick, limits, cancel),
         }
     }
 }
