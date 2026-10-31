@@ -524,8 +524,19 @@ impl RingRecord {
     /// `counter_a` = delivered frame bytes (saturating), `counter_b` = receipt revision, correlation from the
     /// receipt. A progress receipt maps to `Progress`/`Tick`.
     pub const fn terminal(receipt: &Receipt, identity: RingIdentity, timing: RingTiming) -> Self {
-        let _ = (receipt, identity, timing);
-        unimplemented!()
+        let delivered = if receipt.delivered_bytes as u128 > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            receipt.delivered_bytes as u64
+        };
+        Self::new(
+            ring_of_outcome(receipt.outcome),
+            receipt.sequence,
+            [delivered, receipt.revision],
+            CorrelationRef::new(receipt.correlation_id),
+            identity,
+            timing,
+        )
     }
     /// Record of a refused delivery: code from the error, `sequence` = the attempted sequence (the emitter's
     /// acknowledged sequence + 1), both counters zero.
@@ -536,8 +547,7 @@ impl RingRecord {
         identity: RingIdentity,
         timing: RingTiming,
     ) -> Self {
-        let _ = (error, correlation, attempted_sequence, identity, timing);
-        unimplemented!()
+        Self::new(ring_of_delivery(error), attempted_sequence, [0, 0], correlation, identity, timing)
     }
     pub const fn code(&self) -> RingCode {
         self.code
