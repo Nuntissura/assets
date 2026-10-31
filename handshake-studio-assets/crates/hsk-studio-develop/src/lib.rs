@@ -38,6 +38,7 @@ mod levels;
 pub mod output;
 pub mod export;
 pub mod export_stage;
+pub mod settings;
 pub mod dng;
 pub mod dng_write;
 mod ljpeg_enc;
