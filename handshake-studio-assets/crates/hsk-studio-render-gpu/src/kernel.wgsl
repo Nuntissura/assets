@@ -358,9 +358,24 @@ fn exposure_apply(rgb: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(exposure_ch(rgb.x), exposure_ch(rgb.y), exposure_ch(rgb.z));
 }
 
+// pigment blend_math::lum evaluated exactly as pigment rounds it: each product rounded to binary32,
+// then ((p0 + p1) + p2). WGSL lets the backend compiler contract a product feeding an add into an
+// FMA (naga emits no NoContraction), and the drivers do: F-R46-1 (lane SMB-R46-FOLLOWUPS-1)
+// measured fma(0.11, b, fma(0.3, r, 0.59 g)) on Vulkan and fma(0.11, b, fma(0.59, g, 0.3 r)) on
+// DX12 (49 and 76 of the 1110 8-bit colours tying level 128 decided unlike pigment). Adding the
+// runtime zero `z` (ext.adj[0].y, written 0.0 for Threshold by ext.rs) to each product leaves no
+// product feeding a sum: a contracted fma(w, c, z) still rounds w c once, exactly as the plain
+// product, and the compiler cannot fold an add of a uniform it does not know.
+fn threshold_lum(c: vec3<f32>, z: f32) -> f32 {
+    let p0 = 0.3 * c.x + z;
+    let p1 = 0.59 * c.y + z;
+    let p2 = 0.11 * c.z + z;
+    return (p0 + p1) + p2;
+}
+
 fn threshold_apply(rgb: vec3<f32>) -> vec3<f32> {
     // pigment THRESHOLD_HALF_CODE: the luminance is compared as rounded to 8 bits.
-    return vec3<f32>(select(0.0, 1.0, hsk_lum(rgb) >= ext.adj[0].x - 0.5 / 255.0));
+    return vec3<f32>(select(0.0, 1.0, threshold_lum(rgb, ext.adj[0].y) >= ext.adj[0].x - 0.5 / 255.0));
 }
 
 fn posterize_apply(rgb: vec3<f32>) -> vec3<f32> {

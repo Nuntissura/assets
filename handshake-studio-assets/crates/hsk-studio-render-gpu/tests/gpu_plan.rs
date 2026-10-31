@@ -1986,29 +1986,6 @@ fn gpu_vs_reference_with(
     (i64, i64),
     hsk_studio_pigment::render_plan::RenderReceipt,
 ) {
-    let (err, at, receipt, _) = gpu_vs_reference_ties(backend, plan, ext, sources, floor, &|_, _| false);
-    (err, at, receipt)
-}
-
-/// `gpu_vs_reference_with` where `tie(x, y)` marks a threshold boundary pixel (lead disposition
-/// 2026-10-31, lane SMB-GPU-CLIENT-PORT-1): its CPU luminance is within 2^-20 of the threshold cut,
-/// where binary32 (GPU) and pigment's evaluation may legitimately land on opposite sides of an
-/// exact tie. Such a pixel must still be a threshold output (every colour channel exactly 0 or
-/// exactly 1, alpha equal to the reference), is excluded from the error and is counted; every
-/// other pixel is compared exactly as before. Returns the boundary count last.
-fn gpu_vs_reference_ties(
-    backend: &GpuBackend,
-    plan: &RenderPlan<NoVector>,
-    ext: Option<&PlanExtensions>,
-    sources: &Sources,
-    floor: Exactness,
-    tie: &dyn Fn(i64, i64) -> bool,
-) -> (
-    f32,
-    (i64, i64),
-    hsk_studio_pigment::render_plan::RenderReceipt,
-    usize,
-) {
     let extent = plan.target.extent;
     let mut sink = Image::new(extent);
     let req = request(plan.revision, floor);
@@ -2027,20 +2004,11 @@ fn gpu_vs_reference_ties(
     let reference = Reference { plan, sources, ext };
     let (mut max_err, mut worst) = (0.0_f32, (0, 0));
     let mut worst_values = ([0.0_f32; 4], [0.0_f32; 4]);
-    let mut ties = 0_usize;
     for y in 0..i64::from(extent.height) {
         for x in 0..i64::from(extent.width) {
             let mut want = [0.0_f32; 4];
             reference.group(plan.root.0 as usize, extent.x + x, extent.y + y, &mut want);
             let got = sink.px[(y * i64::from(extent.width) + x) as usize];
-            if tie(x, y) {
-                assert!(
-                    got[..3].iter().all(|&v| v == 0.0 || v == 1.0) && got[3] == want[3],
-                    "boundary pixel ({x},{y}) is not a threshold output: got {got:?} want {want:?}"
-                );
-                ties += 1;
-                continue;
-            }
             for c in 0..4 {
                 let e = (got[c] - want[c]).abs();
                 assert!(e.is_finite(), "non-finite output at ({x},{y})");
@@ -2058,19 +2026,7 @@ fn gpu_vs_reference_ties(
             worst_values.0, worst_values.1
         );
     }
-    (max_err, worst, receipt, ties)
-}
-
-/// Threshold boundary window around the cut (lead disposition 2026-10-31): 2^-20.
-const THRESHOLD_TIE_WINDOW: f64 = 1.0 / 1_048_576.0;
-/// The CPU cut of pigment's threshold for `level` (adjust_math `level - THRESHOLD_HALF_CODE`).
-fn threshold_cut(level: f32) -> f64 {
-    f64::from(level - 0.5 / 255.0)
-}
-/// Whether straight `rgb` is a threshold boundary pixel for `level`: pigment's luminance within
-/// 2^-20 of the cut.
-fn threshold_tie(rgb: [f32; 3], level: f32) -> bool {
-    (f64::from(hsk_studio_pigment::blend_math::lum(rgb)) - threshold_cut(level)).abs() <= THRESHOLD_TIE_WINDOW
+    (max_err, worst, receipt)
 }
 
 #[test]
@@ -3205,61 +3161,27 @@ struct AdjustCase {
     tolerance: f32,
 }
 
-/// Lead disposition 2026-10-31 (lane SMB-GPU-CLIENT-PORT-1), the threshold tie rule from both
-/// sides: a pixel whose luminance ties the cut exactly may be 0 or 1 (binary32 vs pigment), while
-/// pixels 1e-4 below and above the cut match pigment exactly on every backend (0 and 1).
+/// The threshold cut from both sides (lane SMB-R46-FOLLOWUPS-1, F-R46-1; replaces the 2^-20
+/// boundary exemption of 66c62129): the pixel whose pigment luminance ties the cut exactly
+/// (7/16, 10/16, 0) is white as in pigment, and greys 1e-4 below and above the cut are black and
+/// white, on every backend, compared exactly.
 #[test]
-fn threshold_tie_at_the_cut_is_either_side_and_off_tie_pixels_match() {
+fn threshold_tie_at_the_cut_and_off_tie_pixels_match_pigment() {
     let _guard = device_lock();
     let backend = shared_backend();
     let Some(info) = gpu_gate(backend, "threshold tie rule").unwrap_or_else(|e| panic!("{e}")) else {
         return;
     };
     let level = 128.0_f32 / 255.0;
-    let cut = threshold_cut(level) as f32;
+    let cut = level - 0.5 / 255.0;
     let (below, above) = (cut - 1.0e-4, cut + 1.0e-4);
-    // (7/16, 10/16, 0): luminance 0.5 = the cut in real arithmetic; greys: luminance = value
+    // (7/16, 10/16, 0): pigment luminance 0x3f000000 = the cut; greys: luminance = value
     let pixels = [[7.0 / 16.0, 10.0 / 16.0, 0.0], [below; 3], [above; 3]];
-    assert!(threshold_tie(pixels[0], level), "the tie pixel is a boundary pixel");
-    assert!(!threshold_tie(pixels[1], level) && !threshold_tie(pixels[2], level));
-    let extent = rect(0, 0, 3, 1);
-    let tile = OwnedTile::from_pixels(3, 1, |x, _| {
-        let [r, g, b] = pixels[x as usize];
-        [r, g, b, 1.0]
-    });
-    let sources = Sources::with_tiles(vec![(1, tile)]);
-    let plan = plan_of(
-        43,
-        extent,
-        vec![sources.tiles[0].1.input(1, extent), solid(extent, [0.0; 4])],
-        vec![
-            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
-            layer(1, StudioBlendMode::Normal, 1.0, 1.0),
-        ],
-    );
-    let ext = PlanExtensions::from_layers(vec![
-        LayerExtension::new(plan.root, 1).with_adjustment(AdjustmentOp::Threshold { level }),
-    ]);
-    // pigment's own answer off the tie: below -> black, above -> white
-    let reference = Reference { plan: &plan, sources: &sources, ext: Some(&ext) };
-    for (x, want) in [(1_i64, 0.0_f32), (2, 1.0)] {
-        let mut px = [0.0_f32; 4];
-        reference.group(plan.root.0 as usize, x, 0, &mut px);
-        assert_eq!(px, [want, want, want, 1.0], "pigment at x {x}");
-    }
-    let (err, at, _, ties) = gpu_vs_reference_ties(
-        backend,
-        &plan,
-        Some(&ext),
-        &sources,
-        Exactness::Approximate,
-        &|x, _| x == 0,
-    );
-    eprintln!(
-        "THRESHOLD_TIE backend {}: off-tie max_err {err:e} at {at:?}, {ties} boundary pixel(s) accepted as 0 or 1",
-        info.backend
-    );
-    assert_eq!((err, ties), (0.0, 1), "off-tie pixels match pigment exactly");
+    assert_eq!(hsk_studio_pigment::blend_math::lum(pixels[0]).to_bits(), cut.to_bits());
+    let (gpu, cpu) = threshold_row(backend, &pixels, level);
+    assert_eq!(cpu, [1.0, 0.0, 1.0], "pigment: tie white, below black, above white");
+    eprintln!("THRESHOLD_TIE backend {}: gpu {gpu:?} pigment {cpu:?}", info.backend);
+    assert_eq!(gpu, cpu, "tie and off-tie pixels match pigment exactly");
 }
 
 /// GPU and pigment Threshold outputs (red channel) of one opaque row of straight `pixels` at
@@ -3451,10 +3373,9 @@ fn ext_adjustment_layer_parity() {
             tolerance: 2.0e-6,
         },
         AdjustCase {
-            // level 128 / 255: the cut is level - 0.5 / 255 = 0.5 exactly, which lattice
-            // luminances tie (e.g. (7/16, 10/16, 0)); those boundary pixels may be 0 or 1 on either
-            // backend (lead disposition 2026-10-31: Vulkan 1.0 at (129, 0), DX12 0); every other
-            // lattice pixel is compared as before
+            // level 128 / 255: the cut is level - 0.5 / 255 = 0.5 exactly, which 7 lattice
+            // luminances tie (e.g. (7/16, 10/16, 0)); the kernel rounds the luminance as pigment
+            // does (no FMA contraction, F-R46-1), so every lattice pixel matches exactly
             name: "threshold 128",
             op: AdjustmentOp::Threshold {
                 level: 128.0 / 255.0,
@@ -3549,25 +3470,12 @@ fn ext_adjustment_layer_parity() {
         let ext = PlanExtensions::from_layers(vec![
             LayerExtension::new(plan.root, 1).with_adjustment(case.op.clone()),
         ]);
-        let tie = |x: i64, y: i64| match case.op {
-            AdjustmentOp::Threshold { level } => threshold_tie(
-                [(x / 17) as f32 / 16.0, (x % 17) as f32 / 16.0, y as f32 / 16.0],
-                level,
-            ),
-            _ => false,
-        };
-        let (err, at, receipt, ties) =
-            gpu_vs_reference_ties(backend, &plan, Some(&ext), &sources, Exactness::Approximate, &tie);
+        let (err, at, receipt) =
+            gpu_vs_reference_with(backend, &plan, Some(&ext), &sources, Exactness::Approximate);
         eprintln!(
             "EXT_ADJUST {:<46} max_err {err:e} at {at:?} (tolerance {:e})",
             case.name, case.tolerance
         );
-        if ties > 0 {
-            eprintln!(
-                "NOT_PROVEN: threshold tie at cut, {ties} boundary pixel(s), backend {}",
-                info.backend
-            );
-        }
         assert!(
             err <= case.tolerance,
             "{} parity {err:e} > {:e}",
