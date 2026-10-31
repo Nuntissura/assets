@@ -969,6 +969,10 @@ pub struct StudioRasterRecords {
     /// Shared placed-asset sources (lane SMB-PS-ADJUST-STYLES); empty is not encoded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub placed_sources: Vec<StudioPlacedSource>,
+    /// Persistent alpha and spot channels in Channels-panel order (lane SMB-FOLIO-CHANNEL-RECORD,
+    /// STU-RAS-022/031/144; rules in `channel.rs`); empty is not encoded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<super::StudioChannelRecord>,
 }
 impl StudioRasterRecords {
     /// An empty set for `document_id`.
@@ -979,7 +983,12 @@ impl StudioRasterRecords {
             global_light: None,
             layers: Vec::new(),
             placed_sources: Vec::new(),
+            channels: Vec::new(),
         }
+    }
+    /// The channel `channel_id`.
+    pub fn channel(&self, channel_id: &str) -> Option<&super::StudioChannelRecord> {
+        self.channels.iter().find(|c| c.channel_id == channel_id)
     }
     /// The placed source `source_id`.
     pub fn placed_source(&self, source_id: &str) -> Option<&StudioPlacedSource> {
@@ -1737,6 +1746,7 @@ pub fn validate_raster_records(
     let layers: BTreeMap<&str, &super::StudioLayer> =
         d.layers.iter().map(|l| (l.layer_id.as_str(), l)).collect();
     let placed_ids = placed_sources(r, &mut cx)?;
+    super::channel::validate_channel_list(&r.channels, &mut cx)?;
     cx.nodes(r.layers.len(), "layers")?;
     let mut seen = BTreeSet::new();
     for e in &r.layers {
