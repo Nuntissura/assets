@@ -3241,6 +3241,12 @@ fn threshold_tie_decides_as_pigment_at_every_cut_step() {
     else {
         return;
     };
+    threshold_tie_cut_steps(backend, &info);
+}
+
+/// The body of [`threshold_tie_decides_as_pigment_at_every_cut_step`] on one live backend (R47
+/// F-R47-3: also run on the DX12 row).
+fn threshold_tie_cut_steps(backend: &GpuBackend, info: &DeviceInfo) {
     let rgb = [7.0_f32 / 16.0, 10.0 / 16.0, 0.0];
     let lum = hsk_studio_pigment::blend_math::lum(rgb);
     let level = 128.0_f32 / 255.0;
@@ -3290,6 +3296,12 @@ fn threshold_8bit_ties_at_level_128_match_pigment() {
     else {
         return;
     };
+    threshold_8bit_ties(backend, &info);
+}
+
+/// The body of [`threshold_8bit_ties_at_level_128_match_pigment`] on one live backend (R47
+/// F-R47-3: also run on the DX12 row).
+fn threshold_8bit_ties(backend: &GpuBackend, info: &DeviceInfo) {
     let mut pixels = Vec::new();
     for r in 0..=255_i32 {
         for g in 0..=255_i32 {
@@ -3309,6 +3321,57 @@ fn threshold_8bit_ties_at_level_128_match_pigment() {
         cpu.iter().filter(|&&v| v == 1.0).count()
     );
     assert_eq!(differ, 0, "8-bit tie colours decided unlike pigment");
+}
+
+/// R47 F-R47-3 (lane SMB-R47-FOLLOWUPS-1): the DX12 side of the F-R46-1 threshold fix. The transient
+/// platform order is Vulkan first on Windows, so the rows above prove Vulkan; these run the same two
+/// proofs on `TransientAdapter::dx12_for_tests` (test-faults), as the FXC rows of
+/// `tests/gpu_pipeline_fault.rs` do. Windows only; without a DX12 adapter the row prints a
+/// `NOT_PROVEN:` line (the round counts it); an adapter whose device or pipeline failed FAILS.
+#[cfg(feature = "test-faults")]
+fn dx12_threshold_backend(what: &str) -> Option<(GpuBackend, DeviceInfo)> {
+    use hsk_studio_render_gpu::{TransientAdapter, TransientOptions};
+    if !cfg!(windows) {
+        eprintln!("DX12_ROW: {what}: not Windows, no DX12 row");
+        return None;
+    }
+    let backend = GpuBackend::with_grant(
+        Arc::new(TransientAdapter::dx12_for_tests(TransientOptions::default())),
+        AdmissionRequest::asset_local(),
+        DeviceOptions { chunk_side: 16, ..DeviceOptions::default() },
+    );
+    if let Some(info) = backend.device_info() {
+        assert_eq!(info.backend, "dx12", "{what}: the DX12 row runs on DX12");
+        return Some((backend, info));
+    }
+    if let Some(failure) = backend.failure() {
+        panic!("{what}: DX12 adapter present but the backend failed: {failure} ({failure:?})");
+    }
+    match backend.unavailable_reason() {
+        Some(Reason::NoAdapter) => {
+            eprintln!("NOT_PROVEN: no DX12 adapter; {what} (dx12 row) not run");
+            None
+        }
+        other => panic!("{what}: DX12 row has no live device (unavailable {other:?}, lost {})", backend.is_lost()),
+    }
+}
+
+#[cfg(feature = "test-faults")]
+#[test]
+fn threshold_tie_decides_as_pigment_at_every_cut_step_on_dx12() {
+    let _guard = device_lock();
+    if let Some((backend, info)) = dx12_threshold_backend("threshold tie cut steps") {
+        threshold_tie_cut_steps(&backend, &info);
+    }
+}
+
+#[cfg(feature = "test-faults")]
+#[test]
+fn threshold_8bit_ties_at_level_128_match_pigment_on_dx12() {
+    let _guard = device_lock();
+    if let Some((backend, info)) = dx12_threshold_backend("threshold 8-bit ties") {
+        threshold_8bit_ties(&backend, &info);
+    }
 }
 
 #[test]
