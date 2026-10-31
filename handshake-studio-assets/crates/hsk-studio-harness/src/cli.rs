@@ -773,6 +773,17 @@ struct SequenceExport {
 /// `media_too_large` (stage `media` or `audio`, with `total_limit`).
 pub const MAX_EXPORT_INPUT_BYTES: u64 = 2_147_483_648;
 
+/// Most `--audio` files one `export-sequence` takes (R46 F-R46-7, lane SMB-R46-FOLLOWUPS-1): checked before any
+/// file is read. Over it: `audio_too_many` (stage `audio`, with `limit`).
+pub const MAX_EXPORT_AUDIO_FILES: usize = 16;
+
+/// Total planar f32 bytes (frames x channels x 4) all `--audio` decodes of one `export-sequence` may hold (R46
+/// F-R46-7): one stereo file at the viewer import's own frame bound (`ImportLimits::max_frames`, 3 h at 48 kHz),
+/// 518 400 000 x 2 x 4. Every decode gets the remainder as reel's frame limit (in mono frames, so a file whose
+/// frame count alone does not fit is refused before its PCM buffer exists) and is charged frames x channels x 4
+/// before it is kept. Over it: `audio_too_large` (stage `audio`, with `decoded_limit`).
+pub const MAX_EXPORT_AUDIO_DECODED_BYTES: u64 = 4_147_200_000;
+
 /// The `--audio` files of an `export-sequence` as the export's sound port (R44 F-R44-2): each file decoded by
 /// reel's audio decoder (`hsk_studio_reel::decode_audio_file`, as the viewer's audio import) and keyed as the clip
 /// source `sha256:<hex>` of its bytes, exactly as `Viewer::bind_program_media` keys video. Port adapter only: no
@@ -798,22 +809,42 @@ type AudioRefusal = (String, Value);
 
 /// Decodes the `--audio` files (bytes already read) into one port at their shared rate; `None` without files.
 /// Refusals (stage `audio`): `audio_decode` (reel's message), `audio_empty`, `audio_rate_mismatch` (files at
-/// different rates: this path has no resampler).
+/// different rates: this path has no resampler), `audio_too_large` (the decoded total over
+/// [`MAX_EXPORT_AUDIO_DECODED_BYTES`]).
 #[cfg(feature = "media")]
 fn cli_audio(files: Vec<(PathBuf, Vec<u8>)>, cancel: &CancellationToken) -> Result<Option<(CliAudio, u32)>, AudioRefusal> {
+    cli_audio_within(files, MAX_EXPORT_AUDIO_DECODED_BYTES, cancel)
+}
+
+/// [`cli_audio`] with the decoded-bytes budget `budget` (frames x channels x 4 over all files, R46 F-R46-7).
+#[cfg(feature = "media")]
+fn cli_audio_within(files: Vec<(PathBuf, Vec<u8>)>, budget: u64, cancel: &CancellationToken) -> Result<Option<(CliAudio, u32)>, AudioRefusal> {
     let limits = crate::view::audio_import::ImportLimits::default();
     let decode_fail = |name: &str, message: String| ("audio_decode".to_string(), json!({"stage":"audio","path":name,"message":message}));
+    let too_large = |name: &str| ("audio_too_large".to_string(), json!({"stage":"audio","path":name,"decoded_limit":budget}));
     let mut port = Vec::with_capacity(files.len());
     let mut rate: Option<u32> = None;
+    let mut charged = 0u64;
     for (path, bytes) in files {
         let name = path.to_string_lossy().into_owned();
         let digest = hsk_studio_reel::full_digest(&mut std::io::Cursor::new(&bytes[..]), 1 << 20, cancel).map_err(|e| decode_fail(&name, e.to_string()))?;
-        let decoded = hsk_studio_reel::decode_audio_file(&mut std::io::Cursor::new(&bytes[..]), &hsk_studio_reel::Limits::default(), limits.max_frames, cancel)
-            .map_err(|e| decode_fail(&name, e.to_string()))?;
+        // The remainder in mono frames (every frame holds at least one 4-byte sample) is reel's frame limit.
+        let remaining = budget.saturating_sub(charged);
+        let frame_limit = limits.max_frames.min(remaining.checked_div(4).unwrap_or(0));
+        let decoded = hsk_studio_reel::decode_audio_file(&mut std::io::Cursor::new(&bytes[..]), &hsk_studio_reel::Limits::default(), frame_limit, cancel)
+            .map_err(|e| match e {
+                hsk_studio_reel::ReelError::LimitExceeded { what: "audio-frame-budget" } if frame_limit < limits.max_frames => too_large(&name),
+                e => decode_fail(&name, e.to_string()),
+            })?;
         let frames = u64::try_from(decoded.frames()).map_err(|_| decode_fail(&name, "frame count".into()))?;
         if frames == 0 || decoded.channels == 0 {
             return Err(("audio_empty".into(), json!({"stage":"audio","path":name})));
         }
+        let cost = frames.checked_mul(u64::from(decoded.channels)).and_then(|n| n.checked_mul(4)).ok_or_else(|| too_large(&name))?;
+        if cost > remaining {
+            return Err(too_large(&name));
+        }
+        charged = charged.saturating_add(cost);
         match rate {
             Some(r) if r != decoded.sample_rate => {
                 return Err(("audio_rate_mismatch".into(), json!({"stage":"audio","path":name,"rate":decoded.sample_rate,"expected":r})));
@@ -838,8 +869,10 @@ fn cli_audio(files: Vec<(PathBuf, Vec<u8>)>, cancel: &CancellationToken) -> Resu
 /// Export Media runs the same method): same refusals, same result JSON (`export.receipt` is reel's receipt). Exit 0
 /// only when the receipt's outcome is `complete`. A relative OUT is relative to the current directory. Before any
 /// file is read (R44 F-R44-15): an `--out` past the sequence end (its duration rounded up to a whole frame) is
-/// `export_range` (stage `range`), the summed `--media` and `--audio` sizes are checked against
-/// [`MAX_EXPORT_INPUT_BYTES`], and an OUT that cannot be made absolute is `output_unresolved` (stage `output`).
+/// `export_range` (stage `range`), more than [`MAX_EXPORT_AUDIO_FILES`] `--audio` files are `audio_too_many`, the
+/// summed `--media` and `--audio` sizes are checked against [`MAX_EXPORT_INPUT_BYTES`] (an audio file over the
+/// viewer import's `max_file_bytes`, 1 GiB, is `media_too_large` with `limit`), and an OUT that cannot be made
+/// absolute is `output_unresolved` (stage `output`); the decodes share [`MAX_EXPORT_AUDIO_DECODED_BYTES`].
 /// Tests: `tests/cli_export_sequence.rs`.
 #[cfg(feature = "media")]
 fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
@@ -863,17 +896,23 @@ fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
         Ok(p) => p,
         Err(e) => return fail("output_unresolved", json!({"stage":"output","path":a.output.to_string_lossy(),"message":e.to_string()})),
     };
-    // Sizes first, every file, before reading any (the total bound and reel's per-item limit).
+    if a.audio.len() > MAX_EXPORT_AUDIO_FILES {
+        return fail("audio_too_many", json!({"stage":"audio","count":a.audio.len(),"limit":MAX_EXPORT_AUDIO_FILES}));
+    }
+    // Sizes first, every file, before reading any (the total bound and the per-item limit: reel's for media, the
+    // viewer audio import's `max_file_bytes` for audio, R46 F-R46-7).
+    let audio_file_bytes = crate::view::audio_import::ImportLimits::default().max_file_bytes;
     let mut total = 0u64;
     for (path, stage) in a.media.iter().map(|p| (p, "media")).chain(a.audio.iter().map(|p| (p, "audio"))) {
+        let item_limit = if stage == "audio" { audio_file_bytes } else { crate::view::media::MAX_MEDIA_BYTES as u64 };
         match std::fs::metadata(path) {
-            Ok(m) if m.len() <= crate::view::media::MAX_MEDIA_BYTES as u64 => {
+            Ok(m) if m.len() <= item_limit => {
                 total = total.saturating_add(m.len());
                 if total > MAX_EXPORT_INPUT_BYTES {
                     return fail("media_too_large", json!({"stage":stage,"path":path.to_string_lossy(),"total_limit":MAX_EXPORT_INPUT_BYTES}));
                 }
             }
-            Ok(_) => return fail("media_too_large", json!({"stage":stage,"path":path.to_string_lossy()})),
+            Ok(_) => return fail("media_too_large", json!({"stage":stage,"path":path.to_string_lossy(),"limit":item_limit})),
             Err(_) => return fail("media_unreadable", json!({"stage":stage,"path":path.to_string_lossy()})),
         }
     }
@@ -1040,5 +1079,61 @@ fn edit_flow(run: &mut crate::Run<'_>, parsed: &Parsed) {
     };
     if reopened {
         run.verify_reopened();
+    }
+}
+
+/// R46 F-R46-7 (lane SMB-R46-FOLLOWUPS-1): the `--audio` decodes of one export share one decoded budget.
+#[cfg(all(test, feature = "media"))]
+mod audio_budget_tests {
+    use super::*;
+
+    /// 16-bit PCM WAV at 48 kHz with `channels` channels and `frames` frames of a constant level.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn wav(channels: u16, frames: u32) -> Vec<u8> {
+        let align = u32::from(channels) * 2;
+        let data_len = frames * align;
+        let mut v = b"RIFF".to_vec();
+        v.extend((36 + data_len).to_le_bytes());
+        v.extend_from_slice(b"WAVEfmt ");
+        v.extend(16u32.to_le_bytes());
+        v.extend(1u16.to_le_bytes());
+        v.extend(channels.to_le_bytes());
+        v.extend(48_000u32.to_le_bytes());
+        v.extend((48_000 * align).to_le_bytes());
+        v.extend((channels * 2).to_le_bytes());
+        v.extend(16u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend(data_len.to_le_bytes());
+        v.extend(std::iter::repeat_n(4096i16.to_le_bytes(), (frames * u32::from(channels)) as usize).flatten());
+        v
+    }
+    fn file(name: &str, channels: u16, frames: u32) -> (PathBuf, Vec<u8>) {
+        (PathBuf::from(name), wav(channels, frames))
+    }
+    fn refusal(files: Vec<(PathBuf, Vec<u8>)>, budget: u64) -> AudioRefusal {
+        match cli_audio_within(files, budget, &CancellationToken::default()) {
+            Ok(_) => panic!("not refused"),
+            Err(r) => r,
+        }
+    }
+
+    /// Stereo 1000 frames cost 8000 bytes. Within 12 000: one file decodes, a second is `audio_too_large` (the
+    /// charge after the first leaves 4000); a file whose frame count alone exceeds the remainder in mono frames is
+    /// refused by reel's frame limit before its buffer exists, mapped to the same refusal; exactly the budget fits.
+    #[test]
+    fn audio_decodes_share_one_decoded_budget() {
+        let cancel = CancellationToken::default();
+        let one = cli_audio_within(vec![file("a.wav", 2, 1000)], 12_000, &cancel).expect("fits").expect("a port");
+        assert_eq!(one.1, 48_000);
+        let r = refusal(vec![file("a.wav", 2, 1000), file("b.wav", 2, 1000)], 12_000);
+        assert_eq!((r.0.as_str(), r.1["path"].as_str(), r.1["decoded_limit"].as_u64()), ("audio_too_large", Some("b.wav"), Some(12_000)));
+        // 4000 left = 1000 mono frames: a 1001-frame mono file is over reel's frame limit
+        let r = refusal(vec![file("a.wav", 2, 500), file("c.wav", 1, 1001)], 8000);
+        assert_eq!((r.0.as_str(), r.1["path"].as_str()), ("audio_too_large", Some("c.wav")));
+        // 600 stereo frames pass the frame limit (1000) but cost 4800 > 4000
+        let r = refusal(vec![file("a.wav", 2, 500), file("d.wav", 2, 600)], 8000);
+        assert_eq!((r.0.as_str(), r.1["path"].as_str()), ("audio_too_large", Some("d.wav")));
+        assert!(cli_audio_within(vec![file("a.wav", 2, 500), file("e.wav", 2, 500)], 8000, &cancel).is_ok(), "exactly the budget");
+        assert_eq!(Some(MAX_EXPORT_AUDIO_DECODED_BYTES), crate::view::audio_import::ImportLimits::default().max_frames.checked_mul(8), "stereo f32 at the import frame bound");
     }
 }

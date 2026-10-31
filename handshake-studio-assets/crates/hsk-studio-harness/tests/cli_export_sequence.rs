@@ -361,15 +361,32 @@ fn export_sequence_cli_refuses_audio_range_output_and_total_size_typed() {
     let (exit, json) = args(&["--output", "", "--media", &media]);
     assert_eq!((exit, json["error"].as_str()), (1, Some("output_unresolved")), "{json}");
     assert_eq!(json["detail"]["stage"], "output", "{json}");
-    // Two files of 1 GiB + 1 byte each (each under the 2 GiB item limit, together over the total): set_len only,
-    // nothing is written or read.
+    // A 1.5 GiB --media and a 640 MiB --audio file (each under its item limit, together over the total): set_len
+    // only, nothing is written or read. (R46 F-R46-7, lane SMB-R46-FOLLOWUPS-1: the audio item limit is now the
+    // viewer import's max_file_bytes, 1 GiB, so the audio half shrank from 1 GiB + 1 byte.)
     let (big1, big2) = (s.0.join("big1.wav"), s.0.join("big2.wav"));
-    for p in [&big1, &big2] {
-        std::fs::File::create(p).unwrap().set_len((1 << 30) + 1).unwrap();
-    }
+    std::fs::File::create(&big1).unwrap().set_len((1 << 30) + (1 << 29)).unwrap();
+    std::fs::File::create(&big2).unwrap().set_len((1 << 29) + (1 << 27)).unwrap();
     let (exit, json) = args(&["--output", &out, "--media", big1.to_str().unwrap(), "--audio", big2.to_str().unwrap()]);
     assert_eq!((exit, json["error"].as_str()), (1, Some("media_too_large")), "{json}");
     assert_eq!(json["detail"]["total_limit"].as_u64(), Some(hsk_studio_harness::cli::MAX_EXPORT_INPUT_BYTES), "{json}");
     assert_eq!(json["detail"]["stage"], "audio", "{json}");
+    assert!(!Path::new(&out).exists(), "no file");
+    // R46 F-R46-7: one --audio file of 1 GiB + 1 byte is over the audio item limit (the viewer import's
+    // max_file_bytes, not reel's 2 GiB media limit), from its size only.
+    std::fs::File::create(&big2).unwrap().set_len((1 << 30) + 1).unwrap();
+    let (exit, json) = args(&["--output", &out, "--media", &media, "--audio", big2.to_str().unwrap()]);
+    assert_eq!((exit, json["error"].as_str()), (1, Some("media_too_large")), "{json}");
+    assert_eq!((json["detail"]["stage"].as_str(), json["detail"]["limit"].as_u64()), (Some("audio"), Some(1 << 30)), "{json}");
+    // R46 F-R46-7: more than MAX_EXPORT_AUDIO_FILES --audio files are refused before any file is read (the
+    // paths do not exist).
+    let ghost = s.path("ghost.wav");
+    let mut many = vec!["--output", out.as_str(), "--media", media.as_str()];
+    for _ in 0..=hsk_studio_harness::cli::MAX_EXPORT_AUDIO_FILES {
+        many.extend_from_slice(&["--audio", ghost.as_str()]);
+    }
+    let (exit, json) = args(&many);
+    assert_eq!((exit, json["error"].as_str()), (1, Some("audio_too_many")), "{json}");
+    assert_eq!(json["detail"]["limit"].as_u64(), Some(hsk_studio_harness::cli::MAX_EXPORT_AUDIO_FILES as u64), "{json}");
     assert!(!Path::new(&out).exists(), "no file");
 }
