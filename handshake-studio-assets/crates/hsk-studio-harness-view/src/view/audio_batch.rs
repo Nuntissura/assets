@@ -12,12 +12,20 @@
 //! temp file, re-decoded by reel (frame count, channel count, FLAC MD5 must match) and renamed over the
 //! output only when the whole item succeeded; on failure or cancel the temp file is removed and the
 //! output path is untouched.
+//!
+//! Admission (lane SMB-JOB-ADMISSION-1, RF-08): every item is admitted through the session job
+//! lifecycle before it starts (module [`super::job_admission`]): a canceled item refuses `canceled`
+//! (receipt `Canceled`), an overloaded or stale one gets a `Failed` receipt with that code, and an
+//! admitted item settles from its own receipt (`completed`, `canceled`, `failed`) exactly once;
+//! [`AudioBatchReceipt::job`] records the settlement or refusal. [`AudioBatchQueue::new`] admits
+//! through an asset-local admission; [`AudioBatchQueue::with_jobs`] binds the viewer's.
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::audio_import::{
     BlockSource, IMPORT_CLIP_ID, ImportLimits, ImportOptions, MixExport, MixFormat, PlanarSource,
     export_from, import_audio_with, read_audio_file, write_atomically,
 };
+use super::job_admission::{JobAdmission, refusal_json, settlement_json};
 use super::monitor::MonitorFail;
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_folio as folio;
@@ -242,6 +250,9 @@ pub struct AudioBatchReceipt {
     pub verified: bool,
     /// The chain ran automated (keyframes applied through a score session).
     pub automated: bool,
+    /// The item's job settlement (`{outcome, ticket, bound_revision, ...}`) or admission refusal
+    /// (`{refused, ...}`), module [`super::job_admission`].
+    pub job: Value,
 }
 
 impl AudioBatchReceipt {
@@ -267,6 +278,7 @@ impl AudioBatchReceipt {
             "output_sha256": self.output_sha256,
             "verified": self.verified,
             "automated": self.automated,
+            "job": self.job,
         })
     }
 }
@@ -283,19 +295,29 @@ pub struct AudioBatchQueue {
     items: Vec<Item>,
     next_id: u64,
     receipts: Vec<AudioBatchReceipt>,
+    admission: JobAdmission,
 }
 
 const BLOCK: usize = 4096;
 
 impl AudioBatchQueue {
     /// `actor` is named on every score request (score refuses a request without one).
+    /// Items admit through an asset-local admission (module docs) until [`Self::with_jobs`].
     pub fn new(actor: ActorContext) -> Self {
         Self {
+            admission: JobAdmission::asset_local(actor.clone(), None),
             actor,
             items: Vec::new(),
             next_id: 0,
             receipts: Vec::new(),
         }
+    }
+
+    /// Items admit through `admission` (the viewer's port, lifecycle and attribution).
+    #[must_use]
+    pub fn with_jobs(mut self, admission: JobAdmission) -> Self {
+        self.admission = admission;
+        self
     }
 
     pub fn submit(&mut self, job: AudioBatchJob) -> AudioBatchHandle {
@@ -339,16 +361,41 @@ impl AudioBatchQueue {
                 output_sha256: None,
                 verified: false,
                 automated: false,
+                job: Value::Null,
             };
-            let result = run_item(&self.actor, &job, &item.handle, &mut receipt);
-            receipt.outcome = match result {
-                Ok(()) => BatchOutcome::Complete,
-                Err(e) if e.code == "canceled" || item.handle.cancel.check().is_err() => BatchOutcome::Canceled,
-                Err(e) => BatchOutcome::Failed {
-                    code: e.code,
-                    detail: e.detail,
-                },
+            // Admitted before the item starts; the item's own token is the admission's cancel.
+            let revision = self.admission.revision();
+            let bytes = std::fs::metadata(&job.input).map_or(0, |m| m.len());
+            let request = self.admission.request(hsk_studio_session::Action::Export, bytes, revision, item.handle.id);
+            let admitted = match self.admission.admit(request, revision, &item.handle.cancel) {
+                Ok(admitted) => Some(admitted),
+                Err(refusal) => {
+                    receipt.job = refusal_json(refusal);
+                    receipt.outcome = match refusal {
+                        hsk_studio_session::JobAdmissionRefusal::Canceled => BatchOutcome::Canceled,
+                        other => BatchOutcome::Failed { code: other.code(), detail: receipt.job.to_string() },
+                    };
+                    None
+                }
             };
+            if let Some(admitted) = admitted {
+                let result = run_item(&self.actor, &job, &item.handle, &mut receipt);
+                receipt.outcome = match result {
+                    Ok(()) => BatchOutcome::Complete,
+                    Err(e) if e.code == "canceled" || item.handle.cancel.check().is_err() => BatchOutcome::Canceled,
+                    Err(e) => BatchOutcome::Failed {
+                        code: e.code,
+                        detail: e.detail,
+                    },
+                };
+                // Settled from the item's own receipt, exactly once.
+                let settled = match &receipt.outcome {
+                    BatchOutcome::Complete => admitted.complete(revision),
+                    BatchOutcome::Canceled => admitted.settle(hsk_studio_session::JobOutcome::Canceled),
+                    BatchOutcome::Failed { code, .. } => admitted.settle(hsk_studio_session::JobOutcome::Failed(*code)),
+                };
+                receipt.job = settlement_json(&settled);
+            }
             if receipt.outcome != BatchOutcome::Complete {
                 receipt.export = None;
                 receipt.output_sha256 = None;

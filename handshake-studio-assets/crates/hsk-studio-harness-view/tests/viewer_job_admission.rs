@@ -173,6 +173,93 @@ fn preview_frame_older_than_the_head_is_superseded_and_not_shown() {
     assert!(log.contains(&format!("frame of revision {} superseded by revision {moved}", old.revision)), "{log}");
 }
 
+#[cfg(feature = "audio-batch")]
+mod audio_batch {
+    use super::*;
+    use hsk_studio_accord::{ActorContext, DomainId};
+    use hsk_studio_harness_view::view::audio_batch::{AudioBatchJob, AudioBatchQueue, BatchOutcome};
+    use hsk_studio_harness_view::view::audio_import::{ImportLimits, ImportOptions, MixFormat};
+    use hsk_studio_harness_view::view::job_admission::JobAdmission;
+    use hsk_studio_session::JobLifecycle;
+
+    fn actor() -> ActorContext {
+        ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap()
+    }
+
+    /// Float32 stereo WAV of `frames` frames at 48 kHz.
+    fn wav(frames: usize) -> Vec<u8> {
+        let mut data = Vec::new();
+        for i in 0..frames {
+            let v = ((i as f32) * 0.01).sin() * 0.5;
+            data.extend_from_slice(&v.to_le_bytes());
+            data.extend_from_slice(&(-v).to_le_bytes());
+        }
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&3u16.to_le_bytes());
+        fmt.extend_from_slice(&2u16.to_le_bytes());
+        fmt.extend_from_slice(&48_000u32.to_le_bytes());
+        fmt.extend_from_slice(&(48_000u32 * 8).to_le_bytes());
+        fmt.extend_from_slice(&8u16.to_le_bytes());
+        fmt.extend_from_slice(&32u16.to_le_bytes());
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&((4 + 8 + fmt.len() + 8 + data.len()) as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(b"fmt ");
+        out.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+        out.extend_from_slice(&fmt);
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&data);
+        out
+    }
+
+    fn item(input: PathBuf, output: PathBuf) -> AudioBatchJob {
+        AudioBatchJob {
+            artifact: output.file_name().unwrap().to_string_lossy().into_owned(),
+            input,
+            output,
+            overwrite: false,
+            options: ImportOptions::default(),
+            limits: ImportLimits::default(),
+            chain: Vec::new(),
+            keyframes: Vec::new(),
+            format: MixFormat::Flac { bits: 16 },
+        }
+    }
+
+    /// Each AudioBatchQueue item is admitted before it starts and settled once from its own
+    /// receipt: a complete item `completed`, a failing one `failed` (its code), a canceled-before-
+    /// start item refused `canceled` without asking the port; the port saw two admits and exactly
+    /// two releases of the same tickets.
+    #[test]
+    fn audio_batch_items_settle_once_per_receipt() {
+        let scratch = Scratch::new("batch");
+        let input = scratch.0.join("tone.wav");
+        std::fs::write(&input, wav(4800)).unwrap();
+        let port = Arc::new(Recording::default());
+        let lifecycle = JobLifecycle::default();
+        let admission = JobAdmission::new(port.clone(), lifecycle.clone(), actor(), Some(DomainId::parse(DOC).unwrap())).with_revision(7);
+        let mut queue = AudioBatchQueue::new(actor()).with_jobs(admission);
+        let _ok = queue.submit(item(input, scratch.0.join("tone.flac")));
+        let _missing = queue.submit(item(scratch.0.join("missing.wav"), scratch.0.join("missing.flac")));
+        let canceled = queue.submit(item(scratch.0.join("never.wav"), scratch.0.join("never.flac")));
+        canceled.cancel();
+        let receipts = queue.run();
+        assert_eq!(receipts.len(), 3);
+        assert_eq!(receipts[0].outcome, BatchOutcome::Complete, "{}", receipts[0].to_json());
+        assert_eq!((receipts[0].job["outcome"].as_str(), receipts[0].job["ticket"].as_u64(), receipts[0].job["bound_revision"].as_u64()), (Some("completed"), Some(1), Some(7)), "{}", receipts[0].job);
+        assert!(matches!(receipts[1].outcome, BatchOutcome::Failed { .. }), "{}", receipts[1].to_json());
+        assert_eq!((receipts[1].job["outcome"].as_str(), receipts[1].job["ticket"].as_u64()), (Some("failed"), Some(2)), "{}", receipts[1].job);
+        assert_eq!(receipts[2].outcome, BatchOutcome::Canceled);
+        assert_eq!(receipts[2].job["refused"], "canceled", "{}", receipts[2].job);
+        assert_eq!((port.admitted(), port.released()), (vec![1, 2], vec![1, 2]), "two admits, each released exactly once");
+        let c = lifecycle.counts();
+        assert_eq!((c.admitted, c.completed, c.failed, c.refused_canceled, c.released, c.in_flight), (2, 1, 1, 1, 2, 0), "{c:?}");
+        assert!(scratch.0.join("tone.flac").is_file());
+    }
+}
+
 #[cfg(feature = "media")]
 mod export_media {
     use super::*;
