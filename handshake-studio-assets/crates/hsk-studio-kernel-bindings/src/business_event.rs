@@ -261,6 +261,9 @@ pub enum BusinessEventError {
     InvalidDocument,
     InvalidActor,
     InvalidClientSession,
+    /// A committed command without a command id (lead decision 2026-10-31: every mutating `Run`
+    /// method has a RUN_COMMANDS row, so a missing id is refused, never emitted null or invented).
+    MissingCommandId,
     InvalidCommandId,
     /// Not 64 lowercase hex digits (a SHA-256).
     InvalidDigest,
@@ -293,6 +296,7 @@ impl BusinessEventError {
             Self::InvalidDocument => "invalid_document",
             Self::InvalidActor => "invalid_actor",
             Self::InvalidClientSession => "invalid_client_session",
+            Self::MissingCommandId => "missing_command_id",
             Self::InvalidCommandId => "invalid_command_id",
             Self::InvalidDigest => "invalid_digest",
             Self::InvalidArtifact => "invalid_artifact",
@@ -397,15 +401,18 @@ fn artifact_refs<'s>(refs: impl ExactSizeIterator<Item = &'s str>) -> Result<Vec
 
 impl StudioBusinessEvent {
     /// Builds an event for `document` at `sequence` and the exact `revision` it describes. Every
-    /// bound is checked before anything is copied.
+    /// bound is checked before anything is copied. The command id is required: `None` is
+    /// `missing_command_id` (a business event records a committed command, and every committed
+    /// command has a RUN_COMMANDS id).
     pub fn new(
         variant: StudioEventVariant,
         document: &str,
         attribution: &EventAttribution<'_>,
         sequence: u64,
         revision: u64,
-        command_id: &str,
+        command_id: Option<&str>,
     ) -> Result<Self, BusinessEventError> {
+        let command_id = command_id.ok_or(BusinessEventError::MissingCommandId)?;
         if !valid_command_id(command_id) {
             return Err(BusinessEventError::InvalidCommandId);
         }
@@ -552,7 +559,7 @@ impl EventWire {
             &attribution,
             self.sequence,
             self.revision,
-            &self.command_id,
+            Some(&self.command_id),
         )?
         .with_digests(self.input_digest.as_deref(), self.output_digest.as_deref())?;
         let event = StudioBusinessEvent {

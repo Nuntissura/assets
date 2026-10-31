@@ -46,7 +46,7 @@ fn actor() -> ActorContext {
 fn event(variant: StudioEventVariant, sequence: u64) -> StudioBusinessEvent {
     let actor = actor();
     let attribution = EventAttribution { actor: &actor, client_session: "client-1", correlation: 1001, causation: Some(1000) };
-    StudioBusinessEvent::new(variant, DOC, &attribution, sequence, 4, "studio.layer.rename").unwrap()
+    StudioBusinessEvent::new(variant, DOC, &attribution, sequence, 4, Some("layer.rename")).unwrap()
 }
 
 fn text(event: &StudioBusinessEvent) -> String {
@@ -146,7 +146,7 @@ fn envelopes_are_strict_and_refuse_typed() {
     let attribution_actor = actor();
     let attribution = EventAttribution { actor: &attribution_actor, client_session: "c", correlation: 1, causation: None };
     assert_eq!(
-        StudioBusinessEvent::new(StudioEventVariant::LayerMutated, LAYER, &attribution, 0, 1, "x").unwrap_err().code(),
+        StudioBusinessEvent::new(StudioEventVariant::LayerMutated, LAYER, &attribution, 0, 1, Some("x")).unwrap_err().code(),
         "invalid_document"
     );
     // The event id is derived, never free: another sequence's id is refused.
@@ -165,7 +165,7 @@ fn envelopes_are_strict_and_refuse_typed() {
     let refs: Vec<String> =
         (0..MAX_ARTIFACT_REFS).map(|i| format!("SLYR-019abcde-0000-7000-8000-{i:012x}")).collect();
     let refs: Vec<&str> = refs.iter().map(String::as_str).collect();
-    let largest = StudioBusinessEvent::new(StudioEventVariant::EditProposalRecorded, DOC, &big, u64::MAX, u64::MAX, &"a".repeat(MAX_COMMAND_ID_BYTES))
+    let largest = StudioBusinessEvent::new(StudioEventVariant::EditProposalRecorded, DOC, &big, u64::MAX, u64::MAX, Some(&"a".repeat(MAX_COMMAND_ID_BYTES)))
         .unwrap()
         .with_digests(Some(DIGEST), Some(DIGEST))
         .unwrap()
@@ -200,7 +200,7 @@ fn envelopes_carry_ids_and_digests_only() {
     let attribution = EventAttribution { actor: &actor, client_session: "client-1", correlation: 1, causation: None };
     for command in [DECOY, "studio/../etc", "work/poster.psd", "Studio.Rename"] {
         assert_eq!(
-            StudioBusinessEvent::new(StudioEventVariant::TextEdited, DOC, &attribution, 1, 2, command).unwrap_err().code(),
+            StudioBusinessEvent::new(StudioEventVariant::TextEdited, DOC, &attribution, 1, 2, Some(command)).unwrap_err().code(),
             "invalid_command_id"
         );
     }
@@ -208,10 +208,18 @@ fn envelopes_carry_ids_and_digests_only() {
     assert_eq!(e.clone().with_digests(None, Some(DECOY)).unwrap_err().code(), "invalid_digest");
     let control = EventAttribution { actor: &actor, client_session: "client\n1", correlation: 1, causation: None };
     assert_eq!(
-        StudioBusinessEvent::new(StudioEventVariant::TextEdited, DOC, &control, 1, 2, "x").unwrap_err().code(),
+        StudioBusinessEvent::new(StudioEventVariant::TextEdited, DOC, &control, 1, 2, Some("x")).unwrap_err().code(),
         "invalid_client_session"
     );
     assert!(!text(&e).contains(DECOY));
+    // Lead decision 2026-10-31: the command id is required; a missing one is a typed refusal,
+    // never an event with a null or invented id.
+    assert_eq!(
+        StudioBusinessEvent::new(StudioEventVariant::LayerMutated, DOC, &attribution, 1, 2, None).unwrap_err().code(),
+        "missing_command_id"
+    );
+    let v_null = text(&e).replacen(r#""command_id":"layer.rename""#, r#""command_id":null"#, 1);
+    assert_eq!(decode_business_event(v_null.as_bytes()).unwrap_err().code(), "invalid_type");
 }
 
 /// A port that reports what an adapter reports when it cannot know whether bytes escaped.
