@@ -86,6 +86,9 @@ pub mod text;
 #[cfg(feature = "media")]
 pub mod timeline_export;
 pub mod render;
+/// One admitted job path for the local queues and the preview stale-frame gate (lane SMB-JOB-ADMISSION-1).
+pub mod job_admission;
+pub mod preview_gate;
 /// Soft proofing in the window: VIEW / COLOR > Proof, proof preview and gamut overlay on the canvas,
 /// `state_json()["proof"]` (lane SMB-PS-SOFT-PROOF-2).
 pub mod proof;
@@ -269,6 +272,8 @@ pub struct Viewer {
     /// The live-text status line of each live story at the last render, `(text_id, line)` (lane
     /// SMB-VIEW-POLISH-1: [`Viewer::render_if_dirty`] says the lines that changed).
     live_text_seen: Vec<(String, String)>,
+    /// Job port, lifecycle and preview gate (module [`job_admission`]).
+    jobs: job_admission::ViewerJobs,
 }
 
 struct MonitorState {
@@ -357,6 +362,7 @@ impl Viewer {
             #[cfg(feature = "audio-batch")]
             spectral: None,
             live_text_seen: Vec::new(),
+            jobs: job_admission::ViewerJobs::default(),
         };
         // D24-A (lane SMB-PR-SOURCE-MONITOR): AAC decodes by default through the OS decoder, reel-native's
         // isolated Media Foundation AAC worker (`reel-native-mf-worker --aac` beside the executable).
@@ -768,6 +774,7 @@ impl Viewer {
             (Err(e), _) => Err(RenderFail { code: "text", detail: e }),
             (_, Err(e)) => Err(RenderFail { code: "vector", detail: e }),
         };
+        let Some(result) = self.gate_preview(result) else { return };
         self.proof.frame_changed();
         self.info.frame_changed();
         match result {

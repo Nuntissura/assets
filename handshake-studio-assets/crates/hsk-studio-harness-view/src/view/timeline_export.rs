@@ -602,6 +602,14 @@ pub fn export_queue(worker: Option<std::path::PathBuf>) -> (hsk_studio_reel::Exp
     (hsk_studio_reel::ExportQueue::new(), false)
 }
 
+/// [`export_queue`] whose items are admitted through the session `JobPort` before they are submitted
+/// (module [`super::job_admission`], lane SMB-JOB-ADMISSION-1): product code builds export queues only
+/// through these two functions, and runs them only admitted.
+pub fn admitted_export_queue(worker: Option<std::path::PathBuf>, admission: super::job_admission::JobAdmission) -> (super::job_admission::AdmittedExportQueue, bool) {
+    let (queue, os) = export_queue(worker);
+    (super::job_admission::AdmittedExportQueue::new(queue, admission), os)
+}
+
 /// The recipe of Studio preset `preset_id` (reel's preset table) for a queue that does (`os_encoder`)
 /// or does not carry the OS encoder: `unknown_preset`, or reel's typed `codec_unavailable` refusal
 /// for an H.264 / HEVC preset without the OS encoder (D24-A) and an AV1 preset without `av1-encode`.

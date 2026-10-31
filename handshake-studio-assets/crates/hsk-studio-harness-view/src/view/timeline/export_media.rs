@@ -67,12 +67,13 @@
 
 use super::super::Viewer;
 use super::super::monitor::{FrameSource, MonitorFail, SourceFrame};
-use super::super::timeline_export::{NestedDocument, TimelineExport, export_queue, preset_recipe, timeline_export_job_with};
+use super::super::job_admission::{AdmittedExportQueue, ExportSettlements, frame_bytes, refusal_fail, settlement_json};
+use super::super::timeline_export::{NestedDocument, TimelineExport, admitted_export_queue, export_queue, preset_recipe, timeline_export_job_with};
 use super::{TimelineCommand, widget};
 use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
 use hsk_studio_folio::{ClipSource, StudioSequence, TrackKind};
 use hsk_studio_pulse::{AudioSources, SourceExtents};
-use hsk_studio_reel::{ChromaFormat, Container, ExportHandle, ExportJob, ExportQueue, ExportReceipt, VideoCodecChoice};
+use hsk_studio_reel::{ChromaFormat, Container, ExportHandle, ExportJob, ExportReceipt, VideoCodecChoice};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -221,11 +222,15 @@ fn serve(request: FrameRequest, port: Option<&dyn FrameSource>) {
 
 /// A job ready to submit, with its frame request channel and its description.
 struct Prepared {
-    queue: ExportQueue,
+    /// Admits the job before it is submitted (module `job_admission`).
+    queue: AdmittedExportQueue,
     job: ExportJob,
     requests: mpsc::Receiver<FrameRequest>,
     waiting: Waiting,
     meta: Value,
+    /// Working-set estimate of the job (one frame) and the document revision its input was taken from.
+    bytes: u64,
+    bound_revision: u64,
 }
 
 /// A running window export.
@@ -235,6 +240,8 @@ pub(in crate::view) struct Running {
     handle: ExportHandle,
     waiting: Waiting,
     meta: Value,
+    /// The admitted job: its ticket is held until the worker's receipt settles it (also after a cancel).
+    settlements: ExportSettlements,
 }
 
 impl Running {
@@ -340,6 +347,7 @@ impl ExportMediaState {
                 let paused = r.paused();
                 m["paused"] = json!(paused.is_some());
                 m["paused_ms"] = json!(paused.map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)));
+                m["job_tickets"] = json!(r.settlements.tickets());
                 m
             }),
             "last": self.last,
@@ -412,11 +420,25 @@ fn result_json(meta: &Value, receipt: &ExportReceipt) -> Value {
 
 fn outcome(result: &Value) -> String {
     let r = &result["receipt"];
-    match (r["outcome"].as_str(), r["code"].as_str()) {
+    let line = match (r["outcome"].as_str(), r["code"].as_str()) {
         (Some(o), Some(c)) => format!("{o} {c} {}", r["detail"].as_str().unwrap_or("")),
         (Some(o), None) => format!("{o}: {} frames, {} audio frames, sha256 {}", r["frames_encoded"], r["audio_frames"], r["output_sha256"].as_str().unwrap_or("-")),
         _ => "no receipt".into(),
+    };
+    // A committed export finished after the head moved is kept and said, never dropped silently.
+    let job = &result["job"];
+    match job["outcome"].as_str() {
+        Some("completed_stale") => format!("{line}; completed from revision {} while the document moved to revision {} (stale result, not current)", job["bound_revision"], job["head_revision"]),
+        _ => line,
     }
+}
+
+/// `result` with the settlement of its admitted job (`result["job"]`).
+fn with_job(mut result: Value, settlement: Option<&hsk_studio_session::JobSettlement>) -> Value {
+    if let (Some(s), Some(_)) = (settlement, result.as_object()) {
+        result["job"] = settlement_json(s);
+    }
+    result
 }
 
 impl Viewer {
@@ -481,16 +503,29 @@ impl Viewer {
     }
 
     fn export_sequence_inner(&mut self, sequence_id: &str, request: &ExportSequenceRequest) -> Result<Value, MonitorFail> {
-        let Prepared { mut queue, job, requests, meta, .. } = self.export_prepare(sequence_id, request)?;
-        let _handle = queue.submit(job);
-        let worker = std::thread::Builder::new().name("hsk-export-media".into()).spawn(move || queue.run()).map_err(|e| fail("export_worker", e.to_string()))?;
+        let Prepared { mut queue, job, requests, meta, bytes, bound_revision, .. } = self.export_prepare(sequence_id, request)?;
+        // Admitted before anything starts: a refusal submits nothing and starts no thread or encoder.
+        let _handle = queue.submit(job, bytes, bound_revision, self.document_head(), self.cancel).map_err(refusal_fail)?;
+        let (mut queue, settlements) = queue.into_worker();
+        let worker = match std::thread::Builder::new().name("hsk-export-media".into()).spawn(move || queue.run()) {
+            Ok(worker) => worker,
+            Err(e) => {
+                let _ = settlements.fail("export_worker");
+                return Err(fail("export_worker", e.to_string()));
+            }
+        };
         // The job owns the only sender: the loop ends when the queue has run it.
         let port = self.monitor.as_ref().and_then(|m| m.sources.as_deref());
         while let Ok(r) = requests.recv() {
             serve(r, port);
         }
-        let receipt = worker.join().map_err(|_| fail("export_worker", "the export worker panicked"))?.into_iter().next().ok_or_else(|| fail("export_worker", "no receipt"))?;
-        Ok(result_json(&meta, &receipt))
+        let Ok(receipts) = worker.join() else {
+            let _ = settlements.fail("export_worker");
+            return Err(fail("export_worker", "the export worker panicked"));
+        };
+        let settled = settlements.settle(&receipts, self.document_head());
+        let receipt = receipts.into_iter().next().ok_or_else(|| fail("export_worker", "no receipt"))?;
+        Ok(with_job(result_json(&meta, &receipt), settled.first()))
     }
 
     /// Builds the job of `request` (every refusal before anything renders).
@@ -499,7 +534,7 @@ impl Viewer {
         let sequence = doc.sequences.iter().find(|s| s.sequence_id == sequence_id).cloned().ok_or_else(|| fail("unknown_sequence", sequence_id))?;
         let monitor = self.monitor.as_ref().filter(|m| m.sources.is_some()).ok_or_else(|| fail("frame_decoder_missing", "no frame decoder is bound to the program monitor"))?;
         let video_extents = ExtentTable::of(&doc.sequences, monitor.extents.as_ref());
-        let (queue, os) = export_queue(None);
+        let (queue, os) = admitted_export_queue(None, self.job_admission());
         let recipe = preset_recipe(&request.preset_id, os)?;
         let (din, dout) = default_range(&sequence);
         let (in_tick, out_tick) = (request.in_tick.unwrap_or(din), request.out_tick.unwrap_or(dout));
@@ -558,7 +593,8 @@ impl Viewer {
             artifact,
         };
         let job = timeline_export_job_with(export, NestedDocument::new(doc.sequences.clone(), routing), self.cancel)?;
-        Ok(Prepared { queue, job, requests, waiting, meta })
+        let bound_revision = doc.revision;
+        Ok(Prepared { queue, job, requests, waiting, meta, bytes: frame_bytes(request.width, request.height), bound_revision })
     }
 
     /// `output` as given when absolute, else joined to the save root (module docs).
@@ -666,9 +702,20 @@ impl Viewer {
     fn export_form_start(&mut self, form: &ExportForm) -> Result<(), String> {
         let tpf = self.run.snapshot().and_then(|s| s.document().sequences.iter().find(|q| q.sequence_id == form.sequence_id)).map(|s| s.frame_rate.ticks_per_frame).ok_or("unknown_sequence")?;
         let request = form.request(tpf)?;
-        let Prepared { mut queue, job, requests, waiting, meta } = self.export_prepare(&form.sequence_id, &request).map_err(|e| format!("{} {}", e.code, e.detail))?;
-        let handle = queue.submit(job);
-        let worker = std::thread::Builder::new().name("hsk-export-media".into()).spawn(move || queue.run()).map_err(|e| format!("export_worker {e}"))?;
+        let Prepared { mut queue, job, requests, waiting, meta, bytes, bound_revision } = self.export_prepare(&form.sequence_id, &request).map_err(|e| format!("{} {}", e.code, e.detail))?;
+        // Admitted before anything starts: a refusal submits nothing and starts no thread or encoder.
+        let handle = queue.submit(job, bytes, bound_revision, self.document_head(), self.cancel).map_err(|r| {
+            let f = refusal_fail(r);
+            format!("{} {}", f.code, f.detail)
+        })?;
+        let (mut queue, settlements) = queue.into_worker();
+        let worker = match std::thread::Builder::new().name("hsk-export-media".into()).spawn(move || queue.run()) {
+            Ok(worker) => worker,
+            Err(e) => {
+                let _ = settlements.fail("export_worker");
+                return Err(format!("export_worker {e}"));
+            }
+        };
         self.say(format!(
             "export media: {} [{}, {}) {} started -> {} (frames decode while the timeline panel is shown; hiding it pauses the export)",
             form.sequence_id,
@@ -679,7 +726,7 @@ impl Viewer {
         ));
         if let Some(t) = self.timeline.as_mut() {
             t.export.form = None;
-            t.export.running = Some(Running { requests, worker, handle, waiting, meta });
+            t.export.running = Some(Running { requests, worker, handle, waiting, meta, settlements });
         }
         Ok(())
     }
@@ -687,6 +734,8 @@ impl Viewer {
     fn export_form_cancel(&mut self) -> Result<(), String> {
         let t = self.timeline.as_mut().ok_or("no_timeline")?;
         if let Some(r) = &t.export.running {
+            // Cancel asks the worker to stop; its admitted job keeps the ticket until the worker's
+            // receipt arrives (timeline_export_poll settles it canceled, GUI-DESKTOP-033).
             r.handle.cancel();
             self.say("export media: cancel requested".into());
             return Ok(());
@@ -719,12 +768,21 @@ impl Viewer {
         }
         let Some(r) = self.timeline.as_mut().and_then(|t| t.export.running.take()) else { return false };
         let sequence_id = r.meta["sequence_id"].as_str().unwrap_or("").to_owned();
-        let result = match r.worker.join() {
-            Ok(receipts) => match receipts.first() {
-                Some(receipt) => result_json(&r.meta, receipt),
-                None => json!({"error": "export_worker", "detail": "no receipt"}),
-            },
-            Err(_) => json!({"error": "export_worker", "detail": "the export worker panicked"}),
+        let joined = r.worker.join();
+        let head = self.document_head();
+        let result = match joined {
+            Ok(receipts) => {
+                let settled = r.settlements.settle(&receipts, head);
+                let result = match receipts.first() {
+                    Some(receipt) => result_json(&r.meta, receipt),
+                    None => json!({"error": "export_worker", "detail": "no receipt"}),
+                };
+                with_job(result, settled.first())
+            }
+            Err(_) => {
+                let settled = r.settlements.fail("export_worker");
+                with_job(json!({"error": "export_worker", "detail": "the export worker panicked"}), settled.first())
+            }
         };
         let line = if result.get("receipt").is_some() { outcome(&result) } else { format!("{} {}", result["error"], result["detail"]) };
         self.say(format!("export media: {sequence_id} [{}, {}) {}: {line}", r.meta["in_tick"], r.meta["out_tick"], r.meta["preset_id"].as_str().unwrap_or("")));
