@@ -16,7 +16,17 @@
 //! the token's nib length (3), rounded to 1e-6, refused outside 1..=1000. The tip on the
 //! reference point is `arrow_align.inside_path`, the back on it `arrow_align.outside_path`; both
 //! ends share one alignment (the start is dropped when they differ). The recognition table and the
-//! scale mapping are Studio readings, UNVERIFIED (D5). Everything else, `marker-mid`, the
+//! scale mapping are Studio readings, UNVERIFIED (D5). Paint (R44 finding F-R44-4, lane
+//! SMB-R44-FOLLOWUPS-1): Studio draws a marker in its stroke's paint, so a marker maps only when its
+//! shape's own paint (the `fill` of a filled shape, the `stroke` of a hollow one; the child's
+//! property, else the `<marker>`'s, which its content inherits) is absent, `context-stroke`, or the
+//! same colour and opacity as the element's solid stroke (`currentColor` resolved through `color`;
+//! opacity = colour alpha x `fill-opacity` / `stroke-opacity` x `opacity`, an absent or
+//! `context-stroke` paint needing opacity 1), and a filled shape has no stroke of its own. A red
+//! arrowhead on a black line, a gradient-stroked line with a coloured marker, or a filled shape
+//! with its own outline is `unsupported_marker`. Markers on a `polygon` or on a `path` holding a
+//! closed subpath (R44 F-R44-10) are `unsupported_marker` at import: SVG viewers draw them, Studio
+//! draws no marker on a closed subpath. Everything else, `marker-mid`, the
 //! `marker` shorthand and markers on elements without a stroke row keep the typed loss
 //! `unsupported_marker` (one per use, plus one per `<marker>` no use stored); a non-local
 //! reference is `external_marker_denied`. Marker content is never walked, so a marker that
@@ -1362,17 +1372,28 @@ impl<'d> Importer<'_, 'd> {
         if st.marker_start.is_none() && st.marker_end.is_none() {
             return None;
         }
-        let markable = matches!(el.tag_name().name(), "path" | "line" | "polyline" | "polygon");
+        // R44 F-R44-10: no marker on a closed shape (module docs).
+        let markable = match el.tag_name().name() {
+            "line" | "polyline" => true,
+            "path" => !path_has_closed_subpath(el),
+            _ => false,
+        };
         if !markable || !stroked || !(st.stroke_width > 0.0 && st.stroke_width.is_finite()) {
             self.note(loc, LossKind::Unsupported, "unsupported_marker");
             return None;
         }
+        // The stroke's solid paint, straight RGBA with the stroke opacity (`None`: not a colour).
+        let line = match st.stroke {
+            PaintValue::Color(r, g, b, a) => Some((r, g, b, a * st.stroke_opacity)),
+            PaintValue::Current => Some((st.color.0, st.color.1, st.color.2, st.color.3 * st.stroke_opacity)),
+            _ => None,
+        };
         let mut read = |id: &Option<Rc<str>>, at_start: bool| -> Option<RecognisedMarker> {
             let id = id.as_deref()?;
             let found = self.ids.get(id).copied().filter(|m| {
                 m.tag_name().name() == "marker" && m.tag_name().namespace() == Some(SVG_NS)
             });
-            match found.and_then(|m| recognise_marker(m, at_start, st.stroke_width).map(|r| (m, r))) {
+            match found.and_then(|m| recognise_marker(m, at_start, st.stroke_width, line).map(|r| (m, r))) {
                 Some((m, r)) => {
                     self.markers_stored.insert(m.id().get());
                     Some(r)
@@ -2652,6 +2673,55 @@ fn painted(props: &[(String, String)], name: &str, default: bool) -> bool {
         .map_or(default, |(_, v)| !v.trim().eq_ignore_ascii_case("none"))
 }
 
+/// Whether a `path` element's data holds a closed subpath (a `Z`; R44 F-R44-10). Unparsable data is
+/// treated as closed (no marker is mapped on it).
+fn path_has_closed_subpath(el: Node) -> bool {
+    let Some(d) = plain_attr(el, "d") else {
+        return false;
+    };
+    svgtypes::SimplifyingPathParser::from(d).any(|seg| matches!(seg, Ok(svgtypes::SimplePathSegment::ClosePath) | Err(_)))
+}
+
+/// RGBA of a CSS colour value (`None`: not a plain colour).
+fn plain_colour(value: &str) -> Option<(u8, u8, u8, f64)> {
+    let c = svgtypes::Color::from_str(value.trim()).ok()?;
+    Some((c.red, c.green, c.blue, f64::from(c.alpha) / 255.0))
+}
+
+/// Whether a marker shape's own paint maps to the element's stroke (module docs, R44 F-R44-4).
+/// `props`: the `<marker>`'s properties then the child's (the child's win); `name`: `fill` or
+/// `stroke`; `line`: the stroke's solid RGBA (`None` when the stroke is not a colour).
+fn marker_paint_maps(props: &[(String, String)], name: &str, line: Option<(u8, u8, u8, f64)>) -> bool {
+    marker_paint_check(props, name, line).unwrap_or(false)
+}
+
+/// [`marker_paint_maps`]; `None` for an unparsable opacity.
+fn marker_paint_check(props: &[(String, String)], name: &str, line: Option<(u8, u8, u8, f64)>) -> Option<bool> {
+    let last = |key: &str| props.iter().rev().find(|(n, _)| n == key).map(|(_, v)| v.as_str());
+    // `fill-opacity` / `stroke-opacity` inherit (the last value given: the child's over the
+    // marker's); `opacity` does not, but the marker's applies to its content as a group (every value
+    // given multiplies).
+    let mut factor = match last(if name == "fill" { "fill-opacity" } else { "stroke-opacity" }) {
+        Some(v) => fraction(v)?,
+        None => 1.0,
+    };
+    for (_, v) in props.iter().filter(|(n, _)| n == "opacity") {
+        factor *= fraction(v)?;
+    }
+    let unit = (factor - 1.0).abs() <= 1e-9;
+    let same = |c: (u8, u8, u8, f64)| line.is_some_and(|l| (l.0, l.1, l.2) == (c.0, c.1, c.2) && (l.3 - c.3 * factor).abs() <= 1e-6);
+    // CSS keywords are ASCII case-insensitive (V4-08); anything that is not a keyword or a plain
+    // colour (a `url()`, `context-fill`, `none`) does not map.
+    Some(match last(name).map(|v| v.trim().to_ascii_lowercase()) {
+        None => unit,
+        Some(v) => match v.as_str() {
+            "context-stroke" => unit,
+            "currentcolor" => last("color").and_then(plain_colour).is_some_and(same),
+            other => plain_colour(other).is_some_and(same),
+        },
+    })
+}
+
 /// The vertices of a marker polygon child (no curves, one subpath) and whether it is closed.
 fn marker_polygon(child: Node) -> Option<(Vec<[f64; 2]>, bool)> {
     let tag = child.tag_name().name();
@@ -2683,8 +2753,9 @@ fn marker_polygon(child: Node) -> Option<(Vec<[f64; 2]>, bool)> {
 }
 
 /// Reads one `<marker>` as a token (module docs). `at_start`: the use is `marker-start`;
-/// `stroke_width`: the element's stroke width in user units (> 0).
-fn recognise_marker(marker: Node, at_start: bool, stroke_width: f64) -> Option<RecognisedMarker> {
+/// `stroke_width`: the element's stroke width in user units (> 0); `line`: the stroke's solid RGBA
+/// with its opacity (`None` when it is not a colour), against which the marker's paint is checked.
+fn recognise_marker(marker: Node, at_start: bool, stroke_width: f64, line: Option<(u8, u8, u8, f64)>) -> Option<RecognisedMarker> {
     let flip = match plain_attr(marker, "orient").map(str::trim) {
         Some("auto-start-reverse") => false,
         Some("auto") => at_start,
@@ -2754,9 +2825,16 @@ fn recognise_marker(marker: Node, at_start: bool, stroke_width: f64) -> Option<R
             }
         }
     };
-    let filled = painted(&props, "fill", true);
-    let stroked = painted(&props, "stroke", false);
+    // Paint properties: the marker's (inherited by its content) then the child's.
+    let mut paint_props = collect_props(marker);
+    paint_props.extend(props.iter().cloned());
+    let filled = painted(&paint_props, "fill", true);
+    let stroked = painted(&paint_props, "stroke", false);
     let hollow = !filled;
+    // R44 F-R44-4: the shape's own paint must be the stroke's; a filled shape has no outline.
+    if (filled && stroked) || !marker_paint_maps(&paint_props, if filled { "fill" } else { "stroke" }, line) {
+        return None;
+    }
     let sw = if hollow {
         let w = number("stroke-width", 1.0)?;
         if !(stroked && w > 0.0) {

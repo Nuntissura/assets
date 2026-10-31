@@ -1846,7 +1846,9 @@ impl FolioCx<'_> {
                 note.consumed_subpaths.extend(o.consumed_subpaths.into_iter().map(|i| (k, i)));
             }
         }
-        let _ = note;
+        if !(note.closed_subpaths.is_empty() && note.consumed_subpaths.is_empty()) {
+            self.marker_notes.borrow_mut().push(note);
+        }
         let mut out: Vec<OwnedPath> =
             crate::vector_nib::stroke_outline(&VectorGeometry::Paths(trimmed), style)?
                 .into_iter()
