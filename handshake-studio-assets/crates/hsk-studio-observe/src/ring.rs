@@ -87,12 +87,12 @@
 //!
 //! No public type of this module holds a `String`, `&str`, `Vec` or slice, and nothing converts from text:
 //!
-//! ```compile_fail
+//! ```compile_fail,E0277
 //! use hsk_studio_observe::ring::RingRecord;
 //! let _record = RingRecord::from("private project text");
 //! ```
 //!
-//! ```compile_fail
+//! ```compile_fail,E0277
 //! use hsk_studio_observe::ring::ModuleId;
 //! let _module = ModuleId::from("x");
 //! ```
