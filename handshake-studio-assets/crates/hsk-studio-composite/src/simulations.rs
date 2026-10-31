@@ -36,18 +36,19 @@
 //! After Effects parity of all four types is UNVERIFIED (D5).
 //!
 //! **Water family (lane SMB-AE-WATER-SIMS-1).** Wave world (MT-34181, [`wave_world`]), Caustics
-//! (MT-34182, [`caustics`]) and Bubbles (MT-34186, [`bubbles`]) follow the same identity, record,
-//! bounds and output rules. Wave world is a stateful step simulation: every frame is re-simulated
-//! from the start tick on a fixed step grid (a Wave world may also resume from a [`WaveState`]
-//! checkpoint of the same record, which gives the same field), single-threaded in a fixed order.
-//! Bubbles is closed form on the slot grid like Rain. Caustics is a pure function of a
-//! [`HeightField`] (a Wave world at the tick, or a caller field) and a bottom image.
-//! [`SimulationKind::ALL`] keeps its published five particle-family kinds;
+//! (MT-34182, [`caustics`]), Bubbles (MT-34186, [`bubbles`]) and Foam (MT-34183, [`foam`]) follow
+//! the same identity, record, bounds and output rules. Wave world and Foam are stateful step
+//! simulations: every frame is re-simulated from the start tick on a fixed step grid (a Wave world
+//! may also resume from a [`WaveState`] checkpoint of the same record, which gives the same field),
+//! single-threaded in a fixed order. Bubbles is closed form on the slot grid like Rain. Caustics is
+//! a pure function of a [`HeightField`] (a Wave world at the tick, or a caller field) and a bottom
+//! image. [`SimulationKind::ALL`] keeps its published five particle-family kinds;
 //! [`SimulationKind::EVERY`] lists every kind.
 #![deny(clippy::arithmetic_side_effects)]
 pub mod bubbles;
 pub mod caustics;
 pub mod classic;
+pub mod foam;
 pub mod precipitation;
 pub mod star_burst;
 pub mod wave_world;
@@ -66,6 +67,7 @@ pub use star_burst::{BurstMode, StarBurst};
 pub use wave_world::{EdgeMode, HeightField, ProducerShape, WaveProducer, WaveState, WaveWorld};
 pub use caustics::{CausticSurface, Caustics, WaterBottom};
 pub use bubbles::{BubbleShading, Bubbles};
+pub use foam::Foam;
 
 pub(crate) type Result<T> = std::result::Result<T, ParticleError>;
 
@@ -85,6 +87,7 @@ pub enum SimulationKind {
     WaveWorld,
     Caustics,
     Bubbles,
+    Foam,
 }
 
 impl SimulationKind {
@@ -92,9 +95,9 @@ impl SimulationKind {
     /// lists every implemented kind.
     pub const ALL: [Self; 5] = [Self::ParticleWorld, Self::ParticleSystemsClassic, Self::Rain, Self::Snow, Self::StarBurst];
     /// The water family (lane SMB-AE-WATER-SIMS-1).
-    pub const WATER: [Self; 3] = [Self::WaveWorld, Self::Caustics, Self::Bubbles];
+    pub const WATER: [Self; 4] = [Self::WaveWorld, Self::Caustics, Self::Bubbles, Self::Foam];
     /// Every implemented kind: [`Self::ALL`] then [`Self::WATER`].
-    pub const EVERY: [Self; 8] = [
+    pub const EVERY: [Self; 9] = [
         Self::ParticleWorld,
         Self::ParticleSystemsClassic,
         Self::Rain,
@@ -103,6 +106,7 @@ impl SimulationKind {
         Self::WaveWorld,
         Self::Caustics,
         Self::Bubbles,
+        Self::Foam,
     ];
 
     /// The stable id.
@@ -116,6 +120,7 @@ impl SimulationKind {
             Self::WaveWorld => "hsk.studio.simulation.wave_world",
             Self::Caustics => "hsk.studio.simulation.caustics",
             Self::Bubbles => "hsk.studio.simulation.bubbles",
+            Self::Foam => "hsk.studio.simulation.foam",
         }
     }
 
@@ -130,6 +135,7 @@ impl SimulationKind {
             Self::WaveWorld => "Wave world",
             Self::Caustics => "Caustics",
             Self::Bubbles => "Bubbles",
+            Self::Foam => "Foam",
         }
     }
 
@@ -147,6 +153,7 @@ impl SimulationKind {
             Self::WaveWorld => &["APC Wave World"],
             Self::Caustics => &["APC Caustics"],
             Self::Bubbles => &["CC Bubbles"],
+            Self::Foam => &["APC Foam"],
         }
     }
 
@@ -161,9 +168,9 @@ impl SimulationKind {
     }
 
     /// The authored parameter rows; `None` for the particle world (its record is the typed
-    /// [`ParticleWorld`] struct of lane SMB-AE-PARTICLES-AUDIO-PRESETS). Bubbles includes the
-    /// shared `shading.*` rows ([`bubbles::BUBBLE_SHADING_ROWS`]); Wave world's per-producer rows
-    /// are [`wave_world::WAVE_PRODUCER_ROWS`].
+    /// [`ParticleWorld`] struct of lane SMB-AE-PARTICLES-AUDIO-PRESETS). Bubbles and Foam include
+    /// the shared `shading.*` rows ([`bubbles::BUBBLE_SHADING_ROWS`]); Wave world's per-producer
+    /// rows are [`wave_world::WAVE_PRODUCER_ROWS`].
     pub fn params(self) -> Option<Vec<ParamRow>> {
         match self {
             Self::ParticleWorld => None,
@@ -174,6 +181,7 @@ impl SimulationKind {
             Self::WaveWorld => Some(wave_world::WAVE_WORLD_ROWS.to_vec()),
             Self::Caustics => Some(caustics::CAUSTICS_ROWS.to_vec()),
             Self::Bubbles => Some(bubbles::Bubbles::rows()),
+            Self::Foam => Some(foam::Foam::rows()),
         }
     }
 }
@@ -446,6 +454,7 @@ pub enum Simulation {
     WaveWorld(WaveWorld),
     Caustics(Caustics),
     Bubbles(Bubbles),
+    Foam(Foam),
 }
 
 impl Simulation {
@@ -460,6 +469,7 @@ impl Simulation {
             SimulationKind::WaveWorld => Self::WaveWorld(WaveWorld::default()),
             SimulationKind::Caustics => Self::Caustics(Caustics::default()),
             SimulationKind::Bubbles => Self::Bubbles(Bubbles::default()),
+            SimulationKind::Foam => Self::Foam(Foam::default()),
         }
     }
 
@@ -473,6 +483,7 @@ impl Simulation {
             Self::WaveWorld(_) => SimulationKind::WaveWorld,
             Self::Caustics(_) => SimulationKind::Caustics,
             Self::Bubbles(_) => SimulationKind::Bubbles,
+            Self::Foam(_) => SimulationKind::Foam,
         }
     }
 
@@ -486,6 +497,7 @@ impl Simulation {
             Self::WaveWorld(w) => w.validate(),
             Self::Caustics(c) => c.validate(),
             Self::Bubbles(b) => b.validate(),
+            Self::Foam(f) => f.validate(),
         }
     }
 
@@ -500,6 +512,7 @@ impl Simulation {
             Self::WaveWorld(w) => w.param(key),
             Self::Caustics(c) => c.param(key),
             Self::Bubbles(b) => b.param(key),
+            Self::Foam(f) => f.param(key),
         }
     }
 
@@ -515,12 +528,13 @@ impl Simulation {
             Self::WaveWorld(w) => w.set_param(key, value),
             Self::Caustics(c) => c.set_param(key, value),
             Self::Bubbles(b) => b.set_param(key, value),
+            Self::Foam(f) => f.set_param(key, value),
         }
     }
 
     /// Renders the frame at composition `tick`. `ticks_per_frame` is the particle world's grid
-    /// (its integrator steps per frame); the other types do not use it (Wave world steps on
-    /// its own declared grid).
+    /// (its integrator steps per frame); the other types do not use it (Wave world and Foam step on
+    /// their own declared grids).
     pub fn render(
         &self,
         width: u32,
@@ -539,6 +553,7 @@ impl Simulation {
             Self::WaveWorld(w) => w.render(width, height, tick, limits, cancel),
             Self::Caustics(c) => c.render(width, height, tick, limits, cancel),
             Self::Bubbles(b) => b.render(width, height, tick, limits, cancel),
+            Self::Foam(f) => f.render(width, height, tick, limits, cancel),
         }
     }
 }

@@ -661,3 +661,155 @@ fn bubbles_budget_is_refused_before_allocation() {
     stop.cancel();
     assert_eq!(fizz().render(8, 8, 60 * TPF, &limits(), &stop).unwrap_err(), ParticleError::Canceled);
 }
+
+// ---- Slice 4: Foam (MT-34183) ----
+
+fn froth() -> Foam {
+    Foam {
+        seed: 4,
+        start_tick: 0,
+        preroll: 0.0,
+        step_rate: 30,
+        producer: [64.0, 48.0],
+        producer_size: [96.0, 64.0],
+        region: [0.0, 0.0, 128.0, 96.0],
+        rate: 20.0,
+        life: 20.0,
+        life_random: 0.0,
+        size: 6.0,
+        size_random: 0.0,
+        growth: 0.0,
+        wind_speed: 0.0,
+        wind_direction: 90.0,
+        initial_speed: 0.0,
+        viscosity: 1.0,
+        stickiness: 40.0,
+        stick_radius: 24.0,
+        repulsion: 200.0,
+        opacity: 1.0,
+        shading: BubbleShading::default(),
+    }
+}
+
+fn nn_mean(parts: &[SimParticle]) -> f64 {
+    let mut total = 0.0;
+    for (i, p) in parts.iter().enumerate() {
+        let d = parts
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, q)| (q.position[0] - p.position[0]).hypot(q.position[1] - p.position[1]))
+            .fold(f64::MAX, f64::min);
+        total += d;
+    }
+    total / parts.len() as f64
+}
+
+#[test]
+fn foam_is_its_own_identity_and_never_bubbles() {
+    let (f, b) = (SimulationKind::Foam, SimulationKind::Bubbles);
+    assert_ne!(f.id(), b.id());
+    assert_ne!(f.name(), b.name());
+    assert_eq!(SimulationKind::from_import_key("APC Foam"), Some(f));
+    assert_eq!(SimulationKind::from_import_key("CC Bubbles"), Some(b));
+    assert!(f.import_keys().iter().all(|k| !b.import_keys().contains(k)));
+    assert_eq!(SimulationKind::from_id(f.id()), Some(f));
+    assert!(matches!(Simulation::new(f), Simulation::Foam(_)));
+    assert_ne!(Simulation::new(f).kind(), b);
+    // Its own record: surface, producer and stickiness rows Bubbles does not have, and the shared shading.
+    let (fr, br) = (f.params().unwrap(), b.params().unwrap());
+    let has = |rows: &[ParamRow], k: &str| rows.iter().any(|r| r.key == k);
+    for own in ["stickiness", "stick_radius", "repulsion", "producer_x", "producer_width", "step_rate", "viscosity"] {
+        assert!(has(&fr, own) && !has(&br, own), "{own}");
+    }
+    assert!(has(&br, "rise_speed") && !has(&fr, "rise_speed"));
+    for r in bubbles::BUBBLE_SHADING_ROWS {
+        assert!(has(&fr, r.key) && has(&br, r.key), "{}", r.key);
+    }
+    assert_eq!(Simulation::new(b).param("stickiness"), None);
+    assert!(Simulation::new(b).clone().set_param("stickiness", 1.0).is_err());
+}
+
+#[test]
+fn foam_is_surface_bound_sticky_and_grows() {
+    let cancel = CancellationToken::default();
+    let at = |f: &Foam, tick| f.states_at(tick, &limits(), &cancel).unwrap();
+    // Without forces, wind or initial speed, bubbles stay where they were born (in the producer).
+    let mut calm = froth();
+    calm.stickiness = 0.0;
+    calm.repulsion = 0.0;
+    let (a, b) = (at(&calm, 30 * TPF), at(&calm, 60 * TPF));
+    assert_eq!((a.len(), b.len()), (20, 40));
+    for p in &a {
+        let q = b.iter().find(|q| q.index == p.index).unwrap();
+        assert_eq!(p.position, q.position);
+        assert!((16.0..=112.0).contains(&p.position[0]) && (16.0..=80.0).contains(&p.position[1]), "{:?}", p.position);
+    }
+    // Stickiness pulls neighbours together (nearest-neighbour distance shrinks), same births.
+    let sticky = at(&froth(), 60 * TPF);
+    assert_eq!(sticky.len(), b.len());
+    assert!(nn_mean(&sticky) < 0.75 * nn_mean(&b), "{} vs {}", nn_mean(&sticky), nn_mean(&b));
+    // Surface-bound: a strong wind piles them against the region edge, never past it.
+    let mut windy = froth();
+    windy.wind_speed = 500.0;
+    let w = at(&windy, 60 * TPF);
+    assert!(w.iter().all(|p| (0.0..=128.0).contains(&p.position[0]) && (0.0..=96.0).contains(&p.position[1])));
+    assert!(w.iter().any(|p| p.position[0] == 128.0));
+    // Growth is linear in age; bubbles pop at the end of their life.
+    let mut grow = calm.clone();
+    grow.growth = 2.0;
+    grow.life = 1.0;
+    let g = at(&grow, 60 * TPF);
+    assert!((18..=22).contains(&g.len()), "{}", g.len());
+    for p in &g {
+        assert!((p.size - (6.0 + 2.0 * p.age)).abs() < 1e-9 && p.age < 1.0);
+    }
+    assert!(g.windows(2).all(|w| w[0].index < w[1].index), "draw order: ascending birth");
+}
+
+#[test]
+fn foam_resimulates_from_the_start_tick() {
+    let cancel = CancellationToken::default();
+    let frame = |f: &Foam, n: u64| f.render(128, 96, n * TPF, &limits(), &cancel).unwrap();
+    let direct = frame(&froth(), 60);
+    assert!(direct.drawn > 0 && direct.premultiplied.iter().any(|p| p[3] > 0.0));
+    assert_eq!(frame(&froth(), 60), direct, "same parameters and seed, same frame");
+    let _ = frame(&froth(), 75);
+    assert_eq!(frame(&froth(), 60).digest(), direct.digest(), "scrubbing back re-simulates from the start");
+    let mut seeded = froth();
+    seeded.seed = 5;
+    assert_ne!(frame(&seeded, 60).digest(), direct.digest());
+    let mut late = froth();
+    late.start_tick = 15 * TPF;
+    assert_eq!(frame(&late, 75), direct);
+    assert!(late.states_at(14 * TPF, &limits(), &cancel).unwrap().is_empty());
+    let mut pre = froth();
+    pre.preroll = 1.0;
+    pre.start_tick = 15 * TPF;
+    assert_eq!(frame(&pre, 45), direct, "a 1 s preroll is 1 s already simulated at the start");
+    // Per-bubble rendering is the shared bubble path with the shared shading.
+    let f = froth();
+    let parts = f.states_at(60 * TPF, &limits(), &cancel).unwrap();
+    assert_eq!(bubbles::render_bubble_marks(&parts, &f.shading, 128, 96, &limits(), &cancel).unwrap(), direct);
+}
+
+#[test]
+fn foam_budget_is_refused_before_allocation() {
+    let cancel = CancellationToken::default();
+    let mut crowd = froth();
+    crowd.rate = 1.0e5;
+    crowd.life = 600.0;
+    assert_eq!(crowd.render(8, 8, SEC, &limits(), &cancel).unwrap_err(), ParticleError::Count, "alive bound");
+    let mut long = froth();
+    long.rate = 1000.0;
+    long.life = 10.0;
+    assert_eq!(long.render(8, 8, 600 * SEC, &limits(), &cancel).unwrap_err(), ParticleError::Work, "bubbles x steps");
+    assert_eq!(froth().render(8, 8, u64::MAX, &limits(), &cancel).unwrap_err(), ParticleError::Window);
+    let tight = ParticleLimits { max_steps: 2000, ..ParticleLimits::default() };
+    assert_eq!(froth().render(8, 8, 2 * SEC, &tight, &cancel).unwrap_err(), ParticleError::Work);
+    let mut bad = Simulation::Foam(froth());
+    assert_eq!(bad.set_param("step_rate", 29.5), Err(ParticleError::Parameter("step_rate")));
+    let stop = CancellationToken::default();
+    stop.cancel();
+    assert_eq!(froth().render(8, 8, 2 * SEC, &limits(), &stop).unwrap_err(), ParticleError::Canceled);
+}
