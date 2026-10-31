@@ -439,14 +439,24 @@ fn folio_effect_stacks_render_through_render_scene_in_stack_order() {
             Err(TemporalError::Unsupported { feature, .. }) => feature,
             other => panic!("{other:?}"),
         };
+        // F-R45-3 (lane SMB-R46-FOLLOWUPS-1): the option refusals below carry every colour's
+        // profile, so the colour step cannot refuse in their place, and pin the refused id: the
+        // option refusal names the layer, a colour refusal `{layer}/effects/{id}/{key}`.
+        let refused_at = |extra: Value| match source(&records(extra), &pixels).and_then(|s| s.scene_at(0, &cancel)) {
+            Err(TemporalError::Unsupported { layer_id, feature }) => (layer_id, feature),
+            other => panic!("{other:?}"),
+        };
+        let layer = identity("SLYR", 2);
         off["enabled"] = json!(true);
         off["values"] = json!({"edge":constant(json!([2.0]))});
-        assert_eq!(unsupported(json!({"effects":[off]})), COMPOSITION_EFFECT_OPTION);
+        off["colour_profiles"] = json!({"color":{"colour_profile_id":identity("SCPF", 1)}});
+        assert_eq!(refused_at(json!({"effects":[off]})), (layer.clone(), COMPOSITION_EFFECT_OPTION));
         let mut mode = board.clone();
         mode["values"]["blending_mode"] = constant(json!([5.0]));
         assert_eq!(unsupported(json!({"effects":[mode]})), COMPOSITION_EFFECT_OPTION);
-        let scatter = json!({"effect_id":"r","filter_kind":"gradient_ramp","values":{"ramp_scatter":constant(json!([1.0]))}});
-        assert_eq!(unsupported(json!({"effects":[scatter]})), COMPOSITION_EFFECT_OPTION);
+        let scatter = json!({"effect_id":"r","filter_kind":"gradient_ramp","values":{"ramp_scatter":constant(json!([1.0]))},
+            "colour_profiles":{"start_color":{"colour_profile_id":identity("SCPF", 1)},"end_color":{"colour_profile_id":identity("SCPF", 1)}}});
+        assert_eq!(refused_at(json!({"effects":[scatter]})), (layer, COMPOSITION_EFFECT_OPTION));
         // A Folio refusal (hard bound) surfaces as a document error.
         let over = json!({"effect_id":"t","filter_kind":"twirl","values":{"twirl_radius":constant(json!([101.0]))}});
         assert!(matches!(source(&records(json!({"effects":[over]})), &pixels), Err(TemporalError::Document(t)) if t.contains("effect_param_out_of_range")));

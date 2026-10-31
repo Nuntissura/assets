@@ -389,7 +389,18 @@ fn glow_builds_from_threshold_blur_and_blend() {
         assert_eq!(k(json!({"glow_colors":constant(json!([3.0]))})), COMPOSITION_EFFECT_OPTION);
         assert_eq!(k(json!({"glow_operation":constant(json!([5.0]))})), COMPOSITION_EFFECT_OPTION);
         assert_eq!(k(json!({"glow_operation":constant(json!([1.0]))})), COMPOSITION_EFFECT_OPTION);
-        assert_eq!(k(json!({"glow_colors":constant(json!([2.0])),"color_phase":constant(json!([0.1]))})), COMPOSITION_EFFECT_OPTION);
+        // F-R45-3 (lane SMB-R46-FOLLOWUPS-1): A & B colours carry their profiles, so the colour
+        // step cannot refuse in place of the phase check, and the refused id is the layer (a
+        // colour refusal names `{layer}/effects/{id}/{key}`).
+        let phase = one(json!({"effect_id":"g","filter_kind":"glow",
+            "values":{"glow_colors":constant(json!([2.0])),"color_phase":constant(json!([0.1]))},
+            "colour_profiles":plan_refs(&["color_a", "color_b"])}));
+        match lowered(phase, 0) {
+            Err(TemporalError::Unsupported { layer_id, feature }) => {
+                assert_eq!((layer_id, feature), (identity("SLYR", 2), COMPOSITION_EFFECT_OPTION));
+            }
+            other => panic!("phase not refused: {other:?}"),
+        }
         let SceneEffect::Glow(h) = lowered_one(json!({"effect_id":"g","filter_kind":"glow","values":{"glow_dimensions":constant(json!([2.0]))}}))
         else {
             panic!()
