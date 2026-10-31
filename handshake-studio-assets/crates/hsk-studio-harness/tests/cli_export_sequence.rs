@@ -390,3 +390,39 @@ fn export_sequence_cli_refuses_audio_range_output_and_total_size_typed() {
     assert_eq!(json["detail"]["limit"].as_u64(), Some(hsk_studio_harness::cli::MAX_EXPORT_AUDIO_FILES as u64), "{json}");
     assert!(!Path::new(&out).exists(), "no file");
 }
+
+/// R47 F-R47-2 (lane SMB-R47-FOLLOWUPS-1): the export-sequence manual entry (harness-core `manual::COMMANDS`, the
+/// text `help` prints and models read) names every refusal code `cli.rs` itself emits for export-sequence and
+/// the three bounds. The codes are read from the export-sequence path of `src/cli.rs` (from `cli_audio_within`
+/// to the end of `execute_export_sequence`): every literal passed to `fail(...)` and every `("code".to_string()`
+/// / `("code".into()` refusal tuple. Codes the viewer returns (`e.code`) are the viewer's vocabulary.
+#[test]
+fn export_sequence_manual_entry_names_every_cli_refusal_and_bound() {
+    let source = include_str!("../src/cli.rs");
+    let start = source.find("fn cli_audio_within(").expect("cli_audio_within in cli.rs");
+    let end = start + source[start..].find("struct SharedCliAudio").expect("execute_export_sequence ends before SharedCliAudio");
+    let region = &source[start..end];
+    let mut codes = std::collections::BTreeSet::new();
+    for opener in ["fail(\"", "(\""] {
+        let mut rest = region;
+        while let Some(at) = rest.find(opener) {
+            rest = &rest[at + opener.len()..];
+            let Some(close) = rest.find('"') else { break };
+            let (literal, after) = (&rest[..close], &rest[close + 1..]);
+            let tuple = after.starts_with(".to_string()") || after.starts_with(".into()");
+            if (opener == "fail(\"" || tuple) && !literal.is_empty() && literal.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+                codes.insert(literal.to_string());
+            }
+        }
+    }
+    for expected in ["open_failed", "export_range", "output_unresolved", "audio_too_many", "media_too_large", "media_unreadable", "audio_port", "audio_decode", "audio_empty", "audio_too_large", "audio_rate_mismatch"] {
+        assert!(codes.contains(expected), "the scan finds {expected}: {codes:?}");
+    }
+    let entry = hsk_studio_harness::manual::COMMANDS.iter().find(|c| c.name == "export-sequence").expect("export-sequence entry");
+    let missing: Vec<&String> = codes.iter().filter(|c| !entry.summary.contains(c.as_str())).collect();
+    assert!(missing.is_empty(), "refusal codes cli.rs emits for export-sequence but the manual does not name: {missing:?}");
+    let audio_file_bytes = hsk_studio_harness::view::audio_import::ImportLimits::default().max_file_bytes;
+    for bound in [cli::MAX_EXPORT_AUDIO_FILES.to_string(), audio_file_bytes.to_string(), cli::MAX_EXPORT_AUDIO_DECODED_BYTES.to_string()] {
+        assert!(entry.summary.contains(&bound), "the manual names the bound {bound}");
+    }
+}
