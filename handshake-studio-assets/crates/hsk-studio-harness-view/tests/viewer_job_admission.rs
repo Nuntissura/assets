@@ -10,19 +10,26 @@
 
 #[path = "../../hsk-studio-harness/tests/common/mod.rs"]
 mod common;
+mod support_context;
 
+#[cfg(feature = "media")]
 use hsk_studio_accord::CancellationToken;
+#[cfg(feature = "media")]
 use hsk_studio_folio::{self as folio, *};
 use hsk_studio_harness_view::view::Viewer;
 use hsk_studio_harness_view::view::render::Prefer;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(feature = "media")]
+use std::path::Path;
 #[cfg(feature = "media")]
 use hsk_studio_session::{Cost, JobPort, JobRefused, JobScope, JobTicket};
 #[cfg(feature = "media")]
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "media")]
 const DOC: &str = "SDOC-019abcde-0000-7000-8000-000000000009";
+#[cfg(feature = "media")]
 const LAYER: &str = "SLYR-019abcde-0000-7000-8000-000000000001";
 
 struct Scratch(PathBuf);
@@ -80,7 +87,9 @@ impl JobPort for Recording {
     }
 }
 
+#[cfg(feature = "media")]
 struct Any;
+#[cfg(feature = "media")]
 impl folio::Resolver for Any {
     fn primitive(&self, _: &str, _: &str) -> Resolution {
         Resolution::Available
@@ -102,6 +111,7 @@ impl folio::Resolver for Any {
     }
 }
 
+#[cfg(feature = "media")]
 fn package(dir: &Path, sequences: Vec<StudioSequence>) -> PathBuf {
     let doc = serde_json::json!({
         "schema_id":"hsk.studio.document@1","document_id":DOC,"revision":1,"geometry_unit":"px","colour_mode":3,"bits_per_channel":8,
@@ -151,7 +161,7 @@ fn preview_frame_older_than_the_head_is_superseded_and_not_shown() {
     let psd = common::layered_psd(16, 8, &[common::L { name: "red", rect: [0, 0, 8, 16], channels: vec![(0, vec![200; n]), (1, vec![30; n]), (2, vec![40; n])] }]);
     let path = scratch.0.join("preview.psd");
     std::fs::write(&path, psd).unwrap();
-    let mut v = Viewer::new(Prefer::Cpu);
+    let mut v = crate::support_context::viewer(Prefer::Cpu);
     v.open(&path).unwrap_or_else(|e| panic!("{e}"));
     v.render_if_dirty();
     let layer = v.layers().into_iter().find(|r| r.name == "red").expect("the layer").layer_id;
@@ -386,7 +396,7 @@ mod export_media {
     fn viewer(label: &str, port: Arc<Recording>) -> (Scratch, Viewer, Arc<AtomicU64>) {
         let scratch = Scratch::new(label);
         let frames = Arc::new(AtomicU64::new(0));
-        let mut v = Viewer::new(Prefer::Cpu);
+        let mut v = crate::support_context::viewer(Prefer::Cpu);
         v.open(&package(&scratch.0, vec![main_sequence()])).unwrap_or_else(|e| panic!("{e}"));
         v.open_monitor("seq-main", 64, 32).unwrap();
         v.set_monitor_sources(Box::new(Solids(Arc::clone(&frames))), Box::new(Known));
