@@ -34,10 +34,18 @@
 //! **Bounds (V4-01/02).** Every parameter is finite and inside its row; the raster size, the alive
 //! count and the raster work are checked BEFORE allocation; refusals are [`ParticleError`] codes.
 //! After Effects parity of all four types is UNVERIFIED (D5).
+//!
+//! **Water family (lane SMB-AE-WATER-SIMS-1).** Wave world (MT-34181, [`wave_world`]) follows the
+//! same identity, record, bounds and output rules. Wave world is a stateful step simulation: every
+//! frame is re-simulated from the start tick on a fixed step grid (a Wave world may also resume
+//! from a [`WaveState`] checkpoint of the same record, which gives the same field), single-threaded
+//! in a fixed order. [`SimulationKind::ALL`] keeps its published five particle-family kinds;
+//! [`SimulationKind::EVERY`] lists every kind.
 #![deny(clippy::arithmetic_side_effects)]
 pub mod classic;
 pub mod precipitation;
 pub mod star_burst;
+pub mod wave_world;
 
 use crate::particles::{
     HARD_MAX_ALIVE, ParticleError, ParticleFrame, ParticleLimits, ParticleWorld, finite_in, footprint, over,
@@ -50,6 +58,7 @@ use hsk_studio_observe::Outcome;
 pub use classic::{ClassicParticleType, ParticleSystemsClassic};
 pub use precipitation::{DepthLayer, Precipitation, Rain, Snow};
 pub use star_burst::{BurstMode, StarBurst};
+pub use wave_world::{EdgeMode, HeightField, ProducerShape, WaveProducer, WaveState, WaveWorld};
 
 pub(crate) type Result<T> = std::result::Result<T, ParticleError>;
 
@@ -66,10 +75,24 @@ pub enum SimulationKind {
     Rain,
     Snow,
     StarBurst,
+    WaveWorld,
 }
 
 impl SimulationKind {
+    /// The particle-family kinds of lane SMB-AE-PARTICLES-2 (published length kept); [`Self::EVERY`]
+    /// lists every implemented kind.
     pub const ALL: [Self; 5] = [Self::ParticleWorld, Self::ParticleSystemsClassic, Self::Rain, Self::Snow, Self::StarBurst];
+    /// The water family (lane SMB-AE-WATER-SIMS-1).
+    pub const WATER: [Self; 1] = [Self::WaveWorld];
+    /// Every implemented kind: [`Self::ALL`] then [`Self::WATER`].
+    pub const EVERY: [Self; 6] = [
+        Self::ParticleWorld,
+        Self::ParticleSystemsClassic,
+        Self::Rain,
+        Self::Snow,
+        Self::StarBurst,
+        Self::WaveWorld,
+    ];
 
     /// The stable id.
     pub const fn id(self) -> &'static str {
@@ -79,6 +102,7 @@ impl SimulationKind {
             Self::Rain => "hsk.studio.simulation.rain",
             Self::Snow => "hsk.studio.simulation.snow",
             Self::StarBurst => "hsk.studio.simulation.star_burst",
+            Self::WaveWorld => "hsk.studio.simulation.wave_world",
         }
     }
 
@@ -90,12 +114,14 @@ impl SimulationKind {
             Self::Rain => "Rain",
             Self::Snow => "Snow",
             Self::StarBurst => "Star burst",
+            Self::WaveWorld => "Wave world",
         }
     }
 
     /// Import keys (provenance only) from the module's Simulation effect table rows of the same
     /// capability; behaviour parity with those effects is UNVERIFIED (D5). `CC Particle Systems II`
-    /// is not mapped (its table row does not say which capability it is).
+    /// is not mapped (its table row does not say which capability it is). Each water kind has one
+    /// table row (no obsolete / new pair).
     pub const fn import_keys(self) -> &'static [&'static str] {
         match self {
             Self::ParticleWorld => &["CC Particle World"],
@@ -103,21 +129,23 @@ impl SimulationKind {
             Self::Rain => &["CC Rain", "CSRainfall"],
             Self::Snow => &["CC Snow", "CSSnowfall"],
             Self::StarBurst => &["CC Star Burst"],
+            Self::WaveWorld => &["APC Wave World"],
         }
     }
 
     /// The identity of a stable id; import keys and names are not ids.
     pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|k| k.id() == id)
+        Self::EVERY.into_iter().find(|k| k.id() == id)
     }
 
     /// The Studio identity an import key maps onto.
     pub fn from_import_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|k| k.import_keys().contains(&key))
+        Self::EVERY.into_iter().find(|k| k.import_keys().contains(&key))
     }
 
     /// The authored parameter rows; `None` for the particle world (its record is the typed
-    /// [`ParticleWorld`] struct of lane SMB-AE-PARTICLES-AUDIO-PRESETS).
+    /// [`ParticleWorld`] struct of lane SMB-AE-PARTICLES-AUDIO-PRESETS). Wave world's per-producer
+    /// rows are [`wave_world::WAVE_PRODUCER_ROWS`].
     pub fn params(self) -> Option<Vec<ParamRow>> {
         match self {
             Self::ParticleWorld => None,
@@ -125,6 +153,7 @@ impl SimulationKind {
             Self::Rain => Some(precipitation::Rain::rows()),
             Self::Snow => Some(precipitation::Snow::rows()),
             Self::StarBurst => Some(star_burst::STAR_BURST_ROWS.to_vec()),
+            Self::WaveWorld => Some(wave_world::WAVE_WORLD_ROWS.to_vec()),
         }
     }
 }
@@ -176,6 +205,36 @@ pub(crate) fn checked(rows: &[ParamRow], scope: ParamScope, key: &str, value: f6
     let r = rows.iter().find(|r| r.scope == scope && r.key == key).ok_or(ParticleError::Parameter("param_key"))?;
     finite_in(value, r.hard_min, r.hard_max, r.key)?;
     Ok(r.key)
+}
+
+/// A row value that must be a whole number (counts and grid sizes): `Parameter(key)` otherwise.
+pub(crate) fn whole(key: &'static str, value: f64) -> Result<()> {
+    if value.fract() == 0.0 { Ok(()) } else { Err(ParticleError::Parameter(key)) }
+}
+
+/// Fixed-grid steps from the simulation origin to `tick` for a stepped type: whole `step_rate` steps
+/// elapsed since `start_tick` (floor, exact integer arithmetic) plus `preroll` seconds of steps
+/// (floor), each split into `substeps`; 0 before the start tick. Refused as `Window` when it does not
+/// fit `u64` or exceeds `limits.max_window_steps` (V4-02, before any allocation).
+pub(crate) fn fixed_steps(start_tick: u64, preroll: f64, step_rate: u32, substeps: u32, tick: u64, limits: &ParticleLimits) -> Result<u64> {
+    let Some(d) = tick.checked_sub(start_tick) else { return Ok(0) };
+    let base = u128::from(d)
+        .checked_mul(u128::from(step_rate))
+        .and_then(|v| v.checked_div(u128::from(TICKS_PER_SECOND)))
+        .ok_or(ParticleError::Window)?;
+    let pre = (preroll * f64::from(step_rate)).floor();
+    if !(0.0..=1.0e9).contains(&pre) {
+        return Err(ParticleError::Parameter("preroll"));
+    }
+    let steps = base
+        .checked_add(pre as u128)
+        .and_then(|v| v.checked_mul(u128::from(substeps)))
+        .and_then(|v| u64::try_from(v).ok())
+        .ok_or(ParticleError::Window)?;
+    if steps > limits.max_window_steps {
+        return Err(ParticleError::Window);
+    }
+    Ok(steps)
 }
 
 /// Seconds of simulation time at `tick` (`preroll` seconds already elapsed at the start tick);
@@ -364,6 +423,7 @@ pub enum Simulation {
     Rain(Rain),
     Snow(Snow),
     StarBurst(StarBurst),
+    WaveWorld(WaveWorld),
 }
 
 impl Simulation {
@@ -375,6 +435,7 @@ impl Simulation {
             SimulationKind::Rain => Self::Rain(Rain::default()),
             SimulationKind::Snow => Self::Snow(Snow::default()),
             SimulationKind::StarBurst => Self::StarBurst(StarBurst::default()),
+            SimulationKind::WaveWorld => Self::WaveWorld(WaveWorld::default()),
         }
     }
 
@@ -385,6 +446,7 @@ impl Simulation {
             Self::Rain(_) => SimulationKind::Rain,
             Self::Snow(_) => SimulationKind::Snow,
             Self::StarBurst(_) => SimulationKind::StarBurst,
+            Self::WaveWorld(_) => SimulationKind::WaveWorld,
         }
     }
 
@@ -395,6 +457,7 @@ impl Simulation {
             Self::Rain(r) => r.validate(),
             Self::Snow(s) => s.validate(),
             Self::StarBurst(s) => s.validate(),
+            Self::WaveWorld(w) => w.validate(),
         }
     }
 
@@ -406,6 +469,7 @@ impl Simulation {
             Self::Rain(r) => r.param(key),
             Self::Snow(s) => s.param(key),
             Self::StarBurst(s) => s.param(key),
+            Self::WaveWorld(w) => w.param(key),
         }
     }
 
@@ -418,11 +482,13 @@ impl Simulation {
             Self::Rain(r) => r.set_param(key, value),
             Self::Snow(s) => s.set_param(key, value),
             Self::StarBurst(s) => s.set_param(key, value),
+            Self::WaveWorld(w) => w.set_param(key, value),
         }
     }
 
     /// Renders the frame at composition `tick`. `ticks_per_frame` is the particle world's grid
-    /// (its integrator steps per frame); the closed-form types do not use it.
+    /// (its integrator steps per frame); the other types do not use it (Wave world steps on
+    /// its own declared grid).
     pub fn render(
         &self,
         width: u32,
@@ -438,6 +504,7 @@ impl Simulation {
             Self::Rain(r) => r.render(width, height, tick, limits, cancel),
             Self::Snow(s) => s.render(width, height, tick, limits, cancel),
             Self::StarBurst(s) => s.render(width, height, tick, limits, cancel),
+            Self::WaveWorld(w) => w.render(width, height, tick, limits, cancel),
         }
     }
 }
