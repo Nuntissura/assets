@@ -66,13 +66,18 @@ fn observe() -> Observe {
     Observe::new(1, 3, resource, actor, Budget::new(0, 0).unwrap())
 }
 
+/// Parameter, name, hard_min, hard_max, unit code, precision.
+type BoundRow = (PrintParameter, &'static str, f64, f64, &'static str, Option<u32>);
+/// Sets one booklet numeric.
+type SetField = fn(&mut BookletOptions, f64);
+
 // ---- STU-LAY-156 numeric bounds (MT-30820, MT-30819 AC-001) ----
 
 #[test]
 fn print_parameter_bounds_are_stored_separately_as_tabled() {
     bounded_case("print_parameter_bounds_are_stored_separately_as_tabled", || {
         use PrintParameter as P;
-        let expected: [(P, &str, f64, f64, &str, Option<u32>); 15] = [
+        let expected: [BoundRow; 15] = [
             (P::ScaleWidth, "scale_width", 0.0, 1000.0, "percent", None),
             (P::ScaleHeight, "scale_height", 0.0, 1000.0, "percent", None),
             (P::BitmapResolution, "bitmap_resolution", 72.0, 1200.0, "dpi", Some(0)),
@@ -337,7 +342,7 @@ fn booklet_options_margins_and_admission() {
         assert_eq!(o.effective_margins(), BookletMargins { top: 12.0, bottom: 12.0, left: 12.0, right: 12.0 });
         assert_eq!(o.validate(), Ok(()));
         // Finite values >= 0 only, field by field.
-        let cases: [(fn(&mut BookletOptions, f64), &str); 7] = [
+        let cases: [(SetField, &str); 7] = [
             (|o, v| o.space_between_pages = v, "space_between_pages"),
             (|o, v| o.bleed_between_pages = v, "bleed_between_pages"),
             (|o, v| o.creep = v, "creep"),
