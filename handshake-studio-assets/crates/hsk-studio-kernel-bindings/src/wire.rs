@@ -11,6 +11,7 @@
 //! boundary, replies); every other refusal and its stable code by `wire_strictness_and_descriptor`;
 //! hostile sizes by `hostile_sizes_are_refused_typed`.
 #![deny(clippy::arithmetic_side_effects)]
+pub use crate::context::CommandContextWire;
 use hsk_studio_accord::{ActorContext, DomainId};
 use hsk_studio_observe::{FailureCode, Outcome};
 use hsk_studio_session::Action;
@@ -71,6 +72,8 @@ pub enum WireError {
     EncodeFailed,
     /// Well-formed and schema-valid, but not the exact bytes the encoder produces for that value.
     NonCanonical,
+    /// The envelope's `command` names a client session or command id outside accord's bounds.
+    InvalidCommandContext,
 }
 
 impl WireError {
@@ -96,6 +99,7 @@ impl WireError {
             Self::InvalidCode => "invalid_code",
             Self::EncodeFailed => "encode_failed",
             Self::NonCanonical => "non_canonical",
+            Self::InvalidCommandContext => "invalid_command_context",
         }
     }
 }
@@ -314,6 +318,8 @@ pub enum Body {
 #[serde(deny_unknown_fields)]
 pub struct Envelope {
     pub bridge_version: u32,
+    /// Per-exchange reply-matching counter minted by the adapter; a reply is accepted only when
+    /// it echoes this value. It is NOT the command correlation (that is `command.correlation`).
     pub correlation_id: u64,
     /// Required for `commit` and `lookup`.
     pub idempotency_key: Option<String>,
@@ -322,6 +328,10 @@ pub struct Envelope {
     pub expected_revision: u64,
     pub lease_epoch: u64,
     pub body: Body,
+    /// The mutating command this exchange belongs to (lane SMB-ATTRIBUTION-1). Absent, it is not
+    /// encoded at all, so an envelope without it keeps its exact bytes; `null` is non-canonical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<CommandContextWire>,
 }
 
 // ----- reply -----------------------------------------------------------------------------------
@@ -493,6 +503,9 @@ impl Envelope {
         }
         DomainId::parse(&self.resource_id).map_err(|_| WireError::InvalidResourceId)?;
         self.actor.to_context()?;
+        if let Some(command) = &self.command {
+            command.to_context(&self.actor)?;
+        }
         match (&self.body, self.idempotency_key.as_deref()) {
             (Body::Commit(_) | Body::Lookup, None) => return Err(WireError::InvalidKey),
             (_, Some(key)) if !valid_text(key) => return Err(WireError::InvalidKey),

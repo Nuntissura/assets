@@ -6,6 +6,7 @@
 //! same path (`Exchange::NoReply`) and are not separately tested.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::{
+    context::CommandContextWire,
     host::HostBridge,
     wire::{
         ActionWire, ActorWire, Body, CommitDecision, CommitMsg, DenyReason, DiagnosticMsg,
@@ -14,7 +15,7 @@ use crate::{
         encode_envelope, hex_encode,
     },
 };
-use hsk_studio_accord::{ActorContext, DomainId};
+use hsk_studio_accord::{ActorContext, CommandContext, DomainId};
 use hsk_studio_observe::{FailureCode, Outcome};
 use hsk_studio_session::{
     Action, CommitOutcome, CommitPort, CommitReceipt, CommitRequest, Cost, GrantError, GrantPort,
@@ -35,7 +36,12 @@ struct Shared<H> {
     resource: DomainId,
     epoch: u64,
     limits: Limits,
+    /// Per-exchange reply-matching counter (`Envelope.correlation_id`); never a command
+    /// correlation.
     correlation: AtomicU64,
+    /// The caller's current command (`Envelope.command`), set by
+    /// [`BridgePorts::set_command_context`].
+    command: Mutex<Option<CommandContext>>,
     sent_total: AtomicU64,
     sent: Mutex<Vec<Vec<u8>>>,
 }
@@ -51,6 +57,13 @@ impl<H: HostBridge> Shared<H> {
         key: Option<&str>,
         body: Body,
     ) -> Exchange {
+        let command = match self.command.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            // The envelope's actor is the command's actor: a context for anyone else is refused
+            // before anything is sent (fail closed), never attached to a foreign actor.
+            Some(context) if context.actor() != actor => return Exchange::NotSent,
+            Some(context) => Some(CommandContextWire::from_context(context)),
+            None => None,
+        };
         let correlation = self.correlation.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         let envelope = Envelope {
             bridge_version: crate::wire::BRIDGE_VERSION,
@@ -61,6 +74,7 @@ impl<H: HostBridge> Shared<H> {
             expected_revision,
             lease_epoch: self.epoch,
             body,
+            command,
         };
         let bytes = match encode_envelope(&envelope, &self.limits) {
             Ok(bytes) => bytes,
@@ -143,6 +157,7 @@ impl<H: HostBridge + 'static> BridgePorts<H> {
                 epoch,
                 limits,
                 correlation: AtomicU64::new(0),
+                command: Mutex::new(None),
                 sent_total: AtomicU64::new(0),
                 sent: Mutex::new(Vec::new()),
             }),
@@ -165,6 +180,15 @@ impl<H: HostBridge + 'static> BridgePorts<H> {
         Arc::new(BridgeJobs {
             shared: Arc::clone(&self.shared),
         })
+    }
+
+    /// The command every following request belongs to (`Envelope.command`), until replaced or
+    /// cleared with `None`. Its actor must be the actor of the request: a request for another
+    /// actor is not sent while a context is set (grant denied, commit `wire_invalid`, job
+    /// refused). The command correlation never matches replies: those match on the per-exchange
+    /// `Envelope.correlation_id`.
+    pub fn set_command_context(&self, context: Option<CommandContext>) {
+        *self.shared.command.lock().unwrap_or_else(PoisonError::into_inner) = context;
     }
 
     /// Requests that left this adapter (cancelled-before-send operations add none).

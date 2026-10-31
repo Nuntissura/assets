@@ -473,6 +473,7 @@ fn wire_strictness_and_descriptor() {
             resource_id: DOC.into(),
             expected_revision: START,
             lease_epoch: EPOCH,
+            command: None,
             body: Body::Commit(CommitMsg {
                 grant_token: 1,
                 successor_revision: START + 1,
@@ -566,6 +567,7 @@ fn request(
             resource_id: resource.to_owned(),
             expected_revision,
             lease_epoch,
+            command: None,
             body,
         },
         &Limits::default(),
@@ -742,6 +744,7 @@ fn hostile_sizes_are_refused_typed() {
             resource_id: DOC.into(),
             expected_revision: u64::MAX,
             lease_epoch: u64::MAX,
+            command: None,
             body: Body::Commit(CommitMsg {
                 grant_token: u64::MAX,
                 successor_revision: u64::MAX,
@@ -799,6 +802,7 @@ fn only_canonical_bytes_decode() {
             resource_id: DOC.into(),
             expected_revision: START,
             lease_epoch: EPOCH,
+            command: None,
             body: Body::Commit(CommitMsg {
                 grant_token: 1,
                 successor_revision: START + 1,
