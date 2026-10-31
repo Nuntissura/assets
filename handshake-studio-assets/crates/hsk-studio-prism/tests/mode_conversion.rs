@@ -368,3 +368,80 @@ fn mt_31176_inert_method_fields_round_trip() {
     let tokens: Vec<&str> = HalftoneShape::ALL.iter().map(|s| s.token()).collect();
     assert_eq!(tokens, ["round", "diamond", "ellipse", "line", "square", "cross"]);
 }
+
+// ---------------------------------------------------------------- slice 3: colour table and file codec (MT-31175, MT-31177)
+
+use hsk_studio_prism::mode::color_table::{shipped_table, ColorTable, ShippedTable, ACT_BLOCK_BYTES, ACT_TRAILER_BYTES};
+
+const RED: [u8; 3] = [255, 0, 0];
+const GREEN: [u8; 3] = [0, 255, 0];
+const BLUE: [u8; 3] = [0, 0, 255];
+
+#[test]
+fn mt_31177_color_table_encode_decode_is_identity() {
+    let t = ColorTable::new(&[RED, GREEN, BLUE], Some(1)).unwrap();
+    let bytes = t.encode_act();
+    assert_eq!(bytes.len(), ACT_TRAILER_BYTES);
+    assert_eq!(&bytes[..9], &[255, 0, 0, 0, 255, 0, 0, 0, 255]);
+    assert_eq!(&bytes[768..772], &[0, 3, 0, 1]);
+    assert_eq!(ColorTable::decode_act(&bytes).unwrap(), t);
+    let g = shipped_table(ShippedTable::Grayscale).unwrap();
+    assert_eq!((g.len(), g.entries()[200]), (256, [200, 200, 200]));
+    let gb = g.encode_act();
+    assert_eq!(gb.len(), ACT_BLOCK_BYTES);
+    assert_eq!(ColorTable::decode_act(&gb).unwrap(), g);
+    let bw = shipped_table(ShippedTable::BlackWhite).unwrap();
+    assert_eq!(bw.entries(), &[[0, 0, 0], [255, 255, 255]]);
+    let bwb = bw.encode_act();
+    assert_eq!(&bwb[768..772], &[0, 2, 0xFF, 0xFF]);
+    assert_eq!(ColorTable::decode_act(&bwb).unwrap(), bw);
+    for s in [ShippedTable::MacOs, ShippedTable::Windows] {
+        assert_eq!(code(shipped_table(s)), "color_table_not_shipped");
+        assert_eq!(s.declared_entries(), 256);
+    }
+    let mut e = bw.clone();
+    e.set_entry(1, RED).unwrap();
+    assert_eq!(code(e.set_entry(2, RED)), "color_table_index_out_of_range");
+    assert_eq!(code(e.set_transparency_index(Some(2))), "transparency_index_out_of_range");
+    e.set_transparency_index(Some(0)).unwrap();
+    assert_eq!(ColorTable::decode_act(&e.encode_act()).unwrap(), e);
+}
+
+#[test]
+fn mt_31177_color_table_hostile_input() {
+    for len in [0_usize, 3, 767, 769, 771, 773] {
+        assert_eq!(code(ColorTable::decode_act(&vec![0_u8; len])), "color_table_file_length", "{len}");
+    }
+    let mut f = vec![0_u8; ACT_TRAILER_BYTES];
+    for (count, want) in [(0_u16, "color_table_file_count"), (257, "color_table_file_count")] {
+        f[768..770].copy_from_slice(&count.to_be_bytes());
+        f[770..772].copy_from_slice(&0xFFFF_u16.to_be_bytes());
+        assert_eq!(code(ColorTable::decode_act(&f)), want, "{count}");
+    }
+    f[768..770].copy_from_slice(&4_u16.to_be_bytes());
+    f[770..772].copy_from_slice(&4_u16.to_be_bytes());
+    assert_eq!(code(ColorTable::decode_act(&f)), "transparency_index_out_of_range");
+    f[770..772].copy_from_slice(&3_u16.to_be_bytes());
+    assert_eq!(ColorTable::decode_act(&f).unwrap().transparency_index(), Some(3));
+    assert_eq!(code(ColorTable::new(&[], None)), "color_table_empty");
+    assert_eq!(code(ColorTable::new(&[[0, 0, 0]; 257], None)), "color_table_over_256");
+    assert_eq!(code(ColorTable::new(&[[0, 0, 0]; 2], Some(2))), "transparency_index_out_of_range");
+}
+
+#[test]
+fn mt_31177_color_table_dims_u32_max() {
+    // The largest count field the format can carry is refused before any entry is read.
+    let mut f = vec![0_u8; ACT_TRAILER_BYTES];
+    f[768..770].copy_from_slice(&u16::MAX.to_be_bytes());
+    assert_eq!(code(ColorTable::decode_act(&f)), "color_table_file_count");
+}
+
+#[test]
+fn mt_31177_color_table_aggregate_over_budget() {
+    // A file larger than the fixed layout is refused on its length alone (no allocation).
+    let big = vec![0_u8; 1 << 20];
+    assert_eq!(code(ColorTable::decode_act(&big)), "color_table_file_length");
+    let mut over = vec![[1_u8, 2, 3]; 256];
+    over.push([0, 0, 0]);
+    assert_eq!(code(ColorTable::new(&over, None)), "color_table_over_256");
+}

@@ -30,6 +30,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 pub mod bitmap;
+pub mod color_table;
 
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::{Budget, FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};
