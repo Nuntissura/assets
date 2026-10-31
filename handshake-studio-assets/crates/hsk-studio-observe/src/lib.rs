@@ -1,6 +1,11 @@
 //! Observe: bounded correlation/progress/outcome adapter, not a recorder or authority.
 //! Caller-owned ports deliver allowlisted bytes to the existing diagnostic owners.
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+pub mod ring;
+pub use ring::{
+    CorrelationRef, ModuleId, ProcessRef, RingCode, RingIdentity, RingPhase, RingProducerPort, RingRecord,
+    RingRefusal, RingSeverity, RingTiming, SessionRef, ThreadRef, ring_of_delivery, ring_of_outcome,
+};
 
 pub const MAX_FRAME_BYTES: usize = 2048;
 pub const MAX_PROGRESS_EVENTS: u32 = 1024;
