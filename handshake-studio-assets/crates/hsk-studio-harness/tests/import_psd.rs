@@ -145,6 +145,70 @@ fn psd_converts_to_a_native_package_that_opens_in_a_session_with_receipt_and_ori
     assert_eq!(one.snapshot.document().layers[0].kind, "raster");
 }
 
+/// A layerless RGB PSD (no layer records) with one extra plane and an image-resource section of
+/// `resources` (each `(id, data)`): raw merged data, planes R, G, B, then the extra plane.
+fn layerless_psd_with_channel(width: u32, height: u32, resources: &[(u16, Vec<u8>)], planes: [&[u8]; 4]) -> Vec<u8> {
+    let mut v = b"8BPS".to_vec();
+    v.extend(1u16.to_be_bytes());
+    v.extend([0u8; 6]);
+    v.extend(4u16.to_be_bytes());
+    v.extend(height.to_be_bytes());
+    v.extend(width.to_be_bytes());
+    v.extend(8u16.to_be_bytes());
+    v.extend(3u16.to_be_bytes());
+    v.extend(0u32.to_be_bytes()); // colour mode data
+    let mut section = Vec::new();
+    for (id, data) in resources {
+        section.extend_from_slice(b"8BIM");
+        section.extend(id.to_be_bytes());
+        section.extend([0u8, 0]); // empty Pascal name, padded to even
+        section.extend((data.len() as u32).to_be_bytes());
+        section.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            section.push(0);
+        }
+    }
+    v.extend((section.len() as u32).to_be_bytes());
+    v.extend(section);
+    v.extend(0u32.to_be_bytes()); // no layer and mask section
+    v.extend(0u16.to_be_bytes()); // raw
+    for p in planes {
+        v.extend_from_slice(p);
+    }
+    v
+}
+
+/// R50 finding F-R50-6 (lane SMB-R50-FOLLOWUPS-1): a PSD whose records hold an alpha channel but no
+/// layer records keeps the channel on import: the records entry is written and the channel's tile
+/// bytes are package assets (the package's reference collector requires them).
+#[test]
+fn psd_alpha_channels_without_layer_records_survive_conversion() {
+    let alpha = [0u8, 64, 128, 255];
+    // Resource 1006: one Pascal name for the one extra plane.
+    let names = vec![4u8, b'M', b'a', b's', b'k'];
+    let bytes = layerless_psd_with_channel(2, 2, &[(1006, names)], [&[10; 4], &[20; 4], &[30; 4], &alpha]);
+    let cancel = CancellationToken::default();
+    let resolver = TrustAllResolver;
+    let (package, imported) = convert_to_native(&bytes, &resolver, &cancel).expect("converted");
+    assert_eq!(imported.receipt["records"], true, "{}", imported.receipt);
+    let opened = read_package(&package, &Limits::default(), folio::Budget::default(), &resolver, &cancel).expect("package reads");
+    let records: Value = serde_json::from_slice(&opened.import(ImportRole::Records).expect("records entry").bytes).unwrap();
+    assert_eq!(records["layers"].as_array().map_or(0, Vec::len), 0, "no layer records in this file");
+    let channels = records["channels"].as_array().expect("channels kept");
+    assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0]["name"], "Mask");
+    let tiles = channels[0]["tiles"].as_array().unwrap();
+    assert_eq!(tiles.len(), 1, "2 x 2 fits one grid cell");
+    for t in tiles {
+        let digest = t["content_digest"]["digest"].as_str().unwrap();
+        let stored = opened.assets.get(digest).expect("the channel tile is a package asset");
+        // coverage_u8 in a 256-pixel cell: sample (x, y) at y * 256 + x, as stored.
+        for (i, (x, y)) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
+            assert_eq!(stored[y * 256 + x], alpha[i], "sample ({x},{y})");
+        }
+    }
+}
+
 #[test]
 fn unknown_and_not_yet_importable_formats_are_typed_refusals() {
     let cancel = CancellationToken::default();
