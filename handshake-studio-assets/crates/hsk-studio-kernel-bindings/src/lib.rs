@@ -36,8 +36,8 @@ pub use ckc_rules::{LibraryRecord, RecordFacts, RuleContext, Verdict};
 #[cfg(any(test, feature = "ckc-test-double"))]
 pub use ckc_double::{AssetFacts, CkcTestDouble, DoubleCollection};
 pub use business_event::{
-    BusinessEventError, BusinessEventPort, EventAttribution, EventDeliveryError, MAX_ARTIFACT_REFS,
-    MAX_CLIENT_SESSION_BYTES, MAX_COMMAND_ID_BYTES, MAX_EVENT_BYTES, NOT_PRODUCED_ASSET_LOCALLY,
+    BusinessEventError, BusinessEventPort, EventDeliveryError, MAX_ARTIFACT_REFS,
+    MAX_COMMAND_ID_BYTES, MAX_EVENT_BYTES, NOT_PRODUCED_ASSET_LOCALLY,
     NotProducedReason, StudioBusinessEvent, StudioEventVariant, business_event_id,
     decode_business_event, encode_business_event,
 };

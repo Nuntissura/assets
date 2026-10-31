@@ -17,7 +17,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::wire::ActorWire;
 use hsk_studio_accord::{
-    ActorContext, DomainId, SCHEMA_STUDIO_BUSINESS_EVENT, SCHEMA_STUDIO_DOCUMENT, SchemaId,
+    ActorContext, CausationId, ClientSessionId, CommandContext, CommandId, CorrelationId, DomainId,
+    SCHEMA_STUDIO_BUSINESS_EVENT, SCHEMA_STUDIO_DOCUMENT, SchemaId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -29,8 +30,6 @@ pub const MAX_EVENT_BYTES: usize = 8 * 1024;
 pub const MAX_ARTIFACT_REFS: usize = 64;
 /// Longest command id (`[a-z0-9._-]`).
 pub const MAX_COMMAND_ID_BYTES: usize = 64;
-/// Longest client session id (the accord attribution bound).
-pub const MAX_CLIENT_SESSION_BYTES: usize = 128;
 
 /// The 22 canonical Studio business events (STU-CON-003 wire identities, STU-CON-014 catalog).
 /// Every match over it is exhaustive, so a new variant does not compile until it has a wire
@@ -317,15 +316,6 @@ impl std::fmt::Display for BusinessEventError {
 
 impl std::error::Error for BusinessEventError {}
 
-/// Who and what a business event is attributed to: the caller's command context, as wire values.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EventAttribution<'a> {
-    pub actor: &'a ActorContext,
-    pub client_session: &'a str,
-    pub correlation: u64,
-    pub causation: Option<u64>,
-}
-
 /// One typed `hsk.studio.business_event@1` envelope. Built only through [`StudioBusinessEvent::new`]
 /// or [`decode_business_event`], so every value satisfies the construction rules: an `SDOC`
 /// document, the event id derived from document and sequence, bounded ids and digests only.
@@ -334,13 +324,13 @@ pub struct StudioBusinessEvent {
     variant: StudioEventVariant,
     document: DomainId,
     actor: ActorContext,
-    client_session: String,
+    client_session: ClientSessionId,
     event_id: String,
     sequence: u64,
-    correlation: u64,
-    causation: Option<u64>,
+    correlation: CorrelationId,
+    causation: Option<CausationId>,
     revision: u64,
-    command_id: String,
+    command_id: CommandId,
     input_digest: Option<String>,
     output_digest: Option<String>,
     artifacts: Vec<DomainId>,
@@ -350,12 +340,6 @@ pub struct StudioBusinessEvent {
 /// the host adds its workspace partition).
 pub fn business_event_id(document: &DomainId, sequence: u64) -> String {
     format!("{}#{sequence}", document.as_str())
-}
-
-fn valid_session(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_CLIENT_SESSION_BYTES
-        && !value.chars().any(char::is_control)
 }
 
 fn valid_command_id(value: &str) -> bool {
@@ -400,37 +384,60 @@ fn artifact_refs<'s>(refs: impl ExactSizeIterator<Item = &'s str>) -> Result<Vec
 }
 
 impl StudioBusinessEvent {
-    /// Builds an event for `document` at `sequence` and the exact `revision` it describes. Every
-    /// bound is checked before anything is copied. The command id is required: `None` is
-    /// `missing_command_id` (a business event records a committed command, and every committed
-    /// command has a RUN_COMMANDS id).
+    /// Builds the event of the committed command `context` for `document` at `sequence` and the
+    /// exact successor `revision`. Actor, client session, command id, correlation and causation
+    /// come from the context (SMB-ATTRIBUTION-1). The command id is required: a context without
+    /// one is `missing_command_id` (lead decision 2026-10-31: every committed command has a
+    /// RUN_COMMANDS id), and it must be `[a-z0-9._-]`, at most 64 bytes. Every bound is checked
+    /// before anything is copied.
     pub fn new(
         variant: StudioEventVariant,
         document: &str,
-        attribution: &EventAttribution<'_>,
+        context: &CommandContext,
         sequence: u64,
         revision: u64,
-        command_id: Option<&str>,
     ) -> Result<Self, BusinessEventError> {
-        let command_id = command_id.ok_or(BusinessEventError::MissingCommandId)?;
-        if !valid_command_id(command_id) {
+        Self::build(
+            variant,
+            document,
+            context.actor(),
+            context.client_session(),
+            context.command(),
+            context.correlation(),
+            context.causation(),
+            sequence,
+            revision,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        variant: StudioEventVariant,
+        document: &str,
+        actor: &ActorContext,
+        client_session: &ClientSessionId,
+        command: Option<&CommandId>,
+        correlation: CorrelationId,
+        causation: Option<CausationId>,
+        sequence: u64,
+        revision: u64,
+    ) -> Result<Self, BusinessEventError> {
+        let command = command.ok_or(BusinessEventError::MissingCommandId)?;
+        if !valid_command_id(command.as_str()) {
             return Err(BusinessEventError::InvalidCommandId);
-        }
-        if !valid_session(attribution.client_session) {
-            return Err(BusinessEventError::InvalidClientSession);
         }
         let document = document_id(document)?;
         Ok(Self {
             variant,
             event_id: business_event_id(&document, sequence),
             document,
-            actor: attribution.actor.clone(),
-            client_session: attribution.client_session.to_owned(),
+            actor: actor.clone(),
+            client_session: client_session.clone(),
             sequence,
-            correlation: attribution.correlation,
-            causation: attribution.causation,
+            correlation,
+            causation,
             revision,
-            command_id: command_id.to_owned(),
+            command_id: command.clone(),
             input_digest: None,
             output_digest: None,
             artifacts: Vec::new(),
@@ -459,7 +466,7 @@ impl StudioBusinessEvent {
     pub fn actor(&self) -> &ActorContext {
         &self.actor
     }
-    pub fn client_session(&self) -> &str {
+    pub fn client_session(&self) -> &ClientSessionId {
         &self.client_session
     }
     pub fn event_id(&self) -> &str {
@@ -468,16 +475,16 @@ impl StudioBusinessEvent {
     pub fn sequence(&self) -> u64 {
         self.sequence
     }
-    pub fn correlation(&self) -> u64 {
+    pub fn correlation(&self) -> CorrelationId {
         self.correlation
     }
-    pub fn causation(&self) -> Option<u64> {
+    pub fn causation(&self) -> Option<CausationId> {
         self.causation
     }
     pub fn revision(&self) -> u64 {
         self.revision
     }
-    pub fn command_id(&self) -> &str {
+    pub fn command_id(&self) -> &CommandId {
         &self.command_id
     }
     pub fn input_digest(&self) -> Option<&str> {
@@ -498,13 +505,13 @@ impl StudioBusinessEvent {
             business_id: self.variant.business_id().to_owned(),
             document: self.document.as_str().to_owned(),
             actor: ActorWire::from_context(&self.actor),
-            client_session: self.client_session.clone(),
+            client_session: self.client_session.as_str().to_owned(),
             event_id: self.event_id.clone(),
             sequence: self.sequence,
-            correlation: self.correlation,
-            causation: self.causation,
+            correlation: self.correlation.value(),
+            causation: self.causation.map(CausationId::value),
             revision: self.revision,
-            command_id: self.command_id.clone(),
+            command_id: self.command_id.as_str().to_owned(),
             input_digest: self.input_digest.clone(),
             output_digest: self.output_digest.clone(),
             artifacts: self.artifacts.iter().map(|a| a.as_str().to_owned()).collect(),
@@ -547,19 +554,19 @@ impl EventWire {
             return Err(BusinessEventError::BusinessIdMismatch);
         }
         let actor = self.actor.to_context().map_err(|_| BusinessEventError::InvalidActor)?;
-        let attribution = EventAttribution {
-            actor: &actor,
-            client_session: &self.client_session,
-            correlation: self.correlation,
-            causation: self.causation,
-        };
-        let event = StudioBusinessEvent::new(
+        let client_session = ClientSessionId::parse(&self.client_session)
+            .map_err(|_| BusinessEventError::InvalidClientSession)?;
+        let command = CommandId::parse(&self.command_id).map_err(|_| BusinessEventError::InvalidCommandId)?;
+        let event = StudioBusinessEvent::build(
             variant,
             &self.document,
-            &attribution,
+            &actor,
+            &client_session,
+            Some(&command),
+            CorrelationId::new(self.correlation),
+            self.causation.map(CausationId::new),
             self.sequence,
             self.revision,
-            Some(&self.command_id),
         )?
         .with_digests(self.input_digest.as_deref(), self.output_digest.as_deref())?;
         let event = StudioBusinessEvent {
