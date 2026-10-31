@@ -23,6 +23,14 @@
 //! - Every terminal outcome (refusals included) is counted in [`JobCounts`] and emitted as one
 //!   Observe terminal frame through the lifecycle's sink: outcome codes, the bound revision and the
 //!   caller's opaque correlation id only, never text (rule 5).
+//! - Deadline (R48 F-R48-3, HBR-HOST-004; additive): [`JobLifecycle::admit_by`] admits with a
+//!   deadline. A deadline already reached at admission is refused
+//!   [`JobAdmissionRefusal::DeadlineExceeded`] (checked after the token, before the revision and the
+//!   port: nothing is held); an admitted job exposes [`AdmittedJob::deadline_passed`] for its work loop
+//!   (stop as on a cancel, then settle [`JobOutcome::DeadlineExceeded`]), and a job that completes
+//!   after its deadline settles `DeadlineExceeded`, not `Completed`: the late result is not delivered
+//!   as current. Canceled, failed and superseded settlements keep their outcome. [`JobLifecycle::admit`]
+//!   sets no deadline (a job class without one by nature). Test `deadline_tests`.
 //! - [`AdmissionJobPort`] is an asset-local `JobPort` over a session [`Admission`] so a host-less
 //!   caller (the harness viewer) can admit; a host binds its own port (kernel-bindings
 //!   `BridgeJobs`, MT-36228).
@@ -36,6 +44,7 @@ use hsk_studio_observe::{
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 /// Retry hint of a refusal that waiting cannot clear (the cost exceeds the whole budget).
 pub const RETRY_NEVER_MS: u64 = u64::MAX;
@@ -71,6 +80,8 @@ pub enum JobAdmissionRefusal {
     Canceled,
     /// The job's input revision is not the document head.
     StaleRevision { expected: u64, head: u64 },
+    /// The job's deadline was already reached at admission ([`JobLifecycle::admit_by`]).
+    DeadlineExceeded,
 }
 
 impl JobAdmissionRefusal {
@@ -79,12 +90,15 @@ impl JobAdmissionRefusal {
             Self::Overloaded { .. } => "overloaded",
             Self::Canceled => "canceled",
             Self::StaleRevision { .. } => "stale_revision",
+            Self::DeadlineExceeded => "deadline_exceeded",
         }
     }
 
     const fn observe(self) -> Outcome {
         match self {
-            Self::Overloaded { .. } => Outcome::Failure(FailureCode::Unavailable),
+            Self::Overloaded { .. } | Self::DeadlineExceeded => {
+                Outcome::Failure(FailureCode::Unavailable)
+            }
             Self::Canceled => Outcome::Canceled,
             Self::StaleRevision { .. } => Outcome::Failure(FailureCode::Validation),
         }
@@ -120,6 +134,9 @@ pub enum JobOutcome {
     Superseded { revision: u64 },
     /// The guard was dropped without a settlement.
     Abandoned,
+    /// The job's deadline passed before it finished: stopped at it, or finished after it (the late
+    /// result is not delivered as current).
+    DeadlineExceeded,
 }
 
 impl JobOutcome {
@@ -131,6 +148,7 @@ impl JobOutcome {
             Self::Failed(_) => "failed",
             Self::Superseded { .. } => "superseded",
             Self::Abandoned => "abandoned",
+            Self::DeadlineExceeded => "deadline_exceeded",
         }
     }
 
@@ -138,7 +156,7 @@ impl JobOutcome {
         match self {
             Self::Completed | Self::CompletedStale { .. } => Outcome::Success,
             Self::Canceled | Self::Superseded { .. } => Outcome::Canceled,
-            Self::Failed(_) => Outcome::Failure(FailureCode::Unavailable),
+            Self::Failed(_) | Self::DeadlineExceeded => Outcome::Failure(FailureCode::Unavailable),
             Self::Abandoned => Outcome::Failure(FailureCode::Loss),
         }
     }
@@ -168,6 +186,10 @@ pub struct JobCounts {
     pub failed: u64,
     pub superseded: u64,
     pub abandoned: u64,
+    /// Refused at admission: the deadline was already reached.
+    pub refused_deadline: u64,
+    /// Settled `DeadlineExceeded`.
+    pub deadline_exceeded: u64,
     /// Tickets or local permits given back (one per settlement).
     pub released: u64,
     /// Admitted and not yet settled.
@@ -242,8 +264,34 @@ impl JobLifecycle {
         head_revision: u64,
         cancel: &CancellationToken,
     ) -> Result<AdmittedJob, JobAdmissionRefusal> {
+        self.admit_within(port, request, head_revision, cancel, None)
+    }
+
+    /// [`Self::admit`] for a job that must finish by `deadline` (module docs, R48 F-R48-3): refused
+    /// `DeadlineExceeded` when the deadline is already reached; the admitted job carries it.
+    pub fn admit_by(
+        &self,
+        port: &Arc<dyn JobPort>,
+        request: JobRequest,
+        head_revision: u64,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<AdmittedJob, JobAdmissionRefusal> {
+        self.admit_within(port, request, head_revision, cancel, Some(deadline))
+    }
+
+    fn admit_within(
+        &self,
+        port: &Arc<dyn JobPort>,
+        request: JobRequest,
+        head_revision: u64,
+        cancel: &CancellationToken,
+        deadline: Option<Instant>,
+    ) -> Result<AdmittedJob, JobAdmissionRefusal> {
         let held = if cancel.check().is_err() {
             Err(JobAdmissionRefusal::Canceled)
+        } else if deadline.is_some_and(|d| Instant::now() >= d) {
+            Err(JobAdmissionRefusal::DeadlineExceeded)
         } else if request.bound_revision != head_revision {
             Err(JobAdmissionRefusal::StaleRevision {
                 expected: request.bound_revision,
@@ -262,6 +310,7 @@ impl JobLifecycle {
                     hold: Some(hold),
                     request,
                     lifecycle: self.clone(),
+                    deadline,
                 })
             }
             Err(refusal) => {
@@ -270,6 +319,7 @@ impl JobLifecycle {
                         JobAdmissionRefusal::Overloaded { .. } => &mut c.refused_overloaded,
                         JobAdmissionRefusal::Canceled => &mut c.refused_canceled,
                         JobAdmissionRefusal::StaleRevision { .. } => &mut c.refused_stale,
+                        JobAdmissionRefusal::DeadlineExceeded => &mut c.refused_deadline,
                     };
                     *n = n.saturating_add(1);
                 });
@@ -394,6 +444,8 @@ pub struct AdmittedJob {
     hold: Option<Hold>,
     request: JobRequest,
     lifecycle: JobLifecycle,
+    /// Set by [`JobLifecycle::admit_by`].
+    deadline: Option<Instant>,
 }
 
 impl std::fmt::Debug for AdmittedJob {
@@ -422,6 +474,17 @@ impl AdmittedJob {
         self.request.bound_revision
     }
 
+    /// The deadline the job was admitted with ([`JobLifecycle::admit_by`]); `None` without one.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// Whether the job's deadline is reached now (always `false` without one): the work loop stops
+    /// and settles [`JobOutcome::DeadlineExceeded`], as it would on a cancel.
+    pub fn deadline_passed(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+
     /// Releases the ticket once and records `outcome`.
     pub fn settle(mut self, outcome: JobOutcome) -> JobSettlement {
         self.finish(outcome)
@@ -447,6 +510,10 @@ impl AdmittedJob {
             JobOutcome::Superseded { .. } if self.request.kind == JobKind::Committed => {
                 JobOutcome::Failed("not_replaceable")
             }
+            // A result that arrives after its deadline is not delivered as current.
+            JobOutcome::Completed | JobOutcome::CompletedStale { .. } if self.deadline_passed() => {
+                JobOutcome::DeadlineExceeded
+            }
             other => other,
         };
         let ticket = match self.hold.take() {
@@ -466,6 +533,7 @@ impl AdmittedJob {
                 JobOutcome::Failed(_) => &mut c.failed,
                 JobOutcome::Superseded { .. } => &mut c.superseded,
                 JobOutcome::Abandoned => &mut c.abandoned,
+                JobOutcome::DeadlineExceeded => &mut c.deadline_exceeded,
             };
             *n = n.saturating_add(1);
             c.released = c.released.saturating_add(1);
@@ -563,5 +631,61 @@ impl JobPort for AdmissionJobPort {
             .1
             .remove(&ticket.0);
         drop(permits);
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn request() -> JobRequest {
+        JobRequest {
+            resource: Some(DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap()),
+            action: Action::Export,
+            actor: ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap(),
+            cost: Cost { jobs: 1, bytes: 0 },
+            bound_revision: 3,
+            correlation_id: 4100,
+            kind: JobKind::Committed,
+        }
+    }
+
+    /// R48 F-R48-3 (lane SMB-R47-FOLLOWUPS-1): a deadline reached at admission is refused typed and
+    /// holds nothing; a job whose deadline passes while it runs reports it to its work loop and
+    /// settles `deadline_exceeded` (also when it then completes), releasing its ticket once; a job
+    /// within its deadline completes; a canceled one stays canceled.
+    #[test]
+    fn a_job_past_its_deadline_ends_in_the_deadline_outcome() {
+        let port = Arc::new(AdmissionJobPort::default());
+        let dynamic: Arc<dyn JobPort> = port.clone();
+        let lifecycle = JobLifecycle::default();
+        let token = CancellationToken::default();
+        let now = Instant::now();
+        assert_eq!(lifecycle.admit_by(&dynamic, request(), 3, &token, now).unwrap_err(), JobAdmissionRefusal::DeadlineExceeded);
+        assert_eq!(JobAdmissionRefusal::DeadlineExceeded.code(), "deadline_exceeded");
+        assert_eq!(port.tickets_held(), 0, "a refusal holds nothing");
+
+        let soon = Instant::now().checked_add(Duration::from_millis(1500)).unwrap();
+        let late = lifecycle.admit_by(&dynamic, request(), 3, &token, soon).expect("admitted before its deadline");
+        assert_eq!(late.deadline(), Some(soon));
+        std::thread::sleep(Duration::from_millis(2000));
+        assert!(late.deadline_passed(), "the work loop sees the deadline");
+        let settled = late.complete(3);
+        assert_eq!((settled.outcome, settled.outcome.code(), settled.correlation_id), (JobOutcome::DeadlineExceeded, "deadline_exceeded", 4100));
+        assert_eq!(port.tickets_held(), 0, "released once");
+
+        let far = Instant::now().checked_add(Duration::from_secs(3600)).unwrap();
+        let on_time = lifecycle.admit_by(&dynamic, request(), 3, &token, far).unwrap();
+        assert!(!on_time.deadline_passed());
+        assert_eq!(on_time.complete(3).outcome, JobOutcome::Completed);
+        let stopped = lifecycle.admit_by(&dynamic, request(), 3, &token, soon.checked_add(Duration::from_secs(3600)).unwrap()).unwrap();
+        assert_eq!(stopped.settle(JobOutcome::Canceled).outcome, JobOutcome::Canceled);
+        let undated = lifecycle.admit(&dynamic, request(), 3, &token).unwrap();
+        assert_eq!((undated.deadline(), undated.deadline_passed()), (None, false));
+        assert_eq!(undated.settle(JobOutcome::DeadlineExceeded).outcome, JobOutcome::DeadlineExceeded, "a work loop may stop at its own deadline");
+
+        let c = lifecycle.counts();
+        assert_eq!((c.refused_deadline, c.deadline_exceeded, c.completed, c.canceled, c.released, c.in_flight), (1, 2, 1, 1, 4, 0), "{c:?}");
     }
 }

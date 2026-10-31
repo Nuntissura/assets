@@ -19,7 +19,7 @@ use crate::{
     multicam::MULTICAM_ENTRY,
     multicam_step::{self, MULTICAM_STEP_PROVIDER, MulticamStep},
 };
-use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+use hsk_studio_accord::{ActorContext, CancellationToken, CommandContext, DomainId};
 use hsk_studio_chronicle::{
     self as chronicle, Inverse, Property, RevisionEntry, RevisionUpdate, SourceResult,
 };
@@ -734,6 +734,22 @@ impl Session {
         self.settle(result, |applied, report| applied.report = report)
     }
 
+    /// As [`Session::submit`] for the command `context` (R48 F-R48-6, additive): the operation's one
+    /// Observe report frame carries the command's correlation (`context.correlation()`) instead of the
+    /// session's operation counter, so the frame and the caller's op record name the same command.
+    /// Everything else (checks, commit, refusals, the counter itself) is [`Session::submit`]'s.
+    pub fn submit_as(
+        &mut self,
+        context: &CommandContext,
+        provider: &str,
+        params: &[u8],
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.submit_inner(None, provider, params, expected_revision, cancel, None);
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
     /// As [`Session::submit`], idempotent under `key`: an identical retry (same principal,
     /// resource, action, provider, payload hash and expected revision) returns the stored
     /// receipt after a fresh grant check and applies nothing; the same key with anything else
@@ -779,6 +795,28 @@ impl Session {
         self.settle(result, |applied, report| applied.report = report)
     }
 
+    /// As [`Session::submit_timeline`] for the command `context`: its report frame carries the
+    /// command's correlation (see [`Session::submit_as`]).
+    pub fn submit_timeline_as(
+        &mut self,
+        context: &CommandContext,
+        step: &TimelineStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(
+                None,
+                TIMELINE_STEP_PROVIDER,
+                &params,
+                expected_revision,
+                cancel,
+                Some(Step::Timeline(step)),
+            )
+        });
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
     /// As [`Session::submit_timeline`], idempotent under `key` (see [`Session::submit_keyed`]).
     pub fn submit_timeline_keyed(
         &mut self,
@@ -818,6 +856,21 @@ impl Session {
             self.submit_inner(None, MULTICAM_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::Multicam(step)))
         });
         self.settle(result, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_multicam`] for the command `context`: its report frame carries the
+    /// command's correlation (see [`Session::submit_as`]).
+    pub fn submit_multicam_as(
+        &mut self,
+        context: &CommandContext,
+        step: &MulticamStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(None, MULTICAM_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::Multicam(step)))
+        });
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
     }
 
     /// As [`Session::submit_multicam`], idempotent under `key` (see [`Session::submit_keyed`]).
@@ -2136,6 +2189,29 @@ impl Session {
         ok_outcome: impl FnOnce(&T) -> Outcome,
         attach: impl FnOnce(&mut T, ReportStatus),
     ) -> Result<T, Failed> {
+        self.settle_report(result, None, ok_outcome, attach)
+    }
+
+    /// [`Self::settle`] for a command: the report frame carries `context`'s correlation (R48 F-R48-6).
+    fn settle_correlated<T>(
+        &mut self,
+        result: Result<T, SessionError>,
+        context: &CommandContext,
+        attach: impl FnOnce(&mut T, ReportStatus),
+    ) -> Result<T, Failed> {
+        let correlation = context.correlation().value();
+        self.settle_report(result, Some(correlation), |_| Outcome::Success, attach)
+    }
+
+    /// Counts the operation and emits its one report under `correlation` (the operation counter
+    /// when `None`).
+    fn settle_report<T>(
+        &mut self,
+        result: Result<T, SessionError>,
+        correlation: Option<u64>,
+        ok_outcome: impl FnOnce(&T) -> Outcome,
+        attach: impl FnOnce(&mut T, ReportStatus),
+    ) -> Result<T, Failed> {
         self.operations = self.operations.saturating_add(1);
         let outcome = match &result {
             Ok(value) => ok_outcome(value),
@@ -2143,7 +2219,7 @@ impl Session {
         };
         let report = emit_report(
             &mut *self.ports.sink,
-            self.operations,
+            correlation.unwrap_or(self.operations),
             self.snapshot.document().revision,
             Some(&self.resource),
             &self.config.actor,
