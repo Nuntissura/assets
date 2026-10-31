@@ -2,9 +2,9 @@
 //! typed envelope and the asset-local sink (STU-CON-003, STU-CON-013, STU-CON-014).
 use hsk_studio_accord::ActorContext;
 use hsk_studio_kernel_bindings::{
-    EventAttribution, MAX_ARTIFACT_REFS, MAX_COMMAND_ID_BYTES,
+    BusinessEventPort, EventAttribution, EventDeliveryError, MAX_ARTIFACT_REFS, MAX_COMMAND_ID_BYTES,
     MAX_EVENT_BYTES, NOT_PRODUCED_ASSET_LOCALLY, StudioBusinessEvent, StudioEventVariant,
-    decode_business_event, encode_business_event,
+    TransientBusinessEvents, TransientEventStats, decode_business_event, encode_business_event,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -212,4 +212,42 @@ fn envelopes_carry_ids_and_digests_only() {
         "invalid_client_session"
     );
     assert!(!text(&e).contains(DECOY));
+}
+
+/// A port that reports what an adapter reports when it cannot know whether bytes escaped.
+struct UnknownOutcomePort;
+impl BusinessEventPort for UnknownOutcomePort {
+    fn try_emit(&self, _: &StudioBusinessEvent) -> Result<(), EventDeliveryError> {
+        Err(EventDeliveryError::Indeterminate)
+    }
+}
+
+#[test]
+fn transient_sink_is_bounded_idempotent_and_refuses_collisions() {
+    let sink = TransientBusinessEvents::new(2);
+    let first = event(StudioEventVariant::LayerMutated, 1);
+    assert_eq!(sink.try_emit(&first), Ok(()));
+    // An identical re-delivery is a replay, stored once.
+    assert_eq!(sink.try_emit(&first), Ok(()));
+    // The same id with a different envelope is an immutable-envelope collision.
+    let colliding = event(StudioEventVariant::LayerCreated, 1);
+    assert_eq!(colliding.event_id(), first.event_id());
+    assert_eq!(sink.try_emit(&colliding), Err(EventDeliveryError::Rejected));
+    assert_eq!(sink.try_emit(&event(StudioEventVariant::LayerMutated, 2)), Ok(()));
+    // Full: the new event is refused typed, nothing is evicted.
+    assert_eq!(sink.try_emit(&event(StudioEventVariant::LayerMutated, 3)), Err(EventDeliveryError::Saturated));
+    let stored: Vec<u64> = sink.events().iter().map(StudioBusinessEvent::sequence).collect();
+    assert_eq!(stored, [1, 2]);
+    assert_eq!(sink.events()[0], first);
+    assert_eq!(sink.stats(), TransientEventStats { accepted: 2, replays: 1, saturated: 1, collisions: 1 });
+    // Indeterminate is reported as such and is the only error that needs reconciliation.
+    let port: &dyn BusinessEventPort = &UnknownOutcomePort;
+    let error = port.try_emit(&first).unwrap_err();
+    assert_eq!((error.code(), error.needs_reconciliation()), ("indeterminate", true));
+    for other in [EventDeliveryError::Saturated, EventDeliveryError::Rejected, EventDeliveryError::Unavailable] {
+        assert!(!other.needs_reconciliation(), "{other}");
+    }
+    // The DESCRIPTOR declares the sink asset-local with no storage.
+    let descriptor: Value = serde_json::from_str(hsk_studio_kernel_bindings::DESCRIPTOR).unwrap();
+    assert!(descriptor["business_events"]["asset_local_sink"].as_str().unwrap().starts_with("TransientBusinessEvents: storage NONE"));
 }

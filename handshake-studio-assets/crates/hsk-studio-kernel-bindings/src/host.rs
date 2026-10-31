@@ -9,6 +9,7 @@
 //! (`job_tickets_are_released_only_by_their_owner`, `job_admission_needs_a_standing_grant`), and a host-owned lease epoch
 //! (`lease_epoch_is_issued_by_the_host_not_adopted_from_callers`).
 #![deny(clippy::arithmetic_side_effects)]
+use crate::business_event::{BusinessEventPort, EventDeliveryError, StudioBusinessEvent};
 use crate::wire::{
     ActionWire, Body, CommitDecision, CommitMsg, DenyReason, DiagnosticMsg, Envelope, ErrorReply,
     GrantDecision, JobDecision, JobDenyCode, Limits, LookupDecision, ReceiptWire, RejectCode,
@@ -524,5 +525,95 @@ impl HostBridge for TransientHost {
             return Vec::new();
         }
         encode_reply(&reply, &limits).unwrap_or_default()
+    }
+}
+
+// ----- business events (lane SMB-BUSINESS-EVENTS-1) ----------------------------------------------
+
+/// What [`TransientBusinessEvents`] has seen, for independent inspection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TransientEventStats {
+    /// Events stored.
+    pub accepted: u64,
+    /// Re-deliveries of an already stored, byte-identical envelope (stored once).
+    pub replays: u64,
+    /// Refused because the sink was full.
+    pub saturated: u64,
+    /// Refused because the event id was stored with a different envelope.
+    pub collisions: u64,
+}
+
+struct EventSinkState {
+    events: Vec<StudioBusinessEvent>,
+    by_id: BTreeMap<String, usize>,
+    stats: TransientEventStats,
+}
+
+/// Asset-local [`BusinessEventPort`]: a bounded in-memory list. Memory only and process-local;
+/// it stands in for the host's Flight Recorder / EventLedger delivery (MT-36230) and proves
+/// nothing about host acceptance. A full sink refuses the new event as `Saturated` (nothing is
+/// evicted); the same event id with an identical envelope is accepted once (a replay), with a
+/// different envelope it is `Rejected` (STU-CON-013 immutable-envelope collision refusal; test
+/// `transient_sink_is_bounded_idempotent_and_refuses_collisions`).
+pub struct TransientBusinessEvents {
+    capacity: usize,
+    state: Mutex<EventSinkState>,
+}
+
+impl TransientBusinessEvents {
+    pub const DEFAULT_CAPACITY: usize = 4096;
+
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            state: Mutex::new(EventSinkState {
+                events: Vec::new(),
+                by_id: BTreeMap::new(),
+                stats: TransientEventStats::default(),
+            }),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, EventSinkState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The stored events, in acceptance order.
+    pub fn events(&self) -> Vec<StudioBusinessEvent> {
+        self.lock().events.clone()
+    }
+
+    pub fn stats(&self) -> TransientEventStats {
+        self.lock().stats
+    }
+}
+
+impl Default for TransientBusinessEvents {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_CAPACITY)
+    }
+}
+
+impl BusinessEventPort for TransientBusinessEvents {
+    fn try_emit(&self, event: &StudioBusinessEvent) -> Result<(), EventDeliveryError> {
+        let mut state = self.lock();
+        if let Some(&index) = state.by_id.get(event.event_id()) {
+            return if state.events.get(index) == Some(event) {
+                state.stats.replays = state.stats.replays.saturating_add(1);
+                Ok(())
+            } else {
+                state.stats.collisions = state.stats.collisions.saturating_add(1);
+                Err(EventDeliveryError::Rejected)
+            };
+        }
+        if state.events.len() >= self.capacity {
+            state.stats.saturated = state.stats.saturated.saturating_add(1);
+            return Err(EventDeliveryError::Saturated);
+        }
+        let index = state.events.len();
+        state.by_id.insert(event.event_id().to_owned(), index);
+        state.events.push(event.clone());
+        state.stats.accepted = state.stats.accepted.saturating_add(1);
+        Ok(())
     }
 }
