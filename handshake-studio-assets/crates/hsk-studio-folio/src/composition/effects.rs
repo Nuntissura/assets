@@ -23,7 +23,10 @@
 //!   matched exhaustively by dependents, so the spec's `EFFECT_PARAM_OUT_OF_RANGE` result is the
 //!   target segment). Soft bounds are presentation only and never refused ([STU-FX-105]).
 //! - [STU-FX-112] kinds: `scalar`, `angle`, `point_2d` ("stored as fractions of layer size by
-//!   default"), `color` (4 channels), `enumeration` ("1-based index into `options`").
+//!   default"), `color` (4 channels), `enumeration` ("1-based index into `options`"); lane
+//!   SMB-R50-FOLLOWUPS-1 adds `layer_reference` and `group` (no stored value: `components` 0 and
+//!   `accepts` refuses every value) for composite's recovered simulation records (Foam, Wave world).
+//!   No effect kind of this module has such a row.
 //! - [STU-FX-116a] "Enumerated option indices are STABLE": an enumeration value must be one of the
 //!   recovered indices of [`StudioEffectParamSpec::options`] (gaps in the source numbering kept).
 //! - [STU-FX-131] parameter records of 14.9.4, reproduced row for row for the implemented kinds:
@@ -285,6 +288,12 @@ pub enum StudioParameterKind {
     Enumeration,
     /// `boolean` (a `CHECKBOX` row): stored as `0` or `1`, hold-only.
     Boolean,
+    /// `layer_reference` (a `LAYER` row): a reference to another layer used as an effect input.
+    /// No numeric value is stored for it in an effect stack (lane SMB-R50-FOLLOWUPS-1: the
+    /// recovered simulation records of composite carry it as a typed row).
+    LayerReference,
+    /// `group` (a `GROUP_START` or `GROUP_END` row): a structural container; no stored value.
+    Group,
 }
 impl StudioParameterKind {
     /// Components of a stored value.
@@ -293,6 +302,7 @@ impl StudioParameterKind {
             Self::Scalar | Self::Angle | Self::Enumeration | Self::Boolean => 1,
             Self::Point2d => 2,
             Self::Color => 4,
+            Self::LayerReference | Self::Group => 0,
         }
     }
 }
@@ -359,6 +369,8 @@ impl StudioEffectParamSpec {
             StudioParameterKind::Boolean => value.first().is_some_and(|v| *v == 0.0 || *v == 1.0),
             StudioParameterKind::Scalar | StudioParameterKind::Angle => value.iter().all(|v| self.in_hard_range(*v)),
             StudioParameterKind::Point2d | StudioParameterKind::Color => true,
+            // No numeric value is stored for these kinds.
+            StudioParameterKind::LayerReference | StudioParameterKind::Group => false,
         }
     }
 }

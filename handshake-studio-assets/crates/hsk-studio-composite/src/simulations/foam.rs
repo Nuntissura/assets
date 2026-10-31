@@ -6,11 +6,26 @@
 //! Foam is surface-bound: its bubbles are born inside a producer rectangle and stay inside the
 //! surface region; Bubbles rise through their region and pop at its top.
 //!
-//! **Record ([`FOAM_ROWS`] then the shared `shading.*` rows).** Seed, start tick, preroll, a fixed
-//! step rate, the producer (centre and size), the surface region, a birth rate, a life with a random
-//! share, a birth size with a random share and a growth rate, wind (speed and direction, degrees,
-//! 0 = up, clockwise), an initial speed (seeded direction), viscosity, stickiness with its radius,
-//! repulsion, an opacity and the shared [`BubbleShading`].
+//! **Record ([`FOAM_ROWS`], [`FOAM_MAPPINGS`], then the shared `shading.*` rows).** Seed, start tick,
+//! preroll, a fixed step rate, the producer (centre and size), the surface region, a birth rate, a
+//! life with a random share, a birth size with a random share and a growth rate, wind (speed and
+//! direction, degrees, 0 = up, clockwise), an initial speed (seeded direction), viscosity,
+//! stickiness with its radius, repulsion, an opacity and the shared [`BubbleShading`].
+//!
+//! **Recovered record ([`FOAM_RECORD`], STU-FX-131a `APC Foam`, 47 rows, MT-32012; rules in the
+//! [`super`] module docs).** The engine reads one recovered row: `wind_direction` takes row 32
+//! `Wind Direction` (`ANGLE`, degrees; no-range reading: no hard bound, default 0), replacing the
+//! authored row (hard `-1e6..=1e6`, soft `-180..=180`, default 90). The other engine scalars have no
+//! recovered row of the same quantity and unit and keep their authored rows ([`FOAM_ROWS`],
+//! STU-FX-146 scope beside the record): the record declares no unit (`--`) for `Production Rate`,
+//! `Size`, `Size Variance`, `Lifespan`, `Bubble Growth Speed`, `Initial Speed`, `Wind Speed`,
+//! `Repulsion`, `Viscosity` and `Stickiness`, while the engine's counterparts are in pixels, seconds
+//! or per second, so reading one as the other would invent a conversion (STU-FX-108); `Producer
+//! Point` and `Producer X/Y Size` are layer fractions while the engine producer is in composition
+//! pixels with no layer size in the record; `Random Seed` (`0..=16`) is not the STU-FX-011 `u64`
+//! seed. The remaining rows (view, producer orientation, turbulence, wobble, pop velocity, zoom,
+//! universe size, textures, maps, quality, groups) are stored and validated and do not drive the
+//! simulation. After Effects parity of the mapping is UNVERIFIED (D5).
 //!
 //! **Simulation (stateful, a declared Studio reading; After Effects parity UNVERIFIED, D5).** Every
 //! frame is re-simulated from the origin (`preroll` seconds before the start tick) on the fixed grid
@@ -29,15 +44,21 @@
 //! Rendering goes through [`super::bubbles::render_bubble_marks`] with the shared shading.
 #![deny(clippy::arithmetic_side_effects)]
 use super::bubbles::{BUBBLE_SHADING_ROWS, BubbleShading, default_of, render_bubble_marks};
-use super::{ParamRow, ParamScope, Result, SimParticle, check_count, check_raster, checked, fixed_steps, row, validate_rows, whole};
+use super::{
+    ParamRow, ParamScope, RecoveredMapping, Result, SimParticle, check_count, check_raster, checked, checked_mapped, fixed_steps,
+    mapped_default, rec_angle, rec_checkbox, rec_group, rec_layer, rec_point, rec_popup, rec_slider, row, validate_mapped,
+    validate_rows, whole,
+};
 use crate::particles::{Draws, ParticleError, ParticleFrame, ParticleLimits, splitmix64};
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_folio::StudioEffectParamSpec;
 use std::f64::consts::TAU;
 
 const FOAM_SALT: u64 = 0x666F_616D;
 
-/// Foam's own record rows (STU-FX-146: authored, `studio_declared`).
-pub const FOAM_ROWS: [ParamRow; 24] = [
+/// Foam's authored rows: engine scalars with no counterpart in the recovered record [`FOAM_RECORD`]
+/// (STU-FX-146 scope beside it, `studio_declared`; module docs).
+pub const FOAM_ROWS: [ParamRow; 23] = [
     row("preroll", "s", (0.0, 60.0), (Some(0.0), Some(5.0)), 0.0),
     row("step_rate", "steps/s", (1.0, 240.0), (Some(24.0), Some(120.0)), 30.0),
     row("producer_x", "px", (-1.0e7, 1.0e7), (None, None), 960.0),
@@ -55,7 +76,6 @@ pub const FOAM_ROWS: [ParamRow; 24] = [
     row("size_random", "ratio", (0.0, 1.0), (None, None), 0.5),
     row("growth", "px/s", (0.0, 4096.0), (Some(0.0), Some(10.0)), 1.0),
     row("wind_speed", "px/s", (0.0, 1.0e5), (Some(0.0), Some(200.0)), 10.0),
-    row("wind_direction", "deg", (-1.0e6, 1.0e6), (Some(-180.0), Some(180.0)), 90.0),
     row("initial_speed", "px/s", (0.0, 1.0e5), (Some(0.0), Some(200.0)), 0.0),
     row("viscosity", "1/s", (0.0, 1000.0), (Some(0.0), Some(10.0)), 1.0),
     row("stickiness", "px/s2", (0.0, 1.0e6), (Some(0.0), Some(500.0)), 40.0),
@@ -63,6 +83,69 @@ pub const FOAM_ROWS: [ParamRow; 24] = [
     row("repulsion", "px/s2", (0.0, 1.0e6), (Some(0.0), Some(2000.0)), 200.0),
     row("opacity", "ratio", (0.0, 1.0), (None, None), 1.0),
 ];
+
+/// The engine scalars driven by a row of [`FOAM_RECORD`] (module docs).
+pub const FOAM_MAPPINGS: [RecoveredMapping; 1] = [RecoveredMapping { key: "wind_direction", param_index: 32, component: 0, unit: "deg" }];
+
+/// The recovered STU-FX-131a record of Foam (`APC Foam`, spec v02.225 module 14), every row in
+/// source order (`tests/simulations_records.rs`).
+pub const FOAM_RECORD: [StudioEffectParamSpec; 47] = [
+    rec_layer("unnamed_0", 0, "(unnamed)"),
+    rec_popup("view", 2, "View", &[1.0], FOAM_VIEW_2_OPTIONS),
+    rec_point("producer_point", 4, "Producer Point", &[0.5, 0.5]),
+    rec_group("producer", 5, "Producer"),
+    rec_slider("producer_x_size", 6, "Producer X Size", (0.0, 0.449997), (0.0, 0.449997), &[0.029999], Some(3)),
+    rec_slider("producer_y_size", 8, "Producer Y Size", (0.0, 0.449997), (0.0, 0.449997), &[0.029999], Some(3)),
+    rec_angle("producer_orientation", 10, "Producer Orientation"),
+    rec_checkbox("unnamed_12", 12, "(unnamed)", &[1.0]),
+    rec_slider("production_rate", 14, "Production Rate", (0.0, 100.0), (0.0, 10.0), &[1.0], Some(3)),
+    rec_slider("size", 16, "Size", (0.049988, 4.0), (0.049988, 4.0), &[0.5], Some(3)),
+    rec_slider("size_variance", 18, "Size Variance", (0.0, 4.0), (0.0, 4.0), &[0.5], Some(3)),
+    rec_group("unnamed_19", 19, "(unnamed)"),
+    rec_slider("lifespan", 20, "Lifespan", (0.0, 1000.0), (0.0, 1000.0), &[300.0], Some(3)),
+    rec_group("bubbles", 21, "Bubbles"),
+    rec_slider("bubble_growth_speed", 22, "Bubble Growth Speed", (0.009995, 1.0), (0.009995, 1.0), &[0.099991], Some(3)),
+    rec_slider("strength", 24, "Strength", (0.0, 100.0), (0.0, 100.0), &[10.0], Some(3)),
+    rec_slider("initial_speed", 26, "Initial Speed", (0.0, 10.0), (0.0, 10.0), &[0.0], Some(3)),
+    rec_angle("initial_direction", 28, "Initial Direction"),
+    rec_slider("wind_speed", 30, "Wind Speed", (0.0, 10.0), (0.0, 10.0), &[0.5], Some(3)),
+    rec_angle("wind_direction", 32, "Wind Direction"),
+    rec_group("unnamed_33", 33, "(unnamed)"),
+    rec_slider("turbulence", 34, "Turbulence", (0.0, 2.0), (0.0, 2.0), &[0.5], Some(3)),
+    rec_group("physics", 35, "Physics"),
+    rec_slider("wobble_amount", 36, "Wobble Amount", (0.0, 0.399994), (0.0, 0.399994), &[0.049988], Some(3)),
+    rec_slider("repulsion", 38, "Repulsion", (0.0, 1.0), (0.0, 1.0), &[1.0], Some(3)),
+    rec_slider("pop_velocity", 40, "Pop Velocity", (0.0, 10.0), (0.0, 10.0), &[0.0], Some(3)),
+    rec_slider("viscosity", 42, "Viscosity", (0.0, 4.0), (0.0, 4.0), &[0.099991], Some(3)),
+    rec_slider("stickiness", 44, "Stickiness", (0.0, 4.0), (0.0, 4.0), &[0.75], Some(3)),
+    rec_slider("zoom", 46, "Zoom", (0.00499, 10.0), (0.00499, 5.0), &[1.0], Some(3)),
+    rec_slider("universe_size", 48, "Universe Size", (0.099991, 50.0), (0.099991, 5.0), &[1.0], Some(3)),
+    rec_popup("blend_mode", 50, "Blend Mode", &[1.0], FOAM_BLEND_MODE_50_OPTIONS),
+    rec_popup("bubble_texture", 52, "Bubble Texture", &[3.0], FOAM_BUBBLE_TEXTURE_52_OPTIONS),
+    rec_layer("bubble_texture_layer", 54, "Bubble Texture Layer"),
+    rec_popup("bubble_orientation", 56, "Bubble Orientation", &[1.0], FOAM_BUBBLE_ORIENTATION_56_OPTIONS),
+    rec_group("unnamed_57", 57, "(unnamed)"),
+    rec_layer("environment_map", 58, "Environment Map"),
+    rec_slider("reflection_strength", 60, "Reflection Strength", (0.0, 1.0), (0.0, 1.0), &[0.0], Some(3)),
+    rec_slider("reflection_convergence", 62, "Reflection Convergence", (0.0, 1.0), (0.0, 1.0), &[0.799988], Some(3)),
+    rec_group("rendering", 63, "Rendering"),
+    rec_layer("flow_map_64", 64, "Flow Map"),
+    rec_slider("flow_map_steepness", 66, "Flow Map Steepness", (0.0, 100.0), (0.0, 5.0), &[5.0], Some(3)),
+    rec_popup("flow_map_fits", 68, "Flow Map Fits", &[1.0], FOAM_FLOW_MAP_FITS_68_OPTIONS),
+    rec_popup("simulation_quality", 70, "Simulation Quality", &[1.0], FOAM_SIMULATION_QUALITY_70_OPTIONS),
+    rec_slider("random_seed", 72, "Random Seed", (0.0, 16.0), (0.0, 16.0), &[1.0], None),
+    rec_group("unnamed_79", 79, "(unnamed)"),
+    rec_group("flow_map_81", 81, "Flow Map"),
+    rec_group("unnamed_89", 89, "(unnamed)"),
+];
+/// `param_index` of every row whose flags carry `COLLAPSE_TWIRLY`.
+pub const FOAM_COLLAPSED: [u16; 30] = [5, 6, 8, 10, 14, 16, 18, 20, 21, 22, 24, 26, 28, 30, 32, 34, 35, 36, 38, 40, 42, 44, 46, 48, 60, 62, 63, 66, 72, 81];
+const FOAM_VIEW_2_OPTIONS: &[(u16, &str)] = &[(1, "Draft"), (2, "Draft + Flow Map"), (3, "Rendered")];
+const FOAM_BLEND_MODE_50_OPTIONS: &[(u16, &str)] = &[(1, "Transparent"), (2, "Solid Old on top"), (3, "Solid New on top")];
+const FOAM_BUBBLE_TEXTURE_52_OPTIONS: &[(u16, &str)] = &[(1, "User Defined"), (3, "Default Bubble"), (4, "Amber Bock"), (5, "Water Beads"), (6, "Spit"), (7, "Cartoon Coffee"), (8, "Winter Stream"), (9, "Soda Water"), (10, "Orange Soda"), (11, "Nuclear Waste"), (12, "Red Tide"), (13, "Magma Marbles"), (14, "Sunset Foam"), (15, "Pepto"), (16, "Algae"), (17, "Blisters"), (18, "Bubble Wrap"), (19, "Grape Soda")];
+const FOAM_BUBBLE_ORIENTATION_56_OPTIONS: &[(u16, &str)] = &[(1, "Fixed"), (2, "Physical Orientation"), (3, "Bubble Velocity")];
+const FOAM_FLOW_MAP_FITS_68_OPTIONS: &[(u16, &str)] = &[(1, "Universe"), (2, "Screen")];
+const FOAM_SIMULATION_QUALITY_70_OPTIONS: &[(u16, &str)] = &[(1, "Normal"), (2, "High"), (3, "Intense")];
 
 /// One foam layer (module docs).
 #[derive(Clone, Debug, PartialEq)]
@@ -127,7 +210,7 @@ impl Default for Foam {
             size_random: d("size_random"),
             growth: d("growth"),
             wind_speed: d("wind_speed"),
-            wind_direction: d("wind_direction"),
+            wind_direction: mapped_default(&FOAM_RECORD, &FOAM_MAPPINGS, "wind_direction"),
             initial_speed: d("initial_speed"),
             viscosity: d("viscosity"),
             stickiness: d("stickiness"),
@@ -151,7 +234,7 @@ struct FoamBubble {
 }
 
 impl Foam {
-    /// Record rows then the shared shading rows.
+    /// Authored record rows then the shared shading rows ([`FOAM_MAPPINGS`] are not rows).
     pub fn rows() -> Vec<ParamRow> {
         FOAM_ROWS.iter().chain(&BUBBLE_SHADING_ROWS).copied().collect()
     }
@@ -192,6 +275,13 @@ impl Foam {
         if self.shading.set(key, value)? {
             return Ok(());
         }
+        if let Some(k) = checked_mapped(&FOAM_RECORD, &FOAM_MAPPINGS, key, value)? {
+            match k {
+                "wind_direction" => self.wind_direction = value,
+                _ => return Err(ParticleError::Parameter("param_key")),
+            }
+            return Ok(());
+        }
         match checked(&FOAM_ROWS, ParamScope::Record, key, value)? {
             "preroll" => self.preroll = value,
             "step_rate" => {
@@ -213,7 +303,6 @@ impl Foam {
             "size_random" => self.size_random = value,
             "growth" => self.growth = value,
             "wind_speed" => self.wind_speed = value,
-            "wind_direction" => self.wind_direction = value,
             "initial_speed" => self.initial_speed = value,
             "viscosity" => self.viscosity = value,
             "stickiness" => self.stickiness = value,
@@ -226,6 +315,7 @@ impl Foam {
 
     pub fn validate(&self) -> Result<()> {
         validate_rows(&FOAM_ROWS, ParamScope::Record, |k| self.param(k))?;
+        validate_mapped(&FOAM_RECORD, &FOAM_MAPPINGS, |k| self.param(k))?;
         self.shading.validate()
     }
 

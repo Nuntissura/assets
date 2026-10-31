@@ -9,13 +9,35 @@
 //! Particle systems (classic) is its own identity with its own record ([`classic`]), never a preset
 //! of the particle world (`tests/simulations.rs::classic_particle_systems_are_their_own_identity_and_record`).
 //!
-//! **Parameter records (STU-FX-146).** No typed record was recovered for these simulations, so each
-//! record is authored here as explicit scope: one [`ParamRow`] per scalar with its unit, hard bounds,
-//! separately stored soft bounds (`None` = no soft bound declared, never mirrored from the hard
-//! bound), default and provenance `studio_declared`. Validation IS the table: `validate` walks the
-//! rows (`validate_rows`), and [`Simulation::set_param`] refuses a value outside a row's hard bounds,
-//! so the stored bounds and the enforced bounds cannot drift
-//! (`tests/simulations.rs::authored_parameter_rows_are_the_enforced_bounds`).
+//! **Parameter records.** Of the implemented kinds, only Foam and Wave world have a recovered typed
+//! record (STU-CMP-075b; catalogue STU-FX-130 `Typed params` 47 and 48, tables of STU-FX-131a): those
+//! records are stored whole as Folio [`StudioEffectParamSpec`] rows ([`SimulationKind::recovered_record`],
+//! [`foam::FOAM_RECORD`], [`wave_world::WAVE_WORLD_RECORD`]; mapping below). Every other kind has no
+//! recovered record (catalogue `--`), so its record is authored here as explicit STU-FX-146 scope:
+//! one [`ParamRow`] per scalar with its unit, hard bounds, separately stored soft bounds (`None` = no
+//! soft bound declared, never mirrored from the hard bound), default and provenance
+//! `studio_declared`. Validation IS the table: `validate` walks the rows (`validate_rows`), and
+//! [`Simulation::set_param`] refuses a value outside a row's hard bounds, so the stored bounds and
+//! the enforced bounds cannot drift (`tests/simulations.rs::authored_parameter_rows_are_the_enforced_bounds`).
+//!
+//! **Recovered records (lead decision G2, lane SMB-R50-FOLLOWUPS-1: map, recovered first).** Every
+//! row of the two tables is stored with its seven fields separate (`--` = `None`, never mirrored from
+//! the opposite bound; an undeclared default is an empty `default`), its STU-FX-112 kind, 1-based
+//! options with the declared default index, and the STU-FX-113 flags: `CANNOT_TIME_VARY` ->
+//! `animatable = false`, `CANNOT_INTERP` -> `interpolable = false` (no row of either table carries
+//! it), `COLLAPSE_TWIRLY` -> [`SimulationKind::collapsed_by_default`] (Folio's record has no such
+//! field; the bit is kept per record in [`foam::FOAM_COLLAPSED`] / [`wave_world::WAVE_WORLD_COLLAPSED`]).
+//! Reading conventions (Folio's, UNVERIFIED, D5): a `--` unit is `unitless` (STU-FX-108); an `ANGLE`
+//! row recorded `0..0` in all four bounds is the capture's no-range encoding (`unbounded_in_source`,
+//! all four bounds `None`, default 0, degrees, precision 0), as Folio reads Twirl `Angle`. Where a
+//! recovered row is the same quantity as an engine scalar in the same unit, the engine takes that
+//! row's hard bounds (enforced, plus finiteness and Folio's `MAX_STREAM_ABS_VALUE` ceiling) and its
+//! default, and the authored row is gone ([`RecoveredMapping`]: [`foam::FOAM_MAPPINGS`],
+//! [`wave_world::WAVE_WORLD_MAPPINGS`], [`wave_world::WAVE_PRODUCER_MAPPINGS`]). Engine scalars with
+//! no recovered counterpart keep their authored `studio_declared` rows, which are STU-FX-146 scope
+//! beside a recovered record. Recovered rows the engine does not use are stored and validated but
+//! do not drive the simulation. Vendor parity of every mapping is UNVERIFIED (D5)
+//! (`tests/simulations_records.rs`).
 //!
 //! **Statefulness (STU-CMP-075a).** Each type declares a deterministic start tick and an explicit
 //! integer seed (STU-FX-011). Every element's state is a closed-form function of its own seeded draws
@@ -59,6 +81,7 @@ use crate::particles::{
 };
 use crate::{CompositeError, outcome_of};
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
+use hsk_studio_folio::{MAX_STREAM_ABS_VALUE, StudioBoundState, StudioEffectParamSpec, StudioParameterKind, StudioUnitToken};
 use hsk_studio_observe::Outcome;
 
 pub use classic::{ClassicParticleType, ParticleSystemsClassic};
@@ -71,7 +94,7 @@ pub use foam::Foam;
 
 pub(crate) type Result<T> = std::result::Result<T, ParticleError>;
 
-/// Provenance of every authored row (STU-FX-146: no recovered record).
+/// Provenance of every authored row (STU-FX-146 scope: no recovered counterpart).
 pub const PROVENANCE: &str = "studio_declared";
 /// Largest slot index a birth window may reach (exact in `f64`).
 pub const MAX_SLOT_INDEX: f64 = 4_503_599_627_370_496.0; // 2^52
@@ -170,7 +193,8 @@ impl SimulationKind {
     /// The authored parameter rows; `None` for the particle world (its record is the typed
     /// [`ParticleWorld`] struct of lane SMB-AE-PARTICLES-AUDIO-PRESETS). Bubbles and Foam include
     /// the shared `shading.*` rows ([`bubbles::BUBBLE_SHADING_ROWS`]); Wave world's per-producer
-    /// rows are [`wave_world::WAVE_PRODUCER_ROWS`].
+    /// rows are [`wave_world::WAVE_PRODUCER_ROWS`]. An engine scalar driven by a recovered row is not
+    /// an authored row ([`Self::recovered_mappings`]).
     pub fn params(self) -> Option<Vec<ParamRow>> {
         match self {
             Self::ParticleWorld => None,
@@ -184,6 +208,182 @@ impl SimulationKind {
             Self::Foam => Some(foam::Foam::rows()),
         }
     }
+
+    /// The recovered STU-FX-131a record of the kind, every row in source order (module docs);
+    /// `None` where none was recovered.
+    pub const fn recovered_record(self) -> Option<&'static [StudioEffectParamSpec]> {
+        match self {
+            Self::Foam => Some(&foam::FOAM_RECORD),
+            Self::WaveWorld => Some(&wave_world::WAVE_WORLD_RECORD),
+            _ => None,
+        }
+    }
+
+    /// The record-level engine scalars driven by a recovered row (Wave world's producer scalars
+    /// are [`wave_world::WAVE_PRODUCER_MAPPINGS`]); empty where no record was recovered.
+    pub const fn recovered_mappings(self) -> &'static [RecoveredMapping] {
+        match self {
+            Self::Foam => &foam::FOAM_MAPPINGS,
+            Self::WaveWorld => &wave_world::WAVE_WORLD_MAPPINGS,
+            _ => &[],
+        }
+    }
+
+    /// STU-FX-113 `collapsed_by_default` (source `COLLAPSE_TWIRLY`) of recovered row `param_index`;
+    /// `None` for a kind without a recovered record or an index its record lacks.
+    pub fn collapsed_by_default(self, param_index: u16) -> Option<bool> {
+        let record = self.recovered_record()?;
+        if !record.iter().any(|r| r.param_index == param_index) {
+            return None;
+        }
+        let collapsed: &[u16] = if self == Self::Foam { &foam::FOAM_COLLAPSED } else { &wave_world::WAVE_WORLD_COLLAPSED };
+        Some(collapsed.contains(&param_index))
+    }
+}
+
+/// One engine scalar driven by a recovered row (module docs): the engine key reads component
+/// `component` of row `param_index` (0 for a scalar; 0 = x, 1 = y of a point) in `unit`, with no
+/// conversion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveredMapping {
+    /// The engine key of [`Simulation::param`] / [`Simulation::set_param`].
+    pub key: &'static str,
+    /// `param_index` of the recovered row.
+    pub param_index: u16,
+    pub component: usize,
+    /// The engine unit the value is read in.
+    pub unit: &'static str,
+}
+
+/// The recovered row of `mapping` in `record` (`Parameter(key)` if the record lacks it).
+pub(crate) fn mapped_row(record: &'static [StudioEffectParamSpec], mapping: &RecoveredMapping) -> Result<&'static StudioEffectParamSpec> {
+    record.iter().find(|r| r.param_index == mapping.param_index).ok_or(ParticleError::Parameter(mapping.key))
+}
+
+/// The engine default of mapped scalar `key`: component `component` of its row's default (NaN, so
+/// `validate` refuses it, when the key is not mapped or the row declares no default).
+pub(crate) fn mapped_default(record: &'static [StudioEffectParamSpec], maps: &[RecoveredMapping], key: &str) -> f64 {
+    maps.iter()
+        .find(|m| m.key == key)
+        .and_then(|m| mapped_row(record, m).ok().and_then(|r| r.default.get(m.component).copied()))
+        .unwrap_or(f64::NAN)
+}
+
+/// `value` against the recovered row of `mapping`: finite, within Folio's `MAX_STREAM_ABS_VALUE`
+/// and inside the row's declared hard bounds (an undeclared bound does not constrain, STU-FX-106).
+fn check_mapping(record: &'static [StudioEffectParamSpec], mapping: &RecoveredMapping, value: f64) -> Result<&'static str> {
+    let row = mapped_row(record, mapping)?;
+    if value.is_finite() && value.abs() <= MAX_STREAM_ABS_VALUE && row.in_hard_range(value) {
+        Ok(mapping.key)
+    } else {
+        Err(ParticleError::Parameter(mapping.key))
+    }
+}
+
+/// The mapped key of `key` with `value` checked against its recovered row; `None` when `key` is not
+/// mapped (the caller then tries its authored rows).
+pub(crate) fn checked_mapped(
+    record: &'static [StudioEffectParamSpec],
+    maps: &'static [RecoveredMapping],
+    key: &str,
+    value: f64,
+) -> Result<Option<&'static str>> {
+    match maps.iter().find(|m| m.key == key) {
+        Some(m) => check_mapping(record, m, value).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Every mapped scalar read through `get` is legal for its recovered row.
+pub(crate) fn validate_mapped(record: &'static [StudioEffectParamSpec], maps: &[RecoveredMapping], get: impl Fn(&str) -> Option<f64>) -> Result<()> {
+    for m in maps {
+        let v = get(m.key).ok_or(ParticleError::Parameter(m.key))?;
+        check_mapping(record, m, v)?;
+    }
+    Ok(())
+}
+
+const fn rec_base(param_key: &'static str, param_index: u16, display_name: &'static str, kind: StudioParameterKind) -> StudioEffectParamSpec {
+    StudioEffectParamSpec {
+        param_key,
+        param_index,
+        display_name,
+        kind,
+        hard_min: None,
+        hard_max: None,
+        soft_min: None,
+        soft_max: None,
+        bound_state: StudioBoundState::UnboundedInSource,
+        default: &[],
+        unit: StudioUnitToken::Unitless,
+        precision: None,
+        animatable: true,
+        interpolable: true,
+        options: &[],
+    }
+}
+
+/// A recovered `FIX_SLIDER` / `SLIDER` row declaring all four bounds (STU-FX-112 `scalar`).
+pub(crate) const fn rec_slider(
+    param_key: &'static str,
+    param_index: u16,
+    display_name: &'static str,
+    hard: (f64, f64),
+    soft: (f64, f64),
+    default: &'static [f64],
+    precision: Option<u8>,
+) -> StudioEffectParamSpec {
+    StudioEffectParamSpec {
+        hard_min: Some(hard.0),
+        hard_max: Some(hard.1),
+        soft_min: Some(soft.0),
+        soft_max: Some(soft.1),
+        bound_state: StudioBoundState::DeclaredBoth,
+        default,
+        precision,
+        ..rec_base(param_key, param_index, display_name, StudioParameterKind::Scalar)
+    }
+}
+
+/// A recovered `ANGLE` row recorded `0..0` everywhere: the no-range encoding (module docs).
+pub(crate) const fn rec_angle(param_key: &'static str, param_index: u16, display_name: &'static str) -> StudioEffectParamSpec {
+    StudioEffectParamSpec {
+        default: &[0.0],
+        unit: StudioUnitToken::Degrees,
+        precision: Some(0),
+        ..rec_base(param_key, param_index, display_name, StudioParameterKind::Angle)
+    }
+}
+
+/// A recovered `POPUP` row: the 1-based options (source gaps kept) and the declared default index.
+pub(crate) const fn rec_popup(
+    param_key: &'static str,
+    param_index: u16,
+    display_name: &'static str,
+    default: &'static [f64],
+    options: &'static [(u16, &'static str)],
+) -> StudioEffectParamSpec {
+    StudioEffectParamSpec { default, options, ..rec_base(param_key, param_index, display_name, StudioParameterKind::Enumeration) }
+}
+
+/// A recovered `POINT` row (fractions of the layer size).
+pub(crate) const fn rec_point(param_key: &'static str, param_index: u16, display_name: &'static str, default: &'static [f64]) -> StudioEffectParamSpec {
+    StudioEffectParamSpec { default, ..rec_base(param_key, param_index, display_name, StudioParameterKind::Point2d) }
+}
+
+/// A recovered `CHECKBOX` row (`1` = true).
+pub(crate) const fn rec_checkbox(param_key: &'static str, param_index: u16, display_name: &'static str, default: &'static [f64]) -> StudioEffectParamSpec {
+    StudioEffectParamSpec { default, ..rec_base(param_key, param_index, display_name, StudioParameterKind::Boolean) }
+}
+
+/// A recovered `LAYER` row (every one carries `CANNOT_TIME_VARY` in both tables).
+pub(crate) const fn rec_layer(param_key: &'static str, param_index: u16, display_name: &'static str) -> StudioEffectParamSpec {
+    StudioEffectParamSpec { animatable: false, ..rec_base(param_key, param_index, display_name, StudioParameterKind::LayerReference) }
+}
+
+/// A recovered `GROUP_START` / `GROUP_END` row (every one carries `CANNOT_TIME_VARY`).
+pub(crate) const fn rec_group(param_key: &'static str, param_index: u16, display_name: &'static str) -> StudioEffectParamSpec {
+    StudioEffectParamSpec { animatable: false, ..rec_base(param_key, param_index, display_name, StudioParameterKind::Group) }
 }
 
 /// Where a row's value lives.

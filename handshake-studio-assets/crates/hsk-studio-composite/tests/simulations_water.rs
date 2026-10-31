@@ -2,7 +2,9 @@
 //! (MT-34182), Bubbles (MT-34186) and Foam (MT-34183). STU-CMP-075a (deterministic start, identical
 //! output for identical parameters and seed, scrubbing backwards never differs from playing forwards,
 //! re-simulation from the start tick or a cached state), STU-FX-011 (explicit seed), STU-CMP-075b /
-//! STU-FX-146 (authored `studio_declared` records, vendor names only as import keys). Numerics are
+//! STU-FX-146 (authored `studio_declared` rows for every engine scalar no recovered row drives,
+//! vendor names only as import keys; Foam's and Wave world's recovered STU-FX-131a records and the
+//! scalars they drive: `tests/simulations_records.rs`, lane SMB-R50-FOLLOWUPS-1). Numerics are
 //! checked against exact constructions (hard sources, the discrete light cone, flat surfaces) and
 //! closed forms (Snell's law, constant-speed rise, linear growth). After Effects parity UNVERIFIED (D5).
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId, TICKS_PER_SECOND};

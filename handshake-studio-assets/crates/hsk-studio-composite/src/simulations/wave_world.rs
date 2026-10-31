@@ -6,8 +6,32 @@
 //! wave speed (cells per second), damping (per second), an [`EdgeMode`], an optional seeded initial
 //! roughness, the declared height range of the output and up to [`MAX_WAVE_PRODUCERS`]
 //! [`WaveProducer`]s (a point or a line in layer-relative coordinates, `0..=1` across the layer,
-//! with amplitude, frequency and phase). The record rows are [`WAVE_WORLD_ROWS`], the producer rows
-//! [`WAVE_PRODUCER_ROWS`]; both are the enforced validation (module docs of [`super`]).
+//! with amplitude, frequency and phase). The authored rows are [`WAVE_WORLD_ROWS`] and
+//! [`WAVE_PRODUCER_ROWS`], the scalars driven by the recovered record [`WAVE_WORLD_MAPPINGS`] and
+//! [`WAVE_PRODUCER_MAPPINGS`]; all of them are the enforced validation (module docs of [`super`]).
+//!
+//! **Recovered record ([`WAVE_WORLD_RECORD`], STU-FX-131a `APC Wave World`, 48 rows, MT-32013; rules
+//! in the [`super`] module docs).** Engine scalars that read a recovered row, no unit conversion:
+//! `preroll` <- row 24 `Pre-roll (seconds)` (hard `0..=60`, default 0, as authored before);
+//! producer `x`, `y` <- row 44 `Position` (`POINT`, layer fractions, no declared bound, default
+//! `(0.5, 0.5)`; authored hard `-1e3..=1e3` before); `amplitude` <- row 52 `Amplitude` (hard
+//! `0..=5`, soft `0..=1`, default 0.5; the engine's height unit is the record's own unitless scale;
+//! authored hard `0..=1e6`, soft `0..=2` before); `frequency` <- row 54 `Frequency` (hard `0..=20`,
+//! soft `0..=3`, default 1, read as Hz: the record's time base is seconds by its row 24; authored hard
+//! `0..=1000`, soft `0..=5` before); `phase` <- row 56 `Phase` (`ANGLE`, degrees, no-range reading:
+//! no hard bound, default 0; authored hard `-1e6..=1e6`, soft `-180..=180` before). Every producer
+//! of the record reads the first set of producer rows (44, 52, 54, 56: the set whose amplitude
+//! default 0.5 is the engine's); the second set (60, 62-72) and the `Type` popups (42, 58: index 1
+//! `Ring` = [`ProducerShape::Point`], 2 `Line` = [`ProducerShape::Line`], default 1 = the engine's
+//! default shape) are stored and do not drive the engine. Not mapped, authored rows kept (STU-FX-146
+//! scope beside the record): `grid_width` / `grid_height` (two per-axis cell counts; the record's one
+//! `Grid Resolution` does not say which axis it counts), `wave_speed` (cells per second; `Wave Speed`
+//! declares no unit and no cell scale), `damping` (a per-second coefficient; `Damping` `0..=1` with no
+//! unit is not shown to be the same quantity), `step_rate`, `substeps`, `initial_roughness`,
+//! `height_range`, and producer `x2` / `y2` (the line end; the record describes a line by
+//! `Height/Length`, `Width` and `Angle`). Every other recovered row (view, rotations, scale,
+//! brightness, contrast, gamma, dry areas, transparency, reflect edges, ground, groups) is stored and
+//! validated and does not drive the simulation. After Effects parity UNVERIFIED (D5).
 //!
 //! **Scheme (a declared Studio reading; After Effects parity UNVERIFIED, D5).** The surface height
 //! `h` obeys the damped wave equation `h_tt + k h_t = c^2 lap(h)`, discretised with the explicit
@@ -38,9 +62,13 @@
 //! opaque greyscale [`ParticleFrame`] with `0.5` at rest, `0` at `-range`, `1` at `+range`, drawn
 //! through the existing `StaticContent` route.
 #![deny(clippy::arithmetic_side_effects)]
-use super::{ParamRow, ParamScope, Result, check_raster, checked, fixed_steps, row, validate_rows, whole};
+use super::{
+    ParamRow, ParamScope, RecoveredMapping, Result, check_raster, checked, checked_mapped, fixed_steps, mapped_default, rec_angle,
+    rec_checkbox, rec_group, rec_layer, rec_point, rec_popup, rec_slider, row, validate_mapped, validate_rows, whole,
+};
 use crate::particles::{Draws, MAX_SOURCE_PIXELS, ParticleError, ParticleFrame, ParticleLimits, splitmix64};
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_folio::StudioEffectParamSpec;
 use std::f64::consts::{FRAC_1_SQRT_2, TAU};
 
 /// Most producers of one record.
@@ -50,9 +78,9 @@ pub const CFL_LIMIT: f64 = FRAC_1_SQRT_2;
 
 const ROUGHNESS_SALT: u64 = 0x7761_7665;
 
-/// The record rows (STU-FX-146: authored, `studio_declared`).
-pub const WAVE_WORLD_ROWS: [ParamRow; 9] = [
-    row("preroll", "s", (0.0, 60.0), (Some(0.0), Some(5.0)), 0.0),
+/// The authored record rows: engine scalars with no counterpart in [`WAVE_WORLD_RECORD`]
+/// (STU-FX-146 scope beside it, `studio_declared`; module docs).
+pub const WAVE_WORLD_ROWS: [ParamRow; 8] = [
     row("grid_width", "cells", (2.0, 1024.0), (Some(16.0), Some(256.0)), 64.0),
     row("grid_height", "cells", (2.0, 1024.0), (Some(16.0), Some(256.0)), 64.0),
     row("step_rate", "steps/s", (1.0, 1000.0), (Some(24.0), Some(240.0)), 60.0),
@@ -63,16 +91,84 @@ pub const WAVE_WORLD_ROWS: [ParamRow; 9] = [
     row("height_range", "height", (1.0e-6, 1.0e6), (Some(0.1), Some(10.0)), 1.0),
 ];
 
-/// The per-producer rows (positions are layer-relative, `0..=1` across the layer).
-pub const WAVE_PRODUCER_ROWS: [ParamRow; 7] = [
-    row("x", "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
-    row("y", "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
+/// The authored per-producer rows (the line end, layer-relative, `0..=1` across the layer; no
+/// recovered counterpart, module docs).
+pub const WAVE_PRODUCER_ROWS: [ParamRow; 2] = [
     row("x2", "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
     row("y2", "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
-    row("amplitude", "height", (0.0, 1.0e6), (Some(0.0), Some(2.0)), 0.5),
-    row("frequency", "Hz", (0.0, 1000.0), (Some(0.0), Some(5.0)), 1.0),
-    row("phase", "deg", (-1.0e6, 1.0e6), (Some(-180.0), Some(180.0)), 0.0),
 ];
+
+/// The record scalars driven by a row of [`WAVE_WORLD_RECORD`] (module docs).
+pub const WAVE_WORLD_MAPPINGS: [RecoveredMapping; 1] = [RecoveredMapping { key: "preroll", param_index: 24, component: 0, unit: "s" }];
+
+/// The per-producer scalars driven by a row of [`WAVE_WORLD_RECORD`] (module docs).
+pub const WAVE_PRODUCER_MAPPINGS: [RecoveredMapping; 5] = [
+    RecoveredMapping { key: "x", param_index: 44, component: 0, unit: "ratio" },
+    RecoveredMapping { key: "y", param_index: 44, component: 1, unit: "ratio" },
+    RecoveredMapping { key: "amplitude", param_index: 52, component: 0, unit: "height" },
+    RecoveredMapping { key: "frequency", param_index: 54, component: 0, unit: "Hz" },
+    RecoveredMapping { key: "phase", param_index: 56, component: 0, unit: "deg" },
+];
+
+/// The recovered STU-FX-131a record of Wave world (`APC Wave World`, spec v02.225 module 14), every
+/// row in source order (`tests/simulations_records.rs`).
+pub const WAVE_WORLD_RECORD: [StudioEffectParamSpec; 48] = [
+    rec_layer("unnamed_0", 0, "(unnamed)"),
+    rec_popup("view", 2, "View", &[2.0], WAVE_WORLD_VIEW_2_OPTIONS),
+    rec_angle("horizontal_rotation", 4, "Horizontal Rotation"),
+    rec_group("wireframe_controls", 5, "Wireframe Controls"),
+    rec_angle("vertical_rotation", 6, "Vertical Rotation"),
+    rec_slider("vertical_scale", 8, "Vertical Scale", (0.0, 1.0), (0.0, 1.0), &[0.5], Some(3)),
+    rec_slider("brightness", 10, "Brightness", (-5.0, 5.0), (0.0, 1.0), &[0.5], Some(3)),
+    rec_slider("contrast", 12, "Contrast", (0.0, 2.0), (0.0, 1.0), &[0.25], Some(3)),
+    rec_group("unnamed_13", 13, "(unnamed)"),
+    rec_slider("gamma_adjustment", 14, "Gamma Adjustment", (0.299988, 3.0), (0.299988, 3.0), &[1.0], Some(3)),
+    rec_group("height_map_controls", 15, "Height Map Controls"),
+    rec_popup("render_dry_areas_as", 16, "Render Dry Areas As", &[1.0], WAVE_WORLD_RENDER_DRY_AREAS_AS_16_OPTIONS),
+    rec_slider("transparency", 18, "Transparency", (0.0, 1.0), (0.0, 0.099991), &[0.009995], Some(3)),
+    rec_popup("reflect_edges", 20, "Reflect Edges", &[1.0], WAVE_WORLD_REFLECT_EDGES_20_OPTIONS),
+    rec_slider("pre_roll_seconds", 24, "Pre-roll (seconds)", (0.0, 60.0), (0.0, 5.0), &[0.0], Some(3)),
+    rec_slider("grid_resolution", 26, "Grid Resolution", (10.0, 1000.0), (20.0, 300.0), &[40.0], None),
+    rec_group("unnamed_27", 27, "(unnamed)"),
+    rec_group("simulation", 29, "Simulation"),
+    rec_slider("wave_speed", 30, "Wave Speed", (0.009995, 10.0), (0.009995, 1.0), &[0.5], Some(3)),
+    rec_slider("damping", 32, "Damping", (0.0, 1.0), (0.0, 1.0), &[0.009995], Some(3)),
+    rec_layer("ground_36", 36, "Ground"),
+    rec_slider("steepness", 38, "Steepness", (0.0, 1.0), (0.0, 1.0), &[0.25], Some(3)),
+    rec_slider("height", 40, "Height", (0.0, 1.0), (0.0, 1.0), &[0.299988], Some(3)),
+    rec_popup("type_42", 42, "Type", &[1.0], WAVE_WORLD_TYPE_42_OPTIONS),
+    rec_group("unnamed_43", 43, "(unnamed)"),
+    rec_point("position_44", 44, "Position", &[0.5, 0.5]),
+    rec_group("ground_45", 45, "Ground"),
+    rec_slider("height_length_46", 46, "Height/Length", (0.000992, 100.0), (0.000992, 1.0), &[0.099991], Some(3)),
+    rec_slider("width_48", 48, "Width", (0.000992, 100.0), (0.000992, 1.0), &[0.099991], Some(3)),
+    rec_angle("angle_50", 50, "Angle"),
+    rec_slider("amplitude_52", 52, "Amplitude", (0.0, 5.0), (0.0, 1.0), &[0.5], Some(3)),
+    rec_slider("frequency_54", 54, "Frequency", (0.0, 20.0), (0.0, 3.0), &[1.0], Some(3)),
+    rec_group("unnamed_55", 55, "(unnamed)"),
+    rec_angle("phase_56", 56, "Phase"),
+    rec_group("producer_1", 57, "Producer 1"),
+    rec_popup("type_58", 58, "Type", &[1.0], WAVE_WORLD_TYPE_58_OPTIONS),
+    rec_point("position_60", 60, "Position", &[0.5, 0.5]),
+    rec_slider("height_length_62", 62, "Height/Length", (0.000992, 100.0), (0.000992, 1.0), &[0.5], Some(3)),
+    rec_slider("width_64", 64, "Width", (0.000992, 100.0), (0.000992, 1.0), &[0.5], Some(3)),
+    rec_angle("angle_66", 66, "Angle"),
+    rec_slider("amplitude_68", 68, "Amplitude", (0.0, 5.0), (0.0, 1.0), &[0.0], Some(3)),
+    rec_slider("frequency_70", 70, "Frequency", (0.0, 20.0), (0.0, 3.0), &[1.0], Some(3)),
+    rec_angle("phase_72", 72, "Phase"),
+    rec_group("unnamed_75", 75, "(unnamed)"),
+    rec_group("producer_2", 77, "Producer 2"),
+    rec_slider("wave_strength", 90, "Wave Strength", (0.0, 1.0), (0.0, 1.0), &[0.0], Some(3)),
+    rec_checkbox("unnamed_92", 92, "(unnamed)", &[1.0]),
+    rec_group("unnamed_95", 95, "(unnamed)"),
+];
+/// `param_index` of every row whose flags carry `COLLAPSE_TWIRLY`.
+pub const WAVE_WORLD_COLLAPSED: [u16; 26] = [4, 6, 8, 10, 12, 14, 18, 24, 26, 30, 32, 38, 40, 46, 48, 50, 52, 54, 56, 62, 64, 66, 68, 70, 72, 90];
+const WAVE_WORLD_VIEW_2_OPTIONS: &[(u16, &str)] = &[(1, "Height Map"), (2, "Wireframe Preview")];
+const WAVE_WORLD_RENDER_DRY_AREAS_AS_16_OPTIONS: &[(u16, &str)] = &[(1, "Solid"), (2, "Transparent")];
+const WAVE_WORLD_REFLECT_EDGES_20_OPTIONS: &[(u16, &str)] = &[(1, "None"), (2, "All"), (3, "Left"), (4, "Top"), (5, "Right"), (6, "Bottom"), (7, "Left & Top"), (8, "Right & Left"), (9, "Right & Top"), (10, "Bottom & Left"), (11, "Bottom & Top"), (12, "Bottom & Right"), (13, "Right & Left & Top"), (14, "Bottom & Left & Top"), (15, "Bottom & Right & Left"), (16, "Bottom & Right & Top")];
+const WAVE_WORLD_TYPE_42_OPTIONS: &[(u16, &str)] = &[(1, "Ring"), (2, "Line")];
+const WAVE_WORLD_TYPE_58_OPTIONS: &[(u16, &str)] = &[(1, "Ring"), (2, "Line")];
 
 const INTEGER_KEYS: [&str; 4] = ["grid_width", "grid_height", "step_rate", "substeps"];
 
@@ -119,13 +215,14 @@ pub struct WaveProducer {
 impl Default for WaveProducer {
     fn default() -> Self {
         let d = |k| default_of(&WAVE_PRODUCER_ROWS, k);
+        let m = |k| mapped_default(&WAVE_WORLD_RECORD, &WAVE_PRODUCER_MAPPINGS, k);
         Self {
             shape: ProducerShape::default(),
-            position: [d("x"), d("y")],
+            position: [m("x"), m("y")],
             end: [d("x2"), d("y2")],
-            amplitude: d("amplitude"),
-            frequency: d("frequency"),
-            phase: d("phase"),
+            amplitude: m("amplitude"),
+            frequency: m("frequency"),
+            phase: m("phase"),
         }
     }
 }
@@ -144,9 +241,13 @@ impl WaveProducer {
         })
     }
 
-    /// Sets a producer scalar (refused outside its row; nothing changes).
+    /// Sets a producer scalar (refused outside its row or recovered row; nothing changes).
     pub fn set_param(&mut self, key: &str, value: f64) -> Result<()> {
-        match checked(&WAVE_PRODUCER_ROWS, ParamScope::Record, key, value)? {
+        let k = match checked_mapped(&WAVE_WORLD_RECORD, &WAVE_PRODUCER_MAPPINGS, key, value)? {
+            Some(k) => k,
+            None => checked(&WAVE_PRODUCER_ROWS, ParamScope::Record, key, value)?,
+        };
+        match k {
             "x" => self.position[0] = value,
             "y" => self.position[1] = value,
             "x2" => self.end[0] = value,
@@ -156,6 +257,12 @@ impl WaveProducer {
             _ => self.phase = value,
         }
         Ok(())
+    }
+
+    /// The producer's scalars against its authored rows and recovered rows.
+    fn validate(&self) -> Result<()> {
+        validate_rows(&WAVE_PRODUCER_ROWS, ParamScope::Record, |k| self.param(k))?;
+        validate_mapped(&WAVE_WORLD_RECORD, &WAVE_PRODUCER_MAPPINGS, |k| self.param(k))
     }
 
     /// The grid cells this producer drives, ascending, without duplicates.
@@ -246,7 +353,7 @@ impl Default for WaveWorld {
         Self {
             seed: 0,
             start_tick: 0,
-            preroll: d("preroll"),
+            preroll: mapped_default(&WAVE_WORLD_RECORD, &WAVE_WORLD_MAPPINGS, "preroll"),
             grid: [d("grid_width") as u32, d("grid_height") as u32],
             step_rate: d("step_rate") as u32,
             substeps: d("substeps") as u32,
@@ -276,9 +383,13 @@ impl WaveWorld {
         })
     }
 
-    /// Sets a record scalar (refused outside its row, or fractional for a count; nothing changes).
+    /// Sets a record scalar (refused outside its row or recovered row, or fractional for a count;
+    /// nothing changes).
     pub fn set_param(&mut self, key: &str, value: f64) -> Result<()> {
-        let k = checked(&WAVE_WORLD_ROWS, ParamScope::Record, key, value)?;
+        let k = match checked_mapped(&WAVE_WORLD_RECORD, &WAVE_WORLD_MAPPINGS, key, value)? {
+            Some(k) => k,
+            None => checked(&WAVE_WORLD_ROWS, ParamScope::Record, key, value)?,
+        };
         if INTEGER_KEYS.contains(&k) {
             whole(k, value)?;
         }
@@ -313,11 +424,12 @@ impl WaveWorld {
 
     pub fn validate(&self) -> Result<()> {
         validate_rows(&WAVE_WORLD_ROWS, ParamScope::Record, |k| self.param(k))?;
+        validate_mapped(&WAVE_WORLD_RECORD, &WAVE_WORLD_MAPPINGS, |k| self.param(k))?;
         if self.producers.len() > MAX_WAVE_PRODUCERS {
             return Err(ParticleError::Parameter("producers"));
         }
         for p in &self.producers {
-            validate_rows(&WAVE_PRODUCER_ROWS, ParamScope::Record, |k| p.param(k))?;
+            p.validate()?;
         }
         if self.courant().is_nan() || self.courant() > CFL_LIMIT {
             return Err(ParticleError::Parameter("cfl"));
