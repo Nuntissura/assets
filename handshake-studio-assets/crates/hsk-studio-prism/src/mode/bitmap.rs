@@ -372,7 +372,7 @@ pub fn grayscale_to_bitmap(
                             !(d > 0.0 && coverage(ranks, spot(*shape, u, ww)) <= d)
                         }
                         Plan::Custom(tile, tw, th) => {
-                            let t = tile.data[y.wrapping_rem(*th).wrapping_mul(*tw).wrapping_add(x.wrapping_rem(*tw))];
+                            let t = tile.data[y.checked_rem(*th).unwrap_or(0).wrapping_mul(*tw).wrapping_add(x.checked_rem(*tw).unwrap_or(0))];
                             v > (f64::from(t) + 0.5) / 256.0
                         }
                         Plan::Diffusion => unreachable!("handled above"),

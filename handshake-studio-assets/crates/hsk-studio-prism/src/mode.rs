@@ -524,12 +524,12 @@ pub fn plan_mode_change(from: DocumentMode, op: ChangeMode, depth: BitsPerChanne
         _ if from == M::Bitmap => BitsPerChannel::Eight,
         _ => depth,
     };
-    if from == M::Multichannel {
-        if let Some(n) = colour_channels(to) {
-            if to != M::Grayscale && n != channels.colour_channels {
-                return Err(ModeError::MultichannelChannelCount);
-            }
-        }
+    if from == M::Multichannel
+        && let Some(n) = colour_channels(to)
+        && to != M::Grayscale
+        && n != channels.colour_channels
+    {
+        return Err(ModeError::MultichannelChannelCount);
     }
     check_mode_depth(to, to_depth)?;
     let mut discard = DiscardReport::default();

@@ -318,15 +318,17 @@ fn median_cut(counts: &[u64], sums: &[[u64; 3]], k: usize, palette: Palette) -> 
         };
     }
     let extent = |bx: &[usize]| -> (usize, f64) {
-        let mut best = (0_usize, -1.0_f64);
-        for axis in 0..3 {
-            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-            for &b in bx {
-                lo = lo.min(coord[b][axis]);
-                hi = hi.max(coord[b][axis]);
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for &b in bx {
+            for ((l, h), v) in lo.iter_mut().zip(hi.iter_mut()).zip(coord[b]) {
+                *l = l.min(v);
+                *h = h.max(v);
             }
-            if hi - lo > best.1 {
-                best = (axis, hi - lo);
+        }
+        let mut best = (0_usize, -1.0_f64);
+        for (axis, (l, h)) in lo.iter().zip(hi).enumerate() {
+            if h - l > best.1 {
+                best = (axis, h - l);
             }
         }
         best
@@ -487,10 +489,10 @@ pub fn rgb_to_indexed(source: &RgbImage<'_>, options: &IndexedOptions, env: &Ind
         Matte::NetscapeGray => Some([192, 192, 192]),
     };
     let forced = forced_colours(options.forced);
-    if let Some(n) = requested {
-        if forced.len() > n.min(MAX_TABLE_ENTRIES) {
-            return Err(ModeError::ForcedColorsExceedCount);
-        }
+    if let Some(n) = requested
+        && forced.len() > n.min(MAX_TABLE_ENTRIES)
+    {
+        return Err(ModeError::ForcedColorsExceedCount);
     }
     // Effective colour of pixel i (None = transparent); reads the source only.
     let effective = |i: usize| -> Option<[u8; 3]> {
@@ -615,8 +617,8 @@ pub fn rgb_to_indexed(source: &RgbImage<'_>, options: &IndexedOptions, env: &Ind
     };
     let mut rng = seed.map(SplitMix64);
     for (i, out) in indices.iter_mut().enumerate() {
-        let x = i.wrapping_rem(w);
-        let y = i.wrapping_div(w);
+        let x = i.checked_rem(w).unwrap_or(0);
+        let y = i.checked_div(w).unwrap_or(0);
         if x == 0 && y != 0 && options.dither == IndexedDither::Diffusion {
             std::mem::swap(&mut cur, &mut next);
             next.iter_mut().for_each(|e| *e = 0.0);
@@ -630,11 +632,11 @@ pub fn rgb_to_indexed(source: &RgbImage<'_>, options: &IndexedOptions, env: &Ind
             *out = transparency_index.unwrap_or(0);
             continue;
         }
-        if options.preserve_exact_colors {
-            if let Some(e) = nearest.exact.get(&c) {
-                *out = *e;
-                continue;
-            }
+        if options.preserve_exact_colors
+            && let Some(e) = nearest.exact.get(&c)
+        {
+            *out = *e;
+            continue;
         }
         let target: [f64; 3] = match options.dither {
             IndexedDither::None => c.map(f64::from),
