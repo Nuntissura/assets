@@ -334,6 +334,44 @@ fn channel_edits_psd_cannot_take_are_typed_losses() {
     });
 }
 
+/// R50 finding F-R50-5 (lane SMB-R50-FOLLOWUPS-1): the legacy 1006 Pascal name holds Latin-1 bytes
+/// (a character above U+00FF is written `?`) and at most 255 of them. A rename it cannot carry
+/// exactly is the typed loss `channel_name_transcoded` (as layer names record
+/// `layer_name_truncated`); a rename it carries exactly records none, and the 1045 Unicode name keeps
+/// the exact name either way.
+#[test]
+fn renamed_channel_names_the_pascal_list_cannot_carry_are_typed_losses() {
+    bounded_case("renamed_channel_names_the_pascal_list_cannot_carry_are_typed_losses", || {
+        let cancel = CancellationToken::default();
+        let long = "a".repeat(256);
+        for unicode_names in [true, false] {
+            let (doc, p) = proposal(&doc_with(8, 2, standard_resources(unicode_names)));
+            let renamed = |name: &str| {
+                let mut frames = Frames::default();
+                rename_channel(&p.raster_records, "psd-channel-4", name, &cmd(), &cancel, &mut frames).result.unwrap()
+            };
+            let transcoded = |report: &ExportReport| {
+                report.loss.entries.iter().filter(|e| e.code == "channel_name_transcoded").map(|e| (e.path.clone(), e.kind)).collect::<Vec<_>>()
+            };
+            for (name, pascal, exact) in [
+                ("Haar \u{6f22}", b"Haar ?".to_vec(), false),
+                (long.as_str(), vec![b'a'; 255], false),
+                ("Spot\u{e9} two", b"Spot\xe9 two".to_vec(), true),
+            ] {
+                let (out, report) = export(&doc, &p, &renamed(name), &p.channel_tiles);
+                assert!(report.was_applied("channel_name"), "{name}: {report:?}");
+                let want = if exact { Vec::new() } else { vec![("channel[1]/name".to_string(), LossKind::Transformed)] };
+                assert_eq!(transcoded(&report), want, "{name} (1045 present: {unicode_names})");
+                let (doc2, q) = proposal(&out);
+                assert_eq!(doc2.resources.alpha_names_pascal(8).unwrap().unwrap()[1], pascal, "{name}: the 1006 bytes");
+                // With 1045 the re-import reads the exact name; without it, the Pascal bytes as Latin-1.
+                let read_back: String = if unicode_names { name.to_string() } else { pascal.iter().map(|&b| char::from(b)).collect() };
+                assert_eq!(q.raster_records.channel("psd-channel-4").unwrap().name, read_back, "{name}");
+            }
+        }
+    });
+}
+
 #[test]
 fn hostile_channel_resources_are_bounded() {
     bounded_case("hostile_channel_resources_are_bounded", || {
