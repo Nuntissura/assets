@@ -13,7 +13,10 @@
 use crate::action::{self, ActionRecord, Call, DialogOption, NotRecordable, PlayMode, RecordedValue, Recording, RecordingReport, UnitToken};
 use crate::panel::{self, PanelValues, Route};
 use crate::context::RunContext;
-use hsk_studio_accord::{ActorContext, CancellationToken, CausationId, CommandContext, CommandId, DomainId};
+use hsk_studio_accord::{
+    ActorContext, BusinessEventRecord, CancellationToken, CausationId, CommandContext, CommandId, DomainId, MAX_BUSINESS_EVENT_ARTIFACTS,
+    StudioBusinessEventId,
+};
 use hsk_studio_folio::{self as folio, Parent, Resolution, Resolver, StudioLayer, TileRef};
 use hsk_studio_observe::{Budget, DeliveryClass, DeliveryError, FailureCode, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_session::{
@@ -22,7 +25,7 @@ use hsk_studio_session::{
 };
 use serde_json::{Value, json};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 pub const SCHEMA: &str = "hsk.studio.harness@1";
 
@@ -221,7 +224,37 @@ impl Harness {
             redo_stack: Vec::new(),
             recording: None,
             quiet: false,
+            pending_events: Vec::new(),
+            event_sequence: None,
+            event_stats: BusinessEventStats::default(),
+            ambient_causation: None,
         }
+    }
+}
+
+/// What the run's business-event emission did (lane SMB-BUSINESS-EVENTS-1; [`Run::business_events`]).
+#[derive(Clone, Copy, Default)]
+struct BusinessEventStats {
+    delivered: u64,
+    failed: u64,
+    no_sink: u64,
+    refused: u64,
+    refused_missing_command_id: u64,
+    /// Set by an `indeterminate` delivery: the event may have escaped (observe semantics).
+    reconciliation_required: bool,
+}
+
+/// The business event a session document entry token maps to unambiguously (lane
+/// SMB-BUSINESS-EVENTS-1): `develop` holds the RAW develop settings, `text` the text stories, and
+/// `vector` the vector path records. Every other token (`selection` is view state; `composition`,
+/// `motion`, `audio_routing`, `waveform_edit`, `multicam`, `proof`, `design`, `info`) maps to no
+/// single catalog variant and emits nothing.
+fn entry_business_event(token: &str) -> Option<StudioBusinessEventId> {
+    match token {
+        "develop" => Some(StudioBusinessEventId::RawDeveloped),
+        "text" => Some(StudioBusinessEventId::TextEdited),
+        "vector" => Some(StudioBusinessEventId::VectorPathEdited),
+        _ => None,
     }
 }
 
@@ -373,6 +406,15 @@ pub struct Run<'a> {
     /// Set while an operation runs other public operations internally (and during playback): they
     /// are neither recorded nor reported as not recordable.
     quiet: bool,
+    /// Business events of accepted commits not yet in an op record (lane SMB-BUSINESS-EVENTS-1):
+    /// the next record takes them as `business_events`.
+    pending_events: Vec<Value>,
+    /// (revision, next sequence) of the newest business event: the events of one revision are
+    /// numbered 0, 1, ... (event id `document@revision#sequence`).
+    event_sequence: Option<(u64, u64)>,
+    event_stats: BusinessEventStats,
+    /// The causation of the inner commands of an action being played (its correlation).
+    ambient_causation: Option<CausationId>,
 }
 
 impl Run<'_> {
@@ -390,7 +432,7 @@ impl Run<'_> {
     /// revision when `None`); the operation's record takes it.
     fn begin_at(&mut self, command: &'static str, base: Option<u64>, causation: Option<CausationId>) -> CommandContext {
         let base = base.or_else(|| self.revision()).unwrap_or(0);
-        let ctx = self.context.command(Some(command), base, causation);
+        let ctx = self.context.command(Some(command), base, causation.or(self.ambient_causation));
         self.current = Some(ctx.clone());
         ctx
     }
@@ -431,8 +473,108 @@ impl Run<'_> {
             Ok(detail) => record["detail"] = detail,
             Err(code) => record["error"] = json!(code),
         }
+        if !self.pending_events.is_empty() {
+            record["business_events"] = Value::Array(std::mem::take(&mut self.pending_events));
+        }
         self.ops.push(record);
         ok
+    }
+
+    // ----- business events (lane SMB-BUSINESS-EVENTS-1) -------------------------------------------
+
+    /// Emits `event` for a commit the session accepted (STU-CON-014: the binding, after the
+    /// canonical event; never on a refusal): an accord [`BusinessEventRecord`] of the working
+    /// document at the exact `revision`, attributed to `ctx`, handed to the run context's sink. The
+    /// outcome goes into the op record (`business_events`) and the run's counters
+    /// ([`Run::business_events`]). A delivery failure never undoes the commit; `indeterminate`
+    /// sets the run's reconciliation flag. A context without a command id is refused
+    /// `missing_command_id` and counted (lead decision 2026-10-31). No sink: `no_sink`, nothing
+    /// emitted.
+    fn emit_business_event(&mut self, event: StudioBusinessEventId, ctx: &CommandContext, revision: u64, artifacts: &[&str]) {
+        let entry = self.business_event_entry(event, ctx, revision, artifacts);
+        self.pending_events.push(entry);
+    }
+
+    fn business_event_entry(&mut self, event: StudioBusinessEventId, ctx: &CommandContext, revision: u64, artifacts: &[&str]) -> Value {
+        let wire = event.as_str();
+        if ctx.command().is_none() {
+            self.event_stats.refused = self.event_stats.refused.saturating_add(1);
+            self.event_stats.refused_missing_command_id = self.event_stats.refused_missing_command_id.saturating_add(1);
+            return json!({"event": wire, "delivery": "refused", "error": "missing_command_id"});
+        }
+        let Some(document) = self.session.as_ref().map(|s| s.snapshot().document().document_id.clone()) else {
+            self.event_stats.refused = self.event_stats.refused.saturating_add(1);
+            return json!({"event": wire, "delivery": "refused", "error": "not_open"});
+        };
+        let sequence = match self.event_sequence {
+            Some((r, next)) if r == revision => next,
+            _ => 0,
+        };
+        self.event_sequence = Some((revision, sequence.saturating_add(1)));
+        // Artifact refs are typed accord ids only; anything else is left out, never copied as text.
+        let refs: Vec<&str> = artifacts.iter().copied().filter(|a| DomainId::parse(a).is_ok()).take(MAX_BUSINESS_EVENT_ARTIFACTS).collect();
+        let record = match BusinessEventRecord::new(event, &document, revision, sequence, ctx.clone()).and_then(|r| r.with_artifacts(&refs)) {
+            Ok(r) => r,
+            Err(e) => {
+                self.event_stats.refused = self.event_stats.refused.saturating_add(1);
+                return json!({"event": wire, "delivery": "refused", "error": e.code()});
+            }
+        };
+        let event_id = record.event_id();
+        let Some(sink) = self.context.business_events().cloned() else {
+            self.event_stats.no_sink = self.event_stats.no_sink.saturating_add(1);
+            return json!({"event": wire, "event_id": event_id, "delivery": "no_sink"});
+        };
+        let result = sink.lock().unwrap_or_else(PoisonError::into_inner).try_emit(&record);
+        match result {
+            Ok(()) => {
+                self.event_stats.delivered = self.event_stats.delivered.saturating_add(1);
+                json!({"event": wire, "event_id": event_id, "delivery": "delivered"})
+            }
+            Err(e) => {
+                self.event_stats.failed = self.event_stats.failed.saturating_add(1);
+                if e.needs_reconciliation() {
+                    self.event_stats.reconciliation_required = true;
+                }
+                json!({"event": wire, "event_id": event_id, "delivery": "failed", "error": e.code(), "reconciliation_required": e.needs_reconciliation()})
+            }
+        }
+    }
+
+    /// The entry part of a step: the event its token maps to, unless the step already emitted it.
+    fn emit_entry_business_event(&mut self, token: &str, ctx: &CommandContext, already: Option<StudioBusinessEventId>) {
+        if let Some(event) = entry_business_event(token)
+            && already != Some(event)
+        {
+            let revision = self.revision().unwrap_or(0);
+            self.emit_business_event(event, ctx, revision, &[]);
+        }
+    }
+
+    /// Puts emitted events into the newest op record (a step whose record was written before its
+    /// entry part ran).
+    fn attach_events_to_last_record(&mut self) {
+        if self.pending_events.is_empty() {
+            return;
+        }
+        let events = std::mem::take(&mut self.pending_events);
+        if let Some(record) = self.ops.last_mut() {
+            match record["business_events"].as_array_mut() {
+                Some(list) => list.extend(events),
+                None => record["business_events"] = Value::Array(events),
+            }
+        }
+    }
+
+    /// The run's business-event counters (lane SMB-BUSINESS-EVENTS-1): delivered, failed,
+    /// no_sink, refused (of which missing_command_id) and the reconciliation flag an
+    /// `indeterminate` delivery sets.
+    pub fn business_events(&self) -> Value {
+        let s = self.event_stats;
+        json!({
+            "delivered": s.delivered, "failed": s.failed, "no_sink": s.no_sink, "refused": s.refused,
+            "refused_missing_command_id": s.refused_missing_command_id, "reconciliation_required": s.reconciliation_required,
+        })
     }
 
     /// Frame owned by the harness for an operation no session performed.
@@ -616,6 +758,10 @@ impl Run<'_> {
         };
         let depth = self.undo_stack.len();
         let saved_redo = std::mem::take(&mut self.redo_stack);
+        // The action's own command context: each inner command is caused by it (lane
+        // SMB-BUSINESS-EVENTS-1: every inner commit emits its own event with this causation).
+        let action_ctx = self.context.command(Some("action.play"), self.revision().unwrap_or(0), None);
+        self.ambient_causation = Some(CausationId::from(action_ctx.correlation()));
         let mut fault: Option<(&'static str, &action::ActionStep, Value)> = None;
         for (step, call) in calls {
             if self.cancel.check().is_err() {
@@ -640,6 +786,7 @@ impl Run<'_> {
                 break;
             }
         }
+        self.ambient_causation = None;
         if let Some((code, step, extra)) = fault {
             // Roll back newest-first; the rollback's redo entries are dropped and the history the
             // replay found is restored.
@@ -653,11 +800,13 @@ impl Run<'_> {
             self.redo_stack = saved_redo;
             let before = self.frames.count();
             let detail = json!({"action_id": action.action_id, "step_index": step.index, "command_id": step.command_id, "detail": extra, "rolled_back": restored});
+            self.current = Some(action_ctx);
             return self.play_refusal(before, if restored { code } else { "action_rollback_failed" }, detail);
         }
         let inner: Vec<HistoryStep> = self.undo_stack.drain(depth..).collect();
         let label = format!("action {}", action.name);
-        let ctx = self.begin("action.play", None);
+        let ctx = action_ctx;
+        self.current = Some(ctx.clone());
         let history_label = if inner.is_empty() {
             // Nothing changed: like an unchanged edit, the redo history stays.
             self.redo_stack = saved_redo;
@@ -779,8 +928,17 @@ impl Run<'_> {
             "layers": imported.receipt["layers"],
             "not_proven": imported.receipt["not_proven"],
         });
+        let ctx = self.begin_at("document.import", Some(0), None);
         let opened = Session::open_bytes(&package, SessionConfig::new(self.context.actor().clone()), self.ports(), self.cancel);
         let ok = self.finish_open("import", before, opened, false);
+        if ok {
+            // Every import route converts a foreign file into a new native document with a fresh
+            // SDOC id: the document is created, then the import completed (lane SMB-BUSINESS-EVENTS-1).
+            let revision = self.revision().unwrap_or(0);
+            self.emit_business_event(StudioBusinessEventId::DocumentCreated, &ctx, revision, &[]);
+            self.emit_business_event(StudioBusinessEventId::ImportCompleted, &ctx, revision, &[]);
+            self.attach_events_to_last_record();
+        }
         if let Some(record) = self.ops.last_mut() {
             if record["detail"].is_object() {
                 record["detail"]["import"] = summary;
@@ -981,6 +1139,10 @@ impl Run<'_> {
                 if let Some(expected) = expected {
                     self.expectations.push(Expectation { layer_id: layer_id.to_string(), field, expected });
                 }
+                if applied.changed && !applied.replayed {
+                    let event = if matches!(prop, Prop::VectorPaths) { StudioBusinessEventId::VectorPathEdited } else { StudioBusinessEventId::LayerMutated };
+                    self.emit_business_event(event, &ctx, applied.revision, &[layer_id]);
+                }
                 if applied.changed
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
@@ -1082,6 +1244,7 @@ impl Run<'_> {
         let previous = entry.as_ref().map(|(token, _)| EntryRestore { token: (*token).to_string(), bytes: session.document_entry(token).map(<[u8]>::to_vec) });
         let depth = self.undo_stack.len();
         let ctx = self.begin("layer.set_vector_paths_and_entry", None);
+        let mut emitted = None;
         if !writes.is_empty() {
             if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
                 return self.own_op(op, before, Err("provider_not_selected"));
@@ -1097,6 +1260,11 @@ impl Run<'_> {
             let revision = session.document_revision();
             match session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel) {
                 Ok(applied) => {
+                    if applied.changed && !applied.replayed {
+                        let layers: Vec<&str> = writes.iter().map(|(l, _)| l.as_str()).collect();
+                        self.emit_business_event(StudioBusinessEventId::VectorPathEdited, &ctx, applied.revision, &layers);
+                        emitted = Some(StudioBusinessEventId::VectorPathEdited);
+                    }
                     if applied.changed
                         && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                     {
@@ -1118,12 +1286,17 @@ impl Run<'_> {
             };
             if let Err(code) = set {
                 // A committed path step without its entry would split the step: undo the paths.
+                // The accepted path commit's event stays with this step's record; the rollback
+                // undo's record carries its own.
+                let accepted = std::mem::take(&mut self.pending_events);
                 if self.undo_stack.len() > depth {
                     let _ = self.quietly(Self::undo);
                 }
+                self.pending_events = accepted;
                 self.current = Some(ctx);
                 return self.own_op(op, before, Err(code));
             }
+            self.emit_entry_business_event(token, &ctx, emitted);
             if self.undo_stack.len() > depth {
                 if let Some(step) = self.undo_stack.last_mut() {
                     step.entry = Some(restore);
@@ -1163,6 +1336,12 @@ impl Run<'_> {
         let ctx = self.begin(command, None);
         match self.submit_structure(writes, &ctx) {
             Ok(applied) => {
+                if applied.changed && !applied.replayed {
+                    // A placement that adds a layer creates it; every other placement mutates.
+                    let event = if writes.iter().any(|w| w.create.is_some()) { StudioBusinessEventId::LayerCreated } else { StudioBusinessEventId::LayerMutated };
+                    let layers: Vec<&str> = writes.iter().map(|w| w.layer_id.as_str()).collect();
+                    self.emit_business_event(event, &ctx, applied.revision, &layers);
+                }
                 if applied.changed
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
@@ -1236,12 +1415,18 @@ impl Run<'_> {
             if let Some(step) = self.undo_stack.last_mut() {
                 step.entry = Some(restore);
             }
+            if let Some(ctx) = ctx {
+                self.emit_entry_business_event(token, &ctx, None);
+            }
         } else {
             // The structure edit changed nothing: the step is entry-only (same command).
             let (ctx, revision) = self.entry_only_attribution(ctx, "layer.restructure_and_entry");
+            self.emit_entry_business_event(token, &ctx, None);
             self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
             self.redo_stack.clear();
         }
+        // The restructure record was written before the entry part ran.
+        self.attach_events_to_last_record();
         true
     }
 
@@ -1355,10 +1540,16 @@ impl Run<'_> {
             if let Some(step) = self.undo_stack.last_mut() {
                 step.entry = Some(restore);
             }
+            if let Some(ctx) = ctx {
+                // The tile record was written before the entry part ran.
+                self.emit_entry_business_event(token, &ctx, None);
+                self.attach_events_to_last_record();
+            }
             true
         } else {
             let before = self.frames.count();
             let (ctx, revision) = self.entry_only_attribution(ctx, "layer.set_tiles_and_entry");
+            self.emit_entry_business_event(token, &ctx, None);
             self.current = Some(ctx.clone());
             self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
             self.redo_stack.clear();
@@ -1655,6 +1846,7 @@ impl Run<'_> {
         };
         // A fresh command for the undo / redo, caused by the step it reverses.
         let ctx = self.begin(if undo { "history.undo" } else { "history.redo" }, Some(CausationId::from(step.ctx.correlation())));
+        let history_event = if undo { StudioBusinessEventId::HistoryUndone } else { StudioBusinessEventId::HistoryRedone };
         if let Some(timeline) = step.timeline.clone() {
             // A timeline step: submit it under fresh identity; its inverse goes to the other stack.
             let cancel = self.cancel;
@@ -1682,6 +1874,9 @@ impl Run<'_> {
                         }
                         None => None,
                     };
+                    if applied.changed && !applied.replayed {
+                        self.emit_business_event(history_event, &ctx, applied.revision, &[]);
+                    }
                     let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
                     let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: applied.timeline_inverse.clone(), group: None, sequences: None, ctx, revision: applied.revision };
                     if undo {
@@ -1735,6 +1930,9 @@ impl Run<'_> {
                         }
                         None => None,
                     };
+                    if applied.changed && !applied.replayed {
+                        self.emit_business_event(history_event, &ctx, applied.revision, &[]);
+                    }
                     let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
                     let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: applied.multicam_inverse.clone(), ctx, revision: applied.revision };
                     if undo {
@@ -1758,6 +1956,7 @@ impl Run<'_> {
                 Some(Ok(previous)) => {
                     let detail = json!({"step": step.label, "entry": step.entry.as_ref().map(|e| e.token.clone()), "changed": true});
                     let revision = self.revision().unwrap_or(0);
+                    self.emit_business_event(history_event, &ctx, revision, &[]);
                     let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: None, ctx, revision };
                     if undo {
                         self.redo_stack.push(entry);
@@ -1802,6 +2001,9 @@ impl Run<'_> {
                     };
                     self.expectations.retain(|e| !(e.layer_id == layer && e.field == field));
                     self.expectations.push(Expectation { layer_id: layer, field, expected: write["value"]["value"].clone() });
+                }
+                if applied.changed && !applied.replayed {
+                    self.emit_business_event(history_event, &ctx, applied.revision, &[]);
                 }
                 let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
                 let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None, group: None, sequences: None, ctx, revision: applied.revision };
@@ -2168,4 +2370,47 @@ fn actor_json(actor: &ActorContext) -> Value {
         "owner_account_id": actor.owner_account_id(), "owner_principal_id": actor.owner_principal_id(),
         "access_space_id": actor.access_space_id(), "session_id": actor.session_id(),
     })
+}
+
+#[cfg(test)]
+mod business_event_tests {
+    //! Lane SMB-BUSINESS-EVENTS-1: every `Run` command mints a context with a RUN_COMMANDS id, so
+    //! a context without one cannot reach emission through the public API; this proves the guard
+    //! (lead decision 2026-10-31: refused `missing_command_id`, counted, never emitted).
+    use super::*;
+    use hsk_studio_accord::{BusinessEventDeliveryError, BusinessEventSink, ClientSessionId, TransientCorrelation};
+
+    const FIXTURE: &[u8] = include_bytes!("../../hsk-studio-harness/tests/fixtures/demo.handshake");
+
+    #[derive(Default)]
+    struct Capture(Vec<BusinessEventRecord>);
+
+    impl BusinessEventSink for Capture {
+        fn try_emit(&mut self, record: &BusinessEventRecord) -> Result<(), BusinessEventDeliveryError> {
+            self.0.push(record.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_commit_without_a_command_id_is_refused_and_counted() {
+        let harness = Harness::new(Selection { providers: vec!["chronicle.patch".to_string()], ..Selection::default() }).unwrap();
+        let cancel = CancellationToken::default();
+        let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap();
+        let capture = Arc::new(Mutex::new(Capture::default()));
+        let sink: crate::context::SharedBusinessEventSink = capture.clone();
+        let context = RunContext::new(actor, ClientSessionId::parse("unit").unwrap(), Arc::new(TransientCorrelation::new())).with_business_events(sink);
+        let mut run = harness.run(context, &cancel);
+        assert!(run.open_bytes(FIXTURE));
+        let revision = run.revision().unwrap();
+        let no_command = run.context.command(None, revision, None);
+        run.emit_business_event(StudioBusinessEventId::LayerMutated, &no_command, revision, &[]);
+        assert_eq!(run.pending_events, [json!({"event": "STUDIO_LAYER_MUTATED", "delivery": "refused", "error": "missing_command_id"})]);
+        assert!(capture.lock().unwrap().0.is_empty(), "nothing reached the sink");
+        assert_eq!(run.business_events()["refused_missing_command_id"], 1);
+        assert_eq!(run.business_events()["refused"], 1);
+        // The next record carries the refusal.
+        assert!(run.summary());
+        assert_eq!(run.ops().last().unwrap()["business_events"][0]["error"], "missing_command_id");
+    }
 }

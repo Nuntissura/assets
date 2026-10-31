@@ -6,8 +6,12 @@
 //! [`asset_local_test_context`] (non-default feature `asset-local-test-host`) is the asset-local
 //! test host's one fixed context: the harness CLI and the tests use it; product hosts pass their
 //! own [`RunContext`].
-use hsk_studio_accord::{ActorContext, CausationId, ClientSessionId, CommandContext, CommandId, CorrelationSource};
-use std::sync::Arc;
+use hsk_studio_accord::{ActorContext, BusinessEventSink, CausationId, ClientSessionId, CommandContext, CommandId, CorrelationSource};
+use std::sync::{Arc, Mutex};
+
+/// A shared accord business-event sink (lane SMB-BUSINESS-EVENTS-1): the run locks it for each
+/// non-blocking `try_emit`; the caller keeps its own handle to inspect what was delivered.
+pub type SharedBusinessEventSink = Arc<Mutex<dyn BusinessEventSink>>;
 
 /// Actor, client session and correlation source of one run (cloning shares the source, so a
 /// viewer that rebuilds its run keeps one monotonic correlation sequence).
@@ -16,11 +20,27 @@ pub struct RunContext {
     actor: ActorContext,
     client_session: ClientSessionId,
     correlation: Arc<dyn CorrelationSource>,
+    /// Where the run emits business events after accepted commits (lane SMB-BUSINESS-EVENTS-1);
+    /// `None`: no emission, recorded as `no_sink` in the op records.
+    business_events: Option<SharedBusinessEventSink>,
 }
 
 impl RunContext {
     pub fn new(actor: ActorContext, client_session: ClientSessionId, correlation: Arc<dyn CorrelationSource>) -> Self {
-        Self { actor, client_session, correlation }
+        Self { actor, client_session, correlation, business_events: None }
+    }
+
+    /// This context with an accord business-event sink (additive; the host's sink is MT-36230,
+    /// the asset-local one is kernel-bindings `TransientBusinessEvents`).
+    #[must_use]
+    pub fn with_business_events(mut self, sink: SharedBusinessEventSink) -> Self {
+        self.business_events = Some(sink);
+        self
+    }
+
+    /// The business-event sink, when one is configured.
+    pub fn business_events(&self) -> Option<&SharedBusinessEventSink> {
+        self.business_events.as_ref()
     }
 
     pub fn actor(&self) -> &ActorContext {
@@ -48,7 +68,11 @@ impl RunContext {
 
 impl std::fmt::Debug for RunContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunContext").field("actor", &self.actor).field("client_session", &self.client_session).finish_non_exhaustive()
+        f.debug_struct("RunContext")
+            .field("actor", &self.actor)
+            .field("client_session", &self.client_session)
+            .field("business_events", &self.business_events.is_some())
+            .finish_non_exhaustive()
     }
 }
 

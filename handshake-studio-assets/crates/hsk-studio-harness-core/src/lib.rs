@@ -19,7 +19,9 @@ pub use batch::{BatchJob, BatchReport};
 pub use harness::{AVAILABLE_PROVIDERS, Harness, HarnessError, NOT_PROVEN, Place, PlacementWrite, References, Run, SCHEMA, Selection};
 // Lane SMB-ATTRIBUTION-1: the run's attribution and accord's command-context types, re-exported so
 // callers (harness-view, the CLI) need no further edge.
-pub use context::RunContext;
+pub use context::{RunContext, SharedBusinessEventSink};
 #[cfg(feature = "asset-local-test-host")]
 pub use context::asset_local_test_context;
 pub use hsk_studio_accord::{CausationId, ClientSessionId, CommandContext, CommandId, CorrelationId, CorrelationSource, TransientCorrelation};
+// Lane SMB-BUSINESS-EVENTS-1: accord's business-event vocabulary, re-exported for callers of Run.
+pub use hsk_studio_accord::{BusinessEventDeliveryError, BusinessEventRecord, BusinessEventSink, StudioBusinessEventId};
