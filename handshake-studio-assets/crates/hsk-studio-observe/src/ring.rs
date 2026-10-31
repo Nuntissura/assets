@@ -539,7 +539,27 @@ impl RingRecord {
     }
     /// Field-by-field little-endian bytes in the layout of the module docs (for the host adapter and tests).
     pub fn to_le_bytes(&self) -> [u8; RING_RECORD_BYTES] {
-        [0u8; RING_RECORD_BYTES]
+        let mut out = [0u8; RING_RECORD_BYTES];
+        out[OFF_CODE..OFF_PHASE].copy_from_slice(&self.code.as_u16().to_le_bytes());
+        out[OFF_PHASE] = self.phase.as_u8();
+        out[OFF_SEVERITY] = self.severity.as_u8();
+        out[OFF_RESERVED..OFF_THREAD].copy_from_slice(&self.reserved);
+        out[OFF_THREAD..OFF_SEQUENCE].copy_from_slice(&self.thread.get().to_le_bytes());
+        out[OFF_SEQUENCE..OFF_COUNTER_A].copy_from_slice(&self.sequence.to_le_bytes());
+        out[OFF_COUNTER_A..OFF_COUNTER_B].copy_from_slice(&self.counter_a.to_le_bytes());
+        out[OFF_COUNTER_B..OFF_METRIC].copy_from_slice(&self.counter_b.to_le_bytes());
+        out[OFF_METRIC..OFF_TIMESTAMP].copy_from_slice(&self.metric_micros.to_le_bytes());
+        out[OFF_TIMESTAMP..OFF_MODULE].copy_from_slice(&self.timestamp_nanos.to_le_bytes());
+        out[OFF_MODULE..OFF_RESERVED_TAIL].copy_from_slice(&self.module.get().to_le_bytes());
+        out[OFF_RESERVED_TAIL..OFF_CORRELATION].copy_from_slice(&self.reserved_tail.to_le_bytes());
+        out[OFF_CORRELATION..OFF_SESSION].copy_from_slice(&self.correlation.get().to_le_bytes());
+        let [session_lo, session_hi] = self.session.get();
+        out[OFF_SESSION..OFF_SESSION_HI].copy_from_slice(&session_lo.to_le_bytes());
+        out[OFF_SESSION_HI..OFF_PROCESS].copy_from_slice(&session_hi.to_le_bytes());
+        let [process_lo, process_hi] = self.process.get();
+        out[OFF_PROCESS..OFF_PROCESS_HI].copy_from_slice(&process_lo.to_le_bytes());
+        out[OFF_PROCESS_HI..RING_RECORD_BYTES].copy_from_slice(&process_hi.to_le_bytes());
+        out
     }
 }
 
