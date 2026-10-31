@@ -854,7 +854,7 @@ fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
         && let Some(sequence) = viewer.run().snapshot().and_then(|s| s.document().sequences.iter().find(|q| q.sequence_id == a.sequence))
     {
         let tpf = sequence.frame_rate.ticks_per_frame.max(1);
-        let end = sequence.duration.value().div_ceil(tpf).checked_mul(tpf).unwrap_or(u64::MAX);
+        let end = sequence.duration.value().div_ceil(tpf).saturating_mul(tpf);
         if out_tick > end {
             return fail("export_range", json!({"stage":"range","out_tick":out_tick,"sequence_end":end}));
         }

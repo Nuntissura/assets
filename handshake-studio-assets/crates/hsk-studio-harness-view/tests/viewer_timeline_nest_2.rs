@@ -646,12 +646,14 @@ mod export {
     }
 
     /// The exported PCM (track 2) of `bytes` over `frames` frames, interleaved stereo.
+    #[cfg(feature = "audio-batch")]
     fn pcm(bytes: &[u8], frames: u64) -> Vec<f32> {
         let audio = read(bytes, 2, frames * SPF as u64);
         audio.chunks.iter().flat_map(|c| c.1.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect::<Vec<_>>()).collect()
     }
 
     /// Runs one export job to its file and returns the file's bytes.
+    #[cfg(feature = "audio-batch")]
     fn run_job(job: ExportJob, out: &Path) -> Vec<u8> {
         let mut queue = ExportQueue::new();
         let _handle = queue.submit(job);
@@ -661,6 +663,7 @@ mod export {
     }
 
     /// Interleaves `frames` frames of a planar stereo mix.
+    #[cfg(feature = "audio-batch")]
     fn interleave(mix: &[Vec<f32>; 2], frames: usize) -> Vec<f32> {
         (0..frames * SPF).flat_map(|i| [mix[0][i], mix[1][i]]).collect()
     }
