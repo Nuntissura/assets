@@ -6,6 +6,13 @@
 //! [`crate::masked_replace`] route the brush uses (`result = lerp(before, replacement, coverage)`,
 //! alpha-aware). The caller publishes them; pigment never writes document state.
 //!
+//! Coverage (R44 finding F-R44-1): a pixel the paint leaves unpainted (paint alpha x opacity 0,
+//! e.g. past the end of a foreground-to-transparent drag, or a transparent pattern pixel) gets
+//! coverage 0 and its replacement is the target's own bytes, so `masked_replace` keeps its before
+//! bytes bit for bit: unpainted pixels inside the bounds are not rewritten (test
+//! `fill_tools::unpainted_pixels_get_coverage_zero_and_keep_their_bytes`). A result whose every
+//! pixel is unpainted is refused `nothing_to_fill`, like an all-zero region.
+//!
 //! Values are straight colour and alpha in the caller's space (the views' encoding); the stop
 //! colours, the pattern pixels and the blend run in that same space. Tile values outside `[0, 1]`
 //! are refused by the blend (`blend_out_of_domain`), never clamped silently.
@@ -637,7 +644,7 @@ impl Region {
 
     /// Replacement planes: `source(x, y)` composited over the target where covered, the target's
     /// own bytes elsewhere.
-    fn paint(self, target: &ColourView<'_>, paint: &FillPaint, source: impl Fn(i64, i64) -> Result<Rgba, FillError>) -> Result<FillResult, FillError> {
+    fn paint(mut self, target: &ColourView<'_>, paint: &FillPaint, source: impl Fn(i64, i64) -> Result<Rgba, FillError>) -> Result<FillResult, FillError> {
         let b = self.bounds;
         let n = self.coverage.data.len();
         let mut colour = Vec::with_capacity(n.checked_mul(12).ok_or(Error::Overflow)?);
@@ -650,7 +657,8 @@ impl Region {
                 let dx = usize::try_from(x.checked_sub(target.bounds.x).ok_or(Error::Overflow)?).map_err(|_| Error::Overflow)?;
                 let dy = usize::try_from(y.checked_sub(target.bounds.y).ok_or(Error::Overflow)?).map_err(|_| Error::Overflow)?;
                 let i = dy.checked_mul(tw).and_then(|v| v.checked_add(dx)).ok_or(Error::Overflow)?;
-                let cov = self.coverage.data.get(k).copied().unwrap_or(0);
+                let slot = k;
+                let cov = self.coverage.data.get(slot).copied().unwrap_or(0);
                 k = k.checked_add(1).ok_or(Error::Overflow)?;
                 let c0 = i.checked_mul(12).ok_or(Error::Overflow)?;
                 let a0 = i.checked_mul(4).ok_or(Error::Overflow)?;
@@ -661,18 +669,30 @@ impl Region {
                     alpha.extend_from_slice(own_a);
                     continue;
                 }
+                let src = source(x, y)?;
+                // Unpainted (module doc: coverage): the before bytes stay, coverage 0.
+                if src.a * paint.opacity == 0.0 {
+                    if let Some(c) = self.coverage.data.get_mut(slot) {
+                        *c = 0;
+                    }
+                    colour.extend_from_slice(own_c);
+                    alpha.extend_from_slice(own_a);
+                    continue;
+                }
                 let at = |j: usize| f32_at(target.colour, i.checked_mul(3)?.checked_add(j)?);
                 let (Some(r), Some(g), Some(bl), Some(a)) = (at(0), at(1), at(2), f32_at(target.alpha, i)) else {
                     return Err(Error::MalformedStride.into());
                 };
                 let backdrop = Rgba { rgb: [r, g, bl], a };
-                let src = source(x, y)?;
                 let out = mix(paint, backdrop, src, x, y)?;
                 for c in out.rgb {
                     colour.extend_from_slice(&c.to_le_bytes());
                 }
                 alpha.extend_from_slice(&out.a.to_le_bytes());
             }
+        }
+        if self.coverage.data.iter().all(|v| *v == 0) {
+            return Err(FillError::NothingToFill);
         }
         Ok(FillResult { bounds: b, colour, alpha, coverage: self.coverage })
     }
@@ -697,4 +717,4 @@ fn mix(paint: &FillPaint, backdrop: Rgba, source: Rgba, x: i64, y: i64) -> Resul
 }
 
 /// Fill-tool surface description (Studio readings, parity NOT_PROVEN).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"fill_tools","version":1,"ops":["gradient_fill","flood_fill","fill_selection"],"output":"replacement rgb_f32le + straight f32le alpha + coverage plane for masked_replace; no document writes","gradient":"independent colour and transparency stop lists (STU-RAS-160), location 0..4096, midpoint piecewise-linear (f = m gives 0.5), segment interpolation = effect_math gradient_sample; geometries linear, radial, angle, reflected, diamond from a drag line (see module doc); reverse; dither seeded per site (+-0.5/255)","refused":["form noise: gradient_noise_unsupported","geometry shape_burst: gradient_shape_burst_unsupported","interpolation != 4096: gradient_smoothness_unsupported"],"flood":"region = select_tools::wand::magic_wand (tolerance, contiguous, anti_alias) on the layer or a caller merged frame, intersected with the selection","content":"opaque colour or a caller pattern tile (RGBA pixels, 1x1 legal, id authoritative) tiled from its origin, nearest pixel","blend":"blend_math::composite_over with the opacity; behind and clear computed here; group-only / unrecovered modes refuse typed","limits":{"stops":256,"coordinate":1e9,"pattern_side":4096},"parity":"NOT_PROVEN (Photoshop UNVERIFIED, D5: tolerance metric, anti-alias kernel, dither pattern, midpoint curve, radial/angle/diamond drag mapping)"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"fill_tools","version":1,"ops":["gradient_fill","flood_fill","fill_selection"],"output":"replacement rgb_f32le + straight f32le alpha + coverage plane for masked_replace; no document writes; unpainted pixels (paint alpha x opacity 0) have coverage 0 and keep their bytes (F-R44-1); an all-unpainted result is nothing_to_fill","gradient":"independent colour and transparency stop lists (STU-RAS-160), location 0..4096, midpoint piecewise-linear (f = m gives 0.5), segment interpolation = effect_math gradient_sample; geometries linear, radial, angle, reflected, diamond from a drag line (see module doc); reverse; dither seeded per site (+-0.5/255)","refused":["form noise: gradient_noise_unsupported","geometry shape_burst: gradient_shape_burst_unsupported","interpolation != 4096: gradient_smoothness_unsupported"],"flood":"region = select_tools::wand::magic_wand (tolerance, contiguous, anti_alias) on the layer or a caller merged frame, intersected with the selection","content":"opaque colour or a caller pattern tile (RGBA pixels, 1x1 legal, id authoritative) tiled from its origin, nearest pixel","blend":"blend_math::composite_over with the opacity; behind and clear computed here; group-only / unrecovered modes refuse typed","limits":{"stops":256,"coordinate":1e9,"pattern_side":4096},"parity":"NOT_PROVEN (Photoshop UNVERIFIED, D5: tolerance metric, anti-alias kernel, dither pattern, midpoint curve, radial/angle/diamond drag mapping)"}"#;

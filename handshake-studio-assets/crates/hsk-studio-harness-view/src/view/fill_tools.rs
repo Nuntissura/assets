@@ -171,11 +171,11 @@ fn encode_rgb(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// IEC 61966-2-1 decode into linear light (Prism exposes the encode only; the brush's 8-bit
-/// `edit::linear(u8)` would quantize the replacement).
+/// Decode into linear light through Prism's exact inverse of [`encode_rgb`]'s encoding
+/// (`DisplayEncoding::Srgb.decode`, CTL `moncurve_f`; R44 F-R44-1); the brush's 8-bit
+/// `edit::linear(u8)` would quantize the replacement. A sample Prism refuses (non-finite) yields NaN.
 fn decode(v: f32) -> f32 {
-    let c = v.clamp(0.0, 1.0);
-    if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    DisplayEncoding::Srgb.decode([v; 3]).map_or(f32::NAN, |d| d[0])
 }
 
 fn f32s(bytes: &[u8]) -> impl Iterator<Item = f32> + '_ {
