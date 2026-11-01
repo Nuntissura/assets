@@ -37,6 +37,7 @@ mod pdf_export_prefs;
 mod preflight;
 mod print;
 mod running;
+mod sentinels;
 mod story_tables;
 mod styles;
 mod table;
@@ -150,6 +151,12 @@ pub use preflight::{
     PreflightRuleInstance, Severity, run_preflight,
 };
 pub use running::{RunningError, RunningInstance, VariableContext, compose_overlay, resolve_running_texts};
+pub use sentinels::{
+    BreakOutcome, BreakOverset, BreakResult, FLUSH_SPACE, FlushOutcome, MAX_MARKER_PASSES, MAX_RESOLVED_MARKER_BYTES, MAX_STORY_MARKERS,
+    MarkerKind, MarkerOutcome, MarkerRecord, MarkerState, MarkerTarget, SentinelBudget, SentinelComposition, SentinelError,
+    SentinelRequest, SentinelShaper, ShapeInput, UnresolvedMarker, compose_with_sentinels, ends_paragraph, paragraph_partition,
+    report_sentinels,
+};
 pub use story_tables::{AnchoredTable, StoryWithTables, reflow_with_tables};
 pub use table::{
     FlowPosition, PieceKind, PlacedCell, PlacedRow, StrokeSegment, TableError, TableLimits,
