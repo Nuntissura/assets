@@ -209,7 +209,45 @@ pub fn trap_preset_records_schema() -> schemars::Schema {
 /// unique valid names and finite values, and every page's `applied_trap_preset` naming a stored
 /// preset (`DanglingReference`, target `<page_id>/applied_trap_preset`).
 pub fn validate_trap_preset_records(r: &StudioTrapPresetRecords, d: &StudioDocument, token: &CancellationToken) -> Result<()> {
-    todo!("SMB-ID-TOC-PERSIST-1 item 2: trap-preset records ({} {} {})", r.trap_presets.len(), d.page_spreads.len(), token.check().is_ok())
+    canceled(token)?;
+    id(&r.document_id, "SDOC", "document_id")?;
+    if r.document_id != d.document_id {
+        return Err(err(Code::InvalidField, "document_id"));
+    }
+    if r.trap_presets.len() > MAX_TRAP_PRESETS {
+        return Err(err(Code::BudgetExceeded, "trap_presets"));
+    }
+    let mut names = BTreeSet::new();
+    for (k, p) in r.trap_presets.iter().enumerate() {
+        canceled(token)?;
+        if !trap_preset_name_ok(&p.name) {
+            return Err(err(Code::InvalidField, format!("trap_presets/{k}/name")));
+        }
+        if !names.insert(p.name.as_str()) {
+            return Err(err(Code::DuplicateIdentity, format!("trap_presets/{k}/name")));
+        }
+        let values = [
+            ("default_trap_width", p.default_trap_width),
+            ("black_width", p.black_width),
+            ("black_color_threshold", p.black_color_threshold),
+            ("black_density", p.black_density),
+            ("sliding_trap_threshold", p.sliding_trap_threshold),
+            ("step_threshold", p.step_threshold),
+            ("color_reduction", p.color_reduction),
+        ];
+        if let Some((field, _)) = values.iter().find(|(_, v)| v.is_some_and(|v| !v.is_finite())) {
+            return Err(err(Code::InvalidField, format!("trap_presets/{k}/{field}")));
+        }
+    }
+    for s in &d.page_spreads {
+        for p in &s.pages {
+            canceled(token)?;
+            if p.applied_trap_preset.as_ref().is_some_and(|t| !names.contains(t.as_str())) {
+                return Err(err(Code::DanglingReference, format!("{}/applied_trap_preset", p.page_id)));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// STU-LAY-120 first-baseline enumeration.
