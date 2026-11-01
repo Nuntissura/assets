@@ -4,7 +4,7 @@
 use crate::error::{cmul, Result, TiffError};
 use crate::limits::MAX_ENCODE_BYTES;
 use crate::endian::to_big_endian;
-use crate::model::{Alpha, ByteOrder, Resolution, Samples};
+use crate::model::{Alpha, ByteOrder, ExtraPlane, Resolution, Samples};
 use std::io::Cursor;
 use tiff::encoder::colortype::ColorType;
 use tiff::encoder::{DeflateLevel, TiffEncoder, TiffKind, TiffKindBig, TiffKindStandard, TiffValue};
@@ -192,6 +192,19 @@ pub fn encode_with(req: &EncodeRequest<'_>, opts: &EncodeOptions) -> Result<Vec<
         encode_kind::<TiffKindStandard>(&be_req, opts, predictor_tag, out)?
     };
     to_big_endian(&le, req.big_tiff)
+}
+
+/// Most samples per pixel [`encode_with_planes`] writes (colour, alpha and extra planes together); the
+/// decoder's default `Limits::max_samples_per_pixel`.
+pub const MAX_ENCODE_SAMPLES_PER_PIXEL: u16 = 64;
+
+/// [`encode_with`] plus extra sample planes after the colour model's own samples (lane
+/// SMB-TIFF-CHANNELS-1). Red stub: planes are not written yet.
+pub fn encode_with_planes(req: &EncodeRequest<'_>, extra: &[ExtraPlane], opts: &EncodeOptions) -> Result<Vec<u8>> {
+    if extra.is_empty() {
+        return encode_with(req, opts);
+    }
+    Err(TiffError::unsupported("extra_planes_unsupported"))
 }
 
 fn check_metadata(m: &Metadata) -> Result<()> {

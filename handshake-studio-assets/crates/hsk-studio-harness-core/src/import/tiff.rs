@@ -150,6 +150,26 @@ pub(crate) fn import_tiff(
     package_proposal(FORMAT, "hsk-studio-interop-tiff + hsk-studio-interop-psd", bytes, proposal, extra)
 }
 
+/// What [`export_tiff_with_channels`] wrote, and the typed losses of the channel record fields TIFF
+/// cannot carry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TiffChannelExport {
+    pub bytes: Vec<u8>,
+    pub loss: Vec<psd::LossEntry>,
+}
+
+/// Host-callable TIFF export of a document's channel records as extra sample planes (lane
+/// SMB-TIFF-CHANNELS-1). Red stub.
+pub fn export_tiff_with_channels(
+    base: &tiff::EncodeRequest<'_>,
+    channels: &[folio::StudioChannelRecord],
+    tile_bytes: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+    opts: &tiff::EncodeOptions,
+) -> tiff::Result<TiffChannelExport> {
+    let _ = (base, channels, tile_bytes, opts);
+    Err(tiff::TiffError::unsupported("tiff_channel_export_unimplemented"))
+}
+
 /// Why a TIFF container is a camera raw, or `None`: DNGVersion (tag 50706) in any walked IFD, or a
 /// CFA (32803) / LinearRaw (34892) PhotometricInterpretation in any IFD of the bounded walk (IFD
 /// chain plus SubIFDs, where TIFF/EP raws such as NEF and ARW keep the sensor image behind a

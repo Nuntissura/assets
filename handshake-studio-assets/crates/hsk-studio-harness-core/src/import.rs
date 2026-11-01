@@ -251,6 +251,8 @@ pub use with_package::*;
 
 #[cfg(feature = "import-tiff")]
 mod tiff;
+#[cfg(feature = "import-tiff")]
+pub use self::tiff::{TiffChannelExport, export_tiff_with_channels};
 
 #[cfg(feature = "import-pdf")]
 mod pdf;

@@ -24,7 +24,8 @@ mod writer;
 pub use container::{Container, Ifd, IfdEntry};
 pub use decode::decode;
 pub use encode::{
-    encode, encode_with, ColorModel, Compression, EncodeOptions, EncodeRequest, Metadata, Predictor, MAX_METADATA_BYTES,
+    encode, encode_with, encode_with_planes, ColorModel, Compression, EncodeOptions, EncodeRequest, Metadata, Predictor,
+    MAX_ENCODE_SAMPLES_PER_PIXEL, MAX_METADATA_BYTES,
 };
 pub use error::{Result, TiffError};
 pub use psd_block::{image_source_data, ImageSourceData};
@@ -33,7 +34,7 @@ pub use writer::{
     write_container, ChildIfds, FieldValue, IfdSpec, MAX_WRITE_DEPTH, MAX_WRITE_ENTRIES, MAX_WRITE_IFDS, MAX_WRITE_STRIPS,
 };
 pub use model::{
-    Alpha, ByteOrder, PageInfo, Photometric, Rational, RawBlock, Resolution, SampleFormat, Samples, TiffFile,
+    Alpha, ByteOrder, ExtraPlane, PageInfo, Photometric, Rational, RawBlock, Resolution, SampleFormat, Samples, TiffFile,
     TiffPage,
 };
 
@@ -41,7 +42,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{Observation, Observe, Outcome, Receipt, SinkPort};
 
 /// The complete public surface (everything else is private).
-pub const PUBLIC_ENTRYPOINTS: &[&str] = &["decode", "encode", "encode_with", "image_source_data", "write_container", "report", "Container"];
+pub const PUBLIC_ENTRYPOINTS: &[&str] = &["decode", "encode", "encode_with", "encode_with_planes", "image_source_data", "write_container", "report", "Container"];
 
 /// Maps a decode/encode result to exactly one Observe terminal outcome (no ids, paths or pixel data).
 /// Unsupported features are `Failure(Unsupported)`, cancellation `Canceled`, everything else

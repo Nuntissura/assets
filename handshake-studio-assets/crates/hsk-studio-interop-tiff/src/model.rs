@@ -126,10 +126,54 @@ pub struct TiffPage {
     pub(crate) samples: Samples,
 }
 
+/// One extra sample of a page as its own plane (lane SMB-TIFF-CHANNELS-1): `extra_sample` is the
+/// ExtraSamples (tag 338) value as stored (0 unspecified, 1 associated alpha, 2 unassociated alpha;
+/// 0 when the tag lists no value for it) and `samples` the `width * height` row-major values, in the
+/// page's sample type. Format-only: what a plane means to a document is the caller's mapping.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtraPlane {
+    pub extra_sample: u16,
+    pub samples: Samples,
+}
+
+impl PageInfo {
+    /// Samples per pixel the photometric interpretation itself uses (1 gray, 3 RGB and Lab, 4 CMYK);
+    /// the rest of `samples_per_pixel` are extra samples.
+    pub const fn colour_samples_per_pixel(&self) -> u16 {
+        match self.photometric {
+            Photometric::BlackIsZero => 1,
+            Photometric::Rgb | Photometric::IccLab | Photometric::CieLab => 3,
+            Photometric::Cmyk => 4,
+        }
+    }
+}
+
 impl TiffPage {
     /// Interleaved samples, `width * height * samples_per_pixel` of them.
     pub fn pixels(&self) -> &Samples {
         &self.samples
+    }
+
+    /// Every extra sample of the page (the alpha first when ExtraSamples declares one) as its own
+    /// plane, in file sample order. Bounded by the page budget the decode already enforced (the
+    /// planes together hold at most the page's decoded samples).
+    pub fn extra_planes(&self) -> Vec<ExtraPlane> {
+        let spp = usize::from(self.samples_per_pixel);
+        let colour = usize::from(self.colour_samples_per_pixel());
+        (colour..spp)
+            .enumerate()
+            .map(|(k, at)| {
+                let pick = |n: usize| (at..n).step_by(spp);
+                let samples = match &self.samples {
+                    Samples::U8(v) => Samples::U8(pick(v.len()).filter_map(|i| v.get(i).copied()).collect()),
+                    Samples::U16(v) => Samples::U16(pick(v.len()).filter_map(|i| v.get(i).copied()).collect()),
+                    Samples::U32(v) => Samples::U32(pick(v.len()).filter_map(|i| v.get(i).copied()).collect()),
+                    Samples::F32(v) => Samples::F32(pick(v.len()).filter_map(|i| v.get(i).copied()).collect()),
+                    Samples::F64(v) => Samples::F64(pick(v.len()).filter_map(|i| v.get(i).copied()).collect()),
+                };
+                ExtraPlane { extra_sample: self.extra_samples.get(k).copied().unwrap_or(0), samples }
+            })
+            .collect()
     }
 }
 

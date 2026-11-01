@@ -503,3 +503,324 @@ impl folio::Resolver for TrustAllResolver {
         false
     }
 }
+
+// ---- Lane SMB-TIFF-CHANNELS-1 (R52 F-R52-2, TIFF part; STU-RAS-022, STU-RAS-043, STU-IO-006 row 3) ----
+// TIFF extra samples beyond the image's own alpha import as Folio channel records (tiles stored as
+// package assets, as PSD channels are), and `export_tiff_with_channels` writes channel records back as
+// extra sample planes; the record fields TIFF cannot carry are typed losses. The channel "saved from a
+// selection" is assembled here as Pigment's save rule stores it (tone = full - coverage, selected-area
+// alpha, 256-pixel grid): Pigment is not a dependency of this feature unit. How Photoshop marks alpha
+// channels in a TIFF (ExtraSamples value 0) is UNVERIFIED (D5).
+
+use hsk_studio_harness::import::{TiffChannelExport, export_tiff_with_channels};
+use std::collections::BTreeMap;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Depth {
+    D8,
+    D16,
+    D32,
+}
+
+impl Depth {
+    fn bits(self) -> u8 {
+        match self {
+            Depth::D8 => 8,
+            Depth::D16 => 16,
+            Depth::D32 => 32,
+        }
+    }
+    fn per(self) -> usize {
+        usize::from(self.bits() / 8)
+    }
+    fn format(self) -> &'static str {
+        match self {
+            Depth::D8 => "coverage_u8",
+            Depth::D16 => "coverage_u16le",
+            Depth::D32 => "coverage_f32le",
+        }
+    }
+    /// `n` samples from a 0..=65535 ramp `f`, at this depth (floats in 0..=1).
+    fn samples(self, n: usize, f: impl Fn(usize) -> u32) -> tiff::Samples {
+        match self {
+            Depth::D8 => tiff::Samples::U8((0..n).map(|i| (f(i) >> 8) as u8).collect()),
+            Depth::D16 => tiff::Samples::U16((0..n).map(|i| f(i) as u16).collect()),
+            Depth::D32 => tiff::Samples::F32((0..n).map(|i| f(i) as f32 / 65535.0).collect()),
+        }
+    }
+}
+
+/// Samples as little-endian bytes (the channel tile sample layout).
+fn le_bytes(s: &tiff::Samples) -> Vec<u8> {
+    match s {
+        tiff::Samples::U8(v) => v.clone(),
+        tiff::Samples::U16(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        tiff::Samples::F32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        other => panic!("no channel layout for {other:?}"),
+    }
+}
+
+/// A plane of `w x h` little-endian samples cut into 256-pixel cells (zero padding), as
+/// (column, row, bytes).
+fn cells(plane: &[u8], w: usize, h: usize, per: usize) -> Vec<(i64, i64, Vec<u8>)> {
+    let mut out = Vec::new();
+    for row in 0..h.div_ceil(256) {
+        for column in 0..w.div_ceil(256) {
+            let mut cell = vec![0u8; 256 * 256 * per];
+            for y in row * 256..h.min(row * 256 + 256) {
+                for x in column * 256..w.min(column * 256 + 256) {
+                    let (src, dst) = ((y * w + x) * per, ((y - row * 256) * 256 + (x - column * 256)) * per);
+                    cell[dst..dst + per].copy_from_slice(&plane[src..src + per]);
+                }
+            }
+            out.push((column as i64, row as i64, cell));
+        }
+    }
+    out
+}
+
+/// The plane a channel record's tiles hold (little-endian samples), read back from `assets`.
+fn record_plane(c: &folio::StudioChannelRecord, assets: &BTreeMap<String, Vec<u8>>, per: usize) -> Vec<u8> {
+    let (w, h) = (c.width as usize, c.height as usize);
+    let mut plane = vec![0u8; w * h * per];
+    for t in &c.tiles {
+        let bytes = assets.get(&t.content_digest.digest).unwrap_or_else(|| panic!("tile {} not stored", t.content_digest.digest));
+        let (x0, y0) = (t.column as usize * 256, t.row as usize * 256);
+        for y in y0..h.min(y0 + 256) {
+            for x in x0..w.min(x0 + 256) {
+                let (dst, src) = ((y * w + x) * per, ((y - y0) * 256 + (x - x0)) * per);
+                plane[dst..dst + per].copy_from_slice(&bytes[src..src + per]);
+            }
+        }
+    }
+    plane
+}
+
+/// Converts to a native package and reads it back: the package assets, the raster records and the
+/// import receipt.
+fn converted(bytes: &[u8]) -> (BTreeMap<String, Vec<u8>>, folio::StudioRasterRecords, Value, Vec<String>) {
+    let cancel = CancellationToken::default();
+    let (package, imported) = convert_to_native(bytes, &TrustAllResolver, &cancel).expect("converted");
+    let opened = read_package(&package, &Limits::default(), folio::Budget::default(), &TrustAllResolver, &cancel).expect("package reads");
+    let records: folio::StudioRasterRecords = serde_json::from_slice(opened.import_bytes(ImportRole::Records).expect("records entry")).expect("records parse");
+    let layer_tiles = imported
+        .snapshot
+        .document()
+        .layers
+        .iter()
+        .flat_map(|l| match &l.payload {
+            folio::Payload::Raster { tiles } => tiles.iter().map(|t| t.content_digest.digest.clone()).collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    (opened.assets, records, imported.receipt, layer_tiles)
+}
+
+fn loss_triples(export: &TiffChannelExport) -> Vec<(String, psd::LossKind, &'static str)> {
+    export.loss.iter().map(|e| (e.path.clone(), e.kind, e.code)).collect()
+}
+
+/// What an interchange round trip keeps of a channel's pixels: depth, extent and tiles by grid cell,
+/// format and content digest.
+fn pixels_of(c: &folio::StudioChannelRecord) -> (u8, u32, u32, Vec<(i64, i64, String, String)>) {
+    (c.depth, c.width, c.height, c.tiles.iter().map(|t| (t.column, t.row, t.format.clone(), t.content_digest.digest.clone())).collect())
+}
+
+/// R52 F-R52-2 (TIFF): a document with an alpha channel (a TIFF extra sample beyond the image's own
+/// alpha) and a channel saved from a selection exports to TIFF and re-imports with both channel
+/// records and identical pixels, at 8, 16 and 32 (float) bits; the fields TIFF cannot carry are typed
+/// losses of the export and the import.
+#[test]
+fn tiff_alpha_channel_and_saved_selection_round_trip_as_channel_records() {
+    let (w, h) = (300u32, 3u32);
+    let n = (w * h) as usize;
+    for depth in [Depth::D8, Depth::D16, Depth::D32] {
+        let label = format!("{depth:?}");
+        // Source: RGBA (unassociated image alpha) plus one unspecified extra sample, the alpha channel.
+        let rgba = depth.samples(n * 4, |i| ((i * 2654 + 17) % 65536) as u32);
+        let alpha_channel = depth.samples(n, |i| ((i % w as usize) * 218 + (i / w as usize) * 9001) as u32 % 65536);
+        let base = tiff::EncodeRequest {
+            width: w,
+            height: h,
+            color: tiff::ColorModel::Rgba,
+            alpha: tiff::Alpha::Unassociated,
+            bit_depth: depth.bits(),
+            samples: &rgba,
+            icc: None,
+            compression: tiff::Compression::Deflate,
+            predictor: if depth == Depth::D32 { tiff::Predictor::None } else { tiff::Predictor::Horizontal },
+            big_tiff: false,
+            resolution: None,
+            orientation: None,
+        };
+        let source = tiff::encode_with_planes(&base, &[tiff::ExtraPlane { extra_sample: 0, samples: alpha_channel.clone() }], &tiff::EncodeOptions::default())
+            .expect("source TIFF");
+
+        // Import: the extra sample is a channel record; its tiles are package assets with the exact samples.
+        let (assets, records, receipt, layer_tiles) = converted(&source);
+        let first = codes(&receipt);
+        assert!(!first.iter().any(|c| c == "tiff_extra_samples_not_imported"), "{label}: {first:?}");
+        assert!(first.iter().any(|c| c == "tiff_channel_display_defaulted"), "{label}: {first:?}");
+        assert_eq!(records.channels.len(), 1, "{label}");
+        let alpha = &records.channels[0];
+        assert_eq!(
+            (alpha.channel_id.as_str(), alpha.name.as_str(), alpha.kind, alpha.visible, alpha.opacity, alpha.depth, alpha.width, alpha.height),
+            ("tiff-channel-4", "Alpha 1", folio::StudioChannelKind::MaskedAreaAlpha, false, 50.0, depth.bits(), w, h),
+            "{label}"
+        );
+        assert_eq!(alpha.colour, folio::StudioChannelColour::Rgb { r: 1.0, g: 0.0, b: 0.0 }, "{label}");
+        assert_eq!(alpha.tiles.len(), 2, "{label}: 300 x 3 on the 256 grid");
+        assert!(alpha.tiles.iter().all(|t| t.format == depth.format()), "{label}");
+        assert_eq!(record_plane(alpha, &assets, depth.per()), le_bytes(&alpha_channel), "{label}: exact samples");
+
+        // A channel saved from a selection (selected-area alpha: tone = full - coverage).
+        let coverage: Vec<u32> = (0..n).map(|i| ((i * 40503 + 7) % 65536) as u32).collect();
+        let tone = depth.samples(n, |i| 65535 - coverage[i]);
+        let mut saved_tiles = BTreeMap::new();
+        let profile = alpha.tiles[0].colour_profile_id.clone();
+        let tiles: Vec<Value> = cells(&le_bytes(&tone), w as usize, h as usize, depth.per())
+            .into_iter()
+            .map(|(column, row, bytes)| {
+                let digest = hsk_studio_package::sha256_hex_of(&bytes);
+                saved_tiles.insert(digest.clone(), bytes);
+                serde_json::json!({
+                    "object_key": format!("ch_{column}_{row}"), "layer_id": "saved", "column": column, "row": row,
+                    "width": {"value": 256.0, "unit": "px"}, "height": {"value": 256.0, "unit": "px"},
+                    "format": depth.format(), "colour_profile_id": profile, "schema_id": "hsk.studio.raster_tile@1",
+                    "content_digest": {"algorithm": "sha256", "digest": digest},
+                    "artifact_manifest_id": format!("edited/saved/ch_{column}_{row}"),
+                })
+            })
+            .collect();
+        let saved: folio::StudioChannelRecord = serde_json::from_value(serde_json::json!({
+            "channel_id": "saved", "name": "Saved selection", "kind": "selected_area_alpha", "visible": false,
+            "colour": {"model": "rgb", "r": 0.0, "g": 0.0, "b": 1.0}, "opacity": 40.0, "depth": depth.bits(), "width": w, "height": h,
+            "tiles": tiles,
+        }))
+        .unwrap_or_else(|e| panic!("{label}: saved record {e}"));
+        let mut edited = records.clone();
+        edited.channels.push(saved.clone());
+
+        // Export: the image (colour + its alpha) as before, both channel records as extra planes.
+        let mut lookup = |digest: &str| assets.get(digest).or_else(|| saved_tiles.get(digest)).cloned();
+        let export = export_tiff_with_channels(&base, &edited.channels, &mut lookup, &tiff::EncodeOptions::default())
+            .unwrap_or_else(|e| panic!("{label}: export {e:?}"));
+        let mut want = Vec::new();
+        for i in 0..2 {
+            want.push((format!("channel[{i}]/name"), psd::LossKind::Unsupported, "tiff_channel_name_not_exported"));
+            want.push((format!("channel[{i}]/kind"), psd::LossKind::Transformed, "tiff_channel_kind_not_exported"));
+            want.push((format!("channel[{i}]/colour"), psd::LossKind::Unsupported, "tiff_channel_colour_not_exported"));
+            want.push((format!("channel[{i}]/opacity"), psd::LossKind::Unsupported, "tiff_channel_opacity_not_exported"));
+        }
+        assert_eq!(loss_triples(&export), want, "{label}");
+        // The file itself: the image samples, the alpha kind first, then one unspecified plane per channel.
+        let page = tiff::decode(&export.bytes, &tiff::Limits::default(), &CancellationToken::default()).unwrap().pages.remove(0);
+        assert_eq!(page.extra_samples, [2, 0, 0], "{label}");
+        let planes = page.extra_planes();
+        assert_eq!(planes[1].samples, alpha_channel, "{label}");
+        assert_eq!(planes[2].samples, tone, "{label}");
+
+        // Re-import: both channel records with identical pixels, and the layer pixels unchanged.
+        let (assets2, records2, receipt2, layer_tiles2) = converted(&export.bytes);
+        assert_eq!(layer_tiles2, layer_tiles, "{label}: layer tiles");
+        let ids: Vec<&str> = records2.channels.iter().map(|c| c.channel_id.as_str()).collect();
+        assert_eq!(ids, ["tiff-channel-4", "tiff-channel-5"], "{label}");
+        assert_eq!(pixels_of(&records2.channels[0]), pixels_of(alpha), "{label}: the alpha channel");
+        assert_eq!(pixels_of(&records2.channels[1]), pixels_of(&saved), "{label}: the saved channel");
+        assert_eq!(record_plane(&records2.channels[1], &assets2, depth.per()), le_bytes(&tone), "{label}");
+        // What TIFF did not carry comes back as the import defaults, typed on import.
+        let back = &records2.channels[1];
+        assert_eq!((back.name.as_str(), back.kind, back.opacity), ("Alpha 2", folio::StudioChannelKind::MaskedAreaAlpha, 50.0), "{label}");
+        let defaulted = codes(&receipt2).iter().filter(|c| *c == "tiff_channel_display_defaulted").count();
+        assert_eq!(defaulted, 2, "{label}");
+        assert_eq!(receipt2["tiff"]["channels"].as_array().map(Vec::len), Some(2), "{label}: {receipt2}");
+    }
+}
+
+/// Hostile and out-of-envelope cases are bounded and typed (V4-01/02): more extra samples than Folio
+/// holds channels (dims-style: the rest are typed losses), channel tile bytes over the decode budget
+/// before any tile is allocated (aggregate_over_budget-style: a 1 x 262144 page whose 56 channels
+/// would need 3.5 GiB of 256-pixel cells), and export refusals and losses for missing or altered tile
+/// bytes, a hostile tile edge, a depth or extent the image does not have and more channels than TIFF
+/// takes.
+#[test]
+fn tiff_channel_mapping_is_bounded_and_export_refuses_what_it_cannot_write() {
+    let cancel = CancellationToken::default();
+    let opts = tiff::EncodeOptions::default();
+    let rgb = tiff::Samples::U8(vec![40; 12]);
+    let base = tiff::EncodeRequest {
+        width: 2,
+        height: 2,
+        color: tiff::ColorModel::Rgb,
+        alpha: tiff::Alpha::None,
+        bit_depth: 8,
+        samples: &rgb,
+        icc: None,
+        compression: tiff::Compression::None,
+        predictor: tiff::Predictor::None,
+        big_tiff: false,
+        resolution: None,
+        orientation: None,
+    };
+    let planes = |k: usize| -> Vec<tiff::ExtraPlane> {
+        (0..k).map(|i| tiff::ExtraPlane { extra_sample: 0, samples: tiff::Samples::U8(vec![i as u8; 4]) }).collect()
+    };
+    // 60 extra samples: Folio holds 56 channels; the other four are typed losses.
+    let source = tiff::encode_with_planes(&base, &planes(60), &opts).unwrap();
+    let (assets, records, receipt, _) = converted(&source);
+    assert_eq!(records.channels.len(), folio::MAX_CHANNELS);
+    let lost: Vec<String> = receipt["loss"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["code"] == "tiff_extra_samples_not_imported")
+        .map(|e| e["path"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(lost, (56..60).map(|k| format!("page[0]/extra_sample[{k}]")).collect::<Vec<_>>());
+
+    // Channel cells over the decode budget: refused before any channel tile is allocated.
+    let tall = tiff::Samples::U8(vec![0; 3 * 262_144]);
+    let tall_req = tiff::EncodeRequest { width: 1, height: 262_144, samples: &tall, compression: tiff::Compression::Deflate, ..base };
+    let tall_planes: Vec<tiff::ExtraPlane> =
+        (0..56).map(|_| tiff::ExtraPlane { extra_sample: 0, samples: tiff::Samples::U8(vec![0; 262_144]) }).collect();
+    let tall_file = tiff::encode_with_planes(&tall_req, &tall_planes, &opts).unwrap();
+    assert_eq!(import(&tall_file, &TrustAllResolver, &cancel).err(), Some(ImportError::Importer { format: SourceFormat::Tiff, code: "tiff_channel_tiles_over_budget" }));
+
+    // Export refusals: a tile the host cannot supply, altered tile bytes, a hostile tile edge.
+    let one = records.channels[..1].to_vec();
+    let mut none = |_: &str| None;
+    assert_eq!(export_tiff_with_channels(&base, &one, &mut none, &opts).unwrap_err(), tiff::TiffError::Usage("channel_tile_missing"));
+    let mut altered = |d: &str| assets.get(d).map(|b| b.iter().map(|x| x ^ 1).collect());
+    assert_eq!(export_tiff_with_channels(&base, &one, &mut altered, &opts).unwrap_err(), tiff::TiffError::Usage("channel_tile_digest"));
+    let mut lookup = |d: &str| assets.get(d).cloned();
+    for edge in [0.0, 0.5, 1e12, f64::NAN] {
+        let mut hostile = one.clone();
+        hostile[0].tiles[0].width.value = edge;
+        assert_eq!(export_tiff_with_channels(&base, &hostile, &mut lookup, &opts).unwrap_err(), tiff::TiffError::Usage("channel_tile_edge"), "{edge}");
+    }
+    // A depth or extent other than the image's: typed losses, the image is written without them.
+    let mut deep = one.clone();
+    deep[0].depth = 16;
+    let mut wide = one.clone();
+    wide[0].width = 3;
+    for (records, code) in [(deep, "tiff_channel_depth_not_exported"), (wide, "tiff_channel_extent_not_exported")] {
+        let export = export_tiff_with_channels(&base, &records, &mut lookup, &opts).unwrap();
+        assert_eq!(loss_triples(&export), [("channel[0]".to_string(), psd::LossKind::Unsupported, code)]);
+        let page = tiff::decode(&export.bytes, &tiff::Limits::default(), &cancel).unwrap().pages.remove(0);
+        assert_eq!(page.samples_per_pixel, 3, "{code}");
+    }
+    // 62 channels on RGB: 61 fit the 64 samples per pixel TIFF is written with; the last is typed.
+    let many: Vec<folio::StudioChannelRecord> = (0..62)
+        .map(|k| {
+            let mut c = records.channels[0].clone();
+            c.channel_id = format!("c{k}");
+            c
+        })
+        .collect();
+    let export = export_tiff_with_channels(&base, &many, &mut lookup, &opts).unwrap();
+    let count_losses: Vec<(String, psd::LossKind, &'static str)> =
+        loss_triples(&export).into_iter().filter(|(_, _, c)| *c == "tiff_channel_count_not_exported").collect();
+    assert_eq!(count_losses, [("channel[61]".to_string(), psd::LossKind::Unsupported, "tiff_channel_count_not_exported")]);
+    let page = tiff::decode(&export.bytes, &tiff::Limits::default(), &cancel).unwrap().pages.remove(0);
+    assert_eq!(page.samples_per_pixel, 64);
+}
