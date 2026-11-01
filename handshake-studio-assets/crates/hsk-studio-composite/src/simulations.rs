@@ -28,8 +28,10 @@
 //! it), `COLLAPSE_TWIRLY` -> [`SimulationKind::collapsed_by_default`] (Folio's record has no such
 //! field; the bit is kept per record in [`foam::FOAM_COLLAPSED`] / [`wave_world::WAVE_WORLD_COLLAPSED`]).
 //! Reading conventions (Folio's, UNVERIFIED, D5): a `--` unit is `unitless` (STU-FX-108); an `ANGLE`
-//! row recorded `0..0` in all four bounds is the capture's no-range encoding (`unbounded_in_source`,
-//! all four bounds `None`, default 0, degrees, precision 0), as Folio reads Twirl `Angle`. Where a
+//! row carries `--` in all four bound cells (v02.228 SD-26: the older `0` cells were bytes of another
+//! field, never a declared range): `unbounded_in_source`, all four bounds `None`, the full signed
+//! degrees stored as given; default 0, degrees, precision 0 are provisional (UNVERIFIED), as Folio
+//! reads Twirl `Angle`. Where a
 //! recovered row is the same quantity as an engine scalar in the same unit, the engine takes that
 //! row's hard bounds (enforced, plus finiteness and Folio's `MAX_STREAM_ABS_VALUE` ceiling) and its
 //! default, and the authored row is gone ([`RecoveredMapping`]: [`foam::FOAM_MAPPINGS`],
@@ -345,7 +347,7 @@ pub(crate) const fn rec_slider(
     }
 }
 
-/// A recovered `ANGLE` row recorded `0..0` everywhere: the no-range encoding (module docs).
+/// A recovered `ANGLE` row: all four bounds unknown (v02.228 SD-26, module docs).
 pub(crate) const fn rec_angle(param_key: &'static str, param_index: u16, display_name: &'static str) -> StudioEffectParamSpec {
     StudioEffectParamSpec {
         default: &[0.0],

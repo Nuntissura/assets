@@ -18,7 +18,7 @@
 //! `0..=5`, soft `0..=1`, default 0.5; the engine's height unit is the record's own unitless scale;
 //! authored hard `0..=1e6`, soft `0..=2` before); `frequency` <- row 54 `Frequency` (hard `0..=20`,
 //! soft `0..=3`, default 1, read as Hz: the record's time base is seconds by its row 24; authored hard
-//! `0..=1000`, soft `0..=5` before); `phase` <- row 56 `Phase` (`ANGLE`, degrees, no-range reading:
+//! `0..=1000`, soft `0..=5` before); `phase` <- row 56 `Phase` (`ANGLE`, degrees, unbounded in source:
 //! no hard bound, default 0; authored hard `-1e6..=1e6`, soft `-180..=180` before). Every producer
 //! of the record reads the first set of producer rows (44, 52, 54, 56: the set whose amplitude
 //! default 0.5 is the engine's); the second set (60, 62-72) and the `Type` popups (42, 58: index 1

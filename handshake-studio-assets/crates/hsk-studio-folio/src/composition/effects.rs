@@ -37,10 +37,18 @@
 //!   rows carry no stored value here (the unnamed rows have no recovered name to key them by).
 //!
 //! Studio readings, declared (UNVERIFIED, D5 oracle):
-//! - Twirl `Angle` is recorded as `ANGLE` with hard and soft ranges `0..0`, precision 0, default
-//!   0; a hard range admitting only 0 contradicts the effect's purpose and [STU-FX-112] `angle`
-//!   "wraps rather than clamps unless a hard bound is declared", so the row is read as the
-//!   capture's no-range encoding: `bound_state = unbounded_in_source`, all four bounds `None`.
+//! - Every recovered `ANGLE` row is `bound_state = unbounded_in_source` with all four bounds `None`
+//!   (lane SMB-FOLIO-ANGLE-UNBOUNDED-1, v02.228 SD-26, [STU-FX-131a]): the bound cells the capture
+//!   held for an `ANGLE` record (`0..0` on most rows, impossible pairs such as `0..-1.5e-05` or
+//!   `0.003906..0.496094` on others) were bytes read past the 16-byte angle definition (value,
+//!   default, valid_min, valid_max), never source declarations, so none is stored; the tables show
+//!   `--`. The value is the full signed angle in degrees, whole extra revolutions included
+//!   ([STU-FX-112]: 725 is two turns plus 5 degrees and is stored as 725): nothing wraps or clamps
+//!   on store, and an engine reduces modulo 360 only when it evaluates a principal angle. The rows
+//!   are Twirl `Angle`, Directional Blur `Direction`, Glow `Color Phase` and Hue/Saturation
+//!   `Master Hue` / `Colorize Hue` (test `no_angle_row_of_the_catalogue_carries_numeric_bounds`).
+//!   Their `default` and `precision` are as recorded and provisional (UNVERIFIED until the capture
+//!   is re-decoded at the angle offsets; a re-decode that finds a real range replaces the `None`s).
 //! - Colour parameters: four channels, straight RGBA encoded in the profile the parameter's
 //!   [STU-FX-118] `StudioColorProfile` reference names
 //!   ([`StudioCompositionEffect::colour_profiles`], lane SMB-R43-FOLLOWUPS-1). Defaults are the
@@ -61,10 +69,11 @@
 //!   of the After Effects control it is read as (the record names none): Gaussian / Fast Box Blur
 //!   `repeat_edge_pixels`, Find Edges `invert`, Color Balance `preserve_luminosity`, Exposure
 //!   `bypass_linear_light_conversion`, Hue/Saturation `colorize`. Booleans are `0` / `1`, hold-only.
-//! - Directional Blur `Direction` records the hard pair `0..-1.5e-05` (max below min): read as the
-//!   capture's no-range encoding like Twirl `Angle`, so the hard bounds are `None` and the soft pair
-//!   `0..7936` survives (`declared_soft_only`). Hue/Saturation `Master Hue` / `Colorize Hue`
-//!   (`0..0` everywhere) are read as Twirl `Angle`.
+//! - Directional Blur `Direction` (the capture held the hard pair `0..-1.5e-05` and the soft pair
+//!   `0..7936`) and Glow `Color Phase` (`0.003906..0.496094`, soft `0.003906..0.039062`) are
+//!   unbounded `ANGLE` rows like Twirl `Angle` (see above); before lane SMB-FOLIO-ANGLE-UNBOUNDED-1
+//!   Folio kept those capture numbers and refused a Color Phase above about 0.5 degrees.
+//!   Hue/Saturation `Master Hue` / `Colorize Hue` are the same.
 //! - `ARBITRARY_DATA` rows (Hue/Saturation `Channel Range`, Levels `Histogram`) carry no declared
 //!   schema id ([STU-FX-112] `arbitrary_data` needs one) and are not stored; Curves
 //!   (`ADBE CurvesCustom`), whose only value row is such a blob, is therefore not a kind here.
@@ -427,6 +436,17 @@ const fn unbounded(
         options: &[],
     }
 }
+/// A recovered `ANGLE` row ([STU-FX-131a], v02.228 SD-26): all four bounds unknown
+/// (`unbounded_in_source`), the unit `degrees`; `default` and `precision` are as recorded and
+/// provisional (UNVERIFIED until the capture is re-decoded at the angle offsets). The stored value
+/// is the full signed angle, revolutions included: nothing wraps or clamps on store.
+const fn angle(param_key: &'static str, param_index: u16, display_name: &'static str, default: &'static [f64], precision: Option<u8>) -> StudioEffectParamSpec {
+    StudioEffectParamSpec {
+        unit: StudioUnitToken::Degrees,
+        precision,
+        ..unbounded(param_key, param_index, display_name, StudioParameterKind::Angle, default)
+    }
+}
 const fn enumeration(
     param_key: &'static str,
     param_index: u16,
@@ -468,11 +488,7 @@ const WHITE: &[f64] = &[1.0, 1.0, 1.0, 1.0];
 
 /// `Twirl` (`ADBE Twirl`): rows 1-3.
 const TWIRL: &[StudioEffectParamSpec] = &[
-    StudioEffectParamSpec {
-        unit: StudioUnitToken::Degrees,
-        precision: Some(0),
-        ..unbounded("angle", 1, "Angle", StudioParameterKind::Angle, &[0.0])
-    },
+    angle("angle", 1, "Angle", &[0.0], Some(0)),
     scalar("twirl_radius", 2, "Twirl Radius", (0.0, 100.0), (0.0, 100.0), &[30.0], StudioUnitToken::Unitless),
     unbounded("twirl_center", 3, "Twirl Center", StudioParameterKind::Point2d, CENTRE),
 ];
@@ -556,13 +572,9 @@ const fn fixed(row: StudioEffectParamSpec) -> StudioEffectParamSpec {
 const fn boolean(param_key: &'static str, param_index: u16, display_name: &'static str, default: &'static [f64]) -> StudioEffectParamSpec {
     StudioEffectParamSpec { interpolable: false, ..unbounded(param_key, param_index, display_name, StudioParameterKind::Boolean, default) }
 }
-/// An `ANGLE` row recorded `0..0` everywhere (module docs: the no-range encoding).
+/// An `ANGLE` row with default 0 and precision 0 ([`angle`]).
 const fn free_angle(param_key: &'static str, param_index: u16, display_name: &'static str) -> StudioEffectParamSpec {
-    StudioEffectParamSpec {
-        unit: StudioUnitToken::Degrees,
-        precision: Some(0),
-        ..unbounded(param_key, param_index, display_name, StudioParameterKind::Angle, &[0.0])
-    }
+    angle(param_key, param_index, display_name, &[0.0], Some(0))
 }
 const ON: &[f64] = &[1.0];
 const OFF: &[f64] = &[0.0];
@@ -586,15 +598,9 @@ const FAST_BOX_BLUR: &[StudioEffectParamSpec] = &[
     enumeration("blur_dimensions", 3, "Blur Dimensions", &[1.0], DIMENSION_OPTIONS),
     boolean("repeat_edge_pixels", 4, "Repeat Edge Pixels (unnamed checkbox, Studio reading)", ON),
 ];
-/// `Directional Blur` (`ADBE Motion Blur`): rows 1-2 (module docs on `Direction`).
+/// `Directional Blur` (`ADBE Motion Blur`): rows 1-2 (`Direction` is an unbounded `ANGLE`, module docs).
 const DIRECTIONAL_BLUR: &[StudioEffectParamSpec] = &[
-    StudioEffectParamSpec {
-        soft_min: Some(0.0),
-        soft_max: Some(7936.0),
-        bound_state: StudioBoundState::DeclaredSoftOnly,
-        unit: StudioUnitToken::Degrees,
-        ..unbounded("direction", 1, "Direction", StudioParameterKind::Angle, &[0.0])
-    },
+    angle("direction", 1, "Direction", &[0.0], None),
     scalar("blur_length", 2, "Blur Length", (0.0, 1000.0), (0.0, 20.0), &[0.0], StudioUnitToken::Unitless),
 ];
 /// `Radial Blur` (`ADBE Radial Blur`): rows 1-4 and 6 (row 5 is `NO_DATA`).
@@ -655,11 +661,7 @@ const GLOW: &[StudioEffectParamSpec] = &[
         &[(1, "Sawtooth A>B"), (2, "Sawtooth B>A"), (3, "Triangle A>B>A"), (4, "Triangle B>A>B")],
     ),
     scalar("color_loops", 9, "Color Loops", (1.0, 127.0), (1.0, 10.0), &[1.0], StudioUnitToken::Unitless),
-    StudioEffectParamSpec {
-        kind: StudioParameterKind::Angle,
-        precision: None,
-        ..scalar("color_phase", 10, "Color Phase", (0.003906, 0.496094), (0.003906, 0.039062), &[0.003906], StudioUnitToken::Degrees)
-    },
+    angle("color_phase", 10, "Color Phase", &[0.003906], None),
     scalar_p("a_b_midpoint", 11, "A & B Midpoint", (0.009995, 0.990005), (0.009995, 0.990005), &[0.5], StudioUnitToken::Percent, Some(0)),
     unbounded("color_a", 12, "Color A", StudioParameterKind::Color, WHITE),
     unbounded("color_b", 13, "Color B", StudioParameterKind::Color, &[0.0, 0.0, 0.0, 1.0]),

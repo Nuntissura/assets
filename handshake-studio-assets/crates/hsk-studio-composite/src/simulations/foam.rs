@@ -14,7 +14,7 @@
 //!
 //! **Recovered record ([`FOAM_RECORD`], STU-FX-131a `APC Foam`, 47 rows, MT-32012; rules in the
 //! [`super`] module docs).** The engine reads one recovered row: `wind_direction` takes row 32
-//! `Wind Direction` (`ANGLE`, degrees; no-range reading: no hard bound, default 0), replacing the
+//! `Wind Direction` (`ANGLE`, degrees; unbounded in source: no hard bound, default 0), replacing the
 //! authored row (hard `-1e6..=1e6`, soft `-180..=180`, default 90). The other engine scalars have no
 //! recovered row of the same quantity and unit and keep their authored rows ([`FOAM_ROWS`],
 //! STU-FX-146 scope beside the record): the record declares no unit (`--`) for `Production Rate`,
