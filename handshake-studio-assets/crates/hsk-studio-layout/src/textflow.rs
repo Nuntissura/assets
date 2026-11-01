@@ -4,8 +4,9 @@
 //! replaces a byte range of an inline story and remaps the paragraph and character partitions
 //! (positions before the edit stay, positions after it shift, the range collapses to its start, so
 //! inserted text joins the range that starts at the edit). Paragraphs touched by the edit are
-//! merged and re-split after every `\n` (typing a newline makes a paragraph, deleting one merges
-//! two; the first touched paragraph's style and direction win). `shift_flow_records` moves every
+//! merged and re-split after every paragraph terminator of Type's partition (`\n`, the other UAX #9
+//! class B characters and the five break sentinels, `sentinels::ends_paragraph`; typing one makes a
+//! paragraph, deleting one merges two; the first touched paragraph's style and direction win). `shift_flow_records` moves every
 //! story byte the Folio layout-flow records hold (anchors, text anchors, cross-reference ranges,
 //! conditional ranges, paragraph overrides) the same way.
 //!
@@ -71,7 +72,7 @@ pub fn replace_story_text(
     out.push_str(&text[e..]);
     let n = new_text.len() as u64;
     let edit_end = start.checked_add(n).ok_or(LayoutError::BudgetExceeded)?;
-    // Paragraphs: map, then merge the ones the edit touches and re-split them at newlines.
+    // Paragraphs: map, then merge the ones the edit touches and re-split them after terminators.
     let mut mapped = Vec::with_capacity(story.paragraphs.len());
     for p in &story.paragraphs {
         let (a, b) = (map_pos(p.start, start, end, n)?, map_pos(p.end, start, end, n)?);
@@ -92,18 +93,19 @@ pub fn replace_story_text(
                 let region_end = mapped[l].end;
                 let template = p.clone();
                 let mut at = p.start;
-                let bytes = out.as_bytes();
-                let mut k = usize_of(p.start)?;
-                let stop = usize_of(region_end)?;
-                while k < stop {
-                    if bytes[k] == b'\n' {
-                        let cut = (k as u64).checked_add(1).ok_or(LayoutError::BudgetExceeded)?;
+                let from = usize_of(p.start)?;
+                let region = out.get(from..usize_of(region_end)?).ok_or(LayoutError::InvalidInput)?;
+                for (k, c) in region.char_indices() {
+                    if crate::sentinels::ends_paragraph(c) {
+                        let cut = from
+                            .checked_add(k)
+                            .and_then(|v| v.checked_add(c.len_utf8()))
+                            .ok_or(LayoutError::BudgetExceeded)? as u64;
                         if cut < region_end {
                             paragraphs.push(StoryParagraph { start: at, end: cut, ..template.clone() });
                             at = cut;
                         }
                     }
-                    k = k.checked_add(1).ok_or(LayoutError::BudgetExceeded)?;
                 }
                 paragraphs.push(StoryParagraph { start: at, end: region_end, ..template });
             }

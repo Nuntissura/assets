@@ -45,6 +45,13 @@
 //! frame is its custom baseline frame grid, else the document baseline grid (`grids` module); a
 //! frame with neither is not aligned. Span and split paragraphs are not aligned. Balancing does not
 //! re-snap moved lines. InDesign parity UNVERIFIED (D5).
+//!
+//! Stream sentinels (lane SMB-LAYOUT-SENTINELS-1, STU-TYP-207 / SD-29; `sentinels` module): a
+//! paragraph ended by a break sentinel (the first character after its content) continues the flow
+//! at the break's target (next column, frame, later page, later page of the wanted number parity);
+//! no target oversets from the break byte; a column break stops balancing of its frame. A flush
+//! space on the last line of a `JustifiedAll` paragraph takes the rest of the slot and the line
+//! keeps its natural spacing. InDesign parity UNVERIFIED (D5).
 use crate::adobe_composer::{AdobeContext, compress_line, justify_line, paragraph as adobe_paragraph, single_line};
 use crate::breaker::{Composer, HyphenRules, LineBreak, Sums, first_fit, knuth_plass, line_start};
 use crate::hyphenate::Hyphenator;
@@ -54,7 +61,8 @@ use crate::folio_input::{Frame, FrameObstacles, FrameVertical, pt, resolve_flow}
 use hsk_studio_folio::{FirstBaseline, StudioAlignToGrid, StudioLayoutGrids, StudioSingleWordJustification};
 use crate::paragraph::{FirstBaselineUnavailable, ShapedParagraph, SpaceParams, build_items};
 use crate::cjk::{CjkGap, CjkLineSpacing, CjkParagraph};
-use crate::sentinels::{BreakOutcome, FlushOutcome};
+use crate::sentinels::{BreakOutcome, BreakOverset, BreakResult, FlushOutcome};
+use hsk_studio_type::BreakTarget;
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
@@ -831,6 +839,60 @@ fn vertical_justify(f: &Frame<'_>, v: FrameVertical, lines: &mut [Line], meta: &
     Ok(())
 }
 
+/// The break sentinel that ends paragraph `i`: the first character after its content (its last
+/// glyph, else its start) up to the next paragraph's start, when that is a break sentinel.
+fn paragraph_break(text: &str, paragraphs: &[ShapedParagraph], i: usize) -> Option<(u64, BreakTarget)> {
+    let p = paragraphs.get(i)?;
+    let content_end = p.glyphs.iter().map(|g| g.cluster.end).fold(p.source.start, u64::max);
+    let next = paragraphs.get(i + 1).map_or(text.len() as u64, |n| n.source.start);
+    let c = text.get(usize::try_from(content_end).ok()?..usize::try_from(next).ok()?)?.chars().next()?;
+    if !hsk_studio_type::is_break_sentinel(c) {
+        return None;
+    }
+    hsk_studio_type::catalog_member_for_scalar(c)?.break_target.map(|t| (content_end, t))
+}
+
+/// Where the text after a break continues (`sentinels` module), and how many thread frames were
+/// passed over; `last` is the paragraph's last slot, `after` the cursor the flow would take.
+fn break_target(
+    thread: &[Frame<'_>],
+    last: Slot,
+    after: Cursor,
+    target: BreakTarget,
+    page_number: &dyn Fn(usize, usize) -> Option<u32>,
+) -> Result<(Cursor, usize), BreakOverset> {
+    let next_frame = (last.pos + 1 < thread.len()).then(|| (Cursor::frame(last.pos + 1), 0));
+    let from = &thread[last.pos];
+    match target {
+        BreakTarget::Column if last.col + 1 < from.column_count.max(1) => Ok((
+            Cursor { pos: last.pos, col: last.col + 1, line: 0, band: after.band, extra: 0.0, first: None },
+            0,
+        )),
+        BreakTarget::Column | BreakTarget::Frame => next_frame.ok_or(BreakOverset::NoTarget),
+        BreakTarget::Page | BreakTarget::OddPage | BreakTarget::EvenPage => {
+            let here = (from.spread, from.page);
+            for (q, f) in thread.iter().enumerate().skip(last.pos + 1) {
+                if (f.spread, f.page) <= here {
+                    continue;
+                }
+                let fits = match target {
+                    BreakTarget::Page => true,
+                    _ => {
+                        let n = page_number(f.spread, f.page).ok_or(BreakOverset::ParityUnknown)?;
+                        (n % 2 == 1) == (target == BreakTarget::OddPage)
+                    }
+                };
+                if fits {
+                    return Ok((Cursor::frame(q), q - last.pos - 1));
+                }
+            }
+            Err(BreakOverset::NoTarget)
+        }
+        // Not break sentinels (`paragraph_break` only returns the five sentinel targets).
+        BreakTarget::Line | BreakTarget::Paragraph => Ok((after, 0)),
+    }
+}
+
 /// `compose` with one `ParaFlow` per paragraph (span and split columns, band balancing).
 #[allow(clippy::too_many_arguments)]
 fn compose_flow(
@@ -851,8 +913,7 @@ fn compose_flow(
     cancel: &CancellationToken,
 ) -> Result<Composition, LayoutError> {
     canceled(cancel)?;
-    let facts = FlowFacts::default();
-    let _ = page_number;
+    let mut facts = FlowFacts::default();
     if paragraphs.len() > limits.max_paragraphs
         || stylings.len() != paragraphs.len()
         || flows.len() != paragraphs.len()
@@ -888,6 +949,8 @@ fn compose_flow(
     // Index of the first line of the current band, per frame (bands start after span paragraphs).
     let mut band_start: Vec<usize> = vec![0; thread.len()];
     let mut band_top: Vec<Option<f64>> = vec![None; thread.len()];
+    // Frames whose lines a column break placed: never re-balanced (that would undo the break).
+    let mut no_balance: Vec<bool> = vec![false; thread.len()];
     let story_end = paragraphs.last().map_or(0, |p| p.source.end);
     let (mut cursor, mut placed, mut overset) = (Cursor::frame(0), 0usize, None);
     let scan_cap_base = limits.max_lines.saturating_add(1);
@@ -989,7 +1052,9 @@ fn compose_flow(
                     let pos = cursor.pos;
                     let start = band_start[pos];
                     if frames[pos].len() > start {
-                        balance_band(f, cursor.band, &mut frames[pos][start..], &metas[pos][start..]);
+                        if !no_balance[pos] {
+                            balance_band(f, cursor.band, &mut frames[pos][start..], &metas[pos][start..]);
+                        }
                         let bottom = frames[pos][start..]
                             .iter()
                             .zip(&metas[pos][start..])
@@ -1336,11 +1401,34 @@ fn compose_flow(
                 c
             }
         };
+        // A break sentinel ending the paragraph moves the flow to its target (`sentinels` module).
+        if let Some((at, target)) = paragraph_break(text, paragraphs, pi) {
+            let last = slots[used - 1];
+            match break_target(thread, last, cursor, target, page_number) {
+                Ok((c, skipped_frames)) => {
+                    if target == BreakTarget::Column {
+                        no_balance[last.pos] = true;
+                    }
+                    cursor = c;
+                    facts.breaks.push(BreakOutcome {
+                        story_byte: at,
+                        target,
+                        result: BreakResult::Applied { frame: c.pos, column: c.col, skipped_frames },
+                    });
+                }
+                Err(why) => {
+                    facts.breaks.push(BreakOutcome { story_byte: at, target, result: BreakResult::Overset(why) });
+                    overset = Some(SourceSpan { start: at, end: story_end.max(at.saturating_add(3)) });
+                    break;
+                }
+            }
+        }
     }
     // Balance the band that ends the story when its frame asks for it.
     if overset.is_none()
         && let Some(pos) = frames.iter().rposition(|l| !l.is_empty())
         && thread[pos].balance
+        && !no_balance[pos]
     {
         let start = band_start[pos];
         balance_band(&thread[pos], band_top[pos], &mut frames[pos][start..], &metas[pos][start..]);
