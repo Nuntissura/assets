@@ -33,7 +33,7 @@
 //! counts use checked arithmetic. Vendor parity is UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_observe::{Observe, Receipt, SinkPort};
+use hsk_studio_observe::{DiagnosticCode, DiagnosticDetail, Disposition, FailureCode, MAX_DETAIL_COUNT, Observation, Observe, Outcome, Receipt, SinkPort};
 use crate::separations::{InkLimits, InkReading, LIMIT_EPS, Measure, SepNote, SeparationPreview, Severity};
 
 /// Most pages one evaluation reads.
@@ -848,6 +848,7 @@ pub fn evaluate_ink_coverage(req: &CoverageRequest<'_>) -> Result<InkCoverageRep
 
 /// The caller-owned route of one terminal emission: the correlation and revision of the operation,
 /// its cancellation token, the one [`Observe`] emitter of this operation and the sink it delivers to.
+/// An emitter carries one terminal, so a route serves one evaluation or one edit.
 pub struct ObserveRoute<'a> {
     pub correlation_id: u64,
     pub revision: u64,
@@ -856,20 +857,137 @@ pub struct ObserveRoute<'a> {
     pub sink: &'a mut dyn SinkPort,
 }
 
-/// What the terminal emission of one operation was: the typed terminal code and the delivery receipt.
+/// The terminal emission of one operation: the typed terminal code (a stable token, never text from
+/// the document) and the delivery receipt or the observe refusal. A refused or failed delivery never
+/// changes the operation's result.
 #[derive(Debug, PartialEq)]
 pub struct Emission {
     pub code: &'static str,
     pub receipt: Result<Receipt, hsk_studio_observe::Error>,
 }
 
-/// [`evaluate_ink_coverage`] plus one terminal emission through observe.
+impl ObserveRoute<'_> {
+    /// Emits the one terminal as an observe version-2 detail: closed outcome, disposition, diagnostic
+    /// code and five capped counters. No text, label, path or document content is part of it.
+    pub(crate) fn terminal(
+        self,
+        code: &'static str,
+        outcome: Outcome,
+        disposition: Disposition,
+        diagnostic: Option<DiagnosticCode>,
+        counts: [u32; 5],
+    ) -> Emission {
+        let receipt = DiagnosticDetail::new(disposition, diagnostic, None, counts).and_then(|detail| {
+            self.observe.emit_detail(
+                Observation { correlation_id: self.correlation_id, revision: self.revision, outcome, progress: None, private_project_text: None },
+                &detail,
+                self.cancel,
+                &mut *self.sink,
+            )
+        });
+        Emission { code, receipt }
+    }
+}
+
+/// A count capped at observe's detail bound.
+pub(crate) fn capped(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX).min(MAX_DETAIL_COUNT)
+}
+
+/// Severity order of the states of one evaluation's three limits: the evaluation's terminal state is the
+/// worst of them (an over-limit single or black limit is not hidden by a total limit within its limit).
+const fn state_rank(s: InkLimitCheckState) -> u8 {
+    match s {
+        InkLimitCheckState::NotChecked => 0,
+        InkLimitCheckState::WithinLimit => 1,
+        InkLimitCheckState::WithinWarningMargin => 2,
+        InkLimitCheckState::Indeterminate => 3,
+        InkLimitCheckState::OverLimit => 4,
+    }
+}
+
+/// [`evaluate_ink_coverage`] plus exactly one terminal emission through observe (HOST INTEGRATION
+/// rule 5). The returned result is the evaluation's own, whatever the emission did.
+///
+/// Terminal codes (the typed [`Emission::code`]; the wire is observe's closed vocabulary):
+/// - the worst check state of the three limits: `check_state.within_limit` and
+///   `check_state.within_warning_margin` are a success with disposition no_change (read-only) and the
+///   counters `[limits evaluated, 0, limits checked, 0, 0]`; `check_state.over_limit` is failure
+///   validation + `ValidationRejected`; `check_state.not_checked` is failure unavailable +
+///   `MissingRead`; `check_state.indeterminate` is failure unsupported + `MissingRead`, each with
+///   `[limits evaluated, 0, 0, 0, 0]`. A not-checked limit is never a success;
+/// - a refusal ([`CoverageError::code`]) is a rejected failure with zero counters: validation +
+///   `InvalidInput` (identity, resolution, scope-mismatch and page refusals), `ValidationRejected`
+///   (limit values), `BudgetExceeded` (page, sample, cause, object and replay caps), or unsupported +
+///   `InvalidInput` for a scope the pipeline does not evaluate.
+///
+/// Both within states share one wire value; the typed code tells them apart.
 pub fn evaluate_ink_coverage_observed(
     req: &CoverageRequest<'_>,
     route: ObserveRoute<'_>,
 ) -> (Result<InkCoverageReport, CoverageError>, Emission) {
-    let _ = route;
-    (evaluate_ink_coverage(req), Emission { code: "", receipt: Err(hsk_studio_observe::Error::Closed) })
+    let result = evaluate_ink_coverage(req);
+    let emission = coverage_emission(&result, route);
+    (result, emission)
+}
+
+fn coverage_emission(result: &Result<InkCoverageReport, CoverageError>, route: ObserveRoute<'_>) -> Emission {
+    let rejected = Disposition::Rejected;
+    match result {
+        Ok(report) => {
+            let state = report.evaluations.iter().map(|e| e.check_state).max_by_key(|s| state_rank(*s)).unwrap_or(report.check_state);
+            let evaluated = capped(report.evaluations.len());
+            let checked = capped(report.evaluations.iter().filter(|e| e.metrics.is_some()).count());
+            let code = state.code();
+            match state {
+                InkLimitCheckState::WithinLimit | InkLimitCheckState::WithinWarningMargin => {
+                    route.terminal(code, Outcome::Success, Disposition::NoChange, None, [evaluated, 0, checked, 0, 0])
+                }
+                InkLimitCheckState::OverLimit => route.terminal(
+                    code,
+                    Outcome::Failure(FailureCode::Validation),
+                    rejected,
+                    Some(DiagnosticCode::ValidationRejected),
+                    [evaluated, 0, 0, 0, 0],
+                ),
+                InkLimitCheckState::NotChecked => route.terminal(
+                    code,
+                    Outcome::Failure(FailureCode::Unavailable),
+                    rejected,
+                    Some(DiagnosticCode::MissingRead),
+                    [evaluated, 0, 0, 0, 0],
+                ),
+                InkLimitCheckState::Indeterminate => route.terminal(
+                    code,
+                    Outcome::Failure(FailureCode::Unsupported),
+                    rejected,
+                    Some(DiagnosticCode::MissingRead),
+                    [evaluated, 0, 0, 0, 0],
+                ),
+            }
+        }
+        Err(e) => {
+            let (failure, diagnostic) = match e {
+                CoverageError::UndeclaredIsNotASite | CoverageError::NotFinite { .. } | CoverageError::OutOfHardBounds { .. } => {
+                    (FailureCode::Validation, DiagnosticCode::ValidationRejected)
+                }
+                CoverageError::InvalidRuleId
+                | CoverageError::InvalidPageReference
+                | CoverageError::InvalidObjectReference
+                | CoverageError::NoPages
+                | CoverageError::ScopeMismatch(_)
+                | CoverageError::InvalidSampleResolution(_)
+                | CoverageError::SampleResolutionMismatch { .. } => (FailureCode::Validation, DiagnosticCode::InvalidInput),
+                CoverageError::TooManyPages
+                | CoverageError::TooManyIndeterminateCauses
+                | CoverageError::TooManySamples
+                | CoverageError::TooManyObjectReferences
+                | CoverageError::Budget => (FailureCode::Validation, DiagnosticCode::BudgetExceeded),
+                CoverageError::ScopeNotEvaluated(_) => (FailureCode::Unsupported, DiagnosticCode::InvalidInput),
+            };
+            route.terminal(e.code(), Outcome::Failure(failure), rejected, Some(diagnostic), [0; 5])
+        }
+    }
 }
 
 // ---- JSON (data form of the records; field names are the spec's) ----

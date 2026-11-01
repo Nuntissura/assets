@@ -31,6 +31,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::coverage::{Emission, ObserveRoute, ParamPrecision, ParamValue};
 use hsk_studio_accord::ActorContext;
+use hsk_studio_observe::{DiagnosticCode, Disposition, FailureCode, Outcome};
 
 /// One of the four process inks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -419,6 +420,30 @@ impl InkError {
             Self::TooManyInks => "too_many_inks",
         }
     }
+
+    /// The closed observe diagnostic code of this refusal (no text): the caps are `BudgetExceeded`.
+    pub(crate) const fn diagnostic_code(&self) -> DiagnosticCode {
+        match self {
+            Self::InvalidName => DiagnosticCode::InvalidInput,
+            Self::UnknownInk(_) => DiagnosticCode::InvalidTarget,
+            Self::DuplicateInk(_) => DiagnosticCode::DuplicateAddress,
+            Self::TooManyInks | Self::MixedInkTooManySpots(_) | Self::MixedInkTooManyInks(_) | Self::MixedInkGroupTooLarge(_) => {
+                DiagnosticCode::BudgetExceeded
+            }
+            Self::ProcessInkAliased(_)
+            | Self::AliasCycle(_)
+            | Self::AngleOutOfRange(_)
+            | Self::FrequencyOutOfRange(_)
+            | Self::NeutralDensityOutOfRange(_)
+            | Self::SolidityOutOfRange(_)
+            | Self::ParameterPrecision(..)
+            | Self::ProcessInkNotConvertible(_)
+            | Self::AlternateOutOfRange(_)
+            | Self::TintOutOfRange(_)
+            | Self::MixedInkEmpty(_)
+            | Self::MixedInkDuplicatePart(_) => DiagnosticCode::ValidationRejected,
+        }
+    }
 }
 
 fn tint_ok(t: f64) -> bool {
@@ -565,15 +590,37 @@ impl InkManager {
         Ok(InkEditOutcome { manager: next, receipt })
     }
 
-    /// [`InkManager::apply_edit`] plus one terminal emission through observe.
+    /// [`InkManager::apply_edit`] plus exactly one terminal emission through observe (HOST INTEGRATION
+    /// rule 5). The returned result is the edit's own, whatever the emission did.
+    ///
+    /// Terminal codes (the typed [`Emission::code`]): `ink_edit.applied` is a success with disposition
+    /// changed and counters `[0, 1, 0, 1, 1]` (one write attempted, admitted and changed);
+    /// `ink_edit.no_change` is a success whose edited manager equals the input, disposition no_change,
+    /// `[0, 1, 0, 1, 0]`. A refusal carries its [`InkError::code`] as a rejected validation failure with
+    /// `[0, 1, 0, 0, 0]` and the diagnostic code `InvalidInput` (`invalid_ink_name`), `InvalidTarget`
+    /// (`unknown_ink`), `DuplicateAddress` (`duplicate_ink`), `BudgetExceeded` (the ink, mixed-ink and
+    /// swatch caps) or `ValidationRejected` (every other refusal). No ink name or value is emitted.
     pub fn apply_edit_observed(
         &self,
         actor: &ActorContext,
         edit: &InkEdit,
         route: ObserveRoute<'_>,
     ) -> (Result<InkEditOutcome, InkError>, Emission) {
-        let _ = route;
-        (self.apply_edit(actor, edit), Emission { code: "", receipt: Err(hsk_studio_observe::Error::Closed) })
+        let result = self.apply_edit(actor, edit);
+        let emission = match &result {
+            Ok(outcome) if outcome.manager == *self => {
+                route.terminal("ink_edit.no_change", Outcome::Success, Disposition::NoChange, None, [0, 1, 0, 1, 0])
+            }
+            Ok(_) => route.terminal("ink_edit.applied", Outcome::Success, Disposition::Changed, None, [0, 1, 0, 1, 1]),
+            Err(e) => route.terminal(
+                e.code(),
+                Outcome::Failure(FailureCode::Validation),
+                Disposition::Rejected,
+                Some(e.diagnostic_code()),
+                [0, 1, 0, 0, 0],
+            ),
+        };
+        (result, emission)
     }
 
     fn ink_mut(&mut self, name: &str) -> Result<&mut Ink, InkError> {
