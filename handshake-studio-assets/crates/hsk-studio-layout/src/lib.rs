@@ -81,6 +81,10 @@ pub use print::{
     MAX_TRAP_PRESET_NAME_BYTES, TrapAssignError, TrapAssignment, TrapEndType, TrapImagePlacement, TrapPageRange, TrapParameter, TrapPreset,
     TrapPresetError, TrapPresetValues, assign_trap_preset,
 };
+pub use print::{
+    FlattenerBounds, FlattenerLevel, FlattenerParameter, FlattenerPreset, FlattenerPresetEdit, FlattenerPresetError, FlattenerPresetValues,
+    FlattenerPresets, MAX_FLATTENER_PRESET_NAME_BYTES, MAX_FLATTENER_PRESETS,
+};
 pub use pdf_export_prefs::{
     AcrobatCompatibility, AdvancedPanel, CompressionPanel, CompressionQuality, CompressionType, DomainCompleteness, ExportLayers,
     GeneralPanel, ImageClass, ImageClassCompression, MAX_PDF_NAME_BYTES, MAX_PDF_PASSWORD_BYTES, MAX_PDF_PRESET_ID_BYTES,

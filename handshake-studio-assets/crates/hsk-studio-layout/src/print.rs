@@ -16,7 +16,9 @@
 //!
 //! Captured typed errors (spec :7064): the spec names no field for "a half-gap value greater than the
 //! crossover", so no refusal is guessed for it (UNVERIFIED, D5); ink aliasing belongs to press-write's
-//! ink manager. The spec counts 109 captured properties (105 on the preset object) but names only the
+//! ink manager. Transparency flattener presets (STU-LAY-161) are typed records stored in
+//! [`FlattenerPresets`], and `flattener_preset_name` resolves against them (see the flattener section).
+//! The spec counts 109 captured properties (105 on the preset object) but names only the
 //! 83 grouped fields and the 12 screen parameters carried here; the unnamed rest is not invented.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::LayoutError;
@@ -1187,4 +1189,325 @@ pub fn assign_trap_preset(
         }
     }
     Ok(TrapAssignment { document: out, pages })
+}
+
+// ---- Transparency flattener presets (lane SMB-PRESS-INK-MANAGER-1; STU-LAY-161, STU-LAY-135,
+// STU-LAY-100) ----
+//
+// A flattener preset is a named record of the two tabled resolutions, the raster-vector balance, the
+// three outline / clip switches and the five-member flattener level of STU-LAY-135. The two
+// resolutions use the seven-field bound set ([`FlattenerParameter::bounds`], hard and soft bounds
+// separate, `None` for every field the spec marks unknown, nothing mirrored or invented). The
+// raster-vector balance has no recovered bounds (declared SPEC GAP): every one of its seven fields is
+// unknown, so a stored balance is checked only for being finite and is never range-checked, clamped
+// or defaulted. Stored presets live in a [`FlattenerPresets`] collection edited by attributed
+// commands ([`FlattenerPresets::apply`], the caller's `CommandContext`); `flattener_preset_name`
+// (print, [`AdvancedOptions::resolve_flattener_preset`]) and `applied_flattener_preset` (PDF export,
+// `AdvancedPanel::resolve_flattener_preset`) resolve against it by exact name, and a name with no
+// stored preset is a typed refusal. Not here: the flattener PREVIEW and flattening itself (follow-up;
+// press-write's coverage stage `transparency_flattening` stays unperformed), Folio persistence of
+// the collection, and any mapping from a flattener level to parameter values (none is captured).
+// Vendor parity UNVERIFIED (D5).
+
+/// Most stored flattener presets (a Studio bound for hostile input; the spec declares none).
+pub const MAX_FLATTENER_PRESETS: usize = 1024;
+/// Bytes of a flattener-preset name: the bound of the PDF export panel's `applied_flattener_preset`
+/// name, so every storable name can be referenced.
+pub const MAX_FLATTENER_PRESET_NAME_BYTES: usize = crate::pdf_export_prefs::MAX_PDF_NAME_BYTES;
+
+/// The seven fields of one flattener parameter. Unlike [`NumericBounds`] the hard bounds and unit
+/// may be unknown too (the raster-vector balance: SPEC GAP).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlattenerBounds {
+    pub hard_min: Option<f64>,
+    pub hard_max: Option<f64>,
+    pub soft_min: Option<f64>,
+    pub soft_max: Option<f64>,
+    pub default: Option<f64>,
+    pub unit: Option<PrintUnit>,
+    pub precision: Option<u32>,
+}
+
+/// The numeric parameters of a flattener preset: the two rows of the STU-LAY-161 table and the
+/// raster-vector balance the clause names without bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlattenerParameter {
+    LineArtAndTextResolution,
+    GradientAndMeshResolution,
+    RasterVectorBalance,
+}
+impl FlattenerParameter {
+    pub const ALL: [Self; 3] = [Self::LineArtAndTextResolution, Self::GradientAndMeshResolution, Self::RasterVectorBalance];
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::LineArtAndTextResolution => "line_art_and_text_resolution",
+            Self::GradientAndMeshResolution => "gradient_and_mesh_resolution",
+            Self::RasterVectorBalance => "raster_vector_balance",
+        }
+    }
+    /// The bound set exactly as tabled; every field the spec does not declare is `None`.
+    pub const fn bounds(self) -> FlattenerBounds {
+        let (hard_min, hard_max, unit) = match self {
+            Self::LineArtAndTextResolution => (Some(1.0), Some(9600.0), Some(PrintUnit::Dpi)),
+            Self::GradientAndMeshResolution => (Some(0.0), Some(1200.0), Some(PrintUnit::Dpi)),
+            Self::RasterVectorBalance => (None, None, None),
+        };
+        FlattenerBounds { hard_min, hard_max, soft_min: None, soft_max: None, default: None, unit, precision: None }
+    }
+    /// True for a parameter whose bounds the spec declares as not recovered (SPEC GAP).
+    pub const fn bounds_undeclared(self) -> bool {
+        matches!(self, Self::RasterVectorBalance)
+    }
+    /// Admit `value`: finite and inside the declared hard bounds (inclusive). Undeclared bounds are
+    /// never invented, so the balance is checked for being finite only; nothing is clamped.
+    pub fn check(self, value: f64) -> Result<f64, FlattenerPresetError> {
+        if !value.is_finite() {
+            return Err(FlattenerPresetError::ParameterNotFinite(self));
+        }
+        let b = self.bounds();
+        if b.hard_min.is_some_and(|lo| value < lo) || b.hard_max.is_some_and(|hi| value > hi) {
+            return Err(FlattenerPresetError::ParameterOutOfBounds(self));
+        }
+        Ok(value)
+    }
+}
+
+/// The five-member flattener level of STU-LAY-135 (`spread_flattener_override`), the one
+/// enumeration for spread overrides and flattener presets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlattenerLevel {
+    Low,
+    MediumLow,
+    Medium,
+    MediumHigh,
+    High,
+}
+impl FlattenerLevel {
+    pub const ALL: [Self; 5] = [Self::Low, Self::MediumLow, Self::Medium, Self::MediumHigh, Self::High];
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Low => "flattener.low",
+            Self::MediumLow => "flattener.medium_low",
+            Self::Medium => "flattener.medium",
+            Self::MediumHigh => "flattener.medium_high",
+            Self::High => "flattener.high",
+        }
+    }
+    /// Exact member code only: no case folding, trimming or aliasing.
+    pub fn from_code(code: &str) -> Result<Self, FlattenerPresetError> {
+        Self::ALL.into_iter().find(|m| m.code() == code).ok_or(FlattenerPresetError::UnknownMember("flattener_level"))
+    }
+}
+
+/// Typed refusals of flattener presets, their store and name resolution. Codes only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FlattenerPresetError {
+    ParameterNotFinite(FlattenerParameter),
+    ParameterOutOfBounds(FlattenerParameter),
+    /// A member code that is not a member of the named enumeration.
+    UnknownMember(&'static str),
+    NameEmpty,
+    NameTooLong,
+    /// A name with a control character.
+    NameInvalid,
+    /// More than [`MAX_FLATTENER_PRESETS`] stored presets.
+    TooManyPresets,
+    /// A referenced name has no stored preset (dangling `flattener_preset_name` or
+    /// `applied_flattener_preset`, or a removal of a preset that is not stored).
+    PresetMissing(String),
+    /// `flattener_preset_name` holds a captured value that is not text, so it names nothing.
+    NameNotText,
+    /// The command context carries no command id.
+    CommandMissing,
+    StaleRevision { expected: u64, current: u64 },
+    RevisionOverflow,
+    Canceled,
+}
+impl FlattenerPresetError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ParameterNotFinite(_) => "flattener_parameter_not_finite",
+            Self::ParameterOutOfBounds(_) => "flattener_parameter_out_of_bounds",
+            Self::UnknownMember(_) => "flattener_enum_member_unknown",
+            Self::NameEmpty => "flattener_preset_name_empty",
+            Self::NameTooLong => "flattener_preset_name_too_long",
+            Self::NameInvalid => "flattener_preset_name_invalid",
+            Self::TooManyPresets => "flattener_too_many_presets",
+            Self::PresetMissing(_) => "flattener_preset_missing",
+            Self::NameNotText => "flattener_preset_name_not_text",
+            Self::CommandMissing => "command_id_missing",
+            Self::StaleRevision { .. } => "stale_revision",
+            Self::RevisionOverflow => "revision_overflow",
+            Self::Canceled => "canceled",
+        }
+    }
+    /// The Observe failure class; `None` for cancellation.
+    pub fn failure_code(&self) -> Option<FailureCode> {
+        match self {
+            Self::Canceled => None,
+            Self::StaleRevision { .. } => LayoutError::StaleRevision { expected: 0, current: 0 }.failure_code(),
+            _ => Some(FailureCode::Validation),
+        }
+    }
+}
+impl std::fmt::Display for FlattenerPresetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+impl std::error::Error for FlattenerPresetError {}
+
+/// The values of a flattener preset. `None` = unset: the spec declares no default, so none is
+/// supplied. `Default` is the all-unset record.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FlattenerPresetValues {
+    /// dpi, hard 1..=9600.
+    pub line_art_and_text_resolution: Option<f64>,
+    /// dpi, hard 0..=1200.
+    pub gradient_and_mesh_resolution: Option<f64>,
+    /// Bounds not recovered (SPEC GAP): finite only.
+    pub raster_vector_balance: Option<f64>,
+    pub convert_all_text_to_outlines: Option<bool>,
+    pub convert_all_strokes_to_outlines: Option<bool>,
+    pub clip_complex_regions: Option<bool>,
+    /// The STU-LAY-135 flattener level.
+    pub level: Option<FlattenerLevel>,
+}
+impl FlattenerPresetValues {
+    /// The value of one numeric parameter.
+    pub const fn get(&self, p: FlattenerParameter) -> Option<f64> {
+        match p {
+            FlattenerParameter::LineArtAndTextResolution => self.line_art_and_text_resolution,
+            FlattenerParameter::GradientAndMeshResolution => self.gradient_and_mesh_resolution,
+            FlattenerParameter::RasterVectorBalance => self.raster_vector_balance,
+        }
+    }
+    /// Set one numeric parameter after [`FlattenerParameter::check`]; a refused value leaves the
+    /// record unchanged.
+    pub fn set(&mut self, p: FlattenerParameter, value: f64) -> Result<(), FlattenerPresetError> {
+        let value = p.check(value)?;
+        let slot = match p {
+            FlattenerParameter::LineArtAndTextResolution => &mut self.line_art_and_text_resolution,
+            FlattenerParameter::GradientAndMeshResolution => &mut self.gradient_and_mesh_resolution,
+            FlattenerParameter::RasterVectorBalance => &mut self.raster_vector_balance,
+        };
+        *slot = Some(value);
+        Ok(())
+    }
+    /// Check every set numeric parameter; the first refusal in table order.
+    pub fn validate(&self) -> Result<(), FlattenerPresetError> {
+        for p in FlattenerParameter::ALL {
+            if let Some(v) = self.get(p) {
+                p.check(v)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A named transparency flattener preset (STU-LAY-161).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlattenerPreset {
+    pub name: String,
+    pub values: FlattenerPresetValues,
+}
+impl FlattenerPreset {
+    /// The name must be non-empty after trimming white space, at most
+    /// [`MAX_FLATTENER_PRESET_NAME_BYTES`] bytes (checked before it is copied) and free of control
+    /// characters; every set value must validate.
+    pub fn new(name: &str, values: FlattenerPresetValues) -> Result<Self, FlattenerPresetError> {
+        check_flattener_name(name)?;
+        values.validate()?;
+        Ok(Self { name: name.to_owned(), values })
+    }
+}
+
+fn check_flattener_name(name: &str) -> Result<(), FlattenerPresetError> {
+    if name.len() > MAX_FLATTENER_PRESET_NAME_BYTES {
+        return Err(FlattenerPresetError::NameTooLong);
+    }
+    if name.trim().is_empty() {
+        return Err(FlattenerPresetError::NameEmpty);
+    }
+    if name.chars().any(char::is_control) {
+        return Err(FlattenerPresetError::NameInvalid);
+    }
+    Ok(())
+}
+
+/// One mutating edit of the stored flattener presets.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FlattenerPresetEdit {
+    /// Store `preset`, replacing a stored preset of the same name.
+    Put(FlattenerPreset),
+    /// Remove the stored preset of this name.
+    Remove(String),
+}
+
+/// The stored flattener presets of a document, by unique exact name, with their own revision.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FlattenerPresets {
+    revision: u64,
+    presets: Vec<FlattenerPreset>,
+}
+impl FlattenerPresets {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    /// The stored presets in insertion order.
+    pub fn presets(&self) -> &[FlattenerPreset] {
+        &self.presets
+    }
+    /// The stored preset of exactly this name.
+    pub fn get(&self, name: &str) -> Option<&FlattenerPreset> {
+        self.presets.iter().find(|p| p.name == name)
+    }
+    /// The stored preset of exactly this name, or `flattener_preset_missing` (a dangling reference).
+    pub fn resolve(&self, name: &str) -> Result<&FlattenerPreset, FlattenerPresetError> {
+        self.get(name).ok_or_else(|| FlattenerPresetError::PresetMissing(name.to_owned()))
+    }
+    /// Applies one edit attributed to the caller's `CommandContext` (command id required, base
+    /// revision = this store's revision). The result is a new store at revision + 1; the input is
+    /// unchanged and a refused edit changes nothing. A put is re-validated ([`FlattenerPreset::new`]
+    /// rules) so a record built by field writes cannot bypass the bounds.
+    pub fn apply(&self, ctx: &CommandContext, edit: &FlattenerPresetEdit, cancel: &CancellationToken) -> Result<Self, FlattenerPresetError> {
+        cancel.check().map_err(|_| FlattenerPresetError::Canceled)?;
+        if ctx.command().is_none() {
+            return Err(FlattenerPresetError::CommandMissing);
+        }
+        if ctx.base_revision() != self.revision {
+            return Err(FlattenerPresetError::StaleRevision { expected: ctx.base_revision(), current: self.revision });
+        }
+        let revision = self.revision.checked_add(1).ok_or(FlattenerPresetError::RevisionOverflow)?;
+        let mut presets = self.presets.clone();
+        match edit {
+            FlattenerPresetEdit::Put(p) => {
+                check_flattener_name(&p.name)?;
+                p.values.validate()?;
+                match presets.iter().position(|q| q.name == p.name) {
+                    Some(k) => presets[k] = p.clone(),
+                    None if presets.len() >= MAX_FLATTENER_PRESETS => return Err(FlattenerPresetError::TooManyPresets),
+                    None => presets.push(p.clone()),
+                }
+            }
+            FlattenerPresetEdit::Remove(name) => {
+                let k = presets.iter().position(|q| &q.name == name).ok_or_else(|| FlattenerPresetError::PresetMissing(name.clone()))?;
+                presets.remove(k);
+            }
+        }
+        Ok(Self { revision, presets })
+    }
+}
+
+impl AdvancedOptions {
+    /// Resolves `flattener_preset_name` against the stored presets: unset is `Ok(None)`; a text value
+    /// names a stored preset exactly or is `flattener_preset_missing`; a captured value that is not
+    /// text is `flattener_preset_name_not_text`.
+    pub fn resolve_flattener_preset<'p>(&self, presets: &'p FlattenerPresets) -> Result<Option<&'p FlattenerPreset>, FlattenerPresetError> {
+        match &self.flattener_preset_name {
+            None => Ok(None),
+            Some(PrintValue::Text(name)) => presets.resolve(name).map(Some),
+            Some(_) => Err(FlattenerPresetError::NameNotText),
+        }
+    }
 }

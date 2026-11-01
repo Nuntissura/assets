@@ -1105,6 +1105,15 @@ pub struct AdvancedPanel {
     pub ignore_spread_overrides: Option<PrintValue>,
 }
 impl AdvancedPanel {
+    /// Resolves `applied_flattener_preset` against the stored flattener presets (STU-LAY-161): unset
+    /// is `Ok(None)`; a name with no stored preset is `flattener_preset_missing` (never ignored).
+    pub fn resolve_flattener_preset<'p>(
+        &self,
+        presets: &'p crate::print::FlattenerPresets,
+    ) -> Result<Option<&'p crate::print::FlattenerPreset>, crate::print::FlattenerPresetError> {
+        self.applied_flattener_preset.as_ref().map(|n| presets.resolve(n.as_str())).transpose()
+    }
+
     fn validate(&self) -> Result<(), PdfExportError> {
         check_absolute(PdfParameter::SubsetFontsBelow, self.subset_fonts_below)?;
         for (name, value) in [
