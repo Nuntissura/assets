@@ -817,17 +817,18 @@ pub fn generate_index_contract(
         if k.is_multiple_of(256) {
             cancel.check().map_err(canceled)?;
         }
-        if *depth == 0 && o.include_section_headings {
-            if let Some(g) = headers.group_of(topic) {
-                let from = written_group.map_or(0, |x| x.saturating_add(1));
-                for h in from..=g {
-                    if o.include_empty_index_sections || h == g {
-                        heading(&mut w, h)?;
-                    }
+        if *depth == 0
+            && o.include_section_headings
+            && let Some(g) = headers.group_of(topic)
+        {
+            let from = written_group.map_or(0, |x| x.saturating_add(1));
+            for h in from..=g {
+                if o.include_empty_index_sections || h == g {
+                    heading(&mut w, h)?;
                 }
-                if written_group.is_none_or(|x| x < g) {
-                    written_group = Some(g);
-                }
+            }
+            if written_group.is_none_or(|x| x < g) {
+                written_group = Some(g);
             }
         }
         let continues = o.index_format == IndexFormat::RunIn && *depth > 0 && in_run_in;

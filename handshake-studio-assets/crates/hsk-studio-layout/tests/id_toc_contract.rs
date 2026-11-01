@@ -33,7 +33,9 @@ fn ctx(revision: u64) -> CommandContext {
 }
 
 /// Paragraph texts, styles and where each sits: (frame layer index, page index) or overset.
-const PARTS: [(&str, Option<u32>, Option<(usize, usize)>); 6] = [
+/// Paragraph text, paragraph style number, (frame layer index, page index) or overset.
+type Part = (&'static str, Option<u32>, Option<(usize, usize)>);
+const PARTS: [Part; 6] = [
     ("Alpha\n", Some(1), Some((0, 0))),
     ("beta\u{2028}two\n", Some(2), Some((0, 0))),
     ("Gamma\n", Some(1), Some((0, 1))),

@@ -33,7 +33,9 @@ fn ctx(revision: u64) -> CommandContext {
     )
 }
 
-const PARTS: [(&str, u32, Option<(usize, usize)>); 6] = [
+/// Paragraph text, paragraph style number, (frame layer index, page index) or overset.
+type Part = (&'static str, u32, Option<(usize, usize)>);
+const PARTS: [Part; 6] = [
     ("Apples are red.\n", 1, Some((0, 0))),
     ("Bananas.\n", 1, Some((0, 1))),
     ("Cherries.\n", 2, Some((0, 2))),
@@ -380,7 +382,7 @@ fn index_captured_typed_errors() {
     let nowhere = xref("x1", 0, "Apple", IndexXrefKind::See, &["Zucchini"]);
     assert_eq!(run(&[nowhere], &[]), Err(IndexCommandError::InvalidReferencedTopic("x1".into())));
     let custom = xref("x2", 0, "Apple", IndexXrefKind::Custom, &["Apple"]);
-    assert_eq!(run(&[custom.clone()], &[]), Err(IndexCommandError::InvalidReferencedTopic("x2".into())));
+    assert_eq!(run(std::slice::from_ref(&custom), &[]), Err(IndexCommandError::InvalidReferencedTopic("x2".into())));
     let mut with_text = custom;
     with_text.xref.as_mut().unwrap().custom_text = Some("Compare".into());
     assert!(run(&[with_text], &[]).is_ok());
