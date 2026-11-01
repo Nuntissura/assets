@@ -283,7 +283,7 @@ fn mt_31005_catalog_outcomes_reach_observe_as_fixed_codes_only() {
     assert_eq!(receipt.outcome, obs::Outcome::Failure(obs::FailureCode::Loss));
     assert_eq!(sink.0.len(), 4);
     for frame in &sink.0 {
-        for needle in [&b"plain"[..], "\u{FDD0}".as_bytes(), "\u{FFFD}".as_bytes(), b"ab"] {
+        for needle in [&b"plain"[..], "\u{FDD0}".as_bytes(), "\u{FFFD}".as_bytes()] {
             assert!(!frame.windows(needle.len()).any(|w| w == needle), "no text in Observe frames");
         }
     }

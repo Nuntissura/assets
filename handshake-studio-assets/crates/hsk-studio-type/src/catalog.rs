@@ -294,17 +294,17 @@ pub const MAX_REPORTED_IMPORT_LOSSES: usize = 4096;
 
 /// True for U+FDD0..U+FDEF, the whole block SD-29 reserves for Studio stream sentinels.
 pub const fn is_sentinel_block(c: char) -> bool {
-    c >= SENTINEL_BLOCK_FIRST && c <= SENTINEL_BLOCK_LAST
+    matches!(c, SENTINEL_BLOCK_FIRST..=SENTINEL_BLOCK_LAST)
 }
 /// True for U+FDDE..U+FDEF, which no member uses and which must never be given another meaning.
 pub const fn is_reserved_sentinel(c: char) -> bool {
-    c >= SENTINEL_RESERVED_FIRST && c <= SENTINEL_BLOCK_LAST
+    matches!(c, SENTINEL_RESERVED_FIRST..=SENTINEL_BLOCK_LAST)
 }
 /// True for the five break sentinels U+FDD8..U+FDDC (column, frame, page, odd-page, even-page
 /// break). Each ends its paragraph exactly as U+2029 does; the shaping engine's paragraph
 /// partition reads them as Bidi_Class B.
 pub const fn is_break_sentinel(c: char) -> bool {
-    c >= '\u{FDD8}' && c <= '\u{FDDC}'
+    matches!(c, '\u{FDD8}'..='\u{FDDC}')
 }
 
 /// Headless insertion of member `id` into `text` at byte offset `at`; returns the new text.
