@@ -12,8 +12,9 @@
 //! default and precision are provisional. The engine mapping (recovered row -> engine scalar, hard
 //! bounds enforced, default taken) is asserted for every mapped scalar; vendor parity UNVERIFIED (D5). Lane
 //! SMB-R51-FOLLOWUPS-1 (R51 finding F-R51-1, spec v02.229 SD-27): a recovered row with the `unitless`
-//! token drives no engine scalar until its scale is declared; the engine scalar of that quantity is
-//! its authored `studio_declared` row beside the stored recovered row.
+//! token drives no engine scalar until its scale is declared (a unit read from a row name or default
+//! cell included: lead decision, spec-owner item SD-40); the engine scalar of that quantity is its
+//! authored `studio_declared` row beside the stored recovered row.
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
 use hsk_studio_composite::particles::{ParticleError, ParticleLimits};
 use hsk_studio_composite::simulations::*;
@@ -283,7 +284,9 @@ fn kinds_without_a_recovered_record_have_none() {
     for kind in SimulationKind::EVERY {
         let recovered = matches!(kind, SimulationKind::Foam | SimulationKind::WaveWorld);
         assert_eq!(kind.recovered_record().is_some(), recovered, "{kind:?}");
-        assert_eq!(kind.recovered_mappings().is_empty(), !recovered, "{kind:?}");
+        // Wave world maps no record-level scalar: its rows with a declared unit drive producers only,
+        // and its `--` rows (pre-roll included) drive nothing (SD-27, lead decision on F-R51-1).
+        assert_eq!(kind.recovered_mappings().is_empty(), kind != SimulationKind::Foam, "{kind:?}");
         if !recovered {
             assert_eq!(kind.collapsed_by_default(0), None);
         }
@@ -346,18 +349,19 @@ fn mapped_engine_scalars_take_the_recovered_bounds_and_defaults() {
         f.wind_direction = 450.0;
         assert_eq!(f.validate(), Ok(()), "no declared bound: any finite direction");
     }
-    // Wave world record: preroll <- row 24.
-    assert_eq!(wave_world::WAVE_WORLD_MAPPINGS.map(|m| (m.key, m.param_index, m.component, m.unit)), [("preroll", 24, 0, "s")]);
+    // Wave world record: no scalar is mapped. Pre-roll (row 24) carries the `unitless` token; a unit
+    // read from its name would be a guess (SD-27; `unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars`).
+    assert_eq!(wave_world::WAVE_WORLD_MAPPINGS.iter().map(|m| (m.key, m.param_index, m.component, m.unit)).collect::<Vec<_>>(), Vec::<(&str, u16, usize, &str)>::new());
     for m in &wave_world::WAVE_WORLD_MAPPINGS {
         let mut sim = Simulation::new(SimulationKind::WaveWorld);
         assert_mapping(&wave_world::WAVE_WORLD_RECORD, m, &wave_world::WAVE_WORLD_ROWS, &mut sim, Simulation::param, Simulation::set_param);
     }
-    // Wave world producers: x, y <- row 44 (point, layer fractions), phase <- 56 (ANGLE, degrees).
-    // Amplitude (row 52) and frequency (row 54) carry the `unitless` token and are not mapped (SD-27:
+    // Wave world producers: phase <- 56 (ANGLE, degrees). Position (row 44), amplitude (row 52) and
+    // frequency (row 54) carry the `unitless` token and are not mapped (SD-27:
     // `unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars`).
     assert_eq!(
         wave_world::WAVE_PRODUCER_MAPPINGS.iter().map(|m| (m.key, m.param_index, m.component, m.unit)).collect::<Vec<_>>(),
-        [("x", 44, 0, "ratio"), ("y", 44, 1, "ratio"), ("phase", 56, 0, "deg")]
+        [("phase", 56, 0, "deg")]
     );
     for m in &wave_world::WAVE_PRODUCER_MAPPINGS {
         let mut p = WaveProducer::default();
@@ -429,9 +433,9 @@ fn recovered_angle_rows_store_multi_turn_and_negative_degrees_unchanged() {
 type Sd27 = (&'static str, u16, &'static str, (f64, f64), (Option<f64>, Option<f64>), f64);
 
 /// The recovered row is stored (unit token `unitless`) and maps onto nothing; the engine scalar is
-/// its authored `studio_declared` row: authored default, authored hard bounds enforced, and a value
-/// past the recovered hard bound but inside the authored row accepted (the recovered row does not
-/// constrain the engine).
+/// its authored `studio_declared` row: authored default, authored hard bounds enforced, and, where
+/// the recovered row declares a narrower hard maximum, a value past it but inside the authored row
+/// accepted (the recovered row does not constrain the engine).
 fn assert_sd27<T>(
     record: &'static [StudioEffectParamSpec],
     maps: &[RecoveredMapping],
@@ -460,19 +464,25 @@ fn assert_sd27<T>(
     for v in [hard.0.next_down(), hard.1.next_up(), f64::NAN, f64::INFINITY] {
         assert_eq!(set(obj, key, v), refused, "{key} = {v}");
     }
-    let past = rec.hard_max.expect("recovered hard_max").next_up();
-    assert!(past < hard.1, "{key}: the authored row is wider than the recovered row");
-    assert_eq!(set(obj, key, past), Ok(()), "{key} = {past}: past the recovered bound, inside the authored row");
+    if let Some(hi) = rec.hard_max
+        && hi < hard.1
+    {
+        let past = hi.next_up();
+        assert_eq!(set(obj, key, past), Ok(()), "{key} = {past}: past the recovered bound, inside the authored row");
+    }
 }
 
 /// SD-27 (spec v02.229 STU-FX-131a reading note, STU-CMP-075b; R51 finding F-R51-1): a recovered
 /// row whose unit cell is `--` is the `unitless` token, its engine scale is a SPEC GAP that is never
 /// guessed, and until it is declared the engine's own scalar stays a `studio_declared` row under
-/// STU-FX-146 beside the stored recovered row. Wave world `Wave Speed` (30), `Damping` (32),
+/// STU-FX-146 beside the stored recovered row. A unit read from a row name or default cell is the
+/// guess SD-27 forbids (lead decision on F-R51-1; spec-owner item SD-40 asks for those units). Wave
+/// world `Pre-roll (seconds)` (24), `Wave Speed` (30), `Damping` (32), `Position` (44, x and y),
 /// `Amplitude` (52) and `Frequency` (54), Foam `Viscosity` (42).
 #[test]
 fn unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars() {
-    let wave_record: [Sd27; 2] = [
+    let wave_record: [Sd27; 3] = [
+        ("preroll", 24, "s", (0.0, 60.0), (Some(0.0), Some(5.0)), 0.0),
         ("wave_speed", 30, "cells/s", (0.0, 1.0e4), (Some(1.0), Some(60.0)), 20.0),
         ("damping", 32, "1/s", (0.0, 1000.0), (Some(0.0), Some(5.0)), 0.5),
     ];
@@ -481,7 +491,9 @@ fn unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars() {
         let maps = [wave_world::WAVE_WORLD_MAPPINGS.as_slice(), wave_world::WAVE_PRODUCER_MAPPINGS.as_slice()].concat();
         assert_sd27(&wave_world::WAVE_WORLD_RECORD, &maps, &wave_world::WAVE_WORLD_ROWS, case, &mut sim, Simulation::param, Simulation::set_param);
     }
-    let wave_producer: [Sd27; 2] = [
+    let wave_producer: [Sd27; 4] = [
+        ("x", 44, "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
+        ("y", 44, "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
         ("amplitude", 52, "height", (0.0, 1.0e6), (Some(0.0), Some(2.0)), 0.5),
         ("frequency", 54, "Hz", (0.0, 1000.0), (Some(0.0), Some(5.0)), 1.0),
     ];
@@ -505,4 +517,15 @@ fn unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars() {
     w.producers[0].amplitude = 0.5;
     w.producers[0].frequency = 1000.0_f64.next_up();
     assert_eq!(w.validate(), Err(ParticleError::Parameter("frequency")));
+    // Position walks the authored rows too: past +-1e3 is refused (no recovered bound declared).
+    w.producers[0].frequency = 1.0;
+    w.producers[0].position = [1.0e3_f64.next_up(), 0.5];
+    assert_eq!(w.validate(), Err(ParticleError::Parameter("x")));
+    w.producers[0].position = [0.5, -1.0e3_f64.next_down()];
+    assert_eq!(w.validate(), Err(ParticleError::Parameter("y")));
+    // Pre-roll walks its authored row: 60 s accepted, past it refused.
+    let mut w = WaveWorld { preroll: 60.0, ..WaveWorld::default() };
+    assert_eq!(w.validate(), Ok(()));
+    w.preroll = 60.0_f64.next_up();
+    assert_eq!(w.validate(), Err(ParticleError::Parameter("preroll")));
 }
