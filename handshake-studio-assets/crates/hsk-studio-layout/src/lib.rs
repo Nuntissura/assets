@@ -41,6 +41,7 @@ mod styles;
 mod table;
 mod threaded_reflow;
 mod toc;
+mod toc_contract;
 mod textflow;
 mod typeset;
 mod xref;
@@ -152,6 +153,12 @@ pub use footnotes::{FootnoteError, FootnoteProposal, FootnoteRequest, NoteInput,
 pub use index::{GeneratedIndex, HeaderGroup, IndexError, IndexLimits, generate_index, latin_headers};
 pub use numbering::{NumberScope, NumberingError, PageNumber, format_number, last_page_label, number_pages};
 pub use toc::{GeneratedStory, TocEntryOut, TocError, TocLimits, TocSource, generate_toc};
+pub use toc_contract::{
+    CapturedToken, CharacterStyleRef, MAX_CAPTURED_TOKEN_BYTES, MAX_TOC_NAME_BYTES, MAX_TOCS_PER_UPDATE, ParagraphStyleRef, PlacePoint,
+    RUN_IN_JOINER, StyleRefError, TocAnchorOutcome, TocBatchError, TocBook, TocBookmark, TocCommandError, TocContractEntry, TocEntryStyle,
+    TocGenerateRequest, TocGenerated, TocInstance, TocStoryDirection, TocStyle, generate_table_of_contents, report_command,
+    update_all_tables_of_contents, update_table_of_contents,
+};
 pub use typeset::{JustifyParams, Justification, ParagraphParams, Spacing, TypesetOptions, justify_metrics, paragraph_params};
 
 use hsk_studio_accord::CancellationToken;
