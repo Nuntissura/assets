@@ -600,7 +600,7 @@ pub fn registry() -> &'static [RegistryEntry] {
             .iter()
             .map(|(bytes, name, status, observed)| RegistryEntry {
                 tag: FeatureTag(*bytes),
-                name: *name,
+                name,
                 status: *status,
                 observed: *observed,
                 groups: [None, None],
