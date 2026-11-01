@@ -723,3 +723,130 @@ fn added_channels_psd_cannot_carry_stay_typed_and_the_rest_write_back() {
         }
     });
 }
+
+// ---- R52 finding F-R52-3 (lane SMB-R52-FOLLOWUPS-1): the three `added_channel_fits` branches the
+// tests above did not reach, and the opacity the integral 1077 entry cannot hold (STU-RAS-043) ----
+
+/// Exports `edited` over `bytes` and asserts that PSD refused channel `id` with the typed loss
+/// `channel_added_in_edit_not_exported` and left the file byte-identical.
+fn assert_added_refused(label: &str, bytes: &[u8], doc: &PsdDocument, p: &ImportProposal, edited: &StudioRasterRecords, tiles: &[ChannelTilePayload], id: &str) {
+    let (out, report) = export(doc, p, edited, tiles);
+    assert_eq!(loss_codes(&report), [(format!("channels/{id}"), "channel_added_in_edit_not_exported")], "{label}");
+    assert_eq!(report.loss.entries[0].kind, LossKind::Unsupported, "{label}");
+    assert!(report.applied.is_empty(), "{label}: {report:?}");
+    assert!(out == bytes, "{label}: the file is unchanged");
+}
+
+/// A layerless file of `planes` raw planes at `depth` in colour mode `mode` (no resources); `image`
+/// false leaves the merged image data section out.
+fn doc_mode(mode: u16, depth: u16, planes: u16, image: bool, layer_section: Vec<u8>) -> Vec<u8> {
+    let row = if depth == 1 { W.div_ceil(8) as usize } else { W as usize * usize::from(depth / 8) };
+    let data: Vec<u8> = (0..usize::from(planes) * H as usize * row).map(|i| (i * 13 % 251) as u8).collect();
+    Doc { version: 1, channels: planes, height: H, width: W, depth, mode, color_mode_data: Vec::new(), resources: Vec::new(), layer_section, image: image.then_some((0, data)) }
+        .bytes()
+}
+
+#[test]
+fn added_channel_in_a_multichannel_or_one_bit_file_is_a_typed_loss() {
+    bounded_case("added_channel_in_a_multichannel_or_one_bit_file_is_a_typed_loss", || {
+        // Multichannel (mode 7) at 8 bits: every plane is a colour plane, so there is no extra plane
+        // to append; extent, depth, image data and transparency would all fit.
+        let bytes = doc_mode(7, 8, 3, true, Vec::new());
+        let (doc, p) = proposal(&bytes);
+        assert_eq!(doc.header.color_mode, ColorMode::Multichannel);
+        assert!(p.raster_records.channels.is_empty());
+        let edit = save_new(&p.raster_records, &p.channel_tiles, SCPF, new_channel("multi", "Multi", StudioChannelKind::MaskedAreaAlpha, 8));
+        assert_added_refused("multichannel", &bytes, &doc, &p, &edit.records, &edit.payloads, "multi");
+        // Bitmap (mode 0) at 1 bit: the extent and depth match the file (a 1-bit record), but PSD
+        // extra planes are written at 8, 16 or 32 bits only.
+        let bytes = doc_mode(0, 1, 1, true, Vec::new());
+        let (doc, p) = proposal(&bytes);
+        assert_eq!(doc.header.depth, 1);
+        let mut edit = save_new(&p.raster_records, &p.channel_tiles, SCPF, new_channel("bit", "Bit", StudioChannelKind::MaskedAreaAlpha, 8));
+        edit.records.channels[0].depth = 1;
+        assert_added_refused("one-bit", &bytes, &doc, &p, &edit.records, &edit.payloads, "bit");
+    });
+}
+
+#[test]
+fn added_channel_without_merged_image_data_is_a_typed_loss() {
+    bounded_case("added_channel_without_merged_image_data_is_a_typed_loss", || {
+        // An RGB file whose merged image data section is absent: no plane list to append to.
+        let bytes = doc_mode(3, 8, 3, false, Vec::new());
+        let (doc, p) = proposal(&bytes);
+        assert!(doc.image_data.is_none());
+        let edit = save_new(&p.raster_records, &p.channel_tiles, SCPF, new_channel("orphan", "Orphan", StudioChannelKind::MaskedAreaAlpha, 8));
+        assert_added_refused("no image data", &bytes, &doc, &p, &edit.records, &edit.payloads, "orphan");
+    });
+}
+
+#[test]
+fn added_channel_as_extra_plane_zero_of_a_merged_transparency_file_is_a_typed_loss() {
+    bounded_case("added_channel_as_extra_plane_zero_of_a_merged_transparency_file_is_a_typed_loss", || {
+        // Three header channels (colour only) and a negative layer count: the first extra plane of
+        // this file reads back as the merged transparency, so a channel written there would not
+        // re-import as a channel.
+        let layered = |negative_count: bool| {
+            let mut empty = TLayer::new("empty", [0, 0, 0, 0]);
+            empty.channels = empty_channels(&[-1, 0, 1, 2]);
+            doc_mode(3, 8, 3, true, layer_section(&layer_info(&[empty], false, negative_count), &[], false))
+        };
+        let bytes = layered(true);
+        let (doc, p) = proposal(&bytes);
+        assert!(doc.layer_section.layer_info.as_ref().is_some_and(|l| l.merged_alpha));
+        let edit = save_new(&p.raster_records, &p.channel_tiles, SCPF, new_channel("zero", "Zero", StudioChannelKind::MaskedAreaAlpha, 8));
+        assert_added_refused("merged transparency", &bytes, &doc, &p, &edit.records, &edit.payloads, "zero");
+        // Control: the same file with a positive layer count takes the channel as extra plane 0.
+        let (doc, p) = proposal(&layered(false));
+        let edit = save_new(&p.raster_records, &p.channel_tiles, SCPF, new_channel("zero", "Zero", StudioChannelKind::MaskedAreaAlpha, 8));
+        let (out, report) = export(&doc, &p, &edit.records, &edit.payloads);
+        assert!(report.was_applied("channel_added") && report.loss.entries.is_empty(), "{report:?}");
+        assert_eq!(proposal(&out).1.raster_records.channels.len(), 1);
+    });
+}
+
+#[test]
+fn channel_opacity_the_display_entry_cannot_hold_is_a_typed_loss() {
+    bounded_case("channel_opacity_the_display_entry_cannot_hold_is_a_typed_loss", || {
+        let losses = |report: &ExportReport| report.loss.entries.iter().map(|e| (e.path.clone(), e.code, e.kind)).collect::<Vec<_>>();
+        let at = |code: &'static str| ("channel[1]/opacity".to_string(), code, LossKind::Transformed);
+        // An imported channel edited to an opacity the integral 1077 percent cannot hold: written
+        // rounded or clamped, typed Transformed; an integral in-range value records nothing.
+        let bytes = doc_with(8, 2, standard_resources(true));
+        let (doc, p) = proposal(&bytes);
+        for (opacity, stored, want) in [
+            (62.4, 62u16, vec![at("channel_opacity_rounded")]),
+            (62.5, 63, vec![at("channel_opacity_rounded")]),
+            (60.0, 60, Vec::new()),
+            (120.0, 100, vec![at("channel_opacity_clamped")]),
+            (-0.5, 0, vec![at("channel_opacity_rounded"), at("channel_opacity_clamped")]),
+        ] {
+            let mut records = p.raster_records.clone();
+            records.channels[0].opacity = opacity;
+            let (out, report) = export(&doc, &p, &records, &p.channel_tiles);
+            assert!(report.was_applied("channel_display"), "{opacity}: {report:?}");
+            assert_eq!(losses(&report), want, "{opacity}");
+            let (doc2, q) = proposal(&out);
+            assert_eq!(doc2.resources.display_info(8).unwrap().unwrap().1[1].opacity, stored, "{opacity}");
+            assert_eq!(q.raster_records.channels[0].opacity, f64::from(stored), "{opacity}");
+        }
+        // A channel saved from a selection with a fractional opacity: appended to 1077 rounded, typed.
+        let bytes = doc_with(8, 1, one_alpha_resources());
+        let (doc, p) = proposal(&bytes);
+        let saved = |opacity: f64| {
+            let mut edit = save_new(&p.raster_records, &p.channel_tiles, SCPF, new_channel("saved", "Saved", StudioChannelKind::MaskedAreaAlpha, 8));
+            edit.records.channels[1].opacity = opacity;
+            let mut tiles = p.channel_tiles.clone();
+            tiles.extend(edit.payloads);
+            export(&doc, &p, &edit.records, &tiles)
+        };
+        let (out, report) = saved(33.5);
+        assert!(report.was_applied("channel_added"), "{report:?}");
+        assert_eq!(losses(&report), [("channel[2]/opacity".to_string(), "channel_opacity_rounded", LossKind::Transformed)]);
+        let (doc2, q) = proposal(&out);
+        assert_eq!(doc2.resources.display_info(8).unwrap().unwrap().1[2].opacity, 34);
+        assert_eq!(q.raster_records.channels[1].opacity, 34.0);
+        let (_, report) = saved(40.0);
+        assert!(report.was_applied("channel_added") && report.loss.entries.is_empty(), "{report:?}");
+    });
+}
