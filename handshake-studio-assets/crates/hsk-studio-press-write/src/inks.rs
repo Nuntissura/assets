@@ -55,6 +55,12 @@ pub enum InkType {
     OpaqueIgnore,
 }
 impl InkType {
+    pub const ALL: [InkType; 4] = [Self::Normal, Self::Opaque, Self::Transparent, Self::OpaqueIgnore];
+    /// STU-LAY-252: opaque and opaque-ignore inks obscure what lies beneath them, so their
+    /// contribution to a total ink figure is not a plain sum (see the separations total).
+    pub const fn obscures(self) -> bool {
+        matches!(self, Self::Opaque | Self::OpaqueIgnore)
+    }
     pub const fn code(self) -> &'static str {
         match self {
             Self::Normal => "ink.normal",
@@ -231,6 +237,16 @@ impl InkManager {
     /// The ink with this name.
     pub fn ink(&self, name: &str) -> Option<&Ink> {
         self.inks.iter().find(|i| i.name == name)
+    }
+
+    /// The declared `ink_type` of the ink with this name (`None` for an ink the manager does not list).
+    pub fn ink_type(&self, name: &str) -> Option<InkType> {
+        self.ink(name).map(|i| i.ink_type)
+    }
+
+    /// True when content in spot ink `name` reaches its plate through an alias (STU-LAY-160 ink aliasing).
+    pub fn is_aliased(&self, name: &str) -> bool {
+        self.ink(name).is_some_and(|i| i.alias.is_some())
     }
 
     /// Checks names, ranges, aliases (a process ink with an alias is refused, targets exist, no cycles) and

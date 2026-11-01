@@ -1,6 +1,6 @@
 //! The write half of STUDIO-MODULE-PRESS (SMB-CRATE-SEAM-SPLITS, slice 1): Folio/vector -> PDF
-//! export, the PDF/X-4 check, font subsetting (CFF, sfnt), export verdicts, the ink manager and the
-//! separations preview, built on the read half's PDF syntax, object writer, painter and vector reading. `hsk-studio-press` is the public face.
+//! export, the PDF/X-4 check, font subsetting (CFF, sfnt), export verdicts, the ink manager, the
+//! separations preview and the total ink coverage contract (STU-LAY-250..254, `coverage`), built on the read half's PDF syntax, object writer, painter and vector reading. `hsk-studio-press` is the public face.
 #![forbid(unsafe_code)]
 
 // The read half's modules under the names `export` has always used (`crate::syntax`, ...).
@@ -10,9 +10,18 @@ use hsk_studio_press_read::{canon, cmap, content, error, filters, flatten, paint
 #[allow(unused_imports)]
 use hsk_studio_press_read::{VectorColour, VectorEl, VectorItem, VectorMode, VectorPage, VectorPaint, VectorSpace, read_vector_document};
 
+mod coverage;
 mod export;
 mod inks;
 mod separations;
+
+pub use coverage::{
+    CoverageError, CoverageInputStage, CoverageMetric, CoverageMetrics, CoveragePage, CoverageParameter, CoverageParameterSpec, CoverageRequest,
+    CoverageUnit, DocRegion, FindingPageRef, IndeterminateCause, InkCoverageFinding, InkCoverageReport, InkLimitCheckState, InkLimitRule,
+    InkLimitScope, InkLimitSites, InkLimitSource, LimitEvaluation, MAX_COVERAGE_OBJECT_REFS, MAX_COVERAGE_PAGES, MAX_COVERAGE_SAMPLES,
+    MAX_INDETERMINATE_CAUSES, MAX_OBJECT_REF_BYTES, MAX_PAGE_REF_BYTES, MAX_RULE_ID_BYTES, ObjectRef, PUBLISHED_INK_LIMIT_REFERENCE, PageReference,
+    ParamPrecision, ParamValue, PublishedInkLimit, ResolvedInkLimits, ResolvedLimit, evaluate_ink_coverage,
+};
 
 pub use export::{
     BlendMode, Colour, DrawState, Gradient, GradientGeometry, GradientSpread, GradientStop, GroupStyle, MaskImage, MAX_GRADIENT_CYCLES, TextClipRun, PDFX4_VERSION, PDFA2B_CONFORMANCE, PDFA2B_PART, CONFORMANCE_PDFA2B_VERAPDF, VERAPDF_PDFA2B_PROFILE, MAX_REPORT_BYTES, PdfX4, PdfXReport, PdfXRule, SoftMask, check_pdfx4, EXPORT_CONFORMANCE, ExportError, ExportOptions, ExportReceipt, FillRule, FontHandle, IccHandle, ImageColour, ImageSpec, LineCap,
