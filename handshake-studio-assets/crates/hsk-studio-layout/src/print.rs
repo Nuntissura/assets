@@ -34,6 +34,10 @@ pub enum PrintUnit {
     Deg,
     /// `count` in lines per inch.
     LinesPerInch,
+    /// Points, the canonical layout length unit (STU-LAY-100/101); trap widths (STU-LAY-152).
+    Pt,
+    /// A dimensionless ratio (STU-LAY-152 `black_density`).
+    Ratio,
 }
 impl PrintUnit {
     pub const fn code(self) -> &'static str {
@@ -42,6 +46,8 @@ impl PrintUnit {
             Self::Dpi => "dpi",
             Self::Deg => "deg",
             Self::LinesPerInch => "count",
+            Self::Pt => "pt",
+            Self::Ratio => "ratio",
         }
     }
 }
@@ -717,5 +723,241 @@ impl PrinterPreset {
     /// The complete state this preset applies (a full copy; the preset is unchanged).
     pub fn apply(&self) -> PrintPreferences {
         self.preferences.clone()
+    }
+}
+
+// ---- Trap presets (lane SMB-ID-TOC-INDEX-1; STU-LAY-152, STU-LAY-100, STU-LAY-103) ----
+//
+// A trap preset is a named record of the seven tabled parameters plus the two enumerations. Each
+// parameter's bound set is the same seven-field [`NumericBounds`] the print parameters use: hard and
+// soft bounds separate, `None` for every field the spec marks unknown (never mirrored from the other
+// range), no default supplied. `black_density` carries two captures of its hard maximum (10 and
+// 12.0); per STU-LAY-103 both are recorded ([`TrapParameter::captured_hard_max`]) and the normative
+// Studio hard maximum is 12.0. The two widths are stored in `pt` (canonical, STU-LAY-100); the
+// per-unit ranges of the spec are conversions of the point bound ([`TrapParameter::hard_bounds_in`]),
+// never stored constants. The page's `applied_trap_preset` (STU-LAY-107) is not carried: layout has
+// no page object of its own (pages are Folio's `StudioPage`), so assignment to a page range stays
+// open (lane notes). Vendor parity UNVERIFIED (D5).
+
+/// Bytes of a trap-preset name (a Studio bound for hostile input; the spec declares none).
+pub const MAX_TRAP_PRESET_NAME_BYTES: usize = 256;
+
+/// The seven numeric parameters of the STU-LAY-152 table, in table order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrapParameter {
+    DefaultTrapWidth,
+    BlackWidth,
+    BlackColorThreshold,
+    BlackDensity,
+    SlidingTrapThreshold,
+    StepThreshold,
+    ColorReduction,
+}
+impl TrapParameter {
+    pub const ALL: [Self; 7] = [
+        Self::DefaultTrapWidth,
+        Self::BlackWidth,
+        Self::BlackColorThreshold,
+        Self::BlackDensity,
+        Self::SlidingTrapThreshold,
+        Self::StepThreshold,
+        Self::ColorReduction,
+    ];
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::DefaultTrapWidth => "default_trap_width",
+            Self::BlackWidth => "black_width",
+            Self::BlackColorThreshold => "black_color_threshold",
+            Self::BlackDensity => "black_density",
+            Self::SlidingTrapThreshold => "sliding_trap_threshold",
+            Self::StepThreshold => "step_threshold",
+            Self::ColorReduction => "color_reduction",
+        }
+    }
+    /// The bound set as tabled, with the normative hard maximum of `black_density` (12.0, the wider
+    /// capture per STU-LAY-103); unknown fields are `None`.
+    pub const fn bounds(self) -> NumericBounds {
+        panic!("red: SMB-ID-TOC-INDEX-1")
+    }
+    /// Every captured hard maximum (STU-LAY-103: a capture conflict records both). One entry when
+    /// the captures agree; `black_density` has the table's 10 and the second capture's 12.0.
+    pub const fn captured_hard_max(self) -> &'static [f64] {
+        panic!("red: SMB-ID-TOC-INDEX-1")
+    }
+    /// The hard bounds of a width parameter in another measurement system, derived from the
+    /// canonical point bounds (STU-LAY-100: a converter, no per-unit constants). `None` for a
+    /// parameter that is not a length, or a system without a positive finite size.
+    pub fn hard_bounds_in(self, system: crate::MeasureSystem) -> Option<(f64, f64)> {
+        panic!("red: SMB-ID-TOC-INDEX-1")
+    }
+    /// Admit `value`: finite, inside the hard bounds (inclusive) and, where a precision is declared,
+    /// with no more decimal places than it. Soft bounds and defaults are unknown and never applied.
+    pub fn check(self, value: f64) -> Result<f64, TrapPresetError> {
+        panic!("red: SMB-ID-TOC-INDEX-1")
+    }
+}
+
+/// STU-LAY-152 `trap_end_type`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrapEndType {
+    Miter,
+    Overlap,
+}
+impl TrapEndType {
+    pub const ALL: [Self; 2] = [Self::Miter, Self::Overlap];
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Miter => "trap_end.miter",
+            Self::Overlap => "trap_end.overlap",
+        }
+    }
+    /// Exact member code only: no case folding, trimming or aliasing.
+    pub fn from_code(code: &str) -> Result<Self, TrapPresetError> {
+        Self::ALL.into_iter().find(|m| m.code() == code).ok_or(TrapPresetError::UnknownMember("trap_end_type"))
+    }
+}
+
+/// STU-LAY-152 `trap_image_placement`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrapImagePlacement {
+    CenterEdges,
+    Choke,
+    ImageNeutralDensity,
+    ImagesOverSpread,
+}
+impl TrapImagePlacement {
+    pub const ALL: [Self; 4] = [Self::CenterEdges, Self::Choke, Self::ImageNeutralDensity, Self::ImagesOverSpread];
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::CenterEdges => "trap_image.center_edges",
+            Self::Choke => "trap_image.choke",
+            Self::ImageNeutralDensity => "trap_image.image_neutral_density",
+            Self::ImagesOverSpread => "trap_image.images_over_spread",
+        }
+    }
+    /// Exact member code only: no case folding, trimming or aliasing.
+    pub fn from_code(code: &str) -> Result<Self, TrapPresetError> {
+        Self::ALL
+            .into_iter()
+            .find(|m| m.code() == code)
+            .ok_or(TrapPresetError::UnknownMember("trap_image_placement"))
+    }
+}
+
+/// Typed refusals of trap presets. Codes only; no text is carried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrapPresetError {
+    ParameterNotFinite(TrapParameter),
+    ParameterOutOfBounds(TrapParameter),
+    ParameterPrecision(TrapParameter),
+    /// A member code that is not a member of the named enumeration.
+    UnknownMember(&'static str),
+    NameEmpty,
+    NameTooLong,
+}
+impl TrapPresetError {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::ParameterNotFinite(_) => "trap_parameter_not_finite",
+            Self::ParameterOutOfBounds(_) => "trap_parameter_out_of_bounds",
+            Self::ParameterPrecision(_) => "trap_parameter_precision",
+            Self::UnknownMember(_) => "trap_enum_member_unknown",
+            Self::NameEmpty => "trap_preset_name_empty",
+            Self::NameTooLong => "trap_preset_name_too_long",
+        }
+    }
+    /// The layout refusal class for `report` (one Observe terminal outcome, codes only).
+    pub const fn layout_error(self) -> LayoutError {
+        match self {
+            Self::NameTooLong => LayoutError::BudgetExceeded,
+            _ => LayoutError::InvalidInput,
+        }
+    }
+}
+impl std::fmt::Display for TrapPresetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+impl std::error::Error for TrapPresetError {}
+
+/// The values of a trap preset. `None` = unset: the spec declares no default for any field, so
+/// none is supplied. `Default` is the all-unset record.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TrapPresetValues {
+    /// `pt`, hard 0..=8.
+    pub default_trap_width: Option<f64>,
+    /// `pt`, hard 0..=8.
+    pub black_width: Option<f64>,
+    /// Percent, hard 0..=100.
+    pub black_color_threshold: Option<f64>,
+    /// Ratio, hard 0.001..=12.0, precision 3.
+    pub black_density: Option<f64>,
+    /// Percent, hard 0..=100.
+    pub sliding_trap_threshold: Option<f64>,
+    /// Percent, hard 1..=100.
+    pub step_threshold: Option<f64>,
+    /// Percent, hard 0..=100.
+    pub color_reduction: Option<f64>,
+    pub trap_end_type: Option<TrapEndType>,
+    pub trap_image_placement: Option<TrapImagePlacement>,
+}
+impl TrapPresetValues {
+    /// The value of one parameter.
+    pub const fn get(&self, p: TrapParameter) -> Option<f64> {
+        match p {
+            TrapParameter::DefaultTrapWidth => self.default_trap_width,
+            TrapParameter::BlackWidth => self.black_width,
+            TrapParameter::BlackColorThreshold => self.black_color_threshold,
+            TrapParameter::BlackDensity => self.black_density,
+            TrapParameter::SlidingTrapThreshold => self.sliding_trap_threshold,
+            TrapParameter::StepThreshold => self.step_threshold,
+            TrapParameter::ColorReduction => self.color_reduction,
+        }
+    }
+    /// Set one parameter after [`TrapParameter::check`]; a refused value leaves the record unchanged.
+    pub fn set(&mut self, p: TrapParameter, value: f64) -> Result<(), TrapPresetError> {
+        let value = p.check(value)?;
+        let slot = match p {
+            TrapParameter::DefaultTrapWidth => &mut self.default_trap_width,
+            TrapParameter::BlackWidth => &mut self.black_width,
+            TrapParameter::BlackColorThreshold => &mut self.black_color_threshold,
+            TrapParameter::BlackDensity => &mut self.black_density,
+            TrapParameter::SlidingTrapThreshold => &mut self.sliding_trap_threshold,
+            TrapParameter::StepThreshold => &mut self.step_threshold,
+            TrapParameter::ColorReduction => &mut self.color_reduction,
+        };
+        *slot = Some(value);
+        Ok(())
+    }
+    /// Check every set parameter; the first refusal in table order.
+    pub fn validate(&self) -> Result<(), TrapPresetError> {
+        for p in TrapParameter::ALL {
+            if let Some(v) = self.get(p) {
+                p.check(v)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A named trap preset (STU-LAY-152).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrapPreset {
+    pub name: String,
+    pub values: TrapPresetValues,
+}
+impl TrapPreset {
+    /// The name must be non-empty after trimming white space and at most
+    /// [`MAX_TRAP_PRESET_NAME_BYTES`] bytes; every set value must validate.
+    pub fn new(name: &str, values: TrapPresetValues) -> Result<Self, TrapPresetError> {
+        if name.len() > MAX_TRAP_PRESET_NAME_BYTES {
+            return Err(TrapPresetError::NameTooLong);
+        }
+        if name.trim().is_empty() {
+            return Err(TrapPresetError::NameEmpty);
+        }
+        values.validate()?;
+        Ok(Self { name: name.to_owned(), values })
     }
 }

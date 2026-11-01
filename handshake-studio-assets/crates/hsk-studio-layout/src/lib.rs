@@ -75,6 +75,9 @@ pub use print::{
     PrintLayers, PrintPageOrientation, PrintParameter, PrintPreferences, PrintUnit, PrintValue, PrinterPreset, ScreenParameters,
     SendImageData, SetupOptions, Trapping,
 };
+pub use print::{
+    MAX_TRAP_PRESET_NAME_BYTES, TrapEndType, TrapImagePlacement, TrapParameter, TrapPreset, TrapPresetError, TrapPresetValues,
+};
 pub use pdf_export_prefs::{
     AcrobatCompatibility, AdvancedPanel, CompressionPanel, CompressionQuality, CompressionType, DomainCompleteness, ExportLayers,
     GeneralPanel, ImageClass, ImageClassCompression, MAX_PDF_NAME_BYTES, MAX_PDF_PASSWORD_BYTES, MAX_PDF_PRESET_ID_BYTES,
