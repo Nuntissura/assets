@@ -777,23 +777,60 @@ impl TrapParameter {
     /// The bound set as tabled, with the normative hard maximum of `black_density` (12.0, the wider
     /// capture per STU-LAY-103); unknown fields are `None`.
     pub const fn bounds(self) -> NumericBounds {
-        panic!("red: SMB-ID-TOC-INDEX-1")
+        let (hard_min, hard_max, unit, precision) = match self {
+            Self::DefaultTrapWidth | Self::BlackWidth => (0.0, 8.0, PrintUnit::Pt, None),
+            Self::BlackColorThreshold | Self::SlidingTrapThreshold | Self::ColorReduction => {
+                (0.0, 100.0, PrintUnit::Percent, None)
+            }
+            Self::BlackDensity => (0.001, 12.0, PrintUnit::Ratio, Some(3)),
+            Self::StepThreshold => (1.0, 100.0, PrintUnit::Percent, None),
+        };
+        NumericBounds { hard_min, hard_max, soft_min: None, soft_max: None, default: None, unit, precision }
     }
     /// Every captured hard maximum (STU-LAY-103: a capture conflict records both). One entry when
     /// the captures agree; `black_density` has the table's 10 and the second capture's 12.0.
     pub const fn captured_hard_max(self) -> &'static [f64] {
-        panic!("red: SMB-ID-TOC-INDEX-1")
+        match self {
+            Self::DefaultTrapWidth | Self::BlackWidth => &[8.0],
+            Self::BlackColorThreshold | Self::SlidingTrapThreshold | Self::StepThreshold | Self::ColorReduction => {
+                &[100.0]
+            }
+            Self::BlackDensity => &[10.0, 12.0],
+        }
     }
     /// The hard bounds of a width parameter in another measurement system, derived from the
     /// canonical point bounds (STU-LAY-100: a converter, no per-unit constants). `None` for a
     /// parameter that is not a length, or a system without a positive finite size.
     pub fn hard_bounds_in(self, system: crate::MeasureSystem) -> Option<(f64, f64)> {
-        panic!("red: SMB-ID-TOC-INDEX-1")
+        let b = self.bounds();
+        if b.unit != PrintUnit::Pt {
+            return None;
+        }
+        let per = crate::to_points(system);
+        if !per.is_finite() || per <= 0.0 {
+            return None;
+        }
+        Some((b.hard_min / per, b.hard_max / per))
     }
     /// Admit `value`: finite, inside the hard bounds (inclusive) and, where a precision is declared,
     /// with no more decimal places than it. Soft bounds and defaults are unknown and never applied.
     pub fn check(self, value: f64) -> Result<f64, TrapPresetError> {
-        panic!("red: SMB-ID-TOC-INDEX-1")
+        if !value.is_finite() {
+            return Err(TrapPresetError::ParameterNotFinite(self));
+        }
+        let b = self.bounds();
+        if value < b.hard_min || value > b.hard_max {
+            return Err(TrapPresetError::ParameterOutOfBounds(self));
+        }
+        if let Some(places) = b.precision {
+            let scaled = value * 10f64.powi(i32::try_from(places).unwrap_or(i32::MAX));
+            // Tolerance for the binary form of a decimal (0.123 * 1000 is not exact).
+            let tolerance = 1e-9 * scaled.abs().max(1.0);
+            if (scaled - scaled.round()).abs() > tolerance {
+                return Err(TrapPresetError::ParameterPrecision(self));
+            }
+        }
+        Ok(value)
     }
 }
 
