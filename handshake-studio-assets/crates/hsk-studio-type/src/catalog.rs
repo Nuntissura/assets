@@ -13,7 +13,8 @@
 //! are assigned in the spec's order, U+FDDE..U+FDEF are reserved. Private-use code points are not
 //! used. Flush space is not U+2001 EM QUAD (its canonical decomposition is U+2003). The break
 //! sentinels end their paragraph exactly as U+2029 does ([`is_break_sentinel`]; the paragraph
-//! partition of the shaping engine reads them as Bidi_Class B through `provider::bidi`). Typed
+//! partition of request validation and of the shaping engine treats them as terminators, and bidi
+//! receives a same-length U+2029 stand-in; the vendored bidi tables are unchanged). Typed
 //! marker records (kind, target, options by story byte) and their resolution belong to layout.
 //!
 //! Foreign text: [`import_foreign_text`] never reads U+FDD0..U+FDEF as a sentinel; it replaces each
@@ -302,7 +303,7 @@ pub const fn is_reserved_sentinel(c: char) -> bool {
 }
 /// True for the five break sentinels U+FDD8..U+FDDC (column, frame, page, odd-page, even-page
 /// break). Each ends its paragraph exactly as U+2029 does; the shaping engine's paragraph
-/// partition reads them as Bidi_Class B.
+/// partition treats them as terminators (`validate::ends_paragraph`, `engine::bidi_text`).
 pub const fn is_break_sentinel(c: char) -> bool {
     matches!(c, '\u{FDD8}'..='\u{FDDC}')
 }

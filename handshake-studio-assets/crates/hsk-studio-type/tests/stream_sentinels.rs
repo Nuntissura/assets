@@ -296,3 +296,47 @@ fn descriptor_names_the_assigned_stream_forms() {
     assert!(catalogs.contains("U+FDD0..U+FDDD") && catalogs.contains("U+FFFC") && catalogs.contains("U+FDDE..U+FDEF"));
     assert!(!catalogs.contains("Pending") && !catalogs.contains("pending"), "{catalogs}");
 }
+
+fn arabic_case(text: &str, ranges: serde_json::Value) -> Value {
+    json!({
+        "case": "stream_sentinels_bidi", "text": text, "text_sha256": hex(&hash(text.as_bytes())),
+        "text_utf8_hex": hex(text.as_bytes()), "font_index": 1, "script": "Arab", "language": "ar",
+        "paragraph_ranges": ranges,
+    })
+}
+
+/// Per paragraph: (bidi level, glyph ids) of every run.
+fn run_summary(case: &Value, fonts: &Fonts) -> Vec<Vec<(u8, Vec<u32>)>> {
+    let mut out = Vec::new();
+    with_case(fonts, case, None, |request, ports, _, _, _| {
+        let result = prepared(request, ports);
+        for paragraph in result.paragraphs() {
+            out.push(
+                paragraph
+                    .runs()
+                    .iter()
+                    .map(|r| (r.bidi_level(), r.glyphs().iter().map(|g| g.glyph_id).collect()))
+                    .collect(),
+            );
+        }
+    });
+    out
+}
+
+#[test]
+fn mt_31008_bidi_runs_per_paragraph_and_the_sentinel_is_not_content() {
+    bounded_case("mt_31008_bidi_runs_per_paragraph_and_the_sentinel_is_not_content", || {
+        let fonts = Fonts::load();
+        // Arabic letters in LTR paragraphs resolve to bidi level 1 inside each paragraph; the
+        // result for a break sentinel is identical, per paragraph, to the U+2029 reference.
+        let reference = format!("\u{0628}\u{0628}{}\u{0628}", '\u{2029}');
+        let expected = run_summary(&arabic_case(&reference, json!([[0, 7], [7, 9]])), &fonts);
+        assert_eq!(expected.len(), 2);
+        assert!(expected.iter().all(|runs| runs.iter().all(|(level, glyphs)| *level == 1 && !glyphs.is_empty())));
+        for cp in BREAK_SENTINELS {
+            let text = format!("\u{0628}\u{0628}{}\u{0628}", ch(cp));
+            let actual = run_summary(&arabic_case(&text, json!([[0, 7], [7, 9]])), &fonts);
+            assert_eq!(actual, expected, "U+{cp:04X} behaves as U+2029 under bidi, per paragraph");
+        }
+    });
+}

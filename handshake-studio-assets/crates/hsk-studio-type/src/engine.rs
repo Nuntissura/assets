@@ -142,13 +142,22 @@ impl TextEngine {
                     &ctx,
                 )?;
             }
-            let mut resolved = bidi::resolve(request.text_utf8, &overrides, &levels, &ctx)?;
+            // SD-29: a break sentinel ends its paragraph exactly as U+2029; bidi receives a
+            // same-length U+2029 stand-in so the sentinel never acts as content (the vendored
+            // tables stay untouched). Byte offsets are identical in both texts.
+            let standin = bidi_text(request.text_utf8, &ctx)?;
+            let bidi_input: &str = if standin.is_empty() {
+                request.text_utf8
+            } else {
+                std::str::from_utf8(&standin).map_err(|_| Error::InternalInvariant)?
+            };
+            let mut resolved = bidi::resolve(bidi_input, &overrides, &levels, &ctx)?;
             for p in 0..resolved.paragraphs.len() {
                 ctx.step()?;
                 let paragraph = resolved.paragraphs[p];
                 let visual = bidi::visual_runs(
                     &mut resolved,
-                    request.text_utf8,
+                    bidi_input,
                     paragraph,
                     paragraph.start..paragraph.end,
                     &ctx,
@@ -171,7 +180,7 @@ impl TextEngine {
                         for (offset, ch) in request.text_utf8[start..end].char_indices() {
                             ctx.step()?;
                             let at = start + offset;
-                            if bidi::class(ch, &ctx)? == bidi::BidiClass::B {
+                            if crate::validate::ends_paragraph(ch, &ctx)? {
                                 if cursor < at {
                                     pieces.push((*index, cursor..at), &ctx)?;
                                 }
@@ -307,6 +316,26 @@ impl TextEngine {
     }
 }
 
+/// Empty when `text` holds no break sentinel; else a charged copy with every break sentinel
+/// (U+FDD8..U+FDDC, three UTF-8 bytes) replaced by U+2029 (also three bytes).
+fn bidi_text<'a>(text: &str, ctx: &Context<'a>) -> ProviderResult<ChargedVec<'a, u8>> {
+    const STAND_IN: [u8; 3] = [0xE2, 0x80, 0xA9];
+    let mut out = ChargedVec::new();
+    let mut copied = false;
+    for (at, c) in text.char_indices() {
+        ctx.step()?;
+        if crate::catalog::is_break_sentinel(c) {
+            if !copied {
+                out.extend_copy(text.as_bytes(), ctx)?;
+                copied = true;
+            }
+            let end = at.checked_add(STAND_IN.len()).ok_or(Error::Overflow)?;
+            let slot = out.as_mut_slice().get_mut(at..end).ok_or(Error::InternalInvariant)?;
+            slot.copy_from_slice(&STAND_IN);
+        }
+    }
+    Ok(out)
+}
 fn shape<'a>(
     request: &Request<'a>,
     style: &Style<'a>,

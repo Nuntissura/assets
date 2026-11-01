@@ -45,8 +45,7 @@
   "derivative_files": [
     {
       "path": "src/provider/bidi/char_data/mod.rs",
-      "sha256": "a524bac872803896f8632e0fc55ad4762ed5e99917f7afebbddb696716570401",
-      "studio_modification": "SMB-TYPE-SENTINELS-REGISTRY-1: bidi_class returns Bidi_Class B for the five break sentinels U+FDD8..U+FDDC (STU-TYP-207, SD-29)"
+      "sha256": "8a42f68d78e7c6fc8f98aa15865becc1986ab08427d3b5fb7315bd995f174bee"
     },
     {
       "path": "src/provider/bidi/char_data/tables.rs",

@@ -268,7 +268,7 @@ pub(crate) fn validate<'a>(
         let mut para_index = 0usize;
         for (i, c) in request.text_utf8.char_indices() {
             ctx.step()?;
-            if crate::provider::bidi::class(c, ctx)? == crate::provider::bidi::BidiClass::B {
+            if ends_paragraph(c, ctx)? {
                 check_paragraph(request, para_index, expected, (i + c.len_utf8()) as u64)?;
                 expected = (i + c.len_utf8()) as u64;
                 para_index += 1;
@@ -283,6 +283,13 @@ pub(crate) fn validate<'a>(
         }
     }
     Ok(order)
+}
+/// True for a character that ends its paragraph: Bidi_Class B (U+2029, U+000A, ...) or one of the
+/// five STU-TYP-207 break sentinels (SD-29), which end their paragraph exactly as U+2029 does.
+/// The vendored bidi tables are not changed; `bidi_text` hands bidi the U+2029 stand-in.
+pub(crate) fn ends_paragraph(c: char, ctx: &Context<'_>) -> ProviderResult<bool> {
+    Ok(crate::catalog::is_break_sentinel(c)
+        || crate::provider::bidi::class(c, ctx)? == crate::provider::bidi::BidiClass::B)
 }
 fn check_paragraph(
     request: &Request<'_>,
