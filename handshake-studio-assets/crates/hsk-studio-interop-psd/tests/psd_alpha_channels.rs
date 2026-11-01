@@ -10,10 +10,10 @@ mod common;
 
 use common::*;
 use hsk_studio_accord::{ActorContext, CancellationToken, ClientSessionId, CommandContext, CorrelationId};
-use hsk_studio_folio::{Budget, Resolution, Resolver, StudioChannelColour, StudioChannelKind, TileRef};
+use hsk_studio_folio::{Budget, Resolution, Resolver, StudioChannelColour, StudioChannelKind, StudioChannelRecord, StudioRasterRecords, TileRef};
 use hsk_studio_interop_psd::*;
 use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
-use hsk_studio_pigment::selection::{CombineMode, SelectionLimits};
+use hsk_studio_pigment::selection::{CombineMode, CoveragePlane, SelectionLimits};
 use hsk_studio_pigment::selection_channel_roundtrip::*;
 
 struct Mint(u64);
@@ -309,6 +309,8 @@ fn channel_edits_psd_cannot_take_are_typed_losses() {
         let mut removed = p.raster_records.clone();
         removed.channels.remove(1);
         assert_eq!(lost(&removed), (bytes.clone(), vec!["channel_removed_in_edit_not_exported"]));
+        // A channel added in edit is written (MT-038 AC-003, MT-30095); the cases PSD cannot carry
+        // stay typed (`added_channels_psd_cannot_carry_stay_typed_and_the_rest_write_back`).
         let mut added = p.raster_records.clone();
         let mut extra = added.channels[0].clone();
         extra.channel_id = "new".into();
@@ -316,7 +318,9 @@ fn channel_edits_psd_cannot_take_are_typed_losses() {
             t.layer_id = "new".into();
         }
         added.channels.push(extra);
-        assert_eq!(lost(&added), (bytes.clone(), vec!["channel_added_in_edit_not_exported"]));
+        let (out, report) = export(&doc, &p, &added, &p.channel_tiles);
+        assert!(report.loss.entries.is_empty() && report.was_applied("channel_added"), "{report:?}");
+        assert_eq!(proposal(&out).1.raster_records.channels.len(), 3);
         let mut reordered = p.raster_records.clone();
         reordered.channels.swap(0, 1);
         assert_eq!(lost(&reordered), (bytes.clone(), vec!["channel_reorder_not_exported"]));
@@ -494,6 +498,228 @@ fn photoshop_saved_alpha_and_spot_channels_map_and_reexport() {
             assert!(out == bytes, "{name}: unmodified re-export is byte-identical");
             assert!(report.applied.is_empty(), "{name}: {report:?}");
             println!("PROVEN: photoshop_saved_alpha_and_spot_channels_map_and_reexport {name} channels={}", got.len());
+        }
+    });
+}
+
+// ---- Channels added in edit (lane SMB-R51-FOLLOWUPS-1; MT-038 AC-003, MT-30095: a channel saved from
+// a selection is preserved in round-trippable interchange formats, STU-RAS-022) ----
+
+/// The transparency (alpha id 0) and one alpha channel `Alpha One` (Photoshop default options: red,
+/// 50 percent, mode 1).
+fn one_alpha_resources() -> Vec<u8> {
+    let mut r = resource(1006, "", &pascal_list(&[b"Transparency", b"Alpha 1"]));
+    r.extend(resource(1045, "", &unicode_list(&["Transparency", "Alpha One"])));
+    r.extend(resource(1053, "", &[be32(0), be32(5)].concat()));
+    r.extend(resource(1077, "", &display(&[(0, [65535, 0, 0, 0], 100, 1), (0, [65535, 0, 0, 0], 50, 1)])));
+    r
+}
+/// A layerless RGB file with its three colour planes only (no transparency, no channel resources).
+fn doc_colour_only(depth: u16) -> Vec<u8> {
+    let mut image = Vec::new();
+    for k in 0..3 {
+        for y in 0..H {
+            for x in 0..W {
+                image.extend(sample(9 + k, x, y, depth));
+            }
+        }
+    }
+    Doc {
+        version: 1,
+        channels: 3,
+        height: H,
+        width: W,
+        depth,
+        mode: 3,
+        color_mode_data: Vec::new(),
+        resources: Vec::new(),
+        layer_section: Vec::new(),
+        image: Some((0, image)),
+    }
+    .bytes()
+}
+/// A selection over the whole raster with every coverage class: 0, full and spread values.
+fn selection() -> CoveragePlane {
+    let mut data: Vec<u16> = (0..H).flat_map(|y| (0..W).map(move |x| ((x * 2521 + y * 40503 + 17) % 65536) as u16)).collect();
+    data[0] = 0;
+    data[1] = u16::MAX;
+    CoveragePlane { bounds: hsk_studio_pigment::Rect { x: 0, y: 0, width: W, height: H }, data }
+}
+fn new_channel(id: &str, name: &str, kind: StudioChannelKind, depth: u8) -> NewChannel {
+    NewChannel { channel_id: id.into(), name: name.into(), kind, colour: StudioChannelColour::Rgb { r: 0.0, g: 0.0, b: 1.0 }, opacity: 40.0, depth }
+}
+/// Saves [`selection`] as a new channel on the 256-pixel grid of the importer.
+fn save_new(records: &StudioRasterRecords, stored: &[ChannelTilePayload], profile: &str, n: NewChannel) -> ChannelEdit {
+    let grid = ChannelGrid { width: W, height: H, tile_edge: 256, colour_profile_id: profile };
+    let mut frames = Frames::default();
+    let target = SaveTarget::New(n);
+    save_selection(records, &selection(), &target, &grid, stored, &mut TileMint, &SelectionLimits::default(), &cmd(), &CancellationToken::default(), &mut frames)
+        .result
+        .unwrap()
+}
+/// What an interchange round trip keeps of a channel record: everything but the set-local id and the
+/// artifact handles of the host (tiles by grid cell, format and content digest).
+type Kept = (String, StudioChannelKind, bool, StudioChannelColour, f64, u8, u32, u32, Vec<(String, i64, i64, String, String)>);
+fn kept(c: &StudioChannelRecord) -> Kept {
+    let tiles = c.tiles.iter().map(|t| (t.object_key.clone(), t.column, t.row, t.format.clone(), t.content_digest.digest.clone())).collect();
+    (c.name.clone(), c.kind, c.visible, c.colour.clone(), c.opacity, c.depth, c.width, c.height, tiles)
+}
+fn loss_codes(report: &ExportReport) -> Vec<(String, &'static str)> {
+    report.loss.entries.iter().map(|e| (e.path.clone(), e.code)).collect()
+}
+const SCPF: &str = "SCPF-019abcde-0000-7000-8000-0000000000ff";
+
+#[test]
+fn channel_saved_from_a_selection_exports_and_reimports_beside_the_imported_one() {
+    bounded_case("channel_saved_from_a_selection_exports_and_reimports_beside_the_imported_one", || {
+        let cancel = CancellationToken::default();
+        let units = Limits::default().max_name_units;
+        for depth in [8u16, 16, 32] {
+            let bytes = doc_with(depth, 1, one_alpha_resources());
+            let (doc, p) = proposal(&bytes);
+            assert_eq!(p.raster_records.channels.len(), 1, "{depth}: one imported alpha channel");
+            let name = "Saved \u{6f22}";
+            let saved = save_new(&p.raster_records, &p.channel_tiles, SCPF, new_channel("saved", name, StudioChannelKind::SelectedAreaAlpha, depth as u8));
+            let mut tiles = p.channel_tiles.clone();
+            tiles.extend(saved.payloads.clone());
+            let (out, report) = export(&doc, &p, &saved.records, &tiles);
+            assert!(report.was_applied("channel_added"), "{depth}: {report:?}");
+            // The 1006 Pascal entry cannot carry the CJK character (written `?`, the existing rule);
+            // the 1045 entry keeps the name exact. Nothing else is lost.
+            assert_eq!(loss_codes(&report), [("channel[2]/name".to_string(), "channel_name_transcoded")], "{depth}");
+            // Re-import: both channels, the imported one unchanged, the saved one as saved.
+            let (doc2, q) = proposal(&out);
+            assert_eq!(doc2.header.channels, 6, "{depth}: three colour planes, the transparency, two channels");
+            let ids: Vec<&str> = q.raster_records.channels.iter().map(|c| c.channel_id.as_str()).collect();
+            assert_eq!(ids, ["psd-channel-4", "psd-channel-5"], "{depth}");
+            assert_eq!(kept(&q.raster_records.channels[0]), kept(&p.raster_records.channels[0]), "{depth}: the imported channel");
+            assert_eq!(kept(&q.raster_records.channels[1]), kept(saved.records.channel("saved").unwrap()), "{depth}: the saved channel");
+            // Pixels: the re-imported channel loads the selection identically at 16 and 32 bits and
+            // quantised at 8 by the save rule (tone8 = (tone * 255 + 32767) / 65535, loaded tone8 * 257;
+            // a selected-area alpha stores tone = full - coverage).
+            let reloaded = load_selection(&q.raster_records.channels[1], q.channel_tiles.as_slice(), None, CombineMode::Replace, &SelectionLimits::default(), &cancel).unwrap();
+            let plane = selection();
+            for y in 0..i64::from(H) {
+                for x in 0..i64::from(W) {
+                    let c = plane.at(x, y);
+                    let want = if depth == 8 {
+                        let tone = u32::from(u16::MAX - c);
+                        let t8 = (tone * 255 + 32767) / 65535;
+                        u16::MAX - (t8 * 257) as u16
+                    } else {
+                        c
+                    };
+                    assert_eq!(reloaded.at(x, y), want, "{depth}-bit coverage at ({x},{y})");
+                }
+            }
+            // Resources 1006, 1045 and 1077 list both channels after the transparency; 1053 gives
+            // the new channel its own non-zero identifier.
+            assert_eq!(
+                doc2.resources.alpha_names_pascal(8).unwrap().unwrap(),
+                vec![b"Transparency".to_vec(), b"Alpha 1".to_vec(), b"Saved ?".to_vec()]
+            );
+            assert_eq!(doc2.resources.alpha_names_unicode(8, units).unwrap().unwrap(), ["Transparency", "Alpha One", name]);
+            let (_, entries) = doc2.resources.display_info(8).unwrap().unwrap();
+            assert_eq!(
+                entries,
+                [
+                    ChannelDisplayInfo { colour_space: 0, colour: [65535, 0, 0, 0], opacity: 100, mode: 1 },
+                    ChannelDisplayInfo { colour_space: 0, colour: [65535, 0, 0, 0], opacity: 50, mode: 1 },
+                    ChannelDisplayInfo { colour_space: 0, colour: [0, 0, 65535, 0], opacity: 40, mode: 0 },
+                ]
+            );
+            let ids = doc2.resources.alpha_identifiers(8).unwrap().unwrap();
+            assert_eq!((ids.len(), ids[0], ids[1]), (3, 0, 5), "{depth}");
+            assert!(ids[2] != 0 && ids[2] != 5, "{depth}: a fresh identifier {ids:?}");
+            // The existing planes keep their samples; the new plane is last.
+            let merged = |d: &PsdDocument| d.decode_merged(&Limits::default(), &cancel).unwrap().unwrap().planes;
+            let (before, after) = (merged(&doc), merged(&doc2));
+            assert_eq!((before.len(), after.len()), (5, 6));
+            assert_eq!(before[..], after[..5]);
+            // The exported file is stable: an unmodified re-export is byte-identical.
+            let (again, r2) = export(&doc2, &q, &q.raster_records, &q.channel_tiles);
+            assert!(again == out && r2.applied.is_empty() && r2.loss.entries.is_empty(), "{depth}: {r2:?}");
+        }
+    });
+}
+
+#[test]
+fn added_channels_over_the_header_channel_limit_are_typed_losses() {
+    bounded_case("added_channels_over_the_header_channel_limit_are_typed_losses", || {
+        // Six header channels (colour, transparency, two channels); a PSD header holds at most 56, so
+        // 50 more fit and the 51st is refused typed.
+        let bytes = doc_with(8, 2, standard_resources(true));
+        let (doc, p) = proposal(&bytes);
+        let (mut records, mut tiles) = (p.raster_records.clone(), p.channel_tiles.clone());
+        for k in 0..51 {
+            let edit = save_new(&records, &tiles, SCPF, new_channel(&format!("saved-{k}"), &format!("Saved {k}"), StudioChannelKind::MaskedAreaAlpha, 8));
+            records = edit.records;
+            tiles.extend(edit.payloads);
+        }
+        let (out, report) = export(&doc, &p, &records, &tiles);
+        assert_eq!(report.applied.iter().filter(|(_, f)| *f == "channel_added").count(), 50);
+        assert_eq!(loss_codes(&report), [("channels/saved-50".to_string(), "channel_added_in_edit_not_exported")]);
+        let (doc2, q) = proposal(&out);
+        assert_eq!(doc2.header.channels, 56);
+        assert_eq!(q.raster_records.channels.len(), 52);
+        assert_eq!(q.raster_records.channels.last().map(|c| c.name.as_str()), Some("Saved 49"));
+        assert_eq!(doc2.resources.alpha_names_pascal(56).unwrap().unwrap().len(), 53);
+        assert_eq!(doc2.resources.display_info(56).unwrap().unwrap().1.len(), 53);
+    });
+}
+
+#[test]
+fn added_channels_psd_cannot_carry_stay_typed_and_the_rest_write_back() {
+    bounded_case("added_channels_psd_cannot_carry_stay_typed_and_the_rest_write_back", || {
+        let bytes = doc_with(8, 1, one_alpha_resources());
+        let (doc, p) = proposal(&bytes);
+        let with = |n: NewChannel| {
+            let edit = save_new(&p.raster_records, &p.channel_tiles, SCPF, n);
+            let mut tiles = p.channel_tiles.clone();
+            tiles.extend(edit.payloads);
+            (edit.records, tiles)
+        };
+        // A depth other than the file depth: every merged plane shares the header depth, so PSD
+        // cannot carry it; refused typed, nothing written.
+        let (records, tiles) = with(new_channel("deep", "Deep", StudioChannelKind::MaskedAreaAlpha, 16));
+        let (out, report) = export(&doc, &p, &records, &tiles);
+        assert_eq!(loss_codes(&report), [("channels/deep".to_string(), "channel_added_in_edit_not_exported")]);
+        assert!(out == bytes && report.applied.is_empty(), "{report:?}");
+        // Placed before an imported channel: written after the existing channels (file order),
+        // the order change is typed.
+        let (mut records, tiles) = with(new_channel("front", "Front", StudioChannelKind::MaskedAreaAlpha, 8));
+        records.channels.rotate_right(1);
+        let (out, report) = export(&doc, &p, &records, &tiles);
+        assert!(report.was_applied("channel_added"), "{report:?}");
+        assert_eq!(loss_codes(&report), [("channels".to_string(), "channel_reorder_not_exported")]);
+        let names: Vec<String> = proposal(&out).1.raster_records.channels.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(names, ["Alpha One", "Front"]);
+        // Shown: written; PSD stores no channel visibility here (it re-imports hidden), typed.
+        let (mut records, tiles) = with(new_channel("shown", "Shown", StudioChannelKind::SpotColour, 8));
+        records.channels[1].visible = true;
+        let (out, report) = export(&doc, &p, &records, &tiles);
+        assert!(report.was_applied("channel_added"), "{report:?}");
+        assert_eq!(loss_codes(&report), [("channel[2]/visible".to_string(), "channel_visibility_not_exported")]);
+        let q = proposal(&out).1;
+        assert_eq!((q.raster_records.channels[1].kind, q.raster_records.channels[1].visible), (StudioChannelKind::SpotColour, false));
+        // A colour-only file (no extra planes, no channel resources): resources 1006, 1045 and 1077
+        // are created for the new channel, 1053 stays absent, and the record re-imports as saved.
+        for depth in [8u16, 16, 32] {
+            let bytes = doc_colour_only(depth);
+            let (doc, p) = proposal(&bytes);
+            assert!(p.raster_records.channels.is_empty());
+            let edit = save_new(&p.raster_records, &p.channel_tiles, SCPF, new_channel("first", "First", StudioChannelKind::MaskedAreaAlpha, depth as u8));
+            let (out, report) = export(&doc, &p, &edit.records, &edit.payloads);
+            assert!(report.was_applied("channel_added") && report.loss.entries.is_empty(), "{depth}: {report:?}");
+            let (doc2, q) = proposal(&out);
+            assert_eq!(doc2.header.channels, 4);
+            assert_eq!(q.raster_records.channels.len(), 1);
+            assert_eq!(kept(&q.raster_records.channels[0]), kept(&edit.records.channels[0]), "{depth}");
+            assert_eq!(doc2.resources.alpha_names_pascal(4).unwrap().unwrap(), vec![b"First".to_vec()]);
+            assert_eq!(doc2.resources.alpha_names_unicode(4, Limits::default().max_name_units).unwrap().unwrap(), ["First"]);
+            assert_eq!(doc2.resources.display_info(4).unwrap().unwrap().1.len(), 1);
+            assert_eq!(doc2.resources.alpha_identifiers(4).unwrap(), None);
+            assert!(!codes(&q).iter().any(|(_, c)| c.starts_with("channel_")), "{depth}: {:?}", codes(&q));
         }
     });
 }
