@@ -130,7 +130,7 @@ fn fixture() -> Fixture {
 }
 
 fn mark(n: &str, at: u64, topics: &[&str]) -> StudioIndexMark {
-    StudioIndexMark { mark_id: n.into(), story_id: id("STXT", 1), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None }
+    StudioIndexMark { mark_id: n.into(), story_id: id("STXT", 1), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None, page_range_scope: None }
 }
 fn xref(n: &str, at: u64, topic: &str, kind: IndexXrefKind, target: &[&str]) -> StudioIndexMark {
     let mut m = mark(n, at, &[topic]);
@@ -554,6 +554,13 @@ fn index_options_lift_from_folio_matches_generate_index() {
         between_page_numbers_separator: ", ".into(),
         before_cross_reference_separator: ". ".into(),
         entry_end_separator: String::new(),
+        replace_existing_index: None,
+        include_book_documents: None,
+        include_hidden_entries: None,
+        page_number_style: None,
+        cross_reference_style: None,
+        cross_reference_topic_style: None,
+        section_header_set: None,
     };
     let lifted = IndexOptions::from_folio(&folio).unwrap();
     assert_eq!((lifted.level_1_style.clone(), lifted.level_3_style.clone()), (Some(para(21)), None));

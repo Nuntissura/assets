@@ -518,8 +518,8 @@ fn sections_and_toc_export_page_labels() {
     let a = StudioSection { section_id: "a".into(), name: "Front".into(), page_start: "b1".into(), continue_numbering: true, page_number_start: None, page_number_style: StudioNumberStyle::LowerRoman, include_section_prefix: false, section_prefix: None, marker: None };
     let pages = number_pages(doc, &[a.clone(), b.clone()]).unwrap();
     assert_eq!(pages.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["i", "S5", "S6"]);
-    let entry = |s: u32, level: u32| StudioTocEntry { paragraph_style: stys(s), format_style: None, level, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false };
-    let toc = StudioTocStyle { toc_id: "toc".into(), name: "Contents".into(), title: "Contents".into(), title_style: None, include_overset: false, entries: vec![entry(1, 1), entry(2, 2)] };
+    let entry = |s: u32, level: u32| StudioTocEntry { paragraph_style: stys(s), format_style: None, level, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false, page_number_style: None, separator_style: None };
+    let toc = StudioTocStyle { toc_id: "toc".into(), name: "Contents".into(), title: "Contents".into(), title_style: None, include_overset: false, entries: vec![entry(1, 1), entry(2, 2)], include_book_documents: None, include_hidden: None, run_in: None, create_bookmarks: None, make_anchor: None, remove_forced_line_break: None, numbered_paragraphs: None, set_story_direction: None, default_styled: false };
     let generated = generate_toc(doc, &toc, &[TocSource { story: &body_story, text: body, placement: Some(&body_place) }], &pages, &id("STXT", 9), TocLimits::default(), &cancel).unwrap();
     assert_eq!(generated.text, "Contents\nAlpha i\nBeta S5\nGamma S6");
     let ranges: Vec<(u64, u64, Option<String>)> = generated.paragraphs.iter().map(|p| (p.start, p.end, None)).collect();
@@ -660,7 +660,7 @@ fn footnotes_and_index_export() {
     };
     // Index from marks on the body story.
     let pages = number_pages(doc, &[]).unwrap();
-    let mark = |m: &str, at: u64, topics: &[&str]| StudioIndexMark { mark_id: m.into(), story_id: id("STXT", 7), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None };
+    let mark = |m: &str, at: u64, topics: &[&str]| StudioIndexMark { mark_id: m.into(), story_id: id("STXT", 7), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None, page_range_scope: None };
     let index_options = StudioIndexOptions {
         title: "Index".into(),
         title_style: None,
@@ -675,6 +675,13 @@ fn footnotes_and_index_export() {
         between_page_numbers_separator: ", ".into(),
         before_cross_reference_separator: ". ".into(),
         entry_end_separator: String::new(),
+        replace_existing_index: None,
+        include_book_documents: None,
+        include_hidden_entries: None,
+        page_number_style: None,
+        cross_reference_style: None,
+        cross_reference_topic_style: None,
+        section_header_set: None,
     };
     let index = hsk_studio_interop_layout::layout::generate_index(
         doc,
@@ -855,7 +862,7 @@ fn long_document_archival_export() {
     let placed = [hsk_studio_interop_layout::layout::place_graphic(doc, &graphic).unwrap()];
     // Index.
     let pages = number_pages(doc, &[]).unwrap();
-    let mark = |m: &str, at: u64, topics: &[&str]| StudioIndexMark { mark_id: m.into(), story_id: id("STXT", 7), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None };
+    let mark = |m: &str, at: u64, topics: &[&str]| StudioIndexMark { mark_id: m.into(), story_id: id("STXT", 7), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None, page_range_scope: None };
     let index_options = StudioIndexOptions {
         title: "Index".into(),
         title_style: None,
@@ -870,6 +877,13 @@ fn long_document_archival_export() {
         between_page_numbers_separator: ", ".into(),
         before_cross_reference_separator: ". ".into(),
         entry_end_separator: String::new(),
+        replace_existing_index: None,
+        include_book_documents: None,
+        include_hidden_entries: None,
+        page_number_style: None,
+        cross_reference_style: None,
+        cross_reference_topic_style: None,
+        section_header_set: None,
     };
     let index = hsk_studio_interop_layout::layout::generate_index(
         doc,
@@ -966,8 +980,8 @@ fn page_labels_and_outline_from_sections_and_toc() {
     };
     let sections = [section("a", "b1", true, None, StudioNumberStyle::LowerRoman, None), section("b", "b2", false, Some(5), StudioNumberStyle::Arabic, Some("S"))];
     let pages = number_pages(doc, &sections).unwrap();
-    let entry = |s: u32, level: u32| StudioTocEntry { paragraph_style: stys(s), format_style: None, level, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false };
-    let toc = StudioTocStyle { toc_id: "toc".into(), name: "Contents".into(), title: "Contents".into(), title_style: None, include_overset: false, entries: vec![entry(1, 1), entry(2, 2)] };
+    let entry = |s: u32, level: u32| StudioTocEntry { paragraph_style: stys(s), format_style: None, level, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false, page_number_style: None, separator_style: None };
+    let toc = StudioTocStyle { toc_id: "toc".into(), name: "Contents".into(), title: "Contents".into(), title_style: None, include_overset: false, entries: vec![entry(1, 1), entry(2, 2)], include_book_documents: None, include_hidden: None, run_in: None, create_bookmarks: None, make_anchor: None, remove_forced_line_break: None, numbered_paragraphs: None, set_story_direction: None, default_styled: false };
     let generated = generate_toc(doc, &toc, &[TocSource { story: &body_story, text: body, placement: Some(&body_place) }], &pages, &id("STXT", 9), TocLimits::default(), &cancel).unwrap();
     assert_eq!(generated.entries.iter().map(|e| e.baseline_y).collect::<Vec<_>>(), [Some(26.0); 3]);
     let labels = hsk_studio_interop_layout::page_labels_from_sections(&sections, &pages);

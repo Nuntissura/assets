@@ -709,6 +709,8 @@ fn toc_of(imp: &mut Importer<'_>, n: Node) -> Option<StudioTocStyle> {
             page_number_position: el_attr(e, "PageNumberPosition").and_then(|v| from(&POSITIONS, v)).unwrap_or_default(),
             separator: special_in(el_attr(e, "Separator").unwrap_or("^t")),
             sort_alphabet: el_bool(e, "SortAlphabet").unwrap_or(false),
+            page_number_style: None,
+            separator_style: None,
         });
     }
     let t = StudioTocStyle {
@@ -718,6 +720,15 @@ fn toc_of(imp: &mut Importer<'_>, n: Node) -> Option<StudioTocStyle> {
         title_style: el_attr(n, "TitleStyle").and_then(|s| imp.style(true, s)),
         include_overset: el_bool(n, "IncludeOverset").unwrap_or(false),
         entries,
+        include_book_documents: None,
+        include_hidden: None,
+        run_in: None,
+        create_bookmarks: None,
+        make_anchor: None,
+        remove_forced_line_break: None,
+        numbered_paragraphs: None,
+        set_story_direction: None,
+        default_styled: false,
     };
     match check_toc_style(&t) {
         Ok(()) => Some(t),

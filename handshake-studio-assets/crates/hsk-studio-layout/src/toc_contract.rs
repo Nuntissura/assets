@@ -55,7 +55,7 @@ use hsk_studio_accord::{CancellationToken, CommandContext, DomainId};
 use hsk_studio_folio::{
     MAX_TOC_ENTRIES, MAX_TOC_LEVEL, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioBook,
     StudioDocument, StudioTextAnchor, StudioTextStory, StudioTocStyle, StudioTypeStyleRecords, TextStorySchema,
-    TocPageNumberPosition, TypeStyleScope,
+    TocPageNumberPosition, TypeStyleScope, is_captured_token,
 };
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};
 use std::collections::{BTreeMap, BTreeSet};
@@ -64,8 +64,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const RUN_IN_JOINER: &str = "; ";
 /// Bytes of a TOC style name (a Studio bound for hostile input; the spec declares none).
 pub const MAX_TOC_NAME_BYTES: usize = 256;
-/// Bytes of a captured enumeration token (a Studio bound for hostile input).
-pub const MAX_CAPTURED_TOKEN_BYTES: usize = 64;
+/// Bytes of a captured enumeration token (Folio's bound).
+pub use hsk_studio_folio::MAX_CAPTURED_TOKEN_BYTES;
 /// TOC styles one update-all refreshes (a Studio bound for hostile input).
 pub const MAX_TOCS_PER_UPDATE: usize = 1024;
 
@@ -120,36 +120,18 @@ pub(crate) fn style_scope_ok(
     }
 }
 
-/// STU-LAY-148 `set_story_direction`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TocStoryDirection {
-    Horizontal,
-    Vertical,
-}
-impl TocStoryDirection {
-    pub const ALL: [Self; 2] = [Self::Horizontal, Self::Vertical];
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::Horizontal => "direction.horizontal",
-            Self::Vertical => "direction.vertical",
-        }
-    }
-    /// Exact member code only.
-    pub fn from_code(code: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|m| m.code() == code)
-    }
-}
+/// STU-LAY-148 `set_story_direction`: Folio's persisted enumeration (one type for the record and
+/// the contract, lane SMB-ID-TOC-PERSIST-1).
+pub use hsk_studio_folio::TocStoryDirection;
 
 /// A captured member of an enumeration whose member list the spec does not declare
-/// (`numbered_paragraphs`): ASCII lower-case letters, digits, `.` and `_`, 1..=64 bytes.
+/// (`numbered_paragraphs`): Folio's rule [`hsk_studio_folio::is_captured_token`] (ASCII lower-case
+/// letters, digits, `.` and `_`, 1..=64 bytes).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapturedToken(String);
 impl CapturedToken {
     pub fn parse(value: &str) -> Option<Self> {
-        let ok = !value.is_empty()
-            && value.len() <= MAX_CAPTURED_TOKEN_BYTES
-            && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_');
-        ok.then(|| Self(value.to_owned()))
+        is_captured_token(value).then(|| Self(value.to_owned()))
     }
     pub fn as_str(&self) -> &str {
         &self.0

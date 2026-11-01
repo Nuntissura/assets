@@ -36,8 +36,14 @@
 //! Tables of contents (STU-LAY-044, STU-LAY-148): style-driven TOC styles with a title, a title
 //! style, the include-overset flag and ordered entries mapping a source paragraph style to a level,
 //! a format style, a page-number position and a separator; at least one entry, a paragraph style
-//! mapped at most once. Multiple TOC styles per document are carried. Declared gaps: run-in,
-//! bookmarks, anchors, book documents, hidden-layer text, numbered-paragraph modes.
+//! mapped at most once. Multiple TOC styles per document are carried. Lane SMB-ID-TOC-PERSIST-1
+//! adds the rest of the STU-LAY-148 style table (`include_book_documents`, `include_hidden`,
+//! `run_in`, `create_bookmarks`, `make_anchor`, `remove_forced_line_break`, `numbered_paragraphs`,
+//! `set_story_direction`), the entry table's `page_number_style` and `separator_style`, and the
+//! Studio `default_styled` flag (the one TOC style allowed without entries). The spec declares no
+//! default for any of them, so an absent member is UNKNOWN (`None`), never a filled-in value; a
+//! record written before these members existed decodes with every one unknown and re-encodes
+//! byte-identically. `numbered_paragraphs` lists no members in the spec: it is a captured token.
 //!
 //! Footnotes (STU-LAY-046, STU-LAY-150): a footnote names its host story and the host byte its
 //! reference sits at, and the story holding the note text (never the host, never the host of
@@ -52,8 +58,14 @@
 //! levels (the captured maximum; Studio declares four), optional per-level sort-by text and an
 //! optional cross reference (eight captured kinds, custom text for the custom kinds). Index options
 //! carry the title and styles, nested or run-in format, section headings (with empty sections) and
-//! the six independent separators. Declared gaps: page-range scopes other than the current page,
-//! capitalisation commands, book documents, hidden entries.
+//! the six independent separators. Lane SMB-ID-TOC-PERSIST-1 adds the rest of the STU-LAY-149
+//! table (`replace_existing_index`, `include_book_documents`, `include_hidden_entries` as unknown
+//! when absent; `page_number_style`, `cross_reference_style`, `cross_reference_topic_style`), a
+//! per-mark page-range scope (members from MT-174; absent = the current page, the only scope a mark
+//! written before the member could mean), section header sets (STU-LAY-149: a distinct object with
+//! a name, a language id and a group list; pluggable, any alphabet) and the index options' reference
+//! to one by name (a Studio member: the spec table names no header-set field; absent = the
+//! built-in Latin set layout applies). Capitalisation is a command argument, not a stored member.
 //!
 //! Text variables and running text (STU-LAY-015, STU-LAY-016, STU-LAY-048; lane SMB-LAYOUT-LONGDOC-2):
 //! the twelve captured variable kinds are carried (`StudioVariableKind`); running texts name the
@@ -508,9 +520,49 @@ pub struct StudioTocEntry {
     pub separator: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub sort_alphabet: bool,
+    /// `STYS` character style of the page number (STU-LAY-148 `page_number_style`); absent = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_number_style: Option<String>,
+    /// `STYS` character style of the separator (STU-LAY-148 `separator_style`); absent = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub separator_style: Option<String>,
 }
 
-/// One TOC style (STU-LAY-148).
+/// STU-LAY-148 `set_story_direction` (`direction.horizontal`, `direction.vertical`); the wire form
+/// drops the `direction.` namespace like Folio's other captured enumerations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TocStoryDirection {
+    Horizontal,
+    Vertical,
+}
+impl TocStoryDirection {
+    pub const ALL: [Self; 2] = [Self::Horizontal, Self::Vertical];
+    /// The captured member code.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Horizontal => "direction.horizontal",
+            Self::Vertical => "direction.vertical",
+        }
+    }
+    /// Exact member code only.
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.code() == code)
+    }
+}
+
+/// Bytes of a captured enumeration token (a Studio bound for hostile input).
+pub const MAX_CAPTURED_TOKEN_BYTES: usize = 64;
+/// A captured member of an enumeration whose members the spec does not list
+/// (`numbered_paragraphs`, unnamed header types): ASCII lower-case letters, digits, `.` and `_`,
+/// 1..=[`MAX_CAPTURED_TOKEN_BYTES`] bytes.
+pub fn is_captured_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_CAPTURED_TOKEN_BYTES
+        && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_')
+}
+
+/// One TOC style (STU-LAY-148). The `Option<bool>` members are UNKNOWN when absent (module docs).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StudioTocStyle {
@@ -525,6 +577,31 @@ pub struct StudioTocStyle {
     #[serde(default, skip_serializing_if = "is_false")]
     pub include_overset: bool,
     pub entries: Vec<StudioTocEntry>,
+    /// Valid when the document is part of a book.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_book_documents: Option<bool>,
+    /// Include entries from text on hidden layers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_hidden: Option<bool>,
+    /// Lowest-level entries on the same line as the previous entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_in: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_bookmarks: Option<bool>,
+    /// A text anchor in the SOURCE paragraph (the live hyperlink target).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub make_anchor: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_forced_line_break: Option<bool>,
+    /// A captured token ([`is_captured_token`]); the spec lists no members.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numbered_paragraphs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_story_direction: Option<TocStoryDirection>,
+    /// Studio flag: the default-styled TOC, the one style allowed without entries (STU-LAY-148).
+    /// A record written before the flag existed always had entries, so absent = false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub default_styled: bool,
 }
 
 /// Deepest TOC level.
@@ -591,14 +668,18 @@ pub fn check_sections(sections: &[StudioSection], d: &StudioDocument) -> std::re
     Ok(())
 }
 
-/// The TOC-style rules of STU-LAY-148: at least one entry, a paragraph style mapped once, levels
-/// 1..=MAX_TOC_LEVEL, separators of at most 100 characters, `STYS` references.
+/// The TOC-style rules of STU-LAY-148: at least one entry (unless `default_styled`), a paragraph
+/// style mapped once, levels 1..=MAX_TOC_LEVEL, separators of at most 100 characters, `STYS`
+/// references, a captured `numbered_paragraphs` token.
 pub fn check_toc_style(t: &StudioTocStyle) -> std::result::Result<(), &'static str> {
     if !label(&t.toc_id) {
         return Err("toc_id");
     }
-    if t.entries.is_empty() {
+    if t.entries.is_empty() && !t.default_styled {
         return Err("toc_no_entries");
+    }
+    if t.numbered_paragraphs.as_deref().is_some_and(|v| !is_captured_token(v)) {
+        return Err("toc_numbered_paragraphs");
     }
     if t.entries.len() > MAX_TOC_ENTRIES {
         return Err("toc_too_many_entries");
@@ -612,7 +693,8 @@ pub fn check_toc_style(t: &StudioTocStyle) -> std::result::Result<(), &'static s
     }
     let mut mapped = BTreeSet::new();
     for e in &t.entries {
-        if !style(&e.paragraph_style) || e.format_style.as_deref().is_some_and(|s| !style(s)) {
+        let optional = [&e.format_style, &e.page_number_style, &e.separator_style];
+        if !style(&e.paragraph_style) || optional.iter().any(|s| s.as_deref().is_some_and(|s| !style(s))) {
             return Err("toc_style_ref");
         }
         if !mapped.insert(e.paragraph_style.as_str()) {
@@ -723,6 +805,26 @@ pub struct StudioIndexXref {
     pub custom_text: Option<String>,
 }
 
+/// A per-reference page-range scope of an index mark (STU-LAY-045; the members are MT-174's,
+/// STU-LAY-149 lists none).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "scope_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioPageRangeScope {
+    CurrentPage,
+    ToNextStyleChange,
+    /// To the next use of this `STYS` paragraph style.
+    ToNextUseOfStyle {
+        style: String,
+    },
+    ToEndOfStory,
+    ToEndOfDocument,
+    ToEndOfSection,
+    /// The mark's paragraph and the following ones, `count` in all (at least 1).
+    ForNextParagraphs {
+        count: u32,
+    },
+}
+
 /// One index mark.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -741,6 +843,9 @@ pub struct StudioIndexMark {
     /// A cross reference instead of (or beside) the page number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xref: Option<StudioIndexXref>,
+    /// The page range this reference covers; absent = the current page (module docs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_range_scope: Option<StudioPageRangeScope>,
 }
 
 /// STU-LAY-149 `index_format`.
@@ -777,6 +882,69 @@ pub struct StudioIndexOptions {
     pub between_page_numbers_separator: String,
     pub before_cross_reference_separator: String,
     pub entry_end_separator: String,
+    /// Replaces CONTENT only; does not move the index or change its other properties. Absent =
+    /// unknown (no spec default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace_existing_index: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_book_documents: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_hidden_entries: Option<bool>,
+    /// `STYS` character styles; absent = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_number_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_reference_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_reference_topic_style: Option<String>,
+    /// Studio member: the name of a [`StudioSectionHeaderSet`] of the same record set; absent = the
+    /// built-in Latin set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_header_set: Option<String>,
+}
+
+/// One section-heading group of a header set.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioHeaderGroup {
+    pub heading: String,
+    /// Lower-case initials of the group; empty = the catch-all group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initials: Vec<char>,
+}
+
+/// A section header set (STU-LAY-149): name, language id, group list and the header type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioSectionHeaderSet {
+    /// Unique in the record set; the index options name a set by it.
+    pub name: String,
+    /// ASCII letters, digits, `-` and `_` (e.g. `en`, `ru`, `ja`).
+    pub language_id: String,
+    /// The header-type code: a captured token ([`is_captured_token`]). STU-LAY-149 declares 27
+    /// members and names 13 families; layout names those, the rest stay captured tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_type: Option<String>,
+    pub groups: Vec<StudioHeaderGroup>,
+}
+
+/// Groups of one section-header set (a Studio bound for hostile input).
+pub const MAX_HEADER_GROUPS: usize = 512;
+/// Initials of one header group (a Studio bound for hostile input).
+pub const MAX_HEADER_INITIALS: usize = 4096;
+/// Bytes of a header-set name, a group heading or a language id (Studio bounds).
+pub const MAX_HEADER_TEXT_BYTES: usize = 256;
+/// Section header sets per record set (a Studio bound for hostile input).
+pub const MAX_SECTION_HEADER_SETS: usize = 1024;
+
+/// The header-set rules (shared with layout): non-empty name and headings of at most
+/// [`MAX_HEADER_TEXT_BYTES`] bytes, a key-like language id, a captured header-type token, 1..=
+/// [`MAX_HEADER_GROUPS`] groups of at most [`MAX_HEADER_INITIALS`] lower-case initials, no initial
+/// in two groups. Codes: `header_set_name`, `header_set_language_id`, `header_set_type`,
+/// `header_set_groups`, `header_set_heading`, `header_set_initials_budget`, `header_set_initial`,
+/// `header_set_initial_duplicate`.
+pub fn check_section_header_set(h: &StudioSectionHeaderSet) -> std::result::Result<(), &'static str> {
+    todo!("SMB-ID-TOC-PERSIST-1 item 1: header-set rules ({})", h.name.len())
 }
 
 /// Index topic levels (the captured model declares exactly four).
@@ -880,6 +1048,13 @@ pub fn check_index_marks(marks: &[StudioIndexMark]) -> std::result::Result<(), &
                 return Err("index_xref_custom_text");
             }
         }
+        match &m.page_range_scope {
+            Some(StudioPageRangeScope::ForNextParagraphs { count: 0 }) => return Err("index_page_range_scope"),
+            Some(StudioPageRangeScope::ToNextUseOfStyle { style }) if id(style, "STYS", "index").is_err() => {
+                return Err("index_page_range_scope");
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -905,13 +1080,25 @@ pub fn check_index_options(o: &StudioIndexOptions) -> std::result::Result<(), &'
         return Err("index_level_styles");
     }
     let style_ok = |s: &Option<String>| s.as_deref().is_none_or(|v| id(v, "STYS", "index").is_ok());
-    if !style_ok(&o.title_style) || !style_ok(&o.section_heading_style) || !o.level_styles.iter().all(style_ok) {
+    let characters = [&o.page_number_style, &o.cross_reference_style, &o.cross_reference_topic_style];
+    if !style_ok(&o.title_style)
+        || !style_ok(&o.section_heading_style)
+        || !o.level_styles.iter().all(style_ok)
+        || !characters.into_iter().all(style_ok)
+    {
         return Err("index_style_ref");
     }
     if o.title.len() > 1024 || o.title.chars().any(char::is_control) {
         return Err("index_title");
     }
+    if o.section_header_set.as_deref().is_some_and(|n| !header_text(n)) {
+        return Err("index_header_set_ref");
+    }
     Ok(())
+}
+
+fn header_text(s: &str) -> bool {
+    !s.trim().is_empty() && s.len() <= MAX_HEADER_TEXT_BYTES && !s.chars().any(char::is_control)
 }
 
 /// STU-LAY-016 change-case enumeration.
@@ -1273,6 +1460,9 @@ pub struct StudioLongDocRecords {
     pub sidenotes: Vec<StudioEndnote>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidenote_options: Option<StudioSidenoteOptions>,
+    /// Section header sets the index options may name (STU-LAY-149).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_header_sets: Vec<StudioSectionHeaderSet>,
 }
 impl StudioLongDocRecords {
     /// An empty set for `document_id`.
@@ -1294,7 +1484,12 @@ impl StudioLongDocRecords {
             endnote_options: None,
             sidenotes: Vec::new(),
             sidenote_options: None,
+            section_header_sets: Vec::new(),
         }
+    }
+    /// The section header set with this name.
+    pub fn section_header_set(&self, name: &str) -> Option<&StudioSectionHeaderSet> {
+        self.section_header_sets.iter().find(|h| h.name == name)
     }
     /// The graphic frame of this layer.
     pub fn graphic_frame(&self, layer_id: &str) -> Option<&StudioGraphicFrame> {
@@ -1603,11 +1798,30 @@ pub fn validate_longdoc_records(
         };
         err(code, format!("index_marks/{why}"))
     })?;
+    if r.section_header_sets.len() > MAX_SECTION_HEADER_SETS {
+        return Err(err(Code::BudgetExceeded, "section_header_sets"));
+    }
+    cx.nodes(r.section_header_sets.len(), "section_header_sets")?;
+    let mut header_names = BTreeSet::new();
+    for h in &r.section_header_sets {
+        cx.tick()?;
+        cx.nodes(h.groups.len(), "section_header_sets")?;
+        if !header_names.insert(h.name.as_str()) {
+            return Err(err(Code::DuplicateIdentity, "section_header_sets/header_set_duplicate"));
+        }
+        check_section_header_set(h).map_err(|why| {
+            let code = if why == "header_set_initials_budget" { Code::BudgetExceeded } else { Code::InvalidField };
+            err(code, format!("section_header_sets/{why}"))
+        })?;
+    }
     if let Some(o) = &r.index_options {
         check_index_options(o).map_err(|why| {
             let code = if why == "index_style_ref" { Code::InvalidId } else { Code::InvalidField };
             err(code, format!("index_options/{why}"))
         })?;
+        if o.section_header_set.as_deref().is_some_and(|n| !header_names.contains(n)) {
+            return Err(err(Code::DanglingReference, "index_options/index_header_set_missing"));
+        }
     }
     cx.nodes(r.text_variables.len(), "text_variables")?;
     cx.nodes(r.running_texts.len(), "running_texts")?;

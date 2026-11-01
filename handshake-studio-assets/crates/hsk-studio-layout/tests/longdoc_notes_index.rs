@@ -260,7 +260,7 @@ fn index_from_marks_nested_run_in_and_refusals() {
         frames: (0..5).map(|k| FramePlacement { frame_id: "f".into(), frame_index: 0, spread: k, page: 0, origin_x_pt: 0.0, origin_y_pt: 0.0, lines: vec![line(k as u64 * 10)] }).collect(),
         overset: Some(SourceSpan { start: 50, end: 70 }),
     };
-    let mark = |n: u32, at: u64, topics: &[&str]| StudioIndexMark { mark_id: format!("m{n}"), story_id: id("STXT", 1), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None };
+    let mark = |n: u32, at: u64, topics: &[&str]| StudioIndexMark { mark_id: format!("m{n}"), story_id: id("STXT", 1), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None, page_range_scope: None };
     let mut banana = mark(5, 12, &["banana"]);
     banana.sort_by = vec!["Banana".into()];
     let mut cherry = mark(6, 60, &["Cherry"]);
@@ -280,6 +280,13 @@ fn index_from_marks_nested_run_in_and_refusals() {
         between_page_numbers_separator: ", ".into(),
         before_cross_reference_separator: ". ".into(),
         entry_end_separator: String::new(),
+        replace_existing_index: None,
+        include_book_documents: None,
+        include_hidden_entries: None,
+        page_number_style: None,
+        cross_reference_style: None,
+        cross_reference_topic_style: None,
+        section_header_set: None,
     };
     let sources = [TocSource { story: &st, text: &text, placement: Some(&placement) }];
     let cancel = CancellationToken::default();

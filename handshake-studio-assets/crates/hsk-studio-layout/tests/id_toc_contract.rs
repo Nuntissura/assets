@@ -488,7 +488,16 @@ fn toc_record_fields_enumerations_and_folio_lift() {
         title: "Contents".into(),
         title_style: Some(stys(9)),
         include_overset: false,
-        entries: vec![StudioTocEntry { paragraph_style: stys(1), format_style: Some(stys(11)), level: 1, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false }],
+        entries: vec![StudioTocEntry { paragraph_style: stys(1), format_style: Some(stys(11)), level: 1, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false, page_number_style: None, separator_style: None }],
+        include_book_documents: None,
+        include_hidden: None,
+        run_in: None,
+        create_bookmarks: None,
+        make_anchor: None,
+        remove_forced_line_break: None,
+        numbered_paragraphs: None,
+        set_story_direction: None,
+        default_styled: false,
     };
     let lifted = TocStyle::from_folio(&folio).unwrap();
     assert!(lifted.include_hidden && lifted.remove_forced_line_break && !lifted.make_anchor && !lifted.run_in);

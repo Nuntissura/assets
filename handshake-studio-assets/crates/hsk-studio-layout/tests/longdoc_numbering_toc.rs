@@ -187,6 +187,8 @@ fn toc_from_paragraph_styles_with_page_labels_and_loops() {
         page_number_position: TocPageNumberPosition::After,
         separator: " ".into(),
         sort_alphabet: true,
+        page_number_style: None,
+        separator_style: None,
     };
     let toc = StudioTocStyle {
         toc_id: "toc".into(),
@@ -195,6 +197,15 @@ fn toc_from_paragraph_styles_with_page_labels_and_loops() {
         title_style: Some(stys(9)),
         include_overset: false,
         entries: vec![entry(1, 1, 11), entry(2, 2, 12)],
+        include_book_documents: None,
+        include_hidden: None,
+        run_in: None,
+        create_bookmarks: None,
+        make_anchor: None,
+        remove_forced_line_break: None,
+        numbered_paragraphs: None,
+        set_story_direction: None,
+        default_styled: false,
     };
     let source = [TocSource { story: &story, text, placement: Some(&placement) }];
     let cancel = CancellationToken::default();

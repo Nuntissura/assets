@@ -61,12 +61,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Studio's declared maximum number of index topic levels (STU-LAY-149: at least four, declared).
 pub const STUDIO_MAX_INDEX_LEVELS: usize = MAX_INDEX_LEVELS;
-/// Groups of one section-header set (a Studio bound for hostile input).
-pub const MAX_HEADER_GROUPS: usize = 512;
-/// Initials of one header group (a Studio bound for hostile input).
-pub const MAX_HEADER_INITIALS: usize = 4096;
-/// Bytes of a header-set name, a group heading or a language id (Studio bounds).
-pub const MAX_HEADER_TEXT_BYTES: usize = 256;
+/// Header-set bounds: Folio's (one rule for the record and the contract).
+pub use hsk_studio_folio::{MAX_HEADER_GROUPS, MAX_HEADER_INITIALS, MAX_HEADER_TEXT_BYTES};
 /// Bytes of one topic (as Folio's mark rule).
 pub const MAX_TOPIC_BYTES: usize = 1024;
 /// Header types the capture declares (STU-LAY-149); only [`HeaderType::NAMED`] are named by the spec.
@@ -978,6 +974,7 @@ pub fn capture_index_mark(
         topics: vec![topic],
         sort_by: Vec::new(),
         xref: None,
+        page_range_scope: None,
     };
     if !key_ok(mark_id) || !path_ok(&mark.topics) {
         return Err(bad());

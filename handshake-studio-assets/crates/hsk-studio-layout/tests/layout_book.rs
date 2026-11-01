@@ -163,7 +163,16 @@ fn combined_toc_hostile_books_and_typed_book_errors() {
         title: "Contents".into(),
         title_style: None,
         include_overset: false,
-        entries: vec![StudioTocEntry { paragraph_style: head.clone(), format_style: None, level: 1, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false }],
+        entries: vec![StudioTocEntry { paragraph_style: head.clone(), format_style: None, level: 1, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false, page_number_style: None, separator_style: None }],
+        include_book_documents: None,
+        include_hidden: None,
+        run_in: None,
+        create_bookmarks: None,
+        make_anchor: None,
+        remove_forced_line_break: None,
+        numbered_paragraphs: None,
+        set_story_direction: None,
+        default_styled: false,
     };
     let sources: Vec<TocSource<'_>> = stories
         .iter()
