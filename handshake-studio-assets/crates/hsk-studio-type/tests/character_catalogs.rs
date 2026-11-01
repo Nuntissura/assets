@@ -13,8 +13,8 @@ fn hex(bytes: &[u8]) -> String {
 fn labels(catalog: CharacterCatalog) -> Vec<&'static str> {
     catalog.members().map(|m| m.label).collect()
 }
-fn scalars(catalog: CharacterCatalog) -> Vec<Option<u32>> {
-    catalog.members().map(|m| m.scalar().map(u32::from)).collect()
+fn scalars(catalog: CharacterCatalog) -> Vec<u32> {
+    catalog.members().map(|m| u32::from(m.scalar())).collect()
 }
 fn get(id: &str) -> &'static CatalogMember {
     catalog_member(id).unwrap_or_else(|| panic!("{id}"))
@@ -39,7 +39,7 @@ fn inter_glyphs(fonts: &Fonts, text: &str) -> Vec<u32> {
 }
 
 #[test]
-fn mt_31005_four_catalogs_with_stable_ids_and_pending_sentinels() {
+fn mt_31005_four_catalogs_with_stable_ids_and_assigned_stream_forms() {
     let names: Vec<_> = CharacterCatalog::ALL.iter().map(|c| c.label()).collect();
     assert_eq!(names, ["Symbols", "Markers", "Break characters", "White-space characters"]);
     let mut ids: Vec<_> = CATALOG.iter().map(|m| m.id).collect();
@@ -51,29 +51,29 @@ fn mt_31005_four_catalogs_with_stable_ids_and_pending_sentinels() {
         assert!(m.id.starts_with(&format!("{}.", m.catalog.id())), "{}", m.id);
         assert!(m.id.bytes().all(|b| b.is_ascii_lowercase() || b == b'.' || b == b'_'), "{}", m.id);
         assert_eq!(m.tooltip(), m.label);
-        // A member without a Unicode character has no sentinel assigned here (spec-owner item).
-        assert_eq!(m.scalar().is_none(), m.stream_form == StreamForm::Pending);
+        // SD-29: a member is a sentinel exactly when its stream character is in U+FDD0..U+FDDD.
+        assert_eq!(m.is_sentinel(), ('\u{FDD0}'..='\u{FDDD}').contains(&m.scalar()), "{}", m.id);
     }
-    let pending: Vec<_> = CATALOG.iter().filter(|m| m.scalar().is_none()).map(|m| m.id).collect();
+    let sentinels: Vec<_> = CATALOG.iter().filter(|m| m.is_sentinel()).map(|m| m.id).collect();
     assert_eq!(
-        pending,
+        sentinels,
         [
             "markers.current_page_number", "markers.next_page_number", "markers.previous_page_number",
             "markers.section_marker", "markers.footnote_reference", "markers.endnote_reference",
-            "markers.anchored_object", "markers.cross_reference", "markers.index", "breaks.column",
+            "markers.cross_reference", "markers.index", "breaks.column",
             "breaks.frame", "breaks.page", "breaks.odd_page", "breaks.even_page", "white_space.flush",
         ]
     );
-    // Headless insertion: real characters insert; pending members, unknown ids and bad offsets
+    // Headless insertion: every member inserts its stream character; unknown ids and bad offsets
     // refuse and the borrowed text stays as it was.
     let text = "a\u{e9}b";
     assert_eq!(insert_catalog_member(text, 1, "symbols.em_dash").unwrap(), "a\u{2014}\u{e9}b");
     assert_eq!(insert_catalog_member(text, 2, "symbols.em_dash"), Err(CatalogError::InvalidOffset));
     assert_eq!(insert_catalog_member(text, 99, "symbols.em_dash"), Err(CatalogError::InvalidOffset));
-    assert_eq!(insert_catalog_member(text, 0, "markers.index"), Err(CatalogError::StreamFormPending));
+    assert_eq!(insert_catalog_member(text, 0, "markers.index").unwrap(), "\u{FDD7}a\u{e9}b");
     assert_eq!(insert_catalog_member(text, 0, "symbols.nope"), Err(CatalogError::UnknownMember));
     assert_eq!(text, "a\u{e9}b");
-    assert_eq!(CatalogError::StreamFormPending.code(), "stream_form_pending");
+    assert_eq!(CatalogError::ReservedSentinel.code(), "reserved_stream_sentinel");
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn mt_31006_symbols_catalog_inserts_real_code_points() {
             0x2014, 0x2013, 0x00AD, 0x2011, 0x2026, 0x2022, 0x00A9, 0x00AE, 0x2122, 0x00A7, 0x00B6, 0x2018,
             0x2019, 0x201C, 0x201D, 0x00B0, 0x0024, 0x00A2, 0x00A3, 0x00A4, 0x00A5, 0x20AC,
         ];
-        assert_eq!(scalars(CharacterCatalog::Symbols), want.map(Some));
+        assert_eq!(scalars(CharacterCatalog::Symbols), want);
         // Discretionary and non-breaking hyphens keep distinct break behaviour.
         assert!(get("symbols.discretionary_hyphen").flags.break_opportunity);
         assert!(!get("symbols.non_breaking_hyphen").flags.break_opportunity);
@@ -119,7 +119,7 @@ fn mt_31006_symbols_catalog_inserts_real_code_points() {
 }
 
 #[test]
-fn mt_31007_markers_catalog_has_no_invented_sentinels() {
+fn mt_31007_markers_catalog_stores_assigned_stream_forms() {
     assert_eq!(
         labels(CharacterCatalog::Markers),
         [
@@ -128,10 +128,20 @@ fn mt_31007_markers_catalog_has_no_invented_sentinels() {
             "cross-reference marker", "index marker",
         ]
     );
+    // SD-29: eight sentinels U+FDD0..U+FDD7 in the spec's order around the anchored-object
+    // marker, which is U+FFFC (a real character, not a noncharacter).
+    let forms: Vec<_> = CharacterCatalog::Markers.members().map(|m| m.stream_form).collect();
+    let sentinel = |cp: u32| StreamForm::Sentinel(char::from_u32(cp).unwrap());
+    assert_eq!(
+        forms,
+        [
+            sentinel(0xFDD0), sentinel(0xFDD1), sentinel(0xFDD2), sentinel(0xFDD3), sentinel(0xFDD4),
+            sentinel(0xFDD5), StreamForm::Unicode('\u{FFFC}'), sentinel(0xFDD6), sentinel(0xFDD7),
+        ]
+    );
     for m in CharacterCatalog::Markers.members() {
-        assert_eq!(m.stream_form, StreamForm::Pending);
         assert_eq!(m.flags, CompositionFlags::default());
-        assert_eq!(insert_catalog_member("x", 0, m.id), Err(CatalogError::StreamFormPending));
+        assert_eq!(insert_catalog_member("x", 0, m.id).unwrap(), format!("{}x", m.scalar()));
     }
 }
 
@@ -155,8 +165,8 @@ fn mt_31008_break_characters_keep_distinct_targets() {
     );
     // LINE SEPARATOR and PARAGRAPH SEPARATOR, the conventions layout already reads (find/change
     // `\n` -> U+2028; TOC trims U+2029).
-    assert_eq!(get("breaks.forced_line").scalar(), Some('\u{2028}'));
-    assert_eq!(get("breaks.paragraph_return").scalar(), Some('\u{2029}'));
+    assert_eq!(get("breaks.forced_line").scalar(), '\u{2028}');
+    assert_eq!(get("breaks.paragraph_return").scalar(), '\u{2029}');
     assert!(CharacterCatalog::BreakCharacters.members().all(|m| m.flags.break_opportunity));
     assert!(CATALOG.iter().filter(|m| m.catalog != CharacterCatalog::BreakCharacters).all(|m| m.break_target.is_none()));
 }
@@ -175,8 +185,8 @@ fn mt_31009_white_space_members_and_composition_flags() {
         assert_eq!(
             scalars(CharacterCatalog::WhiteSpaceCharacters),
             [
-                Some(0x2003), Some(0x2002), Some(0x2004), Some(0x2005), Some(0x2006), Some(0x2009),
-                Some(0x200A), Some(0x2007), Some(0x2008), None, Some(0x202F), Some(0x00A0),
+                0x2003, 0x2002, 0x2004, 0x2005, 0x2006, 0x2009, 0x200A, 0x2007, 0x2008, 0xFDDD, 0x202F,
+                0x00A0,
             ]
         );
         let flush = get("white_space.flush").flags;
@@ -191,7 +201,7 @@ fn mt_31009_white_space_members_and_composition_flags() {
         // fontTools cmap glyph ids of Inter for the real space characters.
         let inter = [1689, 1688, 1690, 1691, 1692, 1695, 1696, 1693, 1694, 1684, 1683];
         let fonts = Fonts::load();
-        let real: Vec<_> = CharacterCatalog::WhiteSpaceCharacters.members().filter(|m| m.scalar().is_some()).collect();
+        let real: Vec<_> = CharacterCatalog::WhiteSpaceCharacters.members().filter(|m| !m.is_sentinel()).collect();
         assert_eq!(real.len(), inter.len());
         for (member, gid) in real.into_iter().zip(inter) {
             let text = insert_catalog_member("ab", 1, member.id).unwrap();

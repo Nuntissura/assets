@@ -29,13 +29,21 @@ pub struct HardcodedBidiData;
 #[cfg(all())]
 impl BidiDataSource for HardcodedBidiData {
     fn bidi_class(&self, c: char, ctx:&Context<'_>) -> ProviderResult<BidiClass> {
-        bsearch_range_value_table(c, bidi_class_table, ctx)
+        bidi_class(c, ctx)
     }
 }
 
 /// Find the `BidiClass` of a single char.
 #[cfg(all())]
+///
+/// Studio stream sentinels (STU-TYP-207, SD-29): the five break sentinels U+FDD8..U+FDDC end their
+/// paragraph exactly as U+2029 does, so they are class B here; the UCD table has no entry for
+/// these noncharacters. This is the single lookup every paragraph partition of the crate uses
+/// (`resolve`, the request validation and the separator split in `engine`).
 pub fn bidi_class(c: char, ctx:&Context<'_>) -> ProviderResult<BidiClass> {
+    if crate::catalog::is_break_sentinel(c) {
+        return Ok(B);
+    }
     bsearch_range_value_table(c, bidi_class_table, ctx)
 }
 
