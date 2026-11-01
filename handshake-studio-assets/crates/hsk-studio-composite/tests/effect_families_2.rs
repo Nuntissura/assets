@@ -736,3 +736,50 @@ fn colour_parameters_convert_from_their_profile_into_the_plan() {
         assert_eq!(refused(lowered_in(one(tint(json!(identity("SCPF", 3)))), 0, other_tag, Some(profiles.clone()))), param);
     });
 }
+
+// ---- Lane SMB-FOLIO-ANGLE-UNBOUNDED-1 (v02.228 SD-26): recovered ANGLE rows are unbounded ----
+
+#[test]
+fn glow_color_phase_past_the_old_junk_pair_reaches_the_engine_option_refusal() {
+    bounded_case("glow_color_phase_past_the_old_junk_pair_reaches_the_engine_option_refusal", || {
+        let glow = |phase: f64| {
+            one(json!({"effect_id":"g","filter_kind":"glow",
+                "values":{"glow_colors":constant(json!([2.0])),"color_phase":constant(json!([phase]))},
+                "colour_profiles":plan_refs(&["color_a", "color_b"])}))
+        };
+        // The recorded default lowers (A & B colours kept).
+        let SceneEffect::Glow(g) = lowered(glow(0.003906), 0).expect("default phase lowers").effects[0].effect.clone() else { panic!() };
+        assert!(g.colours.is_some());
+        // Every other phase, above the old hard pair (0.003906..0.496094) included, is a legal
+        // angle for Folio and reaches the engine's own typed option refusal (the engine maps no
+        // phase), never `effect_param_out_of_range`.
+        for phase in [0.5, 5.0, 360.0, 725.0, -360.0, -725.5] {
+            match lowered(glow(phase), 0) {
+                Err(TemporalError::Unsupported { layer_id, feature }) => {
+                    assert_eq!((layer_id, feature), (identity("SLYR", 2), COMPOSITION_EFFECT_OPTION), "phase {phase}");
+                }
+                other => panic!("phase {phase} not refused by the engine: {other:?}"),
+            }
+        }
+    });
+}
+
+#[test]
+fn directional_blur_direction_is_a_full_signed_angle_reduced_only_when_evaluated() {
+    bounded_case("directional_blur_direction_is_a_full_signed_angle_reduced_only_when_evaluated", || {
+        let lower = |dir: f64| {
+            lowered_one(json!({"effect_id":"d","filter_kind":"directional_blur","values":{
+                "direction":constant(json!([dir])),"blur_length":constant(json!([2.0]))}}))
+        };
+        // Lowering keeps the stored direction (angle = 90 - Direction): no wrap before evaluation.
+        assert_eq!(lower(725.0), SceneEffect::DirectionalBlur { angle_deg: -635.0, length_px: 2.0 });
+        assert_eq!(lower(-355.0), SceneEffect::DirectionalBlur { angle_deg: 445.0, length_px: 2.0 });
+        // Evaluation reduces modulo 360: a whole number of turns renders the same pixels bit for bit.
+        let at = |dir: f64| run_on(9, 9, impulse(9, 9, 4, 4), &[entry("d", lower(dir))]);
+        let principal = at(5.0);
+        for dir in [725.0, -355.0, 1085.0, -715.0, 365.0] {
+            assert_eq!(at(dir), principal, "direction {dir} is direction 5 plus whole turns");
+        }
+        assert_ne!(at(95.0), principal, "a different direction renders differently");
+    });
+}

@@ -7,9 +7,10 @@
 //! opposite bound), kind, options and flags (STU-FX-113: `CANNOT_TIME_VARY` -> `animatable = false`,
 //! `CANNOT_INTERP` -> `interpolable = false`, `COLLAPSE_TWIRLY` -> `collapsed_by_default`). Reading
 //! conventions under test (Folio's, UNVERIFIED, D5): a `--` unit is `unitless` (STU-FX-108); an
-//! `ANGLE` row recorded `0..0` in all four bounds is the no-range encoding (all four `None`,
-//! `unbounded_in_source`). The engine mapping (recovered row -> engine scalar, hard bounds enforced,
-//! default taken) is asserted for every mapped scalar; vendor parity UNVERIFIED (D5).
+//! `ANGLE` row carries `--` in all four bound cells since v02.228 (SD-26: the old `0` cells were
+//! bytes of another field, not a declared range): all four `None`, `unbounded_in_source`; its
+//! default and precision are provisional. The engine mapping (recovered row -> engine scalar, hard
+//! bounds enforced, default taken) is asserted for every mapped scalar; vendor parity UNVERIFIED (D5).
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
 use hsk_studio_composite::particles::{ParticleError, ParticleLimits};
 use hsk_studio_composite::simulations::*;
@@ -28,7 +29,7 @@ const FOAM_TABLE: [Row; 47] = [
     (5, "Producer", "GROUP_START", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY,COLLAPSE_TWIRLY"),
     (6, "Producer X Size", "FIX_SLIDER", "0", "0.449997", "0", "0.449997", "0.029999", "--", "3", "COLLAPSE_TWIRLY"),
     (8, "Producer Y Size", "FIX_SLIDER", "0", "0.449997", "0", "0.449997", "0.029999", "--", "3", "COLLAPSE_TWIRLY"),
-    (10, "Producer Orientation", "ANGLE", "0", "0", "0", "0", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
+    (10, "Producer Orientation", "ANGLE", "--", "--", "--", "--", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
     (12, "_(unnamed)_", "CHECKBOX", "--", "--", "--", "--", "true", "--", "--", "--"),
     (14, "Production Rate", "FIX_SLIDER", "0", "100", "0", "10", "1", "--", "3", "COLLAPSE_TWIRLY"),
     (16, "Size", "FIX_SLIDER", "0.049988", "4", "0.049988", "4", "0.5", "--", "3", "COLLAPSE_TWIRLY"),
@@ -39,9 +40,9 @@ const FOAM_TABLE: [Row; 47] = [
     (22, "Bubble Growth Speed", "FIX_SLIDER", "0.009995", "1", "0.009995", "1", "0.099991", "--", "3", "COLLAPSE_TWIRLY"),
     (24, "Strength", "FIX_SLIDER", "0", "100", "0", "100", "10", "--", "3", "COLLAPSE_TWIRLY"),
     (26, "Initial Speed", "FIX_SLIDER", "0", "10", "0", "10", "0", "--", "3", "COLLAPSE_TWIRLY"),
-    (28, "Initial Direction", "ANGLE", "0", "0", "0", "0", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
+    (28, "Initial Direction", "ANGLE", "--", "--", "--", "--", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
     (30, "Wind Speed", "FIX_SLIDER", "0", "10", "0", "10", "0.5", "--", "3", "COLLAPSE_TWIRLY"),
-    (32, "Wind Direction", "ANGLE", "0", "0", "0", "0", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
+    (32, "Wind Direction", "ANGLE", "--", "--", "--", "--", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
     (33, "_(unnamed)_", "GROUP_END", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY"),
     (34, "Turbulence", "FIX_SLIDER", "0", "2", "0", "2", "0.5", "--", "3", "COLLAPSE_TWIRLY"),
     (35, "Physics", "GROUP_START", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY,COLLAPSE_TWIRLY"),
@@ -81,9 +82,9 @@ const FOAM_OPTIONS: [Options; 6] = [
 const WAVE_WORLD_TABLE: [Row; 48] = [
     (0, "_(unnamed)_", "LAYER", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY"),
     (2, "View", "POPUP", "--", "--", "--", "--", "index 2", "--", "--", "--"),
-    (4, "Horizontal Rotation", "ANGLE", "0", "0", "0", "0", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
+    (4, "Horizontal Rotation", "ANGLE", "--", "--", "--", "--", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
     (5, "Wireframe Controls", "GROUP_START", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY"),
-    (6, "Vertical Rotation", "ANGLE", "0", "0", "0", "0", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
+    (6, "Vertical Rotation", "ANGLE", "--", "--", "--", "--", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
     (8, "Vertical Scale", "FIX_SLIDER", "0", "1", "0", "1", "0.5", "--", "3", "COLLAPSE_TWIRLY"),
     (10, "Brightness", "FIX_SLIDER", "-5", "5", "0", "1", "0.5", "--", "3", "COLLAPSE_TWIRLY"),
     (12, "Contrast", "FIX_SLIDER", "0", "2", "0", "1", "0.25", "--", "3", "COLLAPSE_TWIRLY"),
@@ -108,20 +109,20 @@ const WAVE_WORLD_TABLE: [Row; 48] = [
     (45, "Ground", "GROUP_START", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY"),
     (46, "Height/Length", "FIX_SLIDER", "0.000992", "100", "0.000992", "1", "0.099991", "--", "3", "COLLAPSE_TWIRLY"),
     (48, "Width", "FIX_SLIDER", "0.000992", "100", "0.000992", "1", "0.099991", "--", "3", "COLLAPSE_TWIRLY"),
-    (50, "Angle", "ANGLE", "0", "0", "0", "0", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
+    (50, "Angle", "ANGLE", "--", "--", "--", "--", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
     (52, "Amplitude", "FIX_SLIDER", "0", "5", "0", "1", "0.5", "--", "3", "COLLAPSE_TWIRLY"),
     (54, "Frequency", "FIX_SLIDER", "0", "20", "0", "3", "1", "--", "3", "COLLAPSE_TWIRLY"),
     (55, "_(unnamed)_", "GROUP_END", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY"),
-    (56, "Phase", "ANGLE", "0", "0", "0", "0", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
+    (56, "Phase", "ANGLE", "--", "--", "--", "--", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
     (57, "Producer 1", "GROUP_START", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY"),
     (58, "Type", "POPUP", "--", "--", "--", "--", "index 1", "--", "--", "--"),
     (60, "Position", "POINT", "--", "--", "--", "--", "(50%, 50%) of layer", "--", "--", "--"),
     (62, "Height/Length", "FIX_SLIDER", "0.000992", "100", "0.000992", "1", "0.5", "--", "3", "COLLAPSE_TWIRLY"),
     (64, "Width", "FIX_SLIDER", "0.000992", "100", "0.000992", "1", "0.5", "--", "3", "COLLAPSE_TWIRLY"),
-    (66, "Angle", "ANGLE", "0", "0", "0", "0", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
+    (66, "Angle", "ANGLE", "--", "--", "--", "--", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
     (68, "Amplitude", "FIX_SLIDER", "0", "5", "0", "1", "0", "--", "3", "COLLAPSE_TWIRLY"),
     (70, "Frequency", "FIX_SLIDER", "0", "20", "0", "3", "1", "--", "3", "COLLAPSE_TWIRLY"),
-    (72, "Phase", "ANGLE", "0", "0", "0", "0", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
+    (72, "Phase", "ANGLE", "--", "--", "--", "--", "0", "degrees", "0", "COLLAPSE_TWIRLY"),
     (75, "_(unnamed)_", "GROUP_END", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY"),
     (77, "Producer 2", "GROUP_START", "--", "--", "--", "--", "--", "--", "--", "CANNOT_TIME_VARY"),
     (90, "Wave Strength", "FIX_SLIDER", "0", "1", "0", "1", "0", "--", "3", "COLLAPSE_TWIRLY"),
@@ -196,9 +197,10 @@ fn assert_record(kind: SimulationKind, table: &[Row], options: &[Options]) {
         let bounds = [cell(hmin), cell(hmax), cell(smin), cell(smax)];
         let stored = [r.hard_min, r.hard_max, r.soft_min, r.soft_max];
         if kind_cell == "ANGLE" {
-            // No-range reading: the four `0` cells are the capture's encoding of "no range".
-            assert_eq!(bounds, [Some(0.0); 4], "{at}: an ANGLE row of these tables records 0..0");
-            assert_eq!((stored, r.bound_state), ([None; 4], StudioBoundState::UnboundedInSource), "{at}: no-range reading");
+            // v02.228 (SD-26): every bound cell of an ANGLE row is `--` (the old `0` cells were
+            // bytes read at the wrong offsets, never a declared range): four unknown bounds.
+            assert_eq!(bounds, [None; 4], "{at}: an ANGLE row of these tables records `--` in all four bound cells");
+            assert_eq!((stored, r.bound_state), ([None; 4], StudioBoundState::UnboundedInSource), "{at}: unbounded in source");
         } else {
             assert_eq!(stored, bounds, "{at}: hard and soft bounds stored separately, `--` unknown");
             let state = match bounds {
@@ -326,7 +328,7 @@ fn assert_mapping<T>(
 
 #[test]
 fn mapped_engine_scalars_take_the_recovered_bounds_and_defaults() {
-    // Foam: wind direction <- row 32 (ANGLE, no-range reading).
+    // Foam: wind direction <- row 32 (ANGLE, unbounded in source).
     assert_eq!(foam::FOAM_MAPPINGS.map(|m| (m.key, m.param_index, m.component, m.unit)), [("wind_direction", 32, 0, "deg")]);
     for m in &foam::FOAM_MAPPINGS {
         let mut sim = Simulation::new(SimulationKind::Foam);
@@ -369,5 +371,51 @@ fn mapped_engine_scalars_take_the_recovered_bounds_and_defaults() {
         let s = Simulation::new(kind);
         s.validate().expect("default record valid");
         s.render(32, 18, TICKS_PER_SECOND, TICKS_PER_SECOND / 30, &ParticleLimits::default(), &cancel).expect("default record renders");
+    }
+}
+
+/// v02.228 (SD-26): an `ANGLE` row stores the full signed degrees, whole extra revolutions included
+/// (725 is two turns plus 5 degrees), unchanged: nothing wraps or clamps on store.
+#[test]
+fn recovered_angle_rows_store_multi_turn_and_negative_degrees_unchanged() {
+    for kind in [SimulationKind::Foam, SimulationKind::WaveWorld] {
+        let record = kind.recovered_record().unwrap();
+        let angles: Vec<&StudioEffectParamSpec> = record.iter().filter(|r| r.kind == StudioParameterKind::Angle || r.unit == StudioUnitToken::Degrees).collect();
+        assert_eq!(angles.len(), if kind == SimulationKind::Foam { 3 } else { 6 }, "{kind:?}: the ANGLE rows of the table");
+        for r in angles {
+            let at = format!("{kind:?} row #{} {}", r.param_index, r.display_name);
+            assert_eq!(r.kind, StudioParameterKind::Angle, "{at}");
+            assert_eq!(([r.hard_min, r.hard_max, r.soft_min, r.soft_max], r.bound_state), ([None; 4], StudioBoundState::UnboundedInSource), "{at}");
+            for v in [725.0, -725.0, 1440.5, 0.0] {
+                assert!(r.accepts(&[v]), "{at}: {v}");
+            }
+        }
+    }
+    // Foam `Wind Direction` (row 32) through the record.
+    let mut foam = Simulation::new(SimulationKind::Foam);
+    for v in [725.0, -725.0, 1440.5, 0.0] {
+        foam.set_param("wind_direction", v).unwrap();
+        assert_eq!(foam.param("wind_direction"), Some(v), "stored as given");
+        foam.validate().unwrap();
+    }
+    // Wave world producer `Phase` (row 56) through the record and through the world's producer.
+    let mut p = WaveProducer::default();
+    for v in [725.0, -725.0, 1440.5, 0.0] {
+        p.set_param("phase", v).unwrap();
+        assert_eq!(p.param("phase"), Some(v), "stored as given");
+    }
+    let mut world = Simulation::new(SimulationKind::WaveWorld);
+    if let Simulation::WaveWorld(w) = &mut world {
+        w.set_producer_param(0, "phase", -725.0).unwrap();
+        assert_eq!(w.producers[0].param("phase"), Some(-725.0));
+    } else {
+        panic!("a wave world");
+    }
+    world.validate().unwrap();
+    // The Folio ceiling and non-finite values stay refused, and a refusal changes nothing.
+    let before = foam.clone();
+    for v in [f64::NAN, f64::INFINITY, MAX_STREAM_ABS_VALUE.next_up()] {
+        assert!(foam.set_param("wind_direction", v).is_err(), "{v}");
+        assert_eq!(foam, before);
     }
 }

@@ -262,3 +262,145 @@ fn colour_parameters_carry_a_profile_reference_additively() {
         assert!(serde_json::from_value::<StudioCompositionRecords>(v).is_err(), "{bad}");
     }
 }
+
+// ---- Lane SMB-FOLIO-ANGLE-UNBOUNDED-1 (v02.228 SD-26, STU-FX-131a): recovered ANGLE rows ----
+//
+// An `ANGLE` row whose bound cells held numbers came from a binary parameter-definition record read
+// at the wrong offsets, so those numbers were never source declarations. Every such row is
+// `unbounded_in_source` with all four bounds `None` and an angle stores the full signed value in
+// degrees, whole extra revolutions included (STU-FX-112): it is never wrapped or clamped on store.
+// Defaults and precision are provisional (UNVERIFIED until the capture is re-decoded). Vendor
+// behaviour is UNVERIFIED (D5).
+
+/// Every angle row of the catalogue: `kind == angle` or `unit == degrees`.
+fn angle_rows() -> Vec<(StudioCompositionEffectKind, &'static StudioEffectParamSpec)> {
+    let mut rows = Vec::new();
+    for kind in StudioCompositionEffectKind::ALL {
+        for row in kind.params() {
+            if row.kind == StudioParameterKind::Angle || row.unit == StudioUnitToken::Degrees {
+                rows.push((kind, row));
+            }
+        }
+    }
+    rows
+}
+
+#[test]
+fn no_angle_row_of_the_catalogue_carries_numeric_bounds() {
+    let rows = angle_rows();
+    let mut keys: Vec<String> = rows.iter().map(|(k, r)| format!("{}/{}", k.wire(), r.param_key)).collect();
+    keys.sort();
+    // The five STU-FX-131a ANGLE rows of the implemented kinds: nothing else is an angle, nothing is missing.
+    assert_eq!(
+        keys,
+        ["directional_blur/direction", "glow/color_phase", "hue_saturation/colorize_hue", "hue_saturation/master_hue", "twirl/angle"],
+        "the angle rows of the catalogue"
+    );
+    for (kind, row) in rows {
+        let at = format!("{}/{}", kind.wire(), row.param_key);
+        assert_eq!(row.kind, StudioParameterKind::Angle, "{at}: a degrees row is an angle");
+        assert_eq!(row.unit, StudioUnitToken::Degrees, "{at}");
+        assert_eq!([row.hard_min, row.hard_max, row.soft_min, row.soft_max], [None; 4], "{at}: no numeric bound");
+        assert_eq!(row.bound_state, StudioBoundState::UnboundedInSource, "{at}");
+        // Full signed degrees, revolutions included: stored as given, none of it refused.
+        for v in [0.0, 5.0, 360.0, 725.0, -725.0, 1440.5, -0.003906, MAX_STREAM_ABS_VALUE, -MAX_STREAM_ABS_VALUE] {
+            assert!(row.accepts(&[v]), "{at}: {v}");
+        }
+        // Only the Folio ceiling and non-finite values stay refused.
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, MAX_STREAM_ABS_VALUE.next_up(), (-MAX_STREAM_ABS_VALUE).next_down()] {
+            assert!(!row.accepts(&[v]), "{at}: {v}");
+        }
+        assert!(!row.accepts(&[]) && !row.accepts(&[0.0, 0.0]), "{at}: one component");
+        assert!(row.accepts(row.default), "{at}: the default is legal");
+    }
+}
+
+#[test]
+fn glow_color_phase_and_directional_blur_direction_rows_change_from_numeric_pairs_to_unbounded() {
+    // Old -> new. Glow Color Phase: hard 0.003906..0.496094, soft 0.003906..0.039062, declared_both
+    // -> all four None, unbounded_in_source. Directional Blur Direction: hard None, soft 0..7936,
+    // declared_soft_only -> all four None, unbounded_in_source. Defaults, unit and precision stay.
+    let p = StudioCompositionEffectKind::Glow.param("color_phase").unwrap();
+    assert_eq!((p.param_index, p.kind, p.unit, p.precision, p.default), (10, StudioParameterKind::Angle, StudioUnitToken::Degrees, None, &[0.003906][..]));
+    assert_eq!((p.hard_min, p.hard_max, p.soft_min, p.soft_max, p.bound_state), (None, None, None, None, StudioBoundState::UnboundedInSource));
+    assert!(p.animatable && p.interpolable);
+    let d = StudioCompositionEffectKind::DirectionalBlur.param("direction").unwrap();
+    assert_eq!((d.param_index, d.kind, d.unit, d.precision, d.default), (1, StudioParameterKind::Angle, StudioUnitToken::Degrees, None, &[0.0][..]));
+    assert_eq!((d.hard_min, d.hard_max, d.soft_min, d.soft_max, d.bound_state), (None, None, None, None, StudioBoundState::UnboundedInSource));
+    assert!(d.animatable && d.interpolable);
+    // Rows that were already unbounded keep their recorded default and precision.
+    let t = StudioCompositionEffectKind::Twirl.param("angle").unwrap();
+    assert_eq!((t.default, t.precision), (&[0.0][..], Some(0)));
+    for key in ["master_hue", "colorize_hue"] {
+        let h = StudioCompositionEffectKind::HueSaturation.param(key).unwrap();
+        assert_eq!((h.default, h.precision, h.unit), (&[0.0][..], Some(0), StudioUnitToken::Degrees), "{key}");
+    }
+    // Neighbouring numeric rows are untouched: Glow `A & B Midpoint` keeps its hard pair and
+    // Directional Blur `Blur Length` its hard and soft pairs.
+    let m = StudioCompositionEffectKind::Glow.param("a_b_midpoint").unwrap();
+    assert_eq!((m.hard_min, m.hard_max), (Some(0.009995), Some(0.990005)));
+    let l = StudioCompositionEffectKind::DirectionalBlur.param("blur_length").unwrap();
+    assert_eq!((l.hard_min, l.hard_max, l.soft_min, l.soft_max), (Some(0.0), Some(1000.0), Some(0.0), Some(20.0)));
+}
+
+fn angle_stack() -> Value {
+    let key = |t: u64, v: f64| json!({"time":t,"value":[v],"in_interp":"linear","out_interp":"linear"});
+    json!([
+        {"effect_id":"glow","filter_kind":"glow","values":{
+            "color_phase":{"static_value":[725.0],"keyframes":[key(0, 725.0), key(127008000000u64, -1080.5)]}}},
+        {"effect_id":"dir","filter_kind":"directional_blur","values":{
+            "direction":{"static_value":[-725.0],"keyframes":[key(0, -725.0), key(127008000000u64, 8000.25)]}}},
+        {"effect_id":"hue","filter_kind":"hue_saturation","values":{
+            "master_hue":constant(json!([-1080.0])),"colorize_hue":constant(json!([725.0]))}},
+        {"effect_id":"twirl","filter_kind":"twirl","values":{"angle":constant(json!([-1440.0]))}}
+    ])
+}
+
+#[test]
+fn multi_turn_and_negative_angles_are_stored_and_round_trip_unchanged() {
+    let with = with_effects(angle_stack());
+    // Valid (nothing refused for its size), then a byte-identical round trip through the record
+    // wire form: no wrap into 0..360 or -180..180, no clamp, no rounding.
+    check(&with).unwrap();
+    let r: StudioCompositionRecords = serde_json::from_value(with.clone()).unwrap();
+    let first = serde_json::to_vec(&r).unwrap();
+    let back: StudioCompositionRecords = serde_json::from_slice(&first).unwrap();
+    assert_eq!(back, r);
+    assert_eq!(serde_json::to_vec(&back).unwrap(), first);
+    assert_eq!(serde_json::from_slice::<Value>(&first).unwrap(), with);
+    check(&serde_json::from_slice::<Value>(&first).unwrap()).unwrap();
+    let e = &back.compositions[0].layers[0].effects;
+    assert_eq!(e[0].static_or_default("color_phase"), Some(vec![725.0]));
+    assert_eq!(e[1].static_or_default("direction"), Some(vec![-725.0]));
+    assert_eq!(e[2].static_or_default("master_hue"), Some(vec![-1080.0]));
+    assert_eq!(e[2].static_or_default("colorize_hue"), Some(vec![725.0]));
+    assert_eq!(e[3].static_or_default("angle"), Some(vec![-1440.0]));
+    // Keyframe values too (725 = two turns plus 5 degrees, stored as 725).
+    let glow_keys: Vec<f64> = e[0].values["color_phase"].keyframes.iter().map(|k| k.value[0]).collect();
+    assert_eq!(glow_keys, [725.0, -1080.5]);
+    let dir_keys: Vec<f64> = e[1].values["direction"].keyframes.iter().map(|k| k.value[0]).collect();
+    assert_eq!(dir_keys, [-725.0, 8000.25]);
+    // An unset angle reads its recorded default, never a wrapped value.
+    let fresh = StudioCompositionEffect::new("g", StudioCompositionEffectKind::Glow);
+    assert_eq!(fresh.static_or_default("color_phase"), Some(vec![0.003906]));
+}
+
+#[test]
+fn only_the_folio_ceiling_refuses_an_angle() {
+    let t = identity("SLYR", 1);
+    let one = |e: Value| with_effects(json!([e]));
+    // Glow Color Phase above the old junk pair (about 0.5 degrees) is legal.
+    check(&one(json!({"effect_id":"g","filter_kind":"glow","values":{"color_phase":constant(json!([0.5]))}}))).unwrap();
+    check(&one(json!({"effect_id":"g","filter_kind":"glow","values":{"color_phase":constant(json!([360.0]))}}))).unwrap();
+    // A value past the Folio ceiling (not a bound of the row) is still a typed refusal, static or
+    // keyframed, by the stream's own finiteness and ceiling check before any row bound is read.
+    let over = 1.0e13;
+    for (kind, key) in [("glow", "color_phase"), ("directional_blur", "direction"), ("twirl", "angle")] {
+        let s = one(json!({"effect_id":"e","filter_kind":kind,"values":{key:constant(json!([over]))}}));
+        assert_eq!(refusal(&s), format!("InvalidField:{t}/effects/e/{key}/static_value"), "{kind}");
+        let k = one(json!({"effect_id":"e","filter_kind":kind,"values":{key:{"static_value":[1.0],"keyframes":[
+            {"time":0,"value":[1.0],"in_interp":"linear","out_interp":"linear"},
+            {"time":10,"value":[-over],"in_interp":"linear","out_interp":"linear"}]}}}));
+        assert_eq!(refusal(&k), format!("InvalidField:{t}/effects/e/{key}/keyframes/value"), "{kind} keyframe");
+    }
+}
