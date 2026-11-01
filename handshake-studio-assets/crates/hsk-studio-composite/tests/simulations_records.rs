@@ -10,7 +10,10 @@
 //! `ANGLE` row carries `--` in all four bound cells since v02.228 (SD-26: the old `0` cells were
 //! bytes of another field, not a declared range): all four `None`, `unbounded_in_source`; its
 //! default and precision are provisional. The engine mapping (recovered row -> engine scalar, hard
-//! bounds enforced, default taken) is asserted for every mapped scalar; vendor parity UNVERIFIED (D5).
+//! bounds enforced, default taken) is asserted for every mapped scalar; vendor parity UNVERIFIED (D5). Lane
+//! SMB-R51-FOLLOWUPS-1 (R51 finding F-R51-1, spec v02.229 SD-27): a recovered row with the `unitless`
+//! token drives no engine scalar until its scale is declared; the engine scalar of that quantity is
+//! its authored `studio_declared` row beside the stored recovered row.
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
 use hsk_studio_composite::particles::{ParticleError, ParticleLimits};
 use hsk_studio_composite::simulations::*;
@@ -349,21 +352,22 @@ fn mapped_engine_scalars_take_the_recovered_bounds_and_defaults() {
         let mut sim = Simulation::new(SimulationKind::WaveWorld);
         assert_mapping(&wave_world::WAVE_WORLD_RECORD, m, &wave_world::WAVE_WORLD_ROWS, &mut sim, Simulation::param, Simulation::set_param);
     }
-    // Wave world producers: x, y <- row 44 (point), amplitude <- 52, frequency <- 54, phase <- 56.
+    // Wave world producers: x, y <- row 44 (point, layer fractions), phase <- 56 (ANGLE, degrees).
+    // Amplitude (row 52) and frequency (row 54) carry the `unitless` token and are not mapped (SD-27:
+    // `unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars`).
     assert_eq!(
-        wave_world::WAVE_PRODUCER_MAPPINGS.map(|m| (m.key, m.param_index, m.component, m.unit)),
-        [("x", 44, 0, "ratio"), ("y", 44, 1, "ratio"), ("amplitude", 52, 0, "height"), ("frequency", 54, 0, "Hz"), ("phase", 56, 0, "deg")]
+        wave_world::WAVE_PRODUCER_MAPPINGS.iter().map(|m| (m.key, m.param_index, m.component, m.unit)).collect::<Vec<_>>(),
+        [("x", 44, 0, "ratio"), ("y", 44, 1, "ratio"), ("phase", 56, 0, "deg")]
     );
     for m in &wave_world::WAVE_PRODUCER_MAPPINGS {
         let mut p = WaveProducer::default();
         assert_mapping(&wave_world::WAVE_WORLD_RECORD, m, &wave_world::WAVE_PRODUCER_ROWS, &mut p, WaveProducer::param, WaveProducer::set_param);
         // Through the record: validate() walks every producer's recovered rows.
         let mut w = WaveWorld::default();
-        w.producers[0].amplitude = 5.0_f64.next_up();
-        assert_eq!(w.validate(), Err(ParticleError::Parameter("amplitude")));
-        w.producers[0].amplitude = 5.0;
-        w.producers[0].frequency = 20.0_f64.next_up();
-        assert_eq!(w.validate(), Err(ParticleError::Parameter("frequency")));
+        w.producers[0].phase = f64::INFINITY;
+        assert_eq!(w.validate(), Err(ParticleError::Parameter("phase")));
+        w.producers[0].phase = 720.0;
+        assert_eq!(w.validate(), Ok(()), "no declared bound: any finite phase");
     }
     // The default records validate and render with the recovered defaults.
     let cancel = CancellationToken::default();
@@ -418,4 +422,87 @@ fn recovered_angle_rows_store_multi_turn_and_negative_degrees_unchanged() {
         assert!(foam.set_param("wind_direction", v).is_err(), "{v}");
         assert_eq!(foam, before);
     }
+}
+
+/// One SD-27 pair: `(engine key, recovered param_index, authored unit, hard, soft, default)`; the
+/// authored values are the rows as authored before lane SMB-R50-FOLLOWUPS-1 (63ecf5a6).
+type Sd27 = (&'static str, u16, &'static str, (f64, f64), (Option<f64>, Option<f64>), f64);
+
+/// The recovered row is stored (unit token `unitless`) and maps onto nothing; the engine scalar is
+/// its authored `studio_declared` row: authored default, authored hard bounds enforced, and a value
+/// past the recovered hard bound but inside the authored row accepted (the recovered row does not
+/// constrain the engine).
+fn assert_sd27<T>(
+    record: &'static [StudioEffectParamSpec],
+    maps: &[RecoveredMapping],
+    authored: &[ParamRow],
+    case: Sd27,
+    obj: &mut T,
+    get: fn(&T, &str) -> Option<f64>,
+    set: fn(&mut T, &str, f64) -> Result<(), ParticleError>,
+) {
+    let (key, index, unit, hard, soft, default) = case;
+    let rec = record.iter().find(|r| r.param_index == index).expect("recovered row stored");
+    assert_eq!(rec.unit, StudioUnitToken::Unitless, "{key}: row #{index} carries the unitless token");
+    assert!(maps.iter().all(|m| m.key != key && m.param_index != index), "{key}: row #{index} drives no engine scalar");
+    let row = authored.iter().find(|r| r.key == key).expect("authored row present");
+    assert_eq!(
+        (row.unit, row.hard_min, row.hard_max, row.soft_min, row.soft_max, row.default, row.provenance),
+        (unit, hard.0, hard.1, soft.0, soft.1, default, "studio_declared"),
+        "{key}: the authored row"
+    );
+    assert_eq!(get(obj, key), Some(default), "{key}: authored default");
+    let refused = Err(ParticleError::Parameter(key));
+    for v in [hard.0, hard.1] {
+        assert_eq!(set(obj, key, v), Ok(()), "{key} = {v}");
+        assert_eq!(get(obj, key), Some(v));
+    }
+    for v in [hard.0.next_down(), hard.1.next_up(), f64::NAN, f64::INFINITY] {
+        assert_eq!(set(obj, key, v), refused, "{key} = {v}");
+    }
+    let past = rec.hard_max.expect("recovered hard_max").next_up();
+    assert!(past < hard.1, "{key}: the authored row is wider than the recovered row");
+    assert_eq!(set(obj, key, past), Ok(()), "{key} = {past}: past the recovered bound, inside the authored row");
+}
+
+/// SD-27 (spec v02.229 STU-FX-131a reading note, STU-CMP-075b; R51 finding F-R51-1): a recovered
+/// row whose unit cell is `--` is the `unitless` token, its engine scale is a SPEC GAP that is never
+/// guessed, and until it is declared the engine's own scalar stays a `studio_declared` row under
+/// STU-FX-146 beside the stored recovered row. Wave world `Wave Speed` (30), `Damping` (32),
+/// `Amplitude` (52) and `Frequency` (54), Foam `Viscosity` (42).
+#[test]
+fn unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars() {
+    let wave_record: [Sd27; 2] = [
+        ("wave_speed", 30, "cells/s", (0.0, 1.0e4), (Some(1.0), Some(60.0)), 20.0),
+        ("damping", 32, "1/s", (0.0, 1000.0), (Some(0.0), Some(5.0)), 0.5),
+    ];
+    for case in wave_record {
+        let mut sim = Simulation::new(SimulationKind::WaveWorld);
+        let maps = [wave_world::WAVE_WORLD_MAPPINGS.as_slice(), wave_world::WAVE_PRODUCER_MAPPINGS.as_slice()].concat();
+        assert_sd27(&wave_world::WAVE_WORLD_RECORD, &maps, &wave_world::WAVE_WORLD_ROWS, case, &mut sim, Simulation::param, Simulation::set_param);
+    }
+    let wave_producer: [Sd27; 2] = [
+        ("amplitude", 52, "height", (0.0, 1.0e6), (Some(0.0), Some(2.0)), 0.5),
+        ("frequency", 54, "Hz", (0.0, 1000.0), (Some(0.0), Some(5.0)), 1.0),
+    ];
+    for case in wave_producer {
+        let mut p = WaveProducer::default();
+        let maps = [wave_world::WAVE_WORLD_MAPPINGS.as_slice(), wave_world::WAVE_PRODUCER_MAPPINGS.as_slice()].concat();
+        assert_sd27(&wave_world::WAVE_WORLD_RECORD, &maps, &wave_world::WAVE_PRODUCER_ROWS, case, &mut p, WaveProducer::param, WaveProducer::set_param);
+    }
+    let foam: [Sd27; 1] = [("viscosity", 42, "1/s", (0.0, 1000.0), (Some(0.0), Some(10.0)), 1.0)];
+    for case in foam {
+        let mut sim = Simulation::new(SimulationKind::Foam);
+        assert_sd27(&foam::FOAM_RECORD, &foam::FOAM_MAPPINGS, &foam::Foam::rows(), case, &mut sim, Simulation::param, Simulation::set_param);
+    }
+    // Through the record: validate() walks the authored producer rows, not the recovered rows 52/54.
+    let mut w = WaveWorld::default();
+    w.producers[0].amplitude = 5.0_f64.next_up();
+    w.producers[0].frequency = 20.0_f64.next_up();
+    assert_eq!(w.validate(), Ok(()), "past the recovered bounds, inside the authored rows");
+    w.producers[0].amplitude = 1.0e6_f64.next_up();
+    assert_eq!(w.validate(), Err(ParticleError::Parameter("amplitude")));
+    w.producers[0].amplitude = 0.5;
+    w.producers[0].frequency = 1000.0_f64.next_up();
+    assert_eq!(w.validate(), Err(ParticleError::Parameter("frequency")));
 }
