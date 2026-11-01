@@ -944,7 +944,39 @@ pub const MAX_SECTION_HEADER_SETS: usize = 1024;
 /// `header_set_groups`, `header_set_heading`, `header_set_initials_budget`, `header_set_initial`,
 /// `header_set_initial_duplicate`.
 pub fn check_section_header_set(h: &StudioSectionHeaderSet) -> std::result::Result<(), &'static str> {
-    todo!("SMB-ID-TOC-PERSIST-1 item 1: header-set rules ({})", h.name.len())
+    if !header_text(&h.name) {
+        return Err("header_set_name");
+    }
+    let lang_ok = !h.language_id.is_empty()
+        && h.language_id.len() <= MAX_HEADER_TEXT_BYTES
+        && h.language_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !lang_ok {
+        return Err("header_set_language_id");
+    }
+    if h.header_type.as_deref().is_some_and(|t| !is_captured_token(t)) {
+        return Err("header_set_type");
+    }
+    if h.groups.is_empty() || h.groups.len() > MAX_HEADER_GROUPS {
+        return Err("header_set_groups");
+    }
+    let mut seen = BTreeSet::new();
+    for g in &h.groups {
+        if !header_text(&g.heading) {
+            return Err("header_set_heading");
+        }
+        if g.initials.len() > MAX_HEADER_INITIALS {
+            return Err("header_set_initials_budget");
+        }
+        for c in &g.initials {
+            if c.is_control() || c.to_lowercase().ne(std::iter::once(*c)) {
+                return Err("header_set_initial");
+            }
+            if !seen.insert(*c) {
+                return Err("header_set_initial_duplicate");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Index topic levels (the captured model declares exactly four).
