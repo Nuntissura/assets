@@ -465,3 +465,144 @@ fn mt_31005_terminal_outcomes_are_reported_through_observe() {
     assert_eq!(SentinelError::MarkersUnstable.code(), "markers_unstable");
     assert_eq!(UnresolvedMarker::NoNextPage.code(), "marker_no_next_page");
 }
+
+// ---- Item 2: break sentinels direct the flow (MT-31008) ----
+
+const COLUMN: char = '\u{FDD8}';
+const FRAME: char = '\u{FDD9}';
+const PAGE: char = '\u{FDDA}';
+const ODD: char = '\u{FDDB}';
+const EVEN: char = '\u{FDDC}';
+
+/// (thread position, column, baseline) of the non-empty line that starts at story byte `start`.
+fn line_at(layout: &LayoutProposal, start: u64) -> (usize, usize, f64) {
+    for (pos, f) in layout.frames.iter().enumerate() {
+        for l in &f.lines {
+            if l.source.start == start && l.source.end > start {
+                return (pos, l.column, l.baseline_y_pt);
+            }
+        }
+    }
+    panic!("no line starts at {start}")
+}
+fn breaks_case(on: &[usize], h: f64, columns: u32, sections: &[StudioSection], text: &str) -> SentinelComposition {
+    let st = story_of(text);
+    let doc = pages_doc(4, chain(on, h, columns));
+    compose(&request(&doc, &st, sections, &[], SentinelBudget::default()), &TypesetOptions::default()).unwrap()
+}
+fn applied(story_byte: u64, target: hsk_studio_type::BreakTarget, frame: usize, column: usize, skipped_frames: usize) -> BreakOutcome {
+    BreakOutcome { story_byte, target, result: BreakResult::Applied { frame, column, skipped_frames } }
+}
+
+#[test]
+fn mt_31008_each_break_sentinel_directs_the_following_text_to_its_flow_target() {
+    use hsk_studio_type::BreakTarget as T;
+    // "ab" + break (bytes 2..5) + "cd" (from byte 5). Frames are 24 pt high (two lines).
+    // Column break: two 90 pt columns; "cd" starts column 1 at the top (else column 0, line 2).
+    let out = breaks_case(&[0], 24.0, 2, &[], &format!("ab{COLUMN}cd"));
+    assert_eq!(line_at(&out.layout, 0), (0, 0, 10.0));
+    assert_eq!(line_at(&out.layout, 5), (0, 1, 10.0));
+    assert_eq!(out.layout.frames[0].lines[1].x_start_pt, 90.0);
+    assert_eq!(out.breaks, vec![applied(2, T::Column, 0, 1, 0)]);
+    // Column break in the last column: the next frame.
+    let out = breaks_case(&[0, 0], 24.0, 1, &[], &format!("ab{COLUMN}cd"));
+    assert_eq!(line_at(&out.layout, 5), (1, 0, 10.0));
+    assert_eq!(out.breaks, vec![applied(2, T::Column, 1, 0, 0)]);
+    // Frame break: the next frame of the thread, even on the same page.
+    let out = breaks_case(&[0, 0], 24.0, 2, &[], &format!("ab{FRAME}cd"));
+    assert_eq!(line_at(&out.layout, 5), (1, 0, 10.0));
+    assert_eq!(out.breaks, vec![applied(2, T::Frame, 1, 0, 0)]);
+    // Page break: frames 0 and 1 are on page-1, frame 2 on page-2: frame 1 is passed over.
+    let out = breaks_case(&[0, 0, 1], 24.0, 1, &[], &format!("ab{PAGE}cd"));
+    assert_eq!(line_at(&out.layout, 5), (2, 0, 10.0));
+    assert_eq!(out.breaks, vec![applied(2, T::Page, 2, 0, 1)]);
+    assert!(out.layout.frames[1].lines.is_empty());
+    // Odd / even-page breaks from page-1 over frames on pages 1, 2, 3 (implicit numbering 1, 2, 3).
+    let out = breaks_case(&[0, 1, 2], 24.0, 1, &[], &format!("ab{ODD}cd"));
+    assert_eq!(line_at(&out.layout, 5), (2, 0, 10.0));
+    assert_eq!(out.breaks, vec![applied(2, T::OddPage, 2, 0, 1)]);
+    let out = breaks_case(&[0, 1, 2], 24.0, 1, &[], &format!("ab{EVEN}cd"));
+    assert_eq!(line_at(&out.layout, 5), (1, 0, 10.0));
+    assert_eq!(out.breaks, vec![applied(2, T::EvenPage, 1, 0, 0)]);
+    // Parity is the page NUMBER: a section restarting at 1 on page-2 makes page-2 odd.
+    let restart = [
+        section("s1", "page-1", 1, StudioNumberStyle::Arabic, None, None),
+        section("s2", "page-2", 1, StudioNumberStyle::Arabic, None, None),
+    ];
+    let out = breaks_case(&[0, 1, 2], 24.0, 1, &restart, &format!("ab{ODD}cd"));
+    assert_eq!(out.breaks, vec![applied(2, T::OddPage, 1, 0, 0)]);
+    let out = breaks_case(&[0, 1, 2], 24.0, 1, &restart, &format!("ab{EVEN}cd"));
+    assert_eq!(out.breaks, vec![applied(2, T::EvenPage, 2, 0, 1)]);
+    // Successive breaks each apply; an empty paragraph ended by a break still moves the flow.
+    let out = breaks_case(&[0, 1, 2, 3], 24.0, 1, &[], &format!("a{FRAME}{FRAME}b{PAGE}c"));
+    assert_eq!(out.breaks, vec![applied(1, T::Frame, 1, 0, 0), applied(4, T::Frame, 2, 0, 0), applied(8, T::Page, 3, 0, 0)]);
+    assert_eq!(line_at(&out.layout, 7), (2, 0, 10.0));
+    assert_eq!(line_at(&out.layout, 11), (3, 0, 10.0));
+    assert_eq!(out.layout.overset, None);
+}
+
+#[test]
+fn mt_31008_a_break_without_a_target_oversets_from_the_break_byte() {
+    use hsk_studio_type::BreakTarget as T;
+    let overset = |story_byte, target, why| BreakOutcome { story_byte, target, result: BreakResult::Overset(why) };
+    // Frame break in the last frame: "cd" is overset with the break, never dropped.
+    let out = breaks_case(&[0], 24.0, 1, &[], &format!("ab{FRAME}cd"));
+    assert_eq!(out.layout.overset, Some(SourceSpan { start: 2, end: 7 }));
+    assert_eq!(out.breaks, vec![overset(2, T::Frame, BreakOverset::NoTarget)]);
+    assert_eq!(out.layout.frames[0].lines.len(), 1);
+    // Page, odd-page and even-page break with no later page in the thread (two frames on page-1);
+    // the column break there still has the next frame.
+    for c in [PAGE, ODD, EVEN, COLUMN] {
+        let out = breaks_case(&[0, 0], 24.0, 1, &[], &format!("ab{c}cd"));
+        let target = hsk_studio_type::catalog_member_for_scalar(c).and_then(|m| m.break_target).unwrap();
+        if c == COLUMN {
+            assert_eq!(out.breaks, vec![applied(2, T::Column, 1, 0, 0)]);
+            continue;
+        }
+        assert_eq!(out.layout.overset, Some(SourceSpan { start: 2, end: 7 }), "U+{:04X}", c as u32);
+        assert_eq!(out.breaks, vec![overset(2, target, BreakOverset::NoTarget)]);
+    }
+    let out = breaks_case(&[0], 24.0, 1, &[], &format!("ab{COLUMN}cd"));
+    assert_eq!(out.layout.overset, Some(SourceSpan { start: 2, end: 7 }));
+    // A break that ends the story in the last frame still oversets (the break itself).
+    let out = breaks_case(&[0], 24.0, 1, &[], &format!("ab{PAGE}"));
+    assert_eq!(out.layout.overset, Some(SourceSpan { start: 2, end: 5 }));
+    assert_eq!(out.breaks, vec![overset(2, T::Page, BreakOverset::NoTarget)]);
+}
+
+#[test]
+fn mt_31008_plain_reflow_honours_breaks_and_oversets_parity_breaks_it_cannot_number() {
+    // The plain entry points read the same story bytes: a frame break moves "cd" to frame 2.
+    let text = format!("ab{FRAME}cd");
+    let (st, _) = story(1, &text, &[(0, 5), (5, 7)]);
+    let paras = shape(&text, &[(0, 2), (5, 7)]);
+    let doc = pages_doc(4, chain(&[0, 1], 24.0, 1));
+    let p = run(&doc, &st, &paras, &records()).unwrap();
+    assert_eq!(line_at(&p, 5), (1, 0, 10.0));
+    assert_eq!(p.overset, None);
+    // Odd/even parity needs the section numbering (compose_with_sentinels): overset, not guessed.
+    let text = format!("ab{ODD}cd");
+    let (st, _) = story(1, &text, &[(0, 5), (5, 7)]);
+    let p = run(&doc, &st, &shape(&text, &[(0, 2), (5, 7)]), &records()).unwrap();
+    assert_eq!(p.overset, Some(SourceSpan { start: 2, end: 7 }));
+    assert!(p.frames[1].lines.is_empty());
+}
+
+#[test]
+fn mt_31008_story_edits_split_paragraphs_after_every_terminator() {
+    let st = story_of("abcd");
+    for c in [COLUMN, FRAME, PAGE, ODD, EVEN, '\u{2029}', '\n', '\r', '\u{0085}'] {
+        let edited = replace_story_text(&st, None, 2, 2, &c.to_string()).unwrap();
+        let cut = 2 + c.len_utf8() as u64;
+        let spans: Vec<(u64, u64)> = edited.paragraphs.iter().map(|p| (p.start, p.end)).collect();
+        assert_eq!(spans, vec![(0, cut), (cut, cut + 2)], "U+{:04X}", c as u32);
+        // The edited partition is the Type partition of the edited text.
+        let type_like: Vec<(u64, u64)> = paragraph_partition(text_of(&edited)).iter().map(|s| (s.start, s.end)).collect();
+        assert_eq!(spans, type_like);
+    }
+    // A forced line break, a marker or a flush space does not split.
+    for c in ['\u{2028}', CUR, '\u{FDDD}'] {
+        let edited = replace_story_text(&st, None, 2, 2, &c.to_string()).unwrap();
+        assert_eq!(edited.paragraphs.len(), 1, "U+{:04X}", c as u32);
+    }
+}
