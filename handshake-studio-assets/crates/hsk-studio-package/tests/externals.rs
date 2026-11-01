@@ -410,6 +410,7 @@ fn every_folio_reference_property_is_classified() {
         ("design_state", serde_json::to_value(folio::design_state_records_schema()).unwrap()),
         ("layout_rules", serde_json::to_value(folio::layout_rule_records_schema()).unwrap()),
         ("cjk_composition", serde_json::to_value(folio::cjk_composition_records_schema()).unwrap()),
+        ("trap_preset_records", serde_json::to_value(folio::trap_preset_records_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -585,7 +586,9 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioTextSelector.source", "internal: expression text"),
     ("StudioTextStory.story_direction", "internal: value"),
     ("StudioTextStory.story_id", "internal: text story records"),
+    ("StudioTocStyle.set_story_direction", "internal: value (STU-LAY-148 direction enumeration, SMB-ID-TOC-PERSIST-1)"),
     ("StudioTrackMatte.source_layer_id", "internal: document layer"),
+    ("StudioTrapPreset.trap_image_placement", "internal: value (STU-LAY-152 enumeration, not an image reference; SMB-ID-TOC-PERSIST-1)"),
     ("StudioTypeStyle.font_family", "external:font"),
     ("StudioTypeStyle.font_size", "internal: value"),
     ("StudioTypeStyle.font_style", "external:font"),
