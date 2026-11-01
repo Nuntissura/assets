@@ -15,7 +15,7 @@ fn edges(v: f64) -> LayoutEdges {
     LayoutEdges { top: len(v), right: len(v), bottom: len(v), left: len(v) }
 }
 fn page(key: &str) -> StudioPage {
-    StudioPage { page_id: key.into(), width: len(100.0), height: len(100.0), side: PageSide::RightHand, margins: edges(5.0), bleed: None }
+    StudioPage { page_id: key.into(), width: len(100.0), height: len(100.0), side: PageSide::RightHand, margins: edges(5.0), bleed: None, applied_trap_preset: None }
 }
 fn text_frame(page: &str, y: f64, prev: Option<String>, next: Option<String>) -> StudioTextFrame {
     StudioTextFrame {

@@ -16,7 +16,7 @@ pub fn edges(v: f64) -> LayoutEdges {
     LayoutEdges { top: len(v), right: len(v), bottom: len(v), left: len(v) }
 }
 pub fn page(key: &str) -> StudioPage {
-    StudioPage { page_id: key.into(), width: len(200.0), height: len(200.0), side: PageSide::RightHand, margins: edges(10.0), bleed: None }
+    StudioPage { page_id: key.into(), width: len(200.0), height: len(200.0), side: PageSide::RightHand, margins: edges(10.0), bleed: None, applied_trap_preset: None }
 }
 pub const TEXT: &str = "aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj";
 pub fn style(n: u32, scope: TypeStyleScope, name: &str) -> StudioTypeStyle {

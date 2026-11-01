@@ -85,6 +85,7 @@ fn document(extra: Vec<StudioLayer>) -> StudioDocument {
                 side: PageSide::SingleSided,
                 margins: edges(10.0),
                 bleed: None,
+                applied_trap_preset: None,
             }],
         }],
         layers,
@@ -407,7 +408,7 @@ fn book() -> StudioDocument {
         name: format!("spread {n}"),
         parent: Parent::Root(()),
         bounds: Bounds { x: len(0.0), y: len(0.0), width: len(300.0), height: len(300.0) },
-        pages: vec![StudioPage { page_id: format!("b{n}"), width: len(300.0), height: len(300.0), side: PageSide::SingleSided, margins: edges(10.0), bleed: None }],
+        pages: vec![StudioPage { page_id: format!("b{n}"), width: len(300.0), height: len(300.0), side: PageSide::SingleSided, margins: edges(10.0), bleed: None, applied_trap_preset: None }],
     };
     let text_layer = |n: u32, spread: u32, story: u32, y: f64, h: f64, prev: Option<u32>, next: Option<u32>| StudioLayer {
         schema_id: LayerSchema::V1,

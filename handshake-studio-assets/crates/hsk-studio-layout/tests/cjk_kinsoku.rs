@@ -174,7 +174,7 @@ fn edges(v: f64) -> LayoutEdges {
 }
 fn document(w: f64, h: f64) -> StudioDocument {
     let unassigned = || ProfileBinding::Unassigned(());
-    let page = StudioPage { page_id: "page-1".into(), width: len(400.0), height: len(400.0), side: PageSide::RightHand, margins: edges(5.0), bleed: None };
+    let page = StudioPage { page_id: "page-1".into(), width: len(400.0), height: len(400.0), side: PageSide::RightHand, margins: edges(5.0), bleed: None, applied_trap_preset: None };
     StudioDocument {
         schema_id: DocumentSchema::V1,
         document_id: id("SDOC", 1),

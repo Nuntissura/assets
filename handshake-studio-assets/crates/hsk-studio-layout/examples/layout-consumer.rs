@@ -135,6 +135,7 @@ fn folio_document(sizes: &[(f64, f64)]) -> StudioDocument {
                 side: PageSide::SingleSided,
                 margins: edges(0.0),
                 bleed: None,
+                applied_trap_preset: None,
             }],
         }],
         layers,

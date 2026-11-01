@@ -739,8 +739,8 @@ impl PrinterPreset {
 // no page object of its own (pages are Folio's `StudioPage`), so assignment to a page range stays
 // open (lane notes). Vendor parity UNVERIFIED (D5).
 
-/// Bytes of a trap-preset name (a Studio bound for hostile input; the spec declares none).
-pub const MAX_TRAP_PRESET_NAME_BYTES: usize = 256;
+/// Bytes of a trap-preset name: Folio's bound (one rule for the stored record and the contract).
+pub use hsk_studio_folio::MAX_TRAP_PRESET_NAME_BYTES;
 
 /// The seven numeric parameters of the STU-LAY-152 table, in table order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

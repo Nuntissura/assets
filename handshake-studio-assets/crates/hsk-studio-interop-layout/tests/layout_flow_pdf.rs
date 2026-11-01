@@ -94,6 +94,7 @@ fn document() -> StudioDocument {
                 side: PageSide::SingleSided,
                 margins: edges(10.0),
                 bleed: None,
+                applied_trap_preset: None,
             }],
         }],
         layers: vec![frame, picture],

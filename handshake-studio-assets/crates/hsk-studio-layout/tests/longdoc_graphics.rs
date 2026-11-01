@@ -60,7 +60,7 @@ fn fitting_refusals_and_folio_frame_on_its_spread() {
 
     let len = |v: f64| Length { value: v, unit: GeometryUnit::Pt };
     let edges = LayoutEdges { top: len(0.0), right: len(0.0), bottom: len(0.0), left: len(0.0) };
-    let page = |k: &str| StudioPage { page_id: k.into(), width: len(100.0), height: len(100.0), side: PageSide::SingleSided, margins: edges.clone(), bleed: None };
+    let page = |k: &str| StudioPage { page_id: k.into(), width: len(100.0), height: len(100.0), side: PageSide::SingleSided, margins: edges.clone(), bleed: None, applied_trap_preset: None };
     let doc = StudioDocument {
         schema_id: DocumentSchema::V1,
         document_id: "SDOC-019abcde-0000-7000-8000-000000000001".into(),

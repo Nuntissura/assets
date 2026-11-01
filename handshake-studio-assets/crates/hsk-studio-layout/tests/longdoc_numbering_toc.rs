@@ -9,7 +9,7 @@ fn len(v: f64) -> Length {
 }
 fn page(k: &str) -> StudioPage {
     let e = LayoutEdges { top: len(0.0), right: len(0.0), bottom: len(0.0), left: len(0.0) };
-    StudioPage { page_id: k.into(), width: len(100.0), height: len(100.0), side: PageSide::SingleSided, margins: e, bleed: None }
+    StudioPage { page_id: k.into(), width: len(100.0), height: len(100.0), side: PageSide::SingleSided, margins: e, bleed: None, applied_trap_preset: None }
 }
 fn spread(n: u32, pages: &[&str]) -> StudioPageSpread {
     StudioPageSpread {

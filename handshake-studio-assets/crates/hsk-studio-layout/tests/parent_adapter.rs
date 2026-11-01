@@ -34,6 +34,7 @@ fn page(key: &str) -> StudioPage {
         side: PageSide::RightHand,
         margins: edges(),
         bleed: None,
+        applied_trap_preset: None,
     }
 }
 fn parent_ref() -> Parent {

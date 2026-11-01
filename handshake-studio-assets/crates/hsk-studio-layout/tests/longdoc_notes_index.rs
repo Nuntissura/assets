@@ -15,7 +15,7 @@ fn edges(v: f64) -> LayoutEdges {
     LayoutEdges { top: len(v), right: len(v), bottom: len(v), left: len(v) }
 }
 fn page(key: &str) -> StudioPage {
-    StudioPage { page_id: key.into(), width: len(100.0), height: len(100.0), side: PageSide::RightHand, margins: edges(5.0), bleed: None }
+    StudioPage { page_id: key.into(), width: len(100.0), height: len(100.0), side: PageSide::RightHand, margins: edges(5.0), bleed: None, applied_trap_preset: None }
 }
 /// Frames 1, 2 on page-1 and 3 on page-2 thread story 1.
 fn document() -> StudioDocument {

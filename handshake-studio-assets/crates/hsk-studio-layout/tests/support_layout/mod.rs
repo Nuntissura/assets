@@ -16,7 +16,7 @@ pub fn edges(v: f64) -> LayoutEdges {
     LayoutEdges { top: len(v), right: len(v), bottom: len(v), left: len(v) }
 }
 pub fn page(key: &str, side: PageSide) -> StudioPage {
-    StudioPage { page_id: key.into(), width: len(200.0), height: len(200.0), side, margins: edges(10.0), bleed: None }
+    StudioPage { page_id: key.into(), width: len(200.0), height: len(200.0), side, margins: edges(10.0), bleed: None, applied_trap_preset: None }
 }
 /// Frame geometry: page index, x, y, w, h, columns, gutter.
 #[derive(Clone, Copy)]

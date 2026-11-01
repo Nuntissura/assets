@@ -16,6 +16,10 @@
 //! `text_frame_index` is the position in the chain. `overflows` (overset) is layout output and is not
 //! stored in the authored document.
 //!
+//! The page's `applied_trap_preset` (STU-LAY-107, lane SMB-ID-TOC-PERSIST-1) names a stored trap
+//! preset of the document's `hsk.studio.trap_preset_records@1` set (STU-LAY-152 values by value,
+//! bounds owned by layout); absent = none applied.
+//!
 //! Declared gaps, not invented here: v02.215 declares no identity prefix for a page, so `page_id` is
 //! a document-local key (`[A-Za-z0-9_-]{1,128}`); the page fields `document_offset`, `applied_section`,
 //! `applied_alternate_layout`, `applied_parent`, `parent_transform`, `override_list`,
@@ -93,6 +97,119 @@ pub struct StudioPage {
     #[serde(deserialize_with = "required")]
     #[schemars(required)]
     pub bleed: Option<PageBleed>,
+    /// STU-LAY-107 `applied_trap_preset`: the stored trap preset (STU-LAY-152) applied to this page,
+    /// by name; absent = none applied (a page written before the member could carry none). A page
+    /// range assignment is the same reference on each page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_trap_preset: Option<StudioTrapPresetRef>,
+}
+
+/// A typed reference to a stored trap preset: the preset's name (unique in the document's
+/// [`StudioTrapPresetRecords`]).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct StudioTrapPresetRef(pub String);
+impl StudioTrapPresetRef {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Bytes of a trap-preset name (a Studio bound for hostile input; the spec declares none).
+pub const MAX_TRAP_PRESET_NAME_BYTES: usize = 256;
+/// Stored trap presets per document (a Studio bound for hostile input).
+pub const MAX_TRAP_PRESETS: usize = 1024;
+
+/// The trap-preset name rule shared with layout's `TrapPreset::new`: at most
+/// [`MAX_TRAP_PRESET_NAME_BYTES`] bytes and not blank.
+pub fn trap_preset_name_ok(name: &str) -> bool {
+    name.len() <= MAX_TRAP_PRESET_NAME_BYTES && !name.trim().is_empty()
+}
+
+/// STU-LAY-152 `trap_end_type` (`trap_end.miter`, `trap_end.overlap`; namespace dropped on the wire).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioTrapEnd {
+    Miter,
+    Overlap,
+}
+
+/// STU-LAY-152 `trap_image_placement` (`trap_image.*`; namespace dropped on the wire).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioTrapImagePlacement {
+    CenterEdges,
+    Choke,
+    ImageNeutralDensity,
+    ImagesOverSpread,
+}
+
+/// A stored trap preset (STU-LAY-152): layout's `TrapPreset` record by value (Folio does not depend
+/// on layout). Every value is `None` when unset: the spec declares no default. Widths are `pt`.
+/// The parameter bound sets belong to layout (`TrapParameter`); Folio checks finiteness only and
+/// `TrapPreset::from_folio` admits the values against the bounds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioTrapPreset {
+    /// Unique in the record set; pages reference the preset by it.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_trap_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub black_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub black_color_threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub black_density: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliding_trap_threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_reduction: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trap_end_type: Option<StudioTrapEnd>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trap_image_placement: Option<StudioTrapImagePlacement>,
+}
+
+schema_token!(TrapPresetRecordsSchema, "hsk.studio.trap_preset_records@1");
+
+/// The stored trap presets of one document (`hsk.studio.trap_preset_records@1`), stored beside the
+/// document like the other record sets.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct StudioTrapPresetRecords {
+    pub schema_id: TrapPresetRecordsSchema,
+    /// `SDOC` id of the document.
+    pub document_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trap_presets: Vec<StudioTrapPreset>,
+}
+impl StudioTrapPresetRecords {
+    /// An empty set for `document_id`.
+    pub fn new(document_id: impl Into<String>) -> Self {
+        Self { schema_id: TrapPresetRecordsSchema::V1, document_id: document_id.into(), trap_presets: Vec::new() }
+    }
+    /// The stored preset a reference names.
+    pub fn preset(&self, r: &StudioTrapPresetRef) -> Option<&StudioTrapPreset> {
+        self.trap_presets.iter().find(|p| p.name == r.0)
+    }
+}
+
+/// JSON schema (draft 2020-12) of the trap-preset record set.
+pub fn trap_preset_records_schema() -> schemars::Schema {
+    schemars::generate::SchemaSettings::draft2020_12()
+        .into_generator()
+        .into_root_schema_for::<StudioTrapPresetRecords>()
+}
+
+/// Trap-preset records against `d`: document binding, at most [`MAX_TRAP_PRESETS`] presets with
+/// unique valid names and finite values, and every page's `applied_trap_preset` naming a stored
+/// preset (`DanglingReference`, target `<page_id>/applied_trap_preset`).
+pub fn validate_trap_preset_records(r: &StudioTrapPresetRecords, d: &StudioDocument, token: &CancellationToken) -> Result<()> {
+    todo!("SMB-ID-TOC-PERSIST-1 item 2: trap-preset records ({} {} {})", r.trap_presets.len(), d.page_spreads.len(), token.check().is_ok())
 }
 
 /// STU-LAY-120 first-baseline enumeration.
@@ -316,6 +433,9 @@ fn validate_pages<'a>(
                 for l in [&b.top, &b.bottom, &b.inside_or_left, &b.outside_or_right] {
                     pt(l, true, &format!("{pid}/bleed"))?;
                 }
+            }
+            if p.applied_trap_preset.as_ref().is_some_and(|r| !trap_preset_name_ok(r.as_str())) {
+                return Err(err(Code::InvalidField, format!("{pid}/applied_trap_preset")));
             }
         }
     }

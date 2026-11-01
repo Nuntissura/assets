@@ -56,6 +56,7 @@ fn page(key: &str) -> StudioPage {
         side: PageSide::RightHand,
         margins: edges(5.0),
         bleed: None,
+        applied_trap_preset: None,
     }
 }
 fn spread() -> StudioPageSpread {

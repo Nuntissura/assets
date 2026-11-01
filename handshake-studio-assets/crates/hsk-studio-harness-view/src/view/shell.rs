@@ -1612,7 +1612,7 @@ pub fn blank_layout_doc() -> LayoutDoc {
             name: "spread".into(),
             parent: Parent::Root(()),
             bounds: Bounds { x: len(0.0), y: len(0.0), width: len(595.0), height: len(842.0) },
-            pages: vec![StudioPage { page_id: "page-1".into(), width: len(595.0), height: len(842.0), side: PageSide::RightHand, margins: edges(36.0), bleed: None }],
+            pages: vec![StudioPage { page_id: "page-1".into(), width: len(595.0), height: len(842.0), side: PageSide::RightHand, margins: edges(36.0), bleed: None, applied_trap_preset: None }],
         }],
         layers: vec![],
         graph: StudioLayerGraph { schema_id: GraphSchema::V1, operations: vec![], edges: vec![], outputs: vec![] },

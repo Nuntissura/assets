@@ -80,6 +80,7 @@ fn page(key: &str, side: PageSide) -> StudioPage {
         side,
         margins: edges(5.0),
         bleed: Some(PageBleed { top: len(9.0), bottom: len(9.0), inside_or_left: len(BLEED_IN), outside_or_right: len(BLEED_OUT) }),
+        applied_trap_preset: None,
     }
 }
 fn on_spread() -> Parent {
