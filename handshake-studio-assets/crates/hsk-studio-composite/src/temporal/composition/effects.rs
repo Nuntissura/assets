@@ -45,7 +45,9 @@
 //! - Glow: `Glow Threshold` `v` is the fraction `v / 255`; `Glow Radius` is the blur radius;
 //!   `Glow Operation` maps to the pigment blend mode of the same name (`Add` = linear dodge (add));
 //!   `None`, `Dissolve` and the stencil / silhouette / luminescent / alpha-add operations, `Arbitrary
-//!   Map` colours and a `Color Phase` other than its default are refused.
+//!   Map` colours and a `Color Phase` that differs from its default modulo 360 are refused
+//!   (`Color Phase` is an unbounded full signed angle, v02.228 SD-26; the spec states no phase
+//!   semantics, so none is invented; the default is provisional and UNVERIFIED).
 //! - Colour: Levels rows are the composite (RGB) record (the per-channel records are not
 //!   recovered: identity) and `Channel:` selects the panel view only; the clip options are no-ops
 //!   on the unit-range stack. Hue/Saturation `Channel Control` selects the panel view only; with
@@ -111,8 +113,21 @@ pub const COMPOSITION_EFFECT_CONTENT: &str = "composition_effect_content";
 pub const COMPOSITION_EFFECT_OPTION: &str = "composition_effect_option";
 /// An effect value whose kernel pigment does not provide (lane SMB-AE-EFFECT-FAMILIES-2).
 pub const COMPOSITION_EFFECT_KERNEL: &str = "composition_effect_kernel";
-/// Glow `Color Phase` default as recorded ([STU-FX-131]); other phases are refused.
+/// Glow `Color Phase` default as recorded ([STU-FX-131a]); a phase that differs from it (modulo 360)
+/// is refused, because the spec states no Color Phase semantics and the engine maps none. The
+/// default itself is provisional and UNVERIFIED (v02.228 SD-26), so it may be the wrong comparison
+/// point.
 const GLOW_PHASE_DEFAULT: f64 = 0.003906;
+
+/// Whether the angle `phase` (degrees, any full signed value) is the recorded Glow phase default
+/// plus or minus whole turns. The stored value is never wrapped; only this comparison reduces
+/// modulo 360, within the binary64 spacing of a multi-turn value (`4 eps |phase|`, at least 1e-9
+/// degrees).
+fn is_default_glow_phase(phase: f64) -> bool {
+    let tolerance = 1.0e-9_f64.max(phase.abs() * 4.0 * f64::EPSILON);
+    let turns_off = (phase - GLOW_PHASE_DEFAULT).rem_euclid(360.0);
+    turns_off <= tolerance || 360.0 - turns_off <= tolerance
+}
 
 /// The ICC profiles colour parameters are converted with (module docs): the plan profile (its
 /// bytes must hash to the plan colour tag's `profile_sha256`) and the document profiles that
@@ -616,9 +631,7 @@ impl At<'_> {
         let colours = match self.option("glow_colors")? {
             1 => None,
             2 => {
-                #[allow(clippy::float_cmp)]
-                let default_phase = self.one("color_phase")? == GLOW_PHASE_DEFAULT;
-                if !default_phase {
+                if !is_default_glow_phase(self.one("color_phase")?) {
                     return Err(self.refused());
                 }
                 let looping = match self.option("color_looping")? {
