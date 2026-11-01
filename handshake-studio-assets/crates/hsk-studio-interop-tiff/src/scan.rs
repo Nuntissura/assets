@@ -535,26 +535,43 @@ fn page(ctx: &Ctx<'_>, entries: &[Entry], order: ByteOrder) -> Result<PageScan> 
     Ok(PageScan { info, decoded_bytes, budget_bytes, file_spp: spp, palette, patch })
 }
 
-/// The codec classifies an extra sample as data only when ExtraSamples says alpha; an Unspecified (0) extra
-/// sample would be dropped from its output. Exactly one extra sample is decoded by presenting the codec an
-/// alpha value in its place; what is handed out (`extra_samples`, `alpha`) always comes from the file.
-/// More than one extra sample on a colour page is refused rather than silently dropped.
+/// Presents the codec a page whose extra samples it hands out in full (lane SMB-TIFF-CHANNELS-1); what is
+/// handed out (`extra_samples`, `alpha`) always comes from the file.
+/// - One extra sample: the codec keeps it only when ExtraSamples says alpha, so an Unspecified (0) value is
+///   presented as unassociated alpha.
+/// - Several extra samples on a colour page: the codec's colour types hold at most one, so the page is
+///   presented as BlackIsZero, which the codec decodes as interleaved multiband samples in file order
+///   (the colour samples are not interpreted here either). JPEG and YCbCr pages are refused
+///   (`extra_samples_unsupported`): their codec path converts colour and cannot carry extra planes.
+/// - An ExtraSamples tag whose count is not the number of extra samples is refused
+///   (`extra_samples_count_mismatch`); without the tag every extra sample reads as unspecified.
 fn extra_sample_patch(ctx: &Ctx<'_>, entries: &[Entry], info: &PageInfo) -> Result<Vec<(u64, u8)>> {
-    let base: u16 = match info.photometric {
-        Photometric::BlackIsZero => return Ok(Vec::new()),
-        Photometric::Rgb | Photometric::IccLab | Photometric::CieLab => 3,
-        Photometric::Cmyk => 4,
-    };
+    let base = info.colour_samples_per_pixel();
     let extra = info.samples_per_pixel.checked_sub(base).ok_or(TiffError::Corrupt("samples_below_photometric"))?;
-    if extra > 1 {
-        return Err(TiffError::unsupported_value("extra_samples_unsupported", u32::from(extra)));
+    let tag = find(entries, TAG_EXTRA_SAMPLES);
+    if tag.is_some() && info.extra_samples.len() != usize::from(extra) {
+        return Err(TiffError::Corrupt("extra_samples_count_mismatch"));
     }
-    let (Some(e), true) = (find(entries, TAG_EXTRA_SAMPLES), extra == 1 && info.alpha == Alpha::None) else {
+    if info.photometric == Photometric::BlackIsZero {
+        return Ok(Vec::new());
+    }
+    if extra > 1 {
+        if info.compression == 7 || info.source_photometric == 6 {
+            return Err(TiffError::unsupported_value("extra_samples_unsupported", u32::from(extra)));
+        }
+        let pie = find(entries, TAG_PHOTOMETRIC).ok_or(TiffError::MissingTag(TAG_PHOTOMETRIC))?;
+        if pie.ty != 3 {
+            return Err(TiffError::Corrupt("bad_field_type"));
+        }
+        return Ok(if ctx.cur.le {
+            vec![(pie.data_pos, 1), (pie.data_pos.saturating_add(1), 0)]
+        } else {
+            vec![(pie.data_pos, 0), (pie.data_pos.saturating_add(1), 1)]
+        });
+    }
+    let (Some(e), true) = (tag, extra == 1 && info.alpha == Alpha::None) else {
         return Ok(Vec::new());
     };
-    if info.extra_samples.len() != 1 {
-        return Ok(Vec::new());
-    }
     let alpha = |le: bool| -> Vec<(u64, u8)> {
         match (e.ty, le) {
             (3, true) => vec![(e.data_pos, 2), (e.data_pos.saturating_add(1), 0)],

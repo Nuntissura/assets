@@ -767,7 +767,7 @@ mod with_package {
 
     /// Shared tail of every importer that yields an interop-psd `ImportProposal` (PSD layers, or one
     /// raster through `raster_proposal`): tile assets, records, receipt, original.
-    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-raster"))]
     pub(crate) fn package_proposal(
         format: SourceFormat,
         importer: &str,
@@ -775,7 +775,25 @@ mod with_package {
         proposal: hsk_studio_interop_psd::ImportProposal,
         extra: Value,
     ) -> Result<ImportedDocument, ImportError> {
+        package_proposal_with(format, importer, bytes, proposal, extra, Vec::new())
+    }
+
+    /// `package_proposal` plus channel tile bytes an importer produced outside the proposal (TIFF
+    /// extra samples as channel records, lane SMB-TIFF-CHANNELS-1); stored as package assets like the
+    /// proposal's own channel tiles.
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster"))]
+    pub(crate) fn package_proposal_with(
+        format: SourceFormat,
+        importer: &str,
+        bytes: &[u8],
+        proposal: hsk_studio_interop_psd::ImportProposal,
+        extra: Value,
+        channel_assets: Vec<Vec<u8>>,
+    ) -> Result<ImportedDocument, ImportError> {
         let mut assets = MemoryAssetSource::new();
+        for tile in channel_assets {
+            assets.insert(tile);
+        }
         for tile in &proposal.tiles {
             let mut both = Vec::with_capacity(tile.colour.len().saturating_add(tile.alpha.len()));
             both.extend_from_slice(&tile.colour);

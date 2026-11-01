@@ -8,7 +8,7 @@ use crate::model::{Alpha, ByteOrder, ExtraPlane, Resolution, Samples};
 use std::io::Cursor;
 use tiff::encoder::colortype::ColorType;
 use tiff::encoder::{DeflateLevel, TiffEncoder, TiffKind, TiffKindBig, TiffKindStandard, TiffValue};
-use tiff::tags::{PhotometricInterpretation as Pi, SampleFormat as Sf, Tag, Type};
+use tiff::tags::{ExtraSamples, PhotometricInterpretation as Pi, SampleFormat as Sf, Tag, Type};
 use tiff::Directory;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,9 +165,9 @@ pub fn encode_with(req: &EncodeRequest<'_>, opts: &EncodeOptions) -> Result<Vec<
     let out = Vec::new();
     if opts.byte_order == ByteOrder::Little {
         return if req.big_tiff {
-            encode_kind::<TiffKindBig>(req, opts, false, out)
+            encode_kind::<TiffKindBig>(req, opts, false, &[], out)
         } else {
-            encode_kind::<TiffKindStandard>(req, opts, false, out)
+            encode_kind::<TiffKindStandard>(req, opts, false, &[], out)
         };
     }
     let prepared = prepare_big_endian(req)?;
@@ -187,9 +187,9 @@ pub fn encode_with(req: &EncodeRequest<'_>, opts: &EncodeOptions) -> Result<Vec<
     };
     let predictor_tag = req.predictor == Predictor::Horizontal;
     let le = if req.big_tiff {
-        encode_kind::<TiffKindBig>(&be_req, opts, predictor_tag, out)?
+        encode_kind::<TiffKindBig>(&be_req, opts, predictor_tag, &[], out)?
     } else {
-        encode_kind::<TiffKindStandard>(&be_req, opts, predictor_tag, out)?
+        encode_kind::<TiffKindStandard>(&be_req, opts, predictor_tag, &[], out)?
     };
     to_big_endian(&le, req.big_tiff)
 }
@@ -199,12 +199,101 @@ pub fn encode_with(req: &EncodeRequest<'_>, opts: &EncodeOptions) -> Result<Vec<
 pub const MAX_ENCODE_SAMPLES_PER_PIXEL: u16 = 64;
 
 /// [`encode_with`] plus extra sample planes after the colour model's own samples (lane
-/// SMB-TIFF-CHANNELS-1). Red stub: planes are not written yet.
+/// SMB-TIFF-CHANNELS-1; TIFF 6.0 ExtraSamples, tag 338). `req.samples` holds the colour model's samples
+/// (alpha included for `GrayA`/`Rgba`); each [`ExtraPlane`] holds `width * height` values of the same
+/// sample type and its ExtraSamples value (0 unspecified, 1 associated alpha, 2 unassociated alpha).
+/// The tag lists the model's alpha kind first, then the planes' values in order. Every compression,
+/// the horizontal predictor (integer samples; differenced over the whole pixel) and both byte orders
+/// are as in [`encode_with`]; decoding gives back every plane exactly (test
+/// `extra_planes_encode_and_decode_exactly_at_every_depth_compression_and_byte_order`).
+/// Refused before any plane is read or interleaved: more than [`MAX_ENCODE_SAMPLES_PER_PIXEL`]
+/// samples per pixel (`limit_samples_per_pixel`), a value other than 0, 1 or 2
+/// (`extra_sample_unsupported`), the encode byte budget over all samples (`limit_encode_bytes`); then a
+/// plane of another sample type (`extra_plane_sample_type`) or length (`sample_count_mismatch`)
+/// (test `extra_sample_counts_values_and_budgets_are_bounded`).
 pub fn encode_with_planes(req: &EncodeRequest<'_>, extra: &[ExtraPlane], opts: &EncodeOptions) -> Result<Vec<u8>> {
     if extra.is_empty() {
         return encode_with(req, opts);
     }
-    Err(TiffError::unsupported("extra_planes_unsupported"))
+    check(req)?;
+    check_metadata(&opts.metadata)?;
+    let base = req.color.samples_per_pixel();
+    let spp = u16::try_from(extra.len())
+        .ok()
+        .and_then(|n| n.checked_add(base))
+        .filter(|s| *s <= MAX_ENCODE_SAMPLES_PER_PIXEL)
+        .ok_or(TiffError::Limit("limit_samples_per_pixel"))?;
+    if let Some(bad) = extra.iter().find(|p| p.extra_sample > 2) {
+        return Err(TiffError::unsupported_value("extra_sample_unsupported", u32::from(bad.extra_sample)));
+    }
+    let pixels = cmul(u64::from(req.width), u64::from(req.height))?;
+    if cmul(cmul(pixels, u64::from(spp))?, u64::from(req.bit_depth / 8))? > MAX_ENCODE_BYTES {
+        return Err(TiffError::Limit("limit_encode_bytes"));
+    }
+    for p in extra {
+        if std::mem::discriminant(&p.samples) != std::mem::discriminant(req.samples) {
+            return Err(TiffError::Usage("extra_plane_sample_type"));
+        }
+        if u64::try_from(p.samples.len()).map_err(|_| TiffError::DimsOverflow)? != pixels {
+            return Err(TiffError::Usage("sample_count_mismatch"));
+        }
+    }
+    let full = interleave_planes(req.samples, usize::from(base), extra)?;
+    let diff = req.predictor == Predictor::Horizontal;
+    let big_endian = opts.byte_order == ByteOrder::Big;
+    let prepared = prepare(&full, usize::from(spp), req.width, diff, big_endian)?;
+    let inner = EncodeRequest {
+        width: req.width,
+        height: req.height,
+        color: req.color,
+        alpha: req.alpha,
+        bit_depth: req.bit_depth,
+        samples: &prepared,
+        icc: req.icc,
+        compression: req.compression,
+        predictor: Predictor::None,
+        big_tiff: req.big_tiff,
+        resolution: req.resolution,
+        orientation: req.orientation,
+    };
+    let values: Vec<u16> = extra.iter().map(|p| p.extra_sample).collect();
+    let out = if req.big_tiff {
+        encode_kind::<TiffKindBig>(&inner, opts, diff, &values, Vec::new())?
+    } else {
+        encode_kind::<TiffKindStandard>(&inner, opts, diff, &values, Vec::new())?
+    };
+    if big_endian { to_big_endian(&out, req.big_tiff) } else { Ok(out) }
+}
+
+/// The model's samples followed by each extra plane's sample, pixel by pixel.
+fn interleave_planes(base: &Samples, spp: usize, extra: &[ExtraPlane]) -> Result<Samples> {
+    macro_rules! weave {
+        ($v:expr, $variant:ident) => {{
+            let planes = extra
+                .iter()
+                .map(|p| match &p.samples {
+                    Samples::$variant(s) => Ok(s.as_slice()),
+                    _ => Err(TiffError::Usage("extra_plane_sample_type")),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let total = planes.iter().try_fold($v.len(), |n, p| n.checked_add(p.len())).ok_or(TiffError::DimsOverflow)?;
+            let mut out = Vec::with_capacity(total);
+            for (i, px) in $v.chunks(spp).enumerate() {
+                out.extend_from_slice(px);
+                for p in &planes {
+                    out.push(*p.get(i).ok_or(TiffError::Usage("sample_count_mismatch"))?);
+                }
+            }
+            Samples::$variant(out)
+        }};
+    }
+    Ok(match base {
+        Samples::U8(v) => weave!(v, U8),
+        Samples::U16(v) => weave!(v, U16),
+        Samples::U32(v) => weave!(v, U32),
+        Samples::F32(v) => weave!(v, F32),
+        Samples::F64(_) => return Err(TiffError::unsupported("sample_type_unsupported")),
+    })
 }
 
 fn check_metadata(m: &Metadata) -> Result<()> {
@@ -224,12 +313,13 @@ fn check_metadata(m: &Metadata) -> Result<()> {
 /// Row-wise horizontal differencing on the logical values (when requested), then each sample's bytes reversed,
 /// so the little-endian `tiff` writer emits big-endian sample bytes.
 fn prepare_big_endian(req: &EncodeRequest<'_>) -> Result<Samples> {
-    let spp = usize::from(req.color.samples_per_pixel());
-    let row = usize::try_from(req.width)
-        .map_err(|_| TiffError::DimsOverflow)?
-        .checked_mul(spp)
-        .ok_or(TiffError::DimsOverflow)?;
-    let diff = req.predictor == Predictor::Horizontal;
+    prepare(req.samples, usize::from(req.color.samples_per_pixel()), req.width, req.predictor == Predictor::Horizontal, true)
+}
+
+/// Row-wise horizontal differencing over `spp`-sample pixels on the logical values (when `diff`), then,
+/// when `swap`, each sample's bytes reversed.
+fn prepare(samples: &Samples, spp: usize, width: u32, diff: bool, swap: bool) -> Result<Samples> {
+    let row = usize::try_from(width).map_err(|_| TiffError::DimsOverflow)?.checked_mul(spp).ok_or(TiffError::DimsOverflow)?;
     macro_rules! conv {
         ($v:expr, $variant:ident, $swap:expr) => {{
             let mut out: Vec<_> = $v.to_vec();
@@ -240,17 +330,20 @@ fn prepare_big_endian(req: &EncodeRequest<'_>) -> Result<Samples> {
                     }
                 }
             }
-            for x in &mut out {
-                *x = $swap(*x);
+            if swap {
+                for x in &mut out {
+                    *x = $swap(*x);
+                }
             }
             Samples::$variant(out)
         }};
     }
-    Ok(match req.samples {
+    Ok(match samples {
         Samples::U8(v) => conv!(v, U8, |x: u8| x),
         Samples::U16(v) => conv!(v, U16, u16::swap_bytes),
         Samples::U32(v) => conv!(v, U32, u32::swap_bytes),
-        Samples::F32(v) => Samples::F32(v.iter().map(|x| f32::from_bits(x.to_bits().swap_bytes())).collect()),
+        Samples::F32(v) if swap => Samples::F32(v.iter().map(|x| f32::from_bits(x.to_bits().swap_bytes())).collect()),
+        Samples::F32(v) => Samples::F32(v.clone()),
         Samples::F64(_) => return Err(TiffError::unsupported("sample_type_unsupported")),
     })
 }
@@ -305,7 +398,13 @@ fn map_enc(e: tiff::TiffError) -> TiffError {
     }
 }
 
-fn encode_kind<K: TiffKind>(req: &EncodeRequest<'_>, opts: &EncodeOptions, predictor_tag: bool, out: Vec<u8>) -> Result<Vec<u8>> {
+fn encode_kind<K: TiffKind>(
+    req: &EncodeRequest<'_>,
+    opts: &EncodeOptions,
+    predictor_tag: bool,
+    extra: &[u16],
+    out: Vec<u8>,
+) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(out);
     let mut enc = TiffEncoder::<_, K>::new_generic(&mut cursor).map_err(map_enc)?;
     enc = match req.compression {
@@ -321,26 +420,26 @@ fn encode_kind<K: TiffKind>(req: &EncodeRequest<'_>, opts: &EncodeOptions, predi
     }
     use ColorModel::{Cmyk, Gray, GrayA, Rgb, Rgba};
     match (req.samples, req.color) {
-        (Samples::U8(s), Gray) => write::<K, Gray8>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U8(s), GrayA) => write::<K, GrayA8>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U8(s), Rgb) => write::<K, Rgb8>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U8(s), Rgba) => write::<K, Rgba8>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U8(s), Cmyk) => write::<K, Cmyk8>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U16(s), Gray) => write::<K, Gray16>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U16(s), GrayA) => write::<K, GrayA16>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U16(s), Rgb) => write::<K, Rgb16>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U16(s), Rgba) => write::<K, Rgba16>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U16(s), Cmyk) => write::<K, Cmyk16>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U32(s), Gray) => write::<K, Gray32>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U32(s), GrayA) => write::<K, GrayA32>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U32(s), Rgb) => write::<K, Rgb32>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U32(s), Rgba) => write::<K, Rgba32>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::U32(s), Cmyk) => write::<K, Cmyk32>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::F32(s), Gray) => write::<K, Gray32F>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::F32(s), GrayA) => write::<K, GrayA32F>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::F32(s), Rgb) => write::<K, Rgb32F>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::F32(s), Rgba) => write::<K, Rgba32F>(&mut enc, req, opts, predictor_tag, s)?,
-        (Samples::F32(s), Cmyk) => write::<K, Cmyk32F>(&mut enc, req, opts, predictor_tag, s)?,
+        (Samples::U8(s), Gray) => write::<K, Gray8>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U8(s), GrayA) => write::<K, GrayA8>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U8(s), Rgb) => write::<K, Rgb8>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U8(s), Rgba) => write::<K, Rgba8>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U8(s), Cmyk) => write::<K, Cmyk8>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U16(s), Gray) => write::<K, Gray16>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U16(s), GrayA) => write::<K, GrayA16>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U16(s), Rgb) => write::<K, Rgb16>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U16(s), Rgba) => write::<K, Rgba16>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U16(s), Cmyk) => write::<K, Cmyk16>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U32(s), Gray) => write::<K, Gray32>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U32(s), GrayA) => write::<K, GrayA32>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U32(s), Rgb) => write::<K, Rgb32>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U32(s), Rgba) => write::<K, Rgba32>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::U32(s), Cmyk) => write::<K, Cmyk32>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::F32(s), Gray) => write::<K, Gray32F>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::F32(s), GrayA) => write::<K, GrayA32F>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::F32(s), Rgb) => write::<K, Rgb32F>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::F32(s), Rgba) => write::<K, Rgba32F>(&mut enc, req, opts, predictor_tag, extra, s)?,
+        (Samples::F32(s), Cmyk) => write::<K, Cmyk32F>(&mut enc, req, opts, predictor_tag, extra, s)?,
         (Samples::F64(_), _) => return Err(TiffError::unsupported("sample_type_unsupported")),
     }
     Ok(cursor.into_inner())
@@ -351,15 +450,29 @@ fn write<K: TiffKind, C: ColorType>(
     req: &EncodeRequest<'_>,
     opts: &EncodeOptions,
     predictor_tag: bool,
+    extra: &[u16],
     samples: &[C::Inner],
 ) -> Result<()>
 where
     [C::Inner]: TiffValue,
 {
     let mut img = enc.new_image::<C>(req.width, req.height).map_err(map_enc)?;
+    if !extra.is_empty() {
+        // The codec counts these into SamplesPerPixel, BitsPerSample, SampleFormat and the strip size.
+        let kinds = extra
+            .iter()
+            .map(|v| ExtraSamples::from_u16(*v).ok_or(TiffError::unsupported_value("extra_sample_unsupported", u32::from(*v))))
+            .collect::<Result<Vec<_>>>()?;
+        img.extra_samples(&kinds).map_err(map_enc)?;
+    }
+    // ExtraSamples lists the model's alpha kind first, then the extra planes (rewrites the codec's tag).
+    let mut values: Vec<u16> = Vec::with_capacity(extra.len().saturating_add(1));
     if req.color.has_alpha() {
-        let kind: u16 = if req.alpha == Alpha::Associated { 1 } else { 2 };
-        img.encoder().write_tag(Tag::ExtraSamples, &[kind][..]).map_err(map_enc)?;
+        values.push(if req.alpha == Alpha::Associated { 1 } else { 2 });
+    }
+    values.extend_from_slice(extra);
+    if !values.is_empty() {
+        img.encoder().write_tag(Tag::ExtraSamples, &values[..]).map_err(map_enc)?;
     }
     if let Some(r) = &req.resolution {
         let dir = img.encoder();
