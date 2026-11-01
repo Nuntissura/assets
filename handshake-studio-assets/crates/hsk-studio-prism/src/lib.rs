@@ -34,6 +34,8 @@ mod proof;
 pub use proof::*;
 pub mod mode;
 pub use mode::MODE_CONVERSION_DESCRIPTOR;
+mod named_colour;
+pub use named_colour::*;
 mod working;
 pub use working::{
     WORKING_PROFILE_LINEAR_SRGB, WORKING_PROFILE_LINEAR_SRGB_ADMITTED, WORKING_PROFILE_LINEAR_SRGB_ADMITTED_SHA256_HEX,

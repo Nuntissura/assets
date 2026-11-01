@@ -325,9 +325,9 @@ impl WideProfileDescriptor {
 }
 
 pub(crate) struct Tag {
-    sig: [u8; 4],
-    kind: [u8; 4],
-    offset: usize,
+    pub(crate) sig: [u8; 4],
+    pub(crate) kind: [u8; 4],
+    pub(crate) offset: usize,
     pub(crate) size: usize,
 }
 fn be32(b: &[u8], at: usize) -> u32 {
