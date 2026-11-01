@@ -740,20 +740,33 @@ fn colour_parameters_convert_from_their_profile_into_the_plan() {
 // ---- Lane SMB-FOLIO-ANGLE-UNBOUNDED-1 (v02.228 SD-26): recovered ANGLE rows are unbounded ----
 
 #[test]
-fn glow_color_phase_past_the_old_junk_pair_reaches_the_engine_option_refusal() {
-    bounded_case("glow_color_phase_past_the_old_junk_pair_reaches_the_engine_option_refusal", || {
+fn glow_color_phase_default_is_matched_modulo_360_and_other_phases_stay_typed_refusals() {
+    bounded_case("glow_color_phase_default_is_matched_modulo_360_and_other_phases_stay_typed_refusals", || {
+        // Color Phase is an unbounded full signed angle (SD-26) whose semantics the spec does not
+        // state (STU-FX-131a lists the row only): the engine maps no phase, so it keeps a typed
+        // "not implemented" refusal for a phase that differs from the recorded default, and takes
+        // the default plus or minus whole turns as the default. The comparison point (the default
+        // 0.003906) is itself provisional and UNVERIFIED (SD-26).
         let glow = |phase: f64| {
             one(json!({"effect_id":"g","filter_kind":"glow",
                 "values":{"glow_colors":constant(json!([2.0])),"color_phase":constant(json!([phase]))},
                 "colour_profiles":plan_refs(&["color_a", "color_b"])}))
         };
-        // The recorded default lowers (A & B colours kept).
-        let SceneEffect::Glow(g) = lowered(glow(0.003906), 0).expect("default phase lowers").effects[0].effect.clone() else { panic!() };
-        assert!(g.colours.is_some());
-        // Every other phase, above the old hard pair (0.003906..0.496094) included, is a legal
-        // angle for Folio and reaches the engine's own typed option refusal (the engine maps no
-        // phase), never `effect_param_out_of_range`.
-        for phase in [0.5, 5.0, 360.0, 725.0, -360.0, -725.5] {
+        let lower = |phase: f64| lowered(glow(phase), 0).map(|c| c.effects[0].effect.clone());
+        let default = lower(0.003906).expect("the recorded default lowers");
+        assert!(matches!(&default, SceneEffect::Glow(g) if g.colours.is_some()));
+        for phase in [360.003906, 720.003906, 1080.003906, -359.996094, -719.996094, 999_999_720.003906] {
+            let got = lower(phase).unwrap_or_else(|e| panic!("phase {phase} is the default plus whole turns: {e:?}"));
+            assert_eq!(got, default, "phase {phase}");
+            assert_eq!(
+                run_on(9, 9, impulse(9, 9, 4, 4), &[entry("g", got)]),
+                run_on(9, 9, impulse(9, 9, 4, 4), &[entry("g", default.clone())]),
+                "phase {phase} renders like the default"
+            );
+        }
+        // Folio accepts every one of them (no bound); the engine refuses a phase that differs, typed
+        // (never `effect_param_out_of_range`), including whole turns of a different angle.
+        for phase in [0.5, 5.0, 90.0, 360.0, 725.0, -30.0, -360.0, -725.5] {
             match lowered(glow(phase), 0) {
                 Err(TemporalError::Unsupported { layer_id, feature }) => {
                     assert_eq!((layer_id, feature), (identity("SLYR", 2), COMPOSITION_EFFECT_OPTION), "phase {phase}");
@@ -761,6 +774,9 @@ fn glow_color_phase_past_the_old_junk_pair_reaches_the_engine_option_refusal() {
                 other => panic!("phase {phase} not refused by the engine: {other:?}"),
             }
         }
+        // The stored value is never wrapped: the record keeps 720.003906, lowering only reads it.
+        let stored: StudioCompositionRecords = serde_json::from_value(records(glow(720.003906))).expect("records shape");
+        assert_eq!(stored.compositions[0].layers[0].effects[0].static_or_default("color_phase"), Some(vec![720.003906]));
     });
 }
 
