@@ -116,12 +116,12 @@ fn style() -> TocStyle {
         name: "Contents".into(),
         title: "Contents".into(),
         title_style: Some(para(9)),
-        include_book_documents: false,
-        include_hidden: false,
-        run_in: false,
-        create_bookmarks: false,
-        make_anchor: false,
-        remove_forced_line_break: true,
+        include_book_documents: Some(false),
+        include_hidden: Some(false),
+        run_in: Some(false),
+        create_bookmarks: Some(false),
+        make_anchor: Some(false),
+        remove_forced_line_break: Some(true),
         numbered_paragraphs: None,
         set_story_direction: None,
         default_styled: false,
@@ -215,7 +215,7 @@ fn toc_include_overset_and_include_hidden_flags() {
     assert_eq!(text_of(&g.story), "Contents\nAlpha .. 1\n1 beta two\nGamma .. 2\nDelta");
     assert_eq!(g.entries[3].page_label, None);
     assert_eq!(g.omitted_overset, 0);
-    st.include_hidden = true;
+    st.include_hidden = Some(true);
     let g = generate_table_of_contents(&ctx(2), &request(&f, &st, &src), &cancel).unwrap();
     assert_eq!(text_of(&g.story), "Contents\nAlpha .. 1\n1 beta two\nGamma .. 2\nSecret .. 2");
     assert_eq!(g.omitted_hidden, 0);
@@ -228,11 +228,11 @@ fn toc_forced_breaks_run_in_and_sort() {
     let src = [TocSource { story: &f.story, text: &f.text, placement: Some(&f.placement) }];
     let cancel = CancellationToken::default();
     let mut keep = style();
-    keep.remove_forced_line_break = false;
+    keep.remove_forced_line_break = Some(false);
     let g = generate_table_of_contents(&ctx(2), &request(&f, &keep, &src), &cancel).unwrap();
     assert_eq!(text_of(&g.story), "Contents\nAlpha .. 1\n1 beta\u{2028}two\nGamma .. 2");
     let mut run_in = style();
-    run_in.run_in = true;
+    run_in.run_in = Some(true);
     let g = generate_table_of_contents(&ctx(2), &request(&f, &run_in, &src), &cancel).unwrap();
     assert_eq!(text_of(&g.story), format!("Contents\nAlpha .. 1{RUN_IN_JOINER}1 beta two\nGamma .. 2"));
     assert_eq!(g.entries.iter().map(|e| e.run_in).collect::<Vec<_>>(), [false, true, false]);
@@ -253,8 +253,8 @@ fn toc_anchors_bookmarks_and_locked_story_outcome() {
     let src = [TocSource { story: &f.story, text: &f.text, placement: Some(&f.placement) }];
     let cancel = CancellationToken::default();
     let mut st = style();
-    st.make_anchor = true;
-    st.create_bookmarks = true;
+    st.make_anchor = Some(true);
+    st.create_bookmarks = Some(true);
     let existing = [StudioTextAnchor { anchor_id: "toc-anchor-1".into(), name: "TOC anchor toc-anchor-2".into(), story_id: id("STXT", 1), byte: 0 }];
     let r = TocGenerateRequest { existing_anchors: &existing, ..request(&f, &st, &src) };
     let g = generate_table_of_contents(&ctx(2), &r, &cancel).unwrap();
@@ -292,7 +292,7 @@ fn toc_multiple_independent_tocs_and_update_all() {
     headings.title = String::new();
     headings.entries.truncate(1);
     headings.entries[0].page_number_position = TocPageNumberPosition::None;
-    headings.make_anchor = true;
+    headings.make_anchor = Some(true);
     let mut old_a = generate_table_of_contents(&ctx(2), &request(&f, &contents, &src), &cancel).unwrap().story;
     old_a.text_kind = StoryTextKind::Point;
     let mut old_b = old_a.clone();
@@ -430,7 +430,7 @@ fn toc_book_documents_unavailable_missing_and_combined() {
     let src = [TocSource { story: &f.story, text: &f.text, placement: Some(&f.placement) }];
     let cancel = CancellationToken::default();
     let mut st = style();
-    st.include_book_documents = true;
+    st.include_book_documents = Some(true);
     let e = generate_table_of_contents(&ctx(2), &request(&f, &st, &src), &cancel).unwrap_err();
     assert_eq!((e.code(), e.failure_code()), ("toc_book_unavailable", Some(FailureCode::Unavailable)));
     let mut book = StudioBook::new("book", "Book");
@@ -451,7 +451,8 @@ fn toc_book_documents_unavailable_missing_and_combined() {
 }
 
 /// The full style table and entry table are carried (field census), the enumerations round-trip,
-/// and a Folio style lifts with generate_toc's behaviour.
+/// and a Folio style persisting generate_toc's behaviour lifts with exactly those values (lane
+/// SMB-ID-TOC-PERSIST-1: the lift reads persisted values, it no longer fills them in).
 #[test]
 fn toc_record_fields_enumerations_and_folio_lift() {
     let st = style();
@@ -489,18 +490,21 @@ fn toc_record_fields_enumerations_and_folio_lift() {
         title_style: Some(stys(9)),
         include_overset: false,
         entries: vec![StudioTocEntry { paragraph_style: stys(1), format_style: Some(stys(11)), level: 1, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false, page_number_style: None, separator_style: None }],
-        include_book_documents: None,
-        include_hidden: None,
-        run_in: None,
-        create_bookmarks: None,
-        make_anchor: None,
-        remove_forced_line_break: None,
+        include_book_documents: Some(false),
+        include_hidden: Some(true),
+        run_in: Some(false),
+        create_bookmarks: Some(false),
+        make_anchor: Some(false),
+        remove_forced_line_break: Some(true),
         numbered_paragraphs: None,
         set_story_direction: None,
         default_styled: false,
     };
     let lifted = TocStyle::from_folio(&folio).unwrap();
-    assert!(lifted.include_hidden && lifted.remove_forced_line_break && !lifted.make_anchor && !lifted.run_in);
+    assert_eq!(
+        (lifted.include_hidden, lifted.remove_forced_line_break, lifted.make_anchor, lifted.run_in),
+        (Some(true), Some(true), Some(false), Some(false))
+    );
     assert_eq!(lifted.entries[0].name, para(1));
     let mut bad = folio.clone();
     bad.entries[0].paragraph_style = "not-a-style".into();
@@ -536,9 +540,104 @@ fn toc_outcomes_report_through_observe() {
     let receipt = report_command(&ok, TocCommandError::failure_code, &ctx(2), &cancel, &mut observe, &mut Collect(Vec::new())).unwrap();
     assert_eq!((receipt.outcome, receipt.correlation_id, receipt.revision), (Outcome::Success, 1, 2));
     let mut book_style = style();
-    book_style.include_book_documents = true;
+    book_style.include_book_documents = Some(true);
     let refused = generate_table_of_contents(&ctx(2), &request(&f, &book_style, &src), &cancel);
     let mut observe = Observe::new(1, 2, resource, actor, hsk_studio_observe::Budget::new(0, 0).unwrap());
     let receipt = report_command(&refused, TocCommandError::failure_code, &ctx(2), &cancel, &mut observe, &mut Collect(Vec::new())).unwrap();
     assert_eq!(receipt.outcome, Outcome::Failure(FailureCode::Unavailable));
+}
+
+/// Lane SMB-ID-TOC-PERSIST-1 item 3: the lift between Folio's persisted TOC style and this record is
+/// lossless both ways: every style-table and entry-table field, Folio's key and the persisted
+/// include-overset argument; unknown flags stay unknown in both directions.
+#[test]
+fn toc_persisted_style_lift_is_lossless_both_ways() {
+    let mut full = style();
+    full.numbered_paragraphs = CapturedToken::parse("numbered.include_full_paragraph");
+    full.set_story_direction = Some(TocStoryDirection::Vertical);
+    full.include_book_documents = Some(true);
+    full.make_anchor = Some(true);
+    let p = PersistedTocStyle { toc_id: "toc-7".into(), include_overset: true, style: full.clone() };
+    let folio = p.to_folio();
+    assert_eq!(check_toc_style(&folio), Ok(()));
+    assert_eq!((folio.toc_id.as_str(), folio.include_overset, folio.include_book_documents, folio.make_anchor), ("toc-7", true, Some(true), Some(true)));
+    assert_eq!(folio.entries[0].page_number_style.as_deref(), Some(stys(21).as_str()));
+    assert_eq!(folio.entries[0].separator_style.as_deref(), Some(stys(22).as_str()));
+    assert_eq!(folio.numbered_paragraphs.as_deref(), Some("numbered.include_full_paragraph"));
+    assert_eq!(PersistedTocStyle::from_folio(&folio).unwrap(), p, "record -> Folio -> record");
+    assert_eq!(TocStyle::from_folio(&folio).unwrap(), full);
+    // Folio -> record -> Folio, unknown members included.
+    let mut unknown = folio.clone();
+    unknown.include_hidden = None;
+    unknown.run_in = None;
+    unknown.remove_forced_line_break = None;
+    unknown.numbered_paragraphs = None;
+    unknown.set_story_direction = None;
+    unknown.entries[1].page_number_style = Some(stys(23));
+    let lifted = PersistedTocStyle::from_folio(&unknown).unwrap();
+    assert_eq!((lifted.style.include_hidden, lifted.style.run_in, lifted.style.remove_forced_line_break), (None, None, None));
+    assert_eq!(lifted.to_folio(), unknown, "Folio -> record -> Folio");
+    let mut default_styled = unknown.clone();
+    default_styled.entries.clear();
+    default_styled.default_styled = true;
+    assert_eq!(PersistedTocStyle::from_folio(&default_styled).unwrap().to_folio(), default_styled);
+    // Persisted values that are not valid contract values are refused, never dropped.
+    let mut bad = folio.clone();
+    bad.numbered_paragraphs = Some("Not A Token".into());
+    assert_eq!(PersistedTocStyle::from_folio(&bad).unwrap_err().code(), "toc_numbered_paragraphs");
+    let mut bad = folio;
+    bad.entries[0].separator_style = Some(id("SLYR", 1));
+    assert_eq!(PersistedTocStyle::from_folio(&bad).unwrap_err(), TocCommandError::StyleRef);
+}
+
+/// The generators read the persisted members: a persisted style with `include_hidden` and the
+/// persisted include-overset argument generates Secret and Delta; an unknown flag is refused
+/// (`toc_flag_unset`) instead of filled in. The legacy `generate_toc` honours the persisted
+/// `include_hidden` and `remove_forced_line_break` and refuses members it cannot write.
+#[test]
+fn toc_generators_read_persisted_members() {
+    let f = fixture();
+    let src = [TocSource { story: &f.story, text: &f.text, placement: Some(&f.placement) }];
+    let cancel = CancellationToken::default();
+    let mut stated = style();
+    stated.include_hidden = Some(true);
+    let folio = PersistedTocStyle { toc_id: "toc".into(), include_overset: true, style: stated }.to_folio();
+    let persisted = PersistedTocStyle::from_folio(&folio).unwrap();
+    let r = TocGenerateRequest { include_overset: persisted.include_overset, ..request(&f, &persisted.style, &src) };
+    let g = generate_table_of_contents(&ctx(2), &r, &cancel).unwrap();
+    assert_eq!(text_of(&g.story), "Contents\nAlpha .. 1\n1 beta two\nGamma .. 2\nSecret .. 2\nDelta");
+    let mut unknown = folio.clone();
+    unknown.include_hidden = None;
+    let lifted = PersistedTocStyle::from_folio(&unknown).unwrap();
+    let e = generate_table_of_contents(&ctx(2), &request(&f, &lifted.style, &src), &cancel).unwrap_err();
+    assert_eq!((e.code(), e.clone()), ("toc_flag_unset", TocCommandError::FlagUnset("include_hidden")));
+    assert_eq!(e.failure_code(), Some(FailureCode::Validation));
+    // Legacy generator over the persisted record.
+    let mut plain = style();
+    for e in &mut plain.entries {
+        e.page_number_style = None;
+        e.separator_style = None;
+    }
+    let legacy = |s: &StudioTocStyle| generate_toc(&f.doc, s, &src, &f.pages, "STXT-019abcde-0000-7000-8000-000000000009", TocLimits::default(), &cancel);
+    let mut old = plain.to_folio("toc", false);
+    for flag in [&mut old.include_book_documents, &mut old.include_hidden, &mut old.run_in, &mut old.create_bookmarks, &mut old.make_anchor, &mut old.remove_forced_line_break] {
+        *flag = None;
+    }
+    assert_eq!(legacy(&old).unwrap().text, "Contents\nAlpha .. 1\n1 beta two\nGamma .. 2\nSecret .. 2", "unknown = the legacy behaviour");
+    let mut hidden_off = old.clone();
+    hidden_off.include_hidden = Some(false);
+    assert_eq!(legacy(&hidden_off).unwrap().text, "Contents\nAlpha .. 1\n1 beta two\nGamma .. 2");
+    hidden_off.remove_forced_line_break = Some(false);
+    assert_eq!(legacy(&hidden_off).unwrap().text, "Contents\nAlpha .. 1\n1 beta\u{2028}two\nGamma .. 2");
+    let refuse = |edit: &dyn Fn(&mut StudioTocStyle)| {
+        let mut s = old.clone();
+        edit(&mut s);
+        legacy(&s).map(|_| ()).map_err(|e| e.code())
+    };
+    assert_eq!(refuse(&|s| s.run_in = Some(true)), Err("toc_contract_only"));
+    assert_eq!(refuse(&|s| s.make_anchor = Some(true)), Err("toc_contract_only"));
+    assert_eq!(refuse(&|s| s.create_bookmarks = Some(true)), Err("toc_contract_only"));
+    assert_eq!(refuse(&|s| s.include_book_documents = Some(true)), Err("toc_contract_only"));
+    assert_eq!(refuse(&|s| s.entries[0].separator_style = Some(stys(22))), Err("toc_contract_only"));
+    assert_eq!(refuse(&|s| s.run_in = Some(false)), Ok(()), "a stated false is the legacy behaviour");
 }

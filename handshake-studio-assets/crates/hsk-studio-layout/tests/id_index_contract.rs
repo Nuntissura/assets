@@ -179,9 +179,9 @@ fn options() -> IndexOptions {
     IndexOptions {
         title: "Index".into(),
         title_style: Some(para(30)),
-        replace_existing_index: false,
-        include_book_documents: false,
-        include_hidden_entries: false,
+        replace_existing_index: Some(false),
+        include_book_documents: Some(false),
+        include_hidden_entries: Some(false),
         index_format: IndexFormat::Nested,
         include_section_headings: false,
         include_empty_index_sections: false,
@@ -272,7 +272,7 @@ fn index_hierarchy_scopes_xrefs_separators_and_styles() {
     assert!(text_of(&g.story).starts_with("Index\nApple, 1\u{2013}3.; Green, 5.\nBanana, 1 / 3. See Cherry.\n"), "{}", text_of(&g.story));
     assert_eq!(g.story.paragraphs[1].style_ref, Some(stys(21)));
     // Hidden entries included on request.
-    let hidden = IndexOptions { include_hidden_entries: true, ..options() };
+    let hidden = IndexOptions { include_hidden_entries: Some(true), ..options() };
     let g = generate_index_contract(&ctx(2), &request(&f, &hidden, &m, &sc, &src), &cancel).unwrap();
     assert!(text_of(&g.story).contains("\nHidden, 4.\n"));
     assert_eq!(g.omitted_hidden, 0);
@@ -393,7 +393,7 @@ fn index_captured_typed_errors() {
     let e = generate_index_contract(&ctx(2), &r, &cancel).unwrap_err();
     assert_eq!((e.code(), e), ("index_story_locked", IndexCommandError::StoryLocked(locked[0].clone())));
     // Document missing from the book; no book at all.
-    let book_opts = IndexOptions { include_book_documents: true, ..options() };
+    let book_opts = IndexOptions { include_book_documents: Some(true), ..options() };
     let e = generate_index_contract(&ctx(2), &request(&f, &book_opts, &ok_marks, &[], &src), &cancel).unwrap_err();
     assert_eq!((e.code(), e.failure_code()), ("index_book_unavailable", Some(FailureCode::Unavailable)));
     let mut book = StudioBook::new("book", "Book");
@@ -452,7 +452,7 @@ fn index_option_rules_attribution_and_budgets() {
     let mut old = generate_index_contract(&ctx(2), &base, &cancel).unwrap().story;
     old.story_id = id("STXT", 44);
     old.text_kind = StoryTextKind::Point;
-    let replace = IndexOptions { replace_existing_index: true, ..options() };
+    let replace = IndexOptions { replace_existing_index: Some(true), ..options() };
     let r = IndexGenerateRequest { existing: Some(&old), ..request(&f, &replace, &ok_marks, &[], &src) };
     let g = generate_index_contract(&ctx(2), &r, &cancel).unwrap();
     assert_eq!((g.story.story_id.as_str(), g.story.text_kind, g.replaced), (id("STXT", 44).as_str(), StoryTextKind::Point, true));
@@ -537,7 +537,8 @@ fn index_capture_selection_and_proper_names() {
     assert_eq!(capture_index_mark(&st, text, 0, 3, "bad id", false).unwrap_err(), IndexCommandError::InvalidTopicEntry("bad id".into()));
 }
 
-/// Folio options lift into the full record; the lifted record reproduces `generate_index`.
+/// Folio options lift into the full record; the lifted record reproduces `generate_index` (lane
+/// SMB-ID-TOC-PERSIST-1: the include flags are read as persisted, here generate_index's behaviour).
 #[test]
 fn index_options_lift_from_folio_matches_generate_index() {
     let folio = StudioIndexOptions {
@@ -554,9 +555,9 @@ fn index_options_lift_from_folio_matches_generate_index() {
         between_page_numbers_separator: ", ".into(),
         before_cross_reference_separator: ". ".into(),
         entry_end_separator: String::new(),
-        replace_existing_index: None,
-        include_book_documents: None,
-        include_hidden_entries: None,
+        replace_existing_index: Some(false),
+        include_book_documents: Some(false),
+        include_hidden_entries: Some(true),
         page_number_style: None,
         cross_reference_style: None,
         cross_reference_topic_style: None,
@@ -564,7 +565,7 @@ fn index_options_lift_from_folio_matches_generate_index() {
     };
     let lifted = IndexOptions::from_folio(&folio).unwrap();
     assert_eq!((lifted.level_1_style.clone(), lifted.level_3_style.clone()), (Some(para(21)), None));
-    assert!(lifted.include_hidden_entries && !lifted.replace_existing_index && !lifted.include_book_documents);
+    assert_eq!((lifted.include_hidden_entries, lifted.replace_existing_index, lifted.include_book_documents), (Some(true), Some(false), Some(false)));
     let f = fixture();
     let src = [TocSource { story: &f.story, text: &f.text, placement: Some(&f.placement) }];
     let cancel = CancellationToken::default();
@@ -598,4 +599,151 @@ fn index_outcomes_report_through_observe() {
     let mut observe = Observe::new(1, 2, resource, actor, hsk_studio_observe::Budget::new(0, 0).unwrap());
     let receipt = report_command(&refused, IndexCommandError::failure_code, &ctx(2), &cancel, &mut observe, &mut Collect(Vec::new())).unwrap();
     assert_eq!(receipt.outcome, Outcome::Failure(FailureCode::Validation));
+}
+
+fn fruit_groups() -> SectionHeaderSet {
+    SectionHeaderSet {
+        name: "Fruit groups".into(),
+        language_id: "ja".into(),
+        header_type: Some(HeaderType::JapaneseHiraganaConsonants),
+        groups: vec![support_group("A-F", "abcdef"), support_group("G-M", "ghijklm"), support_group("Other", "")],
+    }
+}
+
+/// Lane SMB-ID-TOC-PERSIST-1 item 3: options (with the header-set reference), every page-range
+/// scope member and section header sets lift between Folio and the contract losslessly both ways.
+#[test]
+fn index_persisted_options_scopes_and_header_sets_lift_losslessly() {
+    let p = PersistedIndexOptions { options: options(), section_header_set: Some("Fruit groups".into()) };
+    let folio = p.to_folio();
+    assert_eq!(check_index_options(&folio), Ok(()));
+    assert_eq!(folio.level_styles, vec![Some(stys(21)), Some(stys(22)), Some(stys(23)), Some(stys(24))]);
+    assert_eq!((folio.include_hidden_entries, folio.cross_reference_topic_style.clone()), (Some(false), Some(stys(33))));
+    assert_eq!(PersistedIndexOptions::from_folio(&folio).unwrap(), p, "record -> Folio -> record");
+    let mut unknown = folio.clone();
+    unknown.replace_existing_index = None;
+    unknown.include_hidden_entries = None;
+    unknown.page_number_style = None;
+    unknown.section_header_set = None;
+    unknown.level_styles = vec![Some(stys(21)), None, Some(stys(23))];
+    let lifted = PersistedIndexOptions::from_folio(&unknown).unwrap();
+    assert_eq!((lifted.options.replace_existing_index, lifted.options.include_hidden_entries), (None, None));
+    assert_eq!(lifted.to_folio(), unknown, "Folio -> record -> Folio");
+    let mut trailing = unknown.clone();
+    trailing.level_styles.push(None);
+    assert_eq!(PersistedIndexOptions::from_folio(&trailing).unwrap(), lifted, "a trailing unset level style is the same record");
+    assert_eq!(IndexOptions::from_folio(&folio).unwrap(), options());
+    let mut bad = folio;
+    bad.page_number_style = Some(id("SLYR", 3));
+    assert_eq!(PersistedIndexOptions::from_folio(&bad).unwrap_err().code(), "index_style_ref");
+    // Every scope member, both ways.
+    let members = [
+        PageRangeScope::CurrentPage,
+        PageRangeScope::ToNextStyleChange,
+        PageRangeScope::ToNextUseOfStyle(para(2)),
+        PageRangeScope::ToEndOfStory,
+        PageRangeScope::ToEndOfDocument,
+        PageRangeScope::ToEndOfSection,
+        PageRangeScope::ForNextParagraphs(3),
+    ];
+    for s in members {
+        let stored = s.to_folio();
+        assert_eq!(PageRangeScope::from_folio(&stored).unwrap(), s);
+        assert_eq!(PageRangeScope::from_folio(&stored).unwrap().to_folio(), stored);
+    }
+    assert_eq!(PageRangeScope::ToNextUseOfStyle(para(2)).to_folio(), StudioPageRangeScope::ToNextUseOfStyle { style: stys(2) });
+    let bad_style = StudioPageRangeScope::ToNextUseOfStyle { style: id("STXT", 1) };
+    assert_eq!(PageRangeScope::from_folio(&bad_style).unwrap_err().code(), "index_style_ref");
+    // Header sets, named and captured header types.
+    let set = fruit_groups();
+    let stored = set.to_folio();
+    assert_eq!(stored.header_type.as_deref(), Some("header.japanese_hiragana_consonants"));
+    assert_eq!(check_section_header_set(&stored), Ok(()));
+    assert_eq!(SectionHeaderSet::from_folio(&stored).unwrap(), set);
+    let mut captured = stored.clone();
+    captured.header_type = Some("header.captured_member_14".into());
+    assert_eq!(SectionHeaderSet::from_folio(&captured).unwrap().to_folio(), captured);
+    captured.header_type = Some("Header Type".into());
+    assert_eq!(SectionHeaderSet::from_folio(&captured).unwrap_err().code(), "header_set_type");
+    // The persisted reference resolves against the record set.
+    let mut records = StudioLongDocRecords::new(id("SDOC", 1));
+    records.section_header_sets.push(stored);
+    assert_eq!(p.header_set(&records).unwrap(), Some(set));
+    assert_eq!(PersistedIndexOptions { section_header_set: None, ..p.clone() }.header_set(&records).unwrap(), None);
+    let missing = PersistedIndexOptions { section_header_set: Some("Greek".into()), ..p };
+    assert_eq!(missing.header_set(&records).unwrap_err().code(), "index_header_set_missing");
+}
+
+/// The generator reads each persisted mark scope (the same index as request scopes), refuses a
+/// request scope contradicting a persisted one, refuses unknown include flags, and generates with
+/// the persisted header set. The legacy `generate_index` honours a persisted
+/// `include_hidden_entries` and refuses members it cannot write.
+#[test]
+fn index_generators_read_persisted_members() {
+    let f = fixture();
+    let o = options();
+    let src = [TocSource { story: &f.story, text: &f.text, placement: Some(&f.placement) }];
+    let cancel = CancellationToken::default();
+    let mut persisted = marks(&f.starts);
+    for s in scopes() {
+        if let Some(m) = persisted.iter_mut().find(|m| m.mark_id == s.mark_id) {
+            m.page_range_scope = Some(s.scope.to_folio());
+        }
+    }
+    let g = generate_index_contract(&ctx(2), &request(&f, &o, &persisted, &[], &src), &cancel).unwrap();
+    assert_eq!(text_of(&g.story), NESTED, "persisted scopes = request scopes");
+    let same = [IndexMarkScope { mark_id: "m9".into(), scope: PageRangeScope::ToEndOfStory }];
+    assert!(generate_index_contract(&ctx(2), &request(&f, &o, &persisted, &same, &src), &cancel).is_ok());
+    let contradicting = [IndexMarkScope { mark_id: "m9".into(), scope: PageRangeScope::CurrentPage }];
+    let e = generate_index_contract(&ctx(2), &request(&f, &o, &persisted, &contradicting, &src), &cancel).unwrap_err();
+    assert_eq!(e, IndexCommandError::InvalidPageEntry("m9".into()));
+    let mut zero = persisted.clone();
+    zero[0].page_range_scope = Some(StudioPageRangeScope::ForNextParagraphs { count: 0 });
+    let e = generate_index_contract(&ctx(2), &request(&f, &o, &zero, &[], &src), &cancel).unwrap_err();
+    assert_eq!(e, IndexCommandError::InvalidPageEntry("m1".into()));
+    // Unknown include flags are refused, never filled in.
+    let unknown = IndexOptions { include_hidden_entries: None, ..options() };
+    let e = generate_index_contract(&ctx(2), &request(&f, &unknown, &persisted, &[], &src), &cancel).unwrap_err();
+    assert_eq!((e.code(), e), ("index_flag_unset", IndexCommandError::FlagUnset("include_hidden_entries")));
+    // The persisted header set drives the headings.
+    let stored = PersistedIndexOptions { options: IndexOptions { include_section_headings: true, ..options() }, section_header_set: Some("Fruit groups".into()) };
+    let mut records = StudioLongDocRecords::new(id("SDOC", 1));
+    records.section_header_sets.push(fruit_groups().to_folio());
+    let lifted = PersistedIndexOptions::from_folio(&stored.to_folio()).unwrap();
+    let set = lifted.header_set(&records).unwrap().unwrap();
+    let m = [mark("a", f.starts[0], &["Apple"]), mark("k", f.starts[1], &["Kiwi"]), mark("n", f.starts[4], &["9 lives"])];
+    let r = IndexGenerateRequest { header_set: Some(&set), ..request(&f, &lifted.options, &m, &[], &src) };
+    assert_eq!(text_of(&generate_index_contract(&ctx(2), &r, &cancel).unwrap().story), "Index\nA-F\nApple, 1.\nG-M\nKiwi, 2.\nOther\n9 lives, 5.");
+    // Legacy generator over persisted options.
+    let plain = IndexOptions { page_number_style: None, cross_reference_style: None, cross_reference_topic_style: None, ..options() };
+    let mut old = plain.to_folio(None);
+    old.replace_existing_index = None;
+    old.include_book_documents = None;
+    old.include_hidden_entries = None;
+    let two = [mark("a", f.starts[0], &["Apple"]), mark("h", f.starts[3], &["Hidden"])];
+    let legacy = |o: &StudioIndexOptions, m: &[StudioIndexMark], h: Option<&[HeaderGroup]>| generate_index(&f.doc, o, m, &src, &f.pages, h, IndexLimits::default(), &cancel);
+    let g = legacy(&old, &two, None).unwrap();
+    assert_eq!((g.story.text.as_str(), g.omitted_hidden), ("Index\nApple, 1.\nHidden, 4.", 0), "unknown = the legacy behaviour");
+    let mut hidden_off = old.clone();
+    hidden_off.include_hidden_entries = Some(false);
+    let g = legacy(&hidden_off, &two, None).unwrap();
+    assert_eq!((g.story.text.as_str(), g.omitted_hidden), ("Index\nApple, 1.", 1));
+    let refuse = |o: &StudioIndexOptions, m: &[StudioIndexMark]| legacy(o, m, None).map(|_| ()).map_err(|e| e.code());
+    let mut scoped = two.clone();
+    scoped[0].page_range_scope = Some(StudioPageRangeScope::ToEndOfStory);
+    assert_eq!(refuse(&old, &scoped), Err("index_contract_only"));
+    scoped[0].page_range_scope = Some(StudioPageRangeScope::CurrentPage);
+    assert_eq!(refuse(&old, &scoped), Ok(()));
+    let edits: [fn(&mut StudioIndexOptions); 3] =
+        [|o| o.replace_existing_index = Some(true), |o| o.include_book_documents = Some(true), |o| o.cross_reference_style = Some(stys(32))];
+    for edit in edits {
+        let mut o = old.clone();
+        edit(&mut o);
+        assert_eq!(refuse(&o, &two), Err("index_contract_only"));
+    }
+    let mut named = old.clone();
+    named.section_header_set = Some("Fruit groups".into());
+    assert_eq!(refuse(&named, &two), Err("index_header_set_unresolved"));
+    let groups = fruit_groups().groups;
+    assert!(legacy(&named, &two, Some(groups.as_slice())).is_ok());
 }

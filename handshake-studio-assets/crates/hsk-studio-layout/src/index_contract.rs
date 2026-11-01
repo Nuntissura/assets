@@ -2,8 +2,13 @@
 //! (every field of the table, six independent separators), per-reference page-range scopes, the
 //! eight cross-reference types and four capitalisation members by their captured codes, a pluggable
 //! section-header-set model, the five captured index typed errors and the attributed generate and
-//! update commands. The older `generate_index` (Folio options, no attribution) is kept unchanged for
-//! its callers; [`IndexOptions::from_folio`] lifts Folio options into this record.
+//! update commands. The older `generate_index` (Folio options, no attribution) is kept for its
+//! callers. Persistence (lane SMB-ID-TOC-PERSIST-1): Folio's `StudioIndexOptions`, marks and
+//! `StudioSectionHeaderSet` carry every field; [`PersistedIndexOptions`],
+//! [`PageRangeScope::from_folio`] / [`PageRangeScope::to_folio`] and
+//! [`SectionHeaderSet::from_folio`] / [`SectionHeaderSet::to_folio`] are lossless both ways, and a
+//! mark's persisted scope is read by the generator. The three include booleans have no spec
+//! default: `None` (unknown) is carried and generation refuses it (`index_flag_unset`).
 //!
 //! Rules (Studio readings; InDesign parity UNVERIFIED, D5):
 //! - Levels: Studio's declared maximum is [`STUDIO_MAX_INDEX_LEVELS`] = 4, the captured model's
@@ -53,8 +58,9 @@ use crate::toc_contract::{
 };
 use hsk_studio_accord::{CancellationToken, CommandContext, DomainId};
 use hsk_studio_folio::{
-    IndexFormat, IndexXrefKind, MAX_INDEX_LEVELS, StoryDirection, StoryTextKind, StudioDocument, StudioIndexMark, StudioIndexOptions,
-    StudioIndexXref, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope,
+    IndexFormat, IndexXrefKind, MAX_INDEX_LEVELS, StoryDirection, StoryTextKind, StudioDocument, StudioHeaderGroup, StudioIndexMark,
+    StudioIndexOptions, StudioIndexXref, StudioLongDocRecords, StudioPageRangeScope, StudioSectionHeaderSet, StudioTextStory,
+    StudioTypeStyleRecords, TypeStyleScope, check_section_header_set,
 };
 use hsk_studio_observe::FailureCode;
 use std::collections::{BTreeMap, BTreeSet};
@@ -188,6 +194,14 @@ pub struct SectionHeaderSet {
     pub groups: Vec<HeaderGroup>,
 }
 impl SectionHeaderSet {
+    /// A persisted Folio header set (an invalid header-type token is `header_set_type`).
+    pub fn from_folio(h: &StudioSectionHeaderSet) -> Result<Self, IndexCommandError> {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: header-set lift ({})", h.name)
+    }
+    /// This header set as persisted in Folio (inverse of [`SectionHeaderSet::from_folio`]).
+    pub fn to_folio(&self) -> StudioSectionHeaderSet {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: header set to Folio ({})", self.name)
+    }
     /// The built-in Latin set ("Symbols" catch-all, then A..Z).
     pub fn latin() -> Self {
         Self { name: "Latin".into(), language_id: "en".into(), header_type: Some(HeaderType::Latin), groups: latin_headers() }
@@ -252,6 +266,17 @@ pub enum PageRangeScope {
     ForNextParagraphs(u32),
 }
 
+impl PageRangeScope {
+    /// A persisted Folio scope (a style that is not a `STYS` id is `index_style_ref`).
+    pub fn from_folio(s: &StudioPageRangeScope) -> Result<Self, IndexCommandError> {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: scope lift ({s:?})")
+    }
+    /// This scope as persisted on a Folio mark (inverse of [`PageRangeScope::from_folio`]).
+    pub fn to_folio(&self) -> StudioPageRangeScope {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: scope to Folio ({self:?})")
+    }
+}
+
 static CURRENT_PAGE: PageRangeScope = PageRangeScope::CurrentPage;
 
 fn pstyle(s: Option<&ParagraphStyleRef>) -> Option<&str> {
@@ -274,10 +299,11 @@ pub struct IndexMarkScope {
 pub struct IndexOptions {
     pub title: String,
     pub title_style: Option<ParagraphStyleRef>,
-    /// Replaces CONTENT only; the index story keeps its id and other properties.
-    pub replace_existing_index: bool,
-    pub include_book_documents: bool,
-    pub include_hidden_entries: bool,
+    /// Replaces CONTENT only; the index story keeps its id and other properties. The three include
+    /// booleans are `None` when unknown (no spec default); generation needs them stated.
+    pub replace_existing_index: Option<bool>,
+    pub include_book_documents: Option<bool>,
+    pub include_hidden_entries: Option<bool>,
     /// Governs level 2 and lower.
     pub index_format: IndexFormat,
     pub include_section_headings: bool,
@@ -299,8 +325,9 @@ pub struct IndexOptions {
     pub entry_end_separator: String,
 }
 impl IndexOptions {
-    /// Folio options with the flags `generate_index` implies: no replace, no book documents, hidden
-    /// entries included, no character styles.
+    /// The persisted Folio options read as this record (every persisted value, unknown kept
+    /// unknown). The header-set reference is not an options-table field: [`PersistedIndexOptions`]
+    /// keeps it.
     pub fn from_folio(o: &StudioIndexOptions) -> Result<Self, IndexCommandError> {
         let para = |v: &Option<String>| v.as_deref().map(ParagraphStyleRef::parse).transpose().map_err(|_| IndexCommandError::StyleRef);
         let level = |k: usize| {
@@ -309,9 +336,9 @@ impl IndexOptions {
         Ok(Self {
             title: o.title.clone(),
             title_style: para(&o.title_style)?,
-            replace_existing_index: false,
-            include_book_documents: false,
-            include_hidden_entries: true,
+            replace_existing_index: Some(false),
+            include_book_documents: Some(false),
+            include_hidden_entries: Some(true),
             index_format: o.index_format,
             include_section_headings: o.include_section_headings,
             include_empty_index_sections: o.include_empty_index_sections,
@@ -329,6 +356,20 @@ impl IndexOptions {
             between_page_numbers_separator: o.between_page_numbers_separator.clone(),
             before_cross_reference_separator: o.before_cross_reference_separator.clone(),
             entry_end_separator: o.entry_end_separator.clone(),
+        })
+    }
+    /// This record as persisted Folio options naming `section_header_set` (the inverse of
+    /// [`IndexOptions::from_folio`]; level styles are written up to the deepest set one).
+    pub fn to_folio(&self, section_header_set: Option<&str>) -> StudioIndexOptions {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: index options to Folio ({section_header_set:?})")
+    }
+    /// The three include booleans, each stated (`index_flag_unset` names the first unknown one).
+    pub fn stated_flags(&self) -> Result<IndexFlags, IndexCommandError> {
+        let flag = |v: Option<bool>, name: &'static str| v.ok_or(IndexCommandError::FlagUnset(name));
+        Ok(IndexFlags {
+            replace_existing_index: flag(self.replace_existing_index, "replace_existing_index")?,
+            include_book_documents: flag(self.include_book_documents, "include_book_documents")?,
+            include_hidden_entries: flag(self.include_hidden_entries, "include_hidden_entries")?,
         })
     }
     /// The six separators in table order (independent strings).
@@ -377,6 +418,37 @@ impl IndexOptions {
     }
 }
 
+/// The three STU-LAY-149 include booleans as stated for one generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexFlags {
+    pub replace_existing_index: bool,
+    pub include_book_documents: bool,
+    pub include_hidden_entries: bool,
+}
+
+/// Persisted Folio index options lifted whole: the options record plus the header-set reference
+/// (a Studio member naming a Folio `StudioSectionHeaderSet`; `None` = the built-in Latin set).
+/// `from_folio` and `to_folio` are inverse for options whose level styles end at the deepest set
+/// one (Folio's `[a, null]` and `[a]` lift to the same record and write back as `[a]`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PersistedIndexOptions {
+    pub options: IndexOptions,
+    pub section_header_set: Option<String>,
+}
+impl PersistedIndexOptions {
+    pub fn from_folio(o: &StudioIndexOptions) -> Result<Self, IndexCommandError> {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: persisted index options lift ({})", o.title.len())
+    }
+    pub fn to_folio(&self) -> StudioIndexOptions {
+        self.options.to_folio(self.section_header_set.as_deref())
+    }
+    /// The header set the persisted options name, from the record set (`None` = the built-in Latin
+    /// set; a name the records do not hold is `index_header_set_missing`).
+    pub fn header_set(&self, records: &StudioLongDocRecords) -> Result<Option<SectionHeaderSet>, IndexCommandError> {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: header-set resolution ({})", records.section_header_sets.len())
+    }
+}
+
 /// Typed refusals of the index commands. Mark-scoped errors carry the offending mark id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IndexCommandError {
@@ -407,6 +479,8 @@ pub enum IndexCommandError {
     StaleRevision { expected: u64, current: u64 },
     BudgetExceeded,
     Layout(LayoutError),
+    /// An include boolean generation reads is unknown (no spec default; never filled in).
+    FlagUnset(&'static str),
 }
 impl IndexCommandError {
     pub fn code(&self) -> &'static str {
@@ -430,6 +504,7 @@ impl IndexCommandError {
             Self::StaleRevision { .. } => "stale_revision",
             Self::BudgetExceeded => "budget_exceeded",
             Self::Layout(e) => e.code(),
+            Self::FlagUnset(_) => "index_flag_unset",
         }
     }
     /// The Observe failure class; `None` for cancellation.
@@ -655,6 +730,7 @@ pub fn generate_index_contract(
     check_context(ctx, req.document)?;
     let o = req.options;
     o.check(req.styles)?;
+    let flags = o.stated_flags()?;
     if req.marks.len() > req.limits.max_marks || req.scopes.len() > req.limits.max_marks {
         return Err(IndexCommandError::BudgetExceeded);
     }
@@ -667,14 +743,14 @@ pub fn generate_index_contract(
         }
     };
     headers.check()?;
-    let (doc, pages) = if o.include_book_documents {
+    let (doc, pages) = if flags.include_book_documents {
         let book = req.book.ok_or(IndexCommandError::BookUnavailable)?;
         book.check().map_err(IndexCommandError::DocumentMissingFromBook)?;
         (&book.combined.document, book.combined.pages.as_slice())
     } else {
         (req.document, req.pages)
     };
-    let replacing = o.replace_existing_index.then_some(req.existing).flatten();
+    let replacing = flags.replace_existing_index.then_some(req.existing).flatten();
     let target_id = match replacing {
         Some(s) => s.story_id.as_str(),
         None => {
@@ -738,7 +814,7 @@ pub fn generate_index_contract(
             Some(s) if m.at > s.story.byte_len() => return Err(IndexCommandError::InvalidPageEntry(m.mark_id.clone())),
             _ => {}
         }
-        if !o.include_hidden_entries && source.is_some_and(|s| on_hidden_layer(doc, s.placement, m.at)) {
+        if !flags.include_hidden_entries && source.is_some_and(|s| on_hidden_layer(doc, s.placement, m.at)) {
             omitted_hidden = omitted_hidden.saturating_add(1);
             continue;
         }

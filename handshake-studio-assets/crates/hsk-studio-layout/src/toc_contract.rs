@@ -2,8 +2,13 @@
 //! style record (every field of the style table) and TOC entry record (every field of the entry
 //! table), typed paragraph and character style references, and the attributed generate, update and
 //! update-all commands. The older `generate_toc` (Folio `StudioTocStyle`, no attribution) is kept
-//! unchanged for its callers; [`TocStyle::from_folio`] lifts a Folio style into this record with the
-//! flags that reproduce `generate_toc`'s behaviour.
+//! unchanged for its callers. Persistence (lane SMB-ID-TOC-PERSIST-1): Folio's `StudioTocStyle`
+//! carries every field of this record; [`PersistedTocStyle`] is the lossless lift both ways (the
+//! style record plus Folio's `toc_id` and the persisted `include_overset` argument), and
+//! [`TocStyle::from_folio`] reads the persisted values without filling any in. The six booleans of
+//! the style table have no spec default: `None` (unknown, e.g. a record written before they were
+//! persisted) is carried as such, and generation refuses an unknown flag (`toc_flag_unset`) rather
+//! than inventing a value.
 //!
 //! Rules (Studio readings; InDesign parity UNVERIFIED, D5):
 //! - Sources are read in the given order, paragraphs in story order; a paragraph whose style is a
@@ -163,12 +168,13 @@ pub struct TocStyle {
     /// The generated heading text; empty = no title paragraph.
     pub title: String,
     pub title_style: Option<ParagraphStyleRef>,
-    pub include_book_documents: bool,
-    pub include_hidden: bool,
-    pub run_in: bool,
-    pub create_bookmarks: bool,
-    pub make_anchor: bool,
-    pub remove_forced_line_break: bool,
+    /// The six style-table booleans: `None` = unknown (no spec default); generation needs them stated.
+    pub include_book_documents: Option<bool>,
+    pub include_hidden: Option<bool>,
+    pub run_in: Option<bool>,
+    pub create_bookmarks: Option<bool>,
+    pub make_anchor: Option<bool>,
+    pub remove_forced_line_break: Option<bool>,
     /// Members undeclared by the spec: a captured token, `None` = unset.
     pub numbered_paragraphs: Option<CapturedToken>,
     /// `None` = unset (no spec default).
@@ -178,8 +184,9 @@ pub struct TocStyle {
     pub entries: Vec<TocEntryStyle>,
 }
 impl TocStyle {
-    /// A Folio TOC style with the flags `generate_toc` implies: hidden text included, forced breaks
-    /// removed, no run-in, bookmarks, anchors or book documents; the Folio `toc_id` is dropped.
+    /// The persisted Folio style read as this record (every persisted value, unknown kept unknown);
+    /// Folio's `toc_id` and `include_overset` are not style-table fields: [`PersistedTocStyle`]
+    /// keeps them.
     pub fn from_folio(s: &StudioTocStyle) -> Result<Self, TocCommandError> {
         let para = |v: &str| ParagraphStyleRef::parse(v).map_err(|_| TocCommandError::StyleRef);
         let entries = s
@@ -202,16 +209,36 @@ impl TocStyle {
             name: s.name.clone(),
             title: s.title.clone(),
             title_style: s.title_style.as_deref().map(para).transpose()?,
-            include_book_documents: false,
-            include_hidden: true,
-            run_in: false,
-            create_bookmarks: false,
-            make_anchor: false,
-            remove_forced_line_break: true,
+            include_book_documents: Some(false),
+            include_hidden: Some(true),
+            run_in: Some(false),
+            create_bookmarks: Some(false),
+            make_anchor: Some(false),
+            remove_forced_line_break: Some(true),
             numbered_paragraphs: None,
             set_story_direction: None,
             default_styled: false,
             entries,
+        })
+    }
+
+    /// This record as a persisted Folio style with `toc_id` and the `include_overset` argument
+    /// (the inverse of [`TocStyle::from_folio`]).
+    pub fn to_folio(&self, toc_id: &str, include_overset: bool) -> StudioTocStyle {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: TOC style to Folio ({toc_id} {include_overset})")
+    }
+
+    /// The six style-table booleans, each stated (`toc_flag_unset` names the first unknown one in
+    /// table order).
+    pub fn stated_flags(&self) -> Result<TocFlags, TocCommandError> {
+        let flag = |v: Option<bool>, name: &'static str| v.ok_or(TocCommandError::FlagUnset(name));
+        Ok(TocFlags {
+            include_book_documents: flag(self.include_book_documents, "include_book_documents")?,
+            include_hidden: flag(self.include_hidden, "include_hidden")?,
+            run_in: flag(self.run_in, "run_in")?,
+            create_bookmarks: flag(self.create_bookmarks, "create_bookmarks")?,
+            make_anchor: flag(self.make_anchor, "make_anchor")?,
+            remove_forced_line_break: flag(self.remove_forced_line_break, "remove_forced_line_break")?,
         })
     }
 
@@ -262,6 +289,37 @@ impl TocStyle {
     }
 }
 
+/// The six STU-LAY-148 style booleans as stated for one generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TocFlags {
+    pub include_book_documents: bool,
+    pub include_hidden: bool,
+    pub run_in: bool,
+    pub create_bookmarks: bool,
+    pub make_anchor: bool,
+    pub remove_forced_line_break: bool,
+}
+
+/// A persisted Folio TOC style lifted whole: the style record plus the two persisted members that
+/// are not style-table fields. `from_folio` and `to_folio` are inverse (lossless both ways).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PersistedTocStyle {
+    /// Folio's document-local key.
+    pub toc_id: String,
+    /// The persisted include-overset argument of the generate command (pass it as
+    /// [`TocGenerateRequest::include_overset`]).
+    pub include_overset: bool,
+    pub style: TocStyle,
+}
+impl PersistedTocStyle {
+    pub fn from_folio(s: &StudioTocStyle) -> Result<Self, TocCommandError> {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: persisted TOC lift ({})", s.toc_id)
+    }
+    pub fn to_folio(&self) -> StudioTocStyle {
+        self.style.to_folio(&self.toc_id, self.include_overset)
+    }
+}
+
 /// Typed refusals of the TOC commands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TocCommandError {
@@ -299,6 +357,10 @@ pub enum TocCommandError {
     StaleRevision { expected: u64, current: u64 },
     BudgetExceeded,
     Layout(LayoutError),
+    /// A style-table boolean generation reads is unknown (no spec default; never filled in).
+    FlagUnset(&'static str),
+    /// A persisted `numbered_paragraphs` that is not a captured token.
+    NumberedParagraphs,
 }
 impl TocCommandError {
     pub fn code(&self) -> &'static str {
@@ -323,6 +385,8 @@ impl TocCommandError {
             Self::StaleRevision { .. } => "stale_revision",
             Self::BudgetExceeded => "budget_exceeded",
             Self::Layout(e) => e.code(),
+            Self::FlagUnset(_) => "toc_flag_unset",
+            Self::NumberedParagraphs => "toc_numbered_paragraphs",
         }
     }
     /// The Observe failure class; `None` for cancellation.
@@ -699,11 +763,12 @@ fn generate_inner(
     check_context(ctx, req.document)?;
     let style = req.style;
     style.check(req.styles)?;
+    let flags = style.stated_flags()?;
     if req.sources.len() > req.limits.max_entries {
         return Err(TocCommandError::BudgetExceeded);
     }
     // Where the entries come from: the document, or the combined book.
-    let (doc, pages) = if style.include_book_documents {
+    let (doc, pages) = if flags.include_book_documents {
         let book = req.book.ok_or(TocCommandError::BookUnavailable)?;
         book.check().map_err(TocCommandError::DocumentMissingFromBook)?;
         (&book.combined.document, book.combined.pages.as_slice())
@@ -767,7 +832,7 @@ fn generate_inner(
                 continue;
             };
             let e = &style.entries[ei];
-            if !style.include_hidden && on_hidden_layer(doc, s.placement, p.start) {
+            if !flags.include_hidden && on_hidden_layer(doc, s.placement, p.start) {
                 omitted_hidden = omitted_hidden.saturating_add(1);
                 continue;
             }
@@ -784,7 +849,7 @@ fn generate_inner(
                 .zip(usize::try_from(p.end).ok())
                 .and_then(|(a, b)| s.text.get(a..b))
                 .ok_or(TocCommandError::Layout(LayoutError::InvalidInput))?;
-            let anchor = style.make_anchor.then(|| -> Result<TocAnchorOutcome, TocCommandError> {
+            let anchor = flags.make_anchor.then(|| -> Result<TocAnchorOutcome, TocCommandError> {
                 let sid = s.story.story_id.as_str();
                 if locked.contains(sid) {
                     Ok(TocAnchorOutcome::NotCreatedStoryLocked { story_id: sid.to_owned(), source_start: p.start })
@@ -800,7 +865,7 @@ fn generate_inner(
             flat.push((
                 TocContractEntry {
                     level: e.level,
-                    text: entry_text(raw, style.remove_forced_line_break),
+                    text: entry_text(raw, flags.remove_forced_line_break),
                     page_label: page.map(|x| x.label.clone()),
                     page_id: page.map(|x| x.page_id.clone()),
                     baseline_y: page.and_then(|_| baseline_of(s.placement, p.start)),
@@ -852,7 +917,7 @@ fn generate_inner(
             cancel.check().map_err(canceled)?;
         }
         let te = &style.entries[ei];
-        let continues = style.run_in && wrote_entry && Some(entry.level) == deepest;
+        let continues = flags.run_in && wrote_entry && Some(entry.level) == deepest;
         if continues {
             w.run(RUN_IN_JOINER, None).map_err(budget)?;
         } else {
@@ -877,7 +942,7 @@ fn generate_inner(
         wrote_entry = true;
         entries.push(entry);
     }
-    let bookmarks = if style.create_bookmarks {
+    let bookmarks = if flags.create_bookmarks {
         entries
             .iter()
             .map(|e| TocBookmark {

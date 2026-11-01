@@ -20,6 +20,11 @@
 //! 83 grouped fields and the 12 screen parameters carried here; the unnamed rest is not invented.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::LayoutError;
+use hsk_studio_accord::{CancellationToken, CommandContext};
+use hsk_studio_folio::{
+    StudioDocument, StudioTrapEnd, StudioTrapImagePlacement, StudioTrapPreset, StudioTrapPresetRecords, StudioTrapPresetRef,
+};
+use hsk_studio_observe::FailureCode;
 
 /// Bytes of a captured text value (a Studio bound for hostile input; the spec declares none).
 pub const MAX_PRINT_TEXT_BYTES: usize = 4096;
@@ -735,9 +740,11 @@ impl PrinterPreset {
 // 12.0); per STU-LAY-103 both are recorded ([`TrapParameter::captured_hard_max`]) and the normative
 // Studio hard maximum is 12.0. The two widths are stored in `pt` (canonical, STU-LAY-100); the
 // per-unit ranges of the spec are conversions of the point bound ([`TrapParameter::hard_bounds_in`]),
-// never stored constants. The page's `applied_trap_preset` (STU-LAY-107) is not carried: layout has
-// no page object of its own (pages are Folio's `StudioPage`), so assignment to a page range stays
-// open (lane notes). Vendor parity UNVERIFIED (D5).
+// never stored constants. Persistence (lane SMB-ID-TOC-PERSIST-1): Folio stores presets by value in
+// `hsk.studio.trap_preset_records@1` ([`TrapPreset::from_folio`] / [`TrapPreset::to_folio`],
+// lossless both ways; the name is the preset's identity) and the page's `applied_trap_preset`
+// (STU-LAY-107) names one; [`assign_trap_preset`] sets it on a page range under the caller's
+// `CommandContext`. Vendor parity UNVERIFIED (D5).
 
 /// Bytes of a trap-preset name: Folio's bound (one rule for the stored record and the contract).
 pub use hsk_studio_folio::MAX_TRAP_PRESET_NAME_BYTES;
@@ -997,4 +1004,137 @@ impl TrapPreset {
         values.validate()?;
         Ok(Self { name: name.to_owned(), values })
     }
+}
+
+impl From<StudioTrapEnd> for TrapEndType {
+    fn from(v: StudioTrapEnd) -> Self {
+        match v {
+            StudioTrapEnd::Miter => Self::Miter,
+            StudioTrapEnd::Overlap => Self::Overlap,
+        }
+    }
+}
+impl From<TrapEndType> for StudioTrapEnd {
+    fn from(v: TrapEndType) -> Self {
+        match v {
+            TrapEndType::Miter => Self::Miter,
+            TrapEndType::Overlap => Self::Overlap,
+        }
+    }
+}
+impl From<StudioTrapImagePlacement> for TrapImagePlacement {
+    fn from(v: StudioTrapImagePlacement) -> Self {
+        match v {
+            StudioTrapImagePlacement::CenterEdges => Self::CenterEdges,
+            StudioTrapImagePlacement::Choke => Self::Choke,
+            StudioTrapImagePlacement::ImageNeutralDensity => Self::ImageNeutralDensity,
+            StudioTrapImagePlacement::ImagesOverSpread => Self::ImagesOverSpread,
+        }
+    }
+}
+impl From<TrapImagePlacement> for StudioTrapImagePlacement {
+    fn from(v: TrapImagePlacement) -> Self {
+        match v {
+            TrapImagePlacement::CenterEdges => Self::CenterEdges,
+            TrapImagePlacement::Choke => Self::Choke,
+            TrapImagePlacement::ImageNeutralDensity => Self::ImageNeutralDensity,
+            TrapImagePlacement::ImagesOverSpread => Self::ImagesOverSpread,
+        }
+    }
+}
+
+impl TrapPreset {
+    /// A stored Folio preset admitted as this record: the name rule and every set value against its
+    /// bound set ([`TrapPreset::new`]); unset values stay unset.
+    pub fn from_folio(p: &StudioTrapPreset) -> Result<Self, TrapPresetError> {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: trap preset lift ({})", p.name)
+    }
+    /// This record as a stored Folio preset (inverse of [`TrapPreset::from_folio`]).
+    pub fn to_folio(&self) -> StudioTrapPreset {
+        todo!("SMB-ID-TOC-PERSIST-1 item 3: trap preset to Folio ({})", self.name)
+    }
+}
+
+/// An inclusive page range in document page order, by page key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrapPageRange<'a> {
+    pub first: &'a str,
+    pub last: &'a str,
+}
+
+/// Typed refusals of [`assign_trap_preset`]. Codes only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrapAssignError {
+    /// The command context carries no command id.
+    CommandMissing,
+    StaleRevision { expected: u64, current: u64 },
+    /// The preset records belong to another document.
+    DocumentMismatch,
+    /// The reference names no stored preset.
+    PresetMissing(String),
+    /// A range end names no page of the document.
+    PageMissing(String),
+    /// The range's last page precedes its first page.
+    PageRangeOrder,
+    RevisionOverflow,
+    Canceled,
+}
+impl TrapAssignError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::CommandMissing => "command_id_missing",
+            Self::StaleRevision { .. } => "stale_revision",
+            Self::DocumentMismatch => "trap_document_mismatch",
+            Self::PresetMissing(_) => "trap_preset_missing",
+            Self::PageMissing(_) => "trap_page_missing",
+            Self::PageRangeOrder => "trap_page_range_order",
+            Self::RevisionOverflow => "revision_overflow",
+            Self::Canceled => "canceled",
+        }
+    }
+    /// The Observe failure class; `None` for cancellation.
+    pub fn failure_code(&self) -> Option<FailureCode> {
+        match self {
+            Self::Canceled => None,
+            Self::StaleRevision { .. } => LayoutError::StaleRevision { expected: 0, current: 0 }.failure_code(),
+            _ => Some(FailureCode::Validation),
+        }
+    }
+}
+impl std::fmt::Display for TrapAssignError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+impl std::error::Error for TrapAssignError {}
+
+/// The edited document of an assignment and the pages it changed, in document order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrapAssignment {
+    /// The input document with every page of the range carrying `preset`, at revision base + 1.
+    pub document: StudioDocument,
+    pub pages: Vec<String>,
+}
+
+/// Applies a stored trap preset (or, with `None`, clears it) on every page of `range` (STU-LAY-107
+/// `applied_trap_preset`; STU-LAY-152 assignment to a page range): each page carries the same
+/// reference. A mutating document edit attributed to the caller's `CommandContext` (command id
+/// required, base revision = document revision); the result is a new document at revision + 1 for
+/// the caller to validate and commit; the input is unchanged.
+pub fn assign_trap_preset(
+    ctx: &CommandContext,
+    document: &StudioDocument,
+    presets: &StudioTrapPresetRecords,
+    range: TrapPageRange<'_>,
+    preset: Option<&StudioTrapPresetRef>,
+    cancel: &CancellationToken,
+) -> Result<TrapAssignment, TrapAssignError> {
+    todo!(
+        "SMB-ID-TOC-PERSIST-1 item 3: trap assignment ({} {} {:?} {:?} {})",
+        ctx.base_revision(),
+        presets.trap_presets.len(),
+        range,
+        preset,
+        document.revision + u64::from(cancel.check().is_ok())
+    )
 }

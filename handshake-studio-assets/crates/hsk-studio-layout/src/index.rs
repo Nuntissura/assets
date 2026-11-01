@@ -93,6 +93,9 @@ impl std::error::Error for IndexError {}
 pub struct GeneratedIndex {
     pub story: crate::toc::GeneratedStory,
     pub unplaced: usize,
+    /// Marks on hidden frame layers left out because the persisted `include_hidden_entries` is
+    /// `Some(false)` (lane SMB-ID-TOC-PERSIST-1).
+    pub omitted_hidden: usize,
 }
 
 #[derive(Default)]
@@ -305,5 +308,6 @@ pub fn generate_index(
     Ok(GeneratedIndex {
         story: crate::toc::GeneratedStory { text: w.text, paragraphs: w.paragraphs, entries: Vec::new() },
         unplaced,
+        omitted_hidden: 0,
     })
 }
