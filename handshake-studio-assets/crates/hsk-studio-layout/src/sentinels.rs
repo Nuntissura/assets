@@ -36,9 +36,13 @@
 //! number, the overset at a missing target, equal sharing between flush spaces, zero width
 //! elsewhere. Vendor parity UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
-use crate::numbering::NumberingError;
-use crate::threaded_reflow::{LayoutProposal, Limits};
-use crate::{Composer, FrameObstacles, LayoutError, ShapedParagraph, SourceSpan, SpaceParams, TypesetOptions};
+use crate::folio_input::story_text;
+use crate::numbering::{NumberingError, PageNumber, number_pages};
+use crate::textflow::MAX_STORY_BYTES;
+use crate::threaded_reflow::{LayoutProposal, Limits, ReflowRequest, reflow_facts};
+use crate::{
+    Composer, FrameObstacles, LayoutError, LayoutGlyph, ShapedParagraph, SourceSpan, SpaceParams, TypesetOptions,
+};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{StudioDocument, StudioLayoutFlowRecords, StudioSection, StudioTextStory};
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};
@@ -62,8 +66,19 @@ pub fn ends_paragraph(c: char) -> bool {
 /// The paragraph partition of `text` (module docs): consecutive spans, each ending after its
 /// terminator; text after the last terminator is the last paragraph; empty text has none.
 pub fn paragraph_partition(text: &str) -> Vec<SourceSpan> {
-    let _ = text;
-    Vec::new()
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (i, c) in text.char_indices() {
+        if ends_paragraph(c) {
+            let end = i.saturating_add(c.len_utf8());
+            out.push(SourceSpan { start: start as u64, end: end as u64 });
+            start = end;
+        }
+    }
+    if start < text.len() {
+        out.push(SourceSpan { start: start as u64, end: text.len() as u64 });
+    }
+    out
 }
 
 /// The eight marker sentinels of SD-29 (the anchored-object marker is U+FFFC, not a sentinel).
@@ -387,6 +402,315 @@ pub fn compose_with_sentinels(
     shaper: &mut dyn SentinelShaper,
     cancel: &CancellationToken,
 ) -> Result<SentinelComposition, SentinelError> {
-    let _ = (req, opts, flow, shaper, cancel);
-    Err(SentinelError::Layout(LayoutError::UnsupportedComposition))
+    cancel.check().map_err(|_| LayoutError::Canceled)?;
+    if req.expected_revision != req.document.revision {
+        return Err(LayoutError::StaleRevision { expected: req.expected_revision, current: req.document.revision }.into());
+    }
+    let budget = req.budget;
+    if budget.max_passes == 0 {
+        return Err(LayoutError::InvalidInput.into());
+    }
+    let text = story_text(req.story, req.resolved_text)?;
+    if text.len() > MAX_STORY_BYTES {
+        return Err(LayoutError::BudgetExceeded.into());
+    }
+    // Marker and flush sentinels in story order, counted before anything is allocated per marker.
+    let (mut markers, mut flush): (Vec<(u64, MarkerKind)>, Vec<u64>) = (Vec::new(), Vec::new());
+    for (i, c) in text.char_indices().filter(|(_, c)| ty::is_sentinel_block(*c)) {
+        let kind = MarkerKind::from_sentinel(c);
+        if kind.is_none() && c != FLUSH_SPACE {
+            continue;
+        }
+        if markers.len().saturating_add(flush.len()) >= budget.max_markers {
+            return Err(LayoutError::BudgetExceeded.into());
+        }
+        match kind {
+            Some(k) => markers.push((i as u64, k)),
+            None => flush.push(i as u64),
+        }
+    }
+    let records = check_records(req.markers, &markers)?;
+    let partition = paragraph_partition(text);
+    if partition.len() > req.limits.max_paragraphs {
+        return Err(LayoutError::BudgetExceeded.into());
+    }
+    let pages = number_pages(req.document, req.sections);
+    let page_ids: Vec<&str> =
+        req.document.page_spreads.iter().flat_map(|s| s.pages.iter().map(|p| p.page_id.as_str())).collect();
+    let mut spread_base = Vec::with_capacity(req.document.page_spreads.len());
+    let mut base = 0usize;
+    for s in &req.document.page_spreads {
+        spread_base.push(base);
+        base = base.saturating_add(s.pages.len());
+    }
+    let ordinal = |spread: usize, page: usize| spread_base.get(spread).and_then(|b| b.checked_add(page));
+    let parity = |spread: usize, page: usize| -> Option<u32> {
+        let p = pages.as_ref().ok()?.get(ordinal(spread, page)?)?;
+        (p.spread == spread && p.page == page).then_some(p.number)
+    };
+    let mut states = vec![MarkerState::Unresolved(UnresolvedMarker::NotPlaced); markers.len()];
+    for pass in 1..=budget.max_passes {
+        cancel.check().map_err(|_| LayoutError::Canceled)?;
+        let mut events: Vec<(u64, &str)> = markers
+            .iter()
+            .zip(&states)
+            .map(|((at, _), s)| (*at, if let MarkerState::Resolved(t) = s { t.as_str() } else { "" }))
+            .chain(flush.iter().map(|f| (*f, "")))
+            .collect();
+        events.sort_unstable_by_key(|e| e.0);
+        let shaped = shape_story(text, &partition, &events, &flush, shaper, cancel)?;
+        let reflow = ReflowRequest {
+            document: req.document,
+            story: req.story,
+            resolved_text: req.resolved_text,
+            paragraphs: &shaped,
+            obstacles: req.obstacles,
+            composer: req.composer,
+            space: req.space,
+            expected_revision: req.expected_revision,
+            limits: req.limits,
+        };
+        let (layout, facts) = reflow_facts(&reflow, opts, flow, &parity, cancel)?;
+        let placed = place_markers(&layout, &partition, &markers, &ordinal);
+        let next: Vec<MarkerState> = markers
+            .iter()
+            .zip(&placed)
+            .zip(&records)
+            .map(|(((_, kind), at), record)| resolve(*kind, *at, &pages, req.sections, *record, budget.max_marker_text_bytes))
+            .collect();
+        if next == states {
+            let markers = markers
+                .iter()
+                .zip(placed)
+                .zip(next)
+                .map(|(((story_byte, kind), at), state)| MarkerOutcome {
+                    story_byte: *story_byte,
+                    kind: *kind,
+                    page_id: at.and_then(|o| page_ids.get(o)).map(|s| (*s).to_owned()),
+                    state,
+                })
+                .collect();
+            return Ok(SentinelComposition {
+                layout,
+                paragraphs: shaped,
+                markers,
+                breaks: facts.breaks,
+                flush_spaces: facts.flush,
+                passes: pass,
+            });
+        }
+        states = next;
+    }
+    Err(SentinelError::MarkersUnstable)
+}
+
+/// One record per marker (by index), checked: the byte holds a marker of the record's kind, at most
+/// one record per marker, and the target the kind takes (`Generated` exactly for note and
+/// cross-reference markers).
+fn check_records<'r>(
+    records: &'r [MarkerRecord],
+    markers: &[(u64, MarkerKind)],
+) -> Result<Vec<Option<&'r MarkerRecord>>, SentinelError> {
+    let mut out: Vec<Option<&MarkerRecord>> = vec![None; markers.len()];
+    for r in records {
+        let i = markers.binary_search_by_key(&r.story_byte, |m| m.0).map_err(|_| SentinelError::MarkerRecordInvalid)?;
+        let generated = matches!(r.target, MarkerTarget::Generated { .. });
+        let takes_generated =
+            matches!(r.kind, MarkerKind::FootnoteReference | MarkerKind::EndnoteReference | MarkerKind::CrossReference);
+        let slot = out.get_mut(i).ok_or(SentinelError::MarkerRecordInvalid)?;
+        if markers.get(i).map(|m| m.1) != Some(r.kind) || generated != takes_generated || slot.is_some() {
+            return Err(SentinelError::MarkerRecordInvalid);
+        }
+        *slot = Some(r);
+    }
+    Ok(out)
+}
+
+/// The value of one marker placed on document page `at` (ordinal index), module docs.
+fn resolve(
+    kind: MarkerKind,
+    at: Option<usize>,
+    pages: &Result<Vec<PageNumber>, NumberingError>,
+    sections: &[StudioSection],
+    record: Option<&MarkerRecord>,
+    max_bytes: usize,
+) -> MarkerState {
+    use UnresolvedMarker as U;
+    let Some(at) = at else {
+        return MarkerState::Unresolved(U::NotPlaced);
+    };
+    let label = |i: Option<usize>, missing: U| -> Result<&str, U> {
+        let pages = pages.as_ref().map_err(|e| U::Numbering(*e))?;
+        i.and_then(|i| pages.get(i)).map(|p| p.label.as_str()).ok_or(missing)
+    };
+    let text: Result<&str, U> = match kind {
+        MarkerKind::Index => Err(U::RuleUnstated),
+        MarkerKind::FootnoteReference | MarkerKind::EndnoteReference | MarkerKind::CrossReference => {
+            match record.map(|r| &r.target) {
+                Some(MarkerTarget::Generated { text, .. }) => Ok(text.as_str()),
+                _ => Err(U::RecordMissing),
+            }
+        }
+        MarkerKind::CurrentPageNumber => label(Some(at), U::NotPlaced),
+        MarkerKind::NextPageNumber => label(at.checked_add(1), U::NoNextPage),
+        MarkerKind::PreviousPageNumber => label(at.checked_sub(1), U::NoPreviousPage),
+        MarkerKind::SectionMarker => match pages {
+            Err(e) => Err(U::Numbering(*e)),
+            Ok(pages) => match pages.get(at).and_then(|p| p.section) {
+                None => Err(U::NoSection),
+                Some(k) => sections.get(k).and_then(|s| s.marker.as_deref()).ok_or(U::NoSectionMarker),
+            },
+        },
+    };
+    match text {
+        Ok(t) if t.len() > max_bytes => MarkerState::Unresolved(U::TextOverBudget),
+        Ok(t) if t.chars().any(|c| ends_paragraph(c) || ty::is_sentinel_block(c) || c == '\u{FFFC}') => {
+            MarkerState::Unresolved(U::TextNotInline)
+        }
+        Ok(t) => MarkerState::Resolved(t.to_owned()),
+        Err(u) => MarkerState::Unresolved(u),
+    }
+}
+
+/// The document page (ordinal index) of each marker: the page of the line holding it (the last
+/// line of its paragraph starting at or before it, else the paragraph's first line); `None` in
+/// overset text.
+fn place_markers(
+    layout: &LayoutProposal,
+    partition: &[SourceSpan],
+    markers: &[(u64, MarkerKind)],
+    ordinal: &dyn Fn(usize, usize) -> Option<usize>,
+) -> Vec<Option<usize>> {
+    // Lines in flow order (paragraph index and source start are non-decreasing in it).
+    let lines: Vec<(usize, u64, usize, usize)> = layout
+        .frames
+        .iter()
+        .flat_map(|f| f.lines.iter().map(move |l| (l.paragraph, l.source.start, f.spread, f.page)))
+        .collect();
+    markers
+        .iter()
+        .map(|&(at, _)| {
+            if layout.overset.is_some_and(|o| at >= o.start) {
+                return None;
+            }
+            let pi = partition.partition_point(|p| p.end <= at);
+            let lo = lines.partition_point(|l| l.0 < pi);
+            let hi = lines.partition_point(|l| l.0 <= pi);
+            let mine = lines.get(lo..hi)?;
+            let k = mine.partition_point(|l| l.1 <= at);
+            let line = mine.get(k.saturating_sub(1))?;
+            ordinal(line.2, line.3)
+        })
+        .collect()
+}
+
+/// A 3-byte sentinel at story byte `story` became `len` bytes of composition text at `comp`.
+#[derive(Clone, Copy, Debug)]
+struct Sub {
+    story: u64,
+    comp: u64,
+    len: u64,
+}
+const SENTINEL_LEN: u64 = 3;
+fn sub_story_end(s: &Sub) -> u64 {
+    s.story.saturating_add(SENTINEL_LEN)
+}
+fn sub_comp_end(s: &Sub) -> u64 {
+    s.comp.saturating_add(s.len)
+}
+/// Story byte `y` (never inside a sentinel) in composition coordinates.
+fn to_comp(subs: &[Sub], y: u64) -> Option<u64> {
+    let k = subs.partition_point(|s| sub_story_end(s) <= y);
+    let (s, c) = k.checked_sub(1).and_then(|i| subs.get(i)).map_or((0, 0), |p| (sub_story_end(p), sub_comp_end(p)));
+    c.checked_add(y.checked_sub(s)?)
+}
+/// Composition byte `x` in story coordinates: inside a substituted marker text it is the sentinel's
+/// start (`end` false) or end (`end` true); at an empty substitution a start lies after the
+/// sentinel and an end before it.
+fn to_story(subs: &[Sub], x: u64, end: bool) -> Option<u64> {
+    let before = |s: &Sub| {
+        let e = sub_comp_end(s);
+        e < x || (e == x && (s.len > 0 || !end))
+    };
+    let k = subs.partition_point(before);
+    if let Some(sub) = subs.get(k)
+        && sub.comp < x
+        && x < sub_comp_end(sub)
+    {
+        return Some(if end { sub_story_end(sub) } else { sub.story });
+    }
+    let (s, c) = k.checked_sub(1).and_then(|i| subs.get(i)).map_or((0, 0), |p| (sub_story_end(p), sub_comp_end(p)));
+    s.checked_add(x.checked_sub(c)?)
+}
+
+/// Builds the composition text (each event's sentinel replaced by its text), shapes every paragraph
+/// through the host port and maps the result back to story coordinates, with one zero-advance glyph
+/// per flush space.
+fn shape_story(
+    text: &str,
+    partition: &[SourceSpan],
+    events: &[(u64, &str)],
+    flush: &[u64],
+    shaper: &mut dyn SentinelShaper,
+    cancel: &CancellationToken,
+) -> Result<Vec<ShapedParagraph>, LayoutError> {
+    let bad = || LayoutError::InvalidInput;
+    let mut comp = String::with_capacity(text.len());
+    let mut subs = Vec::with_capacity(events.len());
+    let mut last = 0usize;
+    for &(at, repl) in events {
+        let at_u = usize::try_from(at).map_err(|_| bad())?;
+        comp.push_str(text.get(last..at_u).ok_or_else(bad)?);
+        subs.push(Sub { story: at, comp: comp.len() as u64, len: repl.len() as u64 });
+        comp.push_str(repl);
+        last = at_u.checked_add(3).ok_or(LayoutError::BudgetExceeded)?;
+        if comp.len() > MAX_STORY_BYTES {
+            return Err(LayoutError::BudgetExceeded);
+        }
+    }
+    comp.push_str(text.get(last..).ok_or_else(bad)?);
+    if comp.len() > MAX_STORY_BYTES {
+        return Err(LayoutError::BudgetExceeded);
+    }
+    let comp_len = comp.len() as u64;
+    let mut out = Vec::with_capacity(partition.len());
+    for (index, p) in partition.iter().enumerate() {
+        if index.is_multiple_of(64) {
+            cancel.check().map_err(|_| LayoutError::Canceled)?;
+        }
+        let paragraph = SourceSpan { start: to_comp(&subs, p.start).ok_or_else(bad)?, end: to_comp(&subs, p.end).ok_or_else(bad)? };
+        let mut shaped = shaper.shape(&ShapeInput { text: &comp, paragraph, index })?;
+        let map = |s: SourceSpan| -> Result<SourceSpan, LayoutError> {
+            if s.start > s.end || s.end > comp_len {
+                return Err(bad());
+            }
+            let m = SourceSpan { start: to_story(&subs, s.start, false).ok_or_else(bad)?, end: to_story(&subs, s.end, true).ok_or_else(bad)? };
+            if m.start > m.end { Err(bad()) } else { Ok(m) }
+        };
+        shaped.source = *p;
+        for g in &mut shaped.glyphs {
+            g.cluster = map(g.cluster)?;
+        }
+        for l in &mut shaped.ligature_parts {
+            l.source = map(l.source)?;
+        }
+        let (lo, hi) = (flush.partition_point(|f| *f < p.start), flush.partition_point(|f| *f < p.end));
+        for &f in flush.get(lo..hi).unwrap_or(&[]) {
+            let at = shaped.glyphs.partition_point(|g| g.cluster.start <= f);
+            let cluster = SourceSpan { start: f, end: f.checked_add(SENTINEL_LEN).ok_or_else(bad)? };
+            shaped.glyphs.insert(at, LayoutGlyph { cluster, advance_pt: 0.0 });
+            for a in &mut shaped.line_end_advances {
+                if a.glyph >= at {
+                    a.glyph = a.glyph.checked_add(1).ok_or_else(bad)?;
+                }
+            }
+            for l in &mut shaped.ligature_parts {
+                if l.glyph >= at {
+                    l.glyph = l.glyph.checked_add(1).ok_or_else(bad)?;
+                }
+            }
+        }
+        out.push(shaped);
+    }
+    Ok(out)
 }

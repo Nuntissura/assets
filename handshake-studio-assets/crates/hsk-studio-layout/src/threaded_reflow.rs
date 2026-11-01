@@ -54,6 +54,7 @@ use crate::folio_input::{Frame, FrameObstacles, FrameVertical, pt, resolve_flow}
 use hsk_studio_folio::{FirstBaseline, StudioAlignToGrid, StudioLayoutGrids, StudioSingleWordJustification};
 use crate::paragraph::{FirstBaselineUnavailable, ShapedParagraph, SpaceParams, build_items};
 use crate::cjk::{CjkGap, CjkLineSpacing, CjkParagraph};
+use crate::sentinels::{BreakOutcome, FlushOutcome};
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
@@ -481,7 +482,8 @@ pub(crate) fn reflow_core(
 
 /// `reflow_core` that also returns the STU-LAY-119 resizes (`autosize` module) when `autosize` is
 /// set (only `reflow_autosize`); otherwise, and without an auto-sized frame, the thread is composed
-/// once at its authored sizes, exactly as before auto-size existed.
+/// once at its authored sizes, exactly as before auto-size existed. Odd/even-page breaks have no
+/// page numbers here (`sentinels` module: they overset as `parity_unknown`).
 #[allow(clippy::too_many_arguments)]
 fn reflow_sized(
     req: &ReflowRequest<'_>,
@@ -492,6 +494,39 @@ fn reflow_sized(
     autosize: bool,
     cancel: &CancellationToken,
 ) -> Result<(LayoutProposal, Vec<CjkLineSpacing>, Vec<crate::autosize::FrameResize>), LayoutError> {
+    reflow_sized_facts(req, opts, flow, grids, cjk, autosize, &|_, _| None, cancel).map(|(p, s, r, _)| (p, s, r))
+}
+
+/// What the composition did with the stream sentinels (`sentinels` module).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct FlowFacts {
+    pub breaks: Vec<BreakOutcome>,
+    pub flush: Vec<FlushOutcome>,
+}
+
+/// `reflow_flow` with the page number of each (spread, page) for odd/even-page breaks; also returns
+/// the break and flush-space outcomes (`sentinels::compose_with_sentinels`).
+pub(crate) fn reflow_facts(
+    req: &ReflowRequest<'_>,
+    opts: &TypesetOptions<'_>,
+    flow: &StudioLayoutFlowRecords,
+    page_number: &dyn Fn(usize, usize) -> Option<u32>,
+    cancel: &CancellationToken,
+) -> Result<(LayoutProposal, FlowFacts), LayoutError> {
+    reflow_sized_facts(req, opts, flow, None, &[], false, page_number, cancel).map(|(p, _, _, f)| (p, f))
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn reflow_sized_facts(
+    req: &ReflowRequest<'_>,
+    opts: &TypesetOptions<'_>,
+    flow: &StudioLayoutFlowRecords,
+    grids: Option<&StudioLayoutGrids>,
+    cjk: &[Option<CjkParagraph>],
+    autosize: bool,
+    page_number: &dyn Fn(usize, usize) -> Option<u32>,
+    cancel: &CancellationToken,
+) -> Result<(LayoutProposal, Vec<CjkLineSpacing>, Vec<crate::autosize::FrameResize>, FlowFacts), LayoutError> {
     canceled(cancel)?;
     opts.validate()?;
     if req.expected_revision != req.document.revision {
@@ -569,7 +604,7 @@ fn reflow_sized(
     }
     let paragraphs: &[ShapedParagraph] = anchored.as_deref().unwrap_or(paragraphs);
     let mut compose = |t: &[Frame<'_>], v: &[FrameVertical]| {
-        compose_flow(t, v, &aligns, text, paragraphs, &stylings, &flows, &pre, req.composer, req.space, opts, limits, cjk, cancel)
+        compose_flow(t, v, &aligns, text, paragraphs, &stylings, &flows, &pre, req.composer, req.space, opts, limits, cjk, page_number, cancel)
     };
     let resize = if autosize { crate::autosize::autosize(&mut thread, &mut verticals, paragraphs, &mut compose, cancel)? } else { None };
     let composed = compose(&thread, &verticals)?;
@@ -602,6 +637,7 @@ fn reflow_sized(
         },
         spacing,
         resize.into_iter().collect(),
+        composed.facts,
     ))
 }
 
@@ -671,6 +707,8 @@ pub(crate) struct Composition {
     pub overset: Option<SourceSpan>,
     /// Per frame, parallel to `lines`: the aki gaps of CJK-composed lines (`None` = not CJK).
     pub cjk: Vec<Vec<Option<Vec<CjkGap>>>>,
+    /// Break and flush-space outcomes (`sentinels` module).
+    pub facts: FlowFacts,
 }
 
 /// The composition core shared by `reflow_typeset`, tables and notes: flows already-styled
@@ -690,7 +728,7 @@ pub(crate) fn compose(
 ) -> Result<Composition, LayoutError> {
     let flows = vec![ParaFlow::Single; paragraphs.len()];
     let pre = vec![0.0; paragraphs.len()];
-    compose_flow(thread, &[], &[], text, paragraphs, stylings, &flows, &pre, composer, req_space, opts, limits, &[], cancel)
+    compose_flow(thread, &[], &[], text, paragraphs, stylings, &flows, &pre, composer, req_space, opts, limits, &[], &|_, _| None, cancel)
 }
 
 /// Moves the lines of one band (all single-column lines, no obstacles in the frame) so that the
@@ -809,9 +847,12 @@ fn compose_flow(
     opts: &TypesetOptions<'_>,
     limits: Limits,
     cjk: &[Option<CjkParagraph>],
+    page_number: &dyn Fn(usize, usize) -> Option<u32>,
     cancel: &CancellationToken,
 ) -> Result<Composition, LayoutError> {
     canceled(cancel)?;
+    let facts = FlowFacts::default();
+    let _ = page_number;
     if paragraphs.len() > limits.max_paragraphs
         || stylings.len() != paragraphs.len()
         || flows.len() != paragraphs.len()
@@ -1311,5 +1352,6 @@ fn compose_flow(
         lines: frames,
         overset,
         cjk: cjk_lines,
+        facts,
     })
 }
