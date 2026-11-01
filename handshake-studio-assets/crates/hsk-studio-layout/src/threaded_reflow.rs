@@ -839,6 +839,13 @@ fn vertical_justify(f: &Frame<'_>, v: FrameVertical, lines: &mut [Line], meta: &
     Ok(())
 }
 
+fn is_flush(text: &str, c: SourceSpan) -> bool {
+    match (usize::try_from(c.start), usize::try_from(c.end)) {
+        (Ok(a), Ok(b)) => text.get(a..b) == Some("\u{FDDD}"),
+        _ => false,
+    }
+}
+
 /// The break sentinel that ends paragraph `i`: the first character after its content (its last
 /// glyph, else its start) up to the next paragraph's start, when that is a break sentinel.
 fn paragraph_break(text: &str, paragraphs: &[ShapedParagraph], i: usize) -> Option<(u64, BreakTarget)> {
@@ -861,7 +868,7 @@ fn break_target(
     target: BreakTarget,
     page_number: &dyn Fn(usize, usize) -> Option<u32>,
 ) -> Result<(Cursor, usize), BreakOverset> {
-    let next_frame = (last.pos + 1 < thread.len()).then(|| (Cursor::frame(last.pos + 1), 0));
+    let next_frame = (last.pos + 1 < thread.len()).then_some((Cursor::frame(last.pos + 1), 0));
     let from = &thread[last.pos];
     match target {
         BreakTarget::Column if last.col + 1 < from.column_count.max(1) => Ok((
@@ -1173,6 +1180,7 @@ fn compose_flow(
         // `+ 0.0` turns the empty sum (-0.0) into +0.0 so hang and width never print as "-0".
         let advance = |r: Range<usize>| p.glyphs[r].iter().map(|g| g.advance_pt).sum::<f64>() + 0.0;
         let mut lines_here = Vec::new();
+        let mut flush_here: Vec<Vec<(u64, Option<f64>)>> = Vec::new();
         for (k, b) in breaks.iter().enumerate() {
             let range = starts[k]..starts[k + 1].max(starts[k]);
             let content_end = items[item_starts[k]..b.item]
@@ -1271,6 +1279,7 @@ fn compose_flow(
                     },
                     Some(set.gaps),
                 ));
+                flush_here.push(Vec::new());
                 continue;
             }
             let hyphenated = items[b.item].flagged;
@@ -1283,9 +1292,15 @@ fn compose_flow(
                 .and_then(Option::as_ref)
                 .map_or(opts.alignment, |s| s.alignment);
             let is_last = k + 1 == breaks.len();
+            // Flush spaces of the line (`sentinels` module): on the last line of a fully justified
+            // paragraph they take the rest of the slot and the line keeps its natural spacing.
+            let flush: Vec<u64> = p.glyphs[range.clone()].iter().filter(|g| is_flush(text, g.cluster)).map(|g| g.cluster.start).collect();
+            let absorbs = !flush.is_empty() && !b.overfull && is_last && alignment == Alignment::JustifiedAll;
+            let absorbed = absorbs.then(|| (slot.width_pt - width_pt).max(0.0) / flush.len() as f64);
+            flush_here.push(flush.into_iter().map(|at| (at, absorbed)).collect());
             let mut x_start_pt = slot.x_start_pt;
             let mut justification = None;
-            if !b.overfull {
+            if !b.overfull && !absorbs {
                 let spaces: f64 = items[item_starts[k]..b.item]
                     .iter()
                     .filter(|it| {
@@ -1366,7 +1381,9 @@ fn compose_flow(
             .ok_or(LayoutError::BudgetExceeded)?;
         let used = lines_here.len();
         let single = flow == ParaFlow::Single;
-        for (pos, line, gaps) in lines_here {
+        for ((pos, line, gaps), flush) in lines_here.into_iter().zip(flush_here) {
+            let index = frames[pos].len();
+            facts.flush.extend(flush.into_iter().map(|(story_byte, absorbed_pt)| FlushOutcome { story_byte, frame: pos, line: index, absorbed_pt }));
             frames[pos].push(line);
             cjk_lines[pos].push(gaps);
             metas[pos].push(Meta {
