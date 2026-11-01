@@ -410,7 +410,7 @@ fn channel_edits_in_place(
     let edited_order: Vec<&str> = edited.channels.iter().filter(|c| mapped(c)).map(|c| c.channel_id.as_str()).collect();
     // Added channels are written after the existing ones, so one placed before an imported channel
     // also changes the order.
-    let added_first = match (edited.channels.iter().position(|c| !mapped(c)), edited.channels.iter().rposition(|c| mapped(c))) {
+    let added_first = match (edited.channels.iter().position(|c| !mapped(c)), edited.channels.iter().rposition(mapped)) {
         (Some(first_added), Some(last_mapped)) => first_added < last_mapped,
         _ => false,
     };
