@@ -521,7 +521,7 @@ fn unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars() {
     w.producers[0].frequency = 1.0;
     w.producers[0].position = [1.0e3_f64.next_up(), 0.5];
     assert_eq!(w.validate(), Err(ParticleError::Parameter("x")));
-    w.producers[0].position = [0.5, -1.0e3_f64.next_down()];
+    w.producers[0].position = [0.5, (-1.0e3_f64).next_down()];
     assert_eq!(w.validate(), Err(ParticleError::Parameter("y")));
     // Pre-roll walks its authored row: 60 s accepted, past it refused.
     let mut w = WaveWorld { preroll: 60.0, ..WaveWorld::default() };

@@ -11,27 +11,29 @@
 //! [`WAVE_PRODUCER_MAPPINGS`]; all of them are the enforced validation (module docs of [`super`]).
 //!
 //! **Recovered record ([`WAVE_WORLD_RECORD`], STU-FX-131a `APC Wave World`, 48 rows, MT-32013; rules
-//! in the [`super`] module docs).** Engine scalars that read a recovered row, no unit conversion:
-//! `preroll` <- row 24 `Pre-roll (seconds)` (hard `0..=60`, default 0, as authored before);
-//! producer `x`, `y` <- row 44 `Position` (`POINT`, layer fractions, no declared bound, default
-//! `(0.5, 0.5)`; authored hard `-1e3..=1e3` before); `phase` <- row 56 `Phase` (`ANGLE`, degrees,
-//! unbounded in source: no hard bound, default 0; authored hard `-1e6..=1e6`, soft `-180..=180`
-//! before). Every producer of the record reads the first set of producer rows (44, 56); the second
-//! set (60, 62-72) and the `Type` popups (42, 58: index 1
+//! in the [`super`] module docs).** The one engine scalar that reads a recovered row, no unit
+//! conversion: producer `phase` <- row 56 `Phase` (`ANGLE`, unit cell degrees, unbounded in source: no
+//! hard bound, default 0; authored hard `-1e6..=1e6`, soft `-180..=180` before). Every producer of
+//! the record reads the first producer `Phase` row (56); the second set (60, 62-72) and the `Type`
+//! popups (42, 58: index 1
 //! `Ring` = [`ProducerShape::Point`], 2 `Line` = [`ProducerShape::Line`], default 1 = the engine's
 //! default shape) are stored and do not drive the engine. SD-27 (spec v02.229 STU-FX-131a,
 //! STU-CMP-075b; R51 finding F-R51-1): a recovered row whose unit cell is `--` carries the `unitless`
 //! token, and the scale that would convert it to the engine quantity is a SPEC GAP, never guessed;
 //! until it is declared the engine's own scalar stays its authored `studio_declared` row beside the
-//! stored, validated recovered row, which does not drive the simulation: producer `amplitude`
-//! (height units; row 52 `Amplitude`, hard `0..=5`, soft `0..=1`, default 0.5, stored) and
-//! `frequency` (Hz; row 54 `Frequency`, hard `0..=20`, soft `0..=3`, default 1, stored), as
-//! `wave_speed` and `damping` below. Not mapped, authored rows kept (STU-FX-146
+//! stored, validated recovered row, which does not drive the simulation. A unit read from a row
+//! name or default cell is that guess too (lead decision on F-R51-1; spec-owner item SD-40): record
+//! `preroll` (seconds; row 24 `Pre-roll (seconds)`, hard `0..=60`, soft `0..=5`, default 0, stored),
+//! producer `x`, `y` (layer fractions; row 44 `Position`, `POINT`, no declared bound, default
+//! `(50%, 50%) of layer`, stored), `amplitude` (height units; row 52 `Amplitude`, hard `0..=5`, soft
+//! `0..=1`, default 0.5, stored) and `frequency` (Hz; row 54 `Frequency`, hard `0..=20`, soft
+//! `0..=3`, default 1, stored), as `wave_speed` and `damping` below. Not mapped, authored rows kept (STU-FX-146
 //! scope beside the record): `grid_width` / `grid_height` (two per-axis cell counts; the record's one
 //! `Grid Resolution` does not say which axis it counts), `wave_speed` (cells per second; `Wave Speed`
 //! declares no unit and no cell scale), `damping` (a per-second coefficient; `Damping` `0..=1` with no
 //! unit is not shown to be the same quantity), `step_rate`, `substeps`, `initial_roughness`,
-//! `height_range`, producer `amplitude` / `frequency` (SD-27, above), and producer `x2` / `y2` (the line end; the record describes a line by
+//! `height_range`, `preroll` and producer `x` / `y` / `amplitude` / `frequency` (SD-27, above), and
+//! producer `x2` / `y2` (the line end; the record describes a line by
 //! `Height/Length`, `Width` and `Angle`). Every other recovered row (view, rotations, scale,
 //! brightness, contrast, gamma, dry areas, transparency, reflect edges, ground, groups) is stored and
 //! validated and does not drive the simulation. After Effects parity UNVERIFIED (D5).
@@ -81,9 +83,12 @@ pub const CFL_LIMIT: f64 = FRAC_1_SQRT_2;
 
 const ROUGHNESS_SALT: u64 = 0x7761_7665;
 
-/// The authored record rows: engine scalars with no counterpart in [`WAVE_WORLD_RECORD`]
-/// (STU-FX-146 scope beside it, `studio_declared`; module docs).
-pub const WAVE_WORLD_ROWS: [ParamRow; 8] = [
+/// The authored record rows (STU-FX-146 scope beside [`WAVE_WORLD_RECORD`], `studio_declared`;
+/// module docs): engine scalars with no recovered counterpart, and those whose recovered row
+/// carries the `unitless` token (SD-27: `preroll` beside row 24, `wave_speed` beside row 30,
+/// `damping` beside row 32).
+pub const WAVE_WORLD_ROWS: [ParamRow; 9] = [
+    row("preroll", "s", (0.0, 60.0), (Some(0.0), Some(5.0)), 0.0),
     row("grid_width", "cells", (2.0, 1024.0), (Some(16.0), Some(256.0)), 64.0),
     row("grid_height", "cells", (2.0, 1024.0), (Some(16.0), Some(256.0)), 64.0),
     row("step_rate", "steps/s", (1.0, 1000.0), (Some(24.0), Some(240.0)), 60.0),
@@ -95,25 +100,25 @@ pub const WAVE_WORLD_ROWS: [ParamRow; 8] = [
 ];
 
 /// The authored per-producer rows (STU-FX-146 scope, `studio_declared`; module docs): the line end
-/// (layer-relative, `0..=1` across the layer; no recovered counterpart), and amplitude and frequency,
-/// whose recovered rows 52 and 54 carry the `unitless` token and are stored beside them without
-/// driving the engine (SD-27; bounds and defaults as authored at 63ecf5a6).
-pub const WAVE_PRODUCER_ROWS: [ParamRow; 4] = [
+/// (layer-relative, `0..=1` across the layer; no recovered counterpart), and the position,
+/// amplitude and frequency, whose recovered rows 44, 52 and 54 carry the `unitless` token and are
+/// stored beside them without driving the engine (SD-27; bounds and defaults as authored at
+/// 63ecf5a6).
+pub const WAVE_PRODUCER_ROWS: [ParamRow; 6] = [
+    row("x", "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
+    row("y", "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
     row("x2", "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
     row("y2", "ratio", (-1.0e3, 1.0e3), (Some(0.0), Some(1.0)), 0.5),
     row("amplitude", "height", (0.0, 1.0e6), (Some(0.0), Some(2.0)), 0.5),
     row("frequency", "Hz", (0.0, 1000.0), (Some(0.0), Some(5.0)), 1.0),
 ];
 
-/// The record scalars driven by a row of [`WAVE_WORLD_RECORD`] (module docs).
-pub const WAVE_WORLD_MAPPINGS: [RecoveredMapping; 1] = [RecoveredMapping { key: "preroll", param_index: 24, component: 0, unit: "s" }];
+/// The record scalars driven by a row of [`WAVE_WORLD_RECORD`]: none (its only candidate, row 24
+/// `Pre-roll (seconds)`, carries the `unitless` token; SD-27, module docs).
+pub const WAVE_WORLD_MAPPINGS: [RecoveredMapping; 0] = [];
 
 /// The per-producer scalars driven by a row of [`WAVE_WORLD_RECORD`] (module docs).
-pub const WAVE_PRODUCER_MAPPINGS: [RecoveredMapping; 3] = [
-    RecoveredMapping { key: "x", param_index: 44, component: 0, unit: "ratio" },
-    RecoveredMapping { key: "y", param_index: 44, component: 1, unit: "ratio" },
-    RecoveredMapping { key: "phase", param_index: 56, component: 0, unit: "deg" },
-];
+pub const WAVE_PRODUCER_MAPPINGS: [RecoveredMapping; 1] = [RecoveredMapping { key: "phase", param_index: 56, component: 0, unit: "deg" }];
 
 /// The recovered STU-FX-131a record of Wave world (`APC Wave World`, spec v02.225 module 14), every
 /// row in source order (`tests/simulations_records.rs`).
@@ -223,7 +228,7 @@ impl Default for WaveProducer {
         let m = |k| mapped_default(&WAVE_WORLD_RECORD, &WAVE_PRODUCER_MAPPINGS, k);
         Self {
             shape: ProducerShape::default(),
-            position: [m("x"), m("y")],
+            position: [d("x"), d("y")],
             end: [d("x2"), d("y2")],
             amplitude: d("amplitude"),
             frequency: d("frequency"),
@@ -358,7 +363,7 @@ impl Default for WaveWorld {
         Self {
             seed: 0,
             start_tick: 0,
-            preroll: mapped_default(&WAVE_WORLD_RECORD, &WAVE_WORLD_MAPPINGS, "preroll"),
+            preroll: d("preroll"),
             grid: [d("grid_width") as u32, d("grid_height") as u32],
             step_rate: d("step_rate") as u32,
             substeps: d("substeps") as u32,

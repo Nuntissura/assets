@@ -42,10 +42,12 @@
 //! scale to the engine quantity (a SPEC GAP, never guessed), so it maps onto no engine scalar; the
 //! engine scalar of that quantity keeps its authored `studio_declared` row beside the stored
 //! recovered row until the scale is declared (Foam `viscosity`, Wave world `wave_speed`, `damping`
-//! and producer `amplitude` / `frequency`; test
+//! `preroll`, and producer `x` / `y` / `amplitude` / `frequency`; test
 //! `tests/simulations_records.rs::unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars`).
-//! A mapping reads a row with a declared unit only: an `ANGLE` row in degrees, a `POINT` row in
-//! layer fractions, and Wave world `Pre-roll (seconds)`, whose name declares seconds. Recovered rows the engine does not use are stored and validated but
+//! A unit read from a row name (`Pre-roll (seconds)`) or default cell (`(50%, 50%) of layer`) is
+//! that guess too (lead decision on F-R51-1; spec-owner item SD-40). A mapping reads a row whose
+//! unit cell declares a unit only: today the `ANGLE` rows in degrees (Foam wind direction, Wave
+//! world producer phase). Recovered rows the engine does not use are stored and validated but
 //! do not drive the simulation. Vendor parity of every mapping is UNVERIFIED (D5)
 //! (`tests/simulations_records.rs`).
 //!
@@ -230,7 +232,8 @@ impl SimulationKind {
     }
 
     /// The record-level engine scalars driven by a recovered row (Wave world's producer scalars
-    /// are [`wave_world::WAVE_PRODUCER_MAPPINGS`]); empty where no record was recovered.
+    /// are [`wave_world::WAVE_PRODUCER_MAPPINGS`]); empty where no record was recovered and for Wave
+    /// world, whose record-level candidate rows carry the `unitless` token (SD-27).
     pub const fn recovered_mappings(self) -> &'static [RecoveredMapping] {
         match self {
             Self::Foam => &foam::FOAM_MAPPINGS,
