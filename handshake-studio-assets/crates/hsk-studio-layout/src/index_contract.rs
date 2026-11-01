@@ -654,8 +654,235 @@ pub fn generate_index_contract(
     req: &IndexGenerateRequest<'_>,
     cancel: &CancellationToken,
 ) -> Result<IndexGenerated, IndexCommandError> {
-        panic!("red: SMB-ID-TOC-INDEX-1")
+    let canceled = |_| IndexCommandError::Layout(LayoutError::Canceled);
+    cancel.check().map_err(canceled)?;
+    check_context(ctx, req.document)?;
+    let o = req.options;
+    o.check(req.styles)?;
+    if req.marks.len() > req.limits.max_marks || req.scopes.len() > req.limits.max_marks {
+        return Err(IndexCommandError::BudgetExceeded);
     }
+    let latin;
+    let headers = match req.header_set {
+        Some(h) => h,
+        None => {
+            latin = SectionHeaderSet::latin();
+            &latin
+        }
+    };
+    headers.check()?;
+    let (doc, pages) = if o.include_book_documents {
+        let book = req.book.ok_or(IndexCommandError::BookUnavailable)?;
+        book.check().map_err(IndexCommandError::DocumentMissingFromBook)?;
+        (&book.combined.document, book.combined.pages.as_slice())
+    } else {
+        (req.document, req.pages)
+    };
+    let replacing = o.replace_existing_index.then_some(req.existing).flatten();
+    let target_id = match replacing {
+        Some(s) => s.story_id.as_str(),
+        None => {
+            if !DomainId::parse(req.new_story_id).is_ok_and(|d| d.prefix() == "STXT") {
+                return Err(IndexCommandError::StoryId);
+            }
+            req.new_story_id
+        }
+    };
+    if req.locked_stories.iter().any(|s| s == target_id) {
+        return Err(IndexCommandError::StoryLocked(target_id.to_owned()));
+    }
+    check_marks(req.marks)?;
+    let mark_ids: BTreeSet<&str> = req.marks.iter().map(|m| m.mark_id.as_str()).collect();
+    let mut scopes: BTreeMap<&str, &PageRangeScope> = BTreeMap::new();
+    for s in req.scopes {
+        let valid = match &s.scope {
+            PageRangeScope::ForNextParagraphs(n) => *n >= 1,
+            PageRangeScope::ToNextUseOfStyle(r) => style_scope_ok(req.styles, r.as_str(), TypeStyleScope::Paragraph).is_ok(),
+            _ => true,
+        };
+        if !valid || !mark_ids.contains(s.mark_id.as_str()) || scopes.insert(s.mark_id.as_str(), &s.scope).is_some() {
+            return Err(IndexCommandError::InvalidPageEntry(s.mark_id.clone()));
+        }
+    }
+    for s in req.sources {
+        if let Some(p) = s.placement
+            && p.base_revision != doc.revision
+        {
+            return Err(IndexCommandError::StaleRevision { expected: p.base_revision, current: doc.revision });
+        }
+        if s.text.len() as u64 != s.story.byte_len() {
+            return Err(IndexCommandError::Layout(LayoutError::InvalidInput));
+        }
+    }
+    // Every referenced topic must be a topic path (or a prefix of one) of some mark.
+    let mut known: BTreeSet<&[String]> = BTreeSet::new();
+    for m in req.marks {
+        for k in 1..=m.topics.len() {
+            known.insert(&m.topics[..k]);
+        }
+    }
+    for m in req.marks {
+        if let Some(x) = &m.xref
+            && !known.contains(x.target.as_slice())
+        {
+            return Err(IndexCommandError::InvalidReferencedTopic(m.mark_id.clone()));
+        }
+    }
+    let by_page: BTreeMap<(usize, usize), &PageNumber> = pages.iter().map(|p| ((p.spread, p.page), p)).collect();
+    let mut root: BTreeMap<(String, String), Topic> = BTreeMap::new();
+    let (mut unplaced, mut omitted_hidden) = (0usize, 0usize);
+    for (k, m) in req.marks.iter().enumerate() {
+        if k.is_multiple_of(1024) {
+            cancel.check().map_err(canceled)?;
+        }
+        let source = req.sources.iter().find(|s| s.story.story_id == m.story_id);
+        let page_ref = m.xref.is_none();
+        match source {
+            None if page_ref => return Err(IndexCommandError::InvalidPageEntry(m.mark_id.clone())),
+            Some(s) if m.at > s.story.byte_len() => return Err(IndexCommandError::InvalidPageEntry(m.mark_id.clone())),
+            _ => {}
+        }
+        if !o.include_hidden_entries && source.is_some_and(|s| on_hidden_layer(doc, s.placement, m.at)) {
+            omitted_hidden = omitted_hidden.saturating_add(1);
+            continue;
+        }
+        let page = source.and_then(|s| page_of(s.placement, m.at, &by_page));
+        if page.is_none() && page_ref {
+            unplaced = unplaced.saturating_add(1);
+            continue;
+        }
+        let mut level = &mut root;
+        let mut node: Option<&mut Topic> = None;
+        let deepest = m.topics.len().saturating_sub(1);
+        for (d, topic) in m.topics.iter().enumerate() {
+            let sort = m.sort_by.get(d).filter(|s| !s.is_empty()).unwrap_or(topic).to_lowercase();
+            let entry = level.entry((sort, topic.clone())).or_default();
+            if d == deepest {
+                node = Some(entry);
+                break;
+            }
+            level = &mut entry.children;
+        }
+        let Some(n) = node else { continue };
+        if let (Some(p), Some(s)) = (page, source) {
+            let scope = scopes.get(m.mark_id.as_str()).copied().unwrap_or(&CURRENT_PAGE);
+            let end = scope_end(scope, s, m.at, p, pages, &by_page).unwrap_or(p);
+            if end.ordinal > p.ordinal {
+                n.ranges.insert(PageRef { first: p.ordinal, last: end.ordinal, first_label: p.label.clone(), last_label: end.label.clone() });
+            } else {
+                n.singles.insert((p.ordinal, p.label.clone()));
+            }
+        }
+        if let Some(StudioIndexXref { kind, target, custom_text }) = &m.xref {
+            let x = (*kind, target.clone(), custom_text.clone());
+            if !n.xrefs.contains(&x) {
+                n.xrefs.push(x);
+            }
+        }
+    }
+    // Write the story.
+    let budget = |_| IndexCommandError::BudgetExceeded;
+    let mut w = RunWriter::new(req.limits.max_text_bytes);
+    if !o.title.is_empty() {
+        w.paragraph(pstyle(o.title_style.as_ref())).map_err(budget)?;
+        w.run(&o.title, None).map_err(budget)?;
+    }
+    fn walk<'t>(level: &'t BTreeMap<(String, String), Topic>, depth: usize, out: &mut Vec<(usize, &'t str, &'t Topic)>) {
+        for ((_, topic), t) in level {
+            out.push((depth, topic.as_str(), t));
+            walk(&t.children, depth.saturating_add(1), out);
+        }
+    }
+    // With headings, level-1 topics are ordered by their header group first (header-set order),
+    // then by sort key; a topic in no group (no catch-all) comes before every heading.
+    let mut roots: Vec<(&(String, String), &Topic)> = root.iter().collect();
+    if o.include_section_headings {
+        roots.sort_by_key(|((_, topic), _)| headers.group_of(topic).map_or(0, |g| g.saturating_add(1)));
+    }
+    let mut flat = Vec::new();
+    for ((_, topic), t) in roots {
+        flat.push((0, topic.as_str(), t));
+        walk(&t.children, 1, &mut flat);
+    }
+    let mut written_group: Option<usize> = None;
+    let heading = |w: &mut RunWriter, k: usize| -> Result<(), IndexCommandError> {
+        if let Some(g) = headers.groups.get(k) {
+            w.paragraph(pstyle(o.section_heading_style.as_ref())).map_err(budget)?;
+            w.run(&g.heading, None).map_err(budget)?;
+        }
+        Ok(())
+    };
+    let mut in_run_in = false;
+    for (k, (depth, topic, t)) in flat.iter().enumerate() {
+        if k.is_multiple_of(256) {
+            cancel.check().map_err(canceled)?;
+        }
+        if *depth == 0 && o.include_section_headings {
+            if let Some(g) = headers.group_of(topic) {
+                let from = written_group.map_or(0, |x| x.saturating_add(1));
+                for h in from..=g {
+                    if o.include_empty_index_sections || h == g {
+                        heading(&mut w, h)?;
+                    }
+                }
+                if written_group.is_none_or(|x| x < g) {
+                    written_group = Some(g);
+                }
+            }
+        }
+        let continues = o.index_format == IndexFormat::RunIn && *depth > 0 && in_run_in;
+        if continues {
+            w.run(&o.between_entries_separator, None).map_err(budget)?;
+        } else {
+            let style = if o.index_format == IndexFormat::RunIn { o.level_style(0) } else { o.level_style(*depth) };
+            w.paragraph(pstyle(style)).map_err(budget)?;
+            in_run_in = *depth == 0;
+        }
+        w.run(topic, None).map_err(budget)?;
+        let items = page_items(t);
+        if items.is_empty() && t.xrefs.is_empty() {
+            continue;
+        }
+        w.run(&o.following_topic_separator, None).map_err(budget)?;
+        for (n, item) in items.iter().enumerate() {
+            if n > 0 {
+                w.run(&o.between_page_numbers_separator, None).map_err(budget)?;
+            }
+            w.run(&item.first_label, cstyle(&o.page_number_style)).map_err(budget)?;
+            if item.last > item.first {
+                w.run(&o.page_range_separator, None).map_err(budget)?;
+                w.run(&item.last_label, cstyle(&o.page_number_style)).map_err(budget)?;
+            }
+        }
+        for (n, (kind, target, custom)) in t.xrefs.iter().enumerate() {
+            if n > 0 || !items.is_empty() {
+                w.run(&o.before_cross_reference_separator, None).map_err(budget)?;
+            }
+            let (before, after) = xref_words(*kind, custom.as_deref());
+            w.run(&before, cstyle(&o.cross_reference_style)).map_err(budget)?;
+            w.run(&target.join(": "), cstyle(&o.cross_reference_topic_style)).map_err(budget)?;
+            w.run(&after, cstyle(&o.cross_reference_style)).map_err(budget)?;
+        }
+        w.run(&o.entry_end_separator, None).map_err(budget)?;
+    }
+    if o.include_section_headings && o.include_empty_index_sections {
+        let from = written_group.map_or(0, |x| x.saturating_add(1));
+        for h in from..headers.groups.len() {
+            heading(&mut w, h)?;
+        }
+    }
+    let (kind, direction) = match replacing {
+        Some(s) => (s.text_kind, s.story_direction),
+        None => (StoryTextKind::Area, StoryDirection::LeftToRight),
+    };
+    Ok(IndexGenerated {
+        story: w.into_story(target_id, kind, direction),
+        replaced: replacing.is_some(),
+        unplaced,
+        omitted_hidden,
+        max_levels: STUDIO_MAX_INDEX_LEVELS,
+    })
+}
 
 /// Upper-cases the first character of a topic.
 fn capitalize(t: &mut String) {
@@ -677,8 +904,46 @@ pub fn capitalize_index_topics(
     whole_index: bool,
     limits: IndexLimits,
 ) -> Result<Vec<StudioIndexMark>, IndexCommandError> {
-        panic!("red: SMB-ID-TOC-INDEX-1")
+    if whole_index && !caps.allowed_for_whole_index() {
+        return Err(IndexCommandError::CapsNotForWholeIndex);
     }
+    if marks.len() > limits.max_marks {
+        return Err(IndexCommandError::BudgetExceeded);
+    }
+    check_marks(marks)?;
+    let sel = match caps {
+        IndexCaps::SelectedEntry | IndexCaps::IncludeSubentries => {
+            let s = selection.filter(|s| path_ok(s)).ok_or(IndexCommandError::CapsSelection)?;
+            if !marks.iter().any(|m| m.topics.starts_with(s)) {
+                return Err(IndexCommandError::CapsSelection);
+            }
+            Some(s)
+        }
+        _ => None,
+    };
+    let apply = |path: &mut Vec<String>| {
+        let levels: std::ops::Range<usize> = match (caps, sel) {
+            (IndexCaps::AllEntries, _) => 0..path.len(),
+            (IndexCaps::AllLevel1, _) => 0..path.len().min(1),
+            (IndexCaps::SelectedEntry, Some(s)) if path.starts_with(s) => s.len().saturating_sub(1)..s.len(),
+            (IndexCaps::IncludeSubentries, Some(s)) if path.starts_with(s) => s.len().saturating_sub(1)..path.len(),
+            _ => 0..0,
+        };
+        for k in levels {
+            if let Some(t) = path.get_mut(k) {
+                capitalize(t);
+            }
+        }
+    };
+    let mut out = marks.to_vec();
+    for m in &mut out {
+        apply(&mut m.topics);
+        if let Some(x) = &mut m.xref {
+            apply(&mut x.target);
+        }
+    }
+    Ok(out)
+}
 
 /// A new index mark capturing the selected text `start..end` of `story` (MT-174 capture): the
 /// selection (trimmed) as the topic, or with `proper_name` the last word first ("Ada Lovelace" ->
@@ -691,5 +956,30 @@ pub fn capture_index_mark(
     mark_id: &str,
     proper_name: bool,
 ) -> Result<StudioIndexMark, IndexCommandError> {
-        panic!("red: SMB-ID-TOC-INDEX-1")
+    let bad = || IndexCommandError::InvalidTopicEntry(mark_id.to_owned());
+    if text.len() as u64 != story.byte_len() || start > end {
+        return Err(IndexCommandError::InvalidPageEntry(mark_id.to_owned()));
     }
+    let selected = usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .and_then(|(a, b)| text.get(a..b))
+        .ok_or_else(|| IndexCommandError::InvalidPageEntry(mark_id.to_owned()))?;
+    let words: Vec<&str> = selected.split_whitespace().collect();
+    let topic = match (proper_name, words.split_last()) {
+        (true, Some((last, rest))) if !rest.is_empty() => format!("{last}, {}", rest.join(" ")),
+        _ => words.join(" "),
+    };
+    let mark = StudioIndexMark {
+        mark_id: mark_id.to_owned(),
+        story_id: story.story_id.clone(),
+        at: start,
+        topics: vec![topic],
+        sort_by: Vec::new(),
+        xref: None,
+    };
+    if !key_ok(mark_id) || !path_ok(&mark.topics) {
+        return Err(bad());
+    }
+    Ok(mark)
+}
