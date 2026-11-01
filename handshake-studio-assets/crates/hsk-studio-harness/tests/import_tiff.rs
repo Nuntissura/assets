@@ -622,7 +622,8 @@ fn loss_triples(export: &TiffChannelExport) -> Vec<(String, psd::LossKind, &'sta
 
 /// What an interchange round trip keeps of a channel's pixels: depth, extent and tiles by grid cell,
 /// format and content digest.
-fn pixels_of(c: &folio::StudioChannelRecord) -> (u8, u32, u32, Vec<(i64, i64, String, String)>) {
+type ChannelPixels = (u8, u32, u32, Vec<(i64, i64, String, String)>);
+fn pixels_of(c: &folio::StudioChannelRecord) -> ChannelPixels {
     (c.depth, c.width, c.height, c.tiles.iter().map(|t| (t.column, t.row, t.format.clone(), t.content_digest.digest.clone())).collect())
 }
 

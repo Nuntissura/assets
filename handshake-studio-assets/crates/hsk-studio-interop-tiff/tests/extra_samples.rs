@@ -221,7 +221,9 @@ fn extra_planes_encode_and_decode_exactly_at_every_depth_compression_and_byte_or
             }
         }
     }
-    assert_eq!(cases, 5 * (3 * 3 * 4 * 2 + 3 * 4 * 1) * 3);
+    // 5 models x 3 plane sets x 3 byte orders x (3 integer depths x 4 compressions x 2 predictors
+    // + f32 x 4 compressions).
+    assert_eq!(cases, 5 * 3 * 3 * (3 * 4 * 2 + 4));
 }
 
 /// Hostile and out-of-envelope requests are typed refusals before any allocation (V4-01/02): extra
