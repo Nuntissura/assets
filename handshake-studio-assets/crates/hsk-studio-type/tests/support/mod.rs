@@ -834,7 +834,21 @@ pub fn with_case<const N: usize>(
     } else {
         Direction::LeftToRight
     };
-    let paragraphs: Vec<ParagraphInput> = if text.is_empty() {
+    // Optional `paragraph_ranges` ([[start, end], ...] byte pairs) states the caller's paragraph
+    // partition explicitly (SD-29 break-sentinel cases); absent, the whole text is one paragraph.
+    let paragraphs: Vec<ParagraphInput> = if let Some(ranges) = case["paragraph_ranges"].as_array() {
+        ranges
+            .iter()
+            .map(|pair| ParagraphInput {
+                range: SourceRange {
+                    start: pair[0].as_u64().unwrap(),
+                    end: pair[1].as_u64().unwrap(),
+                },
+                direction,
+                provenance: DirectionProvenance::Explicit,
+            })
+            .collect()
+    } else if text.is_empty() {
         Vec::new()
     } else {
         vec![ParagraphInput {
