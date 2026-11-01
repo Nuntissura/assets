@@ -600,6 +600,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioVectorRecords.icc_profiles", "container of StudioIccProfile"),
     ("StudioVectorRecords.image_paints", "container of StudioImagePaint"),
     ("StudioVectorRecords.path_texts", "container of StudioPathText"),
+    ("StudioVectorRecords.swatch_book_links", "internal: swatch -> colour-book entry codes; the book is a reference whose absence keeps every stored swatch (STU-COL-186), not a package dependency (SMB-COL-SWATCH-GROUPS-1)"),
     ("StudioVectorRecords.width_profiles", "internal: width profiles"),
     ("StudioWidthProfile.path_id", "internal: vector path records"),
     ("StudioXrefDestination.story_id", "internal: text story records"),

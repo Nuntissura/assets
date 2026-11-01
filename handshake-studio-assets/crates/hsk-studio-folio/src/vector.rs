@@ -108,6 +108,12 @@ pub use path_text::*;
 #[path = "vector_mesh.rs"]
 mod mesh;
 pub use mesh::*;
+#[path = "swatch_library.rs"]
+mod swatch_library;
+pub use swatch_library::*;
+#[path = "colour_book.rs"]
+mod colour_book;
+pub use colour_book::*;
 
 /// Tile layout (STU-COL-195 members; the STU-VEC-138 captured tokens are in
 /// [`StudioTileType::capture_token`]).
@@ -507,6 +513,18 @@ pub struct StudioVectorRecords {
     /// empty, so record sets written before them are byte-identical).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stroke_markers: Vec<crate::StudioStrokeMarkers>,
+    /// Swatch groups of the document palette (lane SMB-COL-SWATCH-GROUPS-1, `swatch_library.rs`,
+    /// STU-COL-177; absent when empty = only the implicit root group, so record sets written before
+    /// them are byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub swatch_groups: Vec<StudioSwatchGroup>,
+    /// Colour books the document's swatches came from, by reference only (`colour_book.rs`,
+    /// STU-COL-185/186; absent when empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colour_book_refs: Vec<StudioColourBookRef>,
+    /// Swatch -> book entry links (absent when empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub swatch_book_links: Vec<StudioSwatchBookLink>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -533,6 +551,9 @@ impl StudioVectorRecords {
             area_texts: Vec::new(),
             gradient_meshes: Vec::new(),
             stroke_markers: Vec::new(),
+            swatch_groups: Vec::new(),
+            colour_book_refs: Vec::new(),
+            swatch_book_links: Vec::new(),
         }
     }
     /// The arrowheads of stroke row `row` of style `style_id`.
@@ -911,6 +932,35 @@ pub fn validate_vector_records(
     b: Budget,
     token: &CancellationToken,
 ) -> Result<()> {
+    validate_vector_records_in(r, d, design, None, b, token)
+}
+
+/// `validate_vector_records` with the host's application and system palettes (STU-COL-178): a
+/// swatch reference of a `swatch_paints` row resolves document -> application -> system, and one
+/// that resolves nowhere is `DanglingReference`. Both palettes are validated first
+/// (`validate_swatch_palette`, same budget).
+pub fn validate_vector_records_with_palettes(
+    r: &StudioVectorRecords,
+    d: &StudioDocument,
+    design: Option<&StudioDesignRecords>,
+    palettes: &StudioHostPalettes<'_>,
+    b: Budget,
+    token: &CancellationToken,
+) -> Result<()> {
+    for p in [palettes.application(), palettes.system()].into_iter().flatten() {
+        validate_swatch_palette(p, b, token)?;
+    }
+    validate_vector_records_in(r, d, design, Some(palettes), b, token)
+}
+
+fn validate_vector_records_in(
+    r: &StudioVectorRecords,
+    d: &StudioDocument,
+    design: Option<&StudioDesignRecords>,
+    palettes: Option<&StudioHostPalettes<'_>>,
+    b: Budget,
+    token: &CancellationToken,
+) -> Result<()> {
     let mut cx = Ctx::new(b, token, &Unresolved);
     cx.tick()?;
     id(&r.document_id, "SDOC", "document_id")?;
@@ -1023,7 +1073,7 @@ pub fn validate_vector_records(
         unique(&mut profiled, p.path_id.as_str(), "width_profiles/path_id")?;
     }
 
-    tools::validate_tools(r, &layers, design, &mut cx)?;
+    tools::validate_tools(r, &layers, design, palettes, &mut cx)?;
     path_text::validate_path_texts(r, &layers, &mut cx)?;
     path_text::validate_area_texts(r, &layers, &mut cx)?;
     mesh::validate_meshes(r, &layers, &mut cx)?;

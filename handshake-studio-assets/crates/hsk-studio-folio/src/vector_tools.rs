@@ -27,8 +27,13 @@
 //!   columns 1..=64) or a top object (another vector layer that has no envelope of its own), with
 //!   the STU-VEC-169 options.
 //!
-//! Declared gaps: swatch kinds `mixed_ink` and `mixed_ink_group`, swatch groups as records, the
-//! reserved swatches and palette scopes (STU-COL-175..178); swatch references from gradient stops;
+//! Swatch groups, palette scope and colour-book references are `swatch_library.rs` and
+//! `colour_book.rs` (lane SMB-COL-SWATCH-GROUPS-1): `group_ref` names a named group of
+//! `swatch_groups` (absent = root member), and a `swatch_paints` reference resolves document ->
+//! application -> system through `validate_vector_records_with_palettes`.
+//!
+//! Declared gaps: swatch kinds `mixed_ink` and `mixed_ink_group`, the reserved swatches
+//! (STU-COL-171/175/176); swatch references from gradient stops;
 //! the captured warp integer mapping; mesh-reset `maintain_envelope_shape`; brush image/custom kinds.
 use super::*;
 use crate::{StudioColor, StudioGradient};
@@ -410,7 +415,7 @@ fn text_ok(s: &str) -> bool {
     !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control)
 }
 
-fn validate_swatch(s: &StudioSwatch, t: &str) -> Result<()> {
+pub(super) fn validate_swatch(s: &StudioSwatch, t: &str) -> Result<()> {
     check(text_ok(&s.name), Code::InvalidField, t, "name")?;
     if let Some(p) = &s.profile_ref {
         id(p, "SCPF", &format!("{t}/profile_ref"))?;
@@ -507,9 +512,10 @@ pub(super) fn validate_tools(
     r: &StudioVectorRecords,
     layers: &BTreeMap<&str, &StudioLayer>,
     design: Option<&StudioDesignRecords>,
+    palettes: Option<&super::StudioHostPalettes<'_>>,
     cx: &mut Ctx,
 ) -> Result<()> {
-    for (n, what) in [(r.icc_profiles.len(), "icc_profiles"), (r.swatches.len(), "swatches"), (r.swatch_paints.len(), "swatch_paints"), (r.brushes.len(), "brushes"), (r.brush_strokes.len(), "brush_strokes"), (r.envelopes.len(), "envelopes")] {
+    for (n, what) in [(r.icc_profiles.len(), "icc_profiles"), (r.swatches.len(), "swatches"), (r.swatch_paints.len(), "swatch_paints"), (r.brushes.len(), "brushes"), (r.brush_strokes.len(), "brush_strokes"), (r.envelopes.len(), "envelopes"), (r.swatch_groups.len(), "swatch_groups"), (r.colour_book_refs.len(), "colour_book_refs"), (r.swatch_book_links.len(), "swatch_book_links")] {
         check(n <= TOOLS_MAX_ENTRIES, Code::BudgetExceeded, what, "count")?;
         cx.nodes(n, what)?;
     }
@@ -552,6 +558,8 @@ pub(super) fn validate_tools(
             check(matches!(b.swatch_kind, StudioSwatchKind::Process | StudioSwatchKind::Global | StudioSwatchKind::Spot), Code::InvalidField, &s.swatch_id, "base_swatch_ref")?;
         }
     }
+    super::swatch_library::check_groups(&r.swatches, &r.swatch_groups, cx.token)?;
+    super::colour_book::check_book_links(r, &swatches)?;
     let styles: BTreeMap<&str, &StudioPaintStyle> = design.map(|x| x.paint_styles.iter().map(|s| (s.style_id.as_str(), s)).collect()).unwrap_or_default();
     let row_of = |style_id: &str, row: u32, t: &str| -> Result<&crate::StudioAppearanceRow> {
         id(style_id, "SSTY", t)?;
@@ -565,7 +573,12 @@ pub(super) fn validate_tools(
         let t = format!("{}/rows/{}", p.style_id, p.row);
         row_of(&p.style_id, p.row, &t)?;
         check(!taken.contains(&(p.style_id.as_str(), p.row)) && bound.insert((p.style_id.as_str(), p.row)), Code::DuplicateIdentity, &t, "swatch_id")?;
-        let sw = swatches.get(p.swatch_id.as_str()).ok_or_else(|| err(Code::DanglingReference, format!("{t}/swatch_id")))?;
+        // STU-COL-178: document, then the host's application and system palettes.
+        let sw = swatches
+            .get(p.swatch_id.as_str())
+            .copied()
+            .or_else(|| palettes.and_then(|h| h.external(&p.swatch_id)).map(|x| x.swatch))
+            .ok_or_else(|| err(Code::DanglingReference, format!("{t}/swatch_id")))?;
         check(p.tint.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)), Code::InvalidField, &t, "tint")?;
         check(p.tint.is_none() || sw.swatch_kind != StudioSwatchKind::Gradient, Code::InvalidField, &t, "tint")?;
     }
