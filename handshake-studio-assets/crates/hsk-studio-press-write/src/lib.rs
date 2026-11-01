@@ -21,6 +21,7 @@ pub use coverage::{
     InkLimitScope, InkLimitSites, InkLimitSource, LimitEvaluation, MAX_COVERAGE_OBJECT_REFS, MAX_COVERAGE_PAGES, MAX_COVERAGE_SAMPLES,
     MAX_INDETERMINATE_CAUSES, MAX_OBJECT_REF_BYTES, MAX_PAGE_REF_BYTES, MAX_RULE_ID_BYTES, ObjectRef, PUBLISHED_INK_LIMIT_REFERENCE, PageReference,
     ParamPrecision, ParamValue, PublishedInkLimit, ResolvedInkLimits, ResolvedLimit, evaluate_ink_coverage,
+    Emission, ObserveRoute, evaluate_ink_coverage_observed,
 };
 
 pub use export::{

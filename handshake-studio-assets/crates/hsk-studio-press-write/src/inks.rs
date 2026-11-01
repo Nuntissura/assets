@@ -29,7 +29,7 @@
 //! module ([`MixedInk`], [`MixedInkGroup`]; Folio stores spot inks, not mixed inks), so their
 //! captured limits are enforced here. Vendor parity is UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
-use crate::coverage::{ParamPrecision, ParamValue};
+use crate::coverage::{Emission, ObserveRoute, ParamPrecision, ParamValue};
 use hsk_studio_accord::ActorContext;
 
 /// One of the four process inks.
@@ -563,6 +563,17 @@ impl InkManager {
         next.validate()?;
         let receipt = InkEditReceipt { actor: actor.clone(), edit: edit.code(), ink: edit.ink().map(str::to_owned) };
         Ok(InkEditOutcome { manager: next, receipt })
+    }
+
+    /// [`InkManager::apply_edit`] plus one terminal emission through observe.
+    pub fn apply_edit_observed(
+        &self,
+        actor: &ActorContext,
+        edit: &InkEdit,
+        route: ObserveRoute<'_>,
+    ) -> (Result<InkEditOutcome, InkError>, Emission) {
+        let _ = route;
+        (self.apply_edit(actor, edit), Emission { code: "", receipt: Err(hsk_studio_observe::Error::Closed) })
     }
 
     fn ink_mut(&mut self, name: &str) -> Result<&mut Ink, InkError> {

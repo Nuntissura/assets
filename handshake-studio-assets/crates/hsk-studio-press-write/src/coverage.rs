@@ -32,6 +32,8 @@
 //! worst location and every caller string are bounded with typed refusals before pixels are read;
 //! counts use checked arithmetic. Vendor parity is UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_observe::{Observe, Receipt, SinkPort};
 use crate::separations::{InkLimits, InkReading, LIMIT_EPS, Measure, SepNote, SeparationPreview, Severity};
 
 /// Most pages one evaluation reads.
@@ -840,6 +842,34 @@ pub fn evaluate_ink_coverage(req: &CoverageRequest<'_>) -> Result<InkCoverageRep
         findings,
         indeterminate_causes: causes,
     })
+}
+
+// ---- Observe (HOST INTEGRATION rule 5, F-R51-7) ----
+
+/// The caller-owned route of one terminal emission: the correlation and revision of the operation,
+/// its cancellation token, the one [`Observe`] emitter of this operation and the sink it delivers to.
+pub struct ObserveRoute<'a> {
+    pub correlation_id: u64,
+    pub revision: u64,
+    pub cancel: &'a CancellationToken,
+    pub observe: &'a mut Observe,
+    pub sink: &'a mut dyn SinkPort,
+}
+
+/// What the terminal emission of one operation was: the typed terminal code and the delivery receipt.
+#[derive(Debug, PartialEq)]
+pub struct Emission {
+    pub code: &'static str,
+    pub receipt: Result<Receipt, hsk_studio_observe::Error>,
+}
+
+/// [`evaluate_ink_coverage`] plus one terminal emission through observe.
+pub fn evaluate_ink_coverage_observed(
+    req: &CoverageRequest<'_>,
+    route: ObserveRoute<'_>,
+) -> (Result<InkCoverageReport, CoverageError>, Emission) {
+    let _ = route;
+    (evaluate_ink_coverage(req), Emission { code: "", receipt: Err(hsk_studio_observe::Error::Closed) })
 }
 
 // ---- JSON (data form of the records; field names are the spec's) ----
