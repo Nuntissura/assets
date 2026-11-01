@@ -242,7 +242,7 @@ allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "hsk-s
 allowed = ["hsk-studio-accord"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-press-write]
-allowed = ["hsk-studio-accord", "hsk-studio-press-read"]
+allowed = ["hsk-studio-accord", "hsk-studio-press-read", "hsk-studio-observe"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-web-core]
 allowed = ["hsk-studio-accord", "hsk-studio-observe"]
