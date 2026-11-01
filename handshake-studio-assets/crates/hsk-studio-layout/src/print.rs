@@ -1047,11 +1047,34 @@ impl TrapPreset {
     /// A stored Folio preset admitted as this record: the name rule and every set value against its
     /// bound set ([`TrapPreset::new`]); unset values stay unset.
     pub fn from_folio(p: &StudioTrapPreset) -> Result<Self, TrapPresetError> {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: trap preset lift ({})", p.name)
+        let values = TrapPresetValues {
+            default_trap_width: p.default_trap_width,
+            black_width: p.black_width,
+            black_color_threshold: p.black_color_threshold,
+            black_density: p.black_density,
+            sliding_trap_threshold: p.sliding_trap_threshold,
+            step_threshold: p.step_threshold,
+            color_reduction: p.color_reduction,
+            trap_end_type: p.trap_end_type.map(Into::into),
+            trap_image_placement: p.trap_image_placement.map(Into::into),
+        };
+        Self::new(&p.name, values)
     }
     /// This record as a stored Folio preset (inverse of [`TrapPreset::from_folio`]).
     pub fn to_folio(&self) -> StudioTrapPreset {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: trap preset to Folio ({})", self.name)
+        let v = &self.values;
+        StudioTrapPreset {
+            name: self.name.clone(),
+            default_trap_width: v.default_trap_width,
+            black_width: v.black_width,
+            black_color_threshold: v.black_color_threshold,
+            black_density: v.black_density,
+            sliding_trap_threshold: v.sliding_trap_threshold,
+            step_threshold: v.step_threshold,
+            color_reduction: v.color_reduction,
+            trap_end_type: v.trap_end_type.map(Into::into),
+            trap_image_placement: v.trap_image_placement.map(Into::into),
+        }
     }
 }
 
@@ -1129,12 +1152,39 @@ pub fn assign_trap_preset(
     preset: Option<&StudioTrapPresetRef>,
     cancel: &CancellationToken,
 ) -> Result<TrapAssignment, TrapAssignError> {
-    todo!(
-        "SMB-ID-TOC-PERSIST-1 item 3: trap assignment ({} {} {:?} {:?} {})",
-        ctx.base_revision(),
-        presets.trap_presets.len(),
-        range,
-        preset,
-        document.revision + u64::from(cancel.check().is_ok())
-    )
+    cancel.check().map_err(|_| TrapAssignError::Canceled)?;
+    if ctx.command().is_none() {
+        return Err(TrapAssignError::CommandMissing);
+    }
+    if ctx.base_revision() != document.revision {
+        return Err(TrapAssignError::StaleRevision { expected: ctx.base_revision(), current: document.revision });
+    }
+    if presets.document_id != document.document_id {
+        return Err(TrapAssignError::DocumentMismatch);
+    }
+    if let Some(p) = preset
+        && presets.preset(p).is_none()
+    {
+        return Err(TrapAssignError::PresetMissing(p.as_str().to_owned()));
+    }
+    let position = |key: &str| document.page_spreads.iter().flat_map(|s| s.pages.iter()).position(|p| p.page_id == key);
+    let first = position(range.first).ok_or_else(|| TrapAssignError::PageMissing(range.first.to_owned()))?;
+    let last = position(range.last).ok_or_else(|| TrapAssignError::PageMissing(range.last.to_owned()))?;
+    if last < first {
+        return Err(TrapAssignError::PageRangeOrder);
+    }
+    let revision = document.revision.checked_add(1).ok_or(TrapAssignError::RevisionOverflow)?;
+    let mut out = document.clone();
+    out.revision = revision;
+    let mut pages = Vec::new();
+    for (k, page) in out.page_spreads.iter_mut().flat_map(|s| s.pages.iter_mut()).enumerate() {
+        if k.is_multiple_of(256) {
+            cancel.check().map_err(|_| TrapAssignError::Canceled)?;
+        }
+        if (first..=last).contains(&k) {
+            page.applied_trap_preset = preset.cloned();
+            pages.push(page.page_id.clone());
+        }
+    }
+    Ok(TrapAssignment { document: out, pages })
 }

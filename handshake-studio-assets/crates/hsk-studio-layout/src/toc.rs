@@ -14,6 +14,13 @@
 //!   `none`: text.
 //! - Levels nest (an entry's children are the following deeper entries); siblings are sorted
 //!   alphabetically (lower-cased, stable) when every sibling's level has `sort_alphabet`.
+//! - Persisted members (lane SMB-ID-TOC-PERSIST-1): `include_hidden` = `Some(false)` leaves out
+//!   paragraphs on hidden frame layers and `remove_forced_line_break` = `Some(false)` keeps U+2028;
+//!   unknown (`None`) keeps this generator's documented behaviour (hidden text listed, forced breaks
+//!   removed), the only behaviour a record written before the members existed ever had. Members
+//!   this plain-text generator cannot write (`run_in`, `make_anchor`, `create_bookmarks`,
+//!   `include_book_documents` set to true, entry character styles) are refused with
+//!   `toc_contract_only` (use `generate_table_of_contents`), never ignored.
 //! - Loops are refused before anything is generated (`toc_loop`): the target story is one of the
 //!   sources, or a format or title style is itself a mapped source style (regenerating would feed the
 //!   TOC into itself). The style rules are Folio's `check_toc_style` (`toc_no_entries`,
@@ -171,9 +178,13 @@ impl Writer {
 
 /// Paragraph text without its trailing break; U+2028 and tabs become spaces.
 pub(crate) fn clean(text: &str) -> String {
+    clean_keeping(text, false)
+}
+/// [`clean`], keeping U+2028 when `keep_forced_breaks`.
+fn clean_keeping(text: &str, keep_forced_breaks: bool) -> String {
     text.trim_end_matches(['\n', '\r', '\u{2029}'])
         .chars()
-        .map(|c| if c == '\u{2028}' || c == '\t' { ' ' } else { c })
+        .map(|c| if (c == '\u{2028}' && !keep_forced_breaks) || c == '\t' { ' ' } else { c })
         .collect()
 }
 
@@ -238,6 +249,13 @@ pub fn generate_toc(
 ) -> Result<GeneratedStory, TocError> {
     cancel.check().map_err(|_| TocError::Layout(LayoutError::Canceled))?;
     check_toc_style(style).map_err(TocError::Style)?;
+    let contract_only = [style.include_book_documents, style.run_in, style.create_bookmarks, style.make_anchor].contains(&Some(true))
+        || style.entries.iter().any(|e| e.page_number_style.is_some() || e.separator_style.is_some());
+    if contract_only {
+        return Err(TocError::Style("toc_contract_only"));
+    }
+    let include_hidden = style.include_hidden != Some(false);
+    let keep_forced_breaks = style.remove_forced_line_break == Some(false);
     let mapped: BTreeMap<&str, usize> = style
         .entries
         .iter()
@@ -277,6 +295,9 @@ pub fn generate_toc(
                 continue;
             };
             let e = &style.entries[ei];
+            if !include_hidden && crate::toc_contract::on_hidden_layer(document, s.placement, p.start) {
+                continue;
+            }
             let page = page_of(s.placement, p.start, &by_page);
             if page.is_none() && !style.include_overset {
                 continue;
@@ -292,7 +313,7 @@ pub fn generate_toc(
             flat.push((
                 TocEntryOut {
                     level: e.level,
-                    text: clean(raw),
+                    text: clean_keeping(raw, keep_forced_breaks),
                     page_label: page.map(|x| x.label.clone()),
                     page_id: page.map(|x| x.page_id.clone()),
                     baseline_y: page.and_then(|_| baseline_of(s.placement, p.start)),

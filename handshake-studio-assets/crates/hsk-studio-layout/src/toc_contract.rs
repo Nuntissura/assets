@@ -59,7 +59,7 @@ use crate::toc::{TocLimits, TocSource, baseline_of, page_of};
 use hsk_studio_accord::{CancellationToken, CommandContext, DomainId};
 use hsk_studio_folio::{
     MAX_TOC_ENTRIES, MAX_TOC_LEVEL, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioBook,
-    StudioDocument, StudioTextAnchor, StudioTextStory, StudioTocStyle, StudioTypeStyleRecords, TextStorySchema,
+    StudioDocument, StudioTextAnchor, StudioTextStory, StudioTocEntry, StudioTocStyle, StudioTypeStyleRecords, TextStorySchema,
     TocPageNumberPosition, TypeStyleScope, is_captured_token,
 };
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};
@@ -189,6 +189,7 @@ impl TocStyle {
     /// keeps them.
     pub fn from_folio(s: &StudioTocStyle) -> Result<Self, TocCommandError> {
         let para = |v: &str| ParagraphStyleRef::parse(v).map_err(|_| TocCommandError::StyleRef);
+        let chr = |v: &Option<String>| v.as_deref().map(CharacterStyleRef::parse).transpose().map_err(|_| TocCommandError::StyleRef);
         let entries = s
             .entries
             .iter()
@@ -197,27 +198,32 @@ impl TocStyle {
                     name: para(&e.paragraph_style)?,
                     format_style: e.format_style.as_deref().map(para).transpose()?,
                     level: e.level,
-                    page_number_style: None,
+                    page_number_style: chr(&e.page_number_style)?,
                     page_number_position: e.page_number_position,
                     separator: e.separator.clone(),
-                    separator_style: None,
+                    separator_style: chr(&e.separator_style)?,
                     sort_alphabet: e.sort_alphabet,
                 })
             })
             .collect::<Result<Vec<_>, TocCommandError>>()?;
+        let numbered_paragraphs = s
+            .numbered_paragraphs
+            .as_deref()
+            .map(|t| CapturedToken::parse(t).ok_or(TocCommandError::NumberedParagraphs))
+            .transpose()?;
         Ok(Self {
             name: s.name.clone(),
             title: s.title.clone(),
             title_style: s.title_style.as_deref().map(para).transpose()?,
-            include_book_documents: Some(false),
-            include_hidden: Some(true),
-            run_in: Some(false),
-            create_bookmarks: Some(false),
-            make_anchor: Some(false),
-            remove_forced_line_break: Some(true),
-            numbered_paragraphs: None,
-            set_story_direction: None,
-            default_styled: false,
+            include_book_documents: s.include_book_documents,
+            include_hidden: s.include_hidden,
+            run_in: s.run_in,
+            create_bookmarks: s.create_bookmarks,
+            make_anchor: s.make_anchor,
+            remove_forced_line_break: s.remove_forced_line_break,
+            numbered_paragraphs,
+            set_story_direction: s.set_story_direction,
+            default_styled: s.default_styled,
             entries,
         })
     }
@@ -225,7 +231,38 @@ impl TocStyle {
     /// This record as a persisted Folio style with `toc_id` and the `include_overset` argument
     /// (the inverse of [`TocStyle::from_folio`]).
     pub fn to_folio(&self, toc_id: &str, include_overset: bool) -> StudioTocStyle {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: TOC style to Folio ({toc_id} {include_overset})")
+        let own = |r: &Option<ParagraphStyleRef>| r.as_ref().map(|r| r.as_str().to_owned());
+        let own_chr = |r: &Option<CharacterStyleRef>| r.as_ref().map(|r| r.as_str().to_owned());
+        StudioTocStyle {
+            toc_id: toc_id.to_owned(),
+            name: self.name.clone(),
+            title: self.title.clone(),
+            title_style: own(&self.title_style),
+            include_overset,
+            entries: self
+                .entries
+                .iter()
+                .map(|e| StudioTocEntry {
+                    paragraph_style: e.name.as_str().to_owned(),
+                    format_style: own(&e.format_style),
+                    level: e.level,
+                    page_number_position: e.page_number_position,
+                    separator: e.separator.clone(),
+                    sort_alphabet: e.sort_alphabet,
+                    page_number_style: own_chr(&e.page_number_style),
+                    separator_style: own_chr(&e.separator_style),
+                })
+                .collect(),
+            include_book_documents: self.include_book_documents,
+            include_hidden: self.include_hidden,
+            run_in: self.run_in,
+            create_bookmarks: self.create_bookmarks,
+            make_anchor: self.make_anchor,
+            remove_forced_line_break: self.remove_forced_line_break,
+            numbered_paragraphs: self.numbered_paragraphs.as_ref().map(|t| t.as_str().to_owned()),
+            set_story_direction: self.set_story_direction,
+            default_styled: self.default_styled,
+        }
     }
 
     /// The six style-table booleans, each stated (`toc_flag_unset` names the first unknown one in
@@ -313,7 +350,7 @@ pub struct PersistedTocStyle {
 }
 impl PersistedTocStyle {
     pub fn from_folio(s: &StudioTocStyle) -> Result<Self, TocCommandError> {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: persisted TOC lift ({})", s.toc_id)
+        Ok(Self { toc_id: s.toc_id.clone(), include_overset: s.include_overset, style: TocStyle::from_folio(s)? })
     }
     pub fn to_folio(&self) -> StudioTocStyle {
         self.style.to_folio(&self.toc_id, self.include_overset)

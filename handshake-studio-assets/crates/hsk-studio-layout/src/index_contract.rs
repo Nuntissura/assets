@@ -196,51 +196,43 @@ pub struct SectionHeaderSet {
 impl SectionHeaderSet {
     /// A persisted Folio header set (an invalid header-type token is `header_set_type`).
     pub fn from_folio(h: &StudioSectionHeaderSet) -> Result<Self, IndexCommandError> {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: header-set lift ({})", h.name)
+        let header_type =
+            h.header_type.as_deref().map(|c| HeaderType::from_code(c).ok_or(IndexCommandError::HeaderSet("header_set_type"))).transpose()?;
+        Ok(Self {
+            name: h.name.clone(),
+            language_id: h.language_id.clone(),
+            header_type,
+            groups: h.groups.iter().map(|g| HeaderGroup { heading: g.heading.clone(), initials: g.initials.clone() }).collect(),
+        })
     }
     /// This header set as persisted in Folio (inverse of [`SectionHeaderSet::from_folio`]).
     pub fn to_folio(&self) -> StudioSectionHeaderSet {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: header set to Folio ({})", self.name)
+        StudioSectionHeaderSet {
+            name: self.name.clone(),
+            language_id: self.language_id.clone(),
+            header_type: self.header_type.as_ref().map(|t| t.code().to_owned()),
+            groups: self.groups.iter().map(|g| StudioHeaderGroup { heading: g.heading.clone(), initials: g.initials.clone() }).collect(),
+        }
     }
     /// The built-in Latin set ("Symbols" catch-all, then A..Z).
     pub fn latin() -> Self {
         Self { name: "Latin".into(), language_id: "en".into(), header_type: Some(HeaderType::Latin), groups: latin_headers() }
     }
-    /// Bounds and shape: non-empty name and headings, a key-like language id, at most
+    /// Bounds and shape: Folio's [`check_section_header_set`] (one rule for the stored record and
+    /// the contract): non-empty name and headings, a key-like language id, at most
     /// [`MAX_HEADER_GROUPS`] groups of at most [`MAX_HEADER_INITIALS`] lower-case initials, no
-    /// initial in two groups.
+    /// initial in two groups. The counts are checked before the record is converted.
     pub fn check(&self) -> Result<(), IndexCommandError> {
-        let text_ok = |s: &str| !s.trim().is_empty() && s.len() <= MAX_HEADER_TEXT_BYTES && !s.chars().any(char::is_control);
-        if !text_ok(&self.name) {
-            return Err(IndexCommandError::HeaderSet("header_set_name"));
-        }
-        let lang_ok = !self.language_id.is_empty()
-            && self.language_id.len() <= MAX_HEADER_TEXT_BYTES
-            && self.language_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-        if !lang_ok {
-            return Err(IndexCommandError::HeaderSet("header_set_language_id"));
-        }
         if self.groups.is_empty() || self.groups.len() > MAX_HEADER_GROUPS {
             return Err(IndexCommandError::HeaderSet("header_set_groups"));
         }
-        let mut seen = BTreeSet::new();
-        for g in &self.groups {
-            if !text_ok(&g.heading) {
-                return Err(IndexCommandError::HeaderSet("header_set_heading"));
-            }
-            if g.initials.len() > MAX_HEADER_INITIALS {
-                return Err(IndexCommandError::BudgetExceeded);
-            }
-            for c in &g.initials {
-                if c.is_control() || c.to_lowercase().ne(std::iter::once(*c)) {
-                    return Err(IndexCommandError::HeaderSet("header_set_initial"));
-                }
-                if !seen.insert(*c) {
-                    return Err(IndexCommandError::HeaderSet("header_set_initial_duplicate"));
-                }
-            }
+        if self.groups.iter().any(|g| g.initials.len() > MAX_HEADER_INITIALS) {
+            return Err(IndexCommandError::BudgetExceeded);
         }
-        Ok(())
+        check_section_header_set(&self.to_folio()).map_err(|why| match why {
+            "header_set_initials_budget" => IndexCommandError::BudgetExceeded,
+            other => IndexCommandError::HeaderSet(other),
+        })
     }
     /// The group of a topic: the group listing its lower-cased first character, else the first
     /// catch-all group.
@@ -269,11 +261,29 @@ pub enum PageRangeScope {
 impl PageRangeScope {
     /// A persisted Folio scope (a style that is not a `STYS` id is `index_style_ref`).
     pub fn from_folio(s: &StudioPageRangeScope) -> Result<Self, IndexCommandError> {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: scope lift ({s:?})")
+        Ok(match s {
+            StudioPageRangeScope::CurrentPage => Self::CurrentPage,
+            StudioPageRangeScope::ToNextStyleChange => Self::ToNextStyleChange,
+            StudioPageRangeScope::ToNextUseOfStyle { style } => {
+                Self::ToNextUseOfStyle(ParagraphStyleRef::parse(style).map_err(|_| IndexCommandError::StyleRef)?)
+            }
+            StudioPageRangeScope::ToEndOfStory => Self::ToEndOfStory,
+            StudioPageRangeScope::ToEndOfDocument => Self::ToEndOfDocument,
+            StudioPageRangeScope::ToEndOfSection => Self::ToEndOfSection,
+            StudioPageRangeScope::ForNextParagraphs { count } => Self::ForNextParagraphs(*count),
+        })
     }
     /// This scope as persisted on a Folio mark (inverse of [`PageRangeScope::from_folio`]).
     pub fn to_folio(&self) -> StudioPageRangeScope {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: scope to Folio ({self:?})")
+        match self {
+            Self::CurrentPage => StudioPageRangeScope::CurrentPage,
+            Self::ToNextStyleChange => StudioPageRangeScope::ToNextStyleChange,
+            Self::ToNextUseOfStyle(r) => StudioPageRangeScope::ToNextUseOfStyle { style: r.as_str().to_owned() },
+            Self::ToEndOfStory => StudioPageRangeScope::ToEndOfStory,
+            Self::ToEndOfDocument => StudioPageRangeScope::ToEndOfDocument,
+            Self::ToEndOfSection => StudioPageRangeScope::ToEndOfSection,
+            Self::ForNextParagraphs(n) => StudioPageRangeScope::ForNextParagraphs { count: *n },
+        }
     }
 }
 
@@ -329,16 +339,20 @@ impl IndexOptions {
     /// unknown). The header-set reference is not an options-table field: [`PersistedIndexOptions`]
     /// keeps it.
     pub fn from_folio(o: &StudioIndexOptions) -> Result<Self, IndexCommandError> {
+        if o.level_styles.len() > STUDIO_MAX_INDEX_LEVELS {
+            return Err(IndexCommandError::Layout(LayoutError::InvalidInput));
+        }
         let para = |v: &Option<String>| v.as_deref().map(ParagraphStyleRef::parse).transpose().map_err(|_| IndexCommandError::StyleRef);
+        let chr = |v: &Option<String>| v.as_deref().map(CharacterStyleRef::parse).transpose().map_err(|_| IndexCommandError::StyleRef);
         let level = |k: usize| {
             o.level_styles.get(k).and_then(|s| s.as_deref()).map(ParagraphStyleRef::parse).transpose().map_err(|_| IndexCommandError::StyleRef)
         };
         Ok(Self {
             title: o.title.clone(),
             title_style: para(&o.title_style)?,
-            replace_existing_index: Some(false),
-            include_book_documents: Some(false),
-            include_hidden_entries: Some(true),
+            replace_existing_index: o.replace_existing_index,
+            include_book_documents: o.include_book_documents,
+            include_hidden_entries: o.include_hidden_entries,
             index_format: o.index_format,
             include_section_headings: o.include_section_headings,
             include_empty_index_sections: o.include_empty_index_sections,
@@ -347,9 +361,9 @@ impl IndexOptions {
             level_3_style: level(2)?,
             level_4_style: level(3)?,
             section_heading_style: para(&o.section_heading_style)?,
-            page_number_style: None,
-            cross_reference_style: None,
-            cross_reference_topic_style: None,
+            page_number_style: chr(&o.page_number_style)?,
+            cross_reference_style: chr(&o.cross_reference_style)?,
+            cross_reference_topic_style: chr(&o.cross_reference_topic_style)?,
             following_topic_separator: o.following_topic_separator.clone(),
             between_entries_separator: o.between_entries_separator.clone(),
             page_range_separator: o.page_range_separator.clone(),
@@ -361,7 +375,35 @@ impl IndexOptions {
     /// This record as persisted Folio options naming `section_header_set` (the inverse of
     /// [`IndexOptions::from_folio`]; level styles are written up to the deepest set one).
     pub fn to_folio(&self, section_header_set: Option<&str>) -> StudioIndexOptions {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: index options to Folio ({section_header_set:?})")
+        let para = |r: &Option<ParagraphStyleRef>| r.as_ref().map(|r| r.as_str().to_owned());
+        let chr = |r: &Option<CharacterStyleRef>| r.as_ref().map(|r| r.as_str().to_owned());
+        let mut level_styles: Vec<Option<String>> =
+            [&self.level_1_style, &self.level_2_style, &self.level_3_style, &self.level_4_style].into_iter().map(para).collect();
+        while level_styles.last().is_some_and(Option::is_none) {
+            level_styles.pop();
+        }
+        StudioIndexOptions {
+            title: self.title.clone(),
+            title_style: para(&self.title_style),
+            index_format: self.index_format,
+            include_section_headings: self.include_section_headings,
+            include_empty_index_sections: self.include_empty_index_sections,
+            level_styles,
+            section_heading_style: para(&self.section_heading_style),
+            following_topic_separator: self.following_topic_separator.clone(),
+            between_entries_separator: self.between_entries_separator.clone(),
+            page_range_separator: self.page_range_separator.clone(),
+            between_page_numbers_separator: self.between_page_numbers_separator.clone(),
+            before_cross_reference_separator: self.before_cross_reference_separator.clone(),
+            entry_end_separator: self.entry_end_separator.clone(),
+            replace_existing_index: self.replace_existing_index,
+            include_book_documents: self.include_book_documents,
+            include_hidden_entries: self.include_hidden_entries,
+            page_number_style: chr(&self.page_number_style),
+            cross_reference_style: chr(&self.cross_reference_style),
+            cross_reference_topic_style: chr(&self.cross_reference_topic_style),
+            section_header_set: section_header_set.map(str::to_owned),
+        }
     }
     /// The three include booleans, each stated (`index_flag_unset` names the first unknown one).
     pub fn stated_flags(&self) -> Result<IndexFlags, IndexCommandError> {
@@ -437,7 +479,7 @@ pub struct PersistedIndexOptions {
 }
 impl PersistedIndexOptions {
     pub fn from_folio(o: &StudioIndexOptions) -> Result<Self, IndexCommandError> {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: persisted index options lift ({})", o.title.len())
+        Ok(Self { options: IndexOptions::from_folio(o)?, section_header_set: o.section_header_set.clone() })
     }
     pub fn to_folio(&self) -> StudioIndexOptions {
         self.options.to_folio(self.section_header_set.as_deref())
@@ -445,7 +487,9 @@ impl PersistedIndexOptions {
     /// The header set the persisted options name, from the record set (`None` = the built-in Latin
     /// set; a name the records do not hold is `index_header_set_missing`).
     pub fn header_set(&self, records: &StudioLongDocRecords) -> Result<Option<SectionHeaderSet>, IndexCommandError> {
-        todo!("SMB-ID-TOC-PERSIST-1 item 3: header-set resolution ({})", records.section_header_sets.len())
+        let Some(name) = &self.section_header_set else { return Ok(None) };
+        let stored = records.section_header_set(name).ok_or(IndexCommandError::HeaderSet("index_header_set_missing"))?;
+        SectionHeaderSet::from_folio(stored).map(Some)
     }
 }
 
@@ -765,15 +809,36 @@ pub fn generate_index_contract(
     }
     check_marks(req.marks)?;
     let mark_ids: BTreeSet<&str> = req.marks.iter().map(|m| m.mark_id.as_str()).collect();
+    // Persisted scopes of the marks (lane SMB-ID-TOC-PERSIST-1), lifted once.
+    let mut persisted: Vec<(&str, PageRangeScope)> = Vec::new();
+    for m in req.marks {
+        if let Some(s) = &m.page_range_scope {
+            let scope = PageRangeScope::from_folio(s).map_err(|_| IndexCommandError::InvalidPageEntry(m.mark_id.clone()))?;
+            persisted.push((m.mark_id.as_str(), scope));
+        }
+    }
+    let valid = |scope: &PageRangeScope| match scope {
+        PageRangeScope::ForNextParagraphs(n) => *n >= 1,
+        PageRangeScope::ToNextUseOfStyle(r) => style_scope_ok(req.styles, r.as_str(), TypeStyleScope::Paragraph).is_ok(),
+        _ => true,
+    };
     let mut scopes: BTreeMap<&str, &PageRangeScope> = BTreeMap::new();
     for s in req.scopes {
-        let valid = match &s.scope {
-            PageRangeScope::ForNextParagraphs(n) => *n >= 1,
-            PageRangeScope::ToNextUseOfStyle(r) => style_scope_ok(req.styles, r.as_str(), TypeStyleScope::Paragraph).is_ok(),
-            _ => true,
-        };
-        if !valid || !mark_ids.contains(s.mark_id.as_str()) || scopes.insert(s.mark_id.as_str(), &s.scope).is_some() {
+        if !valid(&s.scope) || !mark_ids.contains(s.mark_id.as_str()) || scopes.insert(s.mark_id.as_str(), &s.scope).is_some() {
             return Err(IndexCommandError::InvalidPageEntry(s.mark_id.clone()));
+        }
+    }
+    // A request scope overrides nothing: it must agree with the mark's persisted scope.
+    for (mark, scope) in &persisted {
+        if !valid(scope) {
+            return Err(IndexCommandError::InvalidPageEntry((*mark).to_owned()));
+        }
+        match scopes.get(mark) {
+            Some(given) if *given != scope => return Err(IndexCommandError::InvalidPageEntry((*mark).to_owned())),
+            Some(_) => {}
+            None => {
+                scopes.insert(mark, scope);
+            }
         }
     }
     for s in req.sources {
