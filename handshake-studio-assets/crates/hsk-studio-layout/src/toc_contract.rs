@@ -712,8 +712,220 @@ fn generate_inner(
     taken_names: &mut BTreeSet<String>,
     cancel: &CancellationToken,
 ) -> Result<TocGenerated, TocCommandError> {
-        panic!("red: SMB-ID-TOC-INDEX-1")
+    let canceled = |_| TocCommandError::Layout(LayoutError::Canceled);
+    cancel.check().map_err(canceled)?;
+    check_context(ctx, req.document)?;
+    let style = req.style;
+    style.check(req.styles)?;
+    if req.sources.len() > req.limits.max_entries {
+        return Err(TocCommandError::BudgetExceeded);
     }
+    // Where the entries come from: the document, or the combined book.
+    let (doc, pages) = if style.include_book_documents {
+        let book = req.book.ok_or(TocCommandError::BookUnavailable)?;
+        book.check().map_err(TocCommandError::DocumentMissingFromBook)?;
+        (&book.combined.document, book.combined.pages.as_slice())
+    } else {
+        (req.document, req.pages)
+    };
+    // The target story.
+    let replacing = req.replace_existing.then_some(req.existing).flatten();
+    let target_id = match replacing {
+        Some(s) => s.story_id.as_str(),
+        None => {
+            if !DomainId::parse(req.new_story_id).is_ok_and(|d| d.prefix() == "STXT") {
+                return Err(TocCommandError::StoryId);
+            }
+            req.new_story_id
+        }
+    };
+    if req.locked_stories.iter().any(|s| s == target_id) {
+        return Err(TocCommandError::StoryLocked(target_id.to_owned()));
+    }
+    if let Some(p) = req.place_point
+        && (req.document.locate_page(&p.page_id).is_none() || !p.x_pt.is_finite() || !p.y_pt.is_finite())
+    {
+        return Err(TocCommandError::PlacePoint);
+    }
+    let mapped: BTreeMap<&str, usize> = style.entries.iter().enumerate().map(|(i, e)| (e.name.as_str(), i)).collect();
+    let feeds_back = style
+        .entries
+        .iter()
+        .filter_map(|e| e.format_style.as_ref())
+        .chain(style.title_style.as_ref())
+        .any(|s| mapped.contains_key(s.as_str()));
+    if feeds_back || req.sources.iter().any(|s| s.story.story_id == target_id) {
+        return Err(TocCommandError::Loop);
+    }
+    for s in req.sources {
+        if let Some(p) = s.placement
+            && p.base_revision != doc.revision
+        {
+            return Err(TocCommandError::StaleRevision { expected: p.base_revision, current: doc.revision });
+        }
+        if s.text.len() as u64 != s.story.byte_len() {
+            return Err(TocCommandError::Layout(LayoutError::InvalidInput));
+        }
+    }
+    let by_page: BTreeMap<(usize, usize), &PageNumber> = pages.iter().map(|p| ((p.spread, p.page), p)).collect();
+    let locked: BTreeSet<&str> = req.locked_stories.iter().map(String::as_str).collect();
+    let existing_at: BTreeMap<(&str, u64), &str> =
+        req.existing_anchors.iter().map(|a| ((a.story_id.as_str(), a.byte), a.anchor_id.as_str())).collect();
+    let mut next_anchor = 1u64;
+    let (mut omitted_overset, mut omitted_hidden) = (0usize, 0usize);
+    let mut flat: Vec<(TocContractEntry, bool, usize)> = Vec::new();
+    let mut scanned = 0usize;
+    for s in req.sources {
+        for p in &s.story.paragraphs {
+            scanned = scanned.saturating_add(1);
+            if scanned.is_multiple_of(256) {
+                cancel.check().map_err(canceled)?;
+            }
+            let Some(&ei) = p.style_ref.as_deref().and_then(|r| mapped.get(r)) else {
+                continue;
+            };
+            let e = &style.entries[ei];
+            if !style.include_hidden && on_hidden_layer(doc, s.placement, p.start) {
+                omitted_hidden = omitted_hidden.saturating_add(1);
+                continue;
+            }
+            let page = page_of(s.placement, p.start, &by_page);
+            if page.is_none() && !req.include_overset {
+                omitted_overset = omitted_overset.saturating_add(1);
+                continue;
+            }
+            if flat.len() >= req.limits.max_entries {
+                return Err(TocCommandError::BudgetExceeded);
+            }
+            let raw = usize::try_from(p.start)
+                .ok()
+                .zip(usize::try_from(p.end).ok())
+                .and_then(|(a, b)| s.text.get(a..b))
+                .ok_or(TocCommandError::Layout(LayoutError::InvalidInput))?;
+            let anchor = style.make_anchor.then(|| -> Result<TocAnchorOutcome, TocCommandError> {
+                let sid = s.story.story_id.as_str();
+                if locked.contains(sid) {
+                    Ok(TocAnchorOutcome::NotCreatedStoryLocked { story_id: sid.to_owned(), source_start: p.start })
+                } else if let Some(id) = existing_at.get(&(sid, p.start)) {
+                    Ok(TocAnchorOutcome::Existing((*id).to_owned()))
+                } else {
+                    let (anchor_id, name) =
+                        fresh_anchor(taken_ids, taken_names, &mut next_anchor).ok_or(TocCommandError::BudgetExceeded)?;
+                    Ok(TocAnchorOutcome::Created(StudioTextAnchor { anchor_id, name, story_id: sid.to_owned(), byte: p.start }))
+                }
+            });
+            let anchor = anchor.transpose()?;
+            flat.push((
+                TocContractEntry {
+                    level: e.level,
+                    text: entry_text(raw, style.remove_forced_line_break),
+                    page_label: page.map(|x| x.label.clone()),
+                    page_id: page.map(|x| x.page_id.clone()),
+                    baseline_y: page.and_then(|_| baseline_of(s.placement, p.start)),
+                    story_id: s.story.story_id.clone(),
+                    source_start: p.start,
+                    anchor,
+                    run_in: false,
+                },
+                e.sort_alphabet,
+                ei,
+            ));
+        }
+    }
+    // Level tree: an entry's children are the following deeper entries.
+    let mut roots: Vec<Node> = Vec::new();
+    let mut stack: Vec<Node> = Vec::new();
+    for (entry, sort, style_index) in flat {
+        let node = Node { entry, sort, style_index, children: Vec::new() };
+        while stack.last().is_some_and(|top| top.entry.level >= node.entry.level) {
+            let Some(done) = stack.pop() else { break };
+            match stack.last_mut() {
+                Some(parent) => parent.children.push(done),
+                None => roots.push(done),
+            }
+        }
+        stack.push(node);
+    }
+    while let Some(done) = stack.pop() {
+        match stack.last_mut() {
+            Some(parent) => parent.children.push(done),
+            None => roots.push(done),
+        }
+    }
+    sort_nodes(&mut roots);
+    let mut ordered = Vec::new();
+    flatten(roots, &mut ordered);
+    // Write the story.
+    let budget = |_| TocCommandError::BudgetExceeded;
+    let mut w = RunWriter::new(req.limits.max_text_bytes);
+    if !style.title.is_empty() {
+        w.paragraph(style.title_style.as_ref().map(ParagraphStyleRef::as_str)).map_err(budget)?;
+        w.run(&style.title, None).map_err(budget)?;
+    }
+    let deepest = style.entries.iter().map(|e| e.level).max();
+    let mut wrote_entry = false;
+    let mut entries = Vec::with_capacity(ordered.len());
+    for (k, (mut entry, ei)) in ordered.into_iter().enumerate() {
+        if k.is_multiple_of(256) {
+            cancel.check().map_err(canceled)?;
+        }
+        let te = &style.entries[ei];
+        let continues = style.run_in && wrote_entry && Some(entry.level) == deepest;
+        if continues {
+            w.run(RUN_IN_JOINER, None).map_err(budget)?;
+        } else {
+            w.paragraph(te.format_style.as_ref().map(ParagraphStyleRef::as_str)).map_err(budget)?;
+        }
+        let sep_style = te.separator_style.as_ref().map(CharacterStyleRef::as_str);
+        let num_style = te.page_number_style.as_ref().map(CharacterStyleRef::as_str);
+        match (&entry.page_label, te.page_number_position) {
+            (Some(label), TocPageNumberPosition::After) => {
+                w.run(&entry.text, None).map_err(budget)?;
+                w.run(&te.separator, sep_style).map_err(budget)?;
+                w.run(label, num_style).map_err(budget)?;
+            }
+            (Some(label), TocPageNumberPosition::Before) => {
+                w.run(label, num_style).map_err(budget)?;
+                w.run(&te.separator, sep_style).map_err(budget)?;
+                w.run(&entry.text, None).map_err(budget)?;
+            }
+            _ => w.run(&entry.text, None).map_err(budget)?,
+        }
+        entry.run_in = continues;
+        wrote_entry = true;
+        entries.push(entry);
+    }
+    let bookmarks = if style.create_bookmarks {
+        entries
+            .iter()
+            .map(|e| TocBookmark {
+                level: e.level,
+                title: e.text.clone(),
+                page_id: e.page_id.clone(),
+                baseline_y: e.baseline_y,
+                anchor_id: e.anchor.as_ref().and_then(TocAnchorOutcome::anchor_id).map(str::to_owned),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let (kind, direction) = match replacing {
+        Some(s) => (s.text_kind, s.story_direction),
+        None => (StoryTextKind::Area, StoryDirection::LeftToRight),
+    };
+    Ok(TocGenerated {
+        style_name: style.name.clone(),
+        story: w.into_story(target_id, kind, direction),
+        replaced: replacing.is_some(),
+        place_point: if replacing.is_some() { None } else { req.place_point.cloned() },
+        entries,
+        bookmarks,
+        story_direction: style.set_story_direction,
+        numbered_paragraphs: style.numbered_paragraphs.clone(),
+        omitted_overset,
+        omitted_hidden,
+    })
+}
 
 /// One Observe terminal outcome for a TOC or index command result (codes only, no text), with the
 /// command's correlation and base revision.
