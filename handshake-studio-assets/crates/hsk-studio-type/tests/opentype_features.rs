@@ -286,7 +286,6 @@ fn mt_30955_registry_pins_the_group_table_and_accepts_any_well_formed_tag() {
 /// feature union"; that union is not listed in the spec, so the registry carries only the 209
 /// tags of the STU-TYP-171 table. MT-30955 AC-001 stays open (spec gap).
 #[test]
-#[ignore = "NOT_PROVEN: STU-TYP-170 229-tag observed union is not recovered in the spec (MT-30955 AC-001 spec gap)"]
 fn mt_30955_observed_union_of_229_tags() {
     assert!(registry().len() >= 229);
 }
