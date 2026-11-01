@@ -2444,6 +2444,13 @@ fn build(
 // allocated. A resource that does not parse keeps its
 // bytes and is reported (`channel_resource_unreadable`); the channels then take default names,
 // kinds and colours. Depth 1 (bitmap) channels are not mapped (`channel_depth_unmapped`).
+// Export (`export::apply_channel_edits`) writes edits of these channels back and appends a channel
+// added in edit as a new extra plane; the loss codes it records are `channel_removed_in_edit_not_exported`,
+// `channel_reorder_not_exported`, `channel_geometry_changed_not_exported`,
+// `channel_visibility_not_exported`, `channel_name_transcoded`, `channel_name_resource_absent`,
+// `channel_display_info_absent` and, for an added channel PSD cannot carry (header channel limit 56,
+// extent or depth other than the file, no extra planes in the mode, no merged image data, or extra
+// plane 0 of a merged-transparency file), `channel_added_in_edit_not_exported`.
 
 /// One imported channel: where it came from in the file and the record the import produced (the
 /// export compares the edited record against it).

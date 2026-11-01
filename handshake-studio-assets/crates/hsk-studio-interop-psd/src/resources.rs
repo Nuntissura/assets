@@ -264,6 +264,17 @@ impl ImageResources {
         block.data = data;
         true
     }
+
+    /// [`Self::replace_data`], or, when resource `id` is absent, a new `8BIM` block with an empty
+    /// name after the last block (a channel added to a file without that resource).
+    pub(crate) fn set_data(&mut self, id: u16, data: Vec<u8>) {
+        if self.find(id).is_some() {
+            self.replace_data(id, data);
+            return;
+        }
+        let data_pad = if data.len().is_multiple_of(2) { Vec::new() } else { vec![0] };
+        self.blocks.push(ImageResource { signature: *b"8BIM", id, name: Vec::new(), name_pad: vec![0], data, data_pad });
+    }
 }
 
 /// Resource 1006 data: Pascal strings, unpadded (psd-tools `AlphaNamesPascal`, padding 1).

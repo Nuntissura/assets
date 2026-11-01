@@ -38,11 +38,12 @@ use crate::limits::Limits;
 use crate::loss::{LossEntry, LossKind, LossReport};
 use crate::pixels::Plane;
 use crate::proposal::{
-    ALPHA_BYTES, COLOUR_BYTES, ImportProposal, TILE_EDGE, TileBlob, display_of_colour, floor_div, imported_look, mode_of_kind,
+    ALPHA_BYTES, COLOUR_BYTES, ImportProposal, TILE_EDGE, TileBlob, display_of_colour, floor_div, imported_look, merged_colour_planes,
+    mode_of_kind,
 };
 use crate::resources::{
-    DISPLAY_INFO_ENTRY_BYTES, ImageResources, RESOURCE_ALPHA_NAMES_PASCAL, RESOURCE_ALPHA_NAMES_UNICODE, RESOURCE_DISPLAY_INFO,
-    RESOURCE_VERSION_INFO, encode_alpha_names_pascal, encode_alpha_names_unicode,
+    ChannelDisplayInfo, DISPLAY_INFO_ENTRY_BYTES, ImageResources, RESOURCE_ALPHA_IDENTIFIERS, RESOURCE_ALPHA_NAMES_PASCAL,
+    RESOURCE_ALPHA_NAMES_UNICODE, RESOURCE_DISPLAY_INFO, RESOURCE_VERSION_INFO, encode_alpha_names_pascal, encode_alpha_names_unicode,
 };
 use crate::samples::{
     SixteenBitScale, linear_to_srgb, read_f32_le, row_major, sample_range, size_add, size_mul, unit_to_sample,
@@ -303,11 +304,20 @@ pub fn export_psd(
 /// components stay when the colour is unedited), and samples (the merged image data is re-encoded
 /// raw with the edited extra planes; colour planes and the merged transparency keep their samples,
 /// so the composite is not marked stale). `channel_tiles` serves the edited tile bytes by digest
-/// (size and digest checked; a missing tile is a typed error). Edits PSD cannot take here are typed
-/// losses and left out: added, removed or reordered channels, a changed extent or depth,
-/// visibility, an edited channel without a 1077 resource to hold its display edit. An unedited
-/// record set changes nothing, so the file re-emits byte-identically (test
-/// `unmodified_channels_reexport_byte_identically`).
+/// (size and digest checked; a missing tile is a typed error). A channel added in edit (a channel
+/// saved from a selection, MT-038 AC-003 / MT-30095, lane SMB-R51-FOLLOWUPS-1) is written as a new
+/// extra plane after the existing ones: its samples raw in the merged image data, its name appended
+/// to 1006 and 1045 (the `channel_name_transcoded` rule as for a rename), its kind, colour and
+/// opacity appended to 1077, a fresh non-zero identifier appended to 1053 when the file has one, and
+/// the header channel count raised; a file without extra planes and without those name or display
+/// resources gets them created. It re-imports as the same record and samples (test
+/// `channel_saved_from_a_selection_exports_and_reimports_beside_the_imported_one`). Edits PSD cannot
+/// take here are typed losses and left out: removed or reordered channels (a new channel placed
+/// before an imported one is written last, `channel_reorder_not_exported`), a changed extent or
+/// depth, visibility, an edited channel without a 1077 resource to hold its display edit, and the
+/// added channels PSD cannot carry, `channel_added_in_edit_not_exported` (see
+/// [`added_channel_fits`]). An unedited record set changes nothing, so the file re-emits
+/// byte-identically (test `unmodified_channels_reexport_byte_identically`).
 pub fn apply_channel_edits(
     doc: &mut PsdDocument,
     proposal: &ImportProposal,
@@ -393,16 +403,18 @@ fn channel_edits_in_place(
     report: &mut ExportReport,
 ) -> Result<()> {
     let map = &proposal.channel_map;
-    for c in &edited.channels {
-        if !map.iter().any(|e| e.channel_id == c.channel_id) {
-            report.lost("channels", LossKind::Unsupported, "channel_added_in_edit_not_exported");
-        }
-    }
+    let mapped = |c: &StudioChannelRecord| map.iter().any(|e| e.channel_id == c.channel_id);
+    let added: Vec<&StudioChannelRecord> = edited.channels.iter().filter(|c| !mapped(c)).collect();
     let imported_order: Vec<&str> =
         map.iter().filter(|e| edited.channel(&e.channel_id).is_some()).map(|e| e.channel_id.as_str()).collect();
-    let edited_order: Vec<&str> =
-        edited.channels.iter().filter(|c| map.iter().any(|e| e.channel_id == c.channel_id)).map(|c| c.channel_id.as_str()).collect();
-    if imported_order != edited_order {
+    let edited_order: Vec<&str> = edited.channels.iter().filter(|c| mapped(c)).map(|c| c.channel_id.as_str()).collect();
+    // Added channels are written after the existing ones, so one placed before an imported channel
+    // also changes the order.
+    let added_first = match (edited.channels.iter().position(|c| !mapped(c)), edited.channels.iter().rposition(|c| mapped(c))) {
+        (Some(first_added), Some(last_mapped)) => first_added < last_mapped,
+        _ => false,
+    };
+    if imported_order != edited_order || added_first {
         report.lost("channels", LossKind::Unsupported, "channel_reorder_not_exported");
     }
     // Resource counts are bounded by the header's channel count (`1..=56`).
@@ -410,6 +422,8 @@ fn channel_edits_in_place(
     let mut pascal = doc.resources.alpha_names_pascal(extras).ok().flatten();
     let mut unicode = doc.resources.alpha_names_unicode(extras, limits.max_name_units).ok().flatten();
     let mut display = doc.resources.display_info(extras).ok().flatten();
+    // Bytes after the last whole 1077 entry as read stay after the entries written.
+    let display_read = display.as_ref().map_or(0, |(_, e)| e.len());
     let (mut names_changed, mut display_changed) = (false, false);
     let mut planes: Vec<(usize, Vec<u8>)> = Vec::new();
     for entry in map {
@@ -428,7 +442,7 @@ fn channel_edits_in_place(
         }
         if c.name != was.name {
             let i = entry.extra_index;
-            let latin1: Vec<u8> = c.name.chars().map(|ch| u8::try_from(u32::from(ch)).unwrap_or(b'?')).take(255).collect();
+            let latin1 = latin1_name(&c.name);
             if let Some(list) = pascal.as_mut()
                 && let Some(slot) = list.get_mut(i)
             {
@@ -445,8 +459,7 @@ fn channel_edits_in_place(
                 report.applied(&path, "channel_name");
                 // The 1006 entry carries the name exactly only when every character is Latin-1 and
                 // the name fits 255 bytes (F-R50-5); the 1045 entry, when present, keeps it exact.
-                let exact = c.name.chars().all(|ch| u32::from(ch) <= 0xFF) && c.name.chars().count() <= 255;
-                if pascal_written && !exact {
+                if pascal_written && !pascal_exact(&c.name) {
                     report.lost(&format!("{path}/name"), LossKind::Transformed, "channel_name_transcoded");
                 }
             } else {
@@ -474,12 +487,74 @@ fn channel_edits_in_place(
             report.applied(&path, "channel_pixels");
         }
     }
+    // Channels added in edit: new extra planes after the existing ones (MT-038 AC-003, MT-30095).
+    let header = doc.header;
+    let existing = usize::from(header.channels).saturating_sub(merged_colour_planes(header.color_mode, usize::from(header.channels)));
+    if !added.is_empty() && existing == 0 {
+        // No extra plane yet: no list to align with, so absent name and display resources are created.
+        if pascal.is_none() && unicode.is_none() {
+            (pascal, unicode) = (Some(Vec::new()), Some(Vec::new()));
+        }
+        if display.is_none() {
+            display = Some((1, Vec::new()));
+        }
+    }
+    let mut ids = if added.is_empty() { None } else { doc.resources.alpha_identifiers(extras).ok().flatten() };
+    let plane_bytes = size_mul(size_mul(header.width as usize, header.height as usize)?, usize::from(header.depth / 8))?;
+    let mut new_planes: Vec<Vec<u8>> = Vec::new();
+    let mut channels = header.channels;
+    for c in added {
+        let i = size_add(existing, new_planes.len())?;
+        if !added_channel_fits(doc, c, channels, i) {
+            report.lost(&format!("channels/{}", c.channel_id), LossKind::Unsupported, "channel_added_in_edit_not_exported");
+            continue;
+        }
+        // V4-02: the merged planes with this one stay inside the decode budget before it is allocated.
+        if size_mul(usize::from(channels).saturating_add(1), plane_bytes)? > limits.max_decoded_bytes {
+            return Err(PsdError::PixelLimit);
+        }
+        let path = format!("channel[{i}]");
+        new_planes.push(channel_plane(c, channel_tiles, &header)?);
+        channels = channels.saturating_add(1);
+        report.applied(&path, "channel_added");
+        if c.visible {
+            report.lost(&format!("{path}/visible"), LossKind::Transformed, "channel_visibility_not_exported");
+        }
+        let pascal_written = pascal.as_mut().filter(|l| l.len() == i).map(|l| l.push(latin1_name(&c.name))).is_some();
+        let unicode_written = unicode.as_mut().filter(|l| l.len() == i).map(|l| l.push(c.name.clone())).is_some();
+        if pascal_written || unicode_written {
+            names_changed = true;
+            if pascal_written && !pascal_exact(&c.name) {
+                report.lost(&format!("{path}/name"), LossKind::Transformed, "channel_name_transcoded");
+            }
+        } else {
+            report.lost(&format!("{path}/name"), LossKind::Unsupported, "channel_name_resource_absent");
+        }
+        let (colour_space, colour) = display_of_colour(&c.colour);
+        let entry =
+            ChannelDisplayInfo { colour_space, colour, opacity: c.opacity.round().clamp(0.0, 100.0) as u16, mode: mode_of_kind(c.kind) };
+        match display.as_mut().filter(|(_, e)| e.len() == i) {
+            Some((_, entries)) => {
+                entries.push(entry);
+                display_changed = true;
+            }
+            None => report.lost(&format!("{path}/display"), LossKind::Unsupported, "channel_display_info_absent"),
+        }
+        if let Some(list) = ids.as_mut() {
+            // One identifier per extra plane: entries past the existing planes describe none.
+            list.truncate(i);
+            while list.len() <= i {
+                let fresh = fresh_alpha_identifier(list);
+                list.push(fresh);
+            }
+        }
+    }
     if names_changed {
         if let Some(names) = &pascal {
-            doc.resources.replace_data(RESOURCE_ALPHA_NAMES_PASCAL, encode_alpha_names_pascal(names));
+            doc.resources.set_data(RESOURCE_ALPHA_NAMES_PASCAL, encode_alpha_names_pascal(names));
         }
         if let Some(names) = &unicode {
-            doc.resources.replace_data(RESOURCE_ALPHA_NAMES_UNICODE, encode_alpha_names_unicode(names, limits.max_name_units));
+            doc.resources.set_data(RESOURCE_ALPHA_NAMES_UNICODE, encode_alpha_names_unicode(names, limits.max_name_units));
         }
     }
     if display_changed && let Some((version, entries)) = &display {
@@ -488,12 +563,18 @@ fn channel_edits_in_place(
         for e in entries {
             e.encode(&mut data);
         }
-        // Bytes after the last whole entry stay as read.
-        let whole = size_add(4, size_mul(entries.len(), DISPLAY_INFO_ENTRY_BYTES)?)?;
+        // Bytes after the last whole entry as read stay as read.
+        let whole = size_add(4, size_mul(display_read, DISPLAY_INFO_ENTRY_BYTES)?)?;
         data.extend_from_slice(old.get(whole..).unwrap_or_default());
-        doc.resources.replace_data(RESOURCE_DISPLAY_INFO, data);
+        doc.resources.set_data(RESOURCE_DISPLAY_INFO, data);
     }
-    if !planes.is_empty() {
+    if !new_planes.is_empty()
+        && let Some(list) = &ids
+    {
+        doc.resources.set_data(RESOURCE_ALPHA_IDENTIFIERS, list.iter().flat_map(|v| v.to_be_bytes()).collect());
+    }
+    if !planes.is_empty() || !new_planes.is_empty() {
+        // Decoded with the header as read; the new planes follow the existing ones.
         let image = doc
             .decode_merged(limits, &CancellationToken::default())?
             .ok_or(PsdError::Encode("channel_planes_missing"))?;
@@ -504,9 +585,52 @@ fn channel_edits_in_place(
                 None => data.extend_from_slice(&plane.bytes),
             }
         }
+        for plane in &new_planes {
+            data.extend_from_slice(plane);
+        }
         doc.image_data = Some(ImageData { compression: 0, data });
+        doc.header.channels = channels;
     }
     Ok(())
+}
+
+/// Most channels a PSD header holds (colour planes plus extra planes; the reader refuses more).
+const MAX_HEADER_CHANNELS: u16 = 56;
+
+/// Whether PSD can carry channel `c` added in edit as extra plane `i` of a file whose header holds
+/// `channels` channels so far. It cannot, and the channel is the typed loss
+/// `channel_added_in_edit_not_exported` (tests
+/// `added_channels_over_the_header_channel_limit_are_typed_losses`,
+/// `added_channels_psd_cannot_carry_stay_typed_and_the_rest_write_back`), when: the header already
+/// holds [`MAX_HEADER_CHANNELS`]; the channel extent or depth differs from the file (every merged
+/// plane has the header size and depth); the file depth is not 8, 16 or 32 or the colour mode has
+/// no extra planes (multichannel: every plane is a colour plane); the file has no merged image data
+/// to append the plane to; or the plane would be extra plane 0 of a file whose negative layer count
+/// marks extra plane 0 as the merged transparency.
+fn added_channel_fits(doc: &PsdDocument, c: &StudioChannelRecord, channels: u16, i: usize) -> bool {
+    let header = &doc.header;
+    let merged_alpha = doc.layer_section.layer_info.as_ref().is_some_and(|l| l.merged_alpha);
+    channels < MAX_HEADER_CHANNELS
+        && matches!(header.depth, 8 | 16 | 32)
+        && header.color_mode != ColorMode::Multichannel
+        && (c.width, c.height, u16::from(c.depth)) == (header.width, header.height, header.depth)
+        && doc.image_data.is_some()
+        && !(i == 0 && merged_alpha)
+}
+
+/// The 1006 entry of a name: Latin-1 bytes (a character above U+00FF written `?`), at most 255.
+fn latin1_name(name: &str) -> Vec<u8> {
+    name.chars().map(|ch| u8::try_from(u32::from(ch)).unwrap_or(b'?')).take(255).collect()
+}
+
+/// Whether the 1006 entry carries `name` exactly: every character Latin-1 and at most 255 of them.
+fn pascal_exact(name: &str) -> bool {
+    name.chars().all(|ch| u32::from(ch) <= 0xFF) && name.chars().count() <= 255
+}
+
+/// The smallest non-zero identifier `used` does not hold (0 marks the merged transparency).
+fn fresh_alpha_identifier(used: &[u32]) -> u32 {
+    (1..=u32::MAX).find(|v| !used.contains(v)).unwrap_or(u32::MAX)
 }
 
 fn put_sample(plane: &mut [u8], index: usize, raw: u32, depth: u16) -> Result<()> {
