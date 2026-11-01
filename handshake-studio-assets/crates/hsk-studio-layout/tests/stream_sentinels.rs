@@ -606,3 +606,60 @@ fn mt_31008_story_edits_split_paragraphs_after_every_terminator() {
         assert_eq!(edited.paragraphs.len(), 1, "U+{:04X}", c as u32);
     }
 }
+
+// ---- Item 3: flush space (MT-31009) ----
+
+const FLUSH: char = '\u{FDDD}';
+
+/// One 48 pt high frame of width `w` on page-1 (four lines).
+fn flush_case(text: &str, w: f64, alignment: Alignment) -> SentinelComposition {
+    let st = story_of(text);
+    let frame = frame_layer(1, 1, Spec { page: 0, x: 10.0, y: 10.0, w, h: 48.0, columns: 1, gutter: 0.0 }, None, None);
+    let doc = pages_doc(2, vec![frame]);
+    let opts = TypesetOptions { alignment, ..TypesetOptions::default() };
+    compose(&request(&doc, &st, &[], &[], SentinelBudget::default()), &opts).unwrap()
+}
+
+#[test]
+fn mt_31009_flush_space_absorbs_the_slack_of_a_fully_justified_last_line_only() {
+    // "ab cd" FLUSH "e": a b ' ' c d e = 6 glyphs of 6 pt (36 pt) plus the flush space (0 pt) in 180 pt.
+    let text = format!("ab cd{FLUSH}e");
+    let full = flush_case(&text, 180.0, Alignment::JustifiedAll);
+    let line = &full.layout.frames[0].lines[0];
+    assert_eq!(line.width_pt, 36.0);
+    assert_eq!(line.x_start_pt, 0.0);
+    assert_eq!(line.justification, None, "the word space keeps its natural width");
+    assert_eq!(full.flush_spaces, vec![FlushOutcome { story_byte: 5, frame: 0, line: 0, absorbed_pt: Some(144.0) }]);
+    // Control: the same line without the flush space is justified through its word space.
+    let plain = flush_case("ab cde", 180.0, Alignment::JustifiedAll);
+    assert!(plain.layout.frames[0].lines[0].justification.is_some());
+    assert!(plain.flush_spaces.is_empty());
+    // Not fully justified (last line aligned left; left; centred): no width, nothing absorbed.
+    for alignment in [Alignment::Justified, Alignment::Left, Alignment::Center] {
+        let out = flush_case(&text, 180.0, alignment);
+        assert_eq!(
+            out.flush_spaces,
+            vec![FlushOutcome { story_byte: 5, frame: 0, line: 0, absorbed_pt: None }],
+            "{alignment:?}"
+        );
+        assert_eq!(out.layout.frames[0].lines[0].width_pt, 36.0);
+    }
+    // Two flush spaces share the slack equally: a FLUSH b FLUSH c = 18 pt in 180 pt.
+    let two = flush_case(&format!("a{FLUSH}b{FLUSH}c"), 180.0, Alignment::JustifiedAll);
+    let shares: Vec<Option<f64>> = two.flush_spaces.iter().map(|f| f.absorbed_pt).collect();
+    assert_eq!(shares, vec![Some(81.0), Some(81.0)]);
+}
+
+#[test]
+fn mt_31009_flush_space_on_a_line_that_is_not_the_last_has_no_width() {
+    // 60 pt frame (10 glyphs): "aaaa" FLUSH "bbbb cccc" breaks after the space; line 0 is not the last.
+    let text = format!("aaaa{FLUSH}bbbb cccc");
+    let out = flush_case(&text, 60.0, Alignment::JustifiedAll);
+    let lines = &out.layout.frames[0].lines;
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].width_pt, 48.0);
+    assert_eq!(out.flush_spaces, vec![FlushOutcome { story_byte: 4, frame: 0, line: 0, absorbed_pt: None }]);
+    // The flush space is one zero-advance glyph of its own 3-byte cluster, never a shaped glyph.
+    let g = &out.paragraphs[0].glyphs[4];
+    assert_eq!((g.cluster, g.advance_pt), (SourceSpan { start: 4, end: 7 }, 0.0));
+}
