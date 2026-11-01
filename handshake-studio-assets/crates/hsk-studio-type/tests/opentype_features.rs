@@ -240,8 +240,10 @@ fn assert_matches_oracle(features: &FontFeatures, tags: &[(&str, u32)], gpos: &[
 #[test]
 fn mt_30955_registry_pins_the_group_table_and_accepts_any_well_formed_tag() {
     let reg = registry();
-    // 211 table cells, abvm and blwm listed twice: 209 distinct tags.
-    assert_eq!(reg.len(), 209);
+    // SD-30: the registry is the 245-tag STU-TYP-170 table. The STU-TYP-171 group table has 211
+    // cells, abvm and blwm listed twice: 209 distinct grouped tags, 36 registry tags in no group.
+    assert_eq!(reg.len(), 245);
+    assert_eq!(reg.iter().filter(|e| e.groups().next().is_some()).count(), 209);
     assert!(reg.windows(2).all(|w| w[0].tag < w[1].tag), "sorted, unique");
     let cells: usize = FeatureGroup::ALL.iter().map(|g| g.tags().len()).sum();
     assert_eq!(cells, 211);
@@ -258,7 +260,7 @@ fn mt_30955_registry_pins_the_group_table_and_accepts_any_well_formed_tag() {
     assert!(registry_entry(tag("cv99")).is_some() && registry_entry(tag("cv00")).is_none());
     // No closed list: unregistered well-formed tags are stored and emitted for shaping.
     let mut map = FeatureMap::new();
-    for t in ["sinf", "xyz1", "ss21", "cv00", "    "] {
+    for t in ["abcd", "xyz1", "ss21", "cv00", "    "] {
         assert!(registry_entry(tag(t)).is_none());
         map.set(tag(t), ON).unwrap();
     }
@@ -283,18 +285,21 @@ fn mt_30955_registry_pins_the_group_table_and_accepts_any_well_formed_tag() {
 }
 
 /// STU-TYP-170 asks for "at least the 229 feature tags observed in the captured design-tool
-/// feature union"; that union is not listed in the spec, so the registry carries only the 209
-/// tags of the STU-TYP-171 table. MT-30955 AC-001 stays open (spec gap).
+/// feature union"; since v02.228 (SD-30) the table lists them with an observed flag, so the union
+/// is checkable: exactly 229 flagged rows, all inside the 245-tag registry
+/// (`feature_registry.rs` proves each row).
 #[test]
 fn mt_30955_observed_union_of_229_tags() {
     assert!(registry().len() >= 229);
+    assert_eq!(registry().iter().filter(|e| e.observed).count(), 229);
 }
 
 #[test]
 fn mt_30955_registered_and_custom_tags_apply_through_real_gsub() {
     bounded_case("mt_30955_registered_and_custom_tags_apply_through_real_gsub", || {
         let fonts = Fonts::load();
-        // `zero` is registered, `sinf` is not; Inter declares both (fontTools: 0 -> uniE06B 1307,
+        // `zero` is in a STU-TYP-171 group, `sinf` is registered but in none; Inter declares both
+        // (fontTools: 0 -> uniE06B 1307,
         // ( -> uni208D 1561).
         let mut map = one("zero", ON);
         map.set(tag("sinf"), ON).unwrap();
@@ -357,7 +362,8 @@ fn mt_30956_group_projection_is_presentation_over_the_tag_map() {
     assert_eq!(find(FeatureGroup::Alternates, "aalt").availability, FeatureAvailability::Declared { alternates: 8 });
     // abvm is projected in both of its groups from the one stored entry.
     assert_eq!(find(FeatureGroup::Indic, "abvm"), find(FeatureGroup::KerningAndMarks, "abvm"));
-    // Ungrouped: the stored custom tag (inert on Inter) and the font-declared unregistered `sinf`.
+    // Ungrouped: the stored custom tag (inert on Inter) and the font-declared `sinf`, which the
+    // 245-tag registry carries but no STU-TYP-171 group lists.
     let ungrouped: Vec<_> = view.ungrouped.iter().map(|e| (e.tag.as_str().to_string(), e.offered(), e.inert())).collect();
     assert_eq!(ungrouped, [("sinf".to_string(), true, false), ("xtra".to_string(), false, true)]);
     // Selections read back from the map.
@@ -833,5 +839,8 @@ fn descriptor_names_the_feature_surface() {
     for key in ["storage", "registry", "groups", "availability", "projections", "catalogs", "diagnostics"] {
         assert!(f[key].is_string(), "{key}");
     }
-    assert_eq!(f["tests"], json!(["opentype_features", "character_catalogs"]));
+    assert_eq!(
+        f["tests"],
+        json!(["opentype_features", "character_catalogs", "stream_sentinels", "feature_registry"])
+    );
 }

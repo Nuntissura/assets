@@ -1,10 +1,13 @@
 //! OpenType feature surface (spec 14.7.11 and STU-TYP-017).
 //!
 //! - STU-TYP-170: [`FeatureMap`] is the only feature storage of a character range: an ordered map
-//!   from a well-formed four-byte tag to [`FeatureValue`]. [`registry`] carries every tag of the
-//!   STU-TYP-171 group table; any other well-formed tag is accepted, stored and applied (no closed
-//!   list). The 229-tag observed design-tool union named by STU-TYP-170 is not recovered in the spec,
-//!   so the registry holds the 209 tags of the group table (gap recorded, MT-30955 AC-001 open).
+//!   from a well-formed four-byte tag to [`FeatureValue`]. [`registry`] is the 245-tag table of
+//!   STU-TYP-170 (v02.228, SD-30): the 243 tags registered in OpenType 1.9.1 (`cv01`-`cv99` and
+//!   `ss01`-`ss20` counted member by member; `hngl` and `opbd` deprecated) plus `abrv` and `just`,
+//!   each with its friendly name, [`FeatureStatus`] and whether the 229-tag observed design-tool
+//!   union carries it (`RegistryEntry::observed`; the union omits 16 registered tags). Any other
+//!   well-formed tag is still accepted, stored and applied (no closed list); a deprecated tag is
+//!   stored and applied like any other and is not offered for new authoring.
 //! - STU-TYP-171: [`FeatureGroup`] and [`project_groups`] are presentation over the map.
 //! - STU-TYP-017: [`StudioFeatureGroup`] is the 13-member normative feature surface enumeration.
 //! - STU-TYP-172: [`FeatureMap::to_features`] yields `declared: false` entries, so a tag the active
@@ -27,6 +30,7 @@
 //! Diagnostics: terminal outcomes go through Observe as fixed codes only ([`report_feature_outcome`]);
 //! tags, text and font names never reach Observe.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::feature_table::ROWS;
 use crate::provider::{Context, storage::ChargedVec, ttf};
 use crate::{Error, Feature, FontResource, Limits, Ports, SourceRange};
 use hsk_studio_accord::CancellationToken;
@@ -542,35 +546,77 @@ impl FeatureGroup {
     }
 }
 
-/// One registry tag with its STU-TYP-171 group memberships (`abvm` and `blwm` have two).
+/// STU-TYP-170 status of a registry tag (v02.228, SD-30).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FeatureStatus {
+    /// Registered in OpenType 1.9.1 and not deprecated.
+    Registered,
+    /// Registered but deprecated (`hngl`, `opbd`): stored and applied like any tag, not offered
+    /// for new authoring.
+    Deprecated,
+    /// Carried by the 229-tag observed union but absent from the OpenType registry (`abrv`,
+    /// `just`).
+    ObservedUnregistered,
+}
+impl FeatureStatus {
+    /// The status word as the STU-TYP-170 table writes it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            FeatureStatus::Registered => "registered",
+            FeatureStatus::Deprecated => "deprecated",
+            FeatureStatus::ObservedUnregistered => "observed_unregistered",
+        }
+    }
+}
+
+/// One STU-TYP-170 registry row with its STU-TYP-171 group memberships (`abvm` and `blwm` have two;
+/// a tag outside the group table, such as `sinf`, has none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RegistryEntry {
     pub tag: FeatureTag,
+    /// Friendly name as the table writes it (`(not registered)` for `abrv` and `just`).
+    pub name: &'static str,
+    pub status: FeatureStatus,
+    /// True when the 229-tag observed union carries the tag.
+    pub observed: bool,
     groups: [Option<FeatureGroup>; 2],
 }
 impl RegistryEntry {
     pub fn groups(&self) -> impl Iterator<Item = FeatureGroup> + '_ {
         self.groups.iter().flatten().copied()
     }
+    /// False for a deprecated tag: it is stored and applied like any other and is not offered for
+    /// new authoring.
+    pub const fn offered_for_new_authoring(&self) -> bool {
+        !matches!(self.status, FeatureStatus::Deprecated)
+    }
 }
-/// The STU-TYP-170 registry: every tag of the STU-TYP-171 table, sorted by tag bytes. Unregistered
+/// The STU-TYP-170 registry: the 245 rows of the table, sorted by tag bytes. Unregistered
 /// well-formed tags remain valid map entries.
 pub fn registry() -> &'static [RegistryEntry] {
     static REGISTRY: OnceLock<Vec<RegistryEntry>> = OnceLock::new();
     REGISTRY.get_or_init(|| {
-        let mut entries: Vec<RegistryEntry> = Vec::new();
+        let mut entries: Vec<RegistryEntry> = ROWS
+            .iter()
+            .map(|(bytes, name, status, observed)| RegistryEntry {
+                tag: FeatureTag(*bytes),
+                name: *name,
+                status: *status,
+                observed: *observed,
+                groups: [None, None],
+            })
+            .collect();
+        entries.sort_by_key(|entry| entry.tag);
         for group in FeatureGroup::ALL {
             for tag in group.tags() {
-                match entries.iter_mut().find(|entry| entry.tag == tag) {
-                    Some(entry) => entry.groups[1] = Some(group),
-                    None => entries.push(RegistryEntry {
-                        tag,
-                        groups: [Some(group), None],
-                    }),
+                if let Ok(index) = entries.binary_search_by_key(&tag, |entry| entry.tag)
+                    && let Some(entry) = entries.get_mut(index)
+                {
+                    let slot = usize::from(entry.groups[0].is_some());
+                    entry.groups[slot] = Some(group);
                 }
             }
         }
-        entries.sort_by_key(|entry| entry.tag);
         entries
     })
 }
@@ -794,7 +840,8 @@ impl GroupedFeature {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FeatureGroupView {
     pub groups: Vec<(FeatureGroup, Vec<GroupedFeature>)>,
-    /// Stored or font-declared tags outside the registry; they stay addressable by tag.
+    /// Stored or font-declared tags outside every STU-TYP-171 group (a registered tag such as
+    /// `sinf` or an unregistered custom tag); they stay addressable by tag.
     pub ungrouped: Vec<GroupedFeature>,
 }
 pub fn project_groups(map: &FeatureMap, font: Option<&FontFeatures>) -> FeatureGroupView {
@@ -811,7 +858,7 @@ pub fn project_groups(map: &FeatureMap, font: Option<&FontFeatures>) -> FeatureG
         .iter()
         .map(|(tag, _)| tag)
         .chain(font.into_iter().flat_map(FontFeatures::tags))
-        .filter(|tag| registry_entry(*tag).is_none())
+        .filter(|tag| registry_entry(*tag).is_none_or(|entry| entry.groups().next().is_none()))
         .collect();
     ungrouped.sort();
     ungrouped.dedup();

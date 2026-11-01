@@ -6,6 +6,7 @@ mod contract;
 mod create_outlines;
 mod descriptor;
 mod engine;
+mod feature_table;
 mod features;
 mod finalization;
 mod fonts;
