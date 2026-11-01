@@ -37,7 +37,15 @@
 //! default, and the authored row is gone ([`RecoveredMapping`]: [`foam::FOAM_MAPPINGS`],
 //! [`wave_world::WAVE_WORLD_MAPPINGS`], [`wave_world::WAVE_PRODUCER_MAPPINGS`]). Engine scalars with
 //! no recovered counterpart keep their authored `studio_declared` rows, which are STU-FX-146 scope
-//! beside a recovered record. Recovered rows the engine does not use are stored and validated but
+//! beside a recovered record. SD-27 (spec v02.229 STU-FX-131a reading note and STU-CMP-075b; R51
+//! finding F-R51-1): a recovered row whose unit cell is `--` (the `unitless` token) has no declared
+//! scale to the engine quantity (a SPEC GAP, never guessed), so it maps onto no engine scalar; the
+//! engine scalar of that quantity keeps its authored `studio_declared` row beside the stored
+//! recovered row until the scale is declared (Foam `viscosity`, Wave world `wave_speed`, `damping`
+//! and producer `amplitude` / `frequency`; test
+//! `tests/simulations_records.rs::unitless_recovered_rows_stay_beside_their_studio_declared_engine_scalars`).
+//! A mapping reads a row with a declared unit only: an `ANGLE` row in degrees, a `POINT` row in
+//! layer fractions, and Wave world `Pre-roll (seconds)`, whose name declares seconds. Recovered rows the engine does not use are stored and validated but
 //! do not drive the simulation. Vendor parity of every mapping is UNVERIFIED (D5)
 //! (`tests/simulations_records.rs`).
 //!
