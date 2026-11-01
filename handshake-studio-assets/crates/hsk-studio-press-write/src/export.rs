@@ -33,7 +33,7 @@ mod cff;
 mod pdfx;
 mod render;
 mod sfnt;
-pub use pdfx::{PDFA2B_CONFORMANCE, PDFA2B_PART, PDFX4_VERSION, PdfXReport, PdfXRule, check_pdfx4};
+pub use pdfx::{PDFA2B_CONFORMANCE, PDFA2B_PART, PDFX4_VERSION, PdfXReport, PdfXRule, PdfXStandard, check_pdfx4};
 mod subset;
 mod verdict;
 pub use verdict::{CONFORMANCE_PDFA2B_VERAPDF, MAX_REPORT_BYTES, VERAPDF_PDFA2B_PROFILE, normalize_verapdf_report};
@@ -143,6 +143,9 @@ pub enum ExportError {
     InvalidGradient,
     /// A PDF/X-4 requirement the request cannot meet (`what` names it).
     PdfXRequirement(&'static str),
+    /// A STU-LAY-160 PDF/X standard this crate writes no identification for (every member but
+    /// `pdfx.none` and `pdfx.x4_2010`); nothing is written and no conformance is claimed.
+    PdfXStandardNotImplemented(PdfXStandard),
     /// A PDF/A-2b requirement the request cannot meet (`what` names it).
     PdfARequirement(&'static str),
     /// [`ExportReceipt::with_verapdf_report`] refused the report (`why` names the reason).
@@ -196,6 +199,7 @@ impl ExportError {
             Self::AlphaOutOfRange => "alpha_out_of_range",
             Self::InvalidGradient => "invalid_gradient",
             Self::PdfXRequirement(_) => "pdfx_requirement",
+            Self::PdfXStandardNotImplemented(_) => "pdfx_standard_not_implemented",
             Self::PdfARequirement(_) => "pdfa_requirement",
             Self::ReportRefused(_) => "report_refused",
             Self::UnbalancedGroup => "unbalanced_group",
@@ -281,6 +285,32 @@ pub struct PdfX4<'a> {
 impl Default for ExportOptions<'_> {
     fn default() -> Self {
         Self { version: "1.7", output_intent: None, info_title: None, subset_fonts: true, pdfx4: None, pdfa2b: false }
+    }
+}
+
+impl<'a> ExportOptions<'a> {
+    /// The STU-LAY-160 PDF/X standard these settings request: `pdfx.x4_2010` when the PDF/X-4
+    /// identification is set, else `pdfx.none`. The standard is carried by [`ExportOptions::pdfx4`]
+    /// (no second field that could disagree with it), so every settings value reads as exactly one
+    /// member.
+    pub fn pdfx_standard(&self) -> PdfXStandard {
+        if self.pdfx4.is_some() { PdfXStandard::X4_2010 } else { PdfXStandard::None }
+    }
+
+    /// These settings with `standard` requested (the typed setter of [`ExportOptions::pdfx_standard`]).
+    /// `pdfx.x4_2010` needs its identification values (`pdfx_requirement` `pdfx4_identification`
+    /// without them); `pdfx.none` takes none (`pdfx_requirement` `identification_without_standard`
+    /// with them) and clears any; every other member is `pdfx_standard_not_implemented`, so a
+    /// standard this crate does not implement is never written or claimed. The X-4 requirements on
+    /// the output intent, version and dates are checked by [`PdfExport::new`] as before.
+    pub fn with_pdfx_standard(self, standard: PdfXStandard, identification: Option<PdfX4<'a>>) -> Result<Self> {
+        match (standard, identification) {
+            (PdfXStandard::X4_2010, Some(x)) => Ok(Self { pdfx4: Some(x), ..self }),
+            (PdfXStandard::X4_2010, None) => Err(ExportError::PdfXRequirement("pdfx4_identification")),
+            (PdfXStandard::None, None) => Ok(Self { pdfx4: None, ..self }),
+            (PdfXStandard::None, Some(_)) => Err(ExportError::PdfXRequirement("identification_without_standard")),
+            (other, _) => Err(ExportError::PdfXStandardNotImplemented(other)),
+        }
     }
 }
 
@@ -381,8 +411,9 @@ pub struct ExportReceipt {
     pub effective_output_condition: Option<String>,
     /// `/RegistryName` read back from the output.
     pub effective_oc_registry: Option<String>,
-    /// `None` in this slice: no PDF/X profile is claimed or proven (STU-PDF-002; test
-    /// `two_page_export_reads_back`).
+    /// The `/GTS_PDFXVersion` read back from the output (`None` when no identification was written).
+    /// An identification is not a conformance claim: `conformance` stays `not_proven` (STU-PDF-002;
+    /// test `two_page_export_reads_back`).
     pub effective_pdfx_profile: Option<String>,
     /// [`EXPORT_CONFORMANCE`] (`not_proven`; test `two_page_export_reads_back`), or
     /// [`CONFORMANCE_PDFA2B_VERAPDF`] once a passing veraPDF report is attached
@@ -392,6 +423,19 @@ pub struct ExportReceipt {
     pub conformance_report_sha256: Option<String>,
     /// Validator and profile of that report (`veraPDF 1.30.3: PDF/A-2b validation profile`).
     pub conformance_validator: Option<String>,
+}
+
+impl ExportReceipt {
+    /// The STU-LAY-160 standard whose identification the output carries, read back from the written
+    /// `/GTS_PDFXVersion`: `pdfx.none` without one, the member this crate writes for a recognised
+    /// version, `None` for a version this crate never writes. Identification only: the standard's
+    /// conformance is not claimed (`conformance` stays `not_proven`).
+    pub fn effective_pdfx_standard(&self) -> Option<PdfXStandard> {
+        match &self.effective_pdfx_profile {
+            None => Some(PdfXStandard::None),
+            Some(v) => PdfXStandard::from_written_version(v),
+        }
+    }
 }
 
 /// PDF blend modes (ISO 32000-2 11.3.5, Tables 134 and 135).

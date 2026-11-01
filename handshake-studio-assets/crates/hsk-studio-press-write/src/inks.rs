@@ -14,7 +14,23 @@
 //! increment; the group's swatches are every combination (ink order = row order, the first row
 //! varying slowest). A tint stepping past 100 % is refused (`tint_out_of_range`). How InDesign names
 //! and orders generated swatches, and whether it clamps or refuses past 100 %, is UNVERIFIED (D5).
+//!
+//! Ink manager contract (lane SMB-PRESS-INK-MANAGER-1, Master Spec v02.229 STU-LAY-160 with
+//! STU-LAY-100 and STU-LAY-102): the four tabled ink parameters are seven-field records
+//! ([`InkParameter::spec`], reusing the coverage contract's [`ParamValue`] / [`ParamPrecision`]);
+//! every field the table marks `unknown` stays [`ParamValue::Unknown`] and is never mirrored from the
+//! other range. A value is admitted only inside its hard bounds and, for `neutral_density`, at the
+//! declared precision of 3 decimal places ([`InkParameter::check`]; a validation error, never a
+//! clamp or a rounding). `ink_type` is the one four-member [`InkType`] enumeration the separations
+//! and coverage paths read. Editing the manager is a mutating document edit:
+//! [`InkManager::apply_edit`] takes the caller's [`ActorContext`] (never a default actor), validates
+//! the edited manager as a whole and returns it with an attributed [`InkEditReceipt`], leaving the
+//! input unchanged (no partial edit). Mixed inks and mixed-ink groups are represented only in this
+//! module ([`MixedInk`], [`MixedInkGroup`]; Folio stores spot inks, not mixed inks), so their
+//! captured limits are enforced here. Vendor parity is UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
+use crate::coverage::{ParamPrecision, ParamValue};
+use hsk_studio_accord::ActorContext;
 
 /// One of the four process inks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -69,6 +85,114 @@ impl InkType {
             Self::OpaqueIgnore => "ink.opaque_ignore",
         }
     }
+    /// The member with exactly this token (STU-LAY-102); anything else is `None`, never a near member.
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.code() == code)
+    }
+}
+
+/// The four numeric parameters of the STU-LAY-160 ink table, in table order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum InkParameter {
+    InkAngle,
+    InkFrequency,
+    NeutralDensity,
+    Solidity,
+}
+
+/// Units of the STU-LAY-160 ink table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InkUnit {
+    Deg,
+    Count,
+    Ratio,
+}
+impl InkUnit {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Deg => "deg",
+            Self::Count => "count",
+            Self::Ratio => "ratio",
+        }
+    }
+}
+
+/// The seven independent fields of one STU-LAY-160 ink parameter (STU-LAY-100).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InkParameterSpec {
+    pub parameter: InkParameter,
+    pub hard_min: ParamValue,
+    pub hard_max: ParamValue,
+    pub soft_min: ParamValue,
+    pub soft_max: ParamValue,
+    pub default: ParamValue,
+    pub unit: InkUnit,
+    pub precision: ParamPrecision,
+}
+
+impl InkParameter {
+    pub const ALL: [InkParameter; 4] = [Self::InkAngle, Self::InkFrequency, Self::NeutralDensity, Self::Solidity];
+    /// The parameter's table token.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::InkAngle => "ink_angle",
+            Self::InkFrequency => "ink_frequency",
+            Self::NeutralDensity => "neutral_density",
+            Self::Solidity => "solidity",
+        }
+    }
+    /// The member with exactly this token; anything else is `None`.
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.code() == code)
+    }
+    /// The parameter's row of the STU-LAY-160 table, exactly as stated (unknown stays unknown).
+    pub const fn spec(self) -> InkParameterSpec {
+        use ParamValue::{Known, Unknown};
+        let (hard_min, hard_max, unit, precision) = match self {
+            Self::InkAngle => (0.0, 360.0, InkUnit::Deg, ParamPrecision::Unknown),
+            Self::InkFrequency => (1.0, 500.0, InkUnit::Count, ParamPrecision::Unknown),
+            Self::NeutralDensity => (0.001, 10.0, InkUnit::Ratio, ParamPrecision::Digits(3)),
+            Self::Solidity => (0.0, 1.0, InkUnit::Ratio, ParamPrecision::Unknown),
+        };
+        InkParameterSpec {
+            parameter: self,
+            hard_min: Known(hard_min),
+            hard_max: Known(hard_max),
+            soft_min: Unknown,
+            soft_max: Unknown,
+            default: Unknown,
+            unit,
+            precision,
+        }
+    }
+    /// Admits `value` for ink `ink`: finite, inside the hard bounds (inclusive) and, where the table
+    /// declares a precision, with no more decimal places than it (tolerance for the binary form of a
+    /// decimal only). Soft bounds and defaults are unknown and never applied; nothing is clamped or
+    /// rounded.
+    pub fn check(self, ink: &str, value: f64) -> Result<f64, InkError> {
+        let spec = self.spec();
+        let below = matches!(spec.hard_min, ParamValue::Known(lo) if value < lo);
+        let above = matches!(spec.hard_max, ParamValue::Known(hi) if value > hi);
+        if !value.is_finite() || below || above {
+            return Err(self.out_of_range(ink));
+        }
+        if let ParamPrecision::Digits(places) = spec.precision {
+            let scaled = value * 10f64.powi(i32::from(places));
+            let tolerance = 1e-9 * scaled.abs().max(1.0);
+            if (scaled - scaled.round()).abs() > tolerance {
+                return Err(InkError::ParameterPrecision(ink.into(), self));
+            }
+        }
+        Ok(value)
+    }
+    fn out_of_range(self, ink: &str) -> InkError {
+        match self {
+            Self::InkAngle => InkError::AngleOutOfRange(ink.into()),
+            Self::InkFrequency => InkError::FrequencyOutOfRange(ink.into()),
+            Self::NeutralDensity => InkError::NeutralDensityOutOfRange(ink.into()),
+            Self::Solidity => InkError::SolidityOutOfRange(ink.into()),
+        }
+    }
 }
 
 /// One ink of the ink manager.
@@ -118,6 +242,79 @@ impl Ink {
         self.process = Some(p);
         self
     }
+    /// The stored value of one tabled parameter (`None` = not stated; no default is supplied).
+    pub const fn parameter(&self, p: InkParameter) -> Option<f64> {
+        match p {
+            InkParameter::InkAngle => self.angle_deg,
+            InkParameter::InkFrequency => self.frequency,
+            InkParameter::NeutralDensity => self.neutral_density,
+            InkParameter::Solidity => self.solidity,
+        }
+    }
+    fn parameter_slot(&mut self, p: InkParameter) -> &mut Option<f64> {
+        match p {
+            InkParameter::InkAngle => &mut self.angle_deg,
+            InkParameter::InkFrequency => &mut self.frequency,
+            InkParameter::NeutralDensity => &mut self.neutral_density,
+            InkParameter::Solidity => &mut self.solidity,
+        }
+    }
+}
+
+/// One mutating edit of an [`InkManager`] (STU-LAY-160 ink manager controls).
+#[derive(Clone, Debug, PartialEq)]
+pub enum InkEdit {
+    /// Add a spot ink with an optional CMYK alternate (0..=1).
+    AddSpot { name: String, process_alternate: Option<[f64; 4]> },
+    /// Set (`Some`) or clear (`None`) one tabled parameter of an ink.
+    SetParameter { ink: String, parameter: InkParameter, value: Option<f64> },
+    SetInkType { ink: String, ink_type: InkType },
+    /// Alias a spot ink to another ink (`None` removes the alias); a process ink cannot be aliased.
+    SetAlias { ink: String, alias: Option<String> },
+    /// Per-ink spot-to-process conversion; a process ink has nothing to convert.
+    SetConvertToProcess { ink: String, convert: bool },
+    SetAllSpotsToProcess(bool),
+    SetUseStandardLabForSpots(bool),
+}
+impl InkEdit {
+    /// Stable code of the edit kind.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::AddSpot { .. } => "ink_edit.add_spot",
+            Self::SetParameter { .. } => "ink_edit.set_parameter",
+            Self::SetInkType { .. } => "ink_edit.set_ink_type",
+            Self::SetAlias { .. } => "ink_edit.set_alias",
+            Self::SetConvertToProcess { .. } => "ink_edit.set_convert_to_process",
+            Self::SetAllSpotsToProcess(_) => "ink_edit.set_all_spots_to_process",
+            Self::SetUseStandardLabForSpots(_) => "ink_edit.set_use_standard_lab_for_spots",
+        }
+    }
+    fn ink(&self) -> Option<&str> {
+        match self {
+            Self::AddSpot { name: ink, .. }
+            | Self::SetParameter { ink, .. }
+            | Self::SetInkType { ink, .. }
+            | Self::SetAlias { ink, .. }
+            | Self::SetConvertToProcess { ink, .. } => Some(ink),
+            Self::SetAllSpotsToProcess(_) | Self::SetUseStandardLabForSpots(_) => None,
+        }
+    }
+}
+
+/// Attribution of one applied ink edit: the caller's actor (transport identifiers only; it grants
+/// nothing), the edit kind and the ink it touched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InkEditReceipt {
+    pub actor: ActorContext,
+    pub edit: &'static str,
+    pub ink: Option<String>,
+}
+
+/// The edited manager and its receipt; the input manager is unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InkEditOutcome {
+    pub manager: InkManager,
+    pub receipt: InkEditReceipt,
 }
 
 /// The ink manager of a document or an output.
@@ -184,9 +381,15 @@ pub enum InkError {
     FrequencyOutOfRange(String),
     NeutralDensityOutOfRange(String),
     SolidityOutOfRange(String),
+    /// A value with more decimal places than its declared precision (`neutral_density`: 3).
+    ParameterPrecision(String, InkParameter),
+    /// Spot-to-process conversion requested on a process ink (Studio rule; UNVERIFIED, D5).
+    ProcessInkNotConvertible(String),
     AlternateOutOfRange(String),
     TintOutOfRange(String),
     MixedInkEmpty(String),
+    /// A mixed ink lists the same ink twice (its counts against the 27 / 31 limits would be ambiguous).
+    MixedInkDuplicatePart(String),
     MixedInkTooManySpots(String),
     MixedInkTooManyInks(String),
     MixedInkGroupTooLarge(String),
@@ -204,9 +407,12 @@ impl InkError {
             Self::FrequencyOutOfRange(_) => "ink_frequency_out_of_range",
             Self::NeutralDensityOutOfRange(_) => "neutral_density_out_of_range",
             Self::SolidityOutOfRange(_) => "solidity_out_of_range",
+            Self::ParameterPrecision(..) => "ink_parameter_precision",
+            Self::ProcessInkNotConvertible(_) => "process_ink_not_convertible",
             Self::AlternateOutOfRange(_) => "process_alternate_out_of_range",
             Self::TintOutOfRange(_) => "tint_out_of_range",
             Self::MixedInkEmpty(_) => "mixed_ink_empty",
+            Self::MixedInkDuplicatePart(_) => "mixed_ink_duplicate_part",
             Self::MixedInkTooManySpots(_) => "mixed_ink_too_many_spot_inks",
             Self::MixedInkTooManyInks(_) => "mixed_ink_too_many_inks",
             Self::MixedInkGroupTooLarge(_) => "mixed_ink_group_too_large",
@@ -215,9 +421,6 @@ impl InkError {
     }
 }
 
-fn in_range(v: Option<f64>, lo: f64, hi: f64) -> bool {
-    v.is_none_or(|x| x.is_finite() && (lo..=hi).contains(&x))
-}
 fn tint_ok(t: f64) -> bool {
     t.is_finite() && (0.0..=1.0).contains(&t)
 }
@@ -264,17 +467,10 @@ impl InkManager {
             if !seen.insert(n) {
                 return Err(InkError::DuplicateInk(n.into()));
             }
-            if !in_range(i.angle_deg, 0.0, 360.0) {
-                return Err(InkError::AngleOutOfRange(n.into()));
-            }
-            if !in_range(i.frequency, 1.0, 500.0) {
-                return Err(InkError::FrequencyOutOfRange(n.into()));
-            }
-            if !in_range(i.neutral_density, 0.001, 10.0) {
-                return Err(InkError::NeutralDensityOutOfRange(n.into()));
-            }
-            if !in_range(i.solidity, 0.0, 1.0) {
-                return Err(InkError::SolidityOutOfRange(n.into()));
+            for p in InkParameter::ALL {
+                if let Some(v) = i.parameter(p) {
+                    p.check(n, v)?;
+                }
             }
             if i.process.is_some() && i.alias.is_some() {
                 return Err(InkError::ProcessInkAliased(n.into()));
@@ -314,6 +510,66 @@ impl InkManager {
     }
 }
 
+impl InkManager {
+    /// Applies one edit for `actor` (STU-LAY-160 ink manager; HOST rule 4: the caller's actor, never
+    /// a default). The edit is made on a copy, the whole copy is validated ([`InkManager::validate`]:
+    /// names, parameter bounds and precision, aliases), and only a valid copy is returned with its
+    /// receipt; on any refusal `self` is unchanged and nothing partial exists. Typed refusals:
+    /// `unknown_ink`, `duplicate_ink`, `invalid_ink_name`, `too_many_inks`, the parameter range and
+    /// precision codes, `process_ink_cannot_be_aliased`, `ink_alias_cycle`,
+    /// `process_ink_not_convertible`, `process_alternate_out_of_range`.
+    pub fn apply_edit(&self, actor: &ActorContext, edit: &InkEdit) -> Result<InkEditOutcome, InkError> {
+        let mut next = self.clone();
+        match edit {
+            InkEdit::AddSpot { name, process_alternate } => {
+                if next.inks.len() >= MAX_INKS {
+                    return Err(InkError::TooManyInks);
+                }
+                if name.trim().is_empty() || name.len() > 256 {
+                    return Err(InkError::InvalidName);
+                }
+                if next.ink(name).is_some() {
+                    return Err(InkError::DuplicateInk(name.clone()));
+                }
+                next.inks.push(Ink::spot(name, *process_alternate));
+            }
+            InkEdit::SetParameter { ink, parameter, value } => {
+                let checked = value.map(|v| parameter.check(ink, v)).transpose()?;
+                *next.ink_mut(ink)?.parameter_slot(*parameter) = checked;
+            }
+            InkEdit::SetInkType { ink, ink_type } => next.ink_mut(ink)?.ink_type = *ink_type,
+            InkEdit::SetAlias { ink, alias } => {
+                let target = next.ink_mut(ink)?;
+                if target.process.is_some() && alias.is_some() {
+                    return Err(InkError::ProcessInkAliased(ink.clone()));
+                }
+                target.alias = alias.clone();
+                if let Some(a) = alias
+                    && self.ink(a).is_none()
+                {
+                    return Err(InkError::UnknownInk(a.clone()));
+                }
+            }
+            InkEdit::SetConvertToProcess { ink, convert } => {
+                let target = next.ink_mut(ink)?;
+                if target.process.is_some() && *convert {
+                    return Err(InkError::ProcessInkNotConvertible(ink.clone()));
+                }
+                target.convert_to_process = *convert;
+            }
+            InkEdit::SetAllSpotsToProcess(on) => next.all_spots_to_process = *on,
+            InkEdit::SetUseStandardLabForSpots(on) => next.use_standard_lab_for_spots = *on,
+        }
+        next.validate()?;
+        let receipt = InkEditReceipt { actor: actor.clone(), edit: edit.code(), ink: edit.ink().map(str::to_owned) };
+        Ok(InkEditOutcome { manager: next, receipt })
+    }
+
+    fn ink_mut(&mut self, name: &str) -> Result<&mut Ink, InkError> {
+        self.inks.iter_mut().find(|i| i.name == name).ok_or_else(|| InkError::UnknownInk(name.into()))
+    }
+}
+
 impl MixedInk {
     /// Captured mixed-ink limits and references: parts exist in `inks`, tints 0..=1, at most 27
     /// spot and 31 total parts, at least one part.
@@ -329,7 +585,11 @@ impl MixedInk {
             return Err(InkError::MixedInkTooManyInks(n.into()));
         }
         let mut spots = 0usize;
+        let mut seen = std::collections::BTreeSet::new();
         for (ink, t) in &self.parts {
+            if !seen.insert(ink.as_str()) {
+                return Err(InkError::MixedInkDuplicatePart(n.into()));
+            }
             let def = inks.ink(ink).ok_or_else(|| InkError::UnknownInk(ink.clone()))?;
             if def.process.is_none() {
                 spots = spots.saturating_add(1);

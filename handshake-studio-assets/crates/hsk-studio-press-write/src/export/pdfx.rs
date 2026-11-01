@@ -14,6 +14,59 @@ use hsk_studio_accord::CancellationToken;
 /// What the writer puts into `/GTS_PDFXVersion` and the XMP `pdfxid:GTS_PDFXVersion`.
 pub const PDFX4_VERSION: &str = "PDF/X-4";
 
+/// The six-member PDF/X standards enumeration of STU-LAY-160 (lane SMB-PRESS-INK-MANAGER-1), in the
+/// spec's member order. Only the standards this crate writes an identification for are
+/// [`PdfXStandard::implemented`]: `pdfx.none` and `pdfx.x4_2010` (the PDF/X-4 identification of this
+/// module). The other four are typed members an export refuses with
+/// `ExportError::PdfXStandardNotImplemented`; nothing is written for them and no conformance is
+/// claimed for any member (`conformance` stays `not_proven`, STU-PDF-002). That the identification
+/// written here is the 2010 edition's and not another edition's is this crate's reading
+/// (UNVERIFIED, D5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PdfXStandard {
+    None,
+    X1a2001,
+    X3_2002,
+    X1a2003,
+    X3_2003,
+    X4_2010,
+}
+impl PdfXStandard {
+    pub const ALL: [PdfXStandard; 6] = [Self::None, Self::X1a2001, Self::X3_2002, Self::X1a2003, Self::X3_2003, Self::X4_2010];
+    /// The member's Studio token.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "pdfx.none",
+            Self::X1a2001 => "pdfx.x1a_2001",
+            Self::X3_2002 => "pdfx.x3_2002",
+            Self::X1a2003 => "pdfx.x1a_2003",
+            Self::X3_2003 => "pdfx.x3_2003",
+            Self::X4_2010 => "pdfx.x4_2010",
+        }
+    }
+    /// The member with exactly this token; anything else is `None` (never mapped onto a near member).
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.code() == code)
+    }
+    /// True when an export can honour this member: `None` (nothing written) and `X4_2010`.
+    pub const fn implemented(self) -> bool {
+        matches!(self, Self::None | Self::X4_2010)
+    }
+    /// The `/GTS_PDFXVersion` this crate writes for the member (`None` for `pdfx.none` and for every
+    /// member it does not implement).
+    pub const fn gts_pdfx_version(self) -> Option<&'static str> {
+        match self {
+            Self::X4_2010 => Some(PDFX4_VERSION),
+            _ => None,
+        }
+    }
+    /// The member whose identification this crate writes as `version` (read back from an output's
+    /// `/GTS_PDFXVersion`); `None` for anything this crate does not write.
+    pub fn from_written_version(version: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.gts_pdfx_version() == Some(version))
+    }
+}
+
 /// One self-checked rule: a stable id and whether the file satisfies it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PdfXRule {

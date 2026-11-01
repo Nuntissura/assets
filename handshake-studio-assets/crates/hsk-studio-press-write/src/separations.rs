@@ -252,6 +252,79 @@ pub enum PlateView {
     InkLimit(f64),
 }
 
+/// One plate's on/off switch in the separations preview (STU-LAY-160 per-plate preview).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlateToggle {
+    pub ink: String,
+    pub shown: bool,
+}
+
+/// The separations preview state a panel or a model holds as typed values (lane
+/// SMB-PRESS-INK-MANAGER-1, STU-LAY-160): per-plate on/off switches (a plate without a switch is
+/// shown) and the ink-limit view's configurable total-ink threshold (`None` = view off). It is
+/// checked against a preview by [`SeparationPreview::readouts`] and [`SeparationPreview::view_for`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SeparationsViewState {
+    pub plates: Vec<PlateToggle>,
+    /// Percent of total ink, `0..=100 x plate count` of the preview it is read against.
+    pub ink_limit_threshold: Option<f64>,
+}
+
+/// Typed refusals of a [`SeparationsViewState`] against a preview.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SepViewError {
+    /// A switch names no plate of the preview.
+    UnknownPlate(String),
+    /// Two switches name the same plate.
+    DuplicatePlate(String),
+    /// More switches than [`MAX_SEP_PLATES`].
+    TooManyToggles,
+    /// The threshold is not finite or outside `0..=100 x plate count`.
+    ThresholdOutOfRange,
+}
+impl SepViewError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::UnknownPlate(_) => "separations_view_unknown_plate",
+            Self::DuplicatePlate(_) => "separations_view_duplicate_plate",
+            Self::TooManyToggles => "separations_view_too_many_toggles",
+            Self::ThresholdOutOfRange => "separations_view_threshold_out_of_range",
+        }
+    }
+}
+
+/// One plate as the separations preview shows it: identity, declared ink type, its switch and its
+/// coverage readout.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlateReadout {
+    pub ink: String,
+    pub process: Option<ProcessInk>,
+    pub ink_type: InkType,
+    pub shown: bool,
+    pub coverage: PlateCoverage,
+}
+
+/// The ink-limit view as typed values: the threshold, the structural maximum it is bounded by, the
+/// highest total on the page, and the pixels the view marks (total above the threshold, as
+/// [`PlateView::InkLimit`] renders them).
+#[derive(Clone, Debug, PartialEq)]
+pub struct InkLimitViewReadout {
+    pub threshold_percent: f64,
+    pub structural_max_percent: f64,
+    pub max_total_percent: f64,
+    pub pixels_over: u64,
+    /// First marked pixel (row-major), `None` when none is marked.
+    pub first_px_over: Option<(u32, u32)>,
+}
+
+/// Everything the separations preview shows for one state, readable as typed values (not only
+/// rendered): per-plate switches and coverage, and the ink-limit view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeparationsReadout {
+    pub plates: Vec<PlateReadout>,
+    pub ink_limit_view: Option<InkLimitViewReadout>,
+}
+
 /// The separated page.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SeparationPreview {
@@ -1192,6 +1265,76 @@ impl SeparationPreview {
             classify(LimitKind::Black, l, &mut self.planes[ProcessInk::Black.index()].iter().map(|t| f64::from(*t) * 100.0));
         }
         Ok(InkLimitReport { structural_max_percent: structural, max_total_percent: max_total, findings })
+    }
+
+    /// Per-plate shown flags (in plate order) of `state`, after checking it: at most
+    /// [`MAX_SEP_PLATES`] switches, each naming one plate of this preview once, and a threshold that
+    /// is finite and inside `0..=100 x plate count`.
+    fn shown_flags(&self, state: &SeparationsViewState) -> Result<Vec<bool>, SepViewError> {
+        if state.plates.len() > MAX_SEP_PLATES {
+            return Err(SepViewError::TooManyToggles);
+        }
+        let structural = self.plates.len() as f64 * 100.0;
+        if state.ink_limit_threshold.is_some_and(|t| !(t.is_finite() && (0.0..=structural).contains(&t))) {
+            return Err(SepViewError::ThresholdOutOfRange);
+        }
+        let mut flags = vec![true; self.plates.len()];
+        let mut seen = BTreeSet::new();
+        for t in &state.plates {
+            let k = self.plates.iter().position(|p| p.name == t.ink).ok_or_else(|| SepViewError::UnknownPlate(t.ink.clone()))?;
+            if !seen.insert(k) {
+                return Err(SepViewError::DuplicatePlate(t.ink.clone()));
+            }
+            flags[k] = t.shown;
+        }
+        Ok(flags)
+    }
+
+    /// The typed readouts of the separations preview for `state` (STU-LAY-160: per-plate on/off
+    /// preview, the ink-limit view with its threshold and per-ink coverage, readable as typed values).
+    /// Coverage is [`SeparationPreview::coverage`] (a switched-off plate still reports its coverage);
+    /// the ink-limit view counts the pixels [`PlateView::InkLimit`] marks with the same total and
+    /// comparison.
+    pub fn readouts(&self, state: &SeparationsViewState) -> Result<SeparationsReadout, SepViewError> {
+        let flags = self.shown_flags(state)?;
+        let plates = self
+            .plates
+            .iter()
+            .zip(self.coverage())
+            .zip(flags)
+            .map(|((p, coverage), shown)| PlateReadout { ink: p.name.clone(), process: p.process, ink_type: p.ink_type, shown, coverage })
+            .collect();
+        let ink_limit_view = state.ink_limit_threshold.map(|t| {
+            let pixels = self.planes.first().map_or(0, Vec::len);
+            let w = self.width.max(1) as usize;
+            let (mut over, mut first, mut max_total) = (0u64, None, 0.0f64);
+            for i in 0..pixels {
+                let total = self.total_at(i);
+                max_total = max_total.max(total);
+                if total > t + 1e-4 {
+                    over = over.saturating_add(1);
+                    first.get_or_insert((i.checked_rem(w).unwrap_or(0) as u32, i.checked_div(w).unwrap_or(0) as u32));
+                }
+            }
+            InkLimitViewReadout {
+                threshold_percent: t,
+                structural_max_percent: self.plates.len() as f64 * 100.0,
+                max_total_percent: max_total,
+                pixels_over: over,
+                first_px_over: first,
+            }
+        });
+        Ok(SeparationsReadout { plates, ink_limit_view })
+    }
+
+    /// The [`PlateView`] `state` selects: the ink-limit overlay when a threshold is set, else the
+    /// composite of the shown plates. Checked as [`SeparationPreview::readouts`].
+    pub fn view_for(&self, state: &SeparationsViewState) -> Result<PlateView, SepViewError> {
+        let flags = self.shown_flags(state)?;
+        Ok(match state.ink_limit_threshold {
+            Some(t) => PlateView::InkLimit(t),
+            None => PlateView::Composite(flags),
+        })
     }
 
     /// RGB8 rows (top-down) of the chosen view.
