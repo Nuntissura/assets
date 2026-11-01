@@ -1512,7 +1512,8 @@ fn extension(v: &Value, target: &str, t: &CancellationToken) -> Result<Option<Di
                 "next_text_frame",
             ])
         } else if o.contains_key("page_id") {
-            Some(&["page_id", "width", "height", "side", "margins", "bleed"])
+            // `applied_trap_preset`: STU-LAY-107, lane SMB-ID-TOC-PERSIST-1 (optional, not encoded when absent).
+            Some(&["page_id", "width", "height", "side", "margins", "bleed", "applied_trap_preset"])
         } else if o.contains_key("inside_or_left") {
             Some(&["top", "bottom", "inside_or_left", "outside_or_right"])
         } else if o.contains_key("top") {

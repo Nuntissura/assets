@@ -73,7 +73,7 @@ fn old_shape() -> Value {
             "include_overset": true,
             "entries": [{"paragraph_style": identity("STYS", 1), "format_style": identity("STYS", 11), "level": 1, "separator": " "}]}],
         "index_marks": [{"mark_id": "m1", "story_id": identity("STXT", 1), "at": 3, "topics": ["Apple"]}],
-        "index_options": {"title": "Index", "level_styles": [identity("STYS", 21)],
+        "index_options": {"title": "Index", "index_format": "nested", "level_styles": [identity("STYS", 21)],
             "following_topic_separator": ", ", "between_entries_separator": "; ", "page_range_separator": "-",
             "between_page_numbers_separator": ", ", "before_cross_reference_separator": ". ", "entry_end_separator": ""}
     })

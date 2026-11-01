@@ -138,11 +138,11 @@ fn trap_preset_applied_to_page_range_with_attribution() {
     let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap();
     let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
     let refused = run(&ctx(2, true), range, Some(&ghost), &presets);
-    let mut observe = Observe::new(1, 2, resource.clone(), actor.clone(), hsk_studio_observe::Budget::new(0, 0).unwrap());
+    let mut observe = Observe::new(4, 2, resource.clone(), actor.clone(), hsk_studio_observe::Budget::new(0, 0).unwrap());
     let receipt = report_command(&refused, TrapAssignError::failure_code, &ctx(2, true), &cancel, &mut observe, &mut Collect(Vec::new())).unwrap();
     assert_eq!((receipt.outcome, receipt.correlation_id, receipt.revision), (Outcome::Failure(FailureCode::Validation), 4, 2));
     let ok = assign_trap_preset(&ctx(2, true), &doc, &presets, range, Some(&a), &cancel);
-    let mut observe = Observe::new(1, 2, resource, actor, hsk_studio_observe::Budget::new(0, 0).unwrap());
+    let mut observe = Observe::new(4, 2, resource, actor, hsk_studio_observe::Budget::new(0, 0).unwrap());
     let receipt = report_command(&ok, TrapAssignError::failure_code, &ctx(2, true), &cancel, &mut observe, &mut Collect(Vec::new())).unwrap();
     assert_eq!(receipt.outcome, Outcome::Success);
 }
