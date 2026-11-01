@@ -2448,7 +2448,8 @@ fn build(
 // added in edit as a new extra plane; the loss codes it records are `channel_removed_in_edit_not_exported`,
 // `channel_reorder_not_exported`, `channel_geometry_changed_not_exported`,
 // `channel_visibility_not_exported`, `channel_name_transcoded`, `channel_name_resource_absent`,
-// `channel_display_info_absent` and, for an added channel PSD cannot carry (header channel limit 56,
+// `channel_display_info_absent`, `channel_opacity_rounded` (a fractional opacity written rounded into
+// the integral 1077 percent), `channel_opacity_clamped` (an opacity outside 0..=100 written clamped) and, for an added channel PSD cannot carry (header channel limit 56,
 // extent or depth other than the file, no extra planes in the mode, no merged image data, or extra
 // plane 0 of a merged-transparency file), `channel_added_in_edit_not_exported`.
 

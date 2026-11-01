@@ -758,7 +758,8 @@ fn added_channel_in_a_multichannel_or_one_bit_file_is_a_typed_loss() {
         let edit = save_new(&p.raster_records, &p.channel_tiles, SCPF, new_channel("multi", "Multi", StudioChannelKind::MaskedAreaAlpha, 8));
         assert_added_refused("multichannel", &bytes, &doc, &p, &edit.records, &edit.payloads, "multi");
         // Bitmap (mode 0) at 1 bit: the extent and depth match the file (a 1-bit record), but PSD
-        // extra planes are written at 8, 16 or 32 bits only.
+        // extra planes are written at 8, 16 or 32 bits only. A 1-bit record is outside Folio's
+        // 8/16/32 contract (a hostile record): any valid depth fails the depth-equality branch first.
         let bytes = doc_mode(0, 1, 1, true, Vec::new());
         let (doc, p) = proposal(&bytes);
         assert_eq!(doc.header.depth, 1);

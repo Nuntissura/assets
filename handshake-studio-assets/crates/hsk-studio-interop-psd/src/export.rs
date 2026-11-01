@@ -312,7 +312,9 @@ pub fn export_psd(
 /// the header channel count raised; a file without extra planes and without those name or display
 /// resources gets them created. It re-imports as the same record and samples (test
 /// `channel_saved_from_a_selection_exports_and_reimports_beside_the_imported_one`). Edits PSD cannot
-/// take here are typed losses and left out: removed or reordered channels (a new channel placed
+/// take here are typed losses and left out: a fractional or out-of-range opacity is written rounded
+/// or clamped (`channel_opacity_rounded`, `channel_opacity_clamped`, see [`display_opacity`]);
+/// removed or reordered channels (a new channel placed
 /// before an imported one is written last, `channel_reorder_not_exported`), a changed extent or
 /// depth, visibility, an edited channel without a 1077 resource to hold its display edit, and the
 /// added channels PSD cannot carry, `channel_added_in_edit_not_exported` (see
@@ -475,7 +477,7 @@ fn channel_edits_in_place(
                         d.colour_space = space;
                         d.colour = colour;
                     }
-                    d.opacity = c.opacity.round().clamp(0.0, 100.0) as u16;
+                    d.opacity = display_opacity(c.opacity, &path, report);
                     display_changed = true;
                     report.applied(&path, "channel_display");
                 }
@@ -531,11 +533,10 @@ fn channel_edits_in_place(
             report.lost(&format!("{path}/name"), LossKind::Unsupported, "channel_name_resource_absent");
         }
         let (colour_space, colour) = display_of_colour(&c.colour);
-        let entry =
-            ChannelDisplayInfo { colour_space, colour, opacity: c.opacity.round().clamp(0.0, 100.0) as u16, mode: mode_of_kind(c.kind) };
         match display.as_mut().filter(|(_, e)| e.len() == i) {
             Some((_, entries)) => {
-                entries.push(entry);
+                let opacity = display_opacity(c.opacity, &path, report);
+                entries.push(ChannelDisplayInfo { colour_space, colour, opacity, mode: mode_of_kind(c.kind) });
                 display_changed = true;
             }
             None => report.lost(&format!("{path}/display"), LossKind::Unsupported, "channel_display_info_absent"),
@@ -616,6 +617,22 @@ fn added_channel_fits(doc: &PsdDocument, c: &StudioChannelRecord, channels: u16,
         && (c.width, c.height, u16::from(c.depth)) == (header.width, header.height, header.depth)
         && doc.image_data.is_some()
         && !(i == 0 && merged_alpha)
+}
+
+/// The 1077 opacity of channel `path` (an integral percent, `0..=100`; STU-RAS-043 F-R52-3): a value
+/// the entry cannot hold exactly is reported, never dropped silently. A fractional opacity is written
+/// rounded with the typed loss `channel_opacity_rounded`, and one outside `0..=100` (or not finite)
+/// clamped with `channel_opacity_clamped`, the code the import records for an entry above 100 (test
+/// `channel_opacity_the_display_entry_cannot_hold_is_a_typed_loss`).
+fn display_opacity(opacity: f64, path: &str, report: &mut ExportReport) -> u16 {
+    if opacity.is_finite() && opacity.fract() != 0.0 {
+        report.lost(&format!("{path}/opacity"), LossKind::Transformed, "channel_opacity_rounded");
+    }
+    if !(0.0..=100.0).contains(&opacity) {
+        report.lost(&format!("{path}/opacity"), LossKind::Transformed, "channel_opacity_clamped");
+    }
+    // NaN fails the range check above; `as` maps it to 0.
+    opacity.round().clamp(0.0, 100.0) as u16
 }
 
 /// The 1006 entry of a name: Latin-1 bytes (a character above U+00FF written `?`), at most 255.
