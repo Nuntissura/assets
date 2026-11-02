@@ -663,3 +663,46 @@ fn mt_31009_flush_space_on_a_line_that_is_not_the_last_has_no_width() {
     let g = &out.paragraphs[0].glyphs[4];
     assert_eq!((g.cluster, g.advance_pt), (SourceSpan { start: 4, end: 7 }, 0.0));
 }
+
+// ---- SMB-LAYOUT-SENTINELS-1 remediation (R53: break after a glyph-less marker; V4-06) ----
+
+#[test]
+fn mt_31008_a_break_after_a_marker_without_glyphs_still_directs_the_flow() {
+    // A marker shaped as nothing (the index marker, whose value the spec does not state, or any
+    // unresolved marker) right before a break sentinel left the break unseen: the following text
+    // stayed in the frame and no BreakOutcome was reported. Cases of the R53 validator probe plus
+    // its control; byte offsets: "a"/"b" 1 byte, every sentinel 3 bytes.
+    use hsk_studio_type::BreakTarget as T;
+    // Control: "ab" PAGE "cd" over frames on page-1, page-1, page-2: frame 1 is passed over.
+    let out = breaks_case(&[0, 0, 1], 24.0, 1, &[], &format!("ab{PAGE}cd"));
+    assert_eq!(out.breaks, vec![applied(2, T::Page, 2, 0, 1)]);
+    assert_eq!(line_at(&out.layout, 5), (2, 0, 10.0));
+    // "ab" INDEX PAGE "cd": the page break at byte 5, "cd" from byte 8 on page-2.
+    let out = breaks_case(&[0, 0, 1], 24.0, 1, &[], &format!("ab{INDEX}{PAGE}cd"));
+    assert_eq!(out.breaks, vec![applied(5, T::Page, 2, 0, 1)]);
+    assert_eq!(line_at(&out.layout, 8), (2, 0, 10.0));
+    // INDEX PAGE "cd": a paragraph holding only the glyph-less marker and the break.
+    let out = breaks_case(&[0, 0, 1], 24.0, 1, &[], &format!("{INDEX}{PAGE}cd"));
+    assert_eq!(out.breaks, vec![applied(3, T::Page, 2, 0, 1)]);
+    assert_eq!(line_at(&out.layout, 6), (2, 0, 10.0));
+    // "ab" XREF FRAME "cd" with no cross-reference record (unresolved, record missing).
+    let out = breaks_case(&[0, 0], 24.0, 1, &[], &format!("ab{XREF}{FRAME}cd"));
+    assert_eq!(out.markers[0].state, MarkerState::Unresolved(UnresolvedMarker::RecordMissing));
+    assert_eq!(out.breaks, vec![applied(5, T::Frame, 1, 0, 0)]);
+    assert_eq!(line_at(&out.layout, 8), (1, 0, 10.0));
+    // Previous page number on page-1 (unresolved, no previous page) before a frame break.
+    let out = breaks_case(&[0, 0], 24.0, 1, &[], &format!("a{PREV}{FRAME}b"));
+    assert_eq!(out.breaks, vec![applied(4, T::Frame, 1, 0, 0)]);
+    assert_eq!(line_at(&out.layout, 7), (1, 0, 10.0));
+    // The plain entry point (no marker resolution) sees the same break after the marker.
+    let text = format!("ab{INDEX}{FRAME}cd");
+    let (st, _) = story(1, &text, &[(0, 8), (8, 10)]);
+    let doc = pages_doc(4, chain(&[0, 1], 24.0, 1));
+    let p = run(&doc, &st, &shape(&text, &[(0, 2), (8, 10)]), &records()).unwrap();
+    assert_eq!(line_at(&p, 8), (1, 0, 10.0));
+    assert_eq!(p.overset, None);
+    // A break without a target after a glyph-less marker oversets from the break byte.
+    let out = breaks_case(&[0], 24.0, 1, &[], &format!("ab{INDEX}{FRAME}cd"));
+    assert_eq!(out.layout.overset, Some(SourceSpan { start: 5, end: 10 }));
+    assert_eq!(out.breaks, vec![BreakOutcome { story_byte: 5, target: T::Frame, result: BreakResult::Overset(BreakOverset::NoTarget) }]);
+}
