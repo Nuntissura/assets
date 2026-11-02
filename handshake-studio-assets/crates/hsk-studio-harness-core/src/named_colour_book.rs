@@ -69,9 +69,17 @@ pub fn colour_book_from_named_colour_profile(
     spec: &NamedColourBookSpec<'_>,
     token: &CancellationToken,
 ) -> Result<folio::StudioColourBook, NamedColourBookError> {
-    // RED stub (SMB-R53-FOLLOWUPS-1 red commit): the join is not built yet.
-    let _ = (input, spec, token);
-    Err(NamedColourBookError::Book(folio::StudioColourBookError::Malformed))
+    if spec.license_state == folio::StudioBookLicenseState::Absent {
+        return Err(NamedColourBookError::Book(folio::StudioColourBookError::LicenseStateMismatch));
+    }
+    let table = prism::parse_named_colour_profile(input, token).map_err(NamedColourBookError::Profile)?;
+    let profile = folio::StudioNamedColourProfileRef {
+        profile_id: input.profile_id.as_str().to_owned(),
+        content_digest: folio::ContentDigest { algorithm: "sha256".into(), digest: prism::hash_hex(&table.sha256) },
+    };
+    let colours: Vec<(String, [f64; 3])> = table.entries.into_iter().map(|e| (e.root_name, e.pcs_lab)).collect();
+    folio::StudioColourBook::from_named_colours(spec.book_id, spec.title, spec.license_state, spec.license_note, profile, &table.prefix, &table.suffix, &colours, token)
+        .map_err(NamedColourBookError::Book)
 }
 
 /// Joins a named-colour profile into the host's colour-book library under the operator's posture
@@ -86,9 +94,12 @@ pub fn load_named_colour_book(
     origin: folio::StudioBookOrigin,
     token: &CancellationToken,
 ) -> Result<folio::StudioBookReport, NamedColourBookError> {
-    // RED stub (SMB-R53-FOLLOWUPS-1 red commit): the join is not built yet.
-    let _ = (library, ctx, origin);
-    colour_book_from_named_colour_profile(input, spec, token).map(|_| unreachable!())
+    if spec.license_state == folio::StudioBookLicenseState::Absent {
+        return library.mark_absent(ctx, spec.book_id).map_err(NamedColourBookError::Book);
+    }
+    let book = colour_book_from_named_colour_profile(input, spec, token)?;
+    let bytes = serde_json::to_vec(&book).map_err(|_| NamedColourBookError::Book(folio::StudioColourBookError::Malformed))?;
+    library.load(ctx, &bytes, origin, token).map_err(NamedColourBookError::Book)
 }
 
 /// [`load_named_colour_book`] plus exactly one terminal through observe, in the form of
