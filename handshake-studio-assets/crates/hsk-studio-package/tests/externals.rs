@@ -411,6 +411,8 @@ fn every_folio_reference_property_is_classified() {
         ("layout_rules", serde_json::to_value(folio::layout_rule_records_schema()).unwrap()),
         ("cjk_composition", serde_json::to_value(folio::cjk_composition_records_schema()).unwrap()),
         ("trap_preset_records", serde_json::to_value(folio::trap_preset_records_schema()).unwrap()),
+        ("sequence_settings", serde_json::to_value(folio::sequence_settings_records_schema()).unwrap()),
+        ("sequence_presets", serde_json::to_value(folio::sequence_presets_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -577,6 +579,11 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioRgba.colour_profile_id", "external:colour_profile"),
     ("StudioRotoEdgeStroke.path", "internal: value (stroke geometry points, not a file reference)"),
     ("StudioRotoStroke.path", "internal: value (stroke geometry points, not a file reference)"),
+    ("StudioSequencePreset.category_path", "internal: value (STU-FX-143 preset category path, SMB-PR-SEQUENCE-PRESETS-1)"),
+    ("StudioSequenceSettings.audio_master_channel_type", "internal: value (STU-FX-137 enumeration, SMB-PR-SEQUENCE-PRESETS-1)"),
+    ("StudioSequenceSettings.audio_sample_rate_hz", "internal: value"),
+    ("StudioSequenceSettings.audio_time_display", "internal: value (STU-VID-012a enumeration)"),
+    ("StudioSequenceSettings.initial_audio_track_count", "internal: value"),
     ("StudioShapeParameters.create_compound_path_from_ellipses", "internal: flag"),
     ("StudioShapeStream.path", "internal: shape path index"),
     ("StudioSwatch.profile_ref", "external:colour_profile"),
@@ -608,3 +615,51 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("TileRef.colour_profile_id", "external:colour_profile"),
     ("TileRef.content_digest", "asset"),
 ];
+
+/// SMB-PR-SEQUENCE-PRESETS-1 (rule 4b): the sequence settings record set and the sequence-preset
+/// style-registry section travel as record entries next to the document: kept verbatim on save,
+/// read back byte-identical, parsed back to the same records, and they name no outside data.
+#[test]
+fn sequence_settings_and_presets_round_trip_through_the_package() {
+    let b = bytes();
+    let snapshot = document(&b);
+    let doc = snapshot.document();
+    let shipped = folio::shipped_sequence_presets();
+    let mut settings = shipped.presets.iter().find(|p| p.settings.frame_rate.ticks_per_frame == F).unwrap().settings.clone();
+    settings.immersive = Some(StudioImmersiveSettings {
+        projection_type: IMMERSIVE_PROJECTION_EQUIRECTANGULAR,
+        stereoscopic_type: IMMERSIVE_STEREO_MONOSCOPIC,
+        stereoscopic_eye: 0,
+        captured_horizontal_view: 360.0,
+        captured_vertical_view: 180.0,
+        field_of_horizontal_view: 108.0,
+        field_of_vertical_view: 108.0,
+        ambisonics_monitoring_type: IMMERSIVE_AMBISONICS_NONE,
+        ambisonics_hrir: None,
+    });
+    settings.preview_render_format.codec = Some("apcs".into());
+    let mut records = StudioSequenceSettingsRecords::new(doc.document_id.clone());
+    records.sequences.push(StudioSequenceSettingsEntry { sequence_id: "seq".into(), editing_mode: CUSTOM_EDITING_MODE.into(), settings });
+    validate_sequence_settings_records(&records, doc, folio::Budget::default(), &token()).unwrap();
+    let presets_bytes = serde_json::to_vec(&shipped).unwrap();
+    let records_bytes = serde_json::to_vec(&records).unwrap();
+    let entry = |token: &str, body: &[u8]| {
+        let sha = sha256_hex_of(body);
+        Quarantined { name: format!("{DOCUMENT_ENTRY_PREFIX}{token}.{sha}"), bytes: body.to_vec(), sha256_hex: sha }
+    };
+    let mut held = vec![entry("sequence_settings", &records_bytes), entry("sequence_presets", &presets_bytes)];
+    held.sort_by(|a, b| a.name.cmp(&b.name));
+    let package = write(&snapshot, &source(&b), &held, EmbedExternal::Link).unwrap();
+    let opened = open(&package);
+    assert_eq!(opened.snapshot().unwrap().encoded_bytes(), snapshot.encoded_bytes());
+    assert_eq!(opened.quarantined, held, "both record entries carried verbatim");
+    let body = |token: &str| opened.quarantined.iter().find(|q| q.name.starts_with(&format!("{DOCUMENT_ENTRY_PREFIX}{token}."))).unwrap().bytes.clone();
+    let budget = folio::Budget { input_bytes: presets_bytes.len().max(records_bytes.len()), nodes: 1024, ..folio::Budget::default() };
+    let reopened = opened.snapshot().unwrap().document();
+    assert_eq!(parse_sequence_settings_records(&body("sequence_settings"), reopened, budget, &token()).unwrap(), records);
+    assert_eq!(parse_sequence_presets(&body("sequence_presets"), budget, &token()).unwrap(), shipped);
+    // No reference to outside data comes from the new entries: the externals are the document's.
+    let without = open(&write(&snapshot, &source(&b), &[], EmbedExternal::Link).unwrap());
+    assert_eq!(states(&opened), states(&without));
+    assert!(opened.externals.iter().all(|e| !e.target.starts_with(DOCUMENT_ENTRY_PREFIX)));
+}
