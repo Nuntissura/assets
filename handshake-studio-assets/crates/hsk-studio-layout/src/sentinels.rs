@@ -42,7 +42,8 @@ use crate::numbering::{NumberingError, PageNumber, number_pages};
 use crate::textflow::MAX_STORY_BYTES;
 use crate::threaded_reflow::{LayoutProposal, Limits, ReflowRequest, reflow_facts};
 use crate::{
-    Composer, FrameObstacles, LayoutError, LayoutGlyph, ShapedParagraph, SourceSpan, SpaceParams, TypesetOptions,
+    Break, BreakKind, Composer, FrameObstacles, LayoutError, LayoutGlyph, ShapedParagraph, SourceSpan, SpaceParams,
+    TypesetOptions, break_opportunities,
 };
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{StudioDocument, StudioLayoutFlowRecords, StudioSection, StudioTextStory};
@@ -470,7 +471,7 @@ pub fn compose_with_sentinels(
             limits: req.limits,
         };
         let (layout, facts) = reflow_facts(&reflow, opts, flow, &parity, cancel)?;
-        let placed = place_markers(&layout, &partition, &markers, &ordinal);
+        let placed = place_markers(text, &layout, &partition, &markers, &ordinal);
         let next: Vec<MarkerState> = markers
             .iter()
             .zip(&placed)
@@ -573,19 +574,26 @@ fn resolve(
 
 /// The document page (ordinal index) of each marker: the page of the line holding it (the last
 /// line of its paragraph starting at or before it, else the paragraph's first line); `None` in
-/// overset text.
+/// overset text. A marker shaped as nothing that lies after a line's last glyph and before the
+/// next line's first glyph (placed or overset) sits where the line broke: it belongs to the next
+/// line when the break opportunity taken there (UAX #14 over the stored story; the first mandatory
+/// one in that gap, else the first allowed one) is at or before it, so it is glued to the next
+/// word, else to the line before (R54 F-R54-6; Studio reading, InDesign placement UNVERIFIED, D5).
 fn place_markers(
+    text: &str,
     layout: &LayoutProposal,
     partition: &[SourceSpan],
     markers: &[(u64, MarkerKind)],
     ordinal: &dyn Fn(usize, usize) -> Option<usize>,
 ) -> Vec<Option<usize>> {
     // Lines in flow order (paragraph index and source start are non-decreasing in it).
-    let lines: Vec<(usize, u64, usize, usize)> = layout
+    let lines: Vec<(usize, u64, u64, usize, usize)> = layout
         .frames
         .iter()
-        .flat_map(|f| f.lines.iter().map(move |l| (l.paragraph, l.source.start, f.spread, f.page)))
+        .flat_map(|f| f.lines.iter().map(move |l| (l.paragraph, l.source.start, l.source.end, f.spread, f.page)))
         .collect();
+    // UAX #14 opportunities (story bytes) of the last paragraph that needed them.
+    let mut opportunities: Option<(usize, Vec<Break>)> = None;
     markers
         .iter()
         .map(|&(at, _)| {
@@ -597,8 +605,36 @@ fn place_markers(
             let hi = lines.partition_point(|l| l.0 <= pi);
             let mine = lines.get(lo..hi)?;
             let k = mine.partition_point(|l| l.1 <= at);
-            let line = mine.get(k.saturating_sub(1))?;
-            ordinal(line.2, line.3)
+            let line = mine.get(k.checked_sub(1).unwrap_or(0))?;
+            if k > 0 && at >= line.2 {
+                let paragraph = partition.get(pi)?;
+                // The next line of the paragraph: placed, else the overset line starting in it.
+                let next = match mine.get(k) {
+                    Some(n) => Some((n.1, Some(n))),
+                    None => layout.overset.filter(|o| o.start > at && o.start < paragraph.end).map(|o| (o.start, None)),
+                };
+                if let Some((next_start, next_line)) = next {
+                    if opportunities.as_ref().is_none_or(|(p, _)| *p != pi) {
+                        let (s, e) = (usize::try_from(paragraph.start).ok()?, usize::try_from(paragraph.end).ok()?);
+                        let found = break_opportunities(text.get(s..e)?)
+                            .into_iter()
+                            .filter_map(|b| Some(Break { byte: b.byte.checked_add(s)?, kind: b.kind }))
+                            .collect();
+                        opportunities = Some((pi, found));
+                    }
+                    let gap = opportunities.as_ref().map_or(&[][..], |(_, o)| o.as_slice());
+                    let in_gap = |b: &&Break| (line.2..=next_start).contains(&(b.byte as u64));
+                    let taken = gap
+                        .iter()
+                        .filter(in_gap)
+                        .find(|b| b.kind == BreakKind::Mandatory)
+                        .or_else(|| gap.iter().find(in_gap));
+                    if taken.is_some_and(|b| b.byte as u64 <= at) {
+                        return next_line.and_then(|n| ordinal(n.3, n.4));
+                    }
+                }
+            }
+            ordinal(line.3, line.4)
         })
         .collect()
 }
