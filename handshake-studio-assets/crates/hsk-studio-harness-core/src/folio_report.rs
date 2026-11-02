@@ -30,7 +30,7 @@
 use hsk_studio_accord::{CancellationToken, CommandContext};
 use hsk_studio_folio as folio;
 use hsk_studio_observe::{
-    DiagnosticCode, Disposition, Error as ObserveError, FailureCode, MAX_DETAIL_COUNT, Observe, Outcome,
+    DiagnosticCode, DiagnosticDetail, Disposition, Error as ObserveError, FailureCode, MAX_DETAIL_COUNT, Observation, Observe, Outcome,
     Receipt, SinkPort,
 };
 
@@ -66,9 +66,9 @@ pub(crate) struct Terminal {
 }
 
 pub(crate) fn emit(ctx: &CommandContext, t: Terminal, route: FolioReportRoute<'_>) -> FolioEmission {
-    // RED stub (SMB-R53-FOLLOWUPS-1 red commit): nothing is emitted yet.
-    let _ = (ctx, t.outcome, t.disposition, t.diagnostic, t.counts, route.cancel, route.observe, route.sink);
-    FolioEmission { code: "", receipt: Err(ObserveError::Closed) }
+    let event = Observation { correlation_id: ctx.correlation().value(), revision: ctx.base_revision(), outcome: t.outcome, progress: None, private_project_text: None };
+    let receipt = DiagnosticDetail::new(t.disposition, t.diagnostic, None, t.counts).and_then(|detail| route.observe.emit_detail(event, &detail, route.cancel, &mut *route.sink));
+    FolioEmission { code: t.code, receipt }
 }
 
 /// A rejected terminal with zero counters; `failure` `None` is the canceled outcome.
