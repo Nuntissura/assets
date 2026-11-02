@@ -7,6 +7,7 @@
 //!   subset from the typed model (fixed attribute and element order, fixed ZIP timestamps) and
 //!   copies every other part verbatim. Whatever the decoder reported as `LossKind::Unsupported` is
 //!   not in the model and therefore not written by this path.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::container;
 use crate::idml_decode::{IDPKG_NS, canceled, parse_xml, text_of};
 use crate::model::*;
@@ -331,7 +332,7 @@ pub fn replace_content(
     if node.children().any(|c| !c.is_text()) {
         return Err(IdmlError::InvalidEdit("content_has_non_text"));
     }
-    let mut out = String::with_capacity(text.len() + edit.new_text.len());
+    let mut out = String::with_capacity(text.len().saturating_add(edit.new_text.len()));
     out.push_str(&text[..edit.span.start]);
     let _ = write!(out, "<Content>{}</Content>", esc(edit.new_text, false));
     out.push_str(&text[edit.span.end..]);
