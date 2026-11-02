@@ -30,7 +30,6 @@ pub(crate) const CURRENT_PAGE: char = '\u{FDD0}';
 pub(crate) const NEXT_PAGE: char = '\u{FDD1}';
 pub(crate) const PREVIOUS_PAGE: char = '\u{FDD2}';
 pub(crate) const SECTION_MARKER: char = '\u{FDD3}';
-pub(crate) const COLUMN_BREAK: char = '\u{FDD8}';
 pub(crate) const FLUSH_SPACE: char = '\u{FDDD}';
 
 /// `(PageNumberType value, sentinel)`; an absent attribute is the current page number.
