@@ -11,6 +11,7 @@ mod idml_composition;
 mod idml_decode;
 mod idml_encode;
 mod idml_longdoc;
+mod idml_sentinels;
 mod ids;
 mod indd_adapter;
 mod model;

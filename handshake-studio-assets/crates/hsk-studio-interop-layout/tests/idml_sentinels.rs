@@ -284,3 +284,19 @@ fn mt_31005_write_paths_refuse_a_sentinel_they_cannot_carry() {
     model.stories[0].paragraphs[0].runs[0].text = format!("a{CUR}{SECTION}");
     assert!(export_model(&model, &i.package, &CancellationToken::default()).is_ok());
 }
+
+#[test]
+fn mt_31005_foreign_noncharacters_in_idml_note_text_are_replaced_and_reported() {
+    // Note and cell fragments are foreign text too (import_longdoc).
+    let note = format!(
+        "<Footnote Self=\"fn1\">{}</Footnote>",
+        psr(&csr("", "<Content>a&#xFDD0;b\u{FDD9}c</Content>"))
+    );
+    let body = psr(&[csr("", "<Content>Host</Content>"), csr("", &note), csr("", "<Content> end</Content>")].concat());
+    let i = import(&package(&body));
+    let mut mint = SequentialIdMint::new(900);
+    let l = import_longdoc(&i, &Limits::default(), &mut mint, &CancellationToken::default()).expect("longdoc import");
+    let note_text: Vec<&str> = l.stories.iter().map(text).collect();
+    assert_eq!(note_text, vec!["a\u{FFFD}b\u{FFFD}c"]);
+    assert_eq!(loss_count(&l.loss, "foreign_stream_sentinel_replaced"), 2, "{:?}", l.loss);
+}

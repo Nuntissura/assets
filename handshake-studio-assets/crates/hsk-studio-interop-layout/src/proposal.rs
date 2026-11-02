@@ -145,8 +145,8 @@ fn story_json(s: &StoryModel, story_id: &str, styles: &mut Styles) -> Value {
         for run in &para.runs {
             let from = text.len();
             text.push_str(&run.text);
-            if run.br {
-                text.push('\n');
+            if let Some(end) = run.paragraph_end() {
+                text.push(end);
             }
             if text.len() == from {
                 continue;

@@ -384,7 +384,7 @@ pub fn import_type_styles(
         for para in &st.paragraphs {
             let start = at;
             for run in &para.runs {
-                at = at.saturating_add(run.text.len() as u64).saturating_add(u64::from(run.br));
+                at = at.saturating_add(run.story_len());
             }
             if at == start {
                 continue;

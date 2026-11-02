@@ -10,7 +10,7 @@
 use crate::container;
 use crate::idml_decode::{IDPKG_NS, canceled, parse_xml, text_of};
 use crate::model::*;
-use crate::{IdmlError, Result};
+use crate::{IdmlError, Result, idml_sentinels};
 use hsk_studio_accord::CancellationToken;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -168,7 +168,36 @@ fn spread_xml(m: &IdmlModel, s: &SpreadModel) -> String {
     wrapper("Spread", &m.dom_version, &body)
 }
 
-fn story_xml(m: &IdmlModel, st: &StoryModel) -> String {
+/// The escaped text of one `Content`, with the STU-TYP-207 page-number and section-marker
+/// sentinels written as their `ACE` instructions (`idml_sentinels`). A page-number sentinel must
+/// match its range's `PageNumberType`; any other U+FDD0..U+FDEF has no IDML form here. Both are
+/// refused rather than written as a raw noncharacter (Folio export maps or reports them first).
+fn content_xml(run: &RunModel) -> Result<String> {
+    if !run.text.chars().any(hsk_studio_type::is_sentinel_block) {
+        return Ok(esc(&run.text, false));
+    }
+    let mut out = String::with_capacity(run.text.len());
+    let mut plain = String::new();
+    for c in run.text.chars() {
+        if !hsk_studio_type::is_sentinel_block(c) {
+            plain.push(c);
+            continue;
+        }
+        let instruction = idml_sentinels::instruction_of(c).ok_or(IdmlError::InvalidEdit(idml_sentinels::SENTINEL_UNMAPPED))?;
+        if let Ok(wanted) = idml_sentinels::page_number_type_of(c)
+            && idml_sentinels::attr(&run.attrs, idml_sentinels::PAGE_NUMBER_TYPE) != wanted
+        {
+            return Err(IdmlError::InvalidEdit("page_number_type_mismatch"));
+        }
+        out.push_str(&esc(&plain, false));
+        plain.clear();
+        out.push_str(instruction);
+    }
+    out.push_str(&esc(&plain, false));
+    Ok(out)
+}
+
+fn story_xml(m: &IdmlModel, st: &StoryModel) -> Result<String> {
     let mut body = String::new();
     body.push_str("<Story");
     attr_out(&mut body, "Self", &st.id);
@@ -202,7 +231,7 @@ fn story_xml(m: &IdmlModel, st: &StoryModel) -> String {
             if let Some(obj) = &run.inline {
                 body.push_str(&obj.xml);
             } else if !run.text.is_empty() || !run.br {
-                let _ = write!(body, "<Content>{}</Content>", esc(&run.text, false));
+                let _ = write!(body, "<Content>{}</Content>", content_xml(run)?);
             }
             if run.br {
                 body.push_str("<Br/>");
@@ -212,7 +241,7 @@ fn story_xml(m: &IdmlModel, st: &StoryModel) -> String {
         body.push_str("</ParagraphStyleRange>\n");
     }
     body.push_str("</Story>\n");
-    wrapper("Story", &m.dom_version, &body)
+    Ok(wrapper("Story", &m.dom_version, &body))
 }
 
 /// Canonical export of the supported subset (see the module docs). Deterministic: the same model
@@ -235,7 +264,7 @@ pub fn export_model(
     }
     for st in &m.stories {
         canceled(cancel)?;
-        generated.insert(st.part.clone(), story_xml(m, st).into_bytes());
+        generated.insert(st.part.clone(), story_xml(m, st)?.into_bytes());
     }
     let mut order: Vec<(String, Vec<u8>)> = Vec::new();
     for p in &package.parts {
@@ -268,7 +297,9 @@ fn xml_char(c: char) -> bool {
 
 /// Replaces the text of one plain `Content` element. The new text is XML-escaped; no other byte of
 /// any part changes. Refuses (typed) a stale part, a span that is not a `Content` element, a
-/// `Content` holding special-character instructions, and text with characters XML cannot carry.
+/// `Content` holding special-character instructions, text with characters XML cannot carry, and
+/// text holding a STU-TYP-207 stream sentinel (U+FDD0..U+FDEF), which a plain `Content` swap
+/// cannot carry (`stream_sentinel_in_content`).
 pub fn replace_content(
     package: &IdmlPackage,
     edit: &ContentEdit,
@@ -284,6 +315,9 @@ pub fn replace_content(
     }
     if !edit.new_text.chars().all(xml_char) {
         return Err(IdmlError::InvalidEdit("illegal_xml_character"));
+    }
+    if edit.new_text.chars().any(hsk_studio_type::is_sentinel_block) {
+        return Err(IdmlError::InvalidEdit("stream_sentinel_in_content"));
     }
     let text = text_of(part)?;
     let doc = parse_xml(text, limits)?;

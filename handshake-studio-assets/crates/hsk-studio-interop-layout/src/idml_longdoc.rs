@@ -300,7 +300,10 @@ fn fragment_paragraphs(root: Node, part: &str, loss: &mut LossBook) -> Vec<(Stri
                     }
                     if let Some(last) = out.last_mut() {
                         for t in c.children().filter(|t| t.is_text()) {
-                            last.0.push_str(t.text().unwrap_or_default());
+                            // A foreign U+FDD0..U+FDEF is never a sentinel (STU-TYP-207 SD-29).
+                            let (text, replaced) = crate::idml_sentinels::foreign_text(t.text().unwrap_or_default());
+                            last.0.push_str(&text);
+                            loss.note_n(part, "Content", LossKind::Approximated, crate::idml_sentinels::FOREIGN_SENTINEL_REPLACED, replaced);
                         }
                     }
                 }
@@ -1012,7 +1015,7 @@ pub fn import_longdoc(import: &IdmlImport, limits: &Limits, mint: &mut dyn IdMin
                     (el, _) => imp.loss.note(&st.part, el, LossKind::Unsupported, "inline_object_out_of_place"),
                 }
             }
-            at = at.saturating_add(run.text.len() as u64).saturating_add(u64::from(run.br));
+            at = at.saturating_add(run.story_len());
         }
     }
     let mut endnote_keys = BTreeSet::new();
@@ -1312,7 +1315,7 @@ fn insert_inline(st: &mut StoryModel, mut items: Vec<(u64, Opaque)>, loss: &mut 
         let runs = std::mem::take(&mut para.runs);
         let mut out = Vec::with_capacity(runs.len());
         for run in runs {
-            let (len, br) = (run.text.len() as u64, run.br);
+            let (len, br, story_len) = (run.text.len() as u64, run.br, run.story_len());
             let mut cut = 0usize;
             let mut split = false;
             while items.peek().is_some_and(|(a, _)| *a <= off.saturating_add(len)) {
@@ -1333,7 +1336,7 @@ fn insert_inline(st: &mut StoryModel, mut items: Vec<(u64, Opaque)>, loss: &mut 
             } else if cut < run.text.len() || br {
                 out.push(RunModel { text: run.text[cut..].to_owned(), span: None, inline: None, ..run });
             }
-            off = off.saturating_add(len).saturating_add(u64::from(br));
+            off = off.saturating_add(story_len);
         }
         para.runs = out;
     }

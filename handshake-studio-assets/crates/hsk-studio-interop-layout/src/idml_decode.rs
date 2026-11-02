@@ -8,7 +8,7 @@
 use crate::container;
 use crate::ids::IdMint;
 use crate::model::*;
-use crate::{IdmlError, Result, proposal};
+use crate::{IdmlError, Result, idml_sentinels, proposal};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{AutoSizing, FirstBaseline, VerticalJustification};
 use roxmltree::{Document, Node, ParsingOptions};
@@ -29,6 +29,14 @@ impl LossBook {
     pub(crate) fn note(&mut self, part: &str, element: &str, kind: LossKind, code: &'static str) {
         let count = self.0.entry((part.to_owned(), element.to_owned(), kind, code)).or_insert(0);
         *count = count.saturating_add(1);
+    }
+    /// `n` occurrences of one loss in one note (nothing when `n` is 0); the count saturates.
+    pub(crate) fn note_n(&mut self, part: &str, element: &str, kind: LossKind, code: &'static str, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let count = self.0.entry((part.to_owned(), element.to_owned(), kind, code)).or_insert(0);
+        *count = count.saturating_add(u32::try_from(n).unwrap_or(u32::MAX));
     }
     pub(crate) fn finish(self) -> Vec<LossEntry> {
         self.0
@@ -859,13 +867,26 @@ impl StoryBuilder<'_> {
             match name(c) {
                 "Content" => {
                     let mut run = proto.clone();
+                    let mut replaced = 0usize;
                     for t in c.children() {
                         if t.is_text() {
-                            run.text.push_str(t.text().unwrap_or_default());
-                        } else if t.is_pi() {
-                            run.special = true;
+                            // A foreign U+FDD0..U+FDEF is never read as a sentinel (SD-29).
+                            let (text, n) = idml_sentinels::foreign_text(t.text().unwrap_or_default());
+                            run.text.push_str(&text);
+                            replaced = replaced.saturating_add(n);
+                        } else if let Some(pi) = t.pi() {
+                            // `ACE 18` (+ PageNumberType) and `ACE 19` are stream markers (STU-TYP-207).
+                            match idml_sentinels::marker_of_instruction(pi.target, pi.value, &proto.attrs) {
+                                Some(Ok(marker)) => run.text.push(marker),
+                                Some(Err(code)) => {
+                                    self.loss.note(self.part, "Content", LossKind::Approximated, code);
+                                    run.special = true;
+                                }
+                                None => run.special = true,
+                            }
                         }
                     }
+                    self.loss.note_n(self.part, "Content", LossKind::Approximated, idml_sentinels::FOREIGN_SENTINEL_REPLACED, replaced);
                     if run.special {
                         self.loss.note(
                             self.part,
@@ -887,6 +908,10 @@ impl StoryBuilder<'_> {
                     }
                 }
                 "Br" => {
+                    // A ParagraphBreakType value no source states ends the paragraph as U+000A.
+                    if let Err((_, code)) = idml_sentinels::break_of(&proto.attrs) {
+                        self.loss.note(self.part, "Br", LossKind::Approximated, code);
+                    }
                     match unterminated.take() {
                         Some(i) => {
                             if let Some(r) = self.paras.last_mut().and_then(|p| p.runs.get_mut(i)) {

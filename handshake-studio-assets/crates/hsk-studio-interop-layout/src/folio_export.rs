@@ -16,6 +16,7 @@
 //! case study; no InDesign has opened a package written here.
 use crate::idml_decode::{AS, FB, LossBook, VJ, canceled, classify};
 use crate::idml_encode::{export_model, num};
+use crate::idml_sentinels;
 use crate::model::*;
 use crate::proposal::{Known, folio_err};
 use crate::{IDML_MIMETYPE, IdmlError, Result};
@@ -151,6 +152,49 @@ fn run_of(
     }
 }
 
+/// Appends the runs of `slice` (one character range's text inside a paragraph) to `out`, mapping
+/// the STU-TYP-207 sentinels as `idml_sentinels` states: the current page number and section
+/// marker stay in the text (written as `ACE 18` / `ACE 19`), a next / previous page number gets a
+/// range of its own with its `PageNumberType`, flush space becomes U+0020 and the markers with no
+/// IDML form are dropped, each with a typed loss.
+fn sentinel_runs(run: RunModel, slice: &str, part: &str, loss: &mut LossBook, out: &mut Vec<RunModel>) {
+    use idml_sentinels as s;
+    if !slice.chars().any(hsk_studio_type::is_sentinel_block) {
+        out.push(RunModel { text: slice.to_owned(), ..run });
+        return;
+    }
+    let mut text = String::new();
+    for c in slice.chars() {
+        if !hsk_studio_type::is_sentinel_block(c) {
+            text.push(c);
+            continue;
+        }
+        match s::page_number_type_of(c) {
+            Ok(None) => text.push(c),
+            Ok(Some(value)) => {
+                if !text.is_empty() {
+                    out.push(RunModel { text: std::mem::take(&mut text), ..run.clone() });
+                }
+                let mut attrs = (*run.attrs).clone();
+                attrs.push((s::PAGE_NUMBER_TYPE.to_owned(), value.to_owned()));
+                out.push(RunModel { text: c.to_string(), attrs: attrs.into(), ..run.clone() });
+            }
+            Err(()) if c == s::SECTION_MARKER => text.push(c),
+            Err(()) if c == s::FLUSH_SPACE => {
+                text.push(' ');
+                loss.note(part, "Content", LossKind::Approximated, s::FLUSH_UNAVAILABLE);
+            }
+            Err(()) if hsk_studio_layout::MarkerKind::from_sentinel(c).is_some() => {
+                loss.note(part, "Content", LossKind::Unsupported, s::MARKER_UNAVAILABLE);
+            }
+            Err(()) => loss.note(part, "Content", LossKind::Unsupported, s::SENTINEL_UNMAPPED),
+        }
+    }
+    if !text.is_empty() {
+        out.push(RunModel { text, ..run });
+    }
+}
+
 fn story_model(
     input: &StoryInput,
     id: &str,
@@ -197,8 +241,21 @@ fn story_model(
             at(p.start).ok_or(IdmlError::InvalidEdit("story_range_not_on_char_boundary"))?,
             at(p.end).ok_or(IdmlError::InvalidEdit("story_range_not_on_char_boundary"))?,
         );
-        let br = text[start..end].ends_with('\n');
-        let content_end = end - usize::from(br);
+        // The paragraph's terminator: U+000A, or a STU-TYP-207 break sentinel written as a `Br`
+        // with its `ParagraphBreakType` (the column break has no recorded value: a plain `Br`
+        // and a typed loss, `idml_sentinels`).
+        let (br, break_type, terminator_len) = match text[start..end].chars().next_back() {
+            Some('\n') => (true, None, 1),
+            Some(c) if hsk_studio_type::is_break_sentinel(c) => {
+                let t = idml_sentinels::break_type_of(c);
+                if t.is_none() {
+                    loss.note(&part, "Br", LossKind::Approximated, idml_sentinels::COLUMN_BREAK_UNAVAILABLE);
+                }
+                (true, t, c.len_utf8())
+            }
+            _ => (false, None, 0),
+        };
+        let content_end = end - terminator_len;
         if text[start..content_end].contains('\n') {
             loss.note(
                 &part,
@@ -235,12 +292,33 @@ fn story_model(
                 (c.end as usize).min(content_end),
             );
             if from < to {
-                let mut run = run_of(c, names, &part, loss, &mut composition);
-                run.text = text[from..to].to_owned();
-                runs.push(run);
+                let run = run_of(c, names, &part, loss, &mut composition);
+                sentinel_runs(run, &text[from..to], &part, loss, &mut runs);
             }
         }
-        if br {
+        if let Some(value) = break_type {
+            // The break is a `Br` alone in a range carrying the holder's style and the break type.
+            let holder = s.character_ranges.iter().find(|c| (c.start as usize) <= content_end && content_end < c.end as usize);
+            let mut run = holder.map_or_else(
+                || RunModel {
+                    char_style: NO_CHARACTER_STYLE.into(),
+                    attrs: Attrs::new().into(),
+                    props: None,
+                    text: String::new(),
+                    br: false,
+                    special: false,
+                    language: None,
+                    span: None,
+                    inline: None,
+                },
+                |c| run_of(c, names, &part, loss, &mut composition),
+            );
+            let mut attrs = (*run.attrs).clone();
+            attrs.push((idml_sentinels::PARAGRAPH_BREAK_TYPE.to_owned(), value.to_owned()));
+            run.attrs = attrs.into();
+            run.br = true;
+            runs.push(run);
+        } else if br {
             match runs.last_mut() {
                 Some(last) => last.br = true,
                 None => {

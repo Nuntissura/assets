@@ -280,6 +280,18 @@ pub struct RunModel {
     /// `import_longdoc` (lane SMB-INTEROP-IDML) and written back as is by both write paths.
     pub inline: Option<Arc<Opaque>>,
 }
+impl RunModel {
+    /// The paragraph terminator this run's `Br` stands for in the Folio story text: the
+    /// STU-TYP-207 break sentinel of its range's `ParagraphBreakType` (`NextFrame`, `NextPage`,
+    /// `NextOddPage`, `NextEvenPage`), else U+000A; `None` without a `Br`.
+    pub fn paragraph_end(&self) -> Option<char> {
+        self.br.then(|| crate::idml_sentinels::break_of(&self.attrs).unwrap_or_else(|(c, _)| c))
+    }
+    /// Bytes this run occupies in the Folio story text (text plus its paragraph terminator).
+    pub fn story_len(&self) -> u64 {
+        (self.text.len() as u64).saturating_add(self.paragraph_end().map_or(0, |c| c.len_utf8() as u64))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LossKind {
