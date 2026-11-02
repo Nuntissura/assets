@@ -40,66 +40,52 @@ pub use validate::{COMPOSITION_VERSION, COMPOSITION_VERSION_V1};
 /// validation and the shaping engine): Bidi_Class B of the vendored UCD table (U+000A, U+000D,
 /// U+001C..U+001E, U+0085, U+2029) or one of the five STU-TYP-207 break sentinels U+FDD8..U+FDDC
 /// (SD-29), which end their paragraph exactly as U+2029 does. Hosts (layout) partition with this
-/// rule so Type accepts their paragraphs.
+/// rule so Type accepts their paragraphs. Constant time (R54 F-R54-4): no provider context and no
+/// table lookup per character.
 pub fn ends_paragraph(c: char) -> bool {
     terminator::ends_paragraph(c)
 }
 
-/// [`ends_paragraph`] outside a request: the engine's own rule (`validate::ends_paragraph`) under
-/// a fixed epoch, a token that is never cancelled, no admission and a work budget above the
-/// vendored table's binary-search depth (about 1 500 rows, at most 12 steps). Neither the context
-/// nor the lookup can then fail; `public_ends_paragraph_is_the_metered_rule_for_every_scalar`
-/// checks the answer against the metered rule for every Unicode scalar value.
+/// [`ends_paragraph`] outside a request: a constant-time match on the twelve terminators, kept
+/// equal to the engine's metered rule (`validate::ends_paragraph`: the vendored bidi table under
+/// a provider context) for every Unicode scalar value by
+/// `public_ends_paragraph_is_the_metered_rule_for_every_scalar`, which fails if a table update
+/// adds or removes a class-B character. Measurement (R54 F-R54-4, lane SMB-R54-FOLLOWUPS-1,
+/// `public_ends_paragraph_answers_a_long_story_without_the_metered_lookup`): the metered rule
+/// spends one context and about 10 epoch-polling search steps per scalar.
 mod terminator {
-    use crate::{AdmissionPort, AllocationSnapshot, EpochPort, Error, Generation, Reservation};
-    use hsk_studio_accord::CancellationToken;
-    use std::sync::OnceLock;
-
-    const WORK_UNITS: u64 = 64;
     pub(crate) fn ends_paragraph(c: char) -> bool {
-        metered(c)
-    }
-    #[cfg(test)]
-    thread_local! {
-        /// Calls of the metered rule from the public helper on this thread (F-R54-4 measurement).
-        pub(crate) static METERED_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    }
-    fn metered(c: char) -> bool {
-        #[cfg(test)]
-        METERED_CALLS.with(|n| n.set(n.get().saturating_add(1)));
-        static NEVER_CANCELLED: OnceLock<CancellationToken> = OnceLock::new();
-        let cancel = NEVER_CANCELLED.get_or_init(CancellationToken::default);
-        crate::provider::Context::new(cancel, &Unmetered, 0, &Unmetered, WORK_UNITS, 1, 1)
-            .and_then(|ctx| crate::validate::ends_paragraph(c, &ctx))
-            .unwrap_or(false)
-    }
-    pub(crate) struct Unmetered;
-    impl EpochPort for Unmetered {
-        fn current_epoch(&self) -> Result<u64, Error> {
-            Ok(0)
-        }
-    }
-    impl AdmissionPort for Unmetered {
-        fn reserve(&self, _: u64, _: u64) -> Result<Reservation<'_>, Error> {
-            Err(Error::Allocation)
-        }
-        fn snapshot(&self) -> Result<AllocationSnapshot, Error> {
-            Ok(AllocationSnapshot {
-                current_requested_bytes: 0,
-                operation_peak_requested_bytes: 0,
-                historical_peak_requested_bytes: 0,
-                retained_generations: 0,
-            })
-        }
-        fn retain_generation(&self, _: u64) -> Result<Generation<'_>, Error> {
-            Err(Error::Allocation)
-        }
+        matches!(c, '\u{000A}' | '\u{000D}' | '\u{001C}'..='\u{001E}' | '\u{0085}' | '\u{2029}')
+            || crate::catalog::is_break_sentinel(c)
     }
 
     #[cfg(test)]
     mod tests {
-        use super::Unmetered;
+        use crate::{AdmissionPort, AllocationSnapshot, EpochPort, Error, Generation, Reservation};
         use hsk_studio_accord::CancellationToken;
+
+        struct Unmetered;
+        impl EpochPort for Unmetered {
+            fn current_epoch(&self) -> Result<u64, Error> {
+                Ok(0)
+            }
+        }
+        impl AdmissionPort for Unmetered {
+            fn reserve(&self, _: u64, _: u64) -> Result<Reservation<'_>, Error> {
+                Err(Error::Allocation)
+            }
+            fn snapshot(&self) -> Result<AllocationSnapshot, Error> {
+                Ok(AllocationSnapshot {
+                    current_requested_bytes: 0,
+                    operation_peak_requested_bytes: 0,
+                    historical_peak_requested_bytes: 0,
+                    retained_generations: 0,
+                })
+            }
+            fn retain_generation(&self, _: u64) -> Result<Generation<'_>, Error> {
+                Err(Error::Allocation)
+            }
+        }
 
         /// No behaviour change: the public helper answers exactly as the metered rule the engine
         /// and request validation use, for every Unicode scalar value.
@@ -146,11 +132,11 @@ mod terminator {
                 max_units = max_units.max(ctx.work());
             }
             let metered_ns = started.elapsed().as_nanos();
-            let before = super::METERED_CALLS.with(std::cell::Cell::get);
+            let before = crate::validate::METERED_CALLS.with(std::cell::Cell::get);
             let started = std::time::Instant::now();
             let public = story.iter().filter(|c| crate::ends_paragraph(**c)).count() as u64;
             let public_ns = started.elapsed().as_nanos();
-            let calls = super::METERED_CALLS.with(std::cell::Cell::get) - before;
+            let calls = crate::validate::METERED_CALLS.with(std::cell::Cell::get) - before;
             println!(
                 "MEASURE F-R54-4 ends_paragraph scalars={} terminators={} metered: contexts={} search_steps={} steps_per_scalar={:.2} max_steps={} epoch_polls={} wall_ns={} | public: metered_calls={} wall_ns={} (wall time informative only)",
                 story.len(),

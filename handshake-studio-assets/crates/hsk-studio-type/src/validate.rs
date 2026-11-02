@@ -288,8 +288,15 @@ pub(crate) fn validate<'a>(
 /// five STU-TYP-207 break sentinels (SD-29), which end their paragraph exactly as U+2029 does.
 /// The vendored bidi tables are not changed; `bidi_text` hands bidi the U+2029 stand-in.
 pub(crate) fn ends_paragraph(c: char, ctx: &Context<'_>) -> ProviderResult<bool> {
+    #[cfg(test)]
+    METERED_CALLS.with(|n| n.set(n.get().saturating_add(1)));
     Ok(crate::catalog::is_break_sentinel(c)
         || crate::provider::bidi::class(c, ctx)? == crate::provider::bidi::BidiClass::B)
+}
+#[cfg(test)]
+thread_local! {
+    /// Evaluations of the metered terminator rule on this thread (R54 F-R54-4 measurement).
+    pub(crate) static METERED_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 /// The forced line break (STU-TYP-207 Break characters, stored as U+2028 per SD-29).
 pub(crate) const FORCED_LINE_BREAK: char = '\u{2028}';
