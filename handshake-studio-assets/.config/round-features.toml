@@ -42,6 +42,9 @@ hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tif
 # harness: tests/audio_session.rs is #![cfg(all(feature = "audio-batch", feature = "audio-device"))];
 # tests/import_affinity.rs has 5 #[cfg(feature = "import-affinity")] items (preview tests).
 hsk-studio-harness-view = [["viewer"], ["desktop", "audio-batch"]]
+# STUDIO-R53 F-R53-10 / rule 4e (lead 2026-11-02, SMB-R53-FOLLOWUPS-1 6286fc11): harness-core tests/tiff_export_outcomes.rs is
+# #![cfg(feature = "import-tiff")] and tests/named_colour_book.rs needs any import-* feature; harness-core's own import-tiff.
+hsk-studio-harness-core = [["import-tiff"]]
 hsk-studio-composite = [["motion"]]
 
 [ignored]
