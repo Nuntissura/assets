@@ -743,7 +743,7 @@ pub struct StudioImmersiveSettings {
     pub ambisonics_hrir: Option<String>,
 }
 
-fn validate_immersive(i: &StudioImmersiveSettings, t: &str, cx: &mut Ctx) -> Result<()> {
+pub(crate) fn validate_immersive(i: &StudioImmersiveSettings, t: &str, cx: &mut Ctx) -> Result<()> {
     check(matches!(i.projection_type, IMMERSIVE_PROJECTION_FLAT | IMMERSIVE_PROJECTION_EQUIRECTANGULAR), t, "projection_type")?;
     check(i.stereoscopic_type <= IMMERSIVE_STEREO_SIDE_BY_SIDE, t, "stereoscopic_type")?;
     check(i.stereoscopic_eye <= 1, t, "stereoscopic_eye")?;
