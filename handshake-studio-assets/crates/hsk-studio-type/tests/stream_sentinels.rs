@@ -385,3 +385,99 @@ fn mt_31008_public_ends_paragraph_names_exactly_the_terminators_type_partitions_
         },
     );
 }
+
+/// Lane SMB-R54-FOLLOWUPS-1 item 1 (R54 F-R54-3, NATIVE-2): the forced line break U+2028
+/// (STU-TYP-207 Break characters, stored as that scalar per SD-29) ends the LINE, not the
+/// paragraph. Type keeps it outside the shaping buffer as a mandatory line break (UAX #14 class
+/// BK): it is never shaped (the Inter fixture maps no glyph to it, so shaping it refused the
+/// paragraph with MissingGlyph), its bytes are covered by one glyph-less coverage entry, no shaped
+/// cluster or run crosses it (shaping context ends at the line break), the paragraph is not split
+/// (bidi class WS, UAX #9), and the stored code point is kept. Layout breaks the line there
+/// (interop-layout tests/sentinels_native_type.rs mt_31008_a_forced_line_break_through_native_type).
+fn assert_forced_line_break(result: &Prepared<'_>, text: &str, breaks: &[u64]) {
+    verify_coverage(result);
+    assert_eq!(result.request().text_utf8, text, "the stored U+2028 is kept");
+    assert_eq!(result.paragraphs().len(), 1, "U+2028 does not end the paragraph");
+    assert_eq!(
+        (result.paragraphs()[0].source().start, result.paragraphs()[0].source().end),
+        (0, text.len() as u64)
+    );
+    for &at in breaks {
+        let entry: Vec<_> = result
+            .coverage()
+            .iter()
+            .filter(|c| c.source.start < at + 3 && at < c.source.end)
+            .collect();
+        assert_eq!(entry.len(), 1, "one coverage entry over the forced line break at {at}");
+        assert_eq!(
+            (entry[0].source.start, entry[0].source.end, entry[0].kind, entry[0].glyphs),
+            (at, at + 3, CoverageKind::NonrenderingControl, None),
+            "U+2028 at {at} is outside shaping"
+        );
+        for run in result.paragraphs().iter().flat_map(|p| p.runs()) {
+            let (s, e) = (run.source().start, run.source().end);
+            assert!(e <= at || s >= at + 3, "run {s}..{e} crosses the forced line break at {at}");
+            for g in run.glyphs() {
+                assert!(g.cluster.end <= at || g.cluster.start >= at + 3, "glyph cluster crosses {at}");
+            }
+        }
+    }
+    let shaped: u64 = result
+        .coverage()
+        .iter()
+        .filter(|c| c.kind == CoverageKind::ShapedCluster)
+        .map(|c| c.source.end - c.source.start)
+        .sum();
+    assert_eq!(shaped, text.len() as u64 - 3 * breaks.len() as u64, "every other character is shaped");
+}
+
+/// (text, byte of every U+2028): inside a word, at the start, at the end, two in a row.
+fn forced_line_break_cases() -> [(&'static str, Vec<u64>); 4] {
+    [
+        ("ab\u{2028}cd", vec![2]),
+        ("\u{2028}ab", vec![0]),
+        ("ab\u{2028}", vec![2]),
+        ("a\u{2028}\u{2028}b", vec![1, 4]),
+    ]
+}
+
+#[test]
+fn mt_31008_forced_line_break_is_a_line_break_outside_shaping() {
+    bounded_case("mt_31008_forced_line_break_is_a_line_break_outside_shaping", || {
+        assert!(!ends_paragraph('\u{2028}'));
+        let fonts = Fonts::load();
+        for (text, breaks) in forced_line_break_cases() {
+            let case = paragraph_case(text, json!([[0, text.len()]]));
+            with_case(&fonts, &case, None, |request, ports, _, _, _| {
+                let result = TextEngine
+                    .shaped_runs(request, ports)
+                    .unwrap_or_else(|r| panic!("{text:?} refused {:?}", r.error));
+                assert_forced_line_break(&result, text, &breaks);
+            });
+        }
+        // A paragraph holding only the forced line break composes with no glyph at all.
+        let case = paragraph_case("\u{2028}", json!([[0, 3]]));
+        with_case(&fonts, &case, None, |request, ports, _, _, _| {
+            let result = TextEngine.shaped_runs(request, ports).unwrap_or_else(|r| panic!("{:?}", r.error));
+            assert_eq!(result.disposition(), TextDisposition::ControlOnly);
+            assert_forced_line_break(&result, "\u{2028}", &[0]);
+        });
+    });
+}
+
+#[cfg(feature = "harfrust")]
+#[test]
+fn mt_31008_forced_line_break_is_a_line_break_outside_shaping_harfrust() {
+    bounded_case("mt_31008_forced_line_break_is_a_line_break_outside_shaping_harfrust", || {
+        let fonts = Fonts::load();
+        for (text, breaks) in forced_line_break_cases() {
+            let case = paragraph_case(text, json!([[0, text.len()]]));
+            with_case(&fonts, &case, None, |request, ports, _, _, _| {
+                let result = TextEngine
+                    .shaped_runs_harfrust(request, ports)
+                    .unwrap_or_else(|r| panic!("{text:?} refused {:?}", r.error));
+                assert_forced_line_break(&result, text, &breaks);
+            });
+        }
+    });
+}

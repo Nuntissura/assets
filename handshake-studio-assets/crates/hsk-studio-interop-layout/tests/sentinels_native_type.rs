@@ -617,15 +617,21 @@ fn mt_31008_a_forced_line_break_through_native_type() {
     };
     let mut native = Native::new(&font);
     let out = compose_with_sentinels(&req, &TypesetOptions::default(), &StudioLayoutFlowRecords::new(id("SDOC", 1)), &mut native, &CancellationToken::default());
-    // Type's request validation accepts the one-paragraph partition; shaping may still refuse.
-    assert!(native.refusals.iter().all(|(_, e)| *e != ty::Error::InvalidBidi), "{:?}", native.refusals);
-    if let Some((_, e)) = native.refusals.first() {
-        println!(
-            "NOT_PROVEN: mt_31008_a_forced_line_break_through_native_type forced_line_break reason=type_refuses_u2028_{e:?} (Type shapes U+2028 as content; the Inter fixture maps no glyph to it; lane SMB-SENTINELS-NATIVE-1 notes)"
-        );
-        return;
-    }
+    // Type accepts the one-paragraph partition and keeps U+2028 outside shaping (lane
+    // SMB-R54-FOLLOWUPS-1 item 1, R54 F-R54-3): no refusal at all, no MissingGlyph.
+    assert_eq!(native.refusals, vec![], "Type composes the paragraph holding U+2028");
     let out = out.expect("composed through native Type");
-    assert_eq!(out.layout.frames[0].lines.len(), 2, "the forced line break ends the first line");
-    assert_eq!(line_at(&out, &doc, 4).0, 0);
+    assert_eq!(out.paragraphs.len(), 1, "one paragraph");
+    assert!(
+        out.paragraphs[0].glyphs.iter().all(|g| g.cluster.end <= 1 || g.cluster.start >= 4),
+        "U+2028 (bytes 1..4) has no glyph"
+    );
+    let lines = &out.layout.frames[0].lines;
+    assert_eq!(lines.len(), 2, "the forced line break ends the first line");
+    assert_eq!((lines[0].source.start, lines[0].source.end), (0, 1), "line 1 is 'H'");
+    assert_eq!((lines[1].source.start, lines[1].source.end), (4, 5), "line 2 is 'I'");
+    assert!(lines[1].baseline_y_pt > lines[0].baseline_y_pt, "'I' sits on the next line");
+    assert_eq!(line_at(&out, &doc, 4), (0, 0, "page-1".to_owned()));
+    assert_eq!(out.layout.overset, None);
+    assert_eq!(stored(&st), text, "the stored U+2028 is kept");
 }
