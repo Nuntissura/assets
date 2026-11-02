@@ -14,6 +14,10 @@ pub mod folio_report;
 pub mod harness;
 pub mod import;
 pub mod manual;
+/// Lane SMB-R53-FOLLOWUPS-1 (MT-31251): the Prism named-colour profile -> Folio colour-book join;
+/// Prism is reached only with an import feature that enables it.
+#[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster"))]
+pub mod named_colour_book;
 pub mod panel;
 
 pub use action::{ActionRecord, ActionSet, ActionStep, PlayMode, RecordedValue, RecordingReport};
