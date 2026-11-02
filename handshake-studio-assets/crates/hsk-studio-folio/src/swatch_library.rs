@@ -564,10 +564,20 @@ pub fn apply_swatch_group_command<T: StudioSwatchContainer>(palette: &T, ctx: &C
 }
 
 /// Restores the palette state an earlier command replaced (its `undo`), as one more attributed
-/// command (`swatch.group.undo`) at `revision`.
+/// command (`swatch.group.undo`) at `revision`. The state is caller-supplied, so before anything is
+/// restored it must hold at most `PALETTE_SWATCHES_MAX` swatches with unique `SSWT` ids, each passing
+/// the palette's swatch rules (`validate_swatch`), and the group rules (STUDIO-R53 F-R53-6; tests
+/// `swatch_group_undo.rs`); a refusal is `InvalidPalette` with the Folio code.
 pub fn undo_swatch_group_command<T: StudioSwatchContainer>(palette: &T, ctx: &CommandContext, revision: u64, state: &StudioSwatchPaletteState) -> std::result::Result<StudioSwatchGroupOutcome<T>, StudioSwatchGroupError> {
     let command = SWATCH_GROUP_COMMAND_IDS[6];
     admit(palette, ctx, revision, command)?;
+    if state.swatches.len() > PALETTE_SWATCHES_MAX {
+        return Err(StudioSwatchGroupError::InvalidPalette(Code::BudgetExceeded));
+    }
+    for s in &state.swatches {
+        let t = s.swatch_id.as_str();
+        super::id(t, "SSWT", "swatches/swatch_id").and_then(|()| validate_swatch(s, t)).map_err(|d| StudioSwatchGroupError::InvalidPalette(d.code))?;
+    }
     let current: BTreeMap<&str, &Option<String>> = palette.swatch_list().iter().map(|s| (s.swatch_id.as_str(), &s.group_ref)).collect();
     let moved = state.swatches.iter().filter(|s| current.get(s.swatch_id.as_str()).is_some_and(|g| **g != s.group_ref)).count();
     let ids: BTreeSet<&str> = state.swatches.iter().map(|s| s.swatch_id.as_str()).collect();
