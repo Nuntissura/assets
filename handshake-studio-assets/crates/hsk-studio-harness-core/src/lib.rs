@@ -8,6 +8,8 @@
 pub mod action;
 pub mod batch;
 pub mod context;
+/// Lane SMB-R53-FOLLOWUPS-1 (F-R53-1): Folio's swatch-group and colour-book reports through observe.
+pub mod folio_report;
 #[doc(hidden)]
 pub mod harness;
 pub mod import;
