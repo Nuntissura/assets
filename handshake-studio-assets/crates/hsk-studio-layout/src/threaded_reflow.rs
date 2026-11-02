@@ -846,17 +846,22 @@ fn is_flush(text: &str, c: SourceSpan) -> bool {
     }
 }
 
-/// The break sentinel that ends paragraph `i`: the first character after its content (its last
-/// glyph, else its start) up to the next paragraph's start, when that is a break sentinel.
+/// The break sentinel that ends paragraph `i`: the last character after its content (its last
+/// glyph, else its start) up to the next paragraph's start, when that is a break sentinel. The
+/// terminator ends the paragraph's span, so it is the last character there; a marker without
+/// glyphs (index marker, unresolved marker) may stand between the content and the terminator
+/// (STUDIO-R53, SMB-LAYOUT-SENTINELS-1 remediation; found composing through native Type).
 fn paragraph_break(text: &str, paragraphs: &[ShapedParagraph], i: usize) -> Option<(u64, BreakTarget)> {
     let p = paragraphs.get(i)?;
     let content_end = p.glyphs.iter().map(|g| g.cluster.end).fold(p.source.start, u64::max);
     let next = paragraphs.get(i + 1).map_or(text.len() as u64, |n| n.source.start);
-    let c = text.get(usize::try_from(content_end).ok()?..usize::try_from(next).ok()?)?.chars().next()?;
+    let tail = text.get(usize::try_from(content_end).ok()?..usize::try_from(next).ok()?)?;
+    let (offset, c) = tail.char_indices().next_back()?;
     if !hsk_studio_type::is_break_sentinel(c) {
         return None;
     }
-    hsk_studio_type::catalog_member_for_scalar(c)?.break_target.map(|t| (content_end, t))
+    let at = content_end.checked_add(u64::try_from(offset).ok()?)?;
+    hsk_studio_type::catalog_member_for_scalar(c)?.break_target.map(|t| (at, t))
 }
 
 /// Where the text after a break continues (`sentinels` module), and how many thread frames were
