@@ -340,3 +340,48 @@ fn mt_31008_bidi_runs_per_paragraph_and_the_sentinel_is_not_content() {
         }
     });
 }
+
+// ---- Lane SMB-SENTINELS-NATIVE-1, item 1: one public paragraph-terminator rule (R53 F-R53-3) ----
+
+/// UAX #9 Bidi_Class B (Unicode 16.0 DerivedBidiClass.txt: U+000A, U+000D, U+001C..U+001E,
+/// U+0085, U+2029) plus the five break sentinels of the spec table: typed in, not read from the
+/// crate.
+const PARAGRAPH_TERMINATORS: [u32; 12] = [
+    0x000A, 0x000D, 0x001C, 0x001D, 0x001E, 0x0085, 0x2029, 0xFDD8, 0xFDD9, 0xFDDA, 0xFDDB, 0xFDDC,
+];
+
+#[test]
+fn mt_31008_public_ends_paragraph_names_exactly_the_terminators_type_partitions_at() {
+    let found: Vec<u32> = (0..=0x10FFFF_u32)
+        .filter(|cp| char::from_u32(*cp).is_some_and(ends_paragraph))
+        .collect();
+    assert_eq!(found, PARAGRAPH_TERMINATORS);
+    bounded_case(
+        "mt_31008_public_ends_paragraph_names_exactly_the_terminators_type_partitions_at",
+        || {
+            let fonts = Fonts::load();
+            // Request validation accepts the partition the public rule gives: a terminator ends
+            // the first paragraph ("ab" + terminator), "cd" is the second.
+            for cp in PARAGRAPH_TERMINATORS {
+                let text = text_with(cp);
+                let cut = 2 + ch(cp).len_utf8();
+                let case = paragraph_case(&text, json!([[0, cut], [cut, text.len()]]));
+                with_case(&fonts, &case, None, |request, ports, _, _, _| {
+                    assert_eq!(prepared(request, ports).paragraphs().len(), 2, "U+{cp:04X}");
+                });
+            }
+            // A character the rule does not name never ends a paragraph: one paragraph is not
+            // refused InvalidBidi (it may be refused for another reason, e.g. a marker's
+            // MissingGlyph).
+            for cp in [0x2028_u32, 0x000B, 0x000C, 0x001F, 0x0009, 0xFDD0, 0xFDDD, 0xFFFC] {
+                assert!(!ends_paragraph(ch(cp)), "U+{cp:04X}");
+                let text = text_with(cp);
+                let case = paragraph_case(&text, json!([[0, text.len()]]));
+                with_case(&fonts, &case, None, |request, ports, _, _, _| {
+                    let refused = TextEngine.shaped_runs(request, ports).err().map(|r| r.error);
+                    assert_ne!(refused, Some(Error::InvalidBidi), "U+{cp:04X}");
+                });
+            }
+        },
+    );
+}

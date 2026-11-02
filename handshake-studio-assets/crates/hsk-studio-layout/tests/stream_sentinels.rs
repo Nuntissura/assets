@@ -706,3 +706,27 @@ fn mt_31008_a_break_after_a_marker_without_glyphs_still_directs_the_flow() {
     assert_eq!(out.layout.overset, Some(SourceSpan { start: 5, end: 10 }));
     assert_eq!(out.breaks, vec![BreakOutcome { story_byte: 5, target: T::Frame, result: BreakResult::Overset(BreakOverset::NoTarget) }]);
 }
+
+// ---- Lane SMB-SENTINELS-NATIVE-1, item 1: one paragraph-terminator rule (R53 F-R53-3) ----
+
+#[test]
+fn mt_31005_layout_partitions_with_types_public_terminator_rule() {
+    // Layout and Type agree for every Unicode scalar value, so a story partitioned by layout is
+    // the partition Type's request validation requires.
+    for c in (0..=0x10FFFF_u32).filter_map(char::from_u32) {
+        assert_eq!(ends_paragraph(c), hsk_studio_type::ends_paragraph(c), "U+{:04X}", c as u32);
+    }
+    // Every code point the rule names (UAX #9 class B and the five break sentinels, typed in
+    // above) ends a paragraph in both crates, terminator included.
+    for c in TERMINATORS {
+        assert!(hsk_studio_type::ends_paragraph(c), "U+{:04X}", c as u32);
+        let text = format!("ab{c}cd");
+        let cut = (2 + c.len_utf8()) as u64;
+        assert_eq!(
+            paragraph_partition(&text),
+            vec![SourceSpan { start: 0, end: cut }, SourceSpan { start: cut, end: text.len() as u64 }],
+            "U+{:04X}",
+            c as u32
+        );
+    }
+}
