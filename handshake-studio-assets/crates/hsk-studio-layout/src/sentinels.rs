@@ -5,7 +5,8 @@
 //!
 //! - Paragraph partition ([`paragraph_partition`], [`ends_paragraph`]): a paragraph ends after every
 //!   character of UAX #9 bidi class B (U+000A, U+000D, U+001C..U+001E, U+0085, U+2029) and after
-//!   every break sentinel U+FDD8..U+FDDC, terminator included, as Type's request validation does;
+//!   every break sentinel U+FDD8..U+FDDC, terminator included, as Type's request validation does
+//!   ([`ends_paragraph`] is Type's public rule, lane SMB-SENTINELS-NATIVE-1; no second copy);
 //!   `replace_story_text` re-splits edited paragraphs the same way.
 //! - Markers ([`compose_with_sentinels`]): each marker sentinel U+FDD0..U+FDD7 is replaced, for
 //!   shaping only, by the text it resolves to where its line lands. The stored story keeps the one
@@ -57,11 +58,9 @@ pub const MAX_MARKER_PASSES: usize = 4;
 /// The flush-space sentinel (SD-29 U+FDDD).
 pub const FLUSH_SPACE: char = '\u{FDDD}';
 
-/// True for a character that ends its paragraph (module docs).
-pub fn ends_paragraph(c: char) -> bool {
-    ty::is_break_sentinel(c)
-        || matches!(c, '\u{000A}' | '\u{000D}' | '\u{001C}'..='\u{001E}' | '\u{0085}' | '\u{2029}')
-}
+/// True for a character that ends its paragraph: Type's own rule, `hsk_studio_type::ends_paragraph`
+/// (module docs), so layout's partition is the one Type's request validation requires.
+pub use hsk_studio_type::ends_paragraph;
 
 /// The paragraph partition of `text` (module docs): consecutive spans, each ending after its
 /// terminator; text after the last terminator is the last paragraph; empty text has none.

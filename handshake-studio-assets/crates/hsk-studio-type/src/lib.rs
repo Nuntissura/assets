@@ -41,15 +41,28 @@ pub use validate::{COMPOSITION_VERSION, COMPOSITION_VERSION_V1};
 /// U+001C..U+001E, U+0085, U+2029) or one of the five STU-TYP-207 break sentinels U+FDD8..U+FDDC
 /// (SD-29), which end their paragraph exactly as U+2029 does. Hosts (layout) partition with this
 /// rule so Type accepts their paragraphs.
-pub fn ends_paragraph(_c: char) -> bool {
-    false
+pub fn ends_paragraph(c: char) -> bool {
+    terminator::ends_paragraph(c)
 }
 
 /// [`ends_paragraph`] outside a request: the engine's own rule (`validate::ends_paragraph`) under
 /// a fixed epoch, a token that is never cancelled, no admission and a work budget above the
-/// vendored table's binary-search depth.
+/// vendored table's binary-search depth (about 1 500 rows, at most 12 steps). Neither the context
+/// nor the lookup can then fail; `public_ends_paragraph_is_the_metered_rule_for_every_scalar`
+/// checks the answer against the metered rule for every Unicode scalar value.
 mod terminator {
     use crate::{AdmissionPort, AllocationSnapshot, EpochPort, Error, Generation, Reservation};
+    use hsk_studio_accord::CancellationToken;
+    use std::sync::OnceLock;
+
+    const WORK_UNITS: u64 = 64;
+    pub(crate) fn ends_paragraph(c: char) -> bool {
+        static NEVER_CANCELLED: OnceLock<CancellationToken> = OnceLock::new();
+        let cancel = NEVER_CANCELLED.get_or_init(CancellationToken::default);
+        crate::provider::Context::new(cancel, &Unmetered, 0, &Unmetered, WORK_UNITS, 1, 1)
+            .and_then(|ctx| crate::validate::ends_paragraph(c, &ctx))
+            .unwrap_or(false)
+    }
     pub(crate) struct Unmetered;
     impl EpochPort for Unmetered {
         fn current_epoch(&self) -> Result<u64, Error> {
