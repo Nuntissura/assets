@@ -12,7 +12,7 @@ use super::EditingModePlatform::{All, Mac, Win};
 use super::frame_rates::*;
 
 /// The 391 complete rows of the [STU-VID-016a] table, in spec order.
-pub(super) const SHIPPED_PRESET_ROWS: [R; 391] = [
+pub(super) static SHIPPED_PRESET_ROWS: [R; 391] = [
     R("23.98p 4 mono discrete", "Broadcast", "broadcast-23-98p-4-mono-discrete", 1920, 1080, 1, 1, TPF_23_976, P, Some(T::Timecode23976), 48000, MC, 3, B709),
     R("23.98p 6 mono discrete", "Broadcast", "broadcast-23-98p-6-mono-discrete", 1920, 1080, 1, 1, TPF_23_976, P, Some(T::Timecode23976), 48000, MC, 3, B709),
     R("23.98p 8 mono discrete", "Broadcast", "broadcast-23-98p-8-mono-discrete", 1920, 1080, 1, 1, TPF_23_976, P, Some(T::Timecode23976), 48000, MC, 3, B709),
@@ -414,7 +414,7 @@ pub const SHIPPED_PRESET_EXCLUSIONS: [(&str, &str); 1] = [
 
 /// The 53 rows of the [STU-VID-017a] table, in spec order (slot counts: frame rate, frame
 /// rect, pixel aspect, field type; column sums 188, 52, 60, 59).
-pub(super) const SHIPPED_MODE_ROWS: [M; 53] = [
+pub(super) static SHIPPED_MODE_ROWS: [M; 53] = [
     M("custom", Some("Custom"), Some("9678AF98-A7B7-4bdb-B477-7AC9C8DF4A4E"), &[All], [12, 1, 1, 0]),
     M("quicktime_dv_ntsc", Some("QuickTime DV NTSC"), Some("0F3C7317-CF5D-44e8-8B19-1BC6D7B05CE6"), &[Mac, Win], [1, 1, 2, 3]),
     M("quicktime_dv_pal", Some("QuickTime DV PAL"), Some("E2E6D6B0-7E3D-4455-BF93-0D9C3C791E4E"), &[Mac, Win], [1, 1, 2, 3]),
