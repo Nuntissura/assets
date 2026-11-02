@@ -730,3 +730,47 @@ fn mt_31005_layout_partitions_with_types_public_terminator_rule() {
         );
     }
 }
+
+// ---- Lane SMB-R54-FOLLOWUPS-1, item 2 (R54 F-R54-6): a glyph-less marker at a line start ----
+
+#[test]
+fn mt_31007_a_glyphless_marker_at_a_line_start_belongs_to_that_line() {
+    // A marker shaped as nothing that sits where the line breaks (after the break opportunity, so
+    // it is glued to the next word: UAX #14 on the stored story) belongs to the NEXT line, and to
+    // the page of that line or to the overset, never to the line before (R54 validator probe
+    // PROBE-R54-SENT-1 r54_marker_at_overset_line_start). Toy shaper: 6 pt per glyph, 180 pt
+    // lines, so "a" x 28 + " " (174 pt) fill line 1 and "bbbbbb" goes to line 2. Studio reading;
+    // InDesign placement UNVERIFIED (D5).
+    use UnresolvedMarker as U;
+    let at_break = format!("{} {INDEX}bbbbbb", "a".repeat(28));
+    // The probe case: one one-line frame, line 2 overset from "bbbbbb" (byte 32); the marker at
+    // byte 29 is in the overset text with it.
+    let out = breaks_case(&[0], 12.0, 1, &[], &at_break);
+    assert_eq!(out.layout.overset, Some(SourceSpan { start: 32, end: 38 }));
+    assert_eq!(out.markers, vec![outcome(29, MarkerKind::Index, None, unresolved(U::RuleUnstated))]);
+    // Two frames on page-1 and page-2: the marker is on page-2 with "bbbbbb".
+    let out = breaks_case(&[0, 1], 12.0, 1, &[], &at_break);
+    assert_eq!(line_at(&out.layout, 32), (1, 0, 10.0));
+    assert_eq!(out.markers, vec![outcome(29, MarkerKind::Index, Some("page-2"), unresolved(U::RuleUnstated))]);
+    // After a hyphen break (UAX #14 allows a break after "-" before the marker): page-2 again.
+    let after_hyphen = format!("{}-{INDEX}bbbbbb", "a".repeat(26));
+    let out = breaks_case(&[0, 1], 12.0, 1, &[], &after_hyphen);
+    assert_eq!(line_at(&out.layout, 30), (1, 0, 10.0));
+    assert_eq!(out.markers, vec![outcome(27, MarkerKind::Index, Some("page-2"), unresolved(U::RuleUnstated))]);
+    // Control: a marker glued to the word before the space stays on line 1 (page-1), placed or
+    // overset alike.
+    let before_space = format!("{}{INDEX} bbbbbb", "a".repeat(27));
+    let out = breaks_case(&[0, 1], 12.0, 1, &[], &before_space);
+    assert_eq!(line_at(&out.layout, 31), (1, 0, 10.0));
+    assert_eq!(out.markers, vec![outcome(27, MarkerKind::Index, Some("page-1"), unresolved(U::RuleUnstated))]);
+    let out = breaks_case(&[0], 12.0, 1, &[], &before_space);
+    assert_eq!(out.layout.overset, Some(SourceSpan { start: 31, end: 37 }));
+    assert_eq!(out.markers, vec![outcome(27, MarkerKind::Index, Some("page-1"), unresolved(U::RuleUnstated))]);
+    // A current-page-number marker at the break resolves for page-2 in the first placement: pass
+    // 1 (unresolved, no glyph) already puts it on page-2, pass 2 confirms "2".
+    let current = format!("{} {CUR}bbbbbb", "a".repeat(28));
+    let out = breaks_case(&[0, 1], 12.0, 1, &[], &current);
+    assert_eq!(out.markers, vec![outcome(29, MarkerKind::CurrentPageNumber, Some("page-2"), resolved("2"))]);
+    assert_eq!(out.passes, 2);
+    assert_eq!(line_at(&out.layout, 29), (1, 0, 10.0));
+}
