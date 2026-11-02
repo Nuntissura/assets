@@ -744,10 +744,10 @@ fn mt_31007_a_glyphless_marker_at_a_line_start_belongs_to_that_line() {
     use UnresolvedMarker as U;
     let at_break = format!("{} {INDEX}bbbbbb", "a".repeat(28));
     // The probe case: one one-line frame, line 2 overset from "bbbbbb" (byte 32); the marker at
-    // byte 29 is in the overset text with it.
+    // byte 29 is in the overset text with it (unplaced, as every overset marker).
     let out = breaks_case(&[0], 12.0, 1, &[], &at_break);
     assert_eq!(out.layout.overset, Some(SourceSpan { start: 32, end: 38 }));
-    assert_eq!(out.markers, vec![outcome(29, MarkerKind::Index, None, unresolved(U::RuleUnstated))]);
+    assert_eq!(out.markers, vec![outcome(29, MarkerKind::Index, None, unresolved(U::NotPlaced))]);
     // Two frames on page-1 and page-2: the marker is on page-2 with "bbbbbb".
     let out = breaks_case(&[0, 1], 12.0, 1, &[], &at_break);
     assert_eq!(line_at(&out.layout, 32), (1, 0, 10.0));
