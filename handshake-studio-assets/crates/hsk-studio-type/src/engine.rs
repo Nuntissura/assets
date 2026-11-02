@@ -175,12 +175,13 @@ impl TextEngine {
                         if start >= end {
                             continue;
                         }
-                        // Keep each original paragraph separator outside the shaping buffer.
+                        // Keep each original paragraph separator and each forced line break
+                        // (U+2028, ends the line, not the paragraph) outside the shaping buffer.
                         let mut cursor = start;
                         for (offset, ch) in request.text_utf8[start..end].char_indices() {
                             ctx.step()?;
                             let at = start + offset;
-                            if crate::validate::ends_paragraph(ch, &ctx)? {
+                            if let Some(kind) = crate::validate::outside_shaping(ch, &ctx)? {
                                 if cursor < at {
                                     pieces.push((*index, cursor..at), &ctx)?;
                                 }
@@ -190,7 +191,7 @@ impl TextEngine {
                                             start: at as u64,
                                             end: (at + ch.len_utf8()) as u64,
                                         },
-                                        kind: CoverageKind::ParagraphSeparator,
+                                        kind,
                                         glyphs: None,
                                     },
                                     &ctx,

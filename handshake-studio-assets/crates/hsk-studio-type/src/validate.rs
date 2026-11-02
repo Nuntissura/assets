@@ -291,6 +291,22 @@ pub(crate) fn ends_paragraph(c: char, ctx: &Context<'_>) -> ProviderResult<bool>
     Ok(crate::catalog::is_break_sentinel(c)
         || crate::provider::bidi::class(c, ctx)? == crate::provider::bidi::BidiClass::B)
 }
+/// The forced line break (STU-TYP-207 Break characters, stored as U+2028 per SD-29).
+pub(crate) const FORCED_LINE_BREAK: char = '\u{2028}';
+/// How the shaping engine keeps `c` outside the shaping buffer, if it does: a paragraph
+/// terminator ([`ends_paragraph`]) is a `ParagraphSeparator`; the forced line break U+2028 ends
+/// the line, not the paragraph (UAX #14 class BK; UAX #9 class WS, so bidi keeps the paragraph
+/// whole) and is a glyph-less `NonrenderingControl` that is never shaped and ends the shaping
+/// context. Every other character is shaped (`None`).
+pub(crate) fn outside_shaping(c: char, ctx: &Context<'_>) -> ProviderResult<Option<CoverageKind>> {
+    Ok(if ends_paragraph(c, ctx)? {
+        Some(CoverageKind::ParagraphSeparator)
+    } else if c == FORCED_LINE_BREAK {
+        Some(CoverageKind::NonrenderingControl)
+    } else {
+        None
+    })
+}
 fn check_paragraph(
     request: &Request<'_>,
     index: usize,
