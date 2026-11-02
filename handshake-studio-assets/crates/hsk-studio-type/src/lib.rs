@@ -57,6 +57,16 @@ mod terminator {
 
     const WORK_UNITS: u64 = 64;
     pub(crate) fn ends_paragraph(c: char) -> bool {
+        metered(c)
+    }
+    #[cfg(test)]
+    thread_local! {
+        /// Calls of the metered rule from the public helper on this thread (F-R54-4 measurement).
+        pub(crate) static METERED_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    fn metered(c: char) -> bool {
+        #[cfg(test)]
+        METERED_CALLS.with(|n| n.set(n.get().saturating_add(1)));
         static NEVER_CANCELLED: OnceLock<CancellationToken> = OnceLock::new();
         let cancel = NEVER_CANCELLED.get_or_init(CancellationToken::default);
         crate::provider::Context::new(cancel, &Unmetered, 0, &Unmetered, WORK_UNITS, 1, 1)
@@ -104,6 +114,59 @@ mod terminator {
                 terminators += u32::from(metered);
             }
             assert_eq!(terminators, 12, "seven class-B characters and five break sentinels");
+        }
+
+        /// A long mixed story (Latin, Arabic, CJK, U+2028, every terminator, the whole sentinel
+        /// block): 64 Ki scalars, deterministic.
+        fn long_story() -> Vec<char> {
+            let unit: Vec<char> = "The quick brown fox jumps over the lazy dog; \u{0627}\u{0644}\u{0639}\u{0631}\u{0628}\u{064A}\u{0629} \u{6F22}\u{5B57} \u{2028}"
+                .chars()
+                .chain(['\n', '\r', '\u{1C}', '\u{1D}', '\u{1E}', '\u{85}', '\u{2029}'])
+                .chain((0xFDD0..=0xFDEF).filter_map(char::from_u32))
+                .collect();
+            unit.iter().copied().cycle().take(65_536).collect()
+        }
+
+        /// F-R54-4 measurement (counted operations; wall time printed, never asserted): the
+        /// metered rule builds one provider Context and binary-searches the vendored bidi table
+        /// per scalar, each search step polling the cancellation token and the epoch port. The
+        /// public helper that layout calls per character (paragraph_partition,
+        /// replace_story_text) answers every scalar of a long story without that lookup, with the
+        /// same answers.
+        #[test]
+        fn public_ends_paragraph_answers_a_long_story_without_the_metered_lookup() {
+            let story = long_story();
+            let cancel = CancellationToken::default();
+            let (mut units, mut max_units, mut terminators) = (0u64, 0u64, 0u64);
+            let started = std::time::Instant::now();
+            for &c in &story {
+                let ctx = crate::provider::Context::new(&cancel, &Unmetered, 0, &Unmetered, u64::MAX, 1, 1).unwrap();
+                terminators += u64::from(crate::validate::ends_paragraph(c, &ctx).unwrap());
+                units += ctx.work();
+                max_units = max_units.max(ctx.work());
+            }
+            let metered_ns = started.elapsed().as_nanos();
+            let before = super::METERED_CALLS.with(std::cell::Cell::get);
+            let started = std::time::Instant::now();
+            let public = story.iter().filter(|c| crate::ends_paragraph(**c)).count() as u64;
+            let public_ns = started.elapsed().as_nanos();
+            let calls = super::METERED_CALLS.with(std::cell::Cell::get) - before;
+            println!(
+                "MEASURE F-R54-4 ends_paragraph scalars={} terminators={} metered: contexts={} search_steps={} steps_per_scalar={:.2} max_steps={} epoch_polls={} wall_ns={} | public: metered_calls={} wall_ns={} (wall time informative only)",
+                story.len(),
+                terminators,
+                story.len(),
+                units,
+                units as f64 / story.len() as f64,
+                max_units,
+                units + story.len() as u64,
+                metered_ns,
+                calls,
+                public_ns
+            );
+            assert_eq!(public, terminators, "same answers on the story");
+            assert!(units >= story.len() as u64, "the metered rule spends at least one search step per scalar");
+            assert_eq!(calls, 0, "the public helper answered {calls} scalars through the metered lookup");
         }
     }
 }
