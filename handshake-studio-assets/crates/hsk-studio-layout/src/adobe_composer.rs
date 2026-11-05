@@ -33,6 +33,12 @@
 //! the past-range term); with both ranges zero the fitted word-only costs are unchanged bit for bit
 //! (lane SMB-TYPE-FF-LIGATURE: ID-02 para ls-3, gs95 and ls-5 gs90 reproduced; UNVERIFIED beyond).
 //!
+//! Paragraph composer bounds (lane SMB-LAYOUT-COMPOSER-DEPTH-1, finding F-R56-1): the evaluation holds
+//! no call-stack frame per line (an explicit stack, `Para::best`), works at most [`para_work_budget`]
+//! steps and holds at most [`PARA_STATE_BUDGET`] states, past which it answers `BudgetExceeded`;
+//! cancellation is read every 256 steps (tests/composer_depth.rs). When the ladder limit or the costs
+//! leave no path at all, `paragraph` documents what it answers.
+//!
 //! Justification (`justify_line`): InDesign always fills a justified line to the measure: inside the
 //! limits word spacing first, then letter spacing; past them the remainder is shared in proportion to
 //! the ranges (ID-01: spaces at 42 % .. 2440 % of natural); a single-word line is letter-spaced; a
@@ -445,7 +451,71 @@ struct ParaLine {
     end: bool,
 }
 
-type Memo = std::collections::BTreeMap<(usize, usize, usize, usize), (f64, Option<ParaLine>)>;
+/// The steps one paragraph may take: one per item a scan reads, one per state opened, linear in its
+/// items up to a ceiling. Ordinary text takes steps in proportion to its items (a scan stops at the
+/// line's end); a paragraph whose scans never stop (no glyph advance, a measure wider than the text)
+/// takes their square. Declared from the readings in the lane notes: ordinary text up to
+/// `Limits::max_glyphs` composes inside it in both windows, and the ceiling bounds the time to refuse.
+pub(crate) fn para_work_budget(items: usize) -> u32 {
+    const FLOOR: u32 = 1 << 24;
+    const PER_ITEM: u32 = 1 << 10;
+    const CEILING: u32 = 1 << 28;
+    u32::try_from(items).unwrap_or(u32::MAX).saturating_mul(PER_ITEM).saturating_add(FLOOR).min(CEILING)
+}
+/// The states one paragraph may hold at once, memoised and open: the memory bound (about 130 bytes a
+/// state, so about 270 MiB at the budget).
+pub(crate) const PARA_STATE_BUDGET: usize = 1 << 21;
+/// `d` of a paragraph composed over all its lines (`ragged_depth` 0). Every line advances its start,
+/// so a paragraph of n items has fewer than n lines and a count from n + 1 could never reach 0: the
+/// value of a state does not depend on it, and it stays out of the memo key.
+const WHOLE_PARAGRAPH: usize = usize::MAX;
+
+/// A state: line start, line class (`Para::flat_from`), hyphen run, lines left in the window.
+type State = (usize, usize, usize, usize);
+type Memo = std::collections::BTreeMap<State, (f64, Option<ParaLine>)>;
+
+/// One step of the composer's budget.
+fn para_step(budget: u32, cancel: &CancellationToken, work: &mut u32) -> Result<(), LayoutError> {
+    check(cancel, work)?;
+    if *work > budget {
+        return Err(LayoutError::BudgetExceeded);
+    }
+    Ok(())
+}
+
+/// How far the feasible lines of one line start have been read (`Para::next_line`).
+#[derive(Clone, Copy)]
+struct Scan {
+    next: usize,
+    emitted: bool,
+    done: bool,
+}
+
+/// One state under evaluation on the explicit stack.
+struct Open {
+    state: State,
+    scan: Scan,
+    /// The line whose rest of the paragraph is the state above this one.
+    waiting: Option<ParaLine>,
+    best: (f64, Option<ParaLine>),
+}
+impl Open {
+    fn new(state: State) -> Self {
+        Self {
+            state,
+            scan: Scan { next: state.0.saturating_add(1), emitted: false, done: false },
+            waiting: None,
+            best: (f64::INFINITY, None),
+        }
+    }
+    /// The first candidate in scan order whose total beats the best by more than the epsilon.
+    fn weigh(&mut self, c: ParaLine, rest: f64) {
+        let total = c.cost + rest;
+        if total < self.best.0 - 1e-12 {
+            self.best = (total, Some(c));
+        }
+    }
+}
 
 struct Para<'a> {
     items: &'a [Item],
@@ -463,6 +533,15 @@ struct Para<'a> {
     letter: Spacing,
     glyph: Spacing,
     reference_pt: f64,
+    /// From this line on every line has the width of this line (bit for bit), so the value of a state
+    /// does not depend on which of those lines it is: they share one class in the memo key. A
+    /// paragraph of n items has fewer than n lines, so reading `width` up to n covers every line.
+    flat_from: usize,
+    /// `para_work_budget` of this paragraph.
+    budget: u32,
+    /// Set once no path exists without it: a line start whose scan stops on a break the ladder limit
+    /// skips goes on to the next break the limit allows, for the emergency line (`next_line`).
+    rescue: bool,
 }
 
 impl Para<'_> {
@@ -523,25 +602,27 @@ impl Para<'_> {
         })
     }
 
-    /// Feasible lines from line start `s` (line number `line`); a hyphenation break past the ladder
-    /// limit is skipped.
-    fn lines_from(
+    /// The next feasible line from line start `s` (line number `line`), in item order; a hyphenation
+    /// break past the ladder limit is skipped.
+    fn next_line(
         &self,
         line: usize,
         s: usize,
         run: usize,
+        scan: &mut Scan,
         work: &mut u32,
         cancel: &CancellationToken,
-    ) -> Result<Vec<ParaLine>, LayoutError> {
-        let mut out: Vec<ParaLine> = Vec::new();
+    ) -> Result<Option<ParaLine>, LayoutError> {
         let wl = (self.width)(line);
         let floor = if self.justified {
             self.model.tight_floor.min(self.model.last_min)
         } else {
             1.0
         };
-        for i in s + 1..self.items.len() {
-            check(cancel, work)?;
+        while !scan.done && scan.next < self.items.len() {
+            let i = scan.next;
+            scan.next += 1;
+            para_step(self.budget, cancel, work)?;
             if !legal(self.items, i) {
                 continue;
             }
@@ -551,7 +632,9 @@ impl Para<'_> {
             let end = forced(&self.items[i]);
             // Past this point no later break can be compressed into the line.
             let hopeless = w - spaces * (1.0 - floor) > wl + EPS;
-            if !(flagged && self.limit > 0 && run >= self.limit) {
+            let skipped = flagged && self.limit > 0 && run >= self.limit;
+            let mut found = None;
+            if !skipped {
                 let last = end && i + 1 >= self.items.len();
                 if let Some(mut cost) = self.line_cost(line, s, i, last) {
                     if flagged {
@@ -566,15 +649,15 @@ impl Para<'_> {
                             cost += self.model.ladder * self.model.ladder_growth.powi(exp);
                         }
                     }
-                    out.push(ParaLine {
+                    found = Some(ParaLine {
                         item: i,
                         cost,
                         flagged,
                         end,
                     });
-                } else if out.is_empty() && (end || hopeless) {
+                } else if !scan.emitted && (end || hopeless) {
                     // Nothing fits at all: one emergency (overfull) line.
-                    out.push(ParaLine {
+                    found = Some(ParaLine {
                         item: i,
                         cost: EMERGENCY,
                         flagged,
@@ -582,59 +665,106 @@ impl Para<'_> {
                     });
                 }
             }
-            if end || hopeless {
-                break;
+            // Only under `rescue`: a skipped break cannot carry the emergency line, so the scan goes
+            // on. It ends: the paragraph's last break is forced, and a forced break is never flagged.
+            let goes_on = self.rescue && skipped && !scan.emitted;
+            if (end || hopeless) && !goes_on {
+                scan.done = true;
+            }
+            if found.is_some() {
+                scan.emitted = true;
+                return Ok(found);
             }
         }
-        Ok(out)
+        Ok(None)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// The state after line `c` of `state`.
+    fn after(&self, state: State, c: &ParaLine) -> State {
+        let (_, line, run, d) = state;
+        (
+            line_start(self.items, c.item),
+            (line + 1).min(self.flat_from),
+            if c.flagged { (run + 1).min(MAX_RUN) } else { 0 },
+            if d == WHOLE_PARAGRAPH { d } else { d.saturating_sub(1) },
+        )
+    }
+
+    /// A state past the window or the paragraph: its value is 0 and nothing is evaluated.
+    fn is_terminal(&self, state: State) -> bool {
+        state.3 == 0 || state.0 >= self.items.len()
+    }
+
+    /// Minimum total cost from `root` and its first line. The definition, per state: the best of
+    /// `line cost + value of the state after that line` over the feasible lines in `next_line`
+    /// order, keeping the first that beats the current best by more than the epsilon (`Open::weigh`);
+    /// 0 past the window or the paragraph. Evaluated depth first on a stack of its own, so a long
+    /// paragraph takes heap bounded by `PARA_STATE_BUDGET`, never call stack. A value is a function
+    /// of its state alone, so the order of evaluation cannot change a bit of it.
     fn best(
         &self,
-        s: usize,
-        line: usize,
-        run: usize,
-        d: usize,
+        root: State,
         memo: &mut Memo,
         work: &mut u32,
         cancel: &CancellationToken,
     ) -> Result<(f64, Option<ParaLine>), LayoutError> {
-        if d == 0 || s >= self.items.len() {
+        if self.is_terminal(root) {
             return Ok((0.0, None));
         }
-        let key = (s, line, run, d);
-        if let Some(v) = memo.get(&key) {
+        if let Some(v) = memo.get(&root) {
             return Ok(*v);
         }
-        let mut out = (f64::INFINITY, None);
-        for c in self.lines_from(line, s, run, work, cancel)? {
-            let rest = if c.end && c.item + 1 >= self.items.len() {
-                0.0
-            } else {
-                let nr = if c.flagged { (run + 1).min(MAX_RUN) } else { 0 };
-                self.best(
-                    line_start(self.items, c.item),
-                    line + 1,
-                    nr,
-                    d.saturating_sub(1),
-                    memo,
-                    work,
-                    cancel,
-                )?
-                .0
+        let mut stack = vec![Open::new(root)];
+        let mut answer = (f64::INFINITY, None);
+        while let Some(top) = stack.last_mut() {
+            let (s, line, run, _) = top.state;
+            let Some(c) = self.next_line(line, s, run, &mut top.scan, work, cancel)? else {
+                let (state, value) = (top.state, top.best);
+                stack.pop();
+                memo.insert(state, value);
+                if let Some(parent) = stack.last_mut()
+                    && let Some(c) = parent.waiting.take()
+                {
+                    parent.weigh(c, value.0);
+                }
+                answer = value;
+                continue;
             };
-            let total = c.cost + rest;
-            if total < out.0 - 1e-12 {
-                out = (total, Some(c));
+            if c.end && c.item + 1 >= self.items.len() {
+                top.weigh(c, 0.0);
+                continue;
+            }
+            let next = self.after(top.state, &c);
+            if self.is_terminal(next) {
+                top.weigh(c, 0.0);
+            } else if let Some(v) = memo.get(&next) {
+                top.weigh(c, v.0);
+            } else {
+                top.waiting = Some(c);
+                para_step(self.budget, cancel, work)?;
+                if memo.len().saturating_add(stack.len()) >= PARA_STATE_BUDGET {
+                    return Err(LayoutError::BudgetExceeded);
+                }
+                stack.push(Open::new(next));
             }
         }
-        memo.insert(key, out);
-        Ok(out)
+        Ok(answer)
     }
 }
 
 /// Adobe-parity paragraph composer: windowed minimum-cost composition (module docs).
+///
+/// No path from the first line (a ladder limit that skips every hyphen point in reach,
+/// tests/composer_depth.rs): the search runs again under `Para::rescue`, where the emergency rule
+/// reaches the next break the limit allows. A paragraph with a path from its first line never gets
+/// there. Under `rescue`, a line start with no comparable total (a line cost past the range of a
+/// float) is `InvalidGeometry`.
+///
+/// No path past the first line (a justified window can commit into a dead end its 7 lines did not
+/// show): composition stops there and the caller's last line takes the rest of the paragraph's
+/// glyphs, the excess reported as `hang_pt` and not marked overfull. That answer is kept as it was
+/// (tests/composer_depth_diff.rs `a_window_dead_end_keeps_the_answer_of_the_base_sha`), an open
+/// finding of the lane, because output does not change here.
 pub(crate) fn paragraph(
     items: &[Item],
     sums: &Sums,
@@ -645,7 +775,13 @@ pub(crate) fn paragraph(
 ) -> Result<Vec<LineBreak>, LayoutError> {
     let ws = ctx.justify.word_spacing;
     let model = &PARA_MODEL;
-    let p = Para {
+    let n = items.len();
+    let last_width = width(n).to_bits();
+    let mut flat_from = n;
+    while flat_from > 0 && width(flat_from - 1).to_bits() == last_width {
+        flat_from -= 1;
+    }
+    let mut p = Para {
         items,
         sums,
         width,
@@ -659,26 +795,33 @@ pub(crate) fn paragraph(
         letter: ctx.justify.letter_spacing,
         glyph: ctx.justify.glyph_scaling,
         reference_pt: ctx.justify.reference_space_pt,
+        flat_from,
+        budget: para_work_budget(n),
+        rescue: false,
     };
-    let n = items.len();
-    // The window is bounded by the line budget of the caller (items) so `d` never overflows.
     let window = if ctx.justified {
         model.depth
     } else {
         model.ragged_depth
     };
-    let depth = if window == 0 {
-        n.saturating_add(1)
-    } else {
-        window
-    };
+    let depth = if window == 0 { WHOLE_PARAGRAPH } else { window };
     let mut memo = Memo::new();
     let mut work = 0u32;
     let mut breaks = Vec::new();
     let (mut s, mut run, mut line) = (0usize, 0usize, 0usize);
     while s < n {
-        let (_, next) = p.best(s, line, run, depth, &mut memo, &mut work, cancel)?;
-        let Some(b) = next else { break };
+        let (_, next) = p.best((s, line.min(flat_from), run, depth), &mut memo, &mut work, cancel)?;
+        let Some(b) = next else {
+            if p.rescue {
+                return Err(LayoutError::InvalidGeometry);
+            }
+            if !breaks.is_empty() {
+                break;
+            }
+            p.rescue = true;
+            memo.clear();
+            continue;
+        };
         let wl = width(line);
         let (w, ..) = sums.measure(items, s, b.item);
         let spaces = sums.spaces(s, b.item);
@@ -696,6 +839,43 @@ pub(crate) fn paragraph(
         run = if b.flagged { (run + 1).min(MAX_RUN) } else { 0 };
         s = line_start(items, b.item);
         line += 1;
+        // A window never looks back: the states before this line start are done with.
+        if window > 0 {
+            memo = memo.split_off(&(s, 0, 0, 0));
+        }
     }
     Ok(breaks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paragraph::build_items;
+    use crate::{ShapedParagraph, SourceSpan, SpaceParams};
+
+    /// Cancellation stays honoured inside the pass, at any depth: the token is cancelled by the
+    /// composer's own width read of a line far down the first descent, and the next check of the
+    /// 256-step cadence answers it. Green on the base sha too (a pin, not a red proof).
+    #[test]
+    fn a_cancel_inside_the_pass_answers_canceled() {
+        for justified in [false, true] {
+            let text = "word ".repeat(2000);
+            let p = ShapedParagraph::from_fixed_advance(&text, SourceSpan { start: 0, end: text.len() as u64 }, 6.0, 12.0, 10.0).unwrap();
+            let items = build_items(&p, &text, SpaceParams::default(), None, true).unwrap();
+            let sums = Sums::new(&items);
+            let token = CancellationToken::default();
+            let reads = std::cell::Cell::new(0usize);
+            let width = |_: usize| {
+                reads.set(reads.get() + 1);
+                if reads.get() == items.len() + 2 + 500 {
+                    token.cancel();
+                }
+                180.0
+            };
+            let jp = JustifyParams::default();
+            let ctx = AdobeContext { params: AdobeParams::default(), justify: &jp, justified, justify_last: false };
+            let got = paragraph(&items, &sums, &width, &HyphenRules::NONE, &ctx, &token);
+            assert_eq!(got.unwrap_err(), LayoutError::Canceled, "justified {justified}");
+        }
+    }
 }

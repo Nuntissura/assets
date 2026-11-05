@@ -133,21 +133,21 @@ fn justified_3000_words_on_the_finding_stack() {
 #[test]
 fn wide_measure_past_the_budget_refuses_typed() {
     let shape = Shape { measure: 1e9, ..Shape::every_line(Alignment::Left) };
-    let got = on_thread(FINDING_STACK, move || compose(&plain(20_000), shape));
+    let got = on_thread(FINDING_STACK, move || compose(&plain(6000), shape));
     assert_eq!(got.unwrap_err(), LayoutError::BudgetExceeded);
 }
 /// The same class from font data alone, at an ordinary measure: glyphs of no advance.
 #[test]
 fn zero_advance_glyphs_past_the_budget_refuse_typed() {
     let shape = Shape { advance: 0.0, ..Shape::every_line(Alignment::Left) };
-    let got = on_thread(FINDING_STACK, move || compose(&plain(20_000), shape));
+    let got = on_thread(FINDING_STACK, move || compose(&plain(6000), shape));
     assert_eq!(got.unwrap_err(), LayoutError::BudgetExceeded);
 }
 /// Justified: the window bounds the depth, not this scan.
 #[test]
 fn justified_zero_advance_past_the_budget_refuses_typed() {
     let shape = Shape { advance: 0.0, ..Shape::every_line(Alignment::Justified) };
-    let got = on_thread(FINDING_STACK, move || compose(&plain(20_000), shape));
+    let got = on_thread(FINDING_STACK, move || compose(&plain(6000), shape));
     assert_eq!(got.unwrap_err(), LayoutError::BudgetExceeded);
 }
 
@@ -248,8 +248,11 @@ fn cjk_style_records(scope: StudioCompositionScope) -> StudioCjkCompositionRecor
     r
 }
 fn cjk_past_the_line_budget(scope: StudioCompositionScope) -> Result<usize, LayoutError> {
+    cjk_lines(scope, 105, 100)
+}
+fn cjk_lines(scope: StudioCompositionScope, lines: usize, max_lines: usize) -> Result<usize, LayoutError> {
     on_thread(FINDING_STACK, move || {
-        let text = "漢".repeat(1005 * 18);
+        let text = "漢".repeat(lines * 18);
         let text = text.as_str();
         let doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 180.0, 2_000_000.0), None, None)], [PageSide::LeftHand, PageSide::RightHand]);
         let (mut st, _) = story(1, text, &[(0, text.len() as u64)]);
@@ -266,14 +269,14 @@ fn cjk_past_the_line_budget(scope: StudioCompositionScope) -> Result<usize, Layo
             composer: Composer::FirstFit,
             space: SpaceParams::default(),
             expected_revision: doc.revision,
-            limits: Limits { max_lines: 1000, ..Limits::default() },
+            limits: Limits { max_lines, ..Limits::default() },
         };
         let flow = StudioLayoutFlowRecords::new(id("SDOC", 1));
         reflow_cjk(&req, &TypesetOptions::default(), &flow, &cjk_style_records(scope), &CancellationToken::default())
             .map(|r| r.proposal.frames.iter().map(|f| f.lines.len()).sum())
     })
 }
-/// CJK, both scopes: 1005 lines of 18 glyphs, past a `Limits::max_lines` of 1000.
+/// CJK, both scopes: 105 lines of 18 glyphs, past a `Limits::max_lines` of 100.
 #[test]
 fn cjk_single_line_past_the_line_budget() {
     assert_eq!(cjk_past_the_line_budget(StudioCompositionScope::SingleLine), Err(LayoutError::BudgetExceeded));
@@ -295,7 +298,7 @@ fn past_every_measure(text: &str) -> ShapedParagraph {
 #[test]
 fn knuth_plass_active_list_past_the_budget_refuses_typed() {
     let got = on_thread(FINDING_STACK, || {
-        let text = format!("{}X", plain(4000));
+        let text = format!("{}X", plain(1000));
         let doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 180.0, 2_000_000.0), None, None)], [PageSide::LeftHand, PageSide::RightHand]);
         let (st, _) = story(1, &text, &[(0, text.len() as u64)]);
         let paragraphs = vec![past_every_measure(&text)];
@@ -322,7 +325,7 @@ fn knuth_plass_active_list_past_the_budget_refuses_typed() {
 #[test]
 fn cjk_every_line_active_list_past_the_budget_refuses_typed() {
     let got = on_thread(FINDING_STACK, || {
-        let text = format!("{}X", "漢".repeat(4000));
+        let text = format!("{}X", "漢".repeat(1000));
         let mut para = past_every_measure(&text);
         para.latin_only = false;
         let c = CjkParagraph::new(StudioCompositionScope::EveryLine, KinsokuSet::shipped("hard_kinsoku"), MojikumiRules::base(StudioMojikumiBaseSet::Nothing));
@@ -355,14 +358,78 @@ fn timings() {
             println!("TIMING plain words={words} alignment={alignment:?} answer={got:?} elapsed={:?}", t.elapsed());
         }
     }
-    for (label, advance, measure, alignment) in [
-        ("wide_measure", 6.0, 1e9, Alignment::Left),
-        ("zero_advance", 0.0, 180.0, Alignment::Left),
-        ("zero_advance", 0.0, 180.0, Alignment::Justified),
-    ] {
-        let shape = Shape { advance, measure, ..Shape::every_line(alignment) };
+    // A paragraph at `Limits::max_glyphs` (5 glyphs a word, 1 048 575 glyphs), both windows, and the
+    // same with long hyphenated words; then the other breakers on the same text.
+    let timed = |label: &str, text: String, shape: Shape, hyphen: Option<u8>| {
         let t = std::time::Instant::now();
-        let got = on_thread(FINDING_STACK, move || compose(&plain(20_000), shape).map(|p| ranges(&p).len()));
-        println!("TIMING refusal {label} words=20000 alignment={alignment:?} answer={got:?} elapsed={:?}", t.elapsed());
+        let got = on_thread(FINDING_STACK, move || {
+            let doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, shape.measure, 2_000_000.0), None, None)], [PageSide::LeftHand, PageSide::RightHand]);
+            let (st, _) = story(1, &text, &[(0, text.len() as u64)]);
+            let paragraphs = shaped_one(&text, shape.advance);
+            let hyphenation = hyphen.map(|consecutive_limit| HyphenationParams { hyphen_advance_pt: 4.0, consecutive_limit, ..HyphenationParams::default() });
+            reflow_typeset(
+                &ReflowRequest { document: &doc, story: &st, resolved_text: None, paragraphs: &paragraphs, obstacles: &[], composer: shape.composer, space: SpaceParams::default(), expected_revision: doc.revision, limits: shape.limits },
+                &TypesetOptions { alignment: shape.alignment, justify: Some(JustifyParams::default()), hyphenation, ..Default::default() },
+                &CancellationToken::default(),
+            )
+            .map(|p| ranges(&p).len())
+        });
+        println!("TIMING {label} answer={got:?} elapsed={:?}", t.elapsed());
+    };
+    let long = |n: usize| "typographic ".repeat(n);
+    let kp = Composer::KnuthPlass(KnuthPlassParams::default());
+    for (alignment, name) in [(Alignment::Left, "ragged"), (Alignment::Justified, "justified")] {
+        let shape = Shape::every_line(alignment);
+        timed(&format!("max_glyphs plain {name}"), plain(209_715), shape, None);
+        for words in [1000usize, 2000] {
+            timed(&format!("knuth-plass hyphen limit 3 long words={words} {name}"), long(words), Shape { composer: kp, ..shape }, Some(3));
+        }
+        timed(&format!("max_glyphs hyphen limit 3 {name}"), long(87_381), shape, Some(3));
+        timed(&format!("max_glyphs hyphen no limit {name}"), long(87_381), shape, Some(0));
+        timed(&format!("knuth-plass 20000 words {name}"), plain(20_000), Shape { composer: kp, ..shape }, None);
+        timed(&format!("knuth-plass max_glyphs {name}"), plain(209_715), Shape { composer: kp, ..shape }, None);
+    }
+    for lines in [1000usize, 2000] {
+        let t = std::time::Instant::now();
+        let got = cjk_lines(StudioCompositionScope::EveryLine, lines, 100_000);
+        println!("TIMING cjk reflow every-line mojikumi lines={lines} answer={got:?} elapsed={:?}", t.elapsed());
+    }
+    for glyphs in [1890usize, 18_090, 180_900] {
+        let t = std::time::Instant::now();
+        let got = on_thread(FINDING_STACK, move || {
+            let text = "漢".repeat(glyphs);
+            let mut para = ShapedParagraph::from_fixed_advance(&text, SourceSpan { start: 0, end: text.len() as u64 }, 10.0, 12.0, 10.0).unwrap();
+            para.latin_only = false;
+            let c = CjkParagraph::new(StudioCompositionScope::EveryLine, KinsokuSet::shipped("hard_kinsoku"), MojikumiRules::base(StudioMojikumiBaseSet::Nothing));
+            compose_cjk_lines(&para, &text, &c, 10.0, 180.0, false, &CancellationToken::default()).map(|l| l.len())
+        });
+        println!("TIMING cjk every-line glyphs={glyphs} answer={got:?} elapsed={:?}", t.elapsed());
+    }
+    for words in [600usize, 1800, 5000, 6000, 20_000, 209_715] {
+        for (label, advance, measure, alignment) in [
+            ("wide_measure", 6.0, 1e9, Alignment::Left),
+            ("zero_advance", 0.0, 180.0, Alignment::Left),
+            ("zero_advance", 0.0, 180.0, Alignment::Justified),
+        ] {
+            let shape = Shape { advance, measure, ..Shape::every_line(alignment) };
+            let t = std::time::Instant::now();
+            let got = on_thread(FINDING_STACK, move || compose(&plain(words), shape).map(|p| ranges(&p).len()));
+            println!("TIMING hostile {label} words={words} alignment={alignment:?} answer={got:?} elapsed={:?}", t.elapsed());
+        }
+    }
+    let kp_hostile = |words: usize| {
+        let t = std::time::Instant::now();
+        let got = on_thread(FINDING_STACK, move || {
+            let text = format!("{}X", plain(words));
+            let doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 180.0, 2_000_000.0), None, None)], [PageSide::LeftHand, PageSide::RightHand]);
+            let (st, _) = story(1, &text, &[(0, text.len() as u64)]);
+            let paragraphs = vec![past_every_measure(&text)];
+            let req = ReflowRequest { document: &doc, story: &st, resolved_text: None, paragraphs: &paragraphs, obstacles: &[], composer: Composer::KnuthPlass(KnuthPlassParams::default()), space: SpaceParams::default(), expected_revision: doc.revision, limits: Limits::default() };
+            reflow_typeset(&req, &TypesetOptions::default(), &CancellationToken::default()).map(|p| ranges(&p).len())
+        });
+        println!("TIMING hostile knuth-plass active list words={words} answer={got:?} elapsed={:?}", t.elapsed());
+    };
+    for words in [1000usize, 4000, 20_000] {
+        kp_hostile(words);
     }
 }

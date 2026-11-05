@@ -9,6 +9,21 @@ use std::collections::BTreeMap;
 
 const EPS: f64 = 1e-9;
 const NONE: usize = usize::MAX;
+/// The active nodes one Knuth-Plass composition may visit, all passes together, and the nodes one
+/// pass may hold. Text that fills its lines visits in proportion to the square of its legal breaks
+/// (readings in the lane notes: 0.30 for CJK with mojikumi, 9.1 for long hyphenated words through
+/// the second pass); a pass that admits every break when no line ever overflows keeps one node per
+/// line count per break, so a run of zero-advance glyphs visits the cube and holds the square
+/// (tests/composer_depth.rs). Past either: `BudgetExceeded`.
+fn kp_work_budget(breaks: usize) -> u32 {
+    const FLOOR: u64 = 1 << 24;
+    const PER_BREAK_SQUARED: u64 = 16;
+    const CEILING: u64 = 1 << 30;
+    let b = u64::try_from(breaks).unwrap_or(u64::MAX);
+    let budget = b.saturating_mul(b).saturating_mul(PER_BREAK_SQUARED).saturating_add(FLOOR).min(CEILING);
+    u32::try_from(budget).unwrap_or(u32::MAX)
+}
+const KP_NODE_BUDGET: usize = 1 << 25;
 
 /// Knuth-Plass tuning. Defaults follow TeX: `\linepenalty` 10, `\adjdemerits` 10000, `\tolerance`
 /// 200 for the first pass and unlimited (badness is capped at 10000) for the second.
@@ -272,6 +287,8 @@ fn knuth_plass_pass(
     rules: &HyphenRules,
     tolerance: f64,
     allow_overfull: bool,
+    budget: u32,
+    work: &mut u32,
     cancel: &CancellationToken,
 ) -> Result<Option<Vec<LineBreak>>, LayoutError> {
     let mut arena = vec![Node {
@@ -286,12 +303,11 @@ fn knuth_plass_pass(
         run: 0,
     }];
     let mut active = vec![0usize];
-    let mut work = 0u32;
     for i in 0..items.len() {
         if !legal(items, i) {
             continue;
         }
-        check(cancel, &mut work)?;
+        check(cancel, work)?;
         let is_forced = forced(&items[i]);
         let penalty = if items[i].kind == Kind::Penalty {
             items[i].p
@@ -301,6 +317,10 @@ fn knuth_plass_pass(
         let mut candidates: BTreeMap<(usize, u8, u8), Candidate> = BTreeMap::new();
         let mut retained = Vec::with_capacity(active.len());
         for &ai in &active {
+            check(cancel, work)?;
+            if *work > budget {
+                return Err(LayoutError::BudgetExceeded);
+            }
             let s = if arena[ai].pos == NONE {
                 0
             } else {
@@ -386,6 +406,9 @@ fn knuth_plass_pass(
         }
         for ((line, class, run), c) in candidates {
             if c.total <= minimum[&line] + params.adjacent_fitness_demerits {
+                if arena.len() >= KP_NODE_BUDGET {
+                    return Err(LayoutError::BudgetExceeded);
+                }
                 arena.push(Node {
                     pos: i,
                     line,
@@ -436,12 +459,14 @@ pub(crate) fn knuth_plass(
     rules: &HyphenRules,
     cancel: &CancellationToken,
 ) -> Result<Vec<LineBreak>, LayoutError> {
+    let budget = kp_work_budget((0..items.len()).filter(|i| legal(items, *i)).count());
+    let mut work = 0u32;
     for (tolerance, overfull) in [
         (params.first_pass_tolerance, false),
         (params.second_pass_tolerance, false),
         (params.second_pass_tolerance, true),
     ] {
-        if let Some(b) = knuth_plass_pass(items, sums, width, params, rules, tolerance, overfull, cancel)? {
+        if let Some(b) = knuth_plass_pass(items, sums, width, params, rules, tolerance, overfull, budget, &mut work, cancel)? {
             return Ok(b);
         }
     }
