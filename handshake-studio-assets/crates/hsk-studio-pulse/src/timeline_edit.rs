@@ -927,7 +927,7 @@ fn slip(
     Ok(out)
 }
 
-fn apply_edit(
+pub(crate) fn apply_edit(
     seq: &StudioSequence,
     edit: &TimelineEdit,
     ctx: &EditContext,
@@ -1022,6 +1022,15 @@ fn diff(old: &StudioSequence, new: &StudioSequence) -> Vec<ClipChange> {
                             window: window(clip),
                             before: old_clip.retime,
                             after: clip.retime,
+                        });
+                    }
+                    if old_clip.link_group != clip.link_group {
+                        changes.push(ClipChange::Relink {
+                            clip_id: clip.clip_id.clone(),
+                            track_id: track.track_id.clone(),
+                            window: window(clip),
+                            group_before: old_clip.link_group.clone(),
+                            group_after: clip.link_group.clone(),
                         });
                     }
                 }

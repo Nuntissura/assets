@@ -838,6 +838,15 @@ fn alignment_lists_transitions_it_ends_and_undo_restores_them() {
         assert_eq!(m.proposal().dropped_transitions(), ["tr-1".to_owned()]);
         assert!(find(m.proposal().snapshot(), 1).transitions.tail.is_none());
         undo_restores(m.proposal(), &snap);
+        // A link written in place moves nothing, so it leaves transitions alone even with unknown
+        // source lengths, where a timing edit could not keep one; unlink likewise.
+        let merged = merge(&snap, &[1, 3], None, &NoSourceTimecodes).unwrap();
+        assert!(merged.proposal().dropped_transitions().is_empty());
+        assert!(find(merged.proposal().snapshot(), 1).transitions.tail.is_some());
+        let s = merged.proposal().snapshot();
+        let unlinked = with_ctx(None, |ctx| plan_unlink(s, SEQ, rev(s), &cid(1), ctx)).unwrap();
+        assert!(unlinked.dropped_transitions().is_empty());
+        assert!(find(unlinked.snapshot(), 1).transitions.tail.is_some());
     });
 }
 

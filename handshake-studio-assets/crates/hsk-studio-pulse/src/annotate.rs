@@ -236,7 +236,7 @@ pub(crate) fn split_records(first: &mut StudioClip, second: &mut StudioClip) {
 
 /// Timeline position of `[a, b)` source ticks of `clip` (clipped to its playing window); `None`
 /// when no part of it plays. Positions between ticks round down.
-fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks) -> Result<Option<TickRange>> {
+pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks) -> Result<Option<TickRange>> {
     let visible = if a == b {
         clip.source_in <= a && a < clip.source_out
     } else {
