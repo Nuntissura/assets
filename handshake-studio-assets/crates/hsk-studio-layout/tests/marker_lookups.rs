@@ -426,3 +426,151 @@ fn mt_30785_cross_reference_destinations_in_a_line_break_gap_resolve_their_page(
     let page = |s: &str| (XrefStatus::Stale, Some(s.to_string()));
     assert_eq!(got, vec![page("1"), page("2"), page("2"), page("2"), page("2"), (XrefStatus::Unplaced, None)]);
 }
+
+// ---- endnotes.rs place_sidenotes (the same footnotes.rs locate) ----
+
+#[test]
+fn mt_30781_sidenotes_of_references_in_a_line_break_gap_are_placed_beside_their_line() {
+    let f = fixture();
+    let host = NoteHost { story: &f.story, placement: Some(&f.placement), paragraphs: &f.paragraphs };
+    let bodies: Vec<(StudioTextStory, Vec<ShapedParagraph>)> = (0..3).map(|k| story(21 + k, "note", &[(0, 4)])).collect();
+    let records: Vec<StudioEndnote> = [A, E, F]
+        .iter()
+        .enumerate()
+        .map(|(k, &a)| StudioEndnote { note_id: format!("s{k}"), story_id: id("STXT", 1), anchor: a, note_story_id: id("STXT", 21 + k as u32) })
+        .collect();
+    let notes: Vec<NoteBody<'_>> =
+        records.iter().zip(&bodies).map(|(r, (s, p))| NoteBody { note: r, story: s, resolved_text: None, paragraphs: p }).collect();
+    let o = StudioSidenoteOptions {
+        width: len(30.0),
+        gap: len(5.0),
+        space_between: len(2.0),
+        side: SidenoteSide::Outside,
+        anchor: SidenoteAnchor::ReferenceLine,
+        numbering_style: StudioNumberStyle::Arabic,
+        start_at: 1,
+        restart: FootnoteRestart::DontRestart,
+    };
+    let p = place_sidenotes(&f.doc, &host, &notes, &o, &[], Composer::FirstFit, &TypesetOptions::default(), Limits::default(), &CancellationToken::default()).unwrap();
+    // Page-1 is left-hand (outside = left, x -5 - 30), line 1 top 0; page-2 right-hand (outside =
+    // right, x 180 + 5), line 4 top 34 - 10; the third reference is overset.
+    let rects: Vec<(String, [f64; 4])> =
+        p.notes.iter().map(|n| (n.frame_id.clone(), [n.rect.x0_pt, n.rect.y0_pt, n.rect.x1_pt, n.rect.y1_pt])).collect();
+    assert_eq!(rects, vec![(id("SLYR", 1), [-35.0, 0.0, -5.0, 12.0]), (id("SLYR", 2), [185.0, 24.0, 215.0, 36.0])]);
+    assert_eq!(p.overset, vec!["s2".to_string()]);
+}
+
+// ---- index_contract.rs (toc.rs page_of, toc_contract.rs on_hidden_layer, scope_end) ----
+
+fn index_options() -> IndexOptions {
+    IndexOptions {
+        title: "Index".into(),
+        title_style: None,
+        replace_existing_index: Some(false),
+        include_book_documents: Some(false),
+        include_hidden_entries: Some(false),
+        index_format: IndexFormat::Nested,
+        include_section_headings: false,
+        include_empty_index_sections: false,
+        level_1_style: None,
+        level_2_style: None,
+        level_3_style: None,
+        level_4_style: None,
+        section_heading_style: None,
+        page_number_style: None,
+        cross_reference_style: None,
+        cross_reference_topic_style: None,
+        following_topic_separator: ", ".into(),
+        between_entries_separator: "; ".into(),
+        page_range_separator: "-".into(),
+        between_page_numbers_separator: ", ".into(),
+        before_cross_reference_separator: ". ".into(),
+        entry_end_separator: String::new(),
+    }
+}
+fn index_request<'a>(
+    doc: &'a StudioDocument,
+    options: &'a IndexOptions,
+    marks: &'a [StudioIndexMark],
+    scopes: &'a [IndexMarkScope],
+    sources: &'a [TocSource<'a>],
+    pages: &'a [PageNumber],
+) -> IndexGenerateRequest<'a> {
+    IndexGenerateRequest {
+        document: doc,
+        options,
+        styles: None,
+        marks,
+        scopes,
+        sources,
+        pages,
+        header_set: None,
+        existing: None,
+        new_story_id: "STXT-019abcde-0000-7000-8000-000000000009",
+        book: None,
+        locked_stories: &[],
+        limits: IndexLimits::default(),
+    }
+}
+fn index_mark(at: u64, topic: &str) -> StudioIndexMark {
+    StudioIndexMark { mark_id: format!("m{topic}"), story_id: id("STXT", 1), at, topics: vec![topic.into()], sort_by: vec![], xref: None, page_range_scope: None }
+}
+
+#[test]
+fn mt_30778_the_index_contract_places_marks_in_a_line_break_gap() {
+    let f = fixture();
+    let source = [TocSource { story: &f.story, text: &f.text, placement: Some(&f.placement) }];
+    let marks: Vec<StudioIndexMark> = [(A, "a"), (B, "b"), (C, "c"), (D, "d"), (E, "e"), (F, "f")].iter().map(|&(at, t)| index_mark(at, t)).collect();
+    let o = index_options();
+    let cancel = CancellationToken::default();
+    let g = generate_index_contract(&ctx(), &index_request(&f.doc, &o, &marks, &[], &source, &f.pages), &cancel).unwrap();
+    assert_eq!(text_of(&g.story), "Index\na, 1\nb, 2\nc, 2\nd, 2\ne, 2");
+    assert_eq!((g.unplaced, g.omitted_hidden), (1, 0));
+    // Frame 2's layer hidden: the four marks on its lines are omitted as hidden, not as overset.
+    let mut hidden = f.doc.clone();
+    hidden.layers[1].visible = false;
+    let g = generate_index_contract(&ctx(), &index_request(&hidden, &o, &marks, &[], &source, &f.pages), &cancel).unwrap();
+    assert_eq!(text_of(&g.story), "Index\na, 1");
+    assert_eq!((g.unplaced, g.omitted_hidden), (1, 4));
+}
+
+#[test]
+fn mt_30779_a_page_range_ending_on_a_paragraph_terminator_ends_on_its_lines_page() {
+    // "aaaa\n" on page-1, "bbbb" on page-2. A range over the mark's own paragraph ends on its
+    // glyph-less terminator (byte 4): page-1, not the story's last placed page.
+    let text = "aaaa\nbbbb";
+    let spans = [(0, 5), (5, 9)];
+    let doc = document(
+        vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 180.0, 12.0), None, Some(2)), frame_layer(2, 1, spec(1, 10.0, 10.0, 180.0, 12.0), Some(1), None)],
+        [PageSide::LeftHand, PageSide::RightHand],
+    );
+    let pages = number_pages(&doc, &[]).unwrap();
+    let st = styled_story(1, text, &spans, &[None, None]);
+    let placement = run(&doc, &st, &shaped(text, &spans), &records()).unwrap();
+    let source = [TocSource { story: &st, text, placement: Some(&placement) }];
+    let marks = [index_mark(0, "x")];
+    let scopes = [IndexMarkScope { mark_id: "mx".into(), scope: PageRangeScope::ForNextParagraphs(1) }];
+    let o = index_options();
+    let g = generate_index_contract(&ctx(), &index_request(&doc, &o, &marks, &scopes, &source, &pages), &CancellationToken::default()).unwrap();
+    assert_eq!(text_of(&g.story), "Index\nx, 1");
+}
+
+// ---- running.rs occurrences (toc.rs page_of) ----
+
+#[test]
+fn a_running_header_finds_a_paragraph_opening_with_a_glyphless_marker_on_its_page() {
+    let f = fixture();
+    let source = [TocSource { story: &f.story, text: &f.text, placement: Some(&f.placement) }];
+    let vars = [StudioTextVariable {
+        variable_id: "h1".into(),
+        kind: StudioVariableKind::MatchParagraphStyle { style: id("STYS", 1), use_on_page: RunningUse::FirstOnPage, delete_end_punctuation: false, change_case: ChangeCase::None },
+    }];
+    let header = StudioRunningText {
+        running_id: "hdr".into(),
+        frame_ids: vec![id("SLYR", 2)],
+        parts: vec![StudioRunningPart::Variable { variable_id: "h1".into() }],
+    };
+    let got = resolve_running_texts(&f.doc, &vars, &[header], &[], &f.pages, &source, &VariableContext::default()).unwrap();
+    // On page-2 the first paragraph of the style is P1 (byte 37), not P0 from the page before.
+    assert!(got[0].text.ends_with("Chapter"), "{:?}", got[0].text);
+}
