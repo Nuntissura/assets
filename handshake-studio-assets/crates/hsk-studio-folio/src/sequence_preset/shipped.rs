@@ -1,7 +1,14 @@
-//! Shipped data of [STU-VID-016a] (sequence presets) and [STU-VID-017a] (editing modes), generated
+//! Shipped data of [STU-VID-016a] (sequence presets) and [STU-VID-017a] (editing modes). The rows come
 //! from the Master Spec v02.229 module `14-studio-creative-suite.md` tables (preset table at line
-//! 23103, editing-mode table at line 23518) by the lane SMB-PR-SEQUENCE-PRESETS-1 generator; one
-//! row per spec row, in spec order. Do not edit by hand: regenerate from the spec.
+//! 23103, editing-mode table at line 23518): one row per spec row, in spec order, except the preset
+//! row listed in `SHIPPED_PRESET_EXCLUSIONS`. The spec tables are the source, so a correction starts
+//! there; the rows were produced from them once by a lane script (SMB-PR-SEQUENCE-PRESETS-1) that is
+//! not kept in this repository, so a change here is made by hand to match the spec.
+//!
+//! What pins them, in tests/sequence_settings_records.rs: `shipped_preset_rows_are_the_016a_table_mt_33696`
+//! and `studiosequencepreset_is_a_named_complete_settings_record_mt_33695` (row count, groups, column
+//! distributions, the 37 frame sizes, spot rows); `editing_mode_table_rows_are_shipped_whole_mt_33700`
+//! (the slot-column sums and spot rows). They do not compare every row with the spec.
 use super::ShippedPresetRow as R;
 use super::ShippedModeRow as M;
 use super::ShippedCs::{B709, B2100, N};

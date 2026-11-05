@@ -619,3 +619,28 @@ fn editing_mode_lists_are_budgeted() {
     dup.push(one);
     assert_eq!(validate_editing_modes(&dup, Budget::default(), &token()).unwrap_err().code, Code::DuplicateIdentity);
 }
+
+/// R55 F-R55-6: a cancelled command and a budget overrun are not bad input, so a host emitting
+/// `code()` through Observe can tell them apart. Lane SMB-PR-SEQUENCE-SESSION-1.
+#[test]
+fn command_codes_tell_cancellation_and_budget_from_bad_input_r55_f6() {
+    let records = records_with(vec![entry("seq-a", settings())]);
+    let presets = StudioSequencePresetSet::new();
+    let set = StudioSequenceSettingsCommand::SetEditingMode { sequence_id: "seq-a".into(), mode_id: CUSTOM_EDITING_MODE.into() };
+    let run_with = |records: &StudioSequenceSettingsRecords, budget: Budget, token: &CancellationToken| {
+        apply_sequence_settings_command(&document(), records, &presets, &ctx(set.command_id(), 7), 7, &set, budget, token)
+    };
+    run_with(&records, Budget::default(), &token()).unwrap();
+    let canceled = token();
+    canceled.cancel();
+    let stopped = run_with(&records, Budget::default(), &canceled).unwrap_err();
+    assert_eq!((stopped, stopped.code()), (StudioSequenceSettingsError::Canceled, "canceled"));
+    let over = run_with(&records, Budget { nodes: 0, ..Budget::default() }, &token()).unwrap_err();
+    assert_eq!((over, over.code()), (StudioSequenceSettingsError::BudgetExceeded, "budget_exceeded"));
+    // Bad input stays bad input, with its Folio code.
+    let mut hostile = records.clone();
+    hostile.sequences[0].sequence_id = "seq-x".into();
+    let bad = run_with(&hostile, Budget::default(), &token()).unwrap_err();
+    assert_eq!(bad.code(), "invalid_input");
+    assert_eq!(bad, StudioSequenceSettingsError::InvalidInput(Code::DanglingReference));
+}

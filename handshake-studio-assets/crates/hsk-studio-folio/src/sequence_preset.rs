@@ -18,8 +18,9 @@
 //!   asset or machine-local value, so the library is portable data (STU-FX-039a).
 //!   [`shipped_sequence_presets`] holds the 391 complete rows of the 016a table; the one row with no
 //!   declared frame rate is listed in [`SHIPPED_PRESET_EXCLUSIONS`] and never shipped (STU-VID-016:
-//!   there is no partial preset; test `studiosequencepreset_is_a_named_complete_settings_record_mt_33695`). Fields the table does not give are filled from the STU-VID-011
-//!   Studio defaults and named in the preset's `defaulted_fields` (module `shipped_preset` docs).
+//!   there is no partial preset; test `studiosequencepreset_is_a_named_complete_settings_record_mt_33695`). Fields the table does not give are filled by Studio and
+//!   named in the preset's `defaulted_fields`: STU-VID-011 Studio defaults where the clause states
+//!   one, Studio readings where it does not (`ShippedPresetRow::preset` docs).
 //! * [`StudioEditingMode`]: STU-VID-017; [`shipped_editing_modes`] holds the 53 rows of the 017a
 //!   table with `constraints_known = false` and empty allow-lists (gap STU-VID-080).
 //! * [`StudioSequenceSettingsCommand`]: save a sequence's settings as a new preset (STU-VID-016a,
@@ -50,7 +51,7 @@ use std::collections::BTreeSet;
 
 /// Presets one set may hold (Studio bound; 391 ship).
 pub const MAX_SEQUENCE_PRESETS: usize = 4096;
-/// Category path depth (Studio bound; the shipped paths are at most four deep).
+/// Category path depth (Studio bound; the shipped paths are at most three deep).
 pub const MAX_SEQUENCE_PRESET_CATEGORY_DEPTH: usize = 8;
 /// Longest preset name or category segment in bytes.
 pub const MAX_SEQUENCE_PRESET_TEXT: usize = 128;
@@ -75,8 +76,11 @@ pub struct StudioSequencePreset {
     /// Browsable category path, outermost first (STU-FX-143); empty = top level.
     pub category_path: Vec<String>,
     pub settings: StudioSequenceSettings,
-    /// Settings fields the source did not declare and that hold the STU-VID-011 Studio default
-    /// (shipped presets only; omitted when empty).
+    /// Settings fields the source did not declare, so Studio filled them (shipped presets only;
+    /// omitted when empty): `working_color_space`, `use_maximum_bit_depth`,
+    /// `use_maximum_render_quality`, `allow_linear_compositing` and `initial_audio_track_count` hold
+    /// their STU-VID-011 Studio default; `auto_tone_map`, `preview_render_format` and `immersive` have
+    /// no declared default and hold a Studio reading (`ShippedPresetRow::preset` docs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub defaulted_fields: Vec<SequenceSettingsField>,
     /// Source values that could not be stored as declared (omitted when empty).
@@ -241,12 +245,12 @@ impl ShippedPresetRow {
     /// field order, video time display, sample rate and master channels, video track count and (for
     /// 27 rows) the working colour space; `audio_time_display` is `audio_samples` for all 392
     /// (STU-VID-011, declared); `auto_tone_map` is true for the BT.2100 HLG (HDR-capable) rows
-    /// (declared). Everything else is the STU-VID-011 Studio default and is named in
-    /// `defaulted_fields`: working colour space `BT.709 RGB Full` where the row has `--`;
-    /// `auto_tone_map` false outside the HDR rows (no default is declared; Studio reading);
-    /// maximum bit depth and render quality false; linear compositing true; 4 audio tracks; the
-    /// preview format at the sequence frame size with the preview tier's codec (null); immersive
-    /// null (flat).
+    /// (declared). Everything else is named in `defaulted_fields`. STU-VID-011 Studio defaults:
+    /// working colour space `BT.709 RGB Full` where the row has `--`; maximum bit depth and render
+    /// quality false; linear compositing true; 4 audio tracks (the clause ties 4 to the stereo
+    /// configurations; applying it to the multichannel rows is a Studio reading). Studio readings, no
+    /// default declared: `auto_tone_map` false outside the HDR rows; the preview format at the
+    /// sequence frame size with the preview tier's codec (null); immersive null (flat).
     fn preset(&self) -> StudioSequencePreset {
         let Self(name, group, preset_id, width, height, pn, pd, tpf, field, display, rate, audio, video_tracks, cs) = *self;
         let frame_size = SequenceFrameSize { width, height };
@@ -378,7 +382,9 @@ pub enum StudioSequenceSettingsError {
     /// The context's command id is not this command's.
     CommandMismatch,
     StaleRevision { expected: u64, current: u64 },
-    /// The inputs fail their own validation; the Folio diagnostic code.
+    /// The inputs fail their own validation; the Folio diagnostic code. Cancellation and budget
+    /// overruns are not bad input: they are [`Self::Canceled`] and [`Self::BudgetExceeded`] (test
+    /// `command_codes_tell_cancellation_and_budget_from_bad_input_r55_f6`).
     InvalidInput(Code),
     SequenceMissing,
     /// The sequence has no settings entry (an earlier-shape sequence).
@@ -392,6 +398,8 @@ pub enum StudioSequenceSettingsError {
     /// The settings fall outside the editing mode's allow-lists.
     ModeViolation,
     BudgetExceeded,
+    /// The cancellation token was set while the inputs or results were validated.
+    Canceled,
 }
 impl StudioSequenceSettingsError {
     pub const fn code(self) -> &'static str {
@@ -410,6 +418,7 @@ impl StudioSequenceSettingsError {
             Self::ModeUnknown => "mode_unknown",
             Self::ModeViolation => "mode_violation",
             Self::BudgetExceeded => "budget_exceeded",
+            Self::Canceled => "canceled",
         }
     }
 }
@@ -468,7 +477,11 @@ pub fn apply_sequence_settings_command(
     if ctx.base_revision() != revision {
         return Err(E::StaleRevision { expected: ctx.base_revision(), current: revision });
     }
-    let invalid = |d: super::Diagnostic| E::InvalidInput(d.code);
+    let invalid = |d: super::Diagnostic| match d.code {
+        Code::Canceled => E::Canceled,
+        Code::BudgetExceeded => E::BudgetExceeded,
+        code => E::InvalidInput(code),
+    };
     validate_sequence_settings_records(records, document, b, token).map_err(invalid)?;
     validate_sequence_presets(presets, b, token).map_err(invalid)?;
     let mut document = document.clone();
