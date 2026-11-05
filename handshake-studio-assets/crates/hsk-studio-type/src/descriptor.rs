@@ -20,3 +20,18 @@ pub fn descriptor() -> &'static str {
 "pending":["independent source/runtime acceptance","full Type domain parity","container layout/linebreaking","hinting/colour glyphs/variable-instance outlines","two-host positioned/raster parity","36-foundation barrier","Handshake host authorization/storage/undo/GUI adoption"]
 }"#
 }
+
+#[cfg(test)]
+mod tests {
+    /// F-R56-6: the descriptor tells a model the token story the code has.
+    #[test]
+    fn the_descriptor_names_the_current_token_and_the_forced_line_break_r56_f6() {
+        let d = super::descriptor();
+        for stated in ["COMPOSITION_VERSION (@3)", "COMPOSITION_VERSION_V2 (@2)", "COMPOSITION_VERSION_V1 (@1)", "forced line break U+2028", "the harfrust spike implements v1 only"] {
+            assert!(d.contains(stated), "{stated}");
+        }
+        for stale in ["COMPOSITION_VERSION (v2)", "the harfrust spike refuses v2"] {
+            assert!(!d.contains(stale), "{stale}");
+        }
+    }
+}
