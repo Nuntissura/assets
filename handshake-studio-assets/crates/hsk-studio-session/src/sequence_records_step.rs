@@ -2,7 +2,7 @@
 //! `crate::multicam_step`).
 //!
 //! A [`SequenceRecordsStep`] carries zero or more [`SequenceEdit`]s (each quoting the live value) and
-//! optional edits of the `sequence_settings`, `sequence_presets` and `track_display` entries (each
+//! optional edits of the `sequence_settings`, `sequence_presets`, `track_display` and `media_markers` entries (each
 //! quoting the live records, `None` = no entry stored; an absent [`RecordEdit`] leaves that entry alone
 //! and does not quote it). The session applies the whole step as ONE revision (`revision + 1`, also when only a
 //! record changes, declared reading as in multicam), ONE receipt and ONE inverse
@@ -19,6 +19,8 @@
 //! stored preset shadows a shipped one of the same id); only the stored presets are written. The six
 //! track display commands (`hsk_studio_folio::TRACK_DISPLAY_COMMAND_IDS`) reach it the same way through
 //! `Session::submit_track_display_command_as` and `_keyed_as`, and read only the `track_display` entry.
+//! The three media marker commands (`hsk_studio_folio::MEDIA_MARKER_COMMAND_IDS`) likewise, through
+//! `Session::submit_media_marker_command_as` and `_keyed_as`, reading only the `media_markers` entry.
 //!
 //! The step shares the submit pipeline with provider submits. A commit authority receives the
 //! successor DOCUMENT; a step's records travel in the binding hash, a command's binding covers the
@@ -26,14 +28,15 @@
 //! only when the session publishes the successor).
 use crate::error::SessionError;
 use crate::multicam_step::{self, MulticamStep, SequenceEdit};
-use crate::sequence_records::{SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY};
+use crate::sequence_records::{MEDIA_MARKERS_ENTRY, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY};
 use crate::timeline::valid_command_id;
 use hsk_studio_accord::{CancellationToken, CommandContext};
 use hsk_studio_folio::{
-    self as folio, Code, Resolver, Snapshot, StudioDocument, StudioMulticamRecords, StudioSequencePresetSet,
+    self as folio, Code, Resolver, Snapshot, StudioDocument, StudioMediaMarkerCommand, StudioMediaMarkerError, StudioMediaMarkerRecords,
+    StudioMediaMarkerReport, StudioMulticamRecords, StudioSequencePresetSet,
     StudioSequenceSettingsCommand, StudioSequenceSettingsError, StudioSequenceSettingsRecords,
     StudioSequenceSettingsReport, StudioTrackDisplayCommand, StudioTrackDisplayError, StudioTrackDisplayRecords,
-    StudioTrackDisplayReport, apply_sequence_settings_command, apply_track_display_command, parse_sequence_presets,
+    StudioTrackDisplayReport, apply_media_marker_command, apply_sequence_settings_command, apply_track_display_command, parse_media_marker_records, parse_sequence_presets,
     parse_sequence_settings_records, parse_track_display_records, shipped_sequence_presets, validate_multicam_records,
 };
 
@@ -67,6 +70,8 @@ pub struct SequenceRecordsStep {
     pub presets: Option<RecordEdit<StudioSequencePresetSet>>,
     /// `None` leaves the `track_display` entry alone.
     pub track_display: Option<RecordEdit<StudioTrackDisplayRecords>>,
+    /// `None` leaves the `media_markers` entry alone.
+    pub media_markers: Option<RecordEdit<StudioMediaMarkerRecords>>,
 }
 
 /// What undoing a committed sequence-records step can restore ([`crate::Applied::sequence_records_undo`]).
@@ -108,6 +113,9 @@ impl SequenceRecordsStep {
         out.push(0);
         let track_display = self.track_display.as_ref().map(|e| (&e.expect, &e.write));
         out.extend_from_slice(&serde_json::to_vec(&track_display).map_err(invalid)?);
+        out.push(0);
+        let media_markers = self.media_markers.as_ref().map(|e| (&e.expect, &e.write));
+        out.extend_from_slice(&serde_json::to_vec(&media_markers).map_err(invalid)?);
         Ok(out)
     }
 }
@@ -162,12 +170,35 @@ pub(crate) fn track_display_binding_bytes(
     Ok(out)
 }
 
+/// Deterministic bytes of a media marker command under its context, for the idempotency binding.
+pub(crate) fn media_marker_binding_bytes(
+    context: &CommandContext,
+    command: &StudioMediaMarkerCommand,
+) -> Result<Vec<u8>, SessionError> {
+    use StudioMediaMarkerCommand as C;
+    let fields = match command {
+        C::Add { content_digest, marker } | C::Replace { content_digest, marker } => serde_json::to_vec(&(content_digest, marker)),
+        C::Remove { content_digest, marker_id } => serde_json::to_vec(&(content_digest, marker_id)),
+    }
+    .map_err(|_| SessionError::Provider("invalid_input"))?;
+    let mut out = format!(
+        "hsk-studio-media-marker-command-1\0{}\0{}\0{}\0",
+        command.command_id(),
+        context.command().map_or("", |c| c.as_str()),
+        context.correlation().value()
+    )
+    .into_bytes();
+    out.extend_from_slice(&fields);
+    Ok(out)
+}
+
 /// The live entry bytes a step is checked against (`Err` = a repeated token, see
 /// `crate::sequence_records::held_body`).
 pub(crate) struct LiveEntries<'a> {
     pub settings: Result<Option<&'a [u8]>, folio::Diagnostic>,
     pub presets: Result<Option<&'a [u8]>, folio::Diagnostic>,
     pub track_display: Result<Option<&'a [u8]>, folio::Diagnostic>,
+    pub media_markers: Result<Option<&'a [u8]>, folio::Diagnostic>,
     pub multicam: Option<&'a [u8]>,
 }
 
@@ -285,7 +316,8 @@ pub(crate) fn successor(
     let settings_changed = step.settings.as_ref().is_some_and(|e| e.expect != e.write);
     let presets_changed = step.presets.as_ref().is_some_and(|e| e.expect != e.write);
     let track_display_changed = step.track_display.as_ref().is_some_and(|e| e.expect != e.write);
-    if edited.is_none() && !settings_changed && !presets_changed && !track_display_changed {
+    let media_markers_changed = false;
+    if edited.is_none() && !settings_changed && !presets_changed && !track_display_changed && !media_markers_changed {
         return Ok(None);
     }
     let document = snapshot.document();
@@ -343,6 +375,19 @@ pub(crate) fn successor(
             entries.push((TRACK_DISPLAY_ENTRY, body));
         }
     }
+    if let Some(edit) = None::<&RecordEdit<StudioMediaMarkerRecords>> {
+        let body = match &edit.write {
+            None => None,
+            Some(records) => {
+                let body = serde_json::to_vec(records).map_err(invalid)?;
+                parse_media_marker_records(&body, next.document(), budget, cancel).map_err(folio_code)?;
+                Some(body)
+            }
+        };
+        if media_markers_changed {
+            entries.push((MEDIA_MARKERS_ENTRY, body));
+        }
+    }
     // What the undo restores is checked against the document it restores.
     let (mut not_restored, mut blocked) = (Vec::new(), false);
     let reencoded = |_: serde_json::Error| folio::Diagnostic { code: Code::InvalidJson, target: "sequence_records".to_owned() };
@@ -367,10 +412,18 @@ pub(crate) fn successor(
         })?,
         None => None,
     };
+    let media_markers = match &step.media_markers {
+        Some(edit) => inverse_half(edit, MEDIA_MARKERS_ENTRY, &mut not_restored, &mut blocked, |records| {
+            let body = serde_json::to_vec(records).map_err(reencoded)?;
+            parse_media_marker_records(&body, document, budget, cancel).map(drop)
+        })?,
+        None => None,
+    };
     let restores_something = !inverse_sequences.is_empty()
         || settings.as_ref().is_some_and(|e| e.expect != e.write)
         || presets.as_ref().is_some_and(|e| e.expect != e.write)
-        || track_display.as_ref().is_some_and(|e| e.expect != e.write);
+        || track_display.as_ref().is_some_and(|e| e.expect != e.write)
+        || media_markers.as_ref().is_some_and(|e| e.expect != e.write);
     let (inverse, undo) = if not_restored.is_empty() {
         (true, SequenceRecordsUndo::Complete)
     } else if blocked || !restores_something {
@@ -388,6 +441,7 @@ pub(crate) fn successor(
             settings,
             presets,
             track_display,
+            media_markers,
         }),
         undo,
     }))
@@ -480,6 +534,7 @@ pub(crate) fn command_step(
             settings,
             presets,
             track_display: None,
+            media_markers: None,
         },
         report,
     ))
@@ -519,6 +574,49 @@ pub(crate) fn track_display_step(
             settings: None,
             presets: None,
             track_display,
+            media_markers: None,
+        },
+        outcome.report,
+    ))
+}
+
+fn media_marker_error(error: StudioMediaMarkerError) -> SessionError {
+    use StudioMediaMarkerError as E;
+    match error {
+        E::StaleRevision { expected, current } => SessionError::StaleRevision { expected, current },
+        E::Canceled => SessionError::Canceled,
+        other => SessionError::Provider(other.code()),
+    }
+}
+
+/// Runs the Folio media marker command on the live entry under the caller's `context` and returns the
+/// step it amounts to, with the Folio report. An invalid entry refuses it.
+pub(crate) fn media_marker_step(
+    document: &StudioDocument,
+    held: Result<Option<&[u8]>, folio::Diagnostic>,
+    context: &CommandContext,
+    revision: u64,
+    command: &StudioMediaMarkerCommand,
+    budget: folio::Budget,
+    cancel: &CancellationToken,
+) -> Result<(SequenceRecordsStep, StudioMediaMarkerReport), SessionError> {
+    let held = held
+        .and_then(|held| held.map(|bytes| parse_media_marker_records(bytes, document, budget, cancel)).transpose())
+        .map_err(folio_code)?;
+    let base = held.clone().unwrap_or_else(|| StudioMediaMarkerRecords::new(document.document_id.clone()));
+    let outcome = apply_media_marker_command(document, &base, context, revision, command, budget, cancel).map_err(media_marker_error)?;
+    // The last marker's removal takes the entry with it, so no empty set is stored.
+    let write = (!outcome.records.media_items.is_empty()).then_some(outcome.records);
+    let media_markers = outcome.report.changed.then_some(RecordEdit { expect: held, write });
+    Ok((
+        SequenceRecordsStep {
+            command_id: command.command_id().to_owned(),
+            correlation_id: context.correlation().value(),
+            sequences: Vec::new(),
+            settings: None,
+            presets: None,
+            track_display: None,
+            media_markers,
         },
         outcome.report,
     ))
@@ -542,6 +640,18 @@ mod tests {
         assert_eq!(command_error(E::InvalidInput(Code::InvalidField)).code(), "invalid_input");
         assert_eq!(command_error(E::StaleRevision { expected: 1, current: 2 }), SessionError::StaleRevision { expected: 1, current: 2 });
         assert_eq!(command_error(E::PresetMissing).code(), "preset_missing");
+    }
+
+    /// And for the media marker commands.
+    #[test]
+    fn media_marker_errors_keep_their_meaning_at_the_session_boundary_r55_f6() {
+        use StudioMediaMarkerError as E;
+        assert_eq!(media_marker_error(E::Canceled), SessionError::Canceled);
+        assert_eq!(media_marker_error(E::Canceled).outcome(), Outcome::Canceled);
+        assert_eq!(media_marker_error(E::BudgetExceeded).code(), "budget_exceeded");
+        assert_eq!(media_marker_error(E::InvalidInput(Code::InvalidField)).code(), "invalid_input");
+        assert_eq!(media_marker_error(E::StaleRevision { expected: 1, current: 2 }), SessionError::StaleRevision { expected: 1, current: 2 });
+        assert_eq!(media_marker_error(E::DuplicateMarker).code(), "duplicate_marker");
     }
 
     /// The same for the track display commands, whose cancel can only be set mid-command too.

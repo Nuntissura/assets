@@ -161,7 +161,8 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// validated on open, set and read; an invalid one opens with a loss note and refuses on read).
 /// `track_display` (lane SMB-PR-TRACK-DISPLAY-1) carries the Folio `StudioTrackDisplayRecords` the same
 /// way. `composition_token` (lane SMB-TYPE-AUTHORED-TOKEN-1) carries the Folio
-/// `StudioCompositionTokenRecord` the same way (`crate::composition_token`).
+/// `StudioCompositionTokenRecord` the same way (`crate::composition_token`), and `media_markers`
+/// (lane SMB-PR-MEDIA-MARKERS-1) the Folio `StudioMediaMarkerRecords`.
 /// An open notes an `audio_routing` entry that does not validate the same way (lane
 /// SMB-PR-ENTRY-REFERENCES-1).
 pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token"];

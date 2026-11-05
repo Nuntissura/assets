@@ -19,7 +19,7 @@ use crate::{
     timeline::{self, TIMELINE_STEP_PROVIDER, TimelineStep},
     multicam::MULTICAM_ENTRY,
     multicam_step::{self, MULTICAM_STEP_PROVIDER, MulticamStep},
-    sequence_records::{self, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY},
+    sequence_records::{self, MEDIA_MARKERS_ENTRY, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY},
     sequence_records_step::{self, LiveEntries, SEQUENCE_RECORDS_STEP_PROVIDER, SequenceRecordsStep, SequenceRecordsUndo},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, CommandContext, DomainId};
@@ -27,7 +27,7 @@ use hsk_studio_chronicle::{
     self as chronicle, Inverse, Property, RevisionEntry, RevisionUpdate, SourceResult,
 };
 use hsk_studio_folio::{
-    self as folio, Resolver, Snapshot, StudioDocument, StudioSequenceSettingsCommand,
+    self as folio, Resolver, Snapshot, StudioDocument, StudioMediaMarkerCommand, StudioMediaMarkerReport, StudioSequenceSettingsCommand,
     StudioSequenceSettingsReport, StudioTrackDisplayCommand, StudioTrackDisplayReport, Unresolved,
 };
 use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome, SinkPort};
@@ -246,6 +246,9 @@ pub struct Applied {
     /// For a [`Session::submit_composition_token`] step: the diff of the operation (from-token, to-token,
     /// the stories it affects). `None` otherwise and for no-change.
     pub composition_upgrade: Option<folio::StudioCompositionUpgrade>,
+    /// For a media marker command: Folio's report (codes and counters only), for the host. `None`
+    /// otherwise.
+    pub media_marker_report: Option<StudioMediaMarkerReport>,
     /// The authority's canonical receipt (`None` for no-change or a standalone session).
     pub commit: Option<CommitReceipt>,
     /// True when this is the stored receipt of an earlier identical request: nothing was
@@ -423,6 +426,7 @@ enum Step<'a> {
     SequenceCommand(&'a CommandContext, &'a StudioSequenceSettingsCommand),
     TrackDisplayCommand(&'a CommandContext, &'a StudioTrackDisplayCommand),
     CompositionToken(&'a CompositionTokenStep),
+    MediaMarkerCommand(&'a CommandContext, &'a StudioMediaMarkerCommand),
 }
 
 enum Resolution {
@@ -936,12 +940,14 @@ impl Session {
     /// the record entries change together at `expected_revision + 1`, through the same grant,
     /// admission, commit and publish path as [`Session::submit`]. The returned
     /// [`Applied::sequence_records_inverse`] is the undo (and the undo's inverse the redo). A step also
-    /// carries the `track_display` entry the same way (tests/track_display.rs). Refusals
+    /// carries the `track_display` and `media_markers` entries the same way (tests/track_display.rs,
+    /// tests/media_markers.rs). Refusals
     /// change neither the document nor an entry: `value_conflict` (a quoted sequence or record set is
     /// not the live one, a held entry that does not parse or is repeated included, or a created id
     /// exists), `invalid_target`, `invalid_input`, `invalid_command`, `folio_rejected` /
     /// `budget_exceeded` (the document or a record set the step writes or keeps would not validate,
-    /// including a removed sequence its settings entry still names), `total_too_large`,
+    /// including a removed sequence its settings entry still names, and a document marker taking an id
+    /// a valid `media_markers` entry holds), `total_too_large`,
     /// `stale_revision`. A step that does not name an invalid entry leaves its bytes alone; one that
     /// quotes it and writes valid records replaces it. Tests in tests/sequence_records_commit.rs.
     pub fn submit_sequence_records(
@@ -1137,6 +1143,52 @@ impl Session {
         self.settle(result, |applied, report| applied.report = report)
     }
 
+    /// Runs one Folio media marker command (`hsk_studio_folio::MEDIA_MARKER_COMMAND_IDS`) under the
+    /// caller's `context`, committed as one [`SequenceRecordsStep`] (one revision, one receipt, one
+    /// inverse). The one report frame carries the context's correlation;
+    /// [`Applied::media_marker_report`] carries Folio's codes and counters. A command that changes
+    /// nothing is no revision. Refusals change nothing: the checks of
+    /// [`Session::submit_sequence_records_as`], `folio_rejected` / `budget_exceeded` when the entry is
+    /// invalid, then Folio's codes (`command_missing`, `invalid_digest`, `invalid_marker`,
+    /// `duplicate_marker`, `marker_missing`, `budget_exceeded`). With a commit authority use
+    /// [`Session::submit_media_marker_command_keyed_as`].
+    pub fn submit_media_marker_command_as(
+        &mut self,
+        context: &CommandContext,
+        command: &StudioMediaMarkerCommand,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.media_marker_command(None, context, command, expected_revision, cancel);
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_media_marker_command_as`], idempotent under `key`: an identical retry
+    /// returns the stored receipt (see [`Session::submit_keyed`]).
+    pub fn submit_media_marker_command_keyed_as(
+        &mut self,
+        key: &IdempotencyKey,
+        context: &CommandContext,
+        command: &StudioMediaMarkerCommand,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.media_marker_command(Some(key), context, command, expected_revision, cancel);
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
+    fn media_marker_command(
+        &mut self,
+        key: Option<&IdempotencyKey>,
+        context: &CommandContext,
+        command: &StudioMediaMarkerCommand,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, SessionError> {
+        let _ = (key, context, command, expected_revision, cancel);
+        Err(SessionError::Provider("not_implemented"))
+    }
+
     /// A command context must name this session's actor (it grants nothing, and grants and receipts
     /// are this session's: `actor_mismatch` otherwise), the command being run when it names one
     /// (`command_mismatch`), and the revision the caller expects (`stale_revision`).
@@ -1306,13 +1358,30 @@ impl Session {
                 proposed
             }
             Some(Step::CompositionToken(step)) => self.propose_composition_token(step, current, cancel)?,
+            Some(Step::MediaMarkerCommand(context, command)) => {
+                let (step, report) = sequence_records_step::media_marker_step(
+                    self.snapshot.document(),
+                    self.live_entries().media_markers,
+                    context,
+                    current,
+                    command,
+                    self.config.budgets.folio(),
+                    cancel,
+                )?;
+                let mut proposed = self.propose_sequence_records(&step, None, current, cancel)?;
+                proposed.applied.media_marker_report = Some(report);
+                proposed
+            }
             None => self.propose_checked(provider_id, params, current, cancel)?,
         };
         if let Some(next) = &successor
             && next.document().sequences != self.snapshot.document().sequences
-            && !entry.iter().any(|(token, _)| *token == SEQUENCE_SETTINGS_ENTRY)
         {
-            self.keep_settings_entry_valid(next.document(), cancel)?;
+            for token in [SEQUENCE_SETTINGS_ENTRY] {
+                if !entry.iter().any(|(written, _)| *written == token) {
+                    self.keep_entry_valid(token, next.document(), cancel)?;
+                }
+            }
         }
         let Some(successor) = successor else {
             // No-change: nothing to commit anywhere; the receipt is still stored under the key.
@@ -1510,6 +1579,7 @@ impl Session {
                 track_display_report: None,
                 composition_token_inverse: None,
                 composition_upgrade: None,
+                media_marker_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1585,6 +1655,7 @@ impl Session {
                 track_display_report: None,
                 composition_token_inverse: None,
                 composition_upgrade: None,
+                media_marker_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1603,6 +1674,7 @@ impl Session {
             settings: sequence_records::held_body(&self.quarantined, SEQUENCE_SETTINGS_ENTRY),
             presets: sequence_records::held_body(&self.quarantined, SEQUENCE_PRESETS_ENTRY),
             track_display: sequence_records::held_body(&self.quarantined, TRACK_DISPLAY_ENTRY),
+            media_markers: sequence_records::held_body(&self.quarantined, MEDIA_MARKERS_ENTRY),
             multicam: self.document_entry(MULTICAM_ENTRY),
         }
     }
@@ -1665,6 +1737,7 @@ impl Session {
                 track_display_report: None,
                 composition_token_inverse: None,
                 composition_upgrade: None,
+                media_marker_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1727,6 +1800,7 @@ impl Session {
                 track_display_report: None,
                 composition_token_inverse: inverse,
                 composition_upgrade: diff,
+                media_marker_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1743,20 +1817,24 @@ impl Session {
     /// entry invalid (module `sequence_records`). Refused `folio_rejected` (`budget_exceeded` and
     /// `canceled` keep their codes), as a multicam step whose records no longer validate against its
     /// result. An entry already invalid, or repeated, is not this commit's to judge: it stays as it came.
-    /// The `track_display` entry is not held here: display state blocks no document edit.
-    fn keep_settings_entry_valid(&self, document: &StudioDocument, cancel: &CancellationToken) -> Result<(), SessionError> {
-        let Ok(Some(bytes)) = sequence_records::held_body(&self.quarantined, SEQUENCE_SETTINGS_ENTRY) else {
+    /// The `track_display` entry is not held here: display state blocks no document edit. A valid
+    /// `media_markers` entry is, for its one link to the document, the marker id space: a document
+    /// marker may not take an id it holds.
+    fn keep_entry_valid(&self, token: &str, document: &StudioDocument, cancel: &CancellationToken) -> Result<(), SessionError> {
+        let Ok(Some(bytes)) = sequence_records::held_body(&self.quarantined, token) else {
             return Ok(());
         };
         let budget = self.config.budgets.folio();
-        match folio::parse_sequence_settings_records(bytes, self.snapshot.document(), budget, cancel) {
-            Ok(_) => {}
+        let validates = |against: &StudioDocument| match token {
+            MEDIA_MARKERS_ENTRY => folio::parse_media_marker_records(bytes, against, budget, cancel).map(drop),
+            _ => folio::parse_sequence_settings_records(bytes, against, budget, cancel).map(drop),
+        };
+        match validates(self.snapshot.document()) {
+            Ok(()) => {}
             Err(d) if d.code == folio::Code::Canceled => return Err(SessionError::Canceled),
             Err(_) => return Ok(()),
         }
-        folio::parse_sequence_settings_records(bytes, document, budget, cancel)
-            .map(drop)
-            .map_err(sequence_records_step::folio_code)
+        validates(document).map_err(sequence_records_step::folio_code)
     }
 
     /// Runs the provider and checks everything about its proposal without publishing anything.
@@ -1909,6 +1987,7 @@ impl Session {
                 track_display_report: None,
                 composition_token_inverse: None,
                 composition_upgrade: None,
+                media_marker_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -2250,8 +2329,8 @@ impl Session {
     /// parsed by folio under the session budgets, and must name this session's document at the
     /// receipt's revision with every raster asset present in the source package; otherwise
     /// `authority_document_*` and nothing changes. The property revision vector restarts at 0,
-    /// as after an open. An authority document a valid held `sequence_settings` entry does not
-    /// validate against is refused `folio_rejected` (nothing changes; removing the entry stays possible
+    /// as after an open. An authority document a valid held `sequence_settings` or `media_markers` entry
+    /// does not validate against is refused `folio_rejected` (nothing changes; removing the entry stays possible
     /// while the key is pending). Same lookup preconditions as [`Session::discard_diverged`].
     pub fn resync_diverged(
         &mut self,
@@ -2272,7 +2351,9 @@ impl Session {
         let (authority, disagreement, draft_revision) = self.diverged_precondition(key, cancel)?;
         let snapshot =
             self.inspect_authority_document(authority_document, authority.revision, cancel)?;
-        self.keep_settings_entry_valid(snapshot.document(), cancel)?;
+        for token in [SEQUENCE_SETTINGS_ENTRY] {
+            self.keep_entry_valid(token, snapshot.document(), cancel)?;
+        }
         // As the settings entry: an authority document may not orphan a multicam entry that validates now.
         sequence_records_step::keep_multicam_records_valid(
             self.document_entry(MULTICAM_ENTRY),
@@ -2886,7 +2967,7 @@ impl Session {
     /// session is dirty until the next save. Refusals change nothing: an unknown token is
     /// `unsafe_name`; all opaque entries together above `limits.max_entry_bytes` (the bound a
     /// reopen enforces) is `total_too_large`. Bytes stored under the `sequence_settings`,
-    /// `sequence_presets` and `track_display` tokens must parse and validate (module
+    /// `sequence_presets`, `track_display` and `media_markers` tokens must parse and validate (module
     /// `sequence_records`); they replace
     /// every entry of the token, an invalid one included, and storing one while a commit is pending is
     /// `reconciliation_required`.
