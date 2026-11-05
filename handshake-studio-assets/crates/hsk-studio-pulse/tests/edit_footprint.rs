@@ -249,7 +249,7 @@ fn expected_writes(old: &StudioSequence, new: &StudioSequence) -> BTreeSet<Strin
                 out.extend(nested_ids(clip));
             }
             Some((new_track, new_clip)) => {
-                if clip != new_clip {
+                if clip != new_clip || track_id != new_track {
                     out.insert((*clip_id).to_owned());
                 }
                 if track_id != new_track {
@@ -281,7 +281,7 @@ fn expected_writes(old: &StudioSequence, new: &StudioSequence) -> BTreeSet<Strin
 fn expected_entries(old: &StudioSequence, new: &StudioSequence) -> BTreeSet<(&'static str, String)> {
     let (before, after) = (clips_of(old), clips_of(new));
     let mut out = BTreeSet::new();
-    for (clip_id, (_, clip)) in &before {
+    for (clip_id, (track_id, clip)) in &before {
         let id = (*clip_id).to_owned();
         match after.get(clip_id) {
             None => {
@@ -289,7 +289,10 @@ fn expected_entries(old: &StudioSequence, new: &StudioSequence) -> BTreeSet<(&'s
                 out.extend(clip.markers.iter().map(|m| ("clip_marker", m.marker_id.clone())));
                 out.extend(slots(clip).into_iter().flatten().map(|t| ("clip_transition", t.transition_id.clone())));
             }
-            Some((_, new_clip)) => {
+            Some((new_track, new_clip)) => {
+                if track_id != new_track {
+                    out.insert(("track_move", id.clone()));
+                }
                 let window = |c: &StudioClip| (c.source_in, c.source_out, c.timeline_start, c.duration);
                 if window(clip) != window(new_clip) {
                     out.insert(("retime", id.clone()));
@@ -523,6 +526,54 @@ fn rows() -> Vec<Row> {
     rows.push(record_row("move_work_area", &area, RecordEdit::SetWorkArea(Some(WorkArea { start: at(2), end: at(5) }))));
     rows.push(record_row("clear_work_area", &area, RecordEdit::SetWorkArea(None)));
     rows
+}
+
+/// `fixture(true)` with a second video and a second audio track, so a clip has somewhere to go.
+fn two_stacks() -> Snapshot {
+    let mut document = fixture(true).document().clone();
+    let mut v2 = track(3, TrackKind::Video, true, Vec::new());
+    v2.index = 1;
+    let mut a2 = track(4, TrackKind::Audio, true, Vec::new());
+    a2.index = 1;
+    document.sequences[0].tracks.extend([v2, a2]);
+    validate_document(document, Budget::default(), &CancellationToken::default(), &Media).expect("fixture is a valid Folio document")
+}
+fn nudge_row(name: &'static str, base: &Snapshot, list: &[u32], direction: TrackNudge) -> Row {
+    let edit = NudgeTrack { clip_ids: ids(list), direction, linked: LinkedSelection::On };
+    let proposal = with_ctx(|ctx| plan_nudge_track(base, SEQ, rev(base), &edit, ctx)).unwrap_or_else(|e| panic!("{name}: {}", e.code()));
+    Row { name, base: base.clone(), proposal }
+}
+/// Lane SMB-PR-NUDGE-1: the track nudge, the one planner that writes `ClipChange::TrackMove`.
+fn nudge_rows() -> Vec<Row> {
+    let s = two_stacks();
+    let mut rows = vec![
+        nudge_row("track_nudge_up", &s, &[6], TrackNudge::Up),
+        nudge_row("track_nudge_carries_the_marker_and_ends_the_transition", &s, &[2], TrackNudge::Up),
+        nudge_row("track_nudge_ends_the_transition_of_a_clip_that_stays", &s, &[3], TrackNudge::Up),
+        nudge_row("track_nudge_audio_down", &s, &[5], TrackNudge::Down),
+    ];
+    let merged = merge_row("merge", &s, &[1, 4], None).proposal.snapshot().clone();
+    rows.push(nudge_row("track_nudge_link_partners", &merged, &[1], TrackNudge::Up));
+    let raised = rows[0].proposal.snapshot().clone();
+    rows.push(nudge_row("track_nudge_down", &raised, &[6], TrackNudge::Down));
+    rows
+}
+
+#[test]
+fn the_track_nudge_rows_report_what_they_write() {
+    bounded_case("the_track_nudge_rows_report_what_they_write", || {
+        let mut failures = Vec::new();
+        let rows = nudge_rows();
+        for row in &rows {
+            check_proposal(row.name, &row.base, &row.proposal, &mut failures);
+            let done = row.proposal.snapshot();
+            let undo = with_ctx(|ctx| plan_timeline_revert(done, SEQ, rev(done), row.proposal.inverse(), ctx)).unwrap_or_else(|e| panic!("{} undo: {}", row.name, e.code()));
+            check_proposal(&format!("undo {}", row.name), done, &undo, &mut failures);
+        }
+        assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+        assert_eq!(rows[0].proposal.write_footprint(), [cid(6), tid(1), tid(3)]);
+        assert_eq!(rows[1].proposal.dropped_transitions(), ["tr-1"]);
+    });
 }
 
 #[test]
