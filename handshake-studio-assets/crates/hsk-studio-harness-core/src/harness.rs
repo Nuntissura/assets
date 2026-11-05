@@ -1811,6 +1811,12 @@ impl Run<'_> {
         self.session.as_ref()?.document_entry(token)
     }
 
+    /// What the open document composes under (STU-TYP-130; `Session::authored_composition`, which also
+    /// refuses a repeated or invalid entry). `not_open` without a session; a refusal is its session code.
+    pub fn authored_composition(&self) -> Result<hsk_studio_session::AuthoredComposition, &'static str> {
+        self.session.as_ref().ok_or("not_open")?.authored_composition(self.cancel).map_err(|e| e.code())
+    }
+
     /// Stages a tile body in the working session (no record; nothing changes until a
     /// [`Run::set_tiles`] names it). `None` without a session or when the session refuses it.
     pub fn stage_tile(&mut self, bytes: Vec<u8>) -> Result<folio::ContentDigest, &'static str> {

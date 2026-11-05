@@ -890,6 +890,24 @@ impl hsk_studio_composite::VectorAssets for LiveTextAssets<'_> {
 /// Story ids the viewer could not shape, with the reason.
 type Unshaped = Vec<(String, String)>;
 
+/// The code of [`CompositionCause`] when the document's token is why a story stayed unshaped: it refuses
+/// the story and the current token shapes it, so an upgrade is the way out (STU-TYP-130).
+pub const COMPOSITION_TOKEN_REFUSED: &str = "composition_token_refused";
+
+/// Why a story stayed unshaped when the document's composition token is the cause, in codes and counters
+/// only (lead's condition on the absent-token reading).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompositionCause {
+    /// [`COMPOSITION_TOKEN_REFUSED`], or `composition_token_unknown` for a token this build does not know.
+    pub code: &'static str,
+    /// Which token of the build's list, oldest = 1, the document composes under (`None` = not on the list).
+    pub composed_under: Option<usize>,
+    /// How many tokens the list holds: the ordinal of the current one.
+    pub current: usize,
+    /// True when an upgrade to the current token is possible from here and would shape the story.
+    pub upgrade_available: bool,
+}
+
 /// The outcome of one live path- or area-text binding in the viewer ([`Viewer::vector_text_reports`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct VectorTextStatus {
@@ -898,6 +916,8 @@ pub struct VectorTextStatus {
     pub report: hsk_studio_composite::vector_text::TextReport,
     /// Why the viewer could not shape the story (`None` when it was shaped).
     pub unshaped: Option<String>,
+    /// Set when the document's composition token is why the story stayed unshaped.
+    pub composition: Option<CompositionCause>,
 }
 
 /// Kind of live text [`Viewer::bind_live_text`] binds to a vector layer's first path.
@@ -1300,7 +1320,7 @@ impl Viewer {
         Ok(prepared
             .texts()
             .iter()
-            .map(|r| VectorTextStatus { report: r.clone(), unshaped: unshaped.iter().find(|(id, _)| *id == r.text_id).map(|(_, e)| e.clone()) })
+            .map(|r| VectorTextStatus { report: r.clone(), unshaped: unshaped.iter().find(|(id, _)| *id == r.text_id).map(|(_, e)| e.clone()), composition: None })
             .collect())
     }
 
