@@ -44,6 +44,7 @@ use crate::transition::{check_at, locate};
 use hsk_studio_accord::{CancellationToken, Ticks};
 pub use hsk_studio_folio::{LabelColor, MarkerRole, StudioMarker, WorkArea};
 use hsk_studio_folio::{ClipSource, ContentDigest, MAX_MARKERS_PER_SEQUENCE, Snapshot, StudioClip, StudioMediaMarkerRecords, StudioSequence};
+use std::collections::BTreeMap;
 
 const CANCEL_STRIDE: usize = 256;
 
@@ -469,8 +470,16 @@ pub fn clip_appearing_markers(
     media: Option<&StudioMediaMarkerRecords>,
     cancel: &CancellationToken,
 ) -> Result<ClipMarkers> {
-    let _ = (media, cancel, walk_clip, sort_appearing);
-    Ok(ClipMarkers { clip_id: clip.clip_id.clone(), media_item: ClipMediaItem::of(clip), appearing: Vec::new(), hidden_clip_markers: 0, hidden_media_markers: 0 })
+    cancel.check()?;
+    let media_item = ClipMediaItem::of(clip);
+    let held: &[StudioMarker] = match &media_item {
+        ClipMediaItem::Media(digest) => media.and_then(|r| r.entry(digest)).map_or(&[][..], |e| e.markers.as_slice()),
+        ClipMediaItem::NestedSequence | ClipMediaItem::Primitive => &[][..],
+    };
+    let mut appearing = Vec::new();
+    let (hidden_clip_markers, hidden_media_markers) = walk_clip(clip, held, &mut appearing, cancel)?;
+    sort_appearing(&mut appearing);
+    Ok(ClipMarkers { clip_id: clip.clip_id.clone(), media_item, appearing, hidden_clip_markers, hidden_media_markers })
 }
 
 /// Every marker that appears in `sequence`: its sequence markers and, for every clip, what
@@ -480,8 +489,38 @@ pub fn sequence_appearing_markers(
     media: Option<&StudioMediaMarkerRecords>,
     cancel: &CancellationToken,
 ) -> Result<SequenceMarkers> {
-    let _ = (sequence, media, cancel);
-    Ok(SequenceMarkers { appearing: Vec::new(), hidden_clip_markers: 0, hidden_media_markers: 0, clips_without_media_item: 0 })
+    cancel.check()?;
+    let mut by_digest: BTreeMap<(&str, &str), &[StudioMarker]> = BTreeMap::new();
+    for (i, entry) in media.map_or(&[][..], |r| r.media_items.as_slice()).iter().enumerate() {
+        if i.is_multiple_of(CANCEL_STRIDE) {
+            cancel.check()?;
+        }
+        let digest = &entry.content_digest;
+        by_digest.entry((digest.algorithm.as_str(), digest.digest.as_str())).or_insert(entry.markers.as_slice());
+    }
+    let mut out = SequenceMarkers { appearing: Vec::new(), hidden_clip_markers: 0, hidden_media_markers: 0, clips_without_media_item: 0 };
+    for marker in &sequence.markers {
+        if out.appearing.len() >= MAX_MARKERS_PER_SEQUENCE {
+            return Err(PulseError::LimitExceeded);
+        }
+        let span = TickRange::from_start_duration(marker.start, marker.duration)?;
+        out.appearing.push(AppearingMarker { scope: AppearingMarkerScope::Sequence, clip_id: None, marker: marker.clone(), span });
+    }
+    for clip in sequence.tracks.iter().flat_map(|t| t.clips.iter()) {
+        cancel.check()?;
+        let held: &[StudioMarker] = match &clip.source_ref {
+            ClipSource::Media { content_digest, .. } => by_digest.get(&(content_digest.algorithm.as_str(), content_digest.digest.as_str())).copied().unwrap_or(&[]),
+            ClipSource::Sequence { .. } | ClipSource::Primitive { .. } => {
+                out.clips_without_media_item = out.clips_without_media_item.saturating_add(1);
+                &[]
+            }
+        };
+        let (own, of_media) = walk_clip(clip, held, &mut out.appearing, cancel)?;
+        out.hidden_clip_markers = out.hidden_clip_markers.saturating_add(own);
+        out.hidden_media_markers = out.hidden_media_markers.saturating_add(of_media);
+    }
+    sort_appearing(&mut out.appearing);
+    Ok(out)
 }
 
 /// Playhead navigation (STU-VID-035): the first marker start strictly after `after`.
