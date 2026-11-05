@@ -35,13 +35,14 @@
 //! Bounds: the Folio input budget (`budget.input_bytes`, depth, duplicate keys) applies before any
 //! parse, then the Folio record bounds; the package limits apply to the entry bytes on open and on
 //! every write. Serialisation is serde_json of the Folio type (deterministic field order).
+use crate::composition_token::{COMPOSITION_TOKEN_ENTRY, COMPOSITION_TOKEN_UNKNOWN};
 use crate::error::SessionError;
 use crate::session::Session;
 use crate::source::{DOCUMENT_ENTRY_PREFIX, document_entry};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     Budget, Code, Diagnostic, StudioDocument, StudioResolvedTrackDisplay, StudioSequencePresetSet,
-    StudioSequenceSettingsRecords, StudioTrackDisplayEntry, StudioTrackDisplayRecords, parse_sequence_presets, parse_sequence_settings_records,
+    StudioSequenceSettingsRecords, StudioTrackDisplayEntry, StudioTrackDisplayRecords, parse_composition_token_record, parse_sequence_presets, parse_sequence_settings_records,
     inert_track_display_entries, parse_track_display_records, resolve_track_displays,
 };
 use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
@@ -58,16 +59,17 @@ fn invalid_json(token: &str) -> SessionError {
     folio_err(Diagnostic { code: Code::InvalidJson, target: format!("{DOCUMENT_ENTRY_PREFIX}{token}") })
 }
 
-fn folio_err(d: Diagnostic) -> SessionError {
+pub(crate) fn folio_err(d: Diagnostic) -> SessionError {
     match d.code {
         Code::Canceled => SessionError::Canceled,
+        Code::UnknownCompositionToken => SessionError::Provider(COMPOSITION_TOKEN_UNKNOWN),
         _ => SessionError::Package(PackageError::Document(d)),
     }
 }
 
 /// True for the tokens this module validates.
 pub(crate) fn validated_token(token: &str) -> bool {
-    token == SEQUENCE_SETTINGS_ENTRY || token == SEQUENCE_PRESETS_ENTRY || token == TRACK_DISPLAY_ENTRY
+    token == SEQUENCE_SETTINGS_ENTRY || token == SEQUENCE_PRESETS_ENTRY || token == TRACK_DISPLAY_ENTRY || token == COMPOSITION_TOKEN_ENTRY
 }
 
 /// Parses and validates the body of a [`validated_token`]; any other token passes (its bytes belong to
@@ -83,6 +85,7 @@ pub(crate) fn check_entry(
         SEQUENCE_SETTINGS_ENTRY => parse_sequence_settings_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         SEQUENCE_PRESETS_ENTRY => parse_sequence_presets(bytes, budget, cancel).map(drop).map_err(folio_err),
         TRACK_DISPLAY_ENTRY => parse_track_display_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
+        COMPOSITION_TOKEN_ENTRY => parse_composition_token_record(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         _ => Ok(()),
     }
 }
@@ -109,7 +112,7 @@ pub(crate) fn invalid_entry_notes(
     cancel: &CancellationToken,
 ) -> Result<Vec<LossNote>, SessionError> {
     let mut notes = Vec::new();
-    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY, TRACK_DISPLAY_ENTRY] {
+    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY, TRACK_DISPLAY_ENTRY, COMPOSITION_TOKEN_ENTRY] {
         let invalid = match held_body(held, token) {
             Ok(None) => false,
             Err(_) => true,
