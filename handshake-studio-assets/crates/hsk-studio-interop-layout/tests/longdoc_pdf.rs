@@ -1148,3 +1148,111 @@ fn running_footer_sidenote_and_endnotes_export() {
     let notes: Vec<u16> = [154.0, 130.0].iter().flat_map(|y| at_y(*y)).collect();
     assert_eq!(notes, ids(&eglyphs), "endnotes");
 }
+
+/// Lane SMB-LAYOUT-BLANK-LINE-LOOKUPS-1: an index entry that now appears exports. Body "Alpha", an empty
+/// paragraph holding a mark, "Gamma" thread b1, b2, b3 (one line each; the empty paragraph takes b2's). The
+/// generated index "Index / Blank, 2" composes into frame 14 and its two lines draw exactly its Type glyphs.
+#[test]
+fn an_index_entry_from_a_mark_on_a_blank_line_exports() {
+    let cancel = CancellationToken::default();
+    let snapshot = validate_document(book(), Budget::default(), &cancel, &Everything).unwrap();
+    let doc = snapshot.document();
+    let files = [common::text_shaping::FontFile::inter()];
+    let fonts = [PdfFont { bytes: &files[0].bytes, face_index: 0, hyphen: None }];
+    let body = "Alpha\n\nGamma";
+    let (mut body_story, mut body_paras, mut body_glyphs) = shaped_story(5, body, &[(0, 6, None), (7, 12, None)], &files, &fonts);
+    // Type shapes no empty text: the empty paragraph has no glyph, as layout's composition gives it.
+    let blank = SourceSpan { start: 6, end: 7 };
+    let mut empty = ShapedParagraph::from_fixed_advance(body, blank, 10.0, 24.0, 16.0).unwrap();
+    empty.glyphs.clear();
+    body_story.paragraphs.insert(1, StoryParagraph { start: 6, end: 7, style_ref: None, paragraph_direction: None });
+    body_paras.insert(1, empty);
+    body_glyphs.insert(1, Vec::new());
+    let reflow = |story: &StudioTextStory, paragraphs: &[ShapedParagraph]| {
+        reflow_typeset(
+            &ReflowRequest { document: doc, story, resolved_text: None, paragraphs, obstacles: &[], composer: Composer::FirstFit, space: SpaceParams::default(), expected_revision: doc.revision, limits: hsk_studio_interop_layout::layout::Limits::default() },
+            &TypesetOptions::default(),
+            &cancel,
+        )
+        .unwrap()
+    };
+    let body_place = reflow(&body_story, &body_paras);
+    assert_eq!(body_place.frames.iter().map(|f| f.lines.len()).collect::<Vec<_>>(), [1, 1, 1]);
+    let pages = number_pages(doc, &[]).unwrap();
+    let options = StudioIndexOptions {
+        title: "Index".into(),
+        title_style: None,
+        index_format: IndexFormat::Nested,
+        include_section_headings: false,
+        include_empty_index_sections: false,
+        level_styles: vec![],
+        section_heading_style: None,
+        following_topic_separator: ", ".into(),
+        between_entries_separator: "; ".into(),
+        page_range_separator: "-".into(),
+        between_page_numbers_separator: ", ".into(),
+        before_cross_reference_separator: ". ".into(),
+        entry_end_separator: String::new(),
+        replace_existing_index: None,
+        include_book_documents: None,
+        include_hidden_entries: None,
+        page_number_style: None,
+        cross_reference_style: None,
+        cross_reference_topic_style: None,
+        section_header_set: None,
+    };
+    let marks = [StudioIndexMark { mark_id: "m".into(), story_id: id("STXT", 5), at: 6, topics: vec!["Blank".into()], sort_by: vec![], xref: None, page_range_scope: None }];
+    let source = [TocSource { story: &body_story, text: body, placement: Some(&body_place) }];
+    let index = hsk_studio_interop_layout::layout::generate_index(doc, &options, &marks, &source, &pages, None, hsk_studio_interop_layout::layout::IndexLimits::default(), &cancel).unwrap();
+    assert_eq!((index.story.text.as_str(), index.unplaced), ("Index\nBlank, 2", 0));
+    let ranges: Vec<(u64, u64, Option<String>)> = index.story.paragraphs.iter().map(|p| (p.start, p.end, None)).collect();
+    let (index_story, index_paras, index_glyphs) = shaped_story(9, &index.story.text, &ranges, &files, &fonts);
+    let index_place = reflow(&index_story, &index_paras);
+    assert!(index_place.overset.is_none());
+    let stories = [
+        PdfStory { story: &body_story, text: body, placement: &body_place, paragraphs: &body_paras, glyphs: &body_glyphs, default_fill: Colour::DeviceGray(0.0) },
+        PdfStory { story: &index_story, text: &index.story.text, placement: &index_place, paragraphs: &index_paras, glyphs: &index_glyphs, default_fill: Colour::DeviceGray(0.0) },
+    ];
+    let out = export_pdf_with(&input(&snapshot, &stories, &fonts, &NoAssets), &PdfLongDoc::default(), &cancel).unwrap();
+    assert_eq!(out.pages, ["b1", "b2", "b3"]);
+    let lines: Vec<(u16, f64)> = shown(&out.bytes).into_iter().filter(|g| g.2 <= 184.0 + 1e-9).map(|g| (g.0, g.2)).collect();
+    assert_eq!(lines.iter().map(|g| g.0).collect::<Vec<_>>(), index_glyphs.iter().flatten().map(|g| g.glyph_id).collect::<Vec<_>>());
+    let mut ys: Vec<f64> = lines.iter().map(|g| g.1).collect();
+    ys.dedup();
+    assert_eq!(ys, [184.0, 160.0]);
+}
+
+/// Lane SMB-LAYOUT-BLANK-LINE-LOOKUPS-1: a heading of white space leaves the generated TOC, so it leaves
+/// the outline too: no bookmark with a blank title, the two real headings on their own pages, the omission
+/// counted on the result `outline_from_toc` reads.
+#[test]
+fn a_white_space_heading_leaves_the_outline_and_is_counted() {
+    let cancel = CancellationToken::default();
+    let snapshot = validate_document(book(), Budget::default(), &cancel, &Everything).unwrap();
+    let doc = snapshot.document();
+    let files = [common::text_shaping::FontFile::inter()];
+    let fonts = [PdfFont { bytes: &files[0].bytes, face_index: 0, hyphen: None }];
+    let body = "Alpha\n  \nGamma";
+    let (body_story, body_paras, body_glyphs) = shaped_story(5, body, &[(0, 6, Some(stys(1))), (6, 9, Some(stys(1))), (9, 14, Some(stys(1)))], &files, &fonts);
+    let body_place = reflow_typeset(
+        &ReflowRequest { document: doc, story: &body_story, resolved_text: None, paragraphs: &body_paras, obstacles: &[], composer: Composer::FirstFit, space: SpaceParams::default(), expected_revision: doc.revision, limits: hsk_studio_interop_layout::layout::Limits::default() },
+        &TypesetOptions::default(),
+        &cancel,
+    )
+    .unwrap();
+    let pages = number_pages(doc, &[]).unwrap();
+    let entry = StudioTocEntry { paragraph_style: stys(1), format_style: None, level: 1, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false, page_number_style: None, separator_style: None };
+    let toc = StudioTocStyle { toc_id: "toc".into(), name: "Contents".into(), title: String::new(), title_style: None, include_overset: false, entries: vec![entry], include_book_documents: None, include_hidden: None, run_in: None, create_bookmarks: None, make_anchor: None, remove_forced_line_break: None, numbered_paragraphs: None, set_story_direction: None, default_styled: false };
+    let generated = generate_toc(doc, &toc, &[TocSource { story: &body_story, text: body, placement: Some(&body_place) }], &pages, &id("STXT", 9), TocLimits::default(), &cancel).unwrap();
+    assert_eq!(generated.text, "Alpha 1\nGamma 3");
+    assert_eq!(generated.omitted.no_text, 1);
+    let outline = hsk_studio_interop_layout::outline_from_toc(&generated);
+    assert_eq!(outline.iter().map(|o| (o.title, o.page_id)).collect::<Vec<_>>(), [("Alpha", "b1"), ("Gamma", "b3")]);
+    let stories = [PdfStory { story: &body_story, text: body, placement: &body_place, paragraphs: &body_paras, glyphs: &body_glyphs, default_fill: Colour::DeviceGray(0.0) }];
+    let longdoc = PdfLongDoc { outline: &outline, ..PdfLongDoc::default() };
+    let out = export_pdf_with(&input(&snapshot, &stories, &fonts, &NoAssets), &longdoc, &cancel).unwrap();
+    let flat = String::from_utf8_lossy(&out.bytes).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("/Type /Outlines /First") && flat.contains("/Count 2"), "outline root");
+    assert_eq!(flat.matches("/Title (Alpha)").count() + flat.matches("/Title (Gamma)").count(), 2);
+    assert_eq!(flat.matches("/Title ( )").count(), 0, "no bookmark with a blank title");
+}

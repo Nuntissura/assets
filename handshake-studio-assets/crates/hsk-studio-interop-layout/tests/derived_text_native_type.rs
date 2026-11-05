@@ -637,3 +637,102 @@ fn a_heading_of_markers_only_gives_no_entry_through_native_type() {
     let reasons: Vec<DerivedGapReason> = g.omitted_marker_gaps.iter().map(|(_, gap)| gap.reason).collect();
     assert_eq!(reasons, [DerivedGapReason::Marker(UnresolvedMarker::NoPreviousPage)]);
 }
+
+// ---- Lane SMB-LAYOUT-BLANK-LINE-LOOKUPS-1 (R56 F-R56-5, F-R56-9) through the real Type engine: a
+// paragraph with no glyph has one placed line at its end. A mark or destination in it answers the page
+// composition places it on; a heading with no text gives no entry and is counted. ----
+
+const LS: char = '\u{2028}';
+
+/// (index text, unplaced, `<pageNum/>` text) of a mark and a destination at byte `at`.
+fn blank_line_answers(doc: &StudioDocument, st: &StudioTextStory, text: &str, layout: &LayoutProposal, at: u64) -> (String, usize, Option<String>) {
+    let pages = number_pages(doc, &[]).unwrap();
+    let source = [TocSource { story: st, text, placement: Some(layout) }];
+    let options = StudioIndexOptions {
+        title: "Index".into(),
+        title_style: None,
+        index_format: IndexFormat::Nested,
+        include_section_headings: false,
+        include_empty_index_sections: false,
+        level_styles: vec![],
+        section_heading_style: None,
+        following_topic_separator: ", ".into(),
+        between_entries_separator: "; ".into(),
+        page_range_separator: "-".into(),
+        between_page_numbers_separator: ", ".into(),
+        before_cross_reference_separator: ". ".into(),
+        entry_end_separator: String::new(),
+        replace_existing_index: None,
+        include_book_documents: None,
+        include_hidden_entries: None,
+        page_number_style: None,
+        cross_reference_style: None,
+        cross_reference_topic_style: None,
+        section_header_set: None,
+    };
+    let marks = [StudioIndexMark { mark_id: "m".into(), story_id: id("STXT", 1), at, topics: vec!["t".into()], sort_by: vec![], xref: None, page_range_scope: None }];
+    let index = generate_index(doc, &options, &marks, &source, &pages, None, IndexLimits::default(), &CancellationToken::default()).expect("index");
+    let mut records = StudioLayoutFlowRecords::new(id("SDOC", 1));
+    records.xref_formats.push(StudioXrefFormat { format_id: "f".into(), name: "f".into(), definition: "<pageNum/>".into(), character_style: None });
+    records.cross_references.push(StudioCrossReference {
+        xref_id: "x".into(),
+        source_story_id: id("STXT", 2),
+        source_start: 0,
+        source_end: 0,
+        destination: StudioXrefDestination::Paragraph { story_id: id("STXT", 1), paragraph_start: at },
+        format_id: "f".into(),
+        resolved_text: None,
+    });
+    let stories = [XrefStory { story: st, text, placement: Some(layout) }];
+    let c = XrefContext { file_name: "doc", chapter_number: None, pages: &pages, type_styles: None };
+    let x = resolve_cross_references(&records, &stories, &c).expect("xref").remove(0);
+    (index.story.text, index.unplaced, x.text)
+}
+
+#[test]
+fn a_mark_and_a_destination_on_a_blank_line_answer_the_page_of_composition_through_native_type() {
+    let font = inter();
+    let doc = two_pages();
+    // The paragraph's first byte is at 6; the second member is the marker's byte when it holds one.
+    let cases = [
+        (String::new(), None),
+        (format!("{INDEX}"), Some(6)),
+        (format!("{INDEX}{LS}"), Some(6)),
+        (format!("{LS}{INDEX}"), Some(9)),
+        (format!("{LS}"), None),
+        ("  ".to_owned(), None),
+    ];
+    for (heading, marker) in cases {
+        let text = format!("Intro\n{heading}\nBody\n");
+        let st = story_of(&text);
+        let out = compose(&doc, &st, &[], &font);
+        if let Some(byte) = marker {
+            let m = out.markers.iter().find(|m| m.story_byte == byte).expect("the marker");
+            assert_eq!(m.page_id.as_deref(), Some("page-2"), "{}", heading.escape_unicode());
+        }
+        let at = marker.unwrap_or(6);
+        let got = blank_line_answers(&doc, &st, &text, &out.layout, at);
+        assert_eq!(got, ("Index\nt, 2".to_owned(), 0, Some("2".to_owned())), "{}", heading.escape_unicode());
+    }
+}
+
+#[test]
+fn a_heading_with_no_text_is_counted_and_a_heading_after_a_blank_line_keeps_its_page_through_native_type() {
+    let font = inter();
+    let doc = two_pages();
+    let pages = number_pages(&doc, &[]).unwrap();
+    let toc_of = |text: &str, styled: usize| {
+        let mut st = story_of(text);
+        st.paragraphs[styled].style_ref = Some(id("STYS", 1));
+        let out = compose(&doc, &st, &[], &font);
+        let source = [TocSource { story: &st, text, placement: Some(&out.layout) }];
+        generate_toc(&doc, &toc_style(), &source, &pages, &id("STXT", 9), TocLimits::default(), &CancellationToken::default()).expect("toc")
+    };
+    for heading in [String::new(), format!("{INDEX}"), format!("{LS}"), "  ".to_owned(), format!(" {INDEX}")] {
+        let g = toc_of(&format!("Intro\n{heading}\nBody\n"), 1);
+        assert_eq!((g.entries.len(), g.text.as_str(), g.omitted.no_text, g.omitted.overset), (0, "", 1, 0), "{}", heading.escape_unicode());
+    }
+    // The blank line on page-1 and "Head" on page-2 both start at byte 1.
+    let g = toc_of("\nHead\n", 1);
+    assert_eq!(g.text, "Head 2");
+}
