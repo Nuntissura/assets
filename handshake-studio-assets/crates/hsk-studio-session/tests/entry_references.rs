@@ -615,3 +615,121 @@ fn a_valid_routing_opens_typed_without_a_note() {
         assert_eq!(open(&package_of(&all_sequences(), &[])).audio_routing_records(&token()).unwrap(), None);
     });
 }
+
+// ----- F-R56-7: the undo of a step that replaced invalid records -----
+
+fn dangling_settings() -> StudioSequenceSettingsRecords {
+    records(vec![settings_entry("seq-x", "custom", F24)])
+}
+fn good_settings() -> StudioSequenceSettingsRecords {
+    records(vec![settings_entry("seq-a", "custom", F24)])
+}
+fn opened_with_dangling_settings() -> Session {
+    open(&package_of(&all_sequences(), &[entry(SEQUENCE_SETTINGS_ENTRY, &serde_json::to_vec(&dangling_settings()).unwrap())]))
+}
+fn repair() -> RecordEdit<StudioSequenceSettingsRecords> {
+    RecordEdit { expect: Some(dangling_settings()), write: Some(good_settings()) }
+}
+fn renamed_b() -> StudioSequence {
+    let mut s = seq_b_full();
+    s.name = "renamed".into();
+    s
+}
+
+/// The repair alone has no undo: the answer says so, and no step that could never apply is handed out.
+#[test]
+fn a_repair_alone_answers_that_no_undo_exists() {
+    bounded_case("repair_alone", || {
+        let mut session = opened_with_dangling_settings();
+        let applied = session.submit_sequence_records(&step(vec![], Some(repair()), None), 3, &token()).unwrap();
+        assert_eq!(applied.sequence_records_inverse, None);
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::Unavailable(vec![SEQUENCE_SETTINGS_ENTRY])));
+        assert_eq!(session.sequence_settings_records(&token()).unwrap(), Some(good_settings()));
+    });
+}
+
+/// A repair with a sequence edit: the sequence edit keeps its undo, the repair stands, and the redo
+/// redoes the sequence edit. The inverse handed out applies.
+#[test]
+fn a_repair_with_a_sequence_edit_keeps_the_undo_of_the_sequence_edit() {
+    bounded_case("repair_with_edit", || {
+        let mut session = opened_with_dangling_settings();
+        let rename = SequenceEdit::Replace { expect: seq_b_full(), write: renamed_b() };
+        let applied = session.submit_sequence_records(&step(vec![rename], Some(repair()), None), 3, &token()).unwrap();
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::WithoutEntries(vec![SEQUENCE_SETTINGS_ENTRY])));
+        assert_eq!(applied.sequence_records_inverse.as_ref().unwrap().settings, None, "the entry is left alone");
+        let undone = session.submit_sequence_records(&fresh_inverse(&applied, "cmd.undo"), 4, &token()).unwrap();
+        assert_eq!(session.snapshot().document().sequences[1], seq_b_full());
+        assert_eq!(session.sequence_settings_records(&token()).unwrap(), Some(good_settings()), "the repair stands");
+        assert_eq!(undone.sequence_records_undo, Some(SequenceRecordsUndo::Complete));
+        session.submit_sequence_records(&fresh_inverse(&undone, "cmd.redo"), 5, &token()).unwrap();
+        assert_eq!(session.snapshot().document().sequences[1], renamed_b());
+        assert_eq!(session.sequence_settings_records(&token()).unwrap(), Some(good_settings()));
+    });
+}
+
+/// A repair with another record edit: that edit keeps its undo.
+#[test]
+fn a_repair_with_a_record_edit_keeps_the_undo_of_the_record_edit() {
+    bounded_case("repair_with_record", || {
+        let mut session = opened_with_dangling_settings();
+        let presets = RecordEdit { expect: None, write: Some(library(vec![preset("mine", F25)])) };
+        let applied = session.submit_sequence_records(&step(vec![], Some(repair()), Some(presets)), 3, &token()).unwrap();
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::WithoutEntries(vec![SEQUENCE_SETTINGS_ENTRY])));
+        session.submit_sequence_records(&fresh_inverse(&applied, "cmd.undo"), 4, &token()).unwrap();
+        assert_eq!(session.sequence_presets(&token()).unwrap(), None);
+        assert_eq!(session.sequence_settings_records(&token()).unwrap(), Some(good_settings()));
+    });
+}
+
+/// A repair whose new records name the sequence the same step inserts: undoing the insert would orphan
+/// the repair, which cannot be put back either. No undo exists, and the answer says so.
+#[test]
+fn a_repair_naming_what_the_step_inserts_answers_that_no_undo_exists() {
+    bounded_case("repair_with_insert", || {
+        let mut session = opened_with_dangling_settings();
+        let write = records(vec![settings_entry("seq-new", "custom", F24)]);
+        let insert = SequenceEdit::Insert { at: 0, write: sequence("seq-new", F24, vec![]) };
+        let s = step(vec![insert], Some(RecordEdit { expect: Some(dangling_settings()), write: Some(write) }), None);
+        let applied = session.submit_sequence_records(&s, 3, &token()).unwrap();
+        assert_eq!(applied.sequence_records_inverse, None);
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::Unavailable(vec![SEQUENCE_SETTINGS_ENTRY])));
+    });
+}
+
+/// Every record half follows the same rule, and a retry under a key replays the same answer.
+#[test]
+fn every_record_half_answers_the_same_and_a_replay_repeats_it() {
+    bounded_case("repair_halves", || {
+        let mut bad = display_body();
+        bad.sequences[0].heights.video = 0;
+        let mut session = open(&package_of(&all_sequences(), &[entry(TRACK_DISPLAY_ENTRY, &serde_json::to_vec(&bad).unwrap())]));
+        let s = SequenceRecordsStep { track_display: Some(RecordEdit { expect: Some(bad), write: Some(display_body()) }), ..step(vec![], None, None) };
+        let applied = session.submit_sequence_records(&s, 3, &token()).unwrap();
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::Unavailable(vec![TRACK_DISPLAY_ENTRY])));
+        // Presets: one id twice parses and does not validate.
+        let bad = library(vec![preset("mine", F25), preset("mine", F25)]);
+        let mut session = open(&package_of(&all_sequences(), &[entry(SEQUENCE_PRESETS_ENTRY, &serde_json::to_vec(&bad).unwrap())]));
+        let s = step(vec![], None, Some(RecordEdit { expect: Some(bad), write: None }));
+        let key = IdempotencyKey::parse("repair-1").unwrap();
+        let applied = session.submit_sequence_records_keyed(&key, &s, 3, &token()).unwrap();
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::Unavailable(vec![SEQUENCE_PRESETS_ENTRY])));
+        let replay = session.submit_sequence_records_keyed(&key, &s, 3, &token()).unwrap();
+        assert!(replay.replayed);
+        assert_eq!((replay.sequence_records_undo, replay.sequence_records_inverse), (applied.sequence_records_undo, applied.sequence_records_inverse));
+    });
+}
+
+/// A step over valid records is untouched by this: complete, and the inverse restores them.
+#[test]
+fn a_step_over_valid_records_has_a_complete_undo() {
+    bounded_case("valid_undo", || {
+        let mut session = opened(SEQUENCE_SETTINGS_ENTRY);
+        let held = session.sequence_settings_records(&token()).unwrap();
+        let s = step(vec![], Some(RecordEdit { expect: held.clone(), write: Some(good_settings()) }), None);
+        let applied = session.submit_sequence_records(&s, 3, &token()).unwrap();
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::Complete));
+        session.submit_sequence_records(&fresh_inverse(&applied, "cmd.undo"), 4, &token()).unwrap();
+        assert_eq!(session.sequence_settings_records(&token()).unwrap(), held);
+    });
+}
