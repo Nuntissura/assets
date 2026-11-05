@@ -525,6 +525,7 @@ fn rows() -> Vec<Row> {
     let area = after(&rows, "set_work_area");
     rows.push(record_row("move_work_area", &area, RecordEdit::SetWorkArea(Some(WorkArea { start: at(2), end: at(5) }))));
     rows.push(record_row("clear_work_area", &area, RecordEdit::SetWorkArea(None)));
+    rows.extend(nudge_rows());
     rows
 }
 
@@ -588,7 +589,7 @@ fn every_planner_names_every_changed_record() {
             let undo = with_ctx(|ctx| plan_timeline_revert(done, SEQ, rev(done), row.proposal.inverse(), ctx)).unwrap_or_else(|e| panic!("{} undo: {}", row.name, e.code()));
             check_proposal(&format!("undo {}", row.name), done, &undo, &mut failures);
         }
-        assert_eq!(rows.len(), 43, "rows");
+        assert_eq!(rows.len(), 49, "rows");
         assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
     });
 }

@@ -187,7 +187,7 @@ pub enum ClipChange {
         before: Speed,
         after: Speed,
     },
-    /// The clip now sits on another track. No planner does this in one proposal today.
+    /// The clip now sits on another track ([`crate::plan_nudge_track`]).
     TrackMove {
         clip_id: String,
         track_before: String,
