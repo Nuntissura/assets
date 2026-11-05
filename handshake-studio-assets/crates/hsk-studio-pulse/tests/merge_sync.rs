@@ -850,6 +850,102 @@ fn alignment_lists_transitions_it_ends_and_undo_restores_them() {
     });
 }
 
+fn held(mut c: StudioClip, frame: u64) -> StudioClip {
+    c.retime.frame_hold = Some(ClipFrameHold { source_tick: Ticks::new(frame * F), anchor: FrameHoldAnchor::Playhead });
+    c
+}
+/// What the program monitor reads at `frame` (`clip_source_at`, the path `frame_layers` uses).
+fn picture_at(s: &Snapshot, n: u32, frame: u64) -> u64 {
+    clip_source_at(&find(s, n), Ticks::new(frame * F), &Extent(Some(1000 * F)), false).unwrap().0.value()
+}
+
+/// STU-VID-031a: a held clip keeps its hold through a link and through a move, because in point and
+/// out point read timeline positions. Timecode and marker read a source position, and a held clip
+/// plays none: it shows one frame at every tick, so those two bases are refused for it.
+#[test]
+fn a_held_clip_links_and_moves_but_cannot_align_by_a_source_position() {
+    bounded_case("held clip", || {
+        let held_av = || vec![
+            track(1, TrackKind::Video, 0, vec![held(marked(fclip(1, 20, 10), "clap", 1, 5 * F), 3)]),
+            track(2, TrackKind::Audio, 0, vec![marked(fclip(2, 0, 4), "clap", 2, F)]),
+        ];
+        let snap = snapshot(held_av());
+        let hold = find(&snap, 1).retime;
+        assert!(hold.frame_hold.is_some());
+        assert_eq!(picture_at(&snap, 1, 25), 3 * F, "fixture holds source frame 3");
+        let only_records = |p: &EditProposal| !p.changes().iter().any(|c| matches!(c, ClipChange::RetimeRecord { .. }));
+
+        // Link in place: the hold stays and only the link is written.
+        let m = merge(&snap, &[1, 2], None, &NoSourceTimecodes).unwrap();
+        let s = m.proposal().snapshot();
+        assert_eq!((find(s, 1).retime, group(s, 1).as_deref()), (hold, Some("av-1")));
+        assert_eq!(picture_at(s, 1, 25), 3 * F);
+        assert_eq!(m.proposal().changes().len(), 2);
+        assert!(m.proposal().changes().iter().all(|c| matches!(c, ClipChange::Relink { .. })));
+
+        // In point, the held clip as anchor: the audio comes to it and plays its own window.
+        let m = merge(&snap, &[1, 2], Some(SyncPoint::InPoint), &NoSourceTimecodes).unwrap();
+        let s = m.proposal().snapshot();
+        assert_eq!((start_f(s, 1), start_f(s, 2)), (20, 20));
+        assert_eq!((find(s, 1).retime, picture_at(s, 1, 25)), (hold, 3 * F));
+        assert_eq!(picture_at(s, 2, 21), F, "the linked audio keeps playing");
+        // In point, the held clip moving to an audio anchor: the frame goes with it, and undo is exact.
+        let m = sync(&snap, &[1, 2], 2, SyncPoint::InPoint, &NoSourceTimecodes).unwrap();
+        let s = m.proposal().snapshot();
+        assert_eq!((start_f(s, 1), source(s, 1)), (0, source(&snap, 1)));
+        assert_eq!((find(s, 1).retime, picture_at(s, 1, 5)), (hold, 3 * F));
+        assert!(only_records(m.proposal()), "{:?}", m.proposal().changes());
+        undo_restores(m.proposal(), &snap);
+        // Out point reads the timeline end the same way.
+        let m = sync(&snap, &[1, 2], 1, SyncPoint::OutPoint, &NoSourceTimecodes).unwrap();
+        assert_eq!(start_f(m.proposal().snapshot(), 2), 26);
+        assert_eq!(find(m.proposal().snapshot(), 1).retime, hold);
+
+        // A group move carries the hold and writes no retime record.
+        let p = plan_move(&snap, &[1], 1, LinkedSelection::On).unwrap();
+        assert_eq!((start_f(p.snapshot(), 1), find(p.snapshot(), 1).retime), (21, hold));
+        assert_eq!(picture_at(p.snapshot(), 1, 21), 3 * F);
+        assert!(only_records(&p));
+
+        // Marker and timecode read a source position, which a held clip does not play: refused and
+        // named, as the anchor or as a member, whatever the other clip has.
+        let clap = || SyncPoint::Marker { name: "clap".into() };
+        let held_named = ("sync_hold_unsupported", Some(cid(1)));
+        assert_eq!(refused(merge(&snap, &[1, 2], Some(clap()), &NoSourceTimecodes)), held_named);
+        assert_eq!(refused(sync(&snap, &[1, 2], 1, clap(), &NoSourceTimecodes)), held_named);
+        assert_eq!(refused(sync(&snap, &[1, 2], 2, clap(), &NoSourceTimecodes)), held_named);
+        let both = Timecodes(vec![("manifest-1", tc(1, 0, 0, 0, F)), ("manifest-2", tc(1, 0, 0, 0, F))]);
+        assert_eq!(refused(sync(&snap, &[1, 2], 1, SyncPoint::Timecode, &both)), held_named);
+        assert_eq!(refused(sync(&snap, &[1, 2], 2, SyncPoint::Timecode, &both)), held_named);
+        assert_eq!(refused(merge(&snap, &[1, 2], Some(SyncPoint::Timecode), &both)), held_named);
+        assert_eq!(
+            sync(&snap, &[1, 2], 1, clap(), &NoSourceTimecodes).err().unwrap().failure_code(),
+            Some(hsk_studio_observe::FailureCode::Unsupported)
+        );
+        // The way out is the hold's own planner: cleared, the marker basis works (25F - 1F = 24F).
+        let cleared = with_ctx(None, |ctx| plan_clear_frame_hold(&snap, SEQ, 3, &cid(1), ctx)).unwrap();
+        let s = cleared.snapshot();
+        let m = merge(s, &[1, 2], Some(clap()), &NoSourceTimecodes).unwrap();
+        assert_eq!(start_f(m.proposal().snapshot(), 2), 24);
+
+        // Link operations on a linked held clip: unlink and the toggle leave the hold alone.
+        let mut tracks = held_av();
+        tracks[0].clips[0].link_group = Some("lg".into());
+        tracks[1].clips[0].link_group = Some("lg".into());
+        let linked_held = snapshot(tracks);
+        let p = with_ctx(None, |ctx| plan_unlink(&linked_held, SEQ, 3, &cid(1), ctx)).unwrap();
+        assert_eq!((find(p.snapshot(), 1).retime, group(p.snapshot(), 1)), (hold, None));
+        let p = plan_linked(&linked_held, &trim_out(1, 2), LinkedSelection::Suspended).unwrap();
+        assert_eq!((find(p.snapshot(), 1).duration.value(), find(p.snapshot(), 1).retime), (2 * F, hold));
+        assert_eq!((find(p.snapshot(), 2).duration.value(), group(p.snapshot(), 1).as_deref()), (4 * F, Some("lg")));
+        let razor = TimelineEdit::Razor { clip_id: cid(1), at: Ticks::new(25 * F), new_right_clip_id: cid(11), linked: None };
+        let p = plan_linked(&linked_held, &razor, LinkedSelection::Suspended).unwrap();
+        assert_eq!((find(p.snapshot(), 1).retime, find(p.snapshot(), 11).retime), (hold, hold));
+        assert_eq!(group(p.snapshot(), 11), None);
+        assert_eq!(picture_at(p.snapshot(), 11, 27), 3 * F);
+    });
+}
+
 #[test]
 fn descriptor_names_the_link_operations_and_their_refusals() {
     for token in [
