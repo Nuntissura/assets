@@ -1,6 +1,6 @@
 //! Text derived from a story (lane SMB-LAYOUT-ENTRY-TEXT-1, R55 F-R55-5 and F-R55-9; Master Spec
-//! v02.229 STU-TYP-207): TOC entries and their generated story, running text, cross-reference text and
-//! endnote text. The one rule of every site that copies story text into generated or derived text:
+//! v02.229 STU-TYP-207): TOC entries and their generated story, running text, cross-reference text,
+//! endnote text and captured index topics. The one rule of every site that copies story text into generated or derived text:
 //! the result holds no stream sentinel and ends where the paragraph ends. The stored stream is not
 //! touched (a marker sentinel carries no text; composition shows its value without rewriting it).
 //!
@@ -23,6 +23,9 @@
 //!   body crossing paragraphs), so the generated story's paragraphs are its partition. Flush space
 //!   U+FDDD becomes a space, as a tab does in an entry. A reserved code point U+FDDE..U+FDEF has no
 //!   member: left out with a typed gap.
+//!
+//! `capture_index_mark` has no placement, pages or records, so any gap refuses the capture
+//! (`index_invalid_topic_entry`), since a topic is stored text with nowhere to carry a gap.
 //!
 //! Studio readings; InDesign's handling of markers in a TOC entry UNVERIFIED (D5).
 //!
