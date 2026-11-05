@@ -156,23 +156,26 @@ fn enumerations_are_the_declared_members() {
 #[test]
 fn hostile_retime_wire_is_refused() {
     let refused = |retime: Value| inspect(&with_retime(retime)).expect_err("the document must be refused").code;
-    let unknown = [
+    let malformed = [
         json!({"frame_interpolation":"nearest"}),
         json!({"frame_interpolation":"Frame_Sampling"}),
         json!({"frame_interpolation":1}),
         json!({"maintain_audio_pitch":"yes"}),
-        json!({"reverse":true}),
-        json!({"frame_hold":{"source_tick":0}}),
-        json!({"frame_hold":{"anchor":"in_point"}}),
         json!({"frame_hold":{"source_tick":0,"anchor":"source_timecode"}}),
-        json!({"frame_hold":{"source_tick":0,"anchor":"in_point","extra":1}}),
         json!({"frame_hold":{"source_tick":-1,"anchor":"in_point"}}),
         json!({"frame_hold":{"source_tick":0.5,"anchor":"in_point"}}),
         json!({"frame_hold":{"source_tick":"3","anchor":"in_point"}}),
         json!("frame_sampling"),
         json!(null),
     ];
-    for retime in unknown {
+    for retime in malformed {
+        assert_eq!(refused(retime.clone()), Code::InvalidField, "{retime}");
+    }
+    for retime in [json!({"frame_hold":{"source_tick":0}}), json!({"frame_hold":{"anchor":"in_point"}})] {
+        assert_eq!(refused(retime.clone()), Code::MissingField, "{retime}");
+    }
+    // An unknown member keeps the whole document read-only, as any unknown field does.
+    for retime in [json!({"reverse":true}), json!({"frame_hold":{"source_tick":0,"anchor":"in_point","extra":1}})] {
         assert_eq!(refused(retime.clone()), Code::UnknownField, "{retime}");
     }
     // No frame starts at the last representable tick: it has no end.

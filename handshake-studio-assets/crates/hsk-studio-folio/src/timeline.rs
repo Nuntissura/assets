@@ -25,8 +25,9 @@
 //! `param_key` of STU-FX-103; Studio reading: the stored instance holds values, the descriptor
 //! holds bounds) and the declared shortfall choice `repeat_end_frame` (STU-VID-032 "repeat the
 //! end frame") and the STU-FX-137 track `volume` (linear, default 1.0) and `pan` (default 0).
-//! Every record field is omitted from the wire when empty or false, so documents
-//! without them encode byte-identically. Exact
+//! Lane SMB-PR-RETIME-HOLD-1 adds the clip's `retime` record (STU-VID-031 interpolation choice and
+//! `Maintain audio pitch`, STU-VID-031a frame hold). Every record field is omitted from the wire
+//! when empty, false or at its default, so documents without them encode byte-identically. Exact
 //! placement around the cut, handles and frame alignment are Pulse's; this module stores and
 //! validates only.
 #![deny(clippy::arithmetic_side_effects)]
@@ -398,7 +399,7 @@ pub struct StudioClip {
     pub transitions: ClipTransitions,
     /// Retime choices (omitted from the wire at their default). A field on the clip, so razor,
     /// duplicate and nest carry it by cloning the clip.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "ClipRetime::is_default")]
     pub retime: ClipRetime,
 }
 impl StudioClip {
@@ -634,6 +635,20 @@ fn validate_transition<'a>(
     Ok(())
 }
 
+/// One clip's retime record: a frame hold needs a picture and a frame that can have an end. The
+/// hold is not bound to the clip's source window (see [`ClipFrameHold::source_tick`]).
+fn validate_retime(c: &StudioClip, kind: TrackKind) -> Result<()> {
+    if let Some(hold) = &c.retime.frame_hold
+        && (kind != TrackKind::Video || hold.source_tick.checked_add(Ticks::new(1)).is_err())
+    {
+        return Err(err(
+            Code::InvalidField,
+            format!("{}/retime/frame_hold", c.clip_id),
+        ));
+    }
+    Ok(())
+}
+
 fn charge(total: &mut usize, bytes: usize, limit: usize, target: &str) -> Result<()> {
     *total = total
         .checked_add(bytes)
@@ -807,6 +822,7 @@ pub(crate) fn validate_sequences(
                 if c.derived_duration() != Some(c.duration) {
                     return Err(err(Code::InvalidField, format!("{cid}/duration")));
                 }
+                validate_retime(c, t.kind)?;
                 let start = c.timeline_start.value();
                 let end = c
                     .timeline_end()

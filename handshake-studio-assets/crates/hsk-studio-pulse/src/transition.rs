@@ -268,13 +268,24 @@ pub(crate) fn check_at(
 
 /// Source tick `clip` plays at timeline `tick` (which may lie outside the clip: a handle), with
 /// the hold rule of `repeat_end_frame` at the available bounds `[0, extent]`. Positions between
-/// ticks round toward the clip start.
+/// ticks round toward the clip start. A frame-held clip ([STU-VID-031a]) answers its held frame at
+/// every tick (`past_source_end` at or past a known source length); the flag stays `false`, it
+/// names the `repeat_end_frame` rule only (test `the_program_monitor_path_reads_the_hold`).
 pub fn clip_source_at(
     clip: &StudioClip,
     tick: Ticks,
     extents: &dyn SourceExtents,
     hold: bool,
 ) -> Result<(Ticks, bool)> {
+    if let Some(frame_hold) = &clip.retime.frame_hold {
+        if extents
+            .extent(&clip.source_ref)
+            .is_some_and(|e| frame_hold.source_tick >= e)
+        {
+            return Err(PulseError::PastSourceEnd);
+        }
+        return Ok((frame_hold.source_tick, false));
+    }
     let offset = TickDelta::between(clip.timeline_start, tick).value();
     let magnitude = u64::try_from(offset.unsigned_abs()).map_err(|_| PulseError::Overflow)?;
     let num = u128::from(clip.speed.numerator.unsigned_abs());

@@ -30,11 +30,13 @@
 //!   `rate_stretch_multicam_reverse` (lane SMB-PR-MULTICAM-2 refuses reverse speed in resolve and
 //!   flatten, so this planner never creates state multicam refuses to read).
 //!
-//! Spec gaps (declared, not stored): [STU-VID-031]'s `Maintain audio pitch` boolean and the
-//! frame-interpolation choice (`frame_sampling` / `frame_blending` / `optical_flow`) have no field
-//! on `StudioClip`; these planners take neither and the GUI shows them as unavailable. A change of
-//! only the reverse flag leaves the clip window unchanged, so [`crate::EditProposal::changes`] is
-//! empty for it (the prospective sequence and the inverse still carry the new speed).
+//! The retime record: [STU-VID-031]'s `Maintain audio pitch` boolean, the frame-interpolation choice
+//! (`frame_sampling` / `frame_blending` / `optical_flow`) and the frame hold are `StudioClip.retime`,
+//! set by [`crate::plan_set_retime_options`] and the frame hold planners. These planners take none
+//! of them and keep the record unchanged (test `rate_planners_keep_the_retime_record`). The GUI does
+//! not offer them yet. A change of only the reverse flag leaves the clip window unchanged, so
+//! [`crate::EditProposal::changes`] is empty for it (the prospective sequence and the inverse still
+//! carry the new speed).
 //! Premiere Pro's rate-stretch limits, cursor zones and Speed/Duration defaults are UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 
@@ -151,7 +153,7 @@ fn unrepresentable(e: PulseError) -> RateError {
 }
 
 /// The clip, its whole link group (one clip per track), primary first, as (track, clip) indices.
-fn members(seq: &StudioSequence, clip_id: &str) -> RateResult<Vec<(usize, usize)>> {
+pub(crate) fn members(seq: &StudioSequence, clip_id: &str) -> RateResult<Vec<(usize, usize)>> {
     let primary = seq
         .tracks
         .iter()
@@ -179,7 +181,7 @@ fn members(seq: &StudioSequence, clip_id: &str) -> RateResult<Vec<(usize, usize)
 }
 
 /// A reversed speed would be created on a clip multicam reads.
-fn multicam_reads(seq: &StudioSequence, clip_id: &str, records: Option<&StudioMulticamRecords>) -> bool {
+pub(crate) fn multicam_reads(seq: &StudioSequence, clip_id: &str, records: Option<&StudioMulticamRecords>) -> bool {
     records.is_some_and(|r| r.clip(clip_id).is_some() || r.multicam_sequence(&seq.sequence_id).is_some())
 }
 

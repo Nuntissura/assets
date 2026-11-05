@@ -465,6 +465,8 @@ fn every_folio_reference_property_is_classified() {
 /// reported by externals.rs, `internal` = a document-local id or value, `not_a_dependency` = data
 /// that names no input (a destination, a documentation URL, a flag).
 const CLASSIFIED: &[(&str, &str)] = &[
+    ("ClipFrameHold.source_tick", "internal: value (a tick in the source the clip already references, not a reference)"),
+    ("ClipRetime.maintain_audio_pitch", "internal: value (a flag, not an audio reference)"),
     ("ClipSource.artifact_manifest_id", "external:timeline_media"),
     ("ClipSource.asset_id", "external:timeline_media (CKC catalog id)"),
     ("ClipSource.content_digest", "external:timeline_media"),
