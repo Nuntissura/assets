@@ -6,6 +6,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 mod admission;
+mod composition_token;
 mod error;
 mod jobs;
 mod motion;
@@ -20,6 +21,10 @@ mod source;
 mod timeline;
 
 pub use admission::{Admission, Permit};
+pub use composition_token::{
+    AuthoredComposition, COMPOSITION_TOKEN_ABSENT, COMPOSITION_TOKEN_ENTRY, COMPOSITION_TOKEN_UNKNOWN,
+    new_document_composition_entry,
+};
 pub use jobs::{
     AdmissionJobPort, AdmittedJob, JobAdmissionRefusal, JobCounts, JobKind, JobLifecycle, JobOutcome,
     JobRequest, JobSettlement, MAX_JOBS_PER_ADMISSION, RETRY_NEVER_MS,

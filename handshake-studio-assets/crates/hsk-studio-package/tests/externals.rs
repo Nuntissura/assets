@@ -415,6 +415,7 @@ fn every_folio_reference_property_is_classified() {
         ("sequence_settings", serde_json::to_value(folio::sequence_settings_records_schema()).unwrap()),
         ("sequence_presets", serde_json::to_value(folio::sequence_presets_schema()).unwrap()),
         ("track_display", serde_json::to_value(folio::track_display_records_schema()).unwrap()),
+        ("composition_token", serde_json::to_value(folio::composition_token_record_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -501,6 +502,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioColor.colour_profile_id", "external:colour_profile"),
     ("StudioColourTarget.path", "internal: shape item path"),
     ("StudioCompositionEffect.colour_profiles", "container of StudioEffectColourProfile (STU-FX-118, keyed by param_key)"),
+    ("StudioCompositionUpgrade.story_ids", "internal: text story records (the stories a token upgrade affects, STU-TYP-130, SMB-TYPE-AUTHORED-TOKEN-1)"),
     ("StudioConditionalRange.story_id", "internal: text story records"),
     ("StudioControlKind.font_family_editable", "internal: flag"),
     ("StudioControlKind.font_size_editable", "internal: flag"),
@@ -701,6 +703,34 @@ fn track_display_records_round_trip_through_the_package() {
     assert_eq!(opened.quarantined, held, "the entry carried verbatim");
     let reopened = opened.snapshot().unwrap().document();
     assert_eq!(parse_track_display_records(&opened.quarantined[0].bytes, reopened, folio::Budget::default(), &token()).unwrap(), records);
+    // No reference to outside data comes from the entry: the externals are the document's.
+    let without = open(&write(&snapshot, &source(&b), &[], EmbedExternal::Link).unwrap());
+    assert_eq!(states(&opened), states(&without));
+    assert!(opened.externals.iter().all(|e| !e.target.starts_with(DOCUMENT_ENTRY_PREFIX)));
+}
+
+/// Lane SMB-TYPE-AUTHORED-TOKEN-1 (rule 4b): the composition token record names no outside data and
+/// travels in the document entry byte-identically.
+#[test]
+fn composition_token_record_round_trips_through_the_package() {
+    let b = bytes();
+    let snapshot = document(&b);
+    let doc = snapshot.document();
+    let mut record = folio::StudioCompositionTokenRecord::new(doc.document_id.clone(), folio::CURRENT_COMPOSITION_TOKEN);
+    record.upgrades.push(folio::StudioCompositionUpgrade {
+        from_token: folio::ABSENT_COMPOSITION_TOKEN.into(),
+        to_token: folio::CURRENT_COMPOSITION_TOKEN.into(),
+        story_ids: vec!["STXT-019a0000-0000-7000-8000-00000000000a".into()],
+    });
+    let body = serde_json::to_vec(&record).unwrap();
+    let sha = sha256_hex_of(&body);
+    let held = vec![Quarantined { name: format!("{DOCUMENT_ENTRY_PREFIX}composition_token.{sha}"), bytes: body.clone(), sha256_hex: sha }];
+    let package = write(&snapshot, &source(&b), &held, EmbedExternal::Link).unwrap();
+    let opened = open(&package);
+    assert_eq!(opened.snapshot().unwrap().encoded_bytes(), snapshot.encoded_bytes());
+    assert_eq!(opened.quarantined, held, "the entry carried verbatim");
+    let reopened = opened.snapshot().unwrap().document();
+    assert_eq!(folio::parse_composition_token_record(&opened.quarantined[0].bytes, reopened, folio::Budget::default(), &token()).unwrap(), record);
     // No reference to outside data comes from the entry: the externals are the document's.
     let without = open(&write(&snapshot, &source(&b), &[], EmbedExternal::Link).unwrap());
     assert_eq!(states(&opened), states(&without));

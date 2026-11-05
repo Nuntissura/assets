@@ -109,6 +109,8 @@ mod book;
 pub use book::*;
 mod cjk_composition;
 pub use cjk_composition::*;
+mod composition_token;
+pub use composition_token::*;
 mod sequence_preset;
 pub use sequence_preset::*;
 mod track_display;
@@ -511,6 +513,9 @@ pub enum Code {
     /// refuses the arrangement (rule and test: `raster::validate_adjustment_clip_bases`,
     /// `adjustment_clip_base_rule`).
     AdjustmentClipBase,
+    /// A well-formed composition token this build cannot compose under (STU-TYP-130): the document is
+    /// never recomposed under another token on its behalf (`composition_token`).
+    UnknownCompositionToken,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
