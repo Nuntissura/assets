@@ -755,3 +755,57 @@ fn f_r55_11_generate_index_counts_a_mark_on_a_hidden_layer_as_hidden() {
     let g = generate_index(&hidden, &options, &marks, &source, &f.pages, None, IndexLimits::default(), &c).unwrap();
     assert_eq!((g.story.text.as_str(), g.omitted_hidden, g.unplaced), ("Index\na, 1", 1, 0));
 }
+
+// ---- V4-06: capture_index_mark copies a story selection into an index topic ----
+
+fn capture(text: &str, proper_name: bool) -> Result<StudioIndexMark, IndexCommandError> {
+    let (st, _) = story(1, text, &[(0, text.len() as u64)]);
+    capture_index_mark(&st, text, 0, text.len() as u64, "m1", proper_name)
+}
+fn bad_topic() -> IndexCommandError {
+    IndexCommandError::InvalidTopicEntry("m1".into())
+}
+
+#[test]
+fn v4_06_a_captured_topic_leaves_out_markers_with_no_value() {
+    let text = format!("{IDX}Ada{FNOTE} Love{ENOTE}lace{OBJECT}");
+    assert_eq!(capture(&text, true).unwrap().topics, ["Lovelace, Ada"]);
+    assert_eq!(capture(&text, false).unwrap().topics, ["Ada Lovelace"]);
+}
+
+#[test]
+fn v4_06_a_captured_topic_with_a_value_the_call_cannot_read_is_refused() {
+    // The call has no placement, pages or records: no page-number, section or cross-reference value.
+    for m in [CUR, NEXT, PREV, SEC, XR] {
+        assert_eq!(capture(&format!("Ada {m}"), false).unwrap_err(), bad_topic(), "U+{:04X}", m as u32);
+    }
+}
+
+#[test]
+fn v4_06_a_captured_topic_with_a_reserved_code_point_is_refused() {
+    assert_eq!(capture(&format!("Ada{RESERVED}"), false).unwrap_err(), bad_topic());
+}
+
+#[test]
+fn v4_06_a_selection_of_markers_only_is_the_existing_bad_topic_refusal() {
+    for text in [format!("{IDX}"), format!("{FNOTE}{ENOTE}{OBJECT}"), format!(" {IDX} "), format!("{IDX}{PAGE}")] {
+        assert_eq!(capture(&text, false).unwrap_err(), bad_topic(), "{}", text.escape_unicode());
+        assert_eq!(capture(&text, true).unwrap_err(), bad_topic(), "{}", text.escape_unicode());
+    }
+}
+
+#[test]
+fn v4_06_a_captured_topic_reads_terminators_and_flush_space_as_word_breaks() {
+    assert_eq!(capture(&format!("Ada{PAGE}"), false).unwrap().topics, ["Ada"]);
+    assert_eq!(capture(&format!("Ada{PAGE}Lovelace{FLUSH}King"), true).unwrap().topics, ["King, Ada Lovelace"]);
+    assert_eq!(capture("Ada\u{001C}Lovelace", false).unwrap().topics, ["Ada Lovelace"]);
+}
+
+#[test]
+fn v4_06_a_captured_mark_stays_at_its_selection_start_and_writes_no_sentinel() {
+    let text = format!("x{IDX}Ada y");
+    let (st, _) = story(1, &text, &[(0, text.len() as u64)]);
+    let m = capture_index_mark(&st, &text, 1, 7, "m1", false).unwrap();
+    assert_eq!((m.at, m.topics.as_slice()), (1, &["Ada".to_string()][..]));
+    no_sentinel(&m.topics[0]);
+}
