@@ -214,7 +214,8 @@ fn first_line_from(f: &FramePlacement, at: u64) -> usize {
 /// contains `at`; else, for a glyph-less byte where a line breaks or before a paragraph's first glyph, the
 /// line `place_markers` gives it (`sentinels::line_holding` over the lines starting in the byte's story
 /// paragraph, R54 F-R54-6); `None` when it is not placed. An empty span holds no byte, so the blank line of
-/// the paragraph before, which starts where this one starts, is never this paragraph's line.
+/// the paragraph before, which starts where this one starts, is not this paragraph's line
+/// (`a_blank_line_is_not_the_line_of_the_paragraph_after_it`).
 fn text_line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FramePlacement, &'s Line)> {
     let placement = source.placement?;
     let hit = placement.frames.iter().find_map(|f| {

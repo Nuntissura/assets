@@ -419,6 +419,9 @@ fn table_an_overset_heading_counts_overset_unless_overset_is_included() {
 fn a_heading_with_a_letter_among_white_space_keeps_its_entry_as_written() {
     let f = placed(" x ");
     assert_eq!(toc(&f, true, false), Toc { entries: entry(" x ", Some("2")), omitted: (0, 0, 0) });
+    // White space is Unicode White_Space: a zero-width space is a character, so it stays an entry.
+    let f = placed("\u{200B}");
+    assert_eq!(toc(&f, true, false), Toc { entries: entry("\u{200B}", Some("2")), omitted: (0, 0, 0) });
 }
 
 #[test]
@@ -473,6 +476,9 @@ fn a_blank_line_is_not_the_line_of_the_paragraph_after_it() {
     assert_eq!(index_at(&f, &[f.at]), ("Index\nt, 2".to_owned(), 0, 0));
     assert_eq!(page_num_at(&f, f.at), page_2());
     assert_eq!(toc(&f, true, false), Toc { entries: entry("Head", Some("2")), omitted: (0, 0, 0) });
+    // The outline destination reads the same line: frame 2 at y 10, first baseline 10.
+    let g = plain_toc(&f, true, false);
+    assert_eq!((g.entries[0].page_id.as_deref(), g.entries[0].baseline_y), (Some("page-2"), Some(20.0)));
     assert_eq!(running(&f), vec![("page-1".to_owned(), String::new()), ("page-2".to_owned(), "Head".to_owned())]);
     // Page-2's frame hidden: the heading is on it, the blank line before it is not.
     let mut h = fx("\nHead\n", 1);
