@@ -48,7 +48,10 @@
 //! (STU-VID-030 "opaque to timeline operations"). [`frame_layers_nested`] expands a Sequence-source
 //! layer into the nested sequence's layers at the mapped source tick (speed and `source_in` applied
 //! by `frame_layers` itself), recursively; the nested group's weight multiplies every inner layer's
-//! weight (a group-opacity approximation, exact when the group shows one layer). [`NestedAudioSources`]
+//! weight (a group-opacity approximation, exact when the group shows one layer). A nested clip's
+//! source tick is resolved on the nested sequence's frame grid; a nested clip whose interpolation
+//! choice needs two inner frames at this tick is not expanded: it is unresolved with
+//! [`FRAME_INTERPOLATION_UNAVAILABLE`], never one floored inner frame. [`NestedAudioSources`]
 //! renders every nested sequence an audible clip uses through the existing `TimelineMixStream` (its
 //! plain timeline mix: track volume, pan, mute and solo, not its bus routing; with
 //! [`NestedAudioSources::with_routing`] also the clip gain and pan envelopes stored for it, lane
@@ -70,8 +73,8 @@
 
 use crate::audio::{AudioSources, StreamLimits, TimelineMixStream};
 use crate::error::PulseError;
-use crate::playback::{FrameLayer, frame_layers};
-use crate::retime::{SequenceGrid, SourceGrids};
+use crate::playback::{FrameLayer, frame_layers_on_grids};
+use crate::retime::{FRAME_INTERPOLATION_UNAVAILABLE, SequenceGrid, SourceFrameGrid, SourceGrids};
 use crate::range::TickRange;
 use crate::time::samples_from_ticks_exact;
 use crate::timeline_edit::{EditContext, SourceExtents, split_clip};
@@ -688,7 +691,8 @@ pub struct NestedLayer {
     pub layer: FrameLayer,
 }
 
-/// A nested clip that could not be expanded (`code`: `nest_cycle` or `unknown_sequence`).
+/// A nested clip that could not be expanded (`code`: `nest_cycle`, `unknown_sequence` or
+/// [`FRAME_INTERPOLATION_UNAVAILABLE`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NestUnresolved {
     pub path: Vec<String>,
@@ -713,14 +717,34 @@ pub fn frame_layers_nested(sequences: &[StudioSequence], sequence: &StudioSequen
 
 /// [`frame_layers_nested`] with the media sources' frame grids stated by `grids`.
 #[allow(clippy::too_many_arguments)]
-pub fn frame_layers_nested_on_grids(sequences: &[StudioSequence], sequence: &StudioSequence, tick: Ticks, extents: &dyn SourceExtents, max_layers: usize, _grids: &dyn SourceGrids, cancel: &CancellationToken) -> crate::Result<NestedFrame> {
+pub fn frame_layers_nested_on_grids(sequences: &[StudioSequence], sequence: &StudioSequence, tick: Ticks, extents: &dyn SourceExtents, max_layers: usize, grids: &dyn SourceGrids, cancel: &CancellationToken) -> crate::Result<NestedFrame> {
+    let grids = NestGrids { sequences, media: grids };
     let nested = NestedExtents::new(sequences, extents);
     let mut out = NestedFrame::default();
     let mut path = Vec::new();
     let mut stack = vec![sequence.sequence_id.clone()];
     let mut visits = 0usize;
-    expand(sequences, sequence, tick, 1.0, &nested, max_layers, &mut visits, &mut path, &mut stack, &mut out, cancel)?;
+    expand(sequences, sequence, tick, 1.0, &nested, &grids, max_layers, &mut visits, &mut path, &mut stack, &mut out, cancel)?;
     Ok(out)
+}
+
+/// A nested sequence's own frame rate; every other source from the media owner's port.
+struct NestGrids<'a> {
+    sequences: &'a [StudioSequence],
+    media: &'a dyn SourceGrids,
+}
+impl SourceGrids for NestGrids<'_> {
+    fn grid(&self, source: &ClipSource) -> Option<SourceFrameGrid> {
+        match source {
+            ClipSource::Sequence { sequence_id } => self
+                .sequences
+                .iter()
+                .find(|s| &s.sequence_id == sequence_id)
+                .and_then(|s| s.frame_rate.accord())
+                .map(SourceFrameGrid::from_rate),
+            other => self.media.grid(other),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -730,6 +754,7 @@ fn expand(
     tick: Ticks,
     weight: f64,
     extents: &NestedExtents<'_>,
+    grids: &NestGrids<'_>,
     max_layers: usize,
     visits: &mut usize,
     path: &mut Vec<String>,
@@ -737,7 +762,7 @@ fn expand(
     out: &mut NestedFrame,
     cancel: &CancellationToken,
 ) -> crate::Result<()> {
-    for layer in frame_layers(sequence, tick, extents, cancel)? {
+    for layer in frame_layers_on_grids(sequence, tick, extents, grids, cancel)? {
         cancel.check()?;
         // Visit budget (module docs, F-R44-7): every layer is charged before its work.
         *visits = visits.checked_add(1).ok_or(PulseError::Overflow)?;
@@ -758,9 +783,13 @@ fn expand(
             out.unresolved.push(NestUnresolved { path: path.clone(), clip_id: layer.clip_id.clone(), code: "unknown_sequence" });
             continue;
         };
+        if layer.answer.pair().is_some() {
+            out.unresolved.push(NestUnresolved { path: path.clone(), clip_id: layer.clip_id.clone(), code: FRAME_INTERPOLATION_UNAVAILABLE });
+            continue;
+        }
         path.push(layer.clip_id.clone());
         stack.push(sequence_id.clone());
-        let result = expand(sequences, inner, layer.source_tick, weight * layer.weight, extents, max_layers, visits, path, stack, out, cancel);
+        let result = expand(sequences, inner, layer.source_tick, weight * layer.weight, extents, grids, max_layers, visits, path, stack, out, cancel);
         path.pop();
         stack.pop();
         result?;

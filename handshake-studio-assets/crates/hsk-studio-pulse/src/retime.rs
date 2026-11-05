@@ -19,7 +19,7 @@
 //!   ([`SourceFrameAnswer::estimation_mark`]): any diagnostic comparing the frame to a source frame
 //!   carries that mark ([STU-VID-031] "MUST be marked as an estimation"). The motion estimator is
 //!   `hsk_studio_pigment::frame_blend::{optical_flow, pixel_motion}`; pulse has no edge to pigment
-//!   and renders nothing, so wiring this answer to it is the renderer's work.
+//!   and renders nothing: [`crate::FrameLayer::answer`] carries this answer to the renderer.
 //! - Only frames of the source window are named: a position past the last frame (or below the first
 //!   when reversed) stays on it, with weight 0.
 //!
@@ -56,8 +56,21 @@
 //! `set_and_clear_are_one_step_with_one_inverse`); session commits whole sequences, so the record
 //! reaches the document either way (session test `retime_commit`).
 //!
-//! Not here: `Time remapping` ([STU-VID-031a] keyframed speed), pixels, and the pitch-preserving
-//! mix (`maintain_audio_pitch` is stored; `build_timeline_mix` does not read it yet).
+//! **What a program layer shows** (lane SMB-PR-RETIME-OUTPUT-1): `frame_layers` carries the answer on
+//! each [`crate::FrameLayer`]. The answer is [`resolve_source_frames`], with two readings where that
+//! function does not reach:
+//! - Unit speed, forward, `frame_sampling`: the layer keeps the tick [`crate::clip_source_at`]
+//!   answers and the frame holding it. Off the source grid that frame can differ from the nearest
+//!   one; unit-speed output does not change (test `unit_speed_sampling_output_does_not_change`).
+//!   Every other speed shows the nearest frame, where `clip_source_at` alone floors.
+//! - A transition handle (the tick lies off the clip): the same position law past the window, bounded
+//!   by the known source length, or by the window when the length is unknown, and refused or held as
+//!   `clip_source_at` decides (test `a_transition_handle_carries_the_choice_past_the_window`).
+//!
+//! The grid comes from a [`SourceGrids`] port; a source it does not state is read on the sequence's
+//! own frame grid, and a nested sequence on its own rate. Studio readings, Premiere UNVERIFIED (D5).
+//!
+//! Not here: `Time remapping` ([STU-VID-031a] keyframed speed) and pixels.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::PulseError;
@@ -66,7 +79,7 @@ use crate::rate::{RateError, members, multicam_reads};
 use crate::timeline_edit::{
     EditContext, EditProposal, Footprint, SourceExtents, grid_of, propose, rate_of, split_clip,
 };
-use crate::transition::locate;
+use crate::transition::{clip_source_at, locate};
 use hsk_studio_accord::{FrameRate, Ticks};
 pub use hsk_studio_folio::{ClipFrameHold, ClipRetime, FrameHoldAnchor, FrameInterpolation};
 use hsk_studio_folio::{ClipSource, Snapshot, StudioClip, StudioMulticamRecords, StudioSequence, TrackKind};
@@ -315,6 +328,122 @@ fn neighbours(clip: &StudioClip, tick: Ticks, grid: SourceFrameGrid) -> crate::R
     })
 }
 
+/// The frame pair of a position in a transition handle: the law of [`neighbours`] past the window,
+/// bounded by the frames of a known source length (module docs).
+fn handle_neighbours(
+    clip: &StudioClip,
+    tick: Ticks,
+    grid: SourceFrameGrid,
+    extents: &dyn SourceExtents,
+) -> crate::Result<Neighbours> {
+    if clip.speed.numerator == 0 {
+        return Err(PulseError::ZeroSpeed);
+    }
+    if clip.speed.denominator == 0 {
+        return Err(PulseError::InvalidSpeed);
+    }
+    let (_, last) = window_frames(clip, grid)?;
+    let den = i128::from(clip.speed.denominator);
+    let ticks_per_frame = i128::from(grid.ticks_per_frame);
+    let moved = TickDelta::between(clip.timeline_start, tick)
+        .value()
+        .checked_mul(i128::from(clip.speed.numerator))
+        .ok_or(PulseError::Overflow)?;
+    // The position in units of 1 / den tick; `moved` already carries the speed's sign.
+    let anchor = if clip.speed.is_reversed() {
+        i128::from(last).checked_mul(ticks_per_frame)
+    } else {
+        Some(i128::from(clip.source_in.value()))
+    }
+    .and_then(|v| v.checked_mul(den))
+    .ok_or(PulseError::Overflow)?;
+    let position = anchor.checked_add(moved).ok_or(PulseError::Overflow)?;
+    let Ok(position) = u128::try_from(position) else {
+        return Ok(Neighbours::on(0));
+    };
+    let high = match extents.extent(&clip.source_ref).filter(|e| e.value() > 0) {
+        Some(length) => grid.index_of(length.checked_sub(Ticks::new(1))?)?,
+        None => last,
+    };
+    let modulus = den
+        .checked_mul(ticks_per_frame)
+        .and_then(|m| u128::try_from(m).ok())
+        .ok_or(PulseError::Overflow)?;
+    let index = position.checked_div(modulus).ok_or(PulseError::InvalidInput)?;
+    let remainder = position.checked_rem(modulus).ok_or(PulseError::InvalidInput)?;
+    if index >= u128::from(high) {
+        return Ok(Neighbours::on(high));
+    }
+    let from = u64::try_from(index).map_err(|_| PulseError::Overflow)?;
+    let to = from.checked_add(1).ok_or(PulseError::Overflow)?;
+    Ok(Neighbours {
+        from,
+        to,
+        remainder,
+        modulus,
+    })
+}
+
+fn answer_of(
+    method: FrameInterpolation,
+    pair: &Neighbours,
+    grid: SourceFrameGrid,
+) -> crate::Result<SourceFrameAnswer> {
+    let (from, to) = (grid.frame(pair.from)?, grid.frame(pair.to)?);
+    let weight = FrameWeight::reduced(pair.remainder, pair.modulus);
+    Ok(match method {
+        FrameInterpolation::FrameSampling => SourceFrameAnswer::Sampled(grid.frame(pair.nearest())?),
+        FrameInterpolation::FrameBlending => SourceFrameAnswer::Blended { from, to, weight },
+        FrameInterpolation::OpticalFlow => SourceFrameAnswer::Estimated { from, to, weight },
+    })
+}
+
+/// What a program layer plays (module docs).
+pub(crate) struct LayerFrame {
+    pub(crate) source_tick: Ticks,
+    pub(crate) held: bool,
+    pub(crate) answer: SourceFrameAnswer,
+}
+
+/// The layer of `clip` at timeline `tick`, which may lie in a transition handle (module docs).
+/// `repeat_end_frame` is the transition's hold rule of [`clip_source_at`].
+pub(crate) fn layer_frame(
+    clip: &StudioClip,
+    tick: Ticks,
+    grid: SourceFrameGrid,
+    extents: &dyn SourceExtents,
+    repeat_end_frame: bool,
+) -> crate::Result<LayerFrame> {
+    let frame_at = |t: Ticks| grid.frame(grid.index_of(t)?);
+    if clip.retime.frame_hold.is_some() {
+        let (source_tick, held) = clip_source_at(clip, tick, extents, repeat_end_frame)?;
+        let answer = SourceFrameAnswer::Held(frame_at(source_tick)?);
+        return Ok(LayerFrame { source_tick, held, answer });
+    }
+    let unit = u64::try_from(clip.speed.numerator).is_ok_and(|n| n == clip.speed.denominator && n != 0);
+    let end = clip.timeline_end().ok_or(PulseError::Overflow)?;
+    let inside = tick >= clip.timeline_start && tick < end;
+    if inside && !unit {
+        let answer = resolve_source_frames(clip, tick, grid, extents)?;
+        let source_tick = answer.frame().start;
+        return Ok(LayerFrame { source_tick, held: false, answer });
+    }
+    let method = clip.retime.frame_interpolation;
+    let (source_tick, held) = clip_source_at(clip, tick, extents, repeat_end_frame)?;
+    if held || (unit && method == FrameInterpolation::FrameSampling) {
+        let answer = SourceFrameAnswer::Sampled(frame_at(source_tick)?);
+        return Ok(LayerFrame { source_tick, held, answer });
+    }
+    let pair = if inside {
+        neighbours(clip, tick, grid)?
+    } else {
+        handle_neighbours(clip, tick, grid, extents)?
+    };
+    let answer = answer_of(method, &pair, grid)?;
+    let source_tick = if unit { source_tick } else { answer.frame().start };
+    Ok(LayerFrame { source_tick, held, answer })
+}
+
 /// What `clip` shows at timeline `tick` (module docs). `outside_range` for a tick off the clip;
 /// `past_source_end` for a stored hold at or past a known source length.
 pub fn resolve_source_frames(
@@ -338,14 +467,7 @@ pub fn resolve_source_frames(
             grid.frame(grid.index_of(hold.source_tick)?)?,
         ));
     }
-    let pair = neighbours(clip, tick, grid)?;
-    let (from, to) = (grid.frame(pair.from)?, grid.frame(pair.to)?);
-    let weight = FrameWeight::reduced(pair.remainder, pair.modulus);
-    Ok(match clip.retime.frame_interpolation {
-        FrameInterpolation::FrameSampling => SourceFrameAnswer::Sampled(grid.frame(pair.nearest())?),
-        FrameInterpolation::FrameBlending => SourceFrameAnswer::Blended { from, to, weight },
-        FrameInterpolation::OpticalFlow => SourceFrameAnswer::Estimated { from, to, weight },
-    })
+    answer_of(clip.retime.frame_interpolation, &neighbours(clip, tick, grid)?, grid)
 }
 
 /// Where a frame hold takes its source frame ([STU-VID-031a]).

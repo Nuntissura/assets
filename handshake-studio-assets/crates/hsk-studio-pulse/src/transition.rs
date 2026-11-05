@@ -268,7 +268,8 @@ pub(crate) fn check_at(
 
 /// Source tick `clip` plays at timeline `tick` (which may lie outside the clip: a handle), with
 /// the hold rule of `repeat_end_frame` at the available bounds `[0, extent]`. Positions between
-/// ticks round toward the clip start. A frame-held clip ([STU-VID-031a]) answers its held frame at
+/// ticks round toward the clip start: this is the tick mapping, not what the monitor shows, which
+/// is `FrameLayer::answer` (`retime` module docs). A frame-held clip ([STU-VID-031a]) answers its held frame at
 /// every tick (`past_source_end` at or past a known source length); the flag stays `false`, it
 /// names the `repeat_end_frame` rule only (test `the_program_monitor_path_reads_the_hold`).
 pub fn clip_source_at(
