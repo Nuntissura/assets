@@ -26,7 +26,8 @@
 //!   ([STU-VID-031] "fixing either derives the other"). The head stays, the tail follows, no ripple.
 //!   Typed form: [`TimelineCommand::SpeedDuration`] `{clip_id, target, reverse}`.
 //!   `Maintain audio pitch` and the frame-interpolation choice (frame sampling / frame blending /
-//!   optical flow) are shown as unavailable: the clip record has no field for them (spec gap).
+//!   optical flow) are shown as unavailable because this form is not wired to them. The clip record
+//!   holds both in `StudioClip.retime`, and pulse sets them with `plan_set_retime_options`.
 //! - Clip blocks of clips not at 100 % show their speed after the name (`(-50.00%)` = reversed
 //!   half speed).
 //! - **Slip at speed**: a slip of N timeline frames moves the source window by N x ticks per frame
