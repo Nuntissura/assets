@@ -258,22 +258,61 @@ fn capture_the_table() {
     std::fs::write(out, table).unwrap();
 }
 
-/// Every row of the table, byte for byte against the base sha.
+/// Every row of the table, byte for byte against the base sha. A `panic` row is a paragraph the base
+/// sha could not answer (the ladder dead end at the first line, `threaded_reflow.rs:1410`): no bytes
+/// to compare, so it must now answer by the emergency rule, which `emergency_answer` reads.
 #[test]
 fn every_generated_paragraph_composes_as_on_the_base_sha() {
     let all = cases();
     let want: Vec<&str> = TABLE.lines().collect();
     assert_eq!(want.len(), all.len());
-    let differ: Vec<String> = all
-        .iter()
-        .enumerate()
-        .filter_map(|(i, c)| {
-            let got = row(i, c);
-            (got != want[i]).then(|| format!("{got} want {} {c:?}", want[i]))
-        })
-        .take(5)
-        .collect();
-    assert!(differ.is_empty(), "{differ:#?}");
+    let (mut differ, mut panics) = (Vec::new(), 0usize);
+    for (i, c) in all.iter().enumerate() {
+        if want[i].ends_with(" panic") {
+            panics += 1;
+            emergency_answer(c);
+            continue;
+        }
+        let got = row(i, c);
+        if got != want[i] {
+            differ.push(format!("{got} want {}", want[i]));
+        }
+    }
+    assert_eq!((differ.len(), differ), (0, Vec::<String>::new()));
+    assert_eq!(panics, 11, "the rows the base sha panics on");
+}
+/// The defined answer of a paragraph with no path: lines that tile it, an overfull line, the ladder
+/// limit held.
+fn emergency_answer(c: &Case) {
+    let p = compose(c).unwrap();
+    let lines: Vec<&Line> = p.frames.iter().flat_map(|f| f.lines.iter()).collect();
+    assert_eq!(lines.first().unwrap().glyph_range.start, 0, "{c:?}");
+    assert!(lines.windows(2).all(|w| w[0].glyph_range.end == w[1].glyph_range.start), "{c:?} {lines:?}");
+    assert!(lines.iter().any(|l| l.overfull), "{c:?} {lines:?}");
+    let limit = usize::from(c.hyphen_limit.unwrap());
+    if limit > 0 {
+        for w in lines.windows(limit + 1) {
+            assert!(!w.iter().all(|l| l.hyphenated), "{c:?} {lines:?}");
+        }
+    }
+}
+
+/// The rows where a justified window commits into a dead end past the first line. The composer stops
+/// there and the last line takes the rest of the paragraph's glyphs: the excess is `hang_pt`, past the
+/// slot, and the line is not marked overfull. Wrong-looking, and exactly what the base sha answers, so
+/// it stays until a lane is told to change it (open finding in the lane notes). This pins the reading;
+/// the bytes are pinned by the table.
+const WINDOW_DEAD_ENDS: [usize; 8] = [80, 334, 609, 807, 842, 1201, 1269, 1440];
+#[test]
+fn a_window_dead_end_keeps_the_answer_of_the_base_sha() {
+    let all = cases();
+    for i in WINDOW_DEAD_ENDS {
+        let c = &all[i];
+        assert!(matches!(c.alignment, Alignment::Justified | Alignment::JustifiedAll), "{i} {c:?}");
+        let p = compose(c).unwrap();
+        let last = p.frames.iter().flat_map(|f| f.lines.iter()).last().unwrap();
+        assert!(last.hang_pt > last.available_pt && !last.overfull, "{i} {last:?}");
+    }
 }
 
 /// The table holds what it claims: both windows, forced breaks, hyphen runs, overfull lines, widths
