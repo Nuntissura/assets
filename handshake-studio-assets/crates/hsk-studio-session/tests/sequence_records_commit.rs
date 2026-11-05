@@ -716,3 +716,33 @@ fn a_resync_cannot_leave_the_settings_entry_invalid() {
         assert_eq!(session.document_entry(SEQUENCE_SETTINGS_ENTRY), Some(bad.as_slice()));
     });
 }
+
+/// Lane SMB-PR-TRACK-DISPLAY-1, brief item 3: a resync is held to the same rule for the track display
+/// entry.
+#[test]
+fn a_resync_keeps_a_valid_track_display_entry_valid() {
+    bounded_case("resync_display", || {
+        let mut held = StudioTrackDisplayRecords::new(doc_id());
+        held.sequences.push(StudioTrackDisplayEntry {
+            sequence_id: "seq-a".into(),
+            switches: StudioTrackDisplaySwitches::STUDIO_DEFAULT,
+            heights: StudioTrackHeights::all(EXPANDED_TRACK_HEIGHT),
+            height_presets: Vec::new(),
+        });
+        let authority = Authority::default();
+        let mut session = open_with_authority(&package(&[entry(TRACK_DISPLAY_ENTRY, &serde_json::to_vec(&held).unwrap())]), &authority);
+        authority.0.lock().unwrap().wrong_binding = true;
+        let key = IdempotencyKey::parse("presets-1").unwrap();
+        let presets = step(vec![], None, Some(RecordEdit { expect: None, write: Some(library(vec![preset("mine", F25)])) }));
+        assert_eq!(session.submit_sequence_records_keyed(&key, &presets, 3, &token()).unwrap_err().code(), "receipt_mismatch");
+        let mut document = session.snapshot().document().clone();
+        document.revision = 4;
+        document.sequences.remove(0);
+        let bytes = serde_json::to_vec(&document).unwrap();
+        assert_eq!(session.resync_diverged(&key, &bytes, &token()).unwrap_err().code(), "folio_rejected");
+        assert_eq!(session.document_revision(), 3, "nothing changed");
+        session.set_track_display_records(None, &token()).unwrap();
+        session.resync_diverged(&key, &bytes, &token()).unwrap();
+        assert_eq!(session.document_revision(), 4);
+    });
+}
