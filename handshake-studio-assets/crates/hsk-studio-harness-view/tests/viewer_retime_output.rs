@@ -216,14 +216,18 @@ fn centroid(c: &[f32]) -> f32 {
 fn optical_flow_moves_the_edge_where_blending_ghosts_it() {
     let bar = Bar { step: 6, occluder: false };
     // Half speed, frame 1: the bar sits at x 6 in source frame 0 and x 12 in source frame 1, so the
-    // frame half way has it at x 9 (columns 9..13, centre 10.5).
+    // frame half way has it at x 9 (columns 9..13). The two positions do not overlap, so the estimate
+    // leaves faint residue behind (pigment module docs: no occlusion reasoning); the proof is where
+    // the brightest columns are: the frame blend has nothing there.
     let flow = monitor(sequence("s", vec![clip(1, media("a"), 8, 0, (1, 2), Flow)]), 32);
     let image = render(&flow, 1, &bar).unwrap();
     let c = columns(&image);
     let (at, peak) = (centroid(&c), c.iter().copied().fold(0.0, f32::max));
     println!("FLOW centroid {at:.3}, peak {peak:.3}, columns {c:.2?}");
-    assert!((at - 10.5).abs() < 1.0, "the bar is half way: {at}");
-    assert!(peak > 0.75, "one bar, not two ghosts: {peak}");
+    assert!((at - 10.5).abs() < 1.5, "the bar is near half way: {at}");
+    assert!(peak > 0.75, "a bright bar, not two half ghosts: {peak}");
+    let bright: Vec<usize> = (0..c.len()).filter(|x| c[*x] > 0.75).collect();
+    assert!(!bright.is_empty() && bright.iter().all(|x| (9..13).contains(x)), "bright columns {bright:?} lie in the bar half way");
     assert!(image.exactness.operators.iter().any(|o| o.key == "frame_blend"), "the estimator ran");
     // The same frames blended: two half-bright bars at the source positions, nothing in between.
     let blend = monitor(sequence("s", vec![clip(1, media("a"), 8, 0, (1, 2), Blend)]), 32);
@@ -231,17 +235,18 @@ fn optical_flow_moves_the_edge_where_blending_ghosts_it() {
     println!("BLEND columns {c:.2?}");
     assert!((c[7] - 0.5).abs() < 1e-4 && (c[13] - 0.5).abs() < 1e-4, "{c:?}");
     assert!(c[10] < 1e-4, "no bar between: {c:?}");
-    // A quarter of the way: the position follows the weight (speed 1/4, frame 1).
+    // A quarter of the way: the position follows the weight (speed 1/4, frame 1): centre 9.
     let quarter = monitor(sequence("s", vec![clip(1, media("a"), 8, 0, (1, 4), Flow)]), 32);
-    let at = centroid(&columns(&render(&quarter, 1, &bar).unwrap()));
-    println!("FLOW quarter centroid {at:.3}");
-    assert!((at - 9.0).abs() < 1.0, "{at}");
+    let early = centroid(&columns(&render(&quarter, 1, &bar).unwrap()));
+    println!("FLOW quarter centroid {early:.3}");
+    assert!((early - 9.0).abs() < 1.5 && early < at, "{early} against {at}");
 }
 
 #[test]
 fn optical_flow_over_an_occlusion_is_an_estimation_and_says_so() {
-    // The bar passes behind a post; the estimator has no occlusion reasoning (pigment module docs),
-    // so the post's neighbourhood is an estimate: the post itself stays where the frames agree.
+    // The bar passes behind a post. The estimator has no occlusion reasoning (pigment module docs),
+    // so it paints the bar over the post, the artefact [STU-VID-031] names: not a source frame and
+    // not their mix. The frame says so through the mark.
     let bar = Bar { step: 6, occluder: true };
     let mut m = monitor(sequence("s", vec![clip(1, media("a"), 8, 0, (1, 2), Flow)]), 32);
     let clock = HeadlessClock::new(48_000);
@@ -249,7 +254,11 @@ fn optical_flow_over_an_occlusion_is_an_estimation_and_says_so() {
     m.refresh(&clock, &bar, &Known, &CancellationToken::default()).unwrap();
     let c = columns(&m.shown().expect("a frame").image);
     println!("OCCLUSION columns {c:.2?}");
-    assert!((c[22] - 0.5).abs() < 0.2 && (c[23] - 0.5).abs() < 0.2, "the post holds: {c:?}");
+    let mix = monitor(sequence("s", vec![clip(1, media("a"), 8, 0, (1, 2), Blend)]), 32);
+    let mixed = columns(&render(&mix, 5, &bar).unwrap());
+    println!("OCCLUSION mixed {mixed:.2?}");
+    assert!((mixed[22] - 0.5).abs() < 1e-4, "both source frames hold the post: {mixed:?}");
+    assert!(c.iter().zip(&mixed).any(|(a, b)| (a - b).abs() > 0.1), "the estimate is not the mix: {c:?}");
     let state = m.state_json();
     let layer = &state["shown_layers"][0];
     assert_eq!(layer["estimation_mark"], "estimation", "{state}");
@@ -464,10 +473,10 @@ fn a_late_estimate_follows_the_existing_drop_policy() {
     assert_eq!(lag, 6 * F, "and the picture falls behind");
 }
 
-/// 8 frames of 16 x 16 planar 4:4:4 Y4M at 12 fps, luma 40 + 20 f.
+/// 8 frames of 16 x 16 planar 4:4:4 Y4M at 24 fps, luma 40 + 20 f.
 #[cfg(feature = "media")]
 fn y4m() -> Vec<u8> {
-    let mut out = b"YUV4MPEG2 W16 H16 F12:1 Ip A1:1 C444\n".to_vec();
+    let mut out = b"YUV4MPEG2 W16 H16 F24:1 Ip A1:1 C444\n".to_vec();
     for f in 0..8u8 {
         out.extend_from_slice(b"FRAME\n");
         out.extend(std::iter::repeat_n(40 + 20 * f, 256));
@@ -486,21 +495,19 @@ fn real_decoded_frames_blend_through_the_frame_cache() {
     // Room for 3 decoded frames: 16 x 16 x 16 bytes each.
     let limits = FrameCacheLimits { max_bytes: 3 * 4096, max_entries: 8, max_frame_bytes: 4096 };
     let frames = MediaFrames::new(decoder, limits, 1).unwrap();
-    let t12 = 21_168_000_000u64;
-    assert_eq!(frames.source_grid(&a), Some(t12), "from the container");
-    let raw = |f: u64| frames.frame_result(&a, Ticks::new(f * t12)).unwrap().colour[0..4].try_into().map(f32::from_le_bytes).unwrap();
+    assert_eq!(frames.source_grid(&a), Some(T24), "from the container");
+    let raw = |f: u64| frames.frame_result(&a, Ticks::new(f * T24)).unwrap().colour[0..4].try_into().map(f32::from_le_bytes).unwrap();
     let (d0, d1) = (raw(0), raw(1));
     assert!(d1 > d0, "{d0} {d1}");
-    // 8 frames at 12 fps = 16.67 timeline frames at 25. Speed 1/2, timeline frame 1: F / 2 is 0.24
-    // of a 12 fps frame, so the share of frame 1 is 6/25.
+    // Speed 1/2, timeline frame 1: F / 2 is 0.48 of a 24 fps frame, so the share of frame 1 is 12/25.
     let mut seq = sequence("s", vec![clip(1, a.clone(), 8, 0, (1, 2), Blend)]);
-    seq.tracks[0].clips[0].source_out = Ticks::new(8 * t12);
-    seq.tracks[0].clips[0].duration = Ticks::new(16 * t12);
-    seq.duration = Ticks::new(16 * t12);
+    seq.tracks[0].clips[0].source_out = Ticks::new(8 * T24);
+    seq.tracks[0].clips[0].duration = Ticks::new(16 * T24);
+    seq.duration = Ticks::new(16 * T24);
     let m = monitor(seq, 16);
     let cancel = CancellationToken::default();
     let image = m.render_at(Ticks::new(F), &frames, &UnknownLength, &cancel).unwrap();
-    let want = d0 * (1.0 - 0.24) + d1 * 0.24;
+    let want = d0 * (1.0 - 0.48) + d1 * 0.48;
     let p = image.pixel(8, 8).unwrap()[0];
     assert!((p - want).abs() < 1e-4, "{p} against {want}");
     frames.with_pipeline(|p| {

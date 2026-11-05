@@ -451,6 +451,8 @@ impl FrameDecoder for ReelFrameDecoder {
 pub struct MediaFrames {
     pipeline: RefCell<FramePipeline<ReelFrameDecoder>>,
     cancel: CancellationToken,
+    /// Ticks per frame by source key, from the container; at most one per registered source.
+    grids: RefCell<BTreeMap<String, u64>>,
     /// Decoder calls one prefetch may make.
     pub prefetch_decodes: u32,
 }
@@ -465,6 +467,7 @@ impl MediaFrames {
         Ok(Self {
             pipeline: RefCell::new(pipeline),
             cancel: CancellationToken::default(),
+            grids: RefCell::new(BTreeMap::new()),
             prefetch_decodes: 2,
         })
     }
@@ -486,6 +489,15 @@ impl FrameSource for MediaFrames {
                 code: r.code,
                 detail: r.detail,
             })
+    }
+    fn source_grid(&self, source: &ClipSource) -> Option<u64> {
+        let key = source_key(source)?;
+        if let Some(ticks) = self.grids.borrow().get(&key) {
+            return Some(*ticks);
+        }
+        let (_, ticks, _, _) = self.pipeline.borrow().decoder().layout(source, &self.cancel).ok()?;
+        self.grids.borrow_mut().insert(key, ticks);
+        Some(ticks)
     }
     fn prefetch(&self, layers: &[FrameLayer], cancel: &CancellationToken) -> u64 {
         self.pipeline
