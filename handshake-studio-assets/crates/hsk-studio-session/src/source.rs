@@ -160,7 +160,8 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// the Folio `StudioSequenceSettingsRecords` and `StudioSequencePresetSet` (`crate::sequence_records`,
 /// validated on open, set and read; an invalid one opens with a loss note and refuses on read).
 /// `track_display` (lane SMB-PR-TRACK-DISPLAY-1) carries the Folio `StudioTrackDisplayRecords` the same
-/// way.
+/// way. An open notes an `audio_routing` entry that does not validate the same way (lane
+/// SMB-PR-ENTRY-REFERENCES-1).
 pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display"];
 
 /// The token of a well-formed document entry name whose digest is its body's.

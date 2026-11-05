@@ -245,9 +245,21 @@ fn dangling_and_duplicate_entries_are_refused() {
     let mut bad_key = r.clone();
     bad_key.multicam_sequences[0].sequence_id = "../seq".into();
     assert_eq!(code(&bad_key, &d), Some(Code::InvalidId));
+    // Lead decision on R56 F-R56-3: a clip no sequence holds is inert, kept and listed, still checked.
     let mut unknown_clip = r.clone();
     unknown_clip.clips.push(mode(77, 1));
-    assert_eq!(check(&unknown_clip, &d), Err((Code::DanglingReference, ident("SCLP", 77))));
+    assert_eq!(check(&unknown_clip, &d), Ok(()));
+    assert_eq!(inert_multicam_clips(&unknown_clip, &d), vec![&mode(77, 1)]);
+    assert_eq!(inert_multicam_clips(&r, &d), Vec::<&StudioMulticamClip>::new());
+    let mut unknown_twice = unknown_clip.clone();
+    unknown_twice.clips.push(mode(77, 1));
+    assert_eq!(check(&unknown_twice, &d), Err((Code::DuplicateIdentity, ident("SCLP", 77))));
+    let mut unknown_angle = r.clone();
+    unknown_angle.clips.push(mode(77, 0));
+    assert_eq!(code(&unknown_angle, &d), Some(Code::InvalidField));
+    let mut unknown_ceiling = r.clone();
+    unknown_ceiling.clips.push(mode(77, u32::MAX));
+    assert_eq!(code(&unknown_ceiling, &d), Some(Code::InvalidField));
     let mut bad_clip_id = r.clone();
     bad_clip_id.clips[0].clip_id = "clip-1".into();
     assert_eq!(code(&bad_clip_id, &d), Some(Code::InvalidId));

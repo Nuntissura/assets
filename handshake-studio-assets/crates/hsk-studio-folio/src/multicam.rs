@@ -29,8 +29,14 @@
 //! - `enabled` false (command `cmd.clip.multicam.toggle`) plays the source sequence as an ordinary
 //!   nest and keeps the stored angles.
 //!
-//! Refusals: out-of-range angles and a wrong `angle_order` `InvalidField`; an unknown sequence, track
-//! or clip, or a clip whose `source_ref` is not a declared multicam source `DanglingReference`;
+//! A mode of a clip no sequence holds is inert, not invalid (lead decision on R56 F-R56-3, the rule of
+//! the track display records; vendor parity UNVERIFIED, D5): kept, its id, uniqueness and angle ceiling
+//! still checked, live again when the clip comes back, listed by [`inert_multicam_clips`]. The readers
+//! look a mode up from the clip they hold. `angle_order` is read by index, so a stale track there stays
+//! refused.
+//!
+//! Refusals: out-of-range angles and a wrong `angle_order` `InvalidField`; an unknown sequence or
+//! track, or a held clip whose `source_ref` is not a declared multicam source `DanglingReference`;
 //! duplicate sequence or clip entries `DuplicateIdentity`; counts beyond the hard ceilings or the
 //! caller node budget `BudgetExceeded`. The records arrive from untrusted wire JSON: integer
 //! arithmetic is denied (workflow V4-01) and every list is counted before it is walked.
@@ -192,8 +198,9 @@ pub fn parse_multicam_records(
 }
 
 /// The clip modes of `records` naming a clip no sequence of `document` holds, in stored order.
-pub fn inert_multicam_clips<'a>(_records: &'a StudioMulticamRecords, _document: &StudioDocument) -> Vec<&'a StudioMulticamClip> {
-    Vec::new()
+pub fn inert_multicam_clips<'a>(records: &'a StudioMulticamRecords, document: &StudioDocument) -> Vec<&'a StudioMulticamClip> {
+    let held = |id: &str| document.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()).any(|c| c.clip_id == id);
+    records.clips.iter().filter(|m| !held(&m.clip_id)).collect()
 }
 
 /// Validates the record set against the document (module docs).
@@ -257,12 +264,21 @@ pub fn validate_multicam_records(
         cx.tick()?;
         let t = c.clip_id.as_str();
         id(t, "SCLP", "clips/clip_id")?;
-        let Some((owner, source)) = owners.get(t) else {
-            return Err(err(Code::DanglingReference, t));
-        };
         if !seen.insert(t) {
             return Err(err(Code::DuplicateIdentity, t));
         }
+        // A clip no sequence holds: its mode is inert (lead decision on R56 F-R56-3, module docs). Its
+        // angles have no source to count against, so only the ceiling applies.
+        let Some((owner, source)) = owners.get(t) else {
+            let in_range = |a: u32| usize::try_from(a).is_ok_and(|a| (1..=MAX_MULTICAM_ANGLES).contains(&a));
+            if !in_range(c.active_angle) {
+                return Err(err(Code::InvalidField, format!("{t}/active_angle")));
+            }
+            if !in_range(c.audio_angle) || (c.audio_follows_video && c.audio_angle != c.active_angle) {
+                return Err(err(Code::InvalidField, format!("{t}/audio_angle")));
+            }
+            continue;
+        };
         let ClipSource::Sequence { sequence_id } = source else {
             return Err(err(Code::DanglingReference, format!("{t}/source_ref")));
         };

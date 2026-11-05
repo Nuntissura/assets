@@ -2139,6 +2139,14 @@ impl Session {
         let snapshot =
             self.inspect_authority_document(authority_document, authority.revision, cancel)?;
         self.keep_settings_entry_valid(snapshot.document(), cancel)?;
+        // As the settings entry: an authority document may not orphan a multicam entry that validates now.
+        sequence_records_step::keep_multicam_records_valid(
+            self.document_entry(MULTICAM_ENTRY),
+            self.snapshot.document(),
+            snapshot.document(),
+            self.config.budgets.folio(),
+            cancel,
+        )?;
         let revision_before = self.snapshot.document().revision;
         let revision_after = snapshot.document().revision;
         self.revisions = chronicle::seed_revisions(snapshot.document());
@@ -2827,7 +2835,7 @@ impl Session {
     /// Stores or removes the entry `token` (already a known token, size already checked). The loss
     /// note of a replaced sequence entry goes with it: it named an entry the session no longer holds.
     fn put_document_entry(&mut self, token: &str, bytes: Option<Vec<u8>>) {
-        if sequence_records::validated_token(token) {
+        if sequence_records::noted_token(token) {
             let held = &self.quarantined;
             let replaced = |name: &str| {
                 held.iter().any(|q| q.name == name && document_entry(&q.name, &q.sha256_hex) == Some(token))

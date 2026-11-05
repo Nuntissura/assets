@@ -32,6 +32,14 @@
 //! declared defaults (`Session::resolved_track_displays`), so that read also says which sequences have
 //! stored state. Tests: tests/track_display.rs.
 //!
+//! The audio routing set is the entry `studio/audio_routing.<sha256>` (lane SMB-PR-ENTRY-REFERENCES-1,
+//! R56 F-R56-3): opened and read as above, so a damaged one opens noted, refuses on read and keeps its
+//! bytes. Lead decision: like display state it blocks no commit, because an id the document does not
+//! hold is inert, not invalid (Folio `audio_routing`, `Session::inert_audio_routing_references`).
+//! Multicam clip modes follow the same rule (`Session::inert_multicam_clips`); multicam sequences and
+//! the settings entry keep their refusals. A direct write of the routing stays its producer's to
+//! validate, as before this lane. Tests: tests/entry_references.rs.
+//!
 //! Bounds: the Folio input budget (`budget.input_bytes`, depth, duplicate keys) applies before any
 //! parse, then the Folio record bounds; the package limits apply to the entry bytes on open and on
 //! every write. Serialisation is serde_json of the Folio type (deterministic field order).
@@ -42,7 +50,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     Budget, Code, Diagnostic, StudioAudioRoutingSet, StudioDocument, StudioInertRoutingReference, StudioMulticamClip, StudioResolvedTrackDisplay, StudioSequencePresetSet,
     StudioSequenceSettingsRecords, StudioTrackDisplayEntry, StudioTrackDisplayRecords, parse_sequence_presets, parse_sequence_settings_records,
-    inert_track_display_entries, parse_audio_routing, parse_track_display_records, resolve_track_displays,
+    inert_audio_routing_references, inert_multicam_clips, inert_track_display_entries, parse_audio_routing, parse_track_display_records, resolve_track_displays,
 };
 use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
 
@@ -72,8 +80,14 @@ pub(crate) fn validated_token(token: &str) -> bool {
     token == SEQUENCE_SETTINGS_ENTRY || token == SEQUENCE_PRESETS_ENTRY || token == TRACK_DISPLAY_ENTRY
 }
 
-/// Parses and validates the body of a [`validated_token`]; any other token passes (its bytes belong to
-/// its producer).
+/// True for the tokens an open notes when they do not validate, and whose note goes when they are
+/// replaced.
+pub(crate) fn noted_token(token: &str) -> bool {
+    validated_token(token) || token == AUDIO_ROUTING_ENTRY
+}
+
+/// Parses and validates the body of a [`noted_token`]; any other token passes (its bytes belong to its
+/// producer).
 pub(crate) fn check_entry(
     token: &str,
     bytes: &[u8],
@@ -85,6 +99,7 @@ pub(crate) fn check_entry(
         SEQUENCE_SETTINGS_ENTRY => parse_sequence_settings_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         SEQUENCE_PRESETS_ENTRY => parse_sequence_presets(bytes, budget, cancel).map(drop).map_err(folio_err),
         TRACK_DISPLAY_ENTRY => parse_track_display_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
+        AUDIO_ROUTING_ENTRY => parse_audio_routing(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         _ => Ok(()),
     }
 }
@@ -111,7 +126,7 @@ pub(crate) fn invalid_entry_notes(
     cancel: &CancellationToken,
 ) -> Result<Vec<LossNote>, SessionError> {
     let mut notes = Vec::new();
-    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY, TRACK_DISPLAY_ENTRY] {
+    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY, TRACK_DISPLAY_ENTRY, AUDIO_ROUTING_ENTRY] {
         let invalid = match held_body(held, token) {
             Ok(None) => false,
             Err(_) => true,
@@ -231,7 +246,9 @@ impl Session {
         Ok(records.as_ref().map_or_else(Vec::new, |r| inert_track_display_entries(r, document).into_iter().cloned().collect()))
     }
 
-    /// The stored audio routing set, validated against the document (`None` = none stored).
+    /// The stored audio routing set, validated against the document (`None` = none stored). An entry
+    /// that does not validate is the Folio diagnostic, never partial records; an id the document does
+    /// not hold is inert and reads.
     pub fn audio_routing_records(&self, cancel: &CancellationToken) -> Result<Option<StudioAudioRoutingSet>, SessionError> {
         cancel.check().map_err(|_| SessionError::Canceled)?;
         let Some(bytes) = held_body(self.held_entries(), AUDIO_ROUTING_ENTRY).map_err(folio_err)? else {
@@ -242,14 +259,23 @@ impl Session {
             .map_err(folio_err)
     }
 
-    /// What the stored routing names that the document does not hold.
-    pub fn inert_audio_routing_references(&self, _cancel: &CancellationToken) -> Result<Vec<StudioInertRoutingReference>, SessionError> {
-        Ok(Vec::new())
+    /// What the stored routing names that the document does not hold, in stored order: opaque ids and
+    /// kinds, no values. Read-only: nothing removes one on its own and it sends no frame, as the other
+    /// typed reads. While the entry is invalid this is the refusal of
+    /// [`Session::audio_routing_records`], not a guess at what the bad entry names.
+    pub fn inert_audio_routing_references(&self, cancel: &CancellationToken) -> Result<Vec<StudioInertRoutingReference>, SessionError> {
+        let records = self.audio_routing_records(cancel)?;
+        let document = self.snapshot().document();
+        Ok(records.as_ref().map_or_else(Vec::new, |r| inert_audio_routing_references(r, document)))
     }
 
-    /// The stored multicam clip modes naming a clip the document does not hold.
-    pub fn inert_multicam_clips(&self, _cancel: &CancellationToken) -> Result<Vec<StudioMulticamClip>, SessionError> {
-        Ok(Vec::new())
+    /// The stored multicam clip modes naming a clip the document does not hold, in stored order: ids,
+    /// angle numbers and switches. Read-only as [`Session::inert_audio_routing_references`]; while the
+    /// entry is invalid this is the refusal of [`Session::multicam_records`].
+    pub fn inert_multicam_clips(&self, cancel: &CancellationToken) -> Result<Vec<StudioMulticamClip>, SessionError> {
+        let records = self.multicam_records(cancel)?;
+        let document = self.snapshot().document();
+        Ok(records.as_ref().map_or_else(Vec::new, |r| inert_multicam_clips(r, document).into_iter().cloned().collect()))
     }
 
     /// Stores (`Some`, validated first) or removes (`None`) the track display records, replacing
