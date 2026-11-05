@@ -491,8 +491,52 @@ fn set_and_clear_are_one_step_with_one_inverse() {
     assert_eq!(answer(&get(cleared.snapshot(), 2), 45 * F), SourceFrameAnswer::Sampled(f(105)));
     assert_eq!(seq(revert(&cleared).snapshot()), seq(set.snapshot()));
     assert_eq!(clear(&s, 2).unwrap_err().code(), "no_change");
-    // The window is untouched, so the clip change list stays empty (as for a reverse-only change).
-    assert!(set.changes().is_empty());
+    // The window is untouched, yet the record is a write: named in the change list and the footprint.
+    let record_change = |p: &EditProposal, n: u32, before: ClipRetime, after: ClipRetime| {
+        assert_eq!(p.changes().len(), 1, "{:?}", p.changes());
+        let ClipChange::RetimeRecord { clip_id, track_id, window, before: b, after: a } = &p.changes()[0] else {
+            panic!("{:?}", p.changes());
+        };
+        assert_eq!((clip_id.as_str(), track_id.as_str()), (cid(n).as_str(), seq(p.snapshot()).tracks[0].track_id.as_str()));
+        assert_eq!((*b, *a), (before, after));
+        let c = get(p.snapshot(), n);
+        assert_eq!((window.source_in, window.source_out, window.timeline_start, window.duration), (c.source_in, c.source_out, c.timeline_start, c.duration));
+        assert_eq!(p.change_for(&cid(n)).map(ClipChange::before), Some(Some(*window)));
+        assert_eq!(p.change_for(&cid(n)).map(ClipChange::after), Some(Some(*window)));
+        assert_eq!(p.write_footprint(), [cid(n)], "the clip is written, its track is not");
+    };
+    assert!(set.read_footprint().contains(&cid(2)));
+    let held = get(set.snapshot(), 2).retime;
+    record_change(&set, 2, ClipRetime::default(), held);
+    record_change(&cleared, 2, held, ClipRetime::default());
+    record_change(&moved, 2, held, get(moved.snapshot(), 2).retime);
+    // The undo of a set writes the same clip.
+    record_change(&undone, 2, held, ClipRetime::default());
+    // The options, and the same on an audio clip.
+    let edit = RetimeOptions { clip_id: cid(4), frame_interpolation: None, maintain_audio_pitch: Some(true) };
+    let options = with_ctx(|ctx| plan_set_retime_options(&s, "seq-main", 3, &edit, ctx)).unwrap();
+    assert_eq!(options.changes().len(), 1);
+    assert_eq!(options.write_footprint(), [cid(4)]);
+    assert_eq!(options.changes()[0].track_id(), seq(&s).tracks[1].track_id);
+    // A piece that both moves and takes the hold lists the window first and the record after it.
+    let head = segment(&s, 2, 40, 44, HoldAt::InPoint, &[20], &[]).unwrap();
+    let kinds: Vec<(&str, &str)> = head
+        .changes()
+        .iter()
+        .map(|c| {
+            (
+                c.clip_id(),
+                match c {
+                    ClipChange::Retime { .. } => "window",
+                    ClipChange::RetimeRecord { .. } => "record",
+                    ClipChange::Insert { .. } => "insert",
+                    _ => "other",
+                },
+            )
+        })
+        .collect();
+    assert_eq!(kinds, [(cid(2).as_str(), "window"), (cid(2).as_str(), "record"), (cid(20).as_str(), "insert")]);
+    assert_eq!(head.write_footprint(), [cid(2), cid(20), seq(&s).tracks[0].track_id.clone()]);
 }
 
 /// [STU-VID-031a] `insert frame hold segment` "splits out a held span as its own clip": the outer

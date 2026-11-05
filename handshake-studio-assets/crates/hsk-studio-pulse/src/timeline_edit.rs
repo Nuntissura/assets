@@ -21,8 +21,8 @@ use crate::range::{
 use crate::rational::SpeedMath;
 use hsk_studio_accord::{CancellationToken, FrameRate, Ticks};
 use hsk_studio_folio::{
-    Budget, ClipSource, Code, Diagnostic, Resolver, Snapshot, StudioClip, StudioSequence,
-    StudioTrack, TrackKind, validate_document,
+    Budget, ClipRetime, ClipSource, Code, Diagnostic, Resolver, Snapshot, StudioClip,
+    StudioSequence, StudioTrack, TrackKind, validate_document,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -146,12 +146,23 @@ pub enum ClipChange {
         track_id: String,
         before: ClipWindow,
     },
+    /// The clip's `retime` record changed (frame hold, interpolation choice, `Maintain audio pitch`).
+    /// A clip whose window also changed has a [`ClipChange::Retime`] first and this entry after it.
+    RetimeRecord {
+        clip_id: String,
+        track_id: String,
+        window: ClipWindow,
+        before: ClipRetime,
+        after: ClipRetime,
+    },
 }
 
 impl ClipChange {
     pub fn clip_id(&self) -> &str {
         match self {
-            Self::Retime { clip_id, .. } | Self::Remove { clip_id, .. } => clip_id,
+            Self::Retime { clip_id, .. }
+            | Self::Remove { clip_id, .. }
+            | Self::RetimeRecord { clip_id, .. } => clip_id,
             Self::Insert { clip, .. } => &clip.clip_id,
         }
     }
@@ -159,18 +170,21 @@ impl ClipChange {
         match self {
             Self::Retime { track_id, .. }
             | Self::Insert { track_id, .. }
-            | Self::Remove { track_id, .. } => track_id,
+            | Self::Remove { track_id, .. }
+            | Self::RetimeRecord { track_id, .. } => track_id,
         }
     }
     pub fn before(&self) -> Option<ClipWindow> {
         match self {
             Self::Retime { before, .. } | Self::Remove { before, .. } => Some(*before),
+            Self::RetimeRecord { window, .. } => Some(*window),
             Self::Insert { .. } => None,
         }
     }
     pub fn after(&self) -> Option<ClipWindow> {
         match self {
             Self::Retime { after, .. } => Some(*after),
+            Self::RetimeRecord { window, .. } => Some(*window),
             Self::Insert { clip, .. } => Some(window(clip)),
             Self::Remove { .. } => None,
         }

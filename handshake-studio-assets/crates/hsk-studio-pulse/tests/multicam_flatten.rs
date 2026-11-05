@@ -373,6 +373,85 @@ fn reverse_speed_is_refused_named() {
     });
 }
 
+/// Lane SMB-PR-RETIME-HOLD-1: multicam does not read a frame hold, so a hold on a clip it would read
+/// is refused by name, as reverse speed is, and never silently played through.
+#[test]
+fn frame_hold_is_refused_where_multicam_would_read_it() {
+    bounded_case("frame_hold", || {
+        const HOLD: &str = "multicam_hold_unsupported";
+        let hold = |c: &mut StudioClip| c.retime.frame_hold = Some(ClipFrameHold { source_tick: Ticks::new(F), anchor: FrameHoldAnchor::InPoint });
+        // The multicam clip itself (only the picture can hold: the audio partner stays unheld).
+        let (s, r) = fixture_with(|c| {
+            if c.clip_id == cid(1) {
+                hold(c);
+            }
+        });
+        assert_eq!(refused(|ctx| plan_multicam_flatten(&s, 3, &r, &[cid(1), cid(2)], &fresh(), ctx)), HOLD);
+        assert_eq!(refused(|ctx| plan_multicam_flatten(&s, 3, &r, &[cid(1)], &fresh(), ctx)), HOLD);
+        assert_eq!(refused(|ctx| resolve_active_angle(&s, &r, &cid(1), Ticks::new(F), ctx)), HOLD);
+        // The partner reads no hold of its own.
+        ok(|ctx| resolve_active_angle(&s, &r, &cid(2), Ticks::new(F), ctx));
+        ok(|ctx| plan_multicam_flatten(&s, 3, &r, &[cid(2)], &fresh(), ctx));
+        // Clearing the hold is the way out: the same flatten then goes through.
+        let cancel = CancellationToken::default();
+        let cleared = with_ctx(&cancel, Budget::default(), |ctx| plan_clear_frame_hold(&s, "seq-main", 3, &cid(1), ctx)).unwrap();
+        ok(|ctx| plan_multicam_flatten(cleared.snapshot(), 4, &r, &[cid(1), cid(2)], &fresh(), ctx));
+
+        // An angle clip the multicam clip reads.
+        let mut held = clip(110, media(0), 0, 24, 0);
+        hold(&mut held);
+        let (s2, r2) = custom_fixture(held.clone(), clip(1, nest(), 4, 12, 0));
+        assert_eq!(refused(|ctx| plan_multicam_flatten(&s2, 3, &r2, &[cid(1)], &fresh(), ctx)), HOLD);
+        assert_eq!(refused(|ctx| resolve_active_angle(&s2, &r2, &cid(1), Ticks::new(F), ctx)), HOLD);
+        // Per angle read: a held clip on another angle does not block angle 2.
+        let mut r_two = r2.clone();
+        let m = r_two.clip_mut(&cid(1)).unwrap();
+        (m.active_angle, m.audio_angle) = (2, 2);
+        ok(|ctx| plan_multicam_flatten(&s2, 3, &r_two, &[cid(1)], &fresh(), ctx));
+        ok(|ctx| resolve_active_angle(&s2, &r_two, &cid(1), Ticks::new(F), ctx));
+        // Per clip read: a held angle clip outside the multicam clip's window is not read.
+        let mut early = clip(110, media(0), 0, 2, 0);
+        hold(&mut early);
+        let (s3, r3) = custom_fixture_clips(vec![early, clip(112, media(0), 10, 20, 4)], clip(1, nest(), 4, 12, 0));
+        ok(|ctx| plan_multicam_flatten(&s3, 3, &r3, &[cid(1)], &fresh(), ctx));
+        ok(|ctx| resolve_active_angle(&s3, &r3, &cid(1), Ticks::new(F), ctx));
+        let (s4, r4) = custom_fixture_clips(vec![clip(112, media(0), 10, 2, 0), held_at(113, 4)], clip(1, nest(), 4, 12, 0));
+        assert_eq!(refused(|ctx| plan_multicam_flatten(&s4, 3, &r4, &[cid(1)], &fresh(), ctx)), HOLD);
+        assert_eq!(refused(|ctx| resolve_active_angle(&s4, &r4, &cid(1), Ticks::new(F), ctx)), HOLD);
+
+        // Create: a held angle input is refused; the same input without the hold is accepted.
+        let (base, base_records) = fixture_with(|_| {});
+        let request = |video: StudioClip| MulticamSourceRequest {
+            sequence_id: "seq-mc-2".into(),
+            name: "second".into(),
+            frame_rate: SequenceFrameRate { ticks_per_frame: F },
+            sync: MulticamSync::InPoints,
+            selection_order: MulticamSelectionOrder::SourceOrder,
+            angles: vec![MulticamAngleInput { video, audio: None, offset: Ticks::new(0) }],
+            video_track_ids: vec![tid(300)],
+            audio_track_ids: vec![tid(301)],
+        };
+        assert_eq!(refused(|ctx| plan_create_multicam_source(&base, 3, &base_records, &request(held_at(600, 0)), ctx)), HOLD);
+        ok(|ctx| plan_create_multicam_source(&base, 3, &base_records, &request(clip(600, media(7), 0, 20, 0)), ctx));
+
+        // Enable: a held clip, or a link partner of one, gains no mode; turning a mode off stays open.
+        let mut bare = r.clone();
+        bare.clips.clear();
+        assert_eq!(refused(|ctx| plan_multicam_toggle_enabled(&s, 3, &bare, &cid(1), ctx)), HOLD);
+        assert_eq!(refused(|ctx| plan_multicam_toggle_enabled(&s, 3, &bare, &cid(2), ctx)), HOLD);
+        let off = ok(|ctx| plan_multicam_toggle_enabled(&s, 3, &r, &cid(1), ctx));
+        assert!(!off.records().clip(&cid(1)).unwrap().enabled);
+        println!("NOT_PROVEN: Premiere frame hold on a multicam clip (no Premiere oracle); Studio refuses it by declared reading");
+    });
+}
+
+/// Video clip `n` of media(0), source frames 0..20 at timeline frame `start`, frame-held.
+fn held_at(n: u32, start: u64) -> StudioClip {
+    let mut c = clip(n, media(0), 0, 20, start);
+    c.retime.frame_hold = Some(ClipFrameHold { source_tick: Ticks::new(F), anchor: FrameHoldAnchor::InPoint });
+    c
+}
+
 #[test]
 fn resolve_active_angle_at_non_unit_speed() {
     bounded_case("resolve_non_unit_speed", || {
