@@ -13,9 +13,9 @@
 //! Rules (Studio readings; InDesign parity UNVERIFIED, D5):
 //! - Levels: Studio's declared maximum is [`STUDIO_MAX_INDEX_LEVELS`] = 4, the captured model's
 //!   exact count (STU-LAY-149 permits more; Folio marks carry four).
-//! - A mark's page is the page of the frame holding the first line whose source span contains (or
-//!   starts at) the mark byte, a glyph-less mark where a line breaks taking the line the R54
-//!   F-R54-6 rule gives it (`toc::line_of`). Marks in overset text are left out and counted (`unplaced`); marks on
+//! - A mark's page is the page of the frame holding the line of the mark byte (`toc::line_of`): the line
+//!   whose source span contains it, a glyph-less mark where a line breaks taking the line the R54
+//!   F-R54-6 rule gives it, a mark in a paragraph with no glyph its blank line. Marks in overset text are left out and counted (`unplaced`); marks on
 //!   a hidden frame layer are left out and counted (`omitted_hidden`) unless
 //!   `include_hidden_entries`.
 //! - Page-range scopes ([`PageRangeScope`]; STU-LAY-149 lists none, the members are MT-174's):
@@ -53,7 +53,7 @@ use crate::LayoutError;
 use crate::derived_text::{DerivedBudget, ENTRY_RULES, derive_text};
 use crate::index::{HeaderGroup, IndexLimits, latin_headers};
 use crate::numbering::PageNumber;
-use crate::toc::{TocSource, page_of};
+use crate::toc::{TocSource, placed_page_of};
 use crate::toc_contract::{
     CapturedToken, CharacterStyleRef, ParagraphStyleRef, RunWriter, TocBook, TocCommandError, check_context, on_hidden_layer,
     style_scope_ok,
@@ -760,7 +760,7 @@ fn scope_end<'p>(
             end_of(k)
         }
     }?;
-    page_of(source, end_byte, by_page).or_else(|| {
+    placed_page_of(source, end_byte, by_page).or_else(|| {
         // Overset end: the story's last placed page.
         source.placement?.frames.iter().rev().find(|f| !f.lines.is_empty()).and_then(|f| by_page.get(&(f.spread, f.page)).copied())
     })
@@ -886,7 +886,7 @@ pub fn generate_index_contract(
             omitted_hidden = omitted_hidden.saturating_add(1);
             continue;
         }
-        let page = source.and_then(|s| page_of(s, m.at, &by_page));
+        let page = source.and_then(|s| placed_page_of(s, m.at, &by_page));
         if page.is_none() && page_ref {
             unplaced = unplaced.saturating_add(1);
             continue;

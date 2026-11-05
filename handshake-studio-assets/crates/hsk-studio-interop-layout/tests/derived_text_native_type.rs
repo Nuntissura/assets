@@ -644,8 +644,8 @@ fn a_heading_of_markers_only_gives_no_entry_through_native_type() {
 
 const LS: char = '\u{2028}';
 
-/// (index text, unplaced, `<pageNum/>` text) of a mark and a destination at byte `at`.
-fn blank_line_answers(doc: &StudioDocument, st: &StudioTextStory, text: &str, layout: &LayoutProposal, at: u64) -> (String, usize, Option<String>) {
+/// (index text, unplaced, `<pageNum/>` text) of a mark at byte `at` and a destination at paragraph `start`.
+fn blank_line_answers(doc: &StudioDocument, st: &StudioTextStory, text: &str, layout: &LayoutProposal, at: u64, start: u64) -> (String, usize, Option<String>) {
     let pages = number_pages(doc, &[]).unwrap();
     let source = [TocSource { story: st, text, placement: Some(layout) }];
     let options = StudioIndexOptions {
@@ -679,7 +679,7 @@ fn blank_line_answers(doc: &StudioDocument, st: &StudioTextStory, text: &str, la
         source_story_id: id("STXT", 2),
         source_start: 0,
         source_end: 0,
-        destination: StudioXrefDestination::Paragraph { story_id: id("STXT", 1), paragraph_start: at },
+        destination: StudioXrefDestination::Paragraph { story_id: id("STXT", 1), paragraph_start: start },
         format_id: "f".into(),
         resolved_text: None,
     });
@@ -711,7 +711,7 @@ fn a_mark_and_a_destination_on_a_blank_line_answer_the_page_of_composition_throu
             assert_eq!(m.page_id.as_deref(), Some("page-2"), "{}", heading.escape_unicode());
         }
         let at = marker.unwrap_or(6);
-        let got = blank_line_answers(&doc, &st, &text, &out.layout, at);
+        let got = blank_line_answers(&doc, &st, &text, &out.layout, at, 6);
         assert_eq!(got, ("Index\nt, 2".to_owned(), 0, Some("2".to_owned())), "{}", heading.escape_unicode());
     }
 }

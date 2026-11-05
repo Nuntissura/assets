@@ -3,10 +3,11 @@
 //! cross references; the caller places and composes it like any story.
 //!
 //! Rules (documented; InDesign parity UNVERIFIED, D5):
-//! - A mark's page is the page of the frame holding the first line whose source span contains (or
-//!   starts at) the mark byte, a glyph-less mark where a line breaks taking the line the R54
-//!   F-R54-6 rule gives it (as the TOC, `toc::line_of`); marks in overset text are left out and counted
-//!   (`GeneratedIndex::unplaced`).
+//! - A mark's page is the page of the frame holding the line of the mark byte (as the TOC,
+//!   `toc::line_of`): the line whose source span contains it, a glyph-less mark where a line breaks
+//!   taking the line the R54 F-R54-6 rule gives it, a mark in a paragraph with no glyph its blank line,
+//!   the page composition places it on (tests/blank_line_lookups.rs); marks in overset text are left out
+//!   and counted (`GeneratedIndex::unplaced`).
 //! - Topics merge by their text per level; siblings sort by the lower-cased sort-by text (the topic
 //!   text when no sort-by is given), ties by the topic text. Page references of a topic are its
 //!   distinct pages in document order joined by `between_page_numbers_separator`; three or more
@@ -36,7 +37,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::LayoutError;
 use crate::numbering::PageNumber;
-use crate::toc::{TocSource, Writer, page_of};
+use crate::toc::{TocSource, Writer, placed_page_of};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     IndexFormat, IndexXrefKind, StudioDocument, StudioIndexMark, StudioIndexOptions, StudioPageRangeScope,
@@ -206,7 +207,7 @@ pub fn generate_index(
             omitted_hidden = omitted_hidden.saturating_add(1);
             continue;
         }
-        let page = source.and_then(|s| page_of(s, m.at, &by_page));
+        let page = source.and_then(|s| placed_page_of(s, m.at, &by_page));
         if page.is_none() && m.xref.is_none() {
             unplaced = unplaced.saturating_add(1);
             continue;

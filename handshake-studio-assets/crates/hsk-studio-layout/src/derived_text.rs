@@ -27,11 +27,11 @@
 //! `capture_index_mark` has no placement, pages or records, so any gap refuses the capture
 //! (`index_invalid_topic_entry`), since a topic is stored text with nowhere to carry a gap.
 //!
-//! A heading that holds only markers: `generate_toc` and `generate_table_of_contents` give it no entry,
-//! as an empty heading has none ([`DerivedText::only_markers`]: it held a marker and leaves no text but
-//! white space); a gap it holds is reported on the result. A marker with a value is text, so a heading
-//! whose only marker has one keeps its entry. A section marker at those calls has no readable value, so
-//! alone it is this case, with its gap. White space with no marker stays an entry, as before.
+//! A heading with no text: `generate_toc` and `generate_table_of_contents` give it no entry and count it
+//! ([`DerivedText::no_text`]: nothing but white space is left, whether it held a marker, nothing, or only
+//! spaces; lane SMB-LAYOUT-BLANK-LINE-LOOKUPS-1, one rule for the empty cases); a gap it holds is reported on
+//! the result. A marker with a value is text, so a heading whose only marker has one keeps its entry. A
+//! section marker at those calls has no readable value, so alone it is this case, with its gap.
 //!
 //! Studio readings; InDesign's handling of markers in a TOC entry UNVERIFIED (D5).
 //!
@@ -42,7 +42,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::numbering::PageNumber;
 use crate::sentinels::{FLUSH_SPACE, MAX_RESOLVED_MARKER_BYTES, MAX_STORY_MARKERS, MarkerKind, MarkerPlace, UnresolvedMarker, ends_paragraph, marker_value};
-use crate::toc::{TocSource, blank_line_of, line_of};
+use crate::toc::{TocSource, line_of};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::StudioSection;
 use hsk_studio_type as ty;
@@ -122,18 +122,16 @@ pub(crate) enum DerivedRefusal {
 pub(crate) struct DerivedText {
     pub text: String,
     pub gaps: Vec<DerivedMarkerGap>,
-    /// The span held a marker of any group, shown or not.
-    held_marker: bool,
 }
 impl DerivedText {
-    /// It held a marker and leaves no text but white space (module docs).
-    pub(crate) fn only_markers(&self) -> bool {
-        self.held_marker && self.text.trim().is_empty()
+    /// Nothing but white space (Unicode `White_Space`) is left of it (module docs).
+    pub(crate) fn no_text(&self) -> bool {
+        self.text.trim().is_empty()
     }
 }
 
 /// The value of a page-number or section marker at story byte `at` (module docs): where the byte is
-/// placed in `source` (`toc::line_of`, or the blank line of a marker-only paragraph), then the one rule, `sentinels::marker_value`. A call with no
+/// placed in `source` (`toc::line_of`), then the one rule, `sentinels::marker_value`. A call with no
 /// sections cannot read a section marker that is placed.
 fn value_at<'a>(
     kind: MarkerKind,
@@ -142,7 +140,7 @@ fn value_at<'a>(
     pages: Option<&DerivedPages<'a>>,
 ) -> Result<&'a str, DerivedGapReason> {
     let placed = source.zip(pages).and_then(|(source, d)| {
-        let (frame, _) = line_of(source, at).or_else(|| blank_line_of(source, at))?;
+        let (frame, _) = line_of(source, at)?;
         let page: &'a PageNumber = d.by_page.get(&(frame.spread, frame.page)).copied()?;
         Some((MarkerPlace::Page { page, pages: d.pages }, d.sections))
     });
@@ -167,7 +165,7 @@ pub(crate) fn derive_text<'a>(
     cancel: Option<&CancellationToken>,
 ) -> Result<DerivedText, DerivedRefusal> {
     let body = raw.trim_end_matches(ends_paragraph);
-    let mut out = DerivedText { text: String::with_capacity(body.len()), gaps: Vec::new(), held_marker: false };
+    let mut out = DerivedText { text: String::with_capacity(body.len()), gaps: Vec::new() };
     for (i, c) in body.char_indices() {
         let is_space = (c == '\u{2028}' && rules.forced_break_to_space) || (c == '\t' && rules.tab_to_space) || c == FLUSH_SPACE || ends_paragraph(c);
         if is_space {
@@ -175,14 +173,12 @@ pub(crate) fn derive_text<'a>(
             continue;
         }
         if c == ANCHORED_OBJECT {
-            out.held_marker = true;
             continue;
         }
         if !ty::is_sentinel_block(c) {
             out.text.push(c);
             continue;
         }
-        out.held_marker = true;
         let kind = MarkerKind::from_sentinel(c);
         if matches!(kind, Some(MarkerKind::Index | MarkerKind::FootnoteReference | MarkerKind::EndnoteReference)) {
             continue;

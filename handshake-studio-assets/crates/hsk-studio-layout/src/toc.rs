@@ -6,17 +6,22 @@
 //!
 //! Rules (documented; InDesign parity UNVERIFIED, D5):
 //! - Sources are read in the given story order, paragraphs in story order. A paragraph's page is the
-//!   page of the frame holding the first line whose source span contains (or starts at) the
-//!   paragraph start; a paragraph opening with a glyph-less byte (a marker) takes its first line
-//!   (`line_of`, R54 F-R54-6 rule). An unplaced (overset) paragraph is left out unless the style's
-//!   `include_overset` is set; it is then listed without a page label.
+//!   page of the frame holding the line of the paragraph start ([`line_of`]): the line whose source
+//!   span contains it; a paragraph opening with a glyph-less byte (a marker) takes its first line (R54
+//!   F-R54-6 rule); a paragraph with no glyph takes its blank line. An unplaced (overset) paragraph is
+//!   left out unless the style's `include_overset` is set; it is then listed without a page label.
 //! - Entry text = `derived_text`: the paragraph text without its trailing terminator (any of the twelve
 //!   of `ends_paragraph`) and without stream sentinels, a marker with a value shown as its value at its
 //!   source byte, anything else typed in `TocEntryOut::marker_gaps` (this call has no sections, so a
-//!   section marker is a gap); forced line breaks (U+2028) and tabs become spaces. A paragraph holding
-//!   only markers has no entry, as an empty one has none, and any gap it holds is in
-//!   `GeneratedStory::omitted_marker_gaps`. Position `after`: text + separator + label; `before`: label + separator + text;
-//!   `none`: text.
+//!   section marker is a gap); forced line breaks (U+2028) and tabs become spaces. Position `after`:
+//!   text + separator + label; `before`: label + separator + text; `none`: text.
+//! - One reason per heading left out, counted in `GeneratedStory::omitted` (lane
+//!   SMB-LAYOUT-BLANK-LINE-LOOKUPS-1, a declared reading; the spec states none, InDesign UNVERIFIED, D5):
+//!   first `hidden`, its line is on a hidden layer and `include_hidden` is off, whatever it holds; then
+//!   `overset`, it has no placed line and `include_overset` is off, its text unread; then `no_text`, its
+//!   derived text is empty or only white space, placed or not, with or without a marker
+//!   (`DerivedText::no_text`), any gap it holds in `GeneratedStory::omitted_marker_gaps`. Tests
+//!   tests/blank_line_lookups.rs `table_*`.
 //! - Levels nest (an entry's children are the following deeper entries); siblings are sorted
 //!   alphabetically (lower-cased, stable) when every sibling's level has `sort_alphabet`.
 //! - Persisted members (lane SMB-ID-TOC-PERSIST-1): `include_hidden` = `Some(false)` leaves out
@@ -122,7 +127,7 @@ pub struct GeneratedStory {
     pub text: String,
     pub paragraphs: Vec<StoryParagraph>,
     pub entries: Vec<TocEntryOut>,
-    /// (story id, gap): markers of a mapped paragraph left out because it holds only markers
+    /// (story id, gap): markers of a mapped paragraph left out because it has no text
     /// (`derived_text`), which has no entry to carry them.
     pub omitted_marker_gaps: Vec<(String, crate::DerivedMarkerGap)>,
     /// Mapped paragraphs left out, by reason (TOC generators only; an index or endnote story leaves none out here).
@@ -198,17 +203,23 @@ impl Writer {
     }
 }
 
-/// The placed line holding story byte `at` of `source` and its frame: the first line whose source
-/// span contains (or starts at) `at`; else, for a glyph-less byte where a line breaks or before a
-/// paragraph's first glyph, the line `place_markers` gives it (`sentinels::line_holding` over the
-/// lines starting in the byte's story paragraph, R54 F-R54-6); `None` when it is not placed.
-pub(crate) fn line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FramePlacement, &'s Line)> {
+/// The first line of `f` whose source span starts at or after `at`. A frame's lines are in flow order, so
+/// source starts and ends do not decrease (`place_markers`), and a lookup costs a binary search per frame:
+/// a document of only empty paragraphs stays bounded (`v4_02_a_document_of_only_empty_paragraphs_at_the_limits_stays_bounded`).
+fn first_line_from(f: &FramePlacement, at: u64) -> usize {
+    f.lines.partition_point(|l| l.source.start < at)
+}
+
+/// The placed line of text holding story byte `at` of `source` and its frame: the line whose source span
+/// contains `at`; else, for a glyph-less byte where a line breaks or before a paragraph's first glyph, the
+/// line `place_markers` gives it (`sentinels::line_holding` over the lines starting in the byte's story
+/// paragraph, R54 F-R54-6); `None` when it is not placed. An empty span holds no byte, so the blank line of
+/// the paragraph before, which starts where this one starts, is never this paragraph's line.
+fn text_line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FramePlacement, &'s Line)> {
     let placement = source.placement?;
     let hit = placement.frames.iter().find_map(|f| {
-        f.lines
-            .iter()
-            .find(|l| l.source.start == at || (l.source.start <= at && at < l.source.end))
-            .map(|l| (f, l))
+        let line = f.lines.get(f.lines.partition_point(|l| l.source.end <= at))?;
+        (line.source.start <= at).then_some((f, line))
     });
     if hit.is_some() {
         return hit;
@@ -218,7 +229,10 @@ pub(crate) fn line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FrameP
     let mine: Vec<(&FramePlacement, &Line)> = placement
         .frames
         .iter()
-        .flat_map(|f| f.lines.iter().filter(|l| p.start <= l.source.start && l.source.start < p.end).map(move |l| (f, l)))
+        .flat_map(|f| {
+            let starting_in = f.lines.get(first_line_from(f, p.start)..first_line_from(f, p.end)).unwrap_or_default();
+            starting_in.iter().filter(|l| l.source.end > p.start).map(move |l| (f, l))
+        })
         .collect();
     let paragraph = SourceSpan { start: p.start, end: p.end };
     let i = line_holding(source.text, paragraph, &mine, |(_, l)| l.source, placement.overset, at, &mut None)?;
@@ -226,23 +240,48 @@ pub(crate) fn line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FrameP
 }
 
 /// The blank line of the paragraph holding story byte `at`, when composition gave a paragraph with no
-/// glyph one: its empty source span sits at the paragraph's end, so [`line_of`] does not find it
-/// (`place_markers` does, by `Line.paragraph`). Read only where a marker-only paragraph is told from
-/// an overset one; `line_of` and its other callers keep their answers.
-pub(crate) fn blank_line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FramePlacement, &'s Line)> {
+/// glyph one: the line of that paragraph (`Line.paragraph`, as `place_markers` reads it, so the story's
+/// paragraphs are the composition's) whose span is empty, which sits at the paragraph's end, or at its start
+/// when the shaped paragraph left its terminator out. `None` for a byte past the paragraph.
+fn blank_line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FramePlacement, &'s Line)> {
     let placement = source.placement?;
     let paras = &source.story.paragraphs;
-    let p = paras.get(paras.partition_point(|p| p.start <= at).checked_sub(1)?)?;
-    placement.frames.iter().find_map(|f| f.lines.iter().find(|l| l.source.start == p.end && l.source.end == p.end).map(|l| (f, l)))
+    let index = paras.partition_point(|p| p.start <= at).checked_sub(1)?;
+    let p = paras.get(index).filter(|p| at <= p.end)?;
+    placement.frames.iter().find_map(|f| {
+        [p.end, p.start].into_iter().find_map(|c| {
+            let line = f.lines.get(first_line_from(f, c))?;
+            (line.paragraph == index && line.source.start == c && line.source.end == c).then_some((f, line))
+        })
+    })
+}
+
+/// The placed line of story byte `at` and its frame, as composition places it: the line of text
+/// ([`text_line_of`]), else the blank line of a paragraph with no glyph ([`blank_line_of`]). What an index
+/// mark, a cross-reference destination, a TOC heading and a marker's value read; `None` when it is not
+/// placed.
+pub(crate) fn line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FramePlacement, &'s Line)> {
+    text_line_of(source, at).or_else(|| blank_line_of(source, at))
 }
 
 /// The page label (and id) where story byte `at` is placed, if it is ([`line_of`]).
-pub(crate) fn page_of<'p>(
+pub(crate) fn placed_page_of<'p>(
     source: &TocSource<'_>,
     at: u64,
     pages: &'p BTreeMap<(usize, usize), &'p PageNumber>,
 ) -> Option<&'p PageNumber> {
     line_of(source, at).and_then(|(f, _)| pages.get(&(f.spread, f.page)).copied())
+}
+
+/// The page of the line of text holding story byte `at` ([`text_line_of`]): what makes a styled paragraph
+/// or range a running-text occurrence. A blank styled paragraph is none, so it does not take the place of
+/// the heading before it on a running header (`a_blank_styled_paragraph_is_no_running_text_occurrence`).
+pub(crate) fn page_of<'p>(
+    source: &TocSource<'_>,
+    at: u64,
+    pages: &'p BTreeMap<(usize, usize), &'p PageNumber>,
+) -> Option<&'p PageNumber> {
+    text_line_of(source, at).and_then(|(f, _)| pages.get(&(f.spread, f.page)).copied())
 }
 
 /// The spread y of the baseline of the line holding story byte `at` ([`line_of`]).
@@ -324,6 +363,7 @@ pub fn generate_toc(
     let rules = DerivedRules { forced_break_to_space: !keep_forced_breaks, tab_to_space: true };
     let mut budget = DerivedBudget::new();
     let mut omitted_marker_gaps = Vec::new();
+    let mut omitted = TocOmitted::default();
     // Flat list first (bounded), then the level tree.
     let mut flat: Vec<(TocEntryOut, bool, usize)> = Vec::new();
     for s in sources {
@@ -336,11 +376,12 @@ pub fn generate_toc(
             };
             let e = &style.entries[ei];
             if !include_hidden && crate::toc_contract::on_hidden_layer(document, s, p.start) {
+                omitted.hidden = omitted.hidden.saturating_add(1);
                 continue;
             }
-            let page = page_of(s, p.start, &by_page);
-            let unplaced_left_out = page.is_none() && !style.include_overset;
-            if unplaced_left_out && blank_line_of(s, p.start).is_none() {
+            let page = placed_page_of(s, p.start, &by_page);
+            if page.is_none() && !style.include_overset {
+                omitted.overset = omitted.overset.saturating_add(1);
                 continue;
             }
             let raw = usize::try_from(p.start)
@@ -352,11 +393,9 @@ pub fn generate_toc(
                 DerivedRefusal::BudgetExceeded => TocError::BudgetExceeded,
                 DerivedRefusal::Canceled => TocError::Layout(LayoutError::Canceled),
             })?;
-            if derived.only_markers() {
+            if derived.no_text() {
+                omitted.no_text = omitted.no_text.saturating_add(1);
                 omitted_marker_gaps.extend(derived.gaps.iter().map(|g| (s.story.story_id.clone(), *g)));
-                continue;
-            }
-            if unplaced_left_out {
                 continue;
             }
             if flat.len() >= limits.max_entries {
@@ -432,6 +471,6 @@ pub fn generate_toc(
         paragraphs: w.paragraphs,
         entries: entries.into_iter().map(|(e, _)| e).collect(),
         omitted_marker_gaps,
-        omitted: TocOmitted::default(),
+        omitted,
     })
 }

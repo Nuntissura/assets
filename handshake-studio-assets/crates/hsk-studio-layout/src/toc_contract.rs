@@ -12,9 +12,9 @@
 //!
 //! Rules (Studio readings; InDesign parity UNVERIFIED, D5):
 //! - Sources are read in the given order, paragraphs in story order; a paragraph whose style is a
-//!   mapped entry `name` becomes an entry. Its page is the page of the frame holding the first line
-//!   whose source span contains (or starts at) the paragraph start, a paragraph opening with a
-//!   glyph-less byte taking its first line (as `generate_toc`, `toc::line_of`).
+//!   mapped entry `name` becomes an entry. Its page is the page of the frame holding the line of the
+//!   paragraph start (as `generate_toc`, `toc::line_of`): the line whose source span contains it, a
+//!   paragraph opening with a glyph-less byte taking its first line, a paragraph with no glyph its blank line.
 //! - `include_overset` (a generate-command argument; the spec declares no default, so the caller
 //!   states it): an unplaced paragraph is listed without a page label when set, else omitted and
 //!   counted (`omitted_overset`), never silently dropped.
@@ -23,8 +23,10 @@
 //! - Entry text = `derived_text`: the paragraph text without its trailing terminator and without stream
 //!   sentinels, a marker with a value shown as its value at its source byte, anything else typed in
 //!   `TocContractEntry::marker_gaps`; tabs as spaces; forced line breaks (U+2028) become spaces only with
-//!   `remove_forced_line_break`, otherwise they are kept. A paragraph holding only markers has no entry,
-//!   as an empty one has none: counted (`omitted_no_text`), any gap it holds in `omitted_marker_gaps`.
+//!   `remove_forced_line_break`, otherwise they are kept. A paragraph with no text (nothing but white
+//!   space left, with or without a marker, placed or not) has no entry: counted (`omitted_no_text`), any
+//!   gap it holds in `omitted_marker_gaps`. One reason per paragraph, hidden before overset before no text
+//!   (`toc` module docs).
 //! - `page_number_position`: `after` = text + separator + label, `before` = label + separator +
 //!   text, `none` = text. The separator run carries `separator_style`, the label run
 //!   `page_number_style`, the entry paragraph `format_style` (character ranges and paragraphs of the
@@ -60,7 +62,7 @@ use crate::book::CombinedBook;
 use crate::derived_text::{DerivedBudget, DerivedPages, DerivedRefusal, DerivedRules, derive_text};
 use crate::numbering::PageNumber;
 use crate::threaded_reflow::FramePlacement;
-use crate::toc::{TocLimits, TocSource, baseline_of, blank_line_of, line_of, page_of};
+use crate::toc::{TocLimits, TocSource, baseline_of, line_of, placed_page_of};
 use hsk_studio_accord::{CancellationToken, CommandContext, DomainId};
 use hsk_studio_folio::{
     MAX_TOC_ENTRIES, MAX_TOC_LEVEL, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioBook,
@@ -881,9 +883,8 @@ fn generate_inner(
                 omitted_hidden = omitted_hidden.saturating_add(1);
                 continue;
             }
-            let page = page_of(s, p.start, &by_page);
-            let unplaced_left_out = page.is_none() && !req.include_overset;
-            if unplaced_left_out && blank_line_of(s, p.start).is_none() {
+            let page = placed_page_of(s, p.start, &by_page);
+            if page.is_none() && !req.include_overset {
                 omitted_overset = omitted_overset.saturating_add(1);
                 continue;
             }
@@ -896,13 +897,9 @@ fn generate_inner(
                 DerivedRefusal::BudgetExceeded => TocCommandError::BudgetExceeded,
                 DerivedRefusal::Canceled => TocCommandError::Layout(LayoutError::Canceled),
             })?;
-            if derived.only_markers() {
+            if derived.no_text() {
                 omitted_no_text = omitted_no_text.saturating_add(1);
                 omitted_marker_gaps.extend(derived.gaps.iter().map(|g| (s.story.story_id.clone(), *g)));
-                continue;
-            }
-            if unplaced_left_out {
-                omitted_overset = omitted_overset.saturating_add(1);
                 continue;
             }
             if flat.len() >= req.limits.max_entries {

@@ -309,7 +309,7 @@ fn char_style_id(ctx: &XrefContext<'_>, name: &str) -> Result<String, XrefError>
 
 /// The page label of the page holding `byte` of a composed story (`toc::line_of`: a glyph-less
 /// destination where a line breaks or opening its paragraph takes the line the R54 F-R54-6 rule
-/// gives it).
+/// gives it, one in a paragraph with no glyph its blank line).
 fn page_of(dest: &XrefStory<'_>, byte: u64, pages: &[PageNumber]) -> Option<String> {
     let source = TocSource { story: dest.story, text: dest.text, placement: dest.placement };
     let (f, _) = line_of(&source, byte)?;

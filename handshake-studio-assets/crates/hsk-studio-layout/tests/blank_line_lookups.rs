@@ -495,7 +495,7 @@ fn consecutive_blank_lines_keep_their_own_pages() {
 fn a_paragraph_overset_after_a_placed_blank_line_is_overset() {
     // The blank line is the sixth and last line, (11, 11); "Head" starts at byte 11 and does not fit.
     let f = fx("a\nb\nc\nd\ne\n\nHead\n", 6);
-    assert_eq!(f.placement.overset, Some(SourceSpan { start: 11, end: 15 }));
+    assert_eq!(f.placement.overset, Some(SourceSpan { start: 11, end: 16 }));
     assert_eq!(index_at(&f, &[f.at]), ("Index".to_owned(), 1, 0));
     assert_eq!(page_num_at(&f, f.at), unplaced());
     assert_eq!(toc(&f, true, false), Toc { entries: vec![], omitted: (1, 0, 0) });
@@ -563,7 +563,8 @@ fn a_mark_and_a_destination_answer_the_page_composition_places_the_marker_on() {
         let (f, page) = composed_marker_page(&text, at);
         assert_eq!(page.as_deref(), Some("page-2"), "{}", text.escape_unicode());
         assert_eq!(index_at(&f, &[at]), ("Index\nt, 2".to_owned(), 0, 0), "{}", text.escape_unicode());
-        assert_eq!(page_num_at(&f, at), page_2(), "{}", text.escape_unicode());
+        // A paragraph destination names the paragraph's first byte.
+        assert_eq!(page_num_at(&f, f.at), page_2(), "{}", text.escape_unicode());
     }
 }
 

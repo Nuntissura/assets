@@ -1105,11 +1105,12 @@ fn an_empty_heading_gives_no_entry_as_the_marker_only_reading_says() {
     assert_eq!((g.entries.len(), g.text.as_str()), (0, ""), "generate_toc");
     let c = contract_try(&f, false, false).unwrap();
     assert_eq!((c.entries.len(), text_of(&c.story)), (0, ""), "generate_table_of_contents");
-    // Today's count, unchanged by this rule: it has no marker, so it stays counted as overset.
-    assert_eq!((c.omitted_overset, c.omitted_no_text), (1, 0));
+    // Placed on its blank line, so no text is what removes it, not overset (SMB-LAYOUT-BLANK-LINE-LOOKUPS-1,
+    // which replaces the count this test held before, 1 overset).
+    assert_eq!((c.omitted_overset, c.omitted_no_text), (0, 1));
     let f = composed("Intro\n\nBody\n", 1);
     let c = contract_try(&f, false, false).unwrap();
-    assert_eq!((c.entries.len(), c.omitted_overset, c.omitted_no_text), (0, 1, 0));
+    assert_eq!((c.entries.len(), c.omitted_overset, c.omitted_no_text), (0, 0, 1));
     assert_eq!(toc_try(&f, false).unwrap().entries.len(), 0);
 }
 
@@ -1123,9 +1124,12 @@ fn a_gap_in_a_marker_only_cross_reference_destination_says_what_composition_says
 }
 
 #[test]
-fn white_space_with_no_marker_is_not_this_rule() {
-    // Text the author typed stays an entry: only a heading that held a marker is read this way.
+fn white_space_with_no_marker_is_this_rule_too() {
+    // SMB-LAYOUT-BLANK-LINE-LOOKUPS-1, F-R56-9: one rule for the empty cases. This test held the opposite
+    // before: a heading of spaces listed its spaces with a label. Declared reading, the spec states
+    // none, InDesign UNVERIFIED (D5).
     let f = on_page_2("  ");
-    assert_eq!(toc_try(&f, false).unwrap().entries[0].text, "  ");
-    assert_eq!(contract_try(&f, false, false).unwrap().omitted_no_text, 0);
+    let g = toc_try(&f, false).unwrap();
+    assert_eq!((g.entries.len(), g.omitted.no_text), (0, 1));
+    assert_eq!(contract_try(&f, false, false).unwrap().omitted_no_text, 1);
 }
