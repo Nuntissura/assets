@@ -261,7 +261,12 @@ impl Session {
     /// pulse for what appears on a clip or a sequence.
     pub fn media_marker_records(&self, cancel: &CancellationToken) -> Result<Option<StudioMediaMarkerRecords>, SessionError> {
         cancel.check().map_err(|_| SessionError::Canceled)?;
-        Ok(None)
+        let Some(bytes) = held_body(self.held_entries(), MEDIA_MARKERS_ENTRY).map_err(folio_err)? else {
+            return Ok(None);
+        };
+        parse_media_marker_records(bytes, self.snapshot().document(), self.folio_budget(), cancel)
+            .map(Some)
+            .map_err(folio_err)
     }
 
     /// Stores (`Some`, validated first) or removes (`None`) the media item markers, replacing whatever
@@ -272,7 +277,10 @@ impl Session {
         records: Option<&StudioMediaMarkerRecords>,
         cancel: &CancellationToken,
     ) -> Result<(), SessionError> {
-        let _ = (records, cancel);
-        Err(SessionError::Provider("not_implemented"))
+        let bytes = match records {
+            None => None,
+            Some(r) => Some(serde_json::to_vec(r).map_err(|_| invalid_json(MEDIA_MARKERS_ENTRY))?),
+        };
+        self.set_document_entry(MEDIA_MARKERS_ENTRY, bytes, cancel)
     }
 }

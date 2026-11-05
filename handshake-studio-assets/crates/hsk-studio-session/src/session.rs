@@ -1119,8 +1119,9 @@ impl Session {
         expected_revision: u64,
         cancel: &CancellationToken,
     ) -> Result<Applied, SessionError> {
-        let _ = (key, context, command, expected_revision, cancel);
-        Err(SessionError::Provider("not_implemented"))
+        self.check_command_context(context, command.command_id(), expected_revision)?;
+        let params = sequence_records_step::media_marker_binding_bytes(context, command)?;
+        self.submit_inner(key, SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::MediaMarkerCommand(context, command)))
     }
 
     /// A command context must name this session's actor (it grants nothing, and grants and receipts
@@ -1310,7 +1311,7 @@ impl Session {
         if let Some(next) = &successor
             && next.document().sequences != self.snapshot.document().sequences
         {
-            for token in [SEQUENCE_SETTINGS_ENTRY] {
+            for token in [SEQUENCE_SETTINGS_ENTRY, MEDIA_MARKERS_ENTRY] {
                 if !entry.iter().any(|(written, _)| *written == token) {
                     self.keep_entry_valid(token, next.document(), cancel)?;
                 }
@@ -2209,7 +2210,7 @@ impl Session {
         let (authority, disagreement, draft_revision) = self.diverged_precondition(key, cancel)?;
         let snapshot =
             self.inspect_authority_document(authority_document, authority.revision, cancel)?;
-        for token in [SEQUENCE_SETTINGS_ENTRY] {
+        for token in [SEQUENCE_SETTINGS_ENTRY, MEDIA_MARKERS_ENTRY] {
             self.keep_entry_valid(token, snapshot.document(), cancel)?;
         }
         let revision_before = self.snapshot.document().revision;

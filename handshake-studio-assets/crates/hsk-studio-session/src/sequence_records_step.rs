@@ -264,10 +264,15 @@ pub(crate) fn successor(
     {
         return Err(SessionError::Provider("value_conflict"));
     }
+    if let Some(edit) = &step.media_markers
+        && !quote_matches(&live.media_markers, edit.expect.as_ref(), |b| serde_json::from_slice(b).ok())
+    {
+        return Err(SessionError::Provider("value_conflict"));
+    }
     let settings_changed = step.settings.as_ref().is_some_and(|e| e.expect != e.write);
     let presets_changed = step.presets.as_ref().is_some_and(|e| e.expect != e.write);
     let track_display_changed = step.track_display.as_ref().is_some_and(|e| e.expect != e.write);
-    let media_markers_changed = false;
+    let media_markers_changed = step.media_markers.as_ref().is_some_and(|e| e.expect != e.write);
     if edited.is_none() && !settings_changed && !presets_changed && !track_display_changed && !media_markers_changed {
         return Ok(None);
     }
@@ -326,7 +331,7 @@ pub(crate) fn successor(
             entries.push((TRACK_DISPLAY_ENTRY, body));
         }
     }
-    if let Some(edit) = None::<&RecordEdit<StudioMediaMarkerRecords>> {
+    if let Some(edit) = &step.media_markers {
         let body = match &edit.write {
             None => None,
             Some(records) => {
