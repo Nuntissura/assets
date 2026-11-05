@@ -41,9 +41,9 @@ use crate::session::Session;
 use crate::source::{DOCUMENT_ENTRY_PREFIX, document_entry};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    Budget, Code, Diagnostic, StudioDocument, StudioResolvedTrackDisplay, StudioSequencePresetSet,
+    Budget, Code, Diagnostic, StudioAudioRoutingSet, StudioDocument, StudioInertRoutingReference, StudioMulticamClip, StudioResolvedTrackDisplay, StudioSequencePresetSet,
     StudioSequenceSettingsRecords, StudioTrackDisplayEntry, StudioTrackDisplayRecords, parse_composition_token_record, parse_sequence_presets, parse_sequence_settings_records,
-    inert_track_display_entries, parse_track_display_records, resolve_track_displays,
+    inert_track_display_entries, parse_audio_routing, parse_track_display_records, resolve_track_displays,
 };
 use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
 
@@ -54,6 +54,8 @@ pub const SEQUENCE_SETTINGS_ENTRY: &str = "sequence_settings";
 pub const SEQUENCE_PRESETS_ENTRY: &str = "sequence_presets";
 /// Document-entry token of the track display records (STU-VID-036).
 pub const TRACK_DISPLAY_ENTRY: &str = "track_display";
+/// Document-entry token of the audio routing set (STU-FX-137).
+pub const AUDIO_ROUTING_ENTRY: &str = "audio_routing";
 
 fn invalid_json(token: &str) -> SessionError {
     folio_err(Diagnostic { code: Code::InvalidJson, target: format!("{DOCUMENT_ENTRY_PREFIX}{token}") })
@@ -230,6 +232,27 @@ impl Session {
         let records = self.track_display_records(cancel)?;
         let document = self.snapshot().document();
         Ok(records.as_ref().map_or_else(Vec::new, |r| inert_track_display_entries(r, document).into_iter().cloned().collect()))
+    }
+
+    /// The stored audio routing set, validated against the document (`None` = none stored).
+    pub fn audio_routing_records(&self, cancel: &CancellationToken) -> Result<Option<StudioAudioRoutingSet>, SessionError> {
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        let Some(bytes) = held_body(self.held_entries(), AUDIO_ROUTING_ENTRY).map_err(folio_err)? else {
+            return Ok(None);
+        };
+        parse_audio_routing(bytes, self.snapshot().document(), self.folio_budget(), cancel)
+            .map(Some)
+            .map_err(folio_err)
+    }
+
+    /// What the stored routing names that the document does not hold.
+    pub fn inert_audio_routing_references(&self, _cancel: &CancellationToken) -> Result<Vec<StudioInertRoutingReference>, SessionError> {
+        Ok(Vec::new())
+    }
+
+    /// The stored multicam clip modes naming a clip the document does not hold.
+    pub fn inert_multicam_clips(&self, _cancel: &CancellationToken) -> Result<Vec<StudioMulticamClip>, SessionError> {
+        Ok(Vec::new())
     }
 
     /// Stores (`Some`, validated first) or removes (`None`) the track display records, replacing

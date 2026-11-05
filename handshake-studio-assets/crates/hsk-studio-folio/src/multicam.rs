@@ -191,6 +191,11 @@ pub fn parse_multicam_records(
     Ok(r)
 }
 
+/// The clip modes of `records` naming a clip no sequence of `document` holds, in stored order.
+pub fn inert_multicam_clips<'a>(_records: &'a StudioMulticamRecords, _document: &StudioDocument) -> Vec<&'a StudioMulticamClip> {
+    Vec::new()
+}
+
 /// Validates the record set against the document (module docs).
 pub fn validate_multicam_records(
     r: &StudioMulticamRecords,

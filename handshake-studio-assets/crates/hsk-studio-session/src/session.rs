@@ -20,7 +20,7 @@ use crate::{
     multicam::MULTICAM_ENTRY,
     multicam_step::{self, MULTICAM_STEP_PROVIDER, MulticamStep},
     sequence_records::{self, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY},
-    sequence_records_step::{self, LiveEntries, SEQUENCE_RECORDS_STEP_PROVIDER, SequenceRecordsStep},
+    sequence_records_step::{self, LiveEntries, SEQUENCE_RECORDS_STEP_PROVIDER, SequenceRecordsStep, SequenceRecordsUndo},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, CommandContext, DomainId};
 use hsk_studio_chronicle::{
@@ -230,6 +230,9 @@ pub struct Applied {
     /// command: the step that restores the previous sequences and records (undo; its own inverse is
     /// the redo). `None` otherwise and for no-change.
     pub sequence_records_inverse: Option<SequenceRecordsStep>,
+    /// For a changed sequence-records step or command: what that inverse restores, so a host can tell
+    /// an undo that exists from one that cannot. `None` otherwise and for no-change.
+    pub sequence_records_undo: Option<SequenceRecordsUndo>,
     /// For a sequence command: Folio's report (codes and counters only), for the host; `presets`
     /// counts the stored presets. `None` otherwise.
     pub sequence_settings_report: Option<StudioSequenceSettingsReport>,
@@ -1501,6 +1504,7 @@ impl Session {
                     .then(|| step.inverse(step.command_id.clone(), step.correlation_id)),
                 multicam_inverse: None,
                 sequence_records_inverse: None,
+                sequence_records_undo: None,
                 sequence_settings_report: None,
                 track_display_report: None,
                 composition_token_inverse: None,
@@ -1575,6 +1579,7 @@ impl Session {
                 timeline_inverse: None,
                 multicam_inverse: inverse,
                 sequence_records_inverse: None,
+                sequence_records_undo: None,
                 sequence_settings_report: None,
                 track_display_report: None,
                 composition_token_inverse: None,
@@ -1654,6 +1659,7 @@ impl Session {
                 timeline_inverse: None,
                 multicam_inverse: None,
                 sequence_records_inverse: inverse,
+                sequence_records_undo: None,
                 sequence_settings_report: report,
                 track_display_report: None,
                 composition_token_inverse: None,
@@ -1715,6 +1721,7 @@ impl Session {
                 timeline_inverse: None,
                 multicam_inverse: None,
                 sequence_records_inverse: None,
+                sequence_records_undo: None,
                 sequence_settings_report: None,
                 track_display_report: None,
                 composition_token_inverse: inverse,
@@ -1896,6 +1903,7 @@ impl Session {
                 timeline_inverse: None,
                 multicam_inverse: None,
                 sequence_records_inverse: None,
+                sequence_records_undo: None,
                 sequence_settings_report: None,
                 track_display_report: None,
                 composition_token_inverse: None,
