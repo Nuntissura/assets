@@ -54,6 +54,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::LayoutError;
 use crate::book::CombinedBook;
+use crate::derived_text::{DerivedBudget, DerivedPages, DerivedRefusal, DerivedRules, derive_text};
 use crate::numbering::PageNumber;
 use crate::threaded_reflow::FramePlacement;
 use crate::toc::{TocLimits, TocSource, baseline_of, line_of, page_of};
@@ -671,13 +672,6 @@ pub(crate) fn check_context(ctx: &CommandContext, document: &StudioDocument) -> 
     Ok(())
 }
 
-fn entry_text(raw: &str, remove_forced_line_break: bool) -> String {
-    raw.trim_end_matches(['\n', '\r', '\u{2029}'])
-        .chars()
-        .map(|c| if c == '\t' || (remove_forced_line_break && c == '\u{2028}') { ' ' } else { c })
-        .collect()
-}
-
 struct Node {
     entry: TocContractEntry,
     sort: bool,
@@ -858,6 +852,9 @@ fn generate_inner(
     let locked: BTreeSet<&str> = req.locked_stories.iter().map(String::as_str).collect();
     let existing_at: BTreeMap<(&str, u64), &str> =
         req.existing_anchors.iter().map(|a| ((a.story_id.as_str(), a.byte), a.anchor_id.as_str())).collect();
+    let derived_pages = DerivedPages { pages, by_page: &by_page, sections: None };
+    let rules = DerivedRules { forced_break_to_space: flags.remove_forced_line_break, tab_to_space: true };
+    let mut budget = DerivedBudget::new();
     let mut next_anchor = 1u64;
     let (mut omitted_overset, mut omitted_hidden) = (0usize, 0usize);
     let mut flat: Vec<(TocContractEntry, bool, usize)> = Vec::new();
@@ -889,6 +886,10 @@ fn generate_inner(
                 .zip(usize::try_from(p.end).ok())
                 .and_then(|(a, b)| s.text.get(a..b))
                 .ok_or(TocCommandError::Layout(LayoutError::InvalidInput))?;
+            let derived = derive_text(raw, p.start, Some(s), Some(&derived_pages), rules, &mut budget, Some(cancel)).map_err(|e| match e {
+                DerivedRefusal::BudgetExceeded => TocCommandError::BudgetExceeded,
+                DerivedRefusal::Canceled => TocCommandError::Layout(LayoutError::Canceled),
+            })?;
             let anchor = flags.make_anchor.then(|| -> Result<TocAnchorOutcome, TocCommandError> {
                 let sid = s.story.story_id.as_str();
                 if locked.contains(sid) {
@@ -905,7 +906,7 @@ fn generate_inner(
             flat.push((
                 TocContractEntry {
                     level: e.level,
-                    text: entry_text(raw, flags.remove_forced_line_break),
+                    text: derived.text,
                     page_label: page.map(|x| x.label.clone()),
                     page_id: page.map(|x| x.page_id.clone()),
                     baseline_y: page.and_then(|_| baseline_of(s, p.start)),
@@ -913,7 +914,7 @@ fn generate_inner(
                     source_start: p.start,
                     anchor,
                     run_in: false,
-                    marker_gaps: Vec::new(),
+                    marker_gaps: derived.gaps,
                 },
                 e.sort_alphabet,
                 ei,

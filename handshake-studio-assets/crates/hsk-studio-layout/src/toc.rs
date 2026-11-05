@@ -10,8 +10,10 @@
 //!   paragraph start; a paragraph opening with a glyph-less byte (a marker) takes its first line
 //!   (`line_of`, R54 F-R54-6 rule). An unplaced (overset) paragraph is left out unless the style's
 //!   `include_overset` is set; it is then listed without a page label.
-//! - Entry text = the paragraph text without its trailing break; forced line breaks (U+2028) and tabs
-//!   become spaces. Position `after`: text + separator + label; `before`: label + separator + text;
+//! - Entry text = `derived_text`: the paragraph text without its trailing terminator (any of the twelve
+//!   of `ends_paragraph`) and without stream sentinels, a marker with a value shown as its value at its
+//!   source byte, anything else typed in `TocEntryOut::marker_gaps` (this call has no sections, so a
+//!   section marker is a gap); forced line breaks (U+2028) and tabs become spaces. Position `after`: text + separator + label; `before`: label + separator + text;
 //!   `none`: text.
 //! - Levels nest (an entry's children are the following deeper entries); siblings are sorted
 //!   alphabetically (lower-cased, stable) when every sibling's level has `sort_alphabet`.
@@ -28,6 +30,7 @@
 //!   `toc_style_mapped_twice`, ...). Entries and text bytes are bounded (`TocLimits`), checked before
 //!   each push.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::derived_text::{DerivedBudget, DerivedPages, DerivedRefusal, DerivedRules, derive_text};
 use crate::numbering::PageNumber;
 use crate::sentinels::line_holding;
 use crate::threaded_reflow::{FramePlacement, LayoutProposal, Line};
@@ -180,18 +183,6 @@ impl Writer {
     }
 }
 
-/// Paragraph text without its trailing break; U+2028 and tabs become spaces.
-pub(crate) fn clean(text: &str) -> String {
-    clean_keeping(text, false)
-}
-/// [`clean`], keeping U+2028 when `keep_forced_breaks`.
-fn clean_keeping(text: &str, keep_forced_breaks: bool) -> String {
-    text.trim_end_matches(['\n', '\r', '\u{2029}'])
-        .chars()
-        .map(|c| if (c == '\u{2028}' && !keep_forced_breaks) || c == '\t' { ' ' } else { c })
-        .collect()
-}
-
 /// The placed line holding story byte `at` of `source` and its frame: the first line whose source
 /// span contains (or starts at) `at`; else, for a glyph-less byte where a line breaks or before a
 /// paragraph's first glyph, the line `place_markers` gives it (`sentinels::line_holding` over the
@@ -303,6 +294,9 @@ pub fn generate_toc(
     }
     let by_page: BTreeMap<(usize, usize), &PageNumber> =
         pages.iter().map(|p| ((p.spread, p.page), p)).collect();
+    let derived_pages = DerivedPages { pages, by_page: &by_page, sections: None };
+    let rules = DerivedRules { forced_break_to_space: !keep_forced_breaks, tab_to_space: true };
+    let mut budget = DerivedBudget::new();
     // Flat list first (bounded), then the level tree.
     let mut flat: Vec<(TocEntryOut, bool, usize)> = Vec::new();
     for s in sources {
@@ -329,16 +323,20 @@ pub fn generate_toc(
                 .zip(usize::try_from(p.end).ok())
                 .and_then(|(a, b)| s.text.get(a..b))
                 .ok_or(TocError::Layout(LayoutError::InvalidInput))?;
+            let derived = derive_text(raw, p.start, Some(s), Some(&derived_pages), rules, &mut budget, Some(cancel)).map_err(|e| match e {
+                DerivedRefusal::BudgetExceeded => TocError::BudgetExceeded,
+                DerivedRefusal::Canceled => TocError::Layout(LayoutError::Canceled),
+            })?;
             flat.push((
                 TocEntryOut {
                     level: e.level,
-                    text: clean_keeping(raw, keep_forced_breaks),
+                    text: derived.text,
                     page_label: page.map(|x| x.label.clone()),
                     page_id: page.map(|x| x.page_id.clone()),
                     baseline_y: page.and_then(|_| baseline_of(s, p.start)),
                     story_id: s.story.story_id.clone(),
                     source_start: p.start,
-                    marker_gaps: Vec::new(),
+                    marker_gaps: derived.gaps,
                 },
                 e.sort_alphabet,
                 ei,

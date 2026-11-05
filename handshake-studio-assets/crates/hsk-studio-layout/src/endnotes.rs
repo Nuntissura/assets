@@ -3,9 +3,13 @@
 //! Endnotes (documented; InDesign parity UNVERIFIED, D5): references are read in source order,
 //! then anchor order; numbers run from `start_at` and restart per story with `story_restart`. The
 //! generated story holds the title (when not empty) and one paragraph per note: prefix + number +
-//! suffix + separator text + the note text (without its trailing break). Document scope makes one
-//! group; story scope one group per host story (each with the title). Reference positions come from
-//! the host placements (as footnote references); references in overset text have none.
+//! suffix + separator text + the note text (`derived_text`: no trailing terminator, an inner terminator
+//! a space, no stream sentinel; a page or section marker in a note body has no placement at this call,
+//! so it is a typed entry of `GeneratedEndnotes::marker_gaps`). Document scope makes one group; story scope one group per host story (each with the title). Reference positions come from
+//! the host placements (as footnote references); references in overset text have none. A host with
+//! `StoryContent::Stored` carries its resolved text like a footnote host does; without it a reference
+//! in no line's span stays unplaced (typed: position `None`, sidenote in `overset`), and a text that
+//! does not fit its story (wrong length, or inline content) is `invalid_input`.
 //!
 //! Sidenotes (the spec names them; their option contract is a declared SPEC GAP, so the Studio
 //! options are provisional): each note is composed in a column of `width` beside its frame, `gap`
@@ -13,12 +17,13 @@
 //! pages, left on left-hand pages); its top is the reference line's top or the frame's top inset;
 //! notes on the same side of a frame stack with `space_between`. Numbers restart like footnotes.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::derived_text::{DerivedBudget, ENTRY_RULES, derive_text};
 use crate::folio_input::{Frame, single_frame, story_text};
 use crate::footnotes::{FootnoteError, locate};
 use crate::geometry::Rect;
 use crate::numbering::{NumberingError, PageNumber, format_number};
 use crate::threaded_reflow::{FramePlacement, LayoutProposal, Limits, Line, compose};
-use crate::toc::{GeneratedStory, Writer, clean};
+use crate::toc::{GeneratedStory, Writer};
 use crate::{Composer, LayoutError, ShapedParagraph, SpaceParams, TypesetOptions};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
@@ -74,8 +79,16 @@ pub struct GeneratedEndnotes {
 
 fn reference(host: &NoteHost<'_>, anchor: u64) -> Option<(String, [f64; 2])> {
     let placement = host.placement?;
-    let (fi, at, _) = locate(placement, anchor, host.story.byte_len(), host.paragraphs, story_text(host.story, None).ok())?;
+    let (fi, at, _) = locate(placement, anchor, host.story.byte_len(), host.paragraphs, story_text(host.story, host.resolved_text).ok())?;
     Some((placement.frames.get(fi)?.frame_id.clone(), at))
+}
+
+/// A resolved text must fit its host story; none at all stays a typed unplaced reference (module docs).
+fn check_host_text(host: &NoteHost<'_>) -> Result<(), LayoutError> {
+    if host.resolved_text.is_some() {
+        story_text(host.story, host.resolved_text)?;
+    }
+    Ok(())
 }
 
 /// Generates the endnotes of `hosts` (module docs).
@@ -87,6 +100,11 @@ pub fn generate_endnotes(
 ) -> Result<GeneratedEndnotes, FootnoteError> {
     let records: Vec<StudioEndnote> = notes.iter().map(|n| n.note.clone()).collect();
     check_endnotes(&records, Some(options)).map_err(FootnoteError::Notes)?;
+    for h in hosts {
+        check_host_text(h)?;
+    }
+    let mut budget = DerivedBudget::new();
+    let mut marker_gaps = Vec::new();
     let mut order: Vec<(usize, u64, usize)> = Vec::with_capacity(notes.len());
     for (i, n) in notes.iter().enumerate() {
         let h = hosts.iter().position(|h| h.story.story_id == n.note.story_id).ok_or(LayoutError::InvalidInput)?;
@@ -127,7 +145,9 @@ pub fn generate_endnotes(
         last_host = Some(h);
         let label = format!("{}{}{}", options.prefix, format_number(count, options.numbering_style).map_err(FootnoteError::Numbering)?, options.suffix);
         let body = story_text(n.story, n.resolved_text)?;
-        let line = format!("{label}{}{}", options.separator_text, clean(body));
+        let derived = derive_text(body, 0, None, None, ENTRY_RULES, &mut budget, None).map_err(|_| LayoutError::BudgetExceeded)?;
+        marker_gaps.extend(derived.gaps.iter().map(|g| (n.note.note_id.clone(), *g)));
+        let line = format!("{label}{}{}", options.separator_text, derived.text);
         if let Some((_, w)) = writer.as_mut() {
             w.push(&line, options.text_style.as_deref()).map_err(|_| FootnoteError::Layout(LayoutError::BudgetExceeded))?;
         }
@@ -141,7 +161,7 @@ pub fn generate_endnotes(
     if let Some((id, w)) = writer.take() {
         groups.push(EndnoteGroup { story_id: id, story: GeneratedStory { text: w.text, paragraphs: w.paragraphs, entries: Vec::new() } });
     }
-    Ok(GeneratedEndnotes { groups, references, marker_gaps: Vec::new() })
+    Ok(GeneratedEndnotes { groups, references, marker_gaps })
 }
 
 /// One placed sidenote.
@@ -178,6 +198,7 @@ pub fn place_sidenotes(
     let records: Vec<StudioEndnote> = notes.iter().map(|n| n.note.clone()).collect();
     check_endnotes(&records, None).map_err(FootnoteError::Notes)?;
     check_sidenote_options(options).map_err(FootnoteError::Notes)?;
+    check_host_text(host)?;
     let placement = host.placement.ok_or(LayoutError::InvalidInput)?;
     if placement.base_revision != document.revision {
         return Err(LayoutError::StaleRevision { expected: placement.base_revision, current: document.revision }.into());
@@ -198,7 +219,7 @@ pub fn place_sidenotes(
     for i in order {
         cancel.check().map_err(|_| LayoutError::Canceled)?;
         let n = &notes[i];
-        let Some((fi, at, _)) = locate(placement, n.note.anchor, host.story.byte_len(), host.paragraphs, story_text(host.story, None).ok()) else {
+        let Some((fi, at, _)) = locate(placement, n.note.anchor, host.story.byte_len(), host.paragraphs, story_text(host.story, host.resolved_text).ok()) else {
             out.overset.push(n.note.note_id.clone());
             continue;
         };

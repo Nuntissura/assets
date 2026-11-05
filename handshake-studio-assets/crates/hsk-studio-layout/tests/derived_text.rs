@@ -507,9 +507,12 @@ fn v4_02_the_budget_is_the_aggregate_of_one_call() {
 #[test]
 fn v4_02_running_gaps_are_bounded_over_the_instances_of_one_call() {
     // 40 000 gaps per instance, two instances: over MAX_STORY_MARKERS in the result.
-    let f = on_page_2(&markers(NEXT, 40_000));
+    let mut f = on_page_2(&markers(NEXT, 40_000));
+    // A second frame on page-2 (Folio: a frame shows one running text), not in the story's thread.
+    f.doc.layers.push(frame_layer(3, 3, spec(1, 10.0, 100.0, 180.0, 12.0), None, None));
     assert_eq!(running_try(&f, &[2]).unwrap()[0].marker_gaps.len(), 40_000);
-    assert_eq!(running_try(&f, &[2, 2]).unwrap_err(), RunningError::Layout(LayoutError::BudgetExceeded));
+    assert_eq!(running_try(&f, &[3]).unwrap()[0].marker_gaps.len(), 40_000);
+    assert_eq!(running_try(&f, &[2, 3]).unwrap_err(), RunningError::Layout(LayoutError::BudgetExceeded));
 }
 
 // ---- F-R55-9: one test per terminator, all 12 of hsk_studio_type::ends_paragraph ----

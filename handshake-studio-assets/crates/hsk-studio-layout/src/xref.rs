@@ -14,11 +14,16 @@
 //! the destination story, the page from its placement (`PageNumber::label` of the page holding the
 //! line with the destination byte) and reports per reference `current`, `stale` (the cached
 //! `resolved_text` differs), `broken` (destination story, paragraph or byte missing) or `unplaced`
-//! (destination overset or not composed: no page).
+//! (destination overset or not composed: no page). Paragraph text is `derived_text`: no stream
+//! sentinel, no trailing terminator (any of the twelve of `ends_paragraph`), a marker with a value shown
+//! as its value at its source byte, anything else typed in `XrefResolution::marker_gaps` (this call has
+//! no sections, so a section marker is a gap). Forced line breaks and tabs stay.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::derived_text::{DerivedBudget, DerivedPages, DerivedText, KEEP_RULES, derive_text};
 use crate::numbering::PageNumber;
 use crate::threaded_reflow::LayoutProposal;
 use crate::toc::{TocSource, line_of};
+use std::collections::BTreeMap;
 use hsk_studio_folio::{
     StudioLayoutFlowRecords, StudioTextStory, StudioTypeStyleRecords, StudioXrefDestination,
     TypeStyleScope,
@@ -340,6 +345,9 @@ pub fn resolve_cross_references(
         }
         formats.push((f, blocks));
     }
+    let by_page: BTreeMap<(usize, usize), &PageNumber> = ctx.pages.iter().map(|p| ((p.spread, p.page), p)).collect();
+    let derived_pages = DerivedPages { pages: ctx.pages, by_page: &by_page, sections: None };
+    let mut budget = DerivedBudget::new();
     let mut out = Vec::with_capacity(records.cross_references.len());
     for x in &records.cross_references {
         let (format, blocks) = formats
@@ -372,11 +380,19 @@ pub fn resolve_cross_references(
             out.push(broken);
             continue;
         };
-        let Some(full) = dest.text.get(ps..pe) else {
+        let Some(raw) = dest.text.get(ps..pe) else {
             out.push(broken);
             continue;
         };
-        let full = full.trim_end_matches(['\n', '\r']);
+        // Derived only when a block reads it, so a reference without paragraph text spends no budget.
+        let reads_text = blocks.iter().any(|b| matches!(b, XrefBlock::FullPara | XrefBlock::ParaText | XrefBlock::PartialPara { .. }));
+        let derived = if reads_text {
+            let source = TocSource { story: dest.story, text: dest.text, placement: dest.placement };
+            derive_text(raw, para.start, Some(&source), Some(&derived_pages), KEEP_RULES, &mut budget, None).map_err(|_| XrefError::BudgetExceeded)?
+        } else {
+            DerivedText::default()
+        };
+        let full = derived.text.as_str();
         let page = page_of(dest, byte, ctx.pages);
         let mut runs: Vec<XrefRun> = Vec::new();
         let mut style: Option<String> = None;
@@ -425,7 +441,7 @@ pub fn resolve_cross_references(
         }
         let text: String = runs.iter().map(|r| r.text.as_str()).collect();
         let status = if x.resolved_text.as_deref() == Some(text.as_str()) { XrefStatus::Current } else { XrefStatus::Stale };
-        out.push(XrefResolution { xref_id: x.xref_id.clone(), status, text: Some(text), runs, marker_gaps: vec![] });
+        out.push(XrefResolution { xref_id: x.xref_id.clone(), status, text: Some(text), runs, marker_gaps: derived.gaps });
     }
     Ok(out)
 }

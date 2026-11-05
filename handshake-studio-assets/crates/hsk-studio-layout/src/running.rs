@@ -9,6 +9,8 @@
 //! - Match paragraph / character style: the paragraphs (character ranges) of the sources carrying
 //!   the style, each on the page where its first byte is placed; first or last on the page in
 //!   source order; with none on the page, the last one on an earlier page; with none at all, empty.
+//!   The text is `derived_text`: no stream sentinel, no trailing terminator, a marker with a value shown
+//!   as its value at its source byte, anything else typed in `RunningInstance::marker_gaps`.
 //!   Delete end punctuation trims trailing `. , ; : ! ?`; change case upper / lower / title (first
 //!   letter of each word upper) / sentence (first letter upper, rest unchanged).
 //! - Last page number: the last page of the document or of the page's section, in the variable's
@@ -18,11 +20,13 @@
 //!   has no clock; the stored format is the caller's). Cross-reference and live-caption variables
 //!   are typed `variable_unsupported`.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::derived_text::{DerivedBudget, DerivedMarkerGap, DerivedPages, DerivedText, ENTRY_RULES, derive_text};
 use crate::folio_input::{single_frame, story_text};
 use crate::numbering::{NumberingError, PageNumber, format_number};
+use crate::sentinels::MAX_STORY_MARKERS;
 use crate::styles::ParagraphStyling;
 use crate::threaded_reflow::{FramePlacement, LayoutProposal, Limits, compose};
-use crate::toc::{TocSource, clean, page_of};
+use crate::toc::{TocSource, page_of};
 use crate::{Composer, LayoutError, ShapedParagraph, SpaceParams, TypesetOptions};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
@@ -105,8 +109,9 @@ fn change_case(s: &str, case: ChangeCase) -> String {
     }
 }
 
-/// (page ordinal, text) of every source occurrence of a style, in source order.
-fn occurrences(sources: &[TocSource<'_>], by_page: &BTreeMap<(usize, usize), &PageNumber>, style: &str, paragraph: bool) -> Vec<(usize, String)> {
+/// (page ordinal, derived text) of every source occurrence of a style, in source order.
+fn occurrences(sources: &[TocSource<'_>], pages: &DerivedPages<'_>, style: &str, paragraph: bool) -> Result<Vec<(usize, DerivedText)>, RunningError> {
+    let mut budget = DerivedBudget::new();
     let mut out = Vec::new();
     for s in sources {
         let spans: Vec<(u64, u64)> = if paragraph {
@@ -115,12 +120,13 @@ fn occurrences(sources: &[TocSource<'_>], by_page: &BTreeMap<(usize, usize), &Pa
             s.story.character_ranges.iter().filter(|r| r.style_ref.as_deref() == Some(style)).map(|r| (r.start, r.end)).collect()
         };
         for (a, b) in spans {
-            let Some(page) = page_of(s, a, by_page) else { continue };
-            let text = usize::try_from(a).ok().zip(usize::try_from(b).ok()).and_then(|(a, b)| s.text.get(a..b)).map(clean).unwrap_or_default();
+            let Some(page) = page_of(s, a, pages.by_page) else { continue };
+            let raw = usize::try_from(a).ok().zip(usize::try_from(b).ok()).and_then(|(a, b)| s.text.get(a..b)).unwrap_or_default();
+            let text = derive_text(raw, a, Some(s), Some(pages), ENTRY_RULES, &mut budget, None).map_err(|_| RunningError::Layout(LayoutError::BudgetExceeded))?;
             out.push((page.ordinal, text));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Resolves every running text for every frame showing it (module docs).
@@ -143,6 +149,8 @@ pub fn resolve_running_texts(
     let by_page: BTreeMap<(usize, usize), &PageNumber> = pages.iter().map(|p| ((p.spread, p.page), p)).collect();
     let by_id: BTreeMap<&str, &StudioTextVariable> = variables.iter().map(|v| (v.variable_id.as_str(), v)).collect();
     let mut out = Vec::new();
+    // Gaps kept in the result, over every instance of this call (`derived_text` budget).
+    let mut gaps_kept = 0usize;
     for r in running {
         for frame_id in &r.frame_ids {
             let layer = document.layers.iter().find(|l| l.layer_id == *frame_id).ok_or(RunningError::Layout(LayoutError::InvalidInput))?;
@@ -150,6 +158,7 @@ pub fn resolve_running_texts(
             let page = pages.iter().find(|p| p.page_id == f.page_id).ok_or(RunningError::Layout(LayoutError::InvalidInput))?;
             let section = page.section.and_then(|k| sections.get(k));
             let mut text = String::new();
+            let mut marker_gaps = Vec::new();
             for part in &r.parts {
                 match part {
                     StudioRunningPart::Text { text: t } => text.push_str(t),
@@ -157,14 +166,15 @@ pub fn resolve_running_texts(
                     StudioRunningPart::SectionMarker => text.push_str(section.and_then(|s| s.marker.as_deref()).unwrap_or("")),
                     StudioRunningPart::Variable { variable_id } => {
                         let v = by_id.get(variable_id.as_str()).ok_or(RunningError::Rules("running_variable_missing"))?;
-                        text.push_str(&resolve_variable(v, page, pages, sections, sources, &by_page, ctx)?);
+                        text.push_str(&resolve_variable(v, page, pages, sections, sources, &by_page, ctx, &mut marker_gaps)?);
                     }
                 }
-                if text.len() > 65_536 {
+                if text.len() > 65_536 || gaps_kept.saturating_add(marker_gaps.len()) > MAX_STORY_MARKERS {
                     return Err(RunningError::Layout(LayoutError::BudgetExceeded));
                 }
             }
-            out.push(RunningInstance { running_id: r.running_id.clone(), frame_id: frame_id.clone(), page_id: page.page_id.clone(), text, marker_gaps: Vec::new() });
+            gaps_kept = gaps_kept.saturating_add(marker_gaps.len());
+            out.push(RunningInstance { running_id: r.running_id.clone(), frame_id: frame_id.clone(), page_id: page.page_id.clone(), text, marker_gaps });
         }
     }
     Ok(out)
@@ -179,6 +189,7 @@ fn resolve_variable(
     sources: &[TocSource<'_>],
     by_page: &BTreeMap<(usize, usize), &PageNumber>,
     ctx: &VariableContext<'_>,
+    gaps: &mut Vec<DerivedMarkerGap>,
 ) -> Result<String, RunningError> {
     let fmt = |n: u32, s: StudioNumberStyle| format_number(n, s).map_err(RunningError::Numbering);
     Ok(match &v.kind {
@@ -211,14 +222,18 @@ fn resolve_variable(
         StudioVariableKind::MatchParagraphStyle { style, use_on_page, delete_end_punctuation, change_case: case }
         | StudioVariableKind::MatchCharacterStyle { style, use_on_page, delete_end_punctuation, change_case: case } => {
             let paragraph = matches!(v.kind, StudioVariableKind::MatchParagraphStyle { .. });
-            let occ = occurrences(sources, by_page, style, paragraph);
-            let here: Vec<&(usize, String)> = occ.iter().filter(|o| o.0 == page.ordinal).collect();
+            let derived_pages = DerivedPages { pages, by_page, sections: Some(sections) };
+            let occ = occurrences(sources, &derived_pages, style, paragraph)?;
+            let here: Vec<&(usize, DerivedText)> = occ.iter().filter(|o| o.0 == page.ordinal).collect();
             let picked = match use_on_page {
                 RunningUse::FirstOnPage => here.first().copied(),
                 RunningUse::LastOnPage => here.last().copied(),
             }
             .or_else(|| occ.iter().filter(|o| o.0 < page.ordinal).max_by_key(|o| o.0));
-            let mut t = picked.map(|o| o.1.clone()).unwrap_or_default();
+            if let Some(o) = picked {
+                gaps.extend_from_slice(&o.1.gaps);
+            }
+            let mut t = picked.map(|o| o.1.text.clone()).unwrap_or_default();
             if *delete_end_punctuation {
                 t = t.trim_end_matches(['.', ',', ';', ':', '!', '?']).to_owned();
             }
