@@ -993,13 +993,25 @@ fn diff(old: &StudioSequence, new: &StudioSequence) -> Vec<ClipChange> {
         for clip in &track.clips {
             seen.insert(clip.clip_id.as_str());
             match before.get(clip.clip_id.as_str()) {
-                Some((_, old_clip)) if window(old_clip) == window(clip) => {}
-                Some((_, old_clip)) => changes.push(ClipChange::Retime {
-                    clip_id: clip.clip_id.clone(),
-                    track_id: track.track_id.clone(),
-                    before: window(old_clip),
-                    after: window(clip),
-                }),
+                Some((_, old_clip)) => {
+                    if window(old_clip) != window(clip) {
+                        changes.push(ClipChange::Retime {
+                            clip_id: clip.clip_id.clone(),
+                            track_id: track.track_id.clone(),
+                            before: window(old_clip),
+                            after: window(clip),
+                        });
+                    }
+                    if old_clip.retime != clip.retime {
+                        changes.push(ClipChange::RetimeRecord {
+                            clip_id: clip.clip_id.clone(),
+                            track_id: track.track_id.clone(),
+                            window: window(clip),
+                            before: old_clip.retime,
+                            after: clip.retime,
+                        });
+                    }
+                }
                 None => changes.push(ClipChange::Insert {
                     track_id: track.track_id.clone(),
                     clip: Box::new(clip.clone()),
@@ -1119,7 +1131,7 @@ pub(crate) fn propose(
     let mut writes = Footprint::default();
     for change in &changes {
         writes.add(change.clip_id());
-        if !matches!(change, ClipChange::Retime { .. }) {
+        if matches!(change, ClipChange::Insert { .. } | ClipChange::Remove { .. }) {
             writes.add(change.track_id());
         }
     }

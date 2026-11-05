@@ -888,7 +888,7 @@ fn retime_options_are_independent_and_undoable() {
 
 #[test]
 fn descriptor_states_the_retime_surface() {
-    for word in ["plan_set_frame_hold", "plan_clear_frame_hold", "plan_insert_frame_hold_segment", "plan_set_retime_options", "resolve_source_frames", "frame_hold_multicam", "frame_hold_outside_source_window", "frame_hold_not_video", "estimation"] {
+    for word in ["plan_set_frame_hold", "plan_clear_frame_hold", "plan_insert_frame_hold_segment", "plan_set_retime_options", "resolve_source_frames", "frame_hold_multicam", "frame_hold_outside_source_window", "frame_hold_not_video", "estimation", "RetimeRecord", "multicam_hold_unsupported"] {
         assert!(hsk_studio_pulse::DESCRIPTOR.contains(word), "{word}");
     }
 }

@@ -46,6 +46,15 @@
 //!   multicam clip or an angle clip it reads is refused `multicam_reverse_unsupported` (declared
 //!   reading). [`resolve_active_angle`] uses the same mapping and FLOORS a fractional source position
 //!   (a slowed clip holds a source tick for several timeline ticks; declared reading).
+//! - frame hold (lane SMB-PR-RETIME-HOLD-1; STU-VID-031a; STU-VID-033 states no hold mapping, so this
+//!   is a declared Studio reading): multicam reads no hold, so a hold on a clip it would read is
+//!   refused `multicam_hold_unsupported`, never played through: the multicam clip or the angle clip
+//!   under the tick in [`resolve_active_angle`], the multicam clip or an angle clip overlapping its
+//!   window in [`plan_multicam_flatten`], an angle input of [`plan_create_multicam_source`], and a
+//!   clip or link partner that would gain a mode in [`plan_multicam_toggle_enabled`]. Turning a mode
+//!   off and `plan_clear_frame_hold` stay open as the way out (test
+//!   `frame_hold_is_refused_where_multicam_would_read_it`). The other retime choices are not read
+//!   here either: flatten keeps each angle clip's own record and drops the multicam clip's.
 //!
 //! Bounds (V4-01/02): record passes hold at most [`MAX_RECORD_PASS_EVENTS`] events, flatten at most
 //! [`MAX_FLATTEN_PIECES`] pieces and [`MAX_FLATTEN_MARKERS`] carried markers (running total checked
@@ -113,6 +122,8 @@ pub enum MulticamError {
     SpeedInexact,
     /// A reverse (negative) speed on a multicam clip or an angle clip it reads.
     ReverseUnsupported,
+    /// A frame hold on a clip multicam would read.
+    HoldUnsupported,
     /// A clip marker starts in a gap of the angle track (no piece holds it).
     MarkerInGap,
     /// A span marker runs past the end of the piece that holds its start.
@@ -133,6 +144,7 @@ impl MulticamError {
             Self::TooManyEvents => "too_many_events",
             Self::SpeedInexact => "multicam_speed_inexact",
             Self::ReverseUnsupported => "multicam_reverse_unsupported",
+            Self::HoldUnsupported => "multicam_hold_unsupported",
             Self::MarkerInGap => "multicam_marker_in_gap",
             Self::MarkerSpansPieces => "multicam_marker_spans_pieces",
             Self::MarkerOutsideWindow => "multicam_marker_outside_window",
@@ -566,6 +578,9 @@ pub fn plan_multicam_toggle_enabled(
         if !partner {
             continue;
         }
+        if on {
+            not_held(clip)?;
+        }
         match next.clip_mut(&clip.clip_id) {
             Some(m) => m.enabled = on,
             None if on => next.clips.push(StudioMulticamClip {
@@ -709,6 +724,10 @@ pub fn plan_create_multicam_source(
     let mut audio = Vec::with_capacity(n);
     for (i, angle) in request.angles.iter().enumerate() {
         ctx.cancel.check().map_err(PulseError::from)?;
+        not_held(&angle.video)?;
+        if let Some(sound) = &angle.audio {
+            not_held(sound)?;
+        }
         let offset = angle.offset.value();
         if request.sync == MulticamSync::InPoints && offset != 0 {
             return Err(PulseError::InvalidInput.into());
@@ -846,6 +865,13 @@ fn forward(speed: &Speed) -> MulticamResult<(u128, u128)> {
     }
     Ok((u128::from(speed.numerator.unsigned_abs()), u128::from(speed.denominator)))
 }
+/// `multicam_hold_unsupported` for a clip multicam would read while it holds a frame (module docs).
+fn not_held(clip: &StudioClip) -> MulticamResult<()> {
+    if clip.retime.frame_hold.is_some() {
+        return Err(MulticamError::HoldUnsupported);
+    }
+    Ok(())
+}
 /// `(denominator, numerator)`: the inverse ratio (source offset -> timeline offset).
 fn inverse_ratio((num, den): (u128, u128)) -> (u128, u128) {
     (den, num)
@@ -892,6 +918,7 @@ fn under(track: Option<&StudioTrack>, at: u64) -> MulticamResult<Option<(String,
         let start = c.timeline_start.value();
         let end = add(start, c.duration.value())?;
         if at >= start && at < end {
+            not_held(c)?;
             let a = forward(&c.speed)?;
             return Ok(Some((c.clip_id.clone(), Ticks::new(add(c.source_in.value(), scale_floor(sub(at, start)?, a)?)?))));
         }
@@ -915,6 +942,7 @@ pub fn resolve_active_angle(
     let clip = &document.sequences[s].tracks[t].clips[c];
     let mode = records.clip(clip_id).filter(|m| m.enabled).ok_or(MulticamError::NotMulticam)?;
     let s = forward(&clip.speed)?;
+    not_held(clip)?;
     let end = clip.timeline_end().ok_or(PulseError::Overflow)?;
     if tick < clip.timeline_start || tick >= end {
         return Err(PulseError::OutsideRange.into());
@@ -957,6 +985,7 @@ fn flatten_clip(
     cancel: &CancellationToken,
 ) -> MulticamResult<Vec<StudioClip>> {
     let s = forward(&clip.speed)?;
+    not_held(clip)?;
     let pick = |angle: u32| -> MulticamResult<&str> {
         let i = usize::try_from(angle).ok().and_then(|a| a.checked_sub(1)).ok_or(MulticamError::AngleOutOfRange)?;
         decl.angle_order.get(i).map(String::as_str).ok_or(MulticamError::AngleOutOfRange)
@@ -978,6 +1007,7 @@ fn flatten_clip(
             if o0 >= o1 {
                 continue;
             }
+            not_held(c)?;
             let a = forward(&c.speed)?;
             let id = fresh.next().ok_or(PulseError::InsufficientIds)?;
             if !taken.insert(id.clone()) {

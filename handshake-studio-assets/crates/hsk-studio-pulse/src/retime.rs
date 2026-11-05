@@ -49,9 +49,12 @@
 //!
 //! A hold on a multicam clip or a clip of a multicam source sequence is refused
 //! `frame_hold_multicam`, as [`crate::plan_rate_stretch`] refuses reverse there. Clearing stays open.
-//! A set, a clear or an options change leaves the clip window unchanged, so
-//! [`crate::EditProposal::changes`] is empty for it (as for a reverse-only change in `rate.rs`); the
-//! prospective sequence and the inverse carry the new record.
+//! The other way round, multicam refuses a clip it would read that already holds a frame
+//! (`multicam_hold_unsupported`, `multicam.rs` module docs). A set, a clear or an options change
+//! leaves the clip window unchanged: [`crate::EditProposal::changes`] lists it as
+//! [`crate::ClipChange::RetimeRecord`] and the clip is in the write footprint (test
+//! `set_and_clear_are_one_step_with_one_inverse`); session commits whole sequences, so the record
+//! reaches the document either way (session test `retime_commit`).
 //!
 //! Not here: `Time remapping` ([STU-VID-031a] keyframed speed), pixels, and the pitch-preserving
 //! mix (`maintain_audio_pitch` is stored; `build_timeline_mix` does not read it yet).
