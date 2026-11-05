@@ -1243,9 +1243,8 @@ impl Session {
         };
         if let Some(next) = &successor
             && next.document().sequences != self.snapshot.document().sequences
-            && !entry.iter().any(|(token, _)| *token == SEQUENCE_SETTINGS_ENTRY)
         {
-            self.keep_settings_entry_valid(next.document(), cancel)?;
+            self.keep_sequence_entries_valid(next.document(), &entry, cancel)?;
         }
         let Some(successor) = successor else {
             // No-change: nothing to commit anywhere; the receipt is still stored under the key.
@@ -1601,23 +1600,32 @@ impl Session {
         })
     }
 
-    /// A commit or resync that changes the sequences may not make a valid held `sequence_settings`
-    /// entry invalid (module `sequence_records`). Refused `folio_rejected` (`budget_exceeded` and
+    /// A commit or resync that changes the sequences may not make a valid held `sequence_settings` or
+    /// `track_display` entry invalid (module `sequence_records`), unless it writes that entry itself
+    /// (`written`, already checked against `document`). Refused `folio_rejected` (`budget_exceeded` and
     /// `canceled` keep their codes), as a multicam step whose records no longer validate against its
     /// result. An entry already invalid, or repeated, is not this commit's to judge: it stays as it came.
-    fn keep_settings_entry_valid(&self, document: &StudioDocument, cancel: &CancellationToken) -> Result<(), SessionError> {
-        let Ok(Some(bytes)) = sequence_records::held_body(&self.quarantined, SEQUENCE_SETTINGS_ENTRY) else {
-            return Ok(());
-        };
+    fn keep_sequence_entries_valid(&self, document: &StudioDocument, written: &EntryWrite, cancel: &CancellationToken) -> Result<(), SessionError> {
         let budget = self.config.budgets.folio();
-        match folio::parse_sequence_settings_records(bytes, self.snapshot.document(), budget, cancel) {
-            Ok(_) => {}
-            Err(d) if d.code == folio::Code::Canceled => return Err(SessionError::Canceled),
-            Err(_) => return Ok(()),
+        let settings = |bytes: &[u8], against: &StudioDocument| folio::parse_sequence_settings_records(bytes, against, budget, cancel).map(drop);
+        let display = |bytes: &[u8], against: &StudioDocument| folio::parse_track_display_records(bytes, against, budget, cancel).map(drop);
+        let checks: [(&str, &dyn Fn(&[u8], &StudioDocument) -> Result<(), folio::Diagnostic>); 2] =
+            [(SEQUENCE_SETTINGS_ENTRY, &settings), (TRACK_DISPLAY_ENTRY, &display)];
+        for (token, parse) in checks {
+            if written.iter().any(|(t, _)| *t == token) {
+                continue;
+            }
+            let Ok(Some(bytes)) = sequence_records::held_body(&self.quarantined, token) else {
+                continue;
+            };
+            match parse(bytes, self.snapshot.document()) {
+                Ok(()) => {}
+                Err(d) if d.code == folio::Code::Canceled => return Err(SessionError::Canceled),
+                Err(_) => continue,
+            }
+            parse(bytes, document).map_err(sequence_records_step::folio_code)?;
         }
-        folio::parse_sequence_settings_records(bytes, document, budget, cancel)
-            .map(drop)
-            .map_err(sequence_records_step::folio_code)
+        Ok(())
     }
 
     /// Runs the provider and checks everything about its proposal without publishing anything.
@@ -2108,8 +2116,8 @@ impl Session {
     /// parsed by folio under the session budgets, and must name this session's document at the
     /// receipt's revision with every raster asset present in the source package; otherwise
     /// `authority_document_*` and nothing changes. The property revision vector restarts at 0,
-    /// as after an open. An authority document a valid held `sequence_settings` entry does not
-    /// validate against is refused `folio_rejected` (nothing changes; removing the entry stays possible
+    /// as after an open. An authority document a valid held `sequence_settings` or `track_display`
+    /// entry does not validate against is refused `folio_rejected` (nothing changes; removing the entry stays possible
     /// while the key is pending). Same lookup preconditions as [`Session::discard_diverged`].
     pub fn resync_diverged(
         &mut self,
@@ -2130,7 +2138,7 @@ impl Session {
         let (authority, disagreement, draft_revision) = self.diverged_precondition(key, cancel)?;
         let snapshot =
             self.inspect_authority_document(authority_document, authority.revision, cancel)?;
-        self.keep_settings_entry_valid(snapshot.document(), cancel)?;
+        self.keep_sequence_entries_valid(snapshot.document(), &EntryWrite::new(), cancel)?;
         let revision_before = self.snapshot.document().revision;
         let revision_after = snapshot.document().revision;
         self.revisions = chronicle::seed_revisions(snapshot.document());

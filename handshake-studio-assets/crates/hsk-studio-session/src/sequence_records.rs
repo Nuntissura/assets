@@ -24,7 +24,9 @@
 //! came. The preset entry names nothing in the document.
 //!
 //! The track display records (lane SMB-PR-TRACK-DISPLAY-1, STU-VID-036) are the entry
-//! `studio/track_display.<sha256>` under all of the above. A sequence with no entry resolves to the
+//! `studio/track_display.<sha256>` under all of the above; of a sequence edit, only the removal of a
+//! sequence it names can make it invalid, because it copies no other document value. A sequence with
+//! no entry resolves to the
 //! declared defaults (`Session::resolved_track_displays`), so that read also says which sequences have
 //! stored state. Tests: tests/track_display.rs.
 //!
