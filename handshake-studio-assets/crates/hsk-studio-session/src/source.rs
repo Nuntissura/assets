@@ -156,8 +156,10 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// edit-preserve), validated by its producer on every set and read. `info` (lane
 /// SMB-PS-INFO-HISTOGRAM-1) carries the viewer's Info panel state (colour sampler points, readout
 /// model, eyedropper sample size and scope; STU-RAS-163), JSON validated by its producer on every
-/// set and read.
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info"];
+/// set and read. `sequence_settings` and `sequence_presets` (lane SMB-PR-SEQUENCE-SESSION-1) carry
+/// the Folio `StudioSequenceSettingsRecords` and `StudioSequencePresetSet` (`crate::sequence_records`,
+/// validated on open, set and read; an invalid one opens with a loss note and refuses on read).
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {

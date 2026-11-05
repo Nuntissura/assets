@@ -18,12 +18,17 @@ use crate::{
     timeline::{self, TIMELINE_STEP_PROVIDER, TimelineStep},
     multicam::MULTICAM_ENTRY,
     multicam_step::{self, MULTICAM_STEP_PROVIDER, MulticamStep},
+    sequence_records::{self, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY},
+    sequence_records_step::{self, LiveEntries, SEQUENCE_RECORDS_STEP_PROVIDER, SequenceRecordsStep},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, CommandContext, DomainId};
 use hsk_studio_chronicle::{
     self as chronicle, Inverse, Property, RevisionEntry, RevisionUpdate, SourceResult,
 };
-use hsk_studio_folio::{self as folio, Resolver, Snapshot, StudioDocument, Unresolved};
+use hsk_studio_folio::{
+    self as folio, Resolver, Snapshot, StudioDocument, StudioSequenceSettingsCommand,
+    StudioSequenceSettingsReport, Unresolved,
+};
 use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_package::{
     Codec, Extras, ImportRef, Limits, LossNote, Manifest, PackageError, PackageReader,
@@ -220,6 +225,13 @@ pub struct Applied {
     /// For a [`Session::submit_multicam`] step: the step that restores the previous sequences and
     /// multicam records (undo; its own inverse is the redo). `None` otherwise and for no-change.
     pub multicam_inverse: Option<MulticamStep>,
+    /// For a [`Session::submit_sequence_records`] step or a [`Session::submit_sequence_command_as`]
+    /// command: the step that restores the previous sequences and records (undo; its own inverse is
+    /// the redo). `None` otherwise and for no-change.
+    pub sequence_records_inverse: Option<SequenceRecordsStep>,
+    /// For a sequence command: Folio's report (codes and counters only), for the host; `presets`
+    /// counts the stored presets. `None` otherwise.
+    pub sequence_settings_report: Option<StudioSequenceSettingsReport>,
     /// The authority's canonical receipt (`None` for no-change or a standalone session).
     pub commit: Option<CommitReceipt>,
     /// True when this is the stored receipt of an earlier identical request: nothing was
@@ -380,19 +392,21 @@ struct PendingCommit {
     draft: Applied,
     /// Set when the authority's receipt for this key disagreed (only an operator command clears it; same test).
     diverged: Option<(CommitReceipt, Disagreement)>,
-    /// The `multicam` document entry the commit stores with the successor (multicam steps).
+    /// The document entries the commit stores with the successor (multicam and sequence-records steps).
     entry: EntryWrite,
 }
 
-/// A document-entry write that travels with a successor (`None` = no entry change; `Some(None)` =
-/// remove the `multicam` entry): published together with the document, never alone.
-type EntryWrite = Option<Option<Vec<u8>>>;
+/// Document-entry writes that travel with a successor, by token (`None` body = remove the entry; an
+/// empty list = no entry change): published together with the document, never alone.
+type EntryWrite = Vec<(&'static str, Option<Vec<u8>>)>;
 
 /// The step a submit carries besides a provider proposal.
 #[derive(Clone, Copy)]
 enum Step<'a> {
     Timeline(&'a TimelineStep),
     Multicam(&'a MulticamStep),
+    SequenceRecords(&'a SequenceRecordsStep),
+    SequenceCommand(&'a CommandContext, &'a StudioSequenceSettingsCommand),
 }
 
 enum Resolution {
@@ -656,9 +670,21 @@ impl Session {
             resolver,
             cancel,
         )
-        .and_then(|parts| {
+        .and_then(|mut parts| {
             let resource = DomainId::parse(&parts.snapshot.document().document_id)
                 .map_err(|_| SessionError::ReadOnlyDocument)?;
+            // An invalid sequence entry does not refuse the open: it is noted, kept and refused on
+            // read (module `sequence_records`).
+            for note in sequence_records::invalid_entry_notes(
+                &parts.quarantined,
+                parts.snapshot.document(),
+                config.budgets.folio(),
+                cancel,
+            )? {
+                if !parts.loss.iter().any(|held| held.name == note.name) {
+                    parts.loss.push(note);
+                }
+            }
             Ok((resource, parts))
         });
         drop(linked);
@@ -775,7 +801,9 @@ impl Session {
     /// (and the undo's inverse the redo). Refusals change nothing: `value_conflict` (the sequence
     /// is not `expect`), `invalid_target` (no such sequence), `invalid_input` (sequence ids
     /// disagree), `invalid_command`, `folio_rejected` / `budget_exceeded` (the result is not a
-    /// valid document), `stale_revision`. Test `timeline_step_round_trips_and_undoes_as_one_step`.
+    /// valid document, or a valid held `sequence_settings` entry would no longer validate against it,
+    /// as a frame rate the entry does not declare), `stale_revision`. Test
+    /// `timeline_step_round_trips_and_undoes_as_one_step`; the settings entry, tests/sequence_records_commit.rs.
     pub fn submit_timeline(
         &mut self,
         step: &TimelineStep,
@@ -845,7 +873,8 @@ impl Session {
     /// entry: `value_conflict` (a quoted sequence or the quoted records are not the live ones, or a
     /// created id exists), `invalid_target`, `invalid_input`, `invalid_command`, `folio_rejected` /
     /// `budget_exceeded` (the document or the records would not validate), `total_too_large`,
-    /// `stale_revision`. Tests in tests/multicam_commit.rs.
+    /// `stale_revision`. Removing a sequence that a valid held `sequence_settings` entry names is
+    /// refused `folio_rejected` too (tests/sequence_records_commit.rs). Tests in tests/multicam_commit.rs.
     pub fn submit_multicam(
         &mut self,
         step: &MulticamStep,
@@ -885,6 +914,124 @@ impl Session {
             self.submit_inner(Some(key), MULTICAM_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::Multicam(step)))
         });
         self.settle(result, |applied, report| applied.report = report)
+    }
+
+    /// Submits one sequence-records step (module `sequence_records_step`): every sequence edit and
+    /// both record entries change together at `expected_revision + 1`, through the same grant,
+    /// admission, commit and publish path as [`Session::submit`]. The returned
+    /// [`Applied::sequence_records_inverse`] is the undo (and the undo's inverse the redo). Refusals
+    /// change neither the document nor an entry: `value_conflict` (a quoted sequence or record set is
+    /// not the live one, a held entry that does not parse or is repeated included, or a created id
+    /// exists), `invalid_target`, `invalid_input`, `invalid_command`, `folio_rejected` /
+    /// `budget_exceeded` (the document or a record set the step writes or keeps would not validate,
+    /// including a removed sequence its settings entry still names), `total_too_large`,
+    /// `stale_revision`. A step that does not name an invalid entry leaves its bytes alone; one that
+    /// quotes it and writes valid records replaces it. Tests in tests/sequence_records_commit.rs.
+    pub fn submit_sequence_records(
+        &mut self,
+        step: &SequenceRecordsStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(None, SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::SequenceRecords(step)))
+        });
+        self.settle(result, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_sequence_records`] for the command `context`: its report frame carries the
+    /// command's correlation, and a context that does not fit the step is refused first
+    /// (`actor_mismatch`, `command_mismatch`, `stale_revision`).
+    pub fn submit_sequence_records_as(
+        &mut self,
+        context: &CommandContext,
+        step: &SequenceRecordsStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.check_command_context(context, &step.command_id, expected_revision).and_then(|()| step.binding_bytes()).and_then(|params| {
+            self.submit_inner(None, SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::SequenceRecords(step)))
+        });
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_sequence_records`], idempotent under `key` (see [`Session::submit_keyed`]).
+    pub fn submit_sequence_records_keyed(
+        &mut self,
+        key: &IdempotencyKey,
+        step: &SequenceRecordsStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(Some(key), SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::SequenceRecords(step)))
+        });
+        self.settle(result, |applied, report| applied.report = report)
+    }
+
+    /// Runs one Folio sequence command (`sequence.preset.save_from_sequence`, `sequence.preset.apply`,
+    /// `sequence.editing_mode.set`) under the caller's `context`, committed as one
+    /// [`SequenceRecordsStep`] (one revision, one receipt, one inverse). The one report frame carries
+    /// the context's correlation. Refusals change nothing: the checks of
+    /// [`Session::submit_sequence_records_as`], `folio_rejected` / `budget_exceeded` when an entry the
+    /// command reads is invalid (all three read the settings; `save` and `apply` read the presets),
+    /// then Folio's codes (`command_missing`,
+    /// `sequence_missing`, `settings_missing`, `preset_missing`, `duplicate_preset`,
+    /// `invalid_preset_id`, `invalid_name`, `invalid_category`, `mode_unknown`, `mode_violation`,
+    /// `invalid_input`, `budget_exceeded`). With a commit authority use
+    /// [`Session::submit_sequence_command_keyed_as`].
+    pub fn submit_sequence_command_as(
+        &mut self,
+        context: &CommandContext,
+        command: &StudioSequenceSettingsCommand,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.sequence_command(None, context, command, expected_revision, cancel);
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_sequence_command_as`], idempotent under `key`: an identical retry returns
+    /// the stored receipt (see [`Session::submit_keyed`]).
+    pub fn submit_sequence_command_keyed_as(
+        &mut self,
+        key: &IdempotencyKey,
+        context: &CommandContext,
+        command: &StudioSequenceSettingsCommand,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.sequence_command(Some(key), context, command, expected_revision, cancel);
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
+    fn sequence_command(
+        &mut self,
+        key: Option<&IdempotencyKey>,
+        context: &CommandContext,
+        command: &StudioSequenceSettingsCommand,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, SessionError> {
+        self.check_command_context(context, command.command_id(), expected_revision)?;
+        let params = sequence_records_step::command_binding_bytes(context, command)?;
+        self.submit_inner(key, SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::SequenceCommand(context, command)))
+    }
+
+    /// A command context must name this session's actor (it grants nothing, and grants and receipts
+    /// are this session's: `actor_mismatch` otherwise), the command being run when it names one
+    /// (`command_mismatch`), and the revision the caller expects (`stale_revision`).
+    fn check_command_context(&self, context: &CommandContext, command_id: &str, expected_revision: u64) -> Result<(), SessionError> {
+        if context.actor() != &self.config.actor {
+            return Err(SessionError::Provider("actor_mismatch"));
+        }
+        if context.command().is_some_and(|c| c.as_str() != command_id) {
+            return Err(SessionError::Provider("command_mismatch"));
+        }
+        if context.base_revision() != expected_revision {
+            return Err(SessionError::StaleRevision { expected: context.base_revision(), current: self.snapshot.document().revision });
+        }
+        Ok(())
     }
 
     fn check_grant(&self, action: Action) -> Result<GrantToken, SessionError> {
@@ -1012,8 +1159,27 @@ impl Session {
         } = match step {
             Some(Step::Timeline(step)) => self.propose_timeline(step, current, cancel)?,
             Some(Step::Multicam(step)) => self.propose_multicam(step, current, cancel)?,
+            Some(Step::SequenceRecords(step)) => self.propose_sequence_records(step, None, current, cancel)?,
+            Some(Step::SequenceCommand(context, command)) => {
+                let (step, report) = sequence_records_step::command_step(
+                    self.snapshot.document(),
+                    self.live_entries(),
+                    context,
+                    current,
+                    command,
+                    self.config.budgets.folio(),
+                    cancel,
+                )?;
+                self.propose_sequence_records(&step, Some(report), current, cancel)?
+            }
             None => self.propose_checked(provider_id, params, current, cancel)?,
         };
+        if let Some(next) = &successor
+            && next.document().sequences != self.snapshot.document().sequences
+            && !entry.iter().any(|(token, _)| *token == SEQUENCE_SETTINGS_ENTRY)
+        {
+            self.keep_settings_entry_valid(next.document(), cancel)?;
+        }
         let Some(successor) = successor else {
             // No-change: nothing to commit anywhere; the receipt is still stored under the key.
             let mut applied = applied;
@@ -1204,6 +1370,8 @@ impl Session {
                 timeline_inverse: changed
                     .then(|| step.inverse(step.command_id.clone(), step.correlation_id)),
                 multicam_inverse: None,
+                sequence_records_inverse: None,
+                sequence_settings_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1212,7 +1380,7 @@ impl Session {
             },
             successor,
             slots: Vec::new(),
-            entry: None,
+            entry: Vec::new(),
         })
     }
 
@@ -1253,8 +1421,12 @@ impl Session {
             current
         };
         let (successor, entry, inverse) = match checked {
-            Some(c) => (Some(c.successor), c.entry, Some(c.inverse)),
-            None => (None, None, None),
+            Some(c) => (
+                Some(c.successor),
+                c.entry.map_or_else(Vec::new, |write| vec![(MULTICAM_ENTRY, write)]),
+                Some(c.inverse),
+            ),
+            None => (None, Vec::new(), None),
         };
         Ok(Proposed {
             applied: Applied {
@@ -1269,6 +1441,8 @@ impl Session {
                 inverse: None,
                 timeline_inverse: None,
                 multicam_inverse: inverse,
+                sequence_records_inverse: None,
+                sequence_settings_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1279,6 +1453,100 @@ impl Session {
             slots: Vec::new(),
             entry,
         })
+    }
+
+    /// The live entries a sequence-records step is checked against.
+    fn live_entries(&self) -> LiveEntries<'_> {
+        LiveEntries {
+            settings: sequence_records::held_body(&self.quarantined, SEQUENCE_SETTINGS_ENTRY),
+            presets: sequence_records::held_body(&self.quarantined, SEQUENCE_PRESETS_ENTRY),
+            multicam: self.document_entry(MULTICAM_ENTRY),
+        }
+    }
+
+    /// Checks a sequence-records step against the live snapshot and entries without publishing
+    /// anything.
+    fn propose_sequence_records(
+        &self,
+        step: &SequenceRecordsStep,
+        report: Option<StudioSequenceSettingsReport>,
+        current: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Proposed, SessionError> {
+        let checked = sequence_records_step::successor(
+            &self.snapshot,
+            self.live_entries(),
+            step,
+            self.config.budgets.folio(),
+            &*self.ports.resolver,
+            cancel,
+        )?;
+        // Last point at which a cancel still prevents publication.
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        if let Some(checked) = &checked {
+            if !self.assets_available(checked.successor.document()) {
+                return Err(SessionError::Package(PackageError::MissingAsset));
+            }
+            if !self.document_entries_fit(&checked.entries) {
+                return Err(SessionError::Package(PackageError::TotalTooLarge));
+            }
+        }
+        let changed = checked.is_some();
+        let revision = if changed {
+            current
+                .checked_add(1)
+                .ok_or(SessionError::ProposalInconsistent)?
+        } else {
+            current
+        };
+        let (successor, entry, inverse) = match checked {
+            Some(c) => (Some(c.successor), c.entries, Some(c.inverse)),
+            None => (None, Vec::new(), None),
+        };
+        Ok(Proposed {
+            applied: Applied {
+                provider: SEQUENCE_RECORDS_STEP_PROVIDER.to_owned(),
+                command_id: step.command_id.clone(),
+                correlation_id: step.correlation_id,
+                actor: timeline::actor_of(&self.config.actor),
+                previous_revision: current,
+                revision,
+                changed,
+                revision_updates: Vec::new(),
+                inverse: None,
+                timeline_inverse: None,
+                multicam_inverse: None,
+                sequence_records_inverse: inverse,
+                sequence_settings_report: report,
+                commit: None,
+                replayed: false,
+                cancel_too_late: false,
+                receipts_evicted: 0,
+                report: ReportStatus::Unaddressed,
+            },
+            successor,
+            slots: Vec::new(),
+            entry,
+        })
+    }
+
+    /// A commit or resync that changes the sequences may not make a valid held `sequence_settings`
+    /// entry invalid (module `sequence_records`). Refused `folio_rejected` (`budget_exceeded` and
+    /// `canceled` keep their codes), as a multicam step whose records no longer validate against its
+    /// result. An entry already invalid, or repeated, is not this commit's to judge: it stays as it came.
+    fn keep_settings_entry_valid(&self, document: &StudioDocument, cancel: &CancellationToken) -> Result<(), SessionError> {
+        let Ok(Some(bytes)) = sequence_records::held_body(&self.quarantined, SEQUENCE_SETTINGS_ENTRY) else {
+            return Ok(());
+        };
+        let budget = self.config.budgets.folio();
+        match folio::parse_sequence_settings_records(bytes, self.snapshot.document(), budget, cancel) {
+            Ok(_) => {}
+            Err(d) if d.code == folio::Code::Canceled => return Err(SessionError::Canceled),
+            Err(_) => return Ok(()),
+        }
+        folio::parse_sequence_settings_records(bytes, document, budget, cancel)
+            .map(drop)
+            .map_err(sequence_records_step::folio_code)
     }
 
     /// Runs the provider and checks everything about its proposal without publishing anything.
@@ -1425,6 +1693,8 @@ impl Session {
                 inverse: prepared.inverse().cloned(),
                 timeline_inverse: None,
                 multicam_inverse: None,
+                sequence_records_inverse: None,
+                sequence_settings_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1433,7 +1703,7 @@ impl Session {
             },
             successor: successor_snapshot,
             slots,
-            entry: None,
+            entry: Vec::new(),
         })
     }
 
@@ -1766,7 +2036,9 @@ impl Session {
     /// parsed by folio under the session budgets, and must name this session's document at the
     /// receipt's revision with every raster asset present in the source package; otherwise
     /// `authority_document_*` and nothing changes. The property revision vector restarts at 0,
-    /// as after an open. Same lookup preconditions as [`Session::discard_diverged`].
+    /// as after an open. An authority document a valid held `sequence_settings` entry does not
+    /// validate against is refused `folio_rejected` (nothing changes; removing the entry stays possible
+    /// while the key is pending). Same lookup preconditions as [`Session::discard_diverged`].
     pub fn resync_diverged(
         &mut self,
         key: &IdempotencyKey,
@@ -1786,6 +2058,7 @@ impl Session {
         let (authority, disagreement, draft_revision) = self.diverged_precondition(key, cancel)?;
         let snapshot =
             self.inspect_authority_document(authority_document, authority.revision, cancel)?;
+        self.keep_settings_entry_valid(snapshot.document(), cancel)?;
         let revision_before = self.snapshot.document().revision;
         let revision_after = snapshot.document().revision;
         self.revisions = chronicle::seed_revisions(snapshot.document());
@@ -2390,7 +2663,10 @@ impl Session {
     /// `document_entries_save_reopen_and_stay_bounded`). Not undoable and not a revision: the
     /// session is dirty until the next save. Refusals change nothing: an unknown token is
     /// `unsafe_name`; all opaque entries together above `limits.max_entry_bytes` (the bound a
-    /// reopen enforces) is `total_too_large`.
+    /// reopen enforces) is `total_too_large`. Bytes stored under the `sequence_settings` and
+    /// `sequence_presets` tokens must parse and validate (module `sequence_records`); they replace
+    /// every entry of the token, an invalid one included, and storing one while a commit is pending is
+    /// `reconciliation_required`.
     pub fn set_document_entry(
         &mut self,
         token: &str,
@@ -2407,8 +2683,26 @@ impl Session {
         {
             return Err(SessionError::Package(PackageError::TotalTooLarge));
         }
+        if let Some(body) = &bytes
+            && sequence_records::validated_token(token)
+        {
+            if !self.pending_keys().is_empty() {
+                return Err(SessionError::ReconciliationRequired);
+            }
+            sequence_records::check_entry(token, body, self.snapshot.document(), self.config.budgets.folio(), cancel)?;
+        }
         self.put_document_entry(token, bytes);
         Ok(())
+    }
+
+    /// The folio budget of this session.
+    pub(crate) fn folio_budget(&self) -> folio::Budget {
+        self.config.budgets.folio()
+    }
+
+    /// Every entry the session holds beside the document.
+    pub(crate) fn held_entries(&self) -> &[Quarantined] {
+        &self.quarantined
     }
 
     /// Whether a `len`-byte body for `token` keeps all opaque entries within `max_entry_bytes`.
@@ -2422,15 +2716,43 @@ impl Session {
         others.saturating_add(len as u64) <= self.config.budgets.limits.max_entry_bytes
     }
 
-    /// Publishes a checked entry write that travels with a successor (multicam steps).
+    /// Whether `writes` together keep all opaque entries within `max_entry_bytes`.
+    fn document_entries_fit(&self, writes: &EntryWrite) -> bool {
+        let written = |q: &Quarantined| {
+            document_entry(&q.name, &q.sha256_hex).is_some_and(|token| writes.iter().any(|(t, _)| *t == token))
+        };
+        let others = self
+            .quarantined
+            .iter()
+            .filter(|q| !written(q))
+            .map(|q| q.bytes.len() as u64)
+            .fold(0u64, u64::saturating_add);
+        let bodies = writes
+            .iter()
+            .filter_map(|(_, body)| body.as_ref())
+            .map(|body| body.len() as u64)
+            .fold(0u64, u64::saturating_add);
+        others.saturating_add(bodies) <= self.config.budgets.limits.max_entry_bytes
+    }
+
+    /// Publishes checked entry writes that travel with a successor (multicam and sequence-records
+    /// steps).
     fn publish_entry(&mut self, entry: EntryWrite) {
-        if let Some(bytes) = entry {
-            self.put_document_entry(MULTICAM_ENTRY, bytes);
+        for (token, bytes) in entry {
+            self.put_document_entry(token, bytes);
         }
     }
 
-    /// Stores or removes the entry `token` (already a known token, size already checked).
+    /// Stores or removes the entry `token` (already a known token, size already checked). The loss
+    /// note of a replaced sequence entry goes with it: it named an entry the session no longer holds.
     fn put_document_entry(&mut self, token: &str, bytes: Option<Vec<u8>>) {
+        if sequence_records::validated_token(token) {
+            let held = &self.quarantined;
+            let replaced = |name: &str| {
+                held.iter().any(|q| q.name == name && document_entry(&q.name, &q.sha256_hex) == Some(token))
+            };
+            self.loss.retain(|note| !replaced(&note.name));
+        }
         self.quarantined
             .retain(|q| document_entry(&q.name, &q.sha256_hex) != Some(token));
         if let Some(body) = bytes {
