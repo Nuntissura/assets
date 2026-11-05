@@ -494,10 +494,9 @@ fn a_successful_commit_replaces_a_parsable_invalid_entry() {
         assert_eq!((applied.revision, applied.changed), (4, true));
         assert_eq!(session.sequence_settings_records(&token()).unwrap(), Some(good.clone()));
         assert!(session.loss().is_empty(), "the note named an entry that is gone: {:?}", session.loss());
-        // Its undo would write invalid records back: refused, the repair stands. Declared reading.
-        let held = state(&session);
-        assert_eq!(session.submit_sequence_records(&fresh_inverse(&applied, "cmd.undo"), 4, &token()).unwrap_err().code(), "folio_rejected");
-        assert_eq!(state(&session), held);
+        // Its undo would write invalid records back, so none exists, and the answer says so (F-R56-7).
+        assert_eq!(applied.sequence_records_inverse, None);
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::Unavailable(vec![SEQUENCE_SETTINGS_ENTRY])));
         // Commands work again.
         assert_eq!(run(&mut session, &set_mode("seq-a", SHIPPED_MODE), 1).unwrap().revision, 5);
         // A commit can also remove it.

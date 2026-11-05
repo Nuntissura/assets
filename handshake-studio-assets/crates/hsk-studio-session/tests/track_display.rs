@@ -458,8 +458,9 @@ fn a_step_replaces_an_entry_it_can_quote_and_refuses_bytes_it_cannot() {
         let applied = session.submit_sequence_records(&replace, 3, &token()).unwrap();
         assert_eq!(session.track_display_records(&token()).unwrap(), Some(good));
         assert!(session.loss().is_empty(), "{:?}", session.loss());
-        // The undo would write the invalid records back, so it is refused and the repair stands.
-        assert_eq!(session.submit_sequence_records(&fresh_inverse(&applied, "cmd.undo"), 4, &token()).unwrap_err().code(), "folio_rejected");
+        // The undo would write the invalid records back, so none exists, and the answer says so (F-R56-7).
+        assert_eq!(applied.sequence_records_inverse, None);
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::Unavailable(vec![TRACK_DISPLAY_ENTRY])));
         // Bytes that do not parse cannot be quoted, a `None` quote included.
         let mut corrupt = open(&package(&[entry(TRACK_DISPLAY_ENTRY, b"{not json")]));
         let any = display_step(RecordEdit { expect: None, write: None });

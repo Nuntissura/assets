@@ -228,7 +228,8 @@ pub struct Applied {
     pub multicam_inverse: Option<MulticamStep>,
     /// For a [`Session::submit_sequence_records`] step or a [`Session::submit_sequence_command_as`]
     /// command: the step that restores the previous sequences and records (undo; its own inverse is
-    /// the redo). `None` otherwise and for no-change.
+    /// the redo). `None` otherwise and for no-change, and when [`Applied::sequence_records_undo`] says
+    /// no undo exists.
     pub sequence_records_inverse: Option<SequenceRecordsStep>,
     /// For a changed sequence-records step or command: what that inverse restores, so a host can tell
     /// an undo that exists from one that cannot. `None` otherwise and for no-change.
@@ -1641,9 +1642,9 @@ impl Session {
         } else {
             current
         };
-        let (successor, entry, inverse) = match checked {
-            Some(c) => (Some(c.successor), c.entries, Some(c.inverse)),
-            None => (None, Vec::new(), None),
+        let (successor, entry, inverse, undo) = match checked {
+            Some(c) => (Some(c.successor), c.entries, c.inverse, Some(c.undo)),
+            None => (None, Vec::new(), None, None),
         };
         Ok(Proposed {
             applied: Applied {
@@ -1659,7 +1660,7 @@ impl Session {
                 timeline_inverse: None,
                 multicam_inverse: None,
                 sequence_records_inverse: inverse,
-                sequence_records_undo: None,
+                sequence_records_undo: undo,
                 sequence_settings_report: report,
                 track_display_report: None,
                 composition_token_inverse: None,
