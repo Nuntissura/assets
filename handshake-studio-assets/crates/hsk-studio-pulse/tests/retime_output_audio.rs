@@ -332,7 +332,7 @@ fn flag_off_is_byte_identical_to_the_resampler() {
             }
             assert_eq!(l.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), dl.iter().map(|v| (v + 0.0).to_bits()).collect::<Vec<_>>(), "{speed:?}");
             assert_eq!(r.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), dr.iter().map(|v| (v + 0.0).to_bits()).collect::<Vec<_>>(), "{speed:?}");
-            // Compared between the base and the tip logs of this lane.
+            // For a reader comparing two runs; the proof is the equality above.
             println!("OFF_DIGEST {speed:?} {:016x}", fnv(&l, &r));
         }
     });

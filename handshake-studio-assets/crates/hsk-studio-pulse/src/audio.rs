@@ -8,6 +8,22 @@
 //! - clips: every enabled clip is cut from its source audio (an [`AudioSources`] port: planar,
 //!   at the mix rate, sample 0 = source tick 0) by `TrackSpec::from_source` (unit speed) or
 //!   `TrackSpec::from_source_at_speed` (other speeds, score's band-limited resampler);
+//! - `Maintain audio pitch` ([STU-VID-031], lane SMB-PR-RETIME-OUTPUT-1, `StudioClip.retime`): with the
+//!   flag on and a speed other than 1 or -1 the clip's window goes through score's phase vocoder
+//!   ([`StreamingStretch`], transients off, which score proves bit-identical to its `time_stretch`)
+//!   instead of the resampler. Pitch stays, the duration is the same `ceil(frames / |speed|)` samples.
+//!   The mix copies whole clips when it builds a session, so no block-level stretch is needed and no
+//!   Score change was: block size and seek do not change the output (test
+//!   `block_size_and_seek_do_not_change_the_kept_pitch_output`). Speeds past the vocoder's factor range
+//!   ([`STRETCH_FACTOR`], 1/4..4) take two stages, inside Score's speed range (1/16..16); a speed past
+//!   that keeps the resampler path's refusal. Transients stay off because the channels are stretched
+//!   separately: an onset detected on one channel only would shift it against the other. Reverse with
+//!   the flag on plays the window backward, then stretches it: the same tones, in reverse order, for
+//!   the same duration (UNVERIFIED, D5). At speed -1 the flag changes nothing: the exact reverse keeps
+//!   the pitch. With the flag off the resampler output is unchanged byte for byte (test
+//!   `flag_off_is_byte_identical_to_the_resampler`). The stretch runs when the session is built, on
+//!   the thread that calls `render` or `build_timeline_mix`, like the resampler it replaces; a seek
+//!   rebuilds. Adobe parity UNVERIFIED (D5).
 //! - transitions: an `audio_crossfade` held as a clip's tail becomes score's fade pair over the
 //!   transition span: the outgoing clip runs `after_cut` samples into its tail handle with a fade
 //!   out over the whole span, the incoming clip starts `before_cut` samples early from its head
@@ -51,8 +67,8 @@ use crate::transition::{AUDIO_CROSSFADE, check_at};
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{ClipSource, StudioClipGainEnvelope, StudioClipPanEnvelope, StudioSequence, TrackKind, TransitionParameterValue};
 use hsk_studio_score::{
-    AutomationLane, ChannelLayout, ClipSpeed, Fade, FadeCurve, MAX_TRACKS, ScoreError, Session,
-    TrackSpec,
+    AutomationLane, ChannelLayout, ClipSpeed, Fade, FadeCurve, MAX_CLIP_FRAMES, MAX_TRACKS, STRETCH_FACTOR, ScoreError,
+    Session, StreamingStretch, StretchParams, TrackSpec,
 };
 
 /// Parameter key of the crossfade curve (`linear` | `equal_power`).
@@ -86,6 +102,82 @@ fn samples(ticks: Ticks, rate_hz: u32) -> Result<usize> {
     usize::try_from(samples_from_ticks_exact(ticks, rate_hz)?).map_err(|_| PulseError::Overflow)
 }
 
+/// `out` samples from `input` through one vocoder pass; a short stream's tail stays silent.
+fn stretch_once(
+    input: &[f32],
+    out: usize,
+    sample_rate_hz: u32,
+    cancel: &CancellationToken,
+) -> std::result::Result<Vec<f32>, ScoreError> {
+    let factor = (out as f64 / input.len() as f64).clamp(STRETCH_FACTOR.0, STRETCH_FACTOR.1);
+    let params = StretchParams::for_rate(sample_rate_hz);
+    let mut stream = StreamingStretch::new(sample_rate_hz, factor, params, false)?;
+    let mut output = vec![0.0_f32; out];
+    let (mut taken, mut made) = (0usize, 0usize);
+    while made < out {
+        let pushed = if taken < input.len() { stream.push(&input[taken..])? } else { 0 };
+        taken = taken.saturating_add(pushed);
+        if taken == input.len() {
+            stream.finish();
+        }
+        let got = stream.pull(&mut output[made..], cancel)?;
+        made = made.saturating_add(got);
+        if got == 0 {
+            if taken == input.len() {
+                break;
+            }
+            if pushed == 0 {
+                // Neither side moved: never spin on a stream that cannot advance.
+                return Err(ScoreError::OutOfRange);
+            }
+        }
+    }
+    Ok(output)
+}
+
+/// [`stretch_once`], in two passes when one factor would leave the vocoder's range.
+fn stretch_to(
+    input: &[f32],
+    out: usize,
+    sample_rate_hz: u32,
+    cancel: &CancellationToken,
+) -> std::result::Result<Vec<f32>, ScoreError> {
+    let factor = out as f64 / input.len() as f64;
+    let inside = factor.clamp(STRETCH_FACTOR.0, STRETCH_FACTOR.1);
+    if inside == factor {
+        return stretch_once(input, out, sample_rate_hz, cancel);
+    }
+    let via = (input.len() as f64 * inside).round().max(1.0) as usize;
+    let first = stretch_once(input, via, sample_rate_hz, cancel)?;
+    stretch_once(&first, out, sample_rate_hz, cancel)
+}
+
+/// The clip of `from_source_at_speed` with its pitch kept (module docs): the same refusals for the
+/// window and the length, before anything is stretched.
+fn kept_pitch_spec(
+    source: &[Vec<f32>],
+    source_in: usize,
+    frames: usize,
+    speed: ClipSpeed,
+    start: u64,
+    sample_rate_hz: u32,
+    cancel: &CancellationToken,
+) -> std::result::Result<TrackSpec, ScoreError> {
+    let mut spec = TrackSpec::from_source(source, source_in, frames, start)?;
+    let out = speed.output_frames(frames as u64);
+    if out > MAX_CLIP_FRAMES as u64 {
+        return Err(ScoreError::CapacityExceeded);
+    }
+    let out = usize::try_from(out).map_err(|_| ScoreError::CapacityExceeded)?;
+    for channel in &mut spec.clip {
+        if speed.reverse() {
+            channel.reverse();
+        }
+        *channel = stretch_to(channel, out, sample_rate_hz, cancel)?;
+    }
+    Ok(spec)
+}
+
 /// One score clip before construction.
 struct Cut {
     track: usize,
@@ -103,6 +195,9 @@ struct PlannedClip {
     source: ClipSource,
     /// `None` = unit speed.
     speed: Option<ClipSpeed>,
+    /// `Maintain audio pitch` (module docs).
+    keep_pitch: bool,
+    sample_rate_hz: u32,
     source_in: usize,
     /// Unit speed: frames cut; other speeds: source window frames.
     frames: usize,
@@ -123,13 +218,16 @@ impl PlannedClip {
     fn end(&self) -> Result<u64> {
         self.start.checked_add(self.len).ok_or(PulseError::Overflow)
     }
-    fn spec(&self, sources: &dyn AudioSources, origin: u64) -> Result<TrackSpec> {
+    fn spec(&self, sources: &dyn AudioSources, origin: u64, cancel: &CancellationToken) -> Result<TrackSpec> {
         let source = sources
             .audio(&self.source)
             .ok_or(PulseError::SourceExtentUnknown)?;
         let start = self.start.checked_sub(origin).ok_or(PulseError::Underflow)?;
         let mut spec = match self.speed {
             None => TrackSpec::from_source(source, self.source_in, self.frames, start),
+            Some(speed) if self.keep_pitch && speed.numerator() != speed.denominator() => {
+                kept_pitch_spec(source, self.source_in, self.frames, speed, start, self.sample_rate_hz, cancel)
+            }
             Some(speed) => {
                 TrackSpec::from_source_at_speed(source, self.source_in, self.frames, speed, start)
             }
@@ -344,6 +442,8 @@ fn plan_clips(
         planned.push(PlannedClip {
             source: clip.source_ref.clone(),
             speed,
+            keep_pitch: clip.retime.maintain_audio_pitch,
+            sample_rate_hz,
             source_in: cut.source_in,
             frames,
             start: cut.start,
@@ -377,7 +477,7 @@ pub fn build_timeline_mix(
     let mut specs = Vec::with_capacity(planned.len());
     for p in &planned {
         cancel.check()?;
-        specs.push(p.spec(sources, 0)?);
+        specs.push(p.spec(sources, 0, cancel)?);
     }
     if specs.is_empty() {
         // Nothing audible: one silent sample keeps the session running as the playback clock.
@@ -606,7 +706,7 @@ impl<S: AudioSources> TimelineMixStream<S> {
         let mut specs = Vec::with_capacity(count);
         for c in &self.clips[first..last] {
             cancel.check()?;
-            specs.push(c.spec(&self.sources, origin)?);
+            specs.push(c.spec(&self.sources, origin, cancel)?);
         }
         let mut session = Session::new(self.rate, self.block, specs).map_err(score_error)?;
         // Behind the position (seek into the middle of the group): render and discard.
