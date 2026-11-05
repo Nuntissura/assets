@@ -31,8 +31,8 @@ use crate::session::Session;
 use crate::source::{DOCUMENT_ENTRY_PREFIX, document_entry};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    Budget, Code, Diagnostic, StudioDocument, StudioSequencePresetSet, StudioSequenceSettingsRecords,
-    parse_sequence_presets, parse_sequence_settings_records,
+    Budget, Code, Diagnostic, StudioDocument, StudioResolvedTrackDisplay, StudioSequencePresetSet,
+    StudioSequenceSettingsRecords, StudioTrackDisplayRecords, parse_sequence_presets, parse_sequence_settings_records,
 };
 use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
 
@@ -41,6 +41,8 @@ pub const SEQUENCE_SETTINGS_ENTRY: &str = "sequence_settings";
 /// Document-entry token of the sequence preset library (the session's stored presets; the shipped
 /// library is Folio data and is not copied here).
 pub const SEQUENCE_PRESETS_ENTRY: &str = "sequence_presets";
+/// Document-entry token of the track display records (STU-VID-036).
+pub const TRACK_DISPLAY_ENTRY: &str = "track_display";
 
 fn invalid_json(token: &str) -> SessionError {
     folio_err(Diagnostic { code: Code::InvalidJson, target: format!("{DOCUMENT_ENTRY_PREFIX}{token}") })
@@ -183,5 +185,27 @@ impl Session {
             Some(p) => Some(serde_json::to_vec(p).map_err(|_| invalid_json(SEQUENCE_PRESETS_ENTRY))?),
         };
         self.set_document_entry(SEQUENCE_PRESETS_ENTRY, bytes, cancel)
+    }
+
+    /// The stored track display records.
+    pub fn track_display_records(&self, cancel: &CancellationToken) -> Result<Option<StudioTrackDisplayRecords>, SessionError> {
+        let _ = cancel;
+        Ok(None)
+    }
+
+    /// Every document sequence with the display state it resolves to.
+    pub fn resolved_track_displays(&self, cancel: &CancellationToken) -> Result<Vec<StudioResolvedTrackDisplay>, SessionError> {
+        let _ = cancel;
+        Ok(Vec::new())
+    }
+
+    /// Stores or removes the track display records.
+    pub fn set_track_display_records(
+        &mut self,
+        records: Option<&StudioTrackDisplayRecords>,
+        cancel: &CancellationToken,
+    ) -> Result<(), SessionError> {
+        let _ = (records, cancel);
+        Err(SessionError::Provider("not_implemented"))
     }
 }

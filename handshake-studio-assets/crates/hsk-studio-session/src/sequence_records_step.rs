@@ -27,7 +27,7 @@ use hsk_studio_accord::{CancellationToken, CommandContext};
 use hsk_studio_folio::{
     self as folio, Code, Resolver, Snapshot, StudioDocument, StudioMulticamRecords, StudioSequencePresetSet,
     StudioSequenceSettingsCommand, StudioSequenceSettingsError, StudioSequenceSettingsRecords,
-    StudioSequenceSettingsReport, apply_sequence_settings_command, parse_sequence_presets,
+    StudioSequenceSettingsReport, StudioTrackDisplayRecords, apply_sequence_settings_command, parse_sequence_presets,
     parse_sequence_settings_records, shipped_sequence_presets, validate_multicam_records,
 };
 
@@ -59,6 +59,8 @@ pub struct SequenceRecordsStep {
     pub settings: Option<RecordEdit<StudioSequenceSettingsRecords>>,
     /// `None` leaves the `sequence_presets` entry alone.
     pub presets: Option<RecordEdit<StudioSequencePresetSet>>,
+    /// `None` leaves the `track_display` entry alone.
+    pub track_display: Option<RecordEdit<StudioTrackDisplayRecords>>,
 }
 
 impl SequenceRecordsStep {
@@ -250,6 +252,7 @@ pub(crate) fn successor(
             sequences: inverse_sequences,
             settings: step.settings.as_ref().map(RecordEdit::swapped),
             presets: step.presets.as_ref().map(RecordEdit::swapped),
+            track_display: None,
         },
     }))
 }
@@ -340,6 +343,7 @@ pub(crate) fn command_step(
             sequences,
             settings,
             presets,
+            track_display: None,
         },
         report,
     ))

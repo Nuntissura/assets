@@ -27,7 +27,7 @@ use hsk_studio_chronicle::{
 };
 use hsk_studio_folio::{
     self as folio, Resolver, Snapshot, StudioDocument, StudioSequenceSettingsCommand,
-    StudioSequenceSettingsReport, Unresolved,
+    StudioSequenceSettingsReport, StudioTrackDisplayCommand, StudioTrackDisplayReport, Unresolved,
 };
 use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_package::{
@@ -232,6 +232,9 @@ pub struct Applied {
     /// For a sequence command: Folio's report (codes and counters only), for the host; `presets`
     /// counts the stored presets. `None` otherwise.
     pub sequence_settings_report: Option<StudioSequenceSettingsReport>,
+    /// For a track display command: Folio's report (codes and counters only), for the host. `None`
+    /// otherwise.
+    pub track_display_report: Option<StudioTrackDisplayReport>,
     /// The authority's canonical receipt (`None` for no-change or a standalone session).
     pub commit: Option<CommitReceipt>,
     /// True when this is the stored receipt of an earlier identical request: nothing was
@@ -1018,6 +1021,31 @@ impl Session {
         self.submit_inner(key, SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::SequenceCommand(context, command)))
     }
 
+    /// Runs one track display command under the caller's `context`.
+    pub fn submit_track_display_command_as(
+        &mut self,
+        context: &CommandContext,
+        command: &StudioTrackDisplayCommand,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let _ = (command, expected_revision, cancel);
+        self.settle_correlated(Err(SessionError::Provider("not_implemented")), context, |applied: &mut Applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_track_display_command_as`], idempotent under `key`.
+    pub fn submit_track_display_command_keyed_as(
+        &mut self,
+        key: &IdempotencyKey,
+        context: &CommandContext,
+        command: &StudioTrackDisplayCommand,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let _ = (key, command, expected_revision, cancel);
+        self.settle_correlated(Err(SessionError::Provider("not_implemented")), context, |applied: &mut Applied, report| applied.report = report)
+    }
+
     /// A command context must name this session's actor (it grants nothing, and grants and receipts
     /// are this session's: `actor_mismatch` otherwise), the command being run when it names one
     /// (`command_mismatch`), and the revision the caller expects (`stale_revision`).
@@ -1372,6 +1400,7 @@ impl Session {
                 multicam_inverse: None,
                 sequence_records_inverse: None,
                 sequence_settings_report: None,
+                track_display_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1443,6 +1472,7 @@ impl Session {
                 multicam_inverse: inverse,
                 sequence_records_inverse: None,
                 sequence_settings_report: None,
+                track_display_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1518,6 +1548,7 @@ impl Session {
                 multicam_inverse: None,
                 sequence_records_inverse: inverse,
                 sequence_settings_report: report,
+                track_display_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1695,6 +1726,7 @@ impl Session {
                 multicam_inverse: None,
                 sequence_records_inverse: None,
                 sequence_settings_report: None,
+                track_display_report: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
