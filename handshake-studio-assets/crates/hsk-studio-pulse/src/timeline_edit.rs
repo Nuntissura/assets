@@ -206,9 +206,9 @@ pub enum ClipChange {
         before: Option<Box<StudioMarker>>,
         after: Option<Box<StudioMarker>>,
     },
-    /// One transition slot of the clip changed, including a transition pruned by the edit and listed
-    /// in [`EditProposal::dropped_transitions`]. Listed for a removed clip as for
-    /// [`ClipChange::ClipMarker`].
+    /// One transition slot of the clip changed, including a transition pruned by the edit. Listed for
+    /// a removed clip as for [`ClipChange::ClipMarker`]. Both of those are also in
+    /// [`EditProposal::dropped_transitions`].
     ClipTransition {
         clip_id: String,
         track_id: String,
@@ -447,8 +447,11 @@ impl EditProposal {
     pub fn splits(&self) -> &[(String, String)] {
         &self.splits
     }
-    /// Transitions this edit made unplayable (clips gone or no longer abutting, handle now
-    /// short); removed from the sequence and listed, never silently lost (undo restores them).
+    /// Transitions this edit took out of the sequence: made unplayable (the incoming clip gone, the
+    /// clips no longer abutting, a handle now short) or gone with their removed clip. Listed, never
+    /// silently lost (tests `every_transition_an_edit_takes_out_is_listed_as_dropped`,
+    /// `a_transition_that_leaves_with_its_outgoing_clip_is_listed`); undo restores them. A transition
+    /// set or cleared by name is not listed.
     pub fn dropped_transitions(&self) -> &[String] {
         &self.dropped_transitions
     }
@@ -1518,7 +1521,9 @@ pub(crate) fn propose(
     reads.add(sequence_id);
     let mut edited = edit(old, &mut reads)?;
     let dropped_transitions = if carry {
-        crate::transition::prune_transitions(&mut edited, ctx.extents, ctx.cancel)?
+        let mut dropped = crate::transition::prune_transitions(&mut edited, ctx.extents, ctx.cancel)?;
+        left_with_their_clips(old, &edited, &mut dropped);
+        dropped
     } else {
         Vec::new()
     };
@@ -1565,6 +1570,22 @@ pub(crate) fn propose(
         dropped_transitions,
         removed_markers,
     })
+}
+
+/// Adds the transitions of clips the edit removed: pruning only sees the clips that stayed. One a
+/// cut handed to another piece is still in the sequence and is not a loss.
+fn left_with_their_clips(old: &StudioSequence, edited: &StudioSequence, dropped: &mut Vec<String>) {
+    let clips = || edited.tracks.iter().flat_map(|t| t.clips.iter());
+    let live: BTreeSet<&str> = clips().map(|c| c.clip_id.as_str()).collect();
+    let held = clips().flat_map(|c| [&c.transitions.head, &c.transitions.tail]).flatten();
+    let mut accounted: BTreeSet<String> = held.map(|t| t.transition_id.clone()).collect();
+    accounted.extend(dropped.iter().cloned());
+    let removed = old.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| !live.contains(c.clip_id.as_str()));
+    for transition in removed.flat_map(|c| [&c.transitions.head, &c.transitions.tail]).flatten() {
+        if accounted.insert(transition.transition_id.clone()) {
+            dropped.push(transition.transition_id.clone());
+        }
+    }
 }
 
 fn marker_ids(seq: &StudioSequence) -> impl Iterator<Item = &str> {
