@@ -809,3 +809,162 @@ fn v4_06_a_captured_mark_stays_at_its_selection_start_and_writes_no_sentinel() {
     assert_eq!((m.at, m.topics.as_slice()), (1, &["Ada".to_string()][..]));
     no_sentinel(&m.topics[0]);
 }
+
+// ---- One value rule: every answer over the catalog, in composition and in derived text ----
+//
+// Written and run green BEFORE the two copies were folded, so it pins that folding changed no answer.
+
+fn composed_state(f: &Fx, markers: &[MarkerRecord]) -> MarkerState {
+    composed_state_with(f, &f.sections, markers)
+}
+fn composed_state_with(f: &Fx, sections: &[StudioSection], markers: &[MarkerRecord]) -> MarkerState {
+    let mut shaper = |i: &ShapeInput<'_>| -> Result<ShapedParagraph, LayoutError> {
+        let mut p = ShapedParagraph::from_fixed_advance(i.text, i.paragraph, 6.0, 12.0, 10.0).ok_or(LayoutError::InvalidInput)?;
+        p.glyphs.retain(|g| !glyphless(i.text[g.cluster.start as usize..].chars().next().unwrap()));
+        Ok(p)
+    };
+    let req = SentinelRequest {
+        document: &f.doc,
+        story: &f.story,
+        resolved_text: None,
+        obstacles: &[],
+        composer: Composer::FirstFit,
+        space: SpaceParams::default(),
+        expected_revision: 2,
+        limits: Limits::default(),
+        sections,
+        markers,
+        budget: SentinelBudget::default(),
+    };
+    let out = compose_with_sentinels(&req, &TypesetOptions::default(), &records(), &mut shaper, &CancellationToken::default()).unwrap();
+    out.markers[0].state.clone()
+}
+fn two_sections() -> Vec<StudioSection> {
+    vec![section("s1", "page-1", Some("Front")), section("s2", "page-2", Some("Body"))]
+}
+/// Marker `m` on page 1 (first paragraph) or page 2 (second), in a one-marker heading "A<m>".
+fn one_marker(m: char, page: usize, sections: Vec<StudioSection>) -> Fx {
+    match page {
+        1 => fx_with(&format!("A{m}\nB\n"), 0, sections),
+        2 => fx_with(&format!("Intro\nA{m}\n"), 1, sections),
+        _ => fx_with(&format!("a\nb\nc\nd\ne\nf\nA{m}\n"), 6, sections),
+    }
+}
+/// The same answer on both sides: composition's state, and running text (the call with sections).
+fn both_sides(m: char, page: usize, sections: Vec<StudioSection>, want: Result<&str, UnresolvedMarker>) {
+    let f = one_marker(m, page, sections);
+    let at = f.heading + 1;
+    let kind = MarkerKind::from_sentinel(m).unwrap();
+    let label = format!("U+{:04X} page {page}", m as u32);
+    let state = match want {
+        Ok(v) => MarkerState::Resolved(v.to_owned()),
+        Err(u) => MarkerState::Unresolved(u),
+    };
+    assert_eq!(composed_state(&f, &[]), state, "composition, {label}");
+    if page > 2 {
+        // Overset: running text has no occurrence, so the entry of a call including overset reads it.
+        let g = toc_try(&f, true).unwrap();
+        assert_eq!(g.entries[0].marker_gaps, vec![gap(at, kind, want.unwrap_err())], "derived, {label}");
+        return;
+    }
+    let r = running_try(&f, &[page as u32]).unwrap();
+    match want {
+        Ok(v) => assert_eq!((r[0].text.clone(), r[0].marker_gaps.clone()), (format!("A{v}"), vec![]), "derived, {label}"),
+        Err(u) => assert_eq!((r[0].text.clone(), r[0].marker_gaps.clone()), ("A".to_string(), vec![gap(at, kind, u)]), "derived, {label}"),
+    }
+}
+
+#[test]
+fn one_value_rule_page_number_markers() {
+    use UnresolvedMarker as U;
+    both_sides(CUR, 1, vec![], Ok("1"));
+    both_sides(CUR, 2, vec![], Ok("2"));
+    both_sides(NEXT, 1, vec![], Ok("2"));
+    both_sides(NEXT, 2, vec![], Err(U::NoNextPage));
+    both_sides(PREV, 1, vec![], Err(U::NoPreviousPage));
+    both_sides(PREV, 2, vec![], Ok("1"));
+    for m in [CUR, NEXT, PREV] {
+        both_sides(m, 3, vec![], Err(U::NotPlaced));
+    }
+}
+
+#[test]
+fn one_value_rule_section_marker() {
+    use UnresolvedMarker as U;
+    both_sides(SEC, 1, two_sections(), Ok("Front"));
+    both_sides(SEC, 2, two_sections(), Ok("Body"));
+    both_sides(SEC, 2, vec![], Err(U::NoSection));
+    both_sides(SEC, 2, vec![section("s1", "page-1", None)], Err(U::NoSectionMarker));
+    both_sides(SEC, 3, two_sections(), Err(U::NotPlaced));
+    let exact = "x".repeat(MAX_RESOLVED_MARKER_BYTES);
+    both_sides(SEC, 2, vec![section("s1", "page-1", Some(&exact))], Ok(&exact));
+    let long = "x".repeat(MAX_RESOLVED_MARKER_BYTES + 1);
+    both_sides(SEC, 2, vec![section("s1", "page-1", Some(&long))], Err(U::TextOverBudget));
+    // Folio's check_sections refuses a control character in a section marker before either side reads it.
+    for bad in ["A\u{2029}B", "A\u{FDD0}B", "A\u{FDDE}B", "A\u{FDDA}B", "A\u{FFFC}B"] {
+        both_sides(SEC, 2, vec![section("s1", "page-1", Some(bad))], Err(U::TextNotInline));
+    }
+}
+
+#[test]
+fn one_value_rule_a_section_marker_without_sections_is_derived_texts_own_gap_after_placement() {
+    // Composition always has its sections argument; only a derived-text call can lack it. Placed:
+    // the sections gap. Overset: not placed comes first, whatever the call has.
+    let f = one_marker(SEC, 2, two_sections());
+    let g = toc_try(&f, false).unwrap();
+    assert_eq!(g.entries[0].marker_gaps[0].reason, DerivedGapReason::SectionsUnavailable);
+    let f = one_marker(SEC, 3, two_sections());
+    let g = toc_try(&f, true).unwrap();
+    assert_eq!(g.entries[0].marker_gaps[0].reason, DerivedGapReason::Marker(UnresolvedMarker::NotPlaced));
+}
+
+#[test]
+fn one_value_rule_record_markers_read_their_record() {
+    use UnresolvedMarker as U;
+    let generated = |f: &Fx, kind, text: &str| MarkerRecord {
+        story_byte: f.heading + 1,
+        kind,
+        target: MarkerTarget::Generated { record_id: "r".into(), text: text.into() },
+    };
+    for (m, kind) in [(FNOTE, MarkerKind::FootnoteReference), (ENOTE, MarkerKind::EndnoteReference), (XR, MarkerKind::CrossReference)] {
+        let f = one_marker(m, 2, vec![]);
+        assert_eq!(composed_state(&f, &[]), MarkerState::Unresolved(U::RecordMissing), "{kind:?}");
+        assert_eq!(composed_state(&f, &[generated(&f, kind, "7")]), MarkerState::Resolved("7".into()), "{kind:?}");
+        let long = "x".repeat(MAX_RESOLVED_MARKER_BYTES + 1);
+        assert_eq!(composed_state(&f, &[generated(&f, kind, &long)]), MarkerState::Unresolved(U::TextOverBudget), "{kind:?}");
+        assert_eq!(composed_state(&f, &[generated(&f, kind, "a\u{2029}b")]), MarkerState::Unresolved(U::TextNotInline), "{kind:?}");
+    }
+    // Derived text has no record: the cross-reference marker is a gap, placed or not placed first.
+    let f = one_marker(XR, 2, vec![]);
+    assert_eq!(running_try(&f, &[2]).unwrap()[0].marker_gaps, vec![gap(f.heading + 1, MarkerKind::CrossReference, U::RecordMissing)]);
+    let f = one_marker(XR, 3, vec![]);
+    assert_eq!(toc_try(&f, true).unwrap().entries[0].marker_gaps, vec![gap(f.heading + 1, MarkerKind::CrossReference, U::NotPlaced)]);
+}
+
+#[test]
+fn one_value_rule_the_index_marker_states_no_rule() {
+    use UnresolvedMarker as U;
+    assert_eq!(composed_state(&one_marker(IDX, 2, vec![]), &[]), MarkerState::Unresolved(U::RuleUnstated));
+    assert_eq!(composed_state(&one_marker(IDX, 3, vec![]), &[]), MarkerState::Unresolved(U::NotPlaced));
+}
+
+#[test]
+fn one_value_rule_page_labels_that_cannot_be_produced() {
+    use UnresolvedMarker as U;
+    // A section starting on no page of the document: number_pages refuses. Composition carries it for
+    // the markers that read pages; the index marker and record markers do not read them.
+    let bad = vec![section("s1", "page-9", Some("X"))];
+    let numbering = number_pages(&one_marker(CUR, 2, vec![]).doc, &bad).unwrap_err();
+    for m in [CUR, NEXT, PREV, SEC] {
+        let f = one_marker(m, 2, vec![]);
+        assert_eq!(composed_state_with(&f, &bad, &[]), MarkerState::Unresolved(U::Numbering(numbering)), "U+{:04X}", m as u32);
+    }
+    let f = one_marker(IDX, 2, vec![]);
+    assert_eq!(composed_state_with(&f, &bad, &[]), MarkerState::Unresolved(U::RuleUnstated));
+    let f = one_marker(FNOTE, 2, vec![]);
+    let r = MarkerRecord { story_byte: f.heading + 1, kind: MarkerKind::FootnoteReference, target: MarkerTarget::Generated { record_id: "r".into(), text: "7".into() } };
+    assert_eq!(composed_state_with(&f, &bad, &[r]), MarkerState::Resolved("7".into()));
+    // Overset comes first: not placed, whatever the pages.
+    let f = one_marker(CUR, 3, vec![]);
+    assert_eq!(composed_state_with(&f, &bad, &[]), MarkerState::Unresolved(U::NotPlaced));
+}
