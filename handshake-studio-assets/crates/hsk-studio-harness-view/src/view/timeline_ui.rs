@@ -460,7 +460,7 @@ fn speed_form_row(ui: &mut egui::Ui, seq: &StudioSequence, t: &mut TimelineState
             }
             let _ = ui.push_id(vw::id(widget::SPEED_REVERSE), |ui| ui.checkbox(&mut form.reverse, "Reverse Speed"));
             out.drawn.push(widget::SPEED_REVERSE.into());
-            let why = "No clip field stores this (STU-VID-031 spec gap)";
+            let why = "This form is not wired to it; the clip's retime record stores it";
             let mut off = false;
             let _ = ui.push_id(vw::id(widget::SPEED_PITCH), |ui| ui.add_enabled(false, egui::Checkbox::new(&mut off, "Maintain Audio Pitch")).on_disabled_hover_text(why));
             let _ = ui.push_id(vw::id(widget::SPEED_INTERPOLATION), |ui| ui.add_enabled(false, egui::Button::new("Interpolation: unavailable")).on_disabled_hover_text(why));

@@ -86,8 +86,8 @@ impl SpeedForm {
             "duration_frames": self.duration_frames,
             "reverse": self.reverse,
             "fixed": match self.fixed { SpeedFix::Speed => "speed", SpeedFix::Duration => "duration" },
-            "maintain_audio_pitch": "unavailable: no clip field (STU-VID-031 spec gap)",
-            "frame_interpolation": "unavailable: no clip field (STU-VID-031 spec gap)",
+            "maintain_audio_pitch": "unavailable: this form is not wired; StudioClip.retime stores it",
+            "frame_interpolation": "unavailable: this form is not wired; StudioClip.retime stores it",
         })
     }
 
