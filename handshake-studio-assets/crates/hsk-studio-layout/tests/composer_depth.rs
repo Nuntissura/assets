@@ -152,36 +152,55 @@ fn justified_zero_advance_past_the_budget_refuses_typed() {
 }
 
 /// A word no line holds without hyphens, with a ladder limit: after a hyphenated line the limit
-/// skips the next hyphen point and no other break fits, so every path dead-ends and the composer
-/// has no line at all. On the base sha that is a panic in `compose_flow` (`slots[used - 1]`, used 0;
-/// 11 of the generated cases of `composer_depth_diff`). Typed now, in both windows.
+/// skips the next hyphen point and no other break fits, so every path dead-ends. On the base sha
+/// that is a panic in `compose_flow` (`slots[used - 1]`, used 0; 11 of the generated cases of
+/// `composer_depth_diff`). The composer's emergency rule ("nothing fits at all: one overfull line")
+/// answers it, in both windows: the rest of the word up to the next break the limit allows, marked
+/// overfull, the lines tile the paragraph, and no two consecutive lines end in a hyphen.
+fn ladder_dead_end(alignment: Alignment) -> Result<LayoutProposal, LayoutError> {
+    let text = "internationalization hyphenation";
+    on_thread(FINDING_STACK, move || {
+        let doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 36.0, 2_000_000.0), None, None)], [PageSide::LeftHand, PageSide::RightHand]);
+        let (st, _) = story(1, text, &[(0, text.len() as u64)]);
+        let paragraphs = shaped_one(text, 6.0);
+        let hyphenation = HyphenationParams { hyphen_advance_pt: 4.0, min_word_len: 5, min_before: 2, min_after: 2, consecutive_limit: 1, ..HyphenationParams::default() };
+        reflow_typeset(
+            &ReflowRequest {
+                document: &doc,
+                story: &st,
+                resolved_text: None,
+                paragraphs: &paragraphs,
+                obstacles: &[],
+                composer: every_line(),
+                space: SpaceParams::default(),
+                expected_revision: doc.revision,
+                limits: Limits::default(),
+            },
+            &TypesetOptions { alignment, justify: Some(JustifyParams::default()), hyphenation: Some(hyphenation), ..Default::default() },
+            &CancellationToken::default(),
+        )
+    })
+}
 #[test]
-fn a_ladder_limit_with_no_path_refuses_typed() {
+fn a_ladder_limit_with_no_path_takes_the_emergency_line() {
     for alignment in [Alignment::Left, Alignment::Justified] {
-        let text = "internationalization hyphenation";
-        let got = on_thread(FINDING_STACK, move || {
-            let doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 36.0, 2_000_000.0), None, None)], [PageSide::LeftHand, PageSide::RightHand]);
-            let (st, _) = story(1, text, &[(0, text.len() as u64)]);
-            let paragraphs = shaped_one(text, 6.0);
-            let hyphenation = HyphenationParams { hyphen_advance_pt: 4.0, min_word_len: 5, min_before: 2, min_after: 2, consecutive_limit: 1, ..HyphenationParams::default() };
-            reflow_typeset(
-                &ReflowRequest {
-                    document: &doc,
-                    story: &st,
-                    resolved_text: None,
-                    paragraphs: &paragraphs,
-                    obstacles: &[],
-                    composer: every_line(),
-                    space: SpaceParams::default(),
-                    expected_revision: doc.revision,
-                    limits: Limits::default(),
-                },
-                &TypesetOptions { alignment, justify: Some(JustifyParams::default()), hyphenation: Some(hyphenation), ..Default::default() },
-                &CancellationToken::default(),
-            )
-        });
-        assert_eq!(got.unwrap_err(), LayoutError::UnsupportedComposition, "{alignment:?}");
+        let p = ladder_dead_end(alignment).unwrap();
+        let lines: Vec<&Line> = p.frames.iter().flat_map(|f| f.lines.iter()).collect();
+        assert_eq!(lines.first().unwrap().glyph_range.start, 0, "{alignment:?}");
+        assert_eq!(lines.last().unwrap().glyph_range.end, "internationalization hyphenation".chars().count(), "{alignment:?}");
+        assert!(lines.windows(2).all(|w| w[0].glyph_range.end == w[1].glyph_range.start), "{alignment:?} {lines:?}");
+        assert!(lines.iter().any(|l| l.overfull), "{alignment:?} {lines:?}");
+        assert!(lines.windows(2).all(|w| !(w[0].hyphenated && w[1].hyphenated)), "{alignment:?} {lines:?}");
+        assert_eq!(ladder_dead_end(alignment).unwrap(), p, "deterministic");
     }
+}
+/// A line cost past the range of a float (the cube of a measure of 1e200 pt) has no comparable
+/// total, emergency rule or not: a typed refusal, not the same panic.
+#[test]
+fn a_measure_past_the_cost_range_refuses_typed() {
+    let shape = Shape { measure: 1e200, ..Shape::every_line(Alignment::Left) };
+    let got = on_thread(FINDING_STACK, move || compose(&format!("a{LS}b"), shape));
+    assert_eq!(got.unwrap_err(), LayoutError::InvalidGeometry);
 }
 
 /// One bounded count per composer, past the line budget (`Limits::max_lines` 100 000): typed, no abort.
@@ -230,8 +249,8 @@ fn cjk_style_records(scope: StudioCompositionScope) -> StudioCjkCompositionRecor
 }
 fn cjk_past_the_line_budget(scope: StudioCompositionScope) -> Result<usize, LayoutError> {
     on_thread(FINDING_STACK, move || {
-        let text = "漢".repeat(100_500 * 18);
-        let text = &text[..3 * 100_500 * 18];
+        let text = "漢".repeat(1005 * 18);
+        let text = text.as_str();
         let doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 180.0, 2_000_000.0), None, None)], [PageSide::LeftHand, PageSide::RightHand]);
         let (mut st, _) = story(1, text, &[(0, text.len() as u64)]);
         st.paragraphs[0].style_ref = Some(id("STYS", 1));
@@ -247,14 +266,14 @@ fn cjk_past_the_line_budget(scope: StudioCompositionScope) -> Result<usize, Layo
             composer: Composer::FirstFit,
             space: SpaceParams::default(),
             expected_revision: doc.revision,
-            limits: Limits { max_glyphs: 100_500 * 18, ..Limits::default() },
+            limits: Limits { max_lines: 1000, ..Limits::default() },
         };
         let flow = StudioLayoutFlowRecords::new(id("SDOC", 1));
         reflow_cjk(&req, &TypesetOptions::default(), &flow, &cjk_style_records(scope), &CancellationToken::default())
             .map(|r| r.proposal.frames.iter().map(|f| f.lines.len()).sum())
     })
 }
-/// CJK, both scopes: 100 500 lines of 18 glyphs, past `Limits::max_lines`.
+/// CJK, both scopes: 1005 lines of 18 glyphs, past a `Limits::max_lines` of 1000.
 #[test]
 fn cjk_single_line_past_the_line_budget() {
     assert_eq!(cjk_past_the_line_budget(StudioCompositionScope::SingleLine), Err(LayoutError::BudgetExceeded));
