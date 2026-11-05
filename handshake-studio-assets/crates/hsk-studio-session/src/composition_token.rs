@@ -17,6 +17,7 @@ use crate::error::SessionError;
 use crate::session::Session;
 use crate::source::DOCUMENT_ENTRY_PREFIX;
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_folio::{self as folio, Resolver, Snapshot, StudioCompositionUpgrade};
 use crate::sequence_records::{folio_err, held_body};
 use hsk_studio_folio::{ABSENT_COMPOSITION_TOKEN, CURRENT_COMPOSITION_TOKEN, STUDIO_COMPOSITION_TOKENS, StudioCompositionTokenRecord, composition_token_rank, parse_composition_token_record};
 use hsk_studio_package::{Quarantined, sha256_hex_of};
@@ -27,6 +28,70 @@ pub const COMPOSITION_TOKEN_ENTRY: &str = "composition_token";
 pub const COMPOSITION_TOKEN_ABSENT: &str = "composition_token_absent";
 /// The refusal of a well-formed token this build cannot compose under.
 pub const COMPOSITION_TOKEN_UNKNOWN: &str = "composition_token_unknown";
+
+/// The refusal of a move to an older token.
+pub const COMPOSITION_TOKEN_OLDER: &str = "composition_token_older";
+/// The refusal of a [`CompositionTokenChange::Restore`] that is neither the undo nor the redo of a
+/// recorded upgrade and does not move to an older token.
+pub const COMPOSITION_TOKEN_UNRECORDED: &str = "composition_token_unrecorded";
+/// Provider name recorded in [`crate::Applied::provider`] and in the idempotency binding.
+pub const COMPOSITION_TOKEN_STEP_PROVIDER: &str = "composition.token";
+
+/// What a [`CompositionTokenStep`] changes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompositionTokenChange {
+    /// The explicit upgrade: `from` quotes the stored token (`None` = no entry), `to` is the target.
+    /// The session lists the stories and writes the record.
+    Upgrade { from: Option<String>, to: String },
+    /// The undo or redo of a recorded upgrade: `expect` quotes the live record (`None` = no entry),
+    /// `write` is the record after the step (`None` = the entry is removed). The inverse a commit
+    /// returns is one of these.
+    Restore { expect: Option<StudioCompositionTokenRecord>, write: Option<StudioCompositionTokenRecord> },
+}
+
+/// One token change = one undo step.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompositionTokenStep {
+    pub command_id: String,
+    pub correlation_id: u64,
+    pub change: CompositionTokenChange,
+}
+
+impl CompositionTokenStep {
+    /// Deterministic bytes of the request for the idempotency binding and admission cost.
+    pub(crate) fn binding_bytes(&self) -> Result<Vec<u8>, SessionError> {
+        let fields = match &self.change {
+            CompositionTokenChange::Upgrade { from, to } => serde_json::to_vec(&("upgrade", from, to)),
+            CompositionTokenChange::Restore { expect, write } => serde_json::to_vec(&("restore", expect, write)),
+        }
+        .map_err(|_| SessionError::Provider("invalid_input"))?;
+        let mut out = format!("hsk-studio-composition-token-step-1\0{}\0{}\0", self.command_id, self.correlation_id).into_bytes();
+        out.extend_from_slice(&fields);
+        Ok(out)
+    }
+}
+
+/// The checked outcome of a step: the successor document (`revision + 1`), the entry body (`None` =
+/// remove), the inverse step and the diff.
+pub(crate) struct Checked {
+    pub successor: Snapshot,
+    pub body: Option<Vec<u8>>,
+    pub inverse: CompositionTokenStep,
+    pub diff: StudioCompositionUpgrade,
+}
+
+/// Checks `step` against the live document and entry; `Ok(None)` when it changes nothing.
+pub(crate) fn successor(
+    _snapshot: &Snapshot,
+    _live: Result<Option<&[u8]>, folio::Diagnostic>,
+    _text_entry: Option<&[u8]>,
+    _step: &CompositionTokenStep,
+    _budget: folio::Budget,
+    _resolver: &dyn Resolver,
+    _cancel: &CancellationToken,
+) -> Result<Option<Checked>, SessionError> {
+    Err(SessionError::Provider("not_implemented"))
+}
 
 /// What a document composes under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

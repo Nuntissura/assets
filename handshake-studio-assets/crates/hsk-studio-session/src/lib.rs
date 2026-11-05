@@ -22,8 +22,9 @@ mod timeline;
 
 pub use admission::{Admission, Permit};
 pub use composition_token::{
-    AuthoredComposition, COMPOSITION_TOKEN_ABSENT, COMPOSITION_TOKEN_ENTRY, COMPOSITION_TOKEN_UNKNOWN,
-    new_document_composition_entry,
+    AuthoredComposition, COMPOSITION_TOKEN_ABSENT, COMPOSITION_TOKEN_ENTRY, COMPOSITION_TOKEN_OLDER,
+    COMPOSITION_TOKEN_STEP_PROVIDER, COMPOSITION_TOKEN_UNKNOWN, COMPOSITION_TOKEN_UNRECORDED, CompositionTokenChange,
+    CompositionTokenStep, new_document_composition_entry,
 };
 pub use jobs::{
     AdmissionJobPort, AdmittedJob, JobAdmissionRefusal, JobCounts, JobKind, JobLifecycle, JobOutcome,

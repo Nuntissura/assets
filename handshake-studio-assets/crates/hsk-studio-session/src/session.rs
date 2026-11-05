@@ -5,6 +5,7 @@
 //! and the session adopts a transaction locally only after the authority's receipt.
 use crate::{
     admission::{Admission, JobGuard},
+    composition_token::{self, COMPOSITION_TOKEN_ENTRY, COMPOSITION_TOKEN_STEP_PROVIDER, CompositionTokenStep},
     error::{AuthorityFault, Failed, ReportStatus, SessionError},
     ports::{
         Action, Clock, CommitOutcome, CommitPort, CommitReceipt, CommitRequest, Cost, GrantError,
@@ -235,6 +236,12 @@ pub struct Applied {
     /// For a track display command: Folio's report (codes and counters only), for the host. `None`
     /// otherwise.
     pub track_display_report: Option<StudioTrackDisplayReport>,
+    /// For a [`Session::submit_composition_token`] step: the step that restores the previous record
+    /// (undo; its own inverse is the redo). `None` otherwise and for no-change.
+    pub composition_token_inverse: Option<CompositionTokenStep>,
+    /// For a [`Session::submit_composition_token`] step: the diff of the operation (from-token, to-token,
+    /// the stories it affects). `None` otherwise and for no-change.
+    pub composition_upgrade: Option<folio::StudioCompositionUpgrade>,
     /// The authority's canonical receipt (`None` for no-change or a standalone session).
     pub commit: Option<CommitReceipt>,
     /// True when this is the stored receipt of an earlier identical request: nothing was
@@ -411,6 +418,7 @@ enum Step<'a> {
     SequenceRecords(&'a SequenceRecordsStep),
     SequenceCommand(&'a CommandContext, &'a StudioSequenceSettingsCommand),
     TrackDisplayCommand(&'a CommandContext, &'a StudioTrackDisplayCommand),
+    CompositionToken(&'a CompositionTokenStep),
 }
 
 enum Resolution {
@@ -1071,6 +1079,60 @@ impl Session {
         self.submit_inner(key, SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::TrackDisplayCommand(context, command)))
     }
 
+    /// Commits one composition token step (STU-TYP-130): an explicit upgrade, or the undo or redo of one,
+    /// as ONE revision, one receipt and one inverse ([`Applied::composition_token_inverse`], its own
+    /// inverse the redo), through the same grant, key, admission, commit and publish path as
+    /// [`Session::submit`], with one Observe frame of codes and counters. [`Applied::composition_upgrade`]
+    /// is the diff: the from-token, the to-token and the stories the change affects. An upgrade of a
+    /// document with no token creates the entry and its undo removes it. The same token again is no change
+    /// and no revision. Refusals change nothing: `composition_token_unknown` (a target this build does not
+    /// know, or a stored token it does not know), `composition_token_older`, `composition_token_unrecorded`,
+    /// `value_conflict` (the quote is not the live state; a held entry that does not parse or is repeated
+    /// included), `invalid_command`, `folio_rejected` / `budget_exceeded` (a text entry the diff cannot
+    /// read, a record that would not validate), `total_too_large`, `stale_revision`. Tests in
+    /// tests/composition_token_upgrade.rs.
+    pub fn submit_composition_token(
+        &mut self,
+        step: &CompositionTokenStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(None, COMPOSITION_TOKEN_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::CompositionToken(step)))
+        });
+        self.settle(result, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_composition_token`] for the command `context`: its report frame carries the
+    /// command's correlation, and a context that does not fit the step is refused first
+    /// (`actor_mismatch`, `command_mismatch`, `stale_revision`).
+    pub fn submit_composition_token_as(
+        &mut self,
+        context: &CommandContext,
+        step: &CompositionTokenStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.check_command_context(context, &step.command_id, expected_revision).and_then(|()| step.binding_bytes()).and_then(|params| {
+            self.submit_inner(None, COMPOSITION_TOKEN_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::CompositionToken(step)))
+        });
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_composition_token`], idempotent under `key` (see [`Session::submit_keyed`]).
+    pub fn submit_composition_token_keyed(
+        &mut self,
+        key: &IdempotencyKey,
+        step: &CompositionTokenStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(Some(key), COMPOSITION_TOKEN_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::CompositionToken(step)))
+        });
+        self.settle(result, |applied, report| applied.report = report)
+    }
+
     /// A command context must name this session's actor (it grants nothing, and grants and receipts
     /// are this session's: `actor_mismatch` otherwise), the command being run when it names one
     /// (`command_mismatch`), and the revision the caller expects (`stale_revision`).
@@ -1239,6 +1301,7 @@ impl Session {
                 proposed.applied.track_display_report = Some(report);
                 proposed
             }
+            Some(Step::CompositionToken(step)) => self.propose_composition_token(step, current, cancel)?,
             None => self.propose_checked(provider_id, params, current, cancel)?,
         };
         if let Some(next) = &successor
@@ -1440,6 +1503,8 @@ impl Session {
                 sequence_records_inverse: None,
                 sequence_settings_report: None,
                 track_display_report: None,
+                composition_token_inverse: None,
+                composition_upgrade: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1512,6 +1577,8 @@ impl Session {
                 sequence_records_inverse: None,
                 sequence_settings_report: None,
                 track_display_report: None,
+                composition_token_inverse: None,
+                composition_upgrade: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1589,6 +1656,69 @@ impl Session {
                 sequence_records_inverse: inverse,
                 sequence_settings_report: report,
                 track_display_report: None,
+                composition_token_inverse: None,
+                composition_upgrade: None,
+                commit: None,
+                replayed: false,
+                cancel_too_late: false,
+                receipts_evicted: 0,
+                report: ReportStatus::Unaddressed,
+            },
+            successor,
+            slots: Vec::new(),
+            entry,
+        })
+    }
+
+    /// Checks a composition token step against the live snapshot and entry without publishing anything.
+    fn propose_composition_token(&self, step: &CompositionTokenStep, current: u64, cancel: &CancellationToken) -> Result<Proposed, SessionError> {
+        let checked = composition_token::successor(
+            &self.snapshot,
+            sequence_records::held_body(&self.quarantined, COMPOSITION_TOKEN_ENTRY),
+            self.document_entry("text"),
+            step,
+            self.config.budgets.folio(),
+            &*self.ports.resolver,
+            cancel,
+        )?;
+        // Last point at which a cancel still prevents publication.
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        let entry: EntryWrite = match &checked {
+            Some(c) => vec![(COMPOSITION_TOKEN_ENTRY, c.body.clone())],
+            None => Vec::new(),
+        };
+        if let Some(c) = &checked {
+            if !self.assets_available(c.successor.document()) {
+                return Err(SessionError::Package(PackageError::MissingAsset));
+            }
+            if !self.document_entries_fit(&entry) {
+                return Err(SessionError::Package(PackageError::TotalTooLarge));
+            }
+        }
+        let changed = checked.is_some();
+        let revision = if changed { current.checked_add(1).ok_or(SessionError::ProposalInconsistent)? } else { current };
+        let (successor, inverse, diff) = match checked {
+            Some(c) => (Some(c.successor), Some(c.inverse), Some(c.diff)),
+            None => (None, None, None),
+        };
+        Ok(Proposed {
+            applied: Applied {
+                provider: COMPOSITION_TOKEN_STEP_PROVIDER.to_owned(),
+                command_id: step.command_id.clone(),
+                correlation_id: step.correlation_id,
+                actor: timeline::actor_of(&self.config.actor),
+                previous_revision: current,
+                revision,
+                changed,
+                revision_updates: Vec::new(),
+                inverse: None,
+                timeline_inverse: None,
+                multicam_inverse: None,
+                sequence_records_inverse: None,
+                sequence_settings_report: None,
+                track_display_report: None,
+                composition_token_inverse: inverse,
+                composition_upgrade: diff,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1768,6 +1898,8 @@ impl Session {
                 sequence_records_inverse: None,
                 sequence_settings_report: None,
                 track_display_report: None,
+                composition_token_inverse: None,
+                composition_upgrade: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
