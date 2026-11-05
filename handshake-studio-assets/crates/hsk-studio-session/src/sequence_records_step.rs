@@ -66,6 +66,20 @@ pub struct SequenceRecordsStep {
     pub track_display: Option<RecordEdit<StudioTrackDisplayRecords>>,
 }
 
+/// What undoing a committed sequence-records step can restore ([`crate::Applied::sequence_records_undo`]).
+/// A step that replaced records which did not validate cannot put them back: a commit never writes
+/// invalid records. The tokens name the entries the inverse leaves as they are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SequenceRecordsUndo {
+    /// The inverse restores everything the step changed.
+    Complete,
+    /// The inverse restores the sequences and every other entry, and leaves these entries alone.
+    WithoutEntries(Vec<&'static str>),
+    /// No undo exists (`Applied::sequence_records_inverse` is `None`): these entries cannot be put
+    /// back, and nothing else the step changed can be restored without them.
+    Unavailable(Vec<&'static str>),
+}
+
 impl SequenceRecordsStep {
     fn sequence_part(&self) -> MulticamStep {
         MulticamStep {

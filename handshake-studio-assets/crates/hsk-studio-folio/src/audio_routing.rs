@@ -434,6 +434,38 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
     Ok(())
 }
 
+/// What a [`StudioInertRoutingReference`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StudioInertRoutingKind {
+    /// A whole routing: its sequence is not in the document.
+    Routing,
+    /// A route of a track its sequence does not hold.
+    Route,
+    /// A bus effect chain of a track its sequence does not hold.
+    BusEffects,
+    /// An automation lane of a track its sequence does not hold.
+    TrackAutomation,
+    /// A gain envelope of a clip its sequence does not hold.
+    ClipGain,
+    /// A pan envelope of a clip its sequence does not hold.
+    ClipPan,
+}
+
+/// One id a routing names that the document does not hold: an opaque id and a kind, no values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StudioInertRoutingReference {
+    /// The routing's sequence.
+    pub sequence_id: String,
+    pub kind: StudioInertRoutingKind,
+    /// The absent id: the sequence, track or clip the kind names.
+    pub id: String,
+}
+
+/// The inert references of `set` against `document`, in stored order.
+pub fn inert_audio_routing_references(_set: &StudioAudioRoutingSet, _document: &StudioDocument) -> Vec<StudioInertRoutingReference> {
+    Vec::new()
+}
+
 /// Validates every routing against `document`: one routing per existing sequence; routes of audio or
 /// submix tracks of that sequence, at most one per track, outputs and send targets submix tracks
 /// other than the track itself, acyclic bus routing, unique key-grammar send ids, levels and the

@@ -1,6 +1,8 @@
-//! Lane SMB-PR-ENTRY-REFERENCES-1 (R56 F-R56-3): the measured table of what removing a sequence or a
-//! clip does to the document entries that name one (V4-06). One row per naming token, one column per
-//! path that can remove either; every other token is listed with why it does not apply.
+//! Lane SMB-PR-ENTRY-REFERENCES-1 (R56 F-R56-3, F-R56-7): the measured table of what removing a
+//! sequence, a clip or a track does to the document entries that name one (V4-06). One row per naming
+//! token, one column per path that can remove one; every other token is listed with why it does not
+//! apply. Lead decision: `audio_routing` and multicam clip modes follow the track display rule (an id
+//! the document does not hold is inert); settings and multicam sequences keep their refusals.
 mod sequence_records_support;
 use hsk_studio_folio::*;
 use hsk_studio_package::Quarantined;
@@ -8,7 +10,7 @@ use hsk_studio_session::*;
 use sequence_records_support::*;
 use std::sync::{Arc, Mutex};
 
-const NAMING: [&str; 4] = ["audio_routing", "multicam", SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY];
+const NAMING: [&str; 4] = [AUDIO_ROUTING_ENTRY, MULTICAM_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY];
 /// Tokens that name neither a sequence nor a clip, read in their owners (lane notes,
 /// `reference_table`), with what they do name.
 const NOT_APPLICABLE: [(&str, &str); 11] = [
@@ -29,11 +31,17 @@ const ENVELOPED: u32 = 21;
 const NESTED: u32 = 20;
 const OTHER: u32 = 31;
 
-fn audio_track(sequence_id: &str, clips: Vec<StudioClip>) -> StudioTrack {
+fn kind_track(sequence_id: &str, offset: u32, kind: TrackKind, clips: Vec<StudioClip>) -> StudioTrack {
     let mut track = sequence(sequence_id, F24, clips).tracks.remove(0);
-    track.track_id = identity("STRK", sequence_id.bytes().map(u32::from).sum::<u32>() + 1000);
-    track.kind = TrackKind::Audio;
+    track.track_id = identity("STRK", sequence_id.bytes().map(u32::from).sum::<u32>() + offset);
+    track.kind = kind;
     track
+}
+fn audio_id(sequence_id: &str) -> String {
+    kind_track(sequence_id, 1000, TrackKind::Audio, vec![]).track_id
+}
+fn submix_id(sequence_id: &str) -> String {
+    kind_track(sequence_id, 2000, TrackKind::Submix, vec![]).track_id
 }
 fn with_end(mut s: StudioSequence) -> StudioSequence {
     s.duration = s.content_end().unwrap();
@@ -44,16 +52,17 @@ fn nested_clip() -> StudioClip {
     c.source_ref = ClipSource::Sequence { sequence_id: "seq-src".into() };
     c
 }
-/// `seq-a`: a nested multicam clip and an audio clip with envelopes. `seq-b`: an audio clip with an
-/// envelope, also a declared multicam source. `seq-src`: the source of the nested clip.
+/// `seq-a`: a nested multicam clip, an audio clip with envelopes, a submix track. `seq-b`: an audio clip
+/// with an envelope, also a declared multicam source. `seq-src`: the source of the nested clip.
 fn seq_a_full() -> StudioSequence {
     let mut s = sequence("seq-a", F24, vec![nested_clip()]);
-    s.tracks.push(audio_track("seq-a", vec![clip(ENVELOPED, 24)]));
+    s.tracks.push(kind_track("seq-a", 1000, TrackKind::Audio, vec![clip(ENVELOPED, 24)]));
+    s.tracks.push(kind_track("seq-a", 2000, TrackKind::Submix, vec![]));
     with_end(s)
 }
 fn seq_b_full() -> StudioSequence {
     let mut s = sequence("seq-b", F24, vec![]);
-    s.tracks.push(audio_track("seq-b", vec![clip(OTHER, 24)]));
+    s.tracks.push(kind_track("seq-b", 1000, TrackKind::Audio, vec![clip(OTHER, 24)]));
     with_end(s)
 }
 fn seq_src() -> StudioSequence {
@@ -71,19 +80,27 @@ fn without_clip(s: &StudioSequence, n: u32) -> StudioSequence {
     with_end(s)
 }
 
-fn envelope(n: u32) -> (StudioClipGainEnvelope, StudioClipPanEnvelope) {
-    (
-        StudioClipGainEnvelope { clip_id: identity("SCLP", n), points: vec![StudioClipGainPoint { offset_ticks: 0, gain_db: -6.0 }] },
-        StudioClipPanEnvelope { clip_id: identity("SCLP", n), points: vec![StudioClipPanPoint { offset_ticks: 0, pan: 0.5 }] },
-    )
+fn gain(n: u32) -> StudioClipGainEnvelope {
+    StudioClipGainEnvelope { clip_id: identity("SCLP", n), points: vec![StudioClipGainPoint { offset_ticks: 0, gain_db: -6.0 }] }
+}
+fn pan(n: u32) -> StudioClipPanEnvelope {
+    StudioClipPanEnvelope { clip_id: identity("SCLP", n), points: vec![StudioClipPanPoint { offset_ticks: 0, pan: 0.5 }] }
+}
+fn lane(track_id: String, param: StudioTrackParam) -> StudioTrackAutomation {
+    StudioTrackAutomation { track_id, param, points: vec![StudioAutomationPoint { offset_ticks: 0, value: 0.5 }] }
 }
 fn routing() -> StudioAudioRoutingSet {
     let mut a = StudioAudioRouting::new("seq-a");
-    let (gain, pan) = envelope(ENVELOPED);
-    a.clip_gains.push(gain);
-    a.clip_pans.push(pan);
+    a.routes = vec![
+        StudioTrackRoute { track_id: audio_id("seq-a"), output: None, sends: vec![] },
+        StudioTrackRoute { track_id: submix_id("seq-a"), output: None, sends: vec![] },
+    ];
+    a.bus_effects = vec![StudioBusEffects { track_id: submix_id("seq-a"), effects: vec![] }];
+    a.track_automation = vec![lane(audio_id("seq-a"), StudioTrackParam::Volume), lane(submix_id("seq-a"), StudioTrackParam::Pan)];
+    a.clip_gains.push(gain(ENVELOPED));
+    a.clip_pans.push(pan(ENVELOPED));
     let mut b = StudioAudioRouting::new("seq-b");
-    b.clip_gains.push(envelope(OTHER).0);
+    b.clip_gains.push(gain(OTHER));
     StudioAudioRoutingSet { routings: vec![a, b] }
 }
 fn multicam_body() -> StudioMulticamRecords {
@@ -119,30 +136,33 @@ fn display_body() -> StudioTrackDisplayRecords {
 }
 fn body_of(named: &str) -> Vec<u8> {
     match named {
-        "audio_routing" => serde_json::to_vec(&routing()).unwrap(),
-        "multicam" => serde_json::to_vec(&multicam_body()).unwrap(),
+        AUDIO_ROUTING_ENTRY => serde_json::to_vec(&routing()).unwrap(),
+        MULTICAM_ENTRY => serde_json::to_vec(&multicam_body()).unwrap(),
         SEQUENCE_SETTINGS_ENTRY => serde_json::to_vec(&records(vec![settings_entry("seq-a", "custom", F24), settings_entry("seq-b", "custom", F24)])).unwrap(),
         TRACK_DISPLAY_ENTRY => serde_json::to_vec(&display_body()).unwrap(),
         other => panic!("{other} is not a naming token"),
     }
 }
-fn held_of(named: &str) -> Vec<Quarantined> {
-    vec![entry(named, &body_of(named))]
+fn opened(named: &str) -> Session {
+    open(&package_of(&all_sequences(), &[entry(named, &body_of(named))]))
 }
 
-/// What a typed read of `token` answers now, as a code.
+/// What a typed read of `named` answers now, as a code.
 fn read(session: &Session, named: &str) -> Result<(), String> {
-    fn code(d: &Diagnostic) -> String {
-        format!("{:?} {}", d.code, d.target)
-    }
     match named {
-        "audio_routing" => match session.document_entry(named) {
-            None => Ok(()),
-            Some(bytes) => parse_audio_routing(bytes, session.snapshot().document(), Budget::default(), &token()).map(drop).map_err(|d| code(&d)),
-        },
-        "multicam" => session.multicam_records(&token()).map(drop).map_err(|e| e.code().to_owned()),
+        AUDIO_ROUTING_ENTRY => session.audio_routing_records(&token()).map(drop).map_err(|e| e.code().to_owned()),
+        MULTICAM_ENTRY => session.multicam_records(&token()).map(drop).map_err(|e| e.code().to_owned()),
         SEQUENCE_SETTINGS_ENTRY => session.sequence_settings_records(&token()).map(drop).map_err(|e| e.code().to_owned()),
         TRACK_DISPLAY_ENTRY => session.track_display_records(&token()).map(drop).map_err(|e| e.code().to_owned()),
+        other => panic!("{other}"),
+    }
+}
+/// How many inert ids the typed listing of `named` answers.
+fn inert_count(session: &Session, named: &str) -> usize {
+    match named {
+        AUDIO_ROUTING_ENTRY => session.inert_audio_routing_references(&token()).unwrap().len(),
+        MULTICAM_ENTRY => session.inert_multicam_clips(&token()).unwrap().len(),
+        TRACK_DISPLAY_ENTRY => session.inert_track_display_entries(&token()).unwrap().len(),
         other => panic!("{other}"),
     }
 }
@@ -151,6 +171,7 @@ fn read(session: &Session, named: &str) -> Result<(), String> {
 enum Removed {
     Sequence,
     Clip,
+    Track,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Path {
@@ -159,6 +180,9 @@ enum Path {
     Records,
     Resync,
 }
+const PATHS: [Path; 4] = [Path::Timeline, Path::Multicam, Path::Records, Path::Resync];
+const REMOVALS: [Removed; 3] = [Removed::Sequence, Removed::Clip, Removed::Track];
+
 /// What one cell did.
 #[derive(Clone, Debug, PartialEq)]
 enum Cell {
@@ -193,71 +217,79 @@ fn multicam_step(session: &Session, sequences: Vec<SequenceEdit>) -> MulticamSte
     MulticamStep { command_id: "cmd.remove".into(), correlation_id: 1, sequences, records_expect: live.clone(), records_write: live }
 }
 
-fn edit(removed: Removed) -> SequenceEdit {
+/// The removal a cell makes. The clip edit removes both clips the fixture's entries name. The track
+/// edit removes what `named` names: multicam's angle track, else the audio and submix tracks of `seq-a`.
+fn edit(named: &str, removed: Removed) -> SequenceEdit {
     match removed {
         Removed::Sequence => SequenceEdit::Remove { expect: seq_b_full() },
-        Removed::Clip => clip_edit(),
+        Removed::Clip => SequenceEdit::Replace { expect: seq_a_full(), write: without_clip(&without_clip(&seq_a_full(), ENVELOPED), NESTED) },
+        Removed::Track if named == MULTICAM_ENTRY => {
+            let mut write = seq_b_full();
+            write.tracks.retain(|t| t.kind != TrackKind::Video);
+            SequenceEdit::Replace { expect: seq_b_full(), write: with_end(write) }
+        }
+        Removed::Track => {
+            let mut write = seq_a_full();
+            write.tracks.retain(|t| t.kind == TrackKind::Video);
+            SequenceEdit::Replace { expect: seq_a_full(), write: with_end(write) }
+        }
     }
 }
-/// The clip a token names: the multicam record names the nested clip, the routing the audio clip.
-fn clip_edit() -> SequenceEdit {
-    let without = without_clip(&without_clip(&seq_a_full(), ENVELOPED), NESTED);
-    SequenceEdit::Replace { expect: seq_a_full(), write: without }
+fn timeline_step(named: &str, removed: Removed) -> TimelineStep {
+    let SequenceEdit::Replace { expect, write } = edit(named, removed) else { panic!("a timeline step replaces") };
+    TimelineStep { command_id: "cmd.remove".into(), correlation_id: 1, sequence_id: expect.sequence_id.clone(), expect, write }
 }
-fn expected_document(session: &Session, removed: Removed) -> StudioDocument {
+fn expected_document(session: &Session, named: &str, removed: Removed) -> StudioDocument {
     let mut document = session.snapshot().document().clone();
-    match removed {
-        Removed::Sequence => document.sequences.retain(|s| s.sequence_id != "seq-b"),
-        Removed::Clip => {
-            let SequenceEdit::Replace { write, .. } = clip_edit() else { unreachable!() };
-            document.sequences[0] = write;
+    match edit(named, removed) {
+        SequenceEdit::Remove { expect } => document.sequences.retain(|s| s.sequence_id != expect.sequence_id),
+        SequenceEdit::Replace { expect, write } => {
+            let at = document.sequences.iter().position(|s| s.sequence_id == expect.sequence_id).unwrap();
+            document.sequences[at] = write;
         }
+        SequenceEdit::Insert { .. } => unreachable!(),
     }
     document
 }
+fn resynced(named: &str, removed: Removed) -> Result<Session, String> {
+    let bytes = package_of(&all_sequences(), &[entry(named, &body_of(named))]);
+    let ports = ports(&Frames::default()).with_commits(Box::new(Authority::default()));
+    let mut session = Session::open_bytes(&bytes, SessionConfig::new(actor()), ports, &token()).unwrap_or_else(|f| panic!("{f:?}"));
+    let key = IdempotencyKey::parse("presets-1").unwrap();
+    let presets = step(vec![], None, Some(RecordEdit { expect: None, write: Some(library(vec![preset("mine", F25)])) }));
+    assert_eq!(session.submit_sequence_records_keyed(&key, &presets, 3, &token()).unwrap_err().code(), "receipt_mismatch");
+    let mut document = expected_document(&session, named, removed);
+    document.revision = 4;
+    let authority_bytes = serde_json::to_vec(&document).unwrap();
+    session.resync_diverged(&key, &authority_bytes, &token()).map(drop).map_err(|f| f.code().to_owned()).map(|()| session)
+}
 
 fn cell(named: &str, path: Path, removed: Removed) -> Cell {
-    let bytes = package_of(&all_sequences(), &held_of(named));
     let outcome = match path {
+        Path::Timeline if removed == Removed::Sequence => {
+            // One value under one id: another id is refused before anything else.
+            let mut session = opened(named);
+            let mut renamed = seq_b_full();
+            renamed.sequence_id = "seq-gone".into();
+            let t = TimelineStep { command_id: "cmd.remove".into(), correlation_id: 1, sequence_id: "seq-b".into(), expect: seq_b_full(), write: renamed };
+            assert_eq!(session.submit_timeline(&t, 3, &token()).unwrap_err().error.code(), "invalid_input");
+            return Cell::CannotRemove;
+        }
         Path::Timeline => {
-            let mut session = open(&bytes);
-            let SequenceEdit::Replace { expect, write } = clip_edit() else { unreachable!() };
-            if removed == Removed::Sequence {
-                // One value under one id: another id is refused before anything else.
-                let renamed = {
-                    let mut s = seq_b_full();
-                    s.sequence_id = "seq-gone".into();
-                    s
-                };
-                let t = TimelineStep { command_id: "cmd.remove".into(), correlation_id: 1, sequence_id: "seq-b".into(), expect: seq_b_full(), write: renamed };
-                assert_eq!(session.submit_timeline(&t, 3, &token()).unwrap_err().error.code(), "invalid_input");
-                return Cell::CannotRemove;
-            }
-            let t = TimelineStep { command_id: "cmd.remove".into(), correlation_id: 1, sequence_id: "seq-a".into(), expect, write };
-            session.submit_timeline(&t, 3, &token()).map(drop).map_err(|f| f.error.code().to_owned()).map(|()| session)
+            let mut session = opened(named);
+            session.submit_timeline(&timeline_step(named, removed), 3, &token()).map(drop).map_err(|f| f.error.code().to_owned()).map(|()| session)
         }
         Path::Multicam => {
-            let mut session = open(&bytes);
-            let s = multicam_step(&session, vec![edit(removed)]);
+            let mut session = opened(named);
+            let s = multicam_step(&session, vec![edit(named, removed)]);
             session.submit_multicam(&s, 3, &token()).map(drop).map_err(|f| f.error.code().to_owned()).map(|()| session)
         }
         Path::Records => {
-            let mut session = open(&bytes);
-            let s = step(vec![edit(removed)], None, None);
+            let mut session = opened(named);
+            let s = step(vec![edit(named, removed)], None, None);
             session.submit_sequence_records(&s, 3, &token()).map(drop).map_err(|f| f.code().to_owned()).map(|()| session)
         }
-        Path::Resync => {
-            let authority = Authority::default();
-            let ports = ports(&Frames::default()).with_commits(Box::new(authority.clone()));
-            let mut session = Session::open_bytes(&bytes, SessionConfig::new(actor()), ports, &token()).unwrap_or_else(|f| panic!("{f:?}"));
-            let key = IdempotencyKey::parse("presets-1").unwrap();
-            let presets = step(vec![], None, Some(RecordEdit { expect: None, write: Some(library(vec![preset("mine", F25)])) }));
-            assert_eq!(session.submit_sequence_records_keyed(&key, &presets, 3, &token()).unwrap_err().code(), "receipt_mismatch");
-            let mut document = expected_document(&session, removed);
-            document.revision = 4;
-            let authority_bytes = serde_json::to_vec(&document).unwrap();
-            session.resync_diverged(&key, &authority_bytes, &token()).map(drop).map_err(|f| f.code().to_owned()).map(|()| session)
-        }
+        Path::Resync => resynced(named, removed),
     };
     match outcome {
         Err(code) => Cell::Refused(code),
@@ -268,25 +300,38 @@ fn cell(named: &str, path: Path, removed: Removed) -> Cell {
     }
 }
 
-/// The table. Red on base: every cell that leaves an entry unreadable.
+/// What each cell must do. The two `Unreadable` cells are the reported gap: multicam's `angle_order` is
+/// read by index (pulse multicam.rs:374, :957, :991), so a stale track is not inert there.
+fn expected(named: &str, path: Path, removed: Removed) -> Cell {
+    let refused = || Cell::Refused("folio_rejected".into());
+    match (named, path, removed) {
+        (_, Path::Timeline, Removed::Sequence) => Cell::CannotRemove,
+        (MULTICAM_ENTRY, Path::Timeline | Path::Records, Removed::Track) => Cell::Unreadable("document_rejected".into()),
+        (MULTICAM_ENTRY, Path::Multicam | Path::Resync, Removed::Track) => refused(),
+        (MULTICAM_ENTRY | SEQUENCE_SETTINGS_ENTRY, _, Removed::Sequence) => refused(),
+        _ => Cell::Reads,
+    }
+}
+
+/// The table: every token, path and removal does what `expected` says.
 #[test]
-fn no_removal_leaves_a_naming_entry_unreadable() {
+fn every_removal_does_what_the_table_says() {
     bounded_case("table", || {
         let mut lines = Vec::new();
-        let mut unreadable = Vec::new();
+        let mut wrong = Vec::new();
         for named in NAMING {
-            for path in [Path::Timeline, Path::Multicam, Path::Records, Path::Resync] {
-                for removed in [Removed::Sequence, Removed::Clip] {
+            for path in PATHS {
+                for removed in REMOVALS {
                     let got = cell(named, path, removed);
                     lines.push(format!("{named:18} {path:?} {removed:?}: {got:?}"));
-                    if matches!(got, Cell::Unreadable(_)) {
-                        unreadable.push(format!("{named} {path:?} {removed:?}"));
+                    if got != expected(named, path, removed) {
+                        wrong.push(format!("{named} {path:?} {removed:?}"));
                     }
                 }
             }
         }
         println!("{}", lines.join("\n"));
-        assert!(unreadable.is_empty(), "unreadable cells: {unreadable:?}\n{}", lines.join("\n"));
+        assert!(wrong.is_empty(), "cells off the table: {wrong:?}\n{}", lines.join("\n"));
     });
 }
 
@@ -302,23 +347,261 @@ fn every_document_entry_token_is_classified() {
     assert!(!DOCUMENT_ENTRY_TOKENS.contains(&"clip_finishing"), "clip finishing names clips: it needs a row when the session carries it");
 }
 
-/// A token that names neither keeps its bytes through a removal of either, on the path each can take.
+/// A token that names neither keeps its bytes through every removal, and composition still reads.
 #[test]
 fn a_token_that_names_neither_is_untouched_by_a_removal() {
     bounded_case("not_applicable", || {
         let composition = serde_json::to_vec(&StudioCompositionRecords::new(doc_id())).unwrap();
         for (held_token, _) in NOT_APPLICABLE {
             let body = if held_token == "composition" { composition.clone() } else { b"{}".to_vec() };
-            let held = [entry(held_token, &body)];
-            let mut session = open(&package_of(&all_sequences(), &held));
-            let removal = multicam_step(&session, vec![edit(Removed::Sequence), edit(Removed::Clip)]);
+            let mut session = open(&package_of(&all_sequences(), &[entry(held_token, &body)]));
+            let removal = multicam_step(&session, vec![edit(held_token, Removed::Sequence), edit(held_token, Removed::Clip)]);
             session.submit_multicam(&removal, 3, &token()).unwrap_or_else(|f| panic!("{held_token}: {f:?}"));
             assert_eq!(session.document_entry(held_token), Some(body.as_slice()), "{held_token}");
         }
-        let held = [entry("composition", &composition)];
-        let mut session = open(&package_of(&all_sequences(), &held));
-        let removal = multicam_step(&session, vec![edit(Removed::Sequence), edit(Removed::Clip)]);
+        let mut session = open(&package_of(&all_sequences(), &[entry("composition", &composition)]));
+        let removal = multicam_step(&session, vec![edit("composition", Removed::Sequence), edit("composition", Removed::Clip)]);
         session.submit_multicam(&removal, 3, &token()).unwrap();
         assert!(session.composition_records(&Granted, &token()).unwrap().is_some(), "reads after both removals");
+    });
+}
+
+// ----- The newly inert cells: undo, redo, save and reopen, bytes identical -----
+
+#[derive(Clone)]
+enum Inverse {
+    Timeline(TimelineStep),
+    Multicam(MulticamStep),
+    Records(SequenceRecordsStep),
+}
+impl Inverse {
+    /// Submits this step at the session's revision and answers its own inverse.
+    fn apply(&self, session: &mut Session) -> Inverse {
+        let revision = session.document_revision();
+        match self {
+            Self::Timeline(s) => Self::Timeline(session.submit_timeline(s, revision, &token()).unwrap_or_else(|f| panic!("{f:?}")).timeline_inverse.unwrap()),
+            Self::Multicam(s) => Self::Multicam(session.submit_multicam(s, revision, &token()).unwrap_or_else(|f| panic!("{f:?}")).multicam_inverse.unwrap()),
+            Self::Records(s) => Self::Records(session.submit_sequence_records(s, revision, &token()).unwrap_or_else(|f| panic!("{f:?}")).sequence_records_inverse.unwrap()),
+        }
+    }
+}
+fn newly_inert() -> Vec<(&'static str, Path, Removed)> {
+    let mut cells = Vec::new();
+    for path in [Path::Timeline, Path::Multicam, Path::Records] {
+        for removed in REMOVALS {
+            if !(path == Path::Timeline && removed == Removed::Sequence) {
+                cells.push((AUDIO_ROUTING_ENTRY, path, removed));
+            }
+        }
+        cells.push((MULTICAM_ENTRY, path, Removed::Clip));
+    }
+    cells
+}
+
+/// The entry's bytes never move: the removal leaves them, the checkpoint and the reopen hold them with
+/// no loss note, the listing names what is absent, an undo (also an inverse taken before the save, on
+/// the reopened document) empties the listing, and a redo fills it again.
+#[test]
+fn newly_inert_cells_undo_redo_save_and_reopen_with_their_bytes() {
+    bounded_case("inert_round_trip", || {
+        for (named, path, removed) in newly_inert() {
+            let what = format!("{named} {path:?} {removed:?}");
+            let mut session = opened(named);
+            let body = session.document_entry(named).unwrap().to_vec();
+            let before = session.snapshot().document().sequences.clone();
+            assert_eq!(inert_count(&session, named), 0, "{what}");
+            let forward = match path {
+                Path::Timeline => Inverse::Timeline(timeline_step(named, removed)),
+                Path::Multicam => Inverse::Multicam(multicam_step(&session, vec![edit(named, removed)])),
+                Path::Records => Inverse::Records(step(vec![edit(named, removed)], None, None)),
+                Path::Resync => unreachable!(),
+            };
+            let undo = forward.apply(&mut session);
+            let removed_sequences = session.snapshot().document().sequences.clone();
+            let listed = inert_count(&session, named);
+            assert!(listed > 0, "{what}: the listing names it");
+            assert_eq!(session.document_entry(named), Some(body.as_slice()), "{what}: left alone");
+            assert!(session.loss().is_empty(), "{what}");
+
+            let checkpoint = session.export_checkpoint(&token()).unwrap();
+            let mut reopened = open(&checkpoint.bytes);
+            assert!(reopened.loss().is_empty(), "{what}: inert is not a loss: {:?}", reopened.loss());
+            assert_eq!(reopened.document_entry(named), Some(body.as_slice()), "{what}: reopened bytes");
+            assert_eq!(read(&reopened, named), Ok(()), "{what}: reopened read");
+            assert_eq!(inert_count(&reopened, named), listed, "{what}: reopened listing");
+            undo.apply(&mut reopened);
+            assert_eq!(reopened.snapshot().document().sequences, before, "{what}: undo after reopen");
+            assert_eq!(inert_count(&reopened, named), 0, "{what}: live again after reopen");
+            assert_eq!(reopened.document_entry(named), Some(body.as_slice()), "{what}: undo after reopen, bytes");
+
+            let redo = undo.apply(&mut session);
+            assert_eq!(session.snapshot().document().sequences, before, "{what}: undo");
+            assert_eq!(session.document_entry(named), Some(body.as_slice()), "{what}: undo, bytes");
+            assert_eq!(inert_count(&session, named), 0, "{what}: live again");
+            redo.apply(&mut session);
+            assert_eq!(session.snapshot().document().sequences, removed_sequences, "{what}: redo");
+            assert_eq!(session.document_entry(named), Some(body.as_slice()), "{what}: redo, bytes");
+            assert_eq!(inert_count(&session, named), listed, "{what}: redo, listing");
+        }
+    });
+}
+
+/// A resync has no undo: the bytes stay, the reopen holds them, the listing names what is absent.
+#[test]
+fn a_resync_leaves_an_inert_entry_byte_identical_through_reopen() {
+    bounded_case("inert_resync", || {
+        let cells = [(AUDIO_ROUTING_ENTRY, Removed::Sequence), (AUDIO_ROUTING_ENTRY, Removed::Clip), (AUDIO_ROUTING_ENTRY, Removed::Track), (MULTICAM_ENTRY, Removed::Clip)];
+        for (named, removed) in cells {
+            let mut session = resynced(named, removed).unwrap_or_else(|code| panic!("{named} {removed:?}: {code}"));
+            let body = body_of(named);
+            assert_eq!(session.document_entry(named), Some(body.as_slice()));
+            let listed = inert_count(&session, named);
+            assert!(listed > 0, "{named} {removed:?}");
+            let reopened = open(&session.export_checkpoint(&token()).unwrap().bytes);
+            assert_eq!(reopened.document_entry(named), Some(body.as_slice()));
+            assert_eq!(inert_count(&reopened, named), listed);
+            assert!(reopened.loss().is_empty());
+        }
+    });
+}
+
+/// Through a file too, not only a checkpoint.
+#[test]
+fn an_inert_routing_survives_save_to_and_open_path() {
+    bounded_case("inert_file", || {
+        let dir = std::env::temp_dir().join(format!("hsk-studio-session-entry-references-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inert.handshake");
+        let mut session = opened(AUDIO_ROUTING_ENTRY);
+        let s = step(vec![edit(AUDIO_ROUTING_ENTRY, Removed::Sequence)], None, None);
+        session.submit_sequence_records(&s, 3, &token()).unwrap();
+        session.save_to(&path, &token()).unwrap();
+        let reopened = match Session::open_path(&path, SessionConfig::new(actor()), ports(&Frames::default()), &token()) {
+            Ok(s) => s,
+            Err(f) => panic!("{f:?}"),
+        };
+        assert_eq!(reopened.document_entry(AUDIO_ROUTING_ENTRY), Some(body_of(AUDIO_ROUTING_ENTRY).as_slice()));
+        assert_eq!(reopened.audio_routing_records(&token()).unwrap(), Some(routing()));
+        assert!(reopened.loss().is_empty());
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+    });
+}
+
+// ----- The listing -----
+
+/// The typed listing: ids and kinds, no values, in stored order, read-only, no frame.
+#[test]
+fn the_listing_names_what_is_absent_and_changes_nothing() {
+    bounded_case("listing", || {
+        use StudioInertRoutingKind as K;
+        let row = |kind: K, id: String| StudioInertRoutingReference { sequence_id: "seq-a".into(), kind, id };
+        let (mut session, frames) = open_counted(&package_of(&all_sequences(), &[entry(AUDIO_ROUTING_ENTRY, &body_of(AUDIO_ROUTING_ENTRY))]));
+        assert_eq!(session.inert_audio_routing_references(&token()).unwrap(), vec![]);
+        session.submit_timeline(&timeline_step(AUDIO_ROUTING_ENTRY, Removed::Track), 3, &token()).unwrap();
+        let start = frames.count();
+        let listed = session.inert_audio_routing_references(&token()).unwrap();
+        assert_eq!(frames.count(), start, "a typed read sends no frame");
+        assert_eq!(
+            listed,
+            vec![
+                row(K::Route, audio_id("seq-a")),
+                row(K::Route, submix_id("seq-a")),
+                row(K::BusEffects, submix_id("seq-a")),
+                row(K::TrackAutomation, audio_id("seq-a")),
+                row(K::TrackAutomation, submix_id("seq-a")),
+                row(K::ClipGain, identity("SCLP", ENVELOPED)),
+                row(K::ClipPan, identity("SCLP", ENVELOPED)),
+            ]
+        );
+
+        // An absent sequence is one row, and the other sequence's routing still reads.
+        let mut session = opened(AUDIO_ROUTING_ENTRY);
+        session.submit_sequence_records(&step(vec![edit(AUDIO_ROUTING_ENTRY, Removed::Sequence)], None, None), 3, &token()).unwrap();
+        assert_eq!(
+            session.inert_audio_routing_references(&token()).unwrap(),
+            vec![StudioInertRoutingReference { sequence_id: "seq-b".into(), kind: K::Routing, id: "seq-b".into() }]
+        );
+        let held = session.audio_routing_records(&token()).unwrap().unwrap();
+        assert_eq!(held.routings[0], routing().routings[0], "seq-a's routing reads");
+
+        let mut session = opened(MULTICAM_ENTRY);
+        session.submit_timeline(&timeline_step(MULTICAM_ENTRY, Removed::Clip), 3, &token()).unwrap();
+        assert_eq!(session.inert_multicam_clips(&token()).unwrap(), multicam_body().clips);
+
+        // While the entry is invalid both are the refusal of the read, not a guess.
+        let held = [entry(AUDIO_ROUTING_ENTRY, b"{not json"), entry(MULTICAM_ENTRY, b"{not json")];
+        let session = open(&package_of(&all_sequences(), &held));
+        assert_eq!(session.inert_audio_routing_references(&token()).unwrap_err().code(), "document_rejected");
+        assert_eq!(session.inert_multicam_clips(&token()).unwrap_err().code(), "document_rejected");
+        // No entry, nothing to list.
+        let session = open(&package_of(&all_sequences(), &[]));
+        assert_eq!(session.inert_audio_routing_references(&token()).unwrap(), vec![]);
+        assert_eq!(session.inert_multicam_clips(&token()).unwrap(), vec![]);
+    });
+}
+
+// ----- A damaged file (brief item 5) -----
+
+/// The ways a routing entry can be damaged while the package still opens. An inert id is not damage.
+fn damaged_routings() -> Vec<(&'static str, Vec<Quarantined>)> {
+    let mut twice = routing();
+    twice.routings.push(StudioAudioRouting::new("seq-a"));
+    let mut video_clip = routing();
+    video_clip.routings[0].clip_gains[0].clip_id = identity("SCLP", NESTED);
+    let mut out_of_range = routing();
+    out_of_range.routings.push(StudioAudioRouting::new("seq-gone"));
+    out_of_range.routings[2].master.volume = 99.0;
+    let good = serde_json::to_vec(&routing()).unwrap();
+    let mut other = routing();
+    other.routings.pop();
+    let other = serde_json::to_vec(&other).unwrap();
+    vec![
+        ("not json", vec![entry(AUDIO_ROUTING_ENTRY, b"{not json")]),
+        ("wrong shape", vec![entry(AUDIO_ROUTING_ENTRY, b"{}")]),
+        ("unknown field", vec![entry(AUDIO_ROUTING_ENTRY, br#"{"routings":[],"x":1}"#)]),
+        ("one sequence twice", vec![entry(AUDIO_ROUTING_ENTRY, &serde_json::to_vec(&twice).unwrap())]),
+        ("an envelope of a clip held on a video track", vec![entry(AUDIO_ROUTING_ENTRY, &serde_json::to_vec(&video_clip).unwrap())]),
+        ("an inert routing with a value out of range", vec![entry(AUDIO_ROUTING_ENTRY, &serde_json::to_vec(&out_of_range).unwrap())]),
+        ("nesting past the budget", vec![entry(AUDIO_ROUTING_ENTRY, "[".repeat(100_000).as_bytes())]),
+        ("two entries of the token", vec![entry(AUDIO_ROUTING_ENTRY, &good), entry(AUDIO_ROUTING_ENTRY, &other)]),
+    ]
+}
+
+/// It opens, one note per entry, the read gives the typed refusal, save keeps the bytes, a removal is
+/// not held up by it, and a direct write replaces it and takes the note.
+#[test]
+fn a_damaged_routing_opens_noted_refuses_typed_and_save_keeps_its_bytes() {
+    bounded_case("routing_damaged", || {
+        for (what, held) in damaged_routings() {
+            let mut session = open(&package_of(&all_sequences(), &held));
+            assert_eq!(session.loss().len(), held.len(), "{what}: {:?}", session.loss());
+            assert!(session.loss().iter().all(|n| n.reason == hsk_studio_package::LossReason::Opaque), "{what}");
+            assert!(session.audio_routing_records(&token()).is_err(), "{what}: refused on read");
+            let again = open(&session.export_checkpoint(&token()).unwrap().bytes);
+            assert_eq!(again.loss().len(), held.len(), "{what}: noted again");
+            assert!(again.audio_routing_records(&token()).is_err(), "{what}");
+            for q in &held {
+                let names: Vec<&str> = again.loss().iter().map(|n| n.name.as_str()).collect();
+                assert!(names.contains(&q.name.as_str()), "{what}: same digest, so the same bytes: {names:?}");
+            }
+            let removal = step(vec![edit(AUDIO_ROUTING_ENTRY, Removed::Sequence)], None, None);
+            session.submit_sequence_records(&removal, 3, &token()).unwrap_or_else(|f| panic!("{what}: {f:?}"));
+            assert_eq!(session.loss().len(), held.len(), "{what}: still noted");
+            session.set_document_entry(AUDIO_ROUTING_ENTRY, Some(body_of(AUDIO_ROUTING_ENTRY)), &token()).unwrap();
+            assert!(session.loss().is_empty(), "{what}: the note named an entry that is gone: {:?}", session.loss());
+            assert_eq!(session.audio_routing_records(&token()).unwrap(), Some(routing()), "{what}");
+        }
+    });
+}
+
+/// A valid routing has no note and reads typed; a package without one reads as none.
+#[test]
+fn a_valid_routing_opens_typed_without_a_note() {
+    bounded_case("routing_typed", || {
+        let session = opened(AUDIO_ROUTING_ENTRY);
+        assert!(session.loss().is_empty(), "{:?}", session.loss());
+        assert_eq!(session.audio_routing_records(&token()).unwrap(), Some(routing()));
+        assert_eq!(open(&package_of(&all_sequences(), &[])).audio_routing_records(&token()).unwrap(), None);
     });
 }
