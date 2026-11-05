@@ -601,7 +601,7 @@ pub(crate) fn line_holding<T>(
         return None;
     }
     let k = lines.partition_point(|l| source(l).start <= at);
-    let i = k.checked_sub(1).unwrap_or(0);
+    let i = k.saturating_sub(1);
     let line = source(lines.get(i)?);
     if k == 0 || at < line.end {
         return Some(i);

@@ -269,7 +269,8 @@ fn mt_30776_a_toc_paragraph_opening_with_a_glyphless_marker_takes_its_first_line
     let g = generate_toc(&f.doc, &toc_style(), &source, &f.pages, &target, TocLimits::default(), &CancellationToken::default()).unwrap();
     // P0 (byte 0 has a glyph) on page-1; P1 opens with a glyph-less marker before "Chapter": the
     // page and baseline (frame 2 at y 10, line 3 baseline 22) of its first line.
-    let got: Vec<(u64, Option<String>, Option<String>, Option<f64>)> =
+    type Entry = (u64, Option<String>, Option<String>, Option<f64>);
+    let got: Vec<Entry> =
         g.entries.iter().map(|e| (e.source_start, e.page_label.clone(), e.page_id.clone(), e.baseline_y)).collect();
     assert_eq!(
         got,
