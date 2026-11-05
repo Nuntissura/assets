@@ -313,3 +313,156 @@ fn audit_how_long_the_step_lasts() {
     println!("AUDIT|step 3 after the document closes and a document opens|step {}", step_of(&v));
     assert_eq!(step_of(&v), serde_json::json!(5), "not kept: no store holds it");
 }
+
+// ---- Up and down by one track: the command the audit found missing.
+
+fn track_nudge(v: &mut Viewer, up: bool) -> Result<(), String> {
+    v.timeline_command(TimelineCommand::ClipTrackNudge { up })
+}
+fn status(v: &Viewer) -> String {
+    v.state_json()["status"].to_string()
+}
+
+/// Up to V2, up to V3, no further. One undo step each; undo and redo restore the exact sequences.
+#[test]
+fn up_and_down_move_the_selected_clip_one_track_with_one_undo() {
+    let (_s, mut v) = opened("updown");
+    select(&mut v, 6);
+    let base = seq(&v);
+    let clip = stored(&v, 6).1;
+    let undo = undo_len(&v);
+    track_nudge(&mut v, true).unwrap_or_else(|e| panic!("{e}: {}", status(&v)));
+    assert_eq!(stored(&v, 6), (tid(2), clip.clone()), "the clip keeps its time and every field");
+    assert_eq!(undo_len(&v), undo + 1, "one history step");
+    assert!(last_undo(&v).starts_with("timeline_clip_track_nudge"), "{}", last_undo(&v));
+    let on_v2 = seq(&v);
+    track_nudge(&mut v, true).unwrap_or_else(|e| panic!("{e}: {}", status(&v)));
+    assert_eq!(stored(&v, 6), (tid(3), clip.clone()));
+    assert_eq!(track_nudge(&mut v, true).unwrap_err(), "nudge_no_track");
+    assert!(status(&v).contains("nudge_no_track"), "{}", status(&v));
+    assert_eq!(undo_len(&v), undo + 2, "a refusal is no step");
+    track_nudge(&mut v, false).unwrap();
+    assert_eq!(stored(&v, 6).0, tid(2), "down");
+    v.shell_command(ShellCommand::Undo).unwrap();
+    v.shell_command(ShellCommand::Undo).unwrap();
+    assert_eq!(seq(&v), on_v2);
+    v.shell_command(ShellCommand::Undo).unwrap();
+    assert_eq!(seq(&v), base, "undo restores the exact sequence");
+    v.shell_command(ShellCommand::Redo).unwrap();
+    assert_eq!(seq(&v), on_v2, "redo");
+}
+
+/// Everything a clip holds survives: speed, retime, the hold, the marker, disabled.
+#[test]
+fn a_track_nudge_keeps_every_member_of_the_clip() {
+    let (_s, mut v) = opened_with("keeps", |s| {
+        let c = s.tracks[0].clips.iter_mut().find(|c| c.clip_id == cid(6)).unwrap();
+        c.speed = Speed { numerator: 1, denominator: 2 };
+        c.duration = Ticks::new(20 * F);
+        c.enabled = false;
+        c.retime = ClipRetime {
+            frame_interpolation: FrameInterpolation::FrameBlending,
+            maintain_audio_pitch: true,
+            frame_hold: Some(ClipFrameHold { source_tick: Ticks::new(17 * F), anchor: FrameHoldAnchor::Playhead }),
+        };
+        c.markers.push(StudioMarker { marker_id: "mk-1".into(), name: "keep".into(), comment: String::new(), color: LabelColor::Rose, start: Ticks::new(12 * F), duration: Ticks::new(0), role: None });
+    });
+    select(&mut v, 6);
+    let before = stored(&v, 6).1;
+    track_nudge(&mut v, true).unwrap_or_else(|e| panic!("{e}: {}", status(&v)));
+    assert_eq!(stored(&v, 6), (tid(2), before), "status: {}", status(&v));
+}
+
+/// The partner takes the same index step, so V1 + A1 go to V2 + A2. One undo step for both.
+#[test]
+fn a_linked_clip_takes_its_partner_along() {
+    let (_s, mut v) = opened("linked");
+    select(&mut v, 9);
+    let base = seq(&v);
+    let undo = undo_len(&v);
+    track_nudge(&mut v, true).unwrap_or_else(|e| panic!("{e}: {}", status(&v)));
+    assert_eq!((stored(&v, 9).0, stored(&v, 10).0), (tid(2), tid(5)));
+    assert_eq!(undo_len(&v), undo + 1);
+    v.shell_command(ShellCommand::Undo).unwrap();
+    assert_eq!(seq(&v), base);
+}
+
+#[test]
+fn refusals_are_named_and_change_nothing() {
+    let (_s, mut v) = opened("none");
+    assert_eq!(track_nudge(&mut v, true).unwrap_err(), "no_selection");
+    let (_s, mut v) = opened_with("locked", |s| s.tracks[1].locked = true);
+    select(&mut v, 6);
+    let base = seq(&v);
+    let undo = undo_len(&v);
+    assert_eq!(track_nudge(&mut v, true).unwrap_err(), "track_locked");
+    assert_eq!((seq(&v), undo_len(&v)), (base, undo));
+    // Clip 8 on V1 sits under clip 7 on V2: refused, not overwritten.
+    let (_s, mut v) = opened_with("occupied", |s| s.tracks[0].clips.insert(4, clip(8, 10, 20, 205)));
+    select(&mut v, 8);
+    let base = seq(&v);
+    assert_eq!(track_nudge(&mut v, true).unwrap_err(), "nudge_range_occupied");
+    assert_eq!(seq(&v), base);
+}
+
+/// The planner's up and down are the rows the panel draws: one row up or down within the kind.
+#[test]
+fn up_lands_on_the_row_above_in_the_drawn_order() {
+    let (_s, mut v) = opened_with("rows", |s| s.tracks[4].clips.push(clip(11, 10, 15, 0)));
+    let row = |v: &Viewer, n: u32| {
+        let s = seq(v);
+        let track = stored(v, n).0;
+        let drawn = hsk_studio_harness_view::view::timeline::track_order(&s);
+        drawn.iter().position(|i| s.tracks[*i].track_id == track).unwrap()
+    };
+    for (n, up) in [(6, true), (6, false), (11, true), (11, false)] {
+        select(&mut v, n);
+        let before = row(&v, n);
+        track_nudge(&mut v, up).unwrap_or_else(|e| panic!("clip {n}: {e}: {}", status(&v)));
+        let want = if up { before - 1 } else { before + 1 };
+        assert_eq!(row(&v, n), want, "clip {n} up={up}");
+    }
+}
+
+/// A transition that stops playing is removed, the status note names it, undo brings it back.
+#[test]
+fn a_transition_that_stops_playing_is_noted() {
+    let (_s, mut v) = opened_with("transition", |s| {
+        s.tracks[0].clips[1].transitions.tail = Some(TimelineTransition {
+            schema_id: TransitionSchema::V1,
+            transition_id: "tr-1".into(),
+            transition_kind: "cross_dissolve".into(),
+            duration: Ticks::new(2 * F),
+            alignment: TransitionAlignment::CenteredOnCut,
+            center_offset: 0,
+            parameters: Vec::new(),
+            repeat_end_frame: false,
+        });
+    });
+    select(&mut v, 2);
+    let base = seq(&v);
+    track_nudge(&mut v, true).unwrap_or_else(|e| panic!("{e}: {}", status(&v)));
+    assert_eq!(stored(&v, 2).1.transitions.tail, None);
+    let note = status(&v);
+    assert!(note.contains("dropped transitions") && note.contains("tr-1"), "{note}");
+    v.shell_command(ShellCommand::Undo).unwrap();
+    assert_eq!(seq(&v), base);
+}
+
+/// The module 14 table names all six ([STU-VID-041]); left and right had no id at base.
+#[test]
+fn every_clip_nudge_names_its_spec_command() {
+    let ids = [
+        TimelineCommand::ClipNudge { right: false, many: false },
+        TimelineCommand::ClipNudge { right: false, many: true },
+        TimelineCommand::ClipNudge { right: true, many: false },
+        TimelineCommand::ClipNudge { right: true, many: true },
+        TimelineCommand::ClipTrackNudge { up: true },
+        TimelineCommand::ClipTrackNudge { up: false },
+    ]
+    .map(|c| c.spec_command());
+    assert_eq!(
+        ids,
+        ["cmd.timeline.nudge.left.one", "cmd.timeline.nudge.left.several", "cmd.timeline.nudge.right.one", "cmd.timeline.nudge.right.several", "cmd.timeline.nudge.up", "cmd.timeline.nudge.down"].map(Some)
+    );
+}

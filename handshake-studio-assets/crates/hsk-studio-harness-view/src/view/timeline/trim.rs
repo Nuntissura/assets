@@ -379,6 +379,7 @@ impl Viewer {
             TimelineCommand::SlipNudge { right, many } => self.timeline_selected_nudge(key, TrimKind::Slip, *right, *many),
             TimelineCommand::SlideNudge { right, many } => self.timeline_selected_nudge(key, TrimKind::Slide, *right, *many),
             TimelineCommand::ClipNudge { right, many } => self.timeline_clip_nudge(*right, *many),
+            TimelineCommand::ClipTrackNudge { .. } => Err("clip_track_nudge_unbuilt".into()),
             TimelineCommand::ExtendEditToPlayhead => self.timeline_extend_edit(key),
             TimelineCommand::SetMultiFrameStep(step) => self.timeline_set_step(*step),
             TimelineCommand::SetTool(tool) => {
