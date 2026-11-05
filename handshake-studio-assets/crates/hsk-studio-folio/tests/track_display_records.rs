@@ -225,7 +225,6 @@ fn records_are_bound_to_the_document_and_hostile_input_is_refused() {
     let mut malformed = records(vec![]);
     malformed.document_id = "not-a-document".into();
     assert!(check(&malformed).is_some());
-    assert_eq!(check(&records(vec![entry("seq-x")])), Some(Code::DanglingReference));
     assert_eq!(check(&records(vec![entry("seq-a"), entry("seq-a")])), Some(Code::DuplicateIdentity));
     assert_eq!(check(&records(vec![entry("bad id!")])), Some(Code::InvalidId));
     let edited = |edit: &dyn Fn(&mut StudioTrackDisplayEntry)| {
@@ -295,7 +294,57 @@ fn the_records_hold_no_copy_of_a_document_value() {
     d.sequences[0].duration = Ticks::new(F25);
     validate_track_display_records(&r, &d, Budget::default(), &token()).unwrap();
     d.sequences.remove(0);
-    assert_eq!(validate_track_display_records(&r, &d, Budget::default(), &token()).unwrap_err().code, Code::DanglingReference);
+    validate_track_display_records(&r, &d, Budget::default(), &token()).unwrap();
+}
+
+/// Lead decision on this lane: display state is a view preference, so an entry naming a sequence the
+/// document does not hold is inert, the one narrowing of the dangling-reference check, for this record
+/// set only.
+#[test]
+fn an_entry_naming_no_document_sequence_is_inert() {
+    let d = document();
+    let r = records(vec![entry("seq-y"), entry("seq-a"), entry("seq-x")]);
+    let bytes = serde_json::to_vec(&r).unwrap();
+    assert_eq!(parse(&bytes).unwrap(), r, "neither the entry nor the file is invalid");
+    let inert: Vec<&str> = inert_track_display_entries(&r, &d).iter().map(|e| e.sequence_id.as_str()).collect();
+    assert_eq!(inert, ["seq-y", "seq-x"], "stored order");
+    assert_eq!(inert_track_display_entries(&r, &d)[0], &entry("seq-y"), "the entry itself, whole");
+    assert!(inert_track_display_entries(&empty(), &d).is_empty());
+    let resolved = resolve_track_displays(Some(&r), &d);
+    assert_eq!(resolved.iter().map(|e| (e.sequence_id.as_str(), e.stored)).collect::<Vec<_>>(), [("seq-a", true), ("seq-b", false)], "the document's sequences only");
+
+    // Only the reference is narrowed: everything else in an inert entry is still checked.
+    let check = |r: &StudioTrackDisplayRecords| validate_track_display_records(r, &d, Budget::default(), &token()).err().map(|e| e.code);
+    let mut bad_height = entry("seq-x");
+    bad_height.heights.video = 0;
+    assert_eq!(check(&records(vec![bad_height])), Some(Code::InvalidField));
+    assert_eq!(check(&records(vec![entry("seq-x"), entry("seq-x")])), Some(Code::DuplicateIdentity));
+    assert_eq!(check(&records(vec![entry("bad id!")])), Some(Code::InvalidId));
+
+    // A command cannot edit one: the sequence is not there to act on.
+    assert_eq!(run(&r, &StudioTrackDisplayCommand::ExpandAll { sequence_id: "seq-x".into() }).unwrap_err(), StudioTrackDisplayError::SequenceMissing);
+    // A command elsewhere keeps it, untouched and in place.
+    let out = run(&r, &StudioTrackDisplayCommand::MinimizeAll { sequence_id: "seq-a".into() }).unwrap().records;
+    assert_eq!(out.entry("seq-y"), Some(&entry("seq-y")));
+    assert_eq!(out.entry("seq-x"), Some(&entry("seq-x")));
+}
+
+#[test]
+fn the_entry_limit_counts_inert_entries_and_refuses_typed() {
+    assert_eq!(MAX_TRACK_DISPLAY_ENTRIES, MAX_SEQUENCES);
+    let d = document();
+    let full: Vec<_> = (0..MAX_TRACK_DISPLAY_ENTRIES).map(|i| entry(&format!("gone-{i}"))).collect();
+    let at_limit = records(full.clone());
+    validate_track_display_records(&at_limit, &d, Budget::default(), &token()).unwrap();
+    assert_eq!(inert_track_display_entries(&at_limit, &d).len(), MAX_TRACK_DISPLAY_ENTRIES);
+    let mut over = full;
+    over.push(entry("seq-a"));
+    assert_eq!(validate_track_display_records(&records(over), &d, Budget::default(), &token()).unwrap_err().code, Code::BudgetExceeded);
+    // A command that would add an entry at the limit is refused, and one that edits nothing new is not asked to.
+    let expand = StudioTrackDisplayCommand::ExpandAll { sequence_id: sid() };
+    assert_eq!(run(&at_limit, &expand).unwrap_err(), StudioTrackDisplayError::BudgetExceeded);
+    let set = StudioTrackDisplayCommand::SetSwitches { sequence_id: sid(), switches: StudioTrackDisplaySwitches::STUDIO_DEFAULT };
+    assert_eq!(run(&at_limit, &set).unwrap().records, at_limit, "no change, no new entry, no refusal");
 }
 
 #[test]
@@ -393,9 +442,9 @@ fn command_codes_tell_cancellation_and_budget_from_bad_input_r55_f6() {
     let over = with(&start, Budget { nodes: 0, ..Budget::default() }, &token()).unwrap_err();
     assert_eq!((over, over.code()), (StudioTrackDisplayError::BudgetExceeded, "budget_exceeded"));
     let mut hostile = start.clone();
-    hostile.sequences[0].sequence_id = "seq-x".into();
+    hostile.sequences[0].heights.video = 0;
     let bad = with(&hostile, Budget::default(), &token()).unwrap_err();
-    assert_eq!((bad, bad.code()), (StudioTrackDisplayError::InvalidInput(Code::DanglingReference), "invalid_input"));
+    assert_eq!((bad, bad.code()), (StudioTrackDisplayError::InvalidInput(Code::InvalidField), "invalid_input"));
     // A result that a parse under this budget would refuse is refused here, not at the next open.
     let small = Budget { input_bytes: 64, ..Budget::default() };
     assert_eq!(with(&start, small, &token()).unwrap_err(), StudioTrackDisplayError::BudgetExceeded);

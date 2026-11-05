@@ -1,7 +1,8 @@
 //! Lane SMB-PR-TRACK-DISPLAY-1, brief items 2 and 4 (STU-VID-036): the track display records persist
 //! as the document entry `studio/track_display.<sha256>`, typed read and write, validated on read, and
 //! commit through `SequenceRecordsStep` as one revision, one receipt, one inverse, one Observe frame.
-//! Item 3: a sequence removal follows the settings entry's rule.
+//! Item 3 as the lead replaced it: display state is a view preference and never blocks a document edit
+//! or an undo; an entry naming a sequence the document does not hold is inert.
 mod sequence_records_support;
 use hsk_studio_accord::{ActorContext, ClientSessionId, CommandContext, CommandId, CorrelationId};
 use hsk_studio_folio::*;
@@ -63,7 +64,6 @@ fn the_entry(s: &Session) -> Option<Vec<u8>> {
 fn invalid_cases() -> Vec<(&'static str, Vec<u8>, Code)> {
     let repeated = String::from_utf8(valid_display()).unwrap().replacen("{", &format!("{{\"document_id\":\"{}\",", doc_id()), 1);
     vec![
-        ("a sequence the document does not hold", display_json(|v| v["sequences"][0]["sequence_id"] = json!("seq-x")), Code::DanglingReference),
         ("another document", display_json(|v| v["document_id"] = json!(identity("SDOC", 2))), Code::InvalidField),
         ("the same sequence twice", display_json(|v| {
             let e = v["sequences"][0].clone();
@@ -184,8 +184,10 @@ fn typed_writes_validate_and_refusals_change_nothing() {
         assert_eq!(session.track_display_records(&token()).unwrap(), Some(good.clone()));
         let held = the_entry(&session);
 
-        let orphan = display(vec![display_entry("seq-x")]);
-        assert_eq!(folio_code(&session.set_track_display_records(Some(&orphan), &token()).unwrap_err()), Some(Code::DanglingReference));
+        let mut bad_height = display_entry("seq-a");
+        bad_height.heights.video = 0;
+        let bad_height = display(vec![bad_height]);
+        assert_eq!(folio_code(&session.set_track_display_records(Some(&bad_height), &token()).unwrap_err()), Some(Code::InvalidField));
         assert_eq!(folio_code(&session.set_document_entry(TRACK_DISPLAY_ENTRY, Some(b"{not json".to_vec()), &token()).unwrap_err()), Some(Code::InvalidJson));
         let canceled = token();
         canceled.cancel();
@@ -200,7 +202,7 @@ fn typed_writes_validate_and_refusals_change_nothing() {
         // An explicit set is the way out of bytes a commit cannot quote; its note goes with them.
         let mut bad = open(&package(&[entry(TRACK_DISPLAY_ENTRY, b"{not json")]));
         assert_eq!(bad.loss().len(), 1);
-        assert!(bad.set_track_display_records(Some(&orphan), &token()).is_err());
+        assert!(bad.set_track_display_records(Some(&bad_height), &token()).is_err());
         assert_eq!(bad.loss().len(), 1, "still there, so still noted");
         bad.set_track_display_records(Some(&good), &token()).unwrap();
         assert!(bad.loss().is_empty(), "{:?}", bad.loss());
@@ -396,12 +398,11 @@ fn step_and_command_refusals_leave_the_document_and_the_entry_untouched() {
         let write = Some(display(vec![display_entry("seq-b")]));
         let code = |session: &mut Session, s: &SequenceRecordsStep, rev: u64| session.submit_sequence_records(s, rev, &token()).unwrap_err().code();
         assert_eq!(code(&mut session, &display_step(RecordEdit { expect: None, write: write.clone() }), 3), "value_conflict", "the quote is not the live records");
-        assert_eq!(code(&mut session, &display_step(RecordEdit { expect: live.clone(), write: Some(display(vec![display_entry("seq-x")])) }), 3), "folio_rejected", "the records must validate against the result");
         let mut over = display(vec![display_entry("seq-a")]);
         over.sequences[0].heights.video = 0;
-        assert_eq!(code(&mut session, &display_step(RecordEdit { expect: live.clone(), write: Some(over) }), 3), "folio_rejected");
+        assert_eq!(code(&mut session, &display_step(RecordEdit { expect: live.clone(), write: Some(over) }), 3), "folio_rejected", "the records must validate");
         assert_eq!(code(&mut session, &display_step(RecordEdit { expect: live.clone(), write: write.clone() }), 2), "stale_revision");
-        ops += 4;
+        ops += 3;
         let mut bad_command = display_step(RecordEdit { expect: live.clone(), write: write.clone() });
         bad_command.command_id = String::new();
         assert_eq!(code(&mut session, &bad_command, 3), "invalid_command");
@@ -441,8 +442,10 @@ fn step_and_command_refusals_leave_the_document_and_the_entry_untouched() {
 #[test]
 fn a_step_replaces_an_entry_it_can_quote_and_refuses_bytes_it_cannot() {
     bounded_case("replace_invalid", || {
-        // Parsable but stale: a step can quote it and write valid records, and the note goes with it.
-        let stale = display(vec![display_entry("seq-x")]);
+        // Parsable but invalid: a step can quote it and write valid records, and the note goes with it.
+        let mut stale_entry = display_entry("seq-a");
+        stale_entry.heights.video = 0;
+        let stale = display(vec![stale_entry]);
         let mut session = open(&package(&[entry(TRACK_DISPLAY_ENTRY, &serde_json::to_vec(&stale).unwrap())]));
         assert_eq!(session.loss().len(), 1);
         let keep = SequenceRecordsStep {
@@ -465,71 +468,184 @@ fn a_step_replaces_an_entry_it_can_quote_and_refuses_bytes_it_cannot() {
     });
 }
 
-/// Brief item 3, the rule the settings entry already has: a step that would orphan a valid entry is
-/// refused, and a records step removes a sequence with its entry in one revision.
+/// `seq-c` holding one clip, and `seq-b` with its clip nesting `seq-c`.
+fn nested_pair() -> (StudioSequence, StudioSequence) {
+    let mut inner = seq_b().tracks[0].clips[0].clone();
+    inner.clip_id = identity("SCLP", 9);
+    let source = sequence("seq-c", F24, vec![inner]);
+    let mut parent = seq_b();
+    parent.tracks[0].clips[0].source_ref = ClipSource::Sequence { sequence_id: "seq-c".into() };
+    (source, parent)
+}
+fn renamed(applied: &Applied, command: &str) -> MulticamStep {
+    let mut inverse = applied.multicam_inverse.clone().expect("a changed step has an inverse");
+    inverse.command_id = command.into();
+    inverse
+}
+fn sequence_ids(session: &Session) -> Vec<String> {
+    session.resolved_track_displays(&token()).unwrap().into_iter().map(|r| r.sequence_id).collect()
+}
+fn inert_ids(session: &Session) -> Vec<String> {
+    session.inert_track_display_entries(&token()).unwrap().into_iter().map(|e| e.sequence_id).collect()
+}
+
+/// The lead's case: a display toggle on a nested sequence, the undo of the nest, the display state back.
 #[test]
-fn removing_a_sequence_its_entry_names_is_refused_unless_the_entry_goes_with_it() {
-    bounded_case("orphan_removal", || {
-        let mut session = open(&package(&[entry(TRACK_DISPLAY_ENTRY, &valid_display())]));
-        let held = (the_entry(&session), session.snapshot().document().sequences.clone(), session.document_revision());
-        let same = |s: &Session| (the_entry(s), s.snapshot().document().sequences.clone(), s.document_revision());
-        let remove_a = || SequenceEdit::Remove { expect: seq_a() };
-        let multicam = MulticamStep { command_id: "cmd.remove".into(), correlation_id: 1, sequences: vec![remove_a()], records_expect: None, records_write: None };
-        assert_eq!(session.submit_multicam(&multicam, 3, &token()).unwrap_err().error.code(), "folio_rejected");
-        assert_eq!(session.submit_sequence_records(&step(vec![remove_a()], None, None), 3, &token()).unwrap_err().code(), "folio_rejected", "the entry left behind, not quoted");
-        let live = session.track_display_records(&token()).unwrap();
-        let quoted = SequenceRecordsStep { track_display: Some(RecordEdit { expect: live.clone(), write: live.clone() }), ..step(vec![remove_a()], None, None) };
-        assert_eq!(session.submit_sequence_records(&quoted, 3, &token()).unwrap_err().code(), "folio_rejected", "the entry left behind, quoted");
-        assert_eq!(same(&session), held, "the refusals change nothing");
+fn a_display_toggle_on_a_nested_sequence_does_not_block_undo_and_comes_back_with_it() {
+    bounded_case("nest_undo", || {
+        let mut session = open(&package(&[]));
+        let (source, parent) = nested_pair();
+        let nest = MulticamStep {
+            command_id: "sequence.nest".into(),
+            correlation_id: 1,
+            sequences: vec![SequenceEdit::Insert { at: 2, write: source }, SequenceEdit::Replace { expect: seq_b(), write: parent }],
+            records_expect: None,
+            records_write: None,
+        };
+        let nested = session.submit_multicam(&nest, 3, &token()).unwrap();
+        assert_eq!(sequence_ids(&session), ["seq-a", "seq-b", "seq-c"]);
+        run_display(&mut session, &expand("seq-c"), 2).unwrap();
+        let held = the_entry(&session).expect("the toggle made an entry");
 
-        // A sequence without an entry is removed as before, and a timeline step that keeps the ids commits.
-        let free = MulticamStep { command_id: "cmd.remove".into(), correlation_id: 1, sequences: vec![SequenceEdit::Remove { expect: seq_b() }], records_expect: None, records_write: None };
-        let removed = session.submit_multicam(&free, 3, &token()).unwrap();
-        session.submit_multicam(&{ let mut u = removed.multicam_inverse.clone().unwrap(); u.command_id = "cmd.undo".into(); u }, 4, &token()).unwrap();
-        let mut renamed = seq_a();
-        renamed.name = "renamed".into();
-        let rename = TimelineStep { command_id: "cmd.rename".into(), correlation_id: 2, sequence_id: "seq-a".into(), expect: seq_a(), write: renamed.clone() };
-        assert_eq!(session.submit_timeline(&rename, 5, &token()).unwrap().revision, 6);
-        let back = TimelineStep { command_id: "cmd.back".into(), correlation_id: 3, sequence_id: "seq-a".into(), expect: renamed, write: seq_a() };
-        assert_eq!(session.submit_timeline(&back, 6, &token()).unwrap().revision, 7);
+        // The undo of the nest removes the sequence, commits normally and leaves the entry alone.
+        let undone = session.submit_multicam(&renamed(&nested, "cmd.undo"), 5, &token()).unwrap();
+        assert_eq!((undone.previous_revision, undone.revision), (5, 6), "one revision");
+        assert_eq!(session.snapshot().document().sequences, vec![seq_a(), seq_b()], "the document as before the nest");
+        assert_eq!(the_entry(&session).as_ref(), Some(&held), "the entry is not touched");
+        assert!(session.loss().is_empty(), "{:?}", session.loss());
+        assert_eq!(sequence_ids(&session), ["seq-a", "seq-b"], "the document's sequences only");
+        assert_eq!(inert_ids(&session), ["seq-c"]);
 
-        // The removal and the entry together are one step, and undo restores both exactly.
-        let before = (the_entry(&session), session.snapshot().document().sequences.clone());
-        let together = SequenceRecordsStep { track_display: Some(RecordEdit { expect: live.clone(), write: None }), ..step(vec![remove_a()], None, None) };
-        let applied = session.submit_sequence_records(&together, 7, &token()).unwrap();
-        assert_eq!(applied.revision, 8, "one revision");
-        assert_eq!(the_entry(&session), None);
-        assert_eq!(session.snapshot().document().sequences.len(), 1);
-        session.submit_sequence_records(&fresh_inverse(&applied, "cmd.undo"), 8, &token()).unwrap();
-        assert_eq!((the_entry(&session), session.snapshot().document().sequences.clone()), before, "the sequence comes back at its index, with its entry");
+        // The redo brings the sequence back, and its display state with it, with no extra work.
+        session.submit_multicam(&renamed(&undone, "cmd.redo"), 6, &token()).unwrap();
+        assert_eq!(the_entry(&session).as_ref(), Some(&held));
+        assert!(inert_ids(&session).is_empty());
+        let back = session.resolved_track_displays(&token()).unwrap().into_iter().find(|r| r.sequence_id == "seq-c").unwrap();
+        assert!(back.stored);
+        assert_eq!(back.heights, StudioTrackHeights::all(EXPANDED_TRACK_HEIGHT));
     });
 }
 
 #[test]
-fn a_sequence_named_by_both_entries_needs_both_edits() {
+fn a_records_step_removes_a_sequence_without_touching_the_entry_and_its_undo_brings_it_back() {
+    bounded_case("records_removal", || {
+        let body = valid_display();
+        let mut session = open(&package(&[entry(TRACK_DISPLAY_ENTRY, &body)]));
+        let removed = session.submit_sequence_records(&step(vec![SequenceEdit::Remove { expect: seq_a() }], None, None), 3, &token()).unwrap();
+        assert_eq!(removed.revision, 4, "one revision");
+        assert_eq!(the_entry(&session), Some(body.clone()));
+        assert_eq!(inert_ids(&session), ["seq-a"]);
+        assert_eq!(sequence_ids(&session), ["seq-b"]);
+        session.submit_sequence_records(&fresh_inverse(&removed, "cmd.undo"), 4, &token()).unwrap();
+        assert_eq!(the_entry(&session), Some(body));
+        assert!(inert_ids(&session).is_empty());
+        assert!(session.resolved_track_displays(&token()).unwrap()[0].stored);
+
+        // A timeline step edits a sequence and cannot remove one; it commits with an entry present.
+        let mut named = seq_a();
+        named.name = "renamed".into();
+        let rename = TimelineStep { command_id: "cmd.rename".into(), correlation_id: 2, sequence_id: "seq-a".into(), expect: seq_a(), write: named };
+        assert_eq!(session.submit_timeline(&rename, 5, &token()).unwrap().revision, 6);
+    });
+}
+
+#[test]
+fn an_inert_entry_survives_save_and_reopen_byte_identically() {
+    bounded_case("inert_save", || {
+        let held = display(vec![display_entry("seq-y"), display_entry("seq-a"), display_entry("seq-x")]);
+        let body = serde_json::to_vec(&held).unwrap();
+        let mut session = open(&package(&[entry(TRACK_DISPLAY_ENTRY, &body)]));
+        assert!(session.loss().is_empty(), "inert is not invalid: {:?}", session.loss());
+        assert_eq!(session.track_display_records(&token()).unwrap(), Some(held.clone()), "not refused on read");
+        assert_eq!(inert_ids(&session), ["seq-y", "seq-x"], "stable order");
+        assert_eq!(session.inert_track_display_entries(&token()).unwrap()[1], display_entry("seq-x"));
+
+        let dir = std::env::temp_dir().join(format!("hsk-studio-session-track-display-inert-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("document.handshake");
+        session.save_to(&path, &token()).unwrap();
+        let reopened = match Session::open_path(&path, SessionConfig::new(actor()), ports(&Frames::default()), &token()) {
+            Ok(s) => s,
+            Err(f) => panic!("{f:?}"),
+        };
+        assert_eq!(the_entry(&reopened), Some(body.clone()), "byte-identical through a file");
+        assert!(reopened.loss().is_empty());
+        assert_eq!(inert_ids(&reopened), ["seq-y", "seq-x"]);
+        let checkpoint = open(&session.export_checkpoint(&token()).unwrap().bytes);
+        assert_eq!(the_entry(&checkpoint), Some(body.clone()), "byte-identical through a checkpoint");
+        drop(reopened);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // Nothing removes one on its own: commits and a save leave it. A records step can, explicitly.
+        run(&mut session, &set_mode("seq-a", "custom"), 1).unwrap_err();
+        run_display(&mut session, &expand("seq-b"), 2).unwrap();
+        assert_eq!(inert_ids(&session), ["seq-y", "seq-x"]);
+        let live = session.track_display_records(&token()).unwrap();
+        let mut without = live.clone().unwrap();
+        without.sequences.retain(|e| e.sequence_id != "seq-y");
+        let revision = session.document_revision();
+        let removed = session.submit_sequence_records(&display_step(RecordEdit { expect: live.clone(), write: Some(without) }), revision, &token()).unwrap();
+        assert_eq!(removed.revision, revision + 1);
+        assert_eq!(inert_ids(&session), ["seq-x"]);
+        session.submit_sequence_records(&fresh_inverse(&removed, "cmd.undo"), revision + 1, &token()).unwrap();
+        assert_eq!(session.track_display_records(&token()).unwrap(), live, "and an undo restores it");
+        let canceled = token();
+        canceled.cancel();
+        assert_eq!(session.inert_track_display_entries(&canceled).unwrap_err().code(), "canceled");
+    });
+}
+
+#[test]
+fn the_list_refuses_while_the_entry_is_invalid_and_the_limit_refuses_typed() {
+    bounded_case("inert_limit", || {
+        let bad = open(&package(&[entry(TRACK_DISPLAY_ENTRY, b"{not json")]));
+        assert_eq!(folio_code(&bad.inert_track_display_entries(&token()).unwrap_err()), Some(Code::InvalidJson));
+
+        let mut plain = |id: String| { let mut e = display_entry("seq-a"); e.sequence_id = id; e.height_presets.clear(); e };
+        let full = display((0..MAX_TRACK_DISPLAY_ENTRIES).map(|i| plain(format!("gone-{i}"))).collect());
+        let (mut session, frames) = open_counted(&package(&[entry(TRACK_DISPLAY_ENTRY, &serde_json::to_vec(&full).unwrap())]));
+        assert!(session.loss().is_empty());
+        let held = the_entry(&session);
+        let opened = frames.count();
+        let failed = run_display(&mut session, &expand("seq-a"), 9).unwrap_err();
+        assert_eq!((failed.code(), correlation_of(&failed.report)), ("budget_exceeded", 9), "a new entry at the limit");
+        let mut over = full.clone();
+        over.sequences.push(plain("seq-a".into()));
+        assert_eq!(session.submit_sequence_records(&display_step(RecordEdit { expect: Some(full.clone()), write: Some(over) }), 3, &token()).unwrap_err().code(), "budget_exceeded");
+        assert_eq!((the_entry(&session), session.document_revision(), frames.count()), (held, 3, opened + 2), "the refusals change nothing");
+        // Removing an inert entry makes room.
+        let mut fewer = full.clone();
+        fewer.sequences.remove(0);
+        assert_eq!(session.submit_sequence_records(&display_step(RecordEdit { expect: Some(full), write: Some(fewer) }), 3, &token()).unwrap().revision, 4);
+        assert_eq!(run_display(&mut session, &expand("seq-a"), 10).unwrap().revision, 5);
+    });
+}
+
+/// Settings and multicam keep their rule; only the display entry was released from it.
+#[test]
+fn a_removal_is_held_by_the_settings_entry_and_not_by_the_display_entry() {
     bounded_case("both_entries", || {
         let settings_held = records(vec![settings_entry("seq-a", "custom", F25)]);
-        let display_held = display(vec![display_entry("seq-a"), display_entry("seq-b")]);
-        let mut session = open(&package(&[entry(SEQUENCE_SETTINGS_ENTRY, &serde_json::to_vec(&settings_held).unwrap()), entry(TRACK_DISPLAY_ENTRY, &serde_json::to_vec(&display_held).unwrap())]));
+        let display_body = valid_display();
+        let mut session = open(&package(&[entry(SEQUENCE_SETTINGS_ENTRY, &serde_json::to_vec(&settings_held).unwrap()), entry(TRACK_DISPLAY_ENTRY, &display_body)]));
         let remove_a = || SequenceEdit::Remove { expect: seq_a() };
-        let settings_edit = || Some(RecordEdit { expect: Some(settings_held.clone()), write: None });
-        let display_edit = || Some(RecordEdit { expect: Some(display_held.clone()), write: Some(display(vec![display_entry("seq-b")])) });
-        let settings_only = step(vec![remove_a()], settings_edit(), None);
-        assert_eq!(session.submit_sequence_records(&settings_only, 3, &token()).unwrap_err().code(), "folio_rejected", "the display entry would dangle");
-        let display_only = SequenceRecordsStep { track_display: display_edit(), ..step(vec![remove_a()], None, None) };
-        assert_eq!(session.submit_sequence_records(&display_only, 3, &token()).unwrap_err().code(), "folio_rejected", "the settings entry would dangle");
-        let both = SequenceRecordsStep { track_display: display_edit(), ..step(vec![remove_a()], settings_edit(), None) };
-        assert_eq!(session.submit_sequence_records(&both, 3, &token()).unwrap().revision, 4);
-        assert_eq!(session.track_display_records(&token()).unwrap(), Some(display(vec![display_entry("seq-b")])), "the other sequence keeps its entry");
+        let multicam = MulticamStep { command_id: "cmd.remove".into(), correlation_id: 1, sequences: vec![remove_a()], records_expect: None, records_write: None };
+        assert_eq!(session.submit_multicam(&multicam, 3, &token()).unwrap_err().error.code(), "folio_rejected", "the settings entry names it");
+        assert_eq!(session.submit_sequence_records(&step(vec![remove_a()], None, None), 3, &token()).unwrap_err().code(), "folio_rejected");
+        let settings_gone = step(vec![remove_a()], Some(RecordEdit { expect: Some(settings_held.clone()), write: None }), None);
+        assert_eq!(session.submit_sequence_records(&settings_gone, 3, &token()).unwrap().revision, 4);
         assert_eq!(session.document_entry(SEQUENCE_SETTINGS_ENTRY), None);
+        assert_eq!(the_entry(&session), Some(display_body), "the display entry stays");
+        assert_eq!(inert_ids(&session), ["seq-a"]);
     });
 }
 
 #[test]
 fn an_entry_already_invalid_does_not_hold_a_removal_up_and_a_new_sequence_resolves_to_the_defaults() {
     bounded_case("not_judged", || {
-        // As the settings entry: an entry already invalid stays as it came.
-        let stale = serde_json::to_vec(&display(vec![display_entry("seq-x")])).unwrap();
+        let mut bad = display_entry("seq-a");
+        bad.heights.video = 0;
+        let stale = serde_json::to_vec(&display(vec![bad])).unwrap();
         let mut session = open(&package(&[entry(TRACK_DISPLAY_ENTRY, &stale)]));
         let free = MulticamStep { command_id: "cmd.remove".into(), correlation_id: 1, sequences: vec![SequenceEdit::Remove { expect: seq_b() }], records_expect: None, records_write: None };
         assert_eq!(session.submit_multicam(&free, 3, &token()).unwrap().revision, 4);

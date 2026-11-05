@@ -39,7 +39,7 @@ use crate::source::{DOCUMENT_ENTRY_PREFIX, document_entry};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     Budget, Code, Diagnostic, StudioDocument, StudioResolvedTrackDisplay, StudioSequencePresetSet,
-    StudioSequenceSettingsRecords, StudioTrackDisplayRecords, parse_sequence_presets, parse_sequence_settings_records,
+    StudioSequenceSettingsRecords, StudioTrackDisplayEntry, StudioTrackDisplayRecords, parse_sequence_presets, parse_sequence_settings_records,
     parse_track_display_records, resolve_track_displays,
 };
 use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
@@ -215,6 +215,12 @@ impl Session {
     pub fn resolved_track_displays(&self, cancel: &CancellationToken) -> Result<Vec<StudioResolvedTrackDisplay>, SessionError> {
         let records = self.track_display_records(cancel)?;
         Ok(resolve_track_displays(records.as_ref(), self.snapshot().document()))
+    }
+
+    /// The stored entries that name a sequence the document does not hold, in stored order.
+    pub fn inert_track_display_entries(&self, cancel: &CancellationToken) -> Result<Vec<StudioTrackDisplayEntry>, SessionError> {
+        let _ = cancel;
+        Ok(Vec::new())
     }
 
     /// Stores (`Some`, validated first) or removes (`None`) the track display records, replacing

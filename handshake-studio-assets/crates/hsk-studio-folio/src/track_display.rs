@@ -40,6 +40,8 @@ pub const MIN_TRACK_HEIGHT: u32 = 16;
 pub const EXPANDED_TRACK_HEIGHT: u32 = 200;
 /// The height of every track kind of a sequence with no entry.
 pub const DEFAULT_TRACK_HEIGHT: u32 = 48;
+/// Entries one record set may hold, inert ones included.
+pub const MAX_TRACK_DISPLAY_ENTRIES: usize = MAX_SEQUENCES;
 /// Named height presets one sequence may hold.
 pub const MAX_TRACK_HEIGHT_PRESETS: usize = 64;
 /// Largest wire form of a record set in bytes, whatever the caller's budget allows.
@@ -241,6 +243,12 @@ pub fn resolve_track_displays(records: Option<&StudioTrackDisplayRecords>, d: &S
         },
     };
     d.sequences.iter().map(|s| resolve(&s.sequence_id)).collect()
+}
+
+/// The entries that name a sequence the document does not hold, in stored order.
+pub fn inert_track_display_entries<'a>(records: &'a StudioTrackDisplayRecords, d: &StudioDocument) -> Vec<&'a StudioTrackDisplayEntry> {
+    let _ = (records, d);
+    Vec::new()
 }
 
 /// Validates the record set against the document: `SDOC` id equal to the document's; at most

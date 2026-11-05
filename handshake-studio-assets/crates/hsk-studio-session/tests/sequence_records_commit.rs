@@ -717,10 +717,10 @@ fn a_resync_cannot_leave_the_settings_entry_invalid() {
     });
 }
 
-/// Lane SMB-PR-TRACK-DISPLAY-1, brief item 3: a resync is held to the same rule for the track display
-/// entry.
+/// Lane SMB-PR-TRACK-DISPLAY-1, the lead's replacement of brief item 3: a resync is not held up by the
+/// track display entry either, which stays as it is, inert.
 #[test]
-fn a_resync_keeps_a_valid_track_display_entry_valid() {
+fn a_resync_is_not_held_up_by_a_track_display_entry() {
     bounded_case("resync_display", || {
         let mut held = StudioTrackDisplayRecords::new(doc_id());
         held.sequences.push(StudioTrackDisplayEntry {
@@ -729,8 +729,9 @@ fn a_resync_keeps_a_valid_track_display_entry_valid() {
             heights: StudioTrackHeights::all(EXPANDED_TRACK_HEIGHT),
             height_presets: Vec::new(),
         });
+        let body = serde_json::to_vec(&held).unwrap();
         let authority = Authority::default();
-        let mut session = open_with_authority(&package(&[entry(TRACK_DISPLAY_ENTRY, &serde_json::to_vec(&held).unwrap())]), &authority);
+        let mut session = open_with_authority(&package(&[entry(TRACK_DISPLAY_ENTRY, &body)]), &authority);
         authority.0.lock().unwrap().wrong_binding = true;
         let key = IdempotencyKey::parse("presets-1").unwrap();
         let presets = step(vec![], None, Some(RecordEdit { expect: None, write: Some(library(vec![preset("mine", F25)])) }));
@@ -739,10 +740,9 @@ fn a_resync_keeps_a_valid_track_display_entry_valid() {
         document.revision = 4;
         document.sequences.remove(0);
         let bytes = serde_json::to_vec(&document).unwrap();
-        assert_eq!(session.resync_diverged(&key, &bytes, &token()).unwrap_err().code(), "folio_rejected");
-        assert_eq!(session.document_revision(), 3, "nothing changed");
-        session.set_track_display_records(None, &token()).unwrap();
         session.resync_diverged(&key, &bytes, &token()).unwrap();
         assert_eq!(session.document_revision(), 4);
+        assert_eq!(session.document_entry(TRACK_DISPLAY_ENTRY), Some(body.as_slice()));
+        assert_eq!(session.inert_track_display_entries(&token()).unwrap(), held.sequences);
     });
 }
