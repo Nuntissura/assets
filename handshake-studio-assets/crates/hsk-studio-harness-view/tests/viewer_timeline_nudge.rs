@@ -264,7 +264,9 @@ fn audit_every_action_the_clause_names() {
     row(&mut v, "clip right many, step 3", 6, TimelineCommand::ClipNudge { right: true, many: true }, &[(6, c6(103))]);
     row(&mut v, "slip right many, step 3", 2, TimelineCommand::SlipNudge { right: true, many: true }, &[(2, (20, 50, 103, 133))]);
     row(&mut v, "slide left many, step 3", 2, TimelineCommand::SlideNudge { right: false, many: true }, &[(1, (0, 17, 10, 27)), (2, (17, 47, 100, 130)), (3, (47, 70, 7, 30))]);
-    println!("AUDIT|clip up and down|no TimelineCommand variant at base; pulse has no planner that changes a track");
+    // At base these two had no command and pulse had no planner that changes a track.
+    row(&mut v, "clip up", 6, TimelineCommand::ClipTrackNudge { up: true }, &[(6, c6(100))]);
+    row(&mut v, "clip down", 7, TimelineCommand::ClipTrackNudge { up: false }, &[(7, (200, 210, 10, 20))]);
 }
 
 /// Facts the audit reports about the rows above: where a nudge refuses and what it overwrites. They

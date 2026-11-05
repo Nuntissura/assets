@@ -876,6 +876,14 @@ impl TimelineCommand {
                 (true, false) => "cmd.timeline.slide.right.one",
                 (true, true) => "cmd.timeline.slide.right.several",
             },
+            Self::ClipNudge { right, many } => match (right, many) {
+                (false, false) => "cmd.timeline.nudge.left.one",
+                (false, true) => "cmd.timeline.nudge.left.several",
+                (true, false) => "cmd.timeline.nudge.right.one",
+                (true, true) => "cmd.timeline.nudge.right.several",
+            },
+            Self::ClipTrackNudge { up: true } => "cmd.timeline.nudge.up",
+            Self::ClipTrackNudge { up: false } => "cmd.timeline.nudge.down",
             Self::TrimSessionFocus(f) => f.spec_command(),
             Self::ToggleCompositePreview => "cmd.timeline.composite.preview.during.trim",
             Self::SetTool(TrimTool::RateStretch) => CMD_TOOL_RATE_STRETCH,
@@ -894,8 +902,10 @@ impl TimelineCommand {
 /// `=` / `-` zoom, `\` zoom to fit. Bindings from the module 14 tables: Ctrl+K, Alt+Backspace, S,
 /// Shift+M, Ctrl+Shift+M, Up, Down; the rest are harness bindings. Lane SMB-TIMELINE-TRIM-1 adds
 /// the [STU-VID-041] slip and slide nudges (Ctrl+Alt+Left / Right slip one frame, with Shift the
-/// multi-frame step; Alt+, / Alt+. slide one frame, with Shift the step) and the harness clip nudge
-/// Alt+Left / Right (with Shift the step; Premiere's binding UNVERIFIED). Lane SMB-PR-RATE-STRETCH-1
+/// multi-frame step; Alt+, / Alt+. slide one frame, with Shift the step) and the clip nudge
+/// Alt+Left / Right (with Shift the step), also from those tables. The tables bind
+/// [`TimelineCommand::ClipTrackNudge`] to Alt+Up / Alt+Down: not mapped here, it runs as a command
+/// (lane SMB-PR-NUDGE-1 adds no egui line). Lane SMB-PR-RATE-STRETCH-1
 /// adds `R` (Rate Stretch tool, `cmd.tools.05ratestretch`) and `Ctrl+R` (Speed/Duration form,
 /// `cmd.clip.speed`). Lane SMB-PR-NEST-1 adds the module 14 bindings `Shift+U` (Make Subsequence,
 /// `cmd.sequence.makesubsequence`) and `Ctrl+Alt+F` (Open Nested, `cmd.tlnav.reveal.nested.sequence`).
