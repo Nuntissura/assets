@@ -518,7 +518,8 @@ fn set_and_clear_are_one_step_with_one_inverse() {
     assert_eq!(options.changes().len(), 1);
     assert_eq!(options.write_footprint(), [cid(4)]);
     assert_eq!(options.changes()[0].track_id(), Some(seq(&s).tracks[1].track_id.as_str()));
-    // A piece that both moves and takes the hold lists the window first and the record after it.
+    // A piece that both moves and takes the hold lists the window first and the record after it. Its
+    // marker goes to the new piece, so the marker is a write too (SMB-PR-EDIT-FOOTPRINT-1).
     let head = segment(&s, 2, 40, 44, HoldAt::InPoint, &[20], &[]).unwrap();
     let kinds: Vec<(&str, &str)> = head
         .changes()
@@ -530,13 +531,14 @@ fn set_and_clear_are_one_step_with_one_inverse() {
                     ClipChange::Retime { .. } => "window",
                     ClipChange::RetimeRecord { .. } => "record",
                     ClipChange::Insert { .. } => "insert",
+                    ClipChange::ClipMarker { after: None, .. } => "marker left",
                     _ => "other",
                 },
             )
         })
         .collect();
-    assert_eq!(kinds, [(cid(2).as_str(), "window"), (cid(2).as_str(), "record"), (cid(20).as_str(), "insert")]);
-    assert_eq!(head.write_footprint(), [cid(2), cid(20), seq(&s).tracks[0].track_id.clone()]);
+    assert_eq!(kinds, [(cid(2).as_str(), "window"), (cid(2).as_str(), "record"), (cid(2).as_str(), "marker left"), (cid(20).as_str(), "insert")]);
+    assert_eq!(head.write_footprint(), [cid(2), "m".to_owned(), cid(20), seq(&s).tracks[0].track_id.clone()]);
 }
 
 /// [STU-VID-031a] `insert frame hold segment` "splits out a held span as its own clip": the outer

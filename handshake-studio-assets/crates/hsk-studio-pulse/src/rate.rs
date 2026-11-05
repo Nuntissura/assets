@@ -34,9 +34,9 @@
 //! (`frame_sampling` / `frame_blending` / `optical_flow`) and the frame hold are `StudioClip.retime`,
 //! set by [`crate::plan_set_retime_options`] and the frame hold planners. These planners take none
 //! of them and keep the record unchanged (test `rate_planners_keep_the_retime_record`). The GUI does
-//! not offer them yet. A change of only the reverse flag leaves the clip window unchanged, so
-//! [`crate::EditProposal::changes`] is empty for it (the prospective sequence and the inverse still
-//! carry the new speed).
+//! not offer them yet. A change of only the reverse flag leaves the clip window unchanged:
+//! [`crate::EditProposal::changes`] lists it as [`crate::ClipChange::Speed`] and the clip is in the
+//! write footprint (test `a_reverse_only_speed_change_names_the_clip_and_both_speeds`).
 //! Premiere Pro's rate-stretch limits, cursor zones and Speed/Duration defaults are UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 

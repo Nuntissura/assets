@@ -21,8 +21,8 @@ use crate::range::{
 use crate::rational::SpeedMath;
 use hsk_studio_accord::{CancellationToken, FrameRate, Ticks};
 use hsk_studio_folio::{
-    Budget, ClipRetime, ClipSource, Code, Diagnostic, Resolver, Snapshot, Speed, StudioClip,
-    StudioMarker, StudioSequence, StudioTrack, TimelineTransition, TrackKind, WorkArea,
+    Budget, ClipRetime, ClipSource, ClipTransitions, Code, Diagnostic, Resolver, Snapshot, Speed,
+    StudioClip, StudioMarker, StudioSequence, StudioTrack, TimelineTransition, TrackKind, WorkArea,
     validate_document,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -1164,7 +1164,216 @@ fn from_diagnostic(diagnostic: Diagnostic) -> PulseError {
     }
 }
 
+/// Pairs two marker lists by id and reports each marker added, removed or replaced. Answers whether
+/// the markers both lists hold sit in another order.
+fn diff_markers<'a>(
+    old: &'a [StudioMarker],
+    new: &'a [StudioMarker],
+    mut report: impl FnMut(&'a str, Option<&'a StudioMarker>, Option<&'a StudioMarker>),
+) -> bool {
+    if old == new {
+        return false;
+    }
+    let by_id = |list: &'a [StudioMarker]| -> BTreeMap<&'a str, &'a StudioMarker> {
+        list.iter().map(|m| (m.marker_id.as_str(), m)).collect()
+    };
+    let (before, after) = (by_id(old), by_id(new));
+    for marker in old {
+        if !after.contains_key(marker.marker_id.as_str()) {
+            report(&marker.marker_id, Some(marker), None);
+        }
+    }
+    for marker in new {
+        match before.get(marker.marker_id.as_str()) {
+            None => report(&marker.marker_id, None, Some(marker)),
+            Some(was) if *was != marker => report(&marker.marker_id, Some(*was), Some(marker)),
+            Some(_) => {}
+        }
+    }
+    let kept_old = old.iter().map(|m| m.marker_id.as_str()).filter(|id| after.contains_key(id));
+    let kept_new = new.iter().map(|m| m.marker_id.as_str()).filter(|id| before.contains_key(id));
+    !kept_old.eq(kept_new)
+}
+
+fn boxed<T: Clone>(record: Option<&T>) -> Option<Box<T>> {
+    record.map(|r| Box::new(r.clone()))
+}
+
+/// Every difference between two values of one clip.
+fn diff_clip(
+    track_before: &str,
+    track_id: &str,
+    old: &StudioClip,
+    new: &StudioClip,
+    changes: &mut Vec<ClipChange>,
+) {
+    // No `..`: a new clip member stops compiling here until someone decides how it is reported.
+    let StudioClip {
+        schema_id: _, // one token per schema, cannot differ
+        clip_id,      // the key this pair was found by
+        source_ref,
+        source_in: _,      // `window`
+        source_out: _,     // `window`
+        timeline_start: _, // `window`
+        duration: _,       // `window`
+        speed,
+        enabled,
+        link_group,
+        markers,
+        transitions,
+        retime,
+    } = new;
+    let ClipTransitions { head, tail } = transitions;
+    let at = window(new);
+    let (clip, track) = (clip_id.clone(), track_id.to_owned());
+    if window(old) != at {
+        changes.push(ClipChange::Retime { clip_id: clip.clone(), track_id: track.clone(), before: window(old), after: at });
+    }
+    if track_before != track_id {
+        changes.push(ClipChange::TrackMove {
+            clip_id: clip.clone(),
+            track_before: track_before.to_owned(),
+            track_after: track.clone(),
+            window: at,
+        });
+    }
+    if old.speed != *speed {
+        changes.push(ClipChange::Speed { clip_id: clip.clone(), track_id: track.clone(), window: at, before: old.speed, after: *speed });
+    }
+    if old.retime != *retime {
+        changes.push(ClipChange::RetimeRecord { clip_id: clip.clone(), track_id: track.clone(), window: at, before: old.retime, after: *retime });
+    }
+    if old.link_group != *link_group {
+        changes.push(ClipChange::Relink {
+            clip_id: clip.clone(),
+            track_id: track.clone(),
+            window: at,
+            group_before: old.link_group.clone(),
+            group_after: link_group.clone(),
+        });
+    }
+    let field = |field| ClipChange::ClipField { clip_id: clip.clone(), track_id: track.clone(), window: at, field };
+    if old.enabled != *enabled {
+        changes.push(field("enabled"));
+    }
+    if old.source_ref != *source_ref {
+        changes.push(field("source_ref"));
+    }
+    let reordered = diff_markers(&old.markers, markers, |marker_id, before, after| {
+        changes.push(ClipChange::ClipMarker {
+            clip_id: clip.clone(),
+            track_id: track.clone(),
+            window: at,
+            marker_id: marker_id.to_owned(),
+            before: boxed(before),
+            after: boxed(after),
+        });
+    });
+    if reordered {
+        changes.push(field("marker_order"));
+    }
+    let slots = [
+        (TransitionSlot::Head, &old.transitions.head, head),
+        (TransitionSlot::Tail, &old.transitions.tail, tail),
+    ];
+    for (slot, before, after) in slots {
+        if before != after {
+            changes.push(ClipChange::ClipTransition {
+                clip_id: clip.clone(),
+                track_id: track.clone(),
+                window: at,
+                slot,
+                before: boxed(before.as_ref()),
+                after: boxed(after.as_ref()),
+            });
+        }
+    }
+}
+
+/// A clip that left, then the markers and transitions that left with it.
+fn removed_clip(track_id: &str, clip: &StudioClip, changes: &mut Vec<ClipChange>) {
+    let at = window(clip);
+    changes.push(ClipChange::Remove { clip_id: clip.clip_id.clone(), track_id: track_id.to_owned(), before: at });
+    for marker in &clip.markers {
+        changes.push(ClipChange::ClipMarker {
+            clip_id: clip.clip_id.clone(),
+            track_id: track_id.to_owned(),
+            window: at,
+            marker_id: marker.marker_id.clone(),
+            before: Some(Box::new(marker.clone())),
+            after: None,
+        });
+    }
+    let slots = [(TransitionSlot::Head, &clip.transitions.head), (TransitionSlot::Tail, &clip.transitions.tail)];
+    for (slot, transition) in slots {
+        if let Some(transition) = transition {
+            changes.push(ClipChange::ClipTransition {
+                clip_id: clip.clip_id.clone(),
+                track_id: track_id.to_owned(),
+                window: at,
+                slot,
+                before: Some(Box::new(transition.clone())),
+                after: None,
+            });
+        }
+    }
+}
+
+/// The track's own members; its clips are records of their own.
+fn diff_track(old: &StudioTrack, new: &StudioTrack, changes: &mut Vec<ClipChange>) {
+    // No `..`: a new track member stops compiling here until someone decides how it is reported.
+    let StudioTrack {
+        schema_id: _, // one token per schema, cannot differ
+        track_id,     // the key this pair was found by
+        kind,
+        index,
+        name,
+        enabled,
+        locked,
+        sync_locked,
+        targeted,
+        muted,
+        soloed,
+        clips: _, // `diff` walks them by clip id
+        volume,
+        pan,
+    } = new;
+    let fields = [
+        ("kind", old.kind != *kind),
+        ("index", old.index != *index),
+        ("name", old.name != *name),
+        ("enabled", old.enabled != *enabled),
+        ("locked", old.locked != *locked),
+        ("sync_locked", old.sync_locked != *sync_locked),
+        ("targeted", old.targeted != *targeted),
+        ("muted", old.muted != *muted),
+        ("soloed", old.soloed != *soloed),
+        ("volume", old.volume != *volume),
+        ("pan", old.pan != *pan),
+    ];
+    for (field, differs) in fields {
+        if differs {
+            changes.push(ClipChange::TrackField { track_id: track_id.clone(), field });
+        }
+    }
+}
+
+/// Every difference between the base and the prospective sequence. Its length is bounded by the
+/// document's limits: a fixed number of entries per clip and track, one per marker.
 fn diff(old: &StudioSequence, new: &StudioSequence) -> Vec<ClipChange> {
+    // No `..`: a new sequence member stops compiling here until someone decides how it is reported.
+    let StudioSequence {
+        schema_id: _, // one token per schema, cannot differ
+        sequence_id,  // the key this pair was found by
+        name,
+        frame_rate,
+        duration: _, // derived from the clips; `propose` names the sequence in the footprint
+        tracks,
+        markers,
+        work_area,
+    } = new;
+    let tracks_before: BTreeMap<&str, &StudioTrack> = old.tracks.iter().map(|t| (t.track_id.as_str(), t)).collect();
+    let tracks_after: BTreeMap<&str, &StudioTrack> = tracks.iter().map(|t| (t.track_id.as_str(), t)).collect();
     let before: BTreeMap<&str, (&str, &StudioClip)> = old
         .tracks
         .iter()
@@ -1176,38 +1385,15 @@ fn diff(old: &StudioSequence, new: &StudioSequence) -> Vec<ClipChange> {
         .collect();
     let mut seen = BTreeSet::new();
     let mut changes = Vec::new();
-    for track in &new.tracks {
+    for track in tracks {
+        match tracks_before.get(track.track_id.as_str()) {
+            Some(old_track) => diff_track(old_track, track, &mut changes),
+            None => changes.push(ClipChange::TrackField { track_id: track.track_id.clone(), field: "presence" }),
+        }
         for clip in &track.clips {
             seen.insert(clip.clip_id.as_str());
             match before.get(clip.clip_id.as_str()) {
-                Some((_, old_clip)) => {
-                    if window(old_clip) != window(clip) {
-                        changes.push(ClipChange::Retime {
-                            clip_id: clip.clip_id.clone(),
-                            track_id: track.track_id.clone(),
-                            before: window(old_clip),
-                            after: window(clip),
-                        });
-                    }
-                    if old_clip.retime != clip.retime {
-                        changes.push(ClipChange::RetimeRecord {
-                            clip_id: clip.clip_id.clone(),
-                            track_id: track.track_id.clone(),
-                            window: window(clip),
-                            before: old_clip.retime,
-                            after: clip.retime,
-                        });
-                    }
-                    if old_clip.link_group != clip.link_group {
-                        changes.push(ClipChange::Relink {
-                            clip_id: clip.clip_id.clone(),
-                            track_id: track.track_id.clone(),
-                            window: window(clip),
-                            group_before: old_clip.link_group.clone(),
-                            group_after: clip.link_group.clone(),
-                        });
-                    }
-                }
+                Some((old_track, old_clip)) => diff_clip(old_track, &track.track_id, old_clip, clip, &mut changes),
                 None => changes.push(ClipChange::Insert {
                     track_id: track.track_id.clone(),
                     clip: Box::new(clip.clone()),
@@ -1216,14 +1402,37 @@ fn diff(old: &StudioSequence, new: &StudioSequence) -> Vec<ClipChange> {
         }
     }
     for track in &old.tracks {
+        if !tracks_after.contains_key(track.track_id.as_str()) {
+            changes.push(ClipChange::TrackField { track_id: track.track_id.clone(), field: "presence" });
+        }
         for clip in &track.clips {
             if !seen.contains(clip.clip_id.as_str()) {
-                changes.push(ClipChange::Remove {
-                    clip_id: clip.clip_id.clone(),
-                    track_id: track.track_id.clone(),
-                    before: window(clip),
-                });
+                removed_clip(&track.track_id, clip, &mut changes);
             }
+        }
+    }
+    let reordered = diff_markers(&old.markers, markers, |marker_id, before, after| {
+        changes.push(ClipChange::SequenceMarker {
+            sequence_id: sequence_id.clone(),
+            marker_id: marker_id.to_owned(),
+            before: boxed(before),
+            after: boxed(after),
+        });
+    });
+    if old.work_area != *work_area {
+        changes.push(ClipChange::WorkArea { sequence_id: sequence_id.clone(), before: old.work_area, after: *work_area });
+    }
+    let kept_old = old.tracks.iter().map(|t| t.track_id.as_str()).filter(|id| tracks_after.contains_key(id));
+    let kept_new = tracks.iter().map(|t| t.track_id.as_str()).filter(|id| tracks_before.contains_key(id));
+    let fields = [
+        ("name", old.name != *name),
+        ("frame_rate", old.frame_rate != *frame_rate),
+        ("marker_order", reordered),
+        ("track_order", !kept_old.eq(kept_new)),
+    ];
+    for (field, differs) in fields {
+        if differs {
+            changes.push(ClipChange::SequenceField { sequence_id: sequence_id.clone(), field });
         }
     }
     changes
@@ -1376,8 +1585,7 @@ fn marker_ids(seq: &StudioSequence) -> impl Iterator<Item = &str> {
 mod diff_tests {
     use super::*;
     use hsk_studio_folio::{
-        ClipSchema, ClipTransitions, ContentDigest, LabelColor, SequenceFrameRate, SequenceSchema,
-        TrackSchema,
+        ClipSchema, ContentDigest, LabelColor, SequenceFrameRate, SequenceSchema, TrackSchema,
     };
 
     const SEQ: &str = "seq";
@@ -1440,7 +1648,7 @@ mod diff_tests {
             schema_id: SequenceSchema::V1,
             sequence_id: SEQ.into(),
             name: String::new(),
-            frame_rate: hsk_studio_folio::SequenceFrameRate { ticks_per_frame: 10 },
+            frame_rate: SequenceFrameRate { ticks_per_frame: 10 },
             duration: Ticks::new(10),
             tracks: vec![track("t1", vec![clip()]), track("t2", Vec::new())],
             markers: vec![marker("s1"), marker("s2")],
@@ -1489,7 +1697,8 @@ mod diff_tests {
 
     #[test]
     fn every_track_member_is_reported() {
-        let edits: [(&str, fn(&mut StudioTrack)); 11] = [
+        type Edit = fn(&mut StudioTrack);
+        let edits: [(&str, Edit); 11] = [
             ("kind", |t| t.kind = TrackKind::Audio),
             ("index", |t| t.index = 7),
             ("name", |t| t.name = "renamed".into()),
