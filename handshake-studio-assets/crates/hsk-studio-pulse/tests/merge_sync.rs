@@ -956,6 +956,7 @@ fn descriptor_names_the_link_operations_and_their_refusals() {
         "plan_timeline_edit_with_linked_selection",
         "merge_no_av_pair",
         "sync_waveform_unavailable",
+        "sync_hold_unsupported",
         "UNVERIFIED",
     ] {
         assert!(hsk_studio_pulse::DESCRIPTOR.contains(token), "{token}");

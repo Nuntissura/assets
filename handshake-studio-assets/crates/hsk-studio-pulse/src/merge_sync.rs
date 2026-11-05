@@ -30,6 +30,15 @@
 //! ripple and sync-locked tracks do not shift. [`SyncPoint::AudioWaveform`] is refused
 //! `sync_waveform_unavailable`: no correlator exists in a crate pulse may depend on.
 //!
+//! A held clip (STU-VID-031a, `StudioClip.retime.frame_hold`): every planner here keeps the record.
+//! Linking, moving, unlinking and aligning by in point or out point read and write timeline positions,
+//! so the clip goes where it goes and shows its frame there; a linked audio partner keeps playing its
+//! own window, as `crate::retime` declares. Timecode and marker read a source position, and a held
+//! clip plays none: it shows one frame at every tick, so no tick of it can carry that position. Those
+//! two bases are refused `sync_hold_unsupported` for it, as the anchor or as a member, before its
+//! timecode or marker is looked at. [`crate::plan_clear_frame_hold`] is the way out (test
+//! `a_held_clip_links_and_moves_but_cannot_align_by_a_source_position`).
+//!
 //! Hostile input (V4-01/02): the selection and the group id are budgeted before any work; every tick
 //! sum is checked; a missing, hidden or ambiguous marker and a missing timecode are per-clip refusals
 //! ([`MergeSyncError::clip_id`]), with no fallback position. Premiere parity (merge and synchronize
@@ -194,6 +203,8 @@ pub enum MergeSyncError {
     SyncMarkerMissing { clip_id: String },
     /// The clip has more than one marker of that name.
     SyncMarkerAmbiguous { clip_id: String },
+    /// Timecode or marker alignment of a clip that holds a frame: it plays no source position.
+    SyncHoldUnsupported { clip_id: String },
 }
 impl MergeSyncError {
     pub fn code(&self) -> &'static str {
@@ -210,6 +221,7 @@ impl MergeSyncError {
             Self::SyncTimecodeNoOverlap { .. } => "sync_timecode_no_overlap",
             Self::SyncMarkerMissing { .. } => "sync_marker_missing",
             Self::SyncMarkerAmbiguous { .. } => "sync_marker_ambiguous",
+            Self::SyncHoldUnsupported { .. } => "sync_hold_unsupported",
         }
     }
     /// The clip this refusal is about, when it is about one.
@@ -222,7 +234,8 @@ impl MergeSyncError {
             | Self::SyncTimecodeSpeed { clip_id }
             | Self::SyncTimecodeNoOverlap { clip_id }
             | Self::SyncMarkerMissing { clip_id }
-            | Self::SyncMarkerAmbiguous { clip_id } => Some(clip_id),
+            | Self::SyncMarkerAmbiguous { clip_id }
+            | Self::SyncHoldUnsupported { clip_id } => Some(clip_id),
             Self::Pulse(_) | Self::MergeNoAvPair | Self::SyncTooFewClips | Self::SyncWaveformUnavailable => None,
         }
     }
@@ -230,7 +243,9 @@ impl MergeSyncError {
     pub fn failure_code(&self) -> Option<FailureCode> {
         match self {
             Self::Pulse(e) => e.failure_code(),
-            Self::SyncWaveformUnavailable | Self::SyncTimecodeSpeed { .. } => Some(FailureCode::Unsupported),
+            Self::SyncWaveformUnavailable | Self::SyncTimecodeSpeed { .. } | Self::SyncHoldUnsupported { .. } => {
+                Some(FailureCode::Unsupported)
+            }
             _ => Some(FailureCode::Validation),
         }
     }
@@ -479,7 +494,16 @@ struct TimecodeSpan {
     span: TickRange,
 }
 
+/// Timecode and marker read a source position; a clip holding a frame plays none (module docs).
+fn not_held(clip: &StudioClip) -> MergeSyncResult<()> {
+    if clip.retime.frame_hold.is_some() {
+        return Err(MergeSyncError::SyncHoldUnsupported { clip_id: clip.clip_id.clone() });
+    }
+    Ok(())
+}
+
 fn timecode_span(clip: &StudioClip, timecodes: &dyn SourceTimecodes) -> MergeSyncResult<TimecodeSpan> {
+    not_held(clip)?;
     let clip_id = || clip.clip_id.clone();
     let tc = timecodes
         .timecode(&clip.source_ref)
@@ -493,6 +517,7 @@ fn timecode_span(clip: &StudioClip, timecodes: &dyn SourceTimecodes) -> MergeSyn
 }
 
 fn marker_position(clip: &StudioClip, name: &str) -> MergeSyncResult<i128> {
+    not_held(clip)?;
     let missing = || MergeSyncError::SyncMarkerMissing { clip_id: clip.clip_id.clone() };
     let mut named = clip.markers.iter().filter(|m| m.name == name);
     let marker = named.next().ok_or_else(missing)?;
