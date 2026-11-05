@@ -175,13 +175,16 @@ impl TextEngine {
                         if start >= end {
                             continue;
                         }
-                        // Keep each original paragraph separator and each forced line break
-                        // (U+2028, ends the line, not the paragraph) outside the shaping buffer.
+                        // Keep each original paragraph separator and, from composition v3 on, each
+                        // forced line break (U+2028, ends the line, not the paragraph) outside the
+                        // shaping buffer.
+                        let semantics = crate::validate::semantics(request.composition_version)
+                            .ok_or(Error::UnknownComposition)?;
                         let mut cursor = start;
                         for (offset, ch) in request.text_utf8[start..end].char_indices() {
                             ctx.step()?;
                             let at = start + offset;
-                            if let Some(kind) = crate::validate::outside_shaping(ch, &ctx)? {
+                            if let Some(kind) = crate::validate::outside_shaping(ch, semantics, &ctx)? {
                                 if cursor < at {
                                     pieces.push((*index, cursor..at), &ctx)?;
                                 }

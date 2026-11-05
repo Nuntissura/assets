@@ -313,15 +313,16 @@ thread_local! {
 }
 /// The forced line break (STU-TYP-207 Break characters, stored as U+2028 per SD-29).
 pub(crate) const FORCED_LINE_BREAK: char = '\u{2028}';
-/// How the shaping engine keeps `c` outside the shaping buffer, if it does: a paragraph
-/// terminator ([`ends_paragraph`]) is a `ParagraphSeparator`; the forced line break U+2028 ends
-/// the line, not the paragraph (UAX #14 class BK; UAX #9 class WS, so bidi keeps the paragraph
-/// whole) and is a glyph-less `NonrenderingControl` that is never shaped and ends the shaping
-/// context. Every other character is shaped (`None`).
-pub(crate) fn outside_shaping(c: char, ctx: &Context<'_>) -> ProviderResult<Option<CoverageKind>> {
+/// How the shaping engine keeps `c` outside the shaping buffer under `semantics`, if it does: a
+/// paragraph terminator ([`ends_paragraph`]) is a `ParagraphSeparator`; from composition v3 on the
+/// forced line break U+2028 ends the line, not the paragraph (UAX #14 class BK; UAX #9 class WS, so
+/// bidi keeps the paragraph whole) and is a glyph-less `NonrenderingControl` that is never shaped
+/// and ends the shaping context. Every other character is shaped (`None`), U+2028 too under the
+/// older tokens (STU-TYP-130: a stored document recomposes under its authored token).
+pub(crate) fn outside_shaping(c: char, semantics: Semantics, ctx: &Context<'_>) -> ProviderResult<Option<CoverageKind>> {
     Ok(if ends_paragraph(c, ctx)? {
         Some(CoverageKind::ParagraphSeparator)
-    } else if c == FORCED_LINE_BREAK {
+    } else if c == FORCED_LINE_BREAK && semantics == Semantics::V3 {
         Some(CoverageKind::NonrenderingControl)
     } else {
         None
