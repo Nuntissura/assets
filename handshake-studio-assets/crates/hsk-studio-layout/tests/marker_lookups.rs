@@ -195,7 +195,7 @@ fn mt_30780_a_footnote_reference_at_a_line_end_before_a_line_break_stays_on_that
 #[test]
 fn mt_30781_endnote_references_in_a_line_break_gap_keep_their_position() {
     let f = fixture();
-    let host = [NoteHost { story: &f.story, placement: Some(&f.placement), paragraphs: &f.paragraphs }];
+    let host = [NoteHost { story: &f.story, resolved_text: None, placement: Some(&f.placement), paragraphs: &f.paragraphs }];
     let anchors = [A, B, E, F];
     let bodies: Vec<(StudioTextStory, Vec<ShapedParagraph>)> = (0..4).map(|k| story(11 + k, "note", &[(0, 4)])).collect();
     let records: Vec<StudioEndnote> = anchors
@@ -433,7 +433,7 @@ fn mt_30785_cross_reference_destinations_in_a_line_break_gap_resolve_their_page(
 #[test]
 fn mt_30781_sidenotes_of_references_in_a_line_break_gap_are_placed_beside_their_line() {
     let f = fixture();
-    let host = NoteHost { story: &f.story, placement: Some(&f.placement), paragraphs: &f.paragraphs };
+    let host = NoteHost { story: &f.story, resolved_text: None, placement: Some(&f.placement), paragraphs: &f.paragraphs };
     let bodies: Vec<(StudioTextStory, Vec<ShapedParagraph>)> = (0..3).map(|k| story(21 + k, "note", &[(0, 4)])).collect();
     let records: Vec<StudioEndnote> = [A, E, F]
         .iter()

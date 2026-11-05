@@ -285,7 +285,7 @@ fn endnotes_and_sidenotes() {
     let records = [note("e1", 1, 5, 11), note("e2", 1, 15, 12), note("e3", 2, 0, 13)];
     let inputs: Vec<NoteBody<'_>> = records.iter().zip(&bodies).zip(&shapes).map(|((r, b), s)| NoteBody { note: r, story: b, resolved_text: None, paragraphs: s }).collect();
     let other = story(2, "x", &[(0, 1, None)]);
-    let hosts = [NoteHost { story: &st, placement: Some(&placement), paragraphs: &sp }, NoteHost { story: &other, placement: None, paragraphs: &[] }];
+    let hosts = [NoteHost { story: &st, resolved_text: None, placement: Some(&placement), paragraphs: &sp }, NoteHost { story: &other, resolved_text: None, placement: None, paragraphs: &[] }];
     let mut o = StudioEndnoteOptions {
         title: "Notes".into(),
         title_style: None,

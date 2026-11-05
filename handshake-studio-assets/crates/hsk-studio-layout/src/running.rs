@@ -72,6 +72,8 @@ pub struct RunningInstance {
     pub frame_id: String,
     pub page_id: String,
     pub text: String,
+    /// Markers of the matched source text whose value `text` does not show (`derived_text`).
+    pub marker_gaps: Vec<crate::DerivedMarkerGap>,
 }
 
 fn change_case(s: &str, case: ChangeCase) -> String {
@@ -162,7 +164,7 @@ pub fn resolve_running_texts(
                     return Err(RunningError::Layout(LayoutError::BudgetExceeded));
                 }
             }
-            out.push(RunningInstance { running_id: r.running_id.clone(), frame_id: frame_id.clone(), page_id: page.page_id.clone(), text });
+            out.push(RunningInstance { running_id: r.running_id.clone(), frame_id: frame_id.clone(), page_id: page.page_id.clone(), text, marker_gaps: Vec::new() });
         }
     }
     Ok(out)

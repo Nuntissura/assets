@@ -30,6 +30,8 @@ use hsk_studio_folio::{
 #[derive(Clone, Copy, Debug)]
 pub struct NoteHost<'a> {
     pub story: &'a StudioTextStory,
+    /// The caller-resolved bytes of `StoryContent::Stored` (exact length); `None` for inline content.
+    pub resolved_text: Option<&'a str>,
     pub placement: Option<&'a LayoutProposal>,
     pub paragraphs: &'a [ShapedParagraph],
 }
@@ -65,6 +67,9 @@ pub struct EndnoteGroup {
 pub struct GeneratedEndnotes {
     pub groups: Vec<EndnoteGroup>,
     pub references: Vec<NoteReference>,
+    /// (note id, gap): markers of a note body whose value the generated text does not show
+    /// (`derived_text`).
+    pub marker_gaps: Vec<(String, crate::DerivedMarkerGap)>,
 }
 
 fn reference(host: &NoteHost<'_>, anchor: u64) -> Option<(String, [f64; 2])> {
@@ -136,7 +141,7 @@ pub fn generate_endnotes(
     if let Some((id, w)) = writer.take() {
         groups.push(EndnoteGroup { story_id: id, story: GeneratedStory { text: w.text, paragraphs: w.paragraphs, entries: Vec::new() } });
     }
-    Ok(GeneratedEndnotes { groups, references })
+    Ok(GeneratedEndnotes { groups, references, marker_gaps: Vec::new() })
 }
 
 /// One placed sidenote.

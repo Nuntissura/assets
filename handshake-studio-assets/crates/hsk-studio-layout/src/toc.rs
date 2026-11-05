@@ -99,6 +99,8 @@ pub struct TocEntryOut {
     pub baseline_y: Option<f64>,
     pub story_id: String,
     pub source_start: u64,
+    /// Markers of the source paragraph whose value `text` does not show (`derived_text`).
+    pub marker_gaps: Vec<crate::DerivedMarkerGap>,
 }
 
 /// Generated text with Folio paragraphs (style references set) and the entries it holds.
@@ -336,6 +338,7 @@ pub fn generate_toc(
                     baseline_y: page.and_then(|_| baseline_of(s, p.start)),
                     story_id: s.story.story_id.clone(),
                     source_start: p.start,
+                    marker_gaps: Vec::new(),
                 },
                 e.sort_alphabet,
                 ei,

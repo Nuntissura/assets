@@ -529,6 +529,8 @@ pub struct TocContractEntry {
     pub anchor: Option<TocAnchorOutcome>,
     /// The entry was written run-in (continuing the previous entry's paragraph).
     pub run_in: bool,
+    /// Markers of the source paragraph whose value `text` does not show (`derived_text`).
+    pub marker_gaps: Vec<crate::DerivedMarkerGap>,
 }
 
 /// One bookmark (`create_bookmarks`).
@@ -911,6 +913,7 @@ fn generate_inner(
                     source_start: p.start,
                     anchor,
                     run_in: false,
+                    marker_gaps: Vec::new(),
                 },
                 e.sort_alphabet,
                 ei,

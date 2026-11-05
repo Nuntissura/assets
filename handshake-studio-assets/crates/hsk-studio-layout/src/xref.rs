@@ -287,6 +287,8 @@ pub struct XrefResolution {
     /// `None` when broken or unplaced.
     pub text: Option<String>,
     pub runs: Vec<XrefRun>,
+    /// Markers of the destination paragraph whose value `text` does not show (`derived_text`).
+    pub marker_gaps: Vec<crate::DerivedMarkerGap>,
 }
 
 fn char_style_id(ctx: &XrefContext<'_>, name: &str) -> Result<String, XrefError> {
@@ -344,7 +346,7 @@ pub fn resolve_cross_references(
             .iter()
             .find(|(f, _)| f.format_id == x.format_id)
             .ok_or_else(|| XrefError::FormatMissing(x.format_id.clone()))?;
-        let broken = XrefResolution { xref_id: x.xref_id.clone(), status: XrefStatus::Broken, text: None, runs: vec![] };
+        let broken = XrefResolution { xref_id: x.xref_id.clone(), status: XrefStatus::Broken, text: None, runs: vec![], marker_gaps: vec![] };
         let (story_id, byte, anchor_name) = match &x.destination {
             StudioXrefDestination::Paragraph { story_id, paragraph_start } => (story_id.as_str(), *paragraph_start, None),
             StudioXrefDestination::TextAnchor { anchor_id } => match records.text_anchors.iter().find(|a| a.anchor_id == *anchor_id) {
@@ -418,12 +420,12 @@ pub fn resolve_cross_references(
             }
         }
         if unplaced {
-            out.push(XrefResolution { xref_id: x.xref_id.clone(), status: XrefStatus::Unplaced, text: None, runs: vec![] });
+            out.push(XrefResolution { xref_id: x.xref_id.clone(), status: XrefStatus::Unplaced, text: None, runs: vec![], marker_gaps: vec![] });
             continue;
         }
         let text: String = runs.iter().map(|r| r.text.as_str()).collect();
         let status = if x.resolved_text.as_deref() == Some(text.as_str()) { XrefStatus::Current } else { XrefStatus::Stale };
-        out.push(XrefResolution { xref_id: x.xref_id.clone(), status, text: Some(text), runs });
+        out.push(XrefResolution { xref_id: x.xref_id.clone(), status, text: Some(text), runs, marker_gaps: vec![] });
     }
     Ok(out)
 }

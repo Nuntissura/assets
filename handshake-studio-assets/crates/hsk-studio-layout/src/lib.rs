@@ -15,6 +15,7 @@ mod book;
 mod booklet;
 mod breaker;
 mod cjk;
+mod derived_text;
 mod endnotes;
 mod find;
 mod find_change;
@@ -103,6 +104,7 @@ pub use xref::{
     MAX_XREF_TOKENS, XrefBlock, XrefContext, XrefError, XrefResolution, XrefRun, XrefStatus, XrefStory,
     parse_xref_format, resolve_cross_references, write_cross_reference,
 };
+pub use derived_text::{DerivedGapReason, DerivedMarkerGap};
 pub use endnotes::{EndnoteGroup, GeneratedEndnotes, NoteBody, NoteHost, NoteReference, PlacedSidenote, SidenoteProposal, generate_endnotes, place_sidenotes};
 pub use find::{FindHit, FindMode, MAX_FIND_PATTERN_BYTES, compile_find, find_in_story};
 pub use find_change::{

@@ -1118,7 +1118,7 @@ fn running_footer_sidenote_and_endnotes_export() {
     let (end_story, end_paras, _) = shaped_story(32, "The end", &[(0, 7, None)], &files, &fonts);
     let side_note = StudioEndnote { note_id: "s1".into(), story_id: id("STXT", 7), anchor: 5, note_story_id: id("STXT", 31) };
     let end_note = StudioEndnote { note_id: "e1".into(), story_id: id("STXT", 7), anchor: 9, note_story_id: id("STXT", 32) };
-    let host = NoteHost { story: &body_story, placement: Some(&body_place), paragraphs: &body_paras };
+    let host = NoteHost { story: &body_story, resolved_text: None, placement: Some(&body_place), paragraphs: &body_paras };
     let side_options = StudioSidenoteOptions { width: len(60.0), gap: len(6.0), space_between: len(2.0), side: SidenoteSide::Outside, anchor: SidenoteAnchor::ReferenceLine, numbering_style: StudioNumberStyle::Arabic, start_at: 1, restart: FootnoteRestart::DontRestart };
     let side = place_sidenotes(doc, &host, &[NoteBody { note: &side_note, story: &side_story, resolved_text: None, paragraphs: &side_paras }], &side_options, &pages, Composer::FirstFit, &TypesetOptions::default(), hsk_studio_interop_layout::layout::Limits::default(), &cancel).unwrap();
     assert_eq!((side.notes[0].rect.x0_pt, side.notes[0].rect.y0_pt), (206.0, 0.0));
