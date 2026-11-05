@@ -517,7 +517,7 @@ fn set_and_clear_are_one_step_with_one_inverse() {
     let options = with_ctx(|ctx| plan_set_retime_options(&s, "seq-main", 3, &edit, ctx)).unwrap();
     assert_eq!(options.changes().len(), 1);
     assert_eq!(options.write_footprint(), [cid(4)]);
-    assert_eq!(options.changes()[0].track_id(), seq(&s).tracks[1].track_id);
+    assert_eq!(options.changes()[0].track_id(), Some(seq(&s).tracks[1].track_id.as_str()));
     // A piece that both moves and takes the hold lists the window first and the record after it.
     let head = segment(&s, 2, 40, 44, HoldAt::InPoint, &[20], &[]).unwrap();
     let kinds: Vec<(&str, &str)> = head
@@ -525,7 +525,7 @@ fn set_and_clear_are_one_step_with_one_inverse() {
         .iter()
         .map(|c| {
             (
-                c.clip_id(),
+                c.clip_id().unwrap_or_default(),
                 match c {
                     ClipChange::Retime { .. } => "window",
                     ClipChange::RetimeRecord { .. } => "record",

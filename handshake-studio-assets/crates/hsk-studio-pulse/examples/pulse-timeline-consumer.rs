@@ -260,19 +260,15 @@ fn list(ids: &[String]) -> String {
 
 fn change_json(c: &ClipChange) -> String {
     let (before, after) = (c.before(), c.after());
-    let op = match (before, after) {
-        (Some(_), Some(_)) => "retime",
-        (None, Some(_)) => "insert",
-        _ => "remove",
-    };
     let side = |name: &str, w: Option<ClipWindow>| {
         w.map(|w| format!(",\"{name}\":{}", window_json(w)))
             .unwrap_or_default()
     };
     format!(
-        "{{\"op\":\"{op}\",\"clip\":\"{}\",\"track\":\"{}\"{}{}}}",
-        c.clip_id(),
-        c.track_id(),
+        "{{\"op\":\"{}\",\"clip\":\"{}\",\"track\":\"{}\"{}{}}}",
+        c.kind(),
+        c.clip_id().unwrap_or_default(),
+        c.track_id().unwrap_or_default(),
         side("before", before),
         side("after", after)
     )

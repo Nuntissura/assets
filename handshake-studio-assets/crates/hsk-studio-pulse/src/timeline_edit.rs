@@ -21,8 +21,9 @@ use crate::range::{
 use crate::rational::SpeedMath;
 use hsk_studio_accord::{CancellationToken, FrameRate, Ticks};
 use hsk_studio_folio::{
-    Budget, ClipRetime, ClipSource, Code, Diagnostic, Resolver, Snapshot, StudioClip,
-    StudioSequence, StudioTrack, TrackKind, validate_document,
+    Budget, ClipRetime, ClipSource, Code, Diagnostic, Resolver, Snapshot, Speed, StudioClip,
+    StudioMarker, StudioSequence, StudioTrack, TimelineTransition, TrackKind, WorkArea,
+    validate_document,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -129,6 +130,19 @@ fn window(clip: &StudioClip) -> ClipWindow {
     }
 }
 
+/// Which transition slot of a clip a [`ClipChange::ClipTransition`] names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransitionSlot {
+    Head,
+    Tail,
+}
+
+/// One difference between the base sequence and the prospective one. The list covers every stored
+/// member of the sequence, its tracks and its clips (`diff` destructures all three with no `..`, so
+/// a new member does not compile until someone decides how it is reported; test
+/// `every_planner_names_every_changed_record`). Sequence-level and track-level entries have no clip:
+/// [`ClipChange::clip_id`] answers `None` for them. Each clip's entries come in a fixed order, its
+/// [`ClipChange::Retime`] or [`ClipChange::Remove`] first.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClipChange {
     Retime {
@@ -164,42 +178,202 @@ pub enum ClipChange {
         group_before: Option<String>,
         group_after: Option<String>,
     },
+    /// The clip's `speed` changed, whether or not its window did (a reverse-only change leaves the
+    /// window as it is). A clip whose window also changed has a [`ClipChange::Retime`] first.
+    Speed {
+        clip_id: String,
+        track_id: String,
+        window: ClipWindow,
+        before: Speed,
+        after: Speed,
+    },
+    /// The clip now sits on another track. No planner does this in one proposal today.
+    TrackMove {
+        clip_id: String,
+        track_before: String,
+        track_after: String,
+        window: ClipWindow,
+    },
+    /// One clip marker was added (`before` is `None`), removed (`after` is `None`) or replaced. A
+    /// marker that leaves with a removed clip is listed here, after the [`ClipChange::Remove`], and
+    /// `window` is the clip's last window. A clip marker on an inserted clip is inside its
+    /// [`ClipChange::Insert`].
+    ClipMarker {
+        clip_id: String,
+        track_id: String,
+        window: ClipWindow,
+        marker_id: String,
+        before: Option<Box<StudioMarker>>,
+        after: Option<Box<StudioMarker>>,
+    },
+    /// One transition slot of the clip changed, including a transition pruned by the edit and listed
+    /// in [`EditProposal::dropped_transitions`]. Listed for a removed clip as for
+    /// [`ClipChange::ClipMarker`].
+    ClipTransition {
+        clip_id: String,
+        track_id: String,
+        window: ClipWindow,
+        slot: TransitionSlot,
+        before: Option<Box<TimelineTransition>>,
+        after: Option<Box<TimelineTransition>>,
+    },
+    /// A clip member no planner writes today: `enabled`, `source_ref` or `marker_order` (the same
+    /// markers in another order). The values are in the proposal's snapshot and its inverse.
+    ClipField {
+        clip_id: String,
+        track_id: String,
+        window: ClipWindow,
+        field: &'static str,
+    },
+    /// A track member no planner writes today: a stored setting by its Folio name, or `presence`
+    /// (the track was added or removed).
+    TrackField {
+        track_id: String,
+        field: &'static str,
+    },
+    /// One sequence marker was added (`before` is `None`), removed (`after` is `None`) or replaced.
+    SequenceMarker {
+        sequence_id: String,
+        marker_id: String,
+        before: Option<Box<StudioMarker>>,
+        after: Option<Box<StudioMarker>>,
+    },
+    /// The work area was set, moved or cleared.
+    WorkArea {
+        sequence_id: String,
+        before: Option<WorkArea>,
+        after: Option<WorkArea>,
+    },
+    /// A sequence member no planner writes today: `name`, `frame_rate`, `marker_order` or
+    /// `track_order`.
+    SequenceField {
+        sequence_id: String,
+        field: &'static str,
+    },
 }
 
 impl ClipChange {
-    pub fn clip_id(&self) -> &str {
+    /// Stable snake_case name of this kind of change.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Retime { .. } => "retime",
+            Self::Insert { .. } => "insert",
+            Self::Remove { .. } => "remove",
+            Self::RetimeRecord { .. } => "retime_record",
+            Self::Relink { .. } => "relink",
+            Self::Speed { .. } => "speed",
+            Self::TrackMove { .. } => "track_move",
+            Self::ClipMarker { .. } => "clip_marker",
+            Self::ClipTransition { .. } => "clip_transition",
+            Self::ClipField { .. } => "clip_field",
+            Self::TrackField { .. } => "track_field",
+            Self::SequenceMarker { .. } => "sequence_marker",
+            Self::WorkArea { .. } => "work_area",
+            Self::SequenceField { .. } => "sequence_field",
+        }
+    }
+    /// The clip this change belongs to; `None` for a track-level or sequence-level change.
+    pub fn clip_id(&self) -> Option<&str> {
         match self {
             Self::Retime { clip_id, .. }
             | Self::Remove { clip_id, .. }
             | Self::RetimeRecord { clip_id, .. }
-            | Self::Relink { clip_id, .. } => clip_id,
-            Self::Insert { clip, .. } => &clip.clip_id,
+            | Self::Relink { clip_id, .. }
+            | Self::Speed { clip_id, .. }
+            | Self::TrackMove { clip_id, .. }
+            | Self::ClipMarker { clip_id, .. }
+            | Self::ClipTransition { clip_id, .. }
+            | Self::ClipField { clip_id, .. } => Some(clip_id),
+            Self::Insert { clip, .. } => Some(&clip.clip_id),
+            Self::TrackField { .. }
+            | Self::SequenceMarker { .. }
+            | Self::WorkArea { .. }
+            | Self::SequenceField { .. } => None,
         }
     }
-    pub fn track_id(&self) -> &str {
+    /// The clip's track after the edit (before it, for a removal), or the track a track-level change
+    /// names; `None` for a sequence-level change.
+    pub fn track_id(&self) -> Option<&str> {
         match self {
             Self::Retime { track_id, .. }
             | Self::Insert { track_id, .. }
             | Self::Remove { track_id, .. }
             | Self::RetimeRecord { track_id, .. }
-            | Self::Relink { track_id, .. } => track_id,
+            | Self::Relink { track_id, .. }
+            | Self::Speed { track_id, .. }
+            | Self::ClipMarker { track_id, .. }
+            | Self::ClipTransition { track_id, .. }
+            | Self::ClipField { track_id, .. }
+            | Self::TrackField { track_id, .. } => Some(track_id),
+            Self::TrackMove { track_after, .. } => Some(track_after),
+            Self::SequenceMarker { .. } | Self::WorkArea { .. } | Self::SequenceField { .. } => None,
         }
     }
     pub fn before(&self) -> Option<ClipWindow> {
         match self {
             Self::Retime { before, .. } | Self::Remove { before, .. } => Some(*before),
-            Self::RetimeRecord { window, .. } => Some(*window),
-            Self::Relink { window, .. } => Some(*window),
-            Self::Insert { .. } => None,
+            Self::RetimeRecord { window, .. }
+            | Self::Relink { window, .. }
+            | Self::Speed { window, .. }
+            | Self::TrackMove { window, .. }
+            | Self::ClipMarker { window, .. }
+            | Self::ClipTransition { window, .. }
+            | Self::ClipField { window, .. } => Some(*window),
+            Self::Insert { .. }
+            | Self::TrackField { .. }
+            | Self::SequenceMarker { .. }
+            | Self::WorkArea { .. }
+            | Self::SequenceField { .. } => None,
         }
     }
     pub fn after(&self) -> Option<ClipWindow> {
         match self {
             Self::Retime { after, .. } => Some(*after),
-            Self::RetimeRecord { window, .. } => Some(*window),
-            Self::Relink { window, .. } => Some(*window),
+            Self::RetimeRecord { window, .. }
+            | Self::Relink { window, .. }
+            | Self::Speed { window, .. }
+            | Self::TrackMove { window, .. }
+            | Self::ClipMarker { window, .. }
+            | Self::ClipTransition { window, .. }
+            | Self::ClipField { window, .. } => Some(*window),
             Self::Insert { clip, .. } => Some(window(clip)),
-            Self::Remove { .. } => None,
+            Self::Remove { .. }
+            | Self::TrackField { .. }
+            | Self::SequenceMarker { .. }
+            | Self::WorkArea { .. }
+            | Self::SequenceField { .. } => None,
+        }
+    }
+    /// Every id this change writes, for the write footprint: the record, the record holding a marker
+    /// or transition, a track whose clip list changed. The work area has no id of its own: it is
+    /// written as a member of its sequence.
+    pub(crate) fn write_ids(&self) -> Vec<&str> {
+        match self {
+            Self::Retime { clip_id, .. }
+            | Self::RetimeRecord { clip_id, .. }
+            | Self::Relink { clip_id, .. }
+            | Self::Speed { clip_id, .. }
+            | Self::ClipField { clip_id, .. } => vec![clip_id],
+            Self::Insert { track_id, clip } => {
+                let markers = clip.markers.iter().map(|m| m.marker_id.as_str());
+                let slots = [&clip.transitions.head, &clip.transitions.tail];
+                let transitions = slots.into_iter().flatten().map(|t| t.transition_id.as_str());
+                [clip.clip_id.as_str(), track_id.as_str()].into_iter().chain(markers).chain(transitions).collect()
+            }
+            Self::Remove { clip_id, track_id, .. } => vec![clip_id, track_id],
+            Self::TrackMove { clip_id, track_before, track_after, .. } => {
+                vec![clip_id, track_before, track_after]
+            }
+            Self::ClipMarker { clip_id, marker_id, .. } => vec![clip_id, marker_id],
+            Self::ClipTransition { clip_id, before, after, .. } => {
+                let held = [before, after].into_iter().flatten().map(|t| t.transition_id.as_str());
+                std::iter::once(clip_id.as_str()).chain(held).collect()
+            }
+            Self::TrackField { track_id, .. } => vec![track_id],
+            Self::SequenceMarker { sequence_id, marker_id, .. } => vec![sequence_id, marker_id],
+            Self::WorkArea { sequence_id, .. } | Self::SequenceField { sequence_id, .. } => {
+                vec![sequence_id]
+            }
         }
     }
 }
@@ -256,7 +430,7 @@ impl EditProposal {
         &self.changes
     }
     pub fn change_for(&self, clip_id: &str) -> Option<&ClipChange> {
-        self.changes.iter().find(|c| c.clip_id() == clip_id)
+        self.changes.iter().find(|c| c.clip_id() == Some(clip_id))
     }
     pub fn read_footprint(&self) -> &[String] {
         &self.read_footprint
@@ -1152,9 +1326,8 @@ pub(crate) fn propose(
     let changes = diff(old, new);
     let mut writes = Footprint::default();
     for change in &changes {
-        writes.add(change.clip_id());
-        if matches!(change, ClipChange::Insert { .. } | ClipChange::Remove { .. }) {
-            writes.add(change.track_id());
+        for id in change.write_ids() {
+            writes.add(id);
         }
     }
     if new.duration != old.duration {
@@ -1195,4 +1368,181 @@ fn marker_ids(seq: &StudioSequence) -> impl Iterator<Item = &str> {
                 .flat_map(|c| c.markers.iter()),
         )
         .map(|m| m.marker_id.as_str())
+}
+
+/// The members no planner writes today cannot be reached through a proposal, so they are driven
+/// through `diff` directly. `tests/edit_footprint.rs` covers everything a planner can do.
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+    use hsk_studio_folio::{
+        ClipSchema, ClipTransitions, ContentDigest, LabelColor, SequenceFrameRate, SequenceSchema,
+        TrackSchema,
+    };
+
+    const SEQ: &str = "seq";
+
+    fn marker(marker_id: &str) -> StudioMarker {
+        StudioMarker {
+            marker_id: marker_id.into(),
+            name: String::new(),
+            comment: String::new(),
+            color: LabelColor::Rose,
+            start: Ticks::new(0),
+            duration: Ticks::new(0),
+            role: None,
+        }
+    }
+    fn source(manifest: &str) -> ClipSource {
+        ClipSource::Media {
+            artifact_manifest_id: manifest.into(),
+            content_digest: ContentDigest { algorithm: "sha256".into(), digest: "abc123".into() },
+            asset_id: None,
+        }
+    }
+    fn clip() -> StudioClip {
+        StudioClip {
+            schema_id: ClipSchema::V1,
+            clip_id: "clip".into(),
+            source_ref: source("a"),
+            source_in: Ticks::new(0),
+            source_out: Ticks::new(10),
+            timeline_start: Ticks::new(0),
+            duration: Ticks::new(10),
+            speed: Speed::UNIT,
+            enabled: true,
+            link_group: None,
+            markers: vec![marker("m1"), marker("m2")],
+            transitions: ClipTransitions::default(),
+            retime: ClipRetime::default(),
+        }
+    }
+    fn track(track_id: &str, clips: Vec<StudioClip>) -> StudioTrack {
+        StudioTrack {
+            schema_id: TrackSchema::V1,
+            track_id: track_id.into(),
+            kind: TrackKind::Video,
+            index: 0,
+            name: String::new(),
+            enabled: true,
+            locked: false,
+            sync_locked: false,
+            targeted: false,
+            muted: false,
+            soloed: false,
+            clips,
+            volume: 1.0,
+            pan: 0.0,
+        }
+    }
+    fn base() -> StudioSequence {
+        StudioSequence {
+            schema_id: SequenceSchema::V1,
+            sequence_id: SEQ.into(),
+            name: String::new(),
+            frame_rate: hsk_studio_folio::SequenceFrameRate { ticks_per_frame: 10 },
+            duration: Ticks::new(10),
+            tracks: vec![track("t1", vec![clip()]), track("t2", Vec::new())],
+            markers: vec![marker("s1"), marker("s2")],
+            work_area: None,
+        }
+    }
+    /// `(kind, field or empty, write ids)` of the one entry `edit` must produce.
+    fn one(edit: impl FnOnce(&mut StudioSequence)) -> (&'static str, &'static str, Vec<String>) {
+        let old = base();
+        let mut new = old.clone();
+        edit(&mut new);
+        let changes = diff(&old, &new);
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        let field = match &changes[0] {
+            ClipChange::ClipField { field, .. }
+            | ClipChange::TrackField { field, .. }
+            | ClipChange::SequenceField { field, .. } => field,
+            _ => "",
+        };
+        let ids = changes[0].write_ids().into_iter().map(str::to_owned).collect();
+        (changes[0].kind(), field, ids)
+    }
+
+    #[test]
+    fn equal_sequences_report_nothing() {
+        assert_eq!(diff(&base(), &base()), []);
+    }
+
+    #[test]
+    fn clip_members_no_planner_writes_are_reported() {
+        let on_clip = |edit: fn(&mut StudioClip)| one(|s| edit(&mut s.tracks[0].clips[0]));
+        let clip_field = |field| ("clip_field", field, vec!["clip".to_owned()]);
+        assert_eq!(on_clip(|c| c.enabled = false), clip_field("enabled"));
+        assert_eq!(on_clip(|c| c.source_ref = source("b")), clip_field("source_ref"));
+        assert_eq!(on_clip(|c| c.markers.reverse()), clip_field("marker_order"));
+    }
+
+    #[test]
+    fn a_clip_on_another_track_names_both_tracks() {
+        let moved = one(|s| {
+            let c = s.tracks[0].clips.remove(0);
+            s.tracks[1].clips.push(c);
+        });
+        assert_eq!(moved, ("track_move", "", vec!["clip".to_owned(), "t1".to_owned(), "t2".to_owned()]));
+    }
+
+    #[test]
+    fn every_track_member_is_reported() {
+        let edits: [(&str, fn(&mut StudioTrack)); 11] = [
+            ("kind", |t| t.kind = TrackKind::Audio),
+            ("index", |t| t.index = 7),
+            ("name", |t| t.name = "renamed".into()),
+            ("enabled", |t| t.enabled = false),
+            ("locked", |t| t.locked = true),
+            ("sync_locked", |t| t.sync_locked = true),
+            ("targeted", |t| t.targeted = true),
+            ("muted", |t| t.muted = true),
+            ("soloed", |t| t.soloed = true),
+            ("volume", |t| t.volume = 0.5),
+            ("pan", |t| t.pan = 0.5),
+        ];
+        for (field, edit) in edits {
+            assert_eq!(one(|s| edit(&mut s.tracks[1])), ("track_field", field, vec!["t2".to_owned()]));
+        }
+    }
+
+    #[test]
+    fn a_track_added_or_removed_is_reported() {
+        let presence = ("track_field", "presence", vec!["t2".to_owned()]);
+        assert_eq!(one(|s| drop(s.tracks.remove(1))), presence);
+        let old = { let mut s = base(); s.tracks.remove(1); s };
+        let changes = diff(&old, &base());
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0], ClipChange::TrackField { track_id: "t2".into(), field: "presence" });
+    }
+
+    #[test]
+    fn every_sequence_member_no_planner_writes_is_reported() {
+        let field = |field| ("sequence_field", field, vec![SEQ.to_owned()]);
+        assert_eq!(one(|s| s.name = "renamed".into()), field("name"));
+        assert_eq!(one(|s| s.frame_rate = SequenceFrameRate { ticks_per_frame: 20 }), field("frame_rate"));
+        assert_eq!(one(|s| s.markers.reverse()), field("marker_order"));
+        assert_eq!(one(|s| s.tracks.reverse()), field("track_order"));
+    }
+
+    #[test]
+    fn the_head_slot_is_reported_like_the_tail() {
+        let transition = TimelineTransition {
+            schema_id: hsk_studio_folio::TransitionSchema::V1,
+            transition_id: "tr".into(),
+            transition_kind: "cross_dissolve".into(),
+            duration: Ticks::new(2),
+            alignment: hsk_studio_folio::TransitionAlignment::CenteredOnCut,
+            center_offset: 0,
+            parameters: Vec::new(),
+            repeat_end_frame: false,
+        };
+        let old = base();
+        let mut new = old.clone();
+        new.tracks[0].clips[0].transitions.head = Some(transition);
+        let changes = diff(&old, &new);
+        assert!(matches!(changes.as_slice(), [ClipChange::ClipTransition { slot: TransitionSlot::Head, before: None, after: Some(_), .. }]), "{changes:?}");
+        assert_eq!(changes[0].write_ids(), ["clip", "tr"]);
+    }
 }
