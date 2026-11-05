@@ -746,3 +746,45 @@ fn a_resync_is_not_held_up_by_a_track_display_entry() {
         assert_eq!(session.inert_track_display_entries(&token()).unwrap(), held.sequences);
     });
 }
+
+/// Lane SMB-PR-MEDIA-MARKERS-1: a resync may not give a document marker an id the media marker entry
+/// holds, as a commit may not; one that only takes clips or a sequence away is not held up.
+#[test]
+fn a_resync_cannot_break_the_media_marker_id_space_and_removal_does_not_hold_it_up() {
+    bounded_case("resync_media", || {
+        let marker = StudioMarker {
+            marker_id: "m-1".into(),
+            name: String::new(),
+            comment: String::new(),
+            color: LabelColor::Rose,
+            start: hsk_studio_accord::Ticks::new(F24),
+            duration: hsk_studio_accord::Ticks::new(0),
+            role: None,
+        };
+        let mut held = StudioMediaMarkerRecords::new(doc_id());
+        held.media_items.push(StudioMediaMarkerEntry { content_digest: ContentDigest { algorithm: "sha256".into(), digest: "ab0001".into() }, markers: vec![marker.clone()] });
+        let body = serde_json::to_vec(&held).unwrap();
+        let authority = Authority::default();
+        let mut session = open_with_authority(&package(&[entry(MEDIA_MARKERS_ENTRY, &body)]), &authority);
+        authority.0.lock().unwrap().wrong_binding = true;
+        let key = IdempotencyKey::parse("presets-1").unwrap();
+        let presets = step(vec![], None, Some(RecordEdit { expect: None, write: Some(library(vec![preset("mine", F25)])) }));
+        assert_eq!(session.submit_sequence_records_keyed(&key, &presets, 3, &token()).unwrap_err().code(), "receipt_mismatch");
+        // The authority's document gives a clip marker the id the entry holds.
+        let mut colliding = session.snapshot().document().clone();
+        colliding.revision = 4;
+        colliding.sequences[1].tracks[0].clips[0].markers.push(marker);
+        let bytes = serde_json::to_vec(&colliding).unwrap();
+        assert_eq!(session.resync_diverged(&key, &bytes, &token()).unwrap_err().code(), "folio_rejected");
+        assert_eq!(session.document_revision(), 3, "nothing changed");
+        assert_eq!(session.document_entry(MEDIA_MARKERS_ENTRY), Some(body.as_slice()));
+        // One that takes the sequence holding the item's only clip away commits and leaves the entry.
+        let mut removed = session.snapshot().document().clone();
+        removed.revision = 4;
+        removed.sequences.remove(1);
+        session.resync_diverged(&key, &serde_json::to_vec(&removed).unwrap(), &token()).unwrap();
+        assert_eq!(session.document_revision(), 4);
+        assert_eq!(session.document_entry(MEDIA_MARKERS_ENTRY), Some(body.as_slice()));
+        assert_eq!(session.media_marker_records(&token()).unwrap(), Some(held));
+    });
+}

@@ -43,7 +43,7 @@ pub use session::{
 pub use motion::{COMPOSITION_ENTRY, MOTION_ENTRY};
 pub use multicam::MULTICAM_ENTRY;
 pub use multicam_step::{MAX_MULTICAM_STEP_EDITS, MULTICAM_STEP_PROVIDER, MulticamStep, SequenceEdit};
-pub use sequence_records::{SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY};
+pub use sequence_records::{MEDIA_MARKERS_ENTRY, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY};
 pub use sequence_records_step::{RecordEdit, SEQUENCE_RECORDS_STEP_PROVIDER, SequenceRecordsStep};
 pub use source::{DOCUMENT_ENTRY_PREFIX, DOCUMENT_ENTRY_TOKENS};
 pub use timeline::{MAX_COMMAND_ID_BYTES, TIMELINE_STEP_PROVIDER, TimelineStep};

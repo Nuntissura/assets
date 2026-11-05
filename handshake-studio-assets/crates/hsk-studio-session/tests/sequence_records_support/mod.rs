@@ -287,7 +287,7 @@ pub fn run(session: &mut Session, command: &StudioSequenceSettingsCommand, corre
     session.submit_sequence_command_as(&context(command.command_id(), revision, correlation), command, revision, &token())
 }
 pub fn step(sequences: Vec<SequenceEdit>, settings: Option<RecordEdit<StudioSequenceSettingsRecords>>, presets: Option<RecordEdit<StudioSequencePresetSet>>) -> SequenceRecordsStep {
-    SequenceRecordsStep { command_id: "cmd.test".into(), correlation_id: 7, sequences, settings, presets, track_display: None }
+    SequenceRecordsStep { command_id: "cmd.test".into(), correlation_id: 7, sequences, settings, presets, track_display: None, media_markers: None }
 }
 pub fn fresh_inverse(applied: &Applied, command: &str) -> SequenceRecordsStep {
     let mut inverse = applied.sequence_records_inverse.clone().expect("a changed step has an inverse");

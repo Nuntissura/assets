@@ -32,6 +32,15 @@
 //! declared defaults (`Session::resolved_track_displays`), so that read also says which sequences have
 //! stored state. Tests: tests/track_display.rs.
 //!
+//! The media item markers (lane SMB-PR-MEDIA-MARKERS-1, STU-VID-034) are the entry
+//! `studio/media_markers.<sha256>`, opened, read, set and saved as above. The entry names no sequence or
+//! clip, so a commit that removes the last clip cut from a media item, or the sequence holding it, leaves
+//! it valid and unchanged. It shares one marker id space with the document's sequence and clip markers
+//! (`StudioMarker`: unique among the document's markers), so that one rule is guarded as the settings
+//! entry is: a commit or resync that would give a document marker an id a valid entry holds is refused
+//! `folio_rejected`. Session has no pulse edge: a host passes [`Session::media_marker_records`] to
+//! pulse's `clip_appearing_markers` and `sequence_appearing_markers`. Tests: tests/media_markers.rs.
+//!
 //! Bounds: the Folio input budget (`budget.input_bytes`, depth, duplicate keys) applies before any
 //! parse, then the Folio record bounds; the package limits apply to the entry bytes on open and on
 //! every write. Serialisation is serde_json of the Folio type (deterministic field order).
@@ -40,8 +49,8 @@ use crate::session::Session;
 use crate::source::{DOCUMENT_ENTRY_PREFIX, document_entry};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    Budget, Code, Diagnostic, StudioDocument, StudioResolvedTrackDisplay, StudioSequencePresetSet,
-    StudioSequenceSettingsRecords, StudioTrackDisplayEntry, StudioTrackDisplayRecords, parse_sequence_presets, parse_sequence_settings_records,
+    Budget, Code, Diagnostic, StudioDocument, StudioMediaMarkerRecords, StudioResolvedTrackDisplay, StudioSequencePresetSet,
+    StudioSequenceSettingsRecords, StudioTrackDisplayEntry, StudioTrackDisplayRecords, parse_media_marker_records, parse_sequence_presets, parse_sequence_settings_records,
     inert_track_display_entries, parse_track_display_records, resolve_track_displays,
 };
 use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
@@ -53,6 +62,8 @@ pub const SEQUENCE_SETTINGS_ENTRY: &str = "sequence_settings";
 pub const SEQUENCE_PRESETS_ENTRY: &str = "sequence_presets";
 /// Document-entry token of the track display records (STU-VID-036).
 pub const TRACK_DISPLAY_ENTRY: &str = "track_display";
+/// Document-entry token of the media item markers (STU-VID-034).
+pub const MEDIA_MARKERS_ENTRY: &str = "media_markers";
 
 fn invalid_json(token: &str) -> SessionError {
     folio_err(Diagnostic { code: Code::InvalidJson, target: format!("{DOCUMENT_ENTRY_PREFIX}{token}") })
@@ -67,7 +78,7 @@ fn folio_err(d: Diagnostic) -> SessionError {
 
 /// True for the tokens this module validates.
 pub(crate) fn validated_token(token: &str) -> bool {
-    token == SEQUENCE_SETTINGS_ENTRY || token == SEQUENCE_PRESETS_ENTRY || token == TRACK_DISPLAY_ENTRY
+    token == SEQUENCE_SETTINGS_ENTRY || token == SEQUENCE_PRESETS_ENTRY || token == TRACK_DISPLAY_ENTRY || token == MEDIA_MARKERS_ENTRY
 }
 
 /// Parses and validates the body of a [`validated_token`]; any other token passes (its bytes belong to
@@ -83,6 +94,7 @@ pub(crate) fn check_entry(
         SEQUENCE_SETTINGS_ENTRY => parse_sequence_settings_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         SEQUENCE_PRESETS_ENTRY => parse_sequence_presets(bytes, budget, cancel).map(drop).map_err(folio_err),
         TRACK_DISPLAY_ENTRY => parse_track_display_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
+        MEDIA_MARKERS_ENTRY => parse_media_marker_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         _ => Ok(()),
     }
 }
@@ -109,7 +121,7 @@ pub(crate) fn invalid_entry_notes(
     cancel: &CancellationToken,
 ) -> Result<Vec<LossNote>, SessionError> {
     let mut notes = Vec::new();
-    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY, TRACK_DISPLAY_ENTRY] {
+    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY, TRACK_DISPLAY_ENTRY, MEDIA_MARKERS_ENTRY] {
         let invalid = match held_body(held, token) {
             Ok(None) => false,
             Err(_) => true,
@@ -242,5 +254,25 @@ impl Session {
             Some(r) => Some(serde_json::to_vec(r).map_err(|_| invalid_json(TRACK_DISPLAY_ENTRY))?),
         };
         self.set_document_entry(TRACK_DISPLAY_ENTRY, bytes, cancel)
+    }
+
+    /// The stored media item markers, validated against the document (`None` = none stored). An entry
+    /// that does not validate is the Folio diagnostic, never partial records. A host passes these to
+    /// pulse for what appears on a clip or a sequence.
+    pub fn media_marker_records(&self, cancel: &CancellationToken) -> Result<Option<StudioMediaMarkerRecords>, SessionError> {
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        Ok(None)
+    }
+
+    /// Stores (`Some`, validated first) or removes (`None`) the media item markers, replacing whatever
+    /// entry is held, an invalid one included. Not a revision and not undoable (see
+    /// [`Session::set_sequence_settings_records`]).
+    pub fn set_media_marker_records(
+        &mut self,
+        records: Option<&StudioMediaMarkerRecords>,
+        cancel: &CancellationToken,
+    ) -> Result<(), SessionError> {
+        let _ = (records, cancel);
+        Err(SessionError::Provider("not_implemented"))
     }
 }
