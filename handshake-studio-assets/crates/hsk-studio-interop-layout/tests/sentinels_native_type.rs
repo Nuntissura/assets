@@ -635,3 +635,143 @@ fn mt_31008_a_forced_line_break_through_native_type() {
     assert_eq!(out.layout.overset, None);
     assert_eq!(stored(&st), text, "the stored U+2028 is kept");
 }
+
+// ---- Lane SMB-R54-FOLLOWUPS-1, STUDIO-R55 failure forced-line-break-without-glyph-before-collapsed:
+// one line per mandatory break inside a glyph gap and one before the first glyph, every composer.
+// Studio reading (UAX #14 class BK), InDesign behaviour UNVERIFIED (D5). ----
+
+const LS: char = '\u{2028}';
+
+fn composers() -> [(&'static str, Composer); 4] {
+    let (k, a) = (KnuthPlassParams::default(), AdobeParams::default());
+    [("first_fit", Composer::FirstFit), ("knuth_plass", Composer::KnuthPlass(k)), ("single", Composer::AdobeSingleLine(a)), ("paragraph", Composer::AdobeParagraph(a))]
+}
+fn native_compose(text: &str, layers: Vec<StudioLayer>, composer: Composer, alignment: Alignment) -> SentinelComposition {
+    let font = inter();
+    let st = story_of(text);
+    let doc = document(layers);
+    let req = SentinelRequest {
+        document: &doc,
+        story: &st,
+        resolved_text: None,
+        obstacles: &[],
+        composer,
+        space: SpaceParams::default(),
+        expected_revision: 2,
+        limits: Limits::default(),
+        sections: &[],
+        markers: &[],
+        budget: SentinelBudget::default(),
+    };
+    let opts = TypesetOptions { alignment, ..TypesetOptions::default() };
+    let mut native = Native::new(&font);
+    let out = compose_with_sentinels(&req, &opts, &StudioLayoutFlowRecords::new(id("SDOC", 1)), &mut native, &CancellationToken::default());
+    assert_eq!(native.refusals, vec![], "{text:?}");
+    assert_eq!(stored(&st), text, "the stored text is kept");
+    out.unwrap_or_else(|e| panic!("{text:?}: {e:?}"))
+}
+/// One frame on page-1, five lines high: (source start, source end, baseline) of each line.
+fn line_table(text: &str, composer: Composer, alignment: Alignment) -> Vec<(u64, u64, f64)> {
+    let out = native_compose(text, vec![frame(1, 1, 0, 10.0, 60.0, 1)], composer, alignment);
+    assert_eq!(out.layout.overset, None, "{text:?}");
+    out.layout.frames[0].lines.iter().map(|l| (l.source.start, l.source.end, l.baseline_y_pt)).collect()
+}
+
+#[test]
+fn mt_31008_each_forced_line_break_makes_one_line_in_every_composer() {
+    for (label, composer) in composers() {
+        for alignment in [Alignment::Left, Alignment::Center, Alignment::Right, Alignment::Justified, Alignment::JustifiedAll] {
+            let at = format!("{label} {alignment:?}");
+            // A second break in a gap makes a blank line: the first break ends the line before it.
+            let t = format!("H{LS}{LS}I");
+            assert_eq!(line_table(&t, composer, alignment), vec![(0, 1, 10.0), (4, 7, 22.0), (7, 8, 34.0)], "{at}: H LS LS I");
+            let t = format!("H{LS}{LS}{LS}I");
+            assert_eq!(line_table(&t, composer, alignment), vec![(0, 1, 10.0), (4, 7, 22.0), (7, 10, 34.0), (10, 11, 46.0)], "{at}: H LS LS LS I");
+            // A break before the first glyph makes a blank first line.
+            let t = format!("{LS}HI");
+            assert_eq!(line_table(&t, composer, alignment), vec![(0, 3, 10.0), (3, 5, 22.0)], "{at}: LS HI");
+            let t = format!("{LS}{LS}HI");
+            assert_eq!(line_table(&t, composer, alignment), vec![(0, 3, 10.0), (3, 6, 22.0), (6, 8, 34.0)], "{at}: LS LS HI");
+            // Both in one paragraph.
+            let t = format!("{LS}H{LS}{LS}I");
+            assert_eq!(line_table(&t, composer, alignment), vec![(0, 3, 10.0), (3, 4, 22.0), (7, 10, 34.0), (10, 11, 46.0)], "{at}: LS H LS LS I");
+            // The one break in a gap stays one line break.
+            let t = format!("H{LS}I");
+            assert_eq!(line_table(&t, composer, alignment), vec![(0, 1, 10.0), (4, 5, 22.0)], "{at}: H LS I");
+        }
+    }
+}
+
+#[test]
+fn mt_31008_a_blank_line_takes_the_metrics_of_an_empty_paragraph() {
+    for (label, composer) in composers() {
+        let blank = native_compose(&format!("H{LS}{LS}I"), vec![frame(1, 1, 0, 10.0, 60.0, 1)], composer, Alignment::Left);
+        let control = native_compose("H\n\nI", vec![frame(1, 1, 0, 10.0, 60.0, 1)], composer, Alignment::Left);
+        let (b, c) = (&blank.layout.frames[0].lines, &control.layout.frames[0].lines);
+        assert_eq!((b.len(), c.len()), (3, 3), "{label}");
+        for (x, y) in b.iter().zip(c) {
+            assert_eq!((x.baseline_y_pt, x.x_start_pt, x.width_pt, x.available_pt, x.hang_pt), (y.baseline_y_pt, y.x_start_pt, y.width_pt, y.available_pt, y.hang_pt), "{label}");
+            assert_eq!(x.column, y.column, "{label}");
+        }
+        assert_eq!(b[1].glyph_range, 1..1, "{label}: the blank line holds no glyph");
+        assert_eq!(b[2].glyph_range, 1..2, "{label}: consecutive lines tile the glyphs");
+        let leading = native_compose(&format!("{LS}H"), vec![frame(1, 1, 0, 10.0, 60.0, 1)], composer, Alignment::Left);
+        let empty_first = native_compose("\nH", vec![frame(1, 1, 0, 10.0, 60.0, 1)], composer, Alignment::Left);
+        let (l, e) = (&leading.layout.frames[0].lines, &empty_first.layout.frames[0].lines);
+        assert_eq!(l.len(), e.len(), "{label}");
+        for (x, y) in l.iter().zip(e) {
+            assert_eq!((x.baseline_y_pt, x.x_start_pt, x.width_pt), (y.baseline_y_pt, y.x_start_pt, y.width_pt), "{label}");
+        }
+    }
+}
+
+#[test]
+fn mt_31008_a_trailing_forced_line_break_keeps_todays_reading() {
+    // Open for the D5 oracle (validator probe n3): breaks after a paragraph's last glyph, and a
+    // paragraph with no glyph at all, make no further line. Declared, not claimed as parity.
+    for (label, composer) in composers() {
+        assert_eq!(line_table(&format!("HI{LS}\nJK"), composer, Alignment::Left), vec![(0, 2, 10.0), (6, 8, 22.0)], "{label}: HI LS NL JK");
+        assert_eq!(line_table(&format!("HI{LS}{LS}\nJK"), composer, Alignment::Left), vec![(0, 2, 10.0), (9, 11, 22.0)], "{label}: HI LS LS NL JK");
+        assert_eq!(line_table(&format!("HI{LS}"), composer, Alignment::Left), vec![(0, 2, 10.0)], "{label}: HI LS");
+        assert_eq!(line_table(&format!("{LS}"), composer, Alignment::Left).len(), 1, "{label}: LS");
+        assert_eq!(line_table(&format!("{LS}{LS}"), composer, Alignment::Left).len(), 1, "{label}: LS LS");
+    }
+}
+
+/// Three one-line frames on page-1, page-2 and page-3.
+fn three_pages() -> Vec<StudioLayer> {
+    vec![frame(1, 3, 0, 10.0, 12.0, 1), frame(2, 3, 1, 10.0, 12.0, 1), frame(3, 3, 2, 10.0, 12.0, 1)]
+}
+
+#[test]
+fn mt_31007_a_marker_on_a_blank_line_resolves_for_that_line() {
+    let page_of = |text: &str, layers: Vec<StudioLayer>| {
+        let out = native_compose(text, layers, Composer::FirstFit, Alignment::Left);
+        assert_eq!(out.markers.len(), 1, "{text:?}");
+        (out.markers[0].page_id.clone(), out.markers[0].state.clone(), out.layout.overset)
+    };
+    let page = |n: &str| Some(n.to_owned());
+    // Index markers have no glyph. On the blank line: page-2 with that line, I on page-3.
+    let t = format!("H{LS}{INDEX}{LS}I");
+    let out = native_compose(&t, three_pages(), Composer::FirstFit, Alignment::Left);
+    assert_eq!(out.layout.frames.iter().map(|f| f.lines.len()).collect::<Vec<_>>(), vec![1, 1, 1], "three lines, one per frame");
+    assert_eq!(out.layout.frames[1].lines[0].source, SourceSpan { start: 4, end: 10 }, "the blank line spans the marker and its break");
+    assert_eq!(out.layout.frames[2].lines[0].source, SourceSpan { start: 10, end: 11 });
+    assert_eq!(out.markers[0].page_id, page("page-2"));
+    // Glued to the word before the first break: page-1. After the second break, glued to I: page-3.
+    assert_eq!(page_of(&format!("H{INDEX}{LS}{LS}I"), three_pages()).0, page("page-1"));
+    assert_eq!(page_of(&format!("H{LS}{LS}{INDEX}I"), three_pages()).0, page("page-3"));
+    // Leading: before the first break on the blank first line, after it on the next one.
+    assert_eq!(page_of(&format!("{INDEX}{LS}HI"), three_pages()).0, page("page-1"));
+    assert_eq!(page_of(&format!("{LS}{INDEX}HI"), three_pages()).0, page("page-2"));
+    // The blank line is placed and the next one overset: still its page.
+    let two = || vec![frame(1, 2, 0, 10.0, 12.0, 1), frame(2, 2, 1, 10.0, 12.0, 1)];
+    let (at, _, overset) = page_of(&format!("H{LS}{INDEX}{LS}I"), two());
+    assert_eq!((at, overset), (page("page-2"), Some(SourceSpan { start: 10, end: 11 })));
+    // The blank line itself is overset: the marker on it is not placed.
+    let (at, state, overset) = page_of(&format!("H{LS}{INDEX}{LS}I"), vec![frame(1, 1, 0, 10.0, 12.0, 1)]);
+    assert_eq!((at, state, overset), (None, MarkerState::Unresolved(UnresolvedMarker::NotPlaced), Some(SourceSpan { start: 4, end: 11 })));
+    // A page marker has a glyph once resolved: no blank line in the final pass, the same page.
+    let (at, state, _) = page_of(&format!("H{LS}{CUR}{LS}I"), three_pages());
+    assert_eq!((at, state), (page("page-2"), MarkerState::Resolved("2".into())));
+}

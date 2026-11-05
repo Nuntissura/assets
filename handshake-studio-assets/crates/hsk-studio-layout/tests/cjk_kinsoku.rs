@@ -462,3 +462,51 @@ fn cjk_sources_cite_the_w3c_software_and_document_licences() {
         assert_eq!(text.matches(common[0]).count(), 1, "LICENSES-W3C {version}");
     }
 }
+
+/// Lane SMB-R54-FOLLOWUPS-1 (STUDIO-R55 forced-line-break-without-glyph-before-collapsed): the CJK
+/// item builder makes one line per mandatory break in a glyph gap and one before the first glyph,
+/// in both scopes, with U+2028 glyph-less as Type keeps it. A leading break takes the paragraph's
+/// indent with it: the indent belongs to the first line, the blank one (Studio reading, UNVERIFIED, D5).
+#[test]
+fn mt_31008_each_forced_line_break_makes_one_cjk_line() {
+    const LS: char = '\u{2028}';
+    let glyphless = |text: &str| {
+        let mut p = para(text);
+        p.glyphs.retain(|g| !text[g.cluster.start as usize..].starts_with(LS));
+        p
+    };
+    let table = |text: &str, c: &CjkParagraph| {
+        compose_cjk_lines(&glyphless(text), text, c, EM, 200.0, false, &CancellationToken::default())
+            .unwrap()
+            .iter()
+            .map(|l| l.glyph_range.clone())
+            .collect::<Vec<_>>()
+    };
+    for scope in [StudioCompositionScope::SingleLine, StudioCompositionScope::EveryLine] {
+        let c = CjkParagraph::new(scope, hard(), MojikumiRules::base(StudioMojikumiBaseSet::Nothing));
+        assert_eq!(table(&format!("漢{LS}字"), &c), vec![0..1, 1..2], "{scope:?}: one break");
+        assert_eq!(table(&format!("漢{LS}{LS}字"), &c), vec![0..1, 1..1, 1..2], "{scope:?}: two breaks");
+        assert_eq!(table(&format!("漢{LS}{LS}{LS}字"), &c), vec![0..1, 1..1, 1..1, 1..2], "{scope:?}: three breaks");
+        assert_eq!(table(&format!("{LS}漢字"), &c), vec![0..0, 0..2], "{scope:?}: leading");
+        assert_eq!(table(&format!("{LS}{LS}漢字"), &c), vec![0..0, 0..0, 0..2], "{scope:?}: two leading");
+        // A word space before the breaks hangs on the line it ends.
+        assert_eq!(table(&format!("漢 {LS}{LS}字"), &c), vec![0..2, 2..2, 2..3], "{scope:?}: space");
+        // After the paragraph's last glyph no further line (open for the D5 oracle).
+        assert_eq!(table(&format!("漢{LS}{LS}"), &c), vec![0..1], "{scope:?}: trailing");
+    }
+    // The indent of the base set: on a plain first line, not on the line after a leading break.
+    let mut rules = MojikumiRules::base(StudioMojikumiBaseSet::Nothing);
+    rules.indent_em = 1.0;
+    let c = CjkParagraph::new(StudioCompositionScope::SingleLine, hard(), rules);
+    let text = format!("{LS}漢字");
+    let lines = compose_cjk_lines(&glyphless(&text), &text, &c, EM, 200.0, false, &CancellationToken::default()).unwrap();
+    assert_eq!((lines[0].glyph_range.clone(), lines[0].width_pt), (0..0, 0.0));
+    assert_eq!((lines[1].start_offset_pt, lines[1].width_pt), (0.0, 20.0));
+    let plain = lines_of_indented(&c);
+    assert_eq!(plain, 10.0, "control: the indent on a first line that holds glyphs");
+}
+
+fn lines_of_indented(c: &CjkParagraph) -> f64 {
+    let text = "漢字";
+    compose_cjk_lines(&para(text), text, c, EM, 200.0, false, &CancellationToken::default()).unwrap()[0].start_offset_pt
+}

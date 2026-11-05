@@ -190,6 +190,48 @@ fn mt_30780_a_footnote_reference_at_a_line_end_before_a_line_break_stays_on_that
     assert_eq!(p.overset_notes, vec!["n1".to_string()]);
 }
 
+// ---- Lane SMB-R54-FOLLOWUPS-1 (STUDIO-R55): the lookups with blank lines (V4-06 re-check of line_holding) ----
+
+/// (source start, source end, baseline) of every line of `text` in one 60 pt frame, first-fit.
+fn blank_line_table(text: &str) -> Vec<(u64, u64, f64)> {
+    let doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 180.0, 60.0), None, None)], [PageSide::LeftHand, PageSide::RightHand]);
+    let span = [(0, text.len() as u64)];
+    let host = styled_story(1, text, &span, &[None]);
+    let p = run(&doc, &host, &shaped(text, &span), &records()).unwrap();
+    p.frames.iter().flat_map(|f| f.lines.iter().map(|l| (l.source.start, l.source.end, l.baseline_y_pt))).collect()
+}
+
+#[test]
+fn mt_31008_blank_lines_through_the_toy_shaper_and_the_byte_to_line_rule() {
+    // A blank line spans the bytes from the break before it to the break that ends it.
+    assert_eq!(blank_line_table(&format!("H{LS}{LS}I")), vec![(0, 1, 10.0), (4, 7, 22.0), (7, 8, 34.0)]);
+    assert_eq!(blank_line_table(&format!("{LS}HI")), vec![(0, 3, 10.0), (3, 5, 22.0)]);
+    assert_eq!(blank_line_table(&format!("{IDX}{LS}HI")), vec![(0, 6, 10.0), (6, 8, 22.0)]);
+    assert_eq!(blank_line_table(&format!("H{LS}{IDX}{LS}I")), vec![(0, 1, 10.0), (4, 10, 22.0), (10, 11, 34.0)]);
+    // A footnote reference on the blank line: x 0, the blank line's baseline, as the line it sits on.
+    let text = format!("H{LS}{FN}{LS}I");
+    let p = footnotes(&text, 60.0, 4);
+    assert_eq!(body_lines(&p.body), vec![(0, 1), (4, 10), (10, 11)]);
+    assert_eq!(summary(&p), vec![("n1".into(), 1, "1.".into(), 0, [0.0, 22.0], vec![0])]);
+    // Glued to the word after the second break: its line. Glued before the first: the first line.
+    let text = format!("H{LS}{LS}{FN}I");
+    assert_eq!(summary(&footnotes(&text, 60.0, 7))[0].4, [0.0, 34.0]);
+    let text = format!("H{FN}{LS}{LS}I");
+    assert_eq!(summary(&footnotes(&text, 60.0, 1))[0].4, [6.0, 10.0]);
+}
+
+#[test]
+fn mt_31008_a_story_of_forced_line_breaks_stays_bounded() {
+    // One line per break (hostile count): typed overset past the frame, nothing lost.
+    let text = format!("H{}I", LS.to_string().repeat(2000));
+    let doc = document(vec![frame_layer(1, 1, spec(0, 10.0, 10.0, 180.0, 12.0), None, None)], [PageSide::LeftHand, PageSide::RightHand]);
+    let span = [(0, text.len() as u64)];
+    let host = styled_story(1, &text, &span, &[None]);
+    let p = run(&doc, &host, &shaped(&text, &span), &records()).unwrap();
+    assert_eq!(body_lines(&p), vec![(0, 1)]);
+    assert_eq!(p.overset, Some(SourceSpan { start: 4, end: text.len() as u64 }));
+}
+
 // ---- endnotes.rs (the same footnotes.rs locate) ----
 
 #[test]
