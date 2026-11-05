@@ -39,10 +39,10 @@
 //!   Knuth-Plass over the CJK items. The Adobe-parity Latin constants (fitted to a Latin oracle) are
 //!   not applied to CJK paragraphs.
 use crate::breaker::{HyphenRules, KnuthPlassParams, LineBreak, Sums, check, forced, knuth_plass, legal, line_start};
-use crate::paragraph::{Break, BreakKind, FORCED, Item, Kind, ShapedParagraph, SpaceParams, break_opportunities};
+use crate::paragraph::{Break, BreakKind, FORCED, Item, Kind, ShapedParagraph, SpaceParams, blank_lines, break_opportunities};
 use crate::threaded_reflow::{LayoutProposal, ReflowRequest, reflow_core};
 use crate::typeset::TypesetOptions;
-use crate::LayoutError;
+use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     StudioBurasagariType, StudioCjkCompositionRecords, StudioCompositionEngine, StudioCompositionScope, StudioKinsokuHangType,
@@ -543,6 +543,7 @@ fn glue(w: f64, y: f64, z: f64, first: usize, end: usize) -> Item {
         flagged: false,
         end_part: None,
         head: None,
+        blank: None,
     }
 }
 fn aki_glue(a: Aki, em: f64, at: usize) -> Item {
@@ -619,7 +620,10 @@ pub(crate) fn build(p: &ShapedParagraph, text: &str, c: &CjkParagraph, em_pt: f6
     let n = g.len();
     let mut items: Vec<Item> = Vec::with_capacity(n.saturating_mul(4).saturating_add(2));
     let mut forbidden = Vec::new();
-    if n > 0 {
+    // Forced line breaks before the first glyph: blank lines. The indent belongs to the paragraph's
+    // first line, the first blank one, so no glyph takes it (Studio reading, UNVERIFIED, D5).
+    let leading = g.first().map_or_else(Vec::new, |first| blank_lines(&opps, s, first.cluster.start as usize, Some(s)));
+    if n > 0 && leading.is_empty() {
         let mut indent_pt = m.indent_em * em;
         if char_class(chars[0].0) == K::OpeningBrackets {
             indent_pt += m.opening_start_extra_em * em;
@@ -640,6 +644,13 @@ pub(crate) fn build(p: &ShapedParagraph, text: &str, c: &CjkParagraph, em_pt: f6
         items.push(Item { inf_stretch: true, ..glue(0.0, 0.0, 0.0, at, at) });
         items.push(penalty(FORCED, hang_w, at));
     };
+    let finish_blank = |items: &mut Vec<Item>, at: usize, spans: Vec<SourceSpan>| {
+        for span in spans {
+            items.push(Item { inf_stretch: true, ..glue(0.0, 0.0, 0.0, at, at) });
+            items.push(Item { blank: Some(span), ..penalty(FORCED, 0.0, at) });
+        }
+    };
+    finish_blank(&mut items, 0, leading);
     let mut i = 0;
     while i < n {
         if space_at(i) {
@@ -652,6 +663,7 @@ pub(crate) fn build(p: &ShapedParagraph, text: &str, c: &CjkParagraph, em_pt: f6
             items.push(Item { breakable: after == Some(BreakKind::Allowed), ..glue(w, w * space.stretch, w * space.shrink, i, j) });
             if j < n && after == Some(BreakKind::Mandatory) {
                 finish(&mut items, j, 0.0);
+                finish_blank(&mut items, j, blank_lines(&opps, g[j - 1].cluster.end as usize, g[j].cluster.start as usize, None));
             }
             i = j;
             continue;
@@ -662,6 +674,7 @@ pub(crate) fn build(p: &ShapedParagraph, text: &str, c: &CjkParagraph, em_pt: f6
             let after = opp_after(i);
             if after == Some(BreakKind::Mandatory) {
                 finish(&mut items, j, 0.0);
+                finish_blank(&mut items, j, blank_lines(&opps, g[i].cluster.end as usize, g[j].cluster.start as usize, None));
             } else if !space_at(j) {
                 let (a, b) = (chars[i].1, chars[j].0);
                 let (ca, cb) = (char_class(a), char_class(b));

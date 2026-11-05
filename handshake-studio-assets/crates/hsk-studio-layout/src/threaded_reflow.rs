@@ -119,6 +119,9 @@ pub struct Line {
     pub width_pt: f64,
     pub available_pt: f64,
     pub hang_pt: f64,
+    /// The source of the line's glyphs. A line a forced line break makes without a glyph holds no
+    /// glyph and spans the bytes from the break before it to the break that ends it
+    /// (`paragraph::blank_lines`); any other line without a glyph has an empty span.
     pub source: SourceSpan,
     /// Paragraph-local glyph indices; consecutive lines tile the paragraph's glyphs exactly.
     pub glyph_range: Range<usize>,
@@ -1205,7 +1208,9 @@ fn compose_flow(
                 .get(item_starts[k])
                 .filter(|it| it.kind == crate::paragraph::Kind::Box && it.first == range.start && !range.is_empty())
                 .and_then(|it| it.head);
-            let mut source = if range.is_empty() {
+            let mut source = if let Some(blank) = items[b.item].blank {
+                blank
+            } else if range.is_empty() {
                 SourceSpan {
                     start: boundary(range.start),
                     end: boundary(range.start),

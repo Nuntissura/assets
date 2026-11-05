@@ -585,6 +585,8 @@ pub(crate) type BreakCache = Option<(SourceSpan, Vec<Break>)>;
 /// gap, else the first allowed one) is at or before it, so it is glued to the next word, else to the
 /// line before (R54 F-R54-6; Studio reading, InDesign placement UNVERIFIED, D5). Without a next
 /// line it stays with the line before (the paragraph's trailing glyph-less bytes and terminator).
+/// A blank line (`paragraph::blank_lines`) spans its bytes, so a byte on it is inside its span, and
+/// its end is a mandatory break, so a byte right after it goes to the next line by the same rule.
 /// The one rule of every byte-to-line lookup of layout: markers here, note references
 /// (`footnotes::locate`), TOC source paragraphs and index marks (`toc::line_of`), cross-reference
 /// destinations (`xref`; lane SMB-LAYOUT-MARKER-LOOKUPS-1, V4-06).

@@ -286,6 +286,8 @@ pub(crate) struct Item {
     /// Box: its first glyph is the right part of a ligature split by the break just before it; when
     /// the box starts a line, the line is `head.delta` wider than the box's natural width.
     pub head: Option<HeadPart>,
+    /// Forced penalty that ends a line holding no glyph ([`blank_lines`]): that line's source span.
+    pub blank: Option<SourceSpan>,
 }
 /// Glyph material set at the end of a line by a hyphenation break (Type composition v2 data).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -323,6 +325,7 @@ impl Item {
             flagged: false,
             end_part: None,
             head: None,
+            blank: None,
         }
     }
     fn fill(at: usize) -> Self {
@@ -340,8 +343,29 @@ impl Item {
             flagged: false,
             end_part: None,
             head: None,
+            blank: None,
         }
     }
+}
+
+/// The lines holding no glyph that the mandatory breaks in the glyph gap `lo..=hi` of `opps` make:
+/// one line per mandatory break, so between two glyphs the first break ends the line before the gap
+/// and each later one ends a blank line; before the paragraph's first glyph (`paragraph_start`)
+/// every break ends a blank line. A blank line's source span runs from the break before it to the
+/// break that ends it, so the glyph-less bytes on it (a marker, its U+2028) belong to it. The gap
+/// after the paragraph's last glyph is not one: forced line breaks there make no line (a reading
+/// open for the D5 oracle, tests `mt_31008_a_trailing_forced_line_break_keeps_todays_reading`).
+pub(crate) fn blank_lines(opps: &[Break], lo: usize, hi: usize, paragraph_start: Option<usize>) -> Vec<SourceSpan> {
+    let from = opps.partition_point(|b| b.byte < lo);
+    let mut before = paragraph_start;
+    let mut out = Vec::new();
+    for b in opps[from..].iter().take_while(|b| b.byte <= hi).filter(|b| b.kind == BreakKind::Mandatory) {
+        if let Some(start) = before {
+            out.push(SourceSpan { start: start as u64, end: b.byte as u64 });
+        }
+        before = Some(b.byte);
+    }
+    out
 }
 
 fn is_hanging_space(c: char) -> bool {
@@ -367,7 +391,8 @@ fn ligature_split(p: &ShapedParagraph, k: usize, at: u64) -> Option<(f64, f64)> 
 
 /// Builds the item list: boxes (unbreakable glyph runs), glue (whitespace runs), zero-width
 /// penalties at in-word opportunities (after a hyphen), and finishing glue plus a forced penalty at
-/// every mandatory break and at the paragraph end. `hyphenate_last_word` false (STU-TYP-151) adds no
+/// every mandatory break, one pair per break even with no glyph between them ([`blank_lines`]), and
+/// at the paragraph end. `hyphenate_last_word` false (STU-TYP-151) adds no
 /// hyphenation point to the paragraph's last word (the glyph run holding its last non-space glyph).
 pub(crate) fn build_items(
     p: &ShapedParagraph,
@@ -433,6 +458,15 @@ pub(crate) fn build_items(
         items.push(Item::fill(at));
         items.push(Item::penalty(FORCED, at));
     };
+    let finish_blank = |items: &mut Vec<Item>, at: usize, spans: Vec<SourceSpan>| {
+        for span in spans {
+            items.push(Item::fill(at));
+            items.push(Item { blank: Some(span), ..Item::penalty(FORCED, at) });
+        }
+    };
+    if let Some(first) = g.first() {
+        finish_blank(&mut items, 0, blank_lines(&opps, s, first.cluster.start as usize, Some(s)));
+    }
     let n = g.len();
     // End (exclusive) of the paragraph's last non-space glyph: the run ending there is its last word.
     let last_word_end = (0..n).rev().find(|k| !space_at(*k)).map_or(0, |k| k + 1);
@@ -460,6 +494,7 @@ pub(crate) fn build_items(
                 flagged: false,
                 end_part: None,
                 head: None,
+                blank: None,
             });
         } else {
             // Hyphenation cuts: glyph index `k` where the next line would start, and `Some(byte)` when
@@ -512,6 +547,7 @@ pub(crate) fn build_items(
                     flagged: false,
                     end_part: None,
                     head: head.take(),
+                    blank: None,
                 });
                 if cut != j {
                     let mut pen = Item::penalty(hyph.map_or(0.0, |x| x.1.hyphen_penalty), cut);
@@ -555,7 +591,10 @@ pub(crate) fn build_items(
         }
         if j < n {
             match after {
-                Some(BreakKind::Mandatory) => finish(&mut items, j),
+                Some(BreakKind::Mandatory) => {
+                    finish(&mut items, j);
+                    finish_blank(&mut items, j, blank_lines(&opps, g[j - 1].cluster.end as usize, g[j].cluster.start as usize, None));
+                }
                 Some(BreakKind::Allowed) if !sp && !space_at(j) => {
                     items.push(Item::penalty(0.0, j));
                 }
