@@ -16,9 +16,9 @@
 //! trim in / trim out = `TimelineEdit::TrimIn` / `TrimOut` (no ripple); delete = `LiftClip`; ripple
 //! delete = `ExtractClip` ([STU-VID-028]); razor at the playhead = `Razor` per clip under the
 //! playhead ([STU-VID-027]); move = `LiftClip` then a `plan_assembly_edit` OVERWRITE of the same
-//! source window at the destination keeping the clip id (the clip's markers and enabled flag are
-//! carried over; a linked clip is refused `linked_move_unsupported`; dragging onto another track of
-//! the same kind moves it there). Markers: `RecordEdit::AddMarker` at the playhead frame,
+//! source window at the destination keeping the clip id (the clip's markers, enabled flag and retime
+//! record are carried over, its transitions are lost with a note; a linked clip is refused
+//! `linked_move_unsupported`; dragging onto another track of the same kind moves it there). Markers: `RecordEdit::AddMarker` at the playhead frame,
 //! `next_marker` / `prev_marker` jumps. Snapping ([STU-VID-035], parity row PR-12) uses pulse's
 //! `snap_targets` / `nearest_snap`: dragged edges and the scrubbed playhead are attracted to edit
 //! points, markers, work-area bounds and the sequence start within [`SNAP_PX`] screen pixels.
@@ -1092,6 +1092,30 @@ fn noted(p: &hsk_studio_pulse::EditProposal, notes: &mut Vec<String>) {
     }
 }
 
+/// What a move keeps that the assembly request does not set. No `..`: a new clip member stops
+/// compiling here until someone decides whether the move carries it or reports losing it (test
+/// `a_move_changes_only_the_position_of_a_clip`).
+fn carry_across_move(original: &StudioClip, placed: &mut StudioClip) {
+    let StudioClip {
+        schema_id: _,      // one token per schema
+        clip_id: _,        // the source patch keeps it
+        source_ref: _,     // `AssemblyEdit::source`
+        source_in: _,      // `AssemblyPoints::source_in`
+        source_out: _,     // `AssemblyPoints::source_out`
+        timeline_start: _, // the destination
+        duration: _,       // derived by the assembly from the window and the speed
+        speed: _,          // `AssemblyEdit::speed`
+        enabled,
+        link_group: _, // a linked clip is refused before the move
+        markers,
+        transitions: _, // lost: the lift lists them in `dropped_transitions` and the note says so
+        retime,
+    } = original;
+    placed.enabled = *enabled;
+    placed.markers.clone_from(markers);
+    placed.retime = *retime;
+}
+
 fn plan_move(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, clip_id: &str, start: Ticks, track_id: Option<&str>) -> Result<Planned, String> {
     let revision = snapshot.document().revision;
     let sequence = sequence_in(snapshot, sequence_id)?;
@@ -1129,10 +1153,8 @@ fn plan_move(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, c
     noted(&lift, &mut notes);
     noted(&placed, &mut notes);
     let mut out = sequence_in(placed.snapshot(), sequence_id)?;
-    // The clip's own record fields the assembly does not set travel with it.
     if let Some(c) = out.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.clip_id == clip_id) {
-        c.markers.clone_from(&clip.markers);
-        c.enabled = clip.enabled;
+        carry_across_move(clip, c);
     }
     if !clip.markers.is_empty() {
         notes.retain(|n| !n.starts_with("removed markers"));
