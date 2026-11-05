@@ -104,7 +104,7 @@ pub fn open_counted(bytes: &[u8]) -> (Session, Frames) {
     (session, frames)
 }
 
-fn clip(n: u32, frames: u64) -> StudioClip {
+pub fn clip(n: u32, frames: u64) -> StudioClip {
     StudioClip {
         schema_id: ClipSchema::V1,
         clip_id: identity("SCLP", n),
