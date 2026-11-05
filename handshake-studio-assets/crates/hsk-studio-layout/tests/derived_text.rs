@@ -973,6 +973,39 @@ fn one_value_rule_page_labels_that_cannot_be_produced() {
 //
 // Declared reading: no text, so no entry, as an empty heading has none. A gap it holds is still
 // reported, on the result, because there is no entry to carry it. InDesign behaviour UNVERIFIED (D5).
+//
+// These fixtures place through compose_with_sentinels, as a host does: a marker with a value is shaped
+// and has a line, a marker-only paragraph without one has a blank line whose empty source span sits at
+// the paragraph's end (native probe: "Intro\n<index>\nBody\n" lines (0,5), (10,10), (10,14)).
+
+/// `fx_with`, placed through composition with toy shaping.
+fn composed(text: &str, styled: usize) -> Fx {
+    let mut f = fx(text, styled);
+    let mut shaper = |i: &ShapeInput<'_>| -> Result<ShapedParagraph, LayoutError> {
+        let mut p = ShapedParagraph::from_fixed_advance(i.text, i.paragraph, 6.0, 12.0, 10.0).ok_or(LayoutError::InvalidInput)?;
+        p.glyphs.retain(|g| !glyphless(i.text[g.cluster.start as usize..].chars().next().unwrap()));
+        Ok(p)
+    };
+    let req = SentinelRequest {
+        document: &f.doc,
+        story: &f.story,
+        resolved_text: None,
+        obstacles: &[],
+        composer: Composer::FirstFit,
+        space: SpaceParams::default(),
+        expected_revision: 2,
+        limits: Limits::default(),
+        sections: &[],
+        markers: &[],
+        budget: SentinelBudget::default(),
+    };
+    let out = compose_with_sentinels(&req, &TypesetOptions::default(), &records(), &mut shaper, &CancellationToken::default()).unwrap();
+    f.placement = out.layout;
+    f
+}
+fn composed_on_page_2(heading: &str) -> Fx {
+    composed(&format!("Intro\n{heading}\n"), 1)
+}
 
 /// (entries, text, omitted gaps) of both generators, which must agree; the contract's counter.
 fn no_entry(f: &Fx, include_overset: bool) -> (Vec<(String, DerivedMarkerGap)>, usize) {
@@ -987,7 +1020,7 @@ fn no_entry(f: &Fx, include_overset: bool) -> (Vec<(String, DerivedMarkerGap)>, 
 #[test]
 fn a_heading_of_markers_with_no_value_gives_no_entry_and_no_gap() {
     for heading in [format!("{IDX}"), format!("{FNOTE}{ENOTE}"), format!("{OBJECT}"), format!("{IDX}{FNOTE}{OBJECT}{ENOTE}")] {
-        let f = on_page_2(&heading);
+        let f = composed_on_page_2(&heading);
         assert_eq!(no_entry(&f, false), (vec![], 1), "{}", heading.escape_unicode());
     }
 }
@@ -995,14 +1028,14 @@ fn a_heading_of_markers_with_no_value_gives_no_entry_and_no_gap() {
 #[test]
 fn a_heading_of_markers_and_white_space_only_gives_no_entry() {
     for heading in [format!(" {IDX} "), format!("{IDX}{FLUSH}"), format!("{IDX}\t"), format!("{LS}{IDX}")] {
-        let f = on_page_2(&heading);
+        let f = composed_on_page_2(&heading);
         assert_eq!(no_entry(&f, false), (vec![], 1), "{}", heading.escape_unicode());
     }
 }
 
 #[test]
 fn a_marker_only_heading_ended_by_a_break_sentinel_gives_no_entry() {
-    let f = fx(&format!("{IDX}{PAGE}Body\n"), 0);
+    let f = composed(&format!("{IDX}{PAGE}Body\n"), 0);
     assert_eq!(no_entry(&f, false), (vec![], 1));
 }
 
@@ -1019,7 +1052,7 @@ fn a_gap_of_a_marker_only_heading_is_still_reported() {
         (RESERVED, DerivedMarkerGap { story_byte: at, kind: None, reason: DerivedGapReason::ReservedCodePoint }),
     ];
     for (m, want) in cases {
-        let f = on_page_2(&format!("{m}"));
+        let f = composed_on_page_2(&format!("{m}"));
         assert_eq!(no_entry(&f, false), (vec![(story.clone(), want)], 1), "U+{:04X}", m as u32);
     }
 }
@@ -1027,16 +1060,16 @@ fn a_gap_of_a_marker_only_heading_is_still_reported() {
 #[test]
 fn a_heading_whose_only_marker_has_a_value_keeps_its_entry() {
     // It has text: the value.
-    every_site(&on_page_2(&format!("{CUR}")), 2, "2", "2", &[]);
-    every_site(&on_page_2(&format!("{PREV}")), 2, "1", "2", &[]);
-    every_site(&fx(&format!("{NEXT}\nB\n"), 0), 1, "2", "1", &[]);
+    every_site(&composed_on_page_2(&format!("{CUR}")), 2, "2", "2", &[]);
+    every_site(&composed_on_page_2(&format!("{PREV}")), 2, "1", "2", &[]);
+    every_site(&composed(&format!("{NEXT}\nB\n"), 0), 1, "2", "1", &[]);
 }
 
 #[test]
 fn a_marker_only_heading_leaves_the_other_entries_alone() {
     // Three headings on page-2: real, marker only, real.
     let text = format!("Intro\nOne\n{IDX}\nTwo\n");
-    let doc = fx(&text, 1);
+    let doc = composed(&text, 1);
     let mut st = doc.story.clone();
     st.paragraphs[2].style_ref = Some(id("STYS", 1));
     st.paragraphs[3].style_ref = Some(id("STYS", 1));
@@ -1053,7 +1086,7 @@ fn a_marker_only_heading_leaves_the_other_entries_alone() {
 #[test]
 fn a_marker_only_heading_is_no_entry_when_overset_is_included_too() {
     let text = format!("a\nb\nc\nd\ne\nf\n{CUR}\n");
-    let f = fx(&text, 6);
+    let f = composed(&text, 6);
     assert!(f.placement.overset.is_some());
     let at = "a\nb\nc\nd\ne\nf\n".len() as u64;
     let want = vec![(id("STXT", 1), gap(at, MarkerKind::CurrentPageNumber, UnresolvedMarker::NotPlaced))];
@@ -1072,6 +1105,21 @@ fn an_empty_heading_gives_no_entry_as_the_marker_only_reading_says() {
     assert_eq!((g.entries.len(), g.text.as_str()), (0, ""), "generate_toc");
     let c = contract_try(&f, false, false).unwrap();
     assert_eq!((c.entries.len(), text_of(&c.story)), (0, ""), "generate_table_of_contents");
+    // Today's count, unchanged by this rule: it has no marker, so it stays counted as overset.
+    assert_eq!((c.omitted_overset, c.omitted_no_text), (1, 0));
+    let f = composed("Intro\n\nBody\n", 1);
+    let c = contract_try(&f, false, false).unwrap();
+    assert_eq!((c.entries.len(), c.omitted_overset, c.omitted_no_text), (0, 1, 0));
+    assert_eq!(toc_try(&f, false).unwrap().entries.len(), 0);
+}
+
+#[test]
+fn a_gap_in_a_marker_only_cross_reference_destination_says_what_composition_says() {
+    // A placed marker with no value: composition's state, not "not placed".
+    let f = composed(&format!("{PREV}\nB\n"), 0);
+    let x = xref_try(&f, "<fullPara/>").unwrap();
+    assert_eq!(x.marker_gaps, vec![gap(0, MarkerKind::PreviousPageNumber, UnresolvedMarker::NoPreviousPage)]);
+    assert_eq!(composed_state(&f, &[]), MarkerState::Unresolved(UnresolvedMarker::NoPreviousPage));
 }
 
 #[test]
