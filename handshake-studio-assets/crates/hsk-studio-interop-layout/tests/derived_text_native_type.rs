@@ -612,3 +612,28 @@ fn every_terminator_ends_the_entry_through_native_type() {
         holds_through_type(&d, &font);
     }
 }
+
+#[test]
+fn a_heading_of_markers_only_gives_no_entry_through_native_type() {
+    let font = inter();
+    let toc_of = |text: &str, styled: usize| {
+        let doc = two_pages();
+        let mut st = story_of(text);
+        st.paragraphs[styled].style_ref = Some(id("STYS", 1));
+        let out = compose(&doc, &st, &[], &font);
+        let pages = number_pages(&doc, &[]).unwrap();
+        let source = [TocSource { story: &st, text, placement: Some(&out.layout) }];
+        generate_toc(&doc, &toc_style(), &source, &pages, &id("STXT", 9), TocLimits::default(), &CancellationToken::default()).expect("toc")
+    };
+    for m in [INDEX, FOOTNOTE, ENDNOTE] {
+        let g = toc_of(&format!("Intro\n{m}\nBody\n"), 1);
+        assert_eq!((g.entries.len(), g.text.as_str(), g.omitted_marker_gaps.len()), (0, "", 0), "U+{:04X}", m as u32);
+    }
+    // A gap is still reported; a value is text and keeps the entry.
+    let g = toc_of(&format!("A\n{PREV}\n"), 1);
+    assert_eq!((g.entries[0].text.as_str(), g.text.as_str()), ("1", "1 2"));
+    let g = toc_of(&format!("{PREV}\nB\n"), 0);
+    assert_eq!(g.entries.len(), 0);
+    let reasons: Vec<DerivedGapReason> = g.omitted_marker_gaps.iter().map(|(_, gap)| gap.reason).collect();
+    assert_eq!(reasons, [DerivedGapReason::Marker(UnresolvedMarker::NoPreviousPage)]);
+}

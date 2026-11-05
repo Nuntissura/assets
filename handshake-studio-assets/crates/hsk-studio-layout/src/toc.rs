@@ -112,6 +112,9 @@ pub struct GeneratedStory {
     pub text: String,
     pub paragraphs: Vec<StoryParagraph>,
     pub entries: Vec<TocEntryOut>,
+    /// (story id, gap): markers of a mapped paragraph left out because it holds only markers
+    /// (`derived_text`), which has no entry to carry them.
+    pub omitted_marker_gaps: Vec<(String, crate::DerivedMarkerGap)>,
 }
 impl GeneratedStory {
     /// A Folio story (inline content, left to right, one character range) carrying this text.
@@ -396,5 +399,6 @@ pub fn generate_toc(
         text: w.text,
         paragraphs: w.paragraphs,
         entries: entries.into_iter().map(|(e, _)| e).collect(),
+        omitted_marker_gaps: Vec::new(),
     })
 }

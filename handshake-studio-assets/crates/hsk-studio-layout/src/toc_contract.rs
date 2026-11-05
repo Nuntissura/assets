@@ -560,6 +560,10 @@ pub struct TocGenerated {
     pub omitted_overset: usize,
     /// Mapped paragraphs left out because their frame layer is hidden (`include_hidden` off).
     pub omitted_hidden: usize,
+    /// Mapped paragraphs left out because they hold only markers, so no text (`derived_text`).
+    pub omitted_no_text: usize,
+    /// (story id, gap): markers of those paragraphs, which have no entry to carry them.
+    pub omitted_marker_gaps: Vec<(String, crate::DerivedMarkerGap)>,
 }
 impl TocGenerated {
     /// Anchors this generation created (to add to the layout-flow records).
@@ -1013,6 +1017,8 @@ fn generate_inner(
         numbered_paragraphs: style.numbered_paragraphs.clone(),
         omitted_overset,
         omitted_hidden,
+        omitted_no_text: 0,
+        omitted_marker_gaps: Vec::new(),
     })
 }
 

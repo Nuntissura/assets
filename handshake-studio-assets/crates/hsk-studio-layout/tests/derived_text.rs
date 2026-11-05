@@ -968,3 +968,116 @@ fn one_value_rule_page_labels_that_cannot_be_produced() {
     let f = one_marker(CUR, 3, vec![]);
     assert_eq!(composed_state_with(&f, &bad, &[]), MarkerState::Unresolved(U::NotPlaced));
 }
+
+// ---- Lead decision: a heading holding only markers gives no TOC entry ----
+//
+// Declared reading: no text, so no entry, as an empty heading has none. A gap it holds is still
+// reported, on the result, because there is no entry to carry it. InDesign behaviour UNVERIFIED (D5).
+
+/// (entries, text, omitted gaps) of both generators, which must agree; the contract's counter.
+fn no_entry(f: &Fx, include_overset: bool) -> (Vec<(String, DerivedMarkerGap)>, usize) {
+    let g = toc_try(f, include_overset).unwrap();
+    assert_eq!((g.entries.len(), g.text.as_str()), (0, ""), "generate_toc");
+    let c = contract_try(f, false, include_overset).unwrap();
+    assert_eq!((c.entries.len(), text_of(&c.story)), (0, ""), "generate_table_of_contents");
+    assert_eq!(g.omitted_marker_gaps, c.omitted_marker_gaps);
+    (g.omitted_marker_gaps, c.omitted_no_text)
+}
+
+#[test]
+fn a_heading_of_markers_with_no_value_gives_no_entry_and_no_gap() {
+    for heading in [format!("{IDX}"), format!("{FNOTE}{ENOTE}"), format!("{OBJECT}"), format!("{IDX}{FNOTE}{OBJECT}{ENOTE}")] {
+        let f = on_page_2(&heading);
+        assert_eq!(no_entry(&f, false), (vec![], 1), "{}", heading.escape_unicode());
+    }
+}
+
+#[test]
+fn a_heading_of_markers_and_white_space_only_gives_no_entry() {
+    for heading in [format!(" {IDX} "), format!("{IDX}{FLUSH}"), format!("{IDX}\t"), format!("{LS}{IDX}")] {
+        let f = on_page_2(&heading);
+        assert_eq!(no_entry(&f, false), (vec![], 1), "{}", heading.escape_unicode());
+    }
+}
+
+#[test]
+fn a_marker_only_heading_ended_by_a_break_sentinel_gives_no_entry() {
+    let f = fx(&format!("{IDX}{PAGE}Body\n"), 0);
+    assert_eq!(no_entry(&f, false), (vec![], 1));
+}
+
+#[test]
+fn a_gap_of_a_marker_only_heading_is_still_reported() {
+    use UnresolvedMarker as U;
+    let story = id("STXT", 1);
+    let at = "Intro\n".len() as u64;
+    // No next page on the last page, no record, no sections at this call, a reserved code point.
+    let cases = [
+        (NEXT, DerivedMarkerGap { story_byte: at, kind: Some(MarkerKind::NextPageNumber), reason: DerivedGapReason::Marker(U::NoNextPage) }),
+        (XR, DerivedMarkerGap { story_byte: at, kind: Some(MarkerKind::CrossReference), reason: DerivedGapReason::Marker(U::RecordMissing) }),
+        (SEC, DerivedMarkerGap { story_byte: at, kind: Some(MarkerKind::SectionMarker), reason: DerivedGapReason::SectionsUnavailable }),
+        (RESERVED, DerivedMarkerGap { story_byte: at, kind: None, reason: DerivedGapReason::ReservedCodePoint }),
+    ];
+    for (m, want) in cases {
+        let f = on_page_2(&format!("{m}"));
+        assert_eq!(no_entry(&f, false), (vec![(story.clone(), want)], 1), "U+{:04X}", m as u32);
+    }
+}
+
+#[test]
+fn a_heading_whose_only_marker_has_a_value_keeps_its_entry() {
+    // It has text: the value.
+    every_site(&on_page_2(&format!("{CUR}")), 2, "2", "2", &[]);
+    every_site(&on_page_2(&format!("{PREV}")), 2, "1", "2", &[]);
+    every_site(&fx(&format!("{NEXT}\nB\n"), 0), 1, "2", "1", &[]);
+}
+
+#[test]
+fn a_marker_only_heading_leaves_the_other_entries_alone() {
+    // Three headings on page-2: real, marker only, real.
+    let text = format!("Intro\nOne\n{IDX}\nTwo\n");
+    let doc = fx(&text, 1);
+    let mut st = doc.story.clone();
+    st.paragraphs[2].style_ref = Some(id("STYS", 1));
+    st.paragraphs[3].style_ref = Some(id("STYS", 1));
+    let f = Fx { story: st, ..doc };
+    let g = toc_try(&f, false).unwrap();
+    assert_eq!(g.text, "One 2\nTwo 2");
+    assert_eq!(spans(&g.paragraphs), partition(&g.text));
+    assert!(g.omitted_marker_gaps.is_empty());
+    let c = contract_try(&f, false, false).unwrap();
+    assert_eq!(text_of(&c.story), "One 2\nTwo 2");
+    assert_eq!((c.omitted_no_text, c.omitted_overset, c.omitted_hidden), (1, 0, 0));
+}
+
+#[test]
+fn a_marker_only_heading_is_no_entry_when_overset_is_included_too() {
+    let text = format!("a\nb\nc\nd\ne\nf\n{CUR}\n");
+    let f = fx(&text, 6);
+    assert!(f.placement.overset.is_some());
+    let at = "a\nb\nc\nd\ne\nf\n".len() as u64;
+    let want = vec![(id("STXT", 1), gap(at, MarkerKind::CurrentPageNumber, UnresolvedMarker::NotPlaced))];
+    assert_eq!(no_entry(&f, true), (want, 1));
+    // Not including overset: left out and counted as overset like any overset heading, before its
+    // text is read, as before.
+    let c = contract_try(&f, false, false).unwrap();
+    assert_eq!((c.entries.len(), c.omitted_overset, c.omitted_no_text, c.omitted_marker_gaps.len()), (0, 1, 0, 0));
+}
+
+#[test]
+fn an_empty_heading_gives_no_entry_as_the_marker_only_reading_says() {
+    // The comparison the reading rests on.
+    let f = fx("Intro\n\nBody\n", 1);
+    let g = toc_try(&f, false).unwrap();
+    assert_eq!((g.entries.len(), g.text.as_str()), (0, ""), "generate_toc");
+    let c = contract_try(&f, false, false).unwrap();
+    assert_eq!((c.entries.len(), text_of(&c.story)), (0, ""), "generate_table_of_contents");
+}
+
+#[test]
+fn white_space_with_no_marker_is_not_this_rule() {
+    // Text the author typed stays an entry: only a heading that held a marker is read this way.
+    let f = on_page_2("  ");
+    assert_eq!(toc_try(&f, false).unwrap().entries[0].text, "  ");
+    assert_eq!(contract_try(&f, false, false).unwrap().omitted_no_text, 0);
+}
