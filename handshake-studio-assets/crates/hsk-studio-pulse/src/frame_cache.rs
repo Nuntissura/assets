@@ -15,7 +15,8 @@
 //!   source that refused is remembered (bounded) so a missing codec is reported once per source
 //!   and not re-decoded every frame; [`FramePipeline::prefetch`] decodes the frames the scheduler
 //!   will present next ([`PlaybackScheduler::upcoming_frames`] + [`prefetch_layers`]) within a
-//!   per-call decode budget.
+//!   per-call decode budget. A layer whose answer needs two frames names both, in order, each
+//!   against the same budget (test `prefetch_decodes_both_frames_of_a_pair_within_its_budget`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::{PulseError, Result};
@@ -513,17 +514,21 @@ impl<D: FrameDecoder> FramePipeline<D> {
     ) -> u64 {
         let mut calls = 0u32;
         let mut inserted = 0u64;
-        for layer in layers {
+        let ticks = layers.iter().flat_map(|layer| {
+            [Some(layer.source_tick), layer.second_source_tick()]
+                .into_iter()
+                .flatten()
+                .map(move |tick| (&layer.source, tick))
+        });
+        for (source, tick) in ticks {
             if calls >= max_decodes || cancel.check().is_err() {
                 break;
             }
-            if self.cache.contains(&layer.source, layer.source_tick)
-                || self.refusal(&layer.source).is_some()
-            {
+            if self.cache.contains(source, tick) || self.refusal(source).is_some() {
                 continue;
             }
             calls = calls.saturating_add(1);
-            if let Ok(n) = self.fill(&layer.source, layer.source_tick, self.run_frames, cancel) {
+            if let Ok(n) = self.fill(source, tick, self.run_frames, cancel) {
                 inserted = inserted.saturating_add(n);
             }
         }

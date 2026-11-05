@@ -45,10 +45,10 @@
 use crate::annotate::play_range;
 use crate::error::{PulseError, Result};
 use crate::range::TickRange;
-use crate::retime::{SequenceGrid, SourceFrameAnswer, SourceFrameRef, SourceGrids};
+use crate::retime::{SequenceGrid, SourceFrameAnswer, SourceFrameGrid, SourceGrids, layer_frame};
 use crate::time::ticks_from_samples;
 use crate::timeline_edit::{SourceExtents, rate_of};
-use crate::transition::{clip_source_at, transition_frame};
+use crate::transition::transition_frame;
 use hsk_studio_accord::{CancellationToken, FrameRate, Ticks};
 use hsk_studio_folio::{ClipSource, StudioSequence, TrackKind};
 
@@ -705,7 +705,8 @@ impl PlaybackScheduler {
 }
 
 /// One layer of a program-monitor frame, bottom-first: which clip's source plays at which source
-/// tick and with what weight (`1` except the incoming side of a cross dissolve).
+/// tick and with what weight (`1` except the incoming side of a cross dissolve). `source_tick` holds
+/// the frame a renderer decodes first; `answer` says what it does with it ([STU-VID-031]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameLayer {
     pub track_id: String,
@@ -716,7 +717,8 @@ pub struct FrameLayer {
     pub weight: f64,
     /// Held end frame (`repeat_end_frame`).
     pub held: bool,
-    /// What the layer shows between source frames ([STU-VID-031]).
+    /// What the layer shows between source frames: the clip's interpolation choice resolved
+    /// (`retime` module docs), with the estimation mark of `optical_flow`.
     pub answer: SourceFrameAnswer,
 }
 
@@ -748,10 +750,13 @@ pub fn frame_layers_on_grids(
     sequence: &StudioSequence,
     tick: Ticks,
     extents: &dyn SourceExtents,
-    _grids: &dyn SourceGrids,
+    grids: &dyn SourceGrids,
     cancel: &CancellationToken,
 ) -> Result<Vec<FrameLayer>> {
-    let stub = |start: Ticks| SourceFrameAnswer::Sampled(SourceFrameRef { index: 0, start });
+    let grid_for = |source: &ClipSource| match grids.grid(source) {
+        Some(grid) => Ok(grid),
+        None => rate_of(sequence).map(SourceFrameGrid::from_rate),
+    };
     let mut out = Vec::new();
     for track in sequence
         .tracks
@@ -761,30 +766,24 @@ pub fn frame_layers_on_grids(
         cancel.check()?;
         let find = |id: &str| track.clips.iter().find(|c| c.clip_id == id);
         if let Some(tf) = transition_frame(sequence, &track.track_id, tick, extents, cancel)? {
-            for (id, source_tick, held, weight) in [
-                (
-                    &tf.outgoing_clip_id,
-                    tf.outgoing_source,
-                    tf.outgoing_held,
-                    1.0,
-                ),
-                (
-                    &tf.incoming_clip_id,
-                    tf.incoming_source,
-                    tf.incoming_held,
-                    tf.incoming_weight(),
-                ),
+            let repeat = find(&tf.outgoing_clip_id)
+                .and_then(|c| c.transitions.tail.as_ref())
+                .is_some_and(|t| t.repeat_end_frame);
+            for (id, weight) in [
+                (&tf.outgoing_clip_id, 1.0),
+                (&tf.incoming_clip_id, tf.incoming_weight()),
             ] {
                 let clip = find(id).ok_or(PulseError::UnknownClip)?;
                 if clip.enabled {
+                    let frame = layer_frame(clip, tick, grid_for(&clip.source_ref)?, extents, repeat)?;
                     out.push(FrameLayer {
                         track_id: track.track_id.clone(),
                         clip_id: clip.clip_id.clone(),
                         source: clip.source_ref.clone(),
-                        source_tick,
+                        source_tick: frame.source_tick,
                         weight,
-                        held,
-                        answer: stub(source_tick),
+                        held: frame.held,
+                        answer: frame.answer,
                     });
                 }
             }
@@ -797,15 +796,15 @@ pub fn frame_layers_on_grids(
         if !clip.enabled || clip.timeline_end().is_none_or(|end| end <= tick) {
             continue;
         }
-        let (source_tick, held) = clip_source_at(clip, tick, extents, false)?;
+        let frame = layer_frame(clip, tick, grid_for(&clip.source_ref)?, extents, false)?;
         out.push(FrameLayer {
             track_id: track.track_id.clone(),
             clip_id: clip.clip_id.clone(),
             source: clip.source_ref.clone(),
-            source_tick,
+            source_tick: frame.source_tick,
             weight: 1.0,
-            held,
-            answer: stub(source_tick),
+            held: frame.held,
+            answer: frame.answer,
         });
     }
     Ok(out)
