@@ -4,7 +4,8 @@
 //! derived from it is then handed to Type directly and, for the TOC, composed like any other story.
 //! Before the lane direct Type refused the text (MissingGlyph, n7a-c), a current-page marker resolved
 //! against the TOC story's own page (n7c), and a heading ended by a break sentinel lost its page label
-//! (n7d). The value rule is pinned against composition: derived text shows the value
+//! (n7d). Composition and derived text share one value rule (`sentinels::marker_value`) but find a
+//! marker's page separately (`place_markers`, `toc::line_of`): derived text must show the value
 //! `compose_with_sentinels` resolves at the same source byte.
 //!
 //! The Type ports, fixtures and font are the ones of `tests/sentinels_native_type.rs` (test-only copy:

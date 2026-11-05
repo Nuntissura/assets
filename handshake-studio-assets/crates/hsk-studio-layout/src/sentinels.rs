@@ -526,7 +526,73 @@ fn check_records<'r>(
     Ok(out)
 }
 
-/// The value of one marker placed on document page `at` (ordinal index), module docs.
+/// Where a marker's value is read from.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum MarkerPlace<'a> {
+    /// In overset text, or on no page.
+    NotPlaced,
+    /// Placed, but the page labels could not be produced.
+    NoPages(NumberingError),
+    /// On `page` of the document's `pages` (`PageNumber::ordinal` finds its neighbours).
+    Page { page: &'a PageNumber, pages: &'a [PageNumber] },
+}
+
+/// The document page with 1-based ordinal `ordinal`.
+fn page_with_ordinal(pages: &[PageNumber], ordinal: usize) -> Option<&PageNumber> {
+    pages.get(pages.partition_point(|p| p.ordinal < ordinal)).filter(|p| p.ordinal == ordinal)
+}
+
+/// The one rule of a marker's value, composition's ([`resolve`]) and derived text's
+/// (`derived_text`), module docs: `Ok` is the text to show, `Err` the explicit state, never a guessed
+/// value. A marker that is not placed has no value whatever its kind.
+pub(crate) fn marker_value<'a>(
+    kind: MarkerKind,
+    place: MarkerPlace<'a>,
+    sections: &'a [StudioSection],
+    record: Option<&'a MarkerRecord>,
+    max_bytes: usize,
+) -> Result<&'a str, UnresolvedMarker> {
+    use UnresolvedMarker as U;
+    let here = match place {
+        MarkerPlace::NotPlaced => return Err(U::NotPlaced),
+        MarkerPlace::NoPages(e) => Err(U::Numbering(e)),
+        MarkerPlace::Page { page, pages } => Ok((page, pages)),
+    };
+    let text = match kind {
+        MarkerKind::Index => return Err(U::RuleUnstated),
+        MarkerKind::FootnoteReference | MarkerKind::EndnoteReference | MarkerKind::CrossReference => {
+            match record.map(|r| &r.target) {
+                Some(MarkerTarget::Generated { text, .. }) => text.as_str(),
+                _ => return Err(U::RecordMissing),
+            }
+        }
+        MarkerKind::CurrentPageNumber => here?.0.label.as_str(),
+        MarkerKind::NextPageNumber => {
+            let (page, pages) = here?;
+            let next = page.ordinal.checked_add(1).and_then(|o| page_with_ordinal(pages, o));
+            next.ok_or(U::NoNextPage)?.label.as_str()
+        }
+        MarkerKind::PreviousPageNumber => {
+            let (page, pages) = here?;
+            let previous = page.ordinal.checked_sub(1).and_then(|o| page_with_ordinal(pages, o));
+            previous.ok_or(U::NoPreviousPage)?.label.as_str()
+        }
+        MarkerKind::SectionMarker => {
+            let section = here?.0.section.ok_or(U::NoSection)?;
+            sections.get(section).and_then(|s| s.marker.as_deref()).ok_or(U::NoSectionMarker)?
+        }
+    };
+    if text.len() > max_bytes {
+        return Err(U::TextOverBudget);
+    }
+    if text.chars().any(|c| ends_paragraph(c) || ty::is_sentinel_block(c) || c == '\u{FFFC}') {
+        return Err(U::TextNotInline);
+    }
+    Ok(text)
+}
+
+/// The state of one marker placed on document page `at` (index into `pages`, which holds every page
+/// of the document, so `at` is always in it): [`marker_value`].
 fn resolve(
     kind: MarkerKind,
     at: Option<usize>,
@@ -535,38 +601,12 @@ fn resolve(
     record: Option<&MarkerRecord>,
     max_bytes: usize,
 ) -> MarkerState {
-    use UnresolvedMarker as U;
-    let Some(at) = at else {
-        return MarkerState::Unresolved(U::NotPlaced);
+    let place = match (at, pages) {
+        (None, _) => MarkerPlace::NotPlaced,
+        (Some(_), Err(e)) => MarkerPlace::NoPages(*e),
+        (Some(i), Ok(pages)) => pages.get(i).map_or(MarkerPlace::NotPlaced, |page| MarkerPlace::Page { page, pages }),
     };
-    let label = |i: Option<usize>, missing: U| -> Result<&str, U> {
-        let pages = pages.as_ref().map_err(|e| U::Numbering(*e))?;
-        i.and_then(|i| pages.get(i)).map(|p| p.label.as_str()).ok_or(missing)
-    };
-    let text: Result<&str, U> = match kind {
-        MarkerKind::Index => Err(U::RuleUnstated),
-        MarkerKind::FootnoteReference | MarkerKind::EndnoteReference | MarkerKind::CrossReference => {
-            match record.map(|r| &r.target) {
-                Some(MarkerTarget::Generated { text, .. }) => Ok(text.as_str()),
-                _ => Err(U::RecordMissing),
-            }
-        }
-        MarkerKind::CurrentPageNumber => label(Some(at), U::NotPlaced),
-        MarkerKind::NextPageNumber => label(at.checked_add(1), U::NoNextPage),
-        MarkerKind::PreviousPageNumber => label(at.checked_sub(1), U::NoPreviousPage),
-        MarkerKind::SectionMarker => match pages {
-            Err(e) => Err(U::Numbering(*e)),
-            Ok(pages) => match pages.get(at).and_then(|p| p.section) {
-                None => Err(U::NoSection),
-                Some(k) => sections.get(k).and_then(|s| s.marker.as_deref()).ok_or(U::NoSectionMarker),
-            },
-        },
-    };
-    match text {
-        Ok(t) if t.len() > max_bytes => MarkerState::Unresolved(U::TextOverBudget),
-        Ok(t) if t.chars().any(|c| ends_paragraph(c) || ty::is_sentinel_block(c) || c == '\u{FFFC}') => {
-            MarkerState::Unresolved(U::TextNotInline)
-        }
+    match marker_value(kind, place, sections, record, max_bytes) {
         Ok(t) => MarkerState::Resolved(t.to_owned()),
         Err(u) => MarkerState::Unresolved(u),
     }

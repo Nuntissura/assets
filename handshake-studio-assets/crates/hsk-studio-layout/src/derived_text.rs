@@ -9,9 +9,9 @@
 //!   reference U+FDD5, anchored-object marker U+FFFC.
 //! - A value at the source, shown as that value: current, next and previous page number U+FDD0..U+FDD2
 //!   (the label of the page holding the marker's own line, of the next, of the previous document page),
-//!   section marker U+FDD3 (the `marker` of that page's section). The same rules as
-//!   `sentinels::resolve`; `derived_text_native_type::derived_values_equal_the_values_composition_resolves`
-//!   holds the two equal through native Type.
+//!   section marker U+FDD3 (the `marker` of that page's section). The value is composition's own rule,
+//!   `sentinels::marker_value`; `derived_text_native_type::derived_values_equal_the_values_composition_resolves`
+//!   holds the two locations of a marker equal through native Type.
 //! - A value this call cannot read, a typed [`DerivedMarkerGap`], no text: cross-reference marker
 //!   U+FDD6 (its value is the display text of a record no derived-text call is given,
 //!   `UnresolvedMarker::RecordMissing`), a section marker in a call without sections
@@ -35,7 +35,7 @@
 //! (`v4_02_the_budget_is_the_aggregate_of_one_call`).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::numbering::PageNumber;
-use crate::sentinels::{FLUSH_SPACE, MAX_RESOLVED_MARKER_BYTES, MAX_STORY_MARKERS, MarkerKind, UnresolvedMarker, ends_paragraph};
+use crate::sentinels::{FLUSH_SPACE, MAX_RESOLVED_MARKER_BYTES, MAX_STORY_MARKERS, MarkerKind, MarkerPlace, UnresolvedMarker, ends_paragraph, marker_value};
 use crate::toc::{TocSource, line_of};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::StudioSection;
@@ -118,50 +118,27 @@ pub(crate) struct DerivedText {
     pub gaps: Vec<DerivedMarkerGap>,
 }
 
-/// The document page with 1-based ordinal `ordinal`.
-fn page_with_ordinal(pages: &[PageNumber], ordinal: usize) -> Option<&PageNumber> {
-    pages.get(pages.partition_point(|p| p.ordinal < ordinal)).filter(|p| p.ordinal == ordinal)
-}
-
-/// The value of a page-number or section marker at story byte `at` (module docs).
+/// The value of a page-number or section marker at story byte `at` (module docs): where the byte is
+/// placed in `source` (`toc::line_of`), then the one rule, `sentinels::marker_value`. A call with no
+/// sections cannot read a section marker that is placed.
 fn value_at<'a>(
     kind: MarkerKind,
     at: u64,
     source: Option<&TocSource<'_>>,
     pages: Option<&DerivedPages<'a>>,
 ) -> Result<&'a str, DerivedGapReason> {
-    use UnresolvedMarker as U;
-    let unresolved = |u: U| DerivedGapReason::Marker(u);
-    let (Some(source), Some(d)) = (source, pages) else {
-        return Err(unresolved(U::NotPlaced));
+    let placed = source.zip(pages).and_then(|(source, d)| {
+        let (frame, _) = line_of(source, at)?;
+        let page: &'a PageNumber = d.by_page.get(&(frame.spread, frame.page)).copied()?;
+        Some((MarkerPlace::Page { page, pages: d.pages }, d.sections))
+    });
+    let (place, sections) = match placed {
+        Some((place, Some(sections))) => (place, sections),
+        Some((_, None)) if kind == MarkerKind::SectionMarker => return Err(DerivedGapReason::SectionsUnavailable),
+        Some((place, None)) => (place, &[][..]),
+        None => (MarkerPlace::NotPlaced, &[][..]),
     };
-    let (frame, _) = line_of(source, at).ok_or(unresolved(U::NotPlaced))?;
-    let page: &'a PageNumber = d.by_page.get(&(frame.spread, frame.page)).copied().ok_or(unresolved(U::NotPlaced))?;
-    let value = match kind {
-        MarkerKind::CurrentPageNumber => page.label.as_str(),
-        MarkerKind::NextPageNumber => {
-            let next = page.ordinal.checked_add(1).and_then(|o| page_with_ordinal(d.pages, o));
-            next.ok_or(unresolved(U::NoNextPage))?.label.as_str()
-        }
-        MarkerKind::PreviousPageNumber => {
-            let previous = page.ordinal.checked_sub(1).and_then(|o| page_with_ordinal(d.pages, o));
-            previous.ok_or(unresolved(U::NoPreviousPage))?.label.as_str()
-        }
-        MarkerKind::SectionMarker => {
-            let sections = d.sections.ok_or(DerivedGapReason::SectionsUnavailable)?;
-            let section = page.section.ok_or(unresolved(U::NoSection))?;
-            sections.get(section).and_then(|s| s.marker.as_deref()).ok_or(unresolved(U::NoSectionMarker))?
-        }
-        MarkerKind::CrossReference => return Err(unresolved(U::RecordMissing)),
-        MarkerKind::Index | MarkerKind::FootnoteReference | MarkerKind::EndnoteReference => return Err(unresolved(U::RuleUnstated)),
-    };
-    if value.len() > MAX_RESOLVED_MARKER_BYTES {
-        return Err(unresolved(U::TextOverBudget));
-    }
-    if value.chars().any(|c| ends_paragraph(c) || ty::is_sentinel_block(c) || c == ANCHORED_OBJECT) {
-        return Err(unresolved(U::TextNotInline));
-    }
-    Ok(value)
+    marker_value(kind, place, sections, None, MAX_RESOLVED_MARKER_BYTES).map_err(DerivedGapReason::Marker)
 }
 
 /// The derived text of `raw`, the story bytes starting at `start` of `source` (module docs). `source`
