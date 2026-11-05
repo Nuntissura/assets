@@ -20,10 +20,15 @@
 //! list is counted before it is walked and charged against the [`Budget`], and a parse refuses bytes
 //! over [`MAX_TRACK_DISPLAY_INPUT_BYTES`] whatever the budget allows.
 #![deny(clippy::arithmetic_side_effects)]
-use super::{Budget, Code, Diagnostic, Result, StudioDocument, TrackKind};
+use super::{
+    Budget, Code, Diagnostic, MAX_SEQUENCES, Result, StudioDocument, TrackKind, Unresolved, err, id, key,
+    sequence_preset::parse_wire,
+    values::{Ctx, label},
+};
 use hsk_studio_accord::{CancellationToken, CommandContext};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 schema_token!(TrackDisplaySchema, "hsk.studio.track_display@1");
 
@@ -115,6 +120,14 @@ impl StudioTrackDisplaySwitches {
     };
 }
 
+fn valid_height(height: &u32) -> bool {
+    (MIN_TRACK_HEIGHT..=MAX_TRACK_HEIGHT).contains(height)
+}
+
+fn valid_preset_name(name: &str) -> bool {
+    !name.trim().is_empty() && label(name)
+}
+
 /// One height per track kind, in logical pixels, each `MIN_TRACK_HEIGHT..=MAX_TRACK_HEIGHT`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +152,10 @@ impl StudioTrackHeights {
             TrackKind::Caption => self.caption,
             TrackKind::Submix => self.submix,
         }
+    }
+    /// Every height is in bounds.
+    fn valid(&self) -> bool {
+        [self.video, self.audio, self.caption, self.submix].iter().all(valid_height)
     }
     fn set(&mut self, kind: TrackKind, height: u32) {
         match kind {
@@ -207,13 +224,81 @@ pub struct StudioResolvedTrackDisplay {
 /// Every document sequence with the display state it resolves to, in document order. `records` must
 /// already be valid against `d`.
 pub fn resolve_track_displays(records: Option<&StudioTrackDisplayRecords>, d: &StudioDocument) -> Vec<StudioResolvedTrackDisplay> {
-    let _ = (records, d);
-    Vec::new()
+    let resolve = |sequence_id: &String| match records.and_then(|r| r.entry(sequence_id)) {
+        Some(e) => StudioResolvedTrackDisplay {
+            sequence_id: sequence_id.clone(),
+            stored: true,
+            switches: e.switches,
+            heights: e.heights,
+            height_presets: e.height_presets.clone(),
+        },
+        None => StudioResolvedTrackDisplay {
+            sequence_id: sequence_id.clone(),
+            stored: false,
+            switches: StudioTrackDisplaySwitches::STUDIO_DEFAULT,
+            heights: StudioTrackHeights::STUDIO_DEFAULT,
+            height_presets: Vec::new(),
+        },
+    };
+    d.sequences.iter().map(|s| resolve(&s.sequence_id)).collect()
 }
 
-/// Validates the record set against the document.
+/// Validates the record set against the document: `SDOC` id equal to the document's; at most
+/// `MAX_SEQUENCES` entries and `MAX_TRACK_HEIGHT_PRESETS` presets per entry (each list counted before
+/// it is walked, then charged against `Budget::nodes`, so the two count together); each entry names a
+/// document sequence (`DanglingReference`) once (`DuplicateIdentity`); heights in bounds
+/// (`InvalidField`); preset ids of the key grammar (`InvalidId`), unique in the entry
+/// (`DuplicateIdentity`); preset names non-blank, at most 128 bytes, no control characters
+/// (`InvalidField`, charged against `Budget::payload_bytes`).
 pub fn validate_track_display_records(r: &StudioTrackDisplayRecords, d: &StudioDocument, b: Budget, token: &CancellationToken) -> Result<()> {
-    let _ = (r, d, b, token);
+    let mut cx = Ctx::new(b, token, &Unresolved);
+    cx.tick()?;
+    id(&r.document_id, "SDOC", "document_id")?;
+    if r.document_id != d.document_id {
+        return Err(err(Code::InvalidField, "document_id"));
+    }
+    if r.sequences.len() > MAX_SEQUENCES {
+        return Err(err(Code::BudgetExceeded, "track_display"));
+    }
+    cx.nodes(r.sequences.len(), "track_display")?;
+    let mut seen = BTreeSet::new();
+    for e in &r.sequences {
+        cx.tick()?;
+        let t = e.sequence_id.as_str();
+        if !key(t) {
+            return Err(err(Code::InvalidId, "track_display/sequence_id"));
+        }
+        if !d.sequences.iter().any(|s| s.sequence_id == t) {
+            return Err(err(Code::DanglingReference, t));
+        }
+        if !seen.insert(t) {
+            return Err(err(Code::DuplicateIdentity, t));
+        }
+        if !e.heights.valid() {
+            return Err(err(Code::InvalidField, format!("{t}/heights")));
+        }
+        if e.height_presets.len() > MAX_TRACK_HEIGHT_PRESETS {
+            return Err(err(Code::BudgetExceeded, format!("{t}/height_presets")));
+        }
+        cx.nodes(e.height_presets.len(), t)?;
+        let mut presets = BTreeSet::new();
+        for p in &e.height_presets {
+            cx.tick()?;
+            if !key(&p.preset_id) {
+                return Err(err(Code::InvalidId, format!("{t}/height_presets/preset_id")));
+            }
+            if !presets.insert(p.preset_id.as_str()) {
+                return Err(err(Code::DuplicateIdentity, format!("{t}/height_presets/{}", p.preset_id)));
+            }
+            if !valid_preset_name(&p.name) {
+                return Err(err(Code::InvalidField, format!("{t}/height_presets/{}/name", p.preset_id)));
+            }
+            if !p.heights.valid() {
+                return Err(err(Code::InvalidField, format!("{t}/height_presets/{}/heights", p.preset_id)));
+            }
+            cx.text(&p.name, t)?;
+        }
+    }
     Ok(())
 }
 
@@ -224,10 +309,16 @@ pub fn track_display_records_schema() -> schemars::Schema {
         .into_root_schema_for::<StudioTrackDisplayRecords>()
 }
 
-/// Parses wire JSON and validates it against the document.
+/// Parses wire JSON (bounded by [`MAX_TRACK_DISPLAY_INPUT_BYTES`], `Budget::input_bytes` and depth
+/// before any parse; duplicate keys `DuplicateField`, unknown fields, a missing field and wrong types
+/// `InvalidJson`) and validates it against the document.
 pub fn parse_track_display_records(input: &[u8], d: &StudioDocument, b: Budget, token: &CancellationToken) -> Result<StudioTrackDisplayRecords> {
-    let _ = (input, d, b, token);
-    Err(Diagnostic { code: Code::InvalidJson, target: "track_display".into() })
+    if input.len() > MAX_TRACK_DISPLAY_INPUT_BYTES {
+        return Err(err(Code::BudgetExceeded, "track_display"));
+    }
+    let r: StudioTrackDisplayRecords = parse_wire(input, b, token, "track_display")?;
+    validate_track_display_records(&r, d, b, token)?;
+    Ok(r)
 }
 
 /// Command ids, in [`StudioTrackDisplayCommand`] variant order.
@@ -337,7 +428,10 @@ pub struct StudioTrackDisplayOutcome {
     pub report: StudioTrackDisplayReport,
 }
 
-/// Applies one command at `revision` (the caller's current document revision).
+/// Applies one command at `revision` (the caller's current document revision; the context's base
+/// revision must equal it and its command id must be `cmd.command_id()`). The records are validated
+/// first (`InvalidInput`), the command runs on a copy, and the result is validated again and must fit
+/// what a parse under `b` accepts (`BudgetExceeded`). A refusal returns the typed error.
 pub fn apply_track_display_command(
     document: &StudioDocument,
     records: &StudioTrackDisplayRecords,
@@ -347,6 +441,89 @@ pub fn apply_track_display_command(
     b: Budget,
     token: &CancellationToken,
 ) -> std::result::Result<StudioTrackDisplayOutcome, StudioTrackDisplayError> {
-    let _ = (document, records, ctx, revision, cmd, b, token);
-    Err(StudioTrackDisplayError::InvalidInput(Code::InvalidField))
+    use StudioTrackDisplayCommand as C;
+    use StudioTrackDisplayError as E;
+    let c = ctx.command().ok_or(E::CommandMissing)?;
+    if c.as_str() != cmd.command_id() {
+        return Err(E::CommandMismatch);
+    }
+    if ctx.base_revision() != revision {
+        return Err(E::StaleRevision { expected: ctx.base_revision(), current: revision });
+    }
+    let invalid = |d: Diagnostic| match d.code {
+        Code::Canceled => E::Canceled,
+        Code::BudgetExceeded => E::BudgetExceeded,
+        code => E::InvalidInput(code),
+    };
+    validate_track_display_records(records, document, b, token).map_err(invalid)?;
+    let sequence_id = match cmd {
+        C::SetSwitches { sequence_id, .. }
+        | C::SetHeight { sequence_id, .. }
+        | C::ExpandAll { sequence_id }
+        | C::MinimizeAll { sequence_id }
+        | C::SaveHeightPreset { sequence_id, .. }
+        | C::RecallHeightPreset { sequence_id, .. } => sequence_id,
+    };
+    if !document.sequences.iter().any(|s| &s.sequence_id == sequence_id) {
+        return Err(E::SequenceMissing);
+    }
+    let before = records.entry(sequence_id).cloned().unwrap_or_else(|| StudioTrackDisplayEntry {
+        sequence_id: sequence_id.clone(),
+        switches: StudioTrackDisplaySwitches::STUDIO_DEFAULT,
+        heights: StudioTrackHeights::STUDIO_DEFAULT,
+        height_presets: Vec::new(),
+    });
+    let mut state = before.clone();
+    match cmd {
+        C::SetSwitches { switches, .. } => state.switches = *switches,
+        C::SetHeight { kind, height, .. } => {
+            if !valid_height(height) {
+                return Err(E::InvalidHeight);
+            }
+            state.heights.set(*kind, *height);
+        }
+        C::ExpandAll { .. } => state.heights = StudioTrackHeights::all(EXPANDED_TRACK_HEIGHT),
+        C::MinimizeAll { .. } => state.heights = StudioTrackHeights::all(MIN_TRACK_HEIGHT),
+        C::SaveHeightPreset { preset_id, name, .. } => {
+            if !key(preset_id) {
+                return Err(E::InvalidPresetId);
+            }
+            if state.height_presets.iter().any(|p| &p.preset_id == preset_id) {
+                return Err(E::DuplicatePreset);
+            }
+            if !valid_preset_name(name) {
+                return Err(E::InvalidName);
+            }
+            if state.height_presets.len() >= MAX_TRACK_HEIGHT_PRESETS {
+                return Err(E::BudgetExceeded);
+            }
+            state.height_presets.push(StudioTrackHeightPreset { preset_id: preset_id.clone(), name: name.clone(), heights: state.heights });
+        }
+        C::RecallHeightPreset { preset_id, .. } => {
+            state.heights = state.height_presets.iter().find(|p| &p.preset_id == preset_id).ok_or(E::PresetMissing)?.heights;
+        }
+    }
+    let changed = state != before;
+    let mut next = records.clone();
+    let height_presets = state.height_presets.len();
+    if changed {
+        match next.sequences.iter_mut().find(|e| &e.sequence_id == sequence_id) {
+            Some(e) => *e = state,
+            None => next.sequences.push(state),
+        }
+        validate_track_display_records(&next, document, b, token).map_err(invalid)?;
+        let bytes = serde_json::to_vec(&next).map_err(|_| E::InvalidInput(Code::InvalidJson))?;
+        if bytes.len() > MAX_TRACK_DISPLAY_INPUT_BYTES.min(b.input_bytes) {
+            return Err(E::BudgetExceeded);
+        }
+    }
+    let report = StudioTrackDisplayReport {
+        command: cmd.command_id(),
+        base_revision: ctx.base_revision(),
+        correlation: ctx.correlation().value(),
+        entries: next.sequences.len(),
+        height_presets,
+        changed,
+    };
+    Ok(StudioTrackDisplayOutcome { records: next, report })
 }
