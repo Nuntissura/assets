@@ -127,7 +127,60 @@ fn validate_fields(m: &StudioMarker, cx: &mut Ctx) -> Result<()> {
 /// key grammar (`InvalidId`), unique over this set and the document's sequence and clip markers
 /// (`DuplicateIdentity`).
 pub fn validate_media_marker_records(r: &StudioMediaMarkerRecords, d: &StudioDocument, b: Budget, token: &CancellationToken) -> Result<()> {
-    let _ = (r, d, b, token);
+    let mut cx = Ctx::new(b, token, &Unresolved);
+    cx.tick()?;
+    id(&r.document_id, "SDOC", "document_id")?;
+    if r.document_id != d.document_id {
+        return Err(err(Code::InvalidField, "document_id"));
+    }
+    if r.media_items.len() > MAX_MEDIA_MARKER_ITEMS || r.marker_count() > MAX_MEDIA_MARKERS {
+        return Err(err(Code::BudgetExceeded, "media_markers"));
+    }
+    cx.nodes(r.media_items.len().saturating_add(r.marker_count()), "media_markers")?;
+    let (mut items, mut ids) = (BTreeSet::new(), BTreeSet::new());
+    for e in &r.media_items {
+        cx.tick()?;
+        let digest = &e.content_digest;
+        if !digest_ok(digest) {
+            return Err(err(Code::InvalidField, "media_markers/content_digest"));
+        }
+        cx.text(&digest.algorithm, "media_markers/content_digest")?;
+        cx.text(&digest.digest, "media_markers/content_digest")?;
+        if !items.insert((digest.algorithm.as_str(), digest.digest.as_str())) {
+            return Err(err(Code::DuplicateIdentity, "media_markers/content_digest"));
+        }
+        if e.markers.is_empty() {
+            return Err(err(Code::InvalidField, "media_markers/markers"));
+        }
+        for (i, m) in e.markers.iter().enumerate() {
+            if i.is_multiple_of(CANCEL_STRIDE) {
+                cx.tick()?;
+            }
+            let target = m.marker_id.as_str();
+            if !key(target) {
+                return Err(err(Code::InvalidId, "marker_id"));
+            }
+            if !ids.insert(target) {
+                return Err(err(Code::DuplicateIdentity, target));
+            }
+            validate_fields(m, &mut cx)?;
+        }
+    }
+    if ids.is_empty() {
+        return Ok(());
+    }
+    for s in &d.sequences {
+        cx.tick()?;
+        let clip_markers = s.tracks.iter().flat_map(|t| t.clips.iter()).flat_map(|c| c.markers.iter());
+        for (i, m) in s.markers.iter().chain(clip_markers).enumerate() {
+            if i.is_multiple_of(CANCEL_STRIDE) {
+                cx.tick()?;
+            }
+            if ids.contains(m.marker_id.as_str()) {
+                return Err(err(Code::DuplicateIdentity, m.marker_id.as_str()));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -142,8 +195,12 @@ pub fn media_marker_records_schema() -> schemars::Schema {
 /// any parse; duplicate keys `DuplicateField`, unknown fields, a missing field and wrong types
 /// `InvalidJson`) and validates it against the document.
 pub fn parse_media_marker_records(input: &[u8], d: &StudioDocument, b: Budget, token: &CancellationToken) -> Result<StudioMediaMarkerRecords> {
-    let _ = (input, d, b, token);
-    Err(err(Code::InvalidJson, "media_markers"))
+    if input.len() > MAX_MEDIA_MARKER_INPUT_BYTES {
+        return Err(err(Code::BudgetExceeded, "media_markers"));
+    }
+    let r: StudioMediaMarkerRecords = parse_wire(input, b, token, "media_markers")?;
+    validate_media_marker_records(&r, d, b, token)?;
+    Ok(r)
 }
 
 /// Command ids, in [`StudioMediaMarkerCommand`] variant order.
@@ -249,6 +306,67 @@ pub fn apply_media_marker_command(
     b: Budget,
     token: &CancellationToken,
 ) -> std::result::Result<StudioMediaMarkerOutcome, StudioMediaMarkerError> {
-    let _ = (document, records, ctx, revision, cmd, b, token);
-    Err(StudioMediaMarkerError::Canceled)
+    use StudioMediaMarkerCommand as C;
+    use StudioMediaMarkerError as E;
+    let c = ctx.command().ok_or(E::CommandMissing)?;
+    if c.as_str() != cmd.command_id() {
+        return Err(E::CommandMismatch);
+    }
+    if ctx.base_revision() != revision {
+        return Err(E::StaleRevision { expected: ctx.base_revision(), current: revision });
+    }
+    let held = |d: Diagnostic| match d.code {
+        Code::Canceled => E::Canceled,
+        Code::BudgetExceeded => E::BudgetExceeded,
+        code => E::InvalidInput(code),
+    };
+    validate_media_marker_records(records, document, b, token).map_err(held)?;
+    let mut next = records.clone();
+    match cmd {
+        C::Add { content_digest, marker } => {
+            if !digest_ok(content_digest) {
+                return Err(E::InvalidDigest);
+            }
+            match next.media_items.iter_mut().find(|e| &e.content_digest == content_digest) {
+                Some(e) => e.markers.push(marker.clone()),
+                None => next.media_items.push(StudioMediaMarkerEntry { content_digest: content_digest.clone(), markers: vec![marker.clone()] }),
+            }
+        }
+        C::Replace { content_digest, marker } => {
+            let entry = next.media_items.iter_mut().find(|e| &e.content_digest == content_digest).ok_or(E::MarkerMissing)?;
+            let slot = entry.markers.iter_mut().find(|m| m.marker_id == marker.marker_id).ok_or(E::MarkerMissing)?;
+            slot.clone_from(marker);
+        }
+        C::Remove { content_digest, marker_id } => {
+            let at = next.media_items.iter().position(|e| &e.content_digest == content_digest).ok_or(E::MarkerMissing)?;
+            let entry = &mut next.media_items[at];
+            let i = entry.markers.iter().position(|m| &m.marker_id == marker_id).ok_or(E::MarkerMissing)?;
+            entry.markers.remove(i);
+            if entry.markers.is_empty() {
+                next.media_items.remove(at);
+            }
+        }
+    }
+    let changed = next != *records;
+    if changed {
+        validate_media_marker_records(&next, document, b, token).map_err(|d| match d.code {
+            Code::Canceled => E::Canceled,
+            Code::BudgetExceeded => E::BudgetExceeded,
+            Code::DuplicateIdentity => E::DuplicateMarker,
+            code => E::InvalidMarker(code),
+        })?;
+        let bytes = serde_json::to_vec(&next).map_err(|_| E::InvalidInput(Code::InvalidJson))?;
+        if bytes.len() > MAX_MEDIA_MARKER_INPUT_BYTES.min(b.input_bytes) {
+            return Err(E::BudgetExceeded);
+        }
+    }
+    let report = StudioMediaMarkerReport {
+        command: cmd.command_id(),
+        base_revision: ctx.base_revision(),
+        correlation: ctx.correlation().value(),
+        media_items: next.media_items.len(),
+        markers: next.marker_count(),
+        changed,
+    };
+    Ok(StudioMediaMarkerOutcome { records: next, report })
 }
