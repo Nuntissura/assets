@@ -1607,23 +1607,26 @@ impl Session {
     /// result. An entry already invalid, or repeated, is not this commit's to judge: it stays as it came.
     fn keep_sequence_entries_valid(&self, document: &StudioDocument, written: &EntryWrite, cancel: &CancellationToken) -> Result<(), SessionError> {
         let budget = self.config.budgets.folio();
-        let settings = |bytes: &[u8], against: &StudioDocument| folio::parse_sequence_settings_records(bytes, against, budget, cancel).map(drop);
-        let display = |bytes: &[u8], against: &StudioDocument| folio::parse_track_display_records(bytes, against, budget, cancel).map(drop);
-        let checks: [(&str, &dyn Fn(&[u8], &StudioDocument) -> Result<(), folio::Diagnostic>); 2] =
-            [(SEQUENCE_SETTINGS_ENTRY, &settings), (TRACK_DISPLAY_ENTRY, &display)];
-        for (token, parse) in checks {
+        for token in [SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY] {
             if written.iter().any(|(t, _)| *t == token) {
                 continue;
             }
             let Ok(Some(bytes)) = sequence_records::held_body(&self.quarantined, token) else {
                 continue;
             };
-            match parse(bytes, self.snapshot.document()) {
+            let parse = |against: &StudioDocument| {
+                if token == TRACK_DISPLAY_ENTRY {
+                    folio::parse_track_display_records(bytes, against, budget, cancel).map(drop)
+                } else {
+                    folio::parse_sequence_settings_records(bytes, against, budget, cancel).map(drop)
+                }
+            };
+            match parse(self.snapshot.document()) {
                 Ok(()) => {}
                 Err(d) if d.code == folio::Code::Canceled => return Err(SessionError::Canceled),
                 Err(_) => continue,
             }
-            parse(bytes, document).map_err(sequence_records_step::folio_code)?;
+            parse(document).map_err(sequence_records_step::folio_code)?;
         }
         Ok(())
     }
