@@ -4,7 +4,8 @@
 //!
 //! Rules (documented; InDesign parity UNVERIFIED, D5):
 //! - A mark's page is the page of the frame holding the first line whose source span contains (or
-//!   starts at) the mark byte (as the TOC); marks in overset text are left out and counted
+//!   starts at) the mark byte, a glyph-less mark where a line breaks taking the line the R54
+//!   F-R54-6 rule gives it (as the TOC, `toc::line_of`); marks in overset text are left out and counted
 //!   (`GeneratedIndex::unplaced`).
 //! - Topics merge by their text per level; siblings sort by the lower-cased sort-by text (the topic
 //!   text when no sort-by is given), ties by the topic text. Page references of a topic are its
@@ -201,11 +202,11 @@ pub fn generate_index(
             cancel.check().map_err(|_| IndexError::Layout(LayoutError::Canceled))?;
         }
         let source = sources.iter().find(|s| s.story.story_id == m.story_id);
-        if !include_hidden && source.is_some_and(|s| crate::toc_contract::on_hidden_layer(document, s.placement, m.at)) {
+        if !include_hidden && source.is_some_and(|s| crate::toc_contract::on_hidden_layer(document, s, m.at)) {
             omitted_hidden = omitted_hidden.saturating_add(1);
             continue;
         }
-        let page = source.and_then(|s| page_of(s.placement, m.at, &by_page));
+        let page = source.and_then(|s| page_of(s, m.at, &by_page));
         if page.is_none() && m.xref.is_none() {
             unplaced = unplaced.saturating_add(1);
             continue;

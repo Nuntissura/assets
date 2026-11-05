@@ -18,6 +18,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::numbering::PageNumber;
 use crate::threaded_reflow::LayoutProposal;
+use crate::toc::{TocSource, line_of};
 use hsk_studio_folio::{
     StudioLayoutFlowRecords, StudioTextStory, StudioTypeStyleRecords, StudioXrefDestination,
     TypeStyleScope,
@@ -299,12 +300,12 @@ fn char_style_id(ctx: &XrefContext<'_>, name: &str) -> Result<String, XrefError>
         .ok_or_else(|| XrefError::CharacterStyleMissing(name.to_owned()))
 }
 
-/// The page label of the page holding `byte` of a composed story.
-fn page_of(p: &LayoutProposal, byte: u64, pages: &[PageNumber]) -> Option<String> {
-    let f = p
-        .frames
-        .iter()
-        .find(|f| f.lines.iter().any(|l| l.source.start <= byte && byte < l.source.end.max(l.source.start.saturating_add(1))))?;
+/// The page label of the page holding `byte` of a composed story (`toc::line_of`: a glyph-less
+/// destination where a line breaks or opening its paragraph takes the line the R54 F-R54-6 rule
+/// gives it).
+fn page_of(dest: &XrefStory<'_>, byte: u64, pages: &[PageNumber]) -> Option<String> {
+    let source = TocSource { story: dest.story, text: dest.text, placement: dest.placement };
+    let (f, _) = line_of(&source, byte)?;
     pages
         .iter()
         .find(|n| n.spread == f.spread && n.page == f.page)
@@ -374,7 +375,7 @@ pub fn resolve_cross_references(
             continue;
         };
         let full = full.trim_end_matches(['\n', '\r']);
-        let page = dest.placement.and_then(|p| page_of(p, byte, ctx.pages));
+        let page = page_of(dest, byte, ctx.pages);
         let mut runs: Vec<XrefRun> = Vec::new();
         let mut style: Option<String> = None;
         let mut unplaced = false;

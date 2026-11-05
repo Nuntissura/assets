@@ -113,7 +113,7 @@ fn occurrences(sources: &[TocSource<'_>], by_page: &BTreeMap<(usize, usize), &Pa
             s.story.character_ranges.iter().filter(|r| r.style_ref.as_deref() == Some(style)).map(|r| (r.start, r.end)).collect()
         };
         for (a, b) in spans {
-            let Some(page) = page_of(s.placement, a, by_page) else { continue };
+            let Some(page) = page_of(s, a, by_page) else { continue };
             let text = usize::try_from(a).ok().zip(usize::try_from(b).ok()).and_then(|(a, b)| s.text.get(a..b)).map(clean).unwrap_or_default();
             out.push((page.ordinal, text));
         }

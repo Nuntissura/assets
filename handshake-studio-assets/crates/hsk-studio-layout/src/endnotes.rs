@@ -69,7 +69,7 @@ pub struct GeneratedEndnotes {
 
 fn reference(host: &NoteHost<'_>, anchor: u64) -> Option<(String, [f64; 2])> {
     let placement = host.placement?;
-    let (fi, at, _) = locate(placement, anchor, host.story.byte_len(), host.paragraphs)?;
+    let (fi, at, _) = locate(placement, anchor, host.story.byte_len(), host.paragraphs, story_text(host.story, None).ok())?;
     Some((placement.frames.get(fi)?.frame_id.clone(), at))
 }
 
@@ -193,7 +193,7 @@ pub fn place_sidenotes(
     for i in order {
         cancel.check().map_err(|_| LayoutError::Canceled)?;
         let n = &notes[i];
-        let Some((fi, at, _)) = locate(placement, n.note.anchor, host.story.byte_len(), host.paragraphs) else {
+        let Some((fi, at, _)) = locate(placement, n.note.anchor, host.story.byte_len(), host.paragraphs, story_text(host.story, None).ok()) else {
             out.overset.push(n.note.note_id.clone());
             continue;
         };

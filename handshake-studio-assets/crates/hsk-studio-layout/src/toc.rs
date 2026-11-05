@@ -7,7 +7,8 @@
 //! Rules (documented; InDesign parity UNVERIFIED, D5):
 //! - Sources are read in the given story order, paragraphs in story order. A paragraph's page is the
 //!   page of the frame holding the first line whose source span contains (or starts at) the
-//!   paragraph start. An unplaced (overset) paragraph is left out unless the style's
+//!   paragraph start; a paragraph opening with a glyph-less byte (a marker) takes its first line
+//!   (`line_of`, R54 F-R54-6 rule). An unplaced (overset) paragraph is left out unless the style's
 //!   `include_overset` is set; it is then listed without a page label.
 //! - Entry text = the paragraph text without its trailing break; forced line breaks (U+2028) and tabs
 //!   become spaces. Position `after`: text + separator + label; `before`: label + separator + text;
@@ -28,8 +29,9 @@
 //!   each push.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::numbering::PageNumber;
-use crate::threaded_reflow::LayoutProposal;
-use crate::LayoutError;
+use crate::sentinels::line_holding;
+use crate::threaded_reflow::{FramePlacement, LayoutProposal, Line};
+use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioDocument,
@@ -188,30 +190,45 @@ fn clean_keeping(text: &str, keep_forced_breaks: bool) -> String {
         .collect()
 }
 
-/// The page label (and id) where story byte `at` is placed, if it is.
-pub(crate) fn page_of<'p>(
-    placement: Option<&LayoutProposal>,
-    at: u64,
-    pages: &'p BTreeMap<(usize, usize), &'p PageNumber>,
-) -> Option<&'p PageNumber> {
-    let placement = placement?;
-    placement.frames.iter().find_map(|f| {
-        f.lines
-            .iter()
-            .any(|l| l.source.start == at || (l.source.start <= at && at < l.source.end))
-            .then(|| pages.get(&(f.spread, f.page)).copied())
-            .flatten()
-    })
-}
-
-/// The spread y of the baseline of the line holding story byte `at`.
-pub(crate) fn baseline_of(placement: Option<&LayoutProposal>, at: u64) -> Option<f64> {
-    placement?.frames.iter().find_map(|f| {
+/// The placed line holding story byte `at` of `source` and its frame: the first line whose source
+/// span contains (or starts at) `at`; else, for a glyph-less byte where a line breaks or before a
+/// paragraph's first glyph, the line `place_markers` gives it (`sentinels::line_holding` over the
+/// lines starting in the byte's story paragraph, R54 F-R54-6); `None` when it is not placed.
+pub(crate) fn line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FramePlacement, &'s Line)> {
+    let placement = source.placement?;
+    let hit = placement.frames.iter().find_map(|f| {
         f.lines
             .iter()
             .find(|l| l.source.start == at || (l.source.start <= at && at < l.source.end))
-            .map(|l| f.origin_y_pt + l.baseline_y_pt)
-    })
+            .map(|l| (f, l))
+    });
+    if hit.is_some() {
+        return hit;
+    }
+    let paras = &source.story.paragraphs;
+    let p = paras.get(paras.partition_point(|p| p.start <= at).checked_sub(1)?)?;
+    let mine: Vec<(&FramePlacement, &Line)> = placement
+        .frames
+        .iter()
+        .flat_map(|f| f.lines.iter().filter(|l| p.start <= l.source.start && l.source.start < p.end).map(move |l| (f, l)))
+        .collect();
+    let paragraph = SourceSpan { start: p.start, end: p.end };
+    let i = line_holding(source.text, paragraph, &mine, |(_, l)| l.source, placement.overset, at, &mut None)?;
+    mine.get(i).copied()
+}
+
+/// The page label (and id) where story byte `at` is placed, if it is ([`line_of`]).
+pub(crate) fn page_of<'p>(
+    source: &TocSource<'_>,
+    at: u64,
+    pages: &'p BTreeMap<(usize, usize), &'p PageNumber>,
+) -> Option<&'p PageNumber> {
+    line_of(source, at).and_then(|(f, _)| pages.get(&(f.spread, f.page)).copied())
+}
+
+/// The spread y of the baseline of the line holding story byte `at` ([`line_of`]).
+pub(crate) fn baseline_of(source: &TocSource<'_>, at: u64) -> Option<f64> {
+    line_of(source, at).map(|(f, l)| f.origin_y_pt + l.baseline_y_pt)
 }
 
 struct Node {
@@ -295,10 +312,10 @@ pub fn generate_toc(
                 continue;
             };
             let e = &style.entries[ei];
-            if !include_hidden && crate::toc_contract::on_hidden_layer(document, s.placement, p.start) {
+            if !include_hidden && crate::toc_contract::on_hidden_layer(document, s, p.start) {
                 continue;
             }
-            let page = page_of(s.placement, p.start, &by_page);
+            let page = page_of(s, p.start, &by_page);
             if page.is_none() && !style.include_overset {
                 continue;
             }
@@ -316,7 +333,7 @@ pub fn generate_toc(
                     text: clean_keeping(raw, keep_forced_breaks),
                     page_label: page.map(|x| x.label.clone()),
                     page_id: page.map(|x| x.page_id.clone()),
-                    baseline_y: page.and_then(|_| baseline_of(s.placement, p.start)),
+                    baseline_y: page.and_then(|_| baseline_of(s, p.start)),
                     story_id: s.story.story_id.clone(),
                     source_start: p.start,
                 },

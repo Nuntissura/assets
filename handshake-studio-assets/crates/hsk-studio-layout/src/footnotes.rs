@@ -5,7 +5,8 @@
 //!
 //! Rules (documented; InDesign parity UNVERIFIED, D5):
 //! - A reference sits at a host byte; its frame is the frame of the line holding that byte (the
-//!   story end belongs to the last line). Notes are numbered in flow order from `start_at` in the
+//!   story end belongs to the last line; a glyph-less byte where a line breaks takes the line the
+//!   R54 F-R54-6 rule gives it, `sentinels::line_holding`). Notes are numbered in flow order from `start_at` in the
 //!   options' style with prefix + number + suffix; the count restarts on a new page, spread or
 //!   section (`restart`). References in overset text are not placed or numbered
 //!   (`overset_notes`).
@@ -30,6 +31,7 @@
 use crate::folio_input::{Frame, resolve, story_text};
 use crate::geometry::Rect;
 use crate::numbering::{NumberingError, PageNumber, format_number};
+use crate::sentinels::line_holding;
 use crate::styles::ParagraphStyling;
 use crate::threaded_reflow::{FramePlacement, LayoutProposal, Line, ReflowRequest, compose, reflow_typeset};
 use crate::{FrameObstacles, LayoutError, ShapedParagraph, TypesetOptions};
@@ -215,35 +217,59 @@ fn compose_note(
     ))
 }
 
-/// Where a reference is: thread index, line, reference x.
-pub(crate) fn locate(body: &LayoutProposal, anchor: u64, story_end: u64, paragraphs: &[ShapedParagraph]) -> Option<(usize, [f64; 2], f64)> {
+/// Where a reference is: thread index, line, reference x. `text` is the host story text; without
+/// it (an endnote host with stored content) a reference outside every line span is not placed.
+pub(crate) fn locate(
+    body: &LayoutProposal,
+    anchor: u64,
+    story_end: u64,
+    paragraphs: &[ShapedParagraph],
+    text: Option<&str>,
+) -> Option<(usize, [f64; 2], f64)> {
+    let at_line = |fi: usize, l: &Line| -> Option<(usize, [f64; 2], f64)> {
+        let p = paragraphs.get(l.paragraph)?;
+        let x = l.x_start_pt
+            + p.glyphs
+                .get(l.glyph_range.clone())?
+                .iter()
+                .take_while(|g| g.cluster.start < anchor)
+                .map(|g| g.advance_pt)
+                .sum::<f64>();
+        let bottom = line_box(l, paragraphs).1;
+        Some((fi, [x, l.baseline_y_pt], bottom))
+    };
     let mut last: Option<(usize, &Line)> = None;
     for (fi, f) in body.frames.iter().enumerate() {
         for l in &f.lines {
-            let hit = l.source.start <= anchor && anchor < l.source.end;
-            if hit {
-                let p = paragraphs.get(l.paragraph)?;
-                let x = l.x_start_pt
-                    + p.glyphs
-                        .get(l.glyph_range.clone())?
-                        .iter()
-                        .take_while(|g| g.cluster.start < anchor)
-                        .map(|g| g.advance_pt)
-                        .sum::<f64>();
-                let bottom = line_box(l, paragraphs).1;
-                return Some((fi, [x, l.baseline_y_pt], bottom));
+            if l.source.start <= anchor && anchor < l.source.end {
+                return at_line(fi, l);
             }
             last = Some((fi, l));
         }
     }
     // The story end belongs to the last line (when the story is not overset).
-    match last {
-        Some((fi, l)) if anchor == story_end && body.overset.is_none() => {
-            let bottom = line_box(l, paragraphs).1;
-            Some((fi, [l.x_start_pt + l.width_pt, l.baseline_y_pt], bottom))
-        }
-        _ => None,
+    if anchor == story_end {
+        return match last {
+            Some((fi, l)) if body.overset.is_none() => {
+                let bottom = line_box(l, paragraphs).1;
+                Some((fi, [l.x_start_pt + l.width_pt, l.baseline_y_pt], bottom))
+            }
+            _ => None,
+        };
     }
+    // A glyph-less reference byte where a line breaks or before a paragraph's first glyph: the
+    // line `place_markers` gives it (`sentinels::line_holding`, R54 F-R54-6).
+    let pi = paragraphs.partition_point(|p| p.source.start <= anchor).checked_sub(1)?;
+    let mine: Vec<(usize, &Line)> = body
+        .frames
+        .iter()
+        .enumerate()
+        .flat_map(|(fi, f)| f.lines.iter().filter(|l| l.paragraph == pi).map(move |l| (fi, l)))
+        .collect();
+    let paragraph = paragraphs.get(pi)?.source;
+    let i = line_holding(text?, paragraph, &mine, |(_, l)| l.source, body.overset, anchor, &mut None)?;
+    let (fi, l) = *mine.get(i)?;
+    at_line(fi, l)
 }
 
 /// Lays out the host story with its footnotes (module docs).
@@ -261,6 +287,7 @@ pub fn layout_footnotes(
     check_footnote_options(req.options).map_err(FootnoteError::Notes)?;
     let host = req.reflow.story;
     let story_end = host.byte_len();
+    let host_text = story_text(host, req.reflow.resolved_text)?;
     for n in req.notes {
         if n.note.story_id != host.story_id || n.note.note_story_id != n.story.story_id || n.note.anchor > story_end {
             return Err(LayoutError::InvalidInput.into());
@@ -302,7 +329,7 @@ pub fn layout_footnotes(
         let mut floor = vec![f64::NEG_INFINITY; frames.len()];
         let mut refs: Vec<Option<(usize, [f64; 2])>> = vec![None; req.notes.len()];
         for &i in &order {
-            if let Some((fi, at, bottom)) = locate(&body, req.notes[i].note.anchor, story_end, req.reflow.paragraphs) {
+            if let Some((fi, at, bottom)) = locate(&body, req.notes[i].note.anchor, story_end, req.reflow.paragraphs, Some(host_text)) {
                 anchored[fi].push(i);
                 floor[fi] = floor[fi].max(bottom);
                 refs[i] = Some((fi, at));

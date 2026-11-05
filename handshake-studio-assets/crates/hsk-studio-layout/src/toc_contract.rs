@@ -13,7 +13,8 @@
 //! Rules (Studio readings; InDesign parity UNVERIFIED, D5):
 //! - Sources are read in the given order, paragraphs in story order; a paragraph whose style is a
 //!   mapped entry `name` becomes an entry. Its page is the page of the frame holding the first line
-//!   whose source span contains (or starts at) the paragraph start (as `generate_toc`).
+//!   whose source span contains (or starts at) the paragraph start, a paragraph opening with a
+//!   glyph-less byte taking its first line (as `generate_toc`, `toc::line_of`).
 //! - `include_overset` (a generate-command argument; the spec declares no default, so the caller
 //!   states it): an unplaced paragraph is listed without a page label when set, else omitted and
 //!   counted (`omitted_overset`), never silently dropped.
@@ -54,8 +55,8 @@
 use crate::LayoutError;
 use crate::book::CombinedBook;
 use crate::numbering::PageNumber;
-use crate::threaded_reflow::{FramePlacement, LayoutProposal};
-use crate::toc::{TocLimits, TocSource, baseline_of, page_of};
+use crate::threaded_reflow::FramePlacement;
+use crate::toc::{TocLimits, TocSource, baseline_of, line_of, page_of};
 use hsk_studio_accord::{CancellationToken, CommandContext, DomainId};
 use hsk_studio_folio::{
     MAX_TOC_ENTRIES, MAX_TOC_LEVEL, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioBook,
@@ -648,14 +649,14 @@ impl RunWriter {
     }
 }
 
-/// The frame placement holding the line that contains (or starts at) story byte `at`.
-pub(crate) fn frame_of(placement: Option<&LayoutProposal>, at: u64) -> Option<&FramePlacement> {
-    placement?.frames.iter().find(|f| f.lines.iter().any(|l| l.source.start == at || (l.source.start <= at && at < l.source.end)))
+/// The frame placement holding the line of story byte `at` (`toc::line_of`).
+pub(crate) fn frame_of<'s>(source: &TocSource<'s>, at: u64) -> Option<&'s FramePlacement> {
+    line_of(source, at).map(|(f, _)| f)
 }
 
 /// True when byte `at` is placed in a frame whose layer is hidden.
-pub(crate) fn on_hidden_layer(document: &StudioDocument, placement: Option<&LayoutProposal>, at: u64) -> bool {
-    frame_of(placement, at).and_then(|f| document.layers.get(f.frame_index)).is_some_and(|l| !l.visible)
+pub(crate) fn on_hidden_layer(document: &StudioDocument, source: &TocSource<'_>, at: u64) -> bool {
+    frame_of(source, at).and_then(|f| document.layers.get(f.frame_index)).is_some_and(|l| !l.visible)
 }
 
 pub(crate) fn check_context(ctx: &CommandContext, document: &StudioDocument) -> Result<(), TocCommandError> {
@@ -869,11 +870,11 @@ fn generate_inner(
                 continue;
             };
             let e = &style.entries[ei];
-            if !flags.include_hidden && on_hidden_layer(doc, s.placement, p.start) {
+            if !flags.include_hidden && on_hidden_layer(doc, s, p.start) {
                 omitted_hidden = omitted_hidden.saturating_add(1);
                 continue;
             }
-            let page = page_of(s.placement, p.start, &by_page);
+            let page = page_of(s, p.start, &by_page);
             if page.is_none() && !req.include_overset {
                 omitted_overset = omitted_overset.saturating_add(1);
                 continue;
@@ -905,7 +906,7 @@ fn generate_inner(
                     text: entry_text(raw, flags.remove_forced_line_break),
                     page_label: page.map(|x| x.label.clone()),
                     page_id: page.map(|x| x.page_id.clone()),
-                    baseline_y: page.and_then(|_| baseline_of(s.placement, p.start)),
+                    baseline_y: page.and_then(|_| baseline_of(s, p.start)),
                     story_id: s.story.story_id.clone(),
                     source_start: p.start,
                     anchor,
