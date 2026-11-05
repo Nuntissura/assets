@@ -142,3 +142,78 @@ fn unshapeable_story_keeps_the_report_and_hostile_bindings_are_refused() {
     // The refused bindings changed nothing.
     assert_eq!(v.vector_text_reports().unwrap().len(), 1);
 }
+
+// ---- Lane SMB-R54-FOLLOWUPS-1 (R55 F-R55-2): a forced line break U+2028 in the Viewer paths. Type keeps
+// it outside shaping under the current token, so no glyph carries it: area text classes the coverage
+// entry as a forced break; a path that holds one line refuses it, typed. ----
+
+/// First and last inked row of `text` as area text in a tall container.
+fn area_rows(v: &mut Viewer, container: &str, text: &str) -> (usize, usize) {
+    v.bind_live_text(container, text, LiveTextKind::Area { inset_pt: 2.0 }).unwrap();
+    let reports = v.vector_text_reports().unwrap();
+    let drawn = reports[0].report.outcome.as_ref().unwrap_or_else(|e| panic!("{text:?} refused {e}: {:?}", reports[0].unshaped));
+    assert!(reports[0].unshaped.is_none() && drawn.overset_from.is_none(), "{text:?}: {drawn:?}");
+    let ink = inked(v);
+    (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap())
+}
+
+#[test]
+fn mt_31008_area_text_breaks_the_line_at_a_forced_line_break() {
+    const LS: char = '\u{2028}';
+    let (_s, mut v) = paper("area-forced-break");
+    let container = v.draw_shape(ShapeKind::Rectangle, [6.0, 2.0], [90.0, 62.0], false).unwrap();
+    // 12 pt text with the viewer's 120 % leading: 14.4 pt from line to line (1 pt = 1 px here).
+    let (top, bottom) = area_rows(&mut v, &container, "HH");
+    let near = |got: usize, want: usize| got.abs_diff(want) <= 1;
+    // One break: the second line one leading below the first, nothing else moves.
+    let (t, b) = area_rows(&mut v, &container, &format!("HH{LS}HH"));
+    assert!(t == top && near(b, bottom + 14), "one break: rows {t}..={b}, control {top}..={bottom}");
+    // Two breaks: a blank line between them.
+    let (t, b) = area_rows(&mut v, &container, &format!("HH{LS}{LS}HH"));
+    assert!(t == top && near(b, bottom + 29), "two breaks: rows {t}..={b}, control {top}..={bottom}");
+    // Before the first glyph: a blank first line.
+    let (t, b) = area_rows(&mut v, &container, &format!("{LS}HH"));
+    assert!(near(t, top + 14) && near(b, bottom + 14), "leading break: rows {t}..={b}, control {top}..={bottom}");
+    // After the last glyph: no further line and no ink change.
+    assert_eq!(area_rows(&mut v, &container, &format!("HH{LS}")), (top, bottom));
+    // Area to point text cannot keep the break (a text layer holds one line): refused, typed.
+    area_rows(&mut v, &container, &format!("HH{LS}HH"));
+    let refused = v.convert_text_kind(&container).unwrap_err();
+    assert!(refused.contains("text_forced_line_break_unsupported"), "{refused}");
+}
+
+#[test]
+fn mt_31008_paths_of_one_line_refuse_a_forced_line_break() {
+    use hsk_studio_folio::StoryContent;
+    use hsk_studio_harness_view::view::text::{self, DEFAULT_FONT, FontFile};
+    use hsk_studio_harness_view::view::vector::path_text::PathTextSpec;
+    const REFUSAL: &str = "text_forced_line_break_unsupported";
+    let (_s, mut v) = paper("forced-break-refused");
+    // Live path text: the binding is kept, unshaped, and the report says why.
+    let line = v.pen_point(6.0, 40.0, None, 1.0).unwrap();
+    v.pen_point(90.0, 40.0, None, 1.0).unwrap();
+    v.pen_end();
+    let story = v.bind_live_text(&line, "ab\u{2028}cd", LiveTextKind::Path).unwrap();
+    assert!(inked(&mut v).is_empty());
+    let reports = v.vector_text_reports().unwrap();
+    assert_eq!(reports[0].report.text_id, story);
+    assert_eq!(reports[0].report.outcome, Err(TEXT_NOT_PROVIDED));
+    assert!(reports[0].unshaped.as_deref().is_some_and(|e| e.starts_with(REFUSAL)), "{:?}", reports[0].unshaped);
+    // The path-text layout of the vector tool.
+    let spec = PathTextSpec { text: "ab\u{2028}cd".into(), family: DEFAULT_FONT.into(), size_pt: 12.0, options: Default::default() };
+    assert!(v.path_text_layout(&line, &spec).unwrap_err().starts_with(REFUSAL));
+    // The text tool holds one line.
+    assert!(v.place_text(10.0, 20.0, "ab\u{2028}cd").unwrap_err().starts_with("text_content"));
+    // A text layer whose stored story holds the break draws no line at all rather than a wrong one.
+    let id = v.place_text(10.0, 20.0, "abcd").unwrap();
+    let mut entry = v.text_entry().unwrap();
+    let held = "ab\u{2028}cd";
+    let story = entry.stories.iter_mut().find(|s| entry.layers.iter().any(|l| l.layer_id == id && l.story_id == s.story_id)).unwrap();
+    story.content = StoryContent::Inline { text_utf8: held.into() };
+    story.paragraphs[0].end = held.len() as u64;
+    story.character_ranges[0].end = held.len() as u64;
+    let snapshot = v.run().snapshot().unwrap();
+    let fonts = [FontFile::bundled().unwrap()];
+    let refused = text::prepare(snapshot.document(), &entry, &fonts, v.run().actor(), &Default::default()).err().unwrap();
+    assert!(refused.starts_with(REFUSAL), "{refused}");
+}
