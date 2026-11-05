@@ -82,6 +82,7 @@ fn clip(n: u32, source: ClipSource, frames: u64) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 fn media(n: u32) -> ClipSource {

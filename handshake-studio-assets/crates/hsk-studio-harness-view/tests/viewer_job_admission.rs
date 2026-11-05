@@ -309,6 +309,7 @@ mod export_media {
             link_group: group.map(str::to_owned),
             markers: Vec::new(),
             transitions: ClipTransitions::default(),
+            retime: Default::default(),
         }
     }
     fn track(n: u32, kind: TrackKind, name: &str, clips: Vec<StudioClip>) -> StudioTrack {

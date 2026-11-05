@@ -104,6 +104,7 @@ fn clip(n: u32, si: u64, frames: u64, start: u64) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 fn sequence(clips: Vec<StudioClip>, markers: Vec<StudioMarker>) -> StudioSequence {

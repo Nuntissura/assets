@@ -276,6 +276,69 @@ impl Speed {
     }
 }
 
+/// STU-VID-031 frame-interpolation choice: what happens between source frames. `frame_sampling` =
+/// nearest source frame; `frame_blending` = weighted blend of the two neighbouring source frames;
+/// `optical_flow` = motion-estimated synthesis of intermediate frames, marked as an estimation
+/// wherever it is compared to a source frame. Studio reading: `frame_sampling` is the default of a
+/// clip that states no choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameInterpolation {
+    #[default]
+    FrameSampling,
+    FrameBlending,
+    OpticalFlow,
+}
+impl FrameInterpolation {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// How a frame hold chose its source frame (STU-VID-031a). Studio reading: this records the choice;
+/// the frame itself is resolved once when the hold is set and does not follow later edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameHoldAnchor {
+    Playhead,
+    ClipMarker,
+    InPoint,
+    OutPoint,
+}
+
+/// STU-VID-031a `Frame hold`: the clip is frozen at one source frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClipFrameHold {
+    /// First SOURCE tick of the held frame. It is NOT bound to this clip's source window: a razor or
+    /// a trim of a held clip leaves pieces whose window no longer holds it, and they must still show
+    /// that frame. The planners refuse a hold outside the window when the hold is set.
+    #[serde(with = "ticks_wire")]
+    #[schemars(with = "u64")]
+    pub source_tick: Ticks,
+    pub anchor: FrameHoldAnchor,
+}
+
+/// STU-VID-031 / STU-VID-031a retime choices of one clip. A member at its default is omitted from
+/// the wire, and a clip whose whole record is at its default omits `retime`, so earlier documents
+/// encode byte-identically.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClipRetime {
+    #[serde(default, skip_serializing_if = "FrameInterpolation::is_default")]
+    pub frame_interpolation: FrameInterpolation,
+    /// `Maintain audio pitch`, independent of the speed. Studio reading: `false` when unstated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maintain_audio_pitch: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_hold: Option<ClipFrameHold>,
+}
+impl ClipRetime {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// STU-VID-020 `source_ref`: content-addressed (never a filesystem path).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "source_kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -333,6 +396,10 @@ pub struct StudioClip {
     /// Head and tail transitions (omitted from the wire when both are empty).
     #[serde(default, skip_serializing_if = "ClipTransitions::is_empty")]
     pub transitions: ClipTransitions,
+    /// Retime choices (omitted from the wire at their default). A field on the clip, so razor,
+    /// duplicate and nest carry it by cloning the clip.
+    #[serde(default)]
+    pub retime: ClipRetime,
 }
 impl StudioClip {
     /// Exclusive end tick on the timeline; `None` on tick overflow.

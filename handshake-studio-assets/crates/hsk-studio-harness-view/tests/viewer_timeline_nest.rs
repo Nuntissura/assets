@@ -64,6 +64,7 @@ fn clip(n: u32, name: &str, si: u64, so: u64, start: u64, group: Option<&str>) -
         link_group: group.map(str::to_owned),
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 fn track(n: u32, kind: TrackKind, name: &str, clips: Vec<StudioClip>) -> StudioTrack {

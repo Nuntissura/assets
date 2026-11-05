@@ -91,6 +91,7 @@ fn clip(n: i64, start: u64, frames: u64) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: hsk_studio_folio::ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 

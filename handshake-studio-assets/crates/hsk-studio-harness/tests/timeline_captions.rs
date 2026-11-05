@@ -90,6 +90,7 @@ fn sequence() -> StudioSequence {
                 link_group: None,
                 markers: Vec::new(),
                 transitions: ClipTransitions::default(),
+                retime: Default::default(),
             }],
             volume: 1.0,
             pan: 0.0,

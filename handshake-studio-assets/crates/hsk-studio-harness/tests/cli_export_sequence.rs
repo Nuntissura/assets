@@ -87,6 +87,7 @@ fn package_with(dir: &Path, audio: Option<ClipSource>) -> PathBuf {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     };
     let sequence = StudioSequence {
         schema_id: SequenceSchema::V1,

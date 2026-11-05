@@ -90,6 +90,7 @@ fn clip(n: u32, source: ClipSource, start: u64) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 
@@ -662,4 +663,30 @@ fn sequence_settings_and_presets_round_trip_through_the_package() {
     let without = open(&write(&snapshot, &source(&b), &[], EmbedExternal::Link).unwrap());
     assert_eq!(states(&opened), states(&without));
     assert!(opened.externals.iter().all(|e| !e.target.starts_with(DOCUMENT_ENTRY_PREFIX)));
+}
+
+/// Lane SMB-PR-RETIME-HOLD-1 (rule 4b): the clip `retime` record names no outside data, travels in
+/// the document entry byte-identically, and an old-shape clip stays old-shape through the package.
+#[test]
+fn clip_retime_round_trips_through_the_package() {
+    let b = bytes();
+    let old = document(&b);
+    assert!(!String::from_utf8_lossy(old.encoded_bytes()).contains("retime"), "the old-shape fixture writes no retime key");
+    let opened_old = open(&write(&old, &source(&b), &[], EmbedExternal::Link).unwrap());
+    assert_eq!(opened_old.snapshot().unwrap().encoded_bytes(), old.encoded_bytes(), "an old-shape clip comes back byte-identical");
+    let reopened = opened_old.snapshot().unwrap();
+    assert!(reopened.document().sequences[0].tracks[0].clips.iter().all(|c| c.retime.is_default()));
+
+    let record = ClipRetime { frame_interpolation: FrameInterpolation::OpticalFlow, maintain_audio_pitch: true, frame_hold: Some(ClipFrameHold { source_tick: Ticks::new(3 * F), anchor: FrameHoldAnchor::ClipMarker }) };
+    let mut doc = old.document().clone();
+    doc.sequences[0].tracks[0].clips[1].retime = record;
+    let held = folio::validate_document(doc, folio::Budget::default(), &token(), &Host).unwrap();
+    assert_ne!(held.encoded_bytes(), old.encoded_bytes());
+    let opened = open(&write(&held, &source(&b), &[], EmbedExternal::Link).unwrap());
+    let snapshot = opened.snapshot().unwrap();
+    assert_eq!(snapshot.encoded_bytes(), held.encoded_bytes(), "the record comes back byte-identical");
+    let clips = &snapshot.document().sequences[0].tracks[0].clips;
+    assert_eq!(clips[1].retime, record);
+    assert!(clips.iter().enumerate().all(|(i, c)| i == 1 || c.retime.is_default()), "only that clip carries it");
+    assert_eq!(states(&opened), states(&opened_old), "the record adds no reference to outside data");
 }

@@ -100,6 +100,7 @@ fn clip(n: u32, src: &str, si: u64, frames: u64, start: u64) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 /// V1: red 0..20 (source 0..20), blue 20..40 (source 100..120).

@@ -71,6 +71,7 @@ fn sequence_package(dir: &Path) -> PathBuf {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     };
     let track = StudioTrack {
         schema_id: TrackSchema::V1,

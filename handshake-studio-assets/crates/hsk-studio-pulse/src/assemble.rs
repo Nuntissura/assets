@@ -276,6 +276,7 @@ fn assemble(
         link_group: edit.link_group.clone(),
         markers: Vec::new(),
         transitions: hsk_studio_folio::ClipTransitions::default(),
+        retime: Default::default(),
     };
     check_extent(&incoming, points.source_out, ctx)?;
     let mut fresh = edit.fresh_clip_ids.iter();

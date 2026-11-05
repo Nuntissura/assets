@@ -36,6 +36,7 @@ fn clip(n: u32, src: &str, frames: u64, start: u64) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 fn track(n: u32, clips: Vec<StudioClip>, pan: f64) -> StudioTrack {

@@ -21,6 +21,7 @@ fn clip() -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 pub fn document() -> StudioDocument {

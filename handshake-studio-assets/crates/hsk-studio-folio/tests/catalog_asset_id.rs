@@ -50,6 +50,7 @@ fn document(asset_id: Option<&str>) -> Value {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     };
     let seq = StudioSequence {
         schema_id: SequenceSchema::V1,

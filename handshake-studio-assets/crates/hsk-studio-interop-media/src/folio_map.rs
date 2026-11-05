@@ -168,6 +168,7 @@ pub fn build_sequence(
                     link_group: clip.link.map(|event| format!("edl-link-{event}")),
                     markers: Vec::new(),
                     transitions: hsk_studio_folio::ClipTransitions::default(),
+                    retime: Default::default(),
                 });
             }
             tracks.push(StudioTrack {

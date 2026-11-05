@@ -68,6 +68,7 @@ fn clip(n: u32, name: &str, si: u64, so: u64, start: u64) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 

@@ -23,6 +23,7 @@ fn clip(n: u32) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 fn track(n: u32, kind: TrackKind, clips: Vec<StudioClip>) -> StudioTrack {

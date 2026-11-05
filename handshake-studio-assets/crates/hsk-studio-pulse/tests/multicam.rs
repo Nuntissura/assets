@@ -81,6 +81,7 @@ fn clip(n: u32, source: ClipSource, si: u64, frames: u64, start: u64) -> StudioC
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 fn nest() -> ClipSource {

@@ -122,6 +122,7 @@ fn clip(n: u32, frames: u64) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 pub fn sequence(id: &str, ticks_per_frame: u64, clips: Vec<StudioClip>) -> StudioSequence {

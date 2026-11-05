@@ -56,6 +56,7 @@ fn sequence() -> StudioSequence {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     };
     StudioSequence {
         schema_id: SequenceSchema::V1,

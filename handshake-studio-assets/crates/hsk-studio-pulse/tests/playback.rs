@@ -49,6 +49,7 @@ fn clip(n: u32, start: u64, frames: u64) -> StudioClip {
         link_group: None,
         markers: Vec::new(),
         transitions: ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 /// 100 frames of video.

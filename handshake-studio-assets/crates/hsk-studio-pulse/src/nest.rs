@@ -552,6 +552,7 @@ pub fn plan_nest(snapshot: &Snapshot, sequence_id: &str, expected_revision: u64,
             link_group: group.map(str::to_owned),
             markers: Vec::new(),
             transitions: ClipTransitions::default(),
+            retime: Default::default(),
         };
         let lane = &mut after.tracks[target].clips;
         let at = lane.partition_point(|c| c.timeline_start < origin);

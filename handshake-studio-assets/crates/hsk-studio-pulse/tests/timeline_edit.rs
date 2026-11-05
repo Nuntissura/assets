@@ -80,6 +80,7 @@ fn clip(n: u32, source_in: u64, source_out: u64, start: u64, duration: u64) -> S
         link_group: None,
         markers: Vec::new(),
         transitions: hsk_studio_folio::ClipTransitions::default(),
+        retime: Default::default(),
     }
 }
 fn linked(mut c: StudioClip) -> StudioClip {
