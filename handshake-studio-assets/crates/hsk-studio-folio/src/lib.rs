@@ -111,6 +111,8 @@ mod cjk_composition;
 pub use cjk_composition::*;
 mod sequence_preset;
 pub use sequence_preset::*;
+mod track_display;
+pub use track_display::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum GeometryUnit {
     #[serde(rename = "mm")]
