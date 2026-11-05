@@ -921,7 +921,7 @@ impl Session {
     }
 
     /// Submits one sequence-records step (module `sequence_records_step`): every sequence edit and
-    /// both record entries change together at `expected_revision + 1`, through the same grant,
+    /// the record entries change together at `expected_revision + 1`, through the same grant,
     /// admission, commit and publish path as [`Session::submit`]. The returned
     /// [`Applied::sequence_records_inverse`] is the undo (and the undo's inverse the redo). A step also
     /// carries the `track_display` entry the same way (tests/track_display.rs). Refusals
