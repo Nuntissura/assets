@@ -7,6 +7,12 @@
 //! A sequence with no entry resolves to the declared defaults ([`resolve_track_displays`], which also
 //! says whether the state is stored), so nothing else has to report it.
 //!
+//! Display state is a view preference and blocks no document edit (lead decision on this lane). An
+//! entry naming a sequence the document does not hold is inert: valid, kept and listed by
+//! [`inert_track_display_entries`], and live again when the sequence comes back, as an undo brings it.
+//! That is this record set's one difference from the other per-sequence records, which refuse a
+//! dangling reference. The clause is silent on a removed sequence; vendor parity is UNVERIFIED (D5).
+//!
 //! The declared defaults, bounds, command ids and the height unit (logical pixels) are Studio's: the
 //! clause states none of them. Vendor parity is UNVERIFIED (D5). Audio and video fade handles and
 //! audio and video keyframes are one switch per medium, a Studio reading of the clause's list.
@@ -245,16 +251,17 @@ pub fn resolve_track_displays(records: Option<&StudioTrackDisplayRecords>, d: &S
     d.sequences.iter().map(|s| resolve(&s.sequence_id)).collect()
 }
 
-/// The entries that name a sequence the document does not hold, in stored order.
+/// The entries that name a sequence the document does not hold, in stored order. Nothing removes one
+/// on its own; a caller writes records without it.
 pub fn inert_track_display_entries<'a>(records: &'a StudioTrackDisplayRecords, d: &StudioDocument) -> Vec<&'a StudioTrackDisplayEntry> {
-    let _ = (records, d);
-    Vec::new()
+    records.sequences.iter().filter(|e| !d.sequences.iter().any(|s| s.sequence_id == e.sequence_id)).collect()
 }
 
 /// Validates the record set against the document: `SDOC` id equal to the document's; at most
-/// `MAX_SEQUENCES` entries and `MAX_TRACK_HEIGHT_PRESETS` presets per entry (each list counted before
-/// it is walked, then charged against `Budget::nodes`, so the two count together); each entry names a
-/// document sequence (`DanglingReference`) once (`DuplicateIdentity`); heights in bounds
+/// `MAX_TRACK_DISPLAY_ENTRIES` entries, inert ones included, and `MAX_TRACK_HEIGHT_PRESETS` presets per
+/// entry (each list counted before it is walked, then charged against `Budget::nodes`, so the two count
+/// together); each entry names a sequence id of the key grammar (`InvalidId`) once
+/// (`DuplicateIdentity`), a sequence the document holds or an inert one; heights in bounds
 /// (`InvalidField`); preset ids of the key grammar (`InvalidId`), unique in the entry
 /// (`DuplicateIdentity`); preset names non-blank, at most 128 bytes, no control characters
 /// (`InvalidField`, charged against `Budget::payload_bytes`).
@@ -265,7 +272,7 @@ pub fn validate_track_display_records(r: &StudioTrackDisplayRecords, d: &StudioD
     if r.document_id != d.document_id {
         return Err(err(Code::InvalidField, "document_id"));
     }
-    if r.sequences.len() > MAX_SEQUENCES {
+    if r.sequences.len() > MAX_TRACK_DISPLAY_ENTRIES {
         return Err(err(Code::BudgetExceeded, "track_display"));
     }
     cx.nodes(r.sequences.len(), "track_display")?;
@@ -275,9 +282,6 @@ pub fn validate_track_display_records(r: &StudioTrackDisplayRecords, d: &StudioD
         let t = e.sequence_id.as_str();
         if !key(t) {
             return Err(err(Code::InvalidId, "track_display/sequence_id"));
-        }
-        if !d.sequences.iter().any(|s| s.sequence_id == t) {
-            return Err(err(Code::DanglingReference, t));
         }
         if !seen.insert(t) {
             return Err(err(Code::DuplicateIdentity, t));

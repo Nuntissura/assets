@@ -24,9 +24,11 @@
 //! came. The preset entry names nothing in the document.
 //!
 //! The track display records (lane SMB-PR-TRACK-DISPLAY-1, STU-VID-036) are the entry
-//! `studio/track_display.<sha256>` under all of the above; of a sequence edit, only the removal of a
-//! sequence it names can make it invalid, because it copies no other document value. A sequence with
-//! no entry resolves to the
+//! `studio/track_display.<sha256>`, opened, read, set and saved as above, with one difference (lead
+//! decision on this lane): display state is a view preference and blocks no commit, so no guard holds
+//! it. A commit that removes a sequence leaves the entry alone, and an entry naming a sequence the
+//! document does not hold is inert, not invalid (`Session::inert_track_display_entries`). A sequence
+//! with no entry resolves to the
 //! declared defaults (`Session::resolved_track_displays`), so that read also says which sequences have
 //! stored state. Tests: tests/track_display.rs.
 //!
@@ -40,7 +42,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     Budget, Code, Diagnostic, StudioDocument, StudioResolvedTrackDisplay, StudioSequencePresetSet,
     StudioSequenceSettingsRecords, StudioTrackDisplayEntry, StudioTrackDisplayRecords, parse_sequence_presets, parse_sequence_settings_records,
-    parse_track_display_records, resolve_track_displays,
+    inert_track_display_entries, parse_track_display_records, resolve_track_displays,
 };
 use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
 
@@ -217,10 +219,14 @@ impl Session {
         Ok(resolve_track_displays(records.as_ref(), self.snapshot().document()))
     }
 
-    /// The stored entries that name a sequence the document does not hold, in stored order.
+    /// The stored entries that name a sequence the document does not hold, in stored order. Read-only:
+    /// nothing removes one on its own, and a sequence that comes back has its state again. A records
+    /// step that quotes the records and writes them without one removes it. While the entry is invalid
+    /// this is the refusal of [`Session::track_display_records`].
     pub fn inert_track_display_entries(&self, cancel: &CancellationToken) -> Result<Vec<StudioTrackDisplayEntry>, SessionError> {
-        let _ = cancel;
-        Ok(Vec::new())
+        let records = self.track_display_records(cancel)?;
+        let document = self.snapshot().document();
+        Ok(records.as_ref().map_or_else(Vec::new, |r| inert_track_display_entries(r, document).into_iter().cloned().collect()))
     }
 
     /// Stores (`Some`, validated first) or removes (`None`) the track display records, replacing

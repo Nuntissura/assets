@@ -577,7 +577,7 @@ fn an_inert_entry_survives_save_and_reopen_byte_identically() {
         std::fs::remove_dir_all(&dir).unwrap();
 
         // Nothing removes one on its own: commits and a save leave it. A records step can, explicitly.
-        run(&mut session, &set_mode("seq-a", "custom"), 1).unwrap_err();
+        session.submit_sequence_records(&step(vec![], None, Some(RecordEdit { expect: None, write: Some(library(vec![preset("mine", F25)])) })), 3, &token()).unwrap();
         run_display(&mut session, &expand("seq-b"), 2).unwrap();
         assert_eq!(inert_ids(&session), ["seq-y", "seq-x"]);
         let live = session.track_display_records(&token()).unwrap();
@@ -601,7 +601,7 @@ fn the_list_refuses_while_the_entry_is_invalid_and_the_limit_refuses_typed() {
         let bad = open(&package(&[entry(TRACK_DISPLAY_ENTRY, b"{not json")]));
         assert_eq!(folio_code(&bad.inert_track_display_entries(&token()).unwrap_err()), Some(Code::InvalidJson));
 
-        let mut plain = |id: String| { let mut e = display_entry("seq-a"); e.sequence_id = id; e.height_presets.clear(); e };
+        let plain = |id: String| { let mut e = display_entry("seq-a"); e.sequence_id = id; e.height_presets.clear(); e };
         let full = display((0..MAX_TRACK_DISPLAY_ENTRIES).map(|i| plain(format!("gone-{i}"))).collect());
         let (mut session, frames) = open_counted(&package(&[entry(TRACK_DISPLAY_ENTRY, &serde_json::to_vec(&full).unwrap())]));
         assert!(session.loss().is_empty());
