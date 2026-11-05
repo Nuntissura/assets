@@ -16,9 +16,25 @@
 //! sequence shows that sequence's layers at the mapped tick (pulse `frame_layers_nested`, at most
 //! [`MAX_NESTED_LAYERS`] layers), and its length bounds the clip's handles (pulse `NestedExtents`);
 //! a nested clip that cannot be expanded is the typed failure `nest_unresolved`.
+//!
+//! The interpolation choice (lane SMB-PR-RETIME-OUTPUT-1, [STU-VID-031]): each layer carries pulse's
+//! answer. A layer that needs two source frames renders as composite's frame-blended content on the
+//! CPU path: `frame_blending` through Pigment's `frame_mix` at the answer's share, `optical_flow`
+//! through `pixel_motion`, each frame fitted to the monitor raster first. What cannot be rendered is
+//! a typed failure, never a floored frame: the source's own refusal when the second frame is missing,
+//! [`FRAME_INTERPOLATION_UNAVAILABLE`] for a nested clip that needs two inner frames, a sample
+//! outside the blend's domain, or a raster over `pixel_motion`'s work budget (`BlendLimits::DEFAULT`
+//! allows 826719 pixels at `FlowParams::DEFAULT`). [`ProgramFrame::layers`] and `state_json`'s
+//! `shown_layers` report each answer and the estimation mark. The render is synchronous with no
+//! deadline: an estimate that misses the frame budget is finished, and the scheduler's drop policy
+//! then answers as for any late frame: `DropLate` presents the due frame and counts the skipped
+//! ones as dropped, `PresentEveryFrame` presents the next frame and the lag grows (test
+//! `a_late_estimate_follows_the_existing_drop_policy`). It never falls back to a mix or a sampled
+//! frame. After Effects' and Premiere's output are UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::{CancellationToken, Ticks};
+use hsk_studio_composite::composition::{FrameBlendMethod, FrameBlendedContent};
 use hsk_studio_composite::{
     RenderedScene, SceneComposition, SceneContent, SceneContext, SceneLayer, SceneLimits,
     ScenePixels, SceneTile, render_scene,
@@ -26,6 +42,7 @@ use hsk_studio_composite::{
 use hsk_studio_folio::{ClipSource, StudioSequence};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendSpace, StudioBlendMode};
+use hsk_studio_pigment::frame_blend::FlowParams;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, ColourTag, Exactness, ExecuteRequest, SampleFormat, TilePlanes,
 };
@@ -34,7 +51,11 @@ pub use hsk_studio_pulse::{
     AudioClock, DropPolicy, FrameAction, FrameLayer, HeadlessClock, PlaySpeed, PlaybackScheduler,
     Transport,
 };
-use hsk_studio_pulse::{NestedExtents, SourceExtents, SourceFrameAnswer, frame_layers, frame_layers_nested, prefetch_layers};
+pub use hsk_studio_pulse::FRAME_INTERPOLATION_UNAVAILABLE;
+use hsk_studio_pulse::{
+    NestedExtents, SourceExtents, SourceFrameAnswer, SourceFrameGrid, SourceGrids, frame_layers_nested_on_grids,
+    frame_layers_on_grids, prefetch_layers_on_grids,
+};
 use hsk_studio_render_cpu::Renderer;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -173,6 +194,35 @@ pub struct ShownLayer {
     pub estimation_mark: Option<&'static str>,
 }
 
+impl ShownLayer {
+    fn state_json(&self) -> Value {
+        let (name, from, to, weight) = match self.answer {
+            SourceFrameAnswer::Sampled(f) => ("sampled", f, f, None),
+            SourceFrameAnswer::Held(f) => ("held", f, f, None),
+            SourceFrameAnswer::Blended { from, to, weight } => ("blended", from, to, Some(weight)),
+            SourceFrameAnswer::Estimated { from, to, weight } => ("estimated", from, to, Some(weight)),
+        };
+        // The share as text: both terms are u128.
+        json!({
+            "clip_id": self.clip_id,
+            "source_tick": self.source_tick.value(),
+            "answer": name,
+            "from": from.index,
+            "to": to.index,
+            "weight": weight.map(|w| format!("{}/{}", w.numerator(), w.denominator())),
+            "estimation_mark": self.estimation_mark,
+        })
+    }
+}
+
+/// The frame source's grids as pulse's port; a value of 0 states nothing.
+struct PortGrids<'a>(&'a dyn FrameSource);
+impl SourceGrids for PortGrids<'_> {
+    fn grid(&self, source: &ClipSource) -> Option<SourceFrameGrid> {
+        self.0.source_grid(source).and_then(|t| SourceFrameGrid::new(t).ok())
+    }
+}
+
 /// Program monitor state over one sequence.
 pub struct ProgramMonitor {
     sequence: StudioSequence,
@@ -223,6 +273,23 @@ impl ScenePixels for Frames {
             space: space(),
         })
     }
+}
+
+/// One full-frame tile of `f`; `tile` is its index in [`Frames`].
+fn tile_content(f: &SourceFrame, tile: usize) -> SceneContent {
+    SceneContent::Tiles(vec![SceneTile {
+        tile_id: tile.to_string(),
+        placement: Rect {
+            x: 0,
+            y: 0,
+            width: f.width,
+            height: f.height,
+        },
+        format: SampleFormat::RgbF32Le,
+        alpha: AlphaConvention::Straight,
+        colour_sha256: f.colour_sha256,
+        alpha_sha256: f.alpha_sha256,
+    }])
 }
 
 impl ProgramMonitor {
@@ -417,9 +484,9 @@ impl ProgramMonitor {
             _ => return Ok(None),
         };
         self.represent = false;
-        match self.render_at(tick, sources, extents, cancel) {
-            Ok(image) => {
-                self.shown = Some(ProgramFrame { frame, tick, image, layers: Vec::new() });
+        match self.render_reported(tick, sources, extents, cancel) {
+            Ok((image, layers)) => {
+                self.shown = Some(ProgramFrame { frame, tick, image, layers });
                 self.last_error = None;
                 self.prefetch(sources, extents, cancel);
                 Ok(Some(frame))
@@ -439,8 +506,43 @@ impl ProgramMonitor {
         let Ok(frames) = self.scheduler.upcoming_frames(self.prefetch_ahead) else {
             return;
         };
-        if let Ok(layers) = prefetch_layers(&self.sequence, &self.scheduler, &frames, extents, cancel) {
+        if let Ok(layers) = prefetch_layers_on_grids(&self.sequence, &self.scheduler, &frames, extents, &PortGrids(sources), cancel) {
             self.prefetched = self.prefetched.saturating_add(sources.prefetch(&layers, cancel));
+        }
+    }
+
+    /// Fits a source frame into the monitor raster (uniform scale, centred).
+    fn fit(&self, f: &SourceFrame) -> Affine2 {
+        if (f.width, f.height) == (self.width, self.height) {
+            return Affine2::IDENTITY;
+        }
+        let s = (f64::from(self.width) / f64::from(f.width))
+            .min(f64::from(self.height) / f64::from(f.height));
+        let tx = (f64::from(self.width) - f64::from(f.width) * s) / 2.0;
+        let ty = (f64::from(self.height) - f64::from(f.height) * s) / 2.0;
+        Affine2 {
+            m: [s, 0.0, tx, 0.0, s, ty],
+        }
+    }
+
+    /// One source frame alone on the monitor raster: one side of a frame blend.
+    fn frame_scene(&self, f: &SourceFrame, tile: usize) -> SceneComposition {
+        SceneComposition {
+            composition_id: format!("SCOM-019abcde-0000-7000-8000-{:012x}", tile.saturating_add(0x1000)),
+            width: self.width,
+            height: self.height,
+            background: None,
+            filter: ResampleFilter::Bilinear,
+            layers: vec![SceneLayer {
+                layer_id: format!("SLYR-019abcde-0000-7000-8000-{:012x}", tile.saturating_add(0x1000)),
+                content: tile_content(f, tile),
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                matrix: self.fit(f),
+                matte: None,
+                clipped: false,
+            }],
         }
     }
 
@@ -453,55 +555,77 @@ impl ProgramMonitor {
         extents: &dyn SourceExtents,
         cancel: &CancellationToken,
     ) -> Result<RenderedScene, MonitorFail> {
+        self.render_reported(tick, sources, extents, cancel).map(|(image, _)| image)
+    }
+
+    /// [`ProgramMonitor::render_at`] with what each layer shows.
+    fn render_reported(
+        &self,
+        tick: Ticks,
+        sources: &dyn FrameSource,
+        extents: &dyn SourceExtents,
+        cancel: &CancellationToken,
+    ) -> Result<(RenderedScene, Vec<ShownLayer>), MonitorFail> {
+        let grids = PortGrids(sources);
         let layers = if self.document.is_empty() {
-            frame_layers(&self.sequence, tick, extents, cancel).map_err(|e| fail("frame_layers", e.code()))?
+            frame_layers_on_grids(&self.sequence, tick, extents, &grids, cancel).map_err(|e| fail("frame_layers", e.code()))?
         } else {
             let nested = NestedExtents::new(&self.document, extents);
-            let frame = frame_layers_nested(&self.document, &self.sequence, tick, &nested, MAX_NESTED_LAYERS, cancel)
+            let frame = frame_layers_nested_on_grids(&self.document, &self.sequence, tick, &nested, MAX_NESTED_LAYERS, &grids, cancel)
                 .map_err(|e| fail("frame_layers", e.code()))?;
             if let Some(u) = frame.unresolved.first() {
+                if u.code == FRAME_INTERPOLATION_UNAVAILABLE {
+                    return Err(fail(u.code, format!("{}: a nested clip needs two inner frames", u.clip_id)));
+                }
                 return Err(fail("nest_unresolved", format!("{}: {}", u.clip_id, u.code)));
             }
             frame.layers.into_iter().map(|l| l.layer).collect()
         };
         let mut frames = Vec::with_capacity(layers.len());
         let mut scene_layers = Vec::with_capacity(layers.len());
+        let mut shown = Vec::with_capacity(layers.len());
+        let mut blended = false;
         for (i, layer) in layers.iter().enumerate() {
-            let f = sources
-                .frame_result(&layer.source, layer.source_tick)
-                .map_err(|e| MonitorFail {
+            let fetch = |tick: Ticks| -> Result<Arc<SourceFrame>, MonitorFail> {
+                let f = sources.frame_result(&layer.source, tick).map_err(|e| MonitorFail {
                     code: e.code,
                     detail: format!("{}: {}", layer.clip_id, e.detail),
                 })?;
-            if f.width == 0 || f.height == 0 {
-                return Err(fail("frame_size", format!("{}: empty", layer.clip_id)));
-            }
-            let matrix = if (f.width, f.height) == (self.width, self.height) {
-                Affine2::IDENTITY
-            } else {
-                let s = (f64::from(self.width) / f64::from(f.width))
-                    .min(f64::from(self.height) / f64::from(f.height));
-                let tx = (f64::from(self.width) - f64::from(f.width) * s) / 2.0;
-                let ty = (f64::from(self.height) - f64::from(f.height) * s) / 2.0;
-                Affine2 {
-                    m: [s, 0.0, tx, 0.0, s, ty],
+                if f.width == 0 || f.height == 0 {
+                    return Err(fail("frame_size", format!("{}: empty", layer.clip_id)));
+                }
+                Ok(f)
+            };
+            let f = fetch(layer.source_tick)?;
+            let tile = frames.len();
+            let (content, matrix) = match layer.answer.pair() {
+                None => {
+                    let placed = (tile_content(&f, tile), self.fit(&f));
+                    frames.push(f);
+                    placed
+                }
+                Some((_, to, weight)) => {
+                    let g = fetch(to.start)?;
+                    let content = SceneContent::FrameBlended(Box::new(FrameBlendedContent {
+                        a: self.frame_scene(&f, tile),
+                        b: self.frame_scene(&g, tile.saturating_add(1)),
+                        weight_b: weight.as_f64(),
+                        method: if layer.answer.is_estimation() {
+                            FrameBlendMethod::PixelMotion
+                        } else {
+                            FrameBlendMethod::FrameMix
+                        },
+                        flow: FlowParams::DEFAULT,
+                    }));
+                    frames.push(f);
+                    frames.push(g);
+                    blended = true;
+                    (content, Affine2::IDENTITY)
                 }
             };
             scene_layers.push(SceneLayer {
                 layer_id: format!("SLYR-019abcde-0000-7000-8000-{i:012x}"),
-                content: SceneContent::Tiles(vec![SceneTile {
-                    tile_id: i.to_string(),
-                    placement: Rect {
-                        x: 0,
-                        y: 0,
-                        width: f.width,
-                        height: f.height,
-                    },
-                    format: SampleFormat::RgbF32Le,
-                    alpha: AlphaConvention::Straight,
-                    colour_sha256: f.colour_sha256,
-                    alpha_sha256: f.alpha_sha256,
-                }]),
+                content,
                 mode: StudioBlendMode::Normal,
                 opacity: layer.weight,
                 fill_opacity: 1.0,
@@ -509,7 +633,12 @@ impl ProgramMonitor {
                 matte: None,
                 clipped: false,
             });
-            frames.push(f);
+            shown.push(ShownLayer {
+                clip_id: layer.clip_id.clone(),
+                source_tick: layer.source_tick,
+                answer: layer.answer,
+                estimation_mark: layer.estimation_mark(),
+            });
         }
         let scene = SceneComposition {
             composition_id: "SCOM-019abcde-0000-7000-8000-00000000000a".into(),
@@ -532,7 +661,10 @@ impl ProgramMonitor {
             space: space(),
             limits: SceneLimits::default(),
         };
-        render_scene(&scene, &ctx, cancel).map_err(|e| fail("render", format!("{e:?}")))
+        render_scene(&scene, &ctx, cancel).map(|image| (image, shown)).map_err(|e| {
+            let code = if blended && cancel.check().is_ok() { FRAME_INTERPOLATION_UNAVAILABLE } else { "render" };
+            fail(code, format!("{e:?}"))
+        })
     }
 
     /// Structured projection for models and tests.
@@ -544,6 +676,7 @@ impl ProgramMonitor {
             "frame": s.frame_of(s.playhead()),
             "range_ticks": [s.range().start().value(), s.range().end().value()],
             "shown_frame": self.shown.as_ref().map(|f| f.frame),
+            "shown_layers": self.shown.as_ref().map_or_else(Vec::new, |f| f.layers.iter().map(ShownLayer::state_json).collect::<Vec<_>>()),
             "stats": {"presented": s.stats().presented, "dropped": s.stats().dropped, "max_lag_ticks": s.stats().max_lag_ticks, "wraps": s.stats().wraps},
             "speed": [s.speed().numerator(), s.speed().denominator()],
             "looping": s.looping(),
