@@ -23,6 +23,11 @@
 //! (tests/sequence_records_commit.rs). An entry already invalid does not hold those up; it stays as it
 //! came. The preset entry names nothing in the document.
 //!
+//! The track display records (lane SMB-PR-TRACK-DISPLAY-1, STU-VID-036) are the entry
+//! `studio/track_display.<sha256>` under all of the above. A sequence with no entry resolves to the
+//! declared defaults (`Session::resolved_track_displays`), so that read also says which sequences have
+//! stored state. Tests: tests/track_display.rs.
+//!
 //! Bounds: the Folio input budget (`budget.input_bytes`, depth, duplicate keys) applies before any
 //! parse, then the Folio record bounds; the package limits apply to the entry bytes on open and on
 //! every write. Serialisation is serde_json of the Folio type (deterministic field order).
@@ -33,6 +38,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     Budget, Code, Diagnostic, StudioDocument, StudioResolvedTrackDisplay, StudioSequencePresetSet,
     StudioSequenceSettingsRecords, StudioTrackDisplayRecords, parse_sequence_presets, parse_sequence_settings_records,
+    parse_track_display_records, resolve_track_displays,
 };
 use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
 
@@ -57,7 +63,7 @@ fn folio_err(d: Diagnostic) -> SessionError {
 
 /// True for the tokens this module validates.
 pub(crate) fn validated_token(token: &str) -> bool {
-    token == SEQUENCE_SETTINGS_ENTRY || token == SEQUENCE_PRESETS_ENTRY
+    token == SEQUENCE_SETTINGS_ENTRY || token == SEQUENCE_PRESETS_ENTRY || token == TRACK_DISPLAY_ENTRY
 }
 
 /// Parses and validates the body of a [`validated_token`]; any other token passes (its bytes belong to
@@ -72,6 +78,7 @@ pub(crate) fn check_entry(
     match token {
         SEQUENCE_SETTINGS_ENTRY => parse_sequence_settings_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         SEQUENCE_PRESETS_ENTRY => parse_sequence_presets(bytes, budget, cancel).map(drop).map_err(folio_err),
+        TRACK_DISPLAY_ENTRY => parse_track_display_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         _ => Ok(()),
     }
 }
@@ -98,7 +105,7 @@ pub(crate) fn invalid_entry_notes(
     cancel: &CancellationToken,
 ) -> Result<Vec<LossNote>, SessionError> {
     let mut notes = Vec::new();
-    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY] {
+    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY, TRACK_DISPLAY_ENTRY] {
         let invalid = match held_body(held, token) {
             Ok(None) => false,
             Err(_) => true,
@@ -187,25 +194,39 @@ impl Session {
         self.set_document_entry(SEQUENCE_PRESETS_ENTRY, bytes, cancel)
     }
 
-    /// The stored track display records.
+    /// The stored track display records, validated against the document (`None` = none stored). An
+    /// entry that does not validate is the Folio diagnostic, never partial records.
     pub fn track_display_records(&self, cancel: &CancellationToken) -> Result<Option<StudioTrackDisplayRecords>, SessionError> {
-        let _ = cancel;
-        Ok(None)
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        let Some(bytes) = held_body(self.held_entries(), TRACK_DISPLAY_ENTRY).map_err(folio_err)? else {
+            return Ok(None);
+        };
+        parse_track_display_records(bytes, self.snapshot().document(), self.folio_budget(), cancel)
+            .map(Some)
+            .map_err(folio_err)
     }
 
-    /// Every document sequence with the display state it resolves to.
+    /// Every document sequence, in document order, with the display state it resolves to: its entry's,
+    /// or the declared defaults with `stored` false. Read-only: it creates no entry and sends no frame,
+    /// as the other typed reads. While the entry is invalid this is the refusal of
+    /// [`Session::track_display_records`], not a guess at what the bad entry names.
     pub fn resolved_track_displays(&self, cancel: &CancellationToken) -> Result<Vec<StudioResolvedTrackDisplay>, SessionError> {
-        let _ = cancel;
-        Ok(Vec::new())
+        let records = self.track_display_records(cancel)?;
+        Ok(resolve_track_displays(records.as_ref(), self.snapshot().document()))
     }
 
-    /// Stores or removes the track display records.
+    /// Stores (`Some`, validated first) or removes (`None`) the track display records, replacing
+    /// whatever entry is held, an invalid one included. Not a revision and not undoable (see
+    /// [`Session::set_sequence_settings_records`]).
     pub fn set_track_display_records(
         &mut self,
         records: Option<&StudioTrackDisplayRecords>,
         cancel: &CancellationToken,
     ) -> Result<(), SessionError> {
-        let _ = (records, cancel);
-        Err(SessionError::Provider("not_implemented"))
+        let bytes = match records {
+            None => None,
+            Some(r) => Some(serde_json::to_vec(r).map_err(|_| invalid_json(TRACK_DISPLAY_ENTRY))?),
+        };
+        self.set_document_entry(TRACK_DISPLAY_ENTRY, bytes, cancel)
     }
 }

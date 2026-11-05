@@ -324,7 +324,7 @@ fn one_step_carries_the_entry_with_the_sequence_settings_and_presets() {
             ..step(vec![], Some(RecordEdit { expect: None, write: Some(settings_next.clone()) }), Some(RecordEdit { expect: None, write: Some(presets_next.clone()) }))
         };
         let receipts = session.receipt_count();
-        let applied = session.submit_sequence_records(&all, 3, &token()).unwrap();
+        let applied = session.submit_sequence_records_keyed(&IdempotencyKey::parse("all-1").unwrap(), &all, 3, &token()).unwrap();
         assert_eq!((applied.previous_revision, applied.revision), (3, 4), "one revision");
         assert_eq!(session.receipt_count(), receipts + 1, "one receipt");
         assert_eq!(session.sequence_settings_records(&token()).unwrap(), Some(settings_next));
@@ -402,7 +402,7 @@ fn step_and_command_refusals_leave_the_document_and_the_entry_untouched() {
         assert_eq!(code(&mut session, &display_step(RecordEdit { expect: live.clone(), write: write.clone() }), 2), "stale_revision");
         ops += 4;
         let mut bad_command = display_step(RecordEdit { expect: live.clone(), write: write.clone() });
-        bad_command.command_id = "not a command id".into();
+        bad_command.command_id = String::new();
         assert_eq!(code(&mut session, &bad_command, 3), "invalid_command");
         ops += 1;
         assert_eq!((the_entry(&session), session.document_revision()), held, "refusals change nothing");

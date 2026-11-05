@@ -18,7 +18,7 @@ use crate::{
     timeline::{self, TIMELINE_STEP_PROVIDER, TimelineStep},
     multicam::MULTICAM_ENTRY,
     multicam_step::{self, MULTICAM_STEP_PROVIDER, MulticamStep},
-    sequence_records::{self, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY},
+    sequence_records::{self, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY},
     sequence_records_step::{self, LiveEntries, SEQUENCE_RECORDS_STEP_PROVIDER, SequenceRecordsStep},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, CommandContext, DomainId};
@@ -410,6 +410,7 @@ enum Step<'a> {
     Multicam(&'a MulticamStep),
     SequenceRecords(&'a SequenceRecordsStep),
     SequenceCommand(&'a CommandContext, &'a StudioSequenceSettingsCommand),
+    TrackDisplayCommand(&'a CommandContext, &'a StudioTrackDisplayCommand),
 }
 
 enum Resolution {
@@ -922,7 +923,8 @@ impl Session {
     /// Submits one sequence-records step (module `sequence_records_step`): every sequence edit and
     /// both record entries change together at `expected_revision + 1`, through the same grant,
     /// admission, commit and publish path as [`Session::submit`]. The returned
-    /// [`Applied::sequence_records_inverse`] is the undo (and the undo's inverse the redo). Refusals
+    /// [`Applied::sequence_records_inverse`] is the undo (and the undo's inverse the redo). A step also
+    /// carries the `track_display` entry the same way (tests/track_display.rs). Refusals
     /// change neither the document nor an entry: `value_conflict` (a quoted sequence or record set is
     /// not the live one, a held entry that does not parse or is repeated included, or a created id
     /// exists), `invalid_target`, `invalid_input`, `invalid_command`, `folio_rejected` /
@@ -1021,7 +1023,16 @@ impl Session {
         self.submit_inner(key, SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::SequenceCommand(context, command)))
     }
 
-    /// Runs one track display command under the caller's `context`.
+    /// Runs one Folio track display command (`hsk_studio_folio::TRACK_DISPLAY_COMMAND_IDS`) under the
+    /// caller's `context`, committed as one [`SequenceRecordsStep`] (one revision, one receipt, one
+    /// inverse). The one report frame carries the context's correlation;
+    /// [`Applied::track_display_report`] carries Folio's codes and counters. A command that changes
+    /// nothing is no revision. Refusals change nothing: the checks of
+    /// [`Session::submit_sequence_records_as`], `folio_rejected` / `budget_exceeded` when the entry is
+    /// invalid, then Folio's codes (`command_missing`, `sequence_missing`, `preset_missing`,
+    /// `duplicate_preset`, `invalid_preset_id`, `invalid_name`, `invalid_height`, `invalid_input`,
+    /// `budget_exceeded`). With a commit authority use
+    /// [`Session::submit_track_display_command_keyed_as`].
     pub fn submit_track_display_command_as(
         &mut self,
         context: &CommandContext,
@@ -1029,11 +1040,12 @@ impl Session {
         expected_revision: u64,
         cancel: &CancellationToken,
     ) -> Result<Applied, Failed> {
-        let _ = (command, expected_revision, cancel);
-        self.settle_correlated(Err(SessionError::Provider("not_implemented")), context, |applied: &mut Applied, report| applied.report = report)
+        let result = self.track_display_command(None, context, command, expected_revision, cancel);
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
     }
 
-    /// As [`Session::submit_track_display_command_as`], idempotent under `key`.
+    /// As [`Session::submit_track_display_command_as`], idempotent under `key`: an identical retry
+    /// returns the stored receipt (see [`Session::submit_keyed`]).
     pub fn submit_track_display_command_keyed_as(
         &mut self,
         key: &IdempotencyKey,
@@ -1042,8 +1054,21 @@ impl Session {
         expected_revision: u64,
         cancel: &CancellationToken,
     ) -> Result<Applied, Failed> {
-        let _ = (key, command, expected_revision, cancel);
-        self.settle_correlated(Err(SessionError::Provider("not_implemented")), context, |applied: &mut Applied, report| applied.report = report)
+        let result = self.track_display_command(Some(key), context, command, expected_revision, cancel);
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
+    fn track_display_command(
+        &mut self,
+        key: Option<&IdempotencyKey>,
+        context: &CommandContext,
+        command: &StudioTrackDisplayCommand,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, SessionError> {
+        self.check_command_context(context, command.command_id(), expected_revision)?;
+        let params = sequence_records_step::track_display_binding_bytes(context, command)?;
+        self.submit_inner(key, SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::TrackDisplayCommand(context, command)))
     }
 
     /// A command context must name this session's actor (it grants nothing, and grants and receipts
@@ -1199,6 +1224,20 @@ impl Session {
                     cancel,
                 )?;
                 self.propose_sequence_records(&step, Some(report), current, cancel)?
+            }
+            Some(Step::TrackDisplayCommand(context, command)) => {
+                let (step, report) = sequence_records_step::track_display_step(
+                    self.snapshot.document(),
+                    self.live_entries().track_display,
+                    context,
+                    current,
+                    command,
+                    self.config.budgets.folio(),
+                    cancel,
+                )?;
+                let mut proposed = self.propose_sequence_records(&step, None, current, cancel)?;
+                proposed.applied.track_display_report = Some(report);
+                proposed
             }
             None => self.propose_checked(provider_id, params, current, cancel)?,
         };
@@ -1490,6 +1529,7 @@ impl Session {
         LiveEntries {
             settings: sequence_records::held_body(&self.quarantined, SEQUENCE_SETTINGS_ENTRY),
             presets: sequence_records::held_body(&self.quarantined, SEQUENCE_PRESETS_ENTRY),
+            track_display: sequence_records::held_body(&self.quarantined, TRACK_DISPLAY_ENTRY),
             multicam: self.document_entry(MULTICAM_ENTRY),
         }
     }
@@ -2695,8 +2735,9 @@ impl Session {
     /// `document_entries_save_reopen_and_stay_bounded`). Not undoable and not a revision: the
     /// session is dirty until the next save. Refusals change nothing: an unknown token is
     /// `unsafe_name`; all opaque entries together above `limits.max_entry_bytes` (the bound a
-    /// reopen enforces) is `total_too_large`. Bytes stored under the `sequence_settings` and
-    /// `sequence_presets` tokens must parse and validate (module `sequence_records`); they replace
+    /// reopen enforces) is `total_too_large`. Bytes stored under the `sequence_settings`,
+    /// `sequence_presets` and `track_display` tokens must parse and validate (module
+    /// `sequence_records`); they replace
     /// every entry of the token, an invalid one included, and storing one while a commit is pending is
     /// `reconciliation_required`.
     pub fn set_document_entry(

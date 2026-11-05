@@ -2,18 +2,20 @@
 //! `crate::multicam_step`).
 //!
 //! A [`SequenceRecordsStep`] carries zero or more [`SequenceEdit`]s (each quoting the live value) and
-//! optional edits of the `sequence_settings` and `sequence_presets` entries (each quoting the live
-//! records, `None` = no entry stored; an absent [`RecordEdit`] leaves that entry alone and does not
-//! quote it). The session applies the whole step as ONE revision (`revision + 1`, also when only a
+//! optional edits of the `sequence_settings`, `sequence_presets` and `track_display` entries (each
+//! quoting the live records, `None` = no entry stored; an absent [`RecordEdit`] leaves that entry alone
+//! and does not quote it). The session applies the whole step as ONE revision (`revision + 1`, also when only a
 //! record changes, declared reading as in multicam), ONE receipt and ONE inverse
 //! ([`crate::Applied::sequence_records_inverse`]); the undo's own inverse is the redo. Any refusal
-//! leaves the document, both entries and the receipts untouched.
+//! leaves the document, the entries and the receipts untouched.
 //!
 //! The three Folio commands (`hsk_studio_folio::SEQUENCE_SETTINGS_COMMAND_IDS`) reach the same step
 //! through `Session::submit_sequence_command_as` and `_keyed_as`: Folio runs the command at proposal
 //! time on the live document and entries under the caller's `CommandContext`, and its result becomes
 //! the step. `save_from_sequence` and `apply` see the shipped library plus the stored presets (a
-//! stored preset shadows a shipped one of the same id); only the stored presets are written.
+//! stored preset shadows a shipped one of the same id); only the stored presets are written. The six
+//! track display commands (`hsk_studio_folio::TRACK_DISPLAY_COMMAND_IDS`) reach it the same way through
+//! `Session::submit_track_display_command_as` and `_keyed_as`, and read only the `track_display` entry.
 //!
 //! The step shares the submit pipeline with provider submits. A commit authority receives the
 //! successor DOCUMENT; a step's records travel in the binding hash, a command's binding covers the
@@ -21,14 +23,15 @@
 //! only when the session publishes the successor).
 use crate::error::SessionError;
 use crate::multicam_step::{self, MulticamStep, SequenceEdit};
-use crate::sequence_records::{SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY};
+use crate::sequence_records::{SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY};
 use crate::timeline::valid_command_id;
 use hsk_studio_accord::{CancellationToken, CommandContext};
 use hsk_studio_folio::{
     self as folio, Code, Resolver, Snapshot, StudioDocument, StudioMulticamRecords, StudioSequencePresetSet,
     StudioSequenceSettingsCommand, StudioSequenceSettingsError, StudioSequenceSettingsRecords,
-    StudioSequenceSettingsReport, StudioTrackDisplayRecords, apply_sequence_settings_command, parse_sequence_presets,
-    parse_sequence_settings_records, shipped_sequence_presets, validate_multicam_records,
+    StudioSequenceSettingsReport, StudioTrackDisplayCommand, StudioTrackDisplayError, StudioTrackDisplayRecords,
+    StudioTrackDisplayReport, apply_sequence_settings_command, apply_track_display_command, parse_sequence_presets,
+    parse_sequence_settings_records, parse_track_display_records, shipped_sequence_presets, validate_multicam_records,
 };
 
 /// Provider name recorded in [`crate::Applied::provider`] and in the idempotency binding.
@@ -85,6 +88,9 @@ impl SequenceRecordsStep {
         out.push(0);
         let presets = self.presets.as_ref().map(|e| (&e.expect, &e.write));
         out.extend_from_slice(&serde_json::to_vec(&presets).map_err(invalid)?);
+        out.push(0);
+        let track_display = self.track_display.as_ref().map(|e| (&e.expect, &e.write));
+        out.extend_from_slice(&serde_json::to_vec(&track_display).map_err(invalid)?);
         Ok(out)
     }
 }
@@ -114,11 +120,37 @@ pub(crate) fn command_binding_bytes(
     Ok(out)
 }
 
+/// Deterministic bytes of a track display command under its context, for the idempotency binding.
+pub(crate) fn track_display_binding_bytes(
+    context: &CommandContext,
+    command: &StudioTrackDisplayCommand,
+) -> Result<Vec<u8>, SessionError> {
+    use StudioTrackDisplayCommand as C;
+    let fields = match command {
+        C::SetSwitches { sequence_id, switches } => serde_json::to_vec(&(sequence_id, switches)),
+        C::SetHeight { sequence_id, kind, height } => serde_json::to_vec(&(sequence_id, kind, height)),
+        C::ExpandAll { sequence_id } | C::MinimizeAll { sequence_id } => serde_json::to_vec(sequence_id),
+        C::SaveHeightPreset { sequence_id, preset_id, name } => serde_json::to_vec(&(sequence_id, preset_id, name)),
+        C::RecallHeightPreset { sequence_id, preset_id } => serde_json::to_vec(&(sequence_id, preset_id)),
+    }
+    .map_err(|_| SessionError::Provider("invalid_input"))?;
+    let mut out = format!(
+        "hsk-studio-track-display-command-1\0{}\0{}\0{}\0",
+        command.command_id(),
+        context.command().map_or("", |c| c.as_str()),
+        context.correlation().value()
+    )
+    .into_bytes();
+    out.extend_from_slice(&fields);
+    Ok(out)
+}
+
 /// The live entry bytes a step is checked against (`Err` = a repeated token, see
 /// `crate::sequence_records::held_body`).
 pub(crate) struct LiveEntries<'a> {
     pub settings: Result<Option<&'a [u8]>, folio::Diagnostic>,
     pub presets: Result<Option<&'a [u8]>, folio::Diagnostic>,
+    pub track_display: Result<Option<&'a [u8]>, folio::Diagnostic>,
     pub multicam: Option<&'a [u8]>,
 }
 
@@ -196,9 +228,15 @@ pub(crate) fn successor(
     {
         return Err(SessionError::Provider("value_conflict"));
     }
+    if let Some(edit) = &step.track_display
+        && !quote_matches(&live.track_display, edit.expect.as_ref(), |b| serde_json::from_slice(b).ok())
+    {
+        return Err(SessionError::Provider("value_conflict"));
+    }
     let settings_changed = step.settings.as_ref().is_some_and(|e| e.expect != e.write);
     let presets_changed = step.presets.as_ref().is_some_and(|e| e.expect != e.write);
-    if edited.is_none() && !settings_changed && !presets_changed {
+    let track_display_changed = step.track_display.as_ref().is_some_and(|e| e.expect != e.write);
+    if edited.is_none() && !settings_changed && !presets_changed && !track_display_changed {
         return Ok(None);
     }
     let document = snapshot.document();
@@ -243,6 +281,19 @@ pub(crate) fn successor(
             entries.push((SEQUENCE_PRESETS_ENTRY, body));
         }
     }
+    if let Some(edit) = &step.track_display {
+        let body = match &edit.write {
+            None => None,
+            Some(records) => {
+                let body = serde_json::to_vec(records).map_err(invalid)?;
+                parse_track_display_records(&body, next.document(), budget, cancel).map_err(folio_code)?;
+                Some(body)
+            }
+        };
+        if track_display_changed {
+            entries.push((TRACK_DISPLAY_ENTRY, body));
+        }
+    }
     Ok(Some(Checked {
         successor: next,
         entries,
@@ -252,7 +303,7 @@ pub(crate) fn successor(
             sequences: inverse_sequences,
             settings: step.settings.as_ref().map(RecordEdit::swapped),
             presets: step.presets.as_ref().map(RecordEdit::swapped),
-            track_display: None,
+            track_display: step.track_display.as_ref().map(RecordEdit::swapped),
         },
     }))
 }
@@ -349,6 +400,45 @@ pub(crate) fn command_step(
     ))
 }
 
+fn track_display_error(error: StudioTrackDisplayError) -> SessionError {
+    use StudioTrackDisplayError as E;
+    match error {
+        E::StaleRevision { expected, current } => SessionError::StaleRevision { expected, current },
+        E::Canceled => SessionError::Canceled,
+        other => SessionError::Provider(other.code()),
+    }
+}
+
+/// Runs the Folio track display command on the live entry under the caller's `context` and returns the
+/// step it amounts to, with the Folio report. An invalid entry refuses it.
+pub(crate) fn track_display_step(
+    document: &StudioDocument,
+    held: Result<Option<&[u8]>, folio::Diagnostic>,
+    context: &CommandContext,
+    revision: u64,
+    command: &StudioTrackDisplayCommand,
+    budget: folio::Budget,
+    cancel: &CancellationToken,
+) -> Result<(SequenceRecordsStep, StudioTrackDisplayReport), SessionError> {
+    let held = held
+        .and_then(|held| held.map(|bytes| parse_track_display_records(bytes, document, budget, cancel)).transpose())
+        .map_err(folio_code)?;
+    let base = held.clone().unwrap_or_else(|| StudioTrackDisplayRecords::new(document.document_id.clone()));
+    let outcome = apply_track_display_command(document, &base, context, revision, command, budget, cancel).map_err(track_display_error)?;
+    let track_display = outcome.report.changed.then_some(RecordEdit { expect: held, write: Some(outcome.records) });
+    Ok((
+        SequenceRecordsStep {
+            command_id: command.command_id().to_owned(),
+            correlation_id: context.correlation().value(),
+            sequences: Vec::new(),
+            settings: None,
+            presets: None,
+            track_display,
+        },
+        outcome.report,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +457,17 @@ mod tests {
         assert_eq!(command_error(E::InvalidInput(Code::InvalidField)).code(), "invalid_input");
         assert_eq!(command_error(E::StaleRevision { expected: 1, current: 2 }), SessionError::StaleRevision { expected: 1, current: 2 });
         assert_eq!(command_error(E::PresetMissing).code(), "preset_missing");
+    }
+
+    /// The same for the track display commands, whose cancel can only be set mid-command too.
+    #[test]
+    fn track_display_errors_keep_their_meaning_at_the_session_boundary_r55_f6() {
+        use StudioTrackDisplayError as E;
+        assert_eq!(track_display_error(E::Canceled), SessionError::Canceled);
+        assert_eq!(track_display_error(E::Canceled).outcome(), Outcome::Canceled);
+        assert_eq!(track_display_error(E::BudgetExceeded).code(), "budget_exceeded");
+        assert_eq!(track_display_error(E::InvalidInput(Code::InvalidField)).code(), "invalid_input");
+        assert_eq!(track_display_error(E::StaleRevision { expected: 1, current: 2 }), SessionError::StaleRevision { expected: 1, current: 2 });
+        assert_eq!(track_display_error(E::InvalidHeight).code(), "invalid_height");
     }
 }
