@@ -34,7 +34,7 @@ pub use hsk_studio_pulse::{
     AudioClock, DropPolicy, FrameAction, FrameLayer, HeadlessClock, PlaySpeed, PlaybackScheduler,
     Transport,
 };
-use hsk_studio_pulse::{NestedExtents, SourceExtents, frame_layers, frame_layers_nested, prefetch_layers};
+use hsk_studio_pulse::{NestedExtents, SourceExtents, SourceFrameAnswer, frame_layers, frame_layers_nested, prefetch_layers};
 use hsk_studio_render_cpu::Renderer;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -86,6 +86,11 @@ pub trait FrameSource {
     ) -> Result<Arc<SourceFrame>, MonitorFail> {
         self.frame(source, source_tick)
             .ok_or_else(|| fail("frame_unavailable", "no decoded frame"))
+    }
+    /// Ticks per frame of `source` when the media owner states them; `None` reads the layer on its
+    /// sequence's frame grid.
+    fn source_grid(&self, _source: &ClipSource) -> Option<u64> {
+        None
     }
     /// Decodes ahead the layers the monitor will present next (bounded by the source); returns
     /// the frames made ready. The default does nothing.
@@ -154,6 +159,18 @@ pub struct ProgramFrame {
     pub frame: u64,
     pub tick: Ticks,
     pub image: RenderedScene,
+    /// What each layer of the image shows, bottom-first.
+    pub layers: Vec<ShownLayer>,
+}
+
+/// One layer of a shown frame: what it shows and, for an estimated frame, the mark any diagnostic
+/// comparing it to a source frame carries ([STU-VID-031]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShownLayer {
+    pub clip_id: String,
+    pub source_tick: Ticks,
+    pub answer: SourceFrameAnswer,
+    pub estimation_mark: Option<&'static str>,
 }
 
 /// Program monitor state over one sequence.
@@ -402,7 +419,7 @@ impl ProgramMonitor {
         self.represent = false;
         match self.render_at(tick, sources, extents, cancel) {
             Ok(image) => {
-                self.shown = Some(ProgramFrame { frame, tick, image });
+                self.shown = Some(ProgramFrame { frame, tick, image, layers: Vec::new() });
                 self.last_error = None;
                 self.prefetch(sources, extents, cancel);
                 Ok(Some(frame))

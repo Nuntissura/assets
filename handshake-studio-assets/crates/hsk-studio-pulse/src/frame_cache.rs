@@ -19,8 +19,9 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::{PulseError, Result};
-use crate::playback::{FrameLayer, PlaybackScheduler, frame_layers};
+use crate::playback::{FrameLayer, PlaybackScheduler, frame_layers_on_grids};
 use crate::range::TickRange;
+use crate::retime::{SequenceGrid, SourceGrids};
 use crate::timeline_edit::SourceExtents;
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{ClipSource, StudioSequence};
@@ -358,13 +359,25 @@ pub fn prefetch_layers(
     extents: &dyn SourceExtents,
     cancel: &CancellationToken,
 ) -> Result<Vec<FrameLayer>> {
+    prefetch_layers_on_grids(sequence, scheduler, frames, extents, &SequenceGrid, cancel)
+}
+
+/// [`prefetch_layers`] with the sources' frame grids stated by `grids`.
+pub fn prefetch_layers_on_grids(
+    sequence: &StudioSequence,
+    scheduler: &PlaybackScheduler,
+    frames: &[u64],
+    extents: &dyn SourceExtents,
+    grids: &dyn SourceGrids,
+    cancel: &CancellationToken,
+) -> Result<Vec<FrameLayer>> {
     if frames.len() > MAX_PREFETCH_FRAMES {
         return Err(PulseError::LimitExceeded);
     }
     let mut out = Vec::new();
     for &f in frames {
         cancel.check()?;
-        out.extend(frame_layers(sequence, scheduler.frame_start(f)?, extents, cancel)?);
+        out.extend(frame_layers_on_grids(sequence, scheduler.frame_start(f)?, extents, grids, cancel)?);
     }
     Ok(out)
 }
