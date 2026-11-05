@@ -734,6 +734,9 @@ pub enum TimelineCommand {
     SlideNudge { right: bool, many: bool },
     /// Moves the selected clip one frame or the multi-frame step (overwrite at the destination).
     ClipNudge { right: bool, many: bool },
+    /// Moves the selected clip, keeping its time, to the next track of its kind in the drawn rows;
+    /// its link partners follow ([STU-VID-035a], pulse `plan_nudge_track`). One undo step.
+    ClipTrackNudge { up: bool },
     /// Rolls the selected roll edit, else the nearest roll edit on the targeted tracks, to the
     /// playhead.
     ExtendEditToPlayhead,
@@ -819,6 +822,7 @@ impl TimelineCommand {
             Self::SlipNudge { .. } => "slip_nudge",
             Self::SlideNudge { .. } => "slide_nudge",
             Self::ClipNudge { .. } => "clip_nudge",
+            Self::ClipTrackNudge { .. } => "clip_track_nudge",
             Self::ExtendEditToPlayhead => "extend_edit",
             Self::SetMultiFrameStep(_) => "multi_frame_step",
             Self::SetTool(_) => "tool",
