@@ -155,6 +155,15 @@ pub enum ClipChange {
         before: ClipRetime,
         after: ClipRetime,
     },
+    /// The clip's `link_group` changed (merge clips, synchronize, unlink, their undo). A clip that
+    /// also moved has a [`ClipChange::Retime`] first and this entry after it.
+    Relink {
+        clip_id: String,
+        track_id: String,
+        window: ClipWindow,
+        group_before: Option<String>,
+        group_after: Option<String>,
+    },
 }
 
 impl ClipChange {
@@ -162,7 +171,8 @@ impl ClipChange {
         match self {
             Self::Retime { clip_id, .. }
             | Self::Remove { clip_id, .. }
-            | Self::RetimeRecord { clip_id, .. } => clip_id,
+            | Self::RetimeRecord { clip_id, .. }
+            | Self::Relink { clip_id, .. } => clip_id,
             Self::Insert { clip, .. } => &clip.clip_id,
         }
     }
@@ -171,13 +181,15 @@ impl ClipChange {
             Self::Retime { track_id, .. }
             | Self::Insert { track_id, .. }
             | Self::Remove { track_id, .. }
-            | Self::RetimeRecord { track_id, .. } => track_id,
+            | Self::RetimeRecord { track_id, .. }
+            | Self::Relink { track_id, .. } => track_id,
         }
     }
     pub fn before(&self) -> Option<ClipWindow> {
         match self {
             Self::Retime { before, .. } | Self::Remove { before, .. } => Some(*before),
             Self::RetimeRecord { window, .. } => Some(*window),
+            Self::Relink { window, .. } => Some(*window),
             Self::Insert { .. } => None,
         }
     }
@@ -185,6 +197,7 @@ impl ClipChange {
         match self {
             Self::Retime { after, .. } => Some(*after),
             Self::RetimeRecord { window, .. } => Some(*window),
+            Self::Relink { window, .. } => Some(*window),
             Self::Insert { clip, .. } => Some(window(clip)),
             Self::Remove { .. } => None,
         }
