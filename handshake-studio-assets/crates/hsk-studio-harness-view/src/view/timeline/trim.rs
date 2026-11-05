@@ -21,7 +21,12 @@
 //!   the multi-frame step; slip Ctrl+Alt+Left / Right (Shift: step), slide Alt+, / Alt+. (Shift:
 //!   step), clip nudge Alt+Left / Right (Shift: step) act on the selected clip. One step
 //!   preference ([`TimelineCommand::SetMultiFrameStep`], default [`DEFAULT_MULTI_FRAME_STEP`])
-//!   governs every "many" variant.
+//!   governs every "many" variant. It lives in the open document's timeline state: hiding and
+//!   showing the panel keeps it, closing the document drops it (no store holds it).
+//! - **Up and down by one track** ([`TimelineCommand::ClipTrackNudge`]): the selected clip keeps its
+//!   time and moves to the next track of its kind in the drawn rows, its link partners with it, as
+//!   one undo step. An occupied range refuses `nudge_range_occupied`, unlike a clip nudge left or
+//!   right, which overwrites; also `nudge_no_track` and `track_locked`. Nothing is shifted.
 //! - **Extend Edit** (`timeline.extend_edit`, [`TimelineCommand::ExtendEditToPlayhead`]): rolls
 //!   the selected roll edit, else the nearest abutting edit on the targeted tracks, to the playhead.
 //! - **Trim session** (`timeline.trim_session.enter`): see module `trim_session`.
@@ -48,10 +53,10 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::super::Viewer;
-use super::{Planned, TimelineCommand, find_clip, plan_one, sequence_in, ticks_per_frame};
+use super::{Planned, TimelineCommand, find_clip, noted, plan_one, sequence_in, ticks_per_frame};
 use hsk_studio_accord::Ticks;
 use hsk_studio_folio::StudioSequence;
-use hsk_studio_pulse::{TickDelta, TimelineEdit};
+use hsk_studio_pulse::{LinkedSelection, NudgeTrack, TickDelta, TimelineEdit, TrackNudge, plan_nudge_track};
 use serde_json::{Value, json};
 
 /// Studio default of the multi-frame step (Premiere's default UNVERIFIED).
@@ -379,7 +384,7 @@ impl Viewer {
             TimelineCommand::SlipNudge { right, many } => self.timeline_selected_nudge(key, TrimKind::Slip, *right, *many),
             TimelineCommand::SlideNudge { right, many } => self.timeline_selected_nudge(key, TrimKind::Slide, *right, *many),
             TimelineCommand::ClipNudge { right, many } => self.timeline_clip_nudge(*right, *many),
-            TimelineCommand::ClipTrackNudge { .. } => Err("clip_track_nudge_unbuilt".into()),
+            TimelineCommand::ClipTrackNudge { up } => self.timeline_clip_track_nudge(*up),
             TimelineCommand::ExtendEditToPlayhead => self.timeline_extend_edit(key),
             TimelineCommand::SetMultiFrameStep(step) => self.timeline_set_step(*step),
             TimelineCommand::SetTool(tool) => {
@@ -492,6 +497,18 @@ impl Viewer {
         let to = i128::from(start.value()).saturating_add(delta);
         let to = u64::try_from(to).map_err(|_| "outside_range")?;
         self.timeline_command_inner(&TimelineCommand::MoveClip { clip_id, start: Ticks::new(to), track_id: None })
+    }
+
+    fn timeline_clip_track_nudge(&mut self, up: bool) -> Result<(), String> {
+        let clip_id = self.timeline.as_ref().and_then(|t| t.selected.clone()).ok_or("no_selection")?;
+        let direction = if up { TrackNudge::Up } else { TrackNudge::Down };
+        let request = NudgeTrack { clip_ids: vec![clip_id], direction, linked: LinkedSelection::On };
+        self.timeline_commit("timeline_clip_track_nudge", |snap, seq_id, ctx| {
+            let p = plan_nudge_track(snap, seq_id, snap.document().revision, &request, ctx).map_err(|e| e.code().to_owned())?;
+            let mut notes = Vec::new();
+            noted(&p, &mut notes);
+            Ok(Planned { sequence: sequence_in(p.snapshot(), seq_id)?, notes })
+        })
     }
 
     fn timeline_extend_edit(&mut self, command: &'static str) -> Result<(), String> {
