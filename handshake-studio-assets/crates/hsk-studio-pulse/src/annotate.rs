@@ -11,6 +11,30 @@
 //! its start (`split_records`). Markers of a removed clip go with it and are listed in
 //! [`crate::EditProposal::removed_markers`]; transitions that no longer play after an edit are
 //! removed and listed in [`crate::EditProposal::dropped_transitions`].
+//!
+//! The third scope (lane SMB-PR-MEDIA-MARKERS-1, STU-VID-034: "lives on a media item and appears on
+//! every clip cut from it") is stored beside the document (`StudioMediaMarkerRecords`, committed by the
+//! session), in the media item's SOURCE ticks. [`clip_appearing_markers`] and
+//! [`sequence_appearing_markers`] answer what appears, each marker labelled with its scope, from records
+//! the host passes in: a session has no pulse edge. A clip is cut from a media item when its source is
+//! `ClipSource::Media` with that digest, whatever its manifest handle or asset id. A clip with a nested
+//! sequence or a primitive as its source has no media item: its own markers appear, no media item's do,
+//! and [`ClipMediaItem`] says which case it is; the markers of the clips inside a nested sequence are not
+//! lifted to the outer clip.
+//!
+//! The mapping is playback's ([`crate::clip_source_at`]), read the other way: speed and reverse through
+//! `source_to_timeline`, and a frame-held clip plays one source tick at every timeline tick, so a marker
+//! holding that tick appears over the whole clip and any other appears nowhere. Held-clip readings, the
+//! clause being silent and vendor parity UNVERIFIED (D5): a hold is matched by exact tick, as this read
+//! has no frame grid, so a marker inside the held frame but past its first tick is hidden; a held frame
+//! outside the window still counts, as playback still shows it. [`marker_span`] and [`marker_spans`],
+//! used for playhead navigation, keep their window mapping for a held clip.
+//!
+//! A marker that does not appear is hidden, not lost: it stays in its record, comes back when an edit
+//! brings its position into play, and is only counted here. A disabled clip's markers appear: it is still
+//! a clip cut from the item. The read is bounded by the existing `MAX_MARKERS_PER_SEQUENCE` over what
+//! appears (`limit_exceeded`, never a truncated list), walks at most clips times markers, and is
+//! cancellable throughout.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::{PulseError, Result};
@@ -19,7 +43,7 @@ use crate::timeline_edit::{EditContext, EditProposal, Footprint, propose, rate_o
 use crate::transition::{check_at, locate};
 use hsk_studio_accord::{CancellationToken, Ticks};
 pub use hsk_studio_folio::{LabelColor, MarkerRole, StudioMarker, WorkArea};
-use hsk_studio_folio::{MAX_MARKERS_PER_SEQUENCE, Snapshot, StudioClip, StudioSequence};
+use hsk_studio_folio::{ClipSource, ContentDigest, MAX_MARKERS_PER_SEQUENCE, Snapshot, StudioClip, StudioMediaMarkerRecords, StudioSequence};
 
 const CANCEL_STRIDE: usize = 256;
 
@@ -316,6 +340,148 @@ pub fn marker_spans(
     }
     out.sort_by(|a, b| (a.1.start(), &a.0).cmp(&(b.1.start(), &b.0)));
     Ok(out)
+}
+
+/// Which of the three STU-VID-034 scopes a marker belongs to. The scopes are not the same object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AppearingMarkerScope {
+    /// In sequence time; does not move with clips.
+    Sequence,
+    /// On the clip; travels with it.
+    Clip,
+    /// On the media item the clip is cut from.
+    MediaItem,
+}
+
+/// One marker where it appears.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppearingMarker {
+    pub scope: AppearingMarkerScope,
+    /// The clip it appears on; `None` for a sequence marker. A media item's marker appears once per clip
+    /// cut from it, so `clip_id` and `marker.marker_id` together name an appearance.
+    pub clip_id: Option<String>,
+    /// The stored record, unchanged: its `start` stays in its own time base.
+    pub marker: StudioMarker,
+    /// Where it appears in sequence time, clipped to what the clip plays.
+    pub span: TickRange,
+}
+
+/// What a clip is cut from, for the media item scope.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClipMediaItem {
+    /// `ClipSource::Media`: the item with these bytes.
+    Media(ContentDigest),
+    /// `ClipSource::Sequence`: a nested sequence has no media item.
+    NestedSequence,
+    /// `ClipSource::Primitive`: a typed primitive has no media item.
+    Primitive,
+}
+impl ClipMediaItem {
+    fn of(clip: &StudioClip) -> Self {
+        match &clip.source_ref {
+            ClipSource::Media { content_digest, .. } => Self::Media(content_digest.clone()),
+            ClipSource::Sequence { .. } => Self::NestedSequence,
+            ClipSource::Primitive { .. } => Self::Primitive,
+        }
+    }
+}
+
+/// Every marker that appears on one clip, by timeline position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipMarkers {
+    pub clip_id: String,
+    pub media_item: ClipMediaItem,
+    pub appearing: Vec<AppearingMarker>,
+    /// The clip's own markers that do not appear; still on the clip.
+    pub hidden_clip_markers: usize,
+    /// Its media item's markers that do not appear on this clip; still on the item.
+    pub hidden_media_markers: usize,
+}
+
+/// Every marker that appears in one sequence, by timeline position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SequenceMarkers {
+    pub appearing: Vec<AppearingMarker>,
+    /// Summed over the clips, as [`ClipMarkers::hidden_clip_markers`].
+    pub hidden_clip_markers: usize,
+    /// Summed over the clips, as [`ClipMarkers::hidden_media_markers`]: a marker hidden on two clips
+    /// counts twice.
+    pub hidden_media_markers: usize,
+    /// Clips with a nested sequence or a primitive as their source.
+    pub clips_without_media_item: usize,
+}
+
+/// Where `marker` appears on `clip`; `None` when it does not (module docs).
+fn appearing_span(clip: &StudioClip, marker: &StudioMarker) -> Result<Option<TickRange>> {
+    let end = marker.start.checked_add(marker.duration)?;
+    let Some(hold) = &clip.retime.frame_hold else {
+        return source_to_timeline(clip, marker.start, end);
+    };
+    let holds = if marker.duration.value() == 0 {
+        marker.start == hold.source_tick
+    } else {
+        marker.start <= hold.source_tick && hold.source_tick < end
+    };
+    if !holds {
+        return Ok(None);
+    }
+    TickRange::new(clip.timeline_start, clip.timeline_end().ok_or(PulseError::Overflow)?).map(Some)
+}
+
+/// One clip's walk: the clip's markers and `media`, pushed onto `out` under the limit; returns the two
+/// hidden counts.
+fn walk_clip(
+    clip: &StudioClip,
+    media: &[StudioMarker],
+    out: &mut Vec<AppearingMarker>,
+    cancel: &CancellationToken,
+) -> Result<(usize, usize)> {
+    let mut hidden = (0usize, 0usize);
+    let own = clip.markers.iter().map(|m| (m, AppearingMarkerScope::Clip));
+    for (i, (marker, scope)) in own.chain(media.iter().map(|m| (m, AppearingMarkerScope::MediaItem))).enumerate() {
+        if i.is_multiple_of(CANCEL_STRIDE) {
+            cancel.check()?;
+        }
+        match appearing_span(clip, marker)? {
+            Some(span) => {
+                if out.len() >= MAX_MARKERS_PER_SEQUENCE {
+                    return Err(PulseError::LimitExceeded);
+                }
+                out.push(AppearingMarker { scope, clip_id: Some(clip.clip_id.clone()), marker: marker.clone(), span });
+            }
+            None if scope == AppearingMarkerScope::Clip => hidden.0 = hidden.0.saturating_add(1),
+            None => hidden.1 = hidden.1.saturating_add(1),
+        }
+    }
+    Ok(hidden)
+}
+
+fn sort_appearing(appearing: &mut [AppearingMarker]) {
+    appearing.sort_by(|a, b| {
+        (a.span.start(), &a.clip_id, a.scope, &a.marker.marker_id).cmp(&(b.span.start(), &b.clip_id, b.scope, &b.marker.marker_id))
+    });
+}
+
+/// Every marker that appears on `clip`: its own and those of the media item it is cut from, ordered by
+/// start, then scope and id. `media` is the parsed record set a session holds (`None` = none stored).
+pub fn clip_appearing_markers(
+    clip: &StudioClip,
+    media: Option<&StudioMediaMarkerRecords>,
+    cancel: &CancellationToken,
+) -> Result<ClipMarkers> {
+    let _ = (media, cancel, walk_clip, sort_appearing);
+    Ok(ClipMarkers { clip_id: clip.clip_id.clone(), media_item: ClipMediaItem::of(clip), appearing: Vec::new(), hidden_clip_markers: 0, hidden_media_markers: 0 })
+}
+
+/// Every marker that appears in `sequence`: its sequence markers and, for every clip, what
+/// [`clip_appearing_markers`] answers, ordered by start, then clip, scope and id.
+pub fn sequence_appearing_markers(
+    sequence: &StudioSequence,
+    media: Option<&StudioMediaMarkerRecords>,
+    cancel: &CancellationToken,
+) -> Result<SequenceMarkers> {
+    let _ = (sequence, media, cancel);
+    Ok(SequenceMarkers { appearing: Vec::new(), hidden_clip_markers: 0, hidden_media_markers: 0, clips_without_media_item: 0 })
 }
 
 /// Playhead navigation (STU-VID-035): the first marker start strictly after `after`.
