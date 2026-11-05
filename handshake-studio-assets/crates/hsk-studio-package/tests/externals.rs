@@ -414,6 +414,7 @@ fn every_folio_reference_property_is_classified() {
         ("trap_preset_records", serde_json::to_value(folio::trap_preset_records_schema()).unwrap()),
         ("sequence_settings", serde_json::to_value(folio::sequence_settings_records_schema()).unwrap()),
         ("sequence_presets", serde_json::to_value(folio::sequence_presets_schema()).unwrap()),
+        ("track_display", serde_json::to_value(folio::track_display_records_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -662,6 +663,36 @@ fn sequence_settings_and_presets_round_trip_through_the_package() {
     assert_eq!(parse_sequence_settings_records(&body("sequence_settings"), reopened, budget, &token()).unwrap(), records);
     assert_eq!(parse_sequence_presets(&body("sequence_presets"), budget, &token()).unwrap(), shipped);
     // No reference to outside data comes from the new entries: the externals are the document's.
+    let without = open(&write(&snapshot, &source(&b), &[], EmbedExternal::Link).unwrap());
+    assert_eq!(states(&opened), states(&without));
+    assert!(opened.externals.iter().all(|e| !e.target.starts_with(DOCUMENT_ENTRY_PREFIX)));
+}
+
+/// Lane SMB-PR-TRACK-DISPLAY-1 (rule 4b): the track display record set travels as a record entry next
+/// to the document: kept verbatim on save, read back byte-identical, parsed back to the same records,
+/// and it names no outside data.
+#[test]
+fn track_display_records_round_trip_through_the_package() {
+    let b = bytes();
+    let snapshot = document(&b);
+    let doc = snapshot.document();
+    let mut records = StudioTrackDisplayRecords::new(doc.document_id.clone());
+    records.sequences.push(StudioTrackDisplayEntry {
+        sequence_id: "seq".into(),
+        switches: StudioTrackDisplaySwitches { video_thumbnails: StudioVideoThumbnails::Continuous, source_clip_name_and_label: false, ..StudioTrackDisplaySwitches::STUDIO_DEFAULT },
+        heights: StudioTrackHeights { video: 60, audio: 70, caption: 80, submix: 90 },
+        height_presets: vec![StudioTrackHeightPreset { preset_id: "tall".into(), name: "Tall tracks".into(), heights: StudioTrackHeights::all(300) }],
+    });
+    let body = serde_json::to_vec(&records).unwrap();
+    let sha = sha256_hex_of(&body);
+    let held = vec![Quarantined { name: format!("{DOCUMENT_ENTRY_PREFIX}track_display.{sha}"), bytes: body.clone(), sha256_hex: sha }];
+    let package = write(&snapshot, &source(&b), &held, EmbedExternal::Link).unwrap();
+    let opened = open(&package);
+    assert_eq!(opened.snapshot().unwrap().encoded_bytes(), snapshot.encoded_bytes());
+    assert_eq!(opened.quarantined, held, "the entry carried verbatim");
+    let reopened = opened.snapshot().unwrap().document();
+    assert_eq!(parse_track_display_records(&opened.quarantined[0].bytes, reopened, folio::Budget::default(), &token()).unwrap(), records);
+    // No reference to outside data comes from the entry: the externals are the document's.
     let without = open(&write(&snapshot, &source(&b), &[], EmbedExternal::Link).unwrap());
     assert_eq!(states(&opened), states(&without));
     assert!(opened.externals.iter().all(|e| !e.target.starts_with(DOCUMENT_ENTRY_PREFIX)));
