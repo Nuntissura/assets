@@ -31,10 +31,12 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::PulseError;
-use crate::merge_sync::LinkedSelection;
-use crate::timeline_edit::{EditContext, EditProposal};
-use hsk_studio_folio::Snapshot;
+use crate::merge_sync::{LinkedSelection, MAX_MOVE_SELECTION};
+use crate::range::validate_lane;
+use crate::timeline_edit::{EditContext, EditProposal, Footprint, lane_of, propose};
+use hsk_studio_folio::{Snapshot, StudioSequence, TrackKind};
 use hsk_studio_observe::FailureCode;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Which way a clip goes, in the rows the timeline draws (module docs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +94,11 @@ impl From<PulseError> for NudgeError {
         Self::Pulse(e)
     }
 }
+impl From<hsk_studio_accord::ValidationError> for NudgeError {
+    fn from(e: hsk_studio_accord::ValidationError) -> Self {
+        Self::Pulse(e.into())
+    }
+}
 impl std::fmt::Display for NudgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.code())
@@ -100,7 +107,156 @@ impl std::fmt::Display for NudgeError {
 impl std::error::Error for NudgeError {}
 pub type NudgeResult<T> = std::result::Result<T, NudgeError>;
 
-/// Red commit: refuses everything; the planner comes with the next commit of this lane.
-pub fn plan_nudge_track(_: &Snapshot, _: &str, _: u64, _: &NudgeTrack, _: &EditContext) -> NudgeResult<EditProposal> {
-    Err(PulseError::InvalidInput.into())
+/// One place in a kind's stack, by index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Higher,
+    Lower,
+}
+
+fn step_of(kind: TrackKind, direction: TrackNudge) -> Step {
+    let drawn_by_descending_index = match kind {
+        TrackKind::Caption | TrackKind::Video => true,
+        TrackKind::Audio | TrackKind::Submix => false,
+    };
+    if drawn_by_descending_index == (direction == TrackNudge::Up) { Step::Higher } else { Step::Lower }
+}
+
+/// For each track, the next track of its kind with a lower and with a higher index. Folio holds a
+/// kind's tracks in index order.
+fn stack_neighbours(seq: &StudioSequence) -> Vec<(Option<usize>, Option<usize>)> {
+    let mut neighbours: Vec<(Option<usize>, Option<usize>)> = vec![(None, None); seq.tracks.len()];
+    let mut last: [Option<usize>; 4] = [None; 4];
+    for (t, track) in seq.tracks.iter().enumerate() {
+        let slot = match track.kind {
+            TrackKind::Video => 0,
+            TrackKind::Audio => 1,
+            TrackKind::Caption => 2,
+            TrackKind::Submix => 3,
+        };
+        if let Some(previous) = last[slot] {
+            neighbours[previous].1 = Some(t);
+            neighbours[t].0 = Some(previous);
+        }
+        last[slot] = Some(t);
+    }
+    neighbours
+}
+
+/// The step each moving clip takes, as the module docs read link partners.
+fn steps<'a>(seq: &'a StudioSequence, request: &'a NudgeTrack, ctx: &EditContext) -> NudgeResult<(BTreeSet<&'a str>, BTreeMap<&'a str, Step>)> {
+    if request.clip_ids.is_empty() {
+        return Err(PulseError::InvalidInput.into());
+    }
+    let mut wanted = BTreeSet::new();
+    for id in &request.clip_ids {
+        if !wanted.insert(id.as_str()) {
+            return Err(PulseError::DuplicateId.into());
+        }
+    }
+    let mut named: BTreeMap<&str, (TrackKind, Option<&str>)> = BTreeMap::new();
+    for track in &seq.tracks {
+        ctx.cancel.check()?;
+        for clip in track.clips.iter().filter(|c| wanted.contains(c.clip_id.as_str())) {
+            named.insert(clip.clip_id.as_str(), (track.kind, clip.link_group.as_deref()));
+        }
+    }
+    let mut groups = BTreeMap::new();
+    for id in &request.clip_ids {
+        let (kind, group) = *named.get(id.as_str()).ok_or(PulseError::UnknownClip)?;
+        if let (LinkedSelection::On, Some(group)) = (request.linked, group) {
+            groups.entry(group).or_insert_with(|| step_of(kind, request.direction));
+        }
+    }
+    Ok((wanted, groups))
+}
+
+fn nudge_tracks(seq: &StudioSequence, request: &NudgeTrack, ctx: &EditContext, reads: &mut Footprint) -> NudgeResult<StudioSequence> {
+    let (wanted, groups) = steps(seq, request, ctx)?;
+    let neighbours = stack_neighbours(seq);
+    let mut destination: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut moving_groups = BTreeSet::new();
+    for (t, track) in seq.tracks.iter().enumerate() {
+        ctx.cancel.check()?;
+        for clip in &track.clips {
+            let group = clip.link_group.as_deref();
+            let step = match group.and_then(|g| groups.get(g)) {
+                Some(step) => *step,
+                None if wanted.contains(clip.clip_id.as_str()) => step_of(track.kind, request.direction),
+                None => continue,
+            };
+            reads.add(&track.track_id);
+            reads.add(&clip.clip_id);
+            let next = if step == Step::Higher { neighbours[t].1 } else { neighbours[t].0 };
+            let d = next.ok_or_else(|| NudgeError::NoTrackThatWay { clip_id: clip.clip_id.clone() })?;
+            if let Some(locked) = [track, &seq.tracks[d]].into_iter().find(|x| x.locked) {
+                return Err(NudgeError::TrackLocked { clip_id: clip.clip_id.clone(), track_id: locked.track_id.clone() });
+            }
+            destination.insert(clip.clip_id.as_str(), d);
+            moving_groups.extend(group);
+        }
+    }
+    let mut out = seq.clone();
+    let mut going = Vec::with_capacity(destination.len());
+    for track in &mut out.tracks {
+        let (leaving, staying) = std::mem::take(&mut track.clips).into_iter().partition::<Vec<_>, _>(|c| destination.contains_key(c.clip_id.as_str()));
+        track.clips = staying;
+        going.extend(leaving);
+    }
+    let mut landing = BTreeSet::new();
+    for clip in going {
+        let d = *destination.get(clip.clip_id.as_str()).ok_or(PulseError::UnknownClip)?;
+        landing.insert(d);
+        out.tracks[d].clips.push(clip);
+    }
+    for d in landing {
+        ctx.cancel.check()?;
+        let track = &mut out.tracks[d];
+        track.clips.sort_by_key(|c| c.timeline_start);
+        reads.add(&track.track_id);
+        let mut members = BTreeSet::new();
+        for clip in &track.clips {
+            reads.add(&clip.clip_id);
+            if let Some(group) = clip.link_group.as_deref().filter(|g| moving_groups.contains(g))
+                && !members.insert(group)
+            {
+                return Err(PulseError::LinkedEditUnsupported.into());
+            }
+        }
+        for pair in track.clips.windows(2) {
+            let end = pair[0].timeline_end().ok_or(PulseError::Overflow)?;
+            if end > pair[1].timeline_start {
+                let (clip, other) = if destination.contains_key(pair[1].clip_id.as_str()) { (&pair[1], &pair[0]) } else { (&pair[0], &pair[1]) };
+                return Err(NudgeError::RangeOccupied { clip_id: clip.clip_id.clone(), occupied_by: other.clip_id.clone() });
+            }
+        }
+        validate_lane(&lane_of(track)?, ctx.cancel)?;
+    }
+    Ok(out)
+}
+
+/// Up or down by one track (STU-VID-035a): every named clip keeps its time and moves to the next track
+/// of its kind; nothing else moves. Refusals, nothing produced: `limit_exceeded` before any work,
+/// `invalid_input` (empty), `duplicate_id`, `unknown_clip`, [`NudgeError`], `linked_edit_unsupported`
+/// (two members of a group on one track), `stale_revision`, `canceled`.
+pub fn plan_nudge_track(snapshot: &Snapshot, sequence_id: &str, expected_revision: u64, request: &NudgeTrack, ctx: &EditContext) -> NudgeResult<EditProposal> {
+    if request.clip_ids.len() > MAX_MOVE_SELECTION {
+        return Err(PulseError::LimitExceeded.into());
+    }
+    let mut refusal = None;
+    let result = propose(snapshot, sequence_id, expected_revision, ctx, true, |old, reads| {
+        nudge_tracks(old, request, ctx, reads).map_err(|e| {
+            let code = match &e {
+                NudgeError::Pulse(p) => *p,
+                _ => PulseError::InvalidInput,
+            };
+            refusal = Some(e);
+            code
+        })
+    });
+    match (result, refusal) {
+        (Ok(proposal), _) => Ok(proposal),
+        (Err(_), Some(r)) => Err(r),
+        (Err(e), None) => Err(e.into()),
+    }
 }
