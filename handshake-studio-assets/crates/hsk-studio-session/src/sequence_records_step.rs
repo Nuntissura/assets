@@ -7,7 +7,10 @@
 //! and does not quote it). The session applies the whole step as ONE revision (`revision + 1`, also when only a
 //! record changes, declared reading as in multicam), ONE receipt and ONE inverse
 //! ([`crate::Applied::sequence_records_inverse`]); the undo's own inverse is the redo. Any refusal
-//! leaves the document, the entries and the receipts untouched.
+//! leaves the document, the entries and the receipts untouched. A step that replaced records which did
+//! not validate cannot put them back, so its inverse leaves that entry alone and the rest of the step
+//! keeps its undo; [`crate::Applied::sequence_records_undo`] says which, and says when no undo exists
+//! (R56 F-R56-7; tests/entry_references.rs).
 //!
 //! The three Folio commands (`hsk_studio_folio::SEQUENCE_SETTINGS_COMMAND_IDS`) reach the same step
 //! through `Session::submit_sequence_command_as` and `_keyed_as`: Folio runs the command at proposal
@@ -173,7 +176,39 @@ pub(crate) struct LiveEntries<'a> {
 pub(crate) struct Checked {
     pub successor: Snapshot,
     pub entries: Vec<(&'static str, Option<Vec<u8>>)>,
-    pub inverse: SequenceRecordsStep,
+    pub inverse: Option<SequenceRecordsStep>,
+    pub undo: SequenceRecordsUndo,
+}
+
+/// The inverse half of one record edit. Records that validate against the document the undo restores
+/// (and `None`) can go back. Records that do not cannot: the half is dropped and `token` named, and
+/// `blocked` is set when what the step wrote would not validate there either, because the inverse could
+/// then never apply. Only a cancel is an error.
+fn inverse_half<T: Clone + PartialEq>(
+    edit: &RecordEdit<T>,
+    token: &'static str,
+    not_restored: &mut Vec<&'static str>,
+    blocked: &mut bool,
+    validates: impl Fn(&T) -> Result<(), folio::Diagnostic>,
+) -> Result<Option<RecordEdit<T>>, SessionError> {
+    let holds = |records: &T| match validates(records) {
+        Ok(()) => Ok(true),
+        Err(d) if d.code == Code::Canceled => Err(SessionError::Canceled),
+        Err(_) => Ok(false),
+    };
+    let Some(expect) = edit.expect.as_ref().filter(|_| edit.expect != edit.write) else {
+        return Ok(Some(edit.swapped()));
+    };
+    if holds(expect)? {
+        return Ok(Some(edit.swapped()));
+    }
+    not_restored.push(token);
+    if let Some(write) = &edit.write
+        && !holds(write)?
+    {
+        *blocked = true;
+    }
+    Ok(None)
 }
 
 pub(crate) fn folio_code(d: folio::Diagnostic) -> SessionError {
@@ -308,17 +343,53 @@ pub(crate) fn successor(
             entries.push((TRACK_DISPLAY_ENTRY, body));
         }
     }
+    // What the undo restores is checked against the document it restores.
+    let (mut not_restored, mut blocked) = (Vec::new(), false);
+    let reencoded = |_: serde_json::Error| folio::Diagnostic { code: Code::InvalidJson, target: "sequence_records".to_owned() };
+    let settings = match &step.settings {
+        Some(edit) => inverse_half(edit, SEQUENCE_SETTINGS_ENTRY, &mut not_restored, &mut blocked, |records| {
+            let body = serde_json::to_vec(records).map_err(reencoded)?;
+            parse_sequence_settings_records(&body, document, budget, cancel).map(drop)
+        })?,
+        None => None,
+    };
+    let presets = match &step.presets {
+        Some(edit) => inverse_half(edit, SEQUENCE_PRESETS_ENTRY, &mut not_restored, &mut blocked, |records| {
+            let body = serde_json::to_vec(records).map_err(reencoded)?;
+            parse_sequence_presets(&body, budget, cancel).map(drop)
+        })?,
+        None => None,
+    };
+    let track_display = match &step.track_display {
+        Some(edit) => inverse_half(edit, TRACK_DISPLAY_ENTRY, &mut not_restored, &mut blocked, |records| {
+            let body = serde_json::to_vec(records).map_err(reencoded)?;
+            parse_track_display_records(&body, document, budget, cancel).map(drop)
+        })?,
+        None => None,
+    };
+    let restores_something = !inverse_sequences.is_empty()
+        || settings.as_ref().is_some_and(|e| e.expect != e.write)
+        || presets.as_ref().is_some_and(|e| e.expect != e.write)
+        || track_display.as_ref().is_some_and(|e| e.expect != e.write);
+    let (inverse, undo) = if not_restored.is_empty() {
+        (true, SequenceRecordsUndo::Complete)
+    } else if blocked || !restores_something {
+        (false, SequenceRecordsUndo::Unavailable(not_restored))
+    } else {
+        (true, SequenceRecordsUndo::WithoutEntries(not_restored))
+    };
     Ok(Some(Checked {
         successor: next,
         entries,
-        inverse: SequenceRecordsStep {
+        inverse: inverse.then(|| SequenceRecordsStep {
             command_id: step.command_id.clone(),
             correlation_id: step.correlation_id,
             sequences: inverse_sequences,
-            settings: step.settings.as_ref().map(RecordEdit::swapped),
-            presets: step.presets.as_ref().map(RecordEdit::swapped),
-            track_display: step.track_display.as_ref().map(RecordEdit::swapped),
-        },
+            settings,
+            presets,
+            track_display,
+        }),
+        undo,
     }))
 }
 
