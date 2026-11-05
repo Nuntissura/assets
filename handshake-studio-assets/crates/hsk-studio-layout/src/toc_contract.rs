@@ -20,8 +20,11 @@
 //!   counted (`omitted_overset`), never silently dropped.
 //! - `include_hidden`: a paragraph whose frame layer has `visible == false` is listed only when set;
 //!   otherwise it is omitted and counted (`omitted_hidden`).
-//! - Entry text = the paragraph text without its trailing break, tabs as spaces; forced line breaks
-//!   (U+2028) become spaces only with `remove_forced_line_break`, otherwise they are kept.
+//! - Entry text = `derived_text`: the paragraph text without its trailing terminator and without stream
+//!   sentinels, a marker with a value shown as its value at its source byte, anything else typed in
+//!   `TocContractEntry::marker_gaps`; tabs as spaces; forced line breaks (U+2028) become spaces only with
+//!   `remove_forced_line_break`, otherwise they are kept. A paragraph holding only markers has no entry,
+//!   as an empty one has none: counted (`omitted_no_text`), any gap it holds in `omitted_marker_gaps`.
 //! - `page_number_position`: `after` = text + separator + label, `before` = label + separator +
 //!   text, `none` = text. The separator run carries `separator_style`, the label run
 //!   `page_number_style`, the entry paragraph `format_style` (character ranges and paragraphs of the
@@ -57,7 +60,7 @@ use crate::book::CombinedBook;
 use crate::derived_text::{DerivedBudget, DerivedPages, DerivedRefusal, DerivedRules, derive_text};
 use crate::numbering::PageNumber;
 use crate::threaded_reflow::FramePlacement;
-use crate::toc::{TocLimits, TocSource, baseline_of, line_of, page_of};
+use crate::toc::{TocLimits, TocSource, baseline_of, blank_line_of, line_of, page_of};
 use hsk_studio_accord::{CancellationToken, CommandContext, DomainId};
 use hsk_studio_folio::{
     MAX_TOC_ENTRIES, MAX_TOC_LEVEL, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioBook,
@@ -860,7 +863,8 @@ fn generate_inner(
     let rules = DerivedRules { forced_break_to_space: flags.remove_forced_line_break, tab_to_space: true };
     let mut budget = DerivedBudget::new();
     let mut next_anchor = 1u64;
-    let (mut omitted_overset, mut omitted_hidden) = (0usize, 0usize);
+    let (mut omitted_overset, mut omitted_hidden, mut omitted_no_text) = (0usize, 0usize, 0usize);
+    let mut omitted_marker_gaps = Vec::new();
     let mut flat: Vec<(TocContractEntry, bool, usize)> = Vec::new();
     let mut scanned = 0usize;
     for s in req.sources {
@@ -878,12 +882,10 @@ fn generate_inner(
                 continue;
             }
             let page = page_of(s, p.start, &by_page);
-            if page.is_none() && !req.include_overset {
+            let unplaced_left_out = page.is_none() && !req.include_overset;
+            if unplaced_left_out && blank_line_of(s, p.start).is_none() {
                 omitted_overset = omitted_overset.saturating_add(1);
                 continue;
-            }
-            if flat.len() >= req.limits.max_entries {
-                return Err(TocCommandError::BudgetExceeded);
             }
             let raw = usize::try_from(p.start)
                 .ok()
@@ -894,6 +896,18 @@ fn generate_inner(
                 DerivedRefusal::BudgetExceeded => TocCommandError::BudgetExceeded,
                 DerivedRefusal::Canceled => TocCommandError::Layout(LayoutError::Canceled),
             })?;
+            if derived.only_markers() {
+                omitted_no_text = omitted_no_text.saturating_add(1);
+                omitted_marker_gaps.extend(derived.gaps.iter().map(|g| (s.story.story_id.clone(), *g)));
+                continue;
+            }
+            if unplaced_left_out {
+                omitted_overset = omitted_overset.saturating_add(1);
+                continue;
+            }
+            if flat.len() >= req.limits.max_entries {
+                return Err(TocCommandError::BudgetExceeded);
+            }
             let anchor = flags.make_anchor.then(|| -> Result<TocAnchorOutcome, TocCommandError> {
                 let sid = s.story.story_id.as_str();
                 if locked.contains(sid) {
@@ -1017,8 +1031,8 @@ fn generate_inner(
         numbered_paragraphs: style.numbered_paragraphs.clone(),
         omitted_overset,
         omitted_hidden,
-        omitted_no_text: 0,
-        omitted_marker_gaps: Vec::new(),
+        omitted_no_text,
+        omitted_marker_gaps,
     })
 }
 

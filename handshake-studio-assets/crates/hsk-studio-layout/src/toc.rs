@@ -13,7 +13,9 @@
 //! - Entry text = `derived_text`: the paragraph text without its trailing terminator (any of the twelve
 //!   of `ends_paragraph`) and without stream sentinels, a marker with a value shown as its value at its
 //!   source byte, anything else typed in `TocEntryOut::marker_gaps` (this call has no sections, so a
-//!   section marker is a gap); forced line breaks (U+2028) and tabs become spaces. Position `after`: text + separator + label; `before`: label + separator + text;
+//!   section marker is a gap); forced line breaks (U+2028) and tabs become spaces. A paragraph holding
+//!   only markers has no entry, as an empty one has none, and any gap it holds is in
+//!   `GeneratedStory::omitted_marker_gaps`. Position `after`: text + separator + label; `before`: label + separator + text;
 //!   `none`: text.
 //! - Levels nest (an entry's children are the following deeper entries); siblings are sorted
 //!   alphabetically (lower-cased, stable) when every sibling's level has `sort_alphabet`.
@@ -213,6 +215,17 @@ pub(crate) fn line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FrameP
     mine.get(i).copied()
 }
 
+/// The blank line of the paragraph holding story byte `at`, when composition gave a paragraph with no
+/// glyph one: its empty source span sits at the paragraph's end, so [`line_of`] does not find it
+/// (`place_markers` does, by `Line.paragraph`). Read only where a marker-only paragraph is told from
+/// an overset one; `line_of` and its other callers keep their answers.
+pub(crate) fn blank_line_of<'s>(source: &TocSource<'s>, at: u64) -> Option<(&'s FramePlacement, &'s Line)> {
+    let placement = source.placement?;
+    let paras = &source.story.paragraphs;
+    let p = paras.get(paras.partition_point(|p| p.start <= at).checked_sub(1)?)?;
+    placement.frames.iter().find_map(|f| f.lines.iter().find(|l| l.source.start == p.end && l.source.end == p.end).map(|l| (f, l)))
+}
+
 /// The page label (and id) where story byte `at` is placed, if it is ([`line_of`]).
 pub(crate) fn page_of<'p>(
     source: &TocSource<'_>,
@@ -300,6 +313,7 @@ pub fn generate_toc(
     let derived_pages = DerivedPages { pages, by_page: &by_page, sections: None };
     let rules = DerivedRules { forced_break_to_space: !keep_forced_breaks, tab_to_space: true };
     let mut budget = DerivedBudget::new();
+    let mut omitted_marker_gaps = Vec::new();
     // Flat list first (bounded), then the level tree.
     let mut flat: Vec<(TocEntryOut, bool, usize)> = Vec::new();
     for s in sources {
@@ -315,11 +329,9 @@ pub fn generate_toc(
                 continue;
             }
             let page = page_of(s, p.start, &by_page);
-            if page.is_none() && !style.include_overset {
+            let unplaced_left_out = page.is_none() && !style.include_overset;
+            if unplaced_left_out && blank_line_of(s, p.start).is_none() {
                 continue;
-            }
-            if flat.len() >= limits.max_entries {
-                return Err(TocError::BudgetExceeded);
             }
             let raw = usize::try_from(p.start)
                 .ok()
@@ -330,6 +342,16 @@ pub fn generate_toc(
                 DerivedRefusal::BudgetExceeded => TocError::BudgetExceeded,
                 DerivedRefusal::Canceled => TocError::Layout(LayoutError::Canceled),
             })?;
+            if derived.only_markers() {
+                omitted_marker_gaps.extend(derived.gaps.iter().map(|g| (s.story.story_id.clone(), *g)));
+                continue;
+            }
+            if unplaced_left_out {
+                continue;
+            }
+            if flat.len() >= limits.max_entries {
+                return Err(TocError::BudgetExceeded);
+            }
             flat.push((
                 TocEntryOut {
                     level: e.level,
@@ -399,6 +421,6 @@ pub fn generate_toc(
         text: w.text,
         paragraphs: w.paragraphs,
         entries: entries.into_iter().map(|(e, _)| e).collect(),
-        omitted_marker_gaps: Vec::new(),
+        omitted_marker_gaps,
     })
 }
