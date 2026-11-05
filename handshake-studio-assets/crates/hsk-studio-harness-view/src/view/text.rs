@@ -18,6 +18,14 @@
 //! text layer whose story holds a forced line break U+2028 is refused, typed
 //! ([`FORCED_LINE_BREAK_UNSUPPORTED`]; R55 F-R55-2): Type keeps it outside shaping, no glyph shows
 //! it, and drawing the story would drop the break without a word.
+//!
+//! Composition token (lane SMB-TYPE-AUTHORED-TOKEN-1; STU-TYP-130): a stored document composes under the
+//! token stored with it, read through [`super::Viewer::composition_token`]: `prepared_text`, live path and
+//! area text and the vector tool's path text all take it. A document with no token reads as the first
+//! one, and a token this build does not know is refused typed, never the newest. Two shapes compose
+//! under the current token because no stored document is involved: [`shaped_line`], which decides
+//! whether an imported run stays text in the document being created, and the public [`prepare`] and
+//! [`animated_glyphs`], which take no document token and have no caller in this crate's product paths.
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_composite::{PreparedText, TextLayerInput, TextResolution, TextRun, prepare_text};
@@ -363,7 +371,7 @@ fn character<'f>(styles: &StudioTypeStyleRecords, id: &str, fonts: &'f [FontFile
 /// ([`FORCED_LINE_BREAK_UNSUPPORTED`]), as does a story whose glyphs are not in logical order (bidi
 /// reordering; the break has no place in them). Errors are typed strings; the caller keeps the
 /// story unshaped.
-pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str, actor: &ActorContext, cancel: &CancellationToken) -> Result<hsk_studio_composite::vector_text::ShapedStory, String> {
+pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str, composition: &str, actor: &ActorContext, cancel: &CancellationToken) -> Result<hsk_studio_composite::vector_text::ShapedStory, String> {
     use hsk_studio_composite::FillPaint;
     use hsk_studio_composite::vector_text::{ShapedGlyph, ShapedRun, ShapedStory};
     let story = entry.stories.iter().find(|s| s.story_id == text_id).ok_or_else(|| format!("text_story_missing: {text_id}"))?;
@@ -393,7 +401,7 @@ pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str,
         ranges.push((r.start, r.end, paint));
     }
     let (font, size_pt) = face.ok_or_else(|| format!("text_story_unstyled: {text_id}"))?;
-    let (shaped, forced_breaks) = shaped_glyphs_and_breaks(font, text, size_pt, actor, cancel)?;
+    let (shaped, forced_breaks) = shaped_glyphs_and_breaks(font, text, size_pt, composition, actor, cancel)?;
     if !forced_breaks.is_empty()
         && (!matches!(story.text_kind, folio::StoryTextKind::Point | folio::StoryTextKind::Area) || shaped.windows(2).any(|w| w[1].cluster.start < w[0].cluster.start))
     {
@@ -456,9 +464,15 @@ pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str,
 
 /// Shapes and rasterises every text layer of `doc` that the entry describes (layers without a
 /// record are left to composite, which refuses them `text_layer_not_prepared`).
-/// The shaping requests are attributed to `actor`, the caller's (lane SMB-ATTRIBUTION-1).
+/// The shaping requests are attributed to `actor`, the caller's (lane SMB-ATTRIBUTION-1). Composes under
+/// the current token; a stored document goes through [`prepare_under`].
 pub fn prepare(doc: &StudioDocument, entry: &TextEntry, fonts: &[FontFile], actor: &ActorContext, cancel: &CancellationToken) -> Result<PreparedText, String> {
-    shape_layers(doc, entry, fonts, actor, cancel, refuse_forced_line_breaks, |inputs, resolution| {
+    prepare_under(doc, entry, fonts, ty::COMPOSITION_VERSION, actor, cancel)
+}
+
+/// [`prepare`] under the document's composition token.
+pub fn prepare_under(doc: &StudioDocument, entry: &TextEntry, fonts: &[FontFile], composition: &str, actor: &ActorContext, cancel: &CancellationToken) -> Result<PreparedText, String> {
+    shape_layers(doc, entry, fonts, composition, actor, cancel, refuse_forced_line_breaks, |inputs, resolution| {
         prepare_text(inputs, resolution, cancel).map_err(|e| format!("text_prepare: {e:?}"))
     })
 }
@@ -477,7 +491,7 @@ pub fn animated_glyphs(
     actor: &ActorContext,
     cancel: &CancellationToken,
 ) -> Result<std::collections::BTreeMap<String, (Vec<hsk_studio_composite::text::animate::AnimatedGlyph>, [f32; 4])>, String> {
-    shape_layers(doc, entry, fonts, actor, cancel, refuse_forced_line_breaks, |inputs, resolution| {
+    shape_layers(doc, entry, fonts, ty::COMPOSITION_VERSION, actor, cancel, refuse_forced_line_breaks, |inputs, resolution| {
         let mut out = std::collections::BTreeMap::new();
         for input in inputs {
             let glyphs = hsk_studio_composite::text::animate::glyphs_from_runs(input.runs, resolution, cancel)
@@ -507,10 +521,12 @@ fn refuse_forced_line_breaks(layer_id: &str, breaks: Vec<u64>) -> Result<(), Str
     if breaks.is_empty() { Ok(()) } else { Err(format!("{FORCED_LINE_BREAK_UNSUPPORTED}: {layer_id}")) }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn shape_layers<R>(
     doc: &StudioDocument,
     entry: &TextEntry,
     fonts: &[FontFile],
+    composition: &str,
     actor: &ActorContext,
     cancel: &CancellationToken,
     mut on_forced_breaks: impl FnMut(&str, Vec<u64>) -> Result<(), String>,
@@ -595,7 +611,7 @@ fn shape_layers<R>(
                 address: ty::ReadAddress { owner: story, property: "result", expected_revision: 1, fingerprint: hsk_studio_prism::profile_hash(b"harness-text-result") },
                 preimage: b"harness-text-result",
             },
-            composition_version: ty::COMPOSITION_VERSION,
+            composition_version: composition,
             normalization: ty::Normalization::Preserve,
             story_direction: ty::StoryDirection::LeftToRight,
             paragraphs: paragraph,
@@ -650,13 +666,19 @@ impl super::Viewer {
         }
     }
 
+    /// The token the open document composes under (module docs): a typed `text_composition_token: <code>`
+    /// when the session refuses it.
+    pub(super) fn composition_token(&self) -> Result<&'static str, String> {
+        self.run.authored_composition().map(|a| a.token).map_err(|code| format!("text_composition_token: {code}"))
+    }
+
     /// Shaped and rasterised text of the open document (empty without text layers).
     pub(super) fn prepared_text(&self) -> Result<PreparedText, String> {
         let snap = self.run.snapshot().ok_or("nothing open")?;
         if !snap.document().layers.iter().any(|l| matches!(l.payload, Payload::Text { .. })) {
             return Ok(PreparedText::default());
         }
-        prepare(snap.document(), &self.text_entry()?, &self.fonts, self.run.actor(), self.cancel)
+        prepare_under(snap.document(), &self.text_entry()?, &self.fonts, self.composition_token()?, self.run.actor(), self.cancel)
     }
 
     /// Places a point-text layer whose first baseline starts at document pixel (`x`, `y`): a Folio
@@ -746,7 +768,7 @@ impl super::Viewer {
 /// with `font`, exactly as [`prepare`] lays a point-text layer out (lane SMB-ILLUSTRATOR-INTEROP-2:
 /// an imported PDF text run stays text only when this layout reproduces its glyphs).
 pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<(u32, f64)>, String> {
-    shape_probe(font, text, size_pt, actor, cancel, refuse_forced_line_breaks, |inputs, resolution| {
+    shape_probe(font, text, size_pt, ty::COMPOSITION_VERSION, actor, cancel, refuse_forced_line_breaks, |inputs, resolution| {
         let mut out = Vec::new();
         for input in inputs {
             for r in input.runs {
@@ -764,17 +786,18 @@ pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, actor: &Act
 /// Glyph id, advance and offsets (pt) of every glyph of `text` shaped in one line at `size_pt`
 /// with `font`, as [`shaped_line`] shapes it (lane SMB-AI-TYPE-PATH-RECOLOR: type on a path).
 /// A forced line break U+2028 is refused: the line is one line.
-pub(crate) fn shaped_glyphs(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<ty::Glyph>, String> {
-    shape_probe(font, text, size_pt, actor, cancel, refuse_forced_line_breaks, |inputs, _| Ok(glyphs_of(inputs)))
+pub(crate) fn shaped_glyphs(font: &FontFile, text: &str, size_pt: f64, composition: &str, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<ty::Glyph>, String> {
+    shape_probe(font, text, size_pt, composition, actor, cancel, refuse_forced_line_breaks, |inputs, _| Ok(glyphs_of(inputs)))
 }
 
 /// [`shaped_glyphs`] for a path that can break a line: also the story bytes of the forced line breaks.
-fn shaped_glyphs_and_breaks(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken) -> Result<(Vec<ty::Glyph>, Vec<u64>), String> {
+fn shaped_glyphs_and_breaks(font: &FontFile, text: &str, size_pt: f64, composition: &str, actor: &ActorContext, cancel: &CancellationToken) -> Result<(Vec<ty::Glyph>, Vec<u64>), String> {
     let mut breaks = Vec::new();
     let glyphs = shape_probe(
         font,
         text,
         size_pt,
+        composition,
         actor,
         cancel,
         |_, found| {
@@ -791,10 +814,12 @@ fn glyphs_of(inputs: &[TextLayerInput<'_>]) -> Vec<ty::Glyph> {
 }
 
 /// Shapes `text` as a one-line probe point-text layer and hands the shaped layer to `finish`.
+#[allow(clippy::too_many_arguments)]
 fn shape_probe<R>(
     font: &FontFile,
     text: &str,
     size_pt: f64,
+    composition: &str,
     actor: &ActorContext,
     cancel: &CancellationToken,
     on_forced_breaks: impl FnMut(&str, Vec<u64>) -> Result<(), String>,
@@ -828,5 +853,5 @@ fn shape_probe<R>(
     ]))
     .map_err(|e| format!("text_probe_styles: {e}"))?;
     let entry = TextEntry { schema: ENTRY_SCHEMA.into(), layers: vec![TextLayerRecord { layer_id: LAYER.into(), story_id: STORY.into(), origin_px: [0.0, 0.0], paragraph_style: PARA.into(), character_style: CHAR.into() }], stories: vec![story], styles };
-    shape_layers(&doc, &entry, std::slice::from_ref(font), actor, cancel, on_forced_breaks, finish)
+    shape_layers(&doc, &entry, std::slice::from_ref(font), composition, actor, cancel, on_forced_breaks, finish)
 }

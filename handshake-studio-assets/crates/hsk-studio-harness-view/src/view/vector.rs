@@ -825,6 +825,8 @@ struct LiveTextAssets<'a> {
     /// Why `text` is `None` when the document's text entry did not decode (F-R41-5).
     text_error: Option<&'a str>,
     fonts: &'a [super::text::FontFile],
+    /// The token the document composes under, or why the session refuses it (STU-TYP-130).
+    composition: Result<&'static str, String>,
     /// The viewer run's actor, the attribution of the shaping (lane SMB-ATTRIBUTION-1).
     actor: &'a hsk_studio_accord::ActorContext,
     cancel: &'a hsk_studio_accord::CancellationToken,
@@ -870,7 +872,7 @@ impl hsk_studio_composite::VectorAssets for LiveTextAssets<'_> {
     }
     fn shaped_story(&self, text_id: &str) -> Option<hsk_studio_composite::vector_text::ShapedStory> {
         let shaped = match self.text {
-            Some(entry) => super::text::shaped_story(entry, self.fonts, text_id, self.actor, self.cancel),
+            Some(entry) => self.composition.clone().and_then(|composition| super::text::shaped_story(entry, self.fonts, text_id, composition, self.actor, self.cancel)),
             None => Err(self.text_error.map_or_else(|| "text_entry_unavailable".into(), |e| format!("text_entry_unavailable: {e}"))),
         };
         let mut shaped = shaped.map_err(|e| self.unshaped.borrow_mut().push((text_id.to_string(), e))).ok()?;
@@ -1306,7 +1308,7 @@ impl Viewer {
     /// [`Self::live_text_assets`] for a plan in `space` (the exports use `Encoded`).
     /// A text entry that does not decode keeps its decode error (`text_entry_unavailable: <error>`).
     fn live_text_assets_in<'a>(&'a self, entry: &'a VectorEntry, text: &'a Result<super::text::TextEntry, String>, space: hsk_studio_composite::BlendSpace) -> LiveTextAssets<'a> {
-        LiveTextAssets { entry: EntryAssets(entry), text: text.as_ref().ok(), text_error: text.as_ref().err().map(String::as_str), fonts: &self.fonts, actor: self.run.actor(), cancel: self.cancel, space, unshaped: std::cell::RefCell::new(Vec::new()) }
+        LiveTextAssets { entry: EntryAssets(entry), text: text.as_ref().ok(), text_error: text.as_ref().err().map(String::as_str), fonts: &self.fonts, composition: self.composition_token(), actor: self.run.actor(), cancel: self.cancel, space, unshaped: std::cell::RefCell::new(Vec::new()) }
     }
 
     /// The live path- and area-text bindings of the open document as the window draws them (lane
@@ -1320,8 +1322,30 @@ impl Viewer {
         Ok(prepared
             .texts()
             .iter()
-            .map(|r| VectorTextStatus { report: r.clone(), unshaped: unshaped.iter().find(|(id, _)| *id == r.text_id).map(|(_, e)| e.clone()), composition: None })
+            .map(|r| VectorTextStatus { report: r.clone(), unshaped: unshaped.iter().find(|(id, _)| *id == r.text_id).map(|(_, e)| e.clone()), composition: if unshaped.iter().any(|(id, _)| *id == r.text_id) { self.composition_cause(&r.text_id) } else { None } })
             .collect())
+    }
+
+    /// Whether the document's composition token is why story `text_id` stayed unshaped: a token this build
+    /// does not know always is; an older token is when the current one shapes the story, which is also
+    /// what makes an upgrade the way out. Runs only for a story that failed, on the report path, not on a
+    /// render. Another failure (a font that cannot shape it under any token) is `None`.
+    fn composition_cause(&self, text_id: &str) -> Option<CompositionCause> {
+        let current = folio::STUDIO_COMPOSITION_TOKENS.len();
+        let read = match self.run.authored_composition() {
+            Ok(read) => read,
+            Err(hsk_studio_session::COMPOSITION_TOKEN_UNKNOWN) => {
+                return Some(CompositionCause { code: hsk_studio_session::COMPOSITION_TOKEN_UNKNOWN, composed_under: None, current, upgrade_available: false });
+            }
+            Err(_) => return None,
+        };
+        let rank = folio::composition_token_rank(read.token)?;
+        if rank.saturating_add(1) == current {
+            return None;
+        }
+        let entry = self.text_entry().ok()?;
+        super::text::shaped_story(&entry, &self.fonts, text_id, folio::CURRENT_COMPOSITION_TOKEN, self.run.actor(), self.cancel).ok()?;
+        Some(CompositionCause { code: COMPOSITION_TOKEN_REFUSED, composed_under: Some(rank.saturating_add(1)), current, upgrade_available: true })
     }
 
     /// Binds `text` as live text to the first path of vector layer `layer_id` (lane
@@ -1626,7 +1650,7 @@ impl Viewer {
     /// The shaped story and point layout of a text layer record (left-aligned from its origin, as
     /// text layers draw).
     fn point_layout(&self, text_entry: &super::text::TextEntry, record: &super::text::TextLayerRecord) -> Result<(hsk_studio_composite::vector_text::ShapedStory, ty::PointTextLayout), String> {
-        let shaped = super::text::shaped_story(text_entry, &self.fonts, &record.story_id, self.run.actor(), self.cancel)?;
+        let shaped = super::text::shaped_story(text_entry, &self.fonts, &record.story_id, self.composition_token()?, self.run.actor(), self.cancel)?;
         let runs: Vec<ty::ComposeRun> = shaped.runs.iter().map(|r| r.metrics).collect();
         let glyphs: Vec<ty::ComposeGlyph> = shaped.glyphs.iter().map(|g| ty::ComposeGlyph { advance_pt: g.advance_pt, brk: g.brk }).collect();
         let layout = ty::layout_point_text(record.origin_px, &runs, &glyphs, ty::TextAlign::Left, &ty::AreaTextLimits::default()).map_err(|e| format!("point_text_layout: {e:?}"))?;
@@ -1685,7 +1709,7 @@ impl Viewer {
         let mut entry = self.vector_entry()?;
         let binding = entry.records.area_texts.iter().find(|a| a.container_layer_id == layer_id).cloned().ok_or_else(|| format!("{op}: {layer_id} holds no area text"))?;
         let mut text_entry = self.text_entry()?;
-        let shaped = super::text::shaped_story(&text_entry, &self.fonts, &binding.text_id, self.run.actor(), self.cancel)?;
+        let shaped = super::text::shaped_story(&text_entry, &self.fonts, &binding.text_id, self.composition_token()?, self.run.actor(), self.cancel)?;
         // A text layer holds one line (`text` module docs): the forced line break would be refused there.
         if shaped.glyphs.iter().any(|g| g.brk == ty::GlyphBreak::Paragraph) {
             return Err(format!("{op}: {}: {}", super::text::FORCED_LINE_BREAK_UNSUPPORTED, binding.text_id));
@@ -2988,7 +3012,7 @@ impl Viewer {
                     let r = &s.report;
                     match &r.outcome {
                         Ok(d) => json!({"text_id": r.text_id, "layer_id": r.layer_id, "placed": d.placed, "overset_from": d.overset_from, "overset_count": d.overset_count, "container": d.container, "resized": d.resized}),
-                        Err(code) => json!({"text_id": r.text_id, "layer_id": r.layer_id, "code": code, "unshaped": s.unshaped}),
+                        Err(code) => json!({"text_id": r.text_id, "layer_id": r.layer_id, "code": code, "unshaped": s.unshaped, "composition": s.composition.map(|c| json!({"code": c.code, "composed_under": c.composed_under, "current": c.current, "upgrade_available": c.upgrade_available}))}),
                     }
                 })
                 .collect(),

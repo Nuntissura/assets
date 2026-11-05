@@ -110,7 +110,10 @@ fn psd_converts_to_a_native_package_that_opens_in_a_session_with_receipt_and_ori
     let receipt: Value = serde_json::from_slice(&opened.import(ImportRole::Receipt).expect("receipt").bytes).unwrap();
     assert_eq!(receipt, imported.receipt);
     assert!(opened.import(ImportRole::Records).is_none());
-    assert!(opened.loss.is_empty(), "import entries add no loss note");
+    // The package layer knows no session document token, so the composition token entry an import
+    // records (STU-TYP-130) is its one note; the import entries add none.
+    assert!(opened.loss.iter().all(|note| note.name.starts_with("studio/composition_token.")), "import entries add no loss note: {:?}", opened.loss);
+    assert_eq!(opened.loss.len(), 1, "{:?}", opened.loss);
     assert_eq!(opened.imports.len(), 2);
     assert_eq!(opened.assets.len(), 2, "one tile per layer, digest-keyed");
 

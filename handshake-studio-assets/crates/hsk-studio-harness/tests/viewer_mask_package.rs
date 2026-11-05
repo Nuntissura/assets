@@ -339,7 +339,10 @@ fn a_session_saved_masked_document_renders_like_a_direct_composite_render() {
 
     let cancel = CancellationToken::default();
     let reopened = read_package(&saved, &Limits::default(), folio::Budget::default(), &TrustAll, &cancel).expect("reopen saved");
-    assert!(reopened.loss.is_empty(), "{:?}", reopened.loss);
+    // The package layer knows no session document token, so the composition token entry the import
+    // recorded (STU-TYP-130) is its one note.
+    assert!(reopened.loss.iter().all(|note| note.name.starts_with("studio/composition_token.")), "{:?}", reopened.loss);
+    assert_eq!(reopened.loss.len(), 1, "{:?}", reopened.loss);
     for (role, bytes) in &masked.planes {
         assert_eq!(reopened.assets.get(&sha256_hex_of(bytes)), Some(bytes), "{role} plane saved byte-identical");
     }

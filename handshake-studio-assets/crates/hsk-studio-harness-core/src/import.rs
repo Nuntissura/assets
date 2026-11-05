@@ -293,7 +293,9 @@ mod with_package {
     impl ImportedDocument {
         /// Native container bytes: document, tile assets and the import entries.
         pub fn to_package(&self, cancel: &CancellationToken) -> Result<Vec<u8>, ImportError> {
-            let held: Vec<_> = self.imports.iter().map(ImportEntry::to_opaque).collect();
+            let mut held: Vec<_> = self.imports.iter().map(ImportEntry::to_opaque).collect();
+            // An import creates a new document, so it records the current composition token (STU-TYP-130).
+            held.push(hsk_studio_session::new_document_composition_entry(&self.snapshot.document().document_id).map_err(|e| ImportError::Package(e.code()))?);
             let mut out = Vec::new();
             write_package_with(
                 &self.snapshot,

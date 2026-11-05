@@ -302,6 +302,8 @@ pub fn ai_to_package(bytes: &[u8], fonts: &[super::super::text::FontFile], actor
         let sha = hsk_studio_package::sha256_hex_of(&bytes);
         held.push(hsk_studio_package::Quarantined { name: format!("{}{}.{sha}", hsk_studio_session::DOCUMENT_ENTRY_PREFIX, super::super::text::ENTRY), bytes, sha256_hex: sha });
     }
+    // An import creates a new document, so it records the current composition token (STU-TYP-130).
+    held.push(hsk_studio_session::new_document_composition_entry(&snapshot.document().document_id).map_err(|e| format!("ai_import: {}", e.code()))?);
     let mut out = Vec::new();
     hsk_studio_package::write_package_with(
         &snapshot,

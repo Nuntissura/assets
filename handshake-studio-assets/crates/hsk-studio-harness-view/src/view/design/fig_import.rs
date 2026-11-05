@@ -511,6 +511,8 @@ fn build_package(
         let body = serde_json::to_vec(&r).map_err(json_err)?;
         held.push(hsk_studio_package::ImportEntry::new(hsk_studio_package::ImportRole::Records, body).to_opaque());
     }
+    // An import creates a new document, so it records the current composition token (STU-TYP-130).
+    held.push(hsk_studio_session::new_document_composition_entry(&doc.document_id).map_err(|e| format!("fig_import: {}", e.code()))?);
     let mut out = Vec::new();
     hsk_studio_package::write_package_with(
         &snapshot,
