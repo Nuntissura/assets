@@ -34,7 +34,7 @@ pub use outline::*;
 pub use path_text::*;
 pub use raster::*;
 pub use result::*;
-pub use validate::{COMPOSITION_VERSION, COMPOSITION_VERSION_V1};
+pub use validate::{COMPOSITION_VERSION, COMPOSITION_VERSION_V1, COMPOSITION_VERSION_V2};
 
 /// True for a character that ends its paragraph in Type's paragraph partition (request
 /// validation and the shaping engine): Bidi_Class B of the vendored UCD table (U+000A, U+000D,

@@ -1,22 +1,35 @@
 use crate::provider::{Context, ProviderResult, storage::ChargedVec};
 use crate::*;
 use sha2::{Digest, Sha256};
-/// Current composition token (STU-TYP-130): composition v1 plus the standard-ligature fallback over
-/// the font's Unicode presentation forms (U+FB00..U+FB04) where its GSUB forms none, and the
-/// line-end advance data (`Run::line_end_advances`, `Run::ligature_components`) layout uses at
-/// hyphenation breaks. New requests use this token.
-pub const COMPOSITION_VERSION: &str = "hsk-type-shaped-runs@2/rustybuzz-0.20.1/ttf-parser-0.25.1/bidi-0.3.18-u16/ccc-0.4.0-u16/mirroring-0.4.0-u16/script-0.5.8-u17/properties-0.1.4-u17/preserve/source-groups-v1/presentation-ligatures-v1/line-end-advances-v1";
-/// The previous token: a document authored under it recomposes under it (STU-TYP-130) with the
-/// unchanged v1 semantics (no presentation-form ligatures, no line-end advance data).
+/// Current composition token (STU-TYP-130): composition v2 plus the forced line break U+2028 kept
+/// outside the shaping buffer ([`outside_shaping`]). New requests use this token.
+pub const COMPOSITION_VERSION: &str = "hsk-type-shaped-runs@3/rustybuzz-0.20.1/ttf-parser-0.25.1/bidi-0.3.18-u16/ccc-0.4.0-u16/mirroring-0.4.0-u16/script-0.5.8-u17/properties-0.1.4-u17/preserve/source-groups-v1/presentation-ligatures-v1/line-end-advances-v1/forced-line-break-v1";
+/// The previous token: composition v1 plus the standard-ligature fallback over the font's Unicode
+/// presentation forms (U+FB00..U+FB04) where its GSUB forms none, and the line-end advance data
+/// (`Run::line_end_advances`, `Run::ligature_components`) layout uses at hyphenation breaks. A
+/// document authored under it recomposes under it (STU-TYP-130): U+2028 is shaped like any other
+/// character (a font without the glyph refuses `MissingGlyph`).
+pub const COMPOSITION_VERSION_V2: &str = "hsk-type-shaped-runs@2/rustybuzz-0.20.1/ttf-parser-0.25.1/bidi-0.3.18-u16/ccc-0.4.0-u16/mirroring-0.4.0-u16/script-0.5.8-u17/properties-0.1.4-u17/preserve/source-groups-v1/presentation-ligatures-v1/line-end-advances-v1";
+/// The first token: a document authored under it recomposes under it (STU-TYP-130) with the
+/// unchanged v1 semantics (no presentation-form ligatures, no line-end advance data, U+2028 shaped).
 pub const COMPOSITION_VERSION_V1: &str = "hsk-type-shaped-runs@1/rustybuzz-0.20.1/ttf-parser-0.25.1/bidi-0.3.18-u16/ccc-0.4.0-u16/mirroring-0.4.0-u16/script-0.5.8-u17/properties-0.1.4-u17/preserve/source-groups-v1";
 /// Composition semantics selected by the request's token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Semantics {
     V1,
     V2,
+    V3,
+}
+impl Semantics {
+    /// Presentation-form ligatures and the line-end data of composition v2 (kept by every later token).
+    pub(crate) fn line_end_data(self) -> bool {
+        matches!(self, Self::V2 | Self::V3)
+    }
 }
 pub(crate) fn semantics(token: &str) -> Option<Semantics> {
     if token == COMPOSITION_VERSION {
+        Some(Semantics::V3)
+    } else if token == COMPOSITION_VERSION_V2 {
         Some(Semantics::V2)
     } else if token == COMPOSITION_VERSION_V1 {
         Some(Semantics::V1)

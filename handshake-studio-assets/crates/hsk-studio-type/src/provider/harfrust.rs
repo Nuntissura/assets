@@ -51,7 +51,7 @@ pub(crate) fn shape_run<'a>(
     ctx: &Context<'a>,
 ) -> ProviderResult<Run<'a>> {
     // The spike provider implements composition v1 only (no presentation-form ligatures or
-    // line-end advance data): a v2 request is refused, never silently composed as v1.
+    // line-end advance data): a v2 or v3 request is refused, never silently composed as v1.
     if crate::validate::semantics(request.composition_version)
         != Some(crate::validate::Semantics::V1)
     {

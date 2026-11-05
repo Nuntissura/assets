@@ -178,9 +178,9 @@ fn write(
                 w.number(glyph.x_offset_pt)?;
                 w.number(glyph.y_offset_pt)?;
             }
-            // Composition v2 line-end data; composition v1 bytes are unchanged.
+            // Composition v2 line-end data (v2 and later); composition v1 bytes are unchanged.
             if crate::validate::semantics(request.composition_version)
-                == Some(crate::validate::Semantics::V2)
+                .is_some_and(crate::validate::Semantics::line_end_data)
             {
                 w.u64(run.line_end_advances.len() as u64)?;
                 for a in run.line_end_advances.iter() {

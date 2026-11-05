@@ -448,7 +448,8 @@ fn mt_31008_forced_line_break_is_a_line_break_outside_shaping() {
         let fonts = Fonts::load();
         for (text, breaks) in forced_line_break_cases() {
             let case = paragraph_case(text, json!([[0, text.len()]]));
-            with_case(&fonts, &case, None, |request, ports, _, _, _| {
+            with_case(&fonts, &case, None, |mut request, ports, _, _, _| {
+                request.composition_version = COMPOSITION_VERSION;
                 let result = TextEngine
                     .shaped_runs(request, ports)
                     .unwrap_or_else(|r| panic!("{text:?} refused {:?}", r.error));
@@ -457,7 +458,8 @@ fn mt_31008_forced_line_break_is_a_line_break_outside_shaping() {
         }
         // A paragraph holding only the forced line break composes with no glyph at all.
         let case = paragraph_case("\u{2028}", json!([[0, 3]]));
-        with_case(&fonts, &case, None, |request, ports, _, _, _| {
+        with_case(&fonts, &case, None, |mut request, ports, _, _, _| {
+            request.composition_version = COMPOSITION_VERSION;
             let result = TextEngine.shaped_runs(request, ports).unwrap_or_else(|r| panic!("{:?}", r.error));
             assert_eq!(result.disposition(), TextDisposition::ControlOnly);
             assert_forced_line_break(&result, "\u{2028}", &[0]);
@@ -465,19 +467,92 @@ fn mt_31008_forced_line_break_is_a_line_break_outside_shaping() {
     });
 }
 
-#[cfg(feature = "harfrust")]
+/// STU-TYP-130 (R55 F-R55-1, lead decision): changing shaping semantics needs a new token and a
+/// stored document recomposes under its authored one. U+2028 stays outside shaping under @3 only;
+/// under @1 and @2 it is shaped like any other character, so a font without the glyph refuses it
+/// (Inter: no fixture font maps U+2028, so a font WITH the glyph stays unproven here).
 #[test]
-fn mt_31008_forced_line_break_is_a_line_break_outside_shaping_harfrust() {
-    bounded_case("mt_31008_forced_line_break_is_a_line_break_outside_shaping_harfrust", || {
+fn mt_31008_composition_3_alone_keeps_the_forced_line_break_outside_shaping() {
+    bounded_case("mt_31008_composition_3_alone_keeps_the_forced_line_break_outside_shaping", || {
         let fonts = Fonts::load();
         for (text, breaks) in forced_line_break_cases() {
             let case = paragraph_case(text, json!([[0, text.len()]]));
             with_case(&fonts, &case, None, |request, ports, _, _, _| {
-                let result = TextEngine
-                    .shaped_runs_harfrust(request, ports)
-                    .unwrap_or_else(|r| panic!("{text:?} refused {:?}", r.error));
+                for token in [COMPOSITION_VERSION_V1, COMPOSITION_VERSION_V2] {
+                    let mut older = request;
+                    older.composition_version = token;
+                    let refused = TextEngine.shaped_runs(older, ports).err().map(|r| r.error);
+                    assert_eq!(refused, Some(Error::MissingGlyph), "{text:?} under {token}");
+                }
+                let mut current = request;
+                current.composition_version = COMPOSITION_VERSION;
+                let result = TextEngine.shaped_runs(current, ports).unwrap_or_else(|r| panic!("{text:?} refused {:?}", r.error));
                 assert_forced_line_break(&result, text, &breaks);
             });
         }
+    });
+}
+
+/// Without U+2028 nothing but the token differs between @2 and @3 (presentation-form ligatures and
+/// line-end data as v2).
+#[test]
+fn mt_31008_composition_3_keeps_every_other_v2_behaviour() {
+    bounded_case("mt_31008_composition_3_keeps_every_other_v2_behaviour", || {
+        assert_ne!(COMPOSITION_VERSION, COMPOSITION_VERSION_V2);
+        assert_ne!(COMPOSITION_VERSION_V2, COMPOSITION_VERSION_V1);
+        assert!(COMPOSITION_VERSION.starts_with("hsk-type-shaped-runs@3/"));
+        assert!(COMPOSITION_VERSION_V2.starts_with("hsk-type-shaped-runs@2/"));
+        let fonts = Fonts::load();
+        let text = "office fi AVA";
+        let case = paragraph_case(text, json!([[0, text.len()]]));
+        with_case(&fonts, &case, None, |request, ports, _, _, _| {
+            let (mut v2, mut v3) = (request, request);
+            v2.composition_version = COMPOSITION_VERSION_V2;
+            v3.composition_version = COMPOSITION_VERSION;
+            let (a, b) = (prepared(v2, ports), prepared(v3, ports));
+            assert_ne!(a.serialized(), b.serialized(), "the token is serialized");
+            let (ra, rb): (Vec<&Run<'_>>, Vec<&Run<'_>>) = (a.paragraphs().iter().flat_map(|q| q.runs()).collect(), b.paragraphs().iter().flat_map(|q| q.runs()).collect());
+            assert_eq!(ra.len(), rb.len());
+            for (x, y) in ra.iter().zip(&rb) {
+                assert_eq!(x.glyphs(), y.glyphs());
+                assert_eq!(x.line_end_advances(), y.line_end_advances());
+                assert_eq!(x.ligature_components(), y.ligature_components());
+            }
+            assert!(ra.iter().any(|r| !r.line_end_advances().is_empty()), "the case has line-end data");
+        });
+    });
+}
+
+/// The spike provider implements composition v1 only: its gate refuses @2 and @3 before any run is
+/// shaped, typed, never silently as v1 (`provider/harfrust.rs`), and under @1 U+2028 is shaped like
+/// any other character. So through this provider a run next to U+2028 never composes; only a
+/// paragraph with no run does (R55 F-R55-1: the gate is kept; declared in the lane notes).
+#[cfg(feature = "harfrust")]
+#[test]
+fn mt_31008_harfrust_refuses_u2028_under_composition_1_and_every_later_token() {
+    bounded_case("mt_31008_harfrust_refuses_u2028_under_composition_1_and_every_later_token", || {
+        let fonts = Fonts::load();
+        for (text, _) in forced_line_break_cases() {
+            let case = paragraph_case(text, json!([[0, text.len()]]));
+            with_case(&fonts, &case, None, |request, ports, _, _, _| {
+                for (token, error) in [
+                    (COMPOSITION_VERSION_V1, Error::MissingGlyph),
+                    (COMPOSITION_VERSION_V2, Error::UnknownComposition),
+                    (COMPOSITION_VERSION, Error::UnknownComposition),
+                ] {
+                    let mut r = request;
+                    r.composition_version = token;
+                    let refused = TextEngine.shaped_runs_harfrust(r, ports).err().map(|x| x.error);
+                    assert_eq!(refused, Some(error), "{text:?} under {token}");
+                }
+            });
+        }
+        let case = paragraph_case("\u{2028}", json!([[0, 3]]));
+        with_case(&fonts, &case, None, |mut request, ports, _, _, _| {
+            request.composition_version = COMPOSITION_VERSION;
+            let result = TextEngine.shaped_runs_harfrust(request, ports).unwrap_or_else(|r| panic!("{:?}", r.error));
+            assert_eq!(result.disposition(), TextDisposition::ControlOnly);
+            assert_forced_line_break(&result, "\u{2028}", &[0]);
+        });
     });
 }

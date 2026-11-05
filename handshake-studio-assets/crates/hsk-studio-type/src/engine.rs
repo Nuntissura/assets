@@ -463,7 +463,7 @@ fn shape<'a>(
     };
     let mut shaped = rb::shape_with_plan(&font.face, &plan, fill(&[])?, ctx)?;
     let v2 = crate::validate::semantics(request.composition_version)
-        == Some(crate::validate::Semantics::V2);
+        .is_some_and(crate::validate::Semantics::line_end_data);
     let mut ligatures = ChargedVec::new();
     if v2 && level.is_multiple_of(2) && effective_script == *b"Latn" {
         presentation_ligatures(
