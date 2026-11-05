@@ -614,3 +614,81 @@ fn authored_display_state_survives_save_and_reopen_through_the_session() {
         std::fs::remove_dir_all(&dir).unwrap();
     });
 }
+
+/// MT-33739's own case. Two sequences hold different display states; every thumbnail mode, rectified
+/// on and off with both scales, each switch alone, then named video and audio heights saved and
+/// recalled around expand-all and minimize-all, each state through a reopen. The oracle is the entry's
+/// JSON against values written out here, and the sequences against the fixture's: no clip timing moves.
+/// The fixture's clip holds no sample data, so "no samples change" is proven only as far as the clip's
+/// fields go.
+#[test]
+fn two_sequences_keep_independent_display_state_through_reopen_mt_33739() {
+    bounded_case("mt_case", || {
+        fn reopened(session: &mut Session) -> Session {
+            let again = open(&session.export_checkpoint(&token()).unwrap().bytes);
+            assert!(again.loss().is_empty(), "{:?}", again.loss());
+            assert_eq!(again.snapshot().document().sequences, vec![seq_a(), seq_b()], "no clip timing changes");
+            again
+        }
+        fn entry_json(session: &Session, sequence_id: &str) -> Value {
+            let all: Value = serde_json::from_slice(session.document_entry(TRACK_DISPLAY_ENTRY).unwrap()).unwrap();
+            all["sequences"].as_array().unwrap().iter().find(|e| e["sequence_id"] == sequence_id).unwrap().clone()
+        }
+        let set = |sequence_id: &str, switches| StudioTrackDisplayCommand::SetSwitches { sequence_id: sequence_id.into(), switches };
+        let mut session = open(&package(&[]));
+
+        let modes = [("off", StudioVideoThumbnails::Off), ("head_only", StudioVideoThumbnails::HeadOnly), ("head_and_tail", StudioVideoThumbnails::HeadAndTail), ("continuous", StudioVideoThumbnails::Continuous)];
+        for (i, (wire, mode)) in modes.iter().enumerate() {
+            let (other_wire, other_mode) = modes[(i + 1) % modes.len()];
+            for (scale_wire, scaling) in [("logarithmic", StudioWaveformScaling::Logarithmic), ("dynamic", StudioWaveformScaling::Dynamic)] {
+                for rectified in [false, true] {
+                    let audio_waveforms = StudioAudioWaveforms { shown: true, scaling, rectified };
+                    let a = StudioTrackDisplaySwitches { video_thumbnails: *mode, audio_waveforms, ..StudioTrackDisplaySwitches::STUDIO_DEFAULT };
+                    let b = StudioTrackDisplaySwitches { video_thumbnails: other_mode, audio_names: false, ..StudioTrackDisplaySwitches::STUDIO_DEFAULT };
+                    run_display(&mut session, &set("seq-a", a), 1).unwrap();
+                    run_display(&mut session, &set("seq-b", b), 2).unwrap();
+                    let again = reopened(&mut session);
+                    let (seen_a, seen_b) = (entry_json(&again, "seq-a"), entry_json(&again, "seq-b"));
+                    assert_eq!(seen_a["switches"]["video_thumbnails"], *wire);
+                    assert_eq!(seen_a["switches"]["audio_waveforms"], json!({"shown": true, "scaling": scale_wire, "rectified": rectified}));
+                    assert_eq!(seen_a["switches"]["audio_names"], true);
+                    assert_eq!(seen_b["switches"]["video_thumbnails"], other_wire);
+                    assert_eq!(seen_b["switches"]["audio_waveforms"], json!({"shown": true, "scaling": "logarithmic", "rectified": false}));
+                    assert_eq!(seen_b["switches"]["audio_names"], false);
+                }
+            }
+        }
+
+        // Each on/off switch alone: turning one off changes that key and no other.
+        let defaults = serde_json::to_value(StudioTrackDisplaySwitches::STUDIO_DEFAULT).unwrap();
+        let flags: Vec<String> = defaults.as_object().unwrap().iter().filter(|(_, v)| v.is_boolean()).map(|(k, _)| k.clone()).collect();
+        assert_eq!(flags.len(), 16, "every declared on/off switch");
+        for flag in &flags {
+            let mut wire = defaults.clone();
+            wire[flag.as_str()] = json!(false);
+            let switches: StudioTrackDisplaySwitches = serde_json::from_value(wire.clone()).unwrap();
+            run_display(&mut session, &set("seq-a", switches), 3).unwrap();
+            let again = reopened(&mut session);
+            assert_eq!(entry_json(&again, "seq-a")["switches"], wire, "{flag}");
+            assert_eq!(entry_json(&again, "seq-b")["switches"]["audio_names"], false, "the other sequence is not touched");
+        }
+
+        // Named video and audio heights, saved and recalled around expand-all and minimize-all.
+        for (kind, height) in [(TrackKind::Video, 111), (TrackKind::Audio, 222)] {
+            run_display(&mut session, &StudioTrackDisplayCommand::SetHeight { sequence_id: "seq-a".into(), kind, height }, 4).unwrap();
+        }
+        let named = json!({"video": 111, "audio": 222, "caption": 48, "submix": 48});
+        run_display(&mut session, &StudioTrackDisplayCommand::SaveHeightPreset { sequence_id: "seq-a".into(), preset_id: "edit".into(), name: "Edit".into() }, 5).unwrap();
+        run_display(&mut session, &expand("seq-a"), 6).unwrap();
+        let again = reopened(&mut session);
+        assert_eq!(entry_json(&again, "seq-a")["heights"], json!({"video": 200, "audio": 200, "caption": 200, "submix": 200}));
+        assert_eq!(entry_json(&again, "seq-a")["height_presets"], json!([{"preset_id": "edit", "name": "Edit", "heights": named}]));
+        run_display(&mut session, &StudioTrackDisplayCommand::RecallHeightPreset { sequence_id: "seq-a".into(), preset_id: "edit".into() }, 7).unwrap();
+        assert_eq!(entry_json(&reopened(&mut session), "seq-a")["heights"], named);
+        run_display(&mut session, &StudioTrackDisplayCommand::MinimizeAll { sequence_id: "seq-a".into() }, 8).unwrap();
+        let again = reopened(&mut session);
+        assert_eq!(entry_json(&again, "seq-a")["heights"], json!({"video": 16, "audio": 16, "caption": 16, "submix": 16}));
+        assert_eq!(entry_json(&again, "seq-b")["heights"], json!({"video": 48, "audio": 48, "caption": 48, "submix": 48}), "the other sequence keeps its heights");
+        assert!(entry_json(&again, "seq-b").get("height_presets").is_none(), "and has no preset");
+    });
+}
