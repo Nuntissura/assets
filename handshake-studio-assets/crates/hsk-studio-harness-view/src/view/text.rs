@@ -14,7 +14,10 @@
 //! viewer's font list, which holds egui's bundled `Ubuntu-Light` (decision 2026-10-14: egui default
 //! fonts are allowed in UI crates); `add_font` registers more (TrueType outlines; colour, bitmap and
 //! CFF2 faces are refused by Type). Fill: the character style's RGBA is linear light in the RGB
-//! working space (the plan's blend space). Line breaking is not done (one line per story).
+//! working space (the plan's blend space). Line breaking is not done (one line per story), so a
+//! text layer whose story holds a forced line break U+2028 is refused, typed
+//! ([`FORCED_LINE_BREAK_UNSUPPORTED`]; R55 F-R55-2): Type keeps it outside shaping, no glyph shows
+//! it, and drawing the story would drop the break without a word.
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_composite::{PreparedText, TextLayerInput, TextResolution, TextRun, prepare_text};
@@ -33,6 +36,8 @@ pub const DEFAULT_FONT: &str = "Ubuntu-Light";
 pub const MAX_TEXT_LAYERS: usize = 256;
 /// Longest story the viewer shapes (bytes).
 pub const MAX_STORY_BYTES: usize = 4096;
+/// Code of a forced line break U+2028 in a path that holds one line: a text layer, text on a path.
+pub const FORCED_LINE_BREAK_UNSUPPORTED: &str = "text_forced_line_break_unsupported";
 
 /// Where a text layer draws and which records it uses.
 #[derive(Clone, Debug, PartialEq)]
@@ -351,7 +356,13 @@ fn character<'f>(styles: &StudioTypeStyleRecords, id: &str, fonts: &'f [FontFile
 /// line height (`auto` = 120% of the size); alignment from the first paragraph style (`justified`
 /// sets left); a glyph whose cluster starts with a space or tab is a break opportunity, a line
 /// feed or U+2029 ends its paragraph; glyph x/y offsets are not carried (composite's
-/// `ShapedGlyph` has none). Errors are typed strings; the caller keeps the story unshaped.
+/// `ShapedGlyph` has none). A forced line break U+2028 is a `NonrenderingControl` coverage entry of
+/// Type, no glyph: point and area text get a zero-advance glyph with no outline classed
+/// `GlyphBreak::Paragraph` at its byte, which ends the line (one per break, so two make a blank line
+/// and one before the first glyph a blank first line); path text holds one line and refuses it
+/// ([`FORCED_LINE_BREAK_UNSUPPORTED`]), as does a story whose glyphs are not in logical order (bidi
+/// reordering; the break has no place in them). Errors are typed strings; the caller keeps the
+/// story unshaped.
 pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str, actor: &ActorContext, cancel: &CancellationToken) -> Result<hsk_studio_composite::vector_text::ShapedStory, String> {
     use hsk_studio_composite::FillPaint;
     use hsk_studio_composite::vector_text::{ShapedGlyph, ShapedRun, ShapedStory};
@@ -382,7 +393,12 @@ pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str,
         ranges.push((r.start, r.end, paint));
     }
     let (font, size_pt) = face.ok_or_else(|| format!("text_story_unstyled: {text_id}"))?;
-    let shaped = shaped_glyphs(font, text, size_pt, actor, cancel)?;
+    let (shaped, forced_breaks) = shaped_glyphs_and_breaks(font, text, size_pt, actor, cancel)?;
+    if !forced_breaks.is_empty()
+        && (!matches!(story.text_kind, folio::StoryTextKind::Point | folio::StoryTextKind::Area) || shaped.windows(2).any(|w| w[1].cluster.start < w[0].cluster.start))
+    {
+        return Err(format!("{FORCED_LINE_BREAK_UNSUPPORTED}: {text_id}"));
+    }
     let ids: Vec<u32> = shaped.iter().map(|g| g.glyph_id).collect();
     let outlines = ty::glyph_outlines(&ty::FontBytes { bytes: &font.bytes, resource: font.resource() }, &ids, &ty::OutlineLimits::default(), cancel).map_err(|e| format!("text_outlines {text_id}: {}", e.code()))?;
     if outlines.len() != shaped.len() {
@@ -410,21 +426,24 @@ pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str,
         Some(folio::StudioTextAlign::Right) => ty::TextAlign::Right,
         _ => ty::TextAlign::Left,
     };
-    let glyphs: Vec<ShapedGlyph> = shaped
-        .iter()
-        .zip(outlines)
-        .map(|(g, outline)| {
-            let start = g.cluster.start;
-            let first = usize::try_from(start).ok().and_then(|i| text.get(i..)).and_then(|t| t.chars().next());
-            let brk = match first {
-                Some(' ' | '\t') => ty::GlyphBreak::Space,
-                Some('\n' | '\u{2029}') => ty::GlyphBreak::Paragraph,
-                _ => ty::GlyphBreak::None,
-            };
-            let paint = ranges.iter().find(|(s, e, _)| *s <= start && start < *e).map_or(0, |r| r.2);
-            ShapedGlyph { advance_pt: g.x_advance_pt, brk, cluster: start, outline, paint }
-        })
-        .collect();
+    let paint_at = |at: u64| ranges.iter().find(|(s, e, _)| *s <= at && at < *e).map_or(0, |r| r.2);
+    let forced = |at: u64| ShapedGlyph { advance_pt: 0.0, brk: ty::GlyphBreak::Paragraph, cluster: at, outline: ty::GlyphOutline::synthetic(1000, Vec::new()), paint: paint_at(at) };
+    let mut glyphs: Vec<ShapedGlyph> = Vec::with_capacity(shaped.len().saturating_add(forced_breaks.len()));
+    let mut pending = forced_breaks.iter().copied().peekable();
+    for (g, outline) in shaped.iter().zip(outlines) {
+        let start = g.cluster.start;
+        while let Some(at) = pending.next_if(|at| *at < start) {
+            glyphs.push(forced(at));
+        }
+        let first = usize::try_from(start).ok().and_then(|i| text.get(i..)).and_then(|t| t.chars().next());
+        let brk = match first {
+            Some(' ' | '\t') => ty::GlyphBreak::Space,
+            Some('\n' | '\u{2029}') => ty::GlyphBreak::Paragraph,
+            _ => ty::GlyphBreak::None,
+        };
+        glyphs.push(ShapedGlyph { advance_pt: g.x_advance_pt, brk, cluster: start, outline, paint: paint_at(start) });
+    }
+    glyphs.extend(pending.map(forced));
     let metrics = ty::ComposeRun { glyph_count: glyphs.len(), ascent_pt: top, descent_pt: -bottom, leading_pt, cap_height_pt: top, x_height_pt: top };
     Ok(ShapedStory {
         text_kind: story.text_kind,
@@ -439,7 +458,7 @@ pub(crate) fn shaped_story(entry: &TextEntry, fonts: &[FontFile], text_id: &str,
 /// record are left to composite, which refuses them `text_layer_not_prepared`).
 /// The shaping requests are attributed to `actor`, the caller's (lane SMB-ATTRIBUTION-1).
 pub fn prepare(doc: &StudioDocument, entry: &TextEntry, fonts: &[FontFile], actor: &ActorContext, cancel: &CancellationToken) -> Result<PreparedText, String> {
-    shape_layers(doc, entry, fonts, actor, cancel, |inputs, resolution| {
+    shape_layers(doc, entry, fonts, actor, cancel, refuse_forced_line_breaks, |inputs, resolution| {
         prepare_text(inputs, resolution, cancel).map_err(|e| format!("text_prepare: {e:?}"))
     })
 }
@@ -458,7 +477,7 @@ pub fn animated_glyphs(
     actor: &ActorContext,
     cancel: &CancellationToken,
 ) -> Result<std::collections::BTreeMap<String, (Vec<hsk_studio_composite::text::animate::AnimatedGlyph>, [f32; 4])>, String> {
-    shape_layers(doc, entry, fonts, actor, cancel, |inputs, resolution| {
+    shape_layers(doc, entry, fonts, actor, cancel, refuse_forced_line_breaks, |inputs, resolution| {
         let mut out = std::collections::BTreeMap::new();
         for input in inputs {
             let glyphs = hsk_studio_composite::text::animate::glyphs_from_runs(input.runs, resolution, cancel)
@@ -469,12 +488,32 @@ pub fn animated_glyphs(
     })
 }
 
+/// The story bytes of the forced line breaks of `text` in Type's coverage: U+2028 kept outside
+/// shaping, a glyph-less `NonrenderingControl` entry (default-ignorable characters are others).
+fn forced_line_breaks(text: &str, coverage: &[ty::Coverage]) -> Vec<u64> {
+    coverage
+        .iter()
+        .filter(|c| c.kind == ty::CoverageKind::NonrenderingControl && c.glyphs.is_none())
+        .filter(|c| {
+            let at = usize::try_from(c.source.start).ok().zip(usize::try_from(c.source.end).ok());
+            at.and_then(|(s, e)| text.get(s..e)) == Some("\u{2028}")
+        })
+        .map(|c| c.source.start)
+        .collect()
+}
+
+/// `on_forced_breaks` of a path that holds one line.
+fn refuse_forced_line_breaks(layer_id: &str, breaks: Vec<u64>) -> Result<(), String> {
+    if breaks.is_empty() { Ok(()) } else { Err(format!("{FORCED_LINE_BREAK_UNSUPPORTED}: {layer_id}")) }
+}
+
 fn shape_layers<R>(
     doc: &StudioDocument,
     entry: &TextEntry,
     fonts: &[FontFile],
     actor: &ActorContext,
     cancel: &CancellationToken,
+    mut on_forced_breaks: impl FnMut(&str, Vec<u64>) -> Result<(), String>,
     finish: impl FnOnce(&[TextLayerInput<'_>], &TextResolution) -> Result<R, String>,
 ) -> Result<R, String> {
     let mut draws = Vec::new();
@@ -570,6 +609,7 @@ fn shape_layers<R>(
             limits: limits(),
         };
         let prepared = ty::TextEngine.shaped_runs(request, &ports).map_err(|r| format!("text_shaping {}: {:?}", d.layer_id, r.error))?;
+        on_forced_breaks(d.layer_id, forced_line_breaks(d.text, prepared.coverage()))?;
         shaped.push(prepared);
     }
     let mut runs_per_layer: Vec<Vec<TextRun<'_>>> = Vec::with_capacity(draws.len());
@@ -642,7 +682,7 @@ impl super::Viewer {
     }
 
     fn place_text_inner(&mut self, x: f64, y: f64, text: &str, family: &str) -> Result<String, String> {
-        if text.is_empty() || text.len() > MAX_STORY_BYTES || text.contains(['\n', '\r']) {
+        if text.is_empty() || text.len() > MAX_STORY_BYTES || text.contains(['\n', '\r', '\u{2028}']) {
             return Err(format!("text_content: one line of 1..={MAX_STORY_BYTES} bytes"));
         }
         if !(x.is_finite() && y.is_finite()) {
@@ -706,7 +746,7 @@ impl super::Viewer {
 /// with `font`, exactly as [`prepare`] lays a point-text layer out (lane SMB-ILLUSTRATOR-INTEROP-2:
 /// an imported PDF text run stays text only when this layout reproduces its glyphs).
 pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<(u32, f64)>, String> {
-    shape_probe(font, text, size_pt, actor, cancel, |inputs, resolution| {
+    shape_probe(font, text, size_pt, actor, cancel, refuse_forced_line_breaks, |inputs, resolution| {
         let mut out = Vec::new();
         for input in inputs {
             for r in input.runs {
@@ -723,12 +763,43 @@ pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, actor: &Act
 
 /// Glyph id, advance and offsets (pt) of every glyph of `text` shaped in one line at `size_pt`
 /// with `font`, as [`shaped_line`] shapes it (lane SMB-AI-TYPE-PATH-RECOLOR: type on a path).
+/// A forced line break U+2028 is refused: the line is one line.
 pub(crate) fn shaped_glyphs(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<ty::Glyph>, String> {
-    shape_probe(font, text, size_pt, actor, cancel, |inputs, _| Ok(inputs.iter().flat_map(|i| i.runs.iter()).flat_map(|r| r.run.glyphs().iter().copied()).collect()))
+    shape_probe(font, text, size_pt, actor, cancel, refuse_forced_line_breaks, |inputs, _| Ok(glyphs_of(inputs)))
+}
+
+/// [`shaped_glyphs`] for a path that can break a line: also the story bytes of the forced line breaks.
+fn shaped_glyphs_and_breaks(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken) -> Result<(Vec<ty::Glyph>, Vec<u64>), String> {
+    let mut breaks = Vec::new();
+    let glyphs = shape_probe(
+        font,
+        text,
+        size_pt,
+        actor,
+        cancel,
+        |_, found| {
+            breaks = found;
+            Ok(())
+        },
+        |inputs, _| Ok(glyphs_of(inputs)),
+    )?;
+    Ok((glyphs, breaks))
+}
+
+fn glyphs_of(inputs: &[TextLayerInput<'_>]) -> Vec<ty::Glyph> {
+    inputs.iter().flat_map(|i| i.runs.iter()).flat_map(|r| r.run.glyphs().iter().copied()).collect()
 }
 
 /// Shapes `text` as a one-line probe point-text layer and hands the shaped layer to `finish`.
-fn shape_probe<R>(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContext, cancel: &CancellationToken, finish: impl FnOnce(&[TextLayerInput<'_>], &TextResolution) -> Result<R, String>) -> Result<R, String> {
+fn shape_probe<R>(
+    font: &FontFile,
+    text: &str,
+    size_pt: f64,
+    actor: &ActorContext,
+    cancel: &CancellationToken,
+    on_forced_breaks: impl FnMut(&str, Vec<u64>) -> Result<(), String>,
+    finish: impl FnOnce(&[TextLayerInput<'_>], &TextResolution) -> Result<R, String>,
+) -> Result<R, String> {
     const DOC: &str = "SDOC-019a0000-0000-7000-8000-000000000001";
     const LAYER: &str = "SLYR-019a0000-0000-7000-8000-000000000002";
     const STORY: &str = "STXT-019a0000-0000-7000-8000-000000000003";
@@ -757,5 +828,5 @@ fn shape_probe<R>(font: &FontFile, text: &str, size_pt: f64, actor: &ActorContex
     ]))
     .map_err(|e| format!("text_probe_styles: {e}"))?;
     let entry = TextEntry { schema: ENTRY_SCHEMA.into(), layers: vec![TextLayerRecord { layer_id: LAYER.into(), story_id: STORY.into(), origin_px: [0.0, 0.0], paragraph_style: PARA.into(), character_style: CHAR.into() }], stories: vec![story], styles };
-    shape_layers(&doc, &entry, std::slice::from_ref(font), actor, cancel, finish)
+    shape_layers(&doc, &entry, std::slice::from_ref(font), actor, cancel, on_forced_breaks, finish)
 }

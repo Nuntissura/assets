@@ -1666,6 +1666,10 @@ impl Viewer {
         let binding = entry.records.area_texts.iter().find(|a| a.container_layer_id == layer_id).cloned().ok_or_else(|| format!("{op}: {layer_id} holds no area text"))?;
         let mut text_entry = self.text_entry()?;
         let shaped = super::text::shaped_story(&text_entry, &self.fonts, &binding.text_id, self.run.actor(), self.cancel)?;
+        // A text layer holds one line (`text` module docs): the forced line break would be refused there.
+        if shaped.glyphs.iter().any(|g| g.brk == ty::GlyphBreak::Paragraph) {
+            return Err(format!("{op}: {}: {}", super::text::FORCED_LINE_BREAK_UNSUPPORTED, binding.text_id));
+        }
         let container = entry.path(&binding.container_id).ok_or_else(|| format!("vector_path_unresolved: {}", binding.container_id))?.path.to_owned_path().map_err(|e| format!("{op}: {}", e.code()))?;
         let commands = baseline_of(&container);
         let options = area_options(&binding, shaped.align);
