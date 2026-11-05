@@ -732,3 +732,63 @@ fn the_descriptor_states_the_report() {
         assert!(hsk_studio_pulse::DESCRIPTOR.contains(word), "{word}");
     }
 }
+
+fn transition_ids(s: &StudioSequence) -> BTreeSet<String> {
+    s.tracks.iter().flat_map(|t| t.clips.iter()).flat_map(|c| slots(c).into_iter().flatten()).map(|t| t.transition_id.clone()).collect()
+}
+
+/// `EditProposal::dropped_transitions` says a transition is "never silently lost". Over the whole
+/// table: every id an edit took out of the sequence is listed, and nothing else is. The commands
+/// that set or clear a transition by name are the caller's own choice and are not a drop.
+#[test]
+fn every_transition_an_edit_takes_out_is_listed_as_dropped() {
+    bounded_case("every_transition_an_edit_takes_out_is_listed_as_dropped", || {
+        let mut failures = Vec::new();
+        for row in rows() {
+            if matches!(row.name, "set_transition" | "replace_transition_same_id" | "replace_transition_new_id" | "clear_transition") {
+                continue;
+            }
+            let (before, after) = (transition_ids(seq(&row.base)), transition_ids(seq(row.proposal.snapshot())));
+            let gone: BTreeSet<&String> = before.difference(&after).collect();
+            let listed: BTreeSet<&String> = row.proposal.dropped_transitions().iter().collect();
+            if gone != listed {
+                failures.push(format!("{}: left the sequence {gone:?}, listed {listed:?}", row.name));
+            }
+        }
+        assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+    });
+}
+
+/// The other commands that remove a whole clip, its undo, and the ones that must not report a drop.
+#[test]
+fn a_transition_that_leaves_with_its_outgoing_clip_is_listed() {
+    bounded_case("a_transition_that_leaves_with_its_outgoing_clip_is_listed", || {
+        let s = fixture(false);
+        let whole_clip = TickRange::new(at(4), at(8)).unwrap();
+        let cases = [
+            timeline_row("lift", &s, TimelineEdit::LiftClip { clip_id: cid(2) }),
+            timeline_row("extract", &s, TimelineEdit::ExtractClip { clip_id: cid(2) }),
+            timeline_row("lift range", &s, TimelineEdit::LiftRange { span: whole_clip, fresh_clip_ids: Vec::new() }),
+            timeline_row("extract range", &s, TimelineEdit::ExtractRange { span: whole_clip, fresh_clip_ids: Vec::new() }),
+            assembly_row("overwrite", &s, AssemblyMode::Overwrite, 4, 4, 30, &[]),
+        ];
+        for case in &cases {
+            assert_eq!(case.proposal.dropped_transitions(), ["tr-1"], "{}", case.name);
+            assert!(!transition_ids(seq(case.proposal.snapshot())).contains("tr-1"), "{}", case.name);
+            let done = case.proposal.snapshot();
+            let undo = with_ctx(|ctx| plan_timeline_revert(done, SEQ, rev(done), case.proposal.inverse(), ctx)).unwrap();
+            assert_eq!(seq(undo.snapshot()), seq(&s), "{}: undo restores it", case.name);
+            assert!(undo.dropped_transitions().is_empty(), "{}: an undo drops nothing", case.name);
+        }
+        // The incoming clip gone: already listed, once.
+        let incoming = timeline_row("lift incoming", &s, TimelineEdit::LiftClip { clip_id: cid(3) }).proposal;
+        assert_eq!(incoming.dropped_transitions(), ["tr-1"]);
+        // Handed to the right piece, so it stays in the sequence.
+        let razor = timeline_row("razor", &s, TimelineEdit::Razor { clip_id: cid(2), at: at(6), new_right_clip_id: cid(20), linked: None }).proposal;
+        assert!(razor.dropped_transitions().is_empty());
+        assert!(transition_ids(seq(razor.snapshot())).contains("tr-1"));
+        // A clip with no transition drops nothing.
+        let plain = timeline_row("lift plain", &s, TimelineEdit::LiftClip { clip_id: cid(6) }).proposal;
+        assert!(plain.dropped_transitions().is_empty());
+    });
+}
