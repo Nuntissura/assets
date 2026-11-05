@@ -108,6 +108,14 @@ pub struct TocEntryOut {
     pub marker_gaps: Vec<crate::DerivedMarkerGap>,
 }
 
+/// How many mapped paragraphs a TOC left out, by the one reason that removed each.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TocOmitted {
+    pub overset: usize,
+    pub hidden: usize,
+    pub no_text: usize,
+}
+
 /// Generated text with Folio paragraphs (style references set) and the entries it holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneratedStory {
@@ -117,6 +125,8 @@ pub struct GeneratedStory {
     /// (story id, gap): markers of a mapped paragraph left out because it holds only markers
     /// (`derived_text`), which has no entry to carry them.
     pub omitted_marker_gaps: Vec<(String, crate::DerivedMarkerGap)>,
+    /// Mapped paragraphs left out, by reason (TOC generators only; an index or endnote story leaves none out here).
+    pub omitted: TocOmitted,
 }
 impl GeneratedStory {
     /// A Folio story (inline content, left to right, one character range) carrying this text.
@@ -422,5 +432,6 @@ pub fn generate_toc(
         paragraphs: w.paragraphs,
         entries: entries.into_iter().map(|(e, _)| e).collect(),
         omitted_marker_gaps,
+        omitted: TocOmitted::default(),
     })
 }

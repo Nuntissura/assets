@@ -136,7 +136,7 @@ pub fn generate_endnotes(
         };
         if options.scope == EndnoteScope::Story && new_story {
             if let Some((id, w)) = writer.take() {
-                groups.push(EndnoteGroup { story_id: id, story: GeneratedStory { text: w.text, paragraphs: w.paragraphs, entries: Vec::new(), omitted_marker_gaps: Vec::new() } });
+                groups.push(EndnoteGroup { story_id: id, story: GeneratedStory { text: w.text, paragraphs: w.paragraphs, entries: Vec::new(), omitted_marker_gaps: Vec::new(), omitted: Default::default() } });
             }
             writer = Some(new_writer(Some(hosts[h].story.story_id.clone()))?);
         } else if writer.is_none() {
@@ -159,7 +159,7 @@ pub fn generate_endnotes(
         });
     }
     if let Some((id, w)) = writer.take() {
-        groups.push(EndnoteGroup { story_id: id, story: GeneratedStory { text: w.text, paragraphs: w.paragraphs, entries: Vec::new(), omitted_marker_gaps: Vec::new() } });
+        groups.push(EndnoteGroup { story_id: id, story: GeneratedStory { text: w.text, paragraphs: w.paragraphs, entries: Vec::new(), omitted_marker_gaps: Vec::new(), omitted: Default::default() } });
     }
     Ok(GeneratedEndnotes { groups, references, marker_gaps })
 }

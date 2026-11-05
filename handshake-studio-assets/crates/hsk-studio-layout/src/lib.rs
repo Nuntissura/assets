@@ -167,7 +167,7 @@ pub use table::{
 pub use footnotes::{FootnoteError, FootnoteProposal, FootnoteRequest, NoteInput, PlacedNote, RuleSegment, layout_footnotes};
 pub use index::{GeneratedIndex, HeaderGroup, IndexError, IndexLimits, generate_index, latin_headers};
 pub use numbering::{NumberScope, NumberingError, PageNumber, format_number, last_page_label, number_pages};
-pub use toc::{GeneratedStory, TocEntryOut, TocError, TocLimits, TocSource, generate_toc};
+pub use toc::{GeneratedStory, TocEntryOut, TocError, TocLimits, TocOmitted, TocSource, generate_toc};
 pub use toc_contract::{
     CapturedToken, CharacterStyleRef, MAX_CAPTURED_TOKEN_BYTES, MAX_TOC_NAME_BYTES, MAX_TOCS_PER_UPDATE, ParagraphStyleRef,
     PersistedTocStyle, PlacePoint, RUN_IN_JOINER, TocFlags, StyleRefError, TocAnchorOutcome, TocBatchError, TocBook, TocBookmark, TocCommandError, TocContractEntry, TocEntryStyle,

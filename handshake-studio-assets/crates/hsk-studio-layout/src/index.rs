@@ -328,7 +328,7 @@ pub fn generate_index(
         emit_headings_until(&mut w, last, &mut written_group)?;
     }
     Ok(GeneratedIndex {
-        story: crate::toc::GeneratedStory { text: w.text, paragraphs: w.paragraphs, entries: Vec::new(), omitted_marker_gaps: Vec::new() },
+        story: crate::toc::GeneratedStory { text: w.text, paragraphs: w.paragraphs, entries: Vec::new(), omitted_marker_gaps: Vec::new(), omitted: Default::default() },
         unplaced,
         omitted_hidden,
     })
