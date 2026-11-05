@@ -45,6 +45,7 @@
 use crate::annotate::play_range;
 use crate::error::{PulseError, Result};
 use crate::range::TickRange;
+use crate::retime::{SequenceGrid, SourceFrameAnswer, SourceFrameRef, SourceGrids};
 use crate::time::ticks_from_samples;
 use crate::timeline_edit::{SourceExtents, rate_of};
 use crate::transition::{clip_source_at, transition_frame};
@@ -715,6 +716,19 @@ pub struct FrameLayer {
     pub weight: f64,
     /// Held end frame (`repeat_end_frame`).
     pub held: bool,
+    /// What the layer shows between source frames ([STU-VID-031]).
+    pub answer: SourceFrameAnswer,
+}
+
+impl FrameLayer {
+    /// The mark a diagnostic carries when it compares this layer to a source frame.
+    pub fn estimation_mark(&self) -> Option<&'static str> {
+        self.answer.estimation_mark()
+    }
+    /// The first tick of the second frame the layer needs, when it needs one.
+    pub fn second_source_tick(&self) -> Option<Ticks> {
+        self.answer.pair().map(|(_, to, _)| to.start)
+    }
 }
 
 /// What plays at `tick`: every enabled video track bottom-to-top (STU-VID-021: the compositing
@@ -726,6 +740,18 @@ pub fn frame_layers(
     extents: &dyn SourceExtents,
     cancel: &CancellationToken,
 ) -> Result<Vec<FrameLayer>> {
+    frame_layers_on_grids(sequence, tick, extents, &SequenceGrid, cancel)
+}
+
+/// [`frame_layers`] with the sources' frame grids stated by `grids`.
+pub fn frame_layers_on_grids(
+    sequence: &StudioSequence,
+    tick: Ticks,
+    extents: &dyn SourceExtents,
+    _grids: &dyn SourceGrids,
+    cancel: &CancellationToken,
+) -> Result<Vec<FrameLayer>> {
+    let stub = |start: Ticks| SourceFrameAnswer::Sampled(SourceFrameRef { index: 0, start });
     let mut out = Vec::new();
     for track in sequence
         .tracks
@@ -758,6 +784,7 @@ pub fn frame_layers(
                         source_tick,
                         weight,
                         held,
+                        answer: stub(source_tick),
                     });
                 }
             }
@@ -778,6 +805,7 @@ pub fn frame_layers(
             source_tick,
             weight: 1.0,
             held,
+            answer: stub(source_tick),
         });
     }
     Ok(out)

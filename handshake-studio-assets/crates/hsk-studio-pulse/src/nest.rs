@@ -71,6 +71,7 @@
 use crate::audio::{AudioSources, StreamLimits, TimelineMixStream};
 use crate::error::PulseError;
 use crate::playback::{FrameLayer, frame_layers};
+use crate::retime::{SequenceGrid, SourceGrids};
 use crate::range::TickRange;
 use crate::time::samples_from_ticks_exact;
 use crate::timeline_edit::{EditContext, SourceExtents, split_clip};
@@ -707,6 +708,12 @@ pub struct NestedFrame {
 /// the document's sequences; more than `max_layers` visited layers in total (media, expanded
 /// Sequence and unresolved layers alike, R44 F-R44-7) is `limit_exceeded`.
 pub fn frame_layers_nested(sequences: &[StudioSequence], sequence: &StudioSequence, tick: Ticks, extents: &dyn SourceExtents, max_layers: usize, cancel: &CancellationToken) -> crate::Result<NestedFrame> {
+    frame_layers_nested_on_grids(sequences, sequence, tick, extents, max_layers, &SequenceGrid, cancel)
+}
+
+/// [`frame_layers_nested`] with the media sources' frame grids stated by `grids`.
+#[allow(clippy::too_many_arguments)]
+pub fn frame_layers_nested_on_grids(sequences: &[StudioSequence], sequence: &StudioSequence, tick: Ticks, extents: &dyn SourceExtents, max_layers: usize, _grids: &dyn SourceGrids, cancel: &CancellationToken) -> crate::Result<NestedFrame> {
     let nested = NestedExtents::new(sequences, extents);
     let mut out = NestedFrame::default();
     let mut path = Vec::new();

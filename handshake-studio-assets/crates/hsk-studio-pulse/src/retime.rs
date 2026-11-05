@@ -69,11 +69,29 @@ use crate::timeline_edit::{
 use crate::transition::locate;
 use hsk_studio_accord::{FrameRate, Ticks};
 pub use hsk_studio_folio::{ClipFrameHold, ClipRetime, FrameHoldAnchor, FrameInterpolation};
-use hsk_studio_folio::{Snapshot, StudioClip, StudioMulticamRecords, StudioSequence, TrackKind};
+use hsk_studio_folio::{ClipSource, Snapshot, StudioClip, StudioMulticamRecords, StudioSequence, TrackKind};
 use std::collections::BTreeSet;
 
 /// The mark any diagnostic carries when it compares an `optical_flow` frame to a source frame.
 pub const ESTIMATION_MARK: &str = "estimation";
+
+/// Code of the typed outcome of a path that cannot render a clip's interpolation choice. It never
+/// shows a floored frame instead.
+pub const FRAME_INTERPOLATION_UNAVAILABLE: &str = "frame_interpolation_unavailable";
+
+/// Typed port: the frame grid of a source, from the media owner. `None`: not stated; the layer is
+/// then read on its sequence's own frame grid (a declared Studio reading).
+pub trait SourceGrids {
+    fn grid(&self, source: &ClipSource) -> Option<SourceFrameGrid>;
+}
+
+/// States no grid: every layer is read on its sequence's frame grid.
+pub struct SequenceGrid;
+impl SourceGrids for SequenceGrid {
+    fn grid(&self, _source: &ClipSource) -> Option<SourceFrameGrid> {
+        None
+    }
+}
 
 /// The frame grid of a clip's source, stated by the caller from the media's metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +156,11 @@ impl FrameWeight {
     pub fn denominator(self) -> u128 {
         self.denominator
     }
+    /// The share as a float, for the renderer's blend weight.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn as_f64(self) -> f64 {
+        self.numerator as f64 / self.denominator as f64
+    }
     fn reduced(numerator: u128, denominator: u128) -> Self {
         let (mut a, mut b) = (numerator, denominator);
         while b != 0 {
@@ -175,6 +198,25 @@ pub enum SourceFrameAnswer {
 }
 
 impl SourceFrameAnswer {
+    /// The frame shown alone, or the earlier frame of a pair.
+    pub fn frame(&self) -> SourceFrameRef {
+        match *self {
+            Self::Sampled(frame) | Self::Held(frame) => frame,
+            Self::Blended { from, .. } | Self::Estimated { from, .. } => from,
+        }
+    }
+    /// The two frames and the share of the later one when the answer needs both. A zero share is
+    /// exactly the earlier frame, so it needs one decode and no blend.
+    pub fn pair(&self) -> Option<(SourceFrameRef, SourceFrameRef, FrameWeight)> {
+        match *self {
+            Self::Blended { from, to, weight } | Self::Estimated { from, to, weight }
+                if weight.numerator != 0 =>
+            {
+                Some((from, to, weight))
+            }
+            _ => None,
+        }
+    }
     pub fn is_estimation(&self) -> bool {
         matches!(self, Self::Estimated { .. })
     }
