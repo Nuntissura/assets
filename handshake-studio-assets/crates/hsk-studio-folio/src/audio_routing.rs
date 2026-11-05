@@ -33,6 +33,16 @@
 //! identity, references, the absence of routing cycles, counts and ranges; the mix itself is pulse's
 //! and score's. Levels and volumes are linear gains in `0 ..= 10^(12/20)` (score's +12 dB fader top).
 //!
+//! An id the document does not hold is inert, not invalid (lead decision on R56 F-R56-3, the rule of
+//! the track display records; vendor parity UNVERIFIED, D5): a routing of an absent sequence, and in
+//! any routing a route, bus effect chain or automation lane of an absent track and an envelope of an
+//! absent clip. An inert member is kept, still checked for what it holds (grammar, uniqueness, counts,
+//! ranges, its budget), plays nothing because the mix looks these up from the tracks and clips it
+//! plays (pulse tests/inert_routing_mix.rs), and is live again when the id comes back. One stale id
+//! never makes the set unreadable for another sequence. Listed by [`inert_audio_routing_references`].
+//! Two things stay refused: an id held with the wrong kind (a clip on a video track), and an output or
+//! send target that names an absent bus, because a live track would play into it (pulse bus_mix.rs).
+//!
 //! The records arrive from untrusted wire JSON: integer arithmetic is denied (V4-01), every count is
 //! checked before use and charged against the [`Budget`].
 #![deny(clippy::arithmetic_side_effects)]
@@ -252,9 +262,11 @@ fn effects(list: &[StudioAudioEffectInstance], target: &str, cx: &mut Ctx) -> Re
     Ok(())
 }
 
-fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result<()> {
+/// `seq` is `None` for the routing of an absent sequence: every member is then inert.
+fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -> Result<()> {
     let target = format!("audio_routing/{}", r.sequence_id);
-    let kinds: BTreeMap<&str, TrackKind> = seq.tracks.iter().map(|t| (t.track_id.as_str(), t.kind)).collect();
+    let tracks = || seq.iter().flat_map(|s| s.tracks.iter());
+    let kinds: BTreeMap<&str, TrackKind> = tracks().map(|t| (t.track_id.as_str(), t.kind)).collect();
     let submix = |id: &str| kinds.get(id) == Some(&TrackKind::Submix);
     cx.nodes(r.routes.len(), &target)?;
     let mut routed = BTreeSet::new();
@@ -263,10 +275,11 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
     for route in &r.routes {
         cx.tick()?;
         let t = format!("{target}/routes/{}", route.track_id);
-        match kinds.get(route.track_id.as_str()) {
-            Some(TrackKind::Audio | TrackKind::Submix) => {}
-            _ => return Err(err(Code::InvalidId, t)),
-        }
+        let live = match kinds.get(route.track_id.as_str()) {
+            Some(TrackKind::Audio | TrackKind::Submix) => true,
+            Some(_) => return Err(err(Code::InvalidId, t)),
+            None => false,
+        };
         if !routed.insert(route.track_id.as_str()) {
             return Err(err(Code::DuplicateField, t));
         }
@@ -275,7 +288,7 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
         }
         cx.nodes(route.sends.len(), &t)?;
         let mut targets: Vec<&str> = Vec::new();
-        if let Some(o) = &route.output {
+        if let Some(o) = route.output.as_ref().filter(|_| live) {
             if !submix(o) || *o == route.track_id {
                 return Err(invalid(&t, "output"));
             }
@@ -286,7 +299,7 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
             if !key(&s.send_id) || !send_ids.insert(s.send_id.as_str()) {
                 return Err(invalid(&t, "sends/send_id"));
             }
-            if !submix(&s.target) || s.target == route.track_id {
+            if live && (!submix(&s.target) || s.target == route.track_id) {
                 return Err(invalid(&t, "sends/target"));
             }
             if !level(s.level) {
@@ -295,7 +308,9 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
             if !s.pan.is_finite() || !(-1.0..=1.0).contains(&s.pan) {
                 return Err(invalid(&t, "sends/pan"));
             }
-            targets.push(&s.target);
+            if live {
+                targets.push(&s.target);
+            }
         }
         if submix(&route.track_id) {
             edges.insert(route.track_id.as_str(), targets);
@@ -333,7 +348,7 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
     let mut buses = BTreeSet::new();
     for b in &r.bus_effects {
         let t = format!("{target}/bus_effects/{}", b.track_id);
-        if !submix(&b.track_id) {
+        if kinds.contains_key(b.track_id.as_str()) && !submix(&b.track_id) {
             return Err(err(Code::InvalidId, t));
         }
         if !buses.insert(b.track_id.as_str()) {
@@ -356,10 +371,8 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
     if m.iter().any(|p| !level(p.value)) {
         return Err(invalid(&target, "master/volume_automation/value"));
     }
-    let clips: BTreeSet<&str> = seq
-        .tracks
-        .iter()
-        .filter(|t| t.kind == TrackKind::Audio)
+    let not_audio: BTreeSet<&str> = tracks()
+        .filter(|t| t.kind != TrackKind::Audio)
         .flat_map(|t| t.clips.iter().map(|c| c.clip_id.as_str()))
         .collect();
     cx.nodes(r.clip_gains.len(), &target)?;
@@ -367,7 +380,7 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
     for g in &r.clip_gains {
         cx.tick()?;
         let t = format!("{target}/clip_gains/{}", g.clip_id);
-        if !clips.contains(g.clip_id.as_str()) {
+        if not_audio.contains(g.clip_id.as_str()) {
             return Err(err(Code::InvalidId, t));
         }
         if !enveloped.insert(g.clip_id.as_str()) {
@@ -390,9 +403,8 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
     for a in &r.track_automation {
         cx.tick()?;
         let t = format!("{target}/track_automation/{}", a.track_id);
-        match kinds.get(a.track_id.as_str()) {
-            Some(TrackKind::Audio | TrackKind::Submix) => {}
-            _ => return Err(err(Code::InvalidId, t)),
+        if matches!(kinds.get(a.track_id.as_str()), Some(k) if !matches!(k, TrackKind::Audio | TrackKind::Submix)) {
+            return Err(err(Code::InvalidId, t));
         }
         if !automated.insert((a.track_id.as_str(), a.param)) {
             return Err(err(Code::DuplicateField, t));
@@ -414,7 +426,7 @@ fn routing(r: &StudioAudioRouting, seq: &StudioSequence, cx: &mut Ctx) -> Result
     for g in &r.clip_pans {
         cx.tick()?;
         let t = format!("{target}/clip_pans/{}", g.clip_id);
-        if !clips.contains(g.clip_id.as_str()) {
+        if not_audio.contains(g.clip_id.as_str()) {
             return Err(err(Code::InvalidId, t));
         }
         if !panned.insert(g.clip_id.as_str()) {
@@ -462,23 +474,40 @@ pub struct StudioInertRoutingReference {
 }
 
 /// The inert references of `set` against `document`, in stored order.
-pub fn inert_audio_routing_references(_set: &StudioAudioRoutingSet, _document: &StudioDocument) -> Vec<StudioInertRoutingReference> {
-    Vec::new()
+pub fn inert_audio_routing_references(set: &StudioAudioRoutingSet, document: &StudioDocument) -> Vec<StudioInertRoutingReference> {
+    use StudioInertRoutingKind as K;
+    let mut out = Vec::new();
+    for r in &set.routings {
+        let mut push = |kind, id: &str| out.push(StudioInertRoutingReference { sequence_id: r.sequence_id.clone(), kind, id: id.to_owned() });
+        let Some(seq) = document.sequences.iter().find(|s| s.sequence_id == r.sequence_id) else {
+            push(K::Routing, &r.sequence_id);
+            continue;
+        };
+        let track = |id: &str| seq.tracks.iter().any(|t| t.track_id == id);
+        let clip = |id: &str| seq.tracks.iter().flat_map(|t| t.clips.iter()).any(|c| c.clip_id == id);
+        r.routes.iter().filter(|x| !track(&x.track_id)).for_each(|x| push(K::Route, &x.track_id));
+        r.bus_effects.iter().filter(|x| !track(&x.track_id)).for_each(|x| push(K::BusEffects, &x.track_id));
+        r.track_automation.iter().filter(|x| !track(&x.track_id)).for_each(|x| push(K::TrackAutomation, &x.track_id));
+        r.clip_gains.iter().filter(|x| !clip(&x.clip_id)).for_each(|x| push(K::ClipGain, &x.clip_id));
+        r.clip_pans.iter().filter(|x| !clip(&x.clip_id)).for_each(|x| push(K::ClipPan, &x.clip_id));
+    }
+    out
 }
 
-/// Validates every routing against `document`: one routing per existing sequence; routes of audio or
-/// submix tracks of that sequence, at most one per track, outputs and send targets submix tracks
-/// other than the track itself, acyclic bus routing, unique key-grammar send ids, levels and the
-/// master volume in `0 ..= MAX_AUDIO_LEVEL`, pans in `-1 ..= 1`; bus effects of submix tracks (one
-/// entry each) and master effects validated as preset instances; clip gain envelopes of clips on
-/// audio tracks of the sequence, one each, 1..=`MAX_CLIP_GAIN_POINTS` points strictly increasing in
-/// `offset_ticks` with `gain_db` in [`CLIP_GAIN_DB`]; track automation lanes of audio or submix
-/// tracks of the sequence (unknown or other tracks `InvalidId`), one per track and parameter
+/// Validates every routing against `document`: one routing per sequence id, key grammar; routes of
+/// audio or submix tracks of that sequence, at most one per track, outputs and send targets of a live
+/// route submix tracks other than the track itself, acyclic bus routing, unique key-grammar send ids,
+/// levels and the master volume in `0 ..= MAX_AUDIO_LEVEL`, pans in `-1 ..= 1`; bus effects of submix
+/// tracks (one entry each) and master effects validated as preset instances; clip gain envelopes of
+/// clips on audio tracks of the sequence, one each, 1..=`MAX_CLIP_GAIN_POINTS` points strictly increasing
+/// in `offset_ticks` with `gain_db` in [`CLIP_GAIN_DB`]; track automation lanes of audio or submix
+/// tracks of the sequence (other kinds of track `InvalidId`), one per track and parameter
 /// (`DuplicateField`), 1..=`MAX_TRACK_AUTOMATION_POINTS` points strictly increasing in `offset_ticks`
 /// with values in [`StudioTrackParam::range`] (`InvalidField`); master volume automation at most
 /// `MAX_TRACK_AUTOMATION_POINTS` points strictly increasing with values in `0 ..= MAX_AUDIO_LEVEL`
 /// (`InvalidField`); clip pan envelopes like clip gain envelopes (clips on audio tracks, one each,
-/// 1..=`MAX_CLIP_PAN_POINTS` points strictly increasing, pan in `-1 ..= 1`).
+/// 1..=`MAX_CLIP_PAN_POINTS` points strictly increasing, pan in `-1 ..= 1`). An id the document does not
+/// hold is inert (module docs): the checks above that need the id's owner are skipped, the rest apply.
 pub fn validate_audio_routing(
     set: &StudioAudioRoutingSet,
     document: &StudioDocument,
@@ -493,11 +522,10 @@ pub fn validate_audio_routing(
     cx.nodes(set.routings.len(), "audio_routing")?;
     let mut seen = BTreeSet::new();
     for r in &set.routings {
-        let seq = document
-            .sequences
-            .iter()
-            .find(|s| s.sequence_id == r.sequence_id)
-            .ok_or_else(|| err(Code::InvalidId, format!("audio_routing/{}", r.sequence_id)))?;
+        let seq = document.sequences.iter().find(|s| s.sequence_id == r.sequence_id);
+        if seq.is_none() && !key(&r.sequence_id) {
+            return Err(err(Code::InvalidId, format!("audio_routing/{}", r.sequence_id)));
+        }
         if !seen.insert(r.sequence_id.as_str()) {
             return Err(err(Code::DuplicateField, format!("audio_routing/{}", r.sequence_id)));
         }

@@ -367,9 +367,6 @@ fn stale_expectation_is_value_conflict_and_changes_nothing() {
         let mut bad_records = good.clone();
         bad_records.records_write.as_mut().unwrap().clips[1].active_angle = 4;
         assert_eq!(code(&mut session, &bad_records, 3), "folio_rejected", "records must validate against the result");
-        let mut dangling = good.clone();
-        dangling.sequences.clear();
-        assert_eq!(code(&mut session, &dangling, 3), "folio_rejected", "clip 11 is not in the document without the cut");
         let mut no_command = good.clone();
         no_command.command_id = String::new();
         assert_eq!(code(&mut session, &no_command, 3), "invalid_command");

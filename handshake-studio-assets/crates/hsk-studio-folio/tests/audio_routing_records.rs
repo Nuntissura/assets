@@ -118,7 +118,7 @@ fn audio_routing_round_trips_and_refuses_bad_references_cycles_and_ranges() {
         f(&mut s.routings[0]);
         validate_audio_routing(&s, &d, b, &token).unwrap_err().code
     };
-    assert_eq!(code(&|r| r.sequence_id = "seq-x".into()), Code::InvalidId);
+    assert_eq!(code(&|r| r.sequence_id = "../seq".into()), Code::InvalidId, "an inert id keeps its grammar");
     assert_eq!(code(&|r| r.routes[0].track_id = id(5)), Code::InvalidId, "video track");
     assert_eq!(code(&|r| r.routes[2].track_id = id(1)), Code::DuplicateField);
     assert_eq!(code(&|r| r.routes[0].output = Some(id(2))), Code::InvalidField, "output to an audio track");
@@ -186,7 +186,6 @@ fn track_automation_validates_round_trips_and_refuses_typed() {
         f(&mut s.routings[0]);
         validate_audio_routing(&s, &d, b, &token).unwrap_err().code
     };
-    assert_eq!(code(&|r| r.track_automation[0].track_id = "STRK-nope".into()), Code::InvalidId, "unknown track");
     assert_eq!(code(&|r| r.track_automation[0].track_id = id(5)), Code::InvalidId, "video track");
     assert_eq!(code(&|r| r.track_automation[1].param = StudioTrackParam::Volume), Code::DuplicateField);
     assert_eq!(code(&|r| r.track_automation[0].points.clear()), Code::InvalidField);
@@ -239,7 +238,6 @@ fn clip_pans_and_master_automation_validate_round_trip_and_refuse_typed() {
         validate_audio_routing(&s, &d, b, &token).unwrap_err().code
     };
     assert_eq!(code(&|r| r.clip_pans[0].clip_id = "SCLP-019abcde-0000-7000-8000-000000000005".into()), Code::InvalidId, "video clip");
-    assert_eq!(code(&|r| r.clip_pans[0].clip_id = "SCLP-nope".into()), Code::InvalidId, "unknown clip");
     assert_eq!(
         code(&|r| {
             let again = r.clip_pans[0].clone();
@@ -267,4 +265,75 @@ fn clip_pans_and_master_automation_validate_round_trip_and_refuse_typed() {
     assert_eq!(validate_audio_routing(&set, &d, Budget { nodes: least, ..b }, &token).unwrap_err().code, Code::BudgetExceeded);
     let text = String::from_utf8(json).unwrap();
     assert_eq!(parse_audio_routing(text.replacen(r#""pan":-1.0"#, r#""pan":-1.0,"curve":"hold""#, 1).as_bytes(), &d, b, &token).unwrap_err().code, Code::InvalidJson);
+}
+
+/// Lead decision on R56 F-R56-3: an id the document does not hold is inert. One stale id never makes
+/// the set unreadable for another sequence; an id held with the wrong kind stays refused, and what an
+/// inert member holds is still checked and still counted.
+#[test]
+fn an_id_the_document_does_not_hold_is_inert_and_still_checked() {
+    use StudioInertRoutingKind as K;
+    let token = CancellationToken::default();
+    let b = Budget::default();
+    let d = document();
+    let stale_clip = "SCLP-019abcde-0000-7000-8000-0000000000ee";
+    let stale_track = "STRK-019abcde-0000-7000-8000-0000000000ee";
+    let mut set = routing();
+    let live = set.routings[0].clone();
+    set.routings.push(StudioAudioRouting::new("seq-gone"));
+    let r = &mut set.routings[0];
+    r.clip_gains.push(StudioClipGainEnvelope { clip_id: stale_clip.into(), points: vec![StudioClipGainPoint { offset_ticks: 0, gain_db: -6.0 }] });
+    r.clip_pans.push(StudioClipPanEnvelope { clip_id: stale_clip.into(), points: vec![StudioClipPanPoint { offset_ticks: 0, pan: 0.5 }] });
+    // An inert route's own output and sends name nothing that plays.
+    r.routes.push(StudioTrackRoute {
+        track_id: stale_track.into(),
+        output: Some(stale_track.into()),
+        sends: vec![StudioAudioSend { send_id: "s1".into(), target: stale_track.into(), level: 0.5, pre_fader: true, pan: 0.0 }],
+    });
+    r.bus_effects.push(StudioBusEffects { track_id: stale_track.into(), effects: vec![] });
+    r.track_automation.push(StudioTrackAutomation { track_id: stale_track.into(), param: StudioTrackParam::Pan, points: vec![StudioAutomationPoint { offset_ticks: 0, value: 0.5 }] });
+    validate_audio_routing(&set, &d, b, &token).unwrap();
+    let parsed = parse_audio_routing(&serde_json::to_vec(&set).unwrap(), &d, b, &token).unwrap();
+    assert_eq!(parsed, set, "kept whole");
+    let row = |kind, id: &str| StudioInertRoutingReference { sequence_id: "seq-main".into(), kind, id: id.into() };
+    assert_eq!(
+        inert_audio_routing_references(&set, &d),
+        vec![
+            row(K::Route, stale_track),
+            row(K::BusEffects, stale_track),
+            row(K::TrackAutomation, stale_track),
+            row(K::ClipGain, stale_clip),
+            row(K::ClipPan, stale_clip),
+            StudioInertRoutingReference { sequence_id: "seq-gone".into(), kind: K::Routing, id: "seq-gone".into() },
+        ]
+    );
+    assert_eq!(inert_audio_routing_references(&routing(), &d), vec![]);
+    assert_eq!(live, routing().routings[0], "the fixture's own routing is untouched");
+
+    let refused = |f: &dyn Fn(&mut StudioAudioRoutingSet)| {
+        let mut s = set.clone();
+        f(&mut s);
+        validate_audio_routing(&s, &d, b, &token).unwrap_err().code
+    };
+    // What an inert member holds is still checked.
+    assert_eq!(refused(&|s| s.routings[0].clip_gains[1].points[0].gain_db = 99.0), Code::InvalidField);
+    assert_eq!(refused(&|s| s.routings[0].clip_gains[1].points.clear()), Code::InvalidField);
+    assert_eq!(refused(&|s| s.routings[0].clip_pans[0].points[0].pan = 2.0), Code::InvalidField);
+    assert_eq!(refused(&|s| s.routings[0].track_automation[0].points[0].value = 9.0), Code::InvalidField);
+    assert_eq!(refused(&|s| s.routings[1].master.volume = 99.0), Code::InvalidField);
+    assert_eq!(refused(&|s| s.routings[0].routes[3].sends[0].level = 99.0), Code::InvalidField);
+    assert_eq!(refused(&|s| s.routings[0].routes[3].sends[0].send_id = "../x".into()), Code::InvalidField);
+    // Uniqueness holds for inert ids too.
+    assert_eq!(refused(&|s| s.routings.push(StudioAudioRouting::new("seq-gone"))), Code::DuplicateField);
+    assert_eq!(refused(&|s| { let again = s.routings[0].clip_gains[1].clone(); s.routings[0].clip_gains.push(again); }), Code::DuplicateField);
+    assert_eq!(refused(&|s| { let again = s.routings[0].routes[3].clone(); s.routings[0].routes.push(again); }), Code::DuplicateField);
+    // A live route naming an absent bus is not inert: a live track would play into it. Reported gap.
+    assert_eq!(refused(&|s| s.routings[0].routes[0].output = Some(stale_track.into())), Code::InvalidField);
+    assert_eq!(refused(&|s| s.routings[0].routes[1].sends[0].target = stale_track.into()), Code::InvalidField);
+    // Inert members count against the budget and the routing ceiling.
+    let least = (1..10_000).find(|&n| validate_audio_routing(&routing(), &d, Budget { nodes: n, ..b }, &token).is_ok()).unwrap();
+    assert_eq!(validate_audio_routing(&set, &d, Budget { nodes: least, ..b }, &token).unwrap_err().code, Code::BudgetExceeded);
+    let mut many = StudioAudioRoutingSet::default();
+    many.routings = (0..=MAX_AUDIO_ROUTINGS).map(|k| StudioAudioRouting::new(format!("gone-{k}"))).collect();
+    assert_eq!(validate_audio_routing(&many, &d, b, &token).unwrap_err().code, Code::BudgetExceeded);
 }

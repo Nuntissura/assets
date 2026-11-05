@@ -201,7 +201,7 @@ fn quote_matches<T: PartialEq>(
 /// Multicam's own promise holds on this path too: a removal may not orphan a multicam record set that
 /// validates now. Corrupt or already stale records are not this step's to judge (they read as their
 /// own diagnostic, `crate::multicam`).
-fn keep_multicam_records_valid(
+pub(crate) fn keep_multicam_records_valid(
     multicam: Option<&[u8]>,
     document: &StudioDocument,
     successor: &StudioDocument,

@@ -162,6 +162,8 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// `track_display` (lane SMB-PR-TRACK-DISPLAY-1) carries the Folio `StudioTrackDisplayRecords` the same
 /// way. `composition_token` (lane SMB-TYPE-AUTHORED-TOKEN-1) carries the Folio
 /// `StudioCompositionTokenRecord` the same way (`crate::composition_token`).
+/// An open notes an `audio_routing` entry that does not validate the same way (lane
+/// SMB-PR-ENTRY-REFERENCES-1).
 pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token"];
 
 /// The token of a well-formed document entry name whose digest is its body's.

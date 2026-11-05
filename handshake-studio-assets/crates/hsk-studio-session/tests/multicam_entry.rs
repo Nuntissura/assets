@@ -227,7 +227,8 @@ fn stale_multicam_entry_reads_as_a_diagnostic() {
         let mut session = open(&package());
         session.set_multicam_records(Some(&records(1)), &token()).unwrap();
         let stored = session.document_entry(MULTICAM_ENTRY).unwrap().to_vec();
-        // The multicam clip leaves the document (one timeline step); the entry no longer validates.
+        // The multicam clip leaves the document (one timeline step); its mode is inert (lead decision on
+        // R56 F-R56-3: one stale id never makes the set unreadable) and the set still reads.
         let step = TimelineStep {
             command_id: "cmd-lift".into(),
             correlation_id: 1,
@@ -236,9 +237,9 @@ fn stale_multicam_entry_reads_as_a_diagnostic() {
             write: main_sequence(false),
         };
         session.submit_timeline(&step, 3, &token()).unwrap();
-        let err = session.multicam_records(&token()).unwrap_err();
-        assert_eq!(folio_code(&err), Some(Code::DanglingReference), "{err:?}");
-        // The stored bytes are kept as they are (never rewritten into partial records).
+        assert!(session.multicam_records(&token()).unwrap().is_some());
+        assert_eq!(session.inert_multicam_clips(&token()).unwrap().len(), 1);
+        // The stored bytes are kept as they are (never rewritten).
         assert_eq!(session.document_entry(MULTICAM_ENTRY), Some(stored.as_slice()));
         // Corrupt bytes read as invalid JSON, typed.
         session.set_document_entry(MULTICAM_ENTRY, Some(b"{not json".to_vec()), &token()).unwrap();
