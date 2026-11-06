@@ -246,6 +246,31 @@ fn a_reversed_audio_clips_in_point_reads_the_end_the_mix_plays_it_at_r58_f1() {
     assert!((frames(reported) - heard).abs() < WITHIN, "read {:.3}F, heard {heard:.3}F", frames(reported));
 }
 
+/// A lone clip does not say what its track plays. With no grid it answers the continuous mapping, the audio
+/// answer, and the mix hears it there; given the sequence's grid it answers the frame law, the video answer,
+/// and `frame_layers` shows it there. Clip at 2F, source 2..26F, on each speed.
+#[test]
+fn a_lone_clip_answers_by_the_grid_it_is_given_r58_f1() {
+    let grid = SourceFrameGrid::new(F).unwrap();
+    for (num, den) in REVERSED {
+        for q in QUARTERS {
+            let tick = Ticks::new(tick_of(2, q));
+            let mut c = clip(1, 2, 26, 2, num, den);
+            c.markers.push(point("m", "clap", tick));
+            let no_grid = clip_appearing_markers(&c, None, None, &token()).unwrap().appearing[0].span;
+            let audio = sequence(vec![track(1, TrackKind::Audio, vec![c.clone()])]);
+            assert_eq!(no_grid, sequence_appearing_markers(&audio, None, &token()).unwrap().appearing[0].span, "{num}/{den} q{q}");
+            let heard = heard_at(&audio, &pulse(30 * FS, tick.value() / TPS));
+            assert!((frames(no_grid.start()) - heard).abs() < WITHIN, "{num}/{den} q{q}: read {:.3}F, heard {heard:.3}F", frames(no_grid.start()));
+            let stated = clip_appearing_markers(&c, None, Some(grid), &token()).unwrap().appearing[0].span;
+            let video = sequence(vec![track(1, TrackKind::Video, vec![c.clone()])]);
+            assert_eq!(stated, sequence_appearing_markers(&video, None, &token()).unwrap().appearing[0].span, "{num}/{den} q{q}");
+            let layers = frame_layers(&video, stated.start(), &UnknownExtents, &token()).unwrap();
+            assert_eq!(layers[0].answer.frame().index, tick.value() / F, "{num}/{den} q{q}");
+        }
+    }
+}
+
 /// `frame_layers` is what a video clip shows. The reversed rows, whole-frame and mid-frame, and the forward
 /// control on whole frames and at unit speed; a mid-frame point at another forward speed keeps its tick and is
 /// F-R58-4, not asserted here.

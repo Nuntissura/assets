@@ -14,9 +14,11 @@ fn token() -> CancellationToken {
 fn t(frames: u64) -> Ticks {
     Ticks::new(frames * F)
 }
-/// The frame grid these fixtures read on: the sequence's own, as `frame_layers` reads an unstated source.
-fn grid() -> SourceFrameGrid {
-    SourceFrameGrid::new(F).unwrap()
+/// The frame grid these fixtures read on: the sequence's own, as `frame_layers` reads an unstated source. Every
+/// clip here is a clip with a picture: on the video track of `sequence`, or a lone clip stating this grid. Other
+/// kinds: tests/marker_track_kind.rs.
+fn grid() -> Option<SourceFrameGrid> {
+    Some(SourceFrameGrid::new(F).unwrap())
 }
 fn cid(n: u32) -> String {
     format!("SCLP-019abcde-0000-7000-8000-{n:012x}")
@@ -267,7 +269,7 @@ fn a_stated_source_grid_is_the_frame_a_reversed_point_is_read_on_r57_f1() {
     let coarse = SourceFrameGrid::new(2 * F).unwrap();
     let mut c = clip_at(1, "item-a", 10, 22, 2, -1, 1);
     c.markers = vec![marker("top", 21, 0), marker("low", 11, 0), marker("mid", 16, 0)];
-    let answer = clip_appearing_markers(&c, None, coarse, &token()).unwrap();
+    let answer = clip_appearing_markers(&c, None, Some(coarse), &token()).unwrap();
     let got: Vec<(&str, u64)> = answer.appearing.iter().map(|a| (a.marker.marker_id.as_str(), a.span.start().value() / F)).collect();
     assert_eq!(got, vec![("top", 2), ("mid", 6), ("low", 12)]);
     let seq = sequence(vec![c.clone()]);
@@ -305,7 +307,7 @@ fn a_reversed_point_from_a_source_at_another_rate_is_read_on_the_stated_grid_onl
             .count()
     };
     let on_sequence_grid = off(&sequence_appearing_markers(&seq, None, &token()).unwrap().appearing);
-    let on_stated_grid = off(&clip_appearing_markers(&c, None, thirty, &token()).unwrap().appearing);
+    let on_stated_grid = off(&clip_appearing_markers(&c, None, Some(thirty), &token()).unwrap().appearing);
     println!("R57 gap F-R57-5 / SD-56: reversed 30 fps source on a 25 fps sequence, of 12 points: sequence read off {on_sequence_grid}, clip read on the stated grid off {on_stated_grid}");
     assert_eq!(on_stated_grid, 0);
     assert!(on_sequence_grid > 0, "the gap this names has closed: retire it");

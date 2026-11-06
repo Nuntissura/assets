@@ -22,15 +22,27 @@
 //! and [`ClipMediaItem`] says which case it is; the markers of the clips inside a nested sequence are not
 //! lifted to the outer clip.
 //!
-//! The mapping is the picture's ([`crate::frame_layers`]), read the other way: speed and reverse through
+//! The mapping is what the clip's track plays, read the other way: speed and reverse through
 //! `source_to_timeline`, and a frame-held clip plays one source tick at every timeline tick, so a marker
-//! holding that tick appears over the whole clip and any other appears nowhere. On a reversed clip a
-//! zero-length marker is on a frame, not on a tick: it appears where the picture's position law reaches the
-//! frame holding it (`retime` owns that law; `reversed_frame_tick`), which takes a frame grid, as the picture
-//! does (test `every_reported_position_shows_the_markers_frame_in_frame_layers`). A span keeps its source
-//! ticks through the clip's end, and a whole-frame span covers exactly its frames. [`clip_appearing_markers`]
-//! reads the grid its caller states; every read that has a sequence reads the sequence's grid, as
-//! `frame_layers` does. A monitor stating another grid for a source (`frame_layers_on_grids`) can show
+//! holding that tick appears over the whole clip and any other appears nowhere. On a reversed clip with a
+//! picture, a clip on a `TrackKind::Video` track, the one kind [`crate::frame_layers`] draws, a zero-length
+//! marker is on a frame, not on a tick: it appears where the picture's position law reaches the frame holding
+//! it (`retime` owns that law and the kind test, `picture_frame_ticks`, `reversed_frame_tick`), which takes a
+//! frame grid, as the picture does (test `every_reported_position_shows_the_markers_frame_in_frame_layers`).
+//! A disabled video track is still a video track: the kind alone decides (test
+//! `the_law_goes_by_the_tracks_kind_alone_r58_f1`). Audio, caption and submix clips show no frame and keep the
+//! continuous mapping `source_out - a`. For audio that is where the mix plays the tick, one sample after it, so
+//! the window's first source tick reads the clip's end (tests
+//! `a_point_on_an_audio_clip_reads_where_the_mix_plays_it_r58_f1`,
+//! `a_reversed_audio_clips_in_point_reads_the_end_the_mix_plays_it_at_r58_f1`). For caption and submix no output
+//! plays the clip, so that answer is a reading with no oracle, NOT_PROVEN by its test. A forward point keeps its
+//! tick on every kind: whole-frame points are 0 off at every speed run (test
+//! `a_point_on_a_video_clip_reads_where_frame_layers_shows_its_frame_r58_f1`); only a marker off the frame grid
+//! can differ from the frame the monitor shows there (F-R58-4). A span keeps its source ticks through the clip's
+//! end, and a whole-frame span covers exactly its frames when the window's end is on the frame grid (F-R58-5).
+//! [`clip_appearing_markers`] reads the grid its caller states; a lone clip with no stated grid has no frame to
+//! read and answers the continuous mapping. Every read that has a sequence reads the sequence's grid for a
+//! video clip, as `frame_layers` does. A monitor stating another grid for a source (`frame_layers_on_grids`) can show
 //! another frame there on a reversed clip: a named gap, F-R57-5 / SD-56
 //! (test `a_reversed_point_from_a_source_at_another_rate_is_read_on_the_stated_grid_only_r57_f5`). Held-clip readings, the
 //! clause being silent and vendor parity UNVERIFIED (D5): a hold is matched by exact tick, as this read
@@ -49,12 +61,12 @@
 
 use crate::error::{PulseError, Result};
 use crate::range::{Grid, TickDelta, TickRange};
-use crate::retime::{SourceFrameGrid, reversed_frame_tick};
+use crate::retime::{SourceFrameGrid, picture_frame_ticks, reversed_frame_tick};
 use crate::timeline_edit::{EditContext, EditProposal, Footprint, propose, rate_of};
 use crate::transition::{check_at, locate};
 use hsk_studio_accord::{CancellationToken, Ticks};
 pub use hsk_studio_folio::{LabelColor, MarkerRole, StudioMarker, WorkArea};
-use hsk_studio_folio::{ClipSource, ContentDigest, MAX_MARKERS_PER_SEQUENCE, Snapshot, StudioClip, StudioMediaMarkerRecords, StudioSequence};
+use hsk_studio_folio::{ClipSource, ContentDigest, MAX_MARKERS_PER_SEQUENCE, Snapshot, StudioClip, StudioMediaMarkerRecords, StudioSequence, TrackKind};
 use std::collections::BTreeMap;
 
 const CANCEL_STRIDE: usize = 256;
@@ -275,9 +287,11 @@ pub(crate) fn split_records(first: &mut StudioClip, second: &mut StudioClip) {
 }
 
 /// Timeline position of `[a, b)` source ticks of `clip` (clipped to its playing window); `None`
-/// when no part of it plays. Positions between ticks round down. A point on a reversed clip that holds no
-/// frame is read on the grid of `ticks_per_frame` (module docs); zero there is `invalid_input`.
-pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, ticks_per_frame: u64) -> Result<Option<TickRange>> {
+/// when no part of it plays. Positions between ticks round down. `picture_frame` is the frame length of a
+/// clip with a picture (`retime::picture_frame_ticks`): a point on such a reversed clip that holds no frame is
+/// read on that grid (module docs), zero there being `invalid_input`. `None`, a clip with no picture, keeps the
+/// continuous mapping.
+pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, picture_frame: Option<u64>) -> Result<Option<TickRange>> {
     let visible = if a == b {
         clip.source_in <= a && a < clip.source_out
     } else {
@@ -286,7 +300,11 @@ pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, ticks_pe
     if !visible {
         return Ok(None);
     }
-    if a == b && clip.speed.is_reversed() && clip.retime.frame_hold.is_none() {
+    if let Some(ticks_per_frame) = picture_frame
+        && a == b
+        && clip.speed.is_reversed()
+        && clip.retime.frame_hold.is_none()
+    {
         let tick = reversed_frame_tick(clip, a, SourceFrameGrid::new(ticks_per_frame)?)?;
         return TickRange::new(tick, tick).map(Some);
     }
@@ -321,15 +339,16 @@ pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, ticks_pe
 }
 
 /// Where a marker sits in sequence time: `clip = None` for a sequence marker; `None` result = a
-/// clip marker outside the clip's playing window. `clip` is read on `sequence`'s frame grid (module docs).
-pub fn marker_span(sequence: &StudioSequence, clip: Option<&StudioClip>, marker: &StudioMarker) -> Result<Option<TickRange>> {
+/// clip marker outside the clip's playing window. `clip` is the clip with the kind of its track, which says
+/// whether it has a picture; a video clip is read on `sequence`'s frame grid (module docs).
+pub fn marker_span(sequence: &StudioSequence, clip: Option<(TrackKind, &StudioClip)>, marker: &StudioMarker) -> Result<Option<TickRange>> {
     match clip {
         None => TickRange::from_start_duration(marker.start, marker.duration).map(Some),
-        Some(clip) => source_to_timeline(
+        Some((kind, clip)) => source_to_timeline(
             clip,
             marker.start,
             marker.start.checked_add(marker.duration)?,
-            sequence.frame_rate.ticks_per_frame,
+            picture_frame_ticks(kind, sequence.frame_rate.ticks_per_frame),
         ),
     }
 }
@@ -345,17 +364,17 @@ pub fn marker_spans(
             out.push((marker.marker_id.clone(), span));
         }
     }
-    for (i, clip) in sequence
+    for (i, (kind, clip)) in sequence
         .tracks
         .iter()
-        .flat_map(|t| t.clips.iter())
+        .flat_map(|t| t.clips.iter().map(|c| (t.kind, c)))
         .enumerate()
     {
         if i.is_multiple_of(CANCEL_STRIDE) {
             cancel.check()?;
         }
         for marker in &clip.markers {
-            if let Some(span) = marker_span(sequence, Some(clip), marker)? {
+            if let Some(span) = marker_span(sequence, Some((kind, clip)), marker)? {
                 out.push((marker.marker_id.clone(), span));
             }
         }
@@ -434,10 +453,10 @@ pub struct SequenceMarkers {
 }
 
 /// Where `marker` appears on `clip`; `None` when it does not (module docs).
-fn appearing_span(clip: &StudioClip, marker: &StudioMarker, ticks_per_frame: u64) -> Result<Option<TickRange>> {
+fn appearing_span(clip: &StudioClip, marker: &StudioMarker, picture_frame: Option<u64>) -> Result<Option<TickRange>> {
     let end = marker.start.checked_add(marker.duration)?;
     let Some(hold) = &clip.retime.frame_hold else {
-        return source_to_timeline(clip, marker.start, end, ticks_per_frame);
+        return source_to_timeline(clip, marker.start, end, picture_frame);
     };
     let holds = if marker.duration.value() == 0 {
         marker.start == hold.source_tick
@@ -455,7 +474,7 @@ fn appearing_span(clip: &StudioClip, marker: &StudioMarker, ticks_per_frame: u64
 fn walk_clip(
     clip: &StudioClip,
     media: &[StudioMarker],
-    ticks_per_frame: u64,
+    picture_frame: Option<u64>,
     out: &mut Vec<AppearingMarker>,
     cancel: &CancellationToken,
 ) -> Result<(usize, usize)> {
@@ -465,7 +484,7 @@ fn walk_clip(
         if i.is_multiple_of(CANCEL_STRIDE) {
             cancel.check()?;
         }
-        match appearing_span(clip, marker, ticks_per_frame)? {
+        match appearing_span(clip, marker, picture_frame)? {
             Some(span) => {
                 if out.len() >= MAX_MARKERS_PER_SEQUENCE {
                     return Err(PulseError::LimitExceeded);
@@ -497,11 +516,14 @@ fn sort_appearing(appearing: &mut [AppearingMarker]) {
 
 /// Every marker that appears on `clip`: its own and those of the media item it is cut from, ordered by
 /// start, then scope and id. `media` is the parsed record set a session holds (`None` = none stored).
-/// `grid` is the source's frame grid, the one the monitor reads it on (module docs).
+/// `grid` is the source's frame grid, the one the monitor reads it on, for a clip with a picture. A lone clip
+/// does not say what its track plays: `None` states it has no frame to read, and a reversed point answers the
+/// continuous mapping, as a clip on an audio track does (module docs; test
+/// `a_lone_clip_answers_by_the_grid_it_is_given_r58_f1`).
 pub fn clip_appearing_markers(
     clip: &StudioClip,
     media: Option<&StudioMediaMarkerRecords>,
-    grid: SourceFrameGrid,
+    grid: Option<SourceFrameGrid>,
     cancel: &CancellationToken,
 ) -> Result<ClipMarkers> {
     cancel.check()?;
@@ -511,14 +533,14 @@ pub fn clip_appearing_markers(
         ClipMediaItem::NestedSequence | ClipMediaItem::Primitive => &[][..],
     };
     let mut appearing = Vec::new();
-    let (hidden_clip_markers, hidden_media_markers) = walk_clip(clip, held, grid.ticks_per_frame(), &mut appearing, cancel)?;
+    let (hidden_clip_markers, hidden_media_markers) = walk_clip(clip, held, grid.map(SourceFrameGrid::ticks_per_frame), &mut appearing, cancel)?;
     sort_appearing(&mut appearing);
     Ok(ClipMarkers { clip_id: clip.clip_id.clone(), media_item, appearing, hidden_clip_markers, hidden_media_markers })
 }
 
 /// Every marker that appears in `sequence`: its sequence markers and, for every clip, what
-/// [`clip_appearing_markers`] answers on the sequence's own frame grid, ordered by start, then clip, scope
-/// and id.
+/// [`clip_appearing_markers`] answers, on the sequence's own frame grid for a clip on a video track and with
+/// no grid for any other kind, ordered by start, then clip, scope and id.
 pub fn sequence_appearing_markers(
     sequence: &StudioSequence,
     media: Option<&StudioMediaMarkerRecords>,
@@ -551,13 +573,14 @@ pub fn sequence_appearing_markers(
         let span = TickRange::from_start_duration(marker.start, marker.duration)?;
         out.appearing.push(AppearingMarker { scope: AppearingMarkerScope::Sequence, clip_id: None, marker: marker.clone(), span });
     }
-    for clip in sequence.tracks.iter().flat_map(|t| t.clips.iter()) {
+    for (kind, clip) in sequence.tracks.iter().flat_map(|t| t.clips.iter().map(|c| (t.kind, c))) {
         cancel.check()?;
         let held = held_by(clip, &by_digest).unwrap_or_else(|| {
             out.clips_without_media_item = out.clips_without_media_item.saturating_add(1);
             &[]
         });
-        let (own, of_media) = walk_clip(clip, held, sequence.frame_rate.ticks_per_frame, &mut out.appearing, cancel)?;
+        let picture_frame = picture_frame_ticks(kind, sequence.frame_rate.ticks_per_frame);
+        let (own, of_media) = walk_clip(clip, held, picture_frame, &mut out.appearing, cancel)?;
         out.hidden_clip_markers = out.hidden_clip_markers.saturating_add(own);
         out.hidden_media_markers = out.hidden_media_markers.saturating_add(of_media);
     }

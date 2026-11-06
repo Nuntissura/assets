@@ -128,7 +128,7 @@ pub fn snap_targets(
             out.push(target(clip.timeline_start, SnapKind::EditPoint, Some(&clip.clip_id)));
             out.push(target(end, SnapKind::EditPoint, Some(&clip.clip_id)));
             for marker in &clip.markers {
-                if let Some(span) = marker_span(sequence, Some(clip), marker)? {
+                if let Some(span) = marker_span(sequence, Some((track.kind, clip)), marker)? {
                     push_span(&mut out, span.start(), span.end(), &marker.marker_id);
                 }
             }

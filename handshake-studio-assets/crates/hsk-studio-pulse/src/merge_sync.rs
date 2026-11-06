@@ -20,8 +20,8 @@
 //! no arithmetic): each clip has a reference position on the timeline, the anchor stays, every other
 //! clip moves so its reference lands on the anchor's. [`SyncPoint::InPoint`] is the clip's timeline
 //! start, [`SyncPoint::OutPoint`] its timeline end, [`SyncPoint::Marker`] the position of the clip
-//! marker of that name inside the clip's playing window (through the clip's speed, as
-//! `marker_span`; a position between ticks rounds down), and [`SyncPoint::Timecode`] aligns the
+//! marker of that name inside the clip's playing window (through the clip's speed and what its track
+//! plays, as `marker_span`; a position between ticks rounds down), and [`SyncPoint::Timecode`] aligns the
 //! source timecode of the clips through the [`SourceTimecodes`] port: equal labels land on one tick.
 //! Timecode refuses a changed speed (two rates have no single alignment), a different rate or
 //! drop-frame mode (the labels are not comparable) and a clip sharing no timecode span with the
@@ -48,6 +48,7 @@
 use crate::annotate::source_to_timeline;
 use crate::error::{PulseError, Result};
 use crate::range::{TickDelta, TickRange, offset, validate_lane};
+use crate::retime::picture_frame_ticks;
 use crate::time::{Timecode, timecode_to_ticks};
 use crate::timeline_edit::{
     EditContext, EditProposal, Footprint, TimelineEdit, apply_edit, grid_of, lane_of, propose, rate_of,
@@ -516,7 +517,7 @@ fn timecode_span(clip: &StudioClip, timecodes: &dyn SourceTimecodes) -> MergeSyn
     Ok(TimecodeSpan { format: (tc.rate, tc.start.drop_frame), span })
 }
 
-fn marker_position(clip: &StudioClip, name: &str, ticks_per_frame: u64) -> MergeSyncResult<i128> {
+fn marker_position(clip: &StudioClip, name: &str, picture_frame: Option<u64>) -> MergeSyncResult<i128> {
     not_held(clip)?;
     let missing = || MergeSyncError::SyncMarkerMissing { clip_id: clip.clip_id.clone() };
     let mut named = clip.markers.iter().filter(|m| m.name == name);
@@ -524,20 +525,20 @@ fn marker_position(clip: &StudioClip, name: &str, ticks_per_frame: u64) -> Merge
     if named.next().is_some() {
         return Err(MergeSyncError::SyncMarkerAmbiguous { clip_id: clip.clip_id.clone() });
     }
-    let at = source_to_timeline(clip, marker.start, marker.start, ticks_per_frame)?.ok_or_else(missing)?;
+    let at = source_to_timeline(clip, marker.start, marker.start, picture_frame)?.ok_or_else(missing)?;
     Ok(i128::from(at.start().value()))
 }
 
 /// The clip's reference position on the timeline. For timecode it is where timecode zero would lie:
 /// a difference of two of these is the move that puts equal labels on one tick.
-fn reference(clip: &StudioClip, point: &SyncPoint, tc: Option<&TimecodeSpan>, ticks_per_frame: u64) -> MergeSyncResult<i128> {
+fn reference(clip: &StudioClip, point: &SyncPoint, tc: Option<&TimecodeSpan>, picture_frame: Option<u64>) -> MergeSyncResult<i128> {
     let start = i128::from(clip.timeline_start.value());
     match (point, tc) {
         (SyncPoint::InPoint, _) => Ok(start),
         (SyncPoint::OutPoint, _) => {
             Ok(i128::from(clip.timeline_end().ok_or(PulseError::Overflow)?.value()))
         }
-        (SyncPoint::Marker { name }, _) => marker_position(clip, name, ticks_per_frame),
+        (SyncPoint::Marker { name }, _) => marker_position(clip, name, picture_frame),
         (SyncPoint::Timecode, Some(tc)) => start
             .checked_sub(i128::from(tc.span.start().value()))
             .ok_or_else(|| PulseError::Overflow.into()),
@@ -555,9 +556,10 @@ fn alignment_offsets(
     ctx: &EditContext,
 ) -> MergeSyncResult<Vec<TickDelta>> {
     let clip_at = |m: Member| &seq.tracks[m.track].clips[m.clip];
+    let picture_frame = |m: Member| picture_frame_ticks(seq.tracks[m.track].kind, seq.frame_rate.ticks_per_frame);
     let by_timecode = matches!(point, SyncPoint::Timecode);
     let anchor_tc = if by_timecode { Some(timecode_span(clip_at(anchor), timecodes)?) } else { None };
-    let anchor_at = reference(clip_at(anchor), point, anchor_tc.as_ref(), seq.frame_rate.ticks_per_frame)?;
+    let anchor_at = reference(clip_at(anchor), point, anchor_tc.as_ref(), picture_frame(anchor))?;
     let mut offsets = Vec::with_capacity(members.len());
     for &member in members {
         ctx.cancel.check()?;
@@ -571,7 +573,7 @@ fn alignment_offsets(
                 return Err(MergeSyncError::SyncTimecodeNoOverlap { clip_id: clip.clip_id.clone() });
             }
         }
-        let at = reference(clip, point, tc.as_ref(), seq.frame_rate.ticks_per_frame)?;
+        let at = reference(clip, point, tc.as_ref(), picture_frame(member))?;
         offsets.push(TickDelta::new(anchor_at.checked_sub(at).ok_or(PulseError::Overflow)?)?);
     }
     Ok(offsets)

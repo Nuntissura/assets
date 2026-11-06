@@ -328,6 +328,13 @@ fn neighbours(clip: &StudioClip, tick: Ticks, grid: SourceFrameGrid) -> crate::R
     })
 }
 
+/// The frame length the position law reads a clip on a track of `kind` on, given the sequence's: `None` for
+/// a kind that shows no picture, as [`crate::frame_layers`] draws only video. The kind alone decides: a disabled
+/// video track is still a video track.
+pub(crate) fn picture_frame_ticks(kind: TrackKind, ticks_per_frame: u64) -> Option<u64> {
+    (kind == TrackKind::Video).then_some(ticks_per_frame)
+}
+
 /// The tick a reversed `clip` shows the frame holding source tick `at`: the inverse of the position law
 /// of [`neighbours`], from the start of the window's last frame. Between ticks it rounds toward the clip
 /// start, so the position stays on that frame. A window shorter than its frames can hold never reaches
