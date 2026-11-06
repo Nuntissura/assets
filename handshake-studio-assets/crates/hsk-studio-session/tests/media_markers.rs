@@ -496,8 +496,22 @@ fn a_step_replaces_an_entry_it_can_quote_and_refuses_bytes_it_cannot() {
         let applied = session.submit_sequence_records(&replace, 3, &token()).unwrap();
         assert_eq!(session.media_marker_records(&token()).unwrap(), Some(held_records()));
         assert!(session.loss().is_empty(), "{:?}", session.loss());
-        // The undo would write the invalid records back, so it is refused and the repair stands.
-        assert_eq!(session.submit_sequence_records(&fresh_inverse(&applied, "cmd.undo"), 4, &token()).unwrap_err().code(), "folio_rejected");
+        // The invalid records cannot go back and nothing else changed, so no undo exists and the answer
+        // says so (R56 F-R56-7).
+        assert_eq!(applied.sequence_records_inverse, None);
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::Unavailable(vec![MEDIA_MARKERS_ENTRY])));
+        // With another record edit, that edit keeps its undo and the repair stands.
+        let mut session = open(&package(&[entry(MEDIA_MARKERS_ENTRY, &serde_json::to_vec(&stale).unwrap())]));
+        let with_other = SequenceRecordsStep {
+            media_markers: Some(RecordEdit { expect: Some(stale.clone()), write: Some(held_records()) }),
+            ..step(vec![], None, Some(RecordEdit { expect: None, write: Some(library(vec![preset("mine", F25)])) }))
+        };
+        let applied = session.submit_sequence_records(&with_other, 3, &token()).unwrap();
+        assert_eq!(applied.sequence_records_undo, Some(SequenceRecordsUndo::WithoutEntries(vec![MEDIA_MARKERS_ENTRY])));
+        assert_eq!(applied.sequence_records_inverse.as_ref().unwrap().media_markers, None, "the entry is left alone");
+        session.submit_sequence_records(&fresh_inverse(&applied, "cmd.undo"), 4, &token()).unwrap();
+        assert_eq!(session.sequence_presets(&token()).unwrap(), None);
+        assert_eq!(session.media_marker_records(&token()).unwrap(), Some(held_records()));
         // Bytes that do not parse cannot be quoted, a `None` quote included.
         let mut corrupt = open(&package(&[entry(MEDIA_MARKERS_ENTRY, b"{not json")]));
         let any = marker_step(RecordEdit { expect: None, write: None });
