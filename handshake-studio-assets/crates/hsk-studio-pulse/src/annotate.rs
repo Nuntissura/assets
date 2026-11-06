@@ -42,8 +42,9 @@
 //! A marker that does not appear is hidden, not lost: it stays in its record, comes back when an edit
 //! brings its position into play, and is only counted here. A disabled clip's markers appear: it is still
 //! a clip cut from the item. The read is bounded by the existing `MAX_MARKERS_PER_SEQUENCE` over what
-//! appears (`limit_exceeded`, never a truncated list), walks at most clips times markers, and is
-//! cancellable throughout.
+//! appears (`limit_exceeded`, never a truncated list), maps at most [`MAX_APPEARING_WALK`] markers over a
+//! sequence's clips, charged before the first is mapped (`limit_exceeded`, test
+//! `a_walk_past_its_budget_is_refused_before_any_marker_is_mapped_r57_f15`), and is cancellable throughout.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::{PulseError, Result};
@@ -58,7 +59,8 @@ use std::collections::BTreeMap;
 
 const CANCEL_STRIDE: usize = 256;
 
-/// Most markers one appearing read maps, over every clip; a marker hidden on two clips counts twice.
+/// Most markers one sequence's appearing read maps, over every clip: a marker hidden on two clips counts
+/// twice, a Studio bound of 256 clips of an item holding the most markers a record set may hold.
 pub const MAX_APPEARING_WALK: usize = 1 << 24;
 
 /// Where a new marker goes.
@@ -477,6 +479,16 @@ fn walk_clip(
     Ok(hidden)
 }
 
+/// The markers of the media item `clip` is cut from; `None` when it has no media item.
+fn held_by<'a>(clip: &StudioClip, by_digest: &BTreeMap<(&str, &str), &'a [StudioMarker]>) -> Option<&'a [StudioMarker]> {
+    match &clip.source_ref {
+        ClipSource::Media { content_digest, .. } => {
+            Some(by_digest.get(&(content_digest.algorithm.as_str(), content_digest.digest.as_str())).copied().unwrap_or(&[]))
+        }
+        ClipSource::Sequence { .. } | ClipSource::Primitive { .. } => None,
+    }
+}
+
 fn sort_appearing(appearing: &mut [AppearingMarker]) {
     appearing.sort_by(|a, b| {
         (a.span.start(), &a.clip_id, a.scope, &a.marker.marker_id).cmp(&(b.span.start(), &b.clip_id, b.scope, &b.marker.marker_id))
@@ -521,6 +533,16 @@ pub fn sequence_appearing_markers(
         let digest = &entry.content_digest;
         by_digest.entry((digest.algorithm.as_str(), digest.digest.as_str())).or_insert(entry.markers.as_slice());
     }
+    let mut walk = 0usize;
+    for (i, clip) in sequence.tracks.iter().flat_map(|t| t.clips.iter()).enumerate() {
+        if i.is_multiple_of(CANCEL_STRIDE) {
+            cancel.check()?;
+        }
+        walk = walk.saturating_add(clip.markers.len()).saturating_add(held_by(clip, &by_digest).map_or(0, <[StudioMarker]>::len));
+        if walk > MAX_APPEARING_WALK {
+            return Err(PulseError::LimitExceeded);
+        }
+    }
     let mut out = SequenceMarkers { appearing: Vec::new(), hidden_clip_markers: 0, hidden_media_markers: 0, clips_without_media_item: 0 };
     for marker in &sequence.markers {
         if out.appearing.len() >= MAX_MARKERS_PER_SEQUENCE {
@@ -531,13 +553,10 @@ pub fn sequence_appearing_markers(
     }
     for clip in sequence.tracks.iter().flat_map(|t| t.clips.iter()) {
         cancel.check()?;
-        let held: &[StudioMarker] = match &clip.source_ref {
-            ClipSource::Media { content_digest, .. } => by_digest.get(&(content_digest.algorithm.as_str(), content_digest.digest.as_str())).copied().unwrap_or(&[]),
-            ClipSource::Sequence { .. } | ClipSource::Primitive { .. } => {
-                out.clips_without_media_item = out.clips_without_media_item.saturating_add(1);
-                &[]
-            }
-        };
+        let held = held_by(clip, &by_digest).unwrap_or_else(|| {
+            out.clips_without_media_item = out.clips_without_media_item.saturating_add(1);
+            &[]
+        });
         let (own, of_media) = walk_clip(clip, held, sequence.frame_rate.ticks_per_frame, &mut out.appearing, cancel)?;
         out.hidden_clip_markers = out.hidden_clip_markers.saturating_add(own);
         out.hidden_media_markers = out.hidden_media_markers.saturating_add(of_media);
