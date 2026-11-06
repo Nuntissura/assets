@@ -416,6 +416,7 @@ fn every_folio_reference_property_is_classified() {
         ("sequence_presets", serde_json::to_value(folio::sequence_presets_schema()).unwrap()),
         ("track_display", serde_json::to_value(folio::track_display_records_schema()).unwrap()),
         ("composition_token", serde_json::to_value(folio::composition_token_record_schema()).unwrap()),
+        ("media_markers", serde_json::to_value(folio::media_marker_records_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -731,6 +732,33 @@ fn composition_token_record_round_trips_through_the_package() {
     assert_eq!(opened.quarantined, held, "the entry carried verbatim");
     let reopened = opened.snapshot().unwrap().document();
     assert_eq!(folio::parse_composition_token_record(&opened.quarantined[0].bytes, reopened, folio::Budget::default(), &token()).unwrap(), record);
+    // No reference to outside data comes from the entry: the externals are the document's.
+    let without = open(&write(&snapshot, &source(&b), &[], EmbedExternal::Link).unwrap());
+    assert_eq!(states(&opened), states(&without));
+    assert!(opened.externals.iter().all(|e| !e.target.starts_with(DOCUMENT_ENTRY_PREFIX)));
+}
+
+/// Lane SMB-PR-MEDIA-MARKERS-1 (rule 4b): the media item marker record set travels as a record entry next
+/// to the document: kept verbatim on save, read back byte-identical, parsed back to the same records, and
+/// it names no outside data. Its `content_digest` is a key, not a reference: a package is complete without
+/// those bytes, and the entry adds no external and no loss, though the digest names no clip of this document.
+#[test]
+fn media_marker_records_round_trip_through_the_package() {
+    let b = bytes();
+    let snapshot = document(&b);
+    let doc = snapshot.document();
+    let mut records = StudioMediaMarkerRecords::new(doc.document_id.clone());
+    let marker = StudioMarker { marker_id: "media-marker-1".into(), name: "A note".into(), comment: "line one\nline two".into(), color: LabelColor::Teal, start: Ticks::new(3 * F), duration: Ticks::new(F), role: Some(MarkerRole::WebLink { url: "https://example.test/a".into() }) };
+    records.media_items.push(StudioMediaMarkerEntry { content_digest: sha(b"bytes of no clip here"), markers: vec![marker] });
+    let body = serde_json::to_vec(&records).unwrap();
+    let sha = sha256_hex_of(&body);
+    let held = vec![Quarantined { name: format!("{DOCUMENT_ENTRY_PREFIX}media_markers.{sha}"), bytes: body.clone(), sha256_hex: sha }];
+    let package = write(&snapshot, &source(&b), &held, EmbedExternal::Link).unwrap();
+    let opened = open(&package);
+    assert_eq!(opened.snapshot().unwrap().encoded_bytes(), snapshot.encoded_bytes());
+    assert_eq!(opened.quarantined, held, "the entry carried verbatim");
+    let reopened = opened.snapshot().unwrap().document();
+    assert_eq!(parse_media_marker_records(&opened.quarantined[0].bytes, reopened, folio::Budget::default(), &token()).unwrap(), records);
     // No reference to outside data comes from the entry: the externals are the document's.
     let without = open(&write(&snapshot, &source(&b), &[], EmbedExternal::Link).unwrap());
     assert_eq!(states(&opened), states(&without));
