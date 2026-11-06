@@ -16,9 +16,9 @@
 //!
 //! `StudioMarker` says its id is unique among the document's markers. `validate_document` checks that
 //! for the sequence and clip scopes over one id set; [`validate_media_marker_records`] extends it to
-//! this scope, against the document it is given. The field rules of a marker are those of `validate_marker` in
-//! `timeline.rs`, which is private to that module; test `marker_fields_are_refused_as_the_document_refuses_them`
-//! pins the two together.
+//! this scope, against the document it is given. A marker is checked by `validate_marker` in `timeline.rs`,
+//! the document's own function, over this set's ids; test `marker_fields_are_refused_as_the_document_refuses_them`
+//! pins the answers.
 //!
 //! [`StudioMediaMarkerCommand`] adds, replaces and removes one marker. Each takes the caller's
 //! `CommandContext` and returns the next records and a report of codes and counters; it holds no
@@ -31,10 +31,9 @@
 //! over [`MAX_MEDIA_MARKER_INPUT_BYTES`] whatever the budget allows.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
-    Budget, Code, ContentDigest, Diagnostic, MAX_MARKER_TEXT_BYTES, MAX_MARKERS_PER_SEQUENCE, MarkerRole, Result, StudioDocument, StudioMarker,
-    Unresolved, err, id, key,
+    Budget, Code, ContentDigest, Diagnostic, MAX_MARKERS_PER_SEQUENCE, Result, StudioDocument, StudioMarker, Unresolved, err, id,
     sequence_preset::parse_wire,
-    timeline::control_free,
+    timeline::{control_free, validate_marker},
     values::Ctx,
 };
 use hsk_studio_accord::{CancellationToken, CommandContext};
@@ -92,33 +91,6 @@ fn digest_ok(digest: &ContentDigest) -> bool {
     control_free(&digest.algorithm) && control_free(&digest.digest)
 }
 
-fn text_ok(s: &str, allow_empty: bool) -> bool {
-    (allow_empty || !s.is_empty()) && s.len() <= MAX_MARKER_TEXT_BYTES && !s.chars().any(char::is_control)
-}
-
-/// The rules of `validate_marker` in `timeline.rs`, in its order, with the id set kept by the caller.
-fn validate_fields(m: &StudioMarker, cx: &mut Ctx) -> Result<()> {
-    let target = m.marker_id.as_str();
-    let role_text = match &m.role {
-        Some(MarkerRole::WebLink { url }) => Some((url.as_str(), false)),
-        Some(MarkerRole::Caption { text }) => Some((text.as_str(), true)),
-        _ => None,
-    };
-    // A comment may hold line breaks; names and role text may not hold control characters.
-    if !text_ok(&m.name, true) || m.comment.len() > MAX_MARKER_TEXT_BYTES || role_text.is_some_and(|(s, empty)| !text_ok(s, empty)) {
-        return Err(err(Code::InvalidField, format!("{target}/text")));
-    }
-    cx.text(&m.name, target)?;
-    cx.text(&m.comment, target)?;
-    if let Some((s, _)) = role_text {
-        cx.text(s, target)?;
-    }
-    if m.start.checked_add(m.duration).is_err() {
-        return Err(err(Code::InvalidField, format!("{target}/span")));
-    }
-    Ok(())
-}
-
 /// Validates the record set against the document: `SDOC` id equal to the document's; at most
 /// `MAX_MEDIA_MARKER_ITEMS` items and `MAX_MEDIA_MARKERS` markers (counted before they are walked, then
 /// charged against `Budget::nodes`); each item's digest parts free of control characters and at most
@@ -138,14 +110,19 @@ pub fn validate_media_marker_records(r: &StudioMediaMarkerRecords, d: &StudioDoc
     }
     cx.nodes(r.media_items.len().saturating_add(r.marker_count()), "media_markers")?;
     let (mut items, mut ids) = (BTreeSet::new(), BTreeSet::new());
+    // Digest and marker text share one count against `Budget::payload_bytes`.
+    let mut payload = 0usize;
     for e in &r.media_items {
         cx.tick()?;
         let digest = &e.content_digest;
         if !digest_ok(digest) {
             return Err(err(Code::InvalidField, "media_markers/content_digest"));
         }
-        cx.text(&digest.algorithm, "media_markers/content_digest")?;
-        cx.text(&digest.digest, "media_markers/content_digest")?;
+        payload = payload
+            .checked_add(digest.algorithm.len())
+            .and_then(|n| n.checked_add(digest.digest.len()))
+            .filter(|n| *n <= b.payload_bytes)
+            .ok_or_else(|| err(Code::BudgetExceeded, "media_markers/content_digest"))?;
         if !items.insert((digest.algorithm.as_str(), digest.digest.as_str())) {
             return Err(err(Code::DuplicateIdentity, "media_markers/content_digest"));
         }
@@ -156,14 +133,7 @@ pub fn validate_media_marker_records(r: &StudioMediaMarkerRecords, d: &StudioDoc
             if i.is_multiple_of(CANCEL_STRIDE) {
                 cx.tick()?;
             }
-            let target = m.marker_id.as_str();
-            if !key(target) {
-                return Err(err(Code::InvalidId, "marker_id"));
-            }
-            if !ids.insert(target) {
-                return Err(err(Code::DuplicateIdentity, target));
-            }
-            validate_fields(m, &mut cx)?;
+            validate_marker(m, &mut ids, &mut payload, b)?;
         }
     }
     if ids.is_empty() {

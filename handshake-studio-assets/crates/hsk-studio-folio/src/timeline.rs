@@ -548,7 +548,7 @@ fn text_ok(s: &str, allow_empty: bool) -> bool {
 }
 
 /// One marker: key id unique in the document, bounded text, `start + duration` in range.
-fn validate_marker<'a>(
+pub(crate) fn validate_marker<'a>(
     m: &'a StudioMarker,
     ids: &mut BTreeSet<&'a str>,
     payload_size: &mut usize,
