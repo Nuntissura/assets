@@ -36,9 +36,12 @@
 //! An id the document does not hold is inert, not invalid (lead decision on R56 F-R56-3, the rule of
 //! the track display records; vendor parity UNVERIFIED, D5): a routing of an absent sequence, and in
 //! any routing a route, bus effect chain or automation lane of an absent track and an envelope of an
-//! absent clip. An inert member is kept, still checked for what it holds (grammar, uniqueness, counts,
-//! ranges, its budget), plays nothing because the mix looks these up from the tracks and clips it
-//! plays (pulse tests/inert_routing_mix.rs), and is live again when the id comes back. One stale id
+//! absent clip. Only a well-formed id is inert: an absent sequence id keeps the key grammar, an absent
+//! track or clip id the domain id grammar with its own prefix, and so do the output and send targets of
+//! an inert route; a malformed one is `InvalidId` (tests/audio_routing_records.rs). An inert member is
+//! kept, still checked for what it holds (uniqueness, counts, ranges, its budget), plays nothing because
+//! the mix looks these up from the tracks and clips it plays (pulse tests/inert_routing_mix.rs), and is
+//! live again when the id comes back (an_inert_member_is_live_again_when_its_track_or_clip_exists). One stale id
 //! never makes the set unreadable for another sequence. Listed by [`inert_audio_routing_references`].
 //! Two things stay refused: an id held with the wrong kind (a clip on a video track), and an output or
 //! send target that names an absent bus, because a live track would play into it (pulse bus_mix.rs).
@@ -49,7 +52,7 @@
 use super::audio_preset::{MAX_AUDIO_PRESET_EFFECTS, instance};
 use super::{
     Budget, Code, Result, StudioAudioEffectInstance, StudioDocument, StudioSequence, TrackKind,
-    Unresolved, err, key, values::Ctx,
+    Unresolved, err, id, key, values::Ctx,
 };
 use hsk_studio_accord::CancellationToken;
 use schemars::JsonSchema;
@@ -278,7 +281,10 @@ fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -
         let live = match kinds.get(route.track_id.as_str()) {
             Some(TrackKind::Audio | TrackKind::Submix) => true,
             Some(_) => return Err(err(Code::InvalidId, t)),
-            None => false,
+            None => {
+                id(&route.track_id, "STRK", &t)?;
+                false
+            }
         };
         if !routed.insert(route.track_id.as_str()) {
             return Err(err(Code::DuplicateField, t));
@@ -288,18 +294,23 @@ fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -
         }
         cx.nodes(route.sends.len(), &t)?;
         let mut targets: Vec<&str> = Vec::new();
-        if let Some(o) = route.output.as_ref().filter(|_| live) {
-            if !submix(o) || *o == route.track_id {
+        if let Some(o) = &route.output {
+            if !live {
+                id(o, "STRK", &format!("{t}/output"))?;
+            } else if !submix(o) || *o == route.track_id {
                 return Err(invalid(&t, "output"));
+            } else {
+                targets.push(o);
             }
-            targets.push(o);
         }
         let mut send_ids = BTreeSet::new();
         for s in &route.sends {
             if !key(&s.send_id) || !send_ids.insert(s.send_id.as_str()) {
                 return Err(invalid(&t, "sends/send_id"));
             }
-            if live && (!submix(&s.target) || s.target == route.track_id) {
+            if !live {
+                id(&s.target, "STRK", &format!("{t}/sends/target"))?;
+            } else if !submix(&s.target) || s.target == route.track_id {
                 return Err(invalid(&t, "sends/target"));
             }
             if !level(s.level) {
@@ -348,7 +359,9 @@ fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -
     let mut buses = BTreeSet::new();
     for b in &r.bus_effects {
         let t = format!("{target}/bus_effects/{}", b.track_id);
-        if kinds.contains_key(b.track_id.as_str()) && !submix(&b.track_id) {
+        if !kinds.contains_key(b.track_id.as_str()) {
+            id(&b.track_id, "STRK", &t)?;
+        } else if !submix(&b.track_id) {
             return Err(err(Code::InvalidId, t));
         }
         if !buses.insert(b.track_id.as_str()) {
@@ -375,11 +388,15 @@ fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -
         .filter(|t| t.kind != TrackKind::Audio)
         .flat_map(|t| t.clips.iter().map(|c| c.clip_id.as_str()))
         .collect();
+    let held_clips: BTreeSet<&str> = tracks().flat_map(|t| t.clips.iter().map(|c| c.clip_id.as_str())).collect();
     cx.nodes(r.clip_gains.len(), &target)?;
     let mut enveloped = BTreeSet::new();
     for g in &r.clip_gains {
         cx.tick()?;
         let t = format!("{target}/clip_gains/{}", g.clip_id);
+        if !held_clips.contains(g.clip_id.as_str()) {
+            id(&g.clip_id, "SCLP", &t)?;
+        }
         if not_audio.contains(g.clip_id.as_str()) {
             return Err(err(Code::InvalidId, t));
         }
@@ -403,8 +420,10 @@ fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -
     for a in &r.track_automation {
         cx.tick()?;
         let t = format!("{target}/track_automation/{}", a.track_id);
-        if matches!(kinds.get(a.track_id.as_str()), Some(k) if !matches!(k, TrackKind::Audio | TrackKind::Submix)) {
-            return Err(err(Code::InvalidId, t));
+        match kinds.get(a.track_id.as_str()) {
+            None => id(&a.track_id, "STRK", &t)?,
+            Some(TrackKind::Audio | TrackKind::Submix) => {}
+            Some(_) => return Err(err(Code::InvalidId, t)),
         }
         if !automated.insert((a.track_id.as_str(), a.param)) {
             return Err(err(Code::DuplicateField, t));
@@ -426,6 +445,9 @@ fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -
     for g in &r.clip_pans {
         cx.tick()?;
         let t = format!("{target}/clip_pans/{}", g.clip_id);
+        if !held_clips.contains(g.clip_id.as_str()) {
+            id(&g.clip_id, "SCLP", &t)?;
+        }
         if not_audio.contains(g.clip_id.as_str()) {
             return Err(err(Code::InvalidId, t));
         }
@@ -507,7 +529,8 @@ pub fn inert_audio_routing_references(set: &StudioAudioRoutingSet, document: &St
 /// `MAX_TRACK_AUTOMATION_POINTS` points strictly increasing with values in `0 ..= MAX_AUDIO_LEVEL`
 /// (`InvalidField`); clip pan envelopes like clip gain envelopes (clips on audio tracks, one each,
 /// 1..=`MAX_CLIP_PAN_POINTS` points strictly increasing, pan in `-1 ..= 1`). An id the document does not
-/// hold is inert (module docs): the checks above that need the id's owner are skipped, the rest apply.
+/// hold is inert (module docs): it must be well-formed (`InvalidId`), the checks above that need the id's
+/// owner are skipped, the rest apply.
 pub fn validate_audio_routing(
     set: &StudioAudioRoutingSet,
     document: &StudioDocument,
