@@ -289,8 +289,8 @@ pub(crate) fn split_records(first: &mut StudioClip, second: &mut StudioClip) {
 /// Timeline position of `[a, b)` source ticks of `clip` (clipped to its playing window); `None`
 /// when no part of it plays. Positions between ticks round down. `picture_frame` is the frame length of a
 /// clip with a picture (`retime::picture_frame_ticks`): a point on such a reversed clip that holds no frame is
-/// read on that grid (module docs), zero there being `invalid_input`. `None`, a clip with no picture, keeps the
-/// continuous mapping.
+/// read on that grid (module docs), zero there being `invalid_input`. `None` keeps the continuous mapping: a clip
+/// with no picture, and every clip of an alignment by marker, which aligns source ticks (`crate::merge_sync`).
 pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, picture_frame: Option<u64>) -> Result<Option<TickRange>> {
     let visible = if a == b {
         clip.source_in <= a && a < clip.source_out

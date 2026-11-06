@@ -708,17 +708,17 @@ fn synchronize_by_marker_maps_speed_and_reverse_and_refuses_a_hidden_marker() {
         let snap = snapshot(vec![track(1, TrackKind::Video, 0, vec![late.clone()]), track(2, TrackKind::Audio, 0, vec![back.clone()])]);
         let p = sync(&snap, &[1, 2], 1, m.clone(), &NoSourceTimecodes).unwrap();
         assert_eq!(start_f(p.proposal().snapshot(), 2), 15);
-        // The same clip on a video track follows the picture: frame 2 shows 7F into it, the window's last
-        // frame being 9F: 23F - 7F = 16F, measured on `frame_layers`, with frame 3 one frame before it.
+        // The same clip on a video track aligns the same source tick, 15F. The NAMED LIMIT, against
+        // `frame_layers`: frame 2 is presented in the frame before the mark, 22F..23F; closing it fails here.
         let snap = snapshot(vec![track(1, TrackKind::Video, 0, vec![late.clone()]), track(2, TrackKind::Video, 1, vec![back])]);
         let p = sync(&snap, &[1, 2], 1, m.clone(), &NoSourceTimecodes).unwrap();
-        assert_eq!(start_f(p.proposal().snapshot(), 2), 16);
+        assert_eq!(start_f(p.proposal().snapshot(), 2), 15);
         let shown = |at: u64| {
             let seq = &p.proposal().snapshot().document().sequences[0];
             let layers = frame_layers(seq, Ticks::new(at * F), &UnknownExtents, &CancellationToken::default()).unwrap();
             layers.iter().find(|l| l.track_id == id("STRK", 2)).expect("the clip is on screen").answer.frame().index
         };
-        assert_eq!((shown(23), shown(22)), (2, 3));
+        assert_eq!((shown(22), shown(23)), (2, 1));
         // A marker between frames: audio moves freely, a video clip refuses to leave its frame grid.
         let tick = marked(clip(2, 0, 10 * F, 40 * F, 10 * F), "clap", 2, 7);
         let snap = snapshot(vec![track(1, TrackKind::Video, 0, vec![late.clone()]), track(2, TrackKind::Audio, 0, vec![tick])]);

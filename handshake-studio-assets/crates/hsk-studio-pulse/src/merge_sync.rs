@@ -20,8 +20,8 @@
 //! no arithmetic): each clip has a reference position on the timeline, the anchor stays, every other
 //! clip moves so its reference lands on the anchor's. [`SyncPoint::InPoint`] is the clip's timeline
 //! start, [`SyncPoint::OutPoint`] its timeline end, [`SyncPoint::Marker`] the position of the clip
-//! marker of that name inside the clip's playing window (through the clip's speed and what its track
-//! plays, as `marker_span`, read per pair below; a position between ticks rounds down), and [`SyncPoint::Timecode`] aligns the
+//! marker of that name inside the clip's playing window (through the clip's speed, by the continuous
+//! mapping below; a position between ticks rounds down), and [`SyncPoint::Timecode`] aligns the
 //! source timecode of the clips through the [`SourceTimecodes`] port: equal labels land on one tick.
 //! Timecode refuses a changed speed (two rates have no single alignment), a different rate or
 //! drop-frame mode (the labels are not comparable) and a clip sharing no timecode span with the
@@ -30,23 +30,30 @@
 //! ripple and sync-locked tracks do not shift. [`SyncPoint::AudioWaveform`] is refused
 //! `sync_waveform_unavailable`: no correlator exists in a crate pulse may depend on.
 //!
-//! A marker alignment subtracts two positions, so it reads them per pair of anchor and member. Each clip reads by
-//! its own kind (`crate::marker_span`), except a pair that is both reversed and holds exactly one clip on a
-//! `TrackKind::Video` track: both sides read the continuous mapping `source_out - a`, the picture's frame law
-//! not entering, so the anchor's position can differ by member. Reversed picture and reversed sound of one source are
-//! locked: each source tick is heard under its own frame's presentation, or the next one presented at a speed that
-//! skips its frame (-2), and the frame law would read the two a frame apart at -1, two at -1/2, half at -2, and
-//! move an in-sync pair (test
-//! `a_reversed_picture_and_its_sound_stay_in_sync_through_a_marker_alignment_pr59_f1`, against the rendered mix and
-//! `frame_layers`). At different speeds the clap lands under its frame the same way (test
-//! `a_reversed_pair_at_different_speeds_reads_the_continuous_mapping_on_both_sides_pr59_f1`); a picture that would
-//! leave its frame grid doing so refuses `not_frame_aligned`, an odd clap at -2 moving onto reversed sound. Reversed
-//! picture with forward sound has no such lock: the frame law stands and the clap is heard on the first tick the
-//! monitor presents its frame (test `a_reversed_picture_and_forward_sound_read_the_frame_law_on_the_picture_pr59_f4`).
-//! Two pictures read the frame law and two sounds the continuous mapping (test
-//! `a_reversed_pair_of_one_kind_reads_by_its_kind_pr59_f1`). A third clip reads its own pair against the anchor (test
-//! `a_third_clip_reads_its_own_pair_against_the_anchor_pr59_f1`). A declared Studio reading, overrulable; Premiere
-//! parity UNVERIFIED (D5).
+//! An alignment by marker aligns source ticks, not frames. Every clip, of every track kind and direction,
+//! reads the continuous mapping from its timeline start: forward `(marker - source_in) / |speed|`, reversed
+//! `(source_out - marker) / |speed|`. Where a marker APPEARS is a frame question, which `crate::marker_span`
+//! answers with the picture's frame law on a reversed `TrackKind::Video` clip; what an alignment aligns is a
+//! source-tick question, and the frame law does not enter it. So clips holding one source window at one speed
+//! land together, and the anchor does not change where a unit's clips stand against each other (tests
+//! `clips_sharing_a_source_window_land_together_sr1`, `no_clip_kind_reads_the_frame_law_in_an_alignment_sr5`,
+//! `a_unit_lands_the_same_from_any_anchor_sr2`). A move that would take a video clip off its frame grid refuses
+//! `not_frame_aligned`, as for any other move: a reversed picture at -2 onto reversed sound by an odd frame reads
+//! half a frame in.
+//!
+//! The named limit of this reading, for a reversed picture whose window ends on the frame grid: a marker on a
+//! frame's first tick reads where that frame's presentation ends, so the marked frame is presented in the frame
+//! before the mark. Forward picture marked at 23F, reversed picture, source 0..10F, speed -1, marker on frame 2:
+//! the clip lands at 15F and `frame_layers` shows frame 2 at 22F..23F and frame 1 at 23F (test
+//! `clips_sharing_a_source_window_land_together_sr1`, which fails if the limit closes). So a reversed picture's
+//! displayed marker and the position synchronize aligns differ by a frame: there `crate::marker_span` reads 22F
+//! and the alignment put 23F on the mark; at -1/2 the clip lands at 7F and `marker_span` reads 21F, each source
+//! frame lasting two timeline frames. At a speed that skips frames the marked frame may not be presented at all.
+//! Reversed sound is heard on the mark. Forward sound aligned to a reversed picture is heard on that position, so
+//! the marked frame has just ended on a whole-frame marker (test
+//! `a_reversed_picture_anchor_aligns_forward_sound_on_the_continuous_mapping_pr59_f4`). The limit is the behaviour
+//! at 4ffe1b06; a frame-accurate reversed alignment would need a rule for the whole unit and is not here. A
+//! declared Studio reading, overrulable; Premiere parity UNVERIFIED (D5).
 //!
 //! A held clip (STU-VID-031a, `StudioClip.retime.frame_hold`): every planner here keeps the record.
 //! Linking, moving, unlinking and aligning by in point or out point read and write timeline positions,
@@ -66,7 +73,6 @@
 use crate::annotate::source_to_timeline;
 use crate::error::{PulseError, Result};
 use crate::range::{TickDelta, TickRange, offset, validate_lane};
-use crate::retime::picture_frame_ticks;
 use crate::time::{Timecode, timecode_to_ticks};
 use crate::timeline_edit::{
     EditContext, EditProposal, Footprint, TimelineEdit, apply_edit, grid_of, lane_of, propose, rate_of,
@@ -535,7 +541,7 @@ fn timecode_span(clip: &StudioClip, timecodes: &dyn SourceTimecodes) -> MergeSyn
     Ok(TimecodeSpan { format: (tc.rate, tc.start.drop_frame), span })
 }
 
-fn marker_position(clip: &StudioClip, name: &str, picture_frame: Option<u64>) -> MergeSyncResult<i128> {
+fn marker_position(clip: &StudioClip, name: &str) -> MergeSyncResult<i128> {
     not_held(clip)?;
     let missing = || MergeSyncError::SyncMarkerMissing { clip_id: clip.clip_id.clone() };
     let mut named = clip.markers.iter().filter(|m| m.name == name);
@@ -543,20 +549,20 @@ fn marker_position(clip: &StudioClip, name: &str, picture_frame: Option<u64>) ->
     if named.next().is_some() {
         return Err(MergeSyncError::SyncMarkerAmbiguous { clip_id: clip.clip_id.clone() });
     }
-    let at = source_to_timeline(clip, marker.start, marker.start, picture_frame)?.ok_or_else(missing)?;
+    let at = source_to_timeline(clip, marker.start, marker.start, None)?.ok_or_else(missing)?;
     Ok(i128::from(at.start().value()))
 }
 
 /// The clip's reference position on the timeline. For timecode it is where timecode zero would lie:
 /// a difference of two of these is the move that puts equal labels on one tick.
-fn reference(clip: &StudioClip, point: &SyncPoint, tc: Option<&TimecodeSpan>, picture_frame: Option<u64>) -> MergeSyncResult<i128> {
+fn reference(clip: &StudioClip, point: &SyncPoint, tc: Option<&TimecodeSpan>) -> MergeSyncResult<i128> {
     let start = i128::from(clip.timeline_start.value());
     match (point, tc) {
         (SyncPoint::InPoint, _) => Ok(start),
         (SyncPoint::OutPoint, _) => {
             Ok(i128::from(clip.timeline_end().ok_or(PulseError::Overflow)?.value()))
         }
-        (SyncPoint::Marker { name }, _) => marker_position(clip, name, picture_frame),
+        (SyncPoint::Marker { name }, _) => marker_position(clip, name),
         (SyncPoint::Timecode, Some(tc)) => start
             .checked_sub(i128::from(tc.span.start().value()))
             .ok_or_else(|| PulseError::Overflow.into()),
@@ -574,16 +580,9 @@ fn alignment_offsets(
     ctx: &EditContext,
 ) -> MergeSyncResult<Vec<TickDelta>> {
     let clip_at = |m: Member| &seq.tracks[m.track].clips[m.clip];
-    let picture_frame = |m: Member| picture_frame_ticks(seq.tracks[m.track].kind, seq.frame_rate.ticks_per_frame);
-    // Module docs: a reversed pair with exactly one picture reads the continuous mapping on both sides.
-    let reads_continuous = |m: Member| {
-        clip_at(anchor).speed.is_reversed()
-            && clip_at(m).speed.is_reversed()
-            && picture_frame(anchor).is_some() != picture_frame(m).is_some()
-    };
     let by_timecode = matches!(point, SyncPoint::Timecode);
     let anchor_tc = if by_timecode { Some(timecode_span(clip_at(anchor), timecodes)?) } else { None };
-    let anchor_own = reference(clip_at(anchor), point, anchor_tc.as_ref(), picture_frame(anchor))?;
+    let anchor_at = reference(clip_at(anchor), point, anchor_tc.as_ref())?;
     let mut offsets = Vec::with_capacity(members.len());
     for &member in members {
         ctx.cancel.check()?;
@@ -597,11 +596,7 @@ fn alignment_offsets(
                 return Err(MergeSyncError::SyncTimecodeNoOverlap { clip_id: clip.clip_id.clone() });
             }
         }
-        let (anchor_at, at) = if reads_continuous(member) {
-            (reference(clip_at(anchor), point, anchor_tc.as_ref(), None)?, reference(clip, point, tc.as_ref(), None)?)
-        } else {
-            (anchor_own, reference(clip, point, tc.as_ref(), picture_frame(member))?)
-        };
+        let at = reference(clip, point, tc.as_ref())?;
         offsets.push(TickDelta::new(anchor_at.checked_sub(at).ok_or(PulseError::Overflow)?)?);
     }
     Ok(offsets)
