@@ -22,13 +22,22 @@
 //! and [`ClipMediaItem`] says which case it is; the markers of the clips inside a nested sequence are not
 //! lifted to the outer clip.
 //!
-//! The mapping is playback's ([`crate::clip_source_at`]), read the other way: speed and reverse through
+//! The mapping is the picture's ([`crate::frame_layers`]), read the other way: speed and reverse through
 //! `source_to_timeline`, and a frame-held clip plays one source tick at every timeline tick, so a marker
-//! holding that tick appears over the whole clip and any other appears nowhere. Held-clip readings, the
+//! holding that tick appears over the whole clip and any other appears nowhere. On a reversed clip a
+//! zero-length marker is on a frame, not on a tick: it appears where the picture's position law reaches the
+//! frame holding it (`retime` owns that law; `reversed_frame_tick`), which takes a frame grid, as the picture
+//! does (test `every_reported_position_shows_the_markers_frame_in_frame_layers`). A span keeps its source
+//! ticks through the clip's end, and a whole-frame span covers exactly its frames. [`clip_appearing_markers`]
+//! reads the grid its caller states; every read that has a sequence reads the sequence's grid, as
+//! `frame_layers` does. A monitor stating another grid for a source (`frame_layers_on_grids`) can show
+//! another frame there on a reversed clip: a named gap, F-R57-5 / SD-56
+//! (test `a_reversed_point_from_a_source_at_another_rate_is_read_on_the_stated_grid_only_r57_f5`). Held-clip readings, the
 //! clause being silent and vendor parity UNVERIFIED (D5): a hold is matched by exact tick, as this read
 //! has no frame grid, so a marker inside the held frame but past its first tick is hidden; a held frame
 //! outside the window still counts, as playback still shows it. [`marker_span`] and [`marker_spans`],
-//! used for playhead navigation, keep their window mapping for a held clip.
+//! used for playhead navigation, keep their window mapping for a held clip, whose picture has no frame to
+//! agree with.
 //!
 //! A marker that does not appear is hidden, not lost: it stays in its record, comes back when an edit
 //! brings its position into play, and is only counted here. A disabled clip's markers appear: it is still
@@ -39,7 +48,7 @@
 
 use crate::error::{PulseError, Result};
 use crate::range::{Grid, TickDelta, TickRange};
-use crate::retime::SourceFrameGrid;
+use crate::retime::{SourceFrameGrid, reversed_frame_tick};
 use crate::timeline_edit::{EditContext, EditProposal, Footprint, propose, rate_of};
 use crate::transition::{check_at, locate};
 use hsk_studio_accord::{CancellationToken, Ticks};
@@ -264,8 +273,9 @@ pub(crate) fn split_records(first: &mut StudioClip, second: &mut StudioClip) {
 }
 
 /// Timeline position of `[a, b)` source ticks of `clip` (clipped to its playing window); `None`
-/// when no part of it plays. Positions between ticks round down.
-pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, _ticks_per_frame: u64) -> Result<Option<TickRange>> {
+/// when no part of it plays. Positions between ticks round down. A point on a reversed clip that holds no
+/// frame is read on the grid of `ticks_per_frame` (module docs); zero there is `invalid_input`.
+pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, ticks_per_frame: u64) -> Result<Option<TickRange>> {
     let visible = if a == b {
         clip.source_in <= a && a < clip.source_out
     } else {
@@ -273,6 +283,10 @@ pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, _ticks_p
     };
     if !visible {
         return Ok(None);
+    }
+    if a == b && clip.speed.is_reversed() && clip.retime.frame_hold.is_none() {
+        let tick = reversed_frame_tick(clip, a, SourceFrameGrid::new(ticks_per_frame)?)?;
+        return TickRange::new(tick, tick).map(Some);
     }
     let lo = a.max(clip.source_in);
     let hi = b.min(clip.source_out).max(lo);
@@ -305,7 +319,7 @@ pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, _ticks_p
 }
 
 /// Where a marker sits in sequence time: `clip = None` for a sequence marker; `None` result = a
-/// clip marker outside the clip's playing window.
+/// clip marker outside the clip's playing window. `clip` is read on `sequence`'s frame grid (module docs).
 pub fn marker_span(sequence: &StudioSequence, clip: Option<&StudioClip>, marker: &StudioMarker) -> Result<Option<TickRange>> {
     match clip {
         None => TickRange::from_start_duration(marker.start, marker.duration).map(Some),
@@ -471,6 +485,7 @@ fn sort_appearing(appearing: &mut [AppearingMarker]) {
 
 /// Every marker that appears on `clip`: its own and those of the media item it is cut from, ordered by
 /// start, then scope and id. `media` is the parsed record set a session holds (`None` = none stored).
+/// `grid` is the source's frame grid, the one the monitor reads it on (module docs).
 pub fn clip_appearing_markers(
     clip: &StudioClip,
     media: Option<&StudioMediaMarkerRecords>,
@@ -490,7 +505,8 @@ pub fn clip_appearing_markers(
 }
 
 /// Every marker that appears in `sequence`: its sequence markers and, for every clip, what
-/// [`clip_appearing_markers`] answers, ordered by start, then clip, scope and id.
+/// [`clip_appearing_markers`] answers on the sequence's own frame grid, ordered by start, then clip, scope
+/// and id.
 pub fn sequence_appearing_markers(
     sequence: &StudioSequence,
     media: Option<&StudioMediaMarkerRecords>,

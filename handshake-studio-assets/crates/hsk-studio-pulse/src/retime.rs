@@ -328,6 +328,26 @@ fn neighbours(clip: &StudioClip, tick: Ticks, grid: SourceFrameGrid) -> crate::R
     })
 }
 
+/// The tick a reversed `clip` shows the frame holding source tick `at`: the inverse of the position law
+/// of [`neighbours`], from the start of the window's last frame. Between ticks it rounds toward the clip
+/// start, so the position stays on that frame. A window shorter than its frames can hold never reaches
+/// it: the clip's last tick answers (test `a_stated_source_grid_is_the_frame_a_reversed_point_is_read_on_r57_f1`).
+pub(crate) fn reversed_frame_tick(clip: &StudioClip, at: Ticks, grid: SourceFrameGrid) -> crate::Result<Ticks> {
+    let (_, last) = window_frames(clip, grid)?;
+    let frames = last.checked_sub(grid.index_of(at)?).ok_or(PulseError::InvalidRange)?;
+    let moved = u128::from(frames)
+        .checked_mul(u128::from(grid.ticks_per_frame))
+        .and_then(|v| v.checked_mul(u128::from(clip.speed.denominator)))
+        .ok_or(PulseError::Overflow)?;
+    let offset = moved
+        .checked_div(u128::from(clip.speed.numerator.unsigned_abs()))
+        .ok_or(PulseError::ZeroSpeed)?;
+    let offset = u64::try_from(offset).map_err(|_| PulseError::Overflow)?;
+    let tick = clip.timeline_start.checked_add(Ticks::new(offset))?;
+    let end = clip.timeline_end().ok_or(PulseError::Overflow)?;
+    Ok(if tick < end { tick } else { Ticks::new(end.value().saturating_sub(1)).max(clip.timeline_start) })
+}
+
 /// The frame pair of a position in a transition handle: the law of [`neighbours`] past the window,
 /// bounded by the frames of a known source length (module docs).
 fn handle_neighbours(
