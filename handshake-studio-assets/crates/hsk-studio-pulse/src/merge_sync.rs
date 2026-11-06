@@ -51,8 +51,12 @@
 //! frame lasting two timeline frames. At a speed that skips frames the marked frame may not be presented at all.
 //! Reversed sound is heard on the mark. Forward sound aligned to a reversed picture is heard on that position, so
 //! the marked frame has just ended on a whole-frame marker (test
-//! `a_reversed_picture_anchor_aligns_forward_sound_on_the_continuous_mapping_pr59_f4`). The limit is the behaviour
-//! at 4ffe1b06; a frame-accurate reversed alignment would need a rule for the whole unit and is not here. A
+//! `a_reversed_picture_anchor_aligns_forward_sound_on_the_continuous_mapping_pr59_f4`). The placement is as at
+//! 4ffe1b06; the displayed marker is not: a reversed picture's `crate::marker_span` reads a frame earlier than it
+//! did there (V2 22F, where 4ffe1b06 read 23F), because the appearing reads keep the frame law. At -2 a moved
+//! picture lands only by frames it never presents: forward V marked at 23F, V2 at -2, source 0..10F, clap 3F (a
+//! presented frame) refuses `not_frame_aligned`, clap 2F (never presented) lands at 19F; same at 4ffe1b06. A
+//! frame-accurate reversed alignment would need a rule for the whole unit and is not here. A
 //! declared Studio reading, overrulable; Premiere parity UNVERIFIED (D5).
 //!
 //! A held clip (STU-VID-031a, `StudioClip.retime.frame_hold`): every planner here keeps the record.
