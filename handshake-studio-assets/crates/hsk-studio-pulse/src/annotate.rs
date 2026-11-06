@@ -31,7 +31,7 @@
 //! frame grid, as the picture does (test `every_reported_position_shows_the_markers_frame_in_frame_layers`).
 //! A disabled video track is still a video track: the kind alone decides (test
 //! `the_law_goes_by_the_tracks_kind_alone_r58_f1`). Audio, caption and submix clips show no frame and keep the
-//! continuous mapping `source_out - a`. For audio that is where the mix plays the tick, one sample after it, so
+//! continuous mapping `source_out - a`. For audio that is where the mix plays the tick, one source sample after it, so
 //! the window's first source tick reads the clip's end (tests
 //! `a_point_on_an_audio_clip_reads_where_the_mix_plays_it_r58_f1`,
 //! `a_reversed_audio_clips_in_point_reads_the_end_the_mix_plays_it_at_r58_f1`). For caption and submix no output
@@ -403,7 +403,9 @@ pub struct AppearingMarker {
     pub clip_id: Option<String>,
     /// The stored record, unchanged: its `start` stays in its own time base.
     pub marker: StudioMarker,
-    /// Where it appears in sequence time, clipped to what the clip plays.
+    /// Where it appears in sequence time, clipped to what the clip plays. A point on the window's first source
+    /// tick of a reversed clip with no picture stands at the clip's exclusive end, as a zero-length span: that may be
+    /// the next clip's first tick or the sequence's end (module docs).
     pub span: TickRange,
 }
 
