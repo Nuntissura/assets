@@ -688,3 +688,105 @@ fn a_reversed_pair_of_one_kind_reads_by_its_kind_pr59_f1() {
     assert_eq!((start_of(&seq, 1), start_of(&seq, 2)), (20 * F, 20 * F));
     println!("NOT_PROVEN: a reversed caption clip aligned by marker to a reversed picture against rendered output: no output plays a caption clip, so the row pins the lead's reading, the continuous mapping on both sides");
 }
+
+// DIAG-MARKERS-SYNC-BASIS-1: where a marker appears is a frame question, what an alignment aligns is a source-tick
+// question. The oracles stay outside the mapping: the rendered mix and `frame_layers`.
+
+/// Where `marker_spans` reads a marker, in frames.
+fn displayed_at(seq: &StudioSequence, n: u32) -> f64 {
+    let spans = marker_spans(seq, &token()).unwrap();
+    frames(spans.iter().find(|(marker, _)| *marker == format!("mk-{n}")).expect("the marker appears").1.start())
+}
+/// The source ticks of `THROUGH`, heard on audio track `a`, each under its own frame on video track `v`.
+fn every_tick_under_its_frame(seq: &StudioSequence, v: u32, a: u32, what: &str, off: &mut Vec<String>) {
+    for q in THROUGH {
+        let heard = heard_on(seq, a, &pulse(14 * FS, q * FS / 4));
+        let at = presented(seq, v, heard);
+        println!("SR1 {what}: source {:.2}F heard {heard:.4}F under frame {at:?}", q as f64 / 4.0);
+        if at != Some(q / 4) {
+            off.push(format!("{what}: source {:.2}F heard {heard:.4}F under frame {at:?}", q as f64 / 4.0));
+        }
+    }
+}
+
+/// F-SR-1: a picture and a sound holding one source window meet only through the anchor, and land together. Anchor V1
+/// forward, source 5..15F at 20F, clap 8F, mark 23F; V2 on a video track and A on an audio track, both 0..10F, clap
+/// 2F. A's clap is heard on the mark, against the mix; every tick of A is heard under V2's frame.
+///
+/// The row also pins the NAMED LIMIT, against `frame_layers`, and fails if it ever closes: frame 2 shows in the frame
+/// before the mark, and `marker_spans` reads V2's marker that many frames from the position the alignment put on 23F.
+#[test]
+fn clips_sharing_a_source_window_land_together_sr1() {
+    let mut off = Vec::new();
+    // Speed, where both land, where V2's marker reads.
+    for (num, den, at, displayed) in [(-1i64, 1u64, 15u64, 22.0f64), (-1, 2, 7, 21.0)] {
+        let what = format!("forward anchor, {num}/{den}");
+        let tracks = vec![
+            track(1, TrackKind::Video, vec![marked(clip(1, 5, 15, 20, 1, 1), 1, 8 * F)]),
+            track_at(2, TrackKind::Video, 1, vec![marked(clip(2, 0, 10, 40, num, den), 2, 2 * F)]),
+            track(3, TrackKind::Audio, vec![marked(clip(3, 0, 10, 40, num, den), 3, 2 * F)]),
+        ];
+        let seq = align(tracks, &[1, 2, 3], Op::Synchronize(1)).unwrap();
+        println!("SR1 {what}: V2 {}, A {}", starts(&seq, 2), starts(&seq, 3));
+        if (start_of(&seq, 2), start_of(&seq, 3)) != (at * F, at * F) {
+            off.push(format!("{what}: V2 {}, A {}, wanted both {at}F", starts(&seq, 2), starts(&seq, 3)));
+        }
+        let heard = heard_on(&seq, 3, &pulse(14 * FS, 2 * FS));
+        if (heard - 23.0).abs() >= WITHIN {
+            off.push(format!("{what}: clap heard {heard:.4}F, mark 23F"));
+        }
+        let limit = (shown(&seq, 2, 22), shown(&seq, 2, 23));
+        println!("SR1 {what}: named limit, frame_layers 22F {:?}, 23F {:?}; marker_spans V2 {:.2}F, A {:.2}F", limit.0, limit.1, displayed_at(&seq, 2), displayed_at(&seq, 3));
+        if limit != (Some(2), Some(1)) {
+            off.push(format!("{what}: named limit, frame_layers 22F {:?}, 23F {:?}, wanted frame 2 then frame 1", limit.0, limit.1));
+        }
+        if (displayed_at(&seq, 2), displayed_at(&seq, 3)) != (displayed, 23.0) {
+            off.push(format!("{what}: marker_spans V2 {:.2}F, A {:.2}F, wanted {displayed}F and 23F", displayed_at(&seq, 2), displayed_at(&seq, 3)));
+        }
+        every_tick_under_its_frame(&seq, 2, 3, &what, &mut off);
+    }
+    // The anchor reversed at another speed, the second form: V1 at -1/2, its clap 16F in, frame 2 shown 34F..36F.
+    let what = "anchor -1/2, members -1";
+    let tracks = vec![
+        track(1, TrackKind::Video, vec![marked(clip(1, 0, 10, 20, -1, 2), 1, 2 * F)]),
+        track_at(2, TrackKind::Video, 1, vec![marked(clip(2, 0, 10, 40, -1, 1), 2, 2 * F)]),
+        track(3, TrackKind::Audio, vec![marked(clip(3, 0, 10, 40, -1, 1), 3, 2 * F)]),
+    ];
+    let seq = align(tracks, &[1, 2, 3], Op::Synchronize(1)).unwrap();
+    println!("SR1 {what}: V2 {}, A {}", starts(&seq, 2), starts(&seq, 3));
+    if (start_of(&seq, 2), start_of(&seq, 3)) != (28 * F, 28 * F) {
+        off.push(format!("{what}: V2 {}, A {}, wanted both 28F", starts(&seq, 2), starts(&seq, 3)));
+    }
+    let heard = heard_on(&seq, 3, &pulse(14 * FS, 2 * FS));
+    if (heard - 36.0).abs() >= WITHIN || presented(&seq, 1, heard) != Some(2) {
+        off.push(format!("{what}: clap heard {heard:.4}F under anchor frame {:?}", presented(&seq, 1, heard)));
+    }
+    every_tick_under_its_frame(&seq, 2, 3, what, &mut off);
+    assert!(off.is_empty(), "clips of one source window, through the anchor: {off:#?}");
+}
+
+/// F-SR-5: this fails if any clip kind in an alignment reads the frame law. Every kind reversed, 0..10F, -1, clap 2F:
+/// as members of a forward anchor all land together, and with each kind as the anchor nothing reversed moves. Video
+/// and audio have their oracles above; caption and submix have no output, so their rows pin the reading.
+#[test]
+fn no_clip_kind_reads_the_frame_law_in_an_alignment_sr5() {
+    let reversed = [(2u32, TrackKind::Video, 1u32), (3, TrackKind::Audio, 0), (4, TrackKind::Caption, 0), (5, TrackKind::Submix, 0)];
+    let tracks = |forward_at: u64, reversed_at: u64| {
+        let mut all = vec![track(1, TrackKind::Video, vec![marked(clip(1, 5, 15, forward_at, 1, 1), 1, 8 * F)])];
+        all.extend(reversed.map(|(n, kind, index)| track_at(n, kind, index, vec![marked(clip(n, 0, 10, reversed_at, -1, 1), n, 2 * F)])));
+        all
+    };
+    let ids = [1, 2, 3, 4, 5];
+    let seq = align(tracks(20, 40), &ids, Op::Synchronize(1)).unwrap();
+    for (n, kind, _) in reversed {
+        assert_eq!(start_of(&seq, n), 15 * F, "{kind:?}: a member of a forward anchor");
+    }
+    for (anchor, kind, _) in reversed {
+        let seq = align(tracks(60, 20), &ids, Op::Synchronize(anchor)).unwrap();
+        assert_eq!(start_of(&seq, 1), 25 * F, "{kind:?} as the anchor: its clap 8F in, the forward clip's 3F");
+        for (n, member, _) in reversed {
+            assert_eq!(start_of(&seq, n), 20 * F, "{kind:?} as the anchor: {member:?} stays");
+        }
+    }
+    println!("NOT_PROVEN: a reversed caption or submix clip aligned by marker against rendered output: no output plays these kinds, so the rows pin the continuous mapping");
+}
