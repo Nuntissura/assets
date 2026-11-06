@@ -552,6 +552,8 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioMask.linked", "internal: flag"),
     ("StudioMatchStatistics.source_mean", "internal: value"),
     ("StudioMatchStatistics.source_std", "internal: value"),
+    ("StudioMediaMarkerEntry.content_digest", "internal: key naming a media item by its bytes; carries no asset and no location, a clip's source_ref is the reference (STU-VID-034, SMB-PR-MEDIA-MARKERS-1)"),
+    ("StudioMediaMarkerRecords.media_items", "container of StudioMediaMarkerEntry"),
     ("StudioMotionRecords.composition_audio", "container of StudioAudioLayer"),
     ("StudioMotionTemplate.required_fonts", "external:font"),
     ("StudioMulticamClip.audio_angle", "internal: angle number of the multicam source sequence"),
