@@ -701,12 +701,13 @@ fn synchronize_by_marker_maps_speed_and_reverse_and_refuses_a_hidden_marker() {
         let snap = snapshot(vec![track(1, TrackKind::Video, 0, vec![late.clone()]), track(2, TrackKind::Audio, 0, vec![slow])]);
         let p = sync(&snap, &[1, 2], 1, m.clone(), &NoSourceTimecodes).unwrap();
         assert_eq!(start_f(p.proposal().snapshot(), 2), 19);
-        // Reversed: source 2F of a 0..10F clip plays 8F into it: 23F - 8F = 15F.
+        // Reversed: the frame at source 2F of a 0..10F clip shows 7F into it, the window's last frame
+        // being 9F (`frame_layers`, F-R57-1): 23F - 7F = 16F.
         let mut back = marked(clip(2, 0, 10 * F, 0, 10 * F), "clap", 2, 2 * F);
         back.speed = Speed { numerator: -1, denominator: 1 };
         let snap = snapshot(vec![track(1, TrackKind::Video, 0, vec![late.clone()]), track(2, TrackKind::Audio, 0, vec![back])]);
         let p = sync(&snap, &[1, 2], 1, m.clone(), &NoSourceTimecodes).unwrap();
-        assert_eq!(start_f(p.proposal().snapshot(), 2), 15);
+        assert_eq!(start_f(p.proposal().snapshot(), 2), 16);
         // A marker between frames: audio moves freely, a video clip refuses to leave its frame grid.
         let tick = marked(clip(2, 0, 10 * F, 40 * F, 10 * F), "clap", 2, 7);
         let snap = snapshot(vec![track(1, TrackKind::Video, 0, vec![late.clone()]), track(2, TrackKind::Audio, 0, vec![tick])]);

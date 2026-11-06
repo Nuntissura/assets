@@ -1,7 +1,7 @@
 //! Lane SMB-PR-MEDIA-MARKERS-1, brief item 4 (STU-VID-034: "A PROJECT-ITEM marker lives on a media item
 //! and appears on every clip cut from it"). Oracles: positions worked out by hand in frames of 25 fps
-//! (F ticks), and `clip_source_at`, the function playback reads, which the read must agree with at every
-//! position it reports. Vendor parity UNVERIFIED (D5).
+//! (F ticks), and `frame_layers`, what the program monitor shows, which must show a marker's frame at the
+//! position the read reports. Vendor parity UNVERIFIED (D5).
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::*;
 use hsk_studio_pulse::*;
@@ -13,6 +13,10 @@ fn token() -> CancellationToken {
 }
 fn t(frames: u64) -> Ticks {
     Ticks::new(frames * F)
+}
+/// The frame grid these fixtures read on: the sequence's own, as `frame_layers` reads an unstated source.
+fn grid() -> SourceFrameGrid {
+    SourceFrameGrid::new(F).unwrap()
 }
 fn cid(n: u32) -> String {
     format!("SCLP-019abcde-0000-7000-8000-{n:012x}")
@@ -121,17 +125,20 @@ fn the_media_items_markers_appear_on_a_clip_through_the_mapping_playback_uses_mt
         ("speed 2: twice as fast, half the distance", double.clone(), vec![marker("m", 20, 4)], vec![at(OnItem, "m", 105 * F, 107 * F)], 0),
         ("speed 1/2: half as fast, twice the distance", half.clone(), vec![marker("m", 12, 1)], vec![at(OnItem, "m", 104 * F, 106 * F)], 0),
         ("reverse: the window plays backwards", reversed.clone(), vec![marker("m", 12, 2)], vec![at(OnItem, "m", 106 * F, 108 * F)], 0),
-        ("reverse: a point", reversed.clone(), vec![marker("m", 12, 0)], vec![at(OnItem, "m", 108 * F, 108 * F)], 0),
-        ("reverse: the in point plays last, at the clip's end tick", reversed.clone(), vec![marker("m", 10, 0)], vec![at(OnItem, "m", 110 * F, 110 * F)], 0),
+        ("reverse: a point, on the first tick its frame shows", reversed.clone(), vec![marker("m", 12, 0)], vec![at(OnItem, "m", 107 * F, 107 * F)], 0),
+        ("reverse: the in point plays last, inside the clip", reversed.clone(), vec![marker("m", 10, 0)], vec![at(OnItem, "m", 109 * F, 109 * F)], 0),
+        ("reverse: the window's last frame plays first", reversed.clone(), vec![marker("m", 19, 0)], vec![at(OnItem, "m", 100 * F, 100 * F)], 0),
+        ("reverse: a point inside a frame is that frame's", reversed.clone(), vec![StudioMarker { start: Ticks::new(12 * F + 7), ..marker("m", 0, 0) }], vec![at(OnItem, "m", 107 * F, 107 * F)], 0),
         ("reverse: a span across the out point is clipped", reversed.clone(), vec![marker("m", 18, 4)], vec![at(OnItem, "m", 100 * F, 102 * F)], 0),
         ("reverse: outside the window", reversed, vec![marker("m", 20, 1)], vec![], 1),
-        ("reverse at speed 2", reverse_double, vec![marker("m", 14, 2)], vec![at(OnItem, "m", 107 * F, 108 * F)], 0),
+        ("reverse at speed 2", reverse_double.clone(), vec![marker("m", 14, 2)], vec![at(OnItem, "m", 107 * F, 108 * F)], 0),
+        ("reverse at speed 2: a point", reverse_double, vec![marker("m", 15, 0)], vec![at(OnItem, "m", 107 * F, 107 * F)], 0),
         ("between ticks a position rounds toward the clip start", third, vec![StudioMarker { start: Ticks::new(2), duration: Ticks::new(0), ..marker("m", 0, 0) }], vec![at(OnItem, "m", 0, 0)], 0),
     ];
     for (what, c, held, expected, hidden) in cases {
         let total = held.len();
         let r = records(vec![(item, held), ("item-other", vec![marker("other", 15, 0)])]);
-        let answer = clip_appearing_markers(&c, Some(&r), &token()).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        let answer = clip_appearing_markers(&c, Some(&r), grid(), &token()).unwrap_or_else(|e| panic!("{what}: {e:?}"));
         assert_eq!(seen(&answer.appearing), expected, "{what}");
         assert_eq!((answer.hidden_media_markers, answer.hidden_clip_markers), (hidden, 0), "{what}");
         assert_eq!(answer.appearing.len() + hidden, total, "{what}: nothing is lost and nothing invented");
@@ -144,10 +151,12 @@ fn the_media_items_markers_appear_on_a_clip_through_the_mapping_playback_uses_mt
     }
 }
 
-/// `clip_source_at` is the function playback reads. At the start a marker reports, the clip plays that
-/// source position, up to the rounding of a position between ticks.
+/// `frame_layers` is what the monitor shows. At the start a marker reports it shows the marker's frame:
+/// forward the frame of its start, reversed the frame of its last tick, as a reversed span starts there.
+/// Every interpolation choice: a pair holds the marker's frame. This test read `clip_source_at` until R57
+/// (F-R57-1); that tick mapping no longer drives the picture, so it agreed with the wrong answer.
 #[test]
-fn every_reported_position_agrees_with_clip_source_at() {
+fn every_reported_position_shows_the_markers_frame_in_frame_layers() {
     let held = [marker("m-a", 11, 0), marker("m-b", 13, 2), marker("m-c", 17, 0), marker("m-d", 19, 1)];
     for (what, c) in [
         ("unit", clip(1, "item-a", 10, 20, 100)),
@@ -155,20 +164,151 @@ fn every_reported_position_agrees_with_clip_source_at() {
         ("speed 3/2", clip_at(1, "item-a", 10, 22, 100, 3, 2)),
         ("speed 1/4", clip_at(1, "item-a", 10, 20, 100, 1, 4)),
         ("reverse", clip_at(1, "item-a", 10, 20, 100, -1, 1)),
+        ("reverse at 2", clip_at(1, "item-a", 10, 20, 100, -2, 1)),
+        ("reverse at 1/2", clip_at(1, "item-a", 10, 20, 100, -1, 2)),
         ("reverse at 3/2", clip_at(1, "item-a", 10, 22, 100, -3, 2)),
+        ("reverse at 3/4", clip_at(1, "item-a", 10, 22, 100, -3, 4)),
     ] {
-        let r = records(vec![("item-a", held.to_vec())]);
-        let answer = clip_appearing_markers(&c, Some(&r), &token()).unwrap();
-        assert_eq!(answer.appearing.len(), held.len(), "{what}");
-        let step = c.speed.numerator.unsigned_abs().div_ceil(c.speed.denominator);
-        for a in &answer.appearing {
-            let (source, past) = clip_source_at(&c, a.span.start(), &UnknownExtents, false).unwrap();
-            assert!(!past, "{what}");
-            // Reversed, the span's start is the marker's end; forward, its start.
-            let m = if c.speed.is_reversed() { a.marker.start.checked_add(a.marker.duration).unwrap() } else { a.marker.start };
-            assert!(source.value().abs_diff(m.value()) <= step, "{what}: {} plays {} at {}, not {}", a.marker.marker_id, source.value(), a.span.start().value(), m.value());
+        for method in [FrameInterpolation::FrameSampling, FrameInterpolation::FrameBlending, FrameInterpolation::OpticalFlow] {
+            let mut c = c.clone();
+            c.retime.frame_interpolation = method;
+            let r = records(vec![("item-a", held.to_vec())]);
+            let answer = clip_appearing_markers(&c, Some(&r), grid(), &token()).unwrap();
+            assert_eq!(answer.appearing.len(), held.len(), "{what}");
+            let seq = sequence(vec![c.clone()]);
+            for a in &answer.appearing {
+                let first = a.marker.start.value();
+                let tick = if c.speed.is_reversed() && a.marker.duration.value() > 0 { first + a.marker.duration.value() - 1 } else { first };
+                let layers = frame_layers(&seq, a.span.start(), &UnknownExtents, &token()).unwrap();
+                assert_eq!(layers.len(), 1, "{what} {method:?}: {} is inside the clip", a.marker.marker_id);
+                let shown = match layers[0].answer.pair() {
+                    Some((from, to, _)) => vec![from.index, to.index],
+                    None => vec![layers[0].answer.frame().index],
+                };
+                assert!(shown.contains(&(tick / F)), "{what} {method:?}: {} at {} shows {shown:?}", a.marker.marker_id, a.span.start().value());
+            }
         }
     }
+}
+
+/// F-R57-1, the validator's clip: at 2..14, source 10..22. Every source frame's point, by hand from the
+/// window's last frame, shows that frame in `frame_layers`, and so does the marker read of the sequence.
+/// One frame's distance earlier on the timeline the frame before it in play shows, so a reversed tick is
+/// that frame's first on the frame law. Forward speeds answer as they did.
+#[test]
+fn a_reversed_point_lands_on_the_first_tick_its_frame_shows_r57_f1() {
+    for (num, den) in [(-1i64, 1u64), (-2, 1), (-1, 2), (1, 1), (2, 1), (1, 2), (3, 4)] {
+        let mut c = clip_at(1, "item-a", 10, 22, 2, num, den);
+        c.markers = (10..22).map(|s| marker(&format!("m-{s}"), s, 0)).collect();
+        let seq = sequence(vec![c.clone()]);
+        let end = c.timeline_end().unwrap().value();
+        let read = sequence_appearing_markers(&seq, None, &token()).unwrap();
+        assert_eq!(read.appearing.len(), 12, "{num}/{den}");
+        for a in &read.appearing {
+            let s = a.marker.start.value() / F;
+            let played = if num < 0 { 21 - s } else { s - 10 };
+            let want = 2 * F + played * F * den / num.unsigned_abs();
+            assert_eq!((a.span.start().value(), a.span.end().value()), (want, want), "{num}/{den}: source {s}");
+            assert!(want < end, "{num}/{den}: source {s} appears inside the clip");
+            let shown = |tick: u64| frame_layers(&seq, Ticks::new(tick), &UnknownExtents, &token()).unwrap()[0].answer.frame().index;
+            assert_eq!(shown(want), s, "{num}/{den}: source {s}");
+            if num < 0 && s < 21 {
+                assert_eq!(shown(want - F * den / num.unsigned_abs()), s + 1, "{num}/{den}: the frame played before it");
+            }
+        }
+    }
+}
+
+/// The same mapping reaches the reads that share it: the spans, playhead navigation and snapping land where
+/// the monitor shows the frame. A span and a frame-held clip keep their window mapping.
+#[test]
+fn navigation_and_snapping_land_on_a_reversed_points_frame_r57_f1() {
+    let mut c = clip_at(1, "item-a", 10, 22, 2, -1, 1);
+    c.markers = vec![marker("first", 21, 0), marker("last", 10, 0), marker("span", 14, 2)];
+    let seq = sequence(vec![c.clone()]);
+    let spans = marker_spans(&seq, &token()).unwrap();
+    let frames = |r: &TickRange| (r.start().value() / F, r.end().value() / F);
+    let at_frames: Vec<(&str, (u64, u64))> = spans.iter().map(|(id, r)| (id.as_str(), frames(r))).collect();
+    assert_eq!(at_frames, vec![("first", (2, 2)), ("span", (8, 10)), ("last", (13, 13))]);
+    assert_eq!(next_marker(&seq, t(2), &token()).unwrap(), Some(t(8)));
+    assert_eq!(next_marker(&seq, t(8), &token()).unwrap(), Some(t(13)));
+    assert_eq!(prev_marker(&seq, t(13), &token()).unwrap(), Some(t(8)));
+    assert_eq!(next_marker(&seq, t(13), &token()).unwrap(), None, "the exclusive end holds no marker");
+    let targets = snap_targets(&seq, None, &[], &token()).unwrap();
+    let marks: Vec<u64> = targets.iter().filter(|x| x.kind == SnapKind::Marker).map(|x| x.at.value() / F).collect();
+    assert_eq!(marks, vec![2, 8, 10, 13]);
+    // A frame-held clip keeps the window mapping these reads gave it, reversed or not.
+    let mut held = c.clone();
+    held.retime.frame_hold = Some(ClipFrameHold { source_tick: t(15), anchor: FrameHoldAnchor::Playhead });
+    let spans = marker_spans(&sequence(vec![held]), &token()).unwrap();
+    let at_frames: Vec<(&str, (u64, u64))> = spans.iter().map(|(id, r)| (id.as_str(), frames(r))).collect();
+    assert_eq!(at_frames, vec![("first", (3, 3)), ("span", (8, 10)), ("last", (14, 14))]);
+    // A sequence with no frame rate has no frame to read: typed for a reversed point, forward as before.
+    let mut no_rate = seq.clone();
+    no_rate.frame_rate = SequenceFrameRate { ticks_per_frame: 0 };
+    assert_eq!(marker_spans(&no_rate, &token()).unwrap_err(), PulseError::InvalidInput);
+    let mut forward = sequence(vec![clip(1, "item-a", 10, 22, 2)]);
+    forward.tracks[0].clips[0].markers.push(marker("m", 15, 0));
+    forward.frame_rate = SequenceFrameRate { ticks_per_frame: 0 };
+    assert_eq!(marker_spans(&forward, &token()).unwrap()[0].1.start(), t(7));
+}
+
+struct Stated(SourceFrameGrid);
+impl SourceGrids for Stated {
+    fn grid(&self, _: &ClipSource) -> Option<SourceFrameGrid> {
+        Some(self.0)
+    }
+}
+
+/// A lone clip's read takes the grid the host states, as `frame_layers_on_grids` does: on a coarser source
+/// grid a frame is two sequence frames. A window across a frame edge still appears inside the clip.
+#[test]
+fn a_stated_source_grid_is_the_frame_a_reversed_point_is_read_on_r57_f1() {
+    let coarse = SourceFrameGrid::new(2 * F).unwrap();
+    let mut c = clip_at(1, "item-a", 10, 22, 2, -1, 1);
+    c.markers = vec![marker("top", 21, 0), marker("low", 11, 0), marker("mid", 16, 0)];
+    let answer = clip_appearing_markers(&c, None, coarse, &token()).unwrap();
+    let got: Vec<(&str, u64)> = answer.appearing.iter().map(|a| (a.marker.marker_id.as_str(), a.span.start().value() / F)).collect();
+    assert_eq!(got, vec![("top", 2), ("mid", 6), ("low", 12)]);
+    let seq = sequence(vec![c.clone()]);
+    for a in &answer.appearing {
+        let layers = frame_layers_on_grids(&seq, a.span.start(), &UnknownExtents, &Stated(coarse), &token()).unwrap();
+        assert_eq!(layers[0].answer.frame().index, a.marker.start.value() / (2 * F), "{}", a.marker.marker_id);
+    }
+    // Source 0.9F..1.1F, shorter than a frame: never past the clip's last tick.
+    let mut short = clip_at(1, "item-a", 0, 1, 40, -1, 1);
+    short.source_in = Ticks::new(F / 10 * 9);
+    short.source_out = Ticks::new(F + F / 10);
+    short.duration = Ticks::new(F / 5);
+    short.markers = vec![StudioMarker { start: Ticks::new(F / 100 * 95), ..marker("m", 0, 0) }];
+    let answer = clip_appearing_markers(&short, None, grid(), &token()).unwrap();
+    let last = short.timeline_end().unwrap().value() - 1;
+    assert_eq!(seen(&answer.appearing), vec![at(OnClip, "m", last, last)]);
+}
+
+/// The named gap (F-R57-5 / SD-56): the sequence-level reads have no grid port, so they read the sequence's
+/// grid. On a reversed clip from a 30 fps source on this 25 fps sequence, a monitor stating the source grid
+/// shows another frame at some reported ticks, printed here; the lone clip's read, given that grid, agrees.
+#[test]
+fn a_reversed_point_from_a_source_at_another_rate_is_read_on_the_stated_grid_only_r57_f5() {
+    let thirty = SourceFrameGrid::new(F / 6 * 5).unwrap();
+    let mut c = clip_at(1, "item-a", 10, 22, 2, -1, 1);
+    c.markers = (10..22).map(|s| marker(&format!("m-{s}"), s, 0)).collect();
+    let seq = sequence(vec![c.clone()]);
+    let off = |appearing: &[AppearingMarker]| {
+        appearing
+            .iter()
+            .filter(|a| {
+                let layers = frame_layers_on_grids(&seq, a.span.start(), &UnknownExtents, &Stated(thirty), &token()).unwrap();
+                layers[0].answer.frame().index != a.marker.start.value() / thirty.ticks_per_frame()
+            })
+            .count()
+    };
+    let on_sequence_grid = off(&sequence_appearing_markers(&seq, None, &token()).unwrap().appearing);
+    let on_stated_grid = off(&clip_appearing_markers(&c, None, thirty, &token()).unwrap().appearing);
+    println!("R57 gap F-R57-5 / SD-56: reversed 30 fps source on a 25 fps sequence, of 12 points: sequence read off {on_sequence_grid}, clip read on the stated grid off {on_stated_grid}");
+    assert_eq!(on_stated_grid, 0);
+    assert!(on_sequence_grid > 0, "the gap this names has closed: retire it");
 }
 
 /// A frame-held clip plays one source tick at every timeline tick (`clip_source_at`), so a marker holding
@@ -194,7 +334,7 @@ fn a_frame_held_clip_shows_only_the_markers_holding_its_frame() {
     ];
     for (what, c, m, span) in cases {
         let r = records(vec![("item-a", vec![m.clone()])]);
-        let answer = clip_appearing_markers(&c, Some(&r), &token()).unwrap();
+        let answer = clip_appearing_markers(&c, Some(&r), grid(), &token()).unwrap();
         match span {
             Some((from, to)) => {
                 assert_eq!(seen(&answer.appearing), vec![at(OnItem, "m", from, to)], "{what}");
@@ -213,7 +353,7 @@ fn a_frame_held_clip_shows_only_the_markers_holding_its_frame() {
         // The clip's own marker reads the same way.
         let mut own = c.clone();
         own.markers.push(m);
-        let answer = clip_appearing_markers(&own, None, &token()).unwrap();
+        let answer = clip_appearing_markers(&own, None, grid(), &token()).unwrap();
         assert_eq!((answer.appearing.len(), answer.hidden_clip_markers), if span.is_some() { (1, 0) } else { (0, 1) }, "{what}: on the clip");
     }
 }
@@ -236,11 +376,11 @@ fn every_clip_cut_from_the_item_shows_it_whatever_its_handle_mt_33736() {
         ("the same digest under another algorithm", other_algorithm, 0),
         ("a disabled clip is still cut from it", disabled, 1),
     ] {
-        assert_eq!(clip_appearing_markers(&c, Some(&r), &token()).unwrap().appearing.len(), count, "{what}");
+        assert_eq!(clip_appearing_markers(&c, Some(&r), grid(), &token()).unwrap().appearing.len(), count, "{what}");
     }
     // No records stored: nothing of this scope, and that is no error.
     let c = clip(1, "item-a", 10, 20, 0);
-    let answer = clip_appearing_markers(&c, None, &token()).unwrap();
+    let answer = clip_appearing_markers(&c, None, grid(), &token()).unwrap();
     assert!(answer.appearing.is_empty());
     assert_eq!((answer.hidden_clip_markers, answer.hidden_media_markers), (0, 0));
     assert_eq!(answer.media_item, ClipMediaItem::Media(digest("item-a")));
@@ -254,14 +394,14 @@ fn a_clip_with_no_media_item_says_so_and_shows_its_own_markers() {
     let mut nested = clip(1, "ignored", 10, 20, 100);
     nested.source_ref = ClipSource::Sequence { sequence_id: "seq-inner".into() };
     nested.markers.push(marker("own", 12, 0));
-    let answer = clip_appearing_markers(&nested, Some(&r), &token()).unwrap();
+    let answer = clip_appearing_markers(&nested, Some(&r), grid(), &token()).unwrap();
     assert_eq!(answer.media_item, ClipMediaItem::NestedSequence);
     assert_eq!(seen(&answer.appearing), vec![at(OnClip, "own", 102 * F, 102 * F)]);
     assert_eq!((answer.hidden_clip_markers, answer.hidden_media_markers), (0, 0), "no item, so nothing of an item is hidden");
 
     let mut primitive = nested.clone();
     primitive.source_ref = ClipSource::Primitive { schema_id: "hsk.studio.composition@1".into(), object_id: "item-a".into() };
-    assert_eq!(clip_appearing_markers(&primitive, Some(&r), &token()).unwrap().media_item, ClipMediaItem::Primitive);
+    assert_eq!(clip_appearing_markers(&primitive, Some(&r), grid(), &token()).unwrap().media_item, ClipMediaItem::Primitive);
 
     let seq = sequence(vec![nested, primitive_after(primitive)]);
     let whole = sequence_appearing_markers(&seq, Some(&r), &token()).unwrap();
@@ -321,7 +461,7 @@ fn the_three_scopes_appear_labelled_and_move_as_the_clause_says_mt_33736() {
     assert_eq!(after.appearing.iter().find(|a| a.marker.marker_id == "late").unwrap().marker.start, t(33));
 
     // Clip read agrees with the sequence read for one clip.
-    let one = clip_appearing_markers(&seq.tracks[0].clips[1], Some(&r), &token()).unwrap();
+    let one = clip_appearing_markers(&seq.tracks[0].clips[1], Some(&r), grid(), &token()).unwrap();
     assert_eq!(seen(&one.appearing), vec![at(OnClip, "on-b", 12 * F, 13 * F), at(OnItem, "late", 13 * F, 15 * F)]);
     assert_eq!(one.hidden_media_markers, 2);
 }
@@ -352,16 +492,16 @@ fn a_marker_appears_once_per_clip_and_a_razor_hands_each_piece_what_it_plays() {
 fn a_marker_outside_the_window_is_hidden_not_lost() {
     let r = records(vec![("item-a", vec![marker("m", 25, 0)])]);
     let narrow = clip(1, "item-a", 10, 20, 100);
-    let hidden = clip_appearing_markers(&narrow, Some(&r), &token()).unwrap();
+    let hidden = clip_appearing_markers(&narrow, Some(&r), grid(), &token()).unwrap();
     assert!(hidden.appearing.is_empty());
     assert_eq!(hidden.hidden_media_markers, 1);
     assert_eq!(r.entry(&digest("item-a")).unwrap().markers.len(), 1, "still on the item");
     let wide = clip(1, "item-a", 10, 30, 100);
-    assert_eq!(seen(&clip_appearing_markers(&wide, Some(&r), &token()).unwrap().appearing), vec![at(OnItem, "m", 115 * F, 115 * F)]);
+    assert_eq!(seen(&clip_appearing_markers(&wide, Some(&r), grid(), &token()).unwrap().appearing), vec![at(OnItem, "m", 115 * F, 115 * F)]);
     // The clip's own marker behaves the same way.
     let mut own = narrow.clone();
     own.markers.push(marker("own", 25, 0));
-    let hidden = clip_appearing_markers(&own, None, &token()).unwrap();
+    let hidden = clip_appearing_markers(&own, None, grid(), &token()).unwrap();
     assert_eq!((hidden.appearing.len(), hidden.hidden_clip_markers, hidden.hidden_media_markers), (0, 1, 0));
     // A sequence with no clip of the item: nothing appears and nothing is counted, it was not missed.
     let answer = sequence_appearing_markers(&sequence(vec![clip(1, "item-b", 0, 5, 0)]), Some(&r), &token()).unwrap();
@@ -382,7 +522,7 @@ fn the_read_is_bounded_and_cancellable() {
     // The clip's own markers count with them.
     let mut crowded = clip(1, "item-a", 10, 20, 0);
     crowded.markers.push(marker("own", 15, 0));
-    assert_eq!(clip_appearing_markers(&crowded, Some(&r), &token()).unwrap_err(), PulseError::LimitExceeded);
+    assert_eq!(clip_appearing_markers(&crowded, Some(&r), grid(), &token()).unwrap_err(), PulseError::LimitExceeded);
     // And the sequence's.
     let mut with_own = one.clone();
     with_own.markers.push(marker("in-sequence", 1, 0));
@@ -395,13 +535,51 @@ fn the_read_is_bounded_and_cancellable() {
 
     // Records the host did not validate: an overflowing span is typed, not a panic.
     let overflow = records(vec![("item-a", vec![StudioMarker { start: Ticks::new(u64::MAX), duration: Ticks::new(1), ..marker("m", 0, 0) }])]);
-    assert_eq!(clip_appearing_markers(&clip(1, "item-a", 10, 20, 0), Some(&overflow), &token()).unwrap_err(), PulseError::Overflow);
+    assert_eq!(clip_appearing_markers(&clip(1, "item-a", 10, 20, 0), Some(&overflow), grid(), &token()).unwrap_err(), PulseError::Overflow);
 
     let canceled = token();
     canceled.cancel();
-    assert_eq!(clip_appearing_markers(&clip(1, "item-a", 10, 20, 0), Some(&r), &canceled).unwrap_err(), PulseError::Canceled);
+    assert_eq!(clip_appearing_markers(&clip(1, "item-a", 10, 20, 0), Some(&r), grid(), &canceled).unwrap_err(), PulseError::Canceled);
     assert_eq!(sequence_appearing_markers(&two, Some(&r), &canceled).unwrap_err(), PulseError::Canceled);
     assert_eq!(sequence_appearing_markers(&two, None, &canceled).unwrap_err(), PulseError::Canceled);
+}
+
+/// F-R57-15, hostile sizes: what a sequence read would map is charged against `MAX_APPEARING_WALK` before
+/// any marker is mapped, whether the markers appear or not, typed and never a partial answer.
+#[test]
+fn a_walk_past_its_budget_is_refused_before_any_marker_is_mapped_r57_f15() {
+    let hidden = |id: usize| StudioMarker { name: String::new(), ..marker(&format!("m{id}"), 15, 0) };
+    let full: Vec<StudioMarker> = (0..MAX_MARKERS_PER_SEQUENCE).map(hidden).collect();
+    let r = records(vec![("item-a", full.clone())]);
+    let clips = |n: usize| -> Vec<StudioClip> { (0..n).map(|k| clip(u32::try_from(k).unwrap() + 1, "item-a", 100, 110, 10 * k as u64)).collect() };
+    let at_limit = MAX_APPEARING_WALK / MAX_MARKERS_PER_SEQUENCE;
+    assert_eq!(MAX_APPEARING_WALK % MAX_MARKERS_PER_SEQUENCE, 0);
+
+    // Exactly the budget answers, one clip past it does not.
+    let answer = sequence_appearing_markers(&sequence(clips(at_limit)), Some(&r), &token()).unwrap();
+    assert_eq!((answer.appearing.len(), answer.hidden_media_markers), (0, MAX_APPEARING_WALK));
+    assert_eq!(sequence_appearing_markers(&sequence(clips(at_limit + 1)), Some(&r), &token()).unwrap_err(), PulseError::LimitExceeded);
+    // A clip's own marker is charged with them.
+    let mut crowded = clips(at_limit);
+    crowded[0].markers.push(marker("own", 15, 0));
+    assert_eq!(sequence_appearing_markers(&sequence(crowded), Some(&r), &token()).unwrap_err(), PulseError::LimitExceeded);
+
+    // Before any marker is mapped: this one would answer `overflow` the moment the walk reached it.
+    let mut decoy = full;
+    decoy[0] = StudioMarker { start: Ticks::new(u64::MAX), duration: Ticks::new(1), ..marker("m0", 0, 0) };
+    let decoyed = records(vec![("item-a", decoy)]);
+    assert_eq!(sequence_appearing_markers(&sequence(clips(at_limit + 1)), Some(&decoyed), &token()).unwrap_err(), PulseError::LimitExceeded);
+    assert_eq!(sequence_appearing_markers(&sequence(clips(1)), Some(&decoyed), &token()).unwrap_err(), PulseError::Overflow);
+
+    // The declared limits of a file, the finding's 1.7e10 calls.
+    let one = clip(1, "item-a", 100, 110, 0);
+    let mut at_declared = sequence(vec![one.clone()]);
+    at_declared.tracks[0].clips = vec![one; MAX_CLIPS_PER_SEQUENCE];
+    assert_eq!(sequence_appearing_markers(&at_declared, Some(&r), &token()).unwrap_err(), PulseError::LimitExceeded);
+    // A cancel still stops the read.
+    let canceled = token();
+    canceled.cancel();
+    assert_eq!(sequence_appearing_markers(&at_declared, Some(&r), &canceled).unwrap_err(), PulseError::Canceled);
 }
 
 /// The two earlier scopes keep their read: the new read gives what `marker_spans` gives for them, on a
@@ -413,6 +591,7 @@ fn the_new_read_agrees_with_marker_spans_for_the_two_earlier_scopes() {
     let mut b = clip_at(2, "item-a", 10, 20, 5, -1, 1);
     b.markers.push(marker("on-b", 12, 1));
     b.markers.push(marker("off-b", 40, 0));
+    b.markers.push(marker("point-b", 15, 0));
     let mut seq = sequence(vec![a, b]);
     seq.markers.push(marker("in-sequence", 3, 1));
     let old: Vec<(String, TickRange)> = marker_spans(&seq, &token()).unwrap();

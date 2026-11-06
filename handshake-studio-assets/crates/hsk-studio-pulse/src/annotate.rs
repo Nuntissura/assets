@@ -39,6 +39,7 @@
 
 use crate::error::{PulseError, Result};
 use crate::range::{Grid, TickDelta, TickRange};
+use crate::retime::SourceFrameGrid;
 use crate::timeline_edit::{EditContext, EditProposal, Footprint, propose, rate_of};
 use crate::transition::{check_at, locate};
 use hsk_studio_accord::{CancellationToken, Ticks};
@@ -47,6 +48,9 @@ use hsk_studio_folio::{ClipSource, ContentDigest, MAX_MARKERS_PER_SEQUENCE, Snap
 use std::collections::BTreeMap;
 
 const CANCEL_STRIDE: usize = 256;
+
+/// Most markers one appearing read maps, over every clip; a marker hidden on two clips counts twice.
+pub const MAX_APPEARING_WALK: usize = 1 << 24;
 
 /// Where a new marker goes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,7 +265,7 @@ pub(crate) fn split_records(first: &mut StudioClip, second: &mut StudioClip) {
 
 /// Timeline position of `[a, b)` source ticks of `clip` (clipped to its playing window); `None`
 /// when no part of it plays. Positions between ticks round down.
-pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks) -> Result<Option<TickRange>> {
+pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks, _ticks_per_frame: u64) -> Result<Option<TickRange>> {
     let visible = if a == b {
         clip.source_in <= a && a < clip.source_out
     } else {
@@ -302,13 +306,14 @@ pub(crate) fn source_to_timeline(clip: &StudioClip, a: Ticks, b: Ticks) -> Resul
 
 /// Where a marker sits in sequence time: `clip = None` for a sequence marker; `None` result = a
 /// clip marker outside the clip's playing window.
-pub fn marker_span(clip: Option<&StudioClip>, marker: &StudioMarker) -> Result<Option<TickRange>> {
+pub fn marker_span(sequence: &StudioSequence, clip: Option<&StudioClip>, marker: &StudioMarker) -> Result<Option<TickRange>> {
     match clip {
         None => TickRange::from_start_duration(marker.start, marker.duration).map(Some),
         Some(clip) => source_to_timeline(
             clip,
             marker.start,
             marker.start.checked_add(marker.duration)?,
+            sequence.frame_rate.ticks_per_frame,
         ),
     }
 }
@@ -320,7 +325,7 @@ pub fn marker_spans(
 ) -> Result<Vec<(String, TickRange)>> {
     let mut out = Vec::with_capacity(marker_count(sequence));
     for marker in &sequence.markers {
-        if let Some(span) = marker_span(None, marker)? {
+        if let Some(span) = marker_span(sequence, None, marker)? {
             out.push((marker.marker_id.clone(), span));
         }
     }
@@ -334,7 +339,7 @@ pub fn marker_spans(
             cancel.check()?;
         }
         for marker in &clip.markers {
-            if let Some(span) = marker_span(Some(clip), marker)? {
+            if let Some(span) = marker_span(sequence, Some(clip), marker)? {
                 out.push((marker.marker_id.clone(), span));
             }
         }
@@ -413,10 +418,10 @@ pub struct SequenceMarkers {
 }
 
 /// Where `marker` appears on `clip`; `None` when it does not (module docs).
-fn appearing_span(clip: &StudioClip, marker: &StudioMarker) -> Result<Option<TickRange>> {
+fn appearing_span(clip: &StudioClip, marker: &StudioMarker, ticks_per_frame: u64) -> Result<Option<TickRange>> {
     let end = marker.start.checked_add(marker.duration)?;
     let Some(hold) = &clip.retime.frame_hold else {
-        return source_to_timeline(clip, marker.start, end);
+        return source_to_timeline(clip, marker.start, end, ticks_per_frame);
     };
     let holds = if marker.duration.value() == 0 {
         marker.start == hold.source_tick
@@ -434,6 +439,7 @@ fn appearing_span(clip: &StudioClip, marker: &StudioMarker) -> Result<Option<Tic
 fn walk_clip(
     clip: &StudioClip,
     media: &[StudioMarker],
+    ticks_per_frame: u64,
     out: &mut Vec<AppearingMarker>,
     cancel: &CancellationToken,
 ) -> Result<(usize, usize)> {
@@ -443,7 +449,7 @@ fn walk_clip(
         if i.is_multiple_of(CANCEL_STRIDE) {
             cancel.check()?;
         }
-        match appearing_span(clip, marker)? {
+        match appearing_span(clip, marker, ticks_per_frame)? {
             Some(span) => {
                 if out.len() >= MAX_MARKERS_PER_SEQUENCE {
                     return Err(PulseError::LimitExceeded);
@@ -468,6 +474,7 @@ fn sort_appearing(appearing: &mut [AppearingMarker]) {
 pub fn clip_appearing_markers(
     clip: &StudioClip,
     media: Option<&StudioMediaMarkerRecords>,
+    grid: SourceFrameGrid,
     cancel: &CancellationToken,
 ) -> Result<ClipMarkers> {
     cancel.check()?;
@@ -477,7 +484,7 @@ pub fn clip_appearing_markers(
         ClipMediaItem::NestedSequence | ClipMediaItem::Primitive => &[][..],
     };
     let mut appearing = Vec::new();
-    let (hidden_clip_markers, hidden_media_markers) = walk_clip(clip, held, &mut appearing, cancel)?;
+    let (hidden_clip_markers, hidden_media_markers) = walk_clip(clip, held, grid.ticks_per_frame(), &mut appearing, cancel)?;
     sort_appearing(&mut appearing);
     Ok(ClipMarkers { clip_id: clip.clip_id.clone(), media_item, appearing, hidden_clip_markers, hidden_media_markers })
 }
@@ -515,7 +522,7 @@ pub fn sequence_appearing_markers(
                 &[]
             }
         };
-        let (own, of_media) = walk_clip(clip, held, &mut out.appearing, cancel)?;
+        let (own, of_media) = walk_clip(clip, held, sequence.frame_rate.ticks_per_frame, &mut out.appearing, cancel)?;
         out.hidden_clip_markers = out.hidden_clip_markers.saturating_add(own);
         out.hidden_media_markers = out.hidden_media_markers.saturating_add(of_media);
     }
