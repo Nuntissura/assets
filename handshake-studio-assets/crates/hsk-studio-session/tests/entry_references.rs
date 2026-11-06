@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 const NAMING: [&str; 4] = [AUDIO_ROUTING_ENTRY, MULTICAM_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY];
 /// Tokens that name neither a sequence nor a clip, read in their owners (lane notes,
 /// `reference_table`), with what they do name.
-const NOT_APPLICABLE: [(&str, &str); 12] = [
+const NOT_APPLICABLE: [(&str, &str); 13] = [
     ("selection", "a pixel plane (harness selection_store), no id"),
     ("text", "text stories keyed by SLYR layer (hsk.harness.text_layers@1)"),
     ("develop", "a camera-raw recipe, no sequence or clip id"),
@@ -26,6 +26,7 @@ const NOT_APPLICABLE: [(&str, &str); 12] = [
     ("info", "colour samplers of the Info panel"),
     (SEQUENCE_PRESETS_ENTRY, "presets are not bound to a document sequence"),
     (COMPOSITION_TOKEN_ENTRY, "Folio token record: SDOC document, tokens, and the story ids of its upgrades (a history checked for grammar and order only)"),
+    (MEDIA_MARKERS_ENTRY, "Folio media item markers: SDOC document, content digests and marker ids, no sequence or clip id (tests/media_markers.rs)"),
 ];
 
 const ENVELOPED: u32 = 21;
@@ -354,10 +355,17 @@ fn a_token_that_names_neither_is_untouched_by_a_removal() {
     bounded_case("not_applicable", || {
         let composition = serde_json::to_vec(&StudioCompositionRecords::new(doc_id())).unwrap();
         let authored = serde_json::to_vec(&StudioCompositionTokenRecord::new(doc_id(), CURRENT_COMPOSITION_TOKEN)).unwrap();
+        let mut media_records = StudioMediaMarkerRecords::new(doc_id());
+        media_records.media_items.push(StudioMediaMarkerEntry {
+            content_digest: ContentDigest { algorithm: "sha256".into(), digest: "ab0001".into() },
+            markers: vec![StudioMarker { marker_id: "media-marker-1".into(), name: "A note".into(), comment: String::new(), color: LabelColor::Mango, start: hsk_studio_accord::Ticks::new(F24), duration: hsk_studio_accord::Ticks::new(F24), role: None }],
+        });
+        let media = serde_json::to_vec(&media_records).unwrap();
         for (held_token, _) in NOT_APPLICABLE {
             let body = match held_token {
                 "composition" => composition.clone(),
                 COMPOSITION_TOKEN_ENTRY => authored.clone(),
+                MEDIA_MARKERS_ENTRY => media.clone(),
                 _ => b"{}".to_vec(),
             };
             let mut session = open(&package_of(&all_sequences(), &[entry(held_token, &body)]));
@@ -373,6 +381,10 @@ fn a_token_that_names_neither_is_untouched_by_a_removal() {
         let removal = multicam_step(&session, vec![edit(COMPOSITION_TOKEN_ENTRY, Removed::Sequence), edit(COMPOSITION_TOKEN_ENTRY, Removed::Clip)]);
         session.submit_multicam(&removal, 3, &token()).unwrap();
         assert!(session.composition_token_record(&token()).unwrap().is_some(), "the token reads after both removals");
+        let mut session = open(&package_of(&all_sequences(), &[entry(MEDIA_MARKERS_ENTRY, &media)]));
+        let removal = multicam_step(&session, vec![edit(MEDIA_MARKERS_ENTRY, Removed::Sequence), edit(MEDIA_MARKERS_ENTRY, Removed::Clip)]);
+        session.submit_multicam(&removal, 3, &token()).unwrap();
+        assert_eq!(session.media_marker_records(&token()).unwrap(), Some(media_records), "the media item markers read after both removals");
     });
 }
 
