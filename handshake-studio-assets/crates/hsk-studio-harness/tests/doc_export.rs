@@ -219,10 +219,13 @@ fn layered_psd_keeps_layers_and_groups_and_reopens() {
     assert_eq!(layers.len(), 4, "divider, two pixel layers, folder: {names:?}");
     assert!(names.contains(&"hero group") && names.contains(&"retouch"), "{names:?}");
     // The imported layer's red channel is the source's red samples.
-    let pixel = layers.iter().find(|l| l.rect.width() == W).expect("the source layer");
-    let red = pixel.channels.iter().find(|c| c.id == 0).unwrap().decode(W, H, &doc.header, &limits, &cancel).unwrap();
-    let src: Vec<u8> = source_rgb().chunks_exact(3).map(|p| p[0]).collect();
-    let worst = src.iter().zip(&red).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+    let pixel = layers.iter().find(|l| l.name == "Background").expect("the source layer");
+    let (rw, rh) = (pixel.rect.width(), pixel.rect.height());
+    println!("DOC_EXPORT psd source layer rect {:?}", pixel.rect);
+    assert!(pixel.rect.left <= 0 && pixel.rect.top <= 0 && rw >= W && rh >= H, "{:?}", pixel.rect);
+    let red = pixel.channels.iter().find(|c| c.id == 0).unwrap().decode(rw, rh, &doc.header, &limits, &cancel).unwrap();
+    let at = |x: u32, y: u32| red[((y as i64 - i64::from(pixel.rect.top)) * i64::from(rw) + x as i64 - i64::from(pixel.rect.left)) as usize];
+    let worst = source_rgb().chunks_exact(3).enumerate().map(|(i, p)| p[0].abs_diff(at(i as u32 % W, i as u32 / W))).max().unwrap();
     assert!(worst <= 1, "layer pixels differ by {worst}");
     // The file opens again as a layered document.
     let mut back = Viewer::new(Prefer::Cpu);
@@ -261,8 +264,10 @@ fn hostile_recipes_are_typed_refusals() {
 #[test]
 fn batch_writes_tiff_and_recipe_targets_and_skips_on_rerun() {
     let s = Scratch::new("batch");
-    let input = s.path("doc.png");
-    std::fs::write(&input, png(W, H, raster::Colour::Rgb, source_rgb())).unwrap();
+    // Batch inputs are native packages: the PNG is imported and saved first.
+    let (mut v, _) = opened(&s);
+    let input = s.path("doc.handshake");
+    v.save(&input, false).unwrap_or_else(|e| panic!("{e}"));
     let recipe_file = s.path("web.json");
     std::fs::write(&recipe_file, serde_json::to_vec(&json!({"schema_id": "hsk.studio.doc_export_recipe@1", "recipe_id": "web-16", "format": "jpeg", "quality": 80,
         "stage": {"constrain_size": true, "resize_type": "LongEdge", "max_width": 16}})).unwrap()).unwrap();
