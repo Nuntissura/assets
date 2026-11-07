@@ -19,7 +19,7 @@ use crate::{
     timeline::{self, TIMELINE_STEP_PROVIDER, TimelineStep},
     multicam::MULTICAM_ENTRY,
     multicam_step::{self, MULTICAM_STEP_PROVIDER, MulticamStep},
-    sequence_records::{self, MEDIA_MARKERS_ENTRY, RoutingTakeover, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY},
+    sequence_records::{self, MEDIA_MARKERS_ENTRY, RemovedSequences, RoutingTakeover, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY},
     sequence_records_step::{self, LiveEntries, SEQUENCE_RECORDS_STEP_PROVIDER, SequenceRecordsStep, SequenceRecordsUndo},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, CommandContext, DomainId};
@@ -518,6 +518,8 @@ pub struct Session {
     /// that brings a tile back still finds its bytes. Bounded by [`MAX_STAGED_BYTES`].
     staged: BTreeMap<String, Vec<u8>>,
     staged_bytes: u64,
+    /// What this session removed (module `sequence_records`, takeovers).
+    removed: RemovedSequences,
 }
 
 /// Largest total of staged tile bytes one session holds (`stage_tile` refuses beyond it with
@@ -752,6 +754,7 @@ impl Session {
                     last_report: report,
                     staged: BTreeMap::new(),
                     staged_bytes: 0,
+            removed: RemovedSequences::default(),
                 })
             }
             Err(error) => {
@@ -1401,6 +1404,7 @@ impl Session {
         };
 
         let mut applied = applied;
+        applied.routing_takeovers = self.routing_takeovers(successor.document(), cancel)?;
         if let (Some(key), Some(binding)) = (key, binding.as_deref()) {
             let outcome = self.ports.commits.as_ref().map(|port| {
                 port.commit(&CommitRequest {
@@ -2044,6 +2048,10 @@ impl Session {
                 }
             }
         }
+        let next = &successor.document().sequences;
+        for gone in self.snapshot.document().sequences.iter().filter(|s| !next.iter().any(|n| n.sequence_id == s.sequence_id)) {
+            self.removed.note(gone);
+        }
         self.snapshot = successor;
     }
 
@@ -2375,6 +2383,7 @@ impl Session {
             self.config.budgets.folio(),
             cancel,
         )?;
+        let routing_takeovers = self.routing_takeovers(snapshot.document(), cancel)?;
         let revision_before = self.snapshot.document().revision;
         let revision_after = snapshot.document().revision;
         self.revisions = chronicle::seed_revisions(snapshot.document());
@@ -2388,7 +2397,7 @@ impl Session {
             draft_revision,
             authority,
             disagreement,
-            routing_takeovers: Vec::new(),
+            routing_takeovers,
             report: ReportStatus::Unaddressed,
         })
     }
@@ -3011,6 +3020,11 @@ impl Session {
         }
         self.put_document_entry(token, bytes);
         Ok(())
+    }
+
+    /// What this session removed (module `sequence_records`).
+    pub(crate) fn removed_sequences(&self) -> &RemovedSequences {
+        &self.removed
     }
 
     /// The folio budget of this session.

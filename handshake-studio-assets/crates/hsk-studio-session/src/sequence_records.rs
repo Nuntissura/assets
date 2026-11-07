@@ -40,6 +40,16 @@
 //! the settings entry keep their refusals. A direct write of the routing stays its producer's to
 //! validate, as before this lane. Tests: tests/entry_references.rs.
 //!
+//! A routing whose sequence comes back is live again by id, which is right for an undo of the removal
+//! and not for a new sequence: its master volume, effects and automation apply to it (R57 F-R57-3, lead
+//! ruling, spec owner decides, SD-67). So the commit reports it: [`crate::Applied::routing_takeovers`]
+//! names a sequence the step adds whose id a readable stored routing names, unless its value is one this
+//! session removed, which is what an undo restores. The routing still applies; nothing is refused.
+//! Limits, named: the session knows what IT removed, so an inverse carried across a reopen reports, and
+//! past [`MAX_REMOVED_SEQUENCES`] the oldest removal is forgotten and its undo reports. Only a report
+//! errs that way. A track or clip that takes an inert member is not reported; the Viewer's minting skips
+//! those ids and a direct commit does not. Tests: tests/routing_repair.rs.
+//!
 //! The media item markers (lane SMB-PR-MEDIA-MARKERS-1, STU-VID-034) are the entry
 //! `studio/media_markers.<sha256>`, opened, read, set and saved as above. The entry names no sequence or
 //! clip, so a commit that removes the last clip cut from a media item, or the sequence holding it, leaves
@@ -58,17 +68,49 @@ use crate::session::Session;
 use crate::source::{DOCUMENT_ENTRY_PREFIX, document_entry};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    Budget, Code, Diagnostic, StudioAudioRoutingSet, StudioDocument, StudioInertRoutingReference, StudioMediaMarkerRecords, StudioMulticamClip, StudioResolvedTrackDisplay, StudioSequencePresetSet,
+    Budget, Code, Diagnostic, StudioAudioRoutingSet, StudioDocument, StudioInertRoutingReference, StudioMediaMarkerRecords, StudioMulticamClip, StudioResolvedTrackDisplay, StudioSequence, StudioSequencePresetSet,
     StudioSequenceSettingsRecords, StudioTrackDisplayEntry, StudioTrackDisplayRecords, parse_composition_token_record, parse_media_marker_records, parse_sequence_presets, parse_sequence_settings_records,
     inert_audio_routing_references, inert_multicam_clips, inert_track_display_entries, parse_audio_routing, parse_track_display_records, resolve_track_displays,
 };
-use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
+use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined, sha256_hex_of};
+use std::collections::VecDeque;
 
-/// A new sequence that takes a stored audio routing by id (R57 F-R57-3).
+/// A new sequence that takes a stored audio routing by id (R57 F-R57-3, module docs).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoutingTakeover {
     /// The new sequence, and the routing that now applies to it.
     pub sequence_id: String,
+}
+
+/// Removed sequences one session remembers (digests only). Every sequence of a full document, removed
+/// and re-created once.
+pub const MAX_REMOVED_SEQUENCES: usize = hsk_studio_folio::MAX_SEQUENCES.saturating_mul(2);
+
+/// What this session removed, for telling an undo from a new sequence (module docs): `(id, digest of the
+/// value)`, oldest first, at most [`MAX_REMOVED_SEQUENCES`].
+#[derive(Debug, Default)]
+pub(crate) struct RemovedSequences(VecDeque<(String, String)>);
+
+impl RemovedSequences {
+    fn digest(sequence: &StudioSequence) -> Option<String> {
+        serde_json::to_vec(sequence).ok().map(|bytes| sha256_hex_of(&bytes))
+    }
+
+    pub(crate) fn note(&mut self, sequence: &StudioSequence) {
+        let Some(digest) = Self::digest(sequence) else { return };
+        if self.0.iter().any(|(id, d)| *id == sequence.sequence_id && *d == digest) {
+            return;
+        }
+        if self.0.len() >= MAX_REMOVED_SEQUENCES {
+            self.0.pop_front();
+        }
+        self.0.push_back((sequence.sequence_id.clone(), digest));
+    }
+
+    fn holds(&self, sequence: &StudioSequence) -> bool {
+        let Some(digest) = Self::digest(sequence) else { return false };
+        self.0.iter().any(|(id, d)| *id == sequence.sequence_id && *d == digest)
+    }
 }
 
 /// Document-entry token of the sequence settings records.
@@ -167,6 +209,32 @@ pub(crate) fn invalid_entry_notes(
 }
 
 impl Session {
+    /// What going from the live document to `successor` takes over (module docs): nothing when it adds
+    /// no sequence, or when no routing entry reads against the live document, because then no routing of
+    /// it applies. Only a cancel is an error.
+    pub(crate) fn routing_takeovers(&self, successor: &StudioDocument, cancel: &CancellationToken) -> Result<Vec<RoutingTakeover>, SessionError> {
+        let current = self.snapshot().document();
+        let held = |id: &str| current.sequences.iter().any(|s| s.sequence_id == id);
+        let added: Vec<&StudioSequence> = successor.sequences.iter().filter(|s| !held(&s.sequence_id)).collect();
+        if added.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Ok(Some(bytes)) = held_body(self.held_entries(), AUDIO_ROUTING_ENTRY) else {
+            return Ok(Vec::new());
+        };
+        let set = match parse_audio_routing(bytes, current, self.folio_budget(), cancel) {
+            Ok(set) => set,
+            Err(d) if d.code == Code::Canceled => return Err(SessionError::Canceled),
+            Err(_) => return Ok(Vec::new()),
+        };
+        let named = |id: &str| set.routings.iter().any(|r| r.sequence_id == id);
+        Ok(added
+            .into_iter()
+            .filter(|s| named(&s.sequence_id) && !self.removed_sequences().holds(s))
+            .map(|s| RoutingTakeover { sequence_id: s.sequence_id.clone() })
+            .collect())
+    }
+
     /// The stored sequence settings records, validated against the document (`None` = none stored). An
     /// entry that does not validate is the Folio diagnostic, never partial records.
     pub fn sequence_settings_records(
@@ -341,5 +409,38 @@ impl Session {
             Some(r) => Some(serde_json::to_vec(r).map_err(|_| invalid_json(MEDIA_MARKERS_ENTRY))?),
         };
         self.set_document_entry(MEDIA_MARKERS_ENTRY, bytes, cancel)
+    }
+}
+
+#[cfg(test)]
+mod removed_sequences_tests {
+    use super::*;
+
+    fn sequence(id: &str, name: &str) -> StudioSequence {
+        serde_json::from_value(serde_json::json!({
+            "schema_id": "hsk.studio.sequence@1", "sequence_id": id, "name": name,
+            "frame_rate": {"ticks_per_frame": 10_584_000_000_u64}, "duration": 0, "tracks": [], "markers": []
+        }))
+        .unwrap()
+    }
+
+    /// V4-02: the memory is bounded, the oldest goes first, a repeat does not grow it, and the id and the
+    /// value both have to match.
+    #[test]
+    fn the_memory_of_removals_is_bounded_and_keyed_by_id_and_value() {
+        let mut removed = RemovedSequences::default();
+        let first = sequence("seq-0", "a");
+        removed.note(&first);
+        removed.note(&first);
+        assert_eq!(removed.0.len(), 1, "a repeat does not grow it");
+        assert!(removed.holds(&first));
+        assert!(!removed.holds(&sequence("seq-0", "b")), "another value");
+        assert!(!removed.holds(&sequence("seq-1", "a")), "another id");
+        for n in 1..=MAX_REMOVED_SEQUENCES {
+            removed.note(&sequence(&format!("seq-{n}"), "a"));
+        }
+        assert_eq!(removed.0.len(), MAX_REMOVED_SEQUENCES);
+        assert!(!removed.holds(&first), "the oldest is forgotten");
+        assert!(removed.holds(&sequence("seq-1", "a")));
     }
 }
