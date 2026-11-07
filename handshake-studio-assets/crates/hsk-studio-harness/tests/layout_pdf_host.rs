@@ -9,7 +9,7 @@
 mod common;
 use common::Scratch;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_harness::layout_ui::LayoutEdit;
+use hsk_studio_harness::layout_ui::{LayoutEdit, TableEdit};
 use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::layout_export::{LayoutPdfSettings, PdfXStandard};
 use hsk_studio_harness::view::render::Prefer;
@@ -107,10 +107,28 @@ fn preflight_runs_before_export_and_an_error_refuses_typed() {
     let r = v.export_layout_pdf(&out, false, &LayoutPdfSettings { ignore_preflight: true, ..LayoutPdfSettings::default() }).unwrap();
     assert_eq!(r["preflight"]["ok"], false);
     assert!(!r["overset_stories"].as_array().unwrap().is_empty(), "{r}");
-    // The editor keeps a text inserted into an empty story as one paragraph: its inner break is
-    // reported, the text on both sides of it is drawn.
-    assert!(r["host_loss"].as_array().unwrap().iter().any(|l| l["code"] == "paragraph_break_inside_paragraph_not_drawn"), "{r}");
-    assert!(r["glyphs_drawn"].as_u64().unwrap() > 0, "{r}");
+}
+
+/// The editor keeps a text inserted into an empty story as one paragraph: the terminator inside it
+/// is set as a line break (both sides drawn, on two lines), and the lost paragraph boundary is
+/// reported.
+#[test]
+fn a_break_inside_one_paragraph_is_set_as_a_line_break_with_both_sides_drawn() {
+    let dir = Scratch::new("layout-inner-break");
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.layout_open(Some((400.0, 400.0)), Some(1)).unwrap();
+    let ed = v.layout_editor().unwrap();
+    ed.apply(LayoutEdit::DrawFrame { page_id: "page-1".into(), x: 20.0, y: 20.0, w: 300.0, h: 300.0 }).unwrap();
+    let frame = ed.selected.clone().unwrap();
+    let story = ed.story_of_frame(&frame).unwrap().story_id.clone();
+    ed.apply(LayoutEdit::ReplaceText { story, start: 0, end: 0, text: "Above\nBelow".into() }).unwrap();
+    let out = dir.0.join("break.pdf");
+    let r = v.export_layout_pdf(&out, false, &LayoutPdfSettings::default()).unwrap();
+    let lost: Vec<&Value> = r["host_loss"].as_array().unwrap().iter().filter(|l| l["code"] == "paragraph_break_inside_paragraph_set_as_line_break").collect();
+    assert_eq!(lost.len(), 1, "{r}");
+    assert_eq!(lost[0]["count"], 1, "{r}");
+    assert_eq!(r["lines"], 2, "the break ends the first line: {r}");
+    assert_eq!(page_texts(&std::fs::read(&out).unwrap())[0], "AboveBelow", "both sides are drawn");
 }
 
 #[test]
@@ -131,6 +149,11 @@ fn pdfx4_with_a_cmyk_output_intent_is_identified_and_self_checked() {
     assert!(r["receipt"]["effective_pdfx_profile"].is_string(), "{r}");
     assert!(!r["pdfx"]["self_check"]["rules"].as_array().unwrap().is_empty(), "{r}");
     assert_eq!(r["pdfx"]["self_check"]["conformance"], "not_proven", "a self-check is not certification: {r}");
+    assert_eq!(r["pdfx"]["self_check"]["all_passed"], true, "a written X-4 file passed every self-check rule: {r}");
+    // Unstyled text is painted in the intent's CMYK, not device RGB. NOT_PROVEN by readback: press's
+    // vector reader keeps no source colour for glyph draws, so this is the export's own statement.
+    assert_eq!(r["default_fill"], "device_cmyk", "{r}");
+    println!("NOT_PROVEN: the glyph fill's colour space read back from the PDF (press reader keeps no source colour for glyphs)");
     // X-4 without its date, a profile that is not ICC: typed, before anything is written.
     let no_date = LayoutPdfSettings { created: None, ..settings };
     assert_eq!(v.export_layout_pdf(&dir.0.join("a.pdf"), false, &no_date).unwrap_err().code, "pdfx_created_required");
@@ -153,6 +176,14 @@ fn idml_export_writes_the_live_layout_as_a_package() {
     assert_eq!(r["pages"].as_array().unwrap().len(), 3, "{r}");
     assert_eq!(r["job"]["outcome"], "completed");
     assert_eq!(v.export_layout_idml(&out, false).unwrap_err().code, "overwrite_required");
+    // A filled table cell: its cell story is the table record's, not a host story (was dangling_story).
+    let ed = v.layout_editor().unwrap();
+    let host = ed.doc().stories[0].story_id.clone();
+    ed.apply(LayoutEdit::Table(TableEdit::InsertTable { story: host, paragraph: 0, rows: 2, columns: 2, header_rows: 1 })).unwrap();
+    let table = ed.records().longdoc.tables[0].table_id.clone();
+    ed.apply(LayoutEdit::Table(TableEdit::SetCellText { table, row: 1, column: 1, text: "cell".into() })).unwrap();
+    let with_table = v.export_layout_idml(&dir.0.join("table.idml"), false).unwrap();
+    assert_eq!(with_table["note_stories"], 1, "{with_table}");
 }
 
 #[test]
