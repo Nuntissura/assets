@@ -36,13 +36,24 @@ impl CommandRefusal {
 }
 
 /// A file a command reads whole: its size is checked before any byte is held.
+/// Only a regular file, and never more than `limit` bytes held, whatever the metadata says.
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, CommandRefusal> {
+    use std::io::Read;
     let unreadable = |e: std::io::Error| CommandRefusal::new("resource_unreadable", json!({"path": path.to_string_lossy(), "kind": format!("{:?}", e.kind())}));
-    let size = std::fs::metadata(path).map_err(unreadable)?.len();
-    if size > limit {
-        return Err(CommandRefusal::new("resource_too_large", json!({"path": path.to_string_lossy(), "bytes": size, "limit_bytes": limit})));
+    let too_large = || CommandRefusal::new("resource_too_large", json!({"path": path.to_string_lossy(), "limit_bytes": limit}));
+    let meta = std::fs::metadata(path).map_err(unreadable)?;
+    if !meta.is_file() {
+        return Err(CommandRefusal::new("resource_unreadable", json!({"path": path.to_string_lossy(), "kind": "not_a_regular_file"})));
     }
-    std::fs::read(path).map_err(unreadable)
+    if meta.len() > limit {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).map_err(unreadable)?.take(limit.saturating_add(1)).read_to_end(&mut bytes).map_err(unreadable)?;
+    if u64::try_from(bytes.len()).map_or(true, |n| n > limit) {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 /// A method's refusal text as a stable code: the run's newest record's when the method reached the run.
@@ -76,7 +87,7 @@ impl Viewer {
                 Ok(_) => Ok(Value::Null),
                 Err(_) => Err("command_refused"),
             };
-            self.run.command_outcome(row.command_id, before, outcome);
+            self.run.command_outcome(row.command_id, outcome);
         }
         result
     }

@@ -655,7 +655,9 @@ impl Run<'_> {
 
     /// One terminal frame and one record for a typed command that reached no other `Run` operation:
     /// the command's id and the run's attribution, a closed outcome and no text.
-    pub fn command_outcome(&mut self, command_id: &str, before: usize, result: Result<Value, &'static str>) -> bool {
+    pub fn command_outcome(&mut self, command_id: &str, result: Result<Value, &'static str>) -> bool {
+        // `push` counts the frames emitted since `before`: this one, emitted inside `own_op`.
+        let before = self.frames.count();
         let base = self.revision().unwrap_or(0);
         self.current = Some(self.context.command(Some(command_id), base, None));
         self.own_op(command_id, before, result)

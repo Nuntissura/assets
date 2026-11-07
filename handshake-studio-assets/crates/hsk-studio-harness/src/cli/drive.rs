@@ -255,6 +255,10 @@ impl Live {
             }
         }
         let map: serde_json::Map<String, Value> = params.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+        // The step this command made, if any: the newest step's correlation changes only then (a count
+        // can stay level under the history cap).
+        let newest = |viewer: &Viewer| viewer.run().history()["undo_steps"].as_array().and_then(|s| s.last()).map(|s| s["correlation"].clone());
+        let step_before = newest(&self.viewer);
         let result = self.viewer.run_command(entry.command_id, &map).map_err(|r| Refusal { code: r.code, detail: r.detail })?;
         if entry.command_id == "panel.vector_import.import_vector"
             && let Some(dest) = params.get("dest")
@@ -264,8 +268,10 @@ impl Live {
         }
         let undo_name = if entry.command_id.starts_with("layout.") {
             result["undo_name"].clone()
-        } else {
+        } else if newest(&self.viewer) != step_before {
             self.viewer.run().history()["undo"].as_array().and_then(|steps| steps.last()).cloned().unwrap_or(Value::Null)
+        } else {
+            Value::Null
         };
         Ok(json!({"result": result, "revision": self.revision(), "undo_name": if entry.mutates_authority { undo_name } else { Value::Null }}))
     }
@@ -373,7 +379,11 @@ fn timeline_call(row: &DriveTimeline, params: &Params) -> Result<TimelineCommand
     let ticks = |key: &str| decode::<u64>(params, key, "ticks").map(Ticks::new);
     let frames = |key: &str| decode::<i64>(params, key, "frames");
     let flag = |key: &str| decode::<bool>(params, key, "boolean");
-    let list = |key: &str| optional(key).map_or_else(Vec::new, |v| v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>());
+    // A JSON list of strings (`[]` empty) or comma-separated text.
+    let list = |key: &str| optional(key).map_or_else(Vec::new, |v| match serde_json::from_str::<Vec<String>>(&v) {
+        Ok(items) if v.trim_start().starts_with('[') => items,
+        _ => v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>(),
+    });
     Ok(match row.key {
         "select" => TimelineCommand::Select(optional("clip_id")),
         "move_clip" => TimelineCommand::MoveClip { clip_id: text("clip_id")?, start: ticks("start")?, track_id: optional("track_id") },
@@ -537,7 +547,7 @@ fn parameter_text(key: &str, value: &Value) -> Result<String, Refusal> {
         Value::String(s) => Ok(s.clone()),
         Value::Bool(b) => Ok(b.to_string()),
         Value::Number(n) => Ok(n.to_string()),
-        Value::Array(items) if items.iter().all(Value::is_string) => Ok(items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(",")),
+        Value::Array(items) if !items.is_empty() && items.iter().all(Value::is_string) => Ok(items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(",")),
         Value::Array(_) | Value::Object(_) => Ok(value.to_string()),
         Value::Null => Err(refuse("parameter_invalid", json!({"key": key}))),
     }

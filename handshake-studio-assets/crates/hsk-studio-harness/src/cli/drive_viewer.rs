@@ -62,8 +62,14 @@ impl Args<'_> {
     fn flag_or(&self, key: &str, default: bool) -> Result<bool, Refusal> {
         self.opt(key).map_or(Ok(default), |_| self.flag(key))
     }
+    /// Comma-separated text, or a JSON list of strings (`[]` is the empty list).
     fn list(&self, key: &str) -> Result<Vec<String>, Refusal> {
-        Ok(self.text(key)?.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
+        let text = self.text(key)?;
+        if text.trim_start().starts_with('[') {
+            let items: Vec<Value> = serde_json::from_str(text).map_err(|_| invalid(key, "a list of text"))?;
+            return items.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<_>>().ok_or_else(|| invalid(key, "a list of text"));
+        }
+        Ok(text.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
     }
     fn json(&self, key: &str, expected: &str) -> Result<Value, Refusal> {
         serde_json::from_str(self.text(key)?).map_err(|_| invalid(key, expected))

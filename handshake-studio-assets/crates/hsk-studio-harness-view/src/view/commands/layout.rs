@@ -117,10 +117,11 @@ fn history(editor: &LayoutEditor) -> Value {
 }
 
 pub(super) fn run(viewer: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, CommandRefusal> {
+    // Decoded first: a refused edit opens no editor.
+    let edit = edit_of(id, f)?;
     if viewer.layout_editor().is_none() {
         viewer.toggle_panel(Panel::LayoutEditor).map_err(|message| CommandRefusal::new("layout_editor_unavailable", json!({"message": message})))?;
     }
-    let edit = edit_of(id, f)?;
     let Some(editor) = viewer.layout_editor() else {
         return Err(CommandRefusal::new("layout_editor_unavailable", Value::Null));
     };
