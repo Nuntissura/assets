@@ -1298,8 +1298,8 @@ impl Session {
     /// commit and publish path of [`Session::submit`]; the one report frame carries the command's
     /// correlation. A step that writes the live state is no revision. Refusals change neither the document
     /// nor the entry: `actor_mismatch`, `command_mismatch`, `stale_revision`, `invalid_command`,
-    /// `invalid_input`, `value_conflict`, `folio_rejected`, `budget_exceeded`, `total_too_large`.
-    /// Tests: hsk-studio-harness tests/layout_persist.rs.
+    /// `invalid_input`, `value_conflict`, `folio_rejected`, `layout_records_rejected`, `budget_exceeded`,
+    /// `total_too_large`. Tests: hsk-studio-harness tests/layout_persist.rs.
     pub fn submit_layout_as(
         &mut self,
         context: &CommandContext,

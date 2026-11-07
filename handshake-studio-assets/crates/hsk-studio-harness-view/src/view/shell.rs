@@ -769,16 +769,38 @@ impl Viewer {
     /// (`unknown_frame`, ...), `not_open`, or the session's (`value_conflict`, `folio_rejected`, ...),
     /// after which the editor is back at the session's state.
     pub fn layout_apply(&mut self, edit: LayoutEdit) -> Result<(), String> {
-        // Red: the edit stays in the editor (lane SMB-LAYOUT-PERSIST-1 commits it in the next commit).
         if self.run.snapshot().is_none() {
             return Err("not_open".into());
         }
-        if self.shell.layout.is_none() {
-            let (doc, rec, _) = self.layout_doc();
+        let command = edit.command_id();
+        let (doc, rec, _) = self.layout_doc();
+        let current = self.shell.layout.as_ref().is_some_and(|ed| same_layout(ed.doc(), &doc) && *ed.records() == rec);
+        if !current {
             self.shell.layout = Some(LayoutEditor::with_records(doc, rec));
         }
-        let ed = self.shell.layout.as_mut().ok_or("layout_editor_unavailable")?;
-        ed.apply(edit).map_err(|e| e.code().to_owned())
+        let Some(ed) = self.shell.layout.as_mut() else {
+            return Err("layout_editor_unavailable".into());
+        };
+        ed.apply(edit).map_err(|e| e.code().to_owned())?;
+        let (doc, rec) = (ed.doc(), ed.records());
+        let records = hsk_studio_session::LayoutRecords {
+            document_id: doc.document.document_id.clone(),
+            stories: doc.stories.clone(),
+            flow: doc.flow.clone(),
+            styles: doc.styles.clone(),
+            parents: rec.parents.clone(),
+            longdoc: rec.longdoc.clone(),
+        };
+        let document = doc.document.clone();
+        if self.run.submit_layout(command, command, document, records) {
+            return Ok(());
+        }
+        let code = self.op_error();
+        if let Some(ed) = self.shell.layout.as_mut() {
+            ed.undo();
+        }
+        self.say(format!("layout: {command} {code}"));
+        Err(code)
     }
 
     /// Whether `panel` exists now (open; it may be hidden).

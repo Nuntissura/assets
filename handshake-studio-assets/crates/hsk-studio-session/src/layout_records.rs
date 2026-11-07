@@ -13,7 +13,8 @@
 //! is gone, can still be replaced by records that validate; the write always validates against the
 //! successor document. Refusals change nothing: `invalid_command`, `invalid_input` (another document
 //! id), `value_conflict` (a quote that is not the live state, a repeated entry included),
-//! `folio_rejected` / `budget_exceeded` (the successor or the records would not validate),
+//! `folio_rejected` (the successor would not validate), `layout_records_rejected` (the records would
+//! not validate against it), `budget_exceeded`,
 //! `total_too_large`, `stale_revision`, and on [`crate::Session::submit_layout_as`] `actor_mismatch`
 //! and `command_mismatch`.
 //!
@@ -28,7 +29,7 @@ use crate::timeline::valid_command_id;
 use hsk_studio_accord::{CancellationToken, SCHEMA_STUDIO_TYPE_STYLE};
 use hsk_studio_folio::{
     self as folio, Budget, Code, Diagnostic, Resolver, Snapshot, StudioDocument, StudioLayoutFlowRecords, StudioLongDocRecords,
-    StudioParentPageRecords, StudioTextStory, StudioTypeStyleRecords,
+    StoryContent, StudioParentPageRecords, StudioTextStory, StudioTypeStyleRecords,
 };
 use hsk_studio_package::Quarantined;
 use serde_json::{Value, json};
@@ -162,7 +163,21 @@ impl LayoutRecords {
             if self.stories[..i].iter().any(|s| s.story_id == story.story_id) {
                 return Err(diag(Code::DuplicateIdentity, &story.story_id));
             }
-            let issues = folio::validate_text_story(story, b, cancel, &styles)?;
+            // The layout engine keeps one empty paragraph in a zero-length story (hsk-studio-layout
+            // `replace_story_text`); Folio's partition of zero bytes is no paragraph. That form is
+            // validated as Folio's, its style references checked here.
+            let empty = matches!(&story.content, StoryContent::Inline { text_utf8 } if text_utf8.is_empty()) && story.paragraphs.iter().all(|p| p.start == 0 && p.end == 0);
+            let folio_form;
+            let checked = if empty {
+                if story.paragraphs.iter().filter_map(|p| p.style_ref.as_deref()).any(|s| self.styles.style(s).is_none()) {
+                    return Err(diag(Code::DanglingReference, &story.story_id));
+                }
+                folio_form = StudioTextStory { paragraphs: Vec::new(), ..story.clone() };
+                &folio_form
+            } else {
+                story
+            };
+            let issues = folio::validate_text_story(checked, b, cancel, &styles)?;
             if !issues.is_empty() {
                 return Err(diag(Code::DanglingReference, &story.story_id));
             }
@@ -308,7 +323,11 @@ pub(crate) fn successor(
     let entry = match &step.records_write {
         None => None,
         Some(r) => {
-            r.validate(successor.document(), budget, cancel).map_err(crate::sequence_records_step::folio_code)?;
+            r.validate(successor.document(), budget, cancel).map_err(|d| match d.code {
+                Code::Canceled => SessionError::Canceled,
+                Code::BudgetExceeded => SessionError::Provider("budget_exceeded"),
+                _ => SessionError::Provider("layout_records_rejected"),
+            })?;
             Some(r.to_bytes()?)
         }
     };

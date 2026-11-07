@@ -2029,7 +2029,7 @@ impl Run<'_> {
     /// live document and the live entry. One history step labelled `op`; undo / redo submit the step's
     /// inverse. A step that writes the live state is no step. Refusals change nothing: `not_open`,
     /// `layout_records_unreadable` (the held entry does not decode), then the session's codes
-    /// (`value_conflict`, `invalid_input`, `folio_rejected`, `budget_exceeded`, `total_too_large`, ...).
+    /// (`value_conflict`, `invalid_input`, `folio_rejected`, `layout_records_rejected`, `budget_exceeded`, `total_too_large`, ...).
     /// One record `op`; not recordable.
     pub fn submit_layout(&mut self, op: &str, command: &'static str, document: folio::StudioDocument, records: hsk_studio_session::LayoutRecords) -> bool {
         self.note_unrecordable(command);
