@@ -86,6 +86,8 @@ pub mod select_liquify;
 pub mod fill_tools;
 pub mod selection_store;
 pub mod text;
+/// Layout PDF and IDML export, preflight before export, page size of a new layout (lane SMB-LAYOUT-PDF-HOST-1).
+pub mod layout_export;
 /// Render-queue export of a timeline range through reel (lane SMB-REEL-ENCODE, feature `media`).
 #[cfg(feature = "media")]
 pub mod timeline_export;

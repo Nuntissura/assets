@@ -1,7 +1,7 @@
 //! Layout rows of the command corpus: every `LayoutEdit` member and the layout editor's undo, redo, find
 //! and preflight, addressed by id through `Viewer::run_command`.
 
-use super::{CommandEntry, ParamSpec, flag as b, index as i, list as l, number as n, one_of as o, record as r, text as t, typed};
+use super::{CommandEntry, ParamSpec, flag as b, index as i, list as l, number as n, one_of as o, output_path as out, path as file, record as r, text as t, typed};
 
 const EDIT: &str = "LayoutEditor::apply";
 const PAGE_ITEM: &[ParamSpec] = &[t("page"), t("item")];
@@ -47,4 +47,13 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("layout.preflight", "LayoutEditor::preflight", "Run preflight", false, &[]),
     typed("layout.set_preflight_severity", "LayoutEditor::set_preflight_severity", "Set preflight rule severity", false, &[t("rule"), o("severity", "error|warning|informational")]),
     typed("layout.thread_info", "LayoutEditor::thread_info", "Text thread information", false, &[t("frame")]),
+    // Lane SMB-LAYOUT-PDF-HOST-1: the layout's output (harness-view view/layout_export.rs). None changes
+    // the document: a new blank layout is editor state, exports are derived deliverables.
+    typed("layout.open", "Viewer::layout_open", "Open the layout editor", false, &[n("page_width_pt").opt(), n("page_height_pt").opt(), i("pages").opt()]),
+    typed("layout.export_pdf", "Viewer::export_layout_pdf", "Export layout as PDF", false, &[
+        out("path"), b("overwrite").opt(), o("pdfx", "pdfx.none|pdfx.x4_2010").opt(), t("created").opt(), file("output_profile").opt(),
+        t("output_condition_identifier").opt(), t("output_condition").opt(), t("registry").opt(), t("title").opt(), b("subset_fonts").opt(), b("ignore_preflight").opt(),
+    ]),
+    typed("layout.export_idml", "Viewer::export_layout_idml", "Export layout as IDML", false, &[out("path"), b("overwrite").opt()]),
+    typed("layout.render_pdf_page", "Viewer::render_pdf_page", "Render a PDF page to PNG", false, &[file("source"), i("page"), n("px_per_pt"), out("path"), b("overwrite").opt()]),
 ];

@@ -7,6 +7,7 @@ use super::super::Viewer;
 use super::super::shell::Panel;
 use super::decode::{Fields, folio_field, invalid, missing};
 use super::CommandRefusal;
+use super::super::layout_export::{self, LayoutExportRefusal, LayoutPdfSettings, PdfXStandard};
 use crate::layout_ui::{FindQuery, FindScope, LayoutEdit, LayoutEditor, LayoutUiError, PageEdit, StyleEdit, StylePatch, TableEdit};
 use hsk_studio_folio as folio;
 use hsk_studio_layout::FindMode;
@@ -116,7 +117,59 @@ fn history(editor: &LayoutEditor) -> Value {
     json!({"undo_name": editor.undo_name(), "redo_name": editor.redo_name(), "undo_steps": undo, "redo_steps": redo})
 }
 
+/// A layout output method's typed refusal (lane SMB-LAYOUT-PDF-HOST-1).
+fn output_refused(r: LayoutExportRefusal) -> CommandRefusal {
+    CommandRefusal::new(r.code, json!({"message": r.detail}))
+}
+
+/// The layout output rows (view/layout_export.rs); `None` for every other row.
+fn output(viewer: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Option<Value>, CommandRefusal> {
+    let overwrite = f.flag_or("overwrite", false)?;
+    let done = match id {
+        "layout.open" => {
+            let size = match (f.opt_number("page_width_pt")?, f.opt_number("page_height_pt")?) {
+                (Some(w), Some(h)) => Some((w, h)),
+                (None, None) => None,
+                _ => return Err(CommandRefusal::new("page_size_incomplete", json!({"message": "give page_width_pt and page_height_pt together"}))),
+            };
+            let pages = if f.has("pages") { Some(f.count("pages")?) } else { None };
+            viewer.layout_open(size, pages)
+        }
+        "layout.export_pdf" => {
+            let profile = match f.opt_text("output_profile")? {
+                Some(p) => Some(layout_export::read_bounded(std::path::Path::new(&p), layout_export::MAX_PROFILE_BYTES, "output_profile_unreadable").map_err(output_refused)?),
+                None => None,
+            };
+            let pdfx = match f.opt_text("pdfx")?.as_deref() {
+                None | Some("pdfx.none") => PdfXStandard::None,
+                Some("pdfx.x4_2010") => PdfXStandard::X4_2010,
+                Some(_) => return Err(invalid("pdfx", "pdfx.none|pdfx.x4_2010")),
+            };
+            let (created, condition_id, condition, registry, title) = (f.opt_text("created")?, f.opt_text("output_condition_identifier")?, f.opt_text("output_condition")?, f.opt_text("registry")?, f.opt_text("title")?);
+            let settings = LayoutPdfSettings {
+                pdfx,
+                created: created.as_deref(),
+                output_profile: profile.as_deref(),
+                output_condition_identifier: condition_id.as_deref(),
+                output_condition: condition.as_deref(),
+                registry: registry.as_deref(),
+                title: title.as_deref(),
+                subset_fonts: f.flag_or("subset_fonts", true)?,
+                ignore_preflight: f.flag_or("ignore_preflight", false)?,
+            };
+            viewer.export_layout_pdf(&f.path("path")?, overwrite, &settings)
+        }
+        "layout.export_idml" => viewer.export_layout_idml(&f.path("path")?, overwrite),
+        "layout.render_pdf_page" => viewer.render_pdf_page(&f.path("source")?, f.index("page")?, f.number("px_per_pt")?, &f.path("path")?, overwrite),
+        _ => return Ok(None),
+    };
+    done.map(Some).map_err(output_refused)
+}
+
 pub(super) fn run(viewer: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, CommandRefusal> {
+    if let Some(v) = output(viewer, id, f)? {
+        return Ok(v);
+    }
     // Decoded first: a refused edit opens no editor.
     let edit = edit_of(id, f)?;
     if viewer.layout_editor().is_none() {

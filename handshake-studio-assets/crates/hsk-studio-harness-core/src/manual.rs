@@ -213,6 +213,16 @@ pub const DRIVE_VIEWER: &[DriveViewer] = &[
     method("export_document", &[need("path", "path"), need("recipe", "text"), may("overwrite", "boolean")]),
     method("export_vector_svg", OUT),
     method("export_vector_pdf", OUT),
+    // Lane SMB-LAYOUT-PDF-HOST-1: the Layout Editor's output, also the typed layout.open, .export_pdf,
+    // .export_idml and .render_pdf_page rows (preflight: the typed layout.preflight).
+    method("layout_open", &[may("page_width_pt", "number"), may("page_height_pt", "number"), may("pages", "integer")]),
+    method("export_layout_pdf", &[
+        need("path", "path"), may("overwrite", "boolean"), may("pdfx", "one_of:pdfx.none|pdfx.x4_2010"), may("created", "text"), may("output_profile", "path"),
+        may("output_condition_identifier", "text"), may("output_condition", "text"), may("registry", "text"), may("title", "text"), may("subset_fonts", "boolean"),
+        may("ignore_preflight", "boolean"),
+    ]),
+    method("export_layout_idml", OUT),
+    method("render_pdf_page", &[need("source", "path"), need("page", "integer"), need("px_per_pt", "number"), need("path", "path"), may("overwrite", "boolean")]),
     method("pen_point", &[need("x", "number"), need("y", "number"), may("drag", "point"), need("close_radius", "number")]),
     method("pen_end", &[]),
     method("curvature_point", &[need("x", "number"), need("y", "number"), need("corner", "boolean"), need("close_radius", "number")]),
@@ -310,6 +320,7 @@ pub fn viewer_domain(method: &str) -> &'static str {
         | "set_develop" | "set_develop_threads" | "set_develop_export_field" | "load_develop_watermark" | "clear_develop_export_stage" | "export" | "export_document" => "photo",
         "grid_append_child_at" | "set_grid_gaps" | "auto_layout_control" => "design",
         "proof_apply_draft" | "proof_close_page" | "proof_set_save_name" => "proof",
+        "layout_open" | "export_layout_pdf" | "export_layout_idml" | "render_pdf_page" => "layout",
         "help_search" | "help_close" | "dialog_accept" | "dialog_cancel" | "close" => "shell",
         _ => "vector",
     }
