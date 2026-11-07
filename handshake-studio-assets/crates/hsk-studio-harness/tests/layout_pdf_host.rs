@@ -229,7 +229,7 @@ fn hostile_sizes_paths_and_sources_refuse_typed() {
 /// keys, same required set, canonical id in the layout domain; preflight is the editor's typed row.
 #[test]
 fn layout_catalog_rows_name_their_drive_rows_with_the_same_keys() {
-    for id in ["layout.open", "layout.export_pdf", "layout.export_idml", "layout.render_pdf_page"] {
+    for id in ["layout.open", "layout.export_pdf", "layout.export_idml"] {
         let entry = action::command(id).unwrap_or_else(|| panic!("{id} missing"));
         assert!(entry.surface == action::Surface::Viewer && !entry.recordable && !entry.mutates_authority, "{id}");
         let method = entry.run_method.strip_prefix("Viewer::").unwrap();
@@ -242,7 +242,11 @@ fn layout_catalog_rows_name_their_drive_rows_with_the_same_keys() {
         assert_eq!(a, b, "{id}");
     }
     assert_eq!(action::command("layout.preflight").map(|e| e.run_method), Some("LayoutEditor::preflight"));
-    assert!(!DRIVE_VIEWER.iter().any(|r| r.method == "layout_preflight"), "one preflight surface");
+    // One surface each where a viewer row's canonical id would repeat a typed id or a second preflight.
+    let render = action::command("layout.render_pdf_page").unwrap();
+    assert_eq!((render.surface, render.run_method), (action::Surface::Viewer, "Viewer::render_pdf_page"));
+    assert!(render.parameters.iter().any(|p| p.key == "path" && p.shape == action::OUTPUT_PATH), "the drive guards the written file");
+    assert!(!DRIVE_VIEWER.iter().any(|r| r.method == "layout_preflight" || r.method == "render_pdf_page"), "one surface each");
 }
 
 // ---- the process: no Rust call ------------------------------------------------------------------

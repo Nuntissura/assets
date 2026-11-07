@@ -366,7 +366,6 @@ pub(super) fn call(viewer: &mut Viewer, row: &DriveViewer, params: &Params) -> R
             layout(viewer.export_layout_pdf(a.path("path")?, a.flag_or("overwrite", false)?, &settings))?
         }
         "export_layout_idml" => layout(viewer.export_layout_idml(a.path("path")?, a.flag_or("overwrite", false)?))?,
-        "render_pdf_page" => layout(viewer.render_pdf_page(a.path("source")?, a.parsed("page", "page index")?, a.number("px_per_pt")?, a.path("path")?, a.flag_or("overwrite", false)?))?,
         // ---- vector tools ----
         "pen_point" => plain(viewer.pen_point(a.number("x")?, a.number("y")?, a.opt_point("drag")?, a.number("close_radius")?)),
         "pen_end" => {

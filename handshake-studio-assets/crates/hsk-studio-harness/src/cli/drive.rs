@@ -284,7 +284,7 @@ impl Live {
             return Err(refuse("unknown_command", json!({"command_id": format!("viewer.{method}"), "hint": "`help --json` lists drive.viewer"})));
         };
         self.check_revision(expected)?;
-        if matches!(method, "export" | "export_document" | "export_vector_svg" | "export_vector_pdf" | "export_layout_pdf" | "export_layout_idml" | "render_pdf_page")
+        if matches!(method, "export" | "export_document" | "export_vector_svg" | "export_vector_pdf" | "export_layout_pdf" | "export_layout_idml")
             && let Some(path) = params.get("path").map(Path::new)
         {
             // An export replaces bytes with no Run op: never the opened package, whatever the flags.
