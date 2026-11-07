@@ -773,11 +773,7 @@ impl Viewer {
             return Err("not_open".into());
         }
         let command = edit.command_id();
-        let (doc, rec, _) = self.layout_doc();
-        let current = self.shell.layout.as_ref().is_some_and(|ed| same_layout(ed.doc(), &doc) && *ed.records() == rec);
-        if !current {
-            self.shell.layout = Some(LayoutEditor::with_records(doc, rec));
-        }
+        self.layout_sync();
         let Some(ed) = self.shell.layout.as_mut() else {
             return Err("layout_editor_unavailable".into());
         };
@@ -791,8 +787,10 @@ impl Viewer {
             parents: rec.parents.clone(),
             longdoc: rec.longdoc.clone(),
         };
-        let document = doc.document.clone();
+        let mut document = doc.document.clone();
+        fit_spreads(&mut document);
         if self.run.submit_layout(command, command, document, records) {
+            self.dirty = true;
             return Ok(());
         }
         let code = self.op_error();
@@ -801,6 +799,46 @@ impl Viewer {
         }
         self.say(format!("layout: {command} {code}"));
         Err(code)
+    }
+
+    /// Brings the layout editor to the session's layout state (opens it when it is not open); an editor
+    /// already showing that state keeps its tool, selection and panel state.
+    pub fn layout_sync(&mut self) {
+        let (doc, rec, _) = self.layout_doc();
+        let current = self.shell.layout.as_ref().is_some_and(|ed| same_layout(ed.doc(), &doc) && *ed.records() == rec);
+        if !current {
+            self.shell.layout = Some(LayoutEditor::with_records(doc, rec));
+        }
+    }
+
+    /// Undoes (`undo`) or redoes the newest document step when it is a layout edit, then shows the
+    /// result in the layout editor. Refusals: `nothing_to_undo` / `nothing_to_redo`,
+    /// `not_a_layout_step` (the newest step is another tool's: EDIT > Undo takes it), or the session's
+    /// code; nothing changes.
+    pub fn layout_history_step(&mut self, undo: bool) -> Result<(), String> {
+        let history = self.run.history();
+        let stack = if undo { &history["undo"] } else { &history["redo"] };
+        let Some(newest) = stack.as_array().and_then(|s| s.last()).and_then(Value::as_str) else {
+            return Err(if undo { "nothing_to_undo" } else { "nothing_to_redo" }.into());
+        };
+        if !newest.starts_with("layout.") {
+            return Err("not_a_layout_step".into());
+        }
+        let ok = if undo { self.run.undo() } else { self.run.redo() };
+        if !ok {
+            return Err(self.op_error());
+        }
+        self.dirty = true;
+        self.layout_sync();
+        Ok(())
+    }
+
+    /// The document history as the layout commands report it: the newest undo and redo step names and
+    /// the step counts.
+    pub fn layout_history(&self) -> Value {
+        let h = self.run.history();
+        let count = |k: &str| h[k].as_array().map_or(0, Vec::len);
+        json!({"undo_name": h["undo"].as_array().and_then(|s| s.last()), "redo_name": h["redo"].as_array().and_then(|s| s.last()), "undo_steps": count("undo"), "redo_steps": count("redo")})
     }
 
     /// Whether `panel` exists now (open; it may be hidden).
@@ -1428,6 +1466,7 @@ impl Viewer {
         let mut note = "editing the open document's pages";
         if doc.page_spreads.is_empty() {
             doc.page_spreads = blank_layout_doc().document.page_spreads;
+            fit_spreads(&mut doc);
             note = "the open document has no pages; the first layout edit adds a blank one-page spread";
         }
         let stored = self.run.document_entry(hsk_studio_session::LAYOUT_RECORDS_ENTRY).map(|bytes| hsk_studio_session::LayoutRecords::parse(bytes, &doc, hsk_studio_folio::Budget::default(), self.cancel));
@@ -1656,6 +1695,32 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
         return Err(format!("open {}: {len} bytes exceeds {}", path.display(), crate::import::MAX_SOURCE_BYTES));
     }
     std::fs::read(path).map_err(|e| format!("open {}: {e}", path.display()))
+}
+
+/// Spread bounds in the document's unit (Folio refuses another): pages are in pt and a spread follows
+/// its pages (width = sum, height = tallest, the layout editor's own rule), its origin converted when it
+/// is in pt; px taken at 72 per inch. The layout editor writes spread bounds from page values in pt.
+#[allow(clippy::arithmetic_side_effects)] // finite document lengths times unit factors
+fn fit_spreads(doc: &mut hsk_studio_folio::StudioDocument) {
+    use hsk_studio_folio::GeometryUnit as U;
+    let unit = doc.geometry_unit;
+    let per_pt = match unit {
+        U::Mm => 25.4 / 72.0,
+        U::In => 1.0 / 72.0,
+        U::Px | U::Pt => 1.0,
+    };
+    for s in &mut doc.page_spreads {
+        let w: f64 = s.pages.iter().map(|p| p.width.value).sum();
+        let h = s.pages.iter().map(|p| p.height.value).fold(0.0, f64::max);
+        for l in [&mut s.bounds.x, &mut s.bounds.y] {
+            if l.unit != unit {
+                l.value *= if l.unit == U::Pt { per_pt } else { 1.0 };
+                l.unit = unit;
+            }
+        }
+        s.bounds.width = hsk_studio_folio::Length { value: w * per_pt, unit };
+        s.bounds.height = hsk_studio_folio::Length { value: h * per_pt, unit };
+    }
 }
 
 /// `a` and `b` are the same layout state, document revisions aside (the session moves the revision).

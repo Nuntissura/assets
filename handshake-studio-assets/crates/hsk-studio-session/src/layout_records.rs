@@ -163,16 +163,21 @@ impl LayoutRecords {
             if self.stories[..i].iter().any(|s| s.story_id == story.story_id) {
                 return Err(diag(Code::DuplicateIdentity, &story.story_id));
             }
-            // The layout engine keeps one empty paragraph in a zero-length story (hsk-studio-layout
-            // `replace_story_text`); Folio's partition of zero bytes is no paragraph. That form is
-            // validated as Folio's, its style references checked here.
-            let empty = matches!(&story.content, StoryContent::Inline { text_utf8 } if text_utf8.is_empty()) && story.paragraphs.iter().all(|p| p.start == 0 && p.end == 0);
+            // The layout engine keeps one empty paragraph (and a table's cell story one empty range)
+            // in a zero-length story (hsk-studio-layout `replace_story_text`, harness-view tables);
+            // Folio's partition of zero bytes is no paragraph and no range. That form is validated as
+            // Folio's, its style references checked here.
+            let zero = |s: u64, e: u64| s == 0 && e == 0;
+            let empty = matches!(&story.content, StoryContent::Inline { text_utf8 } if text_utf8.is_empty())
+                && story.paragraphs.iter().all(|p| zero(p.start, p.end))
+                && story.character_ranges.iter().all(|r| zero(r.start, r.end));
             let folio_form;
             let checked = if empty {
-                if story.paragraphs.iter().filter_map(|p| p.style_ref.as_deref()).any(|s| self.styles.style(s).is_none()) {
+                let mut refs = story.paragraphs.iter().filter_map(|p| p.style_ref.as_deref()).chain(story.character_ranges.iter().filter_map(|r| r.style_ref.as_deref()));
+                if refs.any(|s| self.styles.style(s).is_none()) {
                     return Err(diag(Code::DanglingReference, &story.story_id));
                 }
-                folio_form = StudioTextStory { paragraphs: Vec::new(), ..story.clone() };
+                folio_form = StudioTextStory { paragraphs: Vec::new(), character_ranges: Vec::new(), ..story.clone() };
                 &folio_form
             } else {
                 story

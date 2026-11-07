@@ -1,6 +1,8 @@
 //! `layout.*`: every [`LayoutEdit`] member and the editor's undo, redo and preflight by command id.
-//! Each edit is one named undo step of the layout editor; the first command opens the editor, as the
-//! window's panel does. Layout edits live in the editor until the layout records persist.
+//! Each edit is one named undo step of the document (`Viewer::layout_apply`, lane SMB-LAYOUT-PERSIST-1),
+//! saved with the package; the first command opens the editor, as the window's panel does, and every
+//! command first brings it to the document's state. `layout.undo` and `layout.redo` take the newest
+//! document step when it is a layout edit.
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::super::Viewer;
@@ -8,7 +10,7 @@ use super::super::shell::Panel;
 use super::decode::{Fields, folio_field, invalid, missing};
 use super::CommandRefusal;
 use super::super::layout_export::{self, LayoutExportRefusal, LayoutPdfSettings, PdfXStandard};
-use crate::layout_ui::{FindQuery, FindScope, LayoutEdit, LayoutEditor, LayoutUiError, PageEdit, StyleEdit, StylePatch, TableEdit};
+use crate::layout_ui::{FindQuery, FindScope, LayoutEdit, LayoutUiError, PageEdit, StyleEdit, StylePatch, TableEdit};
 use hsk_studio_folio as folio;
 use hsk_studio_layout::FindMode;
 use hsk_studio_layout::Severity;
@@ -112,11 +114,6 @@ fn edit_of(id: &str, f: Fields<'_>) -> Result<Option<LayoutEdit>, CommandRefusal
     }))
 }
 
-fn history(editor: &LayoutEditor) -> Value {
-    let (undo, redo) = editor.history_len();
-    json!({"undo_name": editor.undo_name(), "redo_name": editor.redo_name(), "undo_steps": undo, "redo_steps": redo})
-}
-
 /// A layout output method's typed refusal (lane SMB-LAYOUT-PDF-HOST-1).
 fn output_refused(r: LayoutExportRefusal) -> CommandRefusal {
     CommandRefusal::new(r.code, json!({"message": r.detail}))
@@ -175,26 +172,22 @@ pub(super) fn run(viewer: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value,
     if viewer.layout_editor().is_none() {
         viewer.toggle_panel(Panel::LayoutEditor).map_err(|message| CommandRefusal::new("layout_editor_unavailable", json!({"message": message})))?;
     }
+    let step = |r: Result<(), String>| r.map_err(|code| CommandRefusal::new(&code, Value::Null));
+    if let Some(edit) = edit {
+        step(viewer.layout_apply(edit))?;
+        return Ok(viewer.layout_history());
+    }
+    match id {
+        "layout.undo" | "layout.redo" => {
+            step(viewer.layout_history_step(id == "layout.undo"))?;
+            return Ok(viewer.layout_history());
+        }
+        _ => viewer.layout_sync(),
+    }
     let Some(editor) = viewer.layout_editor() else {
         return Err(CommandRefusal::new("layout_editor_unavailable", Value::Null));
     };
-    if let Some(edit) = edit {
-        editor.apply(edit).map_err(|e| refused(&e))?;
-        return Ok(history(editor));
-    }
     match id {
-        "layout.undo" => {
-            if !editor.undo() {
-                return Err(CommandRefusal::new("nothing_to_undo", Value::Null));
-            }
-            Ok(history(editor))
-        }
-        "layout.redo" => {
-            if !editor.redo() {
-                return Err(CommandRefusal::new("nothing_to_redo", Value::Null));
-            }
-            Ok(history(editor))
-        }
         "layout.find" => {
             let hits = editor.find(&find_query(f)?).map_err(|e| refused(&e))?;
             Ok(json!({"hits": hits.iter().map(|h| json!({"story": h.story, "start": h.start, "end": h.end, "replacement": h.replacement})).collect::<Vec<_>>()}))
