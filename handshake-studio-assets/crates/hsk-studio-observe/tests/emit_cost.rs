@@ -1,9 +1,11 @@
 //! Lane SMB-OBSERVE-DIAG-SINK-1: what one `Observe::emit` costs, measured, never asserted (a timing assertion is a
 //! flaky test). Run it in release, one test thread:
 //! `cargo nextest run -p hsk-studio-observe --release --run-ignored only -E 'test(emit_cost)' --no-capture`.
-//! It uses only the API that existed before the ring wiring, so the same file measures both sides of the change.
+//! `emit_cost_with_no_port_bound` uses only the API that existed before the ring wiring, so it measures both sides of
+//! that change.
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::{Budget, DeliveryClass, DeliveryError, Observation, Observe, Outcome, Progress, SinkPort};
+use hsk_studio_observe::ring::{RingIdentity, RingProducerPort, RingRecord, RingRefusal, RingTiming, bind_thread_ring};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -18,9 +20,7 @@ impl SinkPort for Quiet {
 const PER_EMITTER: u32 = 1024;
 const EMITTERS: usize = 4000;
 
-#[test]
-#[ignore = "measurement only: prints ns per emit, asserts no timing; run in release with --run-ignored only"]
-fn emit_cost_with_no_port_bound() {
+fn measure(label: &str) {
     let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-00000000beef").unwrap();
     let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap();
     let cancel = CancellationToken::default();
@@ -43,10 +43,31 @@ fn emit_cost_with_no_port_bound() {
     }
     per_batch.sort_by(f64::total_cmp);
     println!(
-        "MEASURE emit_cost ns_per_emit min={:.1} median={:.1} p99={:.1} emits={}",
+        "MEASURE {label} ns_per_emit min={:.1} median={:.1} p99={:.1} emits={}",
         per_batch[0],
         per_batch[per_batch.len() / 2],
         per_batch[per_batch.len() * 99 / 100],
         EMITTERS * PER_EMITTER as usize,
     );
+}
+
+#[test]
+#[ignore = "measurement only: prints ns per emit, asserts no timing; run in release with --run-ignored only"]
+fn emit_cost_with_no_port_bound() {
+    measure("emit_cost_no_port");
+}
+
+struct NoOpPort;
+impl RingProducerPort for NoOpPort {
+    fn try_record(&mut self, record: &RingRecord) -> Result<(), RingRefusal> {
+        black_box(record);
+        Ok(())
+    }
+}
+
+#[test]
+#[ignore = "measurement only: prints ns per emit, asserts no timing; run in release with --run-ignored only"]
+fn emit_cost_with_a_port_bound() {
+    let _binding = bind_thread_ring(Box::new(NoOpPort), RingIdentity::default(), RingTiming::default).unwrap();
+    measure("emit_cost_port_bound");
 }

@@ -3,8 +3,19 @@
 //! Observe stays a bounded adapter, not a recorder or authority: this module declares the record shape, the
 //! closed code vocabulary, the outcome mapping and the producer port. It has no ring, no reader, no storage, no
 //! catalogue and no session registry. The ring, its reader and Palmistry are Handshake's (MT-36233); the host
-//! adapter onto `DiagRingWriter` is Handshake work (MT-36190). `Observe::emit*` is not wired to this port in
-//! phase 0, and `SinkPort` and the wire versions 1-5 are unchanged.
+//! adapter onto `DiagRingWriter` is Handshake work (MT-36190). `SinkPort` and the wire versions 1-5 are unchanged.
+//!
+//! # Wiring (lane SMB-OBSERVE-DIAG-SINK-1)
+//!
+//! A host gives a thread its producer handle with [`bind_thread_ring`]. Every `Observe::emit*` on that thread then
+//! offers one record: [`RingRecord::terminal`] for an accepted emission, [`RingRecord::delivery_failure`] for a
+//! refusing sink or progress over its admission budget (`Saturated`). A call refused before delivery (stale
+//! revision, closed emitter, reconciliation required, invalid progress, frame limit) is no outcome and offers
+//! nothing. The binding is per thread because the port is one SPSC handle, and it reaches every emitter in every
+//! crate without touching their constructors; a thread without a binding records nothing. A ring refusal is counted
+//! ([`ThreadRingBinding::state`]) and never changes what `emit*` returns (`tests/ring_wired.rs`
+//! `a_ring_refusal_never_changes_what_emit_returns_and_is_counted`). Observe still reads no clock: the binding
+//! carries the caller's [`RingClock`]. No shipped path binds a port yet: the adapter is Handshake's.
 //!
 //! # Record layout ([`RingRecord`], `#[repr(C)]`, 104 bytes, align 8, no implicit padding)
 //!
@@ -114,6 +125,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::{DeliveryError, FailureCode, Outcome, Receipt};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Size of a [`RingRecord`] in bytes (56-byte `DiagEvent` core plus the 48-byte identity tail).
 pub const RING_RECORD_BYTES: usize = 104;
@@ -717,22 +730,90 @@ pub enum RingBindRefusal {
     AlreadyBound,
 }
 
-/// The current thread's binding; dropping it unbinds the thread.
+/// The current thread's binding; dropping it unbinds the thread and drops the port. It stays on the thread it was
+/// made on, because the handle it stands for is that thread's.
 #[must_use = "dropping the binding unbinds the thread"]
 pub struct ThreadRingBinding {
-    not_send: core::marker::PhantomData<*const ()>,
+    _not_send: core::marker::PhantomData<*const ()>,
 }
 impl ThreadRingBinding {
+    /// This thread's counts so far.
     pub fn state(&self) -> RingWireState {
-        RingWireState::default()
+        BOUND
+            .try_with(|cell| cell.try_borrow().ok().and_then(|bound| bound.as_ref().map(|b| b.state)).unwrap_or_default())
+            .unwrap_or_default()
+    }
+}
+impl Drop for ThreadRingBinding {
+    fn drop(&mut self) {
+        // Taken out first: the port's own Drop runs with the cell free.
+        let port = BOUND.try_with(|cell| cell.try_borrow_mut().ok().and_then(|mut bound| bound.take()));
+        drop(port);
+        BOUND_THREADS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
-/// RED STUB (lane SMB-OBSERVE-DIAG-SINK-1): binds nothing; the next commit wires it.
+struct Bound {
+    port: Box<dyn RingProducerPort>,
+    identity: RingIdentity,
+    clock: RingClock,
+    state: RingWireState,
+}
+/// Threads with a binding. With none, an emission reads this one relaxed atomic and touches nothing else.
+static BOUND_THREADS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static BOUND: RefCell<Option<Bound>> = const { RefCell::new(None) };
+}
+
+/// Gives this thread its producer handle: from here on every `Observe::emit*` on this thread, in any crate, also
+/// offers its record to `port`. Binding is the setup call and may allocate; the emissions do not.
 pub fn bind_thread_ring(
-    _port: Box<dyn RingProducerPort>,
-    _identity: RingIdentity,
-    _clock: RingClock,
+    port: Box<dyn RingProducerPort>,
+    identity: RingIdentity,
+    clock: RingClock,
 ) -> Result<ThreadRingBinding, RingBindRefusal> {
-    Ok(ThreadRingBinding { not_send: core::marker::PhantomData })
+    let bound = BOUND.try_with(|cell| {
+        let mut slot = cell.try_borrow_mut().map_err(|_| RingBindRefusal::AlreadyBound)?;
+        if slot.is_some() {
+            return Err(RingBindRefusal::AlreadyBound);
+        }
+        *slot = Some(Bound { port, identity, clock, state: RingWireState::default() });
+        Ok(())
+    });
+    // A thread whose locals are already gone cannot emit either; it never gets a binding.
+    bound.map_err(|_| RingBindRefusal::AlreadyBound)??;
+    BOUND_THREADS.fetch_add(1, Ordering::Relaxed);
+    Ok(ThreadRingBinding { _not_send: core::marker::PhantomData })
+}
+
+/// Offers one record to this thread's port, if it has one. Never fails and never changes the caller's result: a
+/// refusal is only counted. A port that emits from inside `try_record` finds the cell taken and records nothing.
+#[inline]
+fn offer(make: impl FnOnce(RingIdentity, RingTiming) -> RingRecord) {
+    if BOUND_THREADS.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    let _ = BOUND.try_with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else { return };
+        let Some(bound) = slot.as_mut() else { return };
+        let record = make(bound.identity, (bound.clock)());
+        let count = match bound.port.try_record(&record) {
+            Ok(()) => &mut bound.state.recorded,
+            Err(RingRefusal::Saturated) => &mut bound.state.saturated,
+            Err(RingRefusal::Unavailable) => &mut bound.state.unavailable,
+        };
+        *count = count.saturating_add(1);
+    });
+}
+/// The record of an emission the sink accepted.
+#[inline]
+pub(crate) fn offer_receipt(receipt: &Receipt) {
+    offer(|identity, timing| RingRecord::terminal(receipt, identity, timing));
+}
+/// The record of an emission that was not delivered: a refusing sink, or progress over its admission budget.
+#[inline]
+pub(crate) fn offer_refusal(error: DeliveryError, correlation: u64, attempted_sequence: u64) {
+    offer(|identity, timing| {
+        RingRecord::delivery_failure(error, CorrelationRef::new(correlation), attempted_sequence, identity, timing)
+    });
 }
