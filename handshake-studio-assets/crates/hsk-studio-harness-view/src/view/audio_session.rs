@@ -119,6 +119,9 @@ pub const MAX_STEMS: usize = 32;
 /// 90 gate; no spec clause names a value).
 pub const STEM_SUM_LIMIT_DBFS: f64 = -90.0;
 
+/// A repaired clip source: its edited samples and their length.
+type Repaired = (ClipSource, Arc<Vec<Vec<f32>>>, Ticks);
+
 /// The export's sound port ([`super::Viewer::set_export_audio`]) with repaired audio resolved: a
 /// clip source whose samples are the source of the stored waveform edit list
 /// ([`super::waveform::WAVEFORM_EDIT_ENTRY`], one undo step per edit, saved with the package) plays
@@ -130,7 +133,7 @@ pub struct SequenceSound {
     /// Port extents of the document's clip sources, read once.
     extents: Vec<(ClipSource, Ticks)>,
     /// Sources the edit list applies to: the edited samples and their length.
-    repaired: Vec<(ClipSource, Arc<Vec<Vec<f32>>>, Ticks)>,
+    repaired: Vec<Repaired>,
     rate: u32,
 }
 
