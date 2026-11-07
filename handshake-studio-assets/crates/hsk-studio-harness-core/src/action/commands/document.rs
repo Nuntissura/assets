@@ -59,4 +59,6 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("document.checkpoint", "checkpoint", "Checkpoint document", false, false, &[]),
     entry("document.verify", "verify_live / verify_reopened", "Verify document", false, false, &[]),
     entry("document.summary", "summary", "Document summary", false, false, &[]),
+    // A host-owned read recorded with its frame (lane SMB-DOC-EXPORT-1: the document export); changes no authority.
+    entry("document.record_host_outcome", "record_host_outcome", "Record host read", false, false, &[]),
 ];
