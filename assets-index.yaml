@@ -571,6 +571,7 @@ assets:
   purpose: Rich-document blocks, selections, undo history, and serialization.
   capabilities:
   - Rich-document blocks, selections, undo history, and serialization.
+  - Complete canonical legacy tag-name validation
   manual: Notes/handshake_rich_document_model/README.md
   packages:
   - name: handshake_rich_document_model

@@ -52,8 +52,8 @@ pub use fragment::{
 };
 pub use history::{UndoManager, DEFAULT_HISTORY_CAP};
 pub use node::{
-    BlockNode, Child, HeadingLevel, HsLinkNode, Mark, NodeKind, ReferenceTargetKind, TagReference,
-    TagReferenceKind, TextLeaf,
+    is_canonical_legacy_tag_name, BlockNode, Child, HeadingLevel, HsLinkNode, Mark, NodeKind,
+    ReferenceTargetKind, TagReference, TagReferenceKind, TextLeaf,
 };
 pub use path_trace::{
     SplitBlockChild, SplitSide, StepPathTrace, TracedTransactionReceipt, TransactionTrace,

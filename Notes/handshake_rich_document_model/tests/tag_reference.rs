@@ -1,10 +1,23 @@
 use handshake_rich_document_model::{
-    apply_transaction, from_json_value, replace_selection_with_fragment, to_content_json_value,
-    validate_tree, ActorKind, BlockNode, Child, DocJsonError, DocPosition, FragmentReplaceOptions,
-    HsLinkNode, NodeKind, RichFragment, SchemaError, Selection, Step, TagReference,
-    TagReferenceKind, TextLeaf, Transaction, TransformError, UndoManager,
+    apply_transaction, from_json_value, is_canonical_legacy_tag_name, replace_selection_with_fragment,
+    to_content_json_value, validate_tree, ActorKind, BlockNode, Child, DocJsonError, DocPosition,
+    FragmentReplaceOptions, HsLinkNode, NodeKind, RichFragment, SchemaError, Selection, Step,
+    TagReference, TagReferenceKind, TextLeaf, Transaction, TransformError, UndoManager,
 };
 use serde_json::json;
+
+#[test]
+fn legacy_tag_name_requires_a_complete_canonical_body() {
+    for name in ["a", "0", "_", "/", "-", "area/sub-tag_42"] {
+        assert!(is_canonical_legacy_tag_name(name), "{name:?}");
+    }
+    for name in [
+        "", "Rust", "#rust", " rust", "rust ", "rust,tag", "rust.tag", "rust\\tag",
+        "rust\n", "rust\0", "café", "rust／tag",
+    ] {
+        assert!(!is_canonical_legacy_tag_name(name), "{name:?}");
+    }
+}
 
 fn document(link: HsLinkNode) -> BlockNode {
     BlockNode::doc(vec![BlockNode::with_children(

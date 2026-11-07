@@ -356,6 +356,17 @@ impl TagReferenceKind {
     }
 }
 
+/// Tests whether the entire name is a nonempty canonical legacy tag body.
+///
+/// Accepts only lowercase ASCII letters, ASCII digits, and `_`, `/`, `-`.
+/// Use this at legacy name lookup boundaries. Full titles and IDs are opaque.
+pub fn is_canonical_legacy_tag_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'/' | b'-'))
+}
+
 /// Host resolution must keep unclassified historical values distinct from IDs
 /// and names. Neither value syntax nor lookup failure determines their meaning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
