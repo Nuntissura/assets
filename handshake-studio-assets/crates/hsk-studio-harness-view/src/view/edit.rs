@@ -533,6 +533,7 @@ impl Viewer {
     }
 
     fn paint_inner(&mut self, layer_id: &str, samples: &[StrokeSample]) -> Result<u64, String> {
+        self.refuse_placed_pixels("paint", layer_id)?;
         let snap = self.run.snapshot().ok_or("paint: nothing open")?;
         let doc = snap.document();
         let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| format!("paint: unknown layer {layer_id}"))?;

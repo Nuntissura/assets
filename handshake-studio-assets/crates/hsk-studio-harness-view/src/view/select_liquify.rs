@@ -529,6 +529,7 @@ impl Viewer {
     }
 
     fn liquify_inner(&mut self, layer_id: &str, tool: LiquifyTool, samples: &[StrokeSample], brush: &LiquifyBrush) -> Result<u64, String> {
+        self.refuse_placed_pixels("liquify", layer_id)?;
         let (region, px) = self.layer_pixels("liquify", layer_id, None)?;
         let limits = LiquifyLimits::default();
         let mut mesh = LiquifyMesh::new(region, LIQUIFY_SPACING, &limits).map_err(|e| format!("liquify: {}", e.code()))?;

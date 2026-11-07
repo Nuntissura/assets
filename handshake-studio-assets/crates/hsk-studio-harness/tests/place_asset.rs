@@ -113,6 +113,12 @@ fn an_embedded_placement_is_one_step_and_survives_save_and_reopen() {
     assert_eq!((rows[0]["layer_id"].as_str(), rows[0]["link_state"].as_str()), (Some(layer.as_str()), Some("embedded")));
     assert_eq!(rows[0]["transform"], json!([1.0, 0.0, 0.0, 1.0, 4.0, 6.0]));
     assert_eq!(v.state_json()["placed"]["placements"].as_array().map(Vec::len), Some(1));
+    // Undoing the placement removes the layer and its record together; redo brings both back.
+    v.undo().unwrap();
+    assert_eq!((layers(&v), placements(&mut v).len()), (before, 0));
+    assert!(near(px(&mut v, 5, 7), PLATE));
+    v.redo().unwrap();
+    assert_eq!((layers(&v), placements(&mut v).len()), (before + 1, 1));
 
     let out = s.path("out.handshake");
     v.save(&out, false).unwrap_or_else(|e| panic!("{e}"));
@@ -125,16 +131,11 @@ fn an_embedded_placement_is_one_step_and_survives_save_and_reopen() {
     let t = FreeTransform { scale_x: 200.0, scale_y: 200.0, reference_point: Anchor::TopLeft, ..FreeTransform::default() };
     let done = w.free_transform(&layer, &t).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(done["transform"], json!([2.0, 0.0, 0.0, 2.0, 4.0, 6.0]), "{done}");
-    assert!(near(px(&mut w, 35, 21), HERO), "{:?}", px(&mut w, 35, 21));
+    assert!(near(px(&mut w, 33, 20), HERO), "{:?}", px(&mut w, 33, 20));
     assert!(last_undo(&w).starts_with("transform.free_transform"), "{}", last_undo(&w));
     w.undo().unwrap();
     assert_eq!(placements(&mut w)[0]["transform"], json!([1.0, 0.0, 0.0, 1.0, 4.0, 6.0]));
-    assert!(near(px(&mut w, 35, 21), PLATE));
-    // Undoing the placement removes the layer and its record together.
-    w.undo().unwrap();
-    assert_eq!((layers(&w), placements(&mut w).len()), (before, 0));
-    w.redo().unwrap();
-    assert_eq!((layers(&w), placements(&mut w).len()), (before + 1, 1));
+    assert!(near(px(&mut w, 33, 20), PLATE));
 }
 
 /// Steps photo-retouch 83 and board-slides-web 64: a linked placement records the file relative to the document's
@@ -255,6 +256,9 @@ fn hostile_input_is_refused_typed_and_changes_nothing() {
     }
     assert_eq!(v.move_content("SLYR-019abcde-0000-7000-8000-00000000dead", 1.0, 1.0).unwrap_err().code, "layer_unknown");
     assert_eq!(v.embed_link(&layer).unwrap_err().code, "layer_not_linked");
+    // Paint would be lost at the next render from the source: the placed layer refuses it, as the fill tools do.
+    let stroke = [hsk_studio_pigment::brush::StrokeSample { x: 2.0, y: 2.0, pressure: None, time_ms: None }];
+    assert!(v.paint(&layer, &stroke).unwrap_err().contains("layer_not_pixel"));
     assert_eq!(v.run().snapshot().unwrap().document().revision, revision);
     // A blank document opened from no file has no folder to link against; embedding needs none.
     let mut fresh = Viewer::new(Prefer::Cpu);
@@ -350,7 +354,7 @@ fn a_model_places_transforms_saves_and_exports_through_the_process() {
     ];
     // The layer id of line 1 is only known from its reply: run line 1 alone first.
     let (_, first) = session(&package, &lines[..1], &s.0);
-    assert_eq!(first.len(), 2, "{first:?}");
+    assert_eq!(first.len(), 3, "open, the line, ended: {first:?}");
     let layer_hint = first[1]["detail"]["result"]["layer_id"].as_str().expect("a layer id").to_owned();
     assert!(first[1]["detail"]["undo_name"].as_str().is_some_and(|n| n.starts_with("asset.place")), "{}", first[1]);
     assert_eq!(first[1]["attribution"]["actor"]["account_id"], "lane-place", "{}", first[1]["attribution"]);
@@ -377,7 +381,7 @@ fn a_model_places_transforms_saves_and_exports_through_the_process() {
         let i = (y * decoded.width as usize + x) * c;
         [samples[i], samples[i + 1], samples[i + 2]]
     };
-    assert!(at(35, 21).iter().zip(HERO).all(|(a, b)| a.abs_diff(b) <= 2), "{:?}", at(35, 21));
+    assert!(at(33, 20).iter().zip(HERO).all(|(a, b)| a.abs_diff(b) <= 2), "{:?}", at(33, 20));
     assert!(at(44, 4).iter().zip(HERO_2).any(|(a, b)| a.abs_diff(b) > 20), "30 % opacity is not the full colour: {:?}", at(44, 4));
     let mut w = Viewer::new(Prefer::Cpu);
     w.open(&out).unwrap_or_else(|e| panic!("{e}"));

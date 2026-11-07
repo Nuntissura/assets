@@ -94,8 +94,6 @@ pub const MAX_PLACE_PIXELS: u64 = render::MAX_VIEW_PIXELS;
 pub const MAX_INSTANCES: usize = 65_536;
 /// Longest source name kept.
 const MAX_NAME_BYTES: usize = 128;
-/// Red commit of lane SMB-PLACE-ASSET-1: the commands refuse `not_built` until the engine lands.
-const BUILT: bool = false;
 
 /// A refusal: a stable code and a detail for people.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -459,11 +457,21 @@ impl Viewer {
         }
     }
 
+    /// Refuses a pixel edit of a placed-asset layer: its tiles are the source rendered through the instance
+    /// transform, so paint there would be lost at the next transform (lane SMB-PLACE-ASSET-1, V4-06 sibling
+    /// of the fill tools' refusal).
+    pub(super) fn refuse_placed_pixels(&self, label: &str, layer_id: &str) -> Result<(), String> {
+        if self.records.as_ref().and_then(|r| r.layer(layer_id)).is_some_and(|r| r.placed_asset.is_some()) {
+            return Err(format!("{label}: layer_not_pixel: {layer_id} is a placed asset layer; rasterize it first (STU-RAS-117)"));
+        }
+        Ok(())
+    }
+
     /// After an open: the import records it read, then the effective set and the link states.
     pub(super) fn place_opened(&mut self, import: Option<StudioRasterRecords>) {
         self.place = PlaceState { import, links: BTreeMap::new() };
         self.place_sync();
-        if let Ok(Some(entry)) = self.read_place_entry() {
+        if let Some(entry) = self.run.snapshot().map(|s| s.document().clone()).and_then(|doc| self.editable_entry(&doc).ok()) {
             self.check_links(&entry);
         }
     }
@@ -478,7 +486,7 @@ impl Viewer {
     /// The [STU-ASSET-007] state of a linked source now.
     fn link_state(&self, uri: &str, content_digest: &str) -> &'static str {
         match self.link_base() {
-            Ok(base) => state_token(LinkedFileResolver::new(&crate::harness::TrustAll, base).check(uri, content_digest)),
+            Ok(base) => state_token(LinkedFileResolver::new(&crate::harness::TrustAll, base).with_max_bytes(MAX_SOURCE_BYTES).check(uri, content_digest)),
             Err(_) => "unresolved",
         }
     }
@@ -509,7 +517,14 @@ impl Viewer {
                 self.run.asset_bytes(&digest).map_err(|c| PlaceRefusal::new(c, source_id.to_owned()))
             }
             StudioPlacedMode::Linked { uri, content_digest, .. } => match self.link_state(uri, content_digest) {
-                "resolved" => self.read_link(uri),
+                "resolved" => {
+                    // Read once more and compared again: the file may change between the check and the read.
+                    let bytes = self.read_link(uri)?;
+                    if format!("sha256:{}", hsk_studio_package::sha256_hex_of(&bytes)) != *content_digest {
+                        return no("placed_link_modified", uri.clone());
+                    }
+                    Ok(bytes)
+                }
                 "unresolved" => no("link_base_unknown", uri.clone()),
                 state => no(&format!("placed_link_{state}"), uri.clone()),
             },
@@ -625,7 +640,7 @@ impl Viewer {
 
     /// Runs `f` and reports its refusal on the status line.
     fn place_reported(&mut self, op: &str, f: impl FnOnce(&mut Self) -> Res<Value>) -> Res<Value> {
-        let r = if BUILT { f(self) } else { no("not_built", op.to_owned()) };
+        let r = f(self);
         match &r {
             Ok(_) => {
                 self.dirty = true;
@@ -775,9 +790,6 @@ impl Viewer {
         if let Some(asset) = entry.placed(layer_id).cloned() {
             return self.transform_placed(op, layer_id, change, entry, asset);
         }
-        if self.records.as_ref().and_then(|r| r.layer(layer_id)).is_some_and(|r| r.fill_layer.is_some()) {
-            return no("layer_not_pixel", "a fill layer");
-        }
         let filter = match change {
             Edit::Reset => return no("layer_not_placed", layer_id.to_owned()),
             Edit::Move(dx, dy) if dx.fract() != 0.0 || dy.fract() != 0.0 => return no("move_not_whole_pixels", "a pixel layer moves by whole pixels"),
@@ -870,14 +882,10 @@ impl Viewer {
         })
     }
 
-    fn placements(&self, live: bool) -> Value {
-        if !BUILT {
-            return json!({"placements": [], "sources": 0});
-        }
-        let (Some(doc), Ok(Some(mut entry))) = (self.run.snapshot().map(|s| s.document()), self.read_place_entry()) else {
+    fn placements(&self) -> Value {
+        let Some(entry) = self.run.snapshot().and_then(|s| self.editable_entry(s.document()).ok()) else {
             return json!({"placements": [], "sources": 0});
         };
-        entry.prune(doc);
         let rows: Vec<Value> = entry
             .records
             .layers
@@ -886,7 +894,6 @@ impl Viewer {
             .map(|(r, a)| {
                 let state = match entry.records.placed_source(&a.source_id).map(|s| &s.location) {
                     Some(StudioPlacedMode::Embedded { .. }) => "embedded",
-                    Some(StudioPlacedMode::Linked { uri, content_digest, .. }) if live => self.link_state(uri, content_digest),
                     Some(StudioPlacedMode::Linked { .. }) => self.place.links.get(&a.source_id).copied().unwrap_or("unresolved"),
                     None => "unresolved",
                 };
@@ -898,15 +905,15 @@ impl Viewer {
 
     /// `asset.list_placements` (module docs): every placement, link states checked now.
     pub fn list_placements(&mut self) -> Value {
-        if let Ok(Some(entry)) = self.read_place_entry() {
+        if let Some(entry) = self.run.snapshot().map(|s| s.document().clone()).and_then(|doc| self.editable_entry(&doc).ok()) {
             self.check_links(&entry);
         }
-        self.placements(true)
+        self.placements()
     }
 
     /// `state_json()["placed"]`: the placements with the link states of the last check.
     pub fn placed_json(&self) -> Value {
-        self.placements(false)
+        self.placements()
     }
 
     /// `asset.update_all_modified` (module docs). Returns `{updated: [source_id], missing: [source_id],
