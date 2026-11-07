@@ -66,6 +66,20 @@ impl Args<'_> {
     fn list(&self, key: &str) -> Result<Vec<String>, Refusal> {
         Ok(self.text(key)?.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
     }
+    /// A JSON list of strings, else comma separated (a path may hold a comma only in the JSON form).
+    fn names(&self, key: &str) -> Result<Vec<String>, Refusal> {
+        let text = self.text(key)?;
+        if text.trim_start().starts_with('[') {
+            return serde_json::from_str(text).map_err(|_| invalid(key, "JSON list of strings"));
+        }
+        self.list(key)
+    }
+    fn ticks(&self, key: &str) -> Result<hsk_studio_accord::Ticks, Refusal> {
+        self.parsed::<u64>(key, "ticks").map(hsk_studio_accord::Ticks::new)
+    }
+    fn opt_ticks(&self, key: &str) -> Result<Option<hsk_studio_accord::Ticks>, Refusal> {
+        self.opt(key).map(|_| self.ticks(key)).transpose()
+    }
     fn json(&self, key: &str, expected: &str) -> Result<Value, Refusal> {
         serde_json::from_str(self.text(key)?).map_err(|_| invalid(key, expected))
     }
@@ -337,6 +351,26 @@ pub(super) fn call(viewer: &mut Viewer, row: &DriveViewer, params: &Params) -> R
             viewer.proof_set_save_name(a.text("name")?);
             Ok(Value::Null)
         }
+        // ---- project bin and sequences (lane SMB-PROJECT-BIN-1) ----
+        "project_new_sequence" => plain(viewer.project_new_sequence(a.text("name")?, a.text("preset_id")?)),
+        "project_add_tracks" => {
+            let kinds = ["video", "audio", "caption", "submix"];
+            let kind = crate::view::project::track_kind(kinds[a.token("kind", &kinds)?]).ok_or_else(|| invalid("kind", "video|audio|caption|submix"))?;
+            viewer.project_add_tracks(a.text("sequence_id")?, kind, &a.names("names")?).map(Into::into)
+        }
+        "project_new_folder" => plain(viewer.project_new_folder(a.text("name")?, a.opt("parent"))),
+        "project_move_items" => unit(viewer.project_move_items(&a.names("items")?, a.opt("folder"))),
+        "project_remove_items" => unit(viewer.project_remove_items(&a.names("items")?)),
+        "project_place_item" => plain(viewer.project_place_item(a.text("sequence_id")?, a.text("track_id")?, a.text("item_id")?, a.ticks("start")?, a.opt_ticks("source_in")?, a.opt_ticks("source_out")?)),
+        #[cfg(feature = "media")]
+        "project_import" => {
+            let paths: Vec<std::path::PathBuf> = a.names("paths")?.into_iter().map(std::path::PathBuf::from).collect();
+            viewer.project_import(&paths, a.opt("folder"))
+        }
+        #[cfg(feature = "media")]
+        "project_bind" => viewer.project_bind(a.text("sequence_id")?, a.parsed("width", "width")?, a.parsed("height", "height")?, a.parsed("sample_rate_hz", "sample rate")?),
+        #[cfg(not(feature = "media"))]
+        "project_import" | "project_bind" => return Err(refuse("feature_unavailable", serde_json::json!({"feature": "media"}))),
         other => return Err(refuse("command_not_driveable", serde_json::json!({"command_id": format!("viewer.{other}")}))),
     })
 }
