@@ -122,6 +122,11 @@ fn new_never_replaces_a_file_unasked() {
 fn routed_catalog_rows_declare_the_drive_rows_keys() {
     use hsk_studio_harness_core::manual::{DRIVE_CATALOG_ROUTES, DRIVE_VIEWER};
     for (id, method) in DRIVE_CATALOG_ROUTES {
+        // A menu leaf id (`studio.*`, STU-SHL-023) is no catalog row: it has the viewer row's keys by route.
+        if id.starts_with("studio.") {
+            assert!(action::command(id).is_none(), "{id}");
+            continue;
+        }
         let row = DRIVE_VIEWER.iter().find(|r| r.method == *method).unwrap_or_else(|| panic!("{id}: no viewer row {method}"));
         let mut drive: Vec<&str> = row.params.iter().map(|p| p.key).collect();
         drive.sort_unstable();
