@@ -710,6 +710,16 @@ fn toolkit_gate(root: &Path, workspace: &Document, members: &[String]) -> Result
     }
     toolkit_wgsl_gate(&toolkit_wgsl_files(root)?)
 }
+// A declared member path: one plain relative path under crates/ with a Studio crate name.
+fn declared_member_path_ok(path: &str) -> bool {
+    path.starts_with("crates/hsk-studio-")
+        && !path.contains(['*', '?'])
+        && Path::new(path).components().all(|c| matches!(c, Component::Normal(_)))
+}
+// The manifest's exact requirement against the pin's lock version.
+fn exact_version_pin(actual: &str, version: &str) -> bool {
+    actual == format!("={version}")
+}
 fn native_name(name: &str) -> bool {
     name.ends_with("-sys") || name.ends_with("_sys")
 }
@@ -793,7 +803,7 @@ fn registry_closure(
     let pin = as_map(direct.get(dep).ok_or("registry_direct_pin_missing")?)?;
     exact_keys(pin, &["version", "features", "default-features"])?;
     let version = text_key(pin, "version")?;
-    if !stable_version(version) || text_key(actual, "version")? != format!("={version}") {
+    if !stable_version(version) || !exact_version_pin(text_key(actual, "version")?, version) {
         return Err("registry_exact_version_pin_required".into());
     }
     if pin
@@ -1034,6 +1044,26 @@ fn toolkit_gate_self_test() -> Result<usize> {
         ("hsk-studio-new", "[features]\nui = [\"hsk-studio-controls?/egui\"]\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
         ("hsk-studio-harness-core", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n", "toolkit_gate_forward/hsk-studio-harness-core/hsk-studio-controls/egui"),
         ("hsk-studio-harness", "[features]\nui = [\"hsk-studio-controls/egui\"]\n", "toolkit_gate_forward/hsk-studio-harness/hsk-studio-controls/egui"),
+        // The Vulkan and host crates gain nothing beyond the one winit entry; winit stays out of every other crate.
+        ("hsk-studio-vulkan", "[dependencies]\nwinit = { V }\n", "toolkit_gate_dependency/hsk-studio-vulkan/winit"),
+        ("hsk-studio-vulkan", "[dependencies]\nwgpu = { V }\n", "toolkit_gate_dependency/hsk-studio-vulkan/wgpu"),
+        ("hsk-studio-vulkan", "[dependencies]\nnaga = { V }\n", "toolkit_gate_dependency/hsk-studio-vulkan/naga"),
+        ("hsk-studio-vulkan", "[dependencies]\neframe = { V }\n", "toolkit_gate_dependency/hsk-studio-vulkan/eframe"),
+        ("hsk-studio-vulkan", "[dependencies]\negui = { V }\n", "toolkit_gate_dependency/hsk-studio-vulkan/egui"),
+        ("hsk-studio-native-host", "[dependencies]\nwgpu = { V }\n", "toolkit_gate_dependency/hsk-studio-native-host/wgpu"),
+        ("hsk-studio-native-host", "[dependencies]\negui-winit = { V }\n", "toolkit_gate_dependency/hsk-studio-native-host/egui-winit"),
+        ("hsk-studio-native-host", "[dependencies]\nw = { package = \"egui\", V }\n", "toolkit_gate_dependency/hsk-studio-native-host/egui"),
+        ("kumihimo-ui", "[dependencies]\nwinit = { V }\n", "toolkit_gate_dependency/kumihimo-ui/winit"),
+        // kumihimo-*: no hsk-studio-* in the closure, in any dependency table or spelling.
+        ("kumihimo-ui", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false }\n", "kumihimo_gate_dependency/kumihimo-ui/hsk-studio-controls"),
+        ("kumihimo-ui", "[dev-dependencies]\nhsk-studio-accord = { path = \"../hsk-studio-accord\", version = \"=0.1.0\", default-features = false }\n", "kumihimo_gate_dependency/kumihimo-ui/hsk-studio-accord"),
+        ("kumihimo-ui", "[build-dependencies]\nhsk-studio-observe = { path = \"../hsk-studio-observe\", version = \"=0.1.0\", default-features = false }\n", "kumihimo_gate_dependency/kumihimo-ui/hsk-studio-observe"),
+        ("kumihimo-ui", "[target.'cfg(windows)'.dependencies]\nhsk-studio-type = { path = \"../hsk-studio-type\", version = \"=0.1.0\", default-features = false }\n", "kumihimo_gate_dependency/kumihimo-ui/hsk-studio-type"),
+        ("kumihimo-ui", "[dependencies]\nt = { package = \"hsk-studio-type\", path = \"../hsk-studio-type\", version = \"=0.1.0\", default-features = false }\n", "kumihimo_gate_dependency/kumihimo-ui/hsk-studio-type"),
+        ("kumihimo-ui", "[dependencies]\nt = { path = \"../hsk-studio-type\", version = \"=0.1.0\", default-features = false }\n", "kumihimo_gate_dependency/kumihimo-ui/hsk-studio-type"),
+        ("kumihimo-ui", "[dependencies]\nHSK-STUDIO-TYPE = { V }\n", "kumihimo_gate_dependency/kumihimo-ui/HSK-STUDIO-TYPE"),
+        ("kumihimo-ui", "[dependencies.hsk-studio-type]\nversion = \"=1.0.0\"\n", "kumihimo_gate_dependency/kumihimo-ui/hsk-studio-type"),
+        ("kumihimo-dock", "[dependencies]\nhsk-studio-controls = { V }\n", "kumihimo_gate_dependency/kumihimo-dock/hsk-studio-controls"),
         // The root table a crate inherits from.
         ("workspace", "[workspace.dependencies]\nwinit = { V }\n", "toolkit_gate_dependency/workspace/winit"),
     ];
@@ -1051,6 +1081,13 @@ fn toolkit_gate_self_test() -> Result<usize> {
         ("hsk-studio-harness-core", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false }\n"),
         ("hsk-studio-harness-view", "[dependencies]\neframe = { V }\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n"),
         ("hsk-studio-render-gpu", "[dependencies]\nwgpu = { version = \"=1.0.0\", default-features = false, features = [\"std\", \"wgsl\"] }\n"),
+        // direction.blocker_decisions_20261107: the one winit entry, the Vulkan binding, a toolkit crate with no deps, and
+        // the edge direction O5 allows: Studio crates and other toolkit crates depend on kumihimo-*.
+        ("hsk-studio-native-host", "[dependencies]\nwinit = { V }\nwindows-sys = { V }\n"),
+        ("hsk-studio-vulkan", "[dependencies]\nash = { V }\n"),
+        ("kumihimo-ui", "[dependencies]\n"),
+        ("kumihimo-dock", "[dependencies]\nkumihimo-ui = { path = \"../kumihimo-ui\", version = \"=0.1.0\", default-features = false }\nserde = { V }\n"),
+        ("hsk-studio-controls", "[dependencies]\nkumihimo-ui = { path = \"../kumihimo-ui\", version = \"=0.1.0\", default-features = false }\n"),
         // Words that only look close, and a forward of an ordinary feature.
         ("hsk-studio-new", "[features]\nx = [\"hsk-studio-render-gpu/shared-device\"]\n[dependencies]\neguide = { V }\nwgsl-tool = { V }\nserde = { V }\n"),
         ("workspace", "[workspace.metadata.studio.dependencies.egui]\nallowed = []\n[workspace.dependencies]\nserde = { V }\n"),
@@ -1071,6 +1108,53 @@ fn toolkit_gate_self_test() -> Result<usize> {
             return Err(format!("self_test_toolkit_wgsl_not_rejected_{added}"));
         }
         wgsl.pop();
+        cases += 1;
+    }
+    // Member paths: kumihimo-* is a member name from its first commit; nothing else outside hsk-studio-* is.
+    for (path, want) in [
+        ("crates/hsk-studio-vulkan", true),
+        ("crates/kumihimo-ui", true),
+        ("crates/other", false),
+        ("crates/kumihimo-*", false),
+        ("crates/kumihimo-ui/../x", false),
+        ("kumihimo-ui", false),
+    ] {
+        if declared_member_path_ok(path) != want {
+            return Err(format!("self_test_member_path_{path}"));
+        }
+        cases += 1;
+    }
+    // Registry owners of the restricted names: winit in the host only, and neither new crate holds naga or wgpu.
+    for (owner, name, want) in [
+        ("hsk-studio-native-host", "winit", true),
+        ("hsk-studio-native-host", "windows-sys", true),
+        ("hsk-studio-harness-view", "winit", true),
+        ("hsk-studio-vulkan", "winit", false),
+        ("hsk-studio-vulkan", "ash", true),
+        ("hsk-studio-vulkan", "naga", false),
+        ("hsk-studio-vulkan", "wgpu", false),
+        ("hsk-studio-native-host", "naga", false),
+        ("hsk-studio-render-gpu", "naga", true),
+        ("kumihimo-ui", "winit", false),
+        ("kumihimo-ui", "windows-sys", false),
+    ] {
+        if registry_name_allowed(owner, name) != want {
+            return Err(format!("self_test_registry_owner_{owner}_{name}"));
+        }
+        cases += 1;
+    }
+    // `=0.38.0` selects the lock's 0.38.0+1.3.281: cargo ignores build metadata in a requirement and warns on it.
+    for (actual, version, want) in [
+        ("=0.38.0", "0.38.0+1.3.281", true),
+        ("=0.38.0+1.3.281", "0.38.0+1.3.281", true),
+        ("=1.0.229", "1.0.229", true),
+        ("=0.38.1", "0.38.0+1.3.281", false),
+        ("0.38.0", "0.38.0+1.3.281", false),
+        ("=0.38", "0.38.0+1.3.281", false),
+    ] {
+        if exact_version_pin(actual, version) != want {
+            return Err(format!("self_test_version_pin_{actual}"));
+        }
         cases += 1;
     }
     Ok(cases)
@@ -1176,12 +1260,7 @@ fn inspect(args: &[String]) -> Result<String> {
     unique(&members, "duplicate_member")?;
     let mut available = BTreeMap::new();
     for path in &declared {
-        if !path.starts_with("crates/hsk-studio-")
-            || path.contains(['*', '?'])
-            || Path::new(path)
-                .components()
-                .any(|c| !matches!(c, Component::Normal(_)))
-        {
+        if !declared_member_path_ok(path) {
             return Err("invalid_declared_member".into());
         }
         let name = path.rsplit('/').next().ok_or("invalid_member")?;
