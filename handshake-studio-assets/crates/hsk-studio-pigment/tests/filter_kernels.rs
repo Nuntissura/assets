@@ -231,7 +231,7 @@ fn edge_plane() -> RgbaPlane {
             let _ = y;
         }
     }
-    data[9 * 2 + 2] = [0.21, 0.21, 0.21, 1.0];
+    data[12 * 2 + 2] = [0.21, 0.21, 0.21, 1.0];
     RgbaPlane { bounds: rect(0, 0, 12, 9), data }
 }
 

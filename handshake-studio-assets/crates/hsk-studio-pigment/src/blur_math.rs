@@ -622,7 +622,7 @@ pub fn blur_window_axis(
 
 /// `(cos, sin)` of `angle_deg`, exact at multiples of 90 degrees (the angle is reduced into
 /// `[0, 360)` first; other angles use the platform's binary64 `sin_cos`).
-fn cos_sin_deg(angle_deg: f64) -> (f64, f64) {
+pub(crate) fn cos_sin_deg(angle_deg: f64) -> (f64, f64) {
     let a = angle_deg.rem_euclid(360.0);
     if a == 0.0 {
         (1.0, 0.0)
@@ -640,7 +640,7 @@ fn cos_sin_deg(angle_deg: f64) -> (f64, f64) {
 
 /// Bilinear premultiplied sample at pixel-index position `(u, v)` (pixel `(x, y)` sits at `(x, y)`;
 /// [`SUBPIXEL_FILTER`]) added into `acc` (corner order of the section docs; zero weights not read).
-fn bilinear_add(
+pub(crate) fn bilinear_add(
     range: SampleRange,
     src: &[[f32; 4]],
     src_rect: Rect,

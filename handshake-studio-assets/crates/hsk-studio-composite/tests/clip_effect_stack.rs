@@ -172,5 +172,5 @@ fn clip_effect_filter_kernel_renders() {
         rect,
         &[ClipEffectFrame::Filters(bad)],
     );
-    println!("clip effect out of range: {}", refused.is_err());
+    assert!(refused.is_err(), "an out-of-range kernel parameter is refused, not clamped");
 }

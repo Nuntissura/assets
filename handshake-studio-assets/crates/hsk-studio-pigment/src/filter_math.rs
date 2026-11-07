@@ -204,7 +204,7 @@ fn src_at(src: &[[f32; 4]], src_rect: Rect, x: i64, y: i64) -> Result<[f32; 4], 
     src.get(at).copied().ok_or(FilterError::Shape)
 }
 
-fn check(p: [f32; 4], range: SampleRange) -> Result<[f32; 4], FilterError> {
+pub(crate) fn check(p: [f32; 4], range: SampleRange) -> Result<[f32; 4], FilterError> {
     let colour_ok = |v: &f32| v.is_finite() && (range == SampleRange::Extended || (0.0..=1.0).contains(v));
     if p[..3].iter().all(colour_ok) && p[3].is_finite() && (0.0..=1.0).contains(&p[3]) {
         Ok(p)
@@ -214,7 +214,7 @@ fn check(p: [f32; 4], range: SampleRange) -> Result<[f32; 4], FilterError> {
 }
 
 /// The disc offsets `dx^2 + dy^2 <= r^2`, row-major.
-fn disc(r: u32) -> Result<Vec<(i64, i64)>, FilterError> {
+pub(crate) fn disc(r: u32) -> Result<Vec<(i64, i64)>, FilterError> {
     let ri = i64::from(r);
     let r2 = ri.checked_mul(ri).ok_or(FilterError::Overflow)?;
     let mut out = Vec::new();
@@ -230,7 +230,7 @@ fn disc(r: u32) -> Result<Vec<(i64, i64)>, FilterError> {
 }
 
 /// Number of disc offsets for radius `r` (counted without allocating).
-fn disc_len(r: u32) -> Result<u64, FilterError> {
+pub(crate) fn disc_len(r: u32) -> Result<u64, FilterError> {
     let ri = i64::from(r);
     let r2 = ri.checked_mul(ri).ok_or(FilterError::Overflow)?;
     let mut n = 0u64;
@@ -530,6 +530,32 @@ pub fn find_edges_window_cost(out: Rect) -> Result<(u64, u64), FilterError> {
     Ok((bytes, work))
 }
 
+/// The 3x3 Sobel magnitude of [`find_edges_window`] at `(x, y)`, which must lie inside `src_rect`:
+/// per premultiplied colour channel, neighbours beyond `src_rect` replaced by the nearest source pixel.
+pub(crate) fn sobel_magnitude(src: &[[f32; 4]], src_rect: Rect, x: i64, y: i64) -> Result<[f64; 3], FilterError> {
+    let (sx1, sy1) = src_rect.end().map_err(|_| FilterError::Overflow)?;
+    let last_x = sx1.checked_sub(1).ok_or(FilterError::Overflow)?;
+    let last_y = sy1.checked_sub(1).ok_or(FilterError::Overflow)?;
+    let at = |dx: i64, dy: i64| -> Result<[f64; 4], FilterError> {
+        let nx = x.saturating_add(dx).max(src_rect.x).min(last_x);
+        let ny = y.saturating_add(dy).max(src_rect.y).min(last_y);
+        let p = check(src_at(src, src_rect, nx, ny)?, SampleRange::Unit)?;
+        let a = f64::from(p[3]);
+        Ok([f64::from(p[0]) * a, f64::from(p[1]) * a, f64::from(p[2]) * a, a])
+    };
+    let (nw, n, ne) = (at(-1, -1)?, at(0, -1)?, at(1, -1)?);
+    let (w, e) = (at(-1, 0)?, at(1, 0)?);
+    let (sw, s, se) = (at(-1, 1)?, at(0, 1)?, at(1, 1)?);
+    let mut out = [0.0_f64; 3];
+    for (c, v) in out.iter_mut().enumerate() {
+        let g = |q: [f64; 4]| q.get(c).copied().unwrap_or(0.0);
+        let gx = (g(ne) + 2.0 * g(e) + g(se)) - (g(nw) + 2.0 * g(w) + g(sw));
+        let gy = (g(sw) + 2.0 * g(s) + g(se)) - (g(nw) + 2.0 * g(n) + g(ne));
+        *v = ((gx * gx + gy * gy).sqrt() / 4.0).clamp(0.0, 1.0);
+    }
+    Ok(out)
+}
+
 /// Find Edges (lane SMB-PIGMENT-AE-KERNELS-1, for composite's After Effects Find Edges; Studio
 /// reading [`FIND_EDGES_OPERATOR`], After Effects / Photoshop formula UNVERIFIED D5, class
 /// Approximate): per premultiplied colour channel the 3x3 Sobel gradients
@@ -559,22 +585,12 @@ pub fn find_edges_window(
     if work > limits.max_work {
         return Err(FilterError::OverBudget { needed: work, limit: limits.max_work });
     }
-    let (sx1, sy1) = src_rect.end().map_err(|_| FilterError::Overflow)?;
+    src_rect.end().map_err(|_| FilterError::Overflow)?;
     let (ox1, oy1) = out.end().map_err(|_| FilterError::Overflow)?;
     let mut result: Vec<[f32; 4]> = Vec::new();
     result
         .try_reserve_exact(count(out)?)
         .map_err(|_| FilterError::OverBudget { needed: bytes, limit: limits.max_bytes })?;
-    // Replicated neighbour (only called for a pixel inside `src_rect`, so the rect is not empty).
-    let last_x = sx1.checked_sub(1).ok_or(FilterError::Overflow)?;
-    let last_y = sy1.checked_sub(1).ok_or(FilterError::Overflow)?;
-    let at = |x: i64, y: i64, dx: i64, dy: i64| -> Result<[f64; 4], FilterError> {
-        let nx = x.saturating_add(dx).max(src_rect.x).min(last_x);
-        let ny = y.saturating_add(dy).max(src_rect.y).min(last_y);
-        let p = check(src_at(src, src_rect, nx, ny)?, SampleRange::Unit)?;
-        let a = f64::from(p[3]);
-        Ok([f64::from(p[0]) * a, f64::from(p[1]) * a, f64::from(p[2]) * a, a])
-    };
     for y in out.y..oy1 {
         for x in out.x..ox1 {
             let o = check(src_at(src, src_rect, x, y)?, SampleRange::Unit)?;
@@ -582,15 +598,10 @@ pub fn find_edges_window(
                 result.push([0.0; 4]);
                 continue;
             }
-            let (nw, n, ne) = (at(x, y, -1, -1)?, at(x, y, 0, -1)?, at(x, y, 1, -1)?);
-            let (w, e) = (at(x, y, -1, 0)?, at(x, y, 1, 0)?);
-            let (sw, s, se) = (at(x, y, -1, 1)?, at(x, y, 0, 1)?, at(x, y, 1, 1)?);
+            // Inside `src_rect`: a pixel beyond it has alpha 0 above.
+            let m = sobel_magnitude(src, src_rect, x, y)?;
             let mut px = [0.0_f32; 4];
-            for (c, v) in px.iter_mut().take(3).enumerate() {
-                let g = |q: [f64; 4]| q.get(c).copied().unwrap_or(0.0);
-                let gx = (g(ne) + 2.0 * g(e) + g(se)) - (g(nw) + 2.0 * g(w) + g(sw));
-                let gy = (g(sw) + 2.0 * g(s) + g(se)) - (g(nw) + 2.0 * g(n) + g(ne));
-                let m = ((gx * gx + gy * gy).sqrt() / 4.0).clamp(0.0, 1.0);
+            for (v, m) in px.iter_mut().zip(m) {
                 *v = if invert { m as f32 } else { (1.0 - m) as f32 };
             }
             px[3] = o[3];
