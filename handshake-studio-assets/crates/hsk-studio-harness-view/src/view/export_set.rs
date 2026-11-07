@@ -366,9 +366,6 @@ impl Viewer {
     }
 
     fn export_run_inner(&self, dir: &Path, nodes: Option<&[String]>, settings: Option<Vec<StudioNodeRenderSetting>>, overwrite: bool) -> Result<Value, Refusal> {
-        if self.cancel.check().is_ok() {
-            return Err(refuse("not_built", "red: lane SMB-ARTBOARD-EXPORT-1"));
-        }
         if !std::fs::metadata(dir).is_ok_and(|m| m.is_dir()) {
             return Err(refuse("export_dir_missing", dir.display().to_string()));
         }
