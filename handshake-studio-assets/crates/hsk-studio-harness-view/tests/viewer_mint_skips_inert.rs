@@ -135,7 +135,7 @@ fn package(dir: &Path, sequences: Vec<StudioSequence>, entries: &[Quarantined]) 
         "schema_id":"hsk.studio.document@1","document_id":DOC,"revision":1,"geometry_unit":"px","colour_mode":3,"bits_per_channel":8,
         "working_space_rgb":null,"working_space_cmyk":null,"working_space_gray":null,"working_space_spot":null,"blending_space":null,
         "artboards":[],"page_spreads":[],
-        "layers":[{"schema_id":"hsk.studio.layer@1","layer_id":"SLYR-019abcde-0000-7000-8000-000000000001","name":"group","parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true,"opacity":1.0,"blend_mode":"normal","clipping_base":null,"masks":[],"filters":[],"styles":[],"transform":[1.0,0.0,0.0,1.0,0.0,0.0]}],
+        "layers":[{"schema_id":"hsk.studio.layer@1","layer_id":"SLYR-019abcde-0000-7000-8000-000000000001","name":"group","parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true}],
         "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[],"edges":[],"outputs":[]},
         "sequences":sequences.iter().map(|s| serde_json::to_value(s).unwrap()).collect::<Vec<_>>()
     });

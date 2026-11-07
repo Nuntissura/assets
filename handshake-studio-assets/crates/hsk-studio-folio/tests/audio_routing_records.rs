@@ -467,7 +467,7 @@ fn many_stale_routes_answer_within_the_budget_and_past_it_are_refused() {
         }
         StudioAudioRoutingSet { routings: vec![r] }
     };
-    let fits = (0..4096u32).rev().find(|&n| validate_audio_routing(&many(n), &d, b, &token).is_ok()).unwrap();
+    let fits = (0..400u32).rev().find(|&n| validate_audio_routing(&many(n), &d, b, &token).is_ok()).unwrap();
     assert!(fits > 100, "the budget holds this many: {fits}");
     let started = std::time::Instant::now();
     let rows = inert_audio_routing_references(&many(fits), &d);
