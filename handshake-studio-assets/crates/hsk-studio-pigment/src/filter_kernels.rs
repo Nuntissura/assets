@@ -579,7 +579,7 @@ fn morphology(plane: &RgbaPlane, radius_px: u32, preserve: MorphPreserve, op: fn
     let b = plane.bounds;
     let (w, h) = (to_usize(b.width)?, to_usize(b.height)?);
     let pm = pm32(plane, limits)?;
-    let cur = match preserve {
+    let mut cur = match preserve {
         MorphPreserve::Squareness => morph_square(pm, w, h, to_usize(radius_px)?, op, limits)?,
         MorphPreserve::Roundness => {
             let offsets = disc(radius_px)?;
@@ -600,11 +600,11 @@ fn morphology(plane: &RgbaPlane, radius_px: u32, preserve: MorphPreserve, op: fn
             cur
         }
     };
-    let mut out = reserve(cur.len(), limits)?;
-    for p in cur {
-        out.push(finite(unpremultiply_in(UNIT, p))?);
+    // In place, so the peak is the premultiplied copy plus `cur`: the 32 bytes a pixel of the cost.
+    for p in cur.iter_mut() {
+        *p = finite(unpremultiply_in(UNIT, *p))?;
     }
-    Ok(out)
+    Ok(cur)
 }
 
 fn morph_square(mut cur: Vec<[f32; 4]>, w: usize, h: usize, radius: usize, op: fn(f32, f32) -> f32, limits: FilterLimits) -> Result<Vec<[f32; 4]>, FilterError> {
