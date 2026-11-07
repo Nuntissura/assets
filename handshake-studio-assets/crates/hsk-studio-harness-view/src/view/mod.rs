@@ -646,6 +646,12 @@ impl Viewer {
         self.commit(layer_id, panel::VISIBLE, if visible { "true" } else { "false" })
     }
 
+    /// Sets a panel control of a layer from its text value (`layer.panel_set`, undoable). Returns the
+    /// new revision.
+    pub fn panel_set(&mut self, layer_id: &str, control: &str, text: &str) -> Result<u64, String> {
+        self.commit(layer_id, control, text)
+    }
+
     fn commit(&mut self, layer_id: &str, control: &str, text: &str) -> Result<u64, String> {
         if self.run.panel_set(layer_id, control, text, None) {
             let revision = self.run.snapshot().map_or(0, |s| s.document().revision);

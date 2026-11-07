@@ -302,6 +302,8 @@ fn an_empty_run_is_nothing_checked_not_a_pass() {
 fn quiet_sources_use_no_process_network_or_environment_api() {
     let sources = [
         ("cli.rs", include_str!("../src/cli.rs")),
+        ("cli/drive.rs", include_str!("../src/cli/drive.rs")),
+        ("cli/drive_viewer.rs", include_str!("../src/cli/drive_viewer.rs")),
         ("harness.rs", include_str!("../../hsk-studio-harness-core/src/harness.rs")),
         ("lib.rs", include_str!("../src/lib.rs")),
         ("manual.rs", include_str!("../../hsk-studio-harness-core/src/manual.rs")),

@@ -27,6 +27,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "export-sequence", usage: "export-sequence PACKAGE --sequence ID --preset ID [--in T --out T] --output OUT [--overwrite] [--media FILE]... [--audio FILE]... [--width W --height H] [--json]", summary: "Export a document sequence, nested sequence clips included, to a media file (feature media; lane SMB-PR-SEQ-EXPORT-UI-1): PACKAGE is opened like the viewer opens it, every --media file is bound to the program monitor through reel's decoders as clip source sha256:<hex>, every --audio file (WAV, MP3, FLAC, Ogg, AAC, AIFF; decoded by reel's audio decoder, all at one sample rate, no resampling) is the export's sound source as clip source sha256:<hex> of its bytes, and the viewer's Viewer::export_sequence (the same path as the timeline's Export Media form) renders the frames, mixes the sound of the --audio files as the mixer plays it (with feature audio-batch, the document's stored audio routing: clip gain and pan envelopes, track and master automation, buses, sends and effects; a build without it neither reads the routing nor plays it) and encodes through reel's export queue with Studio preset --preset (e.g. studio.dnxhr.hq.mov; H.264/HEVC need the OS encoder, feature os-encode). --in/--out are ticks (254016000000 per second, whole frames, together or not at all; default the work area, else the whole sequence); --width/--height default 1920x1080; a relative OUT is relative to the current directory. Before any file is read: an --out past the sequence end (its duration rounded up to a whole frame) is export_range, more than 16 --audio files is audio_too_many (detail limit), an --audio file over 1 GiB (1073741824 bytes, the viewer audio import's file limit) is media_too_large (detail limit), and the sizes of all --media and --audio files together are capped at 2 GiB (media_too_large, detail total_limit). The decoded audio of all --audio files shares one budget of 4147200000 bytes (frames x channels x 4-byte samples; each decode is refused before it holds more than the remainder): over it audio_too_large (detail decoded_limit). Output: export.receipt is reel's receipt (frames_encoded, audio_frames, output_sha256, outcome); exit 0 only for outcome complete. Refusals (exit 1): unknown_preset, codec_unavailable, export_range, frame_decoder_missing (no --media), audio_sources_missing (an audio clip and no --audio: never silent; the detail's hint names --audio), audio_decode, audio_empty, audio_rate_mismatch (--audio files at different rates), audio_too_many, audio_too_large, audio_port (the viewer refused the decoded sound port), mixdown (an --audio set that lacks a clip's sound), media_too_large, media_unreadable, output_unresolved, nest_unresolved, unknown_sequence, open_failed; missing --sequence/--preset/--output or a non-integer --in/--out is a usage error (exit 2). Without feature media: error feature_unavailable." },
     CommandSpec { name: "verify", usage: "verify PACKAGE (--expect-revision N | --expect-name LAYER NAME | --expect-visible LAYER true|false)...", summary: "Open a package and check revision and layer values. At least one expectation is required: a verify that would check nothing is a usage error (exit 2), never a pass." },
     CommandSpec { name: "batch", usage: "batch JOB.json [--provider chronicle.patch] [--references unresolved|trust_all] [--cancel]", summary: "Run a portable batch job (STU-AUT-126..136; JOB.json is BatchJob::export: job_id, source_set explicit_file_list|folder (recurse, include/exclude * and ? patterns on the file name), applied_automation action|command_sequence|none, output_targets (format_id handshake = native package; other formats refused per target), filename_template tokens, error_policy stop_on_first_error|skip_and_continue|retry_then_skip|quarantine (copies, never moves), concurrency 1, post_processing []). Headless and quiet: an enabled always_show step, an ask overwrite policy, an unsupported source kind or template token refuses the job before any file is touched (exit 1, typed code). Prints the receipt set (one receipt per input: path, bytes, sha256, automation and parameters, target paths, outcome, attempts) and the job state. pass: at least one input and every input succeeded; nothing_checked: no input. Edits need --provider chronicle.patch." },
+    CommandSpec { name: "state", usage: "state PACKAGE --actor ID --session ID [--owner ID] [--access-space ID]", summary: "Open PACKAGE on the CPU path, no window, and print the revision, the resolved attribution and the viewer state (state_json: layers, frame, receipt, edit and history, develop, ops, status, shell, timeline, proof, design, info). Feature viewer; without it: error feature_unavailable." },
+    CommandSpec { name: "command", usage: "command PACKAGE --actor ID --session ID [--owner ID] [--access-space ID] (--command-id ID [--param KEY VALUE]... [--expect-revision N] [--save OUT [--overwrite]] | --stdin)", summary: "Run one command id from DRIVE COMMANDS on PACKAGE and print the same response as state, with command_id and detail. Nothing is written without --save OUT; --save over PACKAGE needs both --overwrite and --expect-revision. --stdin is the live session: one process, one document, one undo history, JSONL in and out (see DRIVE SESSION). Feature viewer." },
+    CommandSpec { name: "undo", usage: "undo PACKAGE --actor ID --session ID [--owner ID] [--access-space ID]", summary: "Always refuses undo_needs_live_session, exit 1: the undo history lives in the process that made the edits, and a package carries none. Send {\"command\":\"undo\"} in a `command --stdin` session. Feature viewer." },
     CommandSpec { name: "action", usage: "action check SET.json", summary: "Decode an action set artifact strictly (STU-AUT-102..107, 114: unknown, duplicate or missing fields and out-of-domain values are typed refusals, exit 1) and run the automation validators: action_declared_step_count_mismatch, action_shortcut_collision, action_step_command_unresolvable (step kept, listed in unresolvable), action_step_parameter_key_unknown (warning), action_measured_value_missing_unit. Exit 0 when no error-severity diagnostic, else 1." },
 ];
 
@@ -41,7 +44,259 @@ pub const FLAGS: &[(&str, &str)] = &[
     ("--adjust CONTROL VALUE", "develop: set a develop slider (repeatable; all of them form one undoable step). VALUE must parse as a number (else usage, exit 2); develop decides whether it is in range."),
     ("--depth 8|16", "develop --png: bits per sample (default 16)."),
     ("--threads N", "develop: worker threads of every develop run (default: available parallelism, capped); the output does not depend on it."),
+    ("--actor ID", "state, command, undo (required, no default): account and principal of every command of this process."),
+    ("--session ID", "state, command, undo (required, no default): session and client session of every command of this process."),
+    ("--owner ID", "state, command, undo: owner account and principal. Default: the actor, a stated limit: a default records the actor as its own owner. Every response prints the resolved attribution."),
+    ("--access-space ID", "state, command, undo: access space. Default: the actor, the same limit."),
+    ("--command-id ID", "command: a DRIVE COMMANDS id."),
+    ("--param KEY VALUE", "command: one declared parameter of the command id (repeatable); VALUE is text and decodes by the declared type."),
+    ("--stdin", "command: read JSONL commands from stdin in one process (DRIVE SESSION)."),
 ];
+
+/// One typed parameter of a driveable timeline command. `kind`: text, text_list (comma separated or
+/// a JSON list of strings), ticks (u64), frames (i64), count (u64), boolean.
+pub struct DriveParam {
+    pub key: &'static str,
+    pub kind: &'static str,
+    pub required: bool,
+}
+
+const fn need(key: &'static str, kind: &'static str) -> DriveParam {
+    DriveParam { key, kind, required: true }
+}
+
+const fn may(key: &'static str, kind: &'static str) -> DriveParam {
+    DriveParam { key, kind, required: false }
+}
+
+/// One driveable `timeline.<key>` command: `key` is `TimelineCommand::key()`, `spec_commands` every
+/// [STU-VID-041] command id the variant names, where the tables name one (harness-view has no edge
+/// from this crate; the harness crate's tests pin this table to the enum).
+pub struct DriveTimeline {
+    pub key: &'static str,
+    pub params: &'static [DriveParam],
+    pub spec_commands: &'static [&'static str],
+}
+
+const fn row(key: &'static str, params: &'static [DriveParam], spec_commands: &'static [&'static str]) -> DriveTimeline {
+    DriveTimeline { key, params, spec_commands }
+}
+
+const CLIP_DELTA: &[DriveParam] = &[need("clip_id", "text"), need("delta_frames", "frames")];
+const RIGHT_MANY: &[DriveParam] = &[need("right", "boolean"), need("many", "boolean")];
+
+/// The `RUN_COMMANDS` rows the process drives; their parameters are the rows' own. Any other row
+/// refuses `command_not_driveable`.
+pub const DRIVE_RUN_COMMANDS: &[&str] = &["layer.rename", "layer.set_visible", "layer.set_opacity", "layer.set_blend_mode", "layer.panel_set", "history.undo", "history.redo", "document.save"];
+
+/// The timeline commands the process drives, addressed `timeline.<key>`.
+pub const DRIVE_TIMELINE: &[DriveTimeline] = &[
+    row("select", &[may("clip_id", "text")], &[]),
+    row("move_clip", &[need("clip_id", "text"), need("start", "ticks"), may("track_id", "text")], &[]),
+    row("trim_in", &[need("clip_id", "text"), need("head", "ticks")], &[]),
+    row("trim_out", &[need("clip_id", "text"), need("tail", "ticks")], &[]),
+    row("razor", &[], &["cmd.sequence.razorateditline"]),
+    row("lift", &[], &[]),
+    row("ripple_delete", &[], &["cmd.timeline.ripple.delete"]),
+    row("marker_add", &[], &[]),
+    row("marker_next", &[], &["cmd.marker.gotomarker.next"]),
+    row("marker_previous", &[], &["cmd.marker.gotomarker.previous"]),
+    row("edit_next", &[], &["cmd.tlnav.next.edit"]),
+    row("edit_previous", &[], &["cmd.tlnav.prev.edit"]),
+    row("snap", &[], &["cmd.sequence.snap"]),
+    row("zoom_in", &[], &[]),
+    row("zoom_out", &[], &[]),
+    row("zoom_fit", &[], &[]),
+    row("scroll", &[need("first_frame", "count")], &[]),
+    row("scrub", &[need("tick", "ticks")], &[]),
+    row("ripple_trim_in", CLIP_DELTA, &[]),
+    row("ripple_trim_out", CLIP_DELTA, &[]),
+    row("roll", CLIP_DELTA, &[]),
+    row("slip", CLIP_DELTA, &[]),
+    row("slide", CLIP_DELTA, &[]),
+    row("trim_nudge", &[need("forward", "boolean"), need("many", "boolean")], &["cmd.trim.plus.minor", "cmd.trim.plus.major", "cmd.trim.minus.minor", "cmd.trim.minus.major"]),
+    row("slip_nudge", RIGHT_MANY, &["cmd.timeline.slip.left.one", "cmd.timeline.slip.left.several", "cmd.timeline.slip.right.one", "cmd.timeline.slip.right.several"]),
+    row("slide_nudge", RIGHT_MANY, &["cmd.timeline.slide.left.one", "cmd.timeline.slide.left.several", "cmd.timeline.slide.right.one", "cmd.timeline.slide.right.several"]),
+    row("clip_nudge", RIGHT_MANY, &["cmd.timeline.nudge.left.one", "cmd.timeline.nudge.left.several", "cmd.timeline.nudge.right.one", "cmd.timeline.nudge.right.several"]),
+    row("clip_track_nudge", &[need("up", "boolean")], &["cmd.timeline.nudge.up", "cmd.timeline.nudge.down"]),
+    row("extend_edit", &[], &[]),
+    row("multi_frame_step", &[need("step", "count")], &[]),
+    row("trim_session_enter", &[], &[]),
+    row("trim_session_type", &[], &[]),
+    row("trim_session_commit", &[], &[]),
+    row("trim_session_rollback", &[], &[]),
+    row("composite_preview", &[], &["cmd.timeline.composite.preview.during.trim"]),
+    row("nest", &[may("clips", "text_list")], &["cmd.clip.nestify"]),
+    row("make_subsequence", &[may("clips", "text_list")], &["cmd.sequence.makesubsequence"]),
+    row("open_nested", &[may("clip_id", "text")], &["cmd.tlnav.reveal.nested.sequence"]),
+    row("back_to_parent", &[], &[]),
+];
+
+/// Timeline keys that exist and refuse `command_not_driveable`, with the reason.
+pub const DRIVE_TIMELINE_NOT_DRIVEABLE: &[(&str, &str)] = &[
+    ("edit_select", "takes an edit mode with no text form yet"),
+    ("edit_point", "takes an edit mode with no text form yet"),
+    ("tool", "takes a trim tool with no text form yet"),
+    ("trim_session_focus", "takes a trim focus with no text form yet"),
+    ("rate_stretch", "takes a clip edge with no text form yet"),
+    ("speed_duration", "takes a speed target with no text form yet"),
+    ("speed_duration_open", "a form of the panel, not yet driven"),
+    ("speed_duration_apply", "a form of the panel, not yet driven"),
+    ("speed_duration_cancel", "a form of the panel, not yet driven"),
+    ("export_media_open", "an export job; use export-sequence"),
+    ("export_media_run", "an export job; use export-sequence"),
+    ("export_media_cancel", "an export job; use export-sequence"),
+];
+
+/// One driveable `viewer.<method>` command: `method` is the Viewer method's own name.
+pub struct DriveViewer {
+    pub method: &'static str,
+    pub params: &'static [DriveParam],
+}
+
+const fn method(method: &'static str, params: &'static [DriveParam]) -> DriveViewer {
+    DriveViewer { method, params }
+}
+
+const LAYER: &[DriveParam] = &[need("layer", "text")];
+const XY: &[DriveParam] = &[need("x", "number"), need("y", "number")];
+const RECT: &[DriveParam] = &[need("x", "number"), need("y", "number"), need("width", "number"), need("height", "number")];
+const POINTS: &[DriveParam] = &[need("points", "points")];
+const DRAG: &[DriveParam] = &[need("from", "point"), need("to", "point"), need("radius", "number")];
+const OUT: &[DriveParam] = &[need("path", "path"), may("overwrite", "boolean")];
+const LAYER_STYLE: &[DriveParam] = &[need("layer", "text"), need("style", "text")];
+const SWATCH_ROW: &str = "one_of:fill|stroke";
+
+/// The Viewer's non-draw methods the process drives, addressed `viewer.<method>`, with the same
+/// typed refusals and history as the window.
+pub const DRIVE_VIEWER: &[DriveViewer] = &[
+    method("new_raster_layer", &[need("name", "text")]),
+    method("duplicate_layer", LAYER),
+    method("delete_layer", LAYER),
+    method("shift_layer", &[need("layer", "text"), need("up", "boolean")]),
+    method("ungroup", &[need("group", "text")]),
+    method("group_layers", &[need("layers", "text_list"), need("name", "text")]),
+    method("move_layer", &[need("layer", "text"), need("place", "one_of:inside|at_beginning|at_end|before|after"), may("target", "text")]),
+    method("select", &[may("layer", "text")]),
+    method("set_tool", &[need("tool", "text")]),
+    method("set_combine", &[need("mode", "one_of:replace|extend|diminish|intersect")]),
+    method("set_brush", &[may("diameter_px", "number"), may("hardness_pct", "number"), may("spacing_pct", "number"), may("opacity_pct", "number"), may("rgb8", "rgb8")]),
+    method("select_rect", RECT),
+    method("select_ellipse", RECT),
+    method("select_lasso", POINTS),
+    method("clear_selection", &[]),
+    method("undo_selection", &[]),
+    method("select_wand", &[need("layer", "text"), need("x", "integer"), need("y", "integer"), may("tolerance", "number"), may("contiguous", "boolean")]),
+    method("ps_click", XY),
+    method("refine_end", &[]),
+    method("paint", &[need("layer", "text"), need("samples", "samples")]),
+    method("fill_click", XY),
+    method("fill_drag", &[need("from", "point"), need("to", "point")]),
+    method("info_eyedropper", XY),
+    method("set_develop", &[need("control", "text"), need("value", "number")]),
+    method("set_develop_threads", &[need("count", "integer")]),
+    method("set_develop_export_field", &[need("id", "text"), need("value", "text")]),
+    method("load_develop_watermark", &[need("path", "path")]),
+    method("clear_develop_export_stage", &[]),
+    method("export", &[need("path", "path"), need("format", "one_of:png|jpeg"), may("quality", "integer"), may("overwrite", "boolean")]),
+    method("export_vector_svg", OUT),
+    method("export_vector_pdf", OUT),
+    method("pen_point", &[need("x", "number"), need("y", "number"), may("drag", "point"), need("close_radius", "number")]),
+    method("pen_end", &[]),
+    method("curvature_point", &[need("x", "number"), need("y", "number"), need("corner", "boolean"), need("close_radius", "number")]),
+    method("draw_shape", &[need("kind", "one_of:rectangle|rounded_rectangle|ellipse|polygon|star|line|arc_segment|rectangular_grid|polar_grid|spiral"), need("a", "point"), need("b", "point"), may("constrain", "boolean")]),
+    method("pencil_stroke", POINTS),
+    method("blob_brush_stroke", POINTS),
+    method("knife_cut", POINTS),
+    method("direct_drag", &[need("from", "point"), need("to", "point"), need("radius", "number"), may("angle45", "boolean"), may("break_mirroring", "boolean")]),
+    method("reshape_drag", DRAG),
+    method("width_drag", DRAG),
+    method("set_width_point", &[need("layer", "text"), need("t", "number"), need("width", "number")]),
+    method("clear_width", LAYER),
+    method("expand_shape", LAYER),
+    method("promote_network", LAYER),
+    method("outline_stroke_layer", LAYER),
+    method("offset_path_layer", &[need("layer", "text"), need("offset", "number"), need("join", "one_of:miter|round|bevel")]),
+    method("create_outlines", LAYER),
+    method("convert_text_kind", LAYER),
+    method("bind_live_text", &[need("layer", "text"), need("text", "text"), need("kind", "one_of:path|area"), may("inset_pt", "number")]),
+    method("text_click", &[need("p", "point"), need("radius", "number"), need("text", "text")]),
+    method("network_paint_bucket", &[need("layer", "text"), need("p", "point"), need("fill", "boolean")]),
+    method("network_region_swatch", &[need("layer", "text"), need("p", "point"), may("swatch", "text")]),
+    method("network_pen", &[need("layer", "text"), need("x", "number"), need("y", "number"), may("drag", "point"), need("radius", "number")]),
+    method("pathfinder_layers", &[need("op", "one_of:union|intersect|exclude|subtract_front|subtract_back|divide|trim|merge|crop|outline|hard_mix|soft_mix|trap"), need("layers", "text_list")]),
+    method("shape_builder_layers", &[need("layers", "text_list"), need("gesture", "points"), need("delete", "boolean")]),
+    method("make_clip", &[need("target", "text"), need("source", "text"), may("even_odd", "boolean")]),
+    method("release_masks", &[need("target", "text")]),
+    method("expand_envelope", LAYER),
+    method("release_envelope", LAYER),
+    method("move_envelope_point", &[need("layer", "text"), need("index", "integer"), need("to", "point")]),
+    method("create_gradient_mesh", &[need("layer", "text"), need("rows", "integer"), need("columns", "integer")]),
+    method("clear_appearance", LAYER),
+    method("break_graphic_style", LAYER),
+    method("reduce_to_basic_appearance", LAYER),
+    method("add_graphic_style", &[need("name", "text"), need("layer", "text")]),
+    method("apply_graphic_style", LAYER_STYLE),
+    method("merge_graphic_style", LAYER_STYLE),
+    method("redefine_graphic_style", LAYER_STYLE),
+    method("apply_brush", &[need("layer", "text"), need("brush", "text"), may("scale", "number")]),
+    method("remove_brush", LAYER),
+    method("swap_stroke_markers", &[need("layer", "text"), need("row", "integer")]),
+    method("apply_swatch", &[need("layer", "text"), need("swatch", "text"), need("kind", SWATCH_ROW)]),
+    method("apply_swatch_tinted", &[need("layer", "text"), need("swatch", "text"), need("kind", SWATCH_ROW), may("tint", "number")]),
+    method("detach_swatch", &[need("layer", "text"), need("kind", SWATCH_ROW)]),
+    method("grid_append_child_at", &[need("container", "text"), need("node", "text"), need("row", "integer"), need("column", "integer")]),
+    method("set_grid_gaps", &[need("node", "text"), need("row_gap", "number"), need("column_gap", "number")]),
+    method("auto_layout_control", &[need("widget_id", "text"), need("value", "text")]),
+    method("help_search", &[need("text", "text")]),
+    method("help_close", &[]),
+    method("dialog_accept", &[]),
+    method("dialog_cancel", &[]),
+    method("close", &[]),
+    method("proof_apply_draft", &[]),
+    method("proof_close_page", &[]),
+    method("proof_set_save_name", &[need("name", "text")]),
+];
+
+/// Menu leaves that refuse `command_not_driveable`, with the reason.
+pub const DRIVE_SHELL_NOT_DRIVEABLE: &[(&str, &str)] = &[("studio.view.render_gpu", "the process stays on the CPU path; it holds no GPU device")];
+
+/// Refusal codes of the drive surface itself; a command's own code passes through unchanged.
+pub const DRIVE_REFUSALS: &[&str] = &[
+    "feature_unavailable", "actor_invalid", "open_failed", "undo_needs_live_session", "line_malformed", "line_not_utf8", "line_too_long", "unknown_command", "command_not_driveable",
+    "parameter_missing", "parameter_unknown", "parameter_invalid", "stale_revision", "overwrite_required", "expect_revision_required", "no_timeline", "command_refused", "save_refused", "timeline_refused",
+];
+
+/// What the drive surface does not do yet: a model reads these from `help`, not from a surprise.
+pub const DRIVE_LIMITS: &[&str] = &[
+    "--owner and --access-space default to the actor, which records a model as its own owner; attribution strings are transport identifiers, not proof of a grant",
+    "undo works only inside one --stdin process; the history is not in the package",
+    "no dry_run, no input or output schema, no capability grant and no promotion gate on any command yet; command ids are RUN_COMMANDS ids, not studio.<domain>.<command>.v<N>",
+    "--diag-dir is not available until the observe diagnostics sink lands",
+    "every reply carries the whole state and renders a changed document on the CPU path; a long session's reply grows with its ops",
+    "not driveable yet: layer.restructure and the staged-payload rows of RUN_COMMANDS; Viewer methods that take a whole typed record (paint, stroke, swatch and envelope specs, path and network edits, design and proof commands, liquify, grid tracks, align and transform)",
+    "the coercion is text: a JSON number given for a text parameter arrives as its digits",
+];
+
+/// The drive surface as JSON, from the tables above and the command corpus.
+pub fn drive_json() -> Value {
+    let params = |p: &[DriveParam]| p.iter().map(|d| json!({"key": d.key, "kind": d.kind, "required": d.required})).collect::<Vec<_>>();
+    json!({
+        "commands": crate::action::corpus_json().as_array().into_iter().flatten().filter(|c| c["command_id"].as_str().is_some_and(|id| DRIVE_RUN_COMMANDS.contains(&id))).cloned().collect::<Vec<_>>(),
+        "timeline": DRIVE_TIMELINE.iter().map(|r| json!({"command_id": format!("timeline.{}", r.key), "parameters": params(r.params), "spec_commands": r.spec_commands})).collect::<Vec<_>>(),
+        "viewer": DRIVE_VIEWER.iter().map(|r| json!({"command_id": format!("viewer.{}", r.method), "parameters": params(r.params)})).collect::<Vec<_>>(),
+        "shell": {"command_ids": "every menu leaf id in state.shell.menu (studio.*), through the menu's own availability; no parameters", "not_driveable": DRIVE_SHELL_NOT_DRIVEABLE.iter().map(|(id, why)| json!({"command_id": id, "reason": why})).collect::<Vec<_>>()},
+        "parameter_kinds": "text; text_list (comma separated or a JSON list of strings); number; integer; boolean; ticks; frames; count; path; point [x, y]; points [[x, y], ...]; samples [[x, y] or [x, y, pressure], ...]; rgb8 [r, g, b]; one_of:a|b|c. A list given in --param is its JSON text.",
+        "timeline_not_driveable": DRIVE_TIMELINE_NOT_DRIVEABLE.iter().map(|(k, why)| json!({"command_id": format!("timeline.{k}"), "reason": why})).collect::<Vec<_>>(),
+        "session_lines": ["{\"command\":\"state\"}", "{\"command\":\"undo\",\"expected_revision\":N}", "{\"command\":\"command\",\"command_id\":ID,\"parameters\":{KEY:VALUE},\"expected_revision\":N}"],
+        "response": "schema, command, ok, verdict, revision, attribution, command_id, line (session), detail, error (a refusal), state (state_json). The first session line reports the open, and a closed stdin ends with ended, lines, refused. Exit 0 only when nothing was refused.",
+        "open_timeline": "the first timeline command opens the timeline on the document's first sequence; a document with none refuses no_timeline",
+        "document_save": "overwrite is optional, default false; saving over the opened PACKAGE needs overwrite true and expected_revision",
+        "line_limit_bytes": 1_048_576,
+        "refusals": DRIVE_REFUSALS,
+        "limits": DRIVE_LIMITS,
+    })
+}
 
 /// The manual as JSON.
 pub fn manual_json(harness: &Harness) -> Value {
@@ -57,7 +312,9 @@ pub fn manual_json(harness: &Harness) -> Value {
         "schema": SCHEMA,
         "command": "help",
         "ok": true,
-        "purpose": "Headless development consumer of the Studio foundations with explicitly selected providers. No window, no network, no process spawn; every command prints one JSON document (except help text).",
+        "purpose": "Headless development consumer of the Studio foundations with explicitly selected providers. No window, no network, no process spawn; every command prints one JSON document (except help text; a `command --stdin` session prints one JSON line per input line).",
+        "window": "Feature desktop adds the binary's window: studio-harness [--cpu] [--recent LIST] [FILE], a manual Operator step. Any command word above answers with no window; a word that is no command and no existing file prints usage, exit 2, no window.",
+        "drive": drive_json(),
         "commands": COMMANDS.iter().map(|c| json!({"name":c.name,"usage":c.usage,"summary":c.summary})).collect::<Vec<_>>(),
         "flags": FLAGS.iter().map(|(f, d)| json!({"flag":f,"summary":d})).collect::<Vec<_>>(),
         "providers": {"available": AVAILABLE_PROVIDERS, "selected": harness.selection().providers},
@@ -111,6 +368,40 @@ pub fn manual_text(harness: &Harness) -> String {
     }
     out += &format!("\nPROVIDERS available: {}\n", AVAILABLE_PROVIDERS.join(", "));
     out += "\nOUTPUT\n  One JSON document per command: schema, command, ok, verdict, selection, ops[], observe, not_proven.\n  verdict: pass only when at least one operation ran and every operation succeeded; fail when one failed; nothing_checked when no operation ran (never a pass).\n  Exit codes: 0 pass, 1 failed or refused, 2 usage.\n";
+    let drive = drive_json();
+    out += "\nWINDOW\n  Feature desktop adds the binary's window: studio-harness [--cpu] [--recent LIST] [FILE], a manual Operator step. Any command word above answers with no window; a word that is no command and no existing file prints usage, exit 2, no window.\n";
+    out += "\nDRIVE COMMANDS (state, command, undo; --command-id ID or the command_id of a session line)\n";
+    for c in drive["commands"].as_array().into_iter().flatten() {
+        let keys: Vec<String> = c["parameters"].as_array().into_iter().flatten().map(|p| format!("{}:{}", p["key"].as_str().unwrap_or(""), p["value_type"].as_str().unwrap_or(""))).collect();
+        out += &format!("  {} ({})\n", c["command_id"].as_str().unwrap_or(""), keys.join(", "));
+    }
+    for r in DRIVE_TIMELINE {
+        let keys: Vec<String> = r.params.iter().map(|p| format!("{}:{}{}", p.key, p.kind, if p.required { "" } else { " optional" })).collect();
+        let spec = if r.spec_commands.is_empty() { String::new() } else { format!(" spec {}", r.spec_commands.join(" ")) };
+        out += &format!("  timeline.{} ({}){spec}\n", r.key, keys.join(", "));
+    }
+    for (key, why) in DRIVE_TIMELINE_NOT_DRIVEABLE {
+        out += &format!("  timeline.{key}: refuses command_not_driveable, {why}\n");
+    }
+    for r in DRIVE_VIEWER {
+        let keys: Vec<String> = r.params.iter().map(|p| format!("{}:{}{}", p.key, p.kind, if p.required { "" } else { " optional" })).collect();
+        out += &format!("  viewer.{} ({})\n", r.method, keys.join(", "));
+    }
+    out += "  studio.* (every menu leaf id in state.shell.menu, no parameters, through the menu's own availability)\n";
+    for (id, why) in DRIVE_SHELL_NOT_DRIVEABLE {
+        out += &format!("  {id}: refuses command_not_driveable, {why}\n");
+    }
+    out += "\nDRIVE SESSION (command PACKAGE --actor ID --session ID --stdin)\n";
+    for line in drive["session_lines"].as_array().into_iter().flatten() {
+        out += &format!("  {}\n", line.as_str().unwrap_or(""));
+    }
+    for key in ["response", "open_timeline", "document_save", "parameter_kinds"] {
+        out += &format!("  {key}: {}\n", drive[key].as_str().unwrap_or(""));
+    }
+    out += &format!("  A line over {} bytes refuses line_too_long; a refused line never ends the session.\n  Refusals: {}\n  Limits:\n", drive["line_limit_bytes"], DRIVE_REFUSALS.join(", "));
+    for limit in DRIVE_LIMITS {
+        out += &format!("    {limit}\n");
+    }
     out += "\nPANEL CONTROLS (descriptors from hsk-studio-controls; `panel` prints the same controls with values)\n";
     for t in m["panel_controls"].as_array().into_iter().flatten() {
         out += &format!("  {} ({})\n", t["title"].as_str().unwrap_or(""), t["id"].as_str().unwrap_or(""));

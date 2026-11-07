@@ -2,6 +2,10 @@
 //! example binary only forwards process arguments and prints the result, so every command is
 //! testable without spawning a process, opening a window or touching the environment.
 //!
+//! [`run_streams`] is the process entry of both binaries: it adds the process's stdin and stdout for
+//! the `command --stdin` session (module `drive`, feature `viewer`). [`window_args`] classifies the
+//! desktop binary's arguments: only no argument or an existing file opens a window.
+//!
 //! Two refusals keep a green exit honest (tests: `verify_checks_something_and_save_never_clobbers_the_input`
 //! in `tests/harness_headless.rs`): `verify` with no expectation is a usage error (exit 2), and
 //! `edit --save OUT` where OUT is the input PACKAGE is a usage error unless `--overwrite` is given.
@@ -17,6 +21,8 @@ use std::path::{Path, PathBuf};
 
 #[cfg(feature = "viewer")]
 mod drive;
+#[cfg(feature = "viewer")]
+mod drive_viewer;
 
 pub struct CliOutput {
     pub exit: i32,
@@ -33,16 +39,50 @@ pub enum WindowArgs {
     Usage(CliOutput),
 }
 
-/// RED STUB of the classifier: known words go to the CLI, everything else still reaches the window.
-pub fn window_args(args: &[String], _is_file: &dyn Fn(&Path) -> bool) -> WindowArgs {
-    match args.first().map(String::as_str) {
-        Some("state" | "command" | "undo" | "help" | "develop" | "--help" | "-h") => WindowArgs::Cli,
-        _ => WindowArgs::Window { cpu: false, recent: None, file: None },
+/// Classifies the desktop binary's arguments. A command word of the manual (first argument only, and
+/// it wins over a file of that name) goes to the CLI. The window opens only for no argument or for
+/// `[--cpu] [--recent LIST] FILE` where FILE exists; an unknown flag, an unknown word or a missing
+/// file is usage (`is_file` is the caller's file check).
+pub fn window_args(args: &[String], is_file: &dyn Fn(&Path) -> bool) -> WindowArgs {
+    const WINDOW: &str = "the window takes [--cpu] [--recent LIST] [FILE]";
+    if args.first().is_some_and(|first| matches!(first.as_str(), "--help" | "-h") || crate::manual::COMMANDS.iter().any(|c| c.name == first.as_str())) {
+        return WindowArgs::Cli;
     }
+    let (mut cpu, mut recent, mut file) = (false, None, None);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--cpu" => cpu = true,
+            "--recent" => match rest.next() {
+                Some(path) => recent = Some(PathBuf::from(path)),
+                None => return WindowArgs::Usage(usage(&format!("--recent needs a file path; {WINDOW}"))),
+            },
+            flag if flag.starts_with('-') => return WindowArgs::Usage(usage(&format!("unknown flag `{flag}`; {WINDOW}"))),
+            word => {
+                if file.is_some() {
+                    return WindowArgs::Usage(usage(&format!("`{word}`: only one FILE; {WINDOW}")));
+                }
+                if !is_file(Path::new(word)) {
+                    return WindowArgs::Usage(usage(&format!("`{word}` is no command and no existing file; {WINDOW}")));
+                }
+                file = Some(PathBuf::from(word));
+            }
+        }
+    }
+    WindowArgs::Window { cpu, recent, file }
 }
 
 /// The process entry of both binaries: arguments and the process's streams in, the exit code out.
-pub fn run_streams(args: &[String], _input: &mut dyn BufRead, output: &mut dyn Write) -> i32 {
+#[cfg_attr(not(feature = "viewer"), allow(unused_variables))]
+pub fn run_streams(args: &[String], input: &mut dyn BufRead, output: &mut dyn Write) -> i32 {
+    #[cfg(feature = "viewer")]
+    if let Some((command, rest)) = args.split_first()
+        && command == "command"
+        && let Ok(parsed) = parse(rest)
+        && parsed.stdin
+    {
+        return drive::session(&parsed, input, output);
+    }
     let result = run(args);
     let written = output.write_all(result.stdout.as_bytes()).and_then(|()| output.flush());
     if written.is_err() { 1 } else { result.exit }
@@ -103,6 +143,21 @@ struct Parsed {
     audio: Vec<PathBuf>,
     width: Option<u32>,
     height: Option<u32>,
+    /// state, command, undo (lane SMB-HARNESS-DRIVE-1): the caller's attribution and the command.
+    #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+    actor: Option<String>,
+    #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+    session: Option<String>,
+    #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+    owner: Option<String>,
+    #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+    access_space: Option<String>,
+    #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+    command_id: Option<String>,
+    #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+    params: Vec<(String, String)>,
+    #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+    stdin: bool,
 }
 
 /// One develop export stage flag (lane SMB-LR-EXPORT-GUI-1), mapped one to one onto the export
@@ -223,6 +278,16 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
                 let file = PathBuf::from(take(&mut i, "watermark graphic path")?);
                 p.stage.extend([stage_on(), StageArg::Set("use_watermark".into(), "true".into()), StageArg::Watermark(file)]);
             }
+            "--actor" => p.actor = Some(take(&mut i, "actor id")?),
+            "--session" => p.session = Some(take(&mut i, "session id")?),
+            "--owner" => p.owner = Some(take(&mut i, "owner id")?),
+            "--access-space" => p.access_space = Some(take(&mut i, "access space id")?),
+            "--command-id" => p.command_id = Some(take(&mut i, "command id")?),
+            "--param" => {
+                let key = take(&mut i, "parameter key")?;
+                p.params.push((key, take(&mut i, "parameter value")?));
+            }
+            "--stdin" => p.stdin = true,
             "--sequence" => p.sequence = Some(take(&mut i, "sequence id")?),
             "--preset" => p.preset = Some(take(&mut i, "export preset id")?),
             "--in" => p.in_tick = Some(take(&mut i, "in tick")?),
@@ -299,6 +364,8 @@ pub fn run(args: &[String]) -> CliOutput {
         "help" => help(&parsed),
         #[cfg(feature = "viewer")]
         "state" | "command" | "undo" => drive::one_shot(command, &parsed),
+        #[cfg(not(feature = "viewer"))]
+        "state" | "command" | "undo" => out(1, &json!({"schema":crate::SCHEMA,"command":command,"ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"viewer"}})),
         "descriptors" | "providers" => with_harness(command, &parsed, |h| {
             if command == "descriptors" {
                 match h.collect_descriptors() {

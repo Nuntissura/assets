@@ -832,6 +832,8 @@ const CONTROL: ParamSpec = p("control", ValueType::String);
 const VALUE: ParamSpec = p("value", ValueType::String);
 const OP: ParamSpec = p("op", ValueType::String);
 const WRITES: ParamSpec = p("writes", ValueType::List);
+const PATH: ParamSpec = p("path", ValueType::String);
+const OVERWRITE: ParamSpec = p("overwrite", ValueType::Boolean);
 
 const fn entry(command_id: &'static str, run_method: &'static str, display_name: &'static str, recordable: bool, mutates_authority: bool, parameters: &'static [ParamSpec]) -> CommandEntry {
     CommandEntry { command_id, run_method, display_name, recordable, mutates_authority, dry_runnable: false, parameters }
@@ -865,7 +867,7 @@ pub const RUN_COMMANDS: &[CommandEntry] = &[
     entry("document.open", "open_path / open_bytes", "Open document", false, false, &[]),
     entry("document.import", "open_import / open_import_detailed", "Open and convert to native", false, false, &[]),
     entry("document.reopen", "reopen_bytes / reopen_path", "Reopen saved document", false, false, &[]),
-    entry("document.save", "save_to", "Save document", false, false, &[]),
+    entry("document.save", "save_to", "Save document", false, false, &[PATH, OVERWRITE]),
     entry("document.checkpoint", "checkpoint", "Checkpoint document", false, false, &[]),
     entry("document.verify", "verify_live / verify_reopened", "Verify document", false, false, &[]),
     entry("document.summary", "summary", "Document summary", false, false, &[]),
