@@ -1,6 +1,6 @@
 //! Tree to display list: the toolkit decides what is drawn (O4 layer A); painters only execute. Colours come from the
 //! state table of design-system.json through [`crate::tokens::state_style`], never from literals.
-use crate::display::{Border, DisplayList, Prim};
+use crate::display::{Border, DisplayList, Prim, Side};
 use crate::geom::{Point, Rect, Rgba8};
 use crate::text::Text;
 use crate::tokens::{ColorToken, State, StateStyle, StyleKind, TextToken, Theme, radius, size, state_style, stroke};
@@ -35,7 +35,6 @@ struct Inherit {
     text: ColorToken,
     icon: ColorToken,
     hot: ColorToken,
-    weight: u16,
     disabled: bool,
 }
 
@@ -44,7 +43,7 @@ pub fn emit(tree: &Tree, ui: &Interaction, theme: Theme, text: &mut Text) -> Dis
     if tree.is_empty() {
         return list;
     }
-    let inh = Inherit { text: ColorToken::TextPrimary, icon: ColorToken::TextSecondary, hot: ColorToken::TextSecondary, weight: 0, disabled: false };
+    let inh = Inherit { text: ColorToken::TextPrimary, icon: ColorToken::TextSecondary, hot: ColorToken::TextSecondary, disabled: false };
     let mut rings = Vec::new();
     node(tree, NodeId(0), ui, theme, text, &mut list, inh, &mut rings, 0);
     // Focus rings draw last so no sibling covers them (never clipped by a later fill).
@@ -79,15 +78,16 @@ fn node(tree: &Tree, id: NodeId, ui: &Interaction, theme: Theme, text: &mut Text
                 }
             }
             // State edges draw over the widget's content (a selected row's accent edge covers its colour tag).
-            let mut edge = |t: Option<ColorToken>, r: Rect| {
+            // Edge thickness follows scale_rules.hairline at any position (F1).
+            let mut edge = |t: Option<ColorToken>, side: Side, w: f32| {
                 if let Some(t) = t {
-                    edges.push(Prim::Rect { rect: r, color: c(t, theme) });
+                    edges.push(Prim::Edge { owner: b, side, px: w as u8, color: c(t, theme) });
                 }
             };
-            edge(s.edge_left_2.or(s.gutter_left_2), Rect::new(b.x0, b.y0, b.x0 + stroke::EDGE_STATE, b.y1));
-            edge(s.edge_top_2, Rect::new(b.x0, b.y0, b.x1, b.y0 + stroke::EDGE_STATE));
-            edge(s.edge_bottom_1, Rect::new(b.x0, b.y1 - stroke::HAIRLINE, b.x1, b.y1));
-            edge(s.edge_bottom_2, Rect::new(b.x0, b.y1 - stroke::EDGE_STATE, b.x1, b.y1));
+            edge(s.edge_left_2.or(s.gutter_left_2), Side::Left, stroke::EDGE_STATE);
+            edge(s.edge_top_2, Side::Top, stroke::EDGE_STATE);
+            edge(s.edge_bottom_1, Side::Bottom, stroke::HAIRLINE);
+            edge(s.edge_bottom_2, Side::Bottom, stroke::EDGE_STATE);
             if let Some(t) = s.text {
                 inh.text = t;
             }
@@ -95,9 +95,6 @@ fn node(tree: &Tree, id: NodeId, ui: &Interaction, theme: Theme, text: &mut Text
                 inh.icon = t;
             }
             inh.hot = s.hot_point.or(s.icon).unwrap_or(inh.icon);
-            if s.weight != 0 {
-                inh.weight = s.weight;
-            }
             if n.flags.focused && ui.focus_visible && !inh.disabled {
                 let f = resolved(*kind, State::Focus);
                 if let Some(ring) = f.ring {
@@ -112,10 +109,11 @@ fn node(tree: &Tree, id: NodeId, ui: &Interaction, theme: Theme, text: &mut Text
                 }
             }
         }
-        Paint::Label { text: s, token, color, align, ellipsis } => {
+        Paint::Label { text: s, token, weight, color, align, ellipsis } => {
+            // The label's own weight is the one layout and AC-TEXT-01 measured (F2); no weight is inherited.
             let col = if inh.disabled { ColorToken::TextDisabled } else { color.unwrap_or(inh.text) };
-            let shown = if *ellipsis { text.ellipsize(s, *token, inh.weight, b.w()) } else { s.clone() };
-            label(list, text, &shown, *token, inh.weight, b, *align, c(col, theme));
+            let shown = if *ellipsis { text.ellipsize(s, *token, *weight, b.w()) } else { s.clone() };
+            label(list, text, &shown, *token, *weight, b, *align, c(col, theme));
         }
         Paint::Value { text: s, unit } => {
             let col = if inh.disabled { ColorToken::TextDisabled } else { inh.text };
@@ -163,7 +161,7 @@ fn node(tree: &Tree, id: NodeId, ui: &Interaction, theme: Theme, text: &mut Text
             list.push(Prim::RRect { rect: tr, radius: thumb / 2.0, fill: c(tcol, theme), border });
             let _ = soft.1;
         }
-        Paint::Divider => list.push(Prim::Rect { rect: b, color: c(ColorToken::EdgeSubtle, theme) }),
+        Paint::Divider => list.push(Prim::Edge { owner: b, side: Side::Left, px: 1, color: c(ColorToken::EdgeSubtle, theme) }),
         Paint::TagEdge(t) => list.push(Prim::Rect { rect: b, color: c(*t, theme) }),
         Paint::Thumbnail(img) => {
             match img {

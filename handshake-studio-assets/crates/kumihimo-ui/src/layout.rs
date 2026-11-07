@@ -29,9 +29,9 @@ pub const MAX_DEPTH: usize = 256;
 
 fn content(tree: &Tree, id: NodeId, text: &mut Text) -> (f32, f32) {
     match &tree.get(id).paint {
-        Paint::Label { text: s, token, .. } => {
+        Paint::Label { text: s, token, weight, .. } => {
             let st = token.style();
-            (text.measure(s, *token, 0).ceil(), st.line)
+            (text.measure(s, *token, *weight).ceil(), st.line)
         }
         Paint::Value { text: s, unit } => {
             let st = crate::tokens::TextToken::Value.style();

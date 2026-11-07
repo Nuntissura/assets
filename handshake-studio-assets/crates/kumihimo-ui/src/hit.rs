@@ -27,15 +27,31 @@ fn hit_in(tree: &Tree, id: NodeId, p: Point, depth: usize) -> Option<NodeId> {
     (inside && n.interactive()).then_some(id)
 }
 
-/// Focusable, enabled nodes in reading order.
+/// Focusable, enabled, visible nodes in reading order. A node with empty bounds, one clipped out by an ancestor, or one
+/// deeper than layout follows is not a stop (F8): the ring would be drawn where nobody sees it.
 pub fn focus_order(tree: &Tree) -> Vec<NodeId> {
     tree.preorder()
         .into_iter()
         .filter(|&id| {
             let n = tree.get(id);
-            n.flags.focusable && !n.author_id.is_empty() && !tree.effectively_disabled(id)
+            n.flags.focusable && !n.author_id.is_empty() && !tree.effectively_disabled(id) && visible(tree, id)
         })
         .collect()
+}
+
+/// True when some of `id`'s bounds survive every clipping ancestor and it lies within layout depth.
+pub fn visible(tree: &Tree, id: NodeId) -> bool {
+    let mut r = tree.get(id).bounds;
+    let mut at = id;
+    let mut depth = 0usize;
+    while let Some(p) = tree.get(at).parent {
+        depth += 1;
+        if tree.get(p).flags.clip {
+            r = r.intersect(&tree.get(p).bounds);
+        }
+        at = p;
+    }
+    depth < crate::layout::MAX_DEPTH && !r.is_empty()
 }
 
 /// The next (or previous) focus stop after `current`, wrapping; the first (last) stop when nothing has focus.

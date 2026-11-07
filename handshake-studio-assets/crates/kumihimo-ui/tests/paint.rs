@@ -111,17 +111,21 @@ fn text_caches_hit_and_ellipsize_fits() {
     assert!(menu > plain * 11.0 / 12.0, "menu_title tracking applied");
 }
 
-/// Golden pixel hashes (FNV-1a 64 over size and RGBA) for the four gallery widgets at scale 1 and 1.5, dark theme.
+/// Golden pixel hashes (FNV-1a 64 over size and RGBA) for the four gallery widgets at scale 1, 1.25 and 1.5, dark theme.
 /// A change here is a visible change: open the gallery PNGs before re-pinning.
 #[test]
 fn golden_widget_pixels() {
-    let expected: [(Scene, f32, u64); 8] = [
+    let expected: [(Scene, f32, u64); 12] = [
         (Scene::Toolbar, 1.0, 0x54D96A7D99AC1B3C),
-        (Scene::TabRow, 1.0, 0x18AF722E07D1B0A4),
+        (Scene::TabRow, 1.0, 0xC28214A37D261F94),
         (Scene::Slider, 1.0, 0x1485673531CE5F4A),
         (Scene::LayerRow, 1.0, 0x4B65DA05AD1A3676),
-        (Scene::Toolbar, 1.5, 0x7D381C22B79F8C1F),
-        (Scene::TabRow, 1.5, 0x872A8F97B4925B4B),
+        (Scene::Toolbar, 1.25, 0xAE9F5AB34FA54BBB),
+        (Scene::TabRow, 1.25, 0xF47E6C7AE45200E7),
+        (Scene::Slider, 1.25, 0x741DF48AE4B8E761),
+        (Scene::LayerRow, 1.25, 0xB26D2A5A246E1ED8),
+        (Scene::Toolbar, 1.5, 0xC7ED091386B02267),
+        (Scene::TabRow, 1.5, 0xAB58B214AF165743),
         (Scene::Slider, 1.5, 0x62E096C82065C7D0),
         (Scene::LayerRow, 1.5, 0x2BA08F0AD8A6D691),
     ];
@@ -135,4 +139,54 @@ fn golden_widget_pixels() {
     }
     let all_match = expected.iter().zip(&got).all(|((_, _, w), g)| g.ends_with(&format!("0x{w:016X})")));
     assert!(all_match, "golden mismatch:\n{}", got.join("\n"));
+}
+
+/// F1: a 1 px edge paints hairline() and a 2 px edge edge_px(2) at any position, inside the owner.
+#[test]
+fn edges_keep_their_thickness_wherever_they_sit() {
+    use kumihimo_ui::display::Side;
+    let bg = tok(ColorToken::SurfaceFrame);
+    let fg = tok(ColorToken::AccentBase);
+    for s in [1.0f32, 1.25, 1.5, 1.75, 2.0, 2.25, 3.0] {
+        let scale = Scale::new(s).unwrap();
+        for x0 in [0.0f32, 3.0, 72.0, 72.5, 101.0] {
+            for (px, side) in [(1u8, Side::Left), (2, Side::Left), (1, Side::Right), (2, Side::Top), (1, Side::Bottom), (2, Side::Bottom)] {
+                let owner = Rect::new(x0, x0 / 2.0, x0 + 20.0, x0 / 2.0 + 24.0);
+                let mut c = Canvas::new(scale.edge(140.0) as u32, scale.edge(90.0) as u32, bg).unwrap();
+                let list = DisplayList { items: vec![Prim::Edge { owner, side, px, color: fg }] };
+                paint(&mut c, &list, scale, &mut text(), &mut GalleryIcons::default());
+                let o = scale.snap(owner);
+                let (along, across) = match side {
+                    Side::Left | Side::Right => ((o.y0 + o.y1) / 2, (o.x0..o.x1).filter(|&x| c.pixel(x as u32, ((o.y0 + o.y1) / 2) as u32) == fg).count()),
+                    Side::Top | Side::Bottom => ((o.x0 + o.x1) / 2, (o.y0..o.y1).filter(|&y| c.pixel(((o.x0 + o.x1) / 2) as u32, y as u32) == fg).count()),
+                };
+                let _ = along;
+                assert_eq!(across as i32, scale.edge_px(px), "{px} px {side:?} edge at x0 {x0}, scale {s}");
+                let outside = c.rgba().chunks(4).enumerate().filter(|(i, p)| {
+                    let (x, y) = ((*i as u32 % c.width()) as i32, (*i as u32 / c.width()) as i32);
+                    p[..3] == [fg.r, fg.g, fg.b] && !(x >= o.x0 && x < o.x1 && y >= o.y0 && y < o.y1)
+                });
+                assert_eq!(outside.count(), 0, "edge stays inside its owner");
+            }
+        }
+    }
+    assert_eq!(Scale::new(1.5).unwrap().hairline(), 1);
+    assert_eq!(Scale::new(1.25).unwrap().edge_px(2), 3);
+}
+
+/// F9: ellipsis costs a logarithmic number of shapes and does not flood the line cache.
+#[test]
+fn ellipsize_binary_searches_without_caching_prefixes() {
+    let mut t = text().with_capacity(64, 64);
+    let long: String = "Layer copy ".repeat(372); // 4092 bytes
+    let before = t.stats();
+    let cut = t.ellipsize(&long, TextToken::Body, 0, 200.0);
+    let after = t.stats();
+    assert!(cut.ends_with('\u{2026}') && t.measure(&cut, TextToken::Body, 0) <= 200.0);
+    assert!(cut.chars().count() > 20, "takes the longest fitting prefix: {cut}");
+    assert_eq!(after.resets, before.resets, "line cache not flushed");
+    assert!(after.shape_misses - before.shape_misses <= 2, "only the full text and the result are cached");
+    let huge = "x".repeat(9000);
+    let cut = t.ellipsize(&huge, TextToken::Body, 0, 10_000.0);
+    assert!(cut.len() <= kumihimo_ui::text::MAX_LABEL_BYTES && cut.ends_with('\u{2026}'), "over-long text is cut, never silently unshaped");
 }

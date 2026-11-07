@@ -7,6 +7,9 @@
 //! in the port, so every port tracks the same way.
 use crate::tokens::{TextStyle, TextToken};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static EPOCH: AtomicU64 = AtomicU64::new(1);
 
 /// A font face the port knows, chosen by the port (opaque here).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -105,6 +108,7 @@ pub struct Text {
     lut: [u8; 256],
     gamma: f32,
     stats: TextStats,
+    epoch: u64,
 }
 
 impl Text {
@@ -118,6 +122,7 @@ impl Text {
             lut: [0; 256],
             gamma: 1.0,
             stats: TextStats::default(),
+            epoch: EPOCH.fetch_add(1, Ordering::Relaxed),
         };
         t.set_coverage_gamma(1.0);
         t
@@ -144,6 +149,19 @@ impl Text {
     }
     pub fn stats(&self) -> TextStats {
         self.stats
+    }
+    /// Unique per text system: panels key on it, so a new port (other fonts) re-shapes and re-lays out.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    /// Width of a candidate string, shaped through the port but never cached (ellipsis search, F9).
+    fn measure_uncached(&mut self, text: &str, token: TextToken, weight: u16) -> Option<f32> {
+        if text.len() > MAX_LABEL_BYTES {
+            return None;
+        }
+        let style = Self::style(token, weight);
+        let line = self.port.shape(text, &style).ok()?;
+        Some(line.width + style.tracking * line.glyphs.len() as f32)
     }
     /// Style of a token with an optional weight override (0 = the token's own weight).
     pub fn style(token: TextToken, weight: u16) -> TextStyle {
@@ -209,24 +227,34 @@ impl Text {
     /// The longest prefix of `text` (whole chars) that fits `max_w` logical px with a trailing ellipsis, or the whole
     /// text when it fits.
     pub fn ellipsize(&mut self, text: &str, token: TextToken, weight: u16, max_w: f32) -> String {
-        if self.measure(text, token, weight) <= max_w {
+        if text.len() <= MAX_LABEL_BYTES && self.measure(text, token, weight) <= max_w {
             return text.to_owned();
         }
+        // Binary search over char boundaries for the longest prefix that fits with the ellipsis; candidates are
+        // measured uncached, so a long name costs about log2(n) shapes and never floods the line cache (F9). Only the
+        // result is cached, by emit's shape call.
         let ell = "\u{2026}";
-        let mut cut: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
-        while let Some(end) = cut.pop() {
-            let cand = format!("{}{ell}", &text[..end]);
-            if self.measure(&cand, token, weight) <= max_w {
-                return cand;
-            }
+        // Over-long text is cut to what one label may shape, ellipsis included.
+        let cut: Vec<usize> = text.char_indices().map(|(i, _)| i).take_while(|&i| i + ell.len() <= MAX_LABEL_BYTES).collect();
+        // The whole text does not fit (checked above), so the longest candidate drops its last char.
+        let (mut lo, mut hi) = (0usize, cut.len().saturating_sub(1));
+        while lo < hi {
+            let mid = lo + (hi - lo).div_ceil(2);
+            let end = cut.get(mid).copied().unwrap_or(text.len());
+            let fits = self.measure_uncached(&format!("{}{ell}", &text[..end]), token, weight).is_some_and(|w| w <= max_w);
+            if fits { lo = mid } else { hi = mid - 1 }
         }
-        ell.to_owned()
+        if lo == 0 {
+            return ell.to_owned();
+        }
+        let end = cut.get(lo).copied().unwrap_or(text.len());
+        format!("{}{ell}", &text[..end])
     }
 }
 
 /// A deterministic stand-in engine with no font: every scalar is a box of the style's cap height, advance
-/// `0.56 * size` (digits `0.6 * size`, space `0.3 * size`). For layout tests and hosts with no text engine; never the
-/// product look.
+/// `0.56 * size` (digits `0.6 * size`, space `0.3 * size`), 8 % wider at weight 600 and above so a weight mismatch is
+/// visible in tests. For layout tests and hosts with no text engine; never the product look.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BoxText;
 impl TextPort for BoxText {
@@ -240,7 +268,8 @@ impl TextPort for BoxText {
                 0.6
             } else {
                 0.56
-            } * style.size;
+            } * style.size
+                * if style.weight >= 600 { 1.08 } else { 1.0 };
             let end = i + c.len_utf8();
             glyphs.push(ShapedGlyph { face: FaceId(0), glyph_id: u32::from(c), x, y: 0.0, advance: adv, cluster: (i as u32, end as u32) });
             x += adv;

@@ -1,7 +1,7 @@
 //! CPU painter: draws a [`DisplayList`] into an RGBA8 buffer, so builders and models see real pixels with no window
 //! and no GPU. Blending is in sRGB-encoded space (scale_rules.colour_pipeline), so a token's value is the pixel value of
 //! a flat fill. Every rect goes through [`Scale::snap`].
-use crate::display::{DisplayList, IconId, ImageId, Prim};
+use crate::display::{DisplayList, IconId, ImageId, Prim, Side};
 use crate::geom::{IRect, Point, Rect, Rgba8, Scale};
 use crate::text::{GlyphKey, Text};
 
@@ -156,6 +156,22 @@ pub fn paint(canvas: &mut Canvas, list: &DisplayList, scale: Scale, text: &mut T
         match item {
             Prim::Rect { rect, color } => {
                 let r = scale.snap(*rect).intersect(&clip);
+                for y in r.y0..r.y1 {
+                    for x in r.x0..r.x1 {
+                        canvas.blend(x, y, *color, 255);
+                    }
+                }
+            }
+            Prim::Edge { owner, side, px, color } => {
+                let o = scale.snap(*owner);
+                let t = scale.edge_px(*px);
+                let r = match side {
+                    Side::Left => IRect { x1: o.x0.saturating_add(t).min(o.x1), ..o },
+                    Side::Right => IRect { x0: o.x1.saturating_sub(t).max(o.x0), ..o },
+                    Side::Top => IRect { y1: o.y0.saturating_add(t).min(o.y1), ..o },
+                    Side::Bottom => IRect { y0: o.y1.saturating_sub(t).max(o.y0), ..o },
+                }
+                .intersect(&clip);
                 for y in r.y0..r.y1 {
                     for x in r.x0..r.x1 {
                         canvas.blend(x, y, *color, 255);

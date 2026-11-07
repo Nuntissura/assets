@@ -128,7 +128,7 @@ fn checks_report_overlap_and_clipping() {
     let mut over = Node::new("studio.test.b", Role::Button).actions(&[Action::Click]);
     over.parent = Some(t.root());
     over.bounds = Rect::xywh(10.0, 0.0, 40.0, 24.0);
-    let mut lab = Node::deco().paint(Paint::Label { text: "Extremely long label".into(), token: TextToken::Body, color: None, align: Align::Start, ellipsis: false });
+    let mut lab = Node::deco().paint(Paint::Label { text: "Extremely long label".into(), token: TextToken::Body, weight: 0, color: None, align: Align::Start, ellipsis: false });
     lab.bounds = Rect::xywh(0.0, 30.0, 20.0, 16.0);
     t.nodes.push(over);
     t.nodes.push(lab);
@@ -138,4 +138,34 @@ fn checks_report_overlap_and_clipping() {
     let clipped = clipped_labels(&t, &mut text());
     assert_eq!(clipped.len(), 1);
     assert!(clipped[0].overflow_px > 50.0);
+}
+
+/// F2: the active tab's label is measured at the weight it is drawn with; F3: a value's room excludes its unit.
+#[test]
+fn checks_measure_the_drawn_weight_and_the_unit() {
+    use kumihimo_ui::tokens::TextToken;
+    use kumihimo_ui::tree::{Paint, Size};
+    let t = tree_of(Scene::TabRow);
+    let id = t.find("studio.tab.layers").unwrap();
+    let label = t.get(id).children[0];
+    let Paint::Label { weight, text: s, .. } = &t.get(label).paint else { panic!("tab label") };
+    assert_eq!(*weight, 600, "active tab label carries the state table's weight");
+    let bold = text().measure(s, TextToken::Tab, 600).ceil();
+    assert_eq!(t.get(label).bounds.w(), bold, "layout sized the box for the drawn weight");
+    let inactive = t.get(t.find("studio.tab.channels").unwrap()).children[0];
+    assert!(matches!(t.get(inactive).paint, Paint::Label { weight: 0, .. }));
+    // A box sized for regular text but drawn bold is a clipped label.
+    let mut squeezed = t.clone();
+    squeezed.get_mut(label).bounds.x1 = squeezed.get(label).bounds.x0 + text().measure(s, TextToken::Tab, 0).ceil();
+    assert_eq!(clipped_labels(&squeezed, &mut text()).len(), 1);
+    // F3: '1024.50' fits 60 px alone but not beside its unit.
+    let mut v = tree_of(Scene::Slider);
+    let field = v.find("studio.panel.layers.opacity.field").unwrap();
+    let value = v.get(field).children[0];
+    v.get_mut(value).paint = Paint::Value { text: "1024.50".into(), unit: Some("px".into()) };
+    let w = text().measure("1024.50", TextToken::Value, 0);
+    let b = v.get(value).bounds;
+    v.get_mut(value).bounds.x1 = b.x0 + w + 2.0 * kumihimo_ui::tokens::spacing::S3 + 1.0;
+    assert_eq!(clipped_labels(&v, &mut text()).len(), 1, "the unit takes room from the value");
+    let _ = Size::Fill;
 }

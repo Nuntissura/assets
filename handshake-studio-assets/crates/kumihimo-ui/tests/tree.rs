@@ -97,7 +97,9 @@ fn focus_order_is_reading_order_and_the_ring_shows_on_keyboard_focus() {
     let mut b = Builder::new(Node::new("", Role::Group), &ui2);
     kumihimo_ui::widgets::button(&mut b, "studio.test.group.on", "On", true);
     kumihimo_ui::widgets::button(&mut b, "studio.test.group.off", "Off", false);
-    let t = b.finish().unwrap();
+    let mut t = b.finish().unwrap();
+    let root = t.root();
+    kumihimo_ui::layout::LayoutPort::layout(&mut kumihimo_ui::layout::StackLayout, &mut t, root, Rect::xywh(0.0, 0.0, 300.0, 40.0), &mut text());
     let order = kumihimo_ui::hit::focus_order(&t);
     assert_eq!(order.len(), 1);
 }
@@ -152,4 +154,68 @@ fn author_ids_follow_the_grammar_and_are_unique() {
     let mut b = Builder::new(Node::new("", Role::Group), &ui);
     b.end();
     assert_eq!(b.finish(), Err(BuildError::Unbalanced));
+}
+
+/// F4, F5: stable_id collisions and '#+2' are refused.
+#[test]
+fn stable_id_collisions_and_signed_instances_are_refused() {
+    assert!(!valid_author_id("studio.tab.x#+2"));
+    assert!(!valid_author_id("studio.tab.x#2x"));
+    assert!(valid_author_id("studio.tab.a-b") && valid_author_id("studio.tab-a.b"));
+    assert_eq!(stable_id("studio.tab.a-b"), stable_id("studio.tab-a.b"), "the spec's derivation meets here");
+    let ui = Interaction::default();
+    let mut b = Builder::new(Node::new("", Role::Group), &ui);
+    b.leaf(Node::new("studio.tab.a-b", Role::Tab));
+    b.leaf(Node::new("studio.tab-a.b", Role::Tab));
+    assert_eq!(b.finish(), Err(BuildError::DuplicateStableId("studio.tab-a.b".into())));
+}
+
+/// F6: a new text system (fonts) or an explicit invalidate rebuilds; F7: one window Interaction, two panels, a hover
+/// rebuilds only the panels it enters or leaves.
+#[test]
+fn text_epoch_invalidate_and_per_panel_interaction_slices() {
+    let vp = Rect::xywh(0.0, 0.0, 300.0, 34.0);
+    let mut ui = Interaction::default();
+    let (mut a, mut b) = (Panel::default(), Panel::default());
+    let mut t = text();
+    let up = |p: &mut Panel, scene: Scene, ui: &Interaction, t: &mut Text| p.update(1, ui, vp, Scale::ONE, Theme::Dark, t, |bd| scene.build(bd)).unwrap();
+    assert!(up(&mut a, Scene::Toolbar, &ui, &mut t) && up(&mut b, Scene::TabRow, &ui, &mut t));
+    // Hover inside A: A rebuilds, B does not.
+    let ta = a.tree().clone();
+    assert!(ui.pointer_move(&ta, centre(&a, "studio.options.gallery.move")));
+    assert!(up(&mut a, Scene::Toolbar, &ui, &mut t));
+    assert!(!up(&mut b, Scene::TabRow, &ui, &mut t), "B's slice did not change");
+    assert!(!up(&mut a, Scene::Toolbar, &ui, &mut t), "idle after the hover");
+    // The pointer moves into B: both slices change once.
+    let tb = b.tree().clone();
+    assert!(ui.pointer_move(&tb, centre(&b, "studio.tab.paths")));
+    assert!(up(&mut a, Scene::Toolbar, &ui, &mut t), "A lost its hover");
+    assert!(up(&mut b, Scene::TabRow, &ui, &mut t), "B gained it");
+    assert!(!up(&mut a, Scene::Toolbar, &ui, &mut t) && !up(&mut b, Scene::TabRow, &ui, &mut t));
+    // F6: a new Text (other fonts) re-shapes with the same state revision; invalidate forces a rebuild.
+    let mut t2 = text();
+    assert_ne!(t.epoch(), t2.epoch());
+    assert!(up(&mut a, Scene::Toolbar, &ui, &mut t2));
+    assert!(!up(&mut a, Scene::Toolbar, &ui, &mut t2));
+    a.invalidate();
+    assert!(up(&mut a, Scene::Toolbar, &ui, &mut t2));
+}
+
+/// F8: Tab skips controls that are zero-size or clipped out by an ancestor.
+#[test]
+fn focus_skips_hidden_controls() {
+    use kumihimo_ui::tree::{Axis, LayoutSpec, Size};
+    let ui = Interaction::default();
+    let mut b = Builder::new(Node::new("", Role::Group).layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h: Size::Fill, ..LayoutSpec::default() }), &ui);
+    b.leaf(Node::new("studio.test.list.seen", Role::Button).actions(&[Action::Click]).size(Size::Fixed(40.0), Size::Fixed(24.0)));
+    b.leaf(Node::new("studio.test.list.zero", Role::Button).actions(&[Action::Click]).size(Size::Fixed(0.0), Size::Fixed(24.0)));
+    b.begin(Node::new("studio.test.list.view", Role::Group).flags(|f| f.clip = true).layout(LayoutSpec { axis: Axis::Column, w: Size::Fixed(100.0), h: Size::Fixed(24.0), ..LayoutSpec::default() }));
+    b.leaf(Node::new("studio.test.list.row-1", Role::Button).actions(&[Action::Click]).size(Size::Fixed(100.0), Size::Fixed(24.0)));
+    b.leaf(Node::new("studio.test.list.row-2", Role::Button).actions(&[Action::Click]).size(Size::Fixed(100.0), Size::Fixed(24.0)));
+    b.end();
+    let mut tree = b.finish().unwrap();
+    let root = tree.root();
+    kumihimo_ui::layout::LayoutPort::layout(&mut kumihimo_ui::layout::StackLayout, &mut tree, root, Rect::xywh(0.0, 0.0, 300.0, 300.0), &mut text());
+    let order: Vec<String> = kumihimo_ui::hit::focus_order(&tree).into_iter().map(|i| tree.get(i).author_id.clone()).collect();
+    assert_eq!(order, ["studio.test.list.seen", "studio.test.list.row-1"], "zero-size and scrolled-out rows are not stops");
 }

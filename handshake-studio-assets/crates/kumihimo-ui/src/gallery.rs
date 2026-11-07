@@ -161,7 +161,7 @@ pub fn specimen(b: &mut Builder<'_>) {
         (TextToken::Body, "illegible 1Il| rn m vv w cl d .,;:  ([{ }])  @#&*", ColorToken::TextPrimary),
     ];
     for (token, s, color) in lines {
-        b.leaf(Node::deco().paint(Paint::Label { text: s.into(), token, color: Some(color), align: Align::Start, ellipsis: false }).size(Size::Hug, Size::Fixed(token.style().line)));
+        b.leaf(Node::deco().paint(Paint::Label { text: s.into(), token, weight: 0, color: Some(color), align: Align::Start, ellipsis: false }).size(Size::Hug, Size::Fixed(token.style().line)));
     }
     b.end();
 }

@@ -2,7 +2,7 @@
 //! panel tabs); slider (the wide presentation of ScrubValue); layer row. Each widget builds nodes; sizes and colours are
 //! tokens. Callers pass full author_ids (STU-MDL-100); sub-elements derive `<id>.<part>`.
 use crate::display::{IconId, ImageId};
-use crate::tokens::{ColorToken, StyleKind, TextToken, radius, size, spacing};
+use crate::tokens::{ColorToken, State, StyleKind, TextToken, radius, size, spacing, state_style};
 use crate::tree::{Action, Align, Axis, Builder, LayoutSpec, Node, Numeric, Paint, Role, Size};
 
 /// Component sizes that components.json records but design-system.json `size` does not (logical px).
@@ -27,7 +27,10 @@ pub mod component {
 use component as cp;
 
 fn label(text: &str, token: TextToken) -> Node {
-    Node::deco().paint(Paint::Label { text: text.into(), token, color: None, align: Align::Start, ellipsis: false }).size(Size::Hug, Size::Hug)
+    weighted(text, token, 0)
+}
+fn weighted(text: &str, token: TextToken, weight: u16) -> Node {
+    Node::deco().paint(Paint::Label { text: text.into(), token, weight, color: None, align: Align::Start, ellipsis: false }).size(Size::Hug, Size::Hug)
 }
 
 /// A toolbar row (components.json `context_bar` frame: height 34, gap 8) on `surface.strip`. Close with `b.end()`.
@@ -118,7 +121,9 @@ pub fn tab_row(b: &mut Builder<'_>, id: &str, tabs: &[(&str, &str)], active: usi
                 .layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fill, pad: [size::TAB_PAD_X, 0.0, size::TAB_PAD_X, 0.0], ..LayoutSpec::default() })
                 .paint(Paint::Surface { kind: StyleKind::Tab, radius: radius::R0_DOCKED }),
         );
-        b.leaf(label(text, TextToken::Tab).size(Size::Hug, Size::Fill));
+        // The active tab's weight (state table tab.active, 600) is resolved here, so layout measures what emit draws.
+        let weight = if i == active { state_style(StyleKind::Tab, State::Active).map_or(0, |s| s.weight) } else { 0 };
+        b.leaf(weighted(text, TextToken::Tab, weight).size(Size::Hug, Size::Fill));
         b.end();
     }
     spacer(b);
@@ -138,7 +143,7 @@ pub fn slider(b: &mut Builder<'_>, id: &str, text: &str, value: f64, min: f64, m
             .layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h: Size::Fixed(cp::SLIDER_ROW_PITCH), pad: [size::DOCK_PANEL_PAD_L, 0.0, size::DOCK_PANEL_PAD_R, 0.0], ..LayoutSpec::default() }),
     );
     b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(size::FIELD_H), ..LayoutSpec::default() }));
-    b.leaf(label(text, TextToken::Body).paint(Paint::Label { text: text.into(), token: TextToken::Body, color: Some(ColorToken::TextSecondary), align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
+    b.leaf(label(text, TextToken::Body).paint(Paint::Label { text: text.into(), token: TextToken::Body, weight: 0, color: Some(ColorToken::TextSecondary), align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
     let mut field = Node::new(format!("{id}.field"), Role::SpinButton)
         .label(text)
         .value(shown)
@@ -192,7 +197,7 @@ pub fn layer_row(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, vis
     }
     b.leaf(Node::new(format!("{id}.thumbnail"), Role::Image).label(name).paint(Paint::Thumbnail(thumb)).size(Size::Fixed(size::ROW_LAYER_THUMB), Size::Fixed(size::ROW_LAYER_THUMB)));
     let name_color = if visible { None } else { Some(ColorToken::TextDisabled) };
-    b.leaf(Node::deco().paint(Paint::Label { text: name.into(), token: TextToken::Body, color: name_color, align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
+    b.leaf(Node::deco().paint(Paint::Label { text: name.into(), token: TextToken::Body, weight: 0, color: name_color, align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
     for badge in badges {
         // Badges are decorative: their meaning is in the row's description, and an index is never an id (STU-MDL-101).
         b.leaf(Node::deco().paint(Paint::Icon { icon: *badge, size: cp::LAYER_BADGE }).size(Size::Fixed(cp::LAYER_BADGE), Size::Fixed(cp::LAYER_BADGE)));

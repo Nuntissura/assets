@@ -43,7 +43,9 @@ pub fn fnv64(s: &str) -> u64 {
     h
 }
 
-/// `stable_id` of an author_id (STU-MDL-103 item 2).
+/// `stable_id` of an author_id, exactly as STU-MDL-103 item 2 derives it ("hs-" + dots as hyphens). That mapping is not
+/// injective ('studio.tab.a-b' and 'studio.tab-a.b' meet), so [`crate::tree::Builder`] refuses a second node whose
+/// stable_id collides; an escaping encoding would contradict the spec's own example.
 pub fn stable_id(author_id: &str) -> String {
     format!("hs-{}", author_id.replace('.', "-"))
 }
@@ -56,6 +58,9 @@ pub fn valid_author_id(id: &str) -> bool {
         None => (id, None),
     };
     if let Some(n) = inst {
+        if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
         match n.parse::<u32>() {
             Ok(v) if v >= 2 && !n.starts_with('0') => {}
             _ => return false,

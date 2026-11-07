@@ -96,7 +96,8 @@ pub enum Paint {
     Fill(ColorToken),
     /// A widget surface from the state table of `kind` (fill, edges, focus ring).
     Surface { kind: StyleKind, radius: f32 },
-    Label { text: String, token: TextToken, color: Option<ColorToken>, align: Align, ellipsis: bool },
+    /// `weight` 0 = the token's weight; otherwise the weight layout, checks and emit all use (F2).
+    Label { text: String, token: TextToken, weight: u16, color: Option<ColorToken>, align: Align, ellipsis: bool },
     /// A numeric field value, right aligned, tabular figures, unit in `text.tertiary`.
     Value { text: String, unit: Option<String> },
     Icon { icon: IconId, size: f32 },
@@ -233,6 +234,8 @@ pub enum BuildError {
     DuplicateId(String),
     /// An author_id outside the STU-MDL-100/103 grammar.
     InvalidId(String),
+    /// A distinct author_id whose stable_id (STU-MDL-103 item 2) equals an earlier node's.
+    DuplicateStableId(String),
     /// `end` without a matching `begin`, or `finish` with open nodes.
     Unbalanced,
     /// Over [`MAX_NODES`].
@@ -313,10 +316,11 @@ pub struct Builder<'a> {
     ui: &'a Interaction,
     error: Option<BuildError>,
     ids: std::collections::HashSet<String>,
+    stable_ids: std::collections::HashSet<String>,
 }
 impl<'a> Builder<'a> {
     pub fn new(root: Node, ui: &'a Interaction) -> Self {
-        let mut b = Self { tree: Tree::default(), stack: Vec::new(), ui, error: None, ids: Default::default() };
+        let mut b = Self { tree: Tree::default(), stack: Vec::new(), ui, error: None, ids: Default::default(), stable_ids: Default::default() };
         let id = b.add(root);
         b.stack.push(id);
         b
@@ -332,6 +336,8 @@ impl<'a> Builder<'a> {
             }
             if !self.ids.insert(node.author_id.clone()) {
                 self.error.get_or_insert(BuildError::DuplicateId(node.author_id.clone()));
+            } else if !self.stable_ids.insert(crate::semantic::stable_id(&node.author_id)) {
+                self.error.get_or_insert(BuildError::DuplicateStableId(node.author_id.clone()));
             }
             node.flags.hovered = self.ui.hovered.as_deref() == Some(node.author_id.as_str());
             node.flags.pressed = self.ui.pressed.as_deref() == Some(node.author_id.as_str());
@@ -376,7 +382,10 @@ impl<'a> Builder<'a> {
     }
 }
 
-/// Pointer, press and focus state keyed by author_id; `rev` changes whenever any of it changes.
+/// Pointer, press and focus state keyed by author_id; `rev` changes whenever any of it changes. Ownership (lead ruling
+/// F7): one Interaction per window. The window routes pointer events to the panel under the pointer (`pointer_move`
+/// with that panel's tree), and each [`Panel`] keys on its own slice of this state, so a hover rebuilds only the panels
+/// it enters or leaves. Cross-panel focus order (the F6 key region cycle of components.json) is not here yet.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Interaction {
     pub hovered: Option<String>,
@@ -445,7 +454,10 @@ impl Interaction {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct FrameKey {
     state_rev: u64,
-    ui_rev: u64,
+    /// This panel's slice of the interaction state (F7): hover, press and focus only when the id is in this tree.
+    ui_slice: u64,
+    /// [`Text::epoch`]: a new text system (fonts) re-shapes (F6).
+    text_epoch: u64,
     viewport: [u32; 4],
     scale: u32,
     theme: Theme,
@@ -470,6 +482,28 @@ impl Panel {
     pub fn builds(&self) -> u64 {
         self.builds
     }
+    /// Forces the next [`Panel::update`] to rebuild (a font, icon or resource change the key cannot see).
+    pub fn invalidate(&mut self) {
+        self.key = None;
+    }
+    /// The part of `ui` this panel draws: one window-wide Interaction can serve every panel, and a hover in one panel
+    /// changes only the slices of the panels it enters or leaves (F7).
+    fn ui_slice(tree: &Tree, ui: &Interaction) -> u64 {
+        let mut h: u64 = 0xCBF2_9CE4_8422_2325;
+        let mut eat = |tag: u8, id: Option<&str>| {
+            let id = id.filter(|s| tree.find(s).is_some()).unwrap_or("");
+            for b in std::iter::once(tag).chain(id.bytes()) {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0000_0100_0000_01B3);
+            }
+        };
+        eat(1, ui.hovered.as_deref());
+        eat(2, ui.pressed.as_deref());
+        eat(3, ui.focused.as_deref());
+        let ring = ui.focus_visible && ui.focused.as_deref().is_some_and(|s| tree.find(s).is_some());
+        eat(if ring { 4 } else { 5 }, None);
+        h
+    }
     /// Rebuilds tree, layout and display list when any input changed; returns whether it did. `view` is called only on
     /// a rebuild.
     #[allow(clippy::too_many_arguments)]
@@ -483,9 +517,10 @@ impl Panel {
         text: &mut Text,
         view: impl FnOnce(&mut Builder<'_>),
     ) -> Result<bool, BuildError> {
-        let key = FrameKey {
+        let mut key = FrameKey {
             state_rev,
-            ui_rev: ui.rev(),
+            ui_slice: Self::ui_slice(&self.tree, ui),
+            text_epoch: text.epoch(),
             viewport: [viewport.x0.to_bits(), viewport.y0.to_bits(), viewport.x1.to_bits(), viewport.y1.to_bits()],
             scale: scale.get().to_bits(),
             theme,
@@ -501,6 +536,8 @@ impl Panel {
         let mut tree = b.finish()?;
         StackLayout.layout(&mut tree, NodeId(0), viewport, text);
         self.list = crate::emit::emit(&tree, ui, theme, text);
+        // Keyed on the slice of the tree just built, so the next idle frame compares like with like.
+        key.ui_slice = Self::ui_slice(&tree, ui);
         self.tree = tree;
         self.key = Some(key);
         self.builds = self.builds.saturating_add(1);

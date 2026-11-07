@@ -6,6 +6,15 @@ use crate::geom::{Point, Rect, Rgba8};
 use crate::text::ShapedGlyph;
 use crate::tokens::TextToken;
 
+/// Side of an owner rect an [`Prim::Edge`] sits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Side {
+    Left,
+    Top,
+    Right,
+    Bottom,
+}
+
 /// An icon the host's icon source draws (two-tint RG mask: R form, G hot point).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct IconId(pub u32);
@@ -24,6 +33,10 @@ pub struct Border {
 pub enum Prim {
     /// Flat colour: all surfaces, edges, seams, ticks.
     Rect { rect: Rect, color: Rgba8 },
+    /// A 1 or 2 logical px edge on one side of `owner`, drawn with the flat-colour (rect) shader. Its thickness follows
+    /// scale_rules.hairline (`Scale::hairline` for 1, `Scale::edge_px(2)` for 2) wherever it sits, and it stays inside
+    /// the owner's snapped rect: left and top anchor on the owner's start edge, right and bottom on its end edge.
+    Edge { owner: Rect, side: Side, px: u8, color: Rgba8 },
     /// Rounded box, 1 physical px antialias, optional border inside the rect.
     RRect { rect: Rect, radius: f32, fill: Rgba8, border: Option<Border> },
     /// Antialiased segment of `width` logical px.
@@ -51,7 +64,7 @@ impl Prim {
     /// The designer's primitive id of this item.
     pub fn kind(&self) -> &'static str {
         match self {
-            Prim::Rect { .. } => "rect",
+            Prim::Rect { .. } | Prim::Edge { .. } => "rect",
             Prim::RRect { .. } => "rrect",
             Prim::Line { .. } => "line",
             Prim::Dash { .. } => "dash",

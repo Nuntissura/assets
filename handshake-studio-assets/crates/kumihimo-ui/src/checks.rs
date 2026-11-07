@@ -35,17 +35,21 @@ pub fn clipped_labels(tree: &Tree, text: &mut Text) -> Vec<Clipped> {
     let mut out = Vec::new();
     for id in tree.preorder() {
         let n = tree.get(id);
-        let (s, token, ellipsis) = match &n.paint {
-            Paint::Label { text: s, token, ellipsis, .. } => (s.as_str(), *token, *ellipsis),
-            Paint::Value { text: s, .. } => (s.as_str(), crate::tokens::TextToken::Value, false),
+        let (s, token, weight, ellipsis) = match &n.paint {
+            Paint::Label { text: s, token, weight, ellipsis, .. } => (s.as_str(), *token, *weight, *ellipsis),
+            Paint::Value { text: s, .. } => (s.as_str(), crate::tokens::TextToken::Value, 0, false),
             _ => continue,
         };
         if ellipsis {
             continue;
         }
-        let w = text.measure(s, token, 0);
+        // Same weight and the same room emit uses: a value shares its field with its unit (F2, F3).
+        let w = text.measure(s, token, weight);
         let avail = match &n.paint {
-            Paint::Value { .. } => n.bounds.w() - 2.0 * crate::tokens::spacing::S3,
+            Paint::Value { unit, .. } => {
+                let unit_w = unit.as_deref().map_or(0.0, |u| text.measure(u, crate::tokens::TextToken::Caption, 0).ceil() + crate::tokens::spacing::S1);
+                n.bounds.w() - 2.0 * crate::tokens::spacing::S3 - unit_w
+            }
             _ => n.bounds.w(),
         };
         if w > avail + 0.01 {
