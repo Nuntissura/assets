@@ -12,7 +12,7 @@ use crate::{
         GrantPort, GrantToken, IdempotencyKey, JobPort, JobScope, Lookup, MonotonicClock,
     },
     registry::{ProposalRequest, ProviderRegistry},
-    save_guard::{DiskFingerprint, Expect, GuardedFs, fingerprint_file, same_destination},
+    save_guard::{DiskFingerprint, Expect, GuardedFs, fingerprint_bytes, fingerprint_file, same_destination},
     source::{
         DOCUMENT_ENTRY_PREFIX, DOCUMENT_ENTRY_TOKENS, Handle, LazyAssets, SourceBox,
         document_entry, load_parts, require_tile_assets,
@@ -2494,6 +2494,15 @@ impl Session {
     }
 
     // ----- save and export ---------------------------------------------------------------
+
+    /// Says that this session, opened from memory or an import, came from the file at `path`, which held `bytes`: from
+    /// now on `path` is the file [`Session::save`] writes and [`Session::save_to`] compares (the Viewer reads a file
+    /// whole and opens the bytes). In-memory content bounds the work; nothing is read from disk here.
+    pub fn expect_on_disk(&mut self, path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
+        self.origin_disk = Some(fingerprint_bytes(bytes)?);
+        self.origin = Some(path.to_path_buf());
+        Ok(())
+    }
 
     /// Saves to the path the session was opened from; [`Session::save_to`] says when it refuses.
     pub fn save(&mut self, cancel: &CancellationToken) -> Result<SaveReceipt, Failed> {

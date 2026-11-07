@@ -544,8 +544,10 @@ impl Viewer {
             if !self.run.open_bytes(&bytes) {
                 return Err(format!("open {}: {}", path.display(), self.op_error()));
             }
-            (bytes, None)
+            (bytes.clone(), None)
         };
+        // A save over this file compares it with what was read here (lane SMB-SESSION-WRITE-SAFETY-1).
+        self.run.expect_on_disk(path, &bytes);
         let opened = hsk_studio_package::read_package(
             &package,
             &hsk_studio_package::Limits::default(),

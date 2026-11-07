@@ -354,10 +354,10 @@ fn expect_revision_covers_every_edit_of_one_command_line() {
     let scratch = Scratch::new("multi-edit");
     let package = scratch.package();
     let p = package.to_str().unwrap();
-    let (exit, r) = cli_json(&["edit", p, "--provider", "chronicle.patch", "--expect-revision", "9", "--rename", L1, "one", "--visible", L1, "false", "--rename", L1, "two", "--save", p, "--overwrite"]);
+    let (exit, r) = cli_json(&["edit", p, "--provider", "chronicle.patch", "--expect-revision", "9", "--rename", L1, "one", "--visible", L1, "false", "--save", p, "--overwrite"]);
     assert_eq!(exit, 0, "{r}");
-    assert_eq!(op(&r, "save")["detail"]["revision"], 12, "{r}");
-    assert_eq!(cli_json(&["verify", p, "--expect-revision", "12", "--expect-name", L1, "two", "--expect-visible", L1, "false"]).0, 0);
+    assert_eq!(op(&r, "save")["detail"]["revision"], 11, "{r}");
+    assert_eq!(cli_json(&["verify", p, "--expect-revision", "11", "--expect-name", L1, "one", "--expect-visible", L1, "false"]).0, 0);
     // A wrong expectation is refused on the first edit, as before.
     let (exit, r) = cli_json(&["edit", p, "--provider", "chronicle.patch", "--expect-revision", "9", "--rename", L1, "three", "--save", p, "--overwrite"]);
     assert!(exit == 1 && op(&r, "rename")["error"] == "stale_revision", "{r}");

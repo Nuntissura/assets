@@ -94,6 +94,11 @@ pub(crate) fn fingerprint_file(file: &mut File, cancel: &CancellationToken) -> R
     fingerprint_reader(file, cancel)
 }
 
+/// Fingerprints file content a caller already holds in memory (`Session::expect_on_disk`).
+pub(crate) fn fingerprint_bytes(bytes: &[u8]) -> Result<DiskFingerprint, SessionError> {
+    fingerprint_reader(&mut &*bytes, &CancellationToken::default())
+}
+
 fn parent_dir(path: &Path) -> &Path {
     match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,

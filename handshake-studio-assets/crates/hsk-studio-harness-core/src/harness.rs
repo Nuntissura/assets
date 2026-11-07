@@ -2105,6 +2105,15 @@ impl Run<'_> {
         session.submit_as(ctx, CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
     }
 
+    /// Says that the working session came from the file at `path`, which held `bytes`, so a later save over it compares
+    /// (`Session::expect_on_disk`). For a caller that reads the file itself and opens the bytes. No record: nothing ran.
+    pub fn expect_on_disk(&mut self, path: &Path, bytes: &[u8]) {
+        if let Some(session) = self.session.as_mut() {
+            // In-memory content under a token nobody cancels: this cannot fail.
+            let _ = session.expect_on_disk(path, bytes);
+        }
+    }
+
     /// Atomically saves the working session to `path`. Over the file the session opened or last saved it refuses
     /// `destination_changed` or `destination_missing` when that file is not what the session read or wrote
     /// (`Session::save_to`); the refused record's `detail.recovery` names the way out.
