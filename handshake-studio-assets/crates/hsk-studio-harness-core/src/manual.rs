@@ -260,6 +260,15 @@ pub const DRIVE_VIEWER: &[DriveViewer] = &[
     method("proof_apply_draft", &[]),
     method("proof_close_page", &[]),
     method("proof_set_save_name", &[need("name", "text")]),
+    // ---- project bin and sequences (lane SMB-PROJECT-BIN-1; import and bind need feature `media`) ----
+    method("project_new_sequence", &[need("name", "text"), need("preset_id", "text")]),
+    method("project_add_tracks", &[need("sequence_id", "text"), need("kind", "one_of:video|audio|caption|submix"), need("names", "text_list")]),
+    method("project_new_folder", &[need("name", "text"), may("parent", "text")]),
+    method("project_import", &[need("paths", "text_list"), may("folder", "text")]),
+    method("project_move_items", &[need("items", "text_list"), may("folder", "text")]),
+    method("project_remove_items", &[need("items", "text_list")]),
+    method("project_place_item", &[need("sequence_id", "text"), need("track_id", "text"), need("item_id", "text"), need("start", "ticks"), may("source_in", "ticks"), may("source_out", "ticks")]),
+    method("project_bind", &[need("sequence_id", "text"), need("width", "integer"), need("height", "integer"), need("sample_rate_hz", "integer")]),
 ];
 
 /// Menu leaves that refuse `command_not_driveable`, with the reason.

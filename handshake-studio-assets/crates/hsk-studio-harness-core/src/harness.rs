@@ -21,8 +21,8 @@ use hsk_studio_accord::{
 use hsk_studio_folio::{self as folio, Parent, Resolution, Resolver, StudioLayer, TileRef};
 use hsk_studio_observe::{Budget, DeliveryClass, DeliveryError, FailureCode, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_session::{
-    Applied, CHRONICLE_PROVIDER_ID, ChronicleProvider, Failed, MULTICAM_ENTRY, MulticamStep, ProviderRegistry, ReportStatus, SequenceEdit, Session,
-    SessionConfig, SessionPorts,
+    Applied, CHRONICLE_PROVIDER_ID, ChronicleProvider, Failed, MULTICAM_ENTRY, MulticamStep, PROJECT_BIN_ENTRY, ProviderRegistry, ReportStatus,
+    SEQUENCE_SETTINGS_ENTRY, SequenceEdit, Session, SessionConfig, SessionPorts,
 };
 use serde_json::{Value, json};
 use std::path::Path;
@@ -1741,10 +1741,136 @@ impl Run<'_> {
     /// reported once as `document.submit_sequence_edits_and_entry` (not recordable).
     pub fn submit_sequence_edits_and_entry(&mut self, op: &str, edits: Vec<SequenceEdit>, token: &str, bytes: Vec<u8>) -> bool {
         self.note_unrecordable("document.submit_sequence_edits_and_entry");
-        self.keeping_redo_without_new_step(|run| run.sequence_edits_and_entry_step(op, edits, token, bytes))
+        self.keeping_redo_without_new_step(|run| run.sequence_edits_and_entry_step(op, edits, token, bytes, "document.submit_sequence_edits_and_entry"))
     }
 
-    fn sequence_edits_and_entry_step(&mut self, op: &str, edits: Vec<SequenceEdit>, token: &str, bytes: Vec<u8>) -> bool {
+    /// ONE undoable step of the project bin (lane SMB-PROJECT-BIN-1, [STU-VID-050]): Folio applies
+    /// `command` to the stored `project_bin` entry (an empty bin when none is stored) under this
+    /// command's context, and the entry is set to the result; undo / redo restore the entry's bytes. The
+    /// step makes no document revision (an entry-only step, as `set_tiles_and_entry` without tiles); a
+    /// command that changes nothing makes no step. Refusals change nothing: `not_open`, the stored bin's
+    /// read refusal, Folio's codes (`duplicate_item`, `item_in_use`, `folder_missing`, ...). One record
+    /// named by the command id (`project_bin.new_folder`, `.import`, `.move`, `.remove`).
+    pub fn project_bin_command(&mut self, command: &folio::StudioProjectBinCommand) -> bool {
+        let id = command.command_id();
+        self.note_unrecordable(id);
+        let before = self.frames.count();
+        if self.session.is_none() {
+            return self.push(id, before, Err("not_open"), None, None);
+        }
+        let ctx = self.begin(id, None);
+        let cancel = self.cancel;
+        let Some(session) = self.session.as_mut() else {
+            return self.push(id, before, Err("not_open"), None, None);
+        };
+        let outcome = match session.apply_project_bin_command(&ctx, command, cancel) {
+            Ok(o) => o,
+            Err(e) => return self.own_op(id, before, Err(e.code())),
+        };
+        let r = outcome.report;
+        let detail = json!({"folders": r.folders, "media_items": r.media_items, "touched": r.touched, "changed": r.changed, "correlation_id": r.correlation});
+        if !r.changed {
+            return self.own_op(id, before, Ok(detail));
+        }
+        let previous = session.document_entry(PROJECT_BIN_ENTRY).map(<[u8]>::to_vec);
+        if let Err(e) = session.set_project_bin(Some(&outcome.bin), cancel) {
+            return self.own_op(id, before, Err(e.code()));
+        }
+        let revision = session.document_revision();
+        let restore = EntryRestore { token: PROJECT_BIN_ENTRY.to_string(), bytes: previous };
+        self.undo_stack.push(HistoryStep { label: id.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
+        self.redo_stack.clear();
+        self.own_op(id, before, Ok(detail))
+    }
+
+    /// ONE undoable step (lane SMB-PROJECT-BIN-1, [STU-VID-010] / [STU-VID-016]): inserts `write` after
+    /// the document's sequences and adds `settings` (its settings entry) to the sequence settings records
+    /// (an empty set when none is stored), together, as [`Run::submit_sequence_edits_and_entry`] does,
+    /// under the command `sequence.new`. Refusals change nothing: `not_open`, `settings_mismatch` (the
+    /// entry names another sequence), `sequence_settings_invalid` (the stored records do not read), the
+    /// session's codes (`value_conflict` for a sequence id the document holds, `folio_rejected`). One
+    /// record `sequence.new`.
+    pub fn new_sequence(&mut self, write: folio::StudioSequence, settings: folio::StudioSequenceSettingsEntry) -> bool {
+        const COMMAND: &str = "sequence.new";
+        self.note_unrecordable(COMMAND);
+        let before = self.frames.count();
+        let Some(session) = self.session.as_ref() else {
+            return self.push(COMMAND, before, Err("not_open"), None, None);
+        };
+        if settings.sequence_id != write.sequence_id {
+            return self.own_op(COMMAND, before, Err("settings_mismatch"));
+        }
+        let mut records = match session.sequence_settings_records(self.cancel) {
+            Ok(Some(r)) => r,
+            Ok(None) => folio::StudioSequenceSettingsRecords::new(session.snapshot().document().document_id.clone()),
+            Err(_) => return self.own_op(COMMAND, before, Err("sequence_settings_invalid")),
+        };
+        records.sequences.push(settings);
+        let Ok(bytes) = serde_json::to_vec(&records) else {
+            return self.own_op(COMMAND, before, Err("invalid_input"));
+        };
+        let at = session.snapshot().document().sequences.len();
+        let edits = vec![SequenceEdit::Insert { at, write }];
+        self.keeping_redo_without_new_step(|run| run.sequence_edits_and_entry_step(COMMAND, edits, SEQUENCE_SETTINGS_ENTRY, bytes, COMMAND))
+    }
+
+    /// ONE undoable step (lane SMB-PROJECT-BIN-1, [STU-VID-021], `cmd.sequence.addtracks` and
+    /// `cmd.sequence.addaudiosubmixtrack`): appends `tracks` (kind, `STRK` id, name) to the sequence
+    /// through Folio `with_tracks`, committed like [`Run::submit_sequence`] under the command
+    /// `sequence.add_tracks`. Refusals change nothing: `not_open`, `unknown_sequence`, `no_tracks`,
+    /// `invalid_track` / `budget_exceeded` (Folio `with_tracks`), the session's codes (`folio_rejected`
+    /// for a duplicate or malformed id). One record `sequence.add_tracks`.
+    pub fn add_tracks(&mut self, sequence_id: &str, tracks: &[(folio::TrackKind, String, String)]) -> bool {
+        const COMMAND: &str = "sequence.add_tracks";
+        self.note_unrecordable(COMMAND);
+        let before = self.frames.count();
+        let Some(session) = self.session.as_ref() else {
+            return self.push(COMMAND, before, Err("not_open"), None, None);
+        };
+        let Some(seq) = session.snapshot().document().sequences.iter().find(|s| s.sequence_id == sequence_id).cloned() else {
+            return self.own_op(COMMAND, before, Err("unknown_sequence"));
+        };
+        if tracks.is_empty() {
+            return self.own_op(COMMAND, before, Err("no_tracks"));
+        }
+        match folio::with_tracks(&seq, tracks) {
+            Ok(write) => self.submit_sequence_as(COMMAND, write, COMMAND),
+            Err(d) => self.own_op(COMMAND, before, Err(if d.code == folio::Code::BudgetExceeded { "budget_exceeded" } else { "invalid_track" })),
+        }
+    }
+
+    /// ONE undoable step (lane SMB-PROJECT-BIN-1, [STU-VID-024] / [STU-VID-025]): places `clip` on the
+    /// track `track_id` of the sequence through Folio `with_clip` (start order kept, the sequence duration
+    /// follows its content), committed like [`Run::submit_sequence`] under the command
+    /// `sequence.place_clip`. Refusals change nothing: `not_open`, `unknown_sequence`, `unknown_track`,
+    /// `clip_overlap`, the session's codes (`folio_rejected` for a clip Folio refuses). One record
+    /// `sequence.place_clip`.
+    pub fn place_clip(&mut self, sequence_id: &str, track_id: &str, clip: folio::StudioClip) -> bool {
+        const COMMAND: &str = "sequence.place_clip";
+        self.note_unrecordable(COMMAND);
+        let before = self.frames.count();
+        let Some(session) = self.session.as_ref() else {
+            return self.push(COMMAND, before, Err("not_open"), None, None);
+        };
+        let Some(seq) = session.snapshot().document().sequences.iter().find(|s| s.sequence_id == sequence_id).cloned() else {
+            return self.own_op(COMMAND, before, Err("unknown_sequence"));
+        };
+        match folio::with_clip(&seq, track_id, clip) {
+            Ok(write) => self.submit_sequence_as(COMMAND, write, COMMAND),
+            Err(d) => self.own_op(COMMAND, before, Err(if d.code == folio::Code::DanglingReference { "unknown_track" } else { "clip_overlap" })),
+        }
+    }
+
+    /// The bytes of one asset of the working session (lane SMB-PROJECT-BIN-1): staged by
+    /// [`Run::stage_tile`] first, else read from the opened package (hash-verified), so a media item
+    /// staged at import or embedded by a save is read back the same way. No record. `not_open` without a
+    /// session; a refusal is its session code (`missing_asset`, `invalid_digest`, ...).
+    pub fn asset_bytes(&self, digest: &folio::ContentDigest) -> Result<Vec<u8>, &'static str> {
+        let session = self.session.as_ref().ok_or("not_open")?;
+        session.tile_bytes(digest, self.cancel).map_err(|e| e.code())
+    }
+
+    fn sequence_edits_and_entry_step(&mut self, op: &str, edits: Vec<SequenceEdit>, token: &str, bytes: Vec<u8>, command: &'static str) -> bool {
         let previous = match self.session.as_ref() {
             Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
             None => {
@@ -1753,7 +1879,7 @@ impl Run<'_> {
             }
         };
         let depth = self.undo_stack.len();
-        if !self.quietly(|run| run.submit_sequence_edits_as(op, edits, "document.submit_sequence_edits_and_entry")) {
+        if !self.quietly(|run| run.submit_sequence_edits_as(op, edits, command)) {
             return false;
         }
         let ctx = self.last_command.clone();
@@ -1778,7 +1904,7 @@ impl Run<'_> {
             }
         } else {
             // The sequences did not change: the step is entry-only (same command).
-            let (ctx, revision) = self.entry_only_attribution(ctx, "document.submit_sequence_edits_and_entry");
+            let (ctx, revision) = self.entry_only_attribution(ctx, command);
             self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
             self.redo_stack.clear();
         }
