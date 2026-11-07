@@ -74,8 +74,10 @@ pub fn semantic(tree: &Tree, max_nodes: usize) -> Semantic {
     if tree.is_empty() {
         return out;
     }
-    let _ = (max_nodes, collect as fn(&Tree, crate::tree::NodeId, &mut Vec<SemanticNode>, &mut Semantic, usize, usize));
-    out // RED STUB
+    let mut roots = Vec::new();
+    collect(tree, crate::tree::NodeId(0), &mut roots, &mut out, max_nodes, 0);
+    out.roots = roots;
+    out
 }
 
 fn collect(tree: &Tree, id: crate::tree::NodeId, into: &mut Vec<SemanticNode>, st: &mut Semantic, max: usize, depth: usize) {

@@ -201,9 +201,6 @@ fn refused(e: ty::Error) -> TextError {
 impl TextPort for TypeText {
     fn shape(&mut self, text: &str, style: &TextStyle) -> Result<ShapedLine, TextError> {
         let fi = self.pick(style.weight).ok_or(TextError::NoFace)?;
-        if fi < usize::MAX {
-            return Err(TextError::NoFace); // RED STUB
-        }
         if text.is_empty() {
             return Ok(ShapedLine::default());
         }

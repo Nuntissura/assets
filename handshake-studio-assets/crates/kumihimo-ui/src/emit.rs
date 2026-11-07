@@ -46,7 +46,7 @@ pub fn emit(tree: &Tree, ui: &Interaction, theme: Theme, text: &mut Text) -> Dis
     }
     let inh = Inherit { text: ColorToken::TextPrimary, icon: ColorToken::TextSecondary, hot: ColorToken::TextSecondary, weight: 0, disabled: false };
     let mut rings = Vec::new();
-    let _ = (ui, theme, text, inh, &mut rings, node as fn(&Tree, NodeId, &Interaction, Theme, &mut Text, &mut DisplayList, Inherit, &mut Vec<Prim>, usize)); // RED STUB
+    node(tree, NodeId(0), ui, theme, text, &mut list, inh, &mut rings, 0);
     // Focus rings draw last so no sibling covers them (never clipped by a later fill).
     list.items.extend(rings);
     list

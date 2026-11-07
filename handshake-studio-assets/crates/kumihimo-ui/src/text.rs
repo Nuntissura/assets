@@ -176,7 +176,7 @@ impl Text {
             self.shaped.clear();
             self.stats.resets = self.stats.resets.saturating_add(1);
         }
-        let _ = key; // RED STUB: no shaped-line cache
+        self.shaped.insert(key, line.clone());
         Ok(line)
     }
     /// Advance width in logical px; 0 for a refused string (the refusal surfaces when painting).

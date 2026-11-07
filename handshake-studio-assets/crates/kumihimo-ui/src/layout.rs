@@ -85,8 +85,7 @@ fn measure(tree: &Tree, id: NodeId, text: &mut Text, out: &mut [(f32, f32)], dep
 
 fn place(tree: &mut Tree, id: NodeId, rect: Rect, m: &[(f32, f32)], depth: usize) {
     tree.get_mut(id).bounds = rect;
-    if depth >= MAX_DEPTH || depth == 0 {
-        // RED STUB: children are not placed.
+    if depth >= MAX_DEPTH {
         return;
     }
     let node = tree.get(id);

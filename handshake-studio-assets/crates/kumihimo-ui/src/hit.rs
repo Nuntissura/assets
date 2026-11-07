@@ -8,8 +8,7 @@ pub fn hit_test(tree: &Tree, p: Point) -> Option<NodeId> {
     if tree.is_empty() {
         return None;
     }
-    let _ = (p, hit_in as fn(&Tree, NodeId, Point, usize) -> Option<NodeId>);
-    None // RED STUB
+    hit_in(tree, NodeId(0), p, 0)
 }
 
 fn hit_in(tree: &Tree, id: NodeId, p: Point, depth: usize) -> Option<NodeId> {

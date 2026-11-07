@@ -5,8 +5,7 @@
 use crate::geom::Rgba8;
 
 /// FNV-1a 64 of the design-system.json bytes this file was generated from.
-pub const SOURCE_FNV64: u64 = 0x0; // RED STUB: not generated
-pub const SOURCE_FNV64_GENERATED: u64 = 0x2F83C5F5E1104BE5;
+pub const SOURCE_FNV64: u64 = 0x2F83C5F5E1104BE5;
 pub const SOURCE_SPEC_VERSION: &str = "v02.229";
 
 /// The active theme. Fixed tokens resolve the same in both.

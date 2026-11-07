@@ -126,9 +126,7 @@ impl Scale {
     /// THE snapping function: every rect of the CPU and Vulkan painters goes through here. Edges convert, not sizes,
     /// so `snap(a).x1 == snap(b).x0` whenever `a.x1 == b.x0` (AC-GEOM-03).
     pub fn snap(self, r: Rect) -> IRect {
-        // RED STUB: sizes, not edges.
-        let (x0, y0) = (self.edge(r.x0), self.edge(r.y0));
-        IRect { x0, y0, x1: x0 + self.edge(r.w()), y1: y0 + self.edge(r.h()) }
+        IRect { x0: self.edge(r.x0), y0: self.edge(r.y0), x1: self.edge(r.x1), y1: self.edge(r.y1) }
     }
     /// A 1 logical px line: `max(1, floor(s))` physical px (scale_rules.hairline).
     pub fn hairline(self) -> i32 {

@@ -150,8 +150,7 @@ pub fn paint(canvas: &mut Canvas, list: &DisplayList, scale: Scale, text: &mut T
     let mut st = PaintStats::default();
     let mut clips: Vec<IRect> = vec![canvas.bounds()];
     let s = scale.get();
-    for item in list.items.iter().take(0) {
-        // RED STUB: nothing drawn.
+    for item in &list.items {
         st.prims = st.prims.saturating_add(1);
         let clip = *clips.last().unwrap_or(&IRect::default());
         match item {
