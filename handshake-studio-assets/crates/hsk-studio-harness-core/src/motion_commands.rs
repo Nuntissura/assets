@@ -84,6 +84,12 @@ pub fn params_from_text(row: &CommandEntry, params: &BTreeMap<String, String>) -
                     Ok(v @ Value::Object(_)) => v,
                     _ => Value::String(text.clone()),
                 },
+                // The drive joins a list of strings with commas and passes a bare enumeration member
+                // as itself: those are not JSON.
+                ValueType::List if serde_json::from_str::<Value>(text).is_err() => {
+                    Value::Array(text.split(',').filter(|s| !s.is_empty()).map(|s| Value::String(s.to_string())).collect())
+                }
+                ValueType::Class if serde_json::from_str::<Value>(text).is_err() => Value::String(text.clone()),
                 ValueType::Boolean | ValueType::Number | ValueType::Measured | ValueType::List | ValueType::Class => {
                     let v: Value = serde_json::from_str(text).map_err(|_| ("parameter_invalid", bounded(key)))?;
                     let fits = match spec.value_type {
@@ -286,6 +292,19 @@ impl Edit<'_> {
         self.create.push((layer, op));
         Ok(())
     }
+    /// A document layer that copies `source` (kind, payload, visibility, appearance) under a new id
+    /// and name, placed like [`Edit::create_layer`]: the copy renders as the source does.
+    fn create_copy(&mut self, source: &StudioLayer, id: &str, name: &str, group: bool) -> R<()> {
+        self.create_layer(id, name, group)?;
+        if let Some((layer, _)) = self.create.last_mut() {
+            let mut copy = source.clone();
+            copy.layer_id = id.to_string();
+            copy.name = name.to_string();
+            copy.parent = layer.parent.clone();
+            *layer = copy;
+        }
+        Ok(())
+    }
 }
 
 /// The first free id of the fixed-time form `<prefix>-0195f000-0000-7000-8000-<ordinal>`: deterministic,
@@ -352,6 +371,16 @@ fn plan(run: &Run<'_>, row: &'static CommandEntry, params: &Value) -> R<Planned>
     let doc = session.snapshot().document();
     let comp = session.composition_records(&*resolver, run.cancel).map_err(|e| session_no(&e))?.unwrap_or_else(|| StudioCompositionRecords::new(doc.document_id.clone()));
     let motion = session.motion_records(&*resolver, run.cancel).map_err(|e| session_no(&e))?;
+    if row.command_id == "composition.duplicate_layer"
+        && let Some(Value::String(id)) = map.get("layer_id")
+        && hsk_studio_session::DOCUMENT_ENTRY_TOKENS
+            .iter()
+            .filter(|t| ![COMPOSITION_ENTRY, MOTION_ENTRY, "selection"].contains(*t))
+            .any(|t| session.document_entry(t).is_some_and(|b| contains(b, id.as_bytes())))
+    {
+        // Vector, raster or other records keyed by the layer id would not follow the copy.
+        return no("layer_duplicate_unsupported", id);
+    }
     let mut edit = Edit { row, doc, comp, motion, create: Vec::new(), detail: Map::new() };
     apply(&mut edit, &P(map))?;
     let Edit { comp, motion, create, detail, .. } = edit;
@@ -368,11 +397,14 @@ fn plan(run: &Run<'_>, row: &'static CommandEntry, params: &Value) -> R<Planned>
     Ok(Planned { composition, motion, create, detail })
 }
 
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 /// Commits a plan as one record and one history step (module docs).
 fn commit(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, planned: Planned) -> bool {
     let op = row.command_id;
-    let Planned { composition, motion, create, mut detail } = planned;
-    let cancel = run.cancel;
+    let Planned { composition, motion, create, detail } = planned;
     let entry = |run: &Run<'_>, token: &str| run.session.as_ref().and_then(|s| s.document_entry(token)).map(<[u8]>::to_vec);
     let mut restores = Vec::new();
     if composition.is_some() {
@@ -381,18 +413,30 @@ fn commit(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, planned:
     if motion.is_some() {
         restores.push(EntryRestore { token: MOTION_ENTRY.to_string(), bytes: entry(run, MOTION_ENTRY) });
     }
-    let mut steps = Vec::new();
-    let created = !create.is_empty();
-    if created {
+    if create.is_empty() {
+        return commit_entries(run, row, before, (composition, motion), restores, Vec::new(), detail);
+    }
+    // A refusal after the layer was created takes the layer back and keeps the redo history.
+    run.keeping_redo_without_new_step(|run| {
         let depth = run.undo_stack.len();
         let writes: Vec<PlacementWrite> = create.into_iter().map(|(layer, operation)| PlacementWrite { layer_id: layer.layer_id.clone(), to: Some(Place::AtBeginning(None)), create: Some((layer, operation)) }).collect();
         if !run.quietly(|r| r.restructure_inner(op, &writes, op)) {
             return false;
         }
-        if run.undo_stack.len() > depth {
-            steps.extend(run.undo_stack.pop());
-        }
-    }
+        let steps: Vec<HistoryStep> = if run.undo_stack.len() > depth { run.undo_stack.pop().into_iter().collect() } else { Vec::new() };
+        commit_entries(run, row, before, (composition, motion), restores, steps, detail)
+    })
+}
+
+/// The entry writes of a plan and its one history step; `steps` holds the layer commit, if any.
+fn commit_entries(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, entries: (Option<Vec<u8>>, Option<Option<Vec<u8>>>), restores: Vec<EntryRestore>, mut steps: Vec<HistoryStep>, mut detail: Map<String, Value>) -> bool {
+    let op = row.command_id;
+    let cancel = run.cancel;
+    let (composition, motion) = entries;
+    let created = !steps.is_empty();
+    // The command's context, taken before any rollback: the layer commit's record took it, or it is
+    // still current.
+    let ctx = if created { run.last_command.clone() } else { run.current.clone() };
     let writes = [composition.map(|b| (COMPOSITION_ENTRY, Some(b))), motion.map(|b| (MOTION_ENTRY, b))];
     let mut failed = None;
     for (token, bytes) in writes.into_iter().flatten() {
@@ -415,14 +459,12 @@ fn commit(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, planned:
         if let Some(step) = steps.pop() {
             run.undo_stack.push(step);
             let _ = run.quietly(Run::undo);
-            run.redo_stack.clear();
         }
-        run.current = run.last_command.take();
+        run.current = ctx;
         return run.own_op(op, before, Err(code));
     }
     if created {
         // The structure commit wrote the command's record; its context attributes the step.
-        let ctx = run.last_command.clone();
         let revision = run.revision().unwrap_or(0);
         let ctx = ctx.unwrap_or_else(|| run.context.command(Some(op), revision, None));
         for restore in restores {
@@ -437,7 +479,7 @@ fn commit(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, planned:
         return true;
     }
     let revision = run.revision().unwrap_or(0);
-    let ctx = run.current.clone().unwrap_or_else(|| run.context.command(Some(op), revision, None));
+    let ctx = ctx.unwrap_or_else(|| run.context.command(Some(op), revision, None));
     for restore in restores {
         steps.push(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx: ctx.clone(), revision });
     }
@@ -696,19 +738,17 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         }
         "keyframe.add_at_current" => {
             let (id, prop, time) = key_address(p)?;
-            let value: Option<Vec<f64>> = opt!(p, "value")?;
-            let ((sv, keys), interpolable) = slot(e, &id, &prop, value.as_deref())?;
-            add_at_current(sv, keys, time, interpolable, value)
+            let ((sv, keys), interpolable) = current_slot(e, p, &id, &prop)?;
+            add_at_current(sv, keys, time, interpolable)
         }
         "keyframe.toggle_at_current" => {
             let (id, prop, time) = key_address(p)?;
-            let value: Option<Vec<f64>> = opt!(p, "value")?;
-            let ((sv, keys), interpolable) = slot(e, &id, &prop, value.as_deref())?;
+            let ((sv, keys), interpolable) = current_slot(e, p, &id, &prop)?;
             let toggled = if let Ok(at) = keys.binary_search_by_key(&time, |k| k.time) {
                 keys.remove(at);
                 "deleted"
             } else {
-                add_at_current(sv, keys, time, interpolable, value)?;
+                add_at_current(sv, keys, time, interpolable)?;
                 "added"
             };
             e.say("toggled", json!(toggled));
@@ -1057,8 +1097,8 @@ fn layer_duplicate(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         _ => return no("layer_duplicate_unsupported", &id),
     };
     let name: Option<String> = opt!(p, "name")?;
-    let source_name = source.name.clone();
-    e.create_layer(&new_id, name.as_deref().unwrap_or(&source_name), group)?;
+    let source = source.clone();
+    e.create_copy(&source, &new_id, name.as_deref().unwrap_or(&source.name), group)?;
     let c = e.composition_mut(&owner)?;
     let Some(at) = c.layers.iter().position(|l| l.layer_id == id) else {
         return no("layer_not_in_composition", &id);
@@ -1684,17 +1724,28 @@ fn property_set(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     Ok(())
 }
 
-fn add_at_current(sv: &[f64], keys: &mut Vec<Key>, time: u64, interpolable: bool, value: Option<Vec<f64>>) -> R<()> {
+/// The property a key-at-current-value command keys. `value` only seeds a property whose implied
+/// value is not knowable (an absent position, anchor or point of interest); anywhere else it would
+/// change the render, so it is refused, never ignored.
+fn current_slot<'e>(e: &'e mut Edit<'_>, p: &P<'_>, id: &str, prop: &str) -> R<(Slot<'e>, bool)> {
+    let value: Option<Vec<f64>> = opt!(p, "value")?;
+    let Some(v) = value else {
+        return slot(e, id, prop, None);
+    };
+    // A probe on a copy: does the property have an implied value without the caller's?
+    let mut probe = Edit { row: e.row, doc: e.doc, comp: e.comp.clone(), motion: e.motion.clone(), create: Vec::new(), detail: Map::new() };
+    match slot(&mut probe, id, prop, None) {
+        Err(No("property_default_unknown", _)) => slot(e, id, prop, Some(&v)),
+        Err(other) => Err(other),
+        Ok(_) => no("parameter_invalid", "value"),
+    }
+}
+
+fn add_at_current(sv: &[f64], keys: &mut Vec<Key>, time: u64, interpolable: bool) -> R<()> {
     if keys.binary_search_by_key(&time, |k| k.time).is_ok() {
         return no("keyframe_exists", "time");
     }
     add_preserving(sv, keys, time, interpolable);
-    if keys.len() == 1
-        && let Some(v) = value
-    {
-        // The caller's value seeds a property without a knowable implied value.
-        keys[0].value = v;
-    }
     Ok(())
 }
 

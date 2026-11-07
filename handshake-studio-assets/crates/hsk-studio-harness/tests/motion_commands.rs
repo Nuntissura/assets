@@ -219,6 +219,12 @@ fn step_33_38_40_55_layer_kinds_parent_matte_and_switches() {
         let dup = cmd(run, "composition.duplicate_layer", json!({"layer_id": shape}))["layer_id"].as_str().unwrap().to_string();
         assert_eq!(motion(run)["shape_layers"].as_array().unwrap().len(), 2, "{dup}");
         assert_eq!(refused(run, "composition.duplicate_layer", json!({"layer_id": L2})), "layer_duplicate_unsupported");
+        // The copy's document layer keeps the source's visibility and appearance (review F2).
+        assert!(run.set_visible(&ctrl, false, None));
+        assert!(run.set_opacity(&ctrl, 40.0, None));
+        let copy = cmd(run, "composition.duplicate_layer", json!({"layer_id": ctrl, "name": "CTRL 2"}))["layer_id"].as_str().unwrap().to_string();
+        let l = run.snapshot().unwrap().document().layers.iter().find(|l| l.layer_id == copy).unwrap().clone();
+        assert_eq!((l.visible, l.effective_appearance().opacity, l.name.as_str(), l.kind.as_str()), (false, 40.0, "CTRL 2", "group"));
         cmd(run, "composition.remove_layer", json!({"layer_id": shape}));
         assert_eq!(motion(run)["shape_layers"].as_array().unwrap().len(), 1);
         assert!(run.undo());
@@ -242,6 +248,10 @@ fn step_26_keyframe_operations_are_named_and_add_at_current_never_changes_the_va
         cmd(run, "composition.add_layer", json!({"composition_id": "main", "kind": "existing", "layer_id": L2}));
         // A property with no stream and no knowable default needs a value (position is content-relative).
         assert_eq!(refused(run, "keyframe.add_at_current", json!({"layer_id": L2, "property": "position", "time": 0})), "property_default_unknown");
+        // A value seeds only a property without an implied value; elsewhere it is refused, never
+        // ignored and never applied (review F4).
+        assert_eq!(refused(run, "keyframe.add_at_current", json!({"layer_id": L2, "property": "opacity", "time": 0, "value": [50.0]})), "parameter_invalid");
+        assert_eq!(run.ops().last().unwrap()["target"], "value");
         // Enable animation: first key at the time, static retained.
         cmd(run, "property.set_value", json!({"layer_id": L2, "property": "opacity", "value": [40.0]}));
         assert_eq!(last_label(run), "Set Property Value");
@@ -287,6 +297,9 @@ fn step_26_keyframe_operations_are_named_and_add_at_current_never_changes_the_va
         assert_eq!(last_label(run), "Disable Animation");
         assert_eq!(value_at(run, L2, "opacity", 3 * S), vec![40.0]);
         assert_eq!(refused(run, "property.disable_animation", json!({"layer_id": L2, "property": "opacity"})), "nothing_to_change");
+        cmd(run, "keyframe.add_at_current", json!({"layer_id": L2, "property": "anchor", "time": 0, "value": [1.0, 2.0]}));
+        assert_eq!(value_at(run, L2, "anchor", 5 * S), vec![1.0, 2.0]);
+        assert_eq!(refused(run, "keyframe.toggle_at_current", json!({"layer_id": L2, "property": "anchor", "time": S, "value": [3.0, 3.0]})), "parameter_invalid");
         survives_reopen(run);
     });
 }

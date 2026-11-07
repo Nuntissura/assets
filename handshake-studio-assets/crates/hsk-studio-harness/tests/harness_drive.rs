@@ -381,10 +381,13 @@ fn motion_commands_run_in_the_session_loop() {
         json!({"command": "command", "command_id": "composition.new", "parameters": {"name": "x", "width": 1, "height": 32, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": 1}}),
         json!({"command": "undo"}),
         json!({"command": "command", "command_id": "document.save", "parameters": {"path": saved.to_str().unwrap()}}),
+        json!({"command": "command", "command_id": "composition.precompose", "parameters": {"layer_ids": [L2], "name": "T02", "new_composition_id": "T02"}}),
+        json!({"command": "command", "command_id": "composition.queue_add", "parameters": {"item_id": "rq", "composition_id": "T01"}}),
+        json!({"command": "command", "command_id": "composition.queue_set_settings", "parameters": {"item_id": "rq", "time_span": "length_of_comp", "resolution": "half"}}),
     ]);
     let (exit, out) = session(&package, "a1", "s1", &input, &scratch.0);
     assert_eq!(exit, 1, "two refused lines make the exit non-zero: {out:?}");
-    assert_eq!(out.len(), 9, "open, 7 lines, end: {out:?}");
+    assert_eq!(out.len(), 12, "open, 10 lines, end: {out:?}");
     assert_eq!(out[1]["detail"]["motion"]["composition_id"], "T01", "{}", out[1]);
     assert_eq!(out[1]["attribution"]["client_session"], "s1");
     assert_eq!(out[2]["ok"], true, "{}", out[2]);
@@ -393,6 +396,10 @@ fn motion_commands_run_in_the_session_loop() {
     assert_eq!((out[5]["error"].clone(), out[5]["detail"]["target"].clone()), (json!("invalid_field"), json!("SCOM-0195f000-0000-7000-8000-000000000001/size")), "{}", out[5]);
     assert_eq!(out[6]["ok"], true, "{}", out[6]);
     assert_eq!(out[7]["ok"], true, "{}", out[7]);
+    // A list of strings and a bare enumeration member arrive as the drive's text and still decode.
+    assert_eq!(out[8]["detail"]["motion"]["composition_id"], "T02", "{}", out[8]);
+    assert_eq!(out[9]["ok"], true, "{}", out[9]);
+    assert_eq!(out[10]["ok"], true, "{}", out[10]);
     // The saved package holds the composition and the layer, not the undone key.
     let bytes = std::fs::read(&saved).unwrap();
     let again = lines(&[json!({"command": "command", "command_id": "composition.read", "parameters": {"composition_id": "T01"}})]);
