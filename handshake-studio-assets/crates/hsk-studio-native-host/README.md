@@ -26,8 +26,10 @@ studio-vk help
 ```
 
 The `document` feature (`--features document`) links harness-view's `Viewer` (and through it egui, eframe and wgpu)
-and renders with `Prefer::Cpu`, so the viewer opens no GPU device. The repo fixture is
-`crates/hsk-studio-harness/tests/fixtures/demo.handshake`.
+and renders with `Prefer::Cpu`, so the viewer opens no GPU device. Any file `Viewer::open` accepts works (a PNG goes
+through import-raster). Known gap: the repo's `crates/hsk-studio-harness/tests/fixtures/demo.handshake` is an edit
+fixture with no working colour profile and no visible content; the viewer refuses it with `no_working_profile`
+(harness-view `render.rs:391`) and the host exits 7 with that code.
 
 ## Inputs and outputs
 
@@ -42,8 +44,11 @@ and renders with `Prefer::Cpu`, so the viewer opens no GPU device. The repo fixt
 
 `window --quiet` is created hidden and inactive, gets WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW before its first show
 (SW_SHOWNOACTIVATE), sits at the bottom of the Z order left of every monitor, and minimises and restores with
-SW_SHOWMINNOACTIVE and SW_SHOWNOACTIVATE. `focus_changes` counts focus-gained events on its window plus samples where
-its own window became the foreground; it must be 0, else exit 5. The Operator's own window switches are reported as
+SW_SHOWMINNOACTIVE and SW_SHOWNOACTIVATE. winit's show rewrites the extended style, so the quiet style is applied
+again after the show and checked every frame (`style_restores`); the receipt reads the style from the live window at
+the end of the run. A watcher thread samples the foreground window about every millisecond for the whole run.
+`focus_changes` counts focus-gained events on its window plus samples where its own window became the foreground; it
+must be 0, else exit 5. The Operator's own window switches are reported as
 `foreground_changes_any_process` and never counted against the run. Implicit loader layers (overlays) are disabled in
 this process only (`VK_LOADER_LAYERS_DISABLE=~implicit~`) unless `--allow-overlays`.
 

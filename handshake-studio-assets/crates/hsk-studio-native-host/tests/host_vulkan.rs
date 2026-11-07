@@ -5,7 +5,7 @@
 use hsk_studio_native_host::capture::sha256_hex;
 use hsk_studio_native_host::offscreen::{self, OffscreenArgs};
 use hsk_studio_native_host::scene::{DEFAULT_CLEAR, Scene, painted};
-use hsk_studio_native_host::window::{self, WindowArgs};
+use hsk_studio_native_host::window::{self, FocusReport, WindowArgs};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -28,6 +28,16 @@ fn quiet(scene: Scene, w: u32, h: u32, frames: u32, exercise: bool, dir: &std::p
         allow_overlays: false,
         deadline: Duration::from_secs(60),
     }
+}
+
+/// HBR-QUIET at the end of the run, on the live window: no focus or foreground taken while the watcher sampled the
+/// whole run, WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW still set, and no WS_EX_APPWINDOW (no taskbar button).
+fn assert_quiet(f: &FocusReport) {
+    assert_eq!(f.focus_changes, 0, "{f:?}");
+    assert_eq!(f.foreground_takes, 0, "{f:?}");
+    assert!(f.no_activate_style && f.tool_window_style, "live style after the run: {f:?}");
+    assert!(!f.app_window_style, "taskbar button: {f:?}");
+    assert!(f.samples >= 50, "foreground sampled through the run: {f:?}");
 }
 
 #[test]
@@ -58,8 +68,7 @@ fn offscreen_png_then_quiet_window_same_hash_no_focus() {
     assert!(std::fs::read_to_string(dir.join("offscreen.json")).unwrap().contains(r#""validation":"absent""#));
 
     let win = window::run(&quiet(Scene::Clear(DEFAULT_CLEAR), w, h, 3, false, &dir)).expect("quiet window run");
-    assert_eq!(win.focus.focus_changes, 0, "{:?}", win.focus);
-    assert!(win.focus.no_activate_style && win.focus.tool_window_style);
+    assert_quiet(&win.focus);
     let cap = win.capture.as_ref().expect("swapchain capture");
     assert_eq!((cap.width, cap.height), (w, h));
     assert_eq!(win.frame_sha256.as_deref(), Some(off.frame_sha256.as_str()), "swapchain frame equals offscreen frame");
@@ -76,7 +85,7 @@ fn quiet_exercise_resize_minimise_restore_presents_cpu_buffer() {
     let dir = scratch("exercise");
     let (w, h) = (120u32, 80u32);
     let win = window::run(&quiet(Scene::Painted, w, h, 4, true, &dir)).expect("exercise run");
-    assert_eq!(win.focus.focus_changes, 0, "{:?}", win.focus);
+    assert_quiet(&win.focus);
     assert_eq!(win.exercised, ["resize_grow", "minimize_no_activate", "restore_no_activate", "resize_back"]);
     let t = win.transitions.join(" ");
     assert!(t.contains("running:resized>stale"), "{t}");

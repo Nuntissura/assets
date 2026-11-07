@@ -174,6 +174,9 @@ pub struct Machine {
     state: SwapState,
     log: Vec<Transition>,
     dropped: u64,
+    /// Surface losses since the last presented frame. Kept across re-creation, so a surface that comes back and is
+    /// lost again before any frame is presented still reaches `surface_unrecoverable`.
+    surface_losses: u8,
 }
 
 /// Transitions kept per machine; later ones are counted in `dropped`.
@@ -181,7 +184,7 @@ pub const MAX_LOG: usize = 512;
 
 impl Default for Machine {
     fn default() -> Self {
-        Self { state: SwapState::Uncreated, log: Vec::new(), dropped: 0 }
+        Self { state: SwapState::Uncreated, log: Vec::new(), dropped: 0, surface_losses: 0 }
     }
 }
 
@@ -195,10 +198,26 @@ impl Machine {
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
+    /// Surface losses since the last presented frame.
+    pub fn surface_losses(&self) -> u8 {
+        self.surface_losses
+    }
     /// Applies `signal` and returns the action. Repeated `Acquired`/`Presented` in `Running` are not logged, so the
     /// log holds state changes and faults, not one line per frame.
     pub fn feed(&mut self, signal: Signal) -> Action {
-        let (to, action) = step(self.state, signal);
+        let (mut to, mut action) = step(self.state, signal);
+        match signal {
+            Signal::Presented => self.surface_losses = 0,
+            Signal::SurfaceLost if !self.state.terminal() && to != SwapState::DeviceLost => {
+                self.surface_losses = self.surface_losses.saturating_add(1);
+                if self.surface_losses > MAX_SURFACE_ATTEMPTS {
+                    (to, action) = (SwapState::SurfaceUnrecoverable, Action::Stop);
+                } else if matches!(to, SwapState::SurfaceLost { .. }) {
+                    to = SwapState::SurfaceLost { attempts: self.surface_losses };
+                }
+            }
+            _ => {}
+        }
         let routine = to == self.state && matches!(signal, Signal::Acquired | Signal::Presented);
         if !routine {
             if self.log.len() < MAX_LOG {

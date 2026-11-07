@@ -74,6 +74,9 @@ pub struct Presenter {
     machine: Machine,
     counters: PresentCounters,
     background: [u8; 4],
+    /// The first error of `frame`; every later call returns it (after an error the acquire semaphore or the command
+    /// buffer may still be in use).
+    failed: Option<Refusal>,
 }
 
 impl Presenter {
@@ -134,6 +137,7 @@ impl Presenter {
             machine: Machine::default(),
             counters: PresentCounters::default(),
             background,
+            failed: None,
         })
     }
 
@@ -259,11 +263,15 @@ impl Presenter {
         let swapchain = match created {
             Ok(s) => s,
             Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
+                // A failed create still retires `old`: never pass it as oldSwapchain again.
+                self.destroy_swapchain();
                 self.machine.feed(Signal::SurfaceLost);
                 return Ok(());
             }
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                // The size changed again between the query and the create: try on the next frame.
+                // The size changed again between the query and the create. `old` is retired even though the create
+                // failed (VUID-VkSwapchainCreateInfoKHR-oldSwapchain-01933), so the next create starts from null.
+                self.destroy_swapchain();
                 return Ok(());
             }
             Err(e) => return Err(vk_refusal(e)),
@@ -346,6 +354,17 @@ impl Presenter {
     /// Copies `pane` into the next swapchain image (centred, 1:1, background around it) and presents. With
     /// `capture`, the swapchain image is read back before present: the genuine frame.
     pub fn frame(&mut self, owner: &Owner, pane: PaneId, capture: bool) -> Result<FrameOutcome, Refusal> {
+        if let Some(r) = self.failed {
+            return Err(r);
+        }
+        let result = self.frame_inner(owner, pane, capture);
+        if let Err(r) = result {
+            self.failed = Some(r);
+        }
+        result
+    }
+
+    fn frame_inner(&mut self, owner: &Owner, pane: PaneId, capture: bool) -> Result<FrameOutcome, Refusal> {
         let (pane_image, pw, ph) = {
             let p = owner.pane(pane)?;
             if p.layout != vk::ImageLayout::TRANSFER_SRC_OPTIMAL {

@@ -13,6 +13,8 @@ use hsk_studio_vulkan::{
     WindowHandles, WindowSignal,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -44,8 +46,10 @@ pub struct WindowArgs {
 }
 
 /// What a window run observed about focus. `focus_changes` counts only changes this process caused: focus-gained
-/// events on its window plus samples where its own window became the foreground. The Operator switching between
-/// their own windows is counted in `foreground_changes`, never in `focus_changes`.
+/// events on its window plus samples where one of its windows became the foreground. A watcher thread samples
+/// `GetForegroundWindow` about every millisecond from before the window exists until after the swapchain is gone.
+/// The Operator switching between their own windows is counted in `foreground_changes`, never in `focus_changes`.
+/// The style fields are read from the live window at the end of the run, not before its first show.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FocusReport {
     pub focus_changes: u64,
@@ -55,6 +59,50 @@ pub struct FocusReport {
     pub samples: u64,
     pub no_activate_style: bool,
     pub tool_window_style: bool,
+    /// WS_EX_APPWINDOW (a taskbar button) at the end of the run; false for a quiet run.
+    pub app_window_style: bool,
+    /// Times the quiet style had to be put back after winit rewrote the extended style.
+    pub style_restores: u64,
+}
+
+/// Foreground watcher: samples until stopped and returns (samples, foreground changes, takes by this process).
+struct Watch {
+    stop: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<(u64, u64, u64)>,
+}
+
+impl Watch {
+    fn spawn() -> Result<Self, HostError> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
+            .name("hsk-foreground-watch".into())
+            .spawn(move || {
+                let (mut last, mut owned_last) = win32::foreground();
+                let (mut samples, mut changes, mut takes) = (1u64, 0u64, u64::from(owned_last));
+                while !flag.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(1));
+                    let (fg, owned) = win32::foreground();
+                    samples = samples.saturating_add(1);
+                    if fg != last {
+                        changes = changes.saturating_add(1);
+                        last = fg;
+                    }
+                    if owned && !owned_last {
+                        takes = takes.saturating_add(1);
+                    }
+                    owned_last = owned;
+                }
+                (samples, changes, takes)
+            })
+            .map_err(|_| HostError::Window("watch"))?;
+        Ok(Self { stop, handle })
+    }
+    fn finish(self) -> (u64, u64, u64) {
+        self.stop.store(true, Ordering::Release);
+        // A panicked watcher proves nothing: report one take so a quiet run fails rather than passes.
+        self.handle.join().unwrap_or((0, 0, 1))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -103,8 +151,7 @@ struct App {
     error: Option<HostError>,
     events: EventLog,
     focus: FocusReport,
-    fg_last: isize,
-    owned_last: bool,
+    watch: Option<Watch>,
     start: Instant,
     iterations: u64,
     presented: u32,
@@ -140,7 +187,7 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
         .with_dpi_aware(true)
         .build()
         .map_err(|_| HostError::Window("event_loop"))?;
-    let (fg, _) = win32::foreground();
+    let watch = Watch::spawn()?;
     let mut app = App {
         args: args.clone(),
         content: Some(content),
@@ -151,8 +198,7 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
         error: None,
         events: EventLog::default(),
         focus: FocusReport::default(),
-        fg_last: fg,
-        owned_last: false,
+        watch: Some(watch),
         start: Instant::now(),
         iterations: 0,
         presented: 0,
@@ -201,11 +247,13 @@ impl App {
         if self.args.quiet {
             win32::make_quiet(handles.hwnd)?;
         }
-        let style = win32::quiet_style(handles.hwnd);
-        self.focus.no_activate_style = style.no_activate;
-        self.focus.tool_window_style = style.tool_window;
-        // The first show of a window created inactive is SW_SHOWNOACTIVATE in winit (window_state.rs apply_diff).
+        // The first show of a window created inactive is SW_SHOWNOACTIVATE in winit (window_state.rs apply_diff), but
+        // that same apply_diff rewrites GWL_EXSTYLE (WS_EX_APPWINDOW, no WS_EX_NOACTIVATE), so the quiet style goes
+        // back on right after the show.
         window.set_visible(true);
+        if self.args.quiet {
+            win32::make_quiet(handles.hwnd)?;
+        }
         self.scale_milli = (window.scale_factor() * 1000.0).round().clamp(0.0, 1.0e6) as u32;
         self.window = Some(window);
         let mut owner = Owner::open(OwnerConfig { surface: true, allow_overlays: self.args.allow_overlays, allow_cpu_device: false })?;
@@ -223,17 +271,17 @@ impl App {
         Ok(())
     }
 
-    fn sample_focus(&mut self) {
-        let (fg, owned) = win32::foreground();
-        self.focus.samples = self.focus.samples.saturating_add(1);
-        if fg != self.fg_last {
-            self.focus.foreground_changes = self.focus.foreground_changes.saturating_add(1);
-            self.fg_last = fg;
+    /// Puts the quiet style back if anything (winit's flag diff) removed it.
+    fn keep_quiet(&mut self) -> Result<(), HostError> {
+        if !self.args.quiet || self.hwnd == 0 {
+            return Ok(());
         }
-        if owned && !self.owned_last {
-            self.focus.foreground_takes = self.focus.foreground_takes.saturating_add(1);
+        let s = win32::quiet_style(self.hwnd);
+        if !s.no_activate || !s.tool_window || s.app_window {
+            win32::make_quiet(self.hwnd)?;
+            self.focus.style_restores = self.focus.style_restores.saturating_add(1);
         }
-        self.owned_last = owned;
+        Ok(())
     }
 
     fn resize(&mut self, w: u32, h: u32, label: &'static str) {
@@ -301,7 +349,7 @@ impl App {
         if self.start.elapsed() > self.args.deadline || self.iterations > 2_000_000 {
             return Err(HostError::Timeout);
         }
-        self.sample_focus();
+        self.keep_quiet()?;
         if self.live.is_none() || self.phase == Phase::Done {
             return Ok(());
         }
@@ -336,6 +384,13 @@ impl App {
     }
 
     fn release(&mut self) {
+        if self.live.is_some() && self.hwnd != 0 {
+            // The live style at the end of the run, read while the window still exists.
+            let s = win32::quiet_style(self.hwnd);
+            self.focus.no_activate_style = s.no_activate;
+            self.focus.tool_window_style = s.tool_window;
+            self.focus.app_window_style = s.app_window;
+        }
         if let Some(live) = self.live.take() {
             let p = &live.presenter;
             let transitions = p
@@ -355,7 +410,12 @@ impl App {
 
     fn finish(mut self) -> Result<WindowResult, HostError> {
         self.release();
-        self.sample_focus();
+        if let Some(w) = self.watch.take() {
+            let (samples, changes, takes) = w.finish();
+            self.focus.samples = samples;
+            self.focus.foreground_changes = changes;
+            self.focus.foreground_takes = takes;
+        }
         self.focus.focus_changes = self.focus.focus_gained_events.saturating_add(self.focus.foreground_takes);
         if let Some(e) = self.error {
             return Err(e);
@@ -396,6 +456,8 @@ impl App {
                     ("samples", Json::Num(self.focus.samples)),
                     ("no_activate_style", Json::Bool(self.focus.no_activate_style)),
                     ("tool_window_style", Json::Bool(self.focus.tool_window_style)),
+                    ("app_window_style", Json::Bool(self.focus.app_window_style)),
+                    ("style_restores", Json::Num(self.focus.style_restores)),
                 ]),
             ),
             (

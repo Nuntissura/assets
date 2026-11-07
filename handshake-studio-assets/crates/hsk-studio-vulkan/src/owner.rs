@@ -236,6 +236,9 @@ pub(crate) struct Submitter {
     pool: vk::CommandPool,
     pub(crate) cmd: vk::CommandBuffer,
     fence: vk::Fence,
+    /// Set by the first failed submit or wait: the command buffer may still be pending and the fence in flight, so
+    /// every later `begin` returns this refusal instead of resetting them.
+    poisoned: std::cell::Cell<Option<Refusal>>,
 }
 
 impl Submitter {
@@ -268,11 +271,14 @@ impl Submitter {
                     return Err(vk_refusal(e));
                 }
             };
-            Ok(Self { pool, cmd, fence })
+            Ok(Self { pool, cmd, fence, poisoned: std::cell::Cell::new(None) })
         }
     }
     /// Begins the command buffer (reset first).
     pub(crate) fn begin(&self, core: &Core) -> Result<(), Refusal> {
+        if let Some(r) = self.poisoned.get() {
+            return Err(r);
+        }
         let info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         // SAFETY: the previous submit of this buffer completed (every submit waits on the fence before returning).
         unsafe {
@@ -282,6 +288,22 @@ impl Submitter {
     }
     /// Ends, submits and waits (bounded) for the fence.
     pub(crate) fn submit_wait(
+        &self,
+        core: &Core,
+        waits: &[(vk::Semaphore, vk::PipelineStageFlags)],
+        signals: &[vk::Semaphore],
+    ) -> Result<(), Refusal> {
+        let result = self.submit_wait_inner(core, waits, signals);
+        if let Err(r) = result {
+            self.poisoned.set(Some(r));
+        }
+        result
+    }
+    /// Whether a failed submit or wait poisoned this submitter.
+    pub(crate) fn poisoned(&self) -> Option<Refusal> {
+        self.poisoned.get()
+    }
+    fn submit_wait_inner(
         &self,
         core: &Core,
         waits: &[(vk::Semaphore, vk::PipelineStageFlags)],
@@ -628,6 +650,11 @@ impl Owner {
     /// Validation layer state: always `absent` on this machine (no Khronos validation layer installed).
     pub fn validation(&self) -> &'static str {
         "absent"
+    }
+    /// The refusal that stopped this owner's submits (a fence timeout or device loss leaves its command buffer
+    /// possibly pending; every later pane operation returns this refusal).
+    pub fn poisoned(&self) -> Option<Refusal> {
+        self.submit.poisoned()
     }
     pub(crate) fn core(&self) -> &Arc<Core> {
         &self.core
