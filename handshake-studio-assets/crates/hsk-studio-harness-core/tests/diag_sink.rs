@@ -48,7 +48,8 @@ fn numbers(name: &str) -> Vec<u64> {
 /// Every line of every diag file, in the order of the files, parsed; a line that does not parse fails the test.
 fn lines(dir: &Path) -> Vec<Value> {
     let mut out = Vec::new();
-    let mut names: Vec<String> = file_names(dir).into_iter().filter(|n| n.starts_with("studio-diag-")).collect();
+    let ours = |n: &String| n.starts_with("studio-diag-") && n.ends_with(".jsonl") && numbers(n).len() == 4;
+    let mut names: Vec<String> = file_names(dir).into_iter().filter(ours).collect();
     names.sort_by_key(|n| numbers(n));
     for name in &names {
         for line in fs::read_to_string(dir.join(name)).unwrap().lines() {
@@ -507,7 +508,7 @@ fn a_panic_leaves_a_typed_record_and_keeps_the_exit_and_the_message_on_stderr() 
     let panic_file = names.iter().find(|n| n.starts_with("studio-panic-")).unwrap_or_else(|| panic!("{names:?}"));
     let text = fs::read_to_string(scratch.0.join(panic_file)).unwrap();
     let record: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
-    assert_eq!((record["kind"].as_str(), record["schema"].as_str(), record["payload_kind"].as_str()), (Some("panic"), Some("hsk.studio.diag@1"), Some(record["payload_kind"].as_str().filter(|k| matches!(*k, "str" | "string")).unwrap())));
+    assert_eq!((record["kind"].as_str(), record["schema"].as_str(), record["payload_kind"].as_str()), (Some("panic"), Some("hsk.studio.diag@1"), Some("string")));
     assert_eq!(record["payload_len"].as_u64(), Some(CHILD_DECOY_PANIC.len() as u64));
     assert_eq!(record["source"], "hsk-studio-harness-core/tests/diag_sink.rs");
     assert!(record["line"].as_u64().unwrap() > 0 && record["process_id"].as_u64().unwrap() > 0);

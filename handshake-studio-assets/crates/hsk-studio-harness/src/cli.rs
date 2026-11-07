@@ -2,8 +2,9 @@
 //! example binary only forwards process arguments and prints the result, so every command is
 //! testable without spawning a process, opening a window or touching the environment.
 //!
-//! [`run_streams`] is the process entry of both binaries: it adds the process's stdin and stdout for
-//! the `command --stdin` session (module `drive`, feature `viewer`). [`window_args`] classifies the
+//! [`run_process`] is the process entry of both binaries: [`run_streams`] with the process's diagnostics
+//! around it. [`run_streams`] adds the process's stdin and stdout for the `command --stdin` session
+//! (module `drive`, feature `viewer`). [`window_args`] classifies the
 //! desktop binary's arguments: only no argument or an existing file opens a window.
 //!
 //! Refusals that keep a green exit honest (tests: `verify_checks_something_and_save_never_clobbers_the_input`
@@ -14,7 +15,8 @@
 
 use crate::harness::{Harness, HarnessError, References, Selection};
 use hsk_studio_harness_core::asset_local_test_context;
-use crate::manual::{manual_json, manual_text};
+use crate::manual::{COMMANDS, manual_json, manual_text};
+use hsk_studio_harness_core::diag_sink::{self, DiagSink};
 use hsk_studio_accord::CancellationToken;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -32,7 +34,7 @@ pub struct CliOutput {
 
 /// What the arguments of the desktop binary ask for (lane SMB-HARNESS-DRIVE-1, HBR-QUIET-002).
 pub enum WindowArgs {
-    /// A CLI command: [`run_streams`] answers it and no window opens.
+    /// A CLI command: [`run_process`] answers it and no window opens.
     Cli,
     /// The window, the only case that opens one.
     Window { cpu: bool, recent: Option<PathBuf>, file: Option<PathBuf> },
@@ -73,7 +75,7 @@ pub fn window_args(args: &[String], is_file: &dyn Fn(&Path) -> bool) -> WindowAr
     WindowArgs::Window { cpu, recent, file }
 }
 
-/// The process entry of both binaries: arguments and the process's streams in, the exit code out.
+/// Arguments and the process's streams in, the exit code out; no diagnostics of its own (see [`run_process`]).
 #[cfg_attr(not(feature = "viewer"), allow(unused_variables))]
 pub fn run_streams(args: &[String], input: &mut dyn BufRead, output: &mut dyn Write) -> i32 {
     #[cfg(feature = "viewer")]
@@ -111,6 +113,7 @@ struct Parsed {
     expect_visible: Vec<(String, bool)>,
     /// `--diag-dir DIR` (lane SMB-OBSERVE-DIAG-SINK-1).
     diag_dir: Option<PathBuf>,
+    diag: Option<DiagSink>,
     png: bool,
     jpeg: bool,
     /// develop: `--tiff` and its options (lane SMB-DEVELOP-EXPORT-TIFF).
@@ -351,9 +354,22 @@ fn refused(command: &str, error: &HarnessError) -> CliOutput {
     out(1, &json!({"schema":crate::SCHEMA,"command":command,"ok":false,"verdict":"fail","error":error.code(),"detail":error.to_string()}))
 }
 
-/// A host binary's entry: RED STUB (lane SMB-OBSERVE-DIAG-SINK-1), no diagnostics yet.
-pub fn run_process(args: &[String]) -> CliOutput {
-    run(args)
+/// A command's name in the closed table, never the text someone typed where a command goes.
+fn command_token(command: &str) -> &'static str {
+    COMMANDS.iter().find(|c| c.name == command).map_or("unknown", |c| c.name)
+}
+
+/// The binaries' entry (lane SMB-OBSERVE-DIAG-SINK-1): [`run_streams`] with the process's diagnostics started around it,
+/// in `--diag-dir`, else the default the manual names, with the panic hook. In-process callers use [`run`] or
+/// [`run_streams`], which reach a diag dir only when told one.
+pub fn run_process(args: &[String], input: &mut dyn BufRead, output: &mut dyn Write) -> i32 {
+    let explicit = args.iter().position(|a| a == "--diag-dir").and_then(|i| args.get(i.saturating_add(1))).map(PathBuf::from);
+    let sink = diag_sink::start_process(explicit);
+    let command = args.first().map_or("help", |c| command_token(c));
+    sink.record_run_start(command);
+    let exit = run_streams(args, input, output);
+    sink.record_run_end(command, exit);
+    exit
 }
 
 /// Runs one command line (without the program name).
@@ -365,16 +381,32 @@ pub fn run(args: &[String]) -> CliOutput {
     if matches!(command, "--help" | "-h") {
         return help(&Parsed::default());
     }
-    let parsed = match parse(rest) {
+    let mut parsed = match parse(rest) {
         Ok(p) => p,
         Err(m) => return usage(&m),
     };
+    // A sink of this command's own, unless it is the process's: that one has its start and end from run_process.
+    let process = diag_sink::process_sink();
+    parsed.diag = parsed.diag_dir.as_deref().filter(|dir| process.as_ref().is_none_or(|p| p.dir() != *dir)).map(DiagSink::open);
+    let own = parsed.diag.clone();
+    if let Some(sink) = &own {
+        sink.record_run_start(command_token(command));
+    }
+    let output = dispatch(command, parsed);
+    if let Some(sink) = &own {
+        sink.record_run_end(command_token(command), output.exit);
+    }
+    output
+}
+
+fn dispatch(command: &str, parsed: Parsed) -> CliOutput {
     match command {
         "help" => help(&parsed),
         #[cfg(feature = "viewer")]
         "state" | "command" | "undo" => drive::one_shot(command, &parsed),
         #[cfg(not(feature = "viewer"))]
         "state" | "command" | "undo" => out(1, &json!({"schema":crate::SCHEMA,"command":command,"ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"viewer"}})),
+        "health" => health(&parsed),
         "descriptors" | "providers" => with_harness(command, &parsed, |h| {
             if command == "descriptors" {
                 match h.collect_descriptors() {
@@ -1093,9 +1125,63 @@ fn execute_export_sequence(_: &Path, _: &SequenceExport) -> CliOutput {
 
 fn with_harness(command: &str, parsed: &Parsed, f: impl FnOnce(&Harness) -> CliOutput) -> CliOutput {
     match Harness::new(Selection { providers: parsed.providers.clone(), references: parsed.references }) {
-        Ok(h) => f(&h),
+        Ok(h) => f(&match &parsed.diag {
+            Some(sink) => h.with_diag(sink.clone()),
+            None => h,
+        }),
         Err(e) => refused(command, &e),
     }
+}
+
+/// `health` (lane SMB-OBSERVE-DIAG-SINK-1): checks what it can check now, with a real write to the diag dir. The first
+/// failed check, in the order of `checks`, is the typed exit (manual `output.exit_codes`).
+fn health(parsed: &Parsed) -> CliOutput {
+    with_harness("health", parsed, |h| {
+        let descriptors = h.collect_descriptors();
+        let mut failed = descriptors.is_err().then_some((diag_sink::HEALTH_EXIT_DESCRIPTOR_MISMATCH, "descriptor_mismatch"));
+        let (diag_check, previous_runs) = match h.diag() {
+            None => {
+                failed = failed.or(Some((diag_sink::HEALTH_EXIT_DIAG_NOT_CONFIGURED, "diag_not_configured")));
+                (json!({"id":"diag_sink","ok":false,"status":"not_configured"}), Value::Null)
+            }
+            Some(sink) => {
+                sink.record_health();
+                let state = sink.state();
+                let ok = state.status == "active";
+                if !ok {
+                    failed = failed.or(Some((diag_sink::HEALTH_EXIT_DIAG_UNAVAILABLE, "diag_unavailable")));
+                }
+                (
+                    json!({
+                        "id": "diag_sink", "ok": ok, "status": state.status, "code": state.code, "dir": sink.dir(),
+                        "lines_written": state.lines_written, "lines_dropped": state.lines_dropped, "write_failures": state.write_failures,
+                        "rotations": state.rotations, "files_removed": state.files_removed, "remove_failures": state.remove_failures,
+                    }),
+                    diag_sink::survey(sink.dir(), Some(sink)).to_json(),
+                )
+            }
+        };
+        let (exit, error) = failed.map_or((0, None), |(exit, code)| (exit, Some(code)));
+        out(
+            exit,
+            &json!({
+                "schema": crate::SCHEMA,
+                "command": "health",
+                "ok": exit == 0,
+                "verdict": if exit == 0 { "pass" } else { "fail" },
+                "error": error,
+                "checks": [
+                    {"id": "descriptors", "ok": descriptors.is_ok(), "count": descriptors.as_ref().map_or(0, Vec::len)},
+                    diag_check,
+                ],
+                "previous_runs": previous_runs,
+                "not_proven": [
+                    "ring_port (no standalone path binds one; the adapter is Handshake's, MT-36190)",
+                    "ui_heartbeat, frame_time and cpu_rss counters (not built)",
+                ],
+            }),
+        )
+    })
 }
 
 fn help(parsed: &Parsed) -> CliOutput {

@@ -3,6 +3,7 @@
 //! the controls crate's descriptors; providers and descriptors come from the live registries).
 #![deny(clippy::arithmetic_side_effects)]
 
+use crate::diag_sink::{self, DIAG_DIR_ENV, MAX_CONSECUTIVE_FAILURES, MAX_FILE_BYTES, MAX_FILES, MAX_LINE_BYTES};
 use crate::harness::{AVAILABLE_PROVIDERS, Harness, NOT_PROVEN, SCHEMA};
 use crate::panel::{self, PanelValues};
 use serde_json::{Value, json};
@@ -30,10 +31,12 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "state", usage: "state PACKAGE --actor ID --session ID [--owner ID] [--access-space ID]", summary: "Open PACKAGE on the CPU path, no window, and print the revision, the resolved attribution and the viewer state (state_json: layers, frame, receipt, edit and history, develop, ops, status, shell, timeline, proof, design, info). Feature viewer; without it: error feature_unavailable." },
     CommandSpec { name: "command", usage: "command PACKAGE --actor ID --session ID [--owner ID] [--access-space ID] (--command-id ID [--param KEY VALUE]... [--expect-revision N] [--save OUT [--overwrite]] | --stdin)", summary: "Run one command id from DRIVE COMMANDS on PACKAGE and print the same response as state, with command_id and detail. Nothing is written without --save OUT; --save over PACKAGE needs both --overwrite and --expect-revision. --stdin is the live session: one process, one document, one undo history, JSONL in and out (see DRIVE SESSION). Feature viewer." },
     CommandSpec { name: "undo", usage: "undo PACKAGE --actor ID --session ID [--owner ID] [--access-space ID]", summary: "Always refuses undo_needs_live_session, exit 1: the undo history lives in the process that made the edits, and a package carries none. Send {\"command\":\"undo\"} in a `command --stdin` session. Feature viewer." },
+    CommandSpec { name: "health", usage: "health [--diag-dir DIR]", summary: "Is this build able to work and leave a record? Parses the foundation descriptors and writes one line to the diag dir, then prints one JSON document: checks[], previous_runs (the runs in the diag dir that never reached run_end: a process that died, or one still running; panic files) and not_proven. exit 0 when every check passed, else the first failure: 3 diag_not_configured, 4 diag_unavailable, 5 descriptor_mismatch. See DIAGNOSTICS." },
     CommandSpec { name: "action", usage: "action check SET.json", summary: "Decode an action set artifact strictly (STU-AUT-102..107, 114: unknown, duplicate or missing fields and out-of-domain values are typed refusals, exit 1) and run the automation validators: action_declared_step_count_mismatch, action_shortcut_collision, action_step_command_unresolvable (step kept, listed in unresolvable), action_step_parameter_key_unknown (warning), action_measured_value_missing_unit. Exit 0 when no error-severity diagnostic, else 1." },
 ];
 
 pub const FLAGS: &[(&str, &str)] = &[
+    ("--diag-dir DIR", "Every command: also leave what this run did as JSONL in DIR (see DIAGNOSTICS); the binary then uses DIR instead of its default. A failure to write there never changes the command's result."),
     ("--provider ID", "Select a provider explicitly (repeatable). Nothing is selected by default; edits need one. Available: chronicle.patch."),
     ("--references MODE", "unresolved (default, honest: nothing is available) or trust_all (development stand-in, recorded in the output)."),
     ("--cancel", "Run with an already-cancelled token: every operation is refused or canceled and nothing is written."),
@@ -325,11 +328,29 @@ pub fn manual_json(harness: &Harness) -> Value {
         "commands": COMMANDS.iter().map(|c| json!({"name":c.name,"usage":c.usage,"summary":c.summary})).collect::<Vec<_>>(),
         "flags": FLAGS.iter().map(|(f, d)| json!({"flag":f,"summary":d})).collect::<Vec<_>>(),
         "providers": {"available": AVAILABLE_PROVIDERS, "selected": harness.selection().providers},
-        "output": {"schema": SCHEMA, "ops": "one record per operation: op, n, ok, revision, observe{frames,status,outcome}, detail|error", "verdicts": {"pass":"at least one operation ran and every operation succeeded","fail":"an operation failed or was refused","nothing_checked":"no operation ran; never a pass"}, "exit_codes": {"0":"every operation succeeded","1":"an operation failed or was refused (JSON still printed)","2":"usage error"}},
+        "output": {"schema": SCHEMA, "ops": "one record per operation: op, n, ok, revision, observe{frames,status,outcome}, detail|error", "verdicts": {"pass":"at least one operation ran and every operation succeeded","fail":"an operation failed or was refused","nothing_checked":"no operation ran; never a pass"}, "exit_codes": {"0":"every operation succeeded","1":"an operation failed or was refused (JSON still printed)","2":"usage error","3":"health only: diag_not_configured","4":"health only: diag_unavailable","5":"health only: descriptor_mismatch"}},
+        "diagnostics": diagnostics_json(),
         "panel_controls": topics,
         "automation": automation_json(),
         "descriptors": harness.collect_descriptors().unwrap_or_default(),
         "not_proven": NOT_PROVEN,
+    })
+}
+
+/// What the binaries leave behind (lane SMB-OBSERVE-DIAG-SINK-1); the rules are in [`crate::diag_sink`].
+pub fn diagnostics_json() -> Value {
+    json!({
+        "what": format!("Each run of a binary leaves JSONL (schema {}) in the diag dir: run_start, one frame line per observe frame, one op line per operation, run_end with the exit code. Field names are the ring record's and the observe wire's. Ids, closed codes and counters only: never document contents, panic messages or command-line arguments.", diag_sink::DIAG_SCHEMA),
+        "dir_flag": "--diag-dir DIR on every command, state, command and undo included; the window takes no flag and uses the variable or the default",
+        "dir_variable": DIAG_DIR_ENV,
+        "default_dir": format!("With neither --diag-dir nor {DIAG_DIR_ENV}: the per-user local state directory, the first of LOCALAPPDATA, XDG_STATE_HOME, HOME/.local/state that is set, under hsk-studio/diag; with none of them, the temp directory, under hsk-studio/diag."),
+        "not_writable": format!("A location that cannot be written never fails or changes a command: there is no fallback to another location, each line is dropped and counted, and after {MAX_CONSECUTIVE_FAILURES} failures in a row the process stops trying. `health` reports it, exit 4 diag_unavailable."),
+        "files": "studio-diag-<process birth ms>-<pid>-<instance>-<segment>.jsonl and studio-panic-<process birth ms>-<pid>.jsonl.",
+        "bounds": format!("A line is at most {MAX_LINE_BYTES} bytes, a file at most {MAX_FILE_BYTES} bytes, a directory at most {MAX_FILES} of our files. A full file starts the next one; past the count our oldest file is removed. No other file is ever touched."),
+        "panic": "A panic in a binary adds a typed panic record: source file tail, line, column, payload kind and length, never the message. The previous hook still runs, so stderr and the exit status do not change.",
+        "hard_death": "A stack overflow or an abort runs no hook and leaves no record of itself. It leaves every line written up to then, each one write to the OS, and no run_end; `health` counts such a run in previous_runs.unterminated_or_running. Not power loss: only a panic record is synced to disk.",
+        "library_callers": "cli::run in-process writes only with --diag-dir and reads no variable; only a binary's main resolves the default. A host gives Harness a sink with Harness::with_diag, or installs a process sink. state, command, undo and the viewer build their own harness, which takes the process sink: in a binary their frames and ops are all there, in-process only the run's start and end.",
+        "tests": format!("A test that spawns a binary sets {DIAG_DIR_ENV} or passes --diag-dir on its Command, under its own temp directory, and removes it."),
     })
 }
 
@@ -374,7 +395,7 @@ pub fn manual_text(harness: &Harness) -> String {
         out += &format!("  {f}\n      {d}\n");
     }
     out += &format!("\nPROVIDERS available: {}\n", AVAILABLE_PROVIDERS.join(", "));
-    out += "\nOUTPUT\n  One JSON document per command: schema, command, ok, verdict, selection, ops[], observe, not_proven.\n  verdict: pass only when at least one operation ran and every operation succeeded; fail when one failed; nothing_checked when no operation ran (never a pass).\n  Exit codes: 0 pass, 1 failed or refused, 2 usage.\n";
+    out += "\nOUTPUT\n  One JSON document per command: schema, command, ok, verdict, selection, ops[], observe, not_proven.\n  verdict: pass only when at least one operation ran and every operation succeeded; fail when one failed; nothing_checked when no operation ran (never a pass).\n  Exit codes: 0 pass, 1 failed or refused, 2 usage; health also 3 diag_not_configured, 4 diag_unavailable, 5 descriptor_mismatch.\n";
     let drive = drive_json();
     out += "\nWINDOW\n  Feature desktop adds the binary's window: studio-harness [--cpu] [--recent LIST] [FILE], a manual Operator step. Any command word above answers with no window; a word that is no command and no existing file prints usage, exit 2, no window.\n";
     out += "\nDRIVE COMMANDS (state, command, undo; --command-id ID or the command_id of a session line)\n";
@@ -424,6 +445,10 @@ pub fn manual_text(harness: &Harness) -> String {
     }
     for c in crate::action::RUN_COMMANDS {
         out += &format!("  command {} (Run::{}) recordable={} mutates_authority={}\n", c.command_id, c.run_method, c.recordable, c.mutates_authority);
+    }
+    out += "\nDIAGNOSTICS\n";
+    for (k, v) in m["diagnostics"].as_object().into_iter().flatten() {
+        out += &format!("  {k}: {}\n", v.as_str().unwrap_or(""));
     }
     out += "\nNOT PROVEN\n";
     for n in NOT_PROVEN {

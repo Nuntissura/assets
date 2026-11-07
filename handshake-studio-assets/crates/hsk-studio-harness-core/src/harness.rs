@@ -13,7 +13,7 @@
 use crate::action::{self, ActionRecord, Call, DialogOption, NotRecordable, PlayMode, RecordedValue, Recording, RecordingReport, UnitToken};
 use crate::panel::{self, PanelValues, Route};
 use crate::context::RunContext;
-use crate::diag_sink::DiagSink;
+use crate::diag_sink::{self, DiagSink, OpLine};
 use hsk_studio_accord::{
     ActorContext, BusinessEventRecord, CancellationToken, CausationId, CommandContext, CommandId, DomainId, MAX_BUSINESS_EVENT_ARTIFACTS,
     StudioBusinessEventId,
@@ -121,9 +121,10 @@ impl Resolver for TrustAll {
     }
 }
 
-/// Shared in-memory record of delivered Observe frames (class and size only; no content).
+/// Shared in-memory count of delivered Observe frames (class and size only; no content), and the durable sink the frames
+/// also go to when the host gave one (lane SMB-OBSERVE-DIAG-SINK-1, hbr-usage rules[6]).
 #[derive(Clone, Default)]
-struct Frames(Arc<Mutex<Vec<(DeliveryClass, usize)>>>);
+struct Frames(Arc<Mutex<Vec<(DeliveryClass, usize)>>>, Option<DiagSink>);
 
 impl Frames {
     fn count(&self) -> usize {
@@ -136,6 +137,10 @@ struct FrameSink(Frames);
 impl SinkPort for FrameSink {
     fn try_send(&mut self, class: DeliveryClass, bytes: &[u8]) -> Result<(), DeliveryError> {
         self.0.0.lock().map_err(|_| DeliveryError::Unavailable)?.push((class, bytes.len()));
+        // The durable copy is best effort: the sink counts its own failures and none of them fails the command.
+        if let Some(diag) = &self.0.1 {
+            diag.record_frame(class, bytes);
+        }
         Ok(())
     }
 }
@@ -159,7 +164,7 @@ impl Harness {
                 return Err(HarnessError::DuplicateProvider(id.clone()));
             }
         }
-        Ok(Self { selection, diag: None })
+        Ok(Self { selection, diag: diag_sink::process_sink() })
     }
 
     /// This harness's runs also leave their frames and op records in `sink`.
@@ -228,7 +233,7 @@ impl Harness {
         Run {
             harness: self,
             cancel,
-            frames: Frames::default(),
+            frames: Frames(Arc::default(), self.diag.clone()),
             context,
             current: None,
             last_command: None,
@@ -484,6 +489,18 @@ impl Run<'_> {
             "correlation": ctx.as_ref().map(|c| c.correlation().value()),
             "causation": ctx.as_ref().and_then(CommandContext::causation).map(CausationId::value),
         });
+        if let Some(diag) = &self.frames.1 {
+            diag.record_op(&OpLine {
+                op,
+                n: self.op_no(),
+                ok,
+                revision,
+                frames: u64::try_from(frames).unwrap_or(u64::MAX),
+                error: result.as_ref().err().copied(),
+                correlation: ctx.as_ref().map(|c| c.correlation().value()),
+                command_id: ctx.as_ref().and_then(CommandContext::command).map(CommandId::as_str),
+            });
+        }
         self.last_command = ctx;
         match result {
             Ok(detail) => record["detail"] = detail,

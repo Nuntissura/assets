@@ -6,11 +6,14 @@
 //! opened at start; File > Open... (Ctrl+O), File > Open Recent and the path field open more.
 //! `--cpu` renders with render-cpu only. `--recent LIST` keeps the recent-files list in the file
 //! LIST (read at start when it exists, rewritten atomically whenever the list changes); without it
-//! the list lives only for the session (the harness has no settings path of its own). All
+//! the list lives only for the session (the harness has no settings path of its own). The window
+//! leaves what it ran and its panic record in `STUDIO_DIAG_DIR`, else the default the manual names
+//! under DIAGNOSTICS. All
 //! application state lives in `hsk_studio_harness::view::Viewer`; this file only hosts it in a
 //! window. Launching it is a manual Operator step (`RUN-UI.md`); tests never open this window.
 use hsk_studio_harness::cli::{self, WindowArgs};
 use hsk_studio_harness::view::{Viewer, display::WgpuDisplay, export::write_atomic, render::Prefer};
+use hsk_studio_harness_core::diag_sink;
 use std::path::PathBuf;
 
 struct App {
@@ -37,13 +40,16 @@ impl eframe::App for App {
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (prefer, recent, file) = match cli::window_args(&args, &|p| p.is_file()) {
-        WindowArgs::Cli => std::process::exit(cli::run_streams(&args, &mut std::io::stdin().lock(), &mut std::io::stdout().lock())),
+        WindowArgs::Cli => std::process::exit(cli::run_process(&args, &mut std::io::stdin().lock(), &mut std::io::stdout().lock())),
         WindowArgs::Usage(usage) => {
             print!("{}", usage.stdout);
             std::process::exit(usage.exit);
         }
         WindowArgs::Window { cpu, recent, file } => (if cpu { Prefer::Cpu } else { Prefer::Gpu }, recent, file),
     };
+    // Before the viewer: its harness takes the process's sink when it is built.
+    let diag = diag_sink::start_process(None);
+    diag.record_run_start("desktop");
     let mut viewer = Viewer::new(prefer);
     let recent = recent.map(|path| {
         // A missing list starts empty; a list that does not decode is reported, starts empty and is
@@ -66,7 +72,7 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "hsk-studio-harness",
         options,
         Box::new(move |cc| {
@@ -84,5 +90,7 @@ fn main() -> eframe::Result {
             }
             Ok(Box::new(App { viewer, recent }))
         }),
-    )
+    );
+    diag.record_run_end("desktop", i32::from(result.is_err()));
+    result
 }
