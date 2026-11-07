@@ -1,7 +1,7 @@
 ---
 file_id: handshake-rich-formatting-readme
 file_kind: product-module-manual
-updated_at: "2026-10-20"
+updated_at: "2026-10-29"
 ---
 
 <topic id="purpose-and-dependencies">
@@ -14,9 +14,12 @@ executable or service to start.
 
 The crate uses `handshake_rich_document_model` from
 `https://github.com/Nuntissura/assets.git`, pinned to
-`a118e58a2afaad6009567e046422828c99277aa0`. Its other direct dependencies are
+`e75e34ff69ef799c805b8c3f65fbc103953318aa`. Its other direct dependencies are
 `serde_json = "1"` and `thiserror = "2"`. Consumers must use the compatible model
 dependency so document and history types have the same Rust type identity.
+This compatibility change preserves the existing command/action implementation.
+`tests/model_compatibility.rs` exercises its public contexts with the pinned
+model's typed references/embeds and verifies exact block identities on merge undo.
 
 </topic>
 
@@ -91,8 +94,13 @@ from an accepted edit, rather than applying the same edit again.
 
 From the canonical Assets repository root, with the committed lockfile:
 
+Cargo resolved the exact model pin above while preserving all 20 registry
+entries and the existing dependency edges. The locked compile check passed,
+along with both focused compatibility tests and all 27 tests in the full run.
+
 ```sh
 cargo check --manifest-path handshake_rich_formatting/Cargo.toml --locked --tests -j 1
+cargo test --manifest-path handshake_rich_formatting/Cargo.toml --locked --test model_compatibility -j 1
 cargo test --manifest-path handshake_rich_formatting/Cargo.toml --locked -j 1
 ```
 
