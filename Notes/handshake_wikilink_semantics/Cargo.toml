@@ -5,5 +5,5 @@ edition = "2021"
 publish = false
 
 [dependencies]
-handshake_rich_document_model = { path = "../handshake_rich_document_model" }
+handshake_rich_document_model = { git = "https://github.com/Nuntissura/assets.git", rev = "e75e34ff69ef799c805b8c3f65fbc103953318aa" }
 regex = "1"

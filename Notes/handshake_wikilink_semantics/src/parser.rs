@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
+pub mod legacy_native;
 
 use regex::Regex;
 
@@ -95,6 +96,9 @@ impl ParsedWikilink {
             label: self.label.clone(),
             resolved: self.resolved,
             provenance: None,
+            target_kind: None,
+            target_block_id: None,
+            tag_ref_kind: None,
         }
     }
 }
