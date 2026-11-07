@@ -1,9 +1,9 @@
 //! The process drive surface (lane SMB-HARNESS-DRIVE-1, feature `viewer`; [STU-CON-007] (a) and
 //! [STU-MDL-006], first slice): `state`, `command`, `undo` and the `--stdin` JSONL session, over the
-//! viewer's non-draw methods. No second command catalog: a command id is a `RUN_COMMANDS` row,
-//! `timeline.<TimelineCommand::key()>`, `viewer.<Viewer method>` (module `drive_viewer`) or a menu
-//! leaf `studio.*` (`ShellCommand::id`), and the manual's drive tables say which of them this slice
-//! drives. Every response carries the revision, `Viewer::state_json` and the resolved attribution;
+//! viewer's non-draw methods. No second command catalog: a command id is a `RUN_COMMANDS` row (a typed
+//! row runs `Viewer::run_command`), `timeline.<TimelineCommand::key()>`, `<domain>.<Viewer method>` or
+//! its old form `viewer.<Viewer method>` (module `drive_viewer`) or a menu leaf `studio.*`
+//! (`ShellCommand::id`), and the manual's drive tables say which of them this slice drives. Every response carries the revision, `Viewer::state_json` and the resolved attribution;
 //! a mutating command never runs without the caller's `--actor` and `--session`.
 //!
 //! This module draws nothing and never opens a window (tests/harness_drive.rs
@@ -17,9 +17,9 @@ use crate::view::shell::ShellCommand;
 use crate::view::timeline::TimelineCommand;
 use crate::view::{Viewer, render::Prefer};
 use hsk_studio_accord::{ActorContext, ClientSessionId, Ticks, TransientCorrelation};
-use hsk_studio_harness_core::action::{self, ValueType};
+use hsk_studio_harness_core::action::{self, Surface, ValueType};
 use hsk_studio_harness_core::harness::motion_commands;
-use hsk_studio_harness_core::manual::{DRIVE_RUN_COMMANDS, DRIVE_SHELL_NOT_DRIVEABLE, DRIVE_TIMELINE, DRIVE_TIMELINE_NOT_DRIVEABLE, DRIVE_VIEWER, DriveTimeline};
+use hsk_studio_harness_core::manual::{DRIVE_RUN_COMMANDS, DRIVE_SHELL_NOT_DRIVEABLE, DRIVE_TIMELINE, DRIVE_TIMELINE_NOT_DRIVEABLE, DRIVE_VIEWER, DriveTimeline, viewer_row_of};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -156,9 +156,15 @@ impl Live {
         if let Some(row) = motion_commands::row(id) {
             return self.motion(row, params, expected);
         }
+        if let Some(row) = viewer_row_of(id).filter(|_| action::command(id).is_none()) {
+            return self.viewer_method(row.method, params, expected);
+        }
         let Some(entry) = action::command(id) else {
-            return Err(refuse("unknown_command", json!({"command_id": id, "hint": "`help --json` lists drive.commands and drive.timeline"})));
+            return Err(refuse("unknown_command", json!({"command_id": id, "hint": "`help --json` lists drive.commands, drive.typed, drive.viewer and drive.timeline"})));
         };
+        if entry.surface == Surface::Viewer {
+            return self.typed(entry, params, expected);
+        }
         if !DRIVE_RUN_COMMANDS.contains(&id) {
             return Err(refuse("command_not_driveable", json!({"command_id": id, "reason": "needs a payload this process surface does not carry yet"})));
         }
@@ -233,6 +239,35 @@ impl Live {
             Ok(()) => Ok(json!({"saved": path.to_string_lossy(), "revision": self.revision()})),
             Err(message) => Err(self.failure(before, "save_refused", message)),
         }
+    }
+
+    /// A typed row: `Viewer::run_command`, the call a panel makes. A file it writes is guarded as an
+    /// export is. The reply names the undo step the command made.
+    fn typed(&mut self, entry: &action::CommandEntry, params: &Params, expected: Option<u64>) -> Result<Value, Refusal> {
+        self.check_revision(expected)?;
+        for declared in entry.parameters.iter().filter(|p| p.shape == action::OUTPUT_PATH) {
+            let Some(path) = params.get(declared.key).map(Path::new) else { continue };
+            if same_file(path, &self.source) {
+                return Err(refuse("export_over_source", json!({"path": path.to_string_lossy()})));
+            }
+            if params.get("overwrite").map(String::as_str) != Some("true") && path.exists() {
+                return Err(refuse("overwrite_required", json!({"path": path.to_string_lossy()})));
+            }
+        }
+        let map: serde_json::Map<String, Value> = params.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+        let result = self.viewer.run_command(entry.command_id, &map).map_err(|r| Refusal { code: r.code, detail: r.detail })?;
+        if entry.command_id == "panel.vector_import.import_vector"
+            && let Some(dest) = params.get("dest")
+        {
+            // The viewer now holds the imported package: saves and exports guard that one.
+            self.source = PathBuf::from(dest);
+        }
+        let undo_name = if entry.command_id.starts_with("layout.") {
+            result["undo_name"].clone()
+        } else {
+            self.viewer.run().history()["undo"].as_array().and_then(|steps| steps.last()).cloned().unwrap_or(Value::Null)
+        };
+        Ok(json!({"result": result, "revision": self.revision(), "undo_name": if entry.mutates_authority { undo_name } else { Value::Null }}))
     }
 
     fn viewer_method(&mut self, method: &str, params: &Params, expected: Option<u64>) -> Result<Value, Refusal> {

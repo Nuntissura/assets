@@ -1,8 +1,7 @@
 //! `viewer.<method>` of the process drive surface (lane SMB-HARNESS-DRIVE-1): the Viewer's non-draw
 //! methods whose arguments have a text or JSON form, one row of `manual::DRIVE_VIEWER` each. The id
 //! is the method's own name; attribution comes from the viewer's run context, like every window
-//! action. Methods that take a whole typed spec (paint, envelope, swatch and table records) are not
-//! here yet; the manual says so.
+//! action. Methods that take a whole typed record run through `Viewer::run_command` instead.
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::drive::{Params, Refusal, refuse};

@@ -318,7 +318,7 @@ fn assert_corpus_covers_every_mutating_run_method() {
     for read_only in ["snapshot", "ops", "placement", "document_entry", "render_assets", "history", "finish"] {
         assert!(fns.iter().any(|(n, m)| n == read_only && !m), "Run::{read_only} must scan as non-mutating: {fns:?}");
     }
-    let corpus_methods: Vec<&str> = RUN_COMMANDS.iter().flat_map(|c| c.run_method.split(" / ")).collect();
+    let corpus_methods: Vec<&str> = RUN_COMMANDS.iter().filter(|c| c.surface == action::Surface::Run).flat_map(|c| c.run_method.split(" / ")).collect();
     let missing: Vec<&str> = fns
         .iter()
         .filter(|(n, mutating)| *mutating && !RECORDING_CONTROLS.contains(&n.as_str()) && !corpus_methods.contains(&n.as_str()))

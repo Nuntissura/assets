@@ -653,6 +653,14 @@ impl Run<'_> {
         self.session.as_ref().map(|s| s.document_revision())
     }
 
+    /// One terminal frame and one record for a typed command that reached no other `Run` operation:
+    /// the command's id and the run's attribution, a closed outcome and no text.
+    pub fn command_outcome(&mut self, command_id: &str, before: usize, result: Result<Value, &'static str>) -> bool {
+        let base = self.revision().unwrap_or(0);
+        self.current = Some(self.context.command(Some(command_id), base, None));
+        self.own_op(command_id, before, result)
+    }
+
     /// Records a harness-owned operation: emits its frame, then the record.
     fn own_op(&mut self, op: &str, before: usize, result: Result<Value, &'static str>) -> bool {
         let outcome = match &result {

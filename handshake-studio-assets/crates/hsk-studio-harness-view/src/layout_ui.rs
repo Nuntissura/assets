@@ -166,6 +166,51 @@ pub enum LayoutEdit {
     Change { query: FindQuery, replacement: String, only: Option<(String, u64)> },
 }
 
+impl LayoutEdit {
+    /// The command id of this edit, and the name of its undo step.
+    pub fn command_id(&self) -> &'static str {
+        match self {
+            Self::DrawFrame { .. } => "layout.draw_frame",
+            Self::Thread { .. } => "layout.thread",
+            Self::Unthread { .. } => "layout.unthread",
+            Self::SetColumns { .. } => "layout.set_columns",
+            Self::ReplaceText { .. } => "layout.replace_text",
+            Self::ApplyParagraphStyle { .. } => "layout.apply_paragraph_style",
+            Self::ApplyCharacterStyle { .. } => "layout.apply_character_style",
+            Self::Page(e) => match e {
+                PageEdit::InsertPage { .. } => "layout.page.insert_page",
+                PageEdit::DeletePage { .. } => "layout.page.delete_page",
+                PageEdit::MovePage { .. } => "layout.page.move_page",
+                PageEdit::NewParent { .. } => "layout.page.new_parent",
+                PageEdit::ApplyParent { .. } => "layout.page.apply_parent",
+                PageEdit::AddParentItem { .. } => "layout.page.add_parent_item",
+                PageEdit::OverrideItem { .. } => "layout.page.override_item",
+                PageEdit::RemoveOverride { .. } => "layout.page.remove_override",
+                PageEdit::DetachItem { .. } => "layout.page.detach_item",
+            },
+            Self::Style(e) => match e {
+                StyleEdit::NewStyle { .. } => "layout.style.new_style",
+                StyleEdit::EditStyle { .. } => "layout.style.edit_style",
+                StyleEdit::DeleteStyle { .. } => "layout.style.delete_style",
+                StyleEdit::AddGrepRule { .. } => "layout.style.add_grep_rule",
+                StyleEdit::RemoveGrepRule { .. } => "layout.style.remove_grep_rule",
+                StyleEdit::ClearOverrides { .. } => "layout.style.clear_overrides",
+            },
+            Self::Table(e) => match e {
+                TableEdit::InsertTable { .. } => "layout.table.insert_table",
+                TableEdit::InsertRow { .. } => "layout.table.insert_row",
+                TableEdit::DeleteRow { .. } => "layout.table.delete_row",
+                TableEdit::InsertColumn { .. } => "layout.table.insert_column",
+                TableEdit::DeleteColumn { .. } => "layout.table.delete_column",
+                TableEdit::SetCellText { .. } => "layout.table.set_cell_text",
+                TableEdit::MergeCells { .. } => "layout.table.merge_cells",
+                TableEdit::DeleteTable { .. } => "layout.table.delete_table",
+            },
+            Self::Change { .. } => "layout.change",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LayoutUiError {
     Layout(LayoutError),
@@ -286,6 +331,9 @@ pub struct LayoutEditor {
     rec: LayoutRecords,
     undo: Vec<(LayoutDoc, LayoutRecords)>,
     redo: Vec<(LayoutDoc, LayoutRecords)>,
+    /// The command id of each undo and redo step, in step with the stacks.
+    undo_names: Vec<&'static str>,
+    redo_names: Vec<&'static str>,
     pub tool: Tool,
     pub selected: Option<String>,
     thread_from: Option<String>,
@@ -320,6 +368,8 @@ impl LayoutEditor {
             rec,
             undo: Vec::new(),
             redo: Vec::new(),
+            undo_names: Vec::new(),
+            redo_names: Vec::new(),
             tool: Tool::Select,
             selected: None,
             thread_from: None,
@@ -350,6 +400,14 @@ impl LayoutEditor {
     pub fn history_len(&self) -> (usize, usize) {
         (self.undo.len(), self.redo.len())
     }
+    /// The command id of the step undo takes back.
+    pub fn undo_name(&self) -> Option<&'static str> {
+        self.undo_names.last().copied()
+    }
+    /// The command id of the step redo restores.
+    pub fn redo_name(&self) -> Option<&'static str> {
+        self.redo_names.last().copied()
+    }
 
     /// Applies one edit as ONE undo step; a refusal changes nothing.
     pub fn apply(&mut self, edit: LayoutEdit) -> Result<(), LayoutUiError> {
@@ -369,10 +427,13 @@ impl LayoutEditor {
         let before = std::mem::replace(&mut self.doc, next);
         let before_rec = std::mem::replace(&mut self.rec, next_rec);
         self.undo.push((before, before_rec));
+        self.undo_names.push(edit.command_id());
         if self.undo.len() > MAX_HISTORY {
             self.undo.remove(0);
+            self.undo_names.remove(0);
         }
         self.redo.clear();
+        self.redo_names.clear();
         self.last_error = None;
         if let LayoutEdit::DrawFrame { .. } = edit {
             self.selected = self.doc.document.layers.last().map(|l| l.layer_id.clone());
@@ -386,6 +447,9 @@ impl LayoutEditor {
                 let now = std::mem::replace(&mut self.doc, prev);
                 let now_rec = std::mem::replace(&mut self.rec, prev_rec);
                 self.redo.push((now, now_rec));
+                if let Some(name) = self.undo_names.pop() {
+                    self.redo_names.push(name);
+                }
                 self.draft_story = None;
                 self.after_edit();
                 true
@@ -399,6 +463,9 @@ impl LayoutEditor {
                 let now = std::mem::replace(&mut self.doc, next);
                 let now_rec = std::mem::replace(&mut self.rec, next_rec);
                 self.undo.push((now, now_rec));
+                if let Some(name) = self.redo_names.pop() {
+                    self.undo_names.push(name);
+                }
                 self.draft_story = None;
                 self.after_edit();
                 true

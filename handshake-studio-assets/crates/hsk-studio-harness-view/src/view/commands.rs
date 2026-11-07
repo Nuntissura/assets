@@ -1,0 +1,98 @@
+//! Studio's typed commands by id (lane SMB-COMMAND-SURFACE-1), egui-free and drawing nothing: a row of
+//! `action::RUN_COMMANDS` with surface [`Surface::Viewer`] plus its decoder here. [`Viewer::run_command`]
+//! is the one call: the process drive surface makes it, and a panel will make it too, naming a command
+//! id and never a private method. Parameters are JSON; a missing, undeclared or undecodable one is a
+//! typed refusal before anything runs. Attribution is the viewer's run context, the caller's. A command
+//! that reaches no `Run` operation still ends in one terminal observe frame.
+//!
+//! A new command: its row in `hsk-studio-harness-core/src/action/commands/<domain>.rs`, its arm in the
+//! decoder of that domain here, and a JSONL test through the process.
+#![deny(clippy::arithmetic_side_effects)]
+
+mod decode;
+mod layout;
+mod panel;
+mod photo;
+mod seed;
+mod vector;
+
+use super::Viewer;
+use decode::Fields;
+use hsk_studio_harness_core::action::{self, CommandEntry, Surface};
+use serde_json::{Map, Value, json};
+use std::path::Path;
+
+/// A command refused: a stable code and a JSON detail, never a free-form error alone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommandRefusal {
+    pub code: String,
+    pub detail: Value,
+}
+
+impl CommandRefusal {
+    pub(crate) fn new(code: &str, detail: Value) -> Self {
+        Self { code: code.to_string(), detail }
+    }
+}
+
+/// A file a command reads whole: its size is checked before any byte is held.
+fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, CommandRefusal> {
+    let unreadable = |e: std::io::Error| CommandRefusal::new("resource_unreadable", json!({"path": path.to_string_lossy(), "kind": format!("{:?}", e.kind())}));
+    let size = std::fs::metadata(path).map_err(unreadable)?.len();
+    if size > limit {
+        return Err(CommandRefusal::new("resource_too_large", json!({"path": path.to_string_lossy(), "bytes": size, "limit_bytes": limit})));
+    }
+    std::fs::read(path).map_err(unreadable)
+}
+
+/// A method's refusal text as a stable code: the run's newest record's when the method reached the run.
+fn method_refusal(viewer: &Viewer, before: usize, message: String) -> CommandRefusal {
+    let code = viewer.run().ops().get(before..).and_then(|new| new.iter().rev().find_map(|op| op["error"].as_str().map(str::to_string)));
+    CommandRefusal { code: code.unwrap_or_else(|| "command_refused".to_string()), detail: json!({"message": message}) }
+}
+
+/// Every given key is declared, every required key is given.
+fn check_declared(row: &CommandEntry, params: &Map<String, Value>) -> Result<(), CommandRefusal> {
+    if let Some(key) = params.keys().find(|k| !row.parameters.iter().any(|p| p.key == k.as_str())) {
+        return Err(CommandRefusal::new("parameter_unknown", json!({"key": key})));
+    }
+    if let Some(p) = row.parameters.iter().find(|p| p.required && !params.get(p.key).is_some_and(|v| !v.is_null())) {
+        return Err(decode::missing(p.key));
+    }
+    Ok(())
+}
+
+impl Viewer {
+    /// Runs one typed command by id. The refusal names why; on success the value is the command's own
+    /// result. A panic is the caller's to guard, as with every Viewer method.
+    pub fn run_command(&mut self, command_id: &str, params: &Map<String, Value>) -> Result<Value, CommandRefusal> {
+        let Some(row) = action::command(command_id).filter(|r| r.surface == Surface::Viewer) else {
+            return Err(CommandRefusal::new("unknown_command", json!({"command_id": command_id})));
+        };
+        let before = self.run().ops().len();
+        let result = check_declared(row, params).and_then(|()| self.run_row(row, Fields(params), before));
+        if self.run().ops().len() == before {
+            let outcome = match &result {
+                Ok(_) => Ok(Value::Null),
+                Err(_) => Err("command_refused"),
+            };
+            self.run.command_outcome(row.command_id, before, outcome);
+        }
+        result
+    }
+
+    fn run_row(&mut self, row: &CommandEntry, f: Fields<'_>, before: usize) -> Result<Value, CommandRefusal> {
+        let id = row.command_id;
+        let done = match id.split('.').next().unwrap_or_default() {
+            "catalog" => return seed::run(self, id, f),
+            "layout" => return layout::run(self, id, f),
+            "panel" => return panel::run(self, id, f),
+            "vector" => vector::run_vector(self, id, f)?,
+            "proof" => vector::run_proof(self, id, f)?,
+            "design" => vector::run_design(self, id, f)?,
+            "photo" => photo::run(self, id, f)?,
+            _ => return Err(CommandRefusal::new("command_not_driveable", json!({"command_id": id}))),
+        };
+        done.map_err(|message| method_refusal(self, before, message))
+    }
+}

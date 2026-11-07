@@ -789,8 +789,10 @@ pub fn shortcut_collisions(enabled_sets: &[&ActionSet]) -> Vec<Diagnostic> {
 // ----- command corpus: one file per domain, `action/commands/` -----------------------------------
 
 mod commands;
+mod ui_seed;
 
-pub use commands::{CMD_PANEL_SET, CMD_RENAME, CMD_RESTRUCTURE, CMD_SET_BLEND_MODE, CMD_SET_OPACITY, CMD_SET_VISIBLE, CommandEntry, ParamSpec, RUN_COMMANDS, command, corpus_json};
+pub use commands::{CMD_PANEL_SET, CMD_RENAME, CMD_RESTRUCTURE, CMD_SET_BLEND_MODE, CMD_SET_OPACITY, CMD_SET_VISIBLE, CommandEntry, OUTPUT_PATH, ParamSpec, RUN_COMMANDS, Surface, command, corpus_json};
+pub use ui_seed::ui_seed;
 
 // ----- recording and playback support ----------------------------------------------------------
 

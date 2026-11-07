@@ -19,6 +19,7 @@ pub mod projection;
 pub mod registry;
 pub mod report;
 pub mod store;
+pub mod ui_descriptor;
 pub mod value;
 
 pub use descriptor::{
@@ -28,6 +29,7 @@ pub use descriptor::{
 pub use menu::{Availability, AvailabilityState, DescriptorIssue, MenuBar, MenuNode, MenuNodeKind, ReasonCode, WindowRole, WindowSpec};
 pub use registry::{AuditReport, Registry, SectionSpec};
 pub use store::{ChangeEvent, ChangeSource, EventPhase, GesturePhase, Interaction, ValueStore};
+pub use ui_descriptor::{UiCatalog, UiCatalogError, UiDescriptor, UiKind, kebab, stable_id, valid_author_id};
 pub use value::{ControlError, Value};
 
 /// Machine-readable crate descriptor (same convention as the other Studio crates).

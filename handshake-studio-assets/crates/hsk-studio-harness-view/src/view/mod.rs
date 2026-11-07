@@ -16,6 +16,7 @@
 //! [`Viewer::drawn`], and [`Viewer::state_json`] is a structured projection of the whole state.
 #![deny(clippy::arithmetic_side_effects)]
 
+pub mod commands;
 #[cfg(feature = "desktop")]
 pub mod display;
 pub mod develop;

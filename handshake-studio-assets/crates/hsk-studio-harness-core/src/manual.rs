@@ -262,6 +262,31 @@ pub const DRIVE_VIEWER: &[DriveViewer] = &[
     method("proof_set_save_name", &[need("name", "text")]),
 ];
 
+/// The domain of a viewer row: its canonical id is `<domain>.<method>`, and `viewer.<method>` stays an
+/// alias. A row not named here is a vector row.
+pub fn viewer_domain(method: &str) -> &'static str {
+    match method {
+        "new_raster_layer" | "duplicate_layer" | "delete_layer" | "shift_layer" | "ungroup" | "group_layers" | "move_layer" | "select" => "layer",
+        "set_tool" | "set_combine" | "set_brush" | "select_rect" | "select_ellipse" | "select_lasso" | "clear_selection" | "undo_selection" | "select_wand" | "ps_click" | "refine_end" | "paint" | "fill_click" | "fill_drag" | "info_eyedropper"
+        | "set_develop" | "set_develop_threads" | "set_develop_export_field" | "load_develop_watermark" | "clear_develop_export_stage" | "export" => "photo",
+        "grid_append_child_at" | "set_grid_gaps" | "auto_layout_control" => "design",
+        "proof_apply_draft" | "proof_close_page" | "proof_set_save_name" => "proof",
+        "help_search" | "help_close" | "dialog_accept" | "dialog_cancel" | "close" => "shell",
+        _ => "vector",
+    }
+}
+
+/// The canonical id of a viewer row.
+pub fn viewer_command_id(method: &str) -> String {
+    format!("{}.{method}", viewer_domain(method))
+}
+
+/// The viewer row a canonical id names.
+pub fn viewer_row_of(command_id: &str) -> Option<&'static DriveViewer> {
+    let (domain, method) = command_id.split_once('.')?;
+    DRIVE_VIEWER.iter().find(|r| r.method == method && viewer_domain(r.method) == domain)
+}
+
 /// Menu leaves that refuse `command_not_driveable`, with the reason.
 pub const DRIVE_SHELL_NOT_DRIVEABLE: &[(&str, &str)] = &[
     ("studio.view.render_gpu", "the process stays on the CPU path; it holds no GPU device"),
@@ -272,6 +297,7 @@ pub const DRIVE_SHELL_NOT_DRIVEABLE: &[(&str, &str)] = &[
 pub const DRIVE_REFUSALS: &[&str] = &[
     "feature_unavailable", "actor_invalid", "open_failed", "undo_needs_live_session", "line_malformed", "line_not_utf8", "line_too_long", "unknown_command", "command_not_driveable",
     "parameter_missing", "parameter_unknown", "parameter_invalid", "stale_revision", "overwrite_required", "expect_revision_required", "export_over_source", "no_timeline", "command_refused", "command_panicked", "save_refused", "timeline_refused",
+    "resource_unreadable", "resource_too_large", "layout_editor_unavailable", "nothing_to_undo", "nothing_to_redo", "catalog_invalid",
 ];
 
 /// What the drive surface does not do yet: a model reads these from `help`, not from a surprise.
@@ -281,10 +307,12 @@ pub const DRIVE_LIMITS: &[&str] = &[
     "no dry_run, no input or output schema, no capability grant and no promotion gate on any command yet; command ids are RUN_COMMANDS ids, not studio.<domain>.<command>.v<N>",
     "--diag-dir is not available until the observe diagnostics sink lands",
     "every reply carries the whole state and renders a changed document on the CPU path; a long session's reply grows with its ops",
-    "not driveable yet: layer.restructure and the staged-payload rows of RUN_COMMANDS; Viewer methods that take a whole typed record (paint, stroke, swatch and envelope specs, path and network edits, design and proof commands, liquify, grid tracks, align and transform)",
+    "not driveable yet: layer.restructure and the staged-payload rows of RUN_COMMANDS; the develop operations with a mask-source or tone-family record, VectorNetwork whole-record writes, path-text options beyond the defaults, and the audio and design-instance enums",
+    "layout.* edits live in the layout editor: its own undo (layout.undo, layout.redo), and they do not save with the package until the layout records persist",
+    "a typed row is not recordable yet; playback calls Run methods",
     "the coercion is text: a JSON number given for a text parameter arrives as its digits",
     "one terminal observe frame per command holds only for commands that reach a Run operation: a refusal before dispatch and the rows that never reach Run emit none (viewer.select, set_tool, set_brush, select_rect, select_ellipse, select_lasso, clear_selection, the three exports, timeline zoom, scroll and scrub, studio.view.*); a selection reaches the package at the next save with only that save's record",
-    "viewer.<method> is a transitional prefix over Viewer method names: these rows have no RUN_COMMANDS entry and no controls registry id yet",
+    "viewer.<method> is an old id: every viewer row also answers <domain>.<method>; catalog.list prints the one catalog with each former id as an alias",
     "a command that panics answers command_panicked and the session goes on; what it had already changed stays changed, read state",
 ];
 
@@ -295,7 +323,11 @@ pub fn drive_json() -> Value {
         "commands": crate::action::corpus_json().as_array().into_iter().flatten().filter(|c| c["command_id"].as_str().is_some_and(|id| DRIVE_RUN_COMMANDS.contains(&id))).cloned().collect::<Vec<_>>(),
         "motion_commands": crate::action::corpus_json().as_array().into_iter().flatten().filter(|c| c["run_method"] == "motion_command").cloned().collect::<Vec<_>>(),
         "timeline": DRIVE_TIMELINE.iter().map(|r| json!({"command_id": format!("timeline.{}", r.key), "parameters": params(r.params), "spec_commands": r.spec_commands})).collect::<Vec<_>>(),
-        "viewer": DRIVE_VIEWER.iter().map(|r| json!({"command_id": format!("viewer.{}", r.method), "parameters": params(r.params)})).collect::<Vec<_>>(),
+        "viewer": DRIVE_VIEWER.iter().map(|r| json!({"command_id": format!("viewer.{}", r.method), "canonical_id": viewer_command_id(r.method), "parameters": params(r.params)})).collect::<Vec<_>>(),
+        "typed": crate::action::RUN_COMMANDS.iter().filter(|c| c.surface == crate::action::Surface::Viewer).map(|c| json!({
+            "command_id": c.command_id, "display_name": c.display_name, "method": c.run_method, "mutates_authority": c.mutates_authority,
+            "parameters": c.parameters.iter().map(|p| json!({"key": p.key, "kind": p.shape, "required": p.required})).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
         "shell": {"command_ids": "every menu leaf id in state.shell.menu (studio.*), through the menu's own availability; no parameters", "not_driveable": DRIVE_SHELL_NOT_DRIVEABLE.iter().map(|(id, why)| json!({"command_id": id, "reason": why})).collect::<Vec<_>>()},
         "parameter_kinds": "text; text_list (comma separated or a JSON list of strings); number; integer; boolean; ticks; frames; count; path; point [x, y]; points [[x, y], ...]; samples [[x, y] or [x, y, pressure], ...]; rgb8 [r, g, b]; one_of:a|b|c. A list given in --param is its JSON text.",
         "timeline_not_driveable": DRIVE_TIMELINE_NOT_DRIVEABLE.iter().map(|(k, why)| json!({"command_id": format!("timeline.{k}"), "reason": why})).collect::<Vec<_>>(),
@@ -445,7 +477,8 @@ pub fn manual_text(harness: &Harness) -> String {
         }
     }
     for c in crate::action::RUN_COMMANDS {
-        out += &format!("  command {} (Run::{}) recordable={} mutates_authority={}\n", c.command_id, c.run_method, c.recordable, c.mutates_authority);
+        let method = if c.surface == crate::action::Surface::Run { format!("Run::{}", c.run_method) } else { c.run_method.to_string() };
+        out += &format!("  command {} ({method}) recordable={} mutates_authority={}\n", c.command_id, c.recordable, c.mutates_authority);
     }
     out += "\nDIAGNOSTICS\n";
     for (k, v) in m["diagnostics"].as_object().into_iter().flatten() {
