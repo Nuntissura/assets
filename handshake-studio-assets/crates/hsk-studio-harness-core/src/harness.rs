@@ -2108,6 +2108,19 @@ impl Run<'_> {
             };
             submit.records_expect.clone_from(&records);
             submit.records_write = records;
+            // An entry a commit guards (sequence settings, media markers) names what the undo removes,
+            // so on undo it comes back BEFORE the sequences (lane SMB-PROJECT-BIN-1, review F1: the undo
+            // of `sequence.new` was refused folio_rejected); a refused submit puts it back. Redo keeps
+            // the order of the step: sequences first, then the entry.
+            let guarded = |token: &str| token == SEQUENCE_SETTINGS_ENTRY || token == hsk_studio_session::MEDIA_MARKERS_ENTRY;
+            let early = match step.entry.as_ref().filter(|e| undo && guarded(&e.token)).map(|e| self.swap_entry(e)) {
+                None => None,
+                Some(Ok(replaced)) => Some(replaced),
+                Some(Err(code)) => {
+                    self.restore_step(undo, step);
+                    return self.own_op(op, before, Err(code));
+                }
+            };
             let Some(session) = self.session.as_mut() else {
                 self.restore_step(undo, step);
                 return self.push(op, before, Err("not_open"), None, None);
@@ -2118,13 +2131,16 @@ impl Run<'_> {
                     // The step's entry comes back with the sequences (lane SMB-PR-NEST-2,
                     // submit_sequence_edits_and_entry; refused: the sequence step stays applied,
                     // reported, never silently split).
-                    let previous = match step.entry.as_ref().map(|e| self.swap_entry(e)) {
-                        Some(Ok(p)) => p,
-                        Some(Err(code)) => {
-                            let revision = self.revision();
-                            return self.push(op, before, Err(code), Some(applied.report), revision);
-                        }
-                        None => None,
+                    let previous = match early {
+                        Some(replaced) => replaced,
+                        None => match step.entry.as_ref().map(|e| self.swap_entry(e)) {
+                            Some(Ok(p)) => p,
+                            Some(Err(code)) => {
+                                let revision = self.revision();
+                                return self.push(op, before, Err(code), Some(applied.report), revision);
+                            }
+                            None => None,
+                        },
                     };
                     if applied.changed && !applied.replayed {
                         self.emit_business_event(history_event, &ctx, applied.revision, &[]);
@@ -2139,6 +2155,9 @@ impl Run<'_> {
                     self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
                 }
                 Err(f) => {
+                    if let Some(Some(replaced)) = &early {
+                        let _ = self.swap_entry(replaced);
+                    }
                     self.restore_step(undo, step);
                     let revision = self.revision();
                     self.push(op, before, Err(f.code()), Some(f.report), revision)

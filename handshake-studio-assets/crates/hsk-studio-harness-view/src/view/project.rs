@@ -268,7 +268,7 @@ mod media {
     use super::super::audio_import::{ImportLimits, ImportOptions, ImportedAudio, import_audio_external, read_audio_file, sniff};
     use super::super::media::{MediaFrames, ReelFrameDecoder};
     use super::{MAX_IMPORT_FILES, bin_text, mint_key};
-    use hsk_studio_accord::Ticks;
+    use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
     use hsk_studio_folio::{self as folio, ClipSource, ContentDigest, SequenceFrameRate, StudioMediaItem, StudioMediaKind, StudioProjectBinCommand};
     use hsk_studio_pulse::{AudioSources, SourceExtents};
     use hsk_studio_reel as reel;
@@ -399,7 +399,7 @@ mod media {
                     }
                 };
                 let source = media_source(hex.clone());
-                if bin.item_of_digest(&ContentDigest { algorithm: "sha256".into(), digest: hex.clone() }).is_some() || !digests.insert(hex) {
+                if bin.item_of_digest(&ContentDigest { algorithm: "sha256".into(), digest: hex.clone() }).is_some() || digests.contains(&hex) {
                     refused.push(json!({"name": name, "code": "already_imported"}));
                     continue;
                 }
@@ -414,6 +414,8 @@ mod media {
                     refused.push(json!({"name": name, "code": code}));
                     continue;
                 }
+                // Counted only once staged (review F5): a refused copy never blocks the next copy of its bytes.
+                digests.insert(hex);
                 let item_id = {
                     let refs: BTreeSet<&str> = taken.iter().map(String::as_str).collect();
                     mint_key("item", &refs)
@@ -456,9 +458,25 @@ mod media {
                 return Err("audio_rate".into());
             }
             let extents = BinExtents(Arc::new(bin.media_items.iter().map(|i| (i.source.clone(), Ticks::new(i.duration))).collect()));
+            // Review F7: what a bind holds at once (every video item's bytes, every bound audio item
+            // decoded as f32, at most stereo) stays within the session's staging budget. The audio is
+            // estimated from the bin before anything is read; video bytes count as they are read.
+            let budget = u128::from(hsk_studio_session::MAX_STAGED_BYTES);
+            let decoded = |i: &StudioMediaItem| {
+                let frames = u128::from(i.duration).saturating_mul(u128::from(sample_rate_hz)).checked_div(u128::from(TICKS_PER_SECOND)).unwrap_or(u128::MAX);
+                frames.saturating_mul(u128::from(i.channels.unwrap_or(2).min(2))).saturating_mul(4)
+            };
+            let mut held = bin.media_items.iter().filter(|i| i.kind == StudioMediaKind::Audio && i.sample_rate_hz == Some(sample_rate_hz)).map(decoded).fold(0u128, u128::saturating_add);
+            if held > budget {
+                return Err("bind_too_large".into());
+            }
             let mut decoder = ReelFrameDecoder::new();
             let (mut audio, mut not_bound, mut video) = (Vec::new(), Vec::new(), 0usize);
             for item in &bin.media_items {
+                if item.kind == StudioMediaKind::Audio && item.sample_rate_hz != Some(sample_rate_hz) {
+                    not_bound.push(json!({"item_id": item.item_id, "code": "audio_rate_mismatch", "sample_rate_hz": item.sample_rate_hz}));
+                    continue;
+                }
                 let bytes = match self.item_bytes(&item.source) {
                     Ok(b) => b,
                     Err(code) => {
@@ -466,14 +484,17 @@ mod media {
                         continue;
                     }
                 };
+                if item.kind == StudioMediaKind::Video {
+                    held = held.saturating_add(u128::try_from(bytes.len()).unwrap_or(u128::MAX));
+                    if held > budget {
+                        return Err("bind_too_large".into());
+                    }
+                }
                 match item.kind {
                     StudioMediaKind::Video => match decoder.register(&item.source, Arc::from(bytes)) {
                         Ok(()) => video = video.saturating_add(1),
                         Err(e) => not_bound.push(json!({"item_id": item.item_id, "code": e.code})),
                     },
-                    StudioMediaKind::Audio if item.sample_rate_hz != Some(sample_rate_hz) => {
-                        not_bound.push(json!({"item_id": item.item_id, "code": "audio_rate_mismatch", "sample_rate_hz": item.sample_rate_hz}));
-                    }
                     StudioMediaKind::Audio => match self.decode_audio_item(&bytes) {
                         Ok(decoded) => audio.push((item.source.clone(), decoded.planar)),
                         Err((code, _)) => not_bound.push(json!({"item_id": item.item_id, "code": code})),

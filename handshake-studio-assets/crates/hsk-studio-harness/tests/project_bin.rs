@@ -311,3 +311,35 @@ fn a_model_builds_the_project_through_the_drive_session() {
     assert_eq!((s.tracks.len(), s.tracks[3].track_id.as_str(), s.tracks[3].clips.len()), (8, a1, 1));
     assert_eq!(s.tracks[3].clips[0].source_ref, bin.item("item-2").unwrap().source);
 }
+
+/// Review F1: the undo of `sequence.new` restores the settings entry before it removes the sequence, so
+/// it is not refused, and redo brings both back. Review F5: a refused copy does not make the next copy
+/// of the same bytes `already_imported`.
+#[test]
+fn new_sequence_undoes_and_redoes_and_a_refused_copy_blocks_no_copy() {
+    let dir = support_audio::scratch("project-bin-undo-new");
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&empty_package(&dir)).unwrap_or_else(|e| panic!("{e}"));
+    let start = revision(&v);
+    let seq = v.project_new_sequence("main", PRESET).unwrap();
+    v.undo().unwrap_or_else(|e| panic!("undo of sequence.new: {e}"));
+    let doc = v.run().snapshot().unwrap().document();
+    assert!(doc.sequences.iter().all(|s| s.sequence_id != seq));
+    assert!(v.run().document_entry("sequence_settings").is_none(), "the settings entry goes with the sequence");
+    assert!(undo_labels(&v).is_empty());
+    v.redo().unwrap_or_else(|e| panic!("redo of sequence.new: {e}"));
+    assert_eq!(sequence(&v, &seq).tracks.len(), 7);
+    let settings: StudioSequenceSettingsRecords = serde_json::from_slice(v.run().document_entry("sequence_settings").unwrap()).unwrap();
+    assert!(settings.entry(&seq).is_some());
+    assert!(revision(&v) > start);
+    v.undo().unwrap();
+    v.redo().unwrap();
+
+    let junk = b"definitely not media at all".to_vec();
+    let (a, b) = (dir.join("a.bin"), dir.join("copy_of_a.bin"));
+    std::fs::write(&a, &junk).unwrap();
+    std::fs::write(&b, &junk).unwrap();
+    let result = v.project_import(&[a, b], None).unwrap();
+    let codes: Vec<&str> = result["refused"].as_array().unwrap().iter().map(|r| r["code"].as_str().unwrap()).collect();
+    assert_eq!(codes, ["MEDIA_IMPORT_UNSUPPORTED", "MEDIA_IMPORT_UNSUPPORTED"], "{result}");
+}
