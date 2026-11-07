@@ -251,6 +251,7 @@ impl Harness {
             event_sequence: None,
             event_stats: BusinessEventStats::default(),
             ambient_causation: None,
+            web: web_commands::WebHost::default(),
         }
     }
 }
@@ -398,6 +399,10 @@ struct EntryRestore {
 #[path = "motion_commands.rs"]
 pub mod motion_commands;
 
+/// Lane SMB-WEB-HOST-1: the web document host, a child of this module like `motion_commands`.
+#[path = "web_commands.rs"]
+pub mod web_commands;
+
 /// Why an operation did not complete.
 enum Fail {
     /// Refused before any session operation ran (no frame owed by a session).
@@ -445,6 +450,8 @@ pub struct Run<'a> {
     event_stats: BusinessEventStats,
     /// The causation of the inner commands of an action being played (its correlation).
     ambient_causation: Option<CausationId>,
+    /// The web document host (lane SMB-WEB-HOST-1, [`Run::web_command`]).
+    web: web_commands::WebHost,
 }
 
 impl Run<'_> {
@@ -1570,6 +1577,19 @@ impl Run<'_> {
     /// object of the row's parameters ([`motion_commands::params_from_text`] for text parameters).
     pub fn motion_command(&mut self, command_id: &str, params: &Value) -> bool {
         motion_commands::run(self, command_id, params)
+    }
+
+    /// Runs one web command (lane SMB-WEB-HOST-1, [STU-WEB-003], [STU-WEB-131]; the `web.*` rows of
+    /// `RUN_COMMANDS`): one record, one terminal frame, and for an edit of the source, site or recipe one named step
+    /// of the web history with this command's context; a typed refusal changes nothing. `params` is the JSON object
+    /// of the row's parameters. Module `web_commands`.
+    pub fn web_command(&mut self, command_id: &str, params: &Value) -> bool {
+        web_commands::run(self, command_id, params)
+    }
+
+    /// The web host's state (document, history with attribution, site, recipe), as `web.read` reports it.
+    pub fn web_state(&self) -> Value {
+        self.web.state_json()
     }
 
     /// Sets the entry `restore` names to its bytes; returns the entry it replaced (for the opposite step).

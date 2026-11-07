@@ -376,6 +376,7 @@ pub const DRIVE_LIMITS: &[&str] = &[
     "one terminal observe frame per command holds only for commands that reach a Run operation: a refusal before dispatch and the rows that never reach Run emit none (viewer.select, set_tool, set_brush, select_rect, select_ellipse, select_lasso, clear_selection, the three image exports (export, export_vector_svg, export_vector_pdf; photo.export_document records an op with a frame), timeline zoom, scroll and scrub, studio.view.*); a selection reaches the package at the next save with only that save's record",
     "viewer.<method> is an old id: every viewer row also answers <domain>.<method>; catalog.list prints the one catalog with each former id as an alias",
     "a command that panics answers command_panicked and the session goes on; what it had already changed stays changed, read state",
+    "web.* rows (lane SMB-WEB-HOST-1) run on the web host beside the package: expected_revision is the web source revision (detail.web.revision), web.undo and web.redo are its own history (history.undo does not reach it), and the package's state does not include it",
 ];
 
 /// The drive surface as JSON, from the tables above and the command corpus.
@@ -384,6 +385,7 @@ pub fn drive_json() -> Value {
     json!({
         "commands": crate::action::corpus_json().as_array().into_iter().flatten().filter(|c| c["command_id"].as_str().is_some_and(|id| DRIVE_RUN_COMMANDS.contains(&id))).cloned().collect::<Vec<_>>(),
         "motion_commands": crate::action::corpus_json().as_array().into_iter().flatten().filter(|c| c["run_method"] == "motion_command").cloned().collect::<Vec<_>>(),
+        "web_commands": crate::action::corpus_json().as_array().into_iter().flatten().filter(|c| c["run_method"] == "web_command").cloned().collect::<Vec<_>>(),
         "timeline": DRIVE_TIMELINE.iter().map(|r| json!({"command_id": format!("timeline.{}", r.key), "parameters": params(r.params), "spec_commands": r.spec_commands})).collect::<Vec<_>>(),
         "viewer": DRIVE_VIEWER.iter().map(|r| json!({"command_id": format!("viewer.{}", r.method), "canonical_id": viewer_command_id(r.method), "parameters": params(r.params)})).collect::<Vec<_>>(),
         "typed": crate::action::RUN_COMMANDS.iter().filter(|c| c.surface == crate::action::Surface::Viewer).map(|c| json!({

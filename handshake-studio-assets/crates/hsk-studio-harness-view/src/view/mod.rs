@@ -108,6 +108,8 @@ pub mod info;
 pub mod vector;
 /// Items of wrapping rows under stable ids (toolbar, Layers panel, develop rows; lane SMB-SHELL-ROW-WRAP-1).
 mod wrap;
+/// Web document commands on the viewer's run (lane SMB-WEB-HOST-1; no drawing).
+pub mod web;
 
 use crate::harness::{Harness, References, Run, Selection};
 use hsk_studio_harness_core::RunContext;

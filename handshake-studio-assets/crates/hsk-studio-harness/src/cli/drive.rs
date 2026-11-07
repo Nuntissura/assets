@@ -18,7 +18,7 @@ use crate::view::timeline::TimelineCommand;
 use crate::view::{Viewer, render::Prefer};
 use hsk_studio_accord::{ActorContext, ClientSessionId, Ticks, TransientCorrelation};
 use hsk_studio_harness_core::action::{self, Surface, ValueType};
-use hsk_studio_harness_core::harness::motion_commands;
+use hsk_studio_harness_core::harness::{motion_commands, web_commands};
 use hsk_studio_harness_core::manual::{DRIVE_CATALOG_ROUTES, DRIVE_RUN_COMMANDS, DRIVE_SHELL_NOT_DRIVEABLE, DRIVE_TIMELINE, DRIVE_TIMELINE_NOT_DRIVEABLE, DRIVE_VIEWER, DriveTimeline, viewer_row_of};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -162,6 +162,9 @@ impl Live {
         if let Some(row) = viewer_row_of(id).filter(|_| action::command(id).is_none()) {
             return self.viewer_method(row.method, params, expected);
         }
+        if let Some(row) = web_commands::row(id) {
+            return self.web(row, params, expected);
+        }
         let Some(entry) = action::command(id) else {
             return Err(refuse("unknown_command", json!({"command_id": id, "hint": "`help --json` lists drive.commands, drive.typed, drive.viewer and drive.timeline"})));
         };
@@ -217,6 +220,31 @@ impl Live {
                 let mut refusal = self.failure(before, "command_refused", message);
                 refusal.detail["target"] = self.viewer.run().ops().last().map_or(Value::Null, |op| op["target"].clone());
                 Err(refusal)
+            }
+        }
+    }
+
+    /// One web command (lane SMB-WEB-HOST-1): `expected` is the web source revision; a save never replaces the
+    /// opened package.
+    fn web(&mut self, row: &action::CommandEntry, params: &Params, expected: Option<u64>) -> Result<Value, Refusal> {
+        let value = motion_commands::params_from_text(row, params).map_err(|(code, key)| refuse(code, json!({"key": key})))?;
+        let current = self.viewer.web_json()["revision"].as_u64();
+        if let Some(n) = expected
+            && current != Some(n)
+        {
+            return Err(refuse("stale_revision", json!({"expected": n, "current": current, "revision_of": "web"})));
+        }
+        if row.command_id == "web.save"
+            && let Some(path) = params.get("path").map(Path::new)
+            && same_file(path, &self.source)
+        {
+            return Err(refuse("export_over_source", json!({"path": path.to_string_lossy()})));
+        }
+        match self.viewer.web_command(row.command_id, &value) {
+            Ok(detail) => Ok(detail),
+            Err(code) => {
+                let record = self.viewer.run().ops().last().cloned().unwrap_or(Value::Null);
+                Err(refuse(&code, json!({"target": record["target"], "detail": record["detail"]})))
             }
         }
     }

@@ -22,6 +22,7 @@ mod proof;
 mod text;
 mod vector;
 mod video;
+mod web;
 
 pub use layer::{CMD_PANEL_SET, CMD_RENAME, CMD_RESTRUCTURE, CMD_SET_BLEND_MODE, CMD_SET_OPACITY, CMD_SET_VISIBLE};
 
@@ -168,6 +169,7 @@ const DOMAINS: &[&[CommandEntry]] = &[
     text::ROWS,
     vector::ROWS,
     video::ROWS,
+    web::ROWS,
 ];
 
 const ROW_COUNT: usize = {
