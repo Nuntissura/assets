@@ -555,9 +555,14 @@ impl Viewer {
         // Lane SMB-AUDIO-OUT-MIX-1: repaired audio (the stored waveform edit list) reaches the
         // picture export as it reaches playback and the audio-only mixdown.
         #[cfg(feature = "audio-batch")]
+        let mut repair_unmatched: Option<String> = None;
+        #[cfg(not(feature = "audio-batch"))]
+        let repair_unmatched: Option<String> = None;
+        #[cfg(feature = "audio-batch")]
         let port = match port {
             Some(_) => {
                 let sound = self.sequence_sound()?;
+                repair_unmatched = sound.repair_unmatched().map(str::to_owned);
                 let rate = sound.rate();
                 Some(AudioPort { sources: Arc::new(sound.clone()), extents: Arc::new(sound), rate })
             }
@@ -592,6 +597,7 @@ impl Viewer {
             "bit_depth": request.bit_depth,
             "container": extension(recipe.container),
             "output": output.to_string_lossy(),
+            "repair_unmatched": repair_unmatched,
         });
         let (sender, requests) = mpsc::channel();
         let waiting: Waiting = Arc::default();

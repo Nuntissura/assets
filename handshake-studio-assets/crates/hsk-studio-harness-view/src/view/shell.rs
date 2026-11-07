@@ -1389,6 +1389,9 @@ impl Viewer {
     /// Closes the open document and every document-bound surface (FILE > Close); the recent list,
     /// panel visibility and render preference stay.
     pub fn close(&mut self) {
+        // Lane SMB-AUDIO-OUT-MIX-1: the device and its admission permit go with the document.
+        #[cfg(all(feature = "audio-batch", feature = "audio-device"))]
+        self.audio_out_close();
         self.run = self.harness.run(self.context.clone(), self.cancel);
         self.source = None;
         self.assets = super::render::Assets::new();

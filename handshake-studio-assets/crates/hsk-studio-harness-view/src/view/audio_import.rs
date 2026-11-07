@@ -534,6 +534,9 @@ pub struct MixExport {
     pub bytes_written: u64,
     /// FLAC: the STREAMINFO MD5 written (lower-case hex).
     pub flac_md5: Option<String>,
+    /// A sequence mixdown or stem (lane SMB-AUDIO-OUT-MIX-1): the source SHA-256 of a stored waveform
+    /// edit list that matched no clip source, so the file holds that source unrepaired.
+    pub repair_unmatched: Option<String>,
 }
 
 impl MixExport {
@@ -546,6 +549,7 @@ impl MixExport {
             "clipped_samples": self.clipped_samples,
             "bytes_written": self.bytes_written,
             "flac_md5": self.flac_md5,
+            "repair_unmatched": self.repair_unmatched,
         })
     }
 }
@@ -554,7 +558,7 @@ impl MixExport {
 pub const MAX_EXPORT_FRAMES: u64 = u32::MAX as u64;
 const BLOCK: usize = 4096;
 
-fn quantize(v: f32, bits: u8, clipped: &mut u64) -> i32 {
+pub(crate) fn quantize(v: f32, bits: u8, clipped: &mut u64) -> i32 {
     let max = (1i64 << bits.saturating_sub(1)).saturating_sub(1);
     let min = max.saturating_add(1).saturating_neg();
     if !v.is_finite() {
@@ -800,6 +804,7 @@ pub(crate) fn export_from(
         clipped_samples: chunks.clipped,
         bytes_written: receipt.bytes_written,
         flac_md5,
+        repair_unmatched: None,
     })
 }
 
