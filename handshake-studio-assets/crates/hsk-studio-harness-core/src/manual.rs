@@ -293,6 +293,7 @@ pub fn drive_json() -> Value {
     let params = |p: &[DriveParam]| p.iter().map(|d| json!({"key": d.key, "kind": d.kind, "required": d.required})).collect::<Vec<_>>();
     json!({
         "commands": crate::action::corpus_json().as_array().into_iter().flatten().filter(|c| c["command_id"].as_str().is_some_and(|id| DRIVE_RUN_COMMANDS.contains(&id))).cloned().collect::<Vec<_>>(),
+        "motion_commands": crate::action::corpus_json().as_array().into_iter().flatten().filter(|c| c["run_method"] == "motion_command").cloned().collect::<Vec<_>>(),
         "timeline": DRIVE_TIMELINE.iter().map(|r| json!({"command_id": format!("timeline.{}", r.key), "parameters": params(r.params), "spec_commands": r.spec_commands})).collect::<Vec<_>>(),
         "viewer": DRIVE_VIEWER.iter().map(|r| json!({"command_id": format!("viewer.{}", r.method), "parameters": params(r.params)})).collect::<Vec<_>>(),
         "shell": {"command_ids": "every menu leaf id in state.shell.menu (studio.*), through the menu's own availability; no parameters", "not_driveable": DRIVE_SHELL_NOT_DRIVEABLE.iter().map(|(id, why)| json!({"command_id": id, "reason": why})).collect::<Vec<_>>()},

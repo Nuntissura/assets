@@ -18,6 +18,7 @@ use crate::view::timeline::TimelineCommand;
 use crate::view::{Viewer, render::Prefer};
 use hsk_studio_accord::{ActorContext, ClientSessionId, Ticks, TransientCorrelation};
 use hsk_studio_harness_core::action::{self, ValueType};
+use hsk_studio_harness_core::harness::motion_commands;
 use hsk_studio_harness_core::manual::{DRIVE_RUN_COMMANDS, DRIVE_SHELL_NOT_DRIVEABLE, DRIVE_TIMELINE, DRIVE_TIMELINE_NOT_DRIVEABLE, DRIVE_VIEWER, DriveTimeline};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -152,6 +153,9 @@ impl Live {
         if id.starts_with("studio.") {
             return self.shell(id, params, expected);
         }
+        if let Some(row) = motion_commands::row(id) {
+            return self.motion(row, params, expected);
+        }
         let Some(entry) = action::command(id) else {
             return Err(refuse("unknown_command", json!({"command_id": id, "hint": "`help --json` lists drive.commands and drive.timeline"})));
         };
@@ -186,6 +190,25 @@ impl Live {
         match result {
             Ok(revision) => Ok(json!({"revision": revision})),
             Err(message) => Err(self.failure(before, "command_refused", message)),
+        }
+    }
+
+    /// One typed motion command (lane SMB-MOTION-COMMANDS-1): its parameters are optional per row, so
+    /// `check_declared` does not apply; the run refuses a missing or mistyped one with its own code.
+    fn motion(&mut self, row: &action::CommandEntry, params: &Params, expected: Option<u64>) -> Result<Value, Refusal> {
+        let value = motion_commands::params_from_text(row, params).map_err(|(code, key)| refuse(code, json!({"key": key})))?;
+        self.check_revision(expected)?;
+        let before = self.viewer.run().ops().len();
+        match self.viewer.motion_command(row.command_id, &value) {
+            Ok(revision) => {
+                let detail = self.viewer.run().ops().last().map_or(Value::Null, |op| op["detail"].clone());
+                Ok(json!({"revision": revision, "motion": detail}))
+            }
+            Err(message) => {
+                let mut refusal = self.failure(before, "command_refused", message);
+                refusal.detail["target"] = self.viewer.run().ops().last().map_or(Value::Null, |op| op["target"].clone());
+                Err(refusal)
+            }
         }
     }
 

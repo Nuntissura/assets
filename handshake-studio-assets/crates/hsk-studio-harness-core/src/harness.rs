@@ -389,6 +389,10 @@ struct EntryRestore {
     bytes: Option<Vec<u8>>,
 }
 
+/// Lane SMB-MOTION-COMMANDS-1: a child of this module, so it reaches the history stacks.
+#[path = "motion_commands.rs"]
+pub mod motion_commands;
+
 /// Why an operation did not complete.
 enum Fail {
     /// Refused before any session operation ran (no frame owed by a session).
@@ -1535,6 +1539,14 @@ impl Run<'_> {
         let cancel = self.cancel;
         let session = self.session.as_mut().ok_or("not_open")?;
         session.set_document_entry(token, bytes, cancel).map_err(|e| e.code())
+    }
+
+    /// Runs one typed motion command (lane SMB-MOTION-COMMANDS-1, [STU-MOT-130]; the `composition.*`,
+    /// `property.*`, `keyframe.*` and `expression.*` rows of `RUN_COMMANDS`, or their `STUDIO_*` spelling):
+    /// one record, one named history step, a typed refusal that changes nothing. `params` is the JSON
+    /// object of the row's parameters ([`motion_commands::params_from_text`] for text parameters).
+    pub fn motion_command(&mut self, command_id: &str, params: &Value) -> bool {
+        motion_commands::run(self, command_id, params)
     }
 
     /// Sets the entry `restore` names to its bytes; returns the entry it replaced (for the opposite step).

@@ -48,7 +48,7 @@ pub use session::{
     MAX_STAGED_BYTES, MAX_SUPPLIED_PREVIEWS, PreviewReceipt, ReceiptPolicy, ReceiptStats,
     ReconcileReport, SaveReceipt, Session, SessionConfig, SessionPorts,
 };
-pub use motion::{COMPOSITION_ENTRY, MOTION_ENTRY};
+pub use motion::{COMPOSITION_ENTRY, MOTION_ENTRY, session_error_diagnostic};
 pub use multicam::MULTICAM_ENTRY;
 pub use multicam_step::{MAX_MULTICAM_STEP_EDITS, MULTICAM_STEP_PROVIDER, MulticamStep, SequenceEdit};
 pub use sequence_records::{AUDIO_ROUTING_ENTRY, MEDIA_MARKERS_ENTRY, RoutingTakeover, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY};

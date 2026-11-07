@@ -14,7 +14,7 @@ use crate::error::SessionError;
 use crate::session::Session;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    Budget, Code, Diagnostic, Resolver, StudioCompositionRecords, StudioMotionRecords,
+    Budget, Code, Diagnostic, Resolver, StudioCompositionRecords, StudioLayer, StudioMotionRecords,
     validate_composition_records, validate_motion_records,
 };
 use hsk_studio_package::PackageError;
@@ -30,6 +30,15 @@ fn diag(code: Code, target: &str) -> SessionError {
 
 fn folio_err(d: Diagnostic) -> SessionError {
     SessionError::Package(PackageError::Document(d))
+}
+
+/// The Folio diagnostic of a refusal from Folio's validators (lane SMB-MOTION-COMMANDS-1): its code and
+/// record path, for a caller with no package edge.
+pub fn session_error_diagnostic(e: &SessionError) -> Option<&Diagnostic> {
+    match e {
+        SessionError::Package(PackageError::Document(d)) => Some(d),
+        _ => None,
+    }
 }
 
 impl Session {
@@ -72,6 +81,40 @@ impl Session {
             }
         };
         self.set_document_entry(COMPOSITION_ENTRY, bytes, cancel)
+    }
+
+    /// The entry bytes of both record sets after a typed edit (lane SMB-MOTION-COMMANDS-1), validated
+    /// by Folio against the document plus the layers the same step creates; nothing is stored, so the
+    /// caller commits them as one history step. A refusal is the Folio diagnostic.
+    pub fn motion_entries_bytes(
+        &self,
+        compositions: &StudioCompositionRecords,
+        motion: Option<&StudioMotionRecords>,
+        created: &[StudioLayer],
+        resolver: &dyn Resolver,
+        cancel: &CancellationToken,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), SessionError> {
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        let live = self.snapshot().document();
+        let grown;
+        let document = if created.is_empty() {
+            live
+        } else {
+            let mut d = live.clone();
+            d.layers.extend_from_slice(created);
+            grown = d;
+            &grown
+        };
+        validate_composition_records(compositions, document, Budget::default(), cancel, resolver).map_err(folio_err)?;
+        let composition = serde_json::to_vec(compositions).map_err(|_| diag(Code::InvalidJson, "studio/composition"))?;
+        let motion = match motion {
+            None => None,
+            Some(m) => {
+                validate_motion_records(m, document, compositions, Budget::default(), cancel, resolver).map_err(folio_err)?;
+                Some(serde_json::to_vec(m).map_err(|_| diag(Code::InvalidJson, "studio/motion"))?)
+            }
+        };
+        Ok((composition, motion))
     }
 
     /// The stored motion records, validated against the document and the stored composition records.

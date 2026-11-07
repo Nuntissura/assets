@@ -366,6 +366,45 @@ fn a_stdin_session_runs_commands_undo_redo_and_state_in_one_process() {
     assert_eq!((end["ended"].as_str(), end["lines"].as_u64(), end["refused"].as_u64()), (Some("stdin_closed"), Some(8), Some(0)));
 }
 
+/// Lane SMB-MOTION-COMMANDS-1: a composition authored in the live session, undone by name, saved and
+/// read by a new process; a refusal is typed and the session continues.
+#[test]
+fn motion_commands_run_in_the_session_loop() {
+    let scratch = Scratch::new("motion");
+    let package = scratch.package("a.handshake");
+    let saved = scratch.0.join("b.handshake");
+    let input = lines(&[
+        json!({"command": "command", "command_id": "composition.new", "parameters": {"composition_id": "T01", "name": "T01", "width": 64, "height": 32, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": 254016000000u64}}),
+        json!({"command": "command", "command_id": "STUDIO_COMPOSITION_ADD_LAYER", "parameters": {"composition_id": "T01", "kind": "existing", "layer_id": L2}}),
+        json!({"command": "command", "command_id": "keyframe.set", "parameters": {"layer_id": L2, "property": "opacity", "time": 0, "value": [50.0]}}),
+        json!({"command": "command", "command_id": "keyframe.set", "parameters": {"layer_id": L2, "property": "opacity", "time": "nonsense", "value": [50.0]}}),
+        json!({"command": "command", "command_id": "composition.new", "parameters": {"name": "x", "width": 1, "height": 32, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": 1}}),
+        json!({"command": "undo"}),
+        json!({"command": "command", "command_id": "document.save", "parameters": {"path": saved.to_str().unwrap()}}),
+    ]);
+    let (exit, out) = session(&package, "a1", "s1", &input, &scratch.0);
+    assert_eq!(exit, 0, "{out:?}");
+    assert_eq!(out.len(), 7, "{out:?}");
+    assert_eq!(out[0]["detail"]["motion"]["composition_id"], "T01", "{}", out[0]);
+    assert_eq!(out[0]["attribution"]["client_session"], "s1");
+    assert_eq!(out[1]["ok"], true, "{}", out[1]);
+    assert_eq!(out[2]["ok"], true, "{}", out[2]);
+    assert_eq!(out[3]["error"], "parameter_invalid", "{}", out[3]);
+    assert_eq!((out[4]["error"].clone(), out[4]["detail"]["target"].clone()), (json!("invalid_field"), json!("SCOM-0195f000-0000-7000-8000-000000000001/size")), "{}", out[4]);
+    assert_eq!(out[5]["ok"], true, "{}", out[5]);
+    assert_eq!(out[6]["ok"], true, "{}", out[6]);
+    // The saved package holds the composition and the layer, not the undone key.
+    let bytes = std::fs::read(&saved).unwrap();
+    let again = lines(&[json!({"command": "command", "command_id": "composition.read", "parameters": {"composition_id": "T01"}})]);
+    let reopened = scratch.0.join("c.handshake");
+    std::fs::write(&reopened, bytes).unwrap();
+    let (exit, out) = session(&reopened, "a1", "s2", &again, &scratch.0);
+    assert_eq!(exit, 0, "{out:?}");
+    let layers = out[0]["detail"]["motion"]["composition"]["layers"].clone();
+    assert_eq!(layers[0]["layer_id"], L2, "{}", out[0]);
+    assert!(layers[0].get("streams").is_none(), "{}", out[0]);
+}
+
 #[test]
 fn hostile_lines_refuse_and_the_session_continues() {
     let dir = Scratch::new("hostile");

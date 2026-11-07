@@ -655,6 +655,12 @@ impl Viewer {
         self.after_edit(ok, "redo".into())
     }
 
+    /// One typed motion command (lane SMB-MOTION-COMMANDS-1, `Run::motion_command`).
+    pub fn motion_command(&mut self, command_id: &str, params: &serde_json::Value) -> Result<u64, String> {
+        let ok = self.run.motion_command(command_id, params);
+        self.after_edit(ok, command_id.into())
+    }
+
     pub(super) fn after_edit(&mut self, ok: bool, what: String) -> Result<u64, String> {
         if ok {
             let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
