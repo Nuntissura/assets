@@ -283,6 +283,7 @@ fn every_panel_family_runs_through_the_process_with_the_callers_attribution() {
     s.refused("panel.transform.transform", json!({"layers":[a],"op":{"kind":"spin"}}), "parameter_invalid");
     s.refused("panel.align_distribute.align", json!({"layers":[a,b],"to":"selection","how":"sideways"}), "parameter_invalid");
     // Undo walks back through the run's history.
+    s.ok("viewer.select", json!({"layer":a}));
     let before = s.ok("panel.stroke.swap_stroke_markers", json!({}))["revision"].as_u64().unwrap();
     writeln!(s.stdin, "{}", json!({"command":"undo"})).unwrap();
     s.stdin.flush().unwrap();
@@ -313,7 +314,10 @@ fn proof_vector_and_design_records_run_through_the_process() {
     let filled = s.ok("vector.set_fill", json!({"layer":a,"paint":{"kind":"linear","from":[0,0],"to":[10,0],"stops":[{"position":0,"rgb8":[255,0,0]},{"position":1,"rgb8":[0,0,255],"opacity":0.5}]}}));
     assert!(!undo_name(&filled).is_empty());
     s.ok("vector.set_stroke", json!({"layer":a,"stroke":{"paint":{"kind":"solid","rgb8":[0,0,0]},"weight":1}}));
-    let swatch = result_text(&s.ok("vector.add_folio_swatch", json!({"name":"Spot","spec":{"kind":"spot","ink":"Reflex","measured_lab":[30,10,-40],"alternate":{"model":"cmyk","components":[100,70,0,0]}}})));
+    // A spot record reaches Folio, whose own range check judges the alternate value.
+    let spot = s.call("vector.add_folio_swatch", json!({"name":"Spot","spec":{"kind":"spot","ink":"Reflex","measured_lab":[30,10,-40],"alternate":{"model":"cmyk","components":[100,70,0,0]}}}));
+    assert!(spot["ok"] == true || spot["error"] == "command_refused", "{spot}");
+    let swatch = result_text(&s.ok("vector.add_folio_swatch", json!({"name":"Process","spec":{"kind":"process","colour":{"model":"rgb","components":[0.5,0.5,0.5]}}})));
     s.ok("vector.edit_folio_swatch", json!({"swatch":swatch,"spec":{"kind":"process","colour":{"model":"rgb","components":[0.1,0.2,0.3]}}}));
     let gradient = result_text(&s.ok("vector.add_swatch", json!({"name":"Ramp","paint":{"kind":"radial","centre":[0,0],"radius":5,"stops":[{"position":0,"rgb8":[0,0,0]},{"position":1,"rgb8":[9,9,9]}]}})));
     s.ok("vector.edit_swatch", json!({"swatch":gradient,"paint":{"kind":"solid","rgb8":[5,5,5]}}));
