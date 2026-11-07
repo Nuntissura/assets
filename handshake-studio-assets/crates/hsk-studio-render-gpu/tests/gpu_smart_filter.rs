@@ -9,6 +9,7 @@
 //! SMB-PS-ADJUST-STYLES-3 (tests/gpu_smart_filter_masks.rs).
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over};
+use hsk_studio_pigment::filter_kernels::FilterKernel;
 use hsk_studio_pigment::filter_math::{LayerFilter, NoiseDistribution};
 use hsk_studio_pigment::liquify::{LiquifyLimits, LiquifyMesh};
 use hsk_studio_pigment::render_plan::{
@@ -267,4 +268,8 @@ fn gpu_smart_filter_refusals_are_typed_before_any_sink_call() {
     let mut median = op();
     median.entries[3] = entry(LayerFilter::Median { radius_px: 9 }, true, 1.0);
     refuse(median, "filter_median_radius");
+    // Whole-plane raster kernels have no GPU form: typed, before any device work; the host falls back.
+    let mut kernel = op();
+    kernel.entries[0] = SmartFilterEntryOp { filter: StackFilter::Kernel(FilterKernel::Sharpen), enabled: true, opacity: 1.0, mask: None };
+    refuse(kernel, "filter_sharpen");
 }

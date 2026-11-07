@@ -13,6 +13,7 @@ pub mod coverage_math;
 /// Histogram, averaged samples and colour readouts (lane SMB-PS-INFO-HISTOGRAM-1).
 pub mod diagnostics;
 pub mod effect_math;
+pub mod filter_kernels;
 pub mod filter_math;
 pub mod fill_tools;
 pub mod frame_blend;

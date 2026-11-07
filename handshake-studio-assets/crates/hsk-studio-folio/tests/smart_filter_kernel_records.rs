@@ -58,9 +58,9 @@ fn kinds() -> Vec<Value> {
         json!({"filter_kind":"mosaic","horizontal_blocks":4,"vertical_blocks":3}),
         json!({"filter_kind":"maximum","radius_px":3,"preserve":"squareness"}),
         json!({"filter_kind":"minimum","radius_px":3,"preserve":"roundness"}),
-        json!({"filter_kind":"dust_and_scratches","radius_px":2,"threshold":0.1}),
+        json!({"filter_kind":"dust_and_scratches","radius_px":2,"threshold":0.125}),
         json!({"filter_kind":"surface_blur","radius_px":5,"threshold_levels":15.0}),
-        json!({"filter_kind":"bilateral_blur","radius_px":5,"range_sigma":0.1}),
+        json!({"filter_kind":"bilateral_blur","radius_px":5,"range_sigma":0.25}),
     ]
 }
 
@@ -133,4 +133,15 @@ fn folio_invents_no_range_for_the_new_kinds() {
     ] {
         check(records(k.clone())).unwrap_or_else(|e| panic!("{k}: {e}"));
     }
+}
+
+#[test]
+fn a_stack_of_seventeen_kernels_is_refused() {
+    let entry = |i: usize| json!({"instance_id": format!("f-{i}"), "enabled": true, "opacity": 100.0, "params": {"filter_kind": "sharpen"}});
+    let stack = |n: usize| {
+        let filters: Vec<Value> = (0..n).map(entry).collect();
+        json!({"schema_id":"hsk.studio.raster_records@1","document_id":identity("SDOC",1),"layers":[{"layer_id":identity("SLYR",1),"smart_filters":{"enabled":true,"filters":filters}}]})
+    };
+    check(stack(MAX_SMART_FILTERS)).unwrap();
+    assert!(check(stack(MAX_SMART_FILTERS + 1)).unwrap_err().starts_with("validate"));
 }

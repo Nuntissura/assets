@@ -279,6 +279,7 @@ fn compile_smart(
         let f = match &e.filter {
             StackFilter::Filter(f) => f,
             StackFilter::Liquify { .. } => return Err(unsupported("smart_filter_liquify")),
+            StackFilter::Kernel(k) => return Err(unsupported(k.key())),
         };
         let (compiled, pass_ops) = compile_filters(std::slice::from_ref(f), node)?;
         reach = reach.checked_add(compiled.reach).ok_or_else(overflow)?;

@@ -1118,6 +1118,8 @@ fn effect(p: &StudioClipEffectParams, t: &str, cx: &mut Ctx) -> Result<()> {
                 StudioSmartFilterKind::Median { radius_px } => f64::from(*radius_px) <= MAX_CLIP_BLUR_PX,
                 StudioSmartFilterKind::AddNoise { amount_pct, .. } => finite(*amount_pct),
                 StudioSmartFilterKind::Liquify { .. } => false,
+                // No clip blur cap, no non-negative rule: the ranges are pigment's (STU-FX-106).
+                kernel => kernel.kernel_floats_finite(),
             };
             check(ok, t, "filter")
         }

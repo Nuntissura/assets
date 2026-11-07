@@ -40,6 +40,31 @@ pub enum SmartResample {
     Bicubic,
 }
 
+/// Blur dimensions of `box_blur` (Fast Box Blur `Blur Dimensions`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SmartBoxDimensions {
+    HorizontalAndVertical,
+    Horizontal,
+    Vertical,
+}
+
+/// Path of `radial_blur`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SmartRadialKind {
+    Spin,
+    Zoom,
+}
+
+/// What `maximum` and `minimum` preserve (STU-FX-022): a square or a round neighbourhood.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SmartMorphPreserve {
+    Squareness,
+    Roundness,
+}
+
 /// A re-editable liquify mesh (pigment `liquify::LiquifyMesh` in record form): vertex `(i, j)` at
 /// pixel centre `(origin_x + 0.5 + i spacing, origin_y + 0.5 + j spacing)`; `displacement` and
 /// `freeze` row-major per vertex.
@@ -67,6 +92,66 @@ pub enum StudioSmartFilterKind {
     Median { radius_px: u32 },
     AddNoise { amount_pct: f32, distribution: SmartNoiseDistribution, monochromatic: bool, seed: u64 },
     Liquify { mesh: StudioLiquifyMesh, resample: SmartResample },
+    BoxBlur { radius_px: f32, iterations: u32, dimensions: SmartBoxDimensions },
+    MotionBlur { angle_deg: f32, length_px: f32 },
+    RadialBlur { centre_x_px: f32, centre_y_px: f32, amount: f32, kind: SmartRadialKind },
+    FindEdges { invert: bool },
+    CustomConvolution { weights: [i32; 25], scale: i32, offset: i32 },
+    // Parameterless kinds are empty struct variants: serde's internally tagged unit variant would
+    // ignore unknown fields, and these records are untrusted wire JSON.
+    Sharpen {},
+    SharpenMore {},
+    BasicBlur {},
+    BlurMore {},
+    SharpenEdges {},
+    Despeckle {},
+    Emboss { angle_deg: f32, height_px: f32, amount_pct: f32 },
+    Solarize { threshold_levels: u8 },
+    Mosaic { horizontal_blocks: u32, vertical_blocks: u32 },
+    Maximum { radius_px: u32, preserve: SmartMorphPreserve },
+    Minimum { radius_px: u32, preserve: SmartMorphPreserve },
+    DustAndScratches { radius_px: u32, threshold: f32 },
+    SurfaceBlur { radius_px: u32, threshold_levels: f32 },
+    BilateralBlur { radius_px: u32, range_sigma: f32 },
+}
+
+impl StudioSmartFilterKind {
+    /// Every float of a raster kernel kind is finite (STU-FX-106: Folio invents no range for these
+    /// kinds, negative angles are legal, and the ranges are pigment's, refused at lowering). The
+    /// kinds that predate the kernels keep their own checks at each validator, so this is `true`.
+    pub(crate) fn kernel_floats_finite(&self) -> bool {
+        match self {
+            Self::BoxBlur { radius_px, .. } => radius_px.is_finite(),
+            Self::MotionBlur { angle_deg, length_px } => angle_deg.is_finite() && length_px.is_finite(),
+            Self::RadialBlur { centre_x_px, centre_y_px, amount, .. } => {
+                centre_x_px.is_finite() && centre_y_px.is_finite() && amount.is_finite()
+            }
+            Self::Emboss { angle_deg, height_px, amount_pct } => {
+                angle_deg.is_finite() && height_px.is_finite() && amount_pct.is_finite()
+            }
+            Self::DustAndScratches { threshold, .. } => threshold.is_finite(),
+            Self::SurfaceBlur { threshold_levels, .. } => threshold_levels.is_finite(),
+            Self::BilateralBlur { range_sigma, .. } => range_sigma.is_finite(),
+            Self::FindEdges { .. }
+            | Self::CustomConvolution { .. }
+            | Self::Sharpen {}
+            | Self::SharpenMore {}
+            | Self::BasicBlur {}
+            | Self::BlurMore {}
+            | Self::SharpenEdges {}
+            | Self::Despeckle {}
+            | Self::Solarize { .. }
+            | Self::Mosaic { .. }
+            | Self::Maximum { .. }
+            | Self::Minimum { .. }
+            | Self::GaussianBlur { .. }
+            | Self::UnsharpMask { .. }
+            | Self::HighPass { .. }
+            | Self::Median { .. }
+            | Self::AddNoise { .. }
+            | Self::Liquify { .. } => true,
+        }
+    }
 }
 
 /// One stack entry.
@@ -201,6 +286,11 @@ pub(crate) fn validate_smart_filters(s: &StudioSmartFilterStack, layer: &StudioL
             StudioSmartFilterKind::Liquify { mesh: m, .. } => {
                 mesh(m, &t)?;
                 cx.nodes(m.displacement.len(), &t)?;
+            }
+            kernel => {
+                if !kernel.kernel_floats_finite() {
+                    return Err(invalid(&t, "params"));
+                }
             }
         }
     }

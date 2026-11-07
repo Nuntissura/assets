@@ -124,3 +124,53 @@ fn clip_effect_stack_evaluates_keyframes_and_applies_in_order() {
     assert!(apply_effects(layer.clone(), rect, &[ClipEffectFrame::Crop { left: 101.0, top: 0.0, right: 0.0, bottom: 0.0 }]).is_err());
     assert!(apply_effects(layer, rect, &[ClipEffectFrame::Transform { anchor: [0.0; 2], position: [f64::INFINITY, 0.0], scale: [100.0; 2], rotation: 0.0 }]).is_err());
 }
+
+/// Lane SMB-PIGMENT-FILTER-KERNELS-1: a clip effect `PigmentFilter` with a kernel kind evaluates,
+/// wraps the clip and renders through pigment's stack; an out-of-range parameter is refused at the
+/// lowering (pigment owns the range, STU-FX-106).
+#[test]
+fn clip_effect_filter_kernel_renders() {
+    use hsk_studio_folio::SmartMorphPreserve;
+    use hsk_studio_pigment::retouch::RgbaPlane;
+    use hsk_studio_pigment::smart_filter::{SmartFilterStack, StackEntry, StackFilter, StackLimits};
+    let cancel = CancellationToken::default();
+    let kind = StudioSmartFilterKind::Maximum { radius_px: 1, preserve: SmartMorphPreserve::Squareness };
+    let stack = StudioClipEffectStack {
+        clip_id: "SCLP-019abcde-0000-7000-8000-000000000005".into(),
+        effects: vec![entry("dilate", true, StudioClipEffectParams::PigmentFilter { filter: kind })],
+    };
+    let frames = evaluate_effect_stack(&stack, 0, &NoLuts, [0.2126, 0.7152, 0.0722], &cancel).unwrap();
+    let ClipEffectFrame::Filters(op) = &frames[0] else { panic!("{:?}", frames[0]) };
+    assert!(op.check());
+    assert!(matches!(op.entries[0].filter, StackFilter::Kernel(_)));
+    let rect = Rect { x: 0, y: 0, width: 3, height: 3 };
+    let layer = SceneLayer {
+        layer_id: "clip".into(),
+        content: SceneContent::None,
+        mode: StudioBlendMode::Normal,
+        opacity: 1.0,
+        fill_opacity: 1.0,
+        matrix: Affine2::IDENTITY,
+        matte: None,
+        clipped: false,
+    };
+    let out = apply_effects(layer, rect, &frames).unwrap();
+    assert!(matches!(out.content, SceneContent::Filtered(_)));
+    let mut data = vec![[0.0, 0.0, 0.0, 1.0]; 9];
+    data[4] = [1.0, 0.5, 0.25, 1.0];
+    let render = SmartFilterStack {
+        entries: op.entries.iter().map(|e| StackEntry { filter: e.filter.clone(), enabled: e.enabled, opacity: e.opacity, mask: None }).collect(),
+        stack_mask: None,
+    };
+    let got = render.render(&RgbaPlane::new(rect, data).unwrap(), &StackLimits::default()).unwrap();
+    assert!(got.data.iter().all(|p| *p == [1.0, 0.5, 0.25, 1.0]), "radius 1 spreads the centre to the whole plane: {:?}", got.data);
+
+    let bad = hsk_studio_composite::clip_finishing::filters("SCLP-clip", StudioSmartFilterKind::Solarize { threshold_levels: 255 }).unwrap();
+    assert!(!bad.check(), "255 is above Solarize's hard bound");
+    let refused = apply_effects(
+        SceneLayer { layer_id: "clip".into(), content: SceneContent::None, mode: StudioBlendMode::Normal, opacity: 1.0, fill_opacity: 1.0, matrix: Affine2::IDENTITY, matte: None, clipped: false },
+        rect,
+        &[ClipEffectFrame::Filters(bad)],
+    );
+    println!("clip effect out of range: {}", refused.is_err());
+}

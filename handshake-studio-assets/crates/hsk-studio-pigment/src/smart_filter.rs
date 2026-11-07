@@ -14,13 +14,15 @@
 //!
 //! Persistence and rendering (lane SMB-PS-SELECT-LIQUIFY-2): the Folio record is
 //! `StudioRasterLayerRecord::smart_filters` ([`hsk_studio_folio::StudioSmartFilterStack`]),
-//! converted by [`SmartFilterOp::from_record`]; the render-plan envelope entry is
-//! `LayerExtension::smart_filters` ([`SmartFilterOp`], masks as plan coverage sources), which
+//! converted by [`SmartFilterOp::from_record`]; composite lowers it to the render-plan envelope
+//! entry `LayerExtension::smart_filters` ([`SmartFilterOp`], masks as plan coverage sources), which
 //! render-cpu executes by resolving the masks and calling [`SmartFilterStack::render`] (so its
-//! bytes are this module's) and render-gpu refuses (Unsupported). Composite does not lower the
-//! record yet (composite owner). Blend modes per entry are not implemented (normal only).
+//! bytes are this module's). render-gpu runs the five [`LayerFilter`] kinds and refuses liquify and
+//! every [`crate::filter_kernels::FilterKernel`] with a typed Unsupported before any device work;
+//! the host falls back to render-cpu. Blend modes per entry are not implemented (normal only).
 //! Photoshop parity UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
+use crate::filter_kernels::{BoxDimensions, FilterKernel, MorphPreserve};
 use crate::filter_math::{FilterError, FilterLimits, LayerFilter, MAX_FILTERS_PER_LAYER, filter_plane};
 use crate::liquify::{LiquifyError, LiquifyLimits, LiquifyMesh};
 use crate::retouch::RgbaPlane;
@@ -102,6 +104,8 @@ pub enum StackFilter {
     Filter(LayerFilter),
     /// A liquify mesh (its bounds must equal the source plane's).
     Liquify { mesh: LiquifyMesh, resample: ResampleFilter },
+    /// A whole-plane raster kernel of [`crate::filter_kernels`].
+    Kernel(FilterKernel),
 }
 
 /// One re-editable stack entry.
@@ -204,6 +208,7 @@ impl SmartFilterStack {
                         return Err(Error::InvalidInput.into());
                     }
                 }
+                StackFilter::Kernel(k) => k.validate()?,
             }
         }
         let mut cur = source.clone();
@@ -216,6 +221,7 @@ impl SmartFilterStack {
                     let (c, a) = mesh.render(&view, *resample, &limits.liquify)?;
                     RgbaPlane { bounds: cur.bounds, data: from_view_bytes(&c, &a) }
                 }
+                StackFilter::Kernel(k) => k.render_plane(&cur, limits.filter)?,
             };
             let b = cur.bounds;
             let w = (b.width as usize).max(1);
@@ -239,7 +245,7 @@ impl SmartFilterStack {
 }
 
 /// Stack surface description (Studio readings; Photoshop parity NOT_PROVEN, D5).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"smart_filter","version":1,"lane":"SMB-PS-SELECT-LIQUIFY","spec_basis":["STU-RAS-037","STU-FX-011a","STU-FX-024"],"stack":"entries bottom-to-top: filter_math LayerFilter or liquify mesh; enabled, opacity [0,1], per-entry coverage mask, stack mask; re-rendered from the untouched source","mix":"premultiplied lerp(prev, filtered, opacity * mask * stack_mask); weight 0 keeps prev bytes, 1 takes filtered bytes","limits":{"max_entries":16},"gaps":["Folio live_filter record (folio owner; accord schema hsk.studio.live_filter@1)","plan envelope lowering of masked stacks (render-cpu/gpu)","per-entry blend modes"],"parity":"NOT_PROVEN"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"smart_filter","version":1,"lane":"SMB-PS-SELECT-LIQUIFY","spec_basis":["STU-RAS-037","STU-FX-011a","STU-FX-024"],"stack":"entries bottom-to-top: filter_math LayerFilter, liquify mesh or filter_kernels FilterKernel; enabled, opacity [0,1], per-entry coverage mask, stack mask; re-rendered from the untouched source","mix":"premultiplied lerp(prev, filtered, opacity * mask * stack_mask); weight 0 keeps prev bytes, 1 takes filtered bytes","limits":{"max_entries":16},"gaps":["per-entry blend modes","render-gpu refuses liquify and every FilterKernel (typed Unsupported, the host falls back to render-cpu)"],"parity":"NOT_PROVEN"}"#;
 
 /// Operator key of the envelope entry ([`crate::render_plan::ExtOperator::SmartFilter`]).
 pub const SMART_FILTER_OPERATOR: &str = "smart_filter_stack";
@@ -278,6 +284,7 @@ impl SmartFilterOp {
                     && match &e.filter {
                         StackFilter::Filter(f) => f.validate().is_ok(),
                         StackFilter::Liquify { mesh, .. } => mesh.validate(&lim).is_ok(),
+                        StackFilter::Kernel(k) => k.validate().is_ok(),
                     }
             })
     }
@@ -307,7 +314,11 @@ impl SmartFilterOp {
         rec: &hsk_studio_folio::StudioSmartFilterStack,
         mut mask: impl FnMut(&hsk_studio_folio::StudioMask) -> Option<MaskInput>,
     ) -> Result<Self, Error> {
-        use hsk_studio_folio::{SmartNoiseDistribution, SmartResample, StudioSmartFilterKind as K};
+        use hsk_studio_folio::{SmartBoxDimensions, SmartMorphPreserve, SmartNoiseDistribution, SmartRadialKind, SmartResample, StudioSmartFilterKind as K};
+        let preserved = |p: &SmartMorphPreserve| match p {
+            SmartMorphPreserve::Squareness => MorphPreserve::Squareness,
+            SmartMorphPreserve::Roundness => MorphPreserve::Roundness,
+        };
         if !rec.enabled {
             return Ok(Self { entries: Vec::new(), stack_mask: None });
         }
@@ -346,6 +357,49 @@ impl SmartFilterOp {
                         SmartResample::Bicubic => ResampleFilter::Bicubic,
                     },
                 },
+                K::BoxBlur { radius_px, iterations, dimensions } => StackFilter::Kernel(FilterKernel::BoxBlur {
+                    radius_px: *radius_px,
+                    iterations: *iterations,
+                    dimensions: match dimensions {
+                        SmartBoxDimensions::HorizontalAndVertical => BoxDimensions::HorizontalAndVertical,
+                        SmartBoxDimensions::Horizontal => BoxDimensions::Horizontal,
+                        SmartBoxDimensions::Vertical => BoxDimensions::Vertical,
+                    },
+                }),
+                K::MotionBlur { angle_deg, length_px } => StackFilter::Kernel(FilterKernel::MotionBlur { angle_deg: *angle_deg, length_px: *length_px }),
+                K::RadialBlur { centre_x_px, centre_y_px, amount, kind } => StackFilter::Kernel(FilterKernel::RadialBlur {
+                    centre_x_px: *centre_x_px,
+                    centre_y_px: *centre_y_px,
+                    amount: *amount,
+                    kind: match kind {
+                        SmartRadialKind::Spin => crate::blur_math::RadialBlurKind::Spin,
+                        SmartRadialKind::Zoom => crate::blur_math::RadialBlurKind::Zoom,
+                    },
+                }),
+                K::FindEdges { invert } => StackFilter::Kernel(FilterKernel::FindEdges { invert: *invert }),
+                K::CustomConvolution { weights, scale, offset } => {
+                    StackFilter::Kernel(FilterKernel::CustomConvolution { weights: *weights, scale: *scale, offset: *offset })
+                }
+                K::Sharpen {} => StackFilter::Kernel(FilterKernel::Sharpen),
+                K::SharpenMore {} => StackFilter::Kernel(FilterKernel::SharpenMore),
+                K::BasicBlur {} => StackFilter::Kernel(FilterKernel::BasicBlur),
+                K::BlurMore {} => StackFilter::Kernel(FilterKernel::BlurMore),
+                K::SharpenEdges {} => StackFilter::Kernel(FilterKernel::SharpenEdges),
+                K::Despeckle {} => StackFilter::Kernel(FilterKernel::Despeckle),
+                K::Emboss { angle_deg, height_px, amount_pct } => {
+                    StackFilter::Kernel(FilterKernel::Emboss { angle_deg: *angle_deg, height_px: *height_px, amount_pct: *amount_pct })
+                }
+                K::Solarize { threshold_levels } => StackFilter::Kernel(FilterKernel::Solarize { threshold_levels: *threshold_levels }),
+                K::Mosaic { horizontal_blocks, vertical_blocks } => {
+                    StackFilter::Kernel(FilterKernel::Mosaic { horizontal_blocks: *horizontal_blocks, vertical_blocks: *vertical_blocks })
+                }
+                K::Maximum { radius_px, preserve } => StackFilter::Kernel(FilterKernel::Maximum { radius_px: *radius_px, preserve: preserved(preserve) }),
+                K::Minimum { radius_px, preserve } => StackFilter::Kernel(FilterKernel::Minimum { radius_px: *radius_px, preserve: preserved(preserve) }),
+                K::DustAndScratches { radius_px, threshold } => StackFilter::Kernel(FilterKernel::DustAndScratches { radius_px: *radius_px, threshold: *threshold }),
+                K::SurfaceBlur { radius_px, threshold_levels } => {
+                    StackFilter::Kernel(FilterKernel::SurfaceBlur { radius_px: *radius_px, threshold_levels: *threshold_levels })
+                }
+                K::BilateralBlur { radius_px, range_sigma } => StackFilter::Kernel(FilterKernel::BilateralBlur { radius_px: *radius_px, range_sigma: *range_sigma }),
             };
             let mask = match &f.mask {
                 None => None,
