@@ -14,7 +14,9 @@
 //!   `bus_effects`, its output and sends its route. The master volume and effects come from the
 //!   routing. Effect instances are built by the caller's factory (pulse knows no processor kinds).
 //! - Sends: linear `level` -> dB (floored at -96), `pre_fader`, `pan`; routes are Folio-validated
-//!   (call `validate_audio_routing` first); unknown ids here are `invalid_input`.
+//!   (call `validate_audio_routing` first). An output or send target the sequence does not hold is inert
+//!   (Folio `audio_routing`, lead reading on R57 F-R57-2): the route plays to the master, the send is
+//!   skipped (tests/inert_routing_mix.rs). A held track that is not a bus is `invalid_input`.
 //! - Track automation (lane SMB-AU-MULTITRACK-2, Folio `StudioTrackAutomation`): a track with a
 //!   `volume` lane gets the score fader lane `AutomationLane::new(points, Linear, -96..=12 dB)` with
 //!   each point at its exact timeline sample and its linear value in dB (floored at -96, capped at
@@ -220,7 +222,7 @@ pub struct TimelineBusStream {
 
 impl TimelineBusStream {
     /// Refusals: as [`TimelineMixStream::new`] per track; `invalid_input` for a routing of another
-    /// sequence, unknown track ids or an invalid graph; `audio_unsupported` for a mono/stereo
+    /// sequence, an output or send to a held track that is not a bus, or an invalid graph; `audio_unsupported` for a mono/stereo
     /// crossfade; the factory's error for an effect; score's graph refusals mapped (`limit_exceeded`
     /// for more than its strip, bus or latency bounds).
     #[allow(clippy::too_many_arguments)]
@@ -243,10 +245,18 @@ impl TimelineBusStream {
             .filter(|&t| sequence.tracks[t].kind == TrackKind::Submix)
             .collect();
         let bus_index = |id: &str| buses.iter().position(|&t| sequence.tracks[t].track_id == id);
+        // `None`: the sequence does not hold the id, so the target is inert. A held non-bus is refused.
+        let target_bus = |id: &str| -> Result<Option<usize>> {
+            match bus_index(id) {
+                Some(bus) => Ok(Some(bus)),
+                None if sequence.tracks.iter().any(|t| t.track_id == id) => Err(PulseError::InvalidInput),
+                None => Ok(None),
+            }
+        };
         let destination = |output: &Option<String>| -> Result<Destination> {
             match output {
                 None => Ok(Destination::Master),
-                Some(id) => bus_index(id).map(Destination::Bus).ok_or(PulseError::InvalidInput),
+                Some(id) => Ok(target_bus(id)?.map_or(Destination::Master, Destination::Bus)),
             }
         };
         let route_of = |track_id: &str| routing.routes.iter().find(|r| r.track_id == track_id);
@@ -256,8 +266,9 @@ impl TimelineBusStream {
             };
             let mut sends = Vec::with_capacity(route.sends.len());
             for s in &route.sends {
+                let Some(bus) = target_bus(&s.target)? else { continue };
                 sends.push(SendSpec {
-                    bus: bus_index(&s.target).ok_or(PulseError::InvalidInput)?,
+                    bus,
                     tap: if s.pre_fader { SendTap::PreFader } else { SendTap::PostFader },
                     level_db: AutomationLane::constant(db(s.level)),
                     pan: s.pan,

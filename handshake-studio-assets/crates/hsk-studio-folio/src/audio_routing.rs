@@ -41,10 +41,16 @@
 //! an inert route; a malformed one is `InvalidId` (tests/audio_routing_records.rs). An inert member is
 //! kept, still checked for what it holds (uniqueness, counts, ranges, its budget), plays nothing because
 //! the mix looks these up from the tracks and clips it plays (pulse tests/inert_routing_mix.rs), and is
-//! live again when the id comes back (an_inert_member_is_live_again_when_its_track_or_clip_exists). One stale id
-//! never makes the set unreadable for another sequence. Listed by [`inert_audio_routing_references`].
-//! Two things stay refused: an id held with the wrong kind (a clip on a video track), and an output or
-//! send target that names an absent bus, because a live track would play into it (pulse bus_mix.rs).
+//! live again when the id comes back (an_inert_member_is_live_again_when_its_track_or_clip_exists). A stale
+//! id does not make the set unreadable for another sequence. Listed by [`inert_audio_routing_references`].
+//! The output or send target of a live route naming an absent bus is inert too (lead reading on R57
+//! F-R57-2, SD-64, spec owner decides; tests/audio_routing_records.rs
+//! a_live_route_naming_an_absent_bus_is_inert_and_listed): the route plays to the master, a missing send
+//! is skipped (pulse tests/inert_routing_mix.rs). It is not refused at a commit, because a host commits
+//! the sequence before its entry and a refusal would block a step that removes a bus and repoints the
+//! routing together. What stays refused is an id held with the wrong kind, a clip on a video track or an
+//! output to an audio track, and a cycle among held buses, also when the id only now came back: that
+//! read still refuses the whole set.
 //!
 //! The records arrive from untrusted wire JSON: integer arithmetic is denied (V4-01), every count is
 //! checked before use and charged against the [`Budget`].
@@ -80,7 +86,7 @@ pub const MAX_CLIP_PAN_POINTS: usize = 4096;
 pub struct StudioAudioSend {
     /// Unique within the route (key grammar).
     pub send_id: String,
-    /// A `Submix` track of the sequence.
+    /// A `Submix` track of the sequence; one it does not hold is inert and the send is skipped.
     pub target: String,
     /// Linear level.
     pub level: f64,
@@ -94,7 +100,7 @@ pub struct StudioAudioSend {
 #[serde(deny_unknown_fields)]
 pub struct StudioTrackRoute {
     pub track_id: String,
-    /// A `Submix` track; absent = the master.
+    /// A `Submix` track; absent = the master, and a track the sequence does not hold plays to the master.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -295,7 +301,7 @@ fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -
         cx.nodes(route.sends.len(), &t)?;
         let mut targets: Vec<&str> = Vec::new();
         if let Some(o) = &route.output {
-            if !live {
+            if !live || !kinds.contains_key(o.as_str()) {
                 id(o, "STRK", &format!("{t}/output"))?;
             } else if !submix(o) || *o == route.track_id {
                 return Err(invalid(&t, "output"));
@@ -308,7 +314,8 @@ fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -
             if !key(&s.send_id) || !send_ids.insert(s.send_id.as_str()) {
                 return Err(invalid(&t, "sends/send_id"));
             }
-            if !live {
+            let held_target = live && kinds.contains_key(s.target.as_str());
+            if !held_target {
                 id(&s.target, "STRK", &format!("{t}/sends/target"))?;
             } else if !submix(&s.target) || s.target == route.track_id {
                 return Err(invalid(&t, "sends/target"));
@@ -319,7 +326,7 @@ fn routing(r: &StudioAudioRouting, seq: Option<&StudioSequence>, cx: &mut Ctx) -
             if !s.pan.is_finite() || !(-1.0..=1.0).contains(&s.pan) {
                 return Err(invalid(&t, "sends/pan"));
             }
-            if live {
+            if held_target {
                 targets.push(&s.target);
             }
         }
@@ -509,9 +516,16 @@ pub fn inert_audio_routing_references(set: &StudioAudioRoutingSet, document: &St
             push(K::Routing, &r.sequence_id);
             continue;
         };
-        let track = |id: &str| seq.tracks.iter().any(|t| t.track_id == id);
-        let clip = |id: &str| seq.tracks.iter().flat_map(|t| t.clips.iter()).any(|c| c.clip_id == id);
+        // Sets: a hostile routing holds as many ids as the node budget allows.
+        let tracks: BTreeSet<&str> = seq.tracks.iter().map(|t| t.track_id.as_str()).collect();
+        let clips: BTreeSet<&str> = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.clip_id.as_str()).collect();
+        let track = |id: &str| tracks.contains(id);
+        let clip = |id: &str| clips.contains(id);
         r.routes.iter().filter(|x| !track(&x.track_id)).for_each(|x| push(K::Route, &x.track_id));
+        for route in r.routes.iter().filter(|x| track(&x.track_id)) {
+            route.sends.iter().filter(|s| !track(&s.target)).for_each(|s| push(K::RouteSend, &s.target));
+            route.output.iter().filter(|o| !track(o)).for_each(|o| push(K::RouteOutput, o));
+        }
         r.bus_effects.iter().filter(|x| !track(&x.track_id)).for_each(|x| push(K::BusEffects, &x.track_id));
         r.track_automation.iter().filter(|x| !track(&x.track_id)).for_each(|x| push(K::TrackAutomation, &x.track_id));
         r.clip_gains.iter().filter(|x| !clip(&x.clip_id)).for_each(|x| push(K::ClipGain, &x.clip_id));
@@ -521,7 +535,7 @@ pub fn inert_audio_routing_references(set: &StudioAudioRoutingSet, document: &St
 }
 
 /// Validates every routing against `document`: one routing per sequence id, key grammar; routes of
-/// audio or submix tracks of that sequence, at most one per track, outputs and send targets of a live
+/// audio or submix tracks of that sequence, at most one per track, held outputs and send targets of a live
 /// route submix tracks other than the track itself, acyclic bus routing, unique key-grammar send ids,
 /// levels and the master volume in `0 ..= MAX_AUDIO_LEVEL`, pans in `-1 ..= 1`; bus effects of submix
 /// tracks (one entry each) and master effects validated as preset instances; clip gain envelopes of
@@ -533,8 +547,8 @@ pub fn inert_audio_routing_references(set: &StudioAudioRoutingSet, document: &St
 /// `MAX_TRACK_AUTOMATION_POINTS` points strictly increasing with values in `0 ..= MAX_AUDIO_LEVEL`
 /// (`InvalidField`); clip pan envelopes like clip gain envelopes (clips on audio tracks, one each,
 /// 1..=`MAX_CLIP_PAN_POINTS` points strictly increasing, pan in `-1 ..= 1`). An id the document does not
-/// hold is inert (module docs): it must be well-formed (`InvalidId`), the checks above that need the id's
-/// owner are skipped, the rest apply.
+/// hold is inert (module docs), an output or send target of a live route included: it must be well-formed
+/// (`InvalidId`), the checks above that need the id's owner are skipped, the rest apply.
 pub fn validate_audio_routing(
     set: &StudioAudioRoutingSet,
     document: &StudioDocument,
