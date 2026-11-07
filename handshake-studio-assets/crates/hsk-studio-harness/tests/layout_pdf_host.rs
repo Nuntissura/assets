@@ -91,7 +91,8 @@ fn preflight_runs_before_export_and_an_error_refuses_typed() {
     let mut v = Viewer::new(Prefer::Cpu);
     v.layout_open(Some((200.0, 200.0)), Some(1)).unwrap();
     let ed = v.layout_editor().unwrap();
-    ed.apply(LayoutEdit::DrawFrame { page_id: "page-1".into(), x: 10.0, y: 10.0, w: 60.0, h: 14.0 }).unwrap();
+    // One 15 pt line (12 pt, 1.25 em) fits the 20 pt frame; the rest is overset.
+    ed.apply(LayoutEdit::DrawFrame { page_id: "page-1".into(), x: 10.0, y: 10.0, w: 60.0, h: 20.0 }).unwrap();
     let frame = ed.selected.clone().unwrap();
     let story = ed.story_of_frame(&frame).unwrap().story_id.clone();
     ed.apply(LayoutEdit::ReplaceText { story, start: 0, end: 0, text: "far too much text for one short frame to hold\nand a second paragraph".into() }).unwrap();
@@ -106,6 +107,10 @@ fn preflight_runs_before_export_and_an_error_refuses_typed() {
     let r = v.export_layout_pdf(&out, false, &LayoutPdfSettings { ignore_preflight: true, ..LayoutPdfSettings::default() }).unwrap();
     assert_eq!(r["preflight"]["ok"], false);
     assert!(!r["overset_stories"].as_array().unwrap().is_empty(), "{r}");
+    // The editor keeps a text inserted into an empty story as one paragraph: its inner break is
+    // reported, the text on both sides of it is drawn.
+    assert!(r["host_loss"].as_array().unwrap().iter().any(|l| l["code"] == "paragraph_break_inside_paragraph_not_drawn"), "{r}");
+    assert!(r["glyphs_drawn"].as_u64().unwrap() > 0, "{r}");
 }
 
 #[test]
