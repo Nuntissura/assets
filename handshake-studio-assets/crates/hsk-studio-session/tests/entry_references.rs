@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 const NAMING: [&str; 4] = [AUDIO_ROUTING_ENTRY, MULTICAM_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY];
 /// Tokens that name neither a sequence nor a clip, read in their owners (lane notes,
 /// `reference_table`), with what they do name.
-const NOT_APPLICABLE: [(&str, &str); 13] = [
+const NOT_APPLICABLE: [(&str, &str); 14] = [
     ("selection", "a pixel plane (harness selection_store), no id"),
     ("text", "text stories keyed by SLYR layer (hsk.harness.text_layers@1)"),
     ("develop", "a camera-raw recipe, no sequence or clip id"),
@@ -27,6 +27,7 @@ const NOT_APPLICABLE: [(&str, &str); 13] = [
     (SEQUENCE_PRESETS_ENTRY, "presets are not bound to a document sequence"),
     (COMPOSITION_TOKEN_ENTRY, "Folio token record: SDOC document, tokens, and the story ids of its upgrades (a history checked for grammar and order only)"),
     (MEDIA_MARKERS_ENTRY, "Folio media item markers: SDOC document, content digests and marker ids, no sequence or clip id (tests/media_markers.rs)"),
+    (PROJECT_BIN_ENTRY, "Folio project bin: SDOC document, bin-local folder and item keys and media clip sources by content digest, no sequence, track or clip id (harness tests/project_bin.rs)"),
 ];
 
 const ENVELOPED: u32 = 21;
