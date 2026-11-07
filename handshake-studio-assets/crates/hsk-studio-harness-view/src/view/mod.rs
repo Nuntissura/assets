@@ -74,6 +74,8 @@ pub mod waveform_plugin;
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).
 pub mod prototype;
+/// New Project, project bin, import and bin source binding (lane SMB-PROJECT-BIN-1).
+pub mod project;
 /// Design files opened as editable native documents and the instance inspector (lane SMB-FIG-EDIT-1).
 pub mod design;
 /// Source monitor, marks and insert / overwrite into the program sequence (lane SMB-PR-SOURCE-MONITOR).
@@ -894,6 +896,7 @@ impl Viewer {
             "design": self.design_json(),
             "info": self.info_json(),
             "containers": self.containers_json(),
+            "project_bin": self.project_bin_json(),
         });
         #[cfg(feature = "media")]
         {
