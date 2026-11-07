@@ -240,6 +240,19 @@ pub(super) fn call(viewer: &mut Viewer, row: &DriveViewer, params: &Params) -> R
             };
             viewer.export(a.path("path")?, format, a.flag_or("overwrite", false)?)
         }
+        // The recipe is JSON text (an object in the JSONL line); a recipe that does not decode is the method's
+        // typed refusal (recipe_not_json and the recipe codes), relative file names resolve against the cwd.
+        "export_document" => {
+            let cancel = hsk_studio_accord::CancellationToken::default();
+            let (path, overwrite) = (a.path("path")?, a.flag_or("overwrite", false)?);
+            let recipe = serde_json::from_str::<Value>(a.text("recipe")?)
+                .map_err(|_| crate::view::develop::Refusal { code: "recipe_not_json", detail: "recipe".into() })
+                .and_then(|v| crate::view::doc_export::DocExportRecipe::from_json(&v, None, &cancel));
+            match recipe.and_then(|r| viewer.export_document(path, &r, overwrite)) {
+                Ok(report) => Ok(report),
+                Err(r) => return Err(refuse(r.code, serde_json::json!({"message": r.detail}))),
+            }
+        }
         "export_vector_svg" => plain(viewer.export_vector_svg(a.path("path")?, a.flag_or("overwrite", false)?)),
         "export_vector_pdf" => plain(viewer.export_vector_pdf(a.path("path")?, a.flag_or("overwrite", false)?)),
         // ---- vector tools ----

@@ -137,6 +137,14 @@ struct Parsed {
     stage: Vec<StageArg>,
     threads: Option<usize>,
     depth: Option<u8>,
+    /// export and batch (lane SMB-DOC-EXPORT-1): `--recipe FILE` (one for export, any number for batch), `--psd`,
+    /// `--crop X,Y,W,H`, `--cmyk-profile FILE`, `--intent NAME`, `--no-bpc`.
+    recipes: Vec<PathBuf>,
+    psd: bool,
+    crop: Option<[u32; 4]>,
+    cmyk_profile: Option<PathBuf>,
+    intent: Option<String>,
+    no_bpc: bool,
     /// export-sequence (lane SMB-PR-SEQ-EXPORT-UI-1): `--sequence`, `--preset`, `--in` / `--out` (ticks, kept as
     /// text and checked by the command), `--output`, `--media FILE`..., `--audio FILE`... (R44 F-R44-2), `--width`,
     /// `--height`.
@@ -301,6 +309,16 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
                 p.params.push((key, take(&mut i, "parameter value")?));
             }
             "--stdin" => p.stdin = true,
+            "--recipe" => p.recipes.push(PathBuf::from(take(&mut i, "recipe file")?)),
+            "--psd" => p.psd = true,
+            "--crop" => {
+                let text = take(&mut i, "crop X,Y,W,H")?;
+                let v: Vec<u32> = text.split(',').map(|s| s.trim().parse::<u32>()).collect::<Result<_, _>>().map_err(|_| format!("--crop must be X,Y,W,H whole pixels, got `{text}`"))?;
+                p.crop = Some(<[u32; 4]>::try_from(v).map_err(|_| format!("--crop must be X,Y,W,H whole pixels, got `{text}`"))?);
+            }
+            "--cmyk-profile" => p.cmyk_profile = Some(PathBuf::from(take(&mut i, "CMYK ICC profile")?)),
+            "--intent" => p.intent = Some(take(&mut i, "rendering intent")?),
+            "--no-bpc" => p.no_bpc = true,
             "--sequence" => p.sequence = Some(take(&mut i, "sequence id")?),
             "--preset" => p.preset = Some(take(&mut i, "export preset id")?),
             "--in" => p.in_tick = Some(take(&mut i, "in tick")?),
@@ -454,6 +472,17 @@ fn dispatch(command: &str, parsed: Parsed) -> CliOutput {
             let [source, output] = parsed.positional.as_slice() else {
                 return usage("export needs SOURCE and OUT paths");
             };
+            let (source_path, output_path) = (PathBuf::from(source), PathBuf::from(output));
+            match export_recipe_args(&parsed) {
+                Err(message) => return usage(&message),
+                Ok(Some(recipe)) => {
+                    if !parsed.overwrite && same_file(&output_path, &source_path) {
+                        return usage("OUT names the SOURCE file; pass --overwrite to replace it, or export to another path");
+                    }
+                    return execute_export_recipe(&source_path, &output_path, recipe, parsed.overwrite);
+                }
+                Ok(None) => {}
+            }
             let format = match (parsed.png, parsed.jpeg, parsed.quality) {
                 (true, false, None) => ExportChoice::Png,
                 (true, false, Some(_)) => return usage("--quality applies to --jpeg only"),
@@ -588,7 +617,30 @@ fn execute_batch(parsed: &Parsed, job_path: &Path) -> CliOutput {
         if parsed.cancel {
             cancel.cancel();
         }
-        match run_batch(h, &job, BatchPorts::new(asset_local_test_context()), &cancel) {
+        #[cfg(feature = "viewer")]
+        let mut targets = {
+            let mut targets = crate::view::doc_export::RecipeTargets::new(asset_local_test_context());
+            for path in &parsed.recipes {
+                let added = crate::view::doc_export::DocExportRecipe::read(path, &cancel).and_then(|r| targets.insert(r));
+                if let Err(r) = added {
+                    return failed("batch", r.code, json!({"recipe": path.to_string_lossy(), "message": r.detail}));
+                }
+            }
+            targets
+        };
+        #[cfg(not(feature = "viewer"))]
+        {
+            if !parsed.recipes.is_empty() {
+                return failed("batch", "feature_unavailable", json!({"feature":"viewer"}));
+            }
+        }
+        #[allow(unused_mut)]
+        let mut ports = BatchPorts::new(asset_local_test_context());
+        #[cfg(feature = "viewer")]
+        {
+            ports.exporter = Some(&mut targets);
+        }
+        match run_batch(h, &job, ports, &cancel) {
             Err(refusal) => failed("batch", refusal.code, refusal.detail),
             Ok(report) => {
                 let ran = !report.receipts.is_empty();
@@ -865,6 +917,113 @@ const DEFAULT_JPEG_QUALITY: u8 = 90;
 enum ExportChoice {
     Png,
     Jpeg(u8),
+}
+
+/// The document export recipe of `export` (lane SMB-DOC-EXPORT-1): `--recipe FILE`, or the recipe flags
+/// (`--tiff`, `--psd`, `--depth`, `--compression`, `--predictor`, `--dpi`, `--crop`, the stage flags `--long-edge`,
+/// `--sharpen`, `--watermark`, `--export-set`, and `--cmyk-profile [--intent] [--no-bpc]`) with exactly one format.
+/// `None` when none is given: the plain `--png` / `--jpeg` export runs unchanged.
+#[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+enum RecipeArg {
+    File(PathBuf),
+    Json(Value),
+}
+
+fn export_recipe_args(p: &Parsed) -> Result<Option<RecipeArg>, String> {
+    let flags = p.tiff || p.psd || p.depth.is_some() || p.compression.is_some() || p.predictor || p.dpi.is_some() || !p.stage.is_empty() || p.crop.is_some() || p.cmyk_profile.is_some() || p.intent.is_some() || p.no_bpc;
+    if p.recipes.len() > 1 {
+        return Err("export takes one --recipe".into());
+    }
+    if let Some(file) = p.recipes.first() {
+        if flags || p.png || p.jpeg || p.quality.is_some() {
+            return Err("--recipe is exclusive with the format, stage and colour flags".into());
+        }
+        return Ok(Some(RecipeArg::File(file.clone())));
+    }
+    if !flags {
+        return Ok(None);
+    }
+    let format = match (p.png, p.jpeg, p.tiff, p.psd) {
+        (true, false, false, false) => "png",
+        (false, true, false, false) => "jpeg",
+        (false, false, true, false) => "tiff",
+        (false, false, false, true) => "psd",
+        _ => return Err("export needs exactly one of --png, --jpeg, --tiff, --psd".into()),
+    };
+    let mut recipe = json!({"format": format});
+    if let Some(d) = p.depth {
+        recipe["depth"] = json!(d);
+    }
+    if let Some(q) = p.quality {
+        recipe["quality"] = json!(q);
+    }
+    if let Some(c) = &p.compression {
+        recipe["compression"] = json!(c);
+    }
+    if p.predictor {
+        recipe["predictor"] = json!(true);
+    }
+    if let Some([x, y, width, height]) = p.crop {
+        recipe["crop"] = json!({"x": x, "y": y, "width": width, "height": height});
+    }
+    let mut stage = serde_json::Map::new();
+    for arg in &p.stage {
+        match arg {
+            StageArg::Set(key, _) if key == "stage" => {}
+            StageArg::Set(key, value) => {
+                stage.insert(key.clone(), json!(value));
+            }
+            StageArg::Watermark(path) => recipe["watermark_graphic"] = json!(path.to_string_lossy()),
+        }
+    }
+    if let Some(dpi) = p.dpi {
+        stage.insert("resolution".into(), json!(dpi.to_string()));
+        stage.entry("resolution_unit").or_insert_with(|| json!("ppinch"));
+    }
+    if !stage.is_empty() || recipe.get("watermark_graphic").is_some() {
+        recipe["stage"] = Value::Object(stage);
+    }
+    match &p.cmyk_profile {
+        Some(profile) => {
+            let mut colour = json!({"space": "cmyk", "profile": profile.to_string_lossy(), "black_point_compensation": !p.no_bpc});
+            if let Some(intent) = &p.intent {
+                colour["intent"] = json!(intent);
+            }
+            recipe["colour"] = colour;
+        }
+        None if p.intent.is_some() || p.no_bpc => return Err("--intent and --no-bpc apply to --cmyk-profile only".into()),
+        None => {}
+    }
+    Ok(Some(RecipeArg::Json(recipe)))
+}
+
+/// `export SOURCE OUT` with a document export recipe: open like the viewer, then `Viewer::export_document`.
+#[cfg(feature = "viewer")]
+fn execute_export_recipe(source: &Path, output: &Path, recipe: RecipeArg, overwrite: bool) -> CliOutput {
+    use crate::view::{Viewer, doc_export::DocExportRecipe, render::Prefer};
+    let fail = |error: &str, detail: Value| out(1, &json!({"schema":crate::SCHEMA,"command":"export","ok":false,"verdict":"fail","error":error,"detail":detail}));
+    let cancel = CancellationToken::default();
+    let recipe = match recipe {
+        RecipeArg::File(path) => DocExportRecipe::read(&path, &cancel),
+        RecipeArg::Json(v) => DocExportRecipe::from_json(&v, None, &cancel),
+    };
+    let recipe = match recipe {
+        Ok(r) => r,
+        Err(r) => return fail(r.code, json!({"stage":"recipe","message":r.detail})),
+    };
+    let mut viewer = Viewer::new(Prefer::Cpu);
+    if let Err(detail) = viewer.open(source) {
+        return fail("open_failed", json!({"stage":"open","message":detail}));
+    }
+    match viewer.export_document(output, &recipe, overwrite) {
+        Ok(report) => out(0, &json!({"schema":crate::SCHEMA,"command":"export","ok":true,"verdict":"pass","source":source.to_string_lossy(),"export":report})),
+        Err(r) => fail(r.code, json!({"stage":"export","message":r.detail})),
+    }
+}
+
+#[cfg(not(feature = "viewer"))]
+fn execute_export_recipe(_: &Path, _: &Path, _: RecipeArg, _: bool) -> CliOutput {
+    out(1, &json!({"schema":crate::SCHEMA,"command":"export","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"viewer"}}))
 }
 
 /// `export SOURCE --png|--jpeg [--quality N] OUT`: open like the viewer (import or native package), render
