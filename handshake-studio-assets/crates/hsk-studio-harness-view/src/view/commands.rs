@@ -19,6 +19,7 @@ mod mixer;
 mod monitor;
 mod panel;
 mod photo;
+mod place;
 mod prototype;
 mod seed;
 mod vector;
@@ -45,7 +46,7 @@ impl CommandRefusal {
 
 /// A file a command reads whole: its size is checked before any byte is held.
 /// Only a regular file, and never more than `limit` bytes held, whatever the metadata says.
-fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, CommandRefusal> {
+pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, CommandRefusal> {
     use std::io::Read;
     let unreadable = |e: std::io::Error| CommandRefusal::new("resource_unreadable", json!({"path": path.to_string_lossy(), "kind": format!("{:?}", e.kind())}));
     let too_large = || CommandRefusal::new("resource_too_large", json!({"path": path.to_string_lossy(), "limit_bytes": limit}));
@@ -145,6 +146,8 @@ impl Viewer {
         let id = row.command_id;
         let done = match id.split('.').next().unwrap_or_default() {
             "catalog" => return seed::run(self, id, f),
+            "asset" => return place::run_asset(self, id, f),
+            "transform" => return place::run_transform(self, id, f),
             "audio" => return audio::run(self, id, f),
             // Lane SMB-DRIVE-TYPED-2: audio post, the monitors and product design.
             "mixer" | "multitrack" => return mixer::run(self, id, f, before),

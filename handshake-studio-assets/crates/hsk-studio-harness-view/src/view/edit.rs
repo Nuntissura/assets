@@ -649,12 +649,14 @@ impl Viewer {
     /// Undoes the newest step (appearance, visibility, name or paint).
     pub fn undo(&mut self) -> Result<u64, String> {
         let ok = self.run.undo();
+        self.place_sync();
         self.after_edit(ok, "undo".into())
     }
 
     /// Re-applies the newest undone step.
     pub fn redo(&mut self) -> Result<u64, String> {
         let ok = self.run.redo();
+        self.place_sync();
         self.after_edit(ok, "redo".into())
     }
 

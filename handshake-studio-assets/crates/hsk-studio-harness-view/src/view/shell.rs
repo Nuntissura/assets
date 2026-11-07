@@ -1536,6 +1536,7 @@ impl Viewer {
         self.prototype = None;
         self.selection_history.clear();
         self.records = None;
+        self.place = super::place::PlaceState::default();
         self.proof_close_document();
         self.info_close_document();
         #[cfg(feature = "media")]

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 const NAMING: [&str; 4] = [AUDIO_ROUTING_ENTRY, MULTICAM_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY];
 /// Tokens that name neither a sequence nor a clip, read in their owners (lane notes,
 /// `reference_table`), with what they do name.
-const NOT_APPLICABLE: [(&str, &str); 17] = [
+const NOT_APPLICABLE: [(&str, &str); 18] = [
     ("selection", "a pixel plane (harness selection_store), no id"),
     ("text", "text stories keyed by SLYR layer (hsk.harness.text_layers@1)"),
     ("develop", "a camera-raw recipe, no sequence or clip id"),
@@ -31,6 +31,7 @@ const NOT_APPLICABLE: [(&str, &str); 17] = [
     (MEDIA_MARKERS_ENTRY, "Folio media item markers: SDOC document, content digests and marker ids, no sequence or clip id (tests/media_markers.rs)"),
     (PROJECT_BIN_ENTRY, "Folio project bin: SDOC document, bin-local folder and item keys and media clip sources by content digest, no sequence, track or clip id (harness tests/project_bin.rs)"),
     ("layout_records", "layout editor records: SLYR frames, STXT stories, type styles, page ids; no sequence or clip id (hsk-studio-harness tests/layout_persist.rs)"),
+    ("raster_records", "Folio raster records: SLYR layers, placed sources by key and digest, SDOC ids; no sequence or clip id (hsk-studio-harness tests/place_asset.rs)"),
 ];
 
 const ENVELOPED: u32 = 21;

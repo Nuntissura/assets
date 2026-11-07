@@ -6,6 +6,7 @@
 use super::{UnitToken, ValueType};
 use serde_json::{Value, json};
 
+mod asset;
 mod audio;
 mod automation;
 mod board;
@@ -26,6 +27,7 @@ mod proof;
 mod prototype;
 mod spectral;
 mod text;
+mod transform;
 mod vector;
 mod video;
 mod waveform;
@@ -185,6 +187,8 @@ const DOMAINS: &[&[CommandEntry]] = &[
     spectral::ROWS,
     monitor::ROWS,
     prototype::ROWS,
+    asset::ROWS,
+    transform::ROWS,
 ];
 
 const ROW_COUNT: usize = {

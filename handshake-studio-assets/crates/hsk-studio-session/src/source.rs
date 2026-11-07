@@ -170,7 +170,10 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// `export_settings` (lane SMB-ARTBOARD-EXPORT-1) holds the Folio `StudioExportSettings`, the node render
 /// settings of [STU-IO-111] keyed by SLYR layer or SART artboard (harness-core `harness::export_settings`;
 /// an entry naming a node the document no longer holds is inert).
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token", "media_markers", "artboard_options", "project_bin", "layout_records", "export_settings"];
+/// `raster_records` (lane SMB-PLACE-ASSET-1) holds the Folio `StudioRasterRecords` the harness viewer
+/// authored (placed assets) with its placement metadata, validated by its producer on every set and read;
+/// it supersedes the import records entry for that viewer and names no sequence or clip.
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token", "media_markers", "artboard_options", "project_bin", "layout_records", "export_settings", "raster_records"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {

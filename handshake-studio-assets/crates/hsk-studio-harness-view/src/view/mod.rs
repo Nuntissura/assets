@@ -112,6 +112,8 @@ pub mod vector;
 mod wrap;
 /// Web document commands on the viewer's run (lane SMB-WEB-HOST-1; no drawing).
 pub mod web;
+/// Place embedded or linked assets, raster Move and Free transform (lane SMB-PLACE-ASSET-1; egui-free).
+pub mod place;
 
 use crate::harness::{Harness, References, Run, Selection};
 use hsk_studio_harness_core::RunContext;
@@ -290,6 +292,8 @@ pub struct Viewer {
     live_text_seen: Vec<(String, String)>,
     /// Job port, lifecycle and preview gate (module [`job_admission`]).
     jobs: job_admission::ViewerJobs,
+    /// Import records and link states of the placed assets (module [`place`]).
+    place: place::PlaceState,
 }
 
 struct MonitorState {
@@ -381,6 +385,7 @@ impl Viewer {
             program_audio: None,
             live_text_seen: Vec::new(),
             jobs: job_admission::ViewerJobs::default(),
+            place: place::PlaceState::default(),
         };
         // D24-A (lane SMB-PR-SOURCE-MONITOR): AAC decodes by default through the OS decoder, reel-native's
         // isolated Media Foundation AAC worker (`reel-native-mf-worker --aac` beside the executable).
@@ -579,14 +584,13 @@ impl Viewer {
         let just_imported = receipt.is_some();
         let receipt = receipt.or_else(|| opened.import_bytes(ImportRole::Receipt).and_then(|b| serde_json::from_slice(b).ok()));
         let original = opened.import_bytes(ImportRole::Original).map(<[u8]>::to_vec);
-        // Raster records (lane SMB-HARNESS-RENDER-RECORDS): rendered through composite's adapter.
+        // Raster records (lane SMB-HARNESS-RENDER-RECORDS): rendered through composite's adapter; the
+        // session entry `raster_records` supersedes them and both are validated after open (module place).
         self.records = None;
-        if let (Some(bytes), Some(snap)) = (opened.import_bytes(ImportRole::Records), opened.snapshot()) {
+        let mut import_records = None;
+        if let Some(bytes) = opened.import_bytes(ImportRole::Records) {
             match serde_json::from_slice::<hsk_studio_folio::StudioRasterRecords>(bytes) {
-                Ok(r) => match hsk_studio_folio::validate_raster_records(&r, snap.document(), hsk_studio_folio::Budget::default(), self.cancel, &crate::harness::TrustAll) {
-                    Ok(_) => self.records = Some(r),
-                    Err(e) => self.say(format!("raster records not applied: {:?} at {}", e.code, e.target)),
-                },
+                Ok(r) => import_records = Some(r),
                 Err(e) => self.say(format!("raster records not applied: {e}")),
             }
         }
@@ -605,6 +609,7 @@ impl Viewer {
         self.attach_develop(original.as_deref(), just_imported);
         drop(original);
         self.source = Some(path.to_path_buf());
+        self.place_opened(import_records);
         self.selected = None;
         self.frame = None;
         self.render_error = None;
@@ -902,6 +907,7 @@ impl Viewer {
             "containers": self.containers_json(),
             "project_bin": self.project_bin_json(),
             "export_settings": self.export_settings_json(),
+            "placed": self.placed_json(),
         });
         #[cfg(feature = "media")]
         {

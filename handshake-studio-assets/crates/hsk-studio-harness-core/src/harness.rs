@@ -1308,7 +1308,20 @@ impl Run<'_> {
     /// the redo history as it was. One record `op`.
     pub fn set_vector_paths_and_entry(&mut self, op: &str, writes: &[(String, Vec<String>)], entry: Option<(&str, Vec<u8>)>) -> bool {
         self.note_unrecordable("layer.set_vector_paths_and_entry");
-        self.keeping_redo_without_new_step(|run| run.vector_paths_and_entry_step(op, writes, entry))
+        let writes: Vec<(String, PropValue)> = writes.iter().map(|(l, ids)| (l.clone(), PropValue::PathIds(ids.clone()))).collect();
+        self.keeping_redo_without_new_step(|run| run.layers_and_entry_step(op, "layer.set_vector_paths_and_entry", Prop::VectorPaths, &writes, entry))
+    }
+
+    /// ONE undoable step (lane SMB-PLACE-ASSET-1: Update All Links re-renders every instance of a modified
+    /// source): the tile lists of every raster layer in `writes` through one chronicle patch, and the
+    /// session document entry `token` set to `bytes` inside the same history step, exactly as
+    /// [`Run::set_vector_paths_and_entry`] does for paths. Without tile writes the step is entry-only; a
+    /// refused entry write undoes the tile step. Every new tile body is staged first ([`Run::stage_tile`]).
+    /// One record `op`.
+    pub fn set_layers_tiles_and_entry(&mut self, op: &str, writes: &[(String, Vec<TileRef>)], token: &str, bytes: Vec<u8>) -> bool {
+        self.note_unrecordable("layer.set_layers_tiles_and_entry");
+        let writes: Vec<(String, PropValue)> = writes.iter().map(|(l, tiles)| (l.clone(), PropValue::Tiles(tiles.clone()))).collect();
+        self.keeping_redo_without_new_step(|run| run.layers_and_entry_step(op, "layer.set_layers_tiles_and_entry", Prop::Tiles, &writes, Some((token, bytes))))
     }
 
     /// Runs a `*_and_entry` step (finding F-R42-2 of round STUDIO-R42) with the redo history set
@@ -1326,15 +1339,18 @@ impl Run<'_> {
         ok
     }
 
-    fn vector_paths_and_entry_step(&mut self, op: &str, writes: &[(String, Vec<String>)], entry: Option<(&str, Vec<u8>)>) -> bool {
+    /// The step of [`Run::set_vector_paths_and_entry`] and [`Run::set_layers_tiles_and_entry`]: one chronicle
+    /// patch of `prop` over every layer of `writes`, then the entry, as one history step.
+    fn layers_and_entry_step(&mut self, op: &str, command: &'static str, prop: Prop, writes: &[(String, PropValue)], entry: Option<(&str, Vec<u8>)>) -> bool {
         let before = self.frames.count();
         let Some(session) = self.session.as_ref() else {
             return self.push(op, before, Err("not_open"), None, None);
         };
         let previous = entry.as_ref().map(|(token, _)| EntryRestore { token: (*token).to_string(), bytes: session.document_entry(token).map(<[u8]>::to_vec) });
         let depth = self.undo_stack.len();
-        let ctx = self.begin("layer.set_vector_paths_and_entry", None);
+        let ctx = self.begin(command, None);
         let mut emitted = None;
+        let event = if matches!(prop, Prop::VectorPaths) { StudioBusinessEventId::VectorPathEdited } else { StudioBusinessEventId::LayerMutated };
         if !writes.is_empty() {
             if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
                 return self.own_op(op, before, Err("provider_not_selected"));
@@ -1343,7 +1359,7 @@ impl Run<'_> {
             let Some(session) = self.session.as_mut() else {
                 return self.push(op, before, Err("not_open"), None, None);
             };
-            let params = match patch_json_vector_paths(session, &ctx, writes) {
+            let params = match patch_json_layers(session, &ctx, prop, writes) {
                 Ok(p) => p,
                 Err(code) => return self.own_op(op, before, Err(code)),
             };
@@ -1352,13 +1368,13 @@ impl Run<'_> {
                 Ok(applied) => {
                     if applied.changed && !applied.replayed {
                         let layers: Vec<&str> = writes.iter().map(|(l, _)| l.as_str()).collect();
-                        self.emit_business_event(StudioBusinessEventId::VectorPathEdited, &ctx, applied.revision, &layers);
-                        emitted = Some(StudioBusinessEventId::VectorPathEdited);
+                        self.emit_business_event(event, &ctx, applied.revision, &layers);
+                        emitted = Some(event);
                     }
                     if applied.changed
                         && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                     {
-                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None, group: None, sequences: None, containers: None, layout: None, ctx: ctx.clone(), revision: applied.revision });
+                        self.undo_stack.push(HistoryStep { label: format!("{op} {}", prop.field()), inverse, entry: None, timeline: None, group: None, sequences: None, containers: None, layout: None, ctx: ctx.clone(), revision: applied.revision });
                         self.redo_stack.clear();
                     }
                 }
@@ -2654,25 +2670,30 @@ impl Run<'_> {
 /// Builds the chronicle `Patch` JSON for one property edit. The address and revision come from the
 /// session's own revision vector, so the patch quotes what the session holds (exercised by every
 /// edit in `open_edit_save_reopen_verify_end_to_end`).
-/// One chronicle patch of several `vector_paths` writes (lane SMB-ILLUSTRATOR-TOOLS-2).
-fn patch_json_vector_paths(session: &Session, ctx: &CommandContext, writes: &[(String, Vec<String>)]) -> Result<Vec<u8>, &'static str> {
+/// One chronicle patch of several `vector_paths` writes (lane SMB-ILLUSTRATOR-TOOLS-2) or `tiles` writes
+/// (lane SMB-PLACE-ASSET-1).
+fn patch_json_layers(session: &Session, ctx: &CommandContext, prop: Prop, writes: &[(String, PropValue)]) -> Result<Vec<u8>, &'static str> {
     let doc = session.snapshot().document();
     let mut reads = Vec::with_capacity(writes.len());
     let mut wire = Vec::with_capacity(writes.len());
-    for (layer_id, path_ids) in writes {
+    for (layer_id, value) in writes {
         let layer = doc.layers.iter().find(|l| &l.layer_id == layer_id).ok_or("unknown_layer")?;
-        let folio::Payload::Vector { path_ids: current } = &layer.payload else {
-            return Err("not_a_vector_layer");
+        let current = match (prop, &layer.payload) {
+            (Prop::VectorPaths, folio::Payload::Vector { path_ids }) => PropValue::PathIds(path_ids.clone()),
+            (Prop::VectorPaths, _) => return Err("not_a_vector_layer"),
+            (Prop::Tiles, folio::Payload::Raster { tiles }) => PropValue::Tiles(tiles.clone()),
+            (Prop::Tiles, _) => return Err("not_a_raster_layer"),
+            _ => return Err("not_a_layer_list_property"),
         };
-        let address = json!({"target":{"node_kind":"layer","node_id":layer_id},"property":Prop::VectorPaths.field()});
+        let address = json!({"target":{"node_kind":"layer","node_id":layer_id},"property":prop.field()});
         let revision = session
             .revisions()
             .iter()
             .find(|e| serde_json::to_value(&e.address).ok().as_ref() == Some(&address))
             .map(|e| e.revision)
             .ok_or("no_editable_property")?;
-        reads.push(json!({"address": address, "expected_revision": revision, "expected_value": PropValue::PathIds(current.clone()).wire()}));
-        wire.push(json!({"address": address, "value": PropValue::PathIds(path_ids.clone()).wire()}));
+        reads.push(json!({"address": address, "expected_revision": revision, "expected_value": current.wire()}));
+        wire.push(json!({"address": address, "value": value.wire()}));
     }
     let patch = json!({
         "transport_version": 1,

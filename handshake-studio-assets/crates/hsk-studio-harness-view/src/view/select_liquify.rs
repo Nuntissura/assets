@@ -137,10 +137,11 @@ fn encode_srgb(v: f32) -> f32 {
     if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
 }
 
-/// A layer's pixels over a region: `rgb_f32le` colour and `f32le` alpha, row-major.
-struct LayerPixels {
-    colour: Vec<u8>,
-    alpha: Vec<u8>,
+/// A layer's pixels over a region: `rgb_f32le` colour and `f32le` alpha, row-major (also the source of a
+/// pixel layer's Move and Free transform, module `place`).
+pub(super) struct LayerPixels {
+    pub(super) colour: Vec<u8>,
+    pub(super) alpha: Vec<u8>,
     tiles: Vec<TileRef>,
     rects: Vec<Rect>,
 }
@@ -157,7 +158,7 @@ impl Viewer {
     }
 
     /// The raster layer's tile bodies copied into `region` (transparent where no tile is).
-    fn layer_pixels(&self, label: &str, layer_id: &str, region: Option<Rect>) -> Result<(Rect, LayerPixels), String> {
+    pub(super) fn layer_pixels(&self, label: &str, layer_id: &str, region: Option<Rect>) -> Result<(Rect, LayerPixels), String> {
         let snap = self.run.snapshot().ok_or_else(|| format!("{label}: nothing open"))?;
         let doc = snap.document();
         let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| format!("{label}: unknown layer {layer_id}"))?;
