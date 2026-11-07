@@ -417,6 +417,7 @@ fn every_folio_reference_property_is_classified() {
         ("track_display", serde_json::to_value(folio::track_display_records_schema()).unwrap()),
         ("composition_token", serde_json::to_value(folio::composition_token_record_schema()).unwrap()),
         ("media_markers", serde_json::to_value(folio::media_marker_records_schema()).unwrap()),
+        ("project_bin", serde_json::to_value(folio::project_bin_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -552,6 +553,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioMask.linked", "internal: flag"),
     ("StudioMatchStatistics.source_mean", "internal: value"),
     ("StudioMatchStatistics.source_std", "internal: value"),
+    ("StudioMediaItem.source", "container of ClipSource (a bin item names the media every clip cut from it carries; reported and embedded as timeline_media, STU-VID-050, SMB-PROJECT-BIN-1)"),
     ("StudioMediaMarkerEntry.content_digest", "internal: key naming a media item by its bytes; carries no asset and no location, a clip's source_ref is the reference (STU-VID-034, SMB-PR-MEDIA-MARKERS-1)"),
     ("StudioMediaMarkerRecords.media_items", "container of StudioMediaMarkerEntry"),
     ("StudioMotionRecords.composition_audio", "container of StudioAudioLayer"),
@@ -577,6 +579,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioPlacedMode.uri", "external:placed_source"),
     ("StudioPlacedSource.asset_id", "external:placed_source (CKC catalog id)"),
     ("StudioPlacedSource.source_id", "internal: placed source id"),
+    ("StudioProjectBin.media_items", "container of StudioMediaItem"),
     ("StudioProofConditionRecord.proof_profile", "internal: proof device choice (shipped preset, ICC reference, colour vision, operator matrix)"),
     ("StudioProofProfile.content_digest", "internal: sha256 of the StudioIccProfile the reference names (the package reports its bytes through that record as icc_profile)"),
     ("StudioProofProfile.profile_id", "internal: SCPF id of a StudioIccProfile in the vector records"),
