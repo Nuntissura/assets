@@ -14,13 +14,16 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::harness::{Harness, HarnessError, References, Selection};
-use hsk_studio_harness_core::asset_local_test_context;
 use crate::manual::{COMMANDS, manual_json, manual_text};
 use hsk_studio_harness_core::diag_sink::{self, DiagSink};
+use hsk_studio_accord::{ActorContext, ClientSessionId, TransientCorrelation};
+use hsk_studio_harness_core::document_new::{self, DocumentProfile, NewDocument};
+use hsk_studio_harness_core::{RunContext, asset_local_test_context};
 use hsk_studio_accord::CancellationToken;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[cfg(feature = "viewer")]
 mod drive;
@@ -164,6 +167,14 @@ struct Parsed {
     params: Vec<(String, String)>,
     #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
     stdin: bool,
+    /// new (lane SMB-DOC-NEW-1): `--profile`, `--size WxH`, `--unit`, `--colour-mode`, `--bits`, `--name`;
+    /// kept as text and checked by the command, so a bad value is its typed refusal.
+    profile: Option<String>,
+    size: Option<String>,
+    unit: Option<String>,
+    colour_mode: Option<String>,
+    bits: Option<String>,
+    name: Option<String>,
 }
 
 /// One develop export stage flag (lane SMB-LR-EXPORT-GUI-1), mapped one to one onto the export
@@ -310,6 +321,12 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--audio" => p.audio.push(PathBuf::from(take(&mut i, "audio file path")?)),
             "--width" => p.width = Some(take(&mut i, "width")?.parse::<u32>().ok().filter(|w| *w > 0).ok_or_else(|| "width must be a positive integer".to_string())?),
             "--height" => p.height = Some(take(&mut i, "height")?.parse::<u32>().ok().filter(|h| *h > 0).ok_or_else(|| "height must be a positive integer".to_string())?),
+            "--profile" => p.profile = Some(take(&mut i, "profile (vector|raster|design|layout)")?),
+            "--size" => p.size = Some(take(&mut i, "size WxH")?),
+            "--unit" => p.unit = Some(take(&mut i, "unit (px|pt|mm|in)")?),
+            "--colour-mode" => p.colour_mode = Some(take(&mut i, "colour mode")?),
+            "--bits" => p.bits = Some(take(&mut i, "bits per channel")?),
+            "--name" => p.name = Some(take(&mut i, "artboard name")?),
             "--threads" => {
                 p.threads = Some(take(&mut i, "thread count")?.parse::<usize>().map_err(|_| "threads must be an unsigned integer".to_string())?)
             }
@@ -434,6 +451,19 @@ fn dispatch(command: &str, parsed: Parsed) -> CliOutput {
                 return usage("only one PACKAGE path is accepted");
             }
             with_harness(command, &parsed, |h| execute(command, h, &parsed, &package))
+        }
+        "new" => {
+            let [output] = parsed.positional.as_slice() else {
+                return usage("new needs exactly one OUT path");
+            };
+            let output = PathBuf::from(output);
+            if parsed.actor.is_none() || parsed.session.is_none() {
+                return usage("--actor ID and --session ID are required; there is no default actor");
+            }
+            if parsed.profile.is_none() {
+                return usage("new needs --profile vector|raster|design|layout");
+            }
+            with_harness(command, &parsed, |h| execute_new(h, &parsed, &output))
         }
         "import" => {
             let Some(input) = parsed.positional.first().map(PathBuf::from) else {
@@ -890,6 +920,65 @@ fn execute_export(source: &Path, output: &Path, format: ExportChoice, overwrite:
         ),
         Err(detail) => fail("export_failed", detail),
     }
+}
+
+/// The request of `new`, from text flags: each bad value is its typed refusal, as `document.new`'s.
+fn new_document_spec(parsed: &Parsed) -> Result<NewDocument, &'static str> {
+    let profile = DocumentProfile::parse(parsed.profile.as_deref().unwrap_or_default())?;
+    let size = match parsed.size.as_deref() {
+        None => None,
+        Some(text) => {
+            let (w, h) = text.split_once('x').ok_or("size_invalid")?;
+            Some((w.parse::<f64>().map_err(|_| "size_invalid")?, h.parse::<f64>().map_err(|_| "size_invalid")?))
+        }
+    };
+    let mut spec = NewDocument::new(profile, size);
+    if let Some(unit) = parsed.unit.as_deref() {
+        spec.unit = document_new::parse_unit(unit)?;
+    }
+    if let Some(mode) = parsed.colour_mode.as_deref() {
+        spec.colour_mode = document_new::parse_colour_mode(mode)?;
+    }
+    if let Some(bits) = parsed.bits.as_deref() {
+        spec.bits_per_channel = bits.parse().map_err(|_| "bit_depth_invalid")?;
+    }
+    spec.artboard_name.clone_from(&parsed.name);
+    spec.validate()?;
+    Ok(spec)
+}
+
+/// `new OUT --profile P [--size WxH] [--unit U] [--colour-mode M] [--bits N] [--name NAME] --actor ID --session ID [--overwrite]`
+/// (lane SMB-DOC-NEW-1): a blank document written to OUT, attributed to the caller. An existing file is
+/// replaced only with `--overwrite`. `--owner` and `--access-space` default to the actor, a stated limit:
+/// nothing here proves a grant.
+fn execute_new(harness: &Harness, parsed: &Parsed, output: &Path) -> CliOutput {
+    let fail = |code: &str| out(1, &json!({"schema":crate::SCHEMA,"command":"new","ok":false,"verdict":"fail","error":code}));
+    let spec = match new_document_spec(parsed) {
+        Ok(spec) => spec,
+        Err(code) => return fail(code),
+    };
+    if !parsed.overwrite && output.exists() {
+        return fail("overwrite_required");
+    }
+    let (Some(actor), Some(session)) = (parsed.actor.as_deref(), parsed.session.as_deref()) else {
+        return fail("actor_invalid");
+    };
+    let owner = parsed.owner.as_deref().unwrap_or(actor);
+    let space = parsed.access_space.as_deref().unwrap_or(actor);
+    let (Ok(actor), Ok(client_session)) = (ActorContext::new(actor, actor, owner, owner, space, session), ClientSessionId::parse(session)) else {
+        return fail("actor_invalid");
+    };
+    let cancel = CancellationToken::default();
+    if parsed.cancel {
+        cancel.cancel();
+    }
+    let mut run = harness.run(RunContext::new(actor, client_session, Arc::new(TransientCorrelation::new())), &cancel);
+    if run.new_document(&spec) {
+        run.save_to(output);
+    }
+    let report = run.finish("new");
+    let exit = i32::from(report["verdict"] != "pass");
+    out(exit, &report)
 }
 
 #[cfg(not(feature = "viewer"))]

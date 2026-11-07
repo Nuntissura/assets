@@ -19,7 +19,7 @@ use crate::view::{Viewer, render::Prefer};
 use hsk_studio_accord::{ActorContext, ClientSessionId, Ticks, TransientCorrelation};
 use hsk_studio_harness_core::action::{self, Surface, ValueType};
 use hsk_studio_harness_core::harness::motion_commands;
-use hsk_studio_harness_core::manual::{DRIVE_RUN_COMMANDS, DRIVE_SHELL_NOT_DRIVEABLE, DRIVE_TIMELINE, DRIVE_TIMELINE_NOT_DRIVEABLE, DRIVE_VIEWER, DriveTimeline, viewer_row_of};
+use hsk_studio_harness_core::manual::{DRIVE_CATALOG_ROUTES, DRIVE_RUN_COMMANDS, DRIVE_SHELL_NOT_DRIVEABLE, DRIVE_TIMELINE, DRIVE_TIMELINE_NOT_DRIVEABLE, DRIVE_VIEWER, DriveTimeline, viewer_row_of};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -144,6 +144,9 @@ impl Live {
     /// Runs one command id. Fail closed: an unknown id, a row this slice cannot drive, an undeclared,
     /// missing or mistyped parameter and a stale revision all refuse before anything runs.
     fn dispatch(&mut self, id: &str, params: &Params, expected: Option<u64>) -> Result<Value, Refusal> {
+        if let Some((_, method)) = DRIVE_CATALOG_ROUTES.iter().find(|(catalog, _)| *catalog == id) {
+            return self.viewer_method(method, params, expected);
+        }
         if let Some(key) = id.strip_prefix("timeline.") {
             return self.timeline(key, params, expected);
         }

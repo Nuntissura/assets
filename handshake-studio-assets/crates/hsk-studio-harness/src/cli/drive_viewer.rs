@@ -11,6 +11,7 @@ use crate::view::export::ExportFormat;
 use crate::view::vector::style::RowKind;
 use crate::view::vector::{LiveTextKind, ShapeKind};
 use crate::Place;
+use hsk_studio_harness_core::document_new::{self, ArtboardOptionsEdit, BackgroundFill, DocumentProfile, NewDocument};
 use hsk_studio_harness_core::manual::DriveViewer;
 use hsk_studio_nib::anchor_path::Constraint;
 use hsk_studio_nib::pathfinder::PathfinderOp;
@@ -118,6 +119,51 @@ impl Args<'_> {
     }
 }
 
+/// A rule's stable code as a refusal before the method ran.
+fn coded(code: &'static str) -> Refusal {
+    refuse(code, Value::Null)
+}
+
+/// `width` and `height`: both, neither, or `size_incomplete`.
+fn size_of(a: &Args<'_>) -> Result<Option<(f64, f64)>, Refusal> {
+    match (a.opt_number("width")?, a.opt_number("height")?) {
+        (Some(w), Some(h)) => Ok(Some((w, h))),
+        (None, None) => Ok(None),
+        _ => Err(coded("size_incomplete")),
+    }
+}
+
+/// The request of `document.new`; a bad token is its typed refusal.
+fn new_document_request(a: &Args<'_>) -> Result<NewDocument, Refusal> {
+    let mut spec = NewDocument::new(DocumentProfile::parse(a.text("profile")?).map_err(coded)?, size_of(a)?);
+    if let Some(unit) = a.opt("unit") {
+        spec.unit = document_new::parse_unit(unit).map_err(coded)?;
+    }
+    if let Some(mode) = a.opt("colour_mode") {
+        spec.colour_mode = document_new::parse_colour_mode(mode).map_err(coded)?;
+    }
+    if a.opt("bits_per_channel").is_some() {
+        spec.bits_per_channel = a.parsed("bits_per_channel", "1, 8, 16 or 32")?;
+    }
+    spec.artboard_name = a.opt("artboard_name").map(str::to_string);
+    Ok(spec)
+}
+
+fn options_edit(a: &Args<'_>) -> Result<ArtboardOptionsEdit, Refusal> {
+    let flag = |key: &str| a.opt(key).map(|_| a.flag(key)).transpose();
+    Ok(ArtboardOptionsEdit {
+        ruler_origin: a.opt_point("ruler_origin")?,
+        ruler_pixel_aspect_ratio: a.opt_number("ruler_pixel_aspect_ratio")?,
+        show_center_mark: flag("show_center_mark")?,
+        show_cross_hairs: flag("show_cross_hairs")?,
+        show_safe_areas: flag("show_safe_areas")?,
+        fade_region_outside_artboard: flag("fade_region_outside_artboard")?,
+        update_while_dragging: flag("update_while_dragging")?,
+        background_fill: a.opt("background_fill").map(BackgroundFill::parse).transpose().map_err(coded)?,
+        preset: a.opt("preset").map(str::to_string),
+    })
+}
+
 /// The outcome of a viewer method: its value, or its refusal text.
 type Outcome = Result<Value, String>;
 
@@ -147,6 +193,27 @@ pub(super) fn call(viewer: &mut Viewer, row: &DriveViewer, params: &Params) -> R
     let a = Args(params);
     let layer = || a.text("layer");
     Ok(match row.method {
+        // ---- document, artboards, pages (lane SMB-DOC-NEW-1) ----
+        "new_document" => plain(viewer.new_document(&new_document_request(&a)?, a.opt("name"))),
+        "add_artboard" => {
+            let at = match (a.opt_number("x")?, a.opt_number("y")?) {
+                (Some(x), Some(y)) => Some([x, y]),
+                (None, None) => None,
+                _ => return Err(coded("position_incomplete")),
+            };
+            plain(viewer.add_artboard(a.opt("name").unwrap_or_default(), a.number("width")?, a.number("height")?, at))
+        }
+        "rename_artboard" => plain(viewer.rename_artboard(a.text("artboard")?, a.text("name")?)),
+        "resize_artboard" => plain(viewer.resize_artboard(a.text("artboard")?, a.number("width")?, a.number("height")?)),
+        "move_artboard" => plain(viewer.move_artboard(a.text("artboard")?, a.number("x")?, a.number("y")?)),
+        "delete_artboard" => plain(viewer.delete_artboard(a.text("artboard")?)),
+        "set_artboard_options" => plain(viewer.set_artboard_options(a.text("artboard")?, &options_edit(&a)?)),
+        "go_to_artboard" => unit(viewer.go_to_artboard(a.text("artboard")?)),
+        "add_page" => plain(viewer.add_page(a.opt("after"), a.flag_or("new_spread", false)?, size_of(&a)?, a.opt("name"))),
+        "rename_page" => plain(viewer.rename_page(a.text("page")?, a.text("name")?)),
+        "resize_page" => plain(viewer.resize_page(a.text("page")?, a.number("width")?, a.number("height")?)),
+        "delete_page" => plain(viewer.delete_page(a.text("page")?)),
+        "go_to_page" => unit(viewer.go_to_page(a.text("page")?)),
         // ---- layers ----
         "new_raster_layer" => plain(viewer.new_raster_layer(a.text("name")?)),
         "duplicate_layer" => plain(viewer.duplicate_layer(layer()?)),
