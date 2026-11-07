@@ -725,6 +725,14 @@ impl Run<'_> {
         ok
     }
 
+    /// Records a host-owned read of the document (lane SMB-DOC-EXPORT-1: the viewer's document export) as one
+    /// op `op` with the run's attribution and, when a document is open, one terminal Observe frame (outcome
+    /// only: `detail` holds codes and counters and stays in the op record). Returns whether `result` is `Ok`.
+    pub fn record_host_outcome(&mut self, op: &str, result: Result<Value, &'static str>) -> bool {
+        let before = self.frames.count();
+        self.own_or_push(op, before, result)
+    }
+
     /// Records a harness-owned result: with a frame when a session exists, unaddressed otherwise.
     fn own_or_push(&mut self, op: &str, before: usize, result: Result<Value, &'static str>) -> bool {
         if self.session.is_some() { self.own_op(op, before, result) } else { self.push(op, before, result, None, None) }

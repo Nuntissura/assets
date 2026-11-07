@@ -8,7 +8,10 @@
 //! Every input runs in its own [`Run`] of the caller's [`Harness`]: open, digest, Job Runtime
 //! admission (optional [`JobPort`], one ticket per input, released on every exit path), the
 //! automation through [`Run::play_action`] (headless), then one native package per output target
-//! through [`Run::save_to`]. Inputs are never moved, deleted or written over.
+//! through [`Run::save_to`]. Inputs are never moved, deleted or written over. A target of another format
+//! or with an export recipe is written by the caller's [`TargetExporter`] port (lane SMB-DOC-EXPORT-1; the
+//! viewer's document export recipe), under the same naming, collision and overwrite rules; without the port it
+//! refuses as before.
 //!
 //! Studio readings (UNVERIFIED (D5), no Photoshop oracle): `*`/`?` folder patterns match the file
 //! name only (case-sensitive, symlinks not followed); concurrency is 1 (sequential); the date,
@@ -217,9 +220,10 @@ impl OverwritePolicy {
     }
 }
 
-/// [STU-AUT-129] output target. Only `format_id` `handshake` (native package through
-/// [`Run::save_to`]) is written; any other format, an export recipe and a non-null colour-profile or
-/// resize policy refuse that target with a typed code.
+/// [STU-AUT-129] output target. `format_id` `handshake` is the native package through [`Run::save_to`];
+/// another format or an export recipe is written through [`BatchPorts::exporter`] (refused with a typed
+/// code without one); a non-null colour-profile or resize policy refuses that target (the recipe carries
+/// colour and size).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputTarget {
     pub format_id: String,
@@ -463,13 +467,27 @@ pub struct BatchPorts<'a> {
     /// Every input's run is attributed to this context (one correlation source for the job).
     pub context: RunContext,
     pub on_state: Option<&'a mut dyn FnMut(&JobState)>,
+    /// Writes targets that are not native packages (lane SMB-DOC-EXPORT-1).
+    pub exporter: Option<&'a mut dyn TargetExporter>,
 }
 
 impl BatchPorts<'_> {
-    /// Ports with the caller's attribution, no Job Runtime port and no state callback.
+    /// Ports with the caller's attribution, no Job Runtime port, no state callback and no exporter.
     pub fn new(context: RunContext) -> Self {
-        Self { jobs: None, context, on_state: None }
+        Self { jobs: None, context, on_state: None, exporter: None }
     }
+}
+
+/// The host's writer of non-native output targets ([STU-AUT-129]; lane SMB-DOC-EXPORT-1): another
+/// `format_id` than `handshake`, or an `export_recipe_id`. The runner keeps naming ([STU-AUT-130]), the
+/// collision policy ([STU-AUT-131]) and receipts; the exporter only encodes and writes one file.
+pub trait TargetExporter {
+    /// The file extension the target writes (without the dot), or the typed code refusing the target
+    /// (an unknown format or recipe).
+    fn extension(&self, target: &OutputTarget) -> Result<&'static str, &'static str>;
+    /// Writes `run`'s current document to exactly `path`. With `replace` false nothing at `path` may be
+    /// replaced (`destination_exists`). Returns the typed code of a failure.
+    fn write(&mut self, run: &mut Run<'_>, target: &OutputTarget, path: &Path, replace: bool) -> Result<(), String>;
 }
 
 /// A job that refused to start: nothing was read or written.
@@ -788,7 +806,7 @@ struct Attempt {
 pub fn run_batch(harness: &Harness, job: &BatchJob, ports: BatchPorts<'_>, cancel: &CancellationToken) -> Result<BatchReport, BatchRefusal> {
     let mut warnings = check_start(job)?;
     let inputs = enumerate(job, &mut warnings)?;
-    let BatchPorts { jobs, context, mut on_state } = ports;
+    let BatchPorts { jobs, context, mut on_state, mut exporter } = ports;
     let mut state = JobState { total: inputs.len(), ..JobState::default() };
     let mut emit = |s: &JobState| {
         if let Some(cb) = on_state.as_mut() {
@@ -818,7 +836,7 @@ pub fn run_batch(harness: &Harness, job: &BatchJob, ports: BatchPorts<'_>, cance
         let (attempt, failure) = loop {
             attempts = attempts.saturating_add(1);
             let mut attempt = Attempt::default();
-            let result = process(harness, job, &context, jobs.as_ref(), cancel, input, position, &mut written, &mut attempt);
+            let result = process(harness, job, &context, jobs.as_ref(), cancel, input, position, &mut written, &mut attempt, exporter.as_deref_mut());
             match result {
                 Ok(()) => break (attempt, None),
                 Err(f) if f.retryable && attempts < max_attempts && f.code != "canceled" => {
@@ -913,6 +931,7 @@ fn process(
     position: usize,
     written: &mut BTreeSet<PathBuf>,
     out: &mut Attempt,
+    mut exporter: Option<&mut (dyn TargetExporter + '_)>,
 ) -> Result<(), Failure> {
     let meta = std::fs::metadata(input).map_err(|_| Failure::before_output("read", "input_unreadable"))?;
     if !meta.is_file() {
@@ -971,7 +990,7 @@ fn process(
     }
     let mut first_failure: Option<Failure> = None;
     for target in &job.output_targets {
-        let receipt = write_target(&mut run, job, target, input, position, written);
+        let receipt = write_target(&mut run, job, target, input, position, written, exporter.as_deref_mut());
         if first_failure.is_none() && matches!(receipt.outcome, "refused" | "failed") {
             first_failure = Some(Failure { stage: "output", code: receipt.code.clone().unwrap_or_default(), retryable: false });
         }
@@ -980,19 +999,24 @@ fn process(
     first_failure.map_or(Ok(()), Err)
 }
 
-fn write_target(run: &mut Run<'_>, job: &BatchJob, target: &OutputTarget, input: &Path, position: usize, written: &mut BTreeSet<PathBuf>) -> TargetReceipt {
+fn write_target(run: &mut Run<'_>, job: &BatchJob, target: &OutputTarget, input: &Path, position: usize, written: &mut BTreeSet<PathBuf>, exporter: Option<&mut (dyn TargetExporter + '_)>) -> TargetReceipt {
     let receipt = |path: Option<&Path>, outcome: &'static str, code: Option<&str>| TargetReceipt {
         format_id: target.format_id.clone(),
         path: path.map(|p| p.to_string_lossy().into_owned()),
         outcome,
         code: code.map(str::to_string),
     };
-    if target.format_id != "handshake" {
-        return receipt(None, "refused", Some("batch_output_format_unsupported"));
-    }
-    if target.export_recipe_id.is_some() {
-        return receipt(None, "refused", Some("batch_export_recipe_unsupported"));
-    }
+    let native = target.format_id == "handshake" && target.export_recipe_id.is_none();
+    let (ext, mut exporter) = match exporter {
+        _ if native => ("handshake", None),
+        None if target.format_id != "handshake" => return receipt(None, "refused", Some("batch_output_format_unsupported")),
+        None => return receipt(None, "refused", Some("batch_export_recipe_unsupported")),
+        Some(e) => match e.extension(target) {
+            Ok(ext) if name_part_ok(ext) && !ext.is_empty() => (ext, Some(e)),
+            Ok(_) => return receipt(None, "refused", Some("batch_output_extension_invalid")),
+            Err(code) => return receipt(None, "refused", Some(code)),
+        },
+    };
     if target.colour_profile_policy.is_some() || target.resize_policy.is_some() {
         return receipt(None, "refused", Some("batch_target_policy_unsupported"));
     }
@@ -1004,13 +1028,13 @@ fn write_target(run: &mut Run<'_>, job: &BatchJob, target: &OutputTarget, input:
     if std::fs::create_dir_all(dir).is_err() {
         return receipt(None, "failed", Some("batch_destination_unavailable"));
     }
-    let mut path = dir.join(format!("{name}.handshake"));
+    let mut path = dir.join(format!("{name}.{ext}"));
     let taken = |p: &Path, written: &BTreeSet<PathBuf>| p.exists() || written.contains(p);
     if taken(&path, written) {
         match target.overwrite_policy {
             OverwritePolicy::Skip => return receipt(Some(&path), "skipped_existing", None),
             OverwritePolicy::Rename => {
-                let free = (1..=MAX_RENAME_SUFFIX).map(|i| dir.join(format!("{name}-{i}.handshake"))).find(|p| !taken(p, written));
+                let free = (1..=MAX_RENAME_SUFFIX).map(|i| dir.join(format!("{name}-{i}.{ext}"))).find(|p| !taken(p, written));
                 match free {
                     Some(p) => path = p,
                     None => return receipt(Some(&path), "failed", Some("batch_rename_exhausted")),
@@ -1026,12 +1050,17 @@ fn write_target(run: &mut Run<'_>, job: &BatchJob, target: &OutputTarget, input:
         }
     }
     // Only Overwrite may replace: another process can take the free name after the check above.
-    let saved = if target.overwrite_policy == OverwritePolicy::Overwrite { run.save_to(&path) } else { run.save_new(&path) };
-    if saved {
+    let replace = target.overwrite_policy == OverwritePolicy::Overwrite;
+    let saved = match exporter.as_mut() {
+        Some(e) => e.write(run, target, &path, replace),
+        None if replace => if run.save_to(&path) { Ok(()) } else { Err(last_error(run, "save_failed")) },
+        None => if run.save_new(&path) { Ok(()) } else { Err(last_error(run, "save_failed")) },
+    };
+    if saved.is_ok() {
         written.insert(path.clone());
         receipt(Some(&path), "written", None)
     } else {
-        let code = last_error(run, "save_failed");
+        let code = saved.err().unwrap_or_default();
         if code == "destination_exists" && target.overwrite_policy == OverwritePolicy::Skip {
             return receipt(Some(&path), "skipped_existing", None);
         }

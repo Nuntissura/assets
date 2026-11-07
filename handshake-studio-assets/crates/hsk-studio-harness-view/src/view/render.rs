@@ -262,6 +262,69 @@ pub fn render_full_with_records(
     display: Option<&mut dyn GpuDisplay>,
     cancel: &CancellationToken,
 ) -> Result<Frame, RenderFail> {
+    Ok(match render_rendered(snap, assets, text, vectors, records, prefer, gpu, display, cancel)? {
+        Rendered::Shared(frame) => frame,
+        Rendered::Canvas(c) => Frame { width: c.canvas.extent.width, height: c.canvas.extent.height, x: c.canvas.extent.x, y: c.canvas.extent.y, rgba8: c.canvas.to_rgba8(), backend: c.backend, texture: None, revision: c.revision, notes: c.notes },
+    })
+}
+
+/// A read-back render kept in linear light (lane SMB-DOC-EXPORT-1): the same plan, backend and notes as
+/// [`render_full_with_records`] on render-cpu, before the 8-bit sRGB encoding. `pixels` holds `width x height`
+/// straight `[r, g, b, a]`, linear in the working RGB primaries (the document export recipe encodes it at 8 or 16
+/// bits, or converts it to CMYK).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinearFrame {
+    pub width: u32,
+    pub height: u32,
+    pub x: i64,
+    pub y: i64,
+    pub pixels: Vec<[f32; 4]>,
+    pub backend: &'static str,
+    pub revision: u64,
+    pub notes: Vec<String>,
+}
+
+/// [`render_full_with_records`] on render-cpu, returned in linear light ([`LinearFrame`]).
+pub fn render_linear_with_records(
+    snap: &Snapshot,
+    assets: &Assets,
+    text: Option<&PreparedText>,
+    vectors: Option<&PreparedVectors>,
+    records: Option<&folio::StudioRasterRecords>,
+    cancel: &CancellationToken,
+) -> Result<LinearFrame, RenderFail> {
+    match render_rendered(snap, assets, text, vectors, records, Prefer::Cpu, None, None, cancel)? {
+        Rendered::Canvas(c) => Ok(LinearFrame { width: c.canvas.extent.width, height: c.canvas.extent.height, x: c.canvas.extent.x, y: c.canvas.extent.y, pixels: c.canvas.pixels, backend: c.backend, revision: c.revision, notes: c.notes }),
+        Rendered::Shared(_) => Err(RenderFail::new("render_cpu", "a display-texture frame on the read-back path")),
+    }
+}
+
+/// A read-back canvas and what produced it.
+struct CanvasFrame {
+    canvas: Canvas,
+    backend: &'static str,
+    revision: u64,
+    notes: Vec<String>,
+}
+
+enum Rendered {
+    /// Rendered into the host's display texture.
+    Shared(Frame),
+    Canvas(CanvasFrame),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_rendered(
+    snap: &Snapshot,
+    assets: &Assets,
+    text: Option<&PreparedText>,
+    vectors: Option<&PreparedVectors>,
+    records: Option<&folio::StudioRasterRecords>,
+    prefer: Prefer,
+    gpu: Option<&hsk_studio_render_gpu::GpuBackend>,
+    display: Option<&mut dyn GpuDisplay>,
+    cancel: &CancellationToken,
+) -> Result<Rendered, RenderFail> {
     let mut notes = Vec::new();
     let view = view_snapshot(snap, cancel, &mut notes)?;
     let doc = view.document();
@@ -321,7 +384,7 @@ pub fn render_full_with_records(
     {
         match display.present(&lowering.plan, &request, &sources, cancel) {
             Ok(texture) => {
-                return Ok(Frame { width: extent.width, height: extent.height, x: extent.x, y: extent.y, rgba8: Vec::new(), backend: "gpu-shared", texture: Some(texture), revision: doc.revision, notes });
+                return Ok(Rendered::Shared(Frame { width: extent.width, height: extent.height, x: extent.x, y: extent.y, rgba8: Vec::new(), backend: "gpu-shared", texture: Some(texture), revision: doc.revision, notes }));
             }
             Err(e) => notes.push(format!("gpu_shared_fallback: {e}; read-back path used")),
         }
@@ -361,7 +424,7 @@ pub fn render_full_with_records(
             notes.push(format!("{}: samples outside [0, 1] clipped for display (render-cpu DisplayTransform::Clip, Approximate)", hsk_studio_render_cpu::DISPLAY_CLIP_OPERATOR));
         }
     }
-    Ok(Frame { width: extent.width, height: extent.height, x: extent.x, y: extent.y, rgba8: sink.to_rgba8(), backend, texture: None, revision: doc.revision, notes })
+    Ok(Rendered::Canvas(CanvasFrame { canvas: sink, backend, revision: doc.revision, notes }))
 }
 
 fn extent_of(bounds: &folio::Bounds) -> Result<Rect, RenderFail> {

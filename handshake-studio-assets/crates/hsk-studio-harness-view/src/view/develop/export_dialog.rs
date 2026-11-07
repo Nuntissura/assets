@@ -432,6 +432,44 @@ impl ExportDialog {
     }
 }
 
+/// An export stage built from field texts exactly as the dialog writes them (lane SMB-DOC-EXPORT-1: the document
+/// export recipe's `stage` object shares this path, so a recipe, the CLI and the develop dialog read one key set).
+/// The stage starts from [`dialog_start`]; `fields` are `(key, text)` in order (keys of `EXPORT_STAGE_KEYS` plus
+/// `watermark_size_value` and `watermark_text`); `graphic` becomes the watermark source. A field that does not parse
+/// is its typed refusal here, never kept.
+pub(in crate::view) fn stage_from_fields(fields: &[(String, String)], graphic: Option<WatermarkGraphic>) -> Result<ExportStage, Refusal> {
+    let mut dialog = ExportDialog::default();
+    dialog.write("stage", "true")?;
+    for (key, value) in fields {
+        let id = format!("develop.export.{key}");
+        let key = field_key(&id).filter(|k| !matches!(*k, "stage" | "watermark_graphic")).ok_or_else(|| Refusal::new("unknown_export_field", id.clone()))?;
+        dialog.write(key, value)?;
+    }
+    if let Some(g) = graphic {
+        dialog.graphic = Some((PathBuf::new(), g));
+        dialog.write("watermark_source", "graphic")?;
+    }
+    if let Some((key, text)) = dialog.unparsed.iter().next() {
+        return Err(Refusal::new("export_field_not_a_number", format!("{key}: `{text}` is not a number")));
+    }
+    dialog.stage.ok_or_else(|| Refusal::new("export_stage_off", "stage"))
+}
+
+/// Reads and decodes a PNG or JPEG watermark graphic under develop's size caps (the dialog's file path).
+pub(in crate::view) fn read_watermark_graphic(path: &Path, cancel: &hsk_studio_accord::CancellationToken) -> Result<WatermarkGraphic, Refusal> {
+    let side = MAX_WATERMARK_SIDE;
+    // Every RGBA16 sample of the largest admitted graphic, the decoder's own aggregate budget.
+    let decoded = MAX_WATERMARK_PIXELS.saturating_mul(8);
+    let limits = raster::Limits { max_input_bytes: decoded, max_dimension: side, max_decoded_bytes: decoded, ..raster::Limits::default() };
+    let size = std::fs::metadata(path).map_err(|_| Refusal::new("watermark_unreadable", path.display().to_string()))?.len();
+    if size > limits.max_input_bytes {
+        return Err(Refusal::new("watermark_too_large", format!("{size} bytes")));
+    }
+    let bytes = std::fs::read(path).map_err(|_| Refusal::new("watermark_unreadable", path.display().to_string()))?;
+    let img = raster::decode(&bytes, &limits, cancel).map_err(|e| Refusal::new(e.code(), format!("watermark {}", path.display())))?;
+    graphic_from(&img)
+}
+
 /// A stage refusal as the viewer's typed refusal (develop's code; the key or module it names).
 pub(super) fn stage_refusal(e: &ExportStageError) -> Refusal {
     Refusal::new(e.code(), if e.detail().is_empty() { format!("{e:?}") } else { e.detail().to_owned() })
@@ -537,21 +575,12 @@ impl Viewer {
         if self.develop_export_stage().is_none() {
             return Err(Refusal::new("export_stage_off", format!("switch the export settings on first ({})", widget::STAGE)));
         }
-        let side = MAX_WATERMARK_SIDE;
-        // Every RGBA16 sample of the largest admitted graphic, the decoder's own aggregate budget.
-        let decoded = MAX_WATERMARK_PIXELS.saturating_mul(8);
-        let limits = raster::Limits { max_input_bytes: decoded, max_dimension: side, max_decoded_bytes: decoded, ..raster::Limits::default() };
-        let size = std::fs::metadata(path).map_err(|_| Refusal::new("watermark_unreadable", path.display().to_string()))?.len();
-        if size > limits.max_input_bytes {
-            return Err(Refusal::new("watermark_too_large", format!("{size} bytes")));
-        }
-        let bytes = std::fs::read(path).map_err(|_| Refusal::new("watermark_unreadable", path.display().to_string()))?;
-        let img = raster::decode(&bytes, &limits, self.cancel).map_err(|e| Refusal::new(e.code(), format!("watermark {}", path.display())))?;
-        let graphic = graphic_from(&img)?;
+        let graphic = read_watermark_graphic(path, self.cancel)?;
+        let (width, height) = (graphic.width, graphic.height);
         let dialog = self.export_dialog_mut()?;
         dialog.graphic = Some((path.to_path_buf(), graphic));
         dialog.write("watermark_source", "graphic")?;
-        self.say(format!("develop export watermark graphic {} ({} x {})", path.display(), img.width, img.height));
+        self.say(format!("develop export watermark graphic {} ({width} x {height})", path.display()));
         Ok(())
     }
 

@@ -11,7 +11,9 @@
 //!
 //! Every export is decoded back with interop-raster before it is written (dimensions must match), and the
 //! file is written atomically (a sibling temp file with a name no other writer has, then rename). Exports are
-//! derived deliverables, never stored back into the document (STU-IO-136).
+//! derived deliverables, never stored back into the document (STU-IO-136). The document export recipe (TIFF,
+//! PSD, CMYK, sizing, sharpening, watermark: [`super::doc_export`]) writes through the same temp path, with
+//! [`write_new`] when nothing may be replaced.
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::render::Frame;
@@ -189,4 +191,21 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), &'static str> {
         let _ = std::fs::remove_file(&temp);
         "export_write"
     })
+}
+
+/// [`write_atomic`] that never replaces anything (lane SMB-DOC-EXPORT-1): the same unique sibling temp, then a
+/// hard link to `path`, which the filesystem refuses when anything is there (`destination_exists`), so two
+/// writers creating one new file cannot replace each other; the temp is removed either way. A filesystem
+/// without hard links is `export_write` (nothing at `path` is touched). Test `tests/doc_export.rs`.
+pub fn write_new(path: &Path, bytes: &[u8]) -> Result<(), &'static str> {
+    path.file_name().ok_or("export_path")?;
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err("destination_exists");
+    }
+    let (temp, mut file) = create_unique_sibling(path, ".export-tmp").map_err(|_| "export_write")?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    let linked = written.and_then(|()| std::fs::hard_link(&temp, path));
+    let _ = std::fs::remove_file(&temp);
+    linked.map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { "destination_exists" } else { "export_write" })
 }
