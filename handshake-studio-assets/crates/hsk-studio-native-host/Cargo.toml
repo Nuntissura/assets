@@ -4,9 +4,25 @@ version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+default = []
+# A real document through harness-view's Viewer on render-cpu (Prefer::Cpu: no GPU device in the viewer). Links egui,
+# eframe and wgpu through harness-view, so it is never in the default build.
+document = ["dep:hsk-studio-harness-view", "hsk-studio-harness-view/viewer", "hsk-studio-harness-view/asset-local-test-host"]
+
 [dependencies]
+hsk-studio-vulkan = { path = "../hsk-studio-vulkan", version = "=0.1.0", default-features = false }
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-harness-view = { path = "../hsk-studio-harness-view", version = "=0.1.0", default-features = false, optional = true }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 windows-sys = { version = "=0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_WindowsAndMessaging"] }
+png = { version = "=0.18.1", default-features = false, features = [] }
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "studio-vk"
+path = "src/bin/studio-vk.rs"

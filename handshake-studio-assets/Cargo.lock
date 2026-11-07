@@ -2212,6 +2212,12 @@ dependencies = [
 name = "hsk-studio-native-host"
 version = "0.1.0"
 dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-harness-view",
+ "hsk-studio-observe",
+ "hsk-studio-vulkan",
+ "png",
+ "sha2 0.10.9",
  "windows-sys 0.61.2",
  "winit",
 ]
