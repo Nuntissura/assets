@@ -698,3 +698,41 @@ pub enum RingRefusal {
 pub trait RingProducerPort: Send {
     fn try_record(&mut self, record: &RingRecord) -> Result<(), RingRefusal>;
 }
+
+/// The caller's clock for records made by the wired path; observe reads no clock itself.
+pub type RingClock = fn() -> RingTiming;
+
+/// What the binding of the current thread did with the records of its `Observe::emit*` calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RingWireState {
+    pub recorded: u64,
+    pub saturated: u64,
+    pub unavailable: u64,
+}
+
+/// Typed refusal of [`bind_thread_ring`]; closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RingBindRefusal {
+    /// This thread already has a producer handle: one producer per thread.
+    AlreadyBound,
+}
+
+/// The current thread's binding; dropping it unbinds the thread.
+#[must_use = "dropping the binding unbinds the thread"]
+pub struct ThreadRingBinding {
+    not_send: core::marker::PhantomData<*const ()>,
+}
+impl ThreadRingBinding {
+    pub fn state(&self) -> RingWireState {
+        RingWireState::default()
+    }
+}
+
+/// RED STUB (lane SMB-OBSERVE-DIAG-SINK-1): binds nothing; the next commit wires it.
+pub fn bind_thread_ring(
+    _port: Box<dyn RingProducerPort>,
+    _identity: RingIdentity,
+    _clock: RingClock,
+) -> Result<ThreadRingBinding, RingBindRefusal> {
+    Ok(ThreadRingBinding { not_send: core::marker::PhantomData })
+}
