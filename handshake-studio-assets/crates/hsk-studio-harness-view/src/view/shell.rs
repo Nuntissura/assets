@@ -34,7 +34,7 @@
 use super::file_dialog::{FileDialog, Outcome, Purpose};
 use super::widget as vw;
 use super::{Viewer, export::ExportFormat, render::Prefer};
-use crate::layout_ui::{LayoutDoc, LayoutEditor};
+use crate::layout_ui::{LayoutDoc, LayoutEdit, LayoutEditor, LayoutRecords};
 use super::hosted::HostedPanel;
 use hsk_studio_controls::menu::{self as cm, MenuBar, MenuNode, ReasonCode, WindowRole, WindowSpec};
 use serde_json::{Value, json};
@@ -760,6 +760,27 @@ impl Viewer {
         self.shell.layout.as_mut()
     }
 
+    /// Applies one layout edit and commits it to the open document (lane SMB-LAYOUT-PERSIST-1;
+    /// STU-LAY-013, STU-LAY-067): the editor's document and its stories, flow, styles, parent pages and
+    /// long-document records go to the session as ONE undo step named by the edit's command id
+    /// (`Run::submit_layout`), saved with the package and reopened by the layout editor. The editor is
+    /// first brought to the session's state when it shows something else (an undo, a reopen, a direct
+    /// editor edit), and opened when it is not. A refusal changes nothing: the editor's own code
+    /// (`unknown_frame`, ...), `not_open`, or the session's (`value_conflict`, `folio_rejected`, ...),
+    /// after which the editor is back at the session's state.
+    pub fn layout_apply(&mut self, edit: LayoutEdit) -> Result<(), String> {
+        // Red: the edit stays in the editor (lane SMB-LAYOUT-PERSIST-1 commits it in the next commit).
+        if self.run.snapshot().is_none() {
+            return Err("not_open".into());
+        }
+        if self.shell.layout.is_none() {
+            let (doc, rec, _) = self.layout_doc();
+            self.shell.layout = Some(LayoutEditor::with_records(doc, rec));
+        }
+        let ed = self.shell.layout.as_mut().ok_or("layout_editor_unavailable")?;
+        ed.apply(edit).map_err(|e| e.code().to_owned())
+    }
+
     /// Whether `panel` exists now (open; it may be hidden).
     pub fn panel_open(&self, panel: Panel) -> bool {
         match panel {
@@ -1323,9 +1344,9 @@ impl Viewer {
             }
             Panel::Develop => Err("open a camera raw or DNG first".into()),
             Panel::LayoutEditor => {
-                let (doc, note) = self.layout_doc();
-                self.shell.layout = Some(LayoutEditor::new(doc));
-                self.say(format!("layout editor: {note}; layout edits stay in the editor (saving them with the package is a declared gap of the layout editor)"));
+                let (doc, rec, note) = self.layout_doc();
+                self.shell.layout = Some(LayoutEditor::with_records(doc, rec));
+                self.say(format!("layout editor: {note}; edits made through layout commands are saved with the document"));
                 Ok(())
             }
             Panel::ProgramMonitor => {
@@ -1372,18 +1393,37 @@ impl Viewer {
         }
     }
 
-    /// The layout editor's document: the open document when it has page spreads (its text stories
-    /// and type styles from the `text` entry), else a new blank one-page document.
-    fn layout_doc(&self) -> (LayoutDoc, &'static str) {
-        if let Some(doc) = self.run.snapshot().map(|s| s.document().clone()).filter(|d| !d.page_spreads.is_empty()) {
-            let (stories, styles) = match self.text_entry() {
-                Ok(e) => (e.stories, e.styles),
-                Err(_) => (Vec::new(), hsk_studio_folio::StudioTypeStyleRecords::new(&doc.document_id)),
-            };
-            let flow = hsk_studio_folio::StudioLayoutFlowRecords::new(doc.document_id.clone());
-            return (LayoutDoc { document: doc, stories, flow, styles }, "editing the open document's pages");
+    /// The layout editor's document (lane SMB-LAYOUT-PERSIST-1): the open document with its stored layout
+    /// records (`layout_records` entry); without them its text stories and type styles from the `text`
+    /// entry. An open document without page spreads gets the blank one-page spread, added to it by the
+    /// first committed layout edit. Nothing open: a new blank layout document no command can commit.
+    fn layout_doc(&self) -> (LayoutDoc, LayoutRecords, &'static str) {
+        let Some(mut doc) = self.run.snapshot().map(|s| s.document().clone()) else {
+            let doc = blank_layout_doc();
+            let rec = LayoutRecords::new(&doc.document.document_id);
+            return (doc, rec, "nothing is open; editing a new blank one-page layout document that is not saved");
+        };
+        let mut note = "editing the open document's pages";
+        if doc.page_spreads.is_empty() {
+            doc.page_spreads = blank_layout_doc().document.page_spreads;
+            note = "the open document has no pages; the first layout edit adds a blank one-page spread";
         }
-        (blank_layout_doc(), "the open document has no pages; editing a new blank one-page layout document")
+        let stored = self.run.document_entry(hsk_studio_session::LAYOUT_RECORDS_ENTRY).map(|bytes| hsk_studio_session::LayoutRecords::parse(bytes, &doc, hsk_studio_folio::Budget::default(), self.cancel));
+        if let Some(Ok(r)) = stored {
+            let flow = r.flow;
+            let rec = LayoutRecords { parents: r.parents, longdoc: r.longdoc };
+            return (LayoutDoc { document: doc, stories: r.stories, flow, styles: r.styles }, rec, "editing the open document's pages and its saved layout records");
+        }
+        if stored.is_some() {
+            note = "the saved layout records do not validate against the document (kept until a layout edit replaces them); editing the text entry's stories";
+        }
+        let (stories, styles) = match self.text_entry() {
+            Ok(e) => (e.stories, e.styles),
+            Err(_) => (Vec::new(), hsk_studio_folio::StudioTypeStyleRecords::new(&doc.document_id)),
+        };
+        let flow = hsk_studio_folio::StudioLayoutFlowRecords::new(doc.document_id.clone());
+        let rec = LayoutRecords::new(&doc.document_id);
+        (LayoutDoc { document: doc, stories, flow, styles }, rec, note)
     }
 
     /// Closes the open document and every document-bound surface (FILE > Close); the recent list,
@@ -1594,6 +1634,15 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
         return Err(format!("open {}: {len} bytes exceeds {}", path.display(), crate::import::MAX_SOURCE_BYTES));
     }
     std::fs::read(path).map_err(|e| format!("open {}: {e}", path.display()))
+}
+
+/// `a` and `b` are the same layout state, document revisions aside (the session moves the revision).
+fn same_layout(a: &LayoutDoc, b: &LayoutDoc) -> bool {
+    a.stories == b.stories && a.flow == b.flow && a.styles == b.styles && {
+        let mut d = b.document.clone();
+        d.revision = a.document.revision;
+        a.document == d
+    }
 }
 
 /// A new blank layout document: one spread with one 595 x 842 pt page (A4), 36 pt margins.

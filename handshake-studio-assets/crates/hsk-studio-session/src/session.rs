@@ -22,6 +22,7 @@ use crate::{
     multicam::MULTICAM_ENTRY,
     multicam_step::{self, MULTICAM_STEP_PROVIDER, MulticamStep},
     sequence_records::{self, MEDIA_MARKERS_ENTRY, RemovedSequences, RoutingTakeover, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY},
+    layout_records::{self, LAYOUT_RECORDS_ENTRY, LAYOUT_STEP_PROVIDER, LayoutStep},
     sequence_records_step::{self, LiveEntries, SEQUENCE_RECORDS_STEP_PROVIDER, SequenceRecordsStep, SequenceRecordsUndo},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, CommandContext, DomainId};
@@ -257,6 +258,9 @@ pub struct Applied {
     /// For a media marker command: Folio's report (codes and counters only), for the host. `None`
     /// otherwise.
     pub media_marker_report: Option<StudioMediaMarkerReport>,
+    /// For a [`Session::submit_layout_as`] step: the step that restores the previous document and
+    /// layout records (undo; its own inverse is the redo). `None` otherwise and for no-change.
+    pub layout_inverse: Option<LayoutStep>,
     /// Sequences this step gives an id a stored audio routing names (module `sequence_records`). Empty
     /// for everything else.
     pub routing_takeovers: Vec<RoutingTakeover>,
@@ -442,6 +446,7 @@ enum Step<'a> {
     CompositionToken(&'a CompositionTokenStep),
     MediaMarkerCommand(&'a CommandContext, &'a StudioMediaMarkerCommand),
     Containers(&'a ContainerStep),
+    Layout(&'a LayoutStep),
 }
 
 enum Resolution {
@@ -1287,6 +1292,27 @@ impl Session {
         self.submit_inner(key, SEQUENCE_RECORDS_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::MediaMarkerCommand(context, command)))
     }
 
+    /// Commits one layout step (module `layout_records`) for the command `context`: the document and the
+    /// `layout_records` entry change together at `expected_revision + 1` as ONE revision, one receipt and
+    /// one inverse ([`Applied::layout_inverse`], its own inverse the redo), through the grant, admission,
+    /// commit and publish path of [`Session::submit`]; the one report frame carries the command's
+    /// correlation. A step that writes the live state is no revision. Refusals change neither the document
+    /// nor the entry: `actor_mismatch`, `command_mismatch`, `stale_revision`, `invalid_command`,
+    /// `invalid_input`, `value_conflict`, `folio_rejected`, `budget_exceeded`, `total_too_large`.
+    /// Tests: hsk-studio-harness tests/layout_persist.rs.
+    pub fn submit_layout_as(
+        &mut self,
+        context: &CommandContext,
+        step: &LayoutStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.check_command_context(context, &step.command_id, expected_revision).and_then(|()| step.binding_bytes()).and_then(|params| {
+            self.submit_inner(None, LAYOUT_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::Layout(step)))
+        });
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
     /// A command context must name this session's actor (it grants nothing, and grants and receipts
     /// are this session's: `actor_mismatch` otherwise), the command being run when it names one
     /// (`command_mismatch`), and the revision the caller expects (`stale_revision`).
@@ -1471,6 +1497,7 @@ impl Session {
                 proposed.applied.media_marker_report = Some(report);
                 proposed
             }
+            Some(Step::Layout(step)) => self.propose_layout(step, current, cancel)?,
             None => self.propose_checked(provider_id, params, current, cancel)?,
         };
         if let Some(next) = &successor
@@ -1690,6 +1717,7 @@ impl Session {
                 composition_token_inverse: None,
                 composition_upgrade: None,
                 media_marker_report: None,
+                layout_inverse: None,
                 routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
@@ -1749,6 +1777,7 @@ impl Session {
                 composition_token_inverse: None,
                 composition_upgrade: None,
                 media_marker_report: None,
+                layout_inverse: None,
                 routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
@@ -1826,6 +1855,7 @@ impl Session {
                 composition_token_inverse: None,
                 composition_upgrade: None,
                 media_marker_report: None,
+                layout_inverse: None,
                 routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
@@ -1908,6 +1938,7 @@ impl Session {
                 composition_token_inverse: None,
                 composition_upgrade: None,
                 media_marker_report: None,
+                layout_inverse: None,
                 routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
@@ -1972,6 +2003,64 @@ impl Session {
                 composition_token_inverse: inverse,
                 composition_upgrade: diff,
                 media_marker_report: None,
+                layout_inverse: None,
+                routing_takeovers: Vec::new(),
+                commit: None,
+                replayed: false,
+                cancel_too_late: false,
+                receipts_evicted: 0,
+                report: ReportStatus::Unaddressed,
+            },
+            successor,
+            slots: Vec::new(),
+            entry,
+        })
+    }
+
+    /// Checks a layout step against the live snapshot and entry without publishing anything.
+    fn propose_layout(&self, step: &LayoutStep, current: u64, cancel: &CancellationToken) -> Result<Proposed, SessionError> {
+        let checked = layout_records::successor(&self.snapshot, &self.quarantined, step, self.config.budgets.folio(), &*self.ports.resolver, cancel)?;
+        // Last point at which a cancel still prevents publication.
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        let entry: EntryWrite = match &checked {
+            Some(c) => vec![(LAYOUT_RECORDS_ENTRY, c.entry.clone())],
+            None => Vec::new(),
+        };
+        if let Some(c) = &checked {
+            if !self.assets_available(c.successor.document()) {
+                return Err(SessionError::Package(PackageError::MissingAsset));
+            }
+            if !self.document_entries_fit(&entry) {
+                return Err(SessionError::Package(PackageError::TotalTooLarge));
+            }
+        }
+        let changed = checked.is_some();
+        let revision = if changed { current.checked_add(1).ok_or(SessionError::ProposalInconsistent)? } else { current };
+        let (successor, inverse) = match checked {
+            Some(c) => (Some(c.successor), Some(c.inverse)),
+            None => (None, None),
+        };
+        Ok(Proposed {
+            applied: Applied {
+                provider: LAYOUT_STEP_PROVIDER.to_owned(),
+                command_id: step.command_id.clone(),
+                correlation_id: step.correlation_id,
+                actor: timeline::actor_of(&self.config.actor),
+                previous_revision: current,
+                revision,
+                changed,
+                revision_updates: Vec::new(),
+                inverse: None,
+                timeline_inverse: None,
+                multicam_inverse: None,
+                sequence_records_inverse: None,
+                sequence_records_undo: None,
+                sequence_settings_report: None,
+                track_display_report: None,
+                composition_token_inverse: None,
+                composition_upgrade: None,
+                media_marker_report: None,
+                layout_inverse: inverse,
                 routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
@@ -2160,6 +2249,7 @@ impl Session {
                 composition_token_inverse: None,
                 composition_upgrade: None,
                 media_marker_report: None,
+                layout_inverse: None,
                 routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
@@ -2192,6 +2282,12 @@ impl Session {
                 }
             }
         }
+        // A step that adds or removes layers or page spreads outside chronicle (a layout step) seeds the
+        // revisions of the new nodes too, so a later chronicle edit of them finds its address.
+        let ids = |d: &StudioDocument| -> (Vec<String>, Vec<String>) {
+            (d.layers.iter().map(|l| l.layer_id.clone()).collect(), d.page_spreads.iter().map(|s| s.page_spread_id.clone()).collect())
+        };
+        structural |= ids(self.snapshot.document()) != ids(successor.document());
         if structural {
             let known: BTreeSet<(String, Property)> = self
                 .revisions

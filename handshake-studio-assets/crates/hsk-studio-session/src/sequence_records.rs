@@ -140,7 +140,7 @@ pub(crate) fn folio_err(d: Diagnostic) -> SessionError {
 
 /// True for the tokens this module validates.
 pub(crate) fn validated_token(token: &str) -> bool {
-    token == SEQUENCE_SETTINGS_ENTRY || token == SEQUENCE_PRESETS_ENTRY || token == TRACK_DISPLAY_ENTRY || token == COMPOSITION_TOKEN_ENTRY || token == MEDIA_MARKERS_ENTRY || token == PROJECT_BIN_ENTRY
+    token == SEQUENCE_SETTINGS_ENTRY || token == SEQUENCE_PRESETS_ENTRY || token == TRACK_DISPLAY_ENTRY || token == COMPOSITION_TOKEN_ENTRY || token == MEDIA_MARKERS_ENTRY || token == PROJECT_BIN_ENTRY || token == crate::layout_records::LAYOUT_RECORDS_ENTRY
 }
 
 /// True for the tokens an open notes when they do not validate, and whose note goes when they are
@@ -166,6 +166,7 @@ pub(crate) fn check_entry(
         AUDIO_ROUTING_ENTRY => parse_audio_routing(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         MEDIA_MARKERS_ENTRY => parse_media_marker_records(bytes, document, budget, cancel).map(drop).map_err(folio_err),
         PROJECT_BIN_ENTRY => parse_project_bin(bytes, document, budget, cancel).map(drop).map_err(folio_err),
+        crate::layout_records::LAYOUT_RECORDS_ENTRY => crate::layout_records::check(bytes, document, budget, cancel),
         _ => Ok(()),
     }
 }
@@ -192,7 +193,7 @@ pub(crate) fn invalid_entry_notes(
     cancel: &CancellationToken,
 ) -> Result<Vec<LossNote>, SessionError> {
     let mut notes = Vec::new();
-    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY, TRACK_DISPLAY_ENTRY, COMPOSITION_TOKEN_ENTRY, AUDIO_ROUTING_ENTRY, MEDIA_MARKERS_ENTRY, PROJECT_BIN_ENTRY] {
+    for token in [SEQUENCE_SETTINGS_ENTRY, SEQUENCE_PRESETS_ENTRY, TRACK_DISPLAY_ENTRY, COMPOSITION_TOKEN_ENTRY, AUDIO_ROUTING_ENTRY, MEDIA_MARKERS_ENTRY, PROJECT_BIN_ENTRY, crate::layout_records::LAYOUT_RECORDS_ENTRY] {
         let invalid = match held_body(held, token) {
             Ok(None) => false,
             Err(_) => true,

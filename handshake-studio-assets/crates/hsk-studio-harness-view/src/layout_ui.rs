@@ -16,8 +16,9 @@
 //! History: every successful [`LayoutEditor::apply`] is exactly ONE undo step (a snapshot of the
 //! whole layout state: document, stories, layout-flow and type-style records); a refused edit
 //! leaves the state and the history untouched. Undo/redo restore the snapshots. The history is
-//! bounded (`MAX_HISTORY`, oldest steps dropped). Persisting layout edits through the session and
-//! chronicle is a declared gap of this slice (the state is the caller's to save).
+//! bounded (`MAX_HISTORY`, oldest steps dropped). The editor holds no session: `Viewer::layout_apply`
+//! commits each edit to the open document as one session undo step and the layout editor reopens it
+//! (lane SMB-LAYOUT-PERSIST-1); an edit applied here directly stays in the editor.
 //!
 //! Composition preview: paragraphs are shaped with a fixed advance of 0.5 em, line height 1.25 em
 //! and ascent 0.75 em of the paragraph style's point size (default 12 pt): a placeholder for the

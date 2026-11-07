@@ -205,7 +205,7 @@ impl Run<'_> {
             Ok(applied) => {
                 if applied.changed {
                     let inverse = step.inverse(step.command_id.clone(), step.correlation_id);
-                    self.undo_stack.push(HistoryStep { label, inverse: Value::Null, entry: None, timeline: None, group: None, sequences: None, containers: Some(inverse), ctx, revision: applied.revision });
+                    self.undo_stack.push(HistoryStep { label, inverse: Value::Null, entry: None, timeline: None, group: None, sequences: None, containers: Some(inverse), layout: None, ctx, revision: applied.revision });
                     self.redo_stack.clear();
                 }
                 detail["previous_revision"] = json!(applied.previous_revision);
@@ -241,7 +241,7 @@ impl Run<'_> {
                 }
                 let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
                 let inverse = submit.inverse(submit.command_id.clone(), submit.correlation_id);
-                let next = HistoryStep { label: step.label, inverse: Value::Null, entry: None, timeline: None, group: None, sequences: None, containers: Some(inverse), ctx, revision: applied.revision };
+                let next = HistoryStep { label: step.label, inverse: Value::Null, entry: None, timeline: None, group: None, sequences: None, containers: Some(inverse), layout: None, ctx, revision: applied.revision };
                 if undo {
                     self.redo_stack.push(next);
                 } else {
@@ -514,7 +514,7 @@ impl Run<'_> {
             }
             let revision = session.document_revision();
             let restore = EntryRestore { token: rules::ARTBOARD_OPTIONS_ENTRY.to_string(), bytes: previous };
-            self.undo_stack.push(HistoryStep { label: format!("{OP} {artboard}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, ctx, revision });
+            self.undo_stack.push(HistoryStep { label: format!("{OP} {artboard}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, layout: None, ctx, revision });
             self.redo_stack.clear();
         }
         self.own_op(OP, before, Ok(json!({"options": next.to_json(), "changed": changed})))
