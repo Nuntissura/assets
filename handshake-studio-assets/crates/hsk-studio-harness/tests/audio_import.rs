@@ -119,12 +119,12 @@ fn mixdown_exports_to_flac_and_aiff_and_decodes_back() {
             assert_eq!(receipt.flac_md5, None);
         }
         let (step, clipped) = match format {
-            MixFormat::Flac { bits } | MixFormat::Aiff { bits } => {
+            MixFormat::Flac { bits } | MixFormat::Aiff { bits } | MixFormat::Wav { bits } => {
                 let scale = f64::from(1u32 << (bits - 1));
                 let clipped = interleaved.iter().filter(|v| (f64::from(**v) * scale).round() > scale - 1.0 || (f64::from(**v) * scale).round() < -scale).count();
                 (1.0 / scale, clipped as u64)
             }
-            MixFormat::AiffFloat => (0.0, 0),
+            MixFormat::AiffFloat | MixFormat::WavFloat => (0.0, 0),
         };
         assert_eq!(receipt.clipped_samples, clipped, "{format:?}: clip count");
         for (i, (got, want)) in back.interleaved.iter().zip(&interleaved).enumerate() {
