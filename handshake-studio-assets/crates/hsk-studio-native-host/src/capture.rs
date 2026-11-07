@@ -152,3 +152,15 @@ pub fn layers_json(owner: &hsk_studio_vulkan::Owner) -> Json {
         ("enabled", Json::strs(&l.enabled)),
     ])
 }
+
+/// Writes `text` and a newline to `path` (the gui tree file).
+pub fn write_text(path: &Path, text: &str) -> Result<(), HostError> {
+    let mut file = std::fs::File::create(path).map_err(|_| HostError::Io("text_create"))?;
+    file.write_all(text.as_bytes()).and_then(|()| file.write_all(b"\n")).map_err(|_| HostError::Io("text_write"))
+}
+
+/// The status bar's device and backend readout (AC-BEHAV-07): the Owner's device, type and API version.
+pub fn device_readout(owner: &hsk_studio_vulkan::Owner) -> String {
+    let d = owner.device_info();
+    format!("{} ({}), vulkan {}.{}", d.name, d.device_type, d.api_version[0], d.api_version[1])
+}
