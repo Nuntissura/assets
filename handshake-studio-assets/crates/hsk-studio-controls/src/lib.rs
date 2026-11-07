@@ -1,9 +1,10 @@
-//! One shared egui control/panel mechanic configured by capability registry; agent
+//! One shared control/panel mechanic configured by capability registry, with egui as its one
+//! renderer behind the `egui` feature (D1 quarantine; everything else builds without it); agent
 //! projections/manual use same semantics; never imports full native app.
 //!
 //! Slices 1-2: typed control descriptors ([`ControlSpec`]) in a [`Registry`] with a dead-control
 //! audit, a validated [`ValueStore`] emitting undo-friendly [`ChangeEvent`]s, one egui renderer
-//! driven only by descriptors ([`egui_adapter`], headless-testable), and agent JSON / UserManual
+//! driven only by descriptors (`egui_adapter`, headless-testable), and agent JSON / UserManual
 //! projections of the same descriptors ([`projection`]), spec-aligned scrub gestures with one undo
 //! step per gesture, an integer domain, collapsible sections, and Observe reports ([`report`]).
 //! Menu and window descriptors ([`menu`], lane SMB-HARNESS-SHELL-2): one availability evaluation
@@ -11,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod descriptor;
+#[cfg(feature = "egui")]
 pub mod egui_adapter;
 pub mod menu;
 pub mod projection;

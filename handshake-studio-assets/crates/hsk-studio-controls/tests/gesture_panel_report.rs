@@ -1,8 +1,10 @@
 //! Slice 2 focused tests (<= 4): spec-aligned gesture semantics + undo coalescing, headless egui
 //! gestures and collapsible sections, section projection/audit, one Observe frame per operation.
 
+#[cfg(feature = "egui")]
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, vec2};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+#[cfg(feature = "egui")]
 use hsk_studio_controls::egui_adapter::{PanelOutcome, show_panel_and_apply};
 use hsk_studio_controls::projection::{agent_json, manual_topics, registry_from_json};
 use hsk_studio_controls::report::{ReportContext, report};
@@ -120,14 +122,17 @@ fn gesture_semantics_integer_domain_and_undo_coalescing() {
     assert_eq!(store.apply(&reg, &net_zero, None).unwrap(), None);
 }
 
+#[cfg(feature = "egui")]
 fn key(k: Key, pressed: bool) -> Event {
     Event::Key { key: k, physical_key: Some(k), pressed, repeat: false, modifiers: Modifiers::NONE }
 }
 
+#[cfg(feature = "egui")]
 fn button(pos: Pos2, pressed: bool) -> Event {
     Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
 }
 
+#[cfg(feature = "egui")]
 struct Harness {
     ctx: egui::Context,
     t: f64,
@@ -137,6 +142,7 @@ struct Harness {
     all: Vec<hsk_studio_controls::ChangeEvent>,
 }
 
+#[cfg(feature = "egui")]
 impl Harness {
     fn new() -> Self {
         let reg = panel();
@@ -173,6 +179,7 @@ impl Harness {
     }
 }
 
+#[cfg(feature = "egui")]
 #[test]
 fn headless_egui_label_scrub_is_one_gesture_and_sections_collapse() {
     let mut h = Harness::new();

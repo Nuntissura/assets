@@ -6,7 +6,7 @@
 //! A [`MenuBar`] is a tree of [`MenuNode`]s (titles, submenus, items). Each node carries its
 //! command id (the AccessKit author id is `menu.<id>`, MENU-INV-5 of [STU-SHL-017]) and ONE
 //! [`Availability`] evaluation that every projection reads: the egui renderer
-//! ([`menu_bar_ui`]: disabled + hover reason, never hidden, [STU-SHL-018]; the remedy of an
+//! (`menu_bar_ui`, feature `egui`: disabled + hover reason, never hidden, [STU-SHL-018]; the remedy of an
 //! `INAPPLICABLE_HERE` node as an enabled sibling leaf, [STU-SHL-020] / [STU-SHL-052]), the agent
 //! JSON ([`MenuBar::agent_json`]) and the UserManual topics ([`MenuBar::manual_topics`]). The
 //! states and reason codes are the closed sets of [STU-SHL-050] / [STU-SHL-051].
@@ -602,6 +602,7 @@ impl WindowSpec {
     }
 }
 
+#[cfg(feature = "egui")]
 /// One node the renderer drew this frame.
 #[derive(Clone, Debug)]
 pub struct RenderedNode {
@@ -613,6 +614,7 @@ pub struct RenderedNode {
     pub reason: String,
 }
 
+#[cfg(feature = "egui")]
 /// What [`menu_bar_ui`] drew and what was clicked.
 #[derive(Clone, Debug, Default)]
 pub struct MenuUi {
@@ -621,12 +623,14 @@ pub struct MenuUi {
     pub nodes: Vec<RenderedNode>,
 }
 
+#[cfg(feature = "egui")]
 impl MenuUi {
     pub fn drawn(&self) -> Vec<String> {
         self.nodes.iter().map(|n| n.author_id.clone()).collect()
     }
 }
 
+#[cfg(feature = "egui")]
 /// Draws `bar` with egui's menu bar: every node at every level, a node that is not available
 /// greyed with its reason line as hover text (never hidden), a toggle drawn selected, and after an
 /// `INAPPLICABLE_HERE` leaf an enabled sibling leaf `-> <remedy label>` (author id
@@ -641,6 +645,7 @@ pub fn menu_bar_ui(ui: &mut egui::Ui, bar: &MenuBar, id_of: &dyn Fn(&str) -> egu
     out
 }
 
+#[cfg(feature = "egui")]
 fn node_ui(ui: &mut egui::Ui, bar: &MenuBar, n: &MenuNode, id_of: &dyn Fn(&str) -> egui::Id, out: &mut MenuUi) {
     let author = n.author_id();
     let enabled = n.availability.is_available();

@@ -3,8 +3,10 @@
 //! R5: integer step saturating at the `i64` edge, plus the crate-wide audit of every step, nudge,
 //! clamp and no-change report path (slider arrows, live samples at a hard stop, stray aborts).
 
+#[cfg(feature = "egui")]
 use egui::{Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+#[cfg(feature = "egui")]
 use hsk_studio_controls::egui_adapter::{PanelOutcome, edit_id, show_panel_and_apply};
 use hsk_studio_controls::report::{ReportContext, report};
 use hsk_studio_controls::{
@@ -172,10 +174,12 @@ fn integer_and_directionless_steps_at_the_domain_edge_are_refused() {
     ));
 }
 
+#[cfg(feature = "egui")]
 fn key(k: Key, pressed: bool, modifiers: Modifiers) -> Event {
     Event::Key { key: k, physical_key: Some(k), pressed, repeat: false, modifiers }
 }
 
+#[cfg(feature = "egui")]
 struct Panel {
     ctx: egui::Context,
     t: f64,
@@ -183,6 +187,7 @@ struct Panel {
     store: ValueStore,
 }
 
+#[cfg(feature = "egui")]
 impl Panel {
     fn new() -> Self {
         let mut reg = Registry::new();
@@ -224,10 +229,12 @@ impl Panel {
     }
 }
 
+#[cfg(feature = "egui")]
 fn moves(out: &PanelOutcome) -> Vec<(ChangeSource, EventPhase, Value, Value)> {
     out.changes.iter().map(|e| (e.source, e.phase, e.old.clone(), e.new.clone())).collect()
 }
 
+#[cfg(feature = "egui")]
 #[test]
 fn slider_arrow_keys_use_the_descriptor_step_at_every_position() {
     // R5 audit (egui_adapter.rs slider): egui's own slider arrows were fed to the clamping pointer

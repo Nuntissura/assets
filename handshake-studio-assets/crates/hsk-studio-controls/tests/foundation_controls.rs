@@ -1,11 +1,15 @@
 //! Slice 1 focused tests (<= 5): numeric legality + store/undo, headless egui interaction,
 //! projection round-trip, dead-control audit, descriptor refusal.
 
+#[cfg(feature = "egui")]
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, vec2};
+#[cfg(feature = "egui")]
+use hsk_studio_controls::ChangeEvent;
+#[cfg(feature = "egui")]
 use hsk_studio_controls::egui_adapter::{edit_id, show_panel_and_apply};
 use hsk_studio_controls::projection::{agent_json, manual_topics, registry_from_json};
 use hsk_studio_controls::{
-    ChangeEvent, ChangeSource, ChoiceOption, ControlError, ControlSpec, GestureRoles, NumberSpec, Registry, SoftState,
+    ChangeSource, ChoiceOption, ControlError, ControlSpec, GestureRoles, NumberSpec, Registry, SoftState,
     Value, ValueStore,
 };
 
@@ -110,6 +114,7 @@ fn fixture_numeric_legality_store_and_undo() {
     assert_eq!(store.get("layer.opacity"), Some(&num(0.5)));
 }
 
+#[cfg(feature = "egui")]
 fn frame(ctx: &egui::Context, t: &mut f64, events: Vec<Event>, reg: &Registry, store: &mut ValueStore, origin: &mut Pos2) -> Vec<ChangeEvent> {
     *t += 0.1;
     let raw = RawInput {
@@ -128,14 +133,17 @@ fn frame(ctx: &egui::Context, t: &mut f64, events: Vec<Event>, reg: &Registry, s
     changes
 }
 
+#[cfg(feature = "egui")]
 fn key(k: Key, pressed: bool) -> Event {
     Event::Key { key: k, physical_key: Some(k), pressed, repeat: false, modifiers: Modifiers::NONE }
 }
 
+#[cfg(feature = "egui")]
 fn button(pos: Pos2, pressed: bool) -> Event {
     Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
 }
 
+#[cfg(feature = "egui")]
 #[test]
 fn headless_egui_frames_change_values_through_the_descriptor() {
     let reg = fixture();

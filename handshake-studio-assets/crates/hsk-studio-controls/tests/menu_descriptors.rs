@@ -3,12 +3,15 @@
 //! [STU-SHL-021] / [STU-SHL-050] / [STU-SHL-051] / [STU-SHL-251]). Headless: one bare
 //! `egui::Context`, pointer events only, no window.
 
+#[cfg(feature = "egui")]
 use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, vec2};
+#[cfg(feature = "egui")]
+use hsk_studio_controls::menu::{MenuUi, menu_bar_ui, remedy_author_id};
 use hsk_studio_controls::menu::{
-    Availability, AvailabilityState, MenuBar, MenuNode, MenuUi, ReasonCode, WindowRole, WindowSpec, menu_bar_ui, remedy_author_id,
-    vendor_product_names,
+    Availability, AvailabilityState, MenuBar, MenuNode, ReasonCode, WindowRole, WindowSpec, vendor_product_names,
 };
 
+#[cfg(feature = "egui")]
 fn id_of(name: &str) -> egui::Id {
     egui::Id::new(("menu-test", name))
 }
@@ -192,6 +195,7 @@ fn every_projection_reads_the_one_availability_record() {
 
 // ---- headless egui ---------------------------------------------------------------------------
 
+#[cfg(feature = "egui")]
 fn run(ctx: &egui::Context, bar: &MenuBar, events: Vec<Event>) -> MenuUi {
     let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 700.0))), events, ..Default::default() };
     let mut out = MenuUi::default();
@@ -203,15 +207,18 @@ fn run(ctx: &egui::Context, bar: &MenuBar, events: Vec<Event>) -> MenuUi {
     out
 }
 
+#[cfg(feature = "egui")]
 fn click(ctx: &egui::Context, bar: &MenuBar, at: Pos2) -> Vec<MenuUi> {
     let button = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
     vec![run(ctx, bar, vec![Event::PointerMoved(at), button(true)]), run(ctx, bar, vec![button(false)]), run(ctx, bar, vec![])]
 }
 
+#[cfg(feature = "egui")]
 fn node<'a>(ui: &'a MenuUi, author: &str) -> &'a hsk_studio_controls::menu::RenderedNode {
     ui.nodes.iter().find(|n| n.author_id == author).unwrap_or_else(|| panic!("{author} not drawn: {:?}", ui.drawn()))
 }
 
+#[cfg(feature = "egui")]
 #[test]
 fn menu_bar_ui_never_hides_a_node_and_dispatches_the_remedy_leaf() {
     let bar = sample();

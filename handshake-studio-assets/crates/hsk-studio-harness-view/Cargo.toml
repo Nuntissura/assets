@@ -35,7 +35,7 @@ hsk-studio-harness-core = { path = "../hsk-studio-harness-core", version = "=0.1
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
 hsk-studio-session = { path = "../hsk-studio-session", version = "=0.1.0", default-features = false }
-hsk-studio-controls = { path = "../hsk-studio-controls", version = "=0.1.0", default-features = false }
+hsk-studio-controls = { path = "../hsk-studio-controls", version = "=0.1.0", default-features = false, features = ["egui"] }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-interop-psd = { path = "../hsk-studio-interop-psd", version = "=0.1.0", default-features = false, optional = true }
