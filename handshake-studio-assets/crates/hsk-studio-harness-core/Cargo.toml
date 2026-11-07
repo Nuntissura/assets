@@ -25,6 +25,8 @@ hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-f
 hsk-studio-session = { path = "../hsk-studio-session", version = "=0.1.0", default-features = false }
 hsk-studio-controls = { path = "../hsk-studio-controls", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+# Lane SMB-WEB-HOST-1: the first host of the web crates (NEW EDGE harness-core -> web, dispatch 2026-11-07).
+hsk-studio-web = { path = "../hsk-studio-web", version = "=0.1.0", default-features = false }
 hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-interop-psd = { path = "../hsk-studio-interop-psd", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-develop = { path = "../hsk-studio-develop", version = "=0.1.0", default-features = false, optional = true }

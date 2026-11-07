@@ -1943,6 +1943,7 @@ dependencies = [
  "hsk-studio-press",
  "hsk-studio-prism",
  "hsk-studio-session",
+ "hsk-studio-web",
  "serde_json",
 ]
 
