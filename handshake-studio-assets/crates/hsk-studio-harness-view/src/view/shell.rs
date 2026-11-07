@@ -778,6 +778,21 @@ impl Viewer {
             return Err("layout_editor_unavailable".into());
         };
         ed.apply(edit).map_err(|e| e.code().to_owned())?;
+        let result = self.layout_commit(command, |_| {});
+        if result.is_err()
+            && let Some(ed) = self.shell.layout.as_mut()
+        {
+            ed.undo();
+        }
+        result
+    }
+
+    /// Commits the editor's state, with `change` applied to its document, as one document step named
+    /// `command` (`Run::submit_layout`); the session's code on a refusal, which changes nothing.
+    pub(super) fn layout_commit(&mut self, command: &'static str, change: impl FnOnce(&mut hsk_studio_folio::StudioDocument)) -> Result<(), String> {
+        let Some(ed) = self.shell.layout.as_ref() else {
+            return Err("layout_editor_unavailable".into());
+        };
         let (doc, rec) = (ed.doc(), ed.records());
         let records = hsk_studio_session::LayoutRecords {
             document_id: doc.document.document_id.clone(),
@@ -788,22 +803,25 @@ impl Viewer {
             longdoc: rec.longdoc.clone(),
         };
         let mut document = doc.document.clone();
+        change(&mut document);
         fit_spreads(&mut document);
         if self.run.submit_layout(command, command, document, records) {
             self.dirty = true;
             return Ok(());
         }
         let code = self.op_error();
-        if let Some(ed) = self.shell.layout.as_mut() {
-            ed.undo();
-        }
         self.say(format!("layout: {command} {code}"));
         Err(code)
     }
 
     /// Brings the layout editor to the session's layout state (opens it when it is not open); an editor
-    /// already showing that state keeps its tool, selection and panel state.
+    /// already showing that state keeps its tool, selection and panel state. With nothing open the
+    /// editor is left as it is (its layout is not a document's: lane SMB-LAYOUT-PDF-HOST-1's sized
+    /// blank layout).
     pub fn layout_sync(&mut self) {
+        if self.run.snapshot().is_none() {
+            return;
+        }
         let (doc, rec, _) = self.layout_doc();
         let current = self.shell.layout.as_ref().is_some_and(|ed| same_layout(ed.doc(), &doc) && *ed.records() == rec);
         if !current {

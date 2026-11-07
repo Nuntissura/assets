@@ -12,7 +12,9 @@
 //!   page size or a page count it starts a new blank layout of `pages` single-sided pages of that
 //!   size in points, each on its own spread (a deck of 1920 x 1080 pt slides, an A4 landscape
 //!   guide), only while the open document has no pages and the editor holds no edits:
-//!   `layout_document_has_pages`, `layout_unsaved_edits`. Size bounds: 1 to 14400 pt per side
+//!   `layout_document_has_pages`, `layout_unsaved_edits`. With a document open the pages become its
+//!   pages as one committed layout step `layout.open` (lane SMB-LAYOUT-PERSIST-1; refused
+//!   `layout_commit_refused` with the session's code); with nothing open the layout stays the editor's. Size bounds: 1 to 14400 pt per side
 //!   (`page_size_out_of_range`; 14400 pt = 200 in, the classic PDF page limit, UNVERIFIED against
 //!   Acrobat), 1 to 1000 pages (`page_count_out_of_range`).
 //! - [`Viewer::layout_preflight`]: the editor's live preflight (layout's engine, basic profile)
@@ -502,22 +504,37 @@ impl Viewer {
         if !self.panel_open(Panel::LayoutEditor) {
             self.toggle_panel(Panel::LayoutEditor).map_err(|m| LayoutExportRefusal::new("layout_unavailable", m))?;
         }
-        let editor = self.layout_editor().ok_or_else(|| LayoutExportRefusal::new("layout_unavailable", "the layout editor did not open"))?;
-        if let Some(doc) = sized {
-            *editor = LayoutEditor::new(doc);
+        // With a document open, the sized pages become its pages: one committed layout step (lane
+        // SMB-LAYOUT-PERSIST-1), so they are saved and every later layout command keeps them.
+        match sized {
+            Some(doc) if self.run.snapshot().is_some() => {
+                self.layout_sync();
+                self.layout_commit("layout.open", |d| d.page_spreads = doc.document.page_spreads)
+                    .map_err(|code| LayoutExportRefusal::new("layout_commit_refused", format!("the sized pages were not committed: {code}")))?;
+                self.layout_sync();
+            }
+            Some(doc) => {
+                if let Some(editor) = self.layout_editor() {
+                    *editor = LayoutEditor::new(doc);
+                }
+            }
+            None => {}
         }
+        let editor = self.layout_editor().ok_or_else(|| LayoutExportRefusal::new("layout_unavailable", "the layout editor did not open"))?;
         let doc = editor.doc();
         Ok(json!({"document_id": doc.document.document_id, "pages": pages_json(doc), "stories": doc.stories.len(), "frames": doc.document.layers.iter().filter(|l| l.text_frame.is_some()).count()}))
     }
 
     /// The live preflight of the Layout Editor (module docs).
     pub fn layout_preflight(&mut self) -> Result<Value> {
+        self.layout_sync();
         let editor = self.layout_editor().ok_or_else(|| LayoutExportRefusal::new("layout_not_open", "open the layout editor first (layout_open)"))?;
         let report = editor.preflight(None).map_err(|e| LayoutExportRefusal::new(e.code(), "preflight"))?;
         Ok(report_json(&report, usize::MAX))
     }
 
     fn live_layout(&mut self) -> Result<Live> {
+        self.layout_sync();
         let editor = self.layout_editor().ok_or_else(|| LayoutExportRefusal::new("layout_not_open", "open the layout editor first (layout_open)"))?;
         Ok(Live { doc: editor.doc().clone(), rec: editor.records().clone(), preflight: editor.preflight(None).map_err(|e| e.code()) })
     }
