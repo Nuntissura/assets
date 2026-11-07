@@ -754,7 +754,7 @@ impl Session {
                     last_report: report,
                     staged: BTreeMap::new(),
                     staged_bytes: 0,
-            removed: RemovedSequences::default(),
+                    removed: RemovedSequences::default(),
                 })
             }
             Err(error) => {
