@@ -5,7 +5,8 @@
 //! caller's attribution and survives save and reopen; a refused row answers a typed code. Oracles: the
 //! package reopened by the library viewer, the in-process player, hand values of the fixtures. Scenario
 //! steps (workflows/): audio-post 11, 21, 22, 33-35, 41, 42, 46-48, 51, 55, 57-59, 64-66, 69-71;
-//! video-edit 13, 15, 18, 19, 76, 77; product-design 43-45, 63, 65-68, 79.
+//! video-edit 13, 15, 18, 19, 76, 77; product-design 43-45, 63, 65-68, 79 (STU-PRO-138/139: the spec's
+//! prototype.start_session, dispatch_trigger, read_runtime_variables, capture_frame and end_session).
 //! Also the lead additions: SMB-DOC-NEW-1's rows mark optional parameters as their drive rows do, and
 //! its viewer rows are document rows.
 
@@ -22,7 +23,8 @@ const SLICE_ROWS: &[&str] = &[
     "waveform.gain_envelope", "waveform.amplify", "waveform.normalize", "waveform.invert", "waveform.reverse", "waveform.effect", "waveform.peaks", "waveform.state",
     "spectral.open", "spectral.set_region", "spectral.apply", "spectral.state",
     "monitor.open", "monitor.bind_program_media", "monitor.open_source_media", "monitor.source_mark", "monitor.key", "monitor.source_edit",
-    "prototype.open", "prototype.click", "prototype.hover", "prototype.advance", "prototype.restart", "prototype.render", "prototype.state",
+    "prototype.start_session", "prototype.dispatch_trigger", "prototype.click", "prototype.hover", "prototype.advance", "prototype.restart",
+    "prototype.read_runtime_variables", "prototype.capture_frame", "prototype.state", "prototype.end_session",
     "design.import_fig", "design.instance.inspect", "design.instance.switch_variant", "design.instance.set_property", "design.instance.set_override",
     "design.instance.reset_override", "design.instance.reset_all", "design.instance.swap_component",
 ];
@@ -655,7 +657,7 @@ mod product_design {
         let pages = fixture("fig-prototype-pages.fig");
         let mut oracle = PrototypePlay::open(&std::fs::read(&pages).unwrap(), None).unwrap();
         s.refused("prototype.click", json!({"x": 1, "y": 1}), "prototype_closed");
-        let opened = s.ok("prototype.open", json!({"path": pages.to_str().unwrap()}));
+        let opened = s.ok("prototype.start_session", json!({"path": pages.to_str().unwrap()}));
         assert_eq!(opened["state"], oracle.state_json(), "{opened}");
         let (x, y) = label_centre(&oracle, "Click: navigate to details");
         let hovered = s.ok("prototype.hover", json!({"x": x, "y": y}));
@@ -672,12 +674,31 @@ mod product_design {
         let mid = s.ok("prototype.advance", json!({"ms": 175}));
         oracle.advance(175);
         assert_eq!(mid["state"], oracle.state_json(), "the clock reached the same tween");
-        let rendered = s.ok("prototype.render", json!({}));
+        // Step 67: the mid frame captured to bytes on disk, the same size as the in-process render.
+        let frame = scratch.path("mid.png");
+        let rendered = s.ok("prototype.capture_frame", json!({"path": frame.to_str().unwrap()}));
         let screen = oracle.render().unwrap();
         assert_eq!((rendered["screen"]["width"].as_u64(), rendered["screen"]["height"].as_u64()), (Some(u64::from(screen.width)), Some(u64::from(screen.height))));
+        assert!(std::fs::read(&frame).unwrap().starts_with(b"\x89PNG"), "a PNG was written");
+        s.refused("prototype.capture_frame", json!({"path": frame.to_str().unwrap()}), "overwrite_required");
         s.refused("prototype.advance", json!({"ms": 3_600_001}), "parameter_invalid");
+        s.ok("prototype.advance", json!({"ms": 175}));
+        oracle.advance(175);
+        // Step 65 by name: a named trigger on a named node, no pointer.
+        let (x, y) = label_centre(&oracle, "Click: back to start");
+        let node = oracle.hit(x, y).expect("the label node");
+        let fired = s.ok("prototype.dispatch_trigger", json!({"node": node, "trigger": "click"}));
+        oracle.dispatch_trigger(&hsk_studio_components::PlayerInput::Click(node.clone()));
+        assert_eq!(fired["state"], oracle.state_json(), "{fired}");
+        assert_eq!(fired["state"]["screen_name"], "start-screen");
+        s.refused("prototype.dispatch_trigger", json!({"node": node, "trigger": "tap"}), "parameter_invalid");
+        // Step 68: runtime variables as the session holds them.
+        let vars = s.ok("prototype.read_runtime_variables", json!({}));
+        assert_eq!(vars["variables"], serde_json::to_value(&oracle.session().state().variables).unwrap(), "{vars}");
         let restarted = s.ok("prototype.restart", json!({}));
         assert_eq!(restarted["state"]["history_depth"], 0);
+        s.ok("prototype.end_session", json!({}));
+        s.refused("prototype.state", json!({}), "prototype_closed");
         assert_eq!(s.close(), 1);
 
         // The edited instance is kept: the reopened package draws the switched variant without the label.

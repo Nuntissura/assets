@@ -291,7 +291,7 @@ impl Live {
         let newest = |viewer: &Viewer| viewer.run().history()["undo_steps"].as_array().and_then(|s| s.last()).map(|s| s["correlation"].clone());
         let step_before = newest(&self.viewer);
         let result = self.viewer.run_command(entry.command_id, &map).map_err(|r| Refusal { code: r.code, detail: r.detail })?;
-        if entry.command_id == "panel.vector_import.import_vector"
+        if matches!(entry.command_id, "panel.vector_import.import_vector" | "design.import_fig")
             && let Some(dest) = params.get("dest")
         {
             // The viewer now holds the imported package: saves and exports guard that one.

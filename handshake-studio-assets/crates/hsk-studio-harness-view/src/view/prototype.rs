@@ -741,6 +741,13 @@ impl PrototypePlay {
         self.hovered = node;
     }
 
+    /// Fires a named trigger on a named node (STU-PRO-138 `prototype.dispatch_trigger`, lane
+    /// SMB-DRIVE-TYPED-2): no hit test and no pointer; its events join the ones [`Self::take_events`] returns.
+    pub fn dispatch_trigger(&mut self, input: &PlayerInput) {
+        let ev = self.session.dispatch(input);
+        self.events.extend(ev);
+    }
+
     /// Advances the session clock.
     pub fn advance(&mut self, ms: u64) {
         let ev = self.session.advance(ms);

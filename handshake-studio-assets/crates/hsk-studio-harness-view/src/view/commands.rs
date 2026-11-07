@@ -6,17 +6,23 @@
 //! that reaches no `Run` operation still ends in one terminal observe frame.
 //!
 //! A new command: its row in `hsk-studio-harness-core/src/action/commands/<domain>.rs`, its arm in the
-//! decoder of that domain here, and a JSONL test through the process.
+//! decoder of that domain here, and a JSONL test through the process. A domain whose engine is behind a
+//! feature answers `feature_unavailable` in a build without it.
 #![deny(clippy::arithmetic_side_effects)]
 
 mod audio;
 mod decode;
+mod design;
 mod export;
 mod layout;
+mod mixer;
+mod monitor;
 mod panel;
 mod photo;
+mod prototype;
 mod seed;
 mod vector;
+mod waveform;
 
 use super::Viewer;
 use decode::Fields;
@@ -64,6 +70,30 @@ fn method_refusal(viewer: &Viewer, before: usize, message: String) -> CommandRef
     CommandRefusal { code: code.unwrap_or_else(|| "command_refused".to_string()), detail: json!({"message": message}) }
 }
 
+/// An engine's refusal text as a stable code (lane SMB-DRIVE-TYPED-2): the run's newest record's when
+/// the method reached the run, else the text's own leading code (`lane_unavailable track_volume`,
+/// `mixer: rate_off_tick_grid`), else `command_refused`; the text stays in `detail.message`.
+fn engine_refusal(viewer: &Viewer, before: usize, message: String) -> CommandRefusal {
+    let mut refusal = method_refusal(viewer, before, message);
+    if refusal.code == "command_refused"
+        && let Some(code) = refusal.detail["message"].as_str().and_then(leading_code)
+    {
+        refusal.code = code;
+    }
+    refusal
+}
+
+/// The snake_case code a message starts with, after at most one `<engine>: ` prefix.
+fn leading_code(message: &str) -> Option<String> {
+    let rest = match message.split_once(": ") {
+        Some((engine, rest)) if engine.bytes().all(|b| b.is_ascii_lowercase()) => rest,
+        _ => message,
+    };
+    let token = rest.split([' ', ':', '(']).next()?;
+    let coded = token.len() <= 64 && token.contains('_') && token.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    coded.then(|| token.to_string())
+}
+
 /// Every given key is declared, every required key is given.
 fn check_declared(row: &CommandEntry, params: &Map<String, Value>) -> Result<(), CommandRefusal> {
     if let Some(key) = params.keys().find(|k| !row.parameters.iter().any(|p| p.key == k.as_str())) {
@@ -99,6 +129,12 @@ impl Viewer {
         let done = match id.split('.').next().unwrap_or_default() {
             "catalog" => return seed::run(self, id, f),
             "audio" => return audio::run(self, id, f),
+            // Lane SMB-DRIVE-TYPED-2: audio post, the monitors and product design.
+            "mixer" | "multitrack" => return mixer::run(self, id, f, before),
+            "waveform" | "spectral" => return waveform::run(self, id, f, before),
+            "monitor" => return monitor::run(self, id, f),
+            "prototype" => return prototype::run(self, id, f),
+            "design" if design::owns(id) => return design::run(self, id, f, before),
             "layout" => return layout::run(self, id, f),
             "panel" => return panel::run(self, id, f),
             "vector" => vector::run_vector(self, id, f)?,
