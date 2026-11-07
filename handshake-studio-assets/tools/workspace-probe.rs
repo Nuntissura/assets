@@ -607,11 +607,111 @@ fn toolkit_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     name.split(['-', '_']).any(|word| TOOLKIT_TOKENS.contains(&word))
 }
-fn toolkit_manifest_gate(_owner: &str, _manifest: &Document) -> Result<()> {
+// Rejection codes name the crate and the dependency, without `:` so main keeps the whole code.
+fn toolkit_dependency(owner: &str, alias: &str, spec: Option<&Value>) -> Result<()> {
+    let real = match spec {
+        Some(Value::Map(m)) => m.get("package").map(Value::text).transpose()?.unwrap_or(alias),
+        _ => alias,
+    };
+    for name in [real, alias] {
+        if toolkit_name(name) && !TOOLKIT_ALLOWED_DEPS.contains(&(owner, real)) {
+            let shown: String = name.chars().take(64).collect();
+            return Err(format!("toolkit_gate_dependency/{owner}/{shown}"));
+        }
+    }
     Ok(())
 }
-fn toolkit_wgsl_gate(_found: &[String]) -> Result<()> {
+fn toolkit_forward(owner: &str, dep: &str, feature: &str) -> Result<()> {
+    let forward = format!("{dep}/{feature}");
+    if toolkit_name(feature) && !TOOLKIT_ALLOWED_FORWARDS.contains(&(owner, forward.as_str())) {
+        let shown: String = forward.chars().take(128).collect();
+        return Err(format!("toolkit_gate_forward/{owner}/{shown}"));
+    }
     Ok(())
+}
+fn toolkit_manifest_gate(owner: &str, manifest: &Document) -> Result<()> {
+    const KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+    for (section, table) in &manifest.tables {
+        if section == "features" {
+            for entries in table.values() {
+                for entry in entries.list()? {
+                    if let Some((dep, feature)) = entry.split_once('/') {
+                        toolkit_forward(owner, dep.trim_end_matches('?'), feature)?;
+                    }
+                }
+            }
+            continue;
+        }
+        // Metadata tables are data about crates, not dependencies of this manifest (root [workspace.metadata...]).
+        if section.starts_with("workspace.metadata.") {
+            continue;
+        }
+        let words: Vec<&str> = section.rsplitn(2, '.').collect();
+        if KINDS.contains(&words[0]) {
+            for (alias, spec) in table {
+                toolkit_dependency(owner, alias, Some(spec))?;
+                // A registry dependency's own features (eframe's "wgpu") are pinned by the registry policy.
+                if let Value::Map(m) = spec
+                    && m.contains_key("path")
+                    && let Some(listed) = m.get("features")
+                {
+                    for feature in listed.list()? {
+                        toolkit_forward(owner, alias, &feature)?;
+                    }
+                }
+            }
+        } else if words.len() == 2 && KINDS.iter().any(|k| words[1] == *k || words[1].ends_with(&format!(".{k}"))) {
+            // [dependencies.NAME] subtable; inspection rejects the shape for a selected package, the gate names it here.
+            toolkit_dependency(owner, words[0], table.get("package"))?;
+        }
+    }
+    Ok(())
+}
+fn toolkit_wgsl_gate(found: &[String]) -> Result<()> {
+    for path in found {
+        if !TOOLKIT_ALLOWED_WGSL.contains(&path.as_str()) {
+            return Err(format!("toolkit_gate_wgsl/{path}"));
+        }
+    }
+    Ok(())
+}
+// Every `.wgsl` file under the workspace root, relative, sorted. The root's `target` and any `.git` are skipped; links
+// are not followed (a link named x.wgsl still counts).
+fn toolkit_wgsl_files(root: &Path) -> Result<Vec<String>> {
+    let mut pending = vec![(root.to_path_buf(), String::new())];
+    let mut found = vec![];
+    let mut seen = 0usize;
+    while let Some((dir, relative)) = pending.pop() {
+        for entry in fs::read_dir(&dir).map_err(|_| "toolkit_gate_unreadable_tree")? {
+            let entry = entry.map_err(|_| "toolkit_gate_unreadable_tree")?;
+            seen += 1;
+            if seen > TOOLKIT_WALK_LIMIT {
+                return Err("toolkit_gate_walk_limit".into());
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = if relative.is_empty() { name.clone() } else { format!("{relative}/{name}") };
+            let kind = entry.file_type().map_err(|_| "toolkit_gate_unreadable_tree")?;
+            if kind.is_dir() {
+                if name != ".git" && !(relative.is_empty() && name == "target") {
+                    pending.push((entry.path(), path));
+                }
+            } else if name.to_ascii_lowercase().ends_with(".wgsl") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+// The whole gate over the real tree: root table, every registered member manifest, every `.wgsl`. Runs for every
+// selection, so a gain rejects whichever package is probed. Plain reads: provenance covers selected inputs only.
+fn toolkit_gate(root: &Path, workspace: &Document, members: &[String]) -> Result<()> {
+    toolkit_manifest_gate("workspace", workspace)?;
+    for member in members {
+        let owner = member.rsplit('/').next().ok_or("invalid_member")?;
+        toolkit_manifest_gate(owner, &doc(&read(&inside(root, &format!("{member}/Cargo.toml"))?)?)?)?;
+    }
+    toolkit_wgsl_gate(&toolkit_wgsl_files(root)?)
 }
 fn native_name(name: &str) -> bool {
     name.ends_with("-sys") || name.ends_with("_sys")
@@ -930,7 +1030,7 @@ fn toolkit_gate_self_test() -> Result<usize> {
         ("hsk-studio-controls", "[dependencies]\nwgpu = { V }\n", "toolkit_gate_dependency/hsk-studio-controls/wgpu"),
         ("hsk-studio-render-gpu", "[dependencies]\nnaga = { V }\n", "toolkit_gate_dependency/hsk-studio-render-gpu/naga"),
         // The other door: a headless consumer turns the Studio toolkit feature on.
-        ("hsk-studio-new", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", V, features = [\"egui\"] }\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
+        ("hsk-studio-new", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
         ("hsk-studio-new", "[features]\nui = [\"hsk-studio-controls/egui\"]\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
         ("hsk-studio-new", "[features]\nui = [\"hsk-studio-controls?/egui\"]\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
         // The root table a crate inherits from.
@@ -946,8 +1046,8 @@ fn toolkit_gate_self_test() -> Result<usize> {
     }
     let today = [
         ("hsk-studio-controls", "[features]\ndefault = []\negui = [\"dep:egui\"]\n[dependencies]\negui = { V, optional = true }\nserde = { V }\n"),
-        ("hsk-studio-harness", "[features]\nviewer = [\"dep:egui\"]\ndesktop = [\"viewer\", \"dep:eframe\", \"hsk-studio-render-gpu/shared-device\"]\n[dependencies]\negui = { V, optional = true }\neframe = { version = \"=1.0.0\", default-features = false, features = [\"wgpu\"], optional = true }\nhsk-studio-controls = { path = \"../hsk-studio-controls\", V, features = [\"egui\"] }\n"),
-        ("hsk-studio-harness-core", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", V, features = [\"egui\"] }\n"),
+        ("hsk-studio-harness", "[features]\nviewer = [\"dep:egui\"]\ndesktop = [\"viewer\", \"dep:eframe\", \"hsk-studio-render-gpu/shared-device\"]\n[dependencies]\negui = { V, optional = true }\neframe = { version = \"=1.0.0\", default-features = false, features = [\"wgpu\"], optional = true }\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n"),
+        ("hsk-studio-harness-core", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n"),
         ("hsk-studio-harness-view", "[features]\nui = [\"hsk-studio-controls/egui\"]\n[dependencies]\neframe = { V }\n"),
         ("hsk-studio-render-gpu", "[dependencies]\nwgpu = { version = \"=1.0.0\", default-features = false, features = [\"std\", \"wgsl\"] }\n"),
         // Words that only look close, and a forward of an ordinary feature.
@@ -1093,6 +1193,7 @@ fn inspect(args: &[String]) -> Result<String> {
             return Err("undeclared_workspace_member".into());
         }
     }
+    toolkit_gate(&root, &manifest, &members)?;
     for p in &selected {
         if !available.contains_key(p) {
             return Err("unknown_package".into());
@@ -1414,7 +1515,7 @@ fn inspect(args: &[String]) -> Result<String> {
         hashes
     ))
 }
-const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example, bin, test and bench targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","selection":"Explicit registered packages only, no implicit default features. Feature selectors: dep:x activates optional x; x/f (weak x?/f) forwards feature f to path dependency x (Cargo unification: x activated unless weak, f must exist in x, path-dependency features lists forward the same way, a package is inspected again when its feature set grows; closure_features in the result); selectors naming a registry or undeclared dependency reject. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. Only owner/library pairs in the APPROVED table (generated from workspace.metadata.studio.registry.OWNER.direct by the steward registry sync tool) are approved exact inline direct registry pins, with explicit no defaults and exact feature sets. Native policy: -sys/_sys records only in native provider owners render-gpu, score-device, score-plugin, reel-native, motion-js and labelled kind=native-ffi; wgpu only in render-gpu, egui only in controls, ffmpeg-sys-next only in reel-native; handshake_core, handshake_native, surrealdb, rocksdb, eframe, image, libsqlite3-sys always reject. Metadata workspace.metadata.studio.registry.OWNER has direct inline maps by library (version,features,default-features=false), and locked inline maps keyed name@version (source,checksum,kind=pure-rust|native-ffi) covering the actual selected transitive lock closure, maximum256records. Source is exactly registry+https://github.com/rust-lang/crates.io-index; lock checksum must be64hex and match independently pinned policy. Git/alternate registries, implicit defaults, unapproved native/host dependencies, ambiguous identities and missing transitive pins reject; no network. Metadata pure classification is an owner-approved selection policy, not independent crate implementation review or compiler feature proof. Host paths and pure-leaf GPU edges still reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":64,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
+const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example, bin, test and bench targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","toolkit_gate":"Every inspection, before selection: the root [workspace.dependencies], every registered member manifest and every .wgsl file under --root are checked against the quarantine lists at base c4d06841 (Operator D1, D7). A dependency whose name has egui, eframe, winit, wgpu or naga as a word, in any dependency table, optional or renamed, a path-dependency features entry or dep/feature selector forwarding such a feature, or a .wgsl file (any case) beyond the lists rejects with toolkit_gate_dependency/CRATE/NAME, toolkit_gate_forward/CRATE/DEP/FEATURE or toolkit_gate_wgsl/RELATIVE-PATH. Recovery: remove the gain; only an Operator decision adds an entry. --self-test runs the fixtures. Transitive records, generated shader text and source code are not read.","selection":"Explicit registered packages only, no implicit default features. Feature selectors: dep:x activates optional x; x/f (weak x?/f) forwards feature f to path dependency x (Cargo unification: x activated unless weak, f must exist in x, path-dependency features lists forward the same way, a package is inspected again when its feature set grows; closure_features in the result); selectors naming a registry or undeclared dependency reject. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. Only owner/library pairs in the APPROVED table (generated from workspace.metadata.studio.registry.OWNER.direct by the steward registry sync tool) are approved exact inline direct registry pins, with explicit no defaults and exact feature sets. Native policy: -sys/_sys records only in native provider owners render-gpu, score-device, score-plugin, reel-native, motion-js and labelled kind=native-ffi; wgpu only in render-gpu, egui only in controls, ffmpeg-sys-next only in reel-native; handshake_core, handshake_native, surrealdb, rocksdb, eframe, image, libsqlite3-sys always reject. Metadata workspace.metadata.studio.registry.OWNER has direct inline maps by library (version,features,default-features=false), and locked inline maps keyed name@version (source,checksum,kind=pure-rust|native-ffi) covering the actual selected transitive lock closure, maximum256records. Source is exactly registry+https://github.com/rust-lang/crates.io-index; lock checksum must be64hex and match independently pinned policy. Git/alternate registries, implicit defaults, unapproved native/host dependencies, ambiguous identities and missing transitive pins reject; no network. Metadata pure classification is an owner-approved selection policy, not independent crate implementation review or compiler feature proof. Host paths and pure-leaf GPU edges still reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":64,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes, except that a toolkit_gate_wgsl code names the workspace-relative file; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = if args == ["--help"] || args == ["--descriptor"] {
