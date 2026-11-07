@@ -282,8 +282,10 @@ pub(crate) fn keep_multicam_records_valid(
     let Some(records) = multicam.and_then(|bytes| serde_json::from_slice::<StudioMulticamRecords>(bytes).ok()) else {
         return Ok(());
     };
-    if validate_multicam_records(&records, document, budget, cancel).is_err() {
-        return Ok(());
+    match validate_multicam_records(&records, document, budget, cancel) {
+        Ok(()) => {}
+        Err(d) if d.code == Code::Canceled => return Err(SessionError::Canceled),
+        Err(_) => return Ok(()),
     }
     validate_multicam_records(&records, successor, budget, cancel).map_err(folio_code)
 }
@@ -647,6 +649,30 @@ mod tests {
         assert_eq!(command_error(E::InvalidInput(Code::InvalidField)).code(), "invalid_input");
         assert_eq!(command_error(E::StaleRevision { expected: 1, current: 2 }), SessionError::StaleRevision { expected: 1, current: 2 });
         assert_eq!(command_error(E::PresetMissing).code(), "preset_missing");
+    }
+
+    /// Review F1: a cancel is not stale records. It stops the step here, where a commit would otherwise
+    /// go on unchecked. Records invalid for any other reason are still not this step's to judge. A submit
+    /// checks its token first, so only a direct call shows it.
+    #[test]
+    fn a_cancel_during_the_multicam_guard_is_a_cancel_not_stale_records() {
+        let document: StudioDocument = serde_json::from_value(serde_json::json!({
+            "schema_id":"hsk.studio.document@1","document_id":"SDOC-019abcde-0000-7000-8000-000000000001","revision":1,"geometry_unit":"px","colour_mode":3,"bits_per_channel":8,
+            "working_space_rgb":null,"working_space_cmyk":null,"working_space_gray":null,"working_space_spot":null,"blending_space":null,
+            "artboards":[],"page_spreads":[],"layers":[],
+            "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[],"edges":[],"outputs":[]},
+            "sequences":[]
+        }))
+        .unwrap();
+        let body = |id: &str| serde_json::to_vec(&StudioMulticamRecords::new(id)).unwrap();
+        let valid = body(&document.document_id);
+        let canceled = CancellationToken::default();
+        canceled.cancel();
+        let guard = |bytes: &[u8], token: &CancellationToken| keep_multicam_records_valid(Some(bytes), &document, &document, folio::Budget::default(), token);
+        assert_eq!(guard(&valid, &canceled), Err(SessionError::Canceled));
+        assert_eq!(guard(&valid, &CancellationToken::default()), Ok(()));
+        // Another document's records do not validate now: not judged.
+        assert_eq!(guard(&body("SDOC-019abcde-0000-7000-8000-000000000002"), &CancellationToken::default()), Ok(()));
     }
 
     /// And for the media marker commands.
