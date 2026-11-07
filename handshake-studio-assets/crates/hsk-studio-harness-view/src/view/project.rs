@@ -172,10 +172,6 @@ impl Viewer {
 
     /// New sequence `name` from preset `preset_id` (module docs); returns its id.
     pub fn project_new_sequence(&mut self, name: &str, preset_id: &str) -> Result<String, String> {
-        #[allow(unreachable_code)]
-        if true {
-            return Err("not_built".into());
-        }
         let settings = self.preset_settings(preset_id)?;
         let doc = self.run.snapshot().map(|s| s.document()).ok_or("not_open")?;
         let reserved = ReservedIds::of(&self.run);
