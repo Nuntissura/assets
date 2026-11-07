@@ -23,14 +23,17 @@
 //!   character style's family and size, else the paragraph style's, else the bundled
 //!   `Ubuntu-Light` 12 pt; a family the viewer does not have is drawn in the bundled font and
 //!   reported `font_substituted`; a paragraph terminator inside one Folio paragraph splits the
-//!   shaping only and is reported `paragraph_break_inside_paragraph_not_drawn`), composed by layout (`reflow_flow`, first-fit, line height 1.25
+//!   shaping only: layout sets it as a line break, the paragraph boundary is lost (the text after
+//!   it keeps the first paragraph's style), reported `paragraph_break_inside_paragraph_set_as_line_break`), composed by layout (`reflow_flow`, first-fit, line height 1.25
 //!   em and ascent 0.75 em of the paragraph's largest size: the editor's convention), and lowered by
 //!   `export_pdf_with` with Type's glyph ids, page labels from the Studio sections
 //!   (`number_pages`, arabic from 1 without sections), TrimBox and BleedBox from the pages. Options:
 //!   `pdfx` (`pdfx.none` or `pdfx.x4_2010`, which needs `created`, a PDF date, and an output
 //!   profile), an output intent from an ICC file (`output_profile`; components from its header),
-//!   `title`, `subset_fonts`. PDF/X-4 output is self-checked (press `check_pdfx4`) and the report is
-//!   returned; conformance stays `not_proven` (STU-PDF-002). The result lists the engine's loss
+//!   `title`, `subset_fonts`. Unstyled text is black in the intent's colour space (DeviceCMYK for a
+//!   CMYK intent, DeviceGray for gray, else DeviceRGB). PDF/X-4 output is self-checked (press
+//!   `check_pdfx4`): a failed rule refuses `pdfx_self_check_failed` before anything is written, a
+//!   passing report is returned; conformance stays `not_proven` (STU-PDF-002). The result lists the engine's loss
 //!   entries and this host's own (`host_loss`), page ids and sizes, glyph, path and tile counts,
 //!   sha256 and the job settlement.
 //! - [`Viewer::export_layout_idml`]: the same live document as an IDML package; style names are
@@ -593,7 +596,8 @@ impl Viewer {
                 let mut g = Vec::new();
                 // A terminator inside one Folio paragraph (the editor's insert into an empty story
                 // keeps one paragraph): Type shapes each piece on its own, the pieces join into the
-                // one paragraph layout composes, and the break is reported, not drawn.
+                // one paragraph layout composes, whose line breaking (UAX #14) ends the line at the
+                // terminator. The paragraph boundary is what is lost, and it is reported.
                 let pieces = pieces_of(visible);
                 inner_breaks = inner_breaks.saturating_add(pieces.len().saturating_sub(1));
                 for (k, (a, b)) in pieces.into_iter().enumerate() {
@@ -626,11 +630,19 @@ impl Viewer {
             let placement = reflow_flow(&request, &options, &doc.flow, cancel).map_err(|e| LayoutExportRefusal::new(e.code(), st.story_id.clone()))?;
             composed.push(Composed { story: *i, placement, paragraphs, glyphs });
         }
+        // Unstyled text is black in the output intent's colour space (a CMYK or gray intent
+        // takes no device RGB); style fills stay the engine's (RGB ones are its losses).
+        let intent_components = settings.output_profile.map(icc_components).transpose()?;
+        let default_fill = match intent_components {
+            Some(4) => Colour::DeviceCmyk([0.0, 0.0, 0.0, 1.0]),
+            Some(1) => Colour::DeviceGray(0.0),
+            _ => Colour::DeviceRgb([0.0, 0.0, 0.0]),
+        };
         let stories: Vec<PdfStory<'_>> = composed
             .iter()
             .filter_map(|c| {
                 let st = doc.stories.get(c.story)?;
-                Some(PdfStory { story: st, text: story_text(st), placement: &c.placement, paragraphs: &c.paragraphs, glyphs: &c.glyphs, default_fill: Colour::DeviceRgb([0.0, 0.0, 0.0]) })
+                Some(PdfStory { story: st, text: story_text(st), placement: &c.placement, paragraphs: &c.paragraphs, glyphs: &c.glyphs, default_fill })
             })
             .collect();
         let snapshot = match self.run.snapshot().filter(|s| *s.document() == doc.document) {
@@ -640,16 +652,16 @@ impl Viewer {
         };
         let numbers = number_pages(&doc.document, &rec.longdoc.sections).map_err(|e| LayoutExportRefusal::new(e.code(), "page numbering"))?;
         let labels = page_labels_from_sections(&rec.longdoc.sections, &numbers);
-        let intent = match settings.output_profile {
-            Some(icc) => Some(OutputIntent {
+        let intent = match (settings.output_profile, intent_components) {
+            (Some(icc), Some(components)) => Some(OutputIntent {
                 icc,
-                components: icc_components(icc)?,
+                components,
                 output_condition_identifier: settings.output_condition_identifier.unwrap_or("Custom"),
                 output_condition: settings.output_condition,
                 registry: settings.registry,
                 subtype: OutputIntentSubtype::GtsPdfx,
             }),
-            None => None,
+            _ => None,
         };
         let identification = match (settings.pdfx, settings.created) {
             (PdfXStandard::X4_2010, Some(created)) => Some(PdfX4 { created, modified: created, trapped: false }),
@@ -674,13 +686,16 @@ impl Viewer {
         let pdfx = match settings.pdfx {
             PdfXStandard::X4_2010 => {
                 let r = check_pdfx4(&out.bytes, &hsk_studio_press::Limits::default(), cancel).map_err(|e| LayoutExportRefusal::new(e.code(), "pdfx self-check"))?;
+                if !r.all_passed() {
+                    return Err(LayoutExportRefusal::new("pdfx_self_check_failed", json!({"failed": r.failed()}).to_string()));
+                }
                 json!({"standard": settings.pdfx.code(), "self_check": {"conformance": r.conformance, "all_passed": r.all_passed(), "failed": r.failed(), "rules": r.rules.iter().map(|x| json!({"id": x.id, "passed": x.passed})).collect::<Vec<_>>()}})
             }
             other => json!({"standard": other.code()}),
         };
         let mut host_loss: Vec<Value> = substituted.iter().map(|(family, n)| json!({"code": "font_substituted", "element": family, "count": n, "drawn_with": fonts.get(fallback).map(|f| f.family.as_str())})).collect();
         if inner_breaks > 0 {
-            host_loss.push(json!({"code": "paragraph_break_inside_paragraph_not_drawn", "element": "stories", "count": inner_breaks}));
+            host_loss.push(json!({"code": "paragraph_break_inside_paragraph_set_as_line_break", "element": "stories", "count": inner_breaks}));
         }
         let tables = rec.longdoc.tables.len();
         if tables > 0 {
@@ -691,6 +706,7 @@ impl Viewer {
         let overset: Vec<&str> = composed.iter().filter(|c| c.placement.overset.is_some()).filter_map(|c| doc.stories.get(c.story)).map(|s| s.story_id.as_str()).collect();
         let summary = json!({
             "bytes": out.bytes.len(), "sha256": hex(&hsk_studio_prism::profile_hash(&out.bytes)), "pages": out.pages, "page_sizes": pages_json(doc),
+            "default_fill": match default_fill { Colour::DeviceCmyk(_) => "device_cmyk", Colour::DeviceGray(_) => "device_gray", _ => "device_rgb" },
             "glyphs_drawn": out.glyphs_drawn, "paths_drawn": out.paths_drawn, "tiles_drawn": out.tiles_drawn, "lines": lines, "overset_stories": overset,
             "fonts": used.iter().filter_map(|i| fonts.get(*i)).map(|f| f.family.as_str()).collect::<Vec<_>>(), "page_labels": labels.len(),
             "loss": loss_json(&out.loss), "host_loss": host_loss, "preflight": report_json(&report, MAX_LISTED_FINDINGS), "pdfx": pdfx,
@@ -722,12 +738,23 @@ impl Viewer {
                 doc.styles.styles.iter().filter(|s| s.scope == scope).map(|s| (s.style_id.clone(), format!("{prefix}/{}", s.name))).collect()
             };
             let names = ExportNames { paragraph_styles: names_of(TypeStyleScope::Paragraph, "ParagraphStyle"), character_styles: names_of(TypeStyleScope::Character, "CharacterStyle"), languages: BTreeMap::new() };
-            let stories: Vec<StoryInput<'_>> = doc.stories.iter().map(|s| StoryInput { story: s, resolved_text: None }).collect();
+            // Table cell, footnote, endnote and sidenote stories are the long-document records'
+            // (export_folio_longdoc looks them up there); every other story is a host story.
+            let notes: BTreeSet<&str> = rec
+                .longdoc
+                .tables
+                .iter()
+                .filter_map(|t| t.cell_story_id.as_deref())
+                .chain(rec.longdoc.footnotes.iter().map(|f| f.note_story_id.as_str()))
+                .chain(rec.longdoc.endnotes.iter().chain(&rec.longdoc.sidenotes).map(|e| e.note_story_id.as_str()))
+                .collect();
+            let (note_stories, stories): (Vec<StoryInput<'_>>, Vec<StoryInput<'_>>) =
+                doc.stories.iter().map(|s| StoryInput { story: s, resolved_text: None }).partition(|s| notes.contains(s.story.story_id.as_str()));
             let input = FolioExportInput { document: &doc.document, stories: &stories, names: &names };
-            let out = export_folio_longdoc(&input, &LongDocExportInput { records: &rec.longdoc, stories: &[] }, &il::Limits::default(), v.cancel)
+            let out = export_folio_longdoc(&input, &LongDocExportInput { records: &rec.longdoc, stories: &note_stories }, &il::Limits::default(), v.cancel)
                 .map_err(|e| LayoutExportRefusal::new(e.code(), "idml export"))?;
             write_atomic(path, &out.bytes).map_err(|code| LayoutExportRefusal::new(code, path.display().to_string()))?;
-            Ok(json!({"path": path.to_string_lossy(), "bytes": out.bytes.len(), "sha256": hex(&hsk_studio_prism::profile_hash(&out.bytes)), "stories": stories.len(), "pages": pages_json(doc), "loss": loss_json(&out.loss)}))
+            Ok(json!({"path": path.to_string_lossy(), "bytes": out.bytes.len(), "sha256": hex(&hsk_studio_prism::profile_hash(&out.bytes)), "stories": stories.len(), "note_stories": note_stories.len(), "pages": pages_json(doc), "loss": loss_json(&out.loss)}))
         })
     }
 
