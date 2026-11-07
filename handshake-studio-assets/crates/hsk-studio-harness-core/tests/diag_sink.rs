@@ -465,6 +465,12 @@ fn run_child(mode: &str, dir: &Path) -> Child {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console of its own: a test never opens a window (HBR-QUIET).
+        command.creation_flags(0x0800_0000);
+    }
     let mut child = command.spawn().unwrap();
     let mut stderr_pipe = child.stderr.take().unwrap();
     let reader = std::thread::spawn(move || {

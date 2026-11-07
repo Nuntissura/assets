@@ -56,6 +56,12 @@ fn studio(binary: &Path, local: &Path, args: &[&str]) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console of its own: a test never opens a window (HBR-QUIET).
+        command.creation_flags(0x0800_0000);
+    }
     command
 }
 fn output(command: &mut Command) -> Output {
@@ -210,11 +216,80 @@ fn a_location_that_cannot_be_written_never_fails_the_command_and_health_is_typed
     assert_eq!((report["ok"].as_bool(), report["verdict"].as_str(), report["error"].as_str()), (Some(false), Some("fail"), Some("diag_unavailable")));
 
     // The default location, blocked: no fallback anywhere else, and the same answers.
-    let out = output(Command::new(&binary).arg("providers").env_remove(ENV).env("LOCALAPPDATA", &blocked).env("XDG_STATE_HOME", &blocked).env("HOME", &blocked).stdin(Stdio::null()));
+    let quiet = |word: &str| {
+        let mut command = studio(&binary, &blocked, &[word]);
+        command.env_remove(ENV);
+        command
+    };
+    let out = output(&mut quiet("providers"));
     assert_eq!(out.status.code(), Some(0));
-    let out = output(Command::new(&binary).arg("health").env_remove(ENV).env("LOCALAPPDATA", &blocked).env("XDG_STATE_HOME", &blocked).env("HOME", &blocked).stdin(Stdio::null()));
+    let out = output(&mut quiet("health"));
     assert_eq!(out.status.code(), Some(diag_sink::HEALTH_EXIT_DIAG_UNAVAILABLE));
     assert_eq!(fs::read(&blocked).unwrap(), b"a file, not a directory");
+}
+
+/// Lane SMB-HARNESS-DRIVE-1's commands in a binary: the viewer's own harness takes the process's sink, so what they ran
+/// is in the diag dir, whichever way the dir was named, and a layer name is not.
+#[cfg(feature = "viewer")]
+#[test]
+fn state_command_and_undo_leave_what_ran_in_the_diag_dir() {
+    use std::io::Write;
+    let Some(binary) = binary() else { return };
+    let scratch = Scratch::new("drive");
+    let local = scratch.path("local");
+    let package = scratch.path(&format!("{DECOY_FILE}.handshake"));
+    fs::write(&package, FIXTURE).unwrap();
+    let p = package.to_str().unwrap();
+    let who = ["--actor", "lane-a", "--session", "s-1"];
+    let ran = |dir: &Path, command: &str, exit: i64| {
+        let all = lines(dir);
+        assert_eq!((all[1]["kind"].as_str(), all[1]["command"].as_str()), (Some("run_start"), Some(command)), "{all:?}");
+        let end = all.last().unwrap();
+        assert_eq!((end["kind"].as_str(), end["command"].as_str(), end["exit"].as_i64()), (Some("run_end"), Some(command), Some(exit)), "{all:?}");
+        let text = fs::read_to_string(&diag_files(dir)[0]).unwrap();
+        assert!(!text.contains(DECOY_NAME) && !text.contains(DECOY_FILE), "{text}");
+        all
+    };
+    let ops_and_frames = |all: &[Value]| (all.iter().filter(|l| l["kind"] == "op").count(), all.iter().filter(|l| l["kind"] == "frame").count());
+
+    let state = scratch.path("state");
+    let mut one: Vec<&str> = vec!["state", p];
+    one.extend(who);
+    one.extend(["--diag-dir", state.to_str().unwrap()]);
+    let out = output(&mut studio(&binary, &local, &one));
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let (ops, frames) = ops_and_frames(&ran(&state, "state", 0));
+    assert!(ops >= 1 && frames >= 1, "{ops} ops, {frames} frames");
+
+    let edited = scratch.path("command");
+    let mut one: Vec<&str> = vec!["command", p];
+    one.extend(who);
+    one.extend(["--command-id", "layer.rename", "--param", "layer", L2, "--param", "name", DECOY_NAME]);
+    let out = output(studio(&binary, &local, &one).env(ENV, &edited));
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let (ops, frames) = ops_and_frames(&ran(&edited, "command", 0));
+    assert!(ops >= 2 && frames >= 2, "{ops} ops, {frames} frames");
+
+    let undone = scratch.path("undo");
+    let mut one: Vec<&str> = vec!["undo", p];
+    one.extend(who);
+    let out = output(studio(&binary, &local, &one).env(ENV, &undone));
+    assert_eq!(out.status.code(), Some(1), "undo in one shot refuses: {}", String::from_utf8_lossy(&out.stdout));
+    ran(&undone, "undo", 1);
+
+    let session = scratch.path("session");
+    let mut one: Vec<&str> = vec!["command", p];
+    one.extend(who);
+    one.push("--stdin");
+    let mut child = studio(&binary, &local, &one).env(ENV, &session).stdin(Stdio::piped()).spawn().unwrap();
+    let line = format!("{{\"command\":\"command\",\"command_id\":\"layer.rename\",\"parameters\":{{\"layer\":\"{L2}\",\"name\":\"{DECOY_NAME}\"}}}}\n");
+    child.stdin.take().unwrap().write_all(line.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let (ops, frames) = ops_and_frames(&ran(&session, "command", 0));
+    assert!(ops >= 2 && frames >= 2, "{ops} ops, {frames} frames");
+
+    assert!(!local.exists(), "the default location stayed untouched: {:?}", entries_under(&local));
 }
 
 fn args(list: &[&str]) -> Vec<String> {
