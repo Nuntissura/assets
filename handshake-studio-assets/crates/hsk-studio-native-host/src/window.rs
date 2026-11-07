@@ -167,6 +167,9 @@ struct App {
     device: Option<Json>,
     layers: Option<Json>,
     validation: &'static str,
+    /// Milliseconds from the event loop to a created window, an opened owner and a ready presenter. The frame
+    /// deadline starts after them: loading the driver alone has taken 6 to 20 s on this machine under load.
+    startup_ms: [u64; 3],
 }
 
 /// Runs a window until `frames` frames were presented (and the exercise finished), the window closes, or the
@@ -213,6 +216,7 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
         device: None,
         layers: None,
         validation: "absent",
+        startup_ms: [0; 3],
     };
     event_loop.run_app(&mut app).map_err(|_| HostError::Window("event_loop"))?;
     app.finish()
@@ -238,7 +242,9 @@ impl App {
                 .with_window_level(WindowLevel::AlwaysOnBottom)
                 .with_skip_taskbar(true);
         }
+        let t0 = Instant::now();
         let window = el.create_window(attrs).map_err(|_| HostError::Window("create_window"))?;
+        self.startup_ms[0] = millis(t0);
         let handles = match window.window_handle().map(|h| h.as_raw()) {
             Ok(RawWindowHandle::Win32(h)) => WindowHandles { hwnd: h.hwnd.get(), hinstance: h.hinstance.map_or(0, |i| i.get()) },
             _ => return Err(HostError::Window("handle")),
@@ -256,17 +262,23 @@ impl App {
         }
         self.scale_milli = (window.scale_factor() * 1000.0).round().clamp(0.0, 1.0e6) as u32;
         self.window = Some(window);
+        let t1 = Instant::now();
         let mut owner = Owner::open(OwnerConfig { surface: true, allow_overlays: self.args.allow_overlays, allow_cpu_device: false })?;
+        self.startup_ms[1] = millis(t1);
+        let t2 = Instant::now();
         let pane = owner.create_pane(pw, ph)?;
         match &content {
             Content::Clear { rgba, .. } => owner.clear_pane(pane, *rgba)?,
             Content::Pixels { rgba8, .. } => owner.upload_pane(pane, rgba8)?,
         }
         let presenter = Presenter::new(&owner, handles, BACKGROUND)?;
+        self.startup_ms[2] = millis(t2);
         self.device = Some(device_json(&owner));
         self.layers = Some(layers_json(&owner));
         self.validation = owner.validation();
         self.live = Some(Live { owner, pane, presenter });
+        // The frame deadline counts from here.
+        self.start = Instant::now();
         el.set_control_flow(ControlFlow::Poll);
         Ok(())
     }
@@ -418,6 +430,21 @@ impl App {
         }
         self.focus.focus_changes = self.focus.focus_gained_events.saturating_add(self.focus.foreground_takes);
         if let Some(e) = self.error {
+            // Codes and counters only, for the log of a failed run (no receipt is written).
+            let (c, state, _, extent) = self.report.take().unwrap_or((PresentCounters::default(), "none", Vec::new(), (0, 0)));
+            eprintln!(
+                "window_run_failed code={e} startup_ms={:?} phase={:?} iterations={} presented={} elapsed_ms={} state={state} extent={extent:?} target={:?} creates={} acquire_timeouts={} skipped_minimized={} focus={:?}",
+                self.startup_ms,
+                self.phase,
+                self.iterations,
+                self.presented,
+                self.start.elapsed().as_millis(),
+                self.target,
+                c.swapchain_creates,
+                c.acquire_timeouts,
+                c.skipped_minimized,
+                self.focus
+            );
             return Err(e);
         }
         if self.args.quiet && self.focus.focus_changes != 0 {
@@ -483,6 +510,14 @@ impl App {
                 ]),
             ),
             ("events", Json::Num(self.events.events().len() as u64)),
+            (
+                "startup_ms",
+                Json::obj(vec![
+                    ("window", Json::Num(self.startup_ms[0])),
+                    ("owner", Json::Num(self.startup_ms[1])),
+                    ("presenter", Json::Num(self.startup_ms[2])),
+                ]),
+            ),
             ("chrome", Json::str(CHROME)),
             ("document", document_json(self.document.as_ref())),
         ]);
@@ -559,4 +594,8 @@ impl ApplicationHandler for App {
         // Swapchain and surface go before the window they belong to.
         self.release();
     }
+}
+
+fn millis(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
