@@ -795,12 +795,13 @@ fn raster_record(
         return Err(refuse("psd_layer_too_large", layer.layer_id.clone()));
     }
     let samples = usize::try_from(area).ok().and_then(|a| a.checked_mul(4)).ok_or_else(|| bad("extent"))?;
-    // V4-02: the running aggregate of every layer's samples, checked before this layer is allocated.
+    // V4-02: the running aggregate of every layer's samples at the file depth, checked before this layer is
+    // allocated; the samples are quantized straight into that buffer (no wider transient).
     *total = samples.checked_mul(usize::from(depth / 8)).and_then(|b| total.checked_add(b)).ok_or_else(|| refuse("psd_too_large", ""))?;
     if *total > limits.max_input_bytes {
         return Err(refuse("psd_too_large", format!("{} bytes of layer pixels", *total)));
     }
-    let mut values = vec![0f32; samples];
+    let mut rgba = if depth == 16 { psd::ComposeSamples::U16(vec![0; samples]) } else { psd::ComposeSamples::U8(vec![0; samples]) };
     let w = usize::try_from(width).map_err(|_| bad("extent"))?;
     for (t, x, y, tw, th) in placed {
         let body = src.assets.get(&t.content_digest.digest).ok_or_else(|| refuse("psd_tile_missing", t.content_digest.digest.clone()))?;
@@ -821,15 +822,15 @@ fn raster_record(
                     f(alpha, i.checked_mul(4).ok_or_else(|| bad("index"))?).ok_or_else(|| bad("index"))?,
                 ];
                 let at = dy.checked_add(ty).and_then(|r| r.checked_mul(w)).and_then(|r| r.checked_add(dx)).and_then(|r| r.checked_add(tx)).and_then(|r| r.checked_mul(4)).ok_or_else(|| bad("index"))?;
-                let slot = values.get_mut(at..at.checked_add(4).ok_or_else(|| bad("index"))?).ok_or_else(|| bad("index"))?;
-                slot.copy_from_slice(&[oetf(px[0]), oetf(px[1]), oetf(px[2]), unit_finite(px[3])]);
+                let end = at.checked_add(4).ok_or_else(|| bad("index"))?;
+                let encoded = [oetf(px[0]), oetf(px[1]), oetf(px[2]), unit_finite(px[3])];
+                match &mut rgba {
+                    psd::ComposeSamples::U8(v) => v.get_mut(at..end).ok_or_else(|| bad("index"))?.copy_from_slice(&encoded.map(q8)),
+                    psd::ComposeSamples::U16(v) => v.get_mut(at..end).ok_or_else(|| bad("index"))?.copy_from_slice(&encoded.map(q16)),
+                }
             }
         }
     }
-    let rgba = match quantize(&values, depth) {
-        Samples::U8(v) => psd::ComposeSamples::U8(v),
-        Samples::U16(v) => psd::ComposeSamples::U16(v),
-    };
     let to_i32 = |v: i64| i32::try_from(v).map_err(|_| refuse("psd_layer_offset", layer.layer_id.clone()));
     Ok(psd::ComposeRecord::Pixels { look, left: to_i32(x0.saturating_sub(origin.0))?, top: to_i32(y0.saturating_sub(origin.1))?, width, height, rgba })
 }

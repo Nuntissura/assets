@@ -237,6 +237,30 @@ fn layered_psd_keeps_layers_and_groups_and_reopens() {
     assert_eq!(v.export_document(&s.path("staged.psd"), &staged, false).unwrap_err().code, "psd_export_stage_unsupported");
 }
 
+/// F1: the process drive refuses `viewer.export_document` onto the opened package whatever the flags, and an
+/// existing file without overwrite, before the viewer runs; the package bytes are unchanged.
+#[test]
+fn drive_export_document_never_replaces_the_opened_package() {
+    let s = Scratch::new("drive");
+    let (mut v, _) = opened(&s);
+    let package = s.path("a.handshake");
+    v.save(&package, false).unwrap_or_else(|e| panic!("{e}"));
+    let before = std::fs::read(&package).unwrap();
+    let taken = s.path("taken.png");
+    std::fs::write(&taken, b"keep").unwrap();
+    let call = |path: &Path, overwrite: bool| json!({"command": "command", "command_id": "viewer.export_document",
+        "parameters": {"path": path.to_str().unwrap(), "recipe": {"format": "png"}, "overwrite": overwrite}}).to_string();
+    let input = format!("{}\n{}\n{}\n", call(&package, true), call(&package, false), call(&taken, false));
+    let args: Vec<String> = ["command", package.to_str().unwrap(), "--actor", "lane-a", "--session", "s-1", "--stdin"].iter().map(|a| (*a).to_string()).collect();
+    let mut output = Vec::new();
+    let _ = cli::run_streams(&args, &mut input.as_bytes(), &mut output);
+    let replies: Vec<Value> = String::from_utf8(output).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let errors: Vec<&str> = replies.iter().filter_map(|r| r["error"].as_str()).collect();
+    assert_eq!(errors, ["export_over_source", "export_over_source", "overwrite_required"], "{replies:?}");
+    assert_eq!(std::fs::read(&package).unwrap(), before, "the package is unchanged");
+    assert_eq!(std::fs::read(&taken).unwrap(), b"keep");
+}
+
 /// Hostile recipes: closed keys, bad values and a stage output over develop's limit are typed refusals.
 #[test]
 fn hostile_recipes_are_typed_refusals() {

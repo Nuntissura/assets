@@ -195,8 +195,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), &'static str> {
 
 /// [`write_atomic`] that never replaces anything (lane SMB-DOC-EXPORT-1): the same unique sibling temp, then a
 /// hard link to `path`, which the filesystem refuses when anything is there (`destination_exists`), so two
-/// writers creating one new file cannot replace each other; the temp is removed either way. A filesystem
-/// without hard links is `export_write` (nothing at `path` is touched). Test `tests/doc_export.rs`.
+/// writers creating one new file cannot replace each other; the temp is removed either way. Where the link
+/// fails for another reason (FAT32, exFAT, SMB shares without links) the name is reserved with an exclusive
+/// create (taken: `destination_exists`) and the temp renamed over that reservation; on failure both are
+/// removed. Test `tests/doc_export.rs`.
 pub fn write_new(path: &Path, bytes: &[u8]) -> Result<(), &'static str> {
     path.file_name().ok_or("export_path")?;
     if std::fs::symlink_metadata(path).is_ok() {
@@ -205,7 +207,33 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<(), &'static str> {
     let (temp, mut file) = create_unique_sibling(path, ".export-tmp").map_err(|_| "export_write")?;
     let written = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
-    let linked = written.and_then(|()| std::fs::hard_link(&temp, path));
-    let _ = std::fs::remove_file(&temp);
-    linked.map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { "destination_exists" } else { "export_write" })
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return Err("export_write");
+    }
+    match std::fs::hard_link(&temp, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&temp);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&temp);
+            Err("destination_exists")
+        }
+        // No hard links here: reserve the name exclusively, then rename the temp over the reservation.
+        Err(_) => match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(reservation) => {
+                drop(reservation);
+                replace_with_backoff(&temp, path).map_err(|_| {
+                    let _ = std::fs::remove_file(&temp);
+                    let _ = std::fs::remove_file(path);
+                    "export_write"
+                })
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                Err(if e.kind() == std::io::ErrorKind::AlreadyExists { "destination_exists" } else { "export_write" })
+            }
+        },
+    }
 }
