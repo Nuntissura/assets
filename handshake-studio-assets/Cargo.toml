@@ -59,6 +59,7 @@ members = [
   "crates/hsk-studio-ps",
   "crates/hsk-studio-vulkan",
   "crates/hsk-studio-native-host",
+  "crates/hsk-studio-ui-text",
   "crates/kumihimo-ui",
 ]
 
@@ -131,6 +132,7 @@ declared-members = [
   "crates/hsk-studio-ps",
   "crates/hsk-studio-vulkan",
   "crates/hsk-studio-native-host",
+  "crates/hsk-studio-ui-text",
   "crates/kumihimo-ui",
 ]
 
@@ -318,6 +320,11 @@ allowed = ["hsk-studio-accord", "hsk-studio-observe", "hsk-studio-vulkan", "hsk-
 
 [workspace.metadata.studio.dependencies.kumihimo-ui]
 allowed = []
+
+# SMB-UI-TREE-1 (decision O4): the Studio-side adapter of the kumihimo-ui text port over hsk-studio-type.
+[workspace.metadata.studio.dependencies.hsk-studio-ui-text]
+allowed = ["hsk-studio-accord", "hsk-studio-prism", "hsk-studio-type", "kumihimo-ui"]
+dev-allowed = ["hsk-studio-interop-raster"]
 
 # Corpus-scale imports (SMB-HARNESS-SWEEP-PERF, diagnostics/smb-harness-sweep-perf-1.md): SHA-256, Prism's
 # per-pixel ICC evaluation and interop-psd's tile loop run 18x faster optimized; results are byte-identical

@@ -2515,6 +2515,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hsk-studio-ui-text"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-interop-raster",
+ "hsk-studio-prism",
+ "hsk-studio-type",
+ "kumihimo-ui",
+]
+
+[[package]]
 name = "hsk-studio-vulkan"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,21 @@
+[package]
+name = "hsk-studio-ui-text"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false }
+kumihimo-ui = { path = "../kumihimo-ui", version = "=0.1.0", default-features = false }
+
+[dev-dependencies]
+hsk-studio-interop-raster = { path = "../hsk-studio-interop-raster", version = "=0.1.0", default-features = false }
+
+[lib]
+path = "src/lib.rs"
