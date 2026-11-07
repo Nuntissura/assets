@@ -155,7 +155,7 @@ fn child_entry() {
             let harness = Harness::new(Selection { providers: vec!["chronicle.patch".to_string()], ..Selection::default() }).unwrap();
             let cancel = CancellationToken::default();
             let mut run = harness.run(asset_local_test_context(), &cancel);
-            let name = format!("{id}");
+            let name = id.to_string();
             if !(run.open_path(&package) && run.rename(L1, &name, None)) {
                 std::process::exit(9);
             }
@@ -552,7 +552,7 @@ fn a_refused_save_keeps_the_edits_and_every_way_out_works() {
 
     // destination_changed: refused, the edit is still in the run.
     assert!(!run.save_to(&package));
-    assert_eq!(run.snapshot().unwrap().document().layers.iter().find(|l| l.layer_id.to_string() == L1).unwrap().name, "mine");
+    assert_eq!(run.snapshot().unwrap().document().layers.iter().find(|l| l.layer_id == L1).unwrap().name, "mine");
     let refused = run.ops().last().unwrap().clone();
     assert_eq!(refused["error"], "destination_changed", "{refused}");
     assert!(refused["detail"]["recovery"].as_str().unwrap().contains("another path"), "{refused}");

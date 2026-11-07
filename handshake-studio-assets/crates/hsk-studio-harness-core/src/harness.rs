@@ -27,6 +27,9 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
+/// One of `Session::save_to`, `save_new`, `save_replacing`.
+type SessionSave = fn(&mut Session, &Path, &CancellationToken) -> Result<hsk_studio_session::SaveReceipt, hsk_studio_session::Failed>;
+
 pub const SCHEMA: &str = "hsk.studio.harness@1";
 
 /// Providers the harness knows how to register. A provider must be named in the selection to be
@@ -2119,7 +2122,7 @@ impl Run<'_> {
         self.save_op(path, Session::save_replacing)
     }
 
-    fn save_op(&mut self, path: &Path, save: fn(&mut Session, &Path, &CancellationToken) -> Result<hsk_studio_session::SaveReceipt, hsk_studio_session::Failed>) -> bool {
+    fn save_op(&mut self, path: &Path, save: SessionSave) -> bool {
         self.note_unrecordable("document.save");
         let before = self.frames.count();
         let cancel = self.cancel;

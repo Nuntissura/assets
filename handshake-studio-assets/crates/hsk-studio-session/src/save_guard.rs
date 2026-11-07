@@ -466,7 +466,8 @@ mod tests {
         println!("measured: fingerprint pass over {} bytes {:?}", print.len, start.elapsed());
     }
 
-    /// A destination swapped for a much larger file is refused from its length: nothing is read.
+    /// A destination swapped for a larger file is refused from its length: nothing is read. The proof holds on Windows,
+    /// where the exclusive lock makes any read of the file fail, so a read would have answered `io`.
     #[test]
     fn a_compare_reads_nothing_of_a_file_with_another_length() {
         let scratch = Scratch::new("length");
@@ -474,11 +475,9 @@ mod tests {
         fs::write(&target, b"short").unwrap();
         let expect = Expect::Unchanged(fingerprint_reader(&mut &b"short"[..], &token()).unwrap());
         assert!(check_content(&expect, &target, &token()).is_ok());
-        let huge = File::options().write(true).open(&target).unwrap();
-        huge.set_len(1 << 40).unwrap();
-        drop(huge);
-        let start = Instant::now();
+        let larger = File::options().write(true).open(&target).unwrap();
+        larger.set_len(1 << 20).unwrap();
+        larger.lock().unwrap();
         assert!(matches!(check_content(&expect, &target, &token()), Err(SessionError::DestinationChanged)));
-        assert!(start.elapsed() < Duration::from_secs(5), "a 1 TiB file was not read: {:?}", start.elapsed());
     }
 }

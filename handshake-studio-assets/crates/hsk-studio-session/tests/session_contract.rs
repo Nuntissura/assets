@@ -3347,11 +3347,12 @@ fn save_over_the_opened_file_compares_it_and_refuses_when_it_changed_or_vanished
         session.save(&token()).unwrap();
 
         // A writer that replaces the file by rename, as Studio and careful tools do, keeps this session's source readable.
-        let replace = |bytes: &[u8]| {
+        let replace_at = |path: &std::path::Path, bytes: &[u8]| {
             let swap = fixture.dir.join("swap");
             fs::write(&swap, bytes).unwrap();
-            fs::rename(&swap, &fixture.path).unwrap();
+            fs::rename(&swap, path).unwrap();
         };
+        let replace = |bytes: &[u8]| replace_at(&fixture.path, bytes);
 
         // Changed: refused, typed, Validation; file and session untouched, nothing left behind.
         replace(b"another writer");
@@ -3386,7 +3387,7 @@ fn save_over_the_opened_file_compares_it_and_refuses_when_it_changed_or_vanished
         let other = fixture.dir.join("other.handshake");
         session.save_new(&other, &token()).unwrap();
         session.save(&token()).unwrap();
-        fs::write(&other, b"changed again").unwrap();
+        replace_at(&other, b"changed again");
         assert_eq!(session.save(&token()).unwrap_err().code(), "destination_changed");
         session.save_replacing(&other, &token()).unwrap();
         session.save(&token()).unwrap();
