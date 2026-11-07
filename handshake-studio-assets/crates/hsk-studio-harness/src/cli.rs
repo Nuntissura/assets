@@ -973,8 +973,13 @@ fn execute_new(harness: &Harness, parsed: &Parsed, output: &Path) -> CliOutput {
         cancel.cancel();
     }
     let mut run = harness.run(RunContext::new(actor, client_session, Arc::new(TransientCorrelation::new())), &cancel);
+    // save_new refuses a file that appeared after the check above (SMB-SESSION-WRITE-SAFETY-1).
     if run.new_document(&spec) {
-        run.save_to(output);
+        if parsed.overwrite {
+            run.save_replacing(output);
+        } else {
+            run.save_new(output);
+        }
     }
     let report = run.finish("new");
     let exit = i32::from(report["verdict"] != "pass");
