@@ -786,113 +786,11 @@ pub fn shortcut_collisions(enabled_sets: &[&ActionSet]) -> Vec<Diagnostic> {
     out
 }
 
-// ----- command corpus --------------------------------------------------------------------------
+// ----- command corpus: one file per domain, `action/commands/` -----------------------------------
 
-/// One declared parameter of a corpus command.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ParamSpec {
-    pub key: &'static str,
-    pub value_type: ValueType,
-    /// The unit a `measured` parameter is recorded in.
-    pub unit: Option<UnitToken>,
-}
+mod commands;
 
-/// One [STU-AUT-147] corpus entry (subset: no `input_schema`/`output_schema`, schemars is not an
-/// approved harness-core dependency; no capability, enabler, receipt shape, argus targets or
-/// manual anchor). `dry_runnable` is false for every entry: `Run` has no dry-run mode (gap).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommandEntry {
-    pub command_id: &'static str,
-    /// The public `Run` method the command runs through.
-    pub run_method: &'static str,
-    pub display_name: &'static str,
-    pub recordable: bool,
-    pub mutates_authority: bool,
-    pub dry_runnable: bool,
-    pub parameters: &'static [ParamSpec],
-}
-
-pub const CMD_RENAME: &str = "layer.rename";
-pub const CMD_SET_VISIBLE: &str = "layer.set_visible";
-pub const CMD_SET_OPACITY: &str = "layer.set_opacity";
-pub const CMD_SET_BLEND_MODE: &str = "layer.set_blend_mode";
-pub const CMD_PANEL_SET: &str = "layer.panel_set";
-pub const CMD_RESTRUCTURE: &str = "layer.restructure";
-
-const fn p(key: &'static str, value_type: ValueType) -> ParamSpec {
-    ParamSpec { key, value_type, unit: None }
-}
-
-const LAYER: ParamSpec = p("layer", ValueType::Reference);
-const NAME: ParamSpec = p("name", ValueType::String);
-const VISIBLE: ParamSpec = p("visible", ValueType::Boolean);
-const OPACITY: ParamSpec = ParamSpec { key: "opacity", value_type: ValueType::Measured, unit: Some(UnitToken::Percent) };
-const BLEND_MODE: ParamSpec = p("blend_mode", ValueType::Number);
-const CONTROL: ParamSpec = p("control", ValueType::String);
-const VALUE: ParamSpec = p("value", ValueType::String);
-const OP: ParamSpec = p("op", ValueType::String);
-const WRITES: ParamSpec = p("writes", ValueType::List);
-const PATH: ParamSpec = p("path", ValueType::String);
-const OVERWRITE: ParamSpec = p("overwrite", ValueType::Boolean);
-
-const fn entry(command_id: &'static str, run_method: &'static str, display_name: &'static str, recordable: bool, mutates_authority: bool, parameters: &'static [ParamSpec]) -> CommandEntry {
-    CommandEntry { command_id, run_method, display_name, recordable, mutates_authority, dry_runnable: false, parameters }
-}
-
-/// The automatable surface of [`crate::Run`]: every public operation, recordable or not. Recording
-/// captures exactly the `recordable` ones; any other one run during a recording is reported as
-/// `not_recordable` ([STU-AUT-109]: silent omission is forbidden).
-pub const RUN_COMMANDS: &[CommandEntry] = &[
-    entry(CMD_RENAME, "rename", "Rename layer", true, true, &[LAYER, NAME]),
-    entry(CMD_SET_VISIBLE, "set_visible", "Show or hide layer", true, true, &[LAYER, VISIBLE]),
-    entry(CMD_SET_OPACITY, "set_opacity", "Set layer opacity", true, true, &[LAYER, OPACITY]),
-    // The blend mode is the StudioBlendMode discriminant: no member-name source exists in
-    // harness-core's dependencies (names live in Pigment), so it records as a bare `number`.
-    entry(CMD_SET_BLEND_MODE, "set_blend_mode", "Set layer blend mode", true, true, &[LAYER, BLEND_MODE]),
-    entry(CMD_PANEL_SET, "panel_set", "Set panel control", true, true, &[LAYER, CONTROL, VALUE]),
-    // Placement-only writes; a restructure that creates a layer carries a record payload and is
-    // reported not_recordable at record time.
-    entry(CMD_RESTRUCTURE, "restructure", "Restructure layers", true, true, &[OP, WRITES]),
-    entry("layer.restructure_and_entry", "restructure_and_entry", "Restructure layers with document entry", false, true, &[]),
-    entry("layer.set_tiles", "set_tiles", "Replace raster tiles", false, true, &[]),
-    entry("layer.set_tiles_and_entry", "set_tiles_and_entry", "Replace raster tiles with document entry", false, true, &[]),
-    entry("layer.set_vector_paths", "set_vector_paths", "Replace vector paths", false, true, &[]),
-    entry("layer.set_vector_paths_and_entry", "set_vector_paths_and_entry", "Replace vector paths with document entry", false, true, &[]),
-    entry("document.set_document_entry", "set_document_entry", "Set document entry", false, true, &[]),
-    entry("document.stage_tile", "stage_tile", "Stage tile body", false, false, &[]),
-    entry("document.submit_sequence", "submit_sequence", "Replace sequence", false, true, &[]),
-    entry("document.submit_sequence_and_entry", "submit_sequence_and_entry", "Replace sequence with document entry", false, true, &[]),
-    entry("document.submit_sequence_edits", "submit_sequence_edits", "Replace, insert or remove sequences", false, true, &[]),
-    entry("document.submit_sequence_edits_and_entry", "submit_sequence_edits_and_entry", "Replace, insert or remove sequences with document entry", false, true, &[]),
-    entry("document.open", "open_path / open_bytes / expect_on_disk", "Open document", false, false, &[]),
-    entry("document.import", "open_import / open_import_detailed", "Open and convert to native", false, false, &[]),
-    entry("document.reopen", "reopen_bytes / reopen_path", "Reopen saved document", false, false, &[]),
-    entry("document.save", "save_to / save_new / save_replacing", "Save document", false, false, &[PATH, OVERWRITE]),
-    entry("document.checkpoint", "checkpoint", "Checkpoint document", false, false, &[]),
-    entry("document.verify", "verify_live / verify_reopened", "Verify document", false, false, &[]),
-    entry("document.summary", "summary", "Document summary", false, false, &[]),
-    entry("layer.panel", "panel", "Layer panel", false, false, &[LAYER]),
-    entry("history.undo", "undo", "Undo", false, true, &[]),
-    entry("history.redo", "redo", "Redo", false, true, &[]),
-    entry("action.play", "play_action", "Play action", false, true, &[]),
-];
-
-/// The corpus entry of `command_id`.
-pub fn command(command_id: &str) -> Option<&'static CommandEntry> {
-    RUN_COMMANDS.iter().find(|c| c.command_id == command_id)
-}
-
-/// The corpus as JSON (manual and CLI).
-pub fn corpus_json() -> Value {
-    json!(RUN_COMMANDS
-        .iter()
-        .map(|c| json!({
-            "command_id": c.command_id, "run_method": c.run_method, "display_name": c.display_name,
-            "recordable": c.recordable, "mutates_authority": c.mutates_authority, "dry_runnable": c.dry_runnable,
-            "parameters": c.parameters.iter().map(|p| json!({"key": p.key, "value_type": p.value_type.token(), "unit": p.unit.map(UnitToken::token)})).collect::<Vec<_>>(),
-        }))
-        .collect::<Vec<_>>())
-}
+pub use commands::{CMD_PANEL_SET, CMD_RENAME, CMD_RESTRUCTURE, CMD_SET_BLEND_MODE, CMD_SET_OPACITY, CMD_SET_VISIBLE, CommandEntry, ParamSpec, RUN_COMMANDS, command, corpus_json};
 
 // ----- recording and playback support ----------------------------------------------------------
 
