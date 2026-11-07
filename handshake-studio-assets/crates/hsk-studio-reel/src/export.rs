@@ -16,14 +16,25 @@
 //! absent encoder is `MEDIA_CODEC_UNAVAILABLE` naming the codec (STU-VID-051 item 3).
 //!
 //! Exactness: the published file is re-indexed by reel's own demuxer before the rename; its sample
-//! counts must equal what was written, else the item fails and nothing is published. On failure or
-//! cancel the temp file is removed and the output path is untouched.
+//! counts must equal what was written, else the item fails and nothing is published.
+//!
+//! Publish safety (lane SMB-PR-EXPORT-RECIPE-1; STU-IO-162 "never by racing", tests/export_publish_safety.rs):
+//! every temp file is `.<name>.partial-<pid>-<n>` beside its target, `n` from one process-wide counter,
+//! created with `create_new`; an item removes only temps it created itself, on every failure and cancel.
+//! An output or sidecar path that is a directory is refused before the first frame, and an existing
+//! output or sidecar without `overwrite` is refused before the first frame and again right before the
+//! renames. Publish order: the media is renamed over the output first, then the sidecar over
+//! `<output>.vtt`; an existing file is replaced by the rename itself, never deleted first. On failure or
+//! cancel before the media rename nothing is published and the output path is untouched; a failure after
+//! it (the sidecar rename, which no check can pre-empt) gives a Failed receipt whose
+//! [`ExportReceipt::published_media`] is true and whose media facts (bytes, SHA-256, verified) describe the
+//! file now at the output path, while [`ExportReceipt::published_sidecar`] stays false.
 //!
 //! Captions (lane SMB-PR-SOURCE-MONITOR; STU-VID-037 facet `captions`): [`ExportQueue::submit_with_captions`]
 //! adds caption cues to an item ([`crate::captions`]): checked against the item's span in the plan,
 //! before the first frame; embedded as a `tx3g` timed-text track (re-indexed like the other tracks) and/or
 //! written as a WebVTT sidecar beside the output (`<output>.vtt`, through its own temp file, published
-//! only when the media is), named in [`ExportReceipt::captions`].
+//! after the media, see publish safety), named in [`ExportReceipt::captions`].
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::{ReelError, check_cancel};
@@ -41,7 +52,7 @@ use crate::vc3::encode::{VC3_ENCODER_ID, VC3_ENCODER_VERSION, Vc3Encoder, Vc3Pro
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Read};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -292,6 +303,11 @@ pub struct ExportReceipt {
     pub mux: Option<MuxReceipt>,
     /// The caption stream written with the item (lane SMB-PR-SOURCE-MONITOR); `None` without captions.
     pub captions: Option<crate::captions::CaptionReceipt>,
+    /// The media file is at the output path (module docs, publish safety): true on Complete, and on a Failed
+    /// item whose sidecar could not be published after the media was.
+    pub published_media: bool,
+    /// The WebVTT sidecar is at `<output>.vtt`.
+    pub published_sidecar: bool,
 }
 
 impl ExportReceipt {
@@ -314,7 +330,7 @@ impl ExportReceipt {
             ExportOutcome::Failed { code, detail } => ("failed", Some(*code), Some(detail.as_str())),
         };
         format!(
-            "{{\"item_id\":{},\"recipe_id\":\"{}\",\"artifact\":\"{}\",\"span\":{{\"start_ticks\":{},\"end_ticks\":{}}},\"outcome\":\"{}\",\"code\":{},\"detail\":{},\"container\":\"{}\",\"video_codec\":{},\"encoder\":{{\"id\":{},\"version\":{}}},\"muxer\":{{\"id\":\"{}\",\"version\":\"{}\"}},\"frames_encoded\":{},\"audio_frames\":{},\"audio_clipped\":{},\"output_bytes\":{},\"output_sha256\":{},\"verified\":{}}}",
+            "{{\"item_id\":{},\"recipe_id\":\"{}\",\"artifact\":\"{}\",\"span\":{{\"start_ticks\":{},\"end_ticks\":{}}},\"outcome\":\"{}\",\"code\":{},\"detail\":{},\"container\":\"{}\",\"video_codec\":{},\"encoder\":{{\"id\":{},\"version\":{}}},\"muxer\":{{\"id\":\"{}\",\"version\":\"{}\"}},\"frames_encoded\":{},\"audio_frames\":{},\"audio_clipped\":{},\"output_bytes\":{},\"output_sha256\":{},\"verified\":{},\"published\":{{\"media\":{},\"sidecar\":{}}}}}",
             self.item_id,
             esc(&self.recipe_id),
             esc(&self.artifact),
@@ -335,6 +351,8 @@ impl ExportReceipt {
             self.output_bytes,
             opt(self.output_sha256.as_deref()),
             self.verified,
+            self.published_media,
+            self.published_sidecar,
         )
     }
 }
@@ -633,7 +651,7 @@ fn plan(
     if recipe.audio.is_some() != job.audio.is_some() {
         return Err(unsupported("export-audio-source-mismatch"));
     }
-    if job.output.file_name().is_none() {
+    if job.output.file_name().is_none() || job.output.is_dir() {
         return Err(unsupported("export-output-path"));
     }
     if !job.overwrite && job.output.exists() {
@@ -745,19 +763,36 @@ fn pcm_bytes(samples: &[f32], choice: PcmChoice, out: &mut Vec<u8>, clipped: &mu
     }
 }
 
+/// Media facts of a published file: mux receipt, bytes, SHA-256, verified.
+type Published = (MuxReceipt, u64, String, bool);
+
 struct Run<'a> {
     handle: &'a ExportHandle,
     clipped: u64,
     audio_written: u64,
     frames_encoded: u64,
+    /// Temp files this item created (and only those): removed when the item does not complete.
+    temps: Vec<PathBuf>,
+    /// Set once the media rename succeeded.
+    published: Option<Published>,
 }
 
-fn temp_path(output: &Path, id: u64) -> PathBuf {
-    let name = output
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    output.with_file_name(format!(".{name}.partial-{}-{id}", std::process::id()))
+/// One process-wide sequence for temp names: two queues in one process never share a temp.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A fresh temp path beside `target` (`.<name>.partial-<pid>-<n>`); the caller creates it with `create_new`.
+fn temp_beside(target: &Path) -> Result<PathBuf, ReelError> {
+    let name = target.file_name().ok_or(unsupported("export-output-path"))?.to_string_lossy();
+    let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    Ok(target.with_file_name(format!(".{name}.partial-{}-{n}", std::process::id())))
+}
+
+/// Creates a fresh temp beside `target` with `create_new` and records it as this item's own.
+fn create_temp(target: &Path, run: &mut Run<'_>) -> Result<(PathBuf, File), ReelError> {
+    let path = temp_beside(target)?;
+    let file = OpenOptions::new().write(true).create_new(true).open(&path)?;
+    run.temps.push(path.clone());
+    Ok((path, file))
 }
 
 fn run_item(
@@ -787,6 +822,8 @@ fn run_item(
         verified: false,
         mux: None,
         captions: None,
+        published_media: false,
+        published_sidecar: false,
     };
     if handle.cancel.check().is_err() {
         return receipt;
@@ -795,12 +832,13 @@ fn run_item(
         .shared
         .state
         .store(ExportState::Running.as_u8(), Ordering::Release);
-    let temp = temp_path(&job.output, id);
     let mut run = Run {
         handle,
         clipped: 0,
         audio_written: 0,
         frames_encoded: 0,
+        temps: Vec::new(),
+        published: None,
     };
     let result = plan(&job, external, &handle.cancel).and_then(|plan| {
         if let Some(enc) = &plan.encoder {
@@ -811,29 +849,40 @@ fn run_item(
         }
         let span_ticks = job.span.end_ticks.checked_sub(job.span.start_ticks).ok_or(unsupported("export-span"))?;
         let text = match &captions {
-            Some(c) => Some(CaptionPlan::new(c, span_ticks, &job.output)?),
+            Some(c) => Some(CaptionPlan::new(c, span_ticks, &job.output, job.overwrite)?),
             None => None,
         };
-        let out = execute(&mut job, plan, &temp, &mut run, text.as_ref());
+        let out = execute(&mut job, plan, &mut run, text.as_ref());
         if let (Ok(_), Some(t)) = (&out, &text) {
             receipt.captions = Some(t.receipt.clone());
+            receipt.published_sidecar = t.sidecar.is_some();
         }
         out
     });
     receipt.frames_encoded = run.frames_encoded;
     receipt.audio_frames = run.audio_written;
     receipt.audio_clipped = run.clipped;
+    // Temps this item created and did not publish; never a path another item may own.
+    for temp in run.temps.drain(..) {
+        let _ = std::fs::remove_file(&temp);
+    }
+    let fill = |receipt: &mut ExportReceipt, (mux, bytes, sha, verified): Published| {
+        receipt.published_media = true;
+        receipt.verified = verified;
+        receipt.mux = Some(mux);
+        receipt.output_bytes = bytes;
+        receipt.output_sha256 = Some(sha);
+    };
     match result {
-        Ok((mux, bytes, sha, verified)) => {
+        Ok(published) => {
             receipt.outcome = ExportOutcome::Complete;
-            receipt.verified = verified;
-            receipt.mux = Some(mux);
-            receipt.output_bytes = bytes;
-            receipt.output_sha256 = Some(sha);
+            fill(&mut receipt, published);
         }
         Err(error) => {
-            // Our own temp file only; the output path is untouched.
-            let _ = std::fs::remove_file(&temp);
+            // The media was renamed before the failure: the receipt says so (module docs, publish safety).
+            if let Some(published) = run.published.take() {
+                fill(&mut receipt, published);
+            }
             receipt.outcome = match error {
                 ReelError::Canceled => ExportOutcome::Canceled,
                 e => ExportOutcome::Failed {
@@ -850,29 +899,30 @@ fn run_item(
 struct CaptionPlan {
     samples: Option<Vec<crate::captions::TextSample>>,
     language: [u8; 3],
-    sidecar: Option<(String, PathBuf, PathBuf)>,
+    /// WebVTT text and the sidecar path `<output>.vtt`.
+    sidecar: Option<(String, PathBuf)>,
     receipt: crate::captions::CaptionReceipt,
 }
 
 impl CaptionPlan {
-    fn new(c: &crate::captions::ExportCaptions, span_ticks: u64, output: &Path) -> Result<Self, ReelError> {
+    /// Checked before the first frame, and the sidecar path again right before the renames (`execute`): a
+    /// directory there is `export-sidecar-path`, an existing file without `overwrite` `export-sidecar-exists`.
+    fn new(c: &crate::captions::ExportCaptions, span_ticks: u64, output: &Path, overwrite: bool) -> Result<Self, ReelError> {
         let (samples, exact) = crate::captions::text_samples(c, span_ticks)?;
         let lang = c.language.as_bytes();
         let language = [lang[0], lang[1], lang[2]];
         let sidecar = if c.sidecar {
             let vtt = crate::captions::webvtt(c, span_ticks)?;
             let path = output.with_extension("vtt");
-            let mut name = path.file_name().ok_or(unsupported("export-output-path"))?.to_os_string();
-            name.push(".partial");
-            let temp = path.with_file_name(name);
-            Some((vtt, temp, path))
+            check_sidecar_path(&path, overwrite)?;
+            Some((vtt, path))
         } else {
             None
         };
         if !c.embed && !c.sidecar {
             return Err(unsupported("caption-no-output"));
         }
-        let sha = sidecar.as_ref().map(|(vtt, _, _)| crate::identity::hex(&Sha256::digest(vtt.as_bytes())));
+        let sha = sidecar.as_ref().map(|(vtt, _)| crate::identity::hex(&Sha256::digest(vtt.as_bytes())));
         let receipt = crate::captions::CaptionReceipt {
             language: c.language.clone(),
             cues: u64::try_from(c.cues.len()).unwrap_or(u64::MAX),
@@ -882,6 +932,16 @@ impl CaptionPlan {
         };
         Ok(Self { samples: c.embed.then_some(samples), language, sidecar, receipt })
     }
+}
+
+fn check_sidecar_path(path: &Path, overwrite: bool) -> Result<(), ReelError> {
+    if path.file_name().is_none() || path.is_dir() {
+        return Err(unsupported("export-sidecar-path"));
+    }
+    if !overwrite && path.exists() {
+        return Err(unsupported("export-sidecar-exists"));
+    }
+    Ok(())
 }
 
 /// Lazily created muxer: the AV1 record needs the first temporal unit.
@@ -1062,10 +1122,9 @@ fn finish_encoder(
 fn execute(
     job: &mut ExportJob,
     mut plan: Plan,
-    temp: &Path,
     run: &mut Run<'_>,
     captions: Option<&CaptionPlan>,
-) -> Result<(MuxReceipt, u64, String, bool), ReelError> {
+) -> Result<Published, ReelError> {
     let cancel = run.handle.cancel.clone();
     let total = if plan.frames > 0 {
         plan.frames
@@ -1073,7 +1132,8 @@ fn execute(
         plan.audio_frames
     };
     run.handle.shared.total.store(total, Ordering::Release);
-    let file = OpenOptions::new().write(true).create_new(true).open(temp)?;
+    let (temp_path, file) = create_temp(&job.output, run)?;
+    let temp = temp_path.as_path();
     let mut sink = Sink {
         writer: Some(BufWriter::new(file)),
         muxer: None,
@@ -1138,28 +1198,36 @@ fn execute(
     file.sync_all()?;
     drop(file);
     let (bytes, sha, verified) = verify(temp, &mux, &cancel)?;
-    // The WebVTT sidecar: written to its own temp, refused when it exists and overwrite is off.
-    if let Some((vtt, side_temp, side)) = captions.and_then(|c| c.sidecar.as_ref()) {
-        if side.exists() && !job.overwrite {
-            return Err(unsupported("export-sidecar-exists"));
+    // The WebVTT sidecar: written to its own fresh temp (create_new), never over another file.
+    let sidecar = captions.and_then(|c| c.sidecar.as_ref());
+    let side_temp = match sidecar {
+        Some((vtt, side)) => {
+            let (path, mut file) = create_temp(side, run)?;
+            file.write_all(vtt.as_bytes())?;
+            file.sync_all()?;
+            Some(path)
         }
-        let written = std::fs::write(side_temp, vtt.as_bytes());
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(side_temp);
-            return Err(ReelError::Io(e.kind()));
-        }
+        None => None,
+    };
+    // Checked again right before the renames (the plan checked before the first frame): another writer may
+    // have created either path meanwhile (STU-IO-162).
+    if !job.overwrite && job.output.exists() {
+        return Err(unsupported("export-output-exists"));
     }
-    if job.overwrite && job.output.exists() {
-        std::fs::remove_file(&job.output)?;
+    if let Some((_, side)) = sidecar {
+        check_sidecar_path(side, job.overwrite)?;
     }
+    // Media first, then the sidecar; the rename replaces an existing file itself (no delete first).
     std::fs::rename(temp, &job.output)?;
-    if let Some((_, side_temp, side)) = captions.and_then(|c| c.sidecar.as_ref()) {
-        if job.overwrite && side.exists() {
-            std::fs::remove_file(side)?;
-        }
-        std::fs::rename(side_temp, side)?;
+    run.temps.retain(|t| t != temp);
+    let published = (mux, bytes, sha, verified);
+    run.published = Some(published.clone());
+    if let (Some((_, side)), Some(side_temp)) = (sidecar, side_temp) {
+        std::fs::rename(&side_temp, side)?;
+        run.temps.retain(|t| t != &side_temp);
     }
-    Ok((mux, bytes, sha, verified))
+    run.published = None;
+    Ok(published)
 }
 
 /// Most samples a post-write re-index may expand (MP4 ipcm/fpcm audio is one table entry per audio

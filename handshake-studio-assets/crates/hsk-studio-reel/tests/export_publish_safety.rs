@@ -215,6 +215,7 @@ fn a_failure_after_the_sidecar_temp_leaves_no_temp() {
     let calls = Arc::new(AtomicU64::new(0));
     let r = run_one(job(vc3_mov("c2"), video(3, &calls, Some(hook)), out, true), true);
     let _ = failed_detail(&r);
+    assert!(!r.published_media && !r.published_sidecar, "{r:?}");
     assert_eq!(entries(&d), ["out.mov"], "only the directory: no media, no sidecar, no temp");
     assert!(std::fs::metadata(d.join("out.mov")).unwrap().is_dir());
     let _ = std::fs::remove_dir_all(&d);
@@ -248,7 +249,31 @@ fn sidecar_directory_appearing_mid_run_publishes_nothing() {
     let calls = Arc::new(AtomicU64::new(0));
     let r = run_one(job(vc3_mov("d2"), video(3, &calls, Some(hook)), d.join("out.mov"), true), true);
     assert!(failed_detail(&r).contains("export-sidecar-path"), "{r:?}");
+    assert!(!r.published_media && r.output_sha256.is_none(), "{r:?}");
     assert_eq!(entries(&d), ["out.vtt"], "no media published, no temp");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Item 1d, the case no check can pre-empt: the sidecar rename fails after the media rename (the old sidecar
+/// is held open without delete sharing, so Windows refuses to replace it). The receipt is Failed and states
+/// that the media is published, with the facts of the file now at the output path; the old sidecar is intact
+/// and no temp is left. Windows only: a POSIX rename replaces an open file.
+#[cfg(windows)]
+#[test]
+fn a_sidecar_rename_failure_after_the_media_states_what_was_published() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let d = dir("d3");
+    std::fs::write(d.join("out.vtt"), b"old sidecar").unwrap();
+    let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(d.join("out.vtt")).unwrap();
+    let calls = Arc::new(AtomicU64::new(0));
+    let r = run_one(job(vc3_mov("d3"), video(2, &calls, None), d.join("out.mov"), true), true);
+    drop(lock);
+    assert!(matches!(r.outcome, ExportOutcome::Failed { code: "MEDIA_IO", .. }), "{r:?}");
+    assert!(r.published_media && !r.published_sidecar, "{r:?}");
+    assert_eq!(r.output_sha256.as_deref(), Some(sha_of(&d.join("out.mov")).as_str()));
+    assert!(r.to_json().contains("\"published\":{\"media\":true,\"sidecar\":false}"), "{}", r.to_json());
+    assert_eq!(std::fs::read(d.join("out.vtt")).unwrap(), b"old sidecar");
+    assert_eq!(entries(&d), ["out.mov", "out.vtt"], "no temp left");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -261,6 +286,7 @@ fn overwrite_replaces_output_and_sidecar() {
     let calls = Arc::new(AtomicU64::new(0));
     let r = run_one(job(vc3_mov("e"), video(2, &calls, None), d.join("out.mov"), true), true);
     assert_eq!(r.outcome, ExportOutcome::Complete, "{r:?}");
+    assert!(r.published_media && r.published_sidecar, "{r:?}");
     assert_eq!(r.output_sha256.as_deref(), Some(sha_of(&d.join("out.mov")).as_str()));
     assert!(std::fs::read_to_string(d.join("out.vtt")).unwrap().starts_with("WEBVTT\n"));
     assert_eq!(entries(&d), ["out.mov", "out.vtt"]);
