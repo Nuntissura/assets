@@ -959,11 +959,13 @@ fn header(opts: &ExportOptions, content_pt: [f64; 2]) -> Result<(f64, String)> {
         Some(_) => return Err(VectorError::InvalidPolicy("artboard_pt")),
         None => [content_pt[0].max(1.0), content_pt[1].max(1.0)],
     };
+    let [ox, oy] = opts.origin()?;
     let (w, h) = (num(w_pt * k), num(h_pt * k));
+    let (x, y) = (num(ox * k), num(oy * k));
     Ok((
         k,
         format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}px\" height=\"{h}px\" viewBox=\"0 0 {w} {h}\">\n"
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}px\" height=\"{h}px\" viewBox=\"{x} {y} {w} {h}\">\n"
         ),
     ))
 }
@@ -1122,7 +1124,8 @@ pub fn export_svg_with_loss(
 /// layers become `<g>` and `<path>` elements in document order, with `id` (when the layer name
 /// differs from the element name), `opacity` from the layer appearance and `display="none"` for
 /// hidden layers. Only paths whose `layer_id` names a vector layer of the snapshot are written.
-/// The artboard size comes from the first artboard unless `opts.artboard_pt` overrides it.
+/// The board frame (size and origin) comes from the first artboard unless `opts.artboard_pt`
+/// (and `opts.artboard_origin_pt`) name another one ([`ExportOptions::framed_by`]).
 pub fn export_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> Result<String> {
     export_proposal_with_loss(proposal, opts).map(|e| e.text)
 }
@@ -1164,17 +1167,8 @@ pub fn export_proposal_with_loss(
         .map_err(|d| VectorError::Folio(d.code))?;
     }
     let tree = Tree::new(doc, &proposal.paths)?;
-    let artboard_pt = doc.artboards.first().and_then(|a| {
-        let pt = |l: &hsk_studio_folio::Length| (l.unit == GeometryUnit::Pt).then_some(l.value);
-        match (pt(&a.bounds.width), pt(&a.bounds.height)) {
-            (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some([w, h]),
-            _ => None,
-        }
-    });
-    let opts = ExportOptions {
-        artboard_pt: opts.artboard_pt.or(artboard_pt),
-        ..*opts
-    };
+    // The caller's board (size and origin), else the first artboard in points (lane SMB-ARTBOARD-EXPORT-1).
+    let opts = opts.framed_by(doc);
     let (k, open) = header(&opts, extent(tree.segs.iter()))?;
     let working_assigned = matches!(doc.working_space_rgb, ProfileBinding::Assigned(_));
     let mut w = writer(k, opts.pixels_per_inch, &proposal.design, working_assigned);

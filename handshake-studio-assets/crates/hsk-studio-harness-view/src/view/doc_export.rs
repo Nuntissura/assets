@@ -865,7 +865,9 @@ impl Viewer {
         let text = self.prepared_text().map_err(|e| refuse("render_text", e))?;
         let vectors = self.prepared_vectors().map_err(|e| refuse("render_vector", e))?;
         let snap = self.run.snapshot().ok_or_else(|| refuse("nothing_open", "open a document first"))?;
-        let frame = render::render_linear_with_records(snap, &self.assets, Some(&text), vectors.as_ref(), self.records.as_ref(), self.cancel).map_err(|e| refuse(e.code, e.detail))?;
+        // The artboard Go to Artboard chose, as the canvas and the PNG export frame it (lane SMB-ARTBOARD-EXPORT-1, V4-06).
+        let framed = self.framed_snapshot().map_err(|e| refuse(e.code, e.detail))?;
+        let frame = render::render_linear_with_records(framed.as_ref().unwrap_or(snap), &self.assets, Some(&text), vectors.as_ref(), self.records.as_ref(), self.cancel).map_err(|e| refuse(e.code, e.detail))?;
         let doc = snap.document();
         let resource = DomainId::parse(&doc.document_id).map_err(|_| refuse("document_id", "unparseable"))?;
         let source = LayerSource { doc, assets: &self.assets };

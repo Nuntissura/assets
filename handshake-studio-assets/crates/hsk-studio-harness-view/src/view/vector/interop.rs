@@ -418,9 +418,20 @@ impl Viewer {
         self.report(r)
     }
 
-    /// The open vector document as SVG text (points) and the typed losses (module docs).
+    /// The open vector document as SVG text (points) and the typed losses (module docs), framed on the
+    /// artboard Go to Artboard chose (else the first): its size and its origin (lane SMB-ARTBOARD-EXPORT-1).
     pub fn vector_svg(&self) -> Result<(String, Vec<String>), String> {
         let snap = self.run.snapshot().ok_or("svg_export: nothing open")?;
+        let b = &self.active_artboard(snap.document()).ok_or("svg_export: the document has no artboard")?.bounds;
+        self.vector_svg_framed(snap, [b.x.value, b.y.value, b.width.value, b.height.value])
+    }
+
+    /// [`Viewer::vector_svg`] of `snap` (the open document or a view copy of it, module `export_set`)
+    /// framed on `frame` (x, y, width, height in document pixels): the `viewBox` is that frame.
+    pub(in crate::view) fn vector_svg_framed(&self, snap: &folio::Snapshot, frame: [f64; 4]) -> Result<(String, Vec<String>), String> {
+        if !frame.iter().all(|v| v.is_finite()) || frame[2] <= 0.0 || frame[3] <= 0.0 {
+            return Err("svg_export: frame".into());
+        }
         let doc = snap.document();
         let entry = self.vector_entry()?;
         let design = effective_design(doc, &entry)?;
@@ -584,7 +595,6 @@ impl Viewer {
         out_doc.graph = folio::StudioLayerGraph { schema_id: folio::GraphSchema::V1, operations: Vec::new(), edges: Vec::new(), outputs: Vec::new() };
         let budget = folio::Budget { nodes: out_doc.layers.len().saturating_add(paths.len()).saturating_mul(2).saturating_add(64).max(folio::Budget::default().nodes), ..folio::Budget::default() };
         let snapshot = folio::validate_document(out_doc, budget, self.cancel, &crate::harness::TrustAll).map_err(|d| format!("svg_export: folio {:?} {}", d.code, d.target))?;
-        let board = self.active_artboard(doc).ok_or("svg_export: the document has no artboard")?;
         let proposal = iv::VectorProposal {
             snapshot,
             paths,
@@ -592,9 +602,10 @@ impl Viewer {
             vector_records: out_records,
             gradient_provenance: Vec::new(),
             loss: Vec::new(),
-            provenance: iv::Provenance { source_format: "studio", source_unit: "px", pixels_per_inch: 96.0, px_to_pt: 0.75, source_len: 0, decoded_len: 0, view_box: None, viewport_px: [board.bounds.width.value, board.bounds.height.value] },
+            provenance: iv::Provenance { source_format: "studio", source_unit: "px", pixels_per_inch: 96.0, px_to_pt: 0.75, source_len: 0, decoded_len: 0, view_box: None, viewport_px: [frame[2], frame[3]] },
         };
-        let opts = iv::ExportOptions { pixels_per_inch: 96.0, artboard_pt: Some([board.bounds.width.value * 0.75, board.bounds.height.value * 0.75]) };
+        // The board's size and origin (1 document px = 0.75 pt): a board off the document origin frames its own art.
+        let opts = iv::ExportOptions { pixels_per_inch: 96.0, artboard_pt: Some([frame[2] * 0.75, frame[3] * 0.75]), artboard_origin_pt: Some([frame[0] * 0.75, frame[1] * 0.75]) };
         let svg = iv::export_proposal_with_loss(&proposal, &opts).map_err(|e| format!("svg_export: {e:?}"))?;
         losses.extend(svg.loss.iter().map(|l| format!("{}: {}", l.path, l.code)));
         Ok((svg.text, losses))

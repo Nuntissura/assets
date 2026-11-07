@@ -8,8 +8,10 @@ mod support_context;
 
 use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
 use hsk_studio_harness_view::view::Viewer;
+use hsk_studio_harness_view::view::doc_export::{DocExportRecipe, DocFormat};
 use hsk_studio_harness_view::view::render::Prefer;
 use hsk_studio_harness_view::view::vector::{ShapeKind, VectorTool};
+use std::path::PathBuf;
 
 fn vector_doc(w: f64, h: f64) -> Viewer {
     let mut v = support_context::viewer(Prefer::Cpu);
@@ -44,4 +46,38 @@ fn svg_frames_the_chosen_board_at_its_origin() {
     v.draw_shape(ShapeKind::Rectangle, [200.0, 8.0], [260.0, 56.0], false).unwrap();
     let (svg, _) = v.vector_svg().unwrap();
     assert!(near(view_box(&svg), [192.0, 0.0, 200.0, 64.0]), "the board of x 192: {}", &svg[..svg.len().min(300)]);
+    // The first board keeps the document origin.
+    let first = v.state_json()["containers"]["artboards"][0]["id"].as_str().unwrap().to_owned();
+    v.go_to_artboard(&first).unwrap();
+    assert!(near(view_box(&v.vector_svg().unwrap().0), [0.0, 0.0, 128.0, 128.0]));
+}
+
+/// Test scratch directory under TMP, removed on drop.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(label: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("hsk-artboard-export-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// V4-06 sibling site: the document export recipe frames the chosen board, as the canvas and the PNG
+/// export do (it rendered the first board whatever Go to Artboard chose).
+#[test]
+fn export_document_frames_the_chosen_board() {
+    let scratch = Scratch::new("doc-export");
+    let mut v = vector_doc(128.0, 128.0);
+    let wide = v.add_artboard("wide", 200.0, 64.0, None).unwrap();
+    v.go_to_artboard(&wide).unwrap();
+    let report = v.export_document(&scratch.0.join("wide.png"), &DocExportRecipe::of_format(DocFormat::Png { depth: 8 }), false).unwrap();
+    assert_eq!((report["width"].as_u64(), report["height"].as_u64()), (Some(200), Some(64)), "{report}");
 }

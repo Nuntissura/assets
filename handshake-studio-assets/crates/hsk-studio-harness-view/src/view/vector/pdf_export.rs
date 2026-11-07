@@ -320,9 +320,18 @@ impl Walk<'_> {
 }
 
 impl Viewer {
-    /// The open vector document as PDF bytes and the typed losses (module docs).
+    /// The open vector document as PDF bytes and the typed losses (module docs), on the artboard Go to
+    /// Artboard chose (else the first).
     pub fn vector_pdf_bytes(&self) -> Result<(Vec<u8>, Vec<String>), String> {
         let snap = self.run.snapshot().ok_or("pdf_export: nothing open")?;
+        let b = &self.active_artboard(snap.document()).ok_or("pdf_export: the document has no artboard")?.bounds;
+        self.vector_pdf_framed(snap, [b.x.value, b.y.value, b.width.value, b.height.value])
+    }
+
+    /// [`Viewer::vector_pdf_bytes`] of `snap` (the open document or a view copy of it, module
+    /// `export_set`) on one page framing `board` (x, y, width, height in document pixels; lane
+    /// SMB-ARTBOARD-EXPORT-1).
+    pub(in crate::view) fn vector_pdf_framed(&self, snap: &folio::Snapshot, board: [f64; 4]) -> Result<(Vec<u8>, Vec<String>), String> {
         let doc = snap.document();
         let entry = self.vector_entry()?;
         let design = effective_design(doc, &entry)?;
@@ -336,9 +345,8 @@ impl Viewer {
             .map_err(|e| format!("pdf_export: {e:?}"))?;
         let mut losses: Vec<String> = refused.iter().map(|(l, c)| format!("{l}: refused:{c}")).collect();
         losses.extend(assets.losses());
-        let board = self.active_artboard(doc).ok_or("pdf_export: the document has no artboard")?;
-        let page = Page { o: [board.bounds.x.value, board.bounds.y.value], h: board.bounds.height.value, w: board.bounds.width.value };
-        let media = [0.0, 0.0, board.bounds.width.value * PT, board.bounds.height.value * PT];
+        let page = Page { o: [board[0], board[1]], h: board[3], w: board[2] };
+        let media = [0.0, 0.0, board[2] * PT, board[3] * PT];
         let whole = |v: f64| if v.is_finite() && v.abs() < 1e7 { Some(v.round() as i64) } else { None };
         let frame = match (whole(page.o[0]), whole(page.o[1]), whole(page.w.ceil()), whole(page.h.ceil())) {
             (Some(x), Some(y), Some(w), Some(h)) => PixelFrame {

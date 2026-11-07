@@ -241,9 +241,14 @@ pub fn layer_style<'a>(
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExportOptions {
     pub pixels_per_inch: f64,
-    /// Artboard size in points; `None` uses `[max x, max y]` of all anchors and handles (at
-    /// least 1 pt). The `viewBox` always starts at `0 0`.
+    /// Artboard size in points; `None` uses the document's first artboard (bounds in points), else
+    /// `[max x, max y]` of all anchors and handles (at least 1 pt).
     pub artboard_pt: Option<[f64; 2]>,
+    /// The named board's top-left corner in document points, y down (lane SMB-ARTBOARD-EXPORT-1):
+    /// the SVG `viewBox` starts there and the EPS page is translated by it, so a board off the
+    /// document origin frames its own art. `None` with `artboard_pt` set: `0 0`; with both `None`,
+    /// the first artboard's origin.
+    pub artboard_origin_pt: Option<[f64; 2]>,
 }
 
 impl Default for ExportOptions {
@@ -251,7 +256,42 @@ impl Default for ExportOptions {
         Self {
             pixels_per_inch: 96.0,
             artboard_pt: None,
+            artboard_origin_pt: None,
         }
+    }
+}
+
+impl ExportOptions {
+    /// These options with the board frame resolved: the caller's `artboard_pt` (and origin), else the
+    /// first artboard of `doc` whose bounds are in points with a positive size, its origin included.
+    pub fn framed_by(&self, doc: &hsk_studio_folio::StudioDocument) -> Self {
+        if self.artboard_pt.is_some() {
+            return *self;
+        }
+        match doc.artboards.first().and_then(artboard_region_pt) {
+            Some((origin, size)) => Self { artboard_pt: Some(size), artboard_origin_pt: self.artboard_origin_pt.or(Some(origin)), ..*self },
+            None => *self,
+        }
+    }
+
+    /// The origin, `0 0` when none is set; refused when not finite or beyond [`COORDINATE_LIMIT`].
+    pub fn origin(&self) -> Result<[f64; 2]> {
+        match self.artboard_origin_pt {
+            None => Ok([0.0, 0.0]),
+            Some(o) if o.iter().all(|v| v.is_finite() && v.abs() <= COORDINATE_LIMIT) => Ok(o),
+            Some(_) => Err(VectorError::InvalidPolicy("artboard_origin_pt")),
+        }
+    }
+}
+
+/// The top-left corner and size in points of an artboard whose bounds are in points with a positive
+/// size (the other units need a resolution the document does not carry here).
+pub fn artboard_region_pt(a: &hsk_studio_folio::StudioArtboard) -> Option<([f64; 2], [f64; 2])> {
+    let b = &a.bounds;
+    let pt = |l: &hsk_studio_folio::Length| (l.unit == hsk_studio_folio::GeometryUnit::Pt && l.value.is_finite()).then_some(l.value);
+    match (pt(&b.x), pt(&b.y), pt(&b.width), pt(&b.height)) {
+        (Some(x), Some(y), Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(([x, y], [w, h])),
+        _ => None,
     }
 }
 

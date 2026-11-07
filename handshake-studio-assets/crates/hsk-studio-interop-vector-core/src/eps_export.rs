@@ -6,7 +6,8 @@
 //!   `%%HiResBoundingBox` of the artboard, `%%LanguageLevel: 3`, `%%Pages: 1`, `%%EndComments`;
 //!   no `showpage` side effects beyond the one the EPSF rules allow, wrapped in `save`/`restore`
 //!   by the importing application as usual;
-//! - geometry: document points (y down) under one `0 H translate 1 -1 scale`; each vector layer
+//! - geometry: document points (y down) under one `-ox (H + oy) translate 1 -1 scale`, where `ox oy`
+//!   is the board's origin (`0 H` for a board at the document origin); each vector layer
 //!   is one compound path (`moveto`/`lineto`/`curveto`/`closepath`);
 //! - paint rows bottom to top: solid fill (`setrgbcolor` + `fill`/`eofill`), linear and radial
 //!   gradient fills (LanguageLevel 3 `shfill`, shading types 2 and 3, stitched type 2 functions
@@ -275,17 +276,24 @@ impl Writer<'_> {
     }
 }
 
-fn header(width: f64, height: f64) -> Result<String> {
+/// The header; `origin` is the board's top-left corner in document points (y down), which lands at the
+/// top-left of the bounding box: `-ox (H + oy) translate 1 -1 scale` (`0 H` at the document origin).
+fn header(width: f64, height: f64, origin: [f64; 2]) -> Result<String> {
     if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 && width <= COORDINATE_LIMIT && height <= COORDINATE_LIMIT) {
         return Err(VectorError::InvalidGeometry);
     }
+    let (tx, ty) = (-origin[0], height + origin[1]);
+    if !(tx.is_finite() && ty.is_finite() && tx.abs() <= COORDINATE_LIMIT && ty.abs() <= COORDINATE_LIMIT * 2.0) {
+        return Err(VectorError::InvalidGeometry);
+    }
     Ok(format!(
-        "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 {} {}\n%%HiResBoundingBox: 0 0 {} {}\n%%Creator: Handshake Studio\n%%LanguageLevel: 3\n%%Pages: 1\n%%EndComments\n%%BeginProlog\n/m {{moveto}} bind def /l {{lineto}} bind def /c {{curveto}} bind def /h {{closepath}} bind def\n/rg {{setrgbcolor}} bind def /RG {{setrgbcolor}} bind def /S {{stroke}} bind def\n/w {{setlinewidth}} bind def /J {{setlinecap}} bind def /j {{setlinejoin}} bind def /M {{setmiterlimit}} bind def /d {{setdash}} bind def\n%%EndProlog\n%%Page: 1 1\ngsave\n0 {} translate 1 -1 scale\n",
+        "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 {} {}\n%%HiResBoundingBox: 0 0 {} {}\n%%Creator: Handshake Studio\n%%LanguageLevel: 3\n%%Pages: 1\n%%EndComments\n%%BeginProlog\n/m {{moveto}} bind def /l {{lineto}} bind def /c {{curveto}} bind def /h {{closepath}} bind def\n/rg {{setrgbcolor}} bind def /RG {{setrgbcolor}} bind def /S {{stroke}} bind def\n/w {{setlinewidth}} bind def /J {{setlinecap}} bind def /j {{setlinejoin}} bind def /M {{setmiterlimit}} bind def /d {{setdash}} bind def\n%%EndProlog\n%%Page: 1 1\ngsave\n{} {} translate 1 -1 scale\n",
         num(width.ceil()),
         num(height.ceil()),
         num(width),
         num(height),
-        num(height)
+        num(tx),
+        num(ty)
     ))
 }
 
@@ -313,7 +321,7 @@ fn extent(groups: &[(&VectorPath, Vec<Seg>)]) -> [f64; 2] {
 pub fn export_eps(paths: &[VectorPath], design: &StudioDesignRecords, opts: &ExportOptions) -> Result<EpsExport> {
     let converted: Vec<(&VectorPath, Vec<Seg>)> = paths.iter().map(|p| convert(p).map(|s| (p, s))).collect::<Result<_>>()?;
     let [w, h] = opts.artboard_pt.unwrap_or_else(|| extent(&converted));
-    let open = header(w, h)?;
+    let open = header(w, h, opts.origin()?)?;
     let mut writer = Writer { design, ppi: opts.pixels_per_inch, loss: Vec::new(), noted: BTreeSet::new(), body: String::new() };
     let mut i = 0usize;
     let mut ordinal = 0usize;
@@ -331,8 +339,9 @@ pub fn export_eps(paths: &[VectorPath], design: &StudioDesignRecords, opts: &Exp
 }
 
 /// Export of a proposal (or an edited copy): only paths of visible vector layers are written, in
-/// document order; the first artboard sets the bounding box unless `opts.artboard_pt` overrides
-/// it. Layer opacity, clips, masks and patterns are typed losses (module docs).
+/// document order; the first artboard sets the bounding box and the origin unless `opts.artboard_pt`
+/// (and `opts.artboard_origin_pt`) name another board ([`ExportOptions::framed_by`]). Layer
+/// opacity, clips, masks and patterns are typed losses (module docs).
 pub fn export_eps_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> Result<EpsExport> {
     let doc = proposal.snapshot.document();
     let mut hidden = BTreeSet::new();
@@ -383,14 +392,8 @@ pub fn export_eps_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> R
     if visible.len() < proposal.paths.len() {
         note(&mut loss, "/eps".into(), LossKind::Ignored, "hidden_layer_skipped");
     }
-    let artboard = doc.artboards.first().and_then(|a| {
-        let pt = |l: &FolioLength| (l.unit == GeometryUnit::Pt).then_some(l.value);
-        match (pt(&a.bounds.width), pt(&a.bounds.height)) {
-            (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some([w, h]),
-            _ => None,
-        }
-    });
-    let opts = ExportOptions { artboard_pt: opts.artboard_pt.or(artboard), ..*opts };
+    // The caller's board (size and origin), else the first artboard in points (lane SMB-ARTBOARD-EXPORT-1).
+    let opts = opts.framed_by(doc);
     let mut out = export_eps(&visible, &proposal.design, &opts)?;
     loss.append(&mut out.loss);
     out.loss = loss;
@@ -403,4 +406,30 @@ fn doc_layer_visible(l: &hsk_studio_folio::StudioLayer) -> bool {
 
 fn doc_layer_opacity(l: &hsk_studio_folio::StudioLayer) -> f64 {
     l.appearance.as_ref().map_or(100.0, |a| a.opacity)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Lane SMB-ARTBOARD-EXPORT-1: a board off the document origin frames its own art; the document
+    //! origin keeps the `0 H` translate of before; a hostile origin is typed.
+    use super::*;
+    use hsk_studio_nib::{Anchor, Mirroring, Point};
+
+    fn square() -> VectorPath {
+        let anchor = |x: f64, y: f64| Anchor { position: Point::pt(x, y).unwrap(), incoming: Point::pt(0.0, 0.0).unwrap(), outgoing: Point::pt(0.0, 0.0).unwrap(), handle_mirroring: Mirroring::None };
+        VectorPath { path_id: "SVPT-00000001-0000-7000-8000-000000000001".into(), layer_id: "SLYR-00000001-0000-7000-8000-000000000002".into(), closed: true, anchors: vec![anchor(110.0, 30.0), anchor(150.0, 30.0), anchor(150.0, 60.0)], winding: Winding::NonZero }
+    }
+
+    #[test]
+    fn the_page_is_translated_to_the_board_origin() {
+        let design = StudioDesignRecords::new("SDOC-00000001-0000-7000-8000-000000000003");
+        let at = |origin| export_eps(&[square()], &design, &ExportOptions { artboard_pt: Some([80.0, 50.0]), artboard_origin_pt: origin, ..ExportOptions::default() }).unwrap().text;
+        assert!(at(Some([100.0, 20.0])).contains("gsave\n-100 70 translate 1 -1 scale\n"), "{}", at(Some([100.0, 20.0])));
+        assert!(at(None).contains("gsave\n0 50 translate 1 -1 scale\n"));
+        assert!(at(Some([0.0, 0.0])).contains("gsave\n0 50 translate 1 -1 scale\n"));
+        for bad in [[f64::NAN, 0.0], [0.0, f64::INFINITY], [2.0e9, 0.0]] {
+            let r = export_eps(&[square()], &design, &ExportOptions { artboard_pt: Some([80.0, 50.0]), artboard_origin_pt: Some(bad), ..ExportOptions::default() });
+            assert_eq!(r.err(), Some(VectorError::InvalidPolicy("artboard_origin_pt")), "{bad:?}");
+        }
+    }
 }
