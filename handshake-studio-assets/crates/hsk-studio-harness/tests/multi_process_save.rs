@@ -348,7 +348,8 @@ fn edit_in_place_needs_expect_revision() {
     assert_eq!(cli_json(&["edit", p, "--provider", "chronicle.patch", "--rename", L1, "x", "--save", out.to_str().unwrap()]).0, 0);
 }
 
-/// `--expect-revision N` names the revision the file was opened at: the edits of one command line advance from it.
+/// `--expect-revision N` names the revision the file was opened at and the first edit carries it: the later edits of the
+/// command line follow, also after an edit that changes nothing and so keeps the revision.
 #[test]
 fn expect_revision_covers_every_edit_of_one_command_line() {
     let scratch = Scratch::new("multi-edit");
@@ -358,6 +359,13 @@ fn expect_revision_covers_every_edit_of_one_command_line() {
     assert_eq!(exit, 0, "{r}");
     assert_eq!(op(&r, "save")["detail"]["revision"], 11, "{r}");
     assert_eq!(cli_json(&["verify", p, "--expect-revision", "11", "--expect-name", L1, "one", "--expect-visible", L1, "false"]).0, 0);
+    // The fixture's L1 is visible, so the first edit changes nothing and the revision stays 9.
+    let copy = scratch.0.join("no-op-first.handshake");
+    std::fs::copy(fixture_path(), &copy).unwrap();
+    let c = copy.to_str().unwrap();
+    let (exit, n) = cli_json(&["edit", c, "--provider", "chronicle.patch", "--expect-revision", "9", "--visible", L1, "true", "--rename", L1, "x", "--save", c, "--overwrite"]);
+    assert_eq!(exit, 0, "{n}");
+    assert_eq!(cli_json(&["verify", c, "--expect-revision", "10", "--expect-name", L1, "x"]).0, 0);
     // A wrong expectation is refused on the first edit, as before.
     let (exit, r) = cli_json(&["edit", p, "--provider", "chronicle.patch", "--expect-revision", "9", "--rename", L1, "three", "--save", p, "--overwrite"]);
     assert!(exit == 1 && op(&r, "rename")["error"] == "stale_revision", "{r}");

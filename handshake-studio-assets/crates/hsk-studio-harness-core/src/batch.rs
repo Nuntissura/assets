@@ -1025,11 +1025,16 @@ fn write_target(run: &mut Run<'_>, job: &BatchJob, target: &OutputTarget, input:
             OverwritePolicy::Ask => return receipt(Some(&path), "refused", Some("batch_ask_overwrite_in_headless")),
         }
     }
-    if run.save_to(&path) {
+    // Only Overwrite may replace: another process can take the free name after the check above.
+    let saved = if target.overwrite_policy == OverwritePolicy::Overwrite { run.save_to(&path) } else { run.save_new(&path) };
+    if saved {
         written.insert(path.clone());
         receipt(Some(&path), "written", None)
     } else {
         let code = last_error(run, "save_failed");
+        if code == "destination_exists" && target.overwrite_policy == OverwritePolicy::Skip {
+            return receipt(Some(&path), "skipped_existing", None);
+        }
         receipt(Some(&path), "failed", Some(&code))
     }
 }

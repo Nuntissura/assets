@@ -2746,6 +2746,10 @@ impl Session {
             cancel,
         )
         .map_err(|error| guard.refusal_for(path).unwrap_or_else(|| Self::writer_cause(&assets, error)))?;
+        // The rename has landed: from here this file is what the next save compares against, also
+        // if the reopen below fails.
+        self.origin = Some(path.to_path_buf());
+        self.origin_disk = guard.landed.take();
         // The new file holds only the tiles the document references; tiles a pixel edit replaced
         // stay readable for undo/redo by moving into the staged set before the source changes.
         self.retain_replaced_assets(cancel);
@@ -2776,8 +2780,6 @@ impl Session {
         self.raw = landed_raw;
         self.saved_revision = Some(revision);
         self.entries_changed = false;
-        self.origin = Some(path.to_path_buf());
-        self.origin_disk = guard.landed.take();
         // Releases the lock: everything from the compare to this reopen ran under it.
         drop(guard);
         Ok(SaveReceipt {

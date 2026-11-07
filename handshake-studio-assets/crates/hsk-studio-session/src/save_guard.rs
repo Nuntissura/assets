@@ -21,14 +21,21 @@
 //! filesystem that delays the delete, the open fails with permission denied until the holder closes, and that is retried
 //! too. Every wait is bounded: past it the save refuses `save_busy`.
 //!
-//! **What this closes and what it does not.** Between Studio writers using this path the compare and the rename are one
-//! step: exactly one save from a revision lands (test `saves_looped_from_processes_with_mid_save_exits_lose_nothing`).
-//! A writer that is not Studio takes no lock: if it replaces the file between the compare and the rename, its write is
-//! lost silently. Saving to a file `File::try_lock` reports unsupported (no OS locks on that filesystem) runs the compare
-//! alone, with the same window between Studio writers. A session reads asset bodies lazily from the file it opened: a
-//! Studio save replaces the file by rename, so that handle keeps the old content and every way out stays open, but a
-//! writer that overwrites the file in place destroys those bodies, and then saving elsewhere fails typed too unless the
-//! document needs none of them.
+//! **What this closes and what it does not.** Between Studio writers using this path on one machine, on a filesystem
+//! with OS locks and fine-grained modified times, the compare and the rename are one step: exactly one save from a
+//! revision lands (test `saves_looped_from_processes_with_mid_save_exits_lose_nothing`, run on NTFS only). Still open:
+//! - A writer that is not Studio takes no lock: if it replaces the file between the compare and the rename, its write is
+//!   lost silently.
+//! - Stamp collision: std has no stable file identity on Windows, so the stamp stands in for one. Where modified times
+//!   are coarse (1-2 s on FAT and some network targets) or cannot be set, only the 16-bit length tells a process holding
+//!   a removed sidecar from the live holder: 1 in 65536 per such race. Both then run as holders, and the first to release
+//!   removes the other's name.
+//! - A filesystem whose `File::try_lock` succeeds without sharing the lock between machines (a nolock NFS mount, some
+//!   FUSE mounts) gives each machine its own holder. Only a lock reported as unsupported is detected; that case runs
+//!   the compare alone, with the same window between Studio writers.
+//! - A session reads asset bodies lazily from the file it opened: a Studio save replaces the file by rename, so that handle keeps
+//!   the old content and every way out stays open, but a writer that overwrites the file in place destroys those bodies,
+//!   and then saving elsewhere fails typed too unless the document needs none of them.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::SessionError;
@@ -44,8 +51,8 @@ use std::{
 
 /// Fingerprint read size: the only buffer a fingerprint holds.
 const CHUNK: usize = 256 * 1024;
-/// How long a denied sidecar open is retried: a delete still pending at another process clears in this window, a
-/// directory that takes no new file does not.
+/// How long denied sidecar opens in a row are retried, from the first of them: a delete still pending at another process
+/// clears in this window, a directory that takes no new file does not.
 const DENIED_WAIT: Duration = Duration::from_secs(1);
 const FIRST_DELAY: Duration = Duration::from_millis(1);
 const MAX_DELAY: Duration = Duration::from_millis(50);
@@ -159,26 +166,30 @@ impl SaveLock {
         let path = save_lock_path(target);
         let start = Instant::now();
         let mut delay = FIRST_DELAY;
+        let mut denied_since: Option<Instant> = None;
         loop {
             cancel.check().map_err(|_| SessionError::Canceled)?;
             match OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path) {
-                Ok(file) => match file.try_lock() {
-                    Ok(()) => match names_locked_file(&file, &path) {
-                        Ok(true) => return Ok(Some(SaveLock { file, path })),
-                        Ok(false) => {}
-                        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {}
-                        Err(error) => return Err(SessionError::Io(error.kind())),
-                    },
-                    Err(TryLockError::WouldBlock) => {}
-                    Err(TryLockError::Error(error)) if error.kind() == io::ErrorKind::Unsupported => {
-                        drop(file);
-                        let _ = fs::remove_file(&path);
-                        return Ok(None);
+                Ok(file) => {
+                    denied_since = None;
+                    match file.try_lock() {
+                        Ok(()) => match names_locked_file(&file, &path) {
+                            Ok(true) => return Ok(Some(SaveLock { file, path })),
+                            Ok(false) => {}
+                            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {}
+                            Err(error) => return Err(SessionError::Io(error.kind())),
+                        },
+                        Err(TryLockError::WouldBlock) => {}
+                        Err(TryLockError::Error(error)) if error.kind() == io::ErrorKind::Unsupported => {
+                            drop(file);
+                            let _ = fs::remove_file(&path);
+                            return Ok(None);
+                        }
+                        Err(TryLockError::Error(error)) => return Err(SessionError::Io(error.kind())),
                     }
-                    Err(TryLockError::Error(error)) => return Err(SessionError::Io(error.kind())),
-                },
+                }
                 Err(error) if matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::IsADirectory) => {
-                    if start.elapsed() >= DENIED_WAIT.min(wait) {
+                    if denied_since.get_or_insert_with(Instant::now).elapsed() >= DENIED_WAIT.min(wait) {
                         return Err(SessionError::DestinationReadOnly);
                     }
                 }
@@ -272,13 +283,14 @@ impl<'a> GuardedFs<'a> {
         io::Error::other("save refused at the file boundary")
     }
 
-    /// Lock, compare, fingerprint what lands. Nothing has touched the destination when this fails.
+    /// Fingerprint what lands, lock, compare. Nothing has touched the destination when this fails. The temp is read before
+    /// the lock, so that pass is neither in the lock hold nor between the compare and the rename.
     fn before_rename(&mut self, temp: &Path, target: &Path) -> Result<(), SessionError> {
-        self.lock = SaveLock::acquire(target, self.lock_wait, self.cancel)?;
-        check_content(&self.expect, target, self.cancel)?;
         let mut file = File::open(temp).map_err(|e| SessionError::Io(e.kind()))?;
         self.landed = Some(fingerprint_file(&mut file, self.cancel)?);
-        Ok(())
+        drop(file);
+        self.lock = SaveLock::acquire(target, self.lock_wait, self.cancel)?;
+        check_content(&self.expect, target, self.cancel)
     }
 }
 
@@ -402,6 +414,26 @@ mod tests {
         let target = scratch.0.join("doc.handshake");
         fs::create_dir(save_lock_path(&target)).unwrap();
         assert!(matches!(acquire(&target, Duration::from_secs(5)), Err(SessionError::DestinationReadOnly)));
+    }
+
+    /// A long wait behind a holder does not use up the retry of a denied open: it is timed from the first denial.
+    #[test]
+    fn a_denied_open_after_a_long_wait_is_still_retried() {
+        let scratch = Scratch::new("denied-late");
+        let target = scratch.0.join("doc.handshake");
+        let holder = acquire(&target, Duration::from_secs(5)).unwrap().expect("OS locks");
+        let sidecar = save_lock_path(&target);
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(DENIED_WAIT + Duration::from_millis(200));
+            drop(holder);
+            // Denied opens from here, like a delete still pending, for less than DENIED_WAIT.
+            fs::create_dir(&sidecar).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            fs::remove_dir(&sidecar).unwrap();
+        });
+        let waited = acquire(&target, Duration::from_secs(30));
+        releaser.join().unwrap();
+        assert!(matches!(waited, Ok(Some(_))), "retried, not read-only");
     }
 
     #[test]

@@ -1175,9 +1175,10 @@ fn save_package(run: &mut crate::Run<'_>, path: &Path, overwrite: bool) -> bool 
 }
 
 fn edit_flow(run: &mut crate::Run<'_>, parsed: &Parsed) {
-    // `--expect-revision N` names the revision the package was opened at; every edit advances it by one.
-    for (advanced, edit) in (0u64..).zip(&parsed.edits) {
-        let expect = parsed.expect_revision.map(|revision| revision.saturating_add(advanced));
+    // `--expect-revision N` names the revision the package was opened at, so the first edit carries it. An edit that
+    // changes nothing keeps the revision, and nothing else moves this session between edits.
+    for (index, edit) in parsed.edits.iter().enumerate() {
+        let expect = if index == 0 { parsed.expect_revision } else { None };
         let ok = match edit {
             EditOp::Rename(layer, name) => run.rename(layer, name, expect),
             EditOp::Visible(layer, visible) => run.set_visible(layer, *visible, expect),

@@ -2028,7 +2028,9 @@ fn lazy_failures_are_typed_cancel_reads_nothing_and_memory_sessions_work() {
         assert_eq!(fs::read(&fixture.path).unwrap(), fixture.bytes);
 
         // The asset body is only read (and verified) when needed: damage it behind the
-        // session's back and the save fails with the true cause, not a vague "asset absent".
+        // session's back and the save fails with the true cause, not a vague "asset absent":
+        // over its own file that the file changed (lane SMB-SESSION-WRITE-SAFETY-1), elsewhere
+        // the hash_mismatch of the body it could not read.
         let at = fixture
             .bytes
             .windows(64)
@@ -2047,7 +2049,7 @@ fn lazy_failures_are_typed_cancel_reads_nothing_and_memory_sessions_work() {
         flip(blob[10] ^ 0xff);
         let damaged = fs::read(&fixture.path).unwrap();
         let failed = session.save(&token()).unwrap_err();
-        assert_eq!(failed.code(), "hash_mismatch");
+        assert_eq!(failed.code(), "destination_changed");
         assert_eq!(
             delivered(failed.report).outcome,
             Outcome::Failure(FailureCode::Validation)
