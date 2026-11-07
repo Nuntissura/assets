@@ -486,6 +486,10 @@ pub enum MixFormat {
     Aiff { bits: u8 },
     /// AIFF-C `fl32`: the mix as 32-bit float.
     AiffFloat,
+    /// WAV (RIFF PCM, reel's `wav-pcm` encoder), 16 or 24-bit integer (lane SMB-AUDIO-OUT-MIX-1).
+    Wav { bits: u8 },
+    /// WAV IEEE float, 32-bit.
+    WavFloat,
 }
 
 impl MixFormat {
@@ -494,9 +498,29 @@ impl MixFormat {
             Self::Flac { .. } => "flac",
             Self::Aiff { .. } => "aiff",
             Self::AiffFloat => "aifc",
+            Self::Wav { .. } | Self::WavFloat => "wav",
         }
     }
+
+    /// The format of a text token: `flac16`, `flac24`, `aiff16`, `aiff24`, `aiff_float`, `wav16`,
+    /// `wav24`, `wav_float` (the drive surface's form).
+    pub fn parse(token: &str) -> Option<Self> {
+        Some(match token {
+            "flac16" => Self::Flac { bits: 16 },
+            "flac24" => Self::Flac { bits: 24 },
+            "aiff16" => Self::Aiff { bits: 16 },
+            "aiff24" => Self::Aiff { bits: 24 },
+            "aiff_float" => Self::AiffFloat,
+            "wav16" => Self::Wav { bits: 16 },
+            "wav24" => Self::Wav { bits: 24 },
+            "wav_float" => Self::WavFloat,
+            _ => return None,
+        })
+    }
 }
+
+/// Largest WAV data chunk (bytes) reel's 32-bit RIFF fields describe with its header to spare.
+const MAX_WAV_DATA_BYTES: u64 = u32::MAX as u64 - 64;
 
 /// Receipt of one export.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -685,14 +709,13 @@ pub(crate) fn export_from(
     progress: Option<&AtomicU64>,
     cancel: &CancellationToken,
 ) -> Result<MixExport, MonitorFail> {
-    let (bits, float, provider, codec) = match format {
-        MixFormat::Flac { bits } if matches!(bits, 16 | 24) => {
-            (bits, false, reel::AudioFileProvider::flac(), reel::FLAC_PROVIDER_ID)
-        }
-        MixFormat::Aiff { bits } if matches!(bits, 16 | 24) => {
-            (bits, false, reel::AudioFileProvider::aiff(), reel::audio::AIFF_PROVIDER_ID)
-        }
-        MixFormat::AiffFloat => (32, true, reel::AudioFileProvider::aiff(), reel::audio::AIFF_PROVIDER_ID),
+    let (flac_provider, aiff_provider, wav_provider) = (reel::AudioFileProvider::flac(), reel::AudioFileProvider::aiff(), reel::WavProvider);
+    let (bits, float, provider, codec): (u8, bool, &dyn reel::MediaProvider, &str) = match format {
+        MixFormat::Flac { bits } if matches!(bits, 16 | 24) => (bits, false, &flac_provider, reel::FLAC_PROVIDER_ID),
+        MixFormat::Aiff { bits } if matches!(bits, 16 | 24) => (bits, false, &aiff_provider, reel::audio::AIFF_PROVIDER_ID),
+        MixFormat::AiffFloat => (32, true, &aiff_provider, reel::audio::AIFF_PROVIDER_ID),
+        MixFormat::Wav { bits } if matches!(bits, 16 | 24) => (bits, false, &wav_provider, reel::WAV_PROVIDER_ID),
+        MixFormat::WavFloat => (32, true, &wav_provider, reel::WAV_PROVIDER_ID),
         _ => return Err(fail("export_format", format!("{format:?}: 16 or 24-bit only"))),
     };
     let channels = src.channels();
@@ -702,6 +725,13 @@ pub(crate) fn export_from(
     let frames = src.frames();
     if frames > MAX_EXPORT_FRAMES {
         return Err(fail("export_length", format!("{frames} frames exceeds {MAX_EXPORT_FRAMES}")));
+    }
+    if matches!(format, MixFormat::Wav { .. } | MixFormat::WavFloat) {
+        // Refused before anything renders, not by the encoder after the header (RIFF sizes are 32-bit).
+        let data = frames.checked_mul(u64::from(channels)).and_then(|n| n.checked_mul(u64::from(bits / 8)));
+        if data.is_none_or(|d| d > MAX_WAV_DATA_BYTES) {
+            return Err(fail("export_length", format!("{frames} frames exceed a WAV data chunk")));
+        }
     }
     let rate = src.rate();
     let io = |e: std::io::Error| fail("export_write", e.to_string());
@@ -720,8 +750,7 @@ pub(crate) fn export_from(
         failed: None,
         cancel,
     };
-    let receipt = reel::MediaProvider::encode_segment(
-        &provider,
+    let receipt = provider.encode_segment(
         &reel::EncodeSpec {
             codec: codec.into(),
             params: reel::EncodeParams::Audio {

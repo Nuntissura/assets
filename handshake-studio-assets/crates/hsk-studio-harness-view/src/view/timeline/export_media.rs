@@ -457,6 +457,15 @@ impl Viewer {
         Ok(())
     }
 
+    /// The sound port bound by [`Viewer::set_export_audio`]: its sources, source lengths and rate
+    /// (lane SMB-AUDIO-OUT-MIX-1: playback, the audio-only mixdown and stems read the same port).
+    #[cfg(feature = "audio-batch")]
+    #[allow(clippy::type_complexity)]
+    pub(in crate::view) fn sound_port(&self) -> Option<(Arc<dyn AudioSources + Send + Sync>, Arc<dyn SourceExtents + Send + Sync>, u32)> {
+        let p = self.timeline.as_ref()?.export.audio.as_ref()?;
+        Some((Arc::clone(&p.sources), Arc::clone(&p.extents), p.rate))
+    }
+
     /// Binds media files to the program monitor through reel's decoders (the CLI's `--media`;
     /// module docs): each file is a clip source `sha256:<hex>` (as the source monitor names it),
     /// its length the container's video track; the program monitor opens on `sequence_id` at
@@ -543,6 +552,17 @@ impl Viewer {
             _ => ChromaFormat::Yuv420,
         });
         let port = self.timeline.as_ref().and_then(|t| t.export.audio.clone());
+        // Lane SMB-AUDIO-OUT-MIX-1: repaired audio (the stored waveform edit list) reaches the
+        // picture export as it reaches playback and the audio-only mixdown.
+        #[cfg(feature = "audio-batch")]
+        let port = match port {
+            Some(_) => {
+                let sound = self.sequence_sound()?;
+                let rate = sound.rate();
+                Some(AudioPort { sources: Arc::new(sound.clone()), extents: Arc::new(sound), rate })
+            }
+            None => None,
+        };
         let (audio, audio_extents, rate) = match port {
             Some(p) => (SharedAudio(p.sources), ExtentTable::of(&doc.sequences, p.extents.as_ref()), p.rate),
             None => {

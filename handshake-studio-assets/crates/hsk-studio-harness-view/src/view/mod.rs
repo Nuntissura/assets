@@ -271,6 +271,9 @@ pub struct Viewer {
     /// The spectral display of the waveform editor (module [`spectral_display`]).
     #[cfg(feature = "audio-batch")]
     spectral: Option<spectral_display::SpectralDisplayState>,
+    /// The program audio output (module [`audio_session::playback`], lane SMB-AUDIO-OUT-MIX-1).
+    #[cfg(all(feature = "audio-batch", feature = "audio-device"))]
+    program_audio: Option<audio_session::playback::ProgramAudio>,
     /// The live-text status line of each live story at the last render, `(text_id, line)` (lane
     /// SMB-VIEW-POLISH-1: [`Viewer::render_if_dirty`] says the lines that changed).
     live_text_seen: Vec<(String, String)>,
@@ -363,6 +366,8 @@ impl Viewer {
             waveform: None,
             #[cfg(feature = "audio-batch")]
             spectral: None,
+            #[cfg(all(feature = "audio-batch", feature = "audio-device"))]
+            program_audio: None,
             live_text_seen: Vec::new(),
             jobs: job_admission::ViewerJobs::default(),
         };
@@ -877,6 +882,10 @@ impl Viewer {
             state["mixer"] = self.mixer_json();
             state["waveform"] = self.waveform_json();
             state["spectral"] = self.spectral_json();
+        }
+        #[cfg(all(feature = "audio-batch", feature = "audio-device"))]
+        {
+            state["audio_out"] = self.audio_out_json();
         }
         state
     }
