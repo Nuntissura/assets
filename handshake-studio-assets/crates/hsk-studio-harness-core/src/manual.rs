@@ -307,7 +307,7 @@ pub fn viewer_domain(method: &str) -> &'static str {
     match method {
         "new_raster_layer" | "duplicate_layer" | "delete_layer" | "shift_layer" | "ungroup" | "group_layers" | "move_layer" | "select" => "layer",
         "set_tool" | "set_combine" | "set_brush" | "select_rect" | "select_ellipse" | "select_lasso" | "clear_selection" | "undo_selection" | "select_wand" | "ps_click" | "refine_end" | "paint" | "fill_click" | "fill_drag" | "info_eyedropper"
-        | "set_develop" | "set_develop_threads" | "set_develop_export_field" | "load_develop_watermark" | "clear_develop_export_stage" | "export" => "photo",
+        | "set_develop" | "set_develop_threads" | "set_develop_export_field" | "load_develop_watermark" | "clear_develop_export_stage" | "export" | "export_document" => "photo",
         "grid_append_child_at" | "set_grid_gaps" | "auto_layout_control" => "design",
         "proof_apply_draft" | "proof_close_page" | "proof_set_save_name" => "proof",
         "help_search" | "help_close" | "dialog_accept" | "dialog_cancel" | "close" => "shell",
@@ -350,7 +350,7 @@ pub const DRIVE_LIMITS: &[&str] = &[
     "layout.* edits live in the layout editor: its own undo (layout.undo, layout.redo), and they do not save with the package until the layout records persist",
     "a typed row is not recordable yet; playback calls Run methods",
     "the coercion is text: a JSON number given for a text parameter arrives as its digits",
-    "one terminal observe frame per command holds only for commands that reach a Run operation: a refusal before dispatch and the rows that never reach Run emit none (viewer.select, set_tool, set_brush, select_rect, select_ellipse, select_lasso, clear_selection, the three exports, timeline zoom, scroll and scrub, studio.view.*); a selection reaches the package at the next save with only that save's record",
+    "one terminal observe frame per command holds only for commands that reach a Run operation: a refusal before dispatch and the rows that never reach Run emit none (viewer.select, set_tool, set_brush, select_rect, select_ellipse, select_lasso, clear_selection, the three image exports (export, export_vector_svg, export_vector_pdf; photo.export_document records an op with a frame), timeline zoom, scroll and scrub, studio.view.*); a selection reaches the package at the next save with only that save's record",
     "viewer.<method> is an old id: every viewer row also answers <domain>.<method>; catalog.list prints the one catalog with each former id as an alias",
     "a command that panics answers command_panicked and the session goes on; what it had already changed stays changed, read state",
 ];
