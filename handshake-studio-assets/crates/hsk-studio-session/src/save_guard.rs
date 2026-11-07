@@ -426,10 +426,12 @@ mod tests {
         let releaser = std::thread::spawn(move || {
             std::thread::sleep(DENIED_WAIT + Duration::from_millis(200));
             drop(holder);
-            // Denied opens from here, like a delete still pending, for less than DENIED_WAIT.
-            fs::create_dir(&sidecar).unwrap();
-            std::thread::sleep(Duration::from_millis(300));
-            fs::remove_dir(&sidecar).unwrap();
+            // Denied opens from here, like a delete still pending, for less than DENIED_WAIT. If the waiter got in first
+            // it simply holds the lock.
+            if fs::create_dir(&sidecar).is_ok() {
+                std::thread::sleep(Duration::from_millis(300));
+                fs::remove_dir(&sidecar).unwrap();
+            }
         });
         let waited = acquire(&target, Duration::from_secs(30));
         releaser.join().unwrap();

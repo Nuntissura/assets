@@ -535,9 +535,15 @@ fn save_as_export_and_close_run_through_the_dialog_and_shortcuts() {
     again.open(&copy).unwrap();
     assert_eq!(again.layers().len(), v.layers().len());
     // Ctrl+S saves to the save path (now the copy) without a dialog.
-    std::fs::remove_file(&copy).unwrap();
     press(&mut v, &ctx, egui::Key::S, egui::Modifiers::COMMAND);
     assert!(copy.is_file() && v.state_json()["shell"]["dialog"].is_null());
+    assert!(last_status(&v).contains("saved"), "{}", last_status(&v));
+    // The copy removed behind the viewer's back: Ctrl+S says so and does not silently write it again (lane
+    // SMB-SESSION-WRITE-SAFETY-1; way out: Save As another name, tests/multi_process_save.rs).
+    std::fs::remove_file(&copy).unwrap();
+    press(&mut v, &ctx, egui::Key::S, egui::Modifiers::COMMAND);
+    assert!(!copy.is_file() && v.state_json()["shell"]["dialog"].is_null());
+    assert!(last_status(&v).contains("destination_missing"), "{}", last_status(&v));
     // Export PNG: dialog, write, refusal to replace without the tick, replace with it.
     v.shell_command(ShellCommand::ExportPng).unwrap();
     assert_eq!(v.state_json()["shell"]["dialog"]["typed"], "copy.png");
