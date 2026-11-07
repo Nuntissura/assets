@@ -36,8 +36,8 @@
 //! R56 F-R56-3): opened and read as above, so a damaged one opens noted, refuses on read and keeps its
 //! bytes. Lead decision: like display state it blocks no commit, because an id the document does not
 //! hold is inert, not invalid (Folio `audio_routing`, `Session::inert_audio_routing_references`).
-//! Multicam clip modes follow the same rule (`Session::inert_multicam_clips`); multicam sequences and
-//! the settings entry keep their refusals. A direct write of the routing stays its producer's to
+//! Multicam clip modes follow the same rule (`Session::inert_multicam_clips`); multicam sequences, their
+//! angle order and the settings entry keep their refusals. A direct write of the routing stays its producer's to
 //! validate, as before this lane. Tests: tests/entry_references.rs.
 //!
 //! A routing whose sequence comes back is live again by id, which is right for an undo of the removal

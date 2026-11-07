@@ -32,8 +32,15 @@
 //! A mode of a clip no sequence holds is inert, not invalid (lead decision on R56 F-R56-3, the rule of
 //! the track display records; vendor parity UNVERIFIED, D5): kept, its id, uniqueness and angle ceiling
 //! still checked, live again when the clip comes back, listed by [`inert_multicam_clips`]. The readers
-//! look a mode up from the clip they hold. `angle_order` is read by index, so a stale track there stays
-//! refused.
+//! look a mode up from the clip they hold.
+//!
+//! `angle_order` is not inert: it is read by index, so a stale order must never be read as angles. The
+//! session refuses any commit that would make a valid record set invalid (lead ruling on R57 F-R57-2,
+//! option A; session `keep_multicam_records_valid`). NAMED LIMIT, that cell of F-R57-2 stays open for
+//! files: a file whose `angle_order` no longer matches its tracks (a missing track, an added track, a
+//! re-index) refuses the WHOLE record set on read, every other multicam sequence and clip mode with it.
+//! The refusal is typed and no angle moves. Session tests/routing_repair.rs
+//! a_file_with_a_stale_order_refuses_the_whole_set_on_read_and_can_still_be_edited.
 //!
 //! Refusals: out-of-range angles and a wrong `angle_order` `InvalidField`; an unknown sequence or
 //! track, or a held clip whose `source_ref` is not a declared multicam source `DanglingReference`;

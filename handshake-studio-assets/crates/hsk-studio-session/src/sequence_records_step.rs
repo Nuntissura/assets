@@ -199,7 +199,6 @@ pub(crate) struct LiveEntries<'a> {
     pub presets: Result<Option<&'a [u8]>, folio::Diagnostic>,
     pub track_display: Result<Option<&'a [u8]>, folio::Diagnostic>,
     pub media_markers: Result<Option<&'a [u8]>, folio::Diagnostic>,
-    pub multicam: Option<&'a [u8]>,
 }
 
 /// The checked outcome of a step: the successor document (`revision + 1`), the entry writes
@@ -264,9 +263,15 @@ fn quote_matches<T: PartialEq>(
     }
 }
 
-/// Multicam's own promise holds on this path too: a removal may not orphan a multicam record set that
-/// validates now. Corrupt or already stale records are not this step's to judge (they read as their
-/// own diagnostic, `crate::multicam`).
+/// Multicam's own promise holds on every commit that changes sequences, and on a resync (lead ruling on
+/// R57 F-R57-2, option A, spec owner decides, SD-64): a step may not make invalid a multicam record set
+/// that validates now, so a timeline or records step cannot change the video tracks of a declared source
+/// or the source of a clip that keeps a mode. Refused `folio_rejected`; the session's submit runs this,
+/// after the step is proposed, so an undo and a redo pass through it like any step. Corrupt or already
+/// stale records are not this step's to judge (they read as their own diagnostic, `crate::multicam`), so
+/// a file already stale can still be edited. Corner, named: a step that repairs such a file makes it
+/// valid, and the undo of that repair is then refused (tests/routing_repair.rs
+/// an_undo_of_a_repair_of_a_stale_file_is_refused).
 pub(crate) fn keep_multicam_records_valid(
     multicam: Option<&[u8]>,
     document: &StudioDocument,
@@ -334,9 +339,6 @@ pub(crate) fn successor(
             (folio::validate_document(next, budget, cancel, resolver).map_err(folio_code)?, Vec::new())
         }
     };
-    if step.sequences.iter().any(|e| matches!(e, SequenceEdit::Remove { .. })) {
-        keep_multicam_records_valid(live.multicam, document, next.document(), budget, cancel)?;
-    }
     let invalid = |_| SessionError::Provider("invalid_input");
     // A record set the step keeps is checked like one it writes: quoting invalid records unchanged is
     // using them.

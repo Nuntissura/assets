@@ -5,8 +5,10 @@
 //! loss note, bounded by `limits.max_entry_bytes` together with the other entries).
 //!
 //! The records are validated by Folio against the session document on every set AND every read (the
-//! bytes come from a file). A refusal changes nothing; a stored entry that no longer validates (the
-//! document changed under it) reads as the Folio diagnostic, never as partial records.
+//! bytes come from a file). A refusal changes nothing; a stored entry that no longer validates reads as
+//! the Folio diagnostic, never as partial records. No commit makes a valid entry invalid
+//! (`sequence_records_step::keep_multicam_records_valid`), so that state comes from a file. Named limit:
+//! such a file refuses the whole set on read (Folio `multicam` module docs).
 //! Serialisation is serde_json of the Folio type (deterministic field order).
 use crate::error::SessionError;
 use crate::session::Session;

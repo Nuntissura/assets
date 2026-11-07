@@ -1392,6 +1392,16 @@ impl Session {
                     self.keep_entry_valid(token, next.document(), cancel)?;
                 }
             }
+            // A multicam step already validated the records it carries against this document.
+            if applied.provider != MULTICAM_STEP_PROVIDER {
+                sequence_records_step::keep_multicam_records_valid(
+                    self.document_entry(MULTICAM_ENTRY),
+                    self.snapshot.document(),
+                    next.document(),
+                    self.config.budgets.folio(),
+                    cancel,
+                )?;
+            }
         }
         let Some(successor) = successor else {
             // No-change: nothing to commit anywhere; the receipt is still stored under the key.
@@ -1688,7 +1698,6 @@ impl Session {
             presets: sequence_records::held_body(&self.quarantined, SEQUENCE_PRESETS_ENTRY),
             track_display: sequence_records::held_body(&self.quarantined, TRACK_DISPLAY_ENTRY),
             media_markers: sequence_records::held_body(&self.quarantined, MEDIA_MARKERS_ENTRY),
-            multicam: self.document_entry(MULTICAM_ENTRY),
         }
     }
 
