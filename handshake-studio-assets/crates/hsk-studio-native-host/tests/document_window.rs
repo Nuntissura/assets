@@ -8,13 +8,13 @@
 use hsk_studio_native_host::HostError;
 use hsk_studio_native_host::capture::write_png;
 use hsk_studio_native_host::offscreen::{self, OffscreenArgs};
-use hsk_studio_native_host::scene::{Scene, painted};
+use hsk_studio_native_host::scene::{GuiArgs, Scene, painted};
 use hsk_studio_native_host::window::{self, WindowArgs};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn offscreen_args(path: &Path, out: Option<PathBuf>) -> OffscreenArgs {
-    OffscreenArgs { width: 1, height: 1, scene: Scene::Document(path.to_path_buf()), out, receipt: None, allow_overlays: false }
+    OffscreenArgs { width: 1, height: 1, scene: Scene::Document(path.to_path_buf()), out, receipt: None, allow_overlays: false, gui: GuiArgs::default() }
 }
 
 #[test]
@@ -44,6 +44,7 @@ fn imported_png_document_offscreen_and_quiet_window_match() {
         receipt: Some(dir.join("document-swapchain.json")),
         allow_overlays: false,
         deadline: Duration::from_secs(60),
+        gui: GuiArgs::default(),
     })
     .expect("document window");
     assert_eq!(win.focus.focus_changes, 0, "{:?}", win.focus);

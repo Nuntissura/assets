@@ -168,6 +168,17 @@ pub fn slider(b: &mut Builder<'_>, id: &str, text: &str, value: f64, min: f64, m
     b.end();
 }
 
+/// Passive scrollbar (components.json `scrollbar`: lane 10, thumb 6, min_thumb 24, rest fill surface.control_hover).
+/// The lane is always reserved; the thumb and the identified node exist only when the content overflows
+/// (`total > shown`: "absent when content fits"). `first`, `shown` and `total` are in the caller's unit (rows or px);
+/// `lane_h` is the lane height in logical px. Passive: no actions (dragging and the Page keys belong to the owning
+/// view). The thumb is square: radius 3 needs a rounded flat fill, which [`Paint`] has no variant for yet.
+pub fn scrollbar(b: &mut Builder<'_>, id: &str, label_text: &str, lane_h: f32, first: usize, shown: usize, total: usize) {
+    let lane = LayoutSpec { axis: Axis::Column, w: Size::Fixed(size::DOCK_SCROLL_LANE_W), h: Size::Fill, cross: Align::Center, ..LayoutSpec::default() };
+    let _ = (id, label_text, lane_h, first, shown, total);
+    b.leaf(Node::deco().layout(lane));
+}
+
 /// Layer row (components.json `layer_row`: h 32, tag edge 3, eye 22, indent 16 per depth, thumb 24, name, badges 12).
 #[allow(clippy::too_many_arguments)]
 pub fn layer_row(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, visible: bool, selected: bool, depth: u8, thumb: Option<ImageId>, eye: IconId, badges: &[IconId]) {

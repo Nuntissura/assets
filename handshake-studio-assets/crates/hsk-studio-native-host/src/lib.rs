@@ -19,8 +19,11 @@ pub mod diag;
 pub mod document;
 pub mod error;
 pub mod event;
+#[cfg(feature = "document")]
+pub mod gui;
 pub mod offscreen;
 pub mod scene;
+pub mod script;
 mod win32;
 pub mod window;
 

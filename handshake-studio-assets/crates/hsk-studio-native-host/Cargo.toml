@@ -8,13 +8,16 @@ rust-version = { workspace = true }
 default = []
 # A real document through harness-view's Viewer on render-cpu (Prefer::Cpu: no GPU device in the viewer). Links egui,
 # eframe and wgpu through harness-view, so it is never in the default build.
-document = ["dep:hsk-studio-harness-view", "hsk-studio-harness-view/viewer", "hsk-studio-harness-view/asset-local-test-host"]
+# The GUI frame (scene `gui`): kumihimo-ui panels and Inter text through hsk-studio-ui-text, CPU-painted.
+document = ["dep:hsk-studio-harness-view", "hsk-studio-harness-view/viewer", "hsk-studio-harness-view/asset-local-test-host", "dep:kumihimo-ui", "dep:hsk-studio-ui-text"]
 
 [dependencies]
 hsk-studio-vulkan = { path = "../hsk-studio-vulkan", version = "=0.1.0", default-features = false }
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 hsk-studio-harness-view = { path = "../hsk-studio-harness-view", version = "=0.1.0", default-features = false, optional = true }
+kumihimo-ui = { path = "../kumihimo-ui", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-ui-text = { path = "../hsk-studio-ui-text", version = "=0.1.0", default-features = false, optional = true }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 windows-sys = { version = "=0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_WindowsAndMessaging"] }
 png = { version = "=0.18.1", default-features = false, features = [] }

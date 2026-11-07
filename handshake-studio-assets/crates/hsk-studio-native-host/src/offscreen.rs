@@ -2,7 +2,7 @@
 //! Agents screenshot through this.
 use crate::capture::{Json, device_json, layers_json, sha256_hex, write_png, write_receipt};
 use crate::error::HostError;
-use crate::scene::{CHROME, Content, DocumentFacts, Scene, content};
+use crate::scene::{CHROME, Content, DocumentFacts, GuiArgs, Scene, content};
 use hsk_studio_vulkan::{DeviceInfo, GpuClientPort, LayerReport, Owner, OwnerConfig, PANE_FORMAT};
 use std::path::PathBuf;
 
@@ -14,6 +14,8 @@ pub struct OffscreenArgs {
     pub out: Option<PathBuf>,
     pub receipt: Option<PathBuf>,
     pub allow_overlays: bool,
+    /// Scene `gui` only.
+    pub gui: GuiArgs,
 }
 
 #[derive(Clone, Debug)]

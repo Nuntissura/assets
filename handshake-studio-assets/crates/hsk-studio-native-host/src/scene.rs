@@ -1,6 +1,7 @@
 //! What a pane shows: one clear colour, a CPU-painted RGBA buffer, or a real document through harness-view's Viewer
 //! on render-cpu. Chrome is the CPU painter; the Vulkan UI pass is pending (no shader in this lane).
 use crate::error::HostError;
+use crate::script::Step;
 use hsk_studio_vulkan::rgba_len;
 use std::path::PathBuf;
 
@@ -17,6 +18,8 @@ pub enum Scene {
     Clear([u8; 4]),
     Painted,
     Document(PathBuf),
+    /// A document in the GUI frame (feature `document`): Viewport, a right dock with the Layers panel, status bar.
+    Gui(PathBuf),
 }
 
 impl Scene {
@@ -25,8 +28,18 @@ impl Scene {
             Self::Clear(_) => "clear",
             Self::Painted => "painted",
             Self::Document(_) => "document",
+            Self::Gui(_) => "gui",
         }
     }
+}
+
+/// Options of the `gui` scene: scripted steps (events and invokes, applied in order before the captured frame), the
+/// tree file (`kumihimo.ui.tree@1` with the document revision) and a fixed UI scale (None: the window's own).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuiArgs {
+    pub steps: Vec<Step>,
+    pub tree: Option<PathBuf>,
+    pub scale_milli: Option<u32>,
 }
 
 /// Pane content ready for the owner.
@@ -72,6 +85,8 @@ pub fn content(scene: &Scene, width: u32, height: u32) -> Result<(Content, Optio
         }
         Scene::Painted => Ok((Content::Pixels { width, height, rgba8: painted(width, height)? }, None)),
         Scene::Document(path) => document(path),
+        // The GUI scene is a live frame, never one-shot content (window.rs and offscreen.rs branch first).
+        Scene::Gui(_) => Err(HostError::Document("gui_scene")),
     }
 }
 

@@ -4,7 +4,7 @@
 //! process (one device and one event loop per process).
 use hsk_studio_native_host::capture::sha256_hex;
 use hsk_studio_native_host::offscreen::{self, OffscreenArgs};
-use hsk_studio_native_host::scene::{DEFAULT_CLEAR, Scene, painted};
+use hsk_studio_native_host::scene::{DEFAULT_CLEAR, GuiArgs, Scene, painted};
 use hsk_studio_native_host::window::{self, FocusReport, WindowArgs};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -27,6 +27,7 @@ fn quiet(scene: Scene, w: u32, h: u32, frames: u32, exercise: bool, dir: &std::p
         receipt: Some(dir.join("swapchain.json")),
         allow_overlays: false,
         deadline: Duration::from_secs(60),
+        gui: GuiArgs::default(),
     }
 }
 
@@ -51,6 +52,7 @@ fn offscreen_png_then_quiet_window_same_hash_no_focus() {
         out: Some(dir.join("offscreen.png")),
         receipt: Some(dir.join("offscreen.json")),
         allow_overlays: false,
+        gui: GuiArgs::default(),
     })
     .expect("offscreen run");
     assert!(off.exact);

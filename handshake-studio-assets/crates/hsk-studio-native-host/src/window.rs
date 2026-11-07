@@ -6,7 +6,7 @@ use crate::capture::{Json, device_json, layers_json, sha256_hex, write_png, writ
 use crate::error::HostError;
 use crate::event::{EventLog, HostEvent, from_winit};
 use crate::offscreen::document_json;
-use crate::scene::{BACKGROUND, CHROME, Content, DocumentFacts, Scene, content};
+use crate::scene::{BACKGROUND, CHROME, Content, DocumentFacts, GuiArgs, Scene, content};
 use crate::win32;
 use hsk_studio_vulkan::{
     Capture, FrameOutcome, GpuClientPort, Owner, OwnerConfig, PaneId, PresentCounters, Presenter, SWAPCHAIN_FORMAT,
@@ -43,6 +43,8 @@ pub struct WindowArgs {
     pub allow_overlays: bool,
     /// Wall-clock bound for the whole run.
     pub deadline: Duration,
+    /// Scene `gui` only.
+    pub gui: GuiArgs,
 }
 
 /// What a window run observed about focus. `focus_changes` counts only changes this process caused: focus-gained
@@ -562,7 +564,7 @@ impl ApplicationHandler for App {
                 let _ = inner_size_writer.request_inner_size(PhysicalSize::new(self.target.0, self.target.1));
             }
         }
-        let Some(ev) = from_winit(&event) else { return };
+        let Some(ev) = from_winit(&event, crate::event::Mods::default()) else { return };
         self.events.push(ev);
         match ev {
             HostEvent::Resized { width, height } => {

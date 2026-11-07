@@ -316,7 +316,7 @@ allowed = ["hsk-studio-ps-core", "hsk-studio-ps-engine", "hsk-studio-ps-fonts", 
 allowed = ["hsk-studio-accord", "hsk-studio-observe", "kumihimo-ui"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-native-host]
-allowed = ["hsk-studio-accord", "hsk-studio-observe", "hsk-studio-vulkan", "hsk-studio-harness-view", "kumihimo-ui"]
+allowed = ["hsk-studio-accord", "hsk-studio-observe", "hsk-studio-vulkan", "hsk-studio-harness-view", "kumihimo-ui", "hsk-studio-ui-text"]
 
 [workspace.metadata.studio.dependencies.kumihimo-ui]
 allowed = []
