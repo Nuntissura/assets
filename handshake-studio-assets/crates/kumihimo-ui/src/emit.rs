@@ -191,6 +191,7 @@ fn node(tree: &Tree, id: NodeId, ui: &Interaction, theme: Theme, text: &mut Text
 }
 
 /// One line of text in `b`, caps centred vertically, baseline on a physical pixel at paint.
+#[allow(clippy::too_many_arguments)]
 fn label(list: &mut DisplayList, text: &mut Text, s: &str, token: TextToken, weight: u16, b: Rect, align: Align, color: Rgba8) {
     let Ok(line) = text.shape(s, token, weight) else {
         return;

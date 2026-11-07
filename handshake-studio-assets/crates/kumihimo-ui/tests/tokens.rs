@@ -66,7 +66,7 @@ fn generated_tokens_match_design_system_json() {
     assert_eq!(size::FIELD_H, 24.0);
     assert_eq!(size::ROW_LAYER_H, 32.0);
     assert_eq!(size::DOCK_GROUP_HEADER_H, 26.0);
-    assert_eq!(TextToken::Value.style().tnum, true);
+    assert!(TextToken::Value.style().tnum);
     assert_eq!(TextToken::MenuTitle.style().tracking, 0.4);
     // AC-TEXT-03: no style under the 11 px floor.
     assert!(TextToken::ALL.iter().all(|t| t.style().size >= 11.0));

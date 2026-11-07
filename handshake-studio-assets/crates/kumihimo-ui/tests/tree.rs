@@ -25,7 +25,7 @@ fn panel_rebuilds_only_when_inputs_change() {
     let mut p = Panel::default();
     let vp = Rect::xywh(0.0, 0.0, 300.0, 34.0);
     let mut calls = 0;
-    let mut step = |p: &mut Panel, rev: u64, ui: &Interaction, t: &mut Text, calls: &mut u32| {
+    let step = |p: &mut Panel, rev: u64, ui: &Interaction, t: &mut Text, calls: &mut u32| {
         p.update(rev, ui, vp, Scale::ONE, Theme::Dark, t, |b| {
             *calls += 1;
             Scene::Toolbar.build(b)
