@@ -1,0 +1,550 @@
+**facet `audio`** (36 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEAACAudioMode` | Mode | signed integer | 0 | 3 | -- | -- | -- | -- | 2 | no | 34 | H264, HEVC |
+| `ADBEAACAudioOversampled` | -- | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 134 | AAC, H264, HEVC, MP4 |
+| `ADBEAACAudioPrecedence` | Precedence | signed integer | 0 | 1 | -- | -- | -- | -- | 2 | no | 134 | AAC, H264, HEVC, MP4 |
+| `ADBEAudioAdvancedSettingsGroup` | Advanced Settings | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 188 | AAC, H264, HEVC, MP4, dvd, mpg2 |
+| `ADBEAudioAmbiDoExport` | Audio Is Ambisonics | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 164 | H264, HEVC, MooV |
+| `ADBEAudioAmbiGroup` | Ambisonics | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 164 | H264, HEVC, MooV |
+| `ADBEAudioChannelConfiguration` | Audio Channel Configuration | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 175 | H264, HEVC, MooV |
+| `ADBEAudioChannelConfigurationGroup` | Audio Channel Configuration | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 175 | H264, HEVC, MooV |
+| `ADBEAudioDeemphasis` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 54 | dvd, mpg2 |
+| `ADBEAudioEnableCRC` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 54 | dvd, mpg2 |
+| `ADBEAudioFormat` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEAudioInterleave` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 19 | AVIV |
+| `ADBEAudioLayer` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEAudioMode` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEAudioNumChannels` | -- | signed integer | -51 | 32 | -- | -- | -- | -- | 2 | no | 1475 | AAC, AIFF, AVIV, DCP_, DMXF, H264, H26B, HEVC |
+| `ADBEAudioPsychMode` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 54 | dvd, mpg2 |
+| `ADBEAudioRatePerSecond` | -- | signed integer | 8000 | 192000 | -- | -- | -- | -- | 2 | no | 1503 | AAC, AIFF, AVIV, DCP_, DMXF, H264, H26B, HEVC |
+| `ADBEAudioSampleType` | Sample Size | signed integer | 0 | 4 | -- | -- | -- | -- | 2 | no | 1421 | AAC, AIFF, AVIV, DMXF, H264, H26B, HEVC, JMXF |
+| `ADBEAudioSetCopyrightBit` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 54 | dvd, mpg2 |
+| `ADBEAudioSetOriginalBit` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 54 | dvd, mpg2 |
+| `ADBEAudioSetPrivateBit` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 54 | dvd, mpg2 |
+| `ADBEAudioStreamMonoDiscrete` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 62 | MooV |
+| `ADBEAudioTabGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 1504 | AAC, AIFF, AVIV, DCP_, DMXF, H264, H26B, HEVC |
+| `ADBEAudioTrackLayout` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 99 | MooV |
+| `ADBEAudioTrackLayoutGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 99 | MooV |
+| `ADBEBasicAudioGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 1425 | AAC, AIFF, AVIV, DCP_, DMXF, H264, H26B, HEVC |
+| `ADBEChannelLayout` | Channel Layout | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 90 | MooV |
+| `ADBEChannelLayoutGroup` | Channel Layout | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 90 | MooV |
+| `ADBEFLVEncodeAlphaChannel` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 12 | flv |
+| `ADBEForceMonoAudioTracks` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 144 | JMXF, MX10, MX11, MXFX, PMXF |
+| `ADBEMuxAudioBufferSize` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEVMC_AudioLayer` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `AudioSampleSize` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 4 | DCP_ |
+| `WMAudioBufferSize` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 30 | WMV |
+| `WMAudioMode` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 30 | WMV |
+| `WMAudioPeakBitRate` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 30 | WMV |
+
+**facet `captions`** (4 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBECaptionsExportOption` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 584 | DMXF, H264, MooV, dvd, mbd, mpg2 |
+| `ADBECaptionsFormat` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 584 | DMXF, H264, MooV, dvd, mbd, mpg2 |
+| `ADBECaptionsFrameRate` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 584 | DMXF, H264, MooV, dvd, mbd, mpg2 |
+| `ADBECaptionsTabGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 584 | DMXF, H264, MooV, dvd, mbd, mpg2 |
+
+**facet `colour`** (22 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEBMPEGVideoContentLightLevelsGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBEExportColorSpace` | Export Color Space | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 203 | AVIV, DIBB, DPX, GIFf, H264, HEVC, JMXF, JPEG |
+| `ADBEGamma` | -- | floating point | 0.001 | 10 | -- | -- | -- | -- | -- | yes | 8 | DPX |
+| `ADBEH26xColorPrimariesParam` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 13 | MooV |
+| `ADBEH26xHDRParam` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 13 | MooV |
+| `ADBEMPEGGroupMasteringDisplayGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBEMPEGVideoHDR10MasterDisplayLuminanceMax` | Luminance Max(cd/m^2) | signed integer | 100 | 4000 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBEMPEGVideoHDR10MasterDisplayLuminanceMin` | Luminance Min(cd/m^2) | floating point | 0.0005 | 0.05 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBEMPEGVideoHDR10MasterDisplayPrimaries` | Color Primaries | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBEMPEGVideoHDR10MaxContentLightLevel` | Maximum(cd/m^2) | signed integer | 100 | 4000 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBEMPEGVideoHDR10MaxFrameAvgLightLevel` | Average(cd/m^2) | signed integer | 20 | 4000 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBERenderDeepColor` | -- | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 1493 | AVIV, DIBB, DMXF, DPX, GIFf, H264, H26B, HEVC |
+| `ADBEVideoBitDepth` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 1041 | AVIV, DMXF, DPX, JMXF, MX10, MX11, MXFX, MooV |
+| `ADBEVideoColorPrimaries` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoJ2KColorPrimaries` | -- | signed integer | -- | 2 | -- | -- | -- | -- | -- | no | 22 | JMXF, PMXF |
+| `ADBEVideoMatrixCoefficients` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBE_H264_ColorPrimaries` | -- | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 88 | H264 |
+| `ADBE_H264_HDR` | -- | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 88 | H264 |
+| `ADBE_HEVC_ColorPrimaries` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 20 | HEVC |
+| `ADBE_HEVC_HDR` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 20 | HEVC |
+| `ADBE_VIDEO_HDR10` | -- | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `VideoHybridLogGamma` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 58 | MX10, MX11, MXFX |
+
+**facet `gop_structure`** (13 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEKeyframe` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 25 | AVIV, MooV |
+| `ADBEKeyframeEvery` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 127 | AVIV, MooV |
+| `ADBEMPEGKeyframeRate` | Key Frame Distance: | signed integer | 1 | 300 | -- | -- | -- | -- | 2 | no | 159 | H264, H26B, HEVC, MP4, flv |
+| `ADBEVMC_AutoGOPPlacement` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `ADBEVideoAutoGOPPlacement` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoClosedGOPInterval` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoGOPSettingsGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEVideoMFrames` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `AllowOpenGOP` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 4 | MX11 |
+| `ForceClosedGOP` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 142 | MX10, MX11, MXFX |
+| `ForceFixedLengthGOP` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 142 | MX10, MX11, MXFX |
+| `VariableLengthGOP` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 4 | MX11 |
+| `WMVideoKeyFrameInterval` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 30 | WMV |
+
+**facet `layout`** (16 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEAdvancedVideoGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 127 | AVIV, MooV |
+| `ADBEAlternatesBasicGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEAlternatesCompressHeader` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEAlternatesSettingsGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEAlternatesTabGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEAlternatesTargetDetailsGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEAudienceTabGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `ADBEBasicVideoGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 1427 | AVIV, DCP_, DIBB, DMXF, DPX, GIFf, H264, H26B |
+| `ADBECCGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEHeaderType` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 8 | DPX |
+| `ADBEStockGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEStockLoginSubGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEVideoAdvancedSettingsGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 367 | H264, H26B, HEVC, MP4, MX10, MX11, MXFX, WMV |
+| `ADBEVideoHinterGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 108 | MooV |
+| `ADBEVideoTabGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 1506 | AVIV, DCP_, DIBB, DMXF, DPX, GIFf, H264, H26B |
+| `EXRSettingsGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 8 | oEXR |
+
+**facet `metadata`** (2 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEResynchronizationMarker` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 4 | MP4 |
+| `UseZeroTimecode` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 894 | DMXF, JMXF, MX10, MX11, MXFX, PMXF |
+
+**facet `multiplexing`** (10 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEAlternatesStreamingBool` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEBasicMuxGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEMuxDetailsGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 90 | H26B, dvd, mbd, mpg2 |
+| `ADBEMuxMuxRate` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEMuxPacketSize` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEMuxPacketsPerPack` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEMuxTabGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEMuxVideoBufferSize` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEVMCMux_Type` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 151 | dvd, hbd, mbd, mpg2 |
+| `Container` | -- | multi-instance group (repeating rows) | -- | -- | -- | -- | -- | -- | -- | no | 4 | DCP_ |
+
+**facet `other`** (178 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `0` | -- | opaque / arbitrary data | 0 | 0 | -- | -- | -- | -- | 2 | no | 1541 | AAC, AIFF, AVIV, DCP_, DIBB, DMXF, DPX, GIFf |
+| `13` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `201` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `203` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `204` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `206` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `207` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `208` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `209` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `214` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `251` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `253` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `254` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `260` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `261` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `263` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `3001` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 4 | hbd |
+| `315` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 55 | hbd, mbd, mpg2 |
+| `316` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 55 | hbd, mbd, mpg2 |
+| `317` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `318` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `319` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `320` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `324` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `325` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `35` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `36` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `37` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `38` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 33 | hbd, mpg2 |
+| `4` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 4 | hbd |
+| `407` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `408` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `41` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `412` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `415` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `417` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `434` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `438` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `439` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `448` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `449` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `466` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `468` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `469` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `47` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `470` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `477` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `479` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 4 | hbd |
+| `480` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 26 | hbd, mbd |
+| `481` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 4 | hbd |
+| `50` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 1 | mpg2 |
+| `51` | 5.1 | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 29 | mpg2 |
+| `52` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `53` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `54` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 75 | dvd, mbd, mpg2 |
+| `780` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 26 | hbd, mbd |
+| `92` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 74 | dvd, mbd, mpg2 |
+| `ADBE10BitBlackPoint` | -- | signed integer | -- | 1023 | -- | -- | -- | -- | -- | yes | 8 | DPX |
+| `ADBE10BitWhitePoint` | -- | signed integer | -- | 1023 | -- | -- | -- | -- | -- | yes | 8 | DPX |
+| `ADBEAACParametricStereo` | Parametric Stereo | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 134 | AAC, H264, HEVC, MP4 |
+| `ADBEAS11ShimIndex` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 4 | MX11 |
+| `ADBEAlternatesAlternateBool` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEAlternatesAutoplay` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEAlternatesComputerPower` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | yes | 107 | MooV |
+| `ADBEAlternatesConnection` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | yes | 107 | MooV |
+| `ADBEAlternatesHintedMovieType` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEAlternatesLanguage` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | yes | 107 | MooV |
+| `ADBEAlternatesLoop` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEAlternatesPlatform` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | yes | 107 | MooV |
+| `ADBEAlternatesQTVersion` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | yes | 107 | MooV |
+| `ADBEAlternatesServerPath` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 107 | MooV |
+| `ADBEBlackPoint` | -- | floating point | -- | 1 | -- | -- | -- | -- | -- | yes | 8 | DPX |
+| `ADBECCFileSyncFolder` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBECCFileSyncSubFolder` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEDolby_1` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_10` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_11` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_12` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_13` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_14` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_15` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_16` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_17` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_18` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_19` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_2` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_20` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_21` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_22` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | yes | 73 | H264, HEVC |
+| `ADBEDolby_23` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_4` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | yes | 73 | H264, HEVC |
+| `ADBEDolby_5` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_6` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_7` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_8` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_9` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_Group_0` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_Group_1` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_Group_2` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_Group_3` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_Group_4` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEDolby_Group_5` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 73 | H264, HEVC |
+| `ADBEExpandStills` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 127 | AVIV, MooV |
+| `ADBEFLVUndershootTarget` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | yes | 12 | flv |
+| `ADBEForceTCTimebase` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 53 | MooV |
+| `ADBEFrameFieldCoding` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 18 | H26B |
+| `ADBEHiddenTicksPerFrame` | -- | boolean | -- | -- | -- | -- | -- | -- | -- | no | 2 | MooV |
+| `ADBEHiddenTimeDisplay` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 2 | MooV |
+| `ADBEHighlight` | -- | signed integer | -- | 1023 | -- | -- | -- | -- | -- | yes | 8 | DPX |
+| `ADBELog` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 8 | DPX |
+| `ADBEReorderFrames` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 108 | MooV |
+| `ADBEShimType` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 2 | MX10 |
+| `ADBESonyDeviceCompatibility` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 94 | MX10, MX11, MXFX |
+| `ADBEStillSequence` | Export As Sequence | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 33 | DIBB, DPX, GIFf, JPEG, PNG, TIFF, TPIC, oEXR |
+| `ADBEStockLogin` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEStockRefreshToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEStockStatusText` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBETVStandard` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBETransparencyType` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 8 | GIFf |
+| `ADBEUseAlpha` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 6 | PNG, TIFF |
+| `ADBEUseIRTStructure` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 122 | MX10, MX11, MXFX |
+| `ADBEVMC_Video_M` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 75 | dvd, mbd, mpg2 |
+| `ADBEVMC_Video_N` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 75 | dvd, mbd, mpg2 |
+| `ADBEVideoAlpha` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 8 | oEXR |
+| `ADBEVideoAvgBitRate` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 79 | dvd, hbd, mbd, mpg2 |
+| `ADBEVideoBitRate` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 79 | dvd, hbd, mbd, mpg2 |
+| `ADBEVideoBounds` | Video Dimensions | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | H26B, mbd |
+| `ADBEVideoDisplayAspect` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEVideoEmbedSVCDUserBlks` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoForceVBVDelay` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoGraphicsWhiteLuminance` | -- | signed integer | 0 | 300 | -- | -- | -- | -- | 2 | no | 125 | AVIV, DIBB, DPX, GIFf, H264, HEVC, JMXF, JPEG |
+| `ADBEVideoHinterBool` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 108 | MooV |
+| `ADBEVideoHinterInterval` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 108 | MooV |
+| `ADBEVideoHinterPacketDurationLimit` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 108 | MooV |
+| `ADBEVideoHinterPacketSize` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 108 | MooV |
+| `ADBEVideoHorizontal` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoIgnoreFrameInterval` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoIntraDCPrecision` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoJ2KAlphaEnable` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 22 | JMXF, PMXF |
+| `ADBEVideoJ2KDepthAndColorspace` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 22 | JMXF, PMXF |
+| `ADBEVideoJ2KLossless` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 22 | JMXF, PMXF |
+| `ADBEVideoJ2KParameterVersion` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 22 | JMXF, PMXF |
+| `ADBEVideoMacroblockQuantization` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoMatchSource` | -- | button / action (no stored value) | false | false | -- | -- | -- | -- | 2 | no | 984 | AVIV, DCP_, DIBB, DMXF, DPX, GIFf, H264, HEVC |
+| `ADBEVideoMaxBitRate` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 79 | dvd, hbd, mbd, mpg2 |
+| `ADBEVideoMinBitRate` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 75 | dvd, mbd, mpg2 |
+| `ADBEVideoMinFramePercentage` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoNFrames` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEVideoNoiseControl` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoPadFramePercentage` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoPayloadEncoding` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 108 | MooV |
+| `ADBEVideoPulldown` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEVideoResolution` | Resolution | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 639 | DMXF, JMXF, MooV, PMXF |
+| `ADBEVideoTransferChars` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoVBVBufferSize` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoVertical` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoVideoFormat` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoWriteSDE` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEVideoWriteSeqEndCode` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 36 | mpg2 |
+| `ADBEWhitePoint` | -- | floating point | -- | 1 | -- | -- | -- | -- | -- | yes | 8 | DPX |
+| `AdvancedMXFSettings` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 151 | MX10, MX11, MXFX |
+| `BitRate` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 8 | MP3 |
+| `CustomEditUnits` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 151 | MX10, MX11, MXFX |
+| `EXRBypassLinear` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 8 | oEXR |
+| `EXRCompression` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 8 | oEXR |
+| `EXRfloat` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 8 | oEXR |
+| `EXRlumichrom` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 8 | oEXR |
+| `EditUnitsPerPartition` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 151 | MX10, MX11, MXFX |
+| `Faked_PAR` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | no | 4 | DCP_ |
+| `J2KTile` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 586 | DMXF, JMXF, PMXF |
+| `PlayerButton` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | -- | no | 4 | DCP_ |
+| `SeparateMonoFiles` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 1 | WAVE |
+| `Transcode_VBI_ANC` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 58 | MX10, MX11, MXFX |
+| `WMVideoAvgBitRate` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 30 | WMV |
+| `WMVideoBufferSize` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 30 | WMV |
+| `WMVideoDecoderComplexity` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 30 | WMV |
+| `WMVideoPeakBitRate` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 30 | WMV |
+| `WMVideoPeakBufferSize` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 30 | WMV |
+
+**facet `performance`** (1 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `SmartRender` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 737 | DMXF, JMXF, MX10, MX11, MXFX, PMXF |
+
+**facet `publishing_destination`** (86 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEBehanceDeleteLocalFile` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEBehanceDescription` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEBehanceGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEBehanceLogin` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEBehanceLoginSubGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEBehanceRefreshToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEBehanceStatusText` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEBehanceTags` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEFTPDeleteLocalFileAfterTransfer` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEFTPGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEFTPPassword` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEFTPPort` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEFTPRemotePath` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEFTPRetries` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEFTPServerAddress` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEFTPTest` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEFTPUserID` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+| `ADBEFTPVerifyUpload` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 11 | H264, MooV, PCM |
+| `ADBEFacebookAccountToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 11 | H264, MooV, PCM |
+| `ADBEFacebookDeleteLocalFile` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 21 | H264, MooV, PCM |
+| `ADBEFacebookDescription` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | -- | no | 8 | H264, MooV |
+| `ADBEFacebookGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 21 | H264, MooV, PCM |
+| `ADBEFacebookLogin` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 21 | H264, MooV, PCM |
+| `ADBEFacebookLoginSubGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 21 | H264, MooV, PCM |
+| `ADBEFacebookPages` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEFacebookPagesToken` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEFacebookPost` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEFacebookPrivacy` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 10 | H264, MooV |
+| `ADBEFacebookRefreshToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 21 | H264, MooV, PCM |
+| `ADBEFacebookStatusText` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 21 | H264, MooV, PCM |
+| `ADBEFacebookTitle` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEFacebookType` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 2 | MooV |
+| `ADBETwitterDeleteLocalFile` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 19 | H264, MooV, PCM |
+| `ADBETwitterDescription` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 19 | H264, MooV, PCM |
+| `ADBETwitterGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 19 | H264, MooV, PCM |
+| `ADBETwitterLogin` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 19 | H264, MooV, PCM |
+| `ADBETwitterLoginSubGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 19 | H264, MooV, PCM |
+| `ADBETwitterRefreshToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 19 | H264, MooV, PCM |
+| `ADBETwitterStatusText` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 19 | H264, MooV, PCM |
+| `ADBEVimeoAuthorizationToken` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | -- | no | 22 | H264, MooV |
+| `ADBEVimeoChannel` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEVimeoChannelToken` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEVimeoDeleteLocalFile` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEVimeoDescription` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEVimeoGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEVimeoLogin` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEVimeoLoginSubGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEVimeoPassword` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEVimeoPasswordToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 11 | H264, MooV, PCM |
+| `ADBEVimeoPrivacy` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEVimeoRefreshToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 11 | H264, MooV, PCM |
+| `ADBEVimeoStatusText` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEVimeoTags` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEVimeoTitle` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeAuthCode` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | -- | no | 7 | H264, MooV |
+| `ADBEYouTubeCategory` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 22 | H264, MooV |
+| `ADBEYouTubeChannel` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeChannelAdd` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeChannelPlaylistGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 11 | H264, MooV, PCM |
+| `ADBEYouTubeChannelRemove` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 11 | H264, MooV, PCM |
+| `ADBEYouTubeChannelToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeDeleteLocalFile` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEYouTubeDescription` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEYouTubeGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEYouTubeLogin` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEYouTubeLoginSubGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEYouTubePlaylist` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubePlaylistToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubePrivacy` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEYouTubeRefreshToken` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEYouTubeStatusText` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEYouTubeTags` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 28 | H264, MooV, PCM |
+| `ADBEYouTubeTerms` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 2 | MooV |
+| `ADBEYouTubeTermsOfServiceGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 2 | MooV |
+| `ADBEYouTubeTermsPermissions` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 2 | MooV |
+| `ADBEYouTubeTermsPrivacyPolicy` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 2 | MooV |
+| `ADBEYouTubeThumbnailFile` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeThumbnailFileToken` | -- | file or folder path string | -- | -- | -- | -- | -- | -- | 2 | no | 11 | H264, MooV, PCM |
+| `ADBEYouTubeThumbnailPoster` | -- | colour | -- | -- | -- | -- | -- | -- | 2 | no | 11 | H264, MooV, PCM |
+| `ADBEYouTubeThumbnailSubGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeThumbnailTime` | -- | boolean | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeThumbnailTimeBtn` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeThumbnailTimeToken` | -- | string | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeThumbnailUse` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `ADBEYouTubeTitle` | -- | enumerated integer chosen from a constrained list | -- | -- | -- | -- | -- | -- | 2 | no | 13 | H264, MooV, PCM |
+| `PostEncodeHostMultiGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | 2 | no | 55 | DMXF, H264, MXFX, MooV, PCM |
+
+**facet `rate_control`** (34 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEAACAudioQuality` | Audio Quality | signed integer | 0 | 2 | -- | -- | -- | -- | 2 | no | 134 | AAC, H264, HEVC, MP4 |
+| `ADBEAlternatesQuality` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | yes | 107 | MooV |
+| `ADBEAudioBitrate` | -- | signed integer | 16 | 640 | -- | -- | -- | -- | 2 | no | 386 | AAC, H264, H26B, HEVC, MP4, MooV, WMV, dvd |
+| `ADBEAudioBitrateGroup` | Bitrate Settings | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 273 | AAC, H264, H26B, HEVC, MP4, MooV, WMV |
+| `ADBEAudioBitrateSettingsGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 84 | dvd, flv, mbd, mpg2 |
+| `ADBEFLVCodecQuality` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 12 | flv |
+| `ADBEFLVVideoBitrateVariabilityTarget` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | yes | 12 | flv |
+| `ADBEFLVVideoMaxBitrateTarget` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | yes | 12 | flv |
+| `ADBEFLVVideoMinBitrateTarget` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | yes | 12 | flv |
+| `ADBEMXFBitrateSettingsGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 22 | JMXF, PMXF |
+| `ADBEMuxBitrateType` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEVideoBitrate` | -- | floating point | -- | -- | -- | -- | -- | -- | 2 | yes | 180 | MooV, dvd, mbd, mpg2 |
+| `ADBEVideoBitrateBool` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 6 | MooV |
+| `ADBEVideoBitrateEncoding` | Bitrate Encoding | signed integer | 0 | 3 | -- | -- | -- | -- | 2 | no | 274 | H264, H26B, HEVC, MP4, MooV, WMV, dvd, flv |
+| `ADBEVideoBitrateGroup` | Bitrate Settings | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 297 | H264, H26B, HEVC, MP4, MooV, WMV, flv |
+| `ADBEVideoBitrateLevel` | Bitrate Level | signed integer | 0 | 4 | -- | -- | -- | -- | 2 | no | 274 | H264, H26B, HEVC, MP4, MooV, WMV, dvd, flv |
+| `ADBEVideoBitrateSettingsGroup` | -- | tab or section group | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBEVideoDNxHDBitrate` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 270 | DMXF, JMXF |
+| `ADBEVideoDNxHRBitrate` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 300 | DMXF |
+| `ADBEVideoJ2KMaxBitrate` | -- | floating point | 0.01 | 100000 | -- | -- | -- | -- | -- | yes | 22 | JMXF, PMXF |
+| `ADBEVideoMaxBitrate` | Higher value can improve maximum quality, but increase decoder requirements. | floating point | 0.19 | 240 | -- | -- | -- | -- | 2 | yes | 274 | H264, H26B, HEVC, MP4, MooV, WMV, dvd, flv |
+| `ADBEVideoMinBitrate` | Higher values set a higher minimum quality, but reduce quality of more difficult scenes. | floating point | 0.19 | 20 | -- | -- | -- | -- | 2 | yes | 274 | H264, H26B, HEVC, MP4, MooV, WMV, dvd, flv |
+| `ADBEVideoQuality` | -- | signed integer | 0 | 100 | -- | -- | -- | -- | 2 | yes | 1490 | AVIV, DIBB, DMXF, DPX, GIFf, H264, H26B, HEVC |
+| `ADBEVideoTargetBitrate` | The target data rate allowed by the encoder. | floating point | 0.19 | 240 | -- | -- | -- | -- | 2 | yes | 278 | DCP_, H264, H26B, HEVC, MP4, MooV, WMV, dvd |
+| `ADBEVideoVBR` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `ADBE_HEVCEncodingSpeedVsQuality` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 20 | HEVC |
+| `CodecQuality` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 8 | MP3 |
+| `VideoVariableBitrateType` | -- | signed integer | -- | 2 | -- | -- | -- | -- | -- | no | 142 | MX10, MX11, MXFX |
+| `WMAudioBitrateMode` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 30 | WMV |
+| `WMAudioEncodingPasses` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 30 | WMV |
+| `WMAudioVBRQuality` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 30 | WMV |
+| `WMVideoImageQuality` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 30 | WMV |
+| `WMVideoMaxBitrate` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 30 | WMV |
+| `WMVideoVBRQuality` | -- | floating point | -- | -- | -- | -- | -- | -- | -- | yes | 30 | WMV |
+
+**facet `video_codec`** (41 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEAudioCodec` | Audio Codec | signed integer | 0 | -1 | -- | -- | -- | -- | 2 | no | 1701 | AAC, AIFF, AVIV, DMXF, H264, H26B, HEVC, JMXF |
+| `ADBEAudioCodecGroup` | Audio Codec | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 1421 | AAC, AIFF, AVIV, DMXF, H264, H26B, HEVC, JMXF |
+| `ADBEAudioCodecPrefsButton` | -- | button / action (no stored value) | false | false | -- | -- | -- | -- | 2 | no | 1198 | AVIV, DMXF, H264, HEVC, JMXF, MP3, MP4, MX10 |
+| `ADBECodecPrefs` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | -- | no | 19 | AVIV, MooV |
+| `ADBEDNxHDAlphaType` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 53 | MooV |
+| `ADBEFLVSimpleProfile` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 12 | flv |
+| `ADBEMPEGAudioDeemphasis` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 124 | H264, HEVC |
+| `ADBEMPEGAudioEnableCRC` | -- | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 124 | H264, HEVC |
+| `ADBEMPEGAudioEnableCopyrightBit` | -- | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 124 | H264, HEVC |
+| `ADBEMPEGAudioEnableOriginalBit` | -- | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 124 | H264, HEVC |
+| `ADBEMPEGAudioEnablePrivateBit` | -- | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 124 | H264, HEVC |
+| `ADBEMPEGAudioFormat` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 146 | H264, H26B, HEVC, MP4 |
+| `ADBEMPEGAudioFormatGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 146 | H264, H26B, HEVC, MP4 |
+| `ADBEMPEGAudioLayer` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 124 | H264, HEVC |
+| `ADBEMPEGAudioMode` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 124 | H264, HEVC |
+| `ADBEMPEGAudioPsychModel` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 124 | H264, HEVC |
+| `ADBEMPEGCodecBroadcastStandard` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 79 | dvd, hbd, mbd, mpg2 |
+| `ADBEMPEGMultiplexer` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 159 | H264, H26B, HEVC, MP4, MooV |
+| `ADBEMPEGMuxBasicSettingsGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 146 | H264, H26B, HEVC, MP4 |
+| `ADBEMPEGMuxRate` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 18 | H26B |
+| `ADBEMPEGMuxStreamCompatibility` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 141 | H264, HEVC, MP4, MooV |
+| `ADBEMPEGMuxTabGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 146 | H264, H26B, HEVC, MP4 |
+| `ADBEMPEGShortHeader` | -- | container / group header (no value of its own) | -- | -- | -- | -- | -- | -- | -- | no | 4 | MP4 |
+| `ADBEMPEGTVStandard` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 139 | H264, H26B, MP4, MooV |
+| `ADBEMPEGVideoEncoderNameParam` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 47 | H264, HEVC, MooV |
+| `ADBEMPEGVideoEncodingPerformanceParam` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBEMPEGVideoEncodingPerformanceParamUserSelected` | -- | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBEMPEGVideoEncodingSettingsGroup` | -- | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 59 | H264, HEVC, MooV |
+| `ADBEVideoCodec` | Video Codec | signed integer | 0 | -1 | -- | -- | -- | -- | 2 | no | 1469 | AVIV, DMXF, GIFf, H264, H26B, HEVC, JMXF, MP4 |
+| `ADBEVideoCodecGroup` | Video Codec | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 1394 | AVIV, DCP_, DMXF, GIFf, H264, H26B, HEVC, JMXF |
+| `ADBEVideoCodecPrefsButton` | -- | button / action (no stored value) | -- | -- | -- | -- | -- | -- | 2 | no | 190 | AVIV, MooV, dvd, hbd, mbd, mpg2 |
+| `ADBEVideoCodec_Unabridged` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 58 | MX10, MX11, MXFX |
+| `ADBEVideoMPEGProfile` | Profile | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 160 | H264, H26B, HEVC, MP4, MooV |
+| `ADBEVideoMPEGProfileLevel` | Level | signed integer | 0 | 62 | -- | -- | -- | -- | 2 | no | 232 | H264, H26B, HEVC, MP4, MooV, dvd, mbd, mpg2 |
+| `ADBEVideoProfile` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 72 | dvd, mbd, mpg2 |
+| `ADBE_H26x_Tier` | -- | signed integer | -- | -- | -- | -- | -- | -- | 2 | no | 13 | MooV |
+| `ADBE_HEVC_Tier` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 20 | HEVC |
+| `AudioCodec` | Audio Codec | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 4 | DCP_ |
+| `EXRCompressionLevel` | -- | floating point | -- | 1000 | -- | -- | -- | -- | -- | yes | 8 | oEXR |
+| `J2KBroadcastProfileLevel` | -- | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 586 | DMXF, JMXF, PMXF |
+| `VideoCodec` | Video Codec | signed integer | -- | -- | -- | -- | -- | -- | -- | no | 4 | DCP_ |
+
+**facet `video_frame`** (5 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEVideoAspect` | Aspect | multi-instance group (repeating rows) | 0,0 | 0,0 | -- | -- | -- | -- | 2 | no | 1506 | AVIV, DCP_, DIBB, DMXF, DPX, GIFf, H264, H26B |
+| `ADBEVideoFPS` | -- | boolean | 1 | 254016000000 | -- | -- | -- | -- | 2 | no | 1506 | AVIV, DCP_, DIBB, DMXF, DPX, GIFf, H264, H26B |
+| `ADBEVideoFieldType` | -- | signed integer | 0 | 2 | -- | -- | -- | -- | 2 | no | 1506 | AVIV, DCP_, DIBB, DMXF, DPX, GIFf, H264, H26B |
+| `ADBEVideoHeight` | -- | signed integer | 4 | 16384 | -- | -- | -- | -- | 2 | no | 1506 | AVIV, DCP_, DIBB, DMXF, DPX, GIFf, H264, H26B |
+| `ADBEVideoWidth` | -- | signed integer | 4 | 30000 | -- | -- | -- | -- | 2 | no | 1506 | AVIV, DCP_, DIBB, DMXF, DPX, GIFf, H264, H26B |
+
+**facet `vr_immersive`** (5 identifiers)
+
+*Derivation: parameter table, taken whole; yields 1 microtask whose acceptance criteria are its rows, one bound-set per row.*
+
+| Identifier | Label | Type | hard_min | hard_max | soft_min | soft_max | default | unit | precision | slider | used by presets | formats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADBEVideoVRDoExport` | Video Is VR | container / group header (no value of its own) | false | false | -- | -- | -- | -- | 2 | no | 113 | H264, HEVC, MooV |
+| `ADBEVideoVRGroup` | VR Video | tab or section group | 0 | 0 | -- | -- | -- | -- | 2 | no | 113 | H264, HEVC, MooV |
+| `ADBEVideoVRHFOV` | Horizontal Field of View | signed integer | 60 | 360 | -- | -- | -- | -- | 2 | no | 97 | H264, HEVC, MooV |
+| `ADBEVideoVRStereoscopic` | Frame Layout | signed integer | 0 | 0 | -- | -- | -- | -- | 2 | no | 113 | H264, HEVC, MooV |
+| `ADBEVideoVRVFOV` | Vertical Field of View | signed integer | 60 | 180 | -- | -- | -- | -- | 2 | no | 97 | H264, HEVC, MooV |

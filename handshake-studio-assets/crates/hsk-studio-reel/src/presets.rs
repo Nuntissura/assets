@@ -10,10 +10,14 @@
 //!
 //! The preset names and bitrates are Studio's; Premiere / Media Encoder preset parity (names, bitrates,
 //! GOP, audio) is UNVERIFIED (D5): the 704 captured recipe identities of STU-VID-063 are not imported here.
+//! Each preset is a [`StudioExportRecipe`] ([`ExportPreset::studio_recipe`]); it is complete against the six
+//! identifiers reel's writer consumes (`export_recipe::REEL_WRITER_BINDING`), not against the 453 of the
+//! export parameter dictionary.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::ReelError;
-use crate::export::{Av1Settings, ExportRecipe, PcmChoice, VideoCodecChoice};
+use crate::export::{Av1Settings, ExportRecipe, PcmChoice};
+use crate::export_recipe::{ExportRecipeError, StudioExportRecipe};
 use crate::mux::Container;
 use crate::os_encode::{H264Profile, OsVideoSettings};
 use crate::vc3::encode::Vc3Profile;
@@ -100,19 +104,18 @@ impl ExportPreset {
         matches!(self.video, PresetVideo::H264(_) | PresetVideo::Hevc(_))
     }
 
-    /// The recipe of this preset (recipe id = preset id). `os_encoder`: an OS encoder is registered on
-    /// the queue the job goes to. Refused: an OS-encode preset without one, an AV1 preset without the
-    /// `av1-encode` feature (`MEDIA_CODEC_UNAVAILABLE` naming the codec).
+    /// The record of this preset (STU-VID-063: the same record as a user recipe; lane SMB-PR-EXPORT-RECIPE-1):
+    /// reel's exporter for the container, the codec selection, and for H.264 / HEVC the bitrate as
+    /// `ADBEVideoTargetBitrate` in megabits per second.
+    pub fn studio_recipe(&self) -> StudioExportRecipe {
+        crate::export_recipe::preset_recipe(self)
+    }
+
+    /// The recipe of this preset (recipe id = preset id), resolved through [`ExportPreset::studio_recipe`].
+    /// `os_encoder`: an OS encoder is registered on the queue the job goes to. Refused: an OS-encode preset
+    /// without one, an AV1 preset without the `av1-encode` feature (`MEDIA_CODEC_UNAVAILABLE` naming the
+    /// codec; pinned by tests/export_recipe.rs `preset_recipes_are_pinned`).
     pub fn recipe(&self, os_encoder: bool) -> Result<ExportRecipe, ReelError> {
-        let video = match self.video {
-            PresetVideo::H264(s) if os_encoder => VideoCodecChoice::H264(s),
-            PresetVideo::Hevc(s) if os_encoder => VideoCodecChoice::Hevc(s),
-            PresetVideo::H264(_) => return Err(ReelError::CodecUnavailable { codec: "h264".into() }),
-            PresetVideo::Hevc(_) => return Err(ReelError::CodecUnavailable { codec: "hevc".into() }),
-            PresetVideo::Av1(s) if cfg!(feature = "av1-encode") => VideoCodecChoice::Av1(s),
-            PresetVideo::Av1(_) => return Err(ReelError::CodecUnavailable { codec: "av1".into() }),
-            PresetVideo::Vc3(p) => VideoCodecChoice::Vc3(p),
-        };
-        Ok(ExportRecipe { recipe_id: self.preset_id.to_owned(), container: self.container, video: Some(video), audio: self.audio })
+        self.studio_recipe().resolve(os_encoder).map_err(ExportRecipeError::into_reel_error)
     }
 }

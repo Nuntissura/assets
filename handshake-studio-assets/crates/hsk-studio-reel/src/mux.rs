@@ -220,6 +220,83 @@ pub struct MuxReceipt {
     pub text_samples: u64,
 }
 
+/// What a container declares it carries (STU-VID-062, STU-IO-141; lane SMB-PR-EXPORT-RECIPE-1): exporter
+/// identity, tracks, video codecs, PCM layouts, colour metadata, caption streams and timecode tracks. The
+/// declaration is the answer of [`check_combination`]: an in-crate differential grid over container x video
+/// codec x PCM layout x rate (`export::tests::capability_equals_the_muxer_answer`) pins
+/// [`ContainerCapability::carries`] to [`Muxer::new`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerCapability {
+    pub exporter_class_id: &'static str,
+    pub exporter_file_type: &'static str,
+    pub does_video: bool,
+    pub does_audio: bool,
+    /// [`VideoEntry::codec`] names.
+    pub video_codecs: &'static [&'static str],
+    /// `(bits, float)` of the PCM layouts.
+    pub pcm_layouts: &'static [(u16, bool)],
+    /// The container's own PCM rate cap (`None`: only [`MuxLimits::max_rate`]).
+    pub max_pcm_rate: Option<u32>,
+    /// The `colr` colour type written (`nclx` in MP4, `nclc` in MOV).
+    pub colour_metadata: &'static str,
+    /// Caption stream sample entries ([`Muxer::write_text_track`]).
+    pub caption_streams: &'static [&'static str],
+    /// Reel's muxer writes no `tmcd` track.
+    pub timecode_tracks: bool,
+}
+
+const PCM_LAYOUTS: &[(u16, bool)] = &[(16, false), (24, false), (32, false), (32, true)];
+
+impl ContainerCapability {
+    /// Whether this container carries `video` (a [`VideoEntry::codec`] name) with `audio` PCM `(bits, float,
+    /// rate)`; at least one track. Bounds of [`MuxLimits`] (sides, channels, `max_rate`) are not part of it.
+    pub fn carries(&self, video: Option<&str>, audio: Option<(u16, bool, u32)>) -> bool {
+        if video.is_none() && audio.is_none() {
+            return false;
+        }
+        let video_ok = video.is_none_or(|codec| self.does_video && self.video_codecs.contains(&codec));
+        let audio_ok = audio.is_none_or(|(bits, float, rate)| {
+            self.does_audio
+                && self.pcm_layouts.contains(&(bits, float))
+                && rate > 0
+                && self.max_pcm_rate.is_none_or(|max| rate <= max)
+        });
+        video_ok && audio_ok
+    }
+}
+
+impl Container {
+    /// The declaration of this container (exporter class id [`MUXER_ID`], file type [`Container::as_str`]).
+    pub const fn capability(self) -> ContainerCapability {
+        match self {
+            Self::Mp4 => ContainerCapability {
+                exporter_class_id: MUXER_ID,
+                exporter_file_type: "mp4",
+                does_video: true,
+                does_audio: true,
+                video_codecs: &["av1", "h264", "hevc"],
+                pcm_layouts: PCM_LAYOUTS,
+                max_pcm_rate: Some(65535),
+                colour_metadata: "nclx",
+                caption_streams: &["tx3g"],
+                timecode_tracks: false,
+            },
+            Self::Mov => ContainerCapability {
+                exporter_class_id: MUXER_ID,
+                exporter_file_type: "mov",
+                does_video: true,
+                does_audio: true,
+                video_codecs: &["av1", "h264", "hevc", "vc3"],
+                pcm_layouts: PCM_LAYOUTS,
+                max_pcm_rate: None,
+                colour_metadata: "nclc",
+                caption_streams: &["tx3g"],
+                timecode_tracks: false,
+            },
+        }
+    }
+}
+
 /// Brands and the combination check: one place decides what each container carries.
 fn check_combination(spec: &MuxSpec, limits: &MuxLimits) -> Result<(), ReelError> {
     if spec.video.is_none() && spec.audio.is_none() {

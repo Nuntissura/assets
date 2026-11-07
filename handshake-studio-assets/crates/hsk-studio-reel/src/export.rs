@@ -1294,3 +1294,59 @@ fn verify(
     }
     Ok((len, crate::identity::hex(&hash.finalize()), verified))
 }
+
+#[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)]
+mod tests {
+    use super::provisional_entry;
+    use crate::mux::{Container, MuxLimits, MuxSpec, Muxer, PcmSpec, VideoEntry, VideoTrackSpec};
+    use crate::os_encode::OsVideoCodec;
+
+    /// Item 5 of lane SMB-PR-EXPORT-RECIPE-1: the container declaration cannot drift from the muxer. Every
+    /// cell of container x video (none, av1, h264, hevc, vc3) x PCM (none, 16, 24, 32, 32 float, invalid 8 and
+    /// 64 float) x rate (48000, 65536): `Container::capability().carries` equals `Muxer::new` succeeding.
+    /// Entries are the ones `plan` builds (`provisional_entry` for H.264 / HEVC).
+    #[test]
+    fn capability_equals_the_muxer_answer() {
+        let videos: [Option<(&str, VideoEntry)>; 5] = [
+            None,
+            Some(("av1", VideoEntry::Av1 { av1c: vec![0x81, 0x00, 0x0C, 0x00] })),
+            Some(("h264", provisional_entry(OsVideoCodec::H264).unwrap())),
+            Some(("hevc", provisional_entry(OsVideoCodec::Hevc).unwrap())),
+            Some(("vc3", VideoEntry::Vc3 { dnxhr: true })),
+        ];
+        let pcms = [None, Some((16, false)), Some((24, false)), Some((32, false)), Some((32, true)), Some((8, false)), Some((64, true))];
+        let mut cells = 0;
+        let mut carried = 0;
+        for container in [Container::Mp4, Container::Mov] {
+            let cap = container.capability();
+            assert_eq!((cap.exporter_class_id, cap.exporter_file_type), (crate::mux::MUXER_ID, container.as_str()));
+            for video in &videos {
+                for pcm in pcms {
+                    for rate in [48_000u32, 65_536] {
+                        let spec = MuxSpec {
+                            container,
+                            video: video.as_ref().map(|(_, entry)| VideoTrackSpec {
+                                entry: entry.clone(),
+                                width: 264,
+                                height: 120,
+                                ticks_per_frame: 10_160_640_000,
+                                color: None,
+                            }),
+                            audio: pcm.map(|(bits, float)| PcmSpec { bits, float, rate, channels: 2 }),
+                        };
+                        let muxer = Muxer::new(std::io::Cursor::new(Vec::new()), spec, MuxLimits::default()).is_ok();
+                        let declared = cap.carries(video.as_ref().map(|v| v.0), pcm.map(|(bits, float)| (bits, float, rate)));
+                        assert_eq!(declared, muxer, "{container:?} video {:?} pcm {pcm:?} rate {rate}", video.as_ref().map(|v| v.0));
+                        cells += 1;
+                        carried += usize::from(muxer);
+                    }
+                }
+            }
+        }
+        assert_eq!(cells, 140);
+        // MP4 22 (audio-only 4 layouts at 48000; av1/h264/hevc with no audio at both rates or a layout at
+        // 48000), MOV 48 (audio-only 4 layouts x 2 rates; 4 codecs x (no audio x 2 + 4 layouts x 2)).
+        assert_eq!(carried, 70);
+    }
+}
