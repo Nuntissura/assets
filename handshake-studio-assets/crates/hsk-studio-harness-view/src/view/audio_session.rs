@@ -134,12 +134,19 @@ pub struct SequenceSound {
     extents: Vec<(ClipSource, Ticks)>,
     /// Sources the edit list applies to: the edited samples and their length.
     repaired: Vec<Repaired>,
+    /// The source SHA-256 of a non-empty stored edit list that matched no clip source.
+    repair_unmatched: Option<String>,
     rate: u32,
 }
 
 impl SequenceSound {
     pub fn rate(&self) -> u32 {
         self.rate
+    }
+    /// The source SHA-256 of a stored edit list that matched no clip source (rate, channels, length
+    /// or samples differ): the mix carries that audio unrepaired, and every receipt says so.
+    pub fn repair_unmatched(&self) -> Option<&str> {
+        self.repair_unmatched.as_deref()
     }
     /// The clip sources that play repaired audio.
     pub fn repaired_sources(&self) -> Vec<&ClipSource> {
@@ -208,6 +215,9 @@ pub struct StemReport {
     pub residual_peak: f64,
     /// Peak of the print (linear).
     pub print_peak: f64,
+    /// What the sum check measured: the samples as written (`quantized_16` or `quantized_24` through
+    /// the encoder's quantizer, or `float32`), with the print measured the same way.
+    pub measured: &'static str,
 }
 
 impl StemReport {
@@ -223,7 +233,7 @@ impl StemReport {
         json!({
             "frames": self.frames,
             "stems": self.stems.iter().map(|s| json!({"bus_track_id": s.bus_track_id, "output": s.output.to_string_lossy(), "receipt": s.receipt.to_json()})).collect::<Vec<_>>(),
-            "sum_check": {"residual_dbfs": self.residual_dbfs(), "print_peak": self.print_peak, "limit_dbfs": STEM_SUM_LIMIT_DBFS, "sums_to_print": self.sums_to_print()},
+            "sum_check": {"measured": self.measured, "residual_dbfs": self.residual_dbfs(), "print_peak": self.print_peak, "limit_dbfs": STEM_SUM_LIMIT_DBFS, "sums_to_print": self.sums_to_print()},
         })
     }
 }
@@ -273,10 +283,6 @@ fn file_stem(name: &str) -> String {
     if s.is_empty() { "bus".into() } else { s }
 }
 
-fn peak(a: f32, b: f32) -> f64 {
-    (f64::from(a) - f64::from(b)).abs()
-}
-
 impl super::Viewer {
     /// The sequence sound ([`SequenceSound`]) from the bound port. Refusals: `not_open`,
     /// `audio_sources_missing` (no port), `routing_unreadable`, `repair_unresolved` (a stored edit
@@ -292,6 +298,7 @@ impl super::Viewer {
         }
         let extents = sources.iter().filter_map(|s| port_extents.extent(s).map(|t| (s.clone(), t))).collect();
         let mut repaired = Vec::new();
+        let mut repair_unmatched = None;
         if let Some(doc) = self.waveform_document().map_err(|e| fail("repair_unresolved", e))?.filter(|d| !d.ops.is_empty()) {
             let plugins = self.waveform.as_ref().map(|w| &w.plugins);
             let fallback = super::waveform::PluginRegistry::default();
@@ -309,8 +316,11 @@ impl super::Viewer {
                 let length = hsk_studio_pulse::ticks_from_samples(edited.frames(), rate).map_err(|e| fail("repair_unresolved", e.code()))?;
                 repaired.push((s.clone(), Arc::new(edited.into_channels()), length));
             }
+            if repaired.is_empty() {
+                repair_unmatched = Some(doc.source.sha256.clone());
+            }
         }
-        Ok(SequenceSound { base, extents, repaired, rate })
+        Ok(SequenceSound { base, extents, repaired, repair_unmatched, rate })
     }
 
     /// Opens the waveform editor on the source of timeline clip `clip_id` (any sequence of the
@@ -360,7 +370,12 @@ impl super::Viewer {
     pub fn export_sequence_mix(&mut self, sequence_id: &str, format: MixFormat, output: &Path, overwrite: bool) -> Result<MixExport, MonitorFail> {
         let result = self.export_sequence_mix_inner(sequence_id, format, output, overwrite);
         match &result {
-            Ok(r) => self.say(format!("mixdown {sequence_id}: {} ({} frames, {} clipped)", output.display(), r.frames, r.clipped_samples)),
+            Ok(r) => {
+                self.say(format!("mixdown {sequence_id}: {} ({} frames, {} clipped)", output.display(), r.frames, r.clipped_samples));
+                if let Some(sha) = &r.repair_unmatched {
+                    self.say(format!("mixdown {sequence_id}: the stored waveform edit list (source {sha}) matched no clip source; that audio is unrepaired"));
+                }
+            }
             Err(e) => self.say(format!("mixdown {sequence_id} refused {} {}", e.code, e.detail)),
         }
         result
@@ -386,7 +401,9 @@ impl super::Viewer {
         stream.seek(0, self.cancel).map_err(|e| fail("mixdown", e.code()))?;
         let frames = stream.length_samples();
         let cancel = self.cancel;
-        write_atomically(output, overwrite, |w| export_from(&mut BusSource { stream, frames }, BLOCK, format, w, None, cancel))
+        let mut receipt = write_atomically(output, overwrite, |w| export_from(&mut BusSource { stream, frames }, BLOCK, format, w, None, cancel))?;
+        receipt.repair_unmatched = sound.repair_unmatched.clone();
+        Ok(receipt)
     }
 
     /// Stems of `sequence_id` (STU-FX-137 buses; the audio-post scenario's steps 90 and 91): one
@@ -395,18 +412,29 @@ impl super::Viewer {
     /// its end (equal length and start), written into `dir` as `<bus name>.<ext>` (`rest.<ext>`).
     /// Each stem holds the print's own signal through its bus ([`stem_of`]: unrouted tracks muted,
     /// sends that do not reach the bus dropped), and the report's sum check renders the print and
-    /// every stem again in lockstep and measures `print - sum(stems)`: a send from a track into a bus
-    /// it does not output to, or a non-linear master effect, shows there instead of passing silently.
+    /// every stem again in lockstep and measures `print - sum(stems)` on the samples as written (an
+    /// integer format through the encoder's quantizer, the print quantized alike; `measured`): a send
+    /// from a track into a bus it does not output to, or a non-linear master effect, shows there
+    /// instead of passing silently. Names compare without case (`DX` and `dx` collide).
     /// Refusals before anything is written: as [`super::Viewer::sequence_sound`], `unknown_sequence`,
     /// `stem_none` (no bus and no rest), `stem_count` (over [`MAX_STEMS`]), `unknown_bus` (not a
     /// submix track of the sequence), `stem_duplicate`, `stem_not_top_level`, `stem_name_collision`,
-    /// `output_exists` (any stem file, without `overwrite`), `export_over_source`, `mixdown`. A
-    /// failure while writing removes the stems this call wrote.
+    /// `output_exists` (any stem file, without `overwrite`), `export_over_source`, `mixdown`. Every
+    /// stem is encoded to its own temp file first and the destinations are replaced only after all
+    /// encodes succeeded: a failed encode removes only the temps and leaves every old stem file as it
+    /// was; a failed replace is `stem_replace_partial`, naming the files already replaced (the others
+    /// keep their old content). A stored edit list that matched no clip source is each receipt's
+    /// `repair_unmatched`.
     #[allow(clippy::too_many_arguments)]
     pub fn export_sequence_stems(&mut self, sequence_id: &str, buses: &[String], rest: bool, format: MixFormat, dir: &Path, overwrite: bool) -> Result<StemReport, MonitorFail> {
         let result = self.export_sequence_stems_inner(sequence_id, buses, rest, format, dir, overwrite);
         match &result {
-            Ok(r) => self.say(format!("stems {sequence_id}: {} files, residual {:?} dBFS", r.stems.len(), r.residual_dbfs())),
+            Ok(r) => {
+                self.say(format!("stems {sequence_id}: {} files, residual {:?} dBFS ({})", r.stems.len(), r.residual_dbfs(), r.measured));
+                if let Some(sha) = r.stems.first().and_then(|s| s.receipt.repair_unmatched.clone()) {
+                    self.say(format!("stems {sequence_id}: the stored waveform edit list (source {sha}) matched no clip source; that audio is unrepaired"));
+                }
+            }
             Err(e) => self.say(format!("stems {sequence_id} refused {} {}", e.code, e.detail)),
         }
         result
@@ -439,8 +467,11 @@ impl super::Viewer {
         }
         let ext = format.extension();
         let paths: Vec<PathBuf> = names.iter().map(|n| dir.join(format!("{n}.{ext}"))).collect();
+        // File names compare without case (NTFS ignores it; `file_stem` output is ASCII), so `DX` and
+        // `dx`, or a bus named `Rest` beside the rest stem, never land on one file.
+        let folded: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
         for (i, p) in paths.iter().enumerate() {
-            if paths[..i].contains(p) {
+            if folded[..i].contains(&folded[i]) {
                 return Err(fail("stem_name_collision", p.display().to_string()));
             }
             self.check_output(p)?;
@@ -470,26 +501,73 @@ impl super::Viewer {
         let mut print = stream(self, &sequence, &routing)?;
         let frames = print.length_samples();
         let cancel = self.cancel;
-        let mut stems: Vec<StemPrint> = Vec::with_capacity(plan.len());
-        for ((bus, _, _), (st, path)) in plan.iter().zip(streams.into_iter().zip(&paths)) {
-            match write_atomically(path, overwrite, |w| export_from(&mut BusSource { stream: st, frames }, BLOCK, format, w, None, cancel)) {
-                Ok(receipt) => stems.push(StemPrint { bus_track_id: bus.clone(), output: path.clone(), receipt }),
-                Err(e) => {
-                    for s in &stems {
-                        let _ = std::fs::remove_file(&s.output);
+        // Every stem is encoded to a temp file of its own first; destinations are replaced only after
+        // every encode succeeded, so a failed encode leaves the old set untouched.
+        let mut written: Vec<(PathBuf, MixExport)> = Vec::with_capacity(plan.len());
+        let remove_temps = |written: &[(PathBuf, MixExport)]| {
+            for (t, _) in written {
+                let _ = std::fs::remove_file(t);
+            }
+        };
+        for (st, path) in streams.into_iter().zip(&paths) {
+            let encoded = super::export::create_unique_sibling(path, ".hsk-partial")
+                .map_err(|e| fail("output_path", format!("{}: {e}", path.display())))
+                .and_then(|(temp, file)| {
+                    let mut w = std::io::BufWriter::new(file);
+                    let r = export_from(&mut BusSource { stream: st, frames }, BLOCK, format, &mut w, None, cancel)
+                        .and_then(|r| std::io::Write::flush(&mut w).map(|()| r).map_err(|e| fail("export_write", e.to_string())));
+                    drop(w);
+                    match r {
+                        Ok(r) => Ok((temp, r)),
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&temp);
+                            Err(e)
+                        }
                     }
+                });
+            match encoded {
+                Ok(t) => written.push(t),
+                Err(e) => {
+                    remove_temps(&written);
                     return Err(e);
                 }
             }
+        }
+        let mut stems: Vec<StemPrint> = Vec::with_capacity(plan.len());
+        for (i, ((temp, mut receipt), path)) in written.iter().cloned().zip(&paths).enumerate() {
+            if let Err(e) = super::export::replace_with_backoff(&temp, path) {
+                // Destinations before `i` already hold the new stems; the rest keep what they held.
+                remove_temps(&written[i..]);
+                let replaced: Vec<String> = paths[..i].iter().map(|p| p.display().to_string()).collect();
+                return Err(fail("stem_replace_partial", format!("{}: {e}; replaced with new stems: {replaced:?}; every other stem file is unchanged", path.display())));
+            }
+            receipt.repair_unmatched = sound.repair_unmatched.clone();
+            stems.push(StemPrint { bus_track_id: plan[i].0.clone(), output: path.clone(), receipt });
         }
         // Sum check: the print and every stem rendered in lockstep.
         let mut parts = Vec::with_capacity(plan.len());
         for (_, s, r) in &plan {
             parts.push(stream(self, s, r)?);
         }
+        // What the files hold: integer formats measure every sample through the encoder's own
+        // quantizer (round, clip), float formats the 32-bit samples written; the print is measured the
+        // same way, as if printed in the same format.
+        let bits = match format {
+            MixFormat::Flac { bits } | MixFormat::Aiff { bits } | MixFormat::Wav { bits } => Some(bits),
+            MixFormat::AiffFloat | MixFormat::WavFloat => None,
+        };
+        let written_value = |v: f32| -> f64 {
+            match bits {
+                Some(b) => {
+                    let mut clipped = 0u64;
+                    f64::from(super::audio_import::quantize(v, b, &mut clipped)) / f64::from(1u32 << b.saturating_sub(1))
+                }
+                None => f64::from(v),
+            }
+        };
         let (mut pl, mut pr) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
         let (mut sl, mut sr) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
-        let (mut acc_l, mut acc_r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+        let (mut acc_l, mut acc_r) = (vec![0.0f64; BLOCK], vec![0.0f64; BLOCK]);
         let (mut residual_peak, mut print_peak) = (0.0f64, 0.0f64);
         let mut done = 0u64;
         while done < frames {
@@ -500,17 +578,23 @@ impl super::Viewer {
             for p in &mut parts {
                 p.render(&mut sl[..n], &mut sr[..n], cancel).map_err(|e| fail("mixdown", e.code()))?;
                 for i in 0..n {
-                    acc_l[i] += sl[i];
-                    acc_r[i] += sr[i];
+                    acc_l[i] += written_value(sl[i]);
+                    acc_r[i] += written_value(sr[i]);
                 }
             }
             for i in 0..n {
-                residual_peak = residual_peak.max(peak(pl[i], acc_l[i])).max(peak(pr[i], acc_r[i]));
-                print_peak = print_peak.max(f64::from(pl[i].abs())).max(f64::from(pr[i].abs()));
+                let (l, r) = (written_value(pl[i]), written_value(pr[i]));
+                residual_peak = residual_peak.max((l - acc_l[i]).abs()).max((r - acc_r[i]).abs());
+                print_peak = print_peak.max(l.abs()).max(r.abs());
             }
             done = done.saturating_add(n as u64);
         }
-        Ok(StemReport { stems, frames, residual_peak, print_peak })
+        let measured = match bits {
+            Some(16) => "quantized_16",
+            Some(_) => "quantized_24",
+            None => "float32",
+        };
+        Ok(StemReport { stems, frames, residual_peak, print_peak, measured })
     }
 }
 

@@ -24,6 +24,12 @@
 //!   blocks the device played as silence because the ring ran dry), restarts, loop wraps, and meters
 //!   of what was rendered for the device (score graph peaks since the output opened: master, each bus
 //!   with its submix track id, each strip with its track id; linear and dBFS).
+//! - **Limit, edits while open**: the stream is built once, at open, from the document revision then
+//!   (`built_revision`). A waveform edit, undo, routing or mixer change made while the output is open
+//!   plays only after the next [`super::super::Viewer::audio_out_open`]; until then the state says
+//!   `stale: true`.
+//! - **Document close and open**: [`super::super::Viewer::close`] and every open close the output
+//!   (the device and its admission permit are released).
 //! - **Close**: [`super::super::Viewer::audio_out_close`] stops the stream and returns score-device's
 //!   close report (frames submitted, consumed, residual, underruns, loss).
 //!
@@ -84,6 +90,11 @@ pub struct ProgramAudio {
     device: String,
     sequence_id: String,
     pumps: u64,
+    /// Document revision the stream was built from.
+    revision: Option<u64>,
+    /// [`build_key`] at open: the revision plus the routing and waveform entries the stream reads
+    /// (entry writes do not move the document revision).
+    key: u64,
 }
 
 fn db(linear: f32) -> Option<f64> {
@@ -99,14 +110,16 @@ impl ProgramAudio {
         self.out.mix().buses()
     }
 
-    /// Structured projection (module docs, State).
-    pub fn to_json(&self) -> Value {
+    /// Structured projection (module docs, State); `current` is [`build_key`] now.
+    pub fn to_json(&self, current: u64) -> Value {
         let mut v = self.out.state_json();
         let c = self.out.stream().counters();
         v["provider"] = json!(self.provider);
         v["device"] = json!(self.device);
         v["sequence_id"] = json!(self.sequence_id);
         v["pumps"] = json!(self.pumps);
+        v["built_revision"] = json!(self.revision);
+        v["stale"] = json!(current != self.key);
         v["underrun_frames"] = json!(c.underrun_frames());
         v["played_sequence_sample"] = json!(self.out.played_sequence_sample());
         if let Some(b) = self.buses() {
@@ -166,18 +179,25 @@ impl super::super::Viewer {
         };
         let block = usize::try_from(block_frames).map_err(|_| fail("audio_config", "block_frames"))?;
         let bus = self.program_stream(&wanted, block)?;
-        if shown.as_deref() != Some(wanted.as_str()) {
-            self.open_monitor(&wanted, MONITOR_SIDE, MONITOR_SIDE)?;
-        }
+        // The previous output goes first (one device, one admission permit); the monitor changes only
+        // after the device opened, so a refused open leaves the program monitor as it was.
         self.audio_out_close();
         let config = StreamConfig { sample_rate_hz: hsk_studio_pulse::AudioClock::sample_rate_hz(&bus), layout: bus.layout(), block_frames, ring_blocks: RING_BLOCKS };
         let stream = provider.open_output(&device_id, &config, Some(grant), self.cancel).map_err(|e| fail(e.code(), format!("{} {device}", provider.id())))?;
         let mut out = AudioOut::with_buses(bus, stream)?;
+        if shown.as_deref() != Some(wanted.as_str())
+            && let Err(e) = self.open_monitor(&wanted, MONITOR_SIDE, MONITOR_SIDE)
+        {
+            let _ = out.close();
+            return Err(e);
+        }
         if let Some(m) = &self.monitor {
             out.follow(m.monitor.scheduler())?;
         }
-        let audio = ProgramAudio { out, provider: provider.id(), device: device.to_string(), sequence_id: wanted.clone(), pumps: 0 };
-        let state = audio.to_json();
+        let revision = self.run.snapshot().map(|s| s.document().revision);
+        let key = build_key(self);
+        let audio = ProgramAudio { out, provider: provider.id(), device: device.to_string(), sequence_id: wanted.clone(), pumps: 0, revision, key };
+        let state = audio.to_json(key);
         self.program_audio = Some(audio);
         self.say(format!("audio out: {} {device} on {wanted}", provider.id()));
         Ok(state)
@@ -185,6 +205,7 @@ impl super::super::Viewer {
 
     /// Runs `command` on the program monitor with the output as its clock (module docs, Transport).
     pub fn audio_out_transport(&mut self, command: AudioTransport) -> Result<Value, MonitorFail> {
+        let current = build_key(self);
         let audio = self.program_audio.as_mut().ok_or_else(|| fail("audio_out_closed", "no audio output is open"))?;
         let m = self.monitor.as_mut().ok_or_else(|| fail("audio_out_closed", "no program monitor"))?;
         let ran = audio.out.command(&mut m.monitor, |m, c| match command {
@@ -196,7 +217,7 @@ impl super::super::Viewer {
             AudioTransport::Looping(on) => m.set_looping(on, c),
         })?;
         ran?;
-        Ok(audio.to_json())
+        Ok(audio.to_json(current))
     }
 
     /// One host-loop step (module docs): fills the ring, then refreshes the monitor on the audio clock.
@@ -239,7 +260,8 @@ impl super::super::Viewer {
 
     /// The output's state (`Null` when closed).
     pub fn audio_out_json(&self) -> Value {
-        self.program_audio.as_ref().map_or(Value::Null, ProgramAudio::to_json)
+        let current = build_key(self);
+        self.program_audio.as_ref().map_or(Value::Null, |a| a.to_json(current))
     }
 
     /// The open output, if any.
@@ -254,6 +276,17 @@ impl super::super::Viewer {
         self.say(format!("audio out closed: {} frames consumed, {} underruns", report.frames_consumed, report.underruns));
         Some(report)
     }
+}
+
+/// What the program stream is built from: the document revision and the routing and waveform edit
+/// entries (an entry write keeps the revision), hashed.
+fn build_key(v: &super::super::Viewer) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    v.run.snapshot().map(|s| s.document().revision).hash(&mut h);
+    v.run.document_entry(super::AUDIO_ROUTING_ENTRY).hash(&mut h);
+    v.run.document_entry(super::super::waveform::WAVEFORM_EDIT_ENTRY).hash(&mut h);
+    h.finish()
 }
 
 /// The JSON form of a close report (no samples).

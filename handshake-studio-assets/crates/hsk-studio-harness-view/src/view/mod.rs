@@ -533,6 +533,9 @@ impl Viewer {
             return Err(format!("open {}: {len} bytes exceeds {}", path.display(), crate::import::MAX_SOURCE_BYTES));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        // Lane SMB-AUDIO-OUT-MIX-1: an output never plays the document or file this open replaces.
+        #[cfg(all(feature = "audio-batch", feature = "audio-device"))]
+        self.audio_out_close();
         // Audio files (WAV, MP3, FLAC, Ogg, AAC, AIFF) land in a score mixdown (module audio_import).
         #[cfg(feature = "media")]
         {

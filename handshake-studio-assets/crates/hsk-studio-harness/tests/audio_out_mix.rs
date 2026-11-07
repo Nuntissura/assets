@@ -123,14 +123,14 @@ fn routing(send: bool) -> StudioAudioRoutingSet {
     StudioAudioRoutingSet { routings: vec![r] }
 }
 
-fn package(dir: &Path) -> PathBuf {
+fn package(dir: &Path, sequence: &StudioSequence) -> PathBuf {
     let doc = serde_json::json!({
         "schema_id":"hsk.studio.document@1","document_id":"SDOC-019abcde-0000-7000-8000-000000000001","revision":1,"geometry_unit":"px","colour_mode":3,"bits_per_channel":8,
         "working_space_rgb":null,"working_space_cmyk":null,"working_space_gray":null,"working_space_spot":null,"blending_space":null,
         "artboards":[],"page_spreads":[],
         "layers":[{"schema_id":"hsk.studio.layer@1","layer_id":"SLYR-019abcde-0000-7000-8000-000000000001","name":"group","parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true}],
         "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[],"edges":[],"outputs":[]},
-        "sequences":[serde_json::to_value(sequence()).unwrap()]
+        "sequences":[serde_json::to_value(sequence).unwrap()]
     });
     struct Any;
     impl folio::Resolver for Any {
@@ -177,8 +177,12 @@ fn package(dir: &Path) -> PathBuf {
 
 /// A viewer on a fresh session with `routing` stored; with `port`, the sound port bound.
 fn session(label: &str, routing: &StudioAudioRoutingSet, port: bool) -> (PathBuf, Viewer) {
+    session_of(label, &sequence(), routing, port)
+}
+
+fn session_of(label: &str, sequence: &StudioSequence, routing: &StudioAudioRoutingSet, port: bool) -> (PathBuf, Viewer) {
     let dir = support_audio::scratch(&format!("out-mix-{label}"));
-    let path = package(&dir);
+    let path = package(&dir, sequence);
     let mut v = Viewer::new(Prefer::Cpu);
     v.open(&path).unwrap_or_else(|e| panic!("{e}: {}", v.state_json()));
     v.set_audio_routing(routing).unwrap();
@@ -230,13 +234,18 @@ fn audio_out_plays_the_program_sequence_on_the_audio_clock_with_dropouts_and_met
     let provider = SoftwareProvider::with_options(Limits::default(), SoftwareOptions { loopback_frames: 1 << 18 });
     let devices = v.audio_out_devices(&provider, &grant(&[Direction::Output])).unwrap();
     assert!(devices.as_array().unwrap().iter().any(|d| d["id"] == SOFTWARE_OUTPUT_DEVICE), "{devices}");
-    // Typed refusals before anything opens.
+    let frames = 10 * SPF;
+    let [l, _] = render(&v, sources(), frames);
+    // Typed refusals before anything opens; none of them touches the program monitor.
+    let monitor_before = v.monitor().map(|m| m.state_json());
     assert_eq!(v.audio_out_open(&provider, &grant(&[Direction::Output]), "no-such-device", 480, None).unwrap_err().code, "unknown_device");
     assert_eq!(v.audio_out_open(&provider, &grant(&[Direction::Input]), SOFTWARE_OUTPUT_DEVICE, 480, None).unwrap_err().code, "unauthorized");
     assert_eq!(v.audio_out_open(&provider, &grant(&[Direction::Output]), SOFTWARE_OUTPUT_DEVICE, 0, None).unwrap_err().code, "audio_config");
     assert_eq!(v.audio_out_open(&provider, &grant(&[Direction::Output]), SOFTWARE_OUTPUT_DEVICE, 480, Some("nope")).unwrap_err().code, "mixdown");
     assert_eq!(v.audio_out_transport(AudioTransport::Play).unwrap_err().code, "audio_out_closed");
     assert!(v.audio_out_close().is_none());
+    assert_eq!(v.monitor().map(|m| m.state_json()), monitor_before, "a refused open leaves the program monitor as it was");
+    assert_eq!(provider.admission().open_streams(), 0);
 
     v.audio_out_open(&provider, &grant(&[Direction::Output]), SOFTWARE_OUTPUT_DEVICE, 480, Some("seq-main")).unwrap();
     assert_eq!(v.monitor().unwrap().sequence().sequence_id, "seq-main", "the program monitor opened on the sequence");
@@ -250,14 +259,16 @@ fn audio_out_plays_the_program_sequence_on_the_audio_clock_with_dropouts_and_met
     assert!(dx["level"]["peak"][0].as_f64().unwrap() > 0.1, "{state}");
     assert_eq!(v.state_json()["audio_out"]["device"], SOFTWARE_OUTPUT_DEVICE);
     assert_eq!(v.audio_out_run(MAX_RUN_MS + 1).unwrap_err().code, "run_too_long");
+    assert_eq!(state["stale"], false);
+    // An edit while open plays only after the next open: the state says so.
+    v.set_audio_routing(&routing(true)).unwrap();
+    assert_eq!(v.audio_out_json()["stale"], true);
     v.audio_out_transport(AudioTransport::Pause).unwrap();
     let report = v.audio_out_close().unwrap();
     assert!(report.reconciles() && !report.device_lost, "{report:?}");
     assert!(v.state_json()["audio_out"].is_null());
 
-    // The device received the mixer's stream, sample for sample.
-    let frames = 10 * SPF;
-    let [l, _] = render(&v, sources(), frames);
+    // The device received the mixer's stream (of the routing it was opened on), sample for sample.
     let played: Vec<f32> = report.loopback_samples.chunks_exact(2).map(|f| f[0]).collect();
     let first = played.iter().position(|s| *s != 0.0).expect("audio reached the device");
     let n = played[first..].iter().take_while(|s| **s != 0.0).count().min(frames);
@@ -265,6 +276,18 @@ fn audio_out_plays_the_program_sequence_on_the_audio_clock_with_dropouts_and_met
     for i in 0..n {
         assert_eq!(played[first + i].to_bits(), l[i].to_bits(), "device sample {i}");
     }
+
+    // FILE > Close and opening another file release the device and its admission permit.
+    v.audio_out_open(&provider, &grant(&[Direction::Output]), SOFTWARE_OUTPUT_DEVICE, 480, None).unwrap();
+    assert_eq!(provider.admission().open_streams(), 1);
+    v.close();
+    assert!(v.audio_out_json().is_null());
+    assert_eq!(provider.admission().open_streams(), 0);
+    let (dir, mut w) = session("play-reopen", &routing(false), true);
+    w.audio_out_open(&provider, &grant(&[Direction::Output]), SOFTWARE_OUTPUT_DEVICE, 480, None).unwrap();
+    w.open(&dir.join("session.handshake")).unwrap();
+    assert!(w.audio_out_json().is_null());
+    assert_eq!(provider.admission().open_streams(), 0);
     println!("NOT_PROVEN: real device output (score-device cpal-backend); this test opens only the software device, so nothing reaches the speakers");
 }
 
@@ -314,6 +337,41 @@ fn stems_print_per_bus_and_sum_to_the_print_and_a_cross_send_shows_in_the_residu
     assert_eq!(v.export_sequence_stems("seq-main", &[], false, MixFormat::WavFloat, &stems_dir, true).unwrap_err().code, "stem_none");
     assert_eq!(v.export_sequence_stems("seq-main", &[id(3), id(3)], false, MixFormat::WavFloat, &stems_dir, true).unwrap_err().code, "stem_duplicate");
 
+    // 16-bit: the check measures the written files. Decoded stems summed against the decoded 16-bit
+    // print give exactly the reported residual.
+    let q = dir.join("q16");
+    std::fs::create_dir_all(&q).unwrap();
+    let report = v.export_sequence_stems("seq-main", &[id(3)], true, MixFormat::Wav { bits: 16 }, &q, false).unwrap();
+    assert_eq!(report.measured, "quantized_16");
+    assert_eq!(report.to_json()["sum_check"]["measured"], "quantized_16");
+    v.export_sequence_mix("seq-main", MixFormat::Wav { bits: 16 }, &q.join("print.wav"), false).unwrap();
+    let (a, b, print) = (decode(&q.join("T3.wav")), decode(&q.join("rest.wav")), decode(&q.join("print.wav")));
+    let mut residual = 0.0f64;
+    for c in 0..2 {
+        for i in 0..print[c].len() {
+            residual = residual.max((f64::from(print[c][i]) - f64::from(a[c][i]) - f64::from(b[c][i])).abs());
+        }
+    }
+    assert!((residual - report.residual_peak).abs() < 1e-9, "files {residual} vs report {}", report.residual_peak);
+
+    // A failed replace names what it replaced; nothing partial is left behind.
+    let old = std::fs::read(stems_dir.join("T3.wav")).unwrap();
+    std::fs::remove_file(stems_dir.join("rest.wav")).unwrap();
+    std::fs::create_dir_all(stems_dir.join("rest.wav")).unwrap();
+    let e = v.export_sequence_stems("seq-main", &[id(3)], true, MixFormat::Wav { bits: 24 }, &stems_dir, true).unwrap_err();
+    assert_eq!(e.code, "stem_replace_partial", "{}", e.detail);
+    assert!(e.detail.contains("T3.wav"), "{}", e.detail);
+    assert_ne!(std::fs::read(stems_dir.join("T3.wav")).unwrap(), old, "T3 holds the new stem, as reported");
+    let leftovers: Vec<_> = std::fs::read_dir(&stems_dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().contains("hsk-partial")).collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // A bus named like the rest stem in another case is one file on Windows: refused before writing.
+    let mut seq = sequence();
+    seq.tracks[2].name = "REST".into();
+    let (dir2, mut u) = session_of("stems-case", &seq, &routing(false), true);
+    assert_eq!(u.export_sequence_stems("seq-main", &[id(3)], true, MixFormat::WavFloat, &dir2, true).unwrap_err().code, "stem_name_collision");
+    assert!(!dir2.join("REST.wav").exists() && !dir2.join("rest.wav").exists());
+
     // A pre-fader send from a direct track into DX sits in no stem: the sum check says so.
     let (dir, mut w) = session("stems-send", &routing(true), true);
     let report = w.export_sequence_stems("seq-main", &[id(3)], true, MixFormat::WavFloat, &dir, false).unwrap();
@@ -343,6 +401,16 @@ fn repaired_audio_reaches_the_mix_and_survives_save_and_reopen() {
     v.export_sequence_mix("seq-main", MixFormat::WavFloat, &out, false).unwrap();
     assert_close(&decode(&out), &want, 0.0, "repaired mix");
     assert_ne!(want[0][100], original[0][100]);
+
+    // A port whose source differs in one sample matches no edit list: the receipt says so.
+    let mut other = dc();
+    other[0][7] = 0.5;
+    v.set_export_audio(sources_with(other), Arc::new(Ext), RATE).unwrap();
+    let unmatched = v.export_sequence_mix("seq-main", MixFormat::WavFloat, &dir.join("unmatched.wav"), false).unwrap();
+    assert!(unmatched.repair_unmatched.as_deref().is_some_and(|sha| sha.len() == 64), "{:?}", unmatched.repair_unmatched);
+    assert!(v.sequence_sound().unwrap().repaired_sources().is_empty());
+    v.set_export_audio(sources(), Arc::new(Ext), RATE).unwrap();
+    assert_eq!(v.export_sequence_mix("seq-main", MixFormat::WavFloat, &dir.join("matched.wav"), false).unwrap().repair_unmatched, None);
 
     // Saved and reopened, the edit list resolves the same audio into the mix.
     let saved = dir.join("saved.handshake");
