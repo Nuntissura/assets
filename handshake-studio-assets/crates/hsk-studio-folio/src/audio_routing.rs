@@ -475,6 +475,10 @@ pub enum StudioInertRoutingKind {
     Routing,
     /// A route of a track its sequence does not hold.
     Route,
+    /// The output of a live route names a bus its sequence does not hold: the route plays to the master.
+    RouteOutput,
+    /// A send of a live route names a bus its sequence does not hold: the send is skipped.
+    RouteSend,
     /// A bus effect chain of a track its sequence does not hold.
     BusEffects,
     /// An automation lane of a track its sequence does not hold.

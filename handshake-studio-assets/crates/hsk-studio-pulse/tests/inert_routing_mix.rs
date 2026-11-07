@@ -177,3 +177,101 @@ fn a_routing_of_an_absent_sequence_changes_no_nested_mix() {
     assert!(without[0].iter().any(|v| v.abs() > 0.01), "audible");
     assert_eq!(mix(&stale), without, "sample for sample");
 }
+
+// ----- F-R57-2: a removed bus, against the rendered mix -----
+
+const BUS: u32 = 7;
+const BUS_2: u32 = 8;
+fn bus_id(n: u32) -> String {
+    format!("STRK-019abcde-0000-7000-8000-{n:012x}")
+}
+fn bus_track(n: u32, volume: f64) -> StudioTrack {
+    let mut t = track(n, Vec::new());
+    t.kind = TrackKind::Submix;
+    t.volume = volume;
+    t.pan = 0.0;
+    t
+}
+/// `seq-main` with one audio track of one clip, plus `buses`.
+fn with_buses(buses: Vec<StudioTrack>) -> StudioSequence {
+    let mut s = sequence("seq-main", vec![clip(1, source("ramp"), 4)]);
+    s.tracks.extend(buses);
+    s
+}
+fn audio_track_id() -> String {
+    bus_id(1)
+}
+fn assert_audible(mix: &[Vec<f32>; 2]) {
+    assert!(mix[0].iter().any(|v| v.abs() > 0.01) && mix[1].iter().any(|v| v.abs() > 0.01), "audible on both channels");
+}
+
+/// A live route's output to a removed bus plays to the master: sample for sample the mix of no route.
+#[test]
+fn an_output_to_a_removed_bus_plays_to_the_master() {
+    let mut routing = StudioAudioRouting::new("seq-main");
+    routing.routes.push(StudioTrackRoute { track_id: audio_track_id(), output: Some(bus_id(BUS)), sends: vec![] });
+    let through_bus = bus_mix(&with_buses(vec![bus_track(BUS, 0.25)]), &routing, Sources::new(), &Ext);
+    let removed = with_buses(vec![]);
+    let to_master = bus_mix(&removed, &StudioAudioRouting::new("seq-main"), Sources::new(), &Ext);
+    assert_audible(&to_master);
+    assert_ne!(through_bus, to_master, "the bus's fader is what the route was doing");
+    assert_eq!(bus_mix(&removed, &routing, Sources::new(), &Ext), to_master, "sample for sample");
+}
+
+/// A send to a removed bus is skipped; the track's own output is untouched.
+#[test]
+fn a_send_to_a_removed_bus_is_skipped() {
+    let mut routing = StudioAudioRouting::new("seq-main");
+    routing.routes.push(StudioTrackRoute {
+        track_id: audio_track_id(),
+        output: None,
+        sends: vec![StudioAudioSend { send_id: "s1".into(), target: bus_id(BUS), level: 1.0, pre_fader: false, pan: 0.0 }],
+    });
+    let with_send = bus_mix(&with_buses(vec![bus_track(BUS, 1.0)]), &routing, Sources::new(), &Ext);
+    let removed = with_buses(vec![]);
+    let without = bus_mix(&removed, &StudioAudioRouting::new("seq-main"), Sources::new(), &Ext);
+    assert_audible(&without);
+    assert_ne!(with_send, without, "the send is what the route was doing");
+    assert_eq!(bus_mix(&removed, &routing, Sources::new(), &Ext), without, "sample for sample");
+}
+
+/// A live bus whose own output names a removed bus plays to the master through its own fader.
+#[test]
+fn a_bus_routed_to_a_removed_bus_plays_to_the_master() {
+    let mut routing = StudioAudioRouting::new("seq-main");
+    routing.routes.push(StudioTrackRoute { track_id: audio_track_id(), output: Some(bus_id(BUS)), sends: vec![] });
+    let mut direct = routing.clone();
+    routing.routes.push(StudioTrackRoute { track_id: bus_id(BUS), output: Some(bus_id(BUS_2)), sends: vec![] });
+    direct.routes.push(StudioTrackRoute { track_id: bus_id(BUS), output: None, sends: vec![] });
+    let before = bus_mix(&with_buses(vec![bus_track(BUS, 0.5), bus_track(BUS_2, 0.25)]), &routing, Sources::new(), &Ext);
+    let removed = with_buses(vec![bus_track(BUS, 0.5)]);
+    let expected = bus_mix(&removed, &direct, Sources::new(), &Ext);
+    assert_audible(&expected);
+    assert_ne!(before, expected, "the second bus's fader is what the route was doing");
+    assert_eq!(bus_mix(&removed, &routing, Sources::new(), &Ext), expected, "sample for sample");
+}
+
+/// The bus coming back is live again, so the routing that went inert does what it did.
+#[test]
+fn a_bus_that_comes_back_is_heard_again() {
+    let mut routing = StudioAudioRouting::new("seq-main");
+    routing.routes.push(StudioTrackRoute { track_id: audio_track_id(), output: Some(bus_id(BUS)), sends: vec![] });
+    let held = with_buses(vec![bus_track(BUS, 0.25)]);
+    let first = bus_mix(&held, &routing, Sources::new(), &Ext);
+    let _ = bus_mix(&with_buses(vec![]), &routing, Sources::new(), &Ext);
+    assert_eq!(bus_mix(&held, &routing, Sources::new(), &Ext), first);
+}
+
+/// A held track that is not a bus is not absent: refused, as before this lane.
+#[test]
+fn a_held_track_that_is_not_a_bus_stays_refused() {
+    let mut routing = StudioAudioRouting::new("seq-main");
+    routing.routes.push(StudioTrackRoute {
+        track_id: audio_track_id(),
+        output: None,
+        sends: vec![StudioAudioSend { send_id: "s1".into(), target: audio_track_id(), level: 1.0, pre_fader: false, pan: 0.0 }],
+    });
+    let mut factory = no_effects;
+    let stream = TimelineBusStream::new(&with_buses(vec![]), &routing, RATE, 960, Sources::new(), &Ext, StreamLimits::default(), &mut factory, &CancellationToken::default());
+    assert_eq!(stream.err(), Some(PulseError::InvalidInput));
+}

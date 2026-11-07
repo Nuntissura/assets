@@ -64,6 +64,13 @@ use hsk_studio_folio::{
 };
 use hsk_studio_package::{LossNote, LossReason, PackageError, Quarantined};
 
+/// A new sequence that takes a stored audio routing by id (R57 F-R57-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoutingTakeover {
+    /// The new sequence, and the routing that now applies to it.
+    pub sequence_id: String,
+}
+
 /// Document-entry token of the sequence settings records.
 pub const SEQUENCE_SETTINGS_ENTRY: &str = "sequence_settings";
 /// Document-entry token of the sequence preset library (the session's stored presets; the shipped

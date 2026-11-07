@@ -203,10 +203,15 @@ fn all_to_master_equals_the_plain_mix_and_refusals_are_typed() {
         TimelineBusStream::new(&seq, &other, RATE, 480, Sources::new(), &Ext, StreamLimits::default(), &mut f, &token).err(),
         Some(PulseError::InvalidInput)
     );
+    // F-R57-2: a bus the sequence does not hold is inert (tests/inert_routing_mix.rs); a held track that
+    // is not a bus is still refused.
     let mut unknown = StudioAudioRouting::new("seq-main");
     unknown.routes = vec![StudioTrackRoute { track_id: id(1), output: Some(id(9)), sends: vec![] }];
+    assert!(TimelineBusStream::new(&seq, &unknown, RATE, 480, Sources::new(), &Ext, StreamLimits::default(), &mut f, &token).is_ok());
+    let mut not_a_bus = StudioAudioRouting::new("seq-main");
+    not_a_bus.routes = vec![StudioTrackRoute { track_id: id(1), output: Some(id(1)), sends: vec![] }];
     assert_eq!(
-        TimelineBusStream::new(&seq, &unknown, RATE, 480, Sources::new(), &Ext, StreamLimits::default(), &mut f, &token).err(),
+        TimelineBusStream::new(&seq, &not_a_bus, RATE, 480, Sources::new(), &Ext, StreamLimits::default(), &mut f, &token).err(),
         Some(PulseError::InvalidInput)
     );
     let mut xf = seq.clone();

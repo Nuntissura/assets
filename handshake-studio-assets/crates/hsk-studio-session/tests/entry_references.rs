@@ -302,14 +302,13 @@ fn cell(named: &str, path: Path, removed: Removed) -> Cell {
     }
 }
 
-/// What each cell must do. The two `Unreadable` cells are the reported gap: multicam's `angle_order` is
-/// read by index (pulse multicam.rs:374, :957, :991), so a stale track is not inert there.
+/// What each cell must do. Multicam's `angle_order` is read by index (pulse multicam.rs:374, :957, :991),
+/// so a stale track is not inert there, and no commit may make it stale (lead ruling on F-R57-2, option A).
 fn expected(named: &str, path: Path, removed: Removed) -> Cell {
     let refused = || Cell::Refused("folio_rejected".into());
     match (named, path, removed) {
         (_, Path::Timeline, Removed::Sequence) => Cell::CannotRemove,
-        (MULTICAM_ENTRY, Path::Timeline | Path::Records, Removed::Track) => Cell::Unreadable("document_rejected".into()),
-        (MULTICAM_ENTRY, Path::Multicam | Path::Resync, Removed::Track) => refused(),
+        (MULTICAM_ENTRY, _, Removed::Track) => refused(),
         (MULTICAM_ENTRY | SEQUENCE_SETTINGS_ENTRY, _, Removed::Sequence) => refused(),
         _ => Cell::Reads,
     }

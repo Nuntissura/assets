@@ -345,9 +345,12 @@ fn an_id_the_document_does_not_hold_is_inert_and_still_checked() {
     assert_eq!(refused(&|s| s.routings.push(StudioAudioRouting::new("seq-gone"))), Code::DuplicateField);
     assert_eq!(refused(&|s| { let again = s.routings[0].clip_gains[1].clone(); s.routings[0].clip_gains.push(again); }), Code::DuplicateField);
     assert_eq!(refused(&|s| { let again = s.routings[0].routes[3].clone(); s.routings[0].routes.push(again); }), Code::DuplicateField);
-    // A live route naming an absent bus is not inert: a live track would play into it. Reported gap.
-    assert_eq!(refused(&|s| s.routings[0].routes[0].output = Some(stale_track.into())), Code::InvalidField);
-    assert_eq!(refused(&|s| s.routings[0].routes[1].sends[0].target = stale_track.into()), Code::InvalidField);
+    // A live route naming an absent bus: only a well-formed id is inert (F-R57-2; the rule's other half
+    // is a_live_route_naming_an_absent_bus_is_inert_and_listed).
+    for bad in ["STRK-nope", "../x", "", stale_clip] {
+        assert_eq!(refused(&|s| s.routings[0].routes[0].output = Some(bad.into())), Code::InvalidId, "live output {bad}");
+        assert_eq!(refused(&|s| s.routings[0].routes[1].sends[0].target = bad.into()), Code::InvalidId, "live send target {bad}");
+    }
     // Inert members count against the budget and the routing ceiling.
     let least = (1..10_000).find(|&n| validate_audio_routing(&routing(), &d, Budget { nodes: n, ..b }, &token).is_ok()).unwrap();
     assert_eq!(validate_audio_routing(&set, &d, Budget { nodes: least, ..b }, &token).unwrap_err().code, Code::BudgetExceeded);
@@ -403,4 +406,72 @@ fn an_inert_member_is_live_again_when_its_track_or_clip_exists() {
     assert_eq!(validate_audio_routing(&set, &as_video, b, &token).unwrap_err().code, Code::InvalidId, "a track that comes back with the wrong kind");
     let clip_on_video = holding(TrackKind::Submix, TrackKind::Video);
     assert_eq!(validate_audio_routing(&set, &clip_on_video, b, &token).unwrap_err().code, Code::InvalidId, "a clip that comes back on a video track");
+}
+
+/// F-R57-2, lead reading on SD-64: an output or send target naming an absent bus is inert like the rest
+/// of the rule. The set stays readable, the listing names it, and what is held keeps its refusals.
+#[test]
+fn a_live_route_naming_an_absent_bus_is_inert_and_listed() {
+    use StudioInertRoutingKind as K;
+    let token = CancellationToken::default();
+    let b = Budget::default();
+    // Bus 4 goes: route 2 sends to it, route 3 (bus 3) outputs to it. Bus 3 still receives route 1.
+    let mut gone = document();
+    gone.sequences[0].tracks.retain(|t| t.track_id != id(4));
+    let set = routing();
+    validate_audio_routing(&set, &gone, b, &token).unwrap();
+    let bytes = serde_json::to_vec(&set).unwrap();
+    assert_eq!(parse_audio_routing(&bytes, &gone, b, &token).unwrap(), set, "kept whole");
+    let row = |kind, n: u32| StudioInertRoutingReference { sequence_id: "seq-main".into(), kind, id: id(n) };
+    assert_eq!(inert_audio_routing_references(&set, &gone), vec![row(K::RouteSend, 4), row(K::RouteOutput, 4)]);
+    assert_eq!(inert_audio_routing_references(&set, &document()), vec![], "nothing is inert with the bus held");
+    // Live again with the bus back: its checks apply again, the cycle included.
+    let mut cycle = set.clone();
+    cycle.routings[0].routes.push(StudioTrackRoute { track_id: id(4), output: Some(id(3)), sends: vec![] });
+    assert_eq!(validate_audio_routing(&cycle, &document(), b, &token).unwrap_err().code, Code::InvalidField, "3 -> 4 -> 3 with the bus held");
+    validate_audio_routing(&cycle, &gone, b, &token).unwrap();
+    // A held target of the wrong kind stays refused: it is not absent.
+    let mut wrong = set.clone();
+    wrong.routings[0].routes[0].output = Some(id(5));
+    assert_eq!(validate_audio_routing(&wrong, &gone, b, &token).unwrap_err().code, Code::InvalidField, "output to a video track");
+    let mut wrong = set.clone();
+    wrong.routings[0].routes[1].sends[0].target = id(1);
+    assert_eq!(validate_audio_routing(&wrong, &gone, b, &token).unwrap_err().code, Code::InvalidField, "send to an audio track");
+    // A route of a track that is itself absent keeps its one row: its targets play nothing either way.
+    let mut stale = set;
+    stale.routings[0].routes.push(StudioTrackRoute { track_id: id(9), output: Some(id(8)), sends: vec![] });
+    validate_audio_routing(&stale, &gone, b, &token).unwrap();
+    assert_eq!(inert_audio_routing_references(&stale, &gone), vec![row(K::Route, 9), row(K::RouteSend, 4), row(K::RouteOutput, 4)]);
+}
+
+/// V4-01/02: a set of many stale routes answers within the node budget, and one route past the budget is
+/// refused before the listing exists.
+#[test]
+fn many_stale_routes_answer_within_the_budget_and_past_it_are_refused() {
+    let token = CancellationToken::default();
+    let b = Budget::default();
+    let d = document();
+    let many = |routes: u32| {
+        let mut r = StudioAudioRouting::new("seq-main");
+        r.routes.push(StudioTrackRoute {
+            track_id: id(1),
+            output: Some(id(100)),
+            sends: (0..16).map(|k| StudioAudioSend { send_id: format!("s{k}"), target: id(101 + k), level: 1.0, pre_fader: false, pan: 0.0 }).collect(),
+        });
+        for n in 0..routes {
+            r.routes.push(StudioTrackRoute {
+                track_id: id(1000 + n),
+                output: Some(id(200)),
+                sends: (0..16).map(|k| StudioAudioSend { send_id: format!("s{k}"), target: id(300 + k), level: 1.0, pre_fader: false, pan: 0.0 }).collect(),
+            });
+        }
+        StudioAudioRoutingSet { routings: vec![r] }
+    };
+    let fits = (0..4096u32).rev().find(|&n| validate_audio_routing(&many(n), &d, b, &token).is_ok()).unwrap();
+    assert!(fits > 100, "the budget holds this many: {fits}");
+    let started = std::time::Instant::now();
+    let rows = inert_audio_routing_references(&many(fits), &d);
+    assert_eq!(rows.len(), 17 + fits as usize, "one row per absent target of the live route, one per stale route");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+    assert_eq!(validate_audio_routing(&many(fits + 1), &d, b, &token).unwrap_err().code, Code::BudgetExceeded);
 }

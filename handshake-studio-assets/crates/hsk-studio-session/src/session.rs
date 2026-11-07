@@ -19,7 +19,7 @@ use crate::{
     timeline::{self, TIMELINE_STEP_PROVIDER, TimelineStep},
     multicam::MULTICAM_ENTRY,
     multicam_step::{self, MULTICAM_STEP_PROVIDER, MulticamStep},
-    sequence_records::{self, MEDIA_MARKERS_ENTRY, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY},
+    sequence_records::{self, MEDIA_MARKERS_ENTRY, RoutingTakeover, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY},
     sequence_records_step::{self, LiveEntries, SEQUENCE_RECORDS_STEP_PROVIDER, SequenceRecordsStep, SequenceRecordsUndo},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, CommandContext, DomainId};
@@ -249,6 +249,9 @@ pub struct Applied {
     /// For a media marker command: Folio's report (codes and counters only), for the host. `None`
     /// otherwise.
     pub media_marker_report: Option<StudioMediaMarkerReport>,
+    /// Sequences this step gives an id a stored audio routing names (module `sequence_records`). Empty
+    /// for everything else.
+    pub routing_takeovers: Vec<RoutingTakeover>,
     /// The authority's canonical receipt (`None` for no-change or a standalone session).
     pub commit: Option<CommitReceipt>,
     /// True when this is the stored receipt of an earlier identical request: nothing was
@@ -316,6 +319,9 @@ pub struct DivergenceReport {
     /// The authority's receipt that disagreed.
     pub authority: CommitReceipt,
     pub disagreement: Disagreement,
+    /// Sequences the authority's document gives an id a stored audio routing names (module
+    /// `sequence_records`). Empty for a discard.
+    pub routing_takeovers: Vec<RoutingTakeover>,
     pub report: ReportStatus,
 }
 
@@ -1581,6 +1587,7 @@ impl Session {
                 composition_token_inverse: None,
                 composition_upgrade: None,
                 media_marker_report: None,
+                routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1657,6 +1664,7 @@ impl Session {
                 composition_token_inverse: None,
                 composition_upgrade: None,
                 media_marker_report: None,
+                routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1739,6 +1747,7 @@ impl Session {
                 composition_token_inverse: None,
                 composition_upgrade: None,
                 media_marker_report: None,
+                routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1802,6 +1811,7 @@ impl Session {
                 composition_token_inverse: inverse,
                 composition_upgrade: diff,
                 media_marker_report: None,
+                routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1989,6 +1999,7 @@ impl Session {
                 composition_token_inverse: None,
                 composition_upgrade: None,
                 media_marker_report: None,
+                routing_takeovers: Vec::new(),
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -2320,6 +2331,7 @@ impl Session {
             draft_revision,
             authority,
             disagreement,
+            routing_takeovers: Vec::new(),
             report: ReportStatus::Unaddressed,
         })
     }
@@ -2376,6 +2388,7 @@ impl Session {
             draft_revision,
             authority,
             disagreement,
+            routing_takeovers: Vec::new(),
             report: ReportStatus::Unaddressed,
         })
     }
