@@ -6,7 +6,8 @@ use super::{CommandEntry, ParamSpec, entry, p};
 const PATH: ParamSpec = p("path", ValueType::String);
 const OVERWRITE: ParamSpec = p("overwrite", ValueType::Boolean);
 // Lane SMB-DOC-NEW-1: New Document, artboards and pages. Lengths are numbers in document units
-// (pages: points); the drive surface runs these ids through the viewer rows of manual::DRIVE_CATALOG_ROUTES.
+// (pages: points); the drive surface runs these ids through the viewer rows of manual::DRIVE_CATALOG_ROUTES, and a
+// parameter is optional here exactly where that viewer row's is (lane SMB-DRIVE-TYPED-2).
 const NAME: ParamSpec = p("name", ValueType::String);
 const PROFILE: ParamSpec = p("profile", ValueType::Enumerated);
 const WIDTH: ParamSpec = p("width", ValueType::Number);
@@ -40,17 +41,17 @@ pub(super) const ROWS: &[CommandEntry] = &[
     // Lane SMB-LAYOUT-PERSIST-1: Viewer::layout_apply commits a layout editor edit through it.
     entry("document.submit_layout", "submit_layout", "Commit layout edit", false, true, &[]),
     entry("document.submit_sequence_edits_and_entry", "submit_sequence_edits_and_entry", "Replace, insert or remove sequences with document entry", false, true, &[]),
-    entry("document.new", "new_document", "New document", false, true, &[PROFILE, WIDTH, HEIGHT, UNIT, COLOUR_MODE, BITS_PER_CHANNEL, NAME, FILE_NAME]),
-    entry("artboard.add", "add_artboard", "New artboard", false, true, &[NAME, WIDTH, HEIGHT, X, Y]),
+    entry("document.new", "new_document", "New document", false, true, &[PROFILE, WIDTH.opt(), HEIGHT.opt(), UNIT.opt(), COLOUR_MODE.opt(), BITS_PER_CHANNEL.opt(), NAME.opt(), FILE_NAME.opt()]),
+    entry("artboard.add", "add_artboard", "New artboard", false, true, &[NAME.opt(), WIDTH, HEIGHT, X.opt(), Y.opt()]),
     entry("artboard.rename", "rename_artboard", "Rename artboard", false, true, &[ARTBOARD, NAME]),
     entry("artboard.resize", "resize_artboard", "Resize artboard", false, true, &[ARTBOARD, WIDTH, HEIGHT]),
     entry("artboard.move", "move_artboard", "Move artboard", false, true, &[ARTBOARD, X, Y]),
     entry("artboard.delete", "delete_artboard", "Delete artboard", false, true, &[ARTBOARD]),
     entry("artboard.set_options", "set_artboard_options", "Artboard options", false, true, &[
-        ARTBOARD, RULER_ORIGIN, RULER_PIXEL_ASPECT_RATIO, SHOW_CENTER_MARK, SHOW_CROSS_HAIRS, SHOW_SAFE_AREAS, FADE_REGION_OUTSIDE_ARTBOARD,
-        UPDATE_WHILE_DRAGGING, BACKGROUND_FILL, PRESET,
+        ARTBOARD, RULER_ORIGIN.opt(), RULER_PIXEL_ASPECT_RATIO.opt(), SHOW_CENTER_MARK.opt(), SHOW_CROSS_HAIRS.opt(), SHOW_SAFE_AREAS.opt(), FADE_REGION_OUTSIDE_ARTBOARD.opt(),
+        UPDATE_WHILE_DRAGGING.opt(), BACKGROUND_FILL.opt(), PRESET.opt(),
     ]),
-    entry("page.add", "add_page", "Insert page", false, true, &[AFTER, NEW_SPREAD, WIDTH, HEIGHT, NAME]),
+    entry("page.add", "add_page", "Insert page", false, true, &[AFTER.opt(), NEW_SPREAD.opt(), WIDTH.opt(), HEIGHT.opt(), NAME.opt()]),
     entry("page.rename", "rename_page", "Rename page spread", false, true, &[PAGE, NAME]),
     entry("page.resize", "resize_page", "Page size", false, true, &[PAGE, WIDTH, HEIGHT]),
     entry("page.delete", "delete_page", "Delete page", false, true, &[PAGE]),

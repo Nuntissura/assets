@@ -328,6 +328,9 @@ pub fn viewer_domain(method: &str) -> &'static str {
         "set_tool" | "set_combine" | "set_brush" | "select_rect" | "select_ellipse" | "select_lasso" | "clear_selection" | "undo_selection" | "select_wand" | "ps_click" | "refine_end" | "paint" | "fill_click" | "fill_drag" | "info_eyedropper"
         | "set_develop" | "set_develop_threads" | "set_develop_export_field" | "load_develop_watermark" | "clear_develop_export_stage" | "export" | "export_document" => "photo",
         "grid_append_child_at" | "set_grid_gaps" | "auto_layout_control" => "design",
+        // Lane SMB-DRIVE-TYPED-2 (lead addition, SMB-DOC-NEW-1's rows): New Document, artboards and pages.
+        "new_document" | "add_artboard" | "rename_artboard" | "resize_artboard" | "move_artboard" | "delete_artboard" | "set_artboard_options" | "go_to_artboard" | "add_page"
+        | "rename_page" | "resize_page" | "delete_page" | "go_to_page" => "document",
         "proof_apply_draft" | "proof_close_page" | "proof_set_save_name" => "proof",
         "layout_open" | "export_layout_pdf" | "export_layout_idml" => "layout",
         "help_search" | "help_close" | "dialog_accept" | "dialog_cancel" | "close" => "shell",
@@ -369,7 +372,8 @@ pub const DRIVE_LIMITS: &[&str] = &[
     "no dry_run, no input or output schema, no capability grant and no promotion gate on any command yet; command ids are RUN_COMMANDS ids, not studio.<domain>.<command>.v<N>",
     "--diag-dir is not available until the observe diagnostics sink lands",
     "every reply carries the whole state and renders a changed document on the CPU path; a long session's reply grows with its ops",
-    "not driveable yet: layer.restructure and the staged-payload rows of RUN_COMMANDS; the develop operations with a mask-source or tone-family record, VectorNetwork whole-record writes, path-text options beyond the defaults, and the audio and design-instance enums",
+    "not driveable yet: layer.restructure and the staged-payload rows of RUN_COMMANDS; the develop operations with a mask-source or tone-family record, VectorNetwork whole-record writes, path-text options beyond the defaults, and a hosted plugin on a waveform selection (it needs Viewer::register_waveform_plugin)",
+    "mixer.*, multitrack.*, waveform.* and spectral.* need feature audio-batch, monitor.open_source_media and monitor.bind_program_media feature media (else feature_unavailable); the sound is the port audio.bind_sound or video.project_bind bound; a mixer opened by mixer.open alone plays an undone step only after its next edit, while multitrack.open binds the timeline and every mixer row then follows history.undo",
     "layout.* edits live in the layout editor: its own undo (layout.undo, layout.redo), and they do not save with the package until the layout records persist",
     "a typed row is not recordable yet; playback calls Run methods",
     "the coercion is text: a JSON number given for a text parameter arrives as its digits",
