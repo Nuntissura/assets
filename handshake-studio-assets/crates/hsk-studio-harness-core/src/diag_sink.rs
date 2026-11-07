@@ -78,6 +78,8 @@ const SURVEY_TAIL_BYTES: u64 = 16 * 1024;
 const SEGMENT_END_RESERVE: u64 = 256;
 /// Lines between checks that the current file is still there.
 const LINES_PER_PRESENCE_CHECK: u64 = 64;
+/// The most that `seq` and a newline add to a line.
+const SEQ_ROOM: usize = 28;
 /// The longest name that counts as a token.
 const MAX_TOKEN_BYTES: usize = 64;
 
@@ -330,35 +332,37 @@ impl Inner {
             self.lines_dropped = self.lines_dropped.saturating_add(1);
             return;
         }
-        self.seq = self.seq.saturating_add(1);
         let timestamp = u64::try_from(shared.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let mut text = render(kind, self.seq, timestamp, fields);
-        if text.len() >= MAX_LINE_BYTES {
-            let len = text.len();
-            text = render("frame_refused", self.seq, timestamp, refused_fields(kind, "line_limit", len));
+        let mut body = render_body(kind, timestamp, fields);
+        if body.len().saturating_add(SEQ_ROOM) >= MAX_LINE_BYTES {
+            let len = body.len();
+            body = render_body("frame_refused", timestamp, refused_fields(kind, "line_limit", len));
         }
-        text.push('\n');
-        self.write_line(shared, &text);
+        // The file is settled first: a rotation writes lines of its own, and seq is the order of the lines.
+        self.prepare(shared, body.len().saturating_add(SEQ_ROOM));
+        self.seq = self.seq.saturating_add(1);
+        let text = with_seq(self.seq, &body);
+        if self.stopped.is_none() && self.put(&text) {
+            self.lines_written = self.lines_written.saturating_add(1);
+        } else {
+            self.lines_dropped = self.lines_dropped.saturating_add(1);
+        }
     }
 
-    fn write_line(&mut self, shared: &Shared, text: &str) {
+    /// A file with room for a line of `len` bytes, if one can be had.
+    fn prepare(&mut self, shared: &Shared, len: usize) {
         self.lines_since_check = self.lines_since_check.saturating_add(1);
         if self.lines_since_check >= LINES_PER_PRESENCE_CHECK {
             self.lines_since_check = 0;
             self.check_present(shared);
         }
-        let len = u64::try_from(text.len()).unwrap_or(u64::MAX);
+        let len = u64::try_from(len).unwrap_or(u64::MAX);
         let needed = self.file_bytes.saturating_add(len).saturating_add(SEGMENT_END_RESERVE);
         if self.file.is_some() && needed > shared.limits.max_file_bytes {
             self.rotate(shared);
         }
         if self.file.is_none() {
             self.open_segment(shared);
-        }
-        if self.stopped.is_none() && self.put(text) {
-            self.lines_written = self.lines_written.saturating_add(1);
-        } else {
-            self.lines_dropped = self.lines_dropped.saturating_add(1);
         }
     }
 
@@ -406,8 +410,7 @@ impl Inner {
     fn rotate(&mut self, shared: &Shared) {
         self.seq = self.seq.saturating_add(1);
         let timestamp = u64::try_from(shared.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let mut end = render("segment_end", self.seq, timestamp, Map::new());
-        end.push('\n');
+        let end = render("segment_end", self.seq, timestamp, Map::new());
         if self.put(&end) {
             self.lines_written = self.lines_written.saturating_add(1);
         }
@@ -438,8 +441,7 @@ impl Inner {
                     fields.insert("instance".into(), json!(shared.instance));
                     fields.insert("segment".into(), json!(self.segment));
                     let timestamp = u64::try_from(shared.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-                    let mut start = render("segment_start", self.seq, timestamp, fields);
-                    start.push('\n');
+                    let start = render("segment_start", self.seq, timestamp, fields);
                     if self.put(&start) {
                         self.lines_written = self.lines_written.saturating_add(1);
                     }
@@ -482,12 +484,18 @@ impl Inner {
     }
 }
 
-fn render(kind: &'static str, seq: u64, timestamp: u64, mut fields: Map<String, Value>) -> String {
+fn render_body(kind: &'static str, timestamp: u64, mut fields: Map<String, Value>) -> String {
     fields.insert("schema".into(), json!(DIAG_SCHEMA));
     fields.insert("kind".into(), json!(kind));
-    fields.insert("seq".into(), json!(seq));
     fields.insert("timestamp_nanos".into(), json!(timestamp));
     serde_json::to_string(&Value::Object(fields)).unwrap_or_default()
+}
+/// One line: `seq` goes in front of a rendered body, newline included.
+fn with_seq(seq: u64, body: &str) -> String {
+    format!("{{\"seq\":{seq},{}\n", body.strip_prefix('{').unwrap_or(body))
+}
+fn render(kind: &'static str, seq: u64, timestamp: u64, fields: Map<String, Value>) -> String {
+    with_seq(seq, &render_body(kind, timestamp, fields))
 }
 
 fn refused_fields(class: &str, reason: &'static str, len: usize) -> Map<String, Value> {
@@ -896,8 +904,7 @@ fn write_panic_record(sink: &DiagSink, info: &PanicHookInfo<'_>) {
     }
     // Its own file first: the sink's lock may be held by this very thread.
     let timestamp = u64::try_from(sink.shared.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    let mut text = render("panic", 0, timestamp, fields.clone());
-    text.push('\n');
+    let text = render("panic", 0, timestamp, fields.clone());
     let dir = sink.dir();
     // A failure leaves no record and changes nothing else.
     let _ = fs::create_dir_all(dir).and_then(|()| {
