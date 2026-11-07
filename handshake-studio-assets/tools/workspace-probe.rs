@@ -585,12 +585,9 @@ const TOOLKIT_ALLOWED_DEPS: &[(&str, &str)] = &[
     ("hsk-studio-render-gpu", "wgpu"),
 ];
 // The other door: a crate that turns on a Studio crate's toolkit feature gains the toolkit without a dependency line.
-// These three are the consumers of hsk-studio-controls at the same lane; their behaviour did not change.
-const TOOLKIT_ALLOWED_FORWARDS: &[(&str, &str)] = &[
-    ("hsk-studio-harness", "hsk-studio-controls/egui"),
-    ("hsk-studio-harness-core", "hsk-studio-controls/egui"),
-    ("hsk-studio-harness-view", "hsk-studio-controls/egui"),
-];
+// harness-view is the one consumer that calls hsk-studio-controls' gated API (egui_adapter, menu_bar_ui). harness-core
+// names no gated item and stays out, so its own build has no egui.
+const TOOLKIT_ALLOWED_FORWARDS: &[(&str, &str)] = &[("hsk-studio-harness-view", "hsk-studio-controls/egui")];
 const TOOLKIT_ALLOWED_WGSL: &[&str] = &[
     "crates/hsk-studio-render-gpu/src/blur.wgsl",
     "crates/hsk-studio-render-gpu/src/filter.wgsl",
@@ -1011,6 +1008,8 @@ fn self_test() -> Result<String> {
 }
 // The gate's fixtures: manifests in the shapes a crate can gain a toolkit through, parsed by the real parser. A case
 // that does not hold rejects the self-test, and steward-sync stops on that before it probes any selection.
+// Allow-list source: Operator decisions D1 (2026-10-30, drop egui) and D7 (2026-10-31, pure Vulkan, no wgpu); the lists
+// are the exact set at base commit c4d06841 plus the one forward this lane adds (harness-view).
 fn toolkit_gate_self_test() -> Result<usize> {
     const VERSION: &str = "version = \"=1.0.0\", default-features = false, features = []";
     let gained = [
@@ -1033,6 +1032,8 @@ fn toolkit_gate_self_test() -> Result<usize> {
         ("hsk-studio-new", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
         ("hsk-studio-new", "[features]\nui = [\"hsk-studio-controls/egui\"]\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
         ("hsk-studio-new", "[features]\nui = [\"hsk-studio-controls?/egui\"]\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
+        ("hsk-studio-harness-core", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n", "toolkit_gate_forward/hsk-studio-harness-core/hsk-studio-controls/egui"),
+        ("hsk-studio-harness", "[features]\nui = [\"hsk-studio-controls/egui\"]\n", "toolkit_gate_forward/hsk-studio-harness/hsk-studio-controls/egui"),
         // The root table a crate inherits from.
         ("workspace", "[workspace.dependencies]\nwinit = { V }\n", "toolkit_gate_dependency/workspace/winit"),
     ];
@@ -1046,9 +1047,9 @@ fn toolkit_gate_self_test() -> Result<usize> {
     }
     let today = [
         ("hsk-studio-controls", "[features]\ndefault = []\negui = [\"dep:egui\"]\n[dependencies]\negui = { V, optional = true }\nserde = { V }\n"),
-        ("hsk-studio-harness", "[features]\nviewer = [\"dep:egui\"]\ndesktop = [\"viewer\", \"dep:eframe\", \"hsk-studio-render-gpu/shared-device\"]\n[dependencies]\negui = { V, optional = true }\neframe = { version = \"=1.0.0\", default-features = false, features = [\"wgpu\"], optional = true }\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n"),
-        ("hsk-studio-harness-core", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n"),
-        ("hsk-studio-harness-view", "[features]\nui = [\"hsk-studio-controls/egui\"]\n[dependencies]\neframe = { V }\n"),
+        ("hsk-studio-harness", "[features]\nviewer = [\"dep:egui\"]\ndesktop = [\"viewer\", \"dep:eframe\", \"hsk-studio-render-gpu/shared-device\"]\n[dependencies]\negui = { V, optional = true }\neframe = { version = \"=1.0.0\", default-features = false, features = [\"wgpu\"], optional = true }\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false }\n"),
+        ("hsk-studio-harness-core", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false }\n"),
+        ("hsk-studio-harness-view", "[dependencies]\neframe = { V }\nhsk-studio-controls = { path = \"../hsk-studio-controls\", version = \"=0.1.0\", default-features = false, features = [\"egui\"] }\n"),
         ("hsk-studio-render-gpu", "[dependencies]\nwgpu = { version = \"=1.0.0\", default-features = false, features = [\"std\", \"wgsl\"] }\n"),
         // Words that only look close, and a forward of an ordinary feature.
         ("hsk-studio-new", "[features]\nx = [\"hsk-studio-render-gpu/shared-device\"]\n[dependencies]\neguide = { V }\nwgsl-tool = { V }\nserde = { V }\n"),
