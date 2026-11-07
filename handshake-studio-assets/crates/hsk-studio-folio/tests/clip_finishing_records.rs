@@ -327,3 +327,23 @@ fn clip_finishing_records_round_trip_and_refuse_bad_values() {
     let dup = br#"{"schema_id":"hsk.studio.clip_finishing@1","document_id":"x","document_id":"y"}"#;
     assert_eq!(parse_clip_finishing_records(dup, &d, b, &token).unwrap_err().code, Code::DuplicateField);
 }
+
+/// Lane SMB-PIGMENT-FILTER-KERNELS-1: a clip effect takes the kernel kinds without the clip blur cap
+/// or the non-negative rule (STU-FX-106), still refuses a float that overflows f32 and keeps liquify out.
+#[test]
+fn clip_effect_filter_kernels_inherit_no_invented_range() {
+    let (token, b, d) = (CancellationToken::default(), Budget::default(), document());
+    let fx = |k: serde_json::Value| {
+        let filter: StudioSmartFilterKind = serde_json::from_value(k).unwrap();
+        let mut r = records();
+        r.effect_stacks[0].effects.push(StudioClipEffect { effect_id: "fx-2".into(), enabled: true, params: StudioClipEffectParams::PigmentFilter { filter } });
+        validate_clip_finishing_records(&r, &d, b, &token).map_err(|e| e.code)
+    };
+    use serde_json::json;
+    assert_eq!(fx(json!({"filter_kind":"motion_blur","angle_deg":-45.0,"length_px":5000.0})), Ok(()));
+    assert_eq!(fx(json!({"filter_kind":"emboss","angle_deg":-135.0,"height_px":2000.0,"amount_pct":100.0})), Ok(()));
+    assert_eq!(fx(json!({"filter_kind":"maximum","radius_px":32000,"preserve":"roundness"})), Ok(()));
+    assert_eq!(fx(json!({"filter_kind":"sharpen"})), Ok(()));
+    assert_eq!(fx(json!({"filter_kind":"motion_blur","angle_deg":1e39,"length_px":5.0})), Err(Code::InvalidField));
+    assert_eq!(fx(json!({"filter_kind":"bilateral_blur","radius_px":3,"range_sigma":1e39})), Err(Code::InvalidField));
+}
