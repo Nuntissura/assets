@@ -1389,9 +1389,6 @@ impl Viewer {
     /// Closes the open document and every document-bound surface (FILE > Close); the recent list,
     /// panel visibility and render preference stay.
     pub fn close(&mut self) {
-        // Lane SMB-AUDIO-OUT-MIX-1: the device and its admission permit go with the document.
-        #[cfg(all(feature = "audio-batch", feature = "audio-device"))]
-        self.audio_out_close();
         self.run = self.harness.run(self.context.clone(), self.cancel);
         self.reset_document_surfaces();
         self.say("closed the document".into());
@@ -1400,6 +1397,10 @@ impl Viewer {
     /// Every document-bound surface back to no document (FILE > Close, `document.new`); the run keeps
     /// its own state.
     pub(super) fn reset_document_surfaces(&mut self) {
+        // Lane SMB-AUDIO-OUT-MIX-1: the device and its admission permit go with the document (a new
+        // document too, lane SMB-DOC-NEW-1).
+        #[cfg(all(feature = "audio-batch", feature = "audio-device"))]
+        self.audio_out_close();
         self.source = None;
         self.assets = super::render::Assets::new();
         self.receipt = None;
