@@ -26,6 +26,7 @@ pub mod document_new;
 pub mod develop_more;
 pub mod edit;
 pub mod export;
+pub mod doc_export;
 /// In-crate file dialog of the desktop shell (lane SMB-HARNESS-SHELL-1).
 pub mod file_dialog;
 /// Menu bar, shortcuts, recent files and WORKSPACE panel hosting (lane SMB-HARNESS-SHELL-1).
