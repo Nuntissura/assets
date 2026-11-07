@@ -179,6 +179,8 @@ pub struct GuiFrame {
     backend: &'static str,
     render_code: Option<&'static str>,
     first_row: usize,
+    /// Wheel travel below one row, thousandths of a row (cleared when the pointer leaves).
+    wheel_rest: i64,
     pointer: Option<Point>,
     press: Option<usize>,
     mods: Mods,
@@ -272,6 +274,7 @@ impl GuiFrame {
             backend: "none",
             render_code: None,
             first_row: 0,
+            wheel_rest: 0,
             pointer: None,
             press: None,
             mods: Mods::default(),
@@ -426,9 +429,14 @@ impl GuiFrame {
         DocumentFacts { file_name: self.file_name.clone(), revision: self.revision, backend: self.backend.to_string(), layers: self.rows.len() as u64 }
     }
 
+    /// Physical pixel to the logical point the hit test uses. The painter gives pixel `p` to the node whose snapped
+    /// edges hold it, `round(y0 * s) <= p < round(y1 * s)`, which is `y0 * s < p + 0.5 <= y1 * s`; the hit test is
+    /// `y0 <= q < y1`. Taking `q` just under the pixel centre, `(p + 0.49) / s`, makes them agree at every edge whose
+    /// physical fraction is outside (0.49, 0.5) (review F5: at scale 1.2 pixel 146 shows the fourth row and now clicks
+    /// it; with `p / s` it clicked the third).
     fn logical(&self, x: i32, y: i32) -> Option<Point> {
         let s = self.scale.get();
-        let p = Point::new(x as f32 / s, y as f32 / s);
+        let p = Point::new((x as f32 + 0.49) / s, (y as f32 + 0.49) / s);
         self.regions.window.contains(p).then_some(p)
     }
     fn panel_at(&self, p: Point) -> Option<usize> {
@@ -471,6 +479,7 @@ impl GuiFrame {
             }
             HostEvent::PointerLeft => {
                 self.pointer = None;
+                self.wheel_rest = 0;
                 self.hover();
                 None
             }
@@ -491,12 +500,13 @@ impl GuiFrame {
             }
             HostEvent::Wheel { y, pixels, .. } => {
                 if self.pointer.is_some_and(|p| self.regions.body.contains(p)) {
+                    // Thousandths of a row, remainder kept (review F4): a notch (1000 milli-lines) is 3 rows, 32 px is
+                    // one row, and many small high-resolution or touchpad deltas add up instead of each forcing a row.
                     let y = i64::from(y);
-                    let mut rows = if pixels { -(y / size::ROW_LAYER_H as i64) } else { -(y * 3 / 1000) };
-                    if rows == 0 && y != 0 {
-                        rows = -y.signum();
-                    }
-                    self.scroll_by(rows);
+                    let milli_rows = if pixels { y.saturating_mul(1000) / size::ROW_LAYER_H as i64 } else { y.saturating_mul(3) };
+                    let acc = self.wheel_rest.saturating_sub(milli_rows);
+                    self.wheel_rest = acc % 1000;
+                    self.scroll_by(acc / 1000);
                 }
                 None
             }

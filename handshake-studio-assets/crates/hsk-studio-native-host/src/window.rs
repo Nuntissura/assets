@@ -311,9 +311,15 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
 }
 
 impl App {
-    /// The Operator's own window: waits for events, presents on change.
-    fn operator_wait(&self) -> bool {
+    /// The Operator's own window (not quiet, no frame count): it never enforces a capture size.
+    fn operator_window(&self) -> bool {
         !self.args.quiet && self.args.frames == 0
+    }
+
+    /// The Operator's window waits for events and presents on change, once its scripted steps are applied (review F2:
+    /// while steps remain, the loop polls so each iteration applies one without an OS event).
+    fn operator_wait(&self) -> bool {
+        self.operator_window() && self.steps.is_empty()
     }
 
     fn start(&mut self, el: &ActiveEventLoop) -> Result<(), HostError> {
@@ -433,7 +439,8 @@ impl App {
         if self.phase != Phase::Final && self.phase_iterations > 600 {
             return Err(HostError::Timeout);
         }
-        if self.phase == Phase::Final && extent != (ww, wh) {
+        // The Operator's window captures nothing and keeps the size the Operator gives it (review F1).
+        if self.phase == Phase::Final && extent != (ww, wh) && !self.operator_window() {
             // Never capture at another size (a DPI change before the first frame resized the window).
             if extent != (0, 0) && (self.target != (ww, wh) || !self.exercised.contains(&"resize_to_pane")) {
                 self.resize(ww, wh, "resize_to_pane");
@@ -497,7 +504,9 @@ impl App {
         // A scripted step lands only on a settled frame: the last present had the frame's extent, and a quiet run is
         // back at its first size (a DPI change can resize the window before the first frame; positions in a script
         // are for the size it asked for).
-        let settled = live.presenter.extent() == g.extent() && (!self.args.quiet || g.extent() == self.base);
+        // The window's first size is the clamped one (start, script), never a base larger than 2560x1440 (review F3).
+        let first = (self.base.0.min(2560), self.base.1.min(1440));
+        let settled = live.presenter.extent() == g.extent() && (!self.args.quiet || g.extent() == first);
         if self.presented >= 1
             && settled
             && let Some(step) = self.steps.pop_front()

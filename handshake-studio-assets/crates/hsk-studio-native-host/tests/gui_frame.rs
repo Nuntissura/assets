@@ -394,10 +394,41 @@ fn wheel_scrolls_the_list_and_the_scrollbar_shows() {
     assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 2-4 of 4"));
     run(&mut f, &[Step::Event(HostEvent::Wheel { x: 0, y: 3000, pixels: false })]);
     assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 1-4 of 4"));
+    // Review F4: deltas under a row add up. A quarter notch is 0.75 row: no scroll yet; the second makes 1.5 rows.
+    let quarter = Step::Event(HostEvent::Wheel { x: 0, y: -250, pixels: false });
+    run(&mut f, std::slice::from_ref(&quarter));
+    assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 1-4 of 4"), "0.75 row does not scroll");
+    run(&mut f, std::slice::from_ref(&quarter));
+    assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 2-4 of 4"), "1.5 rows scroll one");
+    let up16 = Step::Event(HostEvent::Wheel { x: 0, y: 16, pixels: true });
+    run(&mut f, std::slice::from_ref(&up16));
+    assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 2-4 of 4"), "16 px up cancels the half row down");
+    run(&mut f, std::slice::from_ref(&up16));
+    assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 2-4 of 4"), "half a row: no scroll");
+    run(&mut f, std::slice::from_ref(&up16));
+    assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 1-4 of 4"), "two 16 px deltas are one row");
 }
 
-/// Hostile (a): 10,000 plain rows build only the rows that fit, shape no row off screen, finish in a stated time;
-/// a PSD past Folio's node budget is the host's typed refusal.
+/// Review F5: at scale 1.2 the painter gives physical row 146 to the fourth row (its top edge 122 * 1.2 = 146.4 snaps
+/// to 146); a click on that pixel selects the fourth row, and the pixel above selects the third.
+#[test]
+fn boundary_pixel_at_scale_1_2_clicks_the_row_it_shows() {
+    let s = Scratch::new("edge");
+    let mut f = open(&s.0, 800, 480, Some(1200));
+    let (green, blue) = (layer(&f, "Green"), layer(&f, "Blue"));
+    let b = f.node(&row_id(&blue)).unwrap().bounds;
+    let sc = f.scale();
+    let (x, y) = (sc.edge((b.x0 + b.x1) / 2.0), sc.edge(b.y0));
+    assert_eq!((b.y0, y), (122.0, 146), "the painter's first physical row of Blue");
+    run(&mut f, &click(x, y));
+    assert_eq!(f.selected(), Some(blue.as_str()));
+    run(&mut f, &click(x, y - 1));
+    assert_eq!(f.selected(), Some(green.as_str()));
+}
+
+/// Hostile (a): 10,000 plain rows build only the rows that fit, shape no row off screen, finish in a stated time.
+/// A 4100-layer PSD stops in the PSD importer (`psd_pixel_limit`) and the host shows that exact code; it never reaches
+/// Folio's node budget (Budget.nodes 4096), so Folio's own BudgetExceeded refusal is NOT_PROVEN here.
 #[test]
 fn ten_thousand_rows_build_bounded_and_over_budget_is_refused() {
     let rows: Vec<LayerRow> = (0..10_000)
@@ -424,10 +455,7 @@ fn ten_thousand_rows_build_bounded_and_over_budget_is_refused() {
         (0..4100).map(|i| common::Layer { name: format!("L{i}"), rect: [0, 0, 1, 1], rgb: [i as u8, 0, 0], hidden: false }).collect();
     let path = s.0.join("many.psd");
     std::fs::write(&path, common::psd(4, 4, &many)).unwrap();
-    match GuiFrame::open(&path, 800, 480, None).err() {
-        Some(HostError::Document(code)) => assert!(code != "open" && code != "not_built", "typed code: {code}"),
-        other => panic!("{other:?}"),
-    }
+    assert_eq!(GuiFrame::open(&path, 800, 480, None).err(), Some(HostError::Document("psd_pixel_limit")));
 }
 
 /// Hostile (b): a 4096-byte name ellipsizes in its row, AC-TEXT-01 stays clean, the accessible label carries the full
