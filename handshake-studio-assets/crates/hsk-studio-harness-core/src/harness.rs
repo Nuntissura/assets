@@ -31,6 +31,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// One of `Session::save_to`, `save_new`, `save_replacing`.
 type SessionSave = fn(&mut Session, &Path, &CancellationToken) -> Result<hsk_studio_session::SaveReceipt, hsk_studio_session::Failed>;
 
+mod containers;
+
 pub const SCHEMA: &str = "hsk.studio.harness@1";
 
 /// Providers the harness knows how to register. A provider must be named in the selection to be
@@ -364,6 +366,9 @@ struct HistoryStep {
     /// A multi-sequence step (lane SMB-PR-NEST-1: Nest, Make Subsequence) that undoes / redoes
     /// this step through `Session::submit_multicam` with the multicam records passed through.
     sequences: Option<MulticamStep>,
+    /// An artboard or page step (lane SMB-DOC-NEW-1, module `containers`) that undoes / redoes this
+    /// step through `Session::submit_containers_as`.
+    containers: Option<hsk_studio_session::ContainerStep>,
     /// The command that made this step (lane SMB-ATTRIBUTION-1): actor, client session, command
     /// id, base revision, correlation and causation.
     ctx: CommandContext,
@@ -878,7 +883,7 @@ impl Run<'_> {
             Value::Null
         } else {
             let revision = self.revision().unwrap_or(0);
-            self.undo_stack.push(HistoryStep { label: label.clone(), inverse: Value::Null, entry: None, timeline: None, group: Some(inner), sequences: None, ctx, revision });
+            self.undo_stack.push(HistoryStep { label: label.clone(), inverse: Value::Null, entry: None, timeline: None, group: Some(inner), sequences: None, containers: None, ctx, revision });
             json!(label)
         };
         let skipped: Vec<u64> = action.steps.iter().filter(|s| !s.enabled).map(|s| s.index).collect();
@@ -912,7 +917,7 @@ impl Run<'_> {
                 let steps: Vec<HistoryStep> = stack.drain(base..).collect();
                 // The regrouped step carries the attribution of its newest inner step.
                 if let Some((ctx, revision)) = steps.last().map(|s| (s.ctx.clone(), s.revision)) {
-                    stack.push(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps), sequences: None, ctx, revision });
+                    stack.push(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps), sequences: None, containers: None, ctx, revision });
                 }
             }
         };
@@ -1087,8 +1092,8 @@ impl Run<'_> {
             "document_id": doc.document_id, "revision": doc.revision,
             "geometry_unit": serde_json::to_value(doc.geometry_unit).unwrap_or(Value::Null),
             "layers": layers,
-            "artboards": doc.artboards.iter().map(|a| json!({"id":a.artboard_id,"name":a.name})).collect::<Vec<_>>(),
-            "page_spreads": doc.page_spreads.iter().map(|p| json!({"id":p.page_spread_id,"name":p.name,"pages":p.pages.len()})).collect::<Vec<_>>(),
+            "artboards": doc.artboards.iter().map(|a| json!({"id":a.artboard_id,"name":a.name,"bounds":[a.bounds.x.value,a.bounds.y.value,a.bounds.width.value,a.bounds.height.value]})).collect::<Vec<_>>(),
+            "page_spreads": doc.page_spreads.iter().map(|p| json!({"id":p.page_spread_id,"name":p.name,"pages":p.pages.len(),"page_sizes":p.pages.iter().map(|g| json!({"id":g.page_id,"width":g.width.value,"height":g.height.value})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "sequences": sequences, "stories": stories,
             "unresolved_references": session.snapshot().resolution_issues().len(),
             "providers": session.providers().ids().collect::<Vec<_>>(),
@@ -1211,7 +1216,7 @@ impl Run<'_> {
                 if applied.changed
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None, timeline: None, group: None, sequences: None, ctx, revision: applied.revision });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None, timeline: None, group: None, sequences: None, containers: None, ctx, revision: applied.revision });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -1333,7 +1338,7 @@ impl Run<'_> {
                     if applied.changed
                         && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                     {
-                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None, group: None, sequences: None, ctx: ctx.clone(), revision: applied.revision });
+                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None, group: None, sequences: None, containers: None, ctx: ctx.clone(), revision: applied.revision });
                         self.redo_stack.clear();
                     }
                 }
@@ -1369,7 +1374,7 @@ impl Run<'_> {
                 }
             } else {
                 let revision = self.revision().unwrap_or(0);
-                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
+                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, ctx, revision });
                 self.redo_stack.clear();
             }
         }
@@ -1412,7 +1417,7 @@ impl Run<'_> {
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
                     let first = writes.first().map_or("", |w| w.layer_id.as_str());
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None, timeline: None, group: None, sequences: None, ctx, revision: applied.revision });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None, timeline: None, group: None, sequences: None, containers: None, ctx, revision: applied.revision });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -1488,7 +1493,7 @@ impl Run<'_> {
             // The structure edit changed nothing: the step is entry-only (same command).
             let (ctx, revision) = self.entry_only_attribution(ctx, "layer.restructure_and_entry");
             self.emit_entry_business_event(token, &ctx, None, restore.bytes.as_deref(), true);
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, ctx, revision });
             self.redo_stack.clear();
         }
         // The restructure record was written before the entry part ran.
@@ -1625,7 +1630,7 @@ impl Run<'_> {
             let (ctx, revision) = self.entry_only_attribution(ctx, "layer.set_tiles_and_entry");
             self.emit_entry_business_event(token, &ctx, None, restore.bytes.as_deref(), true);
             self.current = Some(ctx.clone());
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, ctx, revision });
             self.redo_stack.clear();
             self.own_op(op, before, Ok(json!({"layer_id": layer_id, "entry": token, "tiles_changed": false})))
         }
@@ -1659,7 +1664,7 @@ impl Run<'_> {
         match session.submit_timeline_as(&ctx, &step, revision, cancel) {
             Ok(applied) => {
                 if applied.timeline_inverse.is_some() {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None, sequences: None, ctx, revision: applied.revision });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone(), group: None, sequences: None, containers: None, ctx, revision: applied.revision });
                     self.redo_stack.clear();
                 }
                 let detail = json!({"sequence_id": sequence_id, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
@@ -1727,7 +1732,7 @@ impl Run<'_> {
         match session.submit_multicam_as(&ctx, &step, revision, cancel) {
             Ok(applied) => {
                 if applied.multicam_inverse.is_some() {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {}", ids.join(",")), inverse: Value::Null, entry: None, timeline: None, group: None, sequences: applied.multicam_inverse.clone(), ctx, revision: applied.revision });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {}", ids.join(",")), inverse: Value::Null, entry: None, timeline: None, group: None, sequences: applied.multicam_inverse.clone(), containers: None, ctx, revision: applied.revision });
                     self.redo_stack.clear();
                 }
                 let detail = json!({"sequence_ids": ids, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed, "provider": applied.provider});
@@ -1789,7 +1794,7 @@ impl Run<'_> {
         } else {
             // The sequences did not change: the step is entry-only (same command).
             let (ctx, revision) = self.entry_only_attribution(ctx, "document.submit_sequence_edits_and_entry");
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, ctx, revision });
             self.redo_stack.clear();
         }
         true
@@ -1855,7 +1860,7 @@ impl Run<'_> {
         } else {
             // The sequence did not change: the step is entry-only (same command).
             let (ctx, revision) = self.entry_only_attribution(ctx, "document.submit_sequence_and_entry");
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx, revision });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, ctx, revision });
             self.redo_stack.clear();
         }
         true
@@ -1958,7 +1963,7 @@ impl Run<'_> {
                         self.emit_business_event(history_event, &ctx, applied.revision, &[]);
                     }
                     let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
-                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: applied.timeline_inverse.clone(), group: None, sequences: None, ctx, revision: applied.revision };
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: applied.timeline_inverse.clone(), group: None, sequences: None, containers: None, ctx, revision: applied.revision };
                     if undo {
                         self.redo_stack.push(next);
                     } else {
@@ -1976,6 +1981,9 @@ impl Run<'_> {
                     self.push(op, before, Err(f.code()), Some(f.report), revision)
                 }
             };
+        }
+        if let Some(submit) = step.containers.clone() {
+            return self.container_history(undo, step, submit, ctx, before);
         }
         if let Some(mut submit) = step.sequences.clone() {
             // A multi-sequence step (lane SMB-PR-NEST-1): submit its inverse under fresh identity
@@ -2014,7 +2022,7 @@ impl Run<'_> {
                         self.emit_business_event(history_event, &ctx, applied.revision, &[]);
                     }
                     let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
-                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: applied.multicam_inverse.clone(), ctx, revision: applied.revision };
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: applied.multicam_inverse.clone(), containers: None, ctx, revision: applied.revision };
                     if undo {
                         self.redo_stack.push(next);
                     } else {
@@ -2045,7 +2053,7 @@ impl Run<'_> {
                         let entry = self.business_event_entry(history_event, &ctx, revision, &[], Some(sequence));
                         self.pending_events.push(entry);
                     }
-                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: None, ctx, revision };
+                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: None, containers: None, ctx, revision };
                     if undo {
                         self.redo_stack.push(entry);
                     } else {
@@ -2094,7 +2102,7 @@ impl Run<'_> {
                     self.emit_business_event(history_event, &ctx, applied.revision, &[]);
                 }
                 let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
-                let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None, group: None, sequences: None, ctx, revision: applied.revision };
+                let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None, group: None, sequences: None, containers: None, ctx, revision: applied.revision };
                 if undo {
                     self.redo_stack.push(entry);
                 } else {

@@ -20,6 +20,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "descriptors", usage: "descriptors", summary: "Owner and version parsed from the real DESCRIPTOR const of every foundation the harness uses." },
     CommandSpec { name: "providers", usage: "providers [--provider ID]...", summary: "Providers the harness can register and the ones selected on this command line." },
     CommandSpec { name: "open", usage: "open PACKAGE [--references unresolved|trust_all]", summary: "Open a .handshake package and print a summary: document, layers, artboards, page spreads, sequences, stories." },
+    CommandSpec { name: "new", usage: "new OUT --profile vector|raster|design|layout [--size WxH] [--unit px|pt|mm|in] [--colour-mode grayscale|rgb|cmyk|lab|bitmap|indexed|multichannel] [--bits 1|8|16|32] [--name ARTBOARD] --actor ID --session ID [--overwrite] [--cancel]", summary: "New Document (document.new, STU-SHL-023): a blank document written atomically to OUT, revision 0, attributed to --actor and --session (no default actor). vector and raster and layout need --size; raster is whole px; design with no --size has no container; layout is points, one point per px, one spread of one page. Typed refusals, exit 1: profile_unknown, profile_not_available (board), size_required, size_invalid, dimension_out_of_range, size_not_whole_pixels, raster_needs_px, unit_unknown, colour_mode_unknown, colour_mode_not_creatable (duotone), bit_depth_invalid, overwrite_required, actor_invalid. Artboards and pages: the catalog rows artboard.add, .rename, .resize, .move, .delete, .set_options and page.add, .rename, .resize, .delete; each one undo step, surviving save and reopen." },
     CommandSpec { name: "panel", usage: "panel PACKAGE --layer ID", summary: "Print the control panel bound to a layer (agent JSON of the controls descriptors, current values, commit route of every control)." },
     CommandSpec { name: "edit", usage: "edit PACKAGE --provider chronicle.patch (--rename LAYER NAME | --visible LAYER true|false | --set LAYER CONTROL VALUE)... [--expect-revision N] [--save OUT [--overwrite]] [--cancel]", summary: "Open, apply edits through the selected provider (revision-checked), save (or checkpoint in memory), reopen in a second session and verify. One record per operation. --save OUT naming the input PACKAGE needs both --overwrite and --expect-revision N (usage error, exit 2): N is the revision the package was opened at, checked on the first edit. The save compares the file with what this process read: another writer's save since then is destination_changed, a removed file destination_missing, and nothing is written. --save over another existing file is destination_exists unless --overwrite is given. A read-only file or a directory that takes no new file is destination_read_only; save_busy means another save of that file held its lock for the whole wait. Every refused save record carries detail.recovery: run again from the current revision (`verify` or `open` prints it), or save to another path." },
     CommandSpec { name: "import", usage: "import SOURCE [--references unresolved|trust_all] [--save OUT.handshake [--overwrite]] [--cancel]", summary: "--save over an existing file other than SOURCE is destination_exists unless --overwrite is given. Open directly / convert to native: recognise SOURCE by its magic, run the selected importer (PSD/PSB with feature import-psd; DNG and develop-decodable camera raw with feature import-raw, developed into one linear-light layer; plain TIFF with feature import-tiff, first page as one raster layer, Photoshop layers in tag 37724 (big-endian) imported as layers through interop-psd with the composite as typed loss, other pages recorded as typed loss; PDF with feature import-pdf is carried, not imported: an empty document, the original PDF and a receipt with page count, media boxes and one pdf_pages_not_imported loss per page; embedded ICC profiles are converted by Prism into the linear-light sRGB working space, a missing or unusable profile is a typed loss entry), write a native package (document, tiles, typed import entries: records, receipt with loss report and provenance, original bytes), open it as a session, then save to OUT (or checkpoint in memory), reopen and verify. Unknown bytes are format_unrecognised. An Affinity file (.af/.afphoto/.afdesign/.afpub, magic 00 FF 4B 41) is always refused with affinity_native_use_export: export PSD (layers kept), PDF or SVG from Affinity and import that file; the library call import::import_affinity_preview (feature import-affinity) opens only its embedded preview as one flattened, lossy layer." },
@@ -37,6 +38,12 @@ pub const COMMANDS: &[CommandSpec] = &[
 
 pub const FLAGS: &[(&str, &str)] = &[
     ("--diag-dir DIR", "Every command: also leave what this run did as JSONL in DIR (see DIAGNOSTICS); the binary then uses DIR instead of its default. A failure to write there never changes the command's result."),
+    ("--profile P", "new: vector, raster, design or layout."),
+    ("--size WxH", "new: the stated size in --unit, for example 1920x1080 or 8.5x11."),
+    ("--unit U", "new: px (default), pt, mm or in."),
+    ("--colour-mode M", "new: the document colour mode (STU-RAS-145), default rgb. duotone is refused: a document enters it through the duotone command."),
+    ("--bits N", "new: bits per channel, default 8; 1 needs bitmap."),
+    ("--name NAME", "new: the first artboard's name, default Artboard 1."),
     ("--provider ID", "Select a provider explicitly (repeatable). Nothing is selected by default; edits need one. Available: chronicle.patch."),
     ("--references MODE", "unresolved (default, honest: nothing is available) or trust_all (development stand-in, recorded in the output)."),
     ("--cancel", "Run with an already-cancelled token: every operation is refused or canceled and nothing is written."),
@@ -48,8 +55,8 @@ pub const FLAGS: &[(&str, &str)] = &[
     ("--adjust CONTROL VALUE", "develop: set a develop slider (repeatable; all of them form one undoable step). VALUE must parse as a number (else usage, exit 2); develop decides whether it is in range."),
     ("--depth 8|16", "develop --png: bits per sample (default 16)."),
     ("--threads N", "develop: worker threads of every develop run (default: available parallelism, capped); the output does not depend on it."),
-    ("--actor ID", "state, command, undo (required, no default): account and principal of every command of this process."),
-    ("--session ID", "state, command, undo (required, no default): session and client session of every command of this process."),
+    ("--actor ID", "state, command, undo, new (required, no default): account and principal of every command of this process."),
+    ("--session ID", "state, command, undo, new (required, no default): session and client session of every command of this process."),
     ("--owner ID", "state, command, undo: owner account and principal. Default: the actor, a stated limit: a default records the actor as its own owner. Every response prints the resolved attribution."),
     ("--access-space ID", "state, command, undo: access space. Default: the actor, the same limit."),
     ("--command-id ID", "command: a DRIVE COMMANDS id."),
@@ -260,6 +267,37 @@ pub const DRIVE_VIEWER: &[DriveViewer] = &[
     method("proof_apply_draft", &[]),
     method("proof_close_page", &[]),
     method("proof_set_save_name", &[need("name", "text")]),
+    // Lane SMB-DOC-NEW-1: New Document, artboards and pages; the catalog ids of DRIVE_CATALOG_ROUTES run these.
+    method("new_document", &[need("profile", "text"), may("width", "number"), may("height", "number"), may("unit", "text"), may("colour_mode", "text"), may("bits_per_channel", "integer"), may("artboard_name", "text"), may("name", "text")]),
+    method("add_artboard", &[may("name", "text"), need("width", "number"), need("height", "number"), may("x", "number"), may("y", "number")]),
+    method("rename_artboard", &[need("artboard", "text"), need("name", "text")]),
+    method("resize_artboard", &[need("artboard", "text"), need("width", "number"), need("height", "number")]),
+    method("move_artboard", &[need("artboard", "text"), need("x", "number"), need("y", "number")]),
+    method("delete_artboard", &[need("artboard", "text")]),
+    method("set_artboard_options", &[need("artboard", "text"), may("ruler_origin", "point"), may("ruler_pixel_aspect_ratio", "number"), may("show_center_mark", "boolean"), may("show_cross_hairs", "boolean"), may("show_safe_areas", "boolean"), may("fade_region_outside_artboard", "boolean"), may("update_while_dragging", "boolean"), may("background_fill", "text"), may("preset", "text")]),
+    method("go_to_artboard", &[need("artboard", "text")]),
+    method("add_page", &[may("after", "text"), may("new_spread", "boolean"), may("width", "number"), may("height", "number"), may("name", "text")]),
+    method("rename_page", &[need("page", "text"), need("name", "text")]),
+    method("resize_page", &[need("page", "text"), need("width", "number"), need("height", "number")]),
+    method("delete_page", &[need("page", "text")]),
+    method("go_to_page", &[need("page", "text")]),
+];
+
+/// Catalog and menu ids that run a `viewer.<method>` row with that row's parameters (lane SMB-DOC-NEW-1):
+/// one command under its catalog id, [STU-SHL-023]'s menu id and its viewer id.
+pub const DRIVE_CATALOG_ROUTES: &[(&str, &str)] = &[
+    ("document.new", "new_document"),
+    ("studio.document.new", "new_document"),
+    ("artboard.add", "add_artboard"),
+    ("artboard.rename", "rename_artboard"),
+    ("artboard.resize", "resize_artboard"),
+    ("artboard.move", "move_artboard"),
+    ("artboard.delete", "delete_artboard"),
+    ("artboard.set_options", "set_artboard_options"),
+    ("page.add", "add_page"),
+    ("page.rename", "rename_page"),
+    ("page.resize", "resize_page"),
+    ("page.delete", "delete_page"),
 ];
 
 /// The domain of a viewer row: its canonical id is `<domain>.<method>`, and `viewer.<method>` stays an
@@ -334,6 +372,8 @@ pub fn drive_json() -> Value {
         "session_lines": ["{\"command\":\"state\"}", "{\"command\":\"undo\",\"expected_revision\":N}", "{\"command\":\"command\",\"command_id\":ID,\"parameters\":{KEY:VALUE},\"expected_revision\":N}"],
         "response": "schema, command, ok, verdict, revision, attribution, command_id, line (session), detail, error (a refusal), state (state_json). The first session line reports the open, and a closed stdin ends with ended, lines, refused. Exit 0 only when nothing was refused.",
         "open_timeline": "the first timeline command opens the timeline on the document's first sequence; a document with none refuses no_timeline",
+        "catalog_routes": DRIVE_CATALOG_ROUTES.iter().map(|(id, method)| json!({"command_id": id, "runs": format!("viewer.{method}")})).collect::<Vec<_>>(),
+        "document_new": "`new OUT --profile P [--size WxH] ... --actor ID --session ID`, then `command OUT --actor ID --session ID --stdin`, starts a session on a blank document; document.new inside a session replaces the open document and its history. Artboards are in document units, pages in points. state.containers lists every artboard and spread by id; go_to_artboard and go_to_page choose the frame the view, the tools and the exports use (view state). A profile is what a document starts with: the document stores none",
         "document_save": "overwrite is optional, default false, and no existing file is replaced without it; saving over the opened PACKAGE also needs expected_revision; an export onto the opened PACKAGE always refuses export_over_source",
         "line_limit_bytes": 1_048_576,
         "refusals": DRIVE_REFUSALS,
@@ -456,7 +496,7 @@ pub fn manual_text(harness: &Harness) -> String {
     for line in drive["session_lines"].as_array().into_iter().flatten() {
         out += &format!("  {}\n", line.as_str().unwrap_or(""));
     }
-    for key in ["response", "open_timeline", "document_save", "parameter_kinds"] {
+    for key in ["response", "open_timeline", "document_new", "document_save", "parameter_kinds"] {
         out += &format!("  {key}: {}\n", drive[key].as_str().unwrap_or(""));
     }
     out += &format!("  A line over {} bytes refuses line_too_long; a refused line never ends the session.\n  Refusals: {}\n  Limits:\n", drive["line_limit_bytes"], DRIVE_REFUSALS.join(", "));

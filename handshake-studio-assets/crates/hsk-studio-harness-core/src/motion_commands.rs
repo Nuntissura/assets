@@ -468,7 +468,7 @@ fn commit_entries(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, 
         let revision = run.revision().unwrap_or(0);
         let ctx = ctx.unwrap_or_else(|| run.context.command(Some(op), revision, None));
         for restore in restores {
-            steps.push(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx: ctx.clone(), revision });
+            steps.push(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, ctx: ctx.clone(), revision });
         }
         push_step(run, row, steps, ctx, revision);
         if let Some(record) = run.ops.last_mut() {
@@ -481,7 +481,7 @@ fn commit_entries(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, 
     let revision = run.revision().unwrap_or(0);
     let ctx = ctx.unwrap_or_else(|| run.context.command(Some(op), revision, None));
     for restore in restores {
-        steps.push(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, ctx: ctx.clone(), revision });
+        steps.push(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, ctx: ctx.clone(), revision });
     }
     push_step(run, row, steps, ctx, revision);
     detail.insert("step".to_string(), json!(row.display_name));
@@ -493,7 +493,7 @@ fn push_step(run: &mut Run<'_>, row: &CommandEntry, mut steps: Vec<HistoryStep>,
     let step = if steps.len() == 1 {
         steps.pop()
     } else {
-        Some(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps), sequences: None, ctx, revision })
+        Some(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps), sequences: None, containers: None, ctx, revision })
     };
     if let Some(mut step) = step {
         step.label = row.display_name.to_string();

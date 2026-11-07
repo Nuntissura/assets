@@ -10,6 +10,8 @@ pub mod batch;
 pub mod context;
 /// Lane SMB-OBSERVE-DIAG-SINK-1: the standalone host's durable JSONL diagnostics and panic record.
 pub mod diag_sink;
+/// Lane SMB-DOC-NEW-1: New Document and the rules of artboards and pages.
+pub mod document_new;
 /// Lane SMB-R53-FOLLOWUPS-1 (F-R53-1): Folio's swatch-group and colour-book reports through observe.
 pub mod folio_report;
 #[doc(hidden)]

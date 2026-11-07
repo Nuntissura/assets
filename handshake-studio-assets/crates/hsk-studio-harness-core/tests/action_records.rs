@@ -271,7 +271,7 @@ fn budgets_are_checked_before_building() {
 /// 0 and closes with `}` at column 0, and its methods start with four spaces and `pub fn`; a
 /// signature runs to the first `{` (several lines when rustfmt wraps it).
 fn run_pub_fns() -> Vec<(String, bool)> {
-    const SOURCE: &str = include_str!("../src/harness.rs");
+    const SOURCE: &str = concat!(include_str!("../src/harness.rs"), "\n", include_str!("../src/harness/containers.rs"));
     let mut found = Vec::new();
     let mut in_run = false;
     let mut lines = SOURCE.lines();
