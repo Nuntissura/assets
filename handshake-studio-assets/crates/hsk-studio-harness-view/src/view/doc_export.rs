@@ -502,10 +502,6 @@ fn verify<T>(r: Result<T, Refusal>) -> Result<T, Refusal> {
 
 /// Encodes `frame` by `recipe` (module notes). `layers` is required for PSD. Nothing is written.
 pub fn export_frame(frame: &LinearFrame, recipe: &DocExportRecipe, layers: Option<&LayerSource<'_>>, resource: &DomainId, actor: &ActorContext, cancel: &CancellationToken) -> Result<DocExported, Refusal> {
-    // RED (lane SMB-DOC-EXPORT-1): the pipeline below is gated until the green commit.
-    if !frame.pixels.is_empty() {
-        return Err(refuse("not_implemented", "SMB-DOC-EXPORT-1 red"));
-    }
     let mut notes: Vec<&'static str> = Vec::new();
     let mut image = crop(frame, recipe.crop)?;
     let acting = recipe.stage.as_ref().filter(|s| any_group_on(s));
