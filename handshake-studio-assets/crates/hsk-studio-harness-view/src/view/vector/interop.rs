@@ -584,7 +584,7 @@ impl Viewer {
         out_doc.graph = folio::StudioLayerGraph { schema_id: folio::GraphSchema::V1, operations: Vec::new(), edges: Vec::new(), outputs: Vec::new() };
         let budget = folio::Budget { nodes: out_doc.layers.len().saturating_add(paths.len()).saturating_mul(2).saturating_add(64).max(folio::Budget::default().nodes), ..folio::Budget::default() };
         let snapshot = folio::validate_document(out_doc, budget, self.cancel, &crate::harness::TrustAll).map_err(|d| format!("svg_export: folio {:?} {}", d.code, d.target))?;
-        let board = doc.artboards.first().ok_or("svg_export: the document has no artboard")?;
+        let board = self.active_artboard(doc).ok_or("svg_export: the document has no artboard")?;
         let proposal = iv::VectorProposal {
             snapshot,
             paths,

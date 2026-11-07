@@ -148,7 +148,7 @@ struct LayerPixels {
 impl Viewer {
     fn tool_canvas(&self) -> Result<Rect, String> {
         let snap = self.run.snapshot().ok_or("nothing open")?;
-        let board = snap.document().artboards.first().ok_or("the document has no artboard")?;
+        let board = self.active_artboard(snap.document()).ok_or("the document has no artboard")?;
         let b = [board.bounds.x.value, board.bounds.y.value, board.bounds.width.value, board.bounds.height.value];
         if !b.iter().all(|v| v.is_finite() && v.fract() == 0.0 && v.abs() < f64::from(u32::MAX)) || b[2] < 1.0 || b[3] < 1.0 {
             return Err(format!("artboard bounds {b:?} are not whole pixels"));

@@ -21,6 +21,8 @@ pub mod commands;
 pub mod display;
 pub mod develop;
 pub mod develop_entry;
+/// New Document, artboards and pages (lane SMB-DOC-NEW-1; egui-free).
+pub mod document_new;
 pub mod develop_more;
 pub mod edit;
 pub mod export;
@@ -710,7 +712,9 @@ impl Viewer {
         // A frame that lives only in the display texture is rendered again on the read-back path.
         let read_back;
         let frame = if shown.rgba8.is_empty() {
-            let snap = self.run.snapshot().ok_or_else(|| format!("export {}: nothing open", path.display()))?;
+            let live = self.run.snapshot().ok_or_else(|| format!("export {}: nothing open", path.display()))?;
+            let framed = self.framed_snapshot().map_err(|e| format!("export {}: {e}", path.display()))?;
+            let snap = framed.as_ref().unwrap_or(live);
             let text = self.prepared_text().map_err(|e| format!("export {}: {e}", path.display()))?;
             let vectors = self.prepared_vectors().map_err(|e| format!("export {}: {e}", path.display()))?;
             read_back = render::render_full_with_records(snap, &self.assets, Some(&text), vectors.as_ref(), self.records.as_ref(), Prefer::Cpu, None, None, self.cancel).map_err(|e| format!("export {}: {e}", path.display()))?;
@@ -784,9 +788,20 @@ impl Viewer {
         }
         let result = match (self.prepared_text(), self.prepared_vectors()) {
             (Ok(text), Ok(vectors)) => {
-                let Some(snap) = self.run.snapshot() else {
+                let Some(live) = self.run.snapshot() else {
                     return;
                 };
+                let framed = match self.framed_snapshot() {
+                    Ok(framed) => framed,
+                    Err(e) => {
+                        self.say(format!("render failed: {e}"));
+                        self.render_error = Some(e);
+                        self.frame = None;
+                        self.texture = None;
+                        return;
+                    }
+                };
+                let snap = framed.as_ref().unwrap_or(live);
                 render::render_full_with_records(snap, &self.assets, Some(&text), vectors.as_ref(), self.records.as_ref(), self.prefer, self.gpu.as_ref(), self.display.as_mut().map(|d| &mut **d as &mut dyn GpuDisplay), self.cancel)
             }
             (Err(e), _) => Err(RenderFail { code: "text", detail: e }),
@@ -875,6 +890,7 @@ impl Viewer {
             "proof": self.proof_json(),
             "design": self.design_json(),
             "info": self.info_json(),
+            "containers": self.containers_json(),
         });
         #[cfg(feature = "media")]
         {

@@ -1393,6 +1393,13 @@ impl Viewer {
         #[cfg(all(feature = "audio-batch", feature = "audio-device"))]
         self.audio_out_close();
         self.run = self.harness.run(self.context.clone(), self.cancel);
+        self.reset_document_surfaces();
+        self.say("closed the document".into());
+    }
+
+    /// Every document-bound surface back to no document (FILE > Close, `document.new`); the run keeps
+    /// its own state.
+    pub(super) fn reset_document_surfaces(&mut self) {
         self.source = None;
         self.assets = super::render::Assets::new();
         self.receipt = None;
@@ -1427,7 +1434,6 @@ impl Viewer {
         self.overwrite = false;
         self.fit = true;
         self.pan = egui::Vec2::ZERO;
-        self.say("closed the document".into());
     }
 
     pub(super) fn shell_json(&self) -> Value {
@@ -1592,8 +1598,6 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
 /// A new blank layout document: one spread with one 595 x 842 pt page (A4), 36 pt margins.
 pub fn blank_layout_doc() -> LayoutDoc {
     use hsk_studio_folio::*;
-    let len = |v: f64| Length { value: v, unit: GeometryUnit::Pt };
-    let edges = |v: f64| LayoutEdges { top: len(v), right: len(v), bottom: len(v), left: len(v) };
     let unassigned = || ProfileBinding::Unassigned(());
     let id = "SDOC-019abcde-0000-7000-8000-00000000b001".to_owned();
     let document = StudioDocument {
@@ -1609,14 +1613,7 @@ pub fn blank_layout_doc() -> LayoutDoc {
         working_space_spot: unassigned(),
         blending_space: unassigned(),
         artboards: vec![],
-        page_spreads: vec![StudioPageSpread {
-            schema_id: PageSpreadSchema::V1,
-            page_spread_id: "SPGS-019abcde-0000-7000-8000-00000000b001".into(),
-            name: "spread".into(),
-            parent: Parent::Root(()),
-            bounds: Bounds { x: len(0.0), y: len(0.0), width: len(595.0), height: len(842.0) },
-            pages: vec![StudioPage { page_id: "page-1".into(), width: len(595.0), height: len(842.0), side: PageSide::RightHand, margins: edges(36.0), bleed: None, applied_trap_preset: None }],
-        }],
+        page_spreads: vec![hsk_studio_harness_core::document_new::one_page_spread("SPGS-019abcde-0000-7000-8000-00000000b001".into(), "spread".into(), "page-1".into(), 595.0, 842.0, GeometryUnit::Pt)],
         layers: vec![],
         graph: StudioLayerGraph { schema_id: GraphSchema::V1, operations: vec![], edges: vec![], outputs: vec![] },
         sequences: vec![],

@@ -265,6 +265,8 @@ pub fn brush_values(b: &BrushSettings) -> [(&'static str, SettingValue<'static>)
 /// Editing state held by the viewer.
 #[derive(Clone, Debug)]
 pub struct EditState {
+    /// The artboard or spread Go to Artboard / Go to Page chose (module `document_new`): view state.
+    pub(super) active_container: Option<String>,
     pub tool: Tool,
     pub combine: CombineMode,
     pub brush: BrushSettings,
@@ -290,6 +292,7 @@ pub struct EditState {
 impl Default for EditState {
     fn default() -> Self {
         Self {
+            active_container: None,
             tool: Tool::View,
             combine: CombineMode::Replace,
             brush: BrushSettings::default(),
@@ -460,7 +463,7 @@ impl Viewer {
 
     pub(super) fn canvas(&self) -> Result<Rect, String> {
         let snap = self.run.snapshot().ok_or("nothing open")?;
-        let board = snap.document().artboards.first().ok_or("the document has no artboard")?;
+        let board = self.active_artboard(snap.document()).ok_or("the document has no artboard")?;
         let b = [board.bounds.x.value, board.bounds.y.value, board.bounds.width.value, board.bounds.height.value];
         if !b.iter().all(|v| v.is_finite() && v.fract() == 0.0 && v.abs() < f64::from(u32::MAX)) || b[2] < 1.0 || b[3] < 1.0 {
             return Err(format!("artboard bounds {b:?} are not whole pixels"));

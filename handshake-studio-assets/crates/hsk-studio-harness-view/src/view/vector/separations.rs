@@ -302,7 +302,7 @@ impl Viewer {
             .map_err(|e| format!("separations: {e:?}"))?;
         let mut losses: Vec<String> = refused.iter().map(|(l, c)| format!("{l}: refused:{c}")).collect();
         losses.extend(assets.losses());
-        let board = doc.artboards.first().ok_or("separations: the document has no artboard")?;
+        let board = self.active_artboard(doc).ok_or("separations: the document has no artboard")?;
         let (o, w, h) = ([board.bounds.x.value, board.bounds.y.value], board.bounds.width.value, board.bounds.height.value);
         let inks = match &options.inks {
             Some(i) => i.clone(),

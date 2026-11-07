@@ -336,7 +336,7 @@ impl Viewer {
             .map_err(|e| format!("pdf_export: {e:?}"))?;
         let mut losses: Vec<String> = refused.iter().map(|(l, c)| format!("{l}: refused:{c}")).collect();
         losses.extend(assets.losses());
-        let board = doc.artboards.first().ok_or("pdf_export: the document has no artboard")?;
+        let board = self.active_artboard(doc).ok_or("pdf_export: the document has no artboard")?;
         let page = Page { o: [board.bounds.x.value, board.bounds.y.value], h: board.bounds.height.value, w: board.bounds.width.value };
         let media = [0.0, 0.0, board.bounds.width.value * PT, board.bounds.height.value * PT];
         let whole = |v: f64| if v.is_finite() && v.abs() < 1e7 { Some(v.round() as i64) } else { None };

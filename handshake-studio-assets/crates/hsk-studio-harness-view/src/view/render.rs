@@ -263,10 +263,18 @@ pub fn render_full_with_records(
     cancel: &CancellationToken,
 ) -> Result<Frame, RenderFail> {
     let mut notes = Vec::new();
+    // A document with no layer yet is its empty frame (lane SMB-DOC-NEW-1), when it has a frame.
+    if snap.document().layers.is_empty()
+        && let Ok(extent) = frame_extent(snap.document())
+    {
+        cancel.check().map_err(|_| RenderFail::new("canceled", "the render was canceled"))?;
+        let sink = Canvas::new(extent)?;
+        notes.push("empty_document: no layers to composite".into());
+        return Ok(Frame { width: extent.width, height: extent.height, x: extent.x, y: extent.y, rgba8: sink.to_rgba8(), backend: "cpu", texture: None, revision: snap.document().revision, notes });
+    }
     let view = view_snapshot(snap, cancel, &mut notes)?;
     let doc = view.document();
-    let artboard = doc.artboards.first().ok_or_else(|| RenderFail::new("no_artboard", "the document has no artboard to frame the view"))?;
-    let extent = extent_of(&artboard.bounds)?;
+    let extent = frame_extent(doc)?;
     let profile_sha256 = hsk_studio_prism::profile_hash(hsk_studio_prism::WORKING_PROFILE_LINEAR_SRGB);
     let space = ColourTag { profile_sha256, blend_space: BlendSpace::LinearLight };
     let target = OutputTarget { extent, format: SampleFormat::RgbF32Le, alpha: AlphaConvention::Straight, space };
@@ -362,6 +370,21 @@ pub fn render_full_with_records(
         }
     }
     Ok(Frame { width: extent.width, height: extent.height, x: extent.x, y: extent.y, rgba8: sink.to_rgba8(), backend, texture: None, revision: doc.revision, notes })
+}
+
+/// The frame of the view: the first artboard, else the first spread of a page document, whose bounds
+/// follow its pages in points and are taken up to whole pixels.
+fn frame_extent(doc: &folio::StudioDocument) -> Result<Rect, RenderFail> {
+    if let Some(artboard) = doc.artboards.first() {
+        return extent_of(&artboard.bounds);
+    }
+    let spread = doc.page_spreads.first().ok_or_else(|| RenderFail::new("no_artboard", "the document has no artboard to frame the view"))?;
+    let mut bounds = spread.bounds.clone();
+    bounds.x.value = bounds.x.value.floor();
+    bounds.y.value = bounds.y.value.floor();
+    bounds.width.value = bounds.width.value.ceil();
+    bounds.height.value = bounds.height.value.ceil();
+    extent_of(&bounds)
 }
 
 fn extent_of(bounds: &folio::Bounds) -> Result<Rect, RenderFail> {

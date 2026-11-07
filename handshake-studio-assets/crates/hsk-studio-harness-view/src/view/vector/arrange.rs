@@ -156,7 +156,7 @@ impl Viewer {
             AlignTarget::Selection => AlignTo::Selection,
             AlignTarget::KeyObject(k) => AlignTo::KeyObject(layers.iter().position(|l| l == k).ok_or("align: the key object is not among the layers")?),
             AlignTarget::Artboard => {
-                let b = &doc.artboards.first().ok_or("align: the document has no artboard")?.bounds;
+                let b = &self.active_artboard(doc).ok_or("align: the document has no artboard")?.bounds;
                 AlignTo::Artboard(Bounds { min: [b.x.value, b.y.value], max: [b.x.value + b.width.value, b.y.value + b.height.value] })
             }
         };
