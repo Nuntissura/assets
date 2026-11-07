@@ -13,6 +13,7 @@
 use crate::action::{self, ActionRecord, Call, DialogOption, NotRecordable, PlayMode, RecordedValue, Recording, RecordingReport, UnitToken};
 use crate::panel::{self, PanelValues, Route};
 use crate::context::RunContext;
+use crate::diag_sink::DiagSink;
 use hsk_studio_accord::{
     ActorContext, BusinessEventRecord, CancellationToken, CausationId, CommandContext, CommandId, DomainId, MAX_BUSINESS_EVENT_ARTIFACTS,
     StudioBusinessEventId,
@@ -143,6 +144,8 @@ impl SinkPort for FrameSink {
 #[derive(Clone, Debug)]
 pub struct Harness {
     selection: Selection,
+    /// Where this harness's runs also leave their frames and op records (lane SMB-OBSERVE-DIAG-SINK-1).
+    diag: Option<DiagSink>,
 }
 
 impl Harness {
@@ -156,7 +159,17 @@ impl Harness {
                 return Err(HarnessError::DuplicateProvider(id.clone()));
             }
         }
-        Ok(Self { selection })
+        Ok(Self { selection, diag: None })
+    }
+
+    /// This harness's runs also leave their frames and op records in `sink`.
+    pub fn with_diag(mut self, sink: DiagSink) -> Self {
+        self.diag = Some(sink);
+        self
+    }
+
+    pub fn diag(&self) -> Option<&DiagSink> {
+        self.diag.as_ref()
     }
 
     pub fn selection(&self) -> &Selection {

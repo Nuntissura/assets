@@ -109,6 +109,8 @@ struct Parsed {
     edits: Vec<EditOp>,
     expect_names: Vec<(String, String)>,
     expect_visible: Vec<(String, bool)>,
+    /// `--diag-dir DIR` (lane SMB-OBSERVE-DIAG-SINK-1).
+    diag_dir: Option<PathBuf>,
     png: bool,
     jpeg: bool,
     /// develop: `--tiff` and its options (lane SMB-DEVELOP-EXPORT-TIFF).
@@ -231,6 +233,7 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
                     Some(take(&mut i, "revision")?.parse::<u64>().map_err(|_| "revision must be an unsigned integer".to_string())?)
             }
             "--save" => p.save = Some(PathBuf::from(take(&mut i, "output path")?)),
+            "--diag-dir" => p.diag_dir = Some(PathBuf::from(take(&mut i, "diag dir")?)),
             "--overwrite" => p.overwrite = true,
             "--cancel" => p.cancel = true,
             "--json" => p.json = true,
@@ -346,6 +349,11 @@ fn usage(message: &str) -> CliOutput {
 
 fn refused(command: &str, error: &HarnessError) -> CliOutput {
     out(1, &json!({"schema":crate::SCHEMA,"command":command,"ok":false,"verdict":"fail","error":error.code(),"detail":error.to_string()}))
+}
+
+/// A host binary's entry: RED STUB (lane SMB-OBSERVE-DIAG-SINK-1), no diagnostics yet.
+pub fn run_process(args: &[String]) -> CliOutput {
+    run(args)
 }
 
 /// Runs one command line (without the program name).
