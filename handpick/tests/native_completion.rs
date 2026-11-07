@@ -337,3 +337,82 @@ fn tag_filter_insertions_round_trip_the_exact_normalized_authorized_name() {
         assert_eq!(query.tag, Some(name.nfc().collect::<String>().to_lowercase()), "{name:?}");
     }
 }
+
+#[test]
+fn authorized_tag_titles_extend_to_the_direct_selection_byte_boundary() {
+    let s = session(); let t = trigger(&s, "tag:", CompletionInvocation::Manual);
+    for len in [100, 101, MAX_COMPLETION_TAG_NAME_BYTES] {
+        let name = "a".repeat(len);
+        let values = t.operator_completions(&[name.as_str()]).unwrap();
+        assert_eq!(values, [format!("tag:{name} ")]);
+        assert_eq!(parse_query(&values[0]).unwrap().tag.as_deref(), Some(name.as_str()));
+    }
+    let oversized = "a".repeat(MAX_COMPLETION_TAG_NAME_BYTES + 1);
+    assert_eq!(t.operator_completions(&[oversized.as_str()]), Err(Error::PayloadLimit));
+}
+
+#[test]
+fn long_unicode_titles_keep_raw_filter_text_and_nfc_matching() {
+    use unicode_normalization::UnicodeNormalization;
+    let s = session();
+    let name = "Cafe\u{301}".repeat(30);
+    let t = trigger(&s, "TAG:Café", CompletionInvocation::Manual);
+    let values = t.operator_completions(&[name.as_str(), "other"]).unwrap();
+    assert_eq!(values, [format!("tag:{name} ")]);
+    assert_eq!(parse_query(&values[0].nfc().collect::<String>()).unwrap().tag, Some(name.nfc().collect::<String>().to_lowercase()));
+    let t = trigger(&s, "tag:", CompletionInvocation::Manual);
+    for name in [format!("{}x", "界".repeat(1365)), format!("#{} quote\" slash\\", "猫🙂 ".repeat(30))] {
+        let values = t.operator_completions(&[name.as_str()]).unwrap();
+        let parsed = parse_query(&values[0]).unwrap();
+        assert!(!parsed.incomplete); assert!(parsed.words.is_empty());
+        assert_eq!(parsed.tag, Some(name.nfc().collect::<String>().to_lowercase()));
+    }
+    let oversized = "界".repeat(1366);
+    assert_eq!(t.operator_completions(&[oversized.as_str()]), Err(Error::PayloadLimit));
+}
+
+#[test]
+fn fully_escaped_long_filter_is_parseable_and_plannable_without_relaxing_other_limits() {
+    let mut s = session(); choose(&mut s); let snap = snapshot(&s, "tag:");
+    let t = s.native_completion_trigger(&snap, CompletionInvocation::Manual).unwrap().unwrap();
+    let name = "\u{0001}".repeat(MAX_COMPLETION_TAG_NAME_BYTES);
+    let values = t.operator_completions(&[name.as_str()]).unwrap();
+    let replacement = values[0].clone();
+    assert_eq!(replacement.len(), MAX_COMPLETION_FILTER_BYTES);
+    let parsed = parse_query(&replacement).unwrap(); assert!(!parsed.incomplete);
+    assert_eq!(parsed.tag.as_deref(), Some(name.as_str()));
+    let plan = s.plan_native_completion(&t, &snap, NativeCompletionChoice { key: key(),
+        value: NativeCompletionValue::Text { action: action(), text: replacement.clone() } }).unwrap();
+    assert_eq!(plan.choice().value, NativeCompletionValue::Text { action: action(), text: replacement.clone() });
+    assert!(plan.validate(&s, &snap).is_ok());
+    assert_eq!(s.plan_native_completion(&t, &snap, NativeCompletionChoice { key: key(),
+        value: NativeCompletionValue::Text { action: action(), text: format!("{replacement}x") } }), Err(Error::PayloadLimit));
+    let other = snapshot(&s, "type:"); let trigger = s.native_completion_trigger(&other, CompletionInvocation::Manual).unwrap().unwrap();
+    assert_eq!(s.plan_native_completion(&trigger, &other, NativeCompletionChoice { key: key(),
+        value: NativeCompletionValue::Text { action: action(), text: "a".repeat(MAX_COMPLETION_QUERY_BYTES + 1) } }), Err(Error::PayloadLimit));
+}
+
+#[test]
+fn filter_output_budget_preserves_the_old_maximum_and_rejects_overflow_without_truncation() {
+    let s = session(); let t = trigger(&s, "tag:", CompletionInvocation::Manual);
+    let old_name = "\u{0001}".repeat(100);
+    let values = t.operator_completions(&vec![old_name.as_str(); MAX_COMPLETION_TAGS]).unwrap();
+    assert_eq!(values.len(), MAX_COMPLETION_TAGS);
+    assert_eq!(values.iter().map(String::len).sum::<usize>(), MAX_COMPLETION_FILTER_OUTPUT_BYTES);
+    let long_name = "\u{0001}".repeat(MAX_COMPLETION_TAG_NAME_BYTES);
+    let count = MAX_COMPLETION_FILTER_OUTPUT_BYTES / MAX_COMPLETION_FILTER_BYTES + 1;
+    assert!(count <= MAX_COMPLETION_TAGS);
+    let names = vec![long_name.as_str(); count];
+    assert_eq!(t.operator_completions(&names), Err(Error::PayloadLimit));
+    assert_eq!(trigger(&s, "tag:z", CompletionInvocation::Manual).operator_completions(&names).unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn long_existing_title_does_not_change_the_separate_creation_proposal_limit() {
+    let s = session(); let existing = "existing".repeat(30);
+    let t = trigger(&s, "#new", CompletionInvocation::Manual);
+    assert_eq!(t.tag_creation_name(&[existing.as_str()], CompletionTagCoverage::Complete).unwrap(), Some("new".into()));
+    assert_eq!(t.tag_creation_name(&[existing.as_str()], CompletionTagCoverage::Partial).unwrap(), None);
+    let long = format!("#{}", "a".repeat(101));
+    assert_eq!(trigger(&s, &long, CompletionInvocation::Manual).tag_creation_name(&[], CompletionTagCoverage::Complete).unwrap(), None);
+}

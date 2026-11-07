@@ -5,6 +5,10 @@ use unicode_normalization::UnicodeNormalization;
 pub const MAX_COMPLETION_SNAPSHOT_BYTES: usize = 65_536;
 pub const MAX_COMPLETION_QUERY_BYTES: usize = 4_096;
 pub const MAX_COMPLETION_TAGS: usize = 5_000;
+pub const MAX_COMPLETION_TAG_NAME_BYTES: usize = 4_096;
+pub const MAX_COMPLETION_FILTER_BYTES: usize = 6 * MAX_COMPLETION_TAG_NAME_BYTES + 7;
+// Retain the previous enumeration's worst-case output budget as names grow.
+pub const MAX_COMPLETION_FILTER_OUTPUT_BYTES: usize = MAX_COMPLETION_TAGS * (6 * 100 + 7);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeCompletionSelection {
@@ -119,13 +123,24 @@ impl NativeCompletionTrigger {
     pub fn operator_completions(&self, tags: &[&str]) -> Result<Vec<String>, Error> {
         validate_tags(tags)?;
         if self.kind != NativeCompletionKind::Operator { return Err(Error::InvalidSpan); }
-        let values: Vec<String> = if self.normalized.starts_with("tag:") {
-            tags.iter().map(|name| format!("tag:{}", if name.starts_with('#') || name.chars().any(|ch| separator(ch) || ch.is_control() || matches!(ch, '"' | '\\')) {
-                quoted(name)
-            } else { (*name).to_owned() })).collect()
-        } else { QUERY_COMPLETIONS.iter().map(|text| (*text).to_owned()).collect() };
-        Ok(values.into_iter().filter(|text| normalized(text).starts_with(&self.normalized))
-            .map(|text| format!("{text} ")).collect())
+        let mut output = Vec::new();
+        let mut output_bytes = 0;
+        let mut add = |mut text: String| -> Result<(), Error> {
+            if normalized(&text).starts_with(&self.normalized) {
+                let next = output_bytes + text.len() + 1;
+                if next > MAX_COMPLETION_FILTER_OUTPUT_BYTES { return Err(Error::PayloadLimit); }
+                output_bytes = next; text.push(' '); output.push(text);
+            }
+            Ok(())
+        };
+        if self.normalized.starts_with("tag:") {
+            for name in tags {
+                add(format!("tag:{}", if name.starts_with('#') || name.chars().any(|ch| separator(ch) || ch.is_control() || matches!(ch, '"' | '\\')) {
+                    quoted(name)
+                } else { (*name).to_owned() }))?;
+            }
+        } else { for text in QUERY_COMPLETIONS { add((*text).to_owned())?; } }
+        Ok(output)
     }
 
     /// A proposal only. Complete coverage is supplied by the canonical authorized owner.
@@ -231,7 +246,8 @@ impl WritingSession {
         if &trigger.snapshot != current || self.selected() != Some(&choice.key) { return Err(Error::Stale); }
         let action = match (&mut choice.value, trigger.kind) {
             (NativeCompletionValue::Text { action, text }, NativeCompletionKind::Operator) => {
-                if text.len() > MAX_COMPLETION_QUERY_BYTES || action.kind != ActionKind::ApplyCompletion {
+                let max_bytes = if trigger.normalized.starts_with("tag:") { MAX_COMPLETION_FILTER_BYTES } else { MAX_COMPLETION_QUERY_BYTES };
+                if text.len() > max_bytes || action.kind != ActionKind::ApplyCompletion {
                     return Err(Error::PayloadLimit);
                 }
                 if !offered_completion_action(self, &choice.key, action) { return Err(Error::Stale); }
@@ -309,7 +325,7 @@ fn marker(text: &str) -> Option<Marker<'_>> {
     None
 }
 fn validate_tags(tags: &[&str]) -> Result<(), Error> {
-    if tags.len() > MAX_COMPLETION_TAGS || tags.iter().any(|tag| tag.trim_matches(separator).is_empty() || tag.len() > 100) {
+    if tags.len() > MAX_COMPLETION_TAGS || tags.iter().any(|tag| tag.trim_matches(separator).is_empty() || tag.len() > MAX_COMPLETION_TAG_NAME_BYTES) {
         return Err(Error::PayloadLimit);
     }
     Ok(())

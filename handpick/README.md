@@ -1,7 +1,7 @@
 ---
 file_id: handpick-readme-v1
 file_kind: product-manual
-updated_at: '2026-10-26'
+updated_at: '2026-10-29'
 ---
 
 <topic id="foundation" version="0.1.0" status="implemented">
@@ -20,23 +20,25 @@ Completion edits reference the original draft revision and a half-open UTF-8 byt
 
 </topic>
 
-<topic id="native-completion" status="standalone-tested-host-unproven" version="1">
+<topic id="native-completion" status="standalone-verified" version="1">
 
 ## Native completion adapter
 
-The Rust adapter produces effect-free plans for an owner-held rich editor. Independent affected-source review and standalone proof passed: 81 default tests, 83 tests with `wasm,matching`, a real WASM build, fresh web glue and both browser checks. Host adoption remains unproven. Existing literal `Session::complete` retains its original UTF-8 draft-editing behavior.
+The Rust adapter produces effect-free plans for an owner-held rich editor. The authorized-tag-title extension passed independent source review and locked standalone checks: 28 focused tests, 86 default tests, 88 tests with `wasm,matching`, and a wasm32 build. The bridge and matcher checks ran the freshly generated web glue and compiled WASM in Node. Host adoption remains unproven. Existing literal `Session::complete` retains its original UTF-8 draft-editing behavior.
 
 The owner captures a `NativeCompletionSnapshot` after `WritingSession::begin_lookup`, with the current `WritingFence`, a fresh `CompletionSnapshotId`, a bounded local text prefix ending at the caret, and either a caret or the original selected text. Selection changes need a fresh snapshot ID even if the content revision is unchanged. Supply the complete local prefix needed for token recognition; do not silently truncate an unfinished token. The combined prefix and selection are limited to 65,536 UTF-8 bytes. Notes tree positions, selection direction, marks and undo history remain owner-held.
 
 `WritingSession::native_completion_trigger` distinguishes explicit manual invocation, such as Ctrl+Space, from automatic invocation. It supports manual selected text or the trailing word, `type:`/`tag:`/`in:`/`is:`, `[[note]]` entry, `((block))` entry, `#tag`, `/template`, alias suffixes and reference/embed prefixes. Closed markers are not unfinished triggers. Query text is limited to 4,096 UTF-8 bytes. NFC plus lowercase lookup text is separate from the original text. `NativeCompletionRange::BeforeCaret` names byte offsets only in that original prefix; `Selection` means the original native selection. Neither is a Notes tree/character offset or an offset into normalized text.
 
-`lookup` returns typed note-title, heading/block, tag, template or query-filter requirements. `parsed_query` reuses the shared grammar. `operator_completions` accepts only names from the host's authorized tag set; at most 5,000 names of 100 UTF-8 bytes each are accepted. Filter insertions preserve canonical names, quote syntax characters and append a space. `tag_creation_name` is only a proposal, available with explicit complete authorized coverage and no normalized duplicate. A partial page cannot establish that a tag does not exist.
+`lookup` returns typed note-title, heading/block, tag, template or query-filter requirements. `parsed_query` reuses the shared grammar. `operator_completions` accepts only names from the host's authorized tag set; at most 5,000 names of 4,096 UTF-8 bytes each are accepted. Filter insertions preserve complete raw authorized names, quote syntax characters and append a space. Lookup matching remains NFC/lowercase and the query parser's existing NFC input contract is unchanged. A tag filter can occupy at most 24,583 encoded bytes, including JSON-style escaping, `tag:`, quotes and trailing space; only a tag-filter `Text` plan admits that larger result. The captured query and other operator/text/label bounds remain 4,096 bytes. Returned filter strings have a combined 3,035,000-byte limit, retaining the previous enumeration's worst-case output bound. Exceeding it returns `PayloadLimit` without a partial/truncated result. `tag_creation_name` retains its separate 100-byte proposal limit, explicit complete authorized coverage and no normalized duplicate; a long existing title does not make the authorized set invalid. A partial page cannot establish that a tag does not exist.
 
 `composition_query` retains the original fence. `WritingProvider::validate_native_completion_query` checks the exact provider, query, fence, declared Search support and page bounds, permitting an empty prefix for bounded completion enumeration. It does not change `validate_query`'s existing nonempty prose-query rule or establish live authorization, source completeness or permission to enumerate a corpus.
 
 Deliver authorized descriptors and select the exact `ResultKey` through the existing writing session. `plan_native_completion` combines the trigger with an owner-resolved choice and returns a `NativeCompletionPlan`: the original snapshot/range, typed text/reference/tag/template value and existing `WritingActionIntent`. Aliases and embed prefixes survive planning. Wrong result identities, incompatible target kinds, stale snapshots, active IME and pending save reject without changing content. Before applying, supply a fresh current snapshot to `plan.validate`; repeat canonical permission/target resolution and context checks at the Notes owner. The owner maps the original range and applies one native undo transaction, then advances the writing revision. Save, lost-response recovery and persistence remain separate owner operations. A plan is not a grant, an exactly-once transaction receipt or permission to execute commands.
 
 ### Research and verification basis
+
+The title-bound correction follows the inspected canonical mismatch: `validate_tags` rejected existing titles over 100 bytes, whereas direct `NativeCompletionValue::Tag` already admitted 4,096-byte labels. No separate query-filter rejection requirement was found in the owning specification or focused tests. Raising only that validation bound was rejected because the encoded insertion could exceed the separate 4,096-byte operator-plan bound. The selected extension retains the existing shared formatter/parser and action/fence validation, caps a fully escaped result at `6 * 4096 + 7`, and streams matching results under the old maximum aggregate output budget `5000 * (6 * 100 + 7)`. New focused source cases cover raw-byte boundaries, full Unicode/NFC behavior, worst-case escaping through planning, aggregate overflow/filtering, and the unchanged creation proposal boundary. No new tag parser, host truncation or dependency change is introduced.
 
 Text/tag plans repeat the exact currently offered `ApplyCompletion` action check during final validation; a same-key row refresh cannot retain an action it withdrew. The shared query lexer recognizes escaped quotes inside quoted values, and complete quoted values decode JSON-style escapes, including Unicode scalar/surrogate-pair escapes. Invalid complete escapes remain explicitly incomplete/unsupported. Unquoted backslashes and ordinary partial-query text keep their literal behavior. The tag formatter escapes a literal leading `#` as `\u0023`, preserving that name while retaining the existing unescaped optional tag sigil. Decoded escaped values are NFC-normalized independently of source replacement coordinates.
 
