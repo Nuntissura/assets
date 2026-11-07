@@ -456,8 +456,9 @@ impl Viewer {
         {
             return Ok(Some((Plane::Cached(p), true)));
         }
-        let snap = self.run.snapshot().ok_or("nothing open")?;
-        Ok(Some((Plane::Owned(self.info_render(snap)?), true)))
+        let live = self.run.snapshot().ok_or("nothing open")?;
+        let framed = self.framed_snapshot().map_err(|e| e.to_string())?;
+        Ok(Some((Plane::Owned(self.info_render(framed.as_ref().unwrap_or(live))?), true)))
     }
 
     fn info_render(&self, snap: &folio::Snapshot) -> Result<PlaneBuf, String> {
@@ -506,7 +507,9 @@ impl Viewer {
         let Some(keep) = self.info_scope_layers(scope)? else {
             return self.info_composite()?.map(|(p, _)| p).ok_or_else(|| "no rendered frame".into());
         };
-        let snap = self.run.snapshot().ok_or("nothing open")?;
+        let live = self.run.snapshot().ok_or("nothing open")?;
+        let framed = self.framed_snapshot().map_err(|e| e.to_string())?;
+        let snap = framed.as_ref().unwrap_or(live);
         let mut wire: Value = serde_json::from_slice(snap.encoded_bytes()).map_err(|e| format!("info scope document: {e}"))?;
         if let Some(layers) = wire["layers"].as_array_mut() {
             for l in layers.iter_mut() {

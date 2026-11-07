@@ -1257,7 +1257,9 @@ impl Viewer {
     /// authors none: SPEC GAP), plan blend space linear light like [`super::render::render_full`].
     /// A refused vector layer is an error.
     pub fn render_folio_vectors(&self, design: &folio::StudioDesignRecords, records: &folio::StudioVectorRecords) -> Result<super::render::Frame, String> {
-        let snap = self.run.snapshot().ok_or("render_folio_vectors: nothing open")?;
+        let live = self.run.snapshot().ok_or("render_folio_vectors: nothing open")?;
+        let framed = self.framed_snapshot().map_err(|e| format!("render_folio_vectors: {e}"))?;
+        let snap = framed.as_ref().unwrap_or(live);
         let entry = self.vector_entry()?;
         let text = self.text_entry();
         let prepared = hsk_studio_composite::prepare_vectors(snap, design, records, &self.live_text_assets(&entry, &text), hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)

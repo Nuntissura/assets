@@ -18,7 +18,8 @@ use std::path::Path;
 
 impl Viewer {
     /// `document.new`: replaces the open document with a blank one and resets every document-bound
-    /// surface. `name`, when given, is the default save path (`<name>.handshake`): the document stores
+    /// surface. `name` (`file_name` on the drive surface; the first artboard's name is the request's),
+    /// when given, is the default save path (`<name>.handshake`): the document stores
     /// no name of its own, its file is its name. A refusal changes nothing. Returns the document id.
     pub fn new_document(&mut self, spec: &NewDocument, name: Option<&str>) -> Result<String, String> {
         if let Some(name) = name

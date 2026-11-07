@@ -268,7 +268,7 @@ pub const DRIVE_VIEWER: &[DriveViewer] = &[
     method("proof_close_page", &[]),
     method("proof_set_save_name", &[need("name", "text")]),
     // Lane SMB-DOC-NEW-1: New Document, artboards and pages; the catalog ids of DRIVE_CATALOG_ROUTES run these.
-    method("new_document", &[need("profile", "text"), may("width", "number"), may("height", "number"), may("unit", "text"), may("colour_mode", "text"), may("bits_per_channel", "integer"), may("artboard_name", "text"), may("name", "text")]),
+    method("new_document", &[need("profile", "text"), may("width", "number"), may("height", "number"), may("unit", "text"), may("colour_mode", "text"), may("bits_per_channel", "integer"), may("name", "text"), may("file_name", "text")]),
     method("add_artboard", &[may("name", "text"), need("width", "number"), need("height", "number"), may("x", "number"), may("y", "number")]),
     method("rename_artboard", &[need("artboard", "text"), need("name", "text")]),
     method("resize_artboard", &[need("artboard", "text"), need("width", "number"), need("height", "number")]),

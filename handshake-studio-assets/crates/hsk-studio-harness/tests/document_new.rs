@@ -116,6 +116,21 @@ fn new_never_replaces_a_file_unasked() {
     assert_eq!(std::fs::read(&out).unwrap(), b"keep");
 }
 
+/// Review F3 of 368e1080: a catalog id the drive routes declares exactly the keys of the viewer row it
+/// runs, so a model reading the corpus never meets parameter_unknown.
+#[test]
+fn routed_catalog_rows_declare_the_drive_rows_keys() {
+    use hsk_studio_harness_core::manual::{DRIVE_CATALOG_ROUTES, DRIVE_VIEWER};
+    for (id, method) in DRIVE_CATALOG_ROUTES {
+        let row = DRIVE_VIEWER.iter().find(|r| r.method == *method).unwrap_or_else(|| panic!("{id}: no viewer row {method}"));
+        let mut drive: Vec<&str> = row.params.iter().map(|p| p.key).collect();
+        drive.sort_unstable();
+        let mut catalog: Vec<&str> = action::command(id).unwrap_or_else(|| panic!("{id}: no catalog row")).parameters.iter().map(|p| p.key).collect();
+        catalog.sort_unstable();
+        assert_eq!(catalog, drive, "{id} -> viewer.{method}");
+    }
+}
+
 /// Every row of the slice is in the catalog, mutating and not recordable (a recording reports it).
 #[test]
 fn the_commands_are_catalog_rows() {
@@ -272,6 +287,29 @@ mod through_the_viewer {
         assert_eq!(add["command_id"], "artboard.add");
         assert_eq!(add["observe"]["frames"], 1, "{add}");
         assert!(add["actor"]["account_id"].is_string());
+    }
+
+    /// Review F1 of 368e1080: a new artboard never takes the id of a deleted one, so the deleted one's
+    /// options stay inert; a new page never takes the key of a deleted one.
+    #[test]
+    fn a_new_container_never_reuses_a_deleted_ones_id() {
+        let mut v = vector_doc(100.0, 100.0);
+        let b = v.add_artboard("B", 50.0, 50.0, None).unwrap();
+        v.set_artboard_options(&b, &ArtboardOptionsEdit { show_center_mark: Some(true), ..ArtboardOptionsEdit::default() }).unwrap();
+        v.delete_artboard(&b).unwrap();
+        let c = v.add_artboard("C", 50.0, 50.0, None).unwrap();
+        assert_ne!(c, b);
+        assert_eq!(containers(&v)["artboards"][1]["options"]["show_center_mark"], Value::Null, "C starts with the defaults");
+        v.go_to_artboard(&c).unwrap();
+        assert!(v.go_to_artboard(&b).is_err());
+
+        let mut l = Viewer::new(Prefer::Cpu);
+        l.new_document(&NewDocument::new(DocumentProfile::Layout, Some((100.0, 100.0))), None).unwrap();
+        let two = l.add_page(None, false, None, None).unwrap();
+        let three = l.add_page(None, false, None, None).unwrap();
+        l.delete_page(&three).unwrap();
+        let next = l.add_page(None, false, None, None).unwrap();
+        assert_ne!(next, three, "{two} {three} {next}");
     }
 
     /// Hostile sizes, names and targets are typed and change nothing: bounded, no panic.
@@ -482,7 +520,7 @@ mod through_the_viewer {
     fn the_first_design_steps_run_through_the_jsonl_loop() {
         let scratch = Scratch::new("jsonl");
         let package = scratch.path("brand.handshake");
-        let mut args = vec!["new", &package, "--profile", "vector", "--size", "256x256", "--name", "mark"];
+        let mut args = vec!["new", &package, "--profile", "vector", "--size", "256x256", "--name", "mark-cli"];
         args.extend_from_slice(&WHO);
         let (exit, report) = cli_json(&args);
         assert_eq!(exit, 0, "{report}");
@@ -493,6 +531,7 @@ mod through_the_viewer {
             call("artboard.add", json!({"name": "lockup-horizontal", "width": 512, "height": 192})),
             call("artboard.add", json!({"name": "too big", "width": 99999, "height": 1})),
             call("studio.document.new", json!({"profile": "board"})),
+            call("document.new", json!({"profile": "vector", "width": 100, "height": 100, "name": "mark", "file_name": "brand"})),
         ];
         let lines = |v: &[String]| v.join("\n").into_bytes();
         let mut args: Vec<String> = ["command", package.as_str(), "--stdin"].iter().map(|s| (*s).to_string()).collect();
@@ -512,6 +551,9 @@ mod through_the_viewer {
         assert_eq!(r[1]["state"]["containers"]["artboards"][1]["id"], json!(board));
         assert_eq!(r[2]["error"], "dimension_out_of_range", "{}", r[2]);
         assert_eq!(r[3]["error"], "profile_not_available", "{}", r[3]);
+        assert_eq!(r[4]["ok"], true, "{}", r[4]);
+        assert_eq!(r[4]["state"]["containers"]["artboards"][0]["name"], "mark", "`name` is the artboard name");
+        assert_eq!(r[4]["revision"], 0);
 
         // A session of its own: the undo history lives in one process.
         let mut steps = vec![

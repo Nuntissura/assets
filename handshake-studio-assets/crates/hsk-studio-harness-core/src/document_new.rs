@@ -241,9 +241,9 @@ pub fn mint_child_id(document_id: &str, prefix: &str, first: u64, taken: impl Fn
     }
 }
 
-/// The first unused document-local page key.
-pub fn mint_page_id(document: &folio::StudioDocument) -> String {
-    let mut n = page_count(document).saturating_add(1);
+/// The first document-local page key from `page-{first}` that the document does not hold.
+pub fn mint_page_id(document: &folio::StudioDocument, first: u64) -> String {
+    let mut n = first;
     loop {
         let id = format!("page-{n}");
         if !document.page_spreads.iter().flat_map(|s| &s.pages).any(|p| p.page_id == id) {

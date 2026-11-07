@@ -145,7 +145,7 @@ fn new_document_request(a: &Args<'_>) -> Result<NewDocument, Refusal> {
     if a.opt("bits_per_channel").is_some() {
         spec.bits_per_channel = a.parsed("bits_per_channel", "1, 8, 16 or 32")?;
     }
-    spec.artboard_name = a.opt("artboard_name").map(str::to_string);
+    spec.artboard_name = a.opt("name").map(str::to_string);
     Ok(spec)
 }
 
@@ -194,7 +194,7 @@ pub(super) fn call(viewer: &mut Viewer, row: &DriveViewer, params: &Params) -> R
     let layer = || a.text("layer");
     Ok(match row.method {
         // ---- document, artboards, pages (lane SMB-DOC-NEW-1) ----
-        "new_document" => plain(viewer.new_document(&new_document_request(&a)?, a.opt("name"))),
+        "new_document" => plain(viewer.new_document(&new_document_request(&a)?, a.opt("file_name"))),
         "add_artboard" => {
             let at = match (a.opt_number("x")?, a.opt_number("y")?) {
                 (Some(x), Some(y)) => Some([x, y]),

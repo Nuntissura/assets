@@ -574,7 +574,9 @@ impl Viewer {
         let shown = self.frame.as_ref().ok_or("proof: no rendered frame")?;
         let read_back_frame: Frame;
         let (frame, read_back) = if shown.rgba8.is_empty() {
-            let snap = self.run.snapshot().ok_or("nothing open")?;
+            let live = self.run.snapshot().ok_or("nothing open")?;
+            let framed = self.framed_snapshot().map_err(|e| e.to_string())?;
+            let snap = framed.as_ref().unwrap_or(live);
             let text = self.prepared_text()?;
             let vectors = self.prepared_vectors()?;
             read_back_frame = super::render::render_full_with_records(snap, &self.assets, Some(&text), vectors.as_ref(), self.records.as_ref(), Prefer::Cpu, None, None, self.cancel)

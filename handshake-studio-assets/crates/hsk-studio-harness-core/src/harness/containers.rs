@@ -17,6 +17,7 @@ use hsk_studio_accord::CommandContext;
 use hsk_studio_folio::{self as folio, Bounds, GeometryUnit, Length, PageSide, Parent, StudioArtboard, StudioPage, StudioPageSpread};
 use hsk_studio_session::{ContainerStep, Session, SessionConfig};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ARTBOARD_SCHEMA: &str = "hsk.studio.artboard@1";
@@ -56,7 +57,77 @@ const fn next_side(side: PageSide) -> PageSide {
     }
 }
 
+/// The highest `page-N` named anywhere in `bytes` (a bounded scan of a document entry body).
+fn highest_page_number(bytes: &[u8], mut highest: u64) -> u64 {
+    const KEY: &[u8] = b"page-";
+    let mut at = 0usize;
+    while let Some(found) = bytes.get(at..).and_then(|rest| rest.windows(KEY.len()).position(|w| w == KEY)) {
+        let start = at.saturating_add(found).saturating_add(KEY.len());
+        let digits = bytes.get(start..).map_or(0, |rest| rest.iter().take(20).take_while(|b| b.is_ascii_digit()).count());
+        if let Some(n) = bytes.get(start..start.saturating_add(digits)).and_then(|d| std::str::from_utf8(d).ok()).and_then(|d| d.parse::<u64>().ok()) {
+            highest = highest.max(n);
+        }
+        at = start;
+    }
+    highest
+}
+
 impl Run<'_> {
+    /// Ids a new container must not take (review F1 of 368e1080): the containers whose chronicle
+    /// `name` entry the session still holds (a deleted one keeps its entry for the redo) and the
+    /// artboards the `artboard_options` entry names (an inert row would go live on a new artboard).
+    fn remembered_container_ids(&self) -> BTreeSet<String> {
+        let Some(session) = self.session.as_ref() else {
+            return BTreeSet::new();
+        };
+        let mut ids: BTreeSet<String> = session.revisions().iter().map(|e| e.address.target.node_id.clone()).collect();
+        if let Some(bytes) = session.document_entry(rules::ARTBOARD_OPTIONS_ENTRY)
+            && let Ok(rows) = rules::parse_options(bytes, &session.snapshot().document().document_id)
+        {
+            ids.extend(rows.into_iter().map(|o| o.artboard_id));
+        }
+        for step in self.history_containers() {
+            ids.extend(step.expect_artboards.iter().chain(&step.write_artboards).map(|a| a.artboard_id.clone()));
+            ids.extend(step.expect_spreads.iter().chain(&step.write_spreads).map(|s| s.page_spread_id.clone()));
+        }
+        ids
+    }
+
+    /// The container steps of the undo and redo histories (a group's inner steps included).
+    fn history_containers(&self) -> Vec<&ContainerStep> {
+        fn walk<'s>(steps: &'s [HistoryStep], out: &mut Vec<&'s ContainerStep>) {
+            for step in steps {
+                out.extend(step.containers.as_ref());
+                if let Some(inner) = &step.group {
+                    walk(inner, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.undo_stack, &mut out);
+        walk(&self.redo_stack, &mut out);
+        out
+    }
+
+    /// The first page number past every `page-N` the document, a document entry or the history
+    /// names, so a new page never takes the key of a deleted one that layout records or an undo may
+    /// still name (review F1).
+    fn next_page_number(&self) -> u64 {
+        let Some(session) = self.session.as_ref() else {
+            return 1;
+        };
+        let document = session.snapshot().document();
+        let history = self.history_containers();
+        let pages = document.page_spreads.iter().chain(history.iter().flat_map(|s| s.expect_spreads.iter().chain(&s.write_spreads))).flat_map(|s| &s.pages);
+        let mut highest = pages.fold(0, |n, p| highest_page_number(p.page_id.as_bytes(), n));
+        for token in hsk_studio_session::DOCUMENT_ENTRY_TOKENS {
+            if let Some(bytes) = session.document_entry(token) {
+                highest = highest_page_number(bytes, highest);
+            }
+        }
+        highest.saturating_add(1)
+    }
+
     /// `document.new`: replaces the working session with a blank document of `spec`, revision 0, no
     /// origin, dirty until saved, history empty. A refusal changes nothing (`canceled`,
     /// [`NewDocument::validate`]'s codes, `folio_rejected`). One record `new_document`, detail
@@ -191,6 +262,7 @@ impl Run<'_> {
     /// `size_not_whole_pixels`, `position_out_of_range`, `name_too_long`, `name_invalid`,
     /// `too_many_artboards`. Detail `artboard_id`.
     pub fn add_artboard(&mut self, name: &str, width: f64, height: f64, at: Option<[f64; 2]>) -> bool {
+        let remembered = self.remembered_container_ids();
         self.container_edit("add_artboard", "artboard.add", |document, artboards, _| {
             let unit = document.geometry_unit;
             rules::check_name(name)?;
@@ -204,7 +276,7 @@ impl Run<'_> {
             });
             rules::check_position(x, unit)?;
             rules::check_position(y, unit)?;
-            let id = rules::mint_child_id(&document.document_id, "SART", u64::try_from(artboards.len()).unwrap_or(0).saturating_add(1), |id| artboards.iter().any(|a| a.artboard_id == id));
+            let id = rules::mint_child_id(&document.document_id, "SART", u64::try_from(artboards.len()).unwrap_or(0).saturating_add(1), |id| remembered.contains(id) || artboards.iter().any(|a| a.artboard_id == id));
             let len = |value: f64| Length { value, unit };
             let record = serde_json::from_value::<StudioArtboard>(json!({"schema_id": ARTBOARD_SCHEMA, "artboard_id": id, "name": name, "parent": null, "bounds": Bounds { x: len(x), y: len(y), width: len(width), height: len(height) }})).map_err(|_| "document_encode")?;
             artboards.push(record);
@@ -270,6 +342,8 @@ impl Run<'_> {
     /// `margins_exceed_page`, `too_many_pages`, `name_too_long`, `name_invalid`, `name_needs_new_spread`.
     /// Detail `page_id`, `page_spread_id`.
     pub fn add_page(&mut self, after: Option<&str>, new_spread: bool, size: Option<(f64, f64)>, name: Option<&str>) -> bool {
+        let remembered = self.remembered_container_ids();
+        let page_number = self.next_page_number();
         self.container_edit("add_page", "page.add", |document, _, spreads| {
             if let Some(name) = name {
                 rules::check_name(name)?;
@@ -285,8 +359,8 @@ impl Run<'_> {
                 None => spreads.iter().enumerate().rev().find_map(|(si, s)| s.pages.len().checked_sub(1).map(|pi| (si, pi))),
             };
             let unit = document.geometry_unit;
-            let page_id = rules::mint_page_id(document);
-            let spread_id = rules::mint_child_id(&document.document_id, "SPGS", u64::try_from(spreads.len()).unwrap_or(0).saturating_add(1), |id| spreads.iter().any(|s| s.page_spread_id == id));
+            let page_id = rules::mint_page_id(document, page_number);
+            let spread_id = rules::mint_child_id(&document.document_id, "SPGS", u64::try_from(spreads.len()).unwrap_or(0).saturating_add(1), |id| remembered.contains(id) || spreads.iter().any(|s| s.page_spread_id == id));
             let default_name = format!("spread {}", spreads.len().saturating_add(1));
             let Some((si, pi)) = at else {
                 let (w, h) = size.ok_or("size_required")?;
