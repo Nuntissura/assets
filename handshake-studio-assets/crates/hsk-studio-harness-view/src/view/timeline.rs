@@ -1028,10 +1028,49 @@ impl TimelineState {
     }
 }
 
+/// The ids the stored entries name, inert or live, that a mint must not hand out (R57 F-R57-3, V4-06): a
+/// new id equal to one would bring that entry to life on something else. Audio routing: sequences, tracks
+/// (routes, outputs, send targets, bus chains, automation) and clips (gain and pan envelopes). Multicam:
+/// clip modes. Track display: sequences. An entry that does not parse names nothing readable and reserves
+/// nothing. Bounded by the entries, which the package limits bound.
+#[derive(Debug, Default)]
+pub(in crate::view) struct ReservedIds {
+    pub(in crate::view) sequences: std::collections::BTreeSet<String>,
+    pub(in crate::view) tracks: std::collections::BTreeSet<String>,
+    pub(in crate::view) clips: std::collections::BTreeSet<String>,
+}
+
+impl ReservedIds {
+    pub(in crate::view) fn of(run: &hsk_studio_harness_core::Run<'_>) -> Self {
+        let mut out = Self::default();
+        if let Some(set) = run.document_entry(envelopes::ROUTING_ENTRY).and_then(|b| serde_json::from_slice::<folio::StudioAudioRoutingSet>(b).ok()) {
+            for r in set.routings {
+                out.sequences.insert(r.sequence_id);
+                for route in r.routes {
+                    out.tracks.insert(route.track_id);
+                    out.tracks.extend(route.output);
+                    out.tracks.extend(route.sends.into_iter().map(|s| s.target));
+                }
+                out.tracks.extend(r.bus_effects.into_iter().map(|b| b.track_id));
+                out.tracks.extend(r.track_automation.into_iter().map(|a| a.track_id));
+                out.clips.extend(r.clip_gains.into_iter().map(|g| g.clip_id));
+                out.clips.extend(r.clip_pans.into_iter().map(|p| p.clip_id));
+            }
+        }
+        if let Some(records) = run.document_entry("multicam").and_then(|b| serde_json::from_slice::<folio::StudioMulticamRecords>(b).ok()) {
+            out.clips.extend(records.clips.into_iter().map(|c| c.clip_id));
+        }
+        if let Some(records) = run.document_entry("track_display").and_then(|b| serde_json::from_slice::<folio::StudioTrackDisplayRecords>(b).ok()) {
+            out.sequences.extend(records.sequences.into_iter().map(|e| e.sequence_id));
+        }
+        out
+    }
+}
+
 /// Fresh `SCLP` ids for clips the timeline splits: the document id's time fields, a fixed
 /// version/variant block (`7e1e-9000`, distinct from the source monitor's) and the first unused
-/// counters (never a clip id of the document).
-fn mint_clip_ids(doc: &folio::StudioDocument, count: usize) -> Vec<String> {
+/// counters (never a clip id of the document, never one an entry names).
+fn mint_clip_ids(doc: &folio::StudioDocument, reserved: &ReservedIds, count: usize) -> Vec<String> {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
     let hex = |s: Option<&str>, n: usize| s.filter(|v| v.len() == n && v.bytes().all(|b| b.is_ascii_hexdigit())).map_or_else(|| "0".repeat(n), str::to_owned);
     let (high, low) = (hex(uuid.get(0..8), 8), hex(uuid.get(9..13), 4));
@@ -1040,7 +1079,7 @@ fn mint_clip_ids(doc: &folio::StudioDocument, count: usize) -> Vec<String> {
     let mut n: u64 = 1;
     while out.len() < count {
         let id = format!("SCLP-{high}-{low}-7e1e-9000-{n:012x}");
-        if !used.contains(id.as_str()) {
+        if !used.contains(id.as_str()) && !reserved.clips.contains(&id) {
             out.push(id);
         }
         n = n.wrapping_add(1);
@@ -1130,7 +1169,7 @@ fn carry_across_move(original: &StudioClip, placed: &mut StudioClip) {
     placed.retime = *retime;
 }
 
-fn plan_move(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, clip_id: &str, start: Ticks, track_id: Option<&str>) -> Result<Planned, String> {
+fn plan_move(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, reserved: &ReservedIds, clip_id: &str, start: Ticks, track_id: Option<&str>) -> Result<Planned, String> {
     let revision = snapshot.document().revision;
     let sequence = sequence_in(snapshot, sequence_id)?;
     let (track, clip) = find_clip(&sequence, clip_id).ok_or("unknown_clip")?;
@@ -1148,7 +1187,7 @@ fn plan_move(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, c
         return Err("no_change".into());
     }
     let lift = plan_timeline_edit(snapshot, sequence_id, revision, &TimelineEdit::LiftClip { clip_id: clip_id.to_owned() }, ctx).map_err(|e| e.code().to_owned())?;
-    let fresh_clip_ids = mint_clip_ids(lift.snapshot().document(), 2).into_iter().filter(|id| id != clip_id).collect();
+    let fresh_clip_ids = mint_clip_ids(lift.snapshot().document(), reserved, 2).into_iter().filter(|id| id != clip_id).collect();
     let assembly = AssemblyEdit {
         mode: AssemblyMode::Overwrite,
         source: clip.source_ref.clone(),
@@ -1176,7 +1215,7 @@ fn plan_move(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, c
     Ok(Planned { sequence: out, notes })
 }
 
-fn plan_razor(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, at: Ticks, selected: Option<&str>) -> Result<Planned, String> {
+fn plan_razor(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, reserved: &ReservedIds, at: Ticks, selected: Option<&str>) -> Result<Planned, String> {
     let original = sequence_in(snapshot, sequence_id)?;
     let inside = |c: &StudioClip| c.timeline_start < at && c.timeline_end().is_some_and(|e| at < e);
     let any_targeted = original.tracks.iter().any(|t| t.targeted);
@@ -1206,7 +1245,7 @@ fn plan_razor(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, 
             let linked = match &clip.link_group {
                 Some(group) => {
                     let members: Vec<&str> = seq.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| c.link_group.as_deref() == Some(group) && c.clip_id != clip_id).map(|c| c.clip_id.as_str()).collect();
-                    let ids = mint_clip_ids(doc, members.len().saturating_add(1));
+                    let ids = mint_clip_ids(doc, reserved, members.len().saturating_add(1));
                     let groups: std::collections::BTreeSet<&str> = doc.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()).filter_map(|c| c.link_group.as_deref()).collect();
                     Some((ids[0].clone(), LinkedRazor { right_link_group: mint_key("link-tl", &groups), right_clip_ids: members.iter().zip(ids.iter().skip(1)).map(|(m, i)| ((*m).to_owned(), i.clone())).collect() }))
                 }
@@ -1214,7 +1253,7 @@ fn plan_razor(snapshot: &folio::Snapshot, sequence_id: &str, ctx: &EditContext, 
             };
             let (new_right, linked) = match linked {
                 Some((id, l)) => (id, Some(l)),
-                None => (mint_clip_ids(doc, 1).remove(0), None),
+                None => (mint_clip_ids(doc, reserved, 1).remove(0), None),
             };
             let edit = TimelineEdit::Razor { clip_id: clip_id.clone(), at, new_right_clip_id: new_right, linked };
             plan_timeline_edit(current, sequence_id, doc.revision, &edit, ctx).map_err(|e| e.code().to_owned())?
@@ -1460,7 +1499,8 @@ impl Viewer {
             TimelineCommand::RazorAtPlayhead => {
                 let here = playhead.ok_or("no_program_monitor")?;
                 let selected = self.timeline.as_ref().and_then(|t| t.selected.clone());
-                self.timeline_commit("timeline_razor", |snap, seq_id, ctx| plan_razor(snap, seq_id, ctx, here, selected.as_deref()))
+                let reserved = ReservedIds::of(&self.run);
+                self.timeline_commit("timeline_razor", |snap, seq_id, ctx| plan_razor(snap, seq_id, ctx, &reserved, here, selected.as_deref()))
             }
             TimelineCommand::Lift | TimelineCommand::RippleDelete => {
                 let clip_id = self.timeline.as_ref().and_then(|t| t.selected.clone()).ok_or("no_selection")?;
@@ -1485,7 +1525,10 @@ impl Viewer {
                 let edit = TimelineEdit::TrimOut { clip_id: clip_id.clone(), new_duration: duration, ripple: false };
                 self.timeline_commit("timeline_trim_out", |snap, seq_id, ctx| plan_one(snap, seq_id, ctx, &edit))
             }
-            TimelineCommand::MoveClip { clip_id, start, track_id } => self.timeline_commit("timeline_move", |snap, seq_id, ctx| plan_move(snap, seq_id, ctx, clip_id, *start, track_id.as_deref())),
+            TimelineCommand::MoveClip { clip_id, start, track_id } => {
+                let reserved = ReservedIds::of(&self.run);
+                self.timeline_commit("timeline_move", |snap, seq_id, ctx| plan_move(snap, seq_id, ctx, &reserved, clip_id, *start, track_id.as_deref()))
+            }
             // Select / snap / zoom / scroll returned above; the trim family runs in module `trim`.
             _ => Ok(()),
         }

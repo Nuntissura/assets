@@ -286,10 +286,11 @@ fn a_subsequence_skips_a_routing_of_its_id() {
     assert_eq!(s[1].sequence_id, "subsequence-2", "{:?}", s.iter().map(|q| q.sequence_id.clone()).collect::<Vec<_>>());
 }
 
-/// A file the entries do not parse in cannot name anything: minting keeps its first ids and the step works.
+/// An entry that does not parse names nothing readable: minting keeps its first ids and the step works.
+/// (A damaged routing refuses the multitrack view itself, so this holds a damaged multicam entry.)
 #[test]
 fn an_entry_that_does_not_parse_reserves_nothing() {
-    let (_s, mut v) = opened("damaged", &[held("audio_routing", b"{not json")]);
+    let (_s, mut v) = opened("damaged", &[held("multicam", b"{not json")]);
     v.timeline_command(TimelineCommand::Scrub(Ticks::new(10 * F))).unwrap();
     v.timeline_command(TimelineCommand::RazorAtPlayhead).unwrap_or_else(|e| panic!("{e}: {}", v.state_json()["status"]));
     assert!(clip_ids(&v).contains(&razor_clip(1)));

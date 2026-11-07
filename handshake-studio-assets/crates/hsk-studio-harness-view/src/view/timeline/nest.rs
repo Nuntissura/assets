@@ -38,7 +38,7 @@
 //! reading, no spec clause; Premiere UNVERIFIED). Ids are minted here (pulse mints none).
 #![deny(clippy::arithmetic_side_effects)]
 
-use super::{TimelineCommand, envelopes, find_clip, mint_clip_ids, mint_key, sequence_in};
+use super::{ReservedIds, TimelineCommand, envelopes, find_clip, mint_clip_ids, mint_key, sequence_in};
 use crate::view::Viewer;
 use hsk_studio_accord::Ticks;
 use hsk_studio_folio::{self as folio, ClipSource, StudioSequence};
@@ -51,8 +51,9 @@ pub fn is_nested(seq: &StudioSequence, clip_id: &str) -> bool {
     seq.tracks.iter().flat_map(|t| t.clips.iter()).any(|c| c.clip_id == clip_id && matches!(c.source_ref, ClipSource::Sequence { .. }))
 }
 
-/// `count` fresh `STRK` ids unused by the document (same scheme as clip ids, own block `9001`).
-fn mint_track_ids(doc: &folio::StudioDocument, count: usize) -> Vec<String> {
+/// `count` fresh `STRK` ids unused by the document and named by no entry (same scheme as clip ids, own
+/// block `9001`).
+fn mint_track_ids(doc: &folio::StudioDocument, reserved: &ReservedIds, count: usize) -> Vec<String> {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
     let hex = |s: Option<&str>, n: usize| s.filter(|v| v.len() == n && v.bytes().all(|b| b.is_ascii_hexdigit())).map_or_else(|| "0".repeat(n), str::to_owned);
     let (high, low) = (hex(uuid.get(0..8), 8), hex(uuid.get(9..13), 4));
@@ -61,7 +62,7 @@ fn mint_track_ids(doc: &folio::StudioDocument, count: usize) -> Vec<String> {
     let mut n: u64 = 1;
     while out.len() < count {
         let id = format!("STRK-{high}-{low}-7e1e-9001-{n:012x}");
-        if !used.contains(id.as_str()) {
+        if !used.contains(id.as_str()) && !reserved.tracks.contains(&id) {
             out.push(id);
         }
         n = n.wrapping_add(1);
@@ -97,15 +98,15 @@ fn record_ids(doc: &folio::StudioDocument) -> BTreeSet<&str> {
 }
 
 /// Ids for one nest or subsequence of `seq` touching at most `clips` clips with `records` records.
-fn ids_for(doc: &folio::StudioDocument, seq: &StudioSequence, prefix: &str, label: &str, clips: usize, records: usize) -> NestIds {
-    let sequences: BTreeSet<&str> = doc.sequences.iter().map(|s| s.sequence_id.as_str()).collect();
+fn ids_for(doc: &folio::StudioDocument, reserved: &ReservedIds, seq: &StudioSequence, prefix: &str, label: &str, clips: usize, records: usize) -> NestIds {
+    let sequences: BTreeSet<&str> = doc.sequences.iter().map(|s| s.sequence_id.as_str()).chain(reserved.sequences.iter().map(String::as_str)).collect();
     let sequence_id = mint_key(prefix, &sequences);
     let n = sequence_id.rsplit('-').next().unwrap_or("1").to_owned();
     let groups: BTreeSet<&str> = seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.link_group.as_deref()).collect();
     NestIds {
         sequence_name: format!("{label} {n}"),
-        track_ids: mint_track_ids(doc, seq.tracks.len()),
-        clip_ids: mint_clip_ids(doc, clips),
+        track_ids: mint_track_ids(doc, reserved, seq.tracks.len()),
+        clip_ids: mint_clip_ids(doc, reserved, clips),
         link_group: Some(mint_key("link-nest", &groups)),
         record_ids: mint_keys("rec-nest", &record_ids(doc), records),
         sequence_id,
@@ -174,10 +175,11 @@ impl Viewer {
         if clips.is_empty() {
             return Err("no_selection".into());
         }
+        let reserved = ReservedIds::of(&self.run);
         let proposal = self.timeline_plan(|snap, seq_id, ctx| {
             let doc = snap.document();
             let seq = sequence_in(snap, seq_id)?;
-            let ids = ids_for(doc, &seq, "nest", "Nested Sequence", 4, 0);
+            let ids = ids_for(doc, &reserved, &seq, "nest", "Nested Sequence", 4, 0);
             plan_nest(snap, seq_id, doc.revision, &clips, &ids, ctx).map_err(|e| e.code().to_owned())
         })?;
         let entry = self.nest_envelopes(&proposal)?;
@@ -281,6 +283,7 @@ impl Viewer {
         } else {
             SubsequenceSource::Clips(clips)
         };
+        let reserved = ReservedIds::of(&self.run);
         let proposal = self.timeline_plan(|snap, seq_id, ctx| {
             let doc = snap.document();
             let seq = sequence_in(snap, seq_id)?;
@@ -291,7 +294,7 @@ impl Viewer {
                     copy_counts(&seq, |t, c| (!any || t.targeted) && c.timeline_start < span.end() && c.timeline_end().is_some_and(|e| e > span.start()))
                 }
             };
-            let ids = ids_for(doc, &seq, "subsequence", "Subsequence", n, r);
+            let ids = ids_for(doc, &reserved, &seq, "subsequence", "Subsequence", n, r);
             plan_make_subsequence(snap, seq_id, doc.revision, &source, &ids, ctx).map_err(|e| e.code().to_owned())
         })?;
         let entry = self.nest_envelopes(&proposal)?;

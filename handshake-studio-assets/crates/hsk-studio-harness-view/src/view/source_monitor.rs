@@ -302,8 +302,9 @@ impl SourceExtents for WithSource<'_> {
 }
 
 /// Fresh `SCLP` ids: the document id's time fields, a fixed version/variant block and the first
-/// unused counters (never a clip id of any sequence of the document, never repeated).
-fn mint_clip_ids(doc: &folio::StudioDocument, count: usize) -> Vec<String> {
+/// unused counters (never a clip id of any sequence of the document, never one in `reserved`, the ids
+/// stored entries name; never repeated).
+fn mint_clip_ids(doc: &folio::StudioDocument, reserved: &std::collections::BTreeSet<String>, count: usize) -> Vec<String> {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
     let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
     let used: std::collections::BTreeSet<&str> = doc
@@ -317,7 +318,7 @@ fn mint_clip_ids(doc: &folio::StudioDocument, count: usize) -> Vec<String> {
     let mut n: u64 = 1;
     while out.len() < count {
         let id = format!("SCLP-{high}-{low}-7ed1-9000-{n:012x}");
-        if !used.contains(id.as_str()) {
+        if !used.contains(id.as_str()) && !reserved.contains(&id) {
             out.push(id);
         }
         n = n.wrapping_add(1);
@@ -337,6 +338,7 @@ pub fn plan_source_edit(
     expected_revision: u64,
     source: &SourceMonitor,
     program: &PlaybackScheduler,
+    reserved_clips: &std::collections::BTreeSet<String>,
     edit: &SourceEdit,
     extents: &dyn SourceExtents,
     cancel: &CancellationToken,
@@ -392,7 +394,7 @@ pub fn plan_source_edit(
         .len()
         .checked_add(sequence.tracks.len())
         .ok_or_else(|| fail("overflow", "ids"))?;
-    let mut ids = mint_clip_ids(doc, fresh);
+    let mut ids = mint_clip_ids(doc, reserved_clips, fresh);
     let fresh_clip_ids = ids.split_off(targets.len());
     let patches = targets
         .into_iter()
@@ -575,6 +577,7 @@ impl super::Viewer {
             snapshot.document().revision,
             &source.monitor,
             program.monitor.scheduler(),
+            &super::timeline::ReservedIds::of(&self.run).clips,
             edit,
             program.extents.as_ref(),
             self.cancel,
