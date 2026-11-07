@@ -383,16 +383,16 @@ fn motion_commands_run_in_the_session_loop() {
         json!({"command": "command", "command_id": "document.save", "parameters": {"path": saved.to_str().unwrap()}}),
     ]);
     let (exit, out) = session(&package, "a1", "s1", &input, &scratch.0);
-    assert_eq!(exit, 0, "{out:?}");
-    assert_eq!(out.len(), 7, "{out:?}");
-    assert_eq!(out[0]["detail"]["motion"]["composition_id"], "T01", "{}", out[0]);
-    assert_eq!(out[0]["attribution"]["client_session"], "s1");
-    assert_eq!(out[1]["ok"], true, "{}", out[1]);
+    assert_eq!(exit, 1, "two refused lines make the exit non-zero: {out:?}");
+    assert_eq!(out.len(), 9, "open, 7 lines, end: {out:?}");
+    assert_eq!(out[1]["detail"]["motion"]["composition_id"], "T01", "{}", out[1]);
+    assert_eq!(out[1]["attribution"]["client_session"], "s1");
     assert_eq!(out[2]["ok"], true, "{}", out[2]);
-    assert_eq!(out[3]["error"], "parameter_invalid", "{}", out[3]);
-    assert_eq!((out[4]["error"].clone(), out[4]["detail"]["target"].clone()), (json!("invalid_field"), json!("SCOM-0195f000-0000-7000-8000-000000000001/size")), "{}", out[4]);
-    assert_eq!(out[5]["ok"], true, "{}", out[5]);
+    assert_eq!(out[3]["ok"], true, "{}", out[3]);
+    assert_eq!(out[4]["error"], "parameter_invalid", "{}", out[4]);
+    assert_eq!((out[5]["error"].clone(), out[5]["detail"]["target"].clone()), (json!("invalid_field"), json!("SCOM-0195f000-0000-7000-8000-000000000001/size")), "{}", out[5]);
     assert_eq!(out[6]["ok"], true, "{}", out[6]);
+    assert_eq!(out[7]["ok"], true, "{}", out[7]);
     // The saved package holds the composition and the layer, not the undone key.
     let bytes = std::fs::read(&saved).unwrap();
     let again = lines(&[json!({"command": "command", "command_id": "composition.read", "parameters": {"composition_id": "T01"}})]);
@@ -400,9 +400,9 @@ fn motion_commands_run_in_the_session_loop() {
     std::fs::write(&reopened, bytes).unwrap();
     let (exit, out) = session(&reopened, "a1", "s2", &again, &scratch.0);
     assert_eq!(exit, 0, "{out:?}");
-    let layers = out[0]["detail"]["motion"]["composition"]["layers"].clone();
-    assert_eq!(layers[0]["layer_id"], L2, "{}", out[0]);
-    assert!(layers[0].get("streams").is_none(), "{}", out[0]);
+    let layers = out[1]["detail"]["motion"]["composition"]["layers"].clone();
+    assert_eq!(layers[0]["layer_id"], L2, "{}", out[1]);
+    assert!(layers[0].get("streams").is_none(), "{}", out[1]);
 }
 
 #[test]
