@@ -175,8 +175,20 @@ pub fn slider(b: &mut Builder<'_>, id: &str, text: &str, value: f64, min: f64, m
 /// view). The thumb is square: radius 3 needs a rounded flat fill, which [`Paint`] has no variant for yet.
 pub fn scrollbar(b: &mut Builder<'_>, id: &str, label_text: &str, lane_h: f32, first: usize, shown: usize, total: usize) {
     let lane = LayoutSpec { axis: Axis::Column, w: Size::Fixed(size::DOCK_SCROLL_LANE_W), h: Size::Fill, cross: Align::Center, ..LayoutSpec::default() };
-    let _ = (id, label_text, lane_h, first, shown, total);
-    b.leaf(Node::deco().layout(lane));
+    if total <= shown || !lane_h.is_finite() || lane_h <= 0.0 {
+        b.leaf(Node::deco().layout(lane));
+        return;
+    }
+    let range = total - shown;
+    let first = first.min(range);
+    let thumb = (lane_h * shown as f32 / total as f32).max(size::SCROLLBAR_MIN_THUMB).min(lane_h);
+    let top = ((lane_h - thumb) * first as f32 / range as f32).round();
+    let mut node = Node::new(id, Role::Slider).label(label_text).value(format!("{} to {} of {}", first + 1, first + shown, total)).layout(lane);
+    node.numeric = Some(Numeric { value: first as f64, min: 0.0, max: range as f64, step: 1.0 });
+    b.begin(node);
+    b.leaf(Node::deco().size(Size::Fixed(size::SCROLLBAR_THUMB_W), Size::Fixed(top)));
+    b.leaf(Node::deco().paint(Paint::Fill(ColorToken::SurfaceControlHover)).size(Size::Fixed(size::SCROLLBAR_THUMB_W), Size::Fixed(thumb)));
+    b.end();
 }
 
 /// Layer row (components.json `layer_row`: h 32, tag edge 3, eye 22, indent 16 per depth, thumb 24, name, badges 12).
