@@ -16,13 +16,19 @@ mod export;
 mod history;
 mod layer;
 mod layout;
+mod mixer;
+mod monitor;
 mod motion;
+mod multitrack;
 mod panel;
 mod photo;
 mod proof;
+mod prototype;
+mod spectral;
 mod text;
 mod vector;
 mod video;
+mod waveform;
 mod web;
 
 pub use layer::{CMD_PANEL_SET, CMD_RENAME, CMD_RESTRUCTURE, CMD_SET_BLEND_MODE, CMD_SET_OPACITY, CMD_SET_VISIBLE};
@@ -172,6 +178,13 @@ const DOMAINS: &[&[CommandEntry]] = &[
     video::ROWS,
     web::ROWS,
     export::ROWS,
+    // Lane SMB-DRIVE-TYPED-2: the audio post and product design engines.
+    mixer::ROWS,
+    multitrack::ROWS,
+    waveform::ROWS,
+    spectral::ROWS,
+    monitor::ROWS,
+    prototype::ROWS,
 ];
 
 const ROW_COUNT: usize = {
@@ -183,7 +196,9 @@ const ROW_COUNT: usize = {
     count
 };
 
-const ALL_ROWS: [CommandEntry; ROW_COUNT] = {
+/// A static, not a const: a const array this size is copied into every use (clippy
+/// `large_const_arrays`); `RUN_COMMANDS` names this one copy.
+static ALL_ROWS: [CommandEntry; ROW_COUNT] = {
     let mut rows = [entry("", "", "", false, false, &[]); ROW_COUNT];
     let (mut at, mut d) = (0, 0);
     while d < DOMAINS.len() {

@@ -1,8 +1,9 @@
 //! Design rows of the command corpus: auto layout and grid records.
 
-use super::{CommandEntry, ParamSpec, index as i, number as n, one_of as o, record as r, text as t, typed};
+use super::{CommandEntry, ParamSpec, flag as b, index as i, number as n, one_of as o, output_path as out, path as file, record as r, text as t, typed};
 
 const SIZING: &str = "FIXED|HUG|FILL";
+const INSTANCE: &str = "Viewer::design_command";
 const TRACK_MOVE: &[ParamSpec] = &[t("container"), i("from_index"), i("to_index")];
 
 pub(super) const ROWS: &[CommandEntry] = &[
@@ -14,4 +15,14 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("design.set_grid_tracks", "Viewer::set_grid_tracks", "Set grid tracks", true, &[t("node"), r("rows", "a list of Folio StudioGridTrackSize records"), r("columns", "a list of Folio StudioGridTrackSize records")]),
     typed("design.grid_reorder_rows", "Viewer::grid_reorder_rows", "Reorder grid rows", true, TRACK_MOVE),
     typed("design.grid_reorder_columns", "Viewer::grid_reorder_columns", "Reorder grid columns", true, TRACK_MOVE),
+    // Lane SMB-DRIVE-TYPED-2 (STU-DS-008/009/016/017/162): a design file opened as a native document, and
+    // every `DesignCommand` on the instance drawn by `layer` (one chronicle step each, `design_<key>`).
+    typed("design.import_fig", "Viewer::import_fig", "Open design file", false, &[file("source"), out("dest"), b("overwrite").opt()]),
+    typed("design.instance.inspect", "Viewer::instance_view", "Inspect instance", false, &[t("layer")]),
+    typed("design.instance.switch_variant", INSTANCE, "Switch variant", true, &[t("layer"), t("property"), t("value")]),
+    typed("design.instance.set_property", INSTANCE, "Set component property", true, &[t("layer"), t("name"), o("kind", "boolean|text"), t("value")]),
+    typed("design.instance.set_override", INSTANCE, "Override instance field", true, &[t("layer"), t("node_id"), o("field", "characters|visible|opacity"), t("value")]),
+    typed("design.instance.reset_override", INSTANCE, "Reset override", true, &[t("layer"), t("node_id"), t("field")]),
+    typed("design.instance.reset_all", INSTANCE, "Reset all overrides", true, &[t("layer")]),
+    typed("design.instance.swap_component", INSTANCE, "Swap component", true, &[t("layer"), t("component_id")]),
 ];
