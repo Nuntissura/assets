@@ -427,6 +427,12 @@ impl super::Viewer {
                     }
                 };
                 let routing = &mut set.routings[at];
+                // A target the sequence does not hold reads as inert (Folio `audio_routing`), which is no
+                // licence to author one: a direct edit names a track of the sequence.
+                let sequence = self.mixer_sequence()?;
+                let authored = |op: &str, target: &str| -> Result<(), String> {
+                    if sequence.tracks.iter().any(|t| t.track_id == target) { Ok(()) } else { Err(format!("mixer: {op} refused: no track {target}")) }
+                };
                 let route = |routing: &mut StudioAudioRouting, track_id: &str| -> usize {
                     match routing.routes.iter().position(|r| r.track_id == track_id) {
                         Some(i) => i,
@@ -438,11 +444,15 @@ impl super::Viewer {
                 };
                 let op = match other {
                     MixerEdit::Output { track_id, bus } => {
+                        if let Some(bus) = &bus {
+                            authored("mixer_output", bus)?;
+                        }
                         let i = route(routing, &track_id);
                         routing.routes[i].output = bus;
                         "mixer_output"
                     }
                     MixerEdit::AddSend { track_id, target, level, pre_fader } => {
+                        authored("mixer_add_send", &target)?;
                         let i = route(routing, &track_id);
                         let sends = &mut routing.routes[i].sends;
                         let mut n = sends.len();

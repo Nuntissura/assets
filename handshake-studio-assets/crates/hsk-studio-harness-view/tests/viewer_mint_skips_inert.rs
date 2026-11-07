@@ -296,6 +296,22 @@ fn an_entry_that_does_not_parse_reserves_nothing() {
     assert!(clip_ids(&v).contains(&razor_clip(1)));
 }
 
+/// Review F3, lead ruling: inert on read does not mean a direct edit may write a dangling target. The
+/// mixer's Output and AddSend refuse a bus the sequence does not hold, and no step is added.
+#[test]
+fn a_mixer_edit_cannot_author_a_target_the_sequence_does_not_hold() {
+    use hsk_studio_harness_view::view::mixer::MixerEdit;
+    let (_s, mut v) = opened("mixer", &[]);
+    let (body, undo) = (v.run().document_entry("audio_routing").map(<[u8]>::to_vec), v.run().history()["undo"].as_array().map(Vec::len));
+    let absent = nest_track(9);
+    let output = v.mixer_edit(MixerEdit::Output { track_id: tid(2), bus: Some(absent.clone()) }).unwrap_err();
+    assert!(output.contains("mixer_output refused"), "{output}");
+    let send = v.mixer_edit(MixerEdit::AddSend { track_id: tid(2), target: absent, level: 1.0, pre_fader: false }).unwrap_err();
+    assert!(send.contains("mixer_add_send refused"), "{send}");
+    assert_eq!(v.run().document_entry("audio_routing").map(<[u8]>::to_vec), body);
+    assert_eq!(v.run().history()["undo"].as_array().map(Vec::len), undo);
+}
+
 /// Option A through the harness, without assuming which entry a caller passes: a sequence step and a
 /// multicam entry together cannot change a declared source's video tracks, on either harness path, and
 /// nothing moves. Only `Session::submit_multicam` carrying rewritten records can; no planner produces it.
