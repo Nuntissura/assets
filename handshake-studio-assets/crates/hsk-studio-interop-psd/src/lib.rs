@@ -8,6 +8,7 @@
 
 mod adjust;
 mod blend;
+mod compose;
 mod compression;
 mod convert;
 mod descriptor;
@@ -32,6 +33,7 @@ mod resources;
 mod writer;
 
 pub use blend::{PSD_BLEND_KEYS, StudioBlendMode, psd_key_for, studio_blend_for_key};
+pub use compose::{ComposeLook, ComposeRecord, ComposeRequest, ComposeSamples, compose_psd};
 pub use compression::{
     COMPRESSION_RAW, COMPRESSION_RLE, COMPRESSION_ZIP, COMPRESSION_ZIP_PREDICTION, PlaneGeometry, decode as decode_samples,
     encode_rle, pack_row, row_bytes,
