@@ -418,6 +418,7 @@ fn every_folio_reference_property_is_classified() {
         ("composition_token", serde_json::to_value(folio::composition_token_record_schema()).unwrap()),
         ("media_markers", serde_json::to_value(folio::media_marker_records_schema()).unwrap()),
         ("project_bin", serde_json::to_value(folio::project_bin_schema()).unwrap()),
+        ("export_settings", serde_json::to_value(folio::export_settings_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -560,6 +561,8 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioMotionTemplate.required_fonts", "external:font"),
     ("StudioMulticamClip.audio_angle", "internal: angle number of the multicam source sequence"),
     ("StudioMulticamClip.audio_follows_video", "internal: flag"),
+    ("StudioNodeRenderSetting.colour_profile", "not_a_dependency: output colour choice DOCUMENT, SRGB or DISPLAY_P3_V4; names no profile (STU-IO-112, SMB-ARTBOARD-EXPORT-1)"),
+    ("StudioNodeRenderSetting.use_absolute_bounds", "internal: flag (STU-IO-112; the name holds `lut`, no colour lookup)"),
     ("StudioObjectStyle.epub_aria_label_source_type", "internal: value"),
     ("StudioObjectStyleCategories.enable_story_options", "internal: flag"),
     ("StudioOutputModule.audio", "not_a_dependency: output audio settings"),

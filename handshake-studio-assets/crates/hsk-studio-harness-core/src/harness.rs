@@ -32,6 +32,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 type SessionSave = fn(&mut Session, &Path, &CancellationToken) -> Result<hsk_studio_session::SaveReceipt, hsk_studio_session::Failed>;
 
 mod containers;
+/// Node export settings (lane SMB-ARTBOARD-EXPORT-1).
+pub mod export_settings;
 
 pub const SCHEMA: &str = "hsk.studio.harness@1";
 

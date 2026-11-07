@@ -167,7 +167,10 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// SMB-PR-ENTRY-REFERENCES-1).
 /// `artboard_options` (lane SMB-DOC-NEW-1) holds the [STU-VEC-165] options per artboard, keyed by SART id
 /// (harness-core `document_new`; an entry naming an artboard the document no longer holds is inert).
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token", "media_markers", "artboard_options", "project_bin", "layout_records"];
+/// `export_settings` (lane SMB-ARTBOARD-EXPORT-1) holds the Folio `StudioExportSettings`, the node render
+/// settings of [STU-IO-111] keyed by SLYR layer or SART artboard (harness-core `harness::export_settings`;
+/// an entry naming a node the document no longer holds is inert).
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token", "media_markers", "artboard_options", "project_bin", "layout_records", "export_settings"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {

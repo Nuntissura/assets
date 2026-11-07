@@ -12,6 +12,7 @@ mod board;
 mod catalog;
 mod design;
 mod document;
+mod export;
 mod history;
 mod layer;
 mod layout;
@@ -170,6 +171,7 @@ const DOMAINS: &[&[CommandEntry]] = &[
     vector::ROWS,
     video::ROWS,
     web::ROWS,
+    export::ROWS,
 ];
 
 const ROW_COUNT: usize = {
