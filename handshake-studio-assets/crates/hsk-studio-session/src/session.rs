@@ -6,6 +6,7 @@
 use crate::{
     admission::{Admission, JobGuard},
     composition_token::{self, COMPOSITION_TOKEN_ENTRY, COMPOSITION_TOKEN_STEP_PROVIDER, CompositionTokenStep},
+    container_step::{self, CONTAINER_STEP_PROVIDER, ContainerStep},
     error::{AuthorityFault, Failed, ReportStatus, SessionError},
     ports::{
         Action, Clock, CommitOutcome, CommitPort, CommitReceipt, CommitRequest, Cost, GrantError,
@@ -440,6 +441,7 @@ enum Step<'a> {
     TrackDisplayCommand(&'a CommandContext, &'a StudioTrackDisplayCommand),
     CompositionToken(&'a CompositionTokenStep),
     MediaMarkerCommand(&'a CommandContext, &'a StudioMediaMarkerCommand),
+    Containers(&'a ContainerStep),
 }
 
 enum Resolution {
@@ -665,6 +667,42 @@ impl Session {
             ports,
             cancel,
         )
+    }
+
+    /// A new document (lane SMB-DOC-NEW-1, STU-SHL-023 `studio.document.new`): validates `document`,
+    /// writes it as a package holding the current composition token ([`crate::new_document_composition_entry`],
+    /// STU-TYP-130) and opens that through [`Session::open_bytes`], so a new document and a reopened one
+    /// are the same thing. The caller mints every id. It has no origin and is dirty until first saved.
+    /// Refusals open nothing: Folio's validation as `folio_rejected` / `budget_exceeded`, `canceled`.
+    pub fn create_new(
+        document: StudioDocument,
+        config: SessionConfig,
+        ports: SessionPorts,
+        cancel: &CancellationToken,
+    ) -> Result<Session, Failed> {
+        let unaddressed = |error: SessionError| Failed { error, report: ReportStatus::Unaddressed };
+        let snapshot = folio::validate_document(document, config.budgets.folio(), cancel, &*ports.resolver).map_err(|d| {
+            unaddressed(match d.code {
+                folio::Code::Canceled => SessionError::Canceled,
+                folio::Code::BudgetExceeded => SessionError::Provider("budget_exceeded"),
+                _ => SessionError::Provider("folio_rejected"),
+            })
+        })?;
+        let token = crate::new_document_composition_entry(&snapshot.document().document_id).map_err(unaddressed)?;
+        let mut package = Vec::new();
+        write_package_with(
+            &snapshot,
+            &hsk_studio_package::MemoryAssetSource::new(),
+            &Extras { quarantined: std::slice::from_ref(&token), previews: &[] },
+            &WriteOptions::default(),
+            &config.budgets.limits,
+            cancel,
+            &mut package,
+        )
+        .map_err(|e| unaddressed(SessionError::from_package(e)))?;
+        let mut session = Self::open_bytes(&package, config, ports, cancel)?;
+        session.saved_revision = None;
+        Ok(session)
     }
 
     fn open_stream(
@@ -1167,6 +1205,41 @@ impl Session {
         self.settle(result, |applied, report| applied.report = report)
     }
 
+    /// Submits one artboard or page edit (module `container_step`) under the caller's `context`: both
+    /// container lists change together at `expected_revision + 1`, through the same grant, admission,
+    /// commit and publish path as [`Session::submit`]. The undo is [`ContainerStep::inverse`] (its
+    /// inverse the redo), submitted the same way. The same lists again are no change and no revision.
+    /// Refusals change nothing: `value_conflict`, `invalid_command`, `folio_rejected`, `budget_exceeded`,
+    /// `actor_mismatch`, `command_mismatch`, `stale_revision`. With a commit authority use
+    /// [`Session::submit_containers_keyed_as`]. Tests in tests/new_document.rs.
+    pub fn submit_containers_as(
+        &mut self,
+        context: &CommandContext,
+        step: &ContainerStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.check_command_context(context, &step.command_id, expected_revision).and_then(|()| step.binding_bytes()).and_then(|params| {
+            self.submit_inner(None, CONTAINER_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::Containers(step)))
+        });
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_containers_as`], idempotent under `key` (see [`Session::submit_keyed`]).
+    pub fn submit_containers_keyed_as(
+        &mut self,
+        context: &CommandContext,
+        key: &IdempotencyKey,
+        step: &ContainerStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = self.check_command_context(context, &step.command_id, expected_revision).and_then(|()| step.binding_bytes()).and_then(|params| {
+            self.submit_inner(Some(key), CONTAINER_STEP_PROVIDER, &params, expected_revision, cancel, Some(Step::Containers(step)))
+        });
+        self.settle_correlated(result, context, |applied, report| applied.report = report)
+    }
+
     /// Runs one Folio media marker command (`hsk_studio_folio::MEDIA_MARKER_COMMAND_IDS`) under the
     /// caller's `context`, committed as one [`SequenceRecordsStep`] (one revision, one receipt, one
     /// inverse). The one report frame carries the context's correlation;
@@ -1383,6 +1456,7 @@ impl Session {
                 proposed
             }
             Some(Step::CompositionToken(step)) => self.propose_composition_token(step, current, cancel)?,
+            Some(Step::Containers(step)) => self.propose_containers(step, current, cancel)?,
             Some(Step::MediaMarkerCommand(context, command)) => {
                 let (step, report) = sequence_records_step::media_marker_step(
                     self.snapshot.document(),
@@ -1625,6 +1699,65 @@ impl Session {
             },
             successor,
             slots: Vec::new(),
+            entry: Vec::new(),
+        })
+    }
+
+    /// Checks a container step against the live snapshot without publishing anything. The chronicle
+    /// `name` entry of a created container is new at the step's revision and of a renamed one advances,
+    /// so a later chronicle patch of that name quotes a true revision.
+    fn propose_containers(&self, step: &ContainerStep, current: u64, cancel: &CancellationToken) -> Result<Proposed, SessionError> {
+        let successor = container_step::successor(&self.snapshot, step, self.config.budgets.folio(), &*self.ports.resolver, cancel)?;
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        let changed = successor.is_some();
+        let revision = if changed { current.checked_add(1).ok_or(SessionError::ProposalInconsistent)? } else { current };
+        let mut slots = Vec::new();
+        if let Some(next) = &successor {
+            fn name_of<'d>(document: &'d StudioDocument, id: &str) -> Option<&'d str> {
+                document.artboards.iter().find(|a| a.artboard_id == id).map(|a| a.name.as_str()).or_else(|| document.page_spreads.iter().find(|s| s.page_spread_id == id).map(|s| s.name.as_str()))
+            }
+            let before = self.snapshot.document();
+            for entry in chronicle::seed_revisions(next.document()) {
+                let id = entry.address.target.node_id.as_str();
+                let name = name_of(next.document(), id);
+                if entry.address.property != Property::Name || name.is_none() || name_of(before, id) == name {
+                    continue;
+                }
+                slots.push(match self.revisions.iter().position(|held| held.address == entry.address) {
+                    Some(at) => Slot::Existing(at, revision),
+                    None => Slot::New(RevisionEntry { address: entry.address, revision }),
+                });
+            }
+        }
+        Ok(Proposed {
+            applied: Applied {
+                provider: CONTAINER_STEP_PROVIDER.to_owned(),
+                command_id: step.command_id.clone(),
+                correlation_id: step.correlation_id,
+                actor: timeline::actor_of(&self.config.actor),
+                previous_revision: current,
+                revision,
+                changed,
+                revision_updates: Vec::new(),
+                inverse: None,
+                timeline_inverse: None,
+                multicam_inverse: None,
+                sequence_records_inverse: None,
+                sequence_records_undo: None,
+                sequence_settings_report: None,
+                track_display_report: None,
+                composition_token_inverse: None,
+                composition_upgrade: None,
+                media_marker_report: None,
+                routing_takeovers: Vec::new(),
+                commit: None,
+                replayed: false,
+                cancel_too_late: false,
+                receipts_evicted: 0,
+                report: ReportStatus::Unaddressed,
+            },
+            successor,
+            slots,
             entry: Vec::new(),
         })
     }

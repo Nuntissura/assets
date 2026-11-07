@@ -165,7 +165,9 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// (lane SMB-PR-MEDIA-MARKERS-1) the Folio `StudioMediaMarkerRecords`.
 /// An open notes an `audio_routing` entry that does not validate the same way (lane
 /// SMB-PR-ENTRY-REFERENCES-1).
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token", "media_markers"];
+/// `artboard_options` (lane SMB-DOC-NEW-1) holds the [STU-VEC-165] options per artboard, keyed by SART id
+/// (harness-core `document_new`; an entry naming an artboard the document no longer holds is inert).
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token", "media_markers", "artboard_options"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {
