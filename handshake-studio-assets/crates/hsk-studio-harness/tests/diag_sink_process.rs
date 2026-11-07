@@ -238,6 +238,7 @@ fn cli_run_in_process_uses_no_default_and_health_without_a_dir_is_typed() {
     assert_eq!(out.exit, 0, "{}", out.stdout);
     assert_eq!(kinds(&lines(&diag)), ["segment_start", "run_start", "health", "run_end"]);
     assert_eq!(cli::run(&args(&["health", "--diag-dir"])).exit, 2, "a flag with no value is a usage error");
+    assert_eq!(cli::run(&args(&["health", "--diag-dir", ""])).exit, 2, "an empty value is a usage error");
 }
 
 #[test]

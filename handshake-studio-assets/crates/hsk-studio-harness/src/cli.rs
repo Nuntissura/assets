@@ -236,7 +236,13 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
                     Some(take(&mut i, "revision")?.parse::<u64>().map_err(|_| "revision must be an unsigned integer".to_string())?)
             }
             "--save" => p.save = Some(PathBuf::from(take(&mut i, "output path")?)),
-            "--diag-dir" => p.diag_dir = Some(PathBuf::from(take(&mut i, "diag dir")?)),
+            "--diag-dir" => {
+                let dir = take(&mut i, "diag dir")?;
+                if dir.is_empty() {
+                    return Err("--diag-dir needs a directory, got an empty value".to_string());
+                }
+                p.diag_dir = Some(PathBuf::from(dir));
+            }
             "--overwrite" => p.overwrite = true,
             "--cancel" => p.cancel = true,
             "--json" => p.json = true,
@@ -1153,7 +1159,7 @@ fn health(parsed: &Parsed) -> CliOutput {
                 }
                 (
                     json!({
-                        "id": "diag_sink", "ok": ok, "status": state.status, "code": state.code, "dir": sink.dir(),
+                        "id": "diag_sink", "ok": ok, "status": state.status, "code": state.code, "dir": sink.dir().to_string_lossy(),
                         "lines_written": state.lines_written, "lines_dropped": state.lines_dropped, "write_failures": state.write_failures,
                         "rotations": state.rotations, "files_removed": state.files_removed, "remove_failures": state.remove_failures,
                     }),

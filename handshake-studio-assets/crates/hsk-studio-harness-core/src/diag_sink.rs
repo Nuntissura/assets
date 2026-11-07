@@ -453,6 +453,10 @@ impl Inner {
 
     /// Removes our oldest files until one more file and a panic record fit; false when they still would not.
     fn make_room(&mut self, shared: &Shared) -> bool {
+        // A directory that cannot be listed cannot be kept inside its bound, so nothing is written to it.
+        if fs::read_dir(&shared.dir).is_err() {
+            return false;
+        }
         let mut ours = list_ours(&shared.dir);
         ours.sort();
         let allowed = shared.limits.max_files.saturating_sub(2);
@@ -711,7 +715,8 @@ struct Ours {
 fn parse_ours(name: &str) -> Option<Ours> {
     let stem = name.strip_suffix(".jsonl")?;
     let number = |text: &str| -> Option<u64> {
-        if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        // As we write them: no leading zeros.
+        if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) || (text.len() > 1 && text.starts_with('0')) {
             return None;
         }
         text.parse().ok()
@@ -829,7 +834,7 @@ pub fn default_diag_dir() -> PathBuf {
 /// A host's `main` starts its diagnostics: opens the sink over `explicit` or [`default_diag_dir`], makes it the
 /// process's sink and installs the panic hook. Library callers and tests that only call `cli::run` never reach this.
 pub fn start_process(explicit: Option<PathBuf>) -> DiagSink {
-    let dir = explicit.unwrap_or_else(default_diag_dir);
+    let dir = explicit.filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(default_diag_dir);
     let sink = DiagSink::open(&dir);
     install_process_sink(&sink);
     install_panic_hook(&sink);

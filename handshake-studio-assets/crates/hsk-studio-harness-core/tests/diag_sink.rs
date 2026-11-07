@@ -48,7 +48,8 @@ fn numbers(name: &str) -> Vec<u64> {
 /// Every line of every diag file, in the order of the files, parsed; a line that does not parse fails the test.
 fn lines(dir: &Path) -> Vec<Value> {
     let mut out = Vec::new();
-    let ours = |n: &String| n.starts_with("studio-diag-") && n.ends_with(".jsonl") && numbers(n).len() == 4;
+    let leading_zero = |n: &String| n.split('-').any(|p| p.len() > 1 && p.starts_with('0'));
+    let ours = |n: &String| n.starts_with("studio-diag-") && n.ends_with(".jsonl") && numbers(n).len() == 4 && !leading_zero(n);
     let mut names: Vec<String> = file_names(dir).into_iter().filter(ours).collect();
     names.sort_by_key(|n| numbers(n));
     for name in &names {
@@ -250,7 +251,7 @@ fn a_very_long_detail_is_refused_and_the_line_stays_bounded() {
 fn rotation_keeps_the_directory_inside_its_bound_and_removes_only_our_names() {
     let scratch = Scratch::new("rotation");
     // Not ours, whatever they look like; each must survive every rotation.
-    let foreign = ["notes.jsonl", "studio-diag-1-2-3.jsonl", "studio-diag-a-2-3-4.jsonl", "studio-diag-1-2-3-4.jsonl.bak", "studio-panic-1.jsonl"];
+    let foreign = ["notes.jsonl", "studio-diag-1-2-3.jsonl", "studio-diag-a-2-3-4.jsonl", "studio-diag-1-2-3-4.jsonl.bak", "studio-panic-1.jsonl", "studio-diag-01-2-3-4.jsonl", "studio-panic-007-2.jsonl"];
     for name in foreign {
         fs::write(scratch.0.join(name), DECOY).unwrap();
     }
@@ -311,6 +312,18 @@ fn a_dir_that_cannot_be_used_never_fails_the_caller_and_stops_touching_it() {
     assert_eq!((state.lines_written, state.lines_dropped), (0, 200));
     assert_eq!(fs::read(&not_a_dir).unwrap(), b"x");
     assert_eq!(file_names(&scratch.0), ["a-file"]);
+}
+
+/// F1 of the review of 3c4811ed: an empty path creates fine and cannot be listed, and its files would land in the current
+/// directory, past any bound. A location that cannot be listed gets no file at all.
+#[test]
+fn a_dir_that_cannot_be_listed_gets_no_file() {
+    let before = file_names(Path::new("."));
+    let sink = DiagSink::open(Path::new(""));
+    sink.record_run_start("edit");
+    let state = sink.state();
+    assert_eq!((state.status, state.code, state.lines_written, state.lines_dropped), ("stopped", Some("prune_failed"), 0, 1));
+    assert_eq!(file_names(Path::new(".")), before);
 }
 
 /// A directory with the read-only attribute: on Unix the open fails; on Windows the attribute does not stop it.
