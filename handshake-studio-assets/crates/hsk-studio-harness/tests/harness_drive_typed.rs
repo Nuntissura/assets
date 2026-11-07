@@ -435,8 +435,7 @@ fn known_defect_export_svg_group_duplicate_identity() {
     s.close();
 }
 
-/// KNOWN DEFECT candidate (engine or Studio reading, UNVERIFIED): `layout.replace_text` with a `
-` in
+/// KNOWN DEFECT candidate (engine or Studio reading, UNVERIFIED): `layout.replace_text` with a `\n` in
 /// the text keeps one paragraph (`hsk_studio_layout::replace_story_text`, `sentinels::ends_paragraph`).
 /// The decoder passes the text unchanged. This pins today's behaviour.
 #[test]
@@ -448,8 +447,7 @@ fn known_defect_replace_text_newline_keeps_one_paragraph() {
     let page = first["state"]["shell"]["surfaces"]["layout_editor"]["pages"][0]["page_id"].as_str().expect("a page").to_string();
     let drawn = s.ok("layout.draw_frame", json!({"page_id":page,"x":10,"y":10,"w":200,"h":300}));
     let story = drawn["state"]["shell"]["surfaces"]["layout_editor"]["frames"][0]["story_id"].as_str().unwrap().to_string();
-    let text = s.ok("layout.replace_text", json!({"story":story,"start":0,"end":0,"text":"one
-two"}));
+    let text = s.ok("layout.replace_text", json!({"story":story,"start":0,"end":0,"text":"one\ntwo"}));
     let st = &text["state"]["shell"]["surfaces"]["layout_editor"]["stories"][0];
     assert_eq!((st["bytes"].as_u64(), st["paragraphs"].as_u64()), (Some(7), Some(1)), "{st}");
     s.close();
