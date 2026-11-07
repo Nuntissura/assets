@@ -2,28 +2,82 @@
 //! Vulkan presenter for the frame. `quiet` never takes focus or the foreground (HBR-QUIET): created hidden and
 //! inactive, WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW set before it is shown, shown with SW_SHOWNOACTIVATE at the bottom
 //! of the Z order and placed left of every monitor, minimised and restored with the no-activate show commands.
+//!
+//! Scene `gui` (feature `document`): the GUI frame lives through the loop. Input events go to the frame as typed
+//! HostEvents (pointer moves coalesced to one per loop iteration and kept out of the event log), scripted steps are
+//! applied one per iteration after the first frame, a resize re-creates the pane at the client extent (released
+//! first; 0x0 creates nothing), and only a changed frame is painted and uploaded. The Operator's own window waits for
+//! events (ControlFlow::Wait) and presents only when something changed.
 use crate::capture::{Json, device_json, layers_json, sha256_hex, write_png, write_receipt};
 use crate::error::HostError;
-use crate::event::{EventLog, HostEvent, from_winit};
+use crate::event::{EventLog, HostEvent, Mods, from_winit};
 use crate::offscreen::document_json;
 use crate::scene::{BACKGROUND, CHROME, Content, DocumentFacts, GuiArgs, Scene, content};
+use crate::script::Step;
 use crate::win32;
 use hsk_studio_vulkan::{
     Capture, FrameOutcome, GpuClientPort, Owner, OwnerConfig, PaneId, PresentCounters, Presenter, SWAPCHAIN_FORMAT,
     WindowHandles, WindowSignal,
 };
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::platform::windows::{EventLoopBuilderExtWindows, WindowAttributesExtWindows};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Window, WindowId, WindowLevel};
 
+#[cfg(feature = "document")]
+use crate::gui::GuiFrame;
+
+/// Without the `document` feature there is no GUI frame: the type is uninhabited and `open` refuses.
+#[cfg(not(feature = "document"))]
+enum GuiFrame {}
+#[cfg(not(feature = "document"))]
+impl GuiFrame {
+    fn open(_: &std::path::Path, _: u32, _: u32, _: Option<u32>) -> Result<Self, HostError> {
+        Err(HostError::Document("feature_off"))
+    }
+    fn extent(&self) -> (u32, u32) {
+        match *self {}
+    }
+    fn set_device(&mut self, _: String) {
+        match *self {}
+    }
+    fn apply(&mut self, _: HostEvent) {
+        match *self {}
+    }
+    fn step(&mut self, _: &Step) -> Result<(), HostError> {
+        match *self {}
+    }
+    fn frame(&mut self) -> Result<bool, HostError> {
+        match *self {}
+    }
+    fn upload_to<P: GpuClientPort>(&mut self, _: &mut P, _: PaneId) -> Result<bool, hsk_studio_vulkan::Refusal> {
+        match *self {}
+    }
+    fn mark_upload(&mut self) {
+        match *self {}
+    }
+    fn receipt(&self) -> Json {
+        match *self {}
+    }
+    fn tree_file(&self) -> String {
+        match *self {}
+    }
+    fn facts(&self) -> DocumentFacts {
+        match *self {}
+    }
+}
+
+/// Smallest client size of the Operator's GUI window: the Viewport keeps 360 x 240 (components.json `viewer.size.min`)
+/// beside the 300 dock and above the 24 status bar.
+pub const GUI_MIN_LOGICAL: (f64, f64) = (660.0, 264.0);
 /// Largest frame count a run may ask for.
 pub const MAX_FRAMES: u32 = 100_000;
 
@@ -143,10 +197,25 @@ struct Live {
     presenter: Presenter,
 }
 
+
 struct App {
     args: WindowArgs,
     content: Option<Content>,
     document: Option<DocumentFacts>,
+    gui: Option<GuiFrame>,
+    /// Scripted steps still to apply (scene `gui`), one per loop iteration after the first presented frame.
+    steps: VecDeque<Step>,
+    /// The newest pointer position of this loop iteration (moves are coalesced and never logged).
+    pending_move: Option<(i32, i32)>,
+    moves: u64,
+    mods: Mods,
+    /// The GUI frame was told the window is minimised (scene `gui`). The frame follows the live client size read each
+    /// iteration, never a Resized payload: a DPI change can report a size the window does not keep.
+    gui_minimized: bool,
+    /// The Operator's window presents only when this is set.
+    needs_present: bool,
+    /// The first pane extent: the exercise script resizes around it (the `gui` pane follows the window).
+    base: (u32, u32),
     window: Option<Window>,
     hwnd: isize,
     live: Option<Live>,
@@ -186,7 +255,16 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
     if args.exercise && !args.quiet {
         return Err(HostError::Usage("exercise_needs_quiet"));
     }
-    let (content, document) = content(&args.scene, args.width, args.height)?;
+    if crate::script::frame_only(&args.gui.steps) {
+        return Err(HostError::Usage("script_frame_only"));
+    }
+    let (content, document, gui) = match &args.scene {
+        Scene::Gui(path) => (None, None, Some(GuiFrame::open(path, args.width, args.height, args.gui.scale_milli)?)),
+        scene => {
+            let (c, d) = content(scene, args.width, args.height)?;
+            (Some(c), d, None)
+        }
+    };
     let event_loop = EventLoop::builder()
         .with_any_thread(true)
         .with_dpi_aware(true)
@@ -195,8 +273,16 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
     let watch = Watch::spawn()?;
     let mut app = App {
         args: args.clone(),
-        content: Some(content),
+        content,
         document,
+        gui,
+        steps: args.gui.steps.iter().cloned().collect(),
+        pending_move: None,
+        moves: 0,
+        mods: Mods::default(),
+        gui_minimized: false,
+        needs_present: true,
+        base: (0, 0),
         window: None,
         hwnd: 0,
         live: None,
@@ -225,17 +311,30 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
 }
 
 impl App {
+    /// The Operator's own window: waits for events, presents on change.
+    fn operator_wait(&self) -> bool {
+        !self.args.quiet && self.args.frames == 0
+    }
+
     fn start(&mut self, el: &ActiveEventLoop) -> Result<(), HostError> {
-        let content = self.content.take().ok_or(HostError::Window("state"))?;
-        let (pw, ph) = content.extent();
+        let content = self.content.take();
+        let (pw, ph) = match (&self.gui, &content) {
+            (Some(g), _) => g.extent(),
+            (None, Some(c)) => c.extent(),
+            (None, None) => return Err(HostError::Window("state")),
+        };
         let (ww, wh) = (pw.min(2560), ph.min(1440));
         self.target = (ww, wh);
+        self.base = (pw, ph);
         let title = format!("Handshake Studio, asset-local Vulkan host (chrome: {CHROME})");
         let mut attrs = Window::default_attributes()
             .with_title(title)
             .with_inner_size(PhysicalSize::new(ww, wh))
             .with_visible(false)
             .with_active(false);
+        if self.gui.is_some() && !self.args.quiet {
+            attrs = attrs.with_min_inner_size(LogicalSize::new(GUI_MIN_LOGICAL.0, GUI_MIN_LOGICAL.1));
+        }
         if self.args.quiet {
             let min_x = el.available_monitors().map(|m| m.position().x).min().unwrap_or(0);
             let x = min_x.saturating_sub(i32::try_from(ww).unwrap_or(i32::MAX)).saturating_sub(64);
@@ -269,9 +368,18 @@ impl App {
         self.startup_ms[1] = millis(t1);
         let t2 = Instant::now();
         let pane = owner.create_pane(pw, ph)?;
-        match &content {
-            Content::Clear { rgba, .. } => owner.clear_pane(pane, *rgba)?,
-            Content::Pixels { rgba8, .. } => owner.upload_pane(pane, rgba8)?,
+        if let Some(g) = self.gui.as_mut() {
+            g.set_device(crate::capture::device_readout(&owner));
+            // A frame with no fixed scale follows the window's (the frame ignores this when the scale is fixed).
+            let _ = g.apply(HostEvent::ScaleFactor { milli: self.scale_milli });
+            g.frame()?;
+            g.upload_to(&mut owner, pane)?;
+        } else {
+            match &content {
+                Some(Content::Clear { rgba, .. }) => owner.clear_pane(pane, *rgba)?,
+                Some(Content::Pixels { rgba8, .. }) => owner.upload_pane(pane, rgba8)?,
+                None => {}
+            }
         }
         let presenter = Presenter::new(&owner, handles, BACKGROUND)?;
         self.startup_ms[2] = millis(t2);
@@ -281,7 +389,7 @@ impl App {
         self.live = Some(Live { owner, pane, presenter });
         // The frame deadline counts from here.
         self.start = Instant::now();
-        el.set_control_flow(ControlFlow::Poll);
+        el.set_control_flow(if self.operator_wait() { ControlFlow::Wait } else { ControlFlow::Poll });
         Ok(())
     }
 
@@ -318,7 +426,8 @@ impl App {
         let extent = live.presenter.extent();
         let minimized = live.presenter.state() == hsk_studio_vulkan::machine::SwapState::Minimized
             || live.presenter.counters().skipped_minimized > 0;
-        let (pw, ph) = live.owner.pane_extent(live.pane)?;
+        // The first pane size: a `gui` pane follows the window, so the live pane extent moves with the exercise.
+        let (pw, ph) = self.base;
         let (ww, wh) = (pw.min(2560), ph.min(1440));
         self.phase_iterations = self.phase_iterations.saturating_add(1);
         if self.phase != Phase::Final && self.phase_iterations > 600 {
@@ -355,29 +464,81 @@ impl App {
             Phase::Back if self.phase_frames >= 1 && extent == (ww, wh) => self.advance(Phase::Final),
             _ => {}
         }
-        Ok(self.phase == Phase::Final && self.args.frames != 0 && self.presented.saturating_add(1) >= self.args.frames)
+        Ok(self.phase == Phase::Final && self.steps.is_empty() && self.args.frames != 0 && self.presented.saturating_add(1) >= self.args.frames)
+    }
+
+    /// Scene `gui`: the coalesced pointer move, one scripted step, the pane following the client size, then paint and
+    /// upload only what changed.
+    fn gui_tick(&mut self) -> Result<(), HostError> {
+        let (Some(g), Some(live)) = (self.gui.as_mut(), self.live.as_mut()) else { return Ok(()) };
+        if let Some((x, y)) = self.pending_move.take() {
+            let _ = g.apply(HostEvent::PointerMoved { x, y });
+        }
+        let (w, h) = self.window.as_ref().map_or((0, 0), |win| {
+            let s = win.inner_size();
+            (s.width, s.height)
+        });
+        if w == 0 || h == 0 {
+            if !self.gui_minimized {
+                // Minimised: no layout, no paint, no pane (create_pane(0, 0) is InvalidExtent).
+                let _ = g.apply(HostEvent::Resized { width: 0, height: 0 });
+                self.gui_minimized = true;
+            }
+        } else if self.gui_minimized || (w, h) != g.extent() {
+            let _ = g.apply(HostEvent::Resized { width: w, height: h });
+            self.gui_minimized = false;
+            if live.owner.pane_extent(live.pane)? != (w, h) && g.extent() == (w, h) {
+                // 64-pane cap (owner.rs create_pane): release first, then create at the client extent.
+                live.owner.release_pane(live.pane)?;
+                live.pane = live.owner.create_pane(w, h)?;
+                g.mark_upload();
+            }
+        }
+        // A scripted step lands only on a settled frame: the last present had the frame's extent, and a quiet run is
+        // back at its first size (a DPI change can resize the window before the first frame; positions in a script
+        // are for the size it asked for).
+        let settled = live.presenter.extent() == g.extent() && (!self.args.quiet || g.extent() == self.base);
+        if self.presented >= 1
+            && settled
+            && let Some(step) = self.steps.pop_front()
+        {
+            g.step(&step)?;
+        }
+        let painted = g.frame()?;
+        let uploaded = g.upload_to(&mut live.owner, live.pane)?;
+        if painted || uploaded {
+            self.needs_present = true;
+        }
+        Ok(())
     }
 
     fn tick(&mut self, el: &ActiveEventLoop) -> Result<(), HostError> {
         self.iterations = self.iterations.saturating_add(1);
-        if self.start.elapsed() > self.args.deadline || self.iterations > 2_000_000 {
+        if self.start.elapsed() > self.args.deadline || (self.args.frames != 0 && self.iterations > 2_000_000) {
             return Err(HostError::Timeout);
         }
         self.keep_quiet()?;
         if self.live.is_none() || self.phase == Phase::Done {
             return Ok(());
         }
+        self.gui_tick()?;
+        if self.operator_wait() && !self.needs_present {
+            el.set_control_flow(ControlFlow::Wait);
+            return Ok(());
+        }
         let capture_now = self.script()?;
+        let wait = self.operator_wait();
         let Some(live) = self.live.as_mut() else { return Ok(()) };
         match live.presenter.frame(&live.owner, live.pane, capture_now)? {
             FrameOutcome::Presented { capture, .. } => {
                 self.presented = self.presented.saturating_add(1);
                 self.phase_frames = self.phase_frames.saturating_add(1);
+                self.needs_present = false;
                 if let Some(c) = capture {
                     self.capture = Some(c);
                 }
-                el.set_control_flow(ControlFlow::Poll);
-                let enough = self.args.frames != 0 && self.presented >= self.args.frames;
+                el.set_control_flow(if wait { ControlFlow::Wait } else { ControlFlow::Poll });
+                let enough = self.args.frames != 0 && self.presented >= self.args.frames && self.steps.is_empty();
                 if self.phase == Phase::Final && enough && (self.args.capture.is_none() || self.capture.is_some()) {
                     self.phase = Phase::Done;
                     el.exit();
@@ -456,6 +617,14 @@ impl App {
         let pane_extent = self.capture.as_ref().map_or(swap_extent, |c| (c.width, c.height));
         let frame_sha256 = self.capture.as_ref().map(|c| sha256_hex(&c.rgba8));
         let process_dpi_aware = win32::process_dpi_aware();
+        if let (Some(path), Some(g)) = (&self.args.gui.tree, &self.gui) {
+            crate::capture::write_text(path, &g.tree_file())?;
+        }
+        let gui = self.gui.as_ref().map_or(Json::Null, GuiFrame::receipt);
+        let document = match &self.gui {
+            Some(g) => Some(g.facts()),
+            None => self.document.take(),
+        };
         let receipt = Json::obj(vec![
             ("schema", Json::str("hsk.studio.native_host.receipt@1")),
             ("host", Json::str("asset-local host")),
@@ -512,6 +681,7 @@ impl App {
                 ]),
             ),
             ("events", Json::Num(self.events.events().len() as u64)),
+            ("pointer_moves", Json::Num(self.moves)),
             (
                 "startup_ms",
                 Json::obj(vec![
@@ -521,7 +691,8 @@ impl App {
                 ]),
             ),
             ("chrome", Json::str(CHROME)),
-            ("document", document_json(self.document.as_ref())),
+            ("document", document_json(document.as_ref())),
+            ("gui", gui),
         ]);
         if let (Some(path), Some(c)) = (&self.args.capture, &self.capture) {
             write_png(path, c.width, c.height, &c.rgba8)?;
@@ -542,7 +713,7 @@ impl App {
             scale_factor_milli: self.scale_milli,
             process_dpi_aware,
             exercised: self.exercised,
-            document: self.document,
+            document,
             receipt,
         })
     }
@@ -564,7 +735,13 @@ impl ApplicationHandler for App {
                 let _ = inner_size_writer.request_inner_size(PhysicalSize::new(self.target.0, self.target.1));
             }
         }
-        let Some(ev) = from_winit(&event, crate::event::Mods::default()) else { return };
+        let Some(ev) = from_winit(&event, self.mods) else { return };
+        if let HostEvent::PointerMoved { x, y } = ev {
+            // Coalesced to the newest position per loop iteration, never logged.
+            self.pending_move = Some((x, y));
+            self.moves = self.moves.saturating_add(1);
+            return;
+        }
         self.events.push(ev);
         match ev {
             HostEvent::Resized { width, height } => {
@@ -573,12 +750,31 @@ impl ApplicationHandler for App {
                         if width == 0 || height == 0 { WindowSignal::Minimized } else { WindowSignal::Resized };
                     live.presenter.window_signal(signal);
                 }
+                // Scene `gui`: the next iteration reads the live client size (gui_tick), not this payload.
+                self.needs_present = true;
             }
             HostEvent::Focus { gained: true } => {
                 self.focus.focus_gained_events = self.focus.focus_gained_events.saturating_add(1);
             }
-            HostEvent::ScaleFactor { milli } => self.scale_milli = milli,
+            HostEvent::ScaleFactor { milli } => {
+                self.scale_milli = milli;
+                if let Some(g) = self.gui.as_mut() {
+                    let _ = g.apply(ev);
+                }
+                self.needs_present = true;
+            }
+            HostEvent::Modifiers(m) => self.mods = m,
             HostEvent::CloseRequested => el.exit(),
+            HostEvent::RedrawRequested | HostEvent::Occluded { hidden: false } => self.needs_present = true,
+            HostEvent::PointerLeft | HostEvent::Button { .. } | HostEvent::Wheel { .. } | HostEvent::Key { .. } => {
+                if let Some(g) = self.gui.as_mut() {
+                    // A pending move lands first, so a press sees the newest position.
+                    if let Some((x, y)) = self.pending_move.take() {
+                        let _ = g.apply(HostEvent::PointerMoved { x, y });
+                    }
+                    let _ = g.apply(ev);
+                }
+            }
             _ => {}
         }
     }
@@ -597,6 +793,7 @@ impl ApplicationHandler for App {
         self.release();
     }
 }
+
 
 fn millis(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)

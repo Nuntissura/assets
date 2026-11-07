@@ -215,7 +215,7 @@ fn layers_panel_regions_rows_states_and_tree_checks() {
     for y in 0..480u32 {
         for x in 0..800u32 {
             let (lx, ly) = (x as f32 + 0.5, y as f32 + 0.5);
-            if (x as i32) < vp.x1 && (y as i32) < vp.y1 || skip.iter().any(|q| q.contains(kumihimo_ui::geom::Point::new(lx, ly))) {
+            if ((x as i32) < vp.x1 && (y as i32) < vp.y1) || skip.iter().any(|q| q.contains(kumihimo_ui::geom::Point::new(lx, ly))) {
                 continue;
             }
             let p = c.pixel(x, y);

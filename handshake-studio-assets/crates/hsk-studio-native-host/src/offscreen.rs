@@ -1,5 +1,6 @@
 //! Offscreen proof path: Vulkan instance with no surface extension, a pane image, readback, PNG. No window, no HWND.
-//! Agents screenshot through this.
+//! Agents screenshot through this. The `gui` scene runs its scripted steps on the live frame first, painting and
+//! uploading after each step, then reads back the final frame.
 use crate::capture::{Json, device_json, layers_json, sha256_hex, write_png, write_receipt};
 use crate::error::HostError;
 use crate::scene::{CHROME, Content, DocumentFacts, GuiArgs, Scene, content};
@@ -35,6 +36,9 @@ pub struct OffscreenResult {
 
 /// Renders `args.scene` into a pane and reads it back.
 pub fn run(args: &OffscreenArgs) -> Result<OffscreenResult, HostError> {
+    if let Scene::Gui(path) = &args.scene {
+        return gui_run(args, path);
+    }
     let (content, document) = content(&args.scene, args.width, args.height)?;
     let mut owner = Owner::open(OwnerConfig { surface: false, allow_overlays: args.allow_overlays, allow_cpu_device: false })?;
     let (width, height) = content.extent();
@@ -45,6 +49,43 @@ pub fn run(args: &OffscreenArgs) -> Result<OffscreenResult, HostError> {
     }
     let rgba8 = owner.read_pane(pane)?;
     let exact = rgba8 == content.expected()?;
+    finish(args, owner, (width, height), rgba8, exact, document, Json::Null)
+}
+
+#[cfg(feature = "document")]
+fn gui_run(args: &OffscreenArgs, path: &std::path::Path) -> Result<OffscreenResult, HostError> {
+    use crate::gui::{GuiFrame, PortPane, drive};
+    if crate::script::frame_only(&args.gui.steps) {
+        return Err(HostError::Usage("script_frame_only"));
+    }
+    let mut frame = GuiFrame::open(path, args.width, args.height, Some(args.gui.scale_milli.unwrap_or(1000)))?;
+    let mut owner = Owner::open(OwnerConfig { surface: false, allow_overlays: args.allow_overlays, allow_cpu_device: false })?;
+    frame.set_device(crate::capture::device_readout(&owner));
+    let (width, height) = frame.extent();
+    let pane = owner.create_pane(width, height)?;
+    drive(&mut frame, &mut PortPane { port: &mut owner, pane }, &args.gui.steps)?;
+    let rgba8 = owner.read_pane(pane)?;
+    let exact = frame.rgba() == Some(&rgba8[..]);
+    if let Some(tree) = &args.gui.tree {
+        crate::capture::write_text(tree, &frame.tree_file())?;
+    }
+    finish(args, owner, (width, height), rgba8, exact, Some(frame.facts()), frame.receipt())
+}
+
+#[cfg(not(feature = "document"))]
+fn gui_run(_: &OffscreenArgs, _: &std::path::Path) -> Result<OffscreenResult, HostError> {
+    Err(HostError::Document("feature_off"))
+}
+
+fn finish(
+    args: &OffscreenArgs,
+    owner: Owner,
+    (width, height): (u32, u32),
+    rgba8: Vec<u8>,
+    exact: bool,
+    document: Option<DocumentFacts>,
+    gui: Json,
+) -> Result<OffscreenResult, HostError> {
     let frame_sha256 = sha256_hex(&rgba8);
     let receipt = Json::obj(vec![
         ("schema", Json::str("hsk.studio.native_host.receipt@1")),
@@ -64,6 +105,7 @@ pub fn run(args: &OffscreenArgs) -> Result<OffscreenResult, HostError> {
         ("exact", Json::Bool(exact)),
         ("chrome", Json::str(CHROME)),
         ("document", document_json(document.as_ref())),
+        ("gui", gui),
     ]);
     if let Some(out) = &args.out {
         write_png(out, width, height, &rgba8)?;

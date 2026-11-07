@@ -85,15 +85,20 @@ fn gui_offscreen_png_equals_quiet_window_capture_after_a_pointer_session() {
         gui: gui("gui-swapchain-tree.json"),
     })
     .expect("gui quiet window");
+    keep(&s.0, &["gui-offscreen.png", "gui-offscreen.json", "gui-offscreen-tree.json", "gui-swapchain.png", "gui-swapchain.json", "gui-swapchain-tree.json", "layered.handshake"]);
     assert_quiet(&win.focus);
     assert_eq!(win.swap_extent, SIZE);
+    if win.frame_sha256.as_deref() != Some(off.frame_sha256.as_str()) {
+        eprintln!("window events: {:?}", win.events);
+        eprintln!("window gui: {}", win.receipt.get("gui").map(|v| v.render()).unwrap_or_default());
+        eprintln!("offscreen gui: {}", g.render());
+    }
     assert_eq!(win.frame_sha256.as_deref(), Some(off.frame_sha256.as_str()), "swapchain frame equals the offscreen frame");
     let a = std::fs::read_to_string(s.0.join("gui-offscreen-tree.json")).unwrap();
     let b = std::fs::read_to_string(s.0.join("gui-swapchain-tree.json")).unwrap();
     assert_eq!(a, b, "the same tree after the same session");
     let receipt = std::fs::read_to_string(s.0.join("gui-swapchain.json")).unwrap();
     assert!(receipt.contains(r#""scene":"gui""#) && receipt.contains(r#""chrome":"cpu painter, Vulkan UI pass pending""#), "{receipt}");
-    keep(&s.0, &["gui-offscreen.png", "gui-offscreen.json", "gui-offscreen-tree.json", "gui-swapchain.png", "gui-swapchain.json", "layered.handshake"]);
 }
 
 #[test]
