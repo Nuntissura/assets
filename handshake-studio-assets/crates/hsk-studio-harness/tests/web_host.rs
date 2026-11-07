@@ -216,7 +216,7 @@ fn site_targets_and_recipe_are_steps_and_survive_save_and_reopen() {
     with_run(|run| assert_eq!(refused(run, "web.open", json!({"path": s(&index)})), "site_record_invalid"));
 }
 
-const SITE_PAGE: &str = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<!-- build notes -->\n<link rel=\"stylesheet\" href=\"styles.css\">\n<style>@media (min-width: 768px) { .narrow { display: none; } } @media (min-width: 1200px) { h1 { color: red; } }</style>\n<title>Harbour</title>\n</head>\n<body>\n<h1 id=\"top\">Harbour Lights</h1>\n<p class=\"narrow\">Swipe for stalls</p>\n<img alt=\"Harbour at night\" src=\"hero-768.png\" srcset=\"hero-768.png 768w, hero-1280.png 1280w\">\n<img alt=\"Map\" src=\"img/map.webp\">\n<a href=\"https://example.test/tickets\">Tickets</a> <a href=\"#top\">Top</a>\n</body>\n</html>\n";
+const SITE_PAGE: &str = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<!-- build notes -->\n<link rel=\"stylesheet\" href=\"styles.css\">\n<style>@media (min-width: 768px) { .narrow { display: none; } } @media (min-width: 1200px) { h1 { color: red; } }</style>\n<title>Harbour</title>\n</head>\n<body>\n<h1 id=\"top\">Harbour Lights</h1>\n<p class=\"narrow\">Swipe for stalls</p>\n<img alt=\"Harbour at night\" src=\"hero-768.png\" srcset=\"hero-768.png 768w, hero-1280.png 1280w\">\n<img alt=\"Map\" src=\"img/map.webp\">\n<a href=\"https://example.test/tickets\">Tickets</a> <a href=\"#top\">Top</a>\n<a href=\"index.html\">Home</a> <a href=\"/\">Root</a> <a href=\"docs/\">Docs</a>\n</body>\n</html>\n";
 
 fn site_dir(dir: &Scratch) -> PathBuf {
     dir.write("site/styles.css", b"body { margin: 0; }\n");
@@ -262,6 +262,8 @@ fn export_writes_a_static_tree_and_publish_and_verify_close_the_loop() {
         let paths: Vec<&str> = export["manifest"]["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
         assert_eq!(paths, ["hero-1280.png", "hero-768.png", "img/map.webp", "index.html", "styles.css"]);
         assert_eq!(export["manifest"]["external"], json!(["https://example.test/tickets"]));
+        // Review F1: a link to the document itself and folder links are ordinary pages, listed and not refused.
+        assert_eq!(export["manifest"]["links"], json!(["/", "docs/"]));
         let out = std::fs::read_to_string(dir.at("out/index.html")).unwrap();
         assert!(!out.contains("<!--") && out.starts_with("<!DOCTYPE html><html lang=\"en\"><head><link"), "minified by span: {out}");
         assert!(out.contains("<p class=\"narrow\">Swipe for stalls</p>\n<img"), "body whitespace is kept: {out}");
@@ -286,6 +288,11 @@ fn export_writes_a_static_tree_and_publish_and_verify_close_the_loop() {
         assert!(!receipt.to_string().contains("cred:"), "{receipt}");
         assert!(dir.at(&format!("out/{RECEIPT_FILE}")).is_file());
         assert_eq!(std::fs::read(dir.at("target/index.html")).unwrap(), out.as_bytes());
+        cmd(run, "web.remote_target", json!({"target_id": "src", "root_path": s(&dir.at("site"))}));
+        assert_eq!(refused(run, "web.publish", json!({"target_id": "src"})), "publish_over_source");
+        cmd(run, "web.remote_target", json!({"target_id": "inner", "root_path": s(&dir.at("out/live"))}));
+        assert_eq!(refused(run, "web.publish", json!({"target_id": "inner"})), "publish_over_export");
+        assert!(!dir.at("out/live").exists());
         let verified = cmd(run, "web.verify", json!({}));
         assert_eq!((verified["mismatched"].as_u64(), verified["documents_parsed"].as_u64()), (Some(0), Some(1)));
         std::fs::write(dir.at("target/styles.css"), b"tampered").unwrap();
@@ -294,7 +301,8 @@ fn export_writes_a_static_tree_and_publish_and_verify_close_the_loop() {
         assert!(files.as_array().unwrap().iter().any(|f| f["path"] == "styles.css" && f["outcome"] == "mismatch"), "{files}");
         // A changed export is not published.
         std::fs::write(dir.at("out/styles.css"), b"changed").unwrap();
-        assert_eq!(refused(run, "web.publish", json!({})), "export_changed");
+        assert_eq!(refused(run, "web.publish", json!({})), "parameter_missing", "three local targets: name one");
+        assert_eq!(refused(run, "web.publish", json!({"target_id": "local"})), "export_changed");
     });
 }
 
@@ -337,10 +345,26 @@ fn hostile_input_is_refused_typed_and_changes_nothing() {
         assert_eq!(refused(run, "web.save", json!({})), "parameter_missing");
     });
     // An asset outside the root or missing fails the export closed; nothing is written.
-    for (label, reference, code) in [("escape", "../secret.png", "asset_denied"), ("missing", "gone.png", "asset_missing"), ("backslash", "img\\a.png", "asset_denied"), ("reserved", "con.png", "asset_denied")] {
-        let index = dir.write(&format!("{label}/site/index.html"), format!("<!DOCTYPE html><html><head><title>t</title></head><body><img alt=\"a\" src=\"{reference}\"></body></html>").as_bytes());
+    let img = |src: &str| format!("<img alt=\"a\" src=\"{src}\">");
+    let mut cases = vec![
+        ("escape", img("../secret.png"), "asset_denied"),
+        ("missing", img("gone.png"), "asset_missing"),
+        ("backslash", img("img\\a.png"), "asset_denied"),
+        ("reserved", img("con.png"), "asset_denied"),
+        // Review F3: a reserved output name collides before anything is written.
+        ("manifest", format!("<a href=\"{MANIFEST_FILE}\">m</a>"), "export_path_collision"),
+    ];
+    if cfg!(windows) {
+        // NTFS folds case: two spellings of one file are one output name.
+        cases.push(("case", format!("{}{}", img("logo.png"), img("Logo.png")), "export_path_collision"));
+    }
+    for (label, body, code) in cases {
+        let reference = body.clone();
+        let index = dir.write(&format!("{label}/site/index.html"), format!("<!DOCTYPE html><html><head><title>t</title></head><body>{body}</body></html>").as_bytes());
         dir.write(&format!("{label}/secret.png"), b"secret");
         dir.write(&format!("{label}/site/con.png"), b"device name");
+        dir.write(&format!("{label}/site/logo.png"), b"logo");
+        dir.write(&format!("{label}/site/{MANIFEST_FILE}"), b"{}");
         let out = dir.at(&format!("{label}/out"));
         with_run(|run| {
             cmd(run, "web.open", json!({"path": s(&index)}));
@@ -417,4 +441,65 @@ fn web_commands_run_in_the_drive_session() {
     assert!(saved.contains("<h1 id=\"top\" class=\"headline\">Harbour Lights<small>Friday</small></h1>"), "{saved}");
     assert_eq!(std::fs::read(dir.at("target/index.html")).unwrap().len(), std::fs::read(dir.at("out/index.html")).unwrap().len());
     assert_eq!(std::fs::read(&package).unwrap(), FIXTURE, "the package is never replaced by a web save");
+}
+
+/// Review F2: an undone site does not come back after save and reopen.
+#[test]
+fn an_undone_site_stays_undone_after_save_and_reopen() {
+    let dir = Scratch::new("undone-site");
+    let index = dir.write("site/index.html", PAGE.as_bytes());
+    with_run(|run| {
+        cmd(run, "web.open", json!({"path": s(&index)}));
+        cmd(run, "web.site", json!({"display_name": "harbour", "local_root": s(&dir.at("site"))}));
+        cmd(run, "web.save", json!({"overwrite": true}));
+        cmd(run, "web.undo", json!({}));
+        let saved = cmd(run, "web.save", json!({"overwrite": true}));
+        assert_eq!(saved["site_record"], false);
+    });
+    with_run(|run| {
+        let open = cmd(run, "web.open", json!({"path": s(&index)}));
+        assert_eq!(open["web"]["site"], Value::Null, "{open}");
+    });
+}
+
+/// Review F6: after a web edit the run's undo does not reach an older package step; it refuses, naming web.undo.
+#[test]
+fn history_undo_refuses_while_the_newest_step_is_a_web_step() {
+    const L1: &str = "SLYR-019abcde-0000-7000-8000-000000000001";
+    with_run(|run| {
+        cmd(run, "web.open", json!({"source": "<!DOCTYPE html><html><head><title>t</title></head><body><p id=\"p\">a</p></body></html>"}));
+        cmd(run, "web.set_text", json!({"key": "#p", "text": "b"}));
+        assert!(!run.undo());
+        assert_eq!((run.ops().last().unwrap()["error"].as_str(), run.ops().last().unwrap()["target"].as_str()), (Some("newest_step_is_web"), Some("web.undo")));
+        assert!(run.rename(L1, "renamed", None), "{}", run.ops().last().unwrap());
+        cmd(run, "web.set_text", json!({"key": "#p", "text": "c"}));
+        let revision = run.snapshot().unwrap().document().revision;
+        assert!(!run.undo(), "the web edit is newer than the rename");
+        assert_eq!(run.snapshot().unwrap().document().revision, revision, "nothing was undone");
+        cmd(run, "web.undo", json!({}));
+        assert!(run.undo(), "the rename is the newest step now: {}", run.ops().last().unwrap());
+    });
+}
+
+/// Review F5: a junction or symlinked folder inside the root never grants a file outside it.
+#[test]
+fn a_linked_folder_does_not_reach_outside_the_root() {
+    let dir = Scratch::new("link-escape");
+    dir.write("outside/secret.png", b"secret");
+    let index = dir.write("site/index.html", b"<!DOCTYPE html><html><head><title>t</title></head><body><img alt=\"a\" src=\"media/secret.png\"></body></html>");
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(dir.at("outside"), dir.at("site/media"));
+    #[cfg(not(windows))]
+    let linked = std::os::unix::fs::symlink(dir.at("outside"), dir.at("site/media"));
+    if linked.is_err() {
+        println!("NOT_PROVEN: a_linked_folder_does_not_reach_outside_the_root: this account may not create a folder symlink");
+        return;
+    }
+    let out = dir.at("out");
+    with_run(|run| {
+        cmd(run, "web.open", json!({"path": s(&index)}));
+        cmd(run, "web.export_recipe", json!({"output_root": s(&out)}));
+        assert_eq!(refused(run, "web.export", json!({})), "asset_denied");
+    });
+    assert!(!out.exists());
 }

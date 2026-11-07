@@ -2050,13 +2050,45 @@ impl Run<'_> {
     /// redo history. One record `undo` (`nothing_to_undo` when the history is empty).
     pub fn undo(&mut self) -> bool {
         self.note_unrecordable("history.undo");
+        if self.web_step_is_newer(true) {
+            return self.refuse_for_web(true);
+        }
         self.history_step(true)
     }
 
     /// Re-applies the newest undone step. One record `redo` (`nothing_to_redo` when empty).
     pub fn redo(&mut self) -> bool {
         self.note_unrecordable("history.redo");
+        if self.web_step_is_newer(false) {
+            return self.refuse_for_web(false);
+        }
         self.history_step(false)
+    }
+
+    /// Lane SMB-WEB-HOST-1 (review F6): the web host keeps its own history, so a caller's undo or redo after a web
+    /// edit must not reach an older step of the run. True when the web host's newest step (undo or redo history) is
+    /// newer than the run's newest step: both take their correlation from this run's one source, which is monotonic
+    /// ([`RunContext`]). Internal rollbacks (`quietly`) are never refused.
+    fn web_step_is_newer(&self, undo: bool) -> bool {
+        if self.quiet {
+            return false;
+        }
+        let Some(web) = self.web.newest_correlation(undo) else {
+            return false;
+        };
+        let stack = if undo { &self.undo_stack } else { &self.redo_stack };
+        stack.last().is_none_or(|step| step.ctx.correlation().value() < web)
+    }
+
+    /// The typed refusal `newest_step_is_web`: one record `undo` / `redo` naming `web.undo` / `web.redo`.
+    fn refuse_for_web(&mut self, undo: bool) -> bool {
+        let (op, hint) = if undo { ("undo", "web.undo") } else { ("redo", "web.redo") };
+        let before = self.frames.count();
+        let r = self.own_or_push(op, before, Err("newest_step_is_web"));
+        if let Some(record) = self.ops.last_mut() {
+            record["target"] = json!(hint);
+        }
+        r
     }
 
     /// Labels of the undo and redo histories, oldest first, and each step's attribution (lane

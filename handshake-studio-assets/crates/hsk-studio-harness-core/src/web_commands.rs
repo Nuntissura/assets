@@ -37,10 +37,14 @@
 //! reported once), and the elapsed time, never a credential; a failure keeps the files transferred before it in the
 //! receipt. The receipt is the op record's detail and `studio-publish-receipt.json` in the export root.
 //!
+//! Folder links (`/`, `docs/`) and links to the document itself are listed, never copied or refused; a granted file
+//! must resolve inside the root (no junction or symlink escape); every output name is checked case-folded before
+//! the first write; publish refuses a target inside or around the export and the site's own folder.
+//!
 //! Declared limits: one document per export (the document set is the open document) and the document's folder must
 //! be the site's `local_root`; no source maps, no preprocessors, assets keep their paths (`asset_rewriting: keep`);
 //! site and recipe are not Folio records (no web token exists among the session's document entries), so the web
-//! history is the host's own, not the run's (`history.undo` does not reach it); no business event; jobs and progress
+//! history is the host's own, not the run's (`history.undo` refuses `newest_step_is_web` while a web step is newest); no business event; jobs and progress
 //! are not admitted through a JobPort (the host integration declares jobs none); no controls registry ids.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{Run, actor_json};
@@ -48,7 +52,7 @@ use crate::action::{self, CommandEntry};
 use hsk_studio_accord::{CancellationToken, CausationId, CommandContext, CommandId};
 use hsk_studio_web::responsive::document_media_blocks;
 use hsk_studio_web::{
-    AssetDecision, AssetOutcome, AssetPort, AssetSource, DenyReason, Limits, Loads, NodeId, NodeKey, NodeKind, SourcePatch, TextEdit, WebDoc, WebError, apply, collect_assets, insert_element, insert_fragment,
+    AssetDecision, AssetOutcome, AssetPort, AssetSource, DenyReason, Limits, Load, Loads, NodeId, NodeKey, NodeKind, SourcePatch, TextEdit, WebDoc, WebError, apply, collect_assets, insert_element, insert_fragment,
     parse, preview_tree, remove_attribute, remove_node, set_attribute, set_text, sha256_hex,
 };
 use serde_json::{Map, Value, json};
@@ -197,6 +201,13 @@ impl WebHost {
     /// The source revision (0 before an open).
     pub fn revision(&self) -> u64 {
         self.doc.as_ref().map_or(0, WebDoc::revision)
+    }
+
+    /// The correlation of the newest step of the undo (`undo`) or redo history: `history.undo` and `history.redo`
+    /// refuse while a web step is newer than the run's newest step.
+    pub fn newest_correlation(&self, undo: bool) -> Option<u64> {
+        let stack = if undo { &self.undo } else { &self.redo };
+        stack.last().map(|s| s.ctx.correlation().value())
     }
 
     /// The source text of the open document.
@@ -499,14 +510,17 @@ impl WebHost {
         }
         let source = doc.source().as_bytes().to_vec();
         let sha = doc.sha256_hex().to_string();
-        let record = (self.site.is_some() || self.recipe.is_some()).then(|| sidecar_json(self.site.as_ref(), self.recipe.as_ref()));
+        // A record that existed is rewritten even when site and recipe are now unset (an undone site must not come
+        // back on reopen); a null record reads back as none.
+        let beside = sidecar(&path);
+        let record = (self.site.is_some() || self.recipe.is_some() || std::fs::symlink_metadata(&beside).is_ok()).then(|| sidecar_json(self.site.as_ref(), self.recipe.as_ref()));
         if let Some(record) = &record {
-            write_atomic(&sidecar(&path), &serde_json::to_vec_pretty(record).map_err(|_| No("save_failed", String::new(), None))?)?;
+            write_atomic(&beside, &serde_json::to_vec_pretty(record).map_err(|_| No("save_failed", String::new(), None))?)?;
         }
         write_atomic(&path, &source)?;
         self.path = Some(path.clone());
         self.saved_sha256 = Some(sha);
-        Ok(json!({"saved": path.to_string_lossy(), "site_record": record.is_some(), "web": self.state_json()}))
+        Ok(json!({"saved": path.to_string_lossy(), "site_record": self.site.is_some() || self.recipe.is_some(), "web": self.state_json()}))
     }
 
     /// The reference gate's port over the site root (module docs: the document's folder is the root).
@@ -528,7 +542,8 @@ impl WebHost {
             (None, dir) => dir,
         };
         let document = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
-        Ok(Port { root, document })
+        let canonical = root.as_ref().and_then(|r| std::fs::canonicalize(r).ok());
+        Ok(Port { root, canonical, document })
     }
 
     fn export(&self, cancel: &CancellationToken) -> R<Value> {
@@ -537,9 +552,15 @@ impl WebHost {
         let out_doc = if recipe.minify { minified(doc, cancel)? } else { doc.clone() };
         let port = self.port()?;
         let refs = collect_assets(&out_doc, &port, cancel).map_err(|e| web_no(&e))?;
-        let (mut assets, mut external) = (BTreeSet::new(), BTreeSet::new());
+        let (mut assets, mut external, mut links) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
         for r in &refs {
             match &r.outcome {
+                // A link to a folder (`/`, `docs/`) is navigation only: listed, never copied.
+                AssetOutcome::Granted { id } if id.starts_with(LINK_PREFIX) => {
+                    links.insert(bounded(id.get(LINK_PREFIX.len()..).unwrap_or("")));
+                }
+                // The document itself (`<a href="index.html">`) is written from the exported source.
+                AssetOutcome::Granted { id } if port.document.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(id)) => {}
                 AssetOutcome::Granted { id } => {
                     assets.insert(id.clone());
                 }
@@ -551,8 +572,22 @@ impl WebHost {
                 AssetOutcome::Inline | AssetOutcome::SameDocument => {}
             }
         }
-        if assets.contains(&recipe.file) {
-            return no("export_path_collision", &recipe.file);
+        // One case-folded set of every output name, checked before the first write (NTFS and APFS fold case).
+        let mut names = BTreeSet::new();
+        let mut folders = BTreeSet::new();
+        for name in assets.iter().chain([&recipe.file]).map(|n| n.to_ascii_lowercase()).chain([MANIFEST_FILE.to_string(), RECEIPT_FILE.to_string()]) {
+            let mut at = 0usize;
+            while let Some(slash) = name.get(at..).and_then(|rest| rest.find('/')) {
+                at = at.saturating_add(slash);
+                folders.insert(name.get(..at).unwrap_or("").to_string());
+                at = at.saturating_add(1);
+            }
+            if !names.insert(name.clone()) {
+                return no("export_path_collision", &name);
+            }
+        }
+        if let Some(name) = names.intersection(&folders).next() {
+            return no("export_path_collision", name);
         }
         if assets.len() >= MAX_EXPORT_FILES {
             return no("export_too_many_files", &assets.len().to_string());
@@ -580,7 +615,7 @@ impl WebHost {
         let listed: Vec<Value> = files.iter().map(|(path, bytes, role)| json!({"path": path, "role": role, "bytes": bytes.len(), "sha256": sha256_hex(bytes)})).collect();
         let manifest = json!({
             "schema": "hsk.studio.web.export_manifest@1", "document": recipe.file, "source_sha256": doc.sha256_hex(),
-            "recipe": {"file": recipe.file, "minify": recipe.minify, "asset_rewriting": "keep", "link_base": recipe.link_base}, "files": listed, "external": external.iter().collect::<Vec<_>>(),
+            "recipe": {"file": recipe.file, "minify": recipe.minify, "asset_rewriting": "keep", "link_base": recipe.link_base}, "files": listed, "external": external.iter().collect::<Vec<_>>(), "links": links.iter().collect::<Vec<_>>(),
         });
         for (path, bytes, _) in &files {
             write_new(&join(&out, path), bytes)?;
@@ -610,10 +645,16 @@ impl WebHost {
         let export_root = PathBuf::from(&recipe.output_root);
         let manifest = read_manifest(&export_root)?;
         let target_root = PathBuf::from(checked_path(&target.root_path)?);
-        if let (Ok(a), Ok(b)) = (std::fs::canonicalize(&export_root), std::fs::canonicalize(&target_root))
-            && (b.starts_with(&a) || a.starts_with(&b))
-        {
+        // Resolved through the nearest existing folder, so a target not created yet is checked too.
+        let target_at = resolved(&target_root);
+        let export_at = resolved(&export_root);
+        if target_at.starts_with(&export_at) || export_at.starts_with(&target_at) {
             return no("publish_over_export", &target.root_path);
+        }
+        let doc_dir = self.path.as_ref().and_then(|p| p.parent()).map(|d| if d.as_os_str().is_empty() { Path::new(".") } else { d });
+        let sources = [Some(Path::new(&site.local_root)), doc_dir];
+        if sources.into_iter().flatten().any(|s| resolved(s) == target_at) {
+            return no("publish_over_source", &target.root_path);
         }
         let mut done: Vec<Value> = Vec::new();
         let mut unmapped = BTreeSet::new();
@@ -741,23 +782,37 @@ fn minified(doc: &WebDoc, cancel: &CancellationToken) -> R<WebDoc> {
 /// with that path as its id; anything else is denied or unavailable (module docs).
 struct Port {
     root: Option<PathBuf>,
+    /// The root resolved through links: a granted file must resolve inside it.
+    canonical: Option<PathBuf>,
     document: Option<String>,
 }
+
+/// The id prefix of a navigation link to a folder (granted as a link, never copied).
+const LINK_PREFIX: &str = "link:";
 
 impl AssetPort for Port {
     fn document_url(&self) -> Option<&str> {
         self.document.as_deref()
     }
 
-    fn resolve(&self, reference: &str, _loads: Loads) -> AssetDecision {
+    fn resolve(&self, reference: &str, loads: Loads) -> AssetDecision {
+        let path = reference.split(['?', '#']).next().unwrap_or("");
+        if loads == Loads::of(Load::Document) && (path.is_empty() || path == "." || path.ends_with('/')) {
+            return AssetDecision::Granted { id: format!("{LINK_PREFIX}{reference}") };
+        }
         let Some(id) = asset_id(reference) else {
             return AssetDecision::Denied;
         };
-        let Some(root) = &self.root else {
+        let (Some(root), Some(canonical)) = (&self.root, &self.canonical) else {
             return AssetDecision::Unavailable;
         };
-        match std::fs::symlink_metadata(join(root, &id)) {
-            Ok(m) if m.is_file() => AssetDecision::Granted { id },
+        let file = join(root, &id);
+        match std::fs::symlink_metadata(&file) {
+            // A junction or symlinked folder inside the root must not reach a file outside it.
+            Ok(m) if m.is_file() => match std::fs::canonicalize(&file) {
+                Ok(real) if real.starts_with(canonical) => AssetDecision::Granted { id },
+                _ => AssetDecision::Denied,
+            },
             _ => AssetDecision::Unavailable,
         }
     }
@@ -796,6 +851,28 @@ fn portable(name: &str) -> bool {
         && !name.starts_with('.')
         && !reserved.contains(&stem.as_str())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '+' | '@' | ',' | '(' | ')'))
+}
+
+/// `path` resolved through its nearest existing ancestor (links followed there), the rest appended, ASCII case folded:
+/// two spellings of one place compare equal before the place exists.
+fn resolved(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut rest = Vec::new();
+    let mut at = absolute.as_path();
+    let base = loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            break real;
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = parent;
+            }
+            _ => break at.to_path_buf(),
+        }
+    };
+    let full = rest.into_iter().rev().fold(base, |p, s| p.join(s));
+    PathBuf::from(full.to_string_lossy().to_ascii_lowercase())
 }
 
 fn join(root: &Path, id: &str) -> PathBuf {
@@ -1220,9 +1297,9 @@ pub(super) fn run(run: &mut Run<'_>, command_id: &str, params: &Value) -> bool {
     run.note_unrecordable(op);
     let base = run.web.revision();
     let ctx = run.begin_at(op, Some(base), None);
-    let mut host = std::mem::take(&mut run.web);
-    let result = host.execute(row, params, &ctx, run.cancel);
-    run.web = host;
+    // The host is used in place: a panic inside leaves it as it was up to that point, never emptied.
+    let cancel = run.cancel;
+    let result = run.web.execute(row, params, &ctx, cancel);
     match result {
         Ok(detail) => run.own_or_push(op, before, Ok(detail)),
         Err(No(code, at, detail)) => {

@@ -8,17 +8,17 @@ use super::{CommandEntry, ParamSpec, entry, p};
 // Every row's run method is `web_command`; which parameters are required is the module's rule (its docs).
 const KEY: ParamSpec = p("key", ValueType::Reference);
 const PARENT: ParamSpec = p("parent", ValueType::Reference);
-const INDEX: ParamSpec = p("index", ValueType::Number);
+const INDEX: ParamSpec = p("index", ValueType::Number).opt();
 const NAME: ParamSpec = p("name", ValueType::String);
-const PATH: ParamSpec = p("path", ValueType::String);
-const OVERWRITE: ParamSpec = p("overwrite", ValueType::Boolean);
+const PATH: ParamSpec = p("path", ValueType::String).opt();
+const OVERWRITE: ParamSpec = p("overwrite", ValueType::Boolean).opt();
 const TARGET_ID: ParamSpec = p("target_id", ValueType::String);
-const LINK_BASE: ParamSpec = p("site_relative_link_base", ValueType::Enumerated);
+const LINK_BASE: ParamSpec = p("site_relative_link_base", ValueType::Enumerated).opt();
 
 pub(super) const ROWS: &[CommandEntry] = &[
-    entry("web.open", "web_command", "Open Web Document", false, false, &[PATH, p("source", ValueType::String), p("doctype", ValueType::Enumerated)]),
-    entry("web.read", "web_command", "Read Web Document", false, false, &[KEY, p("include_source", ValueType::Boolean)]),
-    entry("web.insert_element", "web_command", "Insert Element", false, true, &[PARENT, INDEX, p("tag", ValueType::String), p("attrs", ValueType::Class), p("text", ValueType::String)]),
+    entry("web.open", "web_command", "Open Web Document", false, false, &[PATH, p("source", ValueType::String).opt(), p("doctype", ValueType::Enumerated).opt()]),
+    entry("web.read", "web_command", "Read Web Document", false, false, &[KEY.opt(), p("include_source", ValueType::Boolean).opt()]),
+    entry("web.insert_element", "web_command", "Insert Element", false, true, &[PARENT, INDEX, p("tag", ValueType::String), p("attrs", ValueType::Class).opt(), p("text", ValueType::String).opt()]),
     entry("web.insert_fragment", "web_command", "Insert Markup", false, true, &[PARENT, INDEX, p("fragment", ValueType::String)]),
     entry("web.set_text", "web_command", "Set Text", false, true, &[KEY, p("text", ValueType::String)]),
     entry("web.set_attribute", "web_command", "Set Attribute", false, true, &[KEY, NAME, p("value", ValueType::String)]),
@@ -33,7 +33,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
         "Site Definition",
         false,
         true,
-        &[p("site_id", ValueType::String), p("display_name", ValueType::String), p("local_root", ValueType::String), p("default_images_folder", ValueType::String), LINK_BASE, p("cache_enabled", ValueType::Boolean)],
+        &[p("site_id", ValueType::String).opt(), p("display_name", ValueType::String).opt(), p("local_root", ValueType::String).opt(), p("default_images_folder", ValueType::String).opt(), LINK_BASE, p("cache_enabled", ValueType::Boolean).opt()],
     ),
     entry(
         "web.remote_target",
@@ -41,7 +41,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
         "Remote Target",
         false,
         true,
-        &[TARGET_ID, p("display_name", ValueType::String), p("transport", ValueType::Enumerated), p("host", ValueType::String), p("port", ValueType::Number), p("root_path", ValueType::String), p("credentials_ref", ValueType::Reference), p("remove", ValueType::Boolean)],
+        &[TARGET_ID, p("display_name", ValueType::String).opt(), p("transport", ValueType::Enumerated).opt(), p("host", ValueType::String).opt(), p("port", ValueType::Number).opt(), p("root_path", ValueType::String).opt(), p("credentials_ref", ValueType::Reference).opt(), p("remove", ValueType::Boolean).opt()],
     ),
     entry(
         "web.export_recipe",
@@ -49,11 +49,11 @@ pub(super) const ROWS: &[CommandEntry] = &[
         "Export Recipe",
         false,
         true,
-        &[p("output_root", ValueType::String), p("file", ValueType::String), p("minify", ValueType::Boolean), p("emit_source_maps", ValueType::Boolean), p("compile_preprocessors", ValueType::Boolean), p("asset_rewriting", ValueType::Enumerated), p("link_base", ValueType::Enumerated)],
+        &[p("output_root", ValueType::String).opt(), p("file", ValueType::String).opt(), p("minify", ValueType::Boolean).opt(), p("emit_source_maps", ValueType::Boolean).opt(), p("compile_preprocessors", ValueType::Boolean).opt(), p("asset_rewriting", ValueType::Enumerated).opt(), p("link_base", ValueType::Enumerated).opt()],
     ),
     entry("web.export", "web_command", "Export Site", false, false, &[]),
-    entry("web.publish", "web_command", "Publish Site", false, false, &[TARGET_ID]),
-    entry("web.verify", "web_command", "Verify Published Site", false, false, &[p("root", ValueType::String)]),
+    entry("web.publish", "web_command", "Publish Site", false, false, &[TARGET_ID.opt()]),
+    entry("web.verify", "web_command", "Verify Published Site", false, false, &[p("root", ValueType::String).opt()]),
     entry("web.preview", "web_command", "Preview Structure", false, false, &[p("viewport_width_px", ValueType::Number)]),
     entry("web.media", "web_command", "Media Queries", false, false, &[]),
     entry("web.assets", "web_command", "Asset References", false, false, &[]),
