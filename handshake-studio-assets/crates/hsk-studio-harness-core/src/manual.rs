@@ -299,7 +299,7 @@ pub const DRIVE_VIEWER: &[DriveViewer] = &[
     method("project_import", &[need("paths", "text_list"), may("folder", "text")]),
     method("project_move_items", &[need("items", "text_list"), may("folder", "text")]),
     method("project_remove_items", &[need("items", "text_list")]),
-    method("project_place_item", &[need("sequence_id", "text"), need("track_id", "text"), need("item_id", "text"), need("start", "ticks"), may("source_in", "ticks"), may("source_out", "ticks")]),
+    method("project_place_item", &[need("sequence_id", "text"), need("track_id", "text"), need("item_id", "text"), need("start", "integer"), may("source_in", "integer"), may("source_out", "integer")]),
     method("project_bind", &[need("sequence_id", "text"), need("width", "integer"), need("height", "integer"), need("sample_rate_hz", "integer")]),
 ];
 
