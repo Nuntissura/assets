@@ -429,3 +429,164 @@ fn repaired_audio_reaches_the_mix_and_survives_save_and_reopen() {
     v.export_sequence_mix("seq-main", MixFormat::WavFloat, &undone, false).unwrap();
     assert_close(&decode(&undone), &original, 0.0, "undone mix");
 }
+
+// ----- the audio.* rows through the real process (lane SMB-AUDIO-OUT-MIX-1, second step) ---------
+
+/// The built binary: `studio-harness` under feature `desktop`, else the example beside the test target
+/// (run with no target flags so cargo builds the real example).
+#[cfg(feature = "desktop")]
+fn binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_studio-harness"))
+}
+
+#[cfg(not(feature = "desktop"))]
+fn binary() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().and_then(Path::parent).expect("target directory").to_path_buf();
+    let example = dir.join("examples").join(format!("studio-harness{}", std::env::consts::EXE_SUFFIX));
+    assert!(example.is_file(), "the studio-harness example was not built at {}", example.display());
+    example
+}
+
+/// One quiet live session: no console, piped streams, diagnostics under the scratch dir; the window
+/// classifier guards the spawn.
+struct Live {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl Live {
+    fn open(package: &Path, actor: &str, diag: &Path) -> Self {
+        use hsk_studio_harness::cli::{self, WindowArgs};
+        let args = ["command", package.to_str().unwrap(), "--actor", actor, "--session", "s-audio", "--stdin"];
+        let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        assert!(!matches!(cli::window_args(&owned, &|p| p.is_file()), WindowArgs::Window { .. }), "{args:?} would open a window; not spawned");
+        let mut command = std::process::Command::new(binary());
+        command.args(args).current_dir(diag).env("STUDIO_DIAG_DIR", diag).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut child = command.spawn().expect("spawn studio-harness");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = std::io::BufReader::new(child.stdout.take().expect("stdout"));
+        let mut live = Self { child, stdin, stdout };
+        let opened = live.read();
+        assert_eq!(opened["ok"], true, "{opened}");
+        live
+    }
+
+    fn read(&mut self) -> serde_json::Value {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut self.stdout, &mut line).expect("a reply line");
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("reply is not JSON ({e}): {line}"))
+    }
+
+    fn call(&mut self, id: &str, parameters: serde_json::Value) -> serde_json::Value {
+        use std::io::Write;
+        writeln!(self.stdin, "{}", serde_json::json!({"command":"command","command_id":id,"parameters":parameters})).unwrap();
+        self.stdin.flush().unwrap();
+        self.read()
+    }
+
+    fn ok(&mut self, id: &str, parameters: serde_json::Value) -> serde_json::Value {
+        let reply = self.call(id, parameters);
+        assert_eq!(reply["ok"], true, "{id}: {} {}", reply["error"], reply["detail"]);
+        reply["detail"]["result"].clone()
+    }
+
+    fn refused(&mut self, id: &str, parameters: serde_json::Value, code: &str) {
+        let reply = self.call(id, parameters);
+        assert_eq!(reply["error"], code, "{id}: {reply}");
+    }
+
+    fn close(mut self) -> i32 {
+        drop(self.stdin);
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(status) = self.child.try_wait().expect("wait") {
+                return status.code().expect("an exit code");
+            }
+            if start.elapsed() > std::time::Duration::from_secs(120) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                panic!("the session did not end");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+/// The clip source a sound file binds as: `sha256:<hex>` of its bytes.
+fn media_source(bytes: &[u8]) -> ClipSource {
+    let hex = reel::hex(&reel::full_digest(&mut Cursor::new(bytes), 1 << 20, &CancellationToken::default()).unwrap());
+    ClipSource::Media { artifact_manifest_id: format!("sha256:{hex}"), content_digest: ContentDigest { algorithm: "sha256".into(), digest: hex }, asset_id: None }
+}
+
+#[test]
+fn audio_rows_bind_sound_play_mix_and_print_stems_through_the_process() {
+    let dir = support_audio::scratch("out-mix-process");
+    // Two WAV files: dc 0.25 stereo and an impulse, keyed by their digests as the clips' sources.
+    let n = 12 * SPF;
+    let dc_wav = support_audio::wav(2, RATE, support_audio::WavFormat::Int16, None, &vec![0.25; 2 * n]);
+    let mut imp = vec![0.0f32; n];
+    imp[1000] = 0.5;
+    let imp_wav = support_audio::wav(1, RATE, support_audio::WavFormat::Int16, None, &imp);
+    let (dc_path, imp_path) = (dir.join("dc.wav"), dir.join("imp.wav"));
+    std::fs::write(&dc_path, &dc_wav).unwrap();
+    std::fs::write(&imp_path, &imp_wav).unwrap();
+    let mut seq = sequence();
+    seq.tracks[0].clips[0].source_ref = media_source(&dc_wav);
+    seq.tracks[1].clips[0].source_ref = media_source(&imp_wav);
+    let (dir, mut v) = session_of("out-mix-process-doc", &seq, &routing(false), false);
+    let routed = dir.join("routed.handshake");
+    v.save(&routed, false).unwrap();
+
+    let mut s = Live::open(&routed, "lane-audio", &dir);
+    s.refused("audio.out_open", serde_json::json!({}), "audio_sources_missing");
+    let bound = s.ok("audio.bind_sound", serde_json::json!({"files": [dc_path.to_str().unwrap(), imp_path.to_str().unwrap()]}));
+    assert_eq!(bound["sample_rate_hz"], RATE);
+    s.refused("audio.bind_sound", serde_json::json!({"files": [dir.join("missing.wav").to_str().unwrap()]}), "resource_unreadable");
+
+    // Audio out on the software device only.
+    let devices = s.ok("audio.out_devices", serde_json::json!({}));
+    assert!(devices.as_array().unwrap().iter().any(|d| d["id"] == SOFTWARE_OUTPUT_DEVICE), "{devices}");
+    s.refused("audio.out_open", serde_json::json!({"device": "no-such-device"}), "unknown_device");
+    let opened = s.ok("audio.out_open", serde_json::json!({"block_frames": 480}));
+    assert_eq!(opened["device"], SOFTWARE_OUTPUT_DEVICE);
+    s.refused("audio.out_transport", serde_json::json!({"action": "scrub"}), "parameter_invalid");
+    s.ok("audio.out_transport", serde_json::json!({"action": "play"}));
+    let state = s.ok("audio.out_run", serde_json::json!({"ms": 200}));
+    assert!(state["consumed_frames"].as_u64().unwrap() > 0, "{state}");
+    assert!(state["meters"]["master"]["peak"][0].as_f64().unwrap() > 0.1, "{state}");
+    let reply = s.call("audio.out_state", serde_json::json!({}));
+    assert_eq!(reply["attribution"]["actor"]["account_id"], "lane-audio", "the caller's attribution: {reply}");
+    s.refused("audio.out_run", serde_json::json!({"ms": MAX_RUN_MS + 1}), "run_too_long");
+    let closed = s.ok("audio.out_close", serde_json::json!({}));
+    assert!(closed["frames_consumed"].as_u64().unwrap() > 0 && closed["reconciles"] == true, "{closed}");
+
+    // Mixdown and stems of the routed sequence.
+    let mix = dir.join("ep.wav");
+    let receipt = s.ok("audio.export_mix", serde_json::json!({"sequence_id": "seq-main", "format": "wav24", "output": mix.to_str().unwrap()}));
+    assert_eq!(receipt["frames"], 10 * SPF);
+    assert_eq!(decode(&mix)[0].len(), 10 * SPF);
+    s.refused("audio.export_mix", serde_json::json!({"sequence_id": "seq-main", "format": "wav24", "output": mix.to_str().unwrap()}), "overwrite_required");
+    s.refused("audio.export_mix", serde_json::json!({"sequence_id": "seq-main", "format": "mp3", "output": dir.join("x.mp3").to_str().unwrap()}), "parameter_invalid");
+    let stems_dir = dir.join("stems");
+    std::fs::create_dir_all(&stems_dir).unwrap();
+    let stems = s.ok("audio.export_stems", serde_json::json!({"sequence_id": "seq-main", "buses": [id(3)], "rest": true, "format": "wav16", "dir": stems_dir.to_str().unwrap()}));
+    assert_eq!(stems["sum_check"]["measured"], "quantized_16");
+    assert_eq!(stems["sum_check"]["sums_to_print"], true, "{stems}");
+    assert!(stems_dir.join("T3.wav").is_file() && stems_dir.join("rest.wav").is_file());
+
+    // A timeline clip opens in the waveform editor with its window selected.
+    let opened = s.ok("audio.waveform_open_clip", serde_json::json!({"clip_id": CLIP1}));
+    assert_eq!(opened["selection"], serde_json::json!([0, 10 * SPF]));
+    s.refused("audio.waveform_open_clip", serde_json::json!({"clip_id": "no-such-clip"}), "unknown_clip");
+    s.refused("audio.out_state", serde_json::json!({"not_a_parameter": 1}), "parameter_unknown");
+    // A refused line never ends the session; refusals make the exit status non-zero.
+    assert_eq!(s.close(), 1);
+    println!("NOT_PROVEN: real device output; the process opens score-device's software device only");
+}

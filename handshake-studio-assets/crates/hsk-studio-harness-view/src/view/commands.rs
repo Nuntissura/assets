@@ -9,6 +9,7 @@
 //! decoder of that domain here, and a JSONL test through the process.
 #![deny(clippy::arithmetic_side_effects)]
 
+mod audio;
 mod decode;
 mod layout;
 mod panel;
@@ -96,6 +97,7 @@ impl Viewer {
         let id = row.command_id;
         let done = match id.split('.').next().unwrap_or_default() {
             "catalog" => return seed::run(self, id, f),
+            "audio" => return audio::run(self, id, f),
             "layout" => return layout::run(self, id, f),
             "panel" => return panel::run(self, id, f),
             "vector" => vector::run_vector(self, id, f)?,
