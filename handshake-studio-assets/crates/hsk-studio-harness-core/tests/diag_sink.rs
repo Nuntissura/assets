@@ -48,8 +48,10 @@ fn numbers(name: &str) -> Vec<u64> {
 /// Every line of every diag file, in the order of the files, parsed; a line that does not parse fails the test.
 fn lines(dir: &Path) -> Vec<Value> {
     let mut out = Vec::new();
-    let leading_zero = |n: &String| n.split('-').any(|p| p.len() > 1 && p.starts_with('0'));
-    let ours = |n: &String| n.starts_with("studio-diag-") && n.ends_with(".jsonl") && numbers(n).len() == 4 && !leading_zero(n);
+    let ours = |n: &String| {
+        let Some(stem) = n.strip_prefix("studio-diag-").and_then(|n| n.strip_suffix(".jsonl")) else { return false };
+        numbers(n).len() == 4 && stem.split('-').all(|p| p.len() == 1 || !p.starts_with('0'))
+    };
     let mut names: Vec<String> = file_names(dir).into_iter().filter(ours).collect();
     names.sort_by_key(|n| numbers(n));
     for name in &names {
