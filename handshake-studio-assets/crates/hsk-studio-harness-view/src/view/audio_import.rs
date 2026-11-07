@@ -776,7 +776,7 @@ pub(crate) fn export_from(
 
 /// Writes `output` through a sibling temp file renamed over it only when `write` succeeded (the
 /// temp file is removed on failure; an existing `output` is replaced only with `overwrite`).
-pub(crate) fn write_atomically<T>(
+pub fn write_atomically<T>(
     output: &Path,
     overwrite: bool,
     write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> Result<T, MonitorFail>,
