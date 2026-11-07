@@ -568,6 +568,51 @@ const ALWAYS_FORBIDDEN: &[&str] = &[
     "rocksdb",
     "libsqlite3-sys",
 ];
+// Toolkit quarantine gate (lane SMB-CONTROLS-EGUI-GATE-1). Operator D1 2026-10-30: egui is dropped, no new egui.
+// D7 2026-10-31: pure Vulkan, no wgpu. Both held by reading only until this gate. The lists below are the exact set at
+// base c4d06841: quarantined asset-local test-host code, never a licence to add more. A line naming these crates here
+// is the gate, not a use of them. Remove an entry when its crate or file drops the toolkit; a stale entry would let it
+// come back unnoticed, and the gate does not fail on one. Never add an entry without an Operator decision.
+// A dependency name is a toolkit name when one of its `-`/`_` separated words is a token, so egui_extras, wgpu-hal and
+// kumihimo-egui count too. Transitive registry records stay with DESIGNATED above.
+const TOOLKIT_TOKENS: &[&str] = &["egui", "eframe", "winit", "wgpu", "naga"];
+const TOOLKIT_ALLOWED_DEPS: &[(&str, &str)] = &[
+    ("hsk-studio-controls", "egui"),
+    ("hsk-studio-harness", "eframe"),
+    ("hsk-studio-harness", "egui"),
+    ("hsk-studio-harness-view", "eframe"),
+    ("hsk-studio-harness-view", "egui"),
+    ("hsk-studio-render-gpu", "wgpu"),
+];
+// The other door: a crate that turns on a Studio crate's toolkit feature gains the toolkit without a dependency line.
+// These three are the consumers of hsk-studio-controls at the same lane; their behaviour did not change.
+const TOOLKIT_ALLOWED_FORWARDS: &[(&str, &str)] = &[
+    ("hsk-studio-harness", "hsk-studio-controls/egui"),
+    ("hsk-studio-harness-core", "hsk-studio-controls/egui"),
+    ("hsk-studio-harness-view", "hsk-studio-controls/egui"),
+];
+const TOOLKIT_ALLOWED_WGSL: &[&str] = &[
+    "crates/hsk-studio-render-gpu/src/blur.wgsl",
+    "crates/hsk-studio-render-gpu/src/filter.wgsl",
+    "crates/hsk-studio-render-gpu/src/fx.wgsl",
+    "crates/hsk-studio-render-gpu/src/grade.wgsl",
+    "crates/hsk-studio-render-gpu/src/kernel.wgsl",
+    "crates/hsk-studio-render-gpu/src/kernel_knockout.wgsl",
+    "crates/hsk-studio-render-gpu/src/kernel_pixel.wgsl",
+    "crates/hsk-studio-render-gpu/src/key.wgsl",
+    "crates/hsk-studio-render-gpu/src/resample.wgsl",
+];
+const TOOLKIT_WALK_LIMIT: usize = 200_000;
+fn toolkit_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.split(['-', '_']).any(|word| TOOLKIT_TOKENS.contains(&word))
+}
+fn toolkit_manifest_gate(_owner: &str, _manifest: &Document) -> Result<()> {
+    Ok(())
+}
+fn toolkit_wgsl_gate(_found: &[String]) -> Result<()> {
+    Ok(())
+}
 fn native_name(name: &str) -> bool {
     name.ends_with("-sys") || name.ends_with("_sys")
 }
@@ -858,7 +903,76 @@ fn self_test() -> Result<String> {
     if !names(&visited).contains("libfuzzer-sys") || !skipped.is_empty() {
         return Err("self_test_normal_path_not_gated".into());
     }
-    Ok("{\"schema\":\"hsk.studio.workspace-probe-self-test@1\",\"status\":\"ok\",\"cases\":2}".to_owned())
+    let gate_cases = toolkit_gate_self_test()?;
+    Ok(format!(
+        "{{\"schema\":\"hsk.studio.workspace-probe-self-test@1\",\"status\":\"ok\",\"cases\":{}}}",
+        2 + gate_cases
+    ))
+}
+// The gate's fixtures: manifests in the shapes a crate can gain a toolkit through, parsed by the real parser. A case
+// that does not hold rejects the self-test, and steward-sync stops on that before it probes any selection.
+fn toolkit_gate_self_test() -> Result<usize> {
+    const VERSION: &str = "version = \"=1.0.0\", default-features = false, features = []";
+    let gained = [
+        ("hsk-studio-new", "[dependencies]\negui = { V }\n", "toolkit_gate_dependency/hsk-studio-new/egui"),
+        ("hsk-studio-new", "[dependencies]\neframe = { V, optional = true }\n", "toolkit_gate_dependency/hsk-studio-new/eframe"),
+        ("hsk-studio-new", "[dev-dependencies]\nwinit = { V }\n", "toolkit_gate_dependency/hsk-studio-new/winit"),
+        ("hsk-studio-new", "[build-dependencies]\nnaga = { V }\n", "toolkit_gate_dependency/hsk-studio-new/naga"),
+        ("hsk-studio-new", "[target.'cfg(windows)'.dependencies]\nwgpu = { V }\n", "toolkit_gate_dependency/hsk-studio-new/wgpu"),
+        ("hsk-studio-new", "[dependencies]\ngfx = { package = \"wgpu\", V }\n", "toolkit_gate_dependency/hsk-studio-new/wgpu"),
+        ("hsk-studio-new", "[dependencies]\nwgpu-hal = { V }\n", "toolkit_gate_dependency/hsk-studio-new/wgpu-hal"),
+        ("hsk-studio-new", "[dependencies]\nkumihimo-egui = { V }\n", "toolkit_gate_dependency/hsk-studio-new/kumihimo-egui"),
+        ("hsk-studio-new", "[dependencies]\negui_extras = { V }\n", "toolkit_gate_dependency/hsk-studio-new/egui_extras"),
+        ("hsk-studio-new", "[dependencies]\nEGUI = { V }\n", "toolkit_gate_dependency/hsk-studio-new/EGUI"),
+        ("hsk-studio-new", "[dependencies.winit]\nversion = \"=1.0.0\"\n", "toolkit_gate_dependency/hsk-studio-new/winit"),
+        ("hsk-studio-new", "[target.'cfg(windows)'.dev-dependencies.naga]\nversion = \"=1.0.0\"\n", "toolkit_gate_dependency/hsk-studio-new/naga"),
+        // An allowed crate gains a toolkit it does not have today.
+        ("hsk-studio-controls", "[dependencies]\nwgpu = { V }\n", "toolkit_gate_dependency/hsk-studio-controls/wgpu"),
+        ("hsk-studio-render-gpu", "[dependencies]\nnaga = { V }\n", "toolkit_gate_dependency/hsk-studio-render-gpu/naga"),
+        // The other door: a headless consumer turns the Studio toolkit feature on.
+        ("hsk-studio-new", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", V, features = [\"egui\"] }\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
+        ("hsk-studio-new", "[features]\nui = [\"hsk-studio-controls/egui\"]\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
+        ("hsk-studio-new", "[features]\nui = [\"hsk-studio-controls?/egui\"]\n", "toolkit_gate_forward/hsk-studio-new/hsk-studio-controls/egui"),
+        // The root table a crate inherits from.
+        ("workspace", "[workspace.dependencies]\nwinit = { V }\n", "toolkit_gate_dependency/workspace/winit"),
+    ];
+    let mut cases = 0;
+    for (owner, text, code) in gained {
+        let manifest = doc(text.replace("V", VERSION).as_bytes())?;
+        if toolkit_manifest_gate(owner, &manifest) != Err(code.to_owned()) {
+            return Err(format!("self_test_toolkit_gain_not_rejected_{code}"));
+        }
+        cases += 1;
+    }
+    let today = [
+        ("hsk-studio-controls", "[features]\ndefault = []\negui = [\"dep:egui\"]\n[dependencies]\negui = { V, optional = true }\nserde = { V }\n"),
+        ("hsk-studio-harness", "[features]\nviewer = [\"dep:egui\"]\ndesktop = [\"viewer\", \"dep:eframe\", \"hsk-studio-render-gpu/shared-device\"]\n[dependencies]\negui = { V, optional = true }\neframe = { version = \"=1.0.0\", default-features = false, features = [\"wgpu\"], optional = true }\nhsk-studio-controls = { path = \"../hsk-studio-controls\", V, features = [\"egui\"] }\n"),
+        ("hsk-studio-harness-core", "[dependencies]\nhsk-studio-controls = { path = \"../hsk-studio-controls\", V, features = [\"egui\"] }\n"),
+        ("hsk-studio-harness-view", "[features]\nui = [\"hsk-studio-controls/egui\"]\n[dependencies]\neframe = { V }\n"),
+        ("hsk-studio-render-gpu", "[dependencies]\nwgpu = { version = \"=1.0.0\", default-features = false, features = [\"std\", \"wgsl\"] }\n"),
+        // Words that only look close, and a forward of an ordinary feature.
+        ("hsk-studio-new", "[features]\nx = [\"hsk-studio-render-gpu/shared-device\"]\n[dependencies]\neguide = { V }\nwgsl-tool = { V }\nserde = { V }\n"),
+        ("workspace", "[workspace.metadata.studio.dependencies.egui]\nallowed = []\n[workspace.dependencies]\nserde = { V }\n"),
+    ];
+    for (owner, text) in today {
+        toolkit_manifest_gate(owner, &doc(text.replace("V", VERSION).as_bytes())?)
+            .map_err(|_| format!("self_test_toolkit_today_rejected_{owner}"))?;
+        cases += 1;
+    }
+    let owned = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    let mut wgsl = owned(TOOLKIT_ALLOWED_WGSL);
+    toolkit_wgsl_gate(&wgsl).map_err(|_| "self_test_toolkit_wgsl_today_rejected")?;
+    toolkit_wgsl_gate(&[]).map_err(|_| "self_test_toolkit_wgsl_absent_rejected")?;
+    cases += 2;
+    for added in ["crates/hsk-studio-render-gpu/src/new.wgsl", "crates/hsk-studio-prism/src/x.WGSL", "tools/x.wgsl"] {
+        wgsl.push(added.to_owned());
+        if toolkit_wgsl_gate(&wgsl) != Err(format!("toolkit_gate_wgsl/{added}")) {
+            return Err(format!("self_test_toolkit_wgsl_not_rejected_{added}"));
+        }
+        wgsl.pop();
+        cases += 1;
+    }
+    Ok(cases)
 }
 fn registry_acyclic(
     node: &LockIdentity,
