@@ -64,7 +64,7 @@ fn layer(run: &Run<'_>, id: &str) -> Value {
 }
 
 fn new_comp(run: &mut Run<'_>, id: &str) -> Value {
-    cmd(run, "composition.new", json!({"composition_id": id, "name": id, "width": 64, "height": 32, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": 12 * S, "background": {"r": 0, "g": 0, "b": 0, "a": 1}}))
+    cmd(run, "composition.new", json!({"composition_id": id, "name": id, "width": 64, "height": 32, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": 12 * S, "background": {"r": 0, "g": 0, "b": 0, "a": 1, "colour_profile_id": null}}))
 }
 
 fn with_open(f: impl FnOnce(&mut Run<'_>)) {
@@ -275,7 +275,7 @@ fn step_26_keyframe_operations_are_named_and_add_at_current_never_changes_the_va
         assert_eq!(layer(run, L2)["streams"][0]["keyframes"][0]["time"], S);
         assert_eq!(refused(run, "keyframe.shift", json!({"layer_id": L2, "property": "opacity", "frames": -1000})), "tick_overflow");
         assert_eq!(refused(run, "keyframe.shift", json!({"layer_id": L2, "property": "opacity", "frames": i64::MIN})), "tick_overflow");
-        cmd(run, "keyframe.delete", json!({"layer_id": L2, "property": "opacity", "time": 2 * S + 11 * F - F}));
+        cmd(run, "keyframe.delete", json!({"layer_id": L2, "property": "opacity", "time": 2 * S + 11 * F}));
         // Interpolation: bezier gets the STU-MOT-034a default ease when no tangent is given.
         cmd(run, "keyframe.set_interpolation", json!({"layer_id": L2, "property": "opacity", "time": S, "out_interp": "bezier"}));
         assert_eq!(last_label(run), "Set Keyframe Interpolation");
@@ -533,7 +533,7 @@ fn hostile_parameters_are_typed_refusals_with_bounded_work() {
         assert_eq!(refused(run, "composition.new", json!([1, 2])), "parameter_invalid");
         assert_eq!(refused(run, "composition.new", json!({"zzz": 1})), "parameter_unknown");
         assert_eq!(refused(run, "composition.new", json!({"name": "x", "width": "wide", "height": 32, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": S})), "parameter_invalid");
-        assert_eq!(refused(run, "composition.new", json!({"name": "x", "width": 64, "height": 32, "frame_rate": {"numerator": 7, "denominator": 3}, "duration": S})), "invalid_field");
+        assert_eq!(refused(run, "composition.new", json!({"name": "x", "width": 64, "height": 32, "frame_rate": {"numerator": 1000, "denominator": 1}, "duration": S})), "invalid_field");
         assert_eq!(refused(run, "composition.new", json!({"name": "x", "width": 64, "height": 32, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": u64::MAX})), "invalid_field");
         // A composition record over the ceiling is refused, not stored.
         new_comp(run, "main");
