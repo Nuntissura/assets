@@ -2,7 +2,7 @@
 # Studio round entrypoint: the single checked-in build + test invocation for validator rounds (CX-VAL-007).
 # Usage: tools/run-round.sh --results DIR --target-dir DIR [--dev] [--canary] (--all | CRATE...)
 #        tools/run-round.sh --print-plan [--dev] [--canary] (--all | CRATE...)
-#   CRATE      hsk-studio-<name> or <name>; --all = every workspace member.
+#   CRATE      hsk-studio-<name>, kumihimo-<name> or <name> (= hsk-studio-<name>); --all = every workspace member.
 #   --print-plan  print every unit of this selection with the exact cargo/nextest argv the run executes (built by the
 #              same helpers; <results> and <target> stand for the dirs) and exit 0: read-only (`cargo metadata
 #              --no-deps --offline` into a temp dir), no lock, no build, no results or target dir, no export check.
@@ -36,7 +36,7 @@
 #              package() is a binary-level predicate, so other members' test binaries are neither listed nor
 #              reported (junit, counts, per-crate, timed_out, NOT_PROVEN cover only the selection, as with -p);
 #              the canary list takes the same filter and its first-test filter replaces it for the run. --all is
-#              unchanged (`--workspace`, no -E). GPU test lock: --all, or render-gpu in the selection.
+#              unchanged (`--workspace`, no -E). GPU test lock: --all, or a crate_gpu crate in the selection.
 #              Per-test timeouts: .config/nextest.toml slow-timeout (CX-EXEC-005); a junit <failure type="test
 #              timeout"> is reported timed_out (round.json timed_out_tests), not failed (aggregator self-check).
 #   features   per selected crate and feature set declared in .config/round-features.toml: -p CRATE --features SET,
@@ -74,7 +74,8 @@
 #   waits print to stderr; results/disk-lock.json and round.json "disk_lock" record holds, yields, waits and broken
 #   stale locks; giving up (STUDIO_DISK_BUILD_LOCK_TIMEOUT_S, default 7200) or a protocol mismatch exits 75.
 # GPU test lock (SMB-STEWARD-GPU-CONTENTION 2026-10-20; dbl_gpu_run in tools/disk-build-lock.sh): a unit whose selection
-#   includes hsk-studio-render-gpu (or is --all) runs its test step holding the machine-wide GPU test lock (class
+#   includes a GPU crate (crate_gpu: hsk-studio-render-gpu, hsk-studio-vulkan, hsk-studio-native-host) or is --all runs
+#   its test step holding the machine-wide GPU test lock (class
 #   round = queue priority; root STUDIO_GPU_TEST_LOCK_DIR or <sole artifact root>/.gpu-test-lock), so GPU tests of the
 #   other build slot never overlap; the build step stays outside it. Giving up waiting is the unit's run status 75.
 # Tree binding: <target-dir>/.studio-workspace-root binds the target dir to ONE workspace root (`cargo
@@ -99,6 +100,8 @@
 # Env: sets CARGO_TARGET_DIR, TMP/TEMP/TMPDIR (<target-dir>/../tmp; for an SSD target <sole artifact root>/<owner path>/tmp,
 #   owner path = the target dir's parent below the SSD WP dir), CARGO_PROFILE_{DEV,TEST}_DEBUG,
 #   CARGO_TERM_COLOR; unsets every HSK_* variable. Nothing else is required from the caller (python 3.11+).
+#   A CARGO_TARGET_*_LINKER in the environment is refused (exit 2): a round takes no runtime override (CX-VAL-007), and a
+#   linker from the caller's shell would change what the round proves without showing in its identity.
 #   CARGO_INCREMENTAL=0 (lead decision 2026-10-22, proposal P1): rounds never keep incremental state; the union rebuilds every workspace crate anyway, so incremental dirs are pure disk waste (268 GiB purged 2026-10-21).
 # Exit: 2 refused, 75 step 0 drift or disk build lock wait gave up (infrastructure), 72 step 0 machine-local path
 #   (V4-03), 71 step 0 new frozen-duplicate site (V4-05), 70 results aggregation failed, else the first failing unit
@@ -126,11 +129,13 @@ while [ $# -gt 0 ]; do
     --target-dir) target=${2:?--target-dir needs a dir}; shift ;;
     -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     -*) die "unknown option $1" ;;
-    hsk-studio-*) crates+=("$1") ;;
+    hsk-studio-*|kumihimo-*) crates+=("$1") ;;
     *) crates+=("hsk-studio-$1") ;;
   esac
   shift
 done
+linker_env=$(compgen -e | grep -iE '^CARGO_TARGET_.*_LINKER$' | paste -sd' ' || true)
+[ -z "$linker_env" ] || die "refusing a linker from the environment: $linker_env (CX-VAL-007: a round takes no runtime override)"
 [ $print_plan -eq 1 ] || { [ -n "$results" ] && [ -n "$target" ]; } || die "--results and --target-dir are required"
 { [ $all -eq 1 ] && [ ${#crates[@]} -eq 0 ]; } || { [ $all -eq 0 ] && [ ${#crates[@]} -gt 0 ]; } \
   || die "give --all or a crate list (not both)"
@@ -346,7 +351,8 @@ prebuild_cmd() {   # PACKAGE BIN FEATURES
   CMD=(cargo build ${locked[@]+"${locked[@]}"} -p "$1" --bin "$2" ${FA[@]+"${FA[@]}"})
 }
 doc_cmd() { CMD=(cargo test --doc "$@" -- --test-threads=1); }   # CARGO_ARGS...
-crate_gpu() { [ "$1" = hsk-studio-render-gpu ] && echo 1 || echo 0; }   # a -p CRATE unit takes the GPU test lock
+# A -p CRATE unit takes the GPU test lock. .config/nextest.toml's GPU test group names the same three packages.
+crate_gpu() { case "$1" in hsk-studio-render-gpu|hsk-studio-vulkan|hsk-studio-native-host) echo 1 ;; *) echo 0 ;; esac; }
 # default_selection -> DEF_SEL, DEF_FILTER, DEF_GPU (F-R47-8, header "default"): the build is --workspace for every
 # selection, so full and scoped rounds resolve dependency features over the same package set and share artifact
 # identities; a scoped selection narrows only the run (and the canary list) to its packages with a binary-level
@@ -356,7 +362,7 @@ default_selection() {
   DEF_SEL=(--workspace) DEF_FILTER="" DEF_GPU=$all
   for c in ${crates[@]+"${crates[@]}"}; do
     DEF_FILTER+="${DEF_FILTER:+ | }package(=$c)"
-    [ "$c" != hsk-studio-render-gpu ] || DEF_GPU=1
+    [ "$(crate_gpu "$c")" = 0 ] || DEF_GPU=1
   done
 }
 

@@ -46,6 +46,8 @@ hsk-studio-harness-view = [["viewer"], ["desktop", "audio-batch"]]
 # #![cfg(feature = "import-tiff")] and tests/named_colour_book.rs needs any import-* feature; harness-core's own import-tiff.
 hsk-studio-harness-core = [["import-tiff"]]
 hsk-studio-composite = [["motion"]]
+# SMB-CONTROLS-EGUI-GATE-1 (9e73d34c): hsk-studio-controls builds without egui by default; tests behind its `egui` feature.
+hsk-studio-controls = [["egui"]]
 
 [ignored]
 # develop: real_dng, real_raw, container_identity; interop-tiff: real_tiff.

@@ -147,7 +147,10 @@ def main():
                     defects.append(f"{where}: features = [...] missing; pinned as [] but probe rejects registry_features_missing")
                 if set(spec) - {"version", "features", "default-features", "optional", "package"}:
                     defects.append(f"{where}: unsupported keys {sorted(set(spec))}; probe rejects")
-                entry = (ver[1:], sorted(spec.get("features", [])))
+                # `=0.38.0` selects a lock record with build metadata (ash 0.38.0+1.3.281); the pin names the record.
+                carrying = [x for x in byname.get(lib, []) if x.split("+", 1)[0] == ver[1:]]
+                entry = (ver[1:] if ver[1:] in byname.get(lib, []) or len(carrying) != 1 else carrying[0],
+                         sorted(spec.get("features", [])))
                 prev = registry.setdefault(owner, {}).get(lib)
                 if prev and prev != entry:
                     fail(2, f"{where}: conflicting specs {prev} vs {entry}")

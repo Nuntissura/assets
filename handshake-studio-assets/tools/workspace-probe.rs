@@ -528,6 +528,8 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-ps-core", &["fax", "flate2", "hayro-jbig2", "hayro-jpeg2000", "jpeg-decoder", "moxcms", "rustc-hash", "serde", "serde_json", "sha2", "thiserror", "weezl"]),
     ("hsk-studio-ps-ops", &["flate2"]),
     ("hsk-studio-ps-pdf", &["flate2"]),
+    ("hsk-studio-vulkan", &["ash"]),
+    ("hsk-studio-native-host", &["windows-sys", "winit"]),
 ];
 // END GENERATED APPROVED
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.
@@ -537,6 +539,9 @@ const NATIVE_OWNERS: &[&str] = &[
     "hsk-studio-score-plugin",
     "hsk-studio-reel-native",
     "hsk-studio-motion-js",
+    // direction.blocker_decisions_20261107 window_layer: the Vulkan host holds winit and windows-sys. Its winit closure
+    // pins other platforms' -sys records too, because Cargo.lock is platform-agnostic.
+    "hsk-studio-native-host",
     // D18 (lead decision 2026-10-14): worker-process supervision owner incl. Windows Job Objects; windows-sys
     // limited by steward review to the motion-js job_object.rs feature set (Foundation, Security,
     // System_Diagnostics_Debug, System_IO, System_JobObjects, System_Threading).
@@ -556,7 +561,9 @@ const DESIGNATED: &[(&str, &[&str])] = &[
     ("egui", &["hsk-studio-controls", "hsk-studio-harness", "hsk-studio-harness-view"]),
     ("ffmpeg-sys-next", &["hsk-studio-reel-native"]),
     ("eframe", &["hsk-studio-harness", "hsk-studio-harness-view"]),
-    ("winit", &["hsk-studio-harness", "hsk-studio-harness-view"]),
+    ("winit", &["hsk-studio-harness", "hsk-studio-harness-view", "hsk-studio-native-host"]),
+    // D7 and O3: no product crate gains naga; the owners are the ones holding wgpu today.
+    ("naga", &["hsk-studio-render-gpu", "hsk-studio-harness", "hsk-studio-harness-view"]),
     ("egui-winit", &["hsk-studio-harness", "hsk-studio-harness-view"]),
     ("egui-wgpu", &["hsk-studio-harness", "hsk-studio-harness-view"]),
     ("image", &["hsk-studio-harness", "hsk-studio-harness-view"]),
@@ -572,7 +579,8 @@ const ALWAYS_FORBIDDEN: &[&str] = &[
 // D7 2026-10-31: pure Vulkan, no wgpu. Both held by reading only until this gate. The lists below are the exact set at
 // base c4d06841: quarantined asset-local test-host code, never a licence to add more. A line naming these crates here
 // is the gate, not a use of them. Remove an entry when its crate or file drops the toolkit; a stale entry would let it
-// come back unnoticed, and the gate does not fail on one. Never add an entry without an Operator decision.
+// come back unnoticed, and the gate does not fail on one. Never add an entry without an Operator decision, or a lead
+// decision recorded under the Operator's delegation of 2026-11-07 ("resolve all blockers on your own").
 // A dependency name is a toolkit name when one of its `-`/`_` separated words is a token, so egui_extras, wgpu-hal and
 // kumihimo-egui count too. Transitive registry records stay with DESIGNATED above.
 const TOOLKIT_TOKENS: &[&str] = &["egui", "eframe", "winit", "wgpu", "naga"];
@@ -582,6 +590,9 @@ const TOOLKIT_ALLOWED_DEPS: &[(&str, &str)] = &[
     ("hsk-studio-harness", "egui"),
     ("hsk-studio-harness-view", "eframe"),
     ("hsk-studio-harness-view", "egui"),
+    // direction.blocker_decisions_20261107 window_layer: winit =0.30.13 in this crate only, with a typed event stream past
+    // it. D7 reads "pure Vulkan, no wgpu" and D1 "drop egui"; no Operator word bans winit. Reversal: raw Win32 here.
+    ("hsk-studio-native-host", "winit"),
     ("hsk-studio-render-gpu", "wgpu"),
 ];
 // The other door: a crate that turns on a Studio crate's toolkit feature gains the toolkit without a dependency line.
@@ -626,6 +637,28 @@ fn toolkit_forward(owner: &str, dep: &str, feature: &str) -> Result<()> {
     }
     Ok(())
 }
+// Decision O5: a kumihimo-* crate has no hsk-studio-* in its closure, from birth. Workspace members are only hsk-studio-*
+// or kumihimo-*, and every member is checked, so one rejected direct edge covers the closure through workspace crates.
+fn kumihimo_dependency(owner: &str, alias: &str, spec: Option<&Value>) -> Result<()> {
+    if !owner.starts_with("kumihimo-") {
+        return Ok(());
+    }
+    let map = match spec {
+        Some(Value::Map(m)) => Some(m),
+        _ => None,
+    };
+    let field = |key: &str| map.and_then(|m| m.get(key)).map(Value::text).transpose();
+    let package = field("package")?;
+    let path = field("path")?;
+    let folder = path.and_then(|p| p.rsplit(['/', '\\']).find(|word| !word.is_empty()));
+    for name in [package, folder, Some(alias)].into_iter().flatten() {
+        if name.to_ascii_lowercase().starts_with("hsk-studio-") {
+            let shown: String = name.chars().take(64).collect();
+            return Err(format!("kumihimo_gate_dependency/{owner}/{shown}"));
+        }
+    }
+    Ok(())
+}
 fn toolkit_manifest_gate(owner: &str, manifest: &Document) -> Result<()> {
     const KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
     for (section, table) in &manifest.tables {
@@ -647,6 +680,7 @@ fn toolkit_manifest_gate(owner: &str, manifest: &Document) -> Result<()> {
         if KINDS.contains(&words[0]) {
             for (alias, spec) in table {
                 toolkit_dependency(owner, alias, Some(spec))?;
+                kumihimo_dependency(owner, alias, Some(spec))?;
                 // A registry dependency's own features (eframe's "wgpu") are pinned by the registry policy.
                 if let Value::Map(m) = spec
                     && m.contains_key("path")
@@ -660,6 +694,8 @@ fn toolkit_manifest_gate(owner: &str, manifest: &Document) -> Result<()> {
         } else if words.len() == 2 && KINDS.iter().any(|k| words[1] == *k || words[1].ends_with(&format!(".{k}"))) {
             // [dependencies.NAME] subtable; inspection rejects the shape for a selected package, the gate names it here.
             toolkit_dependency(owner, words[0], table.get("package"))?;
+            let fields = Value::Map(table.clone());
+            kumihimo_dependency(owner, words[0], Some(&fields))?;
         }
     }
     Ok(())
@@ -710,15 +746,18 @@ fn toolkit_gate(root: &Path, workspace: &Document, members: &[String]) -> Result
     }
     toolkit_wgsl_gate(&toolkit_wgsl_files(root)?)
 }
-// A declared member path: one plain relative path under crates/ with a Studio crate name.
+// A declared member path: one plain relative path under crates/ named hsk-studio-*, or kumihimo-* for the toolkit-free
+// crates (decision O5, direction.blocker_decisions_20261107).
 fn declared_member_path_ok(path: &str) -> bool {
-    path.starts_with("crates/hsk-studio-")
+    (path.starts_with("crates/hsk-studio-") || path.starts_with("crates/kumihimo-"))
         && !path.contains(['*', '?'])
         && Path::new(path).components().all(|c| matches!(c, Component::Normal(_)))
 }
-// The manifest's exact requirement against the pin's lock version.
+// The manifest's exact requirement against the pin's lock version. `=0.38.0` selects the lock record 0.38.0+1.3.281:
+// cargo ignores build metadata in a requirement and warns on it, so the manifest omits it and the pin names the record.
 fn exact_version_pin(actual: &str, version: &str) -> bool {
-    actual == format!("={version}")
+    let core = version.split_once('+').map_or(version, |(core, _)| core);
+    actual == format!("={version}") || actual == format!("={core}")
 }
 fn native_name(name: &str) -> bool {
     name.ends_with("-sys") || name.ends_with("_sys")
@@ -1595,7 +1634,7 @@ fn inspect(args: &[String]) -> Result<String> {
         hashes
     ))
 }
-const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example, bin, test and bench targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","toolkit_gate":"Every inspection, before selection: the root [workspace.dependencies], every registered member manifest and every .wgsl file under --root are checked against the quarantine lists at base c4d06841 (Operator D1, D7). A dependency whose name has egui, eframe, winit, wgpu or naga as a word, in any dependency table, optional or renamed, a path-dependency features entry or dep/feature selector forwarding such a feature, or a .wgsl file (any case) beyond the lists rejects with toolkit_gate_dependency/CRATE/NAME, toolkit_gate_forward/CRATE/DEP/FEATURE or toolkit_gate_wgsl/RELATIVE-PATH. Recovery: remove the gain; only an Operator decision adds an entry. --self-test runs the fixtures. Transitive records, generated shader text and source code are not read.","selection":"Explicit registered packages only, no implicit default features. Feature selectors: dep:x activates optional x; x/f (weak x?/f) forwards feature f to path dependency x (Cargo unification: x activated unless weak, f must exist in x, path-dependency features lists forward the same way, a package is inspected again when its feature set grows; closure_features in the result); selectors naming a registry or undeclared dependency reject. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. Only owner/library pairs in the APPROVED table (generated from workspace.metadata.studio.registry.OWNER.direct by the steward registry sync tool) are approved exact inline direct registry pins, with explicit no defaults and exact feature sets. Native policy: -sys/_sys records only in native provider owners render-gpu, score-device, score-plugin, reel-native, motion-js and labelled kind=native-ffi; wgpu only in render-gpu, egui only in controls, ffmpeg-sys-next only in reel-native; handshake_core, handshake_native, surrealdb, rocksdb, eframe, image, libsqlite3-sys always reject. Metadata workspace.metadata.studio.registry.OWNER has direct inline maps by library (version,features,default-features=false), and locked inline maps keyed name@version (source,checksum,kind=pure-rust|native-ffi) covering the actual selected transitive lock closure, maximum256records. Source is exactly registry+https://github.com/rust-lang/crates.io-index; lock checksum must be64hex and match independently pinned policy. Git/alternate registries, implicit defaults, unapproved native/host dependencies, ambiguous identities and missing transitive pins reject; no network. Metadata pure classification is an owner-approved selection policy, not independent crate implementation review or compiler feature proof. Host paths and pure-leaf GPU edges still reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":64,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes, except that a toolkit_gate_wgsl code names the workspace-relative file; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
+const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example, bin, test and bench targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","toolkit_gate":"Every inspection, before selection: the root [workspace.dependencies], every registered member manifest and every .wgsl file under --root are checked against the quarantine lists at base c4d06841 (Operator D1, D7). A dependency whose name has egui, eframe, winit, wgpu or naga as a word, in any dependency table, optional or renamed, a path-dependency features entry or dep/feature selector forwarding such a feature, or a .wgsl file (any case) beyond the lists rejects with toolkit_gate_dependency/CRATE/NAME, toolkit_gate_forward/CRATE/DEP/FEATURE or toolkit_gate_wgsl/RELATIVE-PATH. A kumihimo-* member naming an hsk-studio-* crate in any dependency table, as alias, package or path, rejects with kumihimo_gate_dependency/CRATE/NAME. Recovery: remove the gain; only an Operator decision, or a lead decision recorded under the Operator's delegation, adds an entry; winit is allowed in hsk-studio-native-host alone (direction.blocker_decisions_20261107 window_layer). --self-test runs the fixtures. Transitive records, generated shader text and source code are not read.","selection":"Explicit registered packages only, no implicit default features. Feature selectors: dep:x activates optional x; x/f (weak x?/f) forwards feature f to path dependency x (Cargo unification: x activated unless weak, f must exist in x, path-dependency features lists forward the same way, a package is inspected again when its feature set grows; closure_features in the result); selectors naming a registry or undeclared dependency reject. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. Only owner/library pairs in the APPROVED table (generated from workspace.metadata.studio.registry.OWNER.direct by the steward registry sync tool) are approved exact inline direct registry pins, with explicit no defaults and exact feature sets. Native policy: -sys/_sys records only in native provider owners render-gpu, score-device, score-plugin, reel-native, motion-js and labelled kind=native-ffi; wgpu only in render-gpu, egui only in controls, ffmpeg-sys-next only in reel-native; handshake_core, handshake_native, surrealdb, rocksdb, eframe, image, libsqlite3-sys always reject. Metadata workspace.metadata.studio.registry.OWNER has direct inline maps by library (version,features,default-features=false), and locked inline maps keyed name@version (source,checksum,kind=pure-rust|native-ffi) covering the actual selected transitive lock closure, maximum256records. Source is exactly registry+https://github.com/rust-lang/crates.io-index; lock checksum must be64hex and match independently pinned policy. Git/alternate registries, implicit defaults, unapproved native/host dependencies, ambiguous identities and missing transitive pins reject; no network. Metadata pure classification is an owner-approved selection policy, not independent crate implementation review or compiler feature proof. Host paths and pure-leaf GPU edges still reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":64,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes, except that a toolkit_gate_wgsl code names the workspace-relative file; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = if args == ["--help"] || args == ["--descriptor"] {

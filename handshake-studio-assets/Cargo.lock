@@ -2209,6 +2209,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hsk-studio-native-host"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
+ "winit",
+]
+
+[[package]]
 name = "hsk-studio-nib"
 version = "0.1.0"
 dependencies = [
@@ -2504,6 +2512,13 @@ dependencies = [
  "unicode-ccc",
  "unicode-properties",
  "unicode-script",
+]
+
+[[package]]
+name = "hsk-studio-vulkan"
+version = "0.1.0"
+dependencies = [
+ "ash",
 ]
 
 [[package]]
@@ -2843,6 +2858,10 @@ dependencies = [
  "futures-util",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "kumihimo-ui"
+version = "0.1.0"
 
 [[package]]
 name = "kurbo"

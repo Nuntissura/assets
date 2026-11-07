@@ -1,0 +1,11 @@
+[package]
+name = "hsk-studio-vulkan"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+ash = { version = "=0.38.0", default-features = false, features = ["loaded", "std"] }
+
+[lib]
+path = "src/lib.rs"

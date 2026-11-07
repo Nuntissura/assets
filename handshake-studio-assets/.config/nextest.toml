@@ -26,7 +26,9 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 # profile's overrides before a profile's base slow-timeout, so the canary's render-gpu test gets it too). Other
 # packages keep 120 s (default) / 30 s (canary).
 [[profile.default.overrides]]
-filter = 'package(hsk-studio-render-gpu)'
+# SMB-GUI-STEWARD-1 (direction.blocker_decisions_20261107 gpu_contention): the new Vulkan crates share the group and the
+# cap, because foreign GPU clients broke R39. tools/run-round.sh crate_gpu names the same three packages.
+filter = 'package(hsk-studio-render-gpu) | package(hsk-studio-vulkan) | package(hsk-studio-native-host)'
 test-group = 'render-gpu'
 slow-timeout = { period = "60s", terminate-after = 11 }
 
