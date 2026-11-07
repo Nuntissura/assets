@@ -52,7 +52,6 @@ enum Request {
 struct Live {
     viewer: Viewer,
     source: PathBuf,
-    timeline_open: bool,
 }
 
 /// The arguments every drive command needs: one PACKAGE, `--actor` and `--session`.
@@ -94,7 +93,7 @@ fn attribution_json(context: &RunContext) -> Value {
 
 impl Live {
     fn new(context: RunContext, source: PathBuf) -> Self {
-        Self { viewer: Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), context), source, timeline_open: false }
+        Self { viewer: Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), context), source }
     }
 
     fn open(&mut self) -> Result<Value, Refusal> {
@@ -197,15 +196,14 @@ impl Live {
         }
     }
 
-    /// Saving over the source needs both `overwrite` and the revision the caller read.
+    /// An existing file is replaced only with `overwrite`; the opened source also needs the revision
+    /// the caller read.
     fn save(&mut self, path: &Path, overwrite: bool, expected: Option<u64>) -> Result<Value, Refusal> {
-        if same_file(path, &self.source) {
-            if !overwrite {
-                return Err(refuse("overwrite_required", json!({"path": path.to_string_lossy()})));
-            }
-            if expected.is_none() {
-                return Err(refuse("expect_revision_required", json!({"path": path.to_string_lossy()})));
-            }
+        if !overwrite && path.exists() {
+            return Err(refuse("overwrite_required", json!({"path": path.to_string_lossy()})));
+        }
+        if same_file(path, &self.source) && expected.is_none() {
+            return Err(refuse("expect_revision_required", json!({"path": path.to_string_lossy()})));
         }
         let before = self.viewer.run().ops().len();
         match self.viewer.save(path, overwrite) {
@@ -219,6 +217,17 @@ impl Live {
             return Err(refuse("unknown_command", json!({"command_id": format!("viewer.{method}"), "hint": "`help --json` lists drive.viewer"})));
         };
         self.check_revision(expected)?;
+        if matches!(method, "export" | "export_vector_svg" | "export_vector_pdf")
+            && let Some(path) = params.get("path").map(Path::new)
+        {
+            // An export replaces bytes with no Run op: never the opened package, whatever the flags.
+            if same_file(path, &self.source) {
+                return Err(refuse("export_over_source", json!({"path": path.to_string_lossy()})));
+            }
+            if params.get("overwrite").map(String::as_str) != Some("true") && path.exists() {
+                return Err(refuse("overwrite_required", json!({"path": path.to_string_lossy()})));
+            }
+        }
         let before = self.viewer.run().ops().len();
         match super::drive_viewer::call(&mut self.viewer, row, params)? {
             Ok(result) => Ok(json!({"result": result, "revision": self.revision()})),
@@ -255,9 +264,8 @@ impl Live {
         };
         let call = timeline_call(row, params)?;
         self.check_revision(expected)?;
-        if !self.timeline_open {
+        if self.viewer.timeline_mut().is_none() {
             self.viewer.open_timeline().map_err(|message| refuse("no_timeline", json!({"message": message})))?;
-            self.timeline_open = true;
         }
         let before = self.viewer.run().ops().len();
         match self.viewer.timeline_command(call) {
@@ -521,6 +529,12 @@ fn parse_line(text: &str) -> Result<Request, Refusal> {
     })
 }
 
+/// Runs one line's work and answers a panic as a typed refusal, so one bad line cannot end a session.
+/// What the panicking method had already changed stays changed; the reply's state shows it.
+fn guarded<T>(work: impl FnOnce() -> Result<T, Refusal>) -> Result<T, Refusal> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| Err(refuse("command_panicked", json!({"note": "the command panicked; it may have partly applied, read state"}))))
+}
+
 /// Writes one compact JSON line and flushes it, so a caller on a pipe reads the reply at once.
 fn emit(output: &mut dyn Write, value: &Value) -> bool {
     writeln!(output, "{value}").and_then(|()| output.flush()).is_ok()
@@ -571,16 +585,20 @@ pub(super) fn session(parsed: &Parsed, input: &mut dyn BufRead, output: &mut dyn
         let (command, id, result) = match request {
             Err(r) => ("command", None, Err(r)),
             Ok(Request::State) => ("state", None, Ok(Value::Null)),
-            Ok(Request::Undo { expected }) => ("undo", None, live.dispatch("history.undo", &Params::new(), expected)),
+            Ok(Request::Undo { expected }) => ("undo", None, guarded(|| live.dispatch("history.undo", &Params::new(), expected))),
             Ok(Request::Command { id, params, expected }) => {
-                let result = live.dispatch(&id, &params, expected);
+                let result = guarded(|| live.dispatch(&id, &params, expected));
                 ("command", Some(id), result)
             }
         };
         if result.is_err() {
             refused = refused.saturating_add(1);
         }
-        let reply = live.reply(command, id.as_deref(), Some(lines), result);
+        // The state itself may be what panics: the line still gets its one reply.
+        let reply = guarded(|| Ok(live.reply(command, id.as_deref(), Some(lines), result))).unwrap_or_else(|r| {
+            refused = refused.saturating_add(1);
+            json!({"schema": crate::SCHEMA, "command": command, "line": lines, "ok": false, "verdict": "fail", "error": r.code, "detail": r.detail})
+        });
         if !emit(output, &reply) {
             return 1;
         }
@@ -597,6 +615,13 @@ pub(super) fn session(parsed: &Parsed, input: &mut dyn BufRead, output: &mut dyn
 #[allow(clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_in_a_line_is_a_typed_refusal() {
+        let r: Result<(), Refusal> = guarded(|| panic!("a bad line"));
+        assert_eq!(r.err().map(|r| r.code).as_deref(), Some("command_panicked"));
+        assert_eq!(guarded(|| Ok(7)).ok(), Some(7));
+    }
 
     #[test]
     fn a_line_is_bounded_exactly_and_a_long_one_is_skipped() {

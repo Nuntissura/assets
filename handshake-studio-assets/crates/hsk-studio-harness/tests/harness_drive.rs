@@ -70,7 +70,7 @@ fn spawn(args: &[&str], diag: &Path) -> Child {
     let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
     assert!(!matches!(cli::window_args(&owned, &|p| p.is_file()), WindowArgs::Window { .. }), "{args:?} would open a window; not spawned");
     let mut command = Command::new(binary());
-    command.args(args).env("STUDIO_DIAG_DIR", diag).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(args).current_dir(diag).env("STUDIO_DIAG_DIR", diag).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -506,6 +506,54 @@ fn parallel_sessions_on_one_source_do_not_touch_each_other() {
     assert_eq!(std::fs::read(&package).unwrap(), FIXTURE, "the source is untouched");
 }
 
+/// A path never replaces a file unless asked, and an export never replaces the opened package.
+#[test]
+fn saves_and_exports_never_replace_a_file_unasked() {
+    let dir = Scratch::new("no-clobber");
+    let package = dir.package("a.handshake");
+    let other = dir.0.join("other.bin");
+    std::fs::write(&other, b"keep me").unwrap();
+    let (p, o) = (package.to_str().unwrap(), other.to_str().unwrap());
+    let call = |id: &str, parameters: Value| json!({"command":"command","command_id":id,"parameters":parameters});
+    let mut cases = Vec::new();
+    for id in ["viewer.export_vector_svg", "viewer.export_vector_pdf"] {
+        cases.push((call(id, json!({"path":p,"overwrite":true})), "export_over_source"));
+        cases.push((call(id, json!({"path":o})), "overwrite_required"));
+    }
+    cases.push((call("viewer.export", json!({"path":p,"format":"png","overwrite":true})), "export_over_source"));
+    cases.push((call("viewer.export", json!({"path":o,"format":"png"})), "overwrite_required"));
+    cases.push((call("document.save", json!({"path":o})), "overwrite_required"));
+    cases.push((call("document.save", json!({"path":p})), "overwrite_required"));
+    cases.push((call("studio.document.save", json!({})), "command_not_driveable"));
+    let input = lines(&cases.iter().map(|(line, _)| line.clone()).collect::<Vec<_>>());
+    let (exit, r) = session(&package, "a", "s", &input, &dir.0);
+    assert_eq!(exit, 1);
+    for (n, (line, code)) in cases.iter().enumerate() {
+        assert_eq!(r[n + 1]["error"].as_str(), Some(*code), "{line}: {}", r[n + 1]);
+    }
+    assert_eq!(std::fs::read(&package).unwrap(), FIXTURE, "the package is untouched");
+    assert_eq!(std::fs::read(&other).unwrap(), b"keep me", "the other file is untouched");
+    // One-shot --save: the same rule.
+    let (exit, one) = run(&["command", p, "--actor", "a", "--session", "s", "--command-id", "layer.rename", "--param", "layer", L1, "--param", "name", "x", "--save", o], &dir.0);
+    assert_eq!((exit, one["error"].as_str()), (1, Some("overwrite_required")), "{one}");
+    assert_eq!(std::fs::read(&other).unwrap(), b"keep me");
+}
+
+/// The timeline state is the viewer's: closing and reopening the document leaves no stale copy.
+#[test]
+fn a_closed_document_reopens_its_timeline() {
+    let dir = Scratch::new("reopen-timeline");
+    let package = sequence_package(&dir.0);
+    let call = |id: &str| json!({"command":"command","command_id":id});
+    let input = lines(&[timeline("zoom_in", json!({})), call("studio.document.close"), call("studio.document.open_recent.0"), timeline("zoom_in", json!({}))]);
+    let (exit, r) = session(&package, "a", "s", &input, &dir.0);
+    assert_eq!(r[1]["ok"], true, "{}", r[1]);
+    assert_eq!(r[2]["ok"], true, "{}", r[2]["detail"]);
+    assert_eq!(r[3]["ok"], true, "{}", r[3]["detail"]);
+    assert_eq!(r[4]["ok"], true, "the second open reaches the viewer's own timeline: {}", r[4]["detail"]);
+    assert_eq!(exit, 0);
+}
+
 /// Every `viewer.*` row of the manual reaches its method with values built from the row's own kinds:
 /// no row is a routing, parameter or crash failure, whatever the method then decides on this document.
 #[test]
@@ -606,7 +654,22 @@ fn a_live_session_owns_no_window() {
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut first = String::new();
     stdout.read_line(&mut first).unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&first).unwrap()["ok"], true, "{first}");
+    let opened: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(opened["ok"], true, "{first}");
+    // Every menu leaf goes through the process first, closing the document last; each answers on the
+    // pipe, so none panics, blocks or leaves the process.
+    let nodes = opened["state"]["shell"]["menu"]["nodes"].as_array().expect("state.shell.menu.nodes");
+    let mut leaves: Vec<&str> = nodes.iter().filter(|n| n["children"].as_array().is_none_or(Vec::is_empty)).filter_map(|n| n["id"].as_str()).filter(|id| id.starts_with("studio.") && *id != "studio.document.close").collect();
+    leaves.push("studio.document.close");
+    assert!(leaves.len() >= 20, "{leaves:?}");
+    for leaf in &leaves {
+        writeln!(stdin, "{}", json!({"command":"command","command_id":leaf})).unwrap();
+        let mut reply = String::new();
+        stdout.read_line(&mut reply).unwrap();
+        let reply: Value = serde_json::from_str(&reply).unwrap_or_else(|e| panic!("{leaf}: {e}"));
+        assert_ne!(reply["error"], "command_panicked", "{leaf}");
+        assert_ne!(reply["error"], "unknown_command", "{leaf}");
+    }
 
     #[cfg(windows)]
     {
@@ -642,7 +705,7 @@ fn a_live_session_owns_no_window() {
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    assert_eq!(status.code(), Some(0));
+    assert!(matches!(status.code(), Some(0 | 1)), "{status:?}: a clean end, not a crash");
 }
 
 /// The window trap, classified without a window: a command word goes to the CLI, a flag or word it

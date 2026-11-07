@@ -40,9 +40,9 @@ pub enum WindowArgs {
 }
 
 /// Classifies the desktop binary's arguments. A command word of the manual (first argument only, and
-/// it wins over a file of that name) goes to the CLI. The window opens only for no argument or for
-/// `[--cpu] [--recent LIST] FILE` where FILE exists; an unknown flag, an unknown word or a missing
-/// file is usage (`is_file` is the caller's file check).
+/// it wins over a file of that name) goes to the CLI. The window opens for no argument, for its own
+/// flags alone and for `[--cpu] [--recent LIST] FILE` where FILE exists; an unknown flag, an unknown
+/// word or a missing file is usage (`is_file` is the caller's file check).
 pub fn window_args(args: &[String], is_file: &dyn Fn(&Path) -> bool) -> WindowArgs {
     const WINDOW: &str = "the window takes [--cpu] [--recent LIST] [FILE]";
     if args.first().is_some_and(|first| matches!(first.as_str(), "--help" | "-h") || crate::manual::COMMANDS.iter().any(|c| c.name == first.as_str())) {

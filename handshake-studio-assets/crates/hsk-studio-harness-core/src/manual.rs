@@ -259,12 +259,15 @@ pub const DRIVE_VIEWER: &[DriveViewer] = &[
 ];
 
 /// Menu leaves that refuse `command_not_driveable`, with the reason.
-pub const DRIVE_SHELL_NOT_DRIVEABLE: &[(&str, &str)] = &[("studio.view.render_gpu", "the process stays on the CPU path; it holds no GPU device")];
+pub const DRIVE_SHELL_NOT_DRIVEABLE: &[(&str, &str)] = &[
+    ("studio.view.render_gpu", "the process stays on the CPU path; it holds no GPU device"),
+    ("studio.document.save", "writes a path the caller never named; use document.save"),
+];
 
 /// Refusal codes of the drive surface itself; a command's own code passes through unchanged.
 pub const DRIVE_REFUSALS: &[&str] = &[
     "feature_unavailable", "actor_invalid", "open_failed", "undo_needs_live_session", "line_malformed", "line_not_utf8", "line_too_long", "unknown_command", "command_not_driveable",
-    "parameter_missing", "parameter_unknown", "parameter_invalid", "stale_revision", "overwrite_required", "expect_revision_required", "no_timeline", "command_refused", "save_refused", "timeline_refused",
+    "parameter_missing", "parameter_unknown", "parameter_invalid", "stale_revision", "overwrite_required", "expect_revision_required", "export_over_source", "no_timeline", "command_refused", "command_panicked", "save_refused", "timeline_refused",
 ];
 
 /// What the drive surface does not do yet: a model reads these from `help`, not from a surprise.
@@ -276,6 +279,9 @@ pub const DRIVE_LIMITS: &[&str] = &[
     "every reply carries the whole state and renders a changed document on the CPU path; a long session's reply grows with its ops",
     "not driveable yet: layer.restructure and the staged-payload rows of RUN_COMMANDS; Viewer methods that take a whole typed record (paint, stroke, swatch and envelope specs, path and network edits, design and proof commands, liquify, grid tracks, align and transform)",
     "the coercion is text: a JSON number given for a text parameter arrives as its digits",
+    "one terminal observe frame per command holds only for commands that reach a Run operation: a refusal before dispatch and the rows that never reach Run emit none (viewer.select, set_tool, set_brush, select_rect, select_ellipse, select_lasso, clear_selection, the three exports, timeline zoom, scroll and scrub, studio.view.*); a selection reaches the package at the next save with only that save's record",
+    "viewer.<method> is a transitional prefix over Viewer method names: these rows have no RUN_COMMANDS entry and no controls registry id yet",
+    "a command that panics answers command_panicked and the session goes on; what it had already changed stays changed, read state",
 ];
 
 /// The drive surface as JSON, from the tables above and the command corpus.
@@ -291,7 +297,7 @@ pub fn drive_json() -> Value {
         "session_lines": ["{\"command\":\"state\"}", "{\"command\":\"undo\",\"expected_revision\":N}", "{\"command\":\"command\",\"command_id\":ID,\"parameters\":{KEY:VALUE},\"expected_revision\":N}"],
         "response": "schema, command, ok, verdict, revision, attribution, command_id, line (session), detail, error (a refusal), state (state_json). The first session line reports the open, and a closed stdin ends with ended, lines, refused. Exit 0 only when nothing was refused.",
         "open_timeline": "the first timeline command opens the timeline on the document's first sequence; a document with none refuses no_timeline",
-        "document_save": "overwrite is optional, default false; saving over the opened PACKAGE needs overwrite true and expected_revision",
+        "document_save": "overwrite is optional, default false, and no existing file is replaced without it; saving over the opened PACKAGE also needs expected_revision; an export onto the opened PACKAGE always refuses export_over_source",
         "line_limit_bytes": 1_048_576,
         "refusals": DRIVE_REFUSALS,
         "limits": DRIVE_LIMITS,

@@ -194,9 +194,8 @@ pub(super) fn call(viewer: &mut Viewer, row: &DriveViewer, params: &Params) -> R
         }
         "undo_selection" => unit(viewer.undo_selection()),
         "select_wand" => {
-            let mut options = WandOptions::default();
-            options.tolerance = a.opt_number("tolerance")?.unwrap_or(options.tolerance);
-            options.contiguous = a.flag_or("contiguous", options.contiguous)?;
+            let base = WandOptions::default();
+            let options = WandOptions { tolerance: a.opt_number("tolerance")?.unwrap_or(base.tolerance), contiguous: a.flag_or("contiguous", base.contiguous)?, ..base };
             unit(viewer.select_wand(layer()?, a.parsed("x", "integer")?, a.parsed("y", "integer")?, &options))
         }
         "ps_click" => unit(viewer.ps_click(a.number("x")?, a.number("y")?)),
