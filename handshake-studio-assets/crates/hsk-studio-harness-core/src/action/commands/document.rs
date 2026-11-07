@@ -37,6 +37,8 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("document.submit_sequence", "submit_sequence", "Replace sequence", false, true, &[]),
     entry("document.submit_sequence_and_entry", "submit_sequence_and_entry", "Replace sequence with document entry", false, true, &[]),
     entry("document.submit_sequence_edits", "submit_sequence_edits", "Replace, insert or remove sequences", false, true, &[]),
+    // Lane SMB-LAYOUT-PERSIST-1: Viewer::layout_apply commits a layout editor edit through it.
+    entry("document.submit_layout", "submit_layout", "Commit layout edit", false, true, &[]),
     entry("document.submit_sequence_edits_and_entry", "submit_sequence_edits_and_entry", "Replace, insert or remove sequences with document entry", false, true, &[]),
     entry("document.new", "new_document", "New document", false, true, &[PROFILE, WIDTH, HEIGHT, UNIT, COLOUR_MODE, BITS_PER_CHANNEL, NAME, FILE_NAME]),
     entry("artboard.add", "add_artboard", "New artboard", false, true, &[NAME, WIDTH, HEIGHT, X, Y]),

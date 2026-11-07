@@ -2028,7 +2028,8 @@ impl Run<'_> {
     /// `Session::submit_layout_as` under a fresh context for `command` (the caller's edit id), quoting the
     /// live document and the live entry. One history step labelled `op`; undo / redo submit the step's
     /// inverse. A step that writes the live state is no step. Refusals change nothing: `not_open`,
-    /// `layout_records_unreadable` (the held entry does not decode), then the session's codes
+    /// `layout_records_unreadable` (the held entry does not decode), `layout_records_stale` (it decodes
+    /// and no longer validates against the document), then the session's codes
     /// (`value_conflict`, `invalid_input`, `folio_rejected`, `layout_records_rejected`, `budget_exceeded`, `total_too_large`, ...).
     /// One record `op`; not recordable.
     pub fn submit_layout(&mut self, op: &str, command: &'static str, document: folio::StudioDocument, records: hsk_studio_session::LayoutRecords) -> bool {
@@ -2046,6 +2047,13 @@ impl Run<'_> {
             Ok(r) => r,
             Err(_) => return self.own_op(op, before, Err("layout_records_unreadable")),
         };
+        // An entry that decodes but no longer validates against the document (a page or frame removed
+        // outside the layout editor) is refused, not replaced: the editor could only show the text
+        // entry's stories, and committing them would drop every layout record (review F4 of b21616b7).
+        // Undoing the step that made it stale recovers it.
+        if records_expect.is_some() && session.layout_records(cancel).is_err() {
+            return self.own_op(op, before, Err("layout_records_stale"));
+        }
         let step = hsk_studio_session::LayoutStep {
             command_id: command_text(&ctx).to_string(),
             correlation_id: ctx.correlation().value(),

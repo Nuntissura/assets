@@ -14,7 +14,8 @@
 //! successor document. Refusals change nothing: `invalid_command`, `invalid_input` (another document
 //! id), `value_conflict` (a quote that is not the live state, a repeated entry included),
 //! `folio_rejected` (the successor would not validate), `layout_records_rejected` (the records would
-//! not validate against it), `budget_exceeded`,
+//! not validate against it), `budget_exceeded` (also records whose bytes exceed the Folio input budget
+//! every read applies),
 //! `total_too_large`, `stale_revision`, and on [`crate::Session::submit_layout_as`] `actor_mismatch`
 //! and `command_mismatch`.
 //!
@@ -169,8 +170,8 @@ impl LayoutRecords {
             // Folio's, its style references checked here.
             let zero = |s: u64, e: u64| s == 0 && e == 0;
             let empty = matches!(&story.content, StoryContent::Inline { text_utf8 } if text_utf8.is_empty())
-                && story.paragraphs.iter().all(|p| zero(p.start, p.end))
-                && story.character_ranges.iter().all(|r| zero(r.start, r.end));
+                && matches!(story.paragraphs.as_slice(), [p] if zero(p.start, p.end))
+                && matches!(story.character_ranges.as_slice(), [] | [_]) && story.character_ranges.iter().all(|r| zero(r.start, r.end));
             let folio_form;
             let checked = if empty {
                 let mut refs = story.paragraphs.iter().filter_map(|p| p.style_ref.as_deref()).chain(story.character_ranges.iter().filter_map(|r| r.style_ref.as_deref()));
@@ -333,7 +334,11 @@ pub(crate) fn successor(
                 Code::BudgetExceeded => SessionError::Provider("budget_exceeded"),
                 _ => SessionError::Provider("layout_records_rejected"),
             })?;
-            Some(r.to_bytes()?)
+            // Every read bounds the entry by the Folio input budget before parsing; a write may not
+            // make one no read takes (review F3 of b21616b7).
+            let bytes = r.to_bytes()?;
+            preflight(&bytes, budget, cancel).map_err(|d| if d.code == Code::Canceled { SessionError::Canceled } else { SessionError::Provider("budget_exceeded") })?;
+            Some(bytes)
         }
     };
     let mut inverse = step.inverse(step.command_id.clone(), step.correlation_id);

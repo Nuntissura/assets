@@ -1476,7 +1476,7 @@ impl Viewer {
             return (LayoutDoc { document: doc, stories: r.stories, flow, styles: r.styles }, rec, "editing the open document's pages and its saved layout records");
         }
         if stored.is_some() {
-            note = "the saved layout records do not validate against the document (kept until a layout edit replaces them); editing the text entry's stories";
+            note = "the saved layout records do not validate against the document; layout edits are refused (layout_records_stale) until the step that made them stale is undone";
         }
         let (stories, styles) = match self.text_entry() {
             Ok(e) => (e.stories, e.styles),
