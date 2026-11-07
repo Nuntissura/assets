@@ -612,7 +612,7 @@ fn morph_square(mut cur: Vec<[f32; 4]>, w: usize, h: usize, radius: usize, op: f
     let cap = longest.saturating_mul(3).saturating_add(1);
     let mut s = LineScratch { a: reserve(cap, limits)?, g: reserve(cap, limits)?, h: reserve(cap, limits)? };
     let mut line: Vec<f32> = reserve(longest, limits)?;
-    for c in 0..4 {
+    for c in [0usize, 1, 2, 3] {
         for y in 0..h {
             line.clear();
             line.extend((0..w).map(|x| cur[index(w, x, y)][c]));
