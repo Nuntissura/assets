@@ -3326,3 +3326,161 @@ fn commit_authority_tile_path_commits_stages_saves_and_reconciles() {
         rig.assert_balanced(&session);
     });
 }
+
+// ----- save at the file boundary (lane SMB-SESSION-WRITE-SAFETY-1; real processes: harness tests/multi_process_save.rs) --
+
+#[test]
+fn save_over_the_opened_file_compares_it_and_refuses_when_it_changed_or_vanished() {
+    bounded_case("save_compares", || {
+        let fixture = Fixture::new("save-compare");
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+        let params = json_bytes(&rename_patch(1, "layer-1", "renamed-layer", 0, "edit-1"));
+        session.submit(ID, &params, 7, &token()).unwrap();
+
+        // The same bytes written again are not a change: the compare is by content, not by file time.
+        fs::write(&fixture.path, &fixture.bytes).unwrap();
+        session.save(&token()).unwrap();
+        let landed = fs::read(&fixture.path).unwrap();
+
+        // A second save of what it wrote lands (nothing else touched the file).
+        session.save(&token()).unwrap();
+
+        // A writer that replaces the file by rename, as Studio and careful tools do, keeps this session's source readable.
+        let replace = |bytes: &[u8]| {
+            let swap = fixture.dir.join("swap");
+            fs::write(&swap, bytes).unwrap();
+            fs::rename(&swap, &fixture.path).unwrap();
+        };
+
+        // Changed: refused, typed, Validation; file and session untouched, nothing left behind.
+        replace(b"another writer");
+        let failed = session.save(&token()).unwrap_err();
+        assert_eq!(failed.code(), "destination_changed");
+        assert_eq!(delivered(failed.report).outcome, Outcome::Failure(FailureCode::Validation));
+        assert!(failed.error.recovery().is_some());
+        assert_eq!(session.document_revision(), 8);
+        assert_eq!(session.snapshot().document().layers[0].name, "renamed-layer");
+        assert_eq!(fs::read(&fixture.path).unwrap(), b"another writer");
+        assert_eq!(fixture.files(), ["doc.handshake"]);
+
+        // Same length, other content: read and refused.
+        let mut same_length = landed.clone();
+        same_length[0] ^= 1;
+        replace(&same_length);
+        assert_eq!(session.save(&token()).unwrap_err().code(), "destination_changed");
+
+        // A second spelling of the same file is the same file.
+        let alias = fixture.dir.join(".").join("doc.handshake");
+        assert_eq!(session.save_to(&alias, &token()).unwrap_err().code(), "destination_changed");
+
+        // Vanished, then a directory in its place.
+        fs::remove_file(&fixture.path).unwrap();
+        assert_eq!(session.save(&token()).unwrap_err().code(), "destination_missing");
+        assert_eq!(fixture.files(), Vec::<String>::new());
+        fs::create_dir(&fixture.path).unwrap();
+        assert_eq!(session.save(&token()).unwrap_err().code(), "destination_invalid");
+        fs::remove_dir(&fixture.path).unwrap();
+
+        // Ways out: another path (it becomes the file this session compares against), and the explicit overwrite.
+        let other = fixture.dir.join("other.handshake");
+        session.save_new(&other, &token()).unwrap();
+        session.save(&token()).unwrap();
+        fs::write(&other, b"changed again").unwrap();
+        assert_eq!(session.save(&token()).unwrap_err().code(), "destination_changed");
+        session.save_replacing(&other, &token()).unwrap();
+        session.save(&token()).unwrap();
+    });
+}
+
+/// A writer that overwrites the file in place also destroys the bodies the session would stream from it. The save names
+/// the cause, destination_changed, and not the hash_mismatch of the asset read it ran into.
+#[test]
+fn a_file_overwritten_in_place_is_named_as_changed() {
+    bounded_case("overwritten_in_place", || {
+        let fixture = Fixture::new("save-in-place");
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+        let mut same_length = fixture.bytes.clone();
+        let last = same_length.len() / 2;
+        same_length[last] ^= 1;
+        fs::write(&fixture.path, &same_length).unwrap();
+        assert_eq!(session.save(&token()).unwrap_err().code(), "destination_changed");
+        assert_eq!(fs::read(&fixture.path).unwrap(), same_length);
+    });
+}
+
+#[test]
+fn save_new_refuses_anything_at_the_destination_and_save_to_another_file_replaces_it() {
+    bounded_case("save_new", || {
+        let fixture = Fixture::new("save-new");
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+        let other = fixture.dir.join("other.handshake");
+        fs::write(&other, b"not mine").unwrap();
+        let failed = session.save_new(&other, &token()).unwrap_err();
+        assert_eq!(failed.code(), "destination_exists");
+        assert_eq!(fs::read(&other).unwrap(), b"not mine");
+        assert_eq!(session.save_new(&fixture.path, &token()).unwrap_err().code(), "destination_exists");
+        assert_eq!(session.save_new(&fixture.dir, &token()).unwrap_err().code(), "destination_invalid");
+        session.save_to(&other, &token()).unwrap();
+        assert_ne!(fs::read(&other).unwrap(), b"not mine", "another file named by the caller is replaced");
+    });
+}
+
+#[test]
+fn a_held_save_lock_refuses_save_busy_and_a_read_only_file_refuses_typed() {
+    bounded_case("save_busy", || {
+        let fixture = Fixture::new("save-busy");
+        let frames = Frames::default();
+        let mut config = SessionConfig::new(actor_context());
+        config.save_lock_wait = std::time::Duration::from_millis(50);
+        let mut session = Session::open_path(&fixture.path, config, ports(&frames), &token()).unwrap();
+        let sidecar = save_lock_path(&fixture.path);
+        let held = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&sidecar).unwrap();
+        held.lock().unwrap();
+        let failed = session.save(&token()).unwrap_err();
+        assert_eq!(failed.code(), "save_busy");
+        assert_eq!(delivered(failed.report).outcome, Outcome::Failure(FailureCode::Unavailable));
+        assert_eq!(fs::read(&fixture.path).unwrap(), fixture.bytes);
+        assert_eq!(fixture.files().len(), 2, "the file and the lock the test holds: {:?}", fixture.files());
+        drop(held);
+        session.save(&token()).unwrap();
+        assert_eq!(fixture.files(), ["doc.handshake"], "the save removed the sidecar it took over");
+
+        let mut permissions = fs::metadata(&fixture.path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&fixture.path, permissions.clone()).unwrap();
+        let refused = session.save(&token()).unwrap_err().code();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&fixture.path, permissions).unwrap();
+        assert_eq!(refused, "destination_read_only");
+        session.save(&token()).unwrap();
+    });
+}
+
+/// Open and save cost of the compare on a package at the size of the largest single entry the limits allow. Run by hand:
+/// `--run-ignored only`. The extra work is one fingerprint pass at open, two at save (the destination, then the temp).
+#[test]
+#[ignore = "timing measurement on a generated 512 MiB package; asserts nothing about speed"]
+fn measure_open_and_save_of_a_large_package() {
+    const SIZE: usize = 512 << 20;
+    let start = std::time::Instant::now();
+    let fixture = Fixture::with_blob("measure", vec![0x5a; SIZE]);
+    let total = fs::metadata(&fixture.path).unwrap().len();
+    let build = start.elapsed();
+    let frames = Frames::default();
+    let start = std::time::Instant::now();
+    let mut session = open(&fixture, &frames);
+    let opened = start.elapsed();
+    let start = std::time::Instant::now();
+    session.save(&token()).unwrap();
+    let saved = start.elapsed();
+    // Canceled from the first check of the fingerprint pass at the latest: a canceled open is refused.
+    let canceled = CancellationToken::default();
+    canceled.cancel();
+    let start = std::time::Instant::now();
+    let refused = Session::open_path(&fixture.path, SessionConfig::new(actor_context()), ports(&frames), &canceled).map(|_| ()).unwrap_err().code();
+    println!("measured: package {total} bytes (fixture build {build:?}) open {opened:?} save {saved:?} canceled open {refused} in {:?}", start.elapsed());
+}

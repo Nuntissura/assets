@@ -10,15 +10,18 @@
 //!   `alpha_flattened_on_white`).
 //!
 //! Every export is decoded back with interop-raster before it is written (dimensions must match), and the
-//! file is written atomically (sibling temp file, then rename). Exports are derived deliverables, never
-//! stored back into the document (STU-IO-136).
+//! file is written atomically (a sibling temp file with a name no other writer has, then rename). Exports are
+//! derived deliverables, never stored back into the document (STU-IO-136).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::render::Frame;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_interop_raster as raster;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// Default JPEG quality of the CLI and the viewer button.
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
@@ -136,12 +139,53 @@ fn rgb_of(frame: &Frame, flatten: bool) -> Vec<u8> {
     out
 }
 
-/// Writes `bytes` to `path` atomically: a sibling temp file, then a rename over `path`.
+static TEMP_NAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Creates a new sibling of `path` for an atomic write, named `.hsk-PID-N` plus `suffix`: the process id and a counter,
+/// created exclusively, so no two writers share one (tests `tests/atomic_writer_processes.rs`). A temp left by a crash
+/// is skipped by the exclusive create and never read or removed. The name does not embed `path`'s own name, so any name
+/// the filesystem takes still gets a temp. Same directory: the rename stays on one filesystem.
+pub(crate) fn create_unique_sibling(path: &Path, suffix: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
+    let pid = std::process::id();
+    let mut attempts_left = 1024u32;
+    loop {
+        let counter = TEMP_NAMES.fetch_add(1, Ordering::Relaxed);
+        let temp = path.with_file_name(format!(".hsk-{pid}-{counter}{suffix}"));
+        match std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&temp) {
+            Ok(file) => return Ok((temp, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempts_left > 0 => attempts_left = attempts_left.saturating_sub(1),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Renames `temp` over `path`, retrying on Windows while another writer's rename or a scanner has `path` open (the
+/// same bounded backoff as the package crate's atomic save). A directory at `path` fails at once.
+pub(crate) fn replace_with_backoff(temp: &Path, path: &Path) -> std::io::Result<()> {
+    let mut delay = Duration::from_millis(5);
+    let mut attempts_left = 10u32;
+    loop {
+        match std::fs::rename(temp, path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied && attempts_left > 0 && !path.is_dir() => {
+                attempts_left = attempts_left.saturating_sub(1);
+                std::thread::sleep(delay);
+                delay = delay.saturating_mul(2).min(Duration::from_millis(400));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Writes `bytes` to `path` atomically: a sibling temp file of its own, then a rename over `path`. Parallel writers to
+/// one path each land a whole file and the last rename wins; there is no compare here, an export is a derived
+/// deliverable and `overwrite` is the caller's choice.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), &'static str> {
-    let name = path.file_name().ok_or("export_path")?.to_string_lossy().into_owned();
-    let temp = path.with_file_name(format!(".{name}.export-tmp"));
-    std::fs::write(&temp, bytes).map_err(|_| "export_write")?;
-    std::fs::rename(&temp, path).map_err(|_| {
+    path.file_name().ok_or("export_path")?;
+    let (temp, mut file) = create_unique_sibling(path, ".export-tmp").map_err(|_| "export_write")?;
+    let written = file.write_all(bytes);
+    drop(file);
+    written.and_then(|()| replace_with_backoff(&temp, path)).map_err(|_| {
         let _ = std::fs::remove_file(&temp);
         "export_write"
     })

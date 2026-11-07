@@ -280,7 +280,7 @@ fn verify_checks_something_and_save_never_clobbers_the_input() {
         assert!(exit == 2 && r["error"] == "usage", "{r}");
         assert_eq!(std::fs::read(&copy).unwrap(), before, "the input is untouched");
     }
-    let (exit, r) = cli_json(&["edit", copy_s, "--provider", "chronicle.patch", "--rename", L1, "replaced", "--save", copy_s, "--overwrite"]);
+    let (exit, r) = cli_json(&["edit", copy_s, "--provider", "chronicle.patch", "--expect-revision", "9", "--rename", L1, "replaced", "--save", copy_s, "--overwrite"]);
     assert_eq!(exit, 0, "{r}");
     assert_ne!(std::fs::read(&copy).unwrap(), before, "--overwrite replaces the input");
 }

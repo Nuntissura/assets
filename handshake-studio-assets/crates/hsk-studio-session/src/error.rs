@@ -67,6 +67,17 @@ pub enum SessionError {
     VerifyMismatch,
     /// `save` was called on a session with no origin path.
     NoDestination,
+    /// The file this session opened or last saved is not what is on disk any more. Nothing was written and the session
+    /// keeps its edits: see [`SessionError::recovery`].
+    DestinationChanged,
+    /// The file this session opened or last saved is gone. Nothing was written and the session keeps its edits.
+    DestinationMissing,
+    /// `save_new` found a file at the destination. Nothing was written.
+    DestinationExists,
+    /// The destination file is read-only, or its directory takes no new file. Nothing was written.
+    DestinationReadOnly,
+    /// Another save of the same destination held the lock for the whole bounded wait. Nothing was written; retry.
+    SaveBusy,
     /// Idempotency key is empty, longer than 128 bytes or contains control characters.
     InvalidKey,
     /// A commit authority is injected, so every submit must carry a caller-supplied key (this
@@ -158,6 +169,11 @@ impl SessionError {
             Self::ProposalNotDerived => "proposal_not_derived",
             Self::VerifyMismatch => "verify_mismatch",
             Self::NoDestination => "no_destination",
+            Self::DestinationChanged => "destination_changed",
+            Self::DestinationMissing => "destination_missing",
+            Self::DestinationExists => "destination_exists",
+            Self::DestinationReadOnly => "destination_read_only",
+            Self::SaveBusy => "save_busy",
             Self::InvalidKey => "invalid_idempotency_key",
             Self::KeyRequired => "key_required",
             Self::GrantRevoked => "grant_revoked",
@@ -188,7 +204,8 @@ impl SessionError {
             | Self::Overloaded { .. }
             | Self::Closed
             | Self::OutcomeUnknown
-            | Self::ReconciliationRequired => Outcome::Failure(FailureCode::Unavailable),
+            | Self::ReconciliationRequired
+            | Self::SaveBusy => Outcome::Failure(FailureCode::Unavailable),
             Self::Package(e) => hsk_studio_package::outcome_for::<()>(&Err(e.clone())),
             Self::ReadOnlyDocument => Outcome::Failure(FailureCode::Unsupported),
             Self::InvalidBudget
@@ -198,6 +215,10 @@ impl SessionError {
             | Self::ProposalNotDerived
             | Self::VerifyMismatch
             | Self::NoDestination
+            | Self::DestinationChanged
+            | Self::DestinationMissing
+            | Self::DestinationExists
+            | Self::DestinationReadOnly
             | Self::InvalidKey
             | Self::KeyRequired
             | Self::GrantRevoked
@@ -211,6 +232,19 @@ impl SessionError {
             | Self::NotDiverged
             | Self::ReceiptNotHeld
             | Self::AuthorityDocument(_) => Outcome::Failure(FailureCode::Validation),
+        }
+    }
+
+    /// The way out of a save refusal, as text for a model or a person; `None` for every other error. The session keeps
+    /// its edits through all of these (test `a_refused_save_keeps_the_edits_and_every_way_out_works`).
+    pub fn recovery(&self) -> Option<&'static str> {
+        match self {
+            Self::DestinationChanged => Some("the edits are still in this session, nothing was written: save to another path, or reopen the file and apply them again from its current revision, or replace the file on purpose with save_replacing"),
+            Self::DestinationMissing => Some("the edits are still in this session, nothing was written: save to another path, or write the file again on purpose with save_replacing"),
+            Self::DestinationExists => Some("nothing was written: save to another path, or replace that file on purpose (--overwrite on the command line)"),
+            Self::DestinationReadOnly => Some("nothing was written: save to a writable path, or make the file or directory writable and save again"),
+            Self::SaveBusy => Some("another save of this file is running, nothing was written: save again; it then compares against what that save wrote"),
+            _ => None,
         }
     }
 

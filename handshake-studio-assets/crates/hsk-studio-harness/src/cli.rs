@@ -6,9 +6,10 @@
 //! the `command --stdin` session (module `drive`, feature `viewer`). [`window_args`] classifies the
 //! desktop binary's arguments: only no argument or an existing file opens a window.
 //!
-//! Two refusals keep a green exit honest (tests: `verify_checks_something_and_save_never_clobbers_the_input`
-//! in `tests/harness_headless.rs`): `verify` with no expectation is a usage error (exit 2), and
-//! `edit --save OUT` where OUT is the input PACKAGE is a usage error unless `--overwrite` is given.
+//! Refusals that keep a green exit honest (tests: `verify_checks_something_and_save_never_clobbers_the_input`
+//! in `tests/harness_headless.rs`, `tests/multi_process_save.rs`): `verify` with no expectation is a usage error (exit 2);
+//! `edit --save OUT` where OUT is the input PACKAGE is a usage error unless `--overwrite` and `--expect-revision` are
+//! given; a `--save` over another existing file is `destination_exists` unless `--overwrite` is given (`save_package`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::harness::{Harness, HarnessError, References, Selection};
@@ -778,7 +779,7 @@ fn execute_import(harness: &Harness, parsed: &Parsed, input: &Path) -> CliOutput
     if run.open_import(&bytes) {
         run.summary();
         let reopened = match &parsed.save {
-            Some(path) => run.save_to(path) && run.reopen_path(path),
+            Some(path) => save_package(&mut run, path, parsed.overwrite) && run.reopen_path(path),
             None => match run.checkpoint() {
                 Some(b) => run.reopen_bytes(&b),
                 None => false,
@@ -1115,10 +1116,14 @@ fn execute(command: &str, harness: &Harness, parsed: &Parsed, package: &Path) ->
     // The input package is replaced in place only on explicit request.
     if let Some(save) = &parsed.save
         && command == "edit"
-        && !parsed.overwrite
         && same_file(save, package)
     {
-        return usage("--save names the input PACKAGE; pass --overwrite to replace it in place, or save to another path");
+        if !parsed.overwrite {
+            return usage("--save names the input PACKAGE; pass --overwrite to replace it in place, or save to another path");
+        }
+        if parsed.expect_revision.is_none() {
+            return usage("--save over the input PACKAGE needs --expect-revision N (`verify` or `open` prints the revision), or save to another path");
+        }
     }
     let cancel = CancellationToken::default();
     if parsed.cancel {
@@ -1162,9 +1167,17 @@ fn execute(command: &str, harness: &Harness, parsed: &Parsed, package: &Path) ->
     out(i32::from(report["ok"] != true), &report)
 }
 
+/// The one place a command line saves a package. With `overwrite`, [`crate::Run::save_to`]: the file this run opened is
+/// compared and refused `destination_changed` or `destination_missing`; another file is replaced as asked. Without it,
+/// nothing already at `path` is replaced (`destination_exists`). The refused record carries `detail.recovery`.
+fn save_package(run: &mut crate::Run<'_>, path: &Path, overwrite: bool) -> bool {
+    if overwrite { run.save_to(path) } else { run.save_new(path) }
+}
+
 fn edit_flow(run: &mut crate::Run<'_>, parsed: &Parsed) {
-    let expect = parsed.expect_revision;
-    for edit in &parsed.edits {
+    // `--expect-revision N` names the revision the package was opened at; every edit advances it by one.
+    for (advanced, edit) in (0u64..).zip(&parsed.edits) {
+        let expect = parsed.expect_revision.map(|revision| revision.saturating_add(advanced));
         let ok = match edit {
             EditOp::Rename(layer, name) => run.rename(layer, name, expect),
             EditOp::Visible(layer, visible) => run.set_visible(layer, *visible, expect),
@@ -1175,7 +1188,7 @@ fn edit_flow(run: &mut crate::Run<'_>, parsed: &Parsed) {
         }
     }
     let reopened = match &parsed.save {
-        Some(path) => run.save_to(path) && run.reopen_path(path),
+        Some(path) => save_package(run, path, parsed.overwrite) && run.reopen_path(path),
         None => match run.checkpoint() {
             Some(bytes) => run.reopen_bytes(&bytes),
             None => false,

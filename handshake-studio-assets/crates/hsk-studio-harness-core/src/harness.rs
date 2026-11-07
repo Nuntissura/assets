@@ -2102,22 +2102,43 @@ impl Run<'_> {
         session.submit_as(ctx, CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
     }
 
-    /// Atomically saves the working session to `path`.
+    /// Atomically saves the working session to `path`. Over the file the session opened or last saved it refuses
+    /// `destination_changed` or `destination_missing` when that file is not what the session read or wrote
+    /// (`Session::save_to`); the refused record's `detail.recovery` names the way out.
     pub fn save_to(&mut self, path: &Path) -> bool {
+        self.save_op(path, Session::save_to)
+    }
+
+    /// [`Run::save_to`] that refuses `destination_exists` when anything is at `path` (`Session::save_new`).
+    pub fn save_new(&mut self, path: &Path) -> bool {
+        self.save_op(path, Session::save_new)
+    }
+
+    /// [`Run::save_to`] without the compare: the explicit overwrite after a refusal (`Session::save_replacing`).
+    pub fn save_replacing(&mut self, path: &Path) -> bool {
+        self.save_op(path, Session::save_replacing)
+    }
+
+    fn save_op(&mut self, path: &Path, save: fn(&mut Session, &Path, &CancellationToken) -> Result<hsk_studio_session::SaveReceipt, hsk_studio_session::Failed>) -> bool {
         self.note_unrecordable("document.save");
         let before = self.frames.count();
         let cancel = self.cancel;
         let Some(session) = self.session.as_mut() else {
             return self.push("save", before, Err("not_open"), None, None);
         };
-        match session.save_to(path, cancel) {
+        match save(session, path, cancel) {
             Ok(r) => {
                 let detail = json!({"revision":r.revision,"entries":r.entries,"bytes_written":r.bytes_written,"previews_preserved":r.previews_preserved,"previews_dropped":r.previews_dropped,"quarantined_preserved":r.quarantined_preserved});
                 self.push("save", before, Ok(detail), Some(r.report), Some(r.revision))
             }
             Err(f) => {
                 let revision = self.revision();
-                self.push("save", before, Err(f.code()), Some(f.report), revision)
+                let recovery = f.error.recovery();
+                let ok = self.push("save", before, Err(f.code()), Some(f.report), revision);
+                if let (Some(recovery), Some(record)) = (recovery, self.ops.last_mut()) {
+                    record["detail"] = json!({"recovery": recovery});
+                }
+                ok
             }
         }
     }

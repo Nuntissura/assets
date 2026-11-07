@@ -774,7 +774,8 @@ pub(crate) fn export_from(
     })
 }
 
-/// Writes `output` through a sibling temp file renamed over it only when `write` succeeded (the
+/// Writes `output` through a sibling temp file of its own (`export::create_unique_sibling`, so parallel
+/// writers and a crash leftover never collide) renamed over it only when `write` succeeded (the
 /// temp file is removed on failure; an existing `output` is replaced only with `overwrite`).
 pub fn write_atomically<T>(
     output: &Path,
@@ -784,18 +785,11 @@ pub fn write_atomically<T>(
     if output.exists() && !overwrite {
         return Err(fail("output_exists", output.display().to_string()));
     }
-    let name = output
+    output
         .file_name()
-        .ok_or_else(|| fail("output_path", output.display().to_string()))?
-        .to_string_lossy()
-        .into_owned();
-    let temp: PathBuf = output.with_file_name(format!(".{name}.hsk-partial"));
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|e| fail("output_path", format!("{}: {e}", temp.display())))?;
+        .ok_or_else(|| fail("output_path", output.display().to_string()))?;
+    let (temp, file) = super::export::create_unique_sibling(output, ".hsk-partial")
+        .map_err(|e| fail("output_path", format!("{}: {e}", output.display())))?;
     let mut writer = std::io::BufWriter::new(file);
     let result = write(&mut writer).and_then(|v| {
         writer.flush().map_err(|e| fail("export_write", e.to_string()))?;
@@ -804,7 +798,7 @@ pub fn write_atomically<T>(
     drop(writer);
     match result {
         Ok(v) => {
-            std::fs::rename(&temp, output).map_err(|e| {
+            super::export::replace_with_backoff(&temp, output).map_err(|e| {
                 let _ = std::fs::remove_file(&temp);
                 fail("export_write", format!("{}: {e}", output.display()))
             })?;

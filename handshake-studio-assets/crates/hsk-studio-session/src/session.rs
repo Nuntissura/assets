@@ -12,6 +12,7 @@ use crate::{
         GrantPort, GrantToken, IdempotencyKey, JobPort, JobScope, Lookup, MonotonicClock,
     },
     registry::{ProposalRequest, ProviderRegistry},
+    save_guard::{DiskFingerprint, Expect, GuardedFs, fingerprint_file, same_destination},
     source::{
         DOCUMENT_ENTRY_PREFIX, DOCUMENT_ENTRY_TOKENS, Handle, LazyAssets, SourceBox,
         document_entry, load_parts, require_tile_assets,
@@ -34,7 +35,7 @@ use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome,
 use hsk_studio_package::{
     Codec, Extras, ImportRef, Limits, LossNote, Manifest, PackageError, PackageReader,
     PreviewImage, PreviewRef, Quarantined, StreamSave, WriteOptions, WriteReceipt, read_package,
-    save_atomic_streaming, sha256_hex_of, write_package_with,
+    save_atomic_streaming_with, sha256_hex_of, write_package_with,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -45,6 +46,7 @@ use std::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 /// Most preview images a host may supply at once.
@@ -122,6 +124,10 @@ pub struct SessionConfig {
     pub asset_codec: Option<Codec>,
     /// Lease epoch sent with every commit; the authority fences a session whose epoch is old.
     pub epoch: u64,
+    /// How long a save waits for another save of the same destination before it refuses `save_busy`. The lock covers
+    /// the compare, the rename and the reopen, so it grows with the size of the package: the default covers a package
+    /// at the container limit on a slow disk.
+    pub save_lock_wait: Duration,
 }
 
 impl SessionConfig {
@@ -131,6 +137,7 @@ impl SessionConfig {
             budgets: Budgets::default(),
             asset_codec: None,
             epoch: 0,
+            save_lock_wait: Duration::from_secs(120),
         }
     }
 }
@@ -504,6 +511,8 @@ pub struct Session {
     supplied_previews: Option<(u64, Vec<PreviewImage>)>,
     asset_codec: Codec,
     origin: Option<PathBuf>,
+    /// What `origin` held when this session read or last wrote it (module `save_guard`).
+    origin_disk: Option<DiskFingerprint>,
     saved_revision: Option<u64>,
     /// A document entry (`set_document_entry`) changed since the last save.
     entries_changed: bool,
@@ -618,25 +627,27 @@ fn inherited_codec(manifest: &Manifest) -> Codec {
 impl Session {
     /// Opens a package file. The file stays open as the lazy source: its structure and every
     /// entry checksum are verified in bounded chunks, but asset and preview bodies are not kept.
+    /// A second read pass of the verified file, through the same handle, remembers its length and
+    /// content digest for the compare at the next save (module `save_guard`).
     pub fn open_path(
         path: &Path,
         config: SessionConfig,
         ports: SessionPorts,
         cancel: &CancellationToken,
     ) -> Result<Session, Failed> {
-        match File::open(path) {
-            Ok(file) => Self::open_stream(
-                Box::new(file),
-                Some(path.to_path_buf()),
-                config,
-                ports,
-                cancel,
-            ),
-            Err(error) => Err(Failed {
-                error: SessionError::Io(error.kind()),
-                report: ReportStatus::Unaddressed,
-            }),
-        }
+        let io_failed = |error: std::io::Error| Failed {
+            error: SessionError::Io(error.kind()),
+            report: ReportStatus::Unaddressed,
+        };
+        let file = File::open(path).map_err(io_failed)?;
+        let print_from = file.try_clone().map_err(io_failed)?;
+        Self::open_stream(
+            Box::new(file),
+            Some((path.to_path_buf(), print_from)),
+            config,
+            ports,
+            cancel,
+        )
     }
 
     /// Opens a package held in memory (no origin path, so `save_to` is the only way to save).
@@ -658,7 +669,7 @@ impl Session {
 
     fn open_stream(
         source: SourceBox,
-        origin: Option<PathBuf>,
+        origin: Option<(PathBuf, File)>,
         config: SessionConfig,
         mut ports: SessionPorts,
         cancel: &CancellationToken,
@@ -681,6 +692,7 @@ impl Session {
         // Linked placed sources are health-checked next to the opened file (exists, hash
         // matches; lane SMB-PACKAGE-COMPLETENESS-2); bytes opened without a path have no
         // directory to check against and keep the caller's resolver answer.
+        let (origin, print_from) = origin.unzip();
         let linked = origin
             .as_deref()
             .and_then(|p| p.parent())
@@ -713,11 +725,13 @@ impl Session {
                     parts.loss.push(note);
                 }
             }
-            Ok((resource, parts))
+            // After the verification pass, so a file the reader refuses is never read to its end here.
+            let origin_disk = print_from.map(|mut file| fingerprint_file(&mut file, cancel)).transpose()?;
+            Ok((resource, parts, origin_disk))
         });
         drop(linked);
         match result {
-            Ok((resource, parts)) => {
+            Ok((resource, parts, origin_disk)) => {
                 let revision = parts.snapshot.document().revision;
                 let report = emit_report(
                     &mut *ports.sink,
@@ -744,6 +758,7 @@ impl Session {
                     preview_revision: revision,
                     supplied_previews: None,
                     origin,
+                    origin_disk,
                     saved_revision: Some(revision),
                     entries_changed: false,
                     receipts: BTreeMap::new(),
@@ -2480,7 +2495,7 @@ impl Session {
 
     // ----- save and export ---------------------------------------------------------------
 
-    /// Saves to the path the session was opened from.
+    /// Saves to the path the session was opened from; [`Session::save_to`] says when it refuses.
     pub fn save(&mut self, cancel: &CancellationToken) -> Result<SaveReceipt, Failed> {
         match self.origin.clone() {
             Some(path) => self.save_to(&path, cancel),
@@ -2495,12 +2510,44 @@ impl Session {
 
     /// Atomically saves the current revision to `path` (last-good destination stays intact on any
     /// failure), then re-reads the destination's manifest to confirm the revision landed.
+    ///
+    /// When `path` is the file this session opened or last saved, it must still hold what the session
+    /// read or wrote: otherwise `destination_changed` or `destination_missing`. Any other `path` is
+    /// replaced if it exists, as the caller named it; [`Session::save_new`] refuses instead. After a
+    /// refusal the session keeps its edits and [`SessionError::recovery`] names the way out. Module
+    /// `save_guard` says what is closed against other processes and what is not.
     pub fn save_to(
         &mut self,
         path: &Path,
         cancel: &CancellationToken,
     ) -> Result<SaveReceipt, Failed> {
-        let result = self.save_inner(path, cancel);
+        let expect = match (&self.origin, &self.origin_disk) {
+            (Some(origin), Some(disk)) if same_destination(origin, path) => Expect::Unchanged(disk.clone()),
+            _ => Expect::Anything,
+        };
+        let result = self.save_inner(path, expect, cancel);
+        self.settle(result, |receipt, report| receipt.report = report)
+    }
+
+    /// [`Session::save_to`] that refuses `destination_exists` when anything is at `path`, so two
+    /// writers creating one new file cannot replace each other.
+    pub fn save_new(
+        &mut self,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<SaveReceipt, Failed> {
+        let result = self.save_inner(path, Expect::Absent, cancel);
+        self.settle(result, |receipt, report| receipt.report = report)
+    }
+
+    /// [`Session::save_to`] without the compare: the explicit overwrite after `destination_changed`
+    /// or `destination_missing`. The other writer's file is lost by the caller's own decision.
+    pub fn save_replacing(
+        &mut self,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<SaveReceipt, Failed> {
+        let result = self.save_inner(path, Expect::Anything, cancel);
         self.settle(result, |receipt, report| receipt.report = report)
     }
 
@@ -2660,17 +2707,22 @@ impl Session {
     fn save_inner(
         &mut self,
         path: &Path,
+        expect: Expect,
         cancel: &CancellationToken,
     ) -> Result<SaveReceipt, SessionError> {
         cancel.check().map_err(|_| SessionError::Canceled)?;
         self.check_grant(Action::Save)?;
+        let mut guard = GuardedFs::new(expect, self.config.save_lock_wait, cancel);
+        guard.precheck(path)?;
         let limits = self.config.budgets.limits;
         let (images, previews_dropped) = self.gather_previews(cancel)?;
         // Streamed: raw assets flow from the source file into the temp file through one bounded
         // chunk (hash- and length-verified on the way), so peak memory does not grow with the
-        // assets. The package re-verifies the finished temp from disk before the atomic replace.
+        // assets. The package re-verifies the finished temp from disk before the atomic replace; the
+        // guard compares the destination under its lock just before that replace.
         let assets = LazyAssets::new(&self.source, &self.raw, &self.staged, cancel);
-        let written = save_atomic_streaming(
+        let written = save_atomic_streaming_with(
+            &mut guard,
             path,
             &StreamSave {
                 doc: &self.snapshot,
@@ -2684,7 +2736,7 @@ impl Session {
             &limits,
             cancel,
         )
-        .map_err(|error| Self::writer_cause(&assets, error))?;
+        .map_err(|error| guard.refusal_for(path).unwrap_or_else(|| Self::writer_cause(&assets, error)))?;
         // The new file holds only the tiles the document references; tiles a pixel edit replaced
         // stay readable for undo/redo by moving into the staged set before the source changes.
         self.retain_replaced_assets(cancel);
@@ -2716,6 +2768,9 @@ impl Session {
         self.saved_revision = Some(revision);
         self.entries_changed = false;
         self.origin = Some(path.to_path_buf());
+        self.origin_disk = guard.landed.take();
+        // Releases the lock: everything from the compare to this reopen ran under it.
+        drop(guard);
         Ok(SaveReceipt {
             revision,
             entries: written.entries,
