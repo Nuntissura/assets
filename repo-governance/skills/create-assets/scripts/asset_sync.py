@@ -138,14 +138,29 @@ def install_snapshot(destination, incoming, state, revision):
     state_file.write_text(json.dumps({"files": pending, "revision": revision}, indent=2), encoding="utf-8")
 
 
-def catalog_is_absorbed(baseline, local, incoming):
+def merge_catalog(baseline, local, incoming):
     # Match the existing catalog hash's newline normalization. Never resolve a conflicting field.
     with tempfile.TemporaryDirectory(prefix="asset-catalog-proof-") as directory:
         paths = [Path(directory) / name for name in ("local", "base", "incoming")]
         for path, content in zip(paths, (local, baseline, incoming)):
             path.write_bytes(content.replace(b"\r\n", b"\n"))
         merged = subprocess.run(["git", "merge-file", "-p", "--", *map(str, paths)], capture_output=True)
-        return merged.returncode == 0 and merged.stdout == incoming.replace(b"\r\n", b"\n")
+        return merged.stdout if merged.returncode == 0 else None
+
+
+def catalog_is_absorbed(baseline, local, incoming):
+    return merge_catalog(baseline, local, incoming) == incoming.replace(b"\r\n", b"\n")
+
+
+def preserve_disjoint_catalog(baseline, local, incoming):
+    merged = merge_catalog(baseline, local, incoming)
+    if merged is None or merge_catalog(incoming, merged, baseline) != local.replace(b"\r\n", b"\n"):
+        raise ValueError("incoming catalog update conflicts with unpublished local catalog; all work preserved")
+    if b"\r\n" in local:
+        if b"\n" in local.replace(b"\r\n", b""):
+            raise ValueError("mixed local catalog line endings; all work preserved")
+        return merged.replace(b"\n", b"\r\n")
+    return merged
 
 
 class AdoptionRecoveryRequired(ValueError):
@@ -244,10 +259,16 @@ def write_adoption_journal(path, state):
             temporary.unlink()
 
 
-def advance_checkout(root, ref, head, revision, absorbed_catalog=None):
+def advance_checkout(root, ref, head, revision, absorbed_catalog=None, preserve_local_catalog=False):
     receipt = root / ".local/asset-publication/latest.json"
     state = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
     own_publication = state.get("base") == head and state.get("revision") == revision
+    if preserve_local_catalog:
+        changed = run(root, "diff", "--name-only", "-z", head, revision).decode().split("\0")[:-1]
+        if (not own_publication or run(root, "rev-list", "--parents", "-n", "1", revision).decode().split() != [revision, head]
+                or sorted(state.get("paths", [])) != sorted(changed)
+                or not set(absorbed_catalog).issubset(changed)):
+            raise ValueError("own catalog publication receipt no longer matches the incoming commit; all work preserved")
     if not own_publication and absorbed_catalog is None:
         run(root, "merge", "--ff-only", "--no-edit", ref)
         return
@@ -310,8 +331,18 @@ def advance_checkout(root, ref, head, revision, absorbed_catalog=None):
                     incoming = run(root, "show", revision + ":" + path)
                     baseline = run(root, "show", head + ":" + path)
                     indexed = run(root, "show", ":" + path)
-                    if not catalog_is_absorbed(baseline, expected, incoming) or not catalog_is_absorbed(baseline, indexed, incoming):
-                        raise ValueError("incoming catalog no longer contains local edits; all work preserved")
+                    if preserve_local_catalog:
+                        if indexed != baseline or run(root, "diff", "--cached", "--name-only", head, "--", path):
+                            raise ValueError("staged catalog changes prevent disjoint adoption; all work preserved")
+                        mode, kind, blob = run(root, "ls-tree", revision, "--", path).split(b"\t", 1)[0].decode().split()
+                        if mode != "100644" or kind != "blob":
+                            raise ValueError("incoming catalog is not an ordinary file; all work preserved")
+                        run(root, "update-index", "--cacheinfo", f"{mode},{blob},{path}", env=env)
+                        working = preserve_disjoint_catalog(baseline, expected, incoming)
+                    else:
+                        if not catalog_is_absorbed(baseline, expected, incoming) or not catalog_is_absorbed(baseline, indexed, incoming):
+                            raise ValueError("incoming catalog no longer contains local edits; all work preserved")
+                        working = incoming
                     original = preservation / path
                     original.parent.mkdir(parents=True, exist_ok=True)
                     original.write_bytes(expected)
@@ -319,7 +350,9 @@ def advance_checkout(root, ref, head, revision, absorbed_catalog=None):
                     indexed_backup.parent.mkdir(parents=True, exist_ok=True)
                     indexed_backup.write_bytes(indexed)
                     indexed_originals[path] = hashlib.sha256(indexed).hexdigest()
-                    originals[path] = (expected, incoming)
+                    originals[path] = (expected, working)
+                if preserve_local_catalog and len({sha(pair[1]) for pair in originals.values()}) != 1:
+                    raise ValueError("merged catalog and generated inventory differ; all work preserved")
                 state.update({"phase": "CATALOG_PREPARED",
                               "files": {path: hashlib.sha256(value[0]).hexdigest() for path, value in originals.items()},
                               "indexed_files": indexed_originals})
@@ -331,7 +364,9 @@ def advance_checkout(root, ref, head, revision, absorbed_catalog=None):
                     reader = catalog_readers.enter_context(catalog_file(root / path, False))
                     if reader.read() != incoming:
                         raise ValueError("catalog changed before read protection; all foreign edits retained")
-            run(root, "add", "-A", "--", *paths, env=env)
+            to_stage = [path for path in paths if not preserve_local_catalog or path not in absorbed_catalog]
+            if to_stage:
+                run(root, "add", "-A", "--", *to_stage, env=env)
             if run(root, "diff", "--cached", "--name-only", revision, "--", *paths, env=env).strip():
                 context = "our publication" if own_publication else "incoming adoption"
                 raise ValueError(f"new local edits conflict with {context}; all work preserved")
@@ -430,6 +465,7 @@ def before_use(root, destinations, expected=REPOSITORY):
     staged_catalog = bool(run(root, "diff", "--cached", "--name-only", head, "--", "assets-index.yaml").strip())
     local_catalog = staged_catalog or sha(catalog_content) != sha(baseline_catalog)
     absorbed_catalog = None
+    preserve_local_catalog = False
     if local_catalog:
         generated = repository_skill / "references/assets-index.yaml"
         if not generated.is_file() or sha(generated.read_bytes()) != sha(catalog_content):
@@ -439,11 +475,13 @@ def before_use(root, destinations, expected=REPOSITORY):
             publication = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
             own_publication = (publication.get("base") == head and publication.get("revision") == revision
                                and {"assets-index.yaml", SKILL + "/references/assets-index.yaml"}
-                               .issubset(publication.get("paths", []))
-                               and sha(catalog_content) == sha(published_catalog))
-            if not own_publication:
+                               .issubset(publication.get("paths", [])))
+            if not own_publication or sha(catalog_content) != sha(published_catalog):
                 if not catalog_is_absorbed(baseline_catalog, catalog_content, published_catalog):
-                    raise ValueError("incoming catalog update conflicts with unpublished local catalog; all work preserved")
+                    if not own_publication:
+                        raise ValueError("incoming catalog update conflicts with unpublished local catalog; all work preserved")
+                    preserve_disjoint_catalog(baseline_catalog, catalog_content, published_catalog)
+                    preserve_local_catalog = True
                 absorbed_catalog = {"assets-index.yaml": catalog_content,
                                     SKILL + "/references/assets-index.yaml": generated.read_bytes()}
             # advance_checkout must still verify selected paths against the incoming tree and real index.
@@ -475,7 +513,10 @@ def before_use(root, destinations, expected=REPOSITORY):
         if result.returncode:
             raise ValueError(f"local commits diverge from origin; preserved HEAD={head}, origin={revision}")
         # Git itself rejects incoming changes that would overwrite staged, unstaged, or untracked work.
-        preservation = advance_checkout(root, ref, head, revision, absorbed_catalog)
+        if preserve_local_catalog:
+            preservation = advance_checkout(root, ref, head, revision, absorbed_catalog, preserve_local_catalog=True)
+        else:
+            preservation = advance_checkout(root, ref, head, revision, absorbed_catalog)
     if run(root, "rev-parse", "HEAD").decode().strip() != revision:
         raise ValueError("checkout did not reach the fetched revision")
     with ExitStack() as final_readers:

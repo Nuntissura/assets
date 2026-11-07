@@ -252,6 +252,84 @@ class DeviceSynchronization(unittest.TestCase):
                                   catalog.SKILL + "/references/assets-index.yaml", "assets/example/src/lib.rs"), b"")
         self.assertIn(b"unpublished local capability", (self.installed / "references/assets-index.yaml").read_bytes())
 
+    def own_publication_with_later_draft(self):
+        self.edit_local_catalog()
+        self.write("assets/example/src/lib.rs", "pub fn answer() -> u8 { 43 }\n")
+        result = sync.publish(self.root, self.plan(), "publish capability and code", str(self.remote))
+        published = (self.root / catalog.INDEX).read_bytes().replace(b"\r\n", b"\n")
+        original = self.git("show", "HEAD:" + catalog.INDEX)
+        draft = b"drafts:\n- id: LOCAL-DRAFT\n"
+        self.write_catalog_pair(original + draft)
+        return result["revision"], published, draft
+
+    def write_catalog_pair(self, data):
+        (self.root / catalog.INDEX).write_bytes(data)
+        (self.root / catalog.SKILL / "references/assets-index.yaml").write_bytes(catalog.projection(data))
+
+    def test_own_disjoint_catalog_publication_preserves_unpublished_draft(self):
+        revision, published, draft = self.own_publication_with_later_draft()
+        self.write("unrelated.txt", "private staged work\n")
+        self.git("add", "unrelated.txt")
+        unrelated = self.git("ls-files", "-s", "unrelated.txt")
+        result = sync.before_use(self.root, [self.installed], str(self.remote))
+        self.assertEqual(result["local_catalog"], "UNPUBLISHED")
+        self.assertEqual(self.git("rev-parse", "HEAD").decode().strip(), revision)
+        self.assertEqual(self.git("show", ":" + catalog.INDEX), published)
+        self.assertEqual((self.root / catalog.INDEX).read_bytes(), published + draft)
+        self.assertEqual((self.root / catalog.SKILL / "references/assets-index.yaml").read_bytes(), published + draft)
+        self.assertEqual((self.installed / "references/assets-index.yaml").read_bytes(), published)
+        self.assertEqual(self.git("ls-files", "-s", "unrelated.txt"), unrelated)
+        self.assertEqual(self.git("diff", "--cached", "--name-only").decode().strip(), "unrelated.txt")
+        self.assertEqual(self.git("diff", "HEAD", "--", "assets/example/src/lib.rs"), b"")
+
+    def assert_own_disjoint_catalog_refuses(self, blocker):
+        self.own_publication_with_later_draft()
+        receipt = self.root / ".local/asset-publication/latest.json"
+        if blocker == "foreign receipt":
+            data = json.loads(receipt.read_bytes())
+            data["base"] = "foreign-base"
+            receipt.write_text(json.dumps(data))
+        elif blocker == "wrong receipt paths":
+            data = json.loads(receipt.read_bytes())
+            data["paths"].remove("assets/example/src/lib.rs")
+            receipt.write_text(json.dumps(data))
+        elif blocker == "catalog overlap":
+            base = self.git("show", "HEAD:" + catalog.INDEX)
+            self.write_catalog_pair(base.replace(b"- answer\n", b"- answer\n  - conflicting capability\n"))
+        elif blocker == "source drift":
+            self.write("assets/example/src/lib.rs", "pub fn answer() -> u8 { 44 }\n")
+        else:
+            self.git("add", catalog.INDEX, catalog.SKILL + "/references/assets-index.yaml")
+        head = self.git("rev-parse", "HEAD")
+        tracked = (catalog.INDEX, catalog.SKILL + "/references/assets-index.yaml", "assets/example/src/lib.rs")
+        original = [(self.root / path).read_bytes() for path in tracked]
+        index = (self.root / ".git/index").read_bytes()
+        installed = (self.installed / "references/assets-index.yaml").read_bytes()
+        receipt_bytes = receipt.read_bytes()
+        with self.assertRaises(ValueError):
+            sync.before_use(self.root, [self.installed], str(self.remote))
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual([(self.root / path).read_bytes() for path in tracked], original)
+        self.assertEqual((self.root / ".git/index").read_bytes(), index)
+        self.assertEqual((self.installed / "references/assets-index.yaml").read_bytes(), installed)
+        self.assertEqual(receipt.read_bytes(), receipt_bytes)
+
+
+    def test_own_disjoint_catalog_refuses_foreign_receipt(self):
+        self.assert_own_disjoint_catalog_refuses('foreign receipt')
+
+    def test_own_disjoint_catalog_refuses_wrong_receipt_paths(self):
+        self.assert_own_disjoint_catalog_refuses('wrong receipt paths')
+
+    def test_own_disjoint_catalog_refuses_catalog_overlap(self):
+        self.assert_own_disjoint_catalog_refuses('catalog overlap')
+
+    def test_own_disjoint_catalog_refuses_source_drift(self):
+        self.assert_own_disjoint_catalog_refuses('source drift')
+
+    def test_own_disjoint_catalog_refuses_staged_catalog(self):
+        self.assert_own_disjoint_catalog_refuses('staged catalog')
+
     def test_staged_only_catalog_edit_is_reported_and_preserves_index_and_working_bytes(self):
         self.edit_local_catalog()
         self.git("add", catalog.INDEX)
