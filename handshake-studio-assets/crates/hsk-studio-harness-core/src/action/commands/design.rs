@@ -16,7 +16,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("design.grid_reorder_rows", "Viewer::grid_reorder_rows", "Reorder grid rows", true, TRACK_MOVE),
     typed("design.grid_reorder_columns", "Viewer::grid_reorder_columns", "Reorder grid columns", true, TRACK_MOVE),
     // Lane SMB-DRIVE-TYPED-2 (STU-DS-008/009/016/017/162): a design file opened as a native document, and
-    // every `DesignCommand` on the instance drawn by `layer` (one chronicle step each, `design_<key>`).
+    // every `DesignCommand` on the instance drawn by `layer` (one chronicle step each, `design_instance <layer>`).
     typed("design.import_fig", "Viewer::import_fig", "Open design file", false, &[file("source"), out("dest"), b("overwrite").opt()]),
     typed("design.instance.inspect", "Viewer::instance_view", "Inspect instance", false, &[t("layer")]),
     typed("design.instance.switch_variant", INSTANCE, "Switch variant", true, &[t("layer"), t("property"), t("value")]),

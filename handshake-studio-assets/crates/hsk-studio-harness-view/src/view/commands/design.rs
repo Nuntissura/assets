@@ -1,6 +1,6 @@
 //! `design.import_fig` and `design.instance.*` (lane SMB-DRIVE-TYPED-2, STU-DS-008/009/016/017/162): a
 //! design file opened as a native document and every `DesignCommand` on the instance a layer draws,
-//! through `Viewer::design_command` (one chronicle step each, named `design_<key>`, with the instance's
+//! through `Viewer::design_command` (one chronicle step each, named `design_instance <layer>`, with the instance's
 //! state in the `design` entry, so it survives save and reopen). The other `design.*` rows are the auto
 //! layout and grid methods of `vector.rs`.
 #![deny(clippy::arithmetic_side_effects)]

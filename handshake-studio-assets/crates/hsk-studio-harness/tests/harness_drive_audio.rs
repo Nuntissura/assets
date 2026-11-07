@@ -170,11 +170,12 @@ mod process {
             reply["detail"]["result"].clone()
         }
 
-        /// A mutating row passed and named `step` as its undo step.
+        /// A mutating row passed and named `step` as its undo step (the history label is the op, then its target).
         pub fn step(&mut self, id: &str, parameters: serde_json::Value, step: &str) -> serde_json::Value {
             let reply = self.call(id, parameters);
             assert_eq!(reply["ok"], true, "{id}: {} {}", reply["error"], reply["detail"]);
-            assert_eq!(reply["detail"]["undo_name"], step, "{id}: {}", reply["detail"]);
+            let named = reply["detail"]["undo_name"].as_str().is_some_and(|n| n == step || n.starts_with(&format!("{step} ")));
+            assert!(named, "{id}: undo step {} is not {step}: {}", reply["detail"]["undo_name"], reply["detail"]);
             reply["detail"]["result"].clone()
         }
 
@@ -508,13 +509,33 @@ mod monitors {
         let scratch = Scratch::new("monitors");
         let take = scratch.path("take.y4m");
         std::fs::write(&take, y4m(24)).unwrap();
-        // An empty program sequence (Folio: its duration is its content's end, 0).
+        // The program holds the take's first four frames (a monitor refuses an empty sequence: zero_duration).
+        let take_source = {
+            let bytes = std::fs::read(&take).unwrap();
+            let hex = hsk_studio_reel::hex(&hsk_studio_reel::full_digest(&mut std::io::Cursor::new(&bytes[..]), 1 << 20, &hsk_studio_accord::CancellationToken::default()).unwrap());
+            ClipSource::Media { artifact_manifest_id: format!("sha256:{hex}"), content_digest: ContentDigest { algorithm: "sha256".into(), digest: hex }, asset_id: None }
+        };
+        let existing = StudioClip {
+            schema_id: ClipSchema::V1,
+            clip_id: "SCLP-019abcde-0000-7000-8000-000000000021".into(),
+            source_ref: take_source,
+            source_in: Ticks::new(0),
+            source_out: Ticks::new(4 * TPF_24),
+            timeline_start: Ticks::new(0),
+            duration: Ticks::new(4 * TPF_24),
+            speed: Speed::UNIT,
+            enabled: true,
+            link_group: None,
+            markers: Vec::new(),
+            transitions: ClipTransitions::default(),
+            retime: Default::default(),
+        };
         let sequence = StudioSequence {
             schema_id: SequenceSchema::V1,
             sequence_id: "seq-cut".into(),
             name: "cut".into(),
             frame_rate: SequenceFrameRate { ticks_per_frame: TPF_24 },
-            duration: Ticks::new(0),
+            duration: Ticks::new(4 * TPF_24),
             tracks: vec![StudioTrack {
                 schema_id: TrackSchema::V1,
                 track_id: "STRK-019abcde-0000-7000-8000-000000000011".into(),
@@ -527,7 +548,7 @@ mod monitors {
                 targeted: true,
                 muted: false,
                 soloed: false,
-                clips: Vec::new(),
+                clips: vec![existing],
                 volume: 1.0,
                 pan: 0.0,
             }],
@@ -550,9 +571,7 @@ mod monitors {
         s.ok("monitor.key", json!({"target": "source", "key": "mark_in"}));
         let marked = s.ok("monitor.source_mark", json!({"mark_out": 10}));
         assert_eq!((marked["source"]["mark_in"].as_u64(), marked["source"]["mark_out"].as_u64()), (Some(3), Some(10)), "{marked}");
-        let reply = s.call("monitor.source_edit", json!({"mode": "insert"}));
-        assert_eq!(reply["ok"], true, "{reply}");
-        assert_eq!(reply["detail"]["undo_name"], "source_insert", "{reply}");
+        s.step("monitor.source_edit", json!({"mode": "insert"}), "source_insert");
         s.step("monitor.source_edit", json!({"mode": "overwrite"}), "source_overwrite");
         s.refused("monitor.source_edit", json!({"mode": "replace"}), "parameter_invalid");
         let bound = s.ok("monitor.bind_program_media", json!({"sequence_id": "seq-cut", "files": [take.to_str().unwrap()], "width": 64, "height": 36}));
@@ -638,18 +657,18 @@ mod product_design {
             .expect("an instance with a state variant");
         let current = view["variants"]["state"]["current"].clone();
         let other = view["variants"]["state"]["values"].as_array().unwrap().iter().find(|v| **v != current).unwrap().as_str().unwrap().to_owned();
-        let switched = s.step("design.instance.switch_variant", json!({"layer": layer, "property": "state", "value": other}), "design_switch_variant");
+        let switched = s.step("design.instance.switch_variant", json!({"layer": layer, "property": "state", "value": other}), "design_instance");
         assert!(switched.is_object(), "{switched}");
         let view = s.ok("design.instance.inspect", json!({"layer": layer}));
         assert_eq!(view["variants"]["state"]["current"], other.as_str(), "{view}");
         s.refused("design.instance.inspect", json!({"layer": "SLYR-019abcde-0000-7000-8000-00000000ffff"}), "not_an_instance");
         s.refused("design.instance.set_override", json!({"layer": layer, "node_id": "x", "field": "fills", "value": "red"}), "parameter_invalid");
         let node = view["texts"][0]["node_id"].as_str().expect("a text node").to_owned();
-        s.step("design.instance.set_override", json!({"layer": layer, "node_id": node, "field": "characters", "value": "Book the vet"}), "design_set_override");
+        s.step("design.instance.set_override", json!({"layer": layer, "node_id": node, "field": "characters", "value": "Book the vet"}), "design_instance");
         let view = s.ok("design.instance.inspect", json!({"layer": layer}));
         assert_eq!(view["texts"][0]["text"], "Book the vet", "{view}");
-        s.step("design.instance.reset_override", json!({"layer": layer, "node_id": node, "field": "characters"}), "design_reset_override");
-        s.step("design.instance.set_override", json!({"layer": layer, "node_id": node, "field": "visible", "value": false}), "design_set_override");
+        s.step("design.instance.reset_override", json!({"layer": layer, "node_id": node, "field": "characters"}), "design_instance");
+        s.step("design.instance.set_override", json!({"layer": layer, "node_id": node, "field": "visible", "value": false}), "design_instance");
         let saved = scratch.path("components-saved.handshake");
         assert_eq!(s.call("document.save", json!({"path": saved.to_str().unwrap()}))["ok"], true);
 
