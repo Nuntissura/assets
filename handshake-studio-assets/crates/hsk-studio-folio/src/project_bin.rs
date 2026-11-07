@@ -465,11 +465,17 @@ pub fn apply_project_bin_command(
             if !distinct(item_ids) {
                 return Err(E::EmptyOrRepeated);
             }
-            let used: Vec<&ClipSource> = document.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()).map(|c| &c.source_ref).collect();
+            // By content digest (review F6): a clip of the same bytes under another manifest handle or
+            // asset_id cuts from this item too.
+            let digest_of = |s: &ClipSource| match s {
+                ClipSource::Media { content_digest, .. } => Some(content_digest.clone()),
+                _ => None,
+            };
+            let used: Vec<ContentDigest> = document.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()).filter_map(|c| digest_of(&c.source_ref)).collect();
             for item_id in item_ids {
                 token.check().map_err(|_| E::Canceled)?;
                 let at = next.media_items.iter().position(|i| &i.item_id == item_id).ok_or(E::ItemMissing)?;
-                if used.iter().any(|s| **s == next.media_items[at].source) {
+                if digest_of(&next.media_items[at].source).is_some_and(|d| used.contains(&d)) {
                     return Err(E::ItemInUse);
                 }
                 next.media_items.remove(at);
