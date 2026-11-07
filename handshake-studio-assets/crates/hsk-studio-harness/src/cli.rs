@@ -12,11 +12,40 @@ use hsk_studio_harness_core::asset_local_test_context;
 use crate::manual::{manual_json, manual_text};
 use hsk_studio_accord::CancellationToken;
 use serde_json::{Value, json};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+
+#[cfg(feature = "viewer")]
+mod drive;
 
 pub struct CliOutput {
     pub exit: i32,
     pub stdout: String,
+}
+
+/// What the arguments of the desktop binary ask for (lane SMB-HARNESS-DRIVE-1, HBR-QUIET-002).
+pub enum WindowArgs {
+    /// A CLI command: [`run_streams`] answers it and no window opens.
+    Cli,
+    /// The window, the only case that opens one.
+    Window { cpu: bool, recent: Option<PathBuf>, file: Option<PathBuf> },
+    /// Not understood: print this and exit; no window.
+    Usage(CliOutput),
+}
+
+/// RED STUB of the classifier: known words go to the CLI, everything else still reaches the window.
+pub fn window_args(args: &[String], _is_file: &dyn Fn(&Path) -> bool) -> WindowArgs {
+    match args.first().map(String::as_str) {
+        Some("state" | "command" | "undo" | "help" | "develop" | "--help" | "-h") => WindowArgs::Cli,
+        _ => WindowArgs::Window { cpu: false, recent: None, file: None },
+    }
+}
+
+/// The process entry of both binaries: arguments and the process's streams in, the exit code out.
+pub fn run_streams(args: &[String], _input: &mut dyn BufRead, output: &mut dyn Write) -> i32 {
+    let result = run(args);
+    let written = output.write_all(result.stdout.as_bytes()).and_then(|()| output.flush());
+    if written.is_err() { 1 } else { result.exit }
 }
 
 enum EditOp {
@@ -268,6 +297,8 @@ pub fn run(args: &[String]) -> CliOutput {
     };
     match command {
         "help" => help(&parsed),
+        #[cfg(feature = "viewer")]
+        "state" | "command" | "undo" => drive::one_shot(command, &parsed),
         "descriptors" | "providers" => with_harness(command, &parsed, |h| {
             if command == "descriptors" {
                 match h.collect_descriptors() {

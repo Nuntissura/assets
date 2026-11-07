@@ -3,7 +3,6 @@
 //! artifact root (never C:).
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let output = hsk_studio_harness::cli::run(&args);
-    print!("{}", output.stdout);
-    std::process::exit(output.exit);
+    let exit = hsk_studio_harness::cli::run_streams(&args, &mut std::io::stdin().lock(), &mut std::io::stdout().lock());
+    std::process::exit(exit);
 }

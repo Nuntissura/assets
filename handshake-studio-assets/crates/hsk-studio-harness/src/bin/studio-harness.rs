@@ -1,5 +1,7 @@
 //! Studio harness desktop window (feature `desktop`; Operator decision D11: eframe 0.33.3 with
-//! its wgpu backend). Usage: `studio-harness [--cpu] [--recent LIST] [FILE]`: FILE (PSD/PSB, TIFF,
+//! its wgpu backend). A CLI command word (`studio-harness help`) is answered by the CLI with no
+//! window, and an argument that is neither a command nor an existing file prints usage and exits
+//! with no window (`cli::window_args`). Usage: `studio-harness [--cpu] [--recent LIST] [FILE]`: FILE (PSD/PSB, TIFF,
 //! camera raw, PNG/JPEG, PDF, a native `.handshake` package; with feature `media` an audio file) is
 //! opened at start; File > Open... (Ctrl+O), File > Open Recent and the path field open more.
 //! `--cpu` renders with render-cpu only. `--recent LIST` keeps the recent-files list in the file
@@ -7,6 +9,7 @@
 //! the list lives only for the session (the harness has no settings path of its own). All
 //! application state lives in `hsk_studio_harness::view::Viewer`; this file only hosts it in a
 //! window. Launching it is a manual Operator step (`RUN-UI.md`); tests never open this window.
+use hsk_studio_harness::cli::{self, WindowArgs};
 use hsk_studio_harness::view::{Viewer, display::WgpuDisplay, export::write_atomic, render::Prefer};
 use std::path::PathBuf;
 
@@ -32,27 +35,15 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result {
-    let mut prefer = Prefer::Gpu;
-    let mut file = None;
-    let mut recent = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--cpu" => prefer = Prefer::Cpu,
-            "--recent" => match args.next() {
-                Some(p) => recent = Some(PathBuf::from(p)),
-                None => {
-                    eprintln!("studio-harness: --recent needs a file path");
-                    std::process::exit(2);
-                }
-            },
-            "-h" | "--help" => {
-                println!("studio-harness [--cpu] [--recent LIST] [FILE]   desktop viewer (PSD/PSB, TIFF, camera raw, PNG, JPEG, PDF, .handshake)");
-                return Ok(());
-            }
-            _ => file = Some(PathBuf::from(arg)),
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (prefer, recent, file) = match cli::window_args(&args, &|p| p.is_file()) {
+        WindowArgs::Cli => std::process::exit(cli::run_streams(&args, &mut std::io::stdin().lock(), &mut std::io::stdout().lock())),
+        WindowArgs::Usage(usage) => {
+            print!("{}", usage.stdout);
+            std::process::exit(usage.exit);
         }
-    }
+        WindowArgs::Window { cpu, recent, file } => (if cpu { Prefer::Cpu } else { Prefer::Gpu }, recent, file),
+    };
     let mut viewer = Viewer::new(prefer);
     let recent = recent.map(|path| {
         // A missing list starts empty; a list that does not decode is reported, starts empty and is
