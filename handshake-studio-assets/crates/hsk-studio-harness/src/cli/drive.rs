@@ -155,6 +155,10 @@ impl Live {
         let Some(entry) = action::command(id) else {
             return Err(refuse("unknown_command", json!({"command_id": id, "hint": "`help --json` lists drive.commands and drive.timeline"})));
         };
+        // A catalog row the viewer runs (lane SMB-LAYOUT-PDF-HOST-1): its viewer row, same keys.
+        if let Some(method) = entry.run_method.strip_prefix("viewer.") {
+            return self.viewer_method(method, params, expected);
+        }
         if !DRIVE_RUN_COMMANDS.contains(&id) {
             return Err(refuse("command_not_driveable", json!({"command_id": id, "reason": "needs a payload this process surface does not carry yet"})));
         }
@@ -217,7 +221,7 @@ impl Live {
             return Err(refuse("unknown_command", json!({"command_id": format!("viewer.{method}"), "hint": "`help --json` lists drive.viewer"})));
         };
         self.check_revision(expected)?;
-        if matches!(method, "export" | "export_vector_svg" | "export_vector_pdf")
+        if matches!(method, "export" | "export_vector_svg" | "export_vector_pdf" | "export_layout_pdf" | "export_layout_idml" | "render_pdf_page")
             && let Some(path) = params.get("path").map(Path::new)
         {
             // An export replaces bytes with no Run op: never the opened package, whatever the flags.

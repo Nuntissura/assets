@@ -9,6 +9,7 @@ use super::drive::{Params, Refusal, refuse};
 use crate::view::Viewer;
 use crate::view::edit::{BrushSettings, Tool};
 use crate::view::export::ExportFormat;
+use crate::view::layout_export::{self, LayoutExportRefusal, LayoutPdfSettings, PdfXStandard};
 use crate::view::vector::style::RowKind;
 use crate::view::vector::{LiveTextKind, ShapeKind};
 use crate::Place;
@@ -111,6 +112,16 @@ impl Args<'_> {
             _ => Place::After(target()?),
         })
     }
+}
+
+/// A layout output method's typed refusal as the drive's refusal (its own code).
+fn layout(result: Result<Value, LayoutExportRefusal>) -> Result<Outcome, Refusal> {
+    result.map(Ok).map_err(|r| refuse(r.code, serde_json::json!({"message": r.detail})))
+}
+
+/// The output-intent ICC bytes of `path`, bounded.
+fn read_profile(path: &Path) -> Result<Vec<u8>, LayoutExportRefusal> {
+    layout_export::read_bounded(path, layout_export::MAX_PROFILE_BYTES, "output_profile_unreadable")
 }
 
 /// The outcome of a viewer method: its value, or its refusal text.
@@ -237,6 +248,41 @@ pub(super) fn call(viewer: &mut Viewer, row: &DriveViewer, params: &Params) -> R
         }
         "export_vector_svg" => plain(viewer.export_vector_svg(a.path("path")?, a.flag_or("overwrite", false)?)),
         "export_vector_pdf" => plain(viewer.export_vector_pdf(a.path("path")?, a.flag_or("overwrite", false)?)),
+        // ---- layout output (lane SMB-LAYOUT-PDF-HOST-1) ----
+        "layout_open" => {
+            let size = match (a.opt_number("page_width_pt")?, a.opt_number("page_height_pt")?) {
+                (Some(w), Some(h)) => Some((w, h)),
+                (None, None) => None,
+                _ => return Err(refuse("page_size_incomplete", serde_json::json!({"message": "give page_width_pt and page_height_pt together"}))),
+            };
+            let pages = a.opt("pages").map(|_| a.parsed::<u32>("pages", "page count")).transpose()?;
+            layout(viewer.layout_open(size, pages))?
+        }
+        "layout_preflight" => layout(viewer.layout_preflight())?,
+        "export_layout_pdf" => {
+            let profile = match a.opt("output_profile") {
+                Some(path) => Some(read_profile(Path::new(path)).map_err(|r| refuse(r.code, serde_json::json!({"message": r.detail})))?),
+                None => None,
+            };
+            let pdfx = match a.opt("pdfx") {
+                None => PdfXStandard::None,
+                Some(_) => if a.token("pdfx", &["pdfx.none", "pdfx.x4_2010"])? == 0 { PdfXStandard::None } else { PdfXStandard::X4_2010 },
+            };
+            let settings = LayoutPdfSettings {
+                pdfx,
+                created: a.opt("created"),
+                output_profile: profile.as_deref(),
+                output_condition_identifier: a.opt("output_condition_identifier"),
+                output_condition: a.opt("output_condition"),
+                registry: a.opt("registry"),
+                title: a.opt("title"),
+                subset_fonts: a.flag_or("subset_fonts", true)?,
+                ignore_preflight: a.flag_or("ignore_preflight", false)?,
+            };
+            layout(viewer.export_layout_pdf(a.path("path")?, a.flag_or("overwrite", false)?, &settings))?
+        }
+        "export_layout_idml" => layout(viewer.export_layout_idml(a.path("path")?, a.flag_or("overwrite", false)?))?,
+        "render_pdf_page" => layout(viewer.render_pdf_page(a.path("source")?, a.parsed("page", "page index")?, a.number("px_per_pt")?, a.path("path")?, a.flag_or("overwrite", false)?))?,
         // ---- vector tools ----
         "pen_point" => plain(viewer.pen_point(a.number("x")?, a.number("y")?, a.opt_point("drag")?, a.number("close_radius")?)),
         "pen_end" => {

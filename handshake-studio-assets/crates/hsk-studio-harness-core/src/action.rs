@@ -791,6 +791,7 @@ pub fn shortcut_collisions(enabled_sets: &[&ActionSet]) -> Vec<Diagnostic> {
 mod commands;
 
 pub use commands::{CMD_PANEL_SET, CMD_RENAME, CMD_RESTRUCTURE, CMD_SET_BLEND_MODE, CMD_SET_OPACITY, CMD_SET_VISIBLE, CommandEntry, ParamSpec, RUN_COMMANDS, command, corpus_json};
+pub use commands::{CMD_LAYOUT_EXPORT_IDML, CMD_LAYOUT_EXPORT_PDF, CMD_LAYOUT_OPEN, CMD_LAYOUT_PREFLIGHT, CMD_LAYOUT_RENDER_PDF_PAGE};
 
 // ----- recording and playback support ----------------------------------------------------------
 

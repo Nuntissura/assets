@@ -202,6 +202,16 @@ pub const DRIVE_VIEWER: &[DriveViewer] = &[
     method("export", &[need("path", "path"), need("format", "one_of:png|jpeg"), may("quality", "integer"), may("overwrite", "boolean")]),
     method("export_vector_svg", OUT),
     method("export_vector_pdf", OUT),
+    // Lane SMB-LAYOUT-PDF-HOST-1: the Layout Editor's output; the layout.* catalog rows run these.
+    method("layout_open", &[may("page_width_pt", "number"), may("page_height_pt", "number"), may("pages", "integer")]),
+    method("layout_preflight", &[]),
+    method("export_layout_pdf", &[
+        need("path", "path"), may("overwrite", "boolean"), may("pdfx", "one_of:pdfx.none|pdfx.x4_2010"), may("created", "text"), may("output_profile", "path"),
+        may("output_condition_identifier", "text"), may("output_condition", "text"), may("registry", "text"), may("title", "text"), may("subset_fonts", "boolean"),
+        may("ignore_preflight", "boolean"),
+    ]),
+    method("export_layout_idml", OUT),
+    method("render_pdf_page", &[need("source", "path"), need("page", "integer"), need("px_per_pt", "number"), need("path", "path"), may("overwrite", "boolean")]),
     method("pen_point", &[need("x", "number"), need("y", "number"), may("drag", "point"), need("close_radius", "number")]),
     method("pen_end", &[]),
     method("curvature_point", &[need("x", "number"), need("y", "number"), need("corner", "boolean"), need("close_radius", "number")]),

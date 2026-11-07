@@ -21,6 +21,7 @@ mod vector;
 mod video;
 
 pub use layer::{CMD_PANEL_SET, CMD_RENAME, CMD_RESTRUCTURE, CMD_SET_BLEND_MODE, CMD_SET_OPACITY, CMD_SET_VISIBLE};
+pub use layout::{CMD_LAYOUT_EXPORT_IDML, CMD_LAYOUT_EXPORT_PDF, CMD_LAYOUT_OPEN, CMD_LAYOUT_PREFLIGHT, CMD_LAYOUT_RENDER_PDF_PAGE};
 
 /// One declared parameter of a corpus command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,7 +38,8 @@ pub struct ParamSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandEntry {
     pub command_id: &'static str,
-    /// The public `Run` method the command runs through.
+    /// The public `Run` method the command runs through, or `viewer.<method>`: a row of
+    /// `manual::DRIVE_VIEWER` for a command the viewer runs (lane SMB-LAYOUT-PDF-HOST-1).
     pub run_method: &'static str,
     pub display_name: &'static str,
     pub recordable: bool,

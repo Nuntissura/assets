@@ -1961,6 +1961,7 @@ dependencies = [
  "hsk-studio-harness-core",
  "hsk-studio-interop-affinity",
  "hsk-studio-interop-fig",
+ "hsk-studio-interop-layout",
  "hsk-studio-interop-psd",
  "hsk-studio-interop-raster",
  "hsk-studio-interop-tiff",

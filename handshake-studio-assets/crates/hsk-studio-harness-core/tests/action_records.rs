@@ -318,7 +318,11 @@ fn assert_corpus_covers_every_mutating_run_method() {
     for read_only in ["snapshot", "ops", "placement", "document_entry", "render_assets", "history", "finish"] {
         assert!(fns.iter().any(|(n, m)| n == read_only && !m), "Run::{read_only} must scan as non-mutating: {fns:?}");
     }
-    let corpus_methods: Vec<&str> = RUN_COMMANDS.iter().flat_map(|c| c.run_method.split(" / ")).collect();
+    // Lane SMB-LAYOUT-PDF-HOST-1: a row that runs on the viewer names its drive row `viewer.<method>`,
+    // which must be a row of manual::DRIVE_VIEWER (checked here instead of the Run scan).
+    let (viewer_methods, corpus_methods): (Vec<&str>, Vec<&str>) = RUN_COMMANDS.iter().flat_map(|c| c.run_method.split(" / ")).partition(|m| m.starts_with("viewer."));
+    let unknown: Vec<&str> = viewer_methods.iter().copied().filter(|m| !hsk_studio_harness_core::manual::DRIVE_VIEWER.iter().any(|r| m.strip_prefix("viewer.") == Some(r.method))).collect();
+    assert!(unknown.is_empty(), "RUN_COMMANDS viewer.<method> names that are not DRIVE_VIEWER rows: {unknown:?}");
     let missing: Vec<&str> = fns
         .iter()
         .filter(|(n, mutating)| *mutating && !RECORDING_CONTROLS.contains(&n.as_str()) && !corpus_methods.contains(&n.as_str()))

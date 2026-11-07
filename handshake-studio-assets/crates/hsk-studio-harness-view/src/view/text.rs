@@ -200,13 +200,13 @@ impl FontFile {
 // ----- Type caller ports (adapted from composite tests/common/text_shaping.rs) ----------------
 
 #[derive(Default)]
-struct LedgerState {
+pub(super) struct LedgerState {
     current: u64,
     peak: u64,
     retained: u64,
     next: u64,
 }
-struct Ledger(Mutex<LedgerState>);
+pub(super) struct Ledger(pub(super) Mutex<LedgerState>);
 impl ty::RetirementPort for Ledger {
     fn retire(&self, _: u64, n: u64) {
         if let Ok(mut s) = self.0.lock() {
@@ -251,9 +251,9 @@ impl ty::AdmissionPort for Ledger {
         ty::Generation::new(self, handle)
     }
 }
-struct Fonts<'a> {
-    files: &'a [FontFile],
-    ledger: &'a Ledger,
+pub(super) struct Fonts<'a> {
+    pub(super) files: &'a [FontFile],
+    pub(super) ledger: &'a Ledger,
 }
 impl ty::FontResolver for Fonts<'_> {
     fn revision(&self) -> Result<u64, ty::Error> {
@@ -270,15 +270,15 @@ impl ty::FontResolver for Fonts<'_> {
         Ok(())
     }
 }
-struct Input(u64);
+pub(super) struct Input(pub(super) u64);
 impl ty::InputLifetime for Input {
     fn verify(&self, _: &ty::Request<'_>) -> Result<ty::InputCharge, ty::Error> {
         Ok(ty::InputCharge { lifetime_id: 1, requested_bytes: self.0 })
     }
 }
-struct Scene<'a> {
-    text: &'a str,
-    styles: &'a [ty::Style<'a>],
+pub(super) struct Scene<'a> {
+    pub(super) text: &'a str,
+    pub(super) styles: &'a [ty::Style<'a>],
 }
 impl ty::EpochPort for Scene<'_> {
     fn current_epoch(&self) -> Result<u64, ty::Error> {
@@ -302,7 +302,7 @@ impl ty::SourceContext for Scene<'_> {
         self.styles.iter().find(|s| s.read_index == index).copied().ok_or(ty::Error::AbsentRead)
     }
 }
-fn limits() -> ty::Limits {
+pub(super) fn limits() -> ty::Limits {
     ty::Limits {
         input_bytes: 8192,
         input_scalars: 8192,
