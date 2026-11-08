@@ -26,9 +26,13 @@
 //! tables and the leading model (137-139), `balance_ragged_lines` (141), the nine-value
 //! justification mode (145), `allow_arbitrary_hyphenation`, `hyphenation_preference`, provider
 //! style and exceptions (151-154), `use_auto_leading` as a flag separate from `line_height`.
+//! Indents and spacing (lane SMB-TYPE-INDENT-SPACING-1, STU-TYP-185) ride on the same settings:
+//! `left_indent`, `right_indent`, `first_line_indent`, `last_line_indent`, `space_before`,
+//! `space_after` (points, finite, either sign, no bound: [`INDENT_SPACING_PARAMS`] holds the spec's
+//! seven-field rows with every UNKNOWN as `None`) and `space_between_same_style`.
 //!
 //! Declared gaps, not invented here: the full character/paragraph attribute groups of 14.7 (OpenType
-//! features, decoration, baseline shift, indents, spacing, nested styles;
+//! features, decoration, baseline shift, keep options, rules, tabs, lists, nested styles;
 //! GREP styles are carried since SMB-LAYOUT-UI as `grep_styles`), override reporting (STU-TYP-202) and variable-bound fields (STU-TYP-204) are not stored;
 //! the `StudioStyleRegistry` storage and publishing fields (14.6/14.10) stay with the design records
 //! (`PAINT` entries only). Bounds the spec does not state are checked for finiteness and their
@@ -39,7 +43,7 @@
 //! V4-01); counts are charged through the checked `Ctx` budget.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
-    Budget, Code, Length, Resolution, ResolutionIssue, Resolver, Result, StudioDocument,
+    Budget, Code, GeometryUnit, Length, Resolution, ResolutionIssue, Resolver, Result, StudioDocument,
     StudioTextStory, TileRef, canceled, err, id,
     values::{Ctx, StudioRgba, label, slash_path},
 };
@@ -191,7 +195,8 @@ pub const MAX_PARAGRAPH_COMPOSITION: usize = 65_536;
 /// Paragraph composition settings (lane SMB-LAYOUT-COMPOSER-WIRING): the composer axes of
 /// STU-TYP-135, the hyphenation record of STU-TYP-150/151, the H&J spacing block of STU-TYP-147,
 /// single-word justification (STU-TYP-146) and the auto-leading amount (STU-TYP-148), under the spec
-/// field names. Every field is optional: absent means "not set here" and falls through the
+/// field names, and the STU-TYP-185 indent and spacing block (lane SMB-TYPE-INDENT-SPACING-1, lengths
+/// in points). Every field is optional: absent means "not set here" and falls through the
 /// STU-TYP-201 order (paragraph style `based_on` chain root first, then the local paragraph
 /// override); a paragraph with nothing set anywhere composes as before these fields existed.
 /// Spacing fields are percent (word and letter spacing of the font's word space, glyph scaling of
@@ -342,9 +347,54 @@ impl StudioCompositionSettings {
             target,
             "hyphenation_zone",
         )?;
+        // STU-TYP-185 / 108: points, finite, either sign; no bound (STU-TYP-106).
+        for (field, v) in [
+            ("left_indent", &self.left_indent),
+            ("right_indent", &self.right_indent),
+            ("first_line_indent", &self.first_line_indent),
+            ("last_line_indent", &self.last_line_indent),
+            ("space_before", &self.space_before),
+            ("space_after", &self.space_after),
+        ] {
+            check(v.as_ref().is_none_or(|l| l.unit == GeometryUnit::Pt && l.value.is_finite()), target, field)?;
+        }
         Ok(())
     }
 }
+
+/// One STU-TYP-105 seven-field parameter record held as data (Studio-minted name, lane
+/// SMB-TYPE-INDENT-SPACING-1, for the parameter-contract work of MT-30972). `None` is the spec's
+/// literal `UNKNOWN`: that side is not clamped (STU-TYP-106). Hard and soft bounds are separate
+/// fields and never stand in for each other.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TypographyParamRow {
+    /// The spec field name, as stored on [`StudioCompositionSettings`].
+    pub key: &'static str,
+    pub hard_min: Option<f64>,
+    pub hard_max: Option<f64>,
+    pub soft_min: Option<f64>,
+    pub soft_max: Option<f64>,
+    pub default: Option<f64>,
+    /// STU-TYP-105 unit token.
+    pub unit: &'static str,
+    /// Decimal places carried and round-tripped.
+    pub precision: Option<u32>,
+}
+
+const fn unknown_bounds_points(key: &'static str) -> TypographyParamRow {
+    TypographyParamRow { key, hard_min: None, hard_max: None, soft_min: None, soft_max: None, default: Some(0.0), unit: "points", precision: None }
+}
+
+/// STU-TYP-185 parameter table, row for row: every bound and the precision UNKNOWN, default 0,
+/// unit points.
+pub const INDENT_SPACING_PARAMS: [TypographyParamRow; 6] = [
+    unknown_bounds_points("left_indent"),
+    unknown_bounds_points("right_indent"),
+    unknown_bounds_points("first_line_indent"),
+    unknown_bounds_points("last_line_indent"),
+    unknown_bounds_points("space_before"),
+    unknown_bounds_points("space_after"),
+];
 
 /// The composition settings a paragraph style states (paragraph scope only; one entry per style).
 /// Kept beside the styles rather than on `StudioTypeStyle` so existing style records, their wire
