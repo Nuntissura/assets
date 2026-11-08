@@ -172,6 +172,9 @@ pub struct ParagraphStyling {
     /// Effective composition settings; `None` when neither the style chain nor a local override
     /// sets any (the paragraph then composes with the request's composer and `TypesetOptions`).
     pub composition: Option<ParagraphComposition>,
+    /// STU-TYP-185 `space_between_same_style`: the paragraph's effective flag is true and it shares
+    /// its (non-null) paragraph style with the paragraph before it, so no space separates the two.
+    pub same_style_no_space: bool,
 }
 
 /// Advance of the first glyph whose cluster is exactly `want`.
@@ -326,6 +329,7 @@ pub(crate) fn apply(
             font_size_pt: size,
             style: resolved,
             composition,
+            same_style_no_space: false,
         });
         out.push(q);
     }

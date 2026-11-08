@@ -720,6 +720,9 @@ pub(crate) struct Composition {
     pub cjk: Vec<Vec<Option<Vec<CjkGap>>>>,
     /// Break and flush-space outcomes (`sentinels` module).
     pub facts: FlowFacts,
+    /// Per frame, parallel to `lines`: the width the line's indents take from its slot (left, first
+    /// line, right and a positive last-line indent; STU-TYP-185), for auto-size.
+    pub indent: Vec<Vec<f64>>,
 }
 
 /// The composition core shared by `reflow_typeset`, tables and notes: flows already-styled
@@ -961,6 +964,7 @@ fn compose_flow(
     let mut frames: Vec<Vec<Line>> = thread.iter().map(|_| Vec::new()).collect();
     let mut metas: Vec<Vec<Meta>> = thread.iter().map(|_| Vec::new()).collect();
     let mut cjk_lines: Vec<Vec<Option<Vec<CjkGap>>>> = thread.iter().map(|_| Vec::new()).collect();
+    let mut indents: Vec<Vec<f64>> = thread.iter().map(|_| Vec::new()).collect();
     // Index of the first line of the current band, per frame (bands start after span paragraphs).
     let mut band_start: Vec<usize> = vec![0; thread.len()];
     let mut band_top: Vec<Option<f64>> = vec![None; thread.len()];
@@ -1395,6 +1399,7 @@ fn compose_flow(
             let index = frames[pos].len();
             facts.flush.extend(flush.into_iter().map(|(story_byte, absorbed_pt)| FlushOutcome { story_byte, frame: pos, line: index, absorbed_pt }));
             frames[pos].push(line);
+            indents[pos].push(0.0);
             cjk_lines[pos].push(gaps);
             metas[pos].push(Meta {
                 ascent: p.ascent_pt,
@@ -1468,5 +1473,6 @@ fn compose_flow(
         overset,
         cjk: cjk_lines,
         facts,
+        indent: indents,
     })
 }
