@@ -697,3 +697,75 @@ fn find_change_moves_the_paragraph_keyed_records_and_undo_keeps_them() {
     assert_eq!((st.paragraph_composition[0].paragraph_start, fl.paragraph_flows[0].paragraph_start), (7, 7));
     assert_eq!((undo.flow_before, undo.styles_before), (Some(fl0), Some(st0)));
 }
+
+/// Review F1: text typed or pasted at the start of paragraph P belongs to P (P keeps its style), for
+/// P = 0 and P = 2; text typed inside a paragraph stays that paragraph's; a merge keeps the first
+/// touched paragraph's style.
+#[test]
+fn text_at_a_paragraph_start_belongs_to_that_paragraph() {
+    let s = story(&[("aa\n", Some(1)), ("bb\n", Some(2)), ("cc", Some(3))]).story;
+    let styled = |e: StudioTextStory| e.paragraphs.iter().map(|p| (p.start, p.style_ref.clone())).collect::<Vec<_>>();
+    let st = |n: u32| Some(id("STYS", n));
+    let edit = |a: u64, b: u64, t: &str| styled(replace_story_text(&s, None, a, b, t).unwrap());
+    assert_eq!(edit(0, 0, "x"), vec![(0, st(1)), (4, st(2)), (7, st(3))], "typed at P = 0");
+    assert_eq!(edit(6, 6, "x"), vec![(0, st(1)), (3, st(2)), (6, st(3))], "typed at P = 2");
+    assert_eq!(edit(0, 0, "xy\nz"), vec![(0, st(1)), (3, st(1)), (7, st(2)), (10, st(3))], "pasted at P = 0");
+    assert_eq!(edit(6, 6, "xy\nz"), vec![(0, st(1)), (3, st(2)), (6, st(3)), (9, st(3))], "pasted at P = 2");
+    assert_eq!(edit(4, 4, "\n"), vec![(0, st(1)), (3, st(2)), (5, st(2)), (7, st(3))], "a split inside P = 1");
+    assert_eq!(edit(2, 3, ""), vec![(0, st(1)), (5, st(3))], "a merge: the first touched wins");
+}
+
+/// Review F2: a paragraph whose first line opened a column (its space dropped there) gets its
+/// space back when balancing moves that line to the middle of a column.
+#[test]
+fn balancing_gives_back_the_space_a_column_top_dropped() {
+    // Two 60 pt columns, three lines deep; A fills column 0, B (space before 6) opens column 1.
+    let s = story(&[("aaaaaaaa bbbbbbbb cccccccc\n", Some(1)), ("dd", Some(2))]);
+    let r = styles(&[StudioCompositionSettings::default(), space(6.0, 0.0)]);
+    let f = columns(130.0, 36.0, 2, 10.0);
+    let ragged = run(f, &s, &r, Composer::FirstFit).unwrap();
+    assert_eq!(lines(&ragged).iter().map(|l| (l.column, l.baseline_y_pt)).collect::<Vec<_>>(), vec![(0, 10.0), (0, 22.0), (0, 34.0), (1, 10.0)]);
+    let mut fl = flow();
+    fl.frame_options.push(StudioFrameFlowOptions { layer_id: id("SLYR", 1), vertical_balance_columns: true });
+    let balanced = run_with(f, &s, &r, Composer::FirstFit, &fl, &[]).unwrap();
+    assert_eq!(
+        lines(&balanced).iter().map(|l| (l.column, l.baseline_y_pt)).collect::<Vec<_>>(),
+        vec![(0, 10.0), (0, 22.0), (1, 10.0), (1, 28.0)],
+        "B sits at row 1 of column 1: 10 + 12 + 6"
+    );
+}
+
+/// Review F3: on both Adobe composers a last line its spaces can compress into the narrowed width
+/// fits: no re-break, not overfull, its spaces closed to the measure (as the set stage does).
+#[test]
+fn adobe_last_line_fit_counts_its_compressible_spaces() {
+    // "aaaaaaaaaa" / "aa bb cc" (48 pt, two 6 pt spaces shrinking 20 %: 45.6 pt) in 60 pt; the
+    // last line narrowed by 13 pt to 47 pt.
+    let s = one("aaaaaaaaaa aa bb cc");
+    let r = styles(&[StudioCompositionSettings { last_line_indent: pt(13.0), ..Default::default() }]);
+    for composer in [Composer::AdobeSingleLine(AdobeParams::default()), Composer::AdobeParagraph(AdobeParams::default())] {
+        let p = run(frame(60.0, 100.0), &s, &r, composer).unwrap();
+        let l = lines(&p);
+        assert_eq!(l.iter().map(|x| x.source.start).collect::<Vec<_>>(), vec![0, 11], "{composer:?}");
+        let end = &l[1];
+        assert!(!end.overfull && end.available_pt == 47.0, "{composer:?}: {end:?}");
+        let j = end.justification.expect("compressed");
+        assert!(j.word_scale < 1.0 && j.word_scale >= 0.8, "{composer:?}: {j:?}");
+    }
+}
+
+/// Review F4: split paragraphs get no last-line re-break (their breaks are taken for the
+/// sub-column grid); a narrowed last line that does not fit is overfull, whatever the gate says.
+#[test]
+fn split_paragraphs_take_no_last_line_rebreak() {
+    let s = story(&[("aaaa bb cc", Some(1))]);
+    let mut fl = flow();
+    fl.paragraph_flows.push(pflow(0, StudioSpanColumn::SplitColumns, 0.0, 0.0));
+    // Two 30 pt sub-columns: "aaaa " / "bb cc" (30 pt); the last line narrowed by 12 to 18 pt holds
+    // every word (12 pt) but not the line.
+    let r = styles(&[StudioCompositionSettings { last_line_indent: pt(12.0), ..Default::default() }]);
+    let p = run_with(columns(130.0, 200.0, 2, 10.0), &s, &r, Composer::FirstFit, &fl, &[]).unwrap();
+    let l = lines(&p);
+    assert_eq!(l.iter().map(|x| x.source.start).collect::<Vec<_>>(), vec![0, 5]);
+    assert!(l[1].overfull && l[1].available_pt == 18.0, "{:?}", l[1]);
+}
