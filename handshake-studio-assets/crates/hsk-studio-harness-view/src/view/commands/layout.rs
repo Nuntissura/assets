@@ -38,6 +38,7 @@ fn style_patch(f: Fields<'_>) -> Result<StylePatch, CommandRefusal> {
         font_size_pt: patched(f, "font_size_pt", || f.number("font_size_pt"))?,
         leading_pt: patched(f, "leading_pt", || f.number("leading_pt"))?,
         align: patched(f, "align", || folio_field!(f, "align", folio::StudioTextAlign, "a text alignment token"))?,
+        composition: patched(f, "composition", || folio_field!(f, "composition", folio::StudioCompositionSettings, "Folio composition settings"))?,
     })
 }
 
@@ -83,7 +84,7 @@ fn edit_of(id: &str, f: Fields<'_>) -> Result<Option<LayoutEdit>, CommandRefusal
             LayoutEdit::Style(StyleEdit::NewStyle { scope, name: text("name")?, based_on: opt("based_on")? })
         }
         "layout.style.edit_style" => {
-            let patch = f.nested("patch", &["name", "based_on", "next_style", "font_family", "font_size_pt", "leading_pt", "align"], style_patch)?;
+            let patch = f.nested("patch", &["name", "based_on", "next_style", "font_family", "font_size_pt", "leading_pt", "align", "composition"], style_patch)?;
             LayoutEdit::Style(StyleEdit::EditStyle { style: text("style")?, patch })
         }
         "layout.style.delete_style" => LayoutEdit::Style(StyleEdit::DeleteStyle { style: text("style")?, replace_with: opt("replace_with")? }),

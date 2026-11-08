@@ -19,7 +19,7 @@
 use crate::LayoutError;
 use crate::folio_input::story_text;
 use hsk_studio_folio::{
-    StoryContent, StoryParagraph, StoryRange, StudioLayoutFlowRecords, StudioTextStory,
+    StoryContent, StoryParagraph, StoryRange, StudioLayoutFlowRecords, StudioTextStory, StudioTypeStyleRecords,
     StudioXrefDestination,
 };
 
@@ -191,6 +191,20 @@ pub fn shift_flow_records(
         p.paragraph_start = m(p.paragraph_start)?;
     }
     Ok(())
+}
+
+/// [`shift_flow_records`] for an edit of `edited` (the story [`replace_story_text`] returned) plus
+/// the records keyed by a paragraph's start byte: the layout-flow paragraph overrides and the Folio
+/// type-style local composition overrides (`paragraph_composition`, lane SMB-TYPE-INDENT-SPACING-1).
+pub fn shift_paragraph_records(
+    flow: &mut StudioLayoutFlowRecords,
+    _styles: &mut StudioTypeStyleRecords,
+    edited: &StudioTextStory,
+    start: u64,
+    end: u64,
+    new_len: u64,
+) -> Result<(), LayoutError> {
+    shift_flow_records(flow, &edited.story_id, start, end, new_len)
 }
 
 /// The visible part of a story under the current condition visibility.

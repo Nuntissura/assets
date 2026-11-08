@@ -27,7 +27,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("layout.page.remove_override", EDIT, "Remove parent item override", true, PAGE_ITEM),
     typed("layout.page.detach_item", EDIT, "Detach parent item", true, PAGE_ITEM),
     typed("layout.style.new_style", EDIT, "New type style", true, &[o("scope", "paragraph|character"), t("name"), t("based_on").opt()]),
-    typed("layout.style.edit_style", EDIT, "Edit type style", true, &[t("style"), r("patch", "{name, based_on, next_style, font_family, font_size_pt, leading_pt, align}; null clears, absent keeps")]),
+    typed("layout.style.edit_style", EDIT, "Edit type style", true, &[t("style"), r("patch", "{name, based_on, next_style, font_family, font_size_pt, leading_pt, align, composition: Folio StudioCompositionSettings (indents and spacing in pt)}; null clears, absent keeps")]),
     typed("layout.style.delete_style", EDIT, "Delete type style", true, &[t("style"), t("replace_with").opt()]),
     typed("layout.style.add_grep_rule", EDIT, "Add GREP style rule", true, &[t("style"), t("pattern"), t("character_style")]),
     typed("layout.style.remove_grep_rule", EDIT, "Remove GREP style rule", true, &[t("style"), i("index")]),
