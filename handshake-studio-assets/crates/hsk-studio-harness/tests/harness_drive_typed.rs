@@ -470,3 +470,37 @@ fn known_defect_replace_text_newline_keeps_one_paragraph() {
     assert_eq!((st["bytes"].as_u64(), st["paragraphs"].as_u64()), (Some(7), Some(1)), "{st}");
     s.close();
 }
+
+/// Lane SMB-DS-COMPONENTS-AUTHOR-1: component, variant set, property and instance authoring through the
+/// process ([STU-DS-107/112/162]); each mutating row is one named undo step with the caller's attribution,
+/// and a refusal changes nothing.
+#[test]
+fn component_authoring_runs_through_the_process() {
+    let dir = Scratch::new("components");
+    let package = dir.package("a.handshake");
+    let (mut s, _) = Live::open(&package, "lane-i", &dir.0);
+    let a = result_text(&s.ok("viewer.draw_shape", json!({"kind":"rectangle","a":[10,10],"b":[70,30]})));
+    let b = result_text(&s.ok("viewer.draw_shape", json!({"kind":"ellipse","a":[15,15],"b":[25,25]})));
+    let made = s.ok("component.create_from_selection", json!({"layers":[a,b],"name":"Button"}));
+    assert_eq!(made["attribution"]["actor"]["account_id"], "lane-i", "{made}");
+    assert!(!undo_name(&made).is_empty());
+    let component = made["detail"]["result"]["component_id"].as_str().expect("a component id").to_string();
+    let c = result_text(&s.ok("viewer.draw_shape", json!({"kind":"rectangle","a":[100,10],"b":[160,30]})));
+    let other = s.ok("component.create_from_selection", json!({"layers":[c],"name":"Ghost"}))["detail"]["result"]["component_id"].as_str().unwrap().to_string();
+    s.refused("component_set.combine_as_variants", json!({"components":[component,other],"properties":{"State":["A","B"]},"assignments":{component.clone():{"State":"A"},other.clone():{"State":"A"}}}), "variant_assignment_duplicate");
+    let instance = s.ok("component.create_instance", json!({"component":component,"x":300,"y":10}));
+    let frame = instance["detail"]["result"]["layer_id"].as_str().expect("an instance layer").to_string();
+    assert_eq!(s.ok("design.instance.inspect", json!({"layer":frame}))["detail"]["result"]["state"], "edited");
+    s.ok("component.add_property", json!({"component":component,"name":"Label","type":"TEXT","default":"OK"}));
+    s.refused("component.create_instance", json!({"component":component,"x":1.0e12,"y":0}), "instance_coordinate_out_of_range");
+    let listed = s.ok("component.list_instances", json!({"component":component}));
+    assert_eq!(listed["detail"]["result"]["instances"][0]["layer_id"], frame.as_str(), "{listed}");
+    let detached = s.ok("instance.detach", json!({"layer":frame}));
+    assert_eq!(detached["detail"]["result"]["layer_id"], frame.as_str());
+    s.refused("instance.get_main_component", json!({"layer":frame}), "not_an_instance");
+    writeln!(s.stdin, "{}", json!({"command":"undo"})).unwrap();
+    s.stdin.flush().unwrap();
+    let _ = s.read();
+    assert_eq!(s.ok("instance.get_main_component", json!({"layer":frame}))["detail"]["result"]["main_component_id"], component.as_str());
+    s.close();
+}
