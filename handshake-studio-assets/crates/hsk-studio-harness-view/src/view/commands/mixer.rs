@@ -30,7 +30,9 @@ pub(super) mod enabled {
     pub const MAX_BLOCK_FRAMES: u64 = 16_384;
     /// The block of the window's multitrack binding.
     const DEFAULT_BLOCK: usize = 960;
-    const TEMPLATES: &str = "gain|equalizer|dynamics|lookahead_limiter";
+    /// The refusal text of an unknown template: the names of `effect_templates()` (lane
+    /// SMB-SCORE-EFFECTS-6; harness-core's row declares the same list).
+    const TEMPLATES: &str = "gain|equalizer|dynamics|lookahead_limiter|graphic_eq_10_bands|graphic_eq_20_bands|graphic_eq_30_bands|hard_limiter|flanger|phaser|chorus|click_repair|reverb|feedback_delay|hum_remover|multiband_compressor";
     const EFFECT: &str = "a Folio StudioAudioEffectInstance record";
     const LANES: &str = "clip_volume|track_volume|track_pan|clip_pan|bus.<instance_id>.<key>";
 

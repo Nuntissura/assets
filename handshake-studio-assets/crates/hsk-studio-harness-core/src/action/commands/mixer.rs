@@ -6,8 +6,9 @@
 use super::{CommandEntry, flag as b, index as i, number as n, one_of as o, record as r, text as t, typed};
 
 const EDIT: &str = "Viewer::mixer_edit";
-/// The panel's effect templates (`mixer::effect_templates`).
-pub(super) const TEMPLATES: &str = "gain|equalizer|dynamics|lookahead_limiter";
+/// The panel's effect templates (`mixer::effect_templates`: the four batch kinds, then score's
+/// filter-kind table, lane SMB-SCORE-EFFECTS-6); a harness test pins this list to them.
+pub(super) const TEMPLATES: &str = "gain|equalizer|dynamics|lookahead_limiter|graphic_eq_10_bands|graphic_eq_20_bands|graphic_eq_30_bands|hard_limiter|flanger|phaser|chorus|click_repair|reverb|feedback_delay|hum_remover|multiband_compressor";
 const EFFECT: &str = "a Folio StudioAudioEffectInstance record";
 
 pub(super) const ROWS: &[CommandEntry] = &[
