@@ -485,8 +485,15 @@ pub(crate) struct Built {
 /// whose settings state anything; `None` when none does. The exporter takes no type-style records,
 /// so the caller that holds them appends this entry to the export's loss.
 pub fn type_style_composition_loss(styles: &StudioTypeStyleRecords) -> Option<LossEntry> {
-    let _ = styles;
-    None
+    let n = styles.style_composition.iter().filter(|c| !c.settings.is_empty()).count()
+        + styles.paragraph_composition.iter().filter(|c| !c.settings.is_empty()).count();
+    (n > 0).then(|| LossEntry {
+        part: "Resources/Styles.xml".into(),
+        element: "ParagraphStyle".into(),
+        kind: LossKind::Unsupported,
+        code: "paragraph_composition_not_exported",
+        count: u32::try_from(n).unwrap_or(u32::MAX),
+    })
 }
 
 /// Exports a Folio layout document and its stories as a deterministic IDML package.
