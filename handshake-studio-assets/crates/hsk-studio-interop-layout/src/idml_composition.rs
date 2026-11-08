@@ -19,7 +19,12 @@
 //! `HyphenateLadderLimit`, `HyphenWeight`, `HyphenationZone` (points), `HyphenateCapitalizedWords`,
 //! `HyphenateLastWord`, `HyphenateAcrossColumns`, `Minimum/Desired/MaximumWordSpacing`,
 //! `Minimum/Desired/MaximumLetterSpacing`, `Minimum/Desired/MaximumGlyphScaling`, `AutoLeading`
-//! and `SingleWordJustification` (`FullyJustified` seen). UNVERIFIED (no oracle file shows them):
+//! and `SingleWordJustification` (`FullyJustified` seen); STU-TYP-185 indents and spacing (lane
+//! SMB-TYPE-INDENT-SPACING-1) `LeftIndent`, `RightIndent`, `FirstLineIndent`, `LastLineIndent`,
+//! `SpaceBefore`, `SpaceAfter` (points, signed: names verified on the ID-03 root styles, where only
+//! the value 0 is seen, so their semantics stay UNVERIFIED; `TableStyle@SpaceBefore` is not a
+//! paragraph attribute and is not read; no attribute for `space_between_same_style` appears there,
+//! so it is not mapped). UNVERIFIED (no oracle file shows them):
 //! the `SingleWordJustification` values `LeftAlign`, `CenterAlign`, `RightAlign` (the
 //! `Justification` enumeration's names), the World-Ready / Japanese composer values (not mapped:
 //! typed loss), and `BasedOn` written as `ParagraphStyle/...` (accepted in both forms).
@@ -34,8 +39,10 @@
 //! never by substring matching; enumeration values must match exactly, numbers are trimmed.
 //! Paragraphs set in `[No paragraph style]` have no Folio style, so that style's settings are
 //! stored with their local attributes as a paragraph override (`root_style_settings_as_paragraph_override`,
-//! approximated). Style attributes other than composition (fonts, size, alignment, indents, ...)
-//! are not mapped here (`paragraph_style_attributes_not_mapped`). The result is validated by
+//! approximated). Style attributes other than composition, indents and spacing (fonts, size,
+//! alignment, tabs, ...) are not mapped here (`paragraph_style_attributes_not_mapped`). A
+//! non-finite indent or space (`NaN`, `inf`, an overflowing `1e999`) is `composition_value_invalid`;
+//! a large finite one (`1e308`) is stored, no bound being stated (STU-TYP-106). The result is validated by
 //! Folio `validate_type_style_records`.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::idml_decode::{LossBook, canceled, parse_xml, text_of};
@@ -68,7 +75,7 @@ pub struct TypeStyleImport {
 }
 
 /// The IDML attribute names this module maps (others are left to `paragraph_style_attributes_not_mapped`).
-pub const COMPOSITION_ATTRIBUTES: [&str; 22] = [
+pub const COMPOSITION_ATTRIBUTES: [&str; 28] = [
     "Composer",
     "Hyphenation",
     "HyphenateWordsLongerThan",
@@ -91,6 +98,12 @@ pub const COMPOSITION_ATTRIBUTES: [&str; 22] = [
     "MaximumGlyphScaling",
     "AutoLeading",
     "SingleWordJustification",
+    "LeftIndent",
+    "RightIndent",
+    "FirstLineIndent",
+    "LastLineIndent",
+    "SpaceBefore",
+    "SpaceAfter",
 ];
 /// Attributes of a `ParagraphStyle` element that are identity or structure, not formatting.
 const STRUCTURAL: [&str; 6] = ["Self", "Name", "Imported", "NextStyle", "StyleUniqueId", "KeyboardShortcut"];
@@ -140,6 +153,10 @@ impl Reader<'_> {
                 None
             }
         }
+    }
+    /// A signed finite length in points (STU-TYP-185 indents and spacing; no bound is stated).
+    fn points(&mut self, attr: &str, v: &str) -> Option<Length> {
+        self.number(attr, v).map(|value| Length { value, unit: GeometryUnit::Pt })
     }
     fn percent(&mut self, attr: &str, v: &str, (lo, hi): (f64, f64)) -> Option<f64> {
         let x = self.number(attr, v)?;
@@ -201,6 +218,12 @@ fn settings_of<'v>(attrs: impl Iterator<Item = (&'v str, &'v str)>, r: &mut Read
             "DesiredGlyphScaling" => s.glyph_scaling_desired = r.percent(k, v, GLYPH_SCALING_PERCENT),
             "MaximumGlyphScaling" => s.glyph_scaling_maximum = r.percent(k, v, GLYPH_SCALING_PERCENT),
             "AutoLeading" => s.auto_leading_amount = r.percent(k, v, AUTO_LEADING_PERCENT),
+            "LeftIndent" => s.left_indent = r.points(k, v),
+            "RightIndent" => s.right_indent = r.points(k, v),
+            "FirstLineIndent" => s.first_line_indent = r.points(k, v),
+            "LastLineIndent" => s.last_line_indent = r.points(k, v),
+            "SpaceBefore" => s.space_before = r.points(k, v),
+            "SpaceAfter" => s.space_after = r.points(k, v),
             "SingleWordJustification" => {
                 s.single_word_justification = match v {
                     "LeftAlign" => Some(StudioSingleWordJustification::LeftAlign),
