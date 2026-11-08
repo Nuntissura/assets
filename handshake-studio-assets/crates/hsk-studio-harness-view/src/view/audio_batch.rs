@@ -97,10 +97,7 @@ impl EffectSpec {
             } => Box::new(score::Equalizer::new(rate, channels, sections, *master_gain_db)?),
             Self::Dynamics(p) => Box::new(score::Dynamics::new(rate, channels, *p)?),
             Self::Limiter(p) => Box::new(score::LookaheadLimiter::new(rate, channels, *p)?),
-            Self::Filter { filter_kind, params } => {
-                let _ = (filter_kind, borrowed(params), filter_error as fn(score::AudioFilterError) -> score::ScoreError); // red stub
-                return Err(score::ScoreError::OutOfRange);
-            }
+            Self::Filter { filter_kind, params } => score::build_audio_filter(filter_kind, &borrowed(params), rate, channels).map_err(filter_error)?,
         })
     }
 
@@ -129,7 +126,11 @@ impl EffectSpec {
             }
             Self::Dynamics(_) => ["threshold_db", "ratio", "makeup_db"].iter().position(|k| *k == key),
             Self::Limiter(_) => ["ceiling_db", "release_ms"].iter().position(|k| *k == key),
-            Self::Filter { .. } => None, // red stub
+            Self::Filter { filter_kind, params } => score::audio_filter_parameters(filter_kind, &borrowed(params))
+                .ok()?
+                .into_iter()
+                .find(|p| p.key == key)?
+                .automation,
         }
     }
 }
@@ -844,6 +845,12 @@ impl EffectSpec {
                     release_ms: get("release_ms")?,
                     true_peak: true_peak.unwrap_or(true),
                 })
+            }
+            other if score::audio_filter_kind(other).is_some() => {
+                let pairs: Vec<(&str, f64)> = e.params.iter().map(|p| (p.key.as_str(), p.value)).collect();
+                let params = score::audio_filter_parameters(other, &pairs).map_err(|x| fail("preset_effect", target(x.code())))?;
+                used.borrow_mut().extend(e.params.iter().map(|p| p.key.clone()));
+                Self::Filter { filter_kind: other.to_owned(), params: params.into_iter().map(|p| (p.key, p.value)).collect() }
             }
             other => return Err(fail("preset_effect", target(&format!("unknown filter_kind {other}")))),
         };

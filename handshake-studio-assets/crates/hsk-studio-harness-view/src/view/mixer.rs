@@ -102,10 +102,15 @@ fn lane_at(points: &[StudioAutomationPoint], t: u64, map: impl Fn(f64) -> f64) -
 }
 
 /// Effects the panel offers to add, with their starting parameters (score's processor identity
-/// tags; see `audio_batch::EffectSpec`).
+/// tags; see `audio_batch::EffectSpec`): the four kinds of the batch module, then every row of
+/// score's filter-kind table at its defaults (lane SMB-SCORE-EFFECTS-6).
 pub fn effect_templates() -> Vec<(&'static str, EffectSpec)> {
     use hsk_studio_score as score;
-    vec![
+    let table = score::FILTER_KINDS.iter().filter_map(|row| {
+        let params = score::audio_filter_defaults(row.filter_kind)?.into_iter().map(|p| (p.key, p.value)).collect();
+        Some((row.filter_kind, EffectSpec::Filter { filter_kind: row.filter_kind.to_owned(), params }))
+    });
+    let mut templates = vec![
         ("gain", EffectSpec::Gain { db: 0.0 }),
         (
             "equalizer",
@@ -116,7 +121,9 @@ pub fn effect_templates() -> Vec<(&'static str, EffectSpec)> {
         ),
         ("dynamics", EffectSpec::Dynamics(score::DynamicsParams::compressor(-18.0, 3.0))),
         ("lookahead_limiter", EffectSpec::Limiter(score::LimiterParams::default())),
-    ]
+    ];
+    templates.extend(table);
+    templates
 }
 
 /// The mixer bound to one sequence.
