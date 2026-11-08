@@ -853,9 +853,14 @@ fn run_item(
             None => None,
         };
         let out = execute(&mut job, plan, &mut run, text.as_ref());
-        if let (Ok(_), Some(t)) = (&out, &text) {
-            receipt.captions = Some(t.receipt.clone());
-            receipt.published_sidecar = t.sidecar.is_some();
+        if let Some(t) = &text {
+            if out.is_ok() {
+                receipt.captions = Some(t.receipt.clone());
+                receipt.published_sidecar = t.sidecar.is_some();
+            } else if run.published.is_some() {
+                // The media (with any embedded track) is published, the sidecar is not: no sidecar hash.
+                receipt.captions = Some(crate::captions::CaptionReceipt { sidecar_sha256: None, ..t.receipt.clone() });
+            }
         }
         out
     });
