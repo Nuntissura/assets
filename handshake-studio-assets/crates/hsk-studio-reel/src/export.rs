@@ -907,12 +907,17 @@ struct CaptionPlan {
 impl CaptionPlan {
     /// Checked before the first frame, and the sidecar path again right before the renames (`execute`): a
     /// directory there is `export-sidecar-path`, an existing file without `overwrite` `export-sidecar-exists`.
+    /// An output named `*.vtt` (any case: the file system may ignore case) is `export-sidecar-path` too,
+    /// because the sidecar path would be the output path and replace the media.
     fn new(c: &crate::captions::ExportCaptions, span_ticks: u64, output: &Path, overwrite: bool) -> Result<Self, ReelError> {
         let (samples, exact) = crate::captions::text_samples(c, span_ticks)?;
         let lang = c.language.as_bytes();
         let language = [lang[0], lang[1], lang[2]];
         let sidecar = if c.sidecar {
             let vtt = crate::captions::webvtt(c, span_ticks)?;
+            if output.extension().is_some_and(|e| e.eq_ignore_ascii_case("vtt")) {
+                return Err(unsupported("export-sidecar-path"));
+            }
             let path = output.with_extension("vtt");
             check_sidecar_path(&path, overwrite)?;
             Some((vtt, path))
