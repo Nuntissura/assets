@@ -48,6 +48,14 @@
 //! graphic watermark, lane SMB-LR-EXPORT-SIZING-1) as per-document viewer state beside
 //! [`DevelopExport`], its dialog and the TIFF / DNG buttons ([`export_dialog`]). With no stage (the
 //! default) every export runs the unstaged entries and keeps its bytes.
+//!
+//! Lane SMB-DEVELOP-COMMANDS-1 adds the recipe members outside `Adjustments` ([`DevelopExtras`], stored
+//! beside the edit in the same entry and undo step): operator overrides of the STU-RAW-105 group
+//! enables (absent = derived, as before), the STU-RAW-113 point curves, the STU-RAW-015 / STU-RAW-131
+//! crop and straighten, and STU-RAW-128 snapshots ([`DevelopOp::Recipe`], [`RecipeOp`]), plus preset
+//! save ([`Viewer::save_develop_preset`]). The crop is applied by the develop export (PNG, JPEG, TIFF
+//! and the DNG preview); the canvas keeps developing the uncropped frame through the import's tile
+//! layout and says so (`develop_json.crop_preview` = `crop_preview_not_applied`).
 #![deny(clippy::arithmetic_side_effects)]
 
 pub mod export_dialog;
@@ -56,7 +64,7 @@ mod spot;
 use super::Viewer;
 use super::develop_entry;
 use super::wrap::wrap_item;
-use super::export::write_atomic;
+use super::export::{write_atomic, write_new};
 use crate::import::{RawPrepared, SourceFormat, raw_prepare, raw_proposal_as};
 use hsk_studio_controls::{ChangeSource, ControlError, ControlSpec, NumberSpec, Registry, SectionSpec, Value as ControlValue, ValueStore};
 use hsk_studio_develop::{
@@ -64,6 +72,7 @@ use hsk_studio_develop::{
     DevelopError, DevelopRecipe, GrayscaleMix, LinearGradient, LocalStack, LuminanceRange, Mask, MaskBlend, MaskSource, OutputDepth,
     ParametricCurve, PointColour, RadialGradient, Threads,
 };
+use hsk_studio_develop::{Curve, DevelopPreset, Enables, NormalizedCrop, ResolvedCurves};
 use hsk_studio_develop::{DistractionArea, RetouchArea, SourceState, SpotType};
 use hsk_studio_develop::{ByteOrder, ExportColourSpace, TiffCompression, TiffExportSettings, develop_to_tiff, develop_to_tiff_staged};
 use hsk_studio_develop::{DngCompression, DngExportSettings, DngPreview, UnappliedPolicy, decode_container, develop_to_dng, exif_subset};
@@ -433,6 +442,9 @@ pub enum DevelopOp {
     /// Lens profile, Upright, grain seed, vignette style, look and preset steps (lane
     /// SMB-DEVELOP-LENS-PRESETS, [`super::develop_more::FamilyOp`]).
     Family(super::develop_more::FamilyOp),
+    /// Group enable overrides, point curves, crop and snapshots (lane SMB-DEVELOP-COMMANDS-1,
+    /// [`RecipeOp`]).
+    Recipe(RecipeOp),
     /// A heal / clone spot (STU-RAW-124 circle area: no dab mask) at the normalised `centre` with
     /// `radius` (fraction of the shorter side). `source: Some` = explicit source point
     /// (`source_set_explicitly`); `None` = engine-chosen source (pigment `spot_heal` search).
@@ -464,6 +476,7 @@ impl DevelopOp {
             Self::AddBrushDabs { correction, mask, dabs } => format!("{} dabs on {correction}.{mask}", dabs.len()),
             Self::Grayscale(on) => format!("grayscale {on}"),
             Self::Family(op) => op.label(),
+            Self::Recipe(op) => op.label(),
             Self::AddSpot { spot_type, .. } => format!("add {} spot", spot_type.key()),
             Self::MoveSpotSource { spot, .. } => format!("move source of spot {spot}"),
             Self::SetSpot { spot, .. } => format!("set spot {spot}"),
@@ -473,7 +486,14 @@ impl DevelopOp {
         }
     }
 
-    fn apply(&self, e: &mut DevelopEdit) -> Result<(), Refusal> {
+    fn apply(&self, s: &mut DevelopState) -> Result<(), Refusal> {
+        match self {
+            Self::Recipe(op) => op.apply(s),
+            _ => self.apply_edit(&mut s.edit),
+        }
+    }
+
+    fn apply_edit(&self, e: &mut DevelopEdit) -> Result<(), Refusal> {
         let a = &mut e.adjust;
         let range = |what: &str, i: usize, len: usize| Refusal::new("unknown_item", format!("{what} {i}: there are {len}"));
         let mask = |n: usize, source: MaskSource| Mask { id: format!("m{n}"), active: true, inverted: false, value: 1.0, blend: MaskBlend::Add, source };
@@ -563,6 +583,8 @@ impl DevelopOp {
             }
             Self::Grayscale(on) => a.grayscale.convert = *on,
             Self::Family(op) => op.apply(a, &mut e.exposure_stops)?,
+            // Applied by `apply` before this edit-only match.
+            Self::Recipe(_) => {}
             Self::AddSpot { spot_type, centre, radius, source, feather, opacity } => {
                 if a.retouch.areas.len() >= hsk_studio_develop::retouch::MAX_RETOUCH_AREAS {
                     return Err(Refusal::new("develop_limit", format!("at most {} spots", hsk_studio_develop::retouch::MAX_RETOUCH_AREAS)));
@@ -624,6 +646,220 @@ fn source_kind(s: &MaskSource) -> &'static str {
         MaskSource::ColourRange(_) => "colour_range",
         MaskSource::Model(m) => m.kind.key(),
     }
+}
+
+/// The twelve STU-RAW-105 group enables by key (develop's preset keys `enable.<key>`), in
+/// [`DevelopExtras::enables_override`] order.
+pub const ENABLE_GROUPS: [&str; 12] = [
+    "calibration", "colour_adjustments", "detail", "effects", "grayscale_mix", "lens_corrections", "mask_group_based_corrections", "red_eye", "retouch",
+    "tone_curve", "transform", "distraction_removal",
+];
+
+/// Most snapshots one document holds (the entry decoder refuses more before decoding any).
+pub const MAX_SNAPSHOTS: usize = 64;
+/// Longest snapshot or preset name, in bytes.
+pub const MAX_NAME_BYTES: usize = 256;
+
+fn enable_slot(e: &mut Enables, group: usize) -> Option<&mut bool> {
+    Some(match group {
+        0 => &mut e.enable_calibration,
+        1 => &mut e.enable_colour_adjustments,
+        2 => &mut e.enable_detail,
+        3 => &mut e.enable_effects,
+        4 => &mut e.enable_grayscale_mix,
+        5 => &mut e.enable_lens_corrections,
+        6 => &mut e.enable_mask_group_based_corrections,
+        7 => &mut e.enable_red_eye,
+        8 => &mut e.enable_retouch,
+        9 => &mut e.enable_tone_curve,
+        10 => &mut e.enable_transform,
+        11 => &mut e.enable_distraction_removal,
+        _ => return None,
+    })
+}
+
+/// A point curve channel (STU-RAW-113).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurveChannel {
+    Composite,
+    Red,
+    Green,
+    Blue,
+}
+
+impl CurveChannel {
+    pub const ALL: [Self; 4] = [Self::Composite, Self::Red, Self::Green, Self::Blue];
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Composite => "composite",
+            Self::Red => "red",
+            Self::Green => "green",
+            Self::Blue => "blue",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.key() == key)
+    }
+
+    pub fn of(self, c: &ResolvedCurves) -> &Curve {
+        match self {
+            Self::Composite => &c.composite,
+            Self::Red => &c.red,
+            Self::Green => &c.green,
+            Self::Blue => &c.blue,
+        }
+    }
+
+    pub fn of_mut(self, c: &mut ResolvedCurves) -> &mut Curve {
+        match self {
+            Self::Composite => &mut c.composite,
+            Self::Red => &mut c.red,
+            Self::Green => &mut c.green,
+            Self::Blue => &mut c.blue,
+        }
+    }
+}
+
+/// Recipe members outside develop's `Adjustments` that the develop entry carries beside the edit
+/// (lane SMB-DEVELOP-COMMANDS-1): operator overrides of the group enables, the point curves, the
+/// stored crop and the document's snapshots. The default is the state before this lane: entries
+/// without these members keep their bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DevelopExtras {
+    /// STU-RAW-105 operator override per group ([`ENABLE_GROUPS`] order); `None` = derived from the
+    /// active families, as before.
+    pub enables_override: [Option<bool>; 12],
+    /// STU-RAW-113 point curves; `enable_tone_curve` follows a non-identity curve unless overridden.
+    pub curves: ResolvedCurves,
+    /// STU-RAW-015 / STU-RAW-131 crop and straighten: applied by the develop export (and the DNG
+    /// preview); the canvas shows the uncropped develop (`develop_json.crop_preview`).
+    pub crop: NormalizedCrop,
+    /// STU-RAW-128 named complete states (a snapshot's own `extras.snapshots` is empty).
+    pub snapshots: Vec<DevelopSnapshot>,
+}
+
+impl Default for DevelopExtras {
+    fn default() -> Self {
+        Self { enables_override: [None; 12], curves: ResolvedCurves::identity(), crop: NormalizedCrop::full(), snapshots: Vec::new() }
+    }
+}
+
+/// A named complete develop state (STU-RAW-128): the edit and the recipe members, without snapshots.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DevelopSnapshot {
+    pub name: String,
+    pub edit: DevelopEdit,
+    pub extras: DevelopExtras,
+}
+
+/// The whole develop state of the shown pixels: the edit and the members beside it.
+#[derive(Clone, Debug, PartialEq)]
+struct DevelopState {
+    edit: DevelopEdit,
+    extras: DevelopExtras,
+}
+
+/// Structure changes of the recipe members outside `Adjustments` ([`DevelopOp::Recipe`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecipeOp {
+    /// Operator override of the group enable `group` (an [`ENABLE_GROUPS`] key); `None` returns it to
+    /// the derived value. `red_eye` on stays develop's refusal.
+    SetEnable { group: String, on: Option<bool> },
+    /// A point curve in `levels_0_255`, validated by develop's `Curve::new`.
+    SetPointCurve { channel: CurveChannel, points: Vec<(f64, f64)> },
+    /// The stored crop (normalised edges, straighten angle, flips; orientation 1, no constraints).
+    SetCrop(NormalizedCrop),
+    SaveSnapshot(String),
+    ApplySnapshot(String),
+    DeleteSnapshot(String),
+}
+
+fn check_name(name: &str) -> Result<(), Refusal> {
+    if name.is_empty() || name.len() > MAX_NAME_BYTES || name.chars().any(char::is_control) || name.trim() != name {
+        return Err(Refusal::new("develop_name_invalid", format!("a name is 1..={MAX_NAME_BYTES} bytes, no control character, no outer space")));
+    }
+    Ok(())
+}
+
+impl RecipeOp {
+    fn label(&self) -> String {
+        match self {
+            Self::SetEnable { group, on: Some(on) } => format!("enable {group} {on}"),
+            Self::SetEnable { group, on: None } => format!("enable {group} derived"),
+            Self::SetPointCurve { channel, points } => format!("{} point curve ({} points)", channel.key(), points.len()),
+            Self::SetCrop(_) => "crop".into(),
+            Self::SaveSnapshot(n) => format!("save snapshot {n}"),
+            Self::ApplySnapshot(n) => format!("apply snapshot {n}"),
+            Self::DeleteSnapshot(n) => format!("delete snapshot {n}"),
+        }
+    }
+
+    fn apply(&self, s: &mut DevelopState) -> Result<(), Refusal> {
+        let x = &mut s.extras;
+        let find = |x: &DevelopExtras, name: &str| x.snapshots.iter().position(|p| p.name == name).ok_or_else(|| Refusal::new("unknown_item", format!("snapshot {name:?}: there are {}", x.snapshots.len())));
+        match self {
+            Self::SetEnable { group, on } => {
+                let i = ENABLE_GROUPS.iter().position(|g| g == group).ok_or_else(|| Refusal::new("unknown_item", format!("enable group {group:?}")))?;
+                if let Some(slot) = x.enables_override.get_mut(i) {
+                    *slot = *on;
+                }
+            }
+            Self::SetPointCurve { channel, points } => {
+                if points.len() > hsk_studio_develop::curves::MAX_POINTS {
+                    return Err(Refusal::new("develop_limit", format!("at most {} curve points", hsk_studio_develop::curves::MAX_POINTS)));
+                }
+                *channel.of_mut(&mut x.curves) = Curve::new(points.clone()).map_err(|e| Refusal::develop(e, "point curve"))?;
+            }
+            Self::SetCrop(crop) => x.crop = *crop,
+            Self::SaveSnapshot(name) => {
+                check_name(name)?;
+                if x.snapshots.iter().any(|p| &p.name == name) {
+                    return Err(Refusal::new("develop_snapshot_exists", format!("snapshot {name:?} exists (delete it first)")));
+                }
+                if x.snapshots.len() >= MAX_SNAPSHOTS {
+                    return Err(Refusal::new("develop_limit", format!("at most {MAX_SNAPSHOTS} snapshots")));
+                }
+                let extras = DevelopExtras { enables_override: x.enables_override, curves: x.curves.clone(), crop: x.crop, snapshots: Vec::new() };
+                x.snapshots.push(DevelopSnapshot { name: name.clone(), edit: s.edit.clone(), extras });
+            }
+            Self::ApplySnapshot(name) => {
+                let snap = x.snapshots.get(find(x, name)?).cloned().ok_or_else(|| Refusal::new("unknown_item", name.clone()))?;
+                x.enables_override = snap.extras.enables_override;
+                x.curves = snap.extras.curves;
+                x.crop = snap.extras.crop;
+                s.edit = snap.edit;
+            }
+            Self::DeleteSnapshot(name) => {
+                let i = find(x, name)?;
+                x.snapshots.remove(i);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The recipe members of `x` for agents (part of `develop_json`).
+fn extras_json(x: &DevelopExtras, recipe: Option<&DevelopRecipe>) -> serde_json::Map<String, Value> {
+    let identity = Curve::identity();
+    let mut m = serde_json::Map::new();
+    m.insert("group_enables".into(), recipe.map_or(Value::Null, |r| {
+        let mut e = r.enables;
+        Value::Object(ENABLE_GROUPS.iter().enumerate().map(|(i, g)| ((*g).to_string(), json!(enable_slot(&mut e, i).map(|v| *v)))).collect())
+    }));
+    m.insert("enables_override".into(), Value::Object(ENABLE_GROUPS.iter().zip(x.enables_override).filter_map(|(g, o)| o.map(|on| ((*g).to_string(), json!(on)))).collect()));
+    m.insert("point_curves".into(), Value::Object(CurveChannel::ALL.iter().filter(|c| c.of(&x.curves) != &identity).map(|c| (c.key().to_string(), json!(c.of(&x.curves).points().iter().map(|p| [p.0, p.1]).collect::<Vec<_>>()))).collect()));
+    let cropped = x.crop != NormalizedCrop::full();
+    let c = &x.crop;
+    m.insert("crop".into(), if cropped { crop_json(c) } else { Value::Null });
+    m.insert("crop_preview".into(), if cropped { json!("crop_preview_not_applied") } else { Value::Null });
+    m.insert("snapshots".into(), json!(x.snapshots.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()));
+    m
+}
+
+fn crop_json(c: &NormalizedCrop) -> Value {
+    json!({"left": c.left, "top": c.top, "right": c.right, "bottom": c.bottom, "angle": c.angle, "flip_horizontal": c.flip_horizontal, "flip_vertical": c.flip_vertical})
 }
 
 /// Default source of the panel's "Add linear gradient" button (normalised image coordinates).
@@ -713,8 +949,8 @@ enum EntryStatus {
     Refused(&'static str),
 }
 
-/// A decoded and develop-validated entry: (edit or refusal, tile signature, layer id).
-type EntryView = (Result<DevelopEdit, Refusal>, Option<String>, String);
+/// A decoded and develop-validated entry: (state or refusal, tile signature, layer id).
+type EntryView = (Result<DevelopState, Refusal>, Option<String>, String);
 
 /// The develop state of an opened raw. The edit itself lives in the session document entry
 /// `develop`, written with every change inside the same undo step (`Run::set_tiles_and_entry`), so
@@ -749,9 +985,11 @@ fn signature(tiles: &[TileRef]) -> String {
 }
 
 impl DevelopDoc {
-    /// The recipe of `edit`: the file recipe (re-solved for a raw-form white balance), the edit's
-    /// exposure and adjustments, the group enables of the active families; validated by develop.
-    fn recipe(&self, edit: &DevelopEdit) -> Result<DevelopRecipe, Refusal> {
+    /// The document recipe of `s`: the file recipe (re-solved for a raw-form white balance), the edit's
+    /// exposure and adjustments, the point curves, the stored crop and the group enables (those of the
+    /// active families, then the operator's overrides); validated by develop.
+    fn recipe(&self, s: &DevelopState) -> Result<DevelopRecipe, Refusal> {
+        let edit = &s.edit;
         let mut recipe = match edit.adjust.absolute_white_balance {
             Some(w) => {
                 let (r, _) = hsk_studio_develop::recipe_for_white_point(
@@ -783,7 +1021,7 @@ impl DevelopDoc {
         e.enable_colour_adjustments = b.enable_colour_adjustments || colour;
         e.enable_detail = b.enable_detail || detail;
         e.enable_mask_group_based_corrections = b.enable_mask_group_based_corrections || !a.local.is_empty();
-        e.enable_tone_curve = b.enable_tone_curve || a.parametric != ParametricCurve::default();
+        e.enable_tone_curve = b.enable_tone_curve || a.parametric != ParametricCurve::default() || s.extras.curves != ResolvedCurves::identity();
         e.enable_grayscale_mix = b.enable_grayscale_mix || a.grayscale != GrayscaleMix::default();
         let (lens, transform, effects, calibration) = super::develop_more::family_enables(a);
         e.enable_lens_corrections = b.enable_lens_corrections || lens;
@@ -793,8 +1031,24 @@ impl DevelopDoc {
         // STU-RAW-105: the spot lists switch their stages on; adapter fill records never do.
         e.enable_retouch = b.enable_retouch || !a.retouch.areas.is_empty();
         e.enable_distraction_removal = b.enable_distraction_removal || !a.retouch.distraction.is_empty();
+        // STU-RAW-105: an operator override wins over the derived value.
+        for (group, on) in s.extras.enables_override.iter().enumerate() {
+            if let (Some(on), Some(slot)) = (on, enable_slot(e, group)) {
+                *slot = *on;
+            }
+        }
+        recipe.curves = s.extras.curves.clone();
+        recipe.crop = s.extras.crop;
         recipe.validate().map_err(|e| Refusal::develop(e, "recipe"))?;
         Ok(recipe)
+    }
+
+    /// The recipe the canvas develops: the document recipe without its crop. The canvas keeps the
+    /// import's tile layout, so a cropped or straightened frame is applied by the export only.
+    fn preview_recipe(&self, s: &DevelopState) -> Result<DevelopRecipe, Refusal> {
+        let mut r = self.recipe(s)?;
+        r.crop = NormalizedCrop::full();
+        Ok(r)
     }
 
     fn layer_tiles<'a>(&self, viewer: &'a Viewer) -> Option<&'a [TileRef]> {
@@ -806,8 +1060,8 @@ impl DevelopDoc {
         }
     }
 
-    fn identity(&self) -> DevelopEdit {
-        DevelopEdit { exposure_stops: self.base.exposure_stops, adjust: self.base.adjust.clone() }
+    fn identity(&self) -> DevelopState {
+        DevelopState { edit: DevelopEdit { exposure_stops: self.base.exposure_stops, adjust: self.base.adjust.clone() }, extras: DevelopExtras::default() }
     }
 
     /// The entry decoded (hostile input, `develop_entry::decode`) and validated by develop.
@@ -820,7 +1074,10 @@ impl DevelopDoc {
             return Some(view.clone());
         }
         let view: EntryView = match develop_entry::decode(bytes) {
-            Ok(stored) => (self.recipe(&stored.edit).map(|_| stored.edit), stored.tiles_signature, stored.layer_id),
+            Ok(stored) => {
+                let state = DevelopState { edit: stored.edit, extras: stored.extras };
+                (self.recipe(&state).map(|_| state), stored.tiles_signature, stored.layer_id)
+            }
             Err(r) => (Err(r), None, String::new()),
         };
         *cache = Some((bytes.to_vec(), view.clone()));
@@ -828,6 +1085,11 @@ impl DevelopDoc {
     }
 
     fn status(&self, viewer: &Viewer) -> (DevelopEdit, EntryStatus) {
+        let (state, status) = self.status_state(viewer);
+        (state.edit, status)
+    }
+
+    fn status_state(&self, viewer: &Viewer) -> (DevelopState, EntryStatus) {
         let sig = self.layer_tiles(viewer).map(signature);
         match self.entry(viewer) {
             None if sig.is_some() && sig == self.import_signature => (self.identity(), EntryStatus::Imported),
@@ -843,8 +1105,14 @@ impl DevelopDoc {
     /// The edit of the shown pixels and whether it is known (the import's identity develop or the
     /// entry written for exactly these pixels).
     fn current(&self, viewer: &Viewer) -> (DevelopEdit, bool) {
-        let (edit, status) = self.status(viewer);
-        (edit, matches!(status, EntryStatus::Imported | EntryStatus::Current))
+        let (state, known) = self.current_state(viewer);
+        (state.edit, known)
+    }
+
+    /// [`DevelopDoc::current`] with the recipe members beside the edit.
+    fn current_state(&self, viewer: &Viewer) -> (DevelopState, bool) {
+        let (state, status) = self.status_state(viewer);
+        (state, matches!(status, EntryStatus::Imported | EntryStatus::Current))
     }
 }
 
@@ -931,10 +1199,17 @@ impl Viewer {
         Some(d.current(self).0)
     }
 
-    /// The recipe of the shown pixels (develop's type: the file recipe plus the edit).
+    /// The recipe members beside the edit of the shown pixels (overrides, point curves, crop, snapshots).
+    pub fn develop_extras(&self) -> Option<DevelopExtras> {
+        let d = self.develop.as_ref()?;
+        Some(d.current_state(self).0.extras)
+    }
+
+    /// The document recipe of the shown pixels (develop's type: the file recipe plus the edit, the point
+    /// curves, the group enables and the stored crop, which the canvas does not apply).
     pub fn develop_recipe(&self) -> Option<DevelopRecipe> {
         let d = self.develop.as_ref()?;
-        d.recipe(&d.current(self).0).ok()
+        d.recipe(&d.current_state(self).0).ok()
     }
 
     /// Structured develop state for agents (part of [`Viewer::state_json`]).
@@ -942,14 +1217,15 @@ impl Viewer {
         let Some(d) = self.develop.as_ref() else {
             return json!({"available": false});
         };
-        let (edit, known) = d.current(self);
-        let recipe = d.recipe(&edit).ok();
+        let (state, known) = d.current_state(self);
+        let recipe = d.recipe(&state).ok();
+        let edit = &state.edit;
         let a = &edit.adjust;
-        json!({
+        let mut out = json!({
             "available": true,
             "layer_id": d.layer_id,
             "window": [d.prepared.window.x, d.prepared.window.y, d.prepared.window.width, d.prepared.window.height],
-            "values": values_json(&edit),
+            "values": values_json(edit),
             "values_known": known,
             "entry": format!("{:?}", d.status(self).1),
             "white_balance": a.absolute_white_balance.map_or_else(|| json!("as_shot"), |w| json!({"kelvin": w.kelvin, "tint": w.tint})),
@@ -962,11 +1238,15 @@ impl Viewer {
             "spots": spot::spots_json(&a.retouch),
             "distraction": spot::distraction_json(&a.retouch),
             "spot_preview": d.spot.json(),
-            "controls": controls(&edit).iter().map(|c| json!({"id": c.id, "label": c.label, "section": c.section, "panel_range": [c.panel_range.0, c.panel_range.1]})).collect::<Vec<_>>(),
+            "controls": controls(edit).iter().map(|c| json!({"id": c.id, "label": c.label, "section": c.section, "panel_range": [c.panel_range.0, c.panel_range.1]})).collect::<Vec<_>>(),
             "threads": d.threads.get(),
             "export": {"profile": "sRGB-v4.icc", "profile_sha256": hex(&sha256(SRGB_V4_ICC)), "formats": ["png8", "png16", "jpeg"]},
             "export_stage": d.export.json(self.develop_export_source_size()),
-        })
+        });
+        if let Some(o) = out.as_object_mut() {
+            o.extend(extras_json(&state.extras, recipe.as_ref()));
+        }
+        out
     }
 
     /// Sets one develop control (see [`Viewer::set_develop_many`]).
@@ -981,7 +1261,8 @@ impl Viewer {
     /// control, develop's validation code, a stale layer layout) commits nothing. Returns the revision.
     pub fn set_develop_many(&mut self, changes: &[(&str, f64)]) -> Result<u64, Refusal> {
         let label = changes.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ");
-        let result = self.develop_change(|edit| {
+        let result = self.develop_change(|state| {
+            let edit = &mut state.edit;
             if changes.is_empty() {
                 return Err(Refusal::new("nothing_to_change", "no develop control given"));
             }
@@ -1000,7 +1281,7 @@ impl Viewer {
     /// A structure change of the edit as ONE undoable step (see [`DevelopOp`]).
     pub fn develop_op(&mut self, op: DevelopOp) -> Result<u64, Refusal> {
         let label = op.label();
-        let result = self.develop_change(|edit| op.apply(edit));
+        let result = self.develop_change(|state| op.apply(state));
         self.report_change(&label, &result);
         result
     }
@@ -1012,16 +1293,17 @@ impl Viewer {
         }
     }
 
-    fn develop_change(&mut self, change: impl FnOnce(&mut DevelopEdit) -> Result<(), Refusal>) -> Result<u64, Refusal> {
+    fn develop_change(&mut self, change: impl FnOnce(&mut DevelopState) -> Result<(), Refusal>) -> Result<u64, Refusal> {
         if self.run.snapshot().is_none() {
             return Err(Refusal::new("not_open", "nothing open"));
         }
         let d = self.develop.as_ref().ok_or_else(|| Refusal::new("not_a_raw_document", "the open document was not imported from a camera raw or DNG"))?;
-        let (before, known) = d.current(self);
-        let mut edit = before.clone();
-        change(&mut edit)?;
-        let recipe = d.recipe(&edit)?;
-        if known && edit == before {
+        let (before, known) = d.current_state(self);
+        let mut state = before.clone();
+        change(&mut state)?;
+        // The document recipe (crop included) must validate; the canvas develops it uncropped.
+        let recipe = d.preview_recipe(&state)?;
+        if known && state == before {
             // Nothing changed: no step.
             return Ok(self.run.snapshot().map_or(0, |s| s.document().revision));
         }
@@ -1051,7 +1333,7 @@ impl Viewer {
         }
         drop(proposal);
         let sig = signature(&edited);
-        let bytes = develop_entry::encode(&layer_id, Some(&sig), &edit)?;
+        let bytes = develop_entry::encode_state(&layer_id, Some(&sig), &state.edit, &state.extras)?;
         // One undo step: the changed tiles (when any) and the entry (always). A structure change
         // that moves no pixel (a new identity point colour or correction) is still its own step.
         let tiles = if staged.is_empty() { None } else { Some(edited) };
@@ -1107,8 +1389,11 @@ impl Viewer {
             return Err(Refusal::new("export_over_source", format!("{} is the opened source (overwrite not set)", path.display())));
         }
         let d = self.develop.as_ref().ok_or_else(|| Refusal::new("not_a_raw_document", "the open document was not imported from a camera raw or DNG"))?;
-        let (edit, known) = d.current(self);
-        let recipe = d.recipe(&edit)?;
+        let (state, known) = d.current_state(self);
+        let recipe = d.recipe(&state)?;
+        let edit = &state.edit;
+        // The develop crop (lane SMB-DEVELOP-COMMANDS-1) is in `recipe`: every format below applies it.
+        let crop = (state.extras.crop != NormalizedCrop::full()).then(|| crop_json(&state.extras.crop));
         // The export stage (lane SMB-LR-EXPORT-GUI-1): None = the unstaged entries, today's bytes.
         // A set stage with no group on runs the unstaged entries too (same bytes); its fields are still checked.
         let set = d.export.stage().is_some();
@@ -1153,8 +1438,11 @@ impl Viewer {
                 "colour_loss": export.colour_loss, "dng_version": "1.4.0.0",
                 "route": receipt.as_ref().map(|r| r.route), "math_token": receipt.as_ref().map(|r| r.math_token),
                 "threads": d.threads.get(), "revision": revision, "values_known": known,
-                "values": values_json(&edit),
+                "values": values_json(edit),
                 "export_stage": set.then(|| json!({"applied": false, "reason": "dng_preview_not_staged"})),
+                // The raw frame is written whole (crop is non-destructive) and the preview is cropped; the
+                // XMP packet is the caller's (the lrcat codec owns the crs: keys), so it does not carry it.
+                "develop_crop": crop.map(|c| json!({"crop": c, "applied_to": "preview", "notes": ["develop_crop_not_in_dng_xmp"]})),
             }));
         }
         if let DevelopExport::Tiff { depth, compression, predictor, colour_space, big_endian, big_tiff, dpi } = format {
@@ -1188,8 +1476,9 @@ impl Viewer {
                 "byte_order": if big_endian { "big" } else { "little" }, "big_tiff": big_tiff, "dpi": dpi,
                 "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
                 "threads": d.threads.get(), "revision": revision, "values_known": known,
-                "values": values_json(&edit),
+                "values": values_json(edit),
                 "export_stage": not_applied(staged.as_ref().map(export_dialog::receipt_json)),
+                "develop_crop": crop,
             }));
         }
         let (output, receipt, staged) = match &stage {
@@ -1251,9 +1540,47 @@ impl Viewer {
             "subsampling": subsampling, "quality": match format { DevelopExport::Jpeg { quality } => Some(quality), DevelopExport::Png { .. } | DevelopExport::Tiff { .. } | DevelopExport::Dng { .. } => None },
             "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
             "threads": d.threads.get(), "revision": revision, "values_known": known,
-            "values": values_json(&edit),
+            "values": values_json(edit),
             "export_stage": not_applied(staged.as_ref().map(export_dialog::receipt_json)),
+            "develop_crop": crop,
         }))
+    }
+
+    /// Writes the develop preset (`hsk-develop-preset 1`, STU-RAW-128) of `keys` with the values of the
+    /// document recipe (develop's `DevelopPreset::capture`, `to_text`; read back with `parse` before the
+    /// write). Never over the opened source; an existing file only with `overwrite` (else no-clobber,
+    /// `destination_exists`). Changes nothing in the document. Returns the report.
+    pub fn save_develop_preset(&mut self, path: &Path, name: &str, keys: &[String], overwrite: bool) -> Result<Value, Refusal> {
+        let result = self.save_develop_preset_inner(path, name, keys, overwrite);
+        match &result {
+            Ok(report) => self.say(format!("saved develop preset {} ({} keys)", path.display(), report["keys"])),
+            Err(r) => self.say(format!("develop preset save refused: {r}")),
+        }
+        result
+    }
+
+    fn save_develop_preset_inner(&mut self, path: &Path, name: &str, keys: &[String], overwrite: bool) -> Result<Value, Refusal> {
+        if path.as_os_str().is_empty() {
+            return Err(Refusal::new("export_path", "no output path"));
+        }
+        if self.is_source(path) {
+            return Err(Refusal::new("export_over_source", format!("{} is the opened source", path.display())));
+        }
+        let d = self.develop.as_ref().ok_or_else(|| Refusal::new("not_a_raw_document", "the open document was not imported from a camera raw or DNG"))?;
+        check_name(name)?;
+        if keys.is_empty() || keys.len() > hsk_studio_develop::MAX_PRESET_SETTINGS {
+            return Err(Refusal::new("invalid_preset", format!("1..={} keys", hsk_studio_develop::MAX_PRESET_SETTINGS)));
+        }
+        let recipe = d.recipe(&d.current_state(self).0)?;
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let preset = DevelopPreset::capture(&recipe, &keys, name).map_err(|e| Refusal::develop(e, "preset keys"))?;
+        let text = preset.to_text();
+        if DevelopPreset::parse(text.as_bytes()).ok().as_ref() != Some(&preset) {
+            return Err(Refusal::new("invalid_preset", "the preset does not read back as written"));
+        }
+        let write = if overwrite { write_atomic } else { write_new };
+        write(path, text.as_bytes()).map_err(|code| Refusal::new(code, path.display().to_string()))?;
+        Ok(json!({"path": path.to_string_lossy(), "name": name, "keys": keys.len(), "bytes": text.len(), "sha256": hsk_studio_package::sha256_hex_of(text.as_bytes())}))
     }
 
     /// Encoded sRGB of the composite's centre pixel (the sample of new point colours and colour

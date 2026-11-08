@@ -11,18 +11,27 @@
 //! every STU-RAW-124 area field, the distraction areas and the adapter fill records (digests as
 //! 64 hex digits), bounded by develop's `retouch::MAX_*` limits.
 //!
+//! Recipe members outside `Adjustments` (lane SMB-DEVELOP-COMMANDS-1, `DevelopExtras`): the optional
+//! `edit.enables_override` (`{group: bool}`, only the overridden groups), `edit.point_curves`
+//! (`{channel: [[x, y], ...]}`, only channels other than the two-point identity), `edit.crop` (the
+//! edges, angle and flips, only when not the full frame) and `edit.snapshots` (`[{name, edit}]`, each
+//! edit without snapshots), each written only when it is not the default, so every older entry keeps its
+//! bytes; an older reader refuses an entry that uses them (exact keys).
+//!
 //! The decoder treats the bytes as hostile: size cap before parsing, serde_json's nesting limit,
 //! exact array lengths, finite numbers only, list and string caps (develop's own `MAX_*` limits),
 //! unknown keys refused. The values are then validated by develop itself when the viewer builds the
 //! recipe (`DevelopRecipe::validate`), so a decodable but out-of-range edit is develop's typed refusal.
 #![deny(clippy::arithmetic_side_effects)]
 
-use super::develop::{DevelopEdit, Refusal};
+use super::develop::{CurveChannel, DevelopEdit, DevelopExtras, DevelopSnapshot, ENABLE_GROUPS, MAX_SNAPSHOTS, Refusal};
 use hsk_studio_develop::{
     AbsoluteWhiteBalance, Adjustments, Brush, ColourGrading, ColourRange, Correction, Detail, GrayscaleMix, HslBand, LinearGradient,
     LocalStack, LuminanceRange, MAX_COLOUR_SAMPLES, MAX_POINT_COLOURS, Mask, MaskBlend, MaskSource, NoiseReduction, PointColour,
     RadialGradient, Sharpen, Wheel,
 };
+use hsk_studio_develop::curves::MAX_POINTS as MAX_CURVE_POINTS;
+use hsk_studio_develop::{Curve, NormalizedCrop};
 use hsk_studio_develop::local::MAX_DABS;
 use hsk_studio_develop::retouch::{
     self, AdapterFillRecord, AdapterRect, DistractionArea, PatchVariation, RetouchArea, RetouchMethod, RetouchStack, SourceState, SpotType,
@@ -42,6 +51,8 @@ pub struct StoredDevelop {
     /// a develop state when saved.
     pub tiles_signature: Option<String>,
     pub edit: DevelopEdit,
+    /// The recipe members beside the edit (default when the entry has none).
+    pub extras: DevelopExtras,
 }
 
 fn wheel(w: &Wheel) -> Value {
@@ -100,8 +111,23 @@ fn retouch(s: &RetouchStack) -> Value {
     json!({"areas": areas.collect::<Vec<_>>(), "distraction": distraction.collect::<Vec<_>>(), "adapter_fills": fills.collect::<Vec<_>>()})
 }
 
-/// Encodes an edit (see the module documentation).
+/// Encodes an edit with default recipe members (see the module documentation).
 pub fn encode(layer_id: &str, tiles_signature: Option<&str>, edit: &DevelopEdit) -> Result<Vec<u8>, Refusal> {
+    encode_state(layer_id, tiles_signature, edit, &DevelopExtras::default())
+}
+
+/// Encodes an edit and the recipe members beside it (see the module documentation).
+pub fn encode_state(layer_id: &str, tiles_signature: Option<&str>, edit: &DevelopEdit, extras: &DevelopExtras) -> Result<Vec<u8>, Refusal> {
+    let value = json!({"schema": SCHEMA, "layer_id": layer_id, "tiles_signature": tiles_signature, "edit": edit_value(edit, extras)?});
+    let bytes = serde_json::to_vec(&value).map_err(|e| Refusal { code: "develop_entry_encode", detail: e.to_string() })?;
+    if bytes.len() > MAX_ENTRY_BYTES {
+        return Err(Refusal { code: "develop_entry_too_large", detail: format!("{} bytes, at most {MAX_ENTRY_BYTES}", bytes.len()) });
+    }
+    Ok(bytes)
+}
+
+/// The stored `edit` object.
+fn edit_value(edit: &DevelopEdit, extras: &DevelopExtras) -> Result<Value, Refusal> {
     let a = &edit.adjust;
     let local = a
         .local
@@ -114,11 +140,7 @@ pub fn encode(layer_id: &str, tiles_signature: Option<&str>, edit: &DevelopEdit)
     let p = &a.parametric;
     let g = &a.grading;
     let d = &a.detail;
-    let value = json!({
-        "schema": SCHEMA,
-        "layer_id": layer_id,
-        "tiles_signature": tiles_signature,
-        "edit": {
+    let mut value = json!({
             "exposure_stops": edit.exposure_stops,
             "version": [a.version.0, a.version.1],
             "white_balance": {"temperature": a.white_balance.temperature, "tint": a.white_balance.tint},
@@ -139,21 +161,104 @@ pub fn encode(layer_id: &str, tiles_signature: Option<&str>, edit: &DevelopEdit)
                 "sharpen": {"amount": d.sharpen.amount, "radius": d.sharpen.radius, "detail": d.sharpen.detail, "masking": d.sharpen.masking},
                 "noise": {"luminance": d.noise.luminance, "colour": d.noise.colour}},
             "local": local,
-        }
     });
-    let mut value = value;
-    if let Some(edit_object) = value.get_mut("edit").and_then(Value::as_object_mut) {
+    if let Some(edit_object) = value.as_object_mut() {
         edit_object.extend(super::develop_more::encode_families(a));
         if !a.retouch.is_empty() {
             edit_object.insert("retouch".to_string(), retouch(&a.retouch));
         }
+        encode_extras(extras, edit_object)?;
     }
-    let bytes = serde_json::to_vec(&value).map_err(|e| Refusal { code: "develop_entry_encode", detail: e.to_string() })?;
-    if bytes.len() > MAX_ENTRY_BYTES {
-        return Err(Refusal { code: "develop_entry_too_large", detail: format!("{} bytes, at most {MAX_ENTRY_BYTES}", bytes.len()) });
-    }
-    Ok(bytes)
+    Ok(value)
 }
+// ---- recipe members outside Adjustments (lane SMB-DEVELOP-COMMANDS-1) -----------------------------
+
+fn curve_points(c: &Curve) -> Value {
+    json!(c.points().iter().map(|p| [p.0, p.1]).collect::<Vec<_>>())
+}
+
+/// The optional members of `extras`, each written only when it differs from the default.
+fn encode_extras(extras: &DevelopExtras, edit_object: &mut Map<String, Value>) -> Result<(), Refusal> {
+    let overrides: Map<String, Value> = ENABLE_GROUPS.iter().zip(extras.enables_override).filter_map(|(g, o)| o.map(|on| ((*g).to_string(), json!(on)))).collect();
+    if !overrides.is_empty() {
+        edit_object.insert("enables_override".into(), Value::Object(overrides));
+    }
+    let identity = Curve::identity();
+    let curves: Map<String, Value> = CurveChannel::ALL.iter().filter_map(|ch| {
+        let c = ch.of(&extras.curves);
+        (c != &identity).then(|| (ch.key().to_string(), curve_points(c)))
+    }).collect();
+    if !curves.is_empty() {
+        edit_object.insert("point_curves".into(), Value::Object(curves));
+    }
+    if extras.crop != NormalizedCrop::full() {
+        let c = &extras.crop;
+        edit_object.insert("crop".into(), json!({"left": c.left, "top": c.top, "right": c.right, "bottom": c.bottom, "angle": c.angle,
+            "flip_horizontal": c.flip_horizontal, "flip_vertical": c.flip_vertical}));
+    }
+    if !extras.snapshots.is_empty() {
+        let list = extras.snapshots.iter().map(|s| Ok(json!({"name": s.name, "edit": edit_value(&s.edit, &s.extras)?}))).collect::<Result<Vec<_>, Refusal>>()?;
+        edit_object.insert("snapshots".into(), Value::Array(list));
+    }
+    Ok(())
+}
+
+/// Keys of the stored edit this lane adds (optional; `snapshots` only at the top level).
+const EXTRA_KEYS: [&str; 3] = ["enables_override", "point_curves", "crop"];
+
+fn decode_extras(o: &Map<String, Value>, nested: bool) -> Result<DevelopExtras, Refusal> {
+    let mut x = DevelopExtras::default();
+    if let Some(v) = o.get("enables_override") {
+        let m = v.as_object().ok_or_else(|| field("enables_override"))?;
+        for (k, on) in m {
+            let i = ENABLE_GROUPS.iter().position(|g| g == k).ok_or_else(|| field("enables_override"))?;
+            let on = on.as_bool().ok_or_else(|| field(&format!("enables_override.{k}")))?;
+            if let Some(slot) = x.enables_override.get_mut(i) {
+                *slot = Some(on);
+            }
+        }
+    }
+    if let Some(v) = o.get("point_curves") {
+        let m = v.as_object().ok_or_else(|| field("point_curves"))?;
+        for (k, points) in m {
+            let channel = CurveChannel::from_key(k).ok_or_else(|| field("point_curves"))?;
+            let path = format!("point_curves.{k}");
+            let raw = list(Some(points), &path, MAX_CURVE_POINTS)?;
+            let points = raw.iter().map(|p| numbers::<2>(Some(p), &path).map(|[a, b]| (a, b))).collect::<Result<Vec<_>, _>>()?;
+            *channel.of_mut(&mut x.curves) = Curve::new(points).map_err(|_| field(&path))?;
+        }
+    }
+    if let Some(v) = o.get("crop") {
+        let c = object(v, "crop", &["left", "top", "right", "bottom", "angle", "flip_horizontal", "flip_vertical"])?;
+        x.crop = NormalizedCrop {
+            left: num(c, "left", "crop")?,
+            top: num(c, "top", "crop")?,
+            right: num(c, "right", "crop")?,
+            bottom: num(c, "bottom", "crop")?,
+            angle: num(c, "angle", "crop")?,
+            flip_horizontal: boolean(c, "flip_horizontal", "crop")?,
+            flip_vertical: boolean(c, "flip_vertical", "crop")?,
+            ..NormalizedCrop::full()
+        };
+    }
+    if let Some(v) = o.get("snapshots") {
+        if nested {
+            return Err(field("snapshots"));
+        }
+        for (i, s) in list(Some(v), "snapshots", MAX_SNAPSHOTS)?.iter().enumerate() {
+            let path = format!("snapshots[{i}]");
+            let s = object(s, &path, &["name", "edit"])?;
+            let name = text(s, "name", &path)?;
+            if x.snapshots.iter().any(|p| p.name == name) {
+                return Err(field(&format!("{path}.name")));
+            }
+            let (edit, extras) = decode_edit(s.get("edit").ok_or_else(|| field(&path))?, true)?;
+            x.snapshots.push(DevelopSnapshot { name, edit, extras });
+        }
+    }
+    Ok(x)
+}
+
 
 // ---- decoding ----------------------------------------------------------------------------------------
 
@@ -446,13 +551,14 @@ const EDIT_KEYS: [&str; 15] = [
     "absolute_white_balance", "point_colours", "grayscale", "grading", "detail", "local",
 ];
 
-fn decode_edit(v: &Value) -> Result<DevelopEdit, Refusal> {
+/// The stored edit and its recipe members; `nested` = a snapshot's edit, which holds no snapshots.
+fn decode_edit(v: &Value, nested: bool) -> Result<(DevelopEdit, DevelopExtras), Refusal> {
     // The lane SMB-DEVELOP-LENS-PRESETS family objects are optional (older entries lack them).
     let o = v.as_object().ok_or_else(|| field("edit"))?;
-    // `retouch` is optional too (lane SMB-LR-HEALING-1; absent = no retouch).
-    if EDIT_KEYS.iter().any(|k| !o.contains_key(*k))
-        || o.keys().any(|k| !EDIT_KEYS.contains(&k.as_str()) && !super::develop_more::FAMILY_KEYS.contains(&k.as_str()) && k != "retouch")
-    {
+    // `retouch` is optional too (lane SMB-LR-HEALING-1; absent = no retouch), and so are the lane
+    // SMB-DEVELOP-COMMANDS-1 members (`snapshots` at the top level only).
+    let optional = |k: &str| super::develop_more::FAMILY_KEYS.contains(&k) || k == "retouch" || EXTRA_KEYS.contains(&k) || (k == "snapshots" && !nested);
+    if EDIT_KEYS.iter().any(|k| !o.contains_key(*k)) || o.keys().any(|k| !EDIT_KEYS.contains(&k.as_str()) && !optional(k)) {
         return Err(field("edit"));
     }
     let sub = |key: &str, keys: &[&str]| -> Result<&Map<String, Value>, Refusal> { object(o.get(key).ok_or_else(|| field(key))?, key, keys) };
@@ -574,7 +680,8 @@ fn decode_edit(v: &Value) -> Result<DevelopEdit, Refusal> {
         },
     };
     super::develop_more::decode_families(o, &mut adjust)?;
-    Ok(DevelopEdit { exposure_stops: num(o, "exposure_stops", "edit")?, adjust })
+    let edit = DevelopEdit { exposure_stops: num(o, "exposure_stops", "edit")?, adjust };
+    Ok((edit, decode_extras(o, nested)?))
 }
 
 /// Decodes an entry (hostile input; see the module documentation).
@@ -593,5 +700,6 @@ pub fn decode(bytes: &[u8]) -> Result<StoredDevelop, Refusal> {
         Some(Value::String(s)) if s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()) => Some(s.clone()),
         _ => return Err(field("tiles_signature")),
     };
-    Ok(StoredDevelop { layer_id: text(o, "layer_id", "$")?, tiles_signature, edit: decode_edit(o.get("edit").ok_or_else(|| field("edit"))?)? })
+    let (edit, extras) = decode_edit(o.get("edit").ok_or_else(|| field("edit"))?, false)?;
+    Ok(StoredDevelop { layer_id: text(o, "layer_id", "$")?, tiles_signature, edit, extras })
 }

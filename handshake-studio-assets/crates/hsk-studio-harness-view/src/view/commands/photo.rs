@@ -2,7 +2,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::super::Viewer;
-use super::super::develop::{DevelopOp, default_brush, default_linear, default_radial};
+use super::super::develop::{CurveChannel, DevelopOp, ENABLE_GROUPS, RecipeOp, default_brush, default_linear, default_radial};
 use super::super::develop_more::FamilyOp;
 use super::super::fill_tools::{FillSettings, FillSource};
 use super::super::info::{InfoCommand, SampleScope};
@@ -11,7 +11,7 @@ use super::{CommandRefusal, read_bounded};
 use hsk_studio_develop::local::MAX_DABS;
 use hsk_studio_develop::retouch::SpotType;
 use hsk_studio_develop::{
-    Brush, ColourRange, LinearGradient, LookDomain, LuminanceRange, MAX_COLOUR_SAMPLES, MAX_GUIDES, MAX_LENS_PROFILE_BYTES, MAX_PRESET_BYTES, MaskSource, ModelMask,
+    Brush, ColourRange, LinearGradient, NormalizedCrop, LookDomain, LuminanceRange, MAX_COLOUR_SAMPLES, MAX_GUIDES, MAX_LENS_PROFILE_BYTES, MAX_PRESET_BYTES, MaskSource, ModelMask,
     ModelMaskKind, RadialGradient, UprightMode, VignetteStyle,
 };
 use hsk_studio_pigment::diagnostics::{ColourModel, SampleSize};
@@ -192,6 +192,12 @@ fn mask_source(f: &Fields<'_>) -> Result<MaskSource, CommandRefusal> {
     })
 }
 
+/// A group enable key, checked against the twelve groups.
+fn group(f: &Fields<'_>) -> Result<String, CommandRefusal> {
+    let given = f.text("group")?;
+    if ENABLE_GROUPS.contains(&given.as_str()) { Ok(given) } else { Err(invalid("group", &ENABLE_GROUPS.join("|"))) }
+}
+
 const UPRIGHT: [(&str, UprightMode); 6] =
     [("off", UprightMode::Off), ("auto", UprightMode::Auto), ("level", UprightMode::Level), ("vertical", UprightMode::Vertical), ("full", UprightMode::Full), ("guided", UprightMode::Guided)];
 
@@ -273,6 +279,28 @@ fn develop_op(id: &str, f: Fields<'_>) -> Result<DevelopOp, CommandRefusal> {
         }
         "photo.develop.clear_look" => DevelopOp::Family(FamilyOp::ClearLook),
         "photo.develop.apply_preset" => DevelopOp::Family(FamilyOp::Preset { preset: read_bounded(&f.path("path")?, cap(MAX_PRESET_BYTES))?, amount: f.number("amount")? }),
+        "photo.develop.set_enable" => DevelopOp::Recipe(RecipeOp::SetEnable { group: group(&f)?, on: Some(f.flag("on")?) }),
+        "photo.develop.clear_enable" => DevelopOp::Recipe(RecipeOp::SetEnable { group: group(&f)?, on: None }),
+        "photo.develop.set_point_curve" => {
+            let channel = f.token("channel", &CurveChannel::ALL.map(|c| (c.key(), c)))?;
+            let expected = "[[x, y], ...] in levels_0_255";
+            let items = bounded(&f, "points", expected, hsk_studio_develop::curves::MAX_POINTS)?;
+            let points = items.iter().map(|v| pair(v).map(pair_tuple)).collect::<Option<Vec<_>>>().ok_or_else(|| invalid("points", expected))?;
+            DevelopOp::Recipe(RecipeOp::SetPointCurve { channel, points })
+        }
+        "photo.develop.set_crop" => DevelopOp::Recipe(RecipeOp::SetCrop(NormalizedCrop {
+            left: f.number("left")?,
+            top: f.number("top")?,
+            right: f.number("right")?,
+            bottom: f.number("bottom")?,
+            angle: f.number_or("angle", 0.0)?,
+            flip_horizontal: f.flag_or("flip_horizontal", false)?,
+            flip_vertical: f.flag_or("flip_vertical", false)?,
+            ..NormalizedCrop::full()
+        })),
+        "photo.develop.snapshot.save" => DevelopOp::Recipe(RecipeOp::SaveSnapshot(f.text("name")?)),
+        "photo.develop.snapshot.apply" => DevelopOp::Recipe(RecipeOp::ApplySnapshot(f.text("name")?)),
+        "photo.develop.snapshot.delete" => DevelopOp::Recipe(RecipeOp::DeleteSnapshot(f.text("name")?)),
         other => return Err(CommandRefusal::new("command_not_driveable", json!({"command_id": other}))),
     })
 }
@@ -281,6 +309,13 @@ fn develop_op(id: &str, f: Fields<'_>) -> Result<DevelopOp, CommandRefusal> {
 pub(super) fn run(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Result<Value, String>, CommandRefusal> {
     if id.starts_with("photo.info.") {
         return Ok(v.info_command(info_command(id, f)?).map(|()| Value::Null));
+    }
+    if id == "photo.develop.save_preset" {
+        let keys = f.list("keys")?;
+        return match v.save_develop_preset(&f.path("path")?, &f.text("name")?, &keys, f.flag_or("overwrite", false)?) {
+            Ok(report) => Ok(Ok(report)),
+            Err(r) => Err(CommandRefusal::new(r.code, json!({"message": r.detail}))),
+        };
     }
     if id.starts_with("photo.develop.") {
         let result = match id {

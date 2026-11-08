@@ -1,7 +1,7 @@
 //! Photo rows of the command corpus: selection, fill, liquify, info and develop records.
 
 use super::super::ValueType;
-use super::{CommandEntry, ParamSpec, flag as b, index as i, number as n, one_of as o, path as file, point, points, record as r, samples, text as t, typed, vector3};
+use super::{CommandEntry, ParamSpec, flag as b, index as i, list as l, number as n, one_of as o, output_path as out, path as file, point, points, record as r, samples, text as t, typed, vector3};
 
 const MODEL: &str = "rgb|hsb|lab|cmyk";
 const INFO: &str = "Viewer::info_command";
@@ -29,6 +29,8 @@ macro_rules! mask_params {
 }
 const ADD_CORRECTION: &[ParamSpec] = mask_params!();
 const ADD_MASK: &[ParamSpec] = mask_params!(i("correction"), b("subtract").opt());
+/// The twelve STU-RAW-105 group enables.
+const GROUPS: &str = "calibration|colour_adjustments|detail|effects|grayscale_mix|lens_corrections|mask_group_based_corrections|red_eye|retouch|tone_curve|transform|distraction_removal";
 
 pub(super) const ROWS: &[CommandEntry] = &[
     typed("photo.liquify", "Viewer::liquify", "Liquify", true, &[t("layer"), r("tool", "{kind: forward_warp|push_left|twirl|pucker|bloat|reconstruct|smooth|turbulence|mesh_clone, ...}"), samples("samples"), r("brush", "{size, density, pressure, rate}")]),
@@ -61,7 +63,8 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("photo.develop.remove_spot", DEVELOP, "Remove spot removal", true, &[i("spot")]),
     typed("photo.develop.add_distraction", DEVELOP, "Add distraction removal", true, &[point("centre"), n("radius")]),
     typed("photo.develop.remove_distraction", DEVELOP, "Remove distraction removal", true, &[i("index")]),
-    // Lane SMB-DEVELOP-COMMANDS-1: every other DevelopOp / FamilyOp member and the sliders as one step.
+    // Lane SMB-DEVELOP-COMMANDS-1: every other DevelopOp / FamilyOp member, the sliders as one step, and
+    // the develop must-haves (group enables, point curves, crop and straighten, snapshots, preset save).
     typed("photo.develop.set", SLIDERS, "Set develop control", true, &[t("control"), n("value")]),
     typed("photo.develop.set_many", SLIDERS, "Set develop controls", true, &[r("changes", "{control: value, ...}")]),
     typed("photo.develop.add_colour_range", DEVELOP, "Add colour range correction", true, &[colours("samples"), n("breadth")]),
@@ -77,4 +80,12 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("photo.develop.look", DEVELOP, "Apply creative look", true, &[file("path"), t("name"), o("domain", "srgb_encoded|linear")]),
     typed("photo.develop.clear_look", DEVELOP, "Clear creative look", true, &[]),
     typed("photo.develop.apply_preset", DEVELOP, "Apply develop preset", true, &[file("path"), n("amount")]),
+    typed("photo.develop.set_enable", DEVELOP, "Set develop group enable", true, &[o("group", GROUPS), b("on")]),
+    typed("photo.develop.clear_enable", DEVELOP, "Clear develop group enable override", true, &[o("group", GROUPS)]),
+    typed("photo.develop.set_point_curve", DEVELOP, "Set point curve", true, &[o("channel", "composite|red|green|blue"), points("points")]),
+    typed("photo.develop.set_crop", DEVELOP, "Crop and straighten", true, &[n("left"), n("top"), n("right"), n("bottom"), n("angle").opt(), b("flip_horizontal").opt(), b("flip_vertical").opt()]),
+    typed("photo.develop.snapshot.save", DEVELOP, "Save develop snapshot", true, &[t("name")]),
+    typed("photo.develop.snapshot.apply", DEVELOP, "Apply develop snapshot", true, &[t("name")]),
+    typed("photo.develop.snapshot.delete", DEVELOP, "Delete develop snapshot", true, &[t("name")]),
+    typed("photo.develop.save_preset", "Viewer::save_develop_preset", "Save develop preset", false, &[out("path"), t("name"), l("keys"), b("overwrite").opt()]),
 ];
