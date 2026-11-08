@@ -103,6 +103,8 @@ pub struct Text {
     port: Box<dyn TextPort>,
     shaped: HashMap<ShapeKey, ShapedLine>,
     masks: HashMap<GlyphKey, GlyphMask>,
+    /// Ellipsis results by (text, token, weight, room, middle): a squeezed label re-searches nothing on a rebuild.
+    fits: HashMap<(String, TextToken, u16, u32, bool), String>,
     max_lines: usize,
     max_masks: usize,
     lut: [u8; 256],
@@ -117,6 +119,7 @@ impl Text {
             port,
             shaped: HashMap::new(),
             masks: HashMap::new(),
+            fits: HashMap::new(),
             max_lines: 4096,
             max_masks: 8192,
             lut: [0; 256],
@@ -227,6 +230,30 @@ impl Text {
     /// The longest prefix of `text` (whole chars) that fits `max_w` logical px with a trailing ellipsis, or the whole
     /// text when it fits.
     pub fn ellipsize(&mut self, text: &str, token: TextToken, weight: u16, max_w: f32) -> String {
+        self.cached_fit(text, token, weight, max_w, false)
+    }
+
+    /// The ellipsis result cache in front of both searches (bounded like the line cache: reset whole at capacity; keys at
+    /// most MAX_LABEL_BYTES).
+    fn cached_fit(&mut self, text: &str, token: TextToken, weight: u16, max_w: f32, middle: bool) -> String {
+        if text.len() > MAX_LABEL_BYTES {
+            // Over-long inputs are searched, never kept as keys (a 1 MiB name must not pin 1 MiB per entry).
+            return if middle { self.search_middle(text, token, weight, max_w) } else { self.search_end(text, token, weight, max_w) };
+        }
+        let key = (text.to_owned(), token, weight, max_w.to_bits(), middle);
+        if let Some(s) = self.fits.get(&key) {
+            return s.clone();
+        }
+        let out = if middle { self.search_middle(text, token, weight, max_w) } else { self.search_end(text, token, weight, max_w) };
+        if self.fits.len() >= self.max_lines {
+            self.fits.clear();
+            self.stats.resets = self.stats.resets.saturating_add(1);
+        }
+        self.fits.insert(key, out.clone());
+        out
+    }
+
+    fn search_end(&mut self, text: &str, token: TextToken, weight: u16, max_w: f32) -> String {
         if text.len() <= MAX_LABEL_BYTES && self.measure(text, token, weight) <= max_w {
             return text.to_owned();
         }
@@ -254,6 +281,10 @@ impl Text {
     /// chars as fit (head gets the extra one), or the whole text when it fits. Bounded like [`Text::ellipsize`]: only
     /// the first and last [`MAX_LABEL_BYTES`] / 2 bytes are candidates, measured uncached (about log2(n) shapes).
     pub fn ellipsize_middle(&mut self, text: &str, token: TextToken, weight: u16, max_w: f32) -> String {
+        self.cached_fit(text, token, weight, max_w, true)
+    }
+
+    fn search_middle(&mut self, text: &str, token: TextToken, weight: u16, max_w: f32) -> String {
         if text.len() <= MAX_LABEL_BYTES && self.measure(text, token, weight) <= max_w {
             return text.to_owned();
         }

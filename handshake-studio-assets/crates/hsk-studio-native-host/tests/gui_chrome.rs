@@ -388,18 +388,32 @@ fn hostile_scales_names_tiny_windows_and_storms() {
         assert!(checks::partition(l.window, &rects, l.scale).is_empty(), "{w}x{h}");
         assert!(t.frame().is_ok());
     }
-    // A storm at the step cap: rail picks and tab switches rebuild only the panels they change, no undo step. The frame
-    // is 512 x 320 logical at scale 0.5 (256 x 160 px), so 4096 CPU repaints stay cheap.
-    let mut g = open(&s.0, 256, 160, 500);
+    // A storm at the step cap (script.rs MAX_STEPS) of rail picks and tab switches: framed after every step for the
+    // first 512 steps, a pick or a switch rebuilds only the panels it changes (at most 4); the rest of the cap runs with
+    // a frame every 64 steps, each rebuilding at most those 4 panels again. No undo step, no Viewer op. The frame is
+    // 1024 x 640 logical at scale 0.5 (512 x 320 px), so the CPU repaints stay cheap.
+    let mut g = open(&s.0, 512, 320, 500);
     let undo = g.viewer().run().history()["undo"].as_array().unwrap().len();
+    let ops = g.viewer().run().ops().len();
     let ids = ["studio.toolgroup.paint", "studio.tab.adjustments", "studio.toolgroup.crop", "studio.tab.properties"];
     let builds0 = g.stats().builds;
-    for i in 0..MAX_STEPS {
+    for i in 0..512 {
         g.step(&Step::Invoke(ids[i % ids.len()].into())).unwrap();
         g.frame().unwrap();
     }
-    let per_step = (g.stats().builds - builds0) as f64 / MAX_STEPS as f64;
+    let per_step = (g.stats().builds - builds0) as f64 / 512.0;
     assert!(per_step <= 4.0, "{per_step} rebuilds per step");
+    let builds1 = g.stats().builds;
+    let mut frames = 0u64;
+    for i in 512..MAX_STEPS {
+        g.step(&Step::Invoke(ids[i % ids.len()].into())).unwrap();
+        if i % 64 == 63 {
+            g.frame().unwrap();
+            frames += 1;
+        }
+    }
+    assert!(g.stats().builds - builds1 <= 4 * frames, "{} rebuilds over {frames} frames", g.stats().builds - builds1);
+    assert_eq!(g.viewer().run().ops().len(), ops, "frame picks never reach the Viewer");
     assert_eq!(g.viewer().run().history()["undo"].as_array().unwrap().len(), undo);
 }
 
