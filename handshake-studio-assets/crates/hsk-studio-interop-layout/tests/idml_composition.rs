@@ -5,8 +5,9 @@
 //! them in the D5 oracle packages (module docs of `idml_composition.rs`); the fixture is generated.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::*;
-use hsk_studio_interop_layout::layout::{StyleSource, TypesetOptions, resolve_style_composition};
+use hsk_studio_interop_layout::layout::{ShapedParagraph, SourceSpan, StyleSource, TypesetOptions, resolve_style_composition};
 use hsk_studio_interop_layout::*;
+mod common;
 
 const NS: &str = "http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging";
 const CSR: &str = "<CharacterStyleRange AppliedCharacterStyle=\"CharacterStyle/$ID/[No character style]\">";
@@ -63,6 +64,18 @@ DesiredGlyphScaling=\"100\" HyphenateLastWord=\" false\"><Decoy Composer=\"HL Si
     )
 }
 fn package(styles: &str) -> Vec<u8> {
+    let paras = [
+        para("Body", "", "aa typographic", true),
+        para("Body", " Composer=\"HL Composer\" Hyphenation=\"false\"", "aaaa bbbb", true),
+        para("$ID/[No paragraph style]", " MinimumWordSpacing=\"85\"", "cc dd", true),
+        para("Hostile", "", "ee", true),
+        para("Loop A", "", "ff", true),
+        para("Orphan", "", "gg", false),
+    ];
+    package_with(styles, &paras.concat())
+}
+/// A one-story package: `paragraphs` (`para` elements) in a 60 x 390 frame on a 300 x 400 page.
+fn package_with(styles: &str, paragraphs: &str) -> Vec<u8> {
     let designmap = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Document xmlns:idPkg=\"{NS}\" DOMVersion=\"16.0\" Self=\"d\">\n\
 <idPkg:Styles src=\"Resources/Styles.xml\"/>\n<idPkg:Preferences src=\"Resources/Preferences.xml\"/>\n\
@@ -84,13 +97,7 @@ fn package(styles: &str) -> Vec<u8> {
     let story = wrap(
         "Story",
         &format!(
-            "<Story Self=\"ua1\"><StoryPreference StoryDirection=\"LeftToRightDirection\"/>{}{}{}{}{}{}</Story>",
-            para("Body", "", "aa typographic", true),
-            para("Body", " Composer=\"HL Composer\" Hyphenation=\"false\"", "aaaa bbbb", true),
-            para("$ID/[No paragraph style]", " MinimumWordSpacing=\"85\"", "cc dd", true),
-            para("Hostile", "", "ee", true),
-            para("Loop A", "", "ff", true),
-            para("Orphan", "", "gg", false),
+            "<Story Self=\"ua1\"><StoryPreference StoryDirection=\"LeftToRightDirection\"/>{paragraphs}</Story>"
         ),
     );
     let parts = [
@@ -294,4 +301,190 @@ fn idml_reflow_composes_with_the_mapped_composer() {
     assert!((s[1].baseline_y_pt - s[0].baseline_y_pt - 14.4).abs() < 1e-9, "{} {}", s[0].baseline_y_pt, s[1].baseline_y_pt);
     // Same input, same placement.
     assert_eq!(reflow_import_typeset(&i, &shaper, &ReflowOptions::default(), &opts, &cancel).unwrap(), styled);
+}
+
+/// Lane SMB-TYPE-INDENT-SPACING-1 fixture: the root states the six STU-TYP-185 attributes at 0 (as
+/// every InDesign-written root does, ID-03), "Ind" states them set, "Wild" states hostile values; a
+/// lower-case decoy and a `TableStyle@SpaceBefore` (not a paragraph attribute) never map. Story
+/// "aaaa bbbb cccc dddd\neeee\nff" (paragraph starts 0, 20, 25); paragraph 1 overrides
+/// `LeftIndent` locally.
+const INDENT_ZEROS: &str = "LeftIndent=\"0\" RightIndent=\"0\" FirstLineIndent=\"0\" LastLineIndent=\"0\" SpaceBefore=\"0\" SpaceAfter=\"0\"";
+fn indent_styles_xml() -> String {
+    wrap(
+        "Styles",
+        &format!(
+            "<RootParagraphStyleGroup Self=\"u81\">\
+<ParagraphStyle Self=\"ParagraphStyle/$ID/[No paragraph style]\" Name=\"$ID/[No paragraph style]\" {INDENT_ZEROS}/>\
+<ParagraphStyle Self=\"ParagraphStyle/Ind\" Name=\"Ind\" LeftIndent=\" 12 \" RightIndent=\"6\" FirstLineIndent=\"6\" LastLineIndent=\"0\" \
+SpaceBefore=\"5\" SpaceAfter=\"3\" leftindent=\"99\"/>\
+<ParagraphStyle Self=\"ParagraphStyle/Wild\" Name=\"Wild\" LeftIndent=\"1e308\" RightIndent=\"-1e308\" FirstLineIndent=\"NaN\" \
+LastLineIndent=\"inf\" SpaceBefore=\"1e999\" SpaceAfter=\"-INF\"/>\
+</RootParagraphStyleGroup><RootTableStyleGroup Self=\"u90\"><TableStyle Self=\"TableStyle/x\" Name=\"x\" SpaceBefore=\"4\"/></RootTableStyleGroup>"
+        ),
+    )
+}
+fn indent_package() -> Vec<u8> {
+    let paras = [para("Ind", "", "aaaa bbbb cccc dddd", true), para("Ind", " LeftIndent=\"20\"", "eeee", true), para("Wild", "", "ff", false)];
+    package_with(&indent_styles_xml(), &paras.concat())
+}
+fn pt(v: f64) -> Option<Length> {
+    Some(Length { value: v, unit: GeometryUnit::Pt })
+}
+
+/// `LeftIndent`, `RightIndent`, `FirstLineIndent`, `LastLineIndent`, `SpaceBefore` and
+/// `SpaceAfter` map into the Folio settings as points (signed, finite, trimmed; exact names only),
+/// the root's zeros are stored as zeros, a local attribute overrides its style, and non-finite or
+/// unparseable values are `composition_value_invalid` with the field unset; `1e308` is stored.
+#[test]
+fn idml_indents_and_spacing_map_as_points() {
+    let (i, t) = import(&indent_package());
+    let t = t.expect("type styles");
+    let r = &t.records;
+    let ind = r.style_composition(&style_id(&i, &t, "ParagraphStyle/Ind")).expect("Ind settings");
+    let set = StudioCompositionSettings { left_indent: pt(12.0), right_indent: pt(6.0), first_line_indent: pt(6.0), last_line_indent: pt(0.0), space_before: pt(5.0), space_after: pt(3.0), ..Default::default() };
+    assert_eq!(ind, &set);
+    let wild = r.style_composition(&style_id(&i, &t, "ParagraphStyle/Wild")).expect("Wild settings");
+    assert_eq!(wild, &StudioCompositionSettings { left_indent: pt(1e308), right_indent: pt(-1e308), ..Default::default() });
+    for attr in ["FirstLineIndent", "LastLineIndent", "SpaceBefore", "SpaceAfter"] {
+        assert!(has_loss(&t, &format!("ParagraphStyle@{attr}"), "composition_value_invalid"), "{attr}: {:#?}", t.loss);
+    }
+    let story = i.proposal.stories[0].story.story_id.clone();
+    assert_eq!(r.paragraph_composition(&story, 20), Some(&StudioCompositionSettings { left_indent: pt(20.0), ..Default::default() }));
+    assert!(r.paragraph_composition(&story, 0).is_none());
+    // Exactly these names; no attribute is mapped for space_between_same_style.
+    for name in ["LeftIndent", "RightIndent", "FirstLineIndent", "LastLineIndent", "SpaceBefore", "SpaceAfter"] {
+        assert!(COMPOSITION_ATTRIBUTES.contains(&name), "{name}");
+    }
+    assert!(!COMPOSITION_ATTRIBUTES.iter().any(|a| a.to_ascii_lowercase().contains("same")));
+    // The root's zeros are stored as zeros (ID-03 writes them on every root style).
+    let zeros = StudioCompositionSettings { left_indent: pt(0.0), right_indent: pt(0.0), first_line_indent: pt(0.0), last_line_indent: pt(0.0), space_before: pt(0.0), space_after: pt(0.0), ..Default::default() };
+    let root_id = i.proposal.style_refs.iter().chain(&t.new_styles).find(|s| s.idml_name == "ParagraphStyle/$ID/[No paragraph style]").map(|s| s.folio.clone());
+    if let Some(root) = root_id {
+        assert_eq!(r.style_composition(&root), Some(&zeros));
+    }
+    assert!(validate_type_style_records(r, i.proposal.snapshot.document(), Budget::default(), &CancellationToken::default(), &Unresolved).is_ok());
+}
+
+/// End to end: the IDML reflow composes the mapped indents and spacing (narrowed lines, the gap
+/// between paragraphs, the hostile 1e308 indent overset), and PDF export draws every line's first
+/// glyph at the indented x.
+#[test]
+fn idml_indents_compose_and_export_to_pdf_at_the_moved_x() {
+    let (i, t) = import(&indent_package());
+    let t = t.expect("type styles");
+    let shaper = FixedAdvanceShaper { advance_pt: 6.0, line_height_pt: 12.0, ascent_pt: 10.0 };
+    let cancel = CancellationToken::default();
+    let opts = TypesetOptions { styles: Some(StyleSource { records: &t.records, default_font_size_pt: 12.0 }), ..TypesetOptions::default() };
+    let r = reflow_import_typeset(&i, &shaper, &ReflowOptions::default(), &opts, &cancel).unwrap();
+    let placement = r[0].outcome.as_ref().expect("placed").clone();
+    let lines = &placement.frames[0].lines;
+    let got: Vec<(f64, f64, u64)> = lines.iter().map(|l| (l.x_start_pt, l.available_pt, l.source.start)).collect();
+    // 60 pt frame: first line 12 + 6 in, 36 wide; then 12 in, 42 wide; "eeee" 20 + 6 in, 28 wide.
+    assert_eq!(got, vec![(18.0, 36.0, 0), (12.0, 42.0, 5), (12.0, 42.0, 10), (12.0, 42.0, 15), (26.0, 28.0, 20)]);
+    let b0 = lines[0].baseline_y_pt;
+    let gaps: Vec<f64> = lines.iter().map(|l| l.baseline_y_pt - b0).collect();
+    assert_eq!(gaps, vec![0.0, 12.0, 24.0, 36.0, 56.0], "3 after + 5 before between the paragraphs");
+    assert_eq!(placement.overset.map(|o| o.start), Some(25), "the 1e308 indent leaves no width");
+
+    // PDF: one glyph id for letters, one for the space; every line's first glyph at frame x + x_start.
+    let ps = &i.proposal.stories[0];
+    let text = ps.story.inline_text().unwrap();
+    let paragraphs: Vec<ShapedParagraph> = ps
+        .story
+        .paragraphs
+        .iter()
+        .map(|p| {
+            let end = if text.as_bytes().get(p.end as usize - 1) == Some(&b'\n') { p.end - 1 } else { p.end };
+            ShapedParagraph::from_fixed_advance(text, SourceSpan { start: p.start, end }, 6.0, 12.0, 10.0).unwrap()
+        })
+        .collect();
+    let space_gid = 1682u16;
+    let glyphs: Vec<Vec<PdfGlyph>> = paragraphs
+        .iter()
+        .map(|p| {
+            p.glyphs
+                .iter()
+                .map(|g| {
+                    let gid = if text.as_bytes()[g.cluster.start as usize] == b' ' { space_gid } else { 161 };
+                    PdfGlyph { glyph_id: gid, font: 0, size_pt: 12.0, x_offset_pt: 0.0, y_offset_pt: 0.0 }
+                })
+                .collect()
+        })
+        .collect();
+    let stories = [PdfStory { story: &ps.story, text, placement: &placement, paragraphs: &paragraphs, glyphs: &glyphs, default_fill: press::Colour::DeviceGray(0.0) }];
+    let fonts = [PdfFont { bytes: INTER, face_index: 0, hyphen: None }];
+    let input = PdfExportInput {
+        snapshot: &i.proposal.snapshot,
+        design: None,
+        type_styles: None,
+        stories: &stories,
+        fonts: &fonts,
+        assets: &NoAssets,
+        options: press::ExportOptions::default(),
+        limits: press::Limits::default(),
+    };
+    let out = export_pdf(&input, &cancel).unwrap();
+    let shown = common::pdf_scan::shown_runs(&pdf_streams(&out.bytes), &press::font_advance_widths(INTER, 0).unwrap());
+    let origin = placement.frames[0].origin_x_pt;
+    // Leftmost letter per baseline (PDF y up: the first line is the highest).
+    let mut first_x: Vec<(i64, f64)> = Vec::new();
+    for (gid, x, y) in shown.into_iter().filter(|g| g.0 != space_gid) {
+        assert_eq!(gid, 161);
+        let key = (y * 100.0).round() as i64;
+        match first_x.iter_mut().find(|(k, _)| *k == key) {
+            Some(e) => e.1 = e.1.min(x),
+            None => first_x.push((key, x)),
+        }
+    }
+    first_x.sort_by(|a, b| b.0.cmp(&a.0));
+    let want: Vec<f64> = lines.iter().map(|l| origin + l.x_start_pt).collect();
+    assert_eq!(first_x.len(), want.len(), "{first_x:?}");
+    for ((_, x), w) in first_x.iter().zip(&want) {
+        assert!((x - w).abs() < 0.01, "{first_x:?} vs {want:?}");
+    }
+}
+
+const INTER: &[u8] = include_bytes!("../../hsk-studio-type/tests/fixtures/fonts/Inter-Regular.ttf");
+struct NoAssets;
+impl PdfAssets for NoAssets {
+    fn path(&self, _: &str) -> Option<hsk_studio_nib::OwnedPath> {
+        None
+    }
+    fn raster(&self, _: &str) -> Option<PlacedRaster<'_>> {
+        None
+    }
+    fn profile(&self, _: &str) -> Option<&[u8]> {
+        None
+    }
+}
+fn pdf_streams(pdf: &[u8]) -> Vec<Vec<u8>> {
+    let find = |h: &[u8], n: &[u8]| h.windows(n.len()).position(|w| w == n);
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(s) = find(&pdf[at..], b">>\nstream\n").map(|i| at + i + 10) {
+        let Some(e) = find(&pdf[s..], b"\nendstream").map(|i| s + i) else { break };
+        if let Ok(d) = miniz_oxide::inflate::decompress_to_vec_zlib(&pdf[s..e]) {
+            out.push(d);
+        }
+        at = e + 10;
+    }
+    out
+}
+
+/// STU-IO-012: IDML export writes no Folio composition settings yet, so a record set that states
+/// any (indents and spacing included) yields one typed `Unsupported` entry counting the style
+/// entries and overrides that state settings; a set without settings yields none.
+#[test]
+fn idml_export_reports_the_composition_settings_it_does_not_write() {
+    let (i, t) = import(&indent_package());
+    let t = t.expect("type styles");
+    let loss = type_style_composition_loss(&t.records).expect("a loss entry");
+    assert_eq!(
+        (loss.part.as_str(), loss.element.as_str(), loss.kind, loss.code),
+        ("Resources/Styles.xml", "ParagraphStyle", LossKind::Unsupported, "paragraph_composition_not_exported")
+    );
+    assert_eq!(loss.count as usize, t.records.style_composition.len() + t.records.paragraph_composition.len());
+    assert!(loss.count >= 3, "root, Ind, Wild and the local override: {loss:?}");
+    let empty = StudioTypeStyleRecords::new(i.proposal.snapshot.document().document_id.clone());
+    assert_eq!(type_style_composition_loss(&empty), None);
 }
