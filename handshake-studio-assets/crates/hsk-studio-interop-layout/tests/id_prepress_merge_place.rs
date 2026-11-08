@@ -188,3 +188,35 @@ fn placed_pdf_draws_into_an_export_page() {
     let page = ex.add_page(PageSpec { media_box_pt: [0.0, 0.0, 400.0, 200.0], trim_box_pt: None, bleed_box_pt: None }).unwrap();
     assert_eq!(draw_placed_pdf(&mut ex, page, &placed, [0.0; 6], None, &tok).unwrap_err().code(), "invalid_transform");
 }
+
+/// V4-06 class C (lane SMB-TYPE-INDENT-SPACING-1), `merge_story_with_records`: the merged
+/// instance's paragraph-keyed records (a copy of the template's) move through every placeholder
+/// edit with their paragraphs.
+#[test]
+fn merging_moves_the_paragraph_keyed_records_with_their_paragraphs() {
+    let src = parse_delimited(CSV.as_bytes(), ',').unwrap();
+    // "Dear <<Name>>,\n" 0..15, "<<City>>\n" 15..24, "End" 24..27.
+    let text = "Dear <<Name>>,\n<<City>>\nEnd";
+    let st = story(text, &[(0, 15), (15, 24), (24, 27)]);
+    let len0 = Length { value: 0.0, unit: GeometryUnit::Pt };
+    let mut flow = StudioLayoutFlowRecords::new(id("SDOC", 1));
+    flow.paragraph_flows.push(StudioParagraphFlow {
+        story_id: id("STXT", 1),
+        paragraph_start: 15,
+        span_column: StudioSpanColumn::SingleColumn,
+        span_count: None,
+        span_column_count: 1,
+        split_column_count: 2,
+        space_before: len0.clone(),
+        space_after: len0.clone(),
+        inside_gutter: len0.clone(),
+        outside_gutter: len0,
+    });
+    let mut styles = StudioTypeStyleRecords::new(id("SDOC", 1));
+    let settings = StudioCompositionSettings { space_before: Some(Length { value: 4.0, unit: GeometryUnit::Pt }), ..Default::default() };
+    styles.paragraph_composition.push(StudioParagraphComposition { text_id: id("STXT", 1), paragraph_start: 24, settings });
+    let m = merge_story_with_records(&st, text, &src, 0, true, &mut flow, &mut styles).unwrap();
+    assert_eq!(m.text, "Dear Doe, Jane,\nGhent\nEnd");
+    assert_eq!(m.story.paragraphs.iter().map(|p| p.start).collect::<Vec<_>>(), vec![0, 16, 22]);
+    assert_eq!((flow.paragraph_flows[0].paragraph_start, styles.paragraph_composition[0].paragraph_start), (16, 22));
+}
