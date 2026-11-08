@@ -390,7 +390,8 @@ fn hostile_scales_names_tiny_windows_and_storms() {
     }
     // A storm at the step cap (script.rs MAX_STEPS) of rail picks and tab switches: framed after every step for the
     // first 512 steps, a pick or a switch rebuilds only the panels it changes (at most 4); the rest of the cap runs with
-    // a frame every 64 steps, each rebuilding at most those 4 panels again. No undo step, no Viewer op. The frame is
+    // a frame every 64 steps, each rebuilding at most the 5 panels picks and switches touch (Tool Rail, Context Bar,
+    // Inspect Dock, status bar, observability), once, whatever the steps between. No undo step, no Viewer op. The frame is
     // 1024 x 640 logical at scale 0.5 (512 x 320 px), so the CPU repaints stay cheap.
     let mut g = open(&s.0, 512, 320, 500);
     let undo = g.viewer().run().history()["undo"].as_array().unwrap().len();
@@ -412,7 +413,7 @@ fn hostile_scales_names_tiny_windows_and_storms() {
             frames += 1;
         }
     }
-    assert!(g.stats().builds - builds1 <= 4 * frames, "{} rebuilds over {frames} frames", g.stats().builds - builds1);
+    assert!(g.stats().builds - builds1 <= 5 * frames, "{} rebuilds over {frames} frames", g.stats().builds - builds1);
     assert_eq!(g.viewer().run().ops().len(), ops, "frame picks never reach the Viewer");
     assert_eq!(g.viewer().run().history()["undo"].as_array().unwrap().len(), undo);
 }
