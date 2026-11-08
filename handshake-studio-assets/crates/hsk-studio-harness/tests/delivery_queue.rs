@@ -188,7 +188,13 @@ fn author(v: &mut Viewer, colour: &str) {
         {"kind": "rect", "position": [8.0, 8.0], "size": [16.0, 16.0]},
         {"kind": "fill", "rgba": [0.8, 0.1, 0.1, 0.5], "opacity": 100.0, "rule": "non_zero"}]}}));
     motion(v, "composition.queue_add", json!({"item_id": "rq", "composition_id": "T01", "module_id": "png", "format": "png_sequence", "output_path": "renders/title.png"}));
-    motion(v, "composition.queue_set_module", json!({"item_id": "rq", "module_id": "png", "channels": "rgb_alpha", "color": colour, "depth": 8}));
+    // A new PNG module is RGB+alpha, straight, 8 bits: only premultiplied colour is a change.
+    let records: Value = serde_json::from_slice(v.run().document_entry("motion").unwrap()).unwrap();
+    let module = &records["render_queue"][0]["output_modules"][0];
+    assert_eq!((module["channels"].as_str(), module["color"].as_str(), module["depth"].as_u64()), (Some("rgb_alpha"), Some("straight"), Some(8)), "{module}");
+    if colour != "straight" {
+        motion(v, "composition.queue_set_module", json!({"item_id": "rq", "module_id": "png", "color": colour}));
+    }
 }
 
 fn decode_png(path: &Path) -> hsk_studio_interop_raster::RasterImage {
@@ -254,6 +260,67 @@ fn cancelling_one_item_leaves_the_others() {
     assert!(s.0.join("one.mov").is_file() && s.0.join("three.mov").is_file());
     assert!(!s.0.join("two.mov").exists(), "a canceled item writes nothing");
     assert_eq!(run["receipts"][1]["job"]["outcome"].as_str(), Some("canceled"), "{run}");
+}
+
+/// Solid 4x4 frames for any source; after `cancel_after` requests it cancels the item behind `handle` (the
+/// program monitor's port is served by the delivery run's own thread, so this is a cancel mid-run).
+struct CancelAfter {
+    served: std::sync::atomic::AtomicU64,
+    cancel_after: u64,
+    handle: std::sync::Mutex<Option<hsk_studio_harness::view::delivery::DeliveryCancel>>,
+}
+impl CancelAfter {
+    fn serve(&self) -> std::sync::Arc<hsk_studio_harness::view::monitor::SourceFrame> {
+        let n = self.served.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if n == self.cancel_after
+            && let Some(h) = self.handle.lock().unwrap().as_ref()
+        {
+            h.cancel();
+        }
+        let (mut colour, mut alpha) = (Vec::new(), Vec::new());
+        for _ in 0..16 {
+            for c in [0.8f32, 0.2, 0.1] {
+                colour.extend_from_slice(&c.to_le_bytes());
+            }
+            alpha.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        std::sync::Arc::new(hsk_studio_harness::view::monitor::SourceFrame { width: 4, height: 4, colour_sha256: hsk_studio_prism::profile_hash(&colour), alpha_sha256: hsk_studio_prism::profile_hash(&alpha), colour, alpha })
+    }
+}
+struct Shared(std::sync::Arc<CancelAfter>);
+impl hsk_studio_harness::view::monitor::FrameSource for Shared {
+    fn frame(&self, _: &ClipSource, _: Ticks) -> Option<std::sync::Arc<hsk_studio_harness::view::monitor::SourceFrame>> {
+        Some(self.0.serve())
+    }
+}
+struct Long;
+impl hsk_studio_pulse::SourceExtents for Long {
+    fn extent(&self, _: &ClipSource) -> Option<Ticks> {
+        Some(Ticks::new(1000 * F))
+    }
+}
+
+/// A cancel WHILE the queue runs stops that item only: item 2 is canceled at its second frame (reel publishes
+/// nothing, so no partial output is named), items 1 and 3 complete.
+#[test]
+fn cancelling_one_running_item_leaves_the_others() {
+    let s = Scratch::new("cancel-running");
+    let mut v = viewer(&s);
+    let source = std::sync::Arc::new(CancelAfter { served: Default::default(), cancel_after: 5, handle: Default::default() });
+    v.set_monitor_sources(Box::new(Shared(source.clone())), Box::new(Long));
+    let mut ids = Vec::new();
+    for (seq, out) in [("seq-main", "one.mov"), ("seq-main", "two.mov"), ("seq-b", "three.mov")] {
+        ids.push(ok(&mut v, "delivery.add", json!({"kind": "sequence", "sequence_id": seq, "recipe_id": PRESET, "output": out, "width": 64, "height": 32}))["delivery_id"].as_u64().unwrap());
+    }
+    *source.handle.lock().unwrap() = v.delivery_cancel_handle(ids[1]);
+    let run = ok(&mut v, "delivery.run", json!({}));
+    let outcomes: Vec<&str> = run["receipts"].as_array().unwrap().iter().map(|r| r["outcome"].as_str().unwrap_or("?")).collect();
+    assert_eq!(outcomes, ["complete", "canceled", "complete"], "{run}");
+    let two = &run["receipts"][1];
+    assert_eq!((two["partial"].as_bool(), two["artifacts"].as_array().map(Vec::len)), (Some(false), Some(0)), "{two}");
+    assert_eq!(two["job"]["outcome"], "canceled", "{two}");
+    assert!(two["receipt"]["frames_encoded"].as_u64().is_some_and(|n| n < 3), "stopped mid-item: {two}");
+    assert!(!s.0.join("two.mov").exists() && s.0.join("one.mov").is_file() && s.0.join("three.mov").is_file());
 }
 
 /// `export_sequence` keeps `preset_id` (a recipe id alias) and writes the same bytes through the one
@@ -323,6 +390,15 @@ fn user_recipes_save_list_reopen_and_delete() {
     assert_eq!(refused(&mut v, "export.recipe_save", json!({"from": PRESET, "recipe_id": "user.lb.64x32"})), "export_recipe_exists");
     assert_eq!(refused(&mut v, "export.recipe_save", json!({"from": PRESET, "recipe_id": "user.x", "parameters": {"NoSuchIdentifier": 1}})), "export_parameter_unknown");
     assert_eq!(refused(&mut v, "export.recipe_save", json!({"from": "no.such.recipe", "recipe_id": "user.y"})), "unknown_preset");
+    // Every value through reel's checks: a credential is never stored, bounds hold, a parameter the writer does
+    // not consume is refused when the recipe is used, before the first frame.
+    assert_eq!(refused(&mut v, "export.recipe_save", json!({"from": PRESET, "recipe_id": "user.c", "parameters": {"ADBEStockRefreshToken": "secret"}})), "export_credential_in_recipe_record");
+    assert_eq!(refused(&mut v, "export.recipe_save", json!({"from": PRESET, "recipe_id": "user.n", "name": "n".repeat(257)})), "export_recipe_limit");
+    assert_eq!(refused(&mut v, "export.recipe_save", json!({"from": PRESET, "recipe_id": "bad id"})), "export_recipe_field_invalid");
+    assert_eq!(refused(&mut v, "export.recipe_save", json!({"from": PRESET, "recipe_id": PRESET})), "export_recipe_exists");
+    ok(&mut v, "export.recipe_save", json!({"from": PRESET, "recipe_id": "user.fps", "parameters": {"ADBEVideoTargetBitrate": 10.0}}));
+    assert_eq!(refused(&mut v, "delivery.add", json!({"kind": "sequence", "sequence_id": "seq-main", "recipe_id": "user.fps", "output": "fps.mov"})), "export_parameter_not_consumed");
+    ok(&mut v, "export.recipe_delete", json!({"recipe_id": "user.fps"}));
     // The user recipe drives a sequence item; its declared raster must equal the source's.
     ok(&mut v, "delivery.add", json!({"kind": "sequence", "sequence_id": "seq-main", "recipe_id": "user.lb.64x32", "output": "user.mov"}));
     let run = ok(&mut v, "delivery.run", json!({}));
@@ -383,11 +459,6 @@ fn hostile_items_refuse_before_any_frame() {
     for item in listed["items"].as_array().unwrap() {
         ok(&mut v, "delivery.remove", json!({"delivery_id": item["delivery_id"]}));
     }
-    // 4096 items fit; the 4097th is refused.
-    for n in 0..4096 {
-        ok(&mut v, "delivery.add", json!({"kind": "sequence", "sequence_id": "seq-main", "recipe_id": PRESET, "output": format!("q/{n}.mov")}));
-    }
-    assert_eq!(refused(&mut v, "delivery.add", json!({"kind": "sequence", "sequence_id": "seq-main", "recipe_id": PRESET, "output": "q/x.mov"})), "delivery_queue_full");
     // MOV with alpha and post-render actions stay refused, typed, before any frame.
     motion(&mut v, "composition.queue_add", json!({"item_id": "rq-alpha", "composition_id": "T01", "module_id": "m", "format": "mov_vc3", "output_path": "renders/alpha.mov"}));
     motion(&mut v, "composition.queue_set_module", json!({"item_id": "rq-alpha", "module_id": "m", "channels": "rgb_alpha"}));
@@ -395,6 +466,11 @@ fn hostile_items_refuse_before_any_frame() {
     motion(&mut v, "composition.queue_set_module", json!({"item_id": "rq-alpha", "module_id": "m", "channels": "rgb", "post_render_action": "import"}));
     assert_eq!(refused(&mut v, "delivery.add", json!({"kind": "composition", "item_id": "rq-alpha"})), "output_post_render");
     assert!(!s.0.join("renders/alpha.mov").exists());
+    // 4096 items fit; the 4097th is refused.
+    for n in 0..4096 {
+        ok(&mut v, "delivery.add", json!({"kind": "sequence", "sequence_id": "seq-main", "recipe_id": PRESET, "output": format!("q/{n}.mov")}));
+    }
+    assert_eq!(refused(&mut v, "delivery.add", json!({"kind": "sequence", "sequence_id": "seq-main", "recipe_id": PRESET, "output": "q/x.mov"})), "delivery_queue_full");
 }
 
 /// Item 6: the headless CLI verb beside export-sequence (STU-IO-164).

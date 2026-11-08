@@ -158,6 +158,8 @@ struct Parsed {
     output: Option<PathBuf>,
     media: Vec<PathBuf>,
     audio: Vec<PathBuf>,
+    /// deliver (lane SMB-DELIVERY-QUEUE-1): `--item JSON`... in order.
+    items: Vec<String>,
     width: Option<u32>,
     height: Option<u32>,
     /// state, command, undo (lane SMB-HARNESS-DRIVE-1): the caller's attribution and the command.
@@ -337,6 +339,7 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--output" => p.output = Some(PathBuf::from(take(&mut i, "output path")?)),
             "--media" => p.media.push(PathBuf::from(take(&mut i, "media file path")?)),
             "--audio" => p.audio.push(PathBuf::from(take(&mut i, "audio file path")?)),
+            "--item" => p.items.push(take(&mut i, "delivery item JSON")?),
             "--width" => p.width = Some(take(&mut i, "width")?.parse::<u32>().ok().filter(|w| *w > 0).ok_or_else(|| "width must be a positive integer".to_string())?),
             "--height" => p.height = Some(take(&mut i, "height")?.parse::<u32>().ok().filter(|h| *h > 0).ok_or_else(|| "height must be a positive integer".to_string())?),
             "--profile" => p.profile = Some(take(&mut i, "profile (vector|raster|design|layout)")?),
@@ -573,6 +576,15 @@ fn dispatch(command: &str, parsed: Parsed) -> CliOutput {
                 return usage("OUT names the SOURCE file; pass --overwrite to replace it, or develop to another path");
             }
             execute_develop(&source, &output, format, &adjust, &parsed.stage, parsed.threads, parsed.overwrite)
+        }
+        "deliver" => {
+            let [package] = parsed.positional.as_slice() else {
+                return usage("deliver needs exactly one PACKAGE path");
+            };
+            if parsed.items.is_empty() {
+                return usage("deliver needs at least one --item JSON");
+            }
+            execute_deliver(Path::new(package), &parsed.items, &parsed.media, &parsed.audio, parsed.width.unwrap_or(1920), parsed.height.unwrap_or(1080))
         }
         "export-sequence" => {
             let [package] = parsed.positional.as_slice() else {
@@ -1300,56 +1312,8 @@ fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
         Ok(p) => p,
         Err(e) => return fail("output_unresolved", json!({"stage":"output","path":a.output.to_string_lossy(),"message":e.to_string()})),
     };
-    if a.audio.len() > MAX_EXPORT_AUDIO_FILES {
-        return fail("audio_too_many", json!({"stage":"audio","count":a.audio.len(),"limit":MAX_EXPORT_AUDIO_FILES}));
-    }
-    // Sizes first, every file, before reading any (the total bound and the per-item limit: reel's for media, the
-    // viewer audio import's `max_file_bytes` for audio, R46 F-R46-7).
-    let audio_file_bytes = crate::view::audio_import::ImportLimits::default().max_file_bytes;
-    let mut total = 0u64;
-    for (path, stage) in a.media.iter().map(|p| (p, "media")).chain(a.audio.iter().map(|p| (p, "audio"))) {
-        let item_limit = if stage == "audio" { audio_file_bytes } else { crate::view::media::MAX_MEDIA_BYTES as u64 };
-        match std::fs::metadata(path) {
-            Ok(m) if m.len() <= item_limit => {
-                total = total.saturating_add(m.len());
-                if total > MAX_EXPORT_INPUT_BYTES {
-                    return fail("media_too_large", json!({"stage":stage,"path":path.to_string_lossy(),"total_limit":MAX_EXPORT_INPUT_BYTES}));
-                }
-            }
-            Ok(_) => return fail("media_too_large", json!({"stage":stage,"path":path.to_string_lossy(),"limit":item_limit})),
-            Err(_) => return fail("media_unreadable", json!({"stage":stage,"path":path.to_string_lossy()})),
-        }
-    }
-    let read = |path: &PathBuf, stage: &str| std::fs::read(path).map_err(|_| fail("media_unreadable", json!({"stage":stage,"path":path.to_string_lossy()})));
-    let mut files = Vec::with_capacity(a.media.len());
-    for path in &a.media {
-        match read(path, "media") {
-            Ok(b) => files.push(b),
-            Err(o) => return o,
-        }
-    }
-    let mut sounds = Vec::with_capacity(a.audio.len());
-    for path in &a.audio {
-        match read(path, "audio") {
-            Ok(b) => sounds.push((path.clone(), b)),
-            Err(o) => return o,
-        }
-    }
-    if !files.is_empty()
-        && let Err(e) = viewer.bind_program_media(&a.sequence, files, a.width, a.height)
-    {
-        return fail(e.code, json!({"stage":"media","message":e.detail}));
-    }
-    match cli_audio(sounds, &CancellationToken::default()) {
-        Ok(Some((port, rate))) => {
-            let port = std::sync::Arc::new(port);
-            let extents: std::sync::Arc<dyn hsk_studio_pulse::SourceExtents + Send + Sync> = port.clone();
-            if let Err(message) = viewer.set_export_audio(SharedCliAudio(port), extents, rate) {
-                return fail("audio_port", json!({"stage":"audio","message":message}));
-            }
-        }
-        Ok(None) => {}
-        Err((code, detail)) => return fail(&code, detail),
+    if let Err(o) = bind_cli_media(&mut viewer, "export-sequence", &a.sequence, &a.media, &a.audio, a.width, a.height) {
+        return o;
     }
     let mut request = ExportSequenceRequest::new(&a.preset, output);
     request.in_tick = a.in_tick;
@@ -1365,6 +1329,113 @@ fn execute_export_sequence(package: &Path, a: &SequenceExport) -> CliOutput {
         Err(e) if e.code == "audio_sources_missing" => fail(e.code, json!({"stage":"export","message":e.detail,"hint":"pass the clip's sound file with --audio FILE"})),
         Err(e) => fail(e.code, json!({"stage":"export","message":e.detail})),
     }
+}
+
+/// Reads and binds the `--media` and `--audio` files of `export-sequence` and `deliver` (lane SMB-DELIVERY-QUEUE-1:
+/// one implementation, `export-sequence`'s order and refusals): the audio count, every size before any read, the
+/// reads, the media on the program monitor of `sequence` at `width` x `height`, the audio as the sound port.
+#[cfg(feature = "media")]
+#[allow(clippy::too_many_arguments)]
+fn bind_cli_media(viewer: &mut crate::view::Viewer, command: &str, sequence: &str, media: &[PathBuf], audio: &[PathBuf], width: u32, height: u32) -> Result<(), CliOutput> {
+    let fail = |error: &str, detail: Value| out(1, &json!({"schema":crate::SCHEMA,"command":command,"ok":false,"verdict":"fail","error":error,"detail":detail}));
+    if audio.len() > MAX_EXPORT_AUDIO_FILES {
+        return Err(fail("audio_too_many", json!({"stage":"audio","count":audio.len(),"limit":MAX_EXPORT_AUDIO_FILES})));
+    }
+    // Sizes first, every file, before reading any (the total bound and the per-item limit: reel's for media, the
+    // viewer audio import's `max_file_bytes` for audio, R46 F-R46-7).
+    let audio_file_bytes = crate::view::audio_import::ImportLimits::default().max_file_bytes;
+    let mut total = 0u64;
+    for (path, stage) in media.iter().map(|p| (p, "media")).chain(audio.iter().map(|p| (p, "audio"))) {
+        let item_limit = if stage == "audio" { audio_file_bytes } else { crate::view::media::MAX_MEDIA_BYTES as u64 };
+        match std::fs::metadata(path) {
+            Ok(m) if m.len() <= item_limit => {
+                total = total.saturating_add(m.len());
+                if total > MAX_EXPORT_INPUT_BYTES {
+                    return Err(fail("media_too_large", json!({"stage":stage,"path":path.to_string_lossy(),"total_limit":MAX_EXPORT_INPUT_BYTES})));
+                }
+            }
+            Ok(_) => return Err(fail("media_too_large", json!({"stage":stage,"path":path.to_string_lossy(),"limit":item_limit}))),
+            Err(_) => return Err(fail("media_unreadable", json!({"stage":stage,"path":path.to_string_lossy()}))),
+        }
+    }
+    let read = |path: &PathBuf, stage: &str| std::fs::read(path).map_err(|_| fail("media_unreadable", json!({"stage":stage,"path":path.to_string_lossy()})));
+    let mut files = Vec::with_capacity(media.len());
+    for path in media {
+        match read(path, "media") {
+            Ok(b) => files.push(b),
+            Err(o) => return Err(o),
+        }
+    }
+    let mut sounds = Vec::with_capacity(audio.len());
+    for path in audio {
+        match read(path, "audio") {
+            Ok(b) => sounds.push((path.clone(), b)),
+            Err(o) => return Err(o),
+        }
+    }
+    if !files.is_empty()
+        && let Err(e) = viewer.bind_program_media(sequence, files, width, height)
+    {
+        return Err(fail(e.code, json!({"stage":"media","message":e.detail})));
+    }
+    match cli_audio(sounds, &CancellationToken::default()) {
+        Ok(Some((port, rate))) => {
+            let port = std::sync::Arc::new(port);
+            let extents: std::sync::Arc<dyn hsk_studio_pulse::SourceExtents + Send + Sync> = port.clone();
+            if let Err(message) = viewer.set_export_audio(SharedCliAudio(port), extents, rate) {
+                return Err(fail("audio_port", json!({"stage":"audio","message":message})));
+            }
+        }
+        Ok(None) => {}
+        Err((code, detail)) => return Err(fail(&code, detail)),
+    }
+    Ok(())
+}
+
+/// `deliver PACKAGE --item JSON... [--media FILE]... [--audio FILE]... [--width W --height H]` (lane
+/// SMB-DELIVERY-QUEUE-1; STU-VID-064, STU-IO-164): opens the package headlessly like the viewer, binds the media
+/// and audio as `export-sequence` does (on the program monitor of the first sequence item's sequence), queues each
+/// item through `Viewer::delivery_add` (the `delivery.add` row's fields as JSON) and runs `Viewer::delivery_run`.
+/// Exit 0 only when every receipt is complete. Tests: `tests/delivery_queue.rs`.
+#[cfg(feature = "media")]
+fn execute_deliver(package: &Path, items: &[String], media: &[PathBuf], audio: &[PathBuf], width: u32, height: u32) -> CliOutput {
+    use crate::view::{Viewer, render::Prefer};
+    let fail = |error: &str, detail: Value| out(1, &json!({"schema":crate::SCHEMA,"command":"deliver","ok":false,"verdict":"fail","error":error,"detail":detail}));
+    let mut viewer = Viewer::new(Prefer::Cpu);
+    if let Err(message) = viewer.open(package) {
+        return fail("open_failed", json!({"stage":"open","message":message}));
+    }
+    let mut parsed = Vec::with_capacity(items.len());
+    for (n, text) in items.iter().enumerate() {
+        match serde_json::from_str::<serde_json::Map<String, Value>>(text) {
+            Ok(m) => parsed.push(m),
+            Err(_) => return fail("item_not_json", json!({"stage":"items","item":n})),
+        }
+    }
+    let first_sequence = parsed.iter().find(|m| m.get("kind").and_then(Value::as_str) == Some("sequence")).and_then(|m| m.get("sequence_id")).and_then(Value::as_str).map(str::to_owned);
+    if !media.is_empty() && first_sequence.is_none() {
+        return fail("media_without_sequence", json!({"stage":"media","message":"--media binds the program monitor of a sequence item's sequence"}));
+    }
+    if let Err(o) = bind_cli_media(&mut viewer, "deliver", first_sequence.as_deref().unwrap_or(""), media, audio, width, height) {
+        return o;
+    }
+    for (n, m) in parsed.iter().enumerate() {
+        if let Err(r) = viewer.run_command("delivery.add", m) {
+            return fail(&r.code, json!({"stage":"items","item":n,"detail":r.detail}));
+        }
+    }
+    match viewer.run_command("delivery.run", &serde_json::Map::new()) {
+        Ok(run) => {
+            let ok = run["receipts"].as_array().is_some_and(|r| r.iter().all(|r| r["outcome"] == "complete"));
+            out(i32::from(!ok), &json!({"schema":crate::SCHEMA,"command":"deliver","ok":ok,"verdict":if ok { "pass" } else { "fail" },"receipts":run["receipts"],"counts":run["counts"]}))
+        }
+        Err(r) => fail(&r.code, json!({"stage":"run","detail":r.detail})),
+    }
+}
+
+#[cfg(not(feature = "media"))]
+fn execute_deliver(_: &Path, _: &[String], _: &[PathBuf], _: &[PathBuf], _: u32, _: u32) -> CliOutput {
+    out(1, &json!({"schema":crate::SCHEMA,"command":"deliver","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"media"}}))
 }
 
 /// [`CliAudio`] shared between the sound port and its extents.
