@@ -226,3 +226,73 @@ fn drive_edit_style_composition_sets_the_indent() {
     run(&mut v, "layout.style.edit_style", json!({"style":style,"patch":{"composition":null}})).unwrap();
     assert_eq!(x(&mut v), 0.0);
 }
+
+/// Review F1: typing or pasting at the start of paragraph P (P = 0 and P = 2) keeps P's local
+/// composition override and its span/split record on P; composition reads them.
+#[test]
+fn typing_at_a_paragraph_start_keeps_its_records() {
+    use hsk_studio_folio::{
+        GeometryUnit, Length, StoryContent, StoryParagraph, StudioCompositionSettings, StudioParagraphComposition, StudioParagraphFlow,
+        StudioSpanColumn,
+    };
+    let base = || {
+        let mut d = doc();
+        d.stories[0].content = StoryContent::Inline { text_utf8: "aa\nbb\ncc".into() };
+        d.stories[0].paragraphs = [(0, 3), (3, 6), (6, 8)].map(|(s, e)| StoryParagraph { start: s, end: e, style_ref: None, paragraph_direction: None }).to_vec();
+        d.stories[0].character_ranges[0].end = 8;
+        if let Some(f) = d.document.layers[0].text_frame.as_mut() {
+            f.bounds.height = Length { value: 100.0, unit: GeometryUnit::Pt };
+        }
+        let indent = |v: f64| StudioCompositionSettings { left_indent: Some(Length { value: v, unit: GeometryUnit::Pt }), ..Default::default() };
+        for (start, v) in [(0, 12.0), (6, 30.0)] {
+            d.styles.paragraph_composition.push(StudioParagraphComposition { text_id: id("STXT", 1), paragraph_start: start, settings: indent(v) });
+        }
+        let len0 = Length { value: 0.0, unit: GeometryUnit::Pt };
+        d.flow.paragraph_flows.push(StudioParagraphFlow {
+            story_id: id("STXT", 1),
+            paragraph_start: 6,
+            span_column: StudioSpanColumn::SingleColumn,
+            span_count: None,
+            span_column_count: 1,
+            split_column_count: 2,
+            space_before: len0.clone(),
+            space_after: len0.clone(),
+            inside_gutter: len0.clone(),
+            outside_gutter: len0,
+        });
+        LayoutEditor::new(d)
+    };
+    let keys = |ed: &LayoutEditor| {
+        let d = ed.doc();
+        (d.styles.paragraph_composition.iter().map(|c| c.paragraph_start).collect::<Vec<_>>(), d.flow.paragraph_flows.iter().map(|p| p.paragraph_start).collect::<Vec<_>>())
+    };
+    let xs = |ed: &mut LayoutEditor| ed.compose(&id("STXT", 1)).unwrap().frames[0].lines.iter().map(|l| (l.source.start, l.x_start_pt)).collect::<Vec<_>>();
+    for (at, text, want_keys, want_lines) in [
+        (0, "x", (vec![0, 7], vec![7]), vec![(0, 12.0), (4, 0.0), (7, 30.0)]),
+        (6, "x", (vec![0, 6], vec![6]), vec![(0, 12.0), (3, 0.0), (6, 30.0)]),
+        (0, "xy\nz", (vec![3, 10], vec![10]), vec![(0, 0.0), (3, 12.0), (7, 0.0), (10, 30.0)]),
+        (6, "xy\nz", (vec![0, 9], vec![9]), vec![(0, 12.0), (3, 0.0), (6, 0.0), (9, 30.0)]),
+    ] {
+        let mut ed = base();
+        ed.apply(LayoutEdit::ReplaceText { story: id("STXT", 1), start: at, end: at, text: text.into() }).unwrap();
+        assert_eq!(keys(&ed), want_keys, "{text:?} at {at}");
+        assert_eq!(xs(&mut ed), want_lines, "{text:?} at {at}");
+    }
+}
+
+/// Review F6: the composition key merges only the fields the patch sets (an indent keeps the
+/// composer and hyphenation); an explicit null clears the whole record.
+#[test]
+fn style_composition_patch_merges_only_its_fields() {
+    use hsk_studio_folio::{GeometryUnit, Length, StudioCompositionScope, StudioCompositionSettings, StudioStyleComposition};
+    let mut d = doc();
+    let stored = StudioCompositionSettings { composition_scope: Some(StudioCompositionScope::EveryLine), hyphenation: Some(true), word_spacing_minimum: Some(80.0), ..Default::default() };
+    d.styles.style_composition.push(StudioStyleComposition { style_id: id("STYS", 1), settings: stored.clone() });
+    let mut ed = LayoutEditor::new(d);
+    let left = StudioCompositionSettings { left_indent: Some(Length { value: 12.0, unit: GeometryUnit::Pt }), ..Default::default() };
+    let patch = StylePatch { composition: Some(Some(Box::new(left.clone()))), ..StylePatch::default() };
+    ed.apply(se(StyleEdit::EditStyle { style: id("STYS", 1), patch })).unwrap();
+    assert_eq!(ed.doc().styles.style_composition(&id("STYS", 1)), Some(&stored.overlaid(&left)));
+    ed.apply(se(StyleEdit::EditStyle { style: id("STYS", 1), patch: StylePatch { composition: Some(None), ..StylePatch::default() } })).unwrap();
+    assert!(ed.doc().styles.style_composition.is_empty());
+}
