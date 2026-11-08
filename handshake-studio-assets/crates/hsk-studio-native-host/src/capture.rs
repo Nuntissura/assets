@@ -190,6 +190,9 @@ pub fn ui_pass_json(stats: &hsk_studio_vulkan::UiStats, features: &[&str], parit
         ("image_textures", n(s.image_textures)),
         ("image_uploads", n(s.image_uploads)),
         ("image_upload_bytes", n(s.image_upload_bytes)),
+        ("upload_submits", n(s.upload_submits)),
+        ("alloc_refusals", n(s.alloc_refusals)),
+        ("invalidations", n(s.invalidations)),
         ("alloc_bytes", Json::obj(vec![("pages", n(s.page_bytes)), ("images", n(s.image_bytes)), ("instances", n(s.instance_bytes)), ("staging", n(s.staging_bytes))])),
         (
             "skipped",
@@ -197,6 +200,7 @@ pub fn ui_pass_json(stats: &hsk_studio_vulkan::UiStats, features: &[&str], parit
                 ("glyph_refusals", n(s.glyph_refusals)),
                 ("missing_resources", n(s.missing_resources)),
                 ("image_over_limit", n(s.image_over_limit)),
+                ("icon_over_limit", n(s.icon_over_limit)),
                 ("non_finite", n(s.skipped_non_finite)),
                 ("scissor_underflow", n(s.scissor_underflow)),
             ]),
@@ -250,6 +254,8 @@ pub fn validation_json() -> Json {
         ("warnings", Json::Num(v.warnings)),
         ("loader_warnings", Json::Num(v.loader_warnings)),
         ("first", Json::Arr(first)),
+        // Expected loader notes (id and the loader's text, bounded): the layer names this process disabled.
+        ("loader", Json::Arr(v.loader.iter().map(|l| Json::obj(vec![("id", Json::str(&l.name)), ("text", Json::str(&l.text))])).collect())),
     ])
 }
 

@@ -146,9 +146,7 @@ pub(crate) fn classify(severity: vk::DebugUtilsMessageSeverityFlagsEXT, types: v
     }
     let general_only =
         !types.intersects(vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE);
-    // RED (F1): the old rule, every general-only warning is a loader note.
-    let _ = (name, text);
-    if general_only { MessageClass::Loader } else { MessageClass::Warning }
+    if general_only && is_expected_loader_note(name, text) { MessageClass::Loader } else { MessageClass::Warning }
 }
 
 /// Message ids kept per process.

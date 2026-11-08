@@ -145,7 +145,8 @@ fn spine_frame_on_the_ui_pass_matches_the_cpu_painter_at_four_scales() {
             let want = cpu.canvas.unwrap().rgba().to_vec();
             let (max, n, outside) = gui::parity(&want, &got, SIZE.0, pass.trace());
             report.push(format!("{milli}/{round}: max {max} differing {n} outside_aa {outside}"));
-            assert!(max <= 1, "{milli} round {round}: max {max} ({n} px)");
+            // Review F6: measured 0 at every scale; the bound is the measurement.
+            assert_eq!(max, 0, "{milli} round {round}: max {max} ({n} px)");
             assert_eq!(outside, 0, "{milli} round {round}: pixels outside the AA rects differ");
         }
     }
@@ -194,7 +195,7 @@ fn vulkan_offscreen_equals_the_quiet_window_and_two_runs_agree() {
     assert_eq!(ui.get("naga").map(Json::render), Some(r#""27.0.3""#.into()));
     assert!(ui.get("features").map(Json::render).is_some_and(|f| f.contains("dynamicRendering")), "{}", ui.render());
     assert!(num(ui, &["passes"]) >= 1 && num(ui, &["instances"]) > 0 && num(ui, &["glyph_uploads"]) > 0, "{}", ui.render());
-    assert!(num(ui, &["parity", "max"]) <= 1 && num(ui, &["parity", "outside_aa_max"]) == 0, "{}", ui.render());
+    assert!(num(ui, &["parity", "max"]) == 0 && num(ui, &["parity", "outside_aa_max"]) == 0, "{}", ui.render());
     let win = window::run(&WindowArgs {
         width: SIZE.0,
         height: SIZE.1,

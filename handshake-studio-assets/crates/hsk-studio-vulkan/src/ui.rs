@@ -288,6 +288,15 @@ impl Recorder {
     pub fn limits(&self) -> UiLimits {
         self.limits
     }
+    /// Forgets every resident entry (both pages reset, icon bytes dropped): the next plan uploads everything it uses.
+    /// After a refused draw no entry may count as resident without its upload (review F2).
+    pub fn invalidate(&mut self) {
+        self.glyphs.reset();
+        self.icons.reset();
+        self.icon_bytes.clear();
+        self.glyph_fresh = true;
+        self.icon_fresh = true;
+    }
     pub fn glyph_atlas(&self) -> &Atlas<GlyphKey> {
         &self.glyphs
     }
@@ -350,15 +359,13 @@ impl Recorder {
                 Ok(plan)
             }
             Err(e) => {
-                if matches!(e, Stop::Again) {
-                    // Entries placed in the abandoned attempt were never uploaded.
-                    for k in a.new_icons {
-                        self.icons.remove(&k);
-                        self.icon_bytes.remove(&k);
-                    }
-                    for k in a.new_glyphs {
-                        self.glyphs.remove(&k);
-                    }
+                // Entries placed in the abandoned (restarted or refused) attempt were never uploaded (review F2).
+                for k in a.new_icons {
+                    self.icons.remove(&k);
+                    self.icon_bytes.remove(&k);
+                }
+                for k in a.new_glyphs {
+                    self.glyphs.remove(&k);
                 }
                 Err(e)
             }
@@ -466,6 +473,12 @@ impl Recorder {
                             a.trace("icon", p, "icon", 0);
                             continue;
                         };
+                        if mask.width > self.icons.max_side() || mask.height > self.icons.max_side() {
+                            // Larger than the page can ever be: this icon alone is refused (review F4).
+                            a.plan.stats.icon_over_limit = a.plan.stats.icon_over_limit.saturating_add(1);
+                            a.trace("icon", p, "icon", 0);
+                            continue;
+                        }
                         let (mw, mh) = (i32::try_from(mask.width).unwrap_or(i32::MAX), i32::try_from(mask.height).unwrap_or(i32::MAX));
                         let r = IRect { x0: p.x0, y0: p.y0, x1: p.x0.saturating_add(mw), y1: p.y0.saturating_add(mh) }.intersect(&clip);
                         let mut n = 0;
@@ -493,7 +506,13 @@ impl Recorder {
                             continue;
                         }
                         let known = a.plan.images.contains(image);
-                        if img.width > a.limits.max_image_side || img.height > a.limits.max_image_side || (!known && a.plan.images.len() >= MAX_FRAME_IMAGES) {
+                        let pixels = u64::from(img.width).saturating_mul(u64::from(img.height));
+                        if img.width > a.limits.max_image_side
+                            || img.height > a.limits.max_image_side
+                            || pixels > a.limits.max_image_pixels
+                            || need > a.limits.staging_cap_bytes
+                            || (!known && a.plan.images.len() >= MAX_FRAME_IMAGES)
+                        {
                             a.plan.stats.image_over_limit = a.plan.stats.image_over_limit.saturating_add(1);
                             a.trace("image", p, "image", 0);
                             continue;
@@ -620,6 +639,11 @@ impl Recorder {
             }
             bbox = Some(bbox.map_or(full, |b| IRect { x0: b.x0.min(full.x0), y0: b.y0.min(full.y0), x1: b.x1.max(full.x1), y1: b.y1.max(full.y1) }));
             let (w, h) = (mask.width, mask.height);
+            if w > self.glyphs.max_side() || h > self.glyphs.max_side() {
+                // Larger than the page can ever be: this glyph alone is refused, no reset, no pass break (F4).
+                a.plan.stats.glyph_refusals = a.plan.stats.glyph_refusals.saturating_add(1);
+                continue;
+            }
             let slot = match self.glyphs.place(key, w, h) {
                 Placed::Resident(slot) => slot,
                 Placed::New(slot) => {
@@ -872,14 +896,20 @@ enum Target {
     Image(ImageId),
 }
 
-/// Appends `bytes` to the staging blob at a 4-byte aligned offset (texel-size aligned for R8, R8G8 and RGBA8).
-fn stage(blob: &mut Vec<u8>, bytes: &[u8]) -> u64 {
-    while !blob.len().is_multiple_of(4) {
-        blob.push(0);
-    }
+/// Appends `bytes` to the staging blob at a 4-byte aligned offset (texel-size aligned for R8, R8G8 and RGBA8). The
+/// reservation is fallible: a failed one is `out_of_memory`, never an abort (review F3).
+fn stage(blob: &mut Vec<u8>, bytes: &[u8]) -> Result<u64, Refusal> {
+    let pad = blob.len().next_multiple_of(4) - blob.len();
+    blob.try_reserve(pad.saturating_add(bytes.len())).map_err(|_| Refusal::OutOfMemory)?;
+    blob.resize(blob.len() + pad, 0);
     let at = blob.len() as u64;
     blob.extend_from_slice(bytes);
-    at
+    Ok(at)
+}
+
+/// Bytes `bytes` adds to `blob` with its alignment.
+fn staged_len(blob: &[u8], bytes: &[u8]) -> usize {
+    blob.len().next_multiple_of(4).saturating_add(bytes.len())
 }
 
 const VS: &[u8] = include_bytes!("../shaders/ui.vs_main.spv");
@@ -909,6 +939,8 @@ pub struct UiPass {
     stats: UiStats,
     trace: Vec<TraceRecord>,
     trace_on: bool,
+    /// The largest render target: min(maxFramebufferWidth/Height, maxViewportDimensions) (review F5).
+    max_target: (u32, u32),
 }
 
 fn shader(core: &Core, bytes: &[u8]) -> Result<vk::ShaderModule, Refusal> {
@@ -940,6 +972,8 @@ impl UiPass {
             return Err(Refusal::FormatUnsupported);
         }
         let limits = UiLimits { max_image_side: limits.max_image_side.min(props.limits.max_image_dimension2_d), ..limits };
+        let l = &props.limits;
+        let max_target = (l.max_framebuffer_width.min(l.max_viewport_dimensions[0]), l.max_framebuffer_height.min(l.max_viewport_dimensions[1]));
         let mut pass = Self {
             core,
             generation: owner.lease().generation,
@@ -957,6 +991,7 @@ impl UiPass {
             stats: UiStats::default(),
             trace: Vec::new(),
             trace_on: false,
+            max_target,
         };
         // On failure, Drop destroys whatever was created.
         pass.build()?;
@@ -1100,12 +1135,33 @@ impl UiPass {
             return Err(r);
         }
         let (pw, ph) = owner.pane_extent(pane)?;
-        let UiFrame { clear, lists, scale, text, res } = frame;
-        let plan = self.recorder.record((pw, ph), lists, scale, text, res, self.trace_on)?;
-        let st = plan.stats;
-        for (i, pass) in plan.passes.iter().enumerate() {
-            self.run_pass(owner, pane, (pw, ph), clear, pass, i == 0, &*res)?;
+        if pw > self.max_target.0 || ph > self.max_target.1 {
+            return Err(Refusal::InvalidExtent);
         }
+        let UiFrame { clear, lists, scale, text, res } = frame;
+        let result = self.recorder.record((pw, ph), lists, scale, text, res, self.trace_on).and_then(|plan| {
+            for (i, pass) in plan.passes.iter().enumerate() {
+                self.run_pass(owner, pane, (pw, ph), clear, pass, i == 0, &*res)?;
+            }
+            Ok(plan)
+        });
+        let plan = match result {
+            Ok(plan) => plan,
+            Err(r) => {
+                // Uploads planned or recorded for this frame may not have run: nothing stays resident on their
+                // account (review F2). Image textures re-upload on their next use.
+                self.recorder.invalidate();
+                for t in self.images.values_mut() {
+                    t.bytes = Vec::new();
+                }
+                self.stats.invalidations = self.stats.invalidations.saturating_add(1);
+                if r == Refusal::OutOfMemory {
+                    self.stats.alloc_refusals = self.stats.alloc_refusals.saturating_add(1);
+                }
+                return Err(r);
+            }
+        };
+        let st = plan.stats;
         // Image textures the frame did not draw are released.
         let used: Vec<ImageId> = plan.images.clone();
         let core = Arc::clone(&self.core);
@@ -1135,6 +1191,7 @@ impl UiPass {
         s.glyph_refusals = s.glyph_refusals.saturating_add(st.glyph_refusals);
         s.missing_resources = s.missing_resources.saturating_add(st.missing_resources);
         s.image_over_limit = s.image_over_limit.saturating_add(st.image_over_limit);
+        s.icon_over_limit = s.icon_over_limit.saturating_add(st.icon_over_limit);
         s.skipped_non_finite = s.skipped_non_finite.saturating_add(st.skipped_non_finite);
         s.scissor_underflow = s.scissor_underflow.saturating_add(st.scissor_underflow);
         self.trace = plan.trace;
@@ -1153,8 +1210,12 @@ impl UiPass {
         Ok(())
     }
 
-    /// A buffer of at least `need` bytes, doubling from MIN_BUFFER; kept across frames.
-    fn buffer(core: &Core, slot: &mut Option<HostBuffer>, need: usize, usage: vk::BufferUsageFlags) -> Result<(), Refusal> {
+    /// A buffer of at least `need` bytes, doubling from MIN_BUFFER up to `cap`; kept across frames. Over the cap is
+    /// `out_of_memory` (review F3).
+    fn buffer(core: &Core, slot: &mut Option<HostBuffer>, need: usize, cap: usize, usage: vk::BufferUsageFlags) -> Result<(), Refusal> {
+        if need > cap.max(MIN_BUFFER) {
+            return Err(Refusal::OutOfMemory);
+        }
         if slot.as_ref().is_some_and(|b| b.len >= need) {
             return Ok(());
         }
@@ -1162,6 +1223,7 @@ impl UiPass {
         while len < need {
             len = len.checked_mul(2).ok_or(Refusal::OutOfMemory)?;
         }
+        let len = len.min(cap.max(MIN_BUFFER));
         if let Some(mut old) = slot.take() {
             old.destroy(core);
         }
@@ -1169,22 +1231,129 @@ impl UiPass {
         Ok(())
     }
 
+    /// Adds one upload to the staging blob; when it would pass the staging cap, the uploads so far go out first in a
+    /// waited submit. One upload larger than the cap is `out_of_memory` (review F3).
+    #[allow(clippy::too_many_arguments)]
+    fn stage_copy(&mut self, owner: &Owner, images: &[ImageId], copies: &mut Vec<Copy>, blob: &mut Vec<u8>, copy: Copy, bytes: &[u8]) -> Result<(), Refusal> {
+        let cap = self.recorder.limits().staging_cap_bytes;
+        if bytes.len() > cap {
+            return Err(Refusal::OutOfMemory);
+        }
+        if staged_len(blob, bytes) > cap {
+            self.flush(owner, images, copies, blob)?;
+        }
+        let offset = stage(blob, bytes)?;
+        copies.push(Copy { offset, ..copy });
+        Ok(())
+    }
+
+    /// Runs the staged uploads in their own waited submit and empties the blob.
+    fn flush(&mut self, owner: &Owner, images: &[ImageId], copies: &mut Vec<Copy>, blob: &mut Vec<u8>) -> Result<(), Refusal> {
+        if copies.is_empty() {
+            return Ok(());
+        }
+        let core = Arc::clone(&self.core);
+        self.write_staging(blob)?;
+        let submit = owner.submitter();
+        submit.begin(&core)?;
+        self.record_textures(&core, submit.cmd, copies, images);
+        submit.submit_wait(&core, &[], &[])?;
+        self.stats.upload_submits = self.stats.upload_submits.saturating_add(1);
+        copies.clear();
+        blob.clear();
+        Ok(())
+    }
+
+    /// Copies the blob into the staging buffer (grown up to the staging cap).
+    fn write_staging(&mut self, blob: &[u8]) -> Result<(), Refusal> {
+        if blob.is_empty() {
+            return Ok(());
+        }
+        let core = Arc::clone(&self.core);
+        let cap = self.recorder.limits().staging_cap_bytes;
+        Self::buffer(&core, &mut self.staging, blob.len(), cap, vk::BufferUsageFlags::TRANSFER_SRC)?;
+        if let Some(b) = self.staging.as_mut() {
+            b.write_at(0, blob)?;
+        }
+        Ok(())
+    }
+
+    /// Records the uploads of `copies` and leaves every page, the dummy and the pass's image textures in
+    /// SHADER_READ_ONLY_OPTIMAL.
+    fn record_textures(&mut self, core: &Core, cmd: vk::CommandBuffer, copies: &[Copy], images: &[ImageId]) {
+        let staging = self.staging.as_ref().map(|b| b.buffer).unwrap_or_default();
+        let mut targets: Vec<(Target, &mut Tex)> = Vec::new();
+        if let Some(t) = self.glyph.as_mut() {
+            targets.push((Target::Glyph, t));
+        }
+        if let Some(t) = self.icon.as_mut() {
+            targets.push((Target::Icon, t));
+        }
+        if let Some(t) = self.dummy.as_mut() {
+            targets.push((Target::Dummy, t));
+        }
+        for (id, t) in self.images.iter_mut() {
+            if images.contains(id) {
+                targets.push((Target::Image(*id), &mut t.tex));
+            }
+        }
+        for (target, tex) in targets {
+            let mine: Vec<&Copy> = copies.iter().filter(|c| c.target == target).collect();
+            if mine.is_empty() && tex.layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL {
+                continue;
+            }
+            if !mine.is_empty() {
+                image_barrier(
+                    core,
+                    cmd,
+                    tex.image,
+                    tex.layout,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::AccessFlags::SHADER_READ,
+                    vk::AccessFlags::TRANSFER_WRITE,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::TRANSFER,
+                );
+                let regions: Vec<vk::BufferImageCopy> = mine
+                    .iter()
+                    .map(|c| {
+                        vk::BufferImageCopy::default()
+                            .buffer_offset(c.offset)
+                            .buffer_row_length(0)
+                            .buffer_image_height(0)
+                            .image_subresource(color_layers())
+                            .image_offset(vk::Offset3D { x: c.x as i32, y: c.y as i32, z: 0 })
+                            .image_extent(vk::Extent3D { width: c.w, height: c.h, depth: 1 })
+                    })
+                    .collect();
+                // SAFETY: recording; the staging buffer holds every region (offsets and lengths from `blob`); the
+                // image is TRANSFER_DST_OPTIMAL after the barrier; regions lie inside the image (atlas slots, image
+                // extent).
+                unsafe { core.device.cmd_copy_buffer_to_image(cmd, staging, tex.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &regions) };
+                tex.layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+            }
+            image_barrier(
+                core,
+                cmd,
+                tex.image,
+                tex.layout,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+            );
+            tex.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_pass(&mut self, owner: &mut Owner, pane: PaneId, (pw, ph): (u32, u32), clear: Rgba8, pass: &PassPlan, first: bool, res: &dyn Resources) -> Result<(), Refusal> {
         let core = Arc::clone(&self.core);
         Self::page(&core, &mut self.glyph, pass.glyph_side, vk::Format::R8_UNORM)?;
         Self::page(&core, &mut self.icon, pass.icon_side, vk::Format::R8G8_UNORM)?;
-        // Staging: page uploads, then image uploads whose bytes changed; offsets 4-aligned.
-        let mut copies: Vec<Copy> = Vec::new();
-        let mut blob: Vec<u8> = Vec::new();
-        for u in &pass.glyph_uploads {
-            let offset = stage(&mut blob, &u.bytes);
-            copies.push(Copy { target: Target::Glyph, offset, x: u.x, y: u.y, w: u.w, h: u.h });
-        }
-        for u in &pass.icon_uploads {
-            let offset = stage(&mut blob, &u.bytes);
-            copies.push(Copy { target: Target::Icon, offset, x: u.x, y: u.y, w: u.w, h: u.h });
-        }
+        // Staging: page uploads, then image uploads whose bytes changed; offsets 4-aligned. Uploads that would pass the
+        // staging cap go out first in their own waited submits (review F3).
         let mut images: Vec<ImageId> = Vec::new();
         for b in &pass.batches {
             if let Some(id) = b.image
@@ -1192,6 +1361,12 @@ impl UiPass {
             {
                 images.push(id);
             }
+        }
+        let mut copies: Vec<Copy> = Vec::new();
+        let mut blob: Vec<u8> = Vec::new();
+        let pages = pass.glyph_uploads.iter().map(|u| (Target::Glyph, u)).chain(pass.icon_uploads.iter().map(|u| (Target::Icon, u)));
+        for (target, u) in pages {
+            self.stage_copy(owner, &images, &mut copies, &mut blob, Copy { target, offset: 0, x: u.x, y: u.y, w: u.w, h: u.h }, &u.bytes)?;
         }
         for id in &images {
             let Some(img) = res.image(*id) else { continue };
@@ -1209,10 +1384,13 @@ impl UiPass {
                 }
             };
             if fresh {
-                let offset = stage(&mut blob, bytes);
-                copies.push(Copy { target: Target::Image(*id), offset, x: 0, y: 0, w: img.width, h: img.height });
+                let mut kept = Vec::new();
+                kept.try_reserve_exact(bytes.len()).map_err(|_| Refusal::OutOfMemory)?;
+                kept.extend_from_slice(bytes);
+                self.stage_copy(owner, &images, &mut copies, &mut blob, Copy { target: Target::Image(*id), offset: 0, x: 0, y: 0, w: img.width, h: img.height }, bytes)?;
+                // Kept before the submit runs: a failed pass invalidates every image's bytes (draw, review F2).
                 if let Some(t) = self.images.get_mut(id) {
-                    t.bytes = bytes.to_vec();
+                    t.bytes = kept;
                 }
                 self.stats.image_uploads = self.stats.image_uploads.saturating_add(1);
                 self.stats.image_upload_bytes = self.stats.image_upload_bytes.saturating_add(bytes.len() as u64);
@@ -1222,15 +1400,11 @@ impl UiPass {
         self.stats.glyph_upload_bytes = self.stats.glyph_upload_bytes.saturating_add(pass.glyph_uploads.iter().map(|u| u.bytes.len() as u64).sum());
         self.stats.icon_uploads = self.stats.icon_uploads.saturating_add(pass.icon_uploads.len() as u64);
         self.stats.icon_upload_bytes = self.stats.icon_upload_bytes.saturating_add(pass.icon_uploads.iter().map(|u| u.bytes.len() as u64).sum());
-        if !blob.is_empty() {
-            Self::buffer(&core, &mut self.staging, blob.len(), vk::BufferUsageFlags::TRANSFER_SRC)?;
-            if let Some(b) = self.staging.as_mut() {
-                b.write_at(0, &blob)?;
-            }
-        }
+        self.write_staging(&blob)?;
         let inst_bytes: Vec<u8> = pass.instances.iter().flat_map(instance_bytes).collect();
         if !inst_bytes.is_empty() {
-            Self::buffer(&core, &mut self.instances, inst_bytes.len(), vk::BufferUsageFlags::VERTEX_BUFFER)?;
+            let cap = self.recorder.limits().instance_cap_bytes;
+            Self::buffer(&core, &mut self.instances, inst_bytes.len(), cap, vk::BufferUsageFlags::VERTEX_BUFFER)?;
             if let Some(b) = self.instances.as_mut() {
                 b.write_at(0, &inst_bytes)?;
             }
@@ -1276,70 +1450,7 @@ impl UiPass {
         submit.begin(&core)?;
         let cmd = submit.cmd;
         // Uploads and layouts of every sampled texture.
-        let staging = self.staging.as_ref().map(|b| b.buffer).unwrap_or_default();
-        let mut targets: Vec<(Target, &mut Tex)> = Vec::new();
-        if let Some(t) = self.glyph.as_mut() {
-            targets.push((Target::Glyph, t));
-        }
-        if let Some(t) = self.icon.as_mut() {
-            targets.push((Target::Icon, t));
-        }
-        if let Some(t) = self.dummy.as_mut() {
-            targets.push((Target::Dummy, t));
-        }
-        for (id, t) in self.images.iter_mut() {
-            if images.contains(id) {
-                targets.push((Target::Image(*id), &mut t.tex));
-            }
-        }
-        for (target, tex) in targets {
-            let mine: Vec<&Copy> = copies.iter().filter(|c| c.target == target).collect();
-            if mine.is_empty() && tex.layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL {
-                continue;
-            }
-            if !mine.is_empty() {
-                image_barrier(
-                    &core,
-                    cmd,
-                    tex.image,
-                    tex.layout,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    vk::AccessFlags::SHADER_READ,
-                    vk::AccessFlags::TRANSFER_WRITE,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::TRANSFER,
-                );
-                let regions: Vec<vk::BufferImageCopy> = mine
-                    .iter()
-                    .map(|c| {
-                        vk::BufferImageCopy::default()
-                            .buffer_offset(c.offset)
-                            .buffer_row_length(0)
-                            .buffer_image_height(0)
-                            .image_subresource(color_layers())
-                            .image_offset(vk::Offset3D { x: c.x as i32, y: c.y as i32, z: 0 })
-                            .image_extent(vk::Extent3D { width: c.w, height: c.h, depth: 1 })
-                    })
-                    .collect();
-                // SAFETY: recording; the staging buffer holds every region (offsets and lengths from `blob`); the
-                // image is TRANSFER_DST_OPTIMAL after the barrier; regions lie inside the image (atlas slots, image
-                // extent).
-                unsafe { core.device.cmd_copy_buffer_to_image(cmd, staging, tex.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &regions) };
-                tex.layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-            }
-            image_barrier(
-                &core,
-                cmd,
-                tex.image,
-                tex.layout,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                vk::AccessFlags::TRANSFER_WRITE,
-                vk::AccessFlags::SHADER_READ,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-            );
-            tex.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-        }
+        self.record_textures(&core, cmd, &copies, &images);
         // The pane: from its recorded layout to COLOR_ATTACHMENT_OPTIMAL (the first pass clears, so UNDEFINED is fine).
         image_barrier(
             &core,
