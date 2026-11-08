@@ -6,7 +6,12 @@
 //! inserted text joins the range that starts at the edit). Paragraphs touched by the edit are
 //! merged and re-split after every paragraph terminator of Type's partition (`\n`, the other UAX #9
 //! class B characters and the five break sentinels, `sentinels::ends_paragraph`; typing one makes a
-//! paragraph, deleting one merges two; the first touched paragraph's style and direction win). `shift_flow_records` moves every
+//! paragraph, deleting one merges two). Ownership (lane SMB-TYPE-INDENT-SPACING-1, one rule for the
+//! paragraph attributes and the paragraph-keyed records, `owner_of`): a paragraph after the edit is
+//! owned by the first paragraph before it whose first byte maps into it, and takes that paragraph's
+//! style and direction (a merge: the first touched paragraph wins); a paragraph made only of
+//! inserted text belongs to the paragraph the edit starts (text typed or pasted at the start of
+//! paragraph P belongs to P, P = 0 included), else to the owner before it. `shift_flow_records` moves every
 //! story byte the Folio layout-flow records hold (anchors, text anchors, cross-reference ranges,
 //! conditional ranges, paragraph overrides) the same way. `shift_paragraph_records` (lane
 //! SMB-TYPE-INDENT-SPACING-1) also moves the Folio type-style local composition overrides and then
@@ -95,7 +100,7 @@ pub fn replace_story_text(
         match (first, last) {
             (Some(f), Some(l)) if i == f => {
                 let region_end = mapped[l].end;
-                let template = p.clone();
+                let mut ranges: Vec<(u64, u64)> = Vec::new();
                 // Text inserted at the first byte of a non-empty story joins the first paragraph
                 // (map_pos moves a start equal to the edit after the inserted text, which left those
                 // bytes in no paragraph; lane SMB-TYPE-INDENT-SPACING-1). An empty story keeps its
@@ -112,12 +117,24 @@ pub fn replace_story_text(
                             .and_then(|v| v.checked_add(c.len_utf8()))
                             .ok_or(LayoutError::BudgetExceeded)? as u64;
                         if cut < region_end {
-                            paragraphs.push(StoryParagraph { start: at, end: cut, ..template.clone() });
+                            ranges.push((at, cut));
                             at = cut;
                         }
                     }
                 }
-                paragraphs.push(StoryParagraph { start: at, end: region_end, ..template });
+                ranges.push((at, region_end));
+                let mut previous = f;
+                for (a, b) in ranges {
+                    let owner = (f..=l).find(|&q| holds(a, b, mapped[q].start));
+                    let t = match owner {
+                        Some(q) => {
+                            previous = q;
+                            q
+                        }
+                        None => inserted_owner(story, f, l, start, edit_end, a).unwrap_or(previous),
+                    };
+                    paragraphs.push(StoryParagraph { start: a, end: b, ..mapped[t].clone() });
+                }
             }
             (Some(f), Some(l)) if i > f && i <= l => {}
             _ => paragraphs.push(p.clone()),
@@ -203,62 +220,87 @@ pub fn shift_flow_records(
     Ok(())
 }
 
-/// [`shift_flow_records`] for an edit of `edited` (the story [`replace_story_text`] returned) plus
-/// the records keyed by a paragraph's start byte: the layout-flow paragraph overrides and the Folio
-/// type-style local composition overrides (`paragraph_composition`, lane SMB-TYPE-INDENT-SPACING-1).
-/// After the move, a record of this story naming no paragraph start of `edited` is dropped, and of
-/// records that collapse onto one start the one with the lowest original start (the first touched
-/// paragraph) is kept; other stories' records are untouched. Without this a text edit before an
-/// overridden paragraph left its override at the old byte (composition then refused it as
-/// `invalid_input`, or applied it to another paragraph that now starts there).
+/// `x` (a paragraph's mapped first byte) lies in the paragraph `[a, b)` (an empty paragraph holds
+/// its own start).
+fn holds(a: u64, b: u64, x: u64) -> bool {
+    (a <= x && x < b) || (a == b && x == a)
+}
+
+/// The paragraph of the original story (index in `f..=l`) a paragraph made only of inserted text
+/// starting at `a` belongs to: the paragraph the edit starts, when the edit starts a paragraph.
+fn inserted_owner(story: &StudioTextStory, f: usize, l: usize, start: u64, edit_end: u64, a: u64) -> Option<usize> {
+    if !(start <= a && a < edit_end) {
+        return None;
+    }
+    (f..=l).find(|&q| story.paragraphs.get(q).is_some_and(|p| p.start == start))
+}
+
+/// Per paragraph of `edited`, the index of the paragraph of `original` that owns it (module docs):
+/// the first original paragraph whose first byte, moved through the edit, lies in it.
+fn owner_of(original: &StudioTextStory, edited: &StudioTextStory, start: u64, end: u64, new_len: u64) -> Result<Vec<Option<usize>>, LayoutError> {
+    let firsts = original.paragraphs.iter().map(|p| map_pos(p.start, start, end, new_len)).collect::<Result<Vec<u64>, _>>()?;
+    Ok(edited.paragraphs.iter().map(|p| firsts.iter().position(|&x| holds(p.start, p.end, x))).collect())
+}
+
+/// [`shift_flow_records`] for one edit of `original` (`edited` is the story [`replace_story_text`]
+/// returned for it) plus the records keyed by a paragraph's start byte: the layout-flow paragraph
+/// overrides and the Folio type-style local composition overrides (`paragraph_composition`, lane
+/// SMB-TYPE-INDENT-SPACING-1). Each such record of this story follows its paragraph (the one starting
+/// at its key before the edit) to the paragraph that paragraph owns after it (module docs: the same
+/// rule that gives that paragraph its style); a record whose paragraph owns none (merged into
+/// another, or deleted) is dropped, as is one naming no paragraph start. Text typed or pasted at
+/// the start of a paragraph keeps the record on it. Other stories' records are untouched.
 pub fn shift_paragraph_records(
     flow: &mut StudioLayoutFlowRecords,
     styles: &mut StudioTypeStyleRecords,
+    original: &StudioTextStory,
     edited: &StudioTextStory,
     start: u64,
     end: u64,
     new_len: u64,
 ) -> Result<(), LayoutError> {
     let id = edited.story_id.as_str();
+    let owners = owner_of(original, edited, start, end, new_len)?;
+    // Original paragraph start -> the start of the paragraph it owns after the edit.
+    let moved = |key: u64| -> Option<u64> {
+        let i = original.paragraphs.iter().position(|p| p.start == key)?;
+        owners.iter().position(|o| *o == Some(i)).and_then(|j| edited.paragraphs.get(j)).map(|p| p.start)
+    };
     let before: Vec<u64> = flow.paragraph_flows.iter().map(|p| p.paragraph_start).collect();
     shift_flow_records(flow, id, start, end, new_len)?;
-    let starts: Vec<u64> = edited.paragraphs.iter().map(|p| p.start).collect();
-    let keep = first_per_start(flow.paragraph_flows.iter().zip(&before).map(|(p, b)| (p.story_id == id, p.paragraph_start, *b)), &starts);
+    let mut keep = Vec::with_capacity(before.len());
+    for (p, old) in flow.paragraph_flows.iter_mut().zip(&before) {
+        if p.story_id != id {
+            keep.push(true);
+            continue;
+        }
+        match moved(*old) {
+            Some(at) => {
+                p.paragraph_start = at;
+                keep.push(true);
+            }
+            None => keep.push(false),
+        }
+    }
     let mut i = 0usize;
     flow.paragraph_flows.retain(|_| {
         let k = keep.get(i).copied().unwrap_or(true);
         i = i.saturating_add(1);
         k
     });
-    let before: Vec<u64> = styles.paragraph_composition.iter().map(|c| c.paragraph_start).collect();
-    for c in styles.paragraph_composition.iter_mut().filter(|c| c.text_id == id) {
-        c.paragraph_start = map_pos(c.paragraph_start, start, end, new_len)?;
-    }
-    let keep = first_per_start(styles.paragraph_composition.iter().zip(&before).map(|(c, b)| (c.text_id == id, c.paragraph_start, *b)), &starts);
-    let mut i = 0usize;
-    styles.paragraph_composition.retain(|_| {
-        let k = keep.get(i).copied().unwrap_or(true);
-        i = i.saturating_add(1);
-        k
+    styles.paragraph_composition.retain_mut(|c| {
+        if c.text_id != id {
+            return true;
+        }
+        match moved(c.paragraph_start) {
+            Some(at) => {
+                c.paragraph_start = at;
+                true
+            }
+            None => false,
+        }
     });
     Ok(())
-}
-
-/// Which records to keep: `(of the edited story, new start, original start)` per record; a record
-/// of another story is kept; one of the edited story is kept when its new start is a paragraph
-/// start and no other record at that start has a lower original start (the earlier one on a tie).
-fn first_per_start(records: impl Iterator<Item = (bool, u64, u64)>, starts: &[u64]) -> Vec<bool> {
-    let records: Vec<(bool, u64, u64)> = records.collect();
-    let mut winner: std::collections::BTreeMap<u64, (u64, usize)> = std::collections::BTreeMap::new();
-    for (i, &(mine, at, old)) in records.iter().enumerate() {
-        if mine && starts.binary_search(&at).is_ok() {
-            let w = winner.entry(at).or_insert((old, i));
-            if old < w.0 {
-                *w = (old, i);
-            }
-        }
-    }
-    records.iter().enumerate().map(|(i, &(mine, at, _))| !mine || winner.get(&at).is_some_and(|w| w.1 == i)).collect()
 }
 
 /// The visible part of a story under the current condition visibility.

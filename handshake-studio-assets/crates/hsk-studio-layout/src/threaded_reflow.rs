@@ -18,9 +18,9 @@
 //! a baseline without a gap (still as the first line); split sub-columns narrow the same way (a
 //! sub-column left without width is `invalid_geometry`). `last_line_indent` narrows the last line
 //! from the right after breaking, with one bounded re-break when the narrowed last line does not
-//! fit (positive values, Latin paragraphs, a narrowed width that holds the line's widest box; else
-//! the breaks stand and the line is overfull); a negative value widens the last line at the set
-//! stage only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
+//! fit (positive values, Latin paragraphs outside split columns, a narrowed width that holds the
+//! line's widest box; else the breaks stand and the line is overfull; fit counts what an Adobe
+//! composer's spaces may compress); a negative value widens the last line at the set stage only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
 //! paragraph at a column top takes none (a push past the bottom lands at the next column's top);
 //! `space_between_same_style` zeroes the gap between paragraphs of one style; span and split
 //! paragraphs take the larger of the flow record's and the attribute space; a break sentinel drops
@@ -313,6 +313,25 @@ fn indented(s: Slot, left: f64, right: f64) -> Result<Option<Slot>, LayoutError>
 /// unless the attribute space is larger.
 fn larger(flow: f64, attribute: f64) -> f64 {
     if attribute > flow { attribute } else { flow }
+}
+
+/// The narrowest width line `k` of `breaks` is set in (review F3): its natural width
+/// (`natural_width`), less, for the Adobe composers, what its inner word spaces may shrink (word
+/// spacing desired minus minimum): the set stage closes such a line to its slot (`compress_line`).
+fn tightest_width(p: &ShapedParagraph, items: &[crate::paragraph::Item], breaks: &[LineBreak], k: usize, adobe: bool, jp: &crate::typeset::JustifyParams) -> f64 {
+    let natural = natural_width(p, items, breaks, k);
+    if !adobe {
+        return natural;
+    }
+    let item_start = if k == 0 { 0 } else { line_start(items, breaks[k - 1].item) };
+    let b = &breaks[k];
+    let content_end = items[item_start..b.item].iter().rev().find(|it| it.kind == crate::paragraph::Kind::Box).map_or(0, |it| it.end);
+    let spaces: f64 = items[item_start..b.item]
+        .iter()
+        .filter(|it| it.kind == crate::paragraph::Kind::Glue && !it.trailing && !it.inf_stretch && it.end <= content_end)
+        .map(|it| it.w)
+        .sum();
+    natural - spaces * (jp.word_spacing.desired - jp.word_spacing.min).max(0.0)
 }
 
 /// Natural width of line `k` of `breaks` as the set stage measures it (`compose_flow`): the glyphs
@@ -1086,7 +1105,6 @@ fn compose_flow(
         let first_left = sum(g.left_indent_pt, g.first_line_indent_pt)?;
         let gap = if styling.is_some_and(|s| s.same_style_no_space) { 0.0 } else { sum(pending_after, g.space_before_pt)? };
         pending_after = g.space_after_pt;
-        let mut gap_at = None;
         let hyph = pp.hyphenation.as_ref().map(|h| (hyphenator, h));
         let rules = pp.hyphenation.as_ref().map_or(HyphenRules::NONE, |h| HyphenRules {
             limit: h.consecutive_limit,
@@ -1126,7 +1144,6 @@ fn compose_flow(
                 // column bottom lands at the next column's top (`next_slot` resets `extra`).
                 if cursor.line > 0 && gap != 0.0 {
                     cursor.extra = sum(cursor.extra, gap)?;
-                    gap_at = Some((cursor.pos, cursor.col));
                 }
                 // Above-line anchored objects push the paragraph down (anchors module); a push that
                 // falls into the next column or frame is re-applied at that column's top.
@@ -1319,7 +1336,7 @@ fn compose_flow(
                     && !b[l].overfull
                 {
                     let narrowed = sum(slots[l].width_pt, -g.last_line_indent_pt)?;
-                    if narrowed > EPS && natural_width(p, &items, &b, l) > narrowed + EPS && widest_box(&items, &b, l) <= narrowed + EPS {
+                    if narrowed > EPS && tightest_width(p, &items, &b, l, adobe, &jp) > narrowed + EPS && widest_box(&items, &b, l) <= narrowed + EPS {
                         let width = |line: usize| if line == l { narrowed } else { width(line) };
                         b = break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?;
                     }
@@ -1336,7 +1353,7 @@ fn compose_flow(
         {
             let w = sum(slots[l].width_pt, -g.last_line_indent_pt)?;
             slots[l].width_pt = w;
-            last_overfull = g.last_line_indent_pt > 0.0 && cjk_items.is_none() && natural_width(p, &items, &breaks, l) > w + EPS;
+            last_overfull = g.last_line_indent_pt > 0.0 && cjk_items.is_none() && tightest_width(p, &items, &breaks, l, adobe, &jp) > w + EPS;
         }
         // Width the indents take from each line's slot (auto-size).
         let line_indent = |k: usize| -> Result<f64, LayoutError> {
@@ -1566,10 +1583,9 @@ fn compose_flow(
         let single = flow == ParaFlow::Single;
         for (k, (((pos, line, gaps), flush), indent)) in lines_here.into_iter().zip(flush_here).zip(indent_here).enumerate() {
             let index = frames[pos].len();
-            let gap = match gap_at {
-                Some(at) if k == 0 && at == (pos, line.column) => gap,
-                _ => 0.0,
-            };
+            // The paragraph's gap rides on its first line wherever it landed: balancing adds it back
+            // when that line no longer opens a column (review F2) and drops it at a column's top.
+            let gap = if k == 0 { gap } else { 0.0 };
             facts.flush.extend(flush.into_iter().map(|(story_byte, absorbed_pt)| FlushOutcome { story_byte, frame: pos, line: index, absorbed_pt }));
             frames[pos].push(line);
             indents[pos].push(indent);

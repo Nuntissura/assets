@@ -95,7 +95,8 @@ pub(crate) fn transform_change(
         let repl = h.replacement.as_deref().unwrap_or_default();
         let st = d.stories.iter().find(|s| s.story_id == h.story).ok_or_else(|| LayoutUiError::UnknownStory(h.story.clone()))?;
         let edited = replace_story_text(st, None, h.start, h.end, repl)?;
-        shift_paragraph_records(&mut d.flow, &mut d.styles, &edited, h.start, h.end, repl.len() as u64)?;
+        let original = st.clone();
+        shift_paragraph_records(&mut d.flow, &mut d.styles, &original, &edited, h.start, h.end, repl.len() as u64)?;
         if let Some(slot) = d.stories.iter_mut().find(|s| s.story_id == h.story) {
             *slot = edited;
         }
