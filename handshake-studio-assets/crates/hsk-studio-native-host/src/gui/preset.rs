@@ -97,6 +97,16 @@ pub const LEFT: [PanelEntry; 6] = [
     p("actions-macros", "Actions & Macros", "actions"),
 ];
 
+/// The Browse Dock's one group when FIT-L1 expands it: the left panels as tabs (panel id, display name).
+pub const LEFT_TABS: [(&str, &str); 6] = [
+    ("brushes", "Brushes"),
+    ("preset-library", "Preset Library"),
+    ("library", "Library"),
+    ("project-bin", "Project Bin"),
+    ("effects-browser", "Effects Browser"),
+    ("actions-macros", "Actions & Macros"),
+];
+
 /// presets.raster.bottom (state rail): the Time & Results Dock's panels (Jobs and Problems are shell panes).
 pub const BOTTOM: [PanelEntry; 5] = [
     p("keyframe-timeline", "Keyframe Timeline", "diamond"),

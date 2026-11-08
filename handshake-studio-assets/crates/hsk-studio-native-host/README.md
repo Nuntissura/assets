@@ -53,11 +53,21 @@ The command table (every interactive author_id has one entry; `--invoke` and a p
 | Control | Outcome | Effect |
 |---|---|---|
 | `studio.toolgroup.<group>` (19 rail slots, kebab case) | `frame.tool_pick ok` | that slot becomes active; `studio.tool.active` and the identity chip follow (no Viewer tool yet: B11) |
-| `studio.tab.<panel>` of an Inspect Dock group | `frame.tab_select ok` | that tab becomes its group's active tab; the body shows its empty state; the active tab is inert |
+| `studio.tab.<panel>` of a dock group (Inspect Dock; the Browse Dock under FIT-L1) | `frame.tab_select ok` | that tab becomes its group's active tab; the body shows its empty state; the active tab is inert |
+| `studio.group.<g>.more` (+N) and its rows `studio.group.<g>.more.<panel>` | `frame.overflow ok`, then `frame.tab_select ok` | +N opens the list of the group's hidden tabs in place of the body; a row makes that tab active and closes the list |
 | Layers rows, eyes, blank list space, Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | `viewer.select`, `layer.set_visible`, `history.undo`, `history.redo` | as the spine built them (one named undo step per eye) |
-| every other control: `menu.<title>` (19), `shell.module-switch`, `shell.menu-bar.more`, `studio.tab.document`, `studio.tab.document.close`, `studio.tab.new`, `studio.search`, `studio.layout-preset.dropdown`, `studio.layout.panel-menu`, `studio.options.identity`, `studio.options.preset`, `studio.panel.tools.more`, `studio.tool.family-browse`, `studio.colour.proxy`, `studio.rail.left.<panel>`, `studio.rail.left.expand`, `studio.rail.bottom.<panel>`, `studio.rail.bottom.expand`, `studio.group.<g>.disclosure`, `.more`, `.menu` | `frame.static not_implemented_yet` | none: the control is disabled with the reason (build-order B6); its node value starts with `not_implemented_yet` so a model reads it before clicking; the status bar and the receipt carry the code; no popup, no focus move, no Viewer call |
+| every other control: `menu.<title>` (19), `shell.module-switch`, `shell.menu-bar.more`, `studio.presence.operator`, `studio.tab.document`, `studio.tab.document.close`, `studio.tab.new`, `studio.search`, `studio.layout-preset.dropdown`, `studio.layout.panel-menu`, `studio.options.identity`, `studio.options.preset`, `studio.panel.tools.more`, `studio.tool.family-browse`, `studio.colour.proxy`, `studio.rail.left.<panel>`, `studio.rail.left.expand`, `studio.rail.right.*`, `studio.rail.bottom.<panel>`, `studio.rail.bottom.expand`, `studio.group.<g>.disclosure`, `.menu` | `frame.static not_implemented_yet` | none: the control keeps its normal look (lead correction 2026-11-08: B6's greyed items are menus) and carries availability as data, its node value starting with `not_implemented_yet`; a click shows `<name>: not built in this host yet` in the status bar (the readout's value and the receipt carry the code); no popup, no Viewer call |
 | an id outside the table | `unknown_author_id` | a typed refusal for `--invoke` (exit 2), a status-bar code for a pointer release |
 
+- The docks are Regions (`studio.dock.left`, `studio.dock.right`, `studio.dock.bottom`); collapsed, each holds an icon
+  rail (`studio.rail.left`, `studio.rail.right`, `studio.rail.bottom`, Toolbar). Under FIT-L1 (logical width 2400 and
+  up) the Browse Dock opens at 260 as one group of its six panels. The rail chevron's value lists the hidden slots'
+  author ids, which stay invocable. Page Up/Down, Home and End scroll the Layers list only while Layers is shown.
+- The status bar: the hintline (the active tool's name, then the last outcome in words) at the left; size, zoom,
+  revision, the renderer state (`studio.status.chrome`) and the device at the right. Under FIT-S1 the readouts drop in
+  the order device, renderer, revision, size, zoom until the outcome fits whole and the hintline keeps 320; a dropped
+  readout keeps its node (no box). The rulers carry labels at every major tick; the vertical ruler's are rotated to
+  read bottom to top (rasterised by `Text::rotated_label` and drawn as icons of their own id range).
 - Observability nodes (unpainted, the last two tree roots): `studio.dock.state` (STU-MDL-106) holds one JSON value
   with fit_table's keys in its order (`window, scale, logical, left, left_state, right, right_state, meter, bottom,
   bottom_state, centre, right_group_heights, rail_pitch, rail_overflow_slots, applied`) plus `groups` and
@@ -67,7 +77,7 @@ The command table (every interactive author_id has one entry; `--invoke` and a p
   the last frame (`prims`, `glyphs`, `glyph_refusals`, `missing_resources`: both must be 0). Notes gain
   `below_min_size` when the logical client is under 1024 x 640 (rects then clamp at zero size; the partition holds).
 - `--tree T.json` writes `{"schema":"hsk.studio.native_host.tree@1","revision":N,"tree":{kumihimo.ui.tree@1}}` with
-  every panel's roots in paint order: `shell.menu-bar`, `studio.tab-strip`, `studio.options`, `studio.panel.tools`,
+  every panel's roots in paint order: `shell.menu-bar`, `studio.tabstrip`, `studio.options`, `studio.panel.tools`,
   `studio.dock.left`, `studio.viewer.canvas`, `studio.dock.right`, `studio.dock.bottom`, `studio.status`,
   `studio.dock.state`, `studio.tool.active`.
 - The Operator's own window (`window --scene gui --document <file>`) has a minimum client size of 1024 x 640 logical
@@ -90,11 +100,12 @@ Recorded deviations: STU-SHL-110 steps SHL-P-01, SHL-P-08 and SHL-P-10 have not 
 menu before SHL-P-08, so the 19 menu titles are a static stand-in of the closed list and the docks are fixed;
 STU-SHL-004 gives the menu bar to the shell, so here the bar is a host stand-in and the OS frame owns the window
 buttons. Known differences from the mock (not defects of this slice): canvas content and zoom (rulers at 100 %, the
-mock at 20 %; no fit to window, B11); no vertical ruler labels (no rotated text); Context Bar zone controls (B7, B12);
+mock at 20 %; no fit to window, B11); Context Bar zone controls (B7, B12);
 Properties and Colour bodies empty and the Layers group without blend, opacity, lock, the action bar, thumbnails and
 tag colours (B10); no L1 tooltip (B6); no model presence chip; this host's status readouts; +N counts measured with
-Inter; weight 600 drawn with Inter Bold 700 (no 500 or 600 face in the fixtures); disabled controls look disabled
-(B6 ruling) where the mock draws them enabled. Known gaps: the Vulkan UI pass (shaders, glyph and icon atlases),
+Inter; weight 600 drawn with Inter Bold 700 (no 500 or 600 face in the fixtures); ruler numbers in caption without tabular
+figures (no caption tnum token); layer thumbnails are the checker only (named cut D-F9: harness-view exposes no
+per-layer pixels cheaply); no window buttons (D-F8: the OS frame provides them). Known gaps: the Vulkan UI pass (shaders, glyph and icon atlases),
 menus opening, docking and splitters, rename, reorder, lock, opacity and thumbnails, canvas zoom and pan, AccessKit
 (the tree file is the model path), a real device loss (only a fake pane sink proves the typed exit 3).
 

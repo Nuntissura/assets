@@ -387,11 +387,12 @@ fn idle_minimise_resize_and_scale() {
 #[test]
 fn wheel_scrolls_the_list_and_the_scrollbar_shows() {
     let s = Scratch::new("wheel");
-    // 324 high: the Properties and Colour groups collapse to their headers and the Layers body is 100 px (FIT-H2).
+    // 324 high: the Properties and Colour groups collapse to their headers and the Layers body is 99 px (FIT-H2; the
+    // Layers header starts 1 px under its group seam, D-F11).
     let mut f = open(&s.0, 800, 324, Some(1000));
-    assert_eq!(f.regions().body.h(), 100.0);
+    assert_eq!(f.regions().body.h(), 99.0);
     assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 1-4 of 4"));
-    assert!(f.node(SCROLL_ID).is_some(), "100 px body, 4 rows of 32: overflow");
+    assert!(f.node(SCROLL_ID).is_some(), "99 px body, 4 rows of 32: overflow");
     let (x, y) = f.centre(VIEWER_ID).unwrap();
     run(&mut f, &[Step::Event(HostEvent::PointerMoved { x, y }), Step::Event(HostEvent::Wheel { x: 0, y: -1000, pixels: false })]);
     assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 1-4 of 4"), "wheel over the Viewport");

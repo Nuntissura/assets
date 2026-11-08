@@ -34,6 +34,8 @@ use kumihimo_ui::semantic::{Semantic, semantic};
 use kumihimo_ui::text::{BoxText, MAX_LABEL_BYTES, Text, TextStats};
 use kumihimo_ui::tokens::{ColorToken, State, StyleKind, TextToken, Theme, size, state_style};
 use kumihimo_ui::tree::{BuildError, Interaction, Node, Panel, Tree};
+use kumihimo_ui::text::ruler_label_value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub mod chrome;
@@ -84,12 +86,14 @@ pub struct Regions {
 fn regions_of(l: &frame::FrameLayout) -> Regions {
     let g = l.groups.last().copied().unwrap_or_else(|| Rect::new(l.right.x0, l.right.y0, l.right.x0, l.right.y0));
     let collapsed = l.collapsed.last().copied().unwrap_or(true);
-    let hy = (g.y0 + size::DOCK_GROUP_HEADER_H).min(g.y1);
+    // Every group but the top one leads with 1 px under its seam (D-F11).
+    let top = (g.y0 + if l.groups.len() > 1 { 1.0 } else { 0.0 }).min(g.y1);
+    let hy = (top + size::DOCK_GROUP_HEADER_H).min(g.y1);
     Regions {
         window: l.window,
         viewport: l.centre,
         dock: l.right,
-        header: Rect::new(g.x0, g.y0, g.x1, hy),
+        header: Rect::new(g.x0, top, g.x1, hy),
         body: if collapsed { Rect::new(g.x0, hy, g.x1, hy) } else { Rect::new(g.x0, hy, g.x1, g.y1) },
         status: l.status,
     }
@@ -202,9 +206,14 @@ struct DocImage {
 struct Res<'a> {
     icons: &'a mut IconSet,
     image: Option<&'a DocImage>,
+    /// Rotated ruler labels, rasterised with the frame's Text before the draw (the target holds the Text).
+    labels: &'a HashMap<(IconId, u32), IconMask>,
 }
 impl Resources for Res<'_> {
     fn icon(&mut self, icon: IconId, px: u32) -> Option<IconMask> {
+        if ruler_label_value(icon).is_some() {
+            return self.labels.get(&(icon, px)).cloned();
+        }
         self.icons.icon(icon, px)
     }
     fn image(&self, image: ImageId) -> Option<ImageRef<'_>> {
@@ -253,8 +262,15 @@ pub struct GuiFrame {
     render_code: Option<&'static str>,
     /// The active rail slot (index into [`preset::RAIL`]) and each group's active tab.
     tool: usize,
-    tabs: [usize; 3],
+    /// Each dock group's active tab: the three Inspect Dock groups, then the Browse Dock's one group (FIT-L1).
+    tabs: [usize; GROUPS],
     focus_group: usize,
+    /// The dock group whose +N list is open (D-F4).
+    open_more: Option<usize>,
+    /// The label of the control the last `frame.static` answered for (the status bar says it in words).
+    last_label: Option<String>,
+    /// Rotated ruler labels by (icon, px), kept for the draw.
+    labels: HashMap<(IconId, u32), IconMask>,
     first_row: usize,
     /// Wheel travel below one row, thousandths of a row (cleared when the pointer leaves).
     wheel_rest: i64,
@@ -344,7 +360,7 @@ struct Fits {
     tab_w: f32,
     tab_name: String,
     groups: Vec<fit::TabFit>,
-    device_w: f32,
+    status_shown: [bool; 5],
 }
 
 impl GuiFrame {
@@ -382,8 +398,11 @@ impl GuiFrame {
             backend: "none",
             render_code: None,
             tool: 0,
-            tabs: [0; 3],
+            tabs: [0; GROUPS],
             focus_group: 0,
+            open_more: None,
+            last_label: None,
+            labels: HashMap::new(),
             first_row: 0,
             wheel_rest: 0,
             pointer: None,
@@ -550,7 +569,7 @@ impl GuiFrame {
     }
     /// The active tab's panel id of group `group_id` (`studio.group.<first panel>`).
     pub fn active_tab(&self, group_id: &str) -> Option<&str> {
-        preset::RIGHT.iter().zip(self.tabs).find(|(g, _)| chrome::group_id(g.tabs[0].0) == group_id).map(|(g, t)| g.tabs[t].0)
+        (0..GROUPS).find(|&gi| chrome::group_id(group_tabs(gi)[0].0) == group_id).map(|gi| group_tabs(gi)[self.tabs[gi]].0)
     }
     /// The name the frame shows for the document (the opened file's by default); hostile-name tests feed others.
     pub fn set_file_name(&mut self, name: &str) {
@@ -710,6 +729,10 @@ impl GuiFrame {
 
     fn key(&mut self, key: Key, mods: Mods) -> Option<Outcome> {
         let page = view::rows_page(self.regions.body.h()) as i64;
+        // Page keys go only to the active tab's panel: the Layers list scrolls only while Layers is shown.
+        if matches!(key, Key::PageDown | Key::PageUp | Key::Home | Key::End) && !self.layers_active() {
+            return None;
+        }
         match (key, mods.ctrl, mods.shift) {
             // components.json keyboard: PROVISIONAL chords.
             (Key::Char('z'), true, false) => Some(self.run(Cmd::Undo)),
@@ -772,6 +795,7 @@ impl GuiFrame {
     /// A frame-local outcome: recorded, shown in the status bar, the panels in `panels` rebuilt.
     fn frame_outcome(&mut self, command: &'static str, code: &str, panels: &[usize]) -> Outcome {
         let out = Outcome { command, code: code.to_owned() };
+        self.last_label = None;
         self.last = Some(out.clone());
         self.bump(panels);
         self.bump(&[STATUS]);
@@ -786,15 +810,25 @@ impl GuiFrame {
             self.stats.picks = self.stats.picks.saturating_add(1);
             return Ok(Some(self.frame_outcome("frame.tool_pick", "ok", &[RAIL, CONTEXT, OBSERVE])));
         }
-        for (gi, g) in preset::RIGHT.iter().enumerate() {
-            if let Some(t) = g.tabs.iter().position(|(p, _)| chrome::tab_id(p) == id) {
-                if t == self.tabs[gi] {
+        for gi in 0..GROUPS {
+            let tabs = group_tabs(gi);
+            let dock = if gi < 3 { INSPECT } else { BROWSE };
+            let first = tabs[0].0;
+            if chrome::more_id(first) == id {
+                // D-F4: +N opens (or closes) the list of this group's hidden tabs.
+                self.open_more = if self.open_more == Some(gi) { None } else { Some(gi) };
+                return Ok(Some(self.frame_outcome("frame.overflow", "ok", &[INSPECT, BROWSE])));
+            }
+            let row = tabs.iter().position(|(p, _)| chrome::more_row_id(first, p) == id);
+            if let Some(t) = tabs.iter().position(|(p, _)| chrome::tab_id(p) == id).or(row) {
+                if t == self.tabs[gi] && row.is_none() {
                     return Ok(None);
                 }
                 self.tabs[gi] = t;
                 self.focus_group = gi;
+                self.open_more = None;
                 self.stats.picks = self.stats.picks.saturating_add(1);
-                return Ok(Some(self.frame_outcome("frame.tab_select", "ok", &[INSPECT, OBSERVE])));
+                return Ok(Some(self.frame_outcome("frame.tab_select", "ok", &[dock, OBSERVE])));
             }
         }
         let cmd = if id == LIST_ID {
@@ -806,10 +840,12 @@ impl GuiFrame {
             };
             let row = self.rows.iter().find(|r| r.layer_id.len() == lid.len() && r.layer_id.eq_ignore_ascii_case(lid)).ok_or("unknown_layer")?;
             if eye { Cmd::SetVisible { layer: row.layer_id.clone(), visible: !row.visible } } else { Cmd::Select(Some(row.layer_id.clone())) }
-        } else if self.node(id).is_some_and(|n| n.flags.disabled && n.value.as_deref().is_some_and(|v| v.starts_with(chrome::NIY))) {
-            // B6: disabled with a reason; no Viewer call, no focus move, no popup.
+        } else if let Some(label) = self.node(id).filter(|n| n.value.as_deref().is_some_and(|v| v.starts_with(chrome::NIY))).map(|n| n.label.clone().unwrap_or_default()) {
+            // An unbuilt control (availability not_implemented_yet as data, normal look): no Viewer call, no popup.
             self.stats.statics = self.stats.statics.saturating_add(1);
-            return Ok(Some(self.frame_outcome("frame.static", chrome::NIY, &[])));
+            let out = self.frame_outcome("frame.static", chrome::NIY, &[]);
+            self.last_label = Some(cut(&label, 64).to_owned());
+            return Ok(Some(out));
         } else {
             return Err("unknown_author_id");
         };
@@ -866,18 +902,18 @@ impl GuiFrame {
     /// logical sizes rounded to 0.01.
     pub fn dock_state(&self) -> String {
         let l = &self.layout;
-        let groups: Vec<String> = preset::RIGHT
-            .iter()
-            .zip(self.tabs)
-            .enumerate()
-            .map(|(i, (g, t))| {
-                let tabs: Vec<String> = g.tabs.iter().map(|(p, _)| jstr(p)).collect();
+        let left_open = l.left_state == frame::EdgeState::Expanded;
+        let groups: Vec<String> = (0..GROUPS)
+            .filter(|&gi| gi < 3 || left_open)
+            .map(|gi| {
+                let g = group_tabs(gi);
+                let tabs: Vec<String> = g.iter().map(|(p, _)| jstr(p)).collect();
                 format!(
                     "{{\"id\":{},\"tabs\":[{}],\"active\":{},\"collapsed\":{}}}",
-                    jstr(&chrome::group_id(g.tabs[0].0)),
+                    jstr(&chrome::group_id(g[0].0)),
                     tabs.join(","),
-                    jstr(g.tabs[t].0),
-                    l.collapsed.get(i).copied().unwrap_or(false)
+                    jstr(g[self.tabs[gi]].0),
+                    l.collapsed.get(gi).copied().unwrap_or(false)
                 )
             })
             .collect();
@@ -915,7 +951,7 @@ impl GuiFrame {
     /// file name, device, document facts, active tabs).
     fn fits(&mut self) -> Fits {
         let key = format!(
-            "{:?}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}",
+            "{:?}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}|{}|{:?}|{:?}",
             self.extent,
             self.scale.get(),
             self.text.epoch(),
@@ -925,7 +961,10 @@ impl GuiFrame {
             self.revision,
             self.unsaved,
             self.tabs,
-            self.size_text()
+            self.size_text(),
+            self.tool,
+            self.last,
+            self.last_label
         );
         if let Some((k, f)) = &self.fits
             && *k == key
@@ -968,22 +1007,37 @@ impl GuiFrame {
         // docking.tab_overflow: +N measured with the frame's font.
         let plus = t.measure("+9", TextToken::Caption, 0).ceil() + 1.0 + 10.0 + 8.0;
         let tabs_avail = (l.right.w() - kumihimo_ui::widgets::frame::GROUP_DISCLOSURE - kumihimo_ui::widgets::frame::GROUP_MENU).max(0.0);
-        let groups = preset::RIGHT
-            .iter()
-            .zip(self.tabs)
-            .map(|(g, a)| {
-                let labels: Vec<&str> = g.tabs.iter().map(|(_, n)| *n).collect();
-                fit::fit_tabs(t, &labels, a, TextToken::Tab, 0, active_weight, size::TAB_PAD_X, tabs_avail, plus)
+        let left_avail = (l.left.w() - kumihimo_ui::widgets::frame::GROUP_DISCLOSURE - kumihimo_ui::widgets::frame::GROUP_MENU).max(0.0);
+        let groups = (0..GROUPS)
+            .map(|gi| {
+                let labels: Vec<&str> = group_tabs(gi).iter().map(|(_, n)| *n).collect();
+                let room = if gi < 3 { tabs_avail } else { left_avail };
+                fit::fit_tabs(t, &labels, self.tabs[gi], TextToken::Tab, 0, active_weight, size::TAB_PAD_X, room, plus)
             })
             .collect();
-        // The status bar: the last readout (device) takes what the others leave.
-        let device = format!("{}; viewer render-{}", self.device, self.backend);
-        let device = cut(&device, MAX_DEVICE_BYTES).to_owned();
-        let revision = format!("revision {}", self.revision);
-        let others: f32 = [crate::scene::CHROME, "100%", size_text.as_str(), revision.as_str()].iter().map(|s| t.measure(s, TextToken::Body, 0).ceil()).sum();
-        let fixed = 16.0 + 5.0 * kumihimo_ui::widgets::frame::STATUS_GAP + 3.0 * (1.0 + kumihimo_ui::widgets::frame::STATUS_GAP);
-        let device_w = t.measure(&device, TextToken::Body, 0).ceil().min((l.status.w() - fixed - others).max(0.0));
-        Fits { menu, title, tab_w, tab_name, groups, device_w }
+        // FIT-S1: readouts drop (device first) until the hintline holds the tool name and the whole outcome, and keeps
+        // at least 320.
+        let texts = status_texts(&self.device, self.backend, &size_text, self.revision);
+        let hint_w = t.measure(preset::RAIL[self.tool].name, TextToken::Body, 0).ceil();
+        let outcome_w = t.measure(&outcome_words(self.last.as_ref(), self.last_label.as_deref()), TextToken::Body, 0).ceil();
+        let widths: Vec<f32> = texts.iter().map(|s| t.measure(s, TextToken::Body, 0).ceil()).collect();
+        let gap = kumihimo_ui::widgets::frame::STATUS_GAP;
+        let avail = l.status.w() - 16.0;
+        let mut status_shown = [true; 5];
+        let fits_now = |shown: &[bool; 5]| {
+            let n = shown.iter().filter(|s| **s).count();
+            let right: f32 = (0..5).filter(|&i| shown[i]).map(|i| widths[i]).sum::<f32>() + n.saturating_sub(1) as f32;
+            let children = 2 + n + n.saturating_sub(1) + (5 - n);
+            let room = avail - hint_w - right - (children - 1) as f32 * gap;
+            room >= outcome_w && hint_w + gap + room >= 320.0
+        };
+        for &i in &chrome::DROP_ORDER {
+            if fits_now(&status_shown) {
+                break;
+            }
+            status_shown[i] = false;
+        }
+        Fits { menu, title, tab_w, tab_name, groups, status_shown }
     }
 
     fn size_text(&self) -> String {
@@ -995,15 +1049,10 @@ impl GuiFrame {
         let (s, theme) = (self.scale, self.theme);
         let l = self.layout.clone();
         let revs = self.revs;
-        let command = match &self.last {
-            None => "no command yet".to_owned(),
-            Some(o) if o.code == "ok" => format!("{} ok", o.command),
-            Some(o) if o.command.starts_with("frame.") => format!("{} {}", o.command, o.code),
-            Some(o) => format!("{} refused {}", o.command, o.code),
-        };
-        let device = cut(&format!("{}; viewer render-{}", self.device, self.backend), MAX_DEVICE_BYTES).to_owned();
+        let command = outcome_words(self.last.as_ref(), self.last_label.as_deref());
+        let command_code = self.last.as_ref().map_or_else(String::new, |o| format!("{} {}", o.command, o.code));
+        let texts = status_texts(&self.device, self.backend, &self.size_text(), self.revision);
         let title_full = format!("{}: Studio", self.file_name);
-        let size_text = self.size_text();
         let origin = self.image_rect().map_or((l.canvas.x0, l.canvas.y0), |r| (r.x0, r.y0));
         let face = &preset::RAIL[self.tool];
         let selection = self.selected.as_deref().and_then(|id| self.rows.iter().find(|r| r.layer_id == id)).map(|r| format!("{} layer", r.kind));
@@ -1011,25 +1060,32 @@ impl GuiFrame {
         let tool = self.tool_active().to_owned();
         let (rows, selected, first, body_h) = (&self.rows, self.selected.as_deref(), self.first_row, self.regions.body.h());
         let shown: Vec<Vec<usize>> = fits.groups.iter().map(|g| g.shown.clone()).collect();
-        let groups: Vec<chrome::GroupFacts<'_>> = preset::RIGHT
-            .iter()
-            .enumerate()
-            .map(|(i, g)| chrome::GroupFacts {
-                tabs: g.tabs,
-                active: self.tabs[i],
-                shown: &shown[i],
-                collapsed: l.collapsed.get(i).copied().unwrap_or(true),
-                focused: i == self.focus_group,
-                h: l.groups.get(i).map_or(0.0, |r| r.h()),
-            })
-            .collect();
+        let facts = |i: usize| chrome::GroupFacts {
+            tabs: group_tabs(i),
+            active: self.tabs[i],
+            shown: &shown[i],
+            collapsed: i < 3 && l.collapsed.get(i).copied().unwrap_or(true),
+            focused: i == self.focus_group,
+            h: if i < 3 { Some(l.groups.get(i).map_or(0.0, |r| r.h())) } else { None },
+            open: self.open_more == Some(i),
+        };
+        let groups: Vec<chrome::GroupFacts<'_>> = (0..3).map(facts).collect();
+        let left_group = facts(3);
+        let left_open = l.left_state == frame::EdgeState::Expanded;
         let menu = chrome::MenuFacts { pad: fits.menu.0, abbreviated: fits.menu.1, shown: fits.menu.2, title: &fits.title, title_full: &title_full };
         let tab = chrome::TabFacts { full: &self.file_name, shown: &fits.tab_name, w: fits.tab_w, unsaved: self.unsaved };
         let ctx = chrome::ContextFacts { tool_name: face.name, tool_icon: chrome::tool_icon(face.icon), selection: selection.as_deref() };
         let rail = chrome::RailFacts { pitch: l.rail_pitch, shown: l.rail_shown, active: self.tool };
         let vp = chrome::ViewportFacts { file: &self.file_name, size: self.image.as_ref().map(|i| (i.width, i.height)), revision: self.revision, render_code: self.render_code, origin };
         let layers = chrome::LayersFacts { rows, selected, first, body_h };
-        let status = chrome::StatusFacts { command: &command, zoom: "100%", size: &size_text, revision: self.revision, device: &device, device_w: fits.device_w };
+        let status = chrome::StatusFacts {
+            hint: preset::RAIL[self.tool].name,
+            command: &command,
+            command_code: &command_code,
+            readouts: [texts[0].as_str(), texts[1].as_str(), texts[2].as_str(), texts[3].as_str(), texts[4].as_str()],
+            shown: fits.status_shown,
+            chrome: crate::scene::CHROME,
+        };
         let text = &mut self.text;
         let ui = &self.ui;
         let p = &mut self.panels;
@@ -1039,7 +1095,7 @@ impl GuiFrame {
         any |= p[TABS].update(revs[TABS], ui, l.tab_strip, s, theme, text, |b| chrome::tab_strip(b, &tab)).map_err(err)?;
         any |= p[CONTEXT].update(revs[CONTEXT], ui, l.context_bar, s, theme, text, |b| chrome::context_bar(b, &ctx)).map_err(err)?;
         any |= p[RAIL].update(revs[RAIL], ui, l.tool_rail, s, theme, text, |b| chrome::tool_rail(b, &rail)).map_err(err)?;
-        any |= p[BROWSE].update(revs[BROWSE], ui, l.left, s, theme, text, chrome::browse_rail).map_err(err)?;
+        any |= p[BROWSE].update(revs[BROWSE], ui, l.left, s, theme, text, |b| if left_open { chrome::browse_dock(b, &left_group) } else { chrome::browse_rail(b) }).map_err(err)?;
         any |= p[VIEWPORT].update(revs[VIEWPORT], ui, l.centre, s, theme, text, |b| chrome::viewport(b, &vp)).map_err(err)?;
         let inspect_rail = l.right_state == frame::EdgeState::Rail;
         any |= match p[INSPECT].update(revs[INSPECT], ui, l.right, s, theme, text, |b| if inspect_rail { chrome::inspect_rail(b) } else { chrome::inspect_dock(b, &groups, &layers) }) {
@@ -1054,6 +1110,36 @@ impl GuiFrame {
         any |= p[STATUS].update(revs[STATUS], ui, l.status, s, theme, text, |b| chrome::status(b, &status)).map_err(err)?;
         any |= p[OBSERVE].update(revs[OBSERVE], ui, Rect::default(), s, theme, text, |b| chrome::observe(b, &dock_state, &tool)).map_err(err)?;
         Ok(any)
+    }
+
+    /// The rotated ruler labels of the Viewport list at the px paint will ask for (D-F6), rasterised with the frame's
+    /// Text; at most 512 kept (reset whole beyond).
+    fn prepare_labels(&mut self) {
+        let s = self.scale;
+        let want: Vec<(IconId, u32)> = self.panels[VIEWPORT]
+            .display_list()
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Prim::Icon { rect, icon, .. } if ruler_label_value(*icon).is_some() => {
+                    let p = s.snap(*rect);
+                    Some((*icon, p.w().min(p.h()).max(1) as u32))
+                }
+                _ => None,
+            })
+            .collect();
+        if self.labels.len() + want.len() > 512 {
+            self.labels.clear();
+        }
+        for key in want {
+            if self.labels.contains_key(&key) {
+                continue;
+            }
+            let Some(v) = ruler_label_value(key.0) else { continue };
+            if let Some(m) = self.text.rotated_label(&v.to_string(), TextToken::Caption, s) {
+                self.labels.insert(key, m);
+            }
+        }
     }
 
     /// The colour proxy's chips over the rail (components.json `colour_proxy`: box 36, chips 22): the stroke chip
@@ -1080,6 +1166,7 @@ impl GuiFrame {
     pub fn compose(&mut self, target: &mut dyn ChromeTarget) -> Result<(), HostError> {
         let doc = self.image.as_ref().map(|i| view::document_list(self.layout.canvas, i.width, i.height, self.theme));
         let proxy = self.proxy_list();
+        self.prepare_labels();
         let p = &self.panels;
         let mut lists: Vec<&DisplayList> = Vec::with_capacity(PANELS + 2);
         lists.extend([MENU, TABS, CONTEXT, RAIL].map(|i| p[i].display_list()));
@@ -1087,7 +1174,7 @@ impl GuiFrame {
         lists.extend([BROWSE, VIEWPORT].map(|i| p[i].display_list()));
         lists.extend(doc.as_ref());
         lists.extend([INSPECT, TIME, STATUS].map(|i| p[i].display_list()));
-        let mut res = Res { icons: &mut self.icons, image: self.image.as_ref() };
+        let mut res = Res { icons: &mut self.icons, image: self.image.as_ref(), labels: &self.labels };
         target.draw(Chrome {
             extent: self.extent,
             clear: ColorToken::SurfaceFrame.resolve(self.theme),
@@ -1217,6 +1304,34 @@ impl GuiFrame {
             out.extend(checks::clipped_labels(p.tree(), &mut self.text));
         }
         out
+    }
+}
+
+/// The dock groups the frame knows: the three Inspect Dock groups, then the Browse Dock's one group (FIT-L1).
+const GROUPS: usize = 4;
+fn group_tabs(gi: usize) -> &'static [(&'static str, &'static str)] {
+    if gi < 3 { preset::RIGHT[gi].tabs } else { &preset::LEFT_TABS }
+}
+
+/// The status readouts' texts in [`chrome::READOUTS`] order: size, zoom, revision, renderer state, device.
+fn status_texts(device: &str, backend: &str, size_text: &str, revision: u64) -> [String; 5] {
+    [
+        size_text.to_owned(),
+        "100%".to_owned(),
+        format!("revision {revision}"),
+        crate::scene::CHROME.to_owned(),
+        cut(&format!("{device}; viewer render-{backend}"), MAX_DEVICE_BYTES).to_owned(),
+    ]
+}
+
+/// The last outcome in words: an unbuilt control by its name, others by command and code.
+fn outcome_words(last: Option<&Outcome>, label: Option<&str>) -> String {
+    match (last, label) {
+        (None, _) => "no command yet".to_owned(),
+        (Some(o), Some(l)) if o.command == "frame.static" => format!("{l}: not built in this host yet"),
+        (Some(o), _) if o.code == "ok" => format!("{} ok", o.command),
+        (Some(o), _) if o.command.starts_with("frame.") => format!("{} {}", o.command, o.code),
+        (Some(o), _) => format!("{} refused {}", o.command, o.code),
     }
 }
 

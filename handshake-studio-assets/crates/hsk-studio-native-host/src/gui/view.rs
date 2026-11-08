@@ -78,7 +78,7 @@ pub fn layers_body(b: &mut Builder<'_>, rows: &[LayerRow], selected: Option<&str
                 .flags(|f| f.clip = true),
         );
         for r in &rows[first..last] {
-            widgets::layer_row(
+            widgets::layer_row_tinted(
                 b,
                 &row_id(&r.layer_id),
                 cut(&r.name, MAX_LABEL_BYTES),
@@ -89,6 +89,8 @@ pub fn layers_body(b: &mut Builder<'_>, rows: &[LayerRow], selected: Option<&str
                 None,
                 eye(r.visible),
                 &[],
+                // The mock's eye is text.tertiary in both states (D-F10).
+                Some(ColorToken::TextTertiary),
             );
         }
         b.end();
@@ -116,15 +118,16 @@ fn line(text: &str, token: TextToken, color: ColorToken) -> Node {
 
 /// components.json `empty_state` of the Layers panel: one line naming what is missing, one line on how to get it.
 pub fn empty_state(b: &mut Builder<'_>, title: &str, body: &str) {
-    empty_state_at(b, EMPTY_ID, title, body);
+    empty_state_at(b, EMPTY_ID, title, body, body);
 }
 
-/// components.json `empty_state` with its own id (pad 16).
-pub fn empty_state_at(b: &mut Builder<'_>, id: &str, title: &str, body: &str) {
+/// components.json `empty_state` with its own id (pad 16): the two lines in words; `value` is what the node carries
+/// for a model (a code such as `not_implemented_yet`, never shown).
+pub fn empty_state_at(b: &mut Builder<'_>, id: &str, title: &str, body: &str, value: &str) {
     b.begin(
         Node::new(id, Role::Group)
             .label(title)
-            .value(body)
+            .value(value)
             .layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h: Size::Fill, gap: spacing::S2, pad: [spacing::S6; 4], cross: Align::Start, ..LayoutSpec::default() }),
     );
     b.leaf(line(title, TextToken::Body, ColorToken::TextPrimary));
