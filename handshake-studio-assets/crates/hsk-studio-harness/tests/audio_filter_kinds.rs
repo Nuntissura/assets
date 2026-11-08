@@ -415,9 +415,30 @@ fn effect_state_past_the_aggregate_budget_is_refused_before_the_graph_builds() {
 /// a status line.
 #[test]
 fn the_mixdown_repair_replay_records_a_recomputed_noise_print() {
+    let (dir, forced) = forced_print_package("repair-record");
+    let mut x = Viewer::new(Prefer::Cpu);
+    x.open(&forced).unwrap();
+    x.set_export_audio(sources(), Arc::new(Ext), RATE).unwrap();
+    let before = x.run().ops().len();
+    x.export_sequence_mix("seq-main", MixFormat::WavFloat, &dir.join("print.wav"), false).unwrap();
+    assert_recomputed_once(&x, before, "mixdown");
+}
+
+/// One `waveform_noise_print_recomputed` record (one observe frame, the forced stored digest) among
+/// the ops after `before`.
+fn assert_recomputed_once(x: &Viewer, before: usize, path: &str) {
+    let records: Vec<_> = x.run().ops()[before..].iter().filter(|o| o["op"] == "waveform_noise_print_recomputed").cloned().collect();
+    assert_eq!(records.len(), 1, "{path}: {:?}", x.run().ops());
+    assert_eq!(records[0]["observe"]["frames"], 1, "{path}: {}", records[0]);
+    assert_eq!(records[0]["detail"]["stored_digest"], "0".repeat(64), "{path}: {}", records[0]);
+}
+
+/// A package whose stored waveform edit list (a noise reduction on clip 1's source) carries a stored
+/// print digest that no replay reproduces (review F3): `(dir, package)`.
+fn forced_print_package(label: &str) -> (PathBuf, PathBuf) {
     use hsk_studio_harness::view::waveform::{NoiseReduceParams, WaveformDocument, WaveformOp};
     use hsk_studio_harness::{Harness, References, Selection, asset_local_test_context};
-    let (dir, mut v) = session("repair-record");
+    let (dir, mut v) = session(label);
     v.set_export_audio(sources(), Arc::new(Ext), RATE).unwrap();
     v.open_waveform_from_clip("SCLP-019abcde-0000-7000-8000-000000000001").unwrap();
     let all = |a: u64, b: u64| WaveSelection { start: a, end: b, channels: score::ALL_CHANNELS };
@@ -438,15 +459,41 @@ fn the_mixdown_repair_replay_records_a_recomputed_noise_print() {
         run.set_document_entry("waveform_edit", Some(doc.to_bytes())).unwrap();
         assert!(run.save_to(&forced));
     }
+    (dir, forced)
+}
+
+/// Last gap ruling: program playback and Export Media replay the repair through `sequence_sound` and
+/// record a recomputed print like the mixdown (software output device only: nothing reaches the
+/// speakers; Export Media over the reel DNxHR fixture bound to the program monitor).
+#[cfg(feature = "audio-device")]
+#[test]
+fn playback_and_export_media_record_a_recomputed_noise_print() {
+    use hsk_studio_harness::view::timeline::ExportSequenceRequest;
+    use hsk_studio_score_device::{DeviceGrant, Direction, Limits, SOFTWARE_OUTPUT_DEVICE, SoftwareOptions, SoftwareProvider};
+    const DNX: &[u8] = include_bytes!("../../hsk-studio-reel/tests/fixtures/dnx/dnxhr-lb-264x120.mov");
+    let (dir, forced) = forced_print_package("repair-play-export");
+    // Playback: the program output opens on the sequence over the repaired sound.
     let mut x = Viewer::new(Prefer::Cpu);
     x.open(&forced).unwrap();
     x.set_export_audio(sources(), Arc::new(Ext), RATE).unwrap();
+    let provider = SoftwareProvider::with_options(Limits::default(), SoftwareOptions { loopback_frames: 1 << 18 });
+    let actor = hsk_studio_accord::ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap();
+    let grant = DeviceGrant::new(actor, hsk_studio_accord::DomainId::parse("STRK-019abcde-0000-7000-8000-000000000001").unwrap(), &[Direction::Output], None);
     let before = x.run().ops().len();
-    x.export_sequence_mix("seq-main", MixFormat::WavFloat, &dir.join("print.wav"), false).unwrap();
-    let records: Vec<_> = x.run().ops()[before..].iter().filter(|o| o["op"] == "waveform_noise_print_recomputed").cloned().collect();
-    assert_eq!(records.len(), 1, "{:?}", x.run().ops());
-    assert_eq!(records[0]["observe"]["frames"], 1, "{}", records[0]);
-    assert_eq!(records[0]["detail"]["stored_digest"], "0".repeat(64), "{}", records[0]);
+    x.audio_out_open(&provider, &grant, SOFTWARE_OUTPUT_DEVICE, 480, Some("seq-main")).unwrap_or_else(|e| panic!("{} {}", e.code, e.detail));
+    assert_recomputed_once(&x, before, "playback");
+    let _ = x.audio_out_close();
+    // Export Media: the export's sound port reads the same repaired sound.
+    let mut y = Viewer::new(Prefer::Cpu);
+    y.open(&forced).unwrap();
+    y.bind_program_media("seq-main", vec![DNX.to_vec()], 64, 32).unwrap();
+    y.set_export_audio(sources(), Arc::new(Ext), RATE).unwrap();
+    let mut request = ExportSequenceRequest::new("studio.dnxhr.hq.mov", dir.join("forced.mov"));
+    request.width = 64;
+    request.height = 32;
+    let before = y.run().ops().len();
+    let _ = y.export_sequence("seq-main", request);
+    assert_recomputed_once(&y, before, "export media");
 }
 
 #[test]
