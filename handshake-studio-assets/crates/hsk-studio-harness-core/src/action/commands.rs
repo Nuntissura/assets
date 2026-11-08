@@ -11,6 +11,7 @@ mod audio;
 mod automation;
 mod board;
 mod catalog;
+mod component;
 mod design;
 mod document;
 mod export;
@@ -189,6 +190,8 @@ const DOMAINS: &[&[CommandEntry]] = &[
     prototype::ROWS,
     asset::ROWS,
     transform::ROWS,
+    // Lane SMB-DS-COMPONENTS-AUTHOR-1: component, variant set, property and instance authoring.
+    component::ROWS,
 ];
 
 const ROW_COUNT: usize = {

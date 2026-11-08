@@ -24,8 +24,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::Viewer;
 use hsk_studio_folio::{
-    self as folio, Budget, StudioComponentInstance, StudioDesignRecords, StudioDesignStateRecords, StudioInstanceState, StudioOverrideRecord,
-    StudioStateOverride,
+    self as folio, Budget, ComponentPropertyType, StudioComponentInstance, StudioDesignRecords, StudioDesignStateRecords, StudioInstanceState,
+    StudioOverrideRecord, StudioPropertyValue, StudioStateOverride,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -158,13 +158,56 @@ pub(super) fn state_of(
     ))
 }
 
+/// The state of an authored instance as its record says (lane SMB-DS-COMPONENTS-AUTHOR-1): the state of
+/// a native instance is its binding (layer, instance, content, swap target); the main component,
+/// variant assignment, property values and overrides are the vector entry's instance record, which
+/// the history restores, so they are written from that record before Folio reads the entry. An
+/// instance without a main component (deleted main) keeps its stored state.
+fn native_state(s: &mut StudioInstanceState, record: &StudioComponentInstance, design: &StudioDesignRecords) {
+    let Some(main) = record.main_component_id.clone() else { return };
+    let mut variant = design.components.iter().find(|k| k.component_id == main).and_then(|k| k.variant_properties.clone()).unwrap_or_default();
+    for (name, p) in &record.component_properties {
+        if let (ComponentPropertyType::Variant, StudioPropertyValue::Text(v)) = (p.property_type, &p.value) {
+            variant.insert(name.clone(), v.clone());
+        }
+    }
+    let overrides = record.overrides.iter().flat_map(|o| o.overridden_fields.iter().filter_map(|f| Some(StudioStateOverride { node_id: o.overridden_node_id.clone(), field: f.clone(), value: o.values.get(f)?.clone() }))).collect();
+    s.component_id = main;
+    s.variant = variant;
+    s.properties.clone_from(&record.component_properties);
+    s.overrides = overrides;
+}
+
+/// The entry bytes with every native state written from its record ([`native_state`]); `None` when
+/// nothing changes or the entry does not parse (Folio then reads the stored bytes as they are).
+fn normalized(bytes: &[u8], native: &BTreeMap<String, StudioComponentInstance>, design: &StudioDesignRecords) -> Option<Vec<u8>> {
+    if native.is_empty() || bytes.len() > Budget::default().input_bytes {
+        return None;
+    }
+    let mut records: StudioDesignStateRecords = serde_json::from_slice(bytes).ok()?;
+    if records.instances.len() > folio::MAX_DESIGN_STATES {
+        return None;
+    }
+    let before = records.clone();
+    for s in &mut records.instances {
+        if let Some(r) = native.get(&s.instance_id) {
+            native_state(s, r, design);
+        }
+    }
+    (records != before).then(|| serde_json::to_vec(&records).ok()).flatten()
+}
+
 impl Viewer {
-    /// Reads the `design` entry and validates it (module docs); `design` = the receipt's records.
-    pub(super) fn read_design_state(&self, design: Option<&StudioDesignRecords>) -> EntryRead {
+    /// Reads the `design` entry and validates it (module docs) against the inspector's records (the
+    /// receipt's and the authored ones); native states are first written from their records.
+    pub(super) fn read_design_state(&self, receipt: Option<&super::instance::Receipt>) -> EntryRead {
+        let design = receipt.map(|r| &r.records);
         let mut out = EntryRead { design_records_absent: design.is_none(), ..EntryRead::default() };
         let Some(snap) = self.run.snapshot() else { return out };
-        let Some(bytes) = self.run.document_entry(ENTRY) else { return out };
+        let Some(stored) = self.run.document_entry(ENTRY) else { return out };
         out.present = true;
+        let fresh = receipt.and_then(|r| normalized(stored, &r.native, &r.records));
+        let bytes = fresh.as_deref().unwrap_or(stored);
         let doc = snap.document();
         let budget = Budget::default();
         let first = match folio::parse_design_state_records(bytes, doc, design, budget, self.cancel) {
@@ -203,7 +246,7 @@ impl Viewer {
     /// or nothing open); a refusal of the whole entry is its Folio diagnostic.
     pub fn design_state_records(&self) -> Result<Option<StudioDesignStateRecords>, folio::Diagnostic> {
         let receipt = self.design_receipt();
-        let read = self.read_design_state(receipt.as_ref().map(|r| &r.records));
+        let read = self.read_design_state(receipt.as_ref());
         match read.error {
             Some(e) => Err(e),
             None => Ok(read.records),

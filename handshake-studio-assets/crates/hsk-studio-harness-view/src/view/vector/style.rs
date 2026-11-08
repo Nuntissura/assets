@@ -287,15 +287,26 @@ pub(super) fn has_fill(entry: &VectorEntry, layer_id: &str, record: &PathRecord)
     }
 }
 
-/// Checks of the entry's `design` member (decode): only layer nodes with a `fill_style_id` naming a
-/// style of the set, and Folio-valid paint styles.
+/// Most authored components and component sets (together) one entry holds (lane
+/// SMB-DS-COMPONENTS-AUTHOR-1; Studio-declared, the spec declares none).
+pub const MAX_ENTRY_COMPONENTS: usize = 1024;
+/// Most authored component instances one entry holds (Studio-declared).
+pub const MAX_ENTRY_INSTANCES: usize = 4096;
+
+/// Checks of the entry's `design` member (decode): layer nodes with a `fill_style_id` naming a style
+/// of the set (or none when the node carries layout or component-property references), Folio-valid
+/// paint styles, and authored components, sets and instances under [`MAX_ENTRY_COMPONENTS`] and
+/// [`MAX_ENTRY_INSTANCES`] (lane SMB-DS-COMPONENTS-AUTHOR-1; their cross-record rules are Folio
+/// `validate_design_records`, run by the commands that write them). Variables, prototype pages and
+/// frame overflow are still refused here.
 pub(super) fn validate_entry_styles(design: Option<&StudioDesignRecords>, document_id: &str) -> Result<(), String> {
     if let Some(d) = design {
         if d.document_id != document_id {
             return Err("vector_entry_design: document".into());
         }
-        let others = !d.components.is_empty() || !d.component_sets.is_empty() || !d.component_instances.is_empty() || !d.variable_collections.is_empty() || !d.variables.is_empty() || !d.prototype_pages.is_empty() || !d.frame_overflow.is_empty();
-        if others || d.paint_styles.len() > MAX_STYLES || d.nodes.len() > MAX_STYLES {
+        let others = !d.variable_collections.is_empty() || !d.variables.is_empty() || !d.prototype_pages.is_empty() || !d.frame_overflow.is_empty();
+        let components = d.components.len().saturating_add(d.component_sets.len());
+        if others || d.paint_styles.len() > MAX_STYLES || d.nodes.len() > MAX_STYLES || components > MAX_ENTRY_COMPONENTS || d.component_instances.len() > MAX_ENTRY_INSTANCES {
             return Err("vector_entry_design: members".into());
         }
         let mut ids = std::collections::BTreeSet::new();
@@ -306,8 +317,10 @@ pub(super) fn validate_entry_styles(design: Option<&StudioDesignRecords>, docume
             }
         }
         for n in &d.nodes {
-            // Lane SMB-FIG-GRID-2: an auto-layout or child-layout entry may carry no style refs.
-            let refs_ok = (n.style_refs.len() == 1 && n.style_refs.get("fill_style_id").is_some_and(|s| ids.contains(s.as_str()))) || (n.style_refs.is_empty() && (n.auto_layout.is_some() || n.child_layout.is_some()));
+            // Lane SMB-FIG-GRID-2: an auto-layout or child-layout entry may carry no style refs; lane
+            // SMB-DS-COMPONENTS-AUTHOR-1: nor may a definition layer's component-property references.
+            let refs_ok = (n.style_refs.len() == 1 && n.style_refs.get("fill_style_id").is_some_and(|s| ids.contains(s.as_str())))
+                || (n.style_refs.is_empty() && (n.auto_layout.is_some() || n.child_layout.is_some() || !n.component_property_references.is_empty()));
             if serde_json::to_value(&n.node).ok().and_then(|v| v.get("node_kind").cloned()) != Some(json!("layer")) || !refs_ok {
                 return Err(format!("vector_entry_design: node {}", n.node.node_id));
             }

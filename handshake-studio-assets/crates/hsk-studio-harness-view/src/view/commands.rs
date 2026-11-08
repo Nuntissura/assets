@@ -11,6 +11,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 mod audio;
+mod component;
 mod decode;
 mod design;
 mod export;
@@ -155,6 +156,8 @@ impl Viewer {
             "monitor" => return monitor::run(self, id, f),
             "prototype" => return prototype::run(self, id, f),
             "design" if design::owns(id) => return design::run(self, id, f, before),
+            // Lane SMB-DS-COMPONENTS-AUTHOR-1: component, variant set, property and instance authoring.
+            "component" | "component_set" | "instance" => return component::run(self, id, f, before),
             "layout" => return layout::run(self, id, f),
             "panel" => return panel::run(self, id, f),
             "vector" => vector::run_vector(self, id, f)?,

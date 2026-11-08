@@ -27,17 +27,29 @@
 //! instance or definition is refused), with the overrides applied: new path records (vector entry,
 //! same paint style), new stories (text entry, `characters` replaced). Clips, masks and effects of
 //! definition layers are not copied (listed in the command result's `notes`).
+//!
+//! Authored records (lane SMB-DS-COMPONENTS-AUTHOR-1, [`super::component`]): the vector entry's
+//! `design` member also holds components, sets and instances authored in Studio. The inspector reads
+//! the receipt's records and the entry's (settled: a definition whose layer is gone is dropped and its
+//! instances read `main_component_id` null, [STU-DS-003a]) as ONE record set; an id in both is
+//! `design_record_duplicate`. A native instance is bound by its states in the `design` entry (layer,
+//! instance, content); its record is the entry's instance record, which every command rewrites in the
+//! same history step as the redraw (`Run::restructure_and_entry`), so undo and redo restore record and
+//! layers together. Native origins are the layers' bounds at command time (Studio reading: the
+//! top-left of the vector bounds and text origins under the layer); a native redraw also draws the
+//! `visible` and `characters` fields the component properties drive ([STU-DS-113], resolved by
+//! `resolve_instance`).
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::layers::{mint_layer_id, operation_for, stack};
 use super::super::text::{self, TextEntry, TextLayerRecord};
-use super::super::vector::{self, PathRecord};
+use super::super::vector::{self, PathRecord, VectorEntry};
 use super::super::Viewer;
 use super::persist;
 use crate::{Place, PlacementWrite};
-use hsk_studio_components::{Design, LocalContent, resolve_instance, swap_component, switch_variant};
+use hsk_studio_components::{Design, LocalContent, Source, resolve_instance, swap_component, switch_variant};
 use hsk_studio_folio::{
-    self as folio, ComponentPropertyType, NodeKind, NodeRef, Parent, Payload, StudioComponentInstance, StudioDesignRecords, StudioDocument,
-    StudioInstanceProperty, StudioLayer, StudioOverrideRecord, StudioPropertyValue, StudioValue,
+    self as folio, ComponentPropertyType, NodeKind, NodeRef, Parent, Payload, StudioComponentInstance, StudioDesignRecords, StudioDesignStateRecords,
+    StudioDocument, StudioInstanceProperty, StudioLayer, StudioNodeDesign, StudioOverrideRecord, StudioPropertyValue, StudioValue,
 };
 use hsk_studio_nib::PathPoint;
 use serde_json::{Value, json};
@@ -126,22 +138,128 @@ impl DesignState {
     }
 }
 
-/// One instance binding of the receipt.
+/// One instance binding of the receipt (or, `native`, of an authored instance).
 #[derive(Clone, Debug, PartialEq)]
-struct Binding {
-    layer_id: String,
-    instance_id: String,
-    origin: [f64; 2],
+pub(super) struct Binding {
+    pub(super) layer_id: String,
+    pub(super) instance_id: String,
+    pub(super) origin: [f64; 2],
     pure: bool,
     signature: Option<String>,
+    /// An authored instance (its record is the vector entry's).
+    pub(super) native: bool,
 }
 
-/// The receipt's design member, parsed.
+/// The receipt's design member, parsed, merged with the vector entry's authored records (module docs).
 pub(super) struct Receipt {
+    /// Receipt and authored records as one set.
     pub(super) records: StudioDesignRecords,
-    bindings: Vec<Binding>,
+    pub(super) bindings: Vec<Binding>,
     /// component id -> (origin, translation only).
     origins: BTreeMap<String, ([f64; 2], bool)>,
+    /// Authored instance records by instance id.
+    pub(super) native: BTreeMap<String, StudioComponentInstance>,
+    /// Contents each native instance layer was drawn with (from its `design` entry states).
+    contents: BTreeMap<String, Vec<Vec<String>>>,
+    /// The vector entry's authored records, settled (what authoring commands rewrite).
+    pub(super) authored: Option<StudioDesignRecords>,
+    /// The merge was refused (an id in both sets): commands refuse with it.
+    pub(super) error: Option<String>,
+}
+
+/// Most `design` entry bytes read for native bindings (Folio's default input budget).
+const MAX_BINDING_BYTES: usize = 1_048_576;
+
+/// Settles authored records against `doc` ([STU-DS-003a]): a component or set whose container layer
+/// is gone (or not a group) is dropped, a member of a dropped set loses its assignment, a set whose
+/// default member is gone takes its first remaining member (none: the set goes), and an instance
+/// whose main component is gone reads `main_component_id` null. Returns the ids it dropped.
+pub(super) fn settle(r: &mut StudioDesignRecords, doc: &StudioDocument) -> Vec<String> {
+    let groups: BTreeSet<&str> = doc.layers.iter().filter(|l| l.kind == "group" && matches!(l.payload, Payload::Group)).map(|l| l.layer_id.as_str()).collect();
+    let parent = |id: &str| doc.layers.iter().find(|l| l.layer_id == id).and_then(|l| match &l.parent {
+        Parent::Node(n) => Some(n.node_id.clone()),
+        Parent::Root(()) => None,
+    });
+    let mut dropped = Vec::new();
+    r.components.retain(|k| groups.contains(k.layer_id.as_str()) || {
+        dropped.push(k.component_id.clone());
+        false
+    });
+    r.component_sets.retain(|s| groups.contains(s.layer_id.as_str()) || {
+        dropped.push(s.component_id.clone());
+        false
+    });
+    let set_layers: BTreeSet<String> = r.component_sets.iter().map(|s| s.layer_id.clone()).collect();
+    for k in &mut r.components {
+        if k.variant_properties.is_some() && !parent(&k.layer_id).is_some_and(|p| set_layers.contains(&p)) {
+            k.variant_properties = None;
+        }
+    }
+    let members = |s: &folio::StudioComponentSet, r: &[folio::StudioComponent]| -> Vec<String> {
+        r.iter().filter(|k| parent(&k.layer_id).as_deref() == Some(s.layer_id.as_str())).map(|k| k.component_id.clone()).collect()
+    };
+    let components = r.components.clone();
+    r.component_sets.retain_mut(|s| {
+        let list = members(s, &components);
+        if !list.contains(&s.default_variant_id) {
+            match list.first() {
+                Some(first) => s.default_variant_id.clone_from(first),
+                None => {
+                    dropped.push(s.component_id.clone());
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    let known: BTreeSet<&str> = r.components.iter().map(|k| k.component_id.as_str()).collect();
+    let mut gone = Vec::new();
+    for i in &mut r.component_instances {
+        if i.main_component_id.as_deref().is_some_and(|m| !known.contains(m)) {
+            i.main_component_id = None;
+            gone.push(i.instance_id.clone());
+        }
+    }
+    dropped.extend(gone);
+    dropped
+}
+
+/// The top-left of what `layer` draws: the minimum of its vector layers' path bounds and its text
+/// layers' origins, the layer itself included ([0, 0] when it draws nothing; Studio reading).
+pub(super) fn origin_of_layer(doc: &StudioDocument, ventry: &VectorEntry, tentry: &TextEntry, layer: &str) -> [f64; 2] {
+    let mut min: Option<[f64; 2]> = None;
+    let mut take = |p: [f64; 2]| {
+        min = Some(match min {
+            Some(m) => [m[0].min(p[0]), m[1].min(p[1])],
+            None => p,
+        });
+    };
+    let mut todo = vec![(layer.to_owned(), 0_usize)];
+    let mut seen = 0_usize;
+    while let Some((id, depth)) = todo.pop() {
+        seen = seen.saturating_add(1);
+        if depth > 64 || seen > MAX_REDRAW_LAYERS {
+            break;
+        }
+        let Some(l) = doc.layers.iter().find(|l| l.layer_id == id) else { continue };
+        match &l.payload {
+            Payload::Group => todo.extend(stack(doc, Some(&id)).into_iter().map(|c| (c, depth.saturating_add(1)))),
+            Payload::Vector { path_ids } => {
+                for pid in path_ids {
+                    if let Some(b) = ventry.path(pid).and_then(|p| p.path.to_owned_path().ok()).and_then(|o| hsk_studio_nib::arrange::path_bounds(&o)) {
+                        take(b.min);
+                    }
+                }
+            }
+            Payload::Text { .. } => {
+                if let Some(r) = tentry.layers.iter().find(|r| r.layer_id == id) {
+                    take(r.origin_px);
+                }
+            }
+            _ => {}
+        }
+    }
+    min.unwrap_or([0.0, 0.0])
 }
 
 fn origin_of(v: &Value) -> Option<[f64; 2]> {
@@ -164,6 +282,7 @@ fn receipt_design(receipt: Option<&Value>) -> Option<Receipt> {
                 origin: origin_of(&b["origin_px"])?,
                 pure: b["translation_only"].as_bool()?,
                 signature: b["signature"].as_str().map(str::to_owned),
+                native: false,
             })
         })
         .collect();
@@ -173,7 +292,37 @@ fn receipt_design(receipt: Option<&Value>) -> Option<Receipt> {
         .iter()
         .filter_map(|c| Some((c["component_id"].as_str()?.to_owned(), (origin_of(&c["origin_px"])?, c["translation_only"].as_bool()?))))
         .collect();
-    Some(Receipt { records, bindings, origins })
+    Some(Receipt { records, bindings, origins, native: BTreeMap::new(), contents: BTreeMap::new(), authored: None, error: None })
+}
+
+/// The ids `a` and `b` both claim (components and sets share one namespace; instances another).
+fn shared_id(a: &StudioDesignRecords, b: &StudioDesignRecords) -> Option<String> {
+    let defs: BTreeSet<&str> = a.components.iter().map(|k| k.component_id.as_str()).chain(a.component_sets.iter().map(|s| s.component_id.as_str())).collect();
+    let insts: BTreeSet<&str> = a.component_instances.iter().map(|i| i.instance_id.as_str()).collect();
+    b.components
+        .iter()
+        .map(|k| k.component_id.as_str())
+        .chain(b.component_sets.iter().map(|s| s.component_id.as_str()))
+        .find(|id| defs.contains(id))
+        .or_else(|| b.component_instances.iter().map(|i| i.instance_id.as_str()).find(|id| insts.contains(id)))
+        .map(str::to_owned)
+}
+
+/// True when a node entry carries no design member (it is dropped rather than stored).
+pub(super) fn carries_nothing(n: &StudioNodeDesign) -> bool {
+    n.auto_layout.is_none()
+        && n.child_layout.is_none()
+        && n.size_clamps.is_none()
+        && n.constraints.is_none()
+        && n.reactions.is_empty()
+        && n.component_property_references.is_empty()
+        && n.explicit_variable_modes.is_empty()
+        && n.style_refs.is_empty()
+}
+
+/// True when the record set holds authored component records (components, sets or instances).
+pub(super) fn authors_components(d: &StudioDesignRecords) -> bool {
+    !d.components.is_empty() || !d.component_sets.is_empty() || !d.component_instances.is_empty()
 }
 
 /// The content signature of a layer: its children's ids in document order.
@@ -206,6 +355,235 @@ fn definition_layers<'a>(doc: &'a StudioDocument, root: &str) -> Result<Vec<(&'a
         }
     }
     Ok(out)
+}
+
+/// Fields a redraw draws on the copied definition layers: (definition node id, field) -> value.
+pub(super) type Drawn = BTreeMap<(String, String), StudioValue>;
+
+/// The drawn overrides of `record` (the [`DRAWN_OVERRIDES`] fields with a value).
+fn drawn_overrides(record: &StudioComponentInstance) -> Drawn {
+    let mut out = Drawn::new();
+    for o in &record.overrides {
+        for (f, v) in &o.values {
+            if DRAWN_OVERRIDES.contains(&f.as_str()) {
+                out.entry((o.overridden_node_id.clone(), f.clone())).or_insert_with(|| v.clone());
+            }
+        }
+    }
+    out
+}
+
+/// One authored instance to redraw ([`Viewer::native_redraw`]).
+pub(super) struct NativeJob {
+    /// The group layer that draws the instance.
+    pub(super) group: String,
+    /// The record to draw (stored in the vector entry by the same step).
+    pub(super) record: StudioComponentInstance,
+    /// Where the copy's top-left goes.
+    pub(super) origin: [f64; 2],
+    /// The component swap target the binding state keeps.
+    pub(super) swap: Option<String>,
+}
+
+/// The writes and entry records of one or more instance redraws, accumulated for one transaction.
+pub(super) struct Redraw<'d> {
+    doc: &'d StudioDocument,
+    pub(super) ventry: VectorEntry,
+    tentry: TextEntry,
+    design: StudioDesignRecords,
+    attachments: BTreeSet<String>,
+    effects: BTreeSet<String>,
+    writes: Vec<PlacementWrite>,
+    notes: Vec<String>,
+    used_paths: BTreeSet<String>,
+    used_stories: BTreeSet<String>,
+    new_paths: Vec<PathRecord>,
+    new_nodes: Vec<StudioNodeDesign>,
+    minted: BTreeSet<String>,
+    salt: u64,
+    counter: u64,
+}
+
+impl<'d> Redraw<'d> {
+    pub(super) fn new(v: &Viewer, doc: &'d StudioDocument) -> Result<Self, String> {
+        let ventry = v.vector_entry()?;
+        let tentry = v.text_entry()?;
+        let attachments = ventry.folio_records(&doc.document_id).attachments.iter().map(|a| a.layer_id.clone()).collect();
+        let effects = v.records.as_ref().map(|r| r.layers.iter().map(|x| x.layer_id.clone()).collect()).unwrap_or_default();
+        let design = ventry.design.clone().unwrap_or_else(|| StudioDesignRecords::new(doc.document_id.clone()));
+        let used_paths = ventry.paths.iter().map(|p| p.path_id.clone()).collect();
+        let used_stories = tentry.stories.iter().map(|s| s.story_id.clone()).collect();
+        let counter = u64::try_from(ventry.paths.len().saturating_add(tentry.stories.len())).unwrap_or(0);
+        Ok(Self {
+            doc,
+            ventry,
+            tentry,
+            design,
+            attachments,
+            effects,
+            writes: Vec::new(),
+            notes: Vec::new(),
+            used_paths,
+            used_stories,
+            new_paths: Vec::new(),
+            new_nodes: Vec::new(),
+            minted: BTreeSet::new(),
+            salt: u64::try_from(doc.layers.len()).unwrap_or(0),
+            counter,
+        })
+    }
+
+    /// Keeps `id` (a layer the same transaction creates) out of the minted ids.
+    pub(super) fn reserve(&mut self, id: &str) {
+        self.minted.insert(id.to_owned());
+    }
+
+    fn mint(&mut self) -> String {
+        let mut id = mint_layer_id(self.doc, self.salt);
+        while self.minted.contains(&id) {
+            self.salt = self.salt.saturating_add(1);
+            id = mint_layer_id(self.doc, self.salt);
+        }
+        self.salt = self.salt.saturating_add(1);
+        self.minted.insert(id.clone());
+        id
+    }
+
+    fn fresh(&mut self, prefix: &str, used: &BTreeSet<String>) -> String {
+        let uuid = self.doc.document_id.split_once('-').map_or("", |(_, u)| u);
+        let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
+        loop {
+            self.counter = self.counter.saturating_add(1);
+            let id = format!("{prefix}-{high}-{low}-7f17-8000-{:012x}", self.counter);
+            if !used.contains(&id) {
+                return id;
+            }
+        }
+    }
+
+    /// Replaces the children of `group` with a copy of the definition under `root` translated by
+    /// `d`, with `drawn` applied.
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn instance(&mut self, group: &str, root: &str, drawn: &Drawn, d: [f64; 2]) -> Result<(), String> {
+        let doc = self.doc;
+        let defs = definition_layers(doc, root)?;
+        let over = |node: &str, field: &str| drawn.get(&(node.to_owned(), field.to_owned()));
+        if defs.iter().any(|(l, _)| self.attachments.contains(&l.layer_id)) {
+            self.notes.push("definition_clips_and_masks_not_copied".into());
+        }
+        if defs.iter().any(|(l, _)| self.effects.contains(&l.layer_id)) {
+            self.notes.push("definition_effects_not_copied".into());
+        }
+        // Deletes: the group's current stacked children, deepest first.
+        fn post_order(doc: &StudioDocument, id: &str, out: &mut Vec<String>) {
+            if doc.layers.iter().any(|l| l.layer_id == id && matches!(l.payload, Payload::Group)) {
+                for c in stack(doc, Some(id)).iter().rev() {
+                    post_order(doc, c, out);
+                }
+            }
+            out.push(id.to_owned());
+        }
+        for c in stack(doc, Some(group)).iter().rev() {
+            let mut order = Vec::new();
+            post_order(doc, c, &mut order);
+            self.writes.extend(order.into_iter().map(|id| PlacementWrite { layer_id: id, to: None, create: None }));
+        }
+        // Creates: each definition layer copied (bottom first, each to the top of its new parent).
+        let mut new_id: BTreeMap<String, String> = BTreeMap::new();
+        for (l, parent) in &defs {
+            let id = self.mint();
+            new_id.insert(l.layer_id.clone(), id.clone());
+            let target = if parent == root { group.to_owned() } else { new_id.get(parent).cloned().ok_or("design: definition parent order")? };
+            let mut copy = (*l).clone();
+            copy.layer_id.clone_from(&id);
+            copy.parent = Parent::Node(NodeRef { node_kind: NodeKind::Layer, node_id: target.clone() });
+            if let Some(StudioValue::Boolean { value }) = over(&l.layer_id, "visible") {
+                copy.visible = *value;
+            }
+            if let Some(StudioValue::Float { value }) = over(&l.layer_id, "opacity") {
+                let group_kind = matches!(copy.payload, Payload::Group);
+                let mut a = copy.appearance.clone().unwrap_or_else(|| folio::LayerAppearance::identity(group_kind));
+                a.opacity = (value * 100.0).clamp(0.0, 100.0);
+                copy.appearance = Some(a);
+            }
+            match &l.payload {
+                Payload::Group => {}
+                Payload::Vector { path_ids } => {
+                    let mut ids = Vec::with_capacity(path_ids.len());
+                    for pid in path_ids {
+                        let Some(rec) = self.ventry.path(pid) else { continue };
+                        let mut moved = rec.clone();
+                        for c in &mut moved.path.contours {
+                            for a in &mut c.anchors {
+                                a.position = PathPoint::new(a.position.x + d[0], a.position.y + d[1]);
+                            }
+                        }
+                        if moved.path.validate().is_err() {
+                            return Err(format!("design: instance_coordinate_out_of_range (the copy of {} passes the path coordinate limit)", l.layer_id));
+                        }
+                        if moved.network.is_some() || moved.width.is_some() {
+                            self.notes.push("network_or_width_profile_not_copied".into());
+                            moved.network = None;
+                            moved.width = None;
+                        }
+                        let taken: BTreeSet<String> = self.used_paths.iter().cloned().chain(self.new_paths.iter().map(|p: &PathRecord| p.path_id.clone())).collect();
+                        moved.path_id = self.fresh("SVPT", &taken);
+                        ids.push(moved.path_id.clone());
+                        self.new_paths.push(moved);
+                    }
+                    copy.payload = Payload::Vector { path_ids: ids };
+                    if let Some(n) = self.design.nodes.iter().find(|n| n.node.node_id == l.layer_id) {
+                        let mut n = n.clone();
+                        n.node.node_id.clone_from(&id);
+                        // A copy is not inside a definition: its property references stay with the definition.
+                        n.component_property_references.clear();
+                        if !carries_nothing(&n) {
+                            self.new_nodes.push(n);
+                        }
+                    }
+                }
+                Payload::Text { story_id } => {
+                    let rec = self.tentry.layers.iter().find(|r| r.layer_id == l.layer_id).cloned().ok_or_else(|| format!("design: text layer {} has no text record", l.layer_id))?;
+                    let mut story = self.tentry.stories.iter().find(|s| &s.story_id == story_id).cloned().ok_or("design: story missing")?;
+                    let taken: BTreeSet<String> = self.used_stories.iter().cloned().chain(self.tentry.stories.iter().map(|s| s.story_id.clone())).collect();
+                    let sid = self.fresh("STXT", &taken);
+                    story.story_id.clone_from(&sid);
+                    if let Some(StudioValue::String { value }) = over(&l.layer_id, "characters") {
+                        let len = u64::try_from(value.len()).unwrap_or(u64::MAX);
+                        story.content = folio::StoryContent::Inline { text_utf8: value.clone() };
+                        let lang = story.character_ranges.first().and_then(|r| r.applied_language.clone());
+                        story.paragraphs = vec![serde_json::from_value(json!({"start": 0, "end": len, "style_ref": rec.paragraph_style, "paragraph_direction": null})).map_err(|e| format!("design: {e}"))?];
+                        story.character_ranges = vec![serde_json::from_value(json!({"start": 0, "end": len, "style_ref": rec.character_style, "applied_language": lang})).map_err(|e| format!("design: {e}"))?];
+                    }
+                    let origin = [rec.origin_px[0] + d[0], rec.origin_px[1] + d[1]];
+                    if !origin.iter().all(|v| v.is_finite() && v.abs() <= hsk_studio_nib::COORDINATE_LIMIT) {
+                        return Err(format!("design: instance_coordinate_out_of_range (the copy of {} passes the coordinate limit)", l.layer_id));
+                    }
+                    self.tentry.stories.push(story);
+                    self.tentry.layers.push(TextLayerRecord { layer_id: id.clone(), story_id: sid.clone(), origin_px: origin, ..rec });
+                    copy.payload = Payload::Text { story_id: sid };
+                }
+                _ => return Err(format!("design: definition layer {} ({}) is not redrawn here", l.layer_id, l.kind)),
+            }
+            let op = operation_for(&id, matches!(copy.payload, Payload::Group))?;
+            self.writes.push(PlacementWrite { layer_id: id, to: Some(Place::Inside(target)), create: Some((copy, op)) });
+        }
+        if self.tentry.layers.len() > text::MAX_TEXT_LAYERS {
+            return Err(format!("design: the redraw passes the window's {} text layers", text::MAX_TEXT_LAYERS));
+        }
+        Ok(())
+    }
+
+    /// The entries with the copies' records, the writes and the notes.
+    pub(super) fn finish(mut self) -> Result<(VectorEntry, TextEntry, Vec<PlacementWrite>, Vec<String>), String> {
+        self.ventry.paths.extend(self.new_paths);
+        if !self.new_nodes.is_empty() {
+            let mut d2 = self.design;
+            d2.nodes.extend(self.new_nodes);
+            self.ventry.design = Some(d2);
+        }
+        Ok((self.ventry, self.tentry, self.writes, self.notes))
+    }
 }
 
 fn value_text(v: &StudioValue) -> String {
@@ -278,18 +656,82 @@ fn with_instance(records: &StudioDesignRecords, record: &StudioComponentInstance
 }
 
 impl Viewer {
+    /// The design records the inspector reads: the receipt's, merged with the vector entry's authored
+    /// records (module docs); `None` when the document has neither.
     pub(super) fn design_receipt(&self) -> Option<Receipt> {
-        receipt_design(self.receipt.as_ref())
+        let fig = receipt_design(self.receipt.as_ref());
+        let doc = self.run.snapshot()?.document();
+        let Some(mut authored) = self.vector_entry().ok().and_then(|e| e.design).filter(authors_components) else { return fig };
+        settle(&mut authored, doc);
+        let mut r = fig.unwrap_or_else(|| Receipt {
+            records: StudioDesignRecords::new(doc.document_id.clone()),
+            bindings: Vec::new(),
+            origins: BTreeMap::new(),
+            native: BTreeMap::new(),
+            contents: BTreeMap::new(),
+            authored: None,
+            error: None,
+        });
+        if let Some(id) = shared_id(&r.records, &authored) {
+            r.error = Some(format!("design: design_record_duplicate ({id} is in the design file's records and the document's)"));
+            r.authored = Some(authored);
+            return Some(r);
+        }
+        r.records.components.extend(authored.components.iter().cloned());
+        r.records.component_sets.extend(authored.component_sets.iter().cloned());
+        r.records.component_instances.extend(authored.component_instances.iter().cloned());
+        let known: BTreeSet<String> = r.records.nodes.iter().map(|n| n.node.node_id.clone()).collect();
+        r.records.nodes.extend(authored.nodes.iter().filter(|n| !n.component_property_references.is_empty() && !known.contains(&n.node.node_id)).cloned());
+        r.native = authored.component_instances.iter().map(|i| (i.instance_id.clone(), i.clone())).collect();
+        let ventry = self.vector_entry().unwrap_or_else(|_| VectorEntry::empty());
+        let tentry = self.text_entry().unwrap_or_else(|_| TextEntry::empty(&doc.document_id));
+        for k in authored.components.iter().map(|k| (&k.component_id, &k.layer_id)).chain(authored.component_sets.iter().map(|s| (&s.component_id, &s.layer_id))) {
+            r.origins.insert(k.0.clone(), (origin_of_layer(doc, &ventry, &tentry, k.1), true));
+        }
+        // Bindings: the states of the `design` entry naming an authored instance on a group layer the
+        // document holds (read leniently: Folio validates the entry where it is read for commands).
+        let states = self
+            .run
+            .document_entry(persist::ENTRY)
+            .filter(|b| b.len() <= MAX_BINDING_BYTES)
+            .and_then(|b| serde_json::from_slice::<StudioDesignStateRecords>(b).ok())
+            .map(|s| s.instances)
+            .unwrap_or_default();
+        let mut claimed: BTreeMap<String, String> = BTreeMap::new();
+        for s in states.into_iter().take(folio::MAX_DESIGN_STATES) {
+            let group = doc.layers.iter().any(|l| l.layer_id == s.layer_id && matches!(l.payload, Payload::Group));
+            if !group || !r.native.contains_key(&s.instance_id) || claimed.get(&s.instance_id).is_some_and(|l| l != &s.layer_id) || r.bindings.iter().any(|b| b.layer_id == s.layer_id && !b.native) {
+                continue;
+            }
+            claimed.insert(s.instance_id.clone(), s.layer_id.clone());
+            if !r.bindings.iter().any(|b| b.layer_id == s.layer_id) {
+                let origin = origin_of_layer(doc, &ventry, &tentry, &s.layer_id);
+                r.bindings.push(Binding { layer_id: s.layer_id.clone(), instance_id: s.instance_id.clone(), origin, pure: true, signature: None, native: true });
+            }
+            r.contents.entry(s.layer_id).or_default().push(s.content_signature);
+        }
+        r.authored = Some(authored);
+        Some(r)
     }
 
     /// The instance binding of `layer_id`, its state, its current record and, for an `unknown`
     /// state the `design` entry explains, the reason (`None`: not an instance layer). Order: a
     /// record of this session for the layer's content, the entry's state for that content, the
-    /// import record while the content is the imported one.
-    fn instance_record(&self, receipt: &Receipt, entry: &persist::EntryRead, layer_id: &str) -> Option<(Binding, &'static str, StudioComponentInstance, Option<String>)> {
+    /// import record while the content is the imported one. A native instance reads `edited` while
+    /// its children are content one of its states recorded, `unknown` otherwise; its record is the
+    /// entry's.
+    pub(super) fn instance_record(&self, receipt: &Receipt, entry: &persist::EntryRead, layer_id: &str) -> Option<(Binding, &'static str, StudioComponentInstance, Option<String>)> {
         let doc = self.run.snapshot()?.document();
         let b = receipt.bindings.iter().find(|b| b.layer_id == layer_id)?.clone();
         doc.layers.iter().find(|l| l.layer_id == layer_id)?;
+        if b.native {
+            let record = receipt.native.get(&b.instance_id)?.clone();
+            let content = persist::content(doc, layer_id);
+            if receipt.contents.get(layer_id).is_some_and(|c| c.contains(&content)) {
+                return Some((b, "edited", record, None));
+            }
+            return Some((b, "unknown", record, Some("design_state_absent: the instance's layers changed outside the instance commands".into())));
+        }
         let sig = signature(doc, layer_id);
         if let Some(r) = self.design.get(&b.instance_id, &sig) {
             return Some((b, "edited", r.clone(), None));
@@ -309,7 +751,7 @@ impl Viewer {
     /// The instance inspector's view of `layer_id` (`None`: the layer draws no instance).
     pub fn instance_view(&self, layer_id: &str) -> Option<InstanceView> {
         let receipt = self.design_receipt()?;
-        let entry = self.read_design_state(Some(&receipt.records));
+        let entry = self.read_design_state(Some(&receipt));
         let (b, state, record, reason) = self.instance_record(&receipt, &entry, layer_id)?;
         let doc = self.run.snapshot()?.document();
         let mut view = InstanceView {
@@ -324,7 +766,7 @@ impl Viewer {
             overrides: Vec::new(),
             texts: Vec::new(),
             swaps: Vec::new(),
-            error: reason,
+            error: reason.or_else(|| receipt.error.clone()),
         };
         let name = |id: &str| doc.layers.iter().find(|l| l.layer_id == id).map_or_else(|| id.to_owned(), |l| l.name.clone());
         for o in &record.overrides {
@@ -415,7 +857,10 @@ impl Viewer {
     #[allow(clippy::too_many_lines)]
     fn design_command_inner(&mut self, layer_id: &str, command: DesignCommand) -> Result<Value, String> {
         let receipt = self.design_receipt().ok_or("design: the open document has no design records (import a design file)")?;
-        let entry = self.read_design_state(Some(&receipt.records));
+        if let Some(e) = &receipt.error {
+            return Err(e.clone());
+        }
+        let entry = self.read_design_state(Some(&receipt));
         let (binding, state, record, reason) = self.instance_record(&receipt, &entry, layer_id).ok_or_else(|| format!("design: {layer_id} draws no component instance"))?;
         if state == "unknown" {
             return Err(match reason {
@@ -506,6 +951,24 @@ impl Viewer {
         let design = Design::new(&doc, &records, &local).map_err(|e| format!("design: records {e:?}"))?;
         let resolved = resolve_instance(&next, &design, &BTreeMap::new(), 0, &hsk_studio_components::Limits::default(), self.cancel).map_err(|e| format!("design: {e:?}"))?;
         let member = design.component(&resolved.component_id).ok_or("design: member missing")?;
+        if binding.native {
+            // An authored instance: record and layers in one step, origins from bounds (module docs).
+            let swap = match &command {
+                DesignCommand::Swap { component_id } => Some(component_id.clone()),
+                _ => previous_swap,
+            };
+            let job = NativeJob { group: binding.layer_id.clone(), record: next.clone(), origin: binding.origin, swap };
+            let (mut notes, _, revision) = self.native_redraw("design_instance", &receipt, &[job], None)?;
+            if base != record {
+                notes.push("override_without_value_dropped".into());
+            }
+            return Ok(json!({
+                "command": key, "layer_id": binding.layer_id, "instance_id": binding.instance_id,
+                "component_id": resolved.component_id, "main_component_id": next.main_component_id,
+                "dropped": dropped.iter().map(|o| json!({"node_id": o.node_id, "field": o.field})).collect::<Vec<_>>(),
+                "notes": notes, "revision": revision,
+            }));
+        }
         let (corigin, cpure) = *receipt.origins.get(&member.component_id).ok_or("design: the definition has no recorded origin")?;
         if !(binding.pure && cpure) {
             return Err("design: instance_transform_not_translation (a rotated or scaled instance or definition is not redrawn)".into());
@@ -552,137 +1015,11 @@ impl Viewer {
 
     /// Replaces the children of `group` with a translated copy of the definition under `root`
     /// with `record`'s drawn overrides applied, as one chronicle transaction (entries first).
-    #[allow(clippy::too_many_lines)]
     fn redraw(&mut self, doc: &StudioDocument, group: &str, root: &str, record: &StudioComponentInstance, d: [f64; 2]) -> Result<Vec<String>, String> {
-        let mut notes: Vec<String> = Vec::new();
-        let defs = definition_layers(doc, root)?;
-        let mut ventry = self.vector_entry()?;
-        let mut tentry = self.text_entry()?;
-        let over = |node: &str, field: &str| record.overrides.iter().find(|o| o.overridden_node_id == node).and_then(|o| o.values.get(field));
-        let vrecords = ventry.folio_records(&doc.document_id);
-        if defs.iter().any(|(l, _)| vrecords.attachments.iter().any(|a| a.layer_id == l.layer_id)) {
-            notes.push("definition_clips_and_masks_not_copied".into());
-        }
-        if self.records.as_ref().is_some_and(|r| defs.iter().any(|(l, _)| r.layers.iter().any(|x| x.layer_id == l.layer_id))) {
-            notes.push("definition_effects_not_copied".into());
-        }
-        // Deletes: the group's current stacked children, deepest first.
-        fn post_order(doc: &StudioDocument, id: &str, out: &mut Vec<String>) {
-            if doc.layers.iter().any(|l| l.layer_id == id && matches!(l.payload, Payload::Group)) {
-                for c in stack(doc, Some(id)).iter().rev() {
-                    post_order(doc, c, out);
-                }
-            }
-            out.push(id.to_owned());
-        }
-        let mut writes = Vec::new();
-        for c in stack(doc, Some(group)).iter().rev() {
-            let mut order = Vec::new();
-            post_order(doc, c, &mut order);
-            writes.extend(order.into_iter().map(|id| PlacementWrite { layer_id: id, to: None, create: None }));
-        }
-        // Creates: each definition layer copied (bottom first, each to the top of its new parent).
-        let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
-        let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
-        let used_paths: BTreeSet<String> = ventry.paths.iter().map(|p| p.path_id.clone()).collect();
-        let used_stories: BTreeSet<String> = tentry.stories.iter().map(|s| s.story_id.clone()).collect();
-        let mut counter = u64::try_from(ventry.paths.len().saturating_add(tentry.stories.len())).unwrap_or(0);
-        let mut fresh = |prefix: &str, used: &BTreeSet<String>| loop {
-            counter = counter.saturating_add(1);
-            let id = format!("{prefix}-{high}-{low}-7f17-8000-{counter:012x}");
-            if !used.contains(&id) {
-                return id;
-            }
-        };
-        let mut salt = u64::try_from(doc.layers.len()).unwrap_or(0);
-        let mut new_id: BTreeMap<String, String> = BTreeMap::new();
-        let mut minted: BTreeSet<String> = BTreeSet::new();
-        let mut new_paths: Vec<PathRecord> = Vec::new();
-        let mut new_nodes = Vec::new();
-        let design = ventry.design.clone().unwrap_or_else(|| StudioDesignRecords::new(doc.document_id.clone()));
-        for (l, parent) in &defs {
-            let mut id = mint_layer_id(doc, salt);
-            while minted.contains(&id) {
-                salt = salt.saturating_add(1);
-                id = mint_layer_id(doc, salt);
-            }
-            salt = salt.saturating_add(1);
-            minted.insert(id.clone());
-            new_id.insert(l.layer_id.clone(), id.clone());
-            let target = if parent == root { group.to_owned() } else { new_id.get(parent).cloned().ok_or("design: definition parent order")? };
-            let mut copy = (*l).clone();
-            copy.layer_id.clone_from(&id);
-            copy.parent = Parent::Node(NodeRef { node_kind: NodeKind::Layer, node_id: target.clone() });
-            if let Some(StudioValue::Boolean { value }) = over(&l.layer_id, "visible") {
-                copy.visible = *value;
-            }
-            if let Some(StudioValue::Float { value }) = over(&l.layer_id, "opacity") {
-                let group_kind = matches!(copy.payload, Payload::Group);
-                let mut a = copy.appearance.clone().unwrap_or_else(|| folio::LayerAppearance::identity(group_kind));
-                a.opacity = (value * 100.0).clamp(0.0, 100.0);
-                copy.appearance = Some(a);
-            }
-            match &l.payload {
-                Payload::Group => {}
-                Payload::Vector { path_ids } => {
-                    let mut ids = Vec::with_capacity(path_ids.len());
-                    for pid in path_ids {
-                        let Some(rec) = ventry.path(pid) else { continue };
-                        let mut moved = rec.clone();
-                        for c in &mut moved.path.contours {
-                            for a in &mut c.anchors {
-                                a.position = PathPoint::new(a.position.x + d[0], a.position.y + d[1]);
-                            }
-                        }
-                        if moved.network.is_some() || moved.width.is_some() {
-                            notes.push("network_or_width_profile_not_copied".into());
-                            moved.network = None;
-                            moved.width = None;
-                        }
-                        let taken: BTreeSet<String> = used_paths.iter().cloned().chain(new_paths.iter().map(|p: &PathRecord| p.path_id.clone())).collect();
-                        moved.path_id = fresh("SVPT", &taken);
-                        ids.push(moved.path_id.clone());
-                        new_paths.push(moved);
-                    }
-                    copy.payload = Payload::Vector { path_ids: ids };
-                    if let Some(n) = design.nodes.iter().find(|n| n.node.node_id == l.layer_id) {
-                        let mut n = n.clone();
-                        n.node.node_id.clone_from(&id);
-                        new_nodes.push(n);
-                    }
-                }
-                Payload::Text { story_id } => {
-                    let rec = tentry.layers.iter().find(|r| r.layer_id == l.layer_id).cloned().ok_or_else(|| format!("design: text layer {} has no text record", l.layer_id))?;
-                    let mut story = tentry.stories.iter().find(|s| &s.story_id == story_id).cloned().ok_or("design: story missing")?;
-                    let taken: BTreeSet<String> = used_stories.iter().cloned().chain(tentry.stories.iter().map(|s| s.story_id.clone())).collect();
-                    let sid = fresh("STXT", &taken);
-                    story.story_id.clone_from(&sid);
-                    if let Some(StudioValue::String { value }) = over(&l.layer_id, "characters") {
-                        let len = u64::try_from(value.len()).unwrap_or(u64::MAX);
-                        story.content = folio::StoryContent::Inline { text_utf8: value.clone() };
-                        let lang = story.character_ranges.first().and_then(|r| r.applied_language.clone());
-                        story.paragraphs = vec![serde_json::from_value(json!({"start": 0, "end": len, "style_ref": rec.paragraph_style, "paragraph_direction": null})).map_err(|e| format!("design: {e}"))?];
-                        story.character_ranges = vec![serde_json::from_value(json!({"start": 0, "end": len, "style_ref": rec.character_style, "applied_language": lang})).map_err(|e| format!("design: {e}"))?];
-                    }
-                    tentry.stories.push(story);
-                    tentry.layers.push(TextLayerRecord { layer_id: id.clone(), story_id: sid.clone(), origin_px: [rec.origin_px[0] + d[0], rec.origin_px[1] + d[1]], ..rec });
-                    copy.payload = Payload::Text { story_id: sid };
-                }
-                _ => return Err(format!("design: definition layer {} ({}) is not redrawn here", l.layer_id, l.kind)),
-            }
-            let op = operation_for(&id, matches!(copy.payload, Payload::Group))?;
-            writes.push(PlacementWrite { layer_id: id, to: Some(Place::Inside(target)), create: Some((copy, op)) });
-        }
-        if tentry.layers.len() > text::MAX_TEXT_LAYERS {
-            return Err(format!("design: the redraw passes the window's {} text layers", text::MAX_TEXT_LAYERS));
-        }
+        let mut r = Redraw::new(self, doc)?;
+        r.instance(group, root, &drawn_overrides(record), d)?;
+        let (ventry, tentry, writes, mut notes) = r.finish()?;
         // Entries first (append-only records; the layers then render at once), then the layers.
-        ventry.paths.extend(new_paths);
-        if !new_nodes.is_empty() {
-            let mut d2 = design.clone();
-            d2.nodes.extend(new_nodes);
-            ventry.design = Some(d2);
-        }
         let vbytes = ventry.to_bytes(&doc.document_id)?;
         self.run.set_document_entry(vector::ENTRY, Some(vbytes)).map_err(|e| format!("design: vector entry {e}"))?;
         if !tentry.layers.is_empty() {
@@ -693,6 +1030,91 @@ impl Viewer {
         notes.dedup();
         self.structure("design_instance", writes, format!("redrew instance {group}"))?;
         Ok(notes)
+    }
+
+    /// Redraws authored instances (lane SMB-DS-COMPONENTS-AUTHOR-1) as ONE history step: each job's
+    /// group gets a translated copy of the member its record resolves to (its origin minus the
+    /// member's, both from layer bounds), with the overrides and the property-driven `visible` and
+    /// `characters` fields drawn; `create` (a new group write) goes first. The structure edit and the
+    /// vector entry (paths and every job's instance record) are one step (`Run::restructure_and_entry`);
+    /// copied stories go to the text entry before it (append-only, like [`Self::redraw`]); each job's
+    /// binding state is written to the `design` entry after it (a refusal undoes the step). Returns
+    /// the notes, the member each job drew and the revision.
+    pub(super) fn native_redraw(&mut self, op: &str, receipt: &Receipt, jobs: &[NativeJob], create: Option<PlacementWrite>) -> Result<(Vec<String>, Vec<String>, u64), String> {
+        if !vector::entry_persistable() {
+            return Err(format!("{op}: vector_entry_not_persistable"));
+        }
+        let doc = self.run.snapshot().ok_or("nothing open")?.document().clone();
+        let mut records = receipt.records.clone();
+        for job in jobs {
+            records = with_instance(&records, &job.record);
+        }
+        let local = LocalContent::default();
+        let design = Design::new(&doc, &records, &local).map_err(|e| format!("design: design_record_{} ({e:?})", e.code()))?;
+        let text_before = self.text_entry()?;
+        let mut r = Redraw::new(self, &doc)?;
+        let mut writes = Vec::new();
+        if let Some(w) = create {
+            r.reserve(&w.layer_id);
+            writes.push(w);
+        }
+        let mut members = Vec::with_capacity(jobs.len());
+        let limits = hsk_studio_components::Limits::default();
+        for job in jobs {
+            let res = resolve_instance(&job.record, &design, &BTreeMap::new(), 0, &limits, self.cancel).map_err(|e| format!("design: {} ({e:?})", e.code()))?;
+            let member = design.component(&res.component_id).ok_or("design: member missing")?;
+            let def = origin_of_layer(&doc, &r.ventry, &text_before, &member.layer_id);
+            let d = [job.origin[0] - def[0], job.origin[1] - def[1]];
+            let mut drawn = Drawn::new();
+            for f in res.fields.iter().filter(|f| DRAWN_OVERRIDES.contains(&f.field.as_str()) && matches!(f.source, Source::Override | Source::ComponentProperty(_) | Source::PropertyDefault(_))) {
+                drawn.insert((f.node_id.clone(), f.field.clone()), f.value.clone());
+            }
+            r.instance(&job.group, &member.layer_id, &drawn, d)?;
+            members.push(member.component_id.clone());
+        }
+        let (mut ventry, tentry, more, mut notes) = r.finish()?;
+        writes.extend(more);
+        let authored = ventry.design.get_or_insert_with(|| StudioDesignRecords::new(doc.document_id.clone()));
+        for job in jobs {
+            match authored.component_instances.iter_mut().find(|i| i.instance_id == job.record.instance_id) {
+                Some(slot) => *slot = job.record.clone(),
+                None => authored.component_instances.push(job.record.clone()),
+            }
+        }
+        settle(authored, &doc);
+        self.check_authored(&doc, &writes, authored)?;
+        if tentry != text_before {
+            let tbytes = TextEntry::to_bytes(&tentry)?;
+            self.run.set_document_entry(text::ENTRY, Some(tbytes)).map_err(|e| format!("design: text entry {e}"))?;
+        }
+        let vbytes = ventry.to_bytes(&doc.document_id)?;
+        let target = jobs.first().map_or_else(String::new, |j| j.group.clone());
+        let ok = self.run.restructure_and_entry(op, &writes, vector::ENTRY, vbytes);
+        let revision = self.after_edit(ok, format!("{op} {target}"))?;
+        for (job, member) in jobs.iter().zip(&members) {
+            let saved = (|| {
+                let after = self.design_receipt().ok_or("design: records")?;
+                let now = self.run.snapshot().ok_or("nothing open")?.document();
+                let content = persist::content(now, &job.group);
+                let variant = after.records.components.iter().find(|k| &k.component_id == member).and_then(|k| k.variant_properties.clone()).unwrap_or_default();
+                let (state, _) = persist::state_of(&job.record, &job.group, content, variant, job.swap.clone())?;
+                let entry = self.read_design_state(Some(&after));
+                if let Some(e) = &entry.error {
+                    return Err(format!("design: design_state_entry_invalid ({} {})", persist::snake(e.code), e.target));
+                }
+                self.write_design_state(entry, &after.records, state)
+            })();
+            match saved {
+                Ok(n) => notes.extend(n),
+                Err(e) => {
+                    let undone = if self.run.undo() { Ok(()) } else { Err(self.op_error()) };
+                    return Err(rollback_error(&e, undone));
+                }
+            }
+        }
+        notes.sort();
+        notes.dedup();
+        Ok((notes, members, revision))
     }
 
     /// The design-instance section of the Properties panel for the selected layer (drawn only when
@@ -803,8 +1225,9 @@ impl Viewer {
         let instance = self.selected.as_deref().and_then(|l| self.instance_view(l)).map(|v| v.json());
         let receipt = self.design_receipt();
         let bound = receipt.as_ref().map(|r| r.bindings.len());
-        let entry = self.read_design_state(receipt.as_ref().map(|r| &r.records)).json();
-        json!({"instance": instance, "instance_layers": bound, "last": self.design.last, "entry": entry, "auto_layout": self.auto_layout_json()})
+        let entry = self.read_design_state(receipt.as_ref()).json();
+        let components = self.components_json(receipt.as_ref());
+        json!({"instance": instance, "instance_layers": bound, "last": self.design.last, "entry": entry, "auto_layout": self.auto_layout_json(), "components": components})
     }
 }
 
