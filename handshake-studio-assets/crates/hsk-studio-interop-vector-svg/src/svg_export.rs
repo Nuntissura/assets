@@ -1186,6 +1186,18 @@ pub fn export_proposal_with_loss(
     let roots = tree.children.get(&None).cloned().unwrap_or_default();
     w.write_layers(&tree, &roots, 1, None, &skip, &mut body)?;
     w.drain_defs(&tree, &skip)?;
+    // Live filters and envelopes are drawn by composite (the Viewer's SVG export goes through
+    // `expand_vectors`); this writer writes the raw paths, so both are typed losses (lane
+    // SMB-AI-LIVE-EFFECTS-1, V4-06; the envelope drop predates the lane).
+    for (i, layer) in doc.layers.iter().enumerate() {
+        let label = format!("/layer[{}]", i.saturating_add(1));
+        if records.live_filter_stack(&layer.layer_id).is_some_and(|s| s.any_enabled()) {
+            note(&mut w.loss, &label, LossKind::Unsupported, "live_filter_not_exported");
+        }
+        if records.envelope(&layer.layer_id).is_some() {
+            note(&mut w.loss, &label, LossKind::Unsupported, "envelope_not_exported");
+        }
+    }
     Ok(finish(open, w, &body))
 }
 

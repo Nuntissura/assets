@@ -398,6 +398,14 @@ impl<'a> Lower<'a> {
         if p.raster_records.layers.iter().any(|r| r.layer_id == l.layer_id && r.effects.is_some()) {
             self.lose("export.effects", "effect_not_exported");
         }
+        // Live filters and envelopes are drawn by composite; this writer writes the raw paths, so both
+        // are typed losses (lane SMB-AI-LIVE-EFFECTS-1, V4-06; the envelope drop predates the lane).
+        if p.vector_records.live_filter_stack(&l.layer_id).is_some_and(|s| s.any_enabled()) {
+            self.lose("export.live_filters", "live_filter_not_exported");
+        }
+        if p.vector_records.envelope(&l.layer_id).is_some() {
+            self.lose("export.envelope", "envelope_not_exported");
+        }
         // Clip and mask attachments: written as a clip of the source geometry.
         let mut clips = 0u32;
         if let Some(a) = p.vector_records.attachments.iter().find(|a| a.layer_id == l.layer_id) {

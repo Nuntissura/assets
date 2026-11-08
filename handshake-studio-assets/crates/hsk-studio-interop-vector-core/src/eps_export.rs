@@ -388,6 +388,14 @@ pub fn export_eps_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> R
     if !rec.patterns.is_empty() || !rec.pattern_paints.is_empty() {
         note(&mut loss, "/eps".into(), LossKind::Unsupported, "pattern_not_exported");
     }
+    // Live filters and envelopes are drawn by composite; the raw paths are written (lane
+    // SMB-AI-LIVE-EFFECTS-1, V4-06; the envelope drop predates the lane).
+    if rec.live_filters.iter().any(|s| s.any_enabled()) {
+        note(&mut loss, "/eps".into(), LossKind::Unsupported, "live_filter_not_exported");
+    }
+    if !rec.envelopes.is_empty() {
+        note(&mut loss, "/eps".into(), LossKind::Unsupported, "envelope_not_exported");
+    }
     let visible: Vec<VectorPath> = proposal.paths.iter().filter(|p| !hidden.contains(p.layer_id.as_str())).cloned().collect();
     if visible.len() < proposal.paths.len() {
         note(&mut loss, "/eps".into(), LossKind::Ignored, "hidden_layer_skipped");
