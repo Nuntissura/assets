@@ -69,17 +69,357 @@ pub struct Polyline {
     pub closed: bool,
 }
 
-/// Parses the SVG path subset the set uses (M L H V C S A Z, absolute and relative, implicit repeats) and flattens
-/// curves and arcs into polylines.
-pub fn parse_path(d: &str) -> Result<Vec<Polyline>, PathError> {
-    let _ = d;
-    Err(PathError::BadCommand(0))
+/// Segments one cubic curve flattens into.
+const CURVE_STEPS: usize = 16;
+
+struct Lex<'a> {
+    s: &'a [u8],
+    i: usize,
+}
+impl Lex<'_> {
+    fn skip(&mut self) {
+        while self.i < self.s.len() && matches!(self.s[self.i], b' ' | b'\t' | b'\n' | b'\r' | b',') {
+            self.i += 1;
+        }
+    }
+    fn at_number(&self) -> bool {
+        self.i < self.s.len() && matches!(self.s[self.i], b'0'..=b'9' | b'.' | b'-' | b'+')
+    }
+    /// One number: [+-]? digits* (. digits*)? ([eE][+-]? digits+)?, at least one mantissa digit.
+    fn number(&mut self) -> Result<f32, PathError> {
+        self.skip();
+        let start = self.i;
+        let s = self.s;
+        let mut j = self.i;
+        if j < s.len() && matches!(s[j], b'+' | b'-') {
+            j += 1;
+        }
+        let mut digits = 0usize;
+        while j < s.len() && s[j].is_ascii_digit() {
+            j += 1;
+            digits += 1;
+        }
+        if j < s.len() && s[j] == b'.' {
+            j += 1;
+            while j < s.len() && s[j].is_ascii_digit() {
+                j += 1;
+                digits += 1;
+            }
+        }
+        if digits == 0 {
+            return Err(PathError::BadNumber(start));
+        }
+        if j < s.len() && matches!(s[j], b'e' | b'E') {
+            let mut k = j + 1;
+            if k < s.len() && matches!(s[k], b'+' | b'-') {
+                k += 1;
+            }
+            let e0 = k;
+            while k < s.len() && s[k].is_ascii_digit() {
+                k += 1;
+            }
+            if k > e0 {
+                j = k;
+            }
+        }
+        let text = std::str::from_utf8(&s[start..j]).map_err(|_| PathError::BadNumber(start))?;
+        let v: f32 = text.parse().map_err(|_| PathError::BadNumber(start))?;
+        if !v.is_finite() {
+            return Err(PathError::BadNumber(start));
+        }
+        self.i = j;
+        Ok(v)
+    }
+    fn flag(&mut self) -> Result<bool, PathError> {
+        self.skip();
+        match self.s.get(self.i) {
+            Some(b'0') => {
+                self.i += 1;
+                Ok(false)
+            }
+            Some(b'1') => {
+                self.i += 1;
+                Ok(true)
+            }
+            _ => Err(PathError::BadNumber(self.i)),
+        }
+    }
 }
 
-/// The mask of `icon` at `px` physical px square: R the stroked form, G the hot point (tool icons only).
+struct Pen {
+    out: Vec<Polyline>,
+    line: Option<Polyline>,
+    cur: (f32, f32),
+    start: (f32, f32),
+    points: usize,
+}
+impl Pen {
+    fn push(&mut self, p: (f32, f32)) -> Result<(), PathError> {
+        self.points += 1;
+        if self.points > MAX_SEGMENTS {
+            return Err(PathError::TooManySegments);
+        }
+        let cur = self.cur;
+        self.line.get_or_insert_with(|| Polyline { points: vec![cur], closed: false }).points.push(p);
+        self.cur = p;
+        Ok(())
+    }
+    fn finish(&mut self) {
+        if let Some(l) = self.line.take() {
+            self.out.push(l);
+        }
+    }
+}
+
+/// Parses the SVG path subset the set uses (M L H V C S A Z, absolute and relative, implicit repeats) and flattens
+/// curves and arcs into polylines. Tokenised per SVG 1.1 path grammar: separators are whitespace and commas, a sign or
+/// a second decimal point starts a new number, flags are single digits.
+pub fn parse_path(d: &str) -> Result<Vec<Polyline>, PathError> {
+    let mut lx = Lex { s: d.as_bytes(), i: 0 };
+    let mut pen = Pen { out: Vec::new(), line: None, cur: (0.0, 0.0), start: (0.0, 0.0), points: 0 };
+    let mut moved = false;
+    let mut implicit: Option<u8> = None;
+    // The second control point of the last cubic, for S.
+    let mut last_ctrl: Option<(f32, f32)> = None;
+    loop {
+        lx.skip();
+        let Some(&c) = lx.s.get(lx.i) else { break };
+        let cmd = if c.is_ascii_alphabetic() {
+            if !b"MmLlHhVvCcSsAaZz".contains(&c) {
+                return Err(PathError::BadCommand(lx.i));
+            }
+            lx.i += 1;
+            c
+        } else if lx.at_number() {
+            implicit.ok_or(PathError::BadCommand(lx.i))?
+        } else {
+            return Err(PathError::BadCommand(lx.i));
+        };
+        if !moved && !matches!(cmd, b'M' | b'm') {
+            return Err(PathError::MissingMoveTo);
+        }
+        let rel = cmd.is_ascii_lowercase();
+        let (ox, oy) = if rel { pen.cur } else { (0.0, 0.0) };
+        let mut ctrl = None;
+        match cmd.to_ascii_uppercase() {
+            b'M' => {
+                let (x, y) = (lx.number()? + ox, lx.number()? + oy);
+                pen.finish();
+                pen.cur = (x, y);
+                pen.start = (x, y);
+                pen.line = Some(Polyline { points: vec![(x, y)], closed: false });
+                moved = true;
+            }
+            b'L' => {
+                let p = (lx.number()? + ox, lx.number()? + oy);
+                pen.push(p)?;
+            }
+            b'H' => {
+                let x = lx.number()? + ox;
+                pen.push((x, pen.cur.1))?;
+            }
+            b'V' => {
+                let y = lx.number()? + oy;
+                pen.push((pen.cur.0, y))?;
+            }
+            b'C' | b'S' => {
+                let p0 = pen.cur;
+                let c1 = if cmd.to_ascii_uppercase() == b'C' {
+                    (lx.number()? + ox, lx.number()? + oy)
+                } else {
+                    match last_ctrl {
+                        Some(k) => (2.0 * p0.0 - k.0, 2.0 * p0.1 - k.1),
+                        None => p0,
+                    }
+                };
+                let c2 = (lx.number()? + ox, lx.number()? + oy);
+                let p3 = (lx.number()? + ox, lx.number()? + oy);
+                for k in 1..=CURVE_STEPS {
+                    let t = k as f32 / CURVE_STEPS as f32;
+                    let u = 1.0 - t;
+                    let (a, b, cc, dd) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                    let p = if k == CURVE_STEPS { p3 } else { (a * p0.0 + b * c1.0 + cc * c2.0 + dd * p3.0, a * p0.1 + b * c1.1 + cc * c2.1 + dd * p3.1) };
+                    pen.push(p)?;
+                }
+                ctrl = Some(c2);
+            }
+            b'A' => {
+                let (rx, ry, phi) = (lx.number()?, lx.number()?, lx.number()?);
+                let (large, sweep) = (lx.flag()?, lx.flag()?);
+                let p1 = (lx.number()? + ox, lx.number()? + oy);
+                for p in arc(pen.cur, rx, ry, phi, large, sweep, p1) {
+                    pen.push(p)?;
+                }
+            }
+            _ => {
+                // Z
+                let s = pen.start;
+                pen.push(s)?;
+                if let Some(l) = pen.line.as_mut() {
+                    l.closed = true;
+                }
+                pen.finish();
+                pen.cur = s;
+            }
+        }
+        last_ctrl = ctrl;
+        implicit = match cmd {
+            b'M' => Some(b'L'),
+            b'm' => Some(b'l'),
+            b'Z' | b'z' => None,
+            other => Some(other),
+        };
+        if implicit.is_some() {
+            // A parameter group needs a number, a command or the end next.
+            lx.skip();
+        }
+    }
+    pen.finish();
+    Ok(pen.out)
+}
+
+/// Points of an SVG elliptical arc from `p0` to `p1` (endpoint excluded from p0, included at p1): endpoint to centre
+/// parameterisation per SVG 1.1 implementation notes F.6.5, out-of-range radii corrected per F.6.6.
+#[allow(clippy::too_many_arguments)]
+fn arc(p0: (f32, f32), rx: f32, ry: f32, phi_deg: f32, large: bool, sweep: bool, p1: (f32, f32)) -> Vec<(f32, f32)> {
+    if p0 == p1 {
+        return Vec::new();
+    }
+    let (mut rx, mut ry) = (rx.abs(), ry.abs());
+    if rx == 0.0 || ry == 0.0 {
+        return vec![p1];
+    }
+    let phi = phi_deg.to_radians();
+    let (cs, sn) = (phi.cos(), phi.sin());
+    let (dx2, dy2) = ((p0.0 - p1.0) / 2.0, (p0.1 - p1.1) / 2.0);
+    let x1p = cs * dx2 + sn * dy2;
+    let y1p = -sn * dx2 + cs * dy2;
+    let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+    if lambda > 1.0 {
+        let s = lambda.sqrt();
+        rx *= s;
+        ry *= s;
+    }
+    let num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+    let den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+    let mut coef = if den > 0.0 { (num / den).max(0.0).sqrt() } else { 0.0 };
+    if large == sweep {
+        coef = -coef;
+    }
+    let cxp = coef * rx * y1p / ry;
+    let cyp = -coef * ry * x1p / rx;
+    let cx = cs * cxp - sn * cyp + (p0.0 + p1.0) / 2.0;
+    let cy = sn * cxp + cs * cyp + (p0.1 + p1.1) / 2.0;
+    let ang = |ux: f32, uy: f32, vx: f32, vy: f32| {
+        let d = (ux * vx + uy * vy) / ((ux * ux + uy * uy).sqrt() * (vx * vx + vy * vy).sqrt());
+        let a = d.clamp(-1.0, 1.0).acos();
+        if ux * vy - uy * vx < 0.0 { -a } else { a }
+    };
+    let (ux, uy) = ((x1p - cxp) / rx, (y1p - cyp) / ry);
+    let (vx, vy) = ((-x1p - cxp) / rx, (-y1p - cyp) / ry);
+    let theta1 = ang(1.0, 0.0, ux, uy);
+    let mut dtheta = ang(ux, uy, vx, vy);
+    if !sweep && dtheta > 0.0 {
+        dtheta -= std::f32::consts::TAU;
+    } else if sweep && dtheta < 0.0 {
+        dtheta += std::f32::consts::TAU;
+    }
+    let n = ((dtheta.abs() / (std::f32::consts::PI / 16.0)).ceil() as usize).clamp(1, 64);
+    (1..=n)
+        .map(|k| {
+            if k == n {
+                return p1;
+            }
+            let t = theta1 + dtheta * k as f32 / n as f32;
+            (cs * rx * t.cos() - sn * ry * t.sin() + cx, sn * rx * t.cos() + cs * ry * t.sin() + cy)
+        })
+        .collect()
+}
+
+/// Distance from (px, py) to the segment a-b.
+fn seg_dist(px: f32, py: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 { (((px - a.0) * dx + (py - a.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    let (qx, qy) = (a.0 + dx * t - px, a.1 + dy * t - py);
+    (qx * qx + qy * qy).sqrt()
+}
+
+/// Signed distance to a rounded box (centre c, half extents h, corner r).
+fn rbox(px: f32, py: f32, c: (f32, f32), h: f32, r: f32) -> f32 {
+    let qx = (px - c.0).abs() - (h - r);
+    let qy = (py - c.1).abs() - (h - r);
+    let (ox, oy) = (qx.max(0.0), qy.max(0.0));
+    (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - r
+}
+
+fn byte(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// The mask of `icon` at `px` physical px square (clamped to 1..=MAX_ICON_PX): R the stroked form, the cover of each
+/// pixel by its distance to the flattened segments (round caps and joins fall out of the distance), at stroke 1.5
+/// (tool) or 1.25 (panel) grid units scaled to `px`; G the 3 x 3 hot point (corner 0.6) of tool icons.
 pub fn rasterize(icon: IconId, px: u32) -> Option<IconMask> {
-    let _ = (icon, px);
-    None
+    let px = px.clamp(1, MAX_ICON_PX);
+    let n = px as usize;
+    let f = px as f32;
+    if icon == VARIANT_MARKER {
+        let mut rg = Vec::with_capacity(n * n);
+        for y in 0..n {
+            for x in 0..n {
+                let d = (x as f32 + 0.5 + y as f32 + 0.5 - f) / std::f32::consts::SQRT_2;
+                rg.push([byte(d + 0.5), 0]);
+            }
+        }
+        return Some(IconMask { width: px, height: px, rg });
+    }
+    let i = icon.0;
+    let (d, grid, stroke, hot) = if (TOOL_BASE..UI_BASE).contains(&i) {
+        let t = icon_data::TOOL.get((i - TOOL_BASE) as usize)?;
+        (t.1, icon_data::TOOL_GRID, icon_data::TOOL_STROKE, Some((t.2, t.3)))
+    } else if i >= UI_BASE {
+        let t = icon_data::UI.get((i - UI_BASE) as usize)?;
+        (t.1, icon_data::UI_GRID, icon_data::UI_STROKE, None)
+    } else {
+        return None;
+    };
+    let lines = parse_path(d).ok()?;
+    let k = f / grid;
+    let hw = stroke * k / 2.0;
+    let mut cov = vec![0.0f32; n * n];
+    for l in &lines {
+        let pts: Vec<(f32, f32)> = l.points.iter().map(|p| (p.0 * k, p.1 * k)).collect();
+        let segs: Vec<((f32, f32), (f32, f32))> = if pts.len() == 1 { vec![(pts[0], pts[0])] } else { pts.windows(2).map(|w| (w[0], w[1])).collect() };
+        for (a, b) in segs {
+            let pad = hw + 1.0;
+            let x0 = ((a.0.min(b.0) - pad).floor().max(0.0)) as usize;
+            let y0 = ((a.1.min(b.1) - pad).floor().max(0.0)) as usize;
+            let x1 = ((a.0.max(b.0) + pad).ceil().max(0.0) as usize).min(n);
+            let y1 = ((a.1.max(b.1) + pad).ceil().max(0.0) as usize).min(n);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let c = (hw + 0.5 - seg_dist(x as f32 + 0.5, y as f32 + 0.5, a, b)).clamp(0.0, 1.0);
+                    let slot = &mut cov[y * n + x];
+                    if c > *slot {
+                        *slot = c;
+                    }
+                }
+            }
+        }
+    }
+    let mut rg: Vec<[u8; 2]> = cov.iter().map(|&c| [byte(c), 0]).collect();
+    if let Some((hx, hy)) = hot {
+        let h = icon_data::HOT_POINT / 2.0 * k;
+        let c = ((hx + icon_data::HOT_POINT / 2.0) * k, (hy + icon_data::HOT_POINT / 2.0) * k);
+        let r = icon_data::HOT_CORNER * k;
+        for y in 0..n {
+            for x in 0..n {
+                rg[y * n + x][1] = byte(0.5 - rbox(x as f32 + 0.5, y as f32 + 0.5, c, h, r));
+            }
+        }
+    }
+    Some(IconMask { width: px, height: px, rg })
 }
 
 /// Counters of the icon cache.
@@ -108,8 +448,23 @@ impl IconSet {
 }
 impl Resources for IconSet {
     fn icon(&mut self, icon: IconId, px: u32) -> Option<IconMask> {
-        let _ = (icon, px);
-        None
+        if name(icon).is_none() {
+            self.stats.unknown = self.stats.unknown.saturating_add(1);
+            return None;
+        }
+        let key = (icon, px.clamp(1, MAX_ICON_PX));
+        if let Some(m) = self.cache.get(&key) {
+            self.stats.hits = self.stats.hits.saturating_add(1);
+            return Some(m.clone());
+        }
+        self.stats.misses = self.stats.misses.saturating_add(1);
+        let m = rasterize(icon, key.1)?;
+        if self.cache.len() >= CACHE_CAP {
+            self.cache.clear();
+            self.stats.resets = self.stats.resets.saturating_add(1);
+        }
+        self.cache.insert(key, m.clone());
+        Some(m)
     }
     fn image(&self, _: ImageId) -> Option<ImageRef<'_>> {
         None
