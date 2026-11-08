@@ -252,6 +252,28 @@ pub struct StudioCompositionSettings {
     pub single_word_justification: Option<StudioSingleWordJustification>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_leading_amount: Option<f64>,
+    /// STU-TYP-185 indents and spacing (lane SMB-TYPE-INDENT-SPACING-1): lengths in points
+    /// (STU-TYP-108 stores points), finite, either sign; the spec states no bound
+    /// ([`INDENT_SPACING_PARAMS`], STU-TYP-106: nothing clamped). Unset = 0 (the engine default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_indent: Option<Length>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_indent: Option<Length>,
+    /// Added to `left_indent` on the paragraph's first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_line_indent: Option<Length>,
+    /// A distinct fourth indent of the paragraph's last line from the right; never folded into
+    /// `right_indent` (STU-TYP-185).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_line_indent: Option<Length>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_before: Option<Length>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_after: Option<Length>,
+    /// STU-TYP-185: true suppresses `space_before` / `space_after` between adjacent paragraphs
+    /// sharing a paragraph style.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_between_same_style: Option<bool>,
 }
 impl StudioCompositionSettings {
     /// True when no field is set.
@@ -284,6 +306,13 @@ impl StudioCompositionSettings {
             glyph_scaling_maximum: top.glyph_scaling_maximum.or(self.glyph_scaling_maximum),
             single_word_justification: top.single_word_justification.or(self.single_word_justification),
             auto_leading_amount: top.auto_leading_amount.or(self.auto_leading_amount),
+            left_indent: top.left_indent.clone().or_else(|| self.left_indent.clone()),
+            right_indent: top.right_indent.clone().or_else(|| self.right_indent.clone()),
+            first_line_indent: top.first_line_indent.clone().or_else(|| self.first_line_indent.clone()),
+            last_line_indent: top.last_line_indent.clone().or_else(|| self.last_line_indent.clone()),
+            space_before: top.space_before.clone().or_else(|| self.space_before.clone()),
+            space_after: top.space_after.clone().or_else(|| self.space_after.clone()),
+            space_between_same_style: top.space_between_same_style.or(self.space_between_same_style),
         }
     }
     /// The single settings validator: STU-TYP-147 / 148 / 150 hard bounds, finiteness, a

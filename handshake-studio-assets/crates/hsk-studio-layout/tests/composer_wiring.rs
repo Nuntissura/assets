@@ -298,6 +298,7 @@ fn paragraph_params_map_every_setting() {
         glyph_scaling_maximum: Some(110.0),
         single_word_justification: Some(StudioSingleWordJustification::CenterAlign),
         auto_leading_amount: Some(120.0),
+        ..Default::default()
     };
     let c = ParagraphComposition { settings, space_advance_pt: Some(3.0), hyphen_advance_pt: None };
     let o = TypesetOptions::default();
