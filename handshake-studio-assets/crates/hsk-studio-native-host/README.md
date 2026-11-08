@@ -1,7 +1,8 @@
 # hsk-studio-native-host
 
-Asset-local Vulkan host for Handshake Studio. It is a proof host, never host acceptance (HBR-HOST-001). Chrome is the
-CPU painter; the Vulkan UI pass is pending (no shader, pipeline or descriptor yet).
+Asset-local Vulkan host for Handshake Studio. It is a proof host, never host acceptance (HBR-HOST-001). The chrome of
+the `gui` scene is the CPU painter by default (`cpu painter`); `--chrome vulkan` draws the same display lists with
+hsk-studio-vulkan's UI pass on the owner's device (`vulkan ui pass`).
 
 ## Purpose
 
@@ -42,8 +43,8 @@ the document 1:1 under them, the Inspect Dock 300 with three groups (Properties,
 0.46, the last taking the remainder), the Time & Results Dock collapsed to its 28 px labelled rail, and the status bar
 24. Sizes are tokens and layouts.json; the fit ladder (FIT-L1, W1 to W5, H1 to H3, R1, R2, M1, T1) runs in one pure
 function, `gui::frame::layout`, used by paint, hit routing, the tree, `studio.dock.state` and the receipt. The chrome
-is CPU-painted with kumihimo-ui (`cpu painter, Vulkan UI pass pending`, also in the window title, the status bar and
-the receipt); icons are the designer's set rasterised on the CPU (`kumihimo_ui::icons`); text is Inter through
+is CPU-painted with kumihimo-ui by default (`cpu painter`, also in the window title, the status bar and the receipt),
+or drawn by the Vulkan UI pass with `--chrome vulkan` (below); icons are the designer's set rasterised on the CPU (`kumihimo_ui::icons`); text is Inter through
 hsk-studio-ui-text (`text: inter`), or the box stand-in when the font files are missing (`text: box_stand_in`; set
 `HSK_STUDIO_UI_FONTS` to a folder holding `Inter-Regular.ttf` and `Inter-Bold.ttf`). Default size 1280x800; proof
 runs pass `--size 1920x1080` (the acceptance first screen) or `--size 1280x720`.
@@ -88,12 +89,27 @@ The command table (every interactive author_id has one entry; `--invoke` and a p
   (never OS input). Script lines: `move X Y`, `leave`, `down`, `up`, `click X Y`, `wheel N`, `wheelpx N`,
   `key ctrl+shift+z`, `invoke AUTHOR_ID`; `resize W H` and `scale MILLI` apply to the CPU frame only (a window or
   offscreen run refuses them, `script_frame_only`). At most 4096 steps (`script_too_long`).
+- `--chrome cpu|vulkan` (gui scene only; anything else is exit 2 `chrome`): `vulkan` draws the frame's lists, from
+  the same `GuiFrame::compose` call the CPU painter uses, with `UiPass` (one pipeline from checked-in SPIR-V, glyph
+  and icon pages, instanced quads) straight into the pane; no canvas is kept and nothing is copied. The status bar's
+  chrome readout says `vulkan ui pass` and the device readout ends with `; chrome vulkan`. Receipt member `ui_pass`:
+  SPIR-V sha256 per entry point (sha2 here, checked against hsk-studio-vulkan's `shaders/manifest.json`:
+  `manifest_match`), naga 27.0.3, enabled features (`dynamicRendering`), draws, passes, instances, page sides,
+  entries, uploads, resets and bytes, image textures, upload submits, VkMemoryRequirements allocation sizes, skip and
+  allocation-refusal counters. Offscreen in this mode also paints the CPU reference of the final frame and writes
+  `ui_pass.parity` (max channel difference, differing pixels, max difference outside the AA rects; `exact` is true
+  only at 0); with `--out X.png` it writes `X.cpu.png` and `X.diff.png` beside it. `--ui-trace T.json` writes one
+  record per primitive of the last draw (`hsk.studio.native_host.ui_trace@1`: kind, snapped rect, class, instances,
+  pass). In Vulkan mode the receipt's `gui.frame.paint` stays zero (the CPU painter's stats; the pass's counters are
+  in `ui_pass`).
 
 ```text
 studio-vk offscreen --size 1920x1080 --scale 1 --scene gui --document <path>/layered.handshake --out frame.png --tree frame-tree.json --receipt frame.json
 studio-vk offscreen --scene gui --document <path>/layered.handshake --invoke studio.toolgroup.paint --invoke studio.tab.masks --invoke menu.file --out edge.png
 studio-vk window --quiet --frames 3 --size 1280x720 --scene gui --document <path>/layered.handshake --capture shot.png
 studio-vk window --size 1920x1080 --scene gui --document <path>/layered.handshake          # the Operator's own window
+studio-vk offscreen --size 1920x1080 --scene gui --document <path>/layered.handshake --chrome vulkan --out vk.png --ui-trace t.json --receipt vk.json
+studio-vk window --quiet --frames 3 --size 1280x720 --scene gui --document <path>/layered.handshake --chrome vulkan --capture vk-shot.png
 ```
 
 Recorded deviations: STU-SHL-110 steps SHL-P-01, SHL-P-08 and SHL-P-10 have not passed and STU-SHL-112 allows no
@@ -105,8 +121,8 @@ Properties and Colour bodies empty and the Layers group without blend, opacity, 
 tag colours (B10); no L1 tooltip (B6); no model presence chip; this host's status readouts; +N counts measured with
 Inter; weight 600 drawn with Inter Bold 700 (no 500 or 600 face in the fixtures); ruler numbers in caption without tabular
 figures (no caption tnum token); layer thumbnails are the checker only (named cut D-F9: harness-view exposes no
-per-layer pixels cheaply); no window buttons (D-F8: the OS frame provides them). Known gaps: the Vulkan UI pass (shaders, glyph and icon atlases),
-menus opening, docking and splitters, rename, reorder, lock, opacity and thumbnails, canvas zoom and pan, AccessKit
+per-layer pixels cheaply); no window buttons (D-F8: the OS frame provides them). Known gaps: Vulkan chrome as the default (CPU stays the default
+and the reference), menus opening, docking and splitters, rename, reorder, lock, opacity and thumbnails, canvas zoom and pan, AccessKit
 (the tree file is the model path), a real device loss (only a fake pane sink proves the typed exit 3).
 
 ## Inputs and outputs
@@ -150,6 +166,8 @@ this process only (`VK_LOADER_LAYERS_DISABLE=~implicit~`) unless `--allow-overla
 | 3 | vulkan_unavailable, api_below_baseline, no_suitable_device, ... | no Vulkan 1.3 device or a Vulkan refusal | install a Vulkan 1.3 driver; nothing falls back |
 | 3 | owner_already_open | a second device in one process | one owner per process |
 | 3 | device_lost, surface_unrecoverable | the device or surface did not come back | rerun; owner rebind is not built yet |
+| 3 | feature_missing, format_unsupported | `--chrome vulkan`: the device lacks dynamicRendering or a format feature the UI pass needs | run with `--chrome cpu` (the default) |
+| 3 | ui_pass_limit | `--chrome vulkan`: one frame needed more than 16 pass breaks (glyph page or instance cap) | report the list size; never retried |
 | 4 | io | PNG or receipt not written | check the output directory |
 | 5 | focus_violation | a quiet run took focus | report it; never retry in a loop |
 | 6 | timeout | frame or wall-clock bound passed (default 30 s) | rerun with `--deadline-s`; check the GPU lock |
