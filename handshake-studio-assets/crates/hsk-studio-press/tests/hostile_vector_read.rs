@@ -172,6 +172,114 @@ routes!(unopenable_deep, Err(DEPTH), Err(ExportError::Press(DEPTH)));
 routes!(big_image, Ok(1), Err(ExportError::Press(PressError::InputLimit("render_image"))));
 routes!(within_bound, Ok(1), Ok((153, 198)));
 
+// ----- lead rulings 2026-11-08 (F4-F7): the reader-bounds pass never refuses a big legitimate print
+// file, but still stops hostile amplification; every refusal is typed. -------------------------------
+
+/// A page (media box 200 x 200) that draws one image XObject `/Im1` with the given dictionary keys
+/// and data. `filter` empty for an uncompressed (raw) image.
+fn image_page(w: u32, h: u32, cs: &str, bpc: u32, filter: &str, data: &[u8]) -> Vec<u8> {
+    let f = if filter.is_empty() { String::new() } else { format!(" /Filter /{filter}") };
+    let dict = format!("/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /{cs} /BitsPerComponent {bpc}{f}");
+    build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /XObject << /Im1 40 0 R >> >> >>".to_vec()),
+        (4, flate_body("", b"q 200 0 0 200 0 0 cm /Im1 Do Q")),
+        (40, stream_body(&dict, data)),
+    ])
+}
+
+/// F5: print-resolution images are not refused. The reader render route checks the pixel count
+/// (<= 150 Mpx) from the dictionary, at any colour space and bit depth, and never decodes the image
+/// whole, so a 300 dpi A3 photo as Flate CMYK 8-bit, the same at 16-bit, and A2 RGB at 300 dpi all
+/// render. The data is deliberately tiny: the backing-length check is off on this route.
+#[test]
+fn print_resolution_images_render() {
+    // 300 dpi A3 = 3508 x 4961 = 17.4 Mpx; A2 RGB = 4961 x 7016 = 34.8 Mpx.
+    for (w, h, cs, bpc) in [(3508u32, 4961u32, "DeviceCMYK", 8u32), (3508, 4961, "DeviceCMYK", 16), (4961, 7016, "DeviceRGB", 8)] {
+        let pdf = image_page(w, h, cs, bpc, "FlateDecode", &miniz_oxide::deflate::compress_to_vec_zlib(&[0u8; 64], 1));
+        assert!(render(&pdf).is_ok(), "{w}x{h} {cs} {bpc}-bit Flate render: {:?}", render(&pdf));
+        // The vector routes never decode images: they read the page.
+        assert_eq!(pages(&pdf), Ok(1));
+    }
+}
+
+/// F5: an image past 150 Mpx is a typed refusal on the render route, and the vector routes (which
+/// never decode an image) still read.
+fn huge_image() -> Vec<u8> {
+    // 20000 x 10000 = 200 Mpx.
+    image_page(20_000, 10_000, "DeviceGray", 8, "FlateDecode", &miniz_oxide::deflate::compress_to_vec_zlib(&[0u8; 64], 1))
+}
+routes!(huge_image, Ok(1), Err(ExportError::Press(PressError::InputLimit("render_image"))));
+
+/// F6: a CIDFont's `/CIDToGIDMap` stream and an `/ICCBased` profile stream are data, never scanned as
+/// PDF syntax; bytes that look like deep nesting in them do not refuse the file.
+fn cid_to_gid_map() -> Vec<u8> {
+    // The CIDToGIDMap data is `[` repeated far past the depth cap: a syntax scan would refuse it.
+    let deep = vec![b'['; 100_000];
+    build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Font << /F0 6 0 R >> >> >>".to_vec()),
+        (4, flate_body("", b"BT /F0 12 Tf 20 100 Td <0001> Tj ET")),
+        (6, b"<< /Type /Font /Subtype /Type0 /BaseFont /Sub /Encoding /Identity-H /DescendantFonts [7 0 R] >>".to_vec()),
+        (7, b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Sub /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /CIDToGIDMap 8 0 R >>".to_vec()),
+        (8, stream_body("", &deep)),
+    ])
+}
+
+fn inline_icc_profile() -> Vec<u8> {
+    // The ICC profile stream holds `<<` runs past the cap; it is referenced by an [/ICCBased N 0 R]
+    // array directly in the page's (inline) Resources, which `binary_streams` alone would miss.
+    let deep = b"<<".repeat(100_000);
+    build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /ColorSpace << /CS0 [/ICCBased 8 0 R] >> >> >>".to_vec()),
+        (4, flate_body("", b"q /CS0 cs 0 0 0 0 scn 10 10 50 50 re f Q")),
+        (8, stream_body("/N 4", &deep)),
+    ])
+}
+
+#[test]
+fn binary_data_streams_are_not_scanned_as_syntax() {
+    assert_eq!(pages(&cid_to_gid_map()), Ok(1), "CIDToGIDMap");
+    assert_eq!(pages(&inline_icc_profile()), Ok(1), "inline ICCBased");
+    assert!(render(&cid_to_gid_map()).is_ok());
+    assert!(render(&inline_icc_profile()).is_ok());
+}
+
+/// F7: a damaged Flate tail keeps the prefix decoded so far and is not a document refusal.
+fn bad_flate_tail() -> Vec<u8> {
+    let mut deflated = miniz_oxide::deflate::compress_to_vec_zlib(BOX, 6);
+    // Corrupt the Adler-32 trailer (last 4 bytes): the prefix still decodes to BOX.
+    let n = deflated.len();
+    deflated[n - 1] ^= 0xFF;
+    build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>".to_vec()),
+        (4, stream_body("/Filter /FlateDecode", &deflated)),
+    ])
+}
+routes!(bad_flate_tail, Ok(1), Ok((50, 50)));
+
+/// F7: a stream that inflates past 256 MiB at a ratio above 1024 is a typed decompression-bomb
+/// refusal; the decode is stopped at the ratio cap, so it never allocates the whole bomb.
+fn flate_bomb() -> Vec<u8> {
+    // 260 MiB of a single byte compresses to ~257 KiB (ratio ~1035): past the 256 MiB floor and the
+    // 1024 ratio.
+    let zeros = vec![0u8; 260 << 20];
+    build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>".to_vec()),
+        (4, stream_body("/Filter /FlateDecode", &miniz_oxide::deflate::compress_to_vec_zlib(&zeros, 1))),
+    ])
+}
+const RATIO: PressError = PressError::InputLimit("decoded_ratio");
+routes!(flate_bomb, Err(RATIO), Err(ExportError::Press(RATIO)));
+
 /// Measurement probe (item 3: the smallest aborting count of content arrays). Not a gate:
 /// `HOSTILE_PROBE_DEPTH=<n>` reads one page whose content is `n` nested arrays.
 #[test]

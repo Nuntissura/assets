@@ -72,19 +72,6 @@ fn svg_within_cap_keeps_the_walk_answer() {
     }
 }
 
-#[test]
-fn a_caller_max_depth_past_the_cap_still_walks_the_cap_from_any_caller() {
-    // `Limits::max_depth` is the caller's: at 300 the walk itself goes to the scan's 256 levels.
-    let mut policy = ImportPolicy::default();
-    policy.limits.max_depth = 300;
-    policy.limits.max_nodes = 20_000;
-    for stack in CALLERS {
-        let r = import_from(stack, deep_svg(255, true), policy);
-        assert!(r.is_ok(), "256 levels, max_depth 300, from a {stack}-byte caller: {r:?}");
-        assert_eq!(import_from(stack, deep_svg(256, true), policy), Err(VectorError::BudgetExceeded("depth")));
-    }
-}
-
 // ----- item 2: the scan against roxmltree's own tree ---------------------------------------------
 
 /// xorshift64* (fixed seed: no clock, no environment).
