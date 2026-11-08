@@ -34,6 +34,17 @@
 //! sample for sample) and writes it back over the selection: one operation, one undo step, replayed
 //! like the others. The effect starts from its reset state at the selection start (no pre-roll).
 //!
+//! **Noise reduction on a selection** (lane SMB-SCORE-EFFECTS-6): [`WaveformEdit::NoiseReduce`]
+//! captures a noise print (score's `NoiseProfiler`) over the `print` range of the audio as it stands
+//! after the earlier operations, then runs score's `NoiseReducer` over the selection through the
+//! same latency-compensated bounce as an effect. The operation stores the print range, the reduction
+//! parameters, the FFT size and the profile digest (`NoiseProfile::digest`), never the profile: replay
+//! captures the print again and refuses `waveform_noise_print_stale` when its digest differs (the
+//! audio under the print changed). A print too short for a profile is `waveform_noise_print_short`,
+//! a print of other channels than the selection `waveform_noise_print_channels`, both before any
+//! edit. One operation, one undo step, saved in the edit entry like the others. A live bus or clip
+//! noise effect would need a stored profile, which Folio does not hold (not in this form).
+//!
 //! **Hosted plugins on a selection** (slice 4b, parity row AU-19): [`WaveformEdit::Plugin`] names an
 //! approved plugin by its content SHA-256 plus parameter values; the plugin must first be registered
 //! with the editor ([`super::Viewer::register_waveform_plugin`], feature `audio-plugin`: score-plugin's
@@ -118,6 +129,16 @@ pub enum WaveformEdit {
     Effect { selection: WaveSelection, effect: folio::StudioAudioEffectInstance },
     /// A registered hosted plugin over the selection (slice 4b).
     Plugin(PluginEdit),
+    /// Noise reduction of the selection from a noise print over `print` (module docs).
+    NoiseReduce { selection: WaveSelection, print: WaveSelection, params: NoiseReduceParams },
+}
+
+/// Parameters of a noise-reduction operation: score's `NoiseReductionParams` and the STFT size
+/// (a power of two in `score::DENOISE_MIN_FFT ..= score::DENOISE_MAX_FFT`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoiseReduceParams {
+    pub fft_size: usize,
+    pub reduction: score::NoiseReductionParams,
 }
 
 /// A hosted plugin run over `selection` (1 or 2 channels): the plugin approved with SHA-256
@@ -182,6 +203,8 @@ pub enum WaveformOp {
     Spectral(SpectralEdit),
     Effect { selection: WaveSelection, effect: folio::StudioAudioEffectInstance },
     Plugin(PluginEdit),
+    /// `print_digest`: lower-case hex SHA-256 of the noise profile captured over `print`.
+    NoiseReduce { selection: WaveSelection, print: WaveSelection, params: NoiseReduceParams, print_digest: String },
 }
 
 /// The copied range of the audio after the first `after_ops` operations.
@@ -285,6 +308,7 @@ impl WaveformOp {
             Self::Spectral(_) => "spectral",
             Self::Effect { .. } => "effect",
             Self::Plugin(_) => "plugin",
+            Self::NoiseReduce { .. } => "noise_reduce",
         }
     }
     pub fn to_json(&self) -> Value {
@@ -312,6 +336,12 @@ impl WaveformOp {
             }),
             Self::Effect { selection, effect } => json!({"selection": sel_json(selection), "effect": serde_json::to_value(effect).unwrap_or(Value::Null)}),
             Self::Plugin(p) => json!({"selection": sel_json(&p.selection), "content_sha256": p.content_sha256, "parameters": p.parameters.iter().map(|(i, v)| json!([i, v])).collect::<Vec<_>>()}),
+            Self::NoiseReduce { selection, print, params, print_digest } => json!({
+                "selection": sel_json(selection), "print": sel_json(print), "fft_size": params.fft_size,
+                "reduction_db": params.reduction.reduction_db, "over_subtraction": params.reduction.over_subtraction,
+                "smoothing_up_ms": params.reduction.smoothing_up_ms, "smoothing_down_ms": params.reduction.smoothing_down_ms,
+                "freq_smoothing_bins": params.reduction.freq_smoothing_bins, "print_digest": print_digest,
+            }),
         };
         v["op"] = Value::from(self.name());
         v
@@ -491,12 +521,21 @@ const EFFECT_BLOCK: usize = 4096;
 /// Runs `spec` over `clip` (1 or 2 channels) at `rate` through a score chain bounce.
 fn bounce_effect(clip: &[Vec<f32>], rate: u32, spec: &EffectSpec, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<Vec<f32>>, String> {
     let channels = clip.len();
+    if !(1..=2).contains(&channels) {
+        return Err("waveform_effect_channels: effects run on one or two channels".into());
+    }
+    let processor = spec.build(rate, channels).map_err(code)?;
+    bounce_processor(clip, rate, processor, actor, cancel)
+}
+
+/// Runs `processor` over `clip` (1 or 2 channels) through a latency-compensated score chain bounce.
+fn bounce_processor(clip: &[Vec<f32>], rate: u32, processor: Box<dyn score::Processor + Send>, actor: &ActorContext, cancel: &CancellationToken) -> Result<Vec<Vec<f32>>, String> {
+    let channels = clip.len();
     let layout = match channels {
         1 => score::ChannelLayout::mono(score::STEREO_LABELS[0]),
         2 => score::ChannelLayout::stereo(),
         _ => return Err("waveform_effect_channels: effects run on one or two channels".into()),
     };
-    let processor = spec.build(rate, channels).map_err(code)?;
     let stage = score::ChainStage { processor, output: layout.clone() };
     let mut chain = score::Chain::new(layout.clone(), EFFECT_BLOCK, vec![stage]).map_err(code)?;
     let resource = hsk_studio_accord::DomainId::parse(super::audio_import::IMPORT_CLIP_ID).map_err(|_| "waveform_effect: resource id".to_owned())?;
@@ -524,6 +563,29 @@ fn code(e: ScoreError) -> String {
     format!("waveform_{}", e.code())
 }
 
+/// The noise profile of `print` in `buffer` at `fft_size`, pushed in cancel-polled chunks of
+/// `score::CANCEL_CHECK_FRAMES`; too few frames for a profile is `waveform_noise_print_short`.
+fn noise_print(buffer: &WaveBuffer, print: WaveSelection, fft_size: usize, cancel: &CancellationToken) -> Result<score::NoiseProfile, String> {
+    let clip = buffer.copy(print).map_err(code)?;
+    let mut profiler = score::NoiseProfiler::new(buffer.sample_rate_hz(), clip.channels.len(), fft_size).map_err(code)?;
+    let frames = clip.channels.first().map_or(0, Vec::len);
+    let mut at = 0usize;
+    while at < frames {
+        cancel.check().map_err(|_| code(ScoreError::Canceled))?;
+        let end = at.saturating_add(score::CANCEL_CHECK_FRAMES).min(frames);
+        let parts: Vec<&[f32]> = clip.channels.iter().map(|c| &c[at..end]).collect();
+        profiler.push(&parts).map_err(code)?;
+        at = end;
+    }
+    profiler.finish().map_err(|_| {
+        format!(
+            "waveform_noise_print_short: a print needs {} full frames of {fft_size} samples (hop {})",
+            score::DENOISE_MIN_PROFILE_FRAMES,
+            fft_size.checked_div(4).unwrap_or(0)
+        )
+    })
+}
+
 /// Applies one operation (`clip`: the referenced audio of a paste), attributed to `actor`.
 pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip>, plugins: &dyn PluginHost, actor: &ActorContext, cancel: &CancellationToken) -> Result<WaveEditReport, String> {
     match op {
@@ -547,6 +609,7 @@ pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip
             let processed = bounce_effect(&clip.channels, buffer.sample_rate_hz(), &spec, actor, cancel)?;
             return buffer.paste(selection.start, &WaveClip { channels: processed }, PasteMode::Overwrite, selection.channels, cancel).map_err(code);
         }
+        WaveformOp::NoiseReduce { .. } => return Err("waveform_noise_reduce_unimplemented".into()), // red stub
         WaveformOp::Spectral(e) => {
             let rate = buffer.sample_rate_hz();
             buffer.process_channels(e.channels, cancel, |input, out| {
@@ -777,6 +840,10 @@ impl super::Viewer {
             WaveformEdit::Spectral(e) => (WaveformOp::Spectral(e), None, None),
             WaveformEdit::Effect { selection, effect } => (WaveformOp::Effect { selection, effect }, None, None),
             WaveformEdit::Plugin(p) => (WaveformOp::Plugin(p), None, None),
+            WaveformEdit::NoiseReduce { .. } => {
+                let _ = noise_print; // red stub
+                return Err("waveform_noise_reduce_unimplemented".into());
+            }
         };
         if n >= MAX_WAVEFORM_OPS {
             return Err("waveform_too_many_ops".into());
