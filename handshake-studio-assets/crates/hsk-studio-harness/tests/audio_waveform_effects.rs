@@ -218,3 +218,27 @@ fn noise_reduction_from_a_stored_print_is_one_step_and_replays() {
     assert!(WaveformOp::from_json(&json, 0).unwrap_err().contains("print_digest"));
     assert_eq!(WaveformOp::from_json(&stored.ops[0].to_json(), 0).unwrap(), stored.ops[0]);
 }
+
+/// Review F2: `waveform.noise_reduce` is a typed drive row (`Viewer::run_command`): one undo step
+/// named `waveform_noise_reduce`, the engine's refusal code for a bad FFT size, a missing print a
+/// typed `parameter_missing`, nothing changed by a refusal.
+#[test]
+fn noise_reduce_runs_as_a_typed_drive_row() {
+    use serde_json::{Map, Value, json};
+    let dir = support_audio::scratch("waveform-noise-row");
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&support_waveform::package(&dir)).unwrap();
+    v.open_waveform(RATE, support_waveform::source()).unwrap();
+    let params = |value: Value| -> Map<String, Value> { value.as_object().unwrap().clone() };
+    let base = undo_len(&v);
+    let reply = v
+        .run_command("waveform.noise_reduce", &params(json!({"start": 0, "end": 4800, "print_start": 0, "print_end": 1200, "fft_size": 256, "reduction_db": 12.0})))
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(reply["result"]["op"], "noise_reduce", "{reply}");
+    assert_eq!(undo_len(&v), base + 1);
+    let refused = v.run_command("waveform.noise_reduce", &params(json!({"start": 0, "end": 4800, "print_start": 0, "print_end": 1200, "fft_size": 1000}))).unwrap_err();
+    assert_eq!(refused.code, "waveform_out_of_range", "{refused:?}");
+    let missing = v.run_command("waveform.noise_reduce", &params(json!({"start": 0, "end": 4800, "print_end": 1200, "fft_size": 256}))).unwrap_err();
+    assert_eq!(missing.code, "parameter_missing", "{missing:?}");
+    assert_eq!(undo_len(&v), base + 1);
+}
