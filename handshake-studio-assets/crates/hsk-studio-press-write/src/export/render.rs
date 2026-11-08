@@ -3,8 +3,12 @@
 //! the redaction flatten uses, independent of the writer's code. It proves drawability by one
 //! interpreter, not conformance (STU-PDF-002). Bounds (V4-02): the canvas is checked against
 //! `Limits::max_flatten_pixels` before allocation; image decoding is charged to a budget of 64
-//! canvases; the interpreter runs on its own thread with a `RENDER_STACK_BYTES` stack, and a panic
-//! there is a typed refusal. Tests: `tests/export.rs` `render_back_reads_the_export`.
+//! canvases; before the interpreter sees a byte the page is bounded on Press's own reading of the
+//! file (`reader_input_within`: nesting and construction cycles `InputLimit("depth")`, image sizes
+//! `InputLimit("render_image")`, an unreadable syntax stream `Malformed("reader_input")`, an
+//! encrypted file `Encrypted`; SMB-PARSER-HOSTILE-1, tests `press/tests/hostile_vector_read.rs`);
+//! the interpreter runs on its own thread with a `RENDER_STACK_BYTES` stack (margin, not the
+//! guard), and a panic there is a typed refusal. Tests: `tests/export.rs` `render_back_reads_the_export`.
 #![deny(clippy::arithmetic_side_effects)]
 use super::ExportError;
 use crate::error::Limits;
@@ -112,6 +116,9 @@ pub fn render_page(bytes: &[u8], index: usize, px_per_pt: f64, limits: &Limits, 
     if !(w >= 1.0 && h >= 1.0 && w <= f64::from(u32::MAX) && h <= f64::from(u32::MAX) && w * h <= limits.max_flatten_pixels as f64) {
         return Err(ExportError::RenderOverBudget);
     }
+    // hayro reads the original bytes: the page is bounded first on Press's reading of them (nesting,
+    // construction cycles, image sizes; SMB-PARSER-HOSTILE-1, tests press/tests/hostile_vector_read.rs).
+    hsk_studio_press_read::reader_input_within(&doc, Some(index), cancel)?;
     let (wu, hu) = (w as u32, h as u32);
     let canvas = u64::from(wu).checked_mul(u64::from(hu)).ok_or(ExportError::RenderOverBudget)?;
     let decode_budget = canvas.saturating_mul(64);

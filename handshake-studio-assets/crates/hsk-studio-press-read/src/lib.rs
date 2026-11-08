@@ -53,6 +53,10 @@ mod vector_source;
 #[doc(hidden)]
 pub mod writer;
 
+/// Seam for `hsk-studio-press-write` `render_page` (SMB-PARSER-HOSTILE-1): the reader-input bounds.
+#[doc(hidden)]
+pub use render_bounds::reader_input_within;
+
 pub use error::{Limits, PressError, RedactionClass, SinkError, TextCause};
 pub use flatten::{FLATTEN_FILL, FlattenCause, FlattenNote, FlattenedPage, RENDER_STACK_BYTES};
 pub use redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};

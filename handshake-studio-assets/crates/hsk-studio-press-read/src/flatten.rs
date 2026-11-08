@@ -359,8 +359,9 @@ pub(crate) fn refs_in(o: &Object, out: &mut Vec<u32>) {
 }
 
 /// A stream as the renderer receives it: decoded by this crate, or with only its raster codec left,
-/// or empty when this crate cannot decode it.
-fn renderer_stream(s: &Stream, limits: &Limits, budget: &mut usize, notes: &mut BTreeSet<FlattenNote>) -> Result<Stream> {
+/// or empty when this crate cannot decode it. Also the image decode of the reader pass
+/// (`render_bounds::reader_input_within`).
+pub(crate) fn renderer_stream(s: &Stream, limits: &Limits, budget: &mut usize, notes: &mut BTreeSet<FlattenNote>) -> Result<Stream> {
     let mut dict = s.dict.clone();
     if filters::is_decodable(&s.dict) {
         match filters::decode_chain(s, limits, budget) {

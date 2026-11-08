@@ -25,11 +25,17 @@
 //! - Everything else is a typed note and is not drawn: images, soft masks, shadings that are not
 //!   axial or radial, tiling patterns, shading transfer functions.
 //!
-//! The interpreter runs on its own thread with the flatten stack ([`crate::RENDER_STACK_BYTES`]);
-//! a panic there is a typed refusal. Budgets ([`MAX_VECTOR_ITEMS`], [`MAX_VECTOR_ELEMENTS`]) stop the
+//! Before the interpreter sees a byte, the bytes it will read are opened with Press's own reader
+//! and bounded (`render_bounds::reader_input_within`, SMB-PARSER-HOSTILE-1): a file Press refuses is
+//! refused with Press's error (lead ruling OQ1 2026-11-08), nesting or a construction cycle hayro
+//! would recurse through is `InputLimit("depth")`, a syntax stream Press cannot decode is
+//! `Malformed("reader_input")`, an encrypted file is `Encrypted` (tests
+//! `press/tests/hostile_vector_read.rs`). The interpreter runs on its own thread with the flatten
+//! stack ([`crate::RENDER_STACK_BYTES`], margin, not the guard); a panic there is a typed refusal. Budgets ([`MAX_VECTOR_ITEMS`], [`MAX_VECTOR_ELEMENTS`]) stop the
 //! recording with [`VectorNote::Budget`]; cancellation is polled every 64 items.
 #![deny(clippy::arithmetic_side_effects)]
-use crate::error::{PressError, Result};
+use crate::error::{Limits, PressError, Result};
+use crate::pdf_edit::PdfDoc;
 use crate::vector_source::{DocSource, PageSource, SrcPaint, read_sources};
 pub use crate::vector_source::{VectorColour, VectorIcc, VectorLayer, VectorSpace};
 use hayro_interpret::font::Glyph;
@@ -616,6 +622,11 @@ fn read(pdf: &[u8], max_bytes: usize, sources: Option<Option<&DocSource>>, cance
     let bytes = walk.and_then(|s| s.all_visible.clone()).unwrap_or_else(|| pdf.to_vec());
     let hidden_not_read = walk.is_some_and(|s| s.hidden_not_read);
     let walked_any = sources.is_some();
+    // The bytes hayro reads, bounded first (module docs). `max_bytes` already bounds the input.
+    let limits = Limits { max_bytes: Limits::default().max_bytes.max(max_bytes), ..Limits::default() };
+    let guarded = PdfDoc::open(&bytes, &limits, cancel)?;
+    crate::render_bounds::reader_input_within(&guarded, None, cancel)?;
+    drop(guarded);
     std::thread::scope(|scope| {
         let spawned = std::thread::Builder::new().name("hsk-press-vector-read".into()).stack_size(crate::RENDER_STACK_BYTES).spawn_scoped(scope, move || -> Result<VectorDocument> {
             let pdf = Pdf::new(bytes).map_err(|_| PressError::Malformed("pdf_unreadable"))?;

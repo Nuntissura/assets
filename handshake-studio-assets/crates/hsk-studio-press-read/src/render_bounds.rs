@@ -41,6 +41,10 @@
 //! `renderer_input_is_bounded_before_rendering`, `renderer_input_images_are_bounded` and the unit tests
 //! below (`dims_u32_max`, nesting scans).
 //!
+//! Second caller (SMB-PARSER-HOSTILE-1): [`reader_input_within`] runs the same nesting bounds (and,
+//! for `render_page`, the image bounds) on Press's reading of a file before the vector reader or the
+//! render-back hands the original bytes to hayro (tests `press/tests/hostile_vector_read.rs`).
+//!
 //! Residual (DESCRIPTOR `redaction.flatten.renderer_residual`): CPU time inside hayro (font parsing,
 //! codec decoding) is not cancellable; codec-internal bitmaps beyond the dimensions read here (JBIG2
 //! symbol dictionaries, halftone patterns, JPEG 2000 tiles) are bounded only by the decoders' own
@@ -49,7 +53,8 @@
 use crate::content::{self, inline_dict, inline_value_name};
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
-use crate::flatten::FlattenCause;
+use crate::flatten::{FlattenCause, refs_in};
+use crate::pdf_edit::PdfDoc;
 use crate::raster::{self, codec_dims, is_raster_filter};
 use crate::reader::{Entry, check_cancel};
 use crate::redaction::res;
@@ -450,8 +455,8 @@ fn codec_of(d: &Dict) -> Option<Vec<u8>> {
     is_raster_filter(&last).then_some(last)
 }
 
-/// Bounds of one content stream (module docs) and of its inline images.
-fn content_bounds(objs: &Objs, data: &[u8], resources: &[Option<&Dict>], doc_comps: u64, limits: &Limits, budget: &mut usize) -> Result<()> {
+/// Bounds of one content stream (module docs) and, when `images` is set, of its inline images.
+fn content_bounds(objs: &Objs, data: &[u8], resources: &[Option<&Dict>], doc_comps: u64, limits: &Limits, budget: &mut usize, images: bool) -> Result<()> {
     let cs = |n: &[u8]| resources.iter().find_map(|r| resource_components(objs, *r, n));
     let parsed = match content::tokenize(data, limits, &cs, budget) {
         Ok(p) => p,
@@ -459,6 +464,9 @@ fn content_bounds(objs: &Objs, data: &[u8], resources: &[Option<&Dict>], doc_com
         Err(e @ (PressError::Canceled | PressError::InputLimit("decoded_total" | "decoded_bytes"))) => return Err(e),
         Err(_) => return Err(refuse(FlattenCause::RendererInput)),
     };
+    if !images {
+        return Ok(());
+    }
     for op in parsed.ops.iter().filter(|o| o.name == b"BI") {
         let Some((a, b)) = op.inline_data else { continue };
         let raw = data.get(a..b).unwrap_or(&[]);
@@ -485,11 +493,19 @@ fn content_bounds(objs: &Objs, data: &[u8], resources: &[Option<&Dict>], doc_com
 /// Checks the isolated document (module docs). `page_contents` and `page_resources` are those of the
 /// isolated page (not yet in `objs`).
 pub(crate) fn check(objs: &Objs, page_contents: &[u32], page_resources: Option<&Dict>, limits: &Limits, cancel: &CancellationToken) -> Result<()> {
+    let contents: BTreeMap<u32, Option<&Dict>> = page_contents.iter().map(|n| (*n, page_resources)).collect();
+    bounds(objs, &contents, page_resources, true, limits, cancel)
+}
+
+/// The bounds of [`check`] over `objs`. `contents`: page content streams with their page's
+/// resources; `fallback`: the resources every other content-role stream also reads (the flatten's
+/// one page); `images`: whether image sizes are bounded too.
+fn bounds(objs: &Objs, contents: &BTreeMap<u32, Option<&Dict>>, fallback: Option<&Dict>, images_too: bool, limits: &Limits, cancel: &CancellationToken) -> Result<()> {
     let cap = limits.depth_cap();
     let roles = content_role_streams(objs);
     let binary = binary_streams(objs);
     let images = image_streams(objs);
-    let doc_comps = document_components(objs);
+    let doc_comps = if images_too { document_components(objs) } else { 4 };
     if !construction_chains_within(objs, cap) {
         return Err(refuse(FlattenCause::NestingDepth));
     }
@@ -501,18 +517,135 @@ pub(crate) fn check(objs: &Objs, page_contents: &[u32], page_resources: Option<&
         let Object::Stream(s) = &e.obj else { continue };
         let own = s.dict.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict);
         let role = roles.get(num).map(|r| r.resources);
-        if page_contents.contains(num) || role.is_some() {
-            let resources = [role.flatten().or(own), page_resources];
-            content_bounds(objs, &s.data, &resources, doc_comps, limits, &mut budget)?;
+        let page = contents.get(num);
+        if page.is_some() || role.is_some() {
+            let resources = [role.flatten().or(own), page.copied().unwrap_or(fallback)];
+            content_bounds(objs, &s.data, &resources, doc_comps, limits, &mut budget, images_too)?;
         } else if !binary.contains(num) && !images.contains(num) && !syntax_nesting_within(&s.data, cap) {
             return Err(refuse(FlattenCause::NestingDepth));
         }
-        if images.contains(num) {
+        if images_too && images.contains(num) {
             let codec = codec_of(&s.dict);
-            image_bounds(objs, &ImageInput { dict: &s.dict, data: &s.data, codec }, &[own, page_resources], doc_comps, limits)?;
+            image_bounds(objs, &ImageInput { dict: &s.dict, data: &s.data, codec }, &[own, page.copied().unwrap_or(fallback)], doc_comps, limits)?;
         }
     }
     Ok(())
+}
+
+/// A stream hayro parses as PDF or PostScript syntax, decoded the way this crate decodes it; a
+/// filter this crate does not decode, or data it cannot decode, cannot be bounded here
+/// (`reader_input_within`).
+fn syntax_data(s: &Stream, limits: &Limits, budget: &mut usize) -> Result<Vec<u8>> {
+    if s.dict.get("Filter").is_none() {
+        return Ok(s.data.clone());
+    }
+    if !filters::is_decodable(&s.dict) {
+        return Err(refuse(FlattenCause::RendererInput));
+    }
+    match filters::decode_chain(s, limits, budget) {
+        Ok(d) => Ok(d.data),
+        Err(e @ (PressError::InputLimit(_) | PressError::Canceled)) => Err(e),
+        Err(_) => Err(refuse(FlattenCause::RendererInput)),
+    }
+}
+
+/// The pass's causes as the readers' errors.
+fn reader_error(e: PressError) -> PressError {
+    match e {
+        PressError::FlattenRefused(FlattenCause::NestingDepth) => PressError::InputLimit("depth"),
+        PressError::FlattenRefused(FlattenCause::ImageBudget) => PressError::InputLimit("render_image"),
+        PressError::FlattenRefused(_) => PressError::Malformed("reader_input"),
+        other => other,
+    }
+}
+
+/// The bounds of [`check`] for the readers that hand the ORIGINAL file bytes to hayro (SMB-PARSER-
+/// HOSTILE-1 item 4): `vector_read.rs` `read` (`page` `None`: every page, nesting only, because the
+/// vector recorder never decodes an image: hayro-interpret 0.7.0 `ImageXObject::new` reads no
+/// sample and `Recorder::draw_image` only notes it) and press-write `render_page` (`page`
+/// `Some(index)`: that page, nesting and image sizes, because its painter decodes images).
+///
+/// Run on `doc`, Press's own reading of the same bytes, before hayro sees a byte: every object
+/// reachable from the pages' (inherited) `/Resources`, `/Contents` and `/Group` and from the
+/// catalog's `/OCProperties`; every stream hayro parses as syntax (page contents, content-role
+/// streams, every stream not in a binary or image role) decoded with this crate's decoders, and
+/// refused when it cannot be (a filter it does not decode, data it cannot decode: hayro's own
+/// decoders could hand the parser text this pass never saw); image streams decoded as the flatten
+/// decodes them (`renderer_stream`) on the render route only. Errors: nesting or a construction
+/// cycle `InputLimit("depth")`, an image past its budget `InputLimit("render_image")`, an
+/// unreadable syntax stream `Malformed("reader_input")`, an encrypted file `Encrypted` (this crate
+/// cannot decrypt, hayro can: nothing it decrypts could be bounded), budgets and cancellation as
+/// the decoders report them. The callers refuse a file `PdfDoc::open` refuses (lead ruling OQ1
+/// 2026-11-08). Residual: hayro reads the file through its own xref and page tree; where those
+/// differ from Press's (a repaired xref, a page Press's walk does not list) the objects hayro then
+/// reads were not bounded here (tests `press/tests/hostile_vector_read.rs`, the mutation sweep
+/// `press/tests/hostile_mutation_pdf.rs`).
+#[doc(hidden)]
+pub fn reader_input_within(doc: &PdfDoc, page: Option<usize>, cancel: &CancellationToken) -> Result<()> {
+    if doc.encrypted {
+        return Err(PressError::Encrypted);
+    }
+    let limits = &doc.limits;
+    let pages: Vec<u32> = match page {
+        Some(i) => vec![*doc.pages.get(i).ok_or(PressError::NoSuchPage)?],
+        None => doc.pages.clone(),
+    };
+    let mut work: Vec<u32> = Vec::new();
+    let mut contents: BTreeMap<u32, Option<&Dict>> = BTreeMap::new();
+    for &p in &pages {
+        let pd = doc.dict_of(p).ok_or(PressError::Malformed("page_node"))?;
+        let resources = doc.inherited(p, "Resources").filter(|o| matches!(o, Object::Dict(_)));
+        let page_contents = pd.get("Contents");
+        for o in [resources, page_contents, pd.get("Group")].into_iter().flatten() {
+            refs_in(o, &mut work);
+        }
+        let nums: Vec<u32> = match page_contents.map(|c| (c, doc.resolve(c))) {
+            Some((_, Object::Array(a))) => a.iter().filter_map(Object::as_ref).map(|r| r.num).collect(),
+            Some((Object::Ref(r), Object::Stream(_))) => vec![r.num],
+            _ => Vec::new(),
+        };
+        for n in nums {
+            contents.entry(n).or_insert(resources.and_then(Object::as_dict));
+        }
+    }
+    if let Some(o) = doc.catalog().ok().and_then(|c| c.get("OCProperties")) {
+        refs_in(o, &mut work);
+    }
+    let mut objs: Objs = BTreeMap::new();
+    while let Some(num) = work.pop() {
+        if objs.contains_key(&num) {
+            continue;
+        }
+        let Some(e) = doc.objects.get(&num) else { continue };
+        if objs.len() & 255 == 0 {
+            check_cancel(cancel)?;
+        }
+        refs_in(&e.obj, &mut work);
+        objs.insert(num, Entry { generation: e.generation, obj: e.obj.clone(), span: None, data_at: None });
+    }
+    let roles: BTreeSet<u32> = content_role_streams(&objs).keys().copied().collect();
+    let binary = binary_streams(&objs);
+    let images = image_streams(&objs);
+    let images_too = page.is_some();
+    let mut budget = limits.max_decoded_total;
+    let mut notes = BTreeSet::new();
+    for (i, (num, e)) in objs.iter_mut().enumerate() {
+        if i & 63 == 0 {
+            check_cancel(cancel)?;
+        }
+        let Object::Stream(s) = &mut e.obj else { continue };
+        let parsed = contents.contains_key(num) || roles.contains(num) || !(binary.contains(num) || images.contains(num));
+        if parsed {
+            let data = syntax_data(s, limits, &mut budget).map_err(reader_error)?;
+            s.dict.remove("Filter");
+            s.dict.remove("DecodeParms");
+            s.data = data;
+        } else if images_too && images.contains(num) {
+            let decoded = crate::flatten::renderer_stream(s, limits, &mut budget, &mut notes)?;
+            **s = decoded;
+        }
+    }
+    bounds(&objs, &contents, None, images_too, limits, cancel).map_err(reader_error)
 }
 
 #[cfg(test)]
