@@ -78,12 +78,15 @@ pub(crate) fn parse_xml<'a>(text: &'a str, limits: &Limits) -> Result<Document<'
     if !hsk_studio_package::xml_nesting_within(text, hsk_studio_package::XML_MAX_NESTING) {
         return Err(IdmlError::BudgetExceeded("xml_depth"));
     }
-    let options = ParsingOptions {
-        allow_dtd: false,
-        nodes_limit: limits.xml_nodes,
-        ..ParsingOptions::default()
-    };
-    Document::parse_with_options(text, options).map_err(map_xml)
+    // On its own fixed 8 MiB stack (lead ruling 2026-11-08); a panic or a thread that cannot start
+    // is malformed input, typed. The callers' walks stay on their threads (module docs of
+    // tests/hostile_xml_depth.rs: only `idml_longdoc.rs` `walk` recurses, within the cap).
+    let nodes_limit = limits.xml_nodes;
+    let parsed = hsk_studio_package::on_xml_parse_stack(|| {
+        let options = ParsingOptions { allow_dtd: false, nodes_limit, ..ParsingOptions::default() };
+        Document::parse_with_options(text, options)
+    });
+    parsed.ok_or(IdmlError::MalformedXml)?.map_err(map_xml)
 }
 
 fn name<'a>(n: Node<'a, '_>) -> &'a str {

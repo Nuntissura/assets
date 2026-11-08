@@ -24,6 +24,24 @@
 /// `HARD_MAX_DEPTH` (`hsk-studio-press-read/src/error.rs`).
 pub const XML_MAX_NESTING: usize = 256;
 
+/// Stack of the thread a guarded XML parse runs on (lead ruling 2026-11-08): measured in debug,
+/// roxmltree 0.21.1 takes about 14 KiB per nesting level (it aborts at 73 levels on 1 MiB and 148
+/// on 2 MiB; release about 0.8 KiB), so [`XML_MAX_NESTING`] levels need about 3.6 MiB; 8 MiB is the
+/// fixed margin. The same input then gets the same answer in debug and release from any caller
+/// thread (tests `hsk-studio-interop-vector-svg/tests/hostile_xml_depth.rs`,
+/// `hsk-studio-interop-layout/tests/hostile_xml_depth.rs`).
+pub const XML_PARSE_STACK_BYTES: usize = 8 << 20;
+
+/// Runs `f` (a guarded XML parse) on a dedicated thread with [`XML_PARSE_STACK_BYTES`] of stack and
+/// returns its value; `None` when the thread cannot start or `f` panics, which the caller maps to a
+/// typed refusal. Run [`xml_nesting_within`] first: this stack is sized for that cap only.
+pub fn on_xml_parse_stack<T: Send, F: FnOnce() -> T + Send>(f: F) -> Option<T> {
+    std::thread::scope(|scope| {
+        let handle = std::thread::Builder::new().name("hsk-xml-parse".into()).stack_size(XML_PARSE_STACK_BYTES).spawn_scoped(scope, f).ok()?;
+        handle.join().ok()
+    })
+}
+
 /// First index at or after `from` where `needle` starts.
 fn find(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     let hay = b.get(from..)?;

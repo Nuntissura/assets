@@ -23,7 +23,7 @@ mod write;
 mod zip;
 
 pub use error::{AssetError, PackageError};
-pub use bounded_xml::{XML_MAX_NESTING, xml_nesting_within};
+pub use bounded_xml::{XML_MAX_NESTING, XML_PARSE_STACK_BYTES, on_xml_parse_stack, xml_nesting_within};
 pub use bounded_zip::{
     InflateFail, MAX_ZIP_NAME_LEN, ZipDirectory, ZipEntry, ZipLimits, ZipReadError, inflate_exact,
     read_zip,

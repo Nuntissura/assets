@@ -389,6 +389,14 @@ pub struct EpubInspection {
     pub has_nav: bool,
 }
 
+/// One EPUB XML part, parsed on its own fixed 8 MiB stack (lead ruling 2026-11-08; the caller has
+/// run the nesting scan); a parse error, a panic or a thread that cannot start is `NotEpub(what)`.
+fn parse_epub_xml<'a>(text: &'a str, what: &'static str) -> Result<Document<'a>, EpubError> {
+    hsk_studio_package::on_xml_parse_stack(|| Document::parse_with_options(text, ParsingOptions { allow_dtd: false, nodes_limit: 1_000_000, ..ParsingOptions::default() }).ok())
+        .flatten()
+        .ok_or(EpubError::NotEpub(what))
+}
+
 /// Bounded re-read of an EPUB package: the OCF container (mimetype first and stored with the exact
 /// value, `META-INF/container.xml` naming a rootfile) and the OPF (package version, unique
 /// identifier, title, language, `dcterms:modified`, manifest items present in the archive, spine
@@ -406,7 +414,6 @@ pub fn inspect_epub(bytes: &[u8], limits: &ZipLimits, cancel: &CancellationToken
     }
     let get = |name: &str| files.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice());
     let xml = |b: &[u8]| -> Result<String, EpubError> { String::from_utf8(b.to_vec()).map_err(|_| EpubError::NotEpub("utf8")) };
-    let opts = ParsingOptions { allow_dtd: false, nodes_limit: 1_000_000, ..ParsingOptions::default() };
     let container = xml(get("META-INF/container.xml").ok_or(EpubError::NotEpub("container"))?)?;
     // roxmltree recurses per nesting level with no limit (a stack overflow aborts): nesting past
     // the scan's cap is refused before each parse, as malformed XML (SMB-PARSER-HOSTILE-1).
@@ -414,7 +421,7 @@ pub fn inspect_epub(bytes: &[u8], limits: &ZipLimits, cancel: &CancellationToken
     if !shallow(&container) {
         return Err(EpubError::NotEpub("container_xml"));
     }
-    let cdoc = Document::parse_with_options(&container, opts).map_err(|_| EpubError::NotEpub("container_xml"))?;
+    let cdoc = parse_epub_xml(&container, "container_xml")?;
     let root_path = cdoc
         .descendants()
         .find(|n| n.has_tag_name("rootfile"))
@@ -422,11 +429,10 @@ pub fn inspect_epub(bytes: &[u8], limits: &ZipLimits, cancel: &CancellationToken
         .ok_or(EpubError::NotEpub("rootfile"))?
         .to_owned();
     let opf = xml(get(&root_path).ok_or(EpubError::NotEpub("rootfile_missing"))?)?;
-    let opts = ParsingOptions { allow_dtd: false, nodes_limit: 1_000_000, ..ParsingOptions::default() };
     if !shallow(&opf) {
         return Err(EpubError::NotEpub("opf_xml"));
     }
-    let odoc = Document::parse_with_options(&opf, opts).map_err(|_| EpubError::NotEpub("opf_xml"))?;
+    let odoc = parse_epub_xml(&opf, "opf_xml")?;
     let pkg = odoc.root_element();
     if !pkg.has_tag_name("package") {
         return Err(EpubError::NotEpub("package"));

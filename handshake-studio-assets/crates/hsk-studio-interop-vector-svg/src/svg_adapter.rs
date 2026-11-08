@@ -647,12 +647,16 @@ pub fn import_svg(
     if !hsk_studio_package::xml_nesting_within(text, hsk_studio_package::XML_MAX_NESTING) {
         return Err(VectorError::BudgetExceeded("depth"));
     }
-    let options = ParsingOptions {
-        allow_dtd: false,
-        nodes_limit: policy.limits.max_nodes,
-        entity_resolver: None,
-    };
-    let doc = Document::parse_with_options(text, options).map_err(|e| match e {
+    // The parse runs on its own fixed 8 MiB stack (lead ruling 2026-11-08), so the cap fits debug
+    // frames from any caller thread; the walk below stays on the caller's thread because it mints ids
+    // through the caller's `&mut dyn IdMint`, which is not `Send` (it recurses at most
+    // `max_depth` levels, within the cap; tests/hostile_xml_depth.rs).
+    let nodes_limit = policy.limits.max_nodes;
+    let parsed = hsk_studio_package::on_xml_parse_stack(|| {
+        let options = ParsingOptions { allow_dtd: false, nodes_limit, entity_resolver: None };
+        Document::parse_with_options(text, options)
+    });
+    let doc = parsed.ok_or(VectorError::MalformedXml)?.map_err(|e| match e {
         roxmltree::Error::NodesLimitReached
         | roxmltree::Error::AttributesLimitReached
         | roxmltree::Error::NamespacesLimitReached => VectorError::BudgetExceeded("nodes"),
