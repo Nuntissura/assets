@@ -232,7 +232,7 @@ fn effect_presets_are_stored_records_that_drive_the_batch_chain() {
         f(&mut p);
         chain_from_preset(&p).unwrap_err()
     };
-    assert!(refuse(&|p| p.effects[0].filter_kind = "reverb".into()).detail.contains("unknown filter_kind"));
+    assert!(refuse(&|p| p.effects[0].filter_kind = "flux_capacitor".into()).detail.contains("unknown filter_kind"));
     assert!(refuse(&|p| p.effects[0].params.push(folio::StudioAudioPresetParam { key: "wet".into(), value: 1.0 })).detail.contains("unknown parameter"));
     assert!(refuse(&|p| p.effects[0].params.clear()).detail.contains("missing db"));
     assert!(refuse(&|p| p.effects[1].params.iter_mut().find(|x| x.key == "section_0_kind").unwrap().value = 7.0).detail.contains("kind"));
