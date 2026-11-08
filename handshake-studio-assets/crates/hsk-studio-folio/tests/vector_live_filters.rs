@@ -181,3 +181,18 @@ fn counts_are_checked_before_any_entry_is_examined() {
     // A stack with no filter is a valid, empty stack (it draws like no stack).
     assert_eq!(bad(&["live_filters", "0", "filters"], json!([])), Ok(()));
 }
+
+#[test]
+fn non_finite_reals_from_a_caller_are_refused() {
+    // JSON cannot carry NaN or infinity; a caller building records in memory can.
+    for bad_value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut r = decode(&full()).unwrap();
+        r.live_filters[0].filters[0].params[1] = StudioLiveFilterParam::Real { key: "roughen_size_absolute".into(), value: bad_value };
+        let got = validate_vector_records(&r, &document(), None, Budget::default(), &CancellationToken::default()).map_err(|d| d.code);
+        assert_eq!(got, Err(Code::InvalidField), "{bad_value}");
+    }
+    let r = decode(&full()).unwrap();
+    assert_eq!(r.live_filter_stack(&identity("SLYR", 2)).map(|s| (s.filters.len(), s.any_enabled())), Some((1, true)));
+    assert_eq!(r.live_filter_stack(&identity("SLYR", 1)).map(|s| s.filters[1].enabled), Some(false));
+    assert_eq!(r.live_filters[0].filters[0].params[0].key(), "roughen_mode");
+}

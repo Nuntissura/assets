@@ -525,6 +525,11 @@ pub struct StudioVectorRecords {
     /// Swatch -> book entry links (absent when empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub swatch_book_links: Vec<StudioSwatchBookLink>,
+    /// Object-scope live filter stacks of vector layers (lane SMB-AI-LIVE-EFFECTS-1,
+    /// `vector_live_filter.rs`; absent when empty, so record sets written before them are
+    /// byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub live_filters: Vec<crate::StudioLiveFilterStack>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -554,6 +559,7 @@ impl StudioVectorRecords {
             swatch_groups: Vec::new(),
             colour_book_refs: Vec::new(),
             swatch_book_links: Vec::new(),
+            live_filters: Vec::new(),
         }
     }
     /// The arrowheads of stroke row `row` of style `style_id`.

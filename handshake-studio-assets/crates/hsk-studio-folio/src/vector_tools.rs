@@ -515,7 +515,7 @@ pub(super) fn validate_tools(
     palettes: Option<&super::StudioHostPalettes<'_>>,
     cx: &mut Ctx,
 ) -> Result<()> {
-    for (n, what) in [(r.icc_profiles.len(), "icc_profiles"), (r.swatches.len(), "swatches"), (r.swatch_paints.len(), "swatch_paints"), (r.brushes.len(), "brushes"), (r.brush_strokes.len(), "brush_strokes"), (r.envelopes.len(), "envelopes"), (r.swatch_groups.len(), "swatch_groups"), (r.colour_book_refs.len(), "colour_book_refs"), (r.swatch_book_links.len(), "swatch_book_links")] {
+    for (n, what) in [(r.icc_profiles.len(), "icc_profiles"), (r.swatches.len(), "swatches"), (r.swatch_paints.len(), "swatch_paints"), (r.brushes.len(), "brushes"), (r.brush_strokes.len(), "brush_strokes"), (r.envelopes.len(), "envelopes"), (r.swatch_groups.len(), "swatch_groups"), (r.colour_book_refs.len(), "colour_book_refs"), (r.swatch_book_links.len(), "swatch_book_links"), (r.live_filters.len(), "live_filters")] {
         check(n <= TOOLS_MAX_ENTRIES, Code::BudgetExceeded, what, "count")?;
         cx.nodes(n, what)?;
     }
@@ -626,6 +626,7 @@ pub(super) fn validate_tools(
             }
         }
     }
+    crate::vector_live_filter::validate_live_filters(r, layers, cx)?;
     // A top object is not itself wrapped (no envelope chains or cycles).
     for e in &r.envelopes {
         if let StudioEnvelopeShape::TopObject { source_layer_id } = &e.envelope {
