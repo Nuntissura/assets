@@ -202,6 +202,17 @@ fn frame_capture_1280x720_offscreen_equals_quiet_window() {
     frame_capture(1280, 720);
 }
 
+/// FIT-L1: the expanded Browse Dock at 2560 x 1440 scale 1.
+#[test]
+fn frame_capture_2560x1440_offscreen_equals_quiet_window() {
+    frame_capture(2560, 1440);
+}
+
+#[test]
+fn frame_capture_1024x640_offscreen_equals_quiet_window() {
+    frame_capture(1024, 640);
+}
+
 /// The edge state offscreen at 1024 x 640 after a script: a tool picked, a layer hidden, the Properties group on
 /// Masks, a menu title clicked (the status shows not_implemented_yet).
 #[test]
