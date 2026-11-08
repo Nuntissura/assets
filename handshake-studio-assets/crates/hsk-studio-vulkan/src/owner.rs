@@ -4,10 +4,11 @@
 use crate::refusal::{Refusal, rgba_len};
 use ash::vk::{self, Handle};
 use std::ffi::CStr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
-/// Bound on every fence wait (red-team stand-in for the absent validation layer: no unbounded wait).
+/// Bound on every fence wait (no unbounded wait, with or without the validation layer).
 pub const FENCE_TIMEOUT_NS: u64 = 5_000_000_000;
 
 static OWNER_LIVE: AtomicBool = AtomicBool::new(false);
@@ -69,7 +70,7 @@ pub struct LayerReport {
     pub disabled: &'static str,
     /// Layers the loader still enumerates after the disable (empty here when every layer is implicit).
     pub present: Vec<String>,
-    /// Layers enabled on the instance: always empty here, no validation layer exists on this machine.
+    /// Layers enabled on the instance: the Khronos validation layer when [`Owner::validation`] is `on`, else none.
     pub enabled: Vec<String>,
 }
 
@@ -91,15 +92,106 @@ pub struct ValidationReport {
     /// `on` (layer enabled), `absent` (debug build, layer not listed), `off` (release build) or `none` (no owner yet).
     pub state: &'static str,
     pub errors: u64,
+    /// Validation and performance warnings.
     pub warnings: u64,
-    /// The first 16 error and warning ids, in arrival order.
+    /// Loader-only (general) warnings, e.g. the implicit layers this process disables; not validation findings.
+    pub loader_warnings: u64,
+    /// The first 16 error and warning ids, in arrival order (loader-only warnings excluded).
     pub first: Vec<ValidationId>,
+}
+
+/// Message ids kept per process.
+const FIRST_IDS: usize = 16;
+/// 0 no owner yet, 1 on, 2 absent, 3 off: the state of the last owner this process opened.
+static VALIDATION_STATE: AtomicU8 = AtomicU8::new(0);
+static VALIDATION_ERRORS: AtomicU64 = AtomicU64::new(0);
+static VALIDATION_WARNINGS: AtomicU64 = AtomicU64::new(0);
+static LOADER_WARNINGS: AtomicU64 = AtomicU64::new(0);
+static VALIDATION_FIRST: Mutex<Vec<ValidationId>> = Mutex::new(Vec::new());
+
+fn state_code(state: u8) -> &'static str {
+    match state {
+        1 => "on",
+        2 => "absent",
+        3 => "off",
+        _ => "none",
+    }
 }
 
 /// The validation report of this process: counts survive the owner, so messages from its destruction are counted.
 pub fn process_validation() -> ValidationReport {
-    ValidationReport { state: "absent", errors: 0, warnings: 0, first: Vec::new() }
+    let first = match VALIDATION_FIRST.lock() {
+        Ok(v) => v.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    ValidationReport {
+        state: state_code(VALIDATION_STATE.load(Ordering::Acquire)),
+        errors: VALIDATION_ERRORS.load(Ordering::Acquire),
+        warnings: VALIDATION_WARNINGS.load(Ordering::Acquire),
+        loader_warnings: LOADER_WARNINGS.load(Ordering::Acquire),
+        first,
+    }
 }
+
+/// The debug-utils messenger: counts errors and warnings and keeps the first ids. The message text goes to stderr for
+/// the first ids only (diagnostics), never into a report or receipt. Never panics: it runs inside the driver's call.
+unsafe extern "system" fn on_validation_message(
+    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+    types: vk::DebugUtilsMessageTypeFlagsEXT,
+    data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
+    _user: *mut std::ffi::c_void,
+) -> vk::Bool32 {
+    let general_only =
+        !types.intersects(vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE);
+    if general_only && !severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+        // Loader notes such as "layer forced disabled" for the implicit layers this process turns off.
+        LOADER_WARNINGS.fetch_add(1, Ordering::AcqRel);
+        return vk::FALSE;
+    }
+    let (counter, label) = if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+        (&VALIDATION_ERRORS, "error")
+    } else if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::WARNING) {
+        (&VALIDATION_WARNINGS, "warning")
+    } else {
+        return vk::FALSE;
+    };
+    counter.fetch_add(1, Ordering::AcqRel);
+    // SAFETY: the layer passes a valid callback data struct, or null, for the duration of this call
+    // (VUID-PFN_vkDebugUtilsMessengerCallbackEXT); its strings are NUL-terminated or null.
+    let (name, number, text) = match unsafe { data.as_ref() } {
+        Some(d) => unsafe {
+            (
+                d.message_id_name_as_c_str().map(|s| s.to_string_lossy().chars().take(160).collect()).unwrap_or_default(),
+                d.message_id_number,
+                d.message_as_c_str().map(|s| s.to_string_lossy().chars().take(2048).collect::<String>()).unwrap_or_default(),
+            )
+        },
+        None => (String::new(), 0, String::new()),
+    };
+    let mut first = match VALIDATION_FIRST.lock() {
+        Ok(v) => v,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if first.len() < FIRST_IDS {
+        let _ = writeln!(std::io::stderr(), "vk-validation {label} {name} {number:#010x}: {text}");
+        first.push(ValidationId { severity: label, name, number });
+    }
+    vk::FALSE
+}
+
+fn messenger_info() -> vk::DebugUtilsMessengerCreateInfoEXT<'static> {
+    vk::DebugUtilsMessengerCreateInfoEXT::default()
+        .message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR)
+        .message_type(
+            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+        )
+        .pfn_user_callback(Some(on_validation_message))
+}
+
+/// The instance's messenger, destroyed before the instance.
+pub(crate) type Messenger = (ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT);
 
 /// Raw handles a later owner hand-over passes on (Vulkan handles are the C ABI, so the binding does not matter).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,15 +255,23 @@ pub(crate) struct Core {
     pub(crate) family: u32,
     pub(crate) memory: vk::PhysicalDeviceMemoryProperties,
     pub(crate) surface: bool,
+    /// The validation messenger (item V), when the layer is on.
+    pub(crate) messenger: Option<Messenger>,
 }
 
 impl Drop for Core {
     fn drop(&mut self) {
         // SAFETY: the last Arc holder; every child object (panes, buffers, pools, fences, presenters) was destroyed by
-        // its owner first, and the device is idle (each owner waits idle before destroying its children).
+        // its owner first, and the device is idle (each owner waits idle before destroying its children). The
+        // messenger is an instance child: destroyed after the device, before the instance
+        // (VUID-vkDestroyInstance-instance-00629). Messages from instance destruction reach the messenger chained
+        // into the instance create info.
         unsafe {
             let _ = self.device.device_wait_idle();
             self.device.destroy_device(None);
+            if let Some((utils, m)) = self.messenger.take() {
+                utils.destroy_debug_utils_messenger(m, None);
+            }
             self.instance.destroy_instance(None);
         }
         OWNER_LIVE.store(false, Ordering::Release);
@@ -459,6 +559,7 @@ pub struct Owner {
     layers: LayerReport,
     generation: u32,
     extensions: Vec<&'static str>,
+    validation: &'static str,
 }
 
 fn c_text(raw: Result<&CStr, std::ffi::FromBytesUntilNulError>) -> String {
@@ -536,19 +637,73 @@ impl Owner {
                 instance_exts.push(name.as_ptr());
             }
         }
+        // Item V: debug builds enable the Khronos validation layer when the loader lists it, with VK_EXT_debug_utils
+        // (from the loader or the layer itself) and a counting messenger; release builds never do. The checked-in
+        // code decides, not the environment (CX-VAL-007). VK_LOADER_LAYERS_DISABLE=~implicit~ leaves explicit layers.
+        const LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
+        let listed = present.iter().any(|l| l == VALIDATION_LAYER);
+        let utils = ash::ext::debug_utils::NAME;
+        let validate = cfg!(debug_assertions)
+            && listed
+            && (has_ext(utils)
+                // SAFETY: valid entry; the layer name is a static NUL-terminated string.
+                || unsafe { entry.enumerate_instance_extension_properties(Some(LAYER)) }
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|e| e.extension_name_as_c_str() == Ok(utils)));
+        let state: u8 = if !cfg!(debug_assertions) {
+            3
+        } else if validate {
+            1
+        } else {
+            2
+        };
+        let layers: Vec<*const std::ffi::c_char> = if validate { vec![LAYER.as_ptr()] } else { Vec::new() };
+        if validate {
+            instance_exts.push(utils.as_ptr());
+        }
         let app = vk::ApplicationInfo::default()
             .application_name(c"hsk-studio asset-local host")
             .engine_name(c"hsk-studio-vulkan")
             .api_version(vk::API_VERSION_1_3);
-        let create = vk::InstanceCreateInfo::default().application_info(&app).enabled_extension_names(&instance_exts);
-        // SAFETY: create info and extension name pointers outlive the call (static CStr names).
+        let mut chained = messenger_info();
+        let mut create = vk::InstanceCreateInfo::default()
+            .application_info(&app)
+            .enabled_layer_names(&layers)
+            .enabled_extension_names(&instance_exts);
+        if validate {
+            // Instance creation and destruction messages (VK_EXT_debug_utils: a messenger chained to the create info).
+            create = create.push_next(&mut chained);
+        }
+        VALIDATION_STATE.store(state, Ordering::Release);
+        // SAFETY: create info, layer and extension name pointers outlive the call (static CStr names).
         let instance = unsafe { entry.create_instance(&create, None) }.map_err(vk_refusal)?;
-        match Self::open_device(config, entry, instance, disabled, present) {
+        let mut messenger: Option<Messenger> = None;
+        if validate {
+            let utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
+            // SAFETY: valid instance with VK_EXT_debug_utils enabled; the callback is a plain fn with no user data.
+            match unsafe { utils.create_debug_utils_messenger(&messenger_info(), None) } {
+                Ok(m) => messenger = Some((utils, m)),
+                Err(e) => {
+                    // SAFETY: no child object of this instance exists on this path.
+                    unsafe { instance.destroy_instance(None) };
+                    return Err(vk_refusal(e));
+                }
+            }
+        }
+        let enabled = if validate { vec![VALIDATION_LAYER.to_owned()] } else { Vec::new() };
+        let report = LayerReport { disabled, present, enabled };
+        match Self::open_device(config, entry, instance, report, &mut messenger, state_code(state)) {
             Ok(owner) => Ok(owner),
             Err((e, instance)) => {
                 if let Some(instance) = instance {
-                    // SAFETY: no child object of this instance exists on this path.
-                    unsafe { instance.destroy_instance(None) };
+                    // SAFETY: the messenger is this instance's only child on this path; destroyed first.
+                    unsafe {
+                        if let Some((utils, m)) = messenger.take() {
+                            utils.destroy_debug_utils_messenger(m, None);
+                        }
+                        instance.destroy_instance(None);
+                    }
                 }
                 Err(e)
             }
@@ -560,8 +715,9 @@ impl Owner {
         config: OwnerConfig,
         entry: ash::Entry,
         instance: ash::Instance,
-        disabled: &'static str,
-        present: Vec<String>,
+        layers: LayerReport,
+        messenger: &mut Option<Messenger>,
+        validation: &'static str,
     ) -> Result<Self, (Refusal, Option<ash::Instance>)> {
         let win32 = config.surface.then(|| ash::khr::win32_surface::Instance::new(&entry, &instance));
         // SAFETY: valid instance; read-only queries.
@@ -655,18 +811,21 @@ impl Owner {
         let queue = unsafe { device.get_device_queue(family, 0) };
         // SAFETY: valid physical device.
         let memory = unsafe { instance.get_physical_device_memory_properties(physical) };
-        let core = Arc::new(Core { entry, instance, physical, device, queue, family, memory, surface: config.surface });
-        // From here a failure drops `core`, whose Drop destroys device and instance and resets the owner flag.
+        let core = Arc::new(Core {
+            entry,
+            instance,
+            physical,
+            device,
+            queue,
+            family,
+            memory,
+            surface: config.surface,
+            messenger: messenger.take(),
+        });
+        // From here a failure drops `core`, whose Drop destroys device, messenger and instance and resets the owner
+        // flag.
         let submit = Submitter::new(&core).map_err(|e| (e, None))?;
-        Ok(Self {
-            core,
-            submit,
-            panes: Vec::new(),
-            info,
-            layers: LayerReport { disabled, present, enabled: Vec::new() },
-            generation: 1,
-            extensions,
-        })
+        Ok(Self { core, submit, panes: Vec::new(), info, layers, generation: 1, extensions, validation })
     }
 
     pub fn device_info(&self) -> &DeviceInfo {
@@ -675,9 +834,10 @@ impl Owner {
     pub fn layers(&self) -> &LayerReport {
         &self.layers
     }
-    /// Validation layer state: always `absent` on this machine (no Khronos validation layer installed).
+    /// Validation layer state: `on` (debug build, the loader lists VK_LAYER_KHRONOS_validation and it is enabled with
+    /// a counting messenger), `absent` (debug build, not listed) or `off` (release build).
     pub fn validation(&self) -> &'static str {
-        "absent"
+        self.validation
     }
     /// Error and warning counts and the first message ids of this process ([`process_validation`]).
     pub fn validation_report(&self) -> ValidationReport {
@@ -938,5 +1098,30 @@ impl Drop for Owner {
             }
         }
         self.submit.destroy(&core);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Item V positive control (GPU group; its own process): with the layer on, a known invalid call is counted as an
+    /// error under its VUID, so "on" with zero errors elsewhere is a live messenger, not a silent one. The call is
+    /// `vkResetFences` with fenceCount 0 (VUID-vkResetFences-fenceCount-arraylength), which the driver ignores.
+    #[test]
+    fn validation_messenger_counts_a_known_error() {
+        let owner = Owner::open(OwnerConfig::default()).expect("Vulkan 1.3 device on this machine");
+        if owner.validation() != "on" {
+            println!("NOT_PROVEN: validation {} (layer not enabled), positive control skipped", owner.validation());
+            return;
+        }
+        let before = process_validation();
+        // SAFETY: an empty fence list is invalid usage the layer reports; no fence is touched, the driver gets count 0.
+        let _ = unsafe { owner.core.device.reset_fences(&[]) };
+        let after = process_validation();
+        println!("validation before {before:?} after {after:?}");
+        assert_eq!(after.errors, before.errors + 1, "{after:?}");
+        assert!(after.first.iter().any(|id| id.severity == "error" && id.name.contains("vkResetFences")), "{after:?}");
+        assert!(after.loader_warnings >= before.loader_warnings);
     }
 }

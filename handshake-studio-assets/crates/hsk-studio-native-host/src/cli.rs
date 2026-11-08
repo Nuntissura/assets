@@ -18,7 +18,8 @@ pub const USAGE: &str = "studio-vk: asset-local Vulkan host (chrome: cpu painter
   studio-vk help
 Offscreen opens no window. window --quiet never takes focus and needs --frames. Scene gui: the document in the
 Viewport beside the Layers panel (default size 1280x800). Exit: 0 ok, 2 usage, 3 Vulkan refusal, 4 io, 5 focus
-violation, 6 timeout, 7 document, 8 window. Every receipt says validation: absent.";
+violation, 6 timeout, 7 document, 8 window. Receipts name the validation state (on in debug builds when the loader
+lists VK_LAYER_KHRONOS_validation, absent when not, off in release builds) and its error and warning counts.";
 
 /// GUI scene size when no `--size` is given.
 pub const GUI_DEFAULT_SIZE: (u32, u32) = (1280, 800);

@@ -8,7 +8,7 @@
 //! applied one per iteration after the first frame, a resize re-creates the pane at the client extent (released
 //! first; 0x0 creates nothing), and only a changed frame is painted and uploaded. The Operator's own window waits for
 //! events (ControlFlow::Wait) and presents only when something changed.
-use crate::capture::{Json, device_json, layers_json, sha256_hex, write_png, write_receipt};
+use crate::capture::{Json, device_json, layers_json, sha256_hex, validation_json, write_png, write_receipt};
 use crate::error::HostError;
 use crate::event::{EventLog, HostEvent, Mods, from_winit};
 use crate::offscreen::document_json;
@@ -314,7 +314,7 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
         report: None,
         device: None,
         layers: None,
-        validation: "absent",
+        validation: "none",
         startup_ms: [0; 3],
     };
     event_loop.run_app(&mut app).map_err(|_| HostError::Window("event_loop"))?;
@@ -660,6 +660,8 @@ impl App {
             ("issuer", Json::str("transient_asset_local")),
             ("device", self.device.take().unwrap_or(Json::Null)),
             ("validation", Json::str(self.validation)),
+            // Read after release(): the owner is gone, so its destruction messages count.
+            ("validation_report", validation_json()),
             ("layers", self.layers.take().unwrap_or(Json::Null)),
             ("hwnd_created", Json::Bool(true)),
             ("scene", Json::str(self.args.scene.code())),

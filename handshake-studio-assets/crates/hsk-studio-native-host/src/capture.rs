@@ -153,6 +153,30 @@ pub fn layers_json(owner: &hsk_studio_vulkan::Owner) -> Json {
     ])
 }
 
+/// The receipt's `validation_report` (item V): this process's validation counts and first message ids when the
+/// receipt is written (after the owner is dropped, so destruction messages count). Ids and codes only, never text.
+pub fn validation_json() -> Json {
+    let v = hsk_studio_vulkan::process_validation();
+    let first = v
+        .first
+        .iter()
+        .map(|id| {
+            Json::obj(vec![
+                ("severity", Json::str(id.severity)),
+                ("id", Json::str(&id.name)),
+                ("number", Json::str(format!("{:#010x}", id.number as u32))),
+            ])
+        })
+        .collect();
+    Json::obj(vec![
+        ("state", Json::str(v.state)),
+        ("errors", Json::Num(v.errors)),
+        ("warnings", Json::Num(v.warnings)),
+        ("loader_warnings", Json::Num(v.loader_warnings)),
+        ("first", Json::Arr(first)),
+    ])
+}
+
 /// Writes `text` and a newline to `path` (the gui tree file).
 pub fn write_text(path: &Path, text: &str) -> Result<(), HostError> {
     let mut file = std::fs::File::create(path).map_err(|_| HostError::Io("text_create"))?;

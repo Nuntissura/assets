@@ -114,7 +114,8 @@ menus opening, docking and splitters, rename, reorder, lock, opacity and thumbna
 - PNG: 8-bit RGBA, rows top to bottom. Offscreen reads the pane image back; window mode reads the swapchain image
   back before present (the genuine frame).
 - Receipt (`hsk.studio.native_host.receipt@1`, one JSON line on stdout and in `--receipt`): mode, source, device (name,
-  type, UUID, driver, API version), `validation: absent`, loader layers seen and disabled, extent, format,
+  type, UUID, driver, API version), `validation` (`on`, `absent` or `off`) with `validation_report` (errors,
+  warnings, the first 16 message ids), loader layers seen, enabled and disabled, extent, format,
   `frame_sha256`, focus counters, swapchain state, counters and transitions, DPI, chrome, document facts.
 - The same scene gives the same `frame_sha256` offscreen and in the window.
 
@@ -156,4 +157,8 @@ this process only (`VK_LOADER_LAYERS_DISABLE=~implicit~`) unless `--allow-overla
 | 2 | unknown_author_id, script, script_too_long, script_frame_only, gui_only | a bad scripted step or gui flag | fix the script or the author_id (read the tree file) |
 | 8 | window | event loop, window or handle failed | rerun; one window run per process |
 
-Validation layers are absent on this machine, so no receipt claims validated Vulkan use.
+Validation (item V of SMB-VK-UI-PASS-1): debug builds enable VK_LAYER_KHRONOS_validation when the loader lists it
+(Vulkan SDK 1.4.363.1 on this machine), with a VK_EXT_debug_utils messenger that counts errors and warnings; no
+environment variable turns it on or off. The first 16 messages go to stderr as `vk-validation <severity> <id>
+<number>: <text>` for diagnosis; receipts carry ids and counts only. Every GPU test asserts zero errors when the state
+is `on`; `absent` and `off` print `NOT_PROVEN`. Release builds report `off` and validate nothing.

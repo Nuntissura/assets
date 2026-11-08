@@ -1,7 +1,7 @@
 //! Offscreen proof path: Vulkan instance with no surface extension, a pane image, readback, PNG. No window, no HWND.
 //! Agents screenshot through this. The `gui` scene runs its scripted steps on the live frame first, painting and
 //! uploading after each step, then reads back the final frame.
-use crate::capture::{Json, device_json, layers_json, sha256_hex, write_png, write_receipt};
+use crate::capture::{Json, device_json, layers_json, sha256_hex, validation_json, write_png, write_receipt};
 use crate::error::HostError;
 use crate::scene::{CHROME, Content, DocumentFacts, GuiArgs, Scene, content};
 use hsk_studio_vulkan::{DeviceInfo, GpuClientPort, LayerReport, Owner, OwnerConfig, PANE_FORMAT};
@@ -87,16 +87,21 @@ fn finish(
     gui: Json,
 ) -> Result<OffscreenResult, HostError> {
     let frame_sha256 = sha256_hex(&rgba8);
+    let (issuer, device, layers, validation) = (owner.issuer().code(), device_json(&owner), layers_json(&owner), owner.validation());
+    let (device_info, layer_report) = (owner.device_info().clone(), owner.layers().clone());
+    // The owner goes first, so the validation counts include its destruction.
+    drop(owner);
     let receipt = Json::obj(vec![
         ("schema", Json::str("hsk.studio.native_host.receipt@1")),
         ("host", Json::str("asset-local host")),
         ("mode", Json::str("offscreen")),
         ("source", Json::str("offscreen")),
         ("backend", Json::str("vulkan")),
-        ("issuer", Json::str(owner.issuer().code())),
-        ("device", device_json(&owner)),
-        ("validation", Json::str(owner.validation())),
-        ("layers", layers_json(&owner)),
+        ("issuer", Json::str(issuer)),
+        ("device", device),
+        ("validation", Json::str(validation)),
+        ("validation_report", validation_json()),
+        ("layers", layers),
         ("hwnd_created", Json::Bool(false)),
         ("scene", Json::str(args.scene.code())),
         ("extent", Json::Arr(vec![Json::Num(u64::from(width)), Json::Num(u64::from(height))])),
@@ -119,9 +124,9 @@ fn finish(
         rgba8,
         frame_sha256,
         exact,
-        device: owner.device_info().clone(),
-        layers: owner.layers().clone(),
-        validation: owner.validation(),
+        device: device_info,
+        layers: layer_report,
+        validation,
         document,
         receipt,
     })
