@@ -1236,10 +1236,10 @@ fn execute(
     }
     let published = (mux, bytes, sha, verified);
     run.published = Some(published.clone());
-    if let (Some((_, side)), Some(side_temp)) = (sidecar, side_temp) {
-        if !publish(&side_temp, side, job.overwrite, "export-sidecar-exists")? {
-            run.temps.retain(|t| t != &side_temp);
-        }
+    if let (Some((_, side)), Some(side_temp)) = (sidecar, side_temp)
+        && !publish(&side_temp, side, job.overwrite, "export-sidecar-exists")?
+    {
+        run.temps.retain(|t| t != &side_temp);
     }
     run.published = None;
     Ok(published)
