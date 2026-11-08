@@ -170,9 +170,60 @@ fn live_effect_typed_parameter_map() {
     assert_eq!((f.get("src2_h"), f.get("dst2_v"), f.entries().count()), (Some(&real(1.0)), Some(&real(2.0)), 16));
     assert_eq!(f.set_free_distort_frame([[f64::NAN, 0.0]; 4], [[0.0, 0.0]; 4]), Err(LiveEffectError::NonFinite));
     assert_eq!(f.get("src0_h"), Some(&real(0.0)), "failed frame write leaves the record unchanged");
-    // Step-repeat: no recovered record, every row studio_declared.
-    assert_eq!(EffectKind::StepRepeat.provenance(), Provenance::StudioDeclared);
-    assert!(EffectKind::StepRepeat.params().iter().all(|s| s.provenance == Provenance::StudioDeclared));
+    // Step-repeat (lane SMB-AI-LIVE-EFFECTS-1): STU-VEC-157 recovers the shared transform parameter
+    // set, cell for cell; only the seed (STU-FX-011) stays studio_declared.
+    let stu157 = Provenance::Recovered("STU-VEC-157");
+    assert_eq!(EffectKind::StepRepeat.provenance(), stu157);
+    let row = |key: &str| {
+        let spec = EffectKind::StepRepeat.param(key).unwrap_or_else(|| panic!("{key}"));
+        assert_eq!(spec.provenance, stu157, "{key}");
+        let ParamKind::Numeric(n) = spec.kind else { panic!("{key}") };
+        n
+    };
+    for key in ["scale_horizontal", "scale_vertical"] {
+        let n = row(key);
+        assert_eq!(
+            (n.ty, n.hard_min, n.hard_max, n.soft_min, n.soft_max, n.unit, n.precision),
+            (ParamType::Real, Some(-4000.0), Some(4000.0), Some(0.0), Some(200.0), Unit::Percent, Some(2)),
+            "{key}"
+        );
+        // Lead ruling Q2 2026-11-08: the spec cell reads 1.0; Studio keeps the identity 100 percent.
+        assert_eq!(n.default, Some(100.0), "{key}");
+    }
+    for key in ["move_horizontal", "move_vertical"] {
+        let n = row(key);
+        assert_eq!(
+            (n.ty, n.hard_min, n.hard_max, n.soft_min, n.soft_max, n.unit, n.precision),
+            (ParamType::Real, Some(-4000.0), Some(4000.0), Some(-100.0), Some(100.0), Unit::DocumentUnit, Some(4)),
+            "{key}"
+        );
+        assert_eq!(n.default, Some(0.0), "{key}");
+    }
+    let rotate = row("rotate");
+    assert_eq!(
+        (rotate.hard_min, rotate.hard_max, rotate.soft_min, rotate.soft_max, rotate.default, rotate.unit, rotate.precision),
+        (None, None, None, None, Some(0.0), Unit::Deg, None)
+    );
+    let copies = row("copies");
+    assert_eq!(
+        (copies.ty, copies.hard_min, copies.hard_max, copies.soft_min, copies.soft_max, copies.default, copies.unit, copies.precision),
+        (ParamType::Int, None, None, None, None, Some(0.0), Unit::Count, Some(0))
+    );
+    for key in ["reflect_x", "reflect_y", "randomize"] {
+        let spec = EffectKind::StepRepeat.param(key).unwrap_or_else(|| panic!("{key}"));
+        assert_eq!((spec.kind, spec.provenance), (ParamKind::Bool { default: Some(false) }, stu157), "{key}");
+    }
+    assert_eq!(EffectKind::StepRepeat.param("random"), None, "the spec key is `randomize`");
+    assert_eq!(EffectKind::StepRepeat.param("reference_point").map(|s| s.provenance), Some(stu157));
+    assert_eq!(EffectKind::StepRepeat.param("seed").map(|s| s.provenance), Some(Provenance::StudioDeclared));
+    let mut s = EffectRecord::new(EffectKind::StepRepeat);
+    assert_eq!((s.get("scale_horizontal"), s.get("move_vertical"), s.get("randomize")), (Some(&real(100.0)), Some(&real(0.0)), Some(&ParamValue::Bool(false))));
+    // The edit range is wider than the slider and refuses past it; never clamped.
+    s.set_real("scale_horizontal", -4000.0).unwrap();
+    s.set_real("move_vertical", 250.0).unwrap();
+    assert_eq!(s.set_real("scale_vertical", 4000.5), Err(LiveEffectError::OutOfHardRange));
+    assert_eq!(s.set_real("move_horizontal", -4000.01), Err(LiveEffectError::OutOfHardRange));
+    assert_eq!(s.set_bool("random", true), Err(LiveEffectError::UnknownParameter));
     // An unset unknown-default parameter refuses evaluation, never a guessed default.
     assert_eq!(err(&[rect(0.0, 0.0, 10.0, 10.0)], &EffectRecord::new(EffectKind::PuckerBloat)), LiveEffectError::ParameterUnset);
     for kind in [EffectKind::Roughen, EffectKind::ZigZag, EffectKind::Twist, EffectKind::Tweak, EffectKind::FreeDistort] {
@@ -654,7 +705,7 @@ fn vector_step_repeat_live() {
     let scaled = go(&src, &step(&[("copies", ParamValue::Int(2)), ("scale_horizontal", real(50.0)), ("scale_vertical", real(50.0))]));
     assert_eq!(anchors(&scaled[2])[0], p(3.75, 3.75));
     // Random: each amount drawn between identity and the value, seeded.
-    let rnd = step(&[("copies", ParamValue::Int(2)), ("move_horizontal", real(20.0)), ("random", ParamValue::Bool(true)), ("seed", ParamValue::Int(9))]);
+    let rnd = step(&[("copies", ParamValue::Int(2)), ("move_horizontal", real(20.0)), ("randomize", ParamValue::Bool(true)), ("seed", ParamValue::Int(9))]);
     let r1 = go(&src, &rnd);
     assert_eq!(anchors(&r1[1])[0], p(20.0 * unit_random(9, 4, 1), 0.0));
     assert_eq!(go(&src, &rnd), r1);
@@ -671,7 +722,8 @@ fn vector_step_repeat_live() {
     assert_eq!(r.set_token("reference_point", "ref.middle"), Err(LiveEffectError::UnknownEnumMember));
     r.set_int("copies", 100_000).unwrap();
     assert_eq!(err(&src, &r), LiveEffectError::OutputOverBudget);
-    let huge = step(&[("copies", ParamValue::Int(1)), ("scale_horizontal", real(1.0e12))]);
+    // Within the STU-VEC-157 edit range, compounding copies still leave the engine range: refused.
+    let huge = step(&[("copies", ParamValue::Int(3)), ("scale_horizontal", real(4000.0))]);
     assert_eq!(err(&[rect(0.0, 0.0, 1.0e6, 1.0e6)], &huge), LiveEffectError::BeyondEngineRange);
 }
 
@@ -772,5 +824,34 @@ fn live_effect_descriptor_entry() {
     assert!(d.contains("\"vector_live_effects\":{\"lane\":\"SMB-AI-DISTORT-EFFECTS-1\""));
     for needle in ["STU-VEC-155", "STU-VEC-158", "convert_to_shape_sizing_law_not_recovered", "tests/vector_live_effects.rs", "UNVERIFIED", "gpu none"] {
         assert!(d.contains(needle), "{needle}");
+    }
+    // Lane SMB-AI-LIVE-EFFECTS-1: the STU-VEC-157 rows, the `randomize` key and the Studio reading
+    // of the scale and move defaults beside the spec cell.
+    for needle in ["STU-VEC-157", "randomize", "spec cell 1.0", "MT-30558 stays open"] {
+        assert!(d.contains(needle), "{needle}");
+    }
+    assert!(!d.contains("random false"), "the old key is gone from the descriptor");
+}
+
+#[test]
+fn live_effects_keep_the_fill_rule() {
+    // Lane SMB-AI-LIVE-EFFECTS-1 (V4-06 class: a law that rebuilds the path must keep its fill rule):
+    // every evaluating effect over an even-odd source returns even-odd paths.
+    let mut sq = rect(0.0, 0.0, 40.0, 20.0);
+    sq.fill_rule = FillRule::EvenOdd;
+    let src = [sq];
+    let records = [
+        roughen_line(2.0, 10.0, 1, "points.corner"),
+        zigzag(2.0, 3.0, "mode.absolute", "points.smooth"),
+        record(EffectKind::PuckerBloat, &[("pucker_bloat_factor", real(-20.0))]),
+        record(EffectKind::Twist, &[("twist_angle", real(30.0))]),
+        tweak_rec("mode.absolute", 2.0, 2.0, [true; 3], 4),
+        frame([[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]], [[2.0, 1.0], [42.0, 0.0], [38.0, 22.0], [0.0, 19.0]]),
+        step(&[("copies", ParamValue::Int(2)), ("move_horizontal", real(50.0))]),
+    ];
+    for r in &records {
+        let out = go(&src, r);
+        assert!(!out.is_empty(), "{:?}", r.kind());
+        assert!(out.iter().all(|o| o.fill_rule == FillRule::EvenOdd), "{:?}", r.kind());
     }
 }
