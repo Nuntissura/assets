@@ -39,10 +39,15 @@
 //! after the earlier operations, then runs score's `NoiseReducer` over the selection through the
 //! same latency-compensated bounce as an effect. The operation stores the print range, the reduction
 //! parameters, the FFT size and the profile digest (`NoiseProfile::digest`), never the profile: replay
-//! captures the print again and refuses `waveform_noise_print_stale` when its digest differs (the
-//! audio under the print changed). A print too short for a profile is `waveform_noise_print_short`,
-//! a print of other channels than the selection `waveform_noise_print_channels`, both before any
-//! edit. One operation, one undo step, saved in the edit entry like the others. A live bus or clip
+//! captures the print again from the stored range. The digest is a cache check, not a gate (lead
+//! ruling 2026-11-08, review F3): the profile's exact bits depend on the platform's `cos`/`sin` and
+//! on score's FFT, while the source identity and the append-only list already fix the audio under
+//! the print. A replay whose digest differs applies the recomputed print and records
+//! `noise_print_recomputed` with both digests ([`PrintRecompute`]: the viewer's op record and observe
+//! frame, `waveform_json().noise_print_recomputed`, a status line). Refused typed: another source
+//! (`waveform_source_mismatch` at open), a print range outside the buffer, a print too short for a
+//! profile (`waveform_noise_print_short`), a print of other channels than the selection
+//! (`waveform_noise_print_channels`), all before any edit. One operation, one undo step, saved in the edit entry like the others. A live bus or clip
 //! noise effect would need a stored profile, which Folio does not hold (not in this form).
 //!
 //! **Hosted plugins on a selection** (slice 4b, parity row AU-19): [`WaveformEdit::Plugin`] names an
@@ -638,20 +643,7 @@ pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip
             let processed = bounce_effect(&clip.channels, buffer.sample_rate_hz(), &spec, actor, cancel)?;
             return buffer.paste(selection.start, &WaveClip { channels: processed }, PasteMode::Overwrite, selection.channels, cancel).map_err(code);
         }
-        WaveformOp::NoiseReduce { selection, print, params, print_digest } => {
-            if print.channels != selection.channels {
-                return Err("waveform_noise_print_channels: the print and the selection name other channels".into());
-            }
-            params.reduction.validate().map_err(code)?;
-            let profile = noise_print(buffer, *print, params.fft_size, cancel)?;
-            if profile.digest() != *print_digest {
-                return Err("waveform_noise_print_stale: the audio under the noise print changed; capture the print again".into());
-            }
-            let clip = buffer.copy(*selection).map_err(code)?;
-            let reducer = score::NoiseReducer::new(&profile, clip.channels.len(), params.reduction).map_err(code)?;
-            let processed = bounce_processor(&clip.channels, buffer.sample_rate_hz(), Box::new(reducer), actor, cancel)?;
-            return buffer.paste(selection.start, &WaveClip { channels: processed }, PasteMode::Overwrite, selection.channels, cancel).map_err(code);
-        }
+        WaveformOp::NoiseReduce { .. } => return apply_noted(buffer, op, clip, plugins, actor, cancel).map(|(report, _)| report),
         WaveformOp::Spectral(e) => {
             let rate = buffer.sample_rate_hz();
             buffer.process_channels(e.channels, cancel, |input, out| {
@@ -662,8 +654,50 @@ pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip
     .map_err(code)
 }
 
+/// A noise print whose recomputed digest differs from the stored one at replay (module docs): the
+/// recomputed print was applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrintRecompute {
+    /// Index of the operation in the list.
+    pub op: usize,
+    pub stored_digest: String,
+    pub recomputed_digest: String,
+}
+
+impl PrintRecompute {
+    pub fn to_json(&self) -> Value {
+        json!({"code": "noise_print_recomputed", "op": self.op, "stored_digest": self.stored_digest, "recomputed_digest": self.recomputed_digest})
+    }
+}
+
+/// [`apply_op`], also returning the recomputed print digest of a noise reduction whose stored digest
+/// differs (`None` otherwise).
+fn apply_noted(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip>, plugins: &dyn PluginHost, actor: &ActorContext, cancel: &CancellationToken) -> Result<(WaveEditReport, Option<String>), String> {
+    let WaveformOp::NoiseReduce { selection, print, params, print_digest } = op else {
+        return apply_op(buffer, op, clip, plugins, actor, cancel).map(|r| (r, None));
+    };
+    if print.channels != selection.channels {
+        return Err("waveform_noise_print_channels: the print and the selection name other channels".into());
+    }
+    params.reduction.validate().map_err(code)?;
+    let profile = noise_print(buffer, *print, params.fft_size, cancel)?;
+    let digest = profile.digest();
+    let recomputed = (digest != *print_digest).then_some(digest);
+    let clip = buffer.copy(*selection).map_err(code)?;
+    let reducer = score::NoiseReducer::new(&profile, clip.channels.len(), params.reduction).map_err(code)?;
+    let processed = bounce_processor(&clip.channels, buffer.sample_rate_hz(), Box::new(reducer), actor, cancel)?;
+    let report = buffer.paste(selection.start, &WaveClip { channels: processed }, PasteMode::Overwrite, selection.channels, cancel).map_err(code)?;
+    Ok((report, recomputed))
+}
+
 /// The source with `ops` replayed (pasted clips re-derived from their prefixes).
 pub fn replay(source: &WaveBuffer, ops: &[WaveformOp], plugins: &dyn PluginHost, actor: &ActorContext, cancel: &CancellationToken) -> Result<WaveBuffer, String> {
+    replay_noted(source, ops, plugins, actor, cancel).map(|(buffer, _)| buffer)
+}
+
+/// [`replay`], also returning every noise print recomputed with another digest (module docs).
+pub fn replay_noted(source: &WaveBuffer, ops: &[WaveformOp], plugins: &dyn PluginHost, actor: &ActorContext, cancel: &CancellationToken) -> Result<(WaveBuffer, Vec<PrintRecompute>), String> {
+    let mut notes = Vec::new();
     let mut wanted: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (i, op) in ops.iter().enumerate() {
         if let WaveformOp::Paste { clip, .. } = op {
@@ -679,9 +713,12 @@ pub fn replay(source: &WaveBuffer, ops: &[WaveformOp], plugins: &dyn PluginHost,
             }
         }
         let Some(op) = ops.get(i) else { break };
-        apply_op(&mut buffer, op, clips.get(&i), plugins, actor, cancel).map_err(|e| format!("op {i} ({}): {e}", op.name()))?;
+        let (_, recomputed) = apply_noted(&mut buffer, op, clips.get(&i), plugins, actor, cancel).map_err(|e| format!("op {i} ({}): {e}", op.name()))?;
+        if let (Some(recomputed_digest), WaveformOp::NoiseReduce { print_digest, .. }) = (recomputed, op) {
+            notes.push(PrintRecompute { op: i, stored_digest: print_digest.clone(), recomputed_digest });
+        }
     }
-    Ok(buffer)
+    Ok((buffer, notes))
 }
 
 fn prefix_digest(ops: &[WaveformOp]) -> [u8; 32] {
@@ -715,6 +752,8 @@ pub struct WaveformState {
     error: Option<String>,
     /// Hosted plugins the edit list may name (slice 4b).
     pub(crate) plugins: PluginRegistry,
+    /// Noise prints recomputed with another digest by the latest replay (module docs).
+    recomputed: Vec<PrintRecompute>,
 }
 
 impl super::Viewer {
@@ -745,6 +784,7 @@ impl super::Viewer {
             drag_from: None,
             error: None,
             plugins: PluginRegistry::default(),
+            recomputed: Vec::new(),
         });
         self.waveform_sync()?;
         self.say("waveform editor open".into());
@@ -779,16 +819,32 @@ impl super::Viewer {
         // Appended operations without a paste apply to the cache; anything else replays.
         let incremental = w.cache.as_ref().is_some_and(|(o, _)| ops.len() > o.len() && ops.starts_with(o) && ops[o.len()..].iter().all(|x| !matches!(x, WaveformOp::Paste { .. })));
         let result = match w.cache.take() {
-            Some((done, mut buffer)) if incremental => ops[done.len()..]
-                .iter()
-                .try_for_each(|op| apply_op(&mut buffer, op, None, &w.plugins, &actor, cancel).map(|_| ()))
-                .map(|()| buffer),
-            _ => replay(&w.source, &ops, &w.plugins, &actor, cancel),
+            Some((done, mut buffer)) if incremental => {
+                let mut notes = Vec::new();
+                ops.iter()
+                    .enumerate()
+                    .skip(done.len())
+                    .try_for_each(|(i, op)| {
+                        let (_, recomputed) = apply_noted(&mut buffer, op, None, &w.plugins, &actor, cancel)?;
+                        if let (Some(recomputed_digest), WaveformOp::NoiseReduce { print_digest, .. }) = (recomputed, op) {
+                            notes.push(PrintRecompute { op: i, stored_digest: print_digest.clone(), recomputed_digest });
+                        }
+                        Ok::<(), String>(())
+                    })
+                    .map(|()| (buffer, notes))
+            }
+            _ => replay_noted(&w.source, &ops, &w.plugins, &actor, cancel),
         };
         match result {
-            Ok(buffer) => {
+            Ok((buffer, notes)) => {
                 w.cache = Some((ops, buffer));
                 w.error = None;
+                w.recomputed.clone_from(&notes);
+                // Recorded, not refused (module docs): one op record and observe frame per print.
+                for note in notes {
+                    self.say(format!("waveform: noise print of op {} recomputed (stored digest {}, now {})", note.op, note.stored_digest, note.recomputed_digest));
+                    self.run.record_host_outcome("waveform_noise_print_recomputed", Ok(note.to_json()));
+                }
                 Ok(())
             }
             Err(e) => {
@@ -955,6 +1011,7 @@ impl super::Viewer {
             "snap": w.snap,
             "clipboard": w.clipboard.as_ref().map(|c| json!({"frames": c.clip.frames(), "channels": c.clip.channels.len(), "after_ops": c.after_ops})),
             "peak_dbfs": peak_dbfs,
+            "noise_print_recomputed": w.recomputed.iter().map(PrintRecompute::to_json).collect::<Vec<_>>(),
             "error": w.error.clone().or_else(|| buffer.err()),
         })
     }
