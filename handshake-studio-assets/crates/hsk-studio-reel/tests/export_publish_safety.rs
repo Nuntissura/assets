@@ -277,6 +277,47 @@ fn a_sidecar_rename_failure_after_the_media_states_what_was_published() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Review F1 (c79c858d): an output named `*.vtt` (any case) makes the sidecar path `<output>.vtt` the output
+/// path itself, so the sidecar would replace the media under a Complete receipt. Refused before the first
+/// frame, nothing left.
+#[test]
+fn an_output_named_vtt_with_a_sidecar_is_refused_before_the_first_frame() {
+    for name in ["x.vtt", "x.VTT"] {
+        let d = dir(&format!("f1-{name}"));
+        let calls = Arc::new(AtomicU64::new(0));
+        let r = run_one(job(vc3_mov("f1"), video(2, &calls, None), d.join(name), false), true);
+        assert!(failed_detail(&r).contains("export-sidecar-path"), "{name}: {r:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "{name}");
+        assert!(entries(&d).is_empty(), "{name}: {:?}", entries(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// Review F2 (c79c858d): the sidecar rename fails after the media rename, with the caption track embedded.
+/// The published media carries the track, so the receipt names the captions, with no sidecar hash because
+/// no sidecar was published. Windows only, as the test above.
+#[cfg(windows)]
+#[test]
+fn a_sidecar_rename_failure_after_the_media_keeps_the_embedded_caption_receipt() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let d = dir("f2");
+    std::fs::write(d.join("out.vtt"), b"old sidecar").unwrap();
+    let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(d.join("out.vtt")).unwrap();
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut q = ExportQueue::new();
+    q.submit_with_captions(job(vc3_mov("f2"), video(2, &calls, None), d.join("out.mov"), true), ExportCaptions { embed: true, ..captions() });
+    let r = q.run().remove(0);
+    drop(lock);
+    assert!(matches!(r.outcome, ExportOutcome::Failed { code: "MEDIA_IO", .. }), "{r:?}");
+    assert!(r.published_media && !r.published_sidecar, "{r:?}");
+    assert!(r.mux.as_ref().is_some_and(|m| m.text_samples > 0), "{r:?}");
+    let c = r.captions.as_ref().expect("the published media carries the caption track");
+    assert!(c.track_samples > 0, "{c:?}");
+    assert_eq!(c.sidecar_sha256, None, "no sidecar was published");
+    assert_eq!(entries(&d), ["out.mov", "out.vtt"], "no temp left");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// Item 1e: with `overwrite`, an existing output and sidecar are replaced by the rename (no delete first).
 #[test]
 fn overwrite_replaces_output_and_sidecar() {
