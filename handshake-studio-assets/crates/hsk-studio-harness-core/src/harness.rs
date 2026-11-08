@@ -32,6 +32,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 type SessionSave = fn(&mut Session, &Path, &CancellationToken) -> Result<hsk_studio_session::SaveReceipt, hsk_studio_session::Failed>;
 
 mod containers;
+/// User export recipes (lane SMB-DELIVERY-QUEUE-1).
+pub mod export_recipes;
 /// Node export settings (lane SMB-ARTBOARD-EXPORT-1).
 pub mod export_settings;
 

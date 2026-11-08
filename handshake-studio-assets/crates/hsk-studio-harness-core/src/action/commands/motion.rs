@@ -54,6 +54,11 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("composition.queue_add_module", "motion_command", "Add Output Module", false, true, OUTPUT_MODULE),
     entry("composition.queue_set_module", "motion_command", "Output Module Settings", false, true, OUTPUT_MODULE),
     entry("composition.queue_remove_module", "motion_command", "Remove Output Module", false, true, &[ITEM_ID, MODULE_ID]),
+    // Lane SMB-DELIVERY-QUEUE-1 ([STU-MOT-125]): reorder, duplicate, and apply a template (a user export recipe
+    // as an output-module template; render-settings templates refuse typed).
+    entry("composition.queue_reorder", "motion_command", "Move Render Queue Item", false, true, &[ITEM_ID, p("index", ValueType::Number)]),
+    entry("composition.queue_duplicate", "motion_command", "Duplicate Render Queue Item", false, true, &[ITEM_ID, p("new_item_id", ValueType::String)]),
+    entry("composition.queue_apply_template", "motion_command", "Apply Template", false, true, &[ITEM_ID, MODULE_ID, p("template", ValueType::Enumerated), p("recipe_id", ValueType::String)]),
     entry("composition.add_layer", "motion_command", "New Layer", false, true, LAYER_NEW),
     entry("composition.remove_layer", "motion_command", "Remove Layer From Composition", false, true, &[LAYER_ID]),
     entry("composition.reorder_layer", "motion_command", "Move Layer In Stack", false, true, &[LAYER_ID, p("index", ValueType::Number)]),

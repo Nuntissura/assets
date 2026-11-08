@@ -64,6 +64,13 @@
 //! whose current value composite alone knows (`property_default_unknown`);
 //! a copy spans one layer (`copy_spans_layers`); no footage or guide kind; spatial tangents are not
 //! stored (Folio).
+//!
+//! Render queue (lane SMB-DELIVERY-QUEUE-1, [STU-MOT-125]): `composition.queue_reorder` (`index` in the queue),
+//! `composition.queue_duplicate` (a copy after the item, `new_item_id` or `<item_id>-copy`; it keeps the module
+//! output paths), `composition.queue_apply_template` (`template` `output_module`: a user export recipe of the
+//! entry `export_recipes` mapped onto a module, see `template_module`; `render_settings` is refused
+//! `render_settings_template_unbuilt`, the next slice). Post-render actions stay refused at render. A
+//! `png_sequence` module defaults to RGB+alpha, straight colour, 8 bits.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{EntryRestore, HistoryStep, Place, PlacementWrite, Run};
 use crate::action::{self, CommandEntry, ValueType};
@@ -301,6 +308,8 @@ struct Edit<'r> {
     next_keys: Option<KeyframeState>,
     /// The step's name when it is not the row's display name.
     label: Option<&'static str>,
+    /// The user export recipes entry body (`composition.queue_apply_template`).
+    export_recipes: Option<&'r [u8]>,
 }
 
 /// The document layer a command creates.
@@ -481,7 +490,7 @@ fn plan(run: &Run<'_>, row: &'static CommandEntry, params: &Value) -> R<Planned>
         // Vector, raster or other records keyed by the layer id would not follow the copy.
         return no("layer_duplicate_unsupported", id);
     }
-    let mut edit = Edit { row, doc, comp, motion, create: Vec::new(), detail: Map::new(), keys: &run.keyframes, next_keys: None, label: None };
+    let mut edit = Edit { row, doc, comp, motion, create: Vec::new(), detail: Map::new(), keys: &run.keyframes, next_keys: None, label: None, export_recipes: session.document_entry(super::export_recipes::EXPORT_RECIPES_ENTRY) };
     apply(&mut edit, &P(map))?;
     let Edit { comp, motion, create, detail, next_keys: keys, label, .. } = edit;
     if !row.mutates_authority {
@@ -664,6 +673,22 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             q.output_modules.retain(|m| m.module_id != module);
             if q.output_modules.len() == n { no("output_module_not_found", &module) } else { Ok(()) }
         }
+        "composition.queue_reorder" => {
+            let (id, index): (String, usize) = (p.text("item_id")?, req!(p, "index")?);
+            let m = e.motion_mut();
+            let Some(at) = m.render_queue.iter().position(|q| q.item_id == id) else {
+                return no("queue_item_not_found", &id);
+            };
+            if index >= m.render_queue.len() {
+                return no("parameter_invalid", "index");
+            }
+            let q = m.render_queue.remove(at);
+            m.render_queue.insert(index, q);
+            e.say("index", json!(index));
+            Ok(())
+        }
+        "composition.queue_duplicate" => queue_duplicate(e, p),
+        "composition.queue_apply_template" => queue_apply_template(e, p),
         "composition.add_layer" => layer_add(e, p),
         "composition.set_solid" => solid_set(e, p),
         "keyframe.select" => key_select(e, p),
@@ -1060,10 +1085,13 @@ fn default_module(item: &str, module: &str, format: &str) -> R<StudioOutputModul
         "mov_vc3" => ("mov", "dnxhr_hq"),
         "mov_av1" => ("mov", "64"),
         "mp4_av1" => ("mp4", "64"),
+        // Lane SMB-DELIVERY-QUEUE-1: a PNG sequence (STU-MOT-122) defaults to RGB+alpha, straight colour.
+        "png_sequence" => ("png", ""),
         _ => return no("parameter_invalid", "format"),
     };
+    let (channels, color) = if format == "png_sequence" { ("rgb_alpha", "straight") } else { ("rgb", "premultiplied") };
     serde_json::from_value(json!({"module_id": module, "format": format, "codec_option": codec, "include_project_link": false, "post_render_action": "none",
-        "include_source_metadata": false, "channels": "rgb", "depth": 8, "color": "premultiplied", "starting_number": 0, "use_comp_frame_number": false,
+        "include_source_metadata": false, "channels": channels, "depth": 8, "color": color, "starting_number": 0, "use_comp_frame_number": false,
         "audio": {"output": "off", "sample_rate": 48000, "bit_depth": 32, "float": true, "channels": 2},
         "colour": {"preserve_rgb": false, "output_color_space": "rec709", "embed_color_space": true},
         "output_path": format!("renders/{item}-{module}.{ext}")}))
@@ -1093,6 +1121,118 @@ fn queue_add(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     }
     m.render_queue.push(StudioRenderQueueItem { item_id: item_id.clone(), composition_id, settings, output_modules: vec![module] });
     e.say("item_id", json!(&item_id));
+    Ok(())
+}
+
+/// `composition.queue_duplicate`: a copy of the item right after it, with every module and setting; the new
+/// id is `new_item_id`, else `<item_id>-copy`, `<item_id>-copy2`, ... The copy writes the same output paths
+/// until its modules are changed (a delivery run of both refuses `delivery_output_collision`).
+fn queue_duplicate(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
+    let id = p.text("item_id")?;
+    let wanted: Option<String> = opt!(p, "new_item_id", String)?;
+    let m = e.motion_mut();
+    let Some(at) = m.render_queue.iter().position(|q| q.item_id == id) else {
+        return no("queue_item_not_found", &id);
+    };
+    let taken = |m: &StudioMotionRecords, x: &str| m.render_queue.iter().any(|q| q.item_id == x);
+    let new_id = match wanted {
+        Some(w) if taken(m, &w) => return no("duplicate_identity", &w),
+        Some(w) => w,
+        None => (1..=m.render_queue.len().saturating_add(1)).map(|n| if n == 1 { format!("{id}-copy") } else { format!("{id}-copy{n}") }).find(|c| !taken(m, c)).ok_or(No("duplicate_identity", bounded(&id)))?,
+    };
+    let mut copy = m.render_queue.get(at).cloned().ok_or(No("queue_item_not_found", bounded(&id)))?;
+    copy.item_id = new_id.clone();
+    m.render_queue.insert(at.saturating_add(1), copy);
+    e.say("item_id", json!(new_id));
+    Ok(())
+}
+
+/// The output-module fields of a user export recipe (lead ruling 2026-11-08: an output-module template is a
+/// user `StudioExportRecipe` with `does_video`): reel's exporter and container, the VC-3 profile or AV1
+/// quantizer, and the PCM audio (on with its bits, or off). A recipe whose parameters, scope, targets or
+/// filters say more than a module stores is refused `template_not_mapped`; H.264 / HEVC and audio-only
+/// recipes are `template_format_unsupported` (no such render queue format).
+fn template_module(recipe: &Value, m: &mut StudioOutputModule) -> R<()> {
+    let target = &recipe["target_format"];
+    if target["exporter_class_id"].as_str() != Some("reel-isobmff-mux") {
+        return no("template_format_unsupported", "target_format");
+    }
+    let mp4 = match target["exporter_file_type"].as_str() {
+        Some("mov") => false,
+        Some("mp4") => true,
+        _ => return no("template_format_unsupported", "target_format"),
+    };
+    let unmapped = recipe["parameters"].as_object().is_none_or(|o| !o.is_empty())
+        || recipe["source_scope"]["kind"] != "entire_source"
+        || recipe["output_targets"].as_array().is_none_or(|a| !a.is_empty())
+        || recipe["standard_filters"].as_array().is_none_or(|a| !a.is_empty());
+    if unmapped {
+        return no("template_not_mapped", "recipe");
+    }
+    let video = &recipe["video"];
+    let (format, codec) = match (video["codec"].as_str(), mp4) {
+        (Some("vc3"), false) => {
+            let key = match video["profile"].as_str() {
+                Some("DnxhrLb") => "dnxhr_lb",
+                Some("DnxhrSq") => "dnxhr_sq",
+                Some("DnxhrHq") => "dnxhr_hq",
+                Some("DnxhrHqx") => "dnxhr_hqx",
+                _ => return no("template_format_unsupported", "video"),
+            };
+            (folio::StudioOutputFormat::MovVc3, key.to_string())
+        }
+        (Some("av1"), _) => {
+            let q = video["quantizer"].as_u64().ok_or(No("template_not_mapped", "video".to_string()))?;
+            (if mp4 { folio::StudioOutputFormat::Mp4Av1 } else { folio::StudioOutputFormat::MovAv1 }, q.to_string())
+        }
+        _ => return no("template_format_unsupported", "video"),
+    };
+    let depth = if codec == "dnxhr_hqx" { 10 } else if m.format == format { m.depth } else { 8 };
+    m.format = format;
+    m.codec_option = codec;
+    m.depth = depth;
+    match &recipe["audio"] {
+        Value::Null => m.audio.output = folio::StudioAudioOutput::Off,
+        a => {
+            m.audio.output = folio::StudioAudioOutput::On;
+            m.audio.bit_depth = a["pcm_bits"].as_u64().and_then(|b| u16::try_from(b).ok()).ok_or(No("template_not_mapped", "audio".to_string()))?;
+            m.audio.float = a["float"].as_bool().ok_or(No("template_not_mapped", "audio".to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+/// `composition.queue_apply_template` (STU-MOT-125): `template` `output_module` applies the user export
+/// recipe `recipe_id` (document entry `export_recipes`) to module `module_id` (default the item's first);
+/// `render_settings` templates are the next slice, refused `render_settings_template_unbuilt`.
+fn queue_apply_template(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
+    let id = p.text("item_id")?;
+    match p.text("template")?.as_str() {
+        "output_module" => {}
+        "render_settings" => return no("render_settings_template_unbuilt", "template"),
+        other => return no("parameter_invalid", other),
+    }
+    let recipe_id = p.text("recipe_id")?;
+    let recipes: Value = match e.export_recipes {
+        Some(bytes) => serde_json::from_slice(bytes).map_err(|_| No("export_recipes_invalid", String::new()))?,
+        None => Value::Null,
+    };
+    let Some(recipe) = recipes["recipes"].as_array().and_then(|l| l.iter().find(|r| r["recipe_id"] == recipe_id.as_str())).cloned() else {
+        return no("unknown_recipe", &recipe_id);
+    };
+    let module: Option<String> = opt!(p, "module_id", String)?;
+    let q = queue_item(e, &id)?;
+    let m = match &module {
+        Some(mid) => q.output_modules.iter_mut().find(|m| &m.module_id == mid),
+        None => q.output_modules.first_mut(),
+    };
+    let Some(m) = m else {
+        return no("output_module_not_found", module.as_deref().unwrap_or(""));
+    };
+    template_module(&recipe, m)?;
+    let module_id = m.module_id.clone();
+    e.say("module_id", json!(module_id));
+    e.say("recipe_id", json!(recipe_id));
     Ok(())
 }
 
@@ -2086,7 +2226,7 @@ fn gather(entries: &[(&str, &str, &[Key])], times: Option<&BTreeSet<u64>>) -> R<
 /// The keys of one property address on `layer_id` (its address checked; a property that is not
 /// yet stored has none).
 fn property_keys(e: &Edit<'_>, layer_id: &str, prop: &str) -> R<Vec<Key>> {
-    let mut probe = Edit { row: e.row, doc: e.doc, comp: e.comp.clone(), motion: e.motion.clone(), create: Vec::new(), detail: Map::new(), keys: e.keys, next_keys: None, label: None };
+    let mut probe = Edit { row: e.row, doc: e.doc, comp: e.comp.clone(), motion: e.motion.clone(), create: Vec::new(), detail: Map::new(), keys: e.keys, next_keys: None, label: None, export_recipes: e.export_recipes };
     match slot(&mut probe, layer_id, prop, None) {
         Ok(((_, keys), _)) => Ok(keys.clone()),
         Err(No("property_default_unknown", _)) => Ok(Vec::new()),

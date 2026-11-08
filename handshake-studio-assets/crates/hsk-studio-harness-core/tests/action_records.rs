@@ -272,7 +272,7 @@ fn budgets_are_checked_before_building() {
 /// signature runs to the first `{` (several lines when rustfmt wraps it).
 fn run_pub_fns() -> Vec<(String, bool)> {
     // Lane SMB-ARTBOARD-EXPORT-1 review F6: every file of src/harness/ that holds an `impl Run` block.
-    const SOURCE: &str = concat!(include_str!("../src/harness.rs"), "\n", include_str!("../src/harness/containers.rs"), "\n", include_str!("../src/harness/export_settings.rs"));
+    const SOURCE: &str = concat!(include_str!("../src/harness.rs"), "\n", include_str!("../src/harness/containers.rs"), "\n", include_str!("../src/harness/export_settings.rs"), "\n", include_str!("../src/harness/export_recipes.rs"));
     let mut found = Vec::new();
     let mut in_run = false;
     let mut lines = SOURCE.lines();
