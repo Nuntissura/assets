@@ -38,7 +38,7 @@ fn style_patch(f: Fields<'_>) -> Result<StylePatch, CommandRefusal> {
         font_size_pt: patched(f, "font_size_pt", || f.number("font_size_pt"))?,
         leading_pt: patched(f, "leading_pt", || f.number("leading_pt"))?,
         align: patched(f, "align", || folio_field!(f, "align", folio::StudioTextAlign, "a text alignment token"))?,
-        composition: patched(f, "composition", || folio_field!(f, "composition", folio::StudioCompositionSettings, "Folio composition settings"))?,
+        composition: patched(f, "composition", || folio_field!(f, "composition", folio::StudioCompositionSettings, "Folio composition settings").map(Box::new))?,
     })
 }
 

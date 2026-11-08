@@ -221,7 +221,8 @@ fn indent_and_spacing_round_trip_and_overlay() {
 /// finite values are accepted, never clamped.
 #[test]
 fn indent_and_spacing_are_finite_points() {
-    let fields: [(&str, fn(&mut StudioCompositionSettings) -> &mut Option<Length>); 6] = [
+    type Field = fn(&mut StudioCompositionSettings) -> &mut Option<Length>;
+    let fields: [(&str, Field); 6] = [
         ("left_indent", |s| &mut s.left_indent),
         ("right_indent", |s| &mut s.right_indent),
         ("first_line_indent", |s| &mut s.first_line_indent),

@@ -42,7 +42,7 @@ pub struct StylePatch {
     /// The paragraph style's own composition settings (Folio `style_composition`: composer,
     /// hyphenation, H&J, STU-TYP-185 indents and spacing); `Some(None)` removes the style's entry.
     /// Paragraph scope only.
-    pub composition: Option<Option<StudioCompositionSettings>>,
+    pub composition: Option<Option<Box<StudioCompositionSettings>>>,
 }
 
 /// One styles-panel command.
@@ -165,7 +165,7 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
                 // One entry per style; an empty or cleared record removes it. Folio validates the
                 // values below (points, finite, the H&J bounds).
                 let at = d.styles.style_composition.iter().position(|e| e.style_id == *style);
-                match (at, c.as_ref().filter(|c| !c.is_empty())) {
+                match (at, c.as_deref().filter(|c| !c.is_empty())) {
                     (Some(i), Some(c)) => d.styles.style_composition[i].settings = c.clone(),
                     (None, Some(c)) => d.styles.style_composition.push(StudioStyleComposition { style_id: style.clone(), settings: c.clone() }),
                     (Some(i), None) => {

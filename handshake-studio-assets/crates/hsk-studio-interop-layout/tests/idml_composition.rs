@@ -436,7 +436,7 @@ fn idml_indents_compose_and_export_to_pdf_at_the_moved_x() {
             None => first_x.push((key, x)),
         }
     }
-    first_x.sort_by(|a, b| b.0.cmp(&a.0));
+    first_x.sort_by_key(|b| std::cmp::Reverse(b.0));
     let want: Vec<f64> = lines.iter().map(|l| origin + l.x_start_pt).collect();
     assert_eq!(first_x.len(), want.len(), "{first_x:?}");
     for ((_, x), w) in first_x.iter().zip(&want) {

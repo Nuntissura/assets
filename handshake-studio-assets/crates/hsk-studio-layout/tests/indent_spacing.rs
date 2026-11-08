@@ -237,7 +237,7 @@ fn zero_indents_and_spacing_compose_bit_identically() {
     for align in [StudioTextAlign::Left, StudioTextAlign::Justified, StudioTextAlign::Right] {
         for composer in composers() {
             let none = styles_aligned(align, &[StudioCompositionSettings::default()]);
-            let zeros = styles_aligned(align, &[zero.clone()]);
+            let zeros = styles_aligned(align, std::slice::from_ref(&zero));
             for f in [frame(100.0, 300.0), columns(130.0, 300.0, 2, 10.0)] {
                 for fl in [flow(), balanced.clone()] {
                     let a = run_with(f, &s, &none, composer, &fl, &[]).unwrap();
@@ -489,7 +489,7 @@ fn hostile_indent_and_space_values_give_typed_answers() {
     ];
     for settings in each {
         for composer in composers() {
-            match run(frame(120.0, 100.0), &s, &styles(&[settings.clone()]), composer) {
+            match run(frame(120.0, 100.0), &s, &styles(std::slice::from_ref(&settings)), composer) {
                 Ok(p) => assert!(finite(&p), "{settings:?} {composer:?}: {p:?}"),
                 Err(e) => assert_eq!(e, LayoutError::InvalidGeometry, "{settings:?} {composer:?}"),
             }
@@ -499,7 +499,7 @@ fn hostile_indent_and_space_values_give_typed_answers() {
     // accumulated in one column.
     for settings in [indents(-max, -max, 0.0), indents(-max, 0.0, -max), space(-max, 0.0)] {
         for composer in composers() {
-            assert_eq!(run(frame(120.0, 100.0), &s, &styles(&[settings.clone()]), composer), Err(LayoutError::InvalidGeometry), "{settings:?} {composer:?}");
+            assert_eq!(run(frame(120.0, 100.0), &s, &styles(std::slice::from_ref(&settings)), composer), Err(LayoutError::InvalidGeometry), "{settings:?} {composer:?}");
         }
     }
     // Alternating +MAX / -MAX space: each gap is finite (MAX - MAX) or a push off the frame.
@@ -583,4 +583,35 @@ fn shift_paragraph_records_moves_drops_and_keeps_the_first() {
     shift_paragraph_records(&mut f, &mut st, &edited, 2, 3, 0).unwrap();
     assert_eq!(mine(&st), vec![(true, 5, Some(3.0)), (true, 0, Some(1.0)), (false, 6, Some(9.0))]);
     assert_eq!(f.paragraph_flows.iter().map(|p| p.paragraph_start).collect::<Vec<_>>(), vec![5]);
+}
+
+/// Item 3 measurement (not a proof; ignored, run on demand in debug and release): one paragraph of
+/// 600, 1800 and 5000 words per composer, with no, a 30 pt and a 170 pt last-line indent (170 on a
+/// 180 pt measure re-breaks every time), prints `MEASURE:` lines (outcome, lines, time). The
+/// refusal point is the composer's own budget (`budget_exceeded`).
+#[test]
+#[ignore = "measurement of the last-line re-break cost; run with --run-ignored only"]
+fn measure_last_line_indent_rebreak_cost() {
+    let word = ["aaaa", "bb", "cccccc", "ddd", "eeeee"];
+    for words in [600usize, 1800, 5000] {
+        let text: String = (0..words).map(|i| word[i % word.len()]).collect::<Vec<_>>().join(" ");
+        let s = one(&text);
+        for composer in composers() {
+            for last in [0.0, 30.0, 170.0] {
+                // Debug builds skip the 5000-word worst case (Knuth-Plass takes minutes there).
+                if last > 100.0 && words > 1800 && cfg!(debug_assertions) {
+                    continue;
+                }
+                let r = styles(&[StudioCompositionSettings { last_line_indent: pt(last), ..Default::default() }]);
+                let t = std::time::Instant::now();
+                let out = run(frame(180.0, 1_000_000.0), &s, &r, composer);
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                let what = match &out {
+                    Ok(p) => format!("ok lines={} overset={}", lines(p).len(), p.overset.is_some()),
+                    Err(e) => e.code().to_string(),
+                };
+                println!("MEASURE: words={words} composer={composer:?} last_line_indent={last} {what} ms={ms:.1}");
+            }
+        }
+    }
 }
