@@ -292,9 +292,21 @@ impl StudioExportSettings {
     }
 }
 
-/// The key two file names are compared under: names with one key name one file.
+/// The key two file names are compared under, as NTFS compares them (review F5): each character is
+/// replaced by its upper case when that is one character and kept otherwise, the simple mapping of the
+/// volume's upper-case table, so σ, ς and Σ fold to Σ while ß stays ß. Names with one key name one
+/// file on NTFS. A volume's own `$UpCase` table is written when it is formatted; its entries are
+/// UNVERIFIED here, Unicode's simple upper case is the reading.
 pub fn file_name_fold(name: &str) -> String {
-    name.to_lowercase()
+    name.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(one), None) => one,
+                _ => c,
+            }
+        })
+        .collect()
 }
 
 /// One constraint against [STU-IO-114]: `InvalidField` at `export_settings/constraint`.
@@ -319,7 +331,8 @@ pub fn check_suffix(suffix: &str) -> Result<()> {
 
 /// The settings of one node: at least one and at most [`MAX_SETTINGS_PER_NODE`] (`InvalidField`,
 /// `BudgetExceeded` at `export_settings/settings`), each suffix and constraint in bounds, and no two
-/// with one suffix and extension ([STU-IO-117]: `DuplicateIdentity` at `export_settings/suffix`).
+/// with one suffix and extension ([STU-IO-117]: `DuplicateIdentity` at `export_settings/suffix`), the
+/// suffixes compared by [`file_name_fold`] (`@2x` and `@2X` name one file).
 pub fn check_node_settings(settings: &[StudioNodeRenderSetting]) -> Result<()> {
     if settings.is_empty() {
         return Err(err(Code::InvalidField, "export_settings/settings"));
@@ -333,7 +346,7 @@ pub fn check_node_settings(settings: &[StudioNodeRenderSetting]) -> Result<()> {
         if let Some(c) = s.constraint() {
             check_constraint(&c)?;
         }
-        if !names.insert((s.suffix(), s.extension())) {
+        if !names.insert((file_name_fold(s.suffix()), s.extension())) {
             return Err(err(Code::DuplicateIdentity, "export_settings/suffix"));
         }
     }

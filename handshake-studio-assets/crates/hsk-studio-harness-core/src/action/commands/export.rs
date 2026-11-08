@@ -3,7 +3,7 @@
 //! run that writes the files of many nodes and settings at once.
 
 use super::super::ValueType;
-use super::{CommandEntry, ParamSpec, flag as b, list as l, record as r, shaped, text as t, typed};
+use super::{CommandEntry, ParamSpec, entry, flag as b, list as l, record as r, shaped, text as t, typed};
 
 /// The Folio `StudioNodeRenderSetting` list (wire form).
 const SETTINGS: &str = "[{format: PNG|JPG|SVG|PDF, suffix, contents_only, use_absolute_bounds, colour_profile: DOCUMENT|SRGB|DISPLAY_P3_V4, constraint: {type: SCALE|WIDTH|HEIGHT, value} (PNG and JPG only), outline_text, include_id_attribute, simplify_stroke (SVG only)}, ...]";
@@ -20,4 +20,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
     // Without `settings`: every stored node (or the named ones) with its stored settings. With `settings`:
     // those settings on every artboard (or the named nodes), nothing stored.
     typed("export.run", "Viewer::export_run", "Export", false, &[output_dir("dir"), l("nodes").opt(), r("settings", SETTINGS).opt(), b("overwrite").opt()]),
+    // Review F6: the Run method behind `export.set_settings` (one entry-only undo step), not recordable,
+    // as `artboard.set_options` is the Run row of its edit.
+    entry("document.set_export_settings", "set_export_settings", "Set node export settings", false, true, &[]),
 ];
