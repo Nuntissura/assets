@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::platform::windows::{EventLoopBuilderExtWindows, WindowAttributesExtWindows};
@@ -75,9 +75,20 @@ impl GuiFrame {
     }
 }
 
-/// Smallest client size of the Operator's GUI window: the Viewport keeps 360 x 240 (components.json `viewer.size.min`)
-/// beside the 300 dock and above the 24 status bar.
-pub const GUI_MIN_LOGICAL: (f64, f64) = (660.0, 264.0);
+/// Smallest client size of the Operator's GUI window: the design floor of the raster frame, design-system.json
+/// size.window.min (size::WINDOW_MIN_W x WINDOW_MIN_H, 1024 x 640 logical), from the tokens rather than a hand sum.
+#[cfg(feature = "document")]
+pub const GUI_MIN_LOGICAL: (f64, f64) = (kumihimo_ui::tokens::size::WINDOW_MIN_W as f64, kumihimo_ui::tokens::size::WINDOW_MIN_H as f64);
+
+/// [`GUI_MIN_LOGICAL`] clamped to a monitor's logical size when that is smaller (a small display still opens the
+/// window; the frame then lays out below its floor and notes `below_min_size`).
+#[cfg(feature = "document")]
+pub fn gui_min_logical(monitor: Option<(f64, f64)>) -> (f64, f64) {
+    match monitor {
+        Some((w, h)) if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 => (GUI_MIN_LOGICAL.0.min(w), GUI_MIN_LOGICAL.1.min(h)),
+        _ => GUI_MIN_LOGICAL,
+    }
+}
 /// Largest frame count a run may ask for.
 pub const MAX_FRAMES: u32 = 100_000;
 
@@ -338,8 +349,14 @@ impl App {
             .with_inner_size(PhysicalSize::new(ww, wh))
             .with_visible(false)
             .with_active(false);
+        #[cfg(feature = "document")]
         if self.gui.is_some() && !self.args.quiet {
-            attrs = attrs.with_min_inner_size(LogicalSize::new(GUI_MIN_LOGICAL.0, GUI_MIN_LOGICAL.1));
+            let monitor = el.primary_monitor().map(|m| {
+                let l = m.size().to_logical::<f64>(m.scale_factor());
+                (l.width, l.height)
+            });
+            let (mw, mh) = gui_min_logical(monitor);
+            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(mw, mh));
         }
         if self.args.quiet {
             let min_x = el.available_monitors().map(|m| m.position().x).min().unwrap_or(0);

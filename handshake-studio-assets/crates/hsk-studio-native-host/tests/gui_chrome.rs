@@ -192,10 +192,13 @@ fn rail_pick_and_group_tab_behaviour() {
     assert_ne!(f.tree_json(), picked);
     click_on(&mut f, "studio.toolgroup.paint");
     assert_eq!(f.tree_json(), picked, "pick, pick another, pick back is byte-identical");
-    // Group tabs: Masks becomes the Properties group's active tab; the Layers group keeps Layers.
-    click_on(&mut f, "studio.tab.masks");
+    // Group tabs: Masks (behind +N at 300 wide, so by invoke) becomes the Properties group's active tab and is shown;
+    // the Layers group keeps Layers.
+    f.invoke("studio.tab.masks").unwrap();
+    f.frame().unwrap();
     assert_eq!(f.last(), Some(&Outcome { command: "frame.tab_select", code: "ok".into() }));
     assert!(f.node("studio.tab.masks").unwrap().flags.selected && !f.node("studio.tab.properties").unwrap().flags.selected);
+    assert!(!f.node("studio.tab.masks").unwrap().bounds.is_empty(), "the active tab is always shown");
     assert!(f.node("studio.panel.masks.empty").is_some());
     assert_eq!(f.active_tab("studio.group.properties"), Some("masks"));
     assert!(f.dock_state().contains(r#""active":"masks""#), "{}", f.dock_state());
@@ -416,4 +419,28 @@ fn receipt_frame_member_and_idle_frames() {
         assert!(!f.frame().unwrap());
     }
     assert_eq!(f.stats().builds, builds);
+}
+
+/// AC-COL-01 source half: the frame code under src/gui types no colour (tokens only; the proxy's fill chip is the
+/// document's brush colour, read at run time).
+#[test]
+fn gui_source_has_no_colour_literal() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gui");
+    let mut files = 0;
+    for e in std::fs::read_dir(&dir).unwrap() {
+        let p = e.unwrap().path();
+        let src = std::fs::read_to_string(&p).unwrap();
+        files += 1;
+        for (i, line) in src.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            let lit = code.match_indices("Rgba8::new(").any(|(at, m)| code[at + m.len()..].trim_start().starts_with(|c: char| c.is_ascii_digit()));
+            assert!(!lit, "{}:{}: colour literal", p.display(), i + 1);
+            let hex = code.match_indices('#').any(|(at, _)| {
+                let tail: String = code[at + 1..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                tail.len() == 6 || tail.len() == 8
+            });
+            assert!(!hex, "{}:{}: hex colour literal", p.display(), i + 1);
+        }
+    }
+    assert!(files >= 5);
 }

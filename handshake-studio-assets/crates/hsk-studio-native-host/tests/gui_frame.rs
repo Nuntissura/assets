@@ -18,7 +18,6 @@ use hsk_studio_native_host::scene::Scene;
 use hsk_studio_native_host::script::{self, MAX_STEPS, Step, chord, click};
 use hsk_studio_vulkan::Refusal;
 use kumihimo_ui::checks;
-use kumihimo_ui::display::IconId;
 use kumihimo_ui::geom::{Rect, Scale};
 use kumihimo_ui::text::{BoxText, Text};
 use kumihimo_ui::tokens::{ColorToken, Theme};
@@ -144,19 +143,17 @@ fn layers_panel_regions_rows_states_and_tree_checks() {
     let mut f = open(&s.0, 800, 480, None);
     f.set_device("Test GPU (discrete), vulkan 1.3".into());
     f.frame().unwrap();
-    // AC-GEOM-01: regions cover the window with no overlap (physical px).
+    // AC-GEOM-01: the frame's regions partition the window (physical px).
     let r = f.regions();
     let sc = f.scale();
-    let rects = [sc.snap(r.viewport), sc.snap(r.dock), sc.snap(r.status)];
-    let area: i64 = rects.iter().map(|q| i64::from(q.w()) * i64::from(q.h())).sum();
-    assert_eq!(area, 800 * 480);
-    for (i, a) in rects.iter().enumerate() {
-        for b in &rects[i + 1..] {
-            assert!(a.intersect(b).is_empty(), "{a:?} {b:?}");
-        }
-    }
+    let l = f.layout().clone();
+    let rects: Vec<Rect> = l.regions().iter().map(|(_, q)| *q).collect();
+    assert!(checks::partition(l.window, &rects, sc).is_empty(), "{:?}", l.regions());
     assert_eq!((r.dock.w(), r.status.h(), r.header.h()), (300.0, 24.0, 26.0));
-    assert_eq!(f.semantic().roots.iter().map(|n| n.author_id.as_str()).collect::<Vec<_>>(), [VIEWER_ID, DOCK_ID, STATUS_ID]);
+    // The spine's three regions are roots of the frame tree, in paint order (SMB-GUI-FRAME-1 adds the other bands).
+    let roots: Vec<String> = f.semantic().roots.iter().map(|n| n.author_id.clone()).collect();
+    let at = |id: &str| roots.iter().position(|r| r == id).unwrap_or_else(|| panic!("{id} in {roots:?}"));
+    assert!(at(VIEWER_ID) < at(DOCK_ID) && at(DOCK_ID) < at(STATUS_ID), "{roots:?}");
 
     let sun = layer(&f, "Sun");
     let red = layer(&f, "Red");
@@ -168,10 +165,10 @@ fn layers_panel_regions_rows_states_and_tree_checks() {
     // Hidden: no eye glyph, name in text.disabled (never colour alone: the value says hidden).
     let vis = f.node(&format!("{}.visibility", row_id(&sun))).unwrap();
     assert_eq!(vis.value.as_deref(), Some("off"));
-    let dock = f.panels()[1];
+    let dock = f.panel_of(DOCK_ID).unwrap();
     let tree = dock.tree();
     let vis_id = tree.find(&format!("{}.visibility", row_id(&sun))).unwrap();
-    assert!(matches!(tree.get(tree.get(vis_id).children[0]).paint, Paint::Icon { icon: IconId(0), .. }), "no eye glyph");
+    assert!(matches!(tree.get(tree.get(vis_id).children[0]).paint, Paint::Icon { icon, .. } if icon == view::eye(false)), "eye_off, not the eye");
     let row_node = tree.find(&row_id(&sun)).unwrap();
     let disabled_name = tree.get(row_node).children.iter().any(|&c| matches!(&tree.get(c).paint, Paint::Label { color: Some(ColorToken::TextDisabled), text, .. } if text == "Sun"));
     assert!(disabled_name);
@@ -202,13 +199,16 @@ fn layers_panel_regions_rows_states_and_tree_checks() {
     // AC-COL-01: flat chrome pixels outside the Viewport are theme tokens (text, icons and thumbnails excluded).
     let tokens: Vec<[u8; 4]> = ColorToken::ALL.iter().map(|t| t.resolve(Theme::Dark)).map(|c| [c.r, c.g, c.b, c.a]).collect();
     let mut skip: Vec<Rect> = Vec::new();
-    for p in [f.panels()[1], f.panels()[2]] {
+    for p in f.panels() {
         for n in &p.tree().nodes {
-            if matches!(n.paint, Paint::Label { .. } | Paint::Value { .. } | Paint::Icon { .. } | Paint::Thumbnail(_)) {
+            // Glyphs, icons, thumbnails and antialiased round shapes (chips, rounded controls, ruler labels) blend.
+            let rounded = matches!(n.paint, Paint::Surface { radius, .. } if radius > 0.0);
+            if rounded || matches!(n.paint, Paint::Label { .. } | Paint::Value { .. } | Paint::Icon { .. } | Paint::TintedIcon { .. } | Paint::Thumbnail(_) | Paint::Round { .. } | Paint::Ruler { .. }) {
                 skip.push(n.bounds);
             }
         }
     }
+    skip.push(f.node("studio.colour.proxy").unwrap().bounds);
     let c = f.canvas().unwrap();
     let vp = sc.snap(r.viewport);
     let mut off = 0;
@@ -226,7 +226,9 @@ fn layers_panel_regions_rows_states_and_tree_checks() {
     }
     assert_eq!(off, 0, "non-token chrome pixels");
 
-    // AC-GEOM-02, AC-TEXT-01, AC-TEXT-03 and AC-GEOM-03 at the scale matrix.
+    // AC-GEOM-02, AC-TEXT-01, AC-TEXT-03 and AC-GEOM-03 at the scale matrix, on a window that stays at or above the
+    // frame's floor (size::WINDOW_MIN_W x WINDOW_MIN_H logical) at every scale.
+    let mut f = open(&s.0, 2048, 1280, None);
     for milli in [1000u32, 1250, 1500, 2000] {
         f.apply(HostEvent::ScaleFactor { milli });
         f.frame().unwrap();
@@ -366,6 +368,8 @@ fn idle_minimise_resize_and_scale() {
     assert!(f.frame().unwrap());
     assert_eq!(f.extent(), (1000, 600));
     assert_eq!((f.canvas().unwrap().width(), f.canvas().unwrap().height()), (1000, 600));
+    // At 1000 x 600 x 1.5 the centre would be under 360, so the dock rule is checked on a frame with room.
+    f.apply(HostEvent::Resized { width: 1500, height: 900 });
     f.apply(HostEvent::ScaleFactor { milli: 1500 });
     assert!(f.frame().unwrap());
     assert_eq!(f.scale().snap(f.regions().dock).w(), 450);
@@ -383,7 +387,9 @@ fn idle_minimise_resize_and_scale() {
 #[test]
 fn wheel_scrolls_the_list_and_the_scrollbar_shows() {
     let s = Scratch::new("wheel");
-    let mut f = open(&s.0, 800, 150, Some(1000));
+    // 324 high: the Properties and Colour groups collapse to their headers and the Layers body is 100 px (FIT-H2).
+    let mut f = open(&s.0, 800, 324, Some(1000));
+    assert_eq!(f.regions().body.h(), 100.0);
     assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 1-4 of 4"));
     assert!(f.node(SCROLL_ID).is_some(), "100 px body, 4 rows of 32: overflow");
     let (x, y) = f.centre(VIEWER_ID).unwrap();
@@ -409,21 +415,30 @@ fn wheel_scrolls_the_list_and_the_scrollbar_shows() {
     assert_eq!(f.node(LIST_ID).unwrap().value.as_deref(), Some("rows 1-4 of 4"), "two 16 px deltas are one row");
 }
 
-/// Review F5: at scale 1.2 the painter gives physical row 146 to the fourth row (its top edge 122 * 1.2 = 146.4 snaps
-/// to 146); a click on that pixel selects the fourth row, and the pixel above selects the third.
+/// Review F5: at scale 1.2 a row whose top edge has a physical fraction under 0.49 snaps down (for example 146.4 to
+/// 146); a click on that first physical pixel selects that row, and the pixel above selects the row above. The rows
+/// sit where the frame puts the Layers body, so the test finds such a row instead of pinning its position.
 #[test]
 fn boundary_pixel_at_scale_1_2_clicks_the_row_it_shows() {
     let s = Scratch::new("edge");
     let mut f = open(&s.0, 800, 480, Some(1200));
-    let (green, blue) = (layer(&f, "Green"), layer(&f, "Blue"));
-    let b = f.node(&row_id(&blue)).unwrap().bounds;
     let sc = f.scale();
+    let names = ["Sun", "Red", "Green", "Blue"];
+    let ids: Vec<String> = names.iter().map(|n| layer(&f, n)).collect();
+    let k = (1..ids.len())
+        .find(|&i| {
+            let v = f.node(&row_id(&ids[i])).unwrap().bounds.y0 * sc.get();
+            let frac = v - v.floor();
+            frac > 0.01 && frac < 0.49
+        })
+        .expect("a row edge that snaps down");
+    let b = f.node(&row_id(&ids[k])).unwrap().bounds;
     let (x, y) = (sc.edge((b.x0 + b.x1) / 2.0), sc.edge(b.y0));
-    assert_eq!((b.y0, y), (122.0, 146), "the painter's first physical row of Blue");
+    assert_eq!(y as f32, (b.y0 * sc.get()).floor(), "the painter's first physical row of {}", names[k]);
     run(&mut f, &click(x, y));
-    assert_eq!(f.selected(), Some(blue.as_str()));
+    assert_eq!(f.selected(), Some(ids[k].as_str()));
     run(&mut f, &click(x, y - 1));
-    assert_eq!(f.selected(), Some(green.as_str()));
+    assert_eq!(f.selected(), Some(ids[k - 1].as_str()));
 }
 
 /// Hostile (a): 10,000 plain rows build only the rows that fit, shape no row off screen, finish in a stated time.

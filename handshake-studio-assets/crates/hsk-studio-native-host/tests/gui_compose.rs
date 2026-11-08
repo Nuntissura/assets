@@ -35,7 +35,8 @@ impl ChromeTarget for Recorder {
     }
 }
 
-/// Compose hands the frame's lists in paint order (Viewport, document, dock, status), the frame clear and the scale;
+/// Compose hands the frame's lists in paint order (the raster frame's bands, the proxy chips after the Tool Rail, the
+/// document after the Viewport), the frame clear and the scale;
 /// painted with the CPU painter they give the frame's canvas byte for byte, as does [`CpuChrome`], at four scales and
 /// after a command.
 #[test]
@@ -58,10 +59,18 @@ fn compose_hands_every_target_the_cpu_frame_in_paint_order() {
             assert_eq!(rec.extent, (800, 480));
             assert_eq!(rec.clear, Some(ColorToken::SurfaceFrame.resolve(Theme::Dark)));
             assert_eq!(rec.scale, Some(f.scale()));
-            let [vp, dock, bar] = f.panels();
-            assert_eq!(rec.lens.len(), 4, "Viewport, document, dock, status: {:?}", rec.lens);
-            assert_eq!((rec.lens[0], rec.lens[2], rec.lens[3]), (vp.display_list().len(), dock.display_list().len(), bar.display_list().len()));
-            assert!(rec.lens[1] > 0, "the document list");
+            // SMB-GUI-FRAME-1: the raster frame's paint order. Panels 0 to 8 (menu bar, tab strip, Context Bar, Tool Rail,
+            // Browse rail, Viewport, Inspect Dock, Time & Results rail, status bar; panel 9, the observability nodes,
+            // is unpainted), with the colour proxy's chips after the Tool Rail and the document after the Viewport.
+            let p = f.panels();
+            let want: Vec<Option<usize>> = [0, 1, 2, 3].map(|i| Some(p[i].display_list().len())).into_iter().chain([None]).chain([4, 5].map(|i| Some(p[i].display_list().len()))).chain([None]).chain([6, 7, 8].map(|i| Some(p[i].display_list().len()))).collect();
+            assert_eq!(rec.lens.len(), want.len(), "the frame's lists in paint order: {:?}", rec.lens);
+            for (i, (got, w)) in rec.lens.iter().zip(&want).enumerate() {
+                if let Some(w) = w {
+                    assert_eq!(got, w, "list {i}");
+                }
+            }
+            assert!(rec.lens[4] > 0 && rec.lens[7] > 0, "the proxy chips and the document list");
             assert!(rec.canvas.as_ref().unwrap().rgba() == &shown[..], "{milli} round {round}: the recorder paints the frame's bytes");
             let mut cpu = CpuChrome::default();
             f.compose(&mut cpu).expect("compose cpu");
