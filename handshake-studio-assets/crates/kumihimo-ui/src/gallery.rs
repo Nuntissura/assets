@@ -178,9 +178,98 @@ pub fn render_specimen(scale: Scale, theme: Theme, text: &mut Text, w: f32, h: f
 }
 
 /// The designer's contact sheet of the frame widgets in every state (SMB-GUI-FRAME-1), outside [`Scene`] so the goldens
-/// stay pinned: one row per widget, its states side by side, with the designer's icons.
+/// stay pinned: one row per widget, its states side by side, with the designer's icons ([`crate::icons`]).
 pub fn contact_sheet(b: &mut Builder<'_>) {
-    let _ = b;
+    use crate::icons::{self, VARIANT_MARKER};
+    use crate::widgets::{GroupHeader, MenuTitle, frame as fw};
+    let ui = |n: &str| icons::ui(n).unwrap_or(IconId(0));
+    let tool = |n: &str| icons::tool(n).unwrap_or(IconId(0));
+    let niy = Some("not_implemented_yet");
+    let row = |h: f32| LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(h), gap: spacing::S5, cross: Align::Center, ..LayoutSpec::default() };
+    b.begin(
+        Node::deco()
+            .layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h: Size::Fill, gap: spacing::S4, pad: [spacing::S5; 4], cross: Align::Start, ..LayoutSpec::default() })
+            .paint(Paint::Fill(ColorToken::SurfacePanel)),
+    );
+    // Menu titles at both paddings, a hidden title and the chevron; the presence chip.
+    b.begin(Node::new("shell.menu-bar", Role::MenuBar).layout(row(size::FRAME_MENU_BAR_H)).paint(Paint::Fill(ColorToken::SurfaceFrame)).seam(crate::display::Side::Bottom));
+    let titles = [
+        MenuTitle { id: "menu.file", text: "FILE", full: "FILE", shown: true },
+        MenuTitle { id: "menu.document", text: "DOC", full: "DOCUMENT", shown: true },
+        MenuTitle { id: "menu.help", text: "HELP", full: "HELP", shown: false },
+    ];
+    widgets::menu_title_row(b, &titles, fw::MENU_TITLE_PAD_TIGHT, Some(("shell.menu-bar.more", "not_implemented_yet hidden=menu.help", ui("chev_down"))), niy);
+    widgets::presence_chip(b, "studio.presence.operator", "Operator", "O", ColorToken::PresenceOperator);
+    b.end();
+    // Document tabs: active unsaved, inactive; search; the preset faces.
+    b.begin(Node::deco().layout(row(size::FRAME_TAB_STRIP_H)).paint(Paint::Fill(ColorToken::SurfaceStrip)));
+    widgets::document_tab(b, "studio.tab.document", "harbour-dusk-retouch.handshake", "harbour-dusk-retouch.handshake", size::TAB_DOCUMENT_MAX_W, true, true, ("studio.tab.document.close", ui("close")), niy);
+    widgets::document_tab(b, "studio.tab.document-b", "poster-b-festival", "poster-b-festival", size::TAB_DOCUMENT_MIN_W, false, false, ("studio.tab.document-b.close", ui("close")), niy);
+    widgets::search_field(b, "studio.search", "Search", "Search tools, commands, help", "Ctrl K", ui("search"), niy);
+    widgets::dropdown_face(b, "studio.layout-preset.dropdown", "Layout preset", "Photo", ui("chev_down"), false, None, niy);
+    widgets::dropdown_face(b, "studio.options.preset", "Tool preset", "Default", ui("chev_down"), true, Some(96.0), niy);
+    b.end();
+    // Context chip, tool slots in every state at both pitches, rail buttons.
+    b.begin(Node::deco().layout(row(size::FRAME_CONTEXT_BAR_H)).paint(Paint::Fill(ColorToken::SurfacePanel)));
+    widgets::context_chip(b, "studio.options.identity", "Paint Brush", tool("paint"), niy);
+    widgets::tool_slot(b, "studio.toolgroup.paint", "Paint Brush", "paint_brush", tool("paint"), size::RAIL_TOOL_SLOT_H, true, Some(VARIANT_MARKER), None);
+    widgets::tool_slot(b, "studio.toolgroup.select", "Select", "select", tool("select"), size::RAIL_TOOL_SLOT_H, false, Some(VARIANT_MARKER), None);
+    widgets::tool_slot(b, "studio.toolgroup.range", "Range Selection", "range_selection", tool("range"), size::RAIL_TOOL_SLOT_H_COMPACT, false, None, None);
+    widgets::tool_slot(b, "studio.toolgroup.pen", "Pen", "pen", tool("pen"), size::RAIL_TOOL_SLOT_H, false, Some(VARIANT_MARKER), niy);
+    widgets::icon_rail_button(b, "studio.rail.left.brushes", "Brushes", ui("brushes"), niy);
+    widgets::rail_caption_button(b, "studio.rail.bottom.jobs", "Jobs", ui("jobs"), niy);
+    b.end();
+    // Group headers: focused with +N, unfocused, collapsed.
+    let tabs = [("studio.tab.properties", "Properties"), ("studio.tab.adjustments", "Adjustments"), ("studio.tab.masks", "Masks")];
+    for (i, (focused, collapsed)) in [(true, false), (false, false), (false, true)].into_iter().enumerate() {
+        let gid = format!("studio.group.sheet-{i}");
+        let ids: Vec<String> = tabs.iter().map(|(t, _)| format!("{t}-{i}")).collect();
+        let t: Vec<(&str, &str)> = ids.iter().zip(tabs).map(|(id, (_, n))| (id.as_str(), n)).collect();
+        let (dis, more, menu) = (format!("{gid}.disclosure"), format!("{gid}.more"), format!("{gid}.menu"));
+        let value = format!("not_implemented_yet hidden={}", ids[2]);
+        b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Column, w: Size::Fixed(size::DOCK_INSPECT_W), h: Size::Fixed(size::DOCK_GROUP_HEADER_H), ..LayoutSpec::default() }));
+        widgets::group_header(
+            b,
+            &GroupHeader {
+                id: &gid,
+                tabs: &t,
+                shown: &[0, 1],
+                active: i.min(1),
+                focused,
+                collapsed,
+                disclosure: (&dis, ui(if collapsed { "chev_right" } else { "chev_down" })),
+                more: Some((&more, &value, ui("chev_down"))),
+                menu: (&menu, ui("menu")),
+                reason: niy,
+            },
+        );
+        b.end();
+    }
+    // Status readouts and the rulers.
+    b.begin(Node::deco().layout(row(size::FRAME_STATUS_BAR_H)).paint(Paint::Fill(ColorToken::SurfaceFrame)));
+    widgets::status_readouts(b, &[("studio.status.zoom", "100%"), ("studio.status.size", "6000 x 4000 px"), ("studio.status.device", "NVIDIA GeForce RTX 3090 (discrete), vulkan 1.4")], Some(160.0));
+    b.end();
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(400.0), h: Size::Fixed(120.0), cross: Align::Start, ..LayoutSpec::default() }));
+    widgets::ruler(b, "studio.viewer.ruler.y", "Vertical ruler", Axis::Column, 0.0, false);
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h: Size::Fill, cross: Align::Start, ..LayoutSpec::default() }));
+    widgets::ruler(b, "studio.viewer.ruler.x", "Horizontal ruler", Axis::Row, 40.0, true);
+    b.end();
+    b.end();
+    // Every icon of the set at 20 (tool) and 16 (panel).
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(24.0), gap: spacing::S2, cross: Align::Center, ..LayoutSpec::default() }));
+    for i in 0..crate::icon_data::TOOL.len() {
+        b.leaf(Node::deco().paint(Paint::Icon { icon: IconId(icons::TOOL_BASE + i as u32), size: 20.0 }).size(Size::Fixed(20.0), Size::Fixed(20.0)));
+    }
+    b.end();
+    for chunk in 0..2 {
+        b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(20.0), gap: spacing::S2, cross: Align::Center, ..LayoutSpec::default() }));
+        let n = crate::icon_data::UI.len();
+        for i in (chunk * n / 2)..((chunk + 1) * n / 2) {
+            b.leaf(Node::deco().paint(Paint::Icon { icon: IconId(icons::UI_BASE + i as u32), size: 16.0 }).size(Size::Fixed(16.0), Size::Fixed(16.0)));
+        }
+        b.end();
+    }
+    b.end();
 }
 
 /// Logical size of the contact sheet.

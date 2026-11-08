@@ -3,6 +3,7 @@
 //! tokens. Callers pass full author_ids (STU-MDL-100); sub-elements derive `<id>.<part>`.
 use crate::display::{IconId, ImageId};
 use crate::tokens::{ColorToken, State, StyleKind, TextToken, radius, size, spacing, state_style};
+use crate::text::MAX_LABEL_BYTES;
 use crate::tree::{Action, Align, Axis, Builder, LayoutSpec, Node, Numeric, Paint, Role, Size};
 
 /// Component sizes that components.json records but design-system.json `size` does not (logical px).
@@ -280,66 +281,6 @@ pub struct MenuTitle<'a> {
     pub shown: bool,
 }
 
-/// Menu titles (components.json `menu_bar`), into the caller's MenuBar: MenuItem titles in `menu_title` style with `pad` per side,
-/// never ellipsized (AC-TEXT-01); hidden titles keep a zero box; `chevron` (id, value, icon) follows when some are
-/// hidden.
-pub fn menu_title_row(b: &mut Builder<'_>, titles: &[MenuTitle<'_>], pad: f32, chevron: Option<(&str, &str, IconId)>, reason: Option<&str>) {
-    let _ = (b, titles, pad, chevron, reason);
-}
-
-/// A document tab (components.json `document_tab`): Tab surface `w` wide (96 to 220), pad 12/6, the name (already fit
-/// by the caller, full name in the label), the 6 px unsaved dot, close 20, right seam.
-#[allow(clippy::too_many_arguments)]
-pub fn document_tab(b: &mut Builder<'_>, id: &str, full: &str, shown: &str, w: f32, active: bool, unsaved: bool, close: (&str, IconId), reason: Option<&str>) {
-    let _ = (b, id, full, shown, w, active, unsaved, close, reason);
-}
-
-/// Search field (components.json `search_field`, 240 x 24): field face, search icon, placeholder in text.tertiary,
-/// the chord chip.
-pub fn search_field(b: &mut Builder<'_>, id: &str, label: &str, placeholder: &str, chord: &str, icon: IconId, reason: Option<&str>) {
-    let _ = (b, id, label, placeholder, chord, icon, reason);
-}
-
-/// Key chip (components.json `key_chip`: 16 high, pad 4, radius 3, surface.control, caption in text.secondary).
-pub fn key_chip(b: &mut Builder<'_>, text: &str) {
-    let _ = (b, text);
-}
-
-/// Presence chip (components.json `presence_chip`, d 18): `color` circle with the initial in text.on_accent (never
-/// colour alone: the label names who). An indicator: it never pops anything and takes no action.
-pub fn presence_chip(b: &mut Builder<'_>, id: &str, name: &str, initial: &str, color: ColorToken) {
-    let _ = (b, id, name, initial, color);
-}
-
-/// Identity chip of the Context Bar's Tool Zone: tool icon 20 and the tool name at 600.
-pub fn context_chip(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, reason: Option<&str>) {
-    let _ = (b, id, name, icon, reason);
-}
-
-/// A static dropdown face (ComboBox): `field` gives the field face (Context Bar), otherwise a ghost face (tab strip);
-/// the text, then the chevron; `w` fixes the width.
-#[allow(clippy::too_many_arguments)]
-pub fn dropdown_face(b: &mut Builder<'_>, id: &str, label: &str, text: &str, chevron: IconId, field: bool, w: Option<f32>, reason: Option<&str>) {
-    let _ = (b, id, label, text, chevron, field, w, reason);
-}
-
-/// Tool slot (components.json `tool_slot`: 36 x `h` (32, or 28 under FIT-R1), icon 20, radius 3, ToolSlot states; the
-/// 4 px variant marker when the group has more than one tool).
-#[allow(clippy::too_many_arguments)]
-pub fn tool_slot(b: &mut Builder<'_>, id: &str, name: &str, value: &str, icon: IconId, h: f32, active: bool, marker: Option<IconId>, reason: Option<&str>) {
-    let _ = (b, id, name, value, icon, h, active, marker, reason);
-}
-
-/// Icon rail button (components.json `icon_rail`: 32 x 32, icon 16).
-pub fn icon_rail_button(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, reason: Option<&str>) {
-    let _ = (b, id, name, icon, reason);
-}
-
-/// A labelled button of the bottom icon rail (h 24, icon 14, caption).
-pub fn rail_caption_button(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, reason: Option<&str>) {
-    let _ = (b, id, name, icon, reason);
-}
-
 /// A dock group header (components.json `group_header`, h 26 on surface.strip, bottom seam): disclosure 20, the shown
 /// tabs (`panel_tab`, pad 8), the +N chip when tabs are hidden, flexible space, the panel menu 20.
 pub struct GroupHeader<'a> {
@@ -359,18 +300,302 @@ pub struct GroupHeader<'a> {
     /// The reason the disclosure, +N and panel menu are disabled.
     pub reason: Option<&'a str>,
 }
-pub fn group_header(b: &mut Builder<'_>, h: &GroupHeader<'_>) {
-    let _ = (b, h.id);
+
+/// `s` cut at [`MAX_LABEL_BYTES`] on a char boundary (a label never shapes more).
+fn cut_label(s: &str) -> &str {
+    if s.len() <= MAX_LABEL_BYTES {
+        return s;
+    }
+    let mut end = MAX_LABEL_BYTES;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
-/// Status readouts (components.json `status_bar`: gap 12, 1 x 14 separators in edge.subtle); (author_id, text) each, the
-/// full text in the label. `last_w` fixes the last readout's width, which then ellipsizes.
+fn icon_leaf(icon: IconId, px: f32) -> Node {
+    Node::deco().paint(Paint::Icon { icon, size: px }).size(Size::Fixed(px), Size::Fixed(px))
+}
+
+fn text_leaf(text: &str, token: TextToken, weight: u16, color: Option<ColorToken>, w: Size) -> Node {
+    Node::deco().paint(Paint::Label { text: cut_label(text).into(), token, weight, color, align: Align::Start, ellipsis: false }).size(w, Size::Fill)
+}
+
+const CLICK: &[Action] = &[Action::Click, Action::Focus];
+
+/// A ghost button `w` x `h` holding one icon `px` (chevrons, close, panel menu, expand, new document). `reason` is
+/// B6's: Some disables it and states the reason as its value.
+#[allow(clippy::too_many_arguments)]
+pub fn ghost_icon_button(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, w: f32, h: f32, px: f32, reason: Option<&str>) {
+    b.begin(
+        Node::new(id, Role::Button)
+            .label(cut_label(name))
+            .actions(CLICK)
+            .reason(reason)
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(w), h: Size::Fixed(h), main: Align::Center, ..LayoutSpec::default() })
+            .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R1_CONTROL }),
+    );
+    b.leaf(icon_leaf(icon, px));
+    b.end();
+}
+
+/// Menu titles (components.json `menu_bar`), into the caller's MenuBar: MenuItem titles in `menu_title` style with
+/// `pad` per side, never ellipsized (AC-TEXT-01); hidden titles keep a zero box; `chevron` (id, value, icon) follows
+/// when some are hidden.
+pub fn menu_title_row(b: &mut Builder<'_>, titles: &[MenuTitle<'_>], pad: f32, chevron: Option<(&str, &str, IconId)>, reason: Option<&str>) {
+    for t in titles {
+        let n = Node::new(t.id, Role::MenuItem).label(cut_label(t.full)).actions(CLICK).reason(reason);
+        if t.shown {
+            b.begin(
+                n.layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fill, pad: [pad, 0.0, pad, 0.0], ..LayoutSpec::default() })
+                    .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R0_DOCKED }),
+            );
+            b.leaf(text_leaf(t.text, TextToken::MenuTitle, 0, None, Size::Hug));
+            b.end();
+        } else {
+            // Behind the chevron: in the tree (STU-SHL-012), no box, nothing drawn.
+            b.leaf(n.size(Size::Fixed(0.0), Size::Fixed(0.0)));
+        }
+    }
+    if let Some((id, value, icon)) = chevron {
+        b.begin(
+            Node::new(id, Role::Button)
+                .label("More menus")
+                .value(value)
+                .actions(CLICK)
+                .reason(reason)
+                .layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(frame::GROUP_MENU), h: Size::Fill, main: Align::Center, ..LayoutSpec::default() })
+                .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R0_DOCKED }),
+        );
+        b.leaf(icon_leaf(icon, frame::ICON_MICRO));
+        b.end();
+    }
+}
+
+/// A document tab (components.json `document_tab`): Tab surface `w` wide (96 to 220), pad 12/6, the name (already fit
+/// by the caller, full name in the label), the 6 px unsaved dot, close 20, right seam.
+#[allow(clippy::too_many_arguments)]
+pub fn document_tab(b: &mut Builder<'_>, id: &str, full: &str, shown: &str, w: f32, active: bool, unsaved: bool, close: (&str, IconId), reason: Option<&str>) {
+    b.begin(
+        Node::new(id, Role::Tab)
+            .label(cut_label(full))
+            .actions(CLICK)
+            .reason(reason)
+            .flags(|f| f.selected = active)
+            .seam(crate::display::Side::Right)
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(w), h: Size::Fill, gap: spacing::S3, pad: [cp::DOC_TAB_PAD_L, 0.0, cp::DOC_TAB_PAD_R, 0.0], cross: Align::Center, ..LayoutSpec::default() })
+            .paint(Paint::Surface { kind: StyleKind::Tab, radius: radius::R0_DOCKED }),
+    );
+    let weight = if active { state_style(StyleKind::Tab, State::Active).map_or(0, |s| s.weight) } else { 0 };
+    // The caller fit the name (FIT-T1 middle ellipsis): never cut again here, so AC-TEXT-01 sees any misfit.
+    b.leaf(Node::deco().paint(Paint::Label { text: cut_label(shown).into(), token: TextToken::Tab, weight, color: None, align: Align::Start, ellipsis: false }).size(Size::Fill, Size::Fill));
+    if unsaved {
+        b.leaf(Node::deco().paint(Paint::Round { fill: Some(ColorToken::TextSecondary), radius: frame::DOC_TAB_DOT / 2.0, border: None }).size(Size::Fixed(frame::DOC_TAB_DOT), Size::Fixed(frame::DOC_TAB_DOT)));
+    }
+    ghost_icon_button(b, close.0, "Close document", close.1, frame::DOC_TAB_CLOSE, frame::DOC_TAB_CLOSE, frame::ICON_MICRO, reason);
+    b.end();
+}
+
+/// Search field (components.json `search_field`, 240 x 24): field face, search icon, placeholder in text.tertiary,
+/// the chord chip.
+pub fn search_field(b: &mut Builder<'_>, id: &str, label: &str, placeholder: &str, chord: &str, icon: IconId, reason: Option<&str>) {
+    b.begin(
+        Node::new(id, Role::SearchInput)
+            .label(cut_label(label))
+            .actions(CLICK)
+            .reason(reason)
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(frame::SEARCH_W), h: Size::Fixed(size::FIELD_H), gap: spacing::S3, pad: [spacing::S4, 0.0, spacing::S4, 0.0], cross: Align::Center, ..LayoutSpec::default() })
+            .paint(Paint::Surface { kind: StyleKind::Field, radius: radius::R2_FIELD }),
+    );
+    b.leaf(icon_leaf(icon, frame::ICON_SMALL));
+    b.leaf(Node::deco().paint(Paint::Label { text: cut_label(placeholder).into(), token: TextToken::Body, weight: 0, color: Some(ColorToken::TextTertiary), align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
+    key_chip(b, chord);
+    b.end();
+}
+
+/// Key chip (components.json `key_chip`: 16 high, pad 4, radius 3, surface.control, caption in text.secondary).
+pub fn key_chip(b: &mut Builder<'_>, text: &str) {
+    b.begin(
+        Node::deco()
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fixed(frame::KEY_CHIP_H), pad: [frame::KEY_CHIP_PAD, 0.0, frame::KEY_CHIP_PAD, 0.0], cross: Align::Center, ..LayoutSpec::default() })
+            .paint(Paint::Round { fill: Some(ColorToken::SurfaceControl), radius: radius::R1_CONTROL, border: None }),
+    );
+    b.leaf(text_leaf(text, TextToken::Caption, 0, Some(ColorToken::TextSecondary), Size::Hug));
+    b.end();
+}
+
+/// Presence chip (components.json `presence_chip`, d 18): `color` circle with the initial in text.on_accent (never
+/// colour alone: the label names who). An indicator: it never pops anything and takes no action.
+pub fn presence_chip(b: &mut Builder<'_>, id: &str, name: &str, initial: &str, color: ColorToken) {
+    b.begin(
+        Node::new(id, Role::Button)
+            .label(cut_label(name))
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(frame::PRESENCE_D), h: Size::Fixed(frame::PRESENCE_D), main: Align::Center, cross: Align::Center, ..LayoutSpec::default() })
+            .paint(Paint::Round { fill: Some(color), radius: frame::PRESENCE_D / 2.0, border: None }),
+    );
+    let weight = TextToken::BodyStrong.style().weight;
+    b.leaf(text_leaf(initial, TextToken::Caption, weight, Some(ColorToken::TextOnAccent), Size::Hug));
+    b.end();
+}
+
+/// Identity chip of the Context Bar's Tool Zone: tool icon 20 and the tool name at 600.
+pub fn context_chip(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, reason: Option<&str>) {
+    b.begin(
+        Node::new(id, Role::Button)
+            .label(cut_label(name))
+            .actions(CLICK)
+            .reason(reason)
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fixed(size::BUTTON_H), gap: spacing::S2, pad: [spacing::S2, 0.0, spacing::S4, 0.0], cross: Align::Center, ..LayoutSpec::default() })
+            .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R1_CONTROL }),
+    );
+    b.leaf(icon_leaf(icon, frame::CONTEXT_ICON));
+    b.leaf(text_leaf(name, TextToken::Body, TextToken::BodyStrong.style().weight, None, Size::Hug));
+    b.end();
+}
+
+/// A static dropdown face (ComboBox): `field` gives the field face (Context Bar), otherwise a ghost face (tab strip);
+/// the text, then the chevron; `w` fixes the width.
+#[allow(clippy::too_many_arguments)]
+pub fn dropdown_face(b: &mut Builder<'_>, id: &str, label: &str, text: &str, chevron: IconId, field: bool, w: Option<f32>, reason: Option<&str>) {
+    let (kind, r) = if field { (StyleKind::Field, radius::R2_FIELD) } else { (StyleKind::Ghost, radius::R1_CONTROL) };
+    b.begin(
+        Node::new(id, Role::ComboBox)
+            .label(cut_label(label))
+            .value(cut_label(text))
+            .actions(CLICK)
+            .reason(reason)
+            .layout(LayoutSpec { axis: Axis::Row, w: w.map_or(Size::Hug, Size::Fixed), h: Size::Fixed(size::FIELD_H), gap: spacing::S2, pad: [spacing::S4, 0.0, spacing::S2, 0.0], cross: Align::Center, ..LayoutSpec::default() })
+            .paint(Paint::Surface { kind, radius: r }),
+    );
+    b.leaf(text_leaf(text, TextToken::Body, 0, None, if w.is_some() { Size::Fill } else { Size::Hug }));
+    b.leaf(icon_leaf(chevron, frame::ICON_MICRO));
+    b.end();
+}
+
+/// Tool slot (components.json `tool_slot`: 36 x `h` (32, or 28 under FIT-R1), icon 20, radius 3, ToolSlot states; the
+/// 4 px variant marker in text.tertiary when the group has more than one tool).
+#[allow(clippy::too_many_arguments)]
+pub fn tool_slot(b: &mut Builder<'_>, id: &str, name: &str, value: &str, icon: IconId, h: f32, active: bool, marker: Option<IconId>, reason: Option<&str>) {
+    // Icon centred in the 36 wide slot at x 8..28; the marker 4 x 4 at 2 px from the bottom right corner.
+    let lead = (size::RAIL_TOOL_SLOT_W - frame::TOOL_SLOT_ICON) / 2.0;
+    b.begin(
+        Node::new(id, Role::Button)
+            .label(cut_label(name))
+            .value(cut_label(value))
+            .actions(CLICK)
+            .reason(reason)
+            .flags(|f| f.toggled = active)
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(size::RAIL_TOOL_SLOT_W), h: Size::Fixed(h), gap: spacing::S1, pad: [lead, 0.0, spacing::S1, 0.0], cross: Align::Start, ..LayoutSpec::default() })
+            .paint(Paint::Surface { kind: StyleKind::ToolSlot, radius: radius::R1_CONTROL }),
+    );
+    b.leaf(Node::deco().paint(Paint::Icon { icon, size: frame::TOOL_SLOT_ICON }).size(Size::Fixed(frame::TOOL_SLOT_ICON), Size::Fill));
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Column, w: Size::Fixed(frame::TOOL_MARKER), h: Size::Fill, cross: Align::Start, ..LayoutSpec::default() }));
+    if let Some(m) = marker {
+        b.leaf(Node::deco().size(Size::Fixed(frame::TOOL_MARKER), Size::Fill));
+        b.leaf(Node::deco().paint(Paint::TintedIcon { icon: m, size: frame::TOOL_MARKER, color: ColorToken::TextTertiary }).size(Size::Fixed(frame::TOOL_MARKER), Size::Fixed(frame::TOOL_MARKER)));
+        b.leaf(Node::deco().size(Size::Fixed(frame::TOOL_MARKER), Size::Fixed(spacing::S1)));
+    }
+    b.end();
+    b.end();
+}
+
+/// Icon rail button (components.json `icon_rail`: 32 x 32, icon 16).
+pub fn icon_rail_button(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, reason: Option<&str>) {
+    ghost_icon_button(b, id, name, icon, frame::RAIL_BUTTON, frame::RAIL_BUTTON, frame::RAIL_ICON, reason);
+}
+
+/// A labelled button of the bottom icon rail (h 24, icon 14, caption).
+pub fn rail_caption_button(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, reason: Option<&str>) {
+    b.begin(
+        Node::new(id, Role::Button)
+            .label(cut_label(name))
+            .actions(CLICK)
+            .reason(reason)
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fixed(frame::RAIL_CAPTION_H), gap: spacing::S2, pad: [spacing::S3, 0.0, spacing::S3, 0.0], cross: Align::Center, ..LayoutSpec::default() })
+            .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R1_CONTROL }),
+    );
+    b.leaf(icon_leaf(icon, frame::ICON_SMALL));
+    b.leaf(text_leaf(name, TextToken::Caption, 0, None, Size::Hug));
+    b.end();
+}
+
+/// Builds a [`GroupHeader`]; hidden tabs stay in the tree with no box.
+pub fn group_header(b: &mut Builder<'_>, h: &GroupHeader<'_>) {
+    b.begin(
+        Node::new(h.id, Role::TabList)
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(size::DOCK_GROUP_HEADER_H), cross: Align::Start, ..LayoutSpec::default() })
+            .paint(Paint::Fill(ColorToken::SurfaceStrip))
+            .seam(crate::display::Side::Bottom),
+    );
+    ghost_icon_button(b, h.disclosure.0, if h.collapsed { "Expand group" } else { "Collapse group" }, h.disclosure.1, frame::GROUP_DISCLOSURE, size::DOCK_GROUP_HEADER_H, frame::ICON_MICRO, h.reason);
+    let active_weight = state_style(StyleKind::Tab, State::Active).map_or(0, |s| s.weight);
+    for (i, (tid, text)) in h.tabs.iter().enumerate() {
+        let on = i == h.active;
+        let n = Node::new(*tid, Role::Tab).label(cut_label(text)).actions(CLICK).flags(|f| {
+            f.selected = on;
+            f.unfocused_group = !h.focused;
+        });
+        if h.shown.contains(&i) {
+            b.begin(
+                n.layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fill, pad: [size::TAB_PAD_X, 0.0, size::TAB_PAD_X, 0.0], ..LayoutSpec::default() })
+                    .paint(Paint::Surface { kind: StyleKind::Tab, radius: radius::R0_DOCKED }),
+            );
+            b.leaf(text_leaf(text, TextToken::Tab, if on { active_weight } else { 0 }, None, Size::Hug));
+            b.end();
+        } else {
+            // Behind +N: in the tree, no box.
+            b.leaf(n.size(Size::Fixed(0.0), Size::Fixed(0.0)));
+        }
+    }
+    if let Some((id, value, icon)) = h.more {
+        let count = h.tabs.len().saturating_sub(h.shown.len());
+        b.begin(
+            Node::new(id, Role::Button)
+                .label("More tabs")
+                .value(value)
+                .actions(CLICK)
+                .reason(h.reason)
+                .layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fill, gap: 1.0, pad: [spacing::S2, 0.0, spacing::S2, 0.0], cross: Align::Center, ..LayoutSpec::default() })
+                .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R0_DOCKED }),
+        );
+        b.leaf(text_leaf(&format!("+{count}"), TextToken::Caption, 0, Some(ColorToken::TextTertiary), Size::Hug));
+        b.leaf(icon_leaf(icon, 10.0));
+        b.end();
+    }
+    spacer(b);
+    ghost_icon_button(b, h.menu.0, "Panel menu", h.menu.1, frame::GROUP_MENU, size::DOCK_GROUP_HEADER_H, frame::ICON_MICRO, h.reason);
+    b.end();
+}
+
+/// Status readouts (components.json `status_bar`: gap 12, 1 x 14 separators in edge.subtle); (author_id, text) each,
+/// the full text in the label. `last_w` fixes the last readout's width, which then ellipsizes.
 pub fn status_readouts(b: &mut Builder<'_>, items: &[(&str, &str)], last_w: Option<f32>) {
-    let _ = (b, items, last_w);
+    for (i, (id, text)) in items.iter().enumerate() {
+        if i > 0 {
+            b.leaf(Node::deco().paint(Paint::Fill(ColorToken::EdgeSubtle)).size(Size::Fixed(1.0), Size::Fixed(frame::STATUS_SEPARATOR_H)));
+        }
+        let last = i + 1 == items.len();
+        let fixed = last_w.filter(|_| last);
+        b.leaf(
+            Node::new(*id, Role::Label)
+                .label(cut_label(text))
+                .paint(Paint::Label { text: cut_label(text).into(), token: TextToken::Body, weight: 0, color: Some(ColorToken::TextSecondary), align: Align::Start, ellipsis: fixed.is_some() })
+                .size(fixed.map_or(Size::Hug, |w| Size::Fixed(w.max(0.0))), Size::Fixed(TextToken::Body.style().line)),
+        );
+    }
 }
 
 /// A ruler (components.json `ruler`, thickness 20) along `axis` (Row = horizontal) on surface.strip, document 0 at the
 /// logical position `origin`, step 20, major every 5; `labels` false for the vertical ruler (no rotated text).
 pub fn ruler(b: &mut Builder<'_>, id: &str, label: &str, axis: Axis, origin: f32, labels: bool) {
-    let _ = (b, id, label, axis, origin, labels);
+    let t = size::RULER_THICKNESS;
+    let (w, h, seam) = match axis {
+        Axis::Row => (Size::Fill, Size::Fixed(t), crate::display::Side::Bottom),
+        Axis::Column => (Size::Fixed(t), Size::Fill, crate::display::Side::Right),
+    };
+    b.leaf(Node::new(id, Role::Group).label(cut_label(label)).paint(Paint::Ruler { axis, origin, step: RULER_STEP, major: RULER_MAJOR_EVERY, labels }).seam(seam).size(w, h));
 }
+
+/// components.json `ruler`: a tick every 20 logical px, a major tick every 5 (minor 5 long, major 10).
+pub const RULER_STEP: f32 = 20.0;
+pub const RULER_MAJOR_EVERY: u32 = 5;
