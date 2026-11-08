@@ -3,6 +3,8 @@
 //! call with the same operation on a second viewer of the same raw: same tile digests, same
 //! `develop_json`, one undo step each (a differential, so a decoder cannot drift from the op). One
 //! process test runs scenario photo-retouch steps 27-30, 40, 41, 46 and 51 through `command --stdin`.
+//! The develop must-haves (group enables, point curves, crop and straighten, snapshots, preset save) are
+//! state in the develop entry, one undo step each, and reopen; the entry decoder bounds them.
 //! Headless (no window, CX-SAFE-002). Lightroom and Camera Raw parity UNVERIFIED (D5).
 #![cfg(feature = "viewer")]
 
@@ -13,7 +15,9 @@ use hsk_studio_develop::{Brush, ColourRange, LookDomain, LuminanceRange, MaskSou
 use hsk_studio_folio::Payload;
 use hsk_studio_harness::cli::{self, WindowArgs};
 use hsk_studio_harness::view::commands::CommandRefusal;
-use hsk_studio_harness::view::develop::{DevelopOp, Refusal, default_linear};
+use hsk_studio_develop::OutputDepth;
+use hsk_studio_harness::view::develop::{DevelopExport, DevelopOp, Refusal, default_linear};
+use hsk_studio_harness::view::develop_entry;
 use hsk_studio_harness::view::develop_more::FamilyOp;
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_harness::view::Viewer;
@@ -184,6 +188,204 @@ fn develop_rows_refuse_hostile_parameters_typed_and_commit_nothing() {
         assert_eq!(refused.code, code, "{id}: {refused:?}");
     }
     assert_eq!((digests(&v), undo_len(&v)), (pixels, steps), "a refused row commits nothing");
+}
+
+// ---- the develop must-haves (item 3, 4) ----------------------------------------------------------
+
+fn ok_row(v: &mut Viewer, id: &str, params: Value) -> Value {
+    row(v, id, params).unwrap_or_else(|r| panic!("{id} refused: {r:?}"))
+}
+
+/// Group enables are operator state: an override suppresses a family without discarding it, and
+/// clearing it returns to the derived value. Point curves switch the tone curve on. Each is one undo
+/// step, saved and reopened.
+#[test]
+fn group_enables_and_point_curves_are_state_one_undo_step_each_and_reopen() {
+    let scratch = Scratch::new("develop-commands-enables");
+    let source = scratch.0.join("synthetic.dng");
+    std::fs::write(&source, synthetic_dng(160, 120)).unwrap();
+    let mut v = open(&source);
+    ok_row(&mut v, "photo.develop.set", json!({"control":"develop.calibration.red_hue","value":40}));
+    let on = digests(&v);
+    assert_eq!(v.develop_recipe().unwrap().enables.enable_calibration, true);
+    let steps = undo_len(&v);
+    ok_row(&mut v, "photo.develop.set_enable", json!({"group":"calibration","on":false}));
+    assert_eq!(undo_len(&v), steps + 1, "set_enable is one undo step");
+    let r = v.develop_recipe().unwrap();
+    assert!(!r.enables.enable_calibration && r.adjust.calibration.red_hue == 40.0, "the group is off and keeps its parameters");
+    assert_ne!(digests(&v), on, "the override suppresses the group");
+    assert_eq!(v.develop_json()["enables_override"], json!({"calibration": false}));
+    ok_row(&mut v, "photo.develop.clear_enable", json!({"group":"calibration"}));
+    assert_eq!(digests(&v), on, "cleared: derived again, the same pixels");
+    assert_eq!(v.develop_json()["enables_override"], json!({}));
+    let refused = row(&mut v, "photo.develop.set_enable", json!({"group":"red_eye","on":true})).unwrap_err();
+    assert_eq!(refused.code, "unsupported_contribution", "red-eye stays refused: {refused:?}");
+
+    let flat = digests(&v);
+    ok_row(&mut v, "photo.develop.set_point_curve", json!({"channel":"composite","points":[[0,0],[64,40],[192,215],[255,255]]}));
+    ok_row(&mut v, "photo.develop.set_point_curve", json!({"channel":"red","points":[[0,0],[128,150],[255,255]]}));
+    assert_ne!(digests(&v), flat, "a point curve moves pixels");
+    let r = v.develop_recipe().unwrap();
+    assert!(r.enables.enable_tone_curve);
+    assert_eq!(r.curves.red.points(), &[(0.0, 0.0), (128.0, 150.0), (255.0, 255.0)]);
+    ok_row(&mut v, "photo.develop.set_enable", json!({"group":"tone_curve","on":false}));
+    assert_eq!(digests(&v), flat, "tone curve group off: the curves stay, their contribution goes");
+    assert_eq!(v.develop_json()["point_curves"]["red"], json!([[0.0, 0.0], [128.0, 150.0], [255.0, 255.0]]));
+    for (points, what) in [(json!([[0,0],[128,100],[100,120],[255,255]]), "unsorted x"), (json!([[0,0],[128,100],[128,120],[255,255]]), "duplicate x"), (json!([[0,10],[255,255]]), "endpoint")] {
+        let refused = row(&mut v, "photo.develop.set_point_curve", json!({"channel":"green","points":points})).unwrap_err();
+        assert_eq!(refused.code, "invalid_curve", "{what}: {refused:?}");
+    }
+
+    let state = v.develop_json();
+    let (pixels, recipe) = (digests(&v), v.develop_recipe());
+    v.undo().unwrap();
+    assert!(v.develop_recipe().unwrap().enables.enable_tone_curve, "undo restores the derived tone curve enable");
+    v.redo().unwrap();
+    let saved = scratch.0.join("enables.handshake");
+    v.save(&saved, false).unwrap();
+    let w = open(&saved);
+    assert_eq!(w.develop_json()["entry"], "Current");
+    assert_eq!((digests(&w), w.develop_recipe()), (pixels, recipe), "the override and the curves reopen");
+    assert_eq!(w.develop_json()["enables_override"], state["enables_override"]);
+}
+
+/// Crop and straighten are stored, applied by the develop export and named in the state; the canvas
+/// stays the uncropped develop (`crop_preview_not_applied`), so later slider edits keep working.
+#[test]
+fn crop_is_stored_applied_at_export_and_the_preview_stays_uncropped() {
+    let scratch = Scratch::new("develop-commands-crop");
+    let source = scratch.0.join("synthetic.dng");
+    std::fs::write(&source, synthetic_dng(160, 120)).unwrap();
+    let mut v = open(&source);
+    let uncropped = digests(&v);
+    let full = scratch.0.join("full.png");
+    let report = v.export_develop(&full, DevelopExport::Png { depth: OutputDepth::Eight }, false).unwrap();
+    let (fw, fh) = (report["width"].as_u64().unwrap(), report["height"].as_u64().unwrap());
+    ok_row(&mut v, "photo.develop.set_crop", json!({"left":0.1,"top":0.2,"right":0.9,"bottom":0.8,"angle":3.5,"flip_horizontal":true}));
+    assert_eq!(digests(&v), uncropped, "the canvas is not cropped");
+    let state = v.develop_json();
+    assert_eq!(state["crop_preview"], "crop_preview_not_applied", "{state}");
+    assert_eq!(state["crop"]["angle"], 3.5);
+    ok_row(&mut v, "photo.develop.set", json!({"control":"develop.exposure","value":0.3}));
+    let out = scratch.0.join("cropped.png");
+    let report = v.export_develop(&out, DevelopExport::Png { depth: OutputDepth::Eight }, false).unwrap();
+    let (w, h) = (report["width"].as_u64().unwrap(), report["height"].as_u64().unwrap());
+    assert!(w < fw && h < fh, "the export is cropped: {w}x{h} of {fw}x{fh}");
+    let r = v.develop_recipe().unwrap();
+    assert_eq!((r.crop.left, r.crop.angle, r.crop.flip_horizontal, r.crop.flip_vertical), (0.1, 3.5, true, false));
+    for (params, code) in [
+        (json!({"left":0.8,"top":0.0,"right":0.2,"bottom":1.0}), "empty_crop"),
+        (json!({"left":0.0,"top":0.0,"right":1.0,"bottom":1.0,"angle":60}), "invalid_adjustment"),
+        (json!({"left":"NaN","top":0.0,"right":1.0,"bottom":1.0}), "parameter_invalid"),
+    ] {
+        let refused = row(&mut v, "photo.develop.set_crop", params).unwrap_err();
+        assert_eq!(refused.code, code, "{refused:?}");
+    }
+    let saved = scratch.0.join("crop.handshake");
+    v.save(&saved, false).unwrap();
+    let w2 = open(&saved);
+    assert_eq!(w2.develop_recipe().map(|r| r.crop), Some(r.crop), "the crop reopens");
+}
+
+/// Snapshots are complete named states (lens binding and point curves included), saved, applied and
+/// deleted as one undo step each; a preset is written no-clobber and applies on another frame.
+#[test]
+fn snapshots_and_preset_save_round_trip() {
+    let scratch = Scratch::new("develop-commands-snapshots");
+    let source = scratch.0.join("synthetic.dng");
+    std::fs::write(&source, synthetic_dng(160, 120)).unwrap();
+    let f = files(&scratch);
+    let mut v = open(&source);
+    ok_row(&mut v, "photo.develop.set_many", json!({"changes":{"develop.contrast":25,"develop.vibrance":30}}));
+    ok_row(&mut v, "photo.develop.lens_profile", json!({"path":text(&f.profile),"focal_mm":35}));
+    ok_row(&mut v, "photo.develop.set_point_curve", json!({"channel":"blue","points":[[0,0],[128,110],[255,255]]}));
+    let (kept, recipe) = (digests(&v), v.develop_recipe());
+    let steps = undo_len(&v);
+    ok_row(&mut v, "photo.develop.snapshot.save", json!({"name":"Warm v1"}));
+    assert_eq!(undo_len(&v), steps + 1, "snapshot.save is one undo step");
+    assert_eq!(digests(&v), kept, "a snapshot moves no pixel");
+    assert_eq!(row(&mut v, "photo.develop.snapshot.save", json!({"name":"Warm v1"})).unwrap_err().code, "develop_snapshot_exists");
+    assert_eq!(row(&mut v, "photo.develop.snapshot.save", json!({"name":" padded"})).unwrap_err().code, "develop_name_invalid");
+    ok_row(&mut v, "photo.develop.clear_lens_profile", json!({}));
+    ok_row(&mut v, "photo.develop.set_point_curve", json!({"channel":"blue","points":[[0,0],[255,255]]}));
+    ok_row(&mut v, "photo.develop.set", json!({"control":"develop.contrast","value":-50}));
+    assert_ne!(digests(&v), kept);
+    ok_row(&mut v, "photo.develop.snapshot.apply", json!({"name":"Warm v1"}));
+    assert_eq!((digests(&v), v.develop_recipe()), (kept.clone(), recipe.clone()), "the snapshot restores the whole state, profile and curves too");
+    assert_eq!(v.develop_json()["snapshots"], json!(["Warm v1"]));
+    assert_eq!(row(&mut v, "photo.develop.snapshot.apply", json!({"name":"absent"})).unwrap_err().code, "unknown_item");
+
+    // Preset save: an output row, no-clobber, a typed refusal for unknown keys.
+    let preset = scratch.0.join("look.preset");
+    let saved = ok_row(&mut v, "photo.develop.save_preset", json!({"path":text(&preset),"name":"Warm","keys":["contrast","vibrance"]}));
+    assert_eq!(saved["keys"], 2, "{saved}");
+    let bytes = std::fs::read(&preset).unwrap();
+    assert_eq!(row(&mut v, "photo.develop.save_preset", json!({"path":text(&preset),"name":"Warm","keys":["contrast"]})).unwrap_err().code, "destination_exists");
+    assert_eq!(std::fs::read(&preset).unwrap(), bytes, "no clobber");
+    let other = scratch.0.join("other.preset");
+    assert_eq!(row(&mut v, "photo.develop.save_preset", json!({"path":text(&other),"name":"Bad","keys":["no.such.key"]})).unwrap_err().code, "invalid_preset");
+    assert!(!other.exists());
+    assert_eq!(row(&mut v, "photo.develop.save_preset", json!({"path":text(&source),"name":"Bad","keys":["contrast"],"overwrite":true})).unwrap_err().code, "export_over_source");
+    // Scenario step 51: the saved preset on another frame at 80 percent.
+    let mut o = open(&source);
+    ok_row(&mut o, "photo.develop.apply_preset", json!({"path":text(&preset),"amount":0.8}));
+    let r = o.develop_recipe().unwrap();
+    assert_eq!((r.adjust.tone.contrast, r.adjust.presence.vibrance), (20.0, 24.0));
+
+    ok_row(&mut v, "photo.develop.snapshot.save", json!({"name":"Second"}));
+    let saved_pkg = scratch.0.join("snap.handshake");
+    v.save(&saved_pkg, false).unwrap();
+    let mut w = open(&saved_pkg);
+    assert_eq!(w.develop_json()["snapshots"], json!(["Warm v1", "Second"]));
+    ok_row(&mut w, "photo.develop.snapshot.delete", json!({"name":"Warm v1"}));
+    assert_eq!(w.develop_json()["snapshots"], json!(["Second"]));
+    w.undo().unwrap();
+    assert_eq!(w.develop_json()["snapshots"], json!(["Warm v1", "Second"]), "undo brings a deleted snapshot back");
+}
+
+/// Entries without the new members keep their bytes; an entry with them round-trips; the hostile
+/// decoder bounds every new member before decoding it.
+#[test]
+fn develop_entry_new_members_are_absent_by_default_and_bounded() {
+    let scratch = Scratch::new("develop-commands-entry");
+    let source = scratch.0.join("synthetic.dng");
+    std::fs::write(&source, synthetic_dng(64, 48)).unwrap();
+    let mut v = open(&source);
+    ok_row(&mut v, "photo.develop.set", json!({"control":"develop.contrast","value":10}));
+    let layer = v.develop_json()["layer_id"].as_str().unwrap().to_string();
+    let plain = develop_entry::encode(&layer, None, &v.develop_edit().unwrap()).unwrap();
+    let state = v.run().document_entry("develop").unwrap().to_vec();
+    let value: Value = serde_json::from_slice(&state).unwrap();
+    for key in ["enables_override", "point_curves", "crop", "snapshots"] {
+        assert!(value["edit"].get(key).is_none(), "{key} absent when default");
+    }
+    assert_eq!(develop_entry::decode(&plain).unwrap().edit, v.develop_edit().unwrap());
+    ok_row(&mut v, "photo.develop.set_enable", json!({"group":"detail","on":false}));
+    ok_row(&mut v, "photo.develop.set_crop", json!({"left":0.0,"top":0.1,"right":1.0,"bottom":0.9}));
+    ok_row(&mut v, "photo.develop.snapshot.save", json!({"name":"one"}));
+    let bytes = v.run().document_entry("develop").unwrap().to_vec();
+    assert!(develop_entry::decode(&bytes).is_ok());
+    let saved = scratch.0.join("entry.handshake");
+    v.save(&saved, false).unwrap();
+    let w = open(&saved);
+    assert_eq!(w.run().document_entry("develop"), Some(bytes.as_slice()), "the entry is stable over save and reopen");
+
+    let hostile = |patch: &dyn Fn(&mut Value), code: &str, what: &str| {
+        let mut v: Value = serde_json::from_slice(&bytes).unwrap();
+        patch(&mut v);
+        let b = serde_json::to_vec(&v).unwrap();
+        assert_eq!(develop_entry::decode(&b).map(|_| ()).map_err(|r| r.code), Err(code), "{what}");
+    };
+    hostile(&|v| v["edit"]["enables_override"] = json!({"no_group": true}), "develop_entry_field", "unknown group");
+    hostile(&|v| v["edit"]["enables_override"] = json!({"detail": 1}), "develop_entry_field", "non-boolean override");
+    hostile(&|v| v["edit"]["point_curves"] = json!({"red": (0..1000).map(|i| [i, i]).collect::<Vec<_>>()}), "develop_entry_limit", "too many points");
+    hostile(&|v| v["edit"]["point_curves"] = json!({"red": [[0,0],[50,60],[40,70],[255,255]]}), "develop_entry_field", "unsorted points");
+    hostile(&|v| v["edit"]["crop"]["extra"] = json!(1), "develop_entry_field", "crop key");
+    hostile(&|v| v["edit"]["crop"]["left"] = json!("x"), "develop_entry_field", "crop number");
+    hostile(&|v| v["edit"]["snapshots"] = json!((0..100_000).map(|_| json!({})).collect::<Vec<_>>()), "develop_entry_limit", "10^5 snapshots");
+    hostile(&|v| v["edit"]["snapshots"][0]["name"] = json!("x".repeat(300)), "develop_entry_field", "long name");
+    hostile(&|v| { let s = v["edit"]["snapshots"][0].clone(); v["edit"]["snapshots"].as_array_mut().unwrap().push(s); }, "develop_entry_field", "duplicate snapshot name");
+    hostile(&|v| v["edit"]["snapshots"][0]["edit"]["snapshots"] = json!([]), "develop_entry_field", "nested snapshots");
 }
 
 // ---- process test --------------------------------------------------------------------------------
