@@ -101,6 +101,24 @@ impl EffectSpec {
         })
     }
 
+    /// Estimated bytes of the effect's dominant state buffers at `rate` and `channels`, before it is
+    /// built (lane SMB-SCORE-EFFECTS-6, review F4: aggregate budgets): a filter-kind row asks score
+    /// (`score::audio_filter_state_bytes`); the four batch kinds hold small state (the limiter its
+    /// lookahead line, the equalizer its section memories).
+    pub fn state_bytes(&self, rate: u32, channels: usize) -> Result<u64, score::ScoreError> {
+        let small = 4096u64;
+        Ok(match self {
+            Self::Gain { .. } | Self::Dynamics(_) => small,
+            Self::Equalizer { sections, .. } => small.saturating_add((sections.len() as u64).saturating_mul(channels as u64).saturating_mul(16)),
+            Self::Limiter(l) => {
+                let line = (l.lookahead_ms.max(0.0) * f64::from(rate) / 1000.0).ceil();
+                let line = if line.is_finite() && line < 1e12 { line as u64 } else { u64::MAX };
+                small.saturating_add(line.saturating_add(8).saturating_mul(channels as u64).saturating_add(2).saturating_mul(16))
+            }
+            Self::Filter { filter_kind, params } => score::audio_filter_state_bytes(filter_kind, &borrowed(params), rate, channels).map_err(filter_error)?,
+        })
+    }
+
     /// Score automation index of a stored parameter key (lane SMB-AUDITION-SESSION-2): gain `db` 0;
     /// equalizer `master_gain_db` 0 and `section_<i>_frequency_hz|gain_db|q` 1 + 3i .. 3 + 3i;
     /// dynamics `threshold_db` 0, `ratio` 1, `makeup_db` 2; limiter `ceiling_db` 0, `release_ms` 1;

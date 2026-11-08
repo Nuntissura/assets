@@ -31,7 +31,7 @@ use crate::dsp::{HardLimiter, HardLimiterParams};
 use crate::dynamics::{Detector, DynamicsMode, DynamicsParams};
 use crate::error::ScoreError;
 use crate::graphic_eq::{GraphicEq, GraphicEqParams};
-use crate::layout::MAX_CHANNELS;
+use crate::layout::{MAX_CHANNELS, ticks_per_sample};
 use crate::modulation::{Chorus, ChorusParams, Flanger, FlangerParams, MAX_CHORUS_VOICES, PHASER_STAGES, Phaser, PhaserParams};
 use crate::multiband::{MULTIBAND_BANDS, MultibandCompressor, MultibandParams};
 use crate::restore::{CLICK_AR_ORDER, ClickRepair, ClickRepairParams, HumParams, HumRemover, MAX_HUM_HARMONICS};
@@ -427,6 +427,51 @@ impl Typed {
         })
     }
 
+    /// Estimated bytes of the dominant state buffers the processor allocates (module docs of
+    /// [`audio_filter_state_bytes`]); the values that size a buffer are validated first.
+    fn state_bytes(&self, rate: u32, channels: usize) -> Result<u64, ScoreError> {
+        ticks_per_sample(rate)?;
+        if !(1..=MAX_CHANNELS).contains(&channels) {
+            return Err(ScoreError::InvalidLayout);
+        }
+        let (r, ch) = (f64::from(rate), channels as f64);
+        let samples = |ms: f64| (ms * r / 1000.0).ceil() + 5.0;
+        let bytes = match self {
+            Self::GraphicEq(g) => {
+                g.validate()?;
+                let n = g.bands as f64;
+                let m = 2.0 * n - 1.0;
+                (2.0 * m * n + 4.0 * m + 2.0 * n) * 8.0 + m * 32.0 + 16.0 * n * ch
+            }
+            Self::HardLimiter(h) => {
+                h.validate()?;
+                let l = samples(h.lookahead_ms);
+                ch * l * 4.0 + l * 20.0 + 1024.0
+            }
+            Self::Flanger(f) => {
+                f.validate()?;
+                ch * samples(f.initial_ms.max(f.final_ms)) * 8.0
+            }
+            Self::Chorus(c) => {
+                c.validate()?;
+                ch * samples(c.delay_ms + c.depth_ms) * 8.0
+            }
+            Self::Reverb(v) => {
+                v.validate()?;
+                // Freeverb combs and allpasses (with the stereo spread) scaled from 44.1 kHz, plus the pre-delay.
+                ch * (12_863.0 * r / 44_100.0 + 64.0) * 8.0 + samples(v.pre_delay_ms) * 8.0
+            }
+            Self::Delay(d) => {
+                d.validate()?;
+                ch * samples(d.time_ms) * 8.0
+            }
+            Self::ClickRepair(_) => ch * (2048.0 * 8.0 + 1536.0 * 4.0) + 256.0 * 1024.0,
+            Self::Phaser(_) | Self::Hum(_) => 4096.0,
+            Self::Multiband(_) => ch * 1024.0 + 65_536.0,
+        };
+        Ok(if bytes.is_finite() && bytes < u64::MAX as f64 { bytes as u64 } else { u64::MAX })
+    }
+
     fn build(&self, rate: u32, channels: usize) -> Result<Box<dyn Automatable + Send>, ScoreError> {
         Ok(match self {
             Self::GraphicEq(g) => Box::new(GraphicEq::new(rate, channels, *g)?),
@@ -505,6 +550,15 @@ pub fn audio_filter_defaults(filter_kind: &str) -> Option<Vec<FilterKindParam>> 
 /// keys, duplicates, whole-number fields; real ranges are checked by [`build_audio_filter`]).
 pub fn audio_filter_parameters(filter_kind: &str, params: &[(&str, f64)]) -> Result<Vec<FilterKindParam>, AudioFilterError> {
     decode(filter_kind, params).map(|t| t.encode())
+}
+
+/// Estimated bytes of the dominant state buffers (delay lines, combs, analysis windows, design
+/// matrices) the processor of a stored set would allocate at `rate` and `channels`, computed from the
+/// decoded values before anything is built, so a caller can hold an aggregate budget over many
+/// instances (V4-02). An estimate of the large buffers, not an allocator count; the refusals are
+/// [`build_audio_filter`]'s for the values that size a buffer.
+pub fn audio_filter_state_bytes(filter_kind: &str, params: &[(&str, f64)], rate: u32, channels: usize) -> Result<u64, AudioFilterError> {
+    Ok(decode(filter_kind, params)?.state_bytes(rate, channels)?)
 }
 
 /// Builds the processor of a stored set for `rate` and `channels` (refusals: [`AudioFilterError`]).
