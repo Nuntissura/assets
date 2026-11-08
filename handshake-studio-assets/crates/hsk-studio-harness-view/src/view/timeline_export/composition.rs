@@ -50,7 +50,7 @@ use hsk_studio_reel::{
 };
 use hsk_studio_render_cpu::Renderer;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Most audio layers of one composition export.
@@ -754,4 +754,292 @@ pub fn composition_export_job<S: CompositionScenes + 'static>(c: CompositionExpo
     shared_module_jobs(&shared, c.width, c.height, span, vec![module])?
         .pop()
         .ok_or_else(|| fail("export_range", "no job"))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lane SMB-DELIVERY-QUEUE-1: a PNG image sequence sink over the shared frames (STU-MOT-122; motion
+// step 84). Not a reel job: each frame goes through `OutputPost` and interop-raster's PNG encoder.
+// ---------------------------------------------------------------------------------------------
+
+/// Digits of a PNG sequence frame number: `starting_number`'s hard_max 9999999 (STU-MOT-122) fits, so names
+/// sort (lead ruling 2026-11-08).
+pub const PNG_FRAME_DIGITS: usize = 7;
+/// Largest PNG frame number (STU-MOT-122 `starting_number` hard_max).
+pub const PNG_MAX_FRAME_NUMBER: u64 = 9_999_999;
+
+/// Channels of a PNG module (STU-MOT-122 `channels`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PngChannels {
+    Rgb,
+    /// A grey matte of the alpha (one channel).
+    Alpha,
+    RgbAlpha,
+}
+
+/// One PNG sequence output module (module docs of `render_queue`): frame `i` of the span is written to
+/// `<stem>_<number>.png`, `number` = `first_number + i` with [`PNG_FRAME_DIGITS`] zero-padded digits, where
+/// `<stem>` is `pattern` without its `.png` suffix.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PngModule {
+    pub post: OutputPost,
+    pub channels: PngChannels,
+    /// 8 or 16 bits per sample.
+    pub depth: u8,
+    pub compression: hsk_studio_interop_raster::PngCompression,
+    pub first_number: u64,
+    /// The pattern under the output root, and as the record names it (receipts name files relative).
+    pub pattern: PathBuf,
+    pub relative: String,
+    pub overwrite: bool,
+}
+
+impl PngModule {
+    /// Checks a module of `frames` frames before the first frame: [`ExportLimits::max_frames`]
+    /// (`export_frame_limit`), the last number (`output_frame_number_range`), depth 8 or 16 (`output_depth`)
+    /// and a `.png` pattern (`output_png_path`).
+    pub fn check(&self, frames: u64) -> Result<(), MonitorFail> {
+        if frames > ExportLimits::default().max_frames {
+            return Err(fail("export_frame_limit", format!("{frames} frames exceed {}", ExportLimits::default().max_frames)));
+        }
+        let last = frames.checked_sub(1).and_then(|n| self.first_number.checked_add(n));
+        if last.is_none_or(|n| n > PNG_MAX_FRAME_NUMBER) {
+            return Err(fail("output_frame_number_range", format!("frame numbers from {} for {frames} frames pass {PNG_MAX_FRAME_NUMBER}", self.first_number)));
+        }
+        if !matches!(self.depth, 8 | 16) {
+            return Err(fail("output_depth", "a PNG sequence writes 8 or 16 bits per sample"));
+        }
+        if png_stem(&self.relative).is_none() {
+            return Err(fail("output_png_path", format!("{}: a PNG sequence pattern ends in .png", self.relative)));
+        }
+        Ok(())
+    }
+
+    /// The file of frame number `number`: under the root, and relative.
+    pub fn frame_path(&self, number: u64) -> Option<(PathBuf, String)> {
+        let stem = png_stem(&self.relative)?;
+        let rel = format!("{stem}_{number:0width$}.png", width = PNG_FRAME_DIGITS);
+        let abs_stem = png_stem(&self.pattern.to_string_lossy())?.to_owned();
+        Some((PathBuf::from(format!("{abs_stem}_{number:0width$}.png", width = PNG_FRAME_DIGITS)), rel))
+    }
+
+    /// The PNG bytes of one frame (module docs: colour as `post.premultiplied` selects; samples clamped to
+    /// 0..=1 and rounded to the depth's levels; NaN is 0).
+    pub fn encode(&self, f: &Frame) -> Result<Vec<u8>, &'static str> {
+        use hsk_studio_interop_raster::{Colour, PngEncodeRequest, Samples};
+        let (w, h) = self.post.size(f.width, f.height).map_err(|e| e.code)?;
+        let (values, colour, take): (Vec<u8>, Colour, usize) = match self.channels {
+            PngChannels::RgbAlpha => (self.post.apply_rgba(f), Colour::Rgba, 4),
+            PngChannels::Rgb => (OutputPost { channels: OutputChannels::Rgb, ..self.post }.apply(f), Colour::Rgb, 3),
+            PngChannels::Alpha => (OutputPost { channels: OutputChannels::Alpha, ..self.post }.apply(f), Colour::Gray, 1),
+        };
+        let stride = if self.channels == PngChannels::Alpha { 3 } else { take };
+        let floats: Vec<f32> = values.chunks_exact(4).map(|b| b.try_into().map_or(0.0, f32::from_le_bytes)).collect();
+        let picked = floats.chunks_exact(stride).flat_map(|px| px.iter().take(take).copied());
+        let level = |v: f32, max: f32| if v.is_finite() { (v.clamp(0.0, 1.0) * max + 0.5).floor() } else { 0.0 };
+        let samples = if self.depth == 16 {
+            Samples::U16(picked.map(|v| level(v, 65535.0) as u16).collect())
+        } else {
+            Samples::U8(picked.map(|v| level(v, 255.0) as u8).collect())
+        };
+        hsk_studio_interop_raster::encode_png(&PngEncodeRequest { width: w, height: h, colour, samples: &samples, icc: None, compression: self.compression }).map_err(|_| "png_encode_failed")
+    }
+}
+
+/// `pattern` without its `.png` suffix (any case); `None` without the suffix or with an empty stem.
+fn png_stem(pattern: &str) -> Option<&str> {
+    let cut = pattern.len().checked_sub(4)?;
+    let (stem, ext) = (pattern.get(..cut)?, pattern.get(cut..)?);
+    (ext.eq_ignore_ascii_case(".png") && !stem.is_empty() && !stem.ends_with(['/', '\\'])).then_some(stem)
+}
+
+/// The receipt of one PNG sequence (STU-MOT-125: a stopped render names its partial output).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PngSequenceReceipt {
+    /// `complete`, `canceled` or `failed`.
+    pub outcome: &'static str,
+    pub code: Option<&'static str>,
+    pub detail: Option<String>,
+    pub frames_total: u64,
+    /// Files written, in frame order, relative as the record names them (also when canceled or failed).
+    pub artifacts: Vec<String>,
+    pub bytes: u64,
+}
+
+impl PngSequenceReceipt {
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({"format": "png_sequence", "outcome": self.outcome, "code": self.code, "detail": self.detail, "frames_total": self.frames_total,
+            "frames_written": self.artifacts.len(), "bytes": self.bytes, "last_written": self.artifacts.last()})
+    }
+}
+
+static PNG_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Writes `bytes` at `target` through a sibling temp created with `create_new`: without `overwrite` a hard
+/// link publishes only where no entry exists (`export-output-exists`), atomically, with a re-checked rename
+/// where the file system has no hard links; with it the rename replaces. The temp never stays.
+fn publish_png(target: &Path, bytes: &[u8], overwrite: bool) -> Result<(), &'static str> {
+    use std::io::Write;
+    let name = target.file_name().ok_or("png_write_failed")?.to_string_lossy().into_owned();
+    let n = PNG_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = target.with_file_name(format!(".{name}.partial-{}-{n}", std::process::id()));
+    let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return Err("png_write_failed");
+    }
+    let published = if overwrite {
+        std::fs::rename(&temp, target).map_err(|_| "png_write_failed")
+    } else {
+        match std::fs::hard_link(&temp, target) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err("export-output-exists"),
+            Err(_) if std::fs::symlink_metadata(target).is_ok() => Err("export-output-exists"),
+            Err(_) => std::fs::rename(&temp, target).map_err(|_| "png_write_failed"),
+        }
+    };
+    let _ = std::fs::remove_file(&temp);
+    published
+}
+
+/// Writes the PNG sequence of `frames` frames, frame `i` from `frame` (module docs). Checked before the
+/// first frame: [`PngModule::check`] and that the pattern's folder exists (`output_directory_missing`). A
+/// cancel stops before the next frame; a failed frame or write stops there; the receipt names the files
+/// written either way.
+pub fn run_png_sequence(frame: &dyn Fn(u64, &CancellationToken) -> Result<Arc<Frame>, ReelError>, frames: u64, m: &PngModule, cancel: &CancellationToken) -> PngSequenceReceipt {
+    let mut r = PngSequenceReceipt { outcome: "complete", code: None, detail: None, frames_total: frames, artifacts: Vec::new(), bytes: 0 };
+    let stop = |mut r: PngSequenceReceipt, outcome: &'static str, code: &'static str, detail: String| {
+        r.outcome = outcome;
+        r.code = Some(code);
+        r.detail = Some(detail);
+        r
+    };
+    if let Err(e) = m.check(frames) {
+        return stop(r, "failed", e.code, e.detail);
+    }
+    if !m.pattern.parent().is_some_and(Path::is_dir) {
+        return stop(r, "failed", "output_directory_missing", m.relative.clone());
+    }
+    for i in 0..frames {
+        if cancel.check().is_err() {
+            return stop(r, "canceled", "MEDIA_CANCELED", format!("canceled before frame {i}"));
+        }
+        let Some((path, rel)) = m.first_number.checked_add(i).and_then(|n| m.frame_path(n)) else {
+            return stop(r, "failed", "output_frame_number_range", format!("frame {i}"));
+        };
+        let f = match frame(i, cancel) {
+            Ok(f) => f,
+            Err(ReelError::Canceled) => return stop(r, "canceled", "MEDIA_CANCELED", format!("canceled at frame {i}")),
+            Err(e) => return stop(r, "failed", e.code(), format!("frame {i}: {e}")),
+        };
+        let bytes = match m.encode(&f) {
+            Ok(b) => b,
+            Err(code) => return stop(r, "failed", code, format!("frame {i}")),
+        };
+        if let Err(code) = publish_png(&path, &bytes, m.overwrite) {
+            return stop(r, "failed", code, format!("frame {i}: {rel}"));
+        }
+        r.bytes = r.bytes.saturating_add(bytes.len() as u64);
+        r.artifacts.push(rel);
+    }
+    r
+}
+
+#[cfg(test)]
+mod png_sequence_tests {
+    //! Lane SMB-DELIVERY-QUEUE-1: the PNG sequence sink alone (its frames from a closure): a cancel names the
+    //! frames written, hostile counts refuse before the first frame, 16-bit grey alpha samples.
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn scratch(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hsk-harness-view-png-sequence-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    fn module(dir: &Path, channels: PngChannels, depth: u8) -> PngModule {
+        PngModule {
+            post: OutputPost { crop: [0; 4], resize: None, channels: OutputChannels::Rgb, premultiplied: false },
+            channels,
+            depth,
+            compression: hsk_studio_interop_raster::PngCompression::Fast,
+            first_number: 0,
+            pattern: dir.join("f.png"),
+            relative: "out/f.png".into(),
+            overwrite: false,
+        }
+    }
+    fn frame() -> Arc<Frame> {
+        Arc::new(Frame { width: 2, height: 2, rgb: vec![0.5; 12], alpha: vec![0.25; 4] })
+    }
+
+    #[test]
+    fn a_cancel_names_the_frames_written() {
+        let dir = scratch("cancel");
+        let m = module(&dir, PngChannels::RgbAlpha, 8);
+        let cancel = CancellationToken::default();
+        let served = AtomicU64::new(0);
+        let source = |i: u64, _: &CancellationToken| {
+            served.fetch_add(1, Ordering::Relaxed);
+            if i == 1 {
+                cancel.cancel();
+            }
+            Ok(frame())
+        };
+        let r = run_png_sequence(&source, 5, &m, &cancel);
+        assert_eq!((r.outcome, r.code), ("canceled", Some("MEDIA_CANCELED")), "{r:?}");
+        assert_eq!(r.artifacts, ["out/f_0000000.png", "out/f_0000001.png"]);
+        assert_eq!(served.load(Ordering::Relaxed), 2);
+        assert!(dir.join("f_0000001.png").is_file() && !dir.join("f_0000002.png").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).filter(|e| e.file_name().to_string_lossy().contains(".partial-")).collect();
+        assert!(leftovers.is_empty(), "no temp stays: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hostile_counts_refuse_before_the_first_frame() {
+        let dir = scratch("hostile");
+        let served = AtomicU64::new(0);
+        let source = |_: u64, _: &CancellationToken| {
+            served.fetch_add(1, Ordering::Relaxed);
+            Ok(frame())
+        };
+        let cancel = CancellationToken::default();
+        let m = module(&dir, PngChannels::Rgb, 8);
+        let r = run_png_sequence(&source, ExportLimits::default().max_frames.saturating_add(1), &m, &cancel);
+        assert_eq!(r.code, Some("export_frame_limit"), "{r:?}");
+        let mut high = module(&dir, PngChannels::Rgb, 8);
+        high.first_number = PNG_MAX_FRAME_NUMBER;
+        assert_eq!(run_png_sequence(&source, 2, &high, &cancel).code, Some("output_frame_number_range"));
+        assert_eq!(run_png_sequence(&source, 1, &high, &cancel).outcome, "complete", "9999999 itself is a valid number");
+        assert!(dir.join("f_9999999.png").is_file());
+        assert_eq!(run_png_sequence(&source, 1, &module(&dir, PngChannels::Rgb, 10), &cancel).code, Some("output_depth"));
+        assert_eq!(served.load(Ordering::Relaxed), 1, "only the valid sequence asked for a frame");
+        let mut missing = module(&dir, PngChannels::Rgb, 8);
+        missing.pattern = dir.join("no-such-folder").join("f.png");
+        assert_eq!(run_png_sequence(&source, 1, &missing, &cancel).code, Some("output_directory_missing"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn alpha_channel_writes_a_sixteen_bit_grey_matte_and_never_replaces_a_file() {
+        let dir = scratch("alpha16");
+        let cancel = CancellationToken::default();
+        let m = module(&dir, PngChannels::Alpha, 16);
+        let source = |_: u64, _: &CancellationToken| Ok(frame());
+        let r = run_png_sequence(&source, 1, &m, &cancel);
+        assert_eq!(r.outcome, "complete", "{r:?}");
+        let bytes = std::fs::read(dir.join("f_0000000.png")).unwrap();
+        let img = hsk_studio_interop_raster::decode(&bytes, &hsk_studio_interop_raster::Limits::default(), &cancel).unwrap();
+        assert_eq!(img.colour, hsk_studio_interop_raster::Colour::Gray);
+        // 0.25 * 65535 + 0.5 = 16384.25 -> 16384.
+        assert_eq!(img.samples, hsk_studio_interop_raster::Samples::U16(vec![16384; 4]));
+        let again = run_png_sequence(&source, 1, &m, &cancel);
+        assert_eq!((again.outcome, again.code, again.artifacts.len()), ("failed", Some("export-output-exists"), 0), "{again:?}");
+        assert_eq!(std::fs::read(dir.join("f_0000000.png")).unwrap(), bytes, "the existing file is untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -161,7 +161,7 @@ impl Viewer {
             "proof" => vector::run_proof(self, id, f)?,
             "design" => vector::run_design(self, id, f)?,
             "photo" => photo::run(self, id, f)?,
-            "export" => return export::run(self, id, f),
+            "export" | "delivery" => return export::run(self, id, f),
             _ => return Err(CommandRefusal::new("command_not_driveable", json!({"command_id": id}))),
         };
         done.map_err(|message| method_refusal(self, before, message))

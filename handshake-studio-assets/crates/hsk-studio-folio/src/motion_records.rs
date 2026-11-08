@@ -546,7 +546,10 @@ settings_enum!(StudioOutputChannels { Rgb, Alpha, RgbAlpha });
 settings_enum!(StudioOutputColor { Premultiplied, Straight });
 settings_enum!(StudioAudioOutput { Auto, On, Off });
 settings_enum!(StudioPostRenderAction { None, Import, ImportAndReplaceUsage, SetProxy });
-settings_enum!(StudioOutputFormat { MovVc3, MovAv1, Mp4Av1 });
+// STU-MOT-124 output formats. `png_sequence` (lane SMB-DELIVERY-QUEUE-1, STU-MOT-122 `channels` RGB, alpha,
+// RGB+alpha): one PNG per frame, `output_path` the `<stem>.png` pattern of `<stem>_<NNNNNNN>.png`; a record set
+// that does not use it is byte-identical, a reader built before it refuses one that does.
+settings_enum!(StudioOutputFormat { MovVc3, MovAv1, Mp4Av1, PngSequence });
 
 /// STU-MOT-122 resize group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1111,6 +1114,14 @@ pub fn validate_motion_records(
                 && m.output_path.split(['/', '\\']).all(|s| !s.is_empty() && s != "..");
             check(path_ok, t, "output_modules/output_path")?;
             check(m.codec_option.len() <= 64 && matches!(m.depth, 8 | 10 | 12 | 16), t, "output_modules/codec")?;
+            if m.format == StudioOutputFormat::PngSequence {
+                // Lane SMB-DELIVERY-QUEUE-1: 8 or 16 bits per sample, a `.png` name pattern, a PNG compression
+                // level (empty = balanced), and no forced audio (a PNG carries none).
+                let pattern = m.output_path.len() > 4 && m.output_path.get(m.output_path.len().saturating_sub(4)..).is_some_and(|e| e.eq_ignore_ascii_case(".png"));
+                check(pattern && matches!(m.depth, 8 | 16), t, "output_modules/png_sequence")?;
+                check(matches!(m.codec_option.as_str(), "" | "stored" | "fast" | "balanced" | "high"), t, "output_modules/codec")?;
+                check(m.audio.output != StudioAudioOutput::On, t, "output_modules/audio")?;
+            }
             check((8_000..=192_000).contains(&m.audio.sample_rate) && matches!(m.audio.channels, 1 | 2) && matches!(m.audio.bit_depth, 16 | 24 | 32), t, "output_modules/audio")?;
         }
     }

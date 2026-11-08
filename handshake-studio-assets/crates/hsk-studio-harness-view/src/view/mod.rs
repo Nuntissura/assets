@@ -97,6 +97,9 @@ mod layout_assets;
 /// Render-queue export of a timeline range through reel (lane SMB-REEL-ENCODE, feature `media`).
 #[cfg(feature = "media")]
 pub mod timeline_export;
+/// One headless delivery queue for sequence recipes and composition render queue items (lane SMB-DELIVERY-QUEUE-1).
+#[cfg(feature = "media")]
+pub mod delivery;
 pub mod render;
 /// One admitted job path for the local queues and the preview stale-frame gate (lane SMB-JOB-ADMISSION-1).
 pub mod job_admission;
@@ -296,6 +299,9 @@ pub struct Viewer {
     jobs: job_admission::ViewerJobs,
     /// Import records and link states of the placed assets (module [`place`]).
     place: place::PlaceState,
+    /// The delivery queue (module [`delivery`]; per Viewer, not saved).
+    #[cfg(feature = "media")]
+    delivery: delivery::DeliveryState,
 }
 
 struct MonitorState {
@@ -388,6 +394,8 @@ impl Viewer {
             live_text_seen: Vec::new(),
             jobs: job_admission::ViewerJobs::default(),
             place: place::PlaceState::default(),
+            #[cfg(feature = "media")]
+            delivery: delivery::DeliveryState::default(),
         };
         // D24-A (lane SMB-PR-SOURCE-MONITOR): AAC decodes by default through the OS decoder, reel-native's
         // isolated Media Foundation AAC worker (`reel-native-mf-worker --aac` beside the executable).

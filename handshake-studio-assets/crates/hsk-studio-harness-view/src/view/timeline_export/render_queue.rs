@@ -31,9 +31,22 @@
 //! `rgb_alpha` (no reel encoder carries alpha: `output_alpha_codec`; `OutputPost::apply_rgba` is the
 //! frame such an encoder would take), mono audio, any other output colour space (STU-MOT-122a before
 //! the render), project links, post-render actions.
+//!
+//! PNG sequence (lane SMB-DELIVERY-QUEUE-1; STU-MOT-122, motion step 84): a `png_sequence` module is not a reel
+//! job. It reads the same shared frames (one more consumer of the render-once cache) and writes one PNG per
+//! frame through `composition::run_png_sequence` (crop, resize, then `channels` `rgb`, `alpha` (one grey
+//! channel) or `rgb_alpha`, `color` straight or premultiplied, depth 8 or 16, `codec_option` the deflate effort
+//! `stored|fast|balanced|high`, empty = balanced), each file no-clobber, named `<stem>_<NNNNNNN>.png` from
+//! `starting_number` + the span frame index, or with `use_comp_frame_number` the composition frame number of the
+//! frame (seven digits, the hard_max 9999999; After Effects' own reading of the two fields is UNVERIFIED, D5).
+//! `audio` `on` is refused `output_audio_png` (a PNG carries no sound). Its frames are the rendered samples as
+//! they are (no transfer conversion and no colour chunk, like the MOV path's R'G'B' reading). Its jobs run only
+//! through the delivery queue (`crate::view::delivery`): [`render_queue_jobs`] and [`session_render_queue_jobs`],
+//! which return reel jobs alone, refuse an item holding one `output_png_needs_delivery`. `rgb_alpha` on a MOV
+//! module stays `output_alpha_codec`.
 use super::composition::{
     CompositionAudioLayer, CompositionScenes, CompositionSpan, DEFAULT_SHARED_CACHE_BYTES, FrameRenderer, ModuleOutput,
-    MotionBlur, OutputChannels, OutputPost, RenderDepth, RenderOptions, SharedFrames, shared_module_jobs,
+    MotionBlur, OutputChannels, OutputPost, PngChannels, PngModule, RenderDepth, RenderOptions, SharedFrames, shared_module_jobs,
 };
 use crate::view::monitor::MonitorFail;
 use hsk_studio_accord::CancellationToken;
@@ -191,15 +204,33 @@ pub fn item_motion_blur(item: &StudioRenderQueueItem, motion: Option<&StudioMoti
     })
 }
 
+/// What one output module writes (module docs).
+enum ModulePlan {
+    Reel(ExportRecipe, OutputPost, u8),
+    /// A PNG sequence: numbered and placed with the span and the root.
+    Png(PngModule),
+}
+
+/// Checks every output module of `item` as a render would, before anything renders (the delivery queue
+/// calls it when an item is added): the `output_*` refusals of the module docs.
+pub fn check_item_outputs(item: &StudioRenderQueueItem, comp: &StudioComposition, has_audio: bool) -> Result<(), MonitorFail> {
+    for m in &item.output_modules {
+        module_output(item, comp, m, has_audio)?;
+    }
+    Ok(())
+}
+
 fn module_output(
     item: &StudioRenderQueueItem,
     comp: &StudioComposition,
     m: &StudioOutputModule,
     has_audio: bool,
-) -> Result<(ExportRecipe, OutputPost, u8), MonitorFail> {
+) -> Result<ModulePlan, MonitorFail> {
+    let png = m.format == StudioOutputFormat::PngSequence;
     let channels = match m.channels {
         StudioOutputChannels::Rgb => OutputChannels::Rgb,
         StudioOutputChannels::Alpha => OutputChannels::Alpha,
+        StudioOutputChannels::RgbAlpha if png => OutputChannels::Rgb,
         StudioOutputChannels::RgbAlpha => return Err(refuse("output_alpha_codec", "no reel encoder carries an alpha channel")),
     };
     if m.post_render_action != StudioPostRenderAction::None || m.include_project_link {
@@ -218,6 +249,9 @@ fn module_output(
         premultiplied: m.color == StudioOutputColor::Premultiplied,
     };
     post.size(comp.width, comp.height)?;
+    if png {
+        return png_module(m, post).map(ModulePlan::Png);
+    }
     let (container, video, depth) = match m.format {
         StudioOutputFormat::MovVc3 => {
             let profile = match m.codec_option.as_str() {
@@ -235,6 +269,7 @@ fn module_output(
             let c = if m.format == StudioOutputFormat::Mp4Av1 { Container::Mp4 } else { Container::Mov };
             (c, VideoCodecChoice::Av1(Av1Settings { quantizer, ..Av1Settings::default() }), m.depth)
         }
+        StudioOutputFormat::PngSequence => return Err(refuse("output_format", "a png_sequence module is not a reel job")),
     };
     if m.depth != depth && !(matches!(video, VideoCodecChoice::Av1(_)) && matches!(m.depth, 8 | 10)) {
         return Err(refuse("output_depth", format!("depth {} does not match the codec option", m.depth)));
@@ -248,7 +283,38 @@ fn module_output(
         return Err(refuse("output_audio_channels", "the composition mix is stereo"));
     }
     let pcm = audio.then_some(PcmChoice { bits: m.audio.bit_depth, float: m.audio.float });
-    Ok((ExportRecipe { recipe_id: format!("{}.{}", item.item_id, m.module_id), container, video: Some(video), audio: pcm }, post, depth))
+    Ok(ModulePlan::Reel(ExportRecipe { recipe_id: format!("{}.{}", item.item_id, m.module_id), container, video: Some(video), audio: pcm }, post, depth))
+}
+
+/// A PNG sequence module (module docs); its pattern is checked here, its frame numbers with the span.
+fn png_module(m: &StudioOutputModule, post: OutputPost) -> Result<PngModule, MonitorFail> {
+    if m.audio.output == StudioAudioOutput::On {
+        return Err(refuse("output_audio_png", "a PNG sequence carries no sound"));
+    }
+    let compression = match m.codec_option.as_str() {
+        "" | "balanced" => hsk_studio_interop_raster::PngCompression::Balanced,
+        "stored" => hsk_studio_interop_raster::PngCompression::Stored,
+        "fast" => hsk_studio_interop_raster::PngCompression::Fast,
+        "high" => hsk_studio_interop_raster::PngCompression::High,
+        other => return Err(refuse("output_codec_option", format!("unknown PNG compression {other}"))),
+    };
+    let channels = match m.channels {
+        StudioOutputChannels::Rgb => PngChannels::Rgb,
+        StudioOutputChannels::Alpha => PngChannels::Alpha,
+        StudioOutputChannels::RgbAlpha => PngChannels::RgbAlpha,
+    };
+    let module = PngModule {
+        post,
+        channels,
+        depth: m.depth,
+        compression,
+        first_number: u64::from(m.starting_number),
+        pattern: std::path::PathBuf::from(&m.output_path),
+        relative: m.output_path.clone(),
+        overwrite: false,
+    };
+    module.check(1)?;
+    Ok(module)
 }
 
 /// One reel job per output module of `item`, rendering the composition ONCE for all of them
@@ -281,7 +347,12 @@ pub fn render_queue_jobs_shared<S: CompositionScenes + 'static>(
     output_root: &Path,
     overwrite: bool,
 ) -> Result<(ModuleJobs, Arc<SharedFrames<S>>), MonitorFail> {
-    render_queue_build(item, comp, motion, None, scenes, audio, space, output_root, overwrite).map(|b| (b.jobs, b.shared))
+    render_queue_build(item, comp, motion, None, scenes, audio, space, output_root, overwrite).and_then(reel_only).map(|b| (b.jobs, b.shared))
+}
+
+/// A build whose PNG modules nobody would write is refused (module docs).
+fn reel_only<S>(b: RenderQueueBuild<S>) -> Result<RenderQueueBuild<S>, MonitorFail> {
+    if b.pngs.is_empty() { Ok(b) } else { Err(refuse("output_png_needs_delivery", "a PNG sequence module runs through the delivery queue")) }
 }
 
 /// The jobs of a queue item, the shared frames handle and the [`RenderNote`]s of settings that
@@ -290,6 +361,20 @@ pub struct RenderQueueBuild<S> {
     pub jobs: ModuleJobs,
     pub shared: Arc<SharedFrames<S>>,
     pub notes: Vec<RenderNote>,
+    /// PNG sequence modules (module docs): module id and module, numbered and placed under the root.
+    pub pngs: Vec<(String, PngModule)>,
+    /// The rendered span and frame size.
+    pub span: BuildSpan,
+}
+
+/// The span `[in_tick, out_tick)` of a build, its frame count and its rendered frame size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuildSpan {
+    pub in_tick: u64,
+    pub out_tick: u64,
+    pub frames: u64,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// [`render_queue_jobs_shared`] with the notes; `document_bits` is the document's
@@ -320,8 +405,21 @@ pub fn render_queue_build<S: CompositionScenes + 'static>(
     let layers = motion.and_then(|m| m.composition_audio(&comp.composition_id)).map_or(&[][..], |a| a.layers.as_slice());
     let mut modules = Vec::with_capacity(item.output_modules.len());
     let mut ids = Vec::with_capacity(item.output_modules.len());
+    let mut pngs = Vec::new();
     for m in &item.output_modules {
-        let (recipe, post, bit_depth) = module_output(item, comp, m, !layers.is_empty())?;
+        let (recipe, post, bit_depth) = match module_output(item, comp, m, !layers.is_empty())? {
+            ModulePlan::Reel(recipe, post, bit_depth) => (recipe, post, bit_depth),
+            ModulePlan::Png(mut png) => {
+                if m.use_comp_frame_number {
+                    png.first_number = in_tick.checked_div(tpf).unwrap_or(0);
+                }
+                png.check(frames)?;
+                png.pattern = output_root.join(&m.output_path);
+                png.overwrite = overwrite;
+                pngs.push((m.module_id.clone(), png));
+                continue;
+            }
+        };
         let audio_layers = if recipe.audio.is_some() {
             let rate = m.audio.sample_rate;
             let mut placed = Vec::with_capacity(layers.len());
@@ -347,10 +445,11 @@ pub fn render_queue_build<S: CompositionScenes + 'static>(
     }
     let renderer = FrameRenderer::new(scenes()?, space, comp.width, comp.height, tpf, item_motion_blur(item, motion))?.with_options(options)?;
     let (width, height) = renderer.size();
-    let consumers = u32::try_from(modules.len()).map_err(|_| refuse("output_modules", "too many output modules"))?;
+    let consumers = u32::try_from(modules.len().saturating_add(pngs.len())).map_err(|_| refuse("output_modules", "too many output modules"))?;
     let shared = SharedFrames::new(renderer, in_tick, frames, consumers, DEFAULT_SHARED_CACHE_BYTES)?;
     let jobs = shared_module_jobs(&shared, width, height, span, modules)?;
-    Ok(RenderQueueBuild { jobs: ids.into_iter().zip(jobs).collect(), shared, notes })
+    let span = BuildSpan { in_tick, out_tick, frames, width, height };
+    Ok(RenderQueueBuild { jobs: ids.into_iter().zip(jobs).collect(), shared, notes, pngs, span })
 }
 
 /// [`render_queue_jobs_shared`] for the queue item `item_id` stored in a session's document
@@ -371,7 +470,7 @@ pub fn session_render_queue_jobs<P: ScenePixels + Send + 'static>(
     overwrite: bool,
     cancel: &CancellationToken,
 ) -> Result<(ModuleJobs, Arc<SharedFrames<TemporalScenes<P>>>), MonitorFail> {
-    session_render_queue_build(session, item_id, resolver, info, pixels, glyphs, audio, space, output_root, overwrite, cancel).map(|b| (b.jobs, b.shared))
+    session_render_queue_build(session, item_id, resolver, info, pixels, glyphs, audio, space, output_root, overwrite, cancel).and_then(reel_only).map(|b| (b.jobs, b.shared))
 }
 
 /// [`session_render_queue_jobs`] with the notes: the item's frame-blending switch is applied to the
@@ -392,12 +491,32 @@ pub fn session_render_queue_build<P: ScenePixels + Send + 'static>(
     cancel: &CancellationToken,
 ) -> Result<RenderQueueBuild<TemporalScenes<P>>, MonitorFail> {
     let session_fail = |e: hsk_studio_session::SessionError| refuse("session_records", e.code());
-    let mut compositions = session.composition_records(resolver, cancel).map_err(session_fail)?.ok_or_else(|| refuse("session_records", "no composition records"))?;
+    let compositions = session.composition_records(resolver, cancel).map_err(session_fail)?.ok_or_else(|| refuse("session_records", "no composition records"))?;
     let motion = session.motion_records(resolver, cancel).map_err(session_fail)?.ok_or_else(|| refuse("session_records", "no motion records"))?;
+    records_render_queue_build(session.snapshot(), compositions, &motion, item_id, resolver, info, pixels, glyphs, audio, space, output_root, overwrite, cancel)
+}
+
+/// [`session_render_queue_build`] over records already read and validated against `snapshot` (lane
+/// SMB-DELIVERY-QUEUE-1: the delivery queue reads them from the open document's entries).
+#[allow(clippy::too_many_arguments)]
+pub fn records_render_queue_build<P: ScenePixels + Send + 'static>(
+    snapshot: &hsk_studio_folio::Snapshot,
+    mut compositions: StudioCompositionRecords,
+    motion: &StudioMotionRecords,
+    item_id: &str,
+    resolver: &dyn Resolver,
+    info: &dyn TileInfoSource,
+    pixels: &dyn Fn() -> P,
+    glyphs: &BTreeMap<String, (Vec<AnimatedGlyph>, [f32; 4])>,
+    audio: AudioResolver<'_>,
+    space: ColourTag,
+    output_root: &Path,
+    overwrite: bool,
+    cancel: &CancellationToken,
+) -> Result<RenderQueueBuild<TemporalScenes<P>>, MonitorFail> {
     let item = motion.render_queue.iter().find(|q| q.item_id == item_id).ok_or_else(|| refuse("render_queue_item", item_id.to_owned()))?;
     apply_frame_blending_switch(&mut compositions, item.settings.frame_blending);
     let comp = compositions.composition(&item.composition_id).ok_or_else(|| refuse("render_queue_composition", item.composition_id.clone()))?;
-    let snapshot = session.snapshot();
     let mut scenes = || {
         let source = CompositionTemporalSource::new(
             &CompositionInput {
@@ -414,9 +533,9 @@ pub fn session_render_queue_build<P: ScenePixels + Send + 'static>(
             },
             cancel,
         )
-        .and_then(|s| s.with_motion_records(&motion, glyphs, space, snapshot.document().revision, None))
+        .and_then(|s| s.with_motion_records(motion, glyphs, space, snapshot.document().revision, None))
         .map_err(|e| refuse("session_composition", format!("{e:?}")))?;
         Ok(TemporalScenes { source, pixels: pixels() })
     };
-    render_queue_build(item, comp, Some(&motion), Some(snapshot.document().bits_per_channel), &mut scenes, audio, space, output_root, overwrite)
+    render_queue_build(item, comp, Some(motion), Some(snapshot.document().bits_per_channel), &mut scenes, audio, space, output_root, overwrite)
 }

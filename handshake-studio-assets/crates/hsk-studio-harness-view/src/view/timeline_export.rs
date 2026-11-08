@@ -613,7 +613,278 @@ pub fn admitted_export_queue(worker: Option<std::path::PathBuf>, admission: supe
 /// The recipe of Studio preset `preset_id` (reel's preset table) for a queue that does (`os_encoder`)
 /// or does not carry the OS encoder: `unknown_preset`, or reel's typed `codec_unavailable` refusal
 /// for an H.264 / HEVC preset without the OS encoder (D24-A) and an AV1 preset without `av1-encode`.
+/// Lane SMB-DELIVERY-QUEUE-1: resolved through the preset's `StudioExportRecipe` record ([`recipe_record`],
+/// [`resolve_recipe`]), the path every sequence export takes.
 pub fn preset_recipe(preset_id: &str, os_encoder: bool) -> Result<ExportRecipe, MonitorFail> {
-    let preset = hsk_studio_reel::presets::export_preset(preset_id).ok_or_else(|| fail("unknown_preset", preset_id))?;
-    preset.recipe(os_encoder).map_err(|e| fail("codec_unavailable", e.to_string()))
+    hsk_studio_reel::presets::export_preset(preset_id).ok_or_else(|| fail("unknown_preset", preset_id))?;
+    resolve_recipe(&recipe_record(preset_id, &[])?, os_encoder)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lane SMB-DELIVERY-QUEUE-1: recipe records (STU-VID-063 a user recipe is the same record as a shipped
+// one) and the user recipes of the document entry `export_recipes` (session `EXPORT_RECIPES_ENTRY`).
+// ---------------------------------------------------------------------------------------------
+
+/// Schema of the `export_recipes` document entry: `{"schema_id": USER_RECIPES_SCHEMA, "recipes": [<reel
+/// StudioExportRecipe::to_json>, ...]}`, recipes in `recipe_id` byte order.
+pub const USER_RECIPES_SCHEMA: &str = "hsk.studio.export_recipes@1";
+/// Most user recipes one document holds.
+pub const MAX_USER_RECIPES: usize = 256;
+/// Largest entry body read (checked before any parse): [`MAX_USER_RECIPES`] recipes of reel's largest
+/// bounded record would exceed it, so a hostile entry is refused by size first and by reel's bounds second.
+pub const MAX_USER_RECIPES_BYTES: usize = 8 << 20;
+
+/// A recipe refusal as the viewer's typed failure: a writer refusal (`MEDIA_CODEC_UNAVAILABLE`) is
+/// `codec_unavailable` as before; every other refusal keeps reel's code.
+pub fn recipe_fail(e: hsk_studio_reel::ExportRecipeError) -> MonitorFail {
+    match e {
+        hsk_studio_reel::ExportRecipeError::Writer(w) => fail("codec_unavailable", w.to_string()),
+        other => MonitorFail { code: other.code(), detail: other.to_string() },
+    }
+}
+
+/// The record of recipe `recipe_id`: a shipped preset ([`hsk_studio_reel::presets::ExportPreset::studio_recipe`]), else
+/// a user recipe of `user`, else `unknown_preset` (the id space of `export_sequence`'s `preset_id`).
+pub fn recipe_record(recipe_id: &str, user: &[hsk_studio_reel::StudioExportRecipe]) -> Result<hsk_studio_reel::StudioExportRecipe, MonitorFail> {
+    if let Some(p) = hsk_studio_reel::presets::export_preset(recipe_id) {
+        return Ok(p.studio_recipe());
+    }
+    user.iter().find(|r| r.recipe_id() == recipe_id).cloned().ok_or_else(|| fail("unknown_preset", recipe_id))
+}
+
+/// The writer settings of `record` for a queue that does (`os_encoder`) or does not carry the OS encoder.
+pub fn resolve_recipe(record: &hsk_studio_reel::StudioExportRecipe, os_encoder: bool) -> Result<ExportRecipe, MonitorFail> {
+    record.resolve(os_encoder).map_err(recipe_fail)
+}
+
+fn invalid_field(field: &'static str) -> MonitorFail {
+    recipe_fail(hsk_studio_reel::ExportRecipeError::InvalidField { field })
+}
+
+fn vc3_profile(name: &str) -> Option<hsk_studio_reel::Vc3Profile> {
+    use hsk_studio_reel::Vc3Profile as P;
+    Some(match name {
+        "DnxhrLb" => P::DnxhrLb,
+        "DnxhrSq" => P::DnxhrSq,
+        "DnxhrHq" => P::DnxhrHq,
+        "DnxhrHqx" => P::DnxhrHqx,
+        "Dnxhd1080p10" => P::Dnxhd1080p10,
+        "Dnxhd1080pHigh" => P::Dnxhd1080pHigh,
+        "Dnxhd1080pMid" => P::Dnxhd1080pMid,
+        "Dnxhd1080pLow" => P::Dnxhd1080pLow,
+        "Dnxhd720p10" => P::Dnxhd720p10,
+        "Dnxhd720pHigh" => P::Dnxhd720pHigh,
+        "Dnxhd720pMid" => P::Dnxhd720pMid,
+        _ => return None,
+    })
+}
+
+fn small<T: TryFrom<u64>>(v: &serde_json::Value, field: &'static str) -> Result<T, MonitorFail> {
+    v.as_u64().and_then(|n| T::try_from(n).ok()).ok_or_else(|| invalid_field(field))
+}
+
+fn video_codec(v: &serde_json::Value) -> Result<Option<hsk_studio_reel::RecipeVideoCodec>, MonitorFail> {
+    use hsk_studio_reel::RecipeVideoCodec as C;
+    if v.is_null() {
+        return Ok(None);
+    }
+    let o = v.as_object().ok_or_else(|| invalid_field("video"))?;
+    let known = |keys: &[&str]| o.keys().all(|k| keys.contains(&k.as_str()));
+    Ok(Some(match o.get("codec").and_then(serde_json::Value::as_str) {
+        Some("vc3") if known(&["codec", "profile"]) => C::Vc3(o.get("profile").and_then(serde_json::Value::as_str).and_then(vc3_profile).ok_or_else(|| invalid_field("video"))?),
+        Some("av1") if known(&["codec", "speed", "quantizer", "bitrate", "max_keyframe_interval"]) => C::Av1(hsk_studio_reel::Av1Settings {
+            speed: small(o.get("speed").unwrap_or(&serde_json::Value::Null), "video")?,
+            quantizer: small(o.get("quantizer").unwrap_or(&serde_json::Value::Null), "video")?,
+            bitrate: match o.get("bitrate") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(b) => Some(small(b, "video")?),
+            },
+            max_keyframe_interval: small(o.get("max_keyframe_interval").unwrap_or(&serde_json::Value::Null), "video")?,
+        }),
+        Some("h264") if known(&["codec", "profile_idc"]) => C::H264(match o.get("profile_idc").and_then(serde_json::Value::as_u64) {
+            Some(66) => hsk_studio_reel::H264Profile::Baseline,
+            Some(77) => hsk_studio_reel::H264Profile::Main,
+            Some(100) => hsk_studio_reel::H264Profile::High,
+            _ => return Err(invalid_field("video")),
+        }),
+        Some("hevc") if known(&["codec"]) => C::Hevc,
+        _ => return Err(invalid_field("video")),
+    }))
+}
+
+/// A recipe record from its JSON form (`StudioExportRecipe::to_json`; reel has no parser by design): every
+/// field through reel's checked constructors and setters (unknown identifiers, credentials, bounds, kinds),
+/// so a value reel refuses is never stored. Unknown or missing fields are `export_recipe_field_invalid`.
+pub fn recipe_from_json(v: &serde_json::Value) -> Result<hsk_studio_reel::StudioExportRecipe, MonitorFail> {
+    use hsk_studio_reel::{ExportTargetFormat, ExportValue, PcmChoice, SourceScope, SourceSpan, StudioExportRecipe};
+    const FIELDS: [&str; 12] = ["recipe_id", "name", "target_format", "parameters", "source_scope", "output_targets", "does_video", "does_audio", "video", "audio", "metadata_export_option", "standard_filters"];
+    let o = v.as_object().ok_or_else(|| invalid_field("recipe"))?;
+    if o.len() != FIELDS.len() || !o.keys().all(|k| FIELDS.contains(&k.as_str())) {
+        return Err(invalid_field("recipe"));
+    }
+    let text = |k: &'static str| o.get(k).and_then(serde_json::Value::as_str).ok_or_else(|| invalid_field(k));
+    let mut r = StudioExportRecipe::new(text("recipe_id")?, text("name")?).map_err(recipe_fail)?;
+    match o.get("target_format") {
+        Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Object(t)) if t.len() == 2 => {
+            let part = |k: &'static str| t.get(k).and_then(serde_json::Value::as_str).map(str::to_owned).ok_or_else(|| invalid_field("target_format"));
+            r = r.with_target_format(ExportTargetFormat { exporter_class_id: part("exporter_class_id")?, exporter_file_type: part("exporter_file_type")? }).map_err(recipe_fail)?;
+        }
+        _ => return Err(invalid_field("target_format")),
+    }
+    let video = video_codec(o.get("video").unwrap_or(&serde_json::Value::Null))?;
+    let audio = match o.get("audio") {
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Object(a)) if a.len() == 2 => Some(PcmChoice {
+            bits: small(a.get("pcm_bits").unwrap_or(&serde_json::Value::Null), "audio")?,
+            float: a.get("float").and_then(serde_json::Value::as_bool).ok_or_else(|| invalid_field("audio"))?,
+        }),
+        _ => return Err(invalid_field("audio")),
+    };
+    if o.get("does_video").and_then(serde_json::Value::as_bool) != Some(video.is_some()) {
+        return Err(invalid_field("does_video"));
+    }
+    if o.get("does_audio").and_then(serde_json::Value::as_bool) != Some(audio.is_some()) {
+        return Err(invalid_field("does_audio"));
+    }
+    r = r.with_video(video).with_audio(audio);
+    let scope = o.get("source_scope").and_then(serde_json::Value::as_object).ok_or_else(|| invalid_field("source_scope"))?;
+    let scope = match scope.get("kind").and_then(serde_json::Value::as_str) {
+        Some("entire_source") if scope.len() == 1 => SourceScope::EntireSource,
+        Some("span") if scope.len() == 3 => SourceScope::Span(SourceSpan {
+            start_ticks: scope.get("start_ticks").and_then(serde_json::Value::as_u64).ok_or_else(|| invalid_field("source_scope"))?,
+            end_ticks: scope.get("end_ticks").and_then(serde_json::Value::as_u64).ok_or_else(|| invalid_field("source_scope"))?,
+        }),
+        _ => return Err(invalid_field("source_scope")),
+    };
+    r = r.with_source_scope(scope).map_err(recipe_fail)?;
+    if o.get("metadata_export_option").and_then(serde_json::Value::as_str) != Some("none") {
+        return Err(invalid_field("metadata_export_option"));
+    }
+    let list = |k: &'static str| o.get(k).and_then(serde_json::Value::as_array).ok_or_else(|| invalid_field(k));
+    for t in list("output_targets")? {
+        r.add_output_target(t.as_str().ok_or_else(|| invalid_field("output_targets"))?).map_err(recipe_fail)?;
+    }
+    for f in list("standard_filters")? {
+        r.add_standard_filter(f.as_str().ok_or_else(|| invalid_field("standard_filters"))?).map_err(recipe_fail)?;
+    }
+    let parameters = o.get("parameters").and_then(serde_json::Value::as_object).ok_or_else(|| invalid_field("parameters"))?;
+    if parameters.len() > hsk_studio_reel::export_parameters().len() {
+        return Err(recipe_fail(hsk_studio_reel::ExportRecipeError::Limit { field: "parameters", limit: hsk_studio_reel::export_parameters().len() }));
+    }
+    for (id, value) in parameters {
+        let value = match value {
+            serde_json::Value::Bool(b) => ExportValue::Bool(*b),
+            serde_json::Value::String(s) => ExportValue::Text(s.clone()),
+            serde_json::Value::Number(n) => match (n.as_i64(), n.as_f64()) {
+                (Some(i), _) if !n.is_f64() => ExportValue::Integer(i),
+                (_, Some(f)) if n.is_f64() => ExportValue::Float(f),
+                _ => return Err(invalid_field("parameters")),
+            },
+            _ => return Err(invalid_field("parameters")),
+        };
+        r.set_parameter(id, value).map_err(recipe_fail)?;
+    }
+    Ok(r)
+}
+
+/// The user recipes of an `export_recipes` entry body (`None`: none stored): the size bound before any parse,
+/// then the schema, then every recipe through [`recipe_from_json`]; a duplicate id or an id of a shipped
+/// preset is `export_recipes_invalid`.
+pub fn user_recipes(bytes: Option<&[u8]>) -> Result<Vec<hsk_studio_reel::StudioExportRecipe>, MonitorFail> {
+    let Some(bytes) = bytes else { return Ok(Vec::new()) };
+    if bytes.len() > MAX_USER_RECIPES_BYTES {
+        return Err(fail("export_recipes_invalid", format!("entry over {MAX_USER_RECIPES_BYTES} bytes")));
+    }
+    let v: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| fail("export_recipes_invalid", "entry is not JSON"))?;
+    let o = v.as_object().filter(|o| o.len() == 2 && o.get("schema_id").and_then(serde_json::Value::as_str) == Some(USER_RECIPES_SCHEMA)).ok_or_else(|| fail("export_recipes_invalid", "schema"))?;
+    let list = o.get("recipes").and_then(serde_json::Value::as_array).ok_or_else(|| fail("export_recipes_invalid", "recipes"))?;
+    if list.len() > MAX_USER_RECIPES {
+        return Err(fail("export_recipes_invalid", format!("more than {MAX_USER_RECIPES} recipes")));
+    }
+    let mut out: Vec<hsk_studio_reel::StudioExportRecipe> = Vec::with_capacity(list.len());
+    for item in list {
+        let r = recipe_from_json(item)?;
+        if out.iter().any(|q| q.recipe_id() == r.recipe_id()) || hsk_studio_reel::presets::export_preset(r.recipe_id()).is_some() {
+            return Err(fail("export_recipes_invalid", format!("{}: duplicate recipe id", r.recipe_id())));
+        }
+        out.push(r);
+    }
+    Ok(out)
+}
+
+/// The entry body of `recipes` (`None` when empty, so a document without user recipes stays byte-identical):
+/// deterministic, recipes in `recipe_id` byte order.
+pub fn user_recipes_entry(recipes: &[hsk_studio_reel::StudioExportRecipe]) -> Option<Vec<u8>> {
+    if recipes.is_empty() {
+        return None;
+    }
+    let mut sorted: Vec<&hsk_studio_reel::StudioExportRecipe> = recipes.iter().collect();
+    sorted.sort_by(|a, b| a.recipe_id().as_bytes().cmp(b.recipe_id().as_bytes()));
+    let body: Vec<String> = sorted.iter().map(|r| r.to_json()).collect();
+    Some(format!("{{\"schema_id\":\"{USER_RECIPES_SCHEMA}\",\"recipes\":[{}]}}", body.join(",")).into_bytes())
+}
+
+#[cfg(test)]
+mod user_recipe_tests {
+    //! Lane SMB-DELIVERY-QUEUE-1: the JSON form of a recipe round-trips through reel's checked setters, and the
+    //! entry's bounds hold before any parse.
+    use super::*;
+
+    fn every_codec() -> Vec<hsk_studio_reel::StudioExportRecipe> {
+        use hsk_studio_reel::{Av1Settings, ExportTargetFormat, ExportValue, PcmChoice, RecipeVideoCodec, SourceScope, SourceSpan, StudioExportRecipe};
+        let mut out: Vec<StudioExportRecipe> = hsk_studio_reel::presets::EXPORT_PRESETS.iter().map(|p| p.studio_recipe()).collect();
+        let mut r = StudioExportRecipe::new("user.av1.span", "AV1 span \"quoted\"")
+            .unwrap()
+            .with_target_format(ExportTargetFormat::reel(hsk_studio_reel::Container::Mov))
+            .unwrap()
+            .with_video(Some(RecipeVideoCodec::Av1(Av1Settings { speed: 4, quantizer: 80, bitrate: Some(5_000_000), max_keyframe_interval: 120 })))
+            .with_audio(Some(PcmChoice { bits: 32, float: true }))
+            .with_source_scope(SourceScope::Span(SourceSpan { start_ticks: 0, end_ticks: 10 }))
+            .unwrap();
+        r.set_parameter("ADBEVideoWidth", ExportValue::Integer(64)).unwrap();
+        r.add_output_target("a.mov").unwrap();
+        r.add_standard_filter("filter").unwrap();
+        out.push(r);
+        out.push(StudioExportRecipe::new("user.audio-only", "").unwrap().with_audio(Some(PcmChoice { bits: 16, float: false })));
+        out
+    }
+
+    #[test]
+    fn every_recipe_shape_round_trips_through_its_json() {
+        for r in every_codec() {
+            let v: serde_json::Value = serde_json::from_str(&r.to_json()).unwrap();
+            let back = recipe_from_json(&v).unwrap_or_else(|e| panic!("{}: {} {}", r.recipe_id(), e.code, e.detail));
+            assert_eq!(back, r);
+            assert_eq!(back.to_json(), r.to_json());
+        }
+        let mut user: Vec<_> = every_codec().into_iter().filter(|r| r.recipe_id().starts_with("user.")).collect();
+        let entry = user_recipes_entry(&user).unwrap();
+        // The entry holds them in recipe_id byte order.
+        user.sort_by(|a, b| a.recipe_id().as_bytes().cmp(b.recipe_id().as_bytes()));
+        assert_eq!(user_recipes(Some(&entry)).unwrap(), user);
+        assert_eq!(user_recipes_entry(&[]), None, "no user recipe: no entry");
+    }
+
+    #[test]
+    fn hostile_entries_and_records_refuse() {
+        let big = vec![b' '; MAX_USER_RECIPES_BYTES + 1];
+        assert_eq!(user_recipes(Some(&big)).unwrap_err().code, "export_recipes_invalid");
+        assert_eq!(user_recipes(Some(br#"{"schema_id":"other","recipes":[]}"#)).unwrap_err().code, "export_recipes_invalid");
+        let preset = hsk_studio_reel::presets::EXPORT_PRESETS[0].studio_recipe().to_json();
+        let shadow = format!(r#"{{"schema_id":"{USER_RECIPES_SCHEMA}","recipes":[{preset}]}}"#);
+        assert_eq!(user_recipes(Some(shadow.as_bytes())).unwrap_err().code, "export_recipes_invalid", "a user recipe never shadows a shipped id");
+        let mut v: serde_json::Value = serde_json::from_str(&preset).unwrap();
+        v["extra"] = serde_json::json!(1);
+        assert_eq!(recipe_from_json(&v).unwrap_err().code, "export_recipe_field_invalid");
+        let mut v: serde_json::Value = serde_json::from_str(&preset).unwrap();
+        v["does_audio"] = serde_json::json!(false);
+        assert_eq!(recipe_from_json(&v).unwrap_err().code, "export_recipe_field_invalid", "does_audio must equal the audio selection");
+        let mut v: serde_json::Value = serde_json::from_str(&preset).unwrap();
+        v["parameters"]["ADBEVideoFPS"] = serde_json::json!(25.0);
+        assert_eq!(recipe_from_json(&v).unwrap_err().code, "export_frame_rate_stored_as_float");
+        let mut v: serde_json::Value = serde_json::from_str(&preset).unwrap();
+        v["parameters"]["x".repeat(129)] = serde_json::json!(1);
+        assert_eq!(recipe_from_json(&v).unwrap_err().code, "export_parameter_unknown");
+    }
 }

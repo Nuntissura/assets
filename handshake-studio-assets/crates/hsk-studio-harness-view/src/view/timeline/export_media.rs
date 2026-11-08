@@ -59,6 +59,14 @@
 //! - **Log**: every result and refusal is a status log line `export media: ...` (the viewer's
 //!   operation log for exports; nothing is committed to the session).
 //!
+//! - **Recipes** (lane SMB-DELIVERY-QUEUE-1): `preset_id` is a recipe id: a shipped preset is resolved through
+//!   its `StudioExportRecipe` record, and a user recipe of the document entry `export_recipes` is accepted
+//!   too; the job is built through reel's `job_from_recipe`, so a recipe parameter reel's writer does not
+//!   consume is `export_parameter_not_consumed` and a declared raster, rate or channel count that differs
+//!   from the source is `export_parameter_source_mismatch`, both before the first frame. This is the one
+//!   implementation of a sequence export: the delivery queue (`crate::view::delivery`) runs its sequence
+//!   items through it, and the bytes are pinned (hsk-studio-harness tests/delivery_queue.rs).
+//!
 //! Refusals: `not_open`, `unknown_sequence`, `frame_decoder_missing`, `unknown_preset`,
 //! `codec_unavailable`, `export_range`, `audio_sources_missing`, `nest_unresolved`, `mixdown`,
 //! `routing_unreadable`, `export_output_root`, `monitor_size`, `export_worker`, `export_running`,
@@ -68,7 +76,7 @@
 use super::super::Viewer;
 use super::super::monitor::{FrameSource, MonitorFail, SourceFrame};
 use super::super::job_admission::{AdmittedExportQueue, ExportSettlements, frame_bytes, refusal_fail, settlement_json};
-use super::super::timeline_export::{NestedDocument, TimelineExport, admitted_export_queue, export_queue, preset_recipe, timeline_export_job_with};
+use super::super::timeline_export::{NestedDocument, TimelineExport, admitted_export_queue, export_queue, preset_recipe, recipe_fail, recipe_record, resolve_recipe, timeline_export_job_with};
 use super::{TimelineCommand, widget};
 use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
 use hsk_studio_folio::{ClipSource, StudioSequence, TrackKind};
@@ -358,6 +366,11 @@ impl ExportMediaState {
             "audio_port": self.audio.as_ref().map(|a| json!({"rate": a.rate})),
         })
     }
+    /// The bound sound port's sources and rate (lane SMB-DELIVERY-QUEUE-1: composition audio layers).
+    #[allow(clippy::type_complexity)]
+    pub(in crate::view) fn sound(&self) -> Option<(Arc<dyn AudioSources + Send + Sync>, u32)> {
+        self.audio.as_ref().map(|p| (Arc::clone(&p.sources), p.rate))
+    }
     /// Toolbar progress label of a running export.
     pub(in crate::view) fn progress_label(&self) -> Option<String> {
         self.running.as_ref().map(|r| {
@@ -507,7 +520,7 @@ impl Viewer {
     /// Exports `sequence_id` (module docs): the job runs on reel's queue on a worker thread while
     /// this thread serves decoded frames; returns when the receipt is in.
     pub fn export_sequence(&mut self, sequence_id: &str, request: ExportSequenceRequest) -> Result<Value, MonitorFail> {
-        let result = self.export_sequence_inner(sequence_id, &request);
+        let result = self.export_sequence_with(sequence_id, &request, &mut |_| {});
         match &result {
             Ok(v) => self.say(format!("export media: {sequence_id} [{}, {}) {}: {}", v["in_tick"], v["out_tick"], request.preset_id, outcome(v))),
             Err(e) => self.say(format!("export media: {sequence_id} refused {} {}", e.code, e.detail)),
@@ -515,13 +528,17 @@ impl Viewer {
         result
     }
 
-    fn export_sequence_inner(&mut self, sequence_id: &str, request: &ExportSequenceRequest) -> Result<Value, MonitorFail> {
+    /// [`Viewer::export_sequence`] without its log line; `on_submit` sees the admitted item's handle before its
+    /// worker starts (the delivery queue cancels one item through it). Delivery sequence items record their noise
+    /// print recomputes here too (SMB-SCORE-EFFECTS-6 review F3).
+    pub(in crate::view) fn export_sequence_with(&mut self, sequence_id: &str, request: &ExportSequenceRequest, on_submit: &mut dyn FnMut(&ExportHandle)) -> Result<Value, MonitorFail> {
         let prepared = self.export_prepare(sequence_id, request)?;
         #[cfg(feature = "audio-batch")]
         self.record_print_recomputes(&prepared.recomputed);
         let Prepared { mut queue, job, requests, meta, bytes, bound_revision, .. } = prepared;
         // Admitted before anything starts: a refusal submits nothing and starts no thread or encoder.
-        let _handle = queue.submit(job, bytes, bound_revision, self.document_head(), self.cancel).map_err(refusal_fail)?;
+        let handle = queue.submit(job, bytes, bound_revision, self.document_head(), self.cancel).map_err(refusal_fail)?;
+        on_submit(&handle);
         let (mut queue, settlements) = queue.into_worker();
         let worker = match std::thread::Builder::new().name("hsk-export-media".into()).spawn(move || queue.run()) {
             Ok(worker) => worker,
@@ -551,7 +568,9 @@ impl Viewer {
         let monitor = self.monitor.as_ref().filter(|m| m.sources.is_some()).ok_or_else(|| fail("frame_decoder_missing", "no frame decoder is bound to the program monitor"))?;
         let video_extents = ExtentTable::of(&doc.sequences, monitor.extents.as_ref());
         let (queue, os) = admitted_export_queue(None, self.job_admission());
-        let recipe = preset_recipe(&request.preset_id, os)?;
+        // A shipped preset or a user recipe, the same record (lane SMB-DELIVERY-QUEUE-1).
+        let record = recipe_record(&request.preset_id, &self.user_recipes()?)?;
+        let recipe = resolve_recipe(&record, os)?;
         let (din, dout) = default_range(&sequence);
         let (in_tick, out_tick) = (request.in_tick.unwrap_or(din), request.out_tick.unwrap_or(dout));
         let chroma = request.chroma.unwrap_or(match recipe.video {
@@ -629,6 +648,9 @@ impl Viewer {
             artifact,
         };
         let job = timeline_export_job_with(export, NestedDocument::new(doc.sequences.clone(), routing), self.cancel)?;
+        // Through the recipe record: every parameter consumed and equal to its source fact, before any frame.
+        let inputs = hsk_studio_reel::RecipeJobInputs { video: job.video, audio: job.audio, span: job.span, output: job.output, overwrite: job.overwrite, artifact: job.artifact, limits: job.limits };
+        let job = hsk_studio_reel::job_from_recipe(&record, inputs, os).map_err(recipe_fail)?;
         let bound_revision = doc.revision;
         Ok(Prepared {
             queue,
@@ -648,11 +670,15 @@ impl Viewer {
         if output.is_absolute() {
             return Ok(output.to_path_buf());
         }
+        self.export_root().map(|r| r.join(output)).map_err(|_| fail("export_output_root", format!("{}: relative, and no save path or opened file names a folder", output.display())))
+    }
+
+    /// The save root relative outputs resolve against: the folder of the save path field, else of the opened
+    /// file (`export_output_root`).
+    pub(in crate::view) fn export_root(&self) -> Result<PathBuf, MonitorFail> {
         let save = Path::new(self.save_input.trim());
         let root = if self.save_input.trim().is_empty() { None } else { save.parent() }.or_else(|| self.source.as_deref().and_then(Path::parent));
-        root.filter(|r| !r.as_os_str().is_empty())
-            .map(|r| r.join(output))
-            .ok_or_else(|| fail("export_output_root", format!("{}: relative, and no save path or opened file names a folder", output.display())))
+        root.filter(|r| !r.as_os_str().is_empty()).map(Path::to_path_buf).ok_or_else(|| fail("export_output_root", "no save path or opened file names a folder"))
     }
 
     /// The Export Media commands (module docs); `None` for every other command.
