@@ -529,7 +529,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-ps-ops", &["flate2"]),
     ("hsk-studio-ps-pdf", &["flate2"]),
     ("hsk-studio-vulkan", &["ash"]),
-    ("hsk-studio-native-host", &["windows-sys", "winit"]),
+    ("hsk-studio-native-host", &["png", "sha2", "windows-sys", "winit"]),
 ];
 // END GENERATED APPROVED
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.
