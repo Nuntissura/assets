@@ -27,9 +27,16 @@
 //! - [`Viewer::free_transform`] (`transform.free_transform`): `scale_x`, `scale_y` (percent; negative flips),
 //!   `angle` (degrees, -360..=360, clockwise on screen), `skew_x`, `skew_y` (degrees, -89.9..=89.9),
 //!   `translate_x`, `translate_y` (document units), about `reference_point` of the layer's bounds (default
-//!   `middle_centre`). On a placed layer the transform accumulates on the record and the tiles are rendered
-//!   again from the source, so the source is resampled once whatever the history ([STU-RAS-014]); on a
-//!   pixel layer the pixels are resampled once into new tiles (no canvas clip).
+//!   `middle_centre`; a placed layer: the source's mapped bounds; a pixel layer: the bounds of its texels
+//!   with alpha > 0, `layer_empty` without one). On a placed layer the transform accumulates on the record
+//!   and the tiles are rendered again from the source, so the source is resampled once whatever the history
+//!   ([STU-RAS-014]); on a pixel layer the pixels are resampled once into new tiles (no canvas clip). A
+//!   filtered resample keeps linear values outside 0..=1 when the source holds any (float layers and
+//!   sources; the tiles are `rgb_f32le`).
+//!
+//! Placed layers take ids from their own block (`7ede-9200`), so a layer another tool creates after a
+//! placed layer is deleted never takes its id; the deleted layer's record stays in [`ENTRY`] (undo brings
+//! the layer back) and is ignored at render and in validation (pruned to the document's layers).
 //! - [`Viewer::move_content`] (`transform.move`): a translation by `dx`, `dy`; on a pixel layer whole pixels
 //!   only (an exact copy, `move_not_whole_pixels` otherwise).
 //! - [`Viewer::reset_transform`] (`transform.reset`): a placed layer back to its transform as placed.
@@ -65,7 +72,7 @@
 
 use super::Viewer;
 use super::edit;
-use super::layers::{mint_layer_id, new_layer, operation_for};
+use super::layers::{new_layer, operation_for};
 use super::render::{self, Assets};
 use crate::PlacementWrite;
 use hsk_studio_composite::lower_extensions::placed::placed_matrix;
@@ -75,6 +82,7 @@ use hsk_studio_folio::{
 };
 use hsk_studio_package::{AssetSource, ImportEntry, ImportRole, LinkedFileResolver};
 use hsk_studio_pigment::Rect;
+use hsk_studio_pigment::render_plan::SampleRange;
 use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, PreparedTransform, ResampleFilter, exact_sin_cos};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -225,11 +233,14 @@ impl Default for FreeTransform {
 }
 
 /// The viewer's place state: the import records of the open document (what the viewer renders while the
-/// session holds no [`ENTRY`]) and the link states of the last check by source id.
+/// session holds no [`ENTRY`]), the link states of the last check by source id, and the opened document's
+/// folder, canonical, captured at its open (review F3 of 9d83222c: `Viewer::source` also names an audio file
+/// opened beside the document; `None` after `document.new` and close).
 #[derive(Clone, Debug, Default)]
 pub struct PlaceState {
     import: Option<StudioRasterRecords>,
     links: BTreeMap<String, &'static str>,
+    base: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -469,18 +480,17 @@ impl Viewer {
 
     /// After an open: the import records it read, then the effective set and the link states.
     pub(super) fn place_opened(&mut self, import: Option<StudioRasterRecords>) {
-        self.place = PlaceState { import, links: BTreeMap::new() };
+        let base = self.source.as_deref().and_then(Path::parent).map(|p| if p.as_os_str().is_empty() { Path::new(".") } else { p }).and_then(|p| std::fs::canonicalize(p).ok());
+        self.place = PlaceState { import, links: BTreeMap::new(), base };
         self.place_sync();
         if let Some(entry) = self.run.snapshot().map(|s| s.document().clone()).and_then(|doc| self.editable_entry(&doc).ok()) {
             self.check_links(&entry);
         }
     }
 
-    /// The opened document's folder, canonical.
+    /// The opened document's folder, canonical, as captured at its open ([`PlaceState`]).
     fn link_base(&self) -> Res<PathBuf> {
-        let parent = self.source.as_deref().and_then(Path::parent).ok_or_else(|| PlaceRefusal::new("link_base_unknown", "a link resolves against the opened document's folder: open or save and reopen the document first"))?;
-        let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
-        std::fs::canonicalize(parent).map_err(|e| PlaceRefusal::new("link_base_unknown", format!("{:?}", e.kind())))
+        self.place.base.clone().ok_or_else(|| PlaceRefusal::new("link_base_unknown", "a link resolves against the opened document's folder: open or save and reopen the document first"))
     }
 
     /// The [STU-ASSET-007] state of a linked source now.
@@ -576,6 +586,7 @@ impl Viewer {
             let k = (j as usize).checked_mul(width).and_then(|k| k.checked_add(i as usize)).ok_or(())?;
             pixels.get(k).copied().ok_or(())
         };
+        let range = sample_range(pixels);
         let mut tiles: Vec<TileRef> = Vec::new();
         let mut staged = Vec::new();
         for row in first(region.y)..=last(ey) {
@@ -589,7 +600,7 @@ impl Viewer {
                 let (hx, hy) = hit.end().map_err(|_| PlaceRefusal::new("budget_exceeded", "cell"))?;
                 for y in hit.y..hy {
                     for x in hit.x..hx {
-                        let px = prepared.sample_rgba(x, y, texel).unwrap_or([0.0; 4]);
+                        let px = prepared.sample_rgba_in(range, x, y, texel).unwrap_or([0.0; 4]);
                         if px[3].is_nan() || px[3] <= 0.0 {
                             continue;
                         }
@@ -724,7 +735,7 @@ impl Viewer {
         let x = opts.x.unwrap_or(canvas.x as f64 + (f64::from(canvas.width) - w * scale) / 2.0);
         let y = opts.y.unwrap_or(canvas.y as f64 + (f64::from(canvas.height) - h * scale) / 2.0);
         let transform = [scale, 0.0, 0.0, scale, x, y];
-        let layer_id = mint_layer_id(&doc, u64::try_from(doc.layers.len()).unwrap_or(0));
+        let layer_id = mint_placed_layer_id(&doc, &entry);
         let tiles = self.placement_tiles(&layer_id, &image, transform, filter)?;
         let count = tiles.len();
         let (parent, place) = self.insertion_point().map_err(|e| PlaceRefusal::new("not_open", e))?;
@@ -802,7 +813,10 @@ impl Viewer {
         if tiles.iter().any(|t| t.format != "rgb_f32le") {
             return no("tile_format_unsupported", "a pixel layer of rgb_f32le tiles");
         }
-        let (bounds, pixels) = self.layer_rgba(layer_id)?;
+        let (tile_bounds, tile_pixels) = self.layer_rgba(layer_id)?;
+        // The reference point and the source rect are the layer's pixels, not its tile cells (review F2).
+        let (bounds, pixels) = opaque_crop(tile_bounds, &tile_pixels).ok_or_else(|| PlaceRefusal::new("layer_empty", layer_id.to_owned()))?;
+        drop(tile_pixels);
         let delta = match change {
             Edit::Free(t) => delta_matrix(t, mapped_bounds(Affine2::IDENTITY, bounds))?,
             Edit::Move(dx, dy) => Affine2::translate(dx, dy),
@@ -1043,12 +1057,82 @@ enum Edit<'a> {
     Reset,
 }
 
+/// The document id's two time fields (`SDOC-{high}-{low}-...`), zeros when they are not hex.
+fn time_fields(doc: &StudioDocument) -> (String, String) {
+    let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
+    let hex = |s: Option<&str>, n: usize| s.filter(|v| v.len() == n && v.bytes().all(|b| b.is_ascii_hexdigit())).map_or_else(|| "0".repeat(n), str::to_owned);
+    (hex(uuid.get(0..8), 8), hex(uuid.get(9..13), 4))
+}
+
+/// A fresh `SLYR` id for a placed layer, from the block `7ede-9200` that no other minter uses (`layers`
+/// mints `7ede-9000`, [`mint_document_id`] `7ede-9100`): the first counter neither the document nor the
+/// entry's records or instances hold. Review F1 of 9d83222c: a placed layer minted from the shared block
+/// freed its id on delete, the next new layer of any tool took that id and inherited the stale record. A
+/// later place may take a pruned placed id again (the prune runs before the push; the history is linear).
+fn mint_placed_layer_id(doc: &StudioDocument, entry: &Entry) -> String {
+    let (high, low) = time_fields(doc);
+    let taken: BTreeSet<&str> = doc
+        .layers
+        .iter()
+        .map(|l| l.layer_id.as_str())
+        .chain(entry.records.layers.iter().map(|r| r.layer_id.as_str()))
+        .chain(entry.instances.iter().map(|i| i.layer_id.as_str()))
+        .collect();
+    let mut n: u64 = 1;
+    loop {
+        let id = format!("SLYR-{high}-{low}-7ede-9200-{n:012x}");
+        if !taken.contains(id.as_str()) {
+            return id;
+        }
+        n = n.wrapping_add(1);
+    }
+}
+
+/// The tight bounds of the texels with alpha > 0 of `pixels` (row-major over `bounds`) and those texels;
+/// `None` when no texel has alpha. Review F2 of 9d83222c: a pixel layer's reference point is on its
+/// pixels, not on its 256-pixel tile cells.
+fn opaque_crop(bounds: Rect, pixels: &[[f32; 4]]) -> Option<(Rect, Vec<[f32; 4]>)> {
+    let width = usize::try_from(bounds.width).ok().filter(|w| *w > 0)?;
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+    for (k, p) in pixels.iter().enumerate() {
+        // NaN alpha compares false: not content.
+        if p[3] > 0.0 {
+            let (x, y) = (k.checked_rem(width)?, k.checked_div(width)?);
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x.saturating_add(1));
+            y1 = y1.max(y.saturating_add(1));
+        }
+    }
+    if x0 == usize::MAX {
+        return None;
+    }
+    let (w, h) = (x1.checked_sub(x0)?, y1.checked_sub(y0)?);
+    let mut out = Vec::with_capacity(w.checked_mul(h)?);
+    for y in y0..y1 {
+        let start = y.checked_mul(width)?.checked_add(x0)?;
+        out.extend_from_slice(pixels.get(start..start.checked_add(w)?)?);
+    }
+    let rect = Rect {
+        x: bounds.x.checked_add(i64::try_from(x0).ok()?)?,
+        y: bounds.y.checked_add(i64::try_from(y0).ok()?)?,
+        width: u32::try_from(w).ok()?,
+        height: u32::try_from(h).ok()?,
+    };
+    Some((rect, out))
+}
+
+/// The colour range a filtered resample keeps: extended when the source holds a colour outside 0..=1
+/// (float data, whose highlights a unit clamp would lose: review F4 of 9d83222c), else unit (no Catmull-Rom
+/// overshoot on unit-range data). The tiles written are always `rgb_f32le`; nothing integer is written here.
+fn sample_range(pixels: &[[f32; 4]]) -> SampleRange {
+    if pixels.iter().any(|p| p[..3].iter().any(|c| *c > 1.0 || *c < 0.0)) { SampleRange::Extended } else { SampleRange::Unit }
+}
+
 /// A fresh `SDOC` id for an embedded source: the document id's time fields, a fixed block, the first
 /// counter neither the document nor another embedded source holds.
 fn mint_document_id(doc: &StudioDocument, records: &StudioRasterRecords) -> String {
-    let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
-    let hex = |s: Option<&str>, n: usize| s.filter(|v| v.len() == n && v.bytes().all(|b| b.is_ascii_hexdigit())).map_or_else(|| "0".repeat(n), str::to_owned);
-    let (high, low) = (hex(uuid.get(0..8), 8), hex(uuid.get(9..13), 4));
+    let (high, low) = time_fields(doc);
     let taken: BTreeSet<&str> = records
         .placed_sources
         .iter()
