@@ -1,0 +1,13 @@
+[package]
+name = "spv-build"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Offline WGSL to SPIR-V for hsk-studio-vulkan's UI pass (decision O3); never in a product build closure"
+
+# Its own workspace: spv-build is no root member, so no product closure gains naga (O3, D7). Its Cargo.lock is a
+# strict subset of the root Cargo.lock (tests/ui_shaders.rs checks name, version and checksum).
+[workspace]
+
+[dependencies]
+naga = { version = "=27.0.3", default-features = false, features = ["wgsl-in", "spv-out"] }

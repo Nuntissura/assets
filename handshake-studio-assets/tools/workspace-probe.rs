@@ -609,6 +609,10 @@ const TOOLKIT_ALLOWED_WGSL: &[&str] = &[
     "crates/hsk-studio-render-gpu/src/kernel_pixel.wgsl",
     "crates/hsk-studio-render-gpu/src/key.wgsl",
     "crates/hsk-studio-render-gpu/src/resample.wgsl",
+    // direction.lead_rulings_20261108.vk_ui_pass_1, under O3 (direction.blocker_decisions_20261107): the UI pass's one
+    // WGSL source, compiled offline by crates/hsk-studio-vulkan/spv-build (its own workspace) into checked-in SPIR-V; no
+    // product closure compiles it or links naga.
+    "crates/hsk-studio-vulkan/shaders/ui.wgsl",
 ];
 const TOOLKIT_WALK_LIMIT: usize = 200_000;
 fn toolkit_name(name: &str) -> bool {
@@ -1141,7 +1145,13 @@ fn toolkit_gate_self_test() -> Result<usize> {
     toolkit_wgsl_gate(&wgsl).map_err(|_| "self_test_toolkit_wgsl_today_rejected")?;
     toolkit_wgsl_gate(&[]).map_err(|_| "self_test_toolkit_wgsl_absent_rejected")?;
     cases += 2;
-    for added in ["crates/hsk-studio-render-gpu/src/new.wgsl", "crates/hsk-studio-prism/src/x.WGSL", "tools/x.wgsl"] {
+    for added in [
+        "crates/hsk-studio-render-gpu/src/new.wgsl",
+        "crates/hsk-studio-prism/src/x.WGSL",
+        "tools/x.wgsl",
+        // The one hsk-studio-vulkan entry is exact: a second shader under that crate still fails.
+        "crates/hsk-studio-vulkan/shaders/second.wgsl",
+    ] {
         wgsl.push(added.to_owned());
         if toolkit_wgsl_gate(&wgsl) != Err(format!("toolkit_gate_wgsl/{added}")) {
             return Err(format!("self_test_toolkit_wgsl_not_rejected_{added}"));
