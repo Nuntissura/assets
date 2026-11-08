@@ -96,8 +96,14 @@ pub fn replace_story_text(
             (Some(f), Some(l)) if i == f => {
                 let region_end = mapped[l].end;
                 let template = p.clone();
-                let mut at = p.start;
-                let from = usize_of(p.start)?;
+                // Text inserted at the first byte of a non-empty story joins the first paragraph
+                // (map_pos moves a start equal to the edit after the inserted text, which left those
+                // bytes in no paragraph; lane SMB-TYPE-INDENT-SPACING-1). An empty story keeps its
+                // one-paragraph fallback below (pinned by harness layout_pdf_host and
+                // harness_drive_typed known_defect_replace_text_newline_keeps_one_paragraph).
+                let region_start = if text.is_empty() { p.start } else { p.start.min(start) };
+                let mut at = region_start;
+                let from = usize_of(region_start)?;
                 let region = out.get(from..usize_of(region_end)?).ok_or(LayoutError::InvalidInput)?;
                 for (k, c) in region.char_indices() {
                     if crate::sentinels::ends_paragraph(c) {
