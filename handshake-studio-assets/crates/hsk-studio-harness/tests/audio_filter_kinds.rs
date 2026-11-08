@@ -371,6 +371,41 @@ fn batch_jobs_and_waveform_effects_run_a_graphic_eq_and_the_multiband_compressor
     assert_ne!(b.channels()[0][1000..3000], src[0][1000..3000]);
 }
 
+/// Review F4: one aggregate budget over the estimated state of every bus and master effect, before
+/// the graph builds any. A hostile stored routing past it opens no stream; an edit that would pass it
+/// is refused with no step.
+#[test]
+fn effect_state_past_the_aggregate_budget_is_refused_before_the_graph_builds() {
+    let dir = support_audio::scratch("filter-kinds-budget");
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&package(&dir)).unwrap();
+    let mut delay = effect_templates().into_iter().find(|(n, _)| *n == "feedback_delay").unwrap().1;
+    if let EffectSpec::Filter { params, .. } = &mut delay {
+        params.iter_mut().find(|(k, _)| k == "time_ms").unwrap().1 = 5000.0;
+    }
+    let list = |n: usize, from: usize| (from..from + n).map(|i| delay.to_preset_instance(format!("fx-{i}"))).collect::<Vec<_>>();
+    let routing = |bus: usize| {
+        let mut r = StudioAudioRouting::new("seq-main");
+        r.routes = vec![StudioTrackRoute { track_id: id(1), output: Some(id(3)), sends: vec![] }];
+        r.master.effects = list(64, 0);
+        r.bus_effects = vec![StudioBusEffects { track_id: id(3), effects: list(bus, 64) }];
+        StudioAudioRoutingSet { routings: vec![r] }
+    };
+    // 64 + 64 five-second stereo delays at 48 kHz: about 491 MB of lines, past the 256 MiB budget.
+    v.set_audio_routing(&routing(64)).unwrap();
+    let e = v.open_mixer("seq-main", RATE, 960, sources(), Arc::new(Ext)).unwrap_err();
+    assert!(e.contains("effect_state_over_budget"), "{e}");
+    assert!(v.mixer_json()["error"].as_str().is_some_and(|t| t.contains("effect_state_over_budget")), "{}", v.mixer_json());
+    // 64 + 5 fit (about 265 MB); a sixth delay on the bus would pass the budget: refused, no step.
+    let (_dir, mut w) = session("budget-edit");
+    w.set_audio_routing(&routing(5)).unwrap();
+    w.open_mixer("seq-main", RATE, 960, sources(), Arc::new(Ext)).unwrap();
+    let before = steps(&w);
+    let e = w.mixer_edit(MixerEdit::AddEffect { bus: Some(id(3)), instance: delay.to_preset_instance("fx-200"), at: None }).unwrap_err();
+    assert!(e.contains("effect_state_over_budget"), "{e}");
+    assert_eq!(steps(&w), before);
+}
+
 #[test]
 fn stems_with_a_master_graphic_eq_sum_to_the_print_and_a_master_limiter_shows_in_the_residual() {
     for (name, sums) in [("graphic_eq_10_bands", true), ("hard_limiter", false)] {
