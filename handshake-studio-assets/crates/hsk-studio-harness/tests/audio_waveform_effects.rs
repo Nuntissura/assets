@@ -82,3 +82,111 @@ fn effects_on_a_selection_are_aligned_single_undo_steps() {
     let doc = WaveformDocument::parse(w.run().document_entry("waveform_edit").unwrap()).unwrap();
     assert_eq!(doc.ops.len(), 1);
 }
+
+/// Lane SMB-SCORE-EFFECTS-6 item 6: noise reduction on a waveform selection from a stored noise
+/// print (range plus profile digest), one undo step, replayed after reopen; a changed print refuses
+/// as stale; hostile parameters refuse typed with no step. Oracle: a tone-plus-noise fixture whose
+/// noise-only spans and tone are measured before and after.
+#[test]
+fn noise_reduction_from_a_stored_print_is_one_step_and_replays() {
+    use hsk_studio_harness::view::waveform::{NoiseReduceParams, PluginRegistry, WaveformOp, replay};
+    use hsk_studio_score::{ALL_CHANNELS, NoiseReductionParams, WaveBuffer};
+    let dir = support_audio::scratch("waveform-noise");
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&support_waveform::package(&dir)).unwrap();
+    // 1 s stereo: noise 0.05 everywhere, a 1 kHz tone of 0.5 over 12000 .. 40000.
+    let mut s = 0x9E37_79B9_7F4A_7C15u64;
+    let mut noise = || {
+        s ^= s >> 12;
+        s ^= s << 25;
+        s ^= s >> 27;
+        ((s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0) * 0.05
+    };
+    let src: Vec<Vec<f32>> = (0..2)
+        .map(|_| {
+            (0..48_000)
+                .map(|n| {
+                    let tone = if (12_000..40_000).contains(&n) { 0.5 * (2.0 * std::f64::consts::PI * 1000.0 * n as f64 / f64::from(RATE)).sin() } else { 0.0 };
+                    (tone + noise()) as f32
+                })
+                .collect()
+        })
+        .collect();
+    v.open_waveform(RATE, src.clone()).unwrap();
+    let base = undo_len(&v);
+    let reduction = NoiseReductionParams::default();
+    let params = NoiseReduceParams { fft_size: 1024, reduction };
+    let all = |a: u64, b: u64| WaveSelection { start: a, end: b, channels: ALL_CHANNELS };
+    let edit = WaveformEdit::NoiseReduce { selection: all(0, 48_000), print: all(0, 12_000), params };
+    v.waveform_edit(edit.clone()).unwrap();
+    assert_eq!(undo_len(&v), base + 1, "one step");
+    let b = v.waveform_buffer().unwrap();
+    let rms = |x: &[f32]| (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+    let db = |x: f64| 20.0 * x.log10();
+    // Noise-only span after the tone (42000 .. 48000): the floor drops by about reduction_db.
+    let drop = db(rms(&src[0][42_000..48_000])) - db(rms(&b.channels()[0][42_000..48_000]));
+    // The tone band (1 kHz projection over 20000 .. 36000, 16 whole periods per 768 samples).
+    let tone = |x: &[f32]| {
+        let (mut c, mut q) = (0.0, 0.0);
+        for (i, v) in x[20_000..36_000].iter().enumerate() {
+            let a = 2.0 * std::f64::consts::PI * 1000.0 * (20_000 + i) as f64 / f64::from(RATE);
+            c += f64::from(*v) * a.cos();
+            q += f64::from(*v) * a.sin();
+        }
+        (c * c + q * q).sqrt() * 2.0 / 16_000.0
+    };
+    let moved = db(tone(&b.channels()[0])) - db(tone(&src[0]));
+    println!("MEASURED: noise floor drop {drop:.2} dB (reduction_db {}), tone change {moved:.3} dB", reduction.reduction_db);
+    assert!(drop >= reduction.reduction_db - 6.0, "noise floor dropped {drop} dB");
+    assert!(moved.abs() <= 1.0, "tone moved {moved} dB");
+    let stored = WaveformDocument::parse(v.run().document_entry("waveform_edit").unwrap()).unwrap();
+    let WaveformOp::NoiseReduce { print, print_digest, .. } = &stored.ops[0] else { panic!("{:?}", stored.ops[0]) };
+    assert_eq!((print.start, print.end, print_digest.len()), (0, 12_000, 64));
+
+    // Undo restores the bytes; redo and save, reopen: the print replays to the same digest.
+    v.waveform_undo(true).unwrap();
+    assert_eq!(v.waveform_buffer().unwrap().channels(), &src[..]);
+    v.waveform_undo(false).unwrap();
+    let saved = dir.join("noise.handshake");
+    v.save(&saved, false).unwrap();
+    let mut w = Viewer::new(Prefer::Cpu);
+    w.open(&saved).unwrap();
+    w.open_waveform(RATE, src.clone()).unwrap();
+    assert_eq!(w.waveform_buffer().unwrap(), b);
+
+    // A changed print is stale: the same operation after an edit of the print range, or a wrong
+    // digest, refuses on replay.
+    let actor = hsk_studio_accord::ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap();
+    let source = WaveBuffer::new(RATE, src.clone()).unwrap();
+    let plugins = PluginRegistry::default();
+    let token = hsk_studio_accord::CancellationToken::default();
+    let louder = vec![WaveformOp::Amplify { selection: all(0, 6000), db: 3.0 }, stored.ops[0].clone()];
+    let e = replay(&source, &louder, &plugins, &actor, &token).unwrap_err();
+    assert!(e.contains("waveform_noise_print_stale"), "{e}");
+    let mut tampered = stored.ops[0].clone();
+    if let WaveformOp::NoiseReduce { print_digest, .. } = &mut tampered {
+        *print_digest = "0".repeat(64);
+    }
+    assert!(replay(&source, &[tampered], &plugins, &actor, &token).unwrap_err().contains("waveform_noise_print_stale"));
+
+    // Hostile parameters and prints refuse typed with no step.
+    let steps = undo_len(&v);
+    let refused = |v: &mut Viewer, selection: WaveSelection, print: WaveSelection, params: NoiseReduceParams| v.waveform_edit(WaveformEdit::NoiseReduce { selection, print, params }).unwrap_err();
+    assert!(refused(&mut v, all(0, 48_000), all(0, 500), params).contains("waveform_noise_print_short"));
+    assert!(refused(&mut v, all(0, 48_000), all(0, 60_000), params).starts_with("waveform_"));
+    assert!(refused(&mut v, all(0, 48_000), WaveSelection { start: 0, end: 12_000, channels: 0b01 }, params).contains("waveform_noise_print_channels"));
+    for fft_size in [1000, 128, 16_384] {
+        assert!(refused(&mut v, all(0, 48_000), all(0, 12_000), NoiseReduceParams { fft_size, reduction }).starts_with("waveform_"), "fft {fft_size}");
+    }
+    let loud = NoiseReduceParams { fft_size: 1024, reduction: NoiseReductionParams { reduction_db: 100.0, ..reduction } };
+    assert!(refused(&mut v, all(0, 48_000), all(0, 12_000), loud).starts_with("waveform_"));
+    assert_eq!(undo_len(&v), steps);
+    // The stored form refuses a hostile FFT size and digest on parse.
+    let mut json = stored.ops[0].to_json();
+    json["fft_size"] = serde_json::json!(1000);
+    assert!(WaveformOp::from_json(&json, 0).unwrap_err().contains("fft_size"));
+    let mut json = stored.ops[0].to_json();
+    json["print_digest"] = serde_json::json!("XYZ");
+    assert!(WaveformOp::from_json(&json, 0).unwrap_err().contains("print_digest"));
+    assert_eq!(WaveformOp::from_json(&stored.ops[0].to_json(), 0).unwrap(), stored.ops[0]);
+}

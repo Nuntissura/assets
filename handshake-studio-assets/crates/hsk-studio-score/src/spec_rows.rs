@@ -5,6 +5,12 @@
 //! refusal ([`SpecRowError::Undeclared`]) naming why, instead of a guessed meaning. Rows of
 //! effects not listed here are [`SpecRowError::UnknownRow`]. Units in the sheets are undeclared
 //! (STU-FX-136b); where a bound field authors a unit it is named in the field string.
+//!
+//! Contract records (lane SMB-SCORE-EFFECTS-6, STU-FX-136a/136b): [`SpecParameterRow`] keeps one
+//! sheet row as declared, every field separately (STU-FX-107: an unknown stays `None`, never a
+//! copy of another field; STU-FX-121: the real default and the normalised default are two forms of
+//! one default, related only by the mapping). The graphic equalizer sheets are reproduced row for
+//! row ([`GRAPHIC_EQ_10_BANDS_ROWS`], [`GRAPHIC_EQ_20_BANDS_ROWS`], [`GRAPHIC_EQ_30_BANDS_ROWS`]).
 
 /// Why a row is not bound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +82,155 @@ pub const SPEC_ROWS: &[(&str, &str, Result<&str, &str>)] = &[
     ("AutoClickRemover", "inf_threshold", Err(NO_MEANING)),
     ("AutoClickRemover", "inf_complexity", Err(NO_MEANING)),
 ];
+
+/// One row of a spec audio parameter sheet as declared (STU-FX-136a): `None` is the sheet's `--`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpecParameterRow {
+    pub parameter: &'static str,
+    /// Normalised input slot, e.g. `in4`.
+    pub slot: &'static str,
+    pub hard_min: Option<f64>,
+    pub hard_max: Option<f64>,
+    pub soft_min: Option<f64>,
+    pub soft_max: Option<f64>,
+    /// The derived real default.
+    pub default: Option<f64>,
+    /// The stored normalised default.
+    pub default_normalised: Option<f64>,
+    pub unit: Option<&'static str>,
+    pub precision: Option<u32>,
+    /// The sheet's normalised-to-value expression, verbatim.
+    pub mapping: &'static str,
+}
+
+impl SpecParameterRow {
+    /// `value = normalised * (hard_max - hard_min) + hard_min` for an affine row with both bounds;
+    /// `None` when a bound is absent.
+    pub fn value_of(&self, normalised: f64) -> Option<f64> {
+        Some(crate::dsp::normalised_to_value(normalised, self.hard_min?, self.hard_max?))
+    }
+}
+
+/// An affine row with hard bounds; soft range, unit and precision absent (STU-FX-136b).
+const fn affine(
+    parameter: &'static str,
+    slot: &'static str,
+    hard_min: f64,
+    hard_max: f64,
+    default: f64,
+    default_normalised: f64,
+    mapping: &'static str,
+) -> SpecParameterRow {
+    SpecParameterRow {
+        parameter,
+        slot,
+        hard_min: Some(hard_min),
+        hard_max: Some(hard_max),
+        soft_min: None,
+        soft_max: None,
+        default: Some(default),
+        default_normalised: Some(default_normalised),
+        unit: None,
+        precision: None,
+        mapping,
+    }
+}
+
+const AMP_MAPPING: &str = "value = normalised * (amp_max - amp_min) + amp_min";
+
+/// Sheet `GraphicEQ__Bands` as the `GraphicEQ10Bands` table (spec module 14, STU-FX-136a), row for row.
+pub const GRAPHIC_EQ_10_BANDS_ROWS: [SpecParameterRow; 13] = [
+    affine("accuracy", "in0", 10.0, 8192.0, 999.997454, 0.120997, "value = normalised * (accuracy_max - accuracy_min) + accuracy_min"),
+    affine("gain", "in1", -64.0, 64.0, 0.0, 0.5, "value = normalised * (gain_max - gain_min) + gain_min"),
+    affine("range", "in2", 1.5, 120.0, 47.808615, 0.39079, "value = normalised * (range_max - range_min) + range_min"),
+    affine("amp1", "in4", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp2", "in5", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp3", "in6", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp4", "in7", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp5", "in8", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp6", "in9", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp7", "in10", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp8", "in11", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp9", "in12", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp10", "in13", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+];
+
+/// Sheet `GraphicEQ__Bands` as the `GraphicEQ20Bands` table (spec module 14, STU-FX-136a), row for row.
+pub const GRAPHIC_EQ_20_BANDS_ROWS: [SpecParameterRow; 23] = [
+    affine("accuracy", "in0", 10.0, 8192.0, 999.997454, 0.120997, "value = normalised * (accuracy_max - accuracy_min) + accuracy_min"),
+    affine("gain", "in1", -64.0, 64.0, 0.0, 0.5, "value = normalised * (gain_max - gain_min) + gain_min"),
+    affine("range", "in2", 1.5, 120.0, 47.808615, 0.39079, "value = normalised * (range_max - range_min) + range_min"),
+    affine("amp1", "in4", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp2", "in5", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp3", "in6", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp4", "in7", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp5", "in8", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp6", "in9", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp7", "in10", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp8", "in11", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp9", "in12", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp10", "in13", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp11", "in14", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp12", "in15", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp13", "in16", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp14", "in17", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp15", "in18", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp16", "in19", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp17", "in20", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp18", "in21", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp19", "in22", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp20", "in23", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+];
+
+/// Sheet `GraphicEQ__Bands` as the `GraphicEQ30Bands` table (spec module 14, STU-FX-136a), row for row.
+pub const GRAPHIC_EQ_30_BANDS_ROWS: [SpecParameterRow; 33] = [
+    affine("accuracy", "in0", 10.0, 8192.0, 999.997454, 0.120997, "value = normalised * (accuracy_max - accuracy_min) + accuracy_min"),
+    affine("gain", "in1", -64.0, 64.0, 0.0, 0.5, "value = normalised * (gain_max - gain_min) + gain_min"),
+    affine("range", "in2", 1.5, 120.0, 47.808615, 0.39079, "value = normalised * (range_max - range_min) + range_min"),
+    affine("amp1", "in4", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp2", "in5", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp3", "in6", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp4", "in7", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp5", "in8", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp6", "in9", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp7", "in10", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp8", "in11", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp9", "in12", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp10", "in13", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp11", "in14", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp12", "in15", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp13", "in16", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp14", "in17", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp15", "in18", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp16", "in19", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp17", "in20", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp18", "in21", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp19", "in22", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp20", "in23", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp21", "in24", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp22", "in25", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp23", "in26", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp24", "in27", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp25", "in28", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp26", "in29", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp27", "in30", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp28", "in31", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp29", "in32", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+    affine("amp30", "in33", -70.0, 70.0, 0.0, 0.5, AMP_MAPPING),
+];
+
+/// The contract table of spec effect `effect` (`GraphicEQ10Bands`, `GraphicEQ20Bands`,
+/// `GraphicEQ30Bands`); `None` for an effect whose sheet is not reproduced here.
+pub fn spec_parameter_rows(effect: &str) -> Option<&'static [SpecParameterRow]> {
+    let _ = effect; // red stub
+    None
+}
+
+/// The graphic equalizer sheet of a band count.
+pub(crate) fn graphic_eq_rows(bands: usize) -> Option<&'static [SpecParameterRow]> {
+    let _ = bands; // red stub
+    None
+}
 
 /// Studio field for spec row `(effect, parameter)`, or the typed refusal.
 pub fn bind_spec_row(effect: &str, parameter: &str) -> Result<&'static str, SpecRowError> {

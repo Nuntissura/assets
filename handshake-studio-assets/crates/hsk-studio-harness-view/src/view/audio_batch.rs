@@ -52,6 +52,22 @@ pub enum EffectSpec {
     Dynamics(score::DynamicsParams),
     /// `score::LookaheadLimiter`.
     Limiter(score::LimiterParams),
+    /// A processor of score's filter-kind table (`score::FILTER_KINDS`, lane SMB-SCORE-EFFECTS-6):
+    /// its `filter_kind` and stored parameters in the table's canonical key order, built by
+    /// `score::build_audio_filter`.
+    Filter { filter_kind: String, params: Vec<(String, f64)> },
+}
+
+fn borrowed(params: &[(String, f64)]) -> Vec<(&str, f64)> {
+    params.iter().map(|(k, v)| (k.as_str(), *v)).collect()
+}
+
+/// A table refusal as the score error of the build paths (structure refusals read as `OutOfRange`).
+fn filter_error(e: score::AudioFilterError) -> score::ScoreError {
+    match e {
+        score::AudioFilterError::Score(e) => e,
+        _ => score::ScoreError::OutOfRange,
+    }
 }
 
 impl EffectSpec {
@@ -64,6 +80,10 @@ impl EffectSpec {
             } => Box::new(score::Equalizer::new(rate, channels, sections, *master_gain_db)?),
             Self::Dynamics(p) => Box::new(score::Dynamics::new(rate, channels, *p)?),
             Self::Limiter(p) => Box::new(score::LookaheadLimiter::new(rate, channels, *p)?),
+            Self::Filter { .. } => {
+                let built: Box<dyn score::Processor + Send> = self.build_automatable(rate, channels)?;
+                built
+            }
         })
     }
 
@@ -77,13 +97,18 @@ impl EffectSpec {
             } => Box::new(score::Equalizer::new(rate, channels, sections, *master_gain_db)?),
             Self::Dynamics(p) => Box::new(score::Dynamics::new(rate, channels, *p)?),
             Self::Limiter(p) => Box::new(score::LookaheadLimiter::new(rate, channels, *p)?),
+            Self::Filter { filter_kind, params } => {
+                let _ = (filter_kind, borrowed(params), filter_error as fn(score::AudioFilterError) -> score::ScoreError); // red stub
+                return Err(score::ScoreError::OutOfRange);
+            }
         })
     }
 
     /// Score automation index of a stored parameter key (lane SMB-AUDITION-SESSION-2): gain `db` 0;
     /// equalizer `master_gain_db` 0 and `section_<i>_frequency_hz|gain_db|q` 1 + 3i .. 3 + 3i;
-    /// dynamics `threshold_db` 0, `ratio` 1, `makeup_db` 2; limiter `ceiling_db` 0, `release_ms` 1.
-    /// Other parameters are not automatable in score.
+    /// dynamics `threshold_db` 0, `ratio` 1, `makeup_db` 2; limiter `ceiling_db` 0, `release_ms` 1;
+    /// a filter-kind row: the table's index (`score::audio_filter_parameters`, e.g. graphic EQ
+    /// `gain` 0, `amp<k>` k). Other parameters are not automatable in score.
     pub fn automation_index(&self, key: &str) -> Option<usize> {
         match self {
             Self::Gain { .. } => (key == "db").then_some(0),
@@ -104,6 +129,7 @@ impl EffectSpec {
             }
             Self::Dynamics(_) => ["threshold_db", "ratio", "makeup_db"].iter().position(|k| *k == key),
             Self::Limiter(_) => ["ceiling_db", "release_ms"].iter().position(|k| *k == key),
+            Self::Filter { .. } => None, // red stub
         }
     }
 }
@@ -734,6 +760,7 @@ impl EffectSpec {
                     param("true_peak", f64::from(u8::from(l.true_peak))),
                 ],
             ),
+            Self::Filter { filter_kind, params } => (filter_kind.as_str(), params.iter().map(|(k, v)| param(k.as_str(), *v)).collect()),
         };
         folio::StudioAudioEffectInstance {
             instance_id: instance_id.into(),
@@ -747,6 +774,8 @@ impl EffectSpec {
     /// The effect a stored instance describes; `None` for a disabled instance. Refusals
     /// (`preset_effect`): an unknown `filter_kind`, a missing or unknown parameter, an enumerated
     /// parameter that is not one of its indices, or keyframes (a batch chain applies static values).
+    /// A filter-kind row (`score::FILTER_KINDS`) is read by `score::audio_filter_parameters` (keys,
+    /// duplicates, whole-number fields; its refusal code in the detail) into canonical key order.
     /// Parameter ranges are checked by score when the chain is built (`effect_chain`).
     pub fn from_preset_instance(e: &folio::StudioAudioEffectInstance) -> Result<Option<Self>, MonitorFail> {
         if !e.enabled {

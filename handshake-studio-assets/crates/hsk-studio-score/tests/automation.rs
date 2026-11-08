@@ -45,6 +45,25 @@ fn dyn_params(v: &[f64]) -> DynamicsParams {
     DynamicsParams { threshold_db: v[0], ratio: v[1], makeup_db: v[2], ..DynamicsParams::compressor(-20.0, 4.0) }
 }
 
+/// Graphic equalizer of `bands` (lane SMB-SCORE-EFFECTS-6): 0 = `gain`, then `amp1 ..= ampN`.
+fn graphic_eq_kind(name: &'static str, bands: usize) -> Kind {
+    let mut alt = vec![-3.0];
+    alt.extend((0..bands).map(|k| if k % 2 == 0 { 6.0 } else { -5.0 }));
+    Kind {
+        name,
+        make: Box::new(move |v| {
+            let mut p = GraphicEqParams::flat(bands);
+            p.gain_db = v[0];
+            p.amps_db[..bands].copy_from_slice(&v[1..]);
+            Box::new(GraphicEq::new(RATE, 1, p).unwrap())
+        }),
+        base: vec![0.0; bands + 1],
+        alt,
+        inputs: 1,
+        outputs: 1,
+    }
+}
+
 fn kinds() -> Vec<Kind> {
     let profile = {
         let mut profiler = NoiseProfiler::new(RATE, 1, 1024).unwrap();
@@ -172,6 +191,9 @@ fn kinds() -> Vec<Kind> {
             inputs: 2,
             outputs: 2,
         },
+        graphic_eq_kind("GraphicEq10", 10),
+        graphic_eq_kind("GraphicEq20", 20),
+        graphic_eq_kind("GraphicEq30", 30),
         Kind {
             name: "NoiseReducer",
             make: Box::new(move |v| {
@@ -223,7 +245,7 @@ fn setting_a_parameter_equals_constructing_with_it_for_every_processor() {
                 covered += 1;
             }
         }
-        assert_eq!(covered, 59);
+        assert_eq!(covered, 59 + 11 + 21 + 31);
     });
 }
 
