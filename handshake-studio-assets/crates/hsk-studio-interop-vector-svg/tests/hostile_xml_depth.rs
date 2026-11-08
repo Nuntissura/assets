@@ -147,16 +147,51 @@ fn the_cap_parses_on_1_mib() {
     assert_eq!(answer, Err(VectorError::BudgetExceeded("depth")));
 }
 
-/// Measurement probe (item 1: the smallest depth that aborts on a 2 MiB thread). Not a gate:
-/// `HOSTILE_PROBE_DEPTH=<n> cargo nextest run ... --run-ignored only svg_depth_probe` runs one
-/// import of `n` closed levels; an abort at `n` and none at `n - 1` is the measurement.
+/// Measurement probe (item 1: the smallest element depth that aborts roxmltree, with the options
+/// `import_svg` uses, on a 1 MiB and a 2 MiB thread). Not a gate: run by hand with
+/// `--run-ignored only -E 'test(svg_depth_abort_probe)'`; it bisects by re-running this binary's
+/// `svg_depth_probe_child` (one parse per child process, so an abort ends only the child) and prints
+/// `PROBE roxmltree stack=<bytes> aborts_at=<depth>`.
 #[test]
-#[ignore = "measurement probe, run by hand with HOSTILE_PROBE_DEPTH"]
-fn svg_depth_probe() {
-    let Some(depth) = std::env::var("HOSTILE_PROBE_DEPTH").ok().and_then(|v| v.parse::<usize>().ok()) else {
-        println!("NOT_PROVEN: HOSTILE_PROBE_DEPTH not set");
+#[ignore = "measurement probe, run by hand"]
+fn svg_depth_abort_probe() {
+    let exe = std::env::current_exe().expect("test binary");
+    let survives = |stack: usize, depth: usize| {
+        std::process::Command::new(&exe)
+            .args(["--exact", "svg_depth_probe_child", "--ignored", "--nocapture"])
+            .env("HOSTILE_PROBE_STACK", stack.to_string())
+            .env("HOSTILE_PROBE_DEPTH", depth.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    for stack in [1usize << 20, 2 << 20] {
+        let (mut lo, mut hi) = (1usize, 1usize << 16);
+        if survives(stack, hi) {
+            println!("PROBE roxmltree stack={stack} aborts_at=>{hi}");
+            continue;
+        }
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if survives(stack, mid) { lo = mid } else { hi = mid }
+        }
+        println!("PROBE roxmltree stack={stack} aborts_at={hi} bytes_per_level~{}", stack / hi);
+    }
+}
+
+#[test]
+#[ignore = "child of svg_depth_abort_probe"]
+fn svg_depth_probe_child() {
+    let var = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    let (Some(stack), Some(depth)) = (var("HOSTILE_PROBE_STACK"), var("HOSTILE_PROBE_DEPTH")) else {
+        println!("NOT_PROVEN: probe child run without HOSTILE_PROBE_STACK / HOSTILE_PROBE_DEPTH");
         return;
     };
-    let answer = import(deep_svg(depth, true));
-    println!("PROBE svg depth={depth} answer={answer:?}");
+    let text = format!("{SVG_OPEN}{}{}</svg>", "<g>".repeat(depth.saturating_sub(1)), "</g>".repeat(depth.saturating_sub(1)));
+    let n = on_stack(stack, move || {
+        let options = roxmltree::ParsingOptions { allow_dtd: false, nodes_limit: u32::MAX, entity_resolver: None };
+        roxmltree::Document::parse_with_options(&text, options).map(|d| d.descendants().count()).unwrap_or(0)
+    });
+    println!("PROBE child stack={stack} depth={depth} nodes={n}");
 }

@@ -11,7 +11,8 @@
 //! (`<!--...-->`), CDATA sections (`<![CDATA[...]]>`), processing instructions (`<?...?>`),
 //! declarations such as `<!DOCTYPE ...>` (quoted strings and a bracketed internal subset included)
 //! and quoted attribute values. A start tag `<name ...>` adds one level, an end tag `</name>`
-//! removes one (saturating at zero), an empty-element tag `<name/>` nets zero. Any other `<`
+//! removes one (saturating at zero), an empty-element tag `<name/>` nets zero but is itself one
+//! level deeper than its parent (the parser enters it like any element). Any other `<`
 //! followed by a byte counts as a start tag, so text the scan does not recognise is measured
 //! conservatively (it can only make the count larger). A construction left open at the end of the
 //! text stops the scan and the answer is `true`: the parser reports that text as malformed at that
@@ -104,7 +105,13 @@ pub fn xml_nesting_within(text: &str, cap: usize) -> bool {
             find(b, at.saturating_add(2), b">").map(|e| e.saturating_add(1))
         } else {
             match past_start_tag(b, at) {
-                Some((end, true)) => Some(end),
+                // An empty element is one parse level for the parser too, without staying open.
+                Some((end, true)) => {
+                    if depth.saturating_add(1) > cap {
+                        return false;
+                    }
+                    Some(end)
+                }
                 Some((end, false)) => {
                     depth = depth.saturating_add(1);
                     if depth > cap {

@@ -15,13 +15,17 @@ fn nesting_table() {
     let cases: Vec<(String, usize, bool)> = vec![
         (String::new(), 0, true),
         ("plain text, no markup".into(), 0, true),
-        ("<a/>".into(), 0, true),
+        // An empty element is one level (the parser enters it) that does not stay open.
+        ("<a/>".into(), 0, false),
+        ("<a/>".into(), 1, true),
+        ("<a/><a/><a/>".into(), 1, true),
         ("<a></a>".into(), 0, false),
         ("<a></a>".into(), 1, true),
         (nested(3), 3, true),
         (nested(3), 2, false),
         // Siblings do not add up.
         ("<r><a></a><a></a><a/></r>".into(), 2, true),
+        ("<r><a><b/></a></r>".into(), 2, false),
         ("<r><a></a><a></a><a/></r>".into(), 1, false),
         // Openers never closed count (the parser recurses before it finds the missing ends).
         ("<a><a><a>".into(), 2, false),
@@ -31,7 +35,7 @@ fn nesting_table() {
         // Comments, CDATA, processing instructions and declarations hide their brackets.
         ("<r><!-- <a><a><a> --></r>".into(), 1, true),
         ("<r><![CDATA[<a><a><a>]]></r>".into(), 1, true),
-        ("<?xml version=\"1.0\"?><?pi <a><a>?><r/>".into(), 0, true),
+        ("<?xml version=\"1.0\"?><?pi <a><a>?><r/>".into(), 1, true),
         ("<!DOCTYPE r [ <!ENTITY e \"<a><a><a>\"> ]><r></r>".into(), 1, true),
         ("<!DOCTYPE r SYSTEM \"x>y\"><r></r>".into(), 1, true),
         // Attribute values may hold `>` and `/>` without ending or emptying the tag.
@@ -40,7 +44,8 @@ fn nesting_table() {
         ("<r a=\"/\"></r>".into(), 0, false),
         // Only `/` right before `>` is an empty-element tag; whitespace between counts a level.
         ("<r/ >".into(), 0, false),
-        ("<r a=\"1\"/>".into(), 0, true),
+        ("<r a=\"1\"/>".into(), 1, true),
+        ("<r a=\"1\"/>".into(), 0, false),
         // Upper-case and spacing variants of the constructs.
         ("<R\n\tA = \"1\"\n></R >".into(), 1, true),
         ("<!-- unterminated <a><a><a>".into(), 0, true),
