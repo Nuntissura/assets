@@ -233,8 +233,8 @@ fn vulkan_offscreen_equals_the_quiet_window_and_two_runs_agree() {
     validation::assert_clean(&win.receipt);
 }
 
-/// Item 8(e): the quiet exercise in Vulkan mode (resize, minimise, restore, back) ends on the offscreen frame, and the
-/// unchanged text adds no glyph upload after the first frame.
+/// Item 8(e): the quiet exercise in Vulkan mode (resize, minimise, restore, back) ends on the offscreen frame, and no
+/// glyph is uploaded twice (the restore and the way back add no upload for unchanged text).
 #[test]
 fn vulkan_quiet_exercise_restores_the_frame_without_new_glyph_uploads() {
     let s = Scratch::new("vk-exercise");
@@ -267,8 +267,12 @@ fn vulkan_quiet_exercise_restores_the_frame_without_new_glyph_uploads() {
     assert_eq!(win.exercised, ["resize_grow", "minimize_no_activate", "restore_no_activate", "resize_back"]);
     let ui = win.receipt.get("ui_pass").expect("ui_pass member");
     assert!(num(ui, &["draws"]) >= 3, "the pane followed the window: {}", ui.render());
+    // The grown window may show more text (the fit ladder, SMB-GUI-FRAME-1), so it may upload new glyphs; the
+    // minimise, the restore and the way back upload none again: every resident glyph was uploaded once, on one page.
     let first = num(off.receipt.get("ui_pass").unwrap(), &["glyph_uploads"]);
-    assert_eq!(num(ui, &["glyph_uploads"]), first, "resize and restore re-place no glyph: {}", ui.render());
+    assert!(num(ui, &["glyph_uploads"]) >= first, "{}", ui.render());
+    assert_eq!(num(ui, &["glyph_uploads"]), num(ui, &["glyph_entries"]), "no glyph uploaded twice: {}", ui.render());
+    assert_eq!((num(ui, &["glyph_resets"]), num(ui, &["glyph_growths"])), (1, 0), "{}", ui.render());
     assert_eq!(win.frame_sha256.as_deref(), Some(off.frame_sha256.as_str()), "back at the first size: the same frame");
     validation::assert_clean(&off.receipt);
     validation::assert_clean(&win.receipt);
@@ -299,6 +303,84 @@ fn idle_vulkan_frames_add_no_pass_instance_or_upload() {
     assert!(f.draw(&mut VulkanChrome { pass: &mut pass, owner: &mut owner, pane }).unwrap());
     assert_eq!(pass.stats().draws, before.draws + 1);
     assert_eq!(pass.stats().glyph_uploads, before.glyph_uploads, "resident glyphs stay");
+    drop(pass);
+    drop(owner);
+    let v = hsk_studio_vulkan::process_validation();
+    if v.state == "on" {
+        assert_eq!((v.errors, v.warnings), (0, 0), "{v:?}");
+        assert!(v.loader.iter().all(|n| hsk_studio_vulkan::is_expected_loader_note(&n.name, &n.text)), "{v:?}");
+    }
+}
+
+/// Per-class maximum difference over the rects of the trace (classes as the pass names them), plus the max outside
+/// every non-exact class.
+fn class_maxima(want: &[u8], got: &[u8], width: u32, trace: &[hsk_studio_vulkan::ui::TraceRecord]) -> std::collections::BTreeMap<&'static str, u8> {
+    let w = width as usize;
+    let h = want.len() / 4 / w;
+    let mut out = std::collections::BTreeMap::new();
+    for r in trace {
+        let (x0, x1) = (r.rect.x0.clamp(0, w as i32) as usize, r.rect.x1.clamp(0, w as i32) as usize);
+        let (y0, y1) = (r.rect.y0.clamp(0, h as i32) as usize, r.rect.y1.clamp(0, h as i32) as usize);
+        let mut m = 0u8;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = (y * w + x) * 4;
+                m = m.max((0..4).map(|k| want[i + k].abs_diff(got[i + k])).max().unwrap_or(0));
+            }
+        }
+        let e = out.entry(r.class).or_insert(0u8);
+        *e = (*e).max(m);
+    }
+    out
+}
+
+/// Lead ruling 2026-11-08 (after SMB-GUI-FRAME-1 landed): CPU versus Vulkan on GUI-FRAME-1's full frame at 1920 x 1080
+/// and 1280 x 720 offscreen, all 11 lists of compose (menu, tabs, context, rail, colour proxy, browse, viewport with the
+/// rotated ruler labels as icon masks, document, inspect, time, status). Measured maxima per class are printed; every
+/// class measured 0 at both sizes.
+#[test]
+fn gui_frame_1_full_frame_on_the_ui_pass_matches_the_cpu_painter() {
+    struct Count(usize);
+    impl ChromeTarget for Count {
+        fn draw(&mut self, c: Chrome<'_>) -> Result<(), HostError> {
+            self.0 = c.lists.len();
+            Ok(())
+        }
+    }
+    let s = Scratch::new("vk-full");
+    let doc = fixture(&s.0);
+    let mut owner = Owner::open(OwnerConfig::default()).expect("Vulkan 1.3 device");
+    let mut pass = UiPass::new(&owner).expect("ui pass");
+    pass.set_trace(true);
+    let mut report = Vec::new();
+    for (w, h) in [(1920u32, 1080u32), (1280, 720)] {
+        let mut f = GuiFrame::open(&doc, w, h, Some(1000)).unwrap();
+        f.set_chrome(ChromeMode::Vulkan);
+        assert!(f.frame().unwrap());
+        let mut count = Count(0);
+        f.compose(&mut count).unwrap();
+        assert_eq!(count.0, 11, "compose lists");
+        let pane = owner.create_pane(w, h).unwrap();
+        f.mark_upload();
+        assert!(f.draw(&mut VulkanChrome { pass: &mut pass, owner: &mut owner, pane }).unwrap());
+        let got = owner.read_pane(pane).unwrap();
+        owner.release_pane(pane).unwrap();
+        let mut cpu = CpuChrome::default();
+        f.compose(&mut cpu).unwrap();
+        let want = cpu.canvas.unwrap().rgba().to_vec();
+        let icons = pass.trace().iter().filter(|r| r.kind == "icon" && r.instances > 0).count();
+        assert!(icons > 20, "designer icons and rotated ruler labels drawn: {icons}");
+        let (max, n, outside) = gui::parity(&want, &got, w, pass.trace());
+        let classes = class_maxima(&want, &got, w, pass.trace());
+        let st = pass.stats();
+        report.push(format!("{w}x{h}: max {max} differing {n} outside_aa {outside} classes {classes:?} passes {} icon_over_limit {} glyph_refusals {}", st.passes, st.icon_over_limit, st.glyph_refusals));
+        assert_eq!(outside, 0, "{w}x{h}: pixels outside the AA rects differ");
+        // Measured 2026-11-08 on the RTX 3090: 0 in every class (aa, flat, glyph, icon, image_translucent, scissor,
+        // translucent) at both sizes; the bound is the measurement.
+        assert_eq!(max, 0, "{w}x{h}: max {max} ({n} px) {classes:?}");
+        assert_eq!((st.icon_over_limit, st.glyph_refusals), (0, 0));
+    }
+    println!("full frame parity {}", report.join("; "));
     drop(pass);
     drop(owner);
     let v = hsk_studio_vulkan::process_validation();
