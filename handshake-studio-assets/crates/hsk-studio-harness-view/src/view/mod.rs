@@ -92,6 +92,8 @@ pub mod selection_store;
 pub mod text;
 /// Layout PDF and IDML export, preflight before export, page size of a new layout (lane SMB-LAYOUT-PDF-HOST-1).
 pub mod layout_export;
+/// The layout PDF's asset resolver: graphic frames' tiles and the working profile (lane SMB-LAYOUT-PLACE-1).
+mod layout_assets;
 /// Render-queue export of a timeline range through reel (lane SMB-REEL-ENCODE, feature `media`).
 #[cfg(feature = "media")]
 pub mod timeline_export;

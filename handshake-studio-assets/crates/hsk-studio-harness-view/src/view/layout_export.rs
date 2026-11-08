@@ -49,12 +49,18 @@
 //! - Admission and diagnostics: each export or render is one job admitted through the viewer's
 //!   session `JobPort` (`overloaded`, `canceled`, `stale_revision` refuse before any work) and
 //!   settled once, so its terminal Observe frame (codes and counters only) goes to the job sink.
-//! - Not done here (declared gaps): placed graphics, vector paths and raster tiles of the layout
-//!   (no asset port: the engine reports them as losses), tables (`table_not_exported` per table),
-//!   design records, outlines, tagged PDF, CMYK conversion of RGB fills, script and language
-//!   detection (every span shapes as Latin, English), saving layout edits with the package
-//!   (SMB-LAYOUT-PERSIST-1). The PDF's line breaks can differ from the editor's preview, whose
-//!   shaping is a fixed-advance placeholder.
+//! - Placed graphics (lane SMB-LAYOUT-PLACE-1, STU-ASSET-009): every graphic frame of the layout
+//!   records is drawn through the host resolver `view::layout_assets` (the frame layer's tiles,
+//!   fitted, clipped to the rectangle or ellipse, 16-bit ICCBased in the linear working profile).
+//!   Before lowering, a linked placement whose file is `modified`, `missing`, `unauthorized` or
+//!   `unsupported` refuses `placed_link_<state>` and nothing is written (a modified one: run
+//!   `asset.update_all_modified`); the result lists `placements` (layer, source, kind, uri, content
+//!   digest, link state at resolution time).
+//! - Not done here (declared gaps): vector paths of the layout and raster layers without a graphic
+//!   frame (the engine reports them as losses), path-shaped frames, tables (`table_not_exported`
+//!   per table), design records, outlines, tagged PDF, CMYK image numbers and CMYK conversion of
+//!   RGB fills, script and language detection (every span shapes as Latin, English). The PDF's
+//!   line breaks can differ from the editor's preview, whose shaping is a fixed-advance placeholder.
 //!
 //! Hostile input (V4-01/02): page sizes and counts are bounded before allocation; text over
 //! [`MAX_EXPORT_TEXT_BYTES`] in all stories, a paragraph over Type's input budget, an ICC file over
@@ -70,11 +76,10 @@ use crate::layout_ui::{LayoutDoc, LayoutEditor, LayoutRecords};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_folio::{self as folio, Bounds, GeometryUnit, Length, PageSide, PageSpreadSchema, Parent, Payload, StudioPage, StudioPageSpread, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope};
 use hsk_studio_interop_layout::{
-    self as il, ExportNames, FolioExportInput, LongDocExportInput, PdfAssets, PdfExportInput, PdfFont, PdfGlyph, PdfLongDoc, PdfStory, PlacedRaster,
+    self as il, ExportNames, FolioExportInput, LongDocExportInput, PdfExportInput, PdfFont, PdfGlyph, PdfLongDoc, PdfStory,
     StoryInput, export_folio_longdoc, export_pdf_with, page_labels_from_sections, pdf_glyphs_from_type,
 };
 use hsk_studio_layout::{Composer, LayoutProposal, ReflowRequest, ShapedParagraph, SourceSpan, SpaceParams, StyleSource, TypesetOptions, number_pages, reflow_flow, resolve_style};
-use hsk_studio_nib::OwnedPath;
 use hsk_studio_press::{Colour, ExportOptions, OutputIntent, OutputIntentSubtype, PdfX4, check_pdfx4, render_page};
 /// The PDF/X standard member of [`LayoutPdfSettings::pdfx`] (press's).
 pub use hsk_studio_press::PdfXStandard;
@@ -188,20 +193,6 @@ fn hex(bytes: &[u8]) -> String {
 /// The engine's loss entries as JSON (kind, code, element, count).
 fn loss_json(loss: &[il::LossEntry]) -> Vec<Value> {
     loss.iter().map(|l| json!({"kind": l.kind.wire(), "code": l.code, "element": l.element, "count": l.count})).collect()
-}
-
-/// Lowering resolves no Folio asset (module docs): the engine reports each one it needed.
-struct NoAssets;
-impl PdfAssets for NoAssets {
-    fn path(&self, _: &str) -> Option<OwnedPath> {
-        None
-    }
-    fn raster(&self, _: &str) -> Option<PlacedRaster<'_>> {
-        None
-    }
-    fn profile(&self, _: &str) -> Option<&[u8]> {
-        None
-    }
 }
 
 /// One style span of a paragraph: bytes `start..end` of the paragraph's visible text, the index of
@@ -688,14 +679,21 @@ impl Viewer {
         let options = ExportOptions { output_intent: intent, info_title: settings.title, subset_fonts: settings.subset_fonts, ..ExportOptions::default() }
             .with_pdfx_standard(settings.pdfx, identification)
             .map_err(|e| LayoutExportRefusal::new(e.code(), "pdfx"))?;
-        let longdoc = PdfLongDoc { page_labels: &labels, ..PdfLongDoc::default() };
+        // Placed graphics (module docs): the link gate first (STU-ASSET-009, nothing written on a refusal),
+        // then the frames' placements and the resolver over the viewer's tile bodies, else the session's.
+        let frames = &rec.longdoc.graphic_frames;
+        let (graphics, placements) = self.layout_pdf_placements(&doc.document, frames).map_err(|(code, detail)| LayoutExportRefusal::new(code, detail))?;
+        let missing = super::layout_assets::needed(&doc.document, frames).iter().any(|d| !self.assets.contains_key(d));
+        let stored = if missing { self.run.render_assets().map_err(|code| LayoutExportRefusal::new(code, "tile bodies"))? } else { BTreeMap::new() };
+        let assets = super::layout_assets::LayoutAssets::new(&doc.document, frames, &[&self.assets, &stored]);
+        let longdoc = PdfLongDoc { page_labels: &labels, graphics: &graphics, ..PdfLongDoc::default() };
         let input = PdfExportInput {
             snapshot: &snapshot,
             design: None,
             type_styles: Some(&doc.styles),
             stories: &stories,
             fonts: &pdf_fonts,
-            assets: &NoAssets,
+            assets: &assets,
             options,
             limits: hsk_studio_press::Limits::default(),
         };
@@ -724,7 +722,7 @@ impl Viewer {
         let summary = json!({
             "bytes": out.bytes.len(), "sha256": hex(&hsk_studio_prism::profile_hash(&out.bytes)), "pages": out.pages, "page_sizes": pages_json(doc),
             "default_fill": match default_fill { Colour::DeviceCmyk(_) => "device_cmyk", Colour::DeviceGray(_) => "device_gray", _ => "device_rgb" },
-            "glyphs_drawn": out.glyphs_drawn, "paths_drawn": out.paths_drawn, "tiles_drawn": out.tiles_drawn, "lines": lines, "overset_stories": overset,
+            "glyphs_drawn": out.glyphs_drawn, "paths_drawn": out.paths_drawn, "tiles_drawn": out.tiles_drawn, "placements": placements, "lines": lines, "overset_stories": overset,
             "fonts": used.iter().filter_map(|i| fonts.get(*i)).map(|f| f.family.as_str()).collect::<Vec<_>>(), "page_labels": labels.len(),
             "loss": loss_json(&out.loss), "host_loss": host_loss, "preflight": report_json(&report, MAX_LISTED_FINDINGS), "pdfx": pdfx,
             "receipt": {"version": receipt.version, "pages": receipt.pages, "fonts_embedded": receipt.fonts_embedded, "conformance": receipt.conformance,
