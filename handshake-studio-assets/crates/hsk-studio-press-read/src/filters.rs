@@ -162,6 +162,49 @@ pub(crate) fn decode_chain(stream: &Stream, limits: &Limits, budget: &mut usize)
     Ok(Decoded { data: data.into_owned(), consumed, trailing })
 }
 
+/// Decodes `stream` for the reader-bounds pass (SMB-PARSER-HOSTILE-1 F7): the same supported
+/// filters as [`decode_chain`], but a damaged Flate tail keeps the prefix decoded so far and a later
+/// stage that cannot read its input stops with the bytes read so far; both set `truncated`. The only
+/// hard refusal is the per-stream byte ceiling `cap` (amplification), returned as
+/// `InputLimit("decoded_bytes")`. An unsupported filter is still `UnsupportedFilter` (the caller
+/// decides what to do with a stream it cannot decode).
+pub(crate) fn decode_chain_lenient(stream: &Stream, cap: usize) -> Result<(Vec<u8>, bool)> {
+    let names = filter_names(&stream.dict, None)?;
+    let parms = decode_parms(&stream.dict, names.len())?;
+    let mut data: Vec<u8> = stream.data.clone();
+    let mut truncated = false;
+    if data.len() > cap {
+        return Err(PressError::InputLimit("decoded_bytes"));
+    }
+    for (name, parm) in names.iter().zip(parms.iter()) {
+        if matches!(name.as_slice(), b"FlateDecode" | b"Fl") {
+            let (inflated, trunc) = inflate_zlib_lenient(&data, cap).map_err(|()| PressError::InputLimit("decoded_bytes"))?;
+            truncated |= trunc;
+            data = match apply_predictor(inflated, parm.as_ref(), cap) {
+                Ok(out) => out,
+                // A predictor that cannot read a truncated prefix: keep the inflated bytes, truncated.
+                Err(_) => {
+                    truncated = true;
+                    break;
+                }
+            };
+            continue;
+        }
+        match stage(name, parm.as_ref(), &data, cap) {
+            Ok((out, _)) if out.len() <= cap => data = out,
+            Ok(_) => return Err(PressError::InputLimit("decoded_bytes")),
+            Err(e @ PressError::InputLimit(_)) => return Err(e),
+            Err(PressError::UnsupportedFilter(f)) => return Err(PressError::UnsupportedFilter(f)),
+            // A damaged LZW/ASCII/RunLength stage: keep what the previous stage produced.
+            Err(_) => {
+                truncated = true;
+                break;
+            }
+        }
+    }
+    Ok((data, truncated))
+}
+
 /// Bytes of `data` the FIRST filter of `dict`'s chain reads, up to and including its end-of-data
 /// marker (Flate: the deflate stream and its Adler-32; LZW code 257; ASCIIHex `>`; ASCII85 `~>`;
 /// RunLength 128): where an inline image's data ends (`content.rs`, R10-F1). The stage output is
@@ -218,6 +261,42 @@ pub(crate) fn inflate_zlib(input: &[u8], cap: usize) -> std::result::Result<(Vec
                 ret.resize(new_len, 0);
             }
             other => return Err(other),
+        }
+    }
+}
+
+/// [`inflate_zlib`] that keeps the bytes decoded so far when the deflate stream ends in a bad
+/// Adler-32 or a truncated tail (SMB-PARSER-HOSTILE-1 F7, lead ruling 2026-11-08: a damaged Flate
+/// tail is not a document refusal on the reader-bounds pass). `Ok((bytes, truncated))`; `truncated`
+/// is true when the stream did not reach `Done`. The only `Err` is the output cap (`HasMoreOutput`),
+/// which is a real amplification bound, not a damaged tail.
+pub(crate) fn inflate_zlib_lenient(input: &[u8], cap: usize) -> std::result::Result<(Vec<u8>, bool), ()> {
+    let flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+    let mut ret: Vec<u8> = vec![0; input.len().saturating_mul(2).min(cap).max(1)];
+    let mut decomp = Box::<DecompressorOxide>::default();
+    let (mut out_pos, mut read) = (0usize, 0usize);
+    loop {
+        let rest = input.get(read..).unwrap_or(&[]);
+        let (status, in_consumed, out_written) = decompress(&mut decomp, rest, &mut ret, out_pos, flags);
+        out_pos = out_pos.saturating_add(out_written);
+        read = read.saturating_add(in_consumed).min(input.len());
+        match status {
+            TINFLStatus::Done => {
+                ret.truncate(out_pos);
+                return Ok((ret, false));
+            }
+            TINFLStatus::HasMoreOutput => {
+                if ret.len() >= cap {
+                    return Err(());
+                }
+                let new_len = ret.len().saturating_mul(2).max(1).min(cap);
+                ret.resize(new_len, 0);
+            }
+            // A bad Adler-32, a truncated stream or any other fault: keep the prefix decoded so far.
+            _ => {
+                ret.truncate(out_pos);
+                return Ok((ret, true));
+            }
         }
     }
 }

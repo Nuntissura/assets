@@ -71,11 +71,19 @@ pub(crate) struct Parsed {
 /// Lenient tokenization: any operator name and operand count, and an inline image whose data end
 /// cannot be computed ends at the first `EI` preceded by white space (module docs).
 pub(crate) fn tokenize(data: &[u8], limits: &Limits, cs: ColorSpaces<'_>, budget: &mut usize) -> Result<Parsed> {
-    tokenize_with(data, limits, cs, budget, true)
+    tokenize_with(data, limits, cs, budget, true, usize::MAX)
 }
 
-fn tokenize_with(data: &[u8], limits: &Limits, cs: ColorSpaces<'_>, budget: &mut usize, lenient: bool) -> Result<Parsed> {
-    let mut lx = Lexer::new(data, 0, limits.max_depth);
+/// [`tokenize`] with a cap on the total parsed operand nodes of the stream (SMB-PARSER-HOSTILE-1 F4:
+/// one array operand of a highly compressible content stream can hold far more elements than the
+/// operator cap bounds; past `max_nodes` the parse is `InputLimit("nodes")`). `usize::MAX` is
+/// unmetered.
+pub(crate) fn tokenize_bounded(data: &[u8], limits: &Limits, cs: ColorSpaces<'_>, budget: &mut usize, max_nodes: usize) -> Result<Parsed> {
+    tokenize_with(data, limits, cs, budget, true, max_nodes)
+}
+
+fn tokenize_with(data: &[u8], limits: &Limits, cs: ColorSpaces<'_>, budget: &mut usize, lenient: bool, max_nodes: usize) -> Result<Parsed> {
+    let mut lx = Lexer::new(data, 0, limits.max_depth).with_nodes(max_nodes);
     let mut out = Parsed::default();
     loop {
         out.ends_in_comment = skip(&mut lx);
@@ -128,7 +136,7 @@ fn tokenize_with(data: &[u8], limits: &Limits, cs: ColorSpaces<'_>, budget: &mut
 
 /// [`tokenize`] and every operation checked by [`check_op`] (module docs).
 pub(crate) fn parse_strict(data: &[u8], limits: &Limits, cs: ColorSpaces<'_>, budget: &mut usize) -> Result<Parsed> {
-    let parsed = tokenize_with(data, limits, cs, budget, false)?;
+    let parsed = tokenize_with(data, limits, cs, budget, false, usize::MAX)?;
     for op in &parsed.ops {
         check_op(op)?;
     }
@@ -521,6 +529,30 @@ mod tests {
         assert!(p.inline_ambiguous);
         // dims_u32_max: dimensions that overflow are refused, not wrapped.
         assert!(strict(b"BI /W 4294967295 /H 4294967295 /BPC 16 /CS /CMYK ID A EI").is_err());
+    }
+
+    /// SMB-PARSER-HOSTILE-1 F4: one array operand of a content stream holds as many elements as its
+    /// decoded size allows; `tokenize_bounded` caps the total parsed nodes so the reader pass cannot
+    /// be amplified past the operator cap into gigabytes of `Object`s. A stream whose single array
+    /// exceeds the node cap is `InputLimit("nodes")`, typed, not an allocation blow-up.
+    #[test]
+    fn a_content_node_cap_bounds_an_array_operand() {
+        // 2,000 array elements as one drawing operand.
+        let mut src = Vec::new();
+        src.push(b'[');
+        for _ in 0..2_000 {
+            src.extend_from_slice(b"0 ");
+        }
+        src.extend_from_slice(b"] 0 d0\n");
+        // Unmetered: it tokenizes.
+        let mut budget = usize::MAX;
+        assert!(tokenize_bounded(&src, &Limits::default(), &no_color_spaces, &mut budget, usize::MAX).is_ok());
+        // Capped below the element count: a typed node refusal (the reader pass caps at 50 M).
+        let mut budget = usize::MAX;
+        assert_eq!(
+            tokenize_bounded(&src, &Limits::default(), &no_color_spaces, &mut budget, 1_000).unwrap_err(),
+            PressError::InputLimit("nodes")
+        );
     }
 
     #[test]
