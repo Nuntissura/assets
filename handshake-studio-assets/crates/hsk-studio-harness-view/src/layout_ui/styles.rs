@@ -18,8 +18,8 @@
 use super::{LayoutDoc, LayoutEdit, LayoutEditor, LayoutUiError, len, widget};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    Code, StoryRange, StudioGrepStyle, StudioLineHeight, StudioTextAlign, StudioTypeStyle, TypeStyleSchema, TypeStyleScope,
-    Unresolved, validate_type_style_records,
+    Code, StoryRange, StudioCompositionSettings, StudioGrepStyle, StudioLineHeight, StudioTextAlign, StudioTypeStyle, TypeStyleSchema,
+    TypeStyleScope, Unresolved, validate_type_style_records,
 };
 use hsk_studio_layout::{FindMode, compile_find, resolve_style};
 use serde_json::{Value, json};
@@ -37,6 +37,10 @@ pub struct StylePatch {
     pub font_size_pt: Option<Option<f64>>,
     pub leading_pt: Option<Option<f64>>,
     pub align: Option<Option<StudioTextAlign>>,
+    /// The paragraph style's own composition settings (Folio `style_composition`: composer,
+    /// hyphenation, H&J, STU-TYP-185 indents and spacing); `Some(None)` removes the style's entry.
+    /// Paragraph scope only.
+    pub composition: Option<Option<StudioCompositionSettings>>,
 }
 
 /// One styles-panel command.

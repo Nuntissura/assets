@@ -549,3 +549,38 @@ fn paragraph_params_maps_indents_and_leaves_the_composer_alone() {
     let nan = ParagraphComposition { settings: StudioCompositionSettings { space_after: pt(f64::NAN), ..Default::default() }, ..c };
     assert_eq!(paragraph_params(Some(&nan), 12.0, kp, SpaceParams::default(), &o), Err(LayoutError::InvalidGeometry));
 }
+
+/// `shift_paragraph_records` (V4-06 class C): the paragraph-keyed records of the edited story move
+/// with their paragraphs; a record naming no paragraph after the edit is dropped, and of two that
+/// collapse onto one start the one of the first touched paragraph (the lower original start) is
+/// kept; another story's records stay.
+#[test]
+fn shift_paragraph_records_moves_drops_and_keeps_the_first() {
+    let s = story(&[("aa\n", None), ("bb\n", None), ("cc", None)]).story;
+    let entry = |text: u32, start: u64, v: f64| StudioParagraphComposition { text_id: id("STXT", text), paragraph_start: start, settings: indents(v, 0.0, 0.0) };
+    let mut styles = StudioTypeStyleRecords::new(id("SDOC", 1));
+    styles.paragraph_composition = vec![entry(1, 6, 3.0), entry(1, 3, 2.0), entry(1, 0, 1.0), entry(2, 6, 9.0)];
+    let mut fl = flow();
+    fl.paragraph_flows = vec![pflow(6, StudioSpanColumn::SingleColumn, 0.0, 0.0), pflow(3, StudioSpanColumn::SingleColumn, 0.0, 0.0)];
+    let mine = |r: &StudioTypeStyleRecords| r.paragraph_composition.iter().map(|c| (c.text_id == id("STXT", 1), c.paragraph_start, c.settings.left_indent.as_ref().map(|l| l.value))).collect::<Vec<_>>();
+    // Typing inside paragraph 0 moves every later start of the story by one byte.
+    let (mut st, mut f) = (styles.clone(), fl.clone());
+    let edited = replace_story_text(&s, None, 1, 1, "x").unwrap();
+    shift_paragraph_records(&mut f, &mut st, &edited, 1, 1, 1).unwrap();
+    assert_eq!(mine(&st), vec![(true, 7, Some(3.0)), (true, 4, Some(2.0)), (true, 0, Some(1.0)), (false, 6, Some(9.0))]);
+    assert_eq!(f.paragraph_flows.iter().map(|p| p.paragraph_start).collect::<Vec<_>>(), vec![7, 4]);
+    // Deleting "aa\n" collapses paragraphs 0 and 1 onto start 0: paragraph 0's override is kept.
+    let (mut st, mut f) = (styles.clone(), fl.clone());
+    let edited = replace_story_text(&s, None, 0, 3, "").unwrap();
+    assert_eq!(edited.paragraphs.iter().map(|p| p.start).collect::<Vec<_>>(), vec![0, 3]);
+    shift_paragraph_records(&mut f, &mut st, &edited, 0, 3, 0).unwrap();
+    assert_eq!(mine(&st), vec![(true, 3, Some(3.0)), (true, 0, Some(1.0)), (false, 6, Some(9.0))]);
+    assert_eq!(f.paragraph_flows.iter().map(|p| p.paragraph_start).collect::<Vec<_>>(), vec![3, 0]);
+    // Deleting the terminator "\n" of paragraph 0 merges it with paragraph 1, whose records go.
+    let (mut st, mut f) = (styles, fl);
+    let edited = replace_story_text(&s, None, 2, 3, "").unwrap();
+    assert_eq!(edited.paragraphs.iter().map(|p| p.start).collect::<Vec<_>>(), vec![0, 5]);
+    shift_paragraph_records(&mut f, &mut st, &edited, 2, 3, 0).unwrap();
+    assert_eq!(mine(&st), vec![(true, 5, Some(3.0)), (true, 0, Some(1.0)), (false, 6, Some(9.0))]);
+    assert_eq!(f.paragraph_flows.iter().map(|p| p.paragraph_start).collect::<Vec<_>>(), vec![5]);
+}

@@ -34,7 +34,7 @@ use hsk_studio_folio::{
 };
 use hsk_studio_layout::{
     Composer, LayoutError, LayoutProposal, Limits, ReflowRequest, ShapedParagraph, SourceSpan, SpaceParams, StyleSource,
-    TypesetOptions, reflow_flow, replace_story_text, shift_flow_records,
+    TypesetOptions, reflow_flow, replace_story_text, shift_paragraph_records,
 };
 use serde_json::{Value, json};
 
@@ -1131,8 +1131,8 @@ fn transform(doc: &LayoutDoc, edit: &LayoutEdit) -> Result<LayoutDoc, LayoutUiEr
         LayoutEdit::ReplaceText { story, start, end, text } => {
             let st = d.stories.iter().find(|s| s.story_id == *story).ok_or_else(|| LayoutUiError::UnknownStory(story.clone()))?;
             let edited = replace_story_text(st, None, *start, *end, text)?;
+            shift_paragraph_records(&mut d.flow, &mut d.styles, &edited, *start, *end, text.len() as u64)?;
             *story_mut(&mut d, story)? = edited;
-            shift_flow_records(&mut d.flow, story, *start, *end, text.len() as u64)?;
         }
         LayoutEdit::ApplyParagraphStyle { story, paragraph, style } => {
             check_style(&d, style, TypeStyleScope::Paragraph)?;

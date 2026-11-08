@@ -99,7 +99,7 @@ pub use cjk::{
     Aki, BUNRI_KINSHI_CHARS, CjkComposedLine, CjkGap, CjkLineSpacing, CjkParagraph, CjkReflow, HANG_COST, HangMode, KINSOKU_BIAS, KinsokuSet,
     MojikumiRules, char_class, compose_cjk_lines, is_cjk, reflow_cjk, resolve_cjk_paragraph,
 };
-pub use textflow::{ConditionalView, MAX_STORY_BYTES, conditional_view, replace_story_text, shift_flow_records};
+pub use textflow::{ConditionalView, MAX_STORY_BYTES, conditional_view, replace_story_text, shift_flow_records, shift_paragraph_records};
 pub use xref::{
     MAX_XREF_TOKENS, XrefBlock, XrefContext, XrefError, XrefResolution, XrefRun, XrefStatus, XrefStory,
     parse_xref_format, resolve_cross_references, write_cross_reference,

@@ -2,14 +2,14 @@
 //! case and whole-word toggles, scope document / story / selection range, find (all hits listed),
 //! next, change, change all and change/find. Matching and capture-group expansion are layout's
 //! (`hsk_studio_layout::find_in_story`, the bounded linear-time engine); a change applies the hits
-//! back to front through `replace_story_text` + `shift_flow_records`, ALL hits of one change-all
+//! back to front through `replace_story_text` + `shift_paragraph_records`, ALL hits of one change-all
 //! being ONE undo step. "object contains no text for find/change" is its own typed error
 //! (`no_text_for_find`), never reported as no matches. Declared gaps: glyph, object, transliterate
 //! and colour modes, formatting criteria, saved queries, locked/hidden layer and parent-page
 //! include toggles. InDesign find/change behaviour UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 use super::{LayoutDoc, LayoutEdit, LayoutEditor, LayoutRecords, LayoutUiError, story_text, widget};
-use hsk_studio_layout::{FindHit, FindMode, find_in_story, replace_story_text, shift_flow_records};
+use hsk_studio_layout::{FindHit, FindMode, find_in_story, replace_story_text, shift_paragraph_records};
 use serde_json::{Value, json};
 
 /// Where find/change looks.
@@ -95,10 +95,10 @@ pub(crate) fn transform_change(
         let repl = h.replacement.as_deref().unwrap_or_default();
         let st = d.stories.iter().find(|s| s.story_id == h.story).ok_or_else(|| LayoutUiError::UnknownStory(h.story.clone()))?;
         let edited = replace_story_text(st, None, h.start, h.end, repl)?;
+        shift_paragraph_records(&mut d.flow, &mut d.styles, &edited, h.start, h.end, repl.len() as u64)?;
         if let Some(slot) = d.stories.iter_mut().find(|s| s.story_id == h.story) {
             *slot = edited;
         }
-        shift_flow_records(&mut d.flow, &h.story, h.start, h.end, repl.len() as u64)?;
         super::tables::shift_anchors(&mut r, &h.story, h.start, h.end, repl.len() as u64);
     }
     Ok((d, r))
