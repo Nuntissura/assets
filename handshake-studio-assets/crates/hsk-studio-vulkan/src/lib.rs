@@ -26,7 +26,7 @@ pub mod ui;
 
 pub use owner::{
     DeviceInfo, DeviceLease, FENCE_TIMEOUT_NS, GpuClientPort, Issuer, LayerReport, Owner, OwnerConfig, PANE_FORMAT,
-    PaneId, VALIDATION_LAYER, ValidationId, ValidationReport, process_validation,
+    LoaderNote, PaneId, VALIDATION_LAYER, ValidationId, ValidationReport, is_expected_loader_note, process_validation,
 };
 pub use present::{
     ACQUIRE_TIMEOUT_NS, Capture, FrameOutcome, PresentCounters, Presenter, SWAPCHAIN_FORMAT, WindowHandles,

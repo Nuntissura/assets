@@ -69,6 +69,11 @@ pub struct UiLimits {
     pub max_passes: u32,
     /// The device's maxImageDimension2D (images above it are skipped and counted).
     pub max_image_side: u32,
+    /// Pixels of one image texture (brief hostile bound (f): MAX_PIXELS, 64 Mpx); larger images are skipped and counted.
+    pub max_image_pixels: u64,
+    /// Staging bytes of one upload submit (64 Mpx x 4 = 256 MiB); a pass whose uploads pass it splits them over
+    /// several waited submits.
+    pub staging_cap_bytes: usize,
 }
 
 impl Default for UiLimits {
@@ -81,6 +86,8 @@ impl Default for UiLimits {
             instance_cap_bytes: 16 << 20,
             max_passes: 16,
             max_image_side: 16384,
+            max_image_pixels: crate::refusal::MAX_PIXELS,
+            staging_cap_bytes: 256 << 20,
         }
     }
 }
@@ -148,6 +155,8 @@ pub struct RecordStats {
     pub glyph_refusals: u64,
     pub missing_resources: u64,
     pub image_over_limit: u64,
+    /// Icon masks larger than the icon page's maximum side (skipped, nothing else changes).
+    pub icon_over_limit: u64,
     pub skipped_non_finite: u64,
     pub scissor_underflow: u64,
     /// Recordings restarted after a page growth.
@@ -754,8 +763,15 @@ pub struct UiStats {
     pub glyph_refusals: u64,
     pub missing_resources: u64,
     pub image_over_limit: u64,
+    pub icon_over_limit: u64,
     pub skipped_non_finite: u64,
     pub scissor_underflow: u64,
+    /// Waited submits that carried uploads only (a pass's uploads over the staging cap).
+    pub upload_submits: u64,
+    /// Allocations refused (out_of_memory) by the staging or instance cap or a failed reservation.
+    pub alloc_refusals: u64,
+    /// Draws refused after recording or during a pass; each invalidated the pages and image uploads.
+    pub invalidations: u64,
 }
 
 /// A device image the pass samples: a page or an image texture.

@@ -257,3 +257,56 @@ fn cold_warm_reset_and_growth_frames_draw_the_same_bytes() {
     drop(owner);
     assert_validation_clean();
 }
+
+/// Review F2: a frame refused with ui_pass_limit leaves no resident entry without its upload: the next frame on the
+/// same pass draws the bytes of a cold draw.
+#[test]
+fn a_refused_frame_leaves_no_unuploaded_residents() {
+    let mut owner = Owner::open(OwnerConfig::default()).expect("Vulkan 1.3 device");
+    let mut text = Text::new(Box::new(GradientText { cell: 12 }));
+    let line = |text: &mut Text, n: u32| {
+        let s: String = (0..n).filter_map(|i| char::from_u32(0x4E00 + i)).collect();
+        let l = text.shape(&s, TextToken::Body, 0).unwrap();
+        let mut d = DisplayList::default();
+        d.push(Prim::Glyphs { origin: Point::new(2.0, 20.0), token: TextToken::Body, glyphs: l.glyphs, color: c(240, 240, 240, 255) });
+        d
+    };
+    let flood = line(&mut text, 40);
+    let small = line(&mut text, 8);
+    let (w, h) = (480u32, 40u32);
+    let mut res = Res::new();
+    let limits = UiLimits { instance_cap_bytes: hsk_studio_vulkan::ui::INSTANCE_BYTES * 10, max_passes: 2, ..UiLimits::default() };
+    let mut pass = UiPass::with_limits(&owner, limits).unwrap();
+    let pane = owner.create_pane(w, h).unwrap();
+    let refused = pass.draw(&mut owner, pane, UiFrame { clear: CLEAR, lists: &[&flood], scale: Scale::ONE, text: &mut text, res: &mut res });
+    assert_eq!(refused.err(), Some(hsk_studio_vulkan::Refusal::UiPassLimit));
+    owner.release_pane(pane).unwrap();
+    let after = gpu(&mut owner, &mut pass, w, h, &[&small], Scale::ONE, &mut text, &mut res);
+    let mut fresh = UiPass::new(&owner).unwrap();
+    let cold = gpu(&mut owner, &mut fresh, w, h, &[&small], Scale::ONE, &mut text, &mut res);
+    assert_eq!(diff(&cold, &after), (0, 0), "the frame after the refusal equals a cold draw");
+    drop((pass, fresh));
+    drop(owner);
+    assert_validation_clean();
+}
+
+/// Review F3: uploads over the staging cap go out in several waited submits and still draw at parity.
+#[test]
+fn uploads_over_the_staging_cap_split_and_draw_at_parity() {
+    let mut owner = Owner::open(OwnerConfig::default()).expect("Vulkan 1.3 device");
+    let mut list = DisplayList::default();
+    list.push(Prim::Image { rect: Rect::xywh(4.0, 4.0, 64.0, 48.0), image: ImageId(1) });
+    list.push(Prim::Image { rect: Rect::xywh(80.0, 4.0, 45.0, 35.0), image: ImageId(2) });
+    let mut text = Text::new(Box::new(BoxText));
+    let mut res = Res::new();
+    let (w, h) = (160u32, 120u32);
+    let want = cpu(w, h, &[&list], Scale::ONE, &mut text, &mut res);
+    // 16x12x4 = 768 and 9x7x4 = 252 bytes: together over a 1000-byte cap.
+    let mut pass = UiPass::with_limits(&owner, UiLimits { staging_cap_bytes: 1000, ..UiLimits::default() }).unwrap();
+    let got = gpu(&mut owner, &mut pass, w, h, &[&list], Scale::ONE, &mut text, &mut res);
+    assert!(pass.stats().upload_submits >= 1, "{:?}", pass.stats());
+    assert_eq!(diff(&want, &got).0, 0);
+    drop(pass);
+    drop(owner);
+    assert_validation_clean();
+}

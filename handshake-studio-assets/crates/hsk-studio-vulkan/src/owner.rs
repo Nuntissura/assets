@@ -96,10 +96,59 @@ pub struct ValidationReport {
     pub errors: u64,
     /// Validation and performance warnings.
     pub warnings: u64,
-    /// Loader-only (general) warnings, e.g. the implicit layers this process disables; not validation findings.
+    /// Expected loader notes: a loader message saying an implicit layer was forced disabled by this process's
+    /// VK_LOADER_LAYERS_DISABLE ([`is_expected_loader_note`]); not validation findings. Any other general message
+    /// counts as a warning (or an error).
     pub loader_warnings: u64,
-    /// The first 16 error and warning ids, in arrival order (loader-only warnings excluded).
+    /// The first 16 error and warning ids, in arrival order (expected loader notes excluded).
     pub first: Vec<ValidationId>,
+    /// The first 16 expected loader notes, id and text (bounded to 256 chars), so the count can be checked.
+    pub loader: Vec<LoaderNote>,
+}
+
+/// One expected loader note: the loader's message id name and its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoaderNote {
+    pub name: String,
+    pub text: String,
+}
+
+/// The loader's note for an implicit layer that this process's `VK_LOADER_LAYERS_DISABLE=~implicit~` turns off:
+/// id `Loader Message`, text `Layer "<name>" forced disabled because name matches filter of env var
+/// 'VK_LOADER_LAYERS_DISABLE'.` (Vulkan loader 1.4.363, observed on this machine).
+pub fn is_expected_loader_note(name: &str, text: &str) -> bool {
+    const TAIL: &str = "\" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.";
+    name == "Loader Message"
+        && text.strip_prefix("Layer \"").and_then(|t| t.strip_suffix(TAIL)).is_some_and(|layer| {
+            !layer.is_empty() && layer.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
+/// How one messenger callback is counted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MessageClass {
+    Error,
+    Warning,
+    /// An expected loader note ([`is_expected_loader_note`]).
+    Loader,
+    /// Below warning (not subscribed; ignored if it arrives).
+    Ignore,
+}
+
+/// Errors are errors whatever their type. A general-only warning is an expected loader note only when its id and
+/// text say so; every other warning (validation, performance, or an unknown general message) is a warning.
+pub(crate) fn classify(severity: vk::DebugUtilsMessageSeverityFlagsEXT, types: vk::DebugUtilsMessageTypeFlagsEXT, name: &str, text: &str) -> MessageClass {
+    if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+        return MessageClass::Error;
+    }
+    if !severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::WARNING) {
+        return MessageClass::Ignore;
+    }
+    let general_only =
+        !types.intersects(vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE);
+    // RED (F1): the old rule, every general-only warning is a loader note.
+    let _ = (name, text);
+    if general_only { MessageClass::Loader } else { MessageClass::Warning }
 }
 
 /// Message ids kept per process.
@@ -110,6 +159,7 @@ static VALIDATION_ERRORS: AtomicU64 = AtomicU64::new(0);
 static VALIDATION_WARNINGS: AtomicU64 = AtomicU64::new(0);
 static LOADER_WARNINGS: AtomicU64 = AtomicU64::new(0);
 static VALIDATION_FIRST: Mutex<Vec<ValidationId>> = Mutex::new(Vec::new());
+static LOADER_FIRST: Mutex<Vec<LoaderNote>> = Mutex::new(Vec::new());
 
 fn state_code(state: u8) -> &'static str {
     match state {
@@ -126,12 +176,17 @@ pub fn process_validation() -> ValidationReport {
         Ok(v) => v.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
+    let loader = match LOADER_FIRST.lock() {
+        Ok(v) => v.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
     ValidationReport {
         state: state_code(VALIDATION_STATE.load(Ordering::Acquire)),
         errors: VALIDATION_ERRORS.load(Ordering::Acquire),
         warnings: VALIDATION_WARNINGS.load(Ordering::Acquire),
         loader_warnings: LOADER_WARNINGS.load(Ordering::Acquire),
         first,
+        loader,
     }
 }
 
@@ -143,24 +198,9 @@ unsafe extern "system" fn on_validation_message(
     data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
     _user: *mut std::ffi::c_void,
 ) -> vk::Bool32 {
-    let general_only =
-        !types.intersects(vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE);
-    if general_only && !severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
-        // Loader notes such as "layer forced disabled" for the implicit layers this process turns off.
-        LOADER_WARNINGS.fetch_add(1, Ordering::AcqRel);
-        return vk::FALSE;
-    }
-    let (counter, label) = if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
-        (&VALIDATION_ERRORS, "error")
-    } else if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::WARNING) {
-        (&VALIDATION_WARNINGS, "warning")
-    } else {
-        return vk::FALSE;
-    };
-    counter.fetch_add(1, Ordering::AcqRel);
     // SAFETY: the layer passes a valid callback data struct, or null, for the duration of this call
     // (VUID-PFN_vkDebugUtilsMessengerCallbackEXT); its strings are NUL-terminated or null.
-    let (name, number, text) = match unsafe { data.as_ref() } {
+    let (name, number, text): (String, i32, String) = match unsafe { data.as_ref() } {
         Some(d) => unsafe {
             (
                 d.message_id_name_as_c_str().map(|s| s.to_string_lossy().chars().take(160).collect()).unwrap_or_default(),
@@ -170,6 +210,23 @@ unsafe extern "system" fn on_validation_message(
         },
         None => (String::new(), 0, String::new()),
     };
+    let (counter, label) = match classify(severity, types, &name, &text) {
+        MessageClass::Error => (&VALIDATION_ERRORS, "error"),
+        MessageClass::Warning => (&VALIDATION_WARNINGS, "warning"),
+        MessageClass::Loader => {
+            LOADER_WARNINGS.fetch_add(1, Ordering::AcqRel);
+            let mut notes = match LOADER_FIRST.lock() {
+                Ok(v) => v,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if notes.len() < FIRST_IDS {
+                notes.push(LoaderNote { name, text: text.chars().take(256).collect() });
+            }
+            return vk::FALSE;
+        }
+        MessageClass::Ignore => return vk::FALSE,
+    };
+    counter.fetch_add(1, Ordering::AcqRel);
     let mut first = match VALIDATION_FIRST.lock() {
         Ok(v) => v,
         Err(poisoned) => poisoned.into_inner(),
@@ -1168,6 +1225,29 @@ impl Drop for Owner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F1 (no device): only the loader's forced-disabled note is an expected loader note; any other general
+    /// warning, and every validation or performance warning, counts as a warning; errors stay errors.
+    #[test]
+    fn messenger_classification_keeps_unexpected_loader_messages_as_warnings() {
+        use vk::DebugUtilsMessageSeverityFlagsEXT as S;
+        use vk::DebugUtilsMessageTypeFlagsEXT as T;
+        let note = "Layer \"VK_LAYER_NV_optimus\" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.";
+        assert!(is_expected_loader_note("Loader Message", note));
+        assert_eq!(classify(S::WARNING, T::GENERAL, "Loader Message", note), MessageClass::Loader);
+        for (name, text) in [
+            ("Loader Message", "loader_scan_for_implicit_layers: Driver manifest version mismatch"),
+            ("Loader Message", "Layer \"VK_LAYER_X\" forced disabled because something else."),
+            ("Loader Message", "Layer \"\" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'."),
+            ("Some Layer", note),
+        ] {
+            assert_eq!(classify(S::WARNING, T::GENERAL, name, text), MessageClass::Warning, "{name}: {text}");
+        }
+        assert_eq!(classify(S::WARNING, T::VALIDATION, "Loader Message", note), MessageClass::Warning);
+        assert_eq!(classify(S::WARNING, T::PERFORMANCE, "BestPractices-x", "y"), MessageClass::Warning);
+        assert_eq!(classify(S::ERROR, T::GENERAL, "Loader Message", note), MessageClass::Error);
+        assert_eq!(classify(S::INFO, T::GENERAL, "Loader Message", "x"), MessageClass::Ignore);
+    }
 
     /// Item V positive control (GPU group; its own process): with the layer on, a known invalid call is counted as an
     /// error under its VUID, so "on" with zero errors elsewhere is a live messenger, not a silent one. The call is

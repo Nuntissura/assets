@@ -155,7 +155,8 @@ fn spine_frame_on_the_ui_pass_matches_the_cpu_painter_at_four_scales() {
     let v = hsk_studio_vulkan::process_validation();
     println!("validation {} errors {} warnings {}", v.state, v.errors, v.warnings);
     if v.state == "on" {
-        assert_eq!(v.errors, 0, "{v:?}");
+        assert_eq!((v.errors, v.warnings), (0, 0), "{v:?}");
+        assert!(v.loader.iter().all(|n| hsk_studio_vulkan::is_expected_loader_note(&n.name, &n.text)), "{v:?}");
     }
 }
 
@@ -301,6 +302,7 @@ fn idle_vulkan_frames_add_no_pass_instance_or_upload() {
     drop(owner);
     let v = hsk_studio_vulkan::process_validation();
     if v.state == "on" {
-        assert_eq!(v.errors, 0, "{v:?}");
+        assert_eq!((v.errors, v.warnings), (0, 0), "{v:?}");
+        assert!(v.loader.iter().all(|n| hsk_studio_vulkan::is_expected_loader_note(&n.name, &n.text)), "{v:?}");
     }
 }

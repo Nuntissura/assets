@@ -89,12 +89,16 @@ pub fn diff(a: &[u8], b: &[u8]) -> (u8, u64) {
     (max, n)
 }
 
-/// Every GPU test ends here: with the layer on, zero validation errors over the process.
+/// Every GPU test ends here: with the layer on, zero validation errors and zero warnings over the process, and every
+/// kept loader note is the expected forced-disabled note (review F1).
 pub fn assert_validation_clean() {
     let v = hsk_studio_vulkan::process_validation();
-    println!("validation {} errors {} warnings {} loader_warnings {} first {:?}", v.state, v.errors, v.warnings, v.loader_warnings, v.first);
+    println!("validation {} errors {} warnings {} loader_warnings {} first {:?} loader {:?}", v.state, v.errors, v.warnings, v.loader_warnings, v.first, v.loader);
     if v.state == "on" {
         assert_eq!(v.errors, 0, "validation errors: {v:?}");
+        assert_eq!(v.warnings, 0, "validation warnings: {v:?}");
+        assert!(v.loader.iter().all(|n| hsk_studio_vulkan::is_expected_loader_note(&n.name, &n.text)), "{v:?}");
+        assert_eq!(v.loader.len() as u64, v.loader_warnings.min(16), "{v:?}");
     } else {
         println!("NOT_PROVEN: validation layer state {}", v.state);
     }

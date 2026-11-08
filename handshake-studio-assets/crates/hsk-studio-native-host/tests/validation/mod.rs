@@ -28,7 +28,10 @@ pub fn assert_clean(receipt: &Json) {
     assert_eq!(v.state, want, "{v:?}");
     if want == "on" {
         assert_eq!(report.get("errors").map(Json::render), Some("0".into()), "{}", report.render());
+        assert_eq!(report.get("warnings").map(Json::render), Some("0".into()), "{}", report.render());
         assert_eq!(v.errors, 0, "validation errors: {v:?}");
+        assert_eq!(v.warnings, 0, "validation warnings: {v:?}");
+        assert!(v.loader.iter().all(|n| hsk_studio_vulkan::is_expected_loader_note(&n.name, &n.text)), "{v:?}");
     } else {
         println!("NOT_PROVEN: validation layer {VALIDATION_LAYER} (state {want})");
     }

@@ -191,3 +191,57 @@ fn non_finite_prims_are_skipped_and_quads_never_leave_the_pane() {
     assert_eq!(plan.passes[0].instances.len(), 1, "the off-pane rect draws nothing");
     assert_eq!(plan.passes[0].instances[0].quad, [0, 0, 64, 32], "clipped to the pane");
 }
+
+/// Review F3: an image over max_image_pixels (MAX_PIXELS by default, brief bound (f)) is skipped and counted.
+#[test]
+fn an_image_over_the_pixel_bound_is_skipped_and_counted() {
+    assert_eq!(UiLimits::default().max_image_pixels, hsk_studio_vulkan::MAX_PIXELS);
+    struct Img(Vec<u8>);
+    impl kumihimo_ui::paint::Resources for Img {
+        fn icon(&mut self, _: kumihimo_ui::display::IconId, _: u32) -> Option<kumihimo_ui::paint::IconMask> {
+            None
+        }
+        fn image(&self, _: kumihimo_ui::display::ImageId) -> Option<kumihimo_ui::paint::ImageRef<'_>> {
+            Some(kumihimo_ui::paint::ImageRef { width: 11, height: 10, rgba: &self.0 })
+        }
+    }
+    let mut list = DisplayList::default();
+    list.push(Prim::Image { rect: Rect::xywh(0.0, 0.0, 20.0, 20.0), image: kumihimo_ui::display::ImageId(1) });
+    list.push(Prim::Rect { rect: Rect::xywh(0.0, 0.0, 4.0, 4.0), color: INK });
+    let mut text = Text::new(Box::new(BoxText));
+    let mut rec = Recorder::new(UiLimits { max_image_pixels: 100, ..UiLimits::default() });
+    let plan = rec.record((64, 32), &[&list], Scale::ONE, &mut text, &mut Img(vec![255; 11 * 10 * 4]), false).unwrap();
+    assert_eq!(plan.stats.image_over_limit, 1);
+    assert!(plan.images.is_empty());
+    assert_eq!(plan.passes[0].instances.len(), 1, "the rect still draws");
+}
+
+/// Review F4: a glyph or an icon larger than its page's maximum is refused alone: counted, no page reset, no extra
+/// pass, the rest of the frame draws.
+#[test]
+fn entries_larger_than_the_page_maximum_are_refused_alone() {
+    struct Big;
+    impl kumihimo_ui::paint::Resources for Big {
+        fn icon(&mut self, _: kumihimo_ui::display::IconId, px: u32) -> Option<kumihimo_ui::paint::IconMask> {
+            Some(kumihimo_ui::paint::IconMask { width: px, height: px, rg: vec![[255, 0]; (px * px) as usize] })
+        }
+        fn image(&self, _: kumihimo_ui::display::ImageId) -> Option<kumihimo_ui::paint::ImageRef<'_>> {
+            None
+        }
+    }
+    let mut text = Text::new(Box::new(GradientText { cell: 40 }));
+    let mut list = DisplayList::default();
+    list.push(label(&mut text, "AB", 2.0, 60.0));
+    list.push(Prim::Icon { rect: Rect::xywh(0.0, 0.0, 600.0, 600.0), icon: kumihimo_ui::display::IconId(1), form: INK, hot: INK });
+    list.push(Prim::Icon { rect: Rect::xywh(0.0, 0.0, 16.0, 16.0), icon: kumihimo_ui::display::IconId(2), form: INK, hot: INK });
+    list.push(Prim::Rect { rect: Rect::xywh(0.0, 0.0, 4.0, 4.0), color: INK });
+    let limits = UiLimits { glyph_min_side: 32, glyph_max_side: 32, icon_min_side: 512, icon_max_side: 512, ..UiLimits::default() };
+    let mut rec = Recorder::new(limits);
+    let plan = rec.record((700, 700), &[&list], Scale::ONE, &mut text, &mut Big, false).expect("the frame draws");
+    assert_eq!(plan.passes.len(), 1, "no pass break");
+    assert_eq!(plan.stats.glyph_refusals, 2, "both 40 px glyphs exceed the 32 page");
+    assert_eq!(plan.stats.icon_over_limit, 1, "the 600 px icon exceeds the 512 page");
+    assert_eq!(rec.glyph_atlas().stats().resets, 1, "only the first page identity");
+    assert_eq!(rec.icon_atlas().stats().resets, 0);
+    assert_eq!(plan.passes[0].instances.len(), 3, "the small icon (2) and the rect");
+}
