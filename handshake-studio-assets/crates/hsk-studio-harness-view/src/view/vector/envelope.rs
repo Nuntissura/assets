@@ -142,6 +142,12 @@ impl Viewer {
             let doc = self.vdoc()?.clone();
             let mut entry = self.vector_entry()?;
             let e = entry.records.envelope(layer_id).cloned().ok_or_else(|| format!("envelope: {layer_id} has none"))?;
+            // Lane SMB-AI-LIVE-EFFECTS-1 (review F4, STU-VEC-054, STU-FX-003): the render wraps the
+            // live-filtered paths; expanding the envelope from the raw paths under a kept stack would
+            // change the picture. Refused while any stack is on the layer, enabled or not.
+            if entry.records.live_filter_stack(layer_id).is_some() {
+                return Err("expand_envelope: vector_envelope_live_filters (bake or remove the layer's live filters first)".into());
+            }
             if e.distort_appearance {
                 return Err("expand_envelope: distort_appearance envelopes are not expanded (gap)".into());
             }

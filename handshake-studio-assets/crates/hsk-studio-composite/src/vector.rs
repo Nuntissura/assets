@@ -1261,6 +1261,14 @@ impl FolioCx<'_> {
         self.records.live_filter_stack(layer_id).is_some_and(|s| crate::vector_live_filters::any_enabled(&s.filters))
     }
 
+    /// True when an operand of boolean group `layer_id`, at any boolean depth, is [`Self::filtered`]
+    /// (review F6: a cached outline was built from the raw operands).
+    fn filtered_operand(&self, layer_id: &str, depth: usize) -> bool {
+        let Some(group) = self.records.boolean_group(layer_id) else { return false };
+        let next = depth.saturating_add(1);
+        depth <= MAX_BOOLEAN_DEPTH && group.operands.iter().any(|o| self.filtered(o) || self.filtered_operand(o, next))
+    }
+
     fn paths(&self, ids: &[String]) -> Result<Vec<OwnedPath>, &'static str> {
         ids.iter()
             .map(|id| self.assets.path(id).ok_or(REFUSE_PATH_UNRESOLVED))
@@ -1282,6 +1290,9 @@ impl FolioCx<'_> {
             .boolean_group(layer_id)
             .ok_or(REFUSE_BOOLEAN_OPERAND)?;
         if !group.fill_geometry_path_ids.is_empty() {
+            if self.filtered_operand(layer_id, depth) {
+                return Err(crate::vector_live_filters::REFUSE_EFFECT_SOURCE);
+            }
             return Ok(VectorGeometry::Paths(
                 self.paths(&group.fill_geometry_path_ids)?,
             ));

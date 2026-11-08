@@ -117,8 +117,11 @@ fn mint_instance(filters: &[StudioLiveFilter]) -> String {
 
 /// Moves the free distort frames of `layer_id`'s stack by `m`: the corners are document
 /// coordinates, so a moved layer distorts against a moved frame. Absolute sizes do not scale
-/// (`scale_strokes_and_effects` default false, STU-VEC-157).
-pub fn transform_live_filters(records: &mut folio::StudioVectorRecords, layer_id: &str, m: &Affine) {
+/// (`scale_strokes_and_effects` default false, STU-VEC-157). Refused typed
+/// (`vector_effect_beyond_engine_range`) when a moved corner is not finite, disabled entries
+/// included, before the caller commits anything (review F2: a non-finite real would be written as
+/// null and the entry would no longer decode).
+pub fn transform_live_filters(records: &mut folio::StudioVectorRecords, layer_id: &str, m: &Affine, op: &str) -> Result<(), String> {
     for s in records.live_filters.iter_mut().filter(|s| s.layer_id == layer_id) {
         for f in s.filters.iter_mut().filter(|f| f.filter_kind == EffectKind::FreeDistort.effect_id()) {
             for [kh, kv] in FREE_DISTORT_KEYS.iter().flatten() {
@@ -130,6 +133,9 @@ pub fn transform_live_filters(records: &mut folio::StudioVectorRecords, layer_id
                 };
                 let (Some(x), Some(y)) = (read(&f.params, kh), read(&f.params, kv)) else { continue };
                 let (tx, ty) = (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]);
+                if !(tx.is_finite() && ty.is_finite()) {
+                    return Err(format!("{op}: vector_effect_beyond_engine_range (free distort corner {kh}/{kv} of {})", f.instance_id));
+                }
                 for p in &mut f.params {
                     if let StudioLiveFilterParam::Real { key, value } = p {
                         if key == kh {
@@ -142,6 +148,7 @@ pub fn transform_live_filters(records: &mut folio::StudioVectorRecords, layer_id
             }
         }
     }
+    Ok(())
 }
 
 impl Viewer {

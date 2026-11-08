@@ -17,9 +17,12 @@
 //! a new nib variant fails compilation), plus [`REFUSE_EFFECT_NETWORK`],
 //! [`REFUSE_EFFECT_TEXT_BOUND`], [`REFUSE_EFFECT_SOURCE`] and [`REFUSE_EFFECT_WORK`].
 //!
-//! Budget (V4-02): every evaluation charges its source element count against one aggregate budget
-//! per `prepare_vectors` / `expand_vectors` call ([`MAX_LIVE_FILTER_ELEMENTS`]) before it runs, so
-//! many layers each with a full stack cannot multiply nib's per-evaluation limit.
+//! Budget (V4-02): every evaluation charges its source element count before it runs and its output
+//! element count after it (review F1: step repeat turns a small source into up to nib's
+//! per-evaluation limit) against one aggregate budget per `prepare_vectors` / `expand_vectors` call
+//! ([`MAX_LIVE_FILTER_ELEMENTS`]), so many layers cannot multiply nib's per-evaluation limit in what
+//! they read or retain; past the budget a layer refuses [`REFUSE_EFFECT_WORK`]. One evaluation may
+//! allocate up to nib's own limit before its output is refused.
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{StudioLiveFilter, StudioLiveFilterParam};
@@ -35,8 +38,8 @@ pub const REFUSE_EFFECT_TEXT_BOUND: &str = "vector_effect_text_bound";
 pub const REFUSE_EFFECT_SOURCE: &str = "vector_effect_source";
 /// The aggregate element budget of one call is spent.
 pub const REFUSE_EFFECT_WORK: &str = "vector_effect_work_limit";
-/// Source elements all evaluations of one `prepare_vectors` or `expand_vectors` call may read
-/// (16 x nib's per-evaluation `MAX_OP_ELEMENTS`). Declared engine limit, not a parameter bound.
+/// Source plus output elements of all evaluations of one `prepare_vectors` or `expand_vectors`
+/// call (16 x nib's per-evaluation `MAX_OP_ELEMENTS`). Declared engine limit, not a parameter bound.
 pub const MAX_LIVE_FILTER_ELEMENTS: u64 = 1 << 22;
 
 /// The stable composite code of a nib refusal (module docs).
@@ -111,18 +114,23 @@ pub fn any_enabled(filters: &[StudioLiveFilter]) -> bool {
 }
 
 /// The enabled entries of `filters`, in list order, over `sources`: each result is the next entry's
-/// sources. `budget` is the remaining aggregate element budget, charged per evaluation before it
-/// runs. Step repeat returns more paths than it took (the sources, then each copy).
+/// sources. `budget` is the remaining aggregate element budget: each evaluation charges its sources
+/// before it runs and its output after it. Step repeat returns more paths than it took (the
+/// sources, then each copy).
 pub fn evaluate_stack(filters: &[StudioLiveFilter], sources: Vec<OwnedPath>, budget: &mut u64, cancel: &CancellationToken) -> Result<Vec<OwnedPath>, &'static str> {
     let mut current = sources;
     for f in filters.iter().filter(|f| f.enabled) {
         cancel.check().map_err(|_| REFUSE_EFFECT_CANCELED)?;
         let record = effect_record(f).map_err(effect_code)?;
-        let elements = current.iter().map(|p| p.elements.len() as u64).fold(0_u64, u64::saturating_add);
-        *budget = budget.checked_sub(elements).ok_or(REFUSE_EFFECT_WORK)?;
+        *budget = budget.checked_sub(element_count(&current)).ok_or(REFUSE_EFFECT_WORK)?;
         current = evaluate(&current, &record, cancel).map_err(effect_code)?;
+        *budget = budget.checked_sub(element_count(&current)).ok_or(REFUSE_EFFECT_WORK)?;
     }
     Ok(current)
+}
+
+fn element_count(paths: &[OwnedPath]) -> u64 {
+    paths.iter().map(|p| p.elements.len() as u64).fold(0_u64, u64::saturating_add)
 }
 
 /// Output `k`'s per-path attribute from source `k % n` (`n` = the source count; step repeat
