@@ -353,9 +353,6 @@ impl GraphicEq {
     /// Refusals: `InvalidRate` (rate not admitted), `InvalidLayout` (channels outside
     /// `1..=MAX_CHANNELS`), then [`GraphicEqParams::validate`]. Designs once.
     pub fn new(sample_rate_hz: u32, channels: usize, params: GraphicEqParams) -> Result<Self, ScoreError> {
-        if sample_rate_hz > 0 {
-            return Err(ScoreError::OutOfRange); // red stub (lane SMB-SCORE-EFFECTS-6)
-        }
         ticks_per_sample(sample_rate_hz)?;
         if !(1..=MAX_CHANNELS).contains(&channels) {
             return Err(ScoreError::InvalidLayout);
