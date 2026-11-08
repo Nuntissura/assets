@@ -79,7 +79,7 @@ fn generated_tokens_match_design_system_json() {
 /// AC-COL-01 source half: UI code never types a colour; only tokens.rs (generated) and the painter's pixel plumbing do.
 #[test]
 fn ui_source_has_no_colour_literal() {
-    for f in ["src/widgets.rs", "src/emit.rs", "src/tree.rs", "src/layout.rs", "src/checks.rs", "src/gallery.rs", "src/hit.rs", "src/semantic.rs"] {
+    for f in ["src/widgets.rs", "src/emit.rs", "src/tree.rs", "src/layout.rs", "src/checks.rs", "src/gallery.rs", "src/hit.rs", "src/semantic.rs", "src/fit.rs", "src/icons.rs", "src/icon_data.rs", "src/text.rs"] {
         let src = crate_file(f);
         for (i, line) in src.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");

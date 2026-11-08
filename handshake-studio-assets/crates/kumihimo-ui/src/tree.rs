@@ -178,6 +178,8 @@ pub struct Flags {
     pub focused: bool,
     /// Children are clipped to this node's bounds.
     pub clip: bool,
+    /// A selected tab of a group without focus (state table tab `active_unfocused_group`: edge.control top edge).
+    pub unfocused_group: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

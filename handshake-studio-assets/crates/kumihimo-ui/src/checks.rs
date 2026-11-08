@@ -53,11 +53,27 @@ pub fn clipped_labels(tree: &Tree, text: &mut Text) -> Vec<Clipped> {
             }
             _ => n.bounds.w(),
         };
-        if w > avail + 0.01 {
-            out.push(Clipped { owner: owner_of(tree, id), text: s.to_owned(), overflow_px: w - avail });
+        // A label is clipped when it is wider than its box, or when its box runs past an ancestor's (a Hug label in a
+        // bar too narrow for it: the parent's clip or the window cuts it, SMB-GUI-FRAME-1).
+        let past = ancestors_overflow(tree, id);
+        let over = (w - avail).max(past);
+        if over > 0.01 {
+            out.push(Clipped { owner: owner_of(tree, id), text: s.to_owned(), overflow_px: over });
         }
     }
     out
+}
+
+/// How far `id`'s box runs past the right edge of its widest-reaching ancestor (0 when inside all of them).
+fn ancestors_overflow(tree: &Tree, id: NodeId) -> f32 {
+    let b = tree.get(id).bounds;
+    let mut at = id;
+    let mut over = 0.0f32;
+    while let Some(p) = tree.get(at).parent {
+        over = over.max(b.x1 - tree.get(p).bounds.x1);
+        at = p;
+    }
+    over
 }
 
 fn owner_of(tree: &Tree, mut id: NodeId) -> String {
@@ -113,6 +129,30 @@ pub enum PartitionFault {
 /// AC-GEOM-01: the rects, snapped at `scale`, cover `window` exactly and are pairwise disjoint (empty rects are allowed
 /// members; an empty edge is passed as its 6 px seam rect, so it is a member, not a gap). Empty result = a partition.
 pub fn partition(window: Rect, rects: &[Rect], scale: Scale) -> Vec<PartitionFault> {
-    let _ = (window, rects, scale);
-    vec![PartitionFault::Uncovered(-1)]
+    let w = scale.snap(window);
+    let area = |r: &crate::geom::IRect| i64::from(r.w()) * i64::from(r.h());
+    let snapped: Vec<crate::geom::IRect> = rects.iter().map(|r| scale.snap(*r)).collect();
+    let mut out = Vec::new();
+    for (i, r) in snapped.iter().enumerate() {
+        if !r.is_empty() && (r.x0 < w.x0 || r.y0 < w.y0 || r.x1 > w.x1 || r.y1 > w.y1) {
+            out.push(PartitionFault::Outside(i));
+        }
+    }
+    let mut overlap = false;
+    for (i, a) in snapped.iter().enumerate() {
+        for (j, b) in snapped.iter().enumerate().skip(i + 1) {
+            if !a.intersect(b).is_empty() {
+                out.push(PartitionFault::Overlap(i, j));
+                overlap = true;
+            }
+        }
+    }
+    if !overlap {
+        let covered: i64 = snapped.iter().map(|r| area(&r.intersect(&w))).sum();
+        let missing = area(&w) - covered;
+        if missing != 0 {
+            out.push(PartitionFault::Uncovered(missing));
+        }
+    }
+    out
 }

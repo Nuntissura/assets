@@ -254,8 +254,31 @@ impl Text {
     /// chars as fit (head gets the extra one), or the whole text when it fits. Bounded like [`Text::ellipsize`]: only
     /// the first and last [`MAX_LABEL_BYTES`] / 2 bytes are candidates, measured uncached (about log2(n) shapes).
     pub fn ellipsize_middle(&mut self, text: &str, token: TextToken, weight: u16, max_w: f32) -> String {
-        let _ = (token, weight, max_w);
-        text.to_owned()
+        if text.len() <= MAX_LABEL_BYTES && self.measure(text, token, weight) <= max_w {
+            return text.to_owned();
+        }
+        let ell = "\u{2026}";
+        let half = (MAX_LABEL_BYTES - ell.len()) / 2;
+        // Head candidates: the end of each char within the first `half` bytes; tail: the start of each char within the
+        // last `half` bytes, nearest the end first.
+        let head: Vec<usize> = text.char_indices().map(|(i, c)| i + c.len_utf8()).take_while(|&e| e <= half).collect();
+        let tail: Vec<usize> = text.char_indices().rev().map(|(i, _)| i).take_while(|&i| text.len() - i <= half).collect();
+        // Keep k chars: ceil(k / 2) from the head, floor(k / 2) from the tail; never all of them (it did not fit).
+        let chars = if text.len() <= MAX_LABEL_BYTES { text.chars().count() } else { usize::MAX };
+        let kmax = (2 * head.len().min(tail.len()) + usize::from(head.len() > tail.len())).min(chars.saturating_sub(1));
+        let cand = |k: usize| {
+            let (h, t) = (k.div_ceil(2), k / 2);
+            let he = if h == 0 { 0 } else { head[h - 1] };
+            let ts = if t == 0 { text.len() } else { tail[t - 1] };
+            format!("{}{ell}{}", &text[..he], &text[ts..])
+        };
+        let (mut lo, mut hi) = (0usize, kmax);
+        while lo < hi {
+            let mid = lo + (hi - lo).div_ceil(2);
+            let fits = self.measure_uncached(&cand(mid), token, weight).is_some_and(|w| w <= max_w);
+            if fits { lo = mid } else { hi = mid - 1 }
+        }
+        cand(lo)
     }
 }
 

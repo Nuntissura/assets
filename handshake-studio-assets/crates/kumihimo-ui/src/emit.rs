@@ -9,6 +9,7 @@ use crate::tree::{Align, Flags, Interaction, NodeId, Paint, Tree};
 /// The state a node shows (disabled wins, then press, selection, hover).
 pub fn state_of(kind: StyleKind, f: &Flags, disabled: bool) -> State {
     let selected_state = match kind {
+        StyleKind::Tab if f.unfocused_group => State::ActiveUnfocusedGroup,
         StyleKind::Tab | StyleKind::ToolSlot => State::Active,
         _ => State::Selected,
     };
@@ -113,7 +114,11 @@ fn node(tree: &Tree, id: NodeId, ui: &Interaction, theme: Theme, text: &mut Text
             // The label's own weight is the one layout and AC-TEXT-01 measured (F2); no weight is inherited.
             let col = if inh.disabled { ColorToken::TextDisabled } else { color.unwrap_or(inh.text) };
             let shown = if *ellipsis { text.ellipsize(s, *token, *weight, b.w()) } else { s.clone() };
-            label(list, text, &shown, *token, *weight, b, *align, c(col, theme));
+            // An ellipsizing label whose box is narrower than the ellipsis itself draws nothing rather than spilling
+            // out of its box (a squeezed readout below the frame's floor).
+            if !(*ellipsis && text.measure(&shown, *token, *weight) > b.w() + 0.01) {
+                label(list, text, &shown, *token, *weight, b, *align, c(col, theme));
+            }
         }
         Paint::Value { text: s, unit } => {
             let col = if inh.disabled { ColorToken::TextDisabled } else { inh.text };
@@ -175,8 +180,18 @@ fn node(tree: &Tree, id: NodeId, ui: &Interaction, theme: Theme, text: &mut Text
             }
             list.push(Prim::RRect { rect: b, radius: radius::R0_DOCKED, fill: Rgba8::TRANSPARENT, border: Some(Border { width: 1.0, color: c(ColorToken::EdgeSubtle, theme) }) });
         }
-        // SMB-GUI-FRAME-1 paints (skeleton: emitted from item 2).
-        Paint::Ruler { .. } | Paint::Round { .. } | Paint::TintedIcon { .. } => {}
+        Paint::Ruler { axis, origin, step, major, labels } => ruler(list, text, b, *axis, *origin, *step, *major, *labels, theme),
+        Paint::Round { fill, radius: r, border } => {
+            let fill = fill.map_or(Rgba8::TRANSPARENT, |t| c(t, theme));
+            let border = border.map(|t| Border { width: stroke::HAIRLINE, color: c(t, theme) });
+            list.push(Prim::RRect { rect: b, radius: *r, fill, border });
+        }
+        Paint::TintedIcon { icon, size: sz, color } => {
+            let x = b.x0 + ((b.w() - sz) / 2.0).round();
+            let y = b.y0 + ((b.h() - sz) / 2.0).round();
+            let t = c(*color, theme);
+            list.push(Prim::Icon { rect: Rect::xywh(x, y, *sz, *sz), icon: *icon, form: t, hot: t });
+        }
     }
     if n.flags.clip {
         list.push(Prim::PushScissor(b));
@@ -188,6 +203,50 @@ fn node(tree: &Tree, id: NodeId, ui: &Interaction, theme: Theme, text: &mut Text
         list.push(Prim::PopScissor);
     }
     list.items.extend(edges);
+    // Seams draw over the children and the state edges: one hairline per set side (geom.rs Scale::hairline).
+    for side in n.seams.sides() {
+        list.push(Prim::Edge { owner: b, side, px: 1, color: c(ColorToken::EdgeSeam, theme) });
+    }
+}
+
+/// components.json `ruler`: tick lengths (minor 5, major 10).
+const RULER_MINOR: f32 = 5.0;
+const RULER_MAJOR: f32 = 10.0;
+
+/// The ruler on surface.strip: ticks in text.disabled standing on the far edge, a label in caption text.tertiary at
+/// each major tick (horizontal only), dropped when it would run past the end; at most MAX_RULER_TICKS ticks.
+#[allow(clippy::too_many_arguments)]
+fn ruler(list: &mut DisplayList, text: &mut Text, b: Rect, axis: crate::tree::Axis, origin: f32, step: f32, major: u32, labels: bool, theme: Theme) {
+    list.push(Prim::Rect { rect: b, color: c(ColorToken::SurfaceStrip, theme) });
+    let row = axis == crate::tree::Axis::Row;
+    let (start, end) = if row { (b.x0, b.x1) } else { (b.y0, b.y1) };
+    if !(origin.is_finite() && step.is_finite()) || step <= 0.0 || end <= start {
+        return;
+    }
+    // A hostile step never makes more than MAX_RULER_TICKS ticks across the ruler.
+    let step = step.max((end - start) / crate::tree::MAX_RULER_TICKS as f32);
+    let k0 = ((start - origin) / step).ceil().clamp(-1.0e12, 1.0e12) as i64;
+    let major = i64::from(major.max(1));
+    let (tick, lab) = (c(ColorToken::TextDisabled, theme), c(ColorToken::TextTertiary, theme));
+    for k in (k0..).take(crate::tree::MAX_RULER_TICKS) {
+        let pos = origin + k as f32 * step;
+        if pos >= end {
+            break;
+        }
+        let is_major = k.rem_euclid(major) == 0;
+        let len = if is_major { RULER_MAJOR } else { RULER_MINOR };
+        let (owner, side) = if row { (Rect::new(pos, b.y1 - len, pos + 1.0, b.y1), Side::Left) } else { (Rect::new(b.x1 - len, pos, b.x1, pos + 1.0), Side::Top) };
+        list.push(Prim::Edge { owner, side, px: 1, color: tick });
+        if labels && row && is_major {
+            let s = format!("{}", (k as f64 * f64::from(step)).round() as i64);
+            let w = text.measure(&s, TextToken::Caption, 0);
+            let x = pos + 3.0;
+            if x + w <= end {
+                let line = TextToken::Caption.style().line;
+                label(list, text, &s, TextToken::Caption, 0, Rect::new(x, b.y0 + 1.0, x + w, b.y0 + 1.0 + line), Align::Start, lab);
+            }
+        }
+    }
 }
 
 /// One line of text in `b`, caps centred vertically, baseline on a physical pixel at paint.

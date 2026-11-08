@@ -34,8 +34,31 @@ impl LabelFit {
 /// once. An empty `pads` means padding 0.
 #[allow(clippy::too_many_arguments)]
 pub fn fit_labels(text: &mut Text, labels: &[&str], token: TextToken, weight: u16, pads: &[f32], avail: f32, chip_w: f32) -> LabelFit {
-    let _ = (text, token, weight, avail, chip_w, MAX_LABEL_BYTES);
-    LabelFit { pad_step: 0, pad: pads.first().copied().unwrap_or(0.0), shown: labels.len(), widths: vec![0.0; labels.len()], used: 0.0 }
+    let widths: Vec<f32> = labels.iter().map(|l| width(text, l, token, weight)).collect();
+    let pads: &[f32] = if pads.is_empty() { &[0.0] } else { pads };
+    for (i, &pad) in pads.iter().enumerate() {
+        let total: f32 = widths.iter().map(|w| w + 2.0 * pad).sum();
+        if total <= avail {
+            return LabelFit { pad_step: i, pad, shown: labels.len(), widths, used: total };
+        }
+    }
+    let i = pads.len() - 1;
+    let pad = pads[i];
+    let (mut used, mut shown) = (chip_w, 0);
+    for w in &widths {
+        let s = w + 2.0 * pad;
+        if used + s > avail {
+            break;
+        }
+        used += s;
+        shown += 1;
+    }
+    LabelFit { pad_step: i, pad, shown, widths, used }
+}
+
+/// A label's width as layout sizes a Hug label (measured, ceiled); infinite over the shaping bound.
+fn width(text: &mut Text, s: &str, token: TextToken, weight: u16) -> f32 {
+    if s.len() > MAX_LABEL_BYTES { f32::INFINITY } else { text.measure(s, token, weight).ceil() }
 }
 
 /// The outcome of [`fit_tabs`]: indices of the tabs shown, in order, and of those in the +N menu.
@@ -50,6 +73,34 @@ pub struct TabFit {
 /// stable. `active_weight` is the active tab's weight (layout measures what emit draws).
 #[allow(clippy::too_many_arguments)]
 pub fn fit_tabs(text: &mut Text, labels: &[&str], active: usize, token: TextToken, weight: u16, active_weight: u16, pad: f32, avail: f32, chip_w: f32) -> TabFit {
-    let _ = (text, active, token, weight, active_weight, pad, avail, chip_w);
-    TabFit { shown: (0..labels.len()).collect(), hidden: Vec::new() }
+    let n = labels.len();
+    if n == 0 {
+        return TabFit::default();
+    }
+    let active = active.min(n - 1);
+    let w: Vec<f32> = labels.iter().enumerate().map(|(i, l)| width(text, l, token, if i == active { active_weight } else { weight }) + 2.0 * pad).collect();
+    if w.iter().sum::<f32>() <= avail {
+        return TabFit { shown: (0..n).collect(), hidden: Vec::new() };
+    }
+    let (mut shown, mut used) = (Vec::new(), chip_w);
+    for (i, wi) in w.iter().enumerate() {
+        if used + wi > avail {
+            break;
+        }
+        shown.push(i);
+        used += wi;
+    }
+    if !shown.contains(&active) {
+        // The active tab takes the slot of the last visible tab(s) it needs.
+        while let Some(&last) = shown.last() {
+            if used + w[active] <= avail {
+                break;
+            }
+            used -= w[last];
+            shown.pop();
+        }
+        shown.push(active);
+    }
+    let hidden = (0..n).filter(|i| !shown.contains(i)).collect();
+    TabFit { shown, hidden }
 }
