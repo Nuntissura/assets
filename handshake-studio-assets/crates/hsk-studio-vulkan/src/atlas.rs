@@ -17,27 +17,58 @@ pub struct Slot {
     pub h: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Shelf {
+    y: u32,
+    h: u32,
+    /// Next free x on this shelf.
+    x: u32,
+}
+
 /// Shelves of height `h` rounded up to [`SHELF_STEP`], filled left to right; an entry goes on the first shelf it fits,
 /// else on a new shelf below the last.
 #[derive(Clone, Debug, Default)]
 pub struct ShelfPacker {
     side: u32,
+    shelves: Vec<Shelf>,
+    /// Top of the next new shelf.
+    bottom: u32,
 }
 
 impl ShelfPacker {
     pub fn new(side: u32) -> Self {
-        Self { side }
+        Self { side, shelves: Vec::new(), bottom: 0 }
     }
     pub fn side(&self) -> u32 {
         self.side
     }
     /// The top-left texel of a `w x h` entry, or None when the page has no room (or the entry is empty or too big).
-    pub fn place(&mut self, _w: u32, _h: u32) -> Option<(u32, u32)> {
-        None
+    pub fn place(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+        if w == 0 || h == 0 || w > self.side || h > self.side {
+            return None;
+        }
+        for s in &mut self.shelves {
+            if h <= s.h && w <= self.side.saturating_sub(s.x) {
+                let at = (s.x, s.y);
+                s.x = s.x.saturating_add(w);
+                return Some(at);
+            }
+        }
+        let sh = h.div_ceil(SHELF_STEP).saturating_mul(SHELF_STEP).min(self.side);
+        if sh > self.side.saturating_sub(self.bottom) {
+            return None;
+        }
+        let at = (0, self.bottom);
+        self.shelves.push(Shelf { y: self.bottom, h: sh, x: w });
+        self.bottom = self.bottom.saturating_add(sh);
+        Some(at)
     }
-    pub fn reset(&mut self) {}
+    pub fn reset(&mut self) {
+        self.shelves.clear();
+        self.bottom = 0;
+    }
     pub fn shelves(&self) -> usize {
-        0
+        self.shelves.len()
     }
 }
 
@@ -76,7 +107,15 @@ pub struct Atlas<K> {
 
 impl<K: Copy + Eq + Hash> Atlas<K> {
     pub fn new(min_side: u32, max_side: u32) -> Self {
-        Self { packer: ShelfPacker::new(min_side), min_side, max_side, identity: 0, entries: HashMap::new(), stats: AtlasStats::default() }
+        let min_side = min_side.max(1);
+        Self {
+            packer: ShelfPacker::new(min_side),
+            min_side,
+            max_side: max_side.max(min_side),
+            identity: 0,
+            entries: HashMap::new(),
+            stats: AtlasStats::default(),
+        }
     }
     pub fn side(&self) -> u32 {
         self.packer.side()
@@ -99,22 +138,48 @@ impl<K: Copy + Eq + Hash> Atlas<K> {
     pub fn get(&self, key: &K) -> Option<Slot> {
         self.entries.get(key).copied()
     }
-    pub fn place(&mut self, _key: K, _w: u32, _h: u32) -> Placed {
-        Placed::Full
+    pub fn place(&mut self, key: K, w: u32, h: u32) -> Placed {
+        if let Some(s) = self.entries.get(&key) {
+            return Placed::Resident(*s);
+        }
+        match self.packer.place(w, h) {
+            Some((x, y)) => {
+                let slot = Slot { x, y, w, h };
+                self.entries.insert(key, slot);
+                self.stats.placed = self.stats.placed.saturating_add(1);
+                Placed::New(slot)
+            }
+            None => Placed::Full,
+        }
     }
-    /// Drops `key` (an icon whose mask changed size).
+    /// Drops `key` (an icon whose mask changed size); its texels stay until the page resets.
     pub fn remove(&mut self, key: &K) {
         self.entries.remove(key);
     }
     /// Doubles the side (capped at `max_side`) and clears the page; false when already at the maximum.
     pub fn grow(&mut self) -> bool {
-        false
+        let side = self.packer.side();
+        if side >= self.max_side {
+            return false;
+        }
+        self.packer = ShelfPacker::new(side.saturating_mul(2).min(self.max_side));
+        self.entries.clear();
+        self.stats.growths = self.stats.growths.saturating_add(1);
+        true
     }
     /// Clears every entry; the side stays.
-    pub fn reset(&mut self) {}
+    pub fn reset(&mut self) {
+        self.packer.reset();
+        self.entries.clear();
+        self.stats.resets = self.stats.resets.saturating_add(1);
+    }
     /// Resets when the page identity (text epoch, LUT, scale) changed; true when it did.
     pub fn set_identity(&mut self, identity: u64) -> bool {
+        if identity == self.identity {
+            return false;
+        }
         self.identity = identity;
-        false
+        self.reset();
+        true
     }
 }

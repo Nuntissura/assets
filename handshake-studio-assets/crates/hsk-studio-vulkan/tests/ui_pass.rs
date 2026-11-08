@@ -1,8 +1,10 @@
 //! SMB-VK-UI-PASS-1 items 3 to 6 and 8(b), on the real device (GPU test group, validation on in debug builds): every
 //! primitive class drawn by the UI pass against `kumihimo_ui::paint::paint` on the same list at scales 1, 1.25, 1.5
 //! and 2; kumihimo-ui's gallery scenes and specimen; cold, warm, reset and growth frames give the same bytes. Bounds:
-//! flat classes exact; glyph, icon, translucent image and ramp at most 1 per channel; AA classes at most 2, 4 where
-//! a border and its fill stack. Each test ends with zero validation errors.
+//! the scope's defaults (flat exact; glyph, icon, translucent image and ramp 1; AA 2, stacked 4) tightened to the
+//! maxima measured on the RTX 3090 (lead ruling 2026-11-08): 0 for flat, translucent rect and image, box glyphs,
+//! icons, the gallery and the specimen; 1 for gradient glyphs, rrect, line, dash, shadow and ramp. Each test ends with
+//! zero validation errors.
 mod support;
 
 use hsk_studio_vulkan::ui::UiLimits;
@@ -68,7 +70,7 @@ fn classes(text: &mut Text, grad: &mut Text) -> Vec<(&'static str, u8, DisplayLi
     let mut tr = DisplayList::default();
     tr.push(Prim::Rect { rect: Rect::xywh(10.0, 10.0, 80.0, 60.0), color: c(10, 120, 250, 128) });
     tr.push(Prim::Rect { rect: Rect::xywh(30.0, 30.0, 80.0, 60.0), color: c(250, 120, 10, 77) });
-    out.push(("rect_translucent", 1, tr, false));
+    out.push(("rect_translucent", 0, tr, false));
     let mut ch = DisplayList::default();
     ch.push(Prim::Checker { rect: Rect::xywh(5.3, 7.7, 120.0, 90.0), a: c(204, 204, 204, 255), b: c(255, 255, 255, 255), cell: 7.0 });
     out.push(("checker", 0, ch, false));
@@ -79,13 +81,13 @@ fn classes(text: &mut Text, grad: &mut Text) -> Vec<(&'static str, u8, DisplayLi
     out.push(("image_opaque", 0, im, false));
     let mut it = DisplayList::default();
     it.push(Prim::Image { rect: Rect::xywh(10.0, 10.0, 90.0, 70.0), image: ImageId(2) });
-    out.push(("image_translucent", 1, it, false));
+    out.push(("image_translucent", 0, it, false));
     let mut gl = DisplayList::default();
     for (i, s) in ["Layers  Channels  Paths", "Opacity 72 %", "Hamburgefonstiv 0123"].iter().enumerate() {
         let line = text.shape(s, TextToken::Body, 0).unwrap();
         gl.push(Prim::Glyphs { origin: Point::new(4.3 + i as f32 * 0.25, 20.0 + i as f32 * 18.0), token: TextToken::Body, glyphs: line.glyphs, color: c(230, 230, 230, 255) });
     }
-    out.push(("glyph_box", 1, gl, false));
+    out.push(("glyph_box", 0, gl, false));
     let mut gg = DisplayList::default();
     let line = grad.shape("ABCDEFG", TextToken::Body, 0).unwrap();
     gg.push(Prim::Glyphs { origin: Point::new(6.6, 40.0), token: TextToken::Body, glyphs: line.glyphs.clone(), color: c(250, 200, 30, 220) });
@@ -94,25 +96,25 @@ fn classes(text: &mut Text, grad: &mut Text) -> Vec<(&'static str, u8, DisplayLi
     ic.push(Prim::Icon { rect: Rect::xywh(10.0, 10.0, 20.0, 20.0), icon: IconId(1), form: c(220, 220, 220, 255), hot: c(255, 80, 80, 255) });
     ic.push(Prim::Icon { rect: Rect::xywh(40.0, 10.0, 16.0, 16.0), icon: IconId(2), form: c(220, 220, 220, 255), hot: c(80, 160, 255, 255) });
     ic.push(Prim::Icon { rect: Rect::xywh(70.0, 10.0, 16.0, 16.0), icon: IconId(0), form: c(220, 220, 220, 255), hot: c(80, 160, 255, 255) });
-    out.push(("icon", 1, ic, false));
+    out.push(("icon", 0, ic, false));
     let mut rr = DisplayList::default();
     rr.push(Prim::RRect { rect: Rect::xywh(5.0, 5.0, 60.0, 30.0), radius: 6.0, fill: c(60, 60, 70, 255), border: None });
     rr.push(Prim::RRect { rect: Rect::xywh(70.2, 5.7, 70.0, 40.0), radius: 8.0, fill: c(50, 90, 200, 255), border: Some(Border { width: 1.0, color: c(230, 230, 230, 255) }) });
     rr.push(Prim::RRect { rect: Rect::xywh(10.0, 50.0, 90.0, 50.0), radius: 20.0, fill: c(200, 60, 60, 180), border: Some(Border { width: 2.0, color: c(20, 20, 20, 200) }) });
-    out.push(("rrect", 4, rr, false));
+    out.push(("rrect", 1, rr, false));
     let mut ln = DisplayList::default();
     ln.push(Prim::Line { a: Point::new(5.0, 5.0), b: Point::new(150.0, 100.0), width: 1.0, color: c(240, 240, 240, 255) });
     ln.push(Prim::Line { a: Point::new(5.0, 110.0), b: Point::new(150.0, 110.0), width: 3.0, color: c(240, 90, 90, 200) });
     ln.push(Prim::Line { a: Point::new(80.0, 10.0), b: Point::new(80.0, 10.0), width: 4.0, color: c(90, 240, 90, 255) });
-    out.push(("line", 2, ln, false));
+    out.push(("line", 1, ln, false));
     let mut da = DisplayList::default();
     da.push(Prim::Dash { a: Point::new(5.0, 20.0), b: Point::new(150.0, 20.0), width: 1.0, dash: 4.0, phase: 0.0, on: c(255, 255, 255, 255), off: Some(c(0, 0, 0, 255)) });
     da.push(Prim::Dash { a: Point::new(5.0, 40.0), b: Point::new(140.0, 100.0), width: 2.0, dash: 3.0, phase: 1.5, on: c(255, 200, 0, 255), off: None });
-    out.push(("dash", 2, da, false));
+    out.push(("dash", 1, da, false));
     let mut sh = DisplayList::default();
     sh.push(Prim::Shadow { rect: Rect::xywh(30.0, 30.0, 80.0, 50.0), radius: 6.0, offset_y: 4.0, blur: 12.0, color: c(0, 0, 0, 160) });
     sh.push(Prim::Rect { rect: Rect::xywh(30.0, 30.0, 80.0, 50.0), color: c(45, 45, 45, 255) });
-    out.push(("shadow", 2, sh, false));
+    out.push(("shadow", 1, sh, false));
     let mut ra = DisplayList::default();
     ra.push(Prim::Ramp { rect: Rect::xywh(4.0, 4.0, 150.0, 100.0), corners: [c(255, 0, 0, 255), c(0, 255, 0, 255), c(0, 0, 255, 255), c(255, 255, 255, 128)] });
     out.push(("ramp", 1, ra, false));
@@ -197,7 +199,7 @@ fn gallery_scenes_and_the_specimen_match_the_cpu_painter() {
             owner.release_pane(pane).unwrap();
             let (max, n) = diff(want.rgba(), &got);
             report.push(format!("{}@{s}: max {max} differing {n}", scene.name()));
-            assert!(max <= 4, "{} at {s}: {max} ({n} px)", scene.name());
+            assert_eq!(max, 0, "{} at {s}: {max} ({n} px)", scene.name());
         }
         let (want, panel, _) = gallery::render_specimen(scale, Theme::Dark, &mut text, 520.0, 260.0);
         let pane = owner.create_pane(want.width(), want.height()).unwrap();
@@ -208,7 +210,7 @@ fn gallery_scenes_and_the_specimen_match_the_cpu_painter() {
         owner.release_pane(pane).unwrap();
         let (max, n) = diff(want.rgba(), &got);
         report.push(format!("specimen@{s}: max {max} differing {n}"));
-        assert!(max <= 1, "specimen at {s}: {max} ({n} px)");
+        assert_eq!(max, 0, "specimen at {s}: {max} ({n} px)");
     }
     println!("gallery parity {}", report.join("; "));
     drop(pass);
@@ -250,7 +252,7 @@ fn cold_warm_reset_and_growth_frames_draw_the_same_bytes() {
     assert_eq!(grown, cold, "growth changes nothing");
     let (max, n) = diff(&want, &cold);
     println!("cold/warm/reset/growth vs cpu: max {max} differing {n}");
-    assert!(max <= 1);
+    assert_eq!(max, 0);
     drop((pass, small, growing));
     drop(owner);
     assert_validation_clean();

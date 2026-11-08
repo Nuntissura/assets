@@ -295,6 +295,8 @@ pub(crate) struct HostBuffer {
     memory: vk::DeviceMemory,
     ptr: *mut u8,
     pub(crate) len: usize,
+    /// Device memory allocated (VkMemoryRequirements size).
+    pub(crate) alloc: u64,
 }
 
 impl HostBuffer {
@@ -325,7 +327,7 @@ impl HostBuffer {
                 .bind_buffer_memory(buffer, memory, 0)
                 .and_then(|()| core.device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty()));
             match mapped {
-                Ok(ptr) => Ok(Self { buffer, memory, ptr: ptr.cast::<u8>(), len }),
+                Ok(ptr) => Ok(Self { buffer, memory, ptr: ptr.cast::<u8>(), len, alloc: req.size }),
                 Err(e) => {
                     core.device.destroy_buffer(buffer, None);
                     core.device.free_memory(memory, None);
@@ -341,6 +343,17 @@ impl HostBuffer {
         // SAFETY: `ptr` maps `len` bytes of host-coherent memory owned by this buffer; no GPU work uses it now (the
         // caller writes before recording the submit that reads it).
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.ptr, self.len) };
+        Ok(())
+    }
+    /// Writes `bytes` at `offset` (a persistent buffer filled in part).
+    pub(crate) fn write_at(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Refusal> {
+        let end = offset.checked_add(bytes.len()).ok_or(Refusal::InvalidBuffer)?;
+        if end > self.len {
+            return Err(Refusal::InvalidBuffer);
+        }
+        // SAFETY: `ptr` maps `len` bytes of host-coherent memory owned by this buffer and `offset..end` lies inside it;
+        // no GPU work uses it now (every submit is waited on before the next write).
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.ptr.add(offset), bytes.len()) };
         Ok(())
     }
     pub(crate) fn read(&self) -> Vec<u8> {
@@ -542,6 +555,9 @@ pub(crate) fn host_read_barrier(core: &Core, cmd: vk::CommandBuffer, buffer: vk:
 
 pub(crate) struct Pane {
     pub(crate) image: vk::Image,
+    /// Its colour view (the UI pass's attachment). It lives and dies with the pane: never cache it by PaneId, whose
+    /// slot is reused after release.
+    pub(crate) view: vk::ImageView,
     memory: vk::DeviceMemory,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -794,8 +810,20 @@ impl Owner {
             driver_info: c_text(driver_props.driver_info_as_c_str()),
             device_uuid,
             queue_family: family,
-            features: Vec::new(),
+            features: vec!["dynamicRendering"],
         };
+        // The UI pass draws with dynamic rendering. Vulkan 1.3 requires support for it (vk.xml VK_VERSION_1_3 feature
+        // requirements), but a feature must still be enabled to be used: query it, refuse typed when absent, enable it.
+        let mut supported13 = vk::PhysicalDeviceVulkan13Features::default();
+        {
+            let mut features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut supported13);
+            // SAFETY: Vulkan 1.1+ core query on a 1.3 device; the chain struct lives for the call.
+            unsafe { instance.get_physical_device_features2(physical, &mut features2) };
+        }
+        if supported13.dynamic_rendering != vk::TRUE {
+            return Err((Refusal::FeatureMissing, Some(instance)));
+        }
+        let mut enable13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true);
         let priorities = [1.0f32];
         let queues = [vk::DeviceQueueCreateInfo::default().queue_family_index(family).queue_priorities(&priorities)];
         let mut device_exts: Vec<*const std::ffi::c_char> = Vec::new();
@@ -804,8 +832,11 @@ impl Owner {
             device_exts.push(ash::khr::swapchain::NAME.as_ptr());
             extensions.extend(["VK_KHR_surface", "VK_KHR_win32_surface", "VK_KHR_swapchain"]);
         }
-        let device_info = vk::DeviceCreateInfo::default().queue_create_infos(&queues).enabled_extension_names(&device_exts);
-        // SAFETY: valid physical device and family; extension names are static.
+        let device_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queues)
+            .enabled_extension_names(&device_exts)
+            .push_next(&mut enable13);
+        // SAFETY: valid physical device and family; extension names are static; dynamicRendering is supported.
         let device = match unsafe { instance.create_device(physical, &device_info, None) } {
             Ok(d) => d,
             Err(e) => return Err((vk_refusal(e), Some(instance))),
@@ -853,6 +884,20 @@ impl Owner {
     }
     pub(crate) fn core(&self) -> &Arc<Core> {
         &self.core
+    }
+    /// The owner's one submitter (poison-aware, bounded fence wait).
+    pub(crate) fn submitter(&self) -> &Submitter {
+        &self.submit
+    }
+    /// A pane's image, colour view and recorded layout, for a pass that draws into it.
+    pub(crate) fn pane_target(&self, pane: PaneId) -> Result<(vk::Image, vk::ImageView, vk::ImageLayout), Refusal> {
+        self.pane(pane).map(|p| (p.image, p.view, p.layout))
+    }
+    /// Records the layout a waited submit left the pane in (owner invariant: TRANSFER_SRC_OPTIMAL after a write).
+    pub(crate) fn set_pane_layout(&mut self, pane: PaneId, layout: vk::ImageLayout) {
+        if let Some(Some(p)) = self.panes.get_mut(pane.0 as usize) {
+            p.layout = layout;
+        }
     }
     pub(crate) fn pane(&self, pane: PaneId) -> Result<&Pane, Refusal> {
         self.panes.get(pane.0 as usize).and_then(Option::as_ref).ok_or(Refusal::InvalidPane)
@@ -997,7 +1042,7 @@ impl GpuClientPort for Owner {
         let core = &self.core;
         // SAFETY: valid device; R8G8B8A8_UNORM optimal tiling with these usages is mandatory format support; failure
         // paths destroy what they created.
-        let (image, memory) = unsafe {
+        let (image, memory, view) = unsafe {
             let image = core.device.create_image(&info, None).map_err(vk_refusal)?;
             let req = core.device.get_image_memory_requirements(image);
             let Some(kind) = core.memory_type(req.memory_type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL) else {
@@ -1017,9 +1062,23 @@ impl GpuClientPort for Owner {
                 core.device.free_memory(memory, None);
                 return Err(vk_refusal(e));
             }
-            (image, memory)
+            // A plain UNORM view: never an _SRGB view (the pane holds encoded bytes; blending stays in encoded space).
+            let view_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::R8G8B8A8_UNORM)
+                .subresource_range(color_range());
+            let view = match core.device.create_image_view(&view_info, None) {
+                Ok(v) => v,
+                Err(e) => {
+                    core.device.destroy_image(image, None);
+                    core.device.free_memory(memory, None);
+                    return Err(vk_refusal(e));
+                }
+            };
+            (image, memory, view)
         };
-        let pane = Pane { image, memory, width, height, layout: vk::ImageLayout::UNDEFINED };
+        let pane = Pane { image, view, memory, width, height, layout: vk::ImageLayout::UNDEFINED };
         let slot = self.panes.iter().position(Option::is_none);
         let index = match slot {
             Some(i) => {
@@ -1039,6 +1098,7 @@ impl GpuClientPort for Owner {
         // SAFETY: every submit that used the pane was waited on; a presenter blits only inside its own waited submit.
         unsafe {
             let _ = self.core.device.device_wait_idle();
+            self.core.device.destroy_image_view(p.view, None);
             self.core.device.destroy_image(p.image, None);
             self.core.device.free_memory(p.memory, None);
         }
@@ -1096,6 +1156,7 @@ impl Drop for Owner {
         unsafe {
             let _ = core.device.device_wait_idle();
             for p in self.panes.drain(..).flatten() {
+                core.device.destroy_image_view(p.view, None);
                 core.device.destroy_image(p.image, None);
                 core.device.free_memory(p.memory, None);
             }
