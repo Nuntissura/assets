@@ -3,9 +3,10 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::super::Viewer;
-use super::super::place::{Anchor, FreeTransform, PlaceOptions, PlaceRefusal, PlacementKind};
+use super::super::place::{Anchor, FitOptions, FrameOptions, FrameShape, FreeTransform, PlaceOptions, PlaceRefusal, PlacementKind};
 use super::CommandRefusal;
-use super::decode::Fields;
+use super::decode::{Fields, folio_field};
+use hsk_studio_folio as folio;
 use hsk_studio_pigment::transform_math::ResampleFilter;
 use serde_json::{Value, json};
 
@@ -20,10 +21,33 @@ fn resample(f: Fields<'_>) -> Result<Option<ResampleFilter>, CommandRefusal> {
     if f.has("resample") { f.token("resample", &RESAMPLE).map(Some) } else { Ok(None) }
 }
 
+const FIT: &str = "a fit token (content_to_frame, proportionally, fill_proportionally, ...)";
+const ANCHOR: &str = "an anchor token (top_left, center, bottom_right, ...)";
+
+/// An optional Folio fit or anchor token (lane SMB-LAYOUT-PLACE-1).
+fn opt_fit(f: Fields<'_>, key: &str) -> Result<Option<folio::StudioFit>, CommandRefusal> {
+    if f.has(key) { folio_field!(f, key, folio::StudioFit, FIT).map(Some) } else { Ok(None) }
+}
+
+fn opt_anchor(f: Fields<'_>) -> Result<Option<folio::StudioFitAnchor>, CommandRefusal> {
+    if f.has("anchor") { folio_field!(f, "anchor", folio::StudioFitAnchor, ANCHOR).map(Some) } else { Ok(None) }
+}
+
 pub(super) fn run_asset(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, CommandRefusal> {
     match id {
         "asset.place" => {
             let kind = f.token("placement_kind", &[("linked", PlacementKind::Linked), ("embedded", PlacementKind::Embedded)])?;
+            let frame = FrameOptions {
+                page: f.opt_text("page")?,
+                x: f.opt_number("frame_x")?,
+                y: f.opt_number("frame_y")?,
+                width: f.opt_number("frame_width")?,
+                height: f.opt_number("frame_height")?,
+                shape: if f.has("shape") { Some(f.token("shape", &FrameShape::ALL)?) } else { None },
+                fit: opt_fit(f, "fit")?,
+                frame_fitting: opt_fit(f, "frame_fitting")?,
+                anchor: opt_anchor(f)?,
+            };
             let opts = PlaceOptions {
                 x: f.opt_number("x")?,
                 y: f.opt_number("y")?,
@@ -31,8 +55,21 @@ pub(super) fn run_asset(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value
                 name: f.opt_text("name")?,
                 opacity_pct: f.opt_number("opacity_pct")?,
                 resample: resample(f)?,
+                frame,
             };
             v.place_asset(&f.path("path")?, kind, &opts).map_err(refusal)
+        }
+        "asset.fit" => {
+            let fit = folio_field!(f, "fit", folio::StudioFit, FIT)?;
+            let opts = FitOptions {
+                anchor: opt_anchor(f)?,
+                crop_top: f.opt_number("crop_top")?,
+                crop_left: f.opt_number("crop_left")?,
+                crop_bottom: f.opt_number("crop_bottom")?,
+                crop_right: f.opt_number("crop_right")?,
+                frame_fitting: opt_fit(f, "frame_fitting")?,
+            };
+            v.fit_graphic(&f.text("layer")?, fit, &opts).map_err(refusal)
         }
         "asset.list_placements" => Ok(v.list_placements()),
         "asset.update_all_modified" => v.update_all_modified().map_err(refusal),

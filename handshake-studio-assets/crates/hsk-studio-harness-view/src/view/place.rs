@@ -6,8 +6,8 @@
 //!
 //! # Manual (no-context operator or model)
 //!
-//! Every method needs an open document with an artboard (raster or vector; a document with pages only
-//! refuses `canvas_unavailable`: layout graphic frames are lane SMB-LAYOUT-PLACE-1). Each mutating call is
+//! Every method needs an open document with an artboard (raster or vector), or with pages only (a layout:
+//! section "Layout pages" below). Each mutating call is
 //! ONE undo step named by its command id, attributed to the viewer's run context (the caller's), and
 //! survives save and reopen: the placed records live in the session document entry [`ENTRY`] beside the
 //! layer's tiles. A refusal is a typed code and changes nothing.
@@ -50,6 +50,37 @@
 //! - [`Viewer::embed_link`] (`asset.embed_link`, FILE > Place > Embed Link): the linked source of the layer
 //!   becomes embedded (its current bytes staged), for every instance of it.
 //!
+//! # Layout pages (lane SMB-LAYOUT-PLACE-1; [STU-LAY-028], [STU-LAY-029], [STU-LAY-131], [STU-LAY-132])
+//!
+//! On a document with pages and no artboard, [`Viewer::place_asset`] puts the picture into a graphic frame:
+//! [`FrameOptions`] `page` and the frame `x`, `y`, `width`, `height` (pt, page coordinates; `frame_x`, ... on the
+//! row) are required (`frame_required`: no hidden page-origin rule), `shape` `rectangle` (default) or `ellipse`
+//! (`path` refuses `frame_shape_unsupported`), `fit` (Folio `StudioFit` tokens; none = 100 % at the frame's
+//! top-left), `frame_fitting` (the stored rule), `anchor` (default `center`). `x`, `y` and `scale_pct` are
+//! artboard parameters (`parameter_not_for_frame`); frame parameters on an artboard document refuse
+//! `frame_needs_pages`. The picture is one raster layer of the page's spread holding the source at its own pixels
+//! (no resample, no canvas clip: the PDF carries the full resolution) with the identity `placed_asset` transform,
+//! and one Folio `StudioGraphicFrame` in the layout records; content size at 100 % = pixels x 72 / ppi, the ppi
+//! the source states to the import route (a TIFF's resolution) else 72 (`ppi_source` `decoder` or `default`).
+//! Layer, frame and [`ENTRY`] are ONE undo step (`Run::submit_layout_and_entry`). [`Viewer::fit_graphic`]
+//! (`asset.fit`): `fit`, `anchor`, crop amounts (pt; a side not given keeps its value) and `frame_fitting`
+//! re-fit the frame through layout's `fit_content`; `frame_to_content` resizes the frame record at its anchor,
+//! `apply_frame_fitting_options` applies the stored rule (`no_stored_fitting` without one) and records the member
+//! applied; one layout step. `content_aware` refuses `content_aware_unavailable`, `honour_existing_style`
+//! `fit_not_legal_here`, a crop leaving no content `crop_empties_content`, a layer without a frame
+//! `layer_not_graphic_frame`. [`Viewer::list_placements`] adds `page_id`, `frame`, `shape`, `fit`,
+//! `frame_fitting`, `anchor`, content size and the derived `actual_ppi` and `effective_ppi` (x, y). Update All
+//! Links re-reads a layout source at its own pixels and keeps the frame; new pixel dimensions refuse
+//! `graphic_frame_source_resized`. Move, Free transform and Reset refuse `graphic_frame_transform_unsupported`
+//! (the frame record places the pixels; frame move is a later slice). The layout PDF draws every graphic frame
+//! and fails closed on a modified, missing, unauthorized or unsupported link (`view::layout_export`).
+//! Hostile bounds: frame sides 0 < side <= 14400 pt, |x|, |y| <= 14400 pt (`frame_out_of_range`), an unknown page
+//! `unknown_page`, a PNG or PSD header declaring more than [`MAX_PLACE_PIXELS`] refuses `budget_exceeded` before
+//! decode (any source after decode), at most `MAX_GRAPHIC_FRAMES` frames. Studio readings (UNVERIFIED against
+//! InDesign, D5): 100 % at the source's ppi, a frame required, the modified-link export refusal. Not drawn on the
+//! viewer canvas at the frame (NOT_INSPECTED: the canvas shows the layer's tiles at the spread origin); the layout
+//! PDF is the placed picture's output.
+//!
 //! Refusal codes: `not_open`, `canvas_unavailable`, `no_working_profile`, `resource_unreadable`,
 //! `resource_too_large`, the import route's codes (`format_unrecognised`, ...), render codes
 //! (`canvas_too_large`, ...), `placed_source_empty`, `link_base_unknown` (no opened file to resolve a link
@@ -58,7 +89,11 @@
 //! `parameter_out_of_range`, pigment's `transform_*`, `budget_exceeded`, `placed_link_missing`,
 //! `placed_link_modified` (run `asset.update_all_modified` first), `placed_link_unauthorized`,
 //! `placed_link_unsupported`, `placed_source_size_mismatch`, `placed_source_unresolved`,
-//! `raster_records_invalid`, `folio_<code>`, and the Run's own codes.
+//! `raster_records_invalid`, `folio_<code>`, the layout codes above (`frame_required`, `frame_out_of_range`,
+//! `frame_needs_pages`, `frame_shape_unsupported`, `parameter_not_for_frame`, `unknown_page`,
+//! `frame_geometry_invalid`, `no_stored_fitting`, `content_aware_unavailable`, `fit_not_legal_here`,
+//! `crop_empties_content`, `layer_not_graphic_frame`, `graphic_frame_transform_unsupported`,
+//! `graphic_frame_source_resized`, `layout_editor_unavailable`), and the Run's own codes.
 //!
 //! Studio readings (UNVERIFIED against Photoshop and Illustrator, D5): 100 % unless larger than the canvas;
 //! the reference point is on the axis-aligned bounds of the layer; skew before rotation; cached pixels
@@ -67,7 +102,8 @@
 //! Relink, Unembed, Edit Original, Convert to Layers, Export Contents, statistical stacks, warp, perspective,
 //! a native `.handshake` package as a source, the text and vector layers of a source document (drawn
 //! without them), a duplicate of a placed layer as a shared instance (`duplicate_layer` copies the pixels
-//! only), the export fail-closed gate for missing links ([STU-ASSET-009]).
+//! only), the export fail-closed gate for missing links ([STU-ASSET-009]) on artboard exports (the layout PDF
+//! has it).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::Viewer;
@@ -87,6 +123,12 @@ use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, PreparedTransf
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+
+/// Layout graphic frames (lane SMB-LAYOUT-PLACE-1): a child module, so it shares this module's records and
+/// pipeline without widening their visibility.
+#[path = "layout_place.rs"]
+mod layout_place;
+pub use layout_place::{FitOptions, FrameOptions, FrameShape};
 
 /// Session document entry holding the authored raster records (`hsk-studio-session` token).
 pub const ENTRY: &str = "raster_records";
@@ -165,6 +207,8 @@ pub struct PlaceOptions {
     pub name: Option<String>,
     pub opacity_pct: Option<f64>,
     pub resample: Option<ResampleFilter>,
+    /// The graphic frame on a document with pages only (lane SMB-LAYOUT-PLACE-1; module docs).
+    pub frame: FrameOptions,
 }
 
 /// [STU-RAS-141] reference point.
@@ -346,6 +390,8 @@ struct SourceImage {
     width: u32,
     height: u32,
     pixels: Vec<[f32; 4]>,
+    /// Pixels per inch (x, y) when the source states them to the import route (lane SMB-LAYOUT-PLACE-1).
+    ppi: Option<[f64; 2]>,
 }
 
 /// Pigment's row-major affine as Folio's `[a, b, c, d, e, f]` (inverse of `placed_matrix`).
@@ -544,6 +590,7 @@ impl Viewer {
     /// Imports `bytes` and renders their composite in linear light, unclipped.
     fn decode_source(&self, bytes: &[u8]) -> Res<SourceImage> {
         let imported = crate::import::import_as(bytes, &crate::harness::TrustAll, self.run.actor(), self.cancel).map_err(|e| PlaceRefusal::new(e.code(), "the source does not import"))?;
+        let ppi = layout_place::stated_ppi(&imported.receipt);
         let held: Vec<_> = imported.imports.iter().map(ImportEntry::to_opaque).collect();
         let referenced = hsk_studio_package::referenced_assets(imported.snapshot.document(), &held).map_err(|e| PlaceRefusal::new(e.code(), "source assets"))?;
         let mut assets = Assets::new();
@@ -559,7 +606,7 @@ impl Viewer {
         if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
             return no("placed_source_empty", "the source renders no pixel");
         }
-        Ok(SourceImage { width: frame.width, height: frame.height, pixels: frame.pixels })
+        Ok(SourceImage { width: frame.width, height: frame.height, pixels: frame.pixels, ppi })
     }
 
     /// `pixels` (row-major over `src`, straight linear RGBA) mapped by `affine` into new 256-pixel tiles of
@@ -634,8 +681,12 @@ impl Viewer {
         Ok(tiles)
     }
 
-    /// The cached display tiles of a placement, clipped to the canvas.
+    /// The cached display tiles of a placement, clipped to the canvas; a layout graphic frame's are the source at
+    /// its own pixels (lane SMB-LAYOUT-PLACE-1: the frame record places them, no canvas clip).
     fn placement_tiles(&mut self, layer_id: &str, source: &SourceImage, transform: [f64; 6], filter: ResampleFilter) -> Res<Vec<TileRef>> {
+        if self.is_graphic_frame(layer_id) {
+            return self.source_tiles(layer_id, source);
+        }
         let canvas = self.canvas().map_err(|e| PlaceRefusal::new("canvas_unavailable", e))?;
         let src = Rect { x: 0, y: 0, width: source.width, height: source.height };
         self.resampled_tiles(layer_id, src, &source.pixels, placed_matrix(transform), filter, Some(canvas))
@@ -680,6 +731,13 @@ impl Viewer {
     fn place_inner(&mut self, path: &Path, kind: PlacementKind, opts: &PlaceOptions) -> Res<Value> {
         const OP: &str = "asset.place";
         let doc = self.place_doc()?;
+        // Lane SMB-LAYOUT-PLACE-1: a document with pages only places into a graphic frame.
+        if layout_place::pages_only(&doc) {
+            return self.place_in_frame(path, kind, opts, doc);
+        }
+        if opts.frame != FrameOptions::default() {
+            return no("frame_needs_pages", "the frame parameters place into a layout page; this document has an artboard");
+        }
         let canvas = self.canvas().map_err(|e| PlaceRefusal::new("canvas_unavailable", e))?;
         if opts.scale_pct.is_some_and(|s| !(s.is_finite() && s > 0.0 && s <= 100_000.0))
             || opts.opacity_pct.is_some_and(|o| !(0.0..=100.0).contains(&o))
@@ -697,38 +755,8 @@ impl Viewer {
         let image = self.decode_source(&bytes)?;
         let mut entry = self.editable_entry(&doc)?;
         let (w, h) = (f64::from(image.width), f64::from(image.height));
-        let shared = entry
-            .records
-            .placed_sources
-            .iter()
-            .find(|s| {
-                s.width == w
-                    && s.height == h
-                    && match (&s.location, &uri) {
-                        (StudioPlacedMode::Linked { uri: u, content_digest, .. }, Some(want)) => u == want && *content_digest == digest,
-                        (StudioPlacedMode::Embedded { content_digest, .. }, None) => *content_digest == digest,
-                        _ => false,
-                    }
-            })
-            .map(|s| s.source_id.clone());
         let name = label(&opts.name.clone().unwrap_or_else(|| path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
-        let source_id = match &shared {
-            Some(id) => id.clone(),
-            None => {
-                let taken: BTreeSet<&str> = entry.records.placed_sources.iter().map(|s| s.source_id.as_str()).collect();
-                let id = (1u64..).map(|n| format!("src-{n}")).find(|id| !taken.contains(id.as_str())).unwrap_or_default();
-                let (location, staged) = match &uri {
-                    Some(u) => (StudioPlacedMode::Linked { uri: u.clone(), content_digest: digest.clone(), health: StudioLinkHealth::UpToDate }, None),
-                    None => {
-                        let staged = self.run.stage_tile(bytes).map_err(|c| PlaceRefusal::new(c, "stage the source"))?;
-                        (StudioPlacedMode::Embedded { document_id: mint_document_id(&doc, &entry.records), content_digest: digest.clone() }, Some(staged))
-                    }
-                };
-                entry.records.placed_sources.push(StudioPlacedSource { source_id: id.clone(), location, width: w, height: h, uses: Vec::new(), asset_id: None });
-                entry.sources.push(SourceMeta { source_id: id.clone(), name: name.clone(), bytes: staged });
-                id
-            }
-        };
+        let (source_id, shared) = self.source_for(&mut entry, &doc, uri.as_ref(), &digest, bytes, (w, h), &name)?;
         let scale = match opts.scale_pct {
             Some(p) => p / 100.0,
             None => 1.0f64.min(f64::from(canvas.width) / w).min(f64::from(canvas.height) / h),
@@ -765,8 +793,39 @@ impl Viewer {
         self.say(format!("{OP} {} as {layer_id} ({count} tile(s), revision {revision})", kind.token()));
         Ok(json!({
             "layer_id": layer_id, "source_id": source_id, "placement_kind": kind.token(), "uri": uri, "tiles": count, "scale_pct": scale * 100.0,
-            "transform": transform, "resample": filter.key(), "shared": shared.is_some(), "revision": revision,
+            "transform": transform, "resample": filter.key(), "shared": shared, "revision": revision,
         }))
+    }
+
+    /// The source of a placement in `entry` ([STU-RAS-013]): the same bytes (embedded) or the same file and digest
+    /// (linked, `uri`) at the same size share their source; else a new one is added, an embedded one's bytes staged.
+    /// Returns the source id and whether it was shared.
+    #[allow(clippy::too_many_arguments)]
+    fn source_for(&mut self, entry: &mut Entry, doc: &StudioDocument, uri: Option<&String>, digest: &str, bytes: Vec<u8>, (w, h): (f64, f64), name: &str) -> Res<(String, bool)> {
+        let shared = entry.records.placed_sources.iter().find(|s| {
+            s.width == w
+                && s.height == h
+                && match (&s.location, uri) {
+                    (StudioPlacedMode::Linked { uri: u, content_digest, .. }, Some(want)) => u == want && content_digest == digest,
+                    (StudioPlacedMode::Embedded { content_digest, .. }, None) => content_digest == digest,
+                    _ => false,
+                }
+        });
+        if let Some(s) = shared {
+            return Ok((s.source_id.clone(), true));
+        }
+        let taken: BTreeSet<&str> = entry.records.placed_sources.iter().map(|s| s.source_id.as_str()).collect();
+        let id = (1u64..).map(|n| format!("src-{n}")).find(|id| !taken.contains(id.as_str())).unwrap_or_default();
+        let (location, staged) = match uri {
+            Some(u) => (StudioPlacedMode::Linked { uri: u.clone(), content_digest: digest.to_owned(), health: StudioLinkHealth::UpToDate }, None),
+            None => {
+                let staged = self.run.stage_tile(bytes).map_err(|c| PlaceRefusal::new(c, "stage the source"))?;
+                (StudioPlacedMode::Embedded { document_id: mint_document_id(doc, &entry.records), content_digest: digest.to_owned() }, Some(staged))
+            }
+        };
+        entry.records.placed_sources.push(StudioPlacedSource { source_id: id.clone(), location, width: w, height: h, uses: Vec::new(), asset_id: None });
+        entry.sources.push(SourceMeta { source_id: id.clone(), name: name.to_owned(), bytes: staged });
+        Ok((id, false))
     }
 
     /// `transform.free_transform` (module docs). Returns `{layer_id, placed, transform?, tiles, resample, revision}`.
@@ -786,6 +845,11 @@ impl Viewer {
 
     fn transform_inner(&mut self, op: &str, layer_id: &str, change: Edit<'_>) -> Res<Value> {
         let doc = self.place_doc()?;
+        // Lane SMB-LAYOUT-PLACE-1: the frame record places a graphic frame's pixels; moving the pixels alone
+        // would draw them wrong (frame move is a later slice).
+        if self.is_graphic_frame(layer_id) {
+            return no("graphic_frame_transform_unsupported", format!("{layer_id} is a layout graphic frame: fit it with asset.fit"));
+        }
         let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| PlaceRefusal::new("layer_unknown", layer_id.to_owned()))?;
         let Payload::Raster { tiles } = &layer.payload else {
             return no("layer_not_pixel", format!("{layer_id} is a {} layer", layer.kind));
@@ -901,6 +965,7 @@ impl Viewer {
         let Some(entry) = self.run.snapshot().and_then(|s| self.editable_entry(s.document()).ok()) else {
             return json!({"placements": [], "sources": 0});
         };
+        let frames = self.graphic_frames_now();
         let rows: Vec<Value> = entry
             .records
             .layers
@@ -912,7 +977,10 @@ impl Viewer {
                     Some(StudioPlacedMode::Linked { .. }) => self.place.links.get(&a.source_id).copied().unwrap_or("unresolved"),
                     None => "unresolved",
                 };
-                Self::placement_json(&entry, r, a, state)
+                let mut row = Self::placement_json(&entry, r, a, state);
+                // Lane SMB-LAYOUT-PLACE-1: a layout placement's page, frame and resolutions.
+                self.frame_fields(&frames, &entry, &r.layer_id, &mut row);
+                row
             })
             .collect();
         json!({"placements": rows, "sources": entry.records.placed_sources.len()})
@@ -973,6 +1041,12 @@ impl Viewer {
                             (l, t, f)
                         })
                         .collect();
+                    // Lane SMB-LAYOUT-PLACE-1: a graphic frame's content size at 100 % is its record's; new pixel
+                    // dimensions would need a frame step beside this one (a later slice), so they refuse.
+                    let resized = f64::from(image.width) != source.width || f64::from(image.height) != source.height;
+                    if resized && instances.iter().any(|(l, _, _)| self.is_graphic_frame(l)) {
+                        return no("graphic_frame_source_resized", source.source_id.clone());
+                    }
                     for (layer_id, transform, filter) in instances {
                         let tiles = self.placement_tiles(&layer_id, &image, transform, filter)?;
                         writes.push((layer_id, tiles));
