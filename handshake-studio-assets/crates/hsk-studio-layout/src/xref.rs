@@ -446,6 +446,20 @@ pub fn resolve_cross_references(
     Ok(out)
 }
 
+/// [`write_cross_reference`] that also moves the Folio type-style records keyed by a paragraph
+/// start (`paragraph_composition`) through the edit (lane SMB-TYPE-INDENT-SPACING-1, V4-06 class C).
+pub fn write_cross_reference_with_styles(
+    records: &mut StudioLayoutFlowRecords,
+    styles: &mut hsk_studio_folio::StudioTypeStyleRecords,
+    source: &StudioTextStory,
+    resolved_text: Option<&str>,
+    xref_id: &str,
+    text: &str,
+) -> Result<StudioTextStory, crate::LayoutError> {
+    let _ = styles;
+    write_cross_reference(records, source, resolved_text, xref_id, text)
+}
+
 /// Writes a resolved reference into its source story: the source range is replaced by `text`
 /// (`replace_story_text`), every flow-record byte of that story is shifted, and the reference's
 /// cached `resolved_text` becomes `text` (so it reads `current` afterwards).

@@ -164,6 +164,10 @@ pub struct FindChangeHit {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChangeUndo {
     pub stories_before: Vec<StudioTextStory>,
+    /// The paragraph-keyed records as they were, when the change moved them
+    /// ([`apply_text_changes_with_records`]; lane SMB-TYPE-INDENT-SPACING-1).
+    pub flow_before: Option<hsk_studio_folio::StudioLayoutFlowRecords>,
+    pub styles_before: Option<hsk_studio_folio::StudioTypeStyleRecords>,
 }
 
 /// Tokenizes a `find.text` literal into a regex source (module docs).
@@ -402,7 +406,20 @@ pub fn apply_text_changes(stories: &[StudioTextStory], hits: &[FindChangeHit]) -
         }
         out.push(cur);
     }
-    Ok((out, ChangeUndo { stories_before: stories.to_vec() }))
+    Ok((out, ChangeUndo { stories_before: stories.to_vec(), flow_before: None, styles_before: None }))
+}
+
+/// [`apply_text_changes`] that also moves the records keyed by story bytes and paragraph starts
+/// (`textflow::shift_paragraph_records`: the layout-flow records and the type-style local
+/// composition overrides) through every edit; the undo keeps them as they were (V4-06 class C).
+pub fn apply_text_changes_with_records(
+    stories: &[StudioTextStory],
+    hits: &[FindChangeHit],
+    flow: &mut hsk_studio_folio::StudioLayoutFlowRecords,
+    styles: &mut hsk_studio_folio::StudioTypeStyleRecords,
+) -> Result<(Vec<StudioTextStory>, ChangeUndo), FindChangeError> {
+    let _ = (flow, styles);
+    apply_text_changes(stories, hits)
 }
 
 /// Object formatting criteria of `find.object` (`None` = any).

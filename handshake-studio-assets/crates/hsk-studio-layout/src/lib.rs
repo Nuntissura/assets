@@ -102,7 +102,7 @@ pub use cjk::{
 pub use textflow::{ConditionalView, MAX_STORY_BYTES, conditional_view, replace_story_text, shift_flow_records, shift_paragraph_records};
 pub use xref::{
     MAX_XREF_TOKENS, XrefBlock, XrefContext, XrefError, XrefResolution, XrefRun, XrefStatus, XrefStory,
-    parse_xref_format, resolve_cross_references, write_cross_reference,
+    parse_xref_format, resolve_cross_references, write_cross_reference, write_cross_reference_with_styles,
 };
 pub use derived_text::{DerivedGapReason, DerivedMarkerGap};
 pub use endnotes::{EndnoteGroup, GeneratedEndnotes, NoteBody, NoteHost, NoteReference, PlacedSidenote, SidenoteProposal, generate_endnotes, place_sidenotes};
@@ -110,6 +110,7 @@ pub use find::{FindHit, FindMode, MAX_FIND_PATTERN_BYTES, compile_find, find_in_
 pub use find_change::{
     ChangeUndo, CharType, FindChangeError, FindChangeHit, FindChangeMode, FindContext, FindScope, MAX_FIND_CHANGE_MATCHES,
     MAX_FIND_CHANGE_QUERY_BYTES, MAX_SAVED_QUERIES, ObjectChange, ObjectCriteria, SavedQueries, SavedQuery, apply_text_changes,
+    apply_text_changes_with_records,
     change_colour, change_objects, find_change_text, find_colour, find_objects,
 };
 pub use fitting::{Crop, FitError, Fitted, PlacedGraphic, fit_content, place_graphic};

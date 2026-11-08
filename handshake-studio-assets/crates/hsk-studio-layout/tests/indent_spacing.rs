@@ -9,10 +9,10 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     AutoSizing, Bounds, DocumentSchema, FirstBaseline, GeometryUnit, GraphSchema, LayerSchema, LayoutEdges, Length, NodeKind, NodeRef,
     PageSide, PageSpreadSchema, Parent, Payload, ProfileBinding, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind,
-    StudioCompositionScope, StudioCompositionSettings, StudioDocument, StudioFrameFlowOptions, StudioLayer, StudioLayerGraph,
+    StudioCompositionScope, StudioCompositionSettings, StudioCrossReference, StudioDocument, StudioFrameFlowOptions, StudioLayer, StudioLayerGraph,
     StudioLayoutFlowRecords, StudioPage, StudioPageSpread, StudioParagraphComposition, StudioParagraphFlow, StudioSpanColumn,
     StudioSpanCount, StudioStyleComposition, StudioTextAlign, StudioTextFrame, StudioTextStory, StudioTypeStyle, StudioTypeStyleRecords,
-    TextStorySchema, TypeStyleSchema, TypeStyleScope, VerticalJustification,
+    StudioXrefDestination, TextStorySchema, TypeStyleSchema, TypeStyleScope, VerticalJustification,
 };
 use hsk_studio_layout::*;
 
@@ -614,4 +614,86 @@ fn measure_last_line_indent_rebreak_cost() {
             }
         }
     }
+}
+
+/// Lead ruling 2026-11-08 (item 3 stop rule): a last line narrowed below its widest word is not
+/// re-broken. The breaks of the paragraph stand and the last line is overfull, a typed outcome
+/// (`Line::overfull`), never a clip; a normal indent still re-breaks once. Measured worst case:
+/// 170 pt on a 180 pt measure (10 pt left, narrower than every word), 600 words on every composer
+/// and 5000 words on the Adobe paragraph composer (it refused `budget_exceeded` there before).
+#[test]
+fn a_last_line_narrower_than_its_widest_word_keeps_the_breaks_and_is_overfull() {
+    let words = ["aaaa", "bb", "cccccc", "ddd", "eeeee"];
+    let text = |n: usize| (0..n).map(|i| words[i % words.len()]).collect::<Vec<_>>().join(" ");
+    let last = |v: f64| styles(&[StudioCompositionSettings { last_line_indent: pt(v), ..Default::default() }]);
+    let starts = |p: &LayoutProposal| lines(p).iter().map(|l| l.source.start).collect::<Vec<_>>();
+    let cases: Vec<(usize, Composer)> =
+        composers().into_iter().map(|c| (600, c)).chain([(5000, Composer::AdobeParagraph(AdobeParams::default()))]).collect();
+    for (n, composer) in cases {
+        let s = one(&text(n));
+        let base = run(frame(180.0, 1_000_000.0), &s, &last(0.0), composer).unwrap();
+        let narrow = run(frame(180.0, 1_000_000.0), &s, &last(170.0), composer).unwrap();
+        assert_eq!(starts(&narrow), starts(&base), "{n} words {composer:?}: breaks unchanged");
+        let (b, l) = (lines(&base), lines(&narrow));
+        let end = l.last().unwrap();
+        assert!(end.overfull && end.available_pt == 10.0, "{composer:?}: {end:?}");
+        assert!(end.justification.is_none(), "an overfull line is not justified");
+        assert_eq!(l[..l.len() - 1], b[..b.len() - 1], "{composer:?}: the other lines are untouched");
+    }
+}
+
+/// Lead ruling 2026-11-08 (item 5): text inserted at byte 0 of a non-empty story belongs to the
+/// first paragraph (the paragraph partition still starts at 0).
+#[test]
+fn text_inserted_at_byte_zero_joins_the_first_paragraph() {
+    let s = story(&[("aa\n", None), ("bb", None)]).story;
+    let edited = replace_story_text(&s, None, 0, 0, "xy").unwrap();
+    assert_eq!(edited.paragraphs.iter().map(|p| (p.start, p.end)).collect::<Vec<_>>(), vec![(0, 5), (5, 7)]);
+    let empty = story(&[("", None)]).story;
+    let e = replace_story_text(&empty, None, 0, 0, "q").unwrap();
+    assert_eq!(e.paragraphs.iter().map(|p| (p.start, p.end)).collect::<Vec<_>>(), vec![(0, 1)]);
+}
+
+fn override_at(start: u64) -> StudioTypeStyleRecords {
+    let mut r = StudioTypeStyleRecords::new(id("SDOC", 1));
+    r.paragraph_composition.push(StudioParagraphComposition { text_id: id("STXT", 1), paragraph_start: start, settings: indents(9.0, 0.0, 0.0) });
+    r
+}
+
+/// V4-06 class C, `write_cross_reference_with_styles`: writing a reference before an overridden
+/// paragraph moves the override and the paragraph's flow record with it.
+#[test]
+fn a_cross_reference_write_moves_the_paragraph_keyed_records() {
+    let s = story(&[("X\n", None), ("bbbb", None)]).story;
+    let mut fl = flow();
+    fl.paragraph_flows.push(pflow(2, StudioSpanColumn::SingleColumn, 0.0, 0.0));
+    fl.cross_references.push(StudioCrossReference {
+        xref_id: "x1".into(),
+        source_story_id: id("STXT", 1),
+        source_start: 0,
+        source_end: 1,
+        destination: StudioXrefDestination::Paragraph { story_id: id("STXT", 1), paragraph_start: 2 },
+        format_id: "f".into(),
+        resolved_text: None,
+    });
+    let mut st = override_at(2);
+    let written = write_cross_reference_with_styles(&mut fl, &mut st, &s, None, "x1", "Hello").unwrap();
+    assert_eq!(written.paragraphs.iter().map(|p| p.start).collect::<Vec<_>>(), vec![0, 6]);
+    assert_eq!((st.paragraph_composition[0].paragraph_start, fl.paragraph_flows[0].paragraph_start), (6, 6));
+}
+
+/// V4-06 class C, `apply_text_changes_with_records`: a change before an overridden paragraph moves
+/// its records; the undo keeps the records as they were.
+#[test]
+fn find_change_moves_the_paragraph_keyed_records_and_undo_keeps_them() {
+    let s = story(&[("aaaa bbbb\n", None), ("cccc", None)]).story;
+    let mut fl = flow();
+    fl.paragraph_flows.push(pflow(10, StudioSpanColumn::SingleColumn, 0.0, 0.0));
+    let mut st = override_at(10);
+    let (fl0, st0) = (fl.clone(), st.clone());
+    let hits = [FindChangeHit { story_id: id("STXT", 1), start: 0, end: 4, replacement: Some("x".into()) }];
+    let (changed, undo) = apply_text_changes_with_records(std::slice::from_ref(&s), &hits, &mut fl, &mut st).unwrap();
+    assert_eq!(changed[0].paragraphs.iter().map(|p| p.start).collect::<Vec<_>>(), vec![0, 7]);
+    assert_eq!((st.paragraph_composition[0].paragraph_start, fl.paragraph_flows[0].paragraph_start), (7, 7));
+    assert_eq!((undo.flow_before, undo.styles_before), (Some(fl0), Some(st0)));
 }

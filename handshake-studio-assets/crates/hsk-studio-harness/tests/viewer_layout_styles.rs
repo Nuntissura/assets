@@ -3,6 +3,8 @@
 //! InDesign style-panel behaviour UNVERIFIED (D5).
 #![cfg(feature = "layout-ui")]
 mod layout_ui_fixture;
+#[cfg(feature = "viewer")]
+mod common;
 use hsk_studio_folio::TypeStyleScope;
 use hsk_studio_harness::layout_ui::{LayoutEdit, LayoutEditor, StyleEdit, StylePatch, widget};
 use layout_ui_fixture::{doc, id};
@@ -209,6 +211,11 @@ fn drive_edit_style_composition_sets_the_indent() {
     assert_eq!(x(&mut v), 0.0);
     run(&mut v, "layout.style.edit_style", json!({"style":style,"patch":{"composition":{"left_indent":{"value":24.0,"unit":"pt"}}}})).unwrap();
     assert_eq!(x(&mut v), 24.0);
+    // The host IDML export writes no composition settings yet and says so (STU-IO-012).
+    let dir = common::Scratch::new("indent-idml");
+    let exported = v.export_layout_idml(&dir.0.join("indent.idml"), false).unwrap();
+    let loss = exported["loss"].as_array().unwrap();
+    assert!(loss.iter().any(|l| l["code"] == "paragraph_composition_not_exported" && l["count"] == 1), "{exported}");
     // Absent keeps, null clears; an unknown settings member and a millimetre value are refused.
     run(&mut v, "layout.style.edit_style", json!({"style":style,"patch":{"name":"Body text"}})).unwrap();
     assert_eq!(x(&mut v), 24.0);

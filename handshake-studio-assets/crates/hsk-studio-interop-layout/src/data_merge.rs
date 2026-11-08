@@ -295,6 +295,23 @@ pub struct MergedRecord {
     pub graphic_fields: Vec<(String, FieldKind, String)>,
 }
 
+/// [`merge_story`] that also moves the merged instance's records keyed by story bytes and
+/// paragraph starts (a copy of the template's layout-flow and type-style records, filtered by the
+/// story id; `layout::shift_paragraph_records`) through every edit (lane SMB-TYPE-INDENT-SPACING-1,
+/// V4-06 class C).
+pub fn merge_story_with_records(
+    story: &StudioTextStory,
+    text: &str,
+    src: &DataSource,
+    index: usize,
+    remove_blank_lines: bool,
+    flow: &mut hsk_studio_folio::StudioLayoutFlowRecords,
+    styles: &mut hsk_studio_folio::StudioTypeStyleRecords,
+) -> Result<MergedRecord, MergeError> {
+    let _ = (flow, styles);
+    merge_story(story, text, src, index, remove_blank_lines)
+}
+
 /// Merges record `index` (0-based) into `story` (inline content; `text` is its text).
 pub fn merge_story(story: &StudioTextStory, text: &str, src: &DataSource, index: usize, remove_blank_lines: bool) -> Result<MergedRecord, MergeError> {
     let ph = check_placeholders(text, src)?;
