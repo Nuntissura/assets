@@ -136,8 +136,7 @@ pub const FILTER_KINDS: [FilterKindRow; 12] = [
 
 /// The row of `filter_kind`.
 pub fn audio_filter_kind(filter_kind: &str) -> Option<&'static FilterKindRow> {
-    let _ = filter_kind; // red stub
-    None
+    FILTER_KINDS.iter().find(|r| r.filter_kind == filter_kind)
 }
 
 /// Typed refusal of a stored parameter set; `code()` strings are wire-stable.
@@ -499,19 +498,17 @@ fn decode(filter_kind: &str, params: &[(&str, f64)]) -> Result<Typed, AudioFilte
 
 /// The default stored parameters of `filter_kind` (canonical order); `None` for an unknown kind.
 pub fn audio_filter_defaults(filter_kind: &str) -> Option<Vec<FilterKindParam>> {
-    let _ = filter_kind; // red stub
-    None
+    Typed::defaults(filter_kind).map(|t| t.encode())
 }
 
 /// The stored set `params` in the row's canonical order with automation indices (structure only:
 /// keys, duplicates, whole-number fields; real ranges are checked by [`build_audio_filter`]).
 pub fn audio_filter_parameters(filter_kind: &str, params: &[(&str, f64)]) -> Result<Vec<FilterKindParam>, AudioFilterError> {
-    let _ = (filter_kind, params); // red stub
-    Err(AudioFilterError::UnknownKind)
+    decode(filter_kind, params).map(|t| t.encode())
 }
 
 /// Builds the processor of a stored set for `rate` and `channels` (refusals: [`AudioFilterError`]).
 pub fn build_audio_filter(filter_kind: &str, params: &[(&str, f64)], rate: u32, channels: usize) -> Result<Box<dyn Automatable + Send>, AudioFilterError> {
-    let _ = (filter_kind, params, rate, channels, decode as fn(&str, &[(&str, f64)]) -> Result<Typed, AudioFilterError>); // red stub
-    Err(AudioFilterError::UnknownKind)
+    let typed = decode(filter_kind, params)?;
+    Ok(typed.build(rate, channels)?)
 }
