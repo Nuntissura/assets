@@ -92,7 +92,8 @@ fn key_of_tag(run: &mut Run<'_>, tag: &str) -> String {
 #[test]
 fn web_rows_are_in_the_corpus_and_run_through_web_command() {
     let rows: Vec<_> = RUN_COMMANDS.iter().filter(|c| c.run_method == "web_command").collect();
-    assert_eq!(rows.len(), 20, "{:?}", rows.iter().map(|r| r.command_id).collect::<Vec<_>>());
+    // 20 rows of SMB-WEB-HOST-1 plus web.site_report and web.move_file (SMB-WEB-SITE-1).
+    assert_eq!(rows.len(), 22, "{:?}", rows.iter().map(|r| r.command_id).collect::<Vec<_>>());
     for r in &rows {
         assert!(r.command_id.starts_with("web."), "{}", r.command_id);
         assert_eq!(web_commands::row(r.command_id).map(|x| x.command_id), Some(r.command_id));

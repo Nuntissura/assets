@@ -37,19 +37,36 @@
 //! reported once), and the elapsed time, never a credential; a failure keeps the files transferred before it in the
 //! receipt. The receipt is the op record's detail and `studio-publish-receipt.json` in the export root.
 //!
-//! Folder links (`/`, `docs/`) and links to the document itself are listed, never copied or refused; a granted file
-//! must resolve inside the root (no junction or symlink escape); every output name is checked case-folded before
-//! the first write; publish refuses a target inside or around the export and the site's own folder.
+//! Folder links (`/`, `docs/`, and a link naming an existing folder) and links to the document itself are listed,
+//! never copied or refused; a granted file must resolve inside the root (no junction or symlink escape); every output
+//! name is checked case-folded before the first write; publish refuses a target inside or around the export and the
+//! site's own folder.
 //!
-//! Declared limits: one document per export (the document set is the open document) and the document's folder must
-//! be the site's `local_root`; no source maps, no preprocessors, assets keep their paths (`asset_rewriting: keep`);
-//! site and recipe are not Folio records (no web token exists among the session's document entries), so the web
-//! history is the host's own, not the run's (`history.undo` refuses `newest_step_is_web` while a web step is newest); no business event; jobs and progress
-//! are not admitted through a JobPort (the host integration declares jobs none); no controls registry ids.
+//! Page links ([STU-WEB-163], lane SMB-WEB-SITE-1): a navigation reference (`a`, `area`, `form`, refresh, `iframe`;
+//! `Load::Document` only) to a file that does not exist is a `link_broken` warning row `{document, line, reference}`
+//! (the line of the source, also when minified) in the manifest's `link_broken` and the result's, never a refusal;
+//! the list is absent when empty, so an export without broken links is byte-identical to before. Every other missing
+//! local reference still fails closed (`asset_missing`, [STU-ASSET-009]).
+//!
+//! The site (module `web_site`, its manual): `web.export_recipe` `documents` is `open` (default: the open document,
+//! as above) or `site` (every document of the site's walk from its source, the files they and their style sheets
+//! reach, a `documents` list in the manifest); `web.site_report` reports broken links, orphaned files, external links,
+//! missing alternative text and untitled documents; `web.move_file` moves one file and rewrites every reference to it
+//! as one receipted transaction. `web.site_report`, the site export, `web.move_file` and `web.publish` hold the
+//! site-level lock `<local_root>/.studio-site.lock` (contention refuses `site_locked` naming the holder, never waits);
+//! `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted as jobs (`overloaded`, `canceled`).
+//!
+//! Declared limits: the open export's document set is the open document and its folder must be the site's
+//! `local_root`; no source maps, no preprocessors, assets keep their paths (`asset_rewriting: keep`); site and recipe
+//! are not Folio records (no web token exists among the session's document entries), so the web history is the
+//! host's own, not the run's (`history.undo` refuses `newest_step_is_web` while a web step is newest); no business
+//! event; the web site is not a session document, so its jobs are resource-less (the lifecycle's own admission, no
+//! host port); no controls registry ids.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{Run, actor_json};
 use crate::action::{self, CommandEntry};
 use hsk_studio_accord::{CancellationToken, CausationId, CommandContext, CommandId};
+use hsk_studio_session::Action;
 use hsk_studio_web::responsive::document_media_blocks;
 use hsk_studio_web::{
     AssetDecision, AssetOutcome, AssetPort, AssetSource, DenyReason, Limits, Load, Loads, NodeId, NodeKey, NodeKind, SourcePatch, TextEdit, WebDoc, WebError, apply, collect_assets, insert_element, insert_fragment,
@@ -86,6 +103,12 @@ const SECRET_KEYS: [&str; 6] = ["password", "token", "private_key", "secret", "p
 /// [STU-WEB-115], closed.
 pub const TRANSPORTS: [&str; 6] = ["local_or_network", "ftp", "ftps", "sftp", "webdav", "version_control"];
 /// [STU-WEB-117] text-mode extensions; the binary list follows.
+/// The id prefix the export's port gives a page link to no file (a `link_broken` warning, module docs).
+const MISSING_PREFIX: &str = "missing:";
+/// The site: its walk, graph, report, document-set export, move, lock and jobs (lane SMB-WEB-SITE-1).
+#[path = "web_site.rs"]
+mod web_site;
+pub use web_site::LOCK_FILE;
 const TEXT_EXTENSIONS: [&str; 29] = [
     "as", "ascx", "asmx", "asp", "aspx", "cfm", "cfml", "cgi", "cs", "css", "dwt", "htm", "html", "inc", "js", "lbi", "mxml", "php", "php3", "php4", "php5", "pl", "shtm", "shtml", "text", "txt", "vb", "xhtm", "xhtml",
 ];
@@ -150,6 +173,8 @@ struct Recipe {
     file: String,
     minify: bool,
     link_base: &'static str,
+    /// `open` (the open document) or `site` (every document of the site).
+    documents: &'static str,
 }
 
 enum Change {
@@ -195,6 +220,8 @@ pub struct WebHost {
     redo: Vec<Step>,
     trimmed: u64,
     published_root: Option<String>,
+    /// Site-wide work is admitted as jobs (module `web_site`).
+    jobs: web_site::Jobs,
 }
 
 impl WebHost {
@@ -311,8 +338,10 @@ impl WebHost {
                 let recipe = recipe_from(self.recipe.as_ref(), &p)?;
                 self.record(label, Change::Recipe { before: self.recipe.clone(), after: Some(recipe) }, ctx)
             }
-            "web.export" => self.export(cancel),
-            "web.publish" => self.publish(&p),
+            "web.export" => self.admitted(Action::Export, ctx, cancel, |host| host.export(ctx, cancel)),
+            "web.publish" => self.admitted(Action::Export, ctx, cancel, |host| host.publish(&p, ctx)),
+            "web.site_report" => self.admitted(Action::Export, ctx, cancel, |host| host.site_report(ctx, cancel)),
+            "web.move_file" => self.admitted(Action::Edit, ctx, cancel, |host| host.move_file(&p, ctx, cancel)),
             "web.verify" => self.verify(&p, cancel),
             "web.preview" => {
                 let doc = self.doc()?;
@@ -543,22 +572,28 @@ impl WebHost {
         };
         let document = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
         let canonical = root.as_ref().and_then(|r| std::fs::canonicalize(r).ok());
-        Ok(Port { root, canonical, document })
+        Ok(Port { root, canonical, document, pages: false })
     }
 
-    fn export(&self, cancel: &CancellationToken) -> R<Value> {
+    fn export(&self, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
+        if let Some(recipe) = self.recipe.as_ref().filter(|r| r.documents == "site") {
+            return self.export_site(recipe, ctx, cancel);
+        }
         let doc = self.doc()?;
         let recipe = self.recipe.clone().ok_or(No("no_export_recipe", String::new(), None))?;
         let out_doc = if recipe.minify { minified(doc, cancel)? } else { doc.clone() };
-        let port = self.port()?;
+        // The port marks a page link to no file, so it is a warning, not a refusal (module docs).
+        let port = Port { pages: true, ..self.port()? };
         let refs = collect_assets(&out_doc, &port, cancel).map_err(|e| web_no(&e))?;
         let (mut assets, mut external, mut links) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        let mut broken = 0usize;
         for r in &refs {
             match &r.outcome {
                 // A link to a folder (`/`, `docs/`) is navigation only: listed, never copied.
                 AssetOutcome::Granted { id } if id.starts_with(LINK_PREFIX) => {
                     links.insert(bounded(id.get(LINK_PREFIX.len()..).unwrap_or("")));
                 }
+                AssetOutcome::Granted { id } if id.starts_with(MISSING_PREFIX) => broken = broken.saturating_add(1),
                 // The document itself (`<a href="index.html">`) is written from the exported source.
                 AssetOutcome::Granted { id } if port.document.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(id)) => {}
                 AssetOutcome::Granted { id } => {
@@ -572,23 +607,7 @@ impl WebHost {
                 AssetOutcome::Inline | AssetOutcome::SameDocument => {}
             }
         }
-        // One case-folded set of every output name, checked before the first write (NTFS and APFS fold case).
-        let mut names = BTreeSet::new();
-        let mut folders = BTreeSet::new();
-        for name in assets.iter().chain([&recipe.file]).map(|n| n.to_ascii_lowercase()).chain([MANIFEST_FILE.to_string(), RECEIPT_FILE.to_string()]) {
-            let mut at = 0usize;
-            while let Some(slash) = name.get(at..).and_then(|rest| rest.find('/')) {
-                at = at.saturating_add(slash);
-                folders.insert(name.get(..at).unwrap_or("").to_string());
-                at = at.saturating_add(1);
-            }
-            if !names.insert(name.clone()) {
-                return no("export_path_collision", &name);
-            }
-        }
-        if let Some(name) = names.intersection(&folders).next() {
-            return no("export_path_collision", name);
-        }
+        output_names(assets.iter().chain([&recipe.file]))?;
         if assets.len() >= MAX_EXPORT_FILES {
             return no("export_too_many_files", &assets.len().to_string());
         }
@@ -612,19 +631,48 @@ impl WebHost {
         if std::fs::read_dir(&out).is_ok_and(|mut d| d.next().is_some()) {
             return no("output_not_empty", &recipe.output_root);
         }
+        // The lines are the referring document's, not the minified output's: minifying removes no reference, so the
+        // marked references of both come in the same order.
+        let link_broken: Vec<Value> = if broken == 0 {
+            Vec::new()
+        } else {
+            let source_refs;
+            let list = if recipe.minify {
+                source_refs = collect_assets(doc, &port, cancel).map_err(|e| web_no(&e))?;
+                &source_refs
+            } else {
+                &refs
+            };
+            let name = port.document.clone().unwrap_or_else(|| recipe.file.clone());
+            let mut rows: Vec<(usize, String)> = list
+                .iter()
+                .filter(|r| matches!(&r.outcome, AssetOutcome::Granted { id } if id.starts_with(MISSING_PREFIX)))
+                .map(|r| (line_at(doc.source(), r.span.start), row_text(&r.reference)))
+                .collect();
+            rows.sort();
+            rows.dedup();
+            rows.into_iter().map(|(line, reference)| json!({"document": name, "line": line, "reference": reference})).collect()
+        };
         let listed: Vec<Value> = files.iter().map(|(path, bytes, role)| json!({"path": path, "role": role, "bytes": bytes.len(), "sha256": sha256_hex(bytes)})).collect();
-        let manifest = json!({
+        let mut manifest = json!({
             "schema": "hsk.studio.web.export_manifest@1", "document": recipe.file, "source_sha256": doc.sha256_hex(),
             "recipe": {"file": recipe.file, "minify": recipe.minify, "asset_rewriting": "keep", "link_base": recipe.link_base}, "files": listed, "external": external.iter().collect::<Vec<_>>(), "links": links.iter().collect::<Vec<_>>(),
         });
+        if !link_broken.is_empty() {
+            manifest["link_broken"] = json!(link_broken);
+        }
         for (path, bytes, _) in &files {
             write_new(&join(&out, path), bytes)?;
         }
         write_new(&out.join(MANIFEST_FILE), &serde_json::to_vec_pretty(&manifest).map_err(|_| No("export_failed", String::new(), None))?)?;
-        Ok(json!({"output_root": recipe.output_root, "manifest": manifest}))
+        let mut result = json!({"output_root": recipe.output_root, "manifest": manifest});
+        if !link_broken.is_empty() {
+            result["link_broken"] = json!(link_broken);
+        }
+        Ok(result)
     }
 
-    fn publish(&mut self, p: &P<'_>) -> R<Value> {
+    fn publish(&mut self, p: &P<'_>, ctx: &CommandContext) -> R<Value> {
         let started = std::time::Instant::now();
         let site = self.site.clone().ok_or(No("no_site", String::new(), None))?;
         let target = match p.opt_text("target_id")? {
@@ -656,6 +704,8 @@ impl WebHost {
         if sources.into_iter().flatten().any(|s| resolved(s) == target_at) {
             return no("publish_over_source", &target.root_path);
         }
+        // The site-level lock, held until the receipt is kept ([STU-WEB-131]).
+        let _lock = web_site::site_lock(&site.local_root, ctx)?;
         let mut done: Vec<Value> = Vec::new();
         let mut unmapped = BTreeSet::new();
         let mut failure = None;
@@ -785,6 +835,9 @@ struct Port {
     /// The root resolved through links: a granted file must resolve inside it.
     canonical: Option<PathBuf>,
     document: Option<String>,
+    /// The export's port: a page link to no file is granted as `missing:` (a warning) and one naming a folder as a
+    /// link; `web.assets` reports them unavailable as before.
+    pages: bool,
 }
 
 /// The id prefix of a navigation link to a folder (granted as a link, never copied).
@@ -813,6 +866,8 @@ impl AssetPort for Port {
                 Ok(real) if real.starts_with(canonical) => AssetDecision::Granted { id },
                 _ => AssetDecision::Denied,
             },
+            Ok(m) if m.is_dir() && self.pages && loads == Loads::of(Load::Document) => AssetDecision::Granted { id: format!("{LINK_PREFIX}{reference}") },
+            Err(_) if self.pages && loads == Loads::of(Load::Document) => AssetDecision::Granted { id: format!("{MISSING_PREFIX}{reference}") },
             _ => AssetDecision::Unavailable,
         }
     }
@@ -873,6 +928,33 @@ fn resolved(path: &Path) -> PathBuf {
     };
     let full = rest.into_iter().rev().fold(base, |p, s| p.join(s));
     PathBuf::from(full.to_string_lossy().to_ascii_lowercase())
+}
+
+/// One case-folded set of every output name (and the manifest and receipt), checked before the first write: NTFS and
+/// APFS fold case, and no name may also be a folder of another.
+fn output_names<'a>(names: impl Iterator<Item = &'a String>) -> R<()> {
+    let mut seen = BTreeSet::new();
+    let mut folders = BTreeSet::new();
+    for name in names.map(|n| n.to_ascii_lowercase()).chain([MANIFEST_FILE.to_string(), RECEIPT_FILE.to_string()]) {
+        let mut at = 0usize;
+        while let Some(slash) = name.get(at..).and_then(|rest| rest.find('/')) {
+            at = at.saturating_add(slash);
+            folders.insert(name.get(..at).unwrap_or("").to_string());
+            at = at.saturating_add(1);
+        }
+        if !seen.insert(name.clone()) {
+            return no("export_path_collision", &name);
+        }
+    }
+    if let Some(name) = seen.intersection(&folders).next() {
+        return no("export_path_collision", name);
+    }
+    Ok(())
+}
+
+/// The 1-based line of byte `at`.
+fn line_at(text: &str, at: usize) -> usize {
+    text.get(..at).map_or(0, |t| t.bytes().filter(|b| *b == b'\n').count()).saturating_add(1)
 }
 
 fn join(root: &Path, id: &str) -> PathBuf {
@@ -1211,7 +1293,7 @@ fn recipe_from(current: Option<&Recipe>, p: &P<'_>) -> R<Recipe> {
     {
         return no("asset_rewriting_unsupported", policy);
     }
-    let mut recipe = current.cloned().unwrap_or(Recipe { output_root: String::new(), file: "index.html".into(), minify: false, link_base: "document" });
+    let mut recipe = current.cloned().unwrap_or(Recipe { output_root: String::new(), file: "index.html".into(), minify: false, link_base: "document", documents: "open" });
     if let Some(root) = p.opt_text("output_root")? {
         recipe.output_root = checked_path(root)?.to_string();
     }
@@ -1227,6 +1309,13 @@ fn recipe_from(current: Option<&Recipe>, p: &P<'_>) -> R<Recipe> {
     }
     if let Some(base) = p.opt_text("link_base")? {
         recipe.link_base = link_base("link_base", base)?;
+    }
+    if let Some(set) = p.opt_text("documents")? {
+        recipe.documents = match set {
+            "open" => "open",
+            "site" => "site",
+            _ => return no("parameter_invalid", "documents"),
+        };
     }
     if recipe.output_root.is_empty() {
         return no("parameter_missing", "output_root");
@@ -1245,7 +1334,7 @@ fn site_json(site: &Site) -> Value {
 }
 
 fn recipe_json(recipe: &Recipe) -> Value {
-    json!({"output_root": recipe.output_root, "file": recipe.file, "minify": recipe.minify, "emit_source_maps": false, "compile_preprocessors": false, "asset_rewriting": "keep", "link_base": recipe.link_base})
+    json!({"output_root": recipe.output_root, "file": recipe.file, "documents": recipe.documents, "minify": recipe.minify, "emit_source_maps": false, "compile_preprocessors": false, "asset_rewriting": "keep", "link_base": recipe.link_base})
 }
 
 fn sidecar_json(site: Option<&Site>, recipe: Option<&Recipe>) -> Value {
