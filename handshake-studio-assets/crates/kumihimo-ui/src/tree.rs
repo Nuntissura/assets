@@ -295,10 +295,10 @@ impl Node {
     /// its value carries the reason code (`not_implemented_yet`) when it has no value of its own, so a model reads it
     /// before clicking and a click is answered, never dropped. Greyed items with a reason are B6 menus, not this.
     pub fn reason(mut self, reason: Option<&str>) -> Self {
-        if let Some(r) = reason {
-            if self.value.is_none() {
-                self.value = Some(r.to_owned());
-            }
+        if let Some(r) = reason
+            && self.value.is_none()
+        {
+            self.value = Some(r.to_owned());
         }
         self
     }

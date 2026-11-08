@@ -224,7 +224,7 @@ pub fn parse_path(d: &str) -> Result<Vec<Polyline>, PathError> {
             }
             b'C' | b'S' => {
                 let p0 = pen.cur;
-                let c1 = if cmd.to_ascii_uppercase() == b'C' {
+                let c1 = if cmd.eq_ignore_ascii_case(&b'C') {
                     (lx.number()? + ox, lx.number()? + oy)
                 } else {
                     match last_ctrl {

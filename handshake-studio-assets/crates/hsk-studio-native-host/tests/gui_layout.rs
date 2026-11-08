@@ -98,12 +98,16 @@ fn fit_table_raster_rows() {
 }
 
 /// AC-CONS-04: the edge rows of all ten layouts.json presets give identical bars at the four matrix windows.
+/// One preset's edge row: (name, left state, left w, right state, right w, shares, right foot, meter, bottom state,
+/// bottom h, slots, viewers, time panel).
+type PresetRow = (&'static str, EdgeState, f32, EdgeState, f32, &'static [f32], bool, bool, EdgeState, f32, usize, u32, bool);
+
 #[test]
 fn bars_are_identical_under_every_preset() {
     use EdgeState::{Expanded as E, Rail as R};
     // (name, left state, left w, right state, right w, shares, right foot (registered), meter, bottom state, bottom h,
     // slots, viewers, time panel), transcribed from layouts.json presets.
-    let presets: [(&str, EdgeState, f32, EdgeState, f32, &[f32], bool, bool, EdgeState, f32, usize, u32, bool); 10] = [
+    let presets: [PresetRow; 10] = [
         ("raster", R, 260.0, E, 300.0, &[0.3, 0.24, 0.46], false, false, R, 240.0, 19, 1, true),
         ("develop", E, 260.0, E, 320.0, &[0.56, 0.2, 0.24], true, false, E, 112.0, 7, 1, false),
         ("vector", R, 260.0, E, 300.0, &[0.32, 0.24, 0.44], false, false, R, 240.0, 15, 1, false),

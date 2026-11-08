@@ -8,7 +8,6 @@
 use super::preset::{self, BOTTOM, LEFT, RAIL};
 use super::view;
 use super::{DOCK_ID, STATUS_ID, VIEWER_ID};
-use crate::scene::CHROME;
 use hsk_studio_harness_view::view::LayerRow;
 use kumihimo_ui::display::{IconId, Side};
 use kumihimo_ui::icons;
