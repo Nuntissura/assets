@@ -303,7 +303,7 @@ fn move_refusals_are_typed_and_change_nothing() {
         for (from, to, code) in [
             ("orphan.png", "../orphan.png", "move_outside_site"),
             ("orphan.png", "a/../../orphan.png", "move_outside_site"),
-            ("orphan.png", "C:/orphan.png", "path_invalid"),
+            ("orphan.png", "or phan.png", "path_invalid"),
             ("orphan.png", "img\\orphan.png", "path_invalid"),
             ("orphan.png", "img/hero.png", "move_target_exists"),
             ("orphan.png", "IMG/Hero.PNG", "move_target_exists"),
