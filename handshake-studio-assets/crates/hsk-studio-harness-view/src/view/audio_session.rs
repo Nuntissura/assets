@@ -136,12 +136,19 @@ pub struct SequenceSound {
     repaired: Vec<Repaired>,
     /// The source SHA-256 of a non-empty stored edit list that matched no clip source.
     repair_unmatched: Option<String>,
+    /// Noise prints the repair replay recomputed with another digest (`super::waveform`, review F3).
+    recomputed: Vec<super::waveform::PrintRecompute>,
     rate: u32,
 }
 
 impl SequenceSound {
     pub fn rate(&self) -> u32 {
         self.rate
+    }
+    /// Noise prints of the repair replay recomputed with another digest than the stored one (review
+    /// F3); the mixdown and stems record each as `waveform_noise_print_recomputed`.
+    pub fn noise_print_recomputed(&self) -> &[super::waveform::PrintRecompute] {
+        &self.recomputed
     }
     /// The source SHA-256 of a stored edit list that matched no clip source (rate, channels, length
     /// or samples differ): the mix carries that audio unrepaired, and every receipt says so.
@@ -299,6 +306,7 @@ impl super::Viewer {
         let extents = sources.iter().filter_map(|s| port_extents.extent(s).map(|t| (s.clone(), t))).collect();
         let mut repaired = Vec::new();
         let mut repair_unmatched = None;
+        let mut recomputed = Vec::new();
         if let Some(doc) = self.waveform_document().map_err(|e| fail("repair_unresolved", e))?.filter(|d| !d.ops.is_empty()) {
             let plugins = self.waveform.as_ref().map(|w| &w.plugins);
             let fallback = super::waveform::PluginRegistry::default();
@@ -312,7 +320,8 @@ impl super::Viewer {
                 if super::waveform::SourceIdentity::of(&buffer) != doc.source {
                     continue;
                 }
-                let edited = super::waveform::replay(&buffer, &doc.ops, plugins.unwrap_or(&fallback), self.run.actor(), self.cancel).map_err(|e| fail("repair_unresolved", e))?;
+                let (edited, notes) = super::waveform::replay_noted(&buffer, &doc.ops, plugins.unwrap_or(&fallback), self.run.actor(), self.cancel).map_err(|e| fail("repair_unresolved", e))?;
+                recomputed.extend(notes);
                 let length = hsk_studio_pulse::ticks_from_samples(edited.frames(), rate).map_err(|e| fail("repair_unresolved", e.code()))?;
                 repaired.push((s.clone(), Arc::new(edited.into_channels()), length));
             }
@@ -320,7 +329,7 @@ impl super::Viewer {
                 repair_unmatched = Some(doc.source.sha256.clone());
             }
         }
-        Ok(SequenceSound { base, extents, repaired, repair_unmatched, rate })
+        Ok(SequenceSound { base, extents, repaired, repair_unmatched, recomputed, rate })
     }
 
     /// Opens the waveform editor on the source of timeline clip `clip_id` (any sequence of the
@@ -368,7 +377,9 @@ impl super::Viewer {
     /// as [`super::Viewer::sequence_sound`], `unknown_sequence`, `mixdown`, `export_over_source`, then
     /// [`super::audio_import::write_atomically`]'s and `export_from`'s.
     pub fn export_sequence_mix(&mut self, sequence_id: &str, format: MixFormat, output: &Path, overwrite: bool) -> Result<MixExport, MonitorFail> {
-        let result = self.export_sequence_mix_inner(sequence_id, format, output, overwrite);
+        let mut notes = Vec::new();
+        let result = self.export_sequence_mix_inner(sequence_id, format, output, overwrite, &mut notes);
+        self.record_print_recomputes(&notes);
         match &result {
             Ok(r) => {
                 self.say(format!("mixdown {sequence_id}: {} ({} frames, {} clipped)", output.display(), r.frames, r.clipped_samples));
@@ -393,10 +404,11 @@ impl super::Viewer {
         snapshot.document().sequences.iter().find(|s| s.sequence_id == sequence_id).cloned().ok_or_else(|| fail("unknown_sequence", sequence_id))
     }
 
-    fn export_sequence_mix_inner(&self, sequence_id: &str, format: MixFormat, output: &Path, overwrite: bool) -> Result<MixExport, MonitorFail> {
+    fn export_sequence_mix_inner(&self, sequence_id: &str, format: MixFormat, output: &Path, overwrite: bool, notes: &mut Vec<super::waveform::PrintRecompute>) -> Result<MixExport, MonitorFail> {
         self.known_sequence(sequence_id)?;
         self.check_output(output)?;
         let sound = self.sequence_sound()?;
+        notes.extend_from_slice(sound.noise_print_recomputed());
         let mut stream = self.sound_stream(sequence_id, &sound, BLOCK)?;
         stream.seek(0, self.cancel).map_err(|e| fail("mixdown", e.code()))?;
         let frames = stream.length_samples();
@@ -427,7 +439,9 @@ impl super::Viewer {
     /// `repair_unmatched`.
     #[allow(clippy::too_many_arguments)]
     pub fn export_sequence_stems(&mut self, sequence_id: &str, buses: &[String], rest: bool, format: MixFormat, dir: &Path, overwrite: bool) -> Result<StemReport, MonitorFail> {
-        let result = self.export_sequence_stems_inner(sequence_id, buses, rest, format, dir, overwrite);
+        let mut notes = Vec::new();
+        let result = self.export_sequence_stems_inner(sequence_id, buses, rest, format, dir, overwrite, &mut notes);
+        self.record_print_recomputes(&notes);
         match &result {
             Ok(r) => {
                 self.say(format!("stems {sequence_id}: {} files, residual {:?} dBFS ({})", r.stems.len(), r.residual_dbfs(), r.measured));
@@ -440,7 +454,8 @@ impl super::Viewer {
         result
     }
 
-    fn export_sequence_stems_inner(&self, sequence_id: &str, buses: &[String], rest: bool, format: MixFormat, dir: &Path, overwrite: bool) -> Result<StemReport, MonitorFail> {
+    #[allow(clippy::too_many_arguments)]
+    fn export_sequence_stems_inner(&self, sequence_id: &str, buses: &[String], rest: bool, format: MixFormat, dir: &Path, overwrite: bool, notes: &mut Vec<super::waveform::PrintRecompute>) -> Result<StemReport, MonitorFail> {
         let sequence = self.known_sequence(sequence_id)?;
         if buses.is_empty() && !rest {
             return Err(fail("stem_none", "no bus and no rest"));
@@ -480,6 +495,7 @@ impl super::Viewer {
             }
         }
         let sound = self.sequence_sound()?;
+        notes.extend_from_slice(sound.noise_print_recomputed());
         let mut plan: Vec<(Option<String>, folio::StudioSequence, StudioAudioRouting)> = buses.iter().map(|b| {
             let (s, r) = stem_of(&sequence, &routing, Some(b), buses);
             (Some(b.clone()), s, r)
@@ -629,7 +645,10 @@ pub fn bus_effect(instance: &folio::StudioAudioEffectInstance, rate: u32) -> Res
     Ok(slot)
 }
 
-/// [`TimelineBusStream::new`] with [`bus_effect`] as the effect factory.
+/// [`TimelineBusStream::new`] with [`bus_effect`] as the effect factory. Every builder of a bus graph
+/// (the mixer, [`super::Viewer::bus_stream`], playback, the mixdown, stems and Export Media) comes
+/// here, so the one aggregate effect-state budget ([`super::mixer::effect_state_budget`], review F4)
+/// is checked here before any effect is built: `PulseError::LimitExceeded` past it.
 pub fn build_bus_stream<S: AudioSources + Clone + Send + 'static>(
     sequence: &folio::StudioSequence,
     routing: &StudioAudioRouting,
@@ -639,6 +658,7 @@ pub fn build_bus_stream<S: AudioSources + Clone + Send + 'static>(
     extents: &dyn SourceExtents,
     cancel: &CancellationToken,
 ) -> Result<TimelineBusStream, PulseError> {
+    super::mixer::effect_state_budget(routing, sample_rate_hz).map_err(|_| PulseError::LimitExceeded)?;
     let mut factory = bus_effect;
     TimelineBusStream::new(
         sequence,

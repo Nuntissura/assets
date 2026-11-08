@@ -840,11 +840,7 @@ impl super::Viewer {
                 w.cache = Some((ops, buffer));
                 w.error = None;
                 w.recomputed.clone_from(&notes);
-                // Recorded, not refused (module docs): one op record and observe frame per print.
-                for note in notes {
-                    self.say(format!("waveform: noise print of op {} recomputed (stored digest {}, now {})", note.op, note.stored_digest, note.recomputed_digest));
-                    self.run.record_host_outcome("waveform_noise_print_recomputed", Ok(note.to_json()));
-                }
+                self.record_print_recomputes(&notes);
                 Ok(())
             }
             Err(e) => {
@@ -852,6 +848,16 @@ impl super::Viewer {
                 w.error = Some(e.clone());
                 Err(format!("waveform: replay failed: {e}"))
             }
+        }
+    }
+
+    /// Recorded, not refused (module docs, review F3): one op record `waveform_noise_print_recomputed`
+    /// with its observe frame and one status line per recomputed print (the editor's replay and the
+    /// mixdown and stems repair replay).
+    pub(crate) fn record_print_recomputes(&mut self, notes: &[PrintRecompute]) {
+        for note in notes {
+            self.say(format!("waveform: noise print of op {} recomputed (stored digest {}, now {})", note.op, note.stored_digest, note.recomputed_digest));
+            self.run.record_host_outcome("waveform_noise_print_recomputed", Ok(note.to_json()));
         }
     }
 
