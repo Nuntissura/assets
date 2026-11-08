@@ -387,11 +387,7 @@ fn many_layers(n: u32) -> (Snapshot, StudioDesignRecords) {
     d["geometry_unit"] = json!("px");
     d["layers"] = Value::Array(layers);
     d["graph"] = json!({"schema_id":"hsk.studio.layer_graph@1","operations":ops,"edges":[],"outputs":outputs});
-    let mut budget = hsk_studio_folio::Budget::default();
-    budget.nodes = 1 << 20;
-    budget.edges = 1 << 20;
-    budget.input_bytes = 64 << 20;
-    budget.payload_bytes = 64 << 20;
+    let budget = hsk_studio_folio::Budget { nodes: 1 << 20, edges: 1 << 20, input_bytes: 64 << 20, payload_bytes: 64 << 20, ..hsk_studio_folio::Budget::default() };
     let snap = match hsk_studio_folio::inspect_bytes(&serde_json::to_vec(&d).unwrap(), budget, &CancellationToken::default(), &Available).unwrap() {
         hsk_studio_folio::Inspection::Editable(s) => s,
         hsk_studio_folio::Inspection::ReadOnly(_) => panic!("read-only"),

@@ -95,7 +95,8 @@ fn live_filter_records_round_trip_exactly_and_absent_members_are_byte_identical(
     let again: StudioVectorRecords = serde_json::from_str(&text).unwrap();
     assert_eq!(serde_json::to_string(&again).unwrap(), text);
     let again = serde_json::to_value(&again).unwrap();
-    for (got, want) in [(&again["live_filters"], &f["live_filters"])] {
+    {
+        let (got, want) = (&again["live_filters"], &f["live_filters"]);
         let reals = |v: &Value| -> Vec<u64> {
             let mut out = Vec::new();
             for s in v.as_array().unwrap() {
