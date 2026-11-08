@@ -10,6 +10,7 @@ use hsk_studio_harness::view::place::{Anchor, FreeTransform, PlaceOptions, Place
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
 use hsk_studio_interop_raster as raster;
+use hsk_studio_pigment::transform_math::ResampleFilter;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -222,6 +223,14 @@ fn free_transform_move_and_reset_on_placed_and_pixel_layers() {
     assert_eq!(v.reset_transform(&plate_layer).unwrap_err().code, "layer_not_placed");
     let shrunk = v.free_transform(&plate_layer, &FreeTransform { scale_x: 50.0, scale_y: 50.0, ..FreeTransform::default() }).unwrap();
     assert!(shrunk["tiles"].as_u64().unwrap() >= 1, "{shrunk}");
+    // Review F2 (9d83222c): the reference point is on the layer's pixels (x 10..58, y 0..32 after the move), not
+    // on its 256-pixel tile grid: 50 % about middle_centre lands on x 22..46, y 8..24.
+    for (x, y) in [(24, 10), (44, 22), (34, 16)] {
+        assert!(near(px(&mut v, x, y), PLATE), "({x}, {y}) {:?}", px(&mut v, x, y));
+    }
+    for (x, y) in [(2, 2), (19, 16), (34, 5), (34, 27)] {
+        assert_eq!(px(&mut v, x, y)[3], 0, "({x}, {y}) lies outside the shrunk plate");
+    }
     v.undo().unwrap();
     v.undo().unwrap();
     assert!(near(px(&mut v, 5, 5), PLATE), "{:?}", px(&mut v, 5, 5));
@@ -267,6 +276,253 @@ fn hostile_input_is_refused_typed_and_changes_nothing() {
     assert_eq!(fresh.place_asset(&hero, PlacementKind::Linked, &none).unwrap_err().code, "link_base_unknown");
     let ok = fresh.place_asset(&hero, PlacementKind::Embedded, &none).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(ok["placement_kind"], "embedded");
+}
+
+// ----- review fixes of 9d83222c (research/review-smb-place-asset-1-9d83222c.json) -----------------
+
+/// One PSD layer: name, `[top, left, bottom, right]`, channels by id, additional-info blocks.
+struct PsdLayer {
+    name: &'static str,
+    rect: [i32; 4],
+    channels: Vec<(i16, Vec<u8>)>,
+    blocks: Vec<([u8; 4], Vec<u8>)>,
+}
+
+/// An RGB PSD of `depth` bits (8 or 32), raw channels, no masks; `merged` is the composite image data.
+fn psd(width: u32, height: u32, depth: u16, layers: &[PsdLayer], merged: &[u8]) -> Vec<u8> {
+    let mut v = b"8BPS".to_vec();
+    v.extend(1u16.to_be_bytes());
+    v.extend([0u8; 6]);
+    v.extend(3u16.to_be_bytes());
+    v.extend(height.to_be_bytes());
+    v.extend(width.to_be_bytes());
+    v.extend(depth.to_be_bytes());
+    v.extend(3u16.to_be_bytes());
+    v.extend(0u32.to_be_bytes());
+    v.extend(0u32.to_be_bytes());
+    let mut info = i16::try_from(layers.len()).unwrap().to_be_bytes().to_vec();
+    for l in layers {
+        for r in l.rect {
+            info.extend(r.to_be_bytes());
+        }
+        info.extend(u16::try_from(l.channels.len()).unwrap().to_be_bytes());
+        for (id, data) in &l.channels {
+            info.extend(id.to_be_bytes());
+            info.extend(u32::try_from(2 + data.len()).unwrap().to_be_bytes());
+        }
+        info.extend_from_slice(b"8BIMnorm");
+        info.extend([255u8, 0, 0x08, 0]);
+        let mut extra = 0u32.to_be_bytes().to_vec();
+        extra.extend(0u32.to_be_bytes());
+        let mut pascal = vec![u8::try_from(l.name.len()).unwrap()];
+        pascal.extend_from_slice(l.name.as_bytes());
+        while pascal.len() % 4 != 0 {
+            pascal.push(0);
+        }
+        extra.extend(pascal);
+        for (key, data) in &l.blocks {
+            extra.extend_from_slice(b"8BIM");
+            extra.extend_from_slice(key);
+            extra.extend(u32::try_from(data.len()).unwrap().to_be_bytes());
+            extra.extend(data);
+        }
+        info.extend(u32::try_from(extra.len()).unwrap().to_be_bytes());
+        info.extend(extra);
+    }
+    for l in layers {
+        for (_, data) in &l.channels {
+            info.extend(0u16.to_be_bytes());
+            info.extend_from_slice(data);
+        }
+    }
+    if info.len() % 2 == 1 {
+        info.push(0);
+    }
+    let mut section = u32::try_from(info.len()).unwrap().to_be_bytes().to_vec();
+    section.extend(info);
+    section.extend(0u32.to_be_bytes());
+    v.extend(u32::try_from(section.len()).unwrap().to_be_bytes());
+    v.extend(section);
+    v.extend(0u16.to_be_bytes());
+    v.extend_from_slice(merged);
+    v
+}
+
+const BASE: [u8; 3] = [40, 90, 200];
+
+/// 64 x 48, 8-bit: a solid `base` layer under an Invert adjustment layer `inv` (a PSD import record the viewer
+/// renders through composite's adapter).
+fn inverted_psd() -> Vec<u8> {
+    let (w, h) = (64u32, 48u32);
+    let n = (w * h) as usize;
+    let base = PsdLayer { name: "base", rect: [0, 0, h as i32, w as i32], channels: (0..3).map(|c| (c as i16, vec![BASE[c]; n])).collect(), blocks: vec![] };
+    let inv = PsdLayer { name: "inv", rect: [0, 0, 0, 0], channels: vec![(0, vec![]), (1, vec![]), (2, vec![])], blocks: vec![(*b"nvrt", vec![])] };
+    let merged: Vec<u8> = (0..3).flat_map(|c| vec![255 - BASE[c]; n]).collect();
+    psd(w, h, 8, &[base, inv], &merged)
+}
+
+/// Linear-light values of the HDR layer: red above white.
+const HDR: [f32; 3] = [1.5, 0.25, 0.5];
+
+/// 64 x 64, 32-bit float (linear): one opaque layer `hdr` of [`HDR`] over the canvas.
+fn hdr_psd() -> Vec<u8> {
+    let w = 64u32;
+    let n = (w * w) as usize;
+    let plane = |v: f32| -> Vec<u8> { std::iter::repeat_n(v.to_be_bytes(), n).flatten().collect() };
+    let channels = vec![(-1, plane(1.0)), (0, plane(HDR[0])), (1, plane(HDR[1])), (2, plane(HDR[2]))];
+    let layer = PsdLayer { name: "hdr", rect: [0, 0, w as i32, w as i32], channels, blocks: vec![] };
+    let merged: Vec<u8> = HDR.iter().flat_map(|c| plane(*c)).collect();
+    psd(w, w, 32, &[layer], &merged)
+}
+
+fn layer_named(v: &Viewer, name: &str) -> String {
+    v.layers().into_iter().find(|r| r.name == name).unwrap_or_else(|| panic!("no layer {name}: {}", v.state_json())).layer_id
+}
+
+/// Straight linear RGBA of document pixel `(x, y)` of raster layer `layer`, read from its tile bytes.
+fn texel(v: &Viewer, layer: &str, x: i64, y: i64) -> [f32; 4] {
+    let assets = v.run().render_assets().unwrap();
+    let snap = v.run().snapshot().unwrap();
+    let l = snap.document().layers.iter().find(|l| l.layer_id == layer).unwrap();
+    let hsk_studio_folio::Payload::Raster { tiles } = &l.payload else { panic!("{layer} is not raster") };
+    for t in tiles {
+        let (tw, th) = (t.width.value as i64, t.height.value as i64);
+        let (dx, dy) = (x - t.column * tw, y - t.row * th);
+        if !(0..tw).contains(&dx) || !(0..th).contains(&dy) {
+            continue;
+        }
+        let body = &assets[&t.content_digest.digest];
+        let i = usize::try_from(dy * tw + dx).unwrap();
+        let colour_len = usize::try_from(tw * th * 12).unwrap();
+        let f = |k: usize| f32::from_le_bytes(body[k..k + 4].try_into().unwrap());
+        return [f(i * 12), f(i * 12 + 4), f(i * 12 + 8), f(colour_len + i * 4)];
+    }
+    [0.0; 4]
+}
+
+/// Review F1: deleting a placed layer frees its id, and the next layer any other tool creates must not take that id
+/// and inherit the placed record. After each kind of new layer, nothing is listed as placed, the raster layer
+/// paints, a moved copy keeps its own pixels, the PSD's Invert layer (an import record) keeps rendering, and
+/// asset.place still works, also after save and reopen.
+#[test]
+fn a_deleted_placement_leaves_no_record_on_the_next_new_layer() {
+    let s = Scratch::new("delete");
+    let source = write(&s.path("inverted.psd"), &inverted_psd());
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&source).unwrap_or_else(|e| panic!("{e}"));
+    let base = layer_named(&v, "base");
+    let inverted = px(&mut v, 2, 2);
+    assert!(!near(inverted, BASE), "the Invert layer renders: {inverted:?}");
+    let mut fresh = None;
+    for kind in ["raster", "duplicate", "group", "text", "vector"] {
+        let placed = embedded(&mut v, &s, &format!("hero-{kind}.png"), HERO, 40.0, 30.0);
+        let placed_id = placed["layer_id"].as_str().unwrap().to_owned();
+        v.delete_layer(&placed_id).unwrap();
+        v.select(None);
+        let created = match kind {
+            "raster" => v.new_raster_layer("fresh").unwrap(),
+            "duplicate" => v.duplicate_layer(&base).unwrap(),
+            "group" => v.group_layers(&[fresh.clone().unwrap()], "group").unwrap(),
+            "text" => v.place_text(30.0, 44.0, "Hi").unwrap(),
+            _ => v.pencil_stroke(&[[36.0, 8.0], [60.0, 8.0]]).unwrap(),
+        };
+        assert!(placements(&mut v).is_empty(), "{kind}: {created} is not a placement: {:?}", placements(&mut v));
+        assert_eq!(v.state_json()["placed"]["placements"].as_array().map(Vec::len), Some(0), "{kind}");
+        match kind {
+            "raster" => {
+                let stroke = [hsk_studio_pigment::brush::StrokeSample { x: 50.0, y: 40.0, pressure: None, time_ms: None }];
+                v.paint(&created, &stroke).unwrap_or_else(|e| panic!("raster: paint on a new layer: {e}"));
+                fresh = Some(created.clone());
+            }
+            "duplicate" => {
+                let moved = v.move_content(&created, 1.0, 0.0).unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(moved["placed"], false, "{moved}");
+            }
+            _ => {}
+        }
+        // Undo and redo re-read the records: the Invert layer still renders, and a placement is accepted.
+        v.undo().unwrap();
+        v.redo().unwrap();
+        assert_eq!(px(&mut v, 2, 2), inverted, "{kind}: the PSD Invert layer still renders");
+    }
+    let out = s.path("after-delete.handshake");
+    v.save(&out, false).unwrap_or_else(|e| panic!("{e}"));
+    let mut w = Viewer::new(Prefer::Cpu);
+    w.open(&out).unwrap_or_else(|e| panic!("{e}"));
+    assert!(placements(&mut w).is_empty(), "{:?}", placements(&mut w));
+    assert_eq!(px(&mut w, 2, 2), inverted, "the Invert layer renders after the reopen");
+    let again = embedded(&mut w, &s, "hero-again.png", HERO, 40.0, 30.0);
+    assert_eq!(placements(&mut w).len(), 1, "{again}");
+    assert!(near(px(&mut w, 41, 31), HERO), "{:?}", px(&mut w, 41, 31));
+}
+
+/// Review F4: Free Transform with a filter (bilinear, bicubic) on a float layer, and a placement of a float source,
+/// keep linear values above 1.0 (the tiles are rgb_f32le; nothing integer is written).
+#[test]
+fn filtered_transforms_keep_float_highlights_above_one() {
+    let s = Scratch::new("hdr");
+    let source = write(&s.path("hdr.psd"), &hdr_psd());
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&source).unwrap_or_else(|e| panic!("{e}"));
+    let layer = layer_named(&v, "hdr");
+    assert!((texel(&v, &layer, 32, 32)[0] - HDR[0]).abs() < 1e-6, "imports as stored: {:?}", texel(&v, &layer, 32, 32));
+    for filter in [ResampleFilter::Bilinear, ResampleFilter::Bicubic] {
+        let t = FreeTransform { angle: 10.0, resample: Some(filter), ..FreeTransform::default() };
+        v.free_transform(&layer, &t).unwrap_or_else(|e| panic!("{e}"));
+        let c = texel(&v, &layer, 32, 32);
+        assert!((c[0] - HDR[0]).abs() < 1e-3 && c[3] > 0.999, "{filter:?}: the highlight is kept: {c:?}");
+        v.undo().unwrap();
+    }
+    // A placed float source, scaled (bicubic, the default): its instance tiles keep the highlight too.
+    let placed = v.place_asset(&source, PlacementKind::Embedded, &PlaceOptions { x: Some(0.0), y: Some(0.0), scale_pct: Some(50.0), ..PlaceOptions::default() }).unwrap_or_else(|e| panic!("{e}"));
+    let placed_layer = placed["layer_id"].as_str().unwrap();
+    let c = texel(&v, placed_layer, 16, 16);
+    assert!((c[0] - HDR[0]).abs() < 1e-3 && c[3] > 0.999, "the placed highlight is kept: {c:?}");
+}
+
+/// 16-bit PCM stereo WAV, 48 kHz, `frames` frames of a square wave.
+#[cfg(feature = "media")]
+fn wav(frames: u32) -> Vec<u8> {
+    let (rate, data_len) = (48_000u32, frames * 4);
+    let mut v = b"RIFF".to_vec();
+    v.extend((36 + data_len).to_le_bytes());
+    v.extend_from_slice(b"WAVEfmt ");
+    v.extend(16u32.to_le_bytes());
+    v.extend(1u16.to_le_bytes());
+    v.extend(2u16.to_le_bytes());
+    v.extend(rate.to_le_bytes());
+    v.extend((rate * 4).to_le_bytes());
+    v.extend(4u16.to_le_bytes());
+    v.extend(16u16.to_le_bytes());
+    v.extend_from_slice(b"data");
+    v.extend(data_len.to_le_bytes());
+    for i in 0..frames {
+        let s: i16 = if (i / 64) % 2 == 0 { 8192 } else { -8192 };
+        v.extend(s.to_le_bytes());
+        v.extend(s.to_le_bytes());
+    }
+    v
+}
+
+/// Review F3: links resolve against the opened document's folder. Opening an audio file from another folder (the
+/// document stays open) does not move that folder: the link stays resolved, and Update All Links does not read
+/// the other folder's file of the same name.
+#[cfg(feature = "media")]
+#[test]
+fn an_audio_file_opened_beside_the_document_does_not_move_its_link_folder() {
+    let s = Scratch::new("link-base");
+    let mut v = plate(&s);
+    let stall = write(&s.path("stall.png"), &png(16, 8, HERO));
+    v.place_asset(&stall, PlacementKind::Linked, &PlaceOptions { x: Some(0.0), y: Some(0.0), ..PlaceOptions::default() }).unwrap_or_else(|e| panic!("{e}"));
+    let other = Scratch::new("link-base-audio");
+    write(&other.path("stall.png"), &png(16, 8, HERO_2));
+    let tone = write(&other.path("tone.wav"), &wav(4800));
+    v.open(&tone).unwrap_or_else(|e| panic!("{e}"));
+    assert!(v.audio().is_some(), "the audio file opened");
+    assert_eq!(placements(&mut v)[0]["link_state"], "resolved", "{:?}", placements(&mut v));
+    let updated = v.update_all_modified().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!((updated["changed"].as_bool(), updated["updated"].as_array().map(Vec::len)), (Some(false), Some(0)), "{updated}");
+    assert!(near(px(&mut v, 3, 3), HERO), "{:?}", px(&mut v, 3, 3));
 }
 
 // ----- the real process over JSONL --------------------------------------------------------------
