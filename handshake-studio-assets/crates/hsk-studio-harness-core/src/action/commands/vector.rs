@@ -9,6 +9,9 @@ const PATH_EDIT: &str = "{kind: insert_anchor|delete_anchor|convert|move_anchor|
 const TO: &[ParamSpec] = &[l("layers"), o("to", "selection|artboard|key_object"), t("key_object").opt(), o("how", "left|centre_horizontal|right|top|centre_vertical|bottom")];
 const DISTRIBUTE: &[ParamSpec] = &[l("layers"), o("to", "selection|artboard|key_object"), t("key_object").opt(), o("how", "left|centre_horizontal|right|top|centre_vertical|bottom|spacing"), n("axis").opt(), n("gap").opt()];
 const REFERENCE: &str = "top_left|top|top_right|left|centre|right|bottom_left|bottom|bottom_right";
+/// Lane SMB-AI-LIVE-EFFECTS-1 (STU-FX-007, STU-VEC-154): one typed live-effect parameter.
+const LIVE_PARAM: &str = "{type: Int|Real|Bool|String, key, value}";
+const LIVE_PARAMS: &str = "[{type: Int|Real|Bool|String, key, value}, ...] over the table defaults";
 
 pub(super) const ROWS: &[CommandEntry] = &[
     typed("vector.set_fill", "Viewer::set_fill", "Set fill paint", true, &[t("layer"), r("paint", PAINT).opt()]),
@@ -35,5 +38,12 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("vector.add_font", "Viewer::add_font", "Add font file", false, &[t("family"), p("path")]),
     typed("vector.set_document_cmyk_profile", "Viewer::set_document_cmyk_profile", "Set document CMYK profile", true, &[t("name"), p("path")]),
     typed("vector.layer_bounds", "Viewer::layer_bounds", "Layer bounds", false, &[t("layer")]),
+    typed("vector.live_filter_apply", "Viewer::apply_live_filter", "Apply live effect", true, &[t("layer"), t("filter_kind"), r("params", LIVE_PARAMS).opt()]),
+    typed("vector.live_filter_update", "Viewer::update_live_filter", "Update live effect parameter", true, &[t("layer"), t("instance"), r("param", LIVE_PARAM)]),
+    typed("vector.live_filter_reorder", "Viewer::reorder_live_filter", "Reorder live effect", true, &[t("layer"), t("instance"), i("to")]),
+    typed("vector.live_filter_toggle", "Viewer::toggle_live_filter", "Enable or disable live effect", true, &[t("layer"), t("instance"), b("enabled")]),
+    typed("vector.live_filter_remove", "Viewer::remove_live_filter", "Remove live effect", true, &[t("layer"), t("instance")]),
+    typed("vector.live_filter_bake", "Viewer::bake_live_filters", "Bake live effects", true, &[t("layer")]),
+    typed("vector.live_filter_read", "Viewer::live_filters", "Read live effects", false, &[t("layer")]),
     typed("vector.set_tool_options", "Viewer::set_vector_tool", "Set vector tool options", false, &[rgb8("fill").opt(), b("fill_on").opt(), rgb8("stroke").opt(), b("stroke_on").opt(), n("stroke_width").opt(), n("corner_radius").opt(), i("polygon_sides").opt(), i("star_points").opt(), n("star_inner").opt()]),
 ];

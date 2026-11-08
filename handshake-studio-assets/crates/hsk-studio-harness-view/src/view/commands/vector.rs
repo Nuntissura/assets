@@ -187,6 +187,17 @@ pub(super) fn run_vector(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Resu
             id_of(v.set_document_cmyk_profile(&f.text("name")?, &bytes))
         }
         "vector.layer_bounds" => v.layer_bounds(&layer()?).map(|b| json!({"min": b.min, "max": b.max})),
+        // Lane SMB-AI-LIVE-EFFECTS-1: typed parameters through Folio's own tagged shape.
+        "vector.live_filter_apply" => {
+            let params = if f.has("params") { folio_field!(f, "params", Vec<folio::StudioLiveFilterParam>, "[{type: Int|Real|Bool|String, key, value}, ...]")? } else { Vec::new() };
+            id_of(v.apply_live_filter(&layer()?, &f.text("filter_kind")?, &params))
+        }
+        "vector.live_filter_update" => id_of(v.update_live_filter(&layer()?, &f.text("instance")?, &folio_field!(f, "param", folio::StudioLiveFilterParam, "{type: Int|Real|Bool|String, key, value}")?)),
+        "vector.live_filter_reorder" => id_of(v.reorder_live_filter(&layer()?, &f.text("instance")?, f.index("to")?)),
+        "vector.live_filter_toggle" => id_of(v.toggle_live_filter(&layer()?, &f.text("instance")?, f.flag("enabled")?)),
+        "vector.live_filter_remove" => id_of(v.remove_live_filter(&layer()?, &f.text("instance")?)),
+        "vector.live_filter_bake" => id_of(v.bake_live_filters(&layer()?)),
+        "vector.live_filter_read" => v.live_filters(&layer()?),
         "vector.set_tool_options" => {
             let mut tool = v.vector_tool().clone();
             if let Some(c) = f.opt_rgb8("fill")? {

@@ -204,6 +204,8 @@ impl Viewer {
                     }
                 }
             }
+            // Free distort corners are document coordinates (lane SMB-AI-LIVE-EFFECTS-1).
+            super::live_filters::transform_live_filters(&mut entry.records, layer_id, m);
             writes.push((layer_id.clone(), ids));
         }
         self.commit_paths(op, &writes, &entry)

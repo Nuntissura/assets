@@ -1065,6 +1065,8 @@ fn rewrite(doc: &StudioDocument, entry: &mut VectorEntry, moves: &BTreeMap<Strin
                 }
             }
         }
+        // Free distort corners follow the layer too (lane SMB-AI-LIVE-EFFECTS-1).
+        super::super::vector::live_filters::transform_live_filters(&mut entry.records, layer_id, m);
         writes.push((layer_id.clone(), ids));
     }
     Ok(writes)

@@ -73,6 +73,8 @@ pub mod arrange;
 pub mod brushes;
 pub mod clipping;
 pub mod envelope;
+/// Lane SMB-AI-LIVE-EFFECTS-1.
+pub mod live_filters;
 /// Lane SMB-ILLUSTRATOR-INTEROP. Feature `vector-interop` (harness -> interop-vector edge, steward
 /// sync ea20bcb; enabled by `viewer`).
 #[cfg(feature = "vector-interop")]
@@ -619,7 +621,7 @@ impl VectorEntry {
         style::validate_entry_styles(design.as_ref(), &doc.document_id)?;
         let mut extra = folio::StudioVectorRecords::new(doc.document_id.clone());
         if let Some(r) = object.get("vector_records") {
-            let members = ["width_profiles", "swatches", "swatch_paints", "brushes", "brush_strokes", "envelopes", "patterns", "pattern_paints", "clips", "masks", "attachments", "image_paints", "boolean_groups", "mask_parameters"];
+            let members = ["width_profiles", "swatches", "swatch_paints", "brushes", "brush_strokes", "envelopes", "patterns", "pattern_paints", "clips", "masks", "attachments", "image_paints", "boolean_groups", "mask_parameters", "live_filters"];
             if members.iter().any(|m| r.get(m).and_then(Value::as_array).is_some_and(|a| a.len() > folio::TOOLS_MAX_ENTRIES.max(MAX_PATHS))) {
                 return Err("vector_entry_over_budget".into());
             }
@@ -687,6 +689,9 @@ impl VectorEntry {
         });
         // Lane SMB-AI-TYPE-PATH-RECOLOR: meshes and path texts of layers the document holds.
         r.gradient_meshes.retain(|m| vector(&m.layer_id));
+        // Lane SMB-AI-LIVE-EFFECTS-1: live filter stacks of vector layers the document holds (a
+        // deleted layer keeps its stack for the revisions the history can return to).
+        r.live_filters.retain(|s| vector(&s.layer_id));
         r.path_texts.retain(|p| doc.layers.iter().any(|l| l.layer_id == p.path_layer_id && matches!(&l.payload, Payload::Vector { path_ids } if path_ids.contains(&p.path_id))));
         // Lane SMB-AI-AREA-TYPE-3: area texts likewise (a deleted container layer keeps its record
         // for the revisions the history can return to).
