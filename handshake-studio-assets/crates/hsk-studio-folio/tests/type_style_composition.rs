@@ -185,3 +185,71 @@ fn out_of_range_and_bad_references_are_refused() {
     bad_local["paragraph_composition"][0]["settings"]["glyph_scaling_desired"] = json!(300.0);
     assert_eq!(check(&bad_local).unwrap_err().code, Code::InvalidField);
 }
+
+/// Lane SMB-TYPE-INDENT-SPACING-1 (STU-TYP-185): the seven indent and spacing fields (spec names)
+/// travel on the same settings, survive the wire byte-identically with either sign, and overlay
+/// field by field like every other setting (STU-TYP-201); `last_line_indent` stays its own field.
+#[test]
+fn indent_and_spacing_round_trip_and_overlay() {
+    let pt = |value: f64| json!({"value": value, "unit": "pt"});
+    let mut v = with_composition();
+    v["style_composition"][1]["settings"] = json!({"left_indent": pt(18.0), "right_indent": pt(-4.5), "first_line_indent": pt(-18.0),
+        "last_line_indent": pt(36.0), "space_before": pt(6.0), "space_after": pt(-3.0), "space_between_same_style": true});
+    v["paragraph_composition"][0]["settings"] = json!({"right_indent": pt(9.0), "space_between_same_style": false});
+    assert_eq!(check(&v), Ok(vec![]));
+    assert_eq!(serde_json::from_slice::<Value>(&wire(&v)).unwrap(), v);
+    let r: StudioTypeStyleRecords = serde_json::from_value(v).unwrap();
+    let lead = r.style_composition(&stys(2)).expect("style entry");
+    let local = r.paragraph_composition(&identity("STXT", 1), 0).expect("override");
+    let len = |value: f64| Some(Length { value, unit: GeometryUnit::Pt });
+    let resolved = lead.overlaid(local);
+    assert_eq!(
+        (resolved.left_indent.clone(), resolved.right_indent.clone(), resolved.first_line_indent.clone(), resolved.last_line_indent.clone()),
+        (len(18.0), len(9.0), len(-18.0), len(36.0))
+    );
+    assert_eq!((resolved.space_before.clone(), resolved.space_after.clone()), (len(6.0), len(-3.0)));
+    assert_eq!(resolved.space_between_same_style, Some(false));
+    assert_eq!(resolved.right_indent, len(9.0), "last_line_indent is not folded into right_indent");
+    // Unknown neighbours of the new names are refused, never ignored.
+    let mut unknown = with_composition();
+    unknown["style_composition"][1]["settings"]["last_line_right_indent"] = pt(1.0);
+    assert!(serde_json::from_value::<StudioTypeStyleRecords>(unknown).is_err());
+}
+
+/// STU-TYP-108 stores points: another unit is `invalid_field`, and so is a non-finite value (a
+/// struct literal can hold one). No bound is invented (STU-TYP-106): negatives and the largest
+/// finite values are accepted, never clamped.
+#[test]
+fn indent_and_spacing_are_finite_points() {
+    let fields: [(&str, fn(&mut StudioCompositionSettings) -> &mut Option<Length>); 6] = [
+        ("left_indent", |s| &mut s.left_indent),
+        ("right_indent", |s| &mut s.right_indent),
+        ("first_line_indent", |s| &mut s.first_line_indent),
+        ("last_line_indent", |s| &mut s.last_line_indent),
+        ("space_before", |s| &mut s.space_before),
+        ("space_after", |s| &mut s.space_after),
+    ];
+    for (name, field) in fields {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut s = StudioCompositionSettings::default();
+            *field(&mut s) = Some(Length { value, unit: GeometryUnit::Pt });
+            let e = s.validate("t").unwrap_err();
+            assert_eq!((e.code, e.target.as_str()), (Code::InvalidField, format!("t/{name}").as_str()), "{name} = {value}");
+        }
+        for unit in [GeometryUnit::Mm, GeometryUnit::In, GeometryUnit::Px] {
+            let mut s = StudioCompositionSettings::default();
+            *field(&mut s) = Some(Length { value: 1.0, unit });
+            assert_eq!(s.validate("t").unwrap_err().code, Code::InvalidField, "{name} in {unit:?}");
+        }
+        for value in [0.0, -0.0, -12.0, f64::MAX, f64::MIN, f64::MIN_POSITIVE] {
+            let mut s = StudioCompositionSettings::default();
+            *field(&mut s) = Some(Length { value, unit: GeometryUnit::Pt });
+            assert_eq!(s.validate("t"), Ok(()), "{name} = {value}");
+        }
+    }
+    // Through the record set too: a millimetre indent on a style entry is refused there.
+    let mut v = with_composition();
+    v["style_composition"][1]["settings"]["left_indent"] = json!({"value": 5.0, "unit": "mm"});
+    let e = check(&v).unwrap_err();
+    assert_eq!((e.code, e.target.as_str()), (Code::InvalidField, format!("style_composition/{}/left_indent", stys(2)).as_str()));
+}

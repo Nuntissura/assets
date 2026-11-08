@@ -143,6 +143,7 @@ fn root_settings() -> StudioCompositionSettings {
         glyph_scaling_maximum: Some(100.0),
         single_word_justification: Some(StudioSingleWordJustification::FullyJustified),
         auto_leading_amount: Some(120.0),
+        ..Default::default()
     }
 }
 
