@@ -32,42 +32,71 @@ fixture with no working colour profile and no visible content; the viewer refuse
 (harness-view `render.rs`, `view_snapshot`) and the host exits 7 with that code. Other open refusals keep the
 viewer's own code (`not_found` for a missing file).
 
-## Scene gui: the first panel on a real document (feature `document`)
+## Scene gui: the raster frame on a real document (feature `document`)
 
-`--scene gui --document <file>` opens the document with the Viewer on render-cpu and shows the frame: the Viewport
-(the document over its transparency grid, 1:1 at scale 1, centred and clipped; zoom and pan are later), a right dock
-300 wide with one group (header 26 with the Layers tab, then the Layers panel body), and a 24 px status bar. The
-chrome is CPU-painted with kumihimo-ui (`cpu painter, Vulkan UI pass pending`, also in the window title, the status
-bar and the receipt) and copied into the pane; text is Inter through hsk-studio-ui-text (`text: inter`), or the box
-stand-in when the font files are missing (`text: box_stand_in`; set `HSK_STUDIO_UI_FONTS` to a folder holding
-`Inter-Regular.ttf` and `Inter-Bold.ttf`). Default size 1280x800.
+`--scene gui --document <file>` opens the document with the Viewer on render-cpu and shows the whole raster
+workspace of the designer's `mock-raster.html` (SMB-GUI-SPINE-1 built the spine; SMB-GUI-FRAME-1 the frame,
+build-order B5): menu bar 28, document tab strip 32, Context Bar 34, Tool Rail 44 over the full main height, the
+Browse Dock collapsed to its 32 px icon rail, the Viewport (role Canvas, `studio.viewer.canvas`) with rulers 20 and
+the document 1:1 under them, the Inspect Dock 300 with three groups (Properties, Colour, Layers by share 0.30, 0.24,
+0.46, the last taking the remainder), the Time & Results Dock collapsed to its 28 px labelled rail, and the status bar
+24. Sizes are tokens and layouts.json; the fit ladder (FIT-L1, W1 to W5, H1 to H3, R1, R2, M1, T1) runs in one pure
+function, `gui::frame::layout`, used by paint, hit routing, the tree, `studio.dock.state` and the receipt. The chrome
+is CPU-painted with kumihimo-ui (`cpu painter, Vulkan UI pass pending`, also in the window title, the status bar and
+the receipt); icons are the designer's set rasterised on the CPU (`kumihimo_ui::icons`); text is Inter through
+hsk-studio-ui-text (`text: inter`), or the box stand-in when the font files are missing (`text: box_stand_in`; set
+`HSK_STUDIO_UI_FONTS` to a folder holding `Inter-Regular.ttf` and `Inter-Bold.ttf`). Default size 1280x800; proof
+runs pass `--size 1920x1080` (the acceptance first screen) or `--size 1280x720`.
 
-- Layers rows (`studio.panel.layers.row.<layer-id lowercased>`): a click selects (`viewer.select`); a click on the eye
-  (`<row>.visibility`) shows or hides the layer as one named undo step (`layer.set_visible` through
-  `Viewer::set_visible`: undo label `panel_set visible <layer_id>`, command `layer.panel_set`); a click on blank list
-  space deselects; Ctrl+Z undoes, Ctrl+Shift+Z and Ctrl+Y redo (chords PROVISIONAL). The wheel over the list scrolls
-  it; Page Up/Down, Home and End scroll too. Only the rows that fit are built; the list value says `rows F-L of T`.
+The command table (every interactive author_id has one entry; `--invoke` and a pointer release take the same path):
+
+| Control | Outcome | Effect |
+|---|---|---|
+| `studio.toolgroup.<group>` (19 rail slots, kebab case) | `frame.tool_pick ok` | that slot becomes active; `studio.tool.active` and the identity chip follow (no Viewer tool yet: B11) |
+| `studio.tab.<panel>` of an Inspect Dock group | `frame.tab_select ok` | that tab becomes its group's active tab; the body shows its empty state; the active tab is inert |
+| Layers rows, eyes, blank list space, Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | `viewer.select`, `layer.set_visible`, `history.undo`, `history.redo` | as the spine built them (one named undo step per eye) |
+| every other control: `menu.<title>` (19), `shell.module-switch`, `shell.menu-bar.more`, `studio.tab.document`, `studio.tab.document.close`, `studio.tab.new`, `studio.search`, `studio.layout-preset.dropdown`, `studio.layout.panel-menu`, `studio.options.identity`, `studio.options.preset`, `studio.panel.tools.more`, `studio.tool.family-browse`, `studio.colour.proxy`, `studio.rail.left.<panel>`, `studio.rail.left.expand`, `studio.rail.bottom.<panel>`, `studio.rail.bottom.expand`, `studio.group.<g>.disclosure`, `.more`, `.menu` | `frame.static not_implemented_yet` | none: the control is disabled with the reason (build-order B6); its node value starts with `not_implemented_yet` so a model reads it before clicking; the status bar and the receipt carry the code; no popup, no focus move, no Viewer call |
+| an id outside the table | `unknown_author_id` | a typed refusal for `--invoke` (exit 2), a status-bar code for a pointer release |
+
+- Observability nodes (unpainted, the last two tree roots): `studio.dock.state` (STU-MDL-106) holds one JSON value
+  with fit_table's keys in its order (`window, scale, logical, left, left_state, right, right_state, meter, bottom,
+  bottom_state, centre, right_group_heights, rail_pitch, rail_overflow_slots, applied`) plus `groups` and
+  `rail_panels`; `studio.tool.active` (STU-MDL-116) holds the active slot's face tool id (`select` at open).
+- The receipt's `gui` member gains `frame`: preset `raster`, the fit rules applied, `below_min_size`, `tool_active`,
+  the active tabs, `static_outcomes`, `picks`, the rail's shown and hidden slots, and the summed paint statistics of
+  the last frame (`prims`, `glyphs`, `glyph_refusals`, `missing_resources`: both must be 0). Notes gain
+  `below_min_size` when the logical client is under 1024 x 640 (rects then clamp at zero size; the partition holds).
+- `--tree T.json` writes `{"schema":"hsk.studio.native_host.tree@1","revision":N,"tree":{kumihimo.ui.tree@1}}` with
+  every panel's roots in paint order: `shell.menu-bar`, `studio.tab-strip`, `studio.options`, `studio.panel.tools`,
+  `studio.dock.left`, `studio.viewer.canvas`, `studio.dock.right`, `studio.dock.bottom`, `studio.status`,
+  `studio.dock.state`, `studio.tool.active`.
+- The Operator's own window (`window --scene gui --document <file>`) has a minimum client size of 1024 x 640 logical
+  (size::WINDOW_MIN_W x WINDOW_MIN_H, clamped to the monitor when it is smaller), waits for events, presents only when
+  something changed and runs up to 12 h unless `--deadline-s` is given. Open it at a size and scale with
+  `--size 1920x1080 --scale 1.25`; without `--scale` it follows its monitor.
 - Input is typed: winit events become `HostEvent`s in physical px; scripts and `--invoke` feed the same queue
   (never OS input). Script lines: `move X Y`, `leave`, `down`, `up`, `click X Y`, `wheel N`, `wheelpx N`,
   `key ctrl+shift+z`, `invoke AUTHOR_ID`; `resize W H` and `scale MILLI` apply to the CPU frame only (a window or
   offscreen run refuses them, `script_frame_only`). At most 4096 steps (`script_too_long`).
-- `--tree T.json` writes `{"schema":"hsk.studio.native_host.tree@1","revision":N,"tree":{kumihimo.ui.tree@1}}`, one
-  tree whose roots are `studio.viewer.raster`, `studio.dock.right` and `studio.status`. The receipt gains `gui`:
-  revision, rows shown and total, builds, paints, uploads, idle frames, commands, refusals and the last command code.
-- `--scale 1.25` fixes the UI scale (tests and captures); without it the window follows its monitor scale.
-- The Operator's own window (`window --scene gui --document <file>`) waits for events, presents only when something
-  changed, keeps the Viewport at least 360 x 240 (minimum client size 660 x 264 logical) and runs up to 12 h unless
-  `--deadline-s` is given.
 
 ```text
-studio-vk offscreen --scene gui --document <path>/layered.handshake --invoke studio.panel.layers.row.<id>.visibility --out gui.png --tree gui-tree.json --receipt gui.json
-studio-vk window --quiet --frames 3 --scene gui --document <path>/layered.handshake --script s.txt --capture shot.png
-studio-vk window --scene gui --document <path>/layered.handshake                  # the Operator's own window
+studio-vk offscreen --size 1920x1080 --scale 1 --scene gui --document <path>/layered.handshake --out frame.png --tree frame-tree.json --receipt frame.json
+studio-vk offscreen --scene gui --document <path>/layered.handshake --invoke studio.toolgroup.paint --invoke studio.tab.masks --invoke menu.file --out edge.png
+studio-vk window --quiet --frames 3 --size 1280x720 --scene gui --document <path>/layered.handshake --capture shot.png
+studio-vk window --size 1920x1080 --scene gui --document <path>/layered.handshake          # the Operator's own window
 ```
 
-Known gaps: the Vulkan UI pass (shaders, glyph atlas), menus and the other B5 regions, docking and splitters,
-rename, reorder, lock, opacity and thumbnails, canvas zoom and pan, AccessKit (the tree file is the model path), a
-real device loss (only a fake pane sink proves the typed exit 3), the designer's icon set (gallery stand-in icons).
+Recorded deviations: STU-SHL-110 steps SHL-P-01, SHL-P-08 and SHL-P-10 have not passed and STU-SHL-112 allows no
+menu before SHL-P-08, so the 19 menu titles are a static stand-in of the closed list and the docks are fixed;
+STU-SHL-004 gives the menu bar to the shell, so here the bar is a host stand-in and the OS frame owns the window
+buttons. Known differences from the mock (not defects of this slice): canvas content and zoom (rulers at 100 %, the
+mock at 20 %; no fit to window, B11); no vertical ruler labels (no rotated text); Context Bar zone controls (B7, B12);
+Properties and Colour bodies empty and the Layers group without blend, opacity, lock, the action bar, thumbnails and
+tag colours (B10); no L1 tooltip (B6); no model presence chip; this host's status readouts; +N counts measured with
+Inter; weight 600 drawn with Inter Bold 700 (no 500 or 600 face in the fixtures); disabled controls look disabled
+(B6 ruling) where the mock draws them enabled. Known gaps: the Vulkan UI pass (shaders, glyph and icon atlases),
+menus opening, docking and splitters, rename, reorder, lock, opacity and thumbnails, canvas zoom and pan, AccessKit
+(the tree file is the model path), a real device loss (only a fake pane sink proves the typed exit 3).
 
 ## Inputs and outputs
 
@@ -92,8 +121,9 @@ this process only (`VK_LOADER_LAYERS_DISABLE=~implicit~`) unless `--allow-overla
 
 ## Navigation
 
-- `src/gui/mod.rs` the GUI frame (regions, router, command table, paint, upload, tree file), `src/gui/view.rs` the
-  panel view functions, `src/script.rs` the scripted step queue, `src/event.rs` the typed HostEvent stream.
+- `src/gui/mod.rs` the GUI frame (router, command table, fit decisions, paint, upload, tree file, receipt),
+  `src/gui/frame.rs` the frame layout and fit ladder, `src/gui/preset.rs` the raster preset data,
+  `src/gui/chrome.rs` the band views, `src/gui/view.rs` the Layers panel views, `src/script.rs` the scripted step queue, `src/event.rs` the typed HostEvent stream.
 - `src/cli.rs` arguments, `src/offscreen.rs` offscreen path, `src/window.rs` winit app and exercise script,
   `src/scene.rs` clear, CPU painter and document flattening, `src/capture.rs` PNG, hash and receipt JSON,
   `src/win32.rs` the only `unsafe` here (window style and foreground queries), `src/diag.rs` observe terminal frames.

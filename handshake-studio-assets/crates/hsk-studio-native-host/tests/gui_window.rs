@@ -1,6 +1,7 @@
 //! Feature `document`, on the real device (GPU test group; validation: absent): the GUI frame offscreen (no HWND) and
 //! in a quiet window give the same frame hash after the same scripted pointer session, with no focus change; the
-//! exercise run resizes the pane with the window, skips the minimised frames and restores the same frame. With
+//! exercise run resizes the pane with the window, skips the minimised frames and restores the same frame; the raster
+//! frame of SMB-GUI-FRAME-1 at 1920 x 1080 and 1280 x 720 is equal offscreen and in the window. With
 //! HSK_NATIVE_HOST_GUI_OUT set, the PNGs, receipts, tree files and the fixture .handshake are copied there.
 #![cfg(feature = "document")]
 mod common;
@@ -137,4 +138,90 @@ fn gui_quiet_exercise_resizes_the_pane_and_restores_the_frame() {
     let uploads: u64 = g.get("uploads").map(|v| v.render()).unwrap().parse().unwrap();
     assert!(uploads >= 3, "the pane followed the window: {uploads}");
     assert_eq!(win.frame_sha256.as_deref(), Some(off.frame_sha256.as_str()), "back at the first size: the same frame");
+}
+
+/// SMB-GUI-FRAME-1 captures (HBR-VIS-003 matrix): the raster frame at 1920 x 1080 and 1280 x 720 scale 1, offscreen and
+/// in a quiet window with equal frame_sha256 and no focus change, and one edge state offscreen at 1024 x 640 after a
+/// script (a tool picked, a layer hidden, the Properties group on Masks, a menu title clicked: not_implemented_yet).
+/// Receipts show missing_resources 0 and glyph_refusals 0. With HSK_NATIVE_HOST_GUI_OUT set, the PNGs, receipts, tree
+/// files and the 1920 x 1080 band rects are kept there.
+#[test]
+fn frame_captures_at_the_matrix_offscreen_equal_quiet_window() {
+    let s = Scratch::new("frame-captures");
+    let doc = fixture(&s.0);
+    let mut kept: Vec<String> = Vec::new();
+    for (w, h) in [(1920u32, 1080u32), (1280, 720)] {
+        let tag = format!("frame-{w}x{h}");
+        let gui = |tree: &str| GuiArgs { steps: Vec::new(), tree: Some(s.0.join(tree)), scale_milli: Some(1000) };
+        let off = offscreen::run(&OffscreenArgs {
+            width: w,
+            height: h,
+            scene: Scene::Gui(doc.clone()),
+            out: Some(s.0.join(format!("{tag}-offscreen.png"))),
+            receipt: Some(s.0.join(format!("{tag}-offscreen.json"))),
+            allow_overlays: false,
+            gui: gui(&format!("{tag}-offscreen-tree.json")),
+        })
+        .expect("frame offscreen");
+        assert!(off.exact, "{tag}: readback equals the painted frame");
+        let paint = off.receipt.get("gui").and_then(|g| g.get("frame")).and_then(|f| f.get("paint")).map(|p| p.render()).unwrap_or_default();
+        assert!(paint.contains(r#""glyph_refusals":0"#) && paint.contains(r#""missing_resources":0"#), "{tag}: {paint}");
+        let win = window::run(&WindowArgs {
+            width: w,
+            height: h,
+            scene: Scene::Gui(doc.clone()),
+            quiet: true,
+            frames: 3,
+            exercise: false,
+            capture: Some(s.0.join(format!("{tag}-swapchain.png"))),
+            receipt: Some(s.0.join(format!("{tag}-swapchain.json"))),
+            allow_overlays: false,
+            deadline: Duration::from_secs(120),
+            gui: gui(&format!("{tag}-swapchain-tree.json")),
+        })
+        .expect("frame quiet window");
+        assert_quiet(&win.focus);
+        assert_eq!(win.swap_extent, (w, h), "{tag}");
+        assert_eq!(win.frame_sha256.as_deref(), Some(off.frame_sha256.as_str()), "{tag}: swapchain frame equals the offscreen frame");
+        for k in ["offscreen.png", "offscreen.json", "offscreen-tree.json", "swapchain.png", "swapchain.json", "swapchain-tree.json"] {
+            kept.push(format!("{tag}-{k}"));
+        }
+    }
+    // The band rects of the 1920 x 1080 frame (AC-LOOK-02 machine half, for the designer's comparison).
+    let mut f = GuiFrame::open(&doc, 1920, 1080, Some(1000)).unwrap();
+    f.frame().unwrap();
+    let bands: Vec<String> = f
+        .layout()
+        .regions()
+        .iter()
+        .map(|(name, r)| format!("{{\"region\":\"{name}\",\"rect\":[{},{},{},{}]}}", r.x0, r.y0, r.x1, r.y1))
+        .collect();
+    std::fs::write(s.0.join("frame-1920x1080-bands.json"), format!("{{\"schema\":\"hsk.studio.native_host.bands@1\",\"window\":[1920,1080],\"scale\":1,\"bands\":[{}]}}\n", bands.join(","))).unwrap();
+    kept.push("frame-1920x1080-bands.json".into());
+    // The edge state at 1024 x 640.
+    let mut g = GuiFrame::open(&doc, 1024, 640, Some(1000)).unwrap();
+    g.frame().unwrap();
+    let red = g.rows().iter().find(|r| r.name == "Red").map(|r| row_id(&r.layer_id)).unwrap();
+    let (mx, my) = g.centre("menu.file").unwrap();
+    let mut steps = vec![Step::Invoke("studio.toolgroup.paint".into()), Step::Invoke(format!("{red}.visibility")), Step::Invoke("studio.tab.masks".into())];
+    steps.extend(click(mx, my));
+    let off = offscreen::run(&OffscreenArgs {
+        width: 1024,
+        height: 640,
+        scene: Scene::Gui(doc.clone()),
+        out: Some(s.0.join("frame-1024x640-edge-offscreen.png")),
+        receipt: Some(s.0.join("frame-1024x640-edge-offscreen.json")),
+        allow_overlays: false,
+        gui: GuiArgs { steps, tree: Some(s.0.join("frame-1024x640-edge-offscreen-tree.json")), scale_milli: Some(1000) },
+    })
+    .expect("edge offscreen");
+    let gr = off.receipt.get("gui").unwrap().render();
+    assert!(gr.contains(r#""last_command":{"command":"frame.static","code":"not_implemented_yet"}"#), "{gr}");
+    assert!(gr.contains(r#""tool_active":"paint_brush""#) && gr.contains(r#""active_tabs":["masks","colour","layers"]"#), "{gr}");
+    assert!(gr.contains(r#""glyph_refusals":0"#) && gr.contains(r#""missing_resources":0"#), "{gr}");
+    for k in ["frame-1024x640-edge-offscreen.png", "frame-1024x640-edge-offscreen.json", "frame-1024x640-edge-offscreen-tree.json"] {
+        kept.push(k.into());
+    }
+    let names: Vec<&str> = kept.iter().map(String::as_str).collect();
+    keep(&s.0, &names);
 }
