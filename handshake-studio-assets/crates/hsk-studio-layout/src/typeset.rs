@@ -236,6 +236,20 @@ impl TypesetOptions<'_> {
     }
 }
 
+/// STU-TYP-185 indents and spacing of one paragraph in points (lane SMB-TYPE-INDENT-SPACING-1); all
+/// 0 is the engine default (STU-TYP-201 step 1) and composes exactly as before the fields existed.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ParagraphGeometry {
+    pub left_indent_pt: f64,
+    pub right_indent_pt: f64,
+    /// Added to `left_indent_pt` on the paragraph's first line.
+    pub first_line_indent_pt: f64,
+    /// The last line's own indent from the right (never folded into `right_indent_pt`).
+    pub last_line_indent_pt: f64,
+    pub space_before_pt: f64,
+    pub space_after_pt: f64,
+}
+
 /// What one paragraph is composed with (see [`paragraph_params`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParagraphParams {
@@ -249,6 +263,8 @@ pub struct ParagraphParams {
     /// STU-TYP-146 setting of a justified line holding one word (`None` = fully justified, the
     /// behaviour before the setting existed).
     pub single_word: Option<StudioSingleWordJustification>,
+    /// STU-TYP-185 indents and spacing.
+    pub geometry: ParagraphGeometry,
 }
 
 /// Composition parameters of one paragraph (lane SMB-LAYOUT-COMPOSER-WIRING). Without composition
@@ -290,6 +306,7 @@ pub fn paragraph_params(
         hyphenation: opts.hyphenation,
         hyphenate_last_word: true,
         single_word: None,
+        geometry: ParagraphGeometry::default(),
     };
     let Some(c) = composition else {
         return Ok(out);

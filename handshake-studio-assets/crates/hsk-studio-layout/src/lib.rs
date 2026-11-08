@@ -179,7 +179,7 @@ pub use index_contract::{
     IndexOptions, PersistedIndexOptions, MAX_HEADER_GROUPS, MAX_HEADER_INITIALS, MAX_HEADER_TEXT_BYTES, MAX_TOPIC_BYTES, PageRangeScope, STUDIO_MAX_INDEX_LEVELS,
     SectionHeaderSet, XREF_CODES, capitalize_index_topics, capture_index_mark, generate_index_contract, xref_code, xref_from_code,
 };
-pub use typeset::{JustifyParams, Justification, ParagraphParams, Spacing, TypesetOptions, justify_metrics, paragraph_params};
+pub use typeset::{JustifyParams, Justification, ParagraphGeometry, ParagraphParams, Spacing, TypesetOptions, justify_metrics, paragraph_params};
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};
