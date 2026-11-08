@@ -21,6 +21,7 @@ const SLICE_ROWS: &[&str] = &[
     "multitrack.clip_gain", "multitrack.waveforms", "multitrack.lane",
     "waveform.select", "waveform.snap", "waveform.copy", "waveform.cut", "waveform.paste", "waveform.delete", "waveform.silence", "waveform.insert_silence", "waveform.fade",
     "waveform.gain_envelope", "waveform.amplify", "waveform.normalize", "waveform.invert", "waveform.reverse", "waveform.effect", "waveform.peaks", "waveform.state",
+    "waveform.noise_reduce",
     "spectral.open", "spectral.set_region", "spectral.apply", "spectral.state",
     "monitor.open", "monitor.bind_program_media", "monitor.open_source_media", "monitor.source_mark", "monitor.key", "monitor.source_edit",
     "prototype.start_session", "prototype.dispatch_trigger", "prototype.click", "prototype.hover", "prototype.advance", "prototype.restart",
