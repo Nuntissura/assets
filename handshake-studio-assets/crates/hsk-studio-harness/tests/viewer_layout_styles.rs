@@ -103,7 +103,7 @@ fn style_composition_edit_composes_and_undoes() {
     let x0 = |ed: &mut LayoutEditor| ed.compose(&id("STXT", 1)).unwrap().frames[0].lines.iter().map(|l| l.x_start_pt).collect::<Vec<_>>();
     assert_eq!(x0(&mut ed), vec![0.0, 0.0]);
     let indented = StudioCompositionSettings { left_indent: pt(12.0), first_line_indent: pt(6.0), ..Default::default() };
-    let patch = |c: Option<StudioCompositionSettings>| StylePatch { composition: Some(c), ..StylePatch::default() };
+    let patch = |c: Option<StudioCompositionSettings>| StylePatch { composition: Some(c.map(Box::new)), ..StylePatch::default() };
     ed.apply(se(StyleEdit::EditStyle { style: id("STYS", 1), patch: patch(Some(indented.clone())) })).unwrap();
     assert_eq!(ed.doc().styles.style_composition(&id("STYS", 1)), Some(&indented));
     assert_eq!(x0(&mut ed), vec![18.0, 12.0]);
