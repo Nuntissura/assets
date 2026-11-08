@@ -84,12 +84,14 @@ fn effects_on_a_selection_are_aligned_single_undo_steps() {
 }
 
 /// Lane SMB-SCORE-EFFECTS-6 item 6: noise reduction on a waveform selection from a stored noise
-/// print (range plus profile digest), one undo step, replayed after reopen; a changed print refuses
-/// as stale; hostile parameters refuse typed with no step. Oracle: a tone-plus-noise fixture whose
+/// print (range plus profile digest), one undo step, replayed after reopen; a stored digest that
+/// differs on replay recomputes the print and is recorded (review F3), another source refuses;
+/// hostile parameters refuse typed with no step. Oracle: a tone-plus-noise fixture whose
 /// noise-only spans and tone are measured before and after.
 #[test]
 fn noise_reduction_from_a_stored_print_is_one_step_and_replays() {
     use hsk_studio_harness::view::waveform::{NoiseReduceParams, PluginRegistry, WaveformOp, replay};
+    use hsk_studio_harness::{Harness, References, Selection, asset_local_test_context};
     use hsk_studio_score::{ALL_CHANNELS, NoiseReductionParams, WaveBuffer};
     let dir = support_audio::scratch("waveform-noise");
     let mut v = Viewer::new(Prefer::Cpu);
@@ -154,20 +156,46 @@ fn noise_reduction_from_a_stored_print_is_one_step_and_replays() {
     w.open_waveform(RATE, src.clone()).unwrap();
     assert_eq!(w.waveform_buffer().unwrap(), b);
 
-    // A changed print is stale: the same operation after an edit of the print range, or a wrong
-    // digest, refuses on replay.
+    // Review F3 (lead ruling 2026-11-08): a digest that differs on replay is a cache miss, not a
+    // refusal. The print is recomputed from the stored range and applied; the viewer records it.
     let actor = hsk_studio_accord::ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap();
     let source = WaveBuffer::new(RATE, src.clone()).unwrap();
     let plugins = PluginRegistry::default();
     let token = hsk_studio_accord::CancellationToken::default();
     let louder = vec![WaveformOp::Amplify { selection: all(0, 6000), db: 3.0 }, stored.ops[0].clone()];
-    let e = replay(&source, &louder, &plugins, &actor, &token).unwrap_err();
-    assert!(e.contains("waveform_noise_print_stale"), "{e}");
-    let mut tampered = stored.ops[0].clone();
-    if let WaveformOp::NoiseReduce { print_digest, .. } = &mut tampered {
+    assert!(replay(&source, &louder, &plugins, &actor, &token).is_ok(), "an earlier edit under the print recomputes it");
+    let digest = print_digest.clone();
+    let mut tampered = stored.clone();
+    if let WaveformOp::NoiseReduce { print_digest, .. } = &mut tampered.ops[0] {
         *print_digest = "0".repeat(64);
     }
-    assert!(replay(&source, &[tampered], &plugins, &actor, &token).unwrap_err().contains("waveform_noise_print_stale"));
+    assert_eq!(replay(&source, &tampered.ops, &plugins, &actor, &token).unwrap(), b, "the recomputed print gives the same audio");
+    // Through the document: a package whose stored digest differs reopens, replays and records
+    // `waveform_noise_print_recomputed` (op record with one observe frame) with both digests.
+    let h = Harness::new(Selection { providers: Vec::new(), references: References::TrustAll }).unwrap();
+    let forced = dir.join("forced.handshake");
+    {
+        let mut run = h.run(asset_local_test_context(), &token);
+        assert!(run.open_path(&saved));
+        run.set_document_entry("waveform_edit", Some(tampered.to_bytes())).unwrap();
+        assert!(run.save_to(&forced));
+    }
+    let mut x = Viewer::new(Prefer::Cpu);
+    x.open(&forced).unwrap();
+    x.open_waveform(RATE, src.clone()).unwrap();
+    assert_eq!(x.waveform_buffer().unwrap(), b);
+    let record = x.run().ops().iter().find(|o| o["op"] == "waveform_noise_print_recomputed").cloned().unwrap_or_else(|| panic!("no record: {:?}", x.run().ops()));
+    assert_eq!(record["ok"], true, "{record}");
+    assert_eq!(record["observe"]["frames"], 1, "{record}");
+    assert_eq!(record["detail"]["stored_digest"], "0".repeat(64), "{record}");
+    assert_eq!(record["detail"]["recomputed_digest"], digest, "{record}");
+    assert_eq!(x.waveform_json()["noise_print_recomputed"][0]["op"], 0);
+    // Another source refuses typed.
+    let mut other = src.clone();
+    other[0][0] += 0.25;
+    let mut y = Viewer::new(Prefer::Cpu);
+    y.open(&forced).unwrap();
+    assert!(y.open_waveform(RATE, other).unwrap_err().contains("waveform_source_mismatch"));
 
     // Hostile parameters and prints refuse typed with no step.
     let steps = undo_len(&v);
