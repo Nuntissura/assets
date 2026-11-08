@@ -592,7 +592,8 @@ impl Viewer {
             let contents = p.setting.contents_only();
             let key = (p.job, contents);
             if slot.as_ref().is_none_or(|(k, _, _)| *k != key) {
-                slot = None;
+                // The previous target's view and render go before the next view is made.
+                drop(slot.take());
                 let view = self.target_view(snap, &job.node, job.frame, contents).map_err(|r| self.partial(r, &written))?;
                 slot = Some((key, view, None));
             }
