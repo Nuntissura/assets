@@ -28,6 +28,27 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("waveform.invert", EDIT, "Invert", true, &[i("start"), i("end"), i("channels").opt()]),
     typed("waveform.reverse", EDIT, "Reverse", true, &[i("start"), i("end"), i("channels").opt()]),
     typed("waveform.effect", EDIT, "Apply effect to selection", true, &[i("start"), i("end"), i("channels").opt(), o("template", TEMPLATES).opt(), r("effect", EFFECT).opt()]),
+    // Lane SMB-SCORE-EFFECTS-6: noise reduction from a noise print over print_start .. print_end (same
+    // channels); the reduction fields default to score's `NoiseReductionParams::default()`.
+    typed(
+        "waveform.noise_reduce",
+        EDIT,
+        "Reduce noise from a noise print",
+        true,
+        &[
+            i("start"),
+            i("end"),
+            i("channels").opt(),
+            i("print_start"),
+            i("print_end"),
+            i("fft_size"),
+            n("reduction_db").opt(),
+            n("over_subtraction").opt(),
+            n("smoothing_up_ms").opt(),
+            n("smoothing_down_ms").opt(),
+            i("freq_smoothing_bins").opt(),
+        ],
+    ),
     typed("waveform.peaks", "Viewer::waveform_peaks", "Waveform peaks", false, &[i("start"), i("end"), i("columns")]),
     typed("waveform.state", "Viewer::waveform_json", "Waveform editor state", false, &[]),
 ];

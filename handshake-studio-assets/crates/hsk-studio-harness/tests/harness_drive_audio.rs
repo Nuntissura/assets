@@ -400,7 +400,7 @@ mod audio_post {
         assert_eq!(state["master"]["effects"].as_array().map(Vec::len), Some(1), "the master's limiter (step 80)");
         s.refused("mixer.add_effect", json!({"bus": id(3)}), "parameter_missing");
         s.refused("mixer.add_effect", json!({"bus": id(3), "template": "gain", "effect": {"instance_id": "x"}}), "parameter_conflict");
-        s.refused("mixer.add_effect", json!({"template": "reverb"}), "parameter_invalid");
+        s.refused("mixer.add_effect", json!({"template": "flux_capacitor"}), "parameter_invalid");
         s.refused("mixer.remove_effect", json!({"bus": id(3), "instance_id": "fx-9"}), "command_refused");
         // Step 71: a pass renders through the buses and fills the meters.
         let state = s.ok("mixer.render", json!({"frames": 4800}));

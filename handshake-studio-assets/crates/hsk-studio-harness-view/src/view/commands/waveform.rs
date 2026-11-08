@@ -15,7 +15,7 @@ use serde_json::Value;
 mod enabled {
     use super::super::super::Viewer;
     use super::super::super::spectral_display::default_params;
-    use super::super::super::waveform::WaveformEdit;
+    use super::super::super::waveform::{NoiseReduceParams, WaveformEdit};
     use super::super::decode::{Fields, invalid, missing};
     use super::super::mixer::enabled::effect_instance;
     use super::super::{CommandRefusal, engine_refusal};
@@ -90,6 +90,22 @@ mod enabled {
             "waveform.invert" => WaveformEdit::Invert(selection(f)?),
             "waveform.reverse" => WaveformEdit::Reverse(selection(f)?),
             "waveform.effect" => WaveformEdit::Effect { selection: selection(f)?, effect: effect_instance(f, &[])? },
+            "waveform.noise_reduce" => {
+                let d = score::NoiseReductionParams::default();
+                let reduction = score::NoiseReductionParams {
+                    reduction_db: f.number_or("reduction_db", d.reduction_db)?,
+                    over_subtraction: f.number_or("over_subtraction", d.over_subtraction)?,
+                    smoothing_up_ms: f.number_or("smoothing_up_ms", d.smoothing_up_ms)?,
+                    smoothing_down_ms: f.number_or("smoothing_down_ms", d.smoothing_down_ms)?,
+                    freq_smoothing_bins: if f.has("freq_smoothing_bins") { f.index("freq_smoothing_bins")? } else { d.freq_smoothing_bins },
+                };
+                let channels = channels(f)?;
+                WaveformEdit::NoiseReduce {
+                    selection: WaveSelection { start: start()?, end: end()?, channels },
+                    print: WaveSelection { start: f.unsigned("print_start")?, end: f.unsigned("print_end")?, channels },
+                    params: NoiseReduceParams { fft_size: f.index("fft_size")?, reduction },
+                }
+            }
             other => return Err(CommandRefusal::new("command_not_driveable", json!({"command_id": other}))),
         })
     }
