@@ -193,15 +193,14 @@ fn drive_edit_style_composition_sets_the_indent() {
     use hsk_studio_harness::view::render::Prefer;
     use serde_json::{Value, json};
     let run = |v: &mut Viewer, id: &str, p: Value| v.run_command(id, p.as_object().unwrap());
+    use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
     let mut v = Viewer::new(Prefer::Cpu);
-    v.layout_open(Some((600.0, 400.0)), Some(1)).unwrap();
-    run(&mut v, "layout.draw_frame", json!({"page_id":"page-1","x":10,"y":10,"w":300,"h":200})).unwrap();
-    let (frame, story) = {
-        let ed = v.layout_editor().unwrap();
-        let frame = ed.selected.clone().unwrap();
-        (frame.clone(), ed.story_of_frame(&frame).unwrap().story_id.clone())
-    };
-    let _ = frame;
+    v.new_document(&NewDocument::new(DocumentProfile::Layout, Some((600.0, 400.0))), None).unwrap();
+    // The first layout command opens the editor on the document; its page carries the frame.
+    run(&mut v, "layout.preflight", json!({})).unwrap();
+    let page = v.layout_editor().unwrap().doc().document.page_spreads[0].pages[0].page_id.clone();
+    run(&mut v, "layout.draw_frame", json!({"page_id":page,"x":10,"y":10,"w":300,"h":200})).unwrap();
+    let story = v.layout_editor().unwrap().doc().stories.last().unwrap().story_id.clone();
     run(&mut v, "layout.replace_text", json!({"story":story,"start":0,"end":0,"text":"Indented body copy"})).unwrap();
     run(&mut v, "layout.style.new_style", json!({"scope":"paragraph","name":"Body"})).unwrap();
     let style = v.layout_editor().unwrap().style_rows(TypeStyleScope::Paragraph).into_iter().find(|r| r.name == "Body").unwrap().style_id;

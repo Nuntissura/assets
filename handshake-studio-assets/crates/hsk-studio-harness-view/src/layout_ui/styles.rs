@@ -1,6 +1,8 @@
 //! Paragraph and character styles panels (lane SMB-LAYOUT-UI-2 slice 3; STU-LAY-036/037/038/143):
 //! the style lists of both scopes with usage counts and an override indicator, new style (based on
-//! another), edit (name, based on, next style, font family, size, leading, alignment), delete with
+//! another), edit (name, based on, next style, font family, size, leading, alignment, and the
+//! paragraph style's Folio composition settings: composer, H&J, STU-TYP-185 indents and spacing;
+//! lane SMB-TYPE-INDENT-SPACING-1, no panel control), delete with
 //! a replacement style, GREP rules on paragraph styles (add/remove), and clear overrides (character
 //! ranges inside a paragraph go back to the paragraph style). Applying styles stays the story
 //! editor's (`ApplyParagraphStyle` / `ApplyCharacterStyle`). Every result is checked by Folio's
@@ -18,8 +20,8 @@
 use super::{LayoutDoc, LayoutEdit, LayoutEditor, LayoutUiError, len, widget};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    Code, StoryRange, StudioCompositionSettings, StudioGrepStyle, StudioLineHeight, StudioTextAlign, StudioTypeStyle, TypeStyleSchema,
-    TypeStyleScope, Unresolved, validate_type_style_records,
+    Code, StoryRange, StudioCompositionSettings, StudioGrepStyle, StudioLineHeight, StudioStyleComposition, StudioTextAlign, StudioTypeStyle,
+    TypeStyleSchema, TypeStyleScope, Unresolved, validate_type_style_records,
 };
 use hsk_studio_layout::{FindMode, compile_find, resolve_style};
 use serde_json::{Value, json};
@@ -156,6 +158,22 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
                     return Err(LayoutUiError::InvalidGeometry);
                 }
             }
+            if patch.composition.is_some() && scope != TypeStyleScope::Paragraph {
+                return Err(LayoutUiError::WrongStyleScope(style.clone()));
+            }
+            if let Some(c) = &patch.composition {
+                // One entry per style; an empty or cleared record removes it. Folio validates the
+                // values below (points, finite, the H&J bounds).
+                let at = d.styles.style_composition.iter().position(|e| e.style_id == *style);
+                match (at, c.as_ref().filter(|c| !c.is_empty())) {
+                    (Some(i), Some(c)) => d.styles.style_composition[i].settings = c.clone(),
+                    (None, Some(c)) => d.styles.style_composition.push(StudioStyleComposition { style_id: style.clone(), settings: c.clone() }),
+                    (Some(i), None) => {
+                        d.styles.style_composition.remove(i);
+                    }
+                    (None, None) => {}
+                }
+            }
             let s = style_mut(&mut d, style)?;
             if let Some(n) = &patch.name {
                 s.name = n.clone();
@@ -192,6 +210,8 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
             }
             let parent = d.styles.style(style).and_then(|s| s.based_on.clone());
             d.styles.styles.retain(|s| s.style_id != *style);
+            // Its composition settings go with it (a record naming no style is refused by Folio).
+            d.styles.style_composition.retain(|c| c.style_id != *style);
             let swap = |v: &mut Option<String>, with: &Option<String>| {
                 if v.as_deref() == Some(style.as_str()) {
                     *v = with.clone();
