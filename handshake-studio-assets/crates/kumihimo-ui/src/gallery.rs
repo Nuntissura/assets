@@ -199,7 +199,7 @@ pub fn contact_sheet(b: &mut Builder<'_>) {
         MenuTitle { id: "menu.help", text: "HELP", full: "HELP", shown: false },
     ];
     widgets::menu_title_row(b, &titles, fw::MENU_TITLE_PAD_TIGHT, Some(("shell.menu-bar.more", "not_implemented_yet hidden=menu.help", ui("chev_down"))), niy);
-    widgets::presence_chip(b, "studio.presence.operator", "Operator", "O", ColorToken::PresenceOperator);
+    widgets::presence_chip(b, "studio.presence.operator", "Operator", "O", ColorToken::PresenceOperator, niy);
     b.end();
     // Document tabs: active unsaved, inactive; search; the preset faces.
     b.begin(Node::deco().layout(row(size::FRAME_TAB_STRIP_H)).paint(Paint::Fill(ColorToken::SurfaceStrip)));

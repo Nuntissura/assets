@@ -68,7 +68,7 @@ fn frame_regions_panels_and_ids() {
         roots,
         [
             "shell.menu-bar",
-            "studio.tab-strip",
+            "studio.tabstrip",
             "studio.options",
             "studio.panel.tools",
             "studio.dock.left",
@@ -88,6 +88,29 @@ fn frame_regions_panels_and_ids() {
     assert_eq!(ids.len(), n, "author_ids unique across panels");
     let node = |id: &str| f.node(id).unwrap_or_else(|| panic!("no {id}"));
     assert_eq!(node(VIEWER_ID).role, Role::Canvas);
+    // C-F3: dock roots are Regions (components.json dock_region); the icon rails inside them are Toolbars.
+    for d in ["studio.dock.left", "studio.dock.right", "studio.dock.bottom"] {
+        assert_eq!(node(d).role, Role::Region, "{d}");
+    }
+    assert_eq!(node("studio.tabstrip").role, Role::TabList);
+    // D-F2: the open document's tab is the active tab.
+    assert!(node("studio.tab.document").flags.selected && !node("studio.tab.document").flags.disabled);
+    // D-F3: family browse and the colour proxy are pinned to the rail's bottom (mock_lib.toolrail: proxy 6 above the
+    // rail bottom, browse 4 above the proxy).
+    assert_eq!((node("studio.tool.family-browse").bounds.y0, node("studio.colour.proxy").bounds.y0), (978.0, 1014.0));
+    // D-F1 (lead correction 2026-11-08): no frame control is drawn disabled; the unbuilt ones carry the reason as data.
+    assert!(all_nodes(&f).iter().filter(|n| !n.actions.is_empty()).all(|n| !n.disabled));
+    assert_eq!(node("menu.file").value.as_deref(), Some(NIY));
+    // D-F10: the visibility icons are text.tertiary in both states.
+    let red = row_id(&layer(&f, "Red"));
+    let t = f.panel_of(&red).unwrap().tree();
+    let eye = t.get(t.find(&format!("{red}.visibility")).unwrap());
+    assert!(matches!(t.get(eye.children[0]).paint, Paint::TintedIcon { color: ColorToken::TextTertiary, .. }));
+    // D-F11: groups 2 and 3 start their header 1 px under the group seam, so the header is a whole 26 px.
+    let l = f.layout().clone();
+    assert_eq!(node("studio.group.colour").bounds.y0, l.groups[1].y0 + 1.0);
+    assert_eq!(node("studio.group.layers").bounds.y0, l.groups[2].y0 + 1.0);
+    assert_eq!(node("studio.group.properties").bounds.y0, l.groups[0].y0);
     assert!(node("studio.viewer.ruler.x").bounds.h() == 20.0 && node("studio.viewer.ruler.y").bounds.w() == 20.0);
     // The menu bar: the module switch, 19 titles in STU-SHL-011 order, the window title, the presence chip.
     let titles: Vec<String> = nodes.iter().filter(|n| n.role == Role::MenuItem).map(|n| n.label.clone().unwrap()).collect();
@@ -114,8 +137,12 @@ fn frame_regions_panels_and_ids() {
         assert_eq!(node(&gid).role, Role::TabList, "{gid}");
         assert!(node(&format!("studio.tab.{}", g.tabs[0].0)).flags.selected);
     }
+    // D-F12: the empty state says it in words; the code stays in the node.
     let empty = node("studio.panel.properties.empty");
-    assert_eq!(empty.value.as_deref(), Some("Not built in this host yet (not_implemented_yet)"));
+    assert_eq!(empty.value.as_deref(), Some(NIY));
+    let p = f.panel_of("studio.panel.properties.empty").unwrap().tree();
+    let words: Vec<String> = p.nodes.iter().filter_map(|n| match &n.paint { Paint::Label { text, .. } => Some(text.clone()), _ => None }).collect();
+    assert!(words.iter().any(|w| w == "Not built in this host yet") && !words.iter().any(|w| w.contains(NIY)), "{words:?}");
     assert_eq!(f.tool_active(), "select", "the select slot at open");
     assert_eq!(node("studio.tool.active").value.as_deref(), Some("select"));
     assert_eq!(node("studio.options.identity").label.as_deref(), Some("Select"));
@@ -124,7 +151,7 @@ fn frame_regions_panels_and_ids() {
     let dock = f.panel_of(&sun).unwrap();
     let t = dock.tree();
     let vis = t.find(&format!("{sun}.visibility")).unwrap();
-    assert!(matches!(t.get(t.get(vis).children[0]).paint, Paint::Icon { icon, .. } if Some(icon) == icons::ui("eye_off")));
+    assert!(matches!(t.get(t.get(vis).children[0]).paint, Paint::TintedIcon { icon, .. } if Some(icon) == icons::ui("eye_off")));
 }
 
 /// Every interactive author_id maps to one command table entry; every unbuilt control answers not_implemented_yet in
@@ -135,13 +162,16 @@ fn every_control_answers_and_static_ones_say_not_implemented_yet() {
     let mut f = open(&s.0, 1920, 1080, 1000);
     let ops = f.viewer().run().ops().len();
     let rev = f.revision();
-    let interactive: Vec<(String, bool)> = all_nodes(&f).iter().filter(|n| !n.actions.is_empty()).map(|n| (n.author_id.clone(), n.disabled)).collect();
+    // Unbuilt controls are known by their availability data (value `not_implemented_yet`), never by a disabled look.
+    let interactive: Vec<(String, bool)> =
+        all_nodes(&f).iter().filter(|n| !n.actions.is_empty()).map(|n| (n.author_id.clone(), n.value.as_deref().is_some_and(|v| v.starts_with(NIY)))).collect();
     assert!(interactive.len() > 60, "{}", interactive.len());
+    assert!(interactive.iter().any(|(id, s)| id == "studio.presence.operator" && *s), "C-F1: the presence chip answers");
     let mut statics = 0u64;
-    for (id, disabled) in &interactive {
+    for (id, unbuilt) in &interactive {
         let before = f.node(id).and_then(|n| n.value.clone());
         let got = f.invoke(id).unwrap_or_else(|e| panic!("{id}: {e}"));
-        if *disabled {
+        if *unbuilt {
             statics += 1;
             assert_eq!(got, Some(Outcome { command: "frame.static", code: NIY.into() }), "{id}");
             assert!(before.as_deref().is_some_and(|v| v.starts_with(NIY)), "{id}: the value states the reason first");
@@ -157,12 +187,13 @@ fn every_control_answers_and_static_ones_say_not_implemented_yet() {
     for id in ["menu.file", "menu.operator", "shell.module-switch", "studio.tab.document.close", "studio.search", "studio.colour.proxy", "studio.rail.left.brushes", "studio.group.layers.menu"] {
         click_on(&mut g, id);
         assert_eq!(g.last(), Some(&Outcome { command: "frame.static", code: NIY.into() }), "{id}");
-        assert!(!g.node(id).unwrap().flags.focused, "{id}: no focus move");
     }
     assert_eq!(g.viewer().run().ops().len(), ops0, "static controls never reach the Viewer");
     assert_eq!(g.revision(), rev);
-    let readout = g.node("studio.status.command").unwrap().label.clone().unwrap();
-    assert!(readout.contains(NIY), "{readout}");
+    // The status bar says it in words; the code is the readout's value and the receipt's.
+    let readout = g.node("studio.status.command").unwrap();
+    assert_eq!(readout.value.as_deref(), Some("frame.static not_implemented_yet"));
+    assert!(readout.label.as_deref().unwrap().ends_with("not built in this host yet"), "{:?}", readout.label);
     let receipt = g.receipt().render();
     assert!(receipt.contains(r#""static_outcomes":8"#), "{receipt}");
     assert!(receipt.contains(r#""last_command":{"command":"frame.static","code":"not_implemented_yet"}"#), "{receipt}");
@@ -459,4 +490,86 @@ fn gui_source_has_no_colour_literal() {
         }
     }
     assert!(files >= 5);
+}
+
+/// D-F4: +N opens the list of the group's hidden tabs; a row runs frame.tab_select for its tab and closes the list.
+/// Lead answer: hidden rail slots and tabs stay invocable by author id, and the rail chevron lists author ids.
+#[test]
+fn overflow_lists_open_and_select_hidden_tabs() {
+    let s = Scratch::new("chrome-overflow");
+    let mut f = open(&s.0, 1920, 1080, 1000);
+    let more = f.node("studio.group.properties.more").unwrap();
+    assert!(more.value.as_deref().unwrap().contains("studio.tab.masks"), "{:?}", more.value);
+    click_on(&mut f, "studio.group.properties.more");
+    assert_eq!(f.last(), Some(&Outcome { command: "frame.overflow", code: "ok".into() }));
+    let row = f.node("studio.group.properties.more.masks").expect("the hidden Masks tab is listed");
+    assert_eq!(row.role, Role::MenuItem);
+    click_on(&mut f, "studio.group.properties.more.masks");
+    assert_eq!(f.last(), Some(&Outcome { command: "frame.tab_select", code: "ok".into() }));
+    assert_eq!(f.active_tab("studio.group.properties"), Some("masks"));
+    assert!(f.node("studio.group.properties.more.masks").is_none(), "choosing closes the list");
+    let mut g = open(&s.0, 1280, 720, 1000);
+    let chevron = g.node("studio.panel.tools.more").unwrap().value.clone().unwrap();
+    assert_eq!(chevron, "not_implemented_yet hidden=studio.toolgroup.warp,studio.toolgroup.measure");
+    assert_eq!(g.invoke("studio.toolgroup.warp").unwrap().map(|o| o.command), Some("frame.tool_pick"));
+    g.frame().unwrap();
+    assert_eq!(g.tool_active(), "warp");
+}
+
+/// D-F5 and D-F7: the hintline keeps the tool name and the last outcome in words; readouts run size, zoom, revision,
+/// renderer, device; under FIT-S1 the device readout drops first so the outcome stays whole (the node stays in the tree
+/// with no box). Lead answer: Page keys go only to the active tab's panel.
+#[test]
+fn status_bar_fit_s1_and_page_keys_follow_the_active_tab() {
+    let s = Scratch::new("chrome-status");
+    let mut f = open(&s.0, 1024, 640, 1000);
+    f.set_device("NVIDIA GeForce RTX 3090 (discrete_gpu), vulkan 1.4".into());
+    click_on(&mut f, "menu.file");
+    let xs: Vec<f32> = ["studio.status.hint", "studio.status.command", "studio.status.size", "studio.status.zoom"].iter().map(|id| f.node(id).unwrap().bounds.x0).collect();
+    assert!(xs.windows(2).all(|w| w[0] < w[1]), "{xs:?}");
+    assert_eq!(f.node("studio.status.hint").unwrap().label.as_deref(), Some("Select"));
+    let cmd = f.node("studio.status.command").unwrap();
+    assert!(matches!(&cmd.paint, Paint::Label { text, .. } if text == "FILE: not built in this host yet"), "{:?}", cmd.paint);
+    assert!(f.clipped().is_empty(), "{:?}", f.clipped());
+    assert!(f.node("studio.status.device").unwrap().bounds.is_empty(), "FIT-S1: the device readout drops first");
+    assert_eq!(f.node("studio.status.chrome").unwrap().label.as_deref(), Some("cpu painter, Vulkan UI pass pending"));
+    let w = open(&s.0, 1920, 1080, 1000);
+    assert!(!w.node("studio.status.device").unwrap().bounds.is_empty(), "room for every readout at 1920");
+    // Page keys: with Channels active in the Layers group, Page Down does not scroll the Layers list.
+    let mut g = open(&s.0, 800, 324, 1000);
+    let before = g.node("studio.panel.layers.list").unwrap().value.clone();
+    g.invoke("studio.tab.channels").unwrap();
+    g.frame().unwrap();
+    for e in hsk_studio_native_host::script::chord(hsk_studio_native_host::event::Key::PageDown, Default::default()) {
+        g.step(&e).unwrap();
+    }
+    g.invoke("studio.tab.layers").unwrap();
+    g.frame().unwrap();
+    assert_eq!(g.node("studio.panel.layers.list").unwrap().value, before, "no scroll while another tab is active");
+}
+
+/// C-F2: at FIT-L1 (2560 x 1440 at 1) the Browse Dock is expanded: one group of the six left panels, no expand rail;
+/// nothing clipped, every control answers, studio.dock.state lists the group.
+#[test]
+fn fit_l1_builds_the_expanded_browse_dock() {
+    let s = Scratch::new("chrome-l1");
+    let mut f = open(&s.0, 2560, 1440, 1000);
+    assert!(f.node("studio.rail.left.expand").is_none());
+    let tabs: Vec<String> = all_nodes(&f)
+        .iter()
+        .filter(|n| n.role == Role::Tab && preset::LEFT.iter().any(|p| n.author_id == format!("studio.tab.{}", p.id)))
+        .map(|n| n.author_id.clone())
+        .collect();
+    assert_eq!(tabs.len(), 6, "{tabs:?}");
+    assert_eq!(f.node("studio.group.brushes").unwrap().role, Role::TabList);
+    assert_eq!(f.node("studio.dock.left").unwrap().bounds.w(), 260.0);
+    assert!(f.clipped().is_empty(), "{:?}", f.clipped());
+    assert!(f.dock_state().contains(r#""id":"studio.group.brushes""#), "{}", f.dock_state());
+    assert_eq!(f.invoke("studio.tab.library").unwrap().map(|o| o.command), Some("frame.tab_select"));
+    f.frame().unwrap();
+    assert!(f.node("studio.panel.library.empty").is_some());
+    let ids: Vec<String> = all_nodes(&f).iter().filter(|n| !n.actions.is_empty()).map(|n| n.author_id.clone()).collect();
+    for id in ids {
+        assert!(f.invoke(&id).is_ok(), "{id}");
+    }
 }

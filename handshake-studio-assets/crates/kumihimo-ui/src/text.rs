@@ -313,6 +313,27 @@ impl Text {
     }
 }
 
+/// The icon id of a rotated ruler label showing `value` (document px), in a range of its own (D-F6): the host's
+/// resource source rasterises it with [`Text::rotated_label`] (skeleton).
+pub fn ruler_label_icon(value: i64) -> crate::display::IconId {
+    let _ = value;
+    crate::display::IconId(0)
+}
+/// The value a ruler-label icon id shows, None for any other id (skeleton).
+pub fn ruler_label_value(icon: crate::display::IconId) -> Option<i64> {
+    let _ = icon;
+    None
+}
+
+impl Text {
+    /// One line in `token` rasterised at `scale` and rotated 90 degrees counter-clockwise (reading bottom to top), as
+    /// an icon mask (form channel); None over [`MAX_LABEL_BYTES`] or for a refused shape (skeleton).
+    pub fn rotated_label(&mut self, text: &str, token: TextToken, scale: crate::geom::Scale) -> Option<crate::paint::IconMask> {
+        let _ = (text, token, scale);
+        None
+    }
+}
+
 /// A deterministic stand-in engine with no font: every scalar is a box of the style's cap height, advance
 /// `0.56 * size` (digits `0.6 * size`, space `0.3 * size`), 8 % wider at weight 600 and above so a weight mismatch is
 /// visible in tests. For layout tests and hosts with no text engine; never the product look.

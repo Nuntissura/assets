@@ -228,7 +228,7 @@ fn frame_widgets_sizes_roles_and_reasons() {
         ];
         b.begin(Node::new("shell.menu-bar", Role::MenuBar).layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fill, ..LayoutSpec::default() }));
         widgets::menu_title_row(b, &titles, 8.0, Some(("shell.menu-bar.more", "not_implemented_yet hidden=menu.help", icons::ui("chev_down").unwrap())), NIY);
-        widgets::presence_chip(b, "studio.presence.operator", "Operator", "O", ColorToken::PresenceOperator);
+        widgets::presence_chip(b, "studio.presence.operator", "Operator", "O", ColorToken::PresenceOperator, NIY);
         b.end();
         b.end();
         b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(32.0), ..LayoutSpec::default() }));
@@ -280,11 +280,13 @@ fn frame_widgets_sizes_roles_and_reasons() {
     assert_eq!(n("menu.file").bounds.w(), (t.measure("FILE", TextToken::MenuTitle, 0) + 16.0).ceil());
     assert!(n("menu.help").bounds.is_empty());
     assert_eq!(n("menu.help").value.as_deref(), Some("not_implemented_yet"));
-    assert!(n("menu.file").flags.disabled && n("shell.menu-bar.more").flags.disabled);
+    // D-F1: unbuilt controls keep the normal look and carry the reason as data.
+    assert!(!n("menu.file").flags.disabled && !n("shell.menu-bar.more").flags.disabled && n("menu.file").value.as_deref() == NIY);
+    assert!(!n("studio.tab.document").flags.disabled && n("studio.tab.document").flags.selected, "D-F2: the open document's tab is active");
     assert_eq!(n("shell.menu-bar.more").value.as_deref(), Some("not_implemented_yet hidden=menu.help"));
     assert_eq!((n("studio.presence.operator").bounds.w(), n("studio.presence.operator").bounds.h()), (fw::PRESENCE_D, fw::PRESENCE_D));
     assert_eq!(n("studio.presence.operator").label.as_deref(), Some("Operator"));
-    assert!(n("studio.presence.operator").actions.is_empty(), "an indicator, not a control");
+    assert!(!n("studio.presence.operator").actions.is_empty() && n("studio.presence.operator").value.as_deref() == NIY, "C-F1: it answers");
     // Document tab 220 x 32 with the close 20; the search field 240 x 24 (SearchInput); the preset face is a ComboBox.
     let tab = n("studio.tab.document");
     assert_eq!((tab.role, tab.bounds.w(), tab.bounds.h()), (Role::Tab, 220.0, 32.0));
@@ -361,6 +363,41 @@ fn contact_sheet_renders_every_widget_with_the_icon_set() {
     for want in ["menu.", "studio.tab.", "studio.search", "studio.toolgroup.", "studio.rail.", "studio.group.", "studio.status.", "studio.viewer.ruler."] {
         assert!(all.iter().any(|i| i.starts_with(want)), "{want} in {all:?}");
     }
-    assert!(p.tree().nodes.iter().any(|n| n.flags.disabled) && p.tree().nodes.iter().any(|n| n.flags.toggled), "states shown");
+    assert!(p.tree().nodes.iter().any(|n| n.value.as_deref() == Some("not_implemented_yet")) && p.tree().nodes.iter().any(|n| n.flags.toggled), "states shown");
     assert_eq!(gallery::Scene::ALL.len(), 4);
+}
+
+/// D-F6: the vertical ruler labels its major ticks with rotated caption labels (reading bottom to top, 2 px from the
+/// outer edge, top at tick + 1, dropped near the end): icons of the ruler-label range whose masks Text rasterises.
+#[test]
+fn vertical_ruler_draws_rotated_labels() {
+    use kumihimo_ui::text::{ruler_label_icon, ruler_label_value};
+    let mut t = text();
+    let v = build(20.0, 300.0, &mut t, |b| widgets::ruler(b, "studio.viewer.ruler.y", "Vertical ruler", Axis::Column, 40.0, true));
+    let labels: Vec<(Rect, i64)> =
+        v.display_list().items.iter().filter_map(|it| match it { Prim::Icon { rect, icon, .. } => ruler_label_value(*icon).map(|val| (*rect, val)), _ => None }).collect();
+    // Majors at 40 (0), 140 (100) and 240 (200): each label runs down from tick + 1 and fits before 300.
+    assert_eq!(labels.iter().map(|l| l.1).collect::<Vec<_>>(), [0, 100, 200], "{labels:?}");
+    assert!(labels.iter().all(|(r, _)| r.x0 == 2.0), "2 px from the outer edge");
+    assert_eq!(labels[1].0.y0, 141.0, "top at tick + 1");
+    assert_eq!(ruler_label_value(ruler_label_icon(-300)), Some(-300));
+    for s in [1.0f32, 1.5, 2.0] {
+        let m = t.rotated_label("100", TextToken::Caption, Scale::new(s).unwrap()).expect("mask");
+        assert!(m.height > m.width, "rotated: taller than wide at {s}: {}x{}", m.width, m.height);
+        assert!(m.rg.iter().any(|p| p[0] > 0), "ink");
+    }
+    assert!(t.rotated_label(&"9".repeat(5000), TextToken::Caption, Scale::ONE).is_none(), "over the label bound");
+}
+
+/// D-F10: the frame's layer row draws its visibility icon in a fixed token (text.tertiary); the gallery's layer_row
+/// output is unchanged (goldens).
+#[test]
+fn tinted_layer_row_eye() {
+    let mut t = text();
+    let p = build(300.0, 32.0, &mut t, |b| {
+        widgets::layer_row_tinted(b, "studio.panel.layers.row.a", "A", ColorToken::TagNone, false, false, 0, None, icons::ui("eye_off").unwrap(), &[], Some(ColorToken::TextTertiary));
+    });
+    let tr = p.tree();
+    let vis = tr.get(tr.find("studio.panel.layers.row.a.visibility").unwrap());
+    assert!(matches!(tr.get(vis.children[0]).paint, Paint::TintedIcon { color: ColorToken::TextTertiary, .. }));
 }

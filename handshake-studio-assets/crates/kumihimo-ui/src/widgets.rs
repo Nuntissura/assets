@@ -192,6 +192,13 @@ pub fn scrollbar(b: &mut Builder<'_>, id: &str, label_text: &str, lane_h: f32, f
     b.end();
 }
 
+/// [`layer_row`] with the visibility icon in a fixed token (skeleton: the tint is not applied yet).
+#[allow(clippy::too_many_arguments)]
+pub fn layer_row_tinted(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, visible: bool, selected: bool, depth: u8, thumb: Option<ImageId>, eye: IconId, badges: &[IconId], eye_tint: Option<ColorToken>) {
+    let _ = eye_tint;
+    layer_row(b, id, name, tag, visible, selected, depth, thumb, eye, badges);
+}
+
 /// Layer row (components.json `layer_row`: h 32, tag edge 3, eye 22, indent 16 per depth, thumb 24, name, badges 12).
 #[allow(clippy::too_many_arguments)]
 pub fn layer_row(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, visible: bool, selected: bool, depth: u8, thumb: Option<ImageId>, eye: IconId, badges: &[IconId]) {
@@ -426,7 +433,8 @@ pub fn key_chip(b: &mut Builder<'_>, text: &str) {
 
 /// Presence chip (components.json `presence_chip`, d 18): `color` circle with the initial in text.on_accent (never
 /// colour alone: the label names who). An indicator: it never pops anything and takes no action.
-pub fn presence_chip(b: &mut Builder<'_>, id: &str, name: &str, initial: &str, color: ColorToken) {
+pub fn presence_chip(b: &mut Builder<'_>, id: &str, name: &str, initial: &str, color: ColorToken, reason: Option<&str>) {
+    let _ = reason;
     b.begin(
         Node::new(id, Role::Button)
             .label(cut_label(name))

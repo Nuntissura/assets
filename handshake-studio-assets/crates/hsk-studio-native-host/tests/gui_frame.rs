@@ -168,7 +168,7 @@ fn layers_panel_regions_rows_states_and_tree_checks() {
     let dock = f.panel_of(DOCK_ID).unwrap();
     let tree = dock.tree();
     let vis_id = tree.find(&format!("{}.visibility", row_id(&sun))).unwrap();
-    assert!(matches!(tree.get(tree.get(vis_id).children[0]).paint, Paint::Icon { icon, .. } if icon == view::eye(false)), "eye_off, not the eye");
+    assert!(matches!(tree.get(tree.get(vis_id).children[0]).paint, Paint::TintedIcon { icon, .. } if icon == view::eye(false)), "eye_off, not the eye");
     let row_node = tree.find(&row_id(&sun)).unwrap();
     let disabled_name = tree.get(row_node).children.iter().any(|&c| matches!(&tree.get(c).paint, Paint::Label { color: Some(ColorToken::TextDisabled), text, .. } if text == "Sun"));
     assert!(disabled_name);

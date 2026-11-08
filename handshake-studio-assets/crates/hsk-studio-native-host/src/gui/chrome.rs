@@ -92,7 +92,7 @@ pub fn menu_bar(b: &mut Builder<'_>, m: &MenuFacts<'_>) {
             .size(Size::Fill, Size::Fill),
     );
     b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fill, gap: 4.0, pad: [4.0, 0.0, 8.0, 0.0], cross: Align::Center, ..LayoutSpec::default() }));
-    widgets::presence_chip(b, "studio.presence.operator", "Operator", "O", ColorToken::PresenceOperator);
+    widgets::presence_chip(b, "studio.presence.operator", "Operator", "O", ColorToken::PresenceOperator, None);
     b.end();
     b.end();
 }
