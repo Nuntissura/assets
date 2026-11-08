@@ -145,8 +145,9 @@ impl super::super::Viewer {
     }
 
     /// The bus stream the program monitor's sequence plays: the open audio file's own import when the
-    /// monitor shows it, else the document sequence over [`super::super::Viewer::sequence_sound`].
-    fn program_stream(&self, sequence_id: &str, block: usize) -> Result<TimelineBusStream, MonitorFail> {
+    /// monitor shows it, else the document sequence over [`super::super::Viewer::sequence_sound`]
+    /// (its recomputed noise prints are recorded, review F3: `record_print_recomputes`).
+    fn program_stream(&mut self, sequence_id: &str, block: usize) -> Result<TimelineBusStream, MonitorFail> {
         if let Some(a) = &self.audio
             && a.import.sequence.sequence_id == sequence_id
         {
@@ -155,6 +156,7 @@ impl super::super::Viewer {
                 .map_err(|e| fail("mixdown", e.code()));
         }
         let sound = self.sequence_sound()?;
+        self.record_print_recomputes(sound.noise_print_recomputed());
         self.sound_stream(sequence_id, &sound, block)
     }
 

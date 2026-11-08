@@ -231,6 +231,10 @@ struct Prepared {
     /// Working-set estimate of the job (one frame) and the document revision its input was taken from.
     bytes: u64,
     bound_revision: u64,
+    /// Noise prints the repair replay recomputed with another digest (review F3), recorded by the
+    /// caller (`record_print_recomputes`).
+    #[cfg(feature = "audio-batch")]
+    recomputed: Vec<super::super::waveform::PrintRecompute>,
 }
 
 /// A running window export.
@@ -512,7 +516,10 @@ impl Viewer {
     }
 
     fn export_sequence_inner(&mut self, sequence_id: &str, request: &ExportSequenceRequest) -> Result<Value, MonitorFail> {
-        let Prepared { mut queue, job, requests, meta, bytes, bound_revision, .. } = self.export_prepare(sequence_id, request)?;
+        let prepared = self.export_prepare(sequence_id, request)?;
+        #[cfg(feature = "audio-batch")]
+        self.record_print_recomputes(&prepared.recomputed);
+        let Prepared { mut queue, job, requests, meta, bytes, bound_revision, .. } = prepared;
         // Admitted before anything starts: a refusal submits nothing and starts no thread or encoder.
         let _handle = queue.submit(job, bytes, bound_revision, self.document_head(), self.cancel).map_err(refusal_fail)?;
         let (mut queue, settlements) = queue.into_worker();
@@ -556,6 +563,8 @@ impl Viewer {
         // picture export as it reaches playback and the audio-only mixdown.
         #[cfg(feature = "audio-batch")]
         let mut repair_unmatched: Option<String> = None;
+        #[cfg(feature = "audio-batch")]
+        let mut recomputed = Vec::new();
         #[cfg(not(feature = "audio-batch"))]
         let repair_unmatched: Option<String> = None;
         #[cfg(feature = "audio-batch")]
@@ -563,6 +572,7 @@ impl Viewer {
             Some(_) => {
                 let sound = self.sequence_sound()?;
                 repair_unmatched = sound.repair_unmatched().map(str::to_owned);
+                recomputed = sound.noise_print_recomputed().to_vec();
                 let rate = sound.rate();
                 Some(AudioPort { sources: Arc::new(sound.clone()), extents: Arc::new(sound), rate })
             }
@@ -620,7 +630,17 @@ impl Viewer {
         };
         let job = timeline_export_job_with(export, NestedDocument::new(doc.sequences.clone(), routing), self.cancel)?;
         let bound_revision = doc.revision;
-        Ok(Prepared { queue, job, requests, waiting, meta, bytes: frame_bytes(request.width, request.height), bound_revision })
+        Ok(Prepared {
+            queue,
+            job,
+            requests,
+            waiting,
+            meta,
+            bytes: frame_bytes(request.width, request.height),
+            bound_revision,
+            #[cfg(feature = "audio-batch")]
+            recomputed,
+        })
     }
 
     /// `output` as given when absolute, else joined to the save root (module docs).
@@ -728,7 +748,10 @@ impl Viewer {
     fn export_form_start(&mut self, form: &ExportForm) -> Result<(), String> {
         let tpf = self.run.snapshot().and_then(|s| s.document().sequences.iter().find(|q| q.sequence_id == form.sequence_id)).map(|s| s.frame_rate.ticks_per_frame).ok_or("unknown_sequence")?;
         let request = form.request(tpf)?;
-        let Prepared { mut queue, job, requests, waiting, meta, bytes, bound_revision } = self.export_prepare(&form.sequence_id, &request).map_err(|e| format!("{} {}", e.code, e.detail))?;
+        let prepared = self.export_prepare(&form.sequence_id, &request).map_err(|e| format!("{} {}", e.code, e.detail))?;
+        #[cfg(feature = "audio-batch")]
+        self.record_print_recomputes(&prepared.recomputed);
+        let Prepared { mut queue, job, requests, waiting, meta, bytes, bound_revision, .. } = prepared;
         // Admitted before anything starts: a refusal submits nothing and starts no thread or encoder.
         let handle = queue.submit(job, bytes, bound_revision, self.document_head(), self.cancel).map_err(|r| {
             let f = refusal_fail(r);
