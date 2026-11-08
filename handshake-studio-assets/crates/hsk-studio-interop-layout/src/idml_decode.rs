@@ -71,7 +71,13 @@ pub(crate) fn text_of(part: &IdmlPart) -> Result<&str> {
     std::str::from_utf8(&part.bytes).map_err(|_| IdmlError::MalformedXml)
 }
 
+/// Every IDML part and kept fragment is parsed here. roxmltree parses element nesting by recursion
+/// with no depth limit (a stack overflow aborts the process), so nesting past
+/// `XML_MAX_NESTING` is refused before the parse (SMB-PARSER-HOSTILE-1; tests/hostile_xml_depth.rs).
 pub(crate) fn parse_xml<'a>(text: &'a str, limits: &Limits) -> Result<Document<'a>> {
+    if !hsk_studio_package::xml_nesting_within(text, hsk_studio_package::XML_MAX_NESTING) {
+        return Err(IdmlError::BudgetExceeded("xml_depth"));
+    }
     let options = ParsingOptions {
         allow_dtd: false,
         nodes_limit: limits.xml_nodes,

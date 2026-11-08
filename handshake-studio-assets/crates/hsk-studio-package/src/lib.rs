@@ -4,6 +4,7 @@
 //! fixtures supply scoped in-memory resolver inputs rather than kernel imports.
 #![forbid(unsafe_code)]
 
+mod bounded_xml;
 mod bounded_zip;
 mod error;
 mod externals;
@@ -22,6 +23,7 @@ mod write;
 mod zip;
 
 pub use error::{AssetError, PackageError};
+pub use bounded_xml::{XML_MAX_NESTING, xml_nesting_within};
 pub use bounded_zip::{
     InflateFail, MAX_ZIP_NAME_LEN, ZipDirectory, ZipEntry, ZipLimits, ZipReadError, inflate_exact,
     read_zip,

@@ -408,6 +408,12 @@ pub fn inspect_epub(bytes: &[u8], limits: &ZipLimits, cancel: &CancellationToken
     let xml = |b: &[u8]| -> Result<String, EpubError> { String::from_utf8(b.to_vec()).map_err(|_| EpubError::NotEpub("utf8")) };
     let opts = ParsingOptions { allow_dtd: false, nodes_limit: 1_000_000, ..ParsingOptions::default() };
     let container = xml(get("META-INF/container.xml").ok_or(EpubError::NotEpub("container"))?)?;
+    // roxmltree recurses per nesting level with no limit (a stack overflow aborts): nesting past
+    // the scan's cap is refused before each parse, as malformed XML (SMB-PARSER-HOSTILE-1).
+    let shallow = |t: &str| hsk_studio_package::xml_nesting_within(t, hsk_studio_package::XML_MAX_NESTING);
+    if !shallow(&container) {
+        return Err(EpubError::NotEpub("container_xml"));
+    }
     let cdoc = Document::parse_with_options(&container, opts).map_err(|_| EpubError::NotEpub("container_xml"))?;
     let root_path = cdoc
         .descendants()
@@ -417,6 +423,9 @@ pub fn inspect_epub(bytes: &[u8], limits: &ZipLimits, cancel: &CancellationToken
         .to_owned();
     let opf = xml(get(&root_path).ok_or(EpubError::NotEpub("rootfile_missing"))?)?;
     let opts = ParsingOptions { allow_dtd: false, nodes_limit: 1_000_000, ..ParsingOptions::default() };
+    if !shallow(&opf) {
+        return Err(EpubError::NotEpub("opf_xml"));
+    }
     let odoc = Document::parse_with_options(&opf, opts).map_err(|_| EpubError::NotEpub("opf_xml"))?;
     let pkg = odoc.root_element();
     if !pkg.has_tag_name("package") {

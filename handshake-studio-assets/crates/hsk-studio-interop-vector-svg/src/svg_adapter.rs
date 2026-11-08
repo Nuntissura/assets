@@ -641,6 +641,12 @@ pub fn import_svg(
         }
         Prolog::InternalSubset => return Err(VectorError::EntityDenied),
     };
+    // roxmltree parses element nesting by recursion with no depth limit, and a stack overflow
+    // aborts the process: nesting past the scan's cap is refused before the parse, with the code
+    // the walk gives past `max_depth` (SMB-PARSER-HOSTILE-1; tests/hostile_xml_depth.rs).
+    if !hsk_studio_package::xml_nesting_within(text, hsk_studio_package::XML_MAX_NESTING) {
+        return Err(VectorError::BudgetExceeded("depth"));
+    }
     let options = ParsingOptions {
         allow_dtd: false,
         nodes_limit: policy.limits.max_nodes,
