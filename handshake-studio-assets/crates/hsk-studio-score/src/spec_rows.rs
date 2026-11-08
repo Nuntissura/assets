@@ -81,6 +81,78 @@ pub const SPEC_ROWS: &[(&str, &str, Result<&str, &str>)] = &[
     // uses its own authored threshold (robust sigmas) and AR order instead.
     ("AutoClickRemover", "inf_threshold", Err(NO_MEANING)),
     ("AutoClickRemover", "inf_complexity", Err(NO_MEANING)),
+    // GraphicEQ10Bands (sheet GraphicEQ__Bands): gain and amp bound; accuracy and range have no declared meaning.
+    ("GraphicEQ10Bands", "accuracy", Err(NO_MEANING)),
+    ("GraphicEQ10Bands", "gain", Ok("GraphicEqParams.gain_db (master gain, dB authored)")),
+    ("GraphicEQ10Bands", "range", Err(NO_MEANING)),
+    ("GraphicEQ10Bands", "amp1", Ok("GraphicEqParams.amps_db[0] (band 1 command, dB authored; band centre authored)")),
+    ("GraphicEQ10Bands", "amp2", Ok("GraphicEqParams.amps_db[1] (band 2 command, dB authored; band centre authored)")),
+    ("GraphicEQ10Bands", "amp3", Ok("GraphicEqParams.amps_db[2] (band 3 command, dB authored; band centre authored)")),
+    ("GraphicEQ10Bands", "amp4", Ok("GraphicEqParams.amps_db[3] (band 4 command, dB authored; band centre authored)")),
+    ("GraphicEQ10Bands", "amp5", Ok("GraphicEqParams.amps_db[4] (band 5 command, dB authored; band centre authored)")),
+    ("GraphicEQ10Bands", "amp6", Ok("GraphicEqParams.amps_db[5] (band 6 command, dB authored; band centre authored)")),
+    ("GraphicEQ10Bands", "amp7", Ok("GraphicEqParams.amps_db[6] (band 7 command, dB authored; band centre authored)")),
+    ("GraphicEQ10Bands", "amp8", Ok("GraphicEqParams.amps_db[7] (band 8 command, dB authored; band centre authored)")),
+    ("GraphicEQ10Bands", "amp9", Ok("GraphicEqParams.amps_db[8] (band 9 command, dB authored; band centre authored)")),
+    ("GraphicEQ10Bands", "amp10", Ok("GraphicEqParams.amps_db[9] (band 10 command, dB authored; band centre authored)")),
+    // GraphicEQ20Bands (sheet GraphicEQ__Bands): gain and amp bound; accuracy and range have no declared meaning.
+    ("GraphicEQ20Bands", "accuracy", Err(NO_MEANING)),
+    ("GraphicEQ20Bands", "gain", Ok("GraphicEqParams.gain_db (master gain, dB authored)")),
+    ("GraphicEQ20Bands", "range", Err(NO_MEANING)),
+    ("GraphicEQ20Bands", "amp1", Ok("GraphicEqParams.amps_db[0] (band 1 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp2", Ok("GraphicEqParams.amps_db[1] (band 2 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp3", Ok("GraphicEqParams.amps_db[2] (band 3 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp4", Ok("GraphicEqParams.amps_db[3] (band 4 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp5", Ok("GraphicEqParams.amps_db[4] (band 5 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp6", Ok("GraphicEqParams.amps_db[5] (band 6 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp7", Ok("GraphicEqParams.amps_db[6] (band 7 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp8", Ok("GraphicEqParams.amps_db[7] (band 8 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp9", Ok("GraphicEqParams.amps_db[8] (band 9 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp10", Ok("GraphicEqParams.amps_db[9] (band 10 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp11", Ok("GraphicEqParams.amps_db[10] (band 11 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp12", Ok("GraphicEqParams.amps_db[11] (band 12 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp13", Ok("GraphicEqParams.amps_db[12] (band 13 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp14", Ok("GraphicEqParams.amps_db[13] (band 14 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp15", Ok("GraphicEqParams.amps_db[14] (band 15 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp16", Ok("GraphicEqParams.amps_db[15] (band 16 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp17", Ok("GraphicEqParams.amps_db[16] (band 17 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp18", Ok("GraphicEqParams.amps_db[17] (band 18 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp19", Ok("GraphicEqParams.amps_db[18] (band 19 command, dB authored; band centre authored)")),
+    ("GraphicEQ20Bands", "amp20", Ok("GraphicEqParams.amps_db[19] (band 20 command, dB authored; band centre authored)")),
+    // GraphicEQ30Bands (sheet GraphicEQ__Bands): gain and amp bound; accuracy and range have no declared meaning.
+    ("GraphicEQ30Bands", "accuracy", Err(NO_MEANING)),
+    ("GraphicEQ30Bands", "gain", Ok("GraphicEqParams.gain_db (master gain, dB authored)")),
+    ("GraphicEQ30Bands", "range", Err(NO_MEANING)),
+    ("GraphicEQ30Bands", "amp1", Ok("GraphicEqParams.amps_db[0] (band 1 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp2", Ok("GraphicEqParams.amps_db[1] (band 2 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp3", Ok("GraphicEqParams.amps_db[2] (band 3 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp4", Ok("GraphicEqParams.amps_db[3] (band 4 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp5", Ok("GraphicEqParams.amps_db[4] (band 5 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp6", Ok("GraphicEqParams.amps_db[5] (band 6 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp7", Ok("GraphicEqParams.amps_db[6] (band 7 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp8", Ok("GraphicEqParams.amps_db[7] (band 8 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp9", Ok("GraphicEqParams.amps_db[8] (band 9 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp10", Ok("GraphicEqParams.amps_db[9] (band 10 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp11", Ok("GraphicEqParams.amps_db[10] (band 11 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp12", Ok("GraphicEqParams.amps_db[11] (band 12 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp13", Ok("GraphicEqParams.amps_db[12] (band 13 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp14", Ok("GraphicEqParams.amps_db[13] (band 14 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp15", Ok("GraphicEqParams.amps_db[14] (band 15 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp16", Ok("GraphicEqParams.amps_db[15] (band 16 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp17", Ok("GraphicEqParams.amps_db[16] (band 17 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp18", Ok("GraphicEqParams.amps_db[17] (band 18 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp19", Ok("GraphicEqParams.amps_db[18] (band 19 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp20", Ok("GraphicEqParams.amps_db[19] (band 20 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp21", Ok("GraphicEqParams.amps_db[20] (band 21 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp22", Ok("GraphicEqParams.amps_db[21] (band 22 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp23", Ok("GraphicEqParams.amps_db[22] (band 23 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp24", Ok("GraphicEqParams.amps_db[23] (band 24 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp25", Ok("GraphicEqParams.amps_db[24] (band 25 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp26", Ok("GraphicEqParams.amps_db[25] (band 26 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp27", Ok("GraphicEqParams.amps_db[26] (band 27 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp28", Ok("GraphicEqParams.amps_db[27] (band 28 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp29", Ok("GraphicEqParams.amps_db[28] (band 29 command, dB authored; band centre authored)")),
+    ("GraphicEQ30Bands", "amp30", Ok("GraphicEqParams.amps_db[29] (band 30 command, dB authored; band centre authored)")),
 ];
 
 /// One row of a spec audio parameter sheet as declared (STU-FX-136a): `None` is the sheet's `--`.
@@ -222,14 +294,22 @@ pub const GRAPHIC_EQ_30_BANDS_ROWS: [SpecParameterRow; 33] = [
 /// The contract table of spec effect `effect` (`GraphicEQ10Bands`, `GraphicEQ20Bands`,
 /// `GraphicEQ30Bands`); `None` for an effect whose sheet is not reproduced here.
 pub fn spec_parameter_rows(effect: &str) -> Option<&'static [SpecParameterRow]> {
-    let _ = effect; // red stub
-    None
+    match effect {
+        "GraphicEQ10Bands" => Some(&GRAPHIC_EQ_10_BANDS_ROWS),
+        "GraphicEQ20Bands" => Some(&GRAPHIC_EQ_20_BANDS_ROWS),
+        "GraphicEQ30Bands" => Some(&GRAPHIC_EQ_30_BANDS_ROWS),
+        _ => None,
+    }
 }
 
 /// The graphic equalizer sheet of a band count.
 pub(crate) fn graphic_eq_rows(bands: usize) -> Option<&'static [SpecParameterRow]> {
-    let _ = bands; // red stub
-    None
+    match bands {
+        10 => Some(&GRAPHIC_EQ_10_BANDS_ROWS),
+        20 => Some(&GRAPHIC_EQ_20_BANDS_ROWS),
+        30 => Some(&GRAPHIC_EQ_30_BANDS_ROWS),
+        _ => None,
+    }
 }
 
 /// Studio field for spec row `(effect, parameter)`, or the typed refusal.
