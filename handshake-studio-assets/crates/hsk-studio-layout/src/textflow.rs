@@ -8,7 +8,11 @@
 //! class B characters and the five break sentinels, `sentinels::ends_paragraph`; typing one makes a
 //! paragraph, deleting one merges two; the first touched paragraph's style and direction win). `shift_flow_records` moves every
 //! story byte the Folio layout-flow records hold (anchors, text anchors, cross-reference ranges,
-//! conditional ranges, paragraph overrides) the same way.
+//! conditional ranges, paragraph overrides) the same way. `shift_paragraph_records` (lane
+//! SMB-TYPE-INDENT-SPACING-1) also moves the Folio type-style local composition overrides and then
+//! keeps only the paragraph-keyed records (those and the layout-flow paragraph overrides) that name
+//! a paragraph of the edited story: a record of a paragraph merged away is dropped, and of two that
+//! collapse onto one start the record of the first touched paragraph wins, as its style does.
 //!
 //! Conditional text (STU-LAY-049/153): visibility resolves BEFORE composition. A byte is hidden when
 //! at least one conditional range covers it and none of the covering ranges carries a visible
@@ -196,15 +200,59 @@ pub fn shift_flow_records(
 /// [`shift_flow_records`] for an edit of `edited` (the story [`replace_story_text`] returned) plus
 /// the records keyed by a paragraph's start byte: the layout-flow paragraph overrides and the Folio
 /// type-style local composition overrides (`paragraph_composition`, lane SMB-TYPE-INDENT-SPACING-1).
+/// After the move, a record of this story naming no paragraph start of `edited` is dropped, and of
+/// records that collapse onto one start the one with the lowest original start (the first touched
+/// paragraph) is kept; other stories' records are untouched. Without this a text edit before an
+/// overridden paragraph left its override at the old byte (composition then refused it as
+/// `invalid_input`, or applied it to another paragraph that now starts there).
 pub fn shift_paragraph_records(
     flow: &mut StudioLayoutFlowRecords,
-    _styles: &mut StudioTypeStyleRecords,
+    styles: &mut StudioTypeStyleRecords,
     edited: &StudioTextStory,
     start: u64,
     end: u64,
     new_len: u64,
 ) -> Result<(), LayoutError> {
-    shift_flow_records(flow, &edited.story_id, start, end, new_len)
+    let id = edited.story_id.as_str();
+    let before: Vec<u64> = flow.paragraph_flows.iter().map(|p| p.paragraph_start).collect();
+    shift_flow_records(flow, id, start, end, new_len)?;
+    let starts: Vec<u64> = edited.paragraphs.iter().map(|p| p.start).collect();
+    let keep = first_per_start(flow.paragraph_flows.iter().zip(&before).map(|(p, b)| (p.story_id == id, p.paragraph_start, *b)), &starts);
+    let mut i = 0usize;
+    flow.paragraph_flows.retain(|_| {
+        let k = keep.get(i).copied().unwrap_or(true);
+        i = i.saturating_add(1);
+        k
+    });
+    let before: Vec<u64> = styles.paragraph_composition.iter().map(|c| c.paragraph_start).collect();
+    for c in styles.paragraph_composition.iter_mut().filter(|c| c.text_id == id) {
+        c.paragraph_start = map_pos(c.paragraph_start, start, end, new_len)?;
+    }
+    let keep = first_per_start(styles.paragraph_composition.iter().zip(&before).map(|(c, b)| (c.text_id == id, c.paragraph_start, *b)), &starts);
+    let mut i = 0usize;
+    styles.paragraph_composition.retain(|_| {
+        let k = keep.get(i).copied().unwrap_or(true);
+        i = i.saturating_add(1);
+        k
+    });
+    Ok(())
+}
+
+/// Which records to keep: `(of the edited story, new start, original start)` per record; a record
+/// of another story is kept; one of the edited story is kept when its new start is a paragraph
+/// start and no other record at that start has a lower original start (the earlier one on a tie).
+fn first_per_start(records: impl Iterator<Item = (bool, u64, u64)>, starts: &[u64]) -> Vec<bool> {
+    let records: Vec<(bool, u64, u64)> = records.collect();
+    let mut winner: std::collections::BTreeMap<u64, (u64, usize)> = std::collections::BTreeMap::new();
+    for (i, &(mine, at, old)) in records.iter().enumerate() {
+        if mine && starts.binary_search(&at).is_ok() {
+            let w = winner.entry(at).or_insert((old, i));
+            if old < w.0 {
+                *w = (old, i);
+            }
+        }
+    }
+    records.iter().enumerate().map(|(i, &(mine, at, _))| !mine || winner.get(&at).is_some_and(|w| w.1 == i)).collect()
 }
 
 /// The visible part of a story under the current condition visibility.
