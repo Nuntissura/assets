@@ -40,6 +40,30 @@ pub struct GuiArgs {
     pub steps: Vec<Step>,
     pub tree: Option<PathBuf>,
     pub scale_milli: Option<u32>,
+    /// What draws the chrome (`--chrome cpu|vulkan`; the CPU painter is the default and the reference).
+    pub chrome: ChromeMode,
+    /// `--ui-trace T.json`: one record per primitive of the last Vulkan draw (visual debugging).
+    pub ui_trace: Option<PathBuf>,
+}
+
+/// The chrome target of the `gui` scene.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChromeMode {
+    /// kumihimo-ui's CPU painter into one canvas, copied into the pane.
+    #[default]
+    Cpu,
+    /// hsk-studio-vulkan's UI pass on the owner's device, drawing into the pane.
+    Vulkan,
+}
+
+impl ChromeMode {
+    /// The receipt and window-title statement.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu painter",
+            Self::Vulkan => "vulkan ui pass",
+        }
+    }
 }
 
 /// Pane content ready for the owner.

@@ -23,7 +23,9 @@ use crate::scene::DocumentFacts;
 use crate::script::Step;
 use hsk_studio_accord::ActorContext;
 use hsk_studio_harness_view::view::{LayerRow, Viewer};
-use hsk_studio_vulkan::{GpuClientPort, PaneId, Refusal, rgba_len};
+use crate::scene::ChromeMode;
+use hsk_studio_vulkan::ui::TraceRecord;
+use hsk_studio_vulkan::{GpuClientPort, Owner, PaneId, Refusal, UiPass, rgba_len};
 use kumihimo_ui::checks::{self, Clipped};
 use kumihimo_ui::display::{Border, DisplayList, IconId, ImageId, Prim};
 use kumihimo_ui::fit;
@@ -186,6 +188,25 @@ impl ChromeTarget for CpuChrome {
         self.stats = sum;
         Ok(())
     }
+}
+
+/// The Vulkan UI pass as a chrome target: draws into `pane` on `owner`'s device (item 7).
+pub struct VulkanChrome<'a> {
+    pub pass: &'a mut UiPass,
+    pub owner: &'a mut Owner,
+    pub pane: PaneId,
+}
+
+impl ChromeTarget for VulkanChrome<'_> {
+    fn draw(&mut self, _: Chrome<'_>) -> Result<(), HostError> {
+        Err(HostError::Window("chrome_unbuilt"))
+    }
+}
+
+/// Max channel difference, differing pixels and the max difference outside the AA rects of `trace` (pixels of the
+/// classes the brief holds exact: flat, opaque image, scissor).
+pub fn parity(_want: &[u8], _got: &[u8], _width: u32, _trace: &[TraceRecord]) -> (u8, u64, u8) {
+    (u8::MAX, u64::MAX, u8::MAX)
 }
 
 enum Cmd {
@@ -1207,6 +1228,16 @@ impl GuiFrame {
         Ok(true)
     }
 
+    /// Selects the chrome target (item 7): Vulkan mode keeps no canvas.
+    pub fn set_chrome(&mut self, _mode: ChromeMode) {}
+    pub fn chrome(&self) -> ChromeMode {
+        ChromeMode::Cpu
+    }
+    /// Vulkan mode: draws the frame through `target` when it changed (or the pane was re-created); false when idle.
+    pub fn draw(&mut self, _target: &mut dyn ChromeTarget) -> Result<bool, HostError> {
+        Err(HostError::Window("chrome_unbuilt"))
+    }
+
     /// Copies the painted frame into the sink when it changed since the last upload.
     pub fn upload(&mut self, sink: &mut dyn PaneSink) -> Result<bool, Refusal> {
         if !self.pending_upload || self.minimized {
@@ -1338,6 +1369,11 @@ fn outcome_words(last: Option<&Outcome>, label: Option<&str>) -> String {
 /// The document tab's horizontal padding (components.json document_tab pad_l 12, pad_r 6).
 fn widgets_pad_doc_tab() -> f32 {
     kumihimo_ui::widgets::component::DOC_TAB_PAD_L + kumihimo_ui::widgets::component::DOC_TAB_PAD_R
+}
+
+/// [`drive`] for Vulkan mode: after each step, draws what changed through `target`. Stops at the first refusal.
+pub fn drive_chrome(_frame: &mut GuiFrame, _target: &mut dyn ChromeTarget, _steps: &[Step]) -> Result<(), HostError> {
+    Err(HostError::Window("chrome_unbuilt"))
 }
 
 /// Applies `steps` in order; after each, paints and uploads what changed. Stops at the first refusal of the sink:

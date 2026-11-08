@@ -57,7 +57,7 @@ fn gui_offscreen_png_equals_quiet_window_capture_after_a_pointer_session() {
     let s = Scratch::new("window");
     let doc = fixture(&s.0);
     let steps = session(&doc);
-    let gui = |tree: &str| GuiArgs { steps: steps.clone(), tree: Some(s.0.join(tree)), scale_milli: Some(1000) };
+    let gui = |tree: &str| GuiArgs { steps: steps.clone(), tree: Some(s.0.join(tree)), scale_milli: Some(1000), ..GuiArgs::default() };
     let off = offscreen::run(&OffscreenArgs {
         width: SIZE.0,
         height: SIZE.1,
@@ -110,7 +110,7 @@ fn gui_offscreen_png_equals_quiet_window_capture_after_a_pointer_session() {
 fn gui_quiet_exercise_resizes_the_pane_and_restores_the_frame() {
     let s = Scratch::new("exercise");
     let doc = fixture(&s.0);
-    let gui = GuiArgs { steps: Vec::new(), tree: None, scale_milli: Some(1000) };
+    let gui = GuiArgs { steps: Vec::new(), tree: None, scale_milli: Some(1000), ..GuiArgs::default() };
     let off = offscreen::run(&OffscreenArgs {
         width: SIZE.0,
         height: SIZE.1,
@@ -154,7 +154,7 @@ fn frame_capture(w: u32, h: u32) {
     let s = Scratch::new(&format!("frame-{w}x{h}"));
     let doc = fixture(&s.0);
     let tag = format!("frame-{w}x{h}");
-    let gui = |tree: &str| GuiArgs { steps: Vec::new(), tree: Some(s.0.join(tree)), scale_milli: Some(1000) };
+    let gui = |tree: &str| GuiArgs { steps: Vec::new(), tree: Some(s.0.join(tree)), scale_milli: Some(1000), ..GuiArgs::default() };
     let off = offscreen::run(&OffscreenArgs {
         width: w,
         height: h,
@@ -238,7 +238,7 @@ fn frame_capture_1024x640_edge_state_after_a_script() {
         out: Some(s.0.join("frame-1024x640-edge-offscreen.png")),
         receipt: Some(s.0.join("frame-1024x640-edge-offscreen.json")),
         allow_overlays: false,
-        gui: GuiArgs { steps, tree: Some(s.0.join("frame-1024x640-edge-offscreen-tree.json")), scale_milli: Some(1000) },
+        gui: GuiArgs { steps, tree: Some(s.0.join("frame-1024x640-edge-offscreen-tree.json")), scale_milli: Some(1000), ..GuiArgs::default() },
     })
     .expect("edge offscreen");
     keep(&s.0, &["frame-1024x640-edge-offscreen.png", "frame-1024x640-edge-offscreen.json", "frame-1024x640-edge-offscreen-tree.json"]);
