@@ -119,7 +119,8 @@ fn every_existing_develop_op_has_a_typed_row_equal_to_the_direct_call() {
     same(&mut a, &mut b, "photo.develop.add_mask", json!({"correction":1,"source":"colour_range","samples":[[0.2,0.3,0.4]],"breadth":0.5}), |v| v.develop_op(DevelopOp::AddMask { correction: 1, source: colour, subtract: false }));
     let lens = FamilyOp::LensProfile { profile: PROFILE.as_bytes().to_vec(), focal_mm: 35.0, aperture_value: None, distance_m: None };
     same(&mut a, &mut b, "photo.develop.lens_profile", json!({"path":text(&f.profile),"focal_mm":35}), |v| v.develop_op(DevelopOp::Family(lens)));
-    same(&mut a, &mut b, "photo.develop.lens_toggles", json!({"profile_enable":true,"auto_ca":true}), |v| v.develop_op(DevelopOp::Family(FamilyOp::LensToggles { profile_enable: true, auto_ca: true })));
+    // Both toggles are on by default (develop `Optics::default`): turn lateral CA removal off.
+    same(&mut a, &mut b, "photo.develop.lens_toggles", json!({"profile_enable":true,"auto_ca":false}), |v| v.develop_op(DevelopOp::Family(FamilyOp::LensToggles { profile_enable: true, auto_ca: false })));
     same(&mut a, &mut b, "photo.develop.upright_guides", json!({"guides":[[[0.1,0.1],[0.12,0.9]],[[0.9,0.1],[0.88,0.9]]]}), |v| {
         v.develop_op(DevelopOp::Family(FamilyOp::UprightGuides(vec![[[0.1, 0.1], [0.12, 0.9]], [[0.9, 0.1], [0.88, 0.9]]])))
     });
@@ -237,12 +238,17 @@ impl Live {
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("reply is not JSON ({e}): {line}"))
     }
 
-    /// One step: ok, one named undo step.
-    fn step(&mut self, id: &str, parameters: Value) -> Value {
+    fn ok(&mut self, id: &str, parameters: Value) -> Value {
         writeln!(self.stdin, "{}", json!({"command":"command","command_id":id,"parameters":parameters})).unwrap();
         self.stdin.flush().unwrap();
         let reply = self.read();
         assert_eq!(reply["ok"], true, "{id}: {} {}", reply["error"], reply["detail"]);
+        reply
+    }
+
+    /// One step: ok, one named undo step.
+    fn step(&mut self, id: &str, parameters: Value) -> Value {
+        let reply = self.ok(id, parameters);
         assert!(reply["detail"]["undo_name"].is_string(), "{id} names its undo step: {reply}");
         reply
     }
@@ -277,7 +283,9 @@ fn photo_retouch_develop_steps_run_through_the_process() {
     s.step("photo.develop.look", json!({"path":text(&f.cube),"name":"negative","domain":"srgb_encoded"}));
     s.step("photo.develop.set", json!({"control":"develop.look.amount","value":0.6}));
     s.step("photo.develop.lens_profile", json!({"path":text(&f.profile),"focal_mm":35}));
-    s.step("photo.develop.lens_toggles", json!({"profile_enable":true,"auto_ca":true}));
+    // Profile correction and lateral CA removal are on by default: the row confirms them, no step.
+    let toggles = s.ok("photo.develop.lens_toggles", json!({"profile_enable":true,"auto_ca":true}));
+    assert!(toggles["detail"]["undo_name"].is_null(), "{toggles}");
     s.step("photo.develop.set_many", json!({"changes":{"develop.optics.defringe.purple_amount":5,"develop.optics.defringe.green_amount":3}}));
     s.step("photo.develop.upright", json!({"mode":"level"}));
     s.step("photo.develop.add_correction", json!({"source":"radial","left":0.3,"top":0.2,"right":0.7,"bottom":0.6}));

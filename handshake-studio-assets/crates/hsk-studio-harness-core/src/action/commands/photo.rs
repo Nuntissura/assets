@@ -1,13 +1,34 @@
 //! Photo rows of the command corpus: selection, fill, liquify, info and develop records.
 
-use super::{CommandEntry, ParamSpec, flag as b, index as i, number as n, one_of as o, point, points, record as r, samples, text as t, typed, vector3};
+use super::super::ValueType;
+use super::{CommandEntry, ParamSpec, flag as b, index as i, number as n, one_of as o, path as file, point, points, record as r, samples, text as t, typed, vector3};
 
 const MODEL: &str = "rgb|hsb|lab|cmyk";
 const INFO: &str = "Viewer::info_command";
 const DEVELOP: &str = "Viewer::develop_op";
+const SLIDERS: &str = "Viewer::set_develop_many";
 const FLOOD: &[ParamSpec] = &[t("layer"), n("x"), n("y"), n("opacity_pct").opt(), b("reverse").opt(), b("dither").opt(), n("tolerance").opt(), b("contiguous").opt(), b("anti_alias").opt(), b("sample_merged").opt(), t("pattern").opt()];
 const FILL_SELECTION: &[ParamSpec] = &[t("layer"), n("opacity_pct").opt(), b("reverse").opt(), b("dither").opt(), n("tolerance").opt(), b("contiguous").opt(), b("anti_alias").opt(), b("sample_merged").opt(), t("pattern").opt()];
 const GRADIENT: &[ParamSpec] = &[t("layer"), point("from"), point("to"), n("opacity_pct").opt(), b("reverse").opt(), b("dither").opt(), n("tolerance").opt(), b("contiguous").opt(), b("anti_alias").opt(), b("sample_merged").opt(), t("pattern").opt()];
+
+/// Encoded sRGB colour samples, each `[r, g, b]` in 0..1.
+const fn colours(key: &'static str) -> ParamSpec {
+    ParamSpec { key, value_type: ValueType::List, unit: None, required: true, shape: "[[r, g, b], ...]" }
+}
+
+/// Develop mask sources (lane SMB-DEVELOP-COMMANDS-1): the panel's linear / radial / brush defaults and
+/// the two range sources take optional fields, a field of another source is refused; the model kinds
+/// refuse `model_unavailable` (no model provider).
+const SOURCES: &str = "linear|radial|brush|luminance_range|colour_range|subject|sky|background|landscape_component|object|person|person_component";
+macro_rules! mask_params {
+    ($($head:expr),*) => {
+        &[$($head,)* o("source", SOURCES), point("zero").opt(), point("full").opt(), b("flipped").opt(), n("left").opt(), n("top").opt(), n("right").opt(),
+          n("bottom").opt(), n("angle").opt(), n("midpoint").opt(), n("roundness").opt(), n("feather").opt(), points("dabs").opt(), n("radius").opt(),
+          n("flow").opt(), n("lo").opt(), n("hi").opt(), colours("samples").opt(), n("breadth").opt()]
+    };
+}
+const ADD_CORRECTION: &[ParamSpec] = mask_params!();
+const ADD_MASK: &[ParamSpec] = mask_params!(i("correction"), b("subtract").opt());
 
 pub(super) const ROWS: &[CommandEntry] = &[
     typed("photo.liquify", "Viewer::liquify", "Liquify", true, &[t("layer"), r("tool", "{kind: forward_warp|push_left|twirl|pucker|bloat|reconstruct|smooth|turbulence|mesh_clone, ...}"), samples("samples"), r("brush", "{size, density, pressure, rate}")]),
@@ -40,4 +61,20 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("photo.develop.remove_spot", DEVELOP, "Remove spot removal", true, &[i("spot")]),
     typed("photo.develop.add_distraction", DEVELOP, "Add distraction removal", true, &[point("centre"), n("radius")]),
     typed("photo.develop.remove_distraction", DEVELOP, "Remove distraction removal", true, &[i("index")]),
+    // Lane SMB-DEVELOP-COMMANDS-1: every other DevelopOp / FamilyOp member and the sliders as one step.
+    typed("photo.develop.set", SLIDERS, "Set develop control", true, &[t("control"), n("value")]),
+    typed("photo.develop.set_many", SLIDERS, "Set develop controls", true, &[r("changes", "{control: value, ...}")]),
+    typed("photo.develop.add_colour_range", DEVELOP, "Add colour range correction", true, &[colours("samples"), n("breadth")]),
+    typed("photo.develop.add_correction", DEVELOP, "Add local correction", true, ADD_CORRECTION),
+    typed("photo.develop.add_mask", DEVELOP, "Add correction mask", true, ADD_MASK),
+    typed("photo.develop.lens_profile", DEVELOP, "Apply lens profile", true, &[file("path"), n("focal_mm"), n("aperture_value").opt(), n("distance_m").opt()]),
+    typed("photo.develop.clear_lens_profile", DEVELOP, "Clear lens profile", true, &[]),
+    typed("photo.develop.lens_toggles", DEVELOP, "Lens profile and CA toggles", true, &[b("profile_enable"), b("auto_ca")]),
+    typed("photo.develop.upright", DEVELOP, "Upright mode", true, &[o("mode", "off|auto|level|vertical|full|guided")]),
+    typed("photo.develop.upright_guides", DEVELOP, "Upright guides", true, &[r("guides", "[[[x, y], [x, y]], ...] at most 4")]),
+    typed("photo.develop.grain_seed", DEVELOP, "Grain seed", true, &[i("seed")]),
+    typed("photo.develop.vignette_style", DEVELOP, "Post-crop vignette style", true, &[o("style", "highlight_priority|colour_priority")]),
+    typed("photo.develop.look", DEVELOP, "Apply creative look", true, &[file("path"), t("name"), o("domain", "srgb_encoded|linear")]),
+    typed("photo.develop.clear_look", DEVELOP, "Clear creative look", true, &[]),
+    typed("photo.develop.apply_preset", DEVELOP, "Apply develop preset", true, &[file("path"), n("amount")]),
 ];

@@ -2,12 +2,18 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::super::Viewer;
-use super::super::develop::DevelopOp;
+use super::super::develop::{DevelopOp, default_brush, default_linear, default_radial};
+use super::super::develop_more::FamilyOp;
 use super::super::fill_tools::{FillSettings, FillSource};
 use super::super::info::{InfoCommand, SampleScope};
-use super::CommandRefusal;
 use super::decode::{Fields, invalid};
+use super::{CommandRefusal, read_bounded};
+use hsk_studio_develop::local::MAX_DABS;
 use hsk_studio_develop::retouch::SpotType;
+use hsk_studio_develop::{
+    Brush, ColourRange, LinearGradient, LookDomain, LuminanceRange, MAX_COLOUR_SAMPLES, MAX_GUIDES, MAX_LENS_PROFILE_BYTES, MAX_PRESET_BYTES, MaskSource, ModelMask,
+    ModelMaskKind, RadialGradient, UprightMode, VignetteStyle,
+};
 use hsk_studio_pigment::diagnostics::{ColourModel, SampleSize};
 use hsk_studio_pigment::liquify::{LiquifyBrush, LiquifyTool};
 use hsk_studio_pigment::select_tools::magnetic::MagneticOptions;
@@ -70,7 +76,150 @@ fn pair_tuple(p: [f64; 2]) -> (f64, f64) {
     (p[0], p[1])
 }
 
-/// The develop operations with no mask-source or tone-family record: those stay Rust-only.
+fn limit(key: &str, count: usize, max: usize) -> CommandRefusal {
+    CommandRefusal::new("develop_limit", json!({"key": key, "count": count, "at_most": max}))
+}
+
+fn finite(v: &Value) -> Option<f64> {
+    v.as_f64().filter(|n| n.is_finite())
+}
+
+fn pair(v: &Value) -> Option<[f64; 2]> {
+    match v.as_array()?.as_slice() {
+        [x, y] => Some([finite(x)?, finite(y)?]),
+        _ => None,
+    }
+}
+
+/// A byte cap as the file reader takes it.
+fn cap(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
+/// The list under `key`, its length checked against `max` before any item is decoded.
+fn bounded(f: &Fields<'_>, key: &str, expected: &str, max: usize) -> Result<Vec<Value>, CommandRefusal> {
+    let Value::Array(items) = f.json(key, expected)? else {
+        return Err(invalid(key, expected));
+    };
+    if items.len() > max {
+        return Err(limit(key, items.len(), max));
+    }
+    Ok(items)
+}
+
+fn colour_samples(f: &Fields<'_>, key: &str) -> Result<Vec<[f64; 3]>, CommandRefusal> {
+    let expected = "[[r, g, b], ...]";
+    let items = bounded(f, key, expected, MAX_COLOUR_SAMPLES)?;
+    let sample = |v: &Value| match v.as_array().map(Vec::as_slice) {
+        Some([r, g, b]) => Some([finite(r)?, finite(g)?, finite(b)?]),
+        _ => None,
+    };
+    items.iter().map(sample).collect::<Option<Vec<_>>>().ok_or_else(|| invalid(key, expected))
+}
+
+fn dabs(f: &Fields<'_>, key: &str) -> Result<Vec<(f64, f64)>, CommandRefusal> {
+    let expected = "[[x, y], ...]";
+    let items = bounded(f, key, expected, MAX_DABS)?;
+    items.iter().map(|v| pair(v).map(pair_tuple)).collect::<Option<Vec<_>>>().ok_or_else(|| invalid(key, expected))
+}
+
+fn guides(f: &Fields<'_>) -> Result<Vec<[[f64; 2]; 2]>, CommandRefusal> {
+    let expected = "[[[x, y], [x, y]], ...]";
+    let items = bounded(f, "guides", expected, MAX_GUIDES)?;
+    let guide = |v: &Value| match v.as_array().map(Vec::as_slice) {
+        Some([a, b]) => Some([pair(a)?, pair(b)?]),
+        _ => None,
+    };
+    items.iter().map(guide).collect::<Option<Vec<_>>>().ok_or_else(|| invalid("guides", expected))
+}
+
+/// Every optional mask field of the `add_correction` and `add_mask` rows.
+const MASK_FIELDS: [&str; 18] = ["zero", "full", "flipped", "left", "top", "right", "bottom", "angle", "midpoint", "roundness", "feather", "dabs", "radius", "flow", "lo", "hi", "samples", "breadth"];
+const SOURCES: &str = "linear|radial|brush|luminance_range|colour_range|subject|sky|background|landscape_component|object|person|person_component";
+
+/// The mask source a row names: the panel's default (`default_linear`, `default_radial`,
+/// `default_brush`; the panel's luminance window 0.6..1 feather 0.2; colour breadth 0.3) with the given
+/// fields. A field the source does not have is refused, never dropped.
+fn mask_source(f: &Fields<'_>) -> Result<MaskSource, CommandRefusal> {
+    let kind = f.text("source")?;
+    let own: &[&str] = match kind.as_str() {
+        "linear" => &["zero", "full", "flipped"],
+        "radial" => &["left", "top", "right", "bottom", "angle", "midpoint", "roundness", "feather", "flipped"],
+        "brush" => &["dabs", "radius", "flow", "feather"],
+        "luminance_range" => &["lo", "hi", "feather"],
+        "colour_range" => &["samples", "breadth"],
+        other if ModelMaskKind::from_key(other).is_some() => &[],
+        _ => return Err(invalid("source", SOURCES)),
+    };
+    if let Some(key) = MASK_FIELDS.iter().find(|k| f.has(k) && !own.contains(k)) {
+        return Err(invalid(key, &format!("no field of source {kind}")));
+    }
+    let point_or = |key: &str, default: (f64, f64)| -> Result<(f64, f64), CommandRefusal> { Ok(f.opt_point(key)?.map_or(default, pair_tuple)) };
+    Ok(match kind.as_str() {
+        "linear" => match default_linear() {
+            MaskSource::LinearGradient(g) => MaskSource::LinearGradient(LinearGradient { zero: point_or("zero", g.zero)?, full: point_or("full", g.full)?, flipped: f.flag_or("flipped", g.flipped)? }),
+            other => other,
+        },
+        "radial" => match default_radial() {
+            MaskSource::RadialGradient(g) => MaskSource::RadialGradient(RadialGradient {
+                left: f.number_or("left", g.left)?,
+                top: f.number_or("top", g.top)?,
+                right: f.number_or("right", g.right)?,
+                bottom: f.number_or("bottom", g.bottom)?,
+                angle: f.number_or("angle", g.angle)?,
+                midpoint: f.number_or("midpoint", g.midpoint)?,
+                roundness: f.number_or("roundness", g.roundness)?,
+                feather: f.number_or("feather", g.feather)?,
+                flipped: f.flag_or("flipped", g.flipped)?,
+            }),
+            other => other,
+        },
+        "brush" => match default_brush() {
+            MaskSource::Brush(g) => MaskSource::Brush(Brush {
+                dabs: if f.has("dabs") { dabs(f, "dabs")? } else { g.dabs },
+                radius: f.number_or("radius", g.radius)?,
+                flow: f.number_or("flow", g.flow)?,
+                feather: f.number_or("feather", g.feather)?,
+            }),
+            other => other,
+        },
+        "luminance_range" => MaskSource::LuminanceRange(LuminanceRange { lo: f.number_or("lo", 0.6)?, hi: f.number_or("hi", 1.0)?, feather: f.number_or("feather", 0.2)? }),
+        "colour_range" => MaskSource::ColourRange(ColourRange { samples: colour_samples(f, "samples")?, breadth: f.number_or("breadth", 0.3)? }),
+        model => match ModelMaskKind::from_key(model) {
+            Some(kind) => MaskSource::Model(ModelMask { kind, subcategory: None, model_version: None }),
+            None => return Err(invalid("source", SOURCES)),
+        },
+    })
+}
+
+const UPRIGHT: [(&str, UprightMode); 6] =
+    [("off", UprightMode::Off), ("auto", UprightMode::Auto), ("level", UprightMode::Level), ("vertical", UprightMode::Vertical), ("full", UprightMode::Full), ("guided", UprightMode::Guided)];
+
+/// Most controls one `set_many` names (the panel has a few hundred).
+const MAX_CHANGES: usize = 4096;
+
+/// `{control: value, ...}`: every value a finite number (or its text), the count bounded first.
+fn changes(f: &Fields<'_>) -> Result<Vec<(String, f64)>, CommandRefusal> {
+    let expected = "{control: value, ...}";
+    let Value::Object(map) = f.json("changes", expected)? else {
+        return Err(invalid("changes", expected));
+    };
+    if map.len() > MAX_CHANGES {
+        return Err(limit("changes", map.len(), MAX_CHANGES));
+    }
+    map.iter()
+        .map(|(control, value)| {
+            let parsed = match value {
+                Value::String(s) => s.parse::<f64>().ok(),
+                other => other.as_f64(),
+            };
+            parsed.filter(|n| n.is_finite()).map(|n| (control.clone(), n)).ok_or_else(|| invalid(&format!("changes.{control}"), "finite number"))
+        })
+        .collect()
+}
+
+/// Every develop operation the Viewer has, by row (lane SMB-DEVELOP-COMMANDS-1 added the mask-source
+/// and family rows). File parameters are read under their engine's byte cap before parsing.
 fn develop_op(id: &str, f: Fields<'_>) -> Result<DevelopOp, CommandRefusal> {
     let spot_type = |key: &str| f.token(key, &[("heal", SpotType::Heal), ("clone", SpotType::Clone)]);
     Ok(match id {
@@ -97,6 +246,33 @@ fn develop_op(id: &str, f: Fields<'_>) -> Result<DevelopOp, CommandRefusal> {
         "photo.develop.remove_spot" => DevelopOp::RemoveSpot(f.index("spot")?),
         "photo.develop.add_distraction" => DevelopOp::AddDistraction { centre: pair_tuple(f.point("centre")?), radius: f.number("radius")? },
         "photo.develop.remove_distraction" => DevelopOp::RemoveDistraction(f.index("index")?),
+        "photo.develop.add_colour_range" => DevelopOp::AddColourRange { samples: colour_samples(&f, "samples")?, breadth: f.number("breadth")? },
+        "photo.develop.add_correction" => DevelopOp::AddCorrection(mask_source(&f)?),
+        "photo.develop.add_mask" => DevelopOp::AddMask { correction: f.index("correction")?, source: mask_source(&f)?, subtract: f.flag_or("subtract", false)? },
+        "photo.develop.lens_profile" => {
+            let profile = read_bounded(&f.path("path")?, cap(MAX_LENS_PROFILE_BYTES))?;
+            let distance_m = match f.opt_text("distance_m")?.as_deref() {
+                None => None,
+                Some("inf") => Some(f64::INFINITY),
+                Some(_) => Some(f.number("distance_m")?),
+            };
+            DevelopOp::Family(FamilyOp::LensProfile { profile, focal_mm: f.number("focal_mm")?, aperture_value: f.opt_number("aperture_value")?, distance_m })
+        }
+        "photo.develop.clear_lens_profile" => DevelopOp::Family(FamilyOp::ClearLensProfile),
+        "photo.develop.lens_toggles" => DevelopOp::Family(FamilyOp::LensToggles { profile_enable: f.flag("profile_enable")?, auto_ca: f.flag("auto_ca")? }),
+        "photo.develop.upright" => DevelopOp::Family(FamilyOp::Upright(f.token("mode", &UPRIGHT)?)),
+        "photo.develop.upright_guides" => DevelopOp::Family(FamilyOp::UprightGuides(guides(&f)?)),
+        "photo.develop.grain_seed" => DevelopOp::Family(FamilyOp::GrainSeed(f.count("seed")?)),
+        "photo.develop.vignette_style" => {
+            DevelopOp::Family(FamilyOp::VignetteStyle(f.token("style", &[("highlight_priority", VignetteStyle::HighlightPriority), ("colour_priority", VignetteStyle::ColourPriority)])?))
+        }
+        "photo.develop.look" => {
+            let domain = f.token("domain", &[("srgb_encoded", LookDomain::SrgbEncoded), ("linear", LookDomain::Linear)])?;
+            let cube = read_bounded(&f.path("path")?, cap(hsk_studio_prism::MAX_CUBE_BYTES))?;
+            DevelopOp::Family(FamilyOp::Look { name: f.text("name")?, cube, domain })
+        }
+        "photo.develop.clear_look" => DevelopOp::Family(FamilyOp::ClearLook),
+        "photo.develop.apply_preset" => DevelopOp::Family(FamilyOp::Preset { preset: read_bounded(&f.path("path")?, cap(MAX_PRESET_BYTES))?, amount: f.number("amount")? }),
         other => return Err(CommandRefusal::new("command_not_driveable", json!({"command_id": other}))),
     })
 }
@@ -107,7 +283,16 @@ pub(super) fn run(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Result<Valu
         return Ok(v.info_command(info_command(id, f)?).map(|()| Value::Null));
     }
     if id.starts_with("photo.develop.") {
-        return match v.develop_op(develop_op(id, f)?) {
+        let result = match id {
+            "photo.develop.set" => v.set_develop(&f.text("control")?, f.number("value")?),
+            "photo.develop.set_many" => {
+                let changes = changes(&f)?;
+                let pairs: Vec<(&str, f64)> = changes.iter().map(|(c, n)| (c.as_str(), *n)).collect();
+                v.set_develop_many(&pairs)
+            }
+            _ => v.develop_op(develop_op(id, f)?),
+        };
+        return match result {
             Ok(revision) => Ok(Ok(revision.into())),
             Err(r) => Err(CommandRefusal::new(r.code, json!({"message": r.detail}))),
         };
