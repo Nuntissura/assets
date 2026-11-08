@@ -2100,6 +2100,64 @@ impl Run<'_> {
         }
     }
 
+    /// ONE undoable step (lane SMB-LAYOUT-PLACE-1: a picture placed into a layout graphic frame): a layout step
+    /// exactly like [`Run::submit_layout`] and the session document entry `token` set to `bytes` inside the same
+    /// history step, so undo / redo restore the document, its layout records and the entry together. A refused
+    /// layout step changes nothing; a refused entry write undoes the layout step (no split step) and leaves the
+    /// redo history as it was. Records: the `submit_layout` record `op`, plus an `op` refusal record when the
+    /// entry write is refused. Not recordable.
+    pub fn submit_layout_and_entry(&mut self, op: &str, command: &'static str, document: folio::StudioDocument, records: hsk_studio_session::LayoutRecords, token: &str, bytes: Vec<u8>) -> bool {
+        self.note_unrecordable("document.submit_layout_and_entry");
+        self.keeping_redo_without_new_step(|run| run.layout_and_entry_step(op, command, document, records, token, bytes))
+    }
+
+    fn layout_and_entry_step(&mut self, op: &str, command: &'static str, document: folio::StudioDocument, records: hsk_studio_session::LayoutRecords, token: &str, bytes: Vec<u8>) -> bool {
+        let previous = match self.session.as_ref() {
+            Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
+            None => {
+                let before = self.frames.count();
+                return self.push(op, before, Err("not_open"), None, None);
+            }
+        };
+        let depth = self.undo_stack.len();
+        if !self.quietly(|run| run.submit_layout(op, command, document, records)) {
+            return false;
+        }
+        let ctx = self.last_command.clone();
+        let cancel = self.cancel;
+        let set = match self.session.as_mut() {
+            Some(s) => s.set_document_entry(token, Some(bytes), cancel).map_err(|e| e.code()),
+            None => Err("not_open"),
+        };
+        if let Err(code) = set {
+            // A committed layout step without its entry would split the step: undo it.
+            if self.undo_stack.len() > depth {
+                let _ = self.quietly(Self::undo);
+            }
+            let before = self.frames.count();
+            self.current = ctx;
+            return self.own_op(op, before, Err(code));
+        }
+        let restore = EntryRestore { token: token.to_string(), bytes: previous };
+        if self.undo_stack.len() > depth {
+            if let Some(ctx) = ctx {
+                self.emit_entry_business_event(token, &ctx, None, restore.bytes.as_deref(), false);
+            }
+            if let Some(step) = self.undo_stack.last_mut() {
+                step.entry = Some(restore);
+            }
+        } else {
+            // The layout step changed nothing: the step is entry-only (same command).
+            let (ctx, revision) = self.entry_only_attribution(ctx, "document.submit_layout_and_entry");
+            self.emit_entry_business_event(token, &ctx, None, restore.bytes.as_deref(), true);
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, layout: None, ctx, revision });
+            self.redo_stack.clear();
+        }
+        // The layout record was written before the entry part ran.
+        self.attach_events_to_last_record();
+        true
+    }
+
     /// The bytes of a session document entry of the working session.
     pub fn document_entry(&self, token: &str) -> Option<&[u8]> {
         self.session.as_ref()?.document_entry(token)
@@ -2264,11 +2322,22 @@ impl Run<'_> {
             let revision = session.document_revision();
             return match session.submit_layout_as(&ctx, &submit, revision, cancel) {
                 Ok(applied) => {
+                    // The step's entry comes back with the layout (lane SMB-LAYOUT-PLACE-1,
+                    // submit_layout_and_entry; refused: the layout step stays applied, reported, as the
+                    // timeline arm does).
+                    let previous = match step.entry.as_ref().map(|e| self.swap_entry(e)) {
+                        Some(Ok(p)) => p,
+                        Some(Err(code)) => {
+                            let revision = self.revision();
+                            return self.push(op, before, Err(code), Some(applied.report), revision);
+                        }
+                        None => None,
+                    };
                     if applied.changed && !applied.replayed {
                         self.emit_business_event(history_event, &ctx, applied.revision, &[]);
                     }
                     let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
-                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: None, timeline: None, group: None, sequences: None, containers: None, layout: applied.layout_inverse.clone(), ctx, revision: applied.revision };
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: None, containers: None, layout: applied.layout_inverse.clone(), ctx, revision: applied.revision };
                     if undo {
                         self.redo_stack.push(next);
                     } else {
