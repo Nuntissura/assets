@@ -8,7 +8,25 @@
 //! frame's inset area, and its width is the widest gap left after subtracting every obstacle that
 //! overlaps the line box (narrower gaps are not used); a baseline with no gap is skipped; hanging
 //! trailing whitespace is part of the line's glyph range but not of `width_pt`; an empty
-//! paragraph occupies one empty line; paragraphs have no space before or after.
+//! paragraph occupies one empty line; paragraphs have no space before or after unless their Folio
+//! composition settings state it (below).
+//!
+//! Indents and spacing (lane SMB-TYPE-INDENT-SPACING-1, STU-TYP-185; `typeset::ParagraphGeometry`,
+//! all 0 by default): every slot is narrowed where it is collected, x by `left_indent` (plus
+//! `first_line_indent` on the paragraph's first line), the width by both and `right_indent`; with
+//! wrap obstacles the indents measure from the free gap; a slot left without width is skipped like
+//! a baseline without a gap (still as the first line); split sub-columns narrow the same way (a
+//! sub-column left without width is `invalid_geometry`). `last_line_indent` narrows the last line
+//! from the right after breaking, with one bounded re-break when the narrowed last line does not
+//! fit (positive values, Latin paragraphs); a negative value widens the last line at the set stage
+//! only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
+//! paragraph at a column top takes none (a push past the bottom lands at the next column's top);
+//! `space_between_same_style` zeroes the gap between paragraphs of one style; span and split
+//! paragraphs take the larger of the flow record's and the attribute space; a break sentinel drops
+//! the pending space; balancing re-adds the space between lines of one column. Every sum is
+//! checked finite (`invalid_geometry`). Zero values execute no operation on a slot. InDesign parity
+//! of all of this is UNVERIFIED (D5); the mixed-leading reading of `baseline_of` (earlier lines of
+//! a column advance by the current paragraph's line height) is unchanged and UNVERIFIED.
 //!
 //! Columns (lane SMB-LAYOUT-UI, STU-LAY-017/118): a frame's inset width is split into
 //! `text_column_count` equal columns with `text_column_gutter` between them; text fills a column top
@@ -238,6 +256,9 @@ struct Meta {
     single: bool,
     /// First-baseline offset of the line's frame for the line's paragraph (`frame_first`).
     first: Option<f64>,
+    /// STU-TYP-185 paragraph space added above this line (its paragraph's first line, in the column
+    /// where the space was added); balancing re-adds it except at a column's first line.
+    gap: f64,
 }
 
 /// Widest gap of `[lo, hi]` left by obstacles that overlap the line box.
@@ -266,6 +287,55 @@ fn free_interval(f: &Frame<'_>, lo: f64, hi: f64, top: f64, bottom: f64) -> (f64
         consider((at, hi));
     }
     best
+}
+
+/// `a + b`, refused as `invalid_geometry` when not finite (sums of finite indents and spaces can
+/// overflow; `+inf + -inf` would be a NaN slot).
+fn sum(a: f64, b: f64) -> Result<f64, LayoutError> {
+    let v = a + b;
+    if v.is_finite() { Ok(v) } else { Err(LayoutError::InvalidGeometry) }
+}
+
+/// STU-TYP-185: `s` with x moved by `left` and the width narrowed by `left` and `right`; `None`
+/// when no width remains (the slot is skipped like a baseline without a gap). Zero indents leave
+/// the slot untouched (no float operation, so the bits of an unindented line cannot move).
+fn indented(s: Slot, left: f64, right: f64) -> Result<Option<Slot>, LayoutError> {
+    if left == 0.0 && right == 0.0 {
+        return Ok(Some(s));
+    }
+    let x = sum(s.x_start_pt, left)?;
+    let w = sum(sum(s.width_pt, -left)?, -right)?;
+    Ok((w > EPS).then_some(Slot { x_start_pt: x, width_pt: w, ..s }))
+}
+
+/// The larger of a flow-record space and the attribute space; the flow value itself (same bits)
+/// unless the attribute space is larger.
+fn larger(flow: f64, attribute: f64) -> f64 {
+    if attribute > flow { attribute } else { flow }
+}
+
+/// Natural width of line `k` of `breaks` as the set stage measures it (`compose_flow`): the glyphs
+/// up to the line's last box, a line-end hyphen and a split ligature's head change.
+fn natural_width(p: &ShapedParagraph, items: &[crate::paragraph::Item], breaks: &[LineBreak], k: usize) -> f64 {
+    let n = p.glyphs.len();
+    let item_start = if k == 0 { 0 } else { line_start(items, breaks[k - 1].item) };
+    let start = if k == 0 { 0 } else { items.get(item_start).map_or(n, |it| it.first) };
+    let end = if k + 1 < breaks.len() { items.get(line_start(items, breaks[k].item)).map_or(n, |it| it.first) } else { n };
+    let range = start..end.max(start);
+    let b = &breaks[k];
+    let content_end = items[item_start..b.item]
+        .iter()
+        .rev()
+        .find(|it| it.kind == crate::paragraph::Kind::Box)
+        .map_or(range.start, |it| it.end.min(range.end));
+    let head = items
+        .get(item_start)
+        .filter(|it| it.kind == crate::paragraph::Kind::Box && it.first == range.start && !range.is_empty())
+        .and_then(|it| it.head);
+    p.glyphs[range.start..content_end].iter().map(|g| g.advance_pt).sum::<f64>()
+        + 0.0
+        + if items[b.item].flagged { items[b.item].w } else { 0.0 }
+        + head.map_or(0.0, |h| h.delta)
 }
 
 fn baseline_of(cur: &Cursor, first: f64, height: f64, ascent: f64) -> f64 {
@@ -757,14 +827,24 @@ fn balance_band(f: &Frame<'_>, band: Option<f64>, lines: &mut [Line], meta: &[Me
     let k = lines.len().div_ceil(n);
     let bottom = f.height_pt - f.inset_bottom_pt + EPS;
     let mut moved = Vec::with_capacity(lines.len());
+    // STU-TYP-185 paragraph space of the lines above in the same column (none at a column's top).
+    let mut extra = 0.0;
     for (i, (l, m)) in lines.iter().zip(meta).enumerate() {
         let (col, row) = (i / k, i % k);
+        if row == 0 {
+            extra = 0.0;
+        } else if m.gap != 0.0 {
+            extra += m.gap;
+            if !extra.is_finite() {
+                return false;
+            }
+        }
         let cur = Cursor {
             pos: 0,
             col,
             line: row,
             band,
-            extra: 0.0,
+            extra,
             first: None,
         };
         // The column's first line fixes its first baseline (known: that line was placed there).
@@ -973,6 +1053,8 @@ fn compose_flow(
     let story_end = paragraphs.last().map_or(0, |p| p.source.end);
     let (mut cursor, mut placed, mut overset) = (Cursor::frame(0), 0usize, None);
     let scan_cap_base = limits.max_lines.saturating_add(1);
+    // STU-TYP-185: the space after the previous paragraph, added with this one's space before.
+    let mut pending_after = 0.0f64;
     for (pi, p) in paragraphs.iter().enumerate() {
         canceled(cancel)?;
         // Composer, H&J limits and hyphenation of this paragraph: the request's unless its Folio style
@@ -986,6 +1068,14 @@ fn compose_flow(
             opts,
         )?;
         let (composer, jp) = (pp.composer, pp.justify);
+        // STU-TYP-185 indents and spacing (module notes): the gap above this paragraph is the
+        // pending space after plus this space before, none between paragraphs of one style whose
+        // `space_between_same_style` holds.
+        let g = pp.geometry;
+        let first_left = sum(g.left_indent_pt, g.first_line_indent_pt)?;
+        let gap = if styling.is_some_and(|s| s.same_style_no_space) { 0.0 } else { sum(pending_after, g.space_before_pt)? };
+        pending_after = g.space_after_pt;
+        let mut gap_at = None;
         let hyph = pp.hyphenation.as_ref().map(|h| (hyphenator, h));
         let rules = pp.hyphenation.as_ref().map_or(HyphenRules::NONE, |h| HyphenRules {
             limit: h.consecutive_limit,
@@ -1021,6 +1111,12 @@ fn compose_flow(
         let mut after_cursor = None;
         match flow {
             ParaFlow::Single => {
+                // The paragraph space; a paragraph at a column top takes none, and a push past the
+                // column bottom lands at the next column's top (`next_slot` resets `extra`).
+                if cursor.line > 0 && gap != 0.0 {
+                    cursor.extra = sum(cursor.extra, gap)?;
+                    gap_at = Some((cursor.pos, cursor.col));
+                }
                 // Above-line anchored objects push the paragraph down (anchors module); a push that
                 // falls into the next column or frame is re-applied at that column's top.
                 if pre[pi] > 0.0 {
@@ -1052,7 +1148,10 @@ fn compose_flow(
                     match next_slot(thread, at, p, Mode::Column, verticals, snap, &mut blocked, &mut scans, scan_cap, cancel)? {
                         Some(s) => {
                             at = s.next;
-                            slots.push(s);
+                            let left = if slots.is_empty() { first_left } else { g.left_indent_pt };
+                            if let Some(s) = indented(s, left, g.right_indent_pt)? {
+                                slots.push(s);
+                            }
                         }
                         None => break,
                     }
@@ -1083,7 +1182,7 @@ fn compose_flow(
                             pos,
                             col: 0,
                             line: 0,
-                            band: Some(bottom + before),
+                            band: Some(sum(bottom, larger(before, gap))?),
                             extra: 0.0,
                             first: None,
                         };
@@ -1097,7 +1196,10 @@ fn compose_flow(
                     match next_slot(thread, at, p, Mode::Span, verticals, false, &mut blocked, &mut scans, scan_cap, cancel)? {
                         Some(s) => {
                             at = s.next;
-                            slots.push(s);
+                            let left = if slots.is_empty() { first_left } else { g.left_indent_pt };
+                            if let Some(s) = indented(s, left, g.right_indent_pt)? {
+                                slots.push(s);
+                            }
                         }
                         None => break,
                     }
@@ -1105,7 +1207,7 @@ fn compose_flow(
             }
             ParaFlow::Split { count, inside, outside, before, .. } => {
                 if cursor.line > 0 {
-                    cursor.extra += before;
+                    cursor.extra = sum(cursor.extra, larger(before, gap))?;
                 }
                 let mut start = cursor;
                 while let Some(probe) =
@@ -1121,7 +1223,17 @@ fn compose_flow(
                     if sub_w <= EPS {
                         return Err(LayoutError::InvalidGeometry);
                     }
-                    let width = |_: usize| sub_w;
+                    // Indents narrow each sub-column line (the first line by the first-line indent too);
+                    // a sub-column the indents leave without width is `invalid_geometry`, as above.
+                    let narrow = |left: f64| -> Result<f64, LayoutError> {
+                        if left == 0.0 && g.right_indent_pt == 0.0 {
+                            return Ok(sub_w);
+                        }
+                        let w = sum(sum(sub_w, -left)?, -g.right_indent_pt)?;
+                        if w > EPS { Ok(w) } else { Err(LayoutError::InvalidGeometry) }
+                    };
+                    let (w_first, w_rest) = (narrow(first_left)?, narrow(g.left_indent_pt)?);
+                    let width = |k: usize| if k == 0 { w_first } else { w_rest };
                     let b = match (&cjk_items, &cjk_p) {
                         (Some(ci), Some(c)) => crate::cjk::break_lines(ci, &sums, &width, c, cancel)?,
                         _ => break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?,
@@ -1147,9 +1259,11 @@ fn compose_flow(
                         let (sub, row) = (i / r, i % r);
                         let s = rows[row];
                         let x0 = thread[s.pos].column_x(s.col).0 + outside + sub as f64 * (sub_w + inside);
+                        let left = if i == 0 { first_left } else { g.left_indent_pt };
+                        let x0 = if left == 0.0 { x0 } else { sum(x0, left)? };
                         slots.push(Slot {
                             x_start_pt: x0,
-                            width_pt: sub_w,
+                            width_pt: width(i),
                             ..s
                         });
                     }
@@ -1174,11 +1288,48 @@ fn compose_flow(
             None => {
                 let last_width = slots[slots.len() - 1].width_pt;
                 let width = |line: usize| slots.get(line).map_or(last_width, |s| s.width_pt);
-                match (&cjk_items, &cjk_p) {
+                let mut b = match (&cjk_items, &cjk_p) {
                     (Some(ci), Some(c)) => crate::cjk::break_lines(ci, &sums, &width, c, cancel)?,
                     _ => break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?,
+                };
+                // STU-TYP-185 `last_line_indent` (Studio reading, UNVERIFIED, D5): the last line is
+                // known only after breaking; when it does not fit its narrowed width the paragraph is
+                // broken once more with that width narrowed, and the second result stands. Bounded:
+                // one re-break, only for a positive indent, a Latin paragraph and a line that fitted
+                // before; a narrowed width without room is left to the set stage (overfull).
+                if g.last_line_indent_pt > 0.0
+                    && cjk_items.is_none()
+                    && let Some(l) = b.len().checked_sub(1)
+                    && l < slots.len()
+                    && !b[l].overfull
+                {
+                    let narrowed = sum(slots[l].width_pt, -g.last_line_indent_pt)?;
+                    if narrowed > EPS && natural_width(p, &items, &b, l) > narrowed + EPS {
+                        let width = |line: usize| if line == l { narrowed } else { width(line) };
+                        b = break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?;
+                    }
                 }
+                b
             }
+        };
+        // The last line's own indent narrows (or, negative, widens) its slot for the set stage; a
+        // narrowed Latin line that still does not fit is overfull.
+        let mut last_overfull = false;
+        if g.last_line_indent_pt != 0.0
+            && let Some(l) = breaks.len().checked_sub(1)
+            && l < slots.len()
+        {
+            let w = sum(slots[l].width_pt, -g.last_line_indent_pt)?;
+            slots[l].width_pt = w;
+            last_overfull = g.last_line_indent_pt > 0.0 && cjk_items.is_none() && natural_width(p, &items, &breaks, l) > w + EPS;
+        }
+        // Width the indents take from each line's slot (auto-size).
+        let line_indent = |k: usize| -> Result<f64, LayoutError> {
+            let mut t = sum(if k == 0 { first_left } else { g.left_indent_pt }, g.right_indent_pt)?;
+            if k + 1 == breaks.len() && g.last_line_indent_pt > 0.0 {
+                t = sum(t, g.last_line_indent_pt)?;
+            }
+            Ok(t)
         };
         let n = p.glyphs.len();
         let mut starts = vec![0usize];
@@ -1192,6 +1343,7 @@ fn compose_flow(
         // `+ 0.0` turns the empty sum (-0.0) into +0.0 so hang and width never print as "-0".
         let advance = |r: Range<usize>| p.glyphs[r].iter().map(|g| g.advance_pt).sum::<f64>() + 0.0;
         let mut lines_here = Vec::new();
+        let mut indent_here = Vec::new();
         let mut flush_here: Vec<Vec<(u64, Option<f64>)>> = Vec::new();
         for (k, b) in breaks.iter().enumerate() {
             let range = starts[k]..starts[k + 1].max(starts[k]);
@@ -1259,6 +1411,7 @@ fn compose_flow(
                 break;
             }
             let slot = &slots[k];
+            indent_here.push(line_indent(k)?);
             if let Some(ci) = &cjk_items {
                 // CJK line: set through its aki glue (`cjk::finish_line`); x_start is the first
                 // glyph's origin, the gaps carry the spacing, no Latin justification.
@@ -1306,15 +1459,16 @@ fn compose_flow(
                 .and_then(Option::as_ref)
                 .map_or(opts.alignment, |s| s.alignment);
             let is_last = k + 1 == breaks.len();
+            let overfull = b.overfull || (is_last && last_overfull);
             // Flush spaces of the line (`sentinels` module): on the last line of a fully justified
             // paragraph they take the rest of the slot and the line keeps its natural spacing.
             let flush: Vec<u64> = p.glyphs[range.clone()].iter().filter(|g| is_flush(text, g.cluster)).map(|g| g.cluster.start).collect();
-            let absorbs = !flush.is_empty() && !b.overfull && is_last && alignment == Alignment::JustifiedAll;
+            let absorbs = !flush.is_empty() && !overfull && is_last && alignment == Alignment::JustifiedAll;
             let absorbed = absorbs.then(|| (slot.width_pt - width_pt).max(0.0) / flush.len() as f64);
             flush_here.push(flush.into_iter().map(|at| (at, absorbed)).collect());
             let mut x_start_pt = slot.x_start_pt;
             let mut justification = None;
-            if !b.overfull && !absorbs {
+            if !overfull && !absorbs {
                 let spaces: f64 = items[item_starts[k]..b.item]
                     .iter()
                     .filter(|it| {
@@ -1378,7 +1532,7 @@ fn compose_flow(
                     hang_pt: advance(content_end..range.end),
                     source,
                     glyph_range: range,
-                    overfull: b.overfull,
+                    overfull,
                     ratio: b.ratio,
                     hyphenated,
                     justification,
@@ -1395,17 +1549,22 @@ fn compose_flow(
             .ok_or(LayoutError::BudgetExceeded)?;
         let used = lines_here.len();
         let single = flow == ParaFlow::Single;
-        for ((pos, line, gaps), flush) in lines_here.into_iter().zip(flush_here) {
+        for (k, (((pos, line, gaps), flush), indent)) in lines_here.into_iter().zip(flush_here).zip(indent_here).enumerate() {
             let index = frames[pos].len();
+            let gap = match gap_at {
+                Some(at) if k == 0 && at == (pos, line.column) => gap,
+                _ => 0.0,
+            };
             facts.flush.extend(flush.into_iter().map(|(story_byte, absorbed_pt)| FlushOutcome { story_byte, frame: pos, line: index, absorbed_pt }));
             frames[pos].push(line);
-            indents[pos].push(0.0);
+            indents[pos].push(indent);
             cjk_lines[pos].push(gaps);
             metas[pos].push(Meta {
                 ascent: p.ascent_pt,
                 height: p.line_height_pt,
                 single,
                 first: frame_first(&thread[pos], verticals.get(pos), p).ok(),
+                gap,
             });
         }
         if overset.is_some() {
@@ -1415,7 +1574,8 @@ fn compose_flow(
             ParaFlow::Single => slots[used - 1].next,
             ParaFlow::Span { after, .. } => {
                 let last = &slots[used - 1];
-                let top = last.baseline_y_pt + descent + after;
+                pending_after = 0.0;
+                let top = sum(last.baseline_y_pt + descent, larger(after, g.space_after_pt))?;
                 band_start[last.pos] = frames[last.pos].len();
                 band_top[last.pos] = Some(top);
                 Cursor {
@@ -1429,7 +1589,8 @@ fn compose_flow(
             }
             ParaFlow::Split { after, .. } => {
                 let mut c = after_cursor.unwrap_or(slots[used - 1].next);
-                c.extra += after;
+                c.extra = sum(c.extra, larger(after, g.space_after_pt))?;
+                pending_after = 0.0;
                 c
             }
         };
@@ -1442,6 +1603,7 @@ fn compose_flow(
                         no_balance[last.pos] = true;
                     }
                     cursor = c;
+                    pending_after = 0.0;
                     facts.breaks.push(BreakOutcome {
                         story_byte: at,
                         target,
