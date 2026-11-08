@@ -103,39 +103,46 @@ fn idml_note_is_a_typed_depth_refusal() {
     assert_eq!(r, Err(IdmlError::BudgetExceeded("xml_depth")));
 }
 
+/// Caller thread stacks of the within-cap rows (lead ruling 2026-11-08: the same answer from any
+/// caller thread; 1 MiB is the Windows default main-thread reserve).
+const CALLERS: [usize; 2] = [1 << 20, 2 << 20];
+
+fn decode_from(stack: usize, story_body: String) -> Result<usize> {
+    on_stack(stack, move || decode_idml(package(&story_body), &Limits::default(), &mut SequentialIdMint::new(1), &CancellationToken::default()).map(|i| i.loss.len()))
+}
+
 #[test]
 fn idml_within_cap_decodes() {
-    // 200 nested ranges (203 levels with the story wrappers and the run): under the cap.
-    let r = decode(nested_ranges(200));
-    println!("WITHIN_CAP idml_story depth=200 answer={:?}", r.as_ref().map(|i| i.loss.len()));
-    assert!(r.is_ok(), "{:?}", r.err());
+    // `nested_ranges(n)` nests n + 4 levels (idPkg:Story, Story, the ranges, the character range,
+    // Content): 200 and the cap 256 decode from either caller; 257 is refused before the parse.
+    for stack in CALLERS {
+        for n in [196usize, 252] {
+            let r = decode_from(stack, nested_ranges(n));
+            println!("WITHIN_CAP idml_story depth={} stack={stack} answer={r:?}", n + 4);
+            assert!(r.is_ok(), "{} levels from a {stack}-byte caller: {r:?}", n + 4);
+        }
+        assert_eq!(decode_from(stack, nested_ranges(253)), Err(IdmlError::BudgetExceeded("xml_depth")));
+    }
 }
 
 #[test]
-fn idml_at_the_cap_parses_on_1_mib() {
-    // 249 ranges + idPkg:Story, Story, the inner character range and Content: 253 levels, parsed
-    // and decoded on a 1 MiB thread (the Windows default main-thread reserve, `/STACK`; where the
-    // Viewer runs imports is NOT_INSPECTED).
-    let r = on_stack(1 << 20, || decode_idml(package(&nested_ranges(249)), &Limits::default(), &mut SequentialIdMint::new(1), &CancellationToken::default()).map(|i| i.loss.len()));
-    assert!(r.is_ok(), "{r:?}");
-}
-
-#[test]
-fn idml_note_at_the_cap_walks_on_2_mib() {
-    // 249 ranges in the note: the story part nests 256 levels, the cap itself.
+fn idml_note_at_the_cap_walks_from_any_caller() {
+    // 249 ranges in the note: the story part nests 256 levels, the cap itself; the longdoc fragment
+    // walk (`idml_longdoc.rs` `walk`, recursive) runs on the caller's thread.
     let deepest = 249;
-    let out = on_stack(CASE_STACK, move || -> Result<usize> {
-        let cancel = CancellationToken::default();
-        let limits = Limits::default();
-        let mut mint = SequentialIdMint::new(1);
-        let i = decode_idml(package(&footnote_story(deepest)), &limits, &mut mint, &cancel)?;
-        import_longdoc(&i, &limits, &mut mint, &cancel).map(|l| l.records.footnotes.len())
-    });
-    println!("WITHIN_CAP idml_note depth={} answer={out:?}", deepest + 7);
-    // Typed and finished on 2 MiB: the walk recursed through every level without overflowing.
-    assert!(out.is_ok(), "{out:?}");
-    // One more level is past the cap: refused at decode, before the walk.
-    assert_eq!(decode(footnote_story(deepest + 1)).map(|_| ()), Err(IdmlError::BudgetExceeded("xml_depth")));
+    for stack in CALLERS {
+        let out = on_stack(stack, move || -> Result<usize> {
+            let cancel = CancellationToken::default();
+            let limits = Limits::default();
+            let mut mint = SequentialIdMint::new(1);
+            let i = decode_idml(package(&footnote_story(deepest)), &limits, &mut mint, &cancel)?;
+            import_longdoc(&i, &limits, &mut mint, &cancel).map(|l| l.records.footnotes.len())
+        });
+        println!("WITHIN_CAP idml_note depth={} stack={stack} answer={out:?}", deepest + 7);
+        assert!(out.is_ok(), "{out:?}");
+        // One more level is past the cap: refused at decode, before the walk.
+        assert_eq!(decode_from(stack, footnote_story(deepest + 1)).map(|_| ()), Err(IdmlError::BudgetExceeded("xml_depth")));
+    }
 }
 
 // ----- EPUB ----------------------------------------------------------------------------------------
@@ -234,10 +241,21 @@ fn epub_opf_is_a_typed_refusal() {
 
 #[test]
 fn epub_within_cap_reads() {
-    for (c, o) in [(padding(200), String::new()), (String::new(), padding(200))] {
-        let r = inspect(epub(container(&c), opf(&o)));
-        println!("WITHIN_CAP epub answer={r:?}");
-        let i = r.expect("inspect");
-        assert_eq!((i.version.as_str(), i.identifier.as_str(), i.spine.as_slice(), i.has_nav), ("3.0", "urn:x", &["OEBPS/c1.xhtml".to_owned()][..], true));
+    // container / package root + `padding(n)`: n + 1 levels; 200 and the cap 256 read from either
+    // caller, 257 is refused.
+    let inspect_from = |stack: usize, bytes: Vec<u8>| {
+        let limits = ZipLimits { max_bytes: 64 << 20, max_entries: 64, max_entry_bytes: 32 << 20, max_inflated_bytes: 64 << 20, max_ratio: 100, allow_zip64: false };
+        on_stack(stack, move || inspect_epub(&bytes, &limits, &CancellationToken::default()))
+    };
+    for stack in CALLERS {
+        for n in [199usize, 255] {
+            for (c, o) in [(padding(n), String::new()), (String::new(), padding(n))] {
+                let r = inspect_from(stack, epub(container(&c), opf(&o)));
+                let i = r.unwrap_or_else(|e| panic!("{} levels from a {stack}-byte caller: {e:?}", n + 1));
+                assert_eq!((i.version.as_str(), i.identifier.as_str(), i.spine.as_slice(), i.has_nav), ("3.0", "urn:x", &["OEBPS/c1.xhtml".to_owned()][..], true));
+            }
+        }
+        assert_eq!(inspect_from(stack, epub(container(&padding(256)), opf(""))).map(|_| ()), Err(EpubError::NotEpub("container_xml")));
+        assert_eq!(inspect_from(stack, epub(container(""), opf(&padding(256)))).map(|_| ()), Err(EpubError::NotEpub("opf_xml")));
     }
 }

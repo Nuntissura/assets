@@ -50,13 +50,39 @@ fn svg_closed_is_a_typed_depth_refusal() {
     assert_eq!(import(deep_svg(19_990, true)), Err(VectorError::BudgetExceeded("depth")));
 }
 
+/// Caller thread stacks the within-cap rows run from (lead ruling 2026-11-08: the same answer in
+/// debug and release from any caller thread; 1 MiB is the Windows default main-thread reserve).
+const CALLERS: [usize; 2] = [1 << 20, 2 << 20];
+
+fn import_from(stack: usize, text: String, policy: ImportPolicy) -> Result<usize, VectorError> {
+    on_stack(stack, move || import_svg(text.as_bytes(), &policy, &mut SequentialIdMint::new(1), &CancellationToken::default()).map(|p| p.loss.len()))
+}
+
 #[test]
 fn svg_within_cap_keeps_the_walk_answer() {
-    // 200 levels: under the scan's 256, past the walk's 32. The answer is the walk's own refusal,
-    // as before the scan existed.
-    assert_eq!(import(deep_svg(200, true)), Err(VectorError::BudgetExceeded("depth")));
-    // 20 levels: under both; imports.
-    assert!(import(deep_svg(20, true)).is_ok());
+    for stack in CALLERS {
+        // 200 and 256 levels: within the scan's cap, past the walk's 32: the walk's own refusal.
+        for depth in [200usize, 256] {
+            assert_eq!(import_from(stack, deep_svg(depth - 1, true), ImportPolicy::default()), Err(VectorError::BudgetExceeded("depth")), "{depth} levels from a {stack}-byte caller");
+        }
+        // 20 levels: under both; imports.
+        assert!(import_from(stack, deep_svg(19, true), ImportPolicy::default()).is_ok(), "20 levels from a {stack}-byte caller");
+        // 257 levels: refused by the scan before the parse.
+        assert_eq!(import_from(stack, deep_svg(256, true), ImportPolicy::default()), Err(VectorError::BudgetExceeded("depth")));
+    }
+}
+
+#[test]
+fn a_caller_max_depth_past_the_cap_still_walks_the_cap_from_any_caller() {
+    // `Limits::max_depth` is the caller's: at 300 the walk itself goes to the scan's 256 levels.
+    let mut policy = ImportPolicy::default();
+    policy.limits.max_depth = 300;
+    policy.limits.max_nodes = 20_000;
+    for stack in CALLERS {
+        let r = import_from(stack, deep_svg(255, true), policy);
+        assert!(r.is_ok(), "256 levels, max_depth 300, from a {stack}-byte caller: {r:?}");
+        assert_eq!(import_from(stack, deep_svg(256, true), policy), Err(VectorError::BudgetExceeded("depth")));
+    }
 }
 
 // ----- item 2: the scan against roxmltree's own tree ---------------------------------------------
@@ -127,24 +153,15 @@ fn scan_depth_equals_roxmltree_depth_on_valid_documents() {
 }
 
 #[test]
-fn the_cap_parses_on_1_mib() {
-    // XML_MAX_NESTING levels parse in roxmltree on a 1 MiB thread (the Windows default main-thread
-    // reserve, `/STACK`; where the Viewer runs imports is NOT_INSPECTED), with the options
-    // `import_svg` uses.
+fn the_cap_parses_from_1_and_2_mib_callers() {
+    // XML_MAX_NESTING levels are within the scan; the import parses them on its own parse thread
+    // and answers typed (the walk's max_depth 32) from either caller stack.
     let cap = hsk_studio_package::XML_MAX_NESTING;
     let text = format!("{SVG_OPEN}{}{}</svg>", "<g>".repeat(cap - 1), "</g>".repeat(cap - 1));
     assert!(hsk_studio_package::xml_nesting_within(&text, cap));
-    let parsed = on_stack(1 << 20, move || {
-        let options = roxmltree::ParsingOptions { allow_dtd: false, nodes_limit: 20_000, entity_resolver: None };
-        roxmltree::Document::parse_with_options(&text, options).map(|d| d.descendants().count()).map_err(|e| e.to_string())
-    });
-    assert_eq!(parsed, Ok(cap + 1), "root node + {cap} elements");
-    // The import runs the walk too (refused at max_depth 32, typed) on the same 1 MiB.
-    let answer = on_stack(1 << 20, move || {
-        let text = format!("{SVG_OPEN}{}{}</svg>", "<g>".repeat(cap - 1), "</g>".repeat(cap - 1));
-        import_svg(text.as_bytes(), &ImportPolicy::default(), &mut SequentialIdMint::new(1), &CancellationToken::default()).map(|p| p.loss.len())
-    });
-    assert_eq!(answer, Err(VectorError::BudgetExceeded("depth")));
+    for stack in CALLERS {
+        assert_eq!(import_from(stack, text.clone(), ImportPolicy::default()), Err(VectorError::BudgetExceeded("depth")));
+    }
 }
 
 /// Measurement probe (item 1: the smallest element depth that aborts roxmltree, with the options
