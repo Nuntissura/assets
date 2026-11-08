@@ -428,3 +428,96 @@ fn a_linked_folder_inside_the_site_is_skipped() {
     });
     assert!(!dir.at("out").exists());
 }
+
+/// Lead ruling 2026-11-08: web.move_file never moves the opened package, nor anything onto or into it.
+#[test]
+fn a_move_never_touches_the_opened_package() {
+    let dir = Scratch::new("package");
+    site(&dir, false);
+    let package = dir.write("site/doc.handshake", FIXTURE);
+    let before = tree(&dir.at("site"));
+    let h = harness();
+    let cancel = CancellationToken::default();
+    let mut run = h.run(asset_local_test_context(), &cancel);
+    assert!(run.open_path(&package), "{}", run.ops().last().unwrap());
+    define(&mut run, &dir);
+    for (from, to) in [("doc.handshake", "old/doc.handshake"), ("orphan.png", "doc.handshake"), ("orphan.png", "doc.handshake/x.png")] {
+        assert_eq!(refused(&mut run, "web.move_file", json!({"from": from, "to": to})), "move_open_package", "{from} -> {to}");
+    }
+    drop(run);
+    assert_eq!(tree(&dir.at("site")), before);
+}
+
+/// R60 probe j3 (lead 2026-11-08): through a Viewer whose job port is saturated, web.export, web.publish, the site
+/// export, web.site_report and web.move_file ask that port once each, refuse `overloaded` and write nothing; an
+/// admitting port is asked once and released once per command.
+#[cfg(feature = "viewer")]
+mod through_the_viewer {
+    use super::{FIXTURE, Scratch, s, site};
+    use hsk_studio_harness::view::Viewer;
+    use hsk_studio_harness::view::render::Prefer;
+    use hsk_studio_session::{Cost, JobPort, JobRefused, JobScope, JobTicket};
+    use serde_json::json;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Counts every admit and release; refuses every admit when `refuse` is set.
+    #[derive(Default)]
+    struct Port {
+        refuse: bool,
+        admits: AtomicU64,
+        releases: AtomicU64,
+    }
+
+    impl JobPort for Port {
+        fn admit(&self, _scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
+            let n = self.admits.fetch_add(1, Ordering::SeqCst);
+            if self.refuse { Err(JobRefused { retry_after_ms: 7 }) } else { Ok(JobTicket(n)) }
+        }
+
+        fn release(&self, _ticket: JobTicket) {
+            self.releases.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn web_jobs_are_admitted_through_the_viewers_job_port() {
+        let dir = Scratch::new("viewer-jobs");
+        let index = site(&dir, false);
+        let package = dir.write("doc/a.handshake", FIXTURE);
+        let mut v = Viewer::new(Prefer::Cpu);
+        v.open(&package).unwrap();
+        let saturated = Arc::new(Port { refuse: true, ..Port::default() });
+        v.set_job_port(saturated.clone());
+        v.web_command("web.open", &json!({"path": s(&index)})).unwrap();
+        v.web_command("web.site", &json!({"display_name": "harbour", "local_root": s(&dir.at("site"))})).unwrap();
+        v.web_command("web.remote_target", &json!({"target_id": "local", "root_path": s(&dir.at("target"))})).unwrap();
+        v.web_command("web.export_recipe", &json!({"output_root": s(&dir.at("out"))})).unwrap();
+        let mut asked = 0;
+        for (id, params, recipe) in [
+            ("web.export", json!({}), None),
+            ("web.publish", json!({}), None),
+            ("web.export", json!({}), Some("site")),
+            ("web.site_report", json!({}), None),
+            ("web.move_file", json!({"from": "orphan.png", "to": "img/orphan.png"}), None),
+        ] {
+            if let Some(set) = recipe {
+                v.web_command("web.export_recipe", &json!({"documents": set})).unwrap();
+            }
+            assert_eq!(v.web_command(id, &params), Err("overloaded".to_string()), "{id}");
+            asked += 1;
+            assert_eq!(saturated.admits.load(Ordering::SeqCst), asked, "{id}: the port is asked exactly once");
+            let record = v.run().ops().last().unwrap();
+            assert_eq!(record["target"], "retry_after_ms=7", "{record}");
+        }
+        assert!(!dir.at("out").exists() && !dir.at("target").exists() && !dir.at("site/.studio-site.lock").exists(), "nothing written");
+        assert!(dir.at("site/orphan.png").exists());
+        // An admitting port: one admit and one release per command, and the work runs.
+        let open = Arc::new(Port::default());
+        v.set_job_port(open.clone());
+        v.web_command("web.export", &json!({})).unwrap();
+        v.web_command("web.site_report", &json!({})).unwrap();
+        assert_eq!((open.admits.load(Ordering::SeqCst), open.releases.load(Ordering::SeqCst)), (2, 2));
+        assert!(dir.at("out/index.html").is_file());
+    }
+}
