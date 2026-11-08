@@ -1,10 +1,12 @@
 //! Feature `document`: a real document through harness-view's public `Viewer::open` and render on render-cpu
 //! (`Prefer::Cpu`, no viewer GPU device), shown offscreen and in a quiet Vulkan window with the same frame hash and no
-//! focus change. GPU test group; validation: absent. Needs a round unit with feature `document` for
-//! hsk-studio-native-host (rule 4e).
+//! focus change. GPU test group; validation on in debug builds when the loader lists the Khronos layer, zero errors.
+//! Needs a round unit with feature `document` for hsk-studio-native-host (rule 4e).
 //! Known gap: the repo's demo.handshake has no working colour profile, so the viewer refuses it
 //! (`no_working_profile`, harness-view render.rs); the host reports that typed refusal and opens no window.
 #![cfg(feature = "document")]
+mod validation;
+
 use hsk_studio_native_host::HostError;
 use hsk_studio_native_host::capture::write_png;
 use hsk_studio_native_host::offscreen::{self, OffscreenArgs};
@@ -52,6 +54,8 @@ fn imported_png_document_offscreen_and_quiet_window_match() {
     let receipt = std::fs::read_to_string(dir.join("document-swapchain.json")).unwrap();
     assert!(receipt.contains(r#""chrome":"cpu painter, Vulkan UI pass pending""#), "{receipt}");
     assert!(receipt.contains(r#""file_name":"card.png""#), "{receipt}");
+    validation::assert_clean(&off.receipt);
+    validation::assert_clean(&win.receipt);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -1,10 +1,12 @@
-//! Feature `document`, on the real device (GPU test group; validation: absent): the GUI frame offscreen (no HWND) and
+//! Feature `document`, on the real device (GPU test group; validation on in debug builds when the loader lists the
+//! Khronos layer, zero errors): the GUI frame offscreen (no HWND) and
 //! in a quiet window give the same frame hash after the same scripted pointer session, with no focus change; the
 //! exercise run resizes the pane with the window, skips the minimised frames and restores the same frame; the raster
 //! frame of SMB-GUI-FRAME-1 at 1920 x 1080 and 1280 x 720 is equal offscreen and in the window. With
 //! HSK_NATIVE_HOST_GUI_OUT set, the PNGs, receipts, tree files and the fixture .handshake are copied there.
 #![cfg(feature = "document")]
 mod common;
+mod validation;
 
 use common::{Scratch, fixture};
 use hsk_studio_native_host::gui::{GuiFrame, row_id};
@@ -100,6 +102,8 @@ fn gui_offscreen_png_equals_quiet_window_capture_after_a_pointer_session() {
     assert_eq!(a, b, "the same tree after the same session");
     let receipt = std::fs::read_to_string(s.0.join("gui-swapchain.json")).unwrap();
     assert!(receipt.contains(r#""scene":"gui""#) && receipt.contains(r#""chrome":"cpu painter, Vulkan UI pass pending""#), "{receipt}");
+    validation::assert_clean(&off.receipt);
+    validation::assert_clean(&win.receipt);
 }
 
 #[test]
@@ -138,6 +142,8 @@ fn gui_quiet_exercise_resizes_the_pane_and_restores_the_frame() {
     let uploads: u64 = g.get("uploads").map(|v| v.render()).unwrap().parse().unwrap();
     assert!(uploads >= 3, "the pane followed the window: {uploads}");
     assert_eq!(win.frame_sha256.as_deref(), Some(off.frame_sha256.as_str()), "back at the first size: the same frame");
+    validation::assert_clean(&off.receipt);
+    validation::assert_clean(&win.receipt);
 }
 
 /// SMB-GUI-FRAME-1 captures (HBR-VIS-003 matrix): the raster frame at `w x h` scale 1 offscreen and in a quiet window

@@ -20,7 +20,7 @@ mod refusal;
 
 pub use owner::{
     DeviceInfo, DeviceLease, FENCE_TIMEOUT_NS, GpuClientPort, Issuer, LayerReport, Owner, OwnerConfig, PANE_FORMAT,
-    PaneId,
+    PaneId, VALIDATION_LAYER, ValidationId, ValidationReport, process_validation,
 };
 pub use present::{
     ACQUIRE_TIMEOUT_NS, Capture, FrameOutcome, PresentCounters, Presenter, SWAPCHAIN_FORMAT, WindowHandles,

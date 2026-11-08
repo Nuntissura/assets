@@ -73,6 +73,34 @@ pub struct LayerReport {
     pub enabled: Vec<String>,
 }
 
+/// The Khronos validation layer's name, as the loader lists it.
+pub const VALIDATION_LAYER: &str = "VK_LAYER_KHRONOS_validation";
+
+/// One validation message id: the layer's message id name (a VUID or a check name) and number, never message text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidationId {
+    /// `error` or `warning`.
+    pub severity: &'static str,
+    pub name: String,
+    pub number: i32,
+}
+
+/// Validation layer messages counted in this process, over every owner it opened.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ValidationReport {
+    /// `on` (layer enabled), `absent` (debug build, layer not listed), `off` (release build) or `none` (no owner yet).
+    pub state: &'static str,
+    pub errors: u64,
+    pub warnings: u64,
+    /// The first 16 error and warning ids, in arrival order.
+    pub first: Vec<ValidationId>,
+}
+
+/// The validation report of this process: counts survive the owner, so messages from its destruction are counted.
+pub fn process_validation() -> ValidationReport {
+    ValidationReport { state: "absent", errors: 0, warnings: 0, first: Vec::new() }
+}
+
 /// Raw handles a later owner hand-over passes on (Vulkan handles are the C ABI, so the binding does not matter).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceLease {
@@ -650,6 +678,10 @@ impl Owner {
     /// Validation layer state: always `absent` on this machine (no Khronos validation layer installed).
     pub fn validation(&self) -> &'static str {
         "absent"
+    }
+    /// Error and warning counts and the first message ids of this process ([`process_validation`]).
+    pub fn validation_report(&self) -> ValidationReport {
+        process_validation()
     }
     /// The refusal that stopped this owner's submits (a fence timeout or device loss leaves its command buffer
     /// possibly pending; every later pane operation returns this refusal).

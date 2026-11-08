@@ -1,6 +1,7 @@
 //! The transient owner on the real device, offscreen (no surface extension, no window): clear and CPU-buffer upload
-//! read back exactly, one device per process, typed refusals. GPU test group; validation: absent.
-use hsk_studio_vulkan::{GpuClientPort, Issuer, Owner, OwnerConfig, Refusal, rgba_len};
+//! read back exactly, one device per process, typed refusals. GPU test group; validation on in debug builds when the
+//! loader lists the Khronos layer, and zero validation errors.
+use hsk_studio_vulkan::{GpuClientPort, Issuer, Owner, OwnerConfig, Refusal, VALIDATION_LAYER, process_validation, rgba_len};
 
 #[test]
 fn offscreen_clear_upload_readback_exact_on_one_owner() {
@@ -10,10 +11,21 @@ fn offscreen_clear_upload_readback_exact_on_one_owner() {
     assert!(info.api_version[0] == 1 && info.api_version[1] >= 3, "{:?}", info.api_version);
     assert_ne!(info.device_type, "cpu");
     assert_eq!(info.device_uuid.len(), 32);
-    assert_eq!(owner.validation(), "absent");
+    // Item V: debug builds enable the Khronos layer when the loader lists it; release builds never do.
+    let listed = owner.layers().present.iter().any(|l| l == VALIDATION_LAYER);
+    let want = if !cfg!(debug_assertions) {
+        "off"
+    } else if listed {
+        "on"
+    } else {
+        "absent"
+    };
+    assert_eq!(owner.validation(), want, "listed {listed}, layers {:?}", owner.layers());
+    assert_eq!(owner.validation_report().state, want);
     assert_eq!(owner.layers().disabled, "~implicit~");
-    assert!(owner.layers().enabled.is_empty());
-    println!("device {} driver {} {} validation absent", info.name, info.driver_name, info.driver_info);
+    let enabled: &[&str] = if want == "on" { &[VALIDATION_LAYER] } else { &[] };
+    assert_eq!(owner.layers().enabled, enabled);
+    println!("device {} driver {} {} validation {want}", info.name, info.driver_name, info.driver_info);
 
     // One device per process.
     assert_eq!(Owner::open(OwnerConfig::default()).err(), Some(Refusal::OwnerAlreadyOpen));
@@ -47,5 +59,20 @@ fn offscreen_clear_upload_readback_exact_on_one_owner() {
 
     // The flag is released with the device: a later owner in the same process opens.
     let again = Owner::open(OwnerConfig::default()).expect("re-open after drop");
+    assert_eq!(again.validation(), want);
     drop(again);
+    assert_validation_clean(want);
+}
+
+/// Every GPU test ends here: with the layer on, no error over the whole process (destruction included); warnings
+/// are printed for the lane file's rulings.
+fn assert_validation_clean(want: &str) {
+    let v = process_validation();
+    assert_eq!(v.state, want, "{v:?}");
+    println!("validation {} errors {} warnings {} first {:?}", v.state, v.errors, v.warnings, v.first);
+    if v.state == "on" {
+        assert_eq!(v.errors, 0, "validation errors: {v:?}");
+    } else {
+        println!("NOT_PROVEN: validation layer {VALIDATION_LAYER} (state {})", v.state);
+    }
 }
