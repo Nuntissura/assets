@@ -366,6 +366,39 @@ fn shift_ease_and_hold_over_the_selection_are_named_steps() {
     });
 }
 
+/// Round R60 attempt-2 probe (claim SMB-MOTION-COMMANDS-1, `validation/round-R60.json`
+/// `attempt_2_probes`): `keyframe.add_at_current` with a value on an anchor without a stream changed
+/// the rendered scene. STU-MOT-038: adding captures the current evaluated value and never changes
+/// the render, so a caller's value is refused everywhere and an unknown current value is refused.
+/// `set_parent` states its choice: the child's transform is not compensated.
+#[test]
+fn r60_add_at_current_never_takes_a_callers_value_and_set_parent_states_its_choice() {
+    with_open(|run| {
+        new_comp(run, "main");
+        let shape = cmd(run, "composition.add_layer", json!({"composition_id": "main", "kind": "shape"}))["layer_id"].as_str().unwrap().to_string();
+        cmd(run, "keyframe.set", json!({"layer_id": shape, "property": "position", "time": 0, "value": [0.0, 0.0]}));
+        cmd(run, "keyframe.set", json!({"layer_id": shape, "property": "position", "time": 4 * F, "value": [40.0, 0.0]}));
+        // The probe's exact call: refused, nothing changes (`refused` compares the entries).
+        for id in ["keyframe.add_at_current", "keyframe.toggle_at_current"] {
+            assert_eq!(refused(run, id, json!({"layer_id": shape, "property": "anchor", "time": F, "value": [37.0, 11.0]})), "parameter_invalid", "{id}");
+            assert_eq!(run.ops().last().unwrap()["target"], "value");
+            assert_eq!(refused(run, id, json!({"layer_id": shape, "property": "anchor", "time": F})), "property_default_unknown", "{id}: no current value to capture");
+            assert_eq!(refused(run, id, json!({"layer_id": shape, "property": "position", "time": F, "value": [1.0, 1.0]})), "parameter_invalid", "{id}: a known value is never replaced");
+        }
+        assert!(layer(run, &shape)["streams"].as_array().unwrap().iter().all(|s| s["property"] != "anchor"));
+        // Adding where the value is known captures it: the sample at F is unchanged.
+        let before = cmd(run, "property.read", json!({"layer_id": shape, "property": "position", "time": F}))["value_at"].clone();
+        cmd(run, "keyframe.add_at_current", json!({"layer_id": shape, "property": "position", "time": F}));
+        assert_eq!(cmd(run, "property.read", json!({"layer_id": shape, "property": "position", "time": F}))["value_at"], before);
+        // set_parent records that the child's transform is not compensated.
+        let ctrl = cmd(run, "composition.add_layer", json!({"composition_id": "main", "kind": "null"}))["layer_id"].as_str().unwrap().to_string();
+        let d = cmd(run, "composition.set_parent", json!({"layer_id": shape, "parent": ctrl}));
+        assert_eq!(d["transform_compensated"], false, "{d}");
+        let d = cmd(run, "composition.set_parent", json!({"layer_id": shape, "parent": Value::Null}));
+        assert_eq!(d["transform_compensated"], false, "{d}");
+    });
+}
+
 #[cfg(feature = "media")]
 mod export {
     //! The scenario's acceptance: solids, adjustment layers and eased keys reach the render queue

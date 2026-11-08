@@ -297,7 +297,11 @@ fn step_26_keyframe_operations_are_named_and_add_at_current_never_changes_the_va
         assert_eq!(last_label(run), "Disable Animation");
         assert_eq!(value_at(run, L2, "opacity", 3 * S), vec![40.0]);
         assert_eq!(refused(run, "property.disable_animation", json!({"layer_id": L2, "property": "opacity"})), "nothing_to_change");
-        cmd(run, "keyframe.add_at_current", json!({"layer_id": L2, "property": "anchor", "time": 0, "value": [1.0, 2.0]}));
+        // R60 attempt-2 probe (SMB-MOTION-COMMANDS-2): a caller's value never seeds a key at the
+        // current time, even where the implied value is unknown (STU-MOT-038).
+        assert_eq!(refused(run, "keyframe.add_at_current", json!({"layer_id": L2, "property": "anchor", "time": 0, "value": [1.0, 2.0]})), "parameter_invalid");
+        assert_eq!(refused(run, "keyframe.add_at_current", json!({"layer_id": L2, "property": "anchor", "time": 0})), "property_default_unknown");
+        cmd(run, "keyframe.set", json!({"layer_id": L2, "property": "anchor", "time": 0, "value": [1.0, 2.0]}));
         assert_eq!(value_at(run, L2, "anchor", 5 * S), vec![1.0, 2.0]);
         assert_eq!(refused(run, "keyframe.toggle_at_current", json!({"layer_id": L2, "property": "anchor", "time": S, "value": [3.0, 3.0]})), "parameter_invalid");
         survives_reopen(run);
