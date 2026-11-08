@@ -173,7 +173,9 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// `raster_records` (lane SMB-PLACE-ASSET-1) holds the Folio `StudioRasterRecords` the harness viewer
 /// authored (placed assets) with its placement metadata, validated by its producer on every set and read;
 /// it supersedes the import records entry for that viewer and names no sequence or clip.
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token", "media_markers", "artboard_options", "project_bin", "layout_records", "export_settings", "raster_records"];
+/// `export_recipes` (lane SMB-DELIVERY-QUEUE-1) holds the user reel `StudioExportRecipe` records of the document
+/// (`crate::export_recipes`), validated by its producer on every set and read; it names no sequence or clip.
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit", "multicam", "proof", "design", "info", "sequence_settings", "sequence_presets", "track_display", "composition_token", "media_markers", "artboard_options", "project_bin", "layout_records", "export_settings", "raster_records", "export_recipes"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {

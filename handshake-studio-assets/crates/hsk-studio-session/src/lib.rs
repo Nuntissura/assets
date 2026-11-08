@@ -9,6 +9,7 @@ mod admission;
 mod composition_token;
 mod container_step;
 mod error;
+mod export_recipes;
 mod jobs;
 mod layout_records;
 mod motion;
@@ -55,6 +56,7 @@ pub use session::{
 };
 pub use motion::{COMPOSITION_ENTRY, MOTION_ENTRY, session_error_diagnostic};
 pub use multicam::MULTICAM_ENTRY;
+pub use export_recipes::EXPORT_RECIPES_ENTRY;
 pub use project_bin::PROJECT_BIN_ENTRY;
 pub use multicam_step::{MAX_MULTICAM_STEP_EDITS, MULTICAM_STEP_PROVIDER, MulticamStep, SequenceEdit};
 pub use sequence_records::{AUDIO_ROUTING_ENTRY, MEDIA_MARKERS_ENTRY, RoutingTakeover, SEQUENCE_PRESETS_ENTRY, SEQUENCE_SETTINGS_ENTRY, TRACK_DISPLAY_ENTRY};
