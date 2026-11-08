@@ -22,7 +22,7 @@ use crate::breaker::{AdobeParams, Composer};
 use crate::hyphenate::{HyphenationParams, Hyphenator, MAX_WORD_BYTES};
 use crate::styles::{Alignment, ParagraphComposition, StyleSource, length_pt};
 use crate::{LayoutError, SpaceParams};
-use hsk_studio_folio::{StudioCompositionEngine, StudioCompositionScope, StudioSingleWordJustification};
+use hsk_studio_folio::{Length, StudioCompositionEngine, StudioCompositionScope, StudioCompositionSettings, StudioSingleWordJustification};
 
 /// Minimum / desired / maximum of one spacing quantity.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -291,6 +291,11 @@ pub struct ParagraphParams {
 ///   request's `hyphenation` value, else `opts.hyphen_advance_pt`, else the paragraph's own U+002D
 ///   glyph, else one third of the font size (an ESTIMATE, UNVERIFIED: Arial's hyphen is 0.333 em).
 /// - Inert here (stored, round-tripped, not composed): `hyphen_weight`, `hyphenate_across_columns`.
+/// - STU-TYP-185 indents and spacing (lane SMB-TYPE-INDENT-SPACING-1) resolve into `geometry` in
+///   points (unset = 0, any unit through `length_pt`, non-finite `invalid_geometry`). Settings that
+///   state only these fields (and `space_between_same_style`) leave every other parameter exactly
+///   the request's, as if no settings were stated (an IDML import that stores zero indents changes
+///   no composition; tests/indent_spacing.rs `zero_indents_and_spacing_compose_bit_identically`).
 pub fn paragraph_params(
     composition: Option<&ParagraphComposition>,
     font_size_pt: f64,
@@ -312,6 +317,28 @@ pub fn paragraph_params(
         return Ok(out);
     };
     let s = &c.settings;
+    let at = |l: &Option<Length>| l.as_ref().map_or(Ok(0.0), length_pt);
+    out.geometry = ParagraphGeometry {
+        left_indent_pt: at(&s.left_indent)?,
+        right_indent_pt: at(&s.right_indent)?,
+        first_line_indent_pt: at(&s.first_line_indent)?,
+        last_line_indent_pt: at(&s.last_line_indent)?,
+        space_before_pt: at(&s.space_before)?,
+        space_after_pt: at(&s.space_after)?,
+    };
+    let composer_settings = StudioCompositionSettings {
+        left_indent: None,
+        right_indent: None,
+        first_line_indent: None,
+        last_line_indent: None,
+        space_before: None,
+        space_after: None,
+        space_between_same_style: None,
+        ..s.clone()
+    };
+    if composer_settings.is_empty() {
+        return Ok(out);
+    }
     match s.composition_engine {
         Some(StudioCompositionEngine::WorldReady | StudioCompositionEngine::Adornment) => {
             return Err(LayoutError::UnsupportedComposition);

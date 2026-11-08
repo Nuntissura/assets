@@ -234,6 +234,7 @@ pub(crate) fn apply(
     let mut char_cache: BTreeMap<&str, ResolvedStyle> = BTreeMap::new();
     let mut out = Vec::with_capacity(paragraphs.len());
     let mut stylings = Vec::with_capacity(paragraphs.len());
+    let mut previous_style: Option<&str> = None;
     for p in paragraphs {
         let sp = story
             .paragraphs
@@ -259,6 +260,11 @@ pub(crate) fn apply(
         if let Some(local) = sp.and_then(|sp| src.records.paragraph_composition(story_id, sp.start)) {
             settings = settings.overlaid(local);
         }
+        // STU-TYP-185: no space between adjacent paragraphs of one (non-null) paragraph style when
+        // this paragraph's effective `space_between_same_style` is true.
+        let style_ref = sp.and_then(|sp| sp.style_ref.as_deref());
+        let same_style_no_space = settings.space_between_same_style == Some(true) && style_ref.is_some() && style_ref == previous_style;
+        previous_style = style_ref;
         let composition = (!settings.is_empty()).then(|| ParagraphComposition {
             space_advance_pt: glyph_advance(p, text, " "),
             hyphen_advance_pt: glyph_advance(p, text, "-"),
@@ -329,7 +335,7 @@ pub(crate) fn apply(
             font_size_pt: size,
             style: resolved,
             composition,
-            same_style_no_space: false,
+            same_style_no_space,
         });
         out.push(q);
     }

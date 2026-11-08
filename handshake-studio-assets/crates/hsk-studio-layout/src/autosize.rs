@@ -7,8 +7,9 @@
 //!   extent bound. Several columns: the smallest height at which the story fits, columns filled in
 //!   order (no balancing), found by bisection and then set exactly to the deepest line's bottom.
 //! - `width_only`: lines do not wrap (the frame is composed at the extent bound); the left edge and
-//!   the height stay; the width is the widest line (`Line::width_pt`, hanging space excluded) plus
-//!   the left and right insets.
+//!   the height stay; the width is the widest line (`Line::width_pt`, hanging space excluded, plus
+//!   the width its STU-TYP-185 indents take: left, first line, right and a positive last-line
+//!   indent; lane SMB-TYPE-INDENT-SPACING-1) plus the left and right insets.
 //! - `height_and_width`: the width rule, and the height fits the lines as for `height_only`.
 //! - `height_and_width_proportionally`: the smallest uniform scale of the authored width and height
 //!   (insets and offsets unscaled; the top-left corner stays) at which the story fits with no overset
@@ -189,10 +190,14 @@ pub(crate) fn autosize<'a>(
                     .and_then(|p| p.glyphs.get(l.glyph_range.start..))
                     .map_or(0.0, |g| g.iter().map(|g| g.advance_pt).sum::<f64>())
             };
-            if c.lines[a].iter().any(|l| l.overfull || natural(l) > room) || (both && c.overset.is_some()) {
+            // STU-TYP-185: a line also needs the width its indents take (left, first line, right, a
+            // positive last-line indent), or the final composition at the found width would wrap.
+            let indent = |i: usize| c.indent.get(a).and_then(|v| v.get(i)).copied().unwrap_or(0.0);
+            let plus = |v: f64, i: f64| if i != 0.0 { v + i } else { v };
+            if c.lines[a].iter().enumerate().any(|(i, l)| l.overfull || plus(natural(l), indent(i)) > room) || (both && c.overset.is_some()) {
                 return Err(LayoutError::AutosizeOverBound);
             }
-            let widest = c.lines[a].iter().map(|l| l.width_pt).reduce(f64::max).filter(|v| *v > 0.0);
+            let widest = c.lines[a].iter().enumerate().map(|(i, l)| plus(l.width_pt, indent(i))).reduce(f64::max).filter(|v| *v > 0.0);
             (widest.map_or(w0, |v| v + left + right), if both { fitted_height(&c) } else { h0 })
         }
         AutoSizing::HeightAndWidthProportionally => {
