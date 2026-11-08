@@ -329,10 +329,9 @@ mod audio_post {
         }
     }
 
-    /// Dialogue (dc 0.25 stereo, ten frames) and music (an impulse, mono) over the DX submix.
-    #[test]
-    fn mixer_multitrack_waveform_and_spectral_rows_run_through_the_process_and_survive_reopen() {
-        let scratch = Scratch::new("audio");
+    /// Dialogue (dc 0.25 stereo, ten frames) and music (an impulse, mono) over the DX submix: the
+    /// package `seq-ep` and its two sound files.
+    fn episode(scratch: &Scratch) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
         let n = 12 * SPF;
         let dc_wav = wav(2, RATE, WavFormat::Int16, None, &vec![0.25; 2 * n]);
         let mut imp = vec![0.0f32; n];
@@ -357,6 +356,13 @@ mod audio_post {
         };
         let source = scratch.path("ep.handshake");
         package(&source, &document(json!([serde_json::to_value(&sequence).unwrap()])));
+        (source, dc_path, imp_path)
+    }
+
+    #[test]
+    fn mixer_multitrack_waveform_and_spectral_rows_run_through_the_process_and_survive_reopen() {
+        let scratch = Scratch::new("audio");
+        let (source, dc_path, imp_path) = episode(&scratch);
 
         let mut s = Live::open(&source, "lane-drive-audio", &scratch.0);
         // No sound port yet: typed refusals, nothing opens.
@@ -476,6 +482,46 @@ mod audio_post {
         let names: Vec<&str> = edits.ops.iter().map(|o| o.name()).collect();
         assert_eq!(names, ["paste", "fade", "gain_envelope", "amplify", "normalize", "spectral"], "the heal was undone");
     }
+
+    /// Review F1, F2 and F7 (2bbe2207): a refused row answers the engine's reason, never the name of the
+    /// step it would have made; a refused `mixer.open` or `spectral.open` leaves the open state as it
+    /// was; a declared parameter the chosen mode does not use is refused, never dropped.
+    #[test]
+    fn refused_audio_rows_keep_the_open_state_and_answer_typed() {
+        let scratch = Scratch::new("audio-refused");
+        let (source, dc_path, imp_path) = episode(&scratch);
+        let mut s = Live::open(&source, "lane-drive-audio", &scratch.0);
+        s.ok("audio.bind_sound", json!({"files": [dc_path.to_str().unwrap(), imp_path.to_str().unwrap()]}));
+        s.ok("multitrack.open", json!({}));
+
+        // F1: the master over Folio's level cap is a refusal of the routing, not `mixer_master_volume`.
+        let reply = s.refused("mixer.master_volume", json!({"linear": 10}), "command_refused");
+        assert!(reply["detail"]["message"].as_str().is_some_and(|m| m.contains("master")), "{reply}");
+        // F2: a mixer.open on a sequence the document does not hold keeps the timeline's mixer.
+        let reply = s.call("mixer.open", json!({"sequence_id": "seq-typo"}));
+        assert_eq!(reply["ok"], false, "{reply}");
+        let state = s.ok("mixer.state", json!({}));
+        assert_eq!(state["sequence_id"], "seq-ep", "the open mixer is kept: {state}");
+        assert_eq!(state["strips"].as_array().map(Vec::len), Some(3), "{state}");
+        s.step("mixer.volume", json!({"track_id": id(2), "linear": 0.5}), "mixer_volume");
+
+        s.ok("audio.waveform_open_clip", json!({"clip_id": CLIP1}));
+        // F7: the selection's channels without a range, a floor frequency on a linear scale.
+        s.refused("waveform.select", json!({"channels": 1}), "parameter_conflict");
+        s.refused("spectral.open", json!({"scale": "linear", "min_hz": 50}), "parameter_conflict");
+        s.ok("spectral.open", json!({"fft_size": 1024, "hop": 256, "scale": "log", "min_hz": 40}));
+        s.ok("spectral.set_region", json!({"start": 0, "end": 4800, "low_hz": 100.0, "high_hz": 2000.0}));
+        // F2: parameters score refuses keep the display that was open, its parameters and its region.
+        let reply = s.call("spectral.open", json!({"fft_size": 3}));
+        assert_eq!(reply["ok"], false, "{reply}");
+        let display = s.ok("spectral.state", json!({}));
+        assert_eq!(display["fft_size"], 1024, "{display}");
+        assert!(!display["region"].is_null(), "the region is kept: {display}");
+        // F7: a gain on an op that takes none.
+        s.refused("spectral.apply", json!({"op": "heal", "gain_db": -3.0}), "parameter_conflict");
+        s.step("spectral.apply", json!({"op": "attenuate", "gain_db": -20.0}), "waveform_spectral");
+        assert_eq!(s.close(), 1);
+    }
 }
 
 // ---- video edit: the monitors and source edit ---------------------------------------------------
@@ -502,11 +548,8 @@ mod monitors {
         out
     }
 
-    /// Steps 13, 15, 18 and 19 of the video edit: a take screened in source, marked and inserted, then
-    /// overwritten on the program sequence, each one undo step that the reopened package holds.
-    #[test]
-    fn monitor_rows_screen_mark_and_edit_a_take_into_the_program() {
-        let scratch = Scratch::new("monitors");
+    /// A 24-frame take and the package `seq-cut` whose program holds the take's first four frames.
+    fn cut(scratch: &Scratch) -> (std::path::PathBuf, std::path::PathBuf) {
         let take = scratch.path("take.y4m");
         std::fs::write(&take, y4m(24)).unwrap();
         // The program holds the take's first four frames (a monitor refuses an empty sequence: zero_duration).
@@ -557,6 +600,29 @@ mod monitors {
         };
         let source = scratch.path("cut.handshake");
         package(&source, &document(json!([serde_json::to_value(&sequence).unwrap()])));
+        (take, source)
+    }
+
+    /// The program's clips as a package holds them.
+    fn program_clips(package: &std::path::Path) -> Vec<StudioClip> {
+        let mut w = Viewer::new(Prefer::Cpu);
+        w.open(package).unwrap();
+        w.run().snapshot().unwrap().document().sequences[0].tracks[0].clips.clone()
+    }
+
+    /// The source edits reached a package: a clip besides the fixture's starts at the in mark (frame 3),
+    /// and the program runs past the fixture's four frames.
+    fn holds_the_edits(clips: &[StudioClip]) -> bool {
+        let end = clips.iter().map(|c| c.timeline_start.value().saturating_add(c.duration.value())).max().unwrap_or(0);
+        clips.len() > 1 && clips.iter().any(|c| c.source_in.value() == 3 * TPF_24) && end > 4 * TPF_24
+    }
+
+    /// Steps 13, 15, 18 and 19 of the video edit: a take screened in source, marked and inserted, then
+    /// overwritten on the program sequence, each one undo step that the reopened package holds.
+    #[test]
+    fn monitor_rows_screen_mark_and_edit_a_take_into_the_program() {
+        let scratch = Scratch::new("monitors");
+        let (take, source) = cut(&scratch);
 
         let mut s = Live::open(&source, "lane-drive-monitor", &scratch.0);
         s.refused("monitor.source_edit", json!({"mode": "insert"}), "no_source_monitor");
@@ -580,12 +646,38 @@ mod monitors {
         assert_eq!(s.call("document.save", json!({"path": saved.to_str().unwrap()}))["ok"], true);
         assert_eq!(s.close(), 1);
 
-        let mut w = Viewer::new(Prefer::Cpu);
-        w.open(&saved).unwrap();
-        let doc = w.run().snapshot().unwrap().document().clone();
-        let clips = &doc.sequences[0].tracks[0].clips;
-        assert!(!clips.is_empty(), "the edits reached the package");
+        // Review F4: the oracle fails on the fixture itself, so a save without the edits fails it too.
+        assert!(!holds_the_edits(&program_clips(&source)), "the oracle must fail on the unedited fixture");
+        let clips = program_clips(&saved);
+        assert!(holds_the_edits(&clips), "the edits reached the package: {clips:?}");
         assert!(clips.iter().all(|c| matches!(&c.source_ref, ClipSource::Media { artifact_manifest_id, .. } if Some(artifact_manifest_id.as_str()) == opened["source"].as_str())));
+    }
+
+    /// Review F3, F6 and F7 (2bbe2207): both marks are one pair, checked whole, and a refusal changes no
+    /// mark; an empty media list has its own code; a step count on a key that takes none is refused.
+    #[test]
+    fn monitor_marks_are_one_pair_and_refusals_change_nothing() {
+        let scratch = Scratch::new("monitors-refused");
+        let (take, source) = cut(&scratch);
+        let mut s = Live::open(&source, "lane-drive-monitor", &scratch.0);
+        s.ok("monitor.open", json!({"sequence_id": "seq-cut", "width": 64, "height": 36}));
+        s.ok("monitor.open_source_media", json!({"path": take.to_str().unwrap(), "width": 64, "height": 36}));
+        let marks = |r: &serde_json::Value| (r["source"]["mark_in"].as_u64(), r["source"]["mark_out"].as_u64());
+        let marked = s.ok("monitor.source_mark", json!({"mark_in": 3, "mark_out": 10}));
+        assert_eq!(marks(&marked), (Some(3), Some(10)), "{marked}");
+        // A later window in one row: (12, 20) is valid although 12 lies after the old out mark.
+        let marked = s.ok("monitor.source_mark", json!({"mark_in": 12, "mark_out": 20}));
+        assert_eq!(marks(&marked), (Some(12), Some(20)), "{marked}");
+        s.refused("monitor.source_mark", json!({"mark_in": 5, "mark_out": 2}), "out_before_in");
+        s.refused("monitor.source_mark", json!({"mark_in": 5, "mark_out": 30}), "outside_range");
+        let kept = s.ok("monitor.key", json!({"target": "source", "key": "shuttle_stop"}));
+        assert_eq!(marks(&kept), (Some(12), Some(20)), "a refused pair changes no mark: {kept}");
+        // F7: frames apply to step_back and step_forward only.
+        s.refused("monitor.key", json!({"target": "source", "key": "mark_in", "frames": 2}), "parameter_conflict");
+        // F6: nothing to bind is its own refusal, as text or as a list.
+        s.refused("monitor.bind_program_media", json!({"sequence_id": "seq-cut", "files": []}), "media_files_empty");
+        s.refused("monitor.bind_program_media", json!({"sequence_id": "seq-cut", "files": ""}), "media_files_empty");
+        assert_eq!(s.close(), 1);
     }
 }
 
@@ -726,5 +818,22 @@ mod product_design {
         let view = w.instance_view(&layer).expect("the instance").json();
         assert_eq!(view["variants"]["state"]["current"], other.as_str(), "{view}");
         assert_eq!(view["state"], "edited", "{view}");
+    }
+
+    /// Review F1 and F7 (2bbe2207): a design file the importer refuses answers the importer's code, not
+    /// the engine's name; `overwrite` without a `path` is refused, never dropped.
+    #[test]
+    fn refused_design_and_prototype_rows_answer_typed() {
+        let scratch = Scratch::new("design-refused");
+        let start = scratch.path("start.handshake");
+        package(&start, &document(json!([])));
+        let junk = scratch.path("junk.fig");
+        std::fs::write(&junk, b"this is no design file, only text").unwrap();
+        let mut s = Live::open(&start, "lane-drive-design", &scratch.0);
+        let reply = s.refused("design.import_fig", json!({"source": junk.to_str().unwrap(), "dest": scratch.path("junk.handshake").to_str().unwrap()}), "not_fig");
+        assert!(reply["detail"]["message"].as_str().is_some_and(|m| m.starts_with("fig_import:")), "{reply}");
+        s.ok("prototype.start_session", json!({"path": fixture("fig-prototype-pages.fig").to_str().unwrap()}));
+        s.refused("prototype.capture_frame", json!({"overwrite": true}), "parameter_conflict");
+        assert_eq!(s.close(), 1);
     }
 }
