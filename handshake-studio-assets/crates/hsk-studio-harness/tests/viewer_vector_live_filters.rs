@@ -238,3 +238,55 @@ fn a_duplicated_layer_does_not_carry_the_stack_pinned() {
     assert!(v.envelope(&copy).unwrap().is_none(), "the copy has no envelope");
     assert_eq!(read(&mut v, &r)["filters"].as_array().map(Vec::len), Some(1), "the original keeps its stack");
 }
+
+#[test]
+fn a_transform_that_would_store_a_non_finite_corner_is_refused_before_commit() {
+    // Review F2: a disabled free distort never meets the trial evaluation, and a scale of a huge
+    // stored corner would write a non-finite value (serialised as null) and brick the entry.
+    let scratch = Scratch::new("live-filters-corner");
+    let mut v = paper(&scratch);
+    let r = v.draw_shape(ShapeKind::Rectangle, [20.0, 20.0], [60.0, 40.0], false).unwrap();
+    let mut params = Vec::new();
+    for (prefix, q) in [("src", [[20.0, 20.0], [60.0, 20.0], [60.0, 40.0], [20.0, 40.0]]), ("dst", [[15.0, 18.0], [65.0, 20.0], [58.0, 44.0], [22.0, 38.0]])] {
+        for (i, [h, vv]) in q.iter().enumerate() {
+            params.push(real(&format!("{prefix}{i}_h"), *h));
+            params.push(real(&format!("{prefix}{i}_v"), *vv));
+        }
+    }
+    let id = apply(&mut v, &r, "free_distort", params).unwrap();
+    cmd(&mut v, "vector.live_filter_toggle", json!({"layer":r,"instance":id,"enabled":false})).unwrap();
+    cmd(&mut v, "vector.live_filter_update", json!({"layer":r,"instance":id,"param":real("src0_h", 1.0e308)})).unwrap();
+    let before = frame(&mut v);
+    let scaled = v.transform_layers(std::slice::from_ref(&r), TransformOp::Scale { horizontal: 200.0, vertical: 200.0 }, ReferencePoint::Centre);
+    assert!(scaled.as_ref().is_err_and(|e| e.contains("vector_effect_beyond_engine_range")), "{scaled:?}");
+    // Nothing was committed: the entry still decodes and holds the corner unchanged.
+    let rows = read(&mut v, &r)["filters"][0]["params"].clone();
+    let corner = rows.as_array().unwrap().iter().find(|p| p["key"] == "src0_h").map(|p| p["value"].clone());
+    assert_eq!(corner, Some(json!(1.0e308)));
+    assert_eq!(frame(&mut v), before);
+}
+
+#[test]
+fn expand_envelope_refuses_while_the_layer_holds_a_live_filter_stack() {
+    // Review F4 (STU-VEC-054, STU-FX-003): the render is envelope(filters(source)); expanding only the
+    // envelope from the raw paths would leave filters(envelope(source)). Refused typed while any
+    // stack is on the layer, enabled or not; bake or remove the filters first.
+    let scratch = Scratch::new("live-filters-envelope");
+    let mut v = paper(&scratch);
+    let r = v.draw_shape(ShapeKind::Rectangle, [20.0, 20.0], [60.0, 40.0], false).unwrap();
+    let id = apply(&mut v, &r, "roughen", roughen(3)).unwrap();
+    v.make_envelope(&r, &EnvelopeSpec::Warp { style: StudioWarpStyle::Arc, axis: StudioWarpAxis::Horizontal, bend: 10.0, horizontal: 0.0, vertical: 0.0 }, 50.0, false).unwrap();
+    let live = frame(&mut v);
+    let expanded = v.expand_envelope(&r);
+    assert!(expanded.as_ref().is_err_and(|e| e.contains("live_filter")), "{expanded:?}");
+    assert!(v.envelope(&r).unwrap().is_some());
+    assert_eq!(frame(&mut v), live);
+    cmd(&mut v, "vector.live_filter_toggle", json!({"layer":r,"instance":id,"enabled":false})).unwrap();
+    assert!(v.expand_envelope(&r).is_err(), "a disabled entry still holds the stack");
+    // Bake first, then the envelope expands and the picture is kept.
+    cmd(&mut v, "vector.live_filter_toggle", json!({"layer":r,"instance":id,"enabled":true})).unwrap();
+    cmd(&mut v, "vector.live_filter_bake", json!({"layer":r})).unwrap();
+    assert_eq!(frame(&mut v), live);
+    v.expand_envelope(&r).unwrap();
+    assert!(v.envelope(&r).unwrap().is_none());
+}

@@ -347,13 +347,22 @@ fn a_filtered_layer_used_as_raw_geometry_refuses_rather_than_using_its_raw_shape
     assert_eq!(prepare_in(&snap, &red(), &top, &PLAIN).refusal(&identity("SLYR", 4)), Some("vector_effect_source"));
     let boolean = filtered(json!({"boolean_groups":[{"layer_id":identity("SLYR",1),"operation":"UNION","operands":[identity("SLYR",6)]}]}));
     assert_eq!(prepare_in(&snap, &red(), &boolean, &PLAIN).refusal(&identity("SLYR", 1)), Some("vector_effect_source"));
+    // Review F6 (reachable: interop-fig-native writes cached outlines, the Viewer can filter an
+    // operand): a group drawn from its cached outline also refuses, the cache was built from the
+    // raw operands.
+    let cached = filtered(json!({"boolean_groups":[{"layer_id":identity("SLYR",1),"operation":"UNION","operands":[identity("SLYR",6)],"fill_geometry_path_ids":[identity("SVPT",2)]}]}));
+    assert_eq!(prepare_in(&snap, &red(), &cached, &PLAIN).refusal(&identity("SLYR", 1)), Some("vector_effect_source"));
+    let unfiltered = records(json!({"boolean_groups":[{"layer_id":identity("SLYR",1),"operation":"UNION","operands":[identity("SLYR",6)],"fill_geometry_path_ids":[identity("SVPT",2)]}]}));
+    assert_eq!(prepare_in(&snap, &red(), &unfiltered, &PLAIN).refusal(&identity("SLYR", 1)), None);
     // Without the filter every reader takes the shape.
     let plain = records(json!({"clips":[{"clip_id":"c","source_layer_id":identity("SLYR",6),"clip_rule":"NONZERO"}],"attachments":[{"layer_id":identity("SLYR",4),"clip_id":"c"}]}));
     assert!(matches!(prepare_in(&snap, &red(), &plain, &PLAIN).clip(&identity("SLYR", 4)), Some(Ok(_))));
 }
 
+/// Regression pin, not a cancel proof (review F5): a token canceled before the call is caught by the
+/// loop-top checks that predate this lane.
 #[test]
-fn a_canceled_token_returns_nothing() {
+fn a_token_canceled_before_the_call_returns_nothing_regression_pin() {
     let cancel = CancellationToken::default();
     cancel.cancel();
     let r = records(live(4, vec![filter("f1", "twist", &[real("twist_angle", 10.0)])]));
@@ -428,9 +437,11 @@ fn one_aggregate_budget_bounds_every_evaluation_of_a_call() {
     bounded_case("live_filter_aggregate_budget", || {
         // A chain of step repeats (zero copies) over a path just under nib's per-evaluation limit:
         // each evaluation alone is admitted; the chain is refused once the budget of the call is spent.
+        // Every evaluation charges its sources and its output (review F1): 2 x per each.
         let (snap, design) = many_layers(1);
         let per = MAX_OP_ELEMENTS - 8;
-        let fits = usize::try_from(MAX_LIVE_FILTER_ELEMENTS / per as u64).unwrap();
+        let fits = usize::try_from(MAX_LIVE_FILTER_ELEMENTS / (2 * per as u64)).unwrap();
+        assert_eq!(fits, 8);
         let chain = |n: usize| {
             let mut r = StudioVectorRecords::new(identity("SDOC", 1));
             let mut s = twist_stack(1, n);
@@ -462,8 +473,10 @@ fn many_layers_each_with_a_full_stack_share_the_budget() {
     let started = std::time::Instant::now();
     let (ok, refused) = expand_vectors(&snap, &design, &r, &Lines(elements), BlendSpace::Encoded, &VectorResolution::default(), &CancellationToken::default()).unwrap();
     let took = started.elapsed();
-    let per_layer = (LIVE_FILTERS_MAX_PER_STACK * elements) as u64;
+    // Sources and output of every evaluation are charged (review F1).
+    let per_layer = (2 * LIVE_FILTERS_MAX_PER_STACK * elements) as u64;
     let fit = usize::try_from(MAX_LIVE_FILTER_ELEMENTS / per_layer).unwrap();
+    assert_eq!(fit, 1638);
     assert_eq!(ok.len(), fit);
     assert_eq!(refused.len(), layers as usize - fit);
     assert!(refused.iter().all(|(_, code)| *code == REFUSE_EFFECT_WORK));
@@ -472,25 +485,66 @@ fn many_layers_each_with_a_full_stack_share_the_budget() {
     println!("live_filter_budget_4096_layers: {fit} layers x {LIVE_FILTERS_MAX_PER_STACK} filters x {elements} elements in {took:?} (profile {})", if cfg!(debug_assertions) { "debug" } else { "release" });
 }
 
+/// Cancels the caller's token when the layer's path is fetched: after the loop-top check of the only
+/// layer, before its stack runs, so only the stack's own cancel check can stop the call (review F5).
+struct CancelOnFetch(Lines, CancellationToken);
+impl VectorAssets for CancelOnFetch {
+    fn path(&self, id: &str) -> Option<OwnedPath> {
+        self.1.cancel();
+        self.0.path(id)
+    }
+    fn image(&self, _: &StudioImageSource) -> Option<ImageInfo> {
+        None
+    }
+}
+
 #[test]
-fn a_token_canceled_during_a_long_stack_returns_promptly_with_nothing() {
-    use hsk_studio_folio::LIVE_FILTERS_MAX_PER_STACK;
+fn a_token_canceled_before_the_stack_runs_returns_promptly_with_nothing() {
+    use hsk_studio_composite::vector_live_filters::MAX_LIVE_FILTER_ELEMENTS;
     use hsk_studio_nib::shape_ops::MAX_OP_ELEMENTS;
     bounded_case("live_filter_cancel", || {
+        // A long stack the budget admits whole (8 twists over 2^18 - 8 elements, in + out charged), so
+        // the result cannot be a budget refusal; the layer is the last of the document, so no later
+        // loop-top check exists: without the stack's check, expand would return Ok.
         let (snap, design) = many_layers(1);
+        let per = MAX_OP_ELEMENTS - 8;
+        assert!(8 * 2 * per as u64 <= MAX_LIVE_FILTER_ELEMENTS);
         let mut r = StudioVectorRecords::new(identity("SDOC", 1));
-        r.live_filters.push(twist_stack(1, LIVE_FILTERS_MAX_PER_STACK));
+        r.live_filters.push(twist_stack(1, 8));
+        let admitted = expand_vectors(&snap, &design, &r, &Lines(per), BlendSpace::Encoded, &VectorResolution::default(), &CancellationToken::default()).unwrap();
+        assert!(admitted.1.is_empty(), "{:?}", admitted.1);
         let cancel = CancellationToken::default();
-        let remote = cancel.clone();
-        let stopper = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            remote.cancel();
-        });
         let started = std::time::Instant::now();
-        let got = expand_vectors(&snap, &design, &r, &Lines(MAX_OP_ELEMENTS - 8), BlendSpace::Encoded, &VectorResolution::default(), &cancel);
+        let got = expand_vectors(&snap, &design, &r, &CancelOnFetch(Lines(per), cancel.clone()), BlendSpace::Encoded, &VectorResolution::default(), &cancel);
         let took = started.elapsed();
-        stopper.join().unwrap();
         assert!(matches!(got, Err(CompositeError::Canceled)), "{:?}", got.map(|(l, r)| (l.len(), r)));
         println!("live_filter_cancel: returned after {took:?}");
+    });
+}
+
+#[test]
+fn step_repeat_output_is_charged_so_small_sources_cannot_amplify_past_the_budget() {
+    use hsk_studio_composite::vector_live_filters::{MAX_LIVE_FILTER_ELEMENTS, REFUSE_EFFECT_WORK};
+    bounded_case("live_filter_amplify", || {
+        // Review F1: each layer a 5-element polyline with one step repeat of 43689 copies, so nib
+        // admits (43689 + 1) x 6 <= 2^18 per evaluation and returns 218450 elements. The output is
+        // charged: the layers past the budget refuse typed instead of growing memory.
+        let layers = 24_u32;
+        let (snap, design) = many_layers(layers);
+        let mut r = StudioVectorRecords::new(identity("SDOC", 1));
+        r.live_filters = (1..=layers)
+            .map(|k| {
+                let mut s = twist_stack(k, 1);
+                s.filters[0].filter_kind = "hsk.studio.vector_effect.step_repeat".into();
+                s.filters[0].params = vec![hsk_studio_folio::StudioLiveFilterParam::Int { key: "copies".into(), value: 43_689 }];
+                s
+            })
+            .collect();
+        let (ok, refused) = expand_vectors(&snap, &design, &r, &Lines(5), BlendSpace::Encoded, &VectorResolution::default(), &CancellationToken::default()).unwrap();
+        let per_layer = 5 + 43_690 * 5;
+        let fit = usize::try_from(MAX_LIVE_FILTER_ELEMENTS / per_layer).unwrap();
+        assert_eq!(fit, 19);
+        assert_eq!((ok.len(), refused.len()), (fit, layers as usize - fit));
+        assert!(refused.iter().all(|(_, code)| *code == REFUSE_EFFECT_WORK), "{refused:?}");
     });
 }
