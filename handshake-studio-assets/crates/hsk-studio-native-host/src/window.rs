@@ -6,18 +6,19 @@
 //! Scene `gui` (feature `document`): the GUI frame lives through the loop. Input events go to the frame as typed
 //! HostEvents (pointer moves coalesced to one per loop iteration and kept out of the event log), scripted steps are
 //! applied one per iteration after the first frame, a resize re-creates the pane at the client extent (released
-//! first; 0x0 creates nothing), and only a changed frame is painted and uploaded. The Operator's own window waits for
-//! events (ControlFlow::Wait) and presents only when something changed.
-use crate::capture::{Json, device_json, layers_json, sha256_hex, validation_json, write_png, write_receipt};
+//! first; 0x0 creates nothing), and only a changed frame is painted and uploaded, or with `--chrome vulkan` drawn by
+//! the UI pass into the pane (a re-created pane is drawn by the next frame; the pass is dropped before the owner).
+//! The Operator's own window waits for events (ControlFlow::Wait) and presents only when something changed.
+use crate::capture::{Json, device_json, layers_json, sha256_hex, ui_pass_json, ui_trace_json, validation_json, write_png, write_receipt};
 use crate::error::HostError;
 use crate::event::{EventLog, HostEvent, Mods, from_winit};
 use crate::offscreen::document_json;
-use crate::scene::{BACKGROUND, CHROME, Content, DocumentFacts, GuiArgs, Scene, content};
+use crate::scene::{BACKGROUND, CHROME, ChromeMode, Content, DocumentFacts, GuiArgs, Scene, content};
 use crate::script::Step;
 use crate::win32;
 use hsk_studio_vulkan::{
     Capture, FrameOutcome, GpuClientPort, Owner, OwnerConfig, PaneId, PresentCounters, Presenter, SWAPCHAIN_FORMAT,
-    WindowHandles, WindowSignal,
+    UiPass, WindowHandles, WindowSignal,
 };
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -34,6 +35,16 @@ use winit::window::{Window, WindowId, WindowLevel};
 
 #[cfg(feature = "document")]
 use crate::gui::GuiFrame;
+
+/// Scene `gui` in Vulkan mode: the frame drawn by the pass into the pane.
+#[cfg(feature = "document")]
+fn draw_vulkan(g: &mut GuiFrame, pass: &mut UiPass, owner: &mut Owner, pane: PaneId) -> Result<bool, HostError> {
+    g.draw(&mut crate::gui::VulkanChrome { pass, owner, pane })
+}
+#[cfg(not(feature = "document"))]
+fn draw_vulkan(g: &mut GuiFrame, _: &mut UiPass, _: &mut Owner, _: PaneId) -> Result<bool, HostError> {
+    match *g {}
+}
 
 /// Without the `document` feature there is no GUI frame: the type is uninhabited and `open` refuses.
 #[cfg(not(feature = "document"))]
@@ -71,6 +82,12 @@ impl GuiFrame {
         match *self {}
     }
     fn facts(&self) -> DocumentFacts {
+        match *self {}
+    }
+    fn set_chrome(&mut self, _: ChromeMode) {
+        match *self {}
+    }
+    fn chrome(&self) -> ChromeMode {
         match *self {}
     }
 }
@@ -206,6 +223,8 @@ struct Live {
     owner: Owner,
     pane: PaneId,
     presenter: Presenter,
+    /// Scene `gui` with `--chrome vulkan`: dropped before the owner.
+    pass: Option<UiPass>,
 }
 
 
@@ -249,6 +268,8 @@ struct App {
     device: Option<Json>,
     layers: Option<Json>,
     validation: &'static str,
+    /// The receipt's `ui_pass` member, read when the pass is dropped.
+    ui_pass: Json,
     /// Milliseconds from the event loop to a created window, an opened owner and a ready presenter. The frame
     /// deadline starts after them: loading the driver alone has taken 6 to 20 s on this machine under load.
     startup_ms: [u64; 3],
@@ -270,7 +291,11 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
         return Err(HostError::Usage("script_frame_only"));
     }
     let (content, document, gui) = match &args.scene {
-        Scene::Gui(path) => (None, None, Some(GuiFrame::open(path, args.width, args.height, args.gui.scale_milli)?)),
+        Scene::Gui(path) => {
+            let mut g = GuiFrame::open(path, args.width, args.height, args.gui.scale_milli)?;
+            g.set_chrome(args.gui.chrome);
+            (None, None, Some(g))
+        }
         scene => {
             let (c, d) = content(scene, args.width, args.height)?;
             (Some(c), d, None)
@@ -315,6 +340,7 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
         device: None,
         layers: None,
         validation: "none",
+        ui_pass: Json::Null,
         startup_ms: [0; 3],
     };
     event_loop.run_app(&mut app).map_err(|_| HostError::Window("event_loop"))?;
@@ -322,6 +348,11 @@ pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
 }
 
 impl App {
+    /// What draws the chrome: the gui scene's mode, else the CPU painter (scene content is CPU-made).
+    fn chrome(&self) -> &'static str {
+        self.gui.as_ref().map_or(CHROME, |g| g.chrome().code())
+    }
+
     /// The Operator's own window (not quiet, no frame count): it never enforces a capture size.
     fn operator_window(&self) -> bool {
         !self.args.quiet && self.args.frames == 0
@@ -343,7 +374,7 @@ impl App {
         let (ww, wh) = (pw.min(2560), ph.min(1440));
         self.target = (ww, wh);
         self.base = (pw, ph);
-        let title = format!("Handshake Studio, asset-local Vulkan host (chrome: {CHROME})");
+        let title = format!("Handshake Studio, asset-local Vulkan host (chrome: {})", self.chrome());
         let mut attrs = Window::default_attributes()
             .with_title(title)
             .with_inner_size(PhysicalSize::new(ww, wh))
@@ -391,12 +422,20 @@ impl App {
         self.startup_ms[1] = millis(t1);
         let t2 = Instant::now();
         let pane = owner.create_pane(pw, ph)?;
+        let mut pass = None;
         if let Some(g) = self.gui.as_mut() {
             g.set_device(crate::capture::device_readout(&owner));
             // A frame with no fixed scale follows the window's (the frame ignores this when the scale is fixed).
             let _ = g.apply(HostEvent::ScaleFactor { milli: self.scale_milli });
             g.frame()?;
-            g.upload_to(&mut owner, pane)?;
+            if g.chrome() == ChromeMode::Vulkan {
+                let mut p = UiPass::new(&owner)?;
+                p.set_trace(self.args.gui.ui_trace.is_some());
+                draw_vulkan(g, &mut p, &mut owner, pane)?;
+                pass = Some(p);
+            } else {
+                g.upload_to(&mut owner, pane)?;
+            }
         } else {
             match &content {
                 Some(Content::Clear { rgba, .. }) => owner.clear_pane(pane, *rgba)?,
@@ -409,7 +448,7 @@ impl App {
         self.device = Some(device_json(&owner));
         self.layers = Some(layers_json(&owner));
         self.validation = owner.validation();
-        self.live = Some(Live { owner, pane, presenter });
+        self.live = Some(Live { owner, pane, presenter, pass });
         // The frame deadline counts from here.
         self.start = Instant::now();
         el.set_control_flow(if self.operator_wait() { ControlFlow::Wait } else { ControlFlow::Poll });
@@ -531,7 +570,10 @@ impl App {
             g.step(&step)?;
         }
         let painted = g.frame()?;
-        let uploaded = g.upload_to(&mut live.owner, live.pane)?;
+        let uploaded = match live.pass.as_mut() {
+            Some(pass) => draw_vulkan(g, pass, &mut live.owner, live.pane)?,
+            None => g.upload_to(&mut live.owner, live.pane)?,
+        };
         if painted || uploaded {
             self.needs_present = true;
         }
@@ -601,7 +643,17 @@ impl App {
                 .map(|t| format!("{}:{}>{}", t.from.code(), t.signal.code(), t.to.code()))
                 .collect();
             self.report = Some((p.counters(), p.state().code(), transitions, p.extent()));
-            let Live { owner, pane, presenter } = live;
+            let Live { owner, pane, presenter, pass } = live;
+            if let Some(pass) = pass {
+                self.ui_pass = ui_pass_json(&pass.stats(), &owner.device_info().features, None);
+                if let Some(path) = &self.args.gui.ui_trace {
+                    // A trace that cannot be written is a typed io error of the run.
+                    if crate::capture::write_text(path, &ui_trace_json(pass.trace()).render()).is_err() && self.error.is_none() {
+                        self.error = Some(HostError::Io("ui_trace"));
+                    }
+                }
+                drop(pass);
+            }
             drop(presenter);
             let mut owner = owner;
             let _ = owner.release_pane(pane);
@@ -718,7 +770,8 @@ impl App {
                     ("presenter", Json::Num(self.startup_ms[2])),
                 ]),
             ),
-            ("chrome", Json::str(CHROME)),
+            ("chrome", Json::str(self.chrome())),
+            ("ui_pass", std::mem::replace(&mut self.ui_pass, Json::Null)),
             ("document", document_json(document.as_ref())),
             ("gui", gui),
         ]);

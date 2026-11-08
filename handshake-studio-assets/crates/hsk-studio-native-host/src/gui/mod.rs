@@ -3,10 +3,11 @@
 //! bar, the document tab strip, the Context Bar, the Tool Rail, the collapsed Browse and Time & Results docks, the
 //! Viewport with rulers, the three-group Inspect Dock and the status bar, at layouts.json sizes under the fit_table
 //! ladder ([`frame::layout`]). One Interaction, one Text and one Panel per region (lead F7 ruling), plus one unpainted
-//! panel with the observability nodes studio.dock.state and studio.tool.active. Chrome is the CPU painter (decision
-//! O6), painted into one window-size canvas that the host copies into its pane: `cpu painter, Vulkan UI pass pending`.
-//! [`GuiFrame::compose`] is the one place that lists what a frame draws, in paint order; every [`ChromeTarget`] draws
-//! through it (SMB-VK-UI-PASS-1 hook).
+//! panel with the observability nodes studio.dock.state and studio.tool.active. [`GuiFrame::compose`] is the one place
+//! that lists what a frame draws, in paint order; every [`ChromeTarget`] draws through it (SMB-VK-UI-PASS-1). The
+//! default chrome is the CPU painter (decision O6, `cpu painter`), painted into one window-size canvas the host copies
+//! into its pane; `--chrome vulkan` draws the same lists with hsk-studio-vulkan's UI pass into the pane
+//! ([`VulkanChrome`], `vulkan ui pass`) and keeps no canvas.
 //!
 //! Input: typed [`HostEvent`]s in physical px, divided by the scale into logical px, routed to the panel under the
 //! pointer; a release inside a control gives its author_id, and the command table answers every one: Layers controls
@@ -25,7 +26,7 @@ use hsk_studio_accord::ActorContext;
 use hsk_studio_harness_view::view::{LayerRow, Viewer};
 use crate::scene::ChromeMode;
 use hsk_studio_vulkan::ui::TraceRecord;
-use hsk_studio_vulkan::{GpuClientPort, Owner, PaneId, Refusal, UiPass, rgba_len};
+use hsk_studio_vulkan::{GpuClientPort, Owner, PaneId, Refusal, UiFrame, UiPass, rgba_len};
 use kumihimo_ui::checks::{self, Clipped};
 use kumihimo_ui::display::{Border, DisplayList, IconId, ImageId, Prim};
 use kumihimo_ui::fit;
@@ -198,15 +199,40 @@ pub struct VulkanChrome<'a> {
 }
 
 impl ChromeTarget for VulkanChrome<'_> {
-    fn draw(&mut self, _: Chrome<'_>) -> Result<(), HostError> {
-        Err(HostError::Window("chrome_unbuilt"))
+    fn draw(&mut self, chrome: Chrome<'_>) -> Result<(), HostError> {
+        let Chrome { clear, scale, lists, text, res, .. } = chrome;
+        self.pass.draw(self.owner, self.pane, UiFrame { clear, lists, scale, text, res }).map_err(HostError::Vulkan)
     }
 }
 
-/// Max channel difference, differing pixels and the max difference outside the AA rects of `trace` (pixels of the
-/// classes the brief holds exact: flat, opaque image, scissor).
-pub fn parity(_want: &[u8], _got: &[u8], _width: u32, _trace: &[TraceRecord]) -> (u8, u64, u8) {
-    (u8::MAX, u64::MAX, u8::MAX)
+/// Max channel difference, differing pixels and the max difference outside the AA rects of `trace` (every pixel
+/// outside the rects of the AA, glyph, icon, ramp and translucent classes must be exact).
+pub fn parity(want: &[u8], got: &[u8], width: u32, trace: &[TraceRecord]) -> (u8, u64, u8) {
+    let w = width as usize;
+    if want.len() != got.len() || w == 0 || !want.len().is_multiple_of(4 * w) {
+        return (u8::MAX, u64::MAX, u8::MAX);
+    }
+    let h = want.len() / 4 / w;
+    let mut aa = vec![false; w * h];
+    for r in trace.iter().filter(|r| !matches!(r.class, "flat" | "image" | "scissor" | "skipped")) {
+        let (x0, x1) = (r.rect.x0.clamp(0, w as i32) as usize, r.rect.x1.clamp(0, w as i32) as usize);
+        let (y0, y1) = (r.rect.y0.clamp(0, h as i32) as usize, r.rect.y1.clamp(0, h as i32) as usize);
+        for y in y0..y1 {
+            aa[y * w + x0..y * w + x1.max(x0)].fill(true);
+        }
+    }
+    let (mut max, mut n, mut outside) = (0u8, 0u64, 0u8);
+    for (i, (p, q)) in want.chunks_exact(4).zip(got.chunks_exact(4)).enumerate() {
+        let d = p.iter().zip(q).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        if d > 0 {
+            n += 1;
+            max = max.max(d);
+            if !aa[i] {
+                outside = outside.max(d);
+            }
+        }
+    }
+    (max, n, outside)
 }
 
 enum Cmd {
@@ -304,6 +330,10 @@ pub struct GuiFrame {
     canvas: Option<Canvas>,
     repaint: bool,
     pending_upload: bool,
+    chrome: ChromeMode,
+    /// Vulkan mode: a frame was composed (the counterpart of `canvas`), and it is due for a draw.
+    composed: bool,
+    pending_draw: bool,
     stats: GuiStats,
     paint_stats: PaintStats,
     last: Option<Outcome>,
@@ -434,6 +464,9 @@ impl GuiFrame {
             canvas: None,
             repaint: true,
             pending_upload: false,
+            chrome: ChromeMode::Cpu,
+            composed: false,
+            pending_draw: false,
             stats: GuiStats::default(),
             paint_stats: PaintStats::default(),
             last: None,
@@ -1038,7 +1071,7 @@ impl GuiFrame {
             .collect();
         // FIT-S1: readouts drop (device first) until the hintline holds the tool name and the whole outcome, and keeps
         // at least 320.
-        let texts = status_texts(&self.device, self.backend, &size_text, self.revision);
+        let texts = status_texts(&self.device, self.backend, &size_text, self.revision, self.chrome);
         let hint_w = t.measure(preset::RAIL[self.tool].name, TextToken::Body, 0).ceil();
         let outcome_w = t.measure(&outcome_words(self.last.as_ref(), self.last_label.as_deref()), TextToken::Body, 0).ceil();
         let widths: Vec<f32> = texts.iter().map(|s| t.measure(s, TextToken::Body, 0).ceil()).collect();
@@ -1072,7 +1105,7 @@ impl GuiFrame {
         let revs = self.revs;
         let command = outcome_words(self.last.as_ref(), self.last_label.as_deref());
         let command_code = self.last.as_ref().map_or_else(String::new, |o| format!("{} {}", o.command, o.code));
-        let texts = status_texts(&self.device, self.backend, &self.size_text(), self.revision);
+        let texts = status_texts(&self.device, self.backend, &self.size_text(), self.revision, self.chrome);
         let title_full = format!("{}: Studio", self.file_name);
         let origin = self.image_rect().map_or((l.canvas.x0, l.canvas.y0), |r| (r.x0, r.y0));
         let face = &preset::RAIL[self.tool];
@@ -1105,7 +1138,7 @@ impl GuiFrame {
             command_code: &command_code,
             readouts: [texts[0].as_str(), texts[1].as_str(), texts[2].as_str(), texts[3].as_str(), texts[4].as_str()],
             shown: fits.status_shown,
-            chrome: crate::scene::CHROME,
+            chrome: self.chrome.code(),
         };
         let text = &mut self.text;
         let ui = &self.ui;
@@ -1214,33 +1247,64 @@ impl GuiFrame {
         }
         let rebuilt = self.update()?;
         self.stats.builds = self.panels.iter().map(Panel::builds).sum();
-        if !rebuilt && !self.repaint && self.canvas.is_some() {
+        let shown = match self.chrome {
+            ChromeMode::Cpu => self.canvas.is_some(),
+            ChromeMode::Vulkan => self.composed,
+        };
+        if !rebuilt && !self.repaint && shown {
             self.stats.idle_frames = self.stats.idle_frames.saturating_add(1);
             return Ok(false);
         }
-        let mut cpu = CpuChrome::default();
-        self.compose(&mut cpu)?;
-        self.paint_stats = cpu.stats;
-        self.canvas = cpu.canvas;
+        match self.chrome {
+            ChromeMode::Cpu => {
+                let mut cpu = CpuChrome::default();
+                self.compose(&mut cpu)?;
+                self.paint_stats = cpu.stats;
+                self.canvas = cpu.canvas;
+                self.pending_upload = true;
+            }
+            // The pass draws where the host draws (GuiFrame::draw): no canvas.
+            ChromeMode::Vulkan => {
+                self.composed = true;
+                self.pending_draw = true;
+            }
+        }
         self.repaint = false;
-        self.pending_upload = true;
         self.stats.paints = self.stats.paints.saturating_add(1);
         Ok(true)
     }
 
     /// Selects the chrome target (item 7): Vulkan mode keeps no canvas.
-    pub fn set_chrome(&mut self, _mode: ChromeMode) {}
-    pub fn chrome(&self) -> ChromeMode {
-        ChromeMode::Cpu
+    pub fn set_chrome(&mut self, mode: ChromeMode) {
+        if mode != self.chrome {
+            self.chrome = mode;
+            self.canvas = None;
+            self.composed = false;
+            self.pending_upload = false;
+            self.pending_draw = false;
+            self.repaint = true;
+            // The status bar names the chrome: its panel rebuilds.
+            self.bump(&[STATUS]);
+        }
     }
-    /// Vulkan mode: draws the frame through `target` when it changed (or the pane was re-created); false when idle.
-    pub fn draw(&mut self, _target: &mut dyn ChromeTarget) -> Result<bool, HostError> {
-        Err(HostError::Window("chrome_unbuilt"))
+    pub fn chrome(&self) -> ChromeMode {
+        self.chrome
+    }
+    /// Vulkan mode: draws the frame through `target` when it changed (or the pane was re-created); false when idle,
+    /// minimised or in CPU mode.
+    pub fn draw(&mut self, target: &mut dyn ChromeTarget) -> Result<bool, HostError> {
+        if self.chrome != ChromeMode::Vulkan || !self.pending_draw || self.minimized {
+            return Ok(false);
+        }
+        self.compose(target)?;
+        self.pending_draw = false;
+        self.stats.uploads = self.stats.uploads.saturating_add(1);
+        Ok(true)
     }
 
     /// Copies the painted frame into the sink when it changed since the last upload.
     pub fn upload(&mut self, sink: &mut dyn PaneSink) -> Result<bool, Refusal> {
-        if !self.pending_upload || self.minimized {
+        if self.chrome != ChromeMode::Cpu || !self.pending_upload || self.minimized {
             return Ok(false);
         }
         let Some(c) = &self.canvas else { return Ok(false) };
@@ -1256,6 +1320,8 @@ impl GuiFrame {
     /// The next upload copies the frame even if it did not change (a re-created pane starts empty).
     pub fn mark_upload(&mut self) {
         self.pending_upload = self.canvas.is_some();
+        // Vulkan mode: a re-created pane starts empty and is drawn by the next draw.
+        self.pending_draw = self.composed;
     }
     pub fn canvas(&self) -> Option<&Canvas> {
         self.canvas.as_ref()
@@ -1345,13 +1411,16 @@ fn group_tabs(gi: usize) -> &'static [(&'static str, &'static str)] {
 }
 
 /// The status readouts' texts in [`chrome::READOUTS`] order: size, zoom, revision, renderer state, device.
-fn status_texts(device: &str, backend: &str, size_text: &str, revision: u64) -> [String; 5] {
+/// The renderer state names the chrome target; in Vulkan mode the device readout also ends with `; chrome vulkan`
+/// (inside the cut), so CPU frames keep their bytes (AC-BEHAV-07).
+fn status_texts(device: &str, backend: &str, size_text: &str, revision: u64, chrome: ChromeMode) -> [String; 5] {
+    let suffix = if chrome == ChromeMode::Vulkan { "; chrome vulkan" } else { "" };
     [
         size_text.to_owned(),
         "100%".to_owned(),
         format!("revision {revision}"),
-        crate::scene::CHROME.to_owned(),
-        cut(&format!("{device}; viewer render-{backend}"), MAX_DEVICE_BYTES).to_owned(),
+        chrome.code().to_owned(),
+        cut(&format!("{device}; viewer render-{backend}{suffix}"), MAX_DEVICE_BYTES).to_owned(),
     ]
 }
 
@@ -1372,8 +1441,15 @@ fn widgets_pad_doc_tab() -> f32 {
 }
 
 /// [`drive`] for Vulkan mode: after each step, draws what changed through `target`. Stops at the first refusal.
-pub fn drive_chrome(_frame: &mut GuiFrame, _target: &mut dyn ChromeTarget, _steps: &[Step]) -> Result<(), HostError> {
-    Err(HostError::Window("chrome_unbuilt"))
+pub fn drive_chrome(frame: &mut GuiFrame, target: &mut dyn ChromeTarget, steps: &[Step]) -> Result<(), HostError> {
+    frame.frame()?;
+    frame.draw(target)?;
+    for s in steps {
+        frame.step(s)?;
+        frame.frame()?;
+        frame.draw(target)?;
+    }
+    Ok(())
 }
 
 /// Applies `steps` in order; after each, paints and uploads what changed. Stops at the first refusal of the sink:

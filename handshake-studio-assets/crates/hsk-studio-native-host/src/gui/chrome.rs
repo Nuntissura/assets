@@ -462,7 +462,7 @@ pub struct StatusFacts<'a> {
     /// The texts of [`READOUTS`], in order; `shown[i]` false drops readout i (FIT-S1): it stays in the tree with no box.
     pub readouts: [&'a str; 5],
     pub shown: [bool; 5],
-    /// The renderer state (`cpu painter, Vulkan UI pass pending`; the Vulkan UI pass sets its own), readout
+    /// The renderer state (`cpu painter`, or `vulkan ui pass` with `--chrome vulkan`: scene::ChromeMode::code), readout
     /// studio.status.chrome.
     pub chrome: &'a str,
 }

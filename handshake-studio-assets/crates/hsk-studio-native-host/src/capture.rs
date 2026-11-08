@@ -153,6 +153,82 @@ pub fn layers_json(owner: &hsk_studio_vulkan::Owner) -> Json {
     ])
 }
 
+/// The receipt's `ui_pass` member (SMB-VK-UI-PASS-1 item 7): the SPIR-V hashed here with sha2 (a second SHA-256
+/// beside spv-build's) and checked against the manifest the crate embeds; naga; the device features enabled; the
+/// pass counters, VkMemoryRequirements allocation sizes and skip counters; and, offscreen, the parity of the final
+/// frame against the CPU painter's (max channel difference, differing pixels, max difference outside the AA rects).
+pub fn ui_pass_json(stats: &hsk_studio_vulkan::UiStats, features: &[&str], parity: Option<(u8, u64, u8)>) -> Json {
+    let mut spirv = Vec::new();
+    let mut matched = true;
+    for (entry, bytes) in hsk_studio_vulkan::ui::SPIRV {
+        let sha = sha256_hex(bytes);
+        matched &= hsk_studio_vulkan::ui::MANIFEST.contains(&format!("\"sha256\":\"{sha}\""));
+        spirv.push((entry, Json::str(sha)));
+    }
+    let n = Json::Num;
+    let s = stats;
+    Json::obj(vec![
+        ("chrome", Json::str("vulkan ui pass")),
+        ("spirv", Json::obj(spirv)),
+        ("manifest_match", Json::Bool(matched)),
+        ("naga", Json::str("27.0.3")),
+        ("features", Json::strs(features)),
+        ("draws", n(s.draws)),
+        ("passes", n(s.passes)),
+        ("instances", n(s.instances)),
+        ("glyph_side", n(u64::from(s.glyph_side))),
+        ("glyph_entries", n(s.glyph_entries)),
+        ("glyph_uploads", n(s.glyph_uploads)),
+        ("glyph_upload_bytes", n(s.glyph_upload_bytes)),
+        ("glyph_resets", n(s.glyph_resets)),
+        ("glyph_growths", n(s.glyph_growths)),
+        ("icon_side", n(u64::from(s.icon_side))),
+        ("icon_entries", n(s.icon_entries)),
+        ("icon_uploads", n(s.icon_uploads)),
+        ("icon_upload_bytes", n(s.icon_upload_bytes)),
+        ("icon_resets", n(s.icon_resets)),
+        ("image_textures", n(s.image_textures)),
+        ("image_uploads", n(s.image_uploads)),
+        ("image_upload_bytes", n(s.image_upload_bytes)),
+        ("alloc_bytes", Json::obj(vec![("pages", n(s.page_bytes)), ("images", n(s.image_bytes)), ("instances", n(s.instance_bytes)), ("staging", n(s.staging_bytes))])),
+        (
+            "skipped",
+            Json::obj(vec![
+                ("glyph_refusals", n(s.glyph_refusals)),
+                ("missing_resources", n(s.missing_resources)),
+                ("image_over_limit", n(s.image_over_limit)),
+                ("non_finite", n(s.skipped_non_finite)),
+                ("scissor_underflow", n(s.scissor_underflow)),
+            ]),
+        ),
+        (
+            "parity",
+            parity.map_or(Json::Null, |(max, differing, outside)| {
+                Json::obj(vec![("max", n(u64::from(max))), ("differing", n(differing)), ("outside_aa_max", n(u64::from(outside)))])
+            }),
+        ),
+    ])
+}
+
+/// The `--ui-trace` file: one record per primitive of the last UI pass draw (kind, snapped rect, class, instances,
+/// pass); codes and coordinates only, never text.
+pub fn ui_trace_json(trace: &[hsk_studio_vulkan::ui::TraceRecord]) -> Json {
+    let i = |v: i32| Json::Float(f64::from(v));
+    let records = trace
+        .iter()
+        .map(|r| {
+            Json::obj(vec![
+                ("kind", Json::str(r.kind)),
+                ("rect", Json::Arr(vec![i(r.rect.x0), i(r.rect.y0), i(r.rect.x1), i(r.rect.y1)])),
+                ("class", Json::str(r.class)),
+                ("instances", Json::Num(u64::from(r.instances))),
+                ("pass", Json::Num(u64::from(r.pass))),
+            ])
+        })
+        .collect();
+    Json::obj(vec![("schema", Json::str("hsk.studio.native_host.ui_trace@1")), ("records", Json::Arr(records))])
+}
+
 /// The receipt's `validation_report` (item V): this process's validation counts and first message ids when the
 /// receipt is written (after the owner is dropped, so destruction messages count). Ids and codes only, never text.
 pub fn validation_json() -> Json {

@@ -182,7 +182,7 @@ fn layers_panel_regions_rows_states_and_tree_checks() {
     let device = f.node("studio.status.device").unwrap().label.clone().unwrap();
     assert!(device.contains("Test GPU") && device.contains("render-cpu"), "{device}");
     assert!(f.node("studio.status.revision").unwrap().label.clone().unwrap().contains(&f.revision().to_string()));
-    assert_eq!(f.node("studio.status.chrome").unwrap().label.as_deref(), Some("cpu painter, Vulkan UI pass pending"));
+    assert_eq!(f.node("studio.status.chrome").unwrap().label.as_deref(), Some("cpu painter"));
     // AC-GEOM-04: row pitch 32, row tops on the 4 px grid from the body top.
     let body_y = r.body.y0;
     for row in f.rows().to_vec() {
@@ -546,11 +546,12 @@ fn tree_file_and_receipt_gui_member() {
     assert_eq!(g.get("text").map(|v| v.render()), Some(format!(r#""{}""#, f.text_kind())));
 }
 
-/// The host never takes focus or synthesises input: no such API in its source (HBR-QUIET-002).
+/// The host never takes focus or synthesises input: no such API in its source or in hsk-studio-vulkan's, where the UI
+/// pass lives (HBR-QUIET-002; SMB-VK-UI-PASS-1 item 8(h): the pass creates no window, thread, surface or input).
 #[test]
 fn native_host_source_calls_no_focus_or_input_api() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut stack = vec![src];
+    let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut stack = vec![here.join("src"), here.join("../hsk-studio-vulkan/src")];
     let mut files = 0;
     while let Some(dir) = stack.pop() {
         for e in std::fs::read_dir(&dir).unwrap() {
@@ -561,7 +562,19 @@ fn native_host_source_calls_no_focus_or_input_api() {
             }
             files += 1;
             let text = std::fs::read_to_string(&p).unwrap();
-            for word in ["focus_window", "set_cursor_grab", "set_cursor_position", "SetForegroundWindow", "SetFocus", "SendInput"] {
+            for word in [
+                "focus_window",
+                "set_cursor_grab",
+                "set_cursor_position",
+                "SetForegroundWindow",
+                "SetFocus",
+                "SendInput",
+                "SetActiveWindow",
+                "BringWindowToTop",
+                "SetCursorPos",
+                "keybd_event",
+                "mouse_event",
+            ] {
                 let hit = text.match_indices(word).any(|(i, _)| {
                     let after = text[i + word.len()..].chars().next();
                     !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -570,5 +583,5 @@ fn native_host_source_calls_no_focus_or_input_api() {
             }
         }
     }
-    assert!(files >= 10);
+    assert!(files >= 15, "native-host and hsk-studio-vulkan sources: {files}");
 }

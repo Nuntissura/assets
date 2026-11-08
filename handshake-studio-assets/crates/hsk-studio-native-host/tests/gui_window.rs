@@ -101,7 +101,7 @@ fn gui_offscreen_png_equals_quiet_window_capture_after_a_pointer_session() {
     let b = std::fs::read_to_string(s.0.join("gui-swapchain-tree.json")).unwrap();
     assert_eq!(a, b, "the same tree after the same session");
     let receipt = std::fs::read_to_string(s.0.join("gui-swapchain.json")).unwrap();
-    assert!(receipt.contains(r#""scene":"gui""#) && receipt.contains(r#""chrome":"cpu painter, Vulkan UI pass pending""#), "{receipt}");
+    assert!(receipt.contains(r#""scene":"gui""#) && receipt.contains(r#""chrome":"cpu painter""#), "{receipt}");
     validation::assert_clean(&off.receipt);
     validation::assert_clean(&win.receipt);
 }

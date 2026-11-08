@@ -52,7 +52,7 @@ fn imported_png_document_offscreen_and_quiet_window_match() {
     assert_eq!(win.focus.focus_changes, 0, "{:?}", win.focus);
     assert_eq!(win.frame_sha256.as_deref(), Some(off.frame_sha256.as_str()));
     let receipt = std::fs::read_to_string(dir.join("document-swapchain.json")).unwrap();
-    assert!(receipt.contains(r#""chrome":"cpu painter, Vulkan UI pass pending""#), "{receipt}");
+    assert!(receipt.contains(r#""chrome":"cpu painter""#), "{receipt}");
     assert!(receipt.contains(r#""file_name":"card.png""#), "{receipt}");
     validation::assert_clean(&off.receipt);
     validation::assert_clean(&win.receipt);

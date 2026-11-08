@@ -532,7 +532,7 @@ fn status_bar_fit_s1_and_page_keys_follow_the_active_tab() {
     assert!(matches!(&cmd.paint, Paint::Label { text, .. } if text == "FILE: not built in this host yet"), "{:?}", cmd.paint);
     assert!(f.clipped().is_empty(), "{:?}", f.clipped());
     assert!(f.node("studio.status.device").unwrap().bounds.is_empty(), "FIT-S1: the device readout drops first");
-    assert_eq!(f.node("studio.status.chrome").unwrap().label.as_deref(), Some("cpu painter, Vulkan UI pass pending"));
+    assert_eq!(f.node("studio.status.chrome").unwrap().label.as_deref(), Some("cpu painter"));
     let w = open(&s.0, 1920, 1080, 1000);
     assert!(!w.node("studio.status.device").unwrap().bounds.is_empty(), "room for every readout at 1920");
     // Page keys: with Channels active in the Layers group, Page Down does not scroll the Layers list.

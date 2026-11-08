@@ -1,12 +1,14 @@
 //! What a pane shows: one clear colour, a CPU-painted RGBA buffer, or a real document through harness-view's Viewer
-//! on render-cpu. Chrome is the CPU painter; the Vulkan UI pass is pending (no shader in this lane).
+//! on render-cpu. The `gui` scene's chrome is the CPU painter by default, or hsk-studio-vulkan's UI pass with
+//! `--chrome vulkan` ([`ChromeMode`]).
 use crate::error::HostError;
 use crate::script::Step;
 use hsk_studio_vulkan::rgba_len;
 use std::path::PathBuf;
 
-/// The receipt and window-title statement of what draws the chrome.
-pub const CHROME: &str = "cpu painter, Vulkan UI pass pending";
+/// The receipt and window-title statement of what draws the chrome by default (and always outside the `gui` scene,
+/// whose content is CPU-made): [`ChromeMode::Cpu`]'s code.
+pub const CHROME: &str = "cpu painter";
 
 /// Default clear colour (exact 8-bit values survive the UNORM round trip).
 pub const DEFAULT_CLEAR: [u8; 4] = [0x2b, 0x6c, 0xb0, 0xff];

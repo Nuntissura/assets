@@ -176,7 +176,15 @@ fn vulkan_offscreen_equals_the_quiet_window_and_two_runs_agree() {
         allow_overlays: false,
         gui: vulkan_gui(steps.clone(), Some(s.0.join(tree))),
     };
-    let off = offscreen::run(&off_args("gui-vulkan-offscreen.png", "gui-vulkan-offscreen.json", "gui-vulkan-offscreen-tree.json")).expect("vulkan offscreen");
+    let mut first = off_args("gui-vulkan-offscreen.png", "gui-vulkan-offscreen.json", "gui-vulkan-offscreen-tree.json");
+    first.gui.ui_trace = Some(s.0.join("gui-vulkan-trace.json"));
+    let off = offscreen::run(&first).expect("vulkan offscreen");
+    let trace = std::fs::read_to_string(s.0.join("gui-vulkan-trace.json")).unwrap();
+    assert!(trace.starts_with(r#"{"schema":"hsk.studio.native_host.ui_trace@1","records":[{"kind":"#), "{}", &trace[..trace.len().min(200)]);
+    assert!(trace.contains(r#""class":"glyph""#) && trace.contains(r#""class":"flat""#));
+    for png in ["gui-vulkan-offscreen.cpu.png", "gui-vulkan-offscreen.diff.png"] {
+        assert!(s.0.join(png).is_file(), "{png}: the CPU reference and the difference image beside --out");
+    }
     let again = offscreen::run(&off_args("gui-vulkan-offscreen-2.png", "gui-vulkan-offscreen-2.json", "gui-vulkan-offscreen-2-tree.json")).expect("second run");
     assert_eq!(off.rgba8, again.rgba8, "two runs, equal bytes");
     assert_eq!(off.receipt.get("chrome").map(Json::render), Some(r#""vulkan ui pass""#.into()));
@@ -200,7 +208,19 @@ fn vulkan_offscreen_equals_the_quiet_window_and_two_runs_agree() {
         gui: vulkan_gui(steps.clone(), Some(s.0.join("gui-vulkan-swapchain-tree.json"))),
     })
     .expect("vulkan quiet window");
-    keep(&s.0, &["gui-vulkan-offscreen.png", "gui-vulkan-offscreen.json", "gui-vulkan-swapchain.png", "gui-vulkan-swapchain.json"]);
+    keep(
+        &s.0,
+        &[
+            "gui-vulkan-offscreen.png",
+            "gui-vulkan-offscreen.cpu.png",
+            "gui-vulkan-offscreen.diff.png",
+            "gui-vulkan-offscreen.json",
+            "gui-vulkan-trace.json",
+            "gui-vulkan-swapchain.png",
+            "gui-vulkan-swapchain.json",
+            "layered.handshake",
+        ],
+    );
     assert_quiet(&win.focus);
     assert_eq!(win.frame_sha256.as_deref(), Some(off.frame_sha256.as_str()), "swapchain frame equals the offscreen frame");
     assert_eq!(win.receipt.get("chrome").map(Json::render), Some(r#""vulkan ui pass""#.into()));

@@ -444,8 +444,8 @@ impl Recorder {
                         a.trace("dash", area, "aa", n);
                     }
                     Prim::Glyphs { origin, token, glyphs, color } => {
-                        let n = self.glyphs_prim(a, &clip, scale, *origin, token.style().size, glyphs, *color, text)?;
-                        a.trace("glyph", IRect::default(), "glyph", n);
+                        let (n, bbox) = self.glyphs_prim(a, &clip, scale, *origin, token.style().size, glyphs, *color, text)?;
+                        a.trace("glyph", bbox, "glyph", n);
                     }
                     Prim::Icon { rect, icon, form, hot } => {
                         let p = scale.snap(*rect);
@@ -577,8 +577,9 @@ impl Recorder {
         glyphs: &[kumihimo_ui::text::ShapedGlyph],
         color: Rgba8,
         text: &mut Text,
-    ) -> Result<u32, Stop> {
+    ) -> Result<(u32, IRect), Stop> {
         let s = scale.get();
+        let mut bbox: Option<IRect> = None;
         let px_size_64 = (size * s * 64.0).round() as u32;
         let base_y = scale.edge(origin.y);
         let lut = *text.lut();
@@ -603,10 +604,12 @@ impl Recorder {
             }
             let (x0, y0) = (ix.saturating_add(mask.left), gy.saturating_add(mask.top));
             let (mw, mh) = (i32::try_from(mask.width).unwrap_or(i32::MAX), i32::try_from(mask.height).unwrap_or(i32::MAX));
-            let r = IRect { x0, y0, x1: x0.saturating_add(mw), y1: y0.saturating_add(mh) }.intersect(clip);
+            let full = IRect { x0, y0, x1: x0.saturating_add(mw), y1: y0.saturating_add(mh) };
+            let r = full.intersect(clip);
             if r.is_empty() {
                 continue;
             }
+            bbox = Some(bbox.map_or(full, |b| IRect { x0: b.x0.min(full.x0), y0: b.y0.min(full.y0), x1: b.x1.max(full.x1), y1: b.y1.max(full.y1) }));
             let (w, h) = (mask.width, mask.height);
             let slot = match self.glyphs.place(key, w, h) {
                 Placed::Resident(slot) => slot,
@@ -641,7 +644,7 @@ impl Recorder {
             a.push(Instance { quad: quad(r), kind: kind::GLYPH, org, colors: [pack(color), 0, 0, 0], ..Instance::default() }, None)?;
             n = n.saturating_add(1);
         }
-        Ok(n)
+        Ok((n, bbox.unwrap_or_default()))
     }
 
     /// The slot of an icon mask, uploading it when it is new or its bytes changed.
@@ -865,6 +868,10 @@ fn stage(blob: &mut Vec<u8>, bytes: &[u8]) -> u64 {
 
 const VS: &[u8] = include_bytes!("../shaders/ui.vs_main.spv");
 const FS: &[u8] = include_bytes!("../shaders/ui.fs_main.spv");
+/// The checked-in SPIR-V modules (entry point, bytes) the pipeline is built from, and their manifest: hosts hash them
+/// with their own SHA-256 and cross-check the manifest in receipts.
+pub const SPIRV: [(&str, &[u8]); 2] = [("vs_main", VS), ("fs_main", FS)];
+pub const MANIFEST: &str = include_str!("../shaders/manifest.json");
 /// Smallest instance and staging buffers; both double up to their caps.
 const MIN_BUFFER: usize = 64 << 10;
 

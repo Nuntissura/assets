@@ -1,20 +1,22 @@
 //! `studio-vk` command line. Anything unknown is a usage error (exit 2) and never opens a window.
 use crate::error::HostError;
 use crate::offscreen::OffscreenArgs;
-use crate::scene::{DEFAULT_CLEAR, GuiArgs, Scene};
+use crate::scene::{ChromeMode, DEFAULT_CLEAR, GuiArgs, Scene};
 use crate::script::{self, Step};
 use crate::window::{MAX_FRAMES, WindowArgs};
 use hsk_studio_vulkan::rgba_len;
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const USAGE: &str = "studio-vk: asset-local Vulkan host (chrome: cpu painter, Vulkan UI pass pending)
+pub const USAGE: &str = "studio-vk: asset-local Vulkan host (chrome: cpu painter by default, vulkan ui pass with --chrome vulkan)
   studio-vk offscreen [--size WxH] [--scene clear|painted|document|gui] [--clear R,G,B,A] [--document PATH]
                       [--out X.png] [--receipt X.json] [--allow-overlays]
                       [--script S.txt] [--invoke AUTHOR_ID]... [--tree T.json] [--scale 1.25]   (scene gui)
+                      [--chrome cpu|vulkan] [--ui-trace T.json]                                    (scene gui)
   studio-vk window [--quiet] [--frames N] [--exercise] [--size WxH] [--scene ...] [--clear R,G,B,A]
                    [--document PATH] [--capture Y.png] [--receipt Y.json] [--deadline-s S] [--allow-overlays]
                    [--script S.txt] [--invoke AUTHOR_ID]... [--tree T.json] [--scale 1.25]        (scene gui)
+                   [--chrome cpu|vulkan] [--ui-trace T.json]                                         (scene gui)
   studio-vk help
 Offscreen opens no window. window --quiet never takes focus and needs --frames. Scene gui: the document in the
 Viewport beside the Layers panel (default size 1280x800). Exit: 0 ok, 2 usage, 3 Vulkan refusal, 4 io, 5 focus
@@ -129,6 +131,18 @@ pub fn parse<S: AsRef<str>>(args: &[S]) -> Result<Command, HostError> {
             }
             "--scale" => {
                 gui.scale_milli = Some(scale(value()?)?);
+                gui_flag = true;
+            }
+            "--chrome" => {
+                gui.chrome = match value()? {
+                    "cpu" => ChromeMode::Cpu,
+                    "vulkan" => ChromeMode::Vulkan,
+                    _ => return Err(HostError::Usage("chrome")),
+                };
+                gui_flag = true;
+            }
+            "--ui-trace" => {
+                gui.ui_trace = Some(PathBuf::from(value()?));
                 gui_flag = true;
             }
             _ => return Err(HostError::Usage("unknown_flag")),

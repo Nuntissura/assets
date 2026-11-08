@@ -1,9 +1,14 @@
 //! Offscreen proof path: Vulkan instance with no surface extension, a pane image, readback, PNG. No window, no HWND.
 //! Agents screenshot through this. The `gui` scene runs its scripted steps on the live frame first, painting and
-//! uploading after each step, then reads back the final frame.
+//! uploading (or, with `--chrome vulkan`, drawing with the UI pass) after each step, then reads back the final frame.
+//! In Vulkan mode it also paints the CPU reference of that frame through the same compose call and writes `parity`
+//! into the receipt's `ui_pass`; with `--out X.png` the reference and a difference image go beside it (X.cpu.png,
+//! X.diff.png), and `--ui-trace` writes the pass's per-primitive trace.
 use crate::capture::{Json, device_json, layers_json, sha256_hex, validation_json, write_png, write_receipt};
 use crate::error::HostError;
 use crate::scene::{CHROME, Content, DocumentFacts, GuiArgs, Scene, content};
+#[cfg(feature = "document")]
+use crate::scene::ChromeMode;
 use hsk_studio_vulkan::{DeviceInfo, GpuClientPort, LayerReport, Owner, OwnerConfig, PANE_FORMAT};
 use std::path::PathBuf;
 
@@ -49,27 +54,64 @@ pub fn run(args: &OffscreenArgs) -> Result<OffscreenResult, HostError> {
     }
     let rgba8 = owner.read_pane(pane)?;
     let exact = rgba8 == content.expected()?;
-    finish(args, owner, (width, height), rgba8, exact, document, Json::Null)
+    finish(args, owner, (width, height), rgba8, exact, document, Json::Null, (CHROME, Json::Null))
 }
 
 #[cfg(feature = "document")]
 fn gui_run(args: &OffscreenArgs, path: &std::path::Path) -> Result<OffscreenResult, HostError> {
-    use crate::gui::{GuiFrame, PortPane, drive};
+    use crate::gui::{CpuChrome, GuiFrame, PortPane, VulkanChrome, drive, drive_chrome, parity};
     if crate::script::frame_only(&args.gui.steps) {
         return Err(HostError::Usage("script_frame_only"));
     }
     let mut frame = GuiFrame::open(path, args.width, args.height, Some(args.gui.scale_milli.unwrap_or(1000)))?;
+    frame.set_chrome(args.gui.chrome);
     let mut owner = Owner::open(OwnerConfig { surface: false, allow_overlays: args.allow_overlays, allow_cpu_device: false })?;
     frame.set_device(crate::capture::device_readout(&owner));
     let (width, height) = frame.extent();
     let pane = owner.create_pane(width, height)?;
-    drive(&mut frame, &mut PortPane { port: &mut owner, pane }, &args.gui.steps)?;
-    let rgba8 = owner.read_pane(pane)?;
-    let exact = frame.rgba() == Some(&rgba8[..]);
+    let (rgba8, exact, ui) = match args.gui.chrome {
+        ChromeMode::Cpu => {
+            drive(&mut frame, &mut PortPane { port: &mut owner, pane }, &args.gui.steps)?;
+            let rgba8 = owner.read_pane(pane)?;
+            let exact = frame.rgba() == Some(&rgba8[..]);
+            (rgba8, exact, Json::Null)
+        }
+        ChromeMode::Vulkan => {
+            let mut pass = hsk_studio_vulkan::UiPass::new(&owner)?;
+            pass.set_trace(true);
+            drive_chrome(&mut frame, &mut VulkanChrome { pass: &mut pass, owner: &mut owner, pane }, &args.gui.steps)?;
+            let rgba8 = owner.read_pane(pane)?;
+            // The CPU reference of the same frame, from the same compose call.
+            let mut cpu = CpuChrome::default();
+            frame.compose(&mut cpu)?;
+            let want = cpu.canvas.map(|c| c.rgba().to_vec()).unwrap_or_default();
+            let p = parity(&want, &rgba8, width, pass.trace());
+            if let Some(out) = &args.out
+                && want.len() == rgba8.len()
+            {
+                write_png(&out.with_extension("cpu.png"), width, height, &want)?;
+                let diff: Vec<u8> = want
+                    .chunks_exact(4)
+                    .zip(rgba8.chunks_exact(4))
+                    .flat_map(|(a, b)| {
+                        let d = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+                        if d == 0 { [0, 0, 0, 255] } else { [d.saturating_mul(64).max(128), 0, 0, 255] }
+                    })
+                    .collect();
+                write_png(&out.with_extension("diff.png"), width, height, &diff)?;
+            }
+            if let Some(t) = &args.gui.ui_trace {
+                crate::capture::write_text(t, &crate::capture::ui_trace_json(pass.trace()).render())?;
+            }
+            let ui = crate::capture::ui_pass_json(&pass.stats(), &owner.device_info().features, Some(p));
+            drop(pass);
+            (rgba8, p.0 == 0, ui)
+        }
+    };
     if let Some(tree) = &args.gui.tree {
         crate::capture::write_text(tree, &frame.tree_file())?;
     }
-    finish(args, owner, (width, height), rgba8, exact, Some(frame.facts()), frame.receipt())
+    finish(args, owner, (width, height), rgba8, exact, Some(frame.facts()), frame.receipt(), (args.gui.chrome.code(), ui))
 }
 
 #[cfg(not(feature = "document"))]
@@ -77,6 +119,7 @@ fn gui_run(_: &OffscreenArgs, _: &std::path::Path) -> Result<OffscreenResult, Ho
     Err(HostError::Document("feature_off"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish(
     args: &OffscreenArgs,
     owner: Owner,
@@ -85,6 +128,7 @@ fn finish(
     exact: bool,
     document: Option<DocumentFacts>,
     gui: Json,
+    (chrome, ui_pass): (&'static str, Json),
 ) -> Result<OffscreenResult, HostError> {
     let frame_sha256 = sha256_hex(&rgba8);
     let (issuer, device, layers, validation) = (owner.issuer().code(), device_json(&owner), layers_json(&owner), owner.validation());
@@ -108,7 +152,8 @@ fn finish(
         ("format", Json::str(PANE_FORMAT)),
         ("frame_sha256", Json::str(&frame_sha256)),
         ("exact", Json::Bool(exact)),
-        ("chrome", Json::str(CHROME)),
+        ("chrome", Json::str(chrome)),
+        ("ui_pass", ui_pass),
         ("document", document_json(document.as_ref())),
         ("gui", gui),
     ]);
