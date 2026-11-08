@@ -510,3 +510,17 @@ fn stems_with_a_master_graphic_eq_sum_to_the_print_and_a_master_limiter_shows_in
         assert_eq!(report.sums_to_print(), sums, "{name}: {}", report.to_json());
     }
 }
+
+/// Review F2: the drive rows `mixer.add_effect` and `waveform.effect` declare exactly the panel's
+/// templates (`effect_templates()` names joined by `|`), so every table kind is drivable by name.
+#[test]
+fn drive_template_lists_equal_the_panel_templates() {
+    let names: Vec<&str> = effect_templates().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names.len(), 4 + score::FILTER_KINDS.len());
+    let joined = names.join("|");
+    for id in ["mixer.add_effect", "waveform.effect"] {
+        let row = hsk_studio_harness_core::action::command(id).unwrap_or_else(|| panic!("{id}"));
+        let template = row.parameters.iter().find(|p| p.key == "template").unwrap_or_else(|| panic!("{id} template"));
+        assert_eq!(template.shape, joined, "{id}");
+    }
+}
