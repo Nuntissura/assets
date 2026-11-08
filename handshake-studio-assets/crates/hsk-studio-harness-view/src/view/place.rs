@@ -541,7 +541,7 @@ impl Viewer {
         }
     }
 
-    /// Imports `bytes` and renders their composite in linear light.
+    /// Imports `bytes` and renders their composite in linear light, unclipped.
     fn decode_source(&self, bytes: &[u8]) -> Res<SourceImage> {
         let imported = crate::import::import_as(bytes, &crate::harness::TrustAll, self.run.actor(), self.cancel).map_err(|e| PlaceRefusal::new(e.code(), "the source does not import"))?;
         let held: Vec<_> = imported.imports.iter().map(ImportEntry::to_opaque).collect();
@@ -554,7 +554,8 @@ impl Viewer {
             }
         }
         let records = imported.imports.iter().find(|e| e.role == ImportRole::Records).and_then(|e| serde_json::from_slice::<StudioRasterRecords>(&e.bytes).ok());
-        let frame = render::render_linear_with_records(&imported.snapshot, &assets, None, None, records.as_ref(), self.cancel).map_err(|f| PlaceRefusal::new(f.code, f.detail))?;
+        // Unclipped (review F4): a float source keeps its values outside 0..=1 into the resample.
+        let frame = render::render_scene_linear_with_records(&imported.snapshot, &assets, records.as_ref(), self.cancel).map_err(|f| PlaceRefusal::new(f.code, f.detail))?;
         if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
             return no("placed_source_empty", "the source renders no pixel");
         }

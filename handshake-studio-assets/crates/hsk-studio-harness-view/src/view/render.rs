@@ -299,6 +299,21 @@ pub fn render_linear_with_records(
     }
 }
 
+/// [`render_linear_with_records`] unclipped: scene-linear values outside [0, 1] are kept (output stage
+/// `SampleRange::Extended`, no display transform, the records envelope included). Lane SMB-PLACE-ASSET-1,
+/// review F4: its only caller is `view::place`'s source decode, so a placed float source keeps its highlights.
+pub fn render_scene_linear_with_records(snap: &Snapshot, assets: &Assets, records: Option<&folio::StudioRasterRecords>, cancel: &CancellationToken) -> Result<LinearFrame, RenderFail> {
+    match render_rendered_in(snap, assets, None, None, records, Prefer::Cpu, None, None, cancel, true)? {
+        Rendered::Canvas(c) => Ok(LinearFrame { width: c.canvas.extent.width, height: c.canvas.extent.height, x: c.canvas.extent.x, y: c.canvas.extent.y, pixels: c.canvas.pixels, backend: c.backend, revision: c.revision, notes: c.notes }),
+        Rendered::Shared(_) => Err(RenderFail::new("render_cpu", "a display-texture frame on the read-back path")),
+    }
+}
+
+/// The output stage of [`render_scene_linear_with_records`]: extended range, no display transform.
+fn scene_output() -> OutputStage {
+    OutputStage::new(SampleRange::Extended, None)
+}
+
 /// A read-back canvas and what produced it.
 struct CanvasFrame {
     canvas: Canvas,
@@ -324,6 +339,23 @@ fn render_rendered(
     gpu: Option<&hsk_studio_render_gpu::GpuBackend>,
     display: Option<&mut dyn GpuDisplay>,
     cancel: &CancellationToken,
+) -> Result<Rendered, RenderFail> {
+    render_rendered_in(snap, assets, text, vectors, records, prefer, gpu, display, cancel, false)
+}
+
+/// [`render_rendered`]; `scene`: the unclipped output stage of [`render_scene_linear_with_records`].
+#[allow(clippy::too_many_arguments)]
+fn render_rendered_in(
+    snap: &Snapshot,
+    assets: &Assets,
+    text: Option<&PreparedText>,
+    vectors: Option<&PreparedVectors>,
+    records: Option<&folio::StudioRasterRecords>,
+    prefer: Prefer,
+    gpu: Option<&hsk_studio_render_gpu::GpuBackend>,
+    display: Option<&mut dyn GpuDisplay>,
+    cancel: &CancellationToken,
+    scene: bool,
 ) -> Result<Rendered, RenderFail> {
     let mut notes = Vec::new();
     // A document with no layer yet is its empty frame (lane SMB-DOC-NEW-1), when it has a frame.
@@ -383,6 +415,7 @@ fn render_rendered(
         }
         None => preview_extensions(),
     };
+    let extensions = if scene { extensions.with_output(scene_output()) } else { extensions };
     let masks: Vec<(SourceKey, StitchedMask)> = lowering.mask_sources.iter().filter_map(|(k, t)| Some((*k, stitch_mask(assets, t)?))).collect();
     let sources = Sources { tiles: &tiles, table: &lowering.sources, space, text: text_masks.as_ref().map(|(m, p)| (m, *p)), vector, masks: &masks };
     let request = ExecuteRequest { expected_revision: lowering.plan.revision, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: MAX_WORKING_BYTES };

@@ -478,6 +478,10 @@ fn filtered_transforms_keep_float_highlights_above_one() {
     let placed_layer = placed["layer_id"].as_str().unwrap();
     let c = texel(&v, placed_layer, 16, 16);
     assert!((c[0] - HDR[0]).abs() < 1e-3 && c[3] > 0.999, "the placed highlight is kept: {c:?}");
+    // A Free Transform renders the instance again from the decoded source, filtered.
+    v.free_transform(placed_layer, &FreeTransform { angle: 10.0, resample: Some(ResampleFilter::Bilinear), ..FreeTransform::default() }).unwrap_or_else(|e| panic!("{e}"));
+    let c = texel(&v, placed_layer, 16, 16);
+    assert!((c[0] - HDR[0]).abs() < 1e-3 && c[3] > 0.999, "the transformed placed highlight is kept: {c:?}");
 }
 
 /// 16-bit PCM stereo WAV, 48 kHz, `frames` frames of a square wave.
