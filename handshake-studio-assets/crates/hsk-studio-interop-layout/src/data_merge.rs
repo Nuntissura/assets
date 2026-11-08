@@ -308,12 +308,22 @@ pub fn merge_story_with_records(
     flow: &mut hsk_studio_folio::StudioLayoutFlowRecords,
     styles: &mut hsk_studio_folio::StudioTypeStyleRecords,
 ) -> Result<MergedRecord, MergeError> {
-    let _ = (flow, styles);
-    merge_story(story, text, src, index, remove_blank_lines)
+    merge_inner(story, text, src, index, remove_blank_lines, Some((flow, styles)))
 }
 
 /// Merges record `index` (0-based) into `story` (inline content; `text` is its text).
 pub fn merge_story(story: &StudioTextStory, text: &str, src: &DataSource, index: usize, remove_blank_lines: bool) -> Result<MergedRecord, MergeError> {
+    merge_inner(story, text, src, index, remove_blank_lines, None)
+}
+
+fn merge_inner(
+    story: &StudioTextStory,
+    text: &str,
+    src: &DataSource,
+    index: usize,
+    remove_blank_lines: bool,
+    mut records: Option<(&mut hsk_studio_folio::StudioLayoutFlowRecords, &mut hsk_studio_folio::StudioTypeStyleRecords)>,
+) -> Result<MergedRecord, MergeError> {
     let ph = check_placeholders(text, src)?;
     let rec = src.records.get(index).ok_or_else(|| MergeError::InvalidRecordRange(index.saturating_add(1).to_string()))?;
     let mut graphic_fields = Vec::new();
@@ -359,6 +369,9 @@ pub fn merge_story(story: &StudioTextStory, text: &str, src: &DataSource, index:
     edits.sort_by_key(|e| e.0);
     for (a, b, t) in edits.iter().rev() {
         cur = replace_story_text(&cur, None, *a, *b, t)?;
+        if let Some((flow, styles)) = records.as_mut() {
+            hsk_studio_layout::shift_paragraph_records(flow, styles, &cur, *a, *b, t.len() as u64)?;
+        }
         let (s, e) = (usize::try_from(*a).map_err(|_| LayoutError::InvalidInput)?, usize::try_from(*b).map_err(|_| LayoutError::InvalidInput)?);
         cur_text.replace_range(s..e, t);
     }

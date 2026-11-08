@@ -418,8 +418,23 @@ pub fn apply_text_changes_with_records(
     flow: &mut hsk_studio_folio::StudioLayoutFlowRecords,
     styles: &mut hsk_studio_folio::StudioTypeStyleRecords,
 ) -> Result<(Vec<StudioTextStory>, ChangeUndo), FindChangeError> {
-    let _ = (flow, styles);
-    apply_text_changes(stories, hits)
+    let (flow_before, styles_before) = (flow.clone(), styles.clone());
+    let mut out = Vec::with_capacity(stories.len());
+    for s in stories {
+        let mut mine: Vec<&FindChangeHit> = hits.iter().filter(|h| h.story_id == s.story_id && h.replacement.is_some()).collect();
+        mine.sort_by_key(|h| (h.start, h.end));
+        if mine.windows(2).any(|w| w[1].start < w[0].end) {
+            return Err(LayoutError::InvalidInput.into());
+        }
+        let mut cur = s.clone();
+        for h in mine.iter().rev() {
+            let replacement = h.replacement.as_deref().unwrap_or("");
+            cur = replace_story_text(&cur, None, h.start, h.end, replacement)?;
+            crate::textflow::shift_paragraph_records(flow, styles, &cur, h.start, h.end, replacement.len() as u64)?;
+        }
+        out.push(cur);
+    }
+    Ok((out, ChangeUndo { stories_before: stories.to_vec(), flow_before: Some(flow_before), styles_before: Some(styles_before) }))
 }
 
 /// Object formatting criteria of `find.object` (`None` = any).

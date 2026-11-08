@@ -768,8 +768,9 @@ impl Viewer {
             let (note_stories, stories): (Vec<StoryInput<'_>>, Vec<StoryInput<'_>>) =
                 doc.stories.iter().map(|s| StoryInput { story: s, resolved_text: None }).partition(|s| notes.contains(s.story.story_id.as_str()));
             let input = FolioExportInput { document: &doc.document, stories: &stories, names: &names };
-            let out = export_folio_longdoc(&input, &LongDocExportInput { records: &rec.longdoc, stories: &note_stories }, &il::Limits::default(), v.cancel)
+            let mut out = export_folio_longdoc(&input, &LongDocExportInput { records: &rec.longdoc, stories: &note_stories }, &il::Limits::default(), v.cancel)
                 .map_err(|e| LayoutExportRefusal::new(e.code(), "idml export"))?;
+            out.loss.extend(il::type_style_composition_loss(&doc.styles));
             write_atomic(path, &out.bytes).map_err(|code| LayoutExportRefusal::new(code, path.display().to_string()))?;
             Ok(json!({"path": path.to_string_lossy(), "bytes": out.bytes.len(), "sha256": hex(&hsk_studio_prism::profile_hash(&out.bytes)), "stories": stories.len(), "note_stories": note_stories.len(), "pages": pages_json(doc), "loss": loss_json(&out.loss)}))
         })
