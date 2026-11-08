@@ -1,7 +1,8 @@
 //! Feature `document`: the GUI frame (SMB-GUI-SPINE-1). A real document in the Viewport, a right dock (300) with one
 //! group, the Layers tab and its panel built with kumihimo-ui, and a status bar; one Interaction, one Text and one
 //! Panel per region (lead F7 ruling). Chrome is the CPU painter (decision O6), painted into one window-size canvas
-//! that the host copies into its pane: `cpu painter, Vulkan UI pass pending`.
+//! that the host copies into its pane: `cpu painter, Vulkan UI pass pending`. [`GuiFrame::compose`] is the one place
+//! that lists what a frame draws, in paint order; every [`ChromeTarget`] draws through it (SMB-VK-UI-PASS-1 hook).
 //!
 //! Input: typed [`HostEvent`]s in physical px, divided by the scale into logical px, routed to the panel under the
 //! pointer; a release inside a control gives its author_id, the command table maps it to a public Viewer method
@@ -18,9 +19,9 @@ use hsk_studio_accord::ActorContext;
 use hsk_studio_harness_view::view::{LayerRow, Viewer};
 use hsk_studio_vulkan::{GpuClientPort, PaneId, Refusal, rgba_len};
 use kumihimo_ui::checks::{self, Clipped};
-use kumihimo_ui::display::{IconId, ImageId};
+use kumihimo_ui::display::{DisplayList, IconId, ImageId};
 use kumihimo_ui::gallery::GalleryIcons;
-use kumihimo_ui::geom::{Point, Rect, Scale};
+use kumihimo_ui::geom::{Point, Rect, Rgba8, Scale};
 use kumihimo_ui::paint::{Canvas, IconMask, ImageRef, Resources, paint};
 use kumihimo_ui::semantic::{Semantic, semantic};
 use kumihimo_ui::text::{BoxText, MAX_LABEL_BYTES, Text, TextStats};
@@ -118,6 +119,43 @@ pub struct PortPane<'a, P: GpuClientPort + ?Sized> {
 impl<P: GpuClientPort + ?Sized> PaneSink for PortPane<'_, P> {
     fn upload(&mut self, rgba8: &[u8]) -> Result<(), Refusal> {
         self.port.upload_pane(self.pane, rgba8)
+    }
+}
+
+/// One frame's chrome in paint order (the compose hook): every chrome target draws exactly these lists, back to
+/// front, over the frame clear, at this scale, with this text and these resources.
+pub struct Chrome<'a> {
+    /// Physical px of the target.
+    pub extent: (u32, u32),
+    pub clear: Rgba8,
+    pub scale: Scale,
+    /// Back to front: Viewport panel, document, right dock, status bar.
+    pub lists: &'a [&'a DisplayList],
+    pub text: &'a mut Text,
+    pub res: &'a mut dyn Resources,
+}
+
+/// Where a composed frame is drawn: [`CpuChrome`] (the CPU painter: the default chrome and the reference) or the
+/// Vulkan UI pass. A test fake returns a refusal such as DeviceLost, as a [`PaneSink`] does.
+pub trait ChromeTarget {
+    fn draw(&mut self, chrome: Chrome<'_>) -> Result<(), HostError>;
+}
+
+/// The CPU painter's target: one canvas of the extent, cleared to the frame clear, each list painted in order.
+#[derive(Default)]
+pub struct CpuChrome {
+    pub canvas: Option<Canvas>,
+}
+
+impl ChromeTarget for CpuChrome {
+    fn draw(&mut self, chrome: Chrome<'_>) -> Result<(), HostError> {
+        let Chrome { extent: (w, h), clear, scale, lists, text, res } = chrome;
+        let mut canvas = Canvas::new(w, h, clear).ok_or(HostError::Window("canvas_extent"))?;
+        for list in lists {
+            paint(&mut canvas, list, scale, text, res);
+        }
+        self.canvas = Some(canvas);
+        Ok(())
     }
 }
 
@@ -680,6 +718,26 @@ impl GuiFrame {
         Ok(any)
     }
 
+    /// The compose hook: the frame's ordered lists with its clear colour, scale, text and resources, drawn by `target`.
+    /// Every chrome target goes through here, so all of them draw the same frame.
+    pub fn compose(&mut self, target: &mut dyn ChromeTarget) -> Result<(), HostError> {
+        let doc = self.image.as_ref().map(|i| view::document_list(self.regions.viewport, i.width, i.height, self.theme));
+        let mut lists: Vec<&DisplayList> = Vec::with_capacity(4);
+        lists.push(self.panels[VIEWPORT].display_list());
+        lists.extend(doc.as_ref());
+        lists.push(self.panels[DOCK].display_list());
+        lists.push(self.panels[STATUS].display_list());
+        let mut res = Res { icons: &mut self.icons, image: self.image.as_ref() };
+        target.draw(Chrome {
+            extent: self.extent,
+            clear: ColorToken::SurfaceFrame.resolve(self.theme),
+            scale: self.scale,
+            lists: &lists,
+            text: &mut self.text,
+            res: &mut res,
+        })
+    }
+
     /// Rebuilds what changed and paints; false on an idle frame (nothing rebuilt, painted or due for upload) and
     /// while minimised.
     pub fn frame(&mut self) -> Result<bool, HostError> {
@@ -692,18 +750,9 @@ impl GuiFrame {
             self.stats.idle_frames = self.stats.idle_frames.saturating_add(1);
             return Ok(false);
         }
-        let (w, h) = self.extent;
-        let mut canvas = Canvas::new(w, h, ColorToken::SurfaceFrame.resolve(self.theme)).ok_or(HostError::Window("canvas_extent"))?;
-        let s = self.scale;
-        let doc = self.image.as_ref().map(|i| view::document_list(self.regions.viewport, i.width, i.height, self.theme));
-        let mut res = Res { icons: &mut self.icons, image: self.image.as_ref() };
-        paint(&mut canvas, self.panels[VIEWPORT].display_list(), s, &mut self.text, &mut res);
-        if let Some(list) = &doc {
-            paint(&mut canvas, list, s, &mut self.text, &mut res);
-        }
-        paint(&mut canvas, self.panels[DOCK].display_list(), s, &mut self.text, &mut res);
-        paint(&mut canvas, self.panels[STATUS].display_list(), s, &mut self.text, &mut res);
-        self.canvas = Some(canvas);
+        let mut cpu = CpuChrome::default();
+        self.compose(&mut cpu)?;
+        self.canvas = cpu.canvas;
         self.repaint = false;
         self.pending_upload = true;
         self.stats.paints = self.stats.paints.saturating_add(1);
