@@ -2540,6 +2540,7 @@ name = "hsk-studio-vulkan"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "kumihimo-ui",
 ]
 
 [[package]]

@@ -37,6 +37,12 @@ pub enum Refusal {
     InvalidBuffer,
     /// The window handles are not a live Win32 window of this process.
     InvalidWindow,
+    /// A Vulkan 1.3 feature the UI pass needs (dynamicRendering) is not reported by the device.
+    FeatureMissing,
+    /// A format feature the UI pass needs (colour-attachment blend, sampled image, transfer destination) is missing.
+    FormatUnsupported,
+    /// One UI frame needed more than the pass-break bound (`UiLimits::max_passes`).
+    UiPassLimit,
     /// Any other Vulkan error (raw `VkResult` code, never text).
     Vk(i32),
 }
@@ -61,6 +67,9 @@ impl Refusal {
             Self::InvalidPane => "invalid_pane",
             Self::InvalidBuffer => "invalid_buffer",
             Self::InvalidWindow => "invalid_window",
+            Self::FeatureMissing => "feature_missing",
+            Self::FormatUnsupported => "format_unsupported",
+            Self::UiPassLimit => "ui_pass_limit",
             Self::Vk(_) => "vk_error",
         }
     }
@@ -75,8 +84,10 @@ impl Refusal {
             | Self::ExtensionMissing
             | Self::SurfaceUnsupported
             | Self::SwapchainFormatUnsupported
-            | Self::SwapchainUsageUnsupported => "unsupported",
-            Self::InvalidExtent | Self::InvalidPane | Self::InvalidBuffer | Self::InvalidWindow => "validation",
+            | Self::SwapchainUsageUnsupported
+            | Self::FeatureMissing
+            | Self::FormatUnsupported => "unsupported",
+            Self::InvalidExtent | Self::InvalidPane | Self::InvalidBuffer | Self::InvalidWindow | Self::UiPassLimit => "validation",
             Self::Vk(_) => "unavailable",
         }
     }

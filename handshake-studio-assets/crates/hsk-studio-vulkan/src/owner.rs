@@ -61,6 +61,8 @@ pub struct DeviceInfo {
     /// `VkPhysicalDeviceIDProperties::deviceUUID`, lowercase hex.
     pub device_uuid: String,
     pub queue_family: u32,
+    /// Device features enabled at creation (Vulkan 1.3 core names).
+    pub features: Vec<&'static str>,
 }
 
 /// Loader layers seen and disabled in this process.
@@ -792,6 +794,7 @@ impl Owner {
             driver_info: c_text(driver_props.driver_info_as_c_str()),
             device_uuid,
             queue_family: family,
+            features: Vec::new(),
         };
         let priorities = [1.0f32];
         let queues = [vk::DeviceQueueCreateInfo::default().queue_family_index(family).queue_priorities(&priorities)];
