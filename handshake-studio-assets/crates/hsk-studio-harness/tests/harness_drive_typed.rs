@@ -267,8 +267,10 @@ fn every_panel_family_runs_through_the_process_with_the_callers_attribution() {
     s.ok("viewer.select", json!({"layer":b}));
     s.ok("panel.envelope_distort.make_envelope", json!({"spec":{"kind":"warp","style":"arc","axis":"horizontal","bend":40},"fidelity":50}));
     s.ok("panel.envelope_distort.release_envelope", json!({}));
-    // The export reaches its method; it never replaces a file unasked, nor the opened package.
+    // The export reaches its method; it never replaces a file unasked, nor the opened package. The SVG
+    // frames an artboard (lane SMB-ARTBOARD-EXPORT-1) and the fixture has none: one is added first.
     let fresh = dir.0.join("out.svg");
+    add_board(&mut s);
     let exported = s.call("panel.vector_export.export_svg", json!({"path":fresh.to_str().unwrap()}));
     // Known defect candidate, pinned by known_defect_export_svg_group_duplicate_identity.
     assert_duplicate_identity(&exported);
@@ -418,6 +420,12 @@ fn assert_duplicate_identity(reply: &Value) {
     assert!(reply["detail"]["message"].as_str().is_some_and(|m| m.contains("svg_export: folio DuplicateIdentity")), "{reply}");
 }
 
+/// The SVG export frames an artboard (lane SMB-ARTBOARD-EXPORT-1), so the demo fixture, which has none,
+/// gets one before an export that must reach the engine.
+fn add_board(s: &mut Live) {
+    s.ok("artboard.add", json!({"name":"board","width":400,"height":100,"x":0,"y":0}));
+}
+
 /// KNOWN DEFECT (engine, not this lane's decoding): on the demo fixture, after the panel sequence of
 /// `every_panel_family_runs_through_the_process_with_the_callers_attribution`, Export SVG refuses with
 /// `svg_export: folio DuplicateIdentity SLYR-...0001` (the fixture's group layer). This pins today's
@@ -435,6 +443,12 @@ fn known_defect_export_svg_group_duplicate_identity() {
     s.ok("panel.path_operations.offset_path", json!({"offset":2,"join":"round"}));
     s.ok("panel.path_operations.outline_stroke", json!({}));
     let out = dir.0.join("known.svg");
+    // Without an artboard the export refuses before the engine, and writes nothing.
+    let boardless = s.call("panel.vector_export.export_svg", json!({"path":out.to_str().unwrap()}));
+    assert_eq!(boardless["error"], "command_refused", "{boardless}");
+    assert!(boardless["detail"]["message"].as_str().is_some_and(|m| m.contains("svg_export: the document has no artboard")), "{boardless}");
+    assert!(!out.exists());
+    add_board(&mut s);
     assert_duplicate_identity(&s.call("panel.vector_export.export_svg", json!({"path":out.to_str().unwrap()})));
     s.close();
 }
