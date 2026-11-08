@@ -388,8 +388,9 @@ fn hostile_scales_names_tiny_windows_and_storms() {
         assert!(checks::partition(l.window, &rects, l.scale).is_empty(), "{w}x{h}");
         assert!(t.frame().is_ok());
     }
-    // A storm at the step cap: rail picks and tab switches rebuild only the panels they change, no undo step.
-    let mut g = open(&s.0, 1920, 1080, 1000);
+    // A storm at the step cap: rail picks and tab switches rebuild only the panels they change, no undo step. The frame
+    // is 512 x 320 logical at scale 0.5 (256 x 160 px), so 4096 CPU repaints stay cheap.
+    let mut g = open(&s.0, 256, 160, 500);
     let undo = g.viewer().run().history()["undo"].as_array().unwrap().len();
     let ids = ["studio.toolgroup.paint", "studio.tab.adjustments", "studio.toolgroup.crop", "studio.tab.properties"];
     let builds0 = g.stats().builds;

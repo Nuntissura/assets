@@ -272,6 +272,8 @@ pub struct GuiFrame {
     last: Option<Outcome>,
     device: String,
     notes: Vec<&'static str>,
+    /// The last fit decisions and the inputs they were measured from: a frame-local pick re-measures nothing.
+    fits: Option<(String, Fits)>,
 }
 
 /// The scale for thousandths `milli`: outside 0.5..=8 it is clamped and reported (`true`).
@@ -335,6 +337,7 @@ fn jstr(s: &str) -> String {
 }
 
 /// Every fit decision the views need, made with Text before the build (the view closure has no Text).
+#[derive(Clone)]
 struct Fits {
     menu: (f32, bool, usize),
     title: String,
@@ -396,6 +399,7 @@ impl GuiFrame {
             last: None,
             device: "no device".into(),
             notes: Vec::new(),
+            fits: None,
         };
         if clamped {
             f.note("scale_clamped");
@@ -907,8 +911,33 @@ impl GuiFrame {
         )
     }
 
-    /// The fit decisions of this frame, measured with the frame's Text.
+    /// The fit decisions of this frame, re-measured only when an input they read changed (extent, scale, text system,
+    /// file name, device, document facts, active tabs).
     fn fits(&mut self) -> Fits {
+        let key = format!(
+            "{:?}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}",
+            self.extent,
+            self.scale.get(),
+            self.text.epoch(),
+            self.file_name,
+            self.device,
+            self.backend,
+            self.revision,
+            self.unsaved,
+            self.tabs,
+            self.size_text()
+        );
+        if let Some((k, f)) = &self.fits
+            && *k == key
+        {
+            return f.clone();
+        }
+        let f = self.measure_fits();
+        self.fits = Some((key, f.clone()));
+        f
+    }
+
+    fn measure_fits(&mut self) -> Fits {
         let size_text = self.size_text();
         let l = &self.layout;
         let t = &mut self.text;

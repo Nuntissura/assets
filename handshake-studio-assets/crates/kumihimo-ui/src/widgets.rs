@@ -459,11 +459,12 @@ pub fn context_chip(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, rea
 pub fn dropdown_face(b: &mut Builder<'_>, id: &str, label: &str, text: &str, chevron: IconId, field: bool, w: Option<f32>, reason: Option<&str>) {
     let (kind, r) = if field { (StyleKind::Field, radius::R2_FIELD) } else { (StyleKind::Ghost, radius::R1_CONTROL) };
     b.begin(
+        // Disabled (B6): the value is the reason and the label names the face (`Layout preset: Photo`).
         Node::new(id, Role::ComboBox)
-            .label(cut_label(label))
-            .value(cut_label(text))
+            .label(if reason.is_some() { format!("{}: {}", cut_label(label), cut_label(text)) } else { cut_label(label).to_owned() })
+            .value(reason.unwrap_or(cut_label(text)))
             .actions(CLICK)
-            .reason(reason)
+            .flags(|f| f.disabled = reason.is_some())
             .layout(LayoutSpec { axis: Axis::Row, w: w.map_or(Size::Hug, Size::Fixed), h: Size::Fixed(size::FIELD_H), gap: spacing::S2, pad: [spacing::S4, 0.0, spacing::S2, 0.0], cross: Align::Center, ..LayoutSpec::default() })
             .paint(Paint::Surface { kind, radius: r }),
     );

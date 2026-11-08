@@ -421,7 +421,8 @@ fn wheel_scrolls_the_list_and_the_scrollbar_shows() {
 #[test]
 fn boundary_pixel_at_scale_1_2_clicks_the_row_it_shows() {
     let s = Scratch::new("edge");
-    let mut f = open(&s.0, 800, 480, Some(1200));
+    // 1200 x 720 at 1.2 is 1000 x 600 logical: the Inspect Dock keeps its groups (at 800 x 480 FIT-W5 collapses it).
+    let mut f = open(&s.0, 1200, 720, Some(1200));
     let sc = f.scale();
     let names = ["Sun", "Red", "Green", "Blue"];
     let ids: Vec<String> = names.iter().map(|n| layer(&f, n)).collect();
