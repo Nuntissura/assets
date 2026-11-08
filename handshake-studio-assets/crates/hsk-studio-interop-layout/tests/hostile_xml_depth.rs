@@ -128,7 +128,10 @@ fn idml_within_cap_decodes() {
 #[test]
 fn idml_note_at_the_cap_walks_from_any_caller() {
     // 249 ranges in the note: the story part nests 256 levels, the cap itself; the longdoc fragment
-    // walk (`idml_longdoc.rs` `walk`, recursive) runs on the caller's thread.
+    // walk (`idml_longdoc.rs` `walk`, recursive) runs on the caller's thread (lead ruling F2,
+    // 2026-11-08). This is the deepest input the walk can receive: the fragment it recurses over is
+    // the story part minus its 4 wrapper levels (252), and one more level puts the story past the cap,
+    // refused before the walk (asserted below). Run from a 1 MiB and a 2 MiB caller.
     let deepest = 249;
     for stack in CALLERS {
         let out = on_stack(stack, move || -> Result<usize> {
