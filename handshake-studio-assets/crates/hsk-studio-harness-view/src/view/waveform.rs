@@ -460,6 +460,35 @@ impl WaveformOp {
                 }
                 Self::Plugin(PluginEdit { selection: sel()?, content_sha256, parameters })
             }
+            "noise_reduce" => {
+                let fft_size = v
+                    .get("fft_size")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|n| n.is_power_of_two() && (score::DENOISE_MIN_FFT..=score::DENOISE_MAX_FFT).contains(n))
+                    .ok_or_else(|| bad("fft_size"))?;
+                let freq_smoothing_bins = v
+                    .get("freq_smoothing_bins")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|n| *n <= score::DENOISE_FREQ_SMOOTHING_BINS)
+                    .ok_or_else(|| bad("freq_smoothing_bins"))?;
+                let reduction = score::NoiseReductionParams {
+                    reduction_db: f("reduction_db")?,
+                    over_subtraction: f("over_subtraction")?,
+                    smoothing_up_ms: f("smoothing_up_ms")?,
+                    smoothing_down_ms: f("smoothing_down_ms")?,
+                    freq_smoothing_bins,
+                };
+                reduction.validate().map_err(|e| bad(&format!("noise reduction {}", e.code())))?;
+                let print_digest = v
+                    .get("print_digest")
+                    .and_then(Value::as_str)
+                    .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+                    .ok_or_else(|| bad("print_digest"))?
+                    .to_owned();
+                Self::NoiseReduce { selection: sel()?, print: sel_of(v.get("print"))?, params: NoiseReduceParams { fft_size, reduction }, print_digest }
+            }
             _ => return Err(bad("unknown op")),
         })
     }
@@ -609,7 +638,20 @@ pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip
             let processed = bounce_effect(&clip.channels, buffer.sample_rate_hz(), &spec, actor, cancel)?;
             return buffer.paste(selection.start, &WaveClip { channels: processed }, PasteMode::Overwrite, selection.channels, cancel).map_err(code);
         }
-        WaveformOp::NoiseReduce { .. } => return Err("waveform_noise_reduce_unimplemented".into()), // red stub
+        WaveformOp::NoiseReduce { selection, print, params, print_digest } => {
+            if print.channels != selection.channels {
+                return Err("waveform_noise_print_channels: the print and the selection name other channels".into());
+            }
+            params.reduction.validate().map_err(code)?;
+            let profile = noise_print(buffer, *print, params.fft_size, cancel)?;
+            if profile.digest() != *print_digest {
+                return Err("waveform_noise_print_stale: the audio under the noise print changed; capture the print again".into());
+            }
+            let clip = buffer.copy(*selection).map_err(code)?;
+            let reducer = score::NoiseReducer::new(&profile, clip.channels.len(), params.reduction).map_err(code)?;
+            let processed = bounce_processor(&clip.channels, buffer.sample_rate_hz(), Box::new(reducer), actor, cancel)?;
+            return buffer.paste(selection.start, &WaveClip { channels: processed }, PasteMode::Overwrite, selection.channels, cancel).map_err(code);
+        }
         WaveformOp::Spectral(e) => {
             let rate = buffer.sample_rate_hz();
             buffer.process_channels(e.channels, cancel, |input, out| {
@@ -840,9 +882,9 @@ impl super::Viewer {
             WaveformEdit::Spectral(e) => (WaveformOp::Spectral(e), None, None),
             WaveformEdit::Effect { selection, effect } => (WaveformOp::Effect { selection, effect }, None, None),
             WaveformEdit::Plugin(p) => (WaveformOp::Plugin(p), None, None),
-            WaveformEdit::NoiseReduce { .. } => {
-                let _ = noise_print; // red stub
-                return Err("waveform_noise_reduce_unimplemented".into());
+            WaveformEdit::NoiseReduce { selection, print, params } => {
+                let print_digest = noise_print(current, print, params.fft_size, cancel)?.digest();
+                (WaveformOp::NoiseReduce { selection, print, params, print_digest }, None, None)
             }
         };
         if n >= MAX_WAVEFORM_OPS {
