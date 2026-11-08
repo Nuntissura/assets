@@ -253,3 +253,19 @@ fn indent_and_spacing_are_finite_points() {
     let e = check(&v).unwrap_err();
     assert_eq!((e.code, e.target.as_str()), (Code::InvalidField, format!("style_composition/{}/left_indent", stys(2)).as_str()));
 }
+
+/// The STU-TYP-185 parameter table held as data, row for row (MT-30971/30972 AC rows): hard and soft
+/// bounds kept apart, every UNKNOWN as `None` (never a guessed number), default 0, unit points,
+/// precision UNKNOWN; the keys are exactly the stored field names.
+#[test]
+fn indent_spacing_parameter_table_is_the_spec_table() {
+    let keys: Vec<&str> = INDENT_SPACING_PARAMS.iter().map(|r| r.key).collect();
+    assert_eq!(keys, ["left_indent", "right_indent", "first_line_indent", "last_line_indent", "space_before", "space_after"]);
+    for r in INDENT_SPACING_PARAMS {
+        assert_eq!((r.hard_min, r.hard_max, r.soft_min, r.soft_max), (None, None, None, None), "{}", r.key);
+        assert_eq!((r.default, r.unit, r.precision), (Some(0.0), "points", None), "{}", r.key);
+        let mut s = serde_json::to_value(StudioCompositionSettings::default()).unwrap();
+        s[r.key] = json!({"value": 1.0, "unit": "pt"});
+        assert!(serde_json::from_value::<StudioCompositionSettings>(s).is_ok(), "{} is a stored field", r.key);
+    }
+}
