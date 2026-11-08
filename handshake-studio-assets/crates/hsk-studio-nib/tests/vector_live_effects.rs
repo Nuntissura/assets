@@ -188,7 +188,7 @@ fn live_effect_typed_parameter_map() {
             "{key}"
         );
         // Lead ruling Q2 2026-11-08: the spec cell reads 1.0; Studio keeps the identity 100 percent.
-        assert_eq!(n.default, Some(100.0), "{key}");
+        assert_eq!((n.default, n.default_is_studio_decision), (Some(100.0), true), "{key}");
     }
     for key in ["move_horizontal", "move_vertical"] {
         let n = row(key);
@@ -197,12 +197,12 @@ fn live_effect_typed_parameter_map() {
             (ParamType::Real, Some(-4000.0), Some(4000.0), Some(-100.0), Some(100.0), Unit::DocumentUnit, Some(4)),
             "{key}"
         );
-        assert_eq!(n.default, Some(0.0), "{key}");
+        assert_eq!((n.default, n.default_is_studio_decision), (Some(0.0), true), "{key}");
     }
     let rotate = row("rotate");
     assert_eq!(
-        (rotate.hard_min, rotate.hard_max, rotate.soft_min, rotate.soft_max, rotate.default, rotate.unit, rotate.precision),
-        (None, None, None, None, Some(0.0), Unit::Deg, None)
+        (rotate.hard_min, rotate.hard_max, rotate.soft_min, rotate.soft_max, rotate.default, rotate.unit, rotate.precision, rotate.default_is_studio_decision),
+        (None, None, None, None, Some(0.0), Unit::Deg, None, false)
     );
     let copies = row("copies");
     assert_eq!(

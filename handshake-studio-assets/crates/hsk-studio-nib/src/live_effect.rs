@@ -15,8 +15,17 @@
 //! substituted by the soft range, STU-VEC-100). A parameter whose default is `unknown` is absent
 //! from a fresh record and an evaluation refuses `parameter_unset` until a caller sets it: Studio
 //! never invents a default. `roughen_mode` defaults to `mode.relative`, the Studio decision the spec
-//! demands (STU-VEC-155); the roughen and tweak `seed` rows (STU-FX-011) and every Transform
-//! (step-repeat) row are `StudioDeclared` (no recovered record exists for them).
+//! demands (STU-VEC-155); the roughen, tweak and step-repeat `seed` rows (STU-FX-011) are
+//! `StudioDeclared`. The Transform (step-repeat) rows are copied from STU-VEC-157, which states that
+//! the transform-each command and the live transform effect share one parameter set (lane
+//! SMB-AI-LIVE-EFFECTS-1 corrected the earlier note that no record exists): `scale_*` and `move_*`
+//! carry both ranges, `rotate`, `copies`, `reflect_*`, `randomize` and `reference_point` their
+//! captured cells. Two defaults are Studio readings (lead ruling Q2 2026-11-08,
+//! [`NumericSpec::default_is_studio_decision`]): the spec cell of `scale_*` and `move_*` reads 1.0,
+//! which as a fresh transform makes 1 percent copies one unit away; Studio keeps the identity, 100
+//! percent and 0. Not in this record (declared, MT-30558 stays open): `scale_mode`, the
+//! `scale_*_absolute` rows, `transform_objects`, `transform_patterns`,
+//! `scale_strokes_and_effects`, `scale_corners`, `preview`.
 //!
 //! # Laws (declared Studio readings v1; Illustrator parity UNVERIFIED, D5)
 //! The spec recovers parameters, not formulas (lead decision G1). Each law below is the Studio
@@ -58,7 +67,7 @@
 //!   [`FREE_DISTORT_MAX_DEPTH`]. `dst == src` returns the sources unchanged.
 //! * Transform (step-repeat): `T = translate(move) . about(reference, rotate . scale . reflect)`
 //!   (reference point of the source bounds, `arrange::ReferencePoint`); copy `k` (`1..=copies`) gets
-//!   `T_k = step_k . T_(k-1)`, `step_k = T` unless `random`, which draws each amount uniformly
+//!   `T_k = step_k . T_(k-1)`, `step_k = T` unless `randomize`, which draws each amount uniformly
 //!   between the identity value and the set value (seeded). Output: the sources, then every
 //!   source per copy, in order.
 //! * Convert to shape and object mosaic: typed records only; evaluation refuses
@@ -261,6 +270,9 @@ pub struct NumericSpec {
     pub default: Option<f64>,
     pub unit: Unit,
     pub precision: Option<u8>,
+    /// True when `default` is a Studio reading rather than the captured cell (the descriptor quotes
+    /// the cell beside it).
+    pub default_is_studio_decision: bool,
 }
 
 impl NumericSpec {
@@ -351,6 +363,7 @@ impl ParamSpec {
 }
 
 const STU155: Provenance = Provenance::Recovered("STU-VEC-155");
+const STU157: Provenance = Provenance::Recovered("STU-VEC-157");
 const STU158: Provenance = Provenance::Recovered("STU-VEC-158");
 const DECLARED: Provenance = Provenance::StudioDeclared;
 
@@ -375,8 +388,17 @@ const fn numeric(
             default,
             unit,
             precision,
+            default_is_studio_decision: false,
         }),
         provenance,
+    }
+}
+
+/// A numeric row whose default is a Studio reading (module docs).
+const fn studio_default(row: ParamSpec) -> ParamSpec {
+    match row.kind {
+        ParamKind::Numeric(n) => ParamSpec { kind: ParamKind::Numeric(NumericSpec { default_is_studio_decision: true, ..n }), ..row },
+        _ => row,
     }
 }
 
@@ -459,17 +481,21 @@ const REFERENCE: &[EnumMember] = &[
     member("ref.bottom_left"), member("ref.bottom"), member("ref.bottom_right"),
 ];
 
+/// STU-VEC-157 edit and slider ranges of `scale_*` (percent) and `move_*` (document unit).
+const SCALE_BOUNDS: [Option<f64>; 4] = [Some(-4000.0), Some(4000.0), Some(0.0), Some(200.0)];
+const MOVE_BOUNDS: [Option<f64>; 4] = [Some(-4000.0), Some(4000.0), Some(-100.0), Some(100.0)];
+
 const STEP_REPEAT: &[ParamSpec] = &[
-    real("move_horizontal", UNKNOWN4, Some(0.0), Unit::DocumentUnit, None, DECLARED),
-    real("move_vertical", UNKNOWN4, Some(0.0), Unit::DocumentUnit, None, DECLARED),
-    real("scale_horizontal", UNKNOWN4, Some(100.0), Unit::Percent, None, DECLARED),
-    real("scale_vertical", UNKNOWN4, Some(100.0), Unit::Percent, None, DECLARED),
-    real("rotate", UNKNOWN4, Some(0.0), Unit::Deg, None, DECLARED),
-    flag("reflect_x", Some(false), DECLARED),
-    flag("reflect_y", Some(false), DECLARED),
-    enumeration("reference_point", REFERENCE, Some("ref.centre"), true, DECLARED),
-    numeric("copies", ParamType::Int, UNKNOWN4, Some(0.0), Unit::Count, Some(0), DECLARED),
-    flag("random", Some(false), DECLARED),
+    studio_default(real("move_horizontal", MOVE_BOUNDS, Some(0.0), Unit::DocumentUnit, Some(4), STU157)),
+    studio_default(real("move_vertical", MOVE_BOUNDS, Some(0.0), Unit::DocumentUnit, Some(4), STU157)),
+    studio_default(real("scale_horizontal", SCALE_BOUNDS, Some(100.0), Unit::Percent, Some(2), STU157)),
+    studio_default(real("scale_vertical", SCALE_BOUNDS, Some(100.0), Unit::Percent, Some(2), STU157)),
+    real("rotate", UNKNOWN4, Some(0.0), Unit::Deg, None, STU157),
+    flag("reflect_x", Some(false), STU157),
+    flag("reflect_y", Some(false), STU157),
+    enumeration("reference_point", REFERENCE, Some("ref.centre"), true, STU157),
+    numeric("copies", ParamType::Int, UNKNOWN4, Some(0.0), Unit::Count, Some(0), STU157),
+    flag("randomize", Some(false), STU157),
     SEED,
 ];
 
@@ -573,7 +599,7 @@ impl EffectKind {
     /// Where the record comes from.
     pub const fn provenance(self) -> Provenance {
         match self {
-            Self::StepRepeat => Provenance::StudioDeclared,
+            Self::StepRepeat => STU157,
             Self::ConvertToShape | Self::ObjectMosaic => STU158,
             _ => STU155,
         }

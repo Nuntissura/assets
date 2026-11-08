@@ -487,7 +487,8 @@ pub(super) fn step_repeat(sources: &[OwnedPath], r: &EffectRecord, cancel: &Canc
         rotate: r.real("rotate")?,
         reflect_x: r.flag("reflect_x")?,
         reflect_y: r.flag("reflect_y")?,
-        random: r.flag("random")?,
+        // STU-VEC-157 spells the key `randomize` (lane SMB-AI-LIVE-EFFECTS-1).
+        random: r.flag("randomize")?,
         seed: r.seed()?,
     };
     let reference = reference(r.token("reference_point")?)?;
