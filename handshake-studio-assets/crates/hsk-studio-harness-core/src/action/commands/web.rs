@@ -1,6 +1,10 @@
 //! Web rows of the command corpus (lane SMB-WEB-HOST-1: the first host of the web crates, [STU-WEB-003],
 //! [STU-WEB-113] to [STU-WEB-120], [STU-WEB-127], [STU-WEB-131]), run by `Run::web_command`, module
-//! `crate::harness::web_commands`.
+//! `crate::harness::web_commands`. Lane SMB-WEB-SITE-1 ([STU-WEB-118], [STU-WEB-121]): `web.site_report` (no
+//! parameters; the site's link graph as typed report rows), `web.move_file` (`from`, `to`: root-relative paths of one
+//! file; every referring document rewritten in one receipted transaction) and the recipe's `documents` (`open` |
+//! `site`). No spec command id is verified for the two new rows; they follow this file's `web.*` naming and are
+//! recorded for the command contract.
 
 use super::super::ValueType;
 use super::{CommandEntry, ParamSpec, entry, p};
@@ -49,7 +53,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
         "Export Recipe",
         false,
         true,
-        &[p("output_root", ValueType::String).opt(), p("file", ValueType::String).opt(), p("minify", ValueType::Boolean).opt(), p("emit_source_maps", ValueType::Boolean).opt(), p("compile_preprocessors", ValueType::Boolean).opt(), p("asset_rewriting", ValueType::Enumerated).opt(), p("link_base", ValueType::Enumerated).opt()],
+        &[p("output_root", ValueType::String).opt(), p("file", ValueType::String).opt(), p("minify", ValueType::Boolean).opt(), p("emit_source_maps", ValueType::Boolean).opt(), p("compile_preprocessors", ValueType::Boolean).opt(), p("asset_rewriting", ValueType::Enumerated).opt(), p("link_base", ValueType::Enumerated).opt(), p("documents", ValueType::Enumerated).opt()],
     ),
     entry("web.export", "web_command", "Export Site", false, false, &[]),
     entry("web.publish", "web_command", "Publish Site", false, false, &[TARGET_ID.opt()]),
@@ -57,4 +61,6 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("web.preview", "web_command", "Preview Structure", false, false, &[p("viewport_width_px", ValueType::Number)]),
     entry("web.media", "web_command", "Media Queries", false, false, &[]),
     entry("web.assets", "web_command", "Asset References", false, false, &[]),
+    entry("web.site_report", "web_command", "Site Report", false, false, &[]),
+    entry("web.move_file", "web_command", "Move File", false, false, &[p("from", ValueType::String), p("to", ValueType::String)]),
 ];
