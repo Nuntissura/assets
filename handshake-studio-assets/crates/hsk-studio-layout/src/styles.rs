@@ -16,7 +16,10 @@
 //! [`ParagraphStyling::composition`] (`None` when nothing is set anywhere, so such paragraphs
 //! compose exactly as before). `auto_leading_amount` sets the line height of a paragraph whose
 //! style states no absolute or percent line height (`size * amount / 100`). An override naming no
-//! paragraph start of the story is `InvalidInput`.
+//! paragraph start of the story is `InvalidInput`. The STU-TYP-185 indents and spacing travel in the
+//! same settings (lane SMB-TYPE-INDENT-SPACING-1); [`ParagraphStyling::same_style_no_space`] states
+//! whether `space_between_same_style` removes the gap above a paragraph that shares its paragraph
+//! style with the one before it.
 use crate::{LayoutError, ShapedParagraph};
 use hsk_studio_folio::{
     GeometryUnit, Length, StudioCompositionSettings, StudioLineHeight, StudioLetterSpacing, StudioRgba, StudioTextAlign,
