@@ -10,13 +10,14 @@
 
 mod common;
 
-use common::{Scratch, synthetic_dng};
+use common::{Scratch, solid_psd, synthetic_dng};
 use hsk_studio_develop::{Brush, ColourRange, LookDomain, LuminanceRange, MaskSource, RadialGradient, UprightMode, VignetteStyle};
 use hsk_studio_folio::Payload;
 use hsk_studio_harness::cli::{self, WindowArgs};
 use hsk_studio_harness::view::commands::CommandRefusal;
-use hsk_studio_develop::OutputDepth;
-use hsk_studio_harness::view::develop::{DevelopExport, DevelopOp, Refusal, default_linear};
+use hsk_studio_develop::{NormalizedCrop, OutputDepth};
+use hsk_studio_harness::view::develop::{CurveChannel, DevelopExport, DevelopOp, RecipeOp, Refusal, default_linear};
+use hsk_studio_harness_core::action;
 use hsk_studio_harness::view::develop_entry;
 use hsk_studio_harness::view::develop_more::FamilyOp;
 use hsk_studio_harness::view::render::Prefer;
@@ -386,6 +387,55 @@ fn develop_entry_new_members_are_absent_by_default_and_bounded() {
     hostile(&|v| v["edit"]["snapshots"][0]["name"] = json!("x".repeat(300)), "develop_entry_field", "long name");
     hostile(&|v| { let s = v["edit"]["snapshots"][0].clone(); v["edit"]["snapshots"].as_array_mut().unwrap().push(s); }, "develop_entry_field", "duplicate snapshot name");
     hostile(&|v| v["edit"]["snapshots"][0]["edit"]["snapshots"] = json!([]), "develop_entry_field", "nested snapshots");
+}
+
+/// The rows of the new ops equal a direct `develop_op(DevelopOp::Recipe(..))` with the same op.
+#[test]
+fn every_new_develop_op_row_equals_the_direct_call() {
+    let scratch = Scratch::new("develop-commands-new-ops");
+    let source = scratch.0.join("synthetic.dng");
+    std::fs::write(&source, synthetic_dng(96, 64)).unwrap();
+    let (mut a, mut b) = (open(&source), open(&source));
+    let recipe = |op: RecipeOp| move |v: &mut Viewer| v.develop_op(DevelopOp::Recipe(op));
+    same(&mut a, &mut b, "photo.develop.set_enable", json!({"group":"detail","on":false}), recipe(RecipeOp::SetEnable { group: "detail".into(), on: Some(false) }));
+    same(&mut a, &mut b, "photo.develop.clear_enable", json!({"group":"detail"}), recipe(RecipeOp::SetEnable { group: "detail".into(), on: None }));
+    let points = vec![(0.0, 0.0), (100.0, 80.0), (255.0, 255.0)];
+    same(&mut a, &mut b, "photo.develop.set_point_curve", json!({"channel":"green","points":[[0,0],[100,80],[255,255]]}), recipe(RecipeOp::SetPointCurve { channel: CurveChannel::Green, points }));
+    let crop = NormalizedCrop { left: 0.1, top: 0.0, right: 0.9, bottom: 1.0, angle: -2.0, flip_vertical: true, ..NormalizedCrop::full() };
+    same(&mut a, &mut b, "photo.develop.set_crop", json!({"left":0.1,"top":0,"right":0.9,"bottom":1,"angle":-2,"flip_vertical":true}), recipe(RecipeOp::SetCrop(crop)));
+    same(&mut a, &mut b, "photo.develop.snapshot.save", json!({"name":"A"}), recipe(RecipeOp::SaveSnapshot("A".into())));
+    same(&mut a, &mut b, "photo.develop.set", json!({"control":"develop.contrast","value":40}), |v| v.set_develop("develop.contrast", 40.0));
+    same(&mut a, &mut b, "photo.develop.snapshot.apply", json!({"name":"A"}), recipe(RecipeOp::ApplySnapshot("A".into())));
+    same(&mut a, &mut b, "photo.develop.snapshot.delete", json!({"name":"A"}), recipe(RecipeOp::DeleteSnapshot("A".into())));
+    assert_eq!(a.develop_extras(), b.develop_extras());
+}
+
+/// R60 attempt-2 probe on SMB-COMMAND-SURFACE-1 (`mutating-row-declared-non-mutating`): every
+/// `photo.info.*` row writes the session entry `info` as one undo step (samplers are persistent
+/// document state, STU-RAS-163 and STU-COL-232), so its row declares it mutates; a row that makes no
+/// step declares it does not.
+#[test]
+fn photo_info_rows_declare_the_undo_step_they_make() {
+    let scratch = Scratch::new("develop-commands-info");
+    let source = scratch.0.join("paper.psd");
+    std::fs::write(&source, solid_psd(16, 16, "paper", [200, 100, 50])).unwrap();
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&source).unwrap();
+    for (id, params) in [
+        ("photo.info.add_sampler", json!({"x":2,"y":3})),
+        ("photo.info.move_sampler", json!({"index":0,"x":4,"y":5})),
+        ("photo.info.set_sampler_model", json!({"index":0,"model":"lab"})),
+        ("photo.info.set_sample_size", json!({"size":"s5"})),
+        ("photo.info.set_sample_scope", json!({"scope":"current_layer"})),
+        ("photo.info.set_model", json!({"model":"hsb"})),
+        ("photo.info.remove_sampler", json!({"index":0})),
+    ] {
+        let steps = undo_len(&v);
+        row(&mut v, id, params).unwrap_or_else(|r| panic!("{id}: {r:?}"));
+        let stepped = undo_len(&v) > steps;
+        let declared = action::command(id).unwrap_or_else(|| panic!("{id} row")).mutates_authority;
+        assert_eq!(declared, stepped, "{id}: mutates_authority {declared}, undo step made {stepped}");
+    }
 }
 
 // ---- process test --------------------------------------------------------------------------------
