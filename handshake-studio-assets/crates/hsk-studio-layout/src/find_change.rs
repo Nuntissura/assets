@@ -429,8 +429,9 @@ pub fn apply_text_changes_with_records(
         let mut cur = s.clone();
         for h in mine.iter().rev() {
             let replacement = h.replacement.as_deref().unwrap_or("");
-            cur = replace_story_text(&cur, None, h.start, h.end, replacement)?;
-            crate::textflow::shift_paragraph_records(flow, styles, &cur, h.start, h.end, replacement.len() as u64)?;
+            let edited = replace_story_text(&cur, None, h.start, h.end, replacement)?;
+            crate::textflow::shift_paragraph_records(flow, styles, &cur, &edited, h.start, h.end, replacement.len() as u64)?;
+            cur = edited;
         }
         out.push(cur);
     }

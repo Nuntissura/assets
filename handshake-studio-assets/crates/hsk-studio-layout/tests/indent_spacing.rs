@@ -551,9 +551,9 @@ fn paragraph_params_maps_indents_and_leaves_the_composer_alone() {
 }
 
 /// `shift_paragraph_records` (V4-06 class C): the paragraph-keyed records of the edited story move
-/// with their paragraphs; a record naming no paragraph after the edit is dropped, and of two that
-/// collapse onto one start the one of the first touched paragraph (the lower original start) is
-/// kept; another story's records stay.
+/// with their paragraphs (to the paragraph each one owns after the edit); a record whose paragraph
+/// owns none after the edit is dropped (a merge or a whole-paragraph delete: the first touched
+/// paragraph owns the result); another story's records stay.
 #[test]
 fn shift_paragraph_records_moves_drops_and_keeps_the_first() {
     let s = story(&[("aa\n", None), ("bb\n", None), ("cc", None)]).story;
@@ -566,28 +566,29 @@ fn shift_paragraph_records_moves_drops_and_keeps_the_first() {
     // Typing inside paragraph 0 moves every later start of the story by one byte.
     let (mut st, mut f) = (styles.clone(), fl.clone());
     let edited = replace_story_text(&s, None, 1, 1, "x").unwrap();
-    shift_paragraph_records(&mut f, &mut st, &edited, 1, 1, 1).unwrap();
+    shift_paragraph_records(&mut f, &mut st, &s, &edited, 1, 1, 1).unwrap();
     assert_eq!(mine(&st), vec![(true, 7, Some(3.0)), (true, 4, Some(2.0)), (true, 0, Some(1.0)), (false, 6, Some(9.0))]);
     assert_eq!(f.paragraph_flows.iter().map(|p| p.paragraph_start).collect::<Vec<_>>(), vec![7, 4]);
     // Deleting "aa\n" collapses paragraphs 0 and 1 onto start 0: paragraph 0's override is kept.
     let (mut st, mut f) = (styles.clone(), fl.clone());
     let edited = replace_story_text(&s, None, 0, 3, "").unwrap();
     assert_eq!(edited.paragraphs.iter().map(|p| p.start).collect::<Vec<_>>(), vec![0, 3]);
-    shift_paragraph_records(&mut f, &mut st, &edited, 0, 3, 0).unwrap();
+    shift_paragraph_records(&mut f, &mut st, &s, &edited, 0, 3, 0).unwrap();
     assert_eq!(mine(&st), vec![(true, 3, Some(3.0)), (true, 0, Some(1.0)), (false, 6, Some(9.0))]);
-    assert_eq!(f.paragraph_flows.iter().map(|p| p.paragraph_start).collect::<Vec<_>>(), vec![3, 0]);
+    assert_eq!(f.paragraph_flows.iter().map(|p| p.paragraph_start).collect::<Vec<_>>(), vec![3], "paragraph 1 owns nothing after the edit: its record goes");
     // Deleting the terminator "\n" of paragraph 0 merges it with paragraph 1, whose records go.
     let (mut st, mut f) = (styles, fl);
     let edited = replace_story_text(&s, None, 2, 3, "").unwrap();
     assert_eq!(edited.paragraphs.iter().map(|p| p.start).collect::<Vec<_>>(), vec![0, 5]);
-    shift_paragraph_records(&mut f, &mut st, &edited, 2, 3, 0).unwrap();
+    shift_paragraph_records(&mut f, &mut st, &s, &edited, 2, 3, 0).unwrap();
     assert_eq!(mine(&st), vec![(true, 5, Some(3.0)), (true, 0, Some(1.0)), (false, 6, Some(9.0))]);
     assert_eq!(f.paragraph_flows.iter().map(|p| p.paragraph_start).collect::<Vec<_>>(), vec![5]);
 }
 
 /// Item 3 measurement (not a proof; ignored, run on demand in debug and release): one paragraph of
-/// 600, 1800 and 5000 words per composer, with no, a 30 pt and a 170 pt last-line indent (170 on a
-/// 180 pt measure re-breaks every time), prints `MEASURE:` lines (outcome, lines, time). The
+/// 600, 1800 and 5000 words per composer, with no, a 30 pt, a 100 pt (the narrowed 80 pt holds
+/// every word: the gate passes and the re-break runs) and a 170 pt last-line indent (narrower than
+/// every word: no re-break since the gate), prints `MEASURE:` lines (outcome, lines, time). The
 /// refusal point is the composer's own budget (`budget_exceeded`).
 #[test]
 #[ignore = "measurement of the last-line re-break cost; run with --run-ignored only"]
@@ -597,9 +598,9 @@ fn measure_last_line_indent_rebreak_cost() {
         let text: String = (0..words).map(|i| word[i % word.len()]).collect::<Vec<_>>().join(" ");
         let s = one(&text);
         for composer in composers() {
-            for last in [0.0, 30.0, 170.0] {
+            for last in [0.0, 30.0, 100.0, 170.0] {
                 // Debug builds skip the 5000-word worst case (Knuth-Plass takes minutes there).
-                if last > 100.0 && words > 1800 && cfg!(debug_assertions) {
+                if last >= 100.0 && words > 1800 && cfg!(debug_assertions) {
                     continue;
                 }
                 let r = styles(&[StudioCompositionSettings { last_line_indent: pt(last), ..Default::default() }]);

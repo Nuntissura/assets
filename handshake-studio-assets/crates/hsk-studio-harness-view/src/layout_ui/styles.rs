@@ -40,7 +40,8 @@ pub struct StylePatch {
     pub leading_pt: Option<Option<f64>>,
     pub align: Option<Option<StudioTextAlign>>,
     /// The paragraph style's own composition settings (Folio `style_composition`: composer,
-    /// hyphenation, H&J, STU-TYP-185 indents and spacing); `Some(None)` removes the style's entry.
+    /// hyphenation, H&J, STU-TYP-185 indents and spacing): the fields set here are merged into the
+    /// stored record, the others keep their values; `Some(None)` removes the style's whole entry.
     /// Paragraph scope only.
     pub composition: Option<Option<Box<StudioCompositionSettings>>>,
 }
@@ -162,12 +163,17 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
                 return Err(LayoutUiError::WrongStyleScope(style.clone()));
             }
             if let Some(c) = &patch.composition {
-                // One entry per style; an empty or cleared record removes it. Folio validates the
-                // values below (points, finite, the H&J bounds).
+                // One entry per style. The patch merges only the fields it sets into the stored
+                // record (review F6); a cleared record (`Some(None)`) removes the entry. Folio
+                // validates the values below (points, finite, the H&J bounds).
                 let at = d.styles.style_composition.iter().position(|e| e.style_id == *style);
-                match (at, c.as_deref().filter(|c| !c.is_empty())) {
-                    (Some(i), Some(c)) => d.styles.style_composition[i].settings = c.clone(),
-                    (None, Some(c)) => d.styles.style_composition.push(StudioStyleComposition { style_id: style.clone(), settings: c.clone() }),
+                match (at, c.as_deref()) {
+                    (Some(i), Some(c)) => {
+                        let merged = d.styles.style_composition[i].settings.overlaid(c);
+                        d.styles.style_composition[i].settings = merged;
+                    }
+                    (None, Some(c)) if !c.is_empty() => d.styles.style_composition.push(StudioStyleComposition { style_id: style.clone(), settings: c.clone() }),
+                    (None, Some(_)) => {}
                     (Some(i), None) => {
                         d.styles.style_composition.remove(i);
                     }

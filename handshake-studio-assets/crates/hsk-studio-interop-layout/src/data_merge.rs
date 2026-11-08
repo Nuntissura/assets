@@ -368,10 +368,11 @@ fn merge_inner(
     }
     edits.sort_by_key(|e| e.0);
     for (a, b, t) in edits.iter().rev() {
-        cur = replace_story_text(&cur, None, *a, *b, t)?;
+        let edited = replace_story_text(&cur, None, *a, *b, t)?;
         if let Some((flow, styles)) = records.as_mut() {
-            hsk_studio_layout::shift_paragraph_records(flow, styles, &cur, *a, *b, t.len() as u64)?;
+            hsk_studio_layout::shift_paragraph_records(flow, styles, &cur, &edited, *a, *b, t.len() as u64)?;
         }
+        cur = edited;
         let (s, e) = (usize::try_from(*a).map_err(|_| LayoutError::InvalidInput)?, usize::try_from(*b).map_err(|_| LayoutError::InvalidInput)?);
         cur_text.replace_range(s..e, t);
     }
