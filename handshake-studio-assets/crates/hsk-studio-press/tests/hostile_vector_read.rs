@@ -183,3 +183,45 @@ fn content_arrays_probe() {
     };
     println!("PROBE pdf content arrays n={n} answer={:?}", pages(&page("", &vec![b'['; n], vec![])));
 }
+
+/// The oracle corpus root (`.config/oracle-corpus.toml`, the workspace convention; no env vars).
+fn corpus_root() -> Option<std::path::PathBuf> {
+    let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cfg = std::fs::read_to_string(ws.join(".config/oracle-corpus.toml")).ok()?;
+    let value = |key: &str| cfg.lines().find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().trim_matches('"').to_owned()));
+    let (search, max) = (value("search")?, value("max-ancestors")?.parse::<usize>().ok()?);
+    let ws = ws.canonicalize().ok()?;
+    ws.ancestors().skip(1).take(max).map(|a| a.join(&search)).find(|p| p.is_dir())
+}
+
+/// Item 4 stop rule (lead ruling OQ1): every `.ai` and `.pdf` file of the oracle corpus through the
+/// two guarded routes, one line per file, run before (base source) and after the guard and compared
+/// by hand. Not a gate.
+#[test]
+#[ignore = "measurement probe, run by hand before and after the guard"]
+fn corpus_pdfs_before_after_probe() {
+    let Some(root) = corpus_root() else {
+        println!("NOT_PROVEN: corpus_pdfs_before_after_probe reason=oracle-corpus root not found");
+        return;
+    };
+    let mut stack = vec![root.clone()];
+    let mut files = Vec::new();
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|x| x.to_str()).is_some_and(|x| x.eq_ignore_ascii_case("ai") || x.eq_ignore_ascii_case("pdf")) {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    for p in files {
+        let bytes = std::fs::read(&p).expect("corpus file");
+        let started = std::time::Instant::now();
+        let doc = document(&bytes);
+        let read_ms = started.elapsed().as_millis();
+        println!("CORPUS file={} bytes={} read_vector_document={doc:?} ms={read_ms} render_page={:?}", p.strip_prefix(&root).unwrap_or(&p).display(), bytes.len(), render(&bytes));
+    }
+}
