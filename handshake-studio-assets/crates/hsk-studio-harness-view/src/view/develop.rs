@@ -858,7 +858,8 @@ fn extras_json(x: &DevelopExtras, recipe: Option<&DevelopRecipe>) -> serde_json:
     m
 }
 
-fn crop_json(c: &NormalizedCrop) -> Value {
+/// The stored crop as the develop entry and the state write it.
+pub(super) fn crop_json(c: &NormalizedCrop) -> Value {
     json!({"left": c.left, "top": c.top, "right": c.right, "bottom": c.bottom, "angle": c.angle, "flip_horizontal": c.flip_horizontal, "flip_vertical": c.flip_vertical})
 }
 

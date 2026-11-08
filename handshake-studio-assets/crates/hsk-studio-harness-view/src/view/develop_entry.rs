@@ -24,7 +24,7 @@
 //! recipe (`DevelopRecipe::validate`), so a decodable but out-of-range edit is develop's typed refusal.
 #![deny(clippy::arithmetic_side_effects)]
 
-use super::develop::{CurveChannel, DevelopEdit, DevelopExtras, DevelopSnapshot, ENABLE_GROUPS, MAX_SNAPSHOTS, Refusal};
+use super::develop::{CurveChannel, DevelopEdit, crop_json, DevelopExtras, DevelopSnapshot, ENABLE_GROUPS, MAX_SNAPSHOTS, Refusal};
 use hsk_studio_develop::{
     AbsoluteWhiteBalance, Adjustments, Brush, ColourGrading, ColourRange, Correction, Detail, GrayscaleMix, HslBand, LinearGradient,
     LocalStack, LuminanceRange, MAX_COLOUR_SAMPLES, MAX_POINT_COLOURS, Mask, MaskBlend, MaskSource, NoiseReduction, PointColour,
@@ -141,26 +141,26 @@ fn edit_value(edit: &DevelopEdit, extras: &DevelopExtras) -> Result<Value, Refus
     let g = &a.grading;
     let d = &a.detail;
     let mut value = json!({
-            "exposure_stops": edit.exposure_stops,
-            "version": [a.version.0, a.version.1],
-            "white_balance": {"temperature": a.white_balance.temperature, "tint": a.white_balance.tint},
-            "tone": {"contrast": a.tone.contrast, "highlights": a.tone.highlights, "shadows": a.tone.shadows, "whites": a.tone.whites, "blacks": a.tone.blacks},
-            "presence": {"vibrance": a.presence.vibrance, "saturation": a.presence.saturation, "clarity": a.presence.clarity},
-            "mixer": a.mixer.bands.iter().map(|b| [b.hue, b.saturation, b.luminance]).collect::<Vec<_>>(),
-            "parametric": {"highlights": p.highlights, "lights": p.lights, "darks": p.darks, "shadows": p.shadows,
-                "shadow_split": p.shadow_split, "midtone_split": p.midtone_split, "highlight_split": p.highlight_split},
-            "working_to_xyz_d50": a.working_to_xyz_d50,
-            "luma": a.luma,
-            "absolute_white_balance": a.absolute_white_balance.map(|w| json!({"kelvin": w.kelvin, "tint": w.tint})),
-            "point_colours": a.point_colours.iter().map(|c| json!({"source": c.source, "hue_shift": c.hue_shift, "saturation": c.saturation,
-                "luminance": c.luminance, "hue_range": c.hue_range, "saturation_range": c.saturation_range, "luminance_range": c.luminance_range})).collect::<Vec<_>>(),
-            "grayscale": {"convert": a.grayscale.convert, "bands": a.grayscale.bands},
-            "grading": {"shadows": wheel(&g.shadows), "midtones": wheel(&g.midtones), "highlights": wheel(&g.highlights), "global": wheel(&g.global),
-                "blending": g.blending, "balance": g.balance},
-            "detail": {"texture": d.texture, "dehaze": d.dehaze,
-                "sharpen": {"amount": d.sharpen.amount, "radius": d.sharpen.radius, "detail": d.sharpen.detail, "masking": d.sharpen.masking},
-                "noise": {"luminance": d.noise.luminance, "colour": d.noise.colour}},
-            "local": local,
+        "exposure_stops": edit.exposure_stops,
+        "version": [a.version.0, a.version.1],
+        "white_balance": {"temperature": a.white_balance.temperature, "tint": a.white_balance.tint},
+        "tone": {"contrast": a.tone.contrast, "highlights": a.tone.highlights, "shadows": a.tone.shadows, "whites": a.tone.whites, "blacks": a.tone.blacks},
+        "presence": {"vibrance": a.presence.vibrance, "saturation": a.presence.saturation, "clarity": a.presence.clarity},
+        "mixer": a.mixer.bands.iter().map(|b| [b.hue, b.saturation, b.luminance]).collect::<Vec<_>>(),
+        "parametric": {"highlights": p.highlights, "lights": p.lights, "darks": p.darks, "shadows": p.shadows,
+            "shadow_split": p.shadow_split, "midtone_split": p.midtone_split, "highlight_split": p.highlight_split},
+        "working_to_xyz_d50": a.working_to_xyz_d50,
+        "luma": a.luma,
+        "absolute_white_balance": a.absolute_white_balance.map(|w| json!({"kelvin": w.kelvin, "tint": w.tint})),
+        "point_colours": a.point_colours.iter().map(|c| json!({"source": c.source, "hue_shift": c.hue_shift, "saturation": c.saturation,
+            "luminance": c.luminance, "hue_range": c.hue_range, "saturation_range": c.saturation_range, "luminance_range": c.luminance_range})).collect::<Vec<_>>(),
+        "grayscale": {"convert": a.grayscale.convert, "bands": a.grayscale.bands},
+        "grading": {"shadows": wheel(&g.shadows), "midtones": wheel(&g.midtones), "highlights": wheel(&g.highlights), "global": wheel(&g.global),
+            "blending": g.blending, "balance": g.balance},
+        "detail": {"texture": d.texture, "dehaze": d.dehaze,
+            "sharpen": {"amount": d.sharpen.amount, "radius": d.sharpen.radius, "detail": d.sharpen.detail, "masking": d.sharpen.masking},
+            "noise": {"luminance": d.noise.luminance, "colour": d.noise.colour}},
+        "local": local,
     });
     if let Some(edit_object) = value.as_object_mut() {
         edit_object.extend(super::develop_more::encode_families(a));
@@ -171,6 +171,7 @@ fn edit_value(edit: &DevelopEdit, extras: &DevelopExtras) -> Result<Value, Refus
     }
     Ok(value)
 }
+
 // ---- recipe members outside Adjustments (lane SMB-DEVELOP-COMMANDS-1) -----------------------------
 
 fn curve_points(c: &Curve) -> Value {
@@ -192,9 +193,7 @@ fn encode_extras(extras: &DevelopExtras, edit_object: &mut Map<String, Value>) -
         edit_object.insert("point_curves".into(), Value::Object(curves));
     }
     if extras.crop != NormalizedCrop::full() {
-        let c = &extras.crop;
-        edit_object.insert("crop".into(), json!({"left": c.left, "top": c.top, "right": c.right, "bottom": c.bottom, "angle": c.angle,
-            "flip_horizontal": c.flip_horizontal, "flip_vertical": c.flip_vertical}));
+        edit_object.insert("crop".into(), crop_json(&extras.crop));
     }
     if !extras.snapshots.is_empty() {
         let list = extras.snapshots.iter().map(|s| Ok(json!({"name": s.name, "edit": edit_value(&s.edit, &s.extras)?}))).collect::<Result<Vec<_>, Refusal>>()?;
