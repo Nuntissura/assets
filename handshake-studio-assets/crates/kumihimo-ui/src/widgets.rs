@@ -192,16 +192,16 @@ pub fn scrollbar(b: &mut Builder<'_>, id: &str, label_text: &str, lane_h: f32, f
     b.end();
 }
 
-/// [`layer_row`] with the visibility icon in a fixed token (skeleton: the tint is not applied yet).
-#[allow(clippy::too_many_arguments)]
-pub fn layer_row_tinted(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, visible: bool, selected: bool, depth: u8, thumb: Option<ImageId>, eye: IconId, badges: &[IconId], eye_tint: Option<ColorToken>) {
-    let _ = eye_tint;
-    layer_row(b, id, name, tag, visible, selected, depth, thumb, eye, badges);
-}
-
 /// Layer row (components.json `layer_row`: h 32, tag edge 3, eye 22, indent 16 per depth, thumb 24, name, badges 12).
 #[allow(clippy::too_many_arguments)]
 pub fn layer_row(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, visible: bool, selected: bool, depth: u8, thumb: Option<ImageId>, eye: IconId, badges: &[IconId]) {
+    layer_row_tinted(b, id, name, tag, visible, selected, depth, thumb, eye, badges, None);
+}
+
+/// [`layer_row`] with the visibility icon in a fixed token when `eye_tint` is set (the mock's text.tertiary eye, D-F10);
+/// None draws exactly what [`layer_row`] draws.
+#[allow(clippy::too_many_arguments)]
+pub fn layer_row_tinted(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, visible: bool, selected: bool, depth: u8, thumb: Option<ImageId>, eye: IconId, badges: &[IconId], eye_tint: Option<ColorToken>) {
     b.begin(
         Node::new(id, Role::TreeItem)
             .label(name)
@@ -220,7 +220,11 @@ pub fn layer_row(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, vis
             .flags(|f| f.toggled = visible)
             .layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(cp::LAYER_EYE), h: Size::Fixed(cp::LAYER_EYE), main: Align::Center, ..LayoutSpec::default() }),
     );
-    b.leaf(Node::deco().paint(Paint::Icon { icon: eye, size: cp::BUTTON_ICON }).size(Size::Fixed(cp::BUTTON_ICON), Size::Fixed(cp::BUTTON_ICON)));
+    let eye_paint = match eye_tint {
+        Some(color) => Paint::TintedIcon { icon: eye, size: cp::BUTTON_ICON, color },
+        None => Paint::Icon { icon: eye, size: cp::BUTTON_ICON },
+    };
+    b.leaf(Node::deco().paint(eye_paint).size(Size::Fixed(cp::BUTTON_ICON), Size::Fixed(cp::BUTTON_ICON)));
     b.end();
     if depth > 0 {
         // The spacer brings one more row gap, so it is that much narrower: the thumbnail moves 16 px per level.
@@ -237,7 +241,8 @@ pub fn layer_row(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, vis
 }
 
 // ---- Frame widgets (SMB-GUI-FRAME-1, build-order B5 static faces). Ids, labels, states and reasons come from the
-// caller; no widget names a panel, tool or menu title. `reason` is B6 "disabled with a reason": None = enabled.
+// caller; no widget names a panel, tool or menu title. `reason` is availability as data (Node::reason): the control
+// keeps its normal look and answers a click; None = built.
 
 /// Frame component sizes components.json records (logical px).
 pub mod frame {
@@ -304,7 +309,7 @@ pub struct GroupHeader<'a> {
     pub disclosure: (&'a str, IconId),
     pub more: Option<(&'a str, &'a str, IconId)>,
     pub menu: (&'a str, IconId),
-    /// The reason the disclosure, +N and panel menu are disabled.
+    /// The reason the disclosure and the panel menu answer with (+N carries its own value: the hidden tab ids).
     pub reason: Option<&'a str>,
 }
 
@@ -357,7 +362,7 @@ pub fn menu_title_row(b: &mut Builder<'_>, titles: &[MenuTitle<'_>], pad: f32, c
                 n.layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fill, pad: [pad, 0.0, pad, 0.0], ..LayoutSpec::default() })
                     .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R0_DOCKED }),
             );
-            b.leaf(text_leaf(t.text, TextToken::MenuTitle, 0, None, Size::Hug));
+            b.leaf(text_leaf(t.text, TextToken::MenuTitle, 0, Some(ColorToken::TextPrimary), Size::Hug));
             b.end();
         } else {
             // Behind the chevron: in the tree (STU-SHL-012), no box, nothing drawn.
@@ -434,10 +439,11 @@ pub fn key_chip(b: &mut Builder<'_>, text: &str) {
 /// Presence chip (components.json `presence_chip`, d 18): `color` circle with the initial in text.on_accent (never
 /// colour alone: the label names who). An indicator: it never pops anything and takes no action.
 pub fn presence_chip(b: &mut Builder<'_>, id: &str, name: &str, initial: &str, color: ColorToken, reason: Option<&str>) {
-    let _ = reason;
     b.begin(
         Node::new(id, Role::Button)
             .label(cut_label(name))
+            .actions(CLICK)
+            .reason(reason)
             .layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(frame::PRESENCE_D), h: Size::Fixed(frame::PRESENCE_D), main: Align::Center, cross: Align::Center, ..LayoutSpec::default() })
             .paint(Paint::Round { fill: Some(color), radius: frame::PRESENCE_D / 2.0, border: None }),
     );
@@ -457,7 +463,7 @@ pub fn context_chip(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, rea
             .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R1_CONTROL }),
     );
     b.leaf(icon_leaf(icon, frame::CONTEXT_ICON));
-    b.leaf(text_leaf(name, TextToken::Body, TextToken::BodyStrong.style().weight, None, Size::Hug));
+    b.leaf(text_leaf(name, TextToken::Body, TextToken::BodyStrong.style().weight, Some(ColorToken::TextPrimary), Size::Hug));
     b.end();
 }
 
@@ -472,11 +478,10 @@ pub fn dropdown_face(b: &mut Builder<'_>, id: &str, label: &str, text: &str, che
             .label(if reason.is_some() { format!("{}: {}", cut_label(label), cut_label(text)) } else { cut_label(label).to_owned() })
             .value(reason.unwrap_or(cut_label(text)))
             .actions(CLICK)
-            .flags(|f| f.disabled = reason.is_some())
             .layout(LayoutSpec { axis: Axis::Row, w: w.map_or(Size::Hug, Size::Fixed), h: Size::Fixed(size::FIELD_H), gap: spacing::S2, pad: [spacing::S4, 0.0, spacing::S2, 0.0], cross: Align::Center, ..LayoutSpec::default() })
             .paint(Paint::Surface { kind, radius: r }),
     );
-    b.leaf(text_leaf(text, TextToken::Body, 0, None, if w.is_some() { Size::Fill } else { Size::Hug }));
+    b.leaf(text_leaf(text, TextToken::Body, 0, Some(ColorToken::TextPrimary), if w.is_some() { Size::Fill } else { Size::Hug }));
     b.leaf(icon_leaf(chevron, frame::ICON_MICRO));
     b.end();
 }
@@ -563,7 +568,6 @@ pub fn group_header(b: &mut Builder<'_>, h: &GroupHeader<'_>) {
                 .label("More tabs")
                 .value(value)
                 .actions(CLICK)
-                .reason(h.reason)
                 .layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fill, gap: 1.0, pad: [spacing::S2, 0.0, spacing::S2, 0.0], cross: Align::Center, ..LayoutSpec::default() })
                 .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R0_DOCKED }),
         );

@@ -237,13 +237,25 @@ fn ruler(list: &mut DisplayList, text: &mut Text, b: Rect, axis: crate::tree::Ax
         let len = if is_major { RULER_MAJOR } else { RULER_MINOR };
         let (owner, side) = if row { (Rect::new(pos, b.y1 - len, pos + 1.0, b.y1), Side::Left) } else { (Rect::new(b.x1 - len, pos, b.x1, pos + 1.0), Side::Top) };
         list.push(Prim::Edge { owner, side, px: 1, color: tick });
-        if labels && row && is_major {
-            let s = format!("{}", (k as f64 * f64::from(step)).round() as i64);
+        if labels && is_major {
+            let v = (k as f64 * f64::from(step)).round() as i64;
+            let s = format!("{v}");
             let w = text.measure(&s, TextToken::Caption, 0);
-            let x = pos + 3.0;
-            if x + w <= end {
-                let line = TextToken::Caption.style().line;
-                label(list, text, &s, TextToken::Caption, 0, Rect::new(x, b.y0 + 1.0, x + w, b.y0 + 1.0 + line), Align::Start, lab);
+            let line = TextToken::Caption.style().line;
+            if row {
+                let x = pos + 3.0;
+                if x + w <= end {
+                    label(list, text, &s, TextToken::Caption, 0, Rect::new(x, b.y0 + 1.0, x + w, b.y0 + 1.0 + line), Align::Start, lab);
+                }
+            } else {
+                // Rotated to read bottom to top (mock_raster.ruler_ticks vertical): 2 px from the outer edge, its top at
+                // tick + 1; the display list has no rotated glyphs, so the label is an icon the host's resource source
+                // rasterises with Text::rotated_label (`line` wide, `w` tall).
+                let y = pos + 1.0;
+                if y + w <= end {
+                    let r = Rect::new(b.x0 + 2.0, y, b.x0 + 2.0 + line, y + w.ceil());
+                    list.push(Prim::Icon { rect: r, icon: crate::text::ruler_label_icon(v), form: lab, hot: lab });
+                }
             }
         }
     }

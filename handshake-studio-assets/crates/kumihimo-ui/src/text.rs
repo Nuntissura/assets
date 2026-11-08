@@ -313,24 +313,72 @@ impl Text {
     }
 }
 
+/// First id of the rotated ruler labels; values span +-2^29 document px around the middle of the range.
+const RULER_LABEL_BASE: u32 = 0x4000_0000;
+const RULER_LABEL_MID: i64 = 1 << 29;
+
 /// The icon id of a rotated ruler label showing `value` (document px), in a range of its own (D-F6): the host's
-/// resource source rasterises it with [`Text::rotated_label`] (skeleton).
+/// resource source rasterises it with [`Text::rotated_label`]. Values beyond +-2^29 clamp.
 pub fn ruler_label_icon(value: i64) -> crate::display::IconId {
-    let _ = value;
-    crate::display::IconId(0)
+    let off = value.clamp(-RULER_LABEL_MID, RULER_LABEL_MID - 1) + RULER_LABEL_MID;
+    crate::display::IconId(RULER_LABEL_BASE + off as u32)
 }
-/// The value a ruler-label icon id shows, None for any other id (skeleton).
+/// The value a ruler-label icon id shows, None for any other id.
 pub fn ruler_label_value(icon: crate::display::IconId) -> Option<i64> {
-    let _ = icon;
-    None
+    let off = icon.0.checked_sub(RULER_LABEL_BASE)?;
+    (i64::from(off) < 2 * RULER_LABEL_MID).then(|| i64::from(off) - RULER_LABEL_MID)
 }
 
 impl Text {
     /// One line in `token` rasterised at `scale` and rotated 90 degrees counter-clockwise (reading bottom to top), as
     /// an icon mask (form channel); None over [`MAX_LABEL_BYTES`] or for a refused shape (skeleton).
     pub fn rotated_label(&mut self, text: &str, token: TextToken, scale: crate::geom::Scale) -> Option<crate::paint::IconMask> {
-        let _ = (text, token, scale);
-        None
+        let line = self.shape(text, token, 0).ok()?;
+        let st = token.style();
+        let s = scale.get();
+        // Upright first, as emit's label() places a line in a box `st.line` high: caps centred, baseline on a pixel.
+        let w = ((line.width * s).ceil() as usize).saturating_add(2).min(4 * crate::paint::MAX_CANVAS_SIDE as usize);
+        let h = ((st.line * s).ceil() as usize).max(1);
+        let cap = if line.cap_height > 0.0 { line.cap_height } else { st.size * 0.7 };
+        let base_y = ((st.line + cap) / 2.0 * s).round() as i32;
+        let px_size_64 = (st.size * s * 64.0).round() as u32;
+        let lut = self.lut;
+        let mut up = vec![0u8; w.checked_mul(h)?];
+        for g in &line.glyphs {
+            let fx = g.x * s;
+            let mut ix = fx.floor() as i32;
+            let mut bin = ((fx - fx.floor()) * 4.0).round() as u8;
+            if bin >= 4 {
+                bin = 0;
+                ix = ix.saturating_add(1);
+            }
+            let gy = base_y.saturating_sub((g.y * s).round() as i32);
+            let Ok(mask) = self.mask(GlyphKey { face: g.face, glyph_id: g.glyph_id, px_size_64, subpx_x: bin }) else { continue };
+            for my in 0..mask.height as i32 {
+                let y = gy + mask.top + my;
+                if y < 0 || y >= h as i32 {
+                    continue;
+                }
+                for mx in 0..mask.width as i32 {
+                    let x = ix + mask.left + mx;
+                    if x < 0 || x >= w as i32 {
+                        continue;
+                    }
+                    let c = lut[mask.data[(my as usize) * (mask.width as usize) + mx as usize] as usize];
+                    let at = (y as usize) * w + x as usize;
+                    up[at] = up[at].max(c);
+                }
+            }
+        }
+        // Rotate 90 degrees counter-clockwise: the start of the line goes to the bottom, it reads bottom to top.
+        let (rw, rh) = (h, w);
+        let mut rg = vec![[0u8, 0u8]; rw * rh];
+        for y2 in 0..rh {
+            for x2 in 0..rw {
+                rg[y2 * rw + x2][0] = up[x2 * w + (w - 1 - y2)];
+            }
+        }
+        Some(crate::paint::IconMask { width: rw as u32, height: rh as u32, rg })
     }
 }
 

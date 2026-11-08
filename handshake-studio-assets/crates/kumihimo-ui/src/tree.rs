@@ -291,11 +291,11 @@ impl Node {
         self.seams = self.seams.with(side);
         self
     }
-    /// Disabled with a reason (B6): the node keeps its actions, so a release on it is reported, and its value carries
-    /// the reason code (`not_implemented_yet`) when it has no value of its own.
+    /// Availability as data (lead correction 2026-11-08): an unbuilt control keeps its normal look and its actions, and
+    /// its value carries the reason code (`not_implemented_yet`) when it has no value of its own, so a model reads it
+    /// before clicking and a click is answered, never dropped. Greyed items with a reason are B6 menus, not this.
     pub fn reason(mut self, reason: Option<&str>) -> Self {
         if let Some(r) = reason {
-            self.flags.disabled = true;
             if self.value.is_none() {
                 self.value = Some(r.to_owned());
             }
