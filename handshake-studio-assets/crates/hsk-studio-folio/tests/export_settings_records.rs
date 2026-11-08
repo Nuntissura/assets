@@ -100,6 +100,14 @@ fn collisions_suffixes_shapes_and_bounds_are_refused() {
     let clash = refused(&set(json!([{"format": "PNG", "suffix": "@2x"}, {"format": "PNG", "suffix": "@2x", "constraint": {"type": "SCALE", "value": 3}}])));
     assert_eq!((clash.code, clash.target.as_str()), (Code::DuplicateIdentity, "export_settings/suffix"));
     validate_export_settings(&set(json!([{"format": "PNG"}, {"format": "JPG"}, {"format": "SVG"}, {"format": "PNG", "suffix": "@2x"}])), &d, budget(), &token()).unwrap();
+    // Review F5 (b): suffixes compare as the file system compares names, without case (NTFS), so
+    // '@2x' and '@2X' name one file and cannot both be stored; a final sigma folds with sigma.
+    for (a, b) in [("@2x", "@2X"), ("-σ", "-ς"), ("-Σ", "-ς")] {
+        let folded = refused(&set(json!([{"format": "PNG", "suffix": a}, {"format": "PNG", "suffix": b}])));
+        assert_eq!((folded.code, folded.target.as_str()), (Code::DuplicateIdentity, "export_settings/suffix"), "{a} {b}");
+    }
+    assert_eq!(file_name_fold("aς.PNG"), file_name_fold("Aσ.png"));
+    assert_ne!(file_name_fold("straße"), file_name_fold("STRASSE"), "a one-to-many upper case is not folded (NTFS simple mapping)");
     for bad in ["a/b", "a\\b", "x:y", "q?", "\u{7}", "<", "|"] {
         assert_eq!(refused(&set(json!([{"format": "PNG", "suffix": bad}]))).target, "export_settings/suffix", "{bad:?}");
     }

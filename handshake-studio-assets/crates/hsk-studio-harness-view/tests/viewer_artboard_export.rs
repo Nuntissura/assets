@@ -165,6 +165,8 @@ fn hostile_export_settings_are_typed_and_change_nothing() {
     let before = (v.state_json()["export_settings"].clone(), undo_labels(&v));
     for (settings, code) in [
         (json!([{"format": "PNG", "suffix": "@2x"}, {"format": "PNG", "suffix": "@2x", "constraint": {"type": "SCALE", "value": 3}}]), "export_suffix_collision"),
+        // Review F5 (b): one file on NTFS, so one suffix.
+        (json!([{"format": "PNG", "suffix": "@2x"}, {"format": "PNG", "suffix": "@2X"}]), "export_suffix_collision"),
         (json!([{"format": "PNG", "constraint": {"type": "SCALE", "value": 0}}]), "export_constraint_out_of_range"),
         (json!([{"format": "PNG", "constraint": {"type": "WIDTH", "value": 100001}}]), "export_constraint_out_of_range"),
         (json!([{"format": "PNG", "suffix": "../up"}]), "export_suffix_invalid"),
@@ -247,4 +249,93 @@ fn hostile_export_runs_are_typed_and_write_nothing() {
     assert_eq!(refusal(&mut v, "export.run", json!({"dir": dir, "settings": [{"format": "PNG", "suffix": "a"}, {"format": "PNG", "suffix": "a"}]})), "export_suffix_collision");
     assert_eq!(refusal(&mut v, "export.run", json!({"dir": dir, "nodes": [icon, icon], "settings": [{"format": "PNG"}]})), "export_node_repeated");
     assert_eq!(count(), 0, "nothing written");
+}
+
+/// The pixel at `x`, `y` of a PNG file, RGBA, and the image size.
+fn pixel(path: &std::path::Path, x: usize, y: usize) -> ([u8; 4], (u32, u32)) {
+    let img = hsk_studio_interop_raster::decode(&std::fs::read(path).unwrap(), &hsk_studio_interop_raster::Limits::default(), &hsk_studio_accord::CancellationToken::default()).unwrap();
+    let hsk_studio_interop_raster::Samples::U8(s) = &img.samples else { panic!("8-bit") };
+    let n = s.len() / (img.width as usize * img.height as usize);
+    let at = (y * img.width as usize + x) * n;
+    let rgba = if n == 4 { [s[at], s[at + 1], s[at + 2], s[at + 3]] } else { [s[at], s[at + 1], s[at + 2], 255] };
+    (rgba, (img.width, img.height))
+}
+
+/// Review F3: a stroked layer frames on its visual bounds (the centred 8 px stroke reaches 4 px past the
+/// path on every side), so neither the PNG nor the SVG cuts the stroke at the path.
+#[test]
+fn a_stroked_layer_exports_at_its_visual_bounds() {
+    let scratch = Scratch::new("stroked");
+    let mut v = vector_doc(128.0, 128.0);
+    v.add_artboard("lockup", 200.0, 64.0, None).unwrap();
+    v.set_vector_tool(VectorTool { stroke_on: true, stroke_width: 8.0, ..black() });
+    let icon = v.draw_shape(ShapeKind::Rectangle, [200.0, 8.0], [260.0, 56.0], false).unwrap();
+    v.rename_layer(&icon, "icon").unwrap();
+    let dir = scratch.0.to_string_lossy().into_owned();
+    let r = command(&mut v, "export.run", json!({"dir": dir, "nodes": [icon], "settings": [{"format": "PNG", "suffix": "@2x", "constraint": {"type": "SCALE", "value": 2}}, {"format": "SVG"}]})).unwrap();
+    let png = r["files"].as_array().unwrap().iter().find(|f| f["file"] == "icon@2x.png").unwrap_or_else(|| panic!("{r}"));
+    assert_eq!((png["width"].as_u64(), png["height"].as_u64()), (Some(136), Some(112)), "{r}");
+    assert_eq!(png["frame"], json!([196.0, 4.0, 68.0, 56.0]), "{r}");
+    let (corner, size) = pixel(&scratch.0.join("icon@2x.png"), 1, 1);
+    assert_eq!((corner[3], size), (255, (136, 112)), "the stroke's outer corner is in the file");
+    assert!(near(view_box(&std::fs::read_to_string(scratch.0.join("icon.svg")).unwrap()), [196.0, 4.0, 68.0, 56.0]));
+}
+
+/// Review F2: one run holds the view and the 1x render of one target at a time: a finished target's
+/// render is dropped before the next is made, and settings of one target that share a render share it.
+#[test]
+fn a_multi_node_run_holds_one_render_at_a_time() {
+    let scratch = Scratch::new("renders");
+    let (mut v, _, _, _) = brand();
+    command(&mut v, "export.set_settings", json!({"node": "mark", "settings": [
+        {"format": "PNG"}, {"format": "PNG", "suffix": "-all", "contents_only": false}, {"format": "PNG", "suffix": "@2x", "constraint": {"type": "SCALE", "value": 2}}, {"format": "SVG"},
+    ]})).unwrap();
+    command(&mut v, "export.set_settings", json!({"node": "icon", "settings": [{"format": "PNG"}, {"format": "JPG"}]})).unwrap();
+    let r = command(&mut v, "export.run", json!({"dir": scratch.0.to_string_lossy()})).unwrap();
+    assert_eq!(r["count"], 6, "{r}");
+    assert_eq!((r["renders"].as_u64(), r["peak_retained_renders"].as_u64()), (Some(3), Some(1)), "{r}");
+}
+
+/// Review F4: every 1x render size and every file name of the whole run is checked before the first
+/// write, so a refusal of a later target writes nothing: a board past the render budget, a Windows device
+/// name (any case, with an extension or a trailing space) and a name over 255 UTF-16 units.
+#[test]
+fn a_run_checks_every_render_size_and_name_before_writing() {
+    let scratch = Scratch::new("preflight");
+    let mut v = vector_doc(64.0, 64.0);
+    let first = v.state_json()["containers"]["artboards"][0]["id"].as_str().unwrap().to_owned();
+    v.rename_artboard(&first, "a").unwrap();
+    v.set_vector_tool(black());
+    let layer = v.draw_shape(ShapeKind::Rectangle, [8.0, 8.0], [40.0, 40.0], false).unwrap();
+    let big = v.add_artboard("b", 12000.0, 12000.0, None).unwrap();
+    let dir = scratch.0.to_string_lossy().into_owned();
+    let count = || std::fs::read_dir(&scratch.0).unwrap().count();
+    let small = json!([{"format": "PNG", "constraint": {"type": "WIDTH", "value": 16}}]);
+    assert_eq!(refusal(&mut v, "export.run", json!({"dir": dir, "nodes": [first, big], "settings": small})), "export_too_large");
+    assert_eq!(count(), 0, "nothing written before the refusal");
+    for name in ["nul", "CON", "Aux.v2", "com1", "LPT9 ", "conin$"] {
+        v.rename_layer(&layer, name).unwrap();
+        assert_eq!(refusal(&mut v, "export.run", json!({"dir": dir, "nodes": [first, layer], "settings": [{"format": "PNG"}]})), "export_name_invalid", "{name:?}");
+    }
+    v.rename_layer(&layer, &"n".repeat(200)).unwrap();
+    assert_eq!(refusal(&mut v, "export.run", json!({"dir": dir, "nodes": [first, layer], "settings": [{"format": "SVG", "suffix": "s".repeat(60)}]})), "export_name_invalid");
+    assert_eq!(count(), 0, "nothing written");
+}
+
+/// Review F5 (a): two names one file on NTFS (simple upper case: σ, ς and Σ) collide in the plan, so
+/// with overwrite one file is never written twice and listed twice.
+#[test]
+fn names_that_fold_to_one_file_collide() {
+    let scratch = Scratch::new("fold");
+    let mut v = vector_doc(64.0, 64.0);
+    v.set_vector_tool(black());
+    let a = v.draw_shape(ShapeKind::Rectangle, [8.0, 8.0], [20.0, 20.0], false).unwrap();
+    let b = v.draw_shape(ShapeKind::Rectangle, [30.0, 30.0], [40.0, 40.0], false).unwrap();
+    v.rename_layer(&a, "aσ").unwrap();
+    v.rename_layer(&b, "aς").unwrap();
+    let dir = scratch.0.to_string_lossy().into_owned();
+    assert_eq!(refusal(&mut v, "export.run", json!({"dir": dir, "nodes": [a, b], "settings": [{"format": "PNG"}], "overwrite": true})), "export_name_collision");
+    assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0, "nothing written");
+    // One node with suffixes that fold to one name, given ad hoc, is refused before the run too.
+    assert_eq!(refusal(&mut v, "export.run", json!({"dir": dir, "nodes": [a], "settings": [{"format": "PNG", "suffix": "@2x"}, {"format": "PNG", "suffix": "@2X"}]})), "export_suffix_collision");
 }

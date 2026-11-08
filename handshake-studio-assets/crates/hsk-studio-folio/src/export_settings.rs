@@ -292,6 +292,11 @@ impl StudioExportSettings {
     }
 }
 
+/// The key two file names are compared under: names with one key name one file.
+pub fn file_name_fold(name: &str) -> String {
+    name.to_lowercase()
+}
+
 /// One constraint against [STU-IO-114]: `InvalidField` at `export_settings/constraint`.
 pub fn check_constraint(c: &StudioExportConstraint) -> Result<()> {
     let v = c.value;
