@@ -1246,9 +1246,21 @@ struct FolioCx<'a> {
     nib: bool,
     /// Marker notes of the layer being prepared (R44 F-R44-10), drained per layer.
     marker_notes: std::cell::RefCell<Vec<MarkerNote>>,
+    /// The caller's token (live filter evaluation, lane SMB-AI-LIVE-EFFECTS-1).
+    cancel: &'a CancellationToken,
+    /// Remaining aggregate live filter element budget of this call
+    /// (`crate::vector_live_filters::MAX_LIVE_FILTER_ELEMENTS`).
+    effect_budget: std::cell::Cell<u64>,
 }
 
 impl FolioCx<'_> {
+    /// True when `layer_id` holds an enabled live filter: a reader of its raw geometry (boolean
+    /// operand, envelope top object, clip or vector mask source) refuses
+    /// `crate::vector_live_filters::REFUSE_EFFECT_SOURCE` instead of using the unfiltered shape.
+    fn filtered(&self, layer_id: &str) -> bool {
+        self.records.live_filter_stack(layer_id).is_some_and(|s| crate::vector_live_filters::any_enabled(&s.filters))
+    }
+
     fn paths(&self, ids: &[String]) -> Result<Vec<OwnedPath>, &'static str> {
         ids.iter()
             .map(|id| self.assets.path(id).ok_or(REFUSE_PATH_UNRESOLVED))
@@ -1278,7 +1290,7 @@ impl FolioCx<'_> {
         let operands = group
             .operands
             .iter()
-            .map(|o| self.geometry(o, next))
+            .map(|o| if self.filtered(o) { Err(crate::vector_live_filters::REFUSE_EFFECT_SOURCE) } else { self.geometry(o, next) })
             .collect::<Result<Vec<_>, _>>()?;
         use hsk_studio_folio::StudioBooleanOperation as Op;
         Ok(VectorGeometry::Boolean {
@@ -1418,7 +1430,12 @@ impl FolioCx<'_> {
     /// (`StudioEnvelope`) wraps the path geometry before the appearance is drawn, or with
     /// `distort_appearance` the drawn fill and stroke geometry, through nib's `envelope_paths`
     /// (one frame: the union bounds of everything it wraps); paints are not distorted. Plain paths
-    /// fill and stroke themselves; a layer with none of these is returned unchanged.
+    /// fill and stroke themselves; a layer with none of these is returned unchanged. A layer with an
+    /// enabled live filter (`StudioVectorRecords::live_filters`, lane SMB-AI-LIVE-EFFECTS-1) first
+    /// replaces its paths by the stack's result (`crate::vector_live_filters`, enabled entries in
+    /// list order), so every step below draws the effected geometry; output `k` keeps the width
+    /// profile of source `k % n` (step repeat returns more paths than it took). A network path, path
+    /// or area text bound to the layer, or a non-px document refuses the layer typed.
     fn own_geometry(
         &self,
         layer_id: &str,
@@ -1446,11 +1463,36 @@ impl FolioCx<'_> {
         };
         let any_marker = (0..fills.len()).any(|k| marked(k).is_some());
         let has_network = networks.iter().any(Option::is_some);
-        if !has_network && profiles.iter().all(Option::is_none) && envelope.is_none() && !any_brush && !any_marker {
+        let live = self.records.live_filter_stack(layer_id).filter(|s| crate::vector_live_filters::any_enabled(&s.filters));
+        if live.is_none() && !has_network && profiles.iter().all(Option::is_none) && envelope.is_none() && !any_brush && !any_marker {
             return Ok((geometry, fills));
         }
         let VectorGeometry::Paths(paths) = geometry else {
             return Err(REFUSE_VECTOR_GEOMETRY);
+        };
+        let (paths, networks, profiles) = match live {
+            None => (paths, networks, profiles),
+            Some(stack) => {
+                use crate::vector_live_filters::{REFUSE_EFFECT_NETWORK, REFUSE_EFFECT_TEXT_BOUND, cycled, evaluate_stack};
+                if has_network {
+                    return Err(REFUSE_EFFECT_NETWORK);
+                }
+                let bound = self.records.path_texts.iter().any(|p| p.path_layer_id == layer_id)
+                    || self.records.area_texts.iter().any(|a| a.container_layer_id == layer_id);
+                if bound {
+                    return Err(REFUSE_EFFECT_TEXT_BOUND);
+                }
+                if !self.unit_px {
+                    return Err(REFUSE_GEOMETRY_UNIT);
+                }
+                let mut budget = self.effect_budget.get();
+                let out = evaluate_stack(&stack.filters, paths, &mut budget, self.cancel);
+                self.effect_budget.set(budget);
+                let out = out?;
+                let profiles = cycled(&profiles, out.len());
+                let networks = vec![None; out.len()];
+                (out, networks, profiles)
+            }
         };
         let owned = |a: &hsk_studio_nib::anchor_path::AnchorPath| {
             a.to_owned_path().map_err(|_| REFUSE_NETWORK)
@@ -1643,6 +1685,7 @@ impl FolioCx<'_> {
                 columns: usize::try_from(*columns).map_err(|_| REFUSE_ENVELOPE)?,
                 points: points.iter().map(|q| PathPoint::new(q[0], q[1])).collect(),
             }),
+            S::TopObject { source_layer_id } if self.filtered(source_layer_id) => return Err(crate::vector_live_filters::REFUSE_EFFECT_SOURCE),
             S::TopObject { source_layer_id } => match self.geometry(source_layer_id, 0)? {
                 VectorGeometry::Paths(top) => Envelope::Shape(top.into_iter().next().ok_or(REFUSE_ENVELOPE)?),
                 VectorGeometry::Boolean { .. } => return Err(REFUSE_ENVELOPE),
@@ -2050,6 +2093,8 @@ pub fn prepare_vectors(
         unit_px: doc.geometry_unit == hsk_studio_folio::GeometryUnit::Px,
         nib: res.coverage == VectorCoverage::Exact,
         marker_notes: std::cell::RefCell::default(),
+        cancel,
+        effect_budget: std::cell::Cell::new(crate::vector_live_filters::MAX_LIVE_FILTER_ELEMENTS),
     };
     let mut specs = Vec::new();
     let mut refused: Vec<(String, &'static str)> = Vec::new();
@@ -2094,6 +2139,8 @@ pub fn prepare_vectors(
                     fills,
                 })
             }
+            // A canceled live filter evaluation returns nothing (lane SMB-AI-LIVE-EFFECTS-1).
+            Err(crate::vector_live_filters::REFUSE_EFFECT_CANCELED) => return Err(CompositeError::Canceled),
             Err(code) => refused.push((l.layer_id.clone(), code)),
         }
     }
@@ -2115,6 +2162,9 @@ pub fn prepare_vectors(
                 hsk_studio_folio::StudioClipRule::NonZero => FillRule::NonZero,
                 hsk_studio_folio::StudioClipRule::EvenOdd => FillRule::EvenOdd,
             };
+            if cx.filtered(&c.source_layer_id) {
+                return Err(crate::vector_live_filters::REFUSE_EFFECT_SOURCE);
+            }
             let geometry = match cx.geometry(&c.source_layer_id, 0)? {
                 VectorGeometry::Paths(paths) => VectorGeometry::Paths(
                     paths
@@ -2223,6 +2273,7 @@ impl FolioCx<'_> {
             .ok_or(crate::vector_mask::REFUSE_MASK_UNRESOLVED)?;
         let boolean = self.records.boolean_group(layer_id).is_some();
         match &layer.payload {
+            hsk_studio_folio::Payload::Vector { .. } | hsk_studio_folio::Payload::Group if self.filtered(layer_id) => Err(crate::vector_live_filters::REFUSE_EFFECT_SOURCE),
             hsk_studio_folio::Payload::Vector { .. } => self.geometry(layer_id, 0),
             hsk_studio_folio::Payload::Group if boolean => self.geometry(layer_id, 0),
             hsk_studio_folio::Payload::Group => {
@@ -2455,6 +2506,8 @@ pub fn expand_vectors(
         unit_px: doc.geometry_unit == hsk_studio_folio::GeometryUnit::Px,
         nib: res.coverage == VectorCoverage::Exact,
         marker_notes: std::cell::RefCell::default(),
+        cancel,
+        effect_budget: std::cell::Cell::new(crate::vector_live_filters::MAX_LIVE_FILTER_ELEMENTS),
     };
     let (mut out, mut refused) = (Vec::new(), Vec::new());
     for l in &doc.layers {
@@ -2492,6 +2545,7 @@ pub fn expand_vectors(
             });
         match layer {
             Ok(rows) => out.push(ExpandedLayer { layer_id: l.layer_id.clone(), rows }),
+            Err(crate::vector_live_filters::REFUSE_EFFECT_CANCELED) => return Err(CompositeError::Canceled),
             Err(code) => refused.push((l.layer_id.clone(), code)),
         }
     }

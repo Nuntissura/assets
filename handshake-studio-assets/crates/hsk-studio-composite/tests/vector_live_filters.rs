@@ -362,3 +362,135 @@ fn a_canceled_token_returns_nothing() {
     let got = expand_vectors(&doc("px", false), &red(), &r, &PLAIN, BlendSpace::Encoded, &VectorResolution::default(), &cancel);
     assert!(matches!(got, Err(CompositeError::Canceled)), "{got:?}");
 }
+
+/// A document of `n` vector layers (layer k paints SVPT k with the red style) for the budget tests.
+fn many_layers(n: u32) -> (Snapshot, StudioDesignRecords) {
+    let id = |prefix: &str, k: u32| format!("{prefix}-019abcde-0000-7000-8000-{k:012x}");
+    let layers: Vec<Value> = (1..=n)
+        .map(|k| json!({"schema_id":"hsk.studio.layer@1","layer_id":id("SLYR",k),"name":format!("l{k}"),"parent":null,"kind":"vector","payload":{"payload_kind":"vector","path_ids":[id("SVPT",k)]},"visible":true}))
+        .collect();
+    let ops: Vec<Value> = (1..=n)
+        .map(|k| json!({"layer_id":id("SLYR",k),"operation_key":"source","operation_kind":"source","inputs":[],"outputs":[{"port_key":"out","value_type":"vector","cardinality":"one","semantic":"source"}]}))
+        .collect();
+    let outputs: Vec<Value> = (1..=n).map(|k| json!({"layer_id":id("SLYR",k),"operation_key":"source","port_key":"out"})).collect();
+    let mut d = mixed();
+    assign_all_profiles(&mut d);
+    d["geometry_unit"] = json!("px");
+    d["layers"] = Value::Array(layers);
+    d["graph"] = json!({"schema_id":"hsk.studio.layer_graph@1","operations":ops,"edges":[],"outputs":outputs});
+    let mut budget = hsk_studio_folio::Budget::default();
+    budget.nodes = 1 << 20;
+    budget.edges = 1 << 20;
+    budget.input_bytes = 64 << 20;
+    budget.payload_bytes = 64 << 20;
+    let snap = match hsk_studio_folio::inspect_bytes(&serde_json::to_vec(&d).unwrap(), budget, &CancellationToken::default(), &Available).unwrap() {
+        hsk_studio_folio::Inspection::Editable(s) => s,
+        hsk_studio_folio::Inspection::ReadOnly(_) => panic!("read-only"),
+    };
+    let nodes: Vec<Value> = (1..=n).map(|k| json!({"node":{"node_kind":"layer","node_id":id("SLYR",k)},"style_refs":{"fill_style_id":identity("SSTY",1)}})).collect();
+    let mut design_value = serde_json::to_value(red()).unwrap();
+    design_value["nodes"] = Value::Array(nodes);
+    (snap, serde_json::from_value(design_value).unwrap())
+}
+
+/// A polyline of `n` elements (every path of the many layers).
+struct Lines(usize);
+impl VectorAssets for Lines {
+    fn path(&self, _: &str) -> Option<OwnedPath> {
+        let points: Vec<(f64, f64)> = (0..self.0).map(|i| ((i % 64) as f64 + 1.0, (i / 64) as f64 * 0.5 + (i % 2) as f64 + 1.0)).collect();
+        Some(poly(&points, false))
+    }
+    fn image(&self, _: &StudioImageSource) -> Option<ImageInfo> {
+        None
+    }
+}
+
+fn twist_stack(layer_k: u32, n: usize) -> hsk_studio_folio::StudioLiveFilterStack {
+    use hsk_studio_folio::{StudioLiveFilter, StudioLiveFilterParam, StudioLiveFilterStack};
+    StudioLiveFilterStack {
+        layer_id: format!("SLYR-019abcde-0000-7000-8000-{layer_k:012x}"),
+        filters: (0..n)
+            .map(|i| StudioLiveFilter {
+                instance_id: format!("f{i}"),
+                filter_kind: "hsk.studio.vector_effect.twist".into(),
+                version: 1,
+                enabled: true,
+                params: vec![StudioLiveFilterParam::Real { key: "twist_angle".into(), value: 1.0 }],
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn one_aggregate_budget_bounds_every_evaluation_of_a_call() {
+    use hsk_studio_composite::vector_live_filters::{MAX_LIVE_FILTER_ELEMENTS, REFUSE_EFFECT_WORK};
+    use hsk_studio_nib::shape_ops::MAX_OP_ELEMENTS;
+    bounded_case("live_filter_aggregate_budget", || {
+        // A chain of step repeats (zero copies) over a path just under nib's per-evaluation limit:
+        // each evaluation alone is admitted; the chain is refused once the budget of the call is spent.
+        let (snap, design) = many_layers(1);
+        let per = MAX_OP_ELEMENTS - 8;
+        let fits = usize::try_from(MAX_LIVE_FILTER_ELEMENTS / per as u64).unwrap();
+        let chain = |n: usize| {
+            let mut r = StudioVectorRecords::new(identity("SDOC", 1));
+            let mut s = twist_stack(1, n);
+            for f in &mut s.filters {
+                f.filter_kind = "hsk.studio.vector_effect.step_repeat".into();
+                f.params = vec![hsk_studio_folio::StudioLiveFilterParam::Int { key: "copies".into(), value: 0 }];
+            }
+            r.live_filters.push(s);
+            r
+        };
+        let run = |r: &StudioVectorRecords| expand_vectors(&snap, &design, r, &Lines(per), BlendSpace::Encoded, &VectorResolution::default(), &CancellationToken::default()).unwrap();
+        let (ok, refused) = run(&chain(fits));
+        assert!(refused.is_empty() && ok.len() == 1, "{refused:?}");
+        let (_, refused) = run(&chain(fits + 1));
+        assert_eq!(refused, vec![(format!("SLYR-019abcde-0000-7000-8000-{:012x}", 1), REFUSE_EFFECT_WORK)]);
+    });
+}
+
+#[test]
+fn many_layers_each_with_a_full_stack_share_the_budget() {
+    use hsk_studio_composite::vector_live_filters::{MAX_LIVE_FILTER_ELEMENTS, REFUSE_EFFECT_WORK};
+    use hsk_studio_folio::LIVE_FILTERS_MAX_PER_STACK;
+    // 4096 layers, each with a full stack of twists over a 20-element path: one evaluation budget
+    // would admit every layer; the aggregate of the call refuses the layers past it, typed.
+    let (layers, elements) = (4096_u32, 20_usize);
+    let (snap, design) = many_layers(layers);
+    let mut r = StudioVectorRecords::new(identity("SDOC", 1));
+    r.live_filters = (1..=layers).map(|k| twist_stack(k, LIVE_FILTERS_MAX_PER_STACK)).collect();
+    let started = std::time::Instant::now();
+    let (ok, refused) = expand_vectors(&snap, &design, &r, &Lines(elements), BlendSpace::Encoded, &VectorResolution::default(), &CancellationToken::default()).unwrap();
+    let took = started.elapsed();
+    let per_layer = (LIVE_FILTERS_MAX_PER_STACK * elements) as u64;
+    let fit = usize::try_from(MAX_LIVE_FILTER_ELEMENTS / per_layer).unwrap();
+    assert_eq!(ok.len(), fit);
+    assert_eq!(refused.len(), layers as usize - fit);
+    assert!(refused.iter().all(|(_, code)| *code == REFUSE_EFFECT_WORK));
+    assert_eq!(refused[0].0, format!("SLYR-019abcde-0000-7000-8000-{:012x}", fit + 1), "the layers past the budget, in document order");
+    // Timing record for the lane notes (debug and release differ; no bound asserted here).
+    println!("live_filter_budget_4096_layers: {fit} layers x {LIVE_FILTERS_MAX_PER_STACK} filters x {elements} elements in {took:?} (profile {})", if cfg!(debug_assertions) { "debug" } else { "release" });
+}
+
+#[test]
+fn a_token_canceled_during_a_long_stack_returns_promptly_with_nothing() {
+    use hsk_studio_folio::LIVE_FILTERS_MAX_PER_STACK;
+    use hsk_studio_nib::shape_ops::MAX_OP_ELEMENTS;
+    bounded_case("live_filter_cancel", || {
+        let (snap, design) = many_layers(1);
+        let mut r = StudioVectorRecords::new(identity("SDOC", 1));
+        r.live_filters.push(twist_stack(1, LIVE_FILTERS_MAX_PER_STACK));
+        let cancel = CancellationToken::default();
+        let remote = cancel.clone();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            remote.cancel();
+        });
+        let started = std::time::Instant::now();
+        let got = expand_vectors(&snap, &design, &r, &Lines(MAX_OP_ELEMENTS - 8), BlendSpace::Encoded, &VectorResolution::default(), &cancel);
+        let took = started.elapsed();
+        stopper.join().unwrap();
+        assert!(matches!(got, Err(CompositeError::Canceled)), "{:?}", got.map(|(l, r)| (l.len(), r)));
+        println!("live_filter_cancel: returned after {took:?}");
+    });
+}
