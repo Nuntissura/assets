@@ -101,6 +101,29 @@ fn lane_at(points: &[StudioAutomationPoint], t: u64, map: impl Fn(f64) -> f64) -
     points.last().map(|p| map(p.value))
 }
 
+/// Most estimated effect state of one mixer graph, summed over the master and every bus stack before
+/// anything is built (authored bound, V4-02; lane SMB-SCORE-EFFECTS-6, review F4): 256 MiB.
+pub const MAX_MIXER_EFFECT_STATE_BYTES: u64 = 256 << 20;
+
+/// The estimated state of every enabled effect of `routing` (`EffectSpec::state_bytes`, stereo at
+/// `rate`); `mixer: effect_state_over_budget` past [`MAX_MIXER_EFFECT_STATE_BYTES`], checked while
+/// summing. Instances the batch module cannot read are left to `bus_effect`, which refuses them.
+pub fn effect_state_budget(routing: &StudioAudioRouting, rate: u32) -> Result<u64, String> {
+    let lists = std::iter::once(&routing.master.effects).chain(routing.bus_effects.iter().map(|b| &b.effects));
+    let mut total = 0u64;
+    for e in lists.flatten().filter(|e| e.enabled) {
+        let mut stat = e.clone();
+        stat.keyframes.clear();
+        let Ok(Some(spec)) = EffectSpec::from_preset_instance(&stat) else { continue };
+        let bytes = spec.state_bytes(rate, 2).map_err(|x| format!("mixer: effect refused: {} ({})", x.code(), e.instance_id))?;
+        total = total.saturating_add(bytes);
+        if total > MAX_MIXER_EFFECT_STATE_BYTES {
+            return Err(format!("mixer: effect_state_over_budget: the bus and master effects need more than {MAX_MIXER_EFFECT_STATE_BYTES} bytes of state (at {})", e.instance_id));
+        }
+    }
+    Ok(total)
+}
+
 /// Effects the panel offers to add, with their starting parameters (score's processor identity
 /// tags; see `audio_batch::EffectSpec`): the four kinds of the batch module, then every row of
 /// score's filter-kind table at its defaults (lane SMB-SCORE-EFFECTS-6).
@@ -243,6 +266,14 @@ impl super::Viewer {
     pub(crate) fn mixer_rebuild(&mut self) -> Result<(), String> {
         let sequence = self.mixer_sequence()?;
         let routing = self.mixer_routing()?;
+        // One aggregate budget over every stack before the graph builds any (review F4).
+        let rate = self.mixer.as_ref().ok_or("mixer: not open")?.rate;
+        if let Err(text) = effect_state_budget(&routing, rate) {
+            let m = self.mixer.as_mut().ok_or("mixer: not open")?;
+            m.stream = None;
+            m.error = Some(text.clone());
+            return Err(text);
+        }
         let set = self.mixer_routing_set()?;
         let cancel = self.cancel;
         let document: Vec<StudioSequence> = self.run.snapshot().map(|s| s.document().sequences.clone()).unwrap_or_default();
@@ -548,6 +579,8 @@ impl super::Viewer {
                     }
                     _ => return Err("mixer: unreachable".into()),
                 };
+                // The aggregate effect state budget, before the edit is committed (review F4).
+                effect_state_budget(&set.routings[at], self.mixer.as_ref().map_or(48_000, |m| m.rate))?;
                 let snapshot = self.run.snapshot().ok_or("mixer: no document is open")?;
                 folio::validate_audio_routing(&set, snapshot.document(), folio::Budget::default(), &CancellationToken::default())
                     .map_err(|d| format!("mixer: {op} refused: {d:?}"))?;

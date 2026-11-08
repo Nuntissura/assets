@@ -87,7 +87,7 @@ pub use eq::{
 pub use error::ScoreError;
 pub use filter_kinds::{
     AudioFilterError, BindingClass, FILTER_KINDS, FilterKindParam, FilterKindRow, MAX_AUDIO_FILTER_PARAMS, ParameterSource,
-    audio_filter_defaults, audio_filter_kind, audio_filter_parameters, build_audio_filter,
+    audio_filter_defaults, audio_filter_kind, audio_filter_parameters, audio_filter_state_bytes, build_audio_filter,
 };
 pub use graphic_eq::{
     GRAPHIC_EQ_ACCURACY, GRAPHIC_EQ_AMP_DB, GRAPHIC_EQ_BANDS, GRAPHIC_EQ_DESIGN_HOP, GRAPHIC_EQ_GAIN_DB, GRAPHIC_EQ_PROTOTYPE_DB,
