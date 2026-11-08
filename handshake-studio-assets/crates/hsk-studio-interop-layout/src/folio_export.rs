@@ -23,7 +23,7 @@ use crate::{IDML_MIMETYPE, IdmlError, Result};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     AutoSizing, PageSide, Payload, StoryDirection, StoryParagraphDirection, StoryRange, StoryTextKind,
-    StudioDocument, StudioTextStory, validate_document,
+    StudioDocument, StudioTextStory, StudioTypeStyleRecords, validate_document,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -476,6 +476,17 @@ pub(crate) struct Built {
     pub story_ids: BTreeMap<String, String>,
     /// Folio page key -> (IDML page `Self`, spread index, page top-left in IDML spread coordinates).
     pub pages: BTreeMap<String, (String, usize, (f64, f64))>,
+}
+
+/// STU-IO-012 receipt for what IDML export does not write yet: the Folio paragraph composition
+/// settings (composer, hyphenation, H&J spacing, STU-TYP-185 indents and spacing; lane
+/// SMB-TYPE-INDENT-SPACING-1). One `Unsupported` entry (`Resources/Styles.xml`, `ParagraphStyle`,
+/// `paragraph_composition_not_exported`) counting the style entries and local paragraph overrides
+/// whose settings state anything; `None` when none does. The exporter takes no type-style records,
+/// so the caller that holds them appends this entry to the export's loss.
+pub fn type_style_composition_loss(styles: &StudioTypeStyleRecords) -> Option<LossEntry> {
+    let _ = styles;
+    None
 }
 
 /// Exports a Folio layout document and its stories as a deterministic IDML package.

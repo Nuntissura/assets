@@ -33,7 +33,7 @@ pub use epub::{
     MAX_EPUB_TEXT_BYTES, export_epub, inspect_epub,
 };
 pub use error::{IdmlError, PreservedBlob, Result};
-pub use folio_export::{ExportNames, FolioExport, FolioExportInput, StoryInput, export_folio};
+pub use folio_export::{ExportNames, FolioExport, FolioExportInput, StoryInput, export_folio, type_style_composition_loss};
 pub use idml_composition::{COMPOSITION_ATTRIBUTES, TypeStyleImport, import_type_styles};
 pub use idml_decode::{decode_idml, import_idml, open_idml};
 pub use idml_encode::{ContentEdit, export_idml, export_model, replace_content, write_idml};
