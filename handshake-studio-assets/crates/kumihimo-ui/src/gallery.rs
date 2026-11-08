@@ -176,3 +176,24 @@ pub fn render_specimen(scale: Scale, theme: Theme, text: &mut Text, w: f32, h: f
     let stats = paint(&mut canvas, panel.display_list(), scale, text, &mut GalleryIcons::default());
     (canvas, panel, stats)
 }
+
+/// The designer's contact sheet of the frame widgets in every state (SMB-GUI-FRAME-1), outside [`Scene`] so the goldens
+/// stay pinned: one row per widget, its states side by side, with the designer's icons.
+pub fn contact_sheet(b: &mut Builder<'_>) {
+    let _ = b;
+}
+
+/// Logical size of the contact sheet.
+pub const CONTACT_SHEET: (f32, f32) = (960.0, 720.0);
+
+/// Paints [`contact_sheet`] at `scale` with [`crate::icons::IconSet`].
+pub fn render_contact_sheet(scale: Scale, theme: Theme, text: &mut Text) -> (Canvas, Panel, PaintStats) {
+    let (w, h) = CONTACT_SHEET;
+    let mut panel = Panel::default();
+    let ui = Interaction::default();
+    let built = panel.update(1, &ui, Rect::xywh(0.0, 0.0, w, h), scale, theme, text, contact_sheet);
+    debug_assert!(built.is_ok());
+    let mut canvas = Canvas::new(scale.edge(w).max(1) as u32, scale.edge(h).max(1) as u32, ColorToken::SurfacePanel.resolve(theme)).unwrap_or_else(|| Canvas::new(1, 1, ColorToken::SurfacePanel.resolve(theme)).expect("1x1 canvas"));
+    let stats = paint(&mut canvas, panel.display_list(), scale, text, &mut crate::icons::IconSet::default());
+    (canvas, panel, stats)
+}

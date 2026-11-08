@@ -227,3 +227,150 @@ pub fn layer_row(b: &mut Builder<'_>, id: &str, name: &str, tag: ColorToken, vis
     }
     b.end();
 }
+
+// ---- Frame widgets (SMB-GUI-FRAME-1, build-order B5 static faces). Ids, labels, states and reasons come from the
+// caller; no widget names a panel, tool or menu title. `reason` is B6 "disabled with a reason": None = enabled.
+
+/// Frame component sizes components.json records (logical px).
+pub mod frame {
+    /// components.json `menu_bar.anatomy`: module switch button 32 wide.
+    pub const MODULE_SWITCH_W: f32 = 32.0;
+    /// `menu_bar.size.title_pad_x_tight`.
+    pub const MENU_TITLE_PAD_TIGHT: f32 = 5.0;
+    /// `presence_chip.size.d`.
+    pub const PRESENCE_D: f32 = 18.0;
+    /// `key_chip.size`.
+    pub const KEY_CHIP_H: f32 = 16.0;
+    pub const KEY_CHIP_PAD: f32 = 4.0;
+    /// `search_field.size.w`.
+    pub const SEARCH_W: f32 = 240.0;
+    /// `document_tab.size.close` and the 6 px unsaved dot.
+    pub const DOC_TAB_CLOSE: f32 = 20.0;
+    pub const DOC_TAB_DOT: f32 = 6.0;
+    /// `tool_slot.size`.
+    pub const TOOL_SLOT_ICON: f32 = 20.0;
+    pub const TOOL_MARKER: f32 = 4.0;
+    /// `group_header.size`.
+    pub const GROUP_DISCLOSURE: f32 = 20.0;
+    pub const GROUP_MENU: f32 = 20.0;
+    /// `icon_rail.size`.
+    pub const RAIL_BUTTON: f32 = 32.0;
+    pub const RAIL_ICON: f32 = 16.0;
+    /// The bottom rail's labelled buttons (h 24, icon 14) and small chrome icons (chevrons, close: 12).
+    pub const RAIL_CAPTION_H: f32 = 24.0;
+    pub const ICON_SMALL: f32 = 14.0;
+    pub const ICON_MICRO: f32 = 12.0;
+    /// `status_bar.size.gap` and its 1 x 14 separators.
+    pub const STATUS_GAP: f32 = 12.0;
+    pub const STATUS_SEPARATOR_H: f32 = 14.0;
+    /// The rail's 20 x 1 divider under the expand button.
+    pub const RAIL_DIVIDER_W: f32 = 20.0;
+    /// The identity chip's tool icon.
+    pub const CONTEXT_ICON: f32 = 20.0;
+}
+
+/// One menu title: `shown` false keeps it in the tree with no box (STU-SHL-012: every title stays in AccessKit).
+#[derive(Clone, Copy, Debug)]
+pub struct MenuTitle<'a> {
+    pub id: &'a str,
+    /// The text drawn (full or abbreviated).
+    pub text: &'a str,
+    /// The full title, the accessible name.
+    pub full: &'a str,
+    pub shown: bool,
+}
+
+/// Menu titles (components.json `menu_bar`), into the caller's MenuBar: MenuItem titles in `menu_title` style with `pad` per side,
+/// never ellipsized (AC-TEXT-01); hidden titles keep a zero box; `chevron` (id, value, icon) follows when some are
+/// hidden.
+pub fn menu_title_row(b: &mut Builder<'_>, titles: &[MenuTitle<'_>], pad: f32, chevron: Option<(&str, &str, IconId)>, reason: Option<&str>) {
+    let _ = (b, titles, pad, chevron, reason);
+}
+
+/// A document tab (components.json `document_tab`): Tab surface `w` wide (96 to 220), pad 12/6, the name (already fit
+/// by the caller, full name in the label), the 6 px unsaved dot, close 20, right seam.
+#[allow(clippy::too_many_arguments)]
+pub fn document_tab(b: &mut Builder<'_>, id: &str, full: &str, shown: &str, w: f32, active: bool, unsaved: bool, close: (&str, IconId), reason: Option<&str>) {
+    let _ = (b, id, full, shown, w, active, unsaved, close, reason);
+}
+
+/// Search field (components.json `search_field`, 240 x 24): field face, search icon, placeholder in text.tertiary,
+/// the chord chip.
+pub fn search_field(b: &mut Builder<'_>, id: &str, label: &str, placeholder: &str, chord: &str, icon: IconId, reason: Option<&str>) {
+    let _ = (b, id, label, placeholder, chord, icon, reason);
+}
+
+/// Key chip (components.json `key_chip`: 16 high, pad 4, radius 3, surface.control, caption in text.secondary).
+pub fn key_chip(b: &mut Builder<'_>, text: &str) {
+    let _ = (b, text);
+}
+
+/// Presence chip (components.json `presence_chip`, d 18): `color` circle with the initial in text.on_accent (never
+/// colour alone: the label names who). An indicator: it never pops anything and takes no action.
+pub fn presence_chip(b: &mut Builder<'_>, id: &str, name: &str, initial: &str, color: ColorToken) {
+    let _ = (b, id, name, initial, color);
+}
+
+/// Identity chip of the Context Bar's Tool Zone: tool icon 20 and the tool name at 600.
+pub fn context_chip(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, reason: Option<&str>) {
+    let _ = (b, id, name, icon, reason);
+}
+
+/// A static dropdown face (ComboBox): `field` gives the field face (Context Bar), otherwise a ghost face (tab strip);
+/// the text, then the chevron; `w` fixes the width.
+#[allow(clippy::too_many_arguments)]
+pub fn dropdown_face(b: &mut Builder<'_>, id: &str, label: &str, text: &str, chevron: IconId, field: bool, w: Option<f32>, reason: Option<&str>) {
+    let _ = (b, id, label, text, chevron, field, w, reason);
+}
+
+/// Tool slot (components.json `tool_slot`: 36 x `h` (32, or 28 under FIT-R1), icon 20, radius 3, ToolSlot states; the
+/// 4 px variant marker when the group has more than one tool).
+#[allow(clippy::too_many_arguments)]
+pub fn tool_slot(b: &mut Builder<'_>, id: &str, name: &str, value: &str, icon: IconId, h: f32, active: bool, marker: Option<IconId>, reason: Option<&str>) {
+    let _ = (b, id, name, value, icon, h, active, marker, reason);
+}
+
+/// Icon rail button (components.json `icon_rail`: 32 x 32, icon 16).
+pub fn icon_rail_button(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, reason: Option<&str>) {
+    let _ = (b, id, name, icon, reason);
+}
+
+/// A labelled button of the bottom icon rail (h 24, icon 14, caption).
+pub fn rail_caption_button(b: &mut Builder<'_>, id: &str, name: &str, icon: IconId, reason: Option<&str>) {
+    let _ = (b, id, name, icon, reason);
+}
+
+/// A dock group header (components.json `group_header`, h 26 on surface.strip, bottom seam): disclosure 20, the shown
+/// tabs (`panel_tab`, pad 8), the +N chip when tabs are hidden, flexible space, the panel menu 20.
+pub struct GroupHeader<'a> {
+    pub id: &'a str,
+    /// (author_id, label) of every tab.
+    pub tabs: &'a [(&'a str, &'a str)],
+    /// Indices of the tabs shown, in order (the rest are behind +N).
+    pub shown: &'a [usize],
+    pub active: usize,
+    /// The active tab of the focused group has the accent edge; others edge.control.
+    pub focused: bool,
+    pub collapsed: bool,
+    /// (id, icon) of the disclosure, of the +N chip (with its value), of the panel menu.
+    pub disclosure: (&'a str, IconId),
+    pub more: Option<(&'a str, &'a str, IconId)>,
+    pub menu: (&'a str, IconId),
+    /// The reason the disclosure, +N and panel menu are disabled.
+    pub reason: Option<&'a str>,
+}
+pub fn group_header(b: &mut Builder<'_>, h: &GroupHeader<'_>) {
+    let _ = (b, h.id);
+}
+
+/// Status readouts (components.json `status_bar`: gap 12, 1 x 14 separators in edge.subtle); (author_id, text) each, the
+/// full text in the label. `last_w` fixes the last readout's width, which then ellipsizes.
+pub fn status_readouts(b: &mut Builder<'_>, items: &[(&str, &str)], last_w: Option<f32>) {
+    let _ = (b, items, last_w);
+}
+
+/// A ruler (components.json `ruler`, thickness 20) along `axis` (Row = horizontal) on surface.strip, document 0 at the
+/// logical position `origin`, step 20, major every 5; `labels` false for the vertical ruler (no rotated text).
+pub fn ruler(b: &mut Builder<'_>, id: &str, label: &str, axis: Axis, origin: f32, labels: bool) {
+    let _ = (b, id, label, axis, origin, labels);
+}

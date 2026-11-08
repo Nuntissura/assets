@@ -14,9 +14,12 @@
 pub mod checks;
 pub mod display;
 pub mod emit;
+pub mod fit;
 pub mod gallery;
 pub mod geom;
 pub mod hit;
+pub mod icon_data;
+pub mod icons;
 pub mod layout;
 pub mod paint;
 pub mod semantic;

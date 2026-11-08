@@ -250,6 +250,13 @@ impl Text {
         let end = cut.get(lo).copied().unwrap_or(text.len());
         format!("{}{ell}", &text[..end])
     }
+    /// FIT-T1: the text with its middle replaced by an ellipsis so it fits `max_w` logical px, keeping as many whole
+    /// chars as fit (head gets the extra one), or the whole text when it fits. Bounded like [`Text::ellipsize`]: only
+    /// the first and last [`MAX_LABEL_BYTES`] / 2 bytes are candidates, measured uncached (about log2(n) shapes).
+    pub fn ellipsize_middle(&mut self, text: &str, token: TextToken, weight: u16, max_w: f32) -> String {
+        let _ = (token, weight, max_w);
+        text.to_owned()
+    }
 }
 
 /// A deterministic stand-in engine with no font: every scalar is a box of the style's cap height, advance

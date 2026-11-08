@@ -1,7 +1,7 @@
 //! Retained node arena, one tree per panel, rebuilt by a pure view function only when the panel's inputs change
 //! (shell-architect position "Retained or immediate mode"). Nodes are keyed by `author_id`; hover, press and focus live
 //! in [`Interaction`], keyed by the same id, so a rebuild never loses them.
-use crate::display::{DisplayList, IconId, ImageId};
+use crate::display::{DisplayList, IconId, ImageId, Side};
 use crate::geom::{Point, Rect, Scale};
 use crate::layout::{LayoutPort, StackLayout};
 use crate::text::Text;
@@ -68,6 +68,16 @@ pub enum Role {
     Label,
     Image,
     CheckBox,
+    /// The frame roles of components.json (SMB-GUI-FRAME-1); AccessKit 0.25 names.
+    MenuBar,
+    MenuItem,
+    TabPanel,
+    Status,
+    ComboBox,
+    SearchInput,
+    Canvas,
+    ScrollBar,
+    Region,
 }
 impl Role {
     pub fn name(self) -> &'static str {
@@ -85,6 +95,15 @@ impl Role {
             Role::Label => "Label",
             Role::Image => "Image",
             Role::CheckBox => "CheckBox",
+            Role::MenuBar => "MenuBar",
+            Role::MenuItem => "MenuItem",
+            Role::TabPanel => "TabPanel",
+            Role::Status => "Status",
+            Role::ComboBox => "ComboBox",
+            Role::SearchInput => "SearchInput",
+            Role::Canvas => "Canvas",
+            Role::ScrollBar => "ScrollBar",
+            Role::Region => "Region",
         }
     }
 }
@@ -107,6 +126,45 @@ pub enum Paint {
     Divider,
     TagEdge(ColorToken),
     Thumbnail(Option<ImageId>),
+    /// components.json `ruler` on `surface.strip`: ticks every `step` logical px from `origin` (the logical position of
+    /// document 0 along `axis`; Row = horizontal ruler), a major tick every `major`, labels in document px at the major
+    /// ticks when `labels` (dropped near the far end rather than clipped). Ticks are capped at [`MAX_RULER_TICKS`].
+    Ruler { axis: Axis, origin: f32, step: f32, major: u32, labels: bool },
+    /// A rounded flat fill and/or a 1 px border in tokens (chips, dots, presence): `radius` logical px.
+    Round { fill: Option<ColorToken>, radius: f32, border: Option<ColorToken> },
+    /// An icon in one fixed token for form and hot point (the module icon in accent.base, a variant marker in
+    /// text.tertiary); the token holds in every state.
+    TintedIcon { icon: IconId, size: f32, color: ColorToken },
+}
+
+/// Most ticks one ruler draws.
+pub const MAX_RULER_TICKS: usize = 2048;
+
+/// The sides of a node that draw a 1 logical px seam in `edge.seam` over its children (bands, docks, groups, tabs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Seams(u8);
+impl Seams {
+    fn bit(side: Side) -> u8 {
+        match side {
+            Side::Left => 1,
+            Side::Top => 2,
+            Side::Right => 4,
+            Side::Bottom => 8,
+        }
+    }
+    pub fn with(self, side: Side) -> Seams {
+        Seams(self.0 | Self::bit(side))
+    }
+    pub fn has(self, side: Side) -> bool {
+        self.0 & Self::bit(side) != 0
+    }
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+    /// Set sides in the order left, top, right, bottom.
+    pub fn sides(self) -> impl Iterator<Item = Side> {
+        [Side::Left, Side::Top, Side::Right, Side::Bottom].into_iter().filter(move |s| self.has(*s))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -167,6 +225,8 @@ pub struct Node {
     pub numeric: Option<Numeric>,
     pub flags: Flags,
     pub actions: Vec<Action>,
+    /// Seams drawn after the children (1 logical px, `edge.seam`).
+    pub seams: Seams,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     /// Computed by layout, logical px.
@@ -184,6 +244,7 @@ impl Node {
             numeric: None,
             flags: Flags::default(),
             actions: Vec::new(),
+            seams: Seams::default(),
             parent: None,
             children: Vec::new(),
             bounds: Rect::default(),
@@ -221,6 +282,22 @@ impl Node {
     }
     pub fn flags(mut self, f: impl FnOnce(&mut Flags)) -> Self {
         f(&mut self.flags);
+        self
+    }
+    /// Adds a seam on `side` (hairline rule, geom.rs Scale::hairline).
+    pub fn seam(mut self, side: Side) -> Self {
+        self.seams = self.seams.with(side);
+        self
+    }
+    /// Disabled with a reason (B6): the node keeps its actions, so a release on it is reported, and its value carries
+    /// the reason code (`not_implemented_yet`) when it has no value of its own.
+    pub fn reason(mut self, reason: Option<&str>) -> Self {
+        if let Some(r) = reason {
+            self.flags.disabled = true;
+            if self.value.is_none() {
+                self.value = Some(r.to_owned());
+            }
+        }
         self
     }
     pub fn interactive(&self) -> bool {

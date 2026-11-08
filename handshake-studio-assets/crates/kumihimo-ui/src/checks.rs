@@ -1,6 +1,7 @@
 //! Tree-method acceptance checks of gui-design/acceptance-checks.json that need no screenshot, so tests, `gui.tree`
 //! and validators run the same code: AC-GEOM-02 (no overlap between interactive controls), AC-GEOM-03 (shared physical
-//! edges), AC-TEXT-01 (no clipped label), AC-TEXT-03 (text floor).
+//! edges), AC-TEXT-01 (no clipped label), AC-TEXT-03 (text floor), AC-GEOM-01 (the frame's regions partition the
+//! window).
 use crate::geom::{Rect, Scale};
 use crate::text::Text;
 use crate::tree::{NodeId, Paint, Tree};
@@ -96,4 +97,22 @@ pub fn edge_gaps(rects: &[Rect], scale: Scale) -> Vec<(usize, i32)> {
         }
     }
     out
+}
+
+/// Why a set of region rects fails to partition a window (AC-GEOM-01), in physical px after [`Scale::snap`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PartitionFault {
+    /// Rect `i` reaches outside the window.
+    Outside(usize),
+    /// Rects `i` and `j` share interior pixels.
+    Overlap(usize, usize),
+    /// Window pixels no rect covers.
+    Uncovered(i64),
+}
+
+/// AC-GEOM-01: the rects, snapped at `scale`, cover `window` exactly and are pairwise disjoint (empty rects are allowed
+/// members; an empty edge is passed as its 6 px seam rect, so it is a member, not a gap). Empty result = a partition.
+pub fn partition(window: Rect, rects: &[Rect], scale: Scale) -> Vec<PartitionFault> {
+    let _ = (window, rects, scale);
+    vec![PartitionFault::Uncovered(-1)]
 }

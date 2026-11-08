@@ -29,6 +29,8 @@ use kumihimo_ui::tokens::{ColorToken, Theme, size};
 use kumihimo_ui::tree::{BuildError, Interaction, Node, Panel, Tree};
 use std::path::{Path, PathBuf};
 
+pub mod frame;
+pub mod preset;
 pub mod view;
 
 pub const VIEWER_ID: &str = "studio.viewer.raster";
@@ -208,6 +210,7 @@ pub struct GuiFrame {
     scale: Scale,
     scale_locked: bool,
     regions: Regions,
+    layout: frame::FrameLayout,
     panels: [Panel; 3],
     state_rev: u64,
     rows: Vec<LayerRow>,
@@ -303,6 +306,7 @@ impl GuiFrame {
             scale,
             scale_locked: scale_milli.is_some(),
             regions: regions(width, height, scale),
+            layout: frame::layout((width, height), scale, &preset::raster_edges()),
             panels: Default::default(),
             state_rev: 0,
             rows: Vec::new(),
@@ -441,6 +445,36 @@ impl GuiFrame {
     }
     pub fn panels(&self) -> [&Panel; 3] {
         [&self.panels[VIEWPORT], &self.panels[DOCK], &self.panels[STATUS]]
+    }
+    /// The frame layout (SMB-GUI-FRAME-1).
+    pub fn layout(&self) -> &frame::FrameLayout {
+        &self.layout
+    }
+    /// The face tool id of the active rail slot (studio.tool.active).
+    pub fn tool_active(&self) -> &str {
+        ""
+    }
+    /// The value of studio.dock.state.
+    pub fn dock_state(&self) -> String {
+        String::new()
+    }
+    /// The active tab's panel id of group `group_id`.
+    pub fn active_tab(&self, group_id: &str) -> Option<&str> {
+        let _ = group_id;
+        None
+    }
+    /// Static outcomes (`frame.static`, not_implemented_yet) so far.
+    pub fn statics(&self) -> u64 {
+        0
+    }
+    /// The panel whose tree holds `author_id`.
+    pub fn panel_of(&self, author_id: &str) -> Option<&Panel> {
+        self.panels.iter().find(|p| p.tree().find(author_id).is_some())
+    }
+    /// The name the frame shows for the document (the opened file's by default); hostile-name tests feed others.
+    pub fn set_file_name(&mut self, name: &str) {
+        self.file_name = name.to_owned();
+        self.bump();
     }
     pub fn node(&self, author_id: &str) -> Option<&Node> {
         self.panels.iter().find_map(|p| p.tree().find(author_id).map(|id| p.tree().get(id)))

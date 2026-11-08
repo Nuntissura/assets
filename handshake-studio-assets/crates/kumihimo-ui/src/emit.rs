@@ -175,6 +175,8 @@ fn node(tree: &Tree, id: NodeId, ui: &Interaction, theme: Theme, text: &mut Text
             }
             list.push(Prim::RRect { rect: b, radius: radius::R0_DOCKED, fill: Rgba8::TRANSPARENT, border: Some(Border { width: 1.0, color: c(ColorToken::EdgeSubtle, theme) }) });
         }
+        // SMB-GUI-FRAME-1 paints (skeleton: emitted from item 2).
+        Paint::Ruler { .. } | Paint::Round { .. } | Paint::TintedIcon { .. } => {}
     }
     if n.flags.clip {
         list.push(Prim::PushScissor(b));
