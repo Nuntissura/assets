@@ -396,6 +396,10 @@ fn effect_state_past_the_aggregate_budget_is_refused_before_the_graph_builds() {
     let e = v.open_mixer("seq-main", RATE, 960, sources(), Arc::new(Ext)).unwrap_err();
     assert!(e.contains("effect_state_over_budget"), "{e}");
     assert!(v.mixer_json()["error"].as_str().is_some_and(|t| t.contains("effect_state_over_budget")), "{}", v.mixer_json());
+    // Gap ruling 1: every builder of the bus graph holds the same budget (here the document's bus
+    // stream, the path of playback, mixdown and stems).
+    let refused = v.bus_stream("seq-main", RATE, 480, sources(), &Ext).err().expect("refused");
+    assert!(refused.contains("limit_exceeded"), "{refused}");
     // 64 + 5 fit (about 265 MB); a sixth delay on the bus would pass the budget: refused, no step.
     let (_dir, mut w) = session("budget-edit");
     w.set_audio_routing(&routing(5)).unwrap();
@@ -404,6 +408,45 @@ fn effect_state_past_the_aggregate_budget_is_refused_before_the_graph_builds() {
     let e = w.mixer_edit(MixerEdit::AddEffect { bus: Some(id(3)), instance: delay.to_preset_instance("fx-200"), at: None }).unwrap_err();
     assert!(e.contains("effect_state_over_budget"), "{e}");
     assert_eq!(steps(&w), before);
+}
+
+/// Gap ruling 2: the mixdown's repair replay (the stored waveform edit list of a clip source) records
+/// a recomputed noise print the same way the editor does: one op record with one observe frame, and
+/// a status line.
+#[test]
+fn the_mixdown_repair_replay_records_a_recomputed_noise_print() {
+    use hsk_studio_harness::view::waveform::{NoiseReduceParams, WaveformDocument, WaveformOp};
+    use hsk_studio_harness::{Harness, References, Selection, asset_local_test_context};
+    let (dir, mut v) = session("repair-record");
+    v.set_export_audio(sources(), Arc::new(Ext), RATE).unwrap();
+    v.open_waveform_from_clip("SCLP-019abcde-0000-7000-8000-000000000001").unwrap();
+    let all = |a: u64, b: u64| WaveSelection { start: a, end: b, channels: score::ALL_CHANNELS };
+    let params = NoiseReduceParams { fft_size: 1024, reduction: score::NoiseReductionParams::default() };
+    v.waveform_edit(WaveformEdit::NoiseReduce { selection: all(0, 20_000), print: all(0, 12_000), params }).unwrap();
+    let saved = dir.join("repair.handshake");
+    v.save(&saved, false).unwrap();
+    let mut doc = WaveformDocument::parse(v.run().document_entry("waveform_edit").unwrap()).unwrap();
+    if let WaveformOp::NoiseReduce { print_digest, .. } = &mut doc.ops[0] {
+        *print_digest = "0".repeat(64);
+    }
+    let token = CancellationToken::default();
+    let h = Harness::new(Selection { providers: Vec::new(), references: References::TrustAll }).unwrap();
+    let forced = dir.join("repair-forced.handshake");
+    {
+        let mut run = h.run(asset_local_test_context(), &token);
+        assert!(run.open_path(&saved));
+        run.set_document_entry("waveform_edit", Some(doc.to_bytes())).unwrap();
+        assert!(run.save_to(&forced));
+    }
+    let mut x = Viewer::new(Prefer::Cpu);
+    x.open(&forced).unwrap();
+    x.set_export_audio(sources(), Arc::new(Ext), RATE).unwrap();
+    let before = x.run().ops().len();
+    x.export_sequence_mix("seq-main", MixFormat::WavFloat, &dir.join("print.wav"), false).unwrap();
+    let records: Vec<_> = x.run().ops()[before..].iter().filter(|o| o["op"] == "waveform_noise_print_recomputed").cloned().collect();
+    assert_eq!(records.len(), 1, "{:?}", x.run().ops());
+    assert_eq!(records[0]["observe"]["frames"], 1, "{}", records[0]);
+    assert_eq!(records[0]["detail"]["stored_digest"], "0".repeat(64), "{}", records[0]);
 }
 
 #[test]
