@@ -23,8 +23,10 @@
 //! created with `create_new`; an item removes only temps it created itself, on every failure and cancel.
 //! An output or sidecar path that is a directory is refused before the first frame, and an existing
 //! output or sidecar without `overwrite` is refused before the first frame and again right before the
-//! renames. Publish order: the media is renamed over the output first, then the sidecar over
-//! `<output>.vtt`; an existing file is replaced by the rename itself, never deleted first. On failure or
+//! renames. Publish order: the media is published at the output first, then the sidecar at
+//! `<output>.vtt`; with `overwrite` an existing file is replaced by the rename itself, never deleted first;
+//! without it a hard link publishes only where no entry exists, atomically (a rename after the re-check
+//! where the file system has no hard links). On failure or
 //! cancel before the media rename nothing is published and the output path is untouched; a failure after
 //! it (the sidecar rename, which no check can pre-empt) gives a Failed receipt whose
 //! [`ExportReceipt::published_media`] is true and whose media facts (bytes, SHA-256, verified) describe the
@@ -867,7 +869,8 @@ fn run_item(
     receipt.frames_encoded = run.frames_encoded;
     receipt.audio_frames = run.audio_written;
     receipt.audio_clipped = run.clipped;
-    // Temps this item created and did not publish; never a path another item may own.
+    // Temps this item created and did not rename (a hard-linked temp is only a second name of the published
+    // file, see `publish`); never a path another item may own.
     for temp in run.temps.drain(..) {
         let _ = std::fs::remove_file(&temp);
     }
@@ -1227,17 +1230,44 @@ fn execute(
     if let Some((_, side)) = sidecar {
         check_sidecar_path(side, job.overwrite)?;
     }
-    // Media first, then the sidecar; the rename replaces an existing file itself (no delete first).
-    std::fs::rename(temp, &job.output)?;
-    run.temps.retain(|t| t != temp);
+    // Media first, then the sidecar (`publish`: no delete first, no replace without `overwrite`).
+    if !publish(temp, &job.output, job.overwrite, "export-output-exists")? {
+        run.temps.retain(|t| t != temp);
+    }
     let published = (mux, bytes, sha, verified);
     run.published = Some(published.clone());
     if let (Some((_, side)), Some(side_temp)) = (sidecar, side_temp) {
-        std::fs::rename(&side_temp, side)?;
-        run.temps.retain(|t| t != &side_temp);
+        if !publish(&side_temp, side, job.overwrite, "export-sidecar-exists")? {
+            run.temps.retain(|t| t != &side_temp);
+        }
     }
     run.published = None;
     Ok(published)
+}
+
+/// Publishes `temp` at `target` (review F3, STU-IO-162 "never by racing"). With `overwrite` the rename
+/// replaces an existing file itself (no delete first). Without it, `std::fs::hard_link` creates the target
+/// only if no entry is there, atomically: an existing entry is `exists_code`, and nothing is replaced. When
+/// the link fails for another reason (FAT, exFAT, ReFS and some shares have no hard links; the error code is
+/// not documented, so every other error takes this path) the exists check and the rename remain, which
+/// narrows but does not close a race with another writer. Returns true when `temp` is still a name of the
+/// published file (the hard link): the caller keeps it among the item's temps, whose cleanup removes it.
+fn publish(temp: &Path, target: &Path, overwrite: bool, exists_code: &'static str) -> Result<bool, ReelError> {
+    if overwrite {
+        std::fs::rename(temp, target)?;
+        return Ok(false);
+    }
+    match std::fs::hard_link(temp, target) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(unsupported(exists_code)),
+        Err(_) => {
+            if target.exists() {
+                return Err(unsupported(exists_code));
+            }
+            std::fs::rename(temp, target)?;
+            Ok(false)
+        }
+    }
 }
 
 /// Most samples a post-write re-index may expand (MP4 ipcm/fpcm audio is one table entry per audio
@@ -1358,5 +1388,37 @@ mod tests {
         // MP4 22 (audio-only 4 layouts at 48000; av1/h264/hevc with no audio at both rates or a layout at
         // 48000), MOV 48 (audio-only 4 layouts x 2 rates; 4 codecs x (no audio x 2 + 4 layouts x 2)).
         assert_eq!(carried, 70);
+    }
+
+    /// Review F3: without `overwrite`, `publish` never replaces an entry that is at the target when it runs
+    /// (the window the exists re-check leaves open); it creates the target when none is there and keeps the
+    /// temp as a second name for the item's cleanup. With `overwrite` it replaces by the rename.
+    #[test]
+    fn publish_without_overwrite_never_replaces_an_existing_entry() {
+        let d = std::env::temp_dir().join(format!("reel-publish-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (temp, target) = (d.join(".t.partial"), d.join("t.mov"));
+        std::fs::write(&temp, b"new").unwrap();
+        std::fs::write(&target, b"other writer").unwrap();
+        let err = super::publish(&temp, &target, false, "export-output-exists").unwrap_err();
+        assert_eq!(err, crate::error::ReelError::Unsupported { what: "export-output-exists" });
+        assert_eq!(std::fs::read(&target).unwrap(), b"other writer");
+        assert_eq!(std::fs::read(&temp).unwrap(), b"new", "the temp stays for the item's cleanup");
+        std::fs::remove_file(&target).unwrap();
+        let linked = super::publish(&temp, &target, false, "export-output-exists").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert_eq!(linked, temp.exists(), "true exactly when the temp is still a name (hard link)");
+        if linked {
+            std::fs::remove_file(&temp).unwrap();
+            assert_eq!(std::fs::read(&target).unwrap(), b"new", "removing the temp name keeps the output");
+        } else {
+            println!("NOT_PROVEN: the temp dir's file system made no hard link; the fallback rename ran");
+        }
+        std::fs::write(&temp, b"newer").unwrap();
+        assert!(!super::publish(&temp, &target, true, "export-output-exists").unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"newer");
+        assert!(!temp.exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
