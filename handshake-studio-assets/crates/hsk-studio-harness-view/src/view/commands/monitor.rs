@@ -7,7 +7,7 @@
 
 use super::super::Viewer;
 use super::super::monitor::MonitorFail;
-use super::super::source_monitor::{MonitorKey, MonitorTarget, SourceEdit};
+use super::super::source_monitor::{MonitorKey, MonitorTarget, SourceEdit, SourceMonitor};
 use super::decode::{Fields, invalid};
 use super::CommandRefusal;
 use hsk_studio_pulse::{AssemblyMode, FourPointFit};
@@ -47,7 +47,7 @@ fn key_of(f: &Fields<'_>) -> Result<MonitorKey, CommandRefusal> {
         }
         u8::try_from(f.unsigned("frames")?).ok().filter(|n| *n > 0).ok_or_else(|| invalid("frames", "1..=255"))
     };
-    Ok(match f.text("key")?.as_str() {
+    let key = match f.text("key")?.as_str() {
         "shuttle_left" => MonitorKey::ShuttleLeft,
         "shuttle_stop" => MonitorKey::ShuttleStop,
         "shuttle_right" => MonitorKey::ShuttleRight,
@@ -61,6 +61,46 @@ fn key_of(f: &Fields<'_>) -> Result<MonitorKey, CommandRefusal> {
         "insert" => MonitorKey::Insert,
         "overwrite" => MonitorKey::Overwrite,
         _ => return Err(invalid("key", "shuttle_left|shuttle_stop|shuttle_right|slow_left|slow_right|toggle_play|step_back|step_forward|mark_in|mark_out|insert|overwrite")),
+    };
+    // A step count on a key that takes none is refused, never dropped (review F7 on 2bbe2207).
+    if f.has("frames") && !matches!(key, MonitorKey::StepBack(_) | MonitorKey::StepForward(_)) {
+        return Err(CommandRefusal::new("parameter_conflict", json!({"keys": ["frames", "key"]})));
+    }
+    Ok(key)
+}
+
+/// Both marks as one pair (review F3 on 2bbe2207): `in > out` is refused first; then the given marks
+/// are set over cleared ones (one mark alone is checked against the other, as the engine does), and
+/// any refusal puts the previous marks back.
+fn set_marks(s: &mut SourceMonitor, marks: (Option<u64>, Option<u64>)) -> Result<(), CommandRefusal> {
+    if let (Some(i), Some(o)) = marks
+        && o < i
+    {
+        return Err(CommandRefusal::new("out_before_in", json!({"message": format!("out {o} before in {i}")})));
+    }
+    let prev = s.marks();
+    let apply = |s: &mut SourceMonitor| -> Result<(), MonitorFail> {
+        if marks.0.is_some() && marks.1.is_some() {
+            s.clear_marks();
+        }
+        if let Some(i) = marks.0 {
+            s.mark_in(i)?;
+        }
+        if let Some(o) = marks.1 {
+            s.mark_out(o)?;
+        }
+        Ok(())
+    };
+    apply(s).map_err(|e| {
+        // The previous marks were a valid pair, so setting them again cannot be refused.
+        s.clear_marks();
+        if let Some(i) = prev.0 {
+            let _ = s.mark_in(i);
+        }
+        if let Some(o) = prev.1 {
+            let _ = s.mark_out(o);
+        }
+        refusal(e)
     })
 }
 
@@ -78,7 +118,11 @@ fn media(v: &mut Viewer, id: &str, f: &Fields<'_>) -> Result<Value, CommandRefus
         return Ok(json!({"source": source_id(&source), "monitors": monitors(v)}));
     }
     let names = f.list("files")?;
-    if names.is_empty() || names.len() > MAX_MEDIA_FILES {
+    // Nothing to bind has its own code (review F6 on 2bbe2207).
+    if names.is_empty() {
+        return Err(CommandRefusal::new("media_files_empty", json!({"key": "files", "expected": "1..=64 files"})));
+    }
+    if names.len() > MAX_MEDIA_FILES {
         return Err(CommandRefusal::new("media_too_many", json!({"files": names.len(), "limit": MAX_MEDIA_FILES})));
     }
     let mut files = Vec::with_capacity(names.len());
@@ -119,14 +163,7 @@ pub(super) fn run(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, Comm
             let s = v.source_monitor_mut().ok_or_else(|| CommandRefusal::new("no_source_monitor", json!({"hint": "monitor.open_source_media first"})))?;
             match marks {
                 (None, None) => s.clear_marks(),
-                (i, o) => {
-                    if let Some(i) = i {
-                        s.mark_in(i).map_err(refusal)?;
-                    }
-                    if let Some(o) = o {
-                        s.mark_out(o).map_err(refusal)?;
-                    }
-                }
+                given => set_marks(s, given)?,
             }
         }
         "monitor.key" => {

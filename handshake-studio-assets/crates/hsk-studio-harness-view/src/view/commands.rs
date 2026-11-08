@@ -71,8 +71,9 @@ fn method_refusal(viewer: &Viewer, before: usize, message: String) -> CommandRef
 }
 
 /// An engine's refusal text as a stable code (lane SMB-DRIVE-TYPED-2): the run's newest record's when
-/// the method reached the run, else the text's own leading code (`lane_unavailable track_volume`,
-/// `mixer: rate_off_tick_grid`), else `command_refused`; the text stays in `detail.message`.
+/// the method reached the run, else the text's own code (`lane_unavailable track_volume`,
+/// `mixer: rate_off_tick_grid`, `fig_import: decode refused not_fig`), else `command_refused`; the
+/// text stays in `detail.message`.
 fn engine_refusal(viewer: &Viewer, before: usize, message: String) -> CommandRefusal {
     let mut refusal = method_refusal(viewer, before, message);
     if refusal.code == "command_refused"
@@ -83,15 +84,31 @@ fn engine_refusal(viewer: &Viewer, before: usize, message: String) -> CommandRef
     refusal
 }
 
-/// The snake_case code a message starts with, after at most one `<engine>: ` prefix.
+/// Engine prefixes holding an underscore: the text after them is the message, not a code
+/// (`fig_import: ...`); any other `<snake_case>: ` prefix is itself the code.
+const ENGINE_PREFIXES: &[&str] = &["fig_import"];
+
+/// The snake_case code a message names, after at most one `<engine>: ` prefix: its leading token, or
+/// the token after `refused ` (`fig_import: decode refused not_fig`). A leading token followed by
+/// ` refused` names the op that was refused (`mixer: mixer_master_volume refused: ...`), not a reason:
+/// `None` (review F1 on 2bbe2207).
 fn leading_code(message: &str) -> Option<String> {
     let rest = match message.split_once(": ") {
-        Some((engine, rest)) if engine.bytes().all(|b| b.is_ascii_lowercase()) => rest,
+        Some((engine, rest)) if engine.bytes().all(|b| b.is_ascii_lowercase()) || ENGINE_PREFIXES.contains(&engine) => rest,
         _ => message,
     };
+    let coded = |token: &str| token.len() <= 64 && token.contains('_') && token.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
     let token = rest.split([' ', ':', '(']).next()?;
-    let coded = token.len() <= 64 && token.contains('_') && token.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
-    coded.then(|| token.to_string())
+    // The token ends at an ASCII delimiter or the end, so the slice after it is on a char boundary.
+    if rest.get(token.len()..).is_some_and(|after| after.starts_with(" refused")) {
+        return None;
+    }
+    if coded(token) {
+        return Some(token.to_string());
+    }
+    let (_, after) = rest.split_once("refused ")?;
+    let code = after.split([' ', ':', '(', ')']).next()?;
+    coded(code).then(|| code.to_string())
 }
 
 /// Every given key is declared, every required key is given.

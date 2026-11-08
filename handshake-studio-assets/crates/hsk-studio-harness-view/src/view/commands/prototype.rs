@@ -119,6 +119,10 @@ pub(super) fn run(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, Comm
             r
         }
         "prototype.capture_frame" => {
+            // `overwrite` applies to a written file only: refused without a path (review F7 on 2bbe2207).
+            if f.has("overwrite") && !f.has("path") {
+                return Err(CommandRefusal::new("parameter_conflict", json!({"keys": ["overwrite", "path"]})));
+            }
             let screen = play.render().map_err(refusal)?;
             if f.has("path") {
                 write_png(&screen, &f.path("path")?, f.flag_or("overwrite", false)?)?;

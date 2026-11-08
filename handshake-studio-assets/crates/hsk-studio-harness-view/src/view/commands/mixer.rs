@@ -101,7 +101,13 @@ pub(super) mod enabled {
             let sequence = f.text("sequence_id")?;
             let sound = v.sequence_sound().map_err(monitor_refusal)?;
             let rate = sound.rate();
-            v.open_mixer(&sequence, rate, block, sound.clone(), Arc::new(sound)).map_err(|e| engine_refusal(v, before, e))?;
+            // A refused open keeps the mixer that was open (review F2 on 2bbe2207).
+            let open = v.mixer.take();
+            if let Err(e) = v.open_mixer(&sequence, rate, block, sound.clone(), Arc::new(sound)) {
+                let refusal = engine_refusal(v, before, e);
+                v.mixer = open;
+                return Err(refusal);
+            }
             return Ok(v.mixer_json());
         }
         if v.mixer.is_none() {

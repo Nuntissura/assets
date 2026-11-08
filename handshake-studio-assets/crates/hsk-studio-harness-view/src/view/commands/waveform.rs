@@ -33,6 +33,11 @@ mod enabled {
         ("rectangular", SpectralWindow::Rectangular),
     ];
 
+    /// Declared keys that do not apply together.
+    fn conflict(keys: &[&str]) -> CommandRefusal {
+        CommandRefusal::new("parameter_conflict", json!({"keys": keys}))
+    }
+
     fn channels(f: &Fields<'_>) -> Result<u32, CommandRefusal> {
         if f.has("channels") { f.count("channels") } else { Ok(ALL_CHANNELS) }
     }
@@ -97,6 +102,8 @@ mod enabled {
             "waveform.state" => Value::Null,
             "waveform.select" => {
                 let wanted = match (f.has("start"), f.has("end")) {
+                    // Channels select nothing without a range: refused, never dropped (review F7).
+                    (false, false) if f.has("channels") => return Err(conflict(&["channels", "start"])),
                     (false, false) => None,
                     (true, true) => Some(selection(f)?),
                     (false, true) => return Err(missing("start")),
@@ -148,11 +155,21 @@ mod enabled {
                     }
                 }
             }
+            // A floor frequency on a linear scale is refused, never dropped (review F7).
+            if min_hz.is_some() && matches!(p.scale, FrequencyScale::Linear) {
+                return Err(conflict(&["min_hz", "scale"]));
+            }
             if f.has("rows") {
                 p.rows = f.index("rows")?;
             }
             p.floor_db = f.number_or("floor_db", p.floor_db)?;
-            v.open_spectral_display(p).map_err(|e| engine_refusal(v, before, e))?;
+            // A refused open keeps the display that was open, its parameters and region (review F2).
+            let open = v.spectral.take();
+            if let Err(e) = v.open_spectral_display(p) {
+                let refusal = engine_refusal(v, before, e);
+                v.spectral = open;
+                return Err(refusal);
+            }
             return Ok(v.spectral_json());
         }
         if v.spectral.is_none() {
@@ -188,6 +205,10 @@ mod enabled {
                     "attenuate" => SpectralMaskOp::Attenuate { gain_db: f.number("gain_db")? },
                     _ => return Err(invalid("op", "identity|remove|heal|attenuate")),
                 };
+                // Only attenuate takes a gain (review F7).
+                if f.has("gain_db") && !matches!(op, SpectralMaskOp::Attenuate { .. }) {
+                    return Err(conflict(&["gain_db", "op"]));
+                }
                 if v.spectral_json()["region"].is_null() {
                     return Err(CommandRefusal::new("spectral_no_selection", json!({"hint": "spectral.set_region first"})));
                 }
