@@ -18,8 +18,9 @@
 //! a baseline without a gap (still as the first line); split sub-columns narrow the same way (a
 //! sub-column left without width is `invalid_geometry`). `last_line_indent` narrows the last line
 //! from the right after breaking, with one bounded re-break when the narrowed last line does not
-//! fit (positive values, Latin paragraphs); a negative value widens the last line at the set stage
-//! only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
+//! fit (positive values, Latin paragraphs, a narrowed width that holds the line's widest box; else
+//! the breaks stand and the line is overfull); a negative value widens the last line at the set
+//! stage only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
 //! paragraph at a column top takes none (a push past the bottom lands at the next column's top);
 //! `space_between_same_style` zeroes the gap between paragraphs of one style; span and split
 //! paragraphs take the larger of the flow record's and the attribute space; a break sentinel drops
@@ -336,6 +337,16 @@ fn natural_width(p: &ShapedParagraph, items: &[crate::paragraph::Item], breaks: 
         + 0.0
         + if items[b.item].flagged { items[b.item].w } else { 0.0 }
         + head.map_or(0.0, |h| h.delta)
+}
+
+/// Width of the widest box (word or hyphenation fragment) of line `k` of `breaks`.
+fn widest_box(items: &[crate::paragraph::Item], breaks: &[LineBreak], k: usize) -> f64 {
+    let item_start = if k == 0 { 0 } else { line_start(items, breaks[k - 1].item) };
+    items[item_start..breaks[k].item]
+        .iter()
+        .filter(|it| it.kind == crate::paragraph::Kind::Box)
+        .map(|it| it.w)
+        .fold(0.0, f64::max)
 }
 
 fn baseline_of(cur: &Cursor, first: f64, height: f64, ascent: f64) -> f64 {
@@ -1296,7 +1307,11 @@ fn compose_flow(
                 // known only after breaking; when it does not fit its narrowed width the paragraph is
                 // broken once more with that width narrowed, and the second result stands. Bounded:
                 // one re-break, only for a positive indent, a Latin paragraph and a line that fitted
-                // before; a narrowed width without room is left to the set stage (overfull).
+                // before, and only when the narrowed width holds the line's widest box (word or
+                // hyphenation fragment): a narrower width cannot be met by any break, and re-breaking
+                // there moved the Adobe paragraph composer's refusal point and cost Knuth-Plass
+                // hundreds of times its pass (lead ruling 2026-11-08, lane notes). Otherwise the
+                // breaks stand and the set stage marks the line overfull.
                 if g.last_line_indent_pt > 0.0
                     && cjk_items.is_none()
                     && let Some(l) = b.len().checked_sub(1)
@@ -1304,7 +1319,7 @@ fn compose_flow(
                     && !b[l].overfull
                 {
                     let narrowed = sum(slots[l].width_pt, -g.last_line_indent_pt)?;
-                    if narrowed > EPS && natural_width(p, &items, &b, l) > narrowed + EPS {
+                    if narrowed > EPS && natural_width(p, &items, &b, l) > narrowed + EPS && widest_box(&items, &b, l) <= narrowed + EPS {
                         let width = |line: usize| if line == l { narrowed } else { width(line) };
                         b = break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?;
                     }

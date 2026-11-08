@@ -456,8 +456,18 @@ pub fn write_cross_reference_with_styles(
     xref_id: &str,
     text: &str,
 ) -> Result<StudioTextStory, crate::LayoutError> {
-    let _ = styles;
-    write_cross_reference(records, source, resolved_text, xref_id, text)
+    let x = records
+        .cross_references
+        .iter()
+        .find(|x| x.xref_id == xref_id && x.source_story_id == source.story_id)
+        .ok_or(crate::LayoutError::InvalidInput)?;
+    let (start, end) = (x.source_start, x.source_end);
+    let edited = crate::textflow::replace_story_text(source, resolved_text, start, end, text)?;
+    crate::textflow::shift_paragraph_records(records, styles, &edited, start, end, text.len() as u64)?;
+    if let Some(x) = records.cross_references.iter_mut().find(|x| x.xref_id == xref_id) {
+        x.resolved_text = Some(text.to_owned());
+    }
+    Ok(edited)
 }
 
 /// Writes a resolved reference into its source story: the source range is replaced by `text`
