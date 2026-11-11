@@ -472,6 +472,57 @@ impl Viewer {
 mod tests {
     use super::*;
 
+    /// A viewer under a test context of its own (no asset-local test host needed) and a 16 x 8 PNG.
+    fn viewer_and_picture(label: &str) -> (Viewer, std::path::PathBuf) {
+        use hsk_studio_accord::{ActorContext, ClientSessionId, TransientCorrelation};
+        let actor = ActorContext::new("layout-place-unit", "principal", "owner", "owner-principal", "space", "session").unwrap();
+        let context = hsk_studio_harness_core::RunContext::new(actor, ClientSessionId::parse("layout-place-unit").unwrap(), std::sync::Arc::new(TransientCorrelation::new()));
+        let mut v = Viewer::with_context(super::super::super::render::Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), context);
+        use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
+        v.new_document(&NewDocument::new(DocumentProfile::Layout, Some((200.0, 200.0))), None).unwrap();
+        let dir = std::env::temp_dir().join(format!("hsk-layout-place-unit-{}-{label}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let samples = hsk_studio_interop_raster::Samples::U8((0..16 * 8).flat_map(|_| [200u8, 30, 30]).collect());
+        let png = hsk_studio_interop_raster::encode_png(&hsk_studio_interop_raster::PngEncodeRequest {
+            width: 16,
+            height: 8,
+            colour: hsk_studio_interop_raster::Colour::Rgb,
+            samples: &samples,
+            icc: None,
+            compression: hsk_studio_interop_raster::PngCompression::Fast,
+        })
+        .unwrap();
+        let path = dir.join("hero.png");
+        std::fs::write(&path, png).unwrap();
+        (v, path)
+    }
+
+    /// The brief's hostile case "a canceled token during decode and during export": typed `canceled`, nothing
+    /// changed, nothing written; the export gate checks the token between frames (review F1 of fbf7f0cd).
+    #[test]
+    fn a_canceled_token_refuses_the_decode_and_the_export_and_changes_nothing() {
+        let (mut v, path) = viewer_and_picture("cancel");
+        let frame = FrameOptions { page: Some("page-1".into()), x: Some(10.0), y: Some(10.0), width: Some(32.0), height: Some(16.0), ..FrameOptions::default() };
+        let opts = PlaceOptions { frame, ..PlaceOptions::default() };
+        v.place_asset(&path, PlacementKind::Embedded, &opts).unwrap_or_else(|e| panic!("{e}"));
+        let state = |v: &Viewer| {
+            let doc = serde_json::to_value(v.run.snapshot().unwrap().document()).unwrap();
+            (doc, v.run.document_entry(LAYOUT_RECORDS_ENTRY).map(<[u8]>::to_vec), v.run.document_entry(ENTRY).map(<[u8]>::to_vec), v.run.history()["undo"].clone())
+        };
+        let frames = v.graphic_frames_now();
+        assert_eq!(frames.len(), 1);
+        let before = state(&v);
+        v.cancel.cancel();
+        assert_eq!(v.place_asset(&path, PlacementKind::Embedded, &opts).unwrap_err().code, "canceled", "the decode");
+        let doc = v.run.snapshot().unwrap().document().clone();
+        assert_eq!(v.layout_pdf_placements(&doc, &frames).err().map(|e| e.0), Some("canceled"), "the export gate");
+        let pdf = path.with_extension("pdf");
+        assert_eq!(v.export_layout_pdf(&pdf, false, &super::super::super::layout_export::LayoutPdfSettings::default()).unwrap_err().code, "canceled", "the export job");
+        assert!(!pdf.exists(), "nothing written");
+        assert_eq!(state(&v), before, "nothing changed");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[test]
     fn a_stated_tiff_resolution_is_read_and_others_take_none() {
         let r = |x: Value, y: Value, unit: u64| json!({"tiff": {"page": {"resolution": {"x": x, "y": y, "unit": unit}}}});

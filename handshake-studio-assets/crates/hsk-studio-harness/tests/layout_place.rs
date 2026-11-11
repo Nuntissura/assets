@@ -399,6 +399,154 @@ fn a_stated_source_resolution_sets_the_content_size() {
     assert_eq!((placed["content_width_pt"].as_f64(), placed["content_height_pt"].as_f64(), placed["ppi_source"].as_str()), (Some(32.0), Some(24.0), Some("decoder")), "{placed}");
 }
 
+/// The lead's rule for deleted objects (rulings 2026-11-08, `common`): deleting a picture's layer drops its
+/// graphic frame record in the same undo step; undo restores both, and the next layout edit is not refused
+/// `layout_records_stale`.
+#[test]
+fn deleting_a_frame_layer_drops_its_frame_record_in_one_undo_step() {
+    let s = Scratch::new("layout-place-delete");
+    let mut v = layout(1);
+    let hero = write(&s.0.join("hero.png"), &png(64, 48, RED));
+    let layer = place(&mut v, &hero, "embedded", "page-1", [10.0, 10.0, 64.0, 48.0], json!({})).unwrap_or_else(|e| panic!("{e:?}"))["layer_id"].as_str().unwrap().to_owned();
+    let placed = state(&v);
+    let steps = undo_labels(&v).len();
+    v.delete_layer(&layer).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(undo_labels(&v).len(), steps + 1, "one step: {:?}", undo_labels(&v));
+    assert_eq!((layers(&v), frames(&v).len()), (0, 0), "the layer and its frame record are gone together");
+    v.undo().unwrap();
+    assert_eq!((layers(&v), frames(&v).len()), (1, 1), "undo restores both");
+    assert_eq!((state(&v).1, state(&v).2), (placed.1.clone(), placed.2.clone()), "both entries as before the delete");
+    v.redo().unwrap();
+    assert_eq!((layers(&v), frames(&v).len()), (0, 0), "redo deletes both again");
+    ok(&mut v, "layout.draw_frame", json!({"page_id": "page-1", "x": 300.0, "y": 300.0, "w": 100.0, "h": 40.0}));
+    let r = export(&mut v, &s.0.join("deleted.pdf")).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!((r["tiles_drawn"].as_u64(), r["placements"].as_array().map(Vec::len)), (Some(0), Some(0)), "{r}");
+}
+
+/// Update All Links of a source whose pixel size changed (ruling 2026-11-08): each of its frames takes the new
+/// content size and its stored fit again (frame to content resizes the frame at its anchor), tiles, frames and
+/// entry as ONE step; a frame that cannot refit refuses typed in `refused` and its source stays modified, the
+/// other source updates.
+#[test]
+fn update_all_links_refits_resized_sources_and_refuses_a_frame_that_cannot_refit() {
+    let s = Scratch::new("layout-place-resized");
+    let mut v = saved_layout(&s);
+    let a = write(&s.0.join("a.png"), &png(64, 48, RED));
+    let b = write(&s.0.join("b.png"), &png(64, 48, BLUE));
+    let pa = place(&mut v, &a, "linked", "page-1", [100.0, 200.0, 100.0, 96.0], json!({"fit": "proportionally"})).unwrap_or_else(|e| panic!("{e:?}"));
+    let pb = place(&mut v, &b, "linked", "page-1", [300.0, 200.0, 64.0, 48.0], json!({"fit": "proportionally"})).unwrap_or_else(|e| panic!("{e:?}"));
+    let (la, lb) = (pa["layer_id"].as_str().unwrap().to_owned(), pb["layer_id"].as_str().unwrap().to_owned());
+    ok(&mut v, "asset.fit", json!({"layer": la, "fit": "frame_to_content"}));
+    ok(&mut v, "asset.fit", json!({"layer": lb, "fit": "proportionally", "crop_left": 20.0, "crop_right": 20.0}));
+    let frame_of = |v: &Viewer, layer: &str| frames(v).into_iter().find(|f| f["layer_id"] == layer).unwrap();
+    let n = |f: &Value, k: &str| f["bounds"][k]["value"].as_f64().unwrap();
+    let before = frame_of(&v, la.as_str());
+    assert_eq!((n(&before, "x"), n(&before, "y"), n(&before, "width"), n(&before, "height")), (118.0, 224.0, 64.0, 48.0), "{before}");
+
+    // a doubles its pixels; b halves them, so its 40 pt crop empties the 32 pt content box.
+    write(&a, &png(128, 96, RED));
+    write(&b, &png(32, 24, BLUE));
+    let steps = undo_labels(&v).len();
+    let r = ok(&mut v, "asset.update_all_modified", json!({}));
+    assert_eq!(r["updated"], json!([pa["source_id"]]), "{r}");
+    let refused = r["refused"].as_array().cloned().unwrap_or_default();
+    assert_eq!(refused.len(), 1, "{r}");
+    assert_eq!((refused[0]["layer_id"].as_str(), refused[0]["code"].as_str(), refused[0]["source_id"].clone()), (Some(lb.as_str()), Some("crop_empties_content"), pb["source_id"].clone()), "{r}");
+    assert_eq!(undo_labels(&v).len(), steps + 1, "one step: {:?}", undo_labels(&v));
+    let after = frame_of(&v, la.as_str());
+    assert_eq!((after["content_width"]["value"].as_f64(), after["content_height"]["value"].as_f64()), (Some(128.0), Some(96.0)), "{after}");
+    // Centre anchor: the frame grows about its centre (150, 248) to 128 x 96.
+    assert_eq!((n(&after, "x"), n(&after, "y"), n(&after, "width"), n(&after, "height")), (86.0, 200.0, 128.0, 96.0), "{after}");
+    assert_eq!(frame_of(&v, lb.as_str())["content_width"]["value"].as_f64(), Some(64.0), "the refused frame is unchanged");
+    let rows = ok(&mut v, "asset.list_placements", json!({}))["placements"].as_array().cloned().unwrap();
+    let row = |l: &str| rows.iter().find(|r| r["layer_id"] == l).cloned().unwrap();
+    assert_eq!((row(la.as_str())["link_state"].as_str(), row(lb.as_str())["link_state"].as_str()), (Some("resolved"), Some("modified")), "{rows:?}");
+    // b still fails closed at export.
+    let pdf = s.0.join("resized.pdf");
+    assert_eq!(export(&mut v, &pdf).map_err(|e| e.0), Err("placed_link_modified".to_owned()));
+    assert!(!pdf.exists());
+    v.undo().unwrap();
+    assert_eq!(frame_of(&v, la.as_str()), before, "undo takes back the refit with the update");
+}
+
+/// Review F2 of fbf7f0cd (path approved 2026-11-08): the STU-ASSET-009 link gate runs right after preflight, so
+/// a modified link refuses before the export reads its PDF/X settings or shapes any story.
+#[test]
+fn the_link_gate_refuses_before_the_export_settings_are_read() {
+    let s = Scratch::new("layout-place-gate-order");
+    let mut v = saved_layout(&s);
+    let stall = write(&s.0.join("stall.png"), &png(64, 48, RED));
+    place(&mut v, &stall, "linked", "page-1", [100.0, 200.0, 64.0, 48.0], json!({})).unwrap_or_else(|e| panic!("{e:?}"));
+    write(&stall, &png(64, 48, BLUE));
+    let pdf = s.0.join("x4.pdf");
+    // pdfx.x4_2010 without `created` refuses pdfx_created_required, after the gate.
+    let r = cmd(&mut v, "layout.export_pdf", json!({"path": pdf.to_str().unwrap(), "pdfx": "pdfx.x4_2010"}));
+    assert_eq!(r.map_err(|e| e.0), Err("placed_link_modified".to_owned()));
+    assert!(!pdf.exists());
+}
+
+/// A PNG chunk with its CRC (the test writes hostile but well-formed headers).
+fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut crc = 0xFFFF_FFFFu32;
+    for b in kind.iter().chain(data) {
+        crc ^= u32::from(*b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    let mut out = u32::try_from(data.len()).unwrap().to_be_bytes().to_vec();
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    out.extend_from_slice(&(!crc).to_be_bytes());
+    out
+}
+
+/// The brief's hostile sources (V4-01/02): oversized, truncated, wrong-format and zero-dimension files, a folder
+/// placed or linked, and a link whose file became a folder at export: each a typed refusal that changes nothing.
+#[test]
+fn hostile_sources_refuse_typed_and_change_nothing() {
+    let s = Scratch::new("layout-place-hostile-sources");
+    let mut v = saved_layout(&s);
+    let at = [1.0, 1.0, 10.0, 10.0];
+    let full = png(64, 48, RED);
+    let truncated = write(&s.0.join("truncated.png"), &full[..full.len() / 2]);
+    let wrong = write(&s.0.join("wrong.png"), b"GIF89a this is not a picture Studio places");
+    let mut zero = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = 0u32.to_be_bytes().to_vec();
+    ihdr.extend_from_slice(&48u32.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    zero.extend(chunk(b"IHDR", &ihdr));
+    zero.extend(chunk(b"IEND", &[]));
+    let zero = write(&s.0.join("zero.png"), &zero);
+    let huge = s.0.join("huge.png");
+    std::fs::File::create(&huge).unwrap().set_len(hsk_studio_harness::view::place::MAX_SOURCE_BYTES + 1).unwrap();
+    let folder = s.0.join("folder.png");
+    std::fs::create_dir(&folder).unwrap();
+    let before = state(&v);
+    let cases: [(&Path, &str, &str); 7] = [
+        (truncated.as_path(), "embedded", "truncated"),
+        (wrong.as_path(), "embedded", "format_unrecognised"),
+        (zero.as_path(), "embedded", "corrupt_png"),
+        (huge.as_path(), "embedded", "resource_too_large"),
+        (huge.as_path(), "linked", "resource_too_large"),
+        (folder.as_path(), "embedded", "resource_unreadable"),
+        (folder.as_path(), "linked", "resource_unreadable"),
+    ];
+    for (path, kind, code) in cases {
+        assert_eq!(place(&mut v, path, kind, "page-1", at, json!({})).map_err(|e| e.0), Err(code.to_owned()), "{} {kind}", path.display());
+    }
+    assert_eq!(state(&v), before, "every refusal changed nothing");
+    std::fs::remove_file(&huge).unwrap();
+    // A linked file replaced by a folder: missing at export, nothing written.
+    let pic = write(&s.0.join("pic.png"), &png(8, 8, RED));
+    place(&mut v, &pic, "linked", "page-1", at, json!({})).unwrap_or_else(|e| panic!("{e:?}"));
+    std::fs::remove_file(&pic).unwrap();
+    std::fs::create_dir(&pic).unwrap();
+    let pdf = s.0.join("folder-link.pdf");
+    assert_eq!(export(&mut v, &pdf).map_err(|e| e.0), Err("placed_link_missing".to_owned()));
+    assert!(!pdf.exists());
+}
+
 // ---- the process: no Rust call ------------------------------------------------------------------
 
 #[cfg(not(feature = "desktop"))]

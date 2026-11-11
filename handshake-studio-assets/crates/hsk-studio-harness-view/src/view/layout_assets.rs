@@ -113,3 +113,23 @@ impl PdfAssets for LayoutAssets<'_> {
         (self.working == Some(profile_id)).then_some(WORKING_PROFILE_LINEAR_SRGB)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument, blank_document};
+
+    #[test]
+    fn paint_colours_resolve_no_profile_so_a_layout_without_pictures_keeps_its_bytes() {
+        let doc = blank_document(&NewDocument::new(DocumentProfile::Layout, Some((100.0, 100.0))), "SDOC-019abcde-0000-7000-8000-00000000a002").unwrap();
+        let hsk_studio_folio::ProfileBinding::Assigned(working) = &doc.working_space_rgb else { panic!("a new layout has a working space") };
+        let empty = Assets::new();
+        let assets = LayoutAssets::new(&doc, &[], &[&empty]);
+        assert_eq!(assets.profile(working.as_str()), None, "the working space id resolves no paint profile");
+        assert_eq!(assets.profile("SCPF-019abcde-0000-7000-8000-000000000001"), None);
+        assert!(assets.raster("SLYR-019abcde-0000-7000-8000-000000000001").is_none(), "no frame: no raster");
+        // Without frames the resolver answers what the engine's former `NoAssets` did (no path, raster or
+        // profile), so the lowering of a layout without pictures is the base's.
+        assert!(assets.path("SVPT-019abcde-0000-7000-8000-000000000001").is_none(), "no path");
+    }
+}
