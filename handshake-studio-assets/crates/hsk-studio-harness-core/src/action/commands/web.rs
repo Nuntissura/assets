@@ -5,13 +5,13 @@
 //! file; every referring document rewritten in one receipted transaction) and the recipe's `documents` (`open` |
 //! `site`). No spec command id is verified for the two new rows; they follow this file's `web.*` naming and are
 //! recorded for the command contract. Typed refusals (manual: module `web_commands::web_site`): every site-wide row
-//! `no_site`, `site_locked` (naming the holder), `overloaded`, `canceled`, `stale_revision`, `site_too_many_files`,
-//! `site_too_deep`, `site_too_large`, `site_too_many_references`; the site export also `output_inside_site`,
-//! `entry_document_missing`, `document_unreadable`, `asset_missing`, `asset_denied`; `web.move_file` also
-//! `move_outside_site`, `path_invalid`, `move_target_exists`, `move_case_only`, `move_source_missing`,
-//! `move_reserved_file`, `move_site_record`, `move_kind_changes`, `move_open_package`, `document_unsaved`,
-//! `document_changed_on_disk`, `document_unreadable`, `reference_not_rewritable`, `move_rewrite_unverified`,
-//! `move_failed` (with the receipt).
+//! `no_site`, `site_locked` (naming the holder), `overloaded`, `canceled`, `stale_revision`, `job_resource_invalid`,
+//! `site_too_many_files`, `site_too_deep`, `site_too_large`, `site_too_many_references`; the site export also
+//! `output_inside_site`, `entry_document_missing`, `document_unreadable`, `asset_missing`, `asset_denied`;
+//! `web.move_file` also `move_outside_site`, `path_invalid`, `move_target_exists`, `move_case_only`,
+//! `move_source_missing`, `move_reserved_file`, `move_site_record`, `move_kind_changes`, `move_open_package`,
+//! `document_unsaved`, `document_changed_on_disk`, `document_unreadable`, `reference_not_rewritable`,
+//! `move_rewrite_unverified`, `move_failed` (with the receipt).
 
 use super::super::ValueType;
 use super::{CommandEntry, ParamSpec, entry, p};

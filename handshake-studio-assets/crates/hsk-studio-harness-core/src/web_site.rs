@@ -65,7 +65,10 @@
 //!   with the run's open package document as the resource and its head as the bound revision, as the viewer's other
 //!   exports (`as_export_job`): `overloaded` (`target` `retry_after_ms=N`, `detail.retry_after_ms`), `canceled` and
 //!   `stale_revision` refuse; each settles `completed`, `canceled` or `failed` with its code. With no package open the
-//!   job is resource-less, bounded by the lifecycle's own admission (the port is not asked), as `as_export_job` does.
+//!   job is never resource-less (lead ruling 2026-11-08: a resource-less job would never reach the port): its resource
+//!   is the site's own id, `SDOC-` in the UUIDv7 shape from the SHA-256 of the site's folder (`local_root`, else the
+//!   open document's folder, canonical when it resolves), the same for every job on one site and in every process,
+//!   bound to the web source revision (`job_resource_invalid` if that id ever failed to parse).
 //! - **The opened package**: `web.move_file` refuses `move_open_package` when `from` or `to` is the file the run's
 //!   package was opened from, or a path inside it.
 #![deny(clippy::arithmetic_side_effects)]
@@ -73,7 +76,7 @@ use super::{
     MANIFEST_FILE, MAX_EXPORT_BYTES, MAX_EXPORT_FILES, MAX_RECORD_BYTES, MAX_ROWS, MAX_SEGMENTS, No, P, R, RECEIPT_FILE, Recipe, SIDECAR_SUFFIX, WebHost, actor_json, bounded, checked_path,
     join, minified, no, output_names, portable, read_bounded, resolved, web_no, write_atomic, write_new,
 };
-use hsk_studio_accord::{CancellationToken, CommandContext, CommandId};
+use hsk_studio_accord::{CancellationToken, CommandContext, CommandId, DomainId};
 use hsk_studio_session::{Action, AdmissionJobPort, Cost, JobAdmissionRefusal, JobKind, JobLifecycle, JobOutcome, JobPort, JobRequest};
 use hsk_studio_web::{
     AssetDecision, AssetOutcome, AssetPort, AssetSource, DenyReason, Limits, Load, Loads, Namespace, NodeId, Quote, SourcePatch, TextEdit, WebDoc, apply, collect_assets, escape_attr, parse, sha256_hex,
@@ -731,8 +734,13 @@ struct Change {
 impl WebHost {
     /// Admits `work` as one job (module docs) and settles it with the work's outcome.
     pub(super) fn admitted(&mut self, action: Action, ctx: &CommandContext, cancel: &CancellationToken, work: impl FnOnce(&mut Self) -> R<Value>) -> R<Value> {
-        let head = self.job_head;
-        let request = JobRequest { resource: self.job_resource.clone(), action, actor: ctx.actor().clone(), cost: Cost { jobs: 1, bytes: 0 }, bound_revision: head, correlation_id: ctx.correlation().value(), kind: JobKind::Committed };
+        // The open package addresses the job, as the viewer's other exports do; with none open the site does. Never
+        // resource-less: a resource-less job never reaches the port (lead ruling 2026-11-08, R60 probe j3).
+        let (resource, head) = match self.job_resource.clone() {
+            Some(id) => (id, self.job_head),
+            None => (self.site_resource()?, self.revision()),
+        };
+        let request = JobRequest { resource: Some(resource), action, actor: ctx.actor().clone(), cost: Cost { jobs: 1, bytes: 0 }, bound_revision: head, correlation_id: ctx.correlation().value(), kind: JobKind::Committed };
         let job = self.jobs.lifecycle.admit(&self.jobs.port, request, head, cancel).map_err(|refusal| match refusal {
             JobAdmissionRefusal::Overloaded { retry_after_ms } => No("overloaded", format!("retry_after_ms={retry_after_ms}"), Some(json!({"retry_after_ms": retry_after_ms}))),
             other => No(other.code(), String::new(), None),
@@ -744,6 +752,28 @@ impl WebHost {
             Err(No(code, ..)) => JobOutcome::Failed(code),
         });
         result
+    }
+
+    /// The job resource with no package open (module docs): an `SDOC` id in the UUIDv7 shape whose digits are the
+    /// SHA-256 of the site's folder (`local_root`, else the open document's folder; canonical when it resolves), so
+    /// every job on one site addresses one resource, the same in every process.
+    fn site_resource(&self) -> R<DomainId> {
+        let folder = match (&self.site, &self.path) {
+            (Some(site), _) => PathBuf::from(&site.local_root),
+            (None, Some(path)) => path.parent().map_or_else(PathBuf::new, Path::to_path_buf),
+            (None, None) => PathBuf::new(),
+        };
+        let key = std::fs::canonicalize(&folder).unwrap_or(folder);
+        let hex = sha256_hex(format!("hsk.studio.web.site\0{}", key.to_string_lossy()).as_bytes());
+        let g = |r: Range<usize>| hex.get(r).unwrap_or("0");
+        let variant = match g(16..17) {
+            "0" | "4" | "8" | "c" => "8",
+            "1" | "5" | "9" | "d" => "9",
+            "2" | "6" | "a" | "e" => "a",
+            _ => "b",
+        };
+        let id = format!("SDOC-{}-{}-7{}-{variant}{}-{}", g(0..8), g(8..12), g(13..16), g(17..20), g(20..32));
+        DomainId::parse(&id).map_err(|_| No("job_resource_invalid", id, None))
     }
 
     fn site_root(&self) -> R<(super::Site, PathBuf)> {
@@ -1169,8 +1199,11 @@ mod tests {
         RunContext::new(actor, ClientSessionId::parse("web-site-unit").unwrap(), Arc::new(TransientCorrelation::new()))
     }
 
-    fn host_with(capacity: u32) -> WebHost {
-        WebHost { jobs: Jobs { port: Arc::new(AdmissionJobPort::default()), lifecycle: JobLifecycle::new(Admission::new(capacity, 1 << 20, 9).unwrap()) }, ..WebHost::default() }
+    /// A host whose job port admits `capacity` jobs (retry hint 9 ms); the port is what admits, never the
+    /// lifecycle's own admission (jobs are never resource-less).
+    fn host_with(capacity: u32) -> (WebHost, Arc<AdmissionJobPort>) {
+        let port = Arc::new(AdmissionJobPort::new(Admission::new(capacity, 1 << 20, 9).unwrap()));
+        (WebHost { jobs: Jobs { port: port.clone(), lifecycle: JobLifecycle::default() }, ..WebHost::default() }, port)
     }
 
     fn run(host: &mut WebHost, id: &str, params: Value, cancel: &CancellationToken) -> R<Value> {
@@ -1183,10 +1216,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hsk-web-site-unit-{}-jobs", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut host = host_with(1);
+        let (mut host, port) = host_with(1);
         let cancel = CancellationToken::default();
         run(&mut host, "web.site", json!({"display_name": "s", "local_root": dir.to_string_lossy()}), &cancel).ok().unwrap();
-        let held = host.jobs.lifecycle.local_admission().try_acquire(0).unwrap();
+        let held = port.admission().try_acquire(0).unwrap();
         for (id, params) in [("web.site_report", json!({})), ("web.export", json!({})), ("web.publish", json!({})), ("web.move_file", json!({"from": "a.png", "to": "b.png"}))] {
             let Err(No(code, at, detail)) = run(&mut host, id, params, &cancel) else { panic!("{id} ran while the admission was full") };
             assert_eq!((code, at.as_str(), detail), ("overloaded", "retry_after_ms=9", Some(json!({"retry_after_ms": 9}))), "{id}");
@@ -1196,6 +1229,7 @@ mod tests {
         drop(held);
         assert!(run(&mut host, "web.site_report", json!({}), &cancel).is_ok());
         assert_eq!(host.jobs.lifecycle.counts().admitted, 1);
+        assert_eq!(port.tickets_held(), 0, "the ticket is released at settlement");
         cancel.cancel();
         assert!(matches!(run(&mut host, "web.site_report", json!({}), &cancel), Err(No("canceled", ..))));
         let _ = std::fs::remove_dir_all(&dir);
