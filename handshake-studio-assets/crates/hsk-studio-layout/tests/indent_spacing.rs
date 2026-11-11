@@ -586,32 +586,32 @@ fn shift_paragraph_records_moves_drops_and_keeps_the_first() {
 }
 
 /// Item 3 measurement (not a proof; ignored, run on demand in debug and release): one paragraph of
-/// 600, 1800 and 5000 words per composer, with no, a 30 pt, a 100 pt (the narrowed 80 pt holds
-/// every word: the gate passes and the re-break runs) and a 170 pt last-line indent (narrower than
-/// every word: no re-break since the gate), prints `MEASURE:` lines (outcome, lines, time). The
-/// refusal point is the composer's own budget (`budget_exceeded`).
+/// 600, 1800 and 5000 words per composer, aligned left and justified, with no, a 30 pt, a 100 pt
+/// (the narrowed 80 pt holds every word: the gate passes and the re-break runs) and a 170 pt
+/// last-line indent (narrower than every word: no re-break since the gate), prints `MEASURE:` lines
+/// (outcome, lines, time). The refusal point is the composer's own budget (`budget_exceeded`).
 #[test]
 #[ignore = "measurement of the last-line re-break cost; run with --run-ignored only"]
 fn measure_last_line_indent_rebreak_cost() {
     let word = ["aaaa", "bb", "cccccc", "ddd", "eeeee"];
-    for words in [600usize, 1800, 5000] {
-        let text: String = (0..words).map(|i| word[i % word.len()]).collect::<Vec<_>>().join(" ");
-        let s = one(&text);
-        for composer in composers() {
-            for last in [0.0, 30.0, 100.0, 170.0] {
-                // Debug builds skip the 5000-word worst case (Knuth-Plass takes minutes there).
-                if last >= 100.0 && words > 1800 && cfg!(debug_assertions) {
-                    continue;
+    for align in [StudioTextAlign::Left, StudioTextAlign::Justified] {
+        for words in [600usize, 1800, 5000] {
+            let text: String = (0..words).map(|i| word[i % word.len()]).collect::<Vec<_>>().join(" ");
+            let s = one(&text);
+            for composer in composers() {
+                for last in [0.0, 30.0, 100.0, 170.0] {
+                    let r = styles_aligned(align, &[StudioCompositionSettings { last_line_indent: pt(last), ..Default::default() }]);
+                    let t = std::time::Instant::now();
+                    let out = run(frame(180.0, 1_000_000.0), &s, &r, composer);
+                    let ms = t.elapsed().as_secs_f64() * 1000.0;
+                    let what = match &out {
+                        Ok(p) => format!("ok lines={} overset={}", lines(p).len(), p.overset.is_some()),
+                        Err(e) => e.code().to_string(),
+                    };
+                    let name = format!("{composer:?}");
+                    let name = name.split('(').next().unwrap_or(&name);
+                    println!("MEASURE: align={align:?} words={words} composer={name} last_line_indent={last} {what} ms={ms:.1}");
                 }
-                let r = styles(&[StudioCompositionSettings { last_line_indent: pt(last), ..Default::default() }]);
-                let t = std::time::Instant::now();
-                let out = run(frame(180.0, 1_000_000.0), &s, &r, composer);
-                let ms = t.elapsed().as_secs_f64() * 1000.0;
-                let what = match &out {
-                    Ok(p) => format!("ok lines={} overset={}", lines(p).len(), p.overset.is_some()),
-                    Err(e) => e.code().to_string(),
-                };
-                println!("MEASURE: words={words} composer={composer:?} last_line_indent={last} {what} ms={ms:.1}");
             }
         }
     }
@@ -769,4 +769,44 @@ fn split_paragraphs_take_no_last_line_rebreak() {
     let l = lines(&p);
     assert_eq!(l.iter().map(|x| x.source.start).collect::<Vec<_>>(), vec![0, 5]);
     assert!(l[1].overfull && l[1].available_pt == 18.0, "{:?}", l[1]);
+}
+
+/// Lead ruling 2026-11-11 (diagnosis 2026-11-11, AdobeParagraph last line): a 5000-word ragged
+/// paragraph with a 100 pt last-line indent on a 180 pt measure composes on the paragraph composer
+/// (the narrowed 80 pt holds every word, so the re-break runs). Its refusal was the composer's step
+/// budget, a count, so this holds on any machine. The re-break changes only the paragraph's last
+/// lines: every line above the tail is the 0 pt run's line.
+#[test]
+fn adobe_paragraph_last_line_rebreak_composes_5000_words() {
+    let words = ["aaaa", "bb", "cccccc", "ddd", "eeeee"];
+    let text = (0..5000).map(|i| words[i % words.len()]).collect::<Vec<_>>().join(" ");
+    let s = one(&text);
+    let last = |v: f64| styles(&[StudioCompositionSettings { last_line_indent: pt(v), ..Default::default() }]);
+    let composer = Composer::AdobeParagraph(AdobeParams::default());
+    let base = run(frame(180.0, 1_000_000.0), &s, &last(0.0), composer).unwrap();
+    let p = run(frame(180.0, 1_000_000.0), &s, &last(100.0), composer).unwrap();
+    let (b, l) = (lines(&base), lines(&p));
+    assert_eq!((b.len(), l.len()), (1000, 1001));
+    let end = l.last().unwrap();
+    assert!(end.available_pt == 80.0 && !end.overfull && end.width_pt <= 80.0, "{end:?}");
+    assert_eq!(l[..1000 - 7], b[..1000 - 7], "the lines above the tail are untouched");
+}
+
+/// Lead ruling 2026-11-11 (item 2): the re-break narrows the line that ENDS the paragraph, not the
+/// old last line by number. "aaaaaaaaa" / "bb cc ddd" in 60 pt with a 40 pt last-line indent
+/// (narrowed 20 pt, every word fits it): narrowing line 1 by number gave "bb" / "cc ddd", whose
+/// last line (36 pt) is overfull in 20 pt, and justified, line 1 ("bb", composed for 20 pt) was set
+/// stretched across 60 pt. Composed for the paragraph's end: "bb cc" / "ddd", the last line fits.
+#[test]
+fn the_final_line_fits_when_the_gate_passes_and_line_l_is_not_stretched() {
+    let s = one("aaaaaaaaa bb cc ddd");
+    for align in [StudioTextAlign::Left, StudioTextAlign::Justified] {
+        let r = styles_aligned(align, &[StudioCompositionSettings { last_line_indent: pt(40.0), ..Default::default() }]);
+        let p = run(frame(60.0, 100.0), &s, &r, Composer::AdobeParagraph(AdobeParams::default())).unwrap();
+        let l = lines(&p);
+        assert_eq!(l.iter().map(|x| x.source.start).collect::<Vec<_>>(), vec![0, 10, 16], "{align:?}");
+        let end = l.last().unwrap();
+        assert!(!end.overfull && end.available_pt == 20.0 && end.width_pt <= 20.0, "{align:?}: {end:?}");
+        assert_eq!((l[1].width_pt, l[1].available_pt), (30.0, 60.0), "{align:?}: line 1 is composed for the 60 pt it is set in");
+    }
 }

@@ -71,7 +71,7 @@
 //! no target oversets from the break byte; a column break stops balancing of its frame. A flush
 //! space on the last line of a `JustifiedAll` paragraph takes the rest of the slot and the line
 //! keeps its natural spacing. InDesign parity UNVERIFIED (D5).
-use crate::adobe_composer::{AdobeContext, compress_line, justify_line, paragraph as adobe_paragraph, single_line};
+use crate::adobe_composer::{AdobeContext, ParaStats, compress_line, justify_line, last_line_rebreak, paragraph as adobe_paragraph, single_line};
 use crate::breaker::{Composer, HyphenRules, LineBreak, Sums, first_fit, knuth_plass, line_start};
 use crate::hyphenate::Hyphenator;
 use crate::styles::{Alignment, ParagraphStyling};
@@ -1337,8 +1337,13 @@ fn compose_flow(
                 {
                     let narrowed = sum(slots[l].width_pt, -g.last_line_indent_pt)?;
                     if narrowed > EPS && tightest_width(p, &items, &b, l, adobe, &jp) > narrowed + EPS && widest_box(&items, &b, l) <= narrowed + EPS {
-                        let width = |line: usize| if line == l { narrowed } else { width(line) };
-                        b = break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?;
+                        b = if let Composer::AdobeParagraph(params) = composer {
+                            let ctx = AdobeContext { params, justify: &jp, justified, justify_last: para_alignment == Alignment::JustifiedAll };
+                            last_line_rebreak(&items, &sums, &width, &rules, &ctx, cancel, b, g.last_line_indent_pt, &mut ParaStats::default())?
+                        } else {
+                            let width = |line: usize| if line == l { narrowed } else { width(line) };
+                            break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?
+                        };
                     }
                 }
                 b
