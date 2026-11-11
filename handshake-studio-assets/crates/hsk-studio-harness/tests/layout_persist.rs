@@ -191,30 +191,30 @@ fn a_hostile_layout_entry_opens_refuses_typed_and_keeps_its_bytes() {
     assert_eq!(entry_of(&saved), Some(deep), "kept byte for byte");
 }
 
-/// Review F4 of b21616b7: a page delete outside the layout editor (DOC-NEW-1 `page.delete` of a page a
-/// parent page is applied to) leaves the entry naming a page the document no longer holds. The next
-/// layout edit is refused typed and the records stay byte for byte; undoing the delete makes them
-/// valid again and edits go on with every record kept.
+/// Review F4 of b21616b7: an entry that decodes but names a page the document does not hold is stale.
+/// The next layout edit is refused typed and the records stay byte for byte. The stale entry is built
+/// directly as a quarantined package entry naming a missing page (a `page.delete` of a parented page
+/// updates the records in its step since lane SMB-R60-FOLLOWUPS-1, so it no longer leaves one).
 #[test]
 fn a_stale_layout_entry_is_refused_not_replaced() {
     let scratch = Scratch::new("layout-stale");
-    let mut v = open(&package(&scratch.0, "stale.handshake", &[]));
+    let mut v = open(&package(&scratch.0, "stale-source.handshake", &[]));
     v.layout_apply(LayoutEdit::Page(PageEdit::NewParent { name: "A-Feature".into(), based_on: None })).unwrap();
     let parent = v.layout_editor().unwrap().records().parents.parents[0].parent_id.clone();
     v.layout_apply(LayoutEdit::Page(PageEdit::ApplyParent { pages: vec!["page-2".into()], parent: Some(parent) })).unwrap();
     let held = scratch.0.join("stale-held.handshake");
     v.save(&held, false).unwrap();
-    let before = entry_of(&held).unwrap();
-    v.delete_page("page-2").unwrap();
-    assert_eq!(v.layout_apply(LayoutEdit::DrawFrame { page_id: "page-1".into(), x: 1.0, y: 1.0, w: 10.0, h: 10.0 }), Err("layout_records_stale".into()));
+    let valid = String::from_utf8(entry_of(&held).unwrap()).unwrap();
+    assert_eq!(valid.matches("\"page-2\"").count(), 1, "one binding names page-2: {valid}");
+    let stale = valid.replace("\"page-2\"", "\"page-9\"").into_bytes();
+    let entry = Quarantined { name: format!("studio/{LAYOUT_RECORDS_ENTRY}.{}", sha256_hex_of(&stale)), sha256_hex: sha256_hex_of(&stale), bytes: stale.clone() };
+
+    let mut w = open(&package(&scratch.0, "stale.handshake", &[entry]));
+    assert_eq!(w.layout_apply(LayoutEdit::DrawFrame { page_id: "page-1".into(), x: 1.0, y: 1.0, w: 10.0, h: 10.0 }), Err("layout_records_stale".into()));
+    assert!(undo_labels(&w).is_empty(), "a refused edit is no step");
     let after = scratch.0.join("stale-after.handshake");
-    v.save(&after, false).unwrap();
-    assert_eq!(entry_of(&after), Some(before), "the records are kept, not replaced");
-    v.undo().unwrap();
-    v.layout_apply(LayoutEdit::DrawFrame { page_id: "page-1".into(), x: 1.0, y: 1.0, w: 10.0, h: 10.0 }).unwrap();
-    let ed = v.layout_editor().unwrap();
-    assert_eq!(ed.records().parents.parents.len(), 1, "the parent page survives");
-    assert_eq!(ed.records().parents.page_bindings.len(), 1);
+    w.save(&after, false).unwrap();
+    assert_eq!(entry_of(&after), Some(stale), "the records are kept, not replaced");
 }
 
 /// Review F3 of b21616b7: a write is bounded like every read (the Folio input budget), so no layout

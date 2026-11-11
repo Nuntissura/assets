@@ -7,7 +7,9 @@
 //!
 //! What a delete refuses: a container a layer still names (`artboard_not_empty`, `page_not_empty`), the
 //! last page of a document (`last_page`) and the last artboard of a document with layers
-//! (`last_artboard`), so a frame for the layers stays. A page has no name of its own in Folio
+//! (`last_artboard`), so a frame for the layers stays; a page delete updates the layout records that name
+//! the page in the same step, or refuses `page_bound_by_layout_records` ([`Run::delete_page`]). A page has
+//! no name of its own in Folio
 //! (`StudioPage`): `page.rename` names the page's spread.
 #![deny(clippy::arithmetic_side_effects)]
 
@@ -37,6 +39,24 @@ fn refit(spread: &mut StudioPageSpread, unit: GeometryUnit) {
     let height = spread.pages.iter().map(|p| p.height.value).fold(0.0, f64::max);
     spread.bounds.width = Length { value: rules::from_points(width, unit), unit };
     spread.bounds.height = Length { value: rules::from_points(height, unit), unit };
+}
+
+/// The page delete on the container lists (`Run::delete_page`).
+fn delete_page_edit(document: &folio::StudioDocument, spreads: &mut Vec<StudioPageSpread>, page: &str) -> Result<ContainerEdit, &'static str> {
+    let (si, pi) = locate(spreads, page).ok_or("unknown_page")?;
+    if rules::page_count(document) <= 1 {
+        return Err("last_page");
+    }
+    if spreads[si].pages.len() == 1 {
+        if layer_names_node(document, &spreads[si].page_spread_id) {
+            return Err("page_not_empty");
+        }
+        spreads.remove(si);
+    } else {
+        spreads[si].pages.remove(pi);
+        refit(&mut spreads[si], document.geometry_unit);
+    }
+    Ok(ContainerEdit { label: format!("delete_page {page}"), detail: json!({"page_id": page}) })
 }
 
 fn locate(spreads: &[StudioPageSpread], page: &str) -> Option<(usize, usize)> {
@@ -90,6 +110,11 @@ impl Run<'_> {
             ids.extend(step.expect_artboards.iter().chain(&step.write_artboards).map(|a| a.artboard_id.clone()));
             ids.extend(step.expect_spreads.iter().chain(&step.write_spreads).map(|s| s.page_spread_id.clone()));
         }
+        // A layout step may remove a spread too (`delete_page` with layout records).
+        for document in self.history_layout_documents() {
+            ids.extend(document.artboards.iter().map(|a| a.artboard_id.clone()));
+            ids.extend(document.page_spreads.iter().map(|s| s.page_spread_id.clone()));
+        }
         ids
     }
 
@@ -109,23 +134,50 @@ impl Run<'_> {
         out
     }
 
+    /// The documents the layout steps of the undo and redo histories quote and write (a group's inner
+    /// steps included): a `page.delete` of a page the layout records bind is one (lane SMB-R60-FOLLOWUPS-1).
+    fn history_layout_documents(&self) -> Vec<&folio::StudioDocument> {
+        fn walk<'s>(steps: &'s [HistoryStep], out: &mut Vec<&'s folio::StudioDocument>) {
+            for step in steps {
+                if let Some(l) = &step.layout {
+                    out.push(&l.expect);
+                    out.push(&l.write);
+                }
+                if let Some(inner) = &step.group {
+                    walk(inner, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.undo_stack, &mut out);
+        walk(&self.redo_stack, &mut out);
+        out
+    }
+
     /// The first page number past every `page-N` the document, a document entry or the history
     /// names, so a new page never takes the key of a deleted one that layout records or an undo may
-    /// still name (review F1).
-    fn next_page_number(&self) -> u64 {
+    /// still name (review F1). `None` when that number would pass `u64::MAX` (lane SMB-R60-FOLLOWUPS-1
+    /// item 4: a document entry may name `page-18446744073709551615`).
+    fn next_page_number(&self) -> Option<u64> {
         let Some(session) = self.session.as_ref() else {
-            return 1;
+            return Some(1);
         };
         let document = session.snapshot().document();
         let history = self.history_containers();
-        let pages = document.page_spreads.iter().chain(history.iter().flat_map(|s| s.expect_spreads.iter().chain(&s.write_spreads))).flat_map(|s| &s.pages);
+        let layouts = self.history_layout_documents();
+        let pages = document
+            .page_spreads
+            .iter()
+            .chain(history.iter().flat_map(|s| s.expect_spreads.iter().chain(&s.write_spreads)))
+            .chain(layouts.iter().flat_map(|d| &d.page_spreads))
+            .flat_map(|s| &s.pages);
         let mut highest = pages.fold(0, |n, p| highest_page_number(p.page_id.as_bytes(), n));
         for token in hsk_studio_session::DOCUMENT_ENTRY_TOKENS {
             if let Some(bytes) = session.document_entry(token) {
                 highest = highest_page_number(bytes, highest);
             }
         }
-        highest.saturating_add(1)
+        highest.checked_add(1)
     }
 
     /// `document.new`: replaces the working session with a blank document of `spec`, revision 0, no
@@ -339,8 +391,9 @@ impl Run<'_> {
     /// spread, or on a new spread with `new_spread`, named `name`. Size in points (STU-LAY-100), else the
     /// neighbour's; margins and bleed the neighbour's. The first page of a document needs a size and is
     /// on a new spread. Refusals: `unknown_page`, `size_required`, `dimension_out_of_range`,
-    /// `margins_exceed_page`, `too_many_pages`, `name_too_long`, `name_invalid`, `name_needs_new_spread`.
-    /// Detail `page_id`, `page_spread_id`.
+    /// `margins_exceed_page`, `too_many_pages`, `name_too_long`, `name_invalid`, `name_needs_new_spread`,
+    /// `page_number_exhausted` (no `page-N` key is left past the highest one the document, an entry or the
+    /// history names: the mint never loops). Detail `page_id`, `page_spread_id`.
     pub fn add_page(&mut self, after: Option<&str>, new_spread: bool, size: Option<(f64, f64)>, name: Option<&str>) -> bool {
         let remembered = self.remembered_container_ids();
         let page_number = self.next_page_number();
@@ -359,7 +412,7 @@ impl Run<'_> {
                 None => spreads.iter().enumerate().rev().find_map(|(si, s)| s.pages.len().checked_sub(1).map(|pi| (si, pi))),
             };
             let unit = document.geometry_unit;
-            let page_id = rules::mint_page_id(document, page_number);
+            let page_id = page_number.and_then(|n| rules::mint_page_id(document, n)).ok_or("page_number_exhausted")?;
             let spread_id = rules::mint_child_id(&document.document_id, "SPGS", u64::try_from(spreads.len()).unwrap_or(0).saturating_add(1), |id| remembered.contains(id) || spreads.iter().any(|s| s.page_spread_id == id));
             let default_name = format!("spread {}", spreads.len().saturating_add(1));
             let Some((si, pi)) = at else {
@@ -432,23 +485,96 @@ impl Run<'_> {
 
     /// `page.delete` ([STU-SHL-026] Delete Pages): a spread left with no page goes too. Refusals:
     /// `unknown_page`, `last_page`, `page_not_empty` (module docs).
+    ///
+    /// Layout records (lane SMB-R60-FOLLOWUPS-1 item 6, lead ruling 2026-11-08): when the document holds
+    /// layout records that validate and name the page, the delete and the records updated for it commit
+    /// as ONE layout step (`Run::submit_layout`, one revision, one undo step labelled `delete_page <page>`),
+    /// so the entry still validates after save and reopen and undo restores the page and its records
+    /// together. The update: the page's parent-page binding (applied parent and overrides) is dropped; a
+    /// section that starts on the page starts on the next page instead, or is dropped when no page of its
+    /// own is left (the next page starts another section, or the page was the last). Refused typed
+    /// `page_bound_by_layout_records`, changing nothing, where a record cannot follow: a graphic frame
+    /// placed on the page (its layer stays on the spread with no page to sit on), and any record the
+    /// updated set still would not validate against the document without the page (a record this update does
+    /// not follow): a delete never leaves a stale entry. Records that need no
+    /// update and validate without the page, none stored, or an entry that is already stale or unreadable
+    /// keep the plain container step (`submit_layout` refuses a stale entry; the next layout edit reports it).
     pub fn delete_page(&mut self, page: &str) -> bool {
-        self.container_edit("delete_page", "page.delete", |document, _, spreads| {
-            let (si, pi) = locate(spreads, page).ok_or("unknown_page")?;
-            if rules::page_count(document) <= 1 {
-                return Err("last_page");
-            }
-            if spreads[si].pages.len() == 1 {
-                if layer_names_node(document, &spreads[si].page_spread_id) {
-                    return Err("page_not_empty");
+        const OP: &str = "delete_page";
+        const COMMAND: &str = "page.delete";
+        match self.layout_records_without_page(page) {
+            Ok(None) => self.container_edit(OP, COMMAND, |document, _, spreads| delete_page_edit(document, spreads, page)),
+            Ok(Some((document, records))) => {
+                let depth = self.undo_stack.len();
+                if !self.submit_layout(OP, COMMAND, document, records) {
+                    return false;
                 }
-                spreads.remove(si);
-            } else {
-                spreads[si].pages.remove(pi);
-                refit(&mut spreads[si], document.geometry_unit);
+                if self.undo_stack.len() > depth
+                    && let Some(step) = self.undo_stack.last_mut()
+                {
+                    step.label = format!("{OP} {page}");
+                }
+                if let Some(record) = self.ops.last_mut()
+                    && record["detail"].is_object()
+                {
+                    record["detail"]["page_id"] = json!(page);
+                    record["detail"]["layout_records"] = json!("updated");
+                }
+                true
             }
-            Ok(ContainerEdit { label: format!("delete_page {page}"), detail: json!({"page_id": page}) })
-        })
+            Err(code) => {
+                self.note_unrecordable(COMMAND);
+                let before = self.frames.count();
+                let _ = self.begin(COMMAND, None);
+                self.own_op(OP, before, Err(code))
+            }
+        }
+    }
+
+    /// The document without `page` and the stored layout records updated for it (`delete_page` docs), or
+    /// `None` when the plain container step applies (no session, no records, records that do not validate
+    /// now, records that need no update and still validate without the page, or a delete the container step
+    /// refuses itself).
+    fn layout_records_without_page(&self, page: &str) -> Result<Option<(folio::StudioDocument, hsk_studio_session::LayoutRecords)>, &'static str> {
+        let cancel = self.cancel;
+        let Some(session) = self.session.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(Some(records)) = session.layout_records(cancel) else {
+            return Ok(None);
+        };
+        let document = session.snapshot().document();
+        let mut spreads = document.page_spreads.clone();
+        if delete_page_edit(document, &mut spreads, page).is_err() {
+            return Ok(None);
+        }
+        let mut successor = document.clone();
+        successor.page_spreads = spreads;
+        let mut updated = records.clone();
+        if updated.longdoc.graphic_frames.iter().any(|g| g.page_id == page) {
+            return Err("page_bound_by_layout_records");
+        }
+        updated.parents.page_bindings.retain(|b| b.page_id != page);
+        // The page after `page` in document order (sections number pages in that order).
+        let order: Vec<&str> = document.page_spreads.iter().flat_map(|s| &s.pages).map(|p| p.page_id.as_str()).collect();
+        let next = order.iter().position(|p| *p == page).and_then(|i| i.checked_add(1)).and_then(|i| order.get(i)).map(|p| (*p).to_owned());
+        let starts: BTreeSet<String> = records.longdoc.sections.iter().map(|s| s.page_start.clone()).collect();
+        updated.longdoc.sections.retain_mut(|s| {
+            if s.page_start != page {
+                return true;
+            }
+            match &next {
+                Some(n) if !starts.contains(n) => {
+                    s.page_start.clone_from(n);
+                    true
+                }
+                _ => false,
+            }
+        });
+        // The updated set must validate without the page even when nothing in it changed (a record this
+        // update does not follow): a delete never leaves a stale entry.
+        updated.validate(&successor, folio::Budget::default(), cancel).map_err(|d| if d.code == folio::Code::Canceled { "canceled" } else { "page_bound_by_layout_records" })?;
+        Ok(if updated == records { None } else { Some((successor, updated)) })
     }
 
     /// The options of the document's artboards in document order, the spec's defaults for one never

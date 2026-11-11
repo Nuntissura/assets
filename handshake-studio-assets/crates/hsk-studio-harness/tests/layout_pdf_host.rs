@@ -231,7 +231,10 @@ fn hostile_sizes_paths_and_sources_refuse_typed() {
 fn layout_catalog_rows_name_their_drive_rows_with_the_same_keys() {
     for id in ["layout.open", "layout.export_pdf", "layout.export_idml"] {
         let entry = action::command(id).unwrap_or_else(|| panic!("{id} missing"));
-        assert!(entry.surface == action::Surface::Viewer && !entry.recordable && !entry.mutates_authority, "{id}");
+        assert!(entry.surface == action::Surface::Viewer && !entry.recordable, "{id}");
+        // layout.open commits a sized open on an open document as one undo step, so its row declares it
+        // mutates (STU-AUT-147, lane SMB-R60-FOLLOWUPS-1 item 6); the exports change nothing.
+        assert_eq!(entry.mutates_authority, id == "layout.open", "{id}");
         let method = entry.run_method.strip_prefix("Viewer::").unwrap();
         let row = DRIVE_VIEWER.iter().find(|r| r.method == method).unwrap_or_else(|| panic!("{method} not a drive row"));
         assert_eq!(manual::viewer_domain(method), "layout", "{method}");

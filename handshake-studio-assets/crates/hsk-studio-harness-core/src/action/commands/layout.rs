@@ -47,9 +47,11 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("layout.preflight", "LayoutEditor::preflight", "Run preflight", false, &[]),
     typed("layout.set_preflight_severity", "LayoutEditor::set_preflight_severity", "Set preflight rule severity", false, &[t("rule"), o("severity", "error|warning|informational")]),
     typed("layout.thread_info", "LayoutEditor::thread_info", "Text thread information", false, &[t("frame")]),
-    // Lane SMB-LAYOUT-PDF-HOST-1: the layout's output (harness-view view/layout_export.rs). None changes
-    // the document: a new blank layout is editor state, exports are derived deliverables.
-    typed("layout.open", "Viewer::layout_open", "Open the layout editor", false, &[n("page_width_pt").opt(), n("page_height_pt").opt(), i("pages").opt()]),
+    // Lane SMB-LAYOUT-PDF-HOST-1: the layout's output (harness-view view/layout_export.rs). Exports are derived
+    // deliverables. layout.open mutates (lane SMB-R60-FOLLOWUPS-1 item 6, STU-AUT-147 `mutates_authority`): a
+    // sized open on an open document commits its pages as one undo step (lane SMB-LAYOUT-PERSIST-1); without a
+    // document a new blank layout is editor state.
+    typed("layout.open", "Viewer::layout_open", "Open the layout editor", true, &[n("page_width_pt").opt(), n("page_height_pt").opt(), i("pages").opt()]),
     typed("layout.export_pdf", "Viewer::export_layout_pdf", "Export layout as PDF", false, &[
         out("path"), b("overwrite").opt(), o("pdfx", "pdfx.none|pdfx.x4_2010").opt(), t("created").opt(), file("output_profile").opt(),
         t("output_condition_identifier").opt(), t("output_condition").opt(), t("registry").opt(), t("title").opt(), b("subset_fonts").opt(), b("ignore_preflight").opt(),

@@ -241,15 +241,18 @@ pub fn mint_child_id(document_id: &str, prefix: &str, first: u64, taken: impl Fn
     }
 }
 
-/// The first document-local page key from `page-{first}` that the document does not hold.
-pub fn mint_page_id(document: &folio::StudioDocument, first: u64) -> String {
+/// The first document-local page key from `page-{first}` that the document does not hold; `None` when the
+/// numbers run out past `u64::MAX` before one is free (`page_number_exhausted`). The mint never wraps and
+/// never repeats a number, so it ends after at most one more step than the document has pages (lane
+/// SMB-R60-FOLLOWUPS-1 item 4: a saturating step at `u64::MAX` looped forever).
+pub fn mint_page_id(document: &folio::StudioDocument, first: u64) -> Option<String> {
     let mut n = first;
     loop {
         let id = format!("page-{n}");
         if !document.page_spreads.iter().flat_map(|s| &s.pages).any(|p| p.page_id == id) {
-            return id;
+            return Some(id);
         }
-        n = n.saturating_add(1);
+        n = n.checked_add(1)?;
     }
 }
 
