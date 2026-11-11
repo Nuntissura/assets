@@ -324,3 +324,189 @@ fn hostile_inputs_are_typed_refusals_that_change_nothing() {
     assert_eq!(snapshot(&v), after_draw);
     assert_ne!(before, after_draw);
 }
+
+// Review fa15c84d (research/review-smb-ds-components-author-1-fa15c84d.json), lead rulings 2026-11-11.
+
+fn main_of(v: &mut Viewer, frame: &str) -> Value {
+    ok(v, "instance.get_main_component", json!({"layer": frame}))["main_component_id"].clone()
+}
+
+fn states(v: &Viewer) -> u64 {
+    v.state_json()["design"]["entry"]["states"].as_u64().unwrap_or(0)
+}
+
+/// F1 (a): a deleted definition's instance stays an instance with main null after an unrelated write,
+/// after save and reopen, and undo of the delete brings its main back (STU-DS-003a, STU-DS-105).
+#[test]
+fn f1_a_deleted_definition_keeps_its_instance_bound_across_writes_reopen_and_undo() {
+    let scratch = Scratch::new("ds-f1-deleted-main");
+    let mut v = design_doc();
+    let (a, ..) = button(&mut v, "A", 10.0);
+    let (b, ..) = button(&mut v, "B", 100.0);
+    let frame = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+    let definition = v.state_json()["design"]["components"]["components"][0]["layer_id"].as_str().unwrap().to_string();
+    v.delete_layer(&definition).unwrap();
+    assert_eq!(main_of(&mut v, &frame), Value::Null);
+    // An unrelated write of the design entry.
+    ok(&mut v, "component.create_instance", json!({"component": b, "x": 300, "y": 10}));
+    assert_eq!(main_of(&mut v, &frame), Value::Null, "the instance stays bound with main null");
+    let path = scratch.0.join("deleted-main.handshake");
+    v.save(&path, false).unwrap();
+    let mut w = Viewer::new(Prefer::Cpu);
+    w.open(&path).unwrap();
+    assert_eq!(main_of(&mut w, &frame), Value::Null, "after reopen");
+    v.undo().unwrap();
+    v.undo().unwrap();
+    assert_eq!(main_of(&mut v, &frame), json!(a), "undo of the delete restores the main");
+}
+
+/// F1 (b), (c) and F4: an instance layer delete and a detach, each followed by another write, are
+/// undone with their binding; a detach of the newest instance never makes its id minted again.
+#[test]
+fn f1_a_deleted_or_detached_instance_comes_back_bound_on_undo() {
+    let mut v = design_doc();
+    let (a, ..) = button(&mut v, "A", 10.0);
+    let first = ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10}));
+    let frame = text(&first, "layer_id");
+    v.delete_layer(&frame).unwrap();
+    ok(&mut v, "component.create_instance", json!({"component": a, "x": 300, "y": 10}));
+    v.undo().unwrap();
+    v.undo().unwrap();
+    assert_eq!(main_of(&mut v, &frame), json!(a), "the deleted instance is back with its binding");
+    // Detach the newest instance, then create another: the id is not minted again (F4).
+    ok(&mut v, "instance.detach", json!({"layer": frame}));
+    let next = ok(&mut v, "component.create_instance", json!({"component": a, "x": 400, "y": 10}));
+    assert_ne!(next["instance_id"], first["instance_id"], "{next}");
+    v.undo().unwrap();
+    v.undo().unwrap();
+    assert_eq!(main_of(&mut v, &frame), json!(a), "the detached instance is back with its binding");
+}
+
+/// F1 (d) and F6: an override of a definition child that is then deleted unbinds nothing, and a sync
+/// refuses that instance only while it redraws the others.
+#[test]
+fn f6_a_stale_override_refuses_its_instance_only_and_keeps_every_binding() {
+    let mut v = design_doc();
+    let (a, bg, icon) = button(&mut v, "A", 10.0);
+    let stale = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+    let fine = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 300, "y": 10})), "layer_id");
+    ok(&mut v, "design.instance.set_override", json!({"layer": stale, "node_id": icon, "field": "visible", "value": false}));
+    v.delete_layer(&icon).unwrap();
+    // Another instance command writes the design entry.
+    ok(&mut v, "design.instance.set_override", json!({"layer": fine, "node_id": bg, "field": "opacity", "value": 0.5}));
+    assert_eq!(main_of(&mut v, &stale), json!(a), "the stale instance keeps its binding");
+    let synced = ok(&mut v, "component.sync_instances", json!({"component": a}));
+    assert_eq!(synced["redrawn"], json!([fine]), "{synced}");
+    assert_eq!(synced["refused"][0]["layer_id"], stale.as_str(), "{synced}");
+    assert_eq!(synced["refused"][0]["code"], "override_target_gone", "{synced}");
+    assert_eq!(main_of(&mut v, &stale), json!(a));
+}
+
+/// F2: hundreds of redraws of one instance never unbind another.
+#[test]
+fn f2_many_redraws_never_unbind_the_first_instance() {
+    let mut v = design_doc();
+    let (a, _, icon) = button(&mut v, "A", 10.0);
+    let first = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+    let busy = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 300, "y": 10})), "layer_id");
+    for i in 0..257 {
+        ok(&mut v, "design.instance.set_override", json!({"layer": busy, "node_id": icon, "field": "visible", "value": i % 2 == 0}));
+    }
+    assert!(states(&v) > 256, "every binding state is kept: {}", states(&v));
+    assert_eq!(main_of(&mut v, &first), json!(a));
+    let listed = ok(&mut v, "component.list_instances", json!({"component": a}));
+    assert_eq!(listed["instances"].as_array().unwrap().len(), 2, "{listed}");
+}
+
+/// F3 and F5: a layer delete drops the records keyed to it in the same undo step, so auto layout,
+/// which validates the settled records, still runs after a definition and a referenced layer go.
+#[test]
+fn f5_deleted_definitions_and_referenced_layers_leave_no_records_behind() {
+    let mut v = design_doc();
+    let (a, _, icon) = button(&mut v, "A", 10.0);
+    ok(&mut v, "component.add_property", json!({"component": a, "name": "Show icon", "type": "BOOLEAN", "default": true}));
+    ok(&mut v, "component.set_property_reference", json!({"layer": icon, "field": "visible", "property": "Show icon"}));
+    let frame = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+    v.delete_layer(&icon).unwrap();
+    let f = v.draw_shape(ShapeKind::Rectangle, [500.0, 10.0], [510.0, 20.0], false).unwrap();
+    let g = v.group_layers(&[f], "Frame").unwrap();
+    v.select(None);
+    ok(&mut v, "design.set_auto_layout_mode", json!({"node": g, "mode": "HORIZONTAL"}));
+    v.undo().unwrap();
+    // The instance layer's record goes with it: no orphan record with layer_id null is listed.
+    v.delete_layer(&frame).unwrap();
+    let listed = v.state_json()["design"]["components"].clone();
+    assert!(listed["instances"].as_array().unwrap().is_empty(), "{listed}");
+    let definition = listed["components"][0]["layer_id"].as_str().unwrap().to_string();
+    v.delete_layer(&definition).unwrap();
+    ok(&mut v, "design.set_auto_layout_mode", json!({"node": g, "mode": "HORIZONTAL"}));
+    v.undo().unwrap();
+    v.undo().unwrap();
+    assert_eq!(v.state_json()["design"]["components"]["components"][0]["component_id"], a.as_str(), "undo restores the record with the layer");
+}
+
+/// F1 ruling (b): states of layers that are gone are dropped when the document is opened (no history).
+#[test]
+fn f1_states_of_absent_layers_are_pruned_on_open_and_nothing_else_changes() {
+    let scratch = Scratch::new("ds-f1-prune-open");
+    let mut v = design_doc();
+    let (a, ..) = button(&mut v, "A", 10.0);
+    let keep = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+    let gone = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 300, "y": 10})), "layer_id");
+    v.delete_layer(&gone).unwrap();
+    assert_eq!(states(&v), 2);
+    let path = scratch.0.join("prune.handshake");
+    v.save(&path, false).unwrap();
+    let mut w = Viewer::new(Prefer::Cpu);
+    w.open(&path).unwrap();
+    assert_eq!(states(&w), 1, "the absent layer's state is gone");
+    assert_eq!(snapshot(&w), snapshot(&v), "layers and vector entry unchanged");
+    assert_eq!(main_of(&mut w, &keep), json!(a));
+}
+
+/// F7: redraws of a component with text never pile up past the text entry's cap.
+#[test]
+fn f7_redraws_of_a_text_component_do_not_exhaust_the_text_entry() {
+    let mut v = design_doc();
+    let label = v.place_text_with_font(10.0, 40.0, "OK", "Inter-Regular").unwrap();
+    v.select(None);
+    let made = ok(&mut v, "component.create_from_selection", json!({"layers": [label], "name": "Label"}));
+    let a = text(&made, "component_id");
+    let one = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+    ok(&mut v, "component.create_instance", json!({"component": a, "x": 300, "y": 10}));
+    for _ in 0..140 {
+        ok(&mut v, "component.sync_instances", json!({"component": a}));
+    }
+    ok(&mut v, "design.instance.set_override", json!({"layer": one, "node_id": label, "field": "characters", "value": "Go"}));
+}
+
+/// F8: an instance copy carries the definition layer's live filter stack.
+#[test]
+fn f8_instance_copies_carry_live_filter_stacks() {
+    let mut v = design_doc();
+    let (a, bg, _) = button(&mut v, "A", 10.0);
+    ok(&mut v, "vector.live_filter_apply", json!({"layer": bg, "filter_kind": "hsk.studio.vector_effect.twist", "params": [{"type": "Real", "key": "twist_angle", "value": 40.0}]}));
+    let made = ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10}));
+    let frame = text(&made, "layer_id");
+    let copy = children(&v, &frame).into_iter().find(|k| layer(&v, k)["name"] == "Rectangle").unwrap();
+    let read = ok(&mut v, "vector.live_filter_read", json!({"layer": copy}));
+    assert_eq!(read["filters"].as_array().unwrap().len(), 1, "{read} {made}");
+}
+
+/// F10: duplicating an instance makes an instance of the same main with its overrides.
+#[test]
+fn f10_a_duplicated_instance_is_an_instance_of_the_same_main() {
+    let mut v = design_doc();
+    let (a, _, icon) = button(&mut v, "A", 10.0);
+    let frame = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+    ok(&mut v, "design.instance.set_override", json!({"layer": frame, "node_id": icon, "field": "visible", "value": false}));
+    let before = snapshot(&v);
+    let copy = v.duplicate_layer(&frame).unwrap();
+    assert_eq!(main_of(&mut v, &copy), json!(a));
+    let view = inspect(&mut v, &copy);
+    assert_eq!(view["overrides"][0]["field"], "visible", "{view}");
+    assert_ne!(view["instance_id"], inspect(&mut v, &frame)["instance_id"]);
+    assert_eq!(ok(&mut v, "component.list_instances", json!({"component": a}))["instances"].as_array().unwrap().len(), 2);
+    v.undo().unwrap();
+    assert_eq!(snapshot(&v), before, "one undo step");
+}
