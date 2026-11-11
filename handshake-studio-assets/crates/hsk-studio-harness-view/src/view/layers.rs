@@ -182,6 +182,10 @@ impl Viewer {
 
     /// Deletes `layer_id` (a group with everything inside it) as one undoable step.
     pub fn delete_layer(&mut self, layer_id: &str) -> Result<u64, String> {
+        // Lane SMB-LAYOUT-PLACE-1: a layout picture's layer goes with its graphic frame record, one layout step.
+        if self.is_graphic_frame(layer_id) {
+            return self.delete_graphic_frame(layer_id);
+        }
         let doc = self.doc()?;
         if self.run.placement(layer_id).is_none() {
             return Err(format!("delete: {layer_id} is not in a layer stack"));

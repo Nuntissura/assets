@@ -61,7 +61,8 @@
 //! `frame_needs_pages`. The picture is one raster layer of the page's spread holding the source at its own pixels
 //! (no resample, no canvas clip: the PDF carries the full resolution) with the identity `placed_asset` transform,
 //! and one Folio `StudioGraphicFrame` in the layout records; content size at 100 % = pixels x 72 / ppi, the ppi
-//! the source states to the import route (a TIFF's resolution) else 72 (`ppi_source` `decoder` or `default`).
+//! the source states to the import route (a TIFF's resolution) else 72 (`ppi_source` `decoder` or `default`; PNG
+//! pHYs and JPEG JFIF or Exif density are not read: the raster decoder exposes none, a declared cut).
 //! Layer, frame and [`ENTRY`] are ONE undo step (`Run::submit_layout_and_entry`). [`Viewer::fit_graphic`]
 //! (`asset.fit`): `fit`, `anchor`, crop amounts (pt; a side not given keeps its value) and `frame_fitting`
 //! re-fit the frame through layout's `fit_content`; `frame_to_content` resizes the frame record at its anchor,
@@ -70,16 +71,21 @@
 //! `fit_not_legal_here`, a crop leaving no content `crop_empties_content`, a layer without a frame
 //! `layer_not_graphic_frame`. [`Viewer::list_placements`] adds `page_id`, `frame`, `shape`, `fit`,
 //! `frame_fitting`, `anchor`, content size and the derived `actual_ppi` and `effective_ppi` (x, y). Update All
-//! Links re-reads a layout source at its own pixels and keeps the frame; new pixel dimensions refuse
-//! `graphic_frame_source_resized`. Move, Free transform and Reset refuse `graphic_frame_transform_unsupported`
-//! (the frame record places the pixels; frame move is a later slice). The layout PDF draws every graphic frame
-//! and fails closed on a modified, missing, unauthorized or unsupported link (`view::layout_export`).
+//! Links re-reads a layout source at its own pixels; its frames take the new content size (new pixels or ppi)
+//! and their stored fit again (`frame_to_content` resizes the frame), tiles, frames and entry as ONE layout step;
+//! a frame that cannot refit (`crop_empties_content`, `frame_out_of_range`, ...) leaves its source modified and is
+//! listed in `refused`, the other sources update. Layers > Delete of a frame layer removes the layer and its frame
+//! record as one layout step (undo restores both). Move, Free transform and Reset refuse
+//! `graphic_frame_transform_unsupported` (the frame record places the pixels; frame move is a later slice). The
+//! layout PDF draws every graphic frame and fails closed on a modified, missing, unauthorized or unsupported link
+//! (`view::layout_export`).
 //! Hostile bounds: frame sides 0 < side <= 14400 pt, |x|, |y| <= 14400 pt (`frame_out_of_range`), an unknown page
 //! `unknown_page`, a PNG or PSD header declaring more than [`MAX_PLACE_PIXELS`] refuses `budget_exceeded` before
 //! decode (any source after decode), at most `MAX_GRAPHIC_FRAMES` frames. Studio readings (UNVERIFIED against
-//! InDesign, D5): 100 % at the source's ppi, a frame required, the modified-link export refusal. Not drawn on the
-//! viewer canvas at the frame (NOT_INSPECTED: the canvas shows the layer's tiles at the spread origin); the layout
-//! PDF is the placed picture's output.
+//! InDesign, D5): 100 % at the source's ppi, a frame required, the modified-link export refusal. The viewer canvas
+//! does not draw the picture: a layout document's layer graph is empty (`document.new` makes none and a frame layer
+//! adds no operation), and the canvas renders the graph (UNVERIFIED by a run); the layout PDF is the placed
+//! picture's output.
 //!
 //! Refusal codes: `not_open`, `canvas_unavailable`, `no_working_profile`, `resource_unreadable`,
 //! `resource_too_large`, the import route's codes (`format_unrecognised`, ...), render codes
@@ -93,7 +99,7 @@
 //! `frame_needs_pages`, `frame_shape_unsupported`, `parameter_not_for_frame`, `unknown_page`,
 //! `frame_geometry_invalid`, `no_stored_fitting`, `content_aware_unavailable`, `fit_not_legal_here`,
 //! `crop_empties_content`, `layer_not_graphic_frame`, `graphic_frame_transform_unsupported`,
-//! `graphic_frame_source_resized`, `layout_editor_unavailable`), and the Run's own codes.
+//! `canceled`, `layout_editor_unavailable`), and the Run's own codes.
 //!
 //! Studio readings (UNVERIFIED against Photoshop and Illustrator, D5): 100 % unless larger than the canvas;
 //! the reference point is on the axis-aligned bounds of the layer; skew before rotation; cached pixels
@@ -681,12 +687,9 @@ impl Viewer {
         Ok(tiles)
     }
 
-    /// The cached display tiles of a placement, clipped to the canvas; a layout graphic frame's are the source at
-    /// its own pixels (lane SMB-LAYOUT-PLACE-1: the frame record places them, no canvas clip).
+    /// The cached display tiles of a placement, clipped to the canvas (a layout graphic frame's are
+    /// `source_tiles`: lane SMB-LAYOUT-PLACE-1, Update All Links picks them).
     fn placement_tiles(&mut self, layer_id: &str, source: &SourceImage, transform: [f64; 6], filter: ResampleFilter) -> Res<Vec<TileRef>> {
-        if self.is_graphic_frame(layer_id) {
-            return self.source_tiles(layer_id, source);
-        }
         let canvas = self.canvas().map_err(|e| PlaceRefusal::new("canvas_unavailable", e))?;
         let src = Rect { x: 0, y: 0, width: source.width, height: source.height };
         self.resampled_tiles(layer_id, src, &source.pixels, placed_matrix(transform), filter, Some(canvas))
@@ -1000,7 +1003,7 @@ impl Viewer {
     }
 
     /// `asset.update_all_modified` (module docs). Returns `{updated: [source_id], missing: [source_id],
-    /// layers: [layer_id], changed, revision}`.
+    /// layers: [layer_id], refused: [{source_id, layer_id, code, detail}], changed, revision}`.
     pub fn update_all_modified(&mut self) -> Result<Value, PlaceRefusal> {
         self.place_reported("asset.update_all_modified", Self::update_inner)
     }
@@ -1013,6 +1016,11 @@ impl Viewer {
         };
         entry.prune(&doc);
         let (mut updated, mut missing, mut writes, mut changed) = (Vec::new(), Vec::new(), Vec::new(), false);
+        // Lane SMB-LAYOUT-PLACE-1: the graphic frames, decoded once (review F3 of fbf7f0cd), and on a layout the
+        // layout state, whose frames are refitted to a source's new size in the same step.
+        let framed = self.graphic_frame_ids();
+        let mut layout = if framed.is_empty() { None } else { Some(self.layout_state()?) };
+        let mut refused = Vec::new();
         let linked: Vec<(usize, String, String, StudioLinkHealth)> = entry
             .records
             .placed_sources
@@ -1041,14 +1049,21 @@ impl Viewer {
                             (l, t, f)
                         })
                         .collect();
-                    // Lane SMB-LAYOUT-PLACE-1: a graphic frame's content size at 100 % is its record's; new pixel
-                    // dimensions would need a frame step beside this one (a later slice), so they refuse.
-                    let resized = f64::from(image.width) != source.width || f64::from(image.height) != source.height;
-                    if resized && instances.iter().any(|(l, _, _)| self.is_graphic_frame(l)) {
-                        return no("graphic_frame_source_resized", source.source_id.clone());
+                    // Lane SMB-LAYOUT-PLACE-1: the source's graphic frames take its new content size and their stored
+                    // fit again; a frame that cannot refit refuses this source (typed, in `refused`), the others go on.
+                    let frames: Vec<String> = instances.iter().map(|(l, _, _)| l.clone()).filter(|l| framed.contains(l)).collect();
+                    if let Some((document, records)) = layout.as_mut()
+                        && !frames.is_empty()
+                    {
+                        let ppi = image.ppi.unwrap_or([layout_place::DEFAULT_PPI; 2]);
+                        let content = [f64::from(image.width) * layout_place::DEFAULT_PPI / ppi[0], f64::from(image.height) * layout_place::DEFAULT_PPI / ppi[1]];
+                        if let Err((layer_id, e)) = Self::refit_frames(document, records, &frames, content) {
+                            refused.push(json!({"source_id": source.source_id, "layer_id": layer_id, "code": e.code, "detail": e.detail}));
+                            continue;
+                        }
                     }
                     for (layer_id, transform, filter) in instances {
-                        let tiles = self.placement_tiles(&layer_id, &image, transform, filter)?;
+                        let tiles = if framed.contains(&layer_id) { self.source_tiles(&layer_id, &image)? } else { self.placement_tiles(&layer_id, &image, transform, filter)? };
                         writes.push((layer_id, tiles));
                     }
                     if let Some(s) = entry.records.placed_sources.get_mut(index) {
@@ -1076,17 +1091,30 @@ impl Viewer {
         }
         let layers: Vec<String> = writes.iter().map(|(l, _)| l.clone()).collect();
         if !changed {
-            return Ok(json!({"updated": updated, "missing": missing, "layers": layers, "changed": false, "revision": self.revision_now()}));
+            return Ok(json!({"updated": updated, "missing": missing, "layers": layers, "refused": refused, "changed": false, "revision": self.revision_now()}));
         }
         folio::validate_raster_records(&entry.records, &doc, folio::Budget::default(), self.cancel, &crate::harness::TrustAll).map_err(|d| folio_refusal(&d))?;
         let body = entry.to_bytes()?;
-        if !self.run.set_layers_tiles_and_entry(OP, &writes, ENTRY, body) {
+        let committed = match layout {
+            // A layout: the new tiles, the refitted frames and the entry as ONE layout step.
+            Some((mut document, records)) => {
+                for (layer_id, tiles) in &writes {
+                    if let Some(l) = document.layers.iter_mut().find(|l| l.layer_id == *layer_id) {
+                        l.payload = Payload::Raster { tiles: tiles.clone() };
+                    }
+                }
+                self.run.submit_layout_and_entry(OP, OP, document, records, ENTRY, body)
+            }
+            None => self.run.set_layers_tiles_and_entry(OP, &writes, ENTRY, body),
+        };
+        if !committed {
             return Err(self.run_refusal(OP));
         }
         self.check_links(&entry);
+        self.layout_sync();
         let revision = self.revision_now();
-        self.say(format!("{OP}: {} updated, {} missing (revision {revision})", updated.len(), missing.len()));
-        Ok(json!({"updated": updated, "missing": missing, "layers": layers, "changed": true, "revision": revision}))
+        self.say(format!("{OP}: {} updated, {} missing, {} refused (revision {revision})", updated.len(), missing.len(), refused.len()));
+        Ok(json!({"updated": updated, "missing": missing, "layers": layers, "refused": refused, "changed": true, "revision": revision}))
     }
 
     /// `asset.embed_link` (module docs). Returns `{layer_id, source_id, document_id, revision}`.

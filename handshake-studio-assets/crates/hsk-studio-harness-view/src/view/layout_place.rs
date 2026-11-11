@@ -24,6 +24,7 @@ use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::transform_math::{Affine2, ResampleFilter};
 use hsk_studio_session::{LAYOUT_RECORDS_ENTRY, LayoutRecords};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// The transform of a layout placement's record and instance: the frame places the pixels.
@@ -160,6 +161,30 @@ fn fit_refusal(e: FitError) -> PlaceRefusal {
     }
 }
 
+/// Applies `g`'s fit to it in `document`: the crop must leave a content box (`crop_empties_content`), layout's
+/// `place_graphic` places it, and `frame_to_content` writes the resized frame back into the record's page
+/// coordinates (each side at most 14400 pt, `frame_out_of_range`). Returns the placement.
+fn refit(document: &StudioDocument, g: &mut StudioGraphicFrame) -> Res<PlacedGraphic> {
+    if let Some(e) = &g.crop
+        && (g.content_width.value - e.left.value - e.right.value <= 0.0 || g.content_height.value - e.top.value - e.bottom.value <= 0.0)
+    {
+        return no("crop_empties_content", "the crop leaves no content box");
+    }
+    let placed = place_graphic(document, g).map_err(fit_refusal)?;
+    if g.fit == Some(StudioFit::FrameToContent) {
+        // The fitted frame is in spread coordinates; the record's bounds are the page's.
+        let unfitted = place_graphic(document, &StudioGraphicFrame { fit: None, ..g.clone() }).map_err(fit_refusal)?;
+        let page_x = unfitted.frame.x0_pt - g.bounds.x.value;
+        let f = placed.frame;
+        let (w, h) = (f.x1_pt - f.x0_pt, f.y1_pt - f.y0_pt);
+        if !(side_ok(w) && side_ok(h)) {
+            return no("frame_out_of_range", format!("the fitted frame is {w} x {h} pt; each side at most {} pt", PAGE_SIDE_PT.1));
+        }
+        g.bounds = Bounds { x: pt(f.x0_pt - page_x), y: pt(f.y0_pt), width: pt(w), height: pt(h) };
+    }
+    Ok(placed)
+}
+
 fn side_ok(v: f64) -> bool {
     v.is_finite() && v > 0.0 && v <= PAGE_SIDE_PT.1
 }
@@ -220,9 +245,54 @@ impl Viewer {
             .unwrap_or_default()
     }
 
-    /// `layer_id` is a layout graphic frame's layer.
-    pub(super) fn is_graphic_frame(&self, layer_id: &str) -> bool {
+    /// `layer_id` is a layout graphic frame's layer (one decode of the layout records: a command that asks for
+    /// several layers takes [`Viewer::graphic_frame_ids`] once instead).
+    pub(in crate::view) fn is_graphic_frame(&self, layer_id: &str) -> bool {
         self.graphic_frames_now().iter().any(|g| g.layer_id == layer_id)
+    }
+
+    /// The layer ids of every layout graphic frame, from one decode of the layout records.
+    pub(super) fn graphic_frame_ids(&self) -> BTreeSet<String> {
+        self.graphic_frames_now().into_iter().map(|g| g.layer_id).collect()
+    }
+
+    /// Deletes the graphic-frame layer `layer_id` and its frame record as ONE layout step (Layers > Delete on a
+    /// layout picture; undo restores both): the frame record would otherwise name a layer the document no
+    /// longer holds and every later layout edit would refuse `layout_records_stale`. The raster records entry
+    /// keeps the placement's record, inert until an undo brings the layer back (as for every deleted placement).
+    pub(in crate::view) fn delete_graphic_frame(&mut self, layer_id: &str) -> Result<u64, String> {
+        const OP: &str = "delete_layer";
+        let (mut document, mut records) = self.layout_state().map_err(|e| format!("delete: {e}"))?;
+        document.layers.retain(|l| l.layer_id != layer_id);
+        records.longdoc.graphic_frames.retain(|g| g.layer_id != layer_id);
+        if !self.run.submit_layout(OP, "layer.delete", document, records) {
+            let e = format!("delete: {}", self.op_error());
+            self.say(e.clone());
+            return Err(e);
+        }
+        if self.selected.as_deref() == Some(layer_id) {
+            self.selected = None;
+        }
+        self.dirty = true;
+        self.place_sync();
+        self.layout_sync();
+        let revision = self.revision_now();
+        self.say(format!("deleted {layer_id} and its graphic frame (revision {revision})"));
+        Ok(revision)
+    }
+
+    /// The frames of `layers` in `records` refitted to `content` (pt at 100 %, Update All Links of a source whose
+    /// pixel size or stated ppi changed): each keeps its stored fit, which is applied again ([`refit`]). The first
+    /// frame that cannot refit refuses with its layer id; `records` is then unchanged.
+    pub(super) fn refit_frames(document: &StudioDocument, records: &mut LayoutRecords, layers: &[String], content: [f64; 2]) -> Result<(), (String, PlaceRefusal)> {
+        let mut next = records.longdoc.graphic_frames.clone();
+        for g in next.iter_mut().filter(|g| layers.contains(&g.layer_id)) {
+            g.content_width = pt(content[0]);
+            g.content_height = pt(content[1]);
+            refit(document, g).map_err(|e| (g.layer_id.clone(), e))?;
+        }
+        records.longdoc.graphic_frames = next;
+        Ok(())
     }
 
     /// The source at its own pixels as new tiles of `layer_id` (no resample, no clip).
@@ -254,7 +324,7 @@ impl Viewer {
     }
 
     /// The layout editor's state as the session holds it: its document and the layout records it commits.
-    fn layout_state(&mut self) -> Res<(StudioDocument, LayoutRecords)> {
+    pub(super) fn layout_state(&mut self) -> Res<(StudioDocument, LayoutRecords)> {
         self.layout_sync();
         let ed = self.layout_editor().ok_or_else(|| PlaceRefusal::new("layout_editor_unavailable", "the layout editor did not open"))?;
         let (doc, rec) = (ed.doc(), ed.records());
@@ -389,18 +459,7 @@ impl Viewer {
             g.crop = Some(LayoutEdges { top: pt(t), right: pt(r), bottom: pt(b), left: pt(l) });
         }
         g.fit = resolve(Some(fit), g.frame_fitting)?;
-        let placed = place_graphic(&document, &g).map_err(fit_refusal)?;
-        if g.fit == Some(StudioFit::FrameToContent) {
-            // The fitted frame is in spread coordinates; the record's bounds are the page's.
-            let unfitted = place_graphic(&document, &StudioGraphicFrame { fit: None, ..g.clone() }).map_err(fit_refusal)?;
-            let page_x = unfitted.frame.x0_pt - g.bounds.x.value;
-            let f = placed.frame;
-            let (w, h) = (f.x1_pt - f.x0_pt, f.y1_pt - f.y0_pt);
-            if !(side_ok(w) && side_ok(h)) {
-                return no("frame_out_of_range", format!("the fitted frame is {w} x {h} pt; each side at most {} pt", PAGE_SIDE_PT.1));
-            }
-            g.bounds = Bounds { x: pt(f.x0_pt - page_x), y: pt(f.y0_pt), width: pt(w), height: pt(h) };
-        }
+        let placed = refit(&document, &mut g)?;
         if let Some(slot) = records.longdoc.graphic_frames.get_mut(index) {
             *slot = g.clone();
         }
@@ -419,7 +478,7 @@ impl Viewer {
 
     /// What the layout PDF needs of the placed pictures ([STU-ASSET-009]): per graphic frame of `frames` its
     /// placement (layout `place_graphic`, the content size scaled to the layer's tile grid, [`tile_extent`]) and a
-    /// receipt row `{layer_id, source_id, placement_kind, uri, content_digest, link_state}`. A linked placement
+    /// receipt row (each source's link state read once; `canceled` between frames) `{layer_id, source_id, placement_kind, uri, content_digest, link_state}`. A linked placement
     /// whose file is `modified`, `missing`, `unauthorized` or `unsupported` refuses `placed_link_<state>` (an
     /// unauthorized one names its layer only, never its path), one without a document folder `link_base_unknown`.
     pub(in crate::view) fn layout_pdf_placements(&self, doc: &StudioDocument, frames: &[StudioGraphicFrame]) -> Result<(Vec<PlacedGraphic>, Vec<Value>), (&'static str, String)> {
@@ -428,7 +487,11 @@ impl Viewer {
             None => None,
         };
         let (mut graphics, mut rows) = (Vec::with_capacity(frames.len()), Vec::new());
+        // Review F1 of fbf7f0cd: each linked file is opened and hashed once per export, however many frames share
+        // it, and the token is checked between frames.
+        let mut states: BTreeMap<&str, &'static str> = BTreeMap::new();
         for g in frames {
+            self.cancel.check().map_err(|_| ("canceled", "layout export".to_owned()))?;
             let mut placed = place_graphic(doc, g).map_err(|e| (e.code(), g.layer_id.clone()))?;
             let asset = entry.as_ref().and_then(|e| e.placed(&g.layer_id).map(|a| (e, a)));
             if let Some((e, a)) = asset {
@@ -436,7 +499,14 @@ impl Viewer {
                 let (kind, uri, digest, state) = match &source.location {
                     StudioPlacedMode::Embedded { content_digest, .. } => ("embedded", None, content_digest, "embedded"),
                     StudioPlacedMode::Linked { uri, content_digest, .. } => {
-                        let state = self.link_state(uri, content_digest);
+                        let state = match states.get(a.source_id.as_str()) {
+                            Some(s) => *s,
+                            None => {
+                                let s = self.link_state(uri, content_digest);
+                                states.insert(a.source_id.as_str(), s);
+                                s
+                            }
+                        };
                         let refused = match state {
                             "resolved" => None,
                             "modified" => Some("placed_link_modified"),
