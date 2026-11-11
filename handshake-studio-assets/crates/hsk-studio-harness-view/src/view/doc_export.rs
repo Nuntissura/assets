@@ -42,6 +42,7 @@ use super::Viewer;
 use super::develop::export_dialog::{any_group_on, read_watermark_graphic, receipt_json, stage_from_fields};
 use super::develop::{Refusal, SRGB_V4_ICC};
 use super::export::{create_unique_sibling, write_atomic, write_new};
+use super::job_admission::{refusal_json, settlement_json};
 use super::render::{self, Assets, LinearFrame, Prefer};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_develop::{DevelopedImage, ExportStage, apply_export_stage};
@@ -52,6 +53,7 @@ use hsk_studio_interop_psd as psd;
 use hsk_studio_interop_raster as raster;
 use hsk_studio_interop_tiff as tiff;
 use hsk_studio_prism::{Intent, MAX_WIDE_PIXELS, MAX_WIDE_PROFILE_BYTES, ProfileInput, WORKING_PROFILE_LINEAR_SRGB, WideEngine, WideSource, WideTransformRequest, profile_hash};
+use hsk_studio_session::{Action, AdmittedJob, JobOutcome};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -844,8 +846,14 @@ impl Viewer {
     /// document. One op record `export_document` with the run's attribution and one terminal Observe frame
     /// (`Run::record_host_outcome`). Returns the report (format, size, depth, colour, profile hash, resolution,
     /// notes, stage receipt, CMYK ink readout or PSD records and losses, path, revision).
+    ///
+    /// Admission (lane SMB-R60-FOLLOWUPS-1 item 1, HBR-HOST-004): after the path, source and open-document
+    /// checks and before anything is rendered or written, the export is one job admitted through the viewer's
+    /// JobPort ([`Viewer::set_job_port`]); `overloaded`, `canceled` or `stale_revision` refuse it typed with no
+    /// file written, and an admitted export settles once (`completed`, `canceled`, or `failed` with the
+    /// refusal's code), reported as the report's `job`.
     pub fn export_document(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
-        let result = self.export_document_inner(path, recipe, overwrite);
+        let result = self.export_document_admitted(path, recipe, overwrite);
         let recorded = match &result {
             Ok(r) => Ok(json!({"format": r["format"], "width": r["width"], "height": r["height"], "bytes": r["bytes"]})),
             Err(r) => Err(r.code),
@@ -858,13 +866,47 @@ impl Viewer {
         result
     }
 
-    fn export_document_inner(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
+    fn export_document_admitted(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
         if path.as_os_str().is_empty() {
             return Err(refuse("export_path", "no output path"));
         }
         if self.is_source(path) && !overwrite {
             return Err(refuse("export_over_source", path.display().to_string()));
         }
+        if self.run.snapshot().is_none() {
+            return Err(refuse("nothing_open", "open a document first"));
+        }
+        let job = self.admit_export_job()?;
+        let result = self.export_document_inner(path, recipe, overwrite);
+        self.settle_export_job(job, result)
+    }
+
+    /// One export job of the open document admitted through the viewer's JobPort before anything is
+    /// rendered or written (the `as_export_job` pattern of `layout_export`): a refusal is typed
+    /// `overloaded`, `canceled` or `stale_revision` with the port's detail.
+    pub(in crate::view) fn admit_export_job(&self) -> Result<AdmittedJob, Refusal> {
+        let admission = self.job_admission();
+        let head = self.document_head();
+        let correlation = admission.next_correlation();
+        admission.admit(admission.request(Action::Export, 0, head, correlation), head, self.cancel).map_err(|r| refuse(r.code(), refusal_json(r).to_string()))
+    }
+
+    /// Settles `job` once from its export's result: `completed` (`completed_stale` when the head moved),
+    /// `canceled`, or `failed` with the refusal's code; a result carries the settlement as `job`.
+    pub(in crate::view) fn settle_export_job(&self, job: AdmittedJob, result: Result<Value, Refusal>) -> Result<Value, Refusal> {
+        match result {
+            Ok(mut report) => {
+                report["job"] = settlement_json(&job.complete(self.document_head()));
+                Ok(report)
+            }
+            Err(e) => {
+                job.settle(if e.code == "canceled" { JobOutcome::Canceled } else { JobOutcome::Failed(e.code) });
+                Err(e)
+            }
+        }
+    }
+
+    fn export_document_inner(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
         let text = self.prepared_text().map_err(|e| refuse("render_text", e))?;
         let vectors = self.prepared_vectors().map_err(|e| refuse("render_vector", e))?;
         let snap = self.run.snapshot().ok_or_else(|| refuse("nothing_open", "open a document first"))?;

@@ -465,6 +465,13 @@ impl Viewer {
     /// stored settings, or every artboard when `settings` is given) by their stored settings, or by
     /// `settings` when given (nothing is stored), into `dir`. Returns `{files: [...], count, bytes}`.
     /// One op record `export.run` and one terminal Observe frame of counters.
+    ///
+    /// Admission (lane SMB-R60-FOLLOWUPS-1 item 2, HBR-HOST-004): once every output is planned and checked
+    /// (a plan refusal is typed before the port is asked) and before the first render or byte, the run is ONE
+    /// job admitted through the viewer's JobPort ([`Viewer::set_job_port`]); `overloaded`, `canceled` or
+    /// `stale_revision` refuse it typed with no file written, and an admitted run settles once (`completed`,
+    /// `completed_stale`, `canceled`, or `failed` with the refusal's code, files written before the failure
+    /// named as before), reported as the result's `job`.
     pub fn export_run(&mut self, dir: &Path, nodes: Option<&[String]>, settings: Option<Vec<StudioNodeRenderSetting>>, overwrite: bool) -> Result<Value, Refusal> {
         let result = self.export_run_inner(dir, nodes, settings, overwrite);
         let recorded = match &result {
@@ -577,6 +584,16 @@ impl Viewer {
             }
             jobs.push(Job { node, name, frame, notes: frame_notes });
         }
+        // The plan is checked: the run is one export job admitted before anything is rendered or written
+        // (lane SMB-R60-FOLLOWUPS-1 item 2, `Viewer::export_run` docs), settled once from its result.
+        let job = self.admit_export_job()?;
+        let result = self.write_planned(snap, &jobs, planned, vectors.as_ref(), overwrite);
+        self.settle_export_job(job, result)
+    }
+
+    /// The checked plan of a run (`export_run_inner`) rendered and written, in plan order.
+    fn write_planned(&self, snap: &Snapshot, jobs: &[Job], mut planned: Vec<Planned>, vectors: Option<&PreparedVectors>, overwrite: bool) -> Result<Value, Refusal> {
+        let doc = snap.document();
         // One target's outputs together, contents-only first, so one view and one render serve them.
         planned.sort_by_key(|p| (p.job, !p.setting.contents_only()));
         let text = self.prepared_text().map_err(|e| refuse("render_text", e))?;
@@ -604,7 +621,7 @@ impl Viewer {
             let encoded = match &p.setting {
                 StudioNodeRenderSetting::Png(r) | StudioNodeRenderSetting::Jpg(r) => {
                     if held.is_none() {
-                        let lin = render::render_linear_with_records(view, &self.assets, Some(&text), vectors.as_ref(), self.records.as_ref(), self.cancel)
+                        let lin = render::render_linear_with_records(view, &self.assets, Some(&text), vectors, self.records.as_ref(), self.cancel)
                             .map_err(|e| self.partial(refuse(e.code, e.detail), &written))?;
                         *held = Some(lin);
                         renders = renders.saturating_add(1);
