@@ -254,6 +254,7 @@ impl Harness {
             event_stats: BusinessEventStats::default(),
             ambient_causation: None,
             web: web_commands::WebHost::default(),
+            keyframes: motion_commands::KeyframeState::default(),
         }
     }
 }
@@ -457,6 +458,8 @@ pub struct Run<'a> {
     ambient_causation: Option<CausationId>,
     /// The web document host (lane SMB-WEB-HOST-1, [`Run::web_command`]).
     web: web_commands::WebHost,
+    /// Keyframe selection and clipboard (lane SMB-MOTION-COMMANDS-2; view state, not saved).
+    keyframes: motion_commands::KeyframeState,
 }
 
 impl Run<'_> {

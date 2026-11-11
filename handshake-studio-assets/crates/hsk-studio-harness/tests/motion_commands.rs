@@ -184,7 +184,9 @@ fn step_33_38_40_55_layer_kinds_parent_matte_and_switches() {
         let pre = cmd(run, "composition.add_layer", json!({"composition_id": "main", "kind": "precomp", "source_composition_id": "nested"}))["layer_id"].as_str().unwrap().to_string();
         assert_eq!(layer(run, &pre)["precomp"]["composition_id"], "nested");
         assert_eq!(refused(run, "composition.add_layer", json!({"composition_id": "main", "kind": "precomp", "source_composition_id": "missing"})), "dangling_reference");
-        assert_eq!(refused(run, "composition.add_layer", json!({"composition_id": "main", "kind": "solid"})), "layer_kind_unsupported");
+        // Lane SMB-MOTION-COMMANDS-2 made `solid` a kind (its colour is required); footage is not.
+        assert_eq!(refused(run, "composition.add_layer", json!({"composition_id": "main", "kind": "solid"})), "parameter_missing");
+        assert_eq!(refused(run, "composition.add_layer", json!({"composition_id": "main", "kind": "footage"})), "layer_kind_unsupported");
         assert_eq!(refused(run, "composition.add_layer", json!({"composition_id": "main", "kind": "existing", "layer_id": L2})), "duplicate_identity");
         assert_eq!(refused(run, "composition.add_layer", json!({"composition_id": "main", "kind": "null", "at": 999})), "parameter_invalid");
         // Parent (step 33) and its typed cycle refusal.

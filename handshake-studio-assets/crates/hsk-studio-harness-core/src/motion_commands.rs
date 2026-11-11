@@ -25,10 +25,42 @@
 //! feature `media` test `add_at_current_leaves_the_real_evaluator_unchanged` pins it to motion through
 //! composite's scene evaluation.
 //!
+//! Layer kinds (lane SMB-MOTION-COMMANDS-2, [STU-MOT-005]): `composition.add_layer` creates `null`,
+//! `shape`, `camera`, `light`, `precomp`, `solid` (an empty raster document layer and a Folio
+//! `StudioSolidLayer`: `colour` required, `width` and `height` default to the composition's;
+//! `composition.set_solid` edits them) and `adjustment` (a document layer of kind `adjustment` with a
+//! `group` payload: the composition adjustment layer of [STU-CMP-015], whose effect stack composite
+//! applies to everything beneath it); `existing` adds a document layer that exists. `footage`, `guide`
+//! and `text` are `layer_kind_unsupported`: a text layer is placed with `vector.place_text_with_font`
+//! and added with `existing`. A parameter of one kind given to another is refused, never ignored.
+//!
+//! Keyframe selection and clipboard ([STU-MOT-038], [STU-MOT-037]; lane SMB-MOTION-COMMANDS-2): run
+//! state ([`KeyframeState`]), never a document entry, no history step, not saved. `keyframe.select`
+//! (scope `property|layer|composition`, mode `replace|add|remove`, optional `times`),
+//! `keyframe.deselect_all` and `keyframe.selection` (the selected keys and the count of keys dropped
+//! because an edit, undo or redo removed them) read the records; `keyframe.copy` copies the selection
+//! (one layer) or an explicit `layer_id`, `property` and `times`. The editing rows are one named
+//! step each: `keyframe.paste` places the earliest copied key at `time` with relative order kept, into
+//! the copied addresses or one `property` of the same dimension (`paste_property_mismatch`), a key at
+//! an occupied tick replaced (Studio reading), `reverse` mirroring the times about the copied span
+//! and swapping each key's in and out interpolation and tangents (Studio reading);
+//! `keyframe.shift_selected` moves the selection by `frames` composition frames (non-zero; the
+//! selection follows); `keyframe.ease` (`side both|in|out`) and `keyframe.toggle_hold` mirror motion's
+//! `assistants::ease` and `toggle_hold` per property (bezier, speed 0, influence 0.16666666666; hold,
+//! or linear without tangent when every selected key of the property holds), pinned by the composite
+//! test `motion_ease_and_hold_write_the_values_the_harness_mirror_writes` and the feature `media`
+//! test `eased_keys_evaluate_as_motion_reads_the_stored_ease`. A selection or clipboard over
+//! [`MAX_SELECTED_KEYS`] keys is refused before it is built. Vendor parity of the paste collision,
+//! the reverse swap and the ease influence (After Effects F9 uses 33.33 percent) is UNVERIFIED (D5).
+//!
 //! Declared limits: a composition property has no expression store in Folio, so `expression.set_source`
 //! edits the expression field that exists (a text selector's `source`); a `recordable: false` row is
-//! reported `not_recordable` while recording; `set_parent` does not compensate the child's transform;
-//! keyframe selection, copy and paste are not commands here.
+//! reported `not_recordable` while recording; `set_parent` does not compensate the child's transform
+//! (stated in its result, `transform_compensated: false`); `keyframe.add_at_current` and
+//! `keyframe.toggle_at_current` take no caller value (`parameter_invalid`) and refuse a property
+//! whose current value composite alone knows (`property_default_unknown`);
+//! a copy spans one layer (`copy_spans_layers`); no footage or guide kind; spatial tangents are not
+//! stored (Folio).
 #![deny(clippy::arithmetic_side_effects)]
 use super::{EntryRestore, HistoryStep, Place, PlacementWrite, Run};
 use crate::action::{self, CommandEntry, ValueType};
@@ -38,7 +70,7 @@ use hsk_studio_folio::{
     StudioCompositionLayer, StudioCompositionMask, StudioCompositionMotionSettings, StudioCompositionRecords, StudioCompositionWorkArea, StudioCornerPin, StudioDocument, StudioFrameBlending,
     StudioFrameRate, StudioInterpolation as Interp, StudioKeyedValue, StudioLayer, StudioLayer3d, StudioLayerProperty, StudioLayerTiming, StudioLightOptions,
     StudioMotionRecords, StudioOutputModule, StudioPrecompSource, StudioPropertyStream, StudioRational, StudioRenderQueueItem, StudioRenderSettings, StudioShapeField, StudioShapeGroup, StudioShapeItem,
-    StudioShapeLayer, StudioShapeStream, StudioTemporalTangent, StudioTextAnimator, StudioTextAnimators, StudioTextParam, StudioTextSelector, StudioTextStream, StudioTrackMatte,
+    StudioShapeLayer, StudioShapeStream, StudioSolidLayer, StudioTemporalTangent, StudioTextAnimator, StudioTextAnimators, StudioTextParam, StudioTextSelector, StudioTextStream, StudioTrackMatte,
 };
 use hsk_studio_session::{COMPOSITION_ENTRY, MOTION_ENTRY, SessionError, session_error_diagnostic};
 use serde_json::{Map, Value, json};
@@ -53,6 +85,24 @@ const CHORD_INFLUENCE: f64 = 1.0 / 6.0;
 const BISECTION_STEPS: u32 = 64;
 /// Angle of view of a new camera (composite `three_d::default_camera`).
 const DEFAULT_CAMERA_ANGLE: f64 = 39.5978;
+
+/// Most keys one selection or the clipboard holds (V4-02; counted before either is built).
+pub const MAX_SELECTED_KEYS: usize = 65_536;
+
+/// One selected key: layer id, property address, tick.
+type KeyRef = (String, String, u64);
+/// Keyed property addresses of one layer with their keys.
+type LayerKeys<'a> = Vec<(String, &'a [Key])>;
+/// (layer id, property address, keys) rows a selection is gathered from.
+type KeyRows<'a> = Vec<(&'a str, &'a str, &'a [Key])>;
+
+/// The keyframe selection and clipboard of one run (module docs).
+#[derive(Clone, Debug, Default)]
+pub struct KeyframeState {
+    selected: BTreeSet<KeyRef>,
+    /// Property address -> copied keys (sorted by time), of one layer.
+    clipboard: Vec<(String, Vec<Key>)>,
+}
 
 /// The `STUDIO_*` id [STU-MOT-130] names for a row: `composition.new` is `STUDIO_COMPOSITION_NEW`.
 pub fn spec_id(command_id: &str) -> String {
@@ -229,6 +279,22 @@ struct Edit<'r> {
     motion: Option<StudioMotionRecords>,
     create: Vec<(StudioLayer, folio::Operation)>,
     detail: Map<String, Value>,
+    /// The run's selection and clipboard, and what a successful command leaves there.
+    keys: &'r KeyframeState,
+    next_keys: Option<KeyframeState>,
+    /// The step's name when it is not the row's display name.
+    label: Option<&'static str>,
+}
+
+/// The document layer a command creates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NewLayer {
+    /// A content-less group (null, camera, light, precomposition).
+    Group,
+    /// An empty raster layer (shape, solid).
+    Raster,
+    /// A composition adjustment layer: kind `adjustment`, payload `group` (STU-CMP-015).
+    Adjustment,
 }
 
 impl Edit<'_> {
@@ -273,17 +339,18 @@ impl Edit<'_> {
         }
     }
     /// A document layer this command creates, placed at the top of the document's stack.
-    fn create_layer(&mut self, id: &str, name: &str, group: bool) -> R<()> {
+    fn create_layer(&mut self, id: &str, name: &str, kind: NewLayer) -> R<()> {
         if self.layer_taken(id) {
             return no("duplicate_identity", id);
         }
-        let (kind, payload, op) = if group {
-            ("group", json!({"payload_kind": "group"}), json!({"layer_id": id, "operation_key": "mix", "operation_kind": "composite",
+        let source = || json!({"layer_id": id, "operation_key": "source", "operation_kind": "source", "inputs": [],
+            "outputs": [{"port_key": "out", "value_type": "image", "cardinality": "one", "semantic": "source"}]});
+        let (kind, payload, op) = match kind {
+            NewLayer::Group => ("group", json!({"payload_kind": "group"}), json!({"layer_id": id, "operation_key": "mix", "operation_kind": "composite",
                 "inputs": [{"port_key": "inputs", "value_type": "image", "cardinality": "many", "semantic": "ordered_composite"}],
-                "outputs": [{"port_key": "out", "value_type": "image", "cardinality": "one", "semantic": "composite_result"}]}))
-        } else {
-            ("raster", json!({"payload_kind": "raster", "tiles": []}), json!({"layer_id": id, "operation_key": "source", "operation_kind": "source", "inputs": [],
-                "outputs": [{"port_key": "out", "value_type": "image", "cardinality": "one", "semantic": "source"}]}))
+                "outputs": [{"port_key": "out", "value_type": "image", "cardinality": "one", "semantic": "composite_result"}]})),
+            NewLayer::Raster => ("raster", json!({"payload_kind": "raster", "tiles": []}), source()),
+            NewLayer::Adjustment => ("adjustment", json!({"payload_kind": "group"}), source()),
         };
         let layer = serde_json::from_value(json!({"schema_id": "hsk.studio.layer@1", "layer_id": id, "name": name, "parent": null, "kind": kind, "payload": payload, "visible": true}));
         let (Ok(layer), Ok(op)) = (layer, serde_json::from_value(op)) else {
@@ -294,8 +361,8 @@ impl Edit<'_> {
     }
     /// A document layer that copies `source` (kind, payload, visibility, appearance) under a new id
     /// and name, placed like [`Edit::create_layer`]: the copy renders as the source does.
-    fn create_copy(&mut self, source: &StudioLayer, id: &str, name: &str, group: bool) -> R<()> {
-        self.create_layer(id, name, group)?;
+    fn create_copy(&mut self, source: &StudioLayer, id: &str, name: &str, kind: NewLayer) -> R<()> {
+        self.create_layer(id, name, kind)?;
         if let Some((layer, _)) = self.create.last_mut() {
             let mut copy = source.clone();
             copy.layer_id = id.to_string();
@@ -339,8 +406,22 @@ pub(super) fn run(run: &mut Run<'_>, command_id: &str, params: &Value) -> bool {
             target(run, &at);
             r
         }
-        Ok(planned) if !row.mutates_authority => run.own_op(op, before, Ok(Value::Object(planned.detail))),
-        Ok(planned) => commit(run, row, before, planned),
+        Ok(mut planned) if !row.mutates_authority => {
+            let keys = planned.keys.take();
+            let r = run.own_op(op, before, Ok(Value::Object(planned.detail)));
+            if let Some(k) = keys {
+                run.keyframes = k;
+            }
+            r
+        }
+        Ok(mut planned) => {
+            let keys = planned.keys.take();
+            let ok = commit(run, row, before, planned);
+            if ok && let Some(k) = keys {
+                run.keyframes = k;
+            }
+            ok
+        }
     }
 }
 
@@ -356,6 +437,8 @@ struct Planned {
     motion: Option<Option<Vec<u8>>>,
     create: Vec<(StudioLayer, folio::Operation)>,
     detail: Map<String, Value>,
+    keys: Option<KeyframeState>,
+    label: Option<&'static str>,
 }
 
 fn plan(run: &Run<'_>, row: &'static CommandEntry, params: &Value) -> R<Planned> {
@@ -381,11 +464,11 @@ fn plan(run: &Run<'_>, row: &'static CommandEntry, params: &Value) -> R<Planned>
         // Vector, raster or other records keyed by the layer id would not follow the copy.
         return no("layer_duplicate_unsupported", id);
     }
-    let mut edit = Edit { row, doc, comp, motion, create: Vec::new(), detail: Map::new() };
+    let mut edit = Edit { row, doc, comp, motion, create: Vec::new(), detail: Map::new(), keys: &run.keyframes, next_keys: None, label: None };
     apply(&mut edit, &P(map))?;
-    let Edit { comp, motion, create, detail, .. } = edit;
+    let Edit { comp, motion, create, detail, next_keys: keys, label, .. } = edit;
     if !row.mutates_authority {
-        return Ok(Planned { composition: None, motion: None, create, detail });
+        return Ok(Planned { composition: None, motion: None, create, detail, keys, label });
     }
     let created: Vec<StudioLayer> = create.iter().map(|(l, _)| l.clone()).collect();
     let (comp_bytes, motion_bytes) = session.motion_entries_bytes(&comp, motion.as_ref(), &created, &*resolver, run.cancel).map_err(|e| session_no(&e))?;
@@ -394,7 +477,7 @@ fn plan(run: &Run<'_>, row: &'static CommandEntry, params: &Value) -> R<Planned>
     if composition.is_none() && motion.is_none() && create.is_empty() {
         return no("nothing_to_change", row.command_id);
     }
-    Ok(Planned { composition, motion, create, detail })
+    Ok(Planned { composition, motion, create, detail, keys, label })
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -404,7 +487,8 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// Commits a plan as one record and one history step (module docs).
 fn commit(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, planned: Planned) -> bool {
     let op = row.command_id;
-    let Planned { composition, motion, create, detail } = planned;
+    let Planned { composition, motion, create, detail, label, .. } = planned;
+    let label = label.unwrap_or(row.display_name);
     let entry = |run: &Run<'_>, token: &str| run.session.as_ref().and_then(|s| s.document_entry(token)).map(<[u8]>::to_vec);
     let mut restores = Vec::new();
     if composition.is_some() {
@@ -414,7 +498,7 @@ fn commit(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, planned:
         restores.push(EntryRestore { token: MOTION_ENTRY.to_string(), bytes: entry(run, MOTION_ENTRY) });
     }
     if create.is_empty() {
-        return commit_entries(run, row, before, (composition, motion), restores, Vec::new(), detail);
+        return commit_entries(run, row, label, before, (composition, motion), restores, Vec::new(), detail);
     }
     // A refusal after the layer was created takes the layer back and keeps the redo history.
     run.keeping_redo_without_new_step(|run| {
@@ -424,12 +508,13 @@ fn commit(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, planned:
             return false;
         }
         let steps: Vec<HistoryStep> = if run.undo_stack.len() > depth { run.undo_stack.pop().into_iter().collect() } else { Vec::new() };
-        commit_entries(run, row, before, (composition, motion), restores, steps, detail)
+        commit_entries(run, row, label, before, (composition, motion), restores, steps, detail)
     })
 }
 
 /// The entry writes of a plan and its one history step; `steps` holds the layer commit, if any.
-fn commit_entries(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, entries: (Option<Vec<u8>>, Option<Option<Vec<u8>>>), restores: Vec<EntryRestore>, mut steps: Vec<HistoryStep>, mut detail: Map<String, Value>) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn commit_entries(run: &mut Run<'_>, row: &'static CommandEntry, label: &str, before: usize, entries: (Option<Vec<u8>>, Option<Option<Vec<u8>>>), restores: Vec<EntryRestore>, mut steps: Vec<HistoryStep>, mut detail: Map<String, Value>) -> bool {
     let op = row.command_id;
     let cancel = run.cancel;
     let (composition, motion) = entries;
@@ -468,9 +553,9 @@ fn commit_entries(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, 
         let revision = run.revision().unwrap_or(0);
         let ctx = ctx.unwrap_or_else(|| run.context.command(Some(op), revision, None));
         for restore in restores {
-            steps.push(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, layout: None, ctx: ctx.clone(), revision });
+            steps.push(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, layout: None, ctx: ctx.clone(), revision });
         }
-        push_step(run, row, steps, ctx, revision);
+        push_step(run, label, steps, ctx, revision);
         if let Some(record) = run.ops.last_mut() {
             for (k, v) in std::mem::take(&mut detail) {
                 record["detail"][k] = v;
@@ -481,22 +566,22 @@ fn commit_entries(run: &mut Run<'_>, row: &'static CommandEntry, before: usize, 
     let revision = run.revision().unwrap_or(0);
     let ctx = ctx.unwrap_or_else(|| run.context.command(Some(op), revision, None));
     for restore in restores {
-        steps.push(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, layout: None, ctx: ctx.clone(), revision });
+        steps.push(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, layout: None, ctx: ctx.clone(), revision });
     }
-    push_step(run, row, steps, ctx, revision);
-    detail.insert("step".to_string(), json!(row.display_name));
+    push_step(run, label, steps, ctx, revision);
+    detail.insert("step".to_string(), json!(label));
     run.own_op(op, before, Ok(Value::Object(detail)))
 }
 
 /// The steps as ONE history entry, named by the row: one step as it is, several as a group.
-fn push_step(run: &mut Run<'_>, row: &CommandEntry, mut steps: Vec<HistoryStep>, ctx: hsk_studio_accord::CommandContext, revision: u64) {
+fn push_step(run: &mut Run<'_>, label: &str, mut steps: Vec<HistoryStep>, ctx: hsk_studio_accord::CommandContext, revision: u64) {
     let step = if steps.len() == 1 {
         steps.pop()
     } else {
-        Some(HistoryStep { label: row.display_name.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps), sequences: None, containers: None, layout: None, ctx, revision })
+        Some(HistoryStep { label: label.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(steps), sequences: None, containers: None, layout: None, ctx, revision })
     };
     if let Some(mut step) = step {
-        step.label = row.display_name.to_string();
+        step.label = label.to_string();
         run.undo_stack.push(step);
         run.redo_stack.clear();
     }
@@ -563,6 +648,27 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             if q.output_modules.len() == n { no("output_module_not_found", &module) } else { Ok(()) }
         }
         "composition.add_layer" => layer_add(e, p),
+        "composition.set_solid" => solid_set(e, p),
+        "keyframe.select" => key_select(e, p),
+        "keyframe.deselect_all" => {
+            e.next_keys = Some(KeyframeState { selected: BTreeSet::new(), clipboard: e.keys.clipboard.clone() });
+            e.say("selected", json!(0));
+            Ok(())
+        }
+        "keyframe.selection" => {
+            let (selected, dropped) = live(e);
+            let keys: Vec<Value> = selected.iter().map(|(l, p, t)| json!({"layer_id": l, "property": p, "time": t})).collect();
+            e.say("selected", json!(selected.len()));
+            e.say("dropped", json!(dropped));
+            e.say("keys", Value::Array(keys));
+            e.next_keys = Some(KeyframeState { selected, clipboard: e.keys.clipboard.clone() });
+            Ok(())
+        }
+        "keyframe.copy" => key_copy(e, p),
+        "keyframe.paste" => key_paste(e, p),
+        "keyframe.shift_selected" => key_shift_selected(e, p),
+        "keyframe.ease" => key_ease(e, p),
+        "keyframe.toggle_hold" => key_toggle_hold(e),
         "composition.remove_layer" => {
             let id = p.text("layer_id")?;
             remove_layer_records(e, &id)?;
@@ -842,6 +948,7 @@ fn composition_delete(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     if let Some(m) = e.motion.as_mut() {
         // The records of the composition go with it; a queue item that names it stays, and Folio refuses.
         m.shape_layers.retain(|s| !layers.contains(&s.layer_id));
+        m.solid_layers.retain(|s| !layers.contains(&s.layer_id));
         m.text_animators.retain(|t| !layers.contains(&t.layer_id));
         m.composition_audio.retain(|a| a.composition_id != id);
         m.composition_settings.retain(|s| s.composition_id != id);
@@ -983,9 +1090,9 @@ fn queue_item<'e>(e: &'e mut Edit<'_>, id: &str) -> R<&'e mut StudioRenderQueueI
 fn layer_add(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     let comp_id = p.text("composition_id")?;
     let kind = p.text("kind")?;
-    let (duration, width, stack) = {
+    let (duration, width, height, stack) = {
         let c = e.composition_mut(&comp_id)?;
-        (c.duration, c.width, c.layers.len())
+        (c.duration, c.width, c.height, c.layers.len())
     };
     let wanted: Option<String> = opt!(p, "layer_id")?;
     let id = match kind.as_str() {
@@ -993,9 +1100,15 @@ fn layer_add(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             Some(id) => id,
             None => return no("parameter_missing", "layer_id"),
         },
-        "null" | "shape" | "camera" | "light" | "precomp" => e.new_layer_id(wanted)?,
+        "null" | "shape" | "camera" | "light" | "precomp" | "solid" | "adjustment" => e.new_layer_id(wanted)?,
         other => return no("layer_kind_unsupported", other),
     };
+    // A solid's parameters on another kind are refused, never ignored.
+    if kind != "solid"
+        && let Some(key) = ["colour", "width", "height"].into_iter().find(|k| p.has(k))
+    {
+        return no("parameter_invalid", key);
+    }
     let at: usize = opt!(p, "at")?.unwrap_or(0);
     if at > stack {
         return no("parameter_invalid", "at");
@@ -1022,21 +1135,28 @@ fn layer_add(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     let members: Vec<(&str, &Value)> = options.iter().map(|(k, v)| (k.as_str(), v)).collect();
     match kind.as_str() {
         "existing" => {}
-        "null" => e.create_layer(&id, name.as_deref().unwrap_or("Null"), true)?,
+        "null" => e.create_layer(&id, name.as_deref().unwrap_or("Null"), NewLayer::Group)?,
+        "solid" => {
+            let colour: [f64; 4] = req!(p, "colour")?;
+            let (w, h): (Option<u32>, Option<u32>) = (opt!(p, "width")?, opt!(p, "height")?);
+            e.create_layer(&id, name.as_deref().unwrap_or("Solid"), NewLayer::Raster)?;
+            e.motion_mut().solid_layers.push(StudioSolidLayer { layer_id: id.clone(), width: w.unwrap_or(width), height: h.unwrap_or(height), colour });
+        }
+        "adjustment" => e.create_layer(&id, name.as_deref().unwrap_or("Adjustment Layer"), NewLayer::Adjustment)?,
         "shape" => {
-            e.create_layer(&id, name.as_deref().unwrap_or("Shape"), false)?;
+            e.create_layer(&id, name.as_deref().unwrap_or("Shape"), NewLayer::Raster)?;
             let root: StudioShapeGroup = opt!(p, "root")?.unwrap_or_default();
             e.motion_mut().shape_layers.push(StudioShapeLayer { layer_id: id.clone(), root, streams: Vec::new() });
         }
         "camera" => {
-            e.create_layer(&id, name.as_deref().unwrap_or("Camera"), true)?;
+            e.create_layer(&id, name.as_deref().unwrap_or("Camera"), NewLayer::Group)?;
             let zoom = folio::camera_zoom_of_angle(DEFAULT_CAMERA_ANGLE, f64::from(width));
             let camera = StudioCameraOptions { zoom: StudioKeyedValue::constant(vec![zoom]), point_of_interest: None, depth_of_field: false, iris_shape: folio::StudioIrisShape::default(), values: BTreeMap::new() };
             layer.camera = Some(overlay!(&camera, &members)?);
             layer.three_d = Some(StudioLayer3d::default());
         }
         "light" => {
-            e.create_layer(&id, name.as_deref().unwrap_or("Light"), true)?;
+            e.create_layer(&id, name.as_deref().unwrap_or("Light"), NewLayer::Group)?;
             let light = StudioLightOptions {
                 light_type: folio::StudioLightType::Point,
                 colour: StudioKeyedValue::constant(vec![1.0, 1.0, 1.0]),
@@ -1053,12 +1173,33 @@ fn layer_add(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             layer.three_d = Some(StudioLayer3d::default());
         }
         _ => {
-            e.create_layer(&id, name.as_deref().unwrap_or("Pre-comp"), true)?;
+            e.create_layer(&id, name.as_deref().unwrap_or("Pre-comp"), NewLayer::Group)?;
             layer.precomp = Some(StudioPrecompSource { composition_id: req!(p, "source_composition_id")?, collapse_transformations: opt!(p, "collapse_transformations")?.unwrap_or(false) });
         }
     }
     e.composition_mut(&comp_id)?.layers.insert(at, layer);
     e.say("layer_id", json!(&id));
+    Ok(())
+}
+
+/// `composition.set_solid`: a solid's colour and size (module docs).
+fn solid_set(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
+    let id = p.text("layer_id")?;
+    let colour: Option<[f64; 4]> = opt!(p, "colour")?;
+    let (w, h): (Option<u32>, Option<u32>) = (opt!(p, "width")?, opt!(p, "height")?);
+    e.layer_mut(&id)?;
+    let Some(s) = e.motion.as_mut().and_then(|m| m.solid_layers.iter_mut().find(|s| s.layer_id == id)) else {
+        return no("layer_not_solid", &id);
+    };
+    if let Some(c) = colour {
+        s.colour = c;
+    }
+    if let Some(w) = w {
+        s.width = w;
+    }
+    if let Some(h) = h {
+        s.height = h;
+    }
     Ok(())
 }
 
@@ -1077,6 +1218,7 @@ fn remove_layer_records(e: &mut Edit<'_>, id: &str) -> R<()> {
     }
     if let Some(m) = e.motion.as_mut() {
         m.shape_layers.retain(|s| s.layer_id != id);
+        m.solid_layers.retain(|s| s.layer_id != id);
         m.text_animators.retain(|t| t.layer_id != id);
         for s in &mut m.composition_settings {
             s.motion_blur_layers.retain(|l| l != id);
@@ -1093,15 +1235,16 @@ fn layer_duplicate(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     let Some(source) = e.doc.layers.iter().find(|l| l.layer_id == id) else {
         return no("layer_not_in_composition", &id);
     };
-    let group = match &source.payload {
-        folio::Payload::Group => true,
-        folio::Payload::Raster { tiles } if tiles.is_empty() => false,
+    let kind = match &source.payload {
+        folio::Payload::Group if source.kind == "adjustment" => NewLayer::Adjustment,
+        folio::Payload::Group => NewLayer::Group,
+        folio::Payload::Raster { tiles } if tiles.is_empty() => NewLayer::Raster,
         // A content layer's tiles, paths or story bind to its id: a copy is a content operation.
         _ => return no("layer_duplicate_unsupported", &id),
     };
     let name: Option<String> = opt!(p, "name")?;
     let source = source.clone();
-    e.create_copy(&source, &new_id, name.as_deref().unwrap_or(&source.name), group)?;
+    e.create_copy(&source, &new_id, name.as_deref().unwrap_or(&source.name), kind)?;
     let c = e.composition_mut(&owner)?;
     let Some(at) = c.layers.iter().position(|l| l.layer_id == id) else {
         return no("layer_not_in_composition", &id);
@@ -1113,6 +1256,11 @@ fn layer_duplicate(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         && let Some(s) = m.shape_layer(&id).cloned()
     {
         m.shape_layers.push(StudioShapeLayer { layer_id: new_id.clone(), ..s });
+    }
+    if let Some(m) = e.motion.as_mut()
+        && let Some(s) = m.solid_layer(&id).cloned()
+    {
+        m.solid_layers.push(StudioSolidLayer { layer_id: new_id.clone(), ..s });
     }
     e.say("layer_id", json!(&new_id));
     Ok(())
@@ -1211,7 +1359,7 @@ fn precompose(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             m.composition_settings.push(inner);
         }
     }
-    e.create_layer(&outer_id, &name, true)?;
+    e.create_layer(&outer_id, &name, NewLayer::Group)?;
     e.say("composition_id", json!(&new_id));
     e.say("layer_id", json!(&outer_id));
     Ok(())
@@ -1818,6 +1966,361 @@ fn key_shift(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     Ok(())
 }
 
+// ----- keyframe selection, clipboard and assistants (lane SMB-MOTION-COMMANDS-2) ------------------
+
+/// The wire name of a unit enumeration member (harness-core names no serde trait: a macro).
+macro_rules! named {
+    ($v:expr) => {
+        serde_json::to_value($v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+    };
+}
+
+fn add_keys<'a>(out: &mut Vec<(String, &'a [Key])>, address: String, keys: &'a [Key]) {
+    if !keys.is_empty() {
+        out.push((address, keys));
+    }
+}
+
+fn add_member<'a>(out: &mut Vec<(String, &'a [Key])>, address: String, v: Option<&'a StudioKeyedValue>) {
+    if let Some(v) = v {
+        add_keys(out, address, &v.keyframes);
+    }
+}
+
+/// Every keyed property address of composition layer `l` (module docs: the addresses `slot`
+/// resolves) with its keys.
+fn layer_keys<'a>(l: &'a StudioCompositionLayer, m: Option<&'a StudioMotionRecords>) -> Vec<(String, &'a [Key])> {
+    let mut out = Vec::new();
+    for s in &l.streams {
+        add_keys(&mut out, named!(s.property), &s.keyframes);
+    }
+    add_member(&mut out, "time_remap".into(), l.time_remap.as_ref());
+    if let Some(c) = &l.corner_pin {
+        add_keys(&mut out, "corner_pin".into(), &c.keyframes);
+    }
+    if let Some(d) = &l.three_d {
+        for (name, v) in [("position_z", &d.position_z), ("anchor_z", &d.anchor_z), ("rotation_x", &d.rotation_x), ("rotation_y", &d.rotation_y), ("orientation", &d.orientation)] {
+            add_member(&mut out, format!("three_d.{name}"), v.as_ref());
+        }
+        for (k, v) in &d.material.values {
+            add_keys(&mut out, format!("three_d.material.{k}"), &v.keyframes);
+        }
+    }
+    if let Some(c) = &l.camera {
+        add_keys(&mut out, "camera.zoom".into(), &c.zoom.keyframes);
+        add_member(&mut out, "camera.point_of_interest".into(), c.point_of_interest.as_ref());
+        for (k, v) in &c.values {
+            add_keys(&mut out, format!("camera.{k}"), &v.keyframes);
+        }
+    }
+    if let Some(c) = &l.light {
+        add_keys(&mut out, "light.colour".into(), &c.colour.keyframes);
+        add_keys(&mut out, "light.intensity".into(), &c.intensity.keyframes);
+        add_member(&mut out, "light.point_of_interest".into(), c.point_of_interest.as_ref());
+        for (k, v) in &c.values {
+            add_keys(&mut out, format!("light.{k}"), &v.keyframes);
+        }
+    }
+    for fx in &l.effects {
+        for (k, v) in &fx.values {
+            add_keys(&mut out, format!("effect.{}.{k}", fx.effect_id), &v.keyframes);
+        }
+    }
+    for mask in &l.masks {
+        let id = &mask.mask_id;
+        add_keys(&mut out, format!("mask.{id}.path"), &mask.keyframes);
+        add_member(&mut out, format!("mask.{id}.feather"), mask.feather.as_ref());
+        add_member(&mut out, format!("mask.{id}.opacity"), mask.opacity.as_ref());
+        add_member(&mut out, format!("mask.{id}.expansion"), mask.expansion.as_ref());
+    }
+    if let Some(shape) = m.and_then(|m| m.shape_layer(&l.layer_id)) {
+        for st in &shape.streams {
+            let path: Vec<String> = st.path.iter().map(u32::to_string).collect();
+            let address = if path.is_empty() { format!("shape.{}", named!(st.field)) } else { format!("shape.{}.{}", path.join("."), named!(st.field)) };
+            add_keys(&mut out, address, &st.value.keyframes);
+        }
+    }
+    if let Some(text) = m.and_then(|m| m.text_animators(&l.layer_id)) {
+        for st in &text.streams {
+            let address = if st.param.on_selector() { format!("text.{}.{}.{}", st.animator, st.selector, named!(st.param)) } else { format!("text.{}.{}", st.animator, named!(st.param)) };
+            add_keys(&mut out, address, &st.value.keyframes);
+        }
+    }
+    out
+}
+
+/// The keys at `(layer, property address)`: counted, then collected, refused over
+/// [`MAX_SELECTED_KEYS`] before the selection is built; every one of `times` must be a key there.
+fn gather(entries: &[(&str, &str, &[Key])], times: Option<&BTreeSet<u64>>) -> R<Vec<KeyRef>> {
+    let chosen = |k: &Key| times.is_none_or(|ts| ts.contains(&k.time));
+    let count = entries.iter().map(|(_, _, keys)| keys.iter().filter(|k| chosen(k)).count()).fold(0usize, usize::saturating_add);
+    if count > MAX_SELECTED_KEYS {
+        return no("selection_over_cap", &count.to_string());
+    }
+    if let Some(t) = times.into_iter().flatten().find(|t| !entries.iter().any(|(_, _, keys)| keys.iter().any(|k| k.time == **t))) {
+        return no("keyframe_not_found", &t.to_string());
+    }
+    let mut out = Vec::with_capacity(count);
+    for (layer, address, keys) in entries {
+        out.extend(keys.iter().filter(|k| chosen(k)).map(|k| ((*layer).to_string(), (*address).to_string(), k.time)));
+    }
+    Ok(out)
+}
+
+/// The keys of one property address on `layer_id` (its address checked; a property that is not
+/// yet stored has none).
+fn property_keys(e: &Edit<'_>, layer_id: &str, prop: &str) -> R<Vec<Key>> {
+    let mut probe = Edit { row: e.row, doc: e.doc, comp: e.comp.clone(), motion: e.motion.clone(), create: Vec::new(), detail: Map::new(), keys: e.keys, next_keys: None, label: None };
+    match slot(&mut probe, layer_id, prop, None) {
+        Ok(((_, keys), _)) => Ok(keys.clone()),
+        Err(No("property_default_unknown", _)) => Ok(Vec::new()),
+        Err(other) => Err(other),
+    }
+}
+
+/// The selection with every key an edit, undo or redo removed dropped, and the dropped count.
+fn live(e: &Edit<'_>) -> (BTreeSet<KeyRef>, usize) {
+    let mut present: BTreeMap<&str, BTreeSet<(String, u64)>> = BTreeMap::new();
+    let (mut keep, mut dropped) = (BTreeSet::new(), 0usize);
+    for k in &e.keys.selected {
+        let layer = k.0.as_str();
+        if !present.contains_key(layer) {
+            let keys: BTreeSet<(String, u64)> = match e.comp.layer(layer) {
+                Some((_, l)) => layer_keys(l, e.motion.as_ref()).into_iter().flat_map(|(a, ks)| ks.iter().map(move |x| (a.clone(), x.time))).collect(),
+                None => BTreeSet::new(),
+            };
+            present.insert(layer, keys);
+        }
+        if present.get(layer).is_some_and(|s| s.contains(&(k.1.clone(), k.2))) {
+            keep.insert(k.clone());
+        } else {
+            dropped = dropped.saturating_add(1);
+        }
+    }
+    (keep, dropped)
+}
+
+/// The live selection grouped by (layer, property): the selected ticks of each.
+fn selection_groups(e: &Edit<'_>) -> R<BTreeMap<(String, String), BTreeSet<u64>>> {
+    let (selected, _) = live(e);
+    if selected.is_empty() {
+        return no("selection_empty", e.row.command_id);
+    }
+    let mut groups: BTreeMap<(String, String), BTreeSet<u64>> = BTreeMap::new();
+    for (l, p, t) in selected {
+        groups.entry((l, p)).or_default().insert(t);
+    }
+    Ok(groups)
+}
+
+fn key_select(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
+    let scope = p.text("scope")?;
+    let mode = opt!(p, "mode", String)?.unwrap_or_else(|| "replace".to_string());
+    if !["replace", "add", "remove"].contains(&mode.as_str()) {
+        return no("parameter_invalid", "mode");
+    }
+    let times: Option<BTreeSet<u64>> = opt!(p, "times")?;
+    let found = match scope.as_str() {
+        "property" => {
+            let (id, prop) = (p.text("layer_id")?, p.text("property")?);
+            let keys = property_keys(e, &id, &prop)?;
+            gather(&[(id.as_str(), prop.as_str(), keys.as_slice())], times.as_ref())?
+        }
+        "layer" => {
+            let id = p.text("layer_id")?;
+            let Some((_, l)) = e.comp.layer(&id) else {
+                return no("layer_not_in_composition", &id);
+            };
+            let keyed = layer_keys(l, e.motion.as_ref());
+            let entries: Vec<(&str, &str, &[Key])> = keyed.iter().map(|(a, k)| (id.as_str(), a.as_str(), *k)).collect();
+            gather(&entries, times.as_ref())?
+        }
+        "composition" => {
+            let id = p.text("composition_id")?;
+            let Some(c) = e.comp.composition(&id) else {
+                return no("composition_not_found", &id);
+            };
+            let keyed: Vec<(&str, LayerKeys<'_>)> = c.layers.iter().map(|l| (l.layer_id.as_str(), layer_keys(l, e.motion.as_ref()))).collect();
+            let entries: KeyRows<'_> = keyed.iter().flat_map(|(l, ks)| ks.iter().map(move |(a, k)| (*l, a.as_str(), *k))).collect();
+            gather(&entries, times.as_ref())?
+        }
+        _ => return no("parameter_invalid", "scope"),
+    };
+    let mut selected = live(e).0;
+    match mode.as_str() {
+        "replace" => selected = found.into_iter().collect(),
+        "add" => selected.extend(found),
+        _ => {
+            for k in &found {
+                selected.remove(k);
+            }
+        }
+    }
+    if selected.len() > MAX_SELECTED_KEYS {
+        return no("selection_over_cap", &selected.len().to_string());
+    }
+    e.say("selected", json!(selected.len()));
+    e.next_keys = Some(KeyframeState { selected, clipboard: e.keys.clipboard.clone() });
+    Ok(())
+}
+
+fn key_copy(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
+    let explicit = p.has("layer_id") || p.has("property") || p.has("times");
+    let (selected, _) = live(e);
+    let clipboard: Vec<(String, Vec<Key>)> = if explicit {
+        let (id, prop) = (p.text("layer_id")?, p.text("property")?);
+        let times: Option<BTreeSet<u64>> = opt!(p, "times")?;
+        let keys = property_keys(e, &id, &prop)?;
+        gather(&[(id.as_str(), prop.as_str(), keys.as_slice())], times.as_ref())?;
+        let chosen: Vec<Key> = keys.into_iter().filter(|k| times.as_ref().is_none_or(|ts| ts.contains(&k.time))).collect();
+        if chosen.is_empty() {
+            return no("keyframe_not_found", &prop);
+        }
+        vec![(prop, chosen)]
+    } else {
+        let groups = selection_groups(e)?;
+        let layers: BTreeSet<&str> = groups.keys().map(|(l, _)| l.as_str()).collect();
+        if layers.len() > 1 {
+            return no("copy_spans_layers", e.row.command_id);
+        }
+        let mut out = Vec::with_capacity(groups.len());
+        for ((layer, prop), ticks) in &groups {
+            let keys = property_keys(e, layer, prop)?;
+            out.push((prop.clone(), keys.into_iter().filter(|k| ticks.contains(&k.time)).collect()));
+        }
+        out
+    };
+    let copied = clipboard.iter().map(|(_, k)| k.len()).fold(0usize, usize::saturating_add);
+    if copied > MAX_SELECTED_KEYS {
+        return no("clipboard_over_cap", &copied.to_string());
+    }
+    e.say("copied", json!(copied));
+    e.next_keys = Some(KeyframeState { selected, clipboard });
+    Ok(())
+}
+
+fn key_paste(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
+    let id = p.text("layer_id")?;
+    let time: u64 = req!(p, "time")?;
+    let target: Option<String> = opt!(p, "property")?;
+    let reverse = opt!(p, "reverse", bool)?.unwrap_or(false);
+    let clipboard = e.keys.clipboard.clone();
+    let (Some(first), Some(last)) = (clipboard.iter().flat_map(|(_, k)| k.iter().map(|k| k.time)).min(), clipboard.iter().flat_map(|(_, k)| k.iter().map(|k| k.time)).max()) else {
+        return no("clipboard_empty", "clipboard");
+    };
+    if target.is_some() && clipboard.len() > 1 {
+        return no("paste_property_mismatch", target.as_deref().unwrap_or_default());
+    }
+    let mut pasted = 0usize;
+    for (address, keys) in clipboard {
+        let prop = target.clone().unwrap_or(address);
+        let mut placed = Vec::with_capacity(keys.len());
+        for mut k in keys {
+            // Relative order kept from the earliest key; reverse mirrors about the copied span.
+            let offset = if reverse { last.saturating_sub(k.time) } else { k.time.saturating_sub(first) };
+            let Some(t) = time.checked_add(offset).filter(|t| *t <= folio::MAX_COMPOSITION_TICK) else {
+                return no("tick_overflow", &prop);
+            };
+            k.time = t;
+            if reverse {
+                std::mem::swap(&mut k.in_interp, &mut k.out_interp);
+                std::mem::swap(&mut k.in_tangent, &mut k.out_tangent);
+            }
+            placed.push(k);
+        }
+        let hint = placed.first().map(|k| k.value.clone());
+        let ((sv, slot_keys), _) = slot(e, &id, &prop, hint.as_deref())?;
+        if placed.iter().any(|k| k.value.len() != sv.len()) {
+            return no("paste_property_mismatch", &prop);
+        }
+        for k in placed {
+            match slot_keys.binary_search_by_key(&k.time, |x| x.time) {
+                // A key at an occupied tick replaces it (Studio reading, module docs).
+                Ok(at) => slot_keys[at] = k,
+                Err(at) => slot_keys.insert(at, k),
+            }
+            pasted = pasted.saturating_add(1);
+        }
+    }
+    e.say("pasted", json!(pasted));
+    Ok(())
+}
+
+fn key_shift_selected(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
+    let frames: i64 = req!(p, "frames")?;
+    if frames == 0 {
+        return no("parameter_invalid", "frames");
+    }
+    let groups = selection_groups(e)?;
+    let mut selected = BTreeSet::new();
+    for ((layer, prop), ticks) in groups {
+        let tpf = e.composition_of(&layer)?.frame_rate.ticks_per_frame().unwrap_or(0);
+        let delta = i128::from(frames).checked_mul(i128::from(tpf)).ok_or_else(|| No("tick_overflow", bounded(&prop)))?;
+        let ((_, keys), _) = slot(e, &layer, &prop, None)?;
+        for k in keys.iter_mut().filter(|k| ticks.contains(&k.time)) {
+            let moved = i128::from(k.time).checked_add(delta).and_then(|t| u64::try_from(t).ok()).filter(|t| *t <= folio::MAX_COMPOSITION_TICK);
+            let Some(t) = moved else {
+                return no("tick_overflow", &prop);
+            };
+            k.time = t;
+            selected.insert((layer.clone(), prop.clone(), t));
+        }
+        keys.sort_by_key(|k| k.time);
+        if keys.windows(2).any(|w| w[0].time == w[1].time) {
+            return no("keyframe_exists", &prop);
+        }
+    }
+    e.next_keys = Some(KeyframeState { selected, clipboard: e.keys.clipboard.clone() });
+    Ok(())
+}
+
+/// Ease / Ease In / Ease Out over the selection (motion `assistants::ease`, module docs).
+fn key_ease(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
+    let side = opt!(p, "side", String)?.unwrap_or_else(|| "both".to_string());
+    let (incoming, outgoing, label) = match side.as_str() {
+        "both" => (true, true, "Easy Ease"),
+        "in" => (true, false, "Easy Ease In"),
+        "out" => (false, true, "Easy Ease Out"),
+        _ => return no("parameter_invalid", "side"),
+    };
+    let groups = selection_groups(e)?;
+    for ((layer, prop), ticks) in &groups {
+        let ((_, keys), _) = slot(e, layer, prop, None)?;
+        for k in keys.iter_mut().filter(|k| ticks.contains(&k.time)) {
+            if incoming {
+                k.in_interp = Interp::Bezier;
+                k.in_tangent = default_tangent();
+            }
+            if outgoing {
+                k.out_interp = Interp::Bezier;
+                k.out_tangent = default_tangent();
+            }
+        }
+    }
+    e.label = Some(label);
+    e.next_keys = Some(KeyframeState { selected: live(e).0, clipboard: e.keys.clipboard.clone() });
+    Ok(())
+}
+
+/// Toggle hold over the selection, per property (motion `assistants::toggle_hold`, module docs).
+fn key_toggle_hold(e: &mut Edit<'_>) -> R<()> {
+    let groups = selection_groups(e)?;
+    for ((layer, prop), ticks) in &groups {
+        let ((_, keys), _) = slot(e, layer, prop, None)?;
+        let all_hold = keys.iter().filter(|k| ticks.contains(&k.time)).all(|k| k.out_interp == Interp::Hold);
+        for k in keys.iter_mut().filter(|k| ticks.contains(&k.time)) {
+            if all_hold {
+                k.out_interp = Interp::Linear;
+                k.out_tangent.clear();
+            } else {
+                k.out_interp = Interp::Hold;
+            }
+        }
+    }
+    e.next_keys = Some(KeyframeState { selected: live(e).0, clipboard: e.keys.clipboard.clone() });
+    Ok(())
+}
+
 // ----- the curve (motion `keyframe::shape`, module docs) -------------------------------------------
 
 enum Curve {
@@ -2000,4 +2503,29 @@ fn tangent(rise: f64, influence: f64, seconds: f64) -> StudioTemporalTangent {
     let influence = influence.clamp(0.0, 1.0);
     let span = influence * seconds;
     StudioTemporalTangent { speed: if span > 0.0 { rise / span } else { 0.0 }, influence }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    fn keys(n: u64) -> Vec<Key> {
+        (0..n).map(|t| linear_key(t, vec![0.0])).collect()
+    }
+
+    #[test]
+    fn a_selection_over_the_cap_is_refused_before_it_is_built() {
+        let (a, b) = (keys(40_000), keys(40_000));
+        let entries: Vec<(&str, &str, &[Key])> = vec![("l", "opacity", &a), ("l", "rotation", &b)];
+        match gather(&entries, None) {
+            Err(No(code, at)) => assert_eq!((code, at.as_str()), ("selection_over_cap", "80000")),
+            Ok(v) => panic!("built {} keys", v.len()),
+        }
+        let few: BTreeSet<u64> = [0, 39_999].into_iter().collect();
+        assert_eq!(gather(&entries, Some(&few)).map(|v| v.len()).unwrap_or(0), 4);
+        let one = [(entries[0].0, entries[0].1, entries[0].2)];
+        assert_eq!(gather(&one, None).map(|v| v.len()).unwrap_or(0), 40_000, "at most the cap is accepted");
+        let missing: BTreeSet<u64> = [40_000].into_iter().collect();
+        assert!(matches!(gather(&entries, Some(&missing)), Err(No("keyframe_not_found", _))));
+    }
 }

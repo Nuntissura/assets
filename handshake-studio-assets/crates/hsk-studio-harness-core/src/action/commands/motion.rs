@@ -1,6 +1,7 @@
 //! Motion rows of the command corpus (lane SMB-MOTION-COMMANDS-1: the typed composition, layer,
 //! property, keyframe and expression commands of [STU-MOT-130], run by `Run::motion_command`, module
-//! `crate::harness::motion_commands`).
+//! `crate::harness::motion_commands`; lane SMB-MOTION-COMMANDS-2 adds solid settings, keyframe
+//! selection, clipboard and the ease and hold assistants).
 
 use super::super::ValueType;
 use super::{CommandEntry, ParamSpec, entry, p};
@@ -22,12 +23,15 @@ const MASK_ID: ParamSpec = p("mask_id", ValueType::String);
 const EFFECT_ID: ParamSpec = p("effect_id", ValueType::String);
 const ANIMATOR: ParamSpec = p("animator", ValueType::Number);
 const COMPOSITION_SETTINGS: &[ParamSpec] = &[COMPOSITION_ID, NAME, p("width", ValueType::Number), p("height", ValueType::Number), p("pixel_aspect", ValueType::Class), p("frame_rate", ValueType::Class), p("duration", ValueType::Number), p("background", ValueType::Class)];
-const LAYER_NEW: &[ParamSpec] = &[COMPOSITION_ID, p("kind", ValueType::Enumerated), LAYER_ID, NAME, p("at", ValueType::Number), p("in_point", ValueType::Number), p("out_point", ValueType::Number), p("start_time", ValueType::Number), p("source_composition_id", ValueType::Reference), p("collapse_transformations", ValueType::Boolean), p("options", ValueType::Class), p("root", ValueType::Class)];
+const LAYER_NEW: &[ParamSpec] = &[COMPOSITION_ID, p("kind", ValueType::Enumerated), LAYER_ID, NAME, p("at", ValueType::Number), p("in_point", ValueType::Number), p("out_point", ValueType::Number), p("start_time", ValueType::Number), p("source_composition_id", ValueType::Reference), p("collapse_transformations", ValueType::Boolean), p("options", ValueType::Class), p("root", ValueType::Class), COLOUR, WIDTH, HEIGHT];
+const COLOUR: ParamSpec = p("colour", ValueType::List);
+const WIDTH: ParamSpec = p("width", ValueType::Number);
+const HEIGHT: ParamSpec = p("height", ValueType::Number);
 const RENDER_SETTINGS: &[ParamSpec] = &[ITEM_ID, p("quality", ValueType::Enumerated), p("resolution", ValueType::Class), p("disk_cache", ValueType::Enumerated), p("proxy_use", ValueType::Enumerated), p("effects", ValueType::Enumerated), p("solo_switches", ValueType::Enumerated), p("guide_layers", ValueType::Enumerated), p("color_depth", ValueType::Enumerated), p("frame_blending", ValueType::Enumerated), p("field_render", ValueType::Enumerated), p("pulldown_3_2", ValueType::Enumerated), p("motion_blur", ValueType::Enumerated), p("time_span", ValueType::Class), p("frame_rate", ValueType::Class)];
 const OUTPUT_MODULE: &[ParamSpec] = &[ITEM_ID, MODULE_ID, p("format", ValueType::Enumerated), p("codec_option", ValueType::String), p("include_project_link", ValueType::Boolean), p("post_render_action", ValueType::Enumerated), p("include_source_metadata", ValueType::Boolean), p("channels", ValueType::Enumerated), p("depth", ValueType::Number), p("color", ValueType::Enumerated), p("starting_number", ValueType::Number), p("use_comp_frame_number", ValueType::Boolean), p("resize", ValueType::Class), p("crop", ValueType::Class), p("audio", ValueType::Class), p("colour", ValueType::Class), p("output_path", ValueType::String)];
 const QUEUE_NEW: &[ParamSpec] = &[ITEM_ID, COMPOSITION_ID, MODULE_ID, p("format", ValueType::Enumerated), p("output_path", ValueType::String)];
 const MASK_SET: &[ParamSpec] = &[LAYER_ID, MASK_ID, p("mode", ValueType::Enumerated), p("inverted", ValueType::Boolean), p("closed", ValueType::Boolean), p("path", ValueType::List)];
-const EFFECT_SET: &[ParamSpec] = &[LAYER_ID, EFFECT_ID, p("filter_kind", ValueType::Enumerated), p("enabled", ValueType::Boolean), p("solo", ValueType::Boolean), p("opacity", ValueType::Number), p("blend_mode", ValueType::Number), MASK_ID, p("values", ValueType::Class), p("at", ValueType::Number)];
+const EFFECT_SET: &[ParamSpec] = &[LAYER_ID, EFFECT_ID, p("filter_kind", ValueType::Enumerated), p("enabled", ValueType::Boolean), p("solo", ValueType::Boolean), p("opacity", ValueType::Number), p("blend_mode", ValueType::Number), MASK_ID, p("values", ValueType::Class), p("at", ValueType::Number), p("colour_profiles", ValueType::Class)];
 const KEY_AT: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME, VALUE_LIST];
 const KEY_SET: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME, VALUE_LIST, IN_INTERP, OUT_INTERP, IN_TANGENT, OUT_TANGENT];
 const KEY_INTERP: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME, IN_INTERP, OUT_INTERP, IN_TANGENT, OUT_TANGENT];
@@ -87,5 +91,15 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("keyframe.move", "motion_command", "Move Keyframe", false, true, &[LAYER_ID, PROPERTY, TIME, p("to", ValueType::Number)]),
     entry("keyframe.shift", "motion_command", "Shift Keyframes", false, true, &[LAYER_ID, PROPERTY, p("times", ValueType::List), p("frames", ValueType::Number)]),
     entry("keyframe.set_interpolation", "motion_command", "Set Keyframe Interpolation", false, true, KEY_INTERP),
+    // Lane SMB-MOTION-COMMANDS-2: solid settings, keyframe selection, clipboard and assistants.
+    entry("composition.set_solid", "motion_command", "Solid Settings", false, true, &[LAYER_ID, COLOUR, WIDTH, HEIGHT]),
+    entry("keyframe.select", "motion_command", "Select Keyframes", false, false, &[p("scope", ValueType::Enumerated), p("mode", ValueType::Enumerated), COMPOSITION_ID, LAYER_ID, PROPERTY, p("times", ValueType::List)]),
+    entry("keyframe.deselect_all", "motion_command", "Deselect All Keyframes", false, false, &[]),
+    entry("keyframe.selection", "motion_command", "Keyframe Selection", false, false, &[]),
+    entry("keyframe.copy", "motion_command", "Copy Keyframes", false, false, &[LAYER_ID, PROPERTY, p("times", ValueType::List)]),
+    entry("keyframe.paste", "motion_command", "Paste Keyframes", false, true, &[LAYER_ID, PROPERTY, TIME, p("reverse", ValueType::Boolean)]),
+    entry("keyframe.shift_selected", "motion_command", "Shift Selected Keyframes", false, true, &[p("frames", ValueType::Number)]),
+    entry("keyframe.ease", "motion_command", "Easy Ease", false, true, &[p("side", ValueType::Enumerated)]),
+    entry("keyframe.toggle_hold", "motion_command", "Toggle Hold Keyframe", false, true, &[]),
     entry("expression.set_source", "motion_command", "Set Expression Source", false, true, &[LAYER_ID, ANIMATOR, p("selector", ValueType::Number), p("source", ValueType::String)]),
 ];
