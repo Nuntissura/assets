@@ -810,3 +810,34 @@ fn the_final_line_fits_when_the_gate_passes_and_line_l_is_not_stretched() {
         assert_eq!((l[1].width_pt, l[1].available_pt), (30.0, 60.0), "{align:?}: line 1 is composed for the 60 pt it is set in");
     }
 }
+
+/// Lead ruling 2026-11-11 (second): FirstFit, Knuth-Plass and the Adobe single-line composer also
+/// narrow the line that ENDS the paragraph in the last-line re-break, not the old last line by
+/// number. "aaaaaaaaa" / "bb cc ddd" in 60 pt with a 40 pt last-line indent (narrowed 20 pt, every
+/// word fits it, so the gate passes): the paragraph's final line is narrowed and fits, and no
+/// other line is narrowed. Narrowed by number, line 1 broke at 20 pt ("bb") and the pushed-down
+/// final line "cc ddd" (36 pt) came out narrowed and overfull.
+fn the_final_line_is_narrowed_and_fits(composer: Composer) {
+    let s = one("aaaaaaaaa bb cc ddd");
+    for align in [StudioTextAlign::Left, StudioTextAlign::Justified] {
+        let r = styles_aligned(align, &[StudioCompositionSettings { last_line_indent: pt(40.0), ..Default::default() }]);
+        let p = run(frame(60.0, 100.0), &s, &r, composer).unwrap();
+        let l = lines(&p);
+        let (end, rest) = l.split_last().unwrap();
+        assert!(end.available_pt == 20.0 && !end.overfull && end.width_pt <= 20.0, "{composer:?} {align:?}: {end:?}");
+        assert!(rest.iter().all(|x| x.available_pt == 60.0 && !x.overfull), "{composer:?} {align:?}: {rest:?}");
+        assert_eq!(end.source.start, 16, "{composer:?} {align:?}: the final line is \"ddd\"");
+    }
+}
+#[test]
+fn first_fit_narrows_the_line_that_ends_the_paragraph() {
+    the_final_line_is_narrowed_and_fits(Composer::FirstFit);
+}
+#[test]
+fn knuth_plass_narrows_the_line_that_ends_the_paragraph() {
+    the_final_line_is_narrowed_and_fits(Composer::KnuthPlass(KnuthPlassParams::default()));
+}
+#[test]
+fn adobe_single_line_narrows_the_line_that_ends_the_paragraph() {
+    the_final_line_is_narrowed_and_fits(Composer::AdobeSingleLine(AdobeParams::default()));
+}
