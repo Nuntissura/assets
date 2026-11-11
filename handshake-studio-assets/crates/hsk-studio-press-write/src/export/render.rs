@@ -5,8 +5,9 @@
 //! `Limits::max_flatten_pixels` before allocation; image decoding is charged to a budget of 64
 //! canvases; before the interpreter sees a byte the page is bounded on Press's own reading of the
 //! file (`reader_input_within`: nesting and construction cycles `InputLimit("depth")`, image sizes
-//! `InputLimit("render_image")`, an unreadable syntax stream `Malformed("reader_input")`, an
-//! encrypted file `Encrypted`; SMB-PARSER-HOSTILE-1, tests `press/tests/hostile_vector_read.rs`);
+//! `InputLimit("render_image")`, an unreadable syntax stream `Malformed("reader_input")`, a damaged
+//! Flate tail read to its prefix and noted `stream_tail_damaged`, an encrypted file rendered as
+//! before; SMB-PARSER-HOSTILE-1, tests `press/tests/hostile_vector_read.rs`);
 //! the interpreter runs on its own thread with a `RENDER_STACK_BYTES` stack (margin, not the
 //! guard), and a panic there is a typed refusal. Tests: `tests/export.rs` `render_back_reads_the_export`.
 #![deny(clippy::arithmetic_side_effects)]
@@ -36,7 +37,9 @@ pub struct RenderedPage {
     /// hayro `ImageDecodeFailure` warnings.
     pub image_warnings: u32,
     /// What the paint device did not draw or approximated (`FlattenNote::as_str`, sorted), e.g.
-    /// `soft_mask` (content under a soft mask is skipped) or `blend_mode_approximated`.
+    /// `soft_mask` (content under a soft mask is skipped) or `blend_mode_approximated`; then
+    /// `group_flags_mixed` and `stream_tail_damaged` (a syntax stream read to its readable prefix,
+    /// SMB-PARSER-HOSTILE-1) when they apply.
     pub notes: Vec<&'static str>,
 }
 
@@ -118,7 +121,7 @@ pub fn render_page(bytes: &[u8], index: usize, px_per_pt: f64, limits: &Limits, 
     }
     // hayro reads the original bytes: the page is bounded first on Press's reading of them (nesting,
     // construction cycles, image sizes; SMB-PARSER-HOSTILE-1, tests press/tests/hostile_vector_read.rs).
-    hsk_studio_press_read::reader_input_within(&doc, Some(index), cancel)?;
+    let stream_tail_damaged = hsk_studio_press_read::reader_input_within(&doc, Some(index), cancel)?;
     let (wu, hu) = (w as u32, h as u32);
     let canvas = u64::from(wu).checked_mul(u64::from(hu)).ok_or(ExportError::RenderOverBudget)?;
     let decode_budget = canvas.saturating_mul(64);
@@ -161,7 +164,7 @@ pub fn render_page(bytes: &[u8], index: usize, px_per_pt: f64, limits: &Limits, 
                     rgb: std::mem::take(&mut painter.px),
                     font_warnings: fonts.load(Ordering::Relaxed),
                     image_warnings: images.load(Ordering::Relaxed),
-                    notes: painter.notes.iter().map(|n| n.as_str()).chain(mixed.then_some("group_flags_mixed")).collect(),
+                    notes: painter.notes.iter().map(|n| n.as_str()).chain(mixed.then_some("group_flags_mixed")).chain(stream_tail_damaged.then_some("stream_tail_damaged")).collect(),
                 })
             },
         );

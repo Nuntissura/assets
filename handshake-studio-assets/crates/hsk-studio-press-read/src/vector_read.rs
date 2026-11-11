@@ -29,8 +29,9 @@
 //! and bounded (`render_bounds::reader_input_within`, SMB-PARSER-HOSTILE-1): a file Press refuses is
 //! refused with Press's error (lead ruling OQ1 2026-11-08), nesting or a construction cycle hayro
 //! would recurse through is `InputLimit("depth")`, a syntax stream Press cannot decode is
-//! `Malformed("reader_input")`, an encrypted file is `Encrypted` (tests
-//! `press/tests/hostile_vector_read.rs`). The interpreter runs on its own thread with the flatten
+//! `Malformed("reader_input")`, a damaged Flate tail is read to its prefix and noted on every page
+//! ([`VectorNote::StreamTailDamaged`]), an encrypted file is read as before (Press cannot decrypt;
+//! lead ruling F3) (tests `press/tests/hostile_vector_read.rs`). The interpreter runs on its own thread with the flatten
 //! stack ([`crate::RENDER_STACK_BYTES`], margin, not the guard); a panic there is a typed refusal. Budgets ([`MAX_VECTOR_ITEMS`], [`MAX_VECTOR_ELEMENTS`]) stop the
 //! recording with [`VectorNote::Budget`]; cancellation is polled every 64 items.
 #![deny(clippy::arithmetic_side_effects)]
@@ -154,6 +155,9 @@ pub enum VectorNote {
     SpotAlternateNotRead,
     StructureNotRead,
     FontBytesBudget,
+    /// A syntax stream of the file had a damaged Flate tail (or a damaged later filter stage) and was
+    /// read to its readable prefix (SMB-PARSER-HOSTILE-1 lead ruling: base behaviour with a warning).
+    StreamTailDamaged,
 }
 
 impl VectorNote {
@@ -172,6 +176,7 @@ impl VectorNote {
             Self::SpotAlternateNotRead => "pdf_spot_alternate_not_read",
             Self::StructureNotRead => "pdf_structure_not_read",
             Self::FontBytesBudget => "pdf_font_bytes_budget",
+            Self::StreamTailDamaged => "pdf_stream_tail_damaged",
         }
     }
 }
@@ -625,7 +630,7 @@ fn read(pdf: &[u8], max_bytes: usize, sources: Option<Option<&DocSource>>, cance
     // The bytes hayro reads, bounded first (module docs). `max_bytes` already bounds the input.
     let limits = Limits { max_bytes: Limits::default().max_bytes.max(max_bytes), ..Limits::default() };
     let guarded = PdfDoc::open(&bytes, &limits, cancel)?;
-    crate::render_bounds::reader_input_within(&guarded, None, cancel)?;
+    let stream_tail_damaged = crate::render_bounds::reader_input_within(&guarded, None, cancel)?;
     drop(guarded);
     std::thread::scope(|scope| {
         let spawned = std::thread::Builder::new().name("hsk-press-vector-read".into()).stack_size(crate::RENDER_STACK_BYTES).spawn_scoped(scope, move || -> Result<VectorDocument> {
@@ -679,6 +684,9 @@ fn read(pdf: &[u8], max_bytes: usize, sources: Option<Option<&DocSource>>, cance
                 let (items, mut notes) = (rec.items, rec.notes);
                 if fonts.over {
                     notes.insert(VectorNote::FontBytesBudget);
+                }
+                if stream_tail_damaged {
+                    notes.insert(VectorNote::StreamTailDamaged);
                 }
                 out.push(VectorPage { media_box: rect(media), crop_box: rect(page.intersected_crop_box()), items, notes: notes.into_iter().collect() });
             }

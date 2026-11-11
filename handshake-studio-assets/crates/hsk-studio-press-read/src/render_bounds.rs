@@ -651,7 +651,10 @@ fn reader_error(e: PressError) -> PressError {
 /// per-call 4 GiB budget `InputLimit("decoded_total")`, a content stream past 50 M operators or
 /// nodes `InputLimit("max_content_ops"|"nodes")`, an unreadable syntax stream
 /// `Malformed("reader_input")`, cancellation `Canceled`. A damaged Flate tail keeps its prefix and
-/// is not a refusal (F7). Encryption is out of scope (F3, lead ruling 2026-11-08): this crate cannot
+/// is not a refusal (F7); the lead ruling keeps base behaviour WITH A WARNING, so `Ok(true)` says a
+/// syntax stream was damaged and read to its readable prefix (the callers note it: vector routes
+/// `VectorNote::StreamTailDamaged`, `render_page` `stream_tail_damaged`), `Ok(false)` that none was.
+/// Encryption is out of scope (F3, lead ruling 2026-11-08): this crate cannot
 /// decrypt, so an encrypted file is passed through unbounded, the behaviour before this lane (hayro
 /// decrypts and reads it). The callers refuse a file `PdfDoc::open` refuses (lead ruling OQ1).
 /// Residual (F8): hayro reads the ORIGINAL bytes through its own xref and page tree; where its xref
@@ -659,11 +662,11 @@ fn reader_error(e: PressError) -> PressError {
 /// hayro then reads were not bounded here. Tests `press/tests/hostile_vector_read.rs`, the mutation
 /// sweep `press/tests/hostile_mutation_pdf.rs`.
 #[doc(hidden)]
-pub fn reader_input_within(doc: &PdfDoc, page: Option<usize>, cancel: &CancellationToken) -> Result<()> {
+pub fn reader_input_within(doc: &PdfDoc, page: Option<usize>, cancel: &CancellationToken) -> Result<bool> {
     // F3: Press cannot decrypt (reader.rs does not expand an encrypted file's object streams), so an
     // encrypted file cannot be bounded here; pass it through, the behaviour before this lane.
     if doc.encrypted {
-        return Ok(());
+        return Ok(false);
     }
     let limits = reader_limits(&doc.limits);
     let pages: Vec<u32> = match page {
@@ -718,6 +721,7 @@ pub fn reader_input_within(doc: &PdfDoc, page: Option<usize>, cancel: &Cancellat
     let images_too = page.is_some();
     // F7: one 4 GiB budget per call for the syntax streams (images charge their own budget in bounds).
     let mut budget = READER_CALL_BUDGET;
+    let mut damaged = false;
     for (i, (num, e)) in objs.iter_mut().enumerate() {
         if i & 63 == 0 {
             check_cancel(cancel)?;
@@ -727,13 +731,15 @@ pub fn reader_input_within(doc: &PdfDoc, page: Option<usize>, cancel: &Cancellat
         // image role. Images are size-bounded from their header below, never decoded here (F5).
         let parsed = contents.contains_key(num) || roles.contains(num) || !(binary.contains(num) || images.contains(num));
         if parsed {
-            let (data, _warning) = reader_syntax_data(s, &mut budget).map_err(reader_error)?;
+            let (data, warning) = reader_syntax_data(s, &mut budget).map_err(reader_error)?;
+            damaged |= warning;
             s.dict.remove("Filter");
             s.dict.remove("DecodeParms");
             s.data = data;
         }
     }
-    bounds_with_extra(&objs, &contents, None, images_too, READER_MAX_CONTENT_NODES, false, &extra_binary, &limits, cancel).map_err(reader_error)
+    bounds_with_extra(&objs, &contents, None, images_too, READER_MAX_CONTENT_NODES, false, &extra_binary, &limits, cancel).map_err(reader_error)?;
+    Ok(damaged)
 }
 
 #[cfg(test)]
