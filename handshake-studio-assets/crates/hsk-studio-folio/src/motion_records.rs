@@ -14,7 +14,12 @@
 //!   a linear gain (the artifact bytes are resolved by the caller; Folio stores the reference);
 //! * render queue (STU-MOT-120..122): items of (composition, render settings, one or more output
 //!   modules) with the recovered option sets of STU-MOT-121 (`current_settings` is a real member,
-//!   STU-MOT-121a) and the STU-MOT-122 output module fields.
+//!   STU-MOT-121a) and the STU-MOT-122 output module fields;
+//! * solid layers (STU-MOT-005 `solid`, lane SMB-MOTION-COMMANDS-2): per composition layer whose
+//!   document layer is an empty raster layer, a size and one straight RGBA colour (the shape fill's
+//!   colour form); the size bound [`MAX_SOLID_SIDE`] is STU-MOT-122's resize bound, because
+//!   STU-MOT-005 states none (Studio reading). A layer holds at most one procedural record: a solid
+//!   is not also a shape or a text-animator layer (`DuplicateIdentity`).
 //!
 //! Numbers are plain data mirrored from the motion / nib / composite models (Folio depends on accord
 //! only). Every keyframe stream uses the composition keyframe rules (`StudioKeyedValue`). Bounds:
@@ -23,7 +28,7 @@
 //! against the `Budget` node count.
 #![deny(clippy::arithmetic_side_effects)]
 #![allow(clippy::match_like_matches_macro)]
-use super::{Budget, Code, Resolver, Result, StudioCompositionRecords, StudioDocument, err, id, key, values::Ctx};
+use super::{Budget, Code, Payload, Resolver, Result, StudioCompositionRecords, StudioDocument, err, id, key, values::Ctx};
 use crate::composition::{StudioKeyedValue, StudioRational, validate_keyed};
 use hsk_studio_accord::CancellationToken;
 use schemars::JsonSchema;
@@ -44,6 +49,8 @@ pub const MAX_QUEUE_ITEMS: usize = 1024;
 pub const MAX_OUTPUT_MODULES: usize = 16;
 /// Largest absolute stored number.
 pub const MAX_MOTION_ABS_VALUE: f64 = 1.0e9;
+/// Largest solid side in pixels (STU-MOT-122 resize bound; module docs).
+pub const MAX_SOLID_SIDE: u32 = 30_000;
 
 /// Fill rule of a shape fill.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -650,6 +657,18 @@ pub struct StudioCompositionWorkArea {
     pub end_tick: u64,
 }
 
+/// A solid layer (STU-MOT-005 `solid`; module docs): the composition layer `layer_id` draws one
+/// `width x height` rectangle at layer-space origin `(0, 0)` filled with straight RGBA `colour`
+/// (components `0..=1`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioSolidLayer {
+    pub layer_id: String,
+    pub width: u32,
+    pub height: u32,
+    pub colour: [f64; 4],
+}
+
 /// The motion records of one document (module docs).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -671,6 +690,10 @@ pub struct StudioMotionRecords {
     /// empty, so earlier record sets stay byte-identical).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composition_work_areas: Vec<StudioCompositionWorkArea>,
+    /// Solid layers (lane SMB-MOTION-COMMANDS-2; omitted from the wire when empty, so earlier
+    /// record sets stay byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub solid_layers: Vec<StudioSolidLayer>,
 }
 
 impl StudioMotionRecords {
@@ -685,6 +708,7 @@ impl StudioMotionRecords {
             render_queue: Vec::new(),
             composition_settings: Vec::new(),
             composition_work_areas: Vec::new(),
+            solid_layers: Vec::new(),
         }
     }
     /// The work area of a composition as `(start_tick, end_tick)`.
@@ -699,6 +723,9 @@ impl StudioMotionRecords {
     }
     pub fn text_animators(&self, layer_id: &str) -> Option<&StudioTextAnimators> {
         self.text_animators.iter().find(|s| s.layer_id == layer_id)
+    }
+    pub fn solid_layer(&self, layer_id: &str) -> Option<&StudioSolidLayer> {
+        self.solid_layers.iter().find(|s| s.layer_id == layer_id)
     }
     pub fn composition_audio(&self, composition_id: &str) -> Option<&StudioCompositionAudio> {
         self.composition_audio.iter().find(|s| s.composition_id == composition_id)
@@ -963,6 +990,25 @@ pub fn validate_motion_records(
             let dim = st.param.dimension();
             validate_keyed(&format!("{t}/streams"), dim, &|v: &[f64]| v.len() == dim && nums(v), &st.value.static_value, &st.value.keyframes, &mut cx)?;
         }
+    }
+    let mut solid_seen = BTreeSet::new();
+    cx.nodes(r.solid_layers.len(), "solid_layers")?;
+    for s in &r.solid_layers {
+        cx.tick()?;
+        let t = s.layer_id.as_str();
+        if !comp_layer(t) {
+            return Err(err(Code::DanglingReference, t));
+        }
+        if !solid_seen.insert(t) || seen.contains(t) || text_seen.contains(t) {
+            return Err(err(Code::DuplicateIdentity, t));
+        }
+        // The host is an empty raster layer (the shape-layer precedent): no content of its own.
+        let host = d.layers.iter().find(|l| l.layer_id == t);
+        if !host.is_some_and(|l| l.kind == "raster" && matches!(&l.payload, Payload::Raster { tiles } if tiles.is_empty())) {
+            return Err(err(Code::PayloadMismatch, t));
+        }
+        check((1..=MAX_SOLID_SIDE).contains(&s.width) && (1..=MAX_SOLID_SIDE).contains(&s.height), t, "size")?;
+        check(unit(&s.colour), t, "colour")?;
     }
     let mut audio_seen = BTreeSet::new();
     cx.nodes(r.composition_audio.len(), "composition_audio")?;
