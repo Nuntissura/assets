@@ -6,6 +6,7 @@ counts:
   done: 18
   blocked: 3
   active: 1
+  planned: 1
 work_packets:
 - wp_id: WP-KUM-001-init-v1
   title: Initialize Kumihimo minimal workflow
@@ -184,3 +185,12 @@ work_packets:
   blockers:
   - Bounded chrome/demo source implemented and source-reviewed; fresh compile, interaction and pixels OPEN; exact
     Primary phase/slot required; host adoption held
+- wp_id: WP-KUM-023-direct-vulkan-renderer-v1
+  title: Direct Vulkan shared geometry
+  phase: planned
+  contract_ref: repo-governance/work-packets/active/WP-KUM-023-direct-vulkan-renderer-v1/WP-KUM-023-direct-vulkan-renderer-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-023-direct-vulkan-renderer-v1/WP-KUM-023-direct-vulkan-renderer-v1-state.yaml
+  next_action: Publish this WP predecessor and record focused dependency readiness, then admit only the three named
+    source and test paths.
+  blockers:
+  - Owning WP publication and dependency readiness are required by KUM-TEAM-002 before coding.

@@ -1,0 +1,46 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-023-direct-vulkan-renderer-v1
+title: Direct Vulkan shared geometry
+scope:
+- Make the existing Core rectangle clip operation callable by the direct Vulkan renderer. Reuse it in the existing
+  browser projection that implements the same clipping behavior.
+files:
+- product/kumihimo-core/src/geometry.rs
+- product/kumihimo-core/tests/layout_contracts.rs
+- product/kumihimo-web/src/projection.rs
+dependencies:
+- Published spec29 at 7607822c88240dffaac7ec1e90f6ad2b4cfb8fe4. The existing Core and browser projection supply
+  all source inputs for this slice.
+spec_refs:
+- DEC-KUM-DIRECT-VULKAN-RENDERER-v1
+- TOPIC-KUM-RENDER
+- TOPIC-KUM-BOUNDARIES
+requirements:
+- Expose Rect::clip with its current signature, arithmetic and errors. The existing solver and direct renderer use
+  the same Rect and clip semantics.
+- Delegate the browser projection intersection to Rect::clip with its existing geometry_overflow mapping. Preserve
+  zero extents and the origin of disjoint clips. Preserve the separate host-local clipping behavior.
+acceptance:
+- A001 An external Core caller clips nested and partially overlapping rectangles and receives the existing zero-extent
+  origin on disjoint and edge-touching inputs.
+- A002 The existing browser projection continues to emit the same clipped geometry and error mapping.
+proof:
+- After compiler admission run kumihimo-core layout_contracts and kumihimo-web web_contracts, including case001_variable_nested_geometry_preserves_membership.
+  Evaluation records actual results and the immutable published revision.
+research_basis:
+  inspected:
+  - product/kumihimo-core/src/geometry.rs Rect::clip and src/solver.rs consumers
+  - product/kumihimo-web/src/projection.rs intersection and src/host.rs separate provider clipping
+  - product/kumihimo-egui/src/workspace.rs projection and src/lib.rs intersect
+  selected: Expose the existing Core operation and use it through a live projection caller with matching semantics.
+  rejected:
+  - Another geometry or display-list type would duplicate the existing Core Rect and GeometryOutput.
+  - The web host clamp differs for disjoint input and is outside this scope.
+  risk_controls:
+  - Preserve existing disjoint origin and zero-extent behavior in A001. Preserve existing adapter error mapping
+    in A002.
+follow_on:
+- A later source scope binds the exact Studio release for UI-pass reuse and actual offscreen Vulkan readback and
+  settlement proof.
+- The Handshake GPU owner selects the Vulkan binding and defines its production admission and settlement ABI. Quiet
+  root and detached presentation, capture and reduced motion remain in the D8 renderer work.

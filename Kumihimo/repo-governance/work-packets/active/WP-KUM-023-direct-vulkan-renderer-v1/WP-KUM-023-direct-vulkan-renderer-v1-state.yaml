@@ -1,0 +1,14 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-023-direct-vulkan-renderer-v1
+generation: 1
+phase: planned
+owner: 01a17374-1d96-7e02-9aea-77b0f62f20dc
+changed_files: []
+proof:
+- kind: published_spec
+  revision: 7607822c88240dffaac7ec1e90f6ad2b4cfb8fe4
+  observation: Exact independent canonical spec29 reread.
+blockers:
+- Owning WP publication and dependency readiness are required by KUM-TEAM-002 before coding.
+next_action: Publish this WP predecessor and record focused dependency readiness, then admit only the three named
+  source and test paths.

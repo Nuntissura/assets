@@ -40,6 +40,7 @@ ids:
 - WP-KUM-020-foreign-window-hosting-v1
 - WP-KUM-021-combined-workspace-demo-v1
 - WP-KUM-022-external-native-embedding-v1
+- WP-KUM-023-direct-vulkan-renderer-v1
 - SESSION-KUM-2026-10-11-v1
 - ROLE-KUM-DEPENDENCIES
 - ROLE-KUM-DIAGNOSTICS
