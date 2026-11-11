@@ -240,7 +240,7 @@ fn a_missing_page_is_a_warning_in_the_open_export() {
 fn the_site_lock_names_its_holder_and_never_blocks() {
     let dir = Scratch::new("lock");
     let index = site(&dir, false);
-    let holder = json!({"schema": "hsk.studio.web.site_lock@1", "actor": {"account_id": "lane-b"}, "client_session": "s-other", "command_id": "web.move_file"});
+    let holder = json!({"schema": "hsk.studio.web.site_lock@1", "actor": {"account_id": "lane-b", "principal_id": "p"}, "client_session": "s-other", "command_id": "web.move_file", "nonce": "n", "extra": "x".repeat(4096)});
     dir.write("site/.studio-site.lock", serde_json::to_string(&holder).unwrap().as_bytes());
     with_run(|run| {
         cmd(run, "web.open", json!({"path": s(&index)}));
@@ -250,7 +250,7 @@ fn the_site_lock_names_its_holder_and_never_blocks() {
         for (id, params) in [("web.site_report", json!({})), ("web.export", json!({})), ("web.move_file", json!({"from": "orphan.png", "to": "img/orphan.png"}))] {
             assert_eq!(refused(run, id, params), "site_locked", "{id}");
             let record = run.ops().last().unwrap();
-            assert_eq!(record["detail"]["holder"], holder, "{id}: {record}");
+            assert_eq!(record["detail"]["holder"], json!({"account_id": "lane-b", "client_session": "s-other", "command_id": "web.move_file"}), "{id}: only three fields, never the whole file: {record}");
             assert!(record["target"].as_str().unwrap().contains("s-other"), "{record}");
         }
         assert!(!dir.at("out").exists() && dir.at("site/orphan.png").exists(), "nothing changed");
@@ -323,9 +323,14 @@ fn move_refusals_are_typed_and_change_nothing() {
         ] {
             assert_eq!(refused(run, "web.move_file", json!({"from": from, "to": to})), code, "{from} -> {to}");
         }
+        let absolute = s(&dir.at("elsewhere/orphan.png"));
+        for to in [absolute.as_str(), "/x.png", "//host/share/x.png", "orphan.png:s", "con.png", "NUL", "img/nul.png"] {
+            assert_eq!(refused(run, "web.move_file", json!({"from": "orphan.png", "to": to})), "path_invalid", "{to}");
+        }
         assert_eq!(refused(run, "web.move_file", json!({"from": "orphan.png"})), "parameter_missing");
     });
     assert_eq!(tree(&dir.at("site")), before, "nothing moved or written");
+    assert!(!dir.at("elsewhere").exists());
 }
 
 /// A reference spelled with character references is rewritten through its whole decoded value (the span is the
@@ -402,6 +407,11 @@ fn hostile_trees_are_bounded_and_typed() {
         assert_eq!(report["skipped"], json!([{"path": ".hidden.png", "reason": "name_not_portable"}]), "{report}");
         cmd(run, "web.export_recipe", json!({"output_root": s(&dir.at("out")), "documents": "site"}));
         assert_eq!(refused(run, "web.export", json!({})), "document_unreadable");
+        let record = run.ops().last().unwrap();
+        assert_eq!((record["target"].as_str(), &record["detail"]), (Some("huge.html: file_too_large"), &json!({"file": "huge.html", "reason": "file_too_large"})), "Q4: the file and its reason: {record}");
+        dir.write("big/a.png", b"x");
+        assert_eq!(refused(run, "web.move_file", json!({"from": "a.png", "to": "b.png"})), "document_unreadable");
+        assert_eq!(run.ops().last().unwrap()["detail"], json!({"file": "huge.html", "reason": "file_too_large"}));
         assert_eq!(refused(run, "web.export_recipe", json!({"documents": "all"})), "parameter_invalid");
     });
     assert!(!dir.at("out").exists());
@@ -413,14 +423,7 @@ fn a_linked_folder_inside_the_site_is_skipped() {
     let dir = Scratch::new("link");
     dir.write("outside/secret.png", b"secret");
     dir.write("site/index.html", b"<!DOCTYPE html><html><head><title>t</title></head><body><img alt=\"a\" src=\"media/secret.png\"></body></html>");
-    #[cfg(windows)]
-    let linked = std::os::windows::fs::symlink_dir(dir.at("outside"), dir.at("site/media"));
-    #[cfg(not(windows))]
-    let linked = std::os::unix::fs::symlink(dir.at("outside"), dir.at("site/media"));
-    if linked.is_err() {
-        println!("NOT_PROVEN: a_linked_folder_inside_the_site_is_skipped: this account may not create a folder symlink");
-        return;
-    }
+    link_dir(&dir.at("outside"), &dir.at("site/media"));
     with_run(|run| {
         define(run, &dir);
         let report = cmd(run, "web.site_report", json!({}));
@@ -459,11 +462,18 @@ struct JobsPort {
     admits: AtomicU64,
     releases: AtomicU64,
     resources: Mutex<Vec<String>>,
+    actions: Mutex<Vec<&'static str>>,
+    /// Canceled while the port admits: the job is admitted, and its work starts canceled.
+    cancel_on_admit: Option<CancellationToken>,
 }
 
 impl JobPort for JobsPort {
     fn admit(&self, scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
         self.resources.lock().unwrap().push(scope.resource.as_str().to_string());
+        self.actions.lock().unwrap().push(scope.action.as_str());
+        if let Some(token) = &self.cancel_on_admit {
+            token.cancel();
+        }
         let n = self.admits.fetch_add(1, Ordering::SeqCst);
         if self.refuse { Err(JobRefused { retry_after_ms: 7 }) } else { Ok(JobTicket(n)) }
     }
@@ -544,6 +554,216 @@ fn with_no_package_open_web_jobs_still_ask_the_bound_port() {
     assert!(dir.at("out/index.html").is_file());
 }
 
+/// Links `link` to the folder `target`: a folder symlink, else on Windows a junction (no privilege needed). Never a
+/// silent skip (review F6): a test that needs a link fails when none can be made.
+fn link_dir(target: &Path, link: &Path) {
+    #[cfg(windows)]
+    {
+        if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+            return;
+        }
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output();
+        assert!(made.is_ok_and(|o| o.status.success()) && link.is_dir(), "neither a folder symlink nor a junction could be made at {}", link.display());
+    }
+    #[cfg(not(windows))]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// Review F1: every prefix of `to` is compared case-folded. A prefix that folds to a link or junction refuses
+/// `move_outside_site` and nothing leaves the root; a prefix that folds to an existing folder takes its on-disk
+/// spelling, for the path and for every rewritten reference.
+#[test]
+fn a_move_target_is_compared_case_folded_against_links_and_folders() {
+    let dir = Scratch::new("case-fold");
+    site(&dir, false);
+    dir.write("outside/keep.txt", b"k");
+    link_dir(&dir.at("outside"), &dir.at("site/media"));
+    with_run(|run| {
+        define(run, &dir);
+        for to in ["media/orphan.png", "MEDIA/orphan.png", "Media/sub/orphan.png"] {
+            assert_eq!(refused(run, "web.move_file", json!({"from": "orphan.png", "to": to})), "move_outside_site", "{to}");
+        }
+        let moved = cmd(run, "web.move_file", json!({"from": "thanks.html", "to": "Img/thanks.html"}));
+        assert_eq!(moved["receipt"]["to"], "img/thanks.html", "the folder's on-disk spelling: {moved}");
+        let report = cmd(run, "web.site_report", json!({}));
+        let reasons: Vec<&str> = report["broken_links"].as_array().unwrap().iter().map(|r| r["reason"].as_str().unwrap()).collect();
+        assert!(!reasons.contains(&"case_mismatch"), "{report}");
+    });
+    assert_eq!(tree(&dir.at("outside")), [("keep.txt".to_string(), b"k".to_vec())], "nothing left the root");
+    assert!(dir.read("site/index.html").contains("<a href=\"img/thanks.html\">Thanks</a>"), "{}", dir.read("site/index.html"));
+    let names: Vec<String> = std::fs::read_dir(dir.at("site")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(names.contains(&"img".to_string()) && !names.contains(&"Img".to_string()), "{names:?}");
+    assert!(dir.at("site/img/thanks.html").is_file());
+}
+
+/// Review F2: in the moved document every relative reference is re-based by path arithmetic on its own bytes,
+/// whatever it reaches (percent-encoding and query kept); where that cannot be done the move refuses
+/// `reference_not_rewritable` naming the document and line.
+#[test]
+fn a_moved_document_rebases_every_relative_reference() {
+    let dir = Scratch::new("rebase");
+    dir.write("site/photos/Summer 2024.jpg", b"jpg");
+    dir.write("site/gallery.html", b"<!DOCTYPE html><html><head><title>g</title></head><body><img alt=\"s\" src=\"photos/Summer%202024.jpg?v=1\">\n<a href=\"../up.html\">up</a> <a href=\"gone.html#x\">gone</a></body></html>");
+    dir.write("site/deep.html", b"<!DOCTYPE html><html><head><title>d</title></head>\n<body><a href=\"../up.html\">up</a></body></html>");
+    with_run(|run| {
+        define(run, &dir);
+        cmd(run, "web.move_file", json!({"from": "gallery.html", "to": "pages/gallery.html"}));
+        // The site-root spelling cannot name a place above the root.
+        cmd(run, "web.site", json!({"site_relative_link_base": "site_root"}));
+        assert_eq!(refused(run, "web.move_file", json!({"from": "deep.html", "to": "pages/deep.html"})), "reference_not_rewritable");
+        assert_eq!(run.ops().last().unwrap()["target"], "deep.html:2");
+    });
+    let gallery = dir.read("site/pages/gallery.html");
+    assert!(gallery.contains("src=\"../photos/Summer%202024.jpg?v=1\"") && gallery.contains("href=\"../../up.html\"") && gallery.contains("href=\"../gone.html#x\""), "{gallery}");
+    assert!(dir.at("site/deep.html").is_file() && !dir.at("site/pages/deep.html").exists());
+}
+
+/// Review F3: a value rewritten through character references is written quoted, so decoded whitespace or `>` never
+/// ends the value or the tag.
+#[test]
+fn an_unquoted_value_rewritten_whole_is_quoted() {
+    let dir = Scratch::new("unquoted");
+    dir.write("site/thanks.html", b"<!DOCTYPE html><html><head><title>t</title></head><body>t</body></html>");
+    dir.write("site/index.html", b"<!DOCTYPE html><html><head><title>i</title></head><body><a href=thanks&#46;html?q=a&#32;b>x</a><a href=thanks&#46;html?x=&gt;y>z</a></body></html>");
+    with_run(|run| {
+        define(run, &dir);
+        cmd(run, "web.move_file", json!({"from": "thanks.html", "to": "pages/thanks.html"}));
+    });
+    assert_eq!(dir.read("site/index.html"), "<!DOCTYPE html><html><head><title>i</title></head><body><a href=\"pages/thanks.html?q=a b\">x</a><a href=\"pages/thanks.html?x=>y\">z</a></body></html>");
+}
+
+/// Review F4: an export lists at most 2000 broken links and counts the rest; a manifest larger than publish and verify
+/// read back (1 MiB) is refused before the first write.
+#[test]
+fn the_export_caps_broken_links_and_its_manifest() {
+    let dir = Scratch::new("manifest-bound");
+    let links: String = (0..2100).map(|i| format!("<a href=\"gone-{i}.html\">g</a>\n")).collect();
+    let index = dir.write("site/index.html", format!("<!DOCTYPE html><html><head><title>i</title></head><body>\n{links}</body></html>").as_bytes());
+    with_run(|run| {
+        cmd(run, "web.open", json!({"path": s(&index)}));
+        define(run, &dir);
+        for (out, set) in [("out-open", "open"), ("out-site", "site")] {
+            cmd(run, "web.export_recipe", json!({"output_root": s(&dir.at(out)), "documents": set}));
+            let export = cmd(run, "web.export", json!({}));
+            assert_eq!(export["manifest"]["link_broken"].as_array().unwrap().len(), 2000, "{set}");
+            assert_eq!((export["manifest"]["link_broken_truncated"].as_u64(), export["link_broken_truncated"].as_u64()), (Some(100), Some(100)), "{set}");
+        }
+    });
+    // About 2600 pages with long names: the files and documents rows exceed 1 MiB.
+    let big = Scratch::new("manifest-big");
+    big.write("site/index.html", b"<!DOCTYPE html><html><head><title>i</title></head><body>i</body></html>");
+    for i in 0..2600 {
+        big.write(&format!("site/p{}{i:05}.html", "a".repeat(70)), b"<!DOCTYPE html><title>t</title>");
+    }
+    with_run(|run| {
+        define(run, &big);
+        cmd(run, "web.export_recipe", json!({"output_root": s(&big.at("out")), "documents": "site"}));
+        assert_eq!(refused(run, "web.export", json!({})), "export_manifest_too_large");
+    });
+    assert!(!big.at("out").exists(), "refused before the first write");
+}
+
+/// Review F5: parameters are checked before admission (a typed refusal, the port not asked); a canceled token reaches
+/// the lifecycle (`refused_canceled`, the port not asked); the result carries the job's settlement; publish checks
+/// the token per file and settles canceled with its partial receipt.
+#[test]
+fn job_admission_edges_are_typed() {
+    let dir = Scratch::new("job-edges");
+    let index = site(&dir, false);
+    let h = harness();
+    let cancel = CancellationToken::default();
+    let mut run = h.run(asset_local_test_context(), &cancel);
+    let saturated = Arc::new(JobsPort { refuse: true, ..JobsPort::default() });
+    run.bind_web_jobs(saturated.clone(), JobLifecycle::default());
+    bare_ok(&mut run, "web.open", json!({"path": s(&index)}));
+    bare_ok(&mut run, "web.site", json!({"display_name": "harbour", "local_root": s(&dir.at("site"))}));
+    bare_ok(&mut run, "web.remote_target", json!({"target_id": "local", "root_path": s(&dir.at("target"))}));
+    bare_ok(&mut run, "web.export_recipe", json!({"output_root": s(&dir.at("out"))}));
+    for (id, params, code) in [
+        ("web.move_file", json!({"from": "orphan.png"}), "parameter_missing"),
+        ("web.move_file", json!({"from": "orphan.png", "to": "or phan.png"}), "path_invalid"),
+        ("web.move_file", json!({"from": "orphan.png", "to": "orphan.png"}), "nothing_to_change"),
+        ("web.publish", json!({"target_id": "nope"}), "no_such_target"),
+    ] {
+        assert_eq!(bare_no(&mut run, id, params), code, "{id}");
+    }
+    assert_eq!(saturated.asked(), 0, "malformed commands never reach the port");
+    // A settled job is in the result.
+    let open = Arc::new(JobsPort::default());
+    run.bind_web_jobs(open.clone(), JobLifecycle::default());
+    bare_ok(&mut run, "web.export", json!({}));
+    let job = run.ops().last().unwrap()["detail"]["job"].clone();
+    assert_eq!((job["outcome"].as_str(), job["ticket"].as_u64()), (Some("completed"), Some(0)), "{job}");
+    assert!(job["correlation"].is_u64() && job["bound_revision"].is_u64(), "{job}");
+    // Canceled while admitted: publish copies nothing, settles canceled and keeps its partial receipt.
+    let lifecycle = JobLifecycle::default();
+    run.bind_web_jobs(Arc::new(JobsPort { cancel_on_admit: Some(cancel.clone()), ..JobsPort::default() }), lifecycle.clone());
+    assert_eq!(bare_no(&mut run, "web.publish", json!({})), "canceled");
+    let detail = run.ops().last().unwrap()["detail"].clone();
+    assert_eq!((detail["receipt"]["complete"].as_bool(), detail["receipt"]["files"].as_array().map(Vec::len)), (Some(false), Some(0)), "{detail}");
+    assert!(!dir.at("target/index.html").exists());
+    assert_eq!(lifecycle.counts().canceled, 1);
+    // Canceled before the command: the lifecycle refuses it, the port is never asked.
+    let lifecycle = JobLifecycle::default();
+    let port = Arc::new(JobsPort::default());
+    run.bind_web_jobs(port.clone(), lifecycle.clone());
+    assert_eq!(bare_no(&mut run, "web.site_report", json!({})), "canceled");
+    assert_eq!((lifecycle.counts().refused_canceled, port.asked()), (1, 0));
+}
+
+/// Review F8: a style sheet whose comment holds `</style>` is scanned like any other and written back byte for byte.
+#[test]
+fn a_style_sheet_holding_end_style_text_blocks_nothing() {
+    let dir = Scratch::new("end-style");
+    site(&dir, false);
+    let old = "/* IE hack: </style> and </STYLE */\np { background: url(../img/hero.png); }\n";
+    dir.write("site/styles/old.css", old.as_bytes());
+    dir.write("site/old.html", b"<!DOCTYPE html><html><head><title>o</title><link rel=\"stylesheet\" href=\"styles/old.css\"></head><body>o</body></html>");
+    with_run(|run| {
+        define(run, &dir);
+        cmd(run, "web.export_recipe", json!({"output_root": s(&dir.at("out")), "documents": "site"}));
+        cmd(run, "web.export", json!({}));
+        cmd(run, "web.move_file", json!({"from": "img/hero.png", "to": "img/h2.png"}));
+    });
+    assert_eq!(dir.read("site/styles/old.css"), old.replace("../img/hero.png", "../img/h2.png"));
+    assert_eq!(dir.read("out/styles/old.css"), old);
+}
+
+/// Q2 (lead 2026-11-11): saving a document inside local_root takes the site lock, so a move's restore never
+/// overwrites a concurrent save.
+#[test]
+fn a_save_inside_the_site_takes_the_site_lock() {
+    let dir = Scratch::new("save-lock");
+    let index = site(&dir, false);
+    with_run(|run| {
+        cmd(run, "web.open", json!({"path": s(&index)}));
+        define(run, &dir);
+        cmd(run, "web.set_attribute", json!({"key": "#top", "name": "class", "value": "x"}));
+        dir.write("site/.studio-site.lock", b"{}");
+        assert_eq!(refused(run, "web.save", json!({"overwrite": true})), "site_locked");
+        assert_eq!(dir.read("site/index.html"), INDEX, "nothing written");
+        std::fs::remove_file(dir.at("site/.studio-site.lock")).unwrap();
+        cmd(run, "web.save", json!({"overwrite": true}));
+        assert!(!dir.at("site/.studio-site.lock").exists(), "released");
+    });
+    assert!(dir.read("site/index.html").contains("class=\"x\""));
+}
+
+/// Q3 (lead 2026-11-11): moving the recipe's entry document updates `recipe.file`, so the next site export finds it.
+#[test]
+fn moving_the_entry_document_updates_the_recipe() {
+    let dir = Scratch::new("entry-move");
+    site(&dir, false);
+    with_run(|run| {
+        define(run, &dir);
+        cmd(run, "web.export_recipe", json!({"output_root": s(&dir.at("out")), "documents": "site", "file": "thanks.html"}));
+        let moved = cmd(run, "web.move_file", json!({"from": "thanks.html", "to": "pages/thanks.html"}));
+        assert_eq!(moved["web"]["recipe"]["file"], "pages/thanks.html", "{moved}");
+        let export = cmd(run, "web.export", json!({}));
+        assert_eq!(export["manifest"]["document"], "pages/thanks.html");
+    });
+}
+
 #[cfg(feature = "viewer")]
 mod through_the_viewer {
     use super::{FIXTURE, JobsPort as Port, Scratch, s, site};
@@ -604,6 +824,12 @@ mod through_the_viewer {
         }
         assert!(!dir.at("out").exists() && !dir.at("target").exists() && !dir.at("site/.studio-site.lock").exists(), "nothing written");
         assert!(dir.at("site/orphan.png").exists());
+        // Q1: the open export and publish admit on the open package; site work always on the site's own id.
+        let package_id = v.run().snapshot().unwrap().document().document_id.clone();
+        let seen = saturated.resources.lock().unwrap().clone();
+        assert_eq!(&seen[..2], [package_id.clone(), package_id.clone()], "{seen:?}");
+        assert!(seen[2] != package_id && seen[2..].iter().all(|r| *r == seen[2]), "site work admits on the site's id: {seen:?}");
+        assert_eq!(*saturated.actions.lock().unwrap(), ["export", "export", "export", "export", "edit"]);
         // An admitting port: one admit and one release per command, and the work runs.
         let open = Arc::new(Port::default());
         v.set_job_port(open.clone());

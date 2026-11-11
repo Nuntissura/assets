@@ -1219,6 +1219,8 @@ mod tests {
         let (mut host, port) = host_with(1);
         let cancel = CancellationToken::default();
         run(&mut host, "web.site", json!({"display_name": "s", "local_root": dir.to_string_lossy()}), &cancel).ok().unwrap();
+        run(&mut host, "web.remote_target", json!({"target_id": "t", "root_path": dir.join("target").to_string_lossy()}), &cancel).ok().unwrap();
+        run(&mut host, "web.export_recipe", json!({"output_root": dir.join("out").to_string_lossy(), "documents": "site"}), &cancel).ok().unwrap();
         let held = port.admission().try_acquire(0).unwrap();
         for (id, params) in [("web.site_report", json!({})), ("web.export", json!({})), ("web.publish", json!({})), ("web.move_file", json!({"from": "a.png", "to": "b.png"}))] {
             let Err(No(code, at, detail)) = run(&mut host, id, params, &cancel) else { panic!("{id} ran while the admission was full") };
@@ -1232,6 +1234,27 @@ mod tests {
         assert_eq!(port.tickets_held(), 0, "the ticket is released at settlement");
         cancel.cancel();
         assert!(matches!(run(&mut host, "web.site_report", json!({}), &cancel), Err(No("canceled", ..))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review F7: a guard removes the lock file only while it still holds the guard's own nonce, so a lock taken after
+    /// a stale one was deleted by hand survives the stale holder's exit.
+    #[test]
+    fn a_lock_guard_removes_only_its_own_lock() {
+        let dir = std::env::temp_dir().join(format!("hsk-web-site-unit-{}-nonce", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = context().command(Some("web.move_file"), 0, None);
+        let guard = site_lock(&dir.to_string_lossy(), &ctx).ok().unwrap();
+        let first: Value = serde_json::from_slice(&std::fs::read(dir.join(LOCK_FILE)).unwrap()).unwrap();
+        assert!(first["nonce"].as_str().is_some_and(|n| !n.is_empty()), "{first}");
+        // The operator deletes the stale lock; another holder takes it.
+        std::fs::remove_file(dir.join(LOCK_FILE)).unwrap();
+        let other = site_lock(&dir.to_string_lossy(), &ctx).ok().unwrap();
+        drop(guard);
+        assert!(dir.join(LOCK_FILE).exists(), "the stale guard left the new holder's lock alone");
+        drop(other);
+        assert!(!dir.join(LOCK_FILE).exists(), "its own holder removes it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
