@@ -217,9 +217,11 @@ fn r60_i3_layout_open_that_adds_an_undo_step_declares_it_mutates() {
     v.layout_open(Some((200.0, 200.0)), Some(1)).unwrap();
     assert_eq!(v.edit_json()["history"]["undo"].as_array().unwrap().len(), before + 1, "a sized open is a step");
 
-    // Review F1 of c43f2d90: the drive reply names that step (the process, as a model drives it).
+    // Review F1 of c43f2d90: the drive reply names that step (the process, as a model drives it). A sized
+    // open needs a document without pages: the harness fixture.
     let scratch = Scratch::new("r60-i3-drive");
-    let package = package(&scratch.0, "drive.handshake");
+    let package = scratch.0.join("demo.handshake");
+    std::fs::write(&package, include_bytes!("fixtures/demo.handshake")).unwrap();
     let line = serde_json::json!({"command": "command", "command_id": "layout.open", "parameters": {"page_width_pt": 200, "page_height_pt": 200, "pages": 1}});
     let (_, replies) = session(&scratch.0, &package, &[line]);
     assert_eq!(replies[1]["ok"], true, "{}", replies[1]);
