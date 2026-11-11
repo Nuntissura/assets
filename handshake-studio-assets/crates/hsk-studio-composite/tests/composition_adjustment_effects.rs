@@ -372,6 +372,62 @@ fn adjustment_layers_nest_on_the_already_adjusted_result() {
     });
 }
 
+/// The left-half mask of the composition (x < 8), with `mode` and `closed`.
+fn left_half_mask(mode: &str, closed: bool) -> Value {
+    json!([{"mask_id":"m","mode":mode,"closed":closed,"static_value":[
+        0.0,0.0,0.0,0.0,0.0,0.0, 8.0,0.0,0.0,0.0,0.0,0.0, 8.0,12.0,0.0,0.0,0.0,0.0, 0.0,12.0,0.0,0.0,0.0,0.0]}])
+}
+
+/// Review F2 (lead ruling 2026-11-11): masks that contribute nothing (every mask mode none, or an
+/// open path) leave the adjustment layer unmasked, as every other layer path reads them.
+#[test]
+fn an_adjustment_layer_whose_masks_contribute_nothing_is_unmasked() {
+    bounded_case("an_adjustment_layer_whose_masks_contribute_nothing_is_unmasked", || {
+        let pixels = Pixels::fixture();
+        let whole = inverted(&beneath(), |_, _| 1.0);
+        for (mode, closed) in [("none", true), ("add", false)] {
+            let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"masks":left_half_mask(mode, closed)})), comp_layer(2, json!({}))], None);
+            let got = frame(&rec, &pixels, 0);
+            assert!(max_delta(&got, &whole) <= 1e-6, "mask mode {mode} closed {closed}: {}", max_delta(&got, &whole));
+        }
+    });
+}
+
+/// Review F4 (lead ruling 2026-11-11): a frame rendered below the composition size (render-queue
+/// resolution) keeps a composition adjustment layer at the identity and scales its stack's pixel
+/// parameters and its coverage with the frame, so it renders as the scaled frame adjusted.
+#[test]
+fn a_scaled_scene_keeps_the_adjustment_layer_untouched_and_scales_its_stack() {
+    bounded_case("a_scaled_scene_keeps_the_adjustment_layer_untouched_and_scales_its_stack", || {
+        let pixels = Pixels::fixture();
+        let cancel = CancellationToken::default();
+        let (hw, hh) = (W / 2, H / 2);
+        let render = |scene: &SceneComposition| pixels_of(&render_scene(scene, &context(&pixels, SceneLimits::default()), &cancel).expect("a half-resolution frame renders"));
+        let at = |rec: &Value| source(rec, &pixels).expect("source").scene_at(0, &cancel).expect("scene");
+        let bare = render(&scale_scene(&at(&records(vec![comp_layer(2, json!({}))], None)), hw, hh).unwrap());
+        let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"masks":left_half_mask("add", true)})), comp_layer(2, json!({}))], None);
+        let half = scale_scene(&at(&rec), hw, hh).expect("scales");
+        assert_eq!(half.layers[0].matrix.m, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0], "the adjustment layer keeps the identity");
+        let SceneContent::AdjustmentEffects(a) = &half.layers[0].content else { panic!("{:?}", half.layers[0].content) };
+        assert_eq!(a.coverage.as_ref().map(Vec::len), Some((hw * hh) as usize), "coverage over the scaled frame");
+        let got = render(&half);
+        let want: Vec<[f32; 4]> = bare
+            .iter()
+            .enumerate()
+            .map(|(i, p)| if p[3] > 0.0 && (i as u32 % hw) < hw / 2 { [1.0 - p[0], 1.0 - p[1], 1.0 - p[2], p[3]] } else { *p })
+            .collect();
+        assert!(max_delta(&got, &want) <= 1e-6, "{}", max_delta(&got, &want));
+        // A pixel parameter follows the frame: a ramp from the left to the right edge.
+        let ramp = json!({"effect_id":"r","filter_kind":"gradient_ramp","values":{"start_of_ramp":constant(json!([0.0,0.0])),"end_of_ramp":constant(json!([1.0,0.0]))},
+            "colour_profiles":{"start_color":{"colour_profile_id":identity("SCPF",1)},"end_color":{"colour_profile_id":identity("SCPF",1)}}});
+        let rec = records(vec![comp_layer(3, json!({"effects":[ramp]})), comp_layer(2, json!({}))], None);
+        let half = scale_scene(&at(&rec), hw, hh).expect("scales");
+        let SceneContent::AdjustmentEffects(a) = &half.layers[0].content else { panic!() };
+        assert!(matches!(a.effects[0].effect, SceneEffect::GradientRamp { start: [0.0, 0.0], end: [8.0, 0.0], .. }), "{:?}", a.effects[0].effect);
+        render(&half);
+    });
+}
+
 #[test]
 fn adjustment_layer_refusals_are_typed() {
     let pixels = Pixels::fixture();

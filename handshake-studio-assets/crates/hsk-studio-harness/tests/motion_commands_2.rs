@@ -288,7 +288,7 @@ fn copy_paste_and_reverse_paste_keep_relative_order_as_one_step() {
         let at = |t: u64| k.iter().find(|x| x["time"] == t).unwrap().clone();
         assert_eq!((at(8 * S)["value"].clone(), at(9 * S)["value"].clone()), (json!([100.0]), json!([70.0])));
         assert_eq!((at(9 * S)["in_interp"].clone(), at(9 * S)["out_interp"].clone()), (json!("bezier"), json!("linear")));
-        assert_eq!(at(9 * S)["in_tangent"], json!([{"speed": 3.0, "influence": 0.25}]));
+        assert_eq!(at(9 * S)["in_tangent"], json!([{"speed": -3.0, "influence": 0.25}]), "reversed time negates the speed (review F1)");
         // Paste onto another layer's property of the same dimension, and over an existing key.
         cmd(run, "keyframe.paste", json!({"layer_id": ctrl, "property": "rotation", "time": S}));
         assert_eq!(times(run, &ctrl, "rotation"), vec![S, 2 * S], "the key at S is replaced, not doubled");
@@ -366,6 +366,87 @@ fn shift_ease_and_hold_over_the_selection_are_named_steps() {
     });
 }
 
+/// Review F1 (lead ruling 2026-11-11): reverse paste plays the copied motion backwards. A bezier side
+/// with a non-zero speed arrives with its speed negated, and the reversed segment samples as the
+/// original at mirrored times (swapping the sides alone would overshoot the arriving key).
+#[test]
+fn f1_reverse_paste_mirrors_a_curve_with_a_non_zero_speed() {
+    with_open(|run| {
+        keyed(run);
+        cmd(run, "keyframe.set_interpolation", json!({"layer_id": L2, "property": "opacity", "time": S, "out_interp": "bezier", "out_tangent": [{"speed": 3.0, "influence": 0.25}]}));
+        cmd(run, "keyframe.set_interpolation", json!({"layer_id": L2, "property": "opacity", "time": 2 * S, "in_interp": "bezier", "in_tangent": [{"speed": -5.0, "influence": 0.4}]}));
+        cmd(run, "keyframe.select", json!({"scope": "property", "layer_id": L2, "property": "opacity", "times": [S, 2 * S]}));
+        cmd(run, "keyframe.copy", json!({}));
+        cmd(run, "keyframe.paste", json!({"layer_id": L2, "time": 8 * S, "reverse": true}));
+        let k = keys(run, L2, "opacity");
+        let at = |t: u64| k.iter().find(|x| x["time"] == t).unwrap().clone();
+        assert_eq!(at(8 * S)["out_tangent"], json!([{"speed": 5.0, "influence": 0.4}]));
+        assert_eq!(at(9 * S)["in_tangent"], json!([{"speed": -3.0, "influence": 0.25}]));
+        let value = |run: &mut Run<'_>, t: u64| cmd(run, "property.read", json!({"layer_id": L2, "property": "opacity", "time": t}))["value_at"][0].as_f64().unwrap();
+        for i in 0..=10u64 {
+            let d = S / 10 * i;
+            let (original, reversed) = (value(run, S + d), value(run, 9 * S - d));
+            assert!((original - reversed).abs() < 1e-6, "at {i}/10: original {original}, reversed {reversed}");
+        }
+    });
+}
+
+/// Review F3 (lead ruling 2026-11-11): opening a document clears the keyframe selection (it named
+/// keys of the previous document); the clipboard stays, so keys paste across documents.
+#[test]
+fn f3_opening_a_document_clears_the_selection_and_keeps_the_clipboard() {
+    with_open(|run| {
+        keyed(run);
+        cmd(run, "keyframe.select", json!({"scope": "property", "layer_id": L2, "property": "opacity"}));
+        assert_eq!(cmd(run, "keyframe.copy", json!({}))["copied"], 3);
+        assert!(run.open_bytes(FIXTURE), "another document on the same run");
+        keyed(run);
+        let before = keys(run, L2, "opacity");
+        let sel = selection(run);
+        assert_eq!((sel["selected"].clone(), sel["dropped"].clone()), (json!(0), json!(0)), "{sel}");
+        for (id, p) in [("keyframe.ease", json!({})), ("keyframe.toggle_hold", json!({})), ("keyframe.shift_selected", json!({"frames": 1}))] {
+            assert_eq!(refused(run, id, p), "selection_empty", "{id} changes nothing in the newly opened document");
+        }
+        assert_eq!(keys(run, L2, "opacity"), before);
+        assert_eq!(cmd(run, "keyframe.paste", json!({"layer_id": L2, "time": 5 * S}))["pasted"], 3, "the clipboard survives the open");
+    });
+}
+
+/// Review F5 (lead ruling 2026-11-11): add and toggle at current take no value, so their rows do not
+/// declare one; a caller that sends it is still refused.
+#[test]
+fn f5_add_and_toggle_at_current_declare_no_value() {
+    for id in ["keyframe.add_at_current", "keyframe.toggle_at_current"] {
+        let row = RUN_COMMANDS.iter().find(|c| c.command_id == id).unwrap();
+        assert!(row.parameters.iter().all(|p| p.key != "value"), "{id} declares value");
+        assert!(["layer_id", "property", "time"].iter().all(|k| row.parameters.iter().any(|p| p.key == *k)), "{id}");
+    }
+}
+
+/// Review F6 (lead ruling 2026-11-11): a row that prunes keys an edit removed from the selection
+/// counts them, and `keyframe.selection` reports the count once.
+#[test]
+fn f6_rows_that_prune_the_selection_count_what_they_dropped() {
+    let rows = [
+        ("keyframe.ease", json!({}), 2),
+        ("keyframe.toggle_hold", json!({}), 2),
+        ("keyframe.shift_selected", json!({"frames": 1}), 2),
+        ("keyframe.select", json!({"scope": "property", "layer_id": L2, "property": "position", "mode": "add"}), 4),
+        ("keyframe.copy", json!({}), 2),
+    ];
+    for (id, p, left) in rows {
+        with_open(|run| {
+            keyed(run);
+            cmd(run, "keyframe.select", json!({"scope": "property", "layer_id": L2, "property": "opacity"}));
+            cmd(run, "keyframe.delete", json!({"layer_id": L2, "property": "opacity", "time": S}));
+            cmd(run, id, p);
+            let sel = selection(run);
+            assert_eq!((sel["selected"].clone(), sel["dropped"].clone()), (json!(left), json!(1)), "{id}: {sel}");
+            assert_eq!(selection(run)["dropped"], 0, "{id}: reported once");
+        });
+    }
+}
+
 /// Round R60 attempt-2 probe (claim SMB-MOTION-COMMANDS-1, `validation/round-R60.json`
 /// `attempt_2_probes`): `keyframe.add_at_current` with a value on an anchor without a stream changed
 /// the rendered scene. STU-MOT-038: adding captures the current evaluated value and never changes
@@ -380,10 +461,10 @@ fn r60_add_at_current_never_takes_a_callers_value_and_set_parent_states_its_choi
         cmd(run, "keyframe.set", json!({"layer_id": shape, "property": "position", "time": 4 * F, "value": [40.0, 0.0]}));
         // The probe's exact call: refused, nothing changes (`refused` compares the entries).
         for id in ["keyframe.add_at_current", "keyframe.toggle_at_current"] {
-            assert_eq!(refused(run, id, json!({"layer_id": shape, "property": "anchor", "time": F, "value": [37.0, 11.0]})), "parameter_invalid", "{id}");
+            assert_eq!(refused(run, id, json!({"layer_id": shape, "property": "anchor", "time": F, "value": [37.0, 11.0]})), "parameter_unknown", "{id}: the row declares no value (review F5)");
             assert_eq!(run.ops().last().unwrap()["target"], "value");
             assert_eq!(refused(run, id, json!({"layer_id": shape, "property": "anchor", "time": F})), "property_default_unknown", "{id}: no current value to capture");
-            assert_eq!(refused(run, id, json!({"layer_id": shape, "property": "position", "time": F, "value": [1.0, 1.0]})), "parameter_invalid", "{id}: a known value is never replaced");
+            assert_eq!(refused(run, id, json!({"layer_id": shape, "property": "position", "time": F, "value": [1.0, 1.0]})), "parameter_unknown", "{id}: a known value is never replaced");
         }
         assert!(layer(run, &shape)["streams"].as_array().unwrap().iter().all(|s| s["property"] != "anchor"));
         // Adding where the value is known captures it: the sample at F is unchanged.
@@ -539,6 +620,52 @@ mod export {
             let want = luma([0.6, 0.075, 0.075]);
             assert!((f64::from(half[0][16 * 64 + 20]) - want).abs() <= 3.0, "50 % luma {} want {want}", half[0][16 * 64 + 20]);
         });
+    }
+
+    /// Review F4 (lead ruling 2026-11-11): a render-queue item at half resolution renders an
+    /// adjustment layer the user never transformed (the full-resolution item already did).
+    #[test]
+    fn f4_an_adjustment_layer_renders_at_half_resolution() {
+        with_open(|run| {
+            new_comp(run, "T01");
+            cmd(run, "composition.add_layer", json!({"composition_id": "T01", "kind": "solid", "colour": [0.8, 0.1, 0.1, 1.0]}));
+            let adj = cmd(run, "composition.add_layer", json!({"composition_id": "T01", "kind": "adjustment"}))["layer_id"].as_str().unwrap().to_string();
+            cmd(run, "composition.add_effect", json!({"layer_id": adj, "filter_kind": "levels", "values": {"output_white": [0.5]}}));
+            queue(run, "T01");
+            cmd(run, "composition.queue_set_settings", json!({"item_id": "rq", "resolution": "half"}));
+            let root = std::env::temp_dir().join(format!("hsk-motion-commands-2-half-{}", std::process::id()));
+            let frames = export(&run.checkpoint().unwrap(), 2, &root).expect("an adjustment layer renders at half resolution");
+            let want = luma([0.4, 0.05, 0.05]);
+            for at in [0, 8 * 32 + 10, 15 * 32 + 31] {
+                assert!((f64::from(frames[0][at]) - want).abs() <= 3.0, "half-resolution levels luma {} at {at}, want {want}", frames[0][at]);
+            }
+        });
+    }
+
+    /// Review F7 (lead ruling 2026-11-11): PSD export of a composition adjustment layer records a
+    /// typed loss entry, never a silent empty group.
+    #[test]
+    fn f7_psd_export_of_an_adjustment_layer_records_a_typed_loss() {
+        use hsk_studio_harness::view::Viewer;
+        use hsk_studio_harness::view::doc_export::{DocExportRecipe, DocFormat};
+        use hsk_studio_harness::view::render::Prefer;
+        let dir = std::env::temp_dir().join(format!("hsk-motion-commands-2-psd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("in.handshake");
+        std::fs::write(&src, FIXTURE).unwrap();
+        let mut v = Viewer::new(Prefer::Cpu);
+        v.open(&src).unwrap_or_else(|e| panic!("{e}"));
+        v.motion_command("composition.new", &json!({"composition_id": "T01", "name": "T01", "width": 64, "height": 32, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": 12 * S})).unwrap();
+        v.motion_command("composition.add_layer", &json!({"composition_id": "T01", "kind": "adjustment"})).unwrap();
+        let adj = v.run().ops().last().unwrap()["detail"]["layer_id"].as_str().unwrap().to_string();
+        let report = v.export_document(&dir.join("out.psd"), &DocExportRecipe::of_format(DocFormat::Psd { depth: 8 }), false).unwrap_or_else(|e| panic!("{e}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let loss = report["psd"]["loss"].as_array().cloned().unwrap_or_default();
+        assert!(
+            loss.iter().any(|l| l["layer_id"] == adj.as_str() && l["code"] == "psd_layer_kind_not_exported" && l["kind"] == "adjustment"),
+            "the adjustment layer is a typed loss: {report}"
+        );
     }
 
     #[test]
