@@ -57,15 +57,15 @@
 //! `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted as jobs before the first file (R60
 //! probe j3): through the job port bound with [`Run::bind_web_jobs`] (the Viewer binds its own before every web
 //! command; a bare Run keeps the asset-local `AdmissionJobPort`), with the run's open package document as the job's
-//! resource, as the viewer's other exports admit (`as_export_job`); refusals `overloaded` (`target`
-//! `retry_after_ms=N`), `canceled`, `stale_revision`.
+//! resource, as the viewer's other exports admit (`as_export_job`), and with none open the site's own derived id
+//! (never resource-less; module `web_site`); refusals `overloaded` (`target` `retry_after_ms=N`), `canceled`,
+//! `stale_revision`.
 //!
 //! Declared limits: the open export's document set is the open document and its folder must be the site's
 //! `local_root`; no source maps, no preprocessors, assets keep their paths (`asset_rewriting: keep`); site and recipe
 //! are not Folio records (no web token exists among the session's document entries), so the web history is the
 //! host's own, not the run's (`history.undo` refuses `newest_step_is_web` while a web step is newest); no business
-//! event; with no package open a web job is resource-less (the lifecycle's own admission, as `as_export_job`); no
-//! controls registry ids.
+//! event; no controls registry ids.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{Run, actor_json};
 use crate::action::{self, CommandEntry};
