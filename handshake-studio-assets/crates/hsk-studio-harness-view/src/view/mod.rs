@@ -713,7 +713,19 @@ impl Viewer {
     /// [`export::encode_frame`] and writes it atomically. Refuses the opened source path unless
     /// `overwrite` is set. Returns the export report (format, size, notes, backend, revision, path).
     pub fn export(&mut self, path: &Path, format: ExportFormat, overwrite: bool) -> Result<Value, String> {
-        let result = self.export_inner(path, format, overwrite);
+        // Admission (lane SMB-R60-FOLLOWUPS-1, review F3 of c43f2d90): after the cheap path checks, which
+        // `export_inner` refuses unadmitted, one export job through the bound JobPort before the first byte.
+        let result = if path.as_os_str().is_empty() || (self.is_source(path) && !overwrite) {
+            self.export_inner(path, format, overwrite)
+        } else {
+            match self.admit_export_job() {
+                Ok(job) => {
+                    let result = self.export_inner(path, format, overwrite);
+                    self.settle_export_text(job, result, "export")
+                }
+                Err(r) => Err(format!("export {}: {} {}", path.display(), r.code, r.detail)),
+            }
+        };
         match &result {
             Ok(report) => self.say(format!("exported {} ({} bytes, {})", path.display(), report["bytes"], format.name())),
             Err(e) => self.say(e.clone()),

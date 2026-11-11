@@ -1424,7 +1424,20 @@ impl Viewer {
     /// as PNG or JPEG with the output profile embedded (decoded back before an atomic write). Refuses
     /// the opened source path unless `overwrite`. Returns the export report.
     pub fn export_develop(&mut self, path: &Path, format: DevelopExport, overwrite: bool) -> Result<Value, Refusal> {
-        let result = self.export_develop_inner(path, format, overwrite);
+        // Admission (lane SMB-R60-FOLLOWUPS-1, review F3 of c43f2d90): after the cheap checks (path, source, a
+        // raw document), which the inner export refuses unadmitted, one export job through the bound JobPort
+        // before the first byte, settled once (the report's `job`).
+        let result = if path.as_os_str().is_empty() || (self.is_source(path) && !overwrite) || self.develop.is_none() {
+            self.export_develop_inner(path, format, overwrite)
+        } else {
+            match self.admit_export_job() {
+                Ok(job) => {
+                    let result = self.export_develop_inner(path, format, overwrite);
+                    self.settle_export_job(job, result)
+                }
+                Err(r) => Err(r),
+            }
+        };
         match &result {
             Ok(report) => {
                 let s = &report["export_stage"];

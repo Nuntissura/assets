@@ -374,9 +374,11 @@ impl Viewer {
             if path.exists() && !overwrite {
                 return Err(format!("pdf_export: {} exists", path.display()));
             }
-            let (bytes, losses) = self.vector_pdf_bytes()?;
-            super::super::export::write_atomic(path, &bytes).map_err(|e| format!("pdf_export: {e}"))?;
-            Ok(losses)
+            // Admission (lane SMB-R60-FOLLOWUPS-1, review F3 of c43f2d90): one export job through the bound
+            // JobPort before the first byte, settled once.
+            let job = self.admit_export_job().map_err(|r| format!("pdf_export: {} {}", r.code, r.detail))?;
+            let written = self.vector_pdf_bytes().and_then(|(bytes, losses)| super::super::export::write_atomic(path, &bytes).map(|()| losses).map_err(|e| format!("pdf_export: {e}")));
+            self.settle_export_text(job, written, "pdf_export")
         })();
         self.report(r)
     }

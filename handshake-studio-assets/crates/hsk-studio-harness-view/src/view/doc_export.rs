@@ -891,6 +891,17 @@ impl Viewer {
         admission.admit(admission.request(Action::Export, 0, head, correlation), head, self.cancel).map_err(|r| refuse(r.code(), refusal_json(r).to_string()))
     }
 
+    /// Settles `job` once for an export route whose refusal is text (`Viewer::export`, the vector exports;
+    /// lane SMB-R60-FOLLOWUPS-1, review F3 of c43f2d90): `completed` (`completed_stale` when the head moved)
+    /// or `failed` with the route's `code`.
+    pub(in crate::view) fn settle_export_text<T>(&self, job: AdmittedJob, result: Result<T, String>, code: &'static str) -> Result<T, String> {
+        let _ = match &result {
+            Ok(_) => job.complete(self.document_head()),
+            Err(_) => job.settle(JobOutcome::Failed(code)),
+        };
+        result
+    }
+
     /// Settles `job` once from its export's result: `completed` (`completed_stale` when the head moved),
     /// `canceled`, or `failed` with the refusal's code; a result carries the settlement as `job`.
     pub(in crate::view) fn settle_export_job(&self, job: AdmittedJob, result: Result<Value, Refusal>) -> Result<Value, Refusal> {
@@ -938,24 +949,30 @@ impl Viewer {
 /// `png`, `jpeg`, `tiff` or `psd` with its default options, or `export_recipe_id` naming a recipe added here (its
 /// format must be the target's). Each input's document is checkpointed into a unique temp beside the output,
 /// opened in a viewer attributed to the job's context, exported by [`Viewer::export_document`] and the temp is
-/// removed. Studio reading: `colour_profile_policy` and `resize_policy` stay refused by the runner; the recipe
+/// removed. Admission (lane SMB-R60-FOLLOWUPS-1 item 1, review c43f2d90 batch-port ruling): with
+/// [`RecipeTargets::with_job_port`] that viewer is bound to the caller's JobPort, so its `export_document`
+/// admits through it once per target (a refusal is the target's typed code, `overloaded`, `canceled` or
+/// `stale_revision`, and no output is written); without one (the CLI, no host port) it admits through the
+/// viewer's own asset-local port. Studio reading: `colour_profile_policy` and `resize_policy` stay refused by the runner; the recipe
 /// carries colour and size.
 pub struct RecipeTargets {
     recipes: BTreeMap<String, DocExportRecipe>,
     context: RunContext,
+    /// The caller's JobPort each export viewer is bound to ([`RecipeTargets::with_job_port`]).
+    port: Option<std::sync::Arc<dyn hsk_studio_session::JobPort>>,
     /// The last export report, by output path.
     pub reports: Vec<(PathBuf, Value)>,
 }
 
 impl RecipeTargets {
     pub fn new(context: RunContext) -> Self {
-        Self { recipes: BTreeMap::new(), context, reports: Vec::new() }
+        Self { recipes: BTreeMap::new(), context, port: None, reports: Vec::new() }
     }
 
-    /// Targets whose exports admit through `port`, the caller's bound JobPort.
+    /// Targets whose exports admit through `port`, the caller's bound JobPort (type docs).
     #[must_use]
-    pub fn with_job_port(self, port: std::sync::Arc<dyn hsk_studio_session::JobPort>) -> Self {
-        let _ = port;
+    pub fn with_job_port(mut self, port: std::sync::Arc<dyn hsk_studio_session::JobPort>) -> Self {
+        self.port = Some(port);
         self
     }
 
@@ -996,6 +1013,9 @@ impl TargetExporter for RecipeTargets {
         drop(file);
         let result = written.map_err(|_| "batch_destination_unavailable".to_string()).and_then(|()| {
             let mut viewer = Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), self.context.clone());
+            if let Some(port) = &self.port {
+                viewer.set_job_port(std::sync::Arc::clone(port));
+            }
             viewer.open(&temp).map_err(|_| "batch_export_open_failed".to_string())?;
             let report = viewer.export_document(path, &recipe, replace).map_err(|r| r.code.to_string())?;
             self.reports.push((path.to_path_buf(), report));

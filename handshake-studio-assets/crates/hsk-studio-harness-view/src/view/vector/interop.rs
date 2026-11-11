@@ -618,9 +618,11 @@ impl Viewer {
             if path.exists() && !overwrite {
                 return Err(format!("svg_export: {} exists", path.display()));
             }
-            let (text, losses) = self.vector_svg()?;
-            super::super::export::write_atomic(path, text.as_bytes()).map_err(|e| format!("svg_export: {e}"))?;
-            Ok(losses)
+            // Admission (lane SMB-R60-FOLLOWUPS-1, review F3 of c43f2d90): one export job through the bound
+            // JobPort before the first byte, settled once.
+            let job = self.admit_export_job().map_err(|r| format!("svg_export: {} {}", r.code, r.detail))?;
+            let written = self.vector_svg().and_then(|(text, losses)| super::super::export::write_atomic(path, text.as_bytes()).map(|()| losses).map_err(|e| format!("svg_export: {e}")));
+            self.settle_export_text(job, written, "svg_export")
         })();
         self.report(r)
     }
