@@ -1085,15 +1085,17 @@ fn default_module(item: &str, module: &str, format: &str) -> R<StudioOutputModul
         "mov_vc3" => ("mov", "dnxhr_hq"),
         "mov_av1" => ("mov", "64"),
         "mp4_av1" => ("mp4", "64"),
-        // Lane SMB-DELIVERY-QUEUE-1: a PNG sequence (STU-MOT-122) defaults to RGB+alpha, straight colour.
+        // Lane SMB-DELIVERY-QUEUE-1: a PNG sequence (STU-MOT-122) defaults to RGB+alpha, straight colour, sRGB (the
+        // space a PNG reader assumes and the document PNG export writes; review 44da1364 F3).
         "png_sequence" => ("png", ""),
         _ => return no("parameter_invalid", "format"),
     };
-    let (channels, color) = if format == "png_sequence" { ("rgb_alpha", "straight") } else { ("rgb", "premultiplied") };
+    let png = format == "png_sequence";
+    let (channels, color) = if png { ("rgb_alpha", "straight") } else { ("rgb", "premultiplied") };
     serde_json::from_value(json!({"module_id": module, "format": format, "codec_option": codec, "include_project_link": false, "post_render_action": "none",
         "include_source_metadata": false, "channels": channels, "depth": 8, "color": color, "starting_number": 0, "use_comp_frame_number": false,
         "audio": {"output": "off", "sample_rate": 48000, "bit_depth": 32, "float": true, "channels": 2},
-        "colour": {"preserve_rgb": false, "output_color_space": "rec709", "embed_color_space": true},
+        "colour": {"preserve_rgb": false, "output_color_space": if png { "srgb" } else { "rec709" }, "embed_color_space": true},
         "output_path": format!("renders/{item}-{module}.{ext}")}))
     .map_err(|_| No("parameter_invalid", "output_module".to_string()))
 }
@@ -1148,8 +1150,10 @@ fn queue_duplicate(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
 }
 
 /// The output-module fields of a user export recipe (lead ruling 2026-11-08: an output-module template is a
-/// user `StudioExportRecipe` with `does_video`): reel's exporter and container, the VC-3 profile or AV1
-/// quantizer, and the PCM audio (on with its bits, or off). A recipe whose parameters, scope, targets or
+/// user `StudioExportRecipe` with `does_video`): reel's exporter and container (the output path's extension
+/// follows it), the VC-3 profile or every AV1 setting ([`av1_codec_option`]), and the PCM audio (on with its
+/// bits, or off). Channels and colour stay the module's (`rgb_alpha` on a MOV or MP4 module is then refused
+/// `output_alpha_codec` when the item is queued). A recipe whose parameters, scope, targets or
 /// filters say more than a module stores is refused `template_not_mapped`; H.264 / HEVC and audio-only
 /// recipes are `template_format_unsupported` (no such render queue format).
 fn template_module(recipe: &Value, m: &mut StudioOutputModule) -> R<()> {
@@ -1182,8 +1186,9 @@ fn template_module(recipe: &Value, m: &mut StudioOutputModule) -> R<()> {
             (folio::StudioOutputFormat::MovVc3, key.to_string())
         }
         (Some("av1"), _) => {
-            let q = video["quantizer"].as_u64().ok_or(No("template_not_mapped", "video".to_string()))?;
-            (if mp4 { folio::StudioOutputFormat::Mp4Av1 } else { folio::StudioOutputFormat::MovAv1 }, q.to_string())
+            let n = |k: &str| video[k].as_u64().ok_or(No("template_not_mapped", "video".to_string()));
+            let bitrate = if video["bitrate"].is_null() { None } else { Some(n("bitrate")?) };
+            (if mp4 { folio::StudioOutputFormat::Mp4Av1 } else { folio::StudioOutputFormat::MovAv1 }, av1_codec_option(n("quantizer")?, n("speed")?, bitrate, n("max_keyframe_interval")?))
         }
         _ => return no("template_format_unsupported", "video"),
     };
@@ -1191,6 +1196,8 @@ fn template_module(recipe: &Value, m: &mut StudioOutputModule) -> R<()> {
     m.format = format;
     m.codec_option = codec;
     m.depth = depth;
+    // The output's extension follows the template's container (review 44da1364 F4).
+    m.output_path = with_extension(&m.output_path, if mp4 { "mp4" } else { "mov" });
     match &recipe["audio"] {
         Value::Null => m.audio.output = folio::StudioAudioOutput::Off,
         a => {
@@ -1200,6 +1207,38 @@ fn template_module(recipe: &Value, m: &mut StudioOutputModule) -> R<()> {
         }
     }
     Ok(())
+}
+
+/// reel's `Av1Settings::default()` speed and key frame interval (harness-core has no reel edge; harness-view's
+/// render_queue tests pin both against reel).
+const AV1_DEFAULT_SPEED: u64 = 6;
+const AV1_DEFAULT_KEYFRAME_INTERVAL: u64 = 240;
+
+/// The `codec_option` of an AV1 output module (review 44da1364 F4: every AV1 setting of a template is kept): the
+/// quantizer, then `,speed=N`, `,bitrate=N` and `,keyframe=N` each where it differs from reel's default (no
+/// bitrate: constant quantizer). Harness-view's `render_queue::module_output` reads it back.
+fn av1_codec_option(quantizer: u64, speed: u64, bitrate: Option<u64>, keyframe: u64) -> String {
+    let mut out = quantizer.to_string();
+    if speed != AV1_DEFAULT_SPEED {
+        out.push_str(&format!(",speed={speed}"));
+    }
+    if let Some(b) = bitrate {
+        out.push_str(&format!(",bitrate={b}"));
+    }
+    if keyframe != AV1_DEFAULT_KEYFRAME_INTERVAL {
+        out.push_str(&format!(",keyframe={keyframe}"));
+    }
+    out
+}
+
+/// `path` with its file name's extension replaced by `ext` (added when it has none).
+fn with_extension(path: &str, ext: &str) -> String {
+    let name_at = path.rfind(['/', '\\']).map_or(0, |i| i.saturating_add(1));
+    let (folder, name) = path.split_at(name_at.min(path.len()));
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => format!("{folder}{}.{ext}", &name[..dot]),
+        _ => format!("{path}.{ext}"),
+    }
 }
 
 /// `composition.queue_apply_template` (STU-MOT-125): `template` `output_module` applies the user export
@@ -2698,5 +2737,22 @@ mod selection_tests {
         assert_eq!(gather(&one, None).map(|v| v.len()).unwrap_or(0), 40_000, "at most the cap is accepted");
         let missing: BTreeSet<u64> = [40_000].into_iter().collect();
         assert!(matches!(gather(&entries, Some(&missing)), Err(No("keyframe_not_found", _))));
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    //! Review 44da1364 F4: a template keeps every AV1 setting and the output extension follows the container.
+    use super::*;
+
+    #[test]
+    fn av1_settings_and_container_extension() {
+        assert_eq!(av1_codec_option(80, AV1_DEFAULT_SPEED, None, AV1_DEFAULT_KEYFRAME_INTERVAL), "80", "defaults: the quantizer alone");
+        assert_eq!(av1_codec_option(80, 2, Some(5_000_000), 60), "80,speed=2,bitrate=5000000,keyframe=60");
+        assert!(av1_codec_option(255, 10, Some(u64::from(u32::MAX)), u64::from(u32::MAX)).len() <= 64, "fits the record's 64 bytes");
+        assert_eq!(with_extension("renders/x.png", "mov"), "renders/x.mov");
+        assert_eq!(with_extension("renders/a.b/x", "mp4"), "renders/a.b/x.mp4");
+        assert_eq!(with_extension("x.tar.png", "mp4"), "x.tar.mp4");
+        assert_eq!(with_extension(".hidden", "mov"), ".hidden.mov");
     }
 }

@@ -12,14 +12,16 @@ use super::{EntryRestore, HistoryStep, Run};
 pub use hsk_studio_session::EXPORT_RECIPES_ENTRY;
 use serde_json::{Value, json};
 
-/// Largest entry body this step stores (the producer's bound is smaller; the package limits apply as well).
-pub const MAX_EXPORT_RECIPES_BYTES: usize = 32 << 20;
+/// Largest entry body a save stores: the producer's one bound for save and read (harness-view
+/// `timeline_export::MAX_USER_RECIPES_BYTES`, review 44da1364 F2); the package limits apply as well. A delete
+/// that shrinks an entry already over it (another writer's) is stored, so the user can repair the document.
+pub const MAX_EXPORT_RECIPES_BYTES: usize = 8 << 20;
 
 impl Run<'_> {
     /// Stores `bytes` (`None`: removes the entry) as the user export recipes after `export.recipe_save`
     /// (`delete` false) or `export.recipe_delete` (`delete` true) of `recipe_id`; `recipes` is the count the
-    /// new body holds. Equal bytes are no step. Refusals: `not_open`, `canceled`, `export_recipes_too_large`,
-    /// the session's entry codes. One record `set_export_recipes`, detail `{command, recipe_id, recipes,
+    /// new body holds. Equal bytes are no step. Refusals: `not_open`, `canceled`, `export_recipes_too_large` (over
+    /// [`MAX_EXPORT_RECIPES_BYTES`], unless a delete shrinks the entry), the session's entry codes. One record `set_export_recipes`, detail `{command, recipe_id, recipes,
     /// changed}`.
     pub fn set_export_recipes(&mut self, delete: bool, recipe_id: &str, bytes: Option<Vec<u8>>, recipes: usize) -> bool {
         const OP: &str = "set_export_recipes";
@@ -33,14 +35,16 @@ impl Run<'_> {
         if self.cancel.check().is_err() {
             return self.own_op(OP, before, Err("canceled"));
         }
-        if bytes.as_ref().is_some_and(|b| b.len() > MAX_EXPORT_RECIPES_BYTES) {
+        let cancel = self.cancel;
+        let previous = self.session.as_ref().and_then(|s| s.document_entry(EXPORT_RECIPES_ENTRY)).map(<[u8]>::to_vec);
+        // Over the bound: refused, except a delete that shrinks the entry (module docs, the repair path).
+        let shrinks = |b: &Vec<u8>| delete && previous.as_ref().is_some_and(|p| b.len() < p.len());
+        if bytes.as_ref().is_some_and(|b| b.len() > MAX_EXPORT_RECIPES_BYTES && !shrinks(b)) {
             return self.own_op(OP, before, Err("export_recipes_too_large"));
         }
-        let cancel = self.cancel;
         let Some(session) = self.session.as_mut() else {
             return self.push(OP, before, Err("not_open"), None, None);
         };
-        let previous = session.document_entry(EXPORT_RECIPES_ENTRY).map(<[u8]>::to_vec);
         let changed = previous != bytes;
         if changed {
             if let Err(e) = session.set_document_entry(EXPORT_RECIPES_ENTRY, bytes, cancel) {

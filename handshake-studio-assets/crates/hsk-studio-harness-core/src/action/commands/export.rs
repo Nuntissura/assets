@@ -46,7 +46,8 @@ pub(super) const ROWS: &[CommandEntry] = &[
     // User export recipes, the same record as a shipped preset ([STU-VID-063]): saved from a preset or recipe
     // id plus parameter edits, each change one entry-only undo step.
     typed("export.recipe_save", "Viewer::export_recipe_save", "Save export recipe", true, &[t("from"), t("recipe_id"), t("name").opt(), r("parameters", PARAMETERS).opt()]),
-    typed("export.recipe_delete", "Viewer::export_recipe_delete", "Delete export recipe", true, &[t("recipe_id")]),
+    // `all` removes the whole entry, also one this build cannot read (repair; exactly one of the two).
+    typed("export.recipe_delete", "Viewer::export_recipe_delete", "Delete export recipe", true, &[t("recipe_id").opt(), b("all").opt()]),
     typed("export.recipes", "Viewer::export_recipes", "Export recipes", false, &[]),
     // The Run method behind both recipe rows (one entry-only undo step), not recordable.
     entry("document.set_export_recipes", "set_export_recipes", "Set user export recipes", false, true, &[]),
