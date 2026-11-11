@@ -550,3 +550,28 @@ fn photo_retouch_develop_steps_run_through_the_process() {
     assert_eq!(last["state"]["develop"]["local"].as_array().map(Vec::len), Some(2), "{last}");
     assert_eq!(s.close(), 0);
 }
+
+/// Lead ruling 2026-11-11 (V4-06): the document export (and the batch runner, which exports through it)
+/// renders the uncropped canvas, so a document with a stored develop crop names
+/// `develop_crop_not_applied` in the report notes; without a crop the notes do not.
+#[test]
+fn document_export_of_a_cropped_develop_names_the_crop_not_applied() {
+    use hsk_studio_harness::view::doc_export::{DocExportRecipe, DocFormat};
+    let scratch = Scratch::new("develop-commands-doc-export-crop");
+    let source = scratch.0.join("synthetic.dng");
+    std::fs::write(&source, synthetic_dng(160, 120)).unwrap();
+    let mut v = open(&source);
+    let recipe = DocExportRecipe::of_format(DocFormat::Png { depth: 8 });
+    let plain = v.export_document(&scratch.0.join("plain.png"), &recipe, false).unwrap_or_else(|e| panic!("{e}"));
+    assert!(!plain["notes"].as_array().unwrap().iter().any(|n| n == "develop_crop_not_applied"), "{plain}");
+    ok_row(&mut v, "photo.develop.set_crop", json!({"left":0.1,"top":0.2,"right":0.9,"bottom":0.8}));
+    let cropped = v.export_document(&scratch.0.join("cropped.png"), &recipe, false).unwrap_or_else(|e| panic!("{e}"));
+    assert!(cropped["notes"].as_array().unwrap().iter().any(|n| n == "develop_crop_not_applied"), "{cropped}");
+    assert_eq!((cropped["width"].clone(), cropped["height"].clone()), (plain["width"].clone(), plain["height"].clone()), "the canvas is exported uncropped");
+    // The note follows the stored entry: a reopened package keeps it.
+    let saved = scratch.0.join("crop.handshake");
+    v.save(&saved, false).unwrap();
+    let mut w = open(&saved);
+    let reopened = w.export_document(&scratch.0.join("reopened.png"), &recipe, false).unwrap_or_else(|e| panic!("{e}"));
+    assert!(reopened["notes"].as_array().unwrap().iter().any(|n| n == "develop_crop_not_applied"), "{reopened}");
+}
