@@ -378,14 +378,15 @@ fn left_half_mask(mode: &str, closed: bool) -> Value {
         0.0,0.0,0.0,0.0,0.0,0.0, 8.0,0.0,0.0,0.0,0.0,0.0, 8.0,12.0,0.0,0.0,0.0,0.0, 0.0,12.0,0.0,0.0,0.0,0.0]}])
 }
 
-/// Review F2 (lead ruling 2026-11-11): masks that contribute nothing (every mask mode none, or an
-/// open path) leave the adjustment layer unmasked, as every other layer path reads them.
+/// Review F2 (lead ruling 2026-11-11): masks that contribute nothing (every mask mode none) leave
+/// the adjustment layer unmasked, as every other layer path reads them. An open composition mask
+/// is refused by Folio (`InvalidField .../masks/<id>/closed`), so only mode none is authorable.
 #[test]
 fn an_adjustment_layer_whose_masks_contribute_nothing_is_unmasked() {
     bounded_case("an_adjustment_layer_whose_masks_contribute_nothing_is_unmasked", || {
         let pixels = Pixels::fixture();
         let whole = inverted(&beneath(), |_, _| 1.0);
-        for (mode, closed) in [("none", true), ("add", false)] {
+        for (mode, closed) in [("none", true)] {
             let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"masks":left_half_mask(mode, closed)})), comp_layer(2, json!({}))], None);
             let got = frame(&rec, &pixels, 0);
             assert!(max_delta(&got, &whole) <= 1e-6, "mask mode {mode} closed {closed}: {}", max_delta(&got, &whole));

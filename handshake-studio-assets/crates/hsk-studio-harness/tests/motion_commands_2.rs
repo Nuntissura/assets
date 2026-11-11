@@ -643,7 +643,9 @@ mod export {
     }
 
     /// Review F7 (lead ruling 2026-11-11): PSD export of a composition adjustment layer records a
-    /// typed loss entry, never a silent empty group.
+    /// typed loss entry, never a silent empty group. A visible one already stops the export typed
+    /// (the document composite refuses its source, `unsupported_payload`); a hidden one leaves the
+    /// composite and reaches the layer records, where it is the loss entry.
     #[test]
     fn f7_psd_export_of_an_adjustment_layer_records_a_typed_loss() {
         use hsk_studio_harness::view::Viewer;
@@ -663,7 +665,12 @@ mod export {
         v.motion_command("composition.new", &json!({"composition_id": "T01", "name": "T01", "width": 8, "height": 4, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": 12 * S})).unwrap();
         v.motion_command("composition.add_layer", &json!({"composition_id": "T01", "kind": "adjustment"})).unwrap();
         let adj = v.run().ops().last().unwrap()["detail"]["layer_id"].as_str().unwrap().to_string();
-        let report = v.export_document(&dir.join("out.psd"), &DocExportRecipe::of_format(DocFormat::Psd { depth: 8 }), false).unwrap_or_else(|e| panic!("{e}"));
+        let recipe = DocExportRecipe::of_format(DocFormat::Psd { depth: 8 });
+        let refused = v.export_document(&dir.join("visible.psd"), &recipe, false).expect_err("a visible adjustment layer stops the composite");
+        assert!(refused.to_string().contains(&adj) && refused.to_string().contains("unsupported_payload"), "{refused}");
+        assert!(!dir.join("visible.psd").exists(), "nothing written");
+        v.set_visible(&adj, false).unwrap();
+        let report = v.export_document(&dir.join("out.psd"), &recipe, false).unwrap_or_else(|e| panic!("{e}"));
         let _ = std::fs::remove_dir_all(&dir);
         let loss = report["psd"]["loss"].as_array().cloned().unwrap_or_default();
         assert!(
