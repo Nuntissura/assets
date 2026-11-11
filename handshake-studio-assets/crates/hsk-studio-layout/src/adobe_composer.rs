@@ -773,6 +773,25 @@ pub(crate) fn paragraph(
     ctx: &AdobeContext<'_>,
     cancel: &CancellationToken,
 ) -> Result<Vec<LineBreak>, LayoutError> {
+    paragraph_from(items, sums, width, rules, ctx, cancel, Resume::START, 0.0, &mut ParaStats::default())
+}
+
+/// `paragraph` from line `from.line`, which starts at item `from.item` after a hyphen run of
+/// `from.run`: the breaks of that line and the lines after it. `stats` receives the steps taken and
+/// the most states held at once.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paragraph_from(
+    items: &[Item],
+    sums: &Sums,
+    width: &dyn Fn(usize) -> f64,
+    rules: &HyphenRules,
+    ctx: &AdobeContext<'_>,
+    cancel: &CancellationToken,
+    from: Resume,
+    last_indent: f64,
+    stats: &mut ParaStats,
+) -> Result<Vec<LineBreak>, LayoutError> {
+    let _ = last_indent;
     let ws = ctx.justify.word_spacing;
     let model = &PARA_MODEL;
     let n = items.len();
@@ -808,7 +827,7 @@ pub(crate) fn paragraph(
     let mut memo = Memo::new();
     let mut work = 0u32;
     let mut breaks = Vec::new();
-    let (mut s, mut run, mut line) = (0usize, 0usize, 0usize);
+    let (mut s, mut run, mut line) = (from.item, from.run, from.line);
     while s < n {
         let (_, next) = p.best((s, line.min(flat_from), run, depth), &mut memo, &mut work, cancel)?;
         let Some(b) = next else {
@@ -819,6 +838,7 @@ pub(crate) fn paragraph(
                 break;
             }
             p.rescue = true;
+            stats.states = stats.states.max(memo.len());
             memo.clear();
             continue;
         };
@@ -841,10 +861,67 @@ pub(crate) fn paragraph(
         line += 1;
         // A window never looks back: the states before this line start are done with.
         if window > 0 {
+            stats.states = stats.states.max(memo.len());
             memo = memo.split_off(&(s, 0, 0, 0));
         }
     }
+    stats.states = stats.states.max(memo.len());
+    stats.work = work;
     Ok(breaks)
+}
+
+
+/// Where a paragraph composition resumes (`paragraph_from`): the first item of line `line` and the
+/// hyphen run of the lines before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Resume {
+    pub item: usize,
+    pub line: usize,
+    pub run: usize,
+}
+impl Resume {
+    pub(crate) const START: Self = Self { item: 0, line: 0, run: 0 };
+}
+
+/// Steps taken and the most states held at once by one composition (`paragraph_from`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ParaStats {
+    pub work: u32,
+    pub states: usize,
+}
+
+/// Lines above the paragraph's last line that a last-line re-break may change (lead ruling
+/// 2026-11-11): the composer's window less one.
+pub(crate) const PARA_TAIL_LINES: usize = PARA_MODEL.depth - 1;
+
+/// The `Resume` of line `t` of `breaks`: its first item and the hyphen run ending before it, as
+/// `paragraph_from` counts it (`MAX_RUN` at most).
+pub(crate) fn resume_at(items: &[Item], breaks: &[LineBreak], t: usize) -> Resume {
+    let run = breaks[..t].iter().fold(0, |run, b| if items[b.item].flagged { (run + 1).min(MAX_RUN) } else { 0 });
+    Resume { item: if t == 0 { 0 } else { line_start(items, breaks[t - 1].item) }, line: t, run }
+}
+
+/// STU-TYP-185 `last_line_indent` re-break of the paragraph composer (`threaded_reflow`, after its
+/// gate): `first` is the first pass at `width`; the result composes the paragraph again with its
+/// last line narrowed by `last_indent`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn last_line_rebreak(
+    items: &[Item],
+    sums: &Sums,
+    width: &dyn Fn(usize) -> f64,
+    rules: &HyphenRules,
+    ctx: &AdobeContext<'_>,
+    cancel: &CancellationToken,
+    first: Vec<LineBreak>,
+    last_indent: f64,
+    stats: &mut ParaStats,
+) -> Result<Vec<LineBreak>, LayoutError> {
+    let Some(l) = first.len().checked_sub(1) else {
+        return Ok(first);
+    };
+    let narrowed = width(l) - last_indent;
+    let narrow = |line: usize| if line == l { narrowed } else { width(line) };
+    paragraph_from(items, sums, &narrow, rules, ctx, cancel, Resume::START, 0.0, stats)
 }
 
 #[cfg(test)]
@@ -876,6 +953,71 @@ mod tests {
             let ctx = AdobeContext { params: AdobeParams::default(), justify: &jp, justified, justify_last: false };
             let got = paragraph(&items, &sums, &width, &HyphenRules::NONE, &ctx, &token);
             assert_eq!(got.unwrap_err(), LayoutError::Canceled, "justified {justified}");
+        }
+    }
+
+    /// The measurement's toy text: `n` words of 2 to 6 glyphs, 6 pt each (tests/indent_spacing.rs).
+    fn toy(n: usize) -> String {
+        let words = ["aaaa", "bb", "cccccc", "ddd", "eeeee"];
+        (0..n).map(|i| words[i % words.len()]).collect::<Vec<_>>().join(" ")
+    }
+    fn toy_items(text: &str, hyph: Option<(&crate::hyphenate::Hyphenator, &crate::hyphenate::HyphenationParams)>) -> Vec<Item> {
+        let p = ShapedParagraph::from_fixed_advance(text, SourceSpan { start: 0, end: text.len() as u64 }, 6.0, 12.0, 10.0).unwrap();
+        build_items(&p, text, SpaceParams::default(), hyph, true).unwrap()
+    }
+
+    /// Lead ruling 2026-11-11: the last-line re-break of a paragraph of 1800 words holds a number of
+    /// states bounded by the lines it may change (`PARA_TAIL_LINES`), not by the paragraph, and takes
+    /// no more steps than the first pass. Counts, never time. Before the ruling the re-break composed
+    /// the whole paragraph with line l narrowed by number: every line number its own memo class,
+    /// about 145 times the first pass's states on ragged text (diagnosis 2026-11-11).
+    #[test]
+    fn last_line_rebreak_work_is_bounded() {
+        let text = toy(1800);
+        let items = toy_items(&text, None);
+        let sums = Sums::new(&items);
+        let token = CancellationToken::default();
+        let width = |_: usize| 180.0;
+        let jp = JustifyParams::default();
+        for justified in [false, true] {
+            let ctx = AdobeContext { params: AdobeParams::default(), justify: &jp, justified, justify_last: false };
+            let mut first_stats = ParaStats::default();
+            let first = paragraph_from(&items, &sums, &width, &HyphenRules::NONE, &ctx, &token, Resume::START, 0.0, &mut first_stats).unwrap();
+            let from = resume_at(&items, &first, (first.len() - 1).saturating_sub(PARA_TAIL_LINES));
+            let mut stats = ParaStats::default();
+            let b = last_line_rebreak(&items, &sums, &width, &HyphenRules::NONE, &ctx, &token, first.clone(), 100.0, &mut stats).unwrap();
+            assert!(!b.is_empty());
+            let tail_items = items.len() - from.item;
+            assert!(stats.states <= 8 * tail_items, "justified {justified}: {stats:?}, tail items {tail_items}, first pass {first_stats:?}");
+            assert!(stats.work <= first_stats.work, "justified {justified}: {stats:?} vs first pass {first_stats:?}");
+        }
+    }
+
+    /// Lead ruling 2026-11-11: on justified (windowed) text the local tail re-break equals the
+    /// re-break of the whole paragraph with the same last-line narrowing, including across a
+    /// hyphen run at the seam (ladder limit 2).
+    #[test]
+    fn local_tail_equals_full_rebreak_when_justified() {
+        let token = CancellationToken::default();
+        let width = |_: usize| 180.0;
+        let jp = JustifyParams::default();
+        let ctx = AdobeContext { params: AdobeParams::default(), justify: &jp, justified: true, justify_last: false };
+        let hp = crate::hyphenate::HyphenationParams { consecutive_limit: 2, hyphen_advance_pt: 6.0, ..Default::default() };
+        let hyphen_text = "typographical justification hyphenation composition paragraphs ".repeat(60);
+        let cases: Vec<(String, Option<(&crate::hyphenate::Hyphenator, &crate::hyphenate::HyphenationParams)>, HyphenRules)> = vec![
+            (toy(600), None, HyphenRules::NONE),
+            (toy(1800), None, HyphenRules::NONE),
+            (hyphen_text.trim_end().to_string(), Some((crate::hyphenate::Hyphenator::en_us(), &hp)), HyphenRules { limit: 2, double_demerits: 10_000.0 }),
+        ];
+        for (text, hyph, rules) in cases {
+            let items = toy_items(&text, hyph);
+            let sums = Sums::new(&items);
+            let first = paragraph(&items, &sums, &width, &rules, &ctx, &token).unwrap();
+            let tail = last_line_rebreak(&items, &sums, &width, &rules, &ctx, &token, first, 100.0, &mut ParaStats::default()).unwrap();
+            let full = paragraph_from(&items, &sums, &width, &rules, &ctx, &token, Resume::START, 100.0, &mut ParaStats::default()).unwrap();
+            let bits = |b: &[LineBreak]| b.iter().map(|x| (x.item, x.overfull, x.ratio.map(f64::to_bits))).collect::<Vec<_>>();
+            assert_eq!(bits(&tail), bits(&full), "{} items, hyphenated {}", items.len(), hyph.is_some());
+            assert!(items.iter().any(|it| it.flagged) == hyph.is_some());
         }
     }
 }
