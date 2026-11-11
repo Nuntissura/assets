@@ -489,6 +489,15 @@ impl DevelopOp {
     fn apply(&self, s: &mut DevelopState) -> Result<(), Refusal> {
         match self {
             Self::Recipe(op) => op.apply(s),
+            // The enable.* keys of a preset set recipe enables outside `Adjustments`: they become the
+            // STU-RAW-105 overrides in the same step (save_preset writes them; review F2).
+            Self::Family(super::develop_more::FamilyOp::Preset { preset, amount }) => {
+                self.apply_edit(&mut s.edit)?;
+                if *amount > 0.0 {
+                    preset_enables(preset, &mut s.extras)?;
+                }
+                Ok(())
+            }
             _ => self.apply_edit(&mut s.edit),
         }
     }
@@ -633,8 +642,32 @@ impl DevelopOp {
         if a.local.len() > hsk_studio_develop::local::MAX_CORRECTIONS {
             return Err(Refusal::new("develop_limit", format!("at most {} corrections", hsk_studio_develop::local::MAX_CORRECTIONS)));
         }
+        // The develop entry bounds brush dabs across every correction of the edit (review F1).
+        let dabs = a.local.iter().flat_map(|c| &c.masks).filter_map(|m| if let MaskSource::Brush(b) = &m.source { Some(b.dabs.len()) } else { None }).fold(0_usize, usize::saturating_add);
+        if dabs > hsk_studio_develop::local::MAX_DABS {
+            return Err(Refusal::new("develop_limit", format!("at most {} brush dabs across the corrections of one edit ({dabs})", hsk_studio_develop::local::MAX_DABS)));
+        }
         Ok(())
     }
+}
+
+/// The `enable.<group>` settings of a preset as operator overrides (review F2). A preset key with no
+/// mapping here or in `Adjustments` is develop's `invalid_preset`, which `apply_edit` already returned.
+fn preset_enables(preset: &[u8], x: &mut DevelopExtras) -> Result<(), Refusal> {
+    let p = DevelopPreset::parse(preset).map_err(|e| Refusal::develop(e, "preset"))?;
+    for (key, value) in &p.settings {
+        let Some(group) = key.strip_prefix("enable.") else {
+            continue;
+        };
+        let i = ENABLE_GROUPS.iter().position(|g| *g == group).ok_or_else(|| Refusal::new("invalid_preset", format!("preset key {key} has no group enable")))?;
+        let hsk_studio_develop::PresetValue::Flag(on) = value else {
+            return Err(Refusal::new("invalid_preset", format!("preset key {key} is not a flag")));
+        };
+        if let Some(slot) = x.enables_override.get_mut(i) {
+            *slot = Some(*on);
+        }
+    }
+    Ok(())
 }
 
 fn source_kind(s: &MaskSource) -> &'static str {
@@ -1206,6 +1239,16 @@ impl Viewer {
         Some(d.current_state(self).0.extras)
     }
 
+    /// The size the export stage resizes: the develop window cut by the stored crop, as the develop
+    /// export cuts it (`NormalizedCrop::source_bounds`; review F4).
+    fn develop_export_stage_size(&self) -> (u32, u32) {
+        let (w, h) = self.develop_export_source_size();
+        let Some(x) = self.develop_extras() else {
+            return (w, h);
+        };
+        x.crop.source_bounds(w, h).map_or((w, h), |(x0, y0, x1, y1)| (x1.saturating_sub(x0), y1.saturating_sub(y0)))
+    }
+
     /// Whether the document's develop entry stores a crop (read from the entry itself, so a document
     /// reopened without its raw still answers). Exports of the canvas name it `develop_crop_not_applied`.
     pub(super) fn develop_crop_stored(&self) -> bool {
@@ -1248,7 +1291,7 @@ impl Viewer {
             "controls": controls(edit).iter().map(|c| json!({"id": c.id, "label": c.label, "section": c.section, "panel_range": [c.panel_range.0, c.panel_range.1]})).collect::<Vec<_>>(),
             "threads": d.threads.get(),
             "export": {"profile": "sRGB-v4.icc", "profile_sha256": hex(&sha256(SRGB_V4_ICC)), "formats": ["png8", "png16", "jpeg"]},
-            "export_stage": d.export.json(self.develop_export_source_size()),
+            "export_stage": d.export.json(self.develop_export_stage_size()),
         });
         if let Some(o) = out.as_object_mut() {
             o.extend(extras_json(&state.extras, recipe.as_ref()));
@@ -1314,6 +1357,15 @@ impl Viewer {
             // Nothing changed: no step.
             return Ok(self.run.snapshot().map_or(0, |s| s.document().revision));
         }
+        // The entry must read back as written before anything is developed, staged or committed: an
+        // entry the hostile decoder refuses would turn the next op and a reopen into the identity
+        // develop (review F1). The signature is not part of the state, so a placeholder stands in.
+        let probe = develop_entry::encode_state(&d.layer_id, None, &state.edit, &state.extras)?;
+        let back = develop_entry::decode(&probe)?;
+        if back.edit != state.edit || back.extras != state.extras {
+            return Err(Refusal::new("develop_entry_round_trip", "the develop entry would not read back as written"));
+        }
+        drop((probe, back));
         let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
         let (image, _) = hsk_studio_develop::develop_to_image_threads(&d.prepared.plane, &recipe, revision, d.threads, self.cancel).map_err(|e| Refusal::develop(e, "develop"))?;
         let (proposal, _) = raw_proposal_as(&d.prepared, image, &crate::harness::TrustAll, self.run.actor(), self.cancel).map_err(|e| Refusal::new(e.code(), format!("tiling: {e}")))?;
@@ -1406,7 +1458,7 @@ impl Viewer {
         let set = d.export.stage().is_some();
         let stage = d.export.stage().filter(|s| export_dialog::any_group_on(s)).cloned();
         if set && !matches!(format, DevelopExport::Dng { .. }) {
-            d.export.ready(self.develop_export_source_size())?;
+            d.export.ready(self.develop_export_stage_size())?;
         }
         let not_applied = |staged: Option<Value>| match staged {
             Some(r) => Some(r),
@@ -1449,7 +1501,11 @@ impl Viewer {
                 "export_stage": set.then(|| json!({"applied": false, "reason": "dng_preview_not_staged"})),
                 // The raw frame is written whole (crop is non-destructive) and the preview is cropped; the
                 // XMP packet is the caller's (the lrcat codec owns the crs: keys), so it does not carry it.
-                "develop_crop": crop.map(|c| json!({"crop": c, "applied_to": "preview", "notes": ["develop_crop_not_in_dng_xmp"]})),
+                // Without a preview the crop is applied nowhere (review F3).
+                "develop_crop": crop.map(|c| match export.preview {
+                    Some(_) => json!({"crop": c, "applied_to": "preview", "notes": ["develop_crop_not_in_dng_xmp"]}),
+                    None => json!({"crop": c, "applied_to": "none", "notes": ["develop_crop_not_in_dng_xmp", "develop_crop_not_applied"]}),
+                }),
             }));
         }
         if let DevelopExport::Tiff { depth, compression, predictor, colour_space, big_endian, big_tiff, dpi } = format {
@@ -1722,7 +1778,7 @@ impl Viewer {
         self.export_dialog_ui(ui);
         // PNG / JPEG / TIFF run the export stage when it is on and are disabled while it is invalid
         // (lane SMB-LR-EXPORT-GUI-1); DNG ignores the stage (its preview is not staged).
-        let staged_ok = self.develop.as_ref().is_none_or(|d| d.export.ready(self.develop_export_source_size()).is_ok());
+        let staged_ok = self.develop.as_ref().is_none_or(|d| d.export.ready(self.develop_export_stage_size()).is_ok());
         ui.horizontal_wrapped(|ui| {
             let base = std::path::PathBuf::from(self.save_input.trim());
             let buttons: [(&str, &str, &str, &str, DevelopExport, bool); 4] = [
