@@ -1,0 +1,10 @@
+[package]
+name = "compiled_schema_catalog_entries"
+version = "0.1.0"
+edition = "2021"
+description = "Pure compiled-schema and ordered-overlay declaration inventories"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]

@@ -1,0 +1,195 @@
+schema: assets.scoped-source-contract.v1
+contract_id: CSCE-SOURCE-CONTRACT-v1
+asset_id: HANDSHAKE-COMPILED-SCHEMA-CATALOG-ENTRIES-ASSET-001
+module: compiled_schema_catalog_entries
+status: maintenance-bound-source-adoption-execution-held
+repository:
+  url: https://github.com/Nuntissura/assets
+  branch: codex/handpick
+  scope: assets/hskernel/compiled_schema_catalog_entries
+placement:
+  authority: GLOBAL-ASSETS-012; scoped Master direction dated2026-10-26
+  local_policy_ref: ASSETS-CATALOG-009
+  existing_asset_migration: false
+ownership:
+  contract_preparer_chat: 01a17374-1d96-7e02-9aea-77b0f62f20dc
+  technical_coordinator_chat: 01a168a9-05b2-7630-9633-5faac88dd068
+  source_implementation_owner_chat: 01a1738a-8fd1-7ea3-abce-4da85992fe2d
+  source_implementation_owner_status: Assigned retained author; availability/nonoverlap and exact API/caller-fit
+    ACK verified by Codeleader/Master; no writes or active source lease
+  selection:
+    reported_by_chat: 01a168a9-05b2-7630-9633-5faac88dd068
+    source_author_chat: 01a1738a-8fd1-7ea3-abce-4da85992fe2d
+    source_author_state: Availability/nonoverlap and exact API ACK received; no active source lease or execution
+      admission
+    coding_parent:
+      chat_id: 01a17387-13d3-7091-951e-c06728fb7e94
+      reported_id_prefix: 01a17387-13d3
+    independent_codecheck_parent:
+      chat_id: 01a17387-9d99-7e61-8987-42feab10e18a
+      reported_id_prefix: 01a17387-9d99
+      review_scope: existing parent and its retained three lenses; no new team
+      state: Assigned existing independent reviewer with retained lenses; no new prior-ACK gate and no completed
+        source review claimed
+    flow:
+      reported_id_prefix: 01a1738c-5c70
+      role: pre-handoff nonauthor
+      chat_id: 01a1738c-5c70-7c93-b1c2-6dfc4d0edfb0
+    physical_publisher:
+      chat_id: 01a16f0c-3f8d-7fa2-8769-3e275ddf6005
+      state: Accepted future physical application/publication role per Codeleader; no current reservation or action
+        admission
+      acceptance_turn: 01a177ad-f79b-7250-8a94-a441cde8aeb9
+    source_writes: held for actual typed binding and shared interval; no actor is claimed running
+    source_author_ack:
+      state: VERIFIED_BY_CODELEADER
+      actor_chat: 01a1738a-8fd1-7ea3-abce-4da85992fe2d
+      completed_turn: 01a177b4-3516-7f53-b614-f4dd10f5aded
+      scope: 'Availability/nonoverlap and exact API/caller fit: validated base entries plus original production_schema_sources()[1..]
+        in existing order; original three APIs and distinct consumer policies preserved'
+      does_not_admit_source_writes: true
+source_and_adoption_binding:
+  source_contract_ref: .GOV/task_packets/WP-KERNEL-012-Native-Editors-Obsidian-VSCode-Parity-v1/MT-210.json
+  host_adoption_contract_ref: .GOV/task_packets/WP-KERNEL-012-Native-Editors-Obsidian-VSCode-Parity-v1/MT-211.json
+  status: Exact source/adoption references materialized and inspected; their execution remains held by actual owners
+  existing_primary_custody: Primary retains compiler, Product, common Git and process ownership
+  source_authority_location: Handshake WP012 owning source/adoption MT pair; no standalone_source MT is created
+    by this asset-maintenance draft
+  pending_exact_fields:
+  - Actual external candidate output/nonoverlap and source preimages bound by Coding/Primary
+  - Conditional owning lock/support lib.rs paths resolved by Primary as required by the owning MTs
+  - Actual asset Git/source/compiler interval handover and separately admitted actions; role fit and reference binding
+    do not reserve resources
+  reported_contract_plan:
+    source_stage: standalone_source
+    source_mt_id: MT-210
+    host_stage: host_adoption
+    host_mt_id: MT-211
+    state: One distinct materialized WP012 pair; no duplicate asset-side source MT
+  returned_file_allocation:
+    reported_by_chat: 01a168a9-05b2-7630-9633-5faac88dd068
+    source_required:
+    - Cargo.toml
+    - src/lib.rs
+    - tests/declaration_inventory.rs
+    source_supporting:
+    - minimal README
+    - owning Cargo.lock only if required
+    host_required:
+    - src/backend/handshake_storage_support/Cargo.toml
+    - src/backend/handshake_storage_support/src/compiled_schema_catalog_entries.rs re-export
+    - src/backend/handshake_core/src/storage/surreal/schema.rs strict/base and ordered-overlay wrappers
+    host_locks: Exact existing owning locks to be resolved by Primary; no guessed lock paths
+    adoption: Exact published dependency pin and re-export; no second host parser
+    state: Returned allocation, pending actual typed binding, author ACK and exact overlay API
+  reference_materialization:
+    source_contract_ref:
+      ref: .GOV/task_packets/WP-KERNEL-012-Native-Editors-Obsidian-VSCode-Parity-v1/MT-210.json
+      file_present_at_read: true
+      stage: standalone_source
+      observed_lifecycle_status: BLOCKED
+    host_adoption_contract_ref:
+      ref: .GOV/task_packets/WP-KERNEL-012-Native-Editors-Obsidian-VSCode-Parity-v1/MT-211.json
+      file_present_at_read: true
+      stage: host_adoption
+      observed_lifecycle_status: BLOCKED
+    observed_utc: '2026-10-26T10:31:28.316602+00:00'
+    binding_note: Stable references only; MT content digests are not embedded here because MT210 binds this maintenance
+      digest
+  source_module_maintenance_ref: .GOV/task_packets/WP-KERNEL-012-Native-Editors-Obsidian-VSCode-Parity-v1/MT-210.json#/execution/module_maintenance
+lineage:
+  historical_revision: b5273d82666354a0fc2b8d2e5715f12d79777786
+  original_path: src/backend/handshake_storage_support/src/compiled_schema_catalog_entries.rs
+  original_and_observed_current_sha256: 0529d603a0c242903a7072d8ded14468633682408370a9f5ae210a9d418cd02a
+  core_consumer_path: src/backend/handshake_core/src/storage/surreal/schema.rs
+  observed_core_sha256: 6b6ece113b043468e058aa71298eb92cc253609738a930d7f5a3a1106103fba6
+  source_status: read-only observations; host source freeze and adoption snapshot remain with owning team
+basis:
+  kind: recorded-remediation
+  failure: A valid multiline Engine Profile DEFINE EVENT header is not recognized by the strict/base and separate
+    ordered-overlay per-line inventories; the overlay recognizer is the reported panic path
+  discovery_revision: e37e61767b4a4a1cce8d8947841ac512b64b2cdd
+  reuse_exclusions:
+  - Accord is transport, not database schema
+  - Studio kernel bindings exclude concrete SurrealDB adapters
+  - Buurtman Surreal transport owns snapshot CAS, not declaration inventory
+  - Ferric storage owns redb archive persistence
+proposed_product_paths:
+- Cargo.toml
+- src/lib.rs
+- tests/declaration_inventory.rs
+requirements:
+- id: CSCE-001
+  requirement: Preserve original module lineage and the existing compiled_schema_catalog_entries, declarative_function_name
+    and insert_catalog_identity public behavior; keep generic logic independent of Handshake schema constants and
+    database execution.
+- id: CSCE-002
+  requirement: One shared declaration recognition capability must support both strict compiled/base inventory and
+    ordered overlay inventory; host adoption must remove both local recognizers rather than retain a divergent second
+    parser.
+- id: CSCE-003
+  requirement: 'Strict/base inventory retains its expected table set and eight-count tuple: tables, fields, indexes,
+    events, views, sequences, accesses and functions. Duplicate identities reject; identities remain sorted; supported
+    declaration/modifier forms and ACCESS/FUNCTION rejection behavior remain compatible.'
+- id: CSCE-004
+  requirement: Ordered overlay inventory consumes the validated base identities and host-supplied sources in their
+    existing order. Preserve optional OVERWRITE and IF NOT EXISTS handling, plain definitions, optional TABLE after
+    ON, supported TABLE/FIELD/INDEX/EVENT/FUNCTION/SEQUENCE/ACCESS/ANALYZER/PARAM identities, unknown-kind errors
+    and identity-set deduplication; do not impose strict-base duplicate/count rules on overlays or invent body-replacement
+    semantics.
+- id: CSCE-005
+  requirement: Multiline declaration headers yield the same identities as equivalent one-line headers without interpreting
+    quoted or commented content as new top-level declarations. This scope is declaration inventory, not a replacement
+    SurrealQL execution engine.
+- id: CSCE-006
+  requirement: Keep compiled schema sources, expected names/counts, production source ordering, source/catalog hash
+    computation and database INFO checks in the host. Preserve their lineage and hash inputs; any intentional source/hash
+    transition belongs to the distinct adoption contract.
+- id: CSCE-007
+  requirement: Before source implementation or publication, bind the actual implementation owner and exact source
+    and host-adoption contract references through Codeleader and the existing Primary custody. This draft and catalog
+    presence are not implementation or publication admission.
+- id: CSCE-008
+  requirement: Keep canonical paths repository-relative and portable; do not change existing Kumihimo or sibling
+    asset placement, global skills/policies, Candle, engines or model files.
+proposed_public_contract:
+  preserved_base_api: 'compiled_schema_catalog_entries(schema: &str, expected_table_names: &[&str], expected_counts:
+    (usize, usize, usize, usize, usize, usize, usize, usize)) -> Result<Vec<String>, String>'
+  preserved_helpers:
+  - declarative_function_name
+  - insert_catalog_identity
+  overlay_boundary: 'production_catalog_entries(base_entries: &[String], ordered_sources: &[(&str, &str)]) -> Result<Vec<String>,
+    String>'
+  preserved_helper_signatures:
+  - 'declarative_function_name(signature: &str) -> Result<&str, String>'
+  - 'insert_catalog_identity(entries: &mut BTreeSet<String>, identity: String) -> Result<(), String>'
+  overlay_api_status: 'Exact API and caller fit acknowledged by retained author B: validated base plus original
+    ordered sources[1..]; no candidate review completion or execution admission inferred'
+acceptance:
+- id: CSCE-A001
+  case: Actual Engine Profile multiline DEFINE EVENT header and equivalent one-line header produce identical event
+    identity in both consumers.
+- id: CSCE-A002
+  case: Strict/base table/count mismatches, duplicate identities and unsupported ACCESS/FUNCTION declarations retain
+    their existing errors.
+- id: CSCE-A003
+  case: Ordered overlays preserve source ordering, OVERWRITE/IF NOT EXISTS/plain handling, identity deduplication
+    and additional overlay kinds without acquiring strict-base count/duplicate rejection.
+- id: CSCE-A004
+  case: Comment/quoted text, truncated headers and unsupported kinds cannot silently invent valid declaration identities;
+    existing accepted fixtures retain behavior.
+- id: CSCE-A005
+  case: Both original host call sites adopt the same independently verified published module revision under the
+    distinct host adoption contract; the exact formerly failing owning schema test passes without rewriting semantic
+    schema content just to fit the parser.
+observed_proof:
+  implementation: NOT_CREATED
+  owning_asset_tests: NOT_RUN
+  host_adoption: NOT_STARTED
+  publication: NOT_AUTHORIZED_BY_THIS_DRAFT
+non_goals:
+- Schema content or database migrations
+- New database engine or general SurrealQL parser
+- Candle/GGUF work
+- Global policy or existing asset relocation
+contract_stage: maintenance_preparation_bound_to_existing_WP012_standalone_source_and_host_adoption_pair

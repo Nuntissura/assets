@@ -2600,6 +2600,23 @@ assets:
     mode: existing
     entrypoint: Ferric_Forager/AGENTS.md
   work_scope: Ferric_Forager
+- id: HANDSHAKE-COMPILED-SCHEMA-CATALOG-ENTRIES-ASSET-001
+  name: compiled_schema_catalog_entries
+  path: assets/hskernel/compiled_schema_catalog_entries
+  kind: asset
+  purpose: Pure compiled-schema and ordered-overlay declaration inventories.
+  capabilities:
+  - Strict base declaration inventory with table and count validation
+  - Ordered production-overlay declaration inventory
+  status: source-present
+  contract: assets/hskernel/compiled_schema_catalog_entries/asset-contract.yaml
+  manual: assets/hskernel/compiled_schema_catalog_entries/README.md
+  packages:
+  - name: compiled_schema_catalog_entries
+    manifest: assets/hskernel/compiled_schema_catalog_entries/Cargo.toml
+    version: 0.1.0
+    api: assets/hskernel/compiled_schema_catalog_entries/src/lib.rs
+    depends_on: []
 drafts:
 - id: HANDSHAKE-SWARM-STATE-DRAFT-001
   path: hskernel/crates/handshake_swarm_state
