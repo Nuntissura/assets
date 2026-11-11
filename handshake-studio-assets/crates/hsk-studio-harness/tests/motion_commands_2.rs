@@ -652,11 +652,15 @@ mod export {
         let dir = std::env::temp_dir().join(format!("hsk-motion-commands-2-psd-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("in.handshake");
-        std::fs::write(&src, FIXTURE).unwrap();
+        // A raster document with a working profile (as `tests/doc_export.rs` opens one).
+        use hsk_studio_interop_raster as raster;
+        let src = dir.join("in.png");
+        let samples = raster::Samples::U8([200u8, 60, 30].repeat(8 * 4));
+        let png = raster::encode_png(&raster::PngEncodeRequest { width: 8, height: 4, colour: raster::Colour::Rgb, samples: &samples, icc: None, compression: raster::PngCompression::Fast }).unwrap();
+        std::fs::write(&src, png).unwrap();
         let mut v = Viewer::new(Prefer::Cpu);
         v.open(&src).unwrap_or_else(|e| panic!("{e}"));
-        v.motion_command("composition.new", &json!({"composition_id": "T01", "name": "T01", "width": 64, "height": 32, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": 12 * S})).unwrap();
+        v.motion_command("composition.new", &json!({"composition_id": "T01", "name": "T01", "width": 8, "height": 4, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": 12 * S})).unwrap();
         v.motion_command("composition.add_layer", &json!({"composition_id": "T01", "kind": "adjustment"})).unwrap();
         let adj = v.run().ops().last().unwrap()["detail"]["layer_id"].as_str().unwrap().to_string();
         let report = v.export_document(&dir.join("out.psd"), &DocExportRecipe::of_format(DocFormat::Psd { depth: 8 }), false).unwrap_or_else(|e| panic!("{e}"));

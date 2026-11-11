@@ -403,8 +403,16 @@ fn a_scaled_scene_keeps_the_adjustment_layer_untouched_and_scales_its_stack() {
         let cancel = CancellationToken::default();
         let (hw, hh) = (W / 2, H / 2);
         let render = |scene: &SceneComposition| pixels_of(&render_scene(scene, &context(&pixels, SceneLimits::default()), &cancel).expect("a half-resolution frame renders"));
-        let at = |rec: &Value| source(rec, &pixels).expect("source").scene_at(0, &cancel).expect("scene");
-        let bare = render(&scale_scene(&at(&records(vec![comp_layer(2, json!({}))], None)), hw, hh).unwrap());
+        // The adjustment layer over the composition background only: the reference executor runs
+        // plain plans, and a scaled content layer would need the resampling extension.
+        let background = [0.2f32, 0.4, 0.6, 1.0];
+        let at = |rec: &Value| {
+            let mut scene = source(rec, &pixels).expect("source").scene_at(0, &cancel).expect("scene");
+            scene.layers.retain(|l| l.layer_id == identity("SLYR", 3));
+            scene.background = Some(background);
+            scene
+        };
+        let bare: Vec<[f32; 4]> = vec![background; (hw * hh) as usize];
         let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"masks":left_half_mask("add", true)})), comp_layer(2, json!({}))], None);
         let half = scale_scene(&at(&rec), hw, hh).expect("scales");
         assert_eq!(half.layers[0].matrix.m, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0], "the adjustment layer keeps the identity");
