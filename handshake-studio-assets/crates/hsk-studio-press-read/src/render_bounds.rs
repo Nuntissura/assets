@@ -472,6 +472,7 @@ fn codec_of(d: &Dict) -> Option<Vec<u8>> {
 /// Bounds of one content stream (module docs) and, when `images` is set, of its inline images.
 /// `max_nodes` caps the parsed operands of the stream (F4: an array operand amplifies memory far
 /// past the operator cap); `usize::MAX` leaves it unmetered (the flatten, which isolates one page).
+#[allow(clippy::too_many_arguments, reason = "the flatten and reader passes share one content walk whose knobs (images, max_nodes, check_backing) differ per route; one call site")]
 fn content_bounds(objs: &Objs, data: &[u8], resources: &[Option<&Dict>], doc_comps: u64, limits: &Limits, budget: &mut usize, images: bool, max_nodes: usize, check_backing: bool) -> Result<()> {
     let cs = |n: &[u8]| resources.iter().find_map(|r| resource_components(objs, *r, n));
     let parsed = match content::tokenize_bounded(data, limits, &cs, budget, max_nodes) {
@@ -612,7 +613,7 @@ fn reader_syntax_data(s: &Stream, budget: &mut usize) -> Result<(Vec<u8>, bool)>
     // bomb is stopped at the cap, so its decode never allocates past ~READER_RATIO_FLOOR (the ratio
     // rule allows any ratio only below that floor). A legitimate big low-ratio stream caps at the
     // per-stream ceiling.
-    let ratio_cap = encoded.saturating_mul(READER_MAX_RATIO).max(READER_RATIO_FLOOR).min(READER_STREAM_CEILING);
+    let ratio_cap = encoded.saturating_mul(READER_MAX_RATIO).clamp(READER_RATIO_FLOOR, READER_STREAM_CEILING);
     let (data, warning) = match filters::decode_chain_lenient(s, ratio_cap) {
         Ok(out) => out,
         // Past the ratio cap below the hard ceiling: a decompression bomb.
