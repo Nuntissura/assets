@@ -301,19 +301,24 @@ fn a2_rgb_jpeg_renders() {
 }
 
 /// Lead ruling required refusal: a stream of at most 1 KiB that inflates past 256 MiB is a typed
-/// decompression-bomb refusal on every route (two Flate stages: one deflate pass cannot exceed a
-/// ratio of about 1032).
+/// decompression-bomb refusal on every route (chained Flate stages: one deflate pass cannot exceed
+/// a ratio of about 1032, so the deflated zeros are deflated again until the stream is at most 1 KiB).
 fn flate_bomb_1k() -> Vec<u8> {
     let zeros = vec![0u8; 260 << 20];
-    let inner = miniz_oxide::deflate::compress_to_vec_zlib(&zeros, 1);
+    let mut stream = miniz_oxide::deflate::compress_to_vec_zlib(&zeros, 1);
     drop(zeros);
-    let outer = miniz_oxide::deflate::compress_to_vec_zlib(&inner, 10);
-    assert!(outer.len() <= 1024, "the bomb stream is {} bytes, not at most 1 KiB", outer.len());
+    let mut stages = 1;
+    while stream.len() > 1024 && stages < 5 {
+        stream = miniz_oxide::deflate::compress_to_vec_zlib(&stream, 10);
+        stages += 1;
+    }
+    assert!(stream.len() <= 1024, "the bomb stream is {} bytes after {stages} stages, not at most 1 KiB", stream.len());
+    let filters = vec!["/FlateDecode"; stages].join(" ");
     build(&[
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
         (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>".to_vec()),
-        (4, stream_body("/Filter [/FlateDecode /FlateDecode]", &outer)),
+        (4, stream_body(&format!("/Filter [{filters}]"), &stream)),
     ])
 }
 routes!(flate_bomb_1k, Err(RATIO), Err(ExportError::Press(RATIO)));
