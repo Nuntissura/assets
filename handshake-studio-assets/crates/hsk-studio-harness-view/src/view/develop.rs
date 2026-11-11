@@ -1206,6 +1206,12 @@ impl Viewer {
         Some(d.current_state(self).0.extras)
     }
 
+    /// Whether the document's develop entry stores a crop (read from the entry itself, so a document
+    /// reopened without its raw still answers). Exports of the canvas name it `develop_crop_not_applied`.
+    pub(super) fn develop_crop_stored(&self) -> bool {
+        self.run.document_entry("develop").and_then(|b| develop_entry::decode(b).ok()).is_some_and(|s| s.extras.crop != NormalizedCrop::full())
+    }
+
     /// The document recipe of the shown pixels (develop's type: the file recipe plus the edit, the point
     /// curves, the group enables and the stored crop, which the canvas does not apply).
     pub fn develop_recipe(&self) -> Option<DevelopRecipe> {

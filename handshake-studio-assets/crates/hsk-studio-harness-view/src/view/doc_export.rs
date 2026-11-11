@@ -879,6 +879,12 @@ impl Viewer {
         report["backend"] = json!(frame.backend);
         report["revision"] = json!(frame.revision);
         report["render_notes"] = json!(frame.notes);
+        // The canvas is the uncropped develop; a stored develop crop is applied by the develop export only.
+        if self.develop_crop_stored()
+            && let Some(notes) = report["notes"].as_array_mut()
+        {
+            notes.push(json!("develop_crop_not_applied"));
+        }
         Ok(report)
     }
 }
