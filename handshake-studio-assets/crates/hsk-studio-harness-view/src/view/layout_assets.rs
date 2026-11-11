@@ -1,5 +1,5 @@
 //! The layout PDF's asset resolver (lane SMB-LAYOUT-PLACE-1; [STU-LAY-028], [STU-PDF-002]): the tiles of every
-//! graphic frame's raster layer as interop-layout's `PlacedRaster`, and the working profile's ICC bytes. egui-free.
+//! graphic frame's raster layer as interop-layout's `PlacedRaster`. egui-free.
 //!
 //! - `raster(layer_id)`: a graphic frame's layer only. Its tiles are 256-pixel cells from (0, 0) (`view::place`,
 //!   "Layout pages"), each body the `rgb_f32le` colour plane then the `f32le` alpha plane, read from the viewer's
@@ -7,14 +7,18 @@
 //!   engine presents them (linear light, straight alpha, the tile's own profile id with Prism's linear working
 //!   profile, `view::brush_mix::tile_view`). A layer one of whose bodies is absent or not one cell long resolves to
 //!   nothing, so the engine reports `raster_unresolved` for it rather than drawing part of it.
-//! - `profile(id)`: Prism's linear working profile for the document's RGB working space id, nothing else.
+//! - `profile(id)`: nothing, for every id (lead ruling 2026-11-08): it resolves PAINT colours (fills, strokes,
+//!   gradients bound to a profile), and resolving the working space id there would change the PDF of a layout
+//!   without pictures (those colours were DeviceRGB, reported unresolved). A picture's tiles carry their own
+//!   profile bytes (`raster`), so pictures need no profile from here. Test
+//!   `paint_colours_resolve_no_profile_so_a_layout_without_pictures_keeps_its_bytes`.
 //! - `path`: nothing (rectangle and ellipse frames only; a path frame is refused at place).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::edit::{ALPHA_CELL, CELL, COLOUR_CELL};
 use super::render::Assets;
 use hsk_studio_accord::DomainId;
-use hsk_studio_folio::{Payload, ProfileBinding, StudioDocument, StudioGraphicFrame, TileRef};
+use hsk_studio_folio::{Payload, StudioDocument, StudioGraphicFrame, TileRef};
 use hsk_studio_interop_layout::{PdfAssets, PlacedRaster};
 use hsk_studio_nib::OwnedPath;
 use hsk_studio_pigment::{Grid, Rect, ResolvedTile};
@@ -31,7 +35,6 @@ struct Tile<'a> {
 /// The resolver (module docs).
 pub(super) struct LayoutAssets<'a> {
     layers: BTreeMap<&'a str, Vec<Tile<'a>>>,
-    working: Option<&'a str>,
     profile_sha256: [u8; 32],
 }
 
@@ -67,11 +70,7 @@ impl<'a> LayoutAssets<'a> {
                 layers.insert(l.layer_id.as_str(), r);
             }
         }
-        let working = match &doc.working_space_rgb {
-            ProfileBinding::Assigned(id) => Some(id.as_str()),
-            ProfileBinding::Unassigned(()) => None,
-        };
-        Self { layers, working, profile_sha256: profile_hash(WORKING_PROFILE_LINEAR_SRGB) }
+        Self { layers, profile_sha256: profile_hash(WORKING_PROFILE_LINEAR_SRGB) }
     }
 }
 
@@ -109,8 +108,8 @@ impl PdfAssets for LayoutAssets<'_> {
         Some(PlacedRaster { grid, tiles: out, origin_pt: [0.0, 0.0], pt_per_px: 1.0 })
     }
 
-    fn profile(&self, profile_id: &str) -> Option<&[u8]> {
-        (self.working == Some(profile_id)).then_some(WORKING_PROFILE_LINEAR_SRGB)
+    fn profile(&self, _: &str) -> Option<&[u8]> {
+        None
     }
 }
 
