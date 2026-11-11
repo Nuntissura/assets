@@ -360,14 +360,19 @@ routes!(bad_flate_tail, Ok(1), Ok((50, 50)));
 /// F7: a stream that inflates past 256 MiB at a ratio above 1024 is a typed decompression-bomb
 /// refusal; the decode is stopped at the ratio cap, so it never allocates the whole bomb.
 fn flate_bomb() -> Vec<u8> {
-    // 260 MiB of a single byte compresses to ~257 KiB (ratio ~1035): past the 256 MiB floor and the
-    // 1024 ratio.
+    // 260 MiB of a single byte, deflated twice: past the 256 MiB floor and far past the 1024 ratio.
+    // One miniz level-1 pass alone stays at or under 1024 (the first run at dcddcfd4 read it: a
+    // legitimate ratio under the ruling), so the row checks its own ratio.
     let zeros = vec![0u8; 260 << 20];
+    let once = miniz_oxide::deflate::compress_to_vec_zlib(&zeros, 1);
+    drop(zeros);
+    let twice = miniz_oxide::deflate::compress_to_vec_zlib(&once, 6);
+    assert!((260usize << 20) / twice.len() > 1024, "ratio {}", (260usize << 20) / twice.len());
     build(&[
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
         (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>".to_vec()),
-        (4, stream_body("/Filter /FlateDecode", &miniz_oxide::deflate::compress_to_vec_zlib(&zeros, 1))),
+        (4, stream_body("/Filter [/FlateDecode /FlateDecode]", &twice)),
     ])
 }
 const RATIO: PressError = PressError::InputLimit("decoded_ratio");
