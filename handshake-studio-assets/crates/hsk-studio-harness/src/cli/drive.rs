@@ -297,7 +297,9 @@ impl Live {
             // The viewer now holds the imported package: saves and exports guard that one.
             self.source = PathBuf::from(dest);
         }
-        let undo_name = if entry.command_id.starts_with("layout.") {
+        // A layout row's result names its step when it has one; a row whose result carries no such key
+        // (layout.open) is read like every other row (lane SMB-R60-FOLLOWUPS-1, review F1 of c43f2d90).
+        let undo_name = if entry.command_id.starts_with("layout.") && result.get("undo_name").is_some() {
             result["undo_name"].clone()
         } else if newest(&self.viewer) != step_before {
             self.viewer.run().history()["undo"].as_array().and_then(|steps| steps.last()).cloned().unwrap_or(Value::Null)
