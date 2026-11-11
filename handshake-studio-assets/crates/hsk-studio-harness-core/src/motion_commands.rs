@@ -594,6 +594,9 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             let id = p.text("layer_id")?;
             let parent: Option<String> = opt!(p, "parent")?;
             e.layer_mut(&id)?.parent = parent;
+            // The choice is stated (round R60 attempt-2 probe): the child's own transform is kept
+            // as stored, so its placement moves with the new parent chain (not compensated).
+            e.say("transform_compensated", json!(false));
             Ok(())
         }
         "composition.set_track_matte" => {
@@ -1724,21 +1727,16 @@ fn property_set(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     Ok(())
 }
 
-/// The property a key-at-current-value command keys. `value` only seeds a property whose implied
-/// value is not knowable (an absent position, anchor or point of interest); anywhere else it would
-/// change the render, so it is refused, never ignored.
+/// The property a key-at-current-value command keys ([STU-MOT-038]: adding captures the current
+/// evaluated value, so it never changes the render). A caller's `value` is refused, never seeded:
+/// where the implied value is not knowable here (an absent position, anchor or point of interest,
+/// whose value composite derives from the content) the command is `property_default_unknown`, and
+/// `keyframe.set` is the explicit route (round R60 attempt-2 probe, lane SMB-MOTION-COMMANDS-2).
 fn current_slot<'e>(e: &'e mut Edit<'_>, p: &P<'_>, id: &str, prop: &str) -> R<(Slot<'e>, bool)> {
-    let value: Option<Vec<f64>> = opt!(p, "value")?;
-    let Some(v) = value else {
-        return slot(e, id, prop, None);
-    };
-    // A probe on a copy: does the property have an implied value without the caller's?
-    let mut probe = Edit { row: e.row, doc: e.doc, comp: e.comp.clone(), motion: e.motion.clone(), create: Vec::new(), detail: Map::new() };
-    match slot(&mut probe, id, prop, None) {
-        Err(No("property_default_unknown", _)) => slot(e, id, prop, Some(&v)),
-        Err(other) => Err(other),
-        Ok(_) => no("parameter_invalid", "value"),
+    if p.has("value") {
+        return no("parameter_invalid", "value");
     }
+    slot(e, id, prop, None)
 }
 
 fn add_at_current(sv: &[f64], keys: &mut Vec<Key>, time: u64, interpolable: bool) -> R<()> {
