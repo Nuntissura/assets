@@ -9,9 +9,12 @@
 
 mod support_context;
 
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_harness_core::batch::{OutputTarget, OverwritePolicy, TargetExporter};
 use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
+use hsk_studio_harness_core::{Harness, Selection};
 use hsk_studio_harness_view::view::Viewer;
-use hsk_studio_harness_view::view::doc_export::{DocExportRecipe, DocFormat};
+use hsk_studio_harness_view::view::doc_export::{DocExportRecipe, DocFormat, RecipeTargets};
 use hsk_studio_harness_view::view::layout_export::LayoutPdfSettings;
 use hsk_studio_harness_view::view::render::Prefer;
 use hsk_studio_session::{Cost, JobPort, JobRefused, JobScope, JobTicket};
@@ -187,6 +190,53 @@ fn r60_g2_page_add_returns_after_a_story_names_the_last_page_number() {
 #[test]
 fn r60_g2_two_page_adds_without_a_hostile_story_mint_in_order() {
     let mut v = vector_doc();
+    assert_eq!(v.add_page(None, false, Some((100.0, 100.0)), None).unwrap(), "page-1");
+    assert_eq!(v.add_page(None, false, Some((100.0, 100.0)), None).unwrap(), "page-2");
+}
+
+/// Item 1 remainder (lead ruling 2026-11-11): the batch runner's per-target export (`RecipeTargets`) admits
+/// through the HOST viewer's bound JobPort, the one `export_document` uses, not a fresh viewer's local
+/// port: a saturated host port refuses the target typed, asked once, with no file written; an open one
+/// writes it with one admission and one release.
+#[test]
+fn r60_j1_batch_target_export_is_admitted_through_the_host_job_port() {
+    let scratch = Scratch::new("j1-batch");
+    let input = scratch.0.join("input.handshake");
+    let mut host = vector_doc();
+    host.save(&input, false).unwrap();
+    let out = scratch.0.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let listing = || std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect::<Vec<_>>();
+    let harness = Harness::new(Selection { providers: vec![hsk_studio_session::CHRONICLE_PROVIDER_ID.to_string()], ..Selection::default() }).unwrap();
+    let cancel = CancellationToken::default();
+    let mut run = harness.run(support_context::context(), &cancel);
+    assert!(run.open_path(&input));
+    let target = OutputTarget { format_id: "png".into(), export_recipe_id: None, destination: out.to_string_lossy().into_owned(), colour_profile_policy: None, resize_policy: None, overwrite_policy: OverwritePolicy::Rename };
+    let path = out.join("input.png");
+
+    let saturated = Port::saturated();
+    host.set_job_port(saturated.clone());
+    let mut targets = RecipeTargets::for_viewer(&host);
+    let refused = targets.write(&mut run, &target, &path, false).expect_err("a saturated host port refuses the target");
+    assert_eq!(refused, "overloaded");
+    assert_eq!(saturated.asks(), 1, "the host port is asked exactly once");
+    assert!(listing().is_empty(), "no file written: {:?}", listing());
+
+    let open = Port::open();
+    host.set_job_port(open.clone());
+    let mut targets = RecipeTargets::for_viewer(&host);
+    targets.write(&mut run, &target, &path, false).unwrap();
+    assert!(path.is_file());
+    assert_eq!((open.asks(), open.released()), (1, 1), "one admission through the host port, released");
+    assert_eq!(targets.reports[0].1["job"]["outcome"], "completed", "{}", targets.reports[0].1);
+}
+
+/// Item 4 remainder (lead ruling 2026-11-11): the page-id scan reads only the id fields of the records,
+/// never story text: a story naming `page-18446744073709551615` does not affect `page.add`.
+#[test]
+fn r60_g2_a_story_naming_the_last_page_number_does_not_affect_page_add() {
+    let mut v = vector_doc();
+    v.place_text(10.0, 10.0, "page-18446744073709551615").unwrap();
     assert_eq!(v.add_page(None, false, Some((100.0, 100.0)), None).unwrap(), "page-1");
     assert_eq!(v.add_page(None, false, Some((100.0, 100.0)), None).unwrap(), "page-2");
 }

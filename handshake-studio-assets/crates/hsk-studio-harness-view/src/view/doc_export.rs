@@ -952,6 +952,11 @@ impl RecipeTargets {
         Self { recipes: BTreeMap::new(), context, reports: Vec::new() }
     }
 
+    /// Targets for a host viewer's batch, attributed to its run context.
+    pub fn for_viewer(host: &Viewer) -> Self {
+        Self::new(host.run.context().clone())
+    }
+
     /// Adds a recipe by its `recipe_id` (required; a second recipe with one id is `recipe_id_duplicate`).
     pub fn insert(&mut self, recipe: DocExportRecipe) -> Result<(), Refusal> {
         let id = recipe.recipe_id.clone().ok_or_else(|| refuse("recipe_id_missing", "a batch recipe needs recipe_id"))?;
