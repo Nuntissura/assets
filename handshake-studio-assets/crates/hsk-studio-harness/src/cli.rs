@@ -1392,6 +1392,24 @@ fn bind_cli_media(viewer: &mut crate::view::Viewer, command: &str, sequence: &st
     Ok(())
 }
 
+/// [`CliAudio`] shared between the sound port and its extents.
+#[cfg(feature = "media")]
+struct SharedCliAudio(std::sync::Arc<CliAudio>);
+#[cfg(feature = "media")]
+impl hsk_studio_pulse::AudioSources for SharedCliAudio {
+    fn audio(&self, source: &hsk_studio_folio::ClipSource) -> Option<&[Vec<f32>]> {
+        self.0.audio(source)
+    }
+}
+
+#[cfg(not(feature = "media"))]
+fn execute_export_sequence(_: &Path, _: &SequenceExport) -> CliOutput {
+    out(1, &json!({"schema":crate::SCHEMA,"command":"export-sequence","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"media"}}))
+}
+
+// Kept outside the export-sequence span (`cli_audio_within` .. `SharedCliAudio`) that tests/cli_export_sequence.rs
+// scans for the export-sequence manual entry: item_not_json and media_without_sequence are deliver's codes, not
+// export-sequence's.
 /// `deliver PACKAGE --item JSON... [--media FILE]... [--audio FILE]... [--width W --height H]` (lane
 /// SMB-DELIVERY-QUEUE-1; STU-VID-064, STU-IO-164): opens the package headlessly like the viewer, binds the media
 /// and audio as `export-sequence` does (on the program monitor of the first sequence item's sequence), queues each
@@ -1436,21 +1454,6 @@ fn execute_deliver(package: &Path, items: &[String], media: &[PathBuf], audio: &
 #[cfg(not(feature = "media"))]
 fn execute_deliver(_: &Path, _: &[String], _: &[PathBuf], _: &[PathBuf], _: u32, _: u32) -> CliOutput {
     out(1, &json!({"schema":crate::SCHEMA,"command":"deliver","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"media"}}))
-}
-
-/// [`CliAudio`] shared between the sound port and its extents.
-#[cfg(feature = "media")]
-struct SharedCliAudio(std::sync::Arc<CliAudio>);
-#[cfg(feature = "media")]
-impl hsk_studio_pulse::AudioSources for SharedCliAudio {
-    fn audio(&self, source: &hsk_studio_folio::ClipSource) -> Option<&[Vec<f32>]> {
-        self.0.audio(source)
-    }
-}
-
-#[cfg(not(feature = "media"))]
-fn execute_export_sequence(_: &Path, _: &SequenceExport) -> CliOutput {
-    out(1, &json!({"schema":crate::SCHEMA,"command":"export-sequence","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"media"}}))
 }
 
 fn with_harness(command: &str, parsed: &Parsed, f: impl FnOnce(&Harness) -> CliOutput) -> CliOutput {
