@@ -56,10 +56,12 @@
 //! site-level lock `<local_root>/.studio-site.lock` (contention refuses `site_locked` naming the holder, never waits);
 //! `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted as jobs before the first file (R60
 //! probe j3): through the job port bound with [`Run::bind_web_jobs`] (the Viewer binds its own before every web
-//! command; a bare Run keeps the asset-local `AdmissionJobPort`), with the run's open package document as the job's
-//! resource, as the viewer's other exports admit (`as_export_job`), and with none open the site's own derived id
-//! (never resource-less; module `web_site`); refusals `overloaded` (`target` `retry_after_ms=N`), `canceled`,
-//! `stale_revision`.
+//! command; a bare Run keeps the asset-local `AdmissionJobPort`), after their checks that need no file, never
+//! resource-less: the open export and publish on the run's open package document (as the viewer's other exports
+//! admit, `as_export_job`), else on the site's own derived id, and the site export, report and move always on the
+//! site's id (module `web_site`, lead Q1); refusals `overloaded` (`target` `retry_after_ms=N`), `canceled`,
+//! `stale_revision`; an accepted result carries the job's settlement (`job`). `web.save` of a file inside
+//! `local_root` holds the site lock too (lead Q2).
 //!
 //! Declared limits: the open export's document set is the open document and its folder must be the site's
 //! `local_root`; no source maps, no preprocessors, assets keep their paths (`asset_rewriting: keep`); site and recipe
@@ -277,7 +279,10 @@ impl WebHost {
     }
 
     fn execute(&mut self, row: &'static CommandEntry, params: &Value, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
-        cancel.check().map_err(|_| No("canceled", String::new(), None))?;
+        // An admitted command's cancellation is the job lifecycle's (counted `refused_canceled`, the port not asked).
+        if !web_site::ADMITTED.contains(&row.command_id) {
+            cancel.check().map_err(|_| No("canceled", String::new(), None))?;
+        }
         let Value::Object(map) = params else {
             return no("parameter_invalid", "parameters");
         };
@@ -332,7 +337,7 @@ impl WebHost {
             }
             "web.undo" => self.step_back(true, cancel),
             "web.redo" => self.step_back(false, cancel),
-            "web.save" => self.save(&p),
+            "web.save" => self.save(&p, ctx),
             "web.site" => {
                 let site = site_from(self.site.as_ref(), &p)?;
                 self.record(label, Change::Site { before: self.site.clone(), after: Some(site) }, ctx)
@@ -348,10 +353,22 @@ impl WebHost {
                 let recipe = recipe_from(self.recipe.as_ref(), &p)?;
                 self.record(label, Change::Recipe { before: self.recipe.clone(), after: Some(recipe) }, ctx)
             }
-            "web.export" => self.admitted(Action::Export, ctx, cancel, |host| host.export(ctx, cancel)),
-            "web.publish" => self.admitted(Action::Export, ctx, cancel, |host| host.publish(&p, ctx)),
-            "web.site_report" => self.admitted(Action::Export, ctx, cancel, |host| host.site_report(ctx, cancel)),
-            "web.move_file" => self.admitted(Action::Edit, ctx, cancel, |host| host.move_file(&p, ctx, cancel)),
+            "web.export" => {
+                let on = if self.export_checks()? { web_site::JobOn::Site } else { web_site::JobOn::Open };
+                self.admitted(Action::Export, on, ctx, cancel, |host| host.export(ctx, cancel))
+            }
+            "web.publish" => {
+                let target_id = self.publish_checks(&p)?;
+                self.admitted(Action::Export, web_site::JobOn::Open, ctx, cancel, |host| host.publish(&target_id, ctx, cancel))
+            }
+            "web.site_report" => {
+                self.site_root()?;
+                self.admitted(web_site::REPORT_ACTION, web_site::JobOn::Site, ctx, cancel, |host| host.site_report(ctx, cancel))
+            }
+            "web.move_file" => {
+                let (from, to) = self.move_checks(&p)?;
+                self.admitted(Action::Edit, web_site::JobOn::Site, ctx, cancel, |host| host.move_file(&from, &to, ctx, cancel))
+            }
             "web.verify" => self.verify(&p, cancel),
             "web.preview" => {
                 let doc = self.doc()?;
@@ -538,7 +555,7 @@ impl WebHost {
         Ok(json!({"step": label, "web": self.state_json()}))
     }
 
-    fn save(&mut self, p: &P<'_>) -> R<Value> {
+    fn save(&mut self, p: &P<'_>, ctx: &CommandContext) -> R<Value> {
         let doc = self.doc()?;
         let path = match p.opt_text("path")? {
             Some(path) => PathBuf::from(checked_path(path)?),
@@ -547,6 +564,11 @@ impl WebHost {
         if path.exists() && !p.flag("overwrite")? {
             return no("overwrite_required", &path.to_string_lossy());
         }
+        // A save inside the site holds the site lock (lead Q2): a move's restore never overwrites it.
+        let _lock = match &self.site {
+            Some(site) if Path::new(&site.local_root).is_dir() && resolved(&path).starts_with(resolved(Path::new(&site.local_root))) => Some(web_site::site_lock(&site.local_root, ctx)?),
+            _ => None,
+        };
         let source = doc.source().as_bytes().to_vec();
         let sha = doc.sha256_hex().to_string();
         // A record that existed is rewritten even when site and recipe are now unset (an undone site must not come
@@ -583,6 +605,42 @@ impl WebHost {
         let document = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
         let canonical = root.as_ref().and_then(|r| std::fs::canonicalize(r).ok());
         Ok(Port { root, canonical, document, pages: false })
+    }
+
+    /// The export's checks before admission (no I/O): whether it is the site export.
+    fn export_checks(&self) -> R<bool> {
+        if self.recipe.as_ref().is_some_and(|r| r.documents == "site") {
+            self.site_root()?;
+            return Ok(true);
+        }
+        self.doc()?;
+        let recipe = self.recipe.as_ref().ok_or(No("no_export_recipe", String::new(), None))?;
+        // The open export writes the open document at the root; an entry moved into a folder is the site export's.
+        if recipe.file.contains('/') {
+            return no("document_outside_site_root", &recipe.file);
+        }
+        Ok(false)
+    }
+
+    /// Publish's checks before admission (no I/O): the target's id.
+    fn publish_checks(&self, p: &P<'_>) -> R<String> {
+        let site = self.site.as_ref().ok_or(No("no_site", String::new(), None))?;
+        let target = match p.opt_text("target_id")? {
+            Some(id) => site.targets.iter().find(|t| t.target_id == id).ok_or(No("no_such_target", bounded(id), None))?,
+            None => {
+                let mut local = site.targets.iter().filter(|t| t.transport == "local_or_network");
+                match (local.next(), local.next()) {
+                    (Some(t), None) => t,
+                    (None, _) => return no("no_such_target", "local_or_network"),
+                    (Some(_), Some(_)) => return no("parameter_missing", "target_id"),
+                }
+            }
+        };
+        if target.transport != "local_or_network" {
+            return no("transport_unsupported", target.transport);
+        }
+        self.recipe.as_ref().ok_or(No("no_export_recipe", String::new(), None))?;
+        Ok(target.target_id.clone())
     }
 
     fn export(&self, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
@@ -663,6 +721,7 @@ impl WebHost {
             rows.dedup();
             rows.into_iter().map(|(line, reference)| json!({"document": name, "line": line, "reference": reference})).collect()
         };
+        let (link_broken, truncated) = web_site::capped_rows(link_broken);
         let listed: Vec<Value> = files.iter().map(|(path, bytes, role)| json!({"path": path, "role": role, "bytes": bytes.len(), "sha256": sha256_hex(bytes)})).collect();
         let mut manifest = json!({
             "schema": "hsk.studio.web.export_manifest@1", "document": recipe.file, "source_sha256": doc.sha256_hex(),
@@ -671,34 +730,28 @@ impl WebHost {
         if !link_broken.is_empty() {
             manifest["link_broken"] = json!(link_broken);
         }
+        if truncated > 0 {
+            manifest["link_broken_truncated"] = json!(truncated);
+        }
+        let manifest_bytes = web_site::manifest_bytes(&manifest)?;
         for (path, bytes, _) in &files {
             write_new(&join(&out, path), bytes)?;
         }
-        write_new(&out.join(MANIFEST_FILE), &serde_json::to_vec_pretty(&manifest).map_err(|_| No("export_failed", String::new(), None))?)?;
+        write_new(&out.join(MANIFEST_FILE), &manifest_bytes)?;
         let mut result = json!({"output_root": recipe.output_root, "manifest": manifest});
         if !link_broken.is_empty() {
             result["link_broken"] = json!(link_broken);
         }
+        if truncated > 0 {
+            result["link_broken_truncated"] = json!(truncated);
+        }
         Ok(result)
     }
 
-    fn publish(&mut self, p: &P<'_>, ctx: &CommandContext) -> R<Value> {
+    fn publish(&mut self, target_id: &str, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
         let started = std::time::Instant::now();
         let site = self.site.clone().ok_or(No("no_site", String::new(), None))?;
-        let target = match p.opt_text("target_id")? {
-            Some(id) => site.targets.iter().find(|t| t.target_id == id).ok_or(No("no_such_target", bounded(id), None))?,
-            None => {
-                let mut local = site.targets.iter().filter(|t| t.transport == "local_or_network");
-                match (local.next(), local.next()) {
-                    (Some(t), None) => t,
-                    (None, _) => return no("no_such_target", "local_or_network"),
-                    (Some(_), Some(_)) => return no("parameter_missing", "target_id"),
-                }
-            }
-        };
-        if target.transport != "local_or_network" {
-            return no("transport_unsupported", target.transport);
-        }
+        let target = site.targets.iter().find(|t| t.target_id == target_id).ok_or(No("no_such_target", bounded(target_id), None))?;
         let recipe = self.recipe.clone().ok_or(No("no_export_recipe", String::new(), None))?;
         let export_root = PathBuf::from(&recipe.output_root);
         let manifest = read_manifest(&export_root)?;
@@ -720,6 +773,11 @@ impl WebHost {
         let mut unmapped = BTreeSet::new();
         let mut failure = None;
         for file in &manifest {
+            // Canceled between files: the files already transferred stay in the receipt (settled `canceled`).
+            if cancel.check().is_err() {
+                failure = Some(No("canceled", String::new(), None));
+                break;
+            }
             let mode = transfer_mode(&file.path);
             if mode.1 {
                 unmapped.insert(extension(&file.path));
@@ -746,7 +804,7 @@ impl WebHost {
         // The receipt is kept with the export whatever the outcome, so a model can resume rather than restart.
         let kept = serde_json::to_vec_pretty(&receipt).ok().is_some_and(|bytes| write_replacing(&export_root.join(RECEIPT_FILE), &bytes).is_ok());
         if let Some(No(code, at, _)) = failure {
-            return Err(No(if code == "export_changed" { code } else { "publish_failed" }, at, Some(json!({"receipt": receipt}))));
+            return Err(No(if matches!(code, "export_changed" | "canceled") { code } else { "publish_failed" }, at, Some(json!({"receipt": receipt}))));
         }
         self.published_root = Some(target.root_path.clone());
         Ok(json!({"receipt": receipt, "receipt_kept": kept}))
@@ -1309,7 +1367,8 @@ fn recipe_from(current: Option<&Recipe>, p: &P<'_>) -> R<Recipe> {
     }
     if let Some(file) = p.opt_text("file")? {
         let lower = file.to_ascii_lowercase();
-        if !portable(file) || !(lower.ends_with(".html") || lower.ends_with(".htm")) || file == MANIFEST_FILE || file == RECEIPT_FILE {
+        let segments_ok = file.split('/').count() <= MAX_SEGMENTS && file.split('/').all(portable);
+        if !segments_ok || !(lower.ends_with(".html") || lower.ends_with(".htm")) || file == MANIFEST_FILE || file == RECEIPT_FILE {
             return no("parameter_invalid", "file");
         }
         recipe.file = file.to_string();

@@ -11,7 +11,11 @@
 //! `web.move_file` also `move_outside_site`, `path_invalid`, `move_target_exists`, `move_case_only`,
 //! `move_source_missing`, `move_reserved_file`, `move_site_record`, `move_kind_changes`, `move_open_package`,
 //! `document_unsaved`, `document_changed_on_disk`, `document_unreadable`, `reference_not_rewritable`,
-//! `move_rewrite_unverified`, `move_failed` (with the receipt).
+//! `move_rewrite_unverified`, `move_failed` (with the receipt). Both exports also `export_manifest_too_large` (a
+//! manifest over 1 MiB) and cap `link_broken` at 2000 rows (`link_broken_truncated`); `document_unreadable` names the
+//! unparsed file and its reason (`detail.file`, `detail.reason`); a file needing more than the engine's 1024 edits
+//! (`Limits::max_edits`) refuses a move with the engine's code. Parameter and state refusals come before job
+//! admission, never `overloaded`. `web.save` of a file inside `local_root` also refuses `site_locked`.
 
 use super::super::ValueType;
 use super::{CommandEntry, ParamSpec, entry, p};
