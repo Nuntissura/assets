@@ -39,11 +39,14 @@
 //! (scope `property|layer|composition`, mode `replace|add|remove`, optional `times`),
 //! `keyframe.deselect_all` and `keyframe.selection` (the selected keys and the count of keys dropped
 //! because an edit, undo or redo removed them) read the records; `keyframe.copy` copies the selection
-//! (one layer) or an explicit `layer_id`, `property` and `times`. The editing rows are one named
+//! (one layer) or an explicit `layer_id`, `property` and `times`. A row that prunes removed keys
+//! counts them until `keyframe.selection` reports them; opening a document clears the selection
+//! and keeps the clipboard. The editing rows are one named
 //! step each: `keyframe.paste` places the earliest copied key at `time` with relative order kept, into
 //! the copied addresses or one `property` of the same dimension (`paste_property_mismatch`), a key at
-//! an occupied tick replaced (Studio reading), `reverse` mirroring the times about the copied span
-//! and swapping each key's in and out interpolation and tangents (Studio reading);
+//! an occupied tick replaced (Studio reading), `reverse` mirroring the times about the copied span,
+//! swapping each key's in and out interpolation and tangents and negating their speeds, so the
+//! copied motion plays backwards (Studio reading);
 //! `keyframe.shift_selected` moves the selection by `frames` composition frames (non-zero; the
 //! selection follows); `keyframe.ease` (`side both|in|out`) and `keyframe.toggle_hold` mirror motion's
 //! `assistants::ease` and `toggle_hold` per property (bezier, speed 0, influence 0.16666666666; hold,
@@ -57,7 +60,7 @@
 //! edits the expression field that exists (a text selector's `source`); a `recordable: false` row is
 //! reported `not_recordable` while recording; `set_parent` does not compensate the child's transform
 //! (stated in its result, `transform_compensated: false`); `keyframe.add_at_current` and
-//! `keyframe.toggle_at_current` take no caller value (`parameter_invalid`) and refuse a property
+//! `keyframe.toggle_at_current` declare no value (a sent one is `parameter_unknown`) and refuse a property
 //! whose current value composite alone knows (`property_default_unknown`);
 //! a copy spans one layer (`copy_spans_layers`); no footage or guide kind; spatial tangents are not
 //! stored (Folio).
@@ -102,6 +105,18 @@ pub struct KeyframeState {
     selected: BTreeSet<KeyRef>,
     /// Property address -> copied keys (sorted by time), of one layer.
     clipboard: Vec<(String, Vec<Key>)>,
+    /// Selected keys an edit, undo or redo removed, pruned by a row since `keyframe.selection` last
+    /// reported them (review F6).
+    dropped: usize,
+}
+
+impl KeyframeState {
+    /// A document was opened on the run: its selection named keys of the previous document (review
+    /// F3); the clipboard stays, so keys paste across documents.
+    pub(crate) fn document_opened(&mut self) {
+        self.selected.clear();
+        self.dropped = 0;
+    }
 }
 
 /// The `STUDIO_*` id [STU-MOT-130] names for a row: `composition.new` is `STUDIO_COMPOSITION_NEW`.
@@ -651,7 +666,7 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         "composition.set_solid" => solid_set(e, p),
         "keyframe.select" => key_select(e, p),
         "keyframe.deselect_all" => {
-            e.next_keys = Some(KeyframeState { selected: BTreeSet::new(), clipboard: e.keys.clipboard.clone() });
+            e.next_keys = Some(state(e, BTreeSet::new(), 0));
             e.say("selected", json!(0));
             Ok(())
         }
@@ -661,7 +676,8 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             e.say("selected", json!(selected.len()));
             e.say("dropped", json!(dropped));
             e.say("keys", Value::Array(keys));
-            e.next_keys = Some(KeyframeState { selected, clipboard: e.keys.clipboard.clone() });
+            // Reported once: the count starts again after this read.
+            e.next_keys = Some(state(e, selected, 0));
             Ok(())
         }
         "keyframe.copy" => key_copy(e, p),
@@ -847,12 +863,12 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         }
         "keyframe.add_at_current" => {
             let (id, prop, time) = key_address(p)?;
-            let ((sv, keys), interpolable) = current_slot(e, p, &id, &prop)?;
+            let ((sv, keys), interpolable) = current_slot(e, &id, &prop)?;
             add_at_current(sv, keys, time, interpolable)
         }
         "keyframe.toggle_at_current" => {
             let (id, prop, time) = key_address(p)?;
-            let ((sv, keys), interpolable) = current_slot(e, p, &id, &prop)?;
+            let ((sv, keys), interpolable) = current_slot(e, &id, &prop)?;
             let toggled = if let Ok(at) = keys.binary_search_by_key(&time, |k| k.time) {
                 keys.remove(at);
                 "deleted"
@@ -1876,14 +1892,12 @@ fn property_set(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
 }
 
 /// The property a key-at-current-value command keys ([STU-MOT-038]: adding captures the current
-/// evaluated value, so it never changes the render). A caller's `value` is refused, never seeded:
-/// where the implied value is not knowable here (an absent position, anchor or point of interest,
-/// whose value composite derives from the content) the command is `property_default_unknown`, and
-/// `keyframe.set` is the explicit route (round R60 attempt-2 probe, lane SMB-MOTION-COMMANDS-2).
-fn current_slot<'e>(e: &'e mut Edit<'_>, p: &P<'_>, id: &str, prop: &str) -> R<(Slot<'e>, bool)> {
-    if p.has("value") {
-        return no("parameter_invalid", "value");
-    }
+/// evaluated value, so it never changes the render). The rows declare no `value`, so a caller's
+/// value is refused `parameter_unknown` before planning, never seeded: where the implied value is
+/// not knowable here (an absent position, anchor or point of interest, whose value composite
+/// derives from the content) the command is `property_default_unknown`, and `keyframe.set` is the
+/// explicit route (round R60 attempt-2 probe and review F5, lane SMB-MOTION-COMMANDS-2).
+fn current_slot<'e>(e: &'e mut Edit<'_>, id: &str, prop: &str) -> R<(Slot<'e>, bool)> {
     slot(e, id, prop, None)
 }
 
@@ -2078,10 +2092,16 @@ fn property_keys(e: &Edit<'_>, layer_id: &str, prop: &str) -> R<Vec<Key>> {
     }
 }
 
-/// The selection with every key an edit, undo or redo removed dropped, and the dropped count.
+/// The run state a row leaves: `selected`, the clipboard kept, `dropped` pending.
+fn state(e: &Edit<'_>, selected: BTreeSet<KeyRef>, dropped: usize) -> KeyframeState {
+    KeyframeState { selected, clipboard: e.keys.clipboard.clone(), dropped }
+}
+
+/// The selection with every key an edit, undo or redo removed dropped, and the dropped count
+/// (with the count pruned earlier and not yet reported).
 fn live(e: &Edit<'_>) -> (BTreeSet<KeyRef>, usize) {
     let mut present: BTreeMap<&str, BTreeSet<(String, u64)>> = BTreeMap::new();
-    let (mut keep, mut dropped) = (BTreeSet::new(), 0usize);
+    let (mut keep, mut dropped) = (BTreeSet::new(), e.keys.dropped);
     for k in &e.keys.selected {
         let layer = k.0.as_str();
         if !present.contains_key(layer) {
@@ -2100,9 +2120,10 @@ fn live(e: &Edit<'_>) -> (BTreeSet<KeyRef>, usize) {
     (keep, dropped)
 }
 
-/// The live selection grouped by (layer, property): the selected ticks of each.
-fn selection_groups(e: &Edit<'_>) -> R<BTreeMap<(String, String), BTreeSet<u64>>> {
-    let (selected, _) = live(e);
+/// The live selection grouped by (layer, property): the selected ticks of each, and the dropped
+/// count of [`live`].
+fn selection_groups(e: &Edit<'_>) -> R<(BTreeMap<(String, String), BTreeSet<u64>>, usize)> {
+    let (selected, dropped) = live(e);
     if selected.is_empty() {
         return no("selection_empty", e.row.command_id);
     }
@@ -2110,7 +2131,7 @@ fn selection_groups(e: &Edit<'_>) -> R<BTreeMap<(String, String), BTreeSet<u64>>
     for (l, p, t) in selected {
         groups.entry((l, p)).or_default().insert(t);
     }
-    Ok(groups)
+    Ok((groups, dropped))
 }
 
 fn key_select(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
@@ -2146,7 +2167,7 @@ fn key_select(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         }
         _ => return no("parameter_invalid", "scope"),
     };
-    let mut selected = live(e).0;
+    let (mut selected, dropped) = live(e);
     match mode.as_str() {
         "replace" => selected = found.into_iter().collect(),
         "add" => selected.extend(found),
@@ -2160,13 +2181,13 @@ fn key_select(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         return no("selection_over_cap", &selected.len().to_string());
     }
     e.say("selected", json!(selected.len()));
-    e.next_keys = Some(KeyframeState { selected, clipboard: e.keys.clipboard.clone() });
+    e.next_keys = Some(state(e, selected, dropped));
     Ok(())
 }
 
 fn key_copy(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     let explicit = p.has("layer_id") || p.has("property") || p.has("times");
-    let (selected, _) = live(e);
+    let (selected, dropped) = live(e);
     let clipboard: Vec<(String, Vec<Key>)> = if explicit {
         let (id, prop) = (p.text("layer_id")?, p.text("property")?);
         let times: Option<BTreeSet<u64>> = opt!(p, "times")?;
@@ -2178,7 +2199,7 @@ fn key_copy(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         }
         vec![(prop, chosen)]
     } else {
-        let groups = selection_groups(e)?;
+        let (groups, _) = selection_groups(e)?;
         let layers: BTreeSet<&str> = groups.keys().map(|(l, _)| l.as_str()).collect();
         if layers.len() > 1 {
             return no("copy_spans_layers", e.row.command_id);
@@ -2195,7 +2216,7 @@ fn key_copy(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         return no("clipboard_over_cap", &copied.to_string());
     }
     e.say("copied", json!(copied));
-    e.next_keys = Some(KeyframeState { selected, clipboard });
+    e.next_keys = Some(KeyframeState { selected, clipboard, dropped });
     Ok(())
 }
 
@@ -2223,8 +2244,14 @@ fn key_paste(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             };
             k.time = t;
             if reverse {
+                // Played backwards: the sides swap and every speed (signed dv/dt) changes sign,
+                // so the pasted segment samples as the copied one at mirrored times (review F1;
+                // `0.0 - s` keeps a zero speed +0).
                 std::mem::swap(&mut k.in_interp, &mut k.out_interp);
                 std::mem::swap(&mut k.in_tangent, &mut k.out_tangent);
+                for t in k.in_tangent.iter_mut().chain(k.out_tangent.iter_mut()) {
+                    t.speed = 0.0 - t.speed;
+                }
             }
             placed.push(k);
         }
@@ -2251,7 +2278,7 @@ fn key_shift_selected(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     if frames == 0 {
         return no("parameter_invalid", "frames");
     }
-    let groups = selection_groups(e)?;
+    let (groups, dropped) = selection_groups(e)?;
     let mut selected = BTreeSet::new();
     for ((layer, prop), ticks) in groups {
         let tpf = e.composition_of(&layer)?.frame_rate.ticks_per_frame().unwrap_or(0);
@@ -2270,7 +2297,7 @@ fn key_shift_selected(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             return no("keyframe_exists", &prop);
         }
     }
-    e.next_keys = Some(KeyframeState { selected, clipboard: e.keys.clipboard.clone() });
+    e.next_keys = Some(state(e, selected, dropped));
     Ok(())
 }
 
@@ -2283,7 +2310,7 @@ fn key_ease(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         "out" => (false, true, "Easy Ease Out"),
         _ => return no("parameter_invalid", "side"),
     };
-    let groups = selection_groups(e)?;
+    let (groups, dropped) = selection_groups(e)?;
     for ((layer, prop), ticks) in &groups {
         let ((_, keys), _) = slot(e, layer, prop, None)?;
         for k in keys.iter_mut().filter(|k| ticks.contains(&k.time)) {
@@ -2298,13 +2325,14 @@ fn key_ease(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         }
     }
     e.label = Some(label);
-    e.next_keys = Some(KeyframeState { selected: live(e).0, clipboard: e.keys.clipboard.clone() });
+    let selected = live(e).0;
+    e.next_keys = Some(state(e, selected, dropped));
     Ok(())
 }
 
 /// Toggle hold over the selection, per property (motion `assistants::toggle_hold`, module docs).
 fn key_toggle_hold(e: &mut Edit<'_>) -> R<()> {
-    let groups = selection_groups(e)?;
+    let (groups, dropped) = selection_groups(e)?;
     for ((layer, prop), ticks) in &groups {
         let ((_, keys), _) = slot(e, layer, prop, None)?;
         let all_hold = keys.iter().filter(|k| ticks.contains(&k.time)).all(|k| k.out_interp == Interp::Hold);
@@ -2317,7 +2345,8 @@ fn key_toggle_hold(e: &mut Edit<'_>) -> R<()> {
             }
         }
     }
-    e.next_keys = Some(KeyframeState { selected: live(e).0, clipboard: e.keys.clipboard.clone() });
+    let selected = live(e).0;
+    e.next_keys = Some(state(e, selected, dropped));
     Ok(())
 }
 

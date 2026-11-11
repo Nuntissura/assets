@@ -1064,6 +1064,7 @@ impl Run<'_> {
                     self.session = Some(session);
                     self.undo_stack.clear();
                     self.redo_stack.clear();
+                    self.keyframes.document_opened();
                 }
                 self.push(op, before, Ok(detail), Some(report), Some(revision))
             }

@@ -33,6 +33,8 @@ const QUEUE_NEW: &[ParamSpec] = &[ITEM_ID, COMPOSITION_ID, MODULE_ID, p("format"
 const MASK_SET: &[ParamSpec] = &[LAYER_ID, MASK_ID, p("mode", ValueType::Enumerated), p("inverted", ValueType::Boolean), p("closed", ValueType::Boolean), p("path", ValueType::List)];
 const EFFECT_SET: &[ParamSpec] = &[LAYER_ID, EFFECT_ID, p("filter_kind", ValueType::Enumerated), p("enabled", ValueType::Boolean), p("solo", ValueType::Boolean), p("opacity", ValueType::Number), p("blend_mode", ValueType::Number), MASK_ID, p("values", ValueType::Class), p("at", ValueType::Number), p("colour_profiles", ValueType::Class)];
 const KEY_AT: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME, VALUE_LIST];
+/// Add or toggle at current capture the evaluated value: no `value` (review F5).
+const KEY_AT_CURRENT: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME];
 const KEY_SET: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME, VALUE_LIST, IN_INTERP, OUT_INTERP, IN_TANGENT, OUT_TANGENT];
 const KEY_INTERP: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME, IN_INTERP, OUT_INTERP, IN_TANGENT, OUT_TANGENT];
 const NAME: ParamSpec = p("name", ValueType::String);
@@ -84,8 +86,8 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("property.set_value", "motion_command", "Set Property Value", false, true, KEY_AT),
     entry("property.enable_animation", "motion_command", "Enable Animation", false, true, KEY_AT),
     entry("property.disable_animation", "motion_command", "Disable Animation", false, true, &[LAYER_ID, PROPERTY]),
-    entry("keyframe.add_at_current", "motion_command", "Add Keyframe at Current Time", false, true, KEY_AT),
-    entry("keyframe.toggle_at_current", "motion_command", "Add/Delete Keyframe at Current Time", false, true, KEY_AT),
+    entry("keyframe.add_at_current", "motion_command", "Add Keyframe at Current Time", false, true, KEY_AT_CURRENT),
+    entry("keyframe.toggle_at_current", "motion_command", "Add/Delete Keyframe at Current Time", false, true, KEY_AT_CURRENT),
     entry("keyframe.set", "motion_command", "Set Keyframe", false, true, KEY_SET),
     entry("keyframe.delete", "motion_command", "Delete Keyframe", false, true, &[LAYER_ID, PROPERTY, TIME]),
     entry("keyframe.move", "motion_command", "Move Keyframe", false, true, &[LAYER_ID, PROPERTY, TIME, p("to", ValueType::Number)]),
