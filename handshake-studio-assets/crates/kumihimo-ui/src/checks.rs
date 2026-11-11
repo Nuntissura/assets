@@ -100,16 +100,18 @@ pub fn under_text_floor(tree: &Tree) -> Vec<String> {
         .collect()
 }
 
-/// For rects that share a logical edge, the physical gap after snapping at `scale` (0 means shared): AC-GEOM-03.
-/// Returns (index of leading rect, gap px) for every horizontally adjacent pair with a non-zero gap.
+/// AC-GEOM-03 ("the leading pane's x1p equals the trailing pane's x0p"): for every horizontally adjacent pair of
+/// `rects` (in order), the trailing pane's snapped x0p minus the leading pane's snapped x1p at `scale`. Returns
+/// (index of leading rect, gap px) for every pair whose physical edges differ: a gap is positive, an overlap
+/// negative. Pairs are compared after snapping whatever their logical edges are (lane SMB-R60-FOLLOWUPS-1 item 7:
+/// comparing only pairs with equal logical edges could never report, because the snap maps one logical edge to
+/// one physical edge).
 pub fn edge_gaps(rects: &[Rect], scale: Scale) -> Vec<(usize, i32)> {
     let mut out = Vec::new();
     for (i, w) in rects.windows(2).enumerate() {
-        if w[0].x1 == w[1].x0 {
-            let gap = scale.snap(w[1]).x0 - scale.snap(w[0]).x1;
-            if gap != 0 {
-                out.push((i, gap));
-            }
+        let gap = scale.snap(w[1]).x0.saturating_sub(scale.snap(w[0]).x1);
+        if gap != 0 {
+            out.push((i, gap));
         }
     }
     out

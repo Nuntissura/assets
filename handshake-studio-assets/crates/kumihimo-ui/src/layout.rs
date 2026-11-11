@@ -134,7 +134,9 @@ fn place(tree: &mut Tree, id: NodeId, rect: Rect, m: &[(f32, f32)], depth: usize
         let (cs, cm) = if row { (cl.h, mh) } else { (cl.w, mw) };
         let cross = match cs {
             Size::Fixed(v) => v,
-            Size::Hug => cm.min(avail_cross.max(cm)),
+            // A Hug child takes its measured size up to the room there is, never more (lane SMB-R60-FOLLOWUPS-1
+            // item 8): a box past its parent's would hide the overflow from AC-TEXT-01 (checks::clipped_labels).
+            Size::Hug => cm.min(avail_cross.max(0.0)),
             Size::Fill => avail_cross,
         };
         let off = match l.cross {
