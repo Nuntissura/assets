@@ -83,19 +83,35 @@ const fn next_side(side: PageSide) -> PageSide {
     }
 }
 
-/// The highest `page-N` named anywhere in `bytes` (a bounded scan of a document entry body).
-fn highest_page_number(bytes: &[u8], mut highest: u64) -> u64 {
-    const KEY: &[u8] = b"page-";
-    let mut at = 0usize;
-    while let Some(found) = bytes.get(at..).and_then(|rest| rest.windows(KEY.len()).position(|w| w == KEY)) {
-        let start = at.saturating_add(found).saturating_add(KEY.len());
-        let digits = bytes.get(start..).map_or(0, |rest| rest.iter().take(20).take_while(|b| b.is_ascii_digit()).count());
-        if let Some(n) = bytes.get(start..start.saturating_add(digits)).and_then(|d| std::str::from_utf8(d).ok()).and_then(|d| d.parse::<u64>().ok()) {
-            highest = highest.max(n);
-        }
-        at = start;
+/// N of a page key of the mint's form `page-N`, else `None`.
+fn page_number(key: &str) -> Option<u64> {
+    let digits = key.strip_prefix("page-")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
     }
-    highest
+    digits.parse().ok()
+}
+
+/// Adds to `out` every `page-N` a document entry body names in an id field (lane SMB-R60-FOLLOWUPS-1 item
+/// 4, lead ruling 2026-11-11): a JSON body's string values under `page_start` or a key ending `_id` or
+/// `_ids` (the fields that hold page keys: `page_id` of a parent binding, a graphic frame or a guide,
+/// `page_start` of a section), never free text, so a story naming `page-N` changes no mint. A body that
+/// is not JSON (or nests past serde_json's recursion limit) names none.
+fn page_id_fields(bytes: &[u8], out: &mut BTreeSet<u64>) {
+    fn id_field(key: &str) -> bool {
+        key == "page_start" || key.ends_with("_id") || key.ends_with("_ids")
+    }
+    fn walk(value: &Value, in_id_field: bool, out: &mut BTreeSet<u64>) {
+        match value {
+            Value::String(s) if in_id_field => out.extend(page_number(s)),
+            Value::Array(items) => items.iter().for_each(|v| walk(v, in_id_field, out)),
+            Value::Object(map) => map.iter().for_each(|(k, v)| walk(v, id_field(k), out)),
+            _ => {}
+        }
+    }
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        walk(&value, false, out);
+    }
 }
 
 impl Run<'_> {
@@ -160,10 +176,11 @@ impl Run<'_> {
         out
     }
 
-    /// The first page number past every `page-N` the document, a document entry or the history
-    /// names, so a new page never takes the key of a deleted one that layout records or an undo may
-    /// still name (review F1). `None` when that number would pass `u64::MAX` (lane SMB-R60-FOLLOWUPS-1
-    /// item 4: a document entry may name `page-18446744073709551615`).
+    /// The first page number past every `page-N` the document, an id field of a document entry (never
+    /// story text) or the history names, so a new page never takes the key of a deleted one that layout
+    /// records or an undo may still name (review F1). Past `u64::MAX` (a page key may be
+    /// `page-18446744073709551615`) it is the lowest n >= 1 none of them names (lane SMB-R60-FOLLOWUPS-1,
+    /// review F2 of c43f2d90); `None` only when no number is free. The mint never loops.
     fn next_page_number(&self) -> Option<u64> {
         let Some(session) = self.session.as_ref() else {
             return Some(1);
@@ -177,13 +194,16 @@ impl Run<'_> {
             .chain(history.iter().flat_map(|s| s.expect_spreads.iter().chain(&s.write_spreads)))
             .chain(layouts.iter().flat_map(|d| &d.page_spreads))
             .flat_map(|s| &s.pages);
-        let mut highest = pages.fold(0, |n, p| highest_page_number(p.page_id.as_bytes(), n));
+        let mut named: BTreeSet<u64> = pages.filter_map(|p| page_number(&p.page_id)).collect();
         for token in hsk_studio_session::DOCUMENT_ENTRY_TOKENS {
             if let Some(bytes) = session.document_entry(token) {
-                highest = highest_page_number(bytes, highest);
+                page_id_fields(bytes, &mut named);
             }
         }
-        highest.checked_add(1)
+        match named.last() {
+            None => Some(1),
+            Some(highest) => highest.checked_add(1).or_else(|| (1..=u64::MAX).find(|n| !named.contains(n))),
+        }
     }
 
     /// `document.new`: replaces the working session with a blank document of `spec`, revision 0, no
@@ -498,11 +518,13 @@ impl Run<'_> {
     /// so the entry still validates after save and reopen and undo restores the page and its records
     /// together. The update: the page's parent-page binding (applied parent and overrides) is dropped; a
     /// section that starts on the page starts on the next page instead, or is dropped when no page of its
-    /// own is left (the next page starts another section, or the page was the last). Refused typed
-    /// `page_bound_by_layout_records`, changing nothing, where a record cannot follow: a graphic frame
-    /// placed on the page (its layer stays on the spread with no page to sit on), and any record the
-    /// updated set still would not validate against the document without the page (a record this update does
-    /// not follow): a delete never leaves a stale entry. Records that need no
+    /// own is left (the next page starts another section, or the page was the last). Refused typed,
+    /// changing nothing: `page_not_empty` for content on the page (a graphic frame placed on it, as for a
+    /// text frame; review c43f2d90 ruling 11: removing a page with its content is a next-lane candidate),
+    /// and `page_bound_by_layout_records`, a fail-closed guard, when the updated set still would not
+    /// validate against the document without the page, its op record detail naming the failing record
+    /// (`record`: the Folio diagnostic target with the record kind and id; `folio_code`): a delete never
+    /// leaves a stale entry. Records that need no
     /// update and validate without the page, none stored, or an entry that is already stale or unreadable
     /// keep the plain container step (`submit_layout` refuses a stale entry; the next layout edit reports it).
     pub fn delete_page(&mut self, page: &str) -> bool {
@@ -528,11 +550,17 @@ impl Run<'_> {
                 }
                 true
             }
-            Err(code) => {
+            Err((code, detail)) => {
                 self.note_unrecordable(COMMAND);
                 let before = self.frames.count();
                 let _ = self.begin(COMMAND, None);
-                self.own_op(OP, before, Err(code))
+                let ok = self.own_op(OP, before, Err(code));
+                if let Some(record) = self.ops.last_mut()
+                    && !detail.is_null()
+                {
+                    record["detail"] = detail;
+                }
+                ok
             }
         }
     }
@@ -541,7 +569,8 @@ impl Run<'_> {
     /// `None` when the plain container step applies (no session, no records, records that do not validate
     /// now, records that need no update and still validate without the page, or a delete the container step
     /// refuses itself).
-    fn layout_records_without_page(&self, page: &str) -> Result<Option<(folio::StudioDocument, hsk_studio_session::LayoutRecords)>, &'static str> {
+    /// A refusal is its code and the op record's detail (`Value::Null` for none).
+    fn layout_records_without_page(&self, page: &str) -> Result<Option<(folio::StudioDocument, hsk_studio_session::LayoutRecords)>, (&'static str, Value)> {
         let cancel = self.cancel;
         let Some(session) = self.session.as_ref() else {
             return Ok(None);
@@ -557,8 +586,8 @@ impl Run<'_> {
         let mut successor = document.clone();
         successor.page_spreads = spreads;
         let mut updated = records.clone();
-        if updated.longdoc.graphic_frames.iter().any(|g| g.page_id == page) {
-            return Err("page_bound_by_layout_records");
+        if let Some(g) = updated.longdoc.graphic_frames.iter().find(|g| g.page_id == page) {
+            return Err(("page_not_empty", json!({"page_id": page, "record": "graphic_frame", "layer_id": g.layer_id})));
         }
         updated.parents.page_bindings.retain(|b| b.page_id != page);
         // The page after `page` in document order (sections number pages in that order).
@@ -579,7 +608,13 @@ impl Run<'_> {
         });
         // The updated set must validate without the page even when nothing in it changed (a record this
         // update does not follow): a delete never leaves a stale entry.
-        updated.validate(&successor, folio::Budget::default(), cancel).map_err(|d| if d.code == folio::Code::Canceled { "canceled" } else { "page_bound_by_layout_records" })?;
+        updated.validate(&successor, folio::Budget::default(), cancel).map_err(|d| {
+            if d.code == folio::Code::Canceled {
+                ("canceled", Value::Null)
+            } else {
+                ("page_bound_by_layout_records", json!({"page_id": page, "record": d.target, "folio_code": format!("{:?}", d.code)}))
+            }
+        })?;
         Ok(if updated == records { None } else { Some((successor, updated)) })
     }
 
