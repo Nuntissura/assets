@@ -60,10 +60,14 @@
 //!   command id, and remove it on every exit path. Contention refuses `site_locked` at once, never waits; `target`
 //!   names the holder and `detail.holder` is the file's record. There is no automatic stale-lock breaking: when the
 //!   holder's process is gone (check the session it names), delete the file by hand.
-//! - **Jobs**: `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted through the session's
-//!   `JobLifecycle` before any work: `overloaded` (with `retry_after_ms`) and `canceled` refuse; each settles
-//!   `completed`, `canceled` or `failed` with its code. The web site is not a session document (no `DomainId`), so
-//!   the job is resource-less and bounded by the lifecycle's own admission; a host port is not reached.
+//! - **Jobs** (R60 probe j3): `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted before
+//!   any work (no lock, no read, no file) through the bound job port (`Run::bind_web_jobs`; the Viewer binds its own),
+//!   with the run's open package document as the resource and its head as the bound revision, as the viewer's other
+//!   exports (`as_export_job`): `overloaded` (`target` `retry_after_ms=N`, `detail.retry_after_ms`), `canceled` and
+//!   `stale_revision` refuse; each settles `completed`, `canceled` or `failed` with its code. With no package open the
+//!   job is resource-less, bounded by the lifecycle's own admission (the port is not asked), as `as_export_job` does.
+//! - **The opened package**: `web.move_file` refuses `move_open_package` when `from` or `to` is the file the run's
+//!   package was opened from, or a path inside it.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
     MANIFEST_FILE, MAX_EXPORT_BYTES, MAX_EXPORT_FILES, MAX_RECORD_BYTES, MAX_ROWS, MAX_SEGMENTS, No, P, R, RECEIPT_FILE, Recipe, SIDECAR_SUFFIX, WebHost, actor_json, bounded, checked_path,
@@ -103,6 +107,12 @@ pub struct Jobs {
 impl Default for Jobs {
     fn default() -> Self {
         Self { port: Arc::new(AdmissionJobPort::default()), lifecycle: JobLifecycle::default() }
+    }
+}
+
+impl Jobs {
+    pub(super) fn new(port: Arc<dyn JobPort>, lifecycle: JobLifecycle) -> Self {
+        Self { port, lifecycle }
     }
 }
 
@@ -721,9 +731,9 @@ struct Change {
 impl WebHost {
     /// Admits `work` as one job (module docs) and settles it with the work's outcome.
     pub(super) fn admitted(&mut self, action: Action, ctx: &CommandContext, cancel: &CancellationToken, work: impl FnOnce(&mut Self) -> R<Value>) -> R<Value> {
-        let revision = self.revision();
-        let request = JobRequest { resource: None, action, actor: ctx.actor().clone(), cost: Cost { jobs: 1, bytes: 0 }, bound_revision: revision, correlation_id: ctx.correlation().value(), kind: JobKind::Committed };
-        let job = self.jobs.lifecycle.admit(&self.jobs.port, request, revision, cancel).map_err(|refusal| match refusal {
+        let head = self.job_head;
+        let request = JobRequest { resource: self.job_resource.clone(), action, actor: ctx.actor().clone(), cost: Cost { jobs: 1, bytes: 0 }, bound_revision: head, correlation_id: ctx.correlation().value(), kind: JobKind::Committed };
+        let job = self.jobs.lifecycle.admit(&self.jobs.port, request, head, cancel).map_err(|refusal| match refusal {
             JobAdmissionRefusal::Overloaded { retry_after_ms } => No("overloaded", format!("retry_after_ms={retry_after_ms}"), Some(json!({"retry_after_ms": retry_after_ms}))),
             other => No(other.code(), String::new(), None),
         })?;
@@ -927,6 +937,14 @@ impl WebHost {
         }
         if role(&from) != role(&to) {
             return no("move_kind_changes", &to);
+        }
+        if let Some(package) = self.package.as_deref().map(resolved)
+            && let Some(id) = [&from, &to].into_iter().find(|id| {
+                let at = resolved(&join(&root, id));
+                at == package || at.starts_with(&package)
+            })
+        {
+            return no("move_open_package", id);
         }
         if let (Some(_), Some(doc)) = (&self.path, &self.doc)
             && self.saved_sha256.as_deref() != Some(doc.sha256_hex())

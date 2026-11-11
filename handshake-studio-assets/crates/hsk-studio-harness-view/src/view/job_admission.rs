@@ -188,6 +188,12 @@ impl Viewer {
         self.jobs.port = port;
     }
 
+    /// The viewer's job port and lifecycle, for the web host's own admission (lane SMB-WEB-SITE-1, R60 probe j3:
+    /// `Run::bind_web_jobs`).
+    pub(in crate::view) fn job_binding(&self) -> (Arc<dyn JobPort>, JobLifecycle) {
+        (Arc::clone(&self.jobs.port), self.jobs.lifecycle.clone())
+    }
+
     /// Terminal job frames go to `sink` (codes and counters only).
     pub fn set_job_sink(&mut self, sink: Box<dyn SinkPort>) {
         self.jobs.lifecycle.set_sink(sink);

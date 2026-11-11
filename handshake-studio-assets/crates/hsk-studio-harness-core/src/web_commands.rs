@@ -54,19 +54,24 @@
 //! missing alternative text and untitled documents; `web.move_file` moves one file and rewrites every reference to it
 //! as one receipted transaction. `web.site_report`, the site export, `web.move_file` and `web.publish` hold the
 //! site-level lock `<local_root>/.studio-site.lock` (contention refuses `site_locked` naming the holder, never waits);
-//! `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted as jobs (`overloaded`, `canceled`).
+//! `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted as jobs before the first file (R60
+//! probe j3): through the job port bound with [`Run::bind_web_jobs`] (the Viewer binds its own before every web
+//! command; a bare Run keeps the asset-local `AdmissionJobPort`), with the run's open package document as the job's
+//! resource, as the viewer's other exports admit (`as_export_job`); refusals `overloaded` (`target`
+//! `retry_after_ms=N`), `canceled`, `stale_revision`.
 //!
 //! Declared limits: the open export's document set is the open document and its folder must be the site's
 //! `local_root`; no source maps, no preprocessors, assets keep their paths (`asset_rewriting: keep`); site and recipe
 //! are not Folio records (no web token exists among the session's document entries), so the web history is the
 //! host's own, not the run's (`history.undo` refuses `newest_step_is_web` while a web step is newest); no business
-//! event; the web site is not a session document, so its jobs are resource-less (the lifecycle's own admission, no
-//! host port); no controls registry ids.
+//! event; with no package open a web job is resource-less (the lifecycle's own admission, as `as_export_job`); no
+//! controls registry ids.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{Run, actor_json};
 use crate::action::{self, CommandEntry};
-use hsk_studio_accord::{CancellationToken, CausationId, CommandContext, CommandId};
-use hsk_studio_session::Action;
+use hsk_studio_accord::{CancellationToken, CausationId, CommandContext, CommandId, DomainId};
+use hsk_studio_session::{Action, JobLifecycle, JobPort};
+use std::sync::Arc;
 use hsk_studio_web::responsive::document_media_blocks;
 use hsk_studio_web::{
     AssetDecision, AssetOutcome, AssetPort, AssetSource, DenyReason, Limits, Load, Loads, NodeId, NodeKey, NodeKind, SourcePatch, TextEdit, WebDoc, WebError, apply, collect_assets, insert_element, insert_fragment,
@@ -222,6 +227,11 @@ pub struct WebHost {
     published_root: Option<String>,
     /// Site-wide work is admitted as jobs (module `web_site`).
     jobs: web_site::Jobs,
+    /// The run's open package document (the jobs' resource) and its head revision, set before every command.
+    job_resource: Option<DomainId>,
+    job_head: u64,
+    /// The file the run's package was opened from: `web.move_file` never moves it or anything onto or into it.
+    package: Option<PathBuf>,
 }
 
 impl WebHost {
@@ -1384,6 +1394,10 @@ pub(super) fn run(run: &mut Run<'_>, command_id: &str, params: &Value) -> bool {
     };
     let op = row.command_id;
     run.note_unrecordable(op);
+    // The package the run holds: the resource web jobs are admitted for, and the file a move must not touch.
+    let package = run.snapshot().map(|s| (DomainId::parse(&s.document().document_id).ok(), s.document().revision));
+    (run.web.job_resource, run.web.job_head) = package.unwrap_or((None, 0));
+    run.web.package = run.session.as_ref().and_then(|s| s.origin()).map(Path::to_path_buf);
     let base = run.web.revision();
     let ctx = run.begin_at(op, Some(base), None);
     // The host is used in place: a panic inside leaves it as it was up to that point, never emptied.
@@ -1396,6 +1410,15 @@ pub(super) fn run(run: &mut Run<'_>, command_id: &str, params: &Value) -> bool {
             target(run, &at, detail);
             r
         }
+    }
+}
+
+impl Run<'_> {
+    /// Binds the job port and lifecycle the web host admits `web.export`, `web.publish`, `web.site_report` and
+    /// `web.move_file` through (module docs; the Viewer binds its own before every web command). Unbound, the run
+    /// keeps an asset-local `AdmissionJobPort`.
+    pub fn bind_web_jobs(&mut self, port: Arc<dyn JobPort>, lifecycle: JobLifecycle) {
+        self.web.jobs = web_site::Jobs::new(port, lifecycle);
     }
 }
 
