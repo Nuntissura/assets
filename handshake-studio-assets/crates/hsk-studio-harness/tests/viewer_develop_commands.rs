@@ -575,3 +575,79 @@ fn document_export_of_a_cropped_develop_names_the_crop_not_applied() {
     let reopened = w.export_document(&scratch.0.join("reopened.png"), &recipe, false).unwrap_or_else(|e| panic!("{e}"));
     assert!(reopened["notes"].as_array().unwrap().iter().any(|n| n == "develop_crop_not_applied"), "{reopened}");
 }
+
+// ---- review 945406d9 findings (lead rulings 2026-11-11) ------------------------------------------
+
+/// F1: the entry decoder bounds brush dabs across the whole edit, so an op whose entry would not read
+/// back is a typed refusal before commit: no step, the entry stays current, and the next op and a
+/// reopen keep the edit.
+#[test]
+fn brush_dabs_over_the_entry_budget_refuse_before_commit_and_the_edit_survives() {
+    let scratch = Scratch::new("develop-commands-dab-budget");
+    let source = scratch.0.join("synthetic.dng");
+    std::fs::write(&source, synthetic_dng(160, 120)).unwrap();
+    let mut v = open(&source);
+    ok_row(&mut v, "photo.develop.set", json!({"control":"develop.exposure","value":0.3}));
+    let dabs: Vec<Value> = (0..40_000).map(|_| json!([0.4, 0.35])).collect();
+    ok_row(&mut v, "photo.develop.add_correction", json!({"source":"brush","dabs":dabs,"radius":0.04}));
+    let steps = undo_len(&v);
+    let before = v.develop_json();
+    let refused = row(&mut v, "photo.develop.add_correction", json!({"source":"brush","dabs":dabs,"radius":0.04})).unwrap_err();
+    assert_eq!(refused.code, "develop_limit", "{refused:?}");
+    assert_eq!(undo_len(&v), steps, "no step");
+    let after = v.develop_json();
+    assert_eq!(after["entry"], "Current", "{}", after["entry"]);
+    assert_eq!(after["values"], before["values"]);
+    ok_row(&mut v, "photo.develop.set", json!({"control":"develop.contrast","value":10}));
+    let edit = v.develop_edit().unwrap();
+    assert_eq!((edit.exposure_stops, edit.adjust.local.len()), (0.3, 1), "the next op keeps the edit");
+    let saved = scratch.0.join("dabs.handshake");
+    v.save(&saved, false).unwrap();
+    let w = open(&saved);
+    let edit = w.develop_edit().unwrap();
+    assert_eq!((edit.exposure_stops, edit.adjust.local.len()), (0.3, 1), "the reopened edit");
+}
+
+/// F2: the enable.* keys save_preset writes apply as STU-RAW-105 overrides, so save then apply round
+/// trips (one step with the adjust part).
+#[test]
+fn preset_enable_keys_round_trip_as_overrides() {
+    let scratch = Scratch::new("develop-commands-preset-enables");
+    let source = scratch.0.join("synthetic.dng");
+    std::fs::write(&source, synthetic_dng(160, 120)).unwrap();
+    let mut v = open(&source);
+    ok_row(&mut v, "photo.develop.set_enable", json!({"group":"detail","on":false}));
+    ok_row(&mut v, "photo.develop.set", json!({"control":"develop.contrast","value":20}));
+    let preset = scratch.0.join("enables.preset");
+    ok_row(&mut v, "photo.develop.save_preset", json!({"path":text(&preset),"name":"No detail","keys":["enable.detail","contrast"]}));
+    let mut o = open(&source);
+    let steps = undo_len(&o);
+    ok_row(&mut o, "photo.develop.apply_preset", json!({"path":text(&preset),"amount":1}));
+    assert_eq!(undo_len(&o), steps + 1, "one step");
+    let state = o.develop_json();
+    assert_eq!(state["enables_override"], json!({"detail": false}), "{state}");
+    let r = o.develop_recipe().unwrap();
+    assert!(!r.enables.enable_detail);
+    assert_eq!(r.adjust.tone.contrast, 20.0);
+}
+
+/// F3, F4: a DNG export without a preview applies the crop nowhere and says so; the export stage sizes
+/// the cropped frame the export develops.
+#[test]
+fn crop_receipts_name_what_was_applied_and_the_stage_sizes_the_crop() {
+    use hsk_studio_develop::{DngCompression, DngPreview};
+    let scratch = Scratch::new("develop-commands-crop-receipts");
+    let source = scratch.0.join("synthetic.dng");
+    std::fs::write(&source, synthetic_dng(160, 120)).unwrap();
+    let mut v = open(&source);
+    ok_row(&mut v, "photo.develop.set_crop", json!({"left":0.25,"top":0.2,"right":0.75,"bottom":0.8}));
+    let dng = v.export_develop(&scratch.0.join("none.dng"), DevelopExport::Dng { compression: DngCompression::None, preview: DngPreview::None, allow_dropped: true }, false).unwrap();
+    assert!(dng["preview"].is_null(), "{dng}");
+    assert_eq!(dng["develop_crop"]["applied_to"], "none", "{dng}");
+    assert!(dng["develop_crop"]["notes"].as_array().unwrap().iter().any(|n| n == "develop_crop_not_applied"), "{dng}");
+    let with = v.export_develop(&scratch.0.join("medium.dng"), DevelopExport::Dng { compression: DngCompression::None, preview: DngPreview::Medium, allow_dropped: true }, false).unwrap();
+    assert_eq!(with["develop_crop"]["applied_to"], "preview", "{with}");
+    v.set_develop_export_field(&hsk_studio_harness::view::develop::export_dialog::widget::key("stage"), "true").unwrap();
+    let png = v.export_develop(&scratch.0.join("cropped.png"), DevelopExport::Png { depth: OutputDepth::Eight }, false).unwrap();
+    assert_eq!(v.develop_json()["export_stage"]["source_size"], json!([png["width"], png["height"]]), "the stage sizes the cropped frame: {png}");
+}
