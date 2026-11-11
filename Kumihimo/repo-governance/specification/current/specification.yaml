@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 28
-  revision: 28
+  version: 29
+  revision: 29
   status: accepted_direction_implementation_authorized
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 28
-    digest: sha256:bf6f09589d93ab535563fb8e82fb157c60e958f85f660f8bdc70b75236a6929f
+    revision: 29
+    digest: sha256:3897157ad9b456efc0344207dd86a56156c3286d6f614e1f53cbf2c8a900d2f8
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -364,6 +364,7 @@ storage:
     - DEC-KUM-EXTERNAL-NATIVE-EMBEDDING-v1
     - DEC-KUM-NATIVE-PRODUCER-v1
     - DEC-KUM-STRICT-VULKAN-SELECTION-v1
+    - DEC-KUM-DIRECT-VULKAN-RENDERER-v1
   - document_id: DOC-KUM-ROADMAP-v1
     path: spec-modules/roadmap.md
     revision: 23

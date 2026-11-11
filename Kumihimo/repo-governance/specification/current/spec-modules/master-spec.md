@@ -2,9 +2,9 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 28
+revision: 29
 title: Kumihimo master specification
-updated_at: '2026-10-25'
+updated_at: '2026-11-08'
 ---
 
 ```yaml
@@ -4507,5 +4507,18 @@ decisions:
   - https://docs.rs/crate/wgpu/27.0.1/features
   - https://docs.rs/crate/wgpu-hal/27.0.4/features
   - https://doc.rust-lang.org/cargo/reference/features.html
+  supersedes: []
+- decision_id: DEC-KUM-DIRECT-VULKAN-RENDERER-v1
+  anchor_refs:
+  - TOPIC-KUM-RENDER
+  - TOPIC-KUM-BOUNDARIES
+  decision: Kumihimo owns the shared controls and provides a pure Vulkan renderer crate alongside kumihimo-egui.
+    The direct renderer excludes wgpu, egui and eframe. The core and content crates remain toolkit-free.
+    Studio GPU work consumes the central Handshake GPU owner through its typed client contract.
+    A transient adapter behind that contract may provide asset-local proof only.
+  rationale: Operator decision D8 and Handshake specification clauses STU-ARC-023 and STU-ARC-024
+    assign the shared controls and direct renderer to Kumihimo while keeping GPU ownership with Handshake.
+  research_source_refs:
+  - https://github.com/Nuntissura/assets/tree/88b5500c90b212e2c13702b3732816f19a6b42c3/handshake-studio-assets/crates/hsk-studio-vulkan
   supersedes: []
 ```
