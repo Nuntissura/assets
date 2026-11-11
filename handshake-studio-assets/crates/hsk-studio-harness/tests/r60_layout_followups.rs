@@ -135,23 +135,18 @@ fn r60_b9_undo_restores_the_page_and_its_binding_together() {
     v.layout_apply(frame_on_page_1()).expect("editable after redo");
 }
 
-/// Item 6: a page delete never leaves a stale entry. A page holding a layout text frame (a record the
-/// update does not follow) is deleted with records that still validate, or refused typed with nothing
-/// changed; either way the layout stays editable, also after save and reopen.
+/// Item 6: a page delete never leaves a stale entry. A page a layout text frame sits on is refused typed
+/// `page_not_empty` with nothing changed, and the layout stays editable, also after save and reopen.
 #[test]
 fn r60_b9_a_page_delete_never_leaves_the_layout_locked() {
     let scratch = Scratch::new("r60-b9-frame");
     let mut v = parented(&scratch);
     v.layout_apply(LayoutEdit::DrawFrame { page_id: "page-2".into(), x: 1.0, y: 1.0, w: 10.0, h: 10.0 }).unwrap();
     let depth = v.edit_json()["history"]["undo"].as_array().unwrap().len();
-    match v.delete_page("page-2") {
-        Ok(_) => assert_eq!(pages(&v), ["page-1", "page-3"]),
-        Err(e) => {
-            assert!(e.contains("page_bound_by_layout_records") || e.contains("page_not_empty"), "a typed refusal: {e}");
-            assert_eq!(pages(&v), ["page-1", "page-2", "page-3"], "a refusal changes nothing");
-            assert_eq!(v.edit_json()["history"]["undo"].as_array().unwrap().len(), depth, "and adds no step");
-        }
-    }
+    let e = v.delete_page("page-2").expect_err("a text frame sits on page-2");
+    assert!(e.contains("page_not_empty"), "a typed refusal: {e}");
+    assert_eq!(pages(&v), ["page-1", "page-2", "page-3"], "a refusal changes nothing");
+    assert_eq!(v.edit_json()["history"]["undo"].as_array().unwrap().len(), depth, "and adds no step");
     v.layout_apply(frame_on_page_1()).expect("the layout stays editable");
     let saved = scratch.0.join("frame.handshake");
     v.save(&saved, false).unwrap();

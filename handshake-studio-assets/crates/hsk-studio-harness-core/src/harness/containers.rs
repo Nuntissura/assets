@@ -5,7 +5,8 @@
 //! step (no revision, like every document entry). Not recordable: a recording reports them typed
 //! ([STU-AUT-109]).
 //!
-//! What a delete refuses: a container a layer still names (`artboard_not_empty`, `page_not_empty`), the
+//! What a delete refuses: a container a layer still names or a page a text frame sits on
+//! (`artboard_not_empty`, `page_not_empty`), the
 //! last page of a document (`last_page`) and the last artboard of a document with layers
 //! (`last_artboard`), so a frame for the layers stays; a page delete updates the layout records that name
 //! the page in the same step, or refuses `page_bound_by_layout_records` ([`Run::delete_page`]). A page has
@@ -46,6 +47,11 @@ fn delete_page_edit(document: &folio::StudioDocument, spreads: &mut Vec<StudioPa
     let (si, pi) = locate(spreads, page).ok_or("unknown_page")?;
     if rules::page_count(document) <= 1 {
         return Err("last_page");
+    }
+    // A text frame sits on one page (lane SMB-R60-FOLLOWUPS-1 item 6: the document would name a page it no
+    // longer holds).
+    if document.layers.iter().any(|l| l.text_frame.as_ref().is_some_and(|f| f.page_id == page)) {
+        return Err("page_not_empty");
     }
     if spreads[si].pages.len() == 1 {
         if layer_names_node(document, &spreads[si].page_spread_id) {
