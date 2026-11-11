@@ -98,6 +98,8 @@ type KeyRef = (String, String, u64);
 type LayerKeys<'a> = Vec<(String, &'a [Key])>;
 /// (layer id, property address, keys) rows a selection is gathered from.
 type KeyRows<'a> = Vec<(&'a str, &'a str, &'a [Key])>;
+/// The selected ticks per (layer id, property address).
+type Groups = BTreeMap<(String, String), BTreeSet<u64>>;
 
 /// The keyframe selection and clipboard of one run (module docs).
 #[derive(Clone, Debug, Default)]
@@ -2122,7 +2124,7 @@ fn live(e: &Edit<'_>) -> (BTreeSet<KeyRef>, usize) {
 
 /// The live selection grouped by (layer, property): the selected ticks of each, and the dropped
 /// count of [`live`].
-fn selection_groups(e: &Edit<'_>) -> R<(BTreeMap<(String, String), BTreeSet<u64>>, usize)> {
+fn selection_groups(e: &Edit<'_>) -> R<(Groups, usize)> {
     let (selected, dropped) = live(e);
     if selected.is_empty() {
         return no("selection_empty", e.row.command_id);
