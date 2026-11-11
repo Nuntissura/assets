@@ -776,6 +776,81 @@ pub enum PngChannels {
     RgbAlpha,
 }
 
+/// The transfer a PNG module applies to the rendered linear working-space colour (module docs of `render_queue`;
+/// review 44da1364 F3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PngTransfer {
+    /// IEC 61966-2-1 sRGB OETF (the viewer's and the document PNG export's encoding).
+    Srgb,
+    /// ITU-R BT.709 OETF: `4.5 L` below 0.018, else `1.099 L^0.45 - 0.099`.
+    Rec709,
+    /// `preserve_rgb`: the rendered samples as they are.
+    AsRendered,
+}
+
+impl PngTransfer {
+    /// `v` clamped to 0..=1 (NaN is 0), then encoded.
+    pub fn encode(self, v: f32) -> f32 {
+        let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+        match self {
+            Self::Srgb if v <= 0.003_130_8 => v * 12.92,
+            Self::Srgb => 1.055 * v.powf(1.0 / 2.4) - 0.055,
+            Self::Rec709 if v < 0.018 => v * 4.5,
+            Self::Rec709 => 1.099 * v.powf(0.45) - 0.099,
+            Self::AsRendered => v,
+        }
+    }
+
+    fn code(self) -> &'static str {
+        match self {
+            Self::Srgb => "srgb",
+            Self::Rec709 => "rec709",
+            Self::AsRendered => "as_rendered",
+        }
+    }
+}
+
+/// A PNG module's colour (STU-MOT-122 colour group): the transfer, and whether an RGB file carries the matching
+/// chunk (`embed_color_space`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PngColour {
+    pub transfer: PngTransfer,
+    pub embed: bool,
+}
+
+impl PngColour {
+    /// The colour chunk an RGB or RGBA file of this colour carries: `iCCP` (sRGB v4 profile), `cICP` (BT.709) or none.
+    pub fn chunk(self, colour: hsk_studio_interop_raster::Colour) -> Option<&'static str> {
+        if !self.embed || colour == hsk_studio_interop_raster::Colour::Gray {
+            return None;
+        }
+        match self.transfer {
+            PngTransfer::Srgb => Some("iCCP"),
+            PngTransfer::Rec709 => Some("cICP"),
+            PngTransfer::AsRendered => None,
+        }
+    }
+}
+
+/// `png` with a `cICP` chunk (BT.709 primaries 1, transfer 1, matrix 0 = RGB, full range) right after `IHDR`, where
+/// the PNG specification (third edition) places it: before `PLTE` and `IDAT`.
+fn with_cicp_bt709(png: Vec<u8>) -> Result<Vec<u8>, &'static str> {
+    // Signature (8) + IHDR: length (4), type (4), 13 data bytes, CRC (4).
+    const AFTER_IHDR: usize = 33;
+    if png.get(12..16) != Some(b"IHDR") || png.len() < AFTER_IHDR {
+        return Err("png_encode_failed");
+    }
+    let body: [u8; 8] = [b'c', b'I', b'C', b'P', 1, 1, 0, 1];
+    let mut out = Vec::with_capacity(png.len().saturating_add(16));
+    out.extend_from_slice(&png[..AFTER_IHDR]);
+    out.extend_from_slice(&4u32.to_be_bytes());
+    out.extend_from_slice(&body);
+    // The PNG chunk CRC is the ISO 3309 CRC-32 of type and data: the workspace's one CRC-32 (package, D16).
+    out.extend_from_slice(&hsk_studio_package::crc32_of(&body).to_be_bytes());
+    out.extend_from_slice(&png[AFTER_IHDR..]);
+    Ok(out)
+}
+
 /// One PNG sequence output module (module docs of `render_queue`): frame `i` of the span is written to
 /// `<stem>_<number>.png`, `number` = `first_number + i` with [`PNG_FRAME_DIGITS`] zero-padded digits, where
 /// `<stem>` is `pattern` without its `.png` suffix.
@@ -783,6 +858,7 @@ pub enum PngChannels {
 pub struct PngModule {
     pub post: OutputPost,
     pub channels: PngChannels,
+    pub colour: PngColour,
     /// 8 or 16 bits per sample.
     pub depth: u8,
     pub compression: hsk_studio_interop_raster::PngCompression,
@@ -822,26 +898,45 @@ impl PngModule {
         Some((PathBuf::from(format!("{abs_stem}_{number:0width$}.png", width = PNG_FRAME_DIGITS)), rel))
     }
 
-    /// The PNG bytes of one frame (module docs: colour as `post.premultiplied` selects; samples clamped to
-    /// 0..=1 and rounded to the depth's levels; NaN is 0).
+    /// The PNG bytes of one frame (module docs of `render_queue`: straight colour through the module's transfer,
+    /// premultiplied after encoding when `post.premultiplied`; alpha linear; samples clamped to 0..=1 and rounded
+    /// to the depth's levels, NaN is 0; the colour chunk of [`PngColour::chunk`]).
     pub fn encode(&self, f: &Frame) -> Result<Vec<u8>, &'static str> {
         use hsk_studio_interop_raster::{Colour, PngEncodeRequest, Samples};
         let (w, h) = self.post.size(f.width, f.height).map_err(|e| e.code)?;
-        let (values, colour, take): (Vec<u8>, Colour, usize) = match self.channels {
-            PngChannels::RgbAlpha => (self.post.apply_rgba(f), Colour::Rgba, 4),
-            PngChannels::Rgb => (OutputPost { channels: OutputChannels::Rgb, ..self.post }.apply(f), Colour::Rgb, 3),
-            PngChannels::Alpha => (OutputPost { channels: OutputChannels::Alpha, ..self.post }.apply(f), Colour::Gray, 1),
+        // Straight colour and alpha per pixel (crop and resize applied), whatever `color` says.
+        let straight = OutputPost { premultiplied: false, ..self.post }.apply_rgba(f);
+        let floats: Vec<f32> = straight.chunks_exact(4).map(|b| b.try_into().map_or(0.0, f32::from_le_bytes)).collect();
+        let t = |v: f32| self.colour.transfer.encode(v);
+        let alpha = |a: f32| if a.is_finite() { a.clamp(0.0, 1.0) } else { 0.0 };
+        let premultiplied = self.post.premultiplied;
+        let colour = match self.channels {
+            PngChannels::RgbAlpha => Colour::Rgba,
+            PngChannels::Rgb => Colour::Rgb,
+            PngChannels::Alpha => Colour::Gray,
         };
-        let stride = if self.channels == PngChannels::Alpha { 3 } else { take };
-        let floats: Vec<f32> = values.chunks_exact(4).map(|b| b.try_into().map_or(0.0, f32::from_le_bytes)).collect();
-        let picked = floats.chunks_exact(stride).flat_map(|px| px.iter().take(take).copied());
+        let mut picked: Vec<f32> = Vec::with_capacity(floats.len());
+        for px in floats.chunks_exact(4) {
+            let (rgb, a) = ([px[0], px[1], px[2]], alpha(px[3]));
+            match self.channels {
+                PngChannels::RgbAlpha if premultiplied => picked.extend(rgb.map(|c| t(c) * a).into_iter().chain([a])),
+                PngChannels::RgbAlpha => picked.extend(rgb.map(t).into_iter().chain([a])),
+                // RGB premultiplied is the composite over black, encoded.
+                PngChannels::Rgb if premultiplied => picked.extend(rgb.map(|c| t(c * a))),
+                PngChannels::Rgb => picked.extend(rgb.map(t)),
+                PngChannels::Alpha => picked.push(a),
+            }
+        }
         let level = |v: f32, max: f32| if v.is_finite() { (v.clamp(0.0, 1.0) * max + 0.5).floor() } else { 0.0 };
         let samples = if self.depth == 16 {
-            Samples::U16(picked.map(|v| level(v, 65535.0) as u16).collect())
+            Samples::U16(picked.iter().map(|v| level(*v, 65535.0) as u16).collect())
         } else {
-            Samples::U8(picked.map(|v| level(v, 255.0) as u8).collect())
+            Samples::U8(picked.iter().map(|v| level(*v, 255.0) as u8).collect())
         };
-        hsk_studio_interop_raster::encode_png(&PngEncodeRequest { width: w, height: h, colour, samples: &samples, icc: None, compression: self.compression }).map_err(|_| "png_encode_failed")
+        let chunk = self.colour.chunk(colour);
+        let icc = (chunk == Some("iCCP")).then_some(crate::view::develop::SRGB_V4_ICC);
+        let png = hsk_studio_interop_raster::encode_png(&PngEncodeRequest { width: w, height: h, colour, samples: &samples, icc, compression: self.compression }).map_err(|_| "png_encode_failed")?;
+        if chunk == Some("cICP") { with_cicp_bt709(png) } else { Ok(png) }
     }
 }
 
@@ -860,15 +955,37 @@ pub struct PngSequenceReceipt {
     pub code: Option<&'static str>,
     pub detail: Option<String>,
     pub frames_total: u64,
-    /// Files written, in frame order, relative as the record names them (also when canceled or failed).
-    pub artifacts: Vec<String>,
+    /// The frame names, relative as the record names them: `<stem>_%07d.png` (review 44da1364 F6: the pattern and
+    /// the range, never one entry per frame).
+    pub pattern: String,
+    /// The number of the first frame, and how many frames were written in order from it (also when canceled or
+    /// failed).
+    pub first_number: u64,
+    pub frames_written: u64,
     pub bytes: u64,
+    /// The transfer applied and the colour chunk written (`render_queue` module docs).
+    pub transfer: &'static str,
+    pub chunk: Option<&'static str>,
 }
 
 impl PngSequenceReceipt {
+    /// The number of the last frame written, if any.
+    pub fn last_number(&self) -> Option<u64> {
+        self.frames_written.checked_sub(1).and_then(|n| self.first_number.checked_add(n))
+    }
+
+    /// The receipt's artifacts: one range `{pattern, first_number, last_number, frames}`, or none.
+    pub fn artifacts_json(&self) -> serde_json::Value {
+        match self.last_number() {
+            Some(last) => serde_json::json!([{"pattern": self.pattern, "first_number": self.first_number, "last_number": last, "frames": self.frames_written}]),
+            None => serde_json::json!([]),
+        }
+    }
+
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({"format": "png_sequence", "outcome": self.outcome, "code": self.code, "detail": self.detail, "frames_total": self.frames_total,
-            "frames_written": self.artifacts.len(), "bytes": self.bytes, "last_written": self.artifacts.last()})
+            "pattern": self.pattern, "first_number": self.first_number, "frames_written": self.frames_written, "last_number": self.last_number(),
+            "bytes": self.bytes, "colour": {"transfer": self.transfer, "chunk": self.chunk}})
     }
 }
 
@@ -904,12 +1021,29 @@ fn publish_png(target: &Path, bytes: &[u8], overwrite: bool) -> Result<(), &'sta
     published
 }
 
+/// Frame `i` of a PNG sequence (the shared render, or a test closure).
+pub type PngFrameSource<'a> = &'a dyn Fn(u64, &CancellationToken) -> Result<Arc<Frame>, ReelError>;
+
 /// Writes the PNG sequence of `frames` frames, frame `i` from `frame` (module docs). Checked before the
 /// first frame: [`PngModule::check`] and that the pattern's folder exists (`output_directory_missing`). A
-/// cancel stops before the next frame; a failed frame or write stops there; the receipt names the files
-/// written either way.
-pub fn run_png_sequence(frame: &dyn Fn(u64, &CancellationToken) -> Result<Arc<Frame>, ReelError>, frames: u64, m: &PngModule, cancel: &CancellationToken) -> PngSequenceReceipt {
-    let mut r = PngSequenceReceipt { outcome: "complete", code: None, detail: None, frames_total: frames, artifacts: Vec::new(), bytes: 0 };
+/// cancel stops before the next frame; a failed frame or write stops there; the receipt names the frames
+/// written either way (pattern and range). `frames` up to [`ExportLimits::max_frames`] (4,000,000) inclusive.
+pub fn run_png_sequence(frame: PngFrameSource<'_>, frames: u64, m: &PngModule, cancel: &CancellationToken) -> PngSequenceReceipt {
+    let pattern = png_stem(&m.relative).map_or_else(|| m.relative.clone(), |s| format!("{s}_%0{PNG_FRAME_DIGITS}d.png"));
+    let colour = if m.channels == PngChannels::Alpha { hsk_studio_interop_raster::Colour::Gray } else { hsk_studio_interop_raster::Colour::Rgba };
+    let transfer = if m.channels == PngChannels::Alpha { "linear_alpha" } else { m.colour.transfer.code() };
+    let mut r = PngSequenceReceipt {
+        outcome: "complete",
+        code: None,
+        detail: None,
+        frames_total: frames,
+        pattern,
+        first_number: m.first_number,
+        frames_written: 0,
+        bytes: 0,
+        transfer,
+        chunk: m.colour.chunk(colour),
+    };
     let stop = |mut r: PngSequenceReceipt, outcome: &'static str, code: &'static str, detail: String| {
         r.outcome = outcome;
         r.code = Some(code);
@@ -942,7 +1076,7 @@ pub fn run_png_sequence(frame: &dyn Fn(u64, &CancellationToken) -> Result<Arc<Fr
             return stop(r, "failed", code, format!("frame {i}: {rel}"));
         }
         r.bytes = r.bytes.saturating_add(bytes.len() as u64);
-        r.artifacts.push(rel);
+        r.frames_written = r.frames_written.saturating_add(1);
     }
     r
 }
@@ -964,6 +1098,7 @@ mod png_sequence_tests {
         PngModule {
             post: OutputPost { crop: [0; 4], resize: None, channels: OutputChannels::Rgb, premultiplied: false },
             channels,
+            colour: PngColour { transfer: PngTransfer::Srgb, embed: true },
             depth,
             compression: hsk_studio_interop_raster::PngCompression::Fast,
             first_number: 0,
@@ -991,7 +1126,8 @@ mod png_sequence_tests {
         };
         let r = run_png_sequence(&source, 5, &m, &cancel);
         assert_eq!((r.outcome, r.code), ("canceled", Some("MEDIA_CANCELED")), "{r:?}");
-        assert_eq!(r.artifacts, ["out/f_0000000.png", "out/f_0000001.png"]);
+        assert_eq!((r.pattern.as_str(), r.first_number, r.frames_written, r.last_number()), ("out/f_%07d.png", 0, 2, Some(1)), "{r:?}");
+        assert_eq!(r.artifacts_json(), serde_json::json!([{"pattern": "out/f_%07d.png", "first_number": 0, "last_number": 1, "frames": 2}]));
         assert_eq!(served.load(Ordering::Relaxed), 2);
         assert!(dir.join("f_0000001.png").is_file() && !dir.join("f_0000002.png").exists());
         let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).filter(|e| e.file_name().to_string_lossy().contains(".partial-")).collect();
@@ -1038,8 +1174,55 @@ mod png_sequence_tests {
         // 0.25 * 65535 + 0.5 = 16384.25 -> 16384.
         assert_eq!(img.samples, hsk_studio_interop_raster::Samples::U16(vec![16384; 4]));
         let again = run_png_sequence(&source, 1, &m, &cancel);
-        assert_eq!((again.outcome, again.code, again.artifacts.len()), ("failed", Some("export-output-exists"), 0), "{again:?}");
+        assert_eq!((again.outcome, again.code, again.frames_written), ("failed", Some("export-output-exists"), 0), "{again:?}");
+        assert_eq!(again.artifacts_json(), serde_json::json!([]));
         assert_eq!(std::fs::read(dir.join("f_0000000.png")).unwrap(), bytes, "the existing file is untouched");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The frame bound is inclusive (lead ruling 2026-11-11): exactly `max_frames` (4,000,000) passes the check,
+    /// one more is `export_frame_limit`.
+    #[test]
+    fn exactly_max_frames_is_allowed() {
+        let m = module(Path::new("."), PngChannels::Rgb, 8);
+        let max = ExportLimits::default().max_frames;
+        assert_eq!(max, 4_000_000);
+        assert!(m.check(max).is_ok());
+        assert_eq!(m.check(max.saturating_add(1)).map_err(|e| e.code), Err("export_frame_limit"));
+    }
+
+    /// Review 44da1364 F3: linear mid-grey 0.5 encodes to sRGB 188 / 48192 and BT.709 180 / 46236 (8 / 16 bits);
+    /// premultiplied colour is premultiplied after encoding; alpha stays linear; the chunk follows the space.
+    #[test]
+    fn mid_grey_encodes_through_the_colour_space_transfer() {
+        let cancel = CancellationToken::default();
+        let grey = Frame { width: 1, height: 1, rgb: vec![0.5; 3], alpha: vec![1.0] };
+        // Frames hold straight colour: 0.5 at alpha 0.5.
+        let half = Frame { width: 1, height: 1, rgb: vec![0.5; 3], alpha: vec![0.5] };
+        let decode = |bytes: &[u8]| hsk_studio_interop_raster::decode(bytes, &hsk_studio_interop_raster::Limits::default(), &cancel).unwrap();
+        for (transfer, want8, want16, chunk) in [(PngTransfer::Srgb, 188u8, 48192u16, Some("iCCP")), (PngTransfer::Rec709, 180, 46236, Some("cICP")), (PngTransfer::AsRendered, 128, 32768, None)] {
+            let mut m = module(Path::new("."), PngChannels::RgbAlpha, 8);
+            m.colour = PngColour { transfer, embed: true };
+            let img = decode(&m.encode(&grey).unwrap());
+            assert_eq!(img.samples, hsk_studio_interop_raster::Samples::U8(vec![want8, want8, want8, 255]), "{transfer:?}");
+            assert_eq!(img.icc.is_some(), chunk == Some("iCCP"), "{transfer:?}");
+            assert_eq!(m.colour.chunk(hsk_studio_interop_raster::Colour::Rgba), chunk);
+            m.depth = 16;
+            assert_eq!(decode(&m.encode(&grey).unwrap()).samples, hsk_studio_interop_raster::Samples::U16(vec![want16, want16, want16, 65535]), "{transfer:?} 16");
+            // Straight 0.5 at alpha 0.5, premultiplied after encoding: half the encoded value, alpha 128.
+            m.depth = 8;
+            m.post.premultiplied = true;
+            let img = decode(&m.encode(&half).unwrap());
+            let encoded = (transfer.encode(0.5) * 0.5 * 255.0 + 0.5).floor() as u8;
+            assert_eq!(img.samples, hsk_studio_interop_raster::Samples::U8(vec![encoded, encoded, encoded, 128]), "{transfer:?} premultiplied");
+        }
+        let mut m = module(Path::new("."), PngChannels::RgbAlpha, 8);
+        m.colour.embed = false;
+        let bytes = m.encode(&grey).unwrap();
+        assert!(decode(&bytes).icc.is_none() && !bytes.windows(4).any(|w| w == b"cICP"), "embed off: no colour chunk");
+        m.channels = PngChannels::Alpha;
+        m.colour = PngColour { transfer: PngTransfer::Rec709, embed: true };
+        assert_eq!(decode(&m.encode(&half).unwrap()).samples, hsk_studio_interop_raster::Samples::U8(vec![128]), "the alpha matte stays linear, untagged");
+        assert_eq!(hsk_studio_package::crc32_of(b"IEND"), 0xAE42_6082, "the PNG IEND chunk's CRC");
     }
 }

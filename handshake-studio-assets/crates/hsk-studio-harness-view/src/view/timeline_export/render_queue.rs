@@ -39,14 +39,22 @@
 //! `stored|fast|balanced|high`, empty = balanced), each file no-clobber, named `<stem>_<NNNNNNN>.png` from
 //! `starting_number` + the span frame index, or with `use_comp_frame_number` the composition frame number of the
 //! frame (seven digits, the hard_max 9999999; After Effects' own reading of the two fields is UNVERIFIED, D5).
-//! `audio` `on` is refused `output_audio_png` (a PNG carries no sound). Its frames are the rendered samples as
-//! they are (no transfer conversion and no colour chunk, like the MOV path's R'G'B' reading). Its jobs run only
+//! `audio` `on` is refused `output_audio_png` (a PNG carries no sound). Its colour (review 44da1364 F3, lead ruling
+//! 2026-11-11): the rendered linear working-space samples go through the transfer of the module's
+//! `output_color_space` (unset or `srgb`: the sRGB OETF, as the viewer and the document PNG export encode;
+//! `rec709` / `bt709`: the BT.709 OETF) on straight colour, premultiplied after encoding for `rgb_alpha` with
+//! `color` premultiplied (`rgb` premultiplied: the encoded composite over black); alpha and the `alpha` matte stay
+//! linear. With `embed_color_space` an RGB file carries the matching chunk (sRGB: iCCP with the sRGB v4 profile of
+//! the document export; BT.709: cICP 1/1/0/1, BT.709 primaries and transfer, RGB, full range); without it no
+//! colour chunk. `preserve_rgb` writes the samples as rendered, untagged. The receipt names the transfer and
+//! chunk. A new PNG module's space is `srgb`. Frame counts up to reel's `ExportLimits::max_frames` (4,000,000)
+//! inclusive are allowed; above it is `export_frame_limit` before the first frame. Its jobs run only
 //! through the delivery queue (`crate::view::delivery`): [`render_queue_jobs`] and [`session_render_queue_jobs`],
 //! which return reel jobs alone, refuse an item holding one `output_png_needs_delivery`. `rgb_alpha` on a MOV
 //! module stays `output_alpha_codec`.
 use super::composition::{
     CompositionAudioLayer, CompositionScenes, CompositionSpan, DEFAULT_SHARED_CACHE_BYTES, FrameRenderer, ModuleOutput,
-    MotionBlur, OutputChannels, OutputPost, PngChannels, PngModule, RenderDepth, RenderOptions, SharedFrames, shared_module_jobs,
+    MotionBlur, OutputChannels, OutputPost, PngChannels, PngColour, PngModule, PngTransfer, RenderDepth, RenderOptions, SharedFrames, shared_module_jobs,
 };
 use crate::view::monitor::MonitorFail;
 use hsk_studio_accord::CancellationToken;
@@ -265,9 +273,8 @@ fn module_output(
             (Container::Mov, VideoCodecChoice::Vc3(profile), depth)
         }
         StudioOutputFormat::MovAv1 | StudioOutputFormat::Mp4Av1 => {
-            let quantizer = m.codec_option.parse::<u8>().map_err(|_| refuse("output_codec_option", "AV1 quantizer 0..=255"))?;
             let c = if m.format == StudioOutputFormat::Mp4Av1 { Container::Mp4 } else { Container::Mov };
-            (c, VideoCodecChoice::Av1(Av1Settings { quantizer, ..Av1Settings::default() }), m.depth)
+            (c, VideoCodecChoice::Av1(av1_settings(&m.codec_option)?), m.depth)
         }
         StudioOutputFormat::PngSequence => return Err(refuse("output_format", "a png_sequence module is not a reel job")),
     };
@@ -284,6 +291,42 @@ fn module_output(
     }
     let pcm = audio.then_some(PcmChoice { bits: m.audio.bit_depth, float: m.audio.float });
     Ok(ModulePlan::Reel(ExportRecipe { recipe_id: format!("{}.{}", item.item_id, m.module_id), container, video: Some(video), audio: pcm }, post, depth))
+}
+
+/// The AV1 settings of an AV1 module's `codec_option` (module docs; review 44da1364 F4): the quantizer 0..=255,
+/// then optional `,speed=0..=10`, `,bitrate=<bits per second>` and `,keyframe=<frames >= 1>`, each at most once;
+/// a missing one is reel's default (harness-core `motion_commands::av1_codec_option` writes it). Anything else
+/// is `output_codec_option`.
+fn av1_settings(option: &str) -> Result<Av1Settings, MonitorFail> {
+    let bad = || refuse("output_codec_option", format!("{option}: AV1 quantizer 0..=255 then ,speed= ,bitrate= ,keyframe="));
+    let mut parts = option.split(',');
+    let mut s = Av1Settings { quantizer: parts.next().and_then(|q| q.parse().ok()).ok_or_else(bad)?, ..Av1Settings::default() };
+    let mut seen = BTreeSet::new();
+    for part in parts {
+        let (key, value) = part.split_once('=').ok_or_else(bad)?;
+        if !seen.insert(key) {
+            return Err(bad());
+        }
+        match key {
+            "speed" => s.speed = value.parse().ok().filter(|v| *v <= 10).ok_or_else(bad)?,
+            "bitrate" => s.bitrate = Some(value.parse().ok().filter(|v| *v > 0).ok_or_else(bad)?),
+            "keyframe" => s.max_keyframe_interval = value.parse().ok().filter(|v| *v >= 1).ok_or_else(bad)?,
+            _ => return Err(bad()),
+        }
+    }
+    Ok(s)
+}
+
+/// The transfer and colour chunk of a PNG module from its colour group (STU-MOT-122; review 44da1364 F3): `preserve_rgb`
+/// writes the rendered samples as they are (no conversion, no chunk); otherwise unset or `srgb` is the sRGB
+/// transfer, `rec709` / `bt709` the BT.709 one (any other space is refused `output_color_space` before this).
+fn png_colour(m: &StudioOutputModule) -> PngColour {
+    let transfer = match (m.colour.preserve_rgb, m.colour.output_color_space.as_deref()) {
+        (true, _) => PngTransfer::AsRendered,
+        (false, Some("rec709" | "bt709")) => PngTransfer::Rec709,
+        (false, _) => PngTransfer::Srgb,
+    };
+    PngColour { transfer, embed: m.colour.embed_color_space }
 }
 
 /// A PNG sequence module (module docs); its pattern is checked here, its frame numbers with the span.
@@ -306,6 +349,7 @@ fn png_module(m: &StudioOutputModule, post: OutputPost) -> Result<PngModule, Mon
     let module = PngModule {
         post,
         channels,
+        colour: png_colour(m),
         depth: m.depth,
         compression,
         first_number: u64::from(m.starting_number),
@@ -538,4 +582,22 @@ pub fn records_render_queue_build<P: ScenePixels + Send + 'static>(
         Ok(TemporalScenes { source, pixels: pixels() })
     };
     render_queue_build(item, comp, Some(motion), Some(snapshot.document().bits_per_channel), &mut scenes, audio, space, output_root, overwrite)
+}
+
+#[cfg(test)]
+mod av1_option_tests {
+    //! Review 44da1364 F4: an AV1 module's `codec_option` carries every AV1 setting a template keeps.
+    use super::*;
+
+    #[test]
+    fn av1_codec_option_round_trips_every_setting() {
+        // harness-core `motion_commands::av1_codec_option` omits these two values as reel's defaults.
+        let d = Av1Settings::default();
+        assert_eq!((d.speed, d.bitrate, d.max_keyframe_interval), (6, None, 240));
+        assert_eq!(av1_settings("80").unwrap(), Av1Settings { quantizer: 80, ..d });
+        assert_eq!(av1_settings("80,speed=2,bitrate=5000000,keyframe=60").unwrap(), Av1Settings { speed: 2, quantizer: 80, bitrate: Some(5_000_000), max_keyframe_interval: 60 });
+        for bad in ["", "256", "80,", "80,speed=11", "80,speed=2,speed=3", "80,keyframe=0", "80,bitrate=0", "80,colour=1", "80;speed=2"] {
+            assert_eq!(av1_settings(bad).map_err(|e| e.code), Err("output_codec_option"), "{bad}");
+        }
+    }
 }

@@ -6,8 +6,9 @@
 //! (264x120, 25 fps, 3 frames; provenance in `hsk-studio-reel/tests/fixtures/dnx/`), read through the
 //! crate tree; every file lives under `std::env::temp_dir()` in a per-test folder, no-clobber.
 //! Oracles: frame and sample counts from the range, the fixture's pinned export digest, hand-computed
-//! 8-bit PNG samples of a half-transparent fill (straight 0.8 -> 204, premultiplied 0.4 -> 102, alpha
-//! 0.5 -> 128). After Effects / Media Encoder parity of naming, padding and template mapping is
+//! 8-bit PNG samples of a half-transparent linear fill through the sRGB transfer (review 44da1364 F3: straight
+//! 0.8 -> 231 and 0.1 -> 89, premultiplied after encoding 116 and 45, alpha 0.5 -> 128), linear mid-grey 0.5 ->
+//! sRGB 188 and BT.709 180. After Effects / Media Encoder parity of naming, padding and template mapping is
 //! UNVERIFIED (D5).
 #![cfg(feature = "media")]
 
@@ -232,9 +233,8 @@ fn one_queue_runs_a_sequence_recipe_and_a_composition_item_with_one_receipt_each
     assert!(s.0.join("main.mov").is_file());
     let comp = &receipts[1];
     assert_eq!((comp["kind"].as_str(), comp["module_id"].as_str(), comp["outcome"].as_str()), (Some("composition"), Some("png"), Some("complete")), "{comp}");
-    let files: Vec<&str> = comp["artifacts"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
-    assert_eq!(files, ["renders/title_0000000.png", "renders/title_0000001.png", "renders/title_0000002.png"], "{comp}");
-    for f in &files {
+    assert_eq!(comp["artifacts"], json!([{"pattern": "renders/title_%07d.png", "first_number": 0, "last_number": 2, "frames": 3}]), "{comp}");
+    for f in ["renders/title_0000000.png", "renders/title_0000001.png", "renders/title_0000002.png"] {
         assert!(s.0.join(f).is_file(), "{f}");
     }
     for r in receipts {
@@ -340,10 +340,11 @@ fn export_sequence_keeps_its_preset_id_and_its_bytes() {
 }
 const PINNED_SHA256: &str = "afbdd389d74c3093cfb79120c6453c249aa0f1ba4e5013585f0a05f32a4e4e58";
 
-/// Item 4: a PNG sequence with alpha, straight and premultiplied colour, 8 bit, seven-digit names.
+/// Item 4: a PNG sequence with alpha, straight and premultiplied colour, 8 bit, seven-digit names; a new module is
+/// sRGB, so the linear fill is sRGB-encoded (review 44da1364 F3).
 #[test]
 fn png_sequence_writes_straight_or_premultiplied_rgba() {
-    for (colour, want) in [("straight", [204u8, 26, 26, 128]), ("premultiplied", [102, 13, 13, 128])] {
+    for (colour, want) in [("straight", [231u8, 89, 89, 128]), ("premultiplied", [116, 45, 45, 128])] {
         let s = Scratch::new(&format!("png-{colour}"));
         std::fs::create_dir_all(s.0.join("renders")).unwrap();
         let mut v = viewer(&s);
@@ -373,7 +374,7 @@ fn png_sequence_names_the_frames_written_when_a_write_fails() {
     let run = ok(&mut v, "delivery.run", json!({}));
     let r = &run["receipts"][0];
     assert_eq!(r["outcome"], "failed", "{run}");
-    assert_eq!(r["artifacts"], json!(["renders/title_0000000.png"]), "{run}");
+    assert_eq!(r["artifacts"], json!([{"pattern": "renders/title_%07d.png", "first_number": 0, "last_number": 0, "frames": 1}]), "{run}");
     assert!(s.0.join("renders/title_0000001.png").is_dir(), "the blocking entry is untouched");
 }
 
@@ -608,7 +609,10 @@ fn author_grey(v: &mut Viewer, colour: Value) {
         {"kind": "rect", "position": [8.0, 4.0], "size": [16.0, 8.0]},
         {"kind": "fill", "rgba": [0.5, 0.5, 0.5, 1.0], "opacity": 100.0, "rule": "non_zero"}]}}));
     motion(v, "composition.queue_add", json!({"item_id": "rq", "composition_id": "G01", "module_id": "png", "format": "png_sequence", "output_path": "renders/grey.png"}));
-    motion(v, "composition.queue_set_module", json!({"item_id": "rq", "module_id": "png", "colour": colour}));
+    // A new PNG module is sRGB with the chunk embedded: setting that again is no change.
+    if colour != json!({"preserve_rgb": false, "output_color_space": "srgb", "embed_color_space": true}) {
+        motion(v, "composition.queue_set_module", json!({"item_id": "rq", "module_id": "png", "colour": colour}));
+    }
 }
 
 /// The data of the first `cICP` chunk of a PNG.

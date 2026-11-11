@@ -18,8 +18,11 @@
 //! - **State.** The queue is per Viewer and not saved (lead ruling 2026-11-08): composition items already
 //!   persist as `StudioRenderQueueItem`s, sequence items are cheap to add again.
 //! - **Run** ([`Viewer::delivery_run`]): before any frame, every output path of every item (sequence
-//!   outputs, composition module outputs, PNG name patterns) is resolved and two equal ones refuse the whole
-//!   run `delivery_output_collision`. Then the items run in queue order, one at a time, each on a worker
+//!   outputs, composition module outputs, PNG name patterns) is resolved and two that name one file on Windows
+//!   refuse the whole run `delivery_output_collision`, with or without `overwrite` (review 44da1364 F5): the
+//!   deepest existing folder in its long canonical form (8.3 short names and links resolved), every segment
+//!   without trailing dots and spaces, case folded; an output equal to a frame name `<stem>_<7 digits>.png` of
+//!   a queued PNG pattern collides with that pattern (every number, not only the span's). Then the items run in queue order, one at a time, each on a worker
 //!   thread (`hsk-delivery`), admitted through the session job port before its thread starts (job
 //!   admission, `AdmittedExportQueue` for reel jobs, `JobAdmission::admit` for a PNG module). A sequence
 //!   item is `Viewer::export_sequence`'s one implementation: the recipe resolves through reel's
@@ -32,10 +35,15 @@
 //!   sound port holds, at the module's rate).
 //! - **Receipts** (one per item and module, `delivery_run`'s `receipts` and [`Viewer::delivery_receipts`]):
 //!   `{delivery_id, kind, recipe_id, sequence_id | item_id + module_id, span {start_ticks, end_ticks},
-//!   outcome complete|canceled|failed|refused, code?, detail?, artifacts [relative paths written], partial
-//!   (outcome not complete and artifacts named), receipt (reel's receipt JSON, or the PNG sequence receipt),
-//!   job (the admission settlement: completed, completed_stale, canceled, failed)}`. A refusal of one item
-//!   (build or admission) is its receipt (`refused` with the code); the run goes on with the next item.
+//!   outcome complete|canceled|failed|refused, code?, detail?, artifacts [relative paths written; for a PNG
+//!   sequence one range `{pattern "<stem>_%07d.png", first_number, last_number, frames}`, never one entry per
+//!   frame], partial (outcome not complete and artifacts named), receipt (reel's receipt JSON, or the PNG
+//!   sequence receipt), job (the admission settlement: completed, completed_stale, canceled, failed)}`. A
+//!   refusal of one item (build or admission) is its receipt (`refused` with the code, `job` null); a sequence
+//!   item that fails after its admission is `failed` with the code (`export_worker`) and its settlement in `job`
+//!   (review 44da1364 F7); the run goes on with the next item.
+//! - **Recipes:** a shipped preset id never reads the `export_recipes` entry; an entry this build cannot read
+//!   refuses `export_recipes_invalid` only for a user recipe id, with a status note (review 44da1364 F1).
 //! - **Cancel** ([`Viewer::delivery_cancel`]): one item only. A queued item never starts (its receipt is
 //!   `canceled`, nothing written); [`Viewer::delivery_cancel_handle`] gives a `Send` handle that cancels the
 //!   item while it runs (reel stops at the next frame and publishes nothing; a PNG sequence stops before the
@@ -184,15 +192,44 @@ fn relative(output: &str) -> Result<PathBuf, MonitorFail> {
     if ok { Ok(path.to_path_buf()) } else { Err(fail("delivery_output_path", format!("{output}: a relative path inside the save root (no root, drive or ..)"))) }
 }
 
-/// Lower-cased form of an output path for the collision check (file systems that fold case).
+/// The form of an output path two Windows names of one file share (module docs, review 44da1364 F5): the deepest
+/// existing ancestor canonicalised (long names, links resolved), the rest appended, every segment without
+/// trailing dots and spaces, case folded.
 fn collision_key(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/").to_ascii_lowercase()
+    let mut existing = path;
+    let mut rest = Vec::new();
+    let base = loop {
+        if let Ok(c) = std::fs::canonicalize(existing) {
+            break c;
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                existing = parent;
+            }
+            _ => break existing.to_path_buf(),
+        }
+    };
+    let mut full = base;
+    for name in rest.iter().rev() {
+        full.push(name);
+    }
+    full.to_string_lossy().replace('\\', "/").split('/').map(|s| s.trim_end_matches(['.', ' '])).collect::<Vec<_>>().join("/").to_lowercase()
 }
+
+/// The pattern stem key of a frame name key `<stem>_<7 digits>.png` (module docs).
+fn png_frame_stem(key: &str) -> Option<&str> {
+    let (stem, digits) = key.strip_suffix(".png")?.rsplit_once('_')?;
+    (digits.len() == super::timeline_export::composition::PNG_FRAME_DIGITS && digits.bytes().all(|b| b.is_ascii_digit())).then_some(stem)
+}
+
+/// One copied tile: colour plane, alpha plane, their SHA-256s.
+type CopiedPlanes = (Vec<u8>, Vec<u8>, [u8; 32], [u8; 32]);
 
 /// The planes of the document tiles a composition names, copied (module docs).
 pub struct DocumentTiles {
     /// By content digest.
-    planes: BTreeMap<String, (Vec<u8>, Vec<u8>, [u8; 32], [u8; 32])>,
+    planes: BTreeMap<String, CopiedPlanes>,
     /// Scene tile id `"{layer_id}/{object_key}"` to content digest and size.
     tiles: BTreeMap<String, (String, u32, u32)>,
 }
@@ -322,7 +359,13 @@ impl Viewer {
                     return Err(fail("unknown_sequence", s.sequence_id.clone()));
                 }
                 let (_, os) = admitted_export_queue(None, self.job_admission());
-                let record = recipe_record(&s.recipe_id, &self.user_recipes()?)?;
+                let record = match recipe_record(&s.recipe_id, || self.user_recipes()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.note_recipes_unreadable(&e);
+                        return Err(e);
+                    }
+                };
                 super::timeline_export::resolve_recipe(&record, os)?;
             }
             DeliveryItem::Composition { item_id, .. } => {
@@ -412,24 +455,38 @@ impl Viewer {
     /// Every output path of the queue, resolved; two equal ones refuse the run (module docs).
     fn delivery_collisions(&self) -> Result<(), MonitorFail> {
         let root = self.export_root()?;
-        let mut seen: BTreeMap<String, u64> = BTreeMap::new();
+        let mut seen: BTreeMap<String, (u64, PathBuf)> = BTreeMap::new();
+        let mut stems: BTreeMap<String, (u64, PathBuf)> = BTreeMap::new();
         let mut records = None;
         for q in &self.delivery.items {
-            let paths: Vec<PathBuf> = match &q.item {
-                DeliveryItem::Sequence(s) => vec![root.join(relative(&s.output)?)],
+            // Each output with whether it is a PNG name pattern (its files are `<stem>_<7 digits>.png`).
+            let paths: Vec<(PathBuf, bool)> = match &q.item {
+                DeliveryItem::Sequence(s) => vec![(root.join(relative(&s.output)?), false)],
                 DeliveryItem::Composition { item_id, .. } => {
                     if records.is_none() {
                         records = Some(self.motion_records_read()?);
                     }
                     let (_, motion) = records.as_ref().ok_or_else(|| fail("session_records", "no motion records"))?;
                     let item = motion.render_queue.iter().find(|r| &r.item_id == item_id).ok_or_else(|| fail("render_queue_item", item_id.clone()))?;
-                    item.output_modules.iter().map(|m| root.join(&m.output_path)).collect()
+                    item.output_modules.iter().map(|m| (root.join(&m.output_path), m.format == folio::StudioOutputFormat::PngSequence)).collect()
                 }
             };
-            for p in paths {
-                if let Some(other) = seen.insert(collision_key(&p), q.id) {
-                    return Err(fail("delivery_output_collision", format!("items {other} and {} both write {}", q.id, p.display())));
+            for (p, pattern) in paths {
+                let key = collision_key(&p);
+                let clash = |other: &(u64, PathBuf)| fail("delivery_output_collision", format!("items {} and {} both write {} ({})", other.0, q.id, p.display(), other.1.display()));
+                if let Some(other) = seen.get(&key) {
+                    return Err(clash(other));
                 }
+                if pattern {
+                    let stem = key.strip_suffix(".png").unwrap_or(&key).to_owned();
+                    if let Some(other) = seen.iter().find(|(k, _)| png_frame_stem(k) == Some(stem.as_str())).map(|(_, v)| v) {
+                        return Err(clash(other));
+                    }
+                    stems.insert(stem, (q.id, p.clone()));
+                } else if let Some(other) = png_frame_stem(&key).and_then(|stem| stems.get(stem)) {
+                    return Err(clash(other));
+                }
+                seen.insert(key, (q.id, p));
             }
         }
         Ok(())
@@ -476,13 +533,13 @@ impl Viewer {
                 r["job"] = result["job"].clone();
                 r
             }
-            Err(e) => refused(base, &e),
+            Err(f) => sequence_fail_receipt(base, &f.fail, f.job),
         }
     }
 
     /// The export request of a sequence item: raster from the item, else the recipe, else the default.
     fn delivery_request(&self, s: &SequenceItem) -> Result<ExportSequenceRequest, MonitorFail> {
-        let record = recipe_record(&s.recipe_id, &self.user_recipes()?)?;
+        let record = recipe_record(&s.recipe_id, || self.user_recipes())?;
         let declared = |id: &str| match record.parameters().get(id) {
             Some(hsk_studio_reel::ExportValue::Integer(v)) => u32::try_from(*v).ok(),
             _ => None,
@@ -642,8 +699,8 @@ impl Viewer {
             v["outcome"] = json!(r.outcome);
             v["code"] = json!(r.code);
             v["detail"] = json!(r.detail);
-            v["artifacts"] = json!(r.artifacts);
-            v["partial"] = json!(r.outcome != "complete" && !r.artifacts.is_empty());
+            v["artifacts"] = r.artifacts_json();
+            v["partial"] = json!(r.outcome != "complete" && r.frames_written > 0);
             v["receipt"] = r.json();
             v["job"] = settlement_json(&settlement);
             v["notes"] = json!(notes.iter().map(|n| n.code).collect::<Vec<_>>());
@@ -699,8 +756,10 @@ impl Viewer {
     /// `export.recipe_save` (module docs of `timeline_export::user_recipes`; STU-VID-063): a new user recipe
     /// `recipe_id` from the shipped preset or user recipe `from`, renamed `name` and with each parameter edit
     /// applied (`null` removes the identifier); every value goes through reel's checks. One entry-only undo
-    /// step (`Run::set_export_recipes`). Refusals: `not_open`, `export_recipe_exists` (a shipped or user id),
-    /// `unknown_preset`, reel's recipe codes, `export_recipes_full`.
+    /// step (`Run::set_export_recipes`). Refusals: `not_open`, `export_recipes_invalid` (an entry this build cannot
+    /// read: repair it with `export.recipe_delete` first), `export_recipe_exists` (a shipped or user id),
+    /// `unknown_preset`, reel's recipe codes, `export_recipes_full` (256 recipes, or a body over
+    /// `MAX_USER_RECIPES_BYTES`, the bound every read applies).
     pub fn export_recipe_save(&mut self, from: &str, recipe_id: &str, name: Option<&str>, edits: &[(String, Value)]) -> Result<Value, MonitorFail> {
         if self.run.snapshot().is_none() {
             return Err(fail("not_open", "nothing is open"));
@@ -712,7 +771,7 @@ impl Viewer {
         if recipes.len() >= super::timeline_export::MAX_USER_RECIPES {
             return Err(fail("export_recipes_full", format!("{} recipes", super::timeline_export::MAX_USER_RECIPES)));
         }
-        let base = recipe_record(from, &recipes)?;
+        let base = recipe_record(from, || Ok(recipes.clone()))?;
         let mut v: Value = serde_json::from_str(&base.to_json()).map_err(|_| fail("export_recipe_field_invalid", "recipe"))?;
         v["recipe_id"] = json!(recipe_id);
         if let Some(n) = name {
@@ -732,38 +791,93 @@ impl Viewer {
         let recipe = super::timeline_export::recipe_from_json(&v)?;
         let row = recipe_row(&recipe, false, admitted_export_queue(None, self.job_admission()).1);
         recipes.push(recipe);
-        let bytes = super::timeline_export::user_recipes_entry(&recipes);
+        let bytes = super::timeline_export::user_recipes_body(&recipes)?;
         let ok = self.run.set_export_recipes(false, recipe_id, bytes, recipes.len());
         self.after_edit(ok, format!("export recipe save {recipe_id}")).map_err(|e| fail("export_recipes_refused", e))?;
         Ok(row)
     }
 
-    /// `export.recipe_delete`: removes user recipe `recipe_id` (the last one removes the entry), one
-    /// entry-only undo step. Refusals: `not_open`, `unknown_recipe` (shipped presets are not deletable).
-    pub fn export_recipe_delete(&mut self, recipe_id: &str) -> Result<Value, MonitorFail> {
+    /// `export.recipe_delete`: removes user recipe `recipe_id` (the last one removes the entry), or with `all` the
+    /// whole entry; one entry-only undo step. An entry this build cannot read still deletes recipe by recipe
+    /// while its `recipes` array parses (`timeline_export::raw_recipe_list`; what is left is stored canonical once
+    /// it reads again), and `all` removes any entry, so the user can repair the document (review 44da1364 F2).
+    /// Refusals: `not_open`, `parameter_invalid` (neither or both of `recipe_id` and `all`), `unknown_recipe`
+    /// (shipped presets are not deletable; `all` without an entry), `export_recipes_invalid` (an id on an entry
+    /// with no readable `recipes` array: use `all`).
+    pub fn export_recipe_delete(&mut self, recipe_id: Option<&str>, all: bool) -> Result<Value, MonitorFail> {
         if self.run.snapshot().is_none() {
             return Err(fail("not_open", "nothing is open"));
         }
-        let mut recipes = self.user_recipes()?;
-        let n = recipes.len();
-        recipes.retain(|r| r.recipe_id() != recipe_id);
-        if recipes.len() == n {
-            return Err(fail("unknown_recipe", recipe_id.to_owned()));
-        }
-        let bytes = super::timeline_export::user_recipes_entry(&recipes);
-        let ok = self.run.set_export_recipes(true, recipe_id, bytes, recipes.len());
-        self.after_edit(ok, format!("export recipe delete {recipe_id}")).map_err(|e| fail("export_recipes_refused", e))?;
-        Ok(json!({"recipe_id": recipe_id, "recipes": recipes.len()}))
+        let (label, bytes, left) = match (recipe_id, all) {
+            (None, true) => {
+                if self.run.document_entry(hsk_studio_session::EXPORT_RECIPES_ENTRY).is_none() {
+                    return Err(fail("unknown_recipe", "all: no export_recipes entry"));
+                }
+                ("*", None, 0)
+            }
+            (Some(id), false) => match self.user_recipes() {
+                Ok(mut recipes) => {
+                    let n = recipes.len();
+                    recipes.retain(|r| r.recipe_id() != id);
+                    if recipes.len() == n {
+                        return Err(fail("unknown_recipe", id.to_owned()));
+                    }
+                    let left = recipes.len();
+                    (id, super::timeline_export::user_recipes_entry(&recipes), left)
+                }
+                Err(e) => {
+                    let raw = self.run.document_entry(hsk_studio_session::EXPORT_RECIPES_ENTRY).and_then(super::timeline_export::raw_recipe_list);
+                    let Some((rest, mut list)) = raw else { return Err(e) };
+                    let n = list.len();
+                    list.retain(|r| r["recipe_id"].as_str() != Some(id));
+                    if list.len() == n {
+                        return Err(fail("unknown_recipe", id.to_owned()));
+                    }
+                    let left = list.len();
+                    (id, super::timeline_export::raw_recipes_body(rest, list), left)
+                }
+            },
+            _ => return Err(fail("parameter_invalid", "recipe_id or all")),
+        };
+        let ok = self.run.set_export_recipes(true, label, bytes, left);
+        self.after_edit(ok, format!("export recipe delete {label}")).map_err(|e| fail("export_recipes_refused", e))?;
+        Ok(json!({"recipe_id": label, "recipes": left}))
     }
 
-    /// `export.recipes`: `{shipped: [...], user: [...]}`, each `{recipe_id, name, shipped, does_video,
-    /// does_audio, available, unavailable_code, recipe}` (availability in this build's queue).
+    /// `export.recipes`: `{shipped: [...], user: [...], user_entry}`, each recipe `{recipe_id, name, shipped,
+    /// does_video, does_audio, available, unavailable_code, recipe}` (availability in this build's queue).
+    /// `user_entry` is `{readable: true}`, or for an entry this build cannot read `{readable: false, code, detail,
+    /// unreadable: [{recipe_id, code, detail}]}` with `user` the recipes of it that read one by one (review
+    /// 44da1364 F2: the listing never refuses for the entry).
     pub fn export_recipes(&self) -> Result<Value, MonitorFail> {
         let os = admitted_export_queue(None, self.job_admission()).1;
         let shipped: Vec<Value> = hsk_studio_reel::presets::EXPORT_PRESETS.iter().map(|p| recipe_row(&p.studio_recipe(), true, os)).collect();
-        let user: Vec<Value> = self.user_recipes()?.iter().map(|r| recipe_row(r, false, os)).collect();
-        Ok(json!({"shipped": shipped, "user": user}))
+        let (user, entry) = match self.user_recipes() {
+            Ok(list) => (list.iter().map(|r| recipe_row(r, false, os)).collect::<Vec<_>>(), json!({"readable": true})),
+            Err(e) => {
+                let raw = self.run.document_entry(hsk_studio_session::EXPORT_RECIPES_ENTRY).and_then(super::timeline_export::raw_recipe_list);
+                let (mut user, mut unreadable) = (Vec::new(), Vec::new());
+                for item in raw.map(|(_, list)| list).unwrap_or_default() {
+                    match super::timeline_export::recipe_from_json(&item) {
+                        Ok(r) => user.push(recipe_row(&r, false, os)),
+                        Err(f) => unreadable.push(json!({"recipe_id": item["recipe_id"].as_str(), "code": f.code, "detail": f.detail})),
+                    }
+                }
+                (user, json!({"readable": false, "code": e.code, "detail": e.detail, "unreadable": unreadable}))
+            }
+        };
+        Ok(json!({"shipped": shipped, "user": user, "user_entry": entry}))
     }
+}
+
+/// A sequence item that `export_sequence_with` did not finish: a refusal before admission (`job` `None`), else a
+/// failure after it (`failed`, the code, the settlement in `job`; review 44da1364 F7).
+fn sequence_fail_receipt(base: Value, e: &MonitorFail, job: Option<Value>) -> Value {
+    let Some(job) = job else { return refused(base, e) };
+    let mut r = refused(base, e);
+    r["outcome"] = json!("failed");
+    r["job"] = job;
+    r
 }
 
 /// A refusal before any frame as the item's receipt.
@@ -775,4 +889,22 @@ fn refused(mut base: Value, e: &MonitorFail) -> Value {
     base["partial"] = json!(false);
     base["job"] = Value::Null;
     base
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    //! Review 44da1364 F7: a sequence item that fails after its admission is `failed` with its job, never `refused`.
+    use super::*;
+
+    #[test]
+    fn a_failure_after_admission_is_failed_with_its_job() {
+        let base = json!({"kind": "sequence", "sequence_id": "s", "recipe_id": "r", "output": "o.mov"});
+        let e = fail("export_worker", "the export worker panicked");
+        let job = json!({"outcome": "failed", "ticket": 7, "bound_revision": 1, "correlation": "c"});
+        let r = sequence_fail_receipt(base.clone(), &e, Some(job.clone()));
+        assert_eq!((r["outcome"].as_str(), r["code"].as_str(), &r["job"]), (Some("failed"), Some("export_worker"), &job), "{r}");
+        assert_eq!((r["artifacts"].clone(), r["partial"].as_bool()), (json!([]), Some(false)));
+        let before = sequence_fail_receipt(base, &fail("unknown_preset", "x"), None);
+        assert_eq!((before["outcome"].as_str(), &before["job"]), (Some("refused"), &Value::Null), "{before}");
+    }
 }

@@ -97,7 +97,8 @@ fn delivery(viewer: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, Comma
         }
         "export.recipe_delete" => {
             let before = viewer.run().ops().len();
-            viewer.export_recipe_delete(&f.text("recipe_id")?).map_err(|e| if viewer.run().ops().len() > before { method_refusal(viewer, before, e.detail) } else { fail(e) })
+            let (recipe_id, all) = (f.opt_text("recipe_id")?, f.flag_or("all", false)?);
+            viewer.export_recipe_delete(recipe_id.as_deref(), all).map_err(|e| if viewer.run().ops().len() > before { method_refusal(viewer, before, e.detail) } else { fail(e) })
         }
         "export.recipes" => viewer.export_recipes().map_err(fail),
         _ => Err(CommandRefusal::new("command_not_driveable", json!({"command_id": id}))),

@@ -450,6 +450,25 @@ fn outcome(result: &Value) -> String {
     }
 }
 
+/// Why `Viewer::export_sequence_with` returned no result: a refusal before admission (`job` `None`), or a
+/// failure after its job was admitted (`job`: the settlement JSON it made, so a receipt can name the job).
+pub(in crate::view) struct SequenceFail {
+    pub fail: MonitorFail,
+    pub job: Option<Value>,
+}
+
+impl SequenceFail {
+    fn after_admission(fail: MonitorFail, settlement: Option<&hsk_studio_session::JobSettlement>) -> Self {
+        Self { fail, job: settlement.map(settlement_json) }
+    }
+}
+
+impl From<MonitorFail> for SequenceFail {
+    fn from(fail: MonitorFail) -> Self {
+        Self { fail, job: None }
+    }
+}
+
 /// `result` with the settlement of its admitted job (`result["job"]`).
 fn with_job(mut result: Value, settlement: Option<&hsk_studio_session::JobSettlement>) -> Value {
     if let (Some(s), Some(_)) = (settlement, result.as_object()) {
@@ -520,18 +539,30 @@ impl Viewer {
     /// Exports `sequence_id` (module docs): the job runs on reel's queue on a worker thread while
     /// this thread serves decoded frames; returns when the receipt is in.
     pub fn export_sequence(&mut self, sequence_id: &str, request: ExportSequenceRequest) -> Result<Value, MonitorFail> {
-        let result = self.export_sequence_with(sequence_id, &request, &mut |_| {});
+        let result = self.export_sequence_with(sequence_id, &request, &mut |_| {}).map_err(|f| f.fail);
         match &result {
             Ok(v) => self.say(format!("export media: {sequence_id} [{}, {}) {}: {}", v["in_tick"], v["out_tick"], request.preset_id, outcome(v))),
-            Err(e) => self.say(format!("export media: {sequence_id} refused {} {}", e.code, e.detail)),
+            Err(e) => {
+                self.say(format!("export media: {sequence_id} refused {} {}", e.code, e.detail));
+                self.note_recipes_unreadable(e);
+            }
         }
         result
     }
 
+    /// The status note of an unreadable `export_recipes` entry (review 44da1364 F1): only a user recipe id reaches
+    /// it; shipped presets still export, `export.recipes` lists the entry and `export.recipe_delete` repairs it.
+    pub(in crate::view) fn note_recipes_unreadable(&mut self, e: &MonitorFail) {
+        if e.code == "export_recipes_invalid" {
+            self.say(format!("export recipes: the document's export_recipes entry is unreadable ({}); shipped presets still export; export.recipes lists it and export.recipe_delete repairs it", e.detail));
+        }
+    }
+
     /// [`Viewer::export_sequence`] without its log line; `on_submit` sees the admitted item's handle before its
     /// worker starts (the delivery queue cancels one item through it). Delivery sequence items record their noise
-    /// print recomputes here too (SMB-SCORE-EFFECTS-6 review F3).
-    pub(in crate::view) fn export_sequence_with(&mut self, sequence_id: &str, request: &ExportSequenceRequest, on_submit: &mut dyn FnMut(&ExportHandle)) -> Result<Value, MonitorFail> {
+    /// print recomputes here too (SMB-SCORE-EFFECTS-6 review F3). A failure after admission carries the job's
+    /// settlement ([`SequenceFail::job`], review 44da1364 F7).
+    pub(in crate::view) fn export_sequence_with(&mut self, sequence_id: &str, request: &ExportSequenceRequest, on_submit: &mut dyn FnMut(&ExportHandle)) -> Result<Value, SequenceFail> {
         let prepared = self.export_prepare(sequence_id, request)?;
         #[cfg(feature = "audio-batch")]
         self.record_print_recomputes(&prepared.recomputed);
@@ -542,10 +573,7 @@ impl Viewer {
         let (mut queue, settlements) = queue.into_worker();
         let worker = match std::thread::Builder::new().name("hsk-export-media".into()).spawn(move || queue.run()) {
             Ok(worker) => worker,
-            Err(e) => {
-                let _ = settlements.fail("export_worker");
-                return Err(fail("export_worker", e.to_string()));
-            }
+            Err(e) => return Err(SequenceFail::after_admission(fail("export_worker", e.to_string()), settlements.fail("export_worker").first())),
         };
         // The job owns the only sender: the loop ends when the queue has run it.
         let port = self.monitor.as_ref().and_then(|m| m.sources.as_deref());
@@ -553,11 +581,12 @@ impl Viewer {
             serve(r, port);
         }
         let Ok(receipts) = worker.join() else {
-            let _ = settlements.fail("export_worker");
-            return Err(fail("export_worker", "the export worker panicked"));
+            return Err(SequenceFail::after_admission(fail("export_worker", "the export worker panicked"), settlements.fail("export_worker").first()));
         };
         let settled = settlements.settle(&receipts, self.document_head());
-        let receipt = receipts.into_iter().next().ok_or_else(|| fail("export_worker", "no receipt"))?;
+        let Some(receipt) = receipts.into_iter().next() else {
+            return Err(SequenceFail::after_admission(fail("export_worker", "no receipt"), settled.first()));
+        };
         Ok(with_job(result_json(&meta, &receipt), settled.first()))
     }
 
@@ -569,7 +598,7 @@ impl Viewer {
         let video_extents = ExtentTable::of(&doc.sequences, monitor.extents.as_ref());
         let (queue, os) = admitted_export_queue(None, self.job_admission());
         // A shipped preset or a user recipe, the same record (lane SMB-DELIVERY-QUEUE-1).
-        let record = recipe_record(&request.preset_id, &self.user_recipes()?)?;
+        let record = recipe_record(&request.preset_id, || self.user_recipes())?;
         let recipe = resolve_recipe(&record, os)?;
         let (din, dout) = default_range(&sequence);
         let (in_tick, out_tick) = (request.in_tick.unwrap_or(din), request.out_tick.unwrap_or(dout));

@@ -617,7 +617,7 @@ pub fn admitted_export_queue(worker: Option<std::path::PathBuf>, admission: supe
 /// [`resolve_recipe`]), the path every sequence export takes.
 pub fn preset_recipe(preset_id: &str, os_encoder: bool) -> Result<ExportRecipe, MonitorFail> {
     hsk_studio_reel::presets::export_preset(preset_id).ok_or_else(|| fail("unknown_preset", preset_id))?;
-    resolve_recipe(&recipe_record(preset_id, &[])?, os_encoder)
+    resolve_recipe(&recipe_record(preset_id, || Ok(Vec::new()))?, os_encoder)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -630,8 +630,10 @@ pub fn preset_recipe(preset_id: &str, os_encoder: bool) -> Result<ExportRecipe, 
 pub const USER_RECIPES_SCHEMA: &str = "hsk.studio.export_recipes@1";
 /// Most user recipes one document holds.
 pub const MAX_USER_RECIPES: usize = 256;
-/// Largest entry body read (checked before any parse): [`MAX_USER_RECIPES`] recipes of reel's largest
-/// bounded record would exceed it, so a hostile entry is refused by size first and by reel's bounds second.
+/// Largest entry body, one bound for save and read (review 44da1364 F2): a read checks it before any parse, a save
+/// that would cross it is `export_recipes_full` ([`user_recipes_body`]). [`MAX_USER_RECIPES`] recipes of reel's
+/// largest bounded record would exceed it, so a hostile entry is refused by size first and by reel's bounds second.
+/// An entry over it (another writer's) still lists and deletes recipe by recipe ([`raw_recipe_list`]).
 pub const MAX_USER_RECIPES_BYTES: usize = 8 << 20;
 
 /// A recipe refusal as the viewer's typed failure: a writer refusal (`MEDIA_CODEC_UNAVAILABLE`) is
@@ -644,12 +646,17 @@ pub fn recipe_fail(e: hsk_studio_reel::ExportRecipeError) -> MonitorFail {
 }
 
 /// The record of recipe `recipe_id`: a shipped preset ([`hsk_studio_reel::presets::ExportPreset::studio_recipe`]), else
-/// a user recipe of `user`, else `unknown_preset` (the id space of `export_sequence`'s `preset_id`).
-pub fn recipe_record(recipe_id: &str, user: &[hsk_studio_reel::StudioExportRecipe]) -> Result<hsk_studio_reel::StudioExportRecipe, MonitorFail> {
+/// a user recipe of `user`, else `unknown_preset` (the id space of `export_sequence`'s `preset_id`). `user` runs only
+/// for an id that is not a shipped preset (review 44da1364 F1): an entry this build cannot read never blocks a
+/// shipped preset, and its `export_recipes_invalid` comes only when a user recipe is asked for.
+pub fn recipe_record(
+    recipe_id: &str,
+    user: impl FnOnce() -> Result<Vec<hsk_studio_reel::StudioExportRecipe>, MonitorFail>,
+) -> Result<hsk_studio_reel::StudioExportRecipe, MonitorFail> {
     if let Some(p) = hsk_studio_reel::presets::export_preset(recipe_id) {
         return Ok(p.studio_recipe());
     }
-    user.iter().find(|r| r.recipe_id() == recipe_id).cloned().ok_or_else(|| fail("unknown_preset", recipe_id))
+    user()?.into_iter().find(|r| r.recipe_id() == recipe_id).ok_or_else(|| fail("unknown_preset", recipe_id))
 }
 
 /// The writer settings of `record` for a queue that does (`os_encoder`) or does not carry the OS encoder.
@@ -823,6 +830,46 @@ pub fn user_recipes_entry(recipes: &[hsk_studio_reel::StudioExportRecipe]) -> Op
     sorted.sort_by(|a, b| a.recipe_id().as_bytes().cmp(b.recipe_id().as_bytes()));
     let body: Vec<String> = sorted.iter().map(|r| r.to_json()).collect();
     Some(format!("{{\"schema_id\":\"{USER_RECIPES_SCHEMA}\",\"recipes\":[{}]}}", body.join(",")).into_bytes())
+}
+
+/// [`user_recipes_entry`] for a save: a body over [`MAX_USER_RECIPES_BYTES`] is `export_recipes_full` (the reader
+/// would refuse it), so a save never stores an entry the next read cannot open (review 44da1364 F2).
+pub fn user_recipes_body(recipes: &[hsk_studio_reel::StudioExportRecipe]) -> Result<Option<Vec<u8>>, MonitorFail> {
+    let body = user_recipes_entry(recipes);
+    match &body {
+        Some(b) if b.len() > MAX_USER_RECIPES_BYTES => Err(fail("export_recipes_full", format!("{} bytes exceed {MAX_USER_RECIPES_BYTES}", b.len()))),
+        _ => Ok(body),
+    }
+}
+
+/// The `recipes` array of an entry body [`user_recipes`] refuses (any size and schema) with the rest of its object;
+/// `None` when the body is not a JSON object holding a `recipes` array. Listing and deleting still work on it,
+/// recipe by recipe, so the user can repair the document (review 44da1364 F2).
+#[allow(clippy::type_complexity)]
+pub fn raw_recipe_list(bytes: &[u8]) -> Option<(serde_json::Map<String, serde_json::Value>, Vec<serde_json::Value>)> {
+    let serde_json::Value::Object(mut o) = serde_json::from_slice(bytes).ok()? else { return None };
+    match o.remove("recipes") {
+        Some(serde_json::Value::Array(list)) => Some((o, list)),
+        _ => None,
+    }
+}
+
+/// The entry body after a delete from a raw list ([`raw_recipe_list`]): `None` when no recipe is left; the canonical
+/// body when what is left reads ([`user_recipes`]); else the same object with the shorter list (still unreadable,
+/// smaller).
+pub fn raw_recipes_body(mut rest: serde_json::Map<String, serde_json::Value>, list: Vec<serde_json::Value>) -> Option<Vec<u8>> {
+    if list.is_empty() {
+        return None;
+    }
+    let parsed: Result<Vec<_>, _> = list.iter().map(recipe_from_json).collect();
+    if let Ok(recipes) = parsed
+        && let Ok(Some(body)) = user_recipes_body(&recipes)
+        && user_recipes(Some(&body)).is_ok()
+    {
+        return Some(body);
+    }
+    rest.insert("recipes".into(), serde_json::Value::Array(list));
+    serde_json::to_vec(&serde_json::Value::Object(rest)).ok()
 }
 
 #[cfg(test)]
