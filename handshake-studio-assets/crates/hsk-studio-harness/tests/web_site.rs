@@ -6,8 +6,11 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_harness::{Harness, Run, Selection, asset_local_test_context};
 use hsk_studio_harness_core::harness::web_commands::MANIFEST_FILE;
+use hsk_studio_session::{Cost, JobLifecycle, JobPort, JobRefused, JobScope, JobTicket};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/demo.handshake");
 
@@ -448,38 +451,114 @@ fn a_move_never_touches_the_opened_package() {
     assert_eq!(tree(&dir.at("site")), before);
 }
 
-/// R60 probe j3 (lead 2026-11-08): through a Viewer whose job port is saturated, web.export, web.publish, the site
-/// export, web.site_report and web.move_file ask that port once each, refuse `overloaded` and write nothing; an
-/// admitting port is asked once and released once per command.
+/// A job port that counts every admit and release and keeps each admitted scope's resource; refuses every admit
+/// when `refuse` is set (R60 probe j3: a saturated Job Runtime).
+#[derive(Default)]
+struct JobsPort {
+    refuse: bool,
+    admits: AtomicU64,
+    releases: AtomicU64,
+    resources: Mutex<Vec<String>>,
+}
+
+impl JobPort for JobsPort {
+    fn admit(&self, scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
+        self.resources.lock().unwrap().push(scope.resource.as_str().to_string());
+        let n = self.admits.fetch_add(1, Ordering::SeqCst);
+        if self.refuse { Err(JobRefused { retry_after_ms: 7 }) } else { Ok(JobTicket(n)) }
+    }
+
+    fn release(&self, _ticket: JobTicket) {
+        self.releases.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl JobsPort {
+    fn asked(&self) -> u64 {
+        self.admits.load(Ordering::SeqCst)
+    }
+}
+
+/// Lead ruling 2026-11-08 (R60 probe j3; resource-less admission is not accepted): with NO package open, web.export,
+/// web.publish, the site export, web.site_report and web.move_file still ask the bound job port, once each, before
+/// any file: a saturated port refuses `overloaded` and nothing is written; the resource is a valid id, the same for
+/// every command on one site; an admitting port is asked and released once per command.
+#[test]
+fn with_no_package_open_web_jobs_still_ask_the_bound_port() {
+    let dir = Scratch::new("no-package-jobs");
+    let index = site(&dir, false);
+    let before = tree(&dir.at("site"));
+    let h = harness();
+    let cancel = CancellationToken::default();
+    let mut run = h.run(asset_local_test_context(), &cancel);
+    assert!(run.snapshot().is_none(), "no package is open");
+    let saturated = Arc::new(JobsPort { refuse: true, ..JobsPort::default() });
+    run.bind_web_jobs(saturated.clone(), JobLifecycle::default());
+    cmd(&mut run, "web.open", json!({"path": s(&index)}));
+    cmd(&mut run, "web.export_recipe", json!({"output_root": s(&dir.at("out"))}));
+    // The probe's shape: no site defined, the open export only.
+    assert_eq!(refused(&mut run, "web.export", json!({})), "overloaded");
+    assert_eq!(saturated.asked(), 1, "web.export asks the port once");
+    define(&mut run, &dir);
+    cmd(&mut run, "web.remote_target", json!({"target_id": "local", "root_path": s(&dir.at("target"))}));
+    let mut asked = 1;
+    for (id, params, recipe) in [
+        ("web.export", json!({}), None),
+        ("web.publish", json!({}), None),
+        ("web.export", json!({}), Some("site")),
+        ("web.site_report", json!({}), None),
+        ("web.move_file", json!({"from": "orphan.png", "to": "img/orphan.png"}), None),
+    ] {
+        if let Some(set) = recipe {
+            cmd(&mut run, "web.export_recipe", json!({"documents": set}));
+        }
+        assert_eq!(refused(&mut run, id, params), "overloaded", "{id}");
+        asked += 1;
+        assert_eq!(saturated.asked(), asked, "{id}: the port is asked exactly once");
+        assert_eq!(run.ops().last().unwrap()["target"], "retry_after_ms=7");
+    }
+    assert!(!dir.at("out").exists() && !dir.at("target").exists(), "nothing written");
+    assert_eq!(tree(&dir.at("site")), before, "the site is untouched (no lock file left)");
+    let seen = saturated.resources.lock().unwrap().clone();
+    assert!(seen.iter().all(|r| hsk_studio_accord::DomainId::parse(r).is_ok()), "{seen:?}");
+    assert!(seen.iter().skip(1).all(|r| *r == seen[1]), "one resource per site: {seen:?}");
+    // An admitting port: one admit and one release per command, and the work runs.
+    let open = Arc::new(JobsPort::default());
+    run.bind_web_jobs(open.clone(), JobLifecycle::default());
+    cmd(&mut run, "web.export", json!({}));
+    cmd(&mut run, "web.site_report", json!({}));
+    assert_eq!((open.asked(), open.releases.load(Ordering::SeqCst)), (2, 2));
+    assert!(dir.at("out/index.html").is_file());
+}
+
 #[cfg(feature = "viewer")]
 mod through_the_viewer {
-    use super::{FIXTURE, Scratch, s, site};
+    use super::{FIXTURE, JobsPort as Port, Scratch, s, site};
     use hsk_studio_harness::view::Viewer;
     use hsk_studio_harness::view::render::Prefer;
-    use hsk_studio_session::{Cost, JobPort, JobRefused, JobScope, JobTicket};
     use serde_json::json;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::Ordering;
 
-    /// Counts every admit and release; refuses every admit when `refuse` is set.
-    #[derive(Default)]
-    struct Port {
-        refuse: bool,
-        admits: AtomicU64,
-        releases: AtomicU64,
+    /// R60 probe j3, its exact shape: a Viewer with no package open and no site, a saturated port bound after
+    /// web.open and web.export_recipe: web.export asks it once, refuses `overloaded` and writes nothing.
+    #[test]
+    fn the_probe_j3_export_with_no_package_asks_the_viewers_port() {
+        let dir = Scratch::new("viewer-no-package");
+        let index = site(&dir, false);
+        let mut v = Viewer::new(Prefer::Cpu);
+        v.web_command("web.open", &json!({"path": s(&index)})).unwrap();
+        v.web_command("web.export_recipe", &json!({"output_root": s(&dir.at("out"))})).unwrap();
+        let saturated = Arc::new(Port { refuse: true, ..Port::default() });
+        v.set_job_port(saturated.clone());
+        assert_eq!(v.web_command("web.export", &json!({})), Err("overloaded".to_string()));
+        assert_eq!(saturated.asked(), 1, "the port is asked exactly once");
+        assert!(!dir.at("out").exists(), "nothing written");
     }
 
-    impl JobPort for Port {
-        fn admit(&self, _scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
-            let n = self.admits.fetch_add(1, Ordering::SeqCst);
-            if self.refuse { Err(JobRefused { retry_after_ms: 7 }) } else { Ok(JobTicket(n)) }
-        }
-
-        fn release(&self, _ticket: JobTicket) {
-            self.releases.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
+    /// R60 probe j3 (lead 2026-11-08): through a Viewer whose job port is saturated, web.export, web.publish, the site
+    /// export, web.site_report and web.move_file ask that port once each, refuse `overloaded` and write nothing; an
+    /// admitting port is asked once and released once per command.
     #[test]
     fn web_jobs_are_admitted_through_the_viewers_job_port() {
         let dir = Scratch::new("viewer-jobs");
