@@ -479,6 +479,19 @@ impl JobsPort {
     }
 }
 
+/// With no package open the run's frames are unaddressed (no frame): an accepted command, record checked only.
+fn bare_ok(run: &mut Run<'_>, id: &str, params: Value) {
+    assert!(run.web_command(id, &params), "{id} {params}: {}", run.ops().last().unwrap());
+}
+
+/// With no package open: a refused command's code; the host's state did not change.
+fn bare_no(run: &mut Run<'_>, id: &str, params: Value) -> String {
+    let before = run.web_state();
+    assert!(!run.web_command(id, &params), "{id} {params} was accepted");
+    assert_eq!(run.web_state(), before, "{id}: a refusal changes nothing");
+    run.ops().last().unwrap()["error"].as_str().unwrap().to_string()
+}
+
 /// Lead ruling 2026-11-08 (R60 probe j3; resource-less admission is not accepted): with NO package open, web.export,
 /// web.publish, the site export, web.site_report and web.move_file still ask the bound job port, once each, before
 /// any file: a saturated port refuses `overloaded` and nothing is written; the resource is a valid id, the same for
@@ -494,13 +507,13 @@ fn with_no_package_open_web_jobs_still_ask_the_bound_port() {
     assert!(run.snapshot().is_none(), "no package is open");
     let saturated = Arc::new(JobsPort { refuse: true, ..JobsPort::default() });
     run.bind_web_jobs(saturated.clone(), JobLifecycle::default());
-    cmd(&mut run, "web.open", json!({"path": s(&index)}));
-    cmd(&mut run, "web.export_recipe", json!({"output_root": s(&dir.at("out"))}));
+    bare_ok(&mut run, "web.open", json!({"path": s(&index)}));
+    bare_ok(&mut run, "web.export_recipe", json!({"output_root": s(&dir.at("out"))}));
     // The probe's shape: no site defined, the open export only.
-    assert_eq!(refused(&mut run, "web.export", json!({})), "overloaded");
+    assert_eq!(bare_no(&mut run, "web.export", json!({})), "overloaded");
     assert_eq!(saturated.asked(), 1, "web.export asks the port once");
-    define(&mut run, &dir);
-    cmd(&mut run, "web.remote_target", json!({"target_id": "local", "root_path": s(&dir.at("target"))}));
+    bare_ok(&mut run, "web.site", json!({"display_name": "harbour", "local_root": s(&dir.at("site"))}));
+    bare_ok(&mut run, "web.remote_target", json!({"target_id": "local", "root_path": s(&dir.at("target"))}));
     let mut asked = 1;
     for (id, params, recipe) in [
         ("web.export", json!({}), None),
@@ -510,9 +523,9 @@ fn with_no_package_open_web_jobs_still_ask_the_bound_port() {
         ("web.move_file", json!({"from": "orphan.png", "to": "img/orphan.png"}), None),
     ] {
         if let Some(set) = recipe {
-            cmd(&mut run, "web.export_recipe", json!({"documents": set}));
+            bare_ok(&mut run, "web.export_recipe", json!({"documents": set}));
         }
-        assert_eq!(refused(&mut run, id, params), "overloaded", "{id}");
+        assert_eq!(bare_no(&mut run, id, params), "overloaded", "{id}");
         asked += 1;
         assert_eq!(saturated.asked(), asked, "{id}: the port is asked exactly once");
         assert_eq!(run.ops().last().unwrap()["target"], "retry_after_ms=7");
@@ -525,8 +538,8 @@ fn with_no_package_open_web_jobs_still_ask_the_bound_port() {
     // An admitting port: one admit and one release per command, and the work runs.
     let open = Arc::new(JobsPort::default());
     run.bind_web_jobs(open.clone(), JobLifecycle::default());
-    cmd(&mut run, "web.export", json!({}));
-    cmd(&mut run, "web.site_report", json!({}));
+    bare_ok(&mut run, "web.export", json!({}));
+    bare_ok(&mut run, "web.site_report", json!({}));
     assert_eq!((open.asked(), open.releases.load(Ordering::SeqCst)), (2, 2));
     assert!(dir.at("out/index.html").is_file());
 }
